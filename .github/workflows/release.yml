@@ -1,17 +1,9 @@
 name: Release Plugin
 
 on:
-  workflow_dispatch:
-    inputs:
-      bump:
-        description: 'Version bump type'
-        required: true
-        default: 'patch'
-        type: choice
-        options:
-          - patch
-          - minor
-          - major
+  push:
+    tags:
+      - 'v*'
 
 permissions:
   contents: write
@@ -32,74 +24,55 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Bump version
+      - name: Extract version from tag
         id: version
         run: |
-          CURRENT=$(node -p "require('./claude-code-boss/scripts/plugin-version.json').version")
-          IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT"
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
 
-          case "${{ inputs.bump }}" in
-            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
-            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
-            patch) PATCH=$((PATCH + 1)) ;;
-          esac
-
-          NEW_VERSION="${MAJOR}.${MINOR}.${PATCH}"
+      - name: Update plugin-version.json and package.json
+        run: |
+          VERSION=${{ steps.version.outputs.version }}
           TODAY=$(date +%Y-%m-%d)
           REPO="${{ github.repository }}"
 
-          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
-          echo "tag=v$NEW_VERSION" >> $GITHUB_OUTPUT
-
-          # Update plugin-version.json
           node -e "
             const fs = require('fs');
             const f = './claude-code-boss/scripts/plugin-version.json';
             const d = JSON.parse(fs.readFileSync(f, 'utf-8'));
-            d.version = '$NEW_VERSION';
+            d.version = '$VERSION';
             d.releaseDate = '$TODAY';
             d.releaseUrl = 'https://github.com/$REPO/releases/latest';
             d.apiUrl = 'https://api.github.com/repos/$REPO/releases/latest';
             fs.writeFileSync(f, JSON.stringify(d, null, 2) + '\n');
           "
-
-          # Update package.json
           node -e "
             const fs = require('fs');
             const f = './claude-code-boss/package.json';
             const d = JSON.parse(fs.readFileSync(f, 'utf-8'));
-            d.version = '$NEW_VERSION';
+            d.version = '$VERSION';
             fs.writeFileSync(f, JSON.stringify(d, null, 2) + '\n');
           "
-
-          echo "Bumped $CURRENT → $NEW_VERSION"
 
       - name: Package plugin
         run: |
           cd claude-code-boss
-          zip -r ../claude-code-boss-${{ steps.version.outputs.new_version }}.zip . \
+          zip -r ../claude-code-boss-${{ steps.version.outputs.version }}.zip . \
             --exclude "node_modules/*" \
             --exclude ".git/*" \
             --exclude "*.log" \
             --exclude "*.download" \
             --exclude "output-styles/*"
-          echo "Package created: $(du -sh ../claude-code-boss-${{ steps.version.outputs.new_version }}.zip)"
-
-      - name: Commit version bump
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add claude-code-boss/scripts/plugin-version.json claude-code-boss/package.json
-          git commit -m "chore: bump version to ${{ steps.version.outputs.new_version }}"
-          git push origin main
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.version.outputs.tag }}
-          name: "v${{ steps.version.outputs.new_version }}"
+          name: "v${{ steps.version.outputs.version }}"
           body: |
-            ## claude-code-boss v${{ steps.version.outputs.new_version }}
+            ## claude-code-boss v${{ steps.version.outputs.version }}
 
             ### Instalação
             Baixe o ZIP e extraia em `~/.claude/plugins/` ou use o marketplace do Claude Code.
@@ -108,6 +81,6 @@ jobs:
             O plugin verifica atualizações automaticamente (intervalo: 24h).
             Se houver update disponível, você será notificado no terminal.
           files: |
-            claude-code-boss-${{ steps.version.outputs.new_version }}.zip
+            claude-code-boss-${{ steps.version.outputs.version }}.zip
           draft: false
           prerelease: false
