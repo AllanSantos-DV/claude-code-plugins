@@ -161,6 +161,43 @@ function getBrainBackend(req, res) {
   }
 }
 
+// ─── API: Brain Backend Config (read/write brain-config.json) ────────
+
+function getBrainConfig(req, res) {
+  const configPath = path.join(ROOT, 'config', 'brain-config.json');
+  const data = readJSON(configPath);
+  if (!data) return fail(res, 'brain-config.json not found', 404);
+  json(res, data);
+}
+
+async function saveBrainConfig(req, res) {
+  const body = await readBody(req);
+  try {
+    const parsed = JSON.parse(body);
+    const configPath = path.join(ROOT, 'config', 'brain-config.json');
+    fs.writeFileSync(configPath, JSON.stringify(parsed, null, 2));
+    json(res, { ok: true, requiresRestart: true });
+  } catch (e) { fail(res, e.message); }
+}
+
+function restartDashboard(req, res) {
+  const port = server.address().port;
+  json(res, { ok: true, port, restarting: true });
+  setTimeout(() => {
+    const child = require('child_process').spawn(
+      process.execPath,
+      [path.join(ROOT, 'scripts', 'dashboard.js')],
+      {
+        detached: true,
+        stdio: 'ignore',
+        env: { ...process.env, DASHBOARD_PORT: String(port), DASHBOARD_NO_OPEN: '1' },
+      }
+    );
+    child.unref();
+    process.exit(0);
+  }, 500);
+}
+
 // ─── API: Brain ────────────────────────────────────────────────────
 
 function getBrainProjects(req, res) {
@@ -351,6 +388,9 @@ function handleAPI(req, res, url) {
   if (p === '/api/pipelines' && m === 'GET') return getPipelines(req, res);
   if (p === '/api/pipelines' && m === 'PUT') return savePipelines(req, res);
   if (p === '/api/brain/backend' && m === 'GET') return getBrainBackend(req, res);
+  if (p === '/api/brain/backend-config' && m === 'GET') return getBrainConfig(req, res);
+  if (p === '/api/brain/backend-config' && m === 'PUT') return saveBrainConfig(req, res);
+  if (p === '/api/brain/backend-restart' && m === 'POST') return restartDashboard(req, res);
   if (p === '/api/brain/projects' && m === 'GET') return getBrainProjects(req, res);
   if (p === '/api/brain/search' && m === 'GET') return searchBrain(req, res, url);
   if (p.match(/^\/api\/brain\/entry\//) && m === 'GET') return getBrainEntry(req, res, url);
@@ -384,7 +424,7 @@ function serveStatic(req, res) {
 
 const server = http.createServer((req, res) => {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, POST, DELETE, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
   const url = new URL(req.url, `http://${req.headers.host}`);

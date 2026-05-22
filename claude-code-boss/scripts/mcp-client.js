@@ -90,7 +90,7 @@ class McpClient extends EventEmitter {
     for (const cmd of candidates) {
       try {
         const result = require('child_process').execSync(`${cmd} -version 2>&1`, { stdio: 'pipe' });
-        const out = result.stderr?.toString() || result.stdout?.toString() || '';
+        const out = result.toString();
         const match = out.match(/(?:openjdk|java|jdk) (?:version "?)?(\d+)/i);
         if (match && parseInt(match[1]) >= 21) return cmd;
       } catch {}
@@ -105,48 +105,90 @@ class McpClient extends EventEmitter {
     return null;
   }
 
-  _downloadJar() {
+  /** Resolve the latest JAR download URL from GitHub Releases API. */
+  _resolveLatestUrl() {
+    const GITHUB_REPO = 'AllanSantos-DV/mcp-memory-server-releases';
+    const apiUrl = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
     return new Promise((resolve, reject) => {
-      const url = this.downloadUrl;
-      if (!url) return reject(new Error('No downloadUrl configured'));
+      https.get(apiUrl, { headers: { 'User-Agent': 'claude-code-boss', 'Accept': 'application/vnd.github+json' } }, (res) => {
+        let body = '';
+        res.on('data', chunk => body += chunk);
+        res.on('end', () => {
+          try {
+            const data = JSON.parse(body);
+            const asset = (data.assets || []).find(a => a.name.endsWith('.jar'));
+            if (asset) {
+              console.error(`[MCP] Latest release: ${data.tag_name} → ${asset.name}`);
+              resolve(asset.browser_download_url);
+            } else {
+              reject(new Error(`No .jar asset found in latest release of ${GITHUB_REPO}`));
+            }
+          } catch (e) {
+            reject(new Error(`GitHub API parse error: ${e.message}`));
+          }
+        });
+      }).on('error', reject);
+    });
+  }
+
+  /** Download a JAR from a URL, following redirects, into this.jarPath. */
+  _fetchJar(url) {
+    return new Promise((resolve, reject) => {
       const dir = path.dirname(this.jarPath);
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
       const tempFile = this.jarPath + '.download';
-      const file = fs.createWriteStream(tempFile);
-      console.error(`[MCP] Downloading ${url}`);
-      https.get(url, (res) => {
-        if (res.statusCode === 302 || res.statusCode === 301) {
-          file.close();
-          fs.unlinkSync(tempFile);
-          const redirectUrl = res.headers.location;
-          return https.get(redirectUrl, (r2) => {
-            r2.pipe(file);
-            file.on('finish', () => {
-              file.close();
-              fs.renameSync(tempFile, this.jarPath);
-              console.error(`[MCP] Downloaded to ${this.jarPath}`);
-              resolve();
-            });
+
+      const doGet = (targetUrl, redirectsLeft = 5) => {
+        const file = fs.createWriteStream(tempFile);
+        https.get(targetUrl, (res) => {
+          if ((res.statusCode === 301 || res.statusCode === 302) && res.headers.location) {
+            file.close();
+            if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
+            if (redirectsLeft <= 0) return reject(new Error('Too many redirects'));
+            return doGet(res.headers.location, redirectsLeft - 1);
+          }
+          if (res.statusCode !== 200) {
+            file.close();
+            if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
+            return reject(new Error(`Download failed: HTTP ${res.statusCode}`));
+          }
+          res.pipe(file);
+          file.on('finish', () => {
+            file.close();
+            fs.renameSync(tempFile, this.jarPath);
+            console.error(`[MCP] Downloaded to ${this.jarPath}`);
+            resolve();
           });
-        }
-        if (res.statusCode !== 200) {
-          file.close();
-          fs.unlinkSync(tempFile);
-          return reject(new Error(`Download failed: HTTP ${res.statusCode}`));
-        }
-        res.pipe(file);
-        file.on('finish', () => {
-          file.close();
-          fs.renameSync(tempFile, this.jarPath);
-          console.error(`[MCP] Downloaded to ${this.jarPath}`);
-          resolve();
+          file.on('error', err => {
+            if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
+            reject(err);
+          });
+        }).on('error', err => {
+          if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
+          reject(err);
         });
-      }).on('error', (err) => {
-        file.close();
-        if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
-        reject(err);
-      });
+      };
+
+      doGet(url);
     });
+  }
+
+  async _downloadJar() {
+    console.error('[MCP] Resolving latest release from GitHub...');
+    let url;
+    try {
+      url = await this._resolveLatestUrl();
+    } catch (e) {
+      // Fallback to static downloadUrl in config if GitHub API is unreachable
+      if (this.downloadUrl) {
+        console.error(`[MCP] GitHub API failed (${e.message}), falling back to configured URL`);
+        url = this.downloadUrl;
+      } else {
+        throw new Error(`Cannot resolve JAR URL: ${e.message}`);
+      }
+    }
+    console.error(`[MCP] Downloading ${url}`);
+    await this._fetchJar(url);
   }
 
   async _handshake() {

@@ -131,10 +131,48 @@ pre { background: #f5f5f5; padding: .6rem; border-radius: 4px; font-size: .7rem;
   <section id="tab-brain" class="tab">
     <h1>Knowledge Base</h1>
     <div class="card" id="brain-backend-card">
-      <div class="flex flex-wrap gap-1" style="align-items:center">
-        <span><strong>Backend:</strong> <span id="brain-backend-type">—</span></span>
-        <span><strong>Status:</strong> <span id="brain-backend-status">—</span></span>
-        <span style="font-size:.75rem;color:#888;margin-left:auto;">Config: <code>config/brain-config.json → backend.type</code></span>
+      <div class="flex mb-1" style="align-items:center;justify-content:space-between">
+        <h2 style="margin:0">Backend Configuration</h2>
+        <div class="flex" style="gap:.5rem;align-items:center">
+          <span class="text-muted" id="brain-backend-status-label">—</span>
+          <button class="btn-primary btn-sm" onclick="saveBrainBackendConfig()">Save</button>
+          <span id="brain-config-saved" class="text-muted"></span>
+        </div>
+      </div>
+
+      <div id="brain-restart-banner" style="display:none;background:#fff3cd;border:1px solid #ffc107;border-radius:6px;padding:.6rem .9rem;margin-bottom:.75rem;display:none;align-items:center;gap:.75rem">
+        <span style="font-size:.85rem">⚠️ <strong>Restart necessário</strong> para aplicar as mudanças.</span>
+        <button class="btn-sm btn-warning" onclick="doRestartDashboard()" id="restart-btn">Restart Dashboard</button>
+        <span id="restart-status" class="text-muted"></span>
+      </div>
+
+      <div class="flex flex-wrap gap-1" style="align-items:flex-start">
+        <div style="min-width:200px">
+          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Backend Type</label>
+          <select id="backend-type-select" onchange="onBackendTypeChange(this.value)" style="width:auto">
+            <option value="local">local (SQLite)</option>
+            <option value="mcp-memory">mcp-memory (Java JAR)</option>
+          </select>
+        </div>
+        <div style="min-width:160px">
+          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Status atual</label>
+          <span id="brain-backend-status" style="font-size:.85rem">—</span>
+        </div>
+      </div>
+
+      <div id="mcp-fields" style="display:none;margin-top:.75rem;border-top:1px solid #eee;padding-top:.75rem">
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
+          <div>
+            <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">JAR Path <span style="color:#888">(deixe vazio para download automático)</span></label>
+            <input type="text" id="mcp-jar-path" placeholder="C:/path/to/mcp-memory-server.jar">
+          </div>
+          <div>
+            <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Java Args</label>
+            <input type="text" id="mcp-java-args" placeholder="-Xmx512m">
+          </div>
+        </div>
+        <p id="java-check-msg" class="text-muted" style="margin-top:.5rem;font-size:.75rem"></p>
+        <p class="text-muted" style="font-size:.72rem;margin-top:.25rem">Se o JAR não existir no caminho acima, será baixado automaticamente da última release do repositório.</p>
       </div>
     </div>
     <div class="flex flex-wrap gap-1 mb-1">
@@ -307,19 +345,42 @@ async function savePipelines() {
 
 // ─── BRAIN ────────────────────────────────────────────────────────
 
+let _brainConfig = null;
+
 async function loadBrain() {
+  // Load backend config into the form
   try {
-    const backend = await api('GET', '/api/brain/backend');
-    document.getElementById('brain-backend-type').textContent = backend.mode || 'local';
-    const statusEl = document.getElementById('brain-backend-status');
-    if (backend.mode === 'mcp-memory') {
-      statusEl.textContent = backend.connected ? 'Connected' : 'Disconnected';
-      statusEl.style.color = backend.connected ? '#155724' : '#721c24';
-    } else {
-      statusEl.textContent = 'Active';
-      statusEl.style.color = '#155724';
+    _brainConfig = await api('GET', '/api/brain/backend-config');
+    const backendType = (_brainConfig.backend && _brainConfig.backend.type) || 'local';
+    const sel = document.getElementById('backend-type-select');
+    sel.value = backendType;
+    onBackendTypeChange(backendType, true);
+
+    if (backendType === 'mcp-memory' && _brainConfig.backend.mcpMemory) {
+      const mcp = _brainConfig.backend.mcpMemory;
+      document.getElementById('mcp-jar-path').value = mcp.jarPath || '';
+      document.getElementById('mcp-java-args').value = (mcp.javaArgs || []).join(' ');
     }
   } catch {}
+
+  // Load live backend status
+  try {
+    const backend = await api('GET', '/api/brain/backend');
+    const statusEl = document.getElementById('brain-backend-status');
+    const labelEl = document.getElementById('brain-backend-status-label');
+    if (backend.mode === 'mcp-memory') {
+      const ok = backend.connected;
+      statusEl.textContent = ok ? '● Connected' : '● Disconnected';
+      statusEl.style.color = ok ? '#155724' : '#721c24';
+      labelEl.textContent = 'mcp-memory';
+    } else {
+      statusEl.textContent = '● Active';
+      statusEl.style.color = '#155724';
+      labelEl.textContent = 'local';
+    }
+  } catch {}
+
+  // Load KB projects
   try {
     state.brainProjects = await api('GET', '/api/brain/projects');
     const sel = document.getElementById('brain-project');
@@ -327,6 +388,57 @@ async function loadBrain() {
       state.brainProjects.map(p => `<option value="${p.project}">${p.project} (${p.entries} entries)</option>`).join('');
     loadBrainStats();
   } catch {}
+}
+
+function onBackendTypeChange(value, silent) {
+  const mcpFields = document.getElementById('mcp-fields');
+  mcpFields.style.display = value === 'mcp-memory' ? 'block' : 'none';
+  if (value === 'mcp-memory' && !silent) {
+    document.getElementById('java-check-msg').textContent = 'Requer Java 21+ instalado na máquina.';
+  }
+}
+
+async function saveBrainBackendConfig() {
+  if (!_brainConfig) return;
+  const type = document.getElementById('backend-type-select').value;
+  const cfg = JSON.parse(JSON.stringify(_brainConfig));
+  cfg.backend = cfg.backend || {};
+  cfg.backend.type = type;
+  if (type === 'mcp-memory') {
+    cfg.backend.mcpMemory = cfg.backend.mcpMemory || {};
+    cfg.backend.mcpMemory.jarPath = document.getElementById('mcp-jar-path').value.trim();
+    const argsRaw = document.getElementById('mcp-java-args').value.trim();
+    cfg.backend.mcpMemory.javaArgs = argsRaw ? argsRaw.split(/\s+/) : ['-Xmx512m'];
+  }
+
+  try {
+    const result = await api('PUT', '/api/brain/backend-config', cfg);
+    _brainConfig = cfg;
+    const savedEl = document.getElementById('brain-config-saved');
+    savedEl.textContent = 'Salvo!';
+    setTimeout(() => { savedEl.textContent = ''; }, 2000);
+
+    if (result.requiresRestart) {
+      const banner = document.getElementById('brain-restart-banner');
+      banner.style.display = 'flex';
+    }
+  } catch (e) {
+    alert('Erro ao salvar: ' + e.message);
+  }
+}
+
+async function doRestartDashboard() {
+  const btn = document.getElementById('restart-btn');
+  const status = document.getElementById('restart-status');
+  btn.disabled = true;
+  btn.textContent = 'Reiniciando...';
+  status.textContent = 'Aguarde...';
+  try {
+    await api('POST', '/api/brain/backend-restart');
+  } catch {}
+  // Wait for the new process to be ready, then reload
+  status.textContent = 'Reconectando em 3s...';
+  setTimeout(() => { location.reload(); }, 3000);
 }
 
 function loadBrainStats() {
