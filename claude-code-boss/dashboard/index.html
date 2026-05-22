@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Plugin Dashboard</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; color: #222; line-height: 1.5; }
+
+nav { background: #1a1a2e; color: #fff; padding: 0 1rem; display: flex; gap: 0; align-items: stretch; overflow-x: auto; }
+nav a { color: #8892b0; text-decoration: none; padding: 0.9rem 1.2rem; font-size: 0.85rem; border-bottom: 2px solid transparent; transition: all .15s; white-space: nowrap; }
+nav a:hover { color: #fff; background: rgba(255,255,255,.05); }
+nav a.active { color: #64ffda; border-bottom-color: #64ffda; }
+
+main { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
+.tab { display: none; }
+.tab.active { display: block; }
+
+h1 { font-size: 1.3rem; margin-bottom: 1rem; color: #1a1a2e; }
+h2 { font-size: 1.05rem; margin-bottom: .75rem; color: #333; }
+
+.card { background: #fff; border-radius: 8px; padding: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,.08); margin-bottom: 1rem; }
+
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: .75rem; margin-bottom: 1rem; }
+.stat { background: #fff; border-radius: 8px; padding: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,.08); text-align: center; }
+.stat .value { font-size: 1.5rem; font-weight: 700; color: #1a1a2e; }
+.stat .label { font-size: .75rem; color: #666; margin-top: .25rem; }
+.stat .badge { display: inline-block; font-size: .65rem; padding: 2px 8px; border-radius: 10px; margin-top: .25rem; }
+.badge-green { background: #d4edda; color: #155724; }
+.badge-yellow { background: #fff3cd; color: #856404; }
+.badge-red { background: #f8d7da; color: #721c24; }
+
+table { width: 100%; border-collapse: collapse; font-size: .8rem; }
+th, td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid #eee; }
+th { font-weight: 600; color: #555; font-size: .75rem; text-transform: uppercase; letter-spacing: .03em; }
+tr:hover { background: #f8f9fa; }
+
+input, select, textarea { font-family: inherit; font-size: .8rem; padding: .4rem .6rem; border: 1px solid #ddd; border-radius: 4px; width: 100%; }
+textarea { font-family: 'SF Mono', Monaco, monospace; font-size: .75rem; }
+button { font-family: inherit; font-size: .8rem; padding: .4rem 1rem; border: none; border-radius: 4px; cursor: pointer; }
+.btn-primary { background: #1a1a2e; color: #fff; }
+.btn-primary:hover { background: #16213e; }
+.btn-danger { background: #dc3545; color: #fff; }
+.btn-sm { padding: .2rem .6rem; font-size: .75rem; }
+.btn-success { background: #28a745; color: #fff; }
+.btn-warning { background: #ffc107; color: #222; }
+
+.panel { border: 1px solid #eee; border-radius: 6px; margin-bottom: .75rem; overflow: hidden; }
+.panel h3 { font-size: .85rem; padding: .6rem .8rem; background: #fafafa; border-bottom: 1px solid #eee; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
+.panel h3:hover { background: #f0f0f0; }
+.panel-body { padding: .8rem; }
+
+.flex { display: flex; gap: .5rem; align-items: center; }
+.flex-wrap { flex-wrap: wrap; }
+.gap-1 { gap: 1rem; }
+.mb-1 { margin-bottom: 1rem; }
+.mt-1 { margin-top: 1rem; }
+.text-right { text-align: right; }
+.text-muted { color: #888; font-size: .75rem; }
+.truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 250px; }
+
+.tag { display: inline-block; background: #e8f4fd; color: #1a73e8; font-size: .65rem; padding: 1px 6px; border-radius: 3px; margin: 1px; }
+.tag-warn { background: #fff3cd; color: #856404; }
+.tag-green { background: #d4edda; color: #155724; }
+
+@media (max-width: 600px) {
+  main { padding: 1rem; }
+  .grid { grid-template-columns: repeat(2, 1fr); }
+  nav a { padding: .7rem .8rem; font-size: .78rem; }
+}
+
+.spinner { display: inline-block; width: 1.5rem; height: 1.5rem; border: 2px solid #ddd; border-top-color: #1a1a2e; border-radius: 50%; animation: spin .6s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+pre { background: #f5f5f5; padding: .6rem; border-radius: 4px; font-size: .7rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+
+.empty-state { text-align: center; padding: 2rem; color: #888; }
+</style>
+</head>
+<body>
+
+<nav id="tabs">
+  <a href="#home" class="active">Home</a>
+  <a href="#models">Models</a>
+  <a href="#pipelines">Pipelines</a>
+  <a href="#brain">Brain KB</a>
+  <a href="#billing">Billing</a>
+  <a href="#hooks">Hooks</a>
+</nav>
+
+<main>
+  <!-- HOME -->
+  <section id="tab-home" class="tab active">
+    <h1>System Overview</h1>
+    <div class="grid" id="home-grid"></div>
+    <div class="card">
+      <h2>Brain Knowledge Base</h2>
+      <div id="home-brain"></div>
+    </div>
+  </section>
+
+  <!-- MODELS -->
+  <section id="tab-models" class="tab">
+    <div class="flex mb-1">
+      <h1>Model Router Config</h1>
+      <button class="btn-primary" onclick="saveModels()">Save</button>
+      <span id="models-saved" class="text-muted"></span>
+    </div>
+    <div class="card">
+      <h2>Tiers</h2>
+      <div id="models-tiers"></div>
+    </div>
+    <div class="card">
+      <h2>Agents</h2>
+      <div id="models-agents"></div>
+    </div>
+  </section>
+
+  <!-- PIPELINES -->
+  <section id="tab-pipelines" class="tab">
+    <div class="flex mb-1">
+      <h1>Pipeline Definitions</h1>
+      <button class="btn-primary" onclick="savePipelines()">Save</button>
+      <span id="pipelines-saved" class="text-muted"></span>
+    </div>
+    <div id="pipelines-list"></div>
+  </section>
+
+  <!-- BRAIN -->
+  <section id="tab-brain" class="tab">
+    <h1>Knowledge Base</h1>
+    <div class="card" id="brain-backend-card">
+      <div class="flex flex-wrap gap-1" style="align-items:center">
+        <span><strong>Backend:</strong> <span id="brain-backend-type">—</span></span>
+        <span><strong>Status:</strong> <span id="brain-backend-status">—</span></span>
+        <span style="font-size:.75rem;color:#888;margin-left:auto;">Config: <code>config/brain-config.json → backend.type</code></span>
+      </div>
+    </div>
+    <div class="flex flex-wrap gap-1 mb-1">
+      <select id="brain-project" onchange="loadBrainStats()" style="max-width:200px"><option value="">Select project...</option></select>
+      <input type="text" id="brain-query" placeholder="Search query..." style="max-width:300px">
+      <button class="btn-primary" onclick="searchBrain()">Search</button>
+    </div>
+    <div id="brain-stats"></div>
+    <div id="brain-results"></div>
+  </section>
+
+  <!-- BILLING -->
+  <section id="tab-billing" class="tab">
+    <h1>Cost Tracker</h1>
+    <div class="flex mb-1">
+      <input type="text" id="billing-filter" placeholder="Filter by agent..." style="max-width:200px" oninput="renderBilling()">
+      <span id="billing-total" class="text-muted"></span>
+    </div>
+    <div class="card">
+      <table><thead><tr><th>Time</th><th>Agent</th><th>Model</th><th>Multiplier</th><th>Message</th></tr></thead>
+      <tbody id="billing-rows"></tbody></table>
+    </div>
+  </section>
+
+  <!-- HOOKS -->
+  <section id="tab-hooks" class="tab">
+    <h1>Hook Registry</h1>
+    <div class="card">
+      <table><thead><tr><th>Event</th><th>Matcher</th><th>Script</th><th>Status</th><th>Action</th></tr></thead>
+      <tbody id="hooks-rows"></tbody></table>
+    </div>
+  </section>
+</main>
+
+<script>
+const API = '';
+let state = { models: null, pipelines: null, hooks: null, billing: null, brainProjects: [] };
+
+// ─── Navigation ──────────────────────────────────────────────────
+
+function navigate() {
+  const hash = location.hash.slice(1) || 'home';
+  document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.id === 'tab-' + hash));
+  document.querySelectorAll('nav a').forEach(a => a.classList.toggle('active', a.hash === '#' + hash));
+  const fns = { home: loadHome, models: loadModels, pipelines: loadPipelines, brain: loadBrain, billing: loadBilling, hooks: loadHooks };
+  if (fns[hash]) fns[hash]();
+}
+window.addEventListener('hashchange', navigate);
+window.addEventListener('load', navigate);
+
+// ─── HTTP ─────────────────────────────────────────────────────────
+
+async function api(method, path, body) {
+  const opts = { method, headers: {} };
+  if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
+  const r = await fetch(API + path, opts);
+  return r.json();
+}
+
+// ─── HOME ─────────────────────────────────────────────────────────
+
+async function loadHome() {
+  const el = document.getElementById('home-grid');
+  el.innerHTML = '<div class="spinner" style="margin:1rem auto"></div>';
+  try {
+    const s = await api('GET', '/api/status');
+    el.innerHTML = `
+      <div class="stat"><div class="value">${s.models.agents}</div><div class="label">Model Agents</div></div>
+      <div class="stat"><div class="value">${s.pipelines}</div><div class="label">Pipelines</div></div>
+      <div class="stat"><div class="value">${s.hooks.active}/${s.hooks.total}</div><div class="label">Hooks Active</div><span class="badge ${s.hooks.active === s.hooks.total ? 'badge-green' : 'badge-yellow'}">${s.hooks.active === s.hooks.total ? 'All active' : s.hooks.active + ' active'}</span></div>
+      <div class="stat"><div class="value">${s.brain.totalEntries}</div><div class="label">KB Entries</div><span class="badge ${s.brain.connected ? 'badge-green' : 'badge-red'}">${s.brain.backend || 'local'}</span></div>
+      <div class="stat"><div class="value">${s.billing.totalCost.toFixed(1)}</div><div class="label">Total Cost (multiplier)</div></div>
+      <div class="stat"><div class="value">${Math.floor(s.uptime / 60)}m</div><div class="label">Dashboard Uptime</div></div>
+    `;
+    const brainEl = document.getElementById('home-brain');
+    if (s.brain.projects.length === 0) {
+      brainEl.innerHTML = '<p class="text-muted">No projects with KB data found.</p>';
+    } else {
+      brainEl.innerHTML = '<table><thead><tr><th>Project</th><th>Entries</th></tr></thead><tbody>' +
+        s.brain.projects.map(p => `<tr><td>${p.project}</td><td>${p.entries}</td></tr>`).join('') +
+        '</tbody></table>';
+    }
+  } catch { el.innerHTML = '<p class="text-muted">Failed to load status.</p>'; }
+}
+
+// ─── MODELS ──────────────────────────────────────────────────────
+
+async function loadModels() {
+  try {
+    state.models = await api('GET', '/api/models');
+    renderModels();
+  } catch {}
+}
+
+function renderModels() {
+  const m = state.models;
+  if (!m) return;
+  const tiers = document.getElementById('models-tiers');
+  tiers.innerHTML = '<table><thead><tr><th>Tier</th><th>Model</th><th>Multiplier</th><th>Rank</th></tr></thead><tbody>' +
+    Object.entries(m.tiers).map(([k, v]) => `<tr><td>${k}</td><td>${v.model || '-'}</td><td>${v.multiplier || 0}</td><td>${v.rank || 0}</td></tr>`).join('') +
+    '</tbody></table>';
+
+  const agents = document.getElementById('models-agents');
+  agents.innerHTML = '<table><thead><tr><th>Agent</th><th>Model</th><th>Cost Sensitive</th><th>Min Tier</th><th>Alert Threshold</th></tr></thead><tbody>' +
+    Object.entries(m.agents).map(([k, v]) => `<tr>
+      <td>${k}</td>
+      <td><select onchange="updateAgent('${k}','model',this.value)">${Object.keys(m.tiers).map(t => `<option value="${t}"${v.model === t ? ' selected' : ''}>${t}</option>`).join('')}</select></td>
+      <td><input type="checkbox" ${v.costSensitive ? 'checked' : ''} onchange="updateAgent('${k}','costSensitive',this.checked)"></td>
+      <td><select onchange="updateAgent('${k}','minTier',this.value)"><option value="">—</option>${Object.keys(m.tiers).filter(t => t !== 'free').map(t => `<option value="${t}"${v.minTier === t ? ' selected' : ''}>${t}</option>`).join('')}</select></td>
+      <td><input type="number" value="${v.alertThreshold || ''}" style="max-width:80px" onchange="updateAgent('${k}','alertThreshold',+this.value||undefined)"></td>
+    </tr>`).join('') +
+    '</tbody></table>';
+}
+
+let modelsDirty = false;
+function updateAgent(agent, field, value) {
+  if (!state.models) return;
+  state.models.agents[agent][field] = value;
+  modelsDirty = true;
+}
+
+async function saveModels() {
+  if (!state.models) return;
+  await api('PUT', '/api/models', state.models);
+  document.getElementById('models-saved').textContent = 'Saved!';
+  modelsDirty = false;
+  setTimeout(() => document.getElementById('models-saved').textContent = '', 2000);
+}
+
+// ─── PIPELINES ───────────────────────────────────────────────────
+
+async function loadPipelines() {
+  try {
+    state.pipelines = await api('GET', '/api/pipelines');
+    renderPipelines();
+  } catch {}
+}
+
+function renderPipelines() {
+  const list = document.getElementById('pipelines-list');
+  const p = state.pipelines;
+  if (!p || !p.pipelines) { list.innerHTML = '<p class="text-muted">No pipelines defined.</p>'; return; }
+  list.innerHTML = p.pipelines.map((pipe, i) => `
+    <div class="panel">
+      <h3 onclick="this.nextElementSibling.classList.toggle('active')" style="cursor:pointer">
+        <span><strong>${pipe.name}</strong> — ${pipe.description || ''}</span>
+        <span class="text-muted">${pipe.steps.length} steps | match: ${(pipe.match||[]).join(', ')}</span>
+      </h3>
+      <div class="panel-body" style="display:none" class="active">
+        <table><thead><tr><th>#</th><th>Agent</th><th>Type</th><th>Description</th><th>Tiers</th></tr></thead><tbody>
+        ${pipe.steps.map((step, j) => `<tr>
+          <td>${j + 1}</td>
+          <td>${step.agent}</td>
+          <td><span class="tag ${step.type === 'cascade' ? 'tag-warn' : 'tag-green'}">${step.type}</span></td>
+          <td class="text-muted">${step.description || ''}</td>
+          <td>${step.tiers ? step.tiers.map(t => t.name).join(' → ') : '-'}</td>
+        </tr>`).join('')}
+        </tbody></table>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function savePipelines() {
+  if (!state.pipelines) return;
+  await api('PUT', '/api/pipelines', state.pipelines);
+  document.getElementById('pipelines-saved').textContent = 'Saved!';
+  setTimeout(() => document.getElementById('pipelines-saved').textContent = '', 2000);
+}
+
+// ─── BRAIN ────────────────────────────────────────────────────────
+
+async function loadBrain() {
+  try {
+    const backend = await api('GET', '/api/brain/backend');
+    document.getElementById('brain-backend-type').textContent = backend.mode || 'local';
+    const statusEl = document.getElementById('brain-backend-status');
+    if (backend.mode === 'mcp-memory') {
+      statusEl.textContent = backend.connected ? 'Connected' : 'Disconnected';
+      statusEl.style.color = backend.connected ? '#155724' : '#721c24';
+    } else {
+      statusEl.textContent = 'Active';
+      statusEl.style.color = '#155724';
+    }
+  } catch {}
+  try {
+    state.brainProjects = await api('GET', '/api/brain/projects');
+    const sel = document.getElementById('brain-project');
+    sel.innerHTML = '<option value="">Select project...</option>' +
+      state.brainProjects.map(p => `<option value="${p.project}">${p.project} (${p.entries} entries)</option>`).join('');
+    loadBrainStats();
+  } catch {}
+}
+
+function loadBrainStats() {
+  const project = document.getElementById('brain-project').value;
+  const el = document.getElementById('brain-stats');
+  if (!project) { el.innerHTML = ''; return; }
+  const p = state.brainProjects.find(x => x.project === project);
+  el.innerHTML = p ? `<p class="text-muted">${p.entries} entries | ${(p.dbSize / 1024).toFixed(1)} KB</p>` : '';
+}
+
+async function searchBrain() {
+  const project = document.getElementById('brain-project').value;
+  const query = document.getElementById('brain-query').value;
+  const el = document.getElementById('brain-results');
+  if (!project || !query) { el.innerHTML = '<p class="text-muted">Select a project and enter a query.</p>'; return; }
+  el.innerHTML = '<div class="spinner" style="margin:1rem auto"></div>';
+  try {
+    const results = await api('GET', `/api/brain/search?q=${encodeURIComponent(query)}&project=${encodeURIComponent(project)}&k=20`);
+    if (results.length === 0) { el.innerHTML = '<p class="text-muted">No results found.</p>'; return; }
+    el.innerHTML = '<table><thead><tr><th>Score</th><th>Type</th><th>Title</th><th>Summary</th><th>Actions</th></tr></thead><tbody>' +
+      results.map(r => `<tr>
+        <td>${(r.score || 0).toFixed(2)}</td>
+        <td><span class="tag">${r.type || 'note'}</span></td>
+        <td class="truncate" style="max-width:200px" title="${r.title}">${r.title}</td>
+        <td class="text-muted truncate" style="max-width:250px" title="${r.summary}">${r.summary || ''}</td>
+        <td><button class="btn-sm btn-primary" onclick="viewBrainEntry('${project}','${r.id}')">View</button> <button class="btn-sm btn-danger" onclick="deleteBrainEntry('${project}','${r.id}')">Delete</button></td>
+      </tr>`).join('') +
+      '</tbody></table>';
+  } catch { el.innerHTML = '<p class="text-muted">Search failed.</p>'; }
+}
+
+async function viewBrainEntry(project, id) {
+  try {
+    const entry = await api('GET', `/api/brain/entry/${id}?project=${encodeURIComponent(project)}`);
+    const related = await api('GET', `/api/brain/related/${id}?project=${encodeURIComponent(project)}`);
+    alert(`Title: ${entry.title}\nType: ${entry.type}\nConfidence: ${entry.confidence}\nSummary: ${entry.summary}\n\nDetail:\n${entry.detail || '(no detail)'}\n\nTags: ${(entry.tags||[]).join(', ')}\n\nRelated (${related.length}): ${related.map(r => r.title).join(', ') || 'none'}`);
+  } catch {}
+}
+
+async function deleteBrainEntry(project, id) {
+  if (!confirm('Delete this entry?')) return;
+  await api('DELETE', `/api/brain/entry/${id}?project=${encodeURIComponent(project)}`);
+  searchBrain();
+}
+
+// ─── BILLING ──────────────────────────────────────────────────────
+
+async function loadBilling() {
+  try {
+    state.billing = await api('GET', '/api/billing/logs');
+    renderBilling();
+  } catch {}
+}
+
+function renderBilling() {
+  const filter = (document.getElementById('billing-filter').value || '').toLowerCase();
+  const rows = document.getElementById('billing-rows');
+  const total = document.getElementById('billing-total');
+  const filtered = filter ? state.billing.filter(e => e.agent.toLowerCase().includes(filter)) : state.billing;
+  const sum = filtered.reduce((a, e) => a + e.multiplier, 0);
+  total.textContent = `Total: ${sum.toFixed(1)} (${filtered.length} entries)`;
+  rows.innerHTML = filtered.slice(0, 200).map(e =>
+    `<tr><td class="text-muted">${e.timestamp.slice(5, 16)}</td><td>${e.agent}</td><td>${e.model}</td><td>x${e.multiplier.toFixed(1)}</td><td class="text-muted truncate" style="max-width:300px">${e.message}</td></tr>`
+  ).join('');
+}
+
+// ─── HOOKS ────────────────────────────────────────────────────────
+
+async function loadHooks() {
+  try {
+    state.hooks = await api('GET', '/api/hooks');
+    renderHooks();
+  } catch {}
+}
+
+function renderHooks() {
+  const rows = document.getElementById('hooks-rows');
+  rows.innerHTML = state.hooks.map(h =>
+    `<tr>
+      <td><span class="tag">${h.event}</span></td>
+      <td>${h.matcher}</td>
+      <td class="text-muted">${h.scriptFile}</td>
+      <td><span class="tag ${h.active ? 'tag-green' : 'tag-warn'}">${h.active ? 'Active' : 'Inactive'}</span></td>
+      <td><button class="btn-sm ${h.active ? 'btn-warning' : 'btn-success'}" onclick="toggleHook('${h.scriptFile}')">${h.active ? 'Disable' : 'Enable'}</button></td>
+    </tr>`
+  ).join('');
+}
+
+async function toggleHook(name) {
+  await api('PUT', `/api/hooks/toggle/${name}`);
+  loadHooks();
+}
+</script>
+</body>
+</html>
