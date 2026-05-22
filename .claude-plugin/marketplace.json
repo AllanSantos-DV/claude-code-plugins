@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-marketplace.json",
+  "name": "allansantos-plugins",
+  "owner": {
+    "name": "Allan Santos"
+  },
+  "description": "Claude Code plugins by Allan Santos — multi-agent orchestration, Brain Research KB, Boss Router.",
+  "plugins": [
+    {
+      "name": "claude-code-boss",
+      "displayName": "Claude Code Boss — Multi-Agent System",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/AllanSantos-DV/claude-code-plugins.git",
+        "path": "claude-code-boss"
+      },
+      "description": "Boss, Brain, Party, Discovery — multi-agent orchestration plugin for Claude Code Desktop. Smart routing, research fan-out, DSTP validation.",
+      "author": {
+        "name": "Allan Santos"
+      },
+      "homepage": "https://github.com/AllanSantos-DV/claude-code-plugins",
+      "license": "MIT",
+      "keywords": ["orchestration", "multi-agent", "research", "discovery", "brain", "boss"]
+    }
+  ]
+}
