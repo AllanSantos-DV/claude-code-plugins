@@ -1,8 +1,8 @@
 {
   "version": "1.1.0",
   "releaseDate": "2026-05-22",
-  "releaseUrl": "https://github.com/AllanSantos-DV/claude-code-boss/releases/latest",
-  "apiUrl": "https://api.github.com/repos/AllanSantos-DV/claude-code-boss/releases/latest",
+  "releaseUrl": "https://github.com/AllanSantos-DV/claude-code-plugins/releases/latest",
+  "apiUrl": "https://api.github.com/repos/AllanSantos-DV/claude-code-plugins/releases/latest",
   "checkInterval": 86400000,
   "description": "Plugin Version — used by plugin-updater.js for auto-update checking"
 }
