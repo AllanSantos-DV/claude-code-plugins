@@ -1,0 +1,522 @@
+#!/usr/bin/env node
+/**
+ * Brain Store — SQLite wrapper for knowledge base with JSON fallback.
+ *
+ * Storage: SQLite via better-sqlite3 (prebuilt binaries).
+ * Fallback: JSON files (when better-sqlite3 not installed).
+ *
+ * Usage:
+ *   const store = require('./brain-store');
+ *   await store.init({ project: 'my-project' });
+ *   await store.save(entry, vector);
+ *   const results = await store.search(queryVector, { topK: 5 });
+ *   const entry = await store.get(id);
+ *   await store.delete(id);
+ */
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const os = require('os');
+
+const STORE_DIR = process.env.CLAUDE_PLUGIN_DATA
+  || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+
+let _db = null;
+let _useSqlite = false;
+let _useJson = false;
+let _project = 'default';
+let _initialized = false;
+
+function cosineSimilarity(a, b) {
+  if (!a || !b || a.length !== b.length) return 0;
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  const denom = Math.sqrt(na) * Math.sqrt(nb);
+  return denom === 0 ? 0 : dot / denom;
+}
+
+function getProjectDir() {
+  const dir = path.join(STORE_DIR, 'brain', _project);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function uuid() {
+  return crypto.randomUUID();
+}
+
+function now() {
+  return new Date().toISOString();
+}
+
+// ── SQLite implementation ──
+
+async function tryInitSqlite() {
+  try {
+    const Database = require('better-sqlite3');
+    const dbPath = path.join(getProjectDir(), 'brain.db');
+    _db = new Database(dbPath);
+    _db.pragma('journal_mode = WAL');
+    _db.pragma('synchronous = NORMAL');
+    createTablesSqlite();
+    _useSqlite = true;
+    return true;
+  } catch (err) {
+    return false;
+  }
+}
+
+function createTablesSqlite() {
+  _db.exec(`
+    CREATE TABLE IF NOT EXISTS entries (
+      id TEXT PRIMARY KEY,
+      type TEXT NOT NULL,
+      project TEXT NOT NULL,
+      session_id TEXT NOT NULL DEFAULT '',
+      title TEXT NOT NULL,
+      summary TEXT NOT NULL DEFAULT '',
+      content TEXT NOT NULL DEFAULT '{}',
+      source TEXT NOT NULL DEFAULT '{}',
+      tags TEXT NOT NULL DEFAULT '[]',
+      confidence REAL NOT NULL DEFAULT 0.5,
+      access_count INTEGER NOT NULL DEFAULT 0,
+      last_accessed TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS embeddings (
+      entry_id TEXT PRIMARY KEY,
+      vector BLOB NOT NULL,
+      dimensions INTEGER NOT NULL,
+      model TEXT NOT NULL DEFAULT 'default',
+      FOREIGN KEY (entry_id) REFERENCES entries(id)
+    );
+    CREATE TABLE IF NOT EXISTS keywords (
+      entry_id TEXT NOT NULL,
+      keyword TEXT NOT NULL,
+      weight REAL NOT NULL DEFAULT 1.0,
+      PRIMARY KEY (entry_id, keyword),
+      FOREIGN KEY (entry_id) REFERENCES entries(id)
+    );
+    CREATE TABLE IF NOT EXISTS graph_edges (
+      from_id TEXT NOT NULL,
+      to_id TEXT NOT NULL,
+      type TEXT NOT NULL,
+      weight REAL NOT NULL DEFAULT 1.0,
+      PRIMARY KEY (from_id, to_id, type),
+      FOREIGN KEY (from_id) REFERENCES entries(id),
+      FOREIGN KEY (to_id) REFERENCES entries(id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_entries_type ON entries(type);
+    CREATE INDEX IF NOT EXISTS idx_entries_project ON entries(project);
+    CREATE INDEX IF NOT EXISTS idx_entries_created ON entries(created_at);
+    CREATE INDEX IF NOT EXISTS idx_keywords_keyword ON keywords(keyword);
+  `);
+}
+
+function vectorToBlob(vec) {
+  return Buffer.from(new Float32Array(vec).buffer);
+}
+
+function blobToVector(blob) {
+  return Array.from(new Float32Array(blob.buffer || blob));
+}
+
+async function saveSqlite(entry, vector) {
+  const stmt = _db.prepare(`
+    INSERT OR REPLACE INTO entries
+      (id, type, project, session_id, title, summary, content, source, tags,
+       confidence, access_count, last_accessed, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  stmt.run(
+    entry.id, entry.type, entry.project, entry.session_id || '',
+    entry.title, entry.summary || '', JSON.stringify(entry.content || {}),
+    JSON.stringify(entry.source || {}), JSON.stringify(entry.tags || []),
+    entry.confidence || 0.5, entry.access_count || 0,
+    entry.last_accessed || null, entry.created_at || now()
+  );
+
+  if (vector) {
+    const dim = vector.length;
+    const vecStmt = _db.prepare(`
+      INSERT OR REPLACE INTO embeddings (entry_id, vector, dimensions, model)
+      VALUES (?, ?, ?, ?)
+    `);
+    vecStmt.run(entry.id, vectorToBlob(vector), dim, 'default');
+  }
+
+  if (entry.tags && entry.tags.length > 0) {
+    const kwStmt = _db.prepare(`
+      INSERT OR REPLACE INTO keywords (entry_id, keyword, weight)
+      VALUES (?, ?, ?)
+    `);
+    for (const tag of entry.tags) {
+      kwStmt.run(entry.id, tag.toLowerCase(), 1.0);
+    }
+  }
+}
+
+async function getSqlite(id) {
+  const row = _db.prepare('SELECT * FROM entries WHERE id = ?').get(id);
+  if (!row) return null;
+  const entry = rowToEntry(row);
+
+  // Increment access count
+  _db.prepare('UPDATE entries SET access_count = access_count + 1, last_accessed = ? WHERE id = ?')
+    .run(now(), id);
+
+  return entry;
+}
+
+function rowToEntry(row) {
+  return {
+    id: row.id,
+    type: row.type,
+    project: row.project,
+    session_id: row.session_id,
+    title: row.title,
+    summary: row.summary,
+    content: safeJson(row.content),
+    source: safeJson(row.source),
+    tags: safeJson(row.tags),
+    confidence: row.confidence,
+    access_count: row.access_count,
+    last_accessed: row.last_accessed,
+    created_at: row.created_at,
+  };
+}
+
+function safeJson(str) {
+  try { return JSON.parse(str); } catch { return {}; }
+}
+
+async function searchSqlite(queryVector, opts = {}) {
+  const topK = opts.topK || 5;
+  const minScore = opts.minScore || 0;
+  const type = opts.type || null;
+  const project = opts.project || _project;
+
+  // Load all vectors + entries for this project
+  const rows = _db.prepare(`
+    SELECT e.id, e.title, e.summary, e.type, e.confidence, e.created_at,
+           e.access_count, em.vector, em.dimensions
+    FROM entries e
+    LEFT JOIN embeddings em ON em.entry_id = e.id
+    WHERE e.project = ? ${type ? 'AND e.type = ?' : ''}
+  `).all(...[project, type].filter(Boolean));
+
+  const scored = [];
+  for (const row of rows) {
+    const vec = row.vector ? blobToVector(row.vector) : null;
+    let score = 0;
+    if (queryVector && vec && vec.length === queryVector.length) {
+      score = cosineSimilarity(queryVector, vec);
+    }
+    if (score >= minScore) {
+      scored.push({
+        id: row.id,
+        title: row.title,
+        summary: row.summary,
+        type: row.type,
+        confidence: row.confidence,
+        createdAt: row.created_at,
+        accessCount: row.access_count,
+        score,
+      });
+    }
+  }
+
+  scored.sort((a, b) => b.score - a.score);
+  return scored.slice(0, topK);
+}
+
+async function searchByKeywordsSqlite(keywords, opts = {}) {
+  const topK = opts.topK || 5;
+  const type = opts.type || null;
+
+  const placeholders = keywords.map(() => '?').join(',');
+  const params = keywords.map(k => k.toLowerCase());
+  if (type) params.push(type);
+
+  const rows = _db.prepare(`
+    SELECT e.id, e.title, e.summary, e.type, e.confidence,
+           COUNT(k.keyword) AS match_count
+    FROM keywords k
+    JOIN entries e ON e.id = k.entry_id
+    WHERE k.keyword IN (${placeholders})
+      ${type ? 'AND e.type = ?' : ''}
+    GROUP BY e.id
+    ORDER BY match_count DESC, e.confidence DESC
+    LIMIT ?
+  `).all(...params, topK);
+
+  return rows.map(r => ({
+    id: r.id,
+    title: r.title,
+    summary: r.summary,
+    type: r.type,
+    confidence: r.confidence,
+    score: r.match_count / Math.max(keywords.length, 1),
+    matchCount: r.match_count,
+  }));
+}
+
+async function deleteSqlite(id) {
+  _db.prepare('DELETE FROM embeddings WHERE entry_id = ?').run(id);
+  _db.prepare('DELETE FROM keywords WHERE entry_id = ?').run(id);
+  _db.prepare('DELETE FROM graph_edges WHERE from_id = ? OR to_id = ?').run(id, id);
+  _db.prepare('DELETE FROM entries WHERE id = ?').run(id);
+}
+
+async function listSqlite(type, project) {
+  const rows = _db.prepare(`
+    SELECT id, title, type, summary, confidence, created_at, access_count
+    FROM entries
+    WHERE project = ? ${type ? 'AND type = ?' : ''}
+    ORDER BY created_at DESC
+  `).all(...[project || _project, type].filter(Boolean));
+  return rows;
+}
+
+// ── JSON fallback implementation ──
+
+async function initJson() {
+  const dir = getProjectDir();
+  for (const sub of ['entries', 'vectors', 'keywords']) {
+    const p = path.join(dir, sub);
+    if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
+  }
+  _useJson = true;
+}
+
+async function saveJson(entry, vector) {
+  const dir = getProjectDir();
+  const entryPath = path.join(dir, 'entries', `${entry.id}.json`);
+  fs.writeFileSync(entryPath, JSON.stringify(entry, null, 2));
+
+  if (vector) {
+    const vecPath = path.join(dir, 'vectors', `${entry.id}.json`);
+    fs.writeFileSync(vecPath, JSON.stringify({ vector, dimensions: vector.length }));
+  }
+
+  if (entry.tags && entry.tags.length > 0) {
+    for (const tag of entry.tags) {
+      const kwDir = path.join(dir, 'keywords', tag.toLowerCase());
+      if (!fs.existsSync(kwDir)) fs.mkdirSync(kwDir, { recursive: true });
+      fs.writeFileSync(path.join(kwDir, `${entry.id}.json`), JSON.stringify({ id: entry.id, weight: 1.0 }));
+    }
+  }
+}
+
+async function getJson(id) {
+  const dir = getProjectDir();
+  const entryPath = path.join(dir, 'entries', `${id}.json`);
+  if (!fs.existsSync(entryPath)) return null;
+  const entry = JSON.parse(fs.readFileSync(entryPath, 'utf-8'));
+  entry.access_count = (entry.access_count || 0) + 1;
+  entry.last_accessed = now();
+  fs.writeFileSync(entryPath, JSON.stringify(entry, null, 2));
+  return entry;
+}
+
+async function searchJson(queryVector, opts = {}) {
+  const topK = opts.topK || 5;
+  const minScore = opts.minScore || 0;
+  const type = opts.type || null;
+  const project = opts.project || _project;
+  const dir = getProjectDir();
+
+  const entries = fs.readdirSync(path.join(dir, 'entries'))
+    .filter(f => f.endsWith('.json'))
+    .map(f => {
+      const e = JSON.parse(fs.readFileSync(path.join(dir, 'entries', f), 'utf-8'));
+      if (e.project !== project) return null;
+      if (type && e.type !== type) return null;
+      const vecPath = path.join(dir, 'vectors', `${e.id}.json`);
+      let vec = null;
+      if (fs.existsSync(vecPath)) {
+        vec = JSON.parse(fs.readFileSync(vecPath, 'utf-8')).vector;
+      }
+      let score = 0;
+      if (queryVector && vec) {
+        score = cosineSimilarity(queryVector, vec);
+      }
+      return { ...e, score };
+    })
+    .filter(Boolean)
+    .filter(e => e.score >= minScore)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, topK);
+
+  return entries.map(e => ({
+    id: e.id, title: e.title, summary: e.summary,
+    type: e.type, confidence: e.confidence,
+    createdAt: e.created_at, accessCount: e.access_count, score: e.score,
+  }));
+}
+
+async function searchByKeywordsJson(keywords, opts = {}) {
+  const topK = opts.topK || 5;
+  const dir = getProjectDir();
+  const matchCounts = {};
+
+  for (const kw of keywords) {
+    const kwDir = path.join(dir, 'keywords', kw.toLowerCase());
+    if (fs.existsSync(kwDir)) {
+      for (const f of fs.readdirSync(kwDir)) {
+        const id = f.replace('.json', '');
+        matchCounts[id] = (matchCounts[id] || 0) + 1;
+      }
+    }
+  }
+
+  const sorted = Object.entries(matchCounts)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, topK);
+
+  return sorted.map(([id, count]) => {
+    const e = JSON.parse(fs.readFileSync(path.join(dir, 'entries', `${id}.json`), 'utf-8'));
+    return {
+      id: e.id, title: e.title, summary: e.summary,
+      type: e.type, confidence: e.confidence,
+      score: count / Math.max(keywords.length, 1), matchCount: count,
+    };
+  });
+}
+
+async function deleteJson(id) {
+  const dir = getProjectDir();
+  for (const p of [
+    path.join(dir, 'entries', `${id}.json`),
+    path.join(dir, 'vectors', `${id}.json`),
+  ]) {
+    if (fs.existsSync(p)) fs.unlinkSync(p);
+  }
+  // Remove from keyword dirs
+  const kwDir = path.join(dir, 'keywords');
+  if (fs.existsSync(kwDir)) {
+    for (const sub of fs.readdirSync(kwDir)) {
+      const f = path.join(kwDir, sub, `${id}.json`);
+      if (fs.existsSync(f)) fs.unlinkSync(f);
+    }
+  }
+}
+
+async function listJson(type, project) {
+  const dir = getProjectDir();
+  return fs.readdirSync(path.join(dir, 'entries'))
+    .filter(f => f.endsWith('.json'))
+    .map(f => {
+      const e = JSON.parse(fs.readFileSync(path.join(dir, 'entries', f), 'utf-8'));
+      return e.project === (project || _project) && (!type || e.type === type)
+        ? { id: e.id, title: e.title, type: e.type, summary: e.summary,
+            confidence: e.confidence, created_at: e.created_at, access_count: e.access_count }
+        : null;
+    })
+    .filter(Boolean)
+    .sort((a, b) => b.created_at?.localeCompare(a.created_at));
+}
+
+// ── Public API ──
+
+async function init(opts = {}) {
+  if (_initialized) return;
+  _project = opts.project || 'default';
+  const dir = getProjectDir();
+
+  // Try SQLite first
+  const sqliteOk = await tryInitSqlite();
+  if (sqliteOk) {
+    _useSqlite = true;
+  } else {
+    // Fallback to JSON
+    await initJson();
+    _useJson = true;
+  }
+  _initialized = true;
+}
+
+async function save(entry, vector) {
+  if (!entry.id) entry.id = uuid();
+  if (!entry.created_at) entry.created_at = now();
+  entry.project = entry.project || _project;
+  entry.access_count = entry.access_count || 0;
+
+  if (_useSqlite) return saveSqlite(entry, vector);
+  return saveJson(entry, vector);
+}
+
+async function get(id) {
+  if (_useSqlite) return getSqlite(id);
+  return getJson(id);
+}
+
+async function search(queryVector, opts = {}) {
+  if (_useSqlite) return searchSqlite(queryVector, opts);
+  return searchJson(queryVector, opts);
+}
+
+async function searchByKeywords(keywords, opts = {}) {
+  const normalized = keywords.map(k => k.toLowerCase().trim()).filter(Boolean);
+  if (normalized.length === 0) return [];
+
+  // Try vector search first, fall back to keyword
+  if (opts.useVector !== false && _useSqlite) {
+    return searchSqlite(null, opts); // vector-less search returns all, sorted by confidence
+  }
+  if (_useSqlite) return searchByKeywordsSqlite(normalized, opts);
+  return searchByKeywordsJson(normalized, opts);
+}
+
+async function delete_({ id, type, project } = {}) {
+  if (id) {
+    if (_useSqlite) return deleteSqlite(id);
+    return deleteJson(id);
+  }
+  if (type || project) {
+    const entries = await list(type, project);
+    for (const e of entries) {
+      if (_useSqlite) deleteSqlite(e.id);
+      else deleteJson(e.id);
+    }
+  }
+}
+
+async function list(type, project) {
+  if (_useSqlite) return listSqlite(type, project);
+  return listJson(type, project);
+}
+
+async function count(type, project) {
+  const entries = await list(type, project);
+  return entries.length;
+}
+
+async function close() {
+  if (_db) {
+    _db.close();
+    _db = null;
+  }
+  _initialized = false;
+}
+
+function getStorageType() { return _useSqlite ? 'sqlite' : 'json'; }
+
+function getStatus() {
+  return {
+    storage: _useSqlite ? 'sqlite' : (_useJson ? 'json' : 'none'),
+    project: _project,
+    dir: getProjectDir(),
+    initialized: _initialized,
+  };
+}
+
+module.exports = {
+  init, save, get, search, searchByKeywords,
+  delete: delete_, list, count, close,
+  getStorageType, getStatus, cosineSimilarity,
+};

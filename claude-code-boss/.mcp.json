@@ -1,0 +1,21 @@
+{
+  "mcpServers": {
+    "brain-server": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/servers/brain-server/index.js"],
+      "env": {
+        "NODE_PATH": "${CLAUDE_PLUGIN_ROOT}/node_modules",
+        "CLAUDE_PLUGIN_ROOT": "${CLAUDE_PLUGIN_ROOT}",
+        "CLAUDE_PLUGIN_DATA": "${CLAUDE_PLUGIN_DATA}"
+      }
+    },
+    "boss-server": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/servers/boss-server/index.js"],
+      "env": {
+        "NODE_PATH": "${CLAUDE_PLUGIN_ROOT}/node_modules",
+        "BOSS_DATA_DIR": "${CLAUDE_PLUGIN_DATA}"
+      }
+    }
+  }
+}

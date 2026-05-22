@@ -1,0 +1,11 @@
+{
+  "name": "claude-code-brain-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MCP server for Brain research fan-out — multi-source web research with quality gating",
+  "type": "module",
+  "main": "index.js",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}

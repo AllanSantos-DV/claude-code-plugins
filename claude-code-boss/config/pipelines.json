@@ -1,0 +1,130 @@
+{
+  "version": 1,
+  "description": "Declarative pipeline definitions for multi-step task delegation with cascading validation.",
+  "pipelines": [
+    {
+      "name": "implement",
+      "description": "Full feature implementation: plan → implement → cascade-validate",
+      "match": ["implement", "feature", "add .*", "create", "build"],
+      "steps": [
+        {
+          "agent": "planner",
+          "type": "task",
+          "description": "Plan implementation — architecture, files, contract"
+        },
+        {
+          "agent": "implementor",
+          "type": "task",
+          "description": "Write code following plan"
+        },
+        {
+          "agent": "validator",
+          "type": "cascade",
+          "description": "Progressive multi-tier validation",
+          "stopOnFailure": true,
+          "tiers": [
+            {
+              "name": "syntax",
+              "description": "Check syntax, types, lint, file structure. Fast pass."
+            },
+            {
+              "name": "logic",
+              "description": "Check correctness, edge cases, completeness vs requirements."
+            },
+            {
+              "name": "security",
+              "description": "Check security, architecture, performance, maintainability."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "bugfix",
+      "description": "Bug fix cycle: debug → implement fix → cascade-validate",
+      "match": ["bug", "fix", "issue", "error", "broken", "crash", "wrong"],
+      "steps": [
+        {
+          "agent": "debugger",
+          "type": "task",
+          "description": "Diagnose root cause"
+        },
+        {
+          "agent": "implementor",
+          "type": "task",
+          "description": "Apply the fix"
+        },
+        {
+          "agent": "validator",
+          "type": "cascade",
+          "description": "Verify fix doesn't break anything",
+          "stopOnFailure": true,
+          "tiers": [
+            {
+              "name": "regression",
+              "description": "Check for regressions in fixed area"
+            },
+            {
+              "name": "related",
+              "description": "Check related modules that could be affected"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "refactor",
+      "description": "Safe refactoring: research → refactor → cascade-validate",
+      "match": ["refactor", "restructure", "rewrite", "reorganize", "clean up"],
+      "steps": [
+        {
+          "agent": "researcher",
+          "type": "task",
+          "description": "Research current code structure and dependencies"
+        },
+        {
+          "agent": "implementor",
+          "type": "task",
+          "description": "Perform refactoring"
+        },
+        {
+          "agent": "validator",
+          "type": "cascade",
+          "description": "Validate no behavior change",
+          "stopOnFailure": true,
+          "tiers": [
+            {
+              "name": "equivalence",
+              "description": "Check behavioral equivalence — same inputs produce same outputs"
+            },
+            {
+              "name": "coverage",
+              "description": "Check test coverage still passes"
+            },
+            {
+              "name": "quality",
+              "description": "Check code quality improved as expected"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "research",
+      "description": "Deep research: multi-source → consolidate → KB persist",
+      "match": ["research", "investigate", "find out", "how does", "what is", "explore"],
+      "steps": [
+        {
+          "agent": "brain-source-researcher",
+          "type": "task",
+          "description": "Multi-source web research, fan-out per VS Code pattern"
+        },
+        {
+          "agent": "brain-consolidator",
+          "type": "task",
+          "description": "Synthesize findings, detect contradictions, score confidence"
+        }
+      ]
+    }
+  ]
+}

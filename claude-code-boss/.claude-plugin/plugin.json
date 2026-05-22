@@ -1,0 +1,21 @@
+{
+  "name": "claude-code-boss",
+  "displayName": "Claude Code Boss — Multi-Agent System",
+  "version": "0.1.0",
+  "description": "Boss, Brain, Party, Discovery — multi-agent orchestration plugin for Claude Code Desktop. Smart routing, research fan-out, DSTP validation.",
+  "author": {
+    "name": "Allan Santos"
+  },
+  "homepage": "https://github.com/allansantos-dv/claude-code-boss",
+  "license": "MIT",
+  "keywords": ["orchestration", "multi-agent", "research", "discovery"],
+  "userConfig": {
+    "language": {
+      "type": "string",
+      "title": "Output Language",
+      "description": "Language for user-facing communication (pt-BR or en)",
+      "default": "pt-BR",
+      "required": true
+    }
+  }
+}
