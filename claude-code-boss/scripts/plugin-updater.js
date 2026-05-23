@@ -69,7 +69,9 @@ function applyUpdate(sourceDir, cacheDir, newSha, newVersion) {
     fs.writeFileSync(path.join(cacheDir, rel), content);
   }
 
-  // Update installed_plugins.json
+  // Update installed_plugins.json — update files in-place, never rename the folder.
+  // Renaming would break all hook paths already registered for the current session.
+  // The folder name is cosmetic; real version is tracked in plugin-version.json.
   try {
     const reg = JSON.parse(fs.readFileSync(INSTALLED_PLUGINS_PATH, 'utf-8'));
     const entries = reg.plugins[PLUGIN_KEY];
@@ -77,13 +79,6 @@ function applyUpdate(sourceDir, cacheDir, newSha, newVersion) {
       entries[0].version = newVersion;
       entries[0].gitCommitSha = newSha;
       entries[0].lastUpdated = new Date().toISOString();
-      // Rename cache dir if version folder changed
-      const oldPath = entries[0].installPath;
-      const newPath = oldPath.replace(/[\d.]+$/, newVersion);
-      if (oldPath !== newPath && fs.existsSync(oldPath)) {
-        fs.renameSync(oldPath, newPath);
-        entries[0].installPath = newPath;
-      }
       fs.writeFileSync(INSTALLED_PLUGINS_PATH, JSON.stringify(reg, null, 2));
     }
   } catch {}
