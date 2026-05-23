@@ -60,7 +60,12 @@ function readStdin() {
 
     const exceeded = charCount > MAX_OUTPUT_CHARS || lineCount > MAX_OUTPUT_LINES;
 
-    // Write payload
+    // Only write payload when threshold is actually exceeded — avoid noise
+    if (!exceeded) {
+      process.stdout.write(JSON.stringify({}));
+      return;
+    }
+
     const payload = {
       version: 1,
       sessionId,
@@ -68,7 +73,7 @@ function readStdin() {
       command,
       charCount,
       lineCount,
-      exceeded,
+      exceeded: true,
       threshold: { maxChars: MAX_OUTPUT_CHARS, maxLines: MAX_OUTPUT_LINES },
       // Preview: first 500 chars + last 500 chars for context-aware analysis
       outputPreview: output.slice(0, 500) + (output.length > 1000 ? '\n...\n' + output.slice(-500) : ''),
@@ -76,10 +81,7 @@ function readStdin() {
 
     const filename = `curation-${sessionId.slice(0, 8)}-${Date.now()}.json`;
     fs.writeFileSync(path.join(CURATION_DETECT_DIR, filename), JSON.stringify(payload, null, 2));
-
-    if (exceeded) {
-      console.error(`[CURATION-DETECT] Large output detected: ${charCount} chars, ${lineCount} lines — written to ${filename}`);
-    }
+    console.error(`[CURATION-DETECT] Large output detected: ${charCount} chars, ${lineCount} lines — written to ${filename}`);
 
     // Always return empty JSON — PostToolUse should not modify the tool result
     process.stdout.write(JSON.stringify({}));
