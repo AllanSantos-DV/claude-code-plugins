@@ -45,7 +45,7 @@ function readStdin() {
       return;
     }
 
-    const output = event.tool_response?.stdout || event.tool_response?.output || '';
+    const output = event.tool_result?.text || '';
     const command = event.tool_input?.command || '';
     const sessionId = event.session_id || event.sessionId || 'default';
 
