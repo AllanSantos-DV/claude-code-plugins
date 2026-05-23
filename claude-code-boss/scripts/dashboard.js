@@ -323,6 +323,68 @@ function getBillingLogs(req, res) {
   json(res, entries.reverse());
 }
 
+// ─── API: Curation ─────────────────────────────────────────────────
+
+function getCurationBuiltin(req, res) {
+  // Mirror the hardcoded sets from curation-guard.js
+  json(res, {
+    trivialCommands: [
+      'ls','pwd','echo','cat','head','tail','wc','which',
+      'cd','pushd','popd','dir','type',
+      'date','whoami','hostname','uname','id',
+    ],
+    buildTools: [
+      'npm','npx','pnpm','yarn','bun',
+      'npx tsc','npx vitest','npx jest','npx mocha',
+      'dotnet','cargo','mvn','gradle','go',
+      'python','pip','poetry','uv',
+      'docker','kubectl','helm',
+      'make','cmake','meson',
+      'pwsh','powershell','bash',
+      'ruby','bundle','rake','gem',
+      'composer','php',
+    ],
+    gitReadOnly: ['status','diff','log','show','branch','tag','describe','rev-parse','rev-list','ls-tree','ls-files','config','help','version'],
+    gitSafe: ['add','commit','checkout','switch','restore','stash','init','clean'],
+    alwaysAllowed: ['gh'],
+  });
+}
+
+function getCurationShells(req, res, url) {
+  const cwd = url.searchParams.get('cwd') || '';
+  const shellsPath = cwd ? path.join(cwd, '.vscode', 'shells.json') : null;
+  if (!shellsPath || !fs.existsSync(shellsPath)) {
+    return json(res, { shells: [], whitelist: [], cwd, found: false });
+  }
+  try {
+    const data = JSON.parse(fs.readFileSync(shellsPath, 'utf-8'));
+    // Enrich each shell with script existence check
+    const shells = (data.shells || []).map(s => {
+      const scriptPath = s.command && cwd ? path.resolve(cwd, s.command) : null;
+      const scriptExists = scriptPath ? fs.existsSync(scriptPath) : false;
+      let scriptContent = null;
+      if (scriptExists) {
+        try { scriptContent = fs.readFileSync(scriptPath, 'utf-8').slice(0, 2000); } catch {}
+      }
+      return { ...s, scriptExists, scriptPath, scriptContent };
+    });
+    json(res, { shells, whitelist: data.whitelist || [], cwd, found: true });
+  } catch (e) { fail(res, e.message); }
+}
+
+async function deleteCurationShell(req, res, url) {
+  const cwd = url.searchParams.get('cwd') || '';
+  const idx = parseInt(url.pathname.split('/').pop());
+  const shellsPath = cwd ? path.join(cwd, '.vscode', 'shells.json') : null;
+  if (!shellsPath || !fs.existsSync(shellsPath)) return fail(res, 'shells.json not found', 404);
+  try {
+    const data = JSON.parse(fs.readFileSync(shellsPath, 'utf-8'));
+    data.shells.splice(idx, 1);
+    fs.writeFileSync(shellsPath, JSON.stringify(data, null, 2));
+    json(res, { ok: true });
+  } catch (e) { fail(res, e.message); }
+}
+
 // ─── API: Hooks Config ─────────────────────────────────────────────
 
 function getHooksConfig(req, res) {
@@ -420,6 +482,9 @@ function handleAPI(req, res, url) {
   if (p.match(/^\/api\/hooks\/toggle\//) && m === 'PUT') return toggleHook(req, res, url);
   if (p === '/api/hooks/config' && m === 'GET') return getHooksConfig(req, res);
   if (p === '/api/hooks/config' && m === 'PUT') return saveHooksConfig(req, res);
+  if (p === '/api/curation/builtin' && m === 'GET') return getCurationBuiltin(req, res);
+  if (p === '/api/curation/shells' && m === 'GET') return getCurationShells(req, res, url);
+  if (p.match(/^\/api\/curation\/shells\/\d+$/) && m === 'DELETE') return deleteCurationShell(req, res, url);
 
   json(res, { error: 'Not found' }, 404);
 }
