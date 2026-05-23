@@ -54,3 +54,7 @@ jobs:
       - name: Check version sync
         run: node scripts/sync-version.js --check
         working-directory: claude-code-boss
+
+      - name: Smoke — curation loop
+        run: node smoke/curation-loop.mjs
+        working-directory: claude-code-boss
