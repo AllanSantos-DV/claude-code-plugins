@@ -25,7 +25,7 @@
       return;
     }
 
-    const event = JSON.parse(raw);
+    const _event = JSON.parse(raw);
     // Always inject: remind LLM to answer pending questions
     process.stdout.write(JSON.stringify({
       hookSpecificOutput: {

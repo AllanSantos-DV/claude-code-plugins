@@ -109,7 +109,6 @@ function check(result, expectations = {}) {
 
 // ─── Test Cases ─────────────────────────────────────────────────────────────
 
-const LARGE_OUTPUT = 'x'.repeat(2000) + '\n'.repeat(35);
 const SESSION = 'test-00000000-0000-0000-0000-000000000001';
 
 const TESTS = [
@@ -253,43 +252,77 @@ const TESTS = [
   {
     name: 'curation-detect   [PostToolUse/small→skip]',
     script: 'curation-detect.js',
-    payload: {
-      tool_name: 'Bash',
-      tool_input: { command: 'git status' },
-      tool_response: { stdout: 'On branch main\nnothing to commit', stderr: '' },
-      session_id: SESSION,
-    },
+    payload: { ...require('./__fixtures__/post-tool-use-success.json'), session_id: SESSION },
     expect: { noError: true },
-    validate: _r => {
-      // Should NOT write a payload file (small output)
-      return null; // just check it runs clean
-    },
+    validate: _r => null, // just check it runs clean — small output means no payload
   },
   {
     name: 'curation-detect   [PostToolUse/large→writes payload]',
     script: 'curation-detect.js',
-    payload: {
-      hook_event_name: 'PostToolUse',
-      tool_name: 'Bash',
-      tool_input: { command: 'npm install' },
-      tool_response: { stdout: LARGE_OUTPUT, stderr: '' },
-      session_id: SESSION,
-    },
+    payload: { ...require('./__fixtures__/post-tool-use-success-noisy.json'), session_id: SESSION },
     expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-det-lrg-')) }),
   },
   {
     name: 'curation-detect   [PostToolUseFailure→needs-curation]',
     script: 'curation-detect.js',
-    payload: {
-      hook_event_name: 'PostToolUseFailure',
-      tool_name: 'Bash',
-      tool_input: { command: 'node fail.js' },
-      error: `Exit code 1\n${LARGE_OUTPUT}\nError: boom\n    at fail.js:1`,
-      is_interrupt: false,
-      duration_ms: 200,
-      session_id: SESSION,
-    },
+    payload: { ...require('./__fixtures__/post-tool-use-failure.json'), session_id: SESSION },
     expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-det-fail-')) }),
+  },
+  {
+    name: 'curation-detect   [PostToolUseFailure/is_interrupt=true]',
+    script: 'curation-detect.js',
+    payload: { ...require('./__fixtures__/post-tool-use-interrupted.json'), session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-det-intr-')) }),
+  },
+  {
+    name: 'curation-detect   [PostToolUseFailure/empty-error]',
+    script: 'curation-detect.js',
+    payload: { ...require('./__fixtures__/post-tool-use-empty-error.json'), session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-det-emp-')) }),
+    validate: _r => null, // charCount=0 → reason=null → no payload → clean exit
+  },
+  {
+    name: 'curation-detect   [PostToolUseFailure/no-exit-prefix]',
+    script: 'curation-detect.js',
+    payload: { ...require('./__fixtures__/post-tool-use-no-exit-prefix.json'), session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-det-nopfx-')) }),
+    validate: _r => null, // small body → no trigger → clean exit
+  },
+  {
+    name: 'curation-detect   [PostToolUseFailure/with-prefix-no-body]',
+    script: 'curation-detect.js',
+    payload: { hook_event_name: 'PostToolUseFailure', tool_name: 'Bash', tool_input: { command: 'run.sh' }, error: 'Exit code 1\n', is_interrupt: false, duration_ms: 10, session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-det-nbody-')) }),
+    validate: _r => null, // body="" → charCount=0 → no trigger
+  },
+  {
+    name: 'curation-detect   [PostToolUse/curated-success-small→no-trigger]',
+    script: 'curation-detect.js',
+    payload: (() => {
+      const f = require('./__fixtures__/post-tool-use-success.json');
+      const projDir = mkTempProject({ shells: [{ command: 'git status', script: '.vscode/scripts/gitstatus.mjs' }], whitelist: [] });
+      return { ...f, session_id: SESSION, cwd: projDir };
+    })(),
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-det-cs-sm-')) }),
+    validate: _r => null, // curated success, 2 lines ≤ 3 → no trigger
+  },
+  {
+    name: 'curation-detect   [PostToolUse/curated-success-noisy→trigger]',
+    script: 'curation-detect.js',
+    payload: (() => {
+      const f = require('./__fixtures__/post-tool-use-success-noisy.json');
+      const projDir = mkTempProject({ shells: [{ command: 'npm test', script: '.vscode/scripts/test.mjs' }], whitelist: [] });
+      return { ...f, session_id: SESSION, cwd: projDir };
+    })(),
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-det-cs-noisy-')) }),
   },
   {
     name: 'brain-submit      [PostToolUse/Bash]',
