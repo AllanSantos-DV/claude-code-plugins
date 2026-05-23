@@ -13,6 +13,8 @@
   },
   "scripts": {
     "postinstall": "node scripts/plugin-setup.js",
+    "test": "node scripts/test-hooks.js",
+    "test:verbose": "node scripts/test-hooks.js --verbose",
     "version:sync": "node scripts/sync-version.js",
     "version:bump": "node scripts/sync-version.js"
   }
