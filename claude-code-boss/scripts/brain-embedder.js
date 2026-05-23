@@ -54,15 +54,15 @@ async function initTransformers() {
   }
 }
 
-function embedTransformers(text) {
+async function embedTransformers(text) {
   if (!_extractor) return null;
-  const result = _extractor(text, { pooling: 'mean', normalize: true });
+  const result = await _extractor(text, { pooling: 'mean', normalize: true });
   return Array.from(result.data);
 }
 
-function embedBatchTransformers(texts) {
+async function embedBatchTransformers(texts) {
   if (!_extractor) return null;
-  const results = _extractor(texts, { pooling: 'mean', normalize: true });
+  const results = await _extractor(texts, { pooling: 'mean', normalize: true });
   return results.map(r => Array.from(r.data));
 }
 
