@@ -32,7 +32,7 @@ jobs:
           echo "version=$VERSION" >> $GITHUB_OUTPUT
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
-      - name: Update plugin-version.json and package.json
+      - name: Update plugin-version.json, package.json and plugin.json
         run: |
           VERSION=${{ steps.version.outputs.version }}
           TODAY=$(date +%Y-%m-%d)
@@ -55,12 +55,19 @@ jobs:
             d.version = '$VERSION';
             fs.writeFileSync(f, JSON.stringify(d, null, 2) + '\n');
           "
+          node -e "
+            const fs = require('fs');
+            const f = './claude-code-boss/.claude-plugin/plugin.json';
+            const d = JSON.parse(fs.readFileSync(f, 'utf-8'));
+            d.version = '$VERSION';
+            fs.writeFileSync(f, JSON.stringify(d, null, 2) + '\n');
+          "
 
       - name: Commit version bump
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add claude-code-boss/scripts/plugin-version.json claude-code-boss/package.json
+          git add claude-code-boss/scripts/plugin-version.json claude-code-boss/package.json claude-code-boss/.claude-plugin/plugin.json
           git commit -m "chore: bump version to ${{ steps.version.outputs.version }} [skip ci]"
           git push origin HEAD:main
 
