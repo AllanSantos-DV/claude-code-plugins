@@ -37,6 +37,78 @@ function readJSON(file) {
   catch { return null; }
 }
 
+// ─── Config validators ────────────────────────────────────────────
+
+function validateModels(data) {
+  if (!data || typeof data !== 'object') return 'root must be an object';
+  if ('tiers' in data && (typeof data.tiers !== 'object' || Array.isArray(data.tiers))) return 'tiers must be object';
+  if ('agents' in data && (typeof data.agents !== 'object' || Array.isArray(data.agents))) return 'agents must be object';
+  if (data.tiers) {
+    for (const [k, v] of Object.entries(data.tiers)) {
+      if (typeof v !== 'object') return `tiers.${k} must be object`;
+      if ('rank' in v && typeof v.rank !== 'number') return `tiers.${k}.rank must be number`;
+      if ('multiplier' in v && typeof v.multiplier !== 'number') return `tiers.${k}.multiplier must be number`;
+      if ('label' in v && typeof v.label !== 'string') return `tiers.${k}.label must be string`;
+    }
+  }
+  if (data.agents) {
+    for (const [k, v] of Object.entries(data.agents)) {
+      if (typeof v !== 'object' && typeof v !== 'string') return `agents.${k} must be object or string`;
+    }
+  }
+  return null;
+}
+
+function validatePipelines(data) {
+  if (!data || typeof data !== 'object') return 'root must be an object';
+  if ('pipelines' in data && !Array.isArray(data.pipelines)) return 'pipelines must be array';
+  if (Array.isArray(data.pipelines)) {
+    for (let i = 0; i < data.pipelines.length; i++) {
+      const p = data.pipelines[i];
+      if (!p || typeof p !== 'object') return `pipelines[${i}] must be object`;
+      if (!p.name || typeof p.name !== 'string') return `pipelines[${i}].name must be non-empty string`;
+      if ('steps' in p && !Array.isArray(p.steps)) return `pipelines[${i}].steps must be array`;
+      if (Array.isArray(p.steps)) {
+        for (let j = 0; j < p.steps.length; j++) {
+          const s = p.steps[j];
+          if (!s || typeof s !== 'object') return `pipelines[${i}].steps[${j}] must be object`;
+          if (!s.agent || typeof s.agent !== 'string') return `pipelines[${i}].steps[${j}].agent must be non-empty string`;
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function validateBrainConfig(data) {
+  if (!data || typeof data !== 'object') return 'root must be an object';
+  if ('backend' in data) {
+    if (typeof data.backend !== 'object') return 'backend must be object';
+    if ('type' in data.backend && !['local', 'mcp-memory'].includes(data.backend.type)) {
+      return `backend.type must be "local" or "mcp-memory"`;
+    }
+  }
+  if ('embedder' in data) {
+    if (typeof data.embedder !== 'object') return 'embedder must be object';
+    if ('provider' in data.embedder && !['transformers', 'ollama', 'voyage'].includes(data.embedder.provider)) {
+      return `embedder.provider must be "transformers", "ollama", or "voyage"`;
+    }
+  }
+  return null;
+}
+
+function validateHooksConfig(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return 'root must be an object';
+  return null;
+}
+
+/** Atomic JSON write: write to tmpfile then rename. */
+function atomicWriteJSON(filePath, data) {
+  const tmp = filePath + '.tmp.' + process.pid;
+  fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
+  fs.renameSync(tmp, filePath);
+}
+
 // ─── API: Status ───────────────────────────────────────────────────
 
 function getStatus(req, res) {
@@ -130,7 +202,9 @@ async function saveModels(req, res) {
   const body = await readBody(req);
   try {
     const parsed = JSON.parse(body);
-    fs.writeFileSync(path.join(ROOT, 'config', 'model-router.json'), JSON.stringify(parsed, null, 2));
+    const err = validateModels(parsed);
+    if (err) return fail(res, `Invalid model-router.json: ${err}`, 400);
+    atomicWriteJSON(path.join(ROOT, 'config', 'model-router.json'), parsed);
     json(res, { ok: true });
   } catch (e) { fail(res, e.message); }
 }
@@ -147,7 +221,9 @@ async function savePipelines(req, res) {
   const body = await readBody(req);
   try {
     const parsed = JSON.parse(body);
-    fs.writeFileSync(path.join(ROOT, 'config', 'pipelines.json'), JSON.stringify(parsed, null, 2));
+    const err = validatePipelines(parsed);
+    if (err) return fail(res, `Invalid pipelines.json: ${err}`, 400);
+    atomicWriteJSON(path.join(ROOT, 'config', 'pipelines.json'), parsed);
     json(res, { ok: true });
   } catch (e) { fail(res, e.message); }
 }
@@ -178,8 +254,10 @@ async function saveBrainConfig(req, res) {
   const body = await readBody(req);
   try {
     const parsed = JSON.parse(body);
+    const err = validateBrainConfig(parsed);
+    if (err) return fail(res, `Invalid brain-config.json: ${err}`, 400);
     const configPath = path.join(ROOT, 'config', 'brain-config.json');
-    fs.writeFileSync(configPath, JSON.stringify(parsed, null, 2));
+    atomicWriteJSON(configPath, parsed);
     json(res, { ok: true, requiresRestart: true });
   } catch (e) { fail(res, e.message); }
 }
@@ -433,8 +511,10 @@ async function saveHooksConfig(req, res) {
   const body = await readBody(req);
   try {
     const parsed = JSON.parse(body);
+    const err = validateHooksConfig(parsed);
+    if (err) return fail(res, `Invalid hooks-config.json: ${err}`, 400);
     const configPath = path.join(ROOT, 'config', 'hooks-config.json');
-    fs.writeFileSync(configPath, JSON.stringify(parsed, null, 2));
+    atomicWriteJSON(configPath, parsed);
     json(res, { ok: true });
   } catch (e) { fail(res, e.message); }
 }
