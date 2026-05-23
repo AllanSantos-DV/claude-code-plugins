@@ -3,4 +3,36 @@ TASK-MAP.md
 planos/
 taskmap/
 planning/
+
+# Smoke tests (local-only, never versioned)
 smoke/
+
+# Local docs (maps, plans — not for git)
+docs/maps/
+
+# Claude Code local config
+.claude/
+
+# MCP runtime data
+.mcp-memory/
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Node.js
+node_modules/
+
+# Logs
+*.log
+
+# Environment variables
+.env
+.env.local
+.env.*.local

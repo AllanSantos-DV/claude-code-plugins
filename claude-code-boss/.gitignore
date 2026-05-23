@@ -37,6 +37,9 @@ planning/
 */tmp/
 */temp/
 
+# MCP runtime data
+.mcp-memory/
+
 # Test coverage
 coverage/
 .lcov*
