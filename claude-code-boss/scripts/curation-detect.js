@@ -15,10 +15,24 @@ const crypto = require('crypto');
 
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
 const CURATION_DETECT_DIR = path.join(DATA_DIR, 'detect-curation');
+const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.join(__dirname, '..');
+const CONFIG_PATH = path.join(PLUGIN_ROOT, 'config', 'brain-config.json');
 
-// Thresholds that trigger investigation
-const MAX_OUTPUT_CHARS = 1500;
-const MAX_OUTPUT_LINES = 30;
+// Load thresholds from brain-config.json (falls back to defaults if missing)
+function loadThresholds() {
+  try {
+    const raw = fs.readFileSync(CONFIG_PATH, 'utf-8');
+    const cfg = JSON.parse(raw);
+    return {
+      maxChars: cfg.curation?.maxOutputChars ?? 1500,
+      maxLines: cfg.curation?.maxOutputLines ?? 30,
+    };
+  } catch {
+    return { maxChars: 1500, maxLines: 30 };
+  }
+}
+
+const { maxChars: MAX_OUTPUT_CHARS, maxLines: MAX_OUTPUT_LINES } = loadThresholds();
 
 function readStdin() {
   return new Promise((resolve) => {
