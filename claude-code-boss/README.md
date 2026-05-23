@@ -148,4 +148,4 @@ npm run version:sync  # Re-sincroniza versão sem bump
 
 ## Licença
 
-[MIT](./LICENSE) — sub-pacotes (`servers/boss-server`, `servers/brain-server`) são `private: true` e herdam esta licença.
+[MIT](../LICENSE) — licença cobre todo o monorepo, incluindo este plugin e seus sub-pacotes.
