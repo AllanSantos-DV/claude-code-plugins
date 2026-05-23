@@ -62,10 +62,10 @@ function getTierLabel(model, tiers) {
     const config = loadConfig();
     const tiers = config.tiers || {};
 
-    // Extract agent info from event — SubagentStop should have agentId/model
-    const agentId = event.agentId || event.agent || event.subAgentId || 'unknown';
-    const model = event.model || event.agentModel || 'inherit';
-    const sessionId = event.sessionId || event.conversationId || 'unknown';
+    // Extract agent info from event — SubagentStop fields (snake_case)
+    const agentId = event.agent_id || event.subagent_id || event.agentId || event.subAgentId || 'unknown';
+    const model = event.model || event.agent_model || event.agentModel || 'inherit';
+    const sessionId = event.session_id || event.sessionId || event.conversationId || 'unknown';
 
     const multiplier = getMultiplier(model, tiers);
     const tierLabel = getTierLabel(model, tiers);
