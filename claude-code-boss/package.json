@@ -18,6 +18,8 @@
     "postinstall": "node scripts/plugin-setup.js",
     "test": "node scripts/test-hooks.js",
     "test:verbose": "node scripts/test-hooks.js --verbose",
+    "install:local": "node scripts/install-local.js",
+    "install:local:clean": "node scripts/install-local.js --clean",
     "version:sync": "node scripts/sync-version.js",
     "version:bump": "node scripts/sync-version.js"
   }
