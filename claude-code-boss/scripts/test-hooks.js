@@ -9,10 +9,37 @@
  */
 const { spawnSync } = require('child_process');
 const path = require('path');
+const fs = require('fs');
+const os = require('os');
 
 const SCRIPTS = path.resolve(__dirname);
 const VERBOSE = process.argv.includes('--verbose');
 const FILTER = process.argv.find(a => !a.startsWith('-') && a !== process.argv[0] && a !== process.argv[1]);
+
+/**
+ * Create a temp directory that mimics a minimal CLAUDE_PLUGIN_ROOT with
+ * optional overrides to config/hooks-config.json. Returns the tmpDir path.
+ */
+function mkTempPluginRoot(configOverrides = {}) {
+  const base = fs.readFileSync(path.join(SCRIPTS, '..', 'config', 'hooks-config.json'), 'utf-8');
+  const config = Object.assign(JSON.parse(base), configOverrides);
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-test-'));
+  const configDir = path.join(tmpDir, 'config');
+  fs.mkdirSync(configDir, { recursive: true });
+  fs.writeFileSync(path.join(configDir, 'hooks-config.json'), JSON.stringify(config, null, 2));
+  return tmpDir;
+}
+
+/**
+ * Create a temp project directory with a .vscode/shells.json for guard tests.
+ * Returns the tmpDir path.
+ */
+function mkTempProject(shellsJson = {}) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-proj-'));
+  fs.mkdirSync(path.join(tmpDir, '.vscode'), { recursive: true });
+  fs.writeFileSync(path.join(tmpDir, '.vscode', 'shells.json'), JSON.stringify(shellsJson, null, 2));
+  return tmpDir;
+}
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -22,7 +49,7 @@ const YELLOW = s => `\x1b[33m${s}\x1b[0m`;
 const DIM    = s => `\x1b[2m${s}\x1b[0m`;
 const BOLD   = s => `\x1b[1m${s}\x1b[0m`;
 
-function run(script, payload, args = []) {
+function run(script, payload, args = [], extraEnv = {}) {
   const input = JSON.stringify(payload);
   const scriptPath = path.join(SCRIPTS, script);
   const result = spawnSync('node', [scriptPath, ...args], {
@@ -34,6 +61,7 @@ function run(script, payload, args = []) {
       CLAUDE_PLUGIN_ROOT: path.resolve(SCRIPTS, '..'),
       CLAUDE_PLUGIN_DATA: process.env.CLAUDE_PLUGIN_DATA ||
         path.join(require('os').homedir(), '.claude', 'plugins', 'data', 'claude-code-boss'),
+      ...extraEnv,
     },
   });
   return result;
@@ -176,6 +204,50 @@ const TESTS = [
     validate: r => r.parsed?.permissionDecision === 'allowed'
       ? null : `non-Bash should pass, got: ${r.parsed?.permissionDecision}`,
   },
+  {
+    // loadShellsConfig: whitelisted command loaded from temp .vscode/shells.json
+    name: 'curation-guard    [loadShellsConfig→whitelist-hit]',
+    script: 'curation-guard.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: 'my-exotic-allowed-command' },
+      session_id: SESSION,
+      cwd: (() => {
+        const d = mkTempProject({ shells: [], whitelist: ['my-exotic-allowed-command'] });
+        return d;
+      })(),
+    },
+    expect: { hasKey: 'permissionDecision', noError: true },
+    validate: r => r.parsed?.permissionDecision === 'allowed'
+      ? null : `whitelisted cmd should be allowed, got: ${r.parsed?.permissionDecision}`,
+  },
+  {
+    // denyUnknown=false (default): unknown command still allowed
+    name: 'curation-guard    [denyUnknown=false→allows-unknown]',
+    script: 'curation-guard.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: 'some-totally-unknown-command-xyz123' },
+      session_id: SESSION,
+    },
+    expect: { hasKey: 'permissionDecision', noError: true },
+    validate: r => r.parsed?.permissionDecision === 'allowed'
+      ? null : `denyUnknown=false → should allow unknown, got: ${r.parsed?.permissionDecision}`,
+  },
+  {
+    // denyUnknown=true: unknown command is denied with additionalContext
+    name: 'curation-guard    [denyUnknown=true→denies-unknown]',
+    script: 'curation-guard.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: 'some-totally-unknown-command-xyz123' },
+      session_id: SESSION,
+    },
+    expect: { hasKey: 'permissionDecision', noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: mkTempPluginRoot({ curationGuard: { extraTrivialCommands: [], extraBuildTools: [], denyUnknown: true } }) }),
+    validate: r => r.parsed?.permissionDecision === 'denied'
+      ? null : `denyUnknown=true → should deny unknown, got: ${r.parsed?.permissionDecision}`,
+  },
 
   // ── PostToolUse / Bash ────────────────────────────────────────────────────
   {
@@ -291,6 +363,57 @@ const TESTS = [
     },
     expect: { noError: true },
   },
+  {
+    // curation-backlog: first run (clean state) with 1 pending payload → injects additionalContext
+    name: 'curation-backlog  [UserPromptSubmit→first-run-injects]',
+    script: 'curation-backlog.js',
+    payload: { prompt: 'o que fazer agora', session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bklog-'));
+      const detectDir = path.join(tmpData, 'detect-curation');
+      fs.mkdirSync(detectDir, { recursive: true });
+      // Write one pending payload
+      fs.writeFileSync(
+        path.join(detectDir, `curation-${Date.now()}-testabcd.json`),
+        JSON.stringify({ detectedAt: new Date().toISOString(), command: 'npm install', charCount: 5000, lineCount: 120, sessionId: SESSION, cwd: '/tmp', outputPreview: 'added 42 packages' }),
+      );
+      return { CLAUDE_PLUGIN_DATA: tmpData };
+    },
+    validate: r => {
+      const ctx = r.parsed?.hookSpecificOutput?.additionalContext;
+      return ctx && ctx.includes('curation payload') ? null : `expected additionalContext with payload count, got: ${JSON.stringify(r.parsed)}`;
+    },
+  },
+  {
+    // curation-backlog: second run after injection → cooldown active (turnsSinceLast=0 < 5)
+    name: 'curation-backlog  [UserPromptSubmit→cooldown-active]',
+    script: 'curation-backlog.js',
+    payload: { prompt: 'proxima pergunta', session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bklog-cool-'));
+      const detectDir = path.join(tmpData, 'detect-curation');
+      const runtimeDir = path.join(tmpData, '.runtime');
+      fs.mkdirSync(detectDir, { recursive: true });
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      // Write payload and state that simulates "just injected" (turnsSinceLast=0)
+      fs.writeFileSync(
+        path.join(detectDir, `curation-${Date.now()}-testcool.json`),
+        JSON.stringify({ detectedAt: new Date().toISOString(), command: 'npm test', charCount: 6000, lineCount: 200, sessionId: SESSION, cwd: '/tmp', outputPreview: 'tests passed' }),
+      );
+      fs.writeFileSync(
+        path.join(runtimeDir, 'curation-backlog-state.json'),
+        JSON.stringify({ lastInjectedAt: new Date().toISOString(), lastInjectedTurnId: SESSION, turnsSinceLast: 0 }),
+      );
+      return { CLAUDE_PLUGIN_DATA: tmpData };
+    },
+    validate: r => {
+      // Should return {} (empty) — cooldown active
+      const keys = Object.keys(r.parsed || {});
+      return keys.length === 0 ? null : `expected {} (cooldown), got: ${JSON.stringify(r.parsed)}`;
+    },
+  },
 ];
 
 // ─── Runner ─────────────────────────────────────────────────────────────────
@@ -306,7 +429,8 @@ console.log(BOLD(`\n🔬 Plugin Hook Test Suite — ${filtered.length} tests\n`)
 console.log(DIM('─'.repeat(70)));
 
 for (const test of filtered) {
-  const result = run(test.script, test.payload, test.args || []);
+  const extraEnv = typeof test.extraEnv === 'function' ? test.extraEnv() : (test.extraEnv || {});
+  const result = run(test.script, test.payload, test.args || [], extraEnv);
   const { ok, issues, parsed } = check(result, test.expect || {});
 
   let extraIssue = null;
