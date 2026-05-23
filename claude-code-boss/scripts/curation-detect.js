@@ -115,32 +115,46 @@ function readStdin() {
       return;
     }
 
-    // Bash event: { tool_response: { stdout, stderr, exit_code?, interrupted, ... } }
-    // PostToolUse fires on success; PostToolUseFailure fires on failure (exit_code != 0).
-    const tr = event.tool_response || {};
-    const stdout = tr.stdout || '';
-    const stderr = tr.stderr || '';
-    const interrupted = tr.interrupted === true;
-    const exitCode = typeof tr.exit_code === 'number' ? tr.exit_code : null;
+    // Two different event shapes:
+    //   PostToolUse (success):
+    //     { tool_response: { stdout, stderr, interrupted, isImage, noOutputExpected } }
+    //   PostToolUseFailure (failure):
+    //     { error: "Exit code N\n<stdout+stderr>", is_interrupt: bool, duration_ms }
+    //     (NO tool_response, NO separate exit_code)
     const hookEvent = event.hook_event_name || '';
-    const output = [stdout, stderr].filter(Boolean).join('\n')
-      || (typeof event.tool_result === 'string' ? event.tool_result : (event.tool_result?.text || ''));
+    const isFailure = hookEvent === 'PostToolUseFailure';
+
+    let stdout = '', stderr = '', output = '', interrupted = false, exitCode = null;
+    if (isFailure) {
+      const errStr = String(event.error || '');
+      // Extract "Exit code N" from the first line, strip it from the body
+      const m = errStr.match(/^Exit code (\d+)\s*\n?/);
+      if (m) exitCode = parseInt(m[1], 10);
+      output = m ? errStr.slice(m[0].length) : errStr;
+      stderr = output; // best approximation — failure output is mostly stderr
+      interrupted = event.is_interrupt === true;
+    } else {
+      const tr = event.tool_response || {};
+      stdout = tr.stdout || '';
+      stderr = tr.stderr || '';
+      interrupted = tr.interrupted === true;
+      exitCode = typeof tr.exit_code === 'number' ? tr.exit_code : null;
+      output = [stdout, stderr].filter(Boolean).join('\n')
+        || (typeof event.tool_result === 'string' ? event.tool_result : (event.tool_result?.text || ''));
+    }
+
     const command = event.tool_input?.command || '';
     const sessionId = event.session_id || event.sessionId || 'default';
     const cwd = event.cwd || process.env.CLAUDE_PROJECT_DIR || '';
-
     const charCount = output.length;
     const lineCount = output ? output.split('\n').length : 0;
 
-    // Success determination (priority order):
-    //   1. exit_code field (most reliable, available in PostToolUseFailure)
-    //   2. hook_event_name (PostToolUseFailure → fail; PostToolUse → success)
-    //   3. heuristic: !interrupted AND no stderr content (fallback)
-    const isSuccess =
-      exitCode !== null ? exitCode === 0
-      : hookEvent === 'PostToolUseFailure' ? false
-      : hookEvent === 'PostToolUse' ? true
-      : (!interrupted && !stderr.trim());
+    // Success determination:
+    //   1. PostToolUseFailure → always failure
+    //   2. PostToolUse with explicit exit_code → check it
+    //   3. Otherwise (PostToolUse default) → success
+    const isSuccess = isFailure ? false
+      : (exitCode !== null ? exitCode === 0 : true);
 
     // Detect curated shell
     const projectRoot = findProjectRoot(cwd);
