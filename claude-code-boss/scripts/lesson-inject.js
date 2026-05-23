@@ -190,7 +190,10 @@ async function run() {
     }
 
     process.stdout.write(JSON.stringify({
-      hookSpecificOutput: outputParts.join('\n\n'),
+      hookSpecificOutput: {
+        hookEventName: 'UserPromptSubmit',
+        additionalContext: outputParts.join('\n\n'),
+      },
     }));
   } catch (err) {
     console.error(`[LESSON-INJECT] Error: ${err.message}`);

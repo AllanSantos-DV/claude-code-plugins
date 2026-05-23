@@ -85,9 +85,10 @@ function checkPendingPayloads() {
     }
 
     process.stdout.write(JSON.stringify({
-      sessionId,
-      found: outputs.length,
-      hookSpecificOutput: outputs.join('\n\n'),
+      hookSpecificOutput: {
+        hookEventName: 'UserPromptSubmit',
+        additionalContext: outputs.join('\n\n'),
+      },
     }));
   } catch (err) {
     console.error(`[BRAIN-RETRIEVE-PROMPT] Error: ${err.message}`);

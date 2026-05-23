@@ -33,7 +33,10 @@
 
     // Always inject: remind LLM to answer pending questions
     process.stdout.write(JSON.stringify({
-      hookSpecificOutput: `[refine] If you asked questions in your previous response, research the answers now using project files (Read, Grep, Glob) and web search (WebSearch, WebFetch). Do NOT wait for the user to answer — resolve the gaps yourself. Provide the answers and proceed with the task.`,
+      hookSpecificOutput: {
+        hookEventName: 'Stop',
+        additionalContext: `[refine] If you asked questions in your previous response, research the answers now using project files (Read, Grep, Glob) and web search (WebSearch, WebFetch). Do NOT wait for the user to answer — resolve the gaps yourself. Provide the answers and proceed with the task.`,
+      },
     }));
   } catch (err) {
     console.error(`[REFINE-RESEARCH] Error: ${err.message}`);

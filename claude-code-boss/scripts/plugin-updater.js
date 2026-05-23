@@ -151,7 +151,10 @@ function applyUpdate(sourceDir, cacheDir, newSha, newVersion) {
       version: newVersion,
       previousVersion: currentVersion,
       updated: true,
-      hookSpecificOutput: output,
+      hookSpecificOutput: {
+        hookEventName: 'SessionStart',
+        additionalContext: output,
+      },
     }));
 
   } catch (err) {
