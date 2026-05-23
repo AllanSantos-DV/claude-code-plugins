@@ -142,6 +142,11 @@ function applyUpdate(sourceDir, cacheDir, newSha, newVersion) {
 
     applyUpdate(sourceDir, cacheDir, newSha, newVersion);
 
+    // Re-run npm install in case dependencies changed
+    try {
+      execSync('node scripts/plugin-setup.js', { cwd: cacheDir, stdio: 'ignore', timeout: 120000 });
+    } catch {}
+
     const output = [
       `[PLUGIN-UPDATE] claude-code-boss atualizado: ${currentVersion} → ${newVersion}`,
       `[PLUGIN-UPDATE] Reinicie o Claude Code para carregar a nova versão.`,
