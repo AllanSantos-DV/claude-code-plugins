@@ -12,6 +12,13 @@ const path = require('path');
 const os = require('os');
 
 const HOME = os.homedir();
+const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
+function _loadHooksCfg() {
+  try { return JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'config', 'hooks-config.json'), 'utf-8')); } catch { return {}; }
+}
+const _HOOKS_CFG = _loadHooksCfg();
+const LESSON_MAX_RESULTS = _HOOKS_CFG.lessonInject?.maxLessons ?? 5;
+
 // Read lessons from both pattern-analyzer and correction-analyzer agent memories
 const AGENT_MEMORY_DIRS = [
   path.join(HOME, '.claude', 'agent-memory', 'pattern-analyzer'),
@@ -71,7 +78,7 @@ function loadMemoryFiles() {
  * Score a memory file's content against query tokens.
  * Returns top lines (rules) that match.
  */
-function findRelevantLines(query, maxResults = 5) {
+function findRelevantLines(query, maxResults = LESSON_MAX_RESULTS) {
   const tokens = tokenize(query);
   if (tokens.length === 0) return [];
 
