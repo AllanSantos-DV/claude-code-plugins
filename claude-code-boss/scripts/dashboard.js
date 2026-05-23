@@ -748,6 +748,14 @@ const PORT = process.env.DASHBOARD_PORT || 0;
 server.listen(PORT, '127.0.0.1', () => {
   const port = server.address().port;
   console.log(`\n  \u{1F4CA} Plugin Dashboard: http://localhost:${port}  (token: ${SESSION_TOKEN})\n`);
+  // Write discovery file for dashboard-start.js and other consumers
+  try {
+    fs.mkdirSync(RUNTIME_DIR, { recursive: true });
+    fs.writeFileSync(
+      path.join(RUNTIME_DIR, 'dashboard.json'),
+      JSON.stringify({ port, token: SESSION_TOKEN, startTime: SERVER_START_TIME, pid: process.pid })
+    );
+  } catch (err) { console.error(`[DASHBOARD] Failed to write dashboard.json: ${err.message}`); }
   const browser = { win32: 'start', darwin: 'open', linux: 'xdg-open' }[process.platform];
   if (browser && !process.env.DASHBOARD_NO_OPEN) {
     try { execSync(`${browser} http://localhost:${port}`, { stdio: 'ignore', timeout: 5000 }); } catch (err) { console.error(`[DASHBOARD] Browser open failed: ${err.message}`); }
