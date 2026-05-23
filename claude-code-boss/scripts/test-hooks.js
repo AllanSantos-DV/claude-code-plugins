@@ -324,13 +324,13 @@ const TESTS = [
   {
     name: 'pattern-detect    [Stop]',
     script: 'pattern-detect.js',
-    payload: { event: 'Stop', session_id: SESSION },
+    payload: { hook_event_name: 'Stop', session_id: SESSION },
     expect: { noError: true },
   },
   {
     name: 'refine-research   [Stop→injects context]',
     script: 'refine-research.js',
-    payload: { event: 'Stop', session_id: SESSION },
+    payload: { hook_event_name: 'Stop', session_id: SESSION },
     expect: { hookEvent: 'Stop', noError: true },
   },
 

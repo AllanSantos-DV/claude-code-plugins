@@ -91,12 +91,12 @@ function readTranscriptContext(transcriptPath) {
 
     const event = JSON.parse(raw);
 
-    if (event.event !== 'Stop') {
+    if (event.hook_event_name && event.hook_event_name !== 'Stop') {
       process.stdout.write(JSON.stringify({}));
       return;
     }
 
-    const sessionId = event.sessionId || 'default';
+    const sessionId = event.session_id || event.sessionId || 'default';
     const transcriptPath = event.transcript_path || '';
 
     // Turn counter

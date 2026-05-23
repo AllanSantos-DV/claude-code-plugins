@@ -26,7 +26,7 @@
     }
 
     const event = JSON.parse(raw);
-    if (event.event !== 'Stop') {
+    if (event.hook_event_name && event.hook_event_name !== 'Stop') {
       process.stdout.write(JSON.stringify({}));
       return;
     }
