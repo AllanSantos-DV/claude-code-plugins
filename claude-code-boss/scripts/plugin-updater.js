@@ -144,6 +144,14 @@ function applyUpdate(sourceDir, cacheDir, newSha, newVersion) {
 }
 
 (async () => {
+  // Skip entirely if a local-dev sentinel marks this install — devs running
+  // install-local.js don't want their changes overwritten by the marketplace.
+  if (fs.existsSync(path.join(PLUGIN_ROOT, '.local-dev.marker'))) {
+    const manifest = readManifest();
+    process.stdout.write(JSON.stringify({ version: manifest.version, skipped: true, reason: 'local-dev install (sentinel present)' }));
+    return;
+  }
+
   // Acquire exclusive lock — prevents concurrent updates from 2 Claude Code instances.
   if (!acquireLock()) {
     const manifest = readManifest();
