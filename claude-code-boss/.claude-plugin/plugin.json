@@ -1,7 +1,7 @@
 {
   "name": "claude-code-boss",
   "displayName": "Claude Code Boss — Multi-Agent System",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "Boss, Brain, Party, Discovery — multi-agent orchestration plugin for Claude Code Desktop. Smart routing, research fan-out, DSTP validation.",
   "author": {
     "name": "Allan Santos"
