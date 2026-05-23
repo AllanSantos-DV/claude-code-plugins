@@ -17,8 +17,8 @@ const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || path.join(os.homedir(), '.cla
 const CURATION_DETECT_DIR = path.join(DATA_DIR, 'detect-curation');
 
 // Thresholds that trigger investigation
-const MAX_OUTPUT_CHARS = 5000;
-const MAX_OUTPUT_LINES = 80;
+const MAX_OUTPUT_CHARS = 1500;
+const MAX_OUTPUT_LINES = 30;
 
 function readStdin() {
   return new Promise((resolve) => {
