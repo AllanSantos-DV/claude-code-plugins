@@ -5,23 +5,19 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/memory-rotate.js"]
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/memory-rotate.js\""
           },
           {
             "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/session-whitelist.js"]
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/session-whitelist.js\""
           },
           {
             "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/model-router.js"]
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/model-router.js\""
           },
           {
             "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/plugin-updater.js"]
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/plugin-updater.js\""
           }
         ]
       }
@@ -32,13 +28,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/brain-retrieve.js"]
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/brain-retrieve.js\""
           },
           {
             "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/discipline-guard.js"]
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/discipline-guard.js\""
           }
         ]
       },
@@ -47,13 +41,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/brain-retrieve.js"]
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/brain-retrieve.js\""
           },
           {
             "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/curation-guard.js"]
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/curation-guard.js\""
           }
         ]
       }
@@ -64,13 +56,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/curation-detect.js"]
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/curation-detect.js\""
           },
           {
             "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/brain-submit.js"]
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/brain-submit.js\""
           }
         ]
       }
@@ -80,8 +70,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/ack-tracker.js", "start"]
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/ack-tracker.js\" start"
           }
         ]
       }
@@ -91,13 +80,11 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/ack-tracker.js", "stop"]
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/ack-tracker.js\" stop"
           },
           {
             "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/cost-tracker.js"]
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/cost-tracker.js\""
           }
         ]
       }
@@ -107,18 +94,15 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/ack-tracker.js", "report"]
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/ack-tracker.js\" report"
           },
           {
             "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/pattern-detect.js"]
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/pattern-detect.js\""
           },
           {
             "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/refine-research.js"]
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/refine-research.js\""
           }
         ]
       }
@@ -128,18 +112,15 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/correction-detect.js"]
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/correction-detect.js\""
           },
           {
             "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/brain-retrieve-prompt.js"]
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/brain-retrieve-prompt.js\""
           },
           {
             "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/lesson-inject.js"]
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/lesson-inject.js\""
           }
         ]
       }
