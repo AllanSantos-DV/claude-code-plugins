@@ -175,12 +175,12 @@ function usesBuildTool(command) {
     const event = JSON.parse(raw);
 
     // Only handle Bash tool
-    if (event.event !== 'PreToolUse' || event.toolUse?.name !== 'Bash') {
+    if (event.tool_name !== 'Bash') {
       process.stdout.write(JSON.stringify({ permissionDecision: 'allowed' }));
       return;
     }
 
-    const command = event.toolUse?.input?.command || '';
+    const command = event.tool_input?.command || '';
     if (!command) {
       process.stdout.write(JSON.stringify({ permissionDecision: 'allowed' }));
       return;
