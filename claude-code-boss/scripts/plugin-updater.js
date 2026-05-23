@@ -52,7 +52,10 @@ function releaseLock() {
 
 function readManifest() {
   try { return JSON.parse(fs.readFileSync(VERSION_PATH, 'utf-8')); }
-  catch { return { version: '0.0.0', checkInterval: 86400000 }; }
+  catch (err) {
+    console.error(`[PLUGIN-UPDATE] Failed to read version manifest: ${err.message}`);
+    return { version: '0.0.0', checkInterval: 86400000 };
+  }
 }
 
 function readLastCheck() {
