@@ -19,11 +19,12 @@ module.exports = [
         setInterval: 'readonly',
         clearInterval: 'readonly',
         URL: 'readonly',
+        fetch: 'readonly',
       },
     },
     rules: {
       'no-empty': ['error', { allowEmptyCatch: false }],
-      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+      'no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrors: 'none' }],
       'no-undef': 'error',
     },
   },

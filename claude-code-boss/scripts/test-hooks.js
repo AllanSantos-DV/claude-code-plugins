@@ -9,7 +9,6 @@
  */
 const { spawnSync } = require('child_process');
 const path = require('path');
-const fs = require('fs');
 
 const SCRIPTS = path.resolve(__dirname);
 const VERBOSE = process.argv.includes('--verbose');
@@ -189,7 +188,7 @@ const TESTS = [
       session_id: SESSION,
     },
     expect: { noError: true },
-    validate: r => {
+    validate: _r => {
       // Should NOT write a payload file (small output)
       return null; // just check it runs clean
     },
@@ -300,7 +299,7 @@ const filtered = FILTER
   ? TESTS.filter(t => t.name.toLowerCase().includes(FILTER.toLowerCase()))
   : TESTS;
 
-let passed = 0, failed = 0, warned = 0;
+let passed = 0, failed = 0, _warned = 0;
 const failures = [];
 
 console.log(BOLD(`\n🔬 Plugin Hook Test Suite — ${filtered.length} tests\n`));

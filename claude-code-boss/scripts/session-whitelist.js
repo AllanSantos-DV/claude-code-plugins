@@ -10,7 +10,6 @@
  */
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 
 // Ecosystem → whitelist mapping
 // ONLY commands that are: idempotent, non-destructive, small-output, high-frequency
