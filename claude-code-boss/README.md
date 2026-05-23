@@ -35,7 +35,7 @@ export CLAUDE_PLUGIN_ROOT="/caminho/para/claude-code-boss"
 
 ## Estrutura
 
-```
+```text
 claude-code-boss/
 ├── .claude-plugin/
 │   └── plugin.json            # Manifesto do plugin (versão canônica)
@@ -76,7 +76,7 @@ claude-code-boss/
 Todos os hooks estão declarados em `hooks/hooks.json`. Eventos e scripts ativos:
 
 | Evento | Script | O que faz |
-|--------|--------|-----------|
+| --- | --- | --- |
 | SessionStart | `memory-rotate.js` | Rotaciona MEMORY.md quando >150 linhas |
 | SessionStart | `session-whitelist.js` | Detecta ecossistema do projeto, popula whitelist |
 | SessionStart | `model-router.js` | Resolve modelo via tiers billing-aware |
@@ -107,7 +107,7 @@ Base de conhecimento local com 3 layers:
 **Providers de embedding** (configurável em `config/brain-config.json`):
 
 | Provider | Config | Requisito | Custo |
-|----------|--------|-----------|-------|
+| --- | --- | --- | --- |
 | `transformers` (padrão) | `embedder.provider: "transformers"` | Zero — ONNX puro JS | Zero |
 | `ollama` | `embedder.provider: "ollama"` | Ollama rodando localmente | Zero |
 | `voyage` | `embedder.provider: "voyage"` | Chave API Voyage AI | ~$0.10/1M tokens |
