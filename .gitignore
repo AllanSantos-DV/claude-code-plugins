@@ -1,8 +1,10 @@
 # Local planning files (not for git)
 TASK-MAP.md
+PLANOS.md
 planos/
 taskmap/
 planning/
+claude-code-boss/PLANOS.md
 
 # Smoke tests (local-only, never versioned)
 smoke/
@@ -31,6 +33,21 @@ node_modules/
 
 # Logs
 *.log
+claude-code-boss/logs/
+
+# Temporary files
+*.tmp
+*.temp
+*/tmp/
+*/temp/
+
+# Build outputs
+claude-code-boss/dist/
+claude-code-boss/build/
+
+# Test coverage
+claude-code-boss/coverage/
+claude-code-boss/.lcov*
 
 # Environment variables
 .env
