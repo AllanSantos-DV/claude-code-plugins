@@ -82,72 +82,7 @@ function readStdin() {
   });
 }
 
-function findProjectRoot(cwd) {
-  let dir = cwd;
-  for (let i = 0; i < 10; i++) {
-    if (fs.existsSync(path.join(dir, '.vscode', 'shells.json'))) return dir;
-    const parent = path.dirname(dir);
-    if (parent === dir) break;
-    dir = parent;
-  }
-  return null;
-}
-
-let _shellsCacheKey = null;
-let _shellsCache = null;
-
-/**
- * Load and cache shells.json for the given projectRoot.
- * Returns { shells: [], whitelist: [] } on any error (logged, never silent).
- * Cache key is projectRoot string — reloads when cwd moves to a different project.
- */
-function loadShellsConfig(projectRoot) {
-  if (!projectRoot) return { shells: [], whitelist: [] };
-  if (_shellsCacheKey === projectRoot && _shellsCache !== null) return _shellsCache;
-
-  try {
-    const shellsPath = path.join(projectRoot, '.vscode', 'shells.json');
-    if (!fs.existsSync(shellsPath)) {
-      _shellsCacheKey = projectRoot;
-      _shellsCache = { shells: [], whitelist: [] };
-      return _shellsCache;
-    }
-    const raw = fs.readFileSync(shellsPath, 'utf-8');
-    const config = JSON.parse(raw);
-    _shellsCacheKey = projectRoot;
-    _shellsCache = { shells: config.shells || [], whitelist: config.whitelist || [] };
-    return _shellsCache;
-  } catch (err) {
-    console.error(`[CURATION-GUARD] Failed to parse shells.json: ${err.message}`);
-    hookLog('error', 'curation-guard', `Failed to parse shells.json: ${err.message}`);
-    _shellsCacheKey = projectRoot;
-    _shellsCache = { shells: [], whitelist: [] };
-    return _shellsCache;
-  }
-}
-
-/**
- * Check if a command matches any curated shell entry.
- * Match by command prefix (first space-separated token) against shell.command.
- */
-function matchCuratedShell(command, shells) {
-  const trimmed = command.trim();
-  for (const shell of shells) {
-    if (!shell.command) continue;
-    // Check if the shell command is a prefix of the called command
-    // e.g. shell.command = ".vscode/scripts/test.ps1" and command = ".vscode/scripts/test.ps1 --filter=unit"
-    if (trimmed.startsWith(shell.command.trim())) {
-      return shell;
-    }
-    // Also check by alias
-    if (shell.aliases && Array.isArray(shell.aliases)) {
-      for (const alias of shell.aliases) {
-        if (trimmed.startsWith(alias.trim())) return shell;
-      }
-    }
-  }
-  return null;
-}
+const { findProjectRoot, loadShellsConfig, matchCuratedShell } = require('./shells-config.js');
 
 /**
  * Check whitelist from shells.json — command prefixes that always pass.
