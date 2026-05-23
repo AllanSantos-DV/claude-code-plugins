@@ -256,7 +256,7 @@ const TESTS = [
     payload: {
       tool_name: 'Bash',
       tool_input: { command: 'git status' },
-      tool_result: { text: 'On branch main\nnothing to commit' },
+      tool_result: 'On branch main\nnothing to commit',
       session_id: SESSION,
     },
     expect: { noError: true },
@@ -271,7 +271,7 @@ const TESTS = [
     payload: {
       tool_name: 'Bash',
       tool_input: { command: 'npm install' },
-      tool_result: { text: LARGE_OUTPUT },
+      tool_result: LARGE_OUTPUT,
       session_id: SESSION,
     },
     expect: { noError: true },
@@ -282,7 +282,7 @@ const TESTS = [
     payload: {
       tool_name: 'Bash',
       tool_input: { command: 'git log --oneline -5' },
-      tool_result: { text: 'abc123 fix something\ndef456 add feature' },
+      tool_result: 'abc123 fix something\ndef456 add feature',
       session_id: SESSION,
     },
     expect: { noError: true },
