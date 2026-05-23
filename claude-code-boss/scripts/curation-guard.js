@@ -21,14 +21,16 @@
  */
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
 function _loadGuardCfg() {
   try {
     const cfg = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'config', 'hooks-config.json'), 'utf-8'));
     return cfg.curationGuard || {};
-  } catch { return {}; }
+  } catch (err) {
+    console.error(`[CURATION-GUARD] Failed to load hooks-config.json: ${err.message}`);
+    return {};
+  }
 }
 const _guardCfg = _loadGuardCfg();
 
@@ -223,7 +225,10 @@ function usesBuildTool(command) {
       try {
         const p = projectRoot ? path.join(projectRoot, '.vscode', 'shells.json') : null;
         return p && fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf-8')) : { whitelist: [] };
-      } catch { return { whitelist: [] }; }
+      } catch (err) {
+        console.error(`[CURATION-GUARD] Failed to parse shells.json: ${err.message}`);
+        return { whitelist: [] };
+      }
     })();
     if (isWhitelisted(command, config.whitelist)) {
       process.stdout.write(JSON.stringify({ permissionDecision: 'allowed' }));
