@@ -1,6 +1,6 @@
 # claude-code-boss
 
-Plugin para Claude Code Desktop — **v1.3.2**
+Plugin para Claude Code Desktop — **v1.3.3**
 
 Sistema multi-agente com orquestração Boss, Brain KB, dashboard local, hooks pipeline e execução curada.
 

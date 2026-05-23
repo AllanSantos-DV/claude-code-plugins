@@ -6,7 +6,7 @@ Monorepo de plugins para [Claude Code Desktop](https://claude.ai/download) — d
 
 | Plugin | Versão | Descrição |
 | --- | --- | --- |
-| [claude-code-boss](./claude-code-boss) | 1.3.2 | Sistema multi-agente: orquestração Boss, Brain KB, dashboard, hooks pipeline, execução curada |
+| [claude-code-boss](./claude-code-boss) | 1.3.3 | Sistema multi-agente: orquestração Boss, Brain KB, dashboard, hooks pipeline, execução curada |
 
 ## O que é o claude-code-boss?
 
