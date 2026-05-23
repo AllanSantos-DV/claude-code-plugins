@@ -89,6 +89,7 @@ Todos os hooks estão declarados em `hooks/hooks.json`. Eventos e scripts ativos
 | PostToolUse | `curation-detect.js` | Detecta outputs grandes para curação |
 | UserPromptSubmit | `correction-detect.js` | Detecta sinais de correção/frustração |
 | UserPromptSubmit | `lesson-inject.js` | Injeta lições relevantes do KB |
+| UserPromptSubmit | `curation-backlog.js` | Verifica payloads pendentes em `detect-curation/` e instrui curação automática via curation-improver; cooldown de 5 turnos entre injeções; move payloads com >7 dias para `processed/orphaned/` |
 | UserPromptSubmit | `brain-retrieve-prompt.js` | Busca KB semanticamente para o prompt |
 | Stop | `pattern-detect.js` | Detecta padrões a cada 4 turnos |
 | Stop | `refine-research.js` | Injeta lembrete de pesquisa (sempre ativo) |

@@ -25,6 +25,12 @@ A 3-layer system that automatically curates shell commands:
        ▼                      ▼                       ▼
    You run curated      detect-curation/         .vscode/scripts/*.mjs
    .mjs script          gets payload              + shells.json entry
+                              │
+                              ▼
+                    curation-backlog.js
+                    (UserPromptSubmit)
+                    injects reminder to
+                    invoke curation-improver
 ```
 
 ## The Learning Loop
@@ -94,8 +100,8 @@ bash "node .vscode/scripts/test.mjs"
 ### 4. If the curated script is wrong or outdated
 
 - Do NOT try to fix it in the current Bash call
-- The curation-improver subagent handles this when payloads exceed threshold
-- Or you can manually spawn curation-improver: "Improve the curated test script"
+- The **curation-backlog.js** hook automatically injects a reminder on the next `UserPromptSubmit` when pending payloads exist, instructing Claude to invoke the curation-improver via Task tool — no manual intervention needed
+- Or you can explicitly ask: "Improve the curated test script"
 - Or edit the .mjs file directly
 
 ## Common Curated Commands
@@ -120,8 +126,12 @@ For every Bash command:
   3. Is it whitelisted (git/gh/code)?     → ALLOW
   4. Is it trivial (ls/pwd/cat/echo)?     → ALLOW
   5. Is it a build tool?                  → ALLOW + warn (learning loop)
-  6. Unknown command                      → ALLOW
+  6. Unknown command                      → ALLOW (or DENY if denyUnknown=true in hooks-config.json)
 ```
+
+### denyUnknown mode
+
+When `curationGuard.denyUnknown: true` is set in `config/hooks-config.json`, outcome 6 returns `denied` with an `additionalContext` explaining that the command is unknown and should be whitelisted or curated. Default is `false` (allow unknown commands silently).
 
 The blocking is intentional and safe:
 - If a curated script exists, you SHOULD use it (that's why it was created)
