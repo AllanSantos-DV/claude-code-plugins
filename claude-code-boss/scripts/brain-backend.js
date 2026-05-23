@@ -63,6 +63,7 @@ async function initMcp() {
     workspacePath: path.join(DATA_DIR, 'brain', _project),
     javaArgs: mcpCfg.javaArgs || ['-Xmx512m'],
     downloadUrl: mcpCfg.downloadUrl || '',
+    expectedSha256: mcpCfg.expectedSha256 || '',
     timeout: mcpCfg.timeout || 60000,
   });
   await _mcp.connect();

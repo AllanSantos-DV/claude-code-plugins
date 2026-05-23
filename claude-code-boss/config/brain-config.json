@@ -7,6 +7,7 @@
       "jarPath": "",
       "javaArgs": ["-Xmx512m"],
       "downloadUrl": "https://github.com/AllanSantos-DV/mcp-memory-server-releases/releases/download/v2.6.0/mcp-memory-server-2.6.0.jar",
+      "expectedSha256": "",
       "timeout": 60000
     }
   },
