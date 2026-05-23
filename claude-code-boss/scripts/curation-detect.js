@@ -58,7 +58,10 @@ function readStdin() {
       return;
     }
 
-    const output = typeof event.tool_result === 'string' ? event.tool_result : (event.tool_result?.text || '');
+    // Bash PostToolUse: real event format is { tool_response: { stdout, stderr, interrupted, ... } }
+    const tr = event.tool_response || {};
+    const output = [tr.stdout || '', tr.stderr || ''].filter(Boolean).join('\n')
+      || (typeof event.tool_result === 'string' ? event.tool_result : (event.tool_result?.text || ''));
     const command = event.tool_input?.command || '';
     const sessionId = event.session_id || event.sessionId || 'default';
     const cwd = event.cwd || process.env.CLAUDE_PROJECT_DIR || '';
