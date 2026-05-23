@@ -23,14 +23,26 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
+const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
+function _loadGuardCfg() {
+  try {
+    const cfg = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'config', 'hooks-config.json'), 'utf-8'));
+    return cfg.curationGuard || {};
+  } catch { return {}; }
+}
+const _guardCfg = _loadGuardCfg();
+
 // Commands inherently safe (read-only, trivial output, no curation needed)
+// Extend via hooks-config.json curationGuard.extraTrivialCommands
 const TRIVIAL_COMMANDS = new Set([
   'ls', 'pwd', 'echo', 'cat', 'head', 'tail', 'wc', 'which',
   'cd', 'pushd', 'popd', 'dir', 'type',
   'date', 'whoami', 'hostname', 'uname', 'id',
+  ...(_guardCfg.extraTrivialCommands || []),
 ]);
 
 // Package managers / tools whose non-trivial subcommands need curation
+// Extend via hooks-config.json curationGuard.extraBuildTools
 const BUILD_TOOLS = new Set([
   'npm', 'npx', 'pnpm', 'yarn', 'bun',
   'npx tsc', 'npx vitest', 'npx jest', 'npx mocha',
@@ -41,6 +53,7 @@ const BUILD_TOOLS = new Set([
   'pwsh', 'powershell', 'bash',
   'ruby', 'bundle', 'rake', 'gem',
   'composer', 'php',
+  ...(_guardCfg.extraBuildTools || []),
 ]);
 
 // Git subcommands that are inherently read-only

@@ -323,6 +323,25 @@ function getBillingLogs(req, res) {
   json(res, entries.reverse());
 }
 
+// ─── API: Hooks Config ─────────────────────────────────────────────
+
+function getHooksConfig(req, res) {
+  const configPath = path.join(ROOT, 'config', 'hooks-config.json');
+  const data = readJSON(configPath);
+  if (!data) return fail(res, 'hooks-config.json not found', 404);
+  json(res, data);
+}
+
+async function saveHooksConfig(req, res) {
+  const body = await readBody(req);
+  try {
+    const parsed = JSON.parse(body);
+    const configPath = path.join(ROOT, 'config', 'hooks-config.json');
+    fs.writeFileSync(configPath, JSON.stringify(parsed, null, 2));
+    json(res, { ok: true });
+  } catch (e) { fail(res, e.message); }
+}
+
 // ─── API: Hooks ────────────────────────────────────────────────────
 
 function getHooks(req, res) {
@@ -399,6 +418,8 @@ function handleAPI(req, res, url) {
   if (p === '/api/billing/logs' && m === 'GET') return getBillingLogs(req, res);
   if (p === '/api/hooks' && m === 'GET') return getHooks(req, res);
   if (p.match(/^\/api\/hooks\/toggle\//) && m === 'PUT') return toggleHook(req, res, url);
+  if (p === '/api/hooks/config' && m === 'GET') return getHooksConfig(req, res);
+  if (p === '/api/hooks/config' && m === 'PUT') return saveHooksConfig(req, res);
 
   json(res, { error: 'Not found' }, 404);
 }

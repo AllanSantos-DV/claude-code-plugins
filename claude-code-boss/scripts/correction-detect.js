@@ -13,11 +13,18 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
+const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
 const PLUGIN_DATA = process.env.CLAUDE_PLUGIN_DATA || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
 const CORRECTIONS_DIR = path.join(PLUGIN_DATA, 'detect-corrections');
 
-const DETECT_INTERVAL = 2;
-const MAX_TRANSCRIPT_LINES = 6; // last 3 turns max
+function loadHooksCfg() {
+  try {
+    return JSON.parse(require('fs').readFileSync(path.join(PLUGIN_ROOT, 'config', 'hooks-config.json'), 'utf-8'));
+  } catch { return {}; }
+}
+const _hcfg = loadHooksCfg().correctionDetect || {};
+const DETECT_INTERVAL = _hcfg.detectInterval ?? 2;
+const MAX_TRANSCRIPT_LINES = _hcfg.maxTranscriptLines ?? 6;
 
 function readStdin() {
   return new Promise(resolve => {

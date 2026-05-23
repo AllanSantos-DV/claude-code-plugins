@@ -11,12 +11,19 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 
+const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
 const DETECT_DIR = path.join(DATA_DIR, 'detect');
 const COUNTER_DIR = path.join(DATA_DIR, '.counters');
 
-const DETECT_INTERVAL = 4;
-const MAX_TRANSCRIPT_LINES = 10;
+function loadHooksCfg() {
+  try {
+    return JSON.parse(require('fs').readFileSync(path.join(PLUGIN_ROOT, 'config', 'hooks-config.json'), 'utf-8'));
+  } catch { return {}; }
+}
+const _hcfg = loadHooksCfg().patternDetect || {};
+const DETECT_INTERVAL = _hcfg.detectInterval ?? 4;
+const MAX_TRANSCRIPT_LINES = _hcfg.maxTranscriptLines ?? 10;
 
 function readStdin() {
   return new Promise((resolve) => {
