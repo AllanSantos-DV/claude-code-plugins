@@ -22,7 +22,7 @@ function getState() {
     if (fs.existsSync(STATE_FILE)) {
       return JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8'));
     }
-  } catch {}
+  } catch (err) { console.error(`[ACK] Failed to read state: ${err.message}`); }
   return { activeSubagents: 0, totalSpawned: 0, totalCompleted: 0, history: [] };
 }
 

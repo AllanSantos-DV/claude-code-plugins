@@ -31,7 +31,7 @@ function loadConfig() {
     if (fs.existsSync(CONFIG_PATH)) {
       return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
     }
-  } catch {}
+  } catch (err) { console.error(`[COST-TRACKER] Config read error: ${err.message}`); }
   return { tiers: {}, agents: {}, alertThreshold: 20 };
 }
 
@@ -103,7 +103,7 @@ function getTierLabel(model, tiers) {
         const e = JSON.parse(line);
         totalMultiplier += (e.multiplier || 0);
       }
-    } catch {}
+    } catch (err) { console.error(`[COST-TRACKER] Log read error: ${err.message}`); }
 
     const threshold = config.alertThreshold || 20;
 

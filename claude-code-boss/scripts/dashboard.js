@@ -76,7 +76,7 @@ function getStatus(req, res) {
           const count = store.count();
           brainProjects.push({ project: p, entries: count });
           brainTotal += count;
-        } catch {}
+        } catch (err) { console.error(`[DASHBOARD] Brain store count error (${p}): ${err.message}`); }
       }
     }
   }
@@ -103,7 +103,7 @@ function getStatus(req, res) {
     const s = backend.getStatus();
     backendMode = s.mode || 'local';
     backendConnected = s.connected !== undefined ? s.connected : true;
-  } catch {}
+  } catch (err) { console.error(`[DASHBOARD] Brain backend status error: ${err.message}`); }
 
   json(res, {
     uptime: process.uptime().toFixed(0),
@@ -217,7 +217,7 @@ function getBrainProjects(req, res) {
         const count = store.count();
         const stats = fs.statSync(dbPath);
         projects.push({ project: p, entries: count, dbSize: stats.size, lastModified: stats.mtime });
-      } catch {}
+      } catch (err) { console.error(`[DASHBOARD] Brain project stat error (${p}): ${err.message}`); }
     }
   }
   json(res, projects);
@@ -344,7 +344,7 @@ function getCurationProjects(req, res) {
       try {
         const d = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf-8'));
         if (d.cwd) seen.add(d.cwd);
-      } catch {}
+      } catch (err) { console.error(`[DASHBOARD] Curation payload parse error (${f}): ${err.message}`); }
     }
   }
   // For each cwd, check if shells.json exists
@@ -353,7 +353,7 @@ function getCurationProjects(req, res) {
     const hasShells = fs.existsSync(shellsPath);
     let shellCount = 0;
     if (hasShells) {
-      try { shellCount = JSON.parse(fs.readFileSync(shellsPath, 'utf-8')).shells?.length || 0; } catch {}
+      try { shellCount = JSON.parse(fs.readFileSync(shellsPath, 'utf-8')).shells?.length || 0; } catch (err) { console.error(`[DASHBOARD] Shells count read error: ${err.message}`); }
     }
     return { cwd, hasShells, shellCount };
   });
@@ -399,7 +399,7 @@ function getCurationShells(req, res, url) {
       const scriptExists = scriptPath ? fs.existsSync(scriptPath) : false;
       let scriptContent = null;
       if (scriptExists) {
-        try { scriptContent = fs.readFileSync(scriptPath, 'utf-8').slice(0, 2000); } catch {}
+        try { scriptContent = fs.readFileSync(scriptPath, 'utf-8').slice(0, 2000); } catch (err) { console.error(`[DASHBOARD] Script content read error: ${err.message}`); }
       }
       return { ...s, scriptExists, scriptPath, scriptContent };
     });
