@@ -9,13 +9,16 @@ When the user asks to open the config, dashboard, or settings UI, launch the das
 
 ## Launch Command
 
-```bash
-node scripts/dashboard.js
+**ALWAYS use the PowerShell tool (not Bash) on Windows to launch the dashboard.**
+
+```powershell
+cd "<plugin_root>"; $env:DASHBOARD_PORT=4500; Start-Process -NoNewWindow node -ArgumentList "scripts/dashboard.js" -PassThru; Start-Sleep 2; Write-Host "http://localhost:4500"
 ```
 
-- The server picks a **random port** by default and prints the URL to stdout
-- To use a **fixed port**: `$env:DASHBOARD_PORT=4500; node scripts/dashboard.js`
-- The browser auto-opens on supported platforms (Windows/macOS/Linux)
+- Fixed port 4500 is recommended — random port requires reading stdout which is unreliable with background processes
+- `Start-Process -NoNewWindow` keeps the server running detached from the current shell session
+- **Do NOT use Bash `&` on Windows** — the process exits immediately (exit 0) and the server never starts
+- **Do NOT use `$env:` syntax in the Bash tool** — that is PowerShell syntax, it will fail silently in Bash
 
 ## What to Tell the User
 
