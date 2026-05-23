@@ -88,14 +88,14 @@ function guessWorkType(command) {
     const event = JSON.parse(raw);
 
     // Only handle Bash PostToolUse
-    if (event.event !== 'PostToolUse' || event.toolUse?.name !== 'Bash') {
+    if (event.tool_name !== 'Bash') {
       process.stdout.write(JSON.stringify({}));
       return;
     }
 
-    const command = event.toolUse?.input?.command || '';
-    const output = event.toolUse?.output || '';
-    const sessionId = event.sessionId || 'default';
+    const command = event.tool_input?.command || '';
+    const output = event.tool_response?.stdout || event.tool_response?.output || '';
+    const sessionId = event.session_id || event.sessionId || 'default';
     const charCount = output.length;
     const lineCount = output.split('\n').length;
 

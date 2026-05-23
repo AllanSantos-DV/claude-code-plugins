@@ -40,14 +40,14 @@ function readStdin() {
     const event = JSON.parse(raw);
 
     // Only handle Bash tool PostToolUse
-    if (event.event !== 'PostToolUse' || event.toolUse?.name !== 'Bash') {
+    if (event.tool_name !== 'Bash') {
       process.stdout.write(JSON.stringify({}));
       return;
     }
 
-    const output = event.toolUse?.output || '';
-    const command = event.toolUse?.input?.command || '';
-    const sessionId = event.sessionId || 'default';
+    const output = event.tool_response?.stdout || event.tool_response?.output || '';
+    const command = event.tool_input?.command || '';
+    const sessionId = event.session_id || event.sessionId || 'default';
 
     // Ensure directory
     if (!fs.existsSync(CURATION_DETECT_DIR)) {

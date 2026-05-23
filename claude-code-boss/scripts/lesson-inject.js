@@ -143,7 +143,7 @@ async function run() {
 
   try {
     const event = JSON.parse(input || '{}');
-    const userMessage = event.userMessage || '';
+    const userMessage = event.prompt || event.userMessage || '';
     const outputParts = [];
 
     // 1. Inject relevant lessons from agent memory
