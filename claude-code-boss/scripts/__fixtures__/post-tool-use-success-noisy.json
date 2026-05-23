@@ -1,0 +1,13 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": { "command": "npm test" },
+  "tool_response": {
+    "stdout": "PASS src/a.test.js\nPASS src/b.test.js\nPASS src/c.test.js\nPASS src/d.test.js\nPASS src/e.test.js\nPASS src/f.test.js\nPASS src/g.test.js\nPASS src/h.test.js\nPASS src/i.test.js\nPASS src/j.test.js\nPASS src/k.test.js\nPASS src/l.test.js\nPASS src/m.test.js\nPASS src/n.test.js\nPASS src/o.test.js\nPASS src/p.test.js\nPASS src/q.test.js\nPASS src/r.test.js\nPASS src/s.test.js\nPASS src/t.test.js\nPASS src/u.test.js\nPASS src/v.test.js\nPASS src/w.test.js\nPASS src/x.test.js\nPASS src/y.test.js\nPASS src/z.test.js\nPASS src/aa.test.js\nPASS src/ab.test.js\nPASS src/ac.test.js\nPASS src/ad.test.js\nPASS src/ae.test.js\nTest Suites: 31 passed, 31 total\nTests:       150 passed, 150 total\nSnapshots:   0 total\nTime:        8.452s",
+    "stderr": "",
+    "exit_code": 0,
+    "interrupted": false
+  },
+  "session_id": "fixture-001",
+  "cwd": "C:\\fixture"
+}

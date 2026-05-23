@@ -1,0 +1,6 @@
+{
+  "hook_event_name": "UserPromptSubmit",
+  "session_id": "fixture-004",
+  "prompt": "test prompt for fixture",
+  "cwd": "C:\\fixture"
+}
