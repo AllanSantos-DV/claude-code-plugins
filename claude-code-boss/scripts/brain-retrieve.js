@@ -1,9 +1,7 @@
 #!/usr/bin/env node
-const fs = require('fs');
 const path = require('path');
-const os = require('os');
 
-const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
+const _PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
 
 const backend = require('./brain-backend.js');
 
@@ -52,7 +50,7 @@ function formatEntries(entries) {
     const filePath = event.tool_input?.file_path
       || event.tool_input?.path
       || '';
-    const sessionId = event.session_id || event.sessionId || 'default';
+    const _sessionId = event.session_id || event.sessionId || 'default';
 
     const context = toolName === 'Bash'
       ? extractContext(command)

@@ -21,6 +21,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { hookLog } = require('./hook-logger.js');
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
 function _loadGuardCfg() {
@@ -29,6 +30,7 @@ function _loadGuardCfg() {
     return cfg.curationGuard || {};
   } catch (err) {
     console.error(`[CURATION-GUARD] Failed to load hooks-config.json: ${err.message}`);
+    hookLog('error', 'curation-guard', `Failed to load hooks-config.json: ${err.message}`);
     return {};
   }
 }
@@ -227,6 +229,7 @@ function usesBuildTool(command) {
         return p && fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf-8')) : { whitelist: [] };
       } catch (err) {
         console.error(`[CURATION-GUARD] Failed to parse shells.json: ${err.message}`);
+        hookLog('error', 'curation-guard', `Failed to parse shells.json: ${err.message}`);
         return { whitelist: [] };
       }
     })();
@@ -255,6 +258,7 @@ function usesBuildTool(command) {
     process.stdout.write(JSON.stringify({ permissionDecision: 'allowed' }));
   } catch (err) {
     console.error(`[CURATION-GUARD] Error: ${err.message}`);
+    hookLog('error', 'curation-guard', `Unhandled error: ${err.message}`);
     process.stdout.write(JSON.stringify({ permissionDecision: 'allowed', error: err.message }));
   }
 })();

@@ -9,6 +9,9 @@ claude-code-boss/PLANOS.md
 # Smoke tests (local-only, never versioned)
 smoke/
 
+# Runtime artifacts (PID files, log ring, dashboard state)
+claude-code-boss/.runtime/
+
 # Local docs (maps, plans — not for git)
 docs/maps/
 

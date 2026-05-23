@@ -13,11 +13,51 @@ const ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
 const DATA = process.env.CLAUDE_PLUGIN_DATA || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
 const DASHBOARD_DIR = path.join(ROOT, 'dashboard');
 
+const RUNTIME_DIR = path.join(ROOT, '.runtime');
+
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.js': 'application/javascript; charset=utf-8',
 };
+
+// ─── In-memory log ring buffer ─────────────────────────────────────
+const LOG_RING_SIZE = 500;
+const _logRing = [];
+const SERVER_START_TIME = new Date().toISOString();
+
+function _pushLog(level, source, message) {
+  if (_logRing.length >= LOG_RING_SIZE) _logRing.shift();
+  _logRing.push({ ts: new Date().toISOString(), level, source, message });
+}
+
+// Wrap console methods within this module to capture to ring buffer
+const _origLog = console.log.bind(console);
+const _origWarn = console.warn.bind(console);
+const _origError = console.error.bind(console);
+console.log = (...args) => { const m = args.join(' '); _pushLog('info', 'dashboard', m); _origLog(m); };
+console.warn = (...args) => { const m = args.join(' '); _pushLog('warn', 'dashboard', m); _origWarn(m); };
+console.error = (...args) => { const m = args.join(' '); _pushLog('error', 'dashboard', m); _origError(m); };
+
+const HOOK_ERRORS_PATH = path.join(RUNTIME_DIR, 'hook-errors.jsonl');
+
+/** Read up to N most-recent hook error lines from .runtime/hook-errors.jsonl */
+function readHookErrors(n = 200) {
+  if (!fs.existsSync(HOOK_ERRORS_PATH)) return [];
+  try {
+    const lines = fs.readFileSync(HOOK_ERRORS_PATH, 'utf-8').trim().split('\n').filter(Boolean);
+    return lines.slice(-n).map(l => {
+      try { return JSON.parse(l); }
+      catch (err) {
+        console.error(`[DASHBOARD] hook-errors.jsonl parse error: ${err.message}`);
+        return { ts: '', level: 'error', source: 'hook', message: l };
+      }
+    });
+  } catch (err) {
+    console.error(`[DASHBOARD] Failed to read hook-errors.jsonl: ${err.message}`);
+    return [];
+  }
+}
 
 function readBody(req) {
   return new Promise(r => { let b = ''; req.on('data', c => b += c); req.on('end', () => r(b)); });
@@ -581,6 +621,28 @@ function toggleHook(req, res, url) {
   fail(res, 'Hook script not found', 404);
 }
 
+// ─── API: Logs ─────────────────────────────────────────────────────
+
+function getLogs(req, res) {
+  const hookErrors = readHookErrors(200);
+  const combined = [..._logRing, ...hookErrors]
+    .sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
+  json(res, {
+    serverStartTime: SERVER_START_TIME,
+    uptimeSeconds: process.uptime().toFixed(0),
+    entries: combined,
+  });
+}
+
+function clearLogs(req, res) {
+  _logRing.length = 0;
+  if (fs.existsSync(HOOK_ERRORS_PATH)) {
+    try { fs.writeFileSync(HOOK_ERRORS_PATH, ''); }
+    catch (err) { console.error(`[DASHBOARD] Failed to clear hook-errors.jsonl: ${err.message}`); }
+  }
+  json(res, { ok: true });
+}
+
 // ─── Router ────────────────────────────────────────────────────────
 
 function handleAPI(req, res, url) {
@@ -610,6 +672,8 @@ function handleAPI(req, res, url) {
   if (p === '/api/curation/builtin' && m === 'GET') return getCurationBuiltin(req, res);
   if (p === '/api/curation/shells' && m === 'GET') return getCurationShells(req, res, url);
   if (p.match(/^\/api\/curation\/shells\/\d+$/) && m === 'DELETE') return deleteCurationShell(req, res, url);
+  if (p === '/api/logs' && m === 'GET') return getLogs(req, res);
+  if (p === '/api/logs/clear' && m === 'POST') return clearLogs(req, res);
 
   json(res, { error: 'Not found' }, 404);
 }

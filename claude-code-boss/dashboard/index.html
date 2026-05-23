@@ -87,6 +87,7 @@ pre { background: #f5f5f5; padding: .6rem; border-radius: 4px; font-size: .7rem;
   <a href="#brain">Brain KB</a>
   <a href="#billing">Billing</a>
   <a href="#hooks">Hooks</a>
+  <a href="#logs">Logs</a>
 </nav>
 
 <main>
@@ -459,6 +460,24 @@ pre { background: #f5f5f5; padding: .6rem; border-radius: 4px; font-size: .7rem;
       </div>
     </div>
   </section>
+
+  <!-- LOGS -->
+  <section id="tab-logs" class="tab">
+    <div class="card">
+      <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.5rem;margin-bottom:.75rem">
+        <h2 style="margin:0">Server &amp; Hook Logs</h2>
+        <div style="display:flex;gap:.5rem;align-items:center">
+          <span id="logs-meta" class="text-muted" style="font-size:.75rem"></span>
+          <button id="logs-copy-btn" style="padding:.3rem .7rem;font-size:.78rem;cursor:pointer">Copy JSON</button>
+          <button id="logs-clear-btn" style="padding:.3rem .7rem;font-size:.78rem;cursor:pointer;color:#ff7070">Clear</button>
+          <label style="font-size:.78rem;display:flex;align-items:center;gap:.3rem">
+            <input type="checkbox" id="logs-auto" checked> Auto-refresh
+          </label>
+        </div>
+      </div>
+      <div id="logs-list" style="font-family:monospace;font-size:.75rem;max-height:70vh;overflow-y:auto;border:1px solid #1e2a45;border-radius:4px;padding:.5rem;background:#0d1117"></div>
+    </div>
+  </section>
 </main>
 
 <script>
@@ -471,7 +490,7 @@ function navigate() {
   const hash = location.hash.slice(1) || 'home';
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.id === 'tab-' + hash));
   document.querySelectorAll('nav a').forEach(a => a.classList.toggle('active', a.hash === '#' + hash));
-  const fns = { home: loadHome, models: loadModels, pipelines: loadPipelines, brain: loadBrain, billing: loadBilling, hooks: loadHooks };
+  const fns = { home: loadHome, models: loadModels, pipelines: loadPipelines, brain: loadBrain, billing: loadBilling, hooks: loadHooks, logs: loadLogs };
   if (fns[hash]) fns[hash]();
 }
 window.addEventListener('hashchange', navigate);
@@ -1030,6 +1049,79 @@ async function saveHooksConfig() {
   const el = document.getElementById('hooks-config-saved');
   el.textContent = 'Saved!';
   setTimeout(() => el.textContent = '', 2000);
+}
+
+// ─── LOGS ─────────────────────────────────────────────────────────
+
+let _logsData = null;
+let _logsInterval = null;
+
+const LEVEL_COLOR = { error: '#ff7070', warn: '#ffa94d', info: '#8892b0', debug: '#4a5568' };
+
+function renderLogs(data) {
+  _logsData = data;
+  const meta = document.getElementById('logs-meta');
+  if (meta) {
+    const uptime = Number(data.uptimeSeconds || 0);
+    const h = Math.floor(uptime / 3600), m = Math.floor((uptime % 3600) / 60), s = uptime % 60;
+    meta.textContent = `Started: ${data.serverStartTime || '—'}  ·  Uptime: ${h}h ${m}m ${s}s  ·  ${(data.entries||[]).length} entries`;
+  }
+  const list = document.getElementById('logs-list');
+  if (!list) return;
+  if (!data.entries || data.entries.length === 0) {
+    list.innerHTML = '<div style="color:#4a5568;padding:.5rem">No log entries yet.</div>';
+    return;
+  }
+  list.innerHTML = data.entries.map(e => {
+    const col = LEVEL_COLOR[e.level] || '#8892b0';
+    const ts = (e.ts || '').replace('T', ' ').replace(/\.\d+Z$/, 'Z');
+    const src = e.source ? `<span style="color:#64ffda;margin-right:.4rem">[${e.source}]</span>` : '';
+    const lvl = `<span style="color:${col};min-width:3rem;display:inline-block">${(e.level||'info').toUpperCase()}</span>`;
+    const msg = String(e.message || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return `<div style="padding:.2rem 0;border-bottom:1px solid #1e2a45">`
+      + `<span style="color:#4a5568;margin-right:.6rem">${ts}</span>${lvl} ${src}${msg}</div>`;
+  }).join('');
+  // Auto-scroll to bottom
+  list.scrollTop = list.scrollHeight;
+}
+
+async function loadLogs() {
+  try {
+    const data = await api('GET', '/api/logs');
+    renderLogs(data);
+  } catch (err) {
+    const list = document.getElementById('logs-list');
+    if (list) list.innerHTML = `<div style="color:#ff7070">Error fetching logs: ${err.message}</div>`;
+  }
+
+  // Setup auto-refresh when tab becomes visible
+  if (!_logsInterval) {
+    _logsInterval = setInterval(() => {
+      const autoEl = document.getElementById('logs-auto');
+      if (document.getElementById('tab-logs').classList.contains('active') && autoEl && autoEl.checked) {
+        loadLogs();
+      }
+    }, 2000);
+  }
+
+  // Wire buttons (idempotent via dataset flag)
+  const copyBtn = document.getElementById('logs-copy-btn');
+  if (copyBtn && !copyBtn.dataset.wired) {
+    copyBtn.dataset.wired = '1';
+    copyBtn.addEventListener('click', () => {
+      if (_logsData) navigator.clipboard.writeText(JSON.stringify(_logsData, null, 2))
+        .then(() => { copyBtn.textContent = 'Copied!'; setTimeout(() => copyBtn.textContent = 'Copy JSON', 1500); })
+        .catch(() => {});
+    });
+  }
+  const clearBtn = document.getElementById('logs-clear-btn');
+  if (clearBtn && !clearBtn.dataset.wired) {
+    clearBtn.dataset.wired = '1';
+    clearBtn.addEventListener('click', async () => {
+      await api('POST', '/api/logs/clear');
+      await loadLogs();
+    });
+  }
 }
 </script>
 </body>

@@ -15,7 +15,7 @@ const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '.
 const CONFIG_PATH = path.join(PLUGIN_ROOT, 'config', 'model-router.json');
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || path.join(PLUGIN_ROOT, '.claude-plugin');
 
-const TIER_ORDER = ['inherit', 'haiku', 'sonnet', 'opus'];
+const _TIER_ORDER = ['inherit', 'haiku', 'sonnet', 'opus'];
 
 function readStdin() {
   return new Promise((resolve) => {

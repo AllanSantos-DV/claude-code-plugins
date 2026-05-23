@@ -3,7 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
+const _PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
   || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
 const PENDING_DIR = path.join(DATA_DIR, 'brain-pending');
@@ -54,7 +54,7 @@ function checkPendingPayloads() {
       return;
     }
 
-    const sessionId = event.session_id || event.sessionId || 'default';
+    const _sessionId = event.session_id || event.sessionId || 'default';
     const project = event.cwd
       ? path.basename(event.cwd)
       : 'default';

@@ -2,7 +2,7 @@
 const path = require('path');
 const fs = require('fs');
 
-const ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
+const _ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
 
 const backend = require('./brain-backend.js');
 

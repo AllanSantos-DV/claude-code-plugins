@@ -11,7 +11,6 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const crypto = require('crypto');
 
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
 const CURATION_DETECT_DIR = path.join(DATA_DIR, 'detect-curation');
