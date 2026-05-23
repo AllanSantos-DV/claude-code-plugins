@@ -17,6 +17,8 @@ claude-code-boss/.runtime/
 
 # Local docs (maps, plans — not for git)
 docs/maps/
+docs/plans/
+docs/research/
 claude-code-boss/docs/
 
 # Claude Code local config
