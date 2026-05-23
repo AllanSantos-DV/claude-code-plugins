@@ -67,4 +67,4 @@ Veja [claude-code-boss/README.md](./claude-code-boss/README.md) para configuraç
 
 ## Licença
 
-MIT
+[MIT](./LICENSE)

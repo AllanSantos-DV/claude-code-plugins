@@ -148,4 +148,4 @@ npm run version:sync  # Re-sincroniza versão sem bump
 
 ## Licença
 
-MIT
+[MIT](./LICENSE)
