@@ -40,7 +40,10 @@ function now() { return new Date().toISOString(); }
 function parseResult(result) {
   if (!result || !result.text) return null;
   try { return JSON.parse(result.text); }
-  catch { return { text: result.text }; }
+  catch (err) {
+    console.error(`[BRAIN-BACKEND] parseResult: ${err.message}`);
+    return { text: result.text };
+  }
 }
 
 function parseResultArray(result) {
@@ -48,7 +51,10 @@ function parseResultArray(result) {
   try {
     const parsed = JSON.parse(result.text);
     return Array.isArray(parsed) ? parsed : [];
-  } catch { return []; }
+  } catch (err) {
+    console.error(`[BRAIN-BACKEND] parseResultArray: ${err.message}`);
+    return [];
+  }
 }
 
 async function initMcp() {

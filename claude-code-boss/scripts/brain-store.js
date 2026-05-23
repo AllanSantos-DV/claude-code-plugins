@@ -191,7 +191,10 @@ function rowToEntry(row) {
 }
 
 function safeJson(str) {
-  try { return JSON.parse(str); } catch { return {}; }
+  try { return JSON.parse(str); } catch (err) {
+    console.error(`[BRAIN-STORE] JSON parse error in safeJson: ${err.message}`);
+    return {};
+  }
 }
 
 async function searchSqlite(queryVector, opts = {}) {
@@ -426,7 +429,7 @@ async function listJson(type, project) {
 async function init(opts = {}) {
   if (_initialized) return;
   _project = opts.project || 'default';
-  const dir = getProjectDir();
+  const _dir = getProjectDir();
 
   // Try SQLite first
   const sqliteOk = await tryInitSqlite();

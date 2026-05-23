@@ -20,7 +20,10 @@ const CORRECTIONS_DIR = path.join(PLUGIN_DATA, 'detect-corrections');
 function loadHooksCfg() {
   try {
     return JSON.parse(require('fs').readFileSync(path.join(PLUGIN_ROOT, 'config', 'hooks-config.json'), 'utf-8'));
-  } catch { return {}; }
+  } catch (err) {
+    console.error(`[CORRECTION-DETECT] Failed to load hooks-config.json: ${err.message}`);
+    return {};
+  }
 }
 const _hcfg = loadHooksCfg().correctionDetect || {};
 const DETECT_INTERVAL = _hcfg.detectInterval ?? 2;

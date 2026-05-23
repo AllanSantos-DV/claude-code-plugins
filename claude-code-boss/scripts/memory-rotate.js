@@ -19,7 +19,10 @@ const AGENT_MEMORY_DIR = path.join(os.homedir(), '.claude', 'agent-memory');
 function loadHooksCfg() {
   try {
     return JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'config', 'hooks-config.json'), 'utf-8'));
-  } catch { return {}; }
+  } catch (err) {
+    console.error(`[MEMORY-ROTATE] Failed to load hooks-config.json: ${err.message}`);
+    return {};
+  }
 }
 const MAX_LINES = loadHooksCfg().memoryRotate?.maxLines ?? 150;
 

@@ -14,7 +14,12 @@ const os = require('os');
 const HOME = os.homedir();
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
 function _loadHooksCfg() {
-  try { return JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'config', 'hooks-config.json'), 'utf-8')); } catch { return {}; }
+  try {
+    return JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'config', 'hooks-config.json'), 'utf-8'));
+  } catch (err) {
+    console.error(`[LESSON-INJECT] Failed to load hooks-config.json: ${err.message}`);
+    return {};
+  }
 }
 const _HOOKS_CFG = _loadHooksCfg();
 const LESSON_MAX_RESULTS = _HOOKS_CFG.lessonInject?.maxLessons ?? 5;
@@ -28,8 +33,8 @@ const PLUGIN_DATA = process.env.CLAUDE_PLUGIN_DATA || path.join(HOME, '.claude',
 const DETECT_DIR = path.join(PLUGIN_DATA, 'detect');
 const CORRECTIONS_DIR = path.join(PLUGIN_DATA, 'detect-corrections');
 const CURATION_DIR = path.join(PLUGIN_DATA, 'detect-curation');
-const REFINE_DIR = path.join(PLUGIN_DATA, 'detect-refine');
-const MARKER_DIR = path.join(PLUGIN_DATA, '.markers');
+const _REFINE_DIR = path.join(PLUGIN_DATA, 'detect-refine');
+const _MARKER_DIR = path.join(PLUGIN_DATA, '.markers');
 
 const STOP_WORDS = new Set([
   'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
@@ -125,7 +130,7 @@ function countPendingFiles(dir, prefix) {
   }
 }
 
-function countTotalLessons() {
+function _countTotalLessons() {
   let count = 0;
   for (const dir of AGENT_MEMORY_DIRS) {
     try {

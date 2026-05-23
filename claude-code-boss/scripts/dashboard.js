@@ -34,7 +34,10 @@ function fail(res, msg, status = 500) {
 
 function readJSON(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf-8')); }
-  catch { return null; }
+  catch (err) {
+    console.error(`[DASHBOARD] readJSON failed (${path.basename(file)}): ${err.message}`);
+    return null;
+  }
 }
 
 // ─── Config validators ────────────────────────────────────────────
@@ -236,7 +239,8 @@ function getBrainBackend(req, res) {
     backend.init({ project: 'default' });
     const status = backend.getStatus();
     json(res, status);
-  } catch {
+  } catch (err) {
+    console.error(`[DASHBOARD] Brain backend unavailable: ${err.message}`);
     json(res, { mode: 'local', error: 'brain-backend not available', fallback: true });
   }
 }
