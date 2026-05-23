@@ -148,4 +148,4 @@ npm run version:sync  # Re-sincroniza versão sem bump
 
 ## Licença
 
-[MIT](./LICENSE)
+[MIT](./LICENSE) — sub-pacotes (`servers/boss-server`, `servers/brain-server`) são `private: true` e herdam esta licença.
