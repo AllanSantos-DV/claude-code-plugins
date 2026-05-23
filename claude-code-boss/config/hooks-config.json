@@ -25,6 +25,7 @@
   },
   "curationGuard": {
     "extraTrivialCommands": [],
-    "extraBuildTools": []
+    "extraBuildTools": [],
+    "denyUnknown": false
   }
 }
