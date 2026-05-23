@@ -4,6 +4,10 @@ const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
 const os = require('os');
+const crypto = require('crypto');
+
+// Session token — generated at boot, injected into index.html, required on all /api/* requests.
+const SESSION_TOKEN = crypto.randomBytes(16).toString('hex');
 
 const ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
 const DATA = process.env.CLAUDE_PLUGIN_DATA || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
@@ -529,33 +533,70 @@ function serveStatic(req, res) {
     return res.end('Forbidden');
   }
   try {
-    const content = fs.readFileSync(filePath);
+    let content = fs.readFileSync(filePath);
     const ext = path.extname(filePath);
+    // Inject session token into index.html so the SPA can authenticate API calls.
+    if (filePath === path.join(DASHBOARD_DIR, 'index.html')) {
+      const html = content.toString('utf-8').replace(
+        '</head>',
+        `<script>window.__DASHBOARD_TOKEN__ = '${SESSION_TOKEN}';</script>\n</head>`
+      );
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end(html);
+    }
     res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
     res.end(content);
-  } catch {
+  } catch (err) {
+    console.error(`[DASHBOARD] Static serve error: ${err.message}`);
     const index = fs.readFileSync(path.join(DASHBOARD_DIR, 'index.html'));
+    const html = index.toString('utf-8').replace(
+      '</head>',
+      `<script>window.__DASHBOARD_TOKEN__ = '${SESSION_TOKEN}';</script>\n</head>`
+    );
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(index);
+    res.end(html);
   }
 }
 
+// ─── Auth helpers ─────────────────────────────────────────────────
+
+function isValidHost(host, port) {
+  if (!host) return false;
+  return host === `localhost:${port}` || host === `127.0.0.1:${port}`;
+}
+
+function checkAuth(req, res, port) {
+  const host = req.headers['host'] || '';
+  if (!isValidHost(host, port)) {
+    json(res, { error: 'Forbidden: invalid Host header' }, 403);
+    return false;
+  }
+  const token = req.headers['x-dashboard-token'] || '';
+  const expected = Buffer.from(SESSION_TOKEN);
+  const actual = Buffer.from(token);
+  if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) {
+    json(res, { error: 'Unauthorized' }, 401);
+    return false;
+  }
+  return true;
+}
+
 const server = http.createServer((req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, PUT, POST, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  if (req.method === 'OPTIONS') { res.writeHead(204); return res.end(); }
-  const url = new URL(req.url, `http://${req.headers.host}`);
-  if (url.pathname.startsWith('/api/')) return handleAPI(req, res, url);
+  const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+  if (url.pathname.startsWith('/api/')) {
+    const port = server.address()?.port;
+    if (!checkAuth(req, res, port)) return;
+    return handleAPI(req, res, url);
+  }
   serveStatic(req, res);
 });
 
 const PORT = process.env.DASHBOARD_PORT || 0;
-server.listen(PORT, () => {
+server.listen(PORT, '127.0.0.1', () => {
   const port = server.address().port;
-  console.log(`\n  \u{1F4CA} Plugin Dashboard: http://localhost:${port}\n`);
+  console.log(`\n  \u{1F4CA} Plugin Dashboard: http://localhost:${port}  (token: ${SESSION_TOKEN})\n`);
   const browser = { win32: 'start', darwin: 'open', linux: 'xdg-open' }[process.platform];
   if (browser && !process.env.DASHBOARD_NO_OPEN) {
-    try { execSync(`${browser} http://localhost:${port}`, { stdio: 'ignore', timeout: 5000 }); } catch {}
+    try { execSync(`${browser} http://localhost:${port}`, { stdio: 'ignore', timeout: 5000 }); } catch (err) { console.error(`[DASHBOARD] Browser open failed: ${err.message}`); }
   }
 });
