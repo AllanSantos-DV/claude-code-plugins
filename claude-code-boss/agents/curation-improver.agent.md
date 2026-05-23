@@ -34,11 +34,28 @@ Read detection payloads from:
 ${CLAUDE_PLUGIN_DATA}/detect-curation/
 ```
 
-Each payload:
+Each payload (`version: 2`):
+- `reason`: **why** it was flagged — drives what you should do (see table below)
 - `command`: the Bash command that was executed
-- `charCount` / `lineCount`: output size that exceeded threshold
-- `outputPreview`: first 500 + last 500 chars of output (enough to understand what kind of output it is)
+- `isCurated`: whether the command matched an existing curated script
+- `curatedShell`: `{ command, script }` if curated, else `null`
+- `isSuccess`: heuristic (no stderr, not interrupted) — true means the command succeeded
+- `interrupted`: true if Ctrl+C
+- `charCount` / `lineCount`: output size
+- `threshold`: which thresholds were applied (differs by reason)
+- `outputPreview`: first 500 + last 500 chars of combined stdout+stderr
+- `stderrPreview`: first 500 chars of stderr (failure context)
 - `sessionId`: which session
+
+### Reason → Action
+
+| `reason` | Meaning | What to do |
+|---|---|---|
+| `needs-curation` | Raw command (not curated) exceeded volume threshold | Create new `.vscode/scripts/<name>.mjs` + add entry to `shells.json` |
+| `curated-success-noisy` | Curated script succeeded but output > 3 lines / 500 chars | **Refactor existing script** to emit a 1-line `OK ... (Nms)` summary on success. The script is buggy: success path is leaking raw output. |
+| `curated-failure-noisy` | Curated script failed and dumped > threshold output | **Refactor existing script's failure path** to surface only the relevant error lines + `FAIL ... (Nms)`. Don't pipe the entire stderr. |
+
+In all three cases, you can also write "no improvement possible / one-shot command" to MEMORY.md and skip — but for curated-* cases that's a bug worth investigating before skipping.
 
 ## Workflow
 
