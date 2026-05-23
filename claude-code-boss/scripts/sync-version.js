@@ -1,11 +1,20 @@
 #!/usr/bin/env node
 /**
- * sync-version.js — propagates version from package.json (single source of truth)
- * to plugin-version.json and .claude-plugin/plugin.json.
+ * sync-version.js — single source of truth for plugin version.
+ *
+ * Propagates version to all three version files and prints the git
+ * commands needed to commit + tag + push the release.
  *
  * Usage:
- *   node scripts/sync-version.js              # reads version from package.json
- *   node scripts/sync-version.js 1.3.0        # overrides with explicit version
+ *   node scripts/sync-version.js 1.4.0       # bump to explicit version
+ *   node scripts/sync-version.js             # re-sync from package.json (no bump)
+ *
+ * Release flow (all local, no CI involvement):
+ *   node scripts/sync-version.js 1.4.0
+ *   git add package.json scripts/plugin-version.json .claude-plugin/plugin.json
+ *   git commit -m "chore: bump version to 1.4.0"
+ *   git tag v1.4.0
+ *   git push origin main --tags
  */
 const fs = require('fs');
 const path = require('path');
@@ -39,6 +48,12 @@ if (process.argv[2]) {
 }
 
 console.log(`[sync-version] version synced to ${version}`);
-console.log(`  package.json          → ${version}`);
-console.log(`  plugin-version.json   → ${version}`);
-console.log(`  .claude-plugin/plugin.json → ${version}`);
+console.log(`  package.json               → ${version}`);
+console.log(`  scripts/plugin-version.json → ${version}`);
+console.log(`  .claude-plugin/plugin.json  → ${version}`);
+console.log('');
+console.log('Next steps to release:');
+console.log(`  git add claude-code-boss/package.json claude-code-boss/scripts/plugin-version.json claude-code-boss/.claude-plugin/plugin.json`);
+console.log(`  git commit -m "chore: bump version to ${version}"`);
+console.log(`  git tag v${version}`);
+console.log(`  git push origin main --tags`);
