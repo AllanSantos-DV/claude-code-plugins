@@ -48,13 +48,13 @@ function checkPendingPayloads() {
     let event, userMessage;
     try {
       event = JSON.parse(raw);
-      userMessage = event.userMessage || event.text || '';
+      userMessage = event.prompt || event.userMessage || event.text || '';
     } catch {
       process.stdout.write(JSON.stringify({}));
       return;
     }
 
-    const sessionId = event.sessionId || 'default';
+    const sessionId = event.session_id || event.sessionId || 'default';
     const project = event.cwd
       ? path.basename(event.cwd)
       : 'default';

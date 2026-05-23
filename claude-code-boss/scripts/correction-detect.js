@@ -107,8 +107,8 @@ function readTranscriptContext(transcriptPath) {
     if (!raw) { process.stdout.write(JSON.stringify({})); return; }
 
     const event = JSON.parse(raw);
-    const userMessage = event.userMessage || '';
-    const sessionId = event.sessionId || 'default';
+    const userMessage = event.prompt || event.userMessage || '';
+    const sessionId = event.session_id || event.sessionId || 'default';
     const transcriptPath = event.transcript_path || '';
 
     if (!userMessage) { process.stdout.write(JSON.stringify({})); return; }

@@ -12,7 +12,7 @@ try {
   const event = JSON.parse(input);
 
   // Only warn when the edit affects source files (not config/markdown)
-  const filePath = event?.toolInput?.filePath || '';
+  const filePath = event?.tool_input?.file_path || event?.tool_input?.path || '';
   const isSourceFile = /\.(ts|js|tsx|jsx|py|rs|go|java|rb|php|c|cpp|h|hpp)$/i.test(filePath);
 
   if (isSourceFile) {

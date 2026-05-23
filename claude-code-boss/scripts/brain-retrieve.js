@@ -42,17 +42,17 @@ function formatEntries(entries) {
     }
 
     const event = JSON.parse(raw);
-    const toolName = event.toolUse?.name || '';
+    const toolName = event.tool_name || '';
     if (toolName !== 'Bash' && toolName !== 'Write' && toolName !== 'Edit') {
       process.stdout.write(JSON.stringify({}));
       return;
     }
 
-    const command = event.toolUse?.input?.command || '';
-    const filePath = event.toolUse?.input?.filePath
-      || event.toolUse?.input?.path
+    const command = event.tool_input?.command || '';
+    const filePath = event.tool_input?.file_path
+      || event.tool_input?.path
       || '';
-    const sessionId = event.sessionId || 'default';
+    const sessionId = event.session_id || event.sessionId || 'default';
 
     const context = toolName === 'Bash'
       ? extractContext(command)
