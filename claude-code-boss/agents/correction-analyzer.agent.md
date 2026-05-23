@@ -3,9 +3,9 @@ name: correction-analyzer
 description: Fast correction analyzer — detects user corrections, dissatisfaction, and frustration signals. Runs every 2 turns. Cheaper/faster than pattern-analyzer.
 model: haiku
 effort: low
-maxTurns: 5
+maxTurns: 10
 memory: user
-disallowedTools: Bash
+disallowedTools: []
 skills:
   - pattern-detection
 ---
