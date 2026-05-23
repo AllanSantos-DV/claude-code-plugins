@@ -94,7 +94,10 @@ function guessWorkType(command) {
     }
 
     const command = event.tool_input?.command || '';
-    const output = typeof event.tool_result === 'string' ? event.tool_result : (event.tool_result?.text || '');
+    // Bash PostToolUse: real event format is { tool_response: { stdout, stderr, ... } }
+    const tr = event.tool_response || {};
+    const output = [tr.stdout || '', tr.stderr || ''].filter(Boolean).join('\n')
+      || (typeof event.tool_result === 'string' ? event.tool_result : (event.tool_result?.text || ''));
     const sessionId = event.session_id || event.sessionId || 'default';
     const charCount = output.length;
     const lineCount = output.split('\n').length;
