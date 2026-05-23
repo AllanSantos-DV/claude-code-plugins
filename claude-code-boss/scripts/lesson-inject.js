@@ -12,7 +12,11 @@ const path = require('path');
 const os = require('os');
 
 const HOME = os.homedir();
-const AGENT_MEMORY_DIR = path.join(HOME, '.claude', 'agent-memory', 'pattern-analyzer');
+// Read lessons from both pattern-analyzer and correction-analyzer agent memories
+const AGENT_MEMORY_DIRS = [
+  path.join(HOME, '.claude', 'agent-memory', 'pattern-analyzer'),
+  path.join(HOME, '.claude', 'agent-memory', 'correction-analyzer'),
+];
 const PLUGIN_DATA = process.env.CLAUDE_PLUGIN_DATA || path.join(HOME, '.claude', 'plugins', 'data', 'claude-code-boss');
 const DETECT_DIR = path.join(PLUGIN_DATA, 'detect');
 const CORRECTIONS_DIR = path.join(PLUGIN_DATA, 'detect-corrections');
@@ -42,24 +46,25 @@ function tokenize(text) {
 }
 
 /**
- * Read all markdown content from pattern-analyzer's agent memory.
- * Reads MEMORY.md + all topic .md files. Returns [{file, content}].
+ * Read all markdown content from all agent memory dirs.
+ * Reads MEMORY.md + all topic .md files from pattern-analyzer and correction-analyzer.
+ * Returns [{file, content}].
  */
 function loadMemoryFiles() {
-  try {
-    if (!fs.existsSync(AGENT_MEMORY_DIR)) return [];
-    return fs.readdirSync(AGENT_MEMORY_DIR)
-      .filter(f => f.endsWith('.md'))
-      .map(f => {
+  const results = [];
+  for (const dir of AGENT_MEMORY_DIRS) {
+    try {
+      if (!fs.existsSync(dir)) continue;
+      const agentName = path.basename(dir);
+      for (const f of fs.readdirSync(dir).filter(f => f.endsWith('.md'))) {
         try {
-          const content = fs.readFileSync(path.join(AGENT_MEMORY_DIR, f), 'utf-8');
-          return { file: f, content };
-        } catch { return null; }
-      })
-      .filter(Boolean);
-  } catch {
-    return [];
+          const content = fs.readFileSync(path.join(dir, f), 'utf-8');
+          results.push({ file: `${agentName}/${f}`, content });
+        } catch { /* skip */ }
+      }
+    } catch { /* skip */ }
   }
+  return results;
 }
 
 /**
@@ -74,7 +79,10 @@ function findRelevantLines(query, maxResults = 5) {
   const scored = [];
 
   for (const { file, content } of files) {
-    const lines = content.split('\n').filter(l => l.trim().startsWith('- **Rule**') || l.trim().startsWith('- Rule'));
+    const lines = content.split('\n').filter(l => {
+      const t = l.trim();
+      return t.startsWith('- **Rule**') || t.startsWith('- Rule') || t.startsWith('**Rule**');
+    });
     for (const line of lines) {
       const lineTokens = tokenize(line);
       let score = 0;
@@ -111,18 +119,18 @@ function countPendingFiles(dir, prefix) {
 }
 
 function countTotalLessons() {
-  try {
-    if (!fs.existsSync(AGENT_MEMORY_DIR)) return 0;
-    let count = 0;
-    for (const f of fs.readdirSync(AGENT_MEMORY_DIR)) {
-      if (!f.endsWith('.md') || f === 'MEMORY.md') continue;
-      const content = fs.readFileSync(path.join(AGENT_MEMORY_DIR, f), 'utf-8');
-      count += (content.match(/- \*\*Rule\*\*/g) || []).length;
-    }
-    return count;
-  } catch {
-    return 0;
+  let count = 0;
+  for (const dir of AGENT_MEMORY_DIRS) {
+    try {
+      if (!fs.existsSync(dir)) continue;
+      for (const f of fs.readdirSync(dir)) {
+        if (!f.endsWith('.md') || f === 'MEMORY.md') continue;
+        const content = fs.readFileSync(path.join(dir, f), 'utf-8');
+        count += (content.match(/- \*\*Rule\*\*/g) || []).length;
+      }
+    } catch { /* skip */ }
   }
+  return count;
 }
 
 // ─── CLI Mode ───

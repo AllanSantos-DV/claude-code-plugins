@@ -83,12 +83,13 @@ Each payload contains:
 
 ## Topic File Format
 
-```markdown
-# agent-behavior
+Each entry MUST start with `- **Rule**:` (list item, exactly this prefix) — lesson-inject.js scans for this pattern to inject lessons into context.
 
+```markdown
 - **Rule**: Always confirm scope before implementing.
-  - Evidence: User said "I didn't ask for that" after agent expanded scope
-  - Session: ses_abc, turn 8
+  - Why: scope creep wastes effort and frustrates users.
+  - How: restate what will change before writing code.
+  - Evidence: User said "I didn't ask for that" — session ses_abc, turn 8
   - Tags: user-explicit, high-signal, correction
 ```
 
