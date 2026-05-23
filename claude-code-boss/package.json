@@ -12,6 +12,8 @@
     "sharp": "^0.34.0"
   },
   "scripts": {
-    "postinstall": "node scripts/plugin-setup.js"
+    "postinstall": "node scripts/plugin-setup.js",
+    "version:sync": "node scripts/sync-version.js",
+    "version:bump": "node scripts/sync-version.js"
   }
 }
