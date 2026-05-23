@@ -325,6 +325,37 @@ function getBillingLogs(req, res) {
 
 // ─── API: Curation ─────────────────────────────────────────────────
 
+function getCurationProjects(req, res) {
+  // Collect unique cwd values from detect-curation payloads (pending + processed)
+  const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA ||
+    path.join(require('os').homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+  const dirs = [
+    path.join(DATA_DIR, 'detect-curation'),
+    path.join(DATA_DIR, 'detect-curation', 'processed'),
+  ];
+  const seen = new Set();
+  for (const dir of dirs) {
+    if (!fs.existsSync(dir)) continue;
+    for (const f of fs.readdirSync(dir).filter(f => f.endsWith('.json'))) {
+      try {
+        const d = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf-8'));
+        if (d.cwd) seen.add(d.cwd);
+      } catch {}
+    }
+  }
+  // For each cwd, check if shells.json exists
+  const projects = [...seen].map(cwd => {
+    const shellsPath = path.join(cwd, '.vscode', 'shells.json');
+    const hasShells = fs.existsSync(shellsPath);
+    let shellCount = 0;
+    if (hasShells) {
+      try { shellCount = JSON.parse(fs.readFileSync(shellsPath, 'utf-8')).shells?.length || 0; } catch {}
+    }
+    return { cwd, hasShells, shellCount };
+  });
+  json(res, projects);
+}
+
 function getCurationBuiltin(req, res) {
   // Mirror the hardcoded sets from curation-guard.js
   json(res, {
@@ -482,6 +513,7 @@ function handleAPI(req, res, url) {
   if (p.match(/^\/api\/hooks\/toggle\//) && m === 'PUT') return toggleHook(req, res, url);
   if (p === '/api/hooks/config' && m === 'GET') return getHooksConfig(req, res);
   if (p === '/api/hooks/config' && m === 'PUT') return saveHooksConfig(req, res);
+  if (p === '/api/curation/projects' && m === 'GET') return getCurationProjects(req, res);
   if (p === '/api/curation/builtin' && m === 'GET') return getCurationBuiltin(req, res);
   if (p === '/api/curation/shells' && m === 'GET') return getCurationShells(req, res, url);
   if (p.match(/^\/api\/curation\/shells\/\d+$/) && m === 'DELETE') return deleteCurationShell(req, res, url);
