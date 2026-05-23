@@ -93,16 +93,36 @@ function findProjectRoot(cwd) {
   return null;
 }
 
-function loadCuratedShells(projectRoot) {
-  if (!projectRoot) return [];
+let _shellsCacheKey = null;
+let _shellsCache = null;
+
+/**
+ * Load and cache shells.json for the given projectRoot.
+ * Returns { shells: [], whitelist: [] } on any error (logged, never silent).
+ * Cache key is projectRoot string — reloads when cwd moves to a different project.
+ */
+function loadShellsConfig(projectRoot) {
+  if (!projectRoot) return { shells: [], whitelist: [] };
+  if (_shellsCacheKey === projectRoot && _shellsCache !== null) return _shellsCache;
+
   try {
     const shellsPath = path.join(projectRoot, '.vscode', 'shells.json');
-    if (!fs.existsSync(shellsPath)) return [];
+    if (!fs.existsSync(shellsPath)) {
+      _shellsCacheKey = projectRoot;
+      _shellsCache = { shells: [], whitelist: [] };
+      return _shellsCache;
+    }
     const raw = fs.readFileSync(shellsPath, 'utf-8');
     const config = JSON.parse(raw);
-    return config.shells || [];
-  } catch {
-    return [];
+    _shellsCacheKey = projectRoot;
+    _shellsCache = { shells: config.shells || [], whitelist: config.whitelist || [] };
+    return _shellsCache;
+  } catch (err) {
+    console.error(`[CURATION-GUARD] Failed to parse shells.json: ${err.message}`);
+    hookLog('error', 'curation-guard', `Failed to parse shells.json: ${err.message}`);
+    _shellsCacheKey = projectRoot;
+    _shellsCache = { shells: [], whitelist: [] };
+    return _shellsCache;
   }
 }
 
@@ -204,7 +224,7 @@ function usesBuildTool(command) {
     }
 
     const projectRoot = findProjectRoot(event.cwd || process.cwd());
-    const shells = loadCuratedShells(projectRoot);
+    const { shells, whitelist } = loadShellsConfig(projectRoot);
 
     // 1. Check if command IS a curated script (.mjs) — allow silently
     if (command.trim().includes('.mjs') || command.trim().includes('.vscode/scripts/')) {
@@ -222,18 +242,8 @@ function usesBuildTool(command) {
       return;
     }
 
-    // 3. Check whitelist from shells.json (project-specific)
-    const config = (() => {
-      try {
-        const p = projectRoot ? path.join(projectRoot, '.vscode', 'shells.json') : null;
-        return p && fs.existsSync(p) ? JSON.parse(fs.readFileSync(p, 'utf-8')) : { whitelist: [] };
-      } catch (err) {
-        console.error(`[CURATION-GUARD] Failed to parse shells.json: ${err.message}`);
-        hookLog('error', 'curation-guard', `Failed to parse shells.json: ${err.message}`);
-        return { whitelist: [] };
-      }
-    })();
-    if (isWhitelisted(command, config.whitelist)) {
+    // 3. Check whitelist from shells.json (project-specific, already loaded by loadShellsConfig)
+    if (isWhitelisted(command, whitelist)) {
       process.stdout.write(JSON.stringify({ permissionDecision: 'allowed' }));
       return;
     }
@@ -254,8 +264,15 @@ function usesBuildTool(command) {
       return;
     }
 
-    // 6. Unknown command — allow silently
-    process.stdout.write(JSON.stringify({ permissionDecision: 'allowed' }));
+    // 6. Unknown command — allow by default; deny when denyUnknown is enabled
+    if (_guardCfg.denyUnknown) {
+      process.stdout.write(JSON.stringify({
+        permissionDecision: 'denied',
+        hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: `[curation-guard] 🔒 Comando \`${command}\` desconhecido (modo denyUnknown ativo). Adicione à whitelist em .vscode/shells.json ou crie um script curado.` },
+      }));
+    } else {
+      process.stdout.write(JSON.stringify({ permissionDecision: 'allowed' }));
+    }
   } catch (err) {
     console.error(`[CURATION-GUARD] Error: ${err.message}`);
     hookLog('error', 'curation-guard', `Unhandled error: ${err.message}`);
