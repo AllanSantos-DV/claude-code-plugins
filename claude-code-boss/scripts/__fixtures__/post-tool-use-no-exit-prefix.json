@@ -1,0 +1,10 @@
+{
+  "hook_event_name": "PostToolUseFailure",
+  "tool_name": "Bash",
+  "tool_input": { "command": "some-script.sh" },
+  "error": "Some raw error without exit code prefix",
+  "is_interrupt": false,
+  "duration_ms": 88,
+  "session_id": "fixture-002",
+  "cwd": "C:\\fixture"
+}

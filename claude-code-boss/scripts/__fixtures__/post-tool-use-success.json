@@ -1,0 +1,13 @@
+{
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": { "command": "git status" },
+  "tool_response": {
+    "stdout": "On branch main\nnothing to commit, working tree clean\n",
+    "stderr": "",
+    "exit_code": 0,
+    "interrupted": false
+  },
+  "session_id": "fixture-001",
+  "cwd": "C:\\fixture"
+}

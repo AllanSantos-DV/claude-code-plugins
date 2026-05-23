@@ -1,0 +1,10 @@
+{
+  "hook_event_name": "PostToolUseFailure",
+  "tool_name": "Bash",
+  "tool_input": { "command": "npm test" },
+  "error": "Exit code 1\nFAIL src/foo.test.js\n  ● describe block › test name\n\n    expect(received).toBe(expected)\n\n    Expected: true\n    Received: false\n\n      14 |   it('test name', () => {\n      15 |     const result = compute(42);\n    > 16 |     expect(result).toBe(true);\n         |                    ^\n      17 |   });\n      18 | });\n\n    at Object.<anonymous> (src/foo.test.js:16:20)\n\nFAIL src/bar.test.js\n  ● another block › another test\n\n    TypeError: Cannot read properties of undefined (reading 'value')\n\n      8  |   it('another test', () => {\n      9  |     const obj = undefined;\n    > 10 |     expect(obj.value).toBe(1);\n          |             ^\n      11 |   });\n\n    at Object.<anonymous> (src/bar.test.js:10:13)\n\nFAIL src/baz.test.js\nFAIL src/qux.test.js\nFAIL src/alpha.test.js\nFAIL src/beta.test.js\nFAIL src/gamma.test.js\nFAIL src/delta.test.js\nFAIL src/epsilon.test.js\nFAIL src/zeta.test.js\nFAIL src/eta.test.js\nFAIL src/theta.test.js\nFAIL src/iota.test.js\nFAIL src/kappa.test.js\nFAIL src/lambda.test.js\nFAIL src/mu.test.js\nFAIL src/nu.test.js\nFAIL src/xi.test.js\nFAIL src/omicron.test.js\nFAIL src/pi.test.js\nFAIL src/rho.test.js\nFAIL src/sigma.test.js\nFAIL src/tau.test.js\nFAIL src/upsilon.test.js\nFAIL src/phi.test.js\nFAIL src/chi.test.js\nFAIL src/psi.test.js\nFAIL src/omega.test.js\nTest Suites: 28 failed, 28 total\nTests:       28 failed, 150 total\nSnapshots:   0 total\nTime:        12.341s\nRan all test suites.",
+  "is_interrupt": false,
+  "duration_ms": 12341,
+  "session_id": "fixture-002",
+  "cwd": "C:\\fixture"
+}

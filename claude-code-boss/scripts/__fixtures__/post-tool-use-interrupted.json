@@ -1,0 +1,10 @@
+{
+  "hook_event_name": "PostToolUseFailure",
+  "tool_name": "Bash",
+  "tool_input": { "command": "npm test" },
+  "error": "Interrupted",
+  "is_interrupt": true,
+  "duration_ms": 450,
+  "session_id": "fixture-002",
+  "cwd": "C:\\fixture"
+}
