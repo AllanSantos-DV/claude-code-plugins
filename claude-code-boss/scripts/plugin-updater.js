@@ -14,8 +14,41 @@ const INSTALLED_PLUGINS_PATH = path.join(PLUGINS_DIR, 'installed_plugins.json');
 const MARKETPLACE_CLONE = path.join(PLUGINS_DIR, 'marketplaces', 'allansantos-plugins');
 const PLUGIN_KEY = 'claude-code-boss@allansantos-plugins';
 
-// Files/dirs to preserve during update (user-customized config)
-const PRESERVE = ['config/brain-config.json', 'config/model-router.json', 'config/pipelines.json'];
+const LOCK_PATH = path.join(STATE_DIR, 'updater.lock');
+const LOCK_STALE_MS = 10 * 60 * 1000; // 10 min
+
+// Dynamic: preserve ALL config/*.json files found in cacheDir before update.
+function getPreserveList(cacheDir) {
+  const configDir = path.join(cacheDir, 'config');
+  if (!fs.existsSync(configDir)) return [];
+  return fs.readdirSync(configDir)
+    .filter(f => f.endsWith('.json'))
+    .map(f => path.join('config', f));
+}
+
+function acquireLock() {
+  // Remove stale lock (older than LOCK_STALE_MS).
+  if (fs.existsSync(LOCK_PATH)) {
+    const mtime = fs.statSync(LOCK_PATH).mtimeMs;
+    if (Date.now() - mtime > LOCK_STALE_MS) {
+      console.error('[PLUGIN-UPDATE] Removing stale lock file.');
+      fs.unlinkSync(LOCK_PATH);
+    }
+  }
+  try {
+    const dir = path.dirname(LOCK_PATH);
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(LOCK_PATH, String(process.pid), { flag: 'wx' });
+    return true;
+  } catch (err) {
+    if (err.code === 'EEXIST') return false; // another process holds lock
+    throw err;
+  }
+}
+
+function releaseLock() {
+  try { fs.unlinkSync(LOCK_PATH); } catch (err) { console.error(`[PLUGIN-UPDATE] Lock release error: ${err.message}`); }
+}
 
 function readManifest() {
   try { return JSON.parse(fs.readFileSync(VERSION_PATH, 'utf-8')); }
@@ -54,37 +87,66 @@ function copyDir(src, dest) {
 }
 
 function applyUpdate(sourceDir, cacheDir, newSha, newVersion) {
-  // Snapshot user config before overwrite
+  // --- Snapshot: preserve ALL config/*.json files (dynamic, not hardcoded). ---
+  const preserveList = getPreserveList(cacheDir);
   const preserved = {};
-  for (const rel of PRESERVE) {
+  for (const rel of preserveList) {
     const full = path.join(cacheDir, rel);
     if (fs.existsSync(full)) preserved[rel] = fs.readFileSync(full);
   }
 
-  // Copy new files from marketplace clone to cache
-  copyDir(sourceDir, cacheDir);
-
-  // Restore user config
-  for (const [rel, content] of Object.entries(preserved)) {
-    fs.writeFileSync(path.join(cacheDir, rel), content);
+  // --- Backup: snapshot cacheDir → <cacheDir>.bak-<sha> for rollback. ---
+  const backupDir = `${cacheDir}.bak-${newSha.slice(0, 8)}`;
+  if (fs.existsSync(backupDir)) {
+    // Remove old backup to keep only the latest
+    fs.rmSync(backupDir, { recursive: true, force: true });
   }
+  copyDir(cacheDir, backupDir);
+  console.error(`[PLUGIN-UPDATE] Snapshot created at ${backupDir}`);
 
-  // Update installed_plugins.json — update files in-place, never rename the folder.
-  // Renaming would break all hook paths already registered for the current session.
-  // The folder name is cosmetic; real version is tracked in plugin-version.json.
+  let setupOk = false;
   try {
-    const reg = JSON.parse(fs.readFileSync(INSTALLED_PLUGINS_PATH, 'utf-8'));
-    const entries = reg.plugins[PLUGIN_KEY];
-    if (entries && entries[0]) {
-      entries[0].version = newVersion;
-      entries[0].gitCommitSha = newSha;
-      entries[0].lastUpdated = new Date().toISOString();
-      fs.writeFileSync(INSTALLED_PLUGINS_PATH, JSON.stringify(reg, null, 2));
+    // Copy new files from marketplace clone to cache
+    copyDir(sourceDir, cacheDir);
+
+    // Restore user config (overrides anything from the new source)
+    for (const [rel, content] of Object.entries(preserved)) {
+      fs.writeFileSync(path.join(cacheDir, rel), content);
     }
-  } catch (err) { console.error(`[PLUGIN-UPDATE] installed_plugins.json update error: ${err.message}`); }
+
+    // Update installed_plugins.json
+    try {
+      const reg = JSON.parse(fs.readFileSync(INSTALLED_PLUGINS_PATH, 'utf-8'));
+      const entries = reg.plugins[PLUGIN_KEY];
+      if (entries && entries[0]) {
+        entries[0].version = newVersion;
+        entries[0].gitCommitSha = newSha;
+        entries[0].lastUpdated = new Date().toISOString();
+        fs.writeFileSync(INSTALLED_PLUGINS_PATH, JSON.stringify(reg, null, 2));
+      }
+    } catch (err) { console.error(`[PLUGIN-UPDATE] installed_plugins.json update error: ${err.message}`); }
+
+    // Re-run plugin-setup (npm install etc.)
+    execSync('node scripts/plugin-setup.js', { cwd: cacheDir, stdio: 'pipe', timeout: 120000 });
+    setupOk = true;
+  } catch (err) {
+    console.error(`[PLUGIN-UPDATE] Update failed (${err.message}), rolling back from ${backupDir}`);
+    copyDir(backupDir, cacheDir);
+    throw err;
+  } finally {
+    if (setupOk) {
+      // Remove backup on success (or keep latest — here we keep it for one cycle)
+    }
+  }
 }
 
 (async () => {
+  // Acquire exclusive lock — prevents concurrent updates from 2 Claude Code instances.
+  if (!acquireLock()) {
+    const manifest = readManifest();
+    process.stdout.write(JSON.stringify({ version: manifest.version, skipped: true, reason: 'update already in progress' }));
+    return;
+  }
   try {
     const manifest = readManifest();
     const { version: currentVersion, checkInterval } = manifest;
@@ -138,11 +200,6 @@ function applyUpdate(sourceDir, cacheDir, newSha, newVersion) {
 
     applyUpdate(sourceDir, cacheDir, newSha, newVersion);
 
-    // Re-run npm install in case dependencies changed
-    try {
-      execSync('node scripts/plugin-setup.js', { cwd: cacheDir, stdio: 'ignore', timeout: 120000 });
-    } catch (err) { console.error(`[PLUGIN-UPDATE] plugin-setup.js failed: ${err.message}`); }
-
     const output = [
       `[PLUGIN-UPDATE] claude-code-boss atualizado: ${currentVersion} → ${newVersion}`,
       `[PLUGIN-UPDATE] Reinicie o Claude Code para carregar a nova versão.`,
@@ -160,5 +217,7 @@ function applyUpdate(sourceDir, cacheDir, newSha, newVersion) {
 
   } catch (err) {
     process.stdout.write(JSON.stringify({ version: 'unknown', error: err.message }));
+  } finally {
+    releaseLock();
   }
 })();
