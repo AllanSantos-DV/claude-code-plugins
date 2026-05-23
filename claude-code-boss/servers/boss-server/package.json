@@ -5,6 +5,7 @@
   "description": "MCP server for Boss session registry — track active subagents, session lifecycle, and delegation history",
   "type": "module",
   "main": "index.js",
+  "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0"
   }
