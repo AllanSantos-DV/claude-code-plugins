@@ -4,6 +4,7 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const https = require('https');
+const crypto = require('crypto');
 const EventEmitter = require('events');
 
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
@@ -16,6 +17,7 @@ class McpClient extends EventEmitter {
     this.workspacePath = opts.workspacePath || DATA_DIR;
     this.javaArgs = opts.javaArgs || ['-Xmx512m'];
     this.downloadUrl = opts.downloadUrl || '';
+    this.expectedSha256 = opts.expectedSha256 || '';
     this.requestTimeout = opts.timeout || 60000;
     this._requestId = 0;
     this._pending = new Map();
@@ -189,6 +191,33 @@ class McpClient extends EventEmitter {
     }
     console.error(`[MCP] Downloading ${url}`);
     await this._fetchJar(url);
+
+    // Compute SHA-256 of the downloaded JAR.
+    const computedSha = await this._computeSha256(this.jarPath);
+    if (this.expectedSha256 && this.expectedSha256.trim()) {
+      if (computedSha !== this.expectedSha256.trim().toLowerCase()) {
+        fs.unlinkSync(this.jarPath);
+        throw new Error(
+          `[MCP] JAR checksum mismatch! Expected: ${this.expectedSha256.trim()}, Got: ${computedSha}. ` +
+          `JAR has been deleted. Possible supply-chain attack. Update "backend.mcpMemory.expectedSha256" in brain-config.json if this was a legitimate update.`
+        );
+      }
+      console.error(`[MCP] Checksum verified: ${computedSha}`);
+    } else {
+      // No expected SHA configured — log computed value so user can pin it.
+      console.error(`[MCP] WARNING: No expectedSha256 configured. Computed SHA-256: ${computedSha}. Pin this in config/brain-config.json backend.mcpMemory.expectedSha256`);
+    }
+  }
+
+  /** Compute SHA-256 of a file, returns hex string. */
+  _computeSha256(filePath) {
+    return new Promise((resolve, reject) => {
+      const hash = crypto.createHash('sha256');
+      const stream = fs.createReadStream(filePath);
+      stream.on('data', chunk => hash.update(chunk));
+      stream.on('end', () => resolve(hash.digest('hex')));
+      stream.on('error', reject);
+    });
   }
 
   async _handshake() {
