@@ -132,7 +132,10 @@ function getTierLabel(model, tiers) {
     };
 
     if (alertMessages.length > 0) {
-      output.hookSpecificOutput = alertMessages.join('\n');
+      output.hookSpecificOutput = {
+        hookEventName: 'SubagentStop',
+        additionalContext: alertMessages.join('\n'),
+      };
     }
 
     process.stdout.write(JSON.stringify(output));

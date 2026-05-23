@@ -81,7 +81,10 @@ function formatEntries(entries) {
     process.stdout.write(JSON.stringify({
       found: entries.length,
       method: backend.getMode(),
-      hookSpecificOutput: message,
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        additionalContext: message,
+      },
       entries: entries.map(e => ({ id: e.id, title: e.title, type: e.type, score: e.score })),
     }));
   } catch (err) {

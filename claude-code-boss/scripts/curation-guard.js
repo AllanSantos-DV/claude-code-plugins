@@ -200,7 +200,7 @@ function usesBuildTool(command) {
     if (curatedShell) {
       process.stdout.write(JSON.stringify({
         permissionDecision: 'denied',
-        hookSpecificOutput: `[curation-guard] 🔒 Comando \`${command}\` possui script curado. Execute \`${curatedShell.command}\` no lugar — output filtrado (${curatedShell.outputFilter || 'summary'}, limite ${curatedShell.outputLines || 200} linhas).`,
+        hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: `[curation-guard] 🔒 Comando \`${command}\` possui script curado. Execute \`${curatedShell.command}\` no lugar — output filtrado (${curatedShell.outputFilter || 'summary'}, limite ${curatedShell.outputLines || 200} linhas).` },
       }));
       return;
     }
@@ -228,7 +228,7 @@ function usesBuildTool(command) {
     if (usesBuildTool(command)) {
       process.stdout.write(JSON.stringify({
         permissionDecision: 'allowed',
-        hookSpecificOutput: `[curation-guard] ⚠️ Sem curadoria: \`${command}\`. Se produzir saída volumosa, o sistema criará script curado automaticamente.`,
+        hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: `[curation-guard] ⚠️ Sem curadoria: \`${command}\`. Se produzir saída volumosa, o sistema criará script curado automaticamente.` },
       }));
       return;
     }
