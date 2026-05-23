@@ -115,11 +115,14 @@ function readStdin() {
       return;
     }
 
-    // Bash event: { tool_response: { stdout, stderr, interrupted, ... } }
+    // Bash event: { tool_response: { stdout, stderr, exit_code?, interrupted, ... } }
+    // PostToolUse fires on success; PostToolUseFailure fires on failure (exit_code != 0).
     const tr = event.tool_response || {};
     const stdout = tr.stdout || '';
     const stderr = tr.stderr || '';
     const interrupted = tr.interrupted === true;
+    const exitCode = typeof tr.exit_code === 'number' ? tr.exit_code : null;
+    const hookEvent = event.hook_event_name || '';
     const output = [stdout, stderr].filter(Boolean).join('\n')
       || (typeof event.tool_result === 'string' ? event.tool_result : (event.tool_result?.text || ''));
     const command = event.tool_input?.command || '';
@@ -129,11 +132,15 @@ function readStdin() {
     const charCount = output.length;
     const lineCount = output ? output.split('\n').length : 0;
 
-    // Heuristic: success = no stderr content AND not interrupted.
-    // Não é perfeito (algumas ferramentas escrevem em stderr no sucesso), mas
-    // serve de proxy razoável quando exit code não está disponível.
-    const hasStderr = stderr.trim().length > 0;
-    const isSuccess = !interrupted && !hasStderr;
+    // Success determination (priority order):
+    //   1. exit_code field (most reliable, available in PostToolUseFailure)
+    //   2. hook_event_name (PostToolUseFailure → fail; PostToolUse → success)
+    //   3. heuristic: !interrupted AND no stderr content (fallback)
+    const isSuccess =
+      exitCode !== null ? exitCode === 0
+      : hookEvent === 'PostToolUseFailure' ? false
+      : hookEvent === 'PostToolUse' ? true
+      : (!interrupted && !stderr.trim());
 
     // Detect curated shell
     const projectRoot = findProjectRoot(cwd);
@@ -174,6 +181,8 @@ function readStdin() {
       isCurated,
       curatedShell: curatedShell ? { command: curatedShell.command, script: curatedShell.script || null } : null,
       isSuccess,
+      exitCode,
+      hookEvent,
       interrupted,
       charCount,
       lineCount,
