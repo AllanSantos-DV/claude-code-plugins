@@ -313,6 +313,38 @@ pre { background: #f5f5f5; padding: .6rem; border-radius: 4px; font-size: .7rem;
       <span id="hooks-config-saved" class="text-muted"></span>
     </div>
 
+    <!-- Auto-Trigger -->
+    <div class="card">
+      <h2>Auto-Trigger de Agentes <span class="text-muted" style="font-size:.75rem;font-weight:400">— quando payloads pendentes ≥ threshold, injeta instrução OBRIGATÓRIA</span></h2>
+      <p class="text-muted" style="font-size:.72rem;margin-bottom:.75rem">Abaixo do threshold: sugestão. Acima ou igual: o LLM é instruído a spawnar o agente ANTES de responder.</p>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
+        <div style="border:1px solid #e8e8e8;border-radius:6px;padding:.75rem">
+          <div class="flex" style="align-items:center;justify-content:space-between;margin-bottom:.5rem">
+            <strong style="font-size:.85rem">Correction Analyzer</strong>
+            <label style="display:flex;align-items:center;gap:.4rem;font-size:.75rem;cursor:pointer">
+              <input type="checkbox" id="hcfg-autotrigger-correction-enabled" style="width:auto">
+              Ativado
+            </label>
+          </div>
+          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Threshold (payloads pendentes) <span style="color:#aaa">· default: 3 · mín: 1</span></label>
+          <input type="number" id="hcfg-autotrigger-correction-threshold" min="1" placeholder="3">
+          <p class="text-muted" style="font-size:.7rem;margin-top:.2rem">Ao atingir X correções acumuladas, o agente é disparado automaticamente</p>
+        </div>
+        <div style="border:1px solid #e8e8e8;border-radius:6px;padding:.75rem">
+          <div class="flex" style="align-items:center;justify-content:space-between;margin-bottom:.5rem">
+            <strong style="font-size:.85rem">Curation Improver</strong>
+            <label style="display:flex;align-items:center;gap:.4rem;font-size:.75rem;cursor:pointer">
+              <input type="checkbox" id="hcfg-autotrigger-curation-enabled" style="width:auto">
+              Ativado
+            </label>
+          </div>
+          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Threshold (payloads pendentes) <span style="color:#aaa">· default: 5 · mín: 1</span></label>
+          <input type="number" id="hcfg-autotrigger-curation-threshold" min="1" placeholder="5">
+          <p class="text-muted" style="font-size:.7rem;margin-top:.2rem">Ao atingir X outputs grandes acumulados, o agente é disparado automaticamente</p>
+        </div>
+      </div>
+    </div>
+
     <!-- Correction Detect -->
     <div class="card">
       <h2>Correction Detect <span class="text-muted" style="font-size:.75rem;font-weight:400">— UserPromptSubmit, a cada N turns</span></h2>
@@ -934,6 +966,13 @@ async function deleteShell(idx, cwdEnc) {
 function renderHooksConfig() {
   if (!_hooksConfig) return;
   const c = _hooksConfig;
+  // Auto-trigger
+  const at = c.autoTrigger || {};
+  document.getElementById('hcfg-autotrigger-correction-enabled').checked = at.correctionAnalyzer?.enabled !== false;
+  document.getElementById('hcfg-autotrigger-correction-threshold').value = at.correctionAnalyzer?.threshold ?? '';
+  document.getElementById('hcfg-autotrigger-curation-enabled').checked = at.curationImprover?.enabled !== false;
+  document.getElementById('hcfg-autotrigger-curation-threshold').value = at.curationImprover?.threshold ?? '';
+  // Detect intervals
   document.getElementById('hcfg-correction-interval').value = c.correctionDetect?.detectInterval ?? '';
   document.getElementById('hcfg-correction-transcript').value = c.correctionDetect?.maxTranscriptLines ?? '';
   document.getElementById('hcfg-pattern-interval').value = c.patternDetect?.detectInterval ?? '';
@@ -951,6 +990,16 @@ async function saveHooksConfig() {
   const iv = n => { const v = parseInt(n); return v > 0 ? v : undefined; };
   const fv = n => { const v = parseFloat(n); return !isNaN(v) ? v : undefined; };
   const lines = s => s.split('\n').map(l => l.trim()).filter(Boolean);
+
+  cfg.autoTrigger = cfg.autoTrigger || {};
+  cfg.autoTrigger.correctionAnalyzer = cfg.autoTrigger.correctionAnalyzer || {};
+  cfg.autoTrigger.correctionAnalyzer.enabled = document.getElementById('hcfg-autotrigger-correction-enabled').checked;
+  const act = iv(document.getElementById('hcfg-autotrigger-correction-threshold').value);
+  if (act) cfg.autoTrigger.correctionAnalyzer.threshold = act;
+  cfg.autoTrigger.curationImprover = cfg.autoTrigger.curationImprover || {};
+  cfg.autoTrigger.curationImprover.enabled = document.getElementById('hcfg-autotrigger-curation-enabled').checked;
+  const ait = iv(document.getElementById('hcfg-autotrigger-curation-threshold').value);
+  if (ait) cfg.autoTrigger.curationImprover.threshold = ait;
 
   cfg.correctionDetect = cfg.correctionDetect || {};
   const ci = iv(document.getElementById('hcfg-correction-interval').value);

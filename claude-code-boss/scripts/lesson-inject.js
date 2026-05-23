@@ -172,6 +172,13 @@ async function run() {
       }
     }
 
+    // Load auto-trigger thresholds from hooks-config.json
+    const autoTriggerCfg = _HOOKS_CFG.autoTrigger || {};
+    const correctionThreshold = autoTriggerCfg.correctionAnalyzer?.enabled !== false
+      ? (autoTriggerCfg.correctionAnalyzer?.threshold ?? 3) : Infinity;
+    const curationThreshold = autoTriggerCfg.curationImprover?.enabled !== false
+      ? (autoTriggerCfg.curationImprover?.threshold ?? 5) : Infinity;
+
     // 2. Pending pattern detection → auto-trigger pattern-analyzer
     const pending = countPendingDetections();
     if (pending > 0) {
@@ -181,22 +188,38 @@ async function run() {
       );
     }
 
-    // 3. Pending correction detection → auto-trigger correction-analyzer
+    // 3. Pending correction detection → mandatory above threshold, suggestion below
     const pendingCorrections = countPendingFiles(CORRECTIONS_DIR, 'correction-');
     if (pendingCorrections > 0) {
-      outputParts.push(
-        `**Correction analysis pending:** ${pendingCorrections} correction(s) at ${CORRECTIONS_DIR}. ` +
-        `Spawn the correction-analyzer subagent now to process them.`
-      );
+      if (pendingCorrections >= correctionThreshold) {
+        outputParts.push(
+          `⚠️ **MANDATORY ACTION — BEFORE RESPONDING:** ${pendingCorrections} correction(s) pending (threshold: ${correctionThreshold}). ` +
+          `You MUST spawn the correction-analyzer subagent as your FIRST action this turn. ` +
+          `Do not respond to the user until you have spawned it. Path: ${CORRECTIONS_DIR}`
+        );
+      } else {
+        outputParts.push(
+          `**Correction analysis pending:** ${pendingCorrections} correction(s) at ${CORRECTIONS_DIR}. ` +
+          `Spawn the correction-analyzer subagent now to process them.`
+        );
+      }
     }
 
-    // 4. Pending curation improvement → auto-trigger curation-improver
+    // 4. Pending curation → mandatory above threshold, suggestion below
     const pendingCuration = countPendingFiles(CURATION_DIR, 'curation-');
     if (pendingCuration > 0) {
-      outputParts.push(
-        `**Curation improvement pending:** ${pendingCuration} large output(s) at ${CURATION_DIR}. ` +
-        `Spawn the curation-improver subagent now to create/improve curated scripts.`
-      );
+      if (pendingCuration >= curationThreshold) {
+        outputParts.push(
+          `⚠️ **MANDATORY ACTION — BEFORE RESPONDING:** ${pendingCuration} large output(s) pending curation (threshold: ${curationThreshold}). ` +
+          `You MUST spawn the curation-improver subagent as your FIRST action this turn. ` +
+          `Do not respond to the user until you have spawned it. Path: ${CURATION_DIR}`
+        );
+      } else {
+        outputParts.push(
+          `**Curation improvement pending:** ${pendingCuration} large output(s) at ${CURATION_DIR}. ` +
+          `Spawn the curation-improver subagent now to create/improve curated scripts.`
+        );
+      }
     }
 
     if (outputParts.length === 0) {

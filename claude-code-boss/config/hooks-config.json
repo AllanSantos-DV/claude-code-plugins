@@ -1,4 +1,14 @@
 {
+  "autoTrigger": {
+    "correctionAnalyzer": {
+      "threshold": 3,
+      "enabled": true
+    },
+    "curationImprover": {
+      "threshold": 5,
+      "enabled": true
+    }
+  },
   "correctionDetect": {
     "detectInterval": 2,
     "maxTranscriptLines": 6
