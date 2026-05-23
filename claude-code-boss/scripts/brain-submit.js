@@ -35,7 +35,7 @@ function loadConfig() {
     if (fs.existsSync(CONFIG_PATH)) {
       return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
     }
-  } catch {}
+  } catch (err) { console.error(`[BRAIN-SUBMIT] Config read error: ${err.message}`); }
   return { kb: { submission: { minOutputChars: 500, dedupThreshold: 0.95 } } };
 }
 

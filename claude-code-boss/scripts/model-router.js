@@ -190,7 +190,7 @@ function updateAgentModel(filePath, model) {
     try {
       const event = raw ? JSON.parse(raw) : {};
       sessionId = event.sessionId || '';
-    } catch {}
+    } catch (err) { console.error(`[MODEL-ROUTER] Event parse error: ${err.message}`); }
 
     if (!fs.existsSync(AGENTS_DIR)) {
       console.error(`[MODEL-ROUTER] Agents dir not found: ${AGENTS_DIR}`);

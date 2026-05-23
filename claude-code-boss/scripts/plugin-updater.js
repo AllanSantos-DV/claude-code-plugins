@@ -25,7 +25,7 @@ function readManifest() {
 function readLastCheck() {
   try {
     if (fs.existsSync(LAST_CHECK_PATH)) return JSON.parse(fs.readFileSync(LAST_CHECK_PATH, 'utf-8'));
-  } catch {}
+  } catch (err) { console.error(`[PLUGIN-UPDATE] Last check read error: ${err.message}`); }
   return { lastCheck: 0 };
 }
 
@@ -81,7 +81,7 @@ function applyUpdate(sourceDir, cacheDir, newSha, newVersion) {
       entries[0].lastUpdated = new Date().toISOString();
       fs.writeFileSync(INSTALLED_PLUGINS_PATH, JSON.stringify(reg, null, 2));
     }
-  } catch {}
+  } catch (err) { console.error(`[PLUGIN-UPDATE] installed_plugins.json update error: ${err.message}`); }
 }
 
 (async () => {
@@ -104,7 +104,8 @@ function applyUpdate(sourceDir, cacheDir, newSha, newVersion) {
     }
 
     // Fetch silently
-    try { git('fetch origin main --quiet', MARKETPLACE_CLONE); } catch {
+    try { git('fetch origin main --quiet', MARKETPLACE_CLONE); } catch (err) {
+      console.error(`[PLUGIN-UPDATE] git fetch failed: ${err.message}`);
       writeLastCheck({ lastCheck: now });
       process.stdout.write(JSON.stringify({ version: currentVersion, checked: false, reason: 'fetch failed' }));
       return;
@@ -130,7 +131,7 @@ function applyUpdate(sourceDir, cacheDir, newSha, newVersion) {
         fs.readFileSync(path.join(MARKETPLACE_CLONE, 'claude-code-boss', 'scripts', 'plugin-version.json'), 'utf-8')
       );
       newVersion = newManifest.version || currentVersion;
-    } catch {}
+    } catch (err) { console.error(`[PLUGIN-UPDATE] New manifest read error: ${err.message}`); }
 
     const sourceDir = path.join(MARKETPLACE_CLONE, 'claude-code-boss');
     const cacheDir = PLUGIN_ROOT;
@@ -140,7 +141,7 @@ function applyUpdate(sourceDir, cacheDir, newSha, newVersion) {
     // Re-run npm install in case dependencies changed
     try {
       execSync('node scripts/plugin-setup.js', { cwd: cacheDir, stdio: 'ignore', timeout: 120000 });
-    } catch {}
+    } catch (err) { console.error(`[PLUGIN-UPDATE] plugin-setup.js failed: ${err.message}`); }
 
     const output = [
       `[PLUGIN-UPDATE] claude-code-boss atualizado: ${currentVersion} → ${newVersion}`,

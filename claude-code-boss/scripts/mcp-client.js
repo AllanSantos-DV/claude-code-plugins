@@ -93,7 +93,7 @@ class McpClient extends EventEmitter {
         const out = result.toString();
         const match = out.match(/(?:openjdk|java|jdk) (?:version "?)?(\d+)/i);
         if (match && parseInt(match[1]) >= 21) return cmd;
-      } catch {}
+      } catch (err) { console.error(`[MCP] Java detection failed for ${cmd}: ${err.message}`); }
     }
     const javaHome = process.env.JAVA_HOME;
     if (javaHome) {
@@ -246,7 +246,7 @@ class McpClient extends EventEmitter {
       try {
         const msg = JSON.parse(line);
         this._handleMessage(msg);
-      } catch {}
+      } catch (err) { console.error(`[MCP] Buffer parse error: ${err.message}`); }
     }
   }
 

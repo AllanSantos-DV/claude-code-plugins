@@ -103,7 +103,7 @@ function readTranscriptContext(transcriptPath) {
     try {
       const data = JSON.parse(fs.readFileSync(counterFile, 'utf-8'));
       turnCount = data.turn || 0;
-    } catch {}
+    } catch (err) { console.error(`[PATTERN-DETECT] Turn counter read error: ${err.message}`); }
     turnCount++;
     fs.writeFileSync(counterFile, JSON.stringify({ sessionId, turn: turnCount }));
 
