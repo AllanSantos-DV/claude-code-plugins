@@ -97,6 +97,11 @@ function validateBrainConfig(data) {
       return `embedder.provider must be "transformers", "ollama", or "voyage"`;
     }
   }
+  if ('curation' in data) {
+    if (typeof data.curation !== 'object') return 'curation must be object';
+    if ('maxOutputChars' in data.curation && typeof data.curation.maxOutputChars !== 'number') return 'curation.maxOutputChars must be number';
+    if ('maxOutputLines' in data.curation && typeof data.curation.maxOutputLines !== 'number') return 'curation.maxOutputLines must be number';
+  }
   return null;
 }
 
