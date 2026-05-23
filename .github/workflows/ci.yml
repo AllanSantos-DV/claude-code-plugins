@@ -41,3 +41,12 @@ jobs:
           fi
           echo "OK: no empty catch{} found"
         working-directory: claude-code-boss
+
+      - name: Check for return-only catch masking
+        run: |
+          if grep -rPzo 'catch\s*(\([a-zA-Z_]*\))?\s*\{\s*return[^}]*\}' scripts/ | grep -q .; then
+            echo "ERROR: catch{ return ...; } masking found — log the error first"
+            exit 1
+          fi
+          echo "OK: no return-only catch masking found"
+        working-directory: claude-code-boss
