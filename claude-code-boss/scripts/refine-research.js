@@ -26,11 +26,6 @@
     }
 
     const event = JSON.parse(raw);
-    if (event.hook_event_name && event.hook_event_name !== 'Stop') {
-      process.stdout.write(JSON.stringify({}));
-      return;
-    }
-
     // Always inject: remind LLM to answer pending questions
     process.stdout.write(JSON.stringify({
       hookSpecificOutput: {
