@@ -50,3 +50,7 @@ jobs:
           fi
           echo "OK: no return-only catch masking found"
         working-directory: claude-code-boss
+
+      - name: Check version sync
+        run: node scripts/sync-version.js --check
+        working-directory: claude-code-boss
