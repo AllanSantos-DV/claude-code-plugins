@@ -58,7 +58,7 @@ function readStdin() {
       return;
     }
 
-    const output = event.tool_result?.text || '';
+    const output = typeof event.tool_result === 'string' ? event.tool_result : (event.tool_result?.text || '');
     const command = event.tool_input?.command || '';
     const sessionId = event.session_id || event.sessionId || 'default';
     const cwd = event.cwd || process.env.CLAUDE_PROJECT_DIR || '';

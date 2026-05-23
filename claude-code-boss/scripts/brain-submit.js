@@ -94,7 +94,7 @@ function guessWorkType(command) {
     }
 
     const command = event.tool_input?.command || '';
-    const output = event.tool_result?.text || '';
+    const output = typeof event.tool_result === 'string' ? event.tool_result : (event.tool_result?.text || '');
     const sessionId = event.session_id || event.sessionId || 'default';
     const charCount = output.length;
     const lineCount = output.split('\n').length;
