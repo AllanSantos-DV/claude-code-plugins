@@ -138,7 +138,6 @@ function readTranscriptContext(transcriptPath) {
     fs.mkdirSync(dir, { recursive: true });
 
     const payload = {
-      version: 2,
       sessionId,
       turnNumber: turn,
       detectedAt: new Date().toISOString(),

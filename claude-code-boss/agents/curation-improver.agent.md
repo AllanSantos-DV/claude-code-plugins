@@ -34,7 +34,7 @@ Read detection payloads from:
 ${CLAUDE_PLUGIN_DATA}/detect-curation/
 ```
 
-Each payload (`version: 2`):
+Each payload:
 - `reason`: **why** it was flagged — drives what you should do (see table below)
 - `command`: the Bash command that was executed
 - `isCurated`: whether the command matched an existing curated script

@@ -119,7 +119,6 @@ function readTranscriptContext(transcriptPath) {
     const dialog = event.dialog || [];
 
     const payload = {
-      version: 2,
       sessionId: sessionId || `ses_${crypto.randomUUID().slice(0, 12)}`,
       turnNumber: turnCount,
       detectedAt: new Date().toISOString(),
