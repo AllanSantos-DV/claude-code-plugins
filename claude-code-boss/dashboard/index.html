@@ -418,8 +418,9 @@ pre { background: #f5f5f5; padding: .6rem; border-radius: 4px; font-size: .7rem;
           <span class="text-muted" style="font-size:.75rem">Scripts auto-gerados pelo curation-improver quando threshold é atingido</span>
         </div>
         <div class="flex mb-1" style="gap:.5rem;align-items:center">
-          <input type="text" id="shells-cwd" placeholder="Caminho do projeto (ex: C:\Users\...\meu-projeto)" style="flex:1;max-width:500px">
-          <button class="btn-primary btn-sm" onclick="loadCuratedShells()">Carregar</button>
+          <select id="shells-project-select" onchange="onShellsProjectChange(this.value)" style="flex:1;max-width:500px">
+            <option value="">Detectando projetos...</option>
+          </select>
           <span id="shells-status" class="text-muted" style="font-size:.75rem"></span>
         </div>
         <div id="shells-table"></div>
@@ -812,6 +813,7 @@ async function loadHooks() {
     renderHooksConfig();
   } catch {}
   loadCurationBuiltin();
+  loadCurationProjects();
 }
 
 function renderHooks() {
@@ -832,6 +834,28 @@ async function toggleHook(name) {
   loadHooks();
 }
 
+async function loadCurationProjects() {
+  try {
+    const projects = await api('GET', '/api/curation/projects');
+    const sel = document.getElementById('shells-project-select');
+    if (projects.length === 0) {
+      sel.innerHTML = '<option value="">Nenhum projeto detectado ainda — curation-detect registrará automaticamente</option>';
+      return;
+    }
+    sel.innerHTML = projects.map(p =>
+      `<option value="${encodeURIComponent(p.cwd)}">${p.cwd} (${p.shellCount} shell${p.shellCount !== 1 ? 's' : ''}${p.hasShells ? '' : ' — sem shells.json ainda'})</option>`
+    ).join('');
+    // Auto-load first project
+    onShellsProjectChange(sel.value);
+  } catch {}
+}
+
+function onShellsProjectChange(cwdEnc) {
+  if (!cwdEnc) return;
+  const cwd = decodeURIComponent(cwdEnc);
+  loadCuratedShells(cwd);
+}
+
 async function loadCurationBuiltin() {
   try {
     const b = await api('GET', '/api/curation/builtin');
@@ -847,11 +871,11 @@ async function loadCurationBuiltin() {
   } catch {}
 }
 
-async function loadCuratedShells() {
-  const cwd = document.getElementById('shells-cwd').value.trim();
+async function loadCuratedShells(cwd) {
+  if (!cwd) cwd = decodeURIComponent(document.getElementById('shells-project-select').value || '');
   const statusEl = document.getElementById('shells-status');
   const tableEl = document.getElementById('shells-table');
-  if (!cwd) { statusEl.textContent = 'Informe o caminho do projeto'; return; }
+  if (!cwd) { statusEl.textContent = ''; tableEl.innerHTML = ''; return; }
   statusEl.textContent = 'Carregando...';
   tableEl.innerHTML = '';
   try {
@@ -904,7 +928,7 @@ function viewShellScript(idx) {
 async function deleteShell(idx, cwdEnc) {
   if (!confirm('Remover este shell da lista?')) return;
   await api('DELETE', `/api/curation/shells/${idx}?cwd=${cwdEnc}`);
-  loadCuratedShells();
+  loadCuratedShells(decodeURIComponent(cwdEnc));
 }
 
 function renderHooksConfig() {
