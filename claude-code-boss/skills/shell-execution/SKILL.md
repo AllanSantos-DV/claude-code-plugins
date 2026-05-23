@@ -1,4 +1,5 @@
 ---
+name: shell-execution
 description: Curated shell execution protocol — blocking mode, redirect flow, script output contract, and the learning loop from raw command to curated script. How the guard, detector, and improver work together.
 ---
 
