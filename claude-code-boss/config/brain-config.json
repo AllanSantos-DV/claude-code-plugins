@@ -34,5 +34,9 @@
       "minOutputChars": 500,
       "dedupThreshold": 0.95
     }
+  },
+  "curation": {
+    "maxOutputChars": 1500,
+    "maxOutputLines": 30
   }
 }
