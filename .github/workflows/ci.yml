@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: claude-code-boss/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+        working-directory: claude-code-boss
+
+      - name: Run tests
+        run: npm test
+        working-directory: claude-code-boss
+
+      - name: Lint
+        run: npx eslint --config eslint.config.cjs scripts/ --max-warnings=0
+        working-directory: claude-code-boss
+
+      - name: Check for empty catch blocks
+        run: |
+          if grep -rE 'catch\s*\(?\s*[_]?\s*\)?\s*\{\s*\}' scripts/; then
+            echo "ERROR: empty catch{} found — fix them (R5 rule)"
+            exit 1
+          fi
+          echo "OK: no empty catch{} found"
+        working-directory: claude-code-boss

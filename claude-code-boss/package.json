@@ -11,6 +11,9 @@
   "optionalDependencies": {
     "sharp": "^0.34.0"
   },
+  "devDependencies": {
+    "eslint": "^9.0.0"
+  },
   "scripts": {
     "postinstall": "node scripts/plugin-setup.js",
     "test": "node scripts/test-hooks.js",
