@@ -11,8 +11,6 @@
  *
  * Files managed:
  *   claude-code-boss/package.json
- *   claude-code-boss/scripts/plugin-version.json
- *   claude-code-boss/.claude-plugin/plugin.json
  *   README.md (repo root)     — table row  | claude-code-boss | X.Y.Z |
  *   claude-code-boss/README.md — badge/table row and **vX.Y.Z** references
  *
@@ -21,8 +19,7 @@
  *
  * Release flow (all local, no CI involvement):
  *   node scripts/sync-version.js 1.4.0
- *   git add package.json scripts/plugin-version.json .claude-plugin/plugin.json \
- *           ../README.md README.md
+ *   git add claude-code-boss/package.json README.md claude-code-boss/README.md
  *   git commit -m "chore: bump version to 1.4.0"
  *   git tag v1.4.0
  *   git push origin main --tags
@@ -41,10 +38,6 @@ const pkgPath = path.join(PLUGIN_ROOT, 'package.json');
 const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf-8'));
 const version = explicitVersion || pkg.version;
 if (!version) { console.error('No version found'); process.exit(1); }
-
-const today = new Date().toISOString().slice(0, 10);
-
-// ─── File descriptors ────────────────────────────────────────────────────────
 
 /**
  * Each descriptor: { path, read, write, check }
@@ -67,24 +60,6 @@ function jsonVersionFile(filePath, ...keys) {
       for (let i = 0; i < keys.length - 1; i++) cur = cur[keys[i]];
       cur[keys[keys.length - 1]] = version;
       if (filePath === pkgPath && !explicitVersion) return; // don't touch pkg if no explicit bump
-      if (filePath === pkgPath) {
-        // also set releaseDate if this is plugin-version.json
-      }
-      fs.writeFileSync(filePath, JSON.stringify(obj, null, 2) + '\n');
-    },
-  };
-}
-
-function pvFile(filePath) {
-  return {
-    path: filePath,
-    read() {
-      return JSON.parse(fs.readFileSync(filePath, 'utf-8')).version;
-    },
-    write() {
-      const obj = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      obj.version = version;
-      obj.releaseDate = today;
       fs.writeFileSync(filePath, JSON.stringify(obj, null, 2) + '\n');
     },
   };
@@ -132,8 +107,6 @@ function markdownBoldVersionFile(filePath) {
 
 const FILES = [
   jsonVersionFile(pkgPath, 'version'),
-  pvFile(path.join(PLUGIN_ROOT, 'scripts', 'plugin-version.json')),
-  jsonVersionFile(path.join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json'), 'version'),
   markdownTableFile(path.join(REPO_ROOT, 'README.md'), 'claude-code-boss'),
   markdownBoldVersionFile(path.join(PLUGIN_ROOT, 'README.md')),
 ];
@@ -187,8 +160,7 @@ if (CHECK_MODE) {
   console.log('');
   if (explicitVersion) {
     console.log('Next steps to release:');
-    console.log(`  git add claude-code-boss/package.json claude-code-boss/scripts/plugin-version.json \\`);
-    console.log(`        claude-code-boss/.claude-plugin/plugin.json README.md claude-code-boss/README.md`);
+    console.log(`  git add claude-code-boss/package.json README.md claude-code-boss/README.md`);
     console.log(`  git commit -m "chore: bump version to ${version}"`);
     console.log(`  git tag v${version}`);
     console.log(`  git push origin main --tags`);

@@ -131,12 +131,6 @@ const TESTS = [
     payload: { session_id: SESSION },
     expect: { noError: true },
   },
-  {
-    name: 'plugin-updater    [SessionStart]',
-    script: 'plugin-updater.js',
-    payload: { session_id: SESSION },
-    expect: { noError: true },
-  },
 
   // ── PreToolUse / Write|Edit ───────────────────────────────────────────────
   {
