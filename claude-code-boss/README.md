@@ -53,14 +53,13 @@ claude-code-boss/
 ├── dashboard/
 │   └── index.html             # SPA — 7 abas: Home/Models/Pipelines/Brain KB/Billing/Hooks/Logs
 ├── hooks/
-│   └── hooks.json             # 6 eventos, 16 scripts registrados
-├── scripts/                   # 29 scripts Node.js (zero deps extras para hooks)
+│   └── hooks.json             # 6 eventos, 15 scripts registrados
+│   ├── scripts/                   # 27 scripts Node.js (zero deps extras para hooks)
 │   ├── dashboard.js           # Servidor HTTP local com ring buffer de logs
 │   ├── dashboard-start.js     # SessionStart: auto-start com PID-file idempotency
 │   ├── brain-*.js             # Brain KB: store, index, graph, embedder, backend, CLI
 │   ├── curation-guard.js      # PreToolUse: bloqueia/redireciona comandos curados
 │   ├── model-router.js        # SessionStart: resolução de modelo billing-aware
-│   ├── plugin-updater.js      # SessionStart: verifica GitHub Releases a cada 24h
 │   ├── hook-logger.js         # Utilitário: append a .runtime/hook-errors.jsonl
 │   └── sync-version.js        # Propaga versão para todos os arquivos de versão
 ├── servers/
@@ -80,7 +79,6 @@ Todos os hooks estão declarados em `hooks/hooks.json`. Eventos e scripts ativos
 | SessionStart | `memory-rotate.js` | Rotaciona MEMORY.md quando >150 linhas |
 | SessionStart | `session-whitelist.js` | Detecta ecossistema do projeto, popula whitelist |
 | SessionStart | `model-router.js` | Resolve modelo via tiers billing-aware |
-| SessionStart | `plugin-updater.js` | Verifica update disponível no GitHub |
 | SessionStart | `dashboard-start.js` | Inicia dashboard (idempotente via PID-file) |
 | PreToolUse | `curation-guard.js` | Bloqueia/redireciona comandos curados |
 | PreToolUse | `discipline-guard.js` | Guardrails comportamentais |
@@ -125,7 +123,6 @@ Auto-iniciado no `SessionStart`. Acesse via URL impressa no log da sessão.
 ## Versionamento
 
 Fonte canônica: `package.json` → propagada via `sync-version.js` para:
-- `scripts/plugin-version.json`
 - `.claude-plugin/plugin.json`
 - `README.md` (raiz do repo)
 - `claude-code-boss/README.md` (este arquivo)

@@ -19,7 +19,6 @@ Plugin para Claude Code Desktop que transforma o Claude num sistema multi-agente
 - **Execução curada (Shell Workbench)** — curation-guard bloqueia/redireciona comandos curados; curation-detect detecta outputs grandes; session-whitelist popula ecosistema no boot
 - **Model Router v2** — tiers billing-aware (free/cheap/standard/premium), multipliadores, `costSensitive` por agente, alertas de custo
 - **Injeção de lições** — lesson-inject injeta lições do KB do pattern-analyzer via UserPromptSubmit
-- **Auto-update** — plugin-updater verifica GitHub Releases a cada 24h e notifica quando há update disponível
 - **Refine Mode** — sempre ativo, injeta lembrete de pesquisa a cada turno via Stop hook
 
 ## Estrutura

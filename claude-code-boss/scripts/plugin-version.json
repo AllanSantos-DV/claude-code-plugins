@@ -1,8 +1,0 @@
-{
-  "version": "1.3.3",
-  "releaseDate": "2026-05-23",
-  "releaseUrl": "https://github.com/AllanSantos-DV/claude-code-plugins/releases/latest",
-  "apiUrl": "https://api.github.com/repos/AllanSantos-DV/claude-code-plugins/releases/latest",
-  "checkInterval": 86400000,
-  "description": "Plugin Version — used by plugin-updater.js for auto-update checking"
-}
