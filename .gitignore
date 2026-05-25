@@ -34,6 +34,9 @@ claude-code-boss/docs/
 .DS_Store
 Thumbs.db
 
+# Backups from legacy plugin-updater — defensive for old clones
+*.bak-*/
+
 # Node.js
 node_modules/
 
