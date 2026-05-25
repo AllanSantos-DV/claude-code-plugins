@@ -9,9 +9,6 @@ claude-code-boss/PLANOS.md
 # Smoke tests (local-only, never versioned)
 smoke/
 
-# Local install script (dev-only, not for git)
-claude-code-boss/scripts/install-local.js
-
 # Runtime artifacts (PID files, log ring, dashboard state)
 claude-code-boss/.runtime/
 

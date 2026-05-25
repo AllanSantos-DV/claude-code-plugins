@@ -140,9 +140,21 @@ node scripts/sync-version.js --check
 ## Desenvolvimento
 
 ```bash
-npm test           # 22 testes de hooks
+npm test           # 33 testes de hooks
 npm run version:sync  # Re-sincroniza versão sem bump
 ```
+
+## Desenvolvimento local
+
+Para testar mudanças não-commitadas localmente antes de publicar:
+
+```bash
+node claude-code-boss/scripts/install-local.js
+```
+
+Isso copia o estado atual do diretório para o cache do Claude Code Desktop (usando o SHA do commit atual como nome do diretório). Reinicie o Desktop para carregar.
+
+Depois de commitar e fazer push, o marketplace atualiza automaticamente via `/plugin update claude-code-boss` no Claude Code.
 
 ## Licença
 
