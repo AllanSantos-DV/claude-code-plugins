@@ -145,6 +145,7 @@ async function tryInitSqlite() {
     _db.pragma('journal_mode = WAL');
     _db.pragma('synchronous = NORMAL');
     createTablesSqlite();
+    migrateSqlite();
     _useSqlite = true;
     return true;
   } catch (err) {
@@ -166,6 +167,7 @@ function createTablesSqlite() {
       tags TEXT NOT NULL DEFAULT '[]',
       confidence REAL NOT NULL DEFAULT 0.5,
       access_count INTEGER NOT NULL DEFAULT 0,
+      recurrence INTEGER NOT NULL DEFAULT 1,
       last_accessed TEXT,
       created_at TEXT NOT NULL
     );
@@ -199,6 +201,19 @@ function createTablesSqlite() {
   `);
 }
 
+// Idempotent migrations for existing DBs (CREATE TABLE IF NOT EXISTS won't add
+// columns to pre-existing tables).
+function migrateSqlite() {
+  try {
+    const cols = _db.prepare(`PRAGMA table_info(entries)`).all().map(c => c.name);
+    if (!cols.includes('recurrence')) {
+      _db.exec(`ALTER TABLE entries ADD COLUMN recurrence INTEGER NOT NULL DEFAULT 1`);
+    }
+  } catch (err) {
+    console.error(`[BRAIN-STORE] migration error: ${err.message}`);
+  }
+}
+
 function vectorToBlob(vec) {
   return Buffer.from(new Float32Array(vec).buffer);
 }
@@ -211,14 +226,14 @@ async function saveSqlite(entry, vector) {
   const stmt = _db.prepare(`
     INSERT OR REPLACE INTO entries
       (id, type, project, session_id, title, summary, content, source, tags,
-       confidence, access_count, last_accessed, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       confidence, access_count, recurrence, last_accessed, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     entry.id, entry.type, entry.project, entry.session_id || '',
     entry.title, entry.summary || '', JSON.stringify(entry.content || {}),
     JSON.stringify(entry.source || {}), JSON.stringify(entry.tags || []),
-    entry.confidence || 0.5, entry.access_count || 0,
+    entry.confidence || 0.5, entry.access_count || 0, entry.recurrence || 1,
     entry.last_accessed || null, entry.created_at || now()
   );
 
@@ -267,6 +282,7 @@ function rowToEntry(row) {
     tags: safeJson(row.tags),
     confidence: row.confidence,
     access_count: row.access_count,
+    recurrence: row.recurrence != null ? row.recurrence : 1,
     last_accessed: row.last_accessed,
     created_at: row.created_at,
   };
@@ -582,6 +598,39 @@ async function count(type, project) {
   return entries.length;
 }
 
+// Raw read (no access_count bump) — for merge/admission flows.
+function getRaw(id) {
+  if (_useSqlite) {
+    const row = _db.prepare('SELECT * FROM entries WHERE id = ?').get(id);
+    return row ? rowToEntry(row) : null;
+  }
+  const entryPath = path.join(getProjectDir(), 'entries', `${id}.json`);
+  if (!fs.existsSync(entryPath)) return null;
+  try { return JSON.parse(fs.readFileSync(entryPath, 'utf-8')); } catch { return null; }
+}
+
+/**
+ * Merge a duplicate into an existing entry (admission control "merge" decision).
+ * Bumps recurrence, refreshes last_accessed, keeps the higher confidence, and
+ * applies an optional patch (summary/content/tags). Preserves the existing
+ * embedding (no vector passed). Returns the merged entry, or null if id missing.
+ */
+async function merge(id, patch = {}) {
+  const existing = getRaw(id);
+  if (!existing) return null;
+  const merged = {
+    ...existing,
+    ...patch,
+    id: existing.id,
+    recurrence: (existing.recurrence || 1) + 1,
+    last_accessed: now(),
+    confidence: Math.max(existing.confidence || 0.5, patch.confidence || 0),
+  };
+  if (_useSqlite) await saveSqlite(merged);
+  else await saveJson(merged);
+  return merged;
+}
+
 async function close() {
   if (_db) {
     _db.close();
@@ -602,7 +651,7 @@ function getStatus() {
 }
 
 module.exports = {
-  init, save, get, search, searchByKeywords,
+  init, save, get, getRaw, merge, search, searchByKeywords,
   delete: delete_, list, count, close,
   getStorageType, getStatus, cosineSimilarity,
 };
