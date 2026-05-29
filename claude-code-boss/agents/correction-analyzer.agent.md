@@ -51,7 +51,10 @@ Each payload contains:
 4. **Write findings** to your agent memory:
    - Append to MEMORY.md index
    - Append to the relevant topic file (e.g., `agent-behavior.md`, `pitfalls.md`)
-5. **Save to Knowledge Base** (only if this is a new lesson, not a repeat):
+5. **Save to Knowledge Base** — write a payload for **every** correction lesson,
+   new OR repeat. Don't pre-dedup: the brain-indexer's Admission Control merges
+   repeats, **bumping `recurrence`** → drives Skill Promotion. A repeated correction
+   is exactly the signal that a lesson should become a skill, so always emit.
    - Path: `${CLAUDE_PLUGIN_DATA}/brain-pending/correction-<sessionId>-<turn>.json`
    - Format:
      ```json
