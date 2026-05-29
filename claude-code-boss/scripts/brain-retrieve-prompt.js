@@ -2,16 +2,12 @@
 /**
  * brain-retrieve-prompt.js — UserPromptSubmit hook
  *
- * Single retrieval/advisory hook for the prompt step. Does:
+ * Lean retrieval/advisory hook for the prompt step:
  *   1. Brain: advisory if payloads pending indexing (capped count).
- *   2. Brain: semantic retrieval of relevant knowledge for the user message.
- *   3. Lessons: inject relevant rules from the analyzers' NATIVE agent memory
- *      (pattern-analyzer / correction-analyzer) — keyword match.
- *   4. Triggers: ADVISORY (never coercive) note when pattern/correction
- *      payloads are pending, gated by a cooldown for backpressure.
+ *   2. Brain: semantic retrieval of relevant knowledge for the user message —
+ *      this surfaces captured lessons too (they're Brain entries via capture_lesson).
  *
- * Folds in the former lesson-inject.js. Tone is advisory: the hook informs,
- * the agent decides. No "MANDATORY"/"you MUST"/"FIRST action" language.
+ * Tone is advisory: the hook informs, the agent decides.
  */
 const fs = require('fs');
 const path = require('path');
@@ -20,27 +16,12 @@ const os = require('os');
 const backend = require('./brain-backend.js');
 
 const HOME = os.homedir();
-const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
   || path.join(HOME, '.claude', 'plugins', 'data', 'claude-code-boss');
 const PENDING_DIR = path.join(DATA_DIR, 'brain-pending');
 
 // Never display an unbounded backlog count.
 const COUNT_CAP = 20;
-
-const AGENT_MEMORY_DIRS = [
-  path.join(HOME, '.claude', 'agent-memory', 'pattern-analyzer'),
-  path.join(HOME, '.claude', 'agent-memory', 'correction-analyzer'),
-];
-
-function _loadHooksCfg() {
-  try {
-    return JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'config', 'hooks-config.json'), 'utf-8'));
-  } catch {
-    return {};
-  }
-}
-const LESSON_MAX_RESULTS = _loadHooksCfg().lessonInject?.maxLessons ?? 5;
 
 const STOP_WORDS = new Set([
   'the', 'this', 'that', 'and', 'for', 'with', 'from',
@@ -70,13 +51,6 @@ function extractKeywords(text) {
     .slice(0, 15);
 }
 
-function tokenize(text) {
-  return text.toLowerCase()
-    .replace(/[^a-z0-9\s-]/g, '')
-    .split(/\s+/)
-    .filter(w => w.length > 2 && !STOP_WORDS.has(w));
-}
-
 function checkPendingPayloads() {
   if (!fs.existsSync(PENDING_DIR)) return 0;
   try {
@@ -86,53 +60,9 @@ function checkPendingPayloads() {
   }
 }
 
-// ── Lessons: keyword match over the analyzers' native agent memory ────────────
-
-function loadMemoryFiles() {
-  const results = [];
-  for (const dir of AGENT_MEMORY_DIRS) {
-    try {
-      if (!fs.existsSync(dir)) continue;
-      const agentName = path.basename(dir);
-      for (const f of fs.readdirSync(dir).filter(f => f.endsWith('.md'))) {
-        try {
-          results.push({ file: `${agentName}/${f}`, content: fs.readFileSync(path.join(dir, f), 'utf-8') });
-        } catch { /* skip */ }
-      }
-    } catch { /* skip */ }
-  }
-  return results;
-}
-
-function findRelevantLessons(query, maxResults = LESSON_MAX_RESULTS) {
-  const tokens = tokenize(query);
-  if (tokens.length === 0) return [];
-  const scored = [];
-  for (const { file, content } of loadMemoryFiles()) {
-    const lines = content.split('\n').filter(l => {
-      const t = l.trim();
-      return t.startsWith('- **Rule**') || t.startsWith('- Rule') || t.startsWith('**Rule**');
-    });
-    for (const line of lines) {
-      const lineTokens = tokenize(line);
-      let score = 0;
-      for (const qt of tokens) {
-        for (const lt of lineTokens) {
-          if (lt === qt) score += 3;
-          else if (lt.startsWith(qt) || qt.startsWith(lt)) score += 1;
-        }
-      }
-      if (score > 0) scored.push({ file, line: line.trim(), score });
-    }
-  }
-  return scored.sort((a, b) => b.score - a.score).slice(0, maxResults);
-}
-
 function fmtCount(n) {
   return n > COUNT_CAP ? `${COUNT_CAP}+` : String(n);
 }
-
-// ── main ──────────────────────────────────────────────────────────────────────
 
 (async () => {
   try {
@@ -157,7 +87,7 @@ function fmtCount(n) {
       outputs.push(`[BRAIN] ${fmtCount(pending)} payload(s) pending indexing — run brain-indexer via Task if you want them searchable.`);
     }
 
-    // 2. Brain: semantic retrieval
+    // 2. Brain: semantic retrieval (also surfaces captured lessons)
     const keywords = extractKeywords(userMessage);
     if (keywords.length > 0) {
       try {
@@ -171,20 +101,6 @@ function fmtCount(n) {
         console.error(`[BRAIN-RETRIEVE-PROMPT] backend search failed: ${err.message}`);
       }
     }
-
-    // 3. Lessons: inject relevant rules from native agent memory
-    if (userMessage) {
-      const relevant = findRelevantLessons(userMessage);
-      if (relevant.length > 0) {
-        const lines = relevant.map(r =>
-          `• [${path.basename(r.file, '.md')}] ${r.line.replace(/^- \*\*Rule\*\*:?/, '').replace(/^- Rule:?/, '').trim()}`
-        );
-        outputs.push(`**Lessons from past sessions:**\n${lines.join('\n')}`);
-      }
-    }
-
-    // (Lesson capture is now in-loop via the capture_lesson MCP tool, nudged by
-    // correction-detect/pattern-detect. No analyzer-subagent trigger advisories.)
 
     if (outputs.length === 0) { process.stdout.write(JSON.stringify({})); return; }
 

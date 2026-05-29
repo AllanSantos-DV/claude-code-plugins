@@ -294,3 +294,28 @@ Progresso de implementação (branch `refactor/slim-down`):
 todos os passos entregues. O loop completo: captura → admission (limpa/funde) →
 rerank (recupera melhor) → prune (remove morto) → recorrência → skill promotion.
 Testado (unit por passo + npm test 26/26 + brain-test + smoke).
+
+---
+
+## 7. ADENDO — captura in-loop (revisão de arquitetura, `bff3e40`)
+
+Diagnóstico de custo: o `brain-indexer` como agente LLM relendo transcript bruto
+custava ~50k/run (96% ruído). Pesquisa (Reflexion/ExpeL, Generative Agents) mostrou
+que a reflexão validada é o **agente agindo fazendo post-mortem da própria
+experiência** — não um terceiro relendo logs. Mudança aplicada:
+
+- **`capture_lesson` (tool MCP no brain-server)** — o agente in-loop grava a lição
+  curada; a tool roda admission control **inline** (embed → dedup cosseno → merge
+  `recurrence++` / grava). Determinístico, ~200 tokens, zero leitura de transcript.
+- **`correction-detect`/`pattern-detect`** — agora só **nudge advisory** (detectam
+  sinal, sugerem `capture_lesson`). Pararam de ler transcript e gerar payloads.
+- **`pattern-analyzer` + `correction-analyzer` removidos** — sem ganho validado vs
+  captura in-loop; síntese cross-session já é coberta por recurrence+promotion+prune.
+- **`brain-indexer` pinado em `haiku`** (só resíduo de work-payloads).
+
+Substitui o "Passo 5" original (analyzers emitindo payloads): as lições agora
+nascem curadas via `capture_lesson` e fluem direto pro Brain (admission inline) →
+recurrence → promotion. Mesmo loop, sem o vilão de tokens.
+
+**Truncagem foi rejeitada** (perde valor no fim da frase): captura-na-fonte
+preserva os específicos E custa ~250× menos que reler transcript.
