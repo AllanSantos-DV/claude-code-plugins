@@ -25,17 +25,26 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // Resolve plugin env vars robustly: ignore unexpanded "${...}" literals (some
 // install contexts don't expand .mcp.json env), derive sane defaults, and
 // normalize process.env so downstream requires (brain-store etc.) inherit them.
+function valid(v) { return v && !v.includes('${') ? v : null; }
 function resolveEnv(name, fallback) {
-  const v = process.env[name];
-  const resolved = v && !v.includes('${') ? v : fallback;
+  const resolved = valid(process.env[name]) || fallback;
   process.env[name] = resolved;
   return resolved;
 }
+// CLI arg fallback for the buggy .mcp.json env block (Claude Code issue #9427:
+// ${...} does not expand in the MCP env block, but DOES expand in args). We pass
+// --plugin-data ${CLAUDE_PLUGIN_DATA} so the server gets the SAME data dir the
+// hooks use (avoids a split-brain KB).
+function argValue(flag) {
+  const i = process.argv.indexOf(flag);
+  return i >= 0 ? valid(process.argv[i + 1]) : null;
+}
+
 const PLUGIN_ROOT = resolveEnv('CLAUDE_PLUGIN_ROOT', path.resolve(__dirname, '..', '..'));
-const DATA_DIR = resolveEnv(
-  'CLAUDE_PLUGIN_DATA',
-  path.join(process.env.HOME || process.env.USERPROFILE, '.claude', 'plugins', 'data', 'claude-code-boss')
-);
+const DATA_DIR = argValue('--plugin-data')
+  || resolveEnv('CLAUDE_PLUGIN_DATA',
+       path.join(process.env.HOME || process.env.USERPROFILE, '.claude', 'plugins', 'data', 'claude-code-boss'));
+process.env.CLAUDE_PLUGIN_DATA = DATA_DIR; // normalize so brain-store inherits the resolved dir
 
 const require = createRequire(import.meta.url);
 
