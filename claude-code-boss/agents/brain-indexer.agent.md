@@ -43,10 +43,43 @@ Payload format:
 ## Workflow
 
 1. **Read MEMORY.md** — skip payloads you've already processed.
-2. **Read all payloads** from `brain-pending/`.
-3. **For each payload**, generate a brain entry:
+2. **Read payloads in batches** from `brain-pending/` — process up to **~20 per run**
+   (avoid context overflow; if more remain, they're picked up next run).
+3. **For each payload:** run **Admission Control** (Step 0), then admit/merge/skip.
 
-### Step 1 — Analyze the payload
+### Step 0 — Admission Control (quality gate — A-MAC)
+
+You are the gate that keeps the KB clean. Garbage in memory pollutes the entire
+downstream pipeline, so judge each payload before consuming it.
+
+**a) Cheap pre-filter (no model needed):** skip transactional noise — payloads with
+no real signal (trivial commands, empty/near-empty output already filtered by
+brain-submit, pure status checks). Move to `processed/skipped/`.
+
+**b) Semantic dedup search:** embed the payload's key takeaway and search the KB:
+```javascript
+const hits = await store.search(vector, { topK: 5, minScore: 0.7 });
+```
+
+**c) Decide per the 5 A-MAC factors** (future utility · factual confidence ·
+semantic novelty · temporal recency · content-type prior):
+
+- **`skip`** — duplicate with no new info, or low-value/one-off noise. Move to
+  `processed/skipped/`. Do NOT create an entry.
+- **`merge`** — same knowledge as an existing entry (a near-dup, `score ≳ 0.9`, or
+  semantically equivalent even if worded differently). Reinforce instead of
+  duplicating:
+  ```javascript
+  await store.merge(existingId, { summary, content, confidence });
+  // bumps recurrence (drives Skill Promotion), refreshes recency, keeps higher confidence
+  ```
+  Then move the payload to `processed/`. Done — no new entry.
+- **`admit`** — genuinely new and useful → continue to Step 1.
+
+If a payload **contradicts** an existing entry (same subject, opposing claim),
+still admit it but record the conflict in Step 3 via a `contradicts` edge.
+
+### Step 1 — Analyze the payload (only for `admit`)
 
 Read the command + output preview. Determine:
 - **What happened?** (test results, build output, lint errors, etc.)
@@ -193,4 +226,5 @@ await graph.addEdge(newEntryId, existingEntryId, 'references', 0.8);
 - Always move processed payloads (don't delete them)
 - Always use brain-embedder.js to generate vectors (not manual arrays)
 - Never index the same payload twice — use MEMORY.md and timestamps
-- Deduplicate: if a very similar entry exists (cosine > 0.95), skip or merge
+- **Always run Admission Control (Step 0) first** — admit/merge/skip. Never blind-insert.
+  Merging (not duplicating) is what makes Skill Promotion possible via `recurrence`.
