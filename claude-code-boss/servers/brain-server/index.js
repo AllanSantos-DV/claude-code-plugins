@@ -212,6 +212,23 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           project: { type: 'string', description: 'Project name (default: auto-detect)' }
         }
       }
+    },
+    {
+      name: 'capture_lesson',
+      description: 'Capture a CURATED lesson in-loop (the agent post-mortem pattern). Call this when the user corrects you, or when a reusable pattern emerges — YOU write the clean summary + correction + generalized lesson (you have full context; do not make the KB re-read transcripts). Runs admission control inline: a near-duplicate is MERGED (bumping recurrence, which drives skill promotion) instead of duplicated. No transcript parsing, no expensive indexer pass.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          title: { type: 'string', description: 'Short lesson title (max 80 chars)' },
+          summary: { type: 'string', description: 'One-line: what went wrong / the pattern, and what to do instead' },
+          detail: { type: 'string', description: 'Full lesson: what happened + the correction + the generalized rule. Keep the valuable specifics.' },
+          type: { type: 'string', enum: ['lesson', 'pattern'], description: 'lesson (correction) or pattern (reusable workflow). Default: lesson' },
+          tags: { type: 'array', items: { type: 'string' }, description: '3-8 semantic tags' },
+          confidence: { type: 'number', description: '0.0-1.0 (default 0.85)' },
+          project: { type: 'string', description: 'Project name (default: auto-detect from CWD)' }
+        },
+        required: ['title', 'summary']
+      }
     }
   ]
 }));
@@ -362,6 +379,51 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       } catch (err) {
         return { isError: true, content: [{ type: 'text', text: `brain_store failed: ${err.message}` }] };
+      }
+    }
+
+    // ── Capture Lesson (in-loop, admission control inline) ───────────────
+    case 'capture_lesson': {
+      try {
+        const { title, summary, detail, type = 'lesson', tags = [], confidence = 0.85, project: projectArg } = args;
+        const project = projectArg || path.basename(process.cwd() || 'default');
+        const { store: kbStore, index: kbIndex, graph: kbGraph } = await getKB(project);
+
+        const text = `${title} ${summary} ${detail || ''}`.trim();
+
+        // Embed for dedup + storage
+        let vector = null;
+        try {
+          const embedder = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-embedder.js'));
+          await embedder.init();
+          if (embedder.getStatus().ready) vector = await embedder.embed(text);
+        } catch { /* embedding optional */ }
+
+        // Admission control inline: near-duplicate → MERGE (bump recurrence)
+        const DEDUP = 0.9;
+        if (vector) {
+          const hits = await kbStore.search(vector, { topK: 1, minScore: DEDUP, rerank: false });
+          if (hits.length > 0) {
+            const merged = await kbStore.merge(hits[0].id, { summary, content: { detail: detail || summary }, confidence });
+            return { content: [{ type: 'text', text: JSON.stringify({ decision: 'merge', id: hits[0].id, recurrence: merged?.recurrence, title: hits[0].title, project }, null, 2) }] };
+          }
+        }
+
+        // Admit: new curated entry
+        const entry = {
+          type, project, session_id: '',
+          title: String(title).slice(0, 80),
+          summary: String(summary).slice(0, 500),
+          content: { detail: detail || summary, files: [] },
+          tags: Array.isArray(tags) ? tags.slice(0, 8) : [],
+          confidence,
+        };
+        await kbStore.save(entry, vector);
+        await kbIndex.index(entry);
+        await kbGraph.registerNode(entry);
+        return { content: [{ type: 'text', text: JSON.stringify({ decision: 'admit', id: entry.id, type, project }, null, 2) }] };
+      } catch (err) {
+        return { isError: true, content: [{ type: 'text', text: `capture_lesson failed: ${err.message}` }] };
       }
     }
 
