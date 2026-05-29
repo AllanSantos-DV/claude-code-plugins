@@ -187,8 +187,28 @@ ele já faz (+ passo de busca semântica + decisão explícita), não custo novo
 **Validação do gate:** 5/6 itens respondidos por pesquisa (externa/interna); 1
 (batch) é parâmetro operacional ajustável. **Sem pendência de design não-validada.**
 
+### 5.0b Gate do passo 2 (rerank com decay) — ABERTO 2026-05-29
+**Referência canônica:** Generative Agents (Stanford) — score = soma ponderada de
+recency + importance + relevance, min-max normalizados.
+
+| Item | Fonte | Resolução |
+|---|---|---|
+| Fórmula decay | ✅ externo | exponencial, fator **0.995/unidade de tempo** (hora no paper) |
+| Pesos default | ✅ externo | **iguais** (α=β=γ=1 no paper), min-max norm, config-tunável |
+| Importance signal | ✅ ext+int | mapeia pro `confidence` (0-1) que o indexer já grava |
+| Onde plugar | ✅ interno | scoring loop de `searchSqlite`/`searchJson` — **`confidence`, `created_at`, `access_count` já vêm no SELECT**; trocar `score=cosine` por soma ponderada |
+| Config surface | ✅ interno | novo bloco `kb.rerank` no `brain-config` (`kb.retrieval` já existe) |
+
+`final = w_rel·cosine + w_rec·decay(last_accessed|created_at) + w_freq·norm(access_count) + w_conf·confidence`
+
+**Validação:** 5/5 respondidos por pesquisa. **Zero mudança de schema** (sinais já
+no SELECT). Único ajuste: unidade de tempo do decay (hora vs dia p/ contexto de
+código) — grounded no 0.995/h, config-tunável. Sem pendência não-validada.
+
+> Nota: min-max norm de recency/frequency é sobre o conjunto recuperado — viável,
+> pois `searchSqlite` carrega as rows do projeto antes de pontuar.
+
 ### 5.1 Gates dos passos seguintes
-- **2.2 decay:** fórmula/meia-vida e pesos default (começar conservador, config).
 - **2.4 contradição:** método barato de detecção (heurística vs embedding vs LLM).
 - **3.1:** confirmar derivação do `<project>` (git) p/ achar o dir nativo;
   gatilho de (re)indexação sem custo a cada SessionStart.
