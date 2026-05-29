@@ -279,6 +279,15 @@ passos 1 e 2 (reusam o LLM do admission e o score do rerank). Isso enxuga o plan
    → `SKILL.md`). O pulo do gato. Depende de recorrência limpa acumulada (passo 1).
 5. **Passo 5 — Reconciliar F4** (lições do pattern/correction ↔ Brain ↔ skills).
 
-**Status do plano: COMPLETO.** Todos os gates abertos e validados contra pesquisa
-externa+interna. Sem ponto de design não-respondido — só parâmetros operacionais
-ajustáveis (§5.1). Pronto p/ implementar quando o usuário decidir "sair de fato".
+**Status do plano: COMPLETO (gates) — implementação em curso.**
+
+Progresso de implementação (branch `refactor/slim-down`):
+- ✅ **Passo 1** — Admission control + `recurrence` + `merge()` + contradição (agente) — `c43b4ef`
+- ✅ **Passo 2** — Rerank com decay — `73cc107`
+- ✅ **Passo 2.3** — Prune/eviction com archive graceful — `fed617e`
+- ⬜ **Passo 3** — Indexar memória nativa (`brain-index-native.js`)
+- ⬜ **Passo 4** — Skill promotion (o pulo do gato)
+- ⬜ **Passo 5** — Reconciliar F4
+
+Todos os gates validados contra pesquisa externa+interna. Núcleo de higiene (F2)
+entregue e testado (unit + npm test 26/26 + brain-test).
