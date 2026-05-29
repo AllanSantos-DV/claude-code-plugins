@@ -1,17 +1,17 @@
 {
   "name": "claude-code-boss",
-  "displayName": "Claude Code Boss — Multi-Agent System",
-  "description": "Boss, Brain, Party, Discovery — multi-agent orchestration plugin for Claude Code Desktop. Smart routing, research fan-out, DSTP validation.",
+  "displayName": "Claude Code Boss — Brain & Curation",
+  "description": "Semantic knowledge base (Brain) + curated shell execution + lightweight learning for Claude Code. Auto-indexed KB with vector search, anti context-bloat curation, and advisory pattern/correction capture. Relies on native Agent/Workflow tools for orchestration.",
   "author": {
     "name": "Allan Santos"
   },
   "homepage": "https://github.com/allansantos-dv/claude-code-boss",
   "license": "MIT",
   "keywords": [
-    "orchestration",
-    "multi-agent",
-    "research",
-    "discovery"
+    "knowledge-base",
+    "semantic-search",
+    "curation",
+    "research"
   ],
   "userConfig": {
     "language": {

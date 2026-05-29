@@ -1,4 +1,9 @@
-<!-- ⚠️ ROADMAP ASPIRACIONAL — features descritas abaixo NÃO estão implementadas. Estado atual: ver `claude-code-boss/TASK-MAP.md` -->
+<!-- ⚠️ HISTÓRICO / OBSOLETO (pré slim-down 2026-05-29). Este roadmap descreve o
+     port original VS Code→plugin (Boss/Party/Discovery), grande parte REMOVIDA na
+     refatoração slim-down. Estado e direção atuais:
+       • O que ficou e por quê → `claude-code-boss/REFACTOR-PLAN.md`
+       • Plano de novas features (Brain hygiene, integração c/ memória nativa)
+         → `claude-code-boss/FEATURES-PLAN.md` -->
 
 # Plano de Implementação — copilot-delegate como Plugin do Claude Code
 

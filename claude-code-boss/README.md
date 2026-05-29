@@ -2,7 +2,7 @@
 
 Plugin para Claude Code Desktop — **v1.3.3**
 
-Sistema multi-agente com orquestração Boss, Brain KB, dashboard local, hooks pipeline e execução curada.
+Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizado leve para Claude Code. A orquestração fica a cargo das ferramentas nativas (Agent/Workflow) — o plugin foca no que o nativo não tem.
 
 ---
 
@@ -39,35 +39,30 @@ export CLAUDE_PLUGIN_ROOT="/caminho/para/claude-code-boss"
 claude-code-boss/
 ├── .claude-plugin/
 │   └── plugin.json            # Manifesto do plugin (versão canônica)
-├── .mcp.json                  # Servidores MCP: boss-server + brain-server
-├── agents/                    # 16 subagentes (.agent.md)
-│   ├── octopus.agent.md       # Orquestrador principal (FAST/DELEGATE/MIXED)
+├── .mcp.json                  # Servidor MCP: brain-server
+├── agents/                    # 8 subagentes (.agent.md)
 │   ├── brain-*.agent.md       # Indexer, Retriever, Consolidator, Source-Researcher
-│   ├── pipeline-executor.agent.md
-│   └── ...
+│   ├── curation-improver.agent.md
+│   ├── pattern-analyzer.agent.md / correction-analyzer.agent.md
+│   └── refine-researcher.agent.md
 ├── config/
 │   ├── brain-config.json      # Provider de embedding, backend (local|mcp-memory), thresholds
-│   ├── model-router.json      # Tiers billing-aware, multipliers, costSensitive por agente
-│   ├── pipelines.json         # 4 pipelines declarativos (implement, bugfix, refactor, research)
 │   └── hooks-config.json      # Configuração dos hooks (memoryRotate, curationGuard, etc.)
 ├── dashboard/
-│   └── index.html             # SPA — 7 abas: Home/Models/Pipelines/Brain KB/Billing/Hooks/Logs
+│   └── index.html             # SPA — 4 abas: Home / Brain KB / Hooks / Logs
 ├── hooks/
-│   └── hooks.json             # 6 eventos, 15 scripts registrados
-│   ├── scripts/                   # 27 scripts Node.js (zero deps extras para hooks)
+│   └── hooks.json             # 5 eventos, ~9 scripts registrados
+├── scripts/                   # Scripts Node.js (zero deps extras para hooks)
 │   ├── dashboard.js           # Servidor HTTP local com ring buffer de logs
-│   ├── dashboard-start.js     # SessionStart: auto-start com PID-file idempotency
 │   ├── brain-*.js             # Brain KB: store, index, graph, embedder, backend, CLI
 │   ├── curation-guard.js      # PreToolUse: bloqueia/redireciona comandos curados
-│   ├── model-router.js        # SessionStart: resolução de modelo billing-aware
 │   ├── hook-logger.js         # Utilitário: append a .runtime/hook-errors.jsonl
 │   └── sync-version.js        # Propaga versão para todos os arquivos de versão
 ├── servers/
-│   ├── boss-server/           # MCP server: registro de subagentes e histórico
 │   └── brain-server/          # MCP server v2: brain_search/store/related/count
-├── skills/                    # 10 skills do Claude Code
-├── package.json               # v1.3.2, scripts: test, version:sync
-└── TASK-MAP.md                # Estado real de entrega (20 features, gaps documentados)
+├── skills/                    # 6 skills do Claude Code
+├── package.json               # scripts: test, version:sync
+└── TASK-MAP.md                # Histórico de entrega (parcialmente obsoleto pós slim-down)
 ```
 
 ## Hooks Pipeline
@@ -78,21 +73,20 @@ Todos os hooks estão declarados em `hooks/hooks.json`. Eventos e scripts ativos
 | --- | --- | --- |
 | SessionStart | `memory-rotate.js` | Rotaciona MEMORY.md quando >150 linhas |
 | SessionStart | `session-whitelist.js` | Detecta ecossistema do projeto, popula whitelist |
-| SessionStart | `model-router.js` | Resolve modelo via tiers billing-aware |
-| SessionStart | `dashboard-start.js` | Inicia dashboard (idempotente via PID-file) |
-| PreToolUse | `curation-guard.js` | Bloqueia/redireciona comandos curados |
-| PreToolUse | `discipline-guard.js` | Guardrails comportamentais |
-| PreToolUse | `brain-retrieve.js` | Busca KB antes de Write/Edit/Bash |
-| PostToolUse | `brain-submit.js` | Indexa outputs relevantes (>500 chars) |
-| PostToolUse | `curation-detect.js` | Detecta outputs grandes para curação |
+| PreToolUse (Write\|Edit) | `brain-retrieve.js` | Busca KB antes de editar |
+| PreToolUse (Bash) | `brain-retrieve.js` | Busca KB antes de Bash |
+| PreToolUse (Bash) | `curation-guard.js` | Bloqueia/redireciona comandos curados |
+| PostToolUse (Bash) | `curation-detect.js` | Detecta outputs grandes para curação |
+| PostToolUse (Bash) | `brain-submit.js` | Indexa outputs relevantes (>500 chars) |
+| Stop | `pattern-detect.js` | Captura padrões de workflow (payload p/ pattern-analyzer) |
+| Stop | `refine-research.js` | Injeta lembrete de pesquisa (web → Brain → usuário) |
 | UserPromptSubmit | `correction-detect.js` | Detecta sinais de correção/frustração |
-| UserPromptSubmit | `lesson-inject.js` | Injeta lições relevantes do KB |
-| UserPromptSubmit | `curation-backlog.js` | Verifica payloads pendentes em `detect-curation/` e instrui curação automática via curation-improver; cooldown de 5 turnos entre injeções; move payloads com >7 dias para `processed/orphaned/` |
-| UserPromptSubmit | `brain-retrieve-prompt.js` | Busca KB semanticamente para o prompt |
-| Stop | `pattern-detect.js` | Detecta padrões a cada 4 turnos |
-| Stop | `refine-research.js` | Injeta lembrete de pesquisa (sempre ativo) |
-| SubagentStart/Stop | `ack-tracker.js` | Rastreia subagentes ativos |
-| SubagentStop | `cost-tracker.js` | Log de custo por agente/modelo |
+| UserPromptSubmit | `brain-retrieve-prompt.js` | Busca KB semântica + injeta lessons + advisory de pendências (advisory, com cooldown de backpressure) |
+| UserPromptSubmit | `curation-backlog.js` | Verifica payloads pendentes em `detect-curation/` (advisory); cooldown de 5 turnos; move payloads >7 dias para `processed/orphaned/` |
+
+> **Tom advisory:** os hooks informam pendências (lessons, padrões, curação) mas
+> não coagem — quem decide rodar um analyzer é o agente. Sem orquestrador próprio:
+> a delegação usa as ferramentas nativas (Agent/Workflow).
 
 ## Brain KB
 
@@ -114,9 +108,12 @@ Base de conhecimento local com 3 layers:
 
 ## Dashboard
 
-Auto-iniciado no `SessionStart`. Acesse via URL impressa no log da sessão.
+Iniciado **sob demanda** (não mais no SessionStart). Configura o **plugin**
+(brain-config, hooks). Lance com `node scripts/dashboard.js` (ou via skill
+`config-dashboard`).
 
-- **Porta**: dinâmica (0 → auto-assign, sempre `127.0.0.1`)
+- **Abas**: Home, Brain KB, Hooks, Logs
+- **Porta**: dinâmica (0 → auto-assign, sempre `127.0.0.1`); fixe com `DASHBOARD_PORT`
 - **Auth**: token aleatório gerado no boot (salvo em `.runtime/dashboard.json`)
 - **Logs tab**: ring buffer de 500 entradas + `hook-errors.jsonl` agregado. Auto-refresh a cada 2s, Copy JSON, Clear
 
@@ -140,7 +137,7 @@ node scripts/sync-version.js --check
 ## Desenvolvimento
 
 ```bash
-npm test           # 33 testes de hooks
+npm test           # testes de hooks
 npm run version:sync  # Re-sincroniza versão sem bump
 ```
 

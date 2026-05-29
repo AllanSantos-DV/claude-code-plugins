@@ -82,10 +82,7 @@ pre { background: #f5f5f5; padding: .6rem; border-radius: 4px; font-size: .7rem;
 
 <nav id="tabs">
   <a href="#home" class="active">Home</a>
-  <a href="#models">Models</a>
-  <a href="#pipelines">Pipelines</a>
   <a href="#brain">Brain KB</a>
-  <a href="#billing">Billing</a>
   <a href="#hooks">Hooks</a>
   <a href="#logs">Logs</a>
 </nav>
@@ -99,33 +96,6 @@ pre { background: #f5f5f5; padding: .6rem; border-radius: 4px; font-size: .7rem;
       <h2>Brain Knowledge Base</h2>
       <div id="home-brain"></div>
     </div>
-  </section>
-
-  <!-- MODELS -->
-  <section id="tab-models" class="tab">
-    <div class="flex mb-1">
-      <h1>Model Router Config</h1>
-      <button class="btn-primary" onclick="saveModels()">Save</button>
-      <span id="models-saved" class="text-muted"></span>
-    </div>
-    <div class="card">
-      <h2>Tiers</h2>
-      <div id="models-tiers"></div>
-    </div>
-    <div class="card">
-      <h2>Agents</h2>
-      <div id="models-agents"></div>
-    </div>
-  </section>
-
-  <!-- PIPELINES -->
-  <section id="tab-pipelines" class="tab">
-    <div class="flex mb-1">
-      <h1>Pipeline Definitions</h1>
-      <button class="btn-primary" onclick="savePipelines()">Save</button>
-      <span id="pipelines-saved" class="text-muted"></span>
-    </div>
-    <div id="pipelines-list"></div>
   </section>
 
   <!-- BRAIN -->
@@ -287,18 +257,6 @@ pre { background: #f5f5f5; padding: .6rem; border-radius: 4px; font-size: .7rem;
     <div id="brain-results"></div>
   </section>
 
-  <!-- BILLING -->
-  <section id="tab-billing" class="tab">
-    <h1>Cost Tracker</h1>
-    <div class="flex mb-1">
-      <input type="text" id="billing-filter" placeholder="Filter by agent..." style="max-width:200px" oninput="renderBilling()">
-      <span id="billing-total" class="text-muted"></span>
-    </div>
-    <div class="card">
-      <table><thead><tr><th>Time</th><th>Agent</th><th>Model</th><th>Multiplier</th><th>Message</th></tr></thead>
-      <tbody id="billing-rows"></tbody></table>
-    </div>
-  </section>
 
   <!-- HOOKS -->
   <section id="tab-hooks" class="tab">
@@ -482,7 +440,7 @@ pre { background: #f5f5f5; padding: .6rem; border-radius: 4px; font-size: .7rem;
 
 <script>
 const API = '';
-let state = { models: null, pipelines: null, hooks: null, billing: null, brainProjects: [] };
+let state = { hooks: null, brainProjects: [] };
 
 // ─── Navigation ──────────────────────────────────────────────────
 
@@ -490,7 +448,7 @@ function navigate() {
   const hash = location.hash.slice(1) || 'home';
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.id === 'tab-' + hash));
   document.querySelectorAll('nav a').forEach(a => a.classList.toggle('active', a.hash === '#' + hash));
-  const fns = { home: loadHome, models: loadModels, pipelines: loadPipelines, brain: loadBrain, billing: loadBilling, hooks: loadHooks, logs: loadLogs };
+  const fns = { home: loadHome, brain: loadBrain, hooks: loadHooks, logs: loadLogs };
   if (fns[hash]) fns[hash]();
 }
 window.addEventListener('hashchange', navigate);
@@ -513,11 +471,8 @@ async function loadHome() {
   try {
     const s = await api('GET', '/api/status');
     el.innerHTML = `
-      <div class="stat"><div class="value">${s.models.agents}</div><div class="label">Model Agents</div></div>
-      <div class="stat"><div class="value">${s.pipelines}</div><div class="label">Pipelines</div></div>
       <div class="stat"><div class="value">${s.hooks.active}/${s.hooks.total}</div><div class="label">Hooks Active</div><span class="badge ${s.hooks.active === s.hooks.total ? 'badge-green' : 'badge-yellow'}">${s.hooks.active === s.hooks.total ? 'All active' : s.hooks.active + ' active'}</span></div>
       <div class="stat"><div class="value">${s.brain.totalEntries}</div><div class="label">KB Entries</div><span class="badge ${s.brain.connected ? 'badge-green' : 'badge-red'}">${s.brain.backend || 'local'}</span></div>
-      <div class="stat"><div class="value">${s.billing.totalCost.toFixed(1)}</div><div class="label">Total Cost (multiplier)</div></div>
       <div class="stat"><div class="value">${Math.floor(s.uptime / 60)}m</div><div class="label">Dashboard Uptime</div></div>
     `;
     const brainEl = document.getElementById('home-brain');
@@ -529,91 +484,6 @@ async function loadHome() {
         '</tbody></table>';
     }
   } catch { el.innerHTML = '<p class="text-muted">Failed to load status.</p>'; }
-}
-
-// ─── MODELS ──────────────────────────────────────────────────────
-
-async function loadModels() {
-  try {
-    state.models = await api('GET', '/api/models');
-    renderModels();
-  } catch {}
-}
-
-function renderModels() {
-  const m = state.models;
-  if (!m) return;
-  const tiers = document.getElementById('models-tiers');
-  tiers.innerHTML = '<table><thead><tr><th>Tier</th><th>Model</th><th>Multiplier</th><th>Rank</th></tr></thead><tbody>' +
-    Object.entries(m.tiers).map(([k, v]) => `<tr><td>${k}</td><td>${v.model || '-'}</td><td>${v.multiplier || 0}</td><td>${v.rank || 0}</td></tr>`).join('') +
-    '</tbody></table>';
-
-  const agents = document.getElementById('models-agents');
-  agents.innerHTML = '<table><thead><tr><th>Agent</th><th>Model</th><th>Cost Sensitive</th><th>Min Tier</th><th>Alert Threshold</th></tr></thead><tbody>' +
-    Object.entries(m.agents).map(([k, v]) => `<tr>
-      <td>${k}</td>
-      <td><select onchange="updateAgent('${k}','model',this.value)">${Object.keys(m.tiers).map(t => `<option value="${t}"${v.model === t ? ' selected' : ''}>${t}</option>`).join('')}</select></td>
-      <td><input type="checkbox" ${v.costSensitive ? 'checked' : ''} onchange="updateAgent('${k}','costSensitive',this.checked)"></td>
-      <td><select onchange="updateAgent('${k}','minTier',this.value)"><option value="">—</option>${Object.keys(m.tiers).filter(t => t !== 'free').map(t => `<option value="${t}"${v.minTier === t ? ' selected' : ''}>${t}</option>`).join('')}</select></td>
-      <td><input type="number" value="${v.alertThreshold || ''}" style="max-width:80px" onchange="updateAgent('${k}','alertThreshold',+this.value||undefined)"></td>
-    </tr>`).join('') +
-    '</tbody></table>';
-}
-
-let modelsDirty = false;
-function updateAgent(agent, field, value) {
-  if (!state.models) return;
-  state.models.agents[agent][field] = value;
-  modelsDirty = true;
-}
-
-async function saveModels() {
-  if (!state.models) return;
-  await api('PUT', '/api/models', state.models);
-  document.getElementById('models-saved').textContent = 'Saved!';
-  modelsDirty = false;
-  setTimeout(() => document.getElementById('models-saved').textContent = '', 2000);
-}
-
-// ─── PIPELINES ───────────────────────────────────────────────────
-
-async function loadPipelines() {
-  try {
-    state.pipelines = await api('GET', '/api/pipelines');
-    renderPipelines();
-  } catch {}
-}
-
-function renderPipelines() {
-  const list = document.getElementById('pipelines-list');
-  const p = state.pipelines;
-  if (!p || !p.pipelines) { list.innerHTML = '<p class="text-muted">No pipelines defined.</p>'; return; }
-  list.innerHTML = p.pipelines.map((pipe, i) => `
-    <div class="panel">
-      <h3 onclick="this.nextElementSibling.classList.toggle('active')" style="cursor:pointer">
-        <span><strong>${pipe.name}</strong> — ${pipe.description || ''}</span>
-        <span class="text-muted">${pipe.steps.length} steps | match: ${(pipe.match||[]).join(', ')}</span>
-      </h3>
-      <div class="panel-body" style="display:none" class="active">
-        <table><thead><tr><th>#</th><th>Agent</th><th>Type</th><th>Description</th><th>Tiers</th></tr></thead><tbody>
-        ${pipe.steps.map((step, j) => `<tr>
-          <td>${j + 1}</td>
-          <td>${step.agent}</td>
-          <td><span class="tag ${step.type === 'cascade' ? 'tag-warn' : 'tag-green'}">${step.type}</span></td>
-          <td class="text-muted">${step.description || ''}</td>
-          <td>${step.tiers ? step.tiers.map(t => t.name).join(' → ') : '-'}</td>
-        </tr>`).join('')}
-        </tbody></table>
-      </div>
-    </div>
-  `).join('');
-}
-
-async function savePipelines() {
-  if (!state.pipelines) return;
-  await api('PUT', '/api/pipelines', state.pipelines);
-  document.getElementById('pipelines-saved').textContent = 'Saved!';
-  setTimeout(() => document.getElementById('pipelines-saved').textContent = '', 2000);
 }
 
 // ─── BRAIN ────────────────────────────────────────────────────────
@@ -827,27 +697,6 @@ async function deleteBrainEntry(project, id) {
   if (!confirm('Delete this entry?')) return;
   await api('DELETE', `/api/brain/entry/${id}?project=${encodeURIComponent(project)}`);
   searchBrain();
-}
-
-// ─── BILLING ──────────────────────────────────────────────────────
-
-async function loadBilling() {
-  try {
-    state.billing = await api('GET', '/api/billing/logs');
-    renderBilling();
-  } catch {}
-}
-
-function renderBilling() {
-  const filter = (document.getElementById('billing-filter').value || '').toLowerCase();
-  const rows = document.getElementById('billing-rows');
-  const total = document.getElementById('billing-total');
-  const filtered = filter ? state.billing.filter(e => e.agent.toLowerCase().includes(filter)) : state.billing;
-  const sum = filtered.reduce((a, e) => a + e.multiplier, 0);
-  total.textContent = `Total: ${sum.toFixed(1)} (${filtered.length} entries)`;
-  rows.innerHTML = filtered.slice(0, 200).map(e =>
-    `<tr><td class="text-muted">${e.timestamp.slice(5, 16)}</td><td>${e.agent}</td><td>${e.model}</td><td>x${e.multiplier.toFixed(1)}</td><td class="text-muted truncate" style="max-width:300px">${e.message}</td></tr>`
-  ).join('');
 }
 
 // ─── HOOKS ────────────────────────────────────────────────────────

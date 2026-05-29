@@ -10,7 +10,6 @@ const crypto = require('crypto');
 const SESSION_TOKEN = crypto.randomBytes(16).toString('hex');
 
 const ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
-const DATA = process.env.CLAUDE_PLUGIN_DATA || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
 const DASHBOARD_DIR = path.join(ROOT, 'dashboard');
 
 const RUNTIME_DIR = path.join(ROOT, '.runtime');
@@ -82,47 +81,6 @@ function readJSON(file) {
 
 // ─── Config validators ────────────────────────────────────────────
 
-function validateModels(data) {
-  if (!data || typeof data !== 'object') return 'root must be an object';
-  if ('tiers' in data && (typeof data.tiers !== 'object' || Array.isArray(data.tiers))) return 'tiers must be object';
-  if ('agents' in data && (typeof data.agents !== 'object' || Array.isArray(data.agents))) return 'agents must be object';
-  if (data.tiers) {
-    for (const [k, v] of Object.entries(data.tiers)) {
-      if (typeof v !== 'object') return `tiers.${k} must be object`;
-      if ('rank' in v && typeof v.rank !== 'number') return `tiers.${k}.rank must be number`;
-      if ('multiplier' in v && typeof v.multiplier !== 'number') return `tiers.${k}.multiplier must be number`;
-      if ('label' in v && typeof v.label !== 'string') return `tiers.${k}.label must be string`;
-    }
-  }
-  if (data.agents) {
-    for (const [k, v] of Object.entries(data.agents)) {
-      if (typeof v !== 'object' && typeof v !== 'string') return `agents.${k} must be object or string`;
-    }
-  }
-  return null;
-}
-
-function validatePipelines(data) {
-  if (!data || typeof data !== 'object') return 'root must be an object';
-  if ('pipelines' in data && !Array.isArray(data.pipelines)) return 'pipelines must be array';
-  if (Array.isArray(data.pipelines)) {
-    for (let i = 0; i < data.pipelines.length; i++) {
-      const p = data.pipelines[i];
-      if (!p || typeof p !== 'object') return `pipelines[${i}] must be object`;
-      if (!p.name || typeof p.name !== 'string') return `pipelines[${i}].name must be non-empty string`;
-      if ('steps' in p && !Array.isArray(p.steps)) return `pipelines[${i}].steps must be array`;
-      if (Array.isArray(p.steps)) {
-        for (let j = 0; j < p.steps.length; j++) {
-          const s = p.steps[j];
-          if (!s || typeof s !== 'object') return `pipelines[${i}].steps[${j}] must be object`;
-          if (!s.agent || typeof s.agent !== 'string') return `pipelines[${i}].steps[${j}].agent must be non-empty string`;
-        }
-      }
-    }
-  }
-  return null;
-}
-
 function validateBrainConfig(data) {
   if (!data || typeof data !== 'object') return 'root must be an object';
   if ('backend' in data) {
@@ -160,11 +118,7 @@ function atomicWriteJSON(filePath, data) {
 // ─── API: Status ───────────────────────────────────────────────────
 
 function getStatus(req, res) {
-  const models = readJSON(path.join(ROOT, 'config', 'model-router.json'));
-  const pipelines = readJSON(path.join(ROOT, 'config', 'pipelines.json'));
   const hooksRaw = readJSON(path.join(ROOT, 'hooks', 'hooks.json'));
-  const agents = models?.agents || {};
-  const tiers = models?.tiers || {};
 
   let hooksTotal = 0, hooksActive = 0, hookEntries = [];
   if (hooksRaw?.hooks) {
@@ -201,21 +155,6 @@ function getStatus(req, res) {
     }
   }
 
-  let billingTotal = 0, billingToday = 0;
-  const logFile = path.join(DATA, 'cost-tracker.log');
-  if (fs.existsSync(logFile)) {
-    const lines = fs.readFileSync(logFile, 'utf-8').trim().split('\n').filter(Boolean);
-    const today = new Date().toISOString().slice(0, 10);
-    for (const line of lines.slice(-100)) {
-      const m = line.match(/\| x([\d.]+) \|/);
-      if (m) {
-        const mult = parseFloat(m[1]);
-        billingTotal += mult;
-        if (line.startsWith(today)) billingToday += mult;
-      }
-    }
-  }
-
   let backendMode = 'local', backendConnected = false;
   try {
     const backend = require('./brain-backend.js');
@@ -227,53 +166,9 @@ function getStatus(req, res) {
 
   json(res, {
     uptime: process.uptime().toFixed(0),
-    models: {
-      agents: Object.keys(agents).length,
-      tiers: Object.keys(tiers).length,
-    },
-    pipelines: pipelines?.pipelines?.length || 0,
     brain: { projects: brainProjects, totalEntries: brainTotal, backend: backendMode, connected: backendConnected },
     hooks: { total: hooksTotal, active: hooksActive },
-    billing: { todayCost: billingToday, totalCost: billingTotal },
   });
-}
-
-// ─── API: Models ───────────────────────────────────────────────────
-
-function getModels(req, res) {
-  const data = readJSON(path.join(ROOT, 'config', 'model-router.json'));
-  if (!data) return fail(res, 'model-router.json not found', 404);
-  json(res, data);
-}
-
-async function saveModels(req, res) {
-  const body = await readBody(req);
-  try {
-    const parsed = JSON.parse(body);
-    const err = validateModels(parsed);
-    if (err) return fail(res, `Invalid model-router.json: ${err}`, 400);
-    atomicWriteJSON(path.join(ROOT, 'config', 'model-router.json'), parsed);
-    json(res, { ok: true });
-  } catch (e) { fail(res, e.message); }
-}
-
-// ─── API: Pipelines ────────────────────────────────────────────────
-
-function getPipelines(req, res) {
-  const data = readJSON(path.join(ROOT, 'config', 'pipelines.json'));
-  if (!data) return fail(res, 'pipelines.json not found', 404);
-  json(res, data);
-}
-
-async function savePipelines(req, res) {
-  const body = await readBody(req);
-  try {
-    const parsed = JSON.parse(body);
-    const err = validatePipelines(parsed);
-    if (err) return fail(res, `Invalid pipelines.json: ${err}`, 400);
-    atomicWriteJSON(path.join(ROOT, 'config', 'pipelines.json'), parsed);
-    json(res, { ok: true });
-  } catch (e) { fail(res, e.message); }
 }
 
 // ─── API: Brain Backend Status ──────────────────────────────────────
@@ -431,27 +326,6 @@ function getBrainRelated(req, res, url) {
     }).filter(Boolean);
     json(res, full);
   } catch (e) { fail(res, e.message); }
-}
-
-// ─── API: Billing ──────────────────────────────────────────────────
-
-function getBillingLogs(req, res) {
-  const logFile = path.join(DATA, 'cost-tracker.log');
-  if (!fs.existsSync(logFile)) return json(res, []);
-  const lines = fs.readFileSync(logFile, 'utf-8').trim().split('\n').filter(Boolean);
-  const entries = lines.map(line => {
-    const parts = line.split(' | ');
-    const multMatch = line.match(/\| x([\d.]+) \|/);
-    return {
-      raw: line,
-      timestamp: parts[0] || '',
-      agent: parts[1] || '',
-      model: parts[2] || '',
-      multiplier: multMatch ? parseFloat(multMatch[1]) : 0,
-      message: parts.slice(4).join(' | ') || '',
-    };
-  });
-  json(res, entries.reverse());
 }
 
 // ─── API: Curation ─────────────────────────────────────────────────
@@ -650,10 +524,6 @@ function handleAPI(req, res, url) {
   const p = url.pathname;
 
   if (p === '/api/status' && m === 'GET') return getStatus(req, res);
-  if (p === '/api/models' && m === 'GET') return getModels(req, res);
-  if (p === '/api/models' && m === 'PUT') return saveModels(req, res);
-  if (p === '/api/pipelines' && m === 'GET') return getPipelines(req, res);
-  if (p === '/api/pipelines' && m === 'PUT') return savePipelines(req, res);
   if (p === '/api/brain/backend' && m === 'GET') return getBrainBackend(req, res);
   if (p === '/api/brain/backend-config' && m === 'GET') return getBrainConfig(req, res);
   if (p === '/api/brain/backend-config' && m === 'PUT') return saveBrainConfig(req, res);
@@ -663,7 +533,6 @@ function handleAPI(req, res, url) {
   if (p.match(/^\/api\/brain\/entry\//) && m === 'GET') return getBrainEntry(req, res, url);
   if (p.match(/^\/api\/brain\/entry\//) && m === 'DELETE') return deleteBrainEntry(req, res, url);
   if (p.match(/^\/api\/brain\/related\//) && m === 'GET') return getBrainRelated(req, res, url);
-  if (p === '/api/billing/logs' && m === 'GET') return getBillingLogs(req, res);
   if (p === '/api/hooks' && m === 'GET') return getHooks(req, res);
   if (p.match(/^\/api\/hooks\/toggle\//) && m === 'PUT') return toggleHook(req, res, url);
   if (p === '/api/hooks/config' && m === 'GET') return getHooksConfig(req, res);
