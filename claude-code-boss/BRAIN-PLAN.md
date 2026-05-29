@@ -285,9 +285,12 @@ Progresso de implementação (branch `refactor/slim-down`):
 - ✅ **Passo 1** — Admission control + `recurrence` + `merge()` + contradição (agente) — `c43b4ef`
 - ✅ **Passo 2** — Rerank com decay — `73cc107`
 - ✅ **Passo 2.3** — Prune/eviction com archive graceful — `fed617e`
-- ⬜ **Passo 3** — Indexar memória nativa (`brain-index-native.js`)
-- ⬜ **Passo 4** — Skill promotion (o pulo do gato)
-- ⬜ **Passo 5** — Reconciliar F4
+- ✅ **Passo 3** — Indexar memória nativa (`brain-index-native.js`) — `92114c1`
+- ✅ **Passo 4** — Skill promotion (`brain-promote.js`) — `33b9779`
+- ✅ **Passo 5** — Reconciliar F4: analyzers emitem sempre → admission funde →
+  `recurrence` sobe → promoção. Loop fechado.
 
-Todos os gates validados contra pesquisa externa+interna. Núcleo de higiene (F2)
-entregue e testado (unit + npm test 26/26 + brain-test).
+**PLANO IMPLEMENTADO.** Todos os gates validados contra pesquisa externa+interna e
+todos os passos entregues. O loop completo: captura → admission (limpa/funde) →
+rerank (recupera melhor) → prune (remove morto) → recorrência → skill promotion.
+Testado (unit por passo + npm test 26/26 + brain-test + smoke).

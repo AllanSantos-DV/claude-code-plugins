@@ -61,7 +61,12 @@ You have `memory: user` — your persistent directory at `~/.claude/agent-memory
 2. **Read payloads** from `${CLAUDE_PLUGIN_DATA}/detect/` (list with Glob, read each).
 3. **Analyze** each payload using the pattern-detection skill methodology (two-axis analysis, 7 categories, behavioral signals). Each payload's `transcriptContext` is already cleaned: text blocks as-is, tool_use blocks simplified to `[Tool: name]`.
 4. **Write findings**: append to MEMORY.md index + append to the relevant topic file (or create it). Use the Write tool.
-5. **Save to Knowledge Base**: for any new lesson (not a repeat/reinforcement), write a structured payload to `brain-pending/` for the brain-indexer to process:
+5. **Save to Knowledge Base**: write a structured payload to `brain-pending/` for
+   **every** lesson observed — new OR a repeat/reinforcement. Do **not** pre-dedup
+   here: the brain-indexer's Admission Control decides admit/merge/skip. A repeat is
+   **merged** there, which **bumps the entry's `recurrence`** — the signal that
+   drives Skill Promotion (`brain-promote.js`). Suppressing repeats would starve
+   promotion, so always emit.
    - Path: `${CLAUDE_PLUGIN_DATA}/brain-pending/pattern-<sessionId>-<turn>.json`
    - Format:
      ```json
