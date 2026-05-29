@@ -39,6 +39,88 @@ function cosineSimilarity(a, b) {
   return denom === 0 ? 0 : dot / denom;
 }
 
+// ── Rerank with decay (BRAIN-PLAN §2.2) ──
+// Combined score = weighted sum of relevance (cosine) + recency (exp decay) +
+// frequency (access_count) + importance (confidence), min-max normalized over the
+// candidate set. Grounded in Generative Agents (Stanford) retrieval scoring.
+
+const DEFAULT_RERANK = {
+  enabled: true,
+  weights: { relevance: 0.5, recency: 0.2, frequency: 0.15, confidence: 0.15 },
+  halfLifeDays: 30,
+};
+let _rerankCfg = null;
+
+function loadRerankConfig() {
+  if (_rerankCfg) return _rerankCfg;
+  _rerankCfg = DEFAULT_RERANK;
+  try {
+    const cfgPath = path.join(
+      process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..'),
+      'config', 'brain-config.json'
+    );
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
+    const r = cfg?.kb?.rerank;
+    if (r) {
+      _rerankCfg = {
+        enabled: r.enabled !== false,
+        weights: { ...DEFAULT_RERANK.weights, ...(r.weights || {}) },
+        halfLifeDays: r.halfLifeDays || DEFAULT_RERANK.halfLifeDays,
+      };
+    }
+  } catch { /* defaults */ }
+  return _rerankCfg;
+}
+
+function recencyScore(iso, halfLifeDays, nowMs) {
+  const t = iso ? Date.parse(iso) : NaN;
+  if (!Number.isFinite(t)) return 0;
+  const ageDays = Math.max(0, (nowMs - t) / 86400000);
+  return Math.pow(0.5, ageDays / Math.max(halfLifeDays, 0.0001)); // exp decay by half-life
+}
+
+/**
+ * Rerank candidates by combined score. Each candidate: { score (cosine),
+ * confidence, accessCount, createdAt, lastAccessed, ... }. minScore already
+ * applied on cosine (relevance gate) before calling this.
+ */
+function applyRerank(candidates, opts = {}) {
+  const cfg = loadRerankConfig();
+  if (opts.rerank === false || cfg.enabled === false || candidates.length === 0) {
+    return candidates.sort((a, b) => b.score - a.score);
+  }
+  const nowMs = Date.now();
+  const w = cfg.weights;
+
+  // Precompute raw components
+  const rows = candidates.map(c => ({
+    c,
+    rel: c.score || 0,
+    rec: recencyScore(c.lastAccessed || c.createdAt, cfg.halfLifeDays, nowMs),
+    freq: c.accessCount || 0,
+    conf: typeof c.confidence === 'number' ? c.confidence : 0.5,
+  }));
+
+  // Min-max normalize rel, rec, freq over the candidate set (conf already 0-1)
+  const norm = (key) => {
+    const vals = rows.map(r => r[key]);
+    const min = Math.min(...vals), max = Math.max(...vals);
+    const span = max - min;
+    return (v) => (span <= 0 ? (max > 0 ? 1 : 0) : (v - min) / span);
+  };
+  const nRel = norm('rel'), nRec = norm('rec'), nFreq = norm('freq');
+
+  for (const r of rows) {
+    r.c.relevanceScore = r.rel;
+    r.c.rerankScore =
+      w.relevance * nRel(r.rel) +
+      w.recency * nRec(r.rec) +
+      w.frequency * nFreq(r.freq) +
+      w.confidence * r.conf;
+  }
+  return rows.sort((a, b) => b.c.rerankScore - a.c.rerankScore).map(r => r.c);
+}
+
 function getProjectDir() {
   const dir = path.join(STORE_DIR, 'brain', _project);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -206,7 +288,7 @@ async function searchSqlite(queryVector, opts = {}) {
   // Load all vectors + entries for this project
   const rows = _db.prepare(`
     SELECT e.id, e.title, e.summary, e.type, e.confidence, e.created_at,
-           e.access_count, em.vector, em.dimensions
+           e.last_accessed, e.access_count, em.vector, em.dimensions
     FROM entries e
     LEFT JOIN embeddings em ON em.entry_id = e.id
     WHERE e.project = ? ${type ? 'AND e.type = ?' : ''}
@@ -227,14 +309,16 @@ async function searchSqlite(queryVector, opts = {}) {
         type: row.type,
         confidence: row.confidence,
         createdAt: row.created_at,
+        lastAccessed: row.last_accessed,
         accessCount: row.access_count,
         score,
       });
     }
   }
 
-  scored.sort((a, b) => b.score - a.score);
-  return scored.slice(0, topK);
+  // Relevance gate (minScore on cosine) already applied; rerank survivors by
+  // combined score (relevance + recency + frequency + confidence).
+  return applyRerank(scored, opts).slice(0, topK);
 }
 
 async function searchByKeywordsSqlite(keywords, opts = {}) {
@@ -333,7 +417,7 @@ async function searchJson(queryVector, opts = {}) {
   const project = opts.project || _project;
   const dir = getProjectDir();
 
-  const entries = fs.readdirSync(path.join(dir, 'entries'))
+  const candidates = fs.readdirSync(path.join(dir, 'entries'))
     .filter(f => f.endsWith('.json'))
     .map(f => {
       const e = JSON.parse(fs.readFileSync(path.join(dir, 'entries', f), 'utf-8'));
@@ -348,18 +432,17 @@ async function searchJson(queryVector, opts = {}) {
       if (queryVector && vec) {
         score = cosineSimilarity(queryVector, vec);
       }
-      return { ...e, score };
+      return {
+        id: e.id, title: e.title, summary: e.summary,
+        type: e.type, confidence: e.confidence,
+        createdAt: e.created_at, lastAccessed: e.last_accessed,
+        accessCount: e.access_count, score,
+      };
     })
     .filter(Boolean)
-    .filter(e => e.score >= minScore)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, topK);
+    .filter(e => e.score >= minScore);
 
-  return entries.map(e => ({
-    id: e.id, title: e.title, summary: e.summary,
-    type: e.type, confidence: e.confidence,
-    createdAt: e.created_at, accessCount: e.access_count, score: e.score,
-  }));
+  return applyRerank(candidates, opts).slice(0, topK);
 }
 
 async function searchByKeywordsJson(keywords, opts = {}) {
