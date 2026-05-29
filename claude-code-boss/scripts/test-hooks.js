@@ -125,27 +125,11 @@ const TESTS = [
     payload: { session_id: SESSION },
     expect: { noError: true },
   },
-  {
-    name: 'model-router      [SessionStart]',
-    script: 'model-router.js',
-    payload: { session_id: SESSION },
-    expect: { noError: true },
-  },
 
   // ── PreToolUse / Write|Edit ───────────────────────────────────────────────
   {
     name: 'brain-retrieve    [PreToolUse/Edit]',
     script: 'brain-retrieve.js',
-    payload: {
-      tool_name: 'Edit',
-      tool_input: { file_path: path.join(SCRIPTS, '..', 'scripts', 'curation-guard.js') },
-      session_id: SESSION,
-    },
-    expect: { noError: true },
-  },
-  {
-    name: 'discipline-guard  [PreToolUse/Edit]',
-    script: 'discipline-guard.js',
     payload: {
       tool_name: 'Edit',
       tool_input: { file_path: path.join(SCRIPTS, '..', 'scripts', 'curation-guard.js') },
@@ -330,38 +314,6 @@ const TESTS = [
     expect: { noError: true },
   },
 
-  // ── SubagentStart / SubagentStop ──────────────────────────────────────────
-  {
-    name: 'ack-tracker       [SubagentStart]',
-    script: 'ack-tracker.js',
-    args: ['start'],
-    payload: { session_id: SESSION, subagent_id: 'test-agent-001' },
-    expect: { noError: true },
-  },
-  {
-    name: 'ack-tracker       [SubagentStop]',
-    script: 'ack-tracker.js',
-    args: ['stop'],
-    payload: { session_id: SESSION, subagent_id: 'test-agent-001' },
-    expect: { noError: true },
-  },
-  {
-    name: 'ack-tracker       [Stop/report]',
-    script: 'ack-tracker.js',
-    args: ['report'],
-    payload: { event: 'Stop', session_id: SESSION },
-    expect: { noError: true },
-  },
-  {
-    name: 'cost-tracker      [SubagentStop]',
-    script: 'cost-tracker.js',
-    payload: {
-      session_id: SESSION,
-      usage: { input_tokens: 1000, output_tokens: 500, cache_read_input_tokens: 200 },
-    },
-    expect: { noError: true },
-  },
-
   // ── Stop ─────────────────────────────────────────────────────────────────
   {
     name: 'pattern-detect    [Stop]',
@@ -392,15 +344,6 @@ const TESTS = [
     script: 'brain-retrieve-prompt.js',
     payload: {
       prompt: 'como configurar os hooks do plugin',
-      session_id: SESSION,
-    },
-    expect: { noError: true },
-  },
-  {
-    name: 'lesson-inject     [UserPromptSubmit→reads memory]',
-    script: 'lesson-inject.js',
-    payload: {
-      prompt: 'version bump no workflow do CI causou conflito',
       session_id: SESSION,
     },
     expect: { noError: true },

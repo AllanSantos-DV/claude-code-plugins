@@ -1,6 +1,6 @@
 ---
 name: config-dashboard
-description: "**WORKFLOW SKILL** — Local plugin configuration dashboard. USE FOR: opening the config UI, viewing/changing model-router, brain-config, pipelines, hooks, billing logs, searching the knowledge base. DO NOT USE FOR: editing config files directly via Write tool when user asks for dashboard (use the dashboard instead), non-plugin configuration."
+description: "**WORKFLOW SKILL** — Local plugin configuration dashboard. USE FOR: opening the config UI, viewing/changing brain-config, hooks, searching the knowledge base. DO NOT USE FOR: editing config files directly via Write tool when user asks for dashboard (use the dashboard instead), non-plugin configuration."
 ---
 
 # Config Dashboard — Launch & Usage
@@ -26,13 +26,12 @@ After launching, read the output for the URL (pattern: `http://localhost:<port>`
 
 > **Dashboard aberto em: http://localhost:XXXX**
 >
-> Abas disponíveis: Home, Models, Pipelines, Brain KB, Billing, Hooks
+> Abas disponíveis: Home, Brain KB, Hooks, Logs
 
 ## When the User Asks
 
 - **"Abre a config"** / **"Open dashboard"** → Run `node scripts/dashboard.js`, show the URL
 - **"Quero ver os hooks"** → Launch dashboard and mention the Hooks tab
-- **"Preciso mudar o model-router"** → Launch dashboard and mention the Models tab (has save button)
 - **"Quero ver o que tem no brain"** → Launch dashboard and mention the Brain KB tab
 - **"Dashboard já está rodando"** → Do NOT launch a second instance — ask which port it's on or check for running `node scripts/dashboard.js` processes
 - **"Porta fixa"** → Suggest `$env:DASHBOARD_PORT=4500` before launching so the URL is predictable
@@ -41,12 +40,10 @@ After launching, read the output for the URL (pattern: `http://localhost:<port>`
 
 | Tab | Purpose |
 |-----|---------|
-| Home | System overview: models, pipelines, KB stats, billing, hooks status |
-| Models | View/edit model-router.json tiers and per-agent config |
-| Pipelines | View pipeline definitions with expandable step details |
+| Home | System overview: KB stats, hooks status, uptime |
 | Brain KB | Select project, search KB, view/delete entries, backend status |
-| Billing | Cost tracker logs with agent filter |
-| Hooks | View all registered hooks, toggle active/inactive |
+| Hooks | View all registered hooks, toggle active/inactive; edit hooks-config + brain-config |
+| Logs | Dashboard + hook error logs (ring buffer) |
 
 ## Port Strategy
 
