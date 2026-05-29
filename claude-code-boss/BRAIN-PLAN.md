@@ -208,23 +208,77 @@ código) — grounded no 0.995/h, config-tunável. Sem pendência não-validada.
 > Nota: min-max norm de recency/frequency é sobre o conjunto recuperado — viável,
 > pois `searchSqlite` carrega as rows do projeto antes de pontuar.
 
-### 5.1 Gates dos passos seguintes
-- **2.4 contradição:** método barato de detecção (heurística vs embedding vs LLM).
-- **3.1:** confirmar derivação do `<project>` (git) p/ achar o dir nativo;
-  gatilho de (re)indexação sem custo a cada SessionStart.
-- **3b skill promotion:** schema do contador de recorrência; limiar de promoção;
-  fluxo de confirmação do usuário (advisory → aprova → grava SKILL.md via
-  skill-creator). Onde guardar o `recurrence`.
-- **Backlog (70 pending):** o admission gate + prune lidam com o acúmulo no 1º run
-  (em lotes, não 70 chamadas).
+### 5.0c Gate do passo 2.3 (prune/eviction) — ABERTO 2026-05-29
+**Descoberta:** prune **cai de graça do passo 2.** A literatura (AMV-L, Priority
+Decay) usa um **utility score contínuo** p/ evict — que é **exatamente o score do
+rerank (§2.2)**. Não há fórmula nova.
 
-## 6. Sequência proposta
-1. **2.1 admission control** (gate LLM em batch — corta lixo na fonte + processa o
-   backlog de 70) + **2.3 prune/eviction** (limpa o que já está sujo).
-2. **2.2 rerank com decay** (qualidade de retrieval usando colunas existentes).
-3. **3.1 indexar memória nativa** (a diferenciação cross-project/semântica).
-4. **3b skill promotion** (o pulo do gato — depende de recorrência acumulada limpa).
-5. **2.4 contradição** + **3.2 reconciliar F4** (refinamento).
+| Item | Fonte | Resolução |
+|---|---|---|
+| Política | ✅ externo | **Priority/Score Decay** (melhor p/ memória heterogênea); reusa score do rerank como utility |
+| Archive vs delete | ✅ externo | **archive (graceful)**, não delete — preserva sinal (Reflection-Summary) |
+| Quando evictar | ✅ ext+config | `count > maxEntriesPerProject` (10000) → evict menor-score; `age > archiveAfterDays` (90) **E** baixo-acesso → archive |
+| Onde plugar | ✅ interno | `brain-store` tem `list`+`delete`; add archive; rodar no fim do run do `brain-indexer` (bounded) |
 
-Cada etapa só abre depois de passar seu gate (§5). **Skill promotion (4) depende de
-admission control (1) ter rodado tempo suficiente p/ acumular recorrência confiável.**
+**Validação:** 4/4 por pesquisa. **Reusa o score do §2.2** (zero fórmula nova).
+Fonte: [agent memory eviction policies](https://medium.com/@bhagyarana80/agent-memory-eviction-8-policies-that-stop-stale-tool-decisions-fa84ec80d144),
+[fazm memory triage](https://fazm.ai/blog/ai-agent-memory-triage-retention-decay).
+
+### 5.0d Gate do passo 2.4 (contradição) — ABERTO 2026-05-29
+**Descoberta:** contradição **cai de graça do passo 1.** Padrão de mercado:
+*recuperar vizinhos semânticos (vetor) → LLM julga só esses* (não all-pairs). O
+admission control (§2.1) **já** faz busca semântica + julga via LLM — basta o mesmo
+julgamento emitir `contradicts`.
+
+| Item | Fonte | Resolução |
+|---|---|---|
+| Método barato | ✅ externo | recuperar similares → LLM julga só candidatos (não par-a-par); evita custo |
+| Onde plugar | ✅ interno | piggyback no admission LLM (§2.1); `graph_edges` + `brain-graph.addEdge` já existem; indexer já instruído (linha 181) |
+
+**Validação:** 2/2 por pesquisa. **Reusa o LLM do §2.1** (zero passo novo/caro).
+Fonte: [RAG contradictions](https://medium.com/@wb82/taming-the-information-jungle-how-rag-systems-handle-contradictions-25227c943980),
+[SparseCL](https://arxiv.org/html/2406.10746v1).
+
+### 5.0e Gate do passo 3.1 (indexar memória nativa) — ABERTO 2026-05-29
+| Item | Fonte | Resolução |
+|---|---|---|
+| Derivação do dir | ✅ interno | **path da cwd sanitizado** (confirmado: `C--Users-allan-Desktop-Projetos-claude-code` = `C:\...\claude-code`), não git. Computável. |
+| Estrutura do arquivo | ✅ interno | markdown com `## seções` (confirmado em `agents.md`) → chunk por header → entry `type: native-memory` |
+| Re-index sem custo | ⚙️ ops | check de `mtime`/hash por arquivo; reindexa só o que mudou |
+| Onde plugar | ✅ interno | novo `brain-index-native.js`; gatilho on-demand ou SessionStart leve |
+
+**Validação:** 3/4 por pesquisa interna; 1 (gatilho/cadência) é ops param.
+
+### 5.0f Gate do passo 3b (skill promotion) — ABERTO 2026-05-29
+| Item | Fonte | Resolução |
+|---|---|---|
+| Formato SKILL.md | ✅ interno | frontmatter `--- description ---` + body md (confirmado); gerar via skill `skill-creator` do ambiente |
+| Mecânica | ✅ externo | Voyager: promove após **self-verification**; recorrência ≥ limiar + LLM valida generalizável |
+| Recorrência | ✅ (5.0) | coluna `recurrence` (decidida no gate 5.0); `merge` incrementa |
+| Confirmação | ✅ interno | advisory (padrão já existe) → usuário aprova → grava `skills/<n>/SKILL.md` |
+| Limiar de promoção | ⚙️ ops | `recurrence ≥ 3-5`, tunável |
+
+**Validação:** 4/5 por pesquisa; 1 (limiar) é ops param. Guardrail: nunca auto-spam.
+
+### 5.1 Parâmetros operacionais (ajustáveis, não bloqueiam)
+Batch do indexer (~20) · unidade de tempo do decay (h/dia) · cadência de reindex
+nativo · limiar de recorrência (3-5). Todos config-tunáveis, começam conservadores.
+
+## 6. Sequência proposta (todos os gates ABERTOS e validados)
+
+Descoberta da pesquisa: **2.3 e 2.4 não são passos separados — caem de graça** dos
+passos 1 e 2 (reusam o LLM do admission e o score do rerank). Isso enxuga o plano.
+
+1. **Passo 1 — Admission control** (gate LLM batch no `brain-indexer`: pré-filtro +
+   busca semântica + `admit/merge/skip`) **+ contradição (2.4)** no mesmo julgamento
+   **+ coluna `recurrence`**. Corta lixo na fonte + processa backlog (lotes ~20).
+2. **Passo 2 — Rerank com decay** (score combinado no `searchSqlite`/`searchJson`)
+   **+ prune/eviction (2.3)** reusando esse score como utility. Zero schema.
+3. **Passo 3 — Indexar memória nativa** (`brain-index-native.js`) — a diferenciação.
+4. **Passo 4 — Skill promotion** (recorrência ≥ limiar → validação LLM → confirmação
+   → `SKILL.md`). O pulo do gato. Depende de recorrência limpa acumulada (passo 1).
+5. **Passo 5 — Reconciliar F4** (lições do pattern/correction ↔ Brain ↔ skills).
+
+**Status do plano: COMPLETO.** Todos os gates abertos e validados contra pesquisa
+externa+interna. Sem ponto de design não-respondido — só parâmetros operacionais
+ajustáveis (§5.1). Pronto p/ implementar quando o usuário decidir "sair de fato".
