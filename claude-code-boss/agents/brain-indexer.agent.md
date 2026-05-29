@@ -168,6 +168,16 @@ mv "${CLAUDE_PLUGIN_DATA}/brain-pending/<file>" "${CLAUDE_PLUGIN_DATA}/brain-pen
 
 Record the payload filename + entry ID so you don't re-process it.
 
+### Step 6 — Prune (end of run)
+
+After the batch is indexed, run a single maintenance prune to keep the KB healthy
+(graceful archive, not delete — archived rows go to `entries_archive`):
+```javascript
+const r = await store.prune({ project });
+// archives stale (older than archiveAfterDays, no access, no recurrence) and
+// evicts lowest-utility if over maxEntriesPerProject. Reuses the rerank signals.
+```
+
 ## Script Template
 
 Here's a template you can use. Save it and update the entry fields per payload:
