@@ -1,141 +1,58 @@
 #!/usr/bin/env node
 /**
- * Pattern Detect — Stop hook that captures transcript excerpts for pattern analysis.
+ * pattern-detect.js — Stop hook (lean, throttled advisory).
  *
- * Runs after each Claude response (every 4 turns). Reads the transcript JSONL
- * and extracts cleaned-up conversation context (text + tool names, no raw tool
- * call data) for the pattern-analyzer subagent.
+ * DESIGN (in-loop capture): instead of dumping the transcript for a separate
+ * analyzer subagent to re-read (expensive/lossy), we just occasionally remind the
+ * in-loop agent to capture reusable workflow patterns via the `capture_lesson` MCP
+ * tool (type: pattern). The agent — with full context — writes the curated pattern;
+ * the tool dedups/merges (bumping recurrence). Throttled so it doesn't nag.
  */
+'use strict';
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const crypto = require('crypto');
 
-const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
-const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
-const DETECT_DIR = path.join(DATA_DIR, 'detect');
-const COUNTER_DIR = path.join(DATA_DIR, '.counters');
-
-function loadHooksCfg() {
-  try {
-    return JSON.parse(require('fs').readFileSync(path.join(PLUGIN_ROOT, 'config', 'hooks-config.json'), 'utf-8'));
-  } catch (err) {
-    console.error(`[PATTERN-DETECT] Failed to load hooks-config.json: ${err.message}`);
-    return {};
-  }
-}
-const _hcfg = loadHooksCfg().patternDetect || {};
-const DETECT_INTERVAL = _hcfg.detectInterval ?? 4;
-const MAX_TRANSCRIPT_LINES = _hcfg.maxTranscriptLines ?? 10;
+const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
+  || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+const STATE = path.join(DATA_DIR, '.runtime', 'pattern-detect-state.json');
+const EVERY = 6; // remind at most once per 6 stops
 
 function readStdin() {
   return new Promise((resolve) => {
-    let data = '';
+    let d = '';
     process.stdin.setEncoding('utf-8');
-    process.stdin.on('data', chunk => data += chunk);
-    process.stdin.on('end', () => resolve(data));
+    process.stdin.on('data', c => d += c);
+    process.stdin.on('end', () => resolve(d));
   });
 }
 
-/**
- * Reads and cleans the transcript JSONL — text blocks as-is,
- * tool_use blocks simplified to [Tool: name].
- */
-function readTranscriptContext(transcriptPath) {
-  if (!transcriptPath || !fs.existsSync(transcriptPath)) return [];
-
+function tick() {
+  let n = 0;
+  try { n = JSON.parse(fs.readFileSync(STATE, 'utf-8')).n || 0; } catch { /* fresh */ }
+  n += 1;
   try {
-    const raw = fs.readFileSync(transcriptPath, 'utf-8').trim();
-    if (!raw) return [];
-
-    const entries = [];
-    for (const line of raw.split('\n').filter(Boolean)) {
-      try {
-        const parsed = JSON.parse(line);
-        if (parsed.type !== 'user' && parsed.type !== 'assistant') continue;
-        if (!parsed.message || !parsed.message.content) continue;
-
-        const textContent = parsed.message.content
-          .map(block => {
-            if (block.type === 'text') return block.text;
-            if (block.type === 'tool_use') return `[Tool: ${block.name || 'unknown'}]`;
-            return null;
-          })
-          .filter(Boolean)
-          .join('\n');
-
-        if (!textContent) continue;
-
-        entries.push({
-          role: parsed.message.role,
-          content: textContent,
-        });
-      } catch { continue; }
-    }
-
-    return entries.slice(-MAX_TRANSCRIPT_LINES);
-  } catch {
-    return [];
-  }
+    fs.mkdirSync(path.dirname(STATE), { recursive: true });
+    fs.writeFileSync(STATE, JSON.stringify({ n }));
+  } catch { /* best effort */ }
+  return n;
 }
-
-// ─── Main ───
 
 (async () => {
   try {
-    const raw = await readStdin();
-    if (!raw) {
-      process.stdout.write(JSON.stringify({}));
-      return;
-    }
-
-    const event = JSON.parse(raw);
-
-    const sessionId = event.session_id || event.sessionId || 'default';
-    const transcriptPath = event.transcript_path || '';
-
-    // Turn counter
-    if (!fs.existsSync(COUNTER_DIR)) fs.mkdirSync(COUNTER_DIR, { recursive: true });
-    const counterFile = path.join(COUNTER_DIR, `${sessionId.slice(0, 8)}.json`);
-    let turnCount = 0;
-    try {
-      const data = JSON.parse(fs.readFileSync(counterFile, 'utf-8'));
-      turnCount = data.turn || 0;
-    } catch (err) { console.error(`[PATTERN-DETECT] Turn counter read error: ${err.message}`); }
-    turnCount++;
-    fs.writeFileSync(counterFile, JSON.stringify({ sessionId, turn: turnCount }));
-
-    if (turnCount % DETECT_INTERVAL !== 0) {
-      process.stdout.write(JSON.stringify({ skipped: `turn_${turnCount}` }));
-      return;
-    }
-
-    if (!fs.existsSync(DETECT_DIR)) {
-      fs.mkdirSync(DETECT_DIR, { recursive: true });
-    }
-
-    // Read cleaned transcript context
-    const transcriptContext = readTranscriptContext(transcriptPath);
-    const dialog = event.dialog || [];
-
-    const payload = {
-      sessionId: sessionId || `ses_${crypto.randomUUID().slice(0, 12)}`,
-      turnNumber: turnCount,
-      detectedAt: new Date().toISOString(),
-      transcriptContext,   // cleaned: text + [Tool: name] only
-      dialog,              // raw dialog from event (fallback)
-      transcriptPath,
-      cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd(),
-    };
-
-    const filename = `detect-${sessionId.slice(0, 8)}-t${turnCount}.json`;
-    fs.writeFileSync(path.join(DETECT_DIR, filename), JSON.stringify(payload, null, 2));
-
-    console.error(`[PATTERN] Detection triggered at turn ${turnCount}`);
-
-    process.stdout.write(JSON.stringify({ turn: turnCount }));
-  } catch (err) {
-    console.error(`[PATTERN] Error: ${err.message}`);
-    process.stdout.write(JSON.stringify({ error: err.message }));
+    await readStdin();
+    const n = tick();
+    if (n % EVERY !== 0) { process.stdout.write('{}'); return; }
+    process.stdout.write(JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'Stop',
+        additionalContext:
+          'If a reusable workflow pattern emerged in this session (a shape worth ' +
+          'repeating), capture it via the `capture_lesson` MCP tool (type: "pattern"). ' +
+          'Only durable, generalizable patterns — skip one-offs.',
+      },
+    }));
+  } catch {
+    process.stdout.write('{}');
   }
 })();

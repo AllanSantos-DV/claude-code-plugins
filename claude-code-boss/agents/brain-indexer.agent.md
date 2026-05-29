@@ -1,7 +1,7 @@
 ---
 name: brain-indexer
 description: "Indexes work payloads into the knowledge base. Reads payloads from brain-pending/, generates embeddings via brain-embedder.js, creates structured entries with summary/tags/relations, saves to SQLite with vector + keyword + graph indexes."
-model: inherit
+model: haiku
 effort: low
 maxTurns: 10
 memory: user
