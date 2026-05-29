@@ -1,160 +1,60 @@
 #!/usr/bin/env node
 /**
- * Correction Detect — UserPromptSubmit hook.
+ * correction-detect.js — UserPromptSubmit hook (lean signal + advisory).
  *
- * Every 2 turns, reads the conversation transcript to extract the last
- * assistant response + current user message, and writes a payload with
- * the FULL TURN CONTEXT so the correction-analyzer agent can understand
- * what the assistant said and what the user is replying to.
- *
- * No regex detection — LLM does the judgment in the subagent.
+ * DESIGN (in-loop capture): when the user's message looks like a correction, nudge
+ * the in-loop agent — who has full context — to call the `capture_lesson` MCP tool
+ * with a CURATED summary. We do NOT read the transcript or write bloated payloads
+ * here (that was the old, expensive, lossy path). The agent writes the lesson; the
+ * tool dedups/merges it (bumping recurrence). The agent is the judge — this is just
+ * a cheap heuristic nudge, so false positives are harmless.
  */
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
+'use strict';
 
-const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
-const PLUGIN_DATA = process.env.CLAUDE_PLUGIN_DATA || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
-const CORRECTIONS_DIR = path.join(PLUGIN_DATA, 'detect-corrections');
+// Cheap correction-signal cues (pt-BR + en). Errs toward nudging; the agent judges.
+const SIGNALS = [
+  /\bn[ãa]o\s+(é|era|faz|deveria|precisa|usa|assim)\b/i,
+  /\b(na verdade|ao inv[ée]s|em vez|deveria ter|era pra|t[áa] errado|isso est[áa] errado|corrig|p[óo]e|n[ãa]o foi isso)\b/i,
+  /\b(actually|you should have|that'?s wrong|incorrect|not what i|instead of|don'?t|no,|wrong)\b/i,
+  /\b(espera|para,|pera|opa,)\b/i,
+];
 
-function loadHooksCfg() {
-  try {
-    return JSON.parse(require('fs').readFileSync(path.join(PLUGIN_ROOT, 'config', 'hooks-config.json'), 'utf-8'));
-  } catch (err) {
-    console.error(`[CORRECTION-DETECT] Failed to load hooks-config.json: ${err.message}`);
-    return {};
-  }
+function looksLikeCorrection(msg) {
+  if (!msg || msg.length < 3) return false;
+  return SIGNALS.some(re => re.test(msg));
 }
-const _hcfg = loadHooksCfg().correctionDetect || {};
-const DETECT_INTERVAL = _hcfg.detectInterval ?? 2;
-const MAX_TRANSCRIPT_LINES = _hcfg.maxTranscriptLines ?? 6;
 
 function readStdin() {
-  return new Promise(resolve => {
-    let data = '';
+  return new Promise((resolve) => {
+    let d = '';
     process.stdin.setEncoding('utf-8');
-    process.stdin.on('data', c => data += c);
-    process.stdin.on('end', () => resolve(data));
+    process.stdin.on('data', c => d += c);
+    process.stdin.on('end', () => resolve(d));
   });
-}
-
-function getTurnCount(sessionId) {
-  const counterFile = path.join(CORRECTIONS_DIR, '.counter', `${sessionId.slice(0, 8)}.json`);
-  try {
-    const data = JSON.parse(fs.readFileSync(counterFile, 'utf-8'));
-    return (data.turn || 0) + 1;
-  } catch {
-    return 1;
-  }
-}
-
-function saveTurnCount(sessionId, turn) {
-  const dir = path.join(CORRECTIONS_DIR, '.counter');
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(
-    path.join(dir, `${sessionId.slice(0, 8)}.json`),
-    JSON.stringify({ sessionId, turn }),
-  );
-}
-
-/**
- * Reads the conversation transcript (JSONL format) to extract the last few turns.
- *
- * Format observed:
- *   {"type":"user","message":{"role":"user","content":[{"type":"text","text":"..."}]}}
- *   {"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"..."},{"type":"tool_use",...}]}}
- *
- * Returns an array of { role, content } entries with extracted text content.
- */
-function readTranscriptContext(transcriptPath) {
-  if (!transcriptPath || !fs.existsSync(transcriptPath)) return [];
-
-  try {
-    const raw = fs.readFileSync(transcriptPath, 'utf-8').trim();
-    if (!raw) return [];
-
-    const lines = raw.split('\n').filter(Boolean);
-    const entries = [];
-
-    for (const line of lines) {
-      try {
-        const parsed = JSON.parse(line);
-
-        // Only extract user and assistant messages
-        if (parsed.type !== 'user' && parsed.type !== 'assistant') continue;
-        if (!parsed.message || !parsed.message.content) continue;
-
-        // Extract: text blocks as-is, tool_use blocks simplified to [Tool: name]
-        const textContent = parsed.message.content
-          .map(block => {
-            if (block.type === 'text') return block.text;
-            if (block.type === 'tool_use') return `[Tool: ${block.name || 'unknown'}]`;
-            return null;
-          })
-          .filter(Boolean)
-          .join('\n');
-
-        if (!textContent) continue;
-
-        entries.push({
-          role: parsed.message.role,
-          content: textContent,
-        });
-      } catch {
-        continue;
-      }
-    }
-
-    return entries.slice(-MAX_TRANSCRIPT_LINES);
-  } catch {
-    return [];
-  }
 }
 
 (async () => {
   try {
     const raw = await readStdin();
-    if (!raw) { process.stdout.write(JSON.stringify({})); return; }
+    if (!raw) { process.stdout.write('{}'); return; }
+    let event;
+    try { event = JSON.parse(raw); } catch { process.stdout.write('{}'); return; }
+    const msg = event.prompt || event.userMessage || event.text || '';
 
-    const event = JSON.parse(raw);
-    const userMessage = event.prompt || event.userMessage || '';
-    const sessionId = event.session_id || event.sessionId || 'default';
-    const transcriptPath = event.transcript_path || '';
+    if (!looksLikeCorrection(msg)) { process.stdout.write('{}'); return; }
 
-    if (!userMessage) { process.stdout.write(JSON.stringify({})); return; }
-
-    // Rate limit: every DETECT_INTERVAL turns
-    const turn = getTurnCount(sessionId);
-    saveTurnCount(sessionId, turn);
-    if (turn % DETECT_INTERVAL !== 0) {
-      process.stdout.write(JSON.stringify({ skipped: `turn_${turn}` }));
-      return;
-    }
-
-    // Read transcript for full turn context
-    const transcriptContext = readTranscriptContext(transcriptPath);
-
-    const dir = CORRECTIONS_DIR;
-    fs.mkdirSync(dir, { recursive: true });
-
-    const payload = {
-      sessionId,
-      turnNumber: turn,
-      detectedAt: new Date().toISOString(),
-      userMessage: userMessage.slice(0, 3000),
-      transcriptContext, // { role, content }[] — last N entries
-      transcriptPath,
-      cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd(),
-    };
-
-    const filename = `correction-${sessionId.slice(0, 8)}-t${turn}.json`;
-    fs.writeFileSync(path.join(dir, filename), JSON.stringify(payload, null, 2));
-
-    console.error(`[CORRECTION] Payload written at turn ${turn} (${transcriptContext.length} transcript entries)`);
-
-    process.stdout.write(JSON.stringify({ turn, transcriptEntries: transcriptContext.length }));
-  } catch (err) {
-    console.error(`[CORRECTION] Error: ${err.message}`);
-    process.stdout.write(JSON.stringify({ error: err.message }));
+    process.stdout.write(JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: 'UserPromptSubmit',
+        additionalContext:
+          'The user may be correcting you. If so — and only if a generalizable lesson ' +
+          'exists — call the `capture_lesson` MCP tool with a curated {title, summary, ' +
+          'detail} (what you did, what was wrong, the rule to follow next time). You have ' +
+          'the full context; do not over-capture trivial back-and-forth.',
+      },
+    }));
+  } catch {
+    // best-effort hook — never block the prompt
+    process.stdout.write('{}');
   }
 })();

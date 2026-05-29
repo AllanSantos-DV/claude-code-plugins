@@ -24,14 +24,8 @@ const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '.
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
   || path.join(HOME, '.claude', 'plugins', 'data', 'claude-code-boss');
 const PENDING_DIR = path.join(DATA_DIR, 'brain-pending');
-const DETECT_DIR = path.join(DATA_DIR, 'detect');
-const CORRECTIONS_DIR = path.join(DATA_DIR, 'detect-corrections');
-const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');
-const TRIGGER_STATE_FILE = path.join(RUNTIME_DIR, 'trigger-advisory-state.json');
 
-// Backpressure: don't repeat trigger advisories every turn, and never display
-// an unbounded backlog count.
-const TRIGGER_COOLDOWN_TURNS = 3;
+// Never display an unbounded backlog count.
 const COUNT_CAP = 20;
 
 const AGENT_MEMORY_DIRS = [
@@ -83,15 +77,6 @@ function tokenize(text) {
     .filter(w => w.length > 2 && !STOP_WORDS.has(w));
 }
 
-function countPendingFiles(dir, prefix) {
-  try {
-    if (!fs.existsSync(dir)) return 0;
-    return fs.readdirSync(dir).filter(f => f.startsWith(prefix) && f.endsWith('.json')).length;
-  } catch {
-    return 0;
-  }
-}
-
 function checkPendingPayloads() {
   if (!fs.existsSync(PENDING_DIR)) return 0;
   try {
@@ -141,26 +126,6 @@ function findRelevantLessons(query, maxResults = LESSON_MAX_RESULTS) {
     }
   }
   return scored.sort((a, b) => b.score - a.score).slice(0, maxResults);
-}
-
-// ── Trigger advisory cooldown (backpressure) ──────────────────────────────────
-
-function loadTriggerState() {
-  try {
-    if (!fs.existsSync(TRIGGER_STATE_FILE)) return { turnsSinceLast: TRIGGER_COOLDOWN_TURNS };
-    return JSON.parse(fs.readFileSync(TRIGGER_STATE_FILE, 'utf-8'));
-  } catch {
-    return { turnsSinceLast: TRIGGER_COOLDOWN_TURNS };
-  }
-}
-
-function saveTriggerState(state) {
-  try {
-    fs.mkdirSync(RUNTIME_DIR, { recursive: true });
-    const tmp = TRIGGER_STATE_FILE + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(state, null, 2), 'utf-8');
-    fs.renameSync(tmp, TRIGGER_STATE_FILE);
-  } catch { /* best effort */ }
 }
 
 function fmtCount(n) {
@@ -218,25 +183,8 @@ function fmtCount(n) {
       }
     }
 
-    // 4. Triggers: ADVISORY only, gated by cooldown for backpressure
-    const triggerState = loadTriggerState();
-    if (triggerState.turnsSinceLast < TRIGGER_COOLDOWN_TURNS) {
-      saveTriggerState({ ...triggerState, turnsSinceLast: (triggerState.turnsSinceLast || 0) + 1 });
-    } else {
-      const triggerNotes = [];
-      const pendingPatterns = countPendingFiles(DETECT_DIR, 'detect-');
-      if (pendingPatterns > 0) {
-        triggerNotes.push(`${fmtCount(pendingPatterns)} workflow pattern(s) captured — run pattern-analyzer via Task if relevant.`);
-      }
-      const pendingCorrections = countPendingFiles(CORRECTIONS_DIR, 'correction-');
-      if (pendingCorrections > 0) {
-        triggerNotes.push(`${fmtCount(pendingCorrections)} user correction(s) captured — run correction-analyzer via Task if relevant.`);
-      }
-      if (triggerNotes.length > 0) {
-        outputs.push(`**Learning (optional, your call):**\n${triggerNotes.map(n => `• ${n}`).join('\n')}`);
-        saveTriggerState({ lastInjectedAt: new Date().toISOString(), turnsSinceLast: 0 });
-      }
-    }
+    // (Lesson capture is now in-loop via the capture_lesson MCP tool, nudged by
+    // correction-detect/pattern-detect. No analyzer-subagent trigger advisories.)
 
     if (outputs.length === 0) { process.stdout.write(JSON.stringify({})); return; }
 
