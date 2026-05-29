@@ -21,9 +21,21 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..', '..');
-const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
-  || path.join(process.env.HOME || process.env.USERPROFILE, '.claude', 'plugins', 'data', 'claude-code-boss');
+
+// Resolve plugin env vars robustly: ignore unexpanded "${...}" literals (some
+// install contexts don't expand .mcp.json env), derive sane defaults, and
+// normalize process.env so downstream requires (brain-store etc.) inherit them.
+function resolveEnv(name, fallback) {
+  const v = process.env[name];
+  const resolved = v && !v.includes('${') ? v : fallback;
+  process.env[name] = resolved;
+  return resolved;
+}
+const PLUGIN_ROOT = resolveEnv('CLAUDE_PLUGIN_ROOT', path.resolve(__dirname, '..', '..'));
+const DATA_DIR = resolveEnv(
+  'CLAUDE_PLUGIN_DATA',
+  path.join(process.env.HOME || process.env.USERPROFILE, '.claude', 'plugins', 'data', 'claude-code-boss')
+);
 
 const require = createRequire(import.meta.url);
 
