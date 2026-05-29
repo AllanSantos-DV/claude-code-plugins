@@ -121,6 +121,31 @@ function applyRerank(candidates, opts = {}) {
   return rows.sort((a, b) => b.c.rerankScore - a.c.rerankScore).map(r => r.c);
 }
 
+// Query-independent utility for eviction (AMV-L / Priority Decay): confidence +
+// recency + frequency(access+recurrence). No relevance term (no query at prune).
+function entryUtility(entry, nowMs, halfLifeDays) {
+  const rec = recencyScore(entry.last_accessed || entry.created_at, halfLifeDays, nowMs);
+  const freq = entry.access_count || 0;
+  const reinforce = entry.recurrence || 1;
+  const freqNorm = 1 - 1 / (1 + freq + reinforce); // 0..1, saturating
+  const conf = typeof entry.confidence === 'number' ? entry.confidence : 0.5;
+  return 0.4 * conf + 0.4 * rec + 0.2 * freqNorm;
+}
+
+function loadKbLimits() {
+  const out = { maxEntriesPerProject: 10000, archiveAfterDays: 90, halfLifeDays: loadRerankConfig().halfLifeDays };
+  try {
+    const cfgPath = path.join(
+      process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..'),
+      'config', 'brain-config.json'
+    );
+    const kb = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'))?.kb || {};
+    if (kb.maxEntriesPerProject) out.maxEntriesPerProject = kb.maxEntriesPerProject;
+    if (kb.archiveAfterDays) out.archiveAfterDays = kb.archiveAfterDays;
+  } catch { /* defaults */ }
+  return out;
+}
+
 function getProjectDir() {
   const dir = path.join(STORE_DIR, 'brain', _project);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -198,6 +223,12 @@ function createTablesSqlite() {
     CREATE INDEX IF NOT EXISTS idx_entries_project ON entries(project);
     CREATE INDEX IF NOT EXISTS idx_entries_created ON entries(created_at);
     CREATE INDEX IF NOT EXISTS idx_keywords_keyword ON keywords(keyword);
+    CREATE TABLE IF NOT EXISTS entries_archive (
+      id TEXT PRIMARY KEY,
+      data TEXT NOT NULL,
+      archived_at TEXT NOT NULL,
+      reason TEXT NOT NULL DEFAULT ''
+    );
   `);
 }
 
@@ -631,6 +662,55 @@ async function merge(id, patch = {}) {
   return merged;
 }
 
+function archiveSqlite(entry, reason) {
+  _db.prepare(`INSERT OR REPLACE INTO entries_archive (id, data, archived_at, reason) VALUES (?, ?, ?, ?)`)
+    .run(entry.id, JSON.stringify(entry), now(), reason);
+  deleteSqlite(entry.id);
+}
+
+/**
+ * Prune the KB (graceful archive, not delete) — BRAIN-PLAN §2.3.
+ * 1. Stale: entries older than archiveAfterDays with no access and no recurrence.
+ * 2. Over cap: if still over maxEntriesPerProject, archive lowest-utility.
+ * Archived rows move to entries_archive (recoverable). SQLite only; JSON no-op.
+ */
+async function prune(opts = {}) {
+  if (!_useSqlite) return { archivedStale: 0, archivedOverCap: 0, remaining: await count() };
+  const lim = loadKbLimits();
+  const maxEntries = opts.maxEntries || lim.maxEntriesPerProject;
+  const archiveAfterDays = opts.archiveAfterDays || lim.archiveAfterDays;
+  const nowMs = Date.now();
+  const project = opts.project || _project;
+  let archivedStale = 0, archivedOverCap = 0;
+
+  const all = _db.prepare(`SELECT * FROM entries WHERE project = ?`).all(project).map(rowToEntry);
+
+  // 1) Stale
+  const cutoff = nowMs - archiveAfterDays * 86400000;
+  for (const e of all) {
+    const created = Date.parse(e.created_at);
+    if (Number.isFinite(created) && created < cutoff && (e.access_count || 0) === 0 && (e.recurrence || 1) <= 1) {
+      archiveSqlite(e, `stale>${lim.archiveAfterDays}d`);
+      archivedStale++;
+    }
+  }
+
+  // 2) Over cap → archive lowest-utility
+  const live = _db.prepare(`SELECT * FROM entries WHERE project = ?`).all(project).map(rowToEntry);
+  if (live.length > maxEntries) {
+    const ranked = live
+      .map(e => ({ e, u: entryUtility(e, nowMs, lim.halfLifeDays) }))
+      .sort((a, b) => a.u - b.u);
+    const toRemove = live.length - maxEntries;
+    for (let i = 0; i < toRemove; i++) {
+      archiveSqlite(ranked[i].e, 'over-capacity');
+      archivedOverCap++;
+    }
+  }
+
+  return { archivedStale, archivedOverCap, remaining: await count(undefined, project) };
+}
+
 async function close() {
   if (_db) {
     _db.close();
@@ -651,7 +731,7 @@ function getStatus() {
 }
 
 module.exports = {
-  init, save, get, getRaw, merge, search, searchByKeywords,
+  init, save, get, getRaw, merge, prune, search, searchByKeywords,
   delete: delete_, list, count, close,
   getStorageType, getStatus, cosineSimilarity,
 };
