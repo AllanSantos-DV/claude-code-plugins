@@ -2,11 +2,12 @@
   "mcpServers": {
     "brain-server": {
       "command": "node",
-      "args": ["${CLAUDE_PLUGIN_ROOT}/servers/brain-server/index.js"],
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/servers/brain-server/index.js",
+        "--plugin-data", "${CLAUDE_PLUGIN_DATA}"
+      ],
       "env": {
-        "NODE_PATH": "${CLAUDE_PLUGIN_ROOT}/node_modules",
-        "CLAUDE_PLUGIN_ROOT": "${CLAUDE_PLUGIN_ROOT}",
-        "CLAUDE_PLUGIN_DATA": "${CLAUDE_PLUGIN_DATA}"
+        "NODE_PATH": "${CLAUDE_PLUGIN_ROOT}/node_modules"
       }
     }
   }
