@@ -39,6 +39,12 @@
       "minBashLines": 3,
       "minOutputChars": 500,
       "dedupThreshold": 0.95
+    },
+    "skillPromotion": {
+      "enabled": true,
+      "minRecurrence": 3,
+      "minConfidence": 0.8,
+      "types": ["lesson", "pattern"]
     }
   },
   "curation": {
