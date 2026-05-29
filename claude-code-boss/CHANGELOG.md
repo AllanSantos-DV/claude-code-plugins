@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### Added — Brain hygiene + in-loop learning (the differentiator)
+
+- **Admission control (A-MAC)** in `brain-indexer` — admit/merge/skip gate; merge
+  bumps a new `recurrence` column (migrated in place). Stops duplicate accumulation.
+- **Rerank with decay** in `brain-store.search` — combined score (relevance +
+  recency + frequency + confidence), Generative Agents pattern. Configurable via
+  `kb.rerank`. Zero schema change.
+- **Prune/eviction** (`brain-store.prune`) — graceful archive (not delete) to
+  `entries_archive`; stale + over-capacity, utility = AMV-L/Priority Decay.
+- **Native memory indexing** (`brain-index-native.js`) — indexes Claude's native
+  Auto Memory (`~/.claude/projects/<cwd>/memory/*.md`) into the Brain for semantic
+  + cross-project search the native layer lacks.
+- **Skill promotion** (`brain-promote.js`) — recurring lessons → global skills
+  (Voyager skill-induction); curated: scan→draft(staging)→approve. Never auto-spam.
+- **`capture_lesson` MCP tool** — in-loop curated lesson capture with inline
+  admission control. Replaces post-hoc transcript-parsing analyzers.
+
+### Removed — token-villain cleanup
+
+- **`pattern-analyzer` + `correction-analyzer` subagents** — re-read raw transcripts
+  on a premium model (~50k/run, 96% noise). Replaced by in-loop `capture_lesson`
+  (~200 tokens). `correction-detect`/`pattern-detect` are now lean advisory nudges
+  (no transcript reading, no payloads). `brain-indexer` pinned to `haiku`.
+- **`pattern-detection` skill** + its `hooks-config.json` keys (`patternDetect`,
+  `correctionDetect`) — obsolete after the in-loop redesign.
+
 ### Changed — slim-down refactor (Brain + Curation focus)
 
 O plugin foi reduzido ao que o Claude Code nativo **não** entrega. A camada de

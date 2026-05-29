@@ -1,15 +1,4 @@
 {
-  "correctionDetect": {
-    "detectInterval": 2,
-    "maxTranscriptLines": 6
-  },
-  "patternDetect": {
-    "detectInterval": 4,
-    "maxTranscriptLines": 10
-  },
-  "lessonInject": {
-    "maxLessons": 5
-  },
   "memoryRotate": {
     "maxLines": 150
   },

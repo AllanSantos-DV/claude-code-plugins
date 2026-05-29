@@ -40,10 +40,9 @@ claude-code-boss/
 ├── .claude-plugin/
 │   └── plugin.json            # Manifesto do plugin (versão canônica)
 ├── .mcp.json                  # Servidor MCP: brain-server
-├── agents/                    # 8 subagentes (.agent.md)
-│   ├── brain-*.agent.md       # Indexer, Retriever, Consolidator, Source-Researcher
+├── agents/                    # 6 subagentes (.agent.md)
+│   ├── brain-*.agent.md       # Indexer (haiku), Retriever, Consolidator, Source-Researcher
 │   ├── curation-improver.agent.md
-│   ├── pattern-analyzer.agent.md / correction-analyzer.agent.md
 │   └── refine-researcher.agent.md
 ├── config/
 │   ├── brain-config.json      # Provider de embedding, backend (local|mcp-memory), thresholds
@@ -60,7 +59,7 @@ claude-code-boss/
 │   └── sync-version.js        # Propaga versão para todos os arquivos de versão
 ├── servers/
 │   └── brain-server/          # MCP server v2: brain_search/store/related/count
-├── skills/                    # 6 skills do Claude Code
+├── skills/                    # 5 skills do Claude Code
 ├── package.json               # scripts: test, version:sync
 └── TASK-MAP.md                # Histórico de entrega (parcialmente obsoleto pós slim-down)
 ```
@@ -78,14 +77,18 @@ Todos os hooks estão declarados em `hooks/hooks.json`. Eventos e scripts ativos
 | PreToolUse (Bash) | `curation-guard.js` | Bloqueia/redireciona comandos curados |
 | PostToolUse (Bash) | `curation-detect.js` | Detecta outputs grandes para curação |
 | PostToolUse (Bash) | `brain-submit.js` | Indexa outputs relevantes (>500 chars) |
-| Stop | `pattern-detect.js` | Captura padrões de workflow (payload p/ pattern-analyzer) |
+| Stop | `pattern-detect.js` | Nudge advisory (throttled): capturar padrão reusável via `capture_lesson` |
 | Stop | `refine-research.js` | Injeta lembrete de pesquisa (web → Brain → usuário) |
-| UserPromptSubmit | `correction-detect.js` | Detecta sinais de correção/frustração |
-| UserPromptSubmit | `brain-retrieve-prompt.js` | Busca KB semântica + injeta lessons + advisory de pendências (advisory, com cooldown de backpressure) |
+| UserPromptSubmit | `correction-detect.js` | Detecta sinal de correção → nudge p/ `capture_lesson` (sem ler transcript) |
+| UserPromptSubmit | `brain-retrieve-prompt.js` | Busca KB semântica + injeta lessons + advisory de pendências (cooldown de backpressure) |
 | UserPromptSubmit | `curation-backlog.js` | Verifica payloads pendentes em `detect-curation/` (advisory); cooldown de 5 turnos; move payloads >7 dias para `processed/orphaned/` |
 
-> **Tom advisory:** os hooks informam pendências (lessons, padrões, curação) mas
-> não coagem — quem decide rodar um analyzer é o agente. Sem orquestrador próprio:
+> **Captura de lição in-loop:** quando o usuário corrige, o agente (no loop, com
+> contexto completo) chama a tool MCP **`capture_lesson`** com a lição curada — que
+> roda admission control inline (dedup/merge → `recurrence`). **Sem reler transcript,
+> sem subagente caro.** Os hooks só dão o nudge.
+>
+> **Tom advisory:** os hooks informam, não coagem. Sem orquestrador próprio:
 > a delegação usa as ferramentas nativas (Agent/Workflow).
 
 ## Brain KB

@@ -6,8 +6,6 @@ effort: low
 maxTurns: 8
 memory: user
 disallowedTools: []
-skills:
-  - pattern-detection
 ---
 
 # Curation Improver
