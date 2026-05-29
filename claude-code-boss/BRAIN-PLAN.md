@@ -169,9 +169,25 @@ sem worker. Justificativa: lixo em memória contamina toda a pipeline downstream
 ---
 
 ## 5. Gates restantes antes de codar
-- **2.1 admission:** definir o prompt do gate (5 fatores A-MAC), o schema de
-  decisão (admit/merge/skip), tamanho do lote e modelo (haiku). Onde no
-  `brain-indexer` plugar.
+
+### 5.0 Gate do passo 1 (admission control) — ABERTO 2026-05-29
+**Achado-chave (interno):** o `brain-indexer` **já é um agente LLM** que analisa
+cada payload — o custo do gate **já é pago**; admission control = fortalecer o que
+ele já faz (+ passo de busca semântica + decisão explícita), não custo novo.
+
+| Item | Fonte | Resolução |
+|---|---|---|
+| Prompt (5 fatores) | externo (A-MAC) | utilidade/confiança/novidade/recência/tipo |
+| Schema decisão | ext+int | `admit/merge/skip` (indexer já tem regra soft cosine>0.95) |
+| Onde plugar | interno | pré-filtro regra em `brain-submit.js`; decisão LLM no agente `brain-indexer` |
+| Modelo | decisão | haiku (indexer é `effort: low`) |
+| **Merge + recorrência** | ✅ externo | A-MAC/decay tratam "frequência de uso" e "re-observação" como sinais **distintos** → **adicionar coluna `recurrence`** (separada de `access_count`). Merge incrementa-a. |
+| **Batch dos 70** | ⚙️ ops | parâmetro de engenharia (sem resposta de pesquisa): **lotes de ~20/run**, ajustável; limitado pelo contexto/maxTurns do indexer |
+
+**Validação do gate:** 5/6 itens respondidos por pesquisa (externa/interna); 1
+(batch) é parâmetro operacional ajustável. **Sem pendência de design não-validada.**
+
+### 5.1 Gates dos passos seguintes
 - **2.2 decay:** fórmula/meia-vida e pesos default (começar conservador, config).
 - **2.4 contradição:** método barato de detecção (heurística vs embedding vs LLM).
 - **3.1:** confirmar derivação do `<project>` (git) p/ achar o dir nativo;
