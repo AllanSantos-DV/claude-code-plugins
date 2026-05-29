@@ -30,6 +30,11 @@
       "minScoreFast": 0.3,
       "minScoreDeep": 0.5
     },
+    "rerank": {
+      "enabled": true,
+      "halfLifeDays": 30,
+      "weights": { "relevance": 0.5, "recency": 0.2, "frequency": 0.15, "confidence": 0.15 }
+    },
     "submission": {
       "minBashLines": 3,
       "minOutputChars": 500,
