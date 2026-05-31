@@ -84,6 +84,11 @@
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/refine-research.js\"",
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/curation-stop.js\"",
+            "timeout": 5
           }
         ]
       }

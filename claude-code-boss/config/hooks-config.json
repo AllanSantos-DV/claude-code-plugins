@@ -6,5 +6,8 @@
     "extraTrivialCommands": [],
     "extraBuildTools": [],
     "denyUnknown": false
+  },
+  "curationStop": {
+    "enabled": true
   }
 }
