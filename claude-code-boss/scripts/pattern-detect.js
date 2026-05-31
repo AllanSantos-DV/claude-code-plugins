@@ -40,17 +40,21 @@ function tick() {
 
 (async () => {
   try {
-    await readStdin();
+    const raw = await readStdin();
+    // Anti-loop guard: if Claude already retried this hook, allow stop.
+    // https://code.claude.com/docs/en/hooks#stop_hook_active
+    try {
+      const input = JSON.parse(raw || '{}');
+      if (input.stop_hook_active) { process.stdout.write('{}'); return; }
+    } catch { /* malformed input — fall through */ }
     const n = tick();
     if (n % EVERY !== 0) { process.stdout.write('{}'); return; }
     process.stdout.write(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'Stop',
-        additionalContext:
-          'If a reusable workflow pattern emerged in this session (a shape worth ' +
-          'repeating), capture it via the `capture_lesson` MCP tool (type: "pattern"). ' +
-          'Only durable, generalizable patterns — skip one-offs.',
-      },
+      decision: 'block',
+      reason:
+        'If a reusable workflow pattern emerged in this session (a shape worth ' +
+        'repeating), capture it via the `capture_lesson` MCP tool (type: "pattern"). ' +
+        'Only durable, generalizable patterns — skip one-offs.',
     }));
   } catch {
     process.stdout.write('{}');

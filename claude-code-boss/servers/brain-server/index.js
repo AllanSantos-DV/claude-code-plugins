@@ -370,33 +370,29 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           title,
           summary,
           detail: detail || summary,
+          content: { detail: detail || summary, files: [] },
           type,
-          tags: tags || [],
+          tags: Array.isArray(tags) ? tags : [],
           project,
           confidence,
           sourceUrl: sourceUrl || '',
           created: new Date().toISOString(),
         };
 
-        const id = await kbStore.save(entry);
-        const keywords = extractKeywords(title + ' ' + summary + ' ' + (detail || ''));
-        await kbIndex.index(id, keywords);
-        await kbGraph.registerNode(id, type);
-
-        // Also generate embedding if embedder is ready
+        // Generate embedding upfront so we save+index in one pass (optional)
+        let vector = null;
         try {
           const embedder = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-embedder.js'));
           await embedder.init();
-          if (embedder.getStatus().ready) {
-            const vector = await embedder.embed(title + ': ' + summary);
-            if (vector) {
-              await kbStore.save({ ...entry, id, vector });
-            }
-          }
-        } catch { /* embedding is optional at store time; brain-indexer handles re-embedding */ }
+          if (embedder.getStatus().ready) vector = await embedder.embed(title + ': ' + summary);
+        } catch { /* embedding optional; brain-indexer re-embeds later */ }
+
+        await kbStore.save(entry, vector);   // mutates entry.id
+        await kbIndex.index(entry);          // extracts keywords/tags internally
+        await kbGraph.registerNode(entry);   // registers node by entry.id
 
         return {
-          content: [{ type: 'text', text: JSON.stringify({ id, project, status: 'saved', title, type }, null, 2) }]
+          content: [{ type: 'text', text: JSON.stringify({ id: entry.id, project, status: 'saved', title, type }, null, 2) }]
         };
       } catch (err) {
         return { isError: true, content: [{ type: 'text', text: `brain_store failed: ${err.message}` }] };

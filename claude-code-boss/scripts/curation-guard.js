@@ -54,7 +54,6 @@ const BUILD_TOOLS = new Set([
   'python', 'pip', 'poetry', 'uv',
   'docker', 'kubectl', 'helm',
   'make', 'cmake', 'meson',
-  'pwsh', 'powershell', 'bash',
   'ruby', 'bundle', 'rake', 'gem',
   'composer', 'php',
   ...(_guardCfg.extraBuildTools || []),
@@ -136,11 +135,21 @@ function usesBuildTool(command) {
   return false;
 }
 
+// Helper: build a properly-formatted PreToolUse decision per Claude Code docs.
+// permissionDecision MUST be "allow" | "deny" | "ask" and live INSIDE hookSpecificOutput.
+// https://docs.claude.com/en/docs/claude-code/hooks
+function decision(permissionDecision, { additionalContext, permissionDecisionReason } = {}) {
+  const hookSpecificOutput = { hookEventName: 'PreToolUse', permissionDecision };
+  if (additionalContext) hookSpecificOutput.additionalContext = additionalContext;
+  if (permissionDecisionReason) hookSpecificOutput.permissionDecisionReason = permissionDecisionReason;
+  return JSON.stringify({ hookSpecificOutput });
+}
+
 (async () => {
   try {
     const raw = await readStdin();
     if (!raw) {
-      process.stdout.write(JSON.stringify({ permissionDecision: 'allowed' }));
+      process.stdout.write(decision('allow'));
       return;
     }
 
@@ -148,13 +157,13 @@ function usesBuildTool(command) {
 
     // Only handle Bash tool
     if (event.tool_name !== 'Bash') {
-      process.stdout.write(JSON.stringify({ permissionDecision: 'allowed' }));
+      process.stdout.write(decision('allow'));
       return;
     }
 
     const command = event.tool_input?.command || '';
     if (!command) {
-      process.stdout.write(JSON.stringify({ permissionDecision: 'allowed' }));
+      process.stdout.write(decision('allow'));
       return;
     }
 
@@ -163,54 +172,50 @@ function usesBuildTool(command) {
 
     // 1. Check if command IS a curated script (.mjs) — allow silently
     if (command.trim().includes('.mjs') || command.trim().includes('.vscode/scripts/')) {
-      process.stdout.write(JSON.stringify({ permissionDecision: 'allowed' }));
+      process.stdout.write(decision('allow'));
       return;
     }
 
     // 2. Check if command matches a curated shell entry — BLOCK + REDIRECT
     const curatedShell = matchCuratedShell(command, shells);
     if (curatedShell) {
-      process.stdout.write(JSON.stringify({
-        permissionDecision: 'denied',
-        hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: `[curation-guard] 🔒 Comando \`${command}\` possui script curado. Execute \`${curatedShell.command}\` no lugar — output filtrado (${curatedShell.outputFilter || 'summary'}, limite ${curatedShell.outputLines || 200} linhas).` },
-      }));
+      const reason = `[curation-guard] 🔒 Comando \`${command}\` possui script curado. Execute \`${curatedShell.command}\` no lugar — output filtrado (${curatedShell.outputFilter || 'summary'}, limite ${curatedShell.outputLines || 200} linhas).`;
+      process.stdout.write(decision('deny', { additionalContext: reason, permissionDecisionReason: reason }));
       return;
     }
 
     // 3. Check whitelist from shells.json (project-specific, already loaded by loadShellsConfig)
     if (isWhitelisted(command, whitelist)) {
-      process.stdout.write(JSON.stringify({ permissionDecision: 'allowed' }));
+      process.stdout.write(decision('allow'));
       return;
     }
 
     // 4. Check if trivial
     if (isTrivial(command)) {
-      process.stdout.write(JSON.stringify({ permissionDecision: 'allowed' }));
+      process.stdout.write(decision('allow'));
       return;
     }
 
     // 5. Check if it uses a build tool — warn but ALLOW (learning loop: first run is raw,
     //    PostToolUse detects large output, curation-improver creates script for NEXT time)
     if (usesBuildTool(command)) {
-      process.stdout.write(JSON.stringify({
-        permissionDecision: 'allowed',
-        hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: `[curation-guard] ⚠️ Sem curadoria: \`${command}\`. Se produzir saída volumosa, o sistema criará script curado automaticamente.` },
+      process.stdout.write(decision('allow', {
+        additionalContext: `[curation-guard] ⚠️ Sem curadoria: \`${command}\`. Se produzir saída volumosa, o sistema criará script curado automaticamente.`,
       }));
       return;
     }
 
     // 6. Unknown command — allow by default; deny when denyUnknown is enabled
     if (_guardCfg.denyUnknown) {
-      process.stdout.write(JSON.stringify({
-        permissionDecision: 'denied',
-        hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: `[curation-guard] 🔒 Comando \`${command}\` desconhecido (modo denyUnknown ativo). Adicione à whitelist em .vscode/shells.json ou crie um script curado.` },
-      }));
+      const reason = `[curation-guard] 🔒 Comando \`${command}\` desconhecido (modo denyUnknown ativo). Adicione à whitelist em .vscode/shells.json ou crie um script curado.`;
+      process.stdout.write(decision('deny', { additionalContext: reason, permissionDecisionReason: reason }));
     } else {
-      process.stdout.write(JSON.stringify({ permissionDecision: 'allowed' }));
+      process.stdout.write(decision('allow'));
     }
   } catch (err) {
     console.error(`[CURATION-GUARD] Error: ${err.message}`);
     hookLog('error', 'curation-guard', `Unhandled error: ${err.message}`);
-    process.stdout.write(JSON.stringify({ permissionDecision: 'allowed', error: err.message }));
+    // Fail-open: malformed/exception path should not block tool use.
+    process.stdout.write(decision('allow'));
   }
 })();

@@ -6,20 +6,21 @@ Monorepo de plugins para [Claude Code Desktop](https://claude.ai/download) — d
 
 | Plugin | Versão | Descrição |
 | --- | --- | --- |
-| [claude-code-boss](./claude-code-boss) | 1.3.3 | Sistema multi-agente: orquestração Boss, Brain KB, dashboard, hooks pipeline, execução curada |
+| [claude-code-boss](./claude-code-boss) | 1.3.3 | Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizado in-loop para Claude Code |
 
 ## O que é o claude-code-boss?
 
-Plugin para Claude Code Desktop que transforma o Claude num sistema multi-agente orquestrado. O que está **efetivamente entregue** (v1.3.2):
+Plugin para Claude Code Desktop focado no que o nativo **não** entrega. A orquestração fica a cargo das ferramentas nativas (Agent/Workflow) — após o slim-down de 2026-05 a camada própria de orquestração foi removida.
 
-- **Orquestrador Boss** — roteamento FAST/DELEGATE/MIXED, 16 subagentes declarados em `.agent.md`, pipelines de 4 passos configuráveis
-- **Brain Research KB** — base de conhecimento local (SQLite + embeddings via Transformers.js/Ollama/Voyage), indexação automática de outputs relevantes, recuperação híbrida (vetor + keyword), grafos de citação, servidor MCP v2 com 4 tools (`brain_search`, `brain_store`, `brain_related`, `brain_count`)
-- **Dashboard local** — servidor HTTP em `localhost` (porta dinâmica, token auth), 7 abas: Home, Models, Pipelines, Brain KB, Billing, Hooks, **Logs** (novo em v1.3.2). Ring buffer in-memory de 500 entradas + aggregação de erros de hooks via `.runtime/hook-errors.jsonl`
-- **Hooks pipeline** — 6 eventos (SessionStart, PreToolUse, PostToolUse, SubagentStart/Stop, Stop, UserPromptSubmit), 16 scripts registrados. Auto-start do dashboard no SessionStart com idempotência via PID-file
-- **Execução curada (Shell Workbench)** — curation-guard bloqueia/redireciona comandos curados; curation-detect detecta outputs grandes; session-whitelist popula ecosistema no boot
-- **Model Router v2** — tiers billing-aware (free/cheap/standard/premium), multipliadores, `costSensitive` por agente, alertas de custo
-- **Injeção de lições** — lesson-inject injeta lições do KB do pattern-analyzer via UserPromptSubmit
-- **Refine Mode** — sempre ativo, injeta lembrete de pesquisa a cada turno via Stop hook
+O que está entregue:
+
+- **Brain KB** — base de conhecimento local (SQLite + embeddings via Transformers.js/Ollama/Voyage), indexação automática de outputs relevantes, recuperação híbrida (vetor + keyword) com **rerank por decay** (relevância + recência + frequência + confiança), grafos de citação, servidor MCP com 7 tools — KB: `brain_search`, `brain_store`, `brain_related`, `brain_count`, `capture_lesson`; Web research: `research_query`, `research_status`
+- **Aprendizado in-loop** — tool MCP `capture_lesson` para captura curada de lições no loop (sem reler transcript), com **admission control (A-MAC)** que mescla duplicatas e incrementa `recurrence`. Promoção curada de lições recorrentes a skills via `brain-promote.js`
+- **Native Memory Indexing** — `brain-index-native.js` indexa a Auto Memory nativa (`~/.claude/projects/<cwd>/memory/*.md`) no Brain para busca semântica e cross-project que a camada nativa não oferece
+- **Hooks pipeline (advisory)** — 5 eventos (SessionStart, PreToolUse, PostToolUse, Stop, UserPromptSubmit), ~9 scripts. Tom **informativo, não coercitivo**, com backpressure (cooldown + cap de contagem) para evitar context bloat
+- **Execução curada (Shell Workbench)** — `curation-guard` bloqueia/redireciona comandos curados; `curation-detect` detecta outputs grandes; `session-whitelist` popula ecossistema no boot
+- **Dashboard local** — servidor HTTP em `localhost` (porta dinâmica, token auth), **4 abas**: Home, Brain KB, Hooks, Logs. Lançado **sob demanda** (não auto-inicia mais no SessionStart). Ring buffer de 500 entradas + agregação de erros via `.runtime/hook-errors.jsonl`
+- **6 subagentes** — `brain-indexer` (haiku, pinned), `brain-retriever`, `brain-consolidator`, `brain-source-researcher`, `curation-improver`, `refine-researcher`
 
 ## Estrutura
 
@@ -27,17 +28,17 @@ Plugin para Claude Code Desktop que transforma o Claude num sistema multi-agente
 claude-code-plugins/
 ├── claude-code-boss/          # Plugin principal
 │   ├── .claude-plugin/        # Manifesto do plugin (plugin.json)
-│   ├── .mcp.json              # Definições dos servidores MCP
-│   ├── agents/                # 16 subagentes (.agent.md)
-│   ├── config/                # brain-config.json, model-router.json, pipelines.json, hooks-config.json
-│   ├── dashboard/             # index.html — dashboard SPA (7 abas)
+│   ├── .mcp.json              # Servidor MCP: brain-server
+│   ├── agents/                # 6 subagentes (.agent.md)
+│   ├── config/                # brain-config.json, hooks-config.json
+│   ├── dashboard/             # index.html — SPA (4 abas)
 │   ├── docs/                  # Guias de upgrade (Ollama, Voyage, MCP Memory)
-│   ├── hooks/                 # hooks.json (6 eventos, 16 scripts)
-│   ├── scripts/               # 29 scripts Node.js (hooks + CLI + Brain + Dashboard)
-│   ├── servers/               # boss-server + brain-server (MCP, Node.js ESM)
-│   ├── skills/                # 10 skills do Claude Code
-│   ├── package.json           # v1.3.2, npm test, version:sync
-│   └── TASK-MAP.md            # Estado real de entrega (20 features)
+│   ├── hooks/                 # hooks.json (5 eventos, ~9 scripts)
+│   ├── scripts/               # Scripts Node.js (hooks + CLI + Brain + Dashboard)
+│   ├── servers/brain-server/  # MCP server (Node.js ESM)
+│   ├── skills/                # 5 skills do Claude Code
+│   ├── package.json           # npm test, version:sync
+│   └── CHANGELOG.md           # Notas de release
 └── .github/workflows/ci.yml   # CI: test + lint + grep anti-patterns + version sync
 ```
 
