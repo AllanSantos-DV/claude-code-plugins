@@ -637,7 +637,8 @@ function getRaw(id) {
   }
   const entryPath = path.join(getProjectDir(), 'entries', `${id}.json`);
   if (!fs.existsSync(entryPath)) return null;
-  try { return JSON.parse(fs.readFileSync(entryPath, 'utf-8')); } catch { return null; }
+  try { return JSON.parse(fs.readFileSync(entryPath, 'utf-8')); }
+  catch (err) { console.error(`[BRAIN-STORE] readEntry failed for ${id}: ${err.message}`); return null; }
 }
 
 /**
