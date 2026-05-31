@@ -2,14 +2,20 @@
 /**
  * Curation Detect — PostToolUse / PostToolUseFailure hook for Bash.
  *
- * Delegates classification logic to curation-classifier.js.
+ * In-loop design (replaces the old payload-on-disk + subagent pipeline):
+ *  - During the turn, append a lightweight entry to a per-turn state file
+ *    at ${CLAUDE_PLUGIN_DATA}/.runtime/curation-turn-<sessionId>.json.
+ *  - At end of turn, curation-stop.js reads the state and asks the main loop
+ *    (with full turn context) to create/refine the .mjs scripts.
+ *
+ * Delegates classification to curation-classifier.js (pure function).
  * Delegates shells.json access to shells-config.js.
  *
- * Reasons:
+ * Reasons recorded:
  *   needs-curation        — uncurated command, output exceeded raw thresholds
  *   curated-success-noisy — curated script succeeded but output > summary thresholds
  *   curated-failure-noisy — curated script failed, output exceeded raw thresholds
- *   (silent)              — no condition matched; no payload written
+ *   (null)                — no condition matched; no entry recorded
  */
 const fs = require('fs');
 const path = require('path');
@@ -19,9 +25,12 @@ const { findProjectRoot, loadShellsConfig, matchCuratedShell } = require('./shel
 const { classify }                                              = require('./curation-classifier.js');
 
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
-const CURATION_DETECT_DIR = path.join(DATA_DIR, 'detect-curation');
+const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.join(__dirname, '..');
 const CONFIG_PATH = path.join(PLUGIN_ROOT, 'config', 'brain-config.json');
+
+/** Cap entries per turn to prevent unbounded growth on pathological sessions. */
+const MAX_ENTRIES_PER_TURN = 50;
 
 function loadThresholds() {
   try {
@@ -33,6 +42,53 @@ function loadThresholds() {
 }
 
 const thresholds = loadThresholds();
+
+// ─── Turn state ──────────────────────────────────────────────────────────────
+
+function turnStatePath(sessionId) {
+  const safe = String(sessionId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+  return path.join(RUNTIME_DIR, `curation-turn-${safe}.json`);
+}
+
+function loadTurnState(sessionId) {
+  try {
+    const p = turnStatePath(sessionId);
+    if (!fs.existsSync(p)) return null;
+    return JSON.parse(fs.readFileSync(p, 'utf-8'));
+  } catch {
+    return null;
+  }
+}
+
+function saveTurnState(sessionId, state) {
+  try {
+    fs.mkdirSync(RUNTIME_DIR, { recursive: true });
+    const tmp = turnStatePath(sessionId) + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
+    fs.renameSync(tmp, turnStatePath(sessionId));
+  } catch (err) {
+    console.error(`[CURATION-DETECT] Failed to save turn state: ${err.message}`);
+  }
+}
+
+function appendTurnEntry(sessionId, entry) {
+  const state = loadTurnState(sessionId) || {
+    sessionId,
+    startedAt: new Date().toISOString(),
+    entries: [],
+  };
+  // Dedup by command+reason (same noisy command repeated → keep most recent metrics only)
+  const dupIdx = state.entries.findIndex(e => e.command === entry.command && e.reason === entry.reason);
+  if (dupIdx >= 0) {
+    state.entries[dupIdx] = entry;
+  } else {
+    state.entries.push(entry);
+  }
+  if (state.entries.length > MAX_ENTRIES_PER_TURN) {
+    state.entries = state.entries.slice(-MAX_ENTRIES_PER_TURN);
+  }
+  saveTurnState(sessionId, state);
+}
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
@@ -73,11 +129,10 @@ function readStdin() {
     let stdout = '', stderr = '', output = '', interrupted = false, exitCode = null;
     if (isFailure) {
       const errStr = String(event.error || '');
-      // Extract "Exit code N" from the first line, strip it from the body
       const m = errStr.match(/^Exit code (\d+)\s*\n?/);
       if (m) exitCode = parseInt(m[1], 10);
       output = m ? errStr.slice(m[0].length) : errStr;
-      stderr = output; // best approximation — failure output is mostly stderr
+      stderr = output;
       interrupted = event.is_interrupt === true;
     } else {
       const tr = event.tool_response || {};
@@ -108,40 +163,29 @@ function readStdin() {
     const isCurated = curatedShell !== null;
 
     // Classify
-    const { reason, threshold } = classify({ command, isCurated, isSuccess, charCount, lineCount, thresholds });
+    const { reason } = classify({ command, isCurated, isSuccess, charCount, lineCount, thresholds });
 
     if (!reason) {
       process.stdout.write(JSON.stringify({}));
       return;
     }
 
-    fs.mkdirSync(CURATION_DETECT_DIR, { recursive: true });
-
-    const payload = {
-      reason,
-      sessionId,
-      cwd,
-      detectedAt: new Date().toISOString(),
+    // Append to per-turn state (curation-stop.js will read at end of turn).
+    appendTurnEntry(sessionId, {
       command,
+      reason,
+      lines: lineCount,
+      chars: charCount,
       isCurated,
-      curatedShell: curatedShell ? { command: curatedShell.command, script: curatedShell.script || null } : null,
+      curatedScript: curatedShell?.script || null,
       isSuccess,
-      exitCode,
-      hookEvent,
       interrupted,
-      charCount,
-      lineCount,
-      threshold,
-      outputPreview: output.slice(0, 500) + (output.length > 1000 ? '\n...\n' + output.slice(-500) : ''),
-      stderrPreview: stderr.slice(0, 500),
-    };
+      hookEvent,
+      exitCode,
+      timestamp: new Date().toISOString(),
+    });
 
-    const filename = `curation-${sessionId.slice(0, 8)}-${Date.now()}.json`;
-    const tmp = path.join(CURATION_DETECT_DIR, filename + '.tmp');
-    fs.writeFileSync(tmp, JSON.stringify(payload, null, 2));
-    fs.renameSync(tmp, path.join(CURATION_DETECT_DIR, filename));
-    console.error(`[CURATION-DETECT] ${reason}: ${charCount} chars, ${lineCount} lines — ${filename}`);
-
+    console.error(`[CURATION-DETECT] ${reason}: ${charCount} chars, ${lineCount} lines — turn state updated`);
     process.stdout.write(JSON.stringify({}));
   } catch (err) {
     console.error(`[CURATION-DETECT] Error: ${err.message}`);

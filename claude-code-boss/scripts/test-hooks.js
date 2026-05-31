@@ -232,14 +232,24 @@ const TESTS = [
     script: 'curation-detect.js',
     payload: { ...require('./__fixtures__/post-tool-use-success.json'), session_id: SESSION },
     expect: { noError: true },
-    validate: _r => null, // just check it runs clean — small output means no payload
+    validate: _r => null, // small output → no trigger → no turn-state entry
   },
   {
-    name: 'curation-detect   [PostToolUse/large→writes payload]',
+    name: 'curation-detect   [PostToolUse/large→appends turn state]',
     script: 'curation-detect.js',
     payload: { ...require('./__fixtures__/post-tool-use-success-noisy.json'), session_id: SESSION },
     expect: { noError: true },
     extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-det-lrg-')) }),
+    validateWithEnv: (r, env) => {
+      // Verify turn-state file was created with at least one entry
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      const p = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime', `curation-turn-${safe}.json`);
+      if (!fs.existsSync(p)) return `turn-state file missing: ${p}`;
+      const state = JSON.parse(fs.readFileSync(p, 'utf-8'));
+      if (!state.entries || state.entries.length === 0) return `no entries in turn state`;
+      if (state.entries[0].reason !== 'needs-curation') return `expected reason=needs-curation, got ${state.entries[0].reason}`;
+      return null;
+    },
   },
   {
     name: 'curation-detect   [PostToolUseFailure→needs-curation]',
@@ -247,6 +257,12 @@ const TESTS = [
     payload: { ...require('./__fixtures__/post-tool-use-failure.json'), session_id: SESSION },
     expect: { noError: true },
     extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-det-fail-')) }),
+    validateWithEnv: (r, env) => {
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      const p = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime', `curation-turn-${safe}.json`);
+      if (!fs.existsSync(p)) return `turn-state file missing: ${p}`;
+      return null;
+    },
   },
   {
     name: 'curation-detect   [PostToolUseFailure/is_interrupt=true]',
@@ -334,6 +350,71 @@ const TESTS = [
       if (keys.length === 0) return null; // throttled — fine
       if (p.decision === 'block' && p.reason) return null; // injected — fine
       return `expected {} or {decision:'block',reason}, got: ${JSON.stringify(p)}`;
+    },
+  },
+  {
+    name: 'curation-stop     [Stop→no-entries→{}]',
+    script: 'curation-stop.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-stop-empty-')) }),
+    validate: r => {
+      const keys = Object.keys(r.parsed || {});
+      return keys.length === 0 ? null : `expected {} (no entries), got: ${JSON.stringify(r.parsed)}`;
+    },
+  },
+  {
+    name: 'curation-stop     [Stop→entries→block+reason]',
+    script: 'curation-stop.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-stop-ent-'));
+      const runtimeDir = path.join(tmpData, '.runtime');
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      fs.writeFileSync(
+        path.join(runtimeDir, `curation-turn-${safe}.json`),
+        JSON.stringify({
+          sessionId: SESSION,
+          startedAt: new Date().toISOString(),
+          entries: [
+            { command: 'npm test', reason: 'needs-curation', lines: 487, chars: 12000, isCurated: false, curatedScript: null, isSuccess: true, timestamp: new Date().toISOString() },
+          ],
+        }),
+      );
+      return { CLAUDE_PLUGIN_DATA: tmpData };
+    },
+    validateWithEnv: (r, env) => {
+      const p = r.parsed || {};
+      if (p.decision !== 'block') return `expected decision:'block', got: ${JSON.stringify(p)}`;
+      if (!p.reason || !p.reason.includes('npm test')) return `expected reason mentioning command, got: ${p.reason}`;
+      // Turn state should be cleared
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      const statePath = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime', `curation-turn-${safe}.json`);
+      if (fs.existsSync(statePath)) return `turn state should be cleared, still exists at ${statePath}`;
+      return null;
+    },
+  },
+  {
+    name: 'curation-stop     [Stop→stop_hook_active→{}]',
+    script: 'curation-stop.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION, stop_hook_active: true },
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-stop-loop-'));
+      const runtimeDir = path.join(tmpData, '.runtime');
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      fs.writeFileSync(
+        path.join(runtimeDir, `curation-turn-${safe}.json`),
+        JSON.stringify({ sessionId: SESSION, entries: [{ command: 'x', reason: 'needs-curation', lines: 100, chars: 5000, isCurated: false }] }),
+      );
+      return { CLAUDE_PLUGIN_DATA: tmpData };
+    },
+    validate: r => {
+      const keys = Object.keys(r.parsed || {});
+      return keys.length === 0 ? null : `expected {} (anti-loop), got: ${JSON.stringify(r.parsed)}`;
     },
   },
 
@@ -430,6 +511,9 @@ for (const test of filtered) {
   let extraIssue = null;
   if (ok && test.validate) {
     extraIssue = test.validate({ ok, issues, parsed });
+  }
+  if (ok && !extraIssue && test.validateWithEnv) {
+    extraIssue = test.validateWithEnv({ ok, issues, parsed }, extraEnv);
   }
 
   const allOk = ok && !extraIssue;
