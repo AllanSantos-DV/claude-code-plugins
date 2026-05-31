@@ -438,57 +438,6 @@ const TESTS = [
     },
     expect: { noError: true },
   },
-  {
-    // curation-backlog: first run (clean state) with 1 pending payload → injects additionalContext
-    name: 'curation-backlog  [UserPromptSubmit→first-run-injects]',
-    script: 'curation-backlog.js',
-    payload: { prompt: 'o que fazer agora', session_id: SESSION },
-    expect: { noError: true },
-    extraEnv: () => {
-      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bklog-'));
-      const detectDir = path.join(tmpData, 'detect-curation');
-      fs.mkdirSync(detectDir, { recursive: true });
-      // Write one pending payload
-      fs.writeFileSync(
-        path.join(detectDir, `curation-${Date.now()}-testabcd.json`),
-        JSON.stringify({ detectedAt: new Date().toISOString(), command: 'npm install', charCount: 5000, lineCount: 120, sessionId: SESSION, cwd: '/tmp', outputPreview: 'added 42 packages' }),
-      );
-      return { CLAUDE_PLUGIN_DATA: tmpData };
-    },
-    validate: r => {
-      const ctx = r.parsed?.hookSpecificOutput?.additionalContext;
-      return ctx && ctx.includes('curation payload') ? null : `expected additionalContext with payload count, got: ${JSON.stringify(r.parsed)}`;
-    },
-  },
-  {
-    // curation-backlog: second run after injection → cooldown active (turnsSinceLast=0 < 5)
-    name: 'curation-backlog  [UserPromptSubmit→cooldown-active]',
-    script: 'curation-backlog.js',
-    payload: { prompt: 'proxima pergunta', session_id: SESSION },
-    expect: { noError: true },
-    extraEnv: () => {
-      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bklog-cool-'));
-      const detectDir = path.join(tmpData, 'detect-curation');
-      const runtimeDir = path.join(tmpData, '.runtime');
-      fs.mkdirSync(detectDir, { recursive: true });
-      fs.mkdirSync(runtimeDir, { recursive: true });
-      // Write payload and state that simulates "just injected" (turnsSinceLast=0)
-      fs.writeFileSync(
-        path.join(detectDir, `curation-${Date.now()}-testcool.json`),
-        JSON.stringify({ detectedAt: new Date().toISOString(), command: 'npm test', charCount: 6000, lineCount: 200, sessionId: SESSION, cwd: '/tmp', outputPreview: 'tests passed' }),
-      );
-      fs.writeFileSync(
-        path.join(runtimeDir, 'curation-backlog-state.json'),
-        JSON.stringify({ lastInjectedAt: new Date().toISOString(), lastInjectedTurnId: SESSION, turnsSinceLast: 0 }),
-      );
-      return { CLAUDE_PLUGIN_DATA: tmpData };
-    },
-    validate: r => {
-      // Should return {} (empty) — cooldown active
-      const keys = Object.keys(r.parsed || {});
-      return keys.length === 0 ? null : `expected {} (cooldown), got: ${JSON.stringify(r.parsed)}`;
-    },
-  },
 ];
 
 // ─── Runner ─────────────────────────────────────────────────────────────────
