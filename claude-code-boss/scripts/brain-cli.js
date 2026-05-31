@@ -12,7 +12,8 @@ function getProject() {
   try {
     const cwd = process.env.CLAUDE_CWD || process.cwd();
     return path.basename(cwd);
-  } catch {
+  } catch (err) {
+    console.error(`[BRAIN-CLI] getProject fallback: ${err.message}`);
     return PROJECT;
   }
 }

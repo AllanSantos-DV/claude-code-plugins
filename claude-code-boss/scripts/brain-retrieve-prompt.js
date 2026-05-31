@@ -55,7 +55,8 @@ function checkPendingPayloads() {
   if (!fs.existsSync(PENDING_DIR)) return 0;
   try {
     return fs.readdirSync(PENDING_DIR).filter(f => f.endsWith('.json')).length;
-  } catch {
+  } catch (err) {
+    console.error(`[BRAIN-RETRIEVE-PROMPT] pending count failed: ${err.message}`);
     return 0;
   }
 }
