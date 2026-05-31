@@ -5,6 +5,18 @@ const _PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '
 
 const backend = require('./brain-backend.js');
 
+// Declared at top to avoid TDZ when extractContext() is hoisted but Set isn't.
+const STOP_WORDS = new Set([
+  'the', 'this', 'that', 'and', 'for', 'with', 'from', 'was', 'are',
+  'have', 'has', 'had', 'not', 'but', 'all', 'can', 'will', 'just',
+  'been', 'were', 'they', 'them', 'their', 'what', 'when', 'where',
+  'which', 'who', 'how', 'about', 'into', 'over', 'such', 'each',
+  'than', 'then', 'these', 'those', 'also', 'very', 'because',
+  'para', 'que', 'com', 'uma', 'mais', 'mas', 'como', 'por',
+  'dos', 'das', 'era', 'sao', 'seu', 'sua', 'pelo', 'pela',
+  'node', 'npm', 'npx', 'file', 'path', 'src', 'lib', 'test',
+]);
+
 function readStdin() {
   return new Promise((resolve) => {
     let data = '';
@@ -90,14 +102,3 @@ function formatEntries(entries) {
     process.stdout.write(JSON.stringify({}));
   }
 })();
-
-const STOP_WORDS = new Set([
-  'the', 'this', 'that', 'and', 'for', 'with', 'from', 'was', 'are',
-  'have', 'has', 'had', 'not', 'but', 'all', 'can', 'will', 'just',
-  'been', 'were', 'they', 'them', 'their', 'what', 'when', 'where',
-  'which', 'who', 'how', 'about', 'into', 'over', 'such', 'each',
-  'than', 'then', 'these', 'those', 'also', 'very', 'because',
-  'para', 'que', 'com', 'uma', 'mais', 'mas', 'como', 'por',
-  'dos', 'das', 'era', 'sao', 'seu', 'sua', 'pelo', 'pela',
-  'node', 'npm', 'npx', 'file', 'path', 'src', 'lib', 'test',
-]);

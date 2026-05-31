@@ -5,11 +5,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/memory-rotate.js\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/memory-rotate.js\"",
+            "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/session-whitelist.js\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/session-whitelist.js\"",
+            "timeout": 10
           }
         ]
       }
@@ -20,7 +22,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/brain-retrieve.js\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/brain-retrieve.js\"",
+            "timeout": 10
           }
         ]
       },
@@ -29,11 +32,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/brain-retrieve.js\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/brain-retrieve.js\"",
+            "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/curation-guard.js\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/curation-guard.js\"",
+            "timeout": 5
           }
         ]
       }
@@ -44,11 +49,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/curation-detect.js\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/curation-detect.js\"",
+            "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/brain-submit.js\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/brain-submit.js\"",
+            "timeout": 10
           }
         ]
       }
@@ -59,7 +66,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/curation-detect.js\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/curation-detect.js\"",
+            "timeout": 10
           }
         ]
       }
@@ -69,11 +77,13 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/pattern-detect.js\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/pattern-detect.js\"",
+            "timeout": 5
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/refine-research.js\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/refine-research.js\"",
+            "timeout": 5
           }
         ]
       }
@@ -83,15 +93,18 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/correction-detect.js\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/correction-detect.js\"",
+            "timeout": 5
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/brain-retrieve-prompt.js\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/brain-retrieve-prompt.js\"",
+            "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/curation-backlog.js\""
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/curation-backlog.js\"",
+            "timeout": 5
           }
         ]
       }

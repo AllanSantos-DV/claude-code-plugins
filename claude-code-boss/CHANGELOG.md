@@ -1,6 +1,40 @@
 # Changelog
 
-## [Unreleased]
+## [1.4.0] — 2026-05-31
+
+### Fixed — hooks correctness pass + MCP brain_store orphan bug
+
+- **`curation-guard.js`** — hook output format was wrong: returned top-level
+  `permissionDecision: "allowed"|"denied"` (silently ignored by Claude Code).
+  Now returns the correct `hookSpecificOutput: { hookEventName: "PreToolUse",
+  permissionDecision: "allow"|"deny", permissionDecisionReason }` per the official
+  hooks reference. Auto-approve of whitelisted commands and deny of blacklisted
+  ones likely never worked before. Also removed `pwsh`/`powershell`/`bash` from
+  `BUILD_TOOLS` (those are shells, not build tools — were triggering false-positive
+  warnings).
+- **`brain-retrieve.js`** — `STOP_WORDS` was declared after its first use (TDZ).
+- **`refine-research.js`** — rewritten with `EVERY=4` throttle via state file
+  (matches `pattern-detect`'s pattern); removed dead ref to deleted `octopus.agent.md`;
+  `stop_hook_active` anti-loop guard preserved.
+- **`hook-logger.js`** — log rotation switched to probabilistic trim (~1%) instead
+  of read+rewrite on every append (was O(n) per log line).
+- **`hooks/hooks.json`** — explicit per-hook `timeout` (5–10s) replacing implicit
+  defaults; better failure semantics.
+- **`servers/brain-server/index.js` `brain_store` handler** — wrong call signatures:
+  `kbIndex.index(id, keywords)` and `kbGraph.registerNode(id, type)` were silent
+  no-ops (canonical signature is `(entry)`). Entries saved via MCP `brain_store`
+  were **orphans** — not in the keyword index, not in the citation graph. Now
+  builds embedding upfront and calls `save(entry, vector)` + `index(entry)` +
+  `registerNode(entry)` in one pass. `capture_lesson` already used the correct
+  signatures.
+- **`README.md` (root)** — MCP tool count corrected from 5 to 7 (was omitting
+  `research_query` and `research_status`).
+
+### Tests
+
+- `scripts/test-hooks.js` — 26/26 green, covers all hook events including
+  `curation-guard` whitelist/blacklist/denyUnknown matrix and `refine-research`
+  throttling.
 
 ### Added — Brain hygiene + in-loop learning (the differentiator)
 

@@ -1,40 +1,66 @@
 #!/usr/bin/env node
 /**
- * Refine Research — Stop hook.
+ * Refine Research — Stop hook (throttled).
  *
- * Always fires after every LLM response. Injects a reminder asking the LLM
- * to research and answer its own pending questions instead of waiting for
- * the user to respond.
+ * Reminds the agent to research and answer its own pending questions instead of
+ * waiting for the user. Throttled (every Nth Stop) so it doesn't burn tokens on
+ * every turn.
  *
- * The LLM (via octopus.agent.md instructions) knows if it asked questions
- * in its previous response. The hook just reminds it to take action.
- *
- * No detection logic needed — the LLM handles everything.
+ * Anti-loop: honors `stop_hook_active` per
+ * https://docs.claude.com/en/docs/claude-code/hooks#stop-hook-active
  */
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+
+const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
+  || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+const STATE = path.join(DATA_DIR, '.runtime', 'refine-research-state.json');
+const EVERY = 4; // remind at most once per 4 stops
+
+function readStdin() {
+  return new Promise(resolve => {
+    let data = '';
+    process.stdin.setEncoding('utf-8');
+    process.stdin.on('data', chunk => data += chunk);
+    process.stdin.on('end', () => resolve(data));
+  });
+}
+
+function tick() {
+  let n = 0;
+  try { n = JSON.parse(fs.readFileSync(STATE, 'utf-8')).n || 0; } catch { /* fresh */ }
+  n += 1;
+  try {
+    fs.mkdirSync(path.dirname(STATE), { recursive: true });
+    fs.writeFileSync(STATE, JSON.stringify({ n }));
+  } catch { /* best effort */ }
+  return n;
+}
+
 (async () => {
   try {
-    const raw = await new Promise(resolve => {
-      let data = '';
-      process.stdin.setEncoding('utf-8');
-      process.stdin.on('data', chunk => data += chunk);
-      process.stdin.on('end', () => resolve(data));
-    });
+    const raw = await readStdin();
+    if (!raw) { process.stdout.write('{}'); return; }
 
-    if (!raw) {
-      process.stdout.write(JSON.stringify({}));
-      return;
-    }
+    const event = JSON.parse(raw);
+    // Anti-loop guard: if Claude already retried this hook, allow stop.
+    if (event.stop_hook_active) { process.stdout.write('{}'); return; }
 
-    const _event = JSON.parse(raw);
-    // Always inject: remind LLM to answer pending questions
+    const n = tick();
+    if (n % EVERY !== 0) { process.stdout.write('{}'); return; }
+
     process.stdout.write(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'Stop',
-        additionalContext: `[refine] If you asked questions in your previous response, research the answers now using project files (Read, Grep, Glob) and web search (WebSearch, WebFetch). Do NOT wait for the user to answer — resolve the gaps yourself. Provide the answers and proceed with the task.`,
-      },
+      decision: 'block',
+      reason:
+        '[refine] If you asked questions in your previous response, research the ' +
+        'answers now using project files (Read, Grep, Glob) and web search ' +
+        '(WebSearch, WebFetch). Do NOT wait for the user — resolve the gaps ' +
+        'yourself, then proceed with the task.',
     }));
   } catch (err) {
     console.error(`[REFINE-RESEARCH] Error: ${err.message}`);
-    process.stdout.write(JSON.stringify({ error: err.message }));
+    process.stdout.write('{}');
   }
 })();

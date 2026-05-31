@@ -23,11 +23,14 @@ function hookLog(level, source, message) {
     if (!fs.existsSync(RUNTIME_DIR)) fs.mkdirSync(RUNTIME_DIR, { recursive: true });
     const entry = JSON.stringify({ ts: new Date().toISOString(), level, source, message }) + '\n';
     fs.appendFileSync(HOOK_ERRORS_PATH, entry);
-    // Trim to MAX_LINES to avoid unbounded growth
-    const content = fs.readFileSync(HOOK_ERRORS_PATH, 'utf-8');
-    const lines = content.split('\n').filter(Boolean);
-    if (lines.length > MAX_LINES) {
-      fs.writeFileSync(HOOK_ERRORS_PATH, lines.slice(-MAX_LINES).join('\n') + '\n');
+    // Probabilistic trim (~1% of writes) — avoids read+rewrite on every append.
+    // Worst case: file grows to ~100k lines before trimming back to MAX_LINES.
+    if (Math.random() < 0.01) {
+      const content = fs.readFileSync(HOOK_ERRORS_PATH, 'utf-8');
+      const lines = content.split('\n').filter(Boolean);
+      if (lines.length > MAX_LINES) {
+        fs.writeFileSync(HOOK_ERRORS_PATH, lines.slice(-MAX_LINES).join('\n') + '\n');
+      }
     }
   } catch (err) {
     // Intentional: hook must not crash even if logging fails

@@ -157,9 +157,9 @@ const TESTS = [
       tool_input: { command: 'git status' },
       session_id: SESSION,
     },
-    expect: { hasKey: 'permissionDecision', noError: true },
-    validate: r => r.parsed?.permissionDecision === 'allowed'
-      ? null : `git should be allowed, got: ${r.parsed?.permissionDecision}`,
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+      ? null : `git should be allowed, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
   },
   {
     name: 'curation-guard    [PreToolUse/npm→build tool warning]',
@@ -169,17 +169,17 @@ const TESTS = [
       tool_input: { command: 'npm install' },
       session_id: SESSION,
     },
-    expect: { hasKey: 'permissionDecision', noError: true },
-    validate: r => r.parsed?.permissionDecision === 'allowed'
-      ? null : `npm should be allowed (with warning), got: ${r.parsed?.permissionDecision}`,
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+      ? null : `npm should be allowed (with warning), got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
   },
   {
     name: 'curation-guard    [PreToolUse/non-Bash→pass]',
     script: 'curation-guard.js',
     payload: { tool_name: 'Write', tool_input: { file_path: 'foo.js' } },
-    expect: { hasKey: 'permissionDecision', noError: true },
-    validate: r => r.parsed?.permissionDecision === 'allowed'
-      ? null : `non-Bash should pass, got: ${r.parsed?.permissionDecision}`,
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+      ? null : `non-Bash should pass, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
   },
   {
     // loadShellsConfig: whitelisted command loaded from temp .vscode/shells.json
@@ -194,9 +194,9 @@ const TESTS = [
         return d;
       })(),
     },
-    expect: { hasKey: 'permissionDecision', noError: true },
-    validate: r => r.parsed?.permissionDecision === 'allowed'
-      ? null : `whitelisted cmd should be allowed, got: ${r.parsed?.permissionDecision}`,
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+      ? null : `whitelisted cmd should be allowed, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
   },
   {
     // denyUnknown=false (default): unknown command still allowed
@@ -207,9 +207,9 @@ const TESTS = [
       tool_input: { command: 'some-totally-unknown-command-xyz123' },
       session_id: SESSION,
     },
-    expect: { hasKey: 'permissionDecision', noError: true },
-    validate: r => r.parsed?.permissionDecision === 'allowed'
-      ? null : `denyUnknown=false → should allow unknown, got: ${r.parsed?.permissionDecision}`,
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+      ? null : `denyUnknown=false → should allow unknown, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
   },
   {
     // denyUnknown=true: unknown command is denied with additionalContext
@@ -220,10 +220,10 @@ const TESTS = [
       tool_input: { command: 'some-totally-unknown-command-xyz123' },
       session_id: SESSION,
     },
-    expect: { hasKey: 'permissionDecision', noError: true },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
     extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: mkTempPluginRoot({ curationGuard: { extraTrivialCommands: [], extraBuildTools: [], denyUnknown: true } }) }),
-    validate: r => r.parsed?.permissionDecision === 'denied'
-      ? null : `denyUnknown=true → should deny unknown, got: ${r.parsed?.permissionDecision}`,
+    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'deny'
+      ? null : `denyUnknown=true → should deny unknown, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
   },
 
   // ── PostToolUse / Bash ────────────────────────────────────────────────────
@@ -322,10 +322,19 @@ const TESTS = [
     expect: { noError: true },
   },
   {
-    name: 'refine-research   [Stop→injects context]',
+    name: 'refine-research   [Stop→throttled or block]',
     script: 'refine-research.js',
     payload: { hook_event_name: 'Stop', session_id: SESSION },
-    expect: { hookEvent: 'Stop', noError: true },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-refine-')) }),
+    validate: r => {
+      // Either throttled ({}) or injected ({decision:'block', reason})
+      const p = r.parsed || {};
+      const keys = Object.keys(p);
+      if (keys.length === 0) return null; // throttled — fine
+      if (p.decision === 'block' && p.reason) return null; // injected — fine
+      return `expected {} or {decision:'block',reason}, got: ${JSON.stringify(p)}`;
+    },
   },
 
   // ── UserPromptSubmit ──────────────────────────────────────────────────────
