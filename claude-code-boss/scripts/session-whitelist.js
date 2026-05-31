@@ -74,7 +74,8 @@ function loadExistingConfig(shellsPath) {
   try {
     if (!fs.existsSync(shellsPath)) return null;
     return JSON.parse(fs.readFileSync(shellsPath, 'utf-8'));
-  } catch {
+  } catch (err) {
+    console.error(`[SESSION-WHITELIST] config parse failed: ${err.message}`);
     return null;
   }
 }

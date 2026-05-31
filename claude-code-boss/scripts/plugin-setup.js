@@ -13,7 +13,8 @@ function run(cmd, opts = {}) {
   try {
     execSync(cmd, { stdio: 'inherit', cwd: PLUGIN_ROOT, timeout: 120000, ...opts });
     return true;
-  } catch {
+  } catch (err) {
+    console.error(`[PLUGIN-SETUP] command failed: ${cmd} → ${err.message}`);
     return false;
   }
 }
@@ -25,7 +26,8 @@ function needsInstall() {
   try {
     require(path.join(nm, 'sharp'));
     return false;
-  } catch {
+  } catch (err) {
+    console.error(`[PLUGIN-SETUP] sharp probe failed, will reinstall: ${err.message}`);
     return true;
   }
 }

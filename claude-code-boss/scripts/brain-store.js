@@ -174,6 +174,7 @@ async function tryInitSqlite() {
     _useSqlite = true;
     return true;
   } catch (err) {
+    console.error(`[BRAIN-STORE] sqlite init failed, falling back to JSON: ${err.message}`);
     return false;
   }
 }
