@@ -85,7 +85,8 @@ function detId(project, file, header) {
 
 function loadState(project) {
   const p = path.join(DATA_DIR, 'brain', project, 'native-index-state.json');
-  try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { return { files: {} }; }
+  try { return JSON.parse(fs.readFileSync(p, 'utf-8')); }
+  catch (err) { void err; return { files: {} }; }
 }
 function saveState(project, state) {
   const dir = path.join(DATA_DIR, 'brain', project);

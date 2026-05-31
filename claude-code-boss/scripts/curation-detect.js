@@ -36,7 +36,8 @@ function loadThresholds() {
   try {
     const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
     return { maxChars: cfg.curation?.maxOutputChars ?? 1500, maxLines: cfg.curation?.maxOutputLines ?? 30 };
-  } catch {
+  } catch (err) {
+    console.error(`[CURATION-DETECT] config load failed, using defaults: ${err.message}`);
     return { maxChars: 1500, maxLines: 30 };
   }
 }
@@ -55,7 +56,8 @@ function loadTurnState(sessionId) {
     const p = turnStatePath(sessionId);
     if (!fs.existsSync(p)) return null;
     return JSON.parse(fs.readFileSync(p, 'utf-8'));
-  } catch {
+  } catch (err) {
+    console.error(`[CURATION-DETECT] turn state load failed: ${err.message}`);
     return null;
   }
 }

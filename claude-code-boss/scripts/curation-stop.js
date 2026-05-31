@@ -29,7 +29,8 @@ function loadConfig() {
   try {
     const cfg = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'config', 'hooks-config.json'), 'utf-8'));
     return cfg.curationStop || {};
-  } catch {
+  } catch (err) {
+    console.error(`[CURATION-STOP] config load failed: ${err.message}`);
     return {};
   }
 }
@@ -53,7 +54,8 @@ function loadTurnState(sessionId) {
     const p = turnStatePath(sessionId);
     if (!fs.existsSync(p)) return null;
     return JSON.parse(fs.readFileSync(p, 'utf-8'));
-  } catch {
+  } catch (err) {
+    console.error(`[CURATION-STOP] turn state load failed: ${err.message}`);
     return null;
   }
 }

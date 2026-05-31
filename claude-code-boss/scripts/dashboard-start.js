@@ -18,12 +18,12 @@ const DASHBOARD_SCRIPT = path.join(PLUGIN_ROOT, 'scripts', 'dashboard.js');
 
 function isAlive(pid) {
   try { process.kill(pid, 0); return true; }
-  catch (err) { return err.code !== 'ESRCH'; }
+  catch (err) { const alive = err.code !== 'ESRCH'; return alive; }
 }
 
 function readPid() {
   try { return parseInt(fs.readFileSync(PID_FILE, 'utf-8').trim(), 10); }
-  catch (_) { return null; }
+  catch (err) { void err; return null; }
 }
 
 function writePid(pid) {
