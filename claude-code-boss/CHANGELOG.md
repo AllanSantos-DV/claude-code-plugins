@@ -1,5 +1,37 @@
 # Changelog
 
+## [1.5.0] — 2026-05-31
+
+### Changed — curation loop refactored to in-loop Stop pattern (BREAKING)
+
+Replaces the curation-improver subagent + UserPromptSubmit backlog injection
+with an in-loop Stop hook that emits `decision:"block" + reason` directly to
+the main agent. Same pattern as `pattern-detect.js` (commit `bff3e40`,
+`refactor(brain): in-loop lesson capture`). The main agent has live turn
+context — a fresh subagent did not — so it creates better curation scripts.
+
+- **Removed** `agents/curation-improver.agent.md` — subagent eliminated.
+- **Removed** `scripts/curation-backlog.js` + its UserPromptSubmit hook entry —
+  backlog mechanism no longer needed (no subagent to wake up).
+- **Added** `scripts/curation-stop.js` — Stop hook reads per-turn state and
+  emits a block+reason instructing the main agent to read the new skill and
+  author a `.mjs` curator. Anti-loop via `stop_hook_active` guard.
+- **Added** `skills/curation-script-pattern/SKILL.md` — migrated from the
+  deleted agent's instructions. Loaded on-demand when the Stop hook references
+  it by path; documents the `.mjs` template, OK/FAIL contract, `shells.json`
+  schema, and `outputFilter` cheatsheet.
+- **Rewrote** `scripts/curation-detect.js` — instead of writing per-event
+  payload files to `data/detect-curation/`, appends entries to a single
+  per-turn state file at `data/.runtime/curation-turn-<sessionId>.json`.
+  Entries dedup'd by `command+reason`, capped at 50/turn.
+- **Config** `config/hooks-config.json` — added `curationStop.enabled: true`.
+
+### Migration
+
+The directory `data/detect-curation/` (runtime, outside the repo) is no
+longer written or read. Existing payload files there can be deleted; they
+were only consumed by the now-removed subagent + backlog hook.
+
 ## [1.4.0] — 2026-05-31
 
 ### Fixed — hooks correctness pass + MCP brain_store orphan bug
