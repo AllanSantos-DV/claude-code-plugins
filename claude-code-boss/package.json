@@ -1,6 +1,6 @@
 {
   "name": "claude-code-plugin-brain",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "private": true,
   "description": "Claude Code plugin — Brain Research knowledge base",
   "type": "commonjs",
@@ -16,7 +16,9 @@
   },
   "scripts": {
     "postinstall": "node scripts/plugin-setup.js",
-    "test": "node scripts/test-hooks.js",
+    "test": "node scripts/test-hooks.js && node scripts/test-units.js",
+    "test:hooks": "node scripts/test-hooks.js",
+    "test:units": "node scripts/test-units.js",
     "test:verbose": "node scripts/test-hooks.js --verbose",
     "version:sync": "node scripts/sync-version.js",
     "version:bump": "node scripts/sync-version.js"

@@ -112,16 +112,17 @@ Diferenciação clara e não-duplicada. Brain vira o "search layer" da memória 
 Sem isso o KB apodrece — prova viva: **68 payloads pendentes** acumulando agora.
 Se o Brain vai coexistir com o Auto Memory nativo, sua **qualidade** é o valor.
 
-- **Achado local:** `brain-config.json` já declara `archiveAfterDays: 90`,
-  `maxEntriesPerProject: 10000`, `dedupThreshold: 0.95` — mas é **config, não prova
-  de implementação**.
+- **Achado local:** `brain-config.json` só declara `archiveAfterDays: 90`,
+  `maxEntriesPerProject: 10000` — mas é **config, não prova de implementação**.
+  (Chaves aspiracionais como `dedupThreshold`/`hybridSearch` foram removidas no
+  audit 2026-05 por serem 100% dead.)
 - **Achado local:** `brain-consolidator` faz contradição só em *pesquisa
   multi-fonte*, não no KB geral.
 
 **Gate de código — RESULTADO (2026-05-29): F2 é GREENFIELD.** As três não existem
 em código:
-- **Dedup:** `dedupThreshold: 0.95` só é carregado como default no
-  `brain-submit.js:39` — **nunca aplicado** (sem cálculo de similaridade, sem skip).
+- **Dedup:** sem cálculo de similaridade, sem skip. Reintroduzir
+  `dedupThreshold` (e o caminho de enforcement) faz parte do desenho desta feature.
 - **Decay/eviction:** `archiveAfterDays` / `maxEntriesPerProject` **não lidos por
   nenhum script**. Config aspiracional.
 - **Contradição:** só no `brain-consolidator` (pesquisa), não no KB.
@@ -131,7 +132,8 @@ em código:
 **Gate restante antes de desenhar:**
 - Mercado: padrões de TTL/decay e re-ranking em vector stores (pesquisar ao
   desenhar). Implementar **fazendo valer os valores já no config**
-  (`dedupThreshold 0.95`, `archiveAfterDays 90`, `maxEntries 10000`).
+  (`archiveAfterDays 90`, `maxEntries 10000`) e reintroduzir `dedupThreshold`
+  junto com seu enforcement.
 - Onde aplicar dedup: na submissão (`brain-submit`) ou na indexação
   (`brain-indexer`)? Decidir o ponto de enforcement.
 

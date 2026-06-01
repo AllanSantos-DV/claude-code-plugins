@@ -150,7 +150,7 @@ const TESTS = [
     expect: { noError: true },
   },
   {
-    name: 'curation-guard    [PreToolUse/git→trivial]',
+    name: 'curation-guard    [PreToolUse/no-curated,no-whitelist→allow-default]',
     script: 'curation-guard.js',
     payload: {
       tool_name: 'Bash',
@@ -159,10 +159,10 @@ const TESTS = [
     },
     expect: { hasKey: 'hookSpecificOutput', noError: true },
     validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
-      ? null : `git should be allowed, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
+      ? null : `unmatched command should fall through to default allow, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
   },
   {
-    name: 'curation-guard    [PreToolUse/npm→build tool warning]',
+    name: 'curation-guard    [PreToolUse/uncurated-build→allow-default]',
     script: 'curation-guard.js',
     payload: {
       tool_name: 'Bash',
@@ -171,7 +171,7 @@ const TESTS = [
     },
     expect: { hasKey: 'hookSpecificOutput', noError: true },
     validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
-      ? null : `npm should be allowed (with warning), got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
+      ? null : `uncurated build command should allow (discovery loop in PostToolUse/Stop handles it), got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
   },
   {
     name: 'curation-guard    [PreToolUse/non-Bash→pass]',
@@ -221,9 +221,185 @@ const TESTS = [
       session_id: SESSION,
     },
     expect: { hasKey: 'hookSpecificOutput', noError: true },
-    extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: mkTempPluginRoot({ curationGuard: { extraTrivialCommands: [], extraBuildTools: [], denyUnknown: true } }) }),
+    extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: mkTempPluginRoot({ curationGuard: { denyUnknown: true } }) }),
     validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'deny'
       ? null : `denyUnknown=true → should deny unknown, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
+  },
+
+  {
+    name: 'curation-guard    [PreToolUse/wrapper-invokes-curated→allow]',
+    script: 'curation-guard.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: 'powershell -ExecutionPolicy Bypass -File .vscode/scripts/vitest.ps1 tests/foo.test.ts' },
+      session_id: SESSION,
+      cwd: (() => mkTempProject({ shells: [{ id: 'vitest', script: '.vscode/scripts/vitest.ps1', aliases: ['npm test'] }], whitelist: [] }))(),
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+      ? null : `wrapper invocation should be allowed silently (matcher.includes), got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
+  },
+  {
+    name: 'curation-guard    [PreToolUse/alias→deny+redirect-to-script]',
+    script: 'curation-guard.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: 'npm test' },
+      session_id: SESSION,
+      cwd: (() => mkTempProject({ shells: [{ id: 'vitest', script: '.vscode/scripts/vitest.ps1', aliases: ['npm test'] }], whitelist: [] }))(),
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    validate: r => {
+      const d = r.parsed?.hookSpecificOutput?.permissionDecision;
+      const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+      if (d !== 'deny') return `alias should deny+redirect, got: ${d}`;
+      if (!ctx.includes('.vscode/scripts/vitest.ps1')) return `redirect should reference script path, got: ${ctx}`;
+      return null;
+    },
+  },
+  {
+    name: 'curation-guard    [PreToolUse/abs-path-invokes-relative-script→allow]',
+    script: 'curation-guard.js',
+    payload: (() => {
+      const cwd = mkTempProject({ shells: [{ id: 'adb', script: '.vscode/scripts/adb-logcat-tail.ps1', aliases: ['adb logcat'] }], whitelist: [] });
+      // Simulate the real-world case: agent invokes the curated script via an
+      // absolute Windows-style path. Must be recognized as already-curated.
+      const absPath = `${cwd.replace(/\\/g, '/')}/.vscode/scripts/adb-logcat-tail.ps1`;
+      return {
+        tool_name: 'Bash',
+        tool_input: { command: `powershell.exe -ExecutionPolicy Bypass -File ${absPath} -Pattern "X" -Lines 20` },
+        session_id: SESSION,
+        cwd,
+      };
+    })(),
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+      ? null : `absolute-path invocation of relative-registered script should allow, got: ${r.parsed?.hookSpecificOutput?.permissionDecision} (ctx: ${r.parsed?.hookSpecificOutput?.additionalContext})`,
+  },
+  {
+    name: 'curation-guard    [PreToolUse/path-prefix-collision→no-false-match]',
+    script: 'curation-guard.js',
+    payload: (() => {
+      const cwd = mkTempProject({ shells: [{ id: 'x', script: 'x.ps1', aliases: [] }], whitelist: [] });
+      return {
+        tool_name: 'Bash',
+        tool_input: { command: 'powershell -File ax.ps1' },
+        session_id: SESSION,
+        cwd,
+      };
+    })(),
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    validate: r => {
+      const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+      if (ctx.includes('x.ps1') && ctx.includes('curated script')) {
+        return `ax.ps1 must NOT match curated x.ps1, got redirect: ${ctx}`;
+      }
+      return null;
+    },
+  },
+  {
+    name: 'curation-guard    [PreToolUse/alias-after-cd→deny+redirect]',
+    script: 'curation-guard.js',
+    payload: (() => {
+      // Real-world case from the field: agent prepends `cd <project> && ` to
+      // its alias invocation. Matcher must split by `&&`/`;`/`||` so the alias
+      // segment is still recognized.
+      const cwd = mkTempProject({ shells: [{ id: 'tsc', script: '.vscode/scripts/tsc_check.ps1', aliases: ['npm run compile'] }], whitelist: [] });
+      return {
+        tool_name: 'Bash',
+        tool_input: { command: `cd ${cwd.replace(/\\/g, '/')} && npm run compile 2>&1 | tail -20` },
+        session_id: SESSION,
+        cwd,
+      };
+    })(),
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    validate: r => {
+      const d = r.parsed?.hookSpecificOutput?.permissionDecision;
+      const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+      if (d !== 'deny') return `alias after 'cd && ' should deny+redirect, got: ${d} (ctx: ${ctx})`;
+      if (!ctx.includes('.vscode/scripts/tsc_check.ps1')) return `redirect should reference script path, got: ${ctx}`;
+      return null;
+    },
+  },
+  {
+    name: 'curation-guard    [PreToolUse/curated-script+pipe→deny+edit-script]',
+    script: 'curation-guard.js',
+    payload: (() => {
+      // Real-world: agent invokes curated script then pipes output. Any pipe
+      // signals post-processing — block and tell the agent to edit the script
+      // if its output isn't adequate. Hook doesn't enumerate filter commands;
+      // the LLM reads the reason and decides.
+      const cwd = mkTempProject({ shells: [{ id: 'rep', script: '.vscode/scripts/repackage.ps1', aliases: [] }], whitelist: [] });
+      const absPath = `${cwd.replace(/\\/g, '/')}/.vscode/scripts/repackage.ps1`;
+      return {
+        tool_name: 'Bash',
+        tool_input: { command: `powershell -ExecutionPolicy Bypass -File ${absPath} 2>&1 | tail -10` },
+        session_id: SESSION,
+        cwd,
+      };
+    })(),
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    validate: r => {
+      const d = r.parsed?.hookSpecificOutput?.permissionDecision;
+      const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+      if (d !== 'deny') return `curated-script + pipe should deny (edit script), got: ${d}`;
+      if (!/edit the script/i.test(ctx)) return `deny reason must instruct to edit the script, got: ${ctx}`;
+      return null;
+    },
+  },
+  {
+    name: 'curation-guard    [PreToolUse/curated-script+logical-or→allow]',
+    script: 'curation-guard.js',
+    payload: (() => {
+      // `||` is logical OR, not a pipe. Should NOT trigger filter-pipe deny.
+      const cwd = mkTempProject({ shells: [{ id: 'rep', script: '.vscode/scripts/repackage.ps1', aliases: [] }], whitelist: [] });
+      const absPath = `${cwd.replace(/\\/g, '/')}/.vscode/scripts/repackage.ps1`;
+      return {
+        tool_name: 'Bash',
+        tool_input: { command: `powershell -File ${absPath} || echo failed` },
+        session_id: SESSION,
+        cwd,
+      };
+    })(),
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+      ? null : `\`||\` is logical OR not a filter pipe, should allow. Got: ${r.parsed?.hookSpecificOutput?.permissionDecision} (ctx: ${r.parsed?.hookSpecificOutput?.additionalContext})`,
+  },
+  {
+    name: 'curation-guard    [legacy `command` field→still matches]',
+    script: 'curation-guard.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: 'npm test' },
+      session_id: SESSION,
+      // legacy entry: no `script`, only `command` (normalized at load time)
+      cwd: (() => mkTempProject({ shells: [{ id: 'legacy', command: '.vscode/scripts/legacy.mjs', aliases: ['npm test'] }], whitelist: [] }))(),
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'deny'
+      ? null : `legacy command-field entry should still drive deny+redirect, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
+  },
+  {
+    // Security: token-aware matcher must NOT treat quoted-arg occurrence as invocation.
+    // Was: substring `includes` matched any embedded path → bypass.
+    name: 'curation-guard    [security/quoted-arg→does-not-bypass]',
+    script: 'curation-guard.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: 'echo "running .vscode/scripts/vitest.ps1"' },
+      session_id: SESSION,
+      cwd: (() => mkTempProject({ shells: [{ id: 'vitest', script: '.vscode/scripts/vitest.ps1', aliases: [] }], whitelist: [] }))(),
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    validate: r => {
+      // `echo "running script.ps1"` mentions the script path inside a quoted arg.
+      // Matcher must NOT treat that as an invocation (would silently allow under
+      // the wrong branch). With no curated match and no whitelist, falls through
+      // to the default allow. Either way, expected: allow with no deny redirect.
+      const d = r.parsed?.hookSpecificOutput?.permissionDecision;
+      if (d !== 'allow') return `quoted-arg must not trigger curated-redirect, got: ${d} (ctx: ${r.parsed?.hookSpecificOutput?.additionalContext})`;
+      return null;
+    },
   },
 
   // ── PostToolUse / Bash ────────────────────────────────────────────────────
@@ -241,13 +417,15 @@ const TESTS = [
     expect: { noError: true },
     extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-det-lrg-')) }),
     validateWithEnv: (r, env) => {
-      // Verify turn-state file was created with at least one entry
+      // Journal: one file per entry under .runtime/curation-turn-<sid>--<ts>-<rand>.json
       const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
-      const p = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime', `curation-turn-${safe}.json`);
-      if (!fs.existsSync(p)) return `turn-state file missing: ${p}`;
-      const state = JSON.parse(fs.readFileSync(p, 'utf-8'));
-      if (!state.entries || state.entries.length === 0) return `no entries in turn state`;
-      if (state.entries[0].reason !== 'needs-curation') return `expected reason=needs-curation, got ${state.entries[0].reason}`;
+      const runtimeDir = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime');
+      const prefix = `curation-turn-${safe}--`;
+      if (!fs.existsSync(runtimeDir)) return `runtime dir missing: ${runtimeDir}`;
+      const files = fs.readdirSync(runtimeDir).filter(f => f.startsWith(prefix) && f.endsWith('.json'));
+      if (files.length === 0) return `no journal entry files in ${runtimeDir}`;
+      const entry = JSON.parse(fs.readFileSync(path.join(runtimeDir, files[0]), 'utf-8'));
+      if (entry.reason !== 'needs-curation') return `expected reason=needs-curation, got ${entry.reason}`;
       return null;
     },
   },
@@ -259,8 +437,11 @@ const TESTS = [
     extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-det-fail-')) }),
     validateWithEnv: (r, env) => {
       const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
-      const p = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime', `curation-turn-${safe}.json`);
-      if (!fs.existsSync(p)) return `turn-state file missing: ${p}`;
+      const runtimeDir = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime');
+      const prefix = `curation-turn-${safe}--`;
+      if (!fs.existsSync(runtimeDir)) return `runtime dir missing: ${runtimeDir}`;
+      const files = fs.readdirSync(runtimeDir).filter(f => f.startsWith(prefix) && f.endsWith('.json'));
+      if (files.length === 0) return `no journal entry files in ${runtimeDir}`;
       return null;
     },
   },
@@ -300,7 +481,7 @@ const TESTS = [
     script: 'curation-detect.js',
     payload: (() => {
       const f = require('./__fixtures__/post-tool-use-success.json');
-      const projDir = mkTempProject({ shells: [{ command: 'git status', script: '.vscode/scripts/gitstatus.mjs' }], whitelist: [] });
+      const projDir = mkTempProject({ shells: [{ id: 'gitstatus', script: '.vscode/scripts/gitstatus.mjs', aliases: ['git status'] }], whitelist: [] });
       return { ...f, session_id: SESSION, cwd: projDir };
     })(),
     expect: { noError: true },
@@ -312,7 +493,7 @@ const TESTS = [
     script: 'curation-detect.js',
     payload: (() => {
       const f = require('./__fixtures__/post-tool-use-success-noisy.json');
-      const projDir = mkTempProject({ shells: [{ command: 'npm test', script: '.vscode/scripts/test.mjs' }], whitelist: [] });
+      const projDir = mkTempProject({ shells: [{ id: 'test', script: '.vscode/scripts/test.mjs', aliases: ['npm test'] }], whitelist: [] });
       return { ...f, session_id: SESSION, cwd: projDir };
     })(),
     expect: { noError: true },
@@ -328,6 +509,59 @@ const TESTS = [
       session_id: SESSION,
     },
     expect: { noError: true },
+    validate: r => {
+      const p = r.parsed || {};
+      return p.skipped === 'trivial_command' ? null : `expected skipped:'trivial_command', got: ${JSON.stringify(p)}`;
+    },
+  },
+  {
+    name: 'brain-submit      [Bash/trivial→skip]',
+    script: 'brain-submit.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: 'git status' },
+      tool_response: { stdout: 'A'.repeat(5000) + '\n' + 'B'.repeat(5000), stderr: '' },
+      session_id: SESSION,
+    },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-submit-triv-')) }),
+    validate: r => {
+      const p = r.parsed || {};
+      return p.skipped === 'trivial_command' ? null : `expected skipped:'trivial_command' even with large output, got: ${JSON.stringify(p)}`;
+    },
+  },
+  {
+    name: 'brain-submit      [Bash/significant→write]',
+    script: 'brain-submit.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: 'npm test' },
+      tool_response: { stdout: 'PASS\nPASS\nPASS', stderr: '' },
+      session_id: SESSION,
+    },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-submit-sig-')) }),
+    validate: r => {
+      const p = r.parsed || {};
+      return p.written && p.workType === 'test' ? null : `expected written + workType:'test', got: ${JSON.stringify(p)}`;
+    },
+  },
+  {
+    name: 'brain-submit      [Bash/below-min-lines→skip]',
+    script: 'brain-submit.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: 'unknown-tool --weird-flag' },
+      // 2000 chars but only 1 line → fails minBashLines:3 gate
+      tool_response: { stdout: 'X'.repeat(2000), stderr: '' },
+      session_id: SESSION,
+    },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-submit-1line-')) }),
+    validate: r => {
+      const p = r.parsed || {};
+      return p.skipped === 'not_significant' ? null : `expected skipped:'not_significant' (single-line output), got: ${JSON.stringify(p)}`;
+    },
   },
 
   // ── Stop ─────────────────────────────────────────────────────────────────
@@ -397,24 +631,365 @@ const TESTS = [
     },
   },
   {
-    name: 'curation-stop     [Stop→stop_hook_active→{}]',
+    name: 'curation-stop     [Stop→retry-overlap→escalated block]',
     script: 'curation-stop.js',
     payload: { hook_event_name: 'Stop', session_id: SESSION, stop_hook_active: true },
     expect: { noError: true },
     extraEnv: () => {
-      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-stop-loop-'));
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-stop-retry-overlap-'));
+      const runtimeDir = path.join(tmpData, '.runtime');
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      // Prior block: same script appears in this turn → no progress.
+      fs.writeFileSync(
+        path.join(runtimeDir, `curation-stop-${safe}.json`),
+        JSON.stringify({ attempts: 1, blockedSignature: 'powershell -File .vscode/scripts/vitest.ps1|.vscode/scripts/vitest.ps1', firstBlockedAt: new Date().toISOString() }),
+      );
+      fs.writeFileSync(
+        path.join(runtimeDir, `curation-turn-${safe}.json`),
+        JSON.stringify({ entries: [{ command: 'powershell -File .vscode/scripts/vitest.ps1', reason: 'curated-success-noisy', lines: 53, chars: 5114, isCurated: true, curatedScript: '.vscode/scripts/vitest.ps1' }] }),
+      );
+      return { CLAUDE_PLUGIN_DATA: tmpData };
+    },
+    validate: r => {
+      if (r.parsed?.decision !== 'block') return `expected escalated block, got: ${JSON.stringify(r.parsed)}`;
+      if (!(r.parsed?.reason || '').includes('[RETRY 2/3]')) return `expected [RETRY 2/3] marker, got: ${(r.parsed?.reason || '').slice(0, 200)}`;
+      return null;
+    },
+  },
+  {
+    name: 'curation-stop     [Stop→retry-no-turnstate→escalated block (text-only ignore)]',
+    script: 'curation-stop.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION, stop_hook_active: true },
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-stop-textonly-'));
+      const runtimeDir = path.join(tmpData, '.runtime');
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      // Prior block exists; turn-state missing = agent replied text-only without
+      // acting on the block. Must escalate, not relent.
+      fs.writeFileSync(
+        path.join(runtimeDir, `curation-stop-${safe}.json`),
+        JSON.stringify({
+          attempts: 1,
+          blockedSignature: 'powershell -File .vscode/scripts/vitest.ps1|.vscode/scripts/vitest.ps1',
+          blockedEntries: [{ command: 'powershell -File .vscode/scripts/vitest.ps1', curatedScript: '.vscode/scripts/vitest.ps1', reason: 'curated-success-noisy' }],
+          firstBlockedAt: new Date().toISOString(),
+        }),
+      );
+      return { CLAUDE_PLUGIN_DATA: tmpData };
+    },
+    validate: r => {
+      if (r.parsed?.decision !== 'block') return `expected escalated block (text-only ignore), got: ${JSON.stringify(r.parsed)}`;
+      if (!(r.parsed?.reason || '').includes('[RETRY 2/3]')) return `expected [RETRY 2/3] marker, got: ${(r.parsed?.reason || '').slice(0, 200)}`;
+      return null;
+    },
+  },
+  {
+    name: 'curation-stop     [Stop→max-attempts-reached→relent {}]',
+    script: 'curation-stop.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION, stop_hook_active: true },
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-stop-relent-'));
+      const runtimeDir = path.join(tmpData, '.runtime');
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      fs.writeFileSync(
+        path.join(runtimeDir, `curation-stop-${safe}.json`),
+        JSON.stringify({ attempts: 3, blockedSignature: 'x|.vscode/scripts/x.ps1', firstBlockedAt: new Date().toISOString() }),
+      );
+      fs.writeFileSync(
+        path.join(runtimeDir, `curation-turn-${safe}.json`),
+        JSON.stringify({ entries: [{ command: 'x', reason: 'curated-success-noisy', lines: 50, chars: 4000, isCurated: true, curatedScript: '.vscode/scripts/x.ps1' }] }),
+      );
+      return { CLAUDE_PLUGIN_DATA: tmpData };
+    },
+    validate: r => Object.keys(r.parsed || {}).length === 0
+      ? null : `expected {} (relent after maxAttempts), got: ${JSON.stringify(r.parsed)}`,
+  },
+  {
+    name: 'curation-stop     [Stop→retry+edited-curated-script→release {}]',
+    script: 'curation-stop.js',
+    payload: (() => {
+      // Build a project with the curated script present, set its mtime to NOW
+      // and set firstBlockedAt to 10s in the past — must be detected as edited.
+      const cwd = mkTempProject({ shells: [{ id: 'adb', script: '.vscode/scripts/adb-logcat-tail.ps1', aliases: [] }], whitelist: [] });
+      const scriptPath = path.join(cwd, '.vscode', 'scripts', 'adb-logcat-tail.ps1');
+      fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
+      fs.writeFileSync(scriptPath, '# refined\n');
+      // Force mtime to "now" (newer than firstBlockedAt below).
+      const now = new Date();
+      fs.utimesSync(scriptPath, now, now);
+      return {
+        hook_event_name: 'Stop',
+        session_id: SESSION,
+        stop_hook_active: true,
+        cwd,
+      };
+    })(),
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-stop-edited-'));
+      const runtimeDir = path.join(tmpData, '.runtime');
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      const tenSecAgo = new Date(Date.now() - 10_000).toISOString();
+      fs.writeFileSync(
+        path.join(runtimeDir, `curation-stop-${safe}.json`),
+        JSON.stringify({
+          attempts: 1,
+          blockedSignature: 'adb logcat|.vscode/scripts/adb-logcat-tail.ps1',
+          blockedEntries: [{ command: 'adb logcat -d -t 1000', reason: 'curated-success-noisy', curatedScript: '.vscode/scripts/adb-logcat-tail.ps1' }],
+          firstBlockedAt: tenSecAgo,
+        }),
+      );
+      // Empty journal — agent didn't run anything new, only edited the script.
+      return { CLAUDE_PLUGIN_DATA: tmpData };
+    },
+    validate: r => Object.keys(r.parsed || {}).length === 0
+      ? null : `editing curated script must count as progress (release stop), got: ${JSON.stringify(r.parsed)}`,
+  },
+  {
+    name: 'curation-stop     [Stop→refine-section→READ instruction in reason]',
+    script: 'curation-stop.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-stop-refine-'));
       const runtimeDir = path.join(tmpData, '.runtime');
       fs.mkdirSync(runtimeDir, { recursive: true });
       const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
       fs.writeFileSync(
         path.join(runtimeDir, `curation-turn-${safe}.json`),
-        JSON.stringify({ sessionId: SESSION, entries: [{ command: 'x', reason: 'needs-curation', lines: 100, chars: 5000, isCurated: false }] }),
+        JSON.stringify({
+          sessionId: SESSION,
+          startedAt: new Date().toISOString(),
+          entries: [
+            { command: 'powershell -File .vscode/scripts/vitest.ps1 x.test.ts', reason: 'curated-success-noisy', lines: 53, chars: 5114, isCurated: true, curatedScript: '.vscode/scripts/vitest.ps1', isSuccess: true, timestamp: new Date().toISOString() },
+          ],
+        }),
       );
       return { CLAUDE_PLUGIN_DATA: tmpData };
     },
     validate: r => {
+      const reason = r.parsed?.reason || '';
+      if (r.parsed?.decision !== 'block') return `expected decision:'block'`;
+      if (!reason.includes('REFINE')) return `expected REFINE section, got: ${reason.slice(0, 200)}`;
+      if (!reason.includes('curation-script-pattern')) return `expected pointer to skill (not paternalistic rule recap), got: ${reason.slice(0, 200)}`;
+      if (!reason.includes('.vscode/scripts/vitest.ps1')) return `expected existing script path in reason`;
+      if (reason.includes('CREATE')) return `should not have CREATE section (no create-entries)`;
+      return null;
+    },
+  },
+  {
+    name: 'curation-stop     [Stop→mixed→both REFINE and CREATE sections]',
+    script: 'curation-stop.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-stop-mixed-'));
+      const runtimeDir = path.join(tmpData, '.runtime');
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      fs.writeFileSync(
+        path.join(runtimeDir, `curation-turn-${safe}.json`),
+        JSON.stringify({
+          sessionId: SESSION,
+          entries: [
+            { command: 'npm test', reason: 'needs-curation', lines: 200, chars: 8000, isCurated: false, curatedScript: null, isSuccess: true, timestamp: new Date().toISOString() },
+            { command: 'powershell -File .vscode/scripts/build.ps1', reason: 'curated-success-noisy', lines: 40, chars: 4000, isCurated: true, curatedScript: '.vscode/scripts/build.ps1', isSuccess: true, timestamp: new Date().toISOString() },
+          ],
+        }),
+      );
+      return { CLAUDE_PLUGIN_DATA: tmpData };
+    },
+    validate: r => {
+      const reason = r.parsed?.reason || '';
+      if (!reason.includes('REFINE')) return `expected REFINE section, got: ${reason.slice(0, 300)}`;
+      if (!reason.includes('CREATE')) return `expected CREATE section, got: ${reason.slice(0, 300)}`;
+      if (!reason.includes('build.ps1')) return `expected build.ps1 in REFINE section`;
+      if (!reason.includes('npm test')) return `expected npm test in CREATE section`;
+      return null;
+    },
+  },
+  {
+    name: 'brain-stop        [Stop→no-pending→{}]',
+    script: 'brain-stop.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-brain-stop-empty-')) }),
+    validate: r => {
       const keys = Object.keys(r.parsed || {});
-      return keys.length === 0 ? null : `expected {} (anti-loop), got: ${JSON.stringify(r.parsed)}`;
+      return keys.length === 0 ? null : `expected {} (no pending), got: ${JSON.stringify(r.parsed)}`;
+    },
+  },
+  {
+    name: 'brain-stop        [Stop→below-threshold→{}]',
+    script: 'brain-stop.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-brain-stop-below-'));
+      const pendingDir = path.join(tmpData, 'brain-pending');
+      fs.mkdirSync(pendingDir, { recursive: true });
+      for (let i = 0; i < 5; i++) {
+        fs.writeFileSync(path.join(pendingDir, `p${i}.json`), JSON.stringify({ command: `x${i}`, project: 'test' }));
+      }
+      return { CLAUDE_PLUGIN_DATA: tmpData };
+    },
+    validate: r => {
+      const keys = Object.keys(r.parsed || {});
+      return keys.length === 0 ? null : `expected {} (below threshold), got: ${JSON.stringify(r.parsed)}`;
+    },
+  },
+  {
+    name: 'brain-stop        [Stop→first-block→attempt 1 reason]',
+    script: 'brain-stop.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-brain-stop-first-'));
+      const pendingDir = path.join(tmpData, 'brain-pending');
+      fs.mkdirSync(pendingDir, { recursive: true });
+      for (let i = 0; i < 15; i++) {
+        fs.writeFileSync(path.join(pendingDir, `p${i}.json`), JSON.stringify({ command: `x${i}`, project: 'test' }));
+      }
+      return { CLAUDE_PLUGIN_DATA: tmpData };
+    },
+    validateWithEnv: (r, env) => {
+      const p = r.parsed || {};
+      if (p.decision !== 'block') return `expected decision:'block', got: ${JSON.stringify(p)}`;
+      if (!p.reason || !p.reason.includes('brain-indexer')) return `expected reason mentioning brain-indexer, got: ${p.reason}`;
+      if (p.reason.includes('[RETRY') || p.reason.includes('[FINAL')) return `attempt 1 should not have escalation tag, got: ${p.reason}`;
+      // State file should be created
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      const sp = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime', `brain-stop-${safe}.json`);
+      if (!fs.existsSync(sp)) return `expected state file at ${sp}`;
+      const state = JSON.parse(fs.readFileSync(sp, 'utf-8'));
+      if (state.attempts !== 1) return `expected attempts:1, got: ${state.attempts}`;
+      if (state.lastPendingCount !== 15) return `expected lastPendingCount:15, got: ${state.lastPendingCount}`;
+      return null;
+    },
+  },
+  {
+    name: 'brain-stop        [Stop→retry-no-progress→escalated block]',
+    script: 'brain-stop.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION, stop_hook_active: true },
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-brain-stop-retry-'));
+      const pendingDir = path.join(tmpData, 'brain-pending');
+      const runtimeDir = path.join(tmpData, '.runtime');
+      fs.mkdirSync(pendingDir, { recursive: true });
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      for (let i = 0; i < 15; i++) {
+        fs.writeFileSync(path.join(pendingDir, `p${i}.json`), JSON.stringify({ command: `x${i}` }));
+      }
+      // Pre-existing state: first attempt already done, pending unchanged
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      fs.writeFileSync(
+        path.join(runtimeDir, `brain-stop-${safe}.json`),
+        JSON.stringify({ attempts: 1, lastPendingCount: 15, firstBlockedAt: new Date().toISOString() }),
+      );
+      return { CLAUDE_PLUGIN_DATA: tmpData };
+    },
+    validateWithEnv: (r, env) => {
+      const p = r.parsed || {};
+      if (p.decision !== 'block') return `expected decision:'block', got: ${JSON.stringify(p)}`;
+      if (!p.reason.includes('[RETRY 2/3]')) return `expected [RETRY 2/3] tag, got: ${p.reason}`;
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      const state = JSON.parse(fs.readFileSync(path.join(env.CLAUDE_PLUGIN_DATA, '.runtime', `brain-stop-${safe}.json`), 'utf-8'));
+      if (state.attempts !== 2) return `expected attempts:2, got: ${state.attempts}`;
+      return null;
+    },
+  },
+  {
+    name: 'brain-stop        [Stop→retry-progress-detected→{}]',
+    script: 'brain-stop.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION, stop_hook_active: true },
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-brain-stop-progress-'));
+      const pendingDir = path.join(tmpData, 'brain-pending');
+      const runtimeDir = path.join(tmpData, '.runtime');
+      fs.mkdirSync(pendingDir, { recursive: true });
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      // 12 pending now (was 15 before — progress!)
+      for (let i = 0; i < 12; i++) {
+        fs.writeFileSync(path.join(pendingDir, `p${i}.json`), JSON.stringify({ command: `x${i}` }));
+      }
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      fs.writeFileSync(
+        path.join(runtimeDir, `brain-stop-${safe}.json`),
+        JSON.stringify({ attempts: 1, lastPendingCount: 15, firstBlockedAt: new Date().toISOString() }),
+      );
+      return { CLAUDE_PLUGIN_DATA: tmpData };
+    },
+    validateWithEnv: (r, env) => {
+      const keys = Object.keys(r.parsed || {});
+      if (keys.length !== 0) return `expected {} (progress detected), got: ${JSON.stringify(r.parsed)}`;
+      // State file should be cleared
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      const sp = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime', `brain-stop-${safe}.json`);
+      if (fs.existsSync(sp)) return `state should be cleared after progress, still exists at ${sp}`;
+      return null;
+    },
+  },
+  {
+    name: 'brain-stop        [Stop→max-attempts-no-progress→relent {}]',
+    script: 'brain-stop.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION, stop_hook_active: true },
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-brain-stop-cap-'));
+      const pendingDir = path.join(tmpData, 'brain-pending');
+      const runtimeDir = path.join(tmpData, '.runtime');
+      fs.mkdirSync(pendingDir, { recursive: true });
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      for (let i = 0; i < 15; i++) {
+        fs.writeFileSync(path.join(pendingDir, `p${i}.json`), JSON.stringify({ command: `x${i}` }));
+      }
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      fs.writeFileSync(
+        path.join(runtimeDir, `brain-stop-${safe}.json`),
+        JSON.stringify({ attempts: 3, lastPendingCount: 15, firstBlockedAt: new Date().toISOString() }),
+      );
+      return { CLAUDE_PLUGIN_DATA: tmpData };
+    },
+    validateWithEnv: (r, env) => {
+      const keys = Object.keys(r.parsed || {});
+      if (keys.length !== 0) return `expected {} (max attempts relent), got: ${JSON.stringify(r.parsed)}`;
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      const sp = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime', `brain-stop-${safe}.json`);
+      if (fs.existsSync(sp)) return `state should be cleared after relent, still exists at ${sp}`;
+      return null;
+    },
+  },
+  {
+    name: 'brain-stop        [Stop→disabled→{}]',
+    script: 'brain-stop.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-brain-stop-disabled-'));
+      const pendingDir = path.join(tmpData, 'brain-pending');
+      fs.mkdirSync(pendingDir, { recursive: true });
+      for (let i = 0; i < 50; i++) {
+        fs.writeFileSync(path.join(pendingDir, `p${i}.json`), JSON.stringify({ command: `x${i}` }));
+      }
+      const fakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-brain-stop-root-'));
+      fs.mkdirSync(path.join(fakeRoot, 'config'), { recursive: true });
+      fs.writeFileSync(
+        path.join(fakeRoot, 'config', 'hooks-config.json'),
+        JSON.stringify({ brainStop: { enabled: false } }),
+      );
+      return { CLAUDE_PLUGIN_DATA: tmpData, CLAUDE_PLUGIN_ROOT: fakeRoot };
+    },
+    validate: r => {
+      const keys = Object.keys(r.parsed || {});
+      return keys.length === 0 ? null : `expected {} (disabled), got: ${JSON.stringify(r.parsed)}`;
     },
   },
 
@@ -488,10 +1063,66 @@ for (const test of filtered) {
 }
 
 console.log(DIM('─'.repeat(70)));
-console.log(BOLD(`\nResults: ${GREEN(passed + ' passed')}  ${failed > 0 ? RED(failed + ' failed') : DIM('0 failed')}\n`));
 
-if (failures.length > 0 && !VERBOSE) {
-  console.log(DIM('Run with --verbose to see stderr for failing tests\n'));
+// ─── Async race-condition test (curation-detect concurrent appends) ─────────
+// The journal design (one file per appendEntry call, unique filename with
+// timestamp + 4-byte random suffix) must allow N truly-concurrent spawns
+// to all land their entries without loss.
+(async () => {
+  if (FILTER && !'curation-detect concurrent appends'.toLowerCase().includes(FILTER.toLowerCase())) {
+    finalize();
+    return;
+  }
+  const testName = 'curation-detect   [concurrent appends→no lost entries]';
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-race-'));
+  const N = 5;
+  const fixture = require('./__fixtures__/post-tool-use-success-noisy.json');
+  const { spawn } = require('child_process');
+
+  const env = {
+    ...process.env,
+    CLAUDE_PLUGIN_ROOT: path.resolve(SCRIPTS, '..'),
+    CLAUDE_PLUGIN_DATA: dataDir,
+  };
+
+  // Spawn N children with distinct commands so dedup-by-command doesn't merge them.
+  const promises = [];
+  for (let i = 0; i < N; i++) {
+    const payload = { ...fixture, session_id: SESSION, tool_input: { ...(fixture.tool_input || {}), command: `echo race-${i}` } };
+    promises.push(new Promise((resolve) => {
+      const child = spawn('node', [path.join(SCRIPTS, 'curation-detect.js')], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+      child.stdin.end(JSON.stringify(payload));
+      child.on('close', () => resolve());
+    }));
+  }
+  await Promise.all(promises);
+
+  // Verify N journal files landed.
+  const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+  const runtimeDir = path.join(dataDir, '.runtime');
+  const prefix = `curation-turn-${safe}--`;
+  const files = fs.existsSync(runtimeDir)
+    ? fs.readdirSync(runtimeDir).filter(f => f.startsWith(prefix) && f.endsWith('.json'))
+    : [];
+
+  if (files.length === N) {
+    passed++;
+    console.log(`  ${GREEN('✓')} ${testName}`);
+  } else {
+    failed++;
+    console.log(`  ${RED('✗')} ${testName}`);
+    console.log(`      ${YELLOW('→')} expected ${N} journal files, got ${files.length}`);
+  }
+  finalize();
+})();
+
+function finalize() {
+  console.log(DIM('─'.repeat(70)));
+  console.log(BOLD(`\nResults: ${GREEN(passed + ' passed')}  ${failed > 0 ? RED(failed + ' failed') : DIM('0 failed')}\n`));
+
+  if (failures.length > 0 && !VERBOSE) {
+    console.log(DIM('Run with --verbose to see stderr for failing tests\n'));
+  }
+
+  process.exit(failed > 0 ? 1 : 0);
 }
-
-process.exit(failed > 0 ? 1 : 0);

@@ -6,13 +6,17 @@ const { execSync } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
+const { getShellsConfigPath } = require('./curation-paths.js');
+
 // Session token — generated at boot, injected into index.html, required on all /api/* requests.
 const SESSION_TOKEN = crypto.randomBytes(16).toString('hex');
 
 const ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
 const DASHBOARD_DIR = path.join(ROOT, 'dashboard');
 
-const RUNTIME_DIR = path.join(ROOT, '.runtime');
+const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
+  || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -348,61 +352,38 @@ function getCurationProjects(req, res) {
       } catch (err) { console.error(`[DASHBOARD] Curation payload parse error (${f}): ${err.message}`); }
     }
   }
-  // For each cwd, check if shells.json exists
+  // For each cwd, check if a curated shells config exists (configurable path)
   const projects = [...seen].map(cwd => {
-    const shellsPath = path.join(cwd, '.vscode', 'shells.json');
-    const hasShells = fs.existsSync(shellsPath);
+    const shellsPath = getShellsConfigPath(cwd);
+    const hasShells = !!shellsPath && fs.existsSync(shellsPath);
     let shellCount = 0;
     if (hasShells) {
       try { shellCount = JSON.parse(fs.readFileSync(shellsPath, 'utf-8')).shells?.length || 0; } catch (err) { console.error(`[DASHBOARD] Shells count read error: ${err.message}`); }
     }
-    return { cwd, hasShells, shellCount };
+    return { cwd, hasShells, shellCount, shellsPath };
   });
   json(res, projects);
 }
 
-function getCurationBuiltin(req, res) {
-  // Mirror the hardcoded sets from curation-guard.js
-  json(res, {
-    trivialCommands: [
-      'ls','pwd','echo','cat','head','tail','wc','which',
-      'cd','pushd','popd','dir','type',
-      'date','whoami','hostname','uname','id',
-    ],
-    buildTools: [
-      'npm','npx','pnpm','yarn','bun',
-      'npx tsc','npx vitest','npx jest','npx mocha',
-      'dotnet','cargo','mvn','gradle','go',
-      'python','pip','poetry','uv',
-      'docker','kubectl','helm',
-      'make','cmake','meson',
-      'pwsh','powershell','bash',
-      'ruby','bundle','rake','gem',
-      'composer','php',
-    ],
-    gitReadOnly: ['status','diff','log','show','branch','tag','describe','rev-parse','rev-list','ls-tree','ls-files','config','help','version'],
-    gitSafe: ['add','commit','checkout','switch','restore','stash','init','clean'],
-    alwaysAllowed: ['gh'],
-  });
-}
-
 function getCurationShells(req, res, url) {
   const cwd = url.searchParams.get('cwd') || '';
-  const shellsPath = cwd ? path.join(cwd, '.vscode', 'shells.json') : null;
+  const shellsPath = cwd ? getShellsConfigPath(cwd) : null;
   if (!shellsPath || !fs.existsSync(shellsPath)) {
     return json(res, { shells: [], whitelist: [], cwd, found: false });
   }
   try {
     const data = JSON.parse(fs.readFileSync(shellsPath, 'utf-8'));
-    // Enrich each shell with script existence check
+    // Enrich each shell with script existence check.
+    // Schema: `script` is the canonical field; legacy `command` accepted as fallback.
     const shells = (data.shells || []).map(s => {
-      const scriptPath = s.command && cwd ? path.resolve(cwd, s.command) : null;
+      const scriptRel = s.script || s.command;
+      const scriptPath = scriptRel && cwd ? path.resolve(cwd, scriptRel) : null;
       const scriptExists = scriptPath ? fs.existsSync(scriptPath) : false;
       let scriptContent = null;
       if (scriptExists) {
         try { scriptContent = fs.readFileSync(scriptPath, 'utf-8').slice(0, 2000); } catch (err) { console.error(`[DASHBOARD] Script content read error: ${err.message}`); }
       }
-      return { ...s, scriptExists, scriptPath, scriptContent };
+      return { ...s, script: scriptRel, scriptExists, scriptPath, scriptContent };
     });
     json(res, { shells, whitelist: data.whitelist || [], cwd, found: true });
   } catch (e) { fail(res, e.message); }
@@ -411,8 +392,8 @@ function getCurationShells(req, res, url) {
 async function deleteCurationShell(req, res, url) {
   const cwd = url.searchParams.get('cwd') || '';
   const idx = parseInt(url.pathname.split('/').pop());
-  const shellsPath = cwd ? path.join(cwd, '.vscode', 'shells.json') : null;
-  if (!shellsPath || !fs.existsSync(shellsPath)) return fail(res, 'shells.json not found', 404);
+  const shellsPath = cwd ? getShellsConfigPath(cwd) : null;
+  if (!shellsPath || !fs.existsSync(shellsPath)) return fail(res, 'shells config not found', 404);
   try {
     const data = JSON.parse(fs.readFileSync(shellsPath, 'utf-8'));
     data.shells.splice(idx, 1);
@@ -538,7 +519,6 @@ function handleAPI(req, res, url) {
   if (p === '/api/hooks/config' && m === 'GET') return getHooksConfig(req, res);
   if (p === '/api/hooks/config' && m === 'PUT') return saveHooksConfig(req, res);
   if (p === '/api/curation/projects' && m === 'GET') return getCurationProjects(req, res);
-  if (p === '/api/curation/builtin' && m === 'GET') return getCurationBuiltin(req, res);
   if (p === '/api/curation/shells' && m === 'GET') return getCurationShells(req, res, url);
   if (p.match(/^\/api\/curation\/shells\/\d+$/) && m === 'DELETE') return deleteCurationShell(req, res, url);
   if (p === '/api/logs' && m === 'GET') return getLogs(req, res);

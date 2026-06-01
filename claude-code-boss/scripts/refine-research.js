@@ -19,14 +19,7 @@ const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
 const STATE = path.join(DATA_DIR, '.runtime', 'refine-research-state.json');
 const EVERY = 4; // remind at most once per 4 stops
 
-function readStdin() {
-  return new Promise(resolve => {
-    let data = '';
-    process.stdin.setEncoding('utf-8');
-    process.stdin.on('data', chunk => data += chunk);
-    process.stdin.on('end', () => resolve(data));
-  });
-}
+const { readStdin, emitStopBlock } = require('./lib/hook-io.js');
 
 function tick() {
   let n = 0;
@@ -51,14 +44,12 @@ function tick() {
     const n = tick();
     if (n % EVERY !== 0) { process.stdout.write('{}'); return; }
 
-    process.stdout.write(JSON.stringify({
-      decision: 'block',
-      reason:
-        '[refine] If you asked questions in your previous response, research the ' +
-        'answers now using project files (Read, Grep, Glob) and web search ' +
-        '(WebSearch, WebFetch). Do NOT wait for the user — resolve the gaps ' +
-        'yourself, then proceed with the task.',
-    }));
+    emitStopBlock(
+      '[refine] If you asked questions in your previous response, research the ' +
+      'answers now using project files (Read, Grep, Glob) and web search ' +
+      '(WebSearch, WebFetch). Do NOT wait for the user — resolve the gaps ' +
+      'yourself, then proceed with the task.'
+    );
   } catch (err) {
     console.error(`[REFINE-RESEARCH] Error: ${err.message}`);
     process.stdout.write('{}');

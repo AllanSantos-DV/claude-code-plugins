@@ -3,30 +3,23 @@
  * Session Whitelist — SessionStart hook.
  *
  * Detects project ecosystem from manifest files and populates the whitelist
- * in .vscode/shells.json. Whitelisted command prefixes pass through the
- * curation guard without needing a curated script entry.
+ * in the curated shells config (path resolved via curation-paths.js).
+ * Whitelisted command prefixes pass through the curation guard without
+ * needing a curated script entry.
  *
  * Runs once per session (SessionStart), idempotent — preserves user additions.
  */
 const fs = require('fs');
 const path = require('path');
 
-// Ecosystem → whitelist mapping
-// ONLY commands that are: idempotent, non-destructive, small-output, high-frequency
-// Build/test tools (npm, npx, pip, cargo, dotnet, etc.) are NOT whitelisted —
-// they need curated scripts via shells.json because their output can be huge.
-const ECOSYSTEM_WHITELISTS = {
-  node: ['git', 'gh', 'code', 'code.cmd'],
-  python: ['git', 'gh', 'code', 'code.cmd'],
-  rust: ['git', 'gh', 'code', 'code.cmd'],
-  dotnet: ['git', 'gh', 'code', 'code.cmd'],
-  java: ['git', 'gh', 'code', 'code.cmd'],
-  go: ['git', 'gh', 'code', 'code.cmd'],
-  ruby: ['git', 'gh', 'code', 'code.cmd'],
-  php: ['git', 'gh', 'code', 'code.cmd'],
-  docker: ['git', 'gh', 'code', 'code.cmd'],
-  generic: ['git', 'gh', 'code', 'code.cmd'],
-};
+const { loadCurationConfig, findProjectRoot, getShellsConfigPath } = require('./curation-paths.js');
+const { readStdin } = require('./lib/hook-io.js');
+
+// Safe defaults applied regardless of ecosystem: idempotent, non-destructive,
+// small-output, high-frequency commands.
+// Build/test tools (npm, pip, cargo, dotnet, ...) are intentionally NOT
+// whitelisted — they need curated scripts because their output can be huge.
+const BASE_WHITELIST = ['git', 'gh', 'code', 'code.cmd'];
 
 const MANIFEST_ECOSYSTEM = [
   { file: 'package.json', ecosystem: 'node' },
@@ -45,22 +38,12 @@ const MANIFEST_ECOSYSTEM = [
   { file: '*.sln', ecosystem: 'dotnet' },
 ];
 
-function readStdin() {
-  return new Promise((resolve) => {
-    let data = '';
-    process.stdin.setEncoding('utf-8');
-    process.stdin.on('data', chunk => data += chunk);
-    process.stdin.on('end', () => resolve(data));
-  });
-}
-
 function detectEcosystem(projectRoot) {
   if (!projectRoot || !fs.existsSync(projectRoot)) return 'generic';
   const entries = fs.readdirSync(projectRoot);
 
   for (const { file, ecosystem } of MANIFEST_ECOSYSTEM) {
     if (file.includes('*')) {
-      // Glob-like pattern — check extension
       const ext = file.replace('*', '');
       if (entries.some(e => e.endsWith(ext))) return ecosystem;
     } else if (entries.includes(file)) {
@@ -85,43 +68,30 @@ function loadExistingConfig(shellsPath) {
     const raw = await readStdin();
     const event = raw ? JSON.parse(raw) : {};
 
-    const projectRoot = event.cwd
-      ? (() => {
-          let dir = event.cwd;
-          for (let i = 0; i < 10; i++) {
-            if (fs.existsSync(path.join(dir, '.vscode'))) return dir;
-            const parent = path.dirname(dir);
-            if (parent === dir) break;
-            dir = parent;
-          }
-          return event.cwd;
-        })()
-      : process.cwd();
+    const startCwd = event.cwd || process.cwd();
+    const projectRoot = findProjectRoot(startCwd) || startCwd;
+    const shellsPath = getShellsConfigPath(projectRoot)
+      || path.join(projectRoot, loadCurationConfig().shellsConfigPath);
 
-    if (!fs.existsSync(path.join(projectRoot, '.vscode'))) {
-      // No .vscode dir — nothing to whitelist
+    // If the parent dir doesn't exist yet (e.g. .vscode/), bail — we won't
+    // silently provision workspace structure. Attach on next SessionStart.
+    if (!fs.existsSync(path.dirname(shellsPath))) {
       process.stdout.write(JSON.stringify({}));
       return;
     }
 
-    const shellsPath = path.join(projectRoot, '.vscode', 'shells.json');
     const existingConfig = loadExistingConfig(shellsPath);
-
-    // Detect ecosystem
     const ecosystem = detectEcosystem(projectRoot);
-    const ecosystemWhitelist = ECOSYSTEM_WHITELISTS[ecosystem] || ECOSYSTEM_WHITELISTS.generic;
 
-    // Merge: preserve existing whitelist entries, add ecosystem defaults
+    // Merge: preserve existing whitelist entries, add base defaults.
     const existingWhitelist = existingConfig?.whitelist || [];
-    const merged = [...new Set([...existingWhitelist, ...ecosystemWhitelist])].sort();
+    const merged = [...new Set([...existingWhitelist, ...BASE_WHITELIST])].sort();
 
-    // Only write if changed
     if (JSON.stringify(existingWhitelist) === JSON.stringify(merged)) {
       process.stdout.write(JSON.stringify({ ecosystem, whitelist: merged, changed: false }));
       return;
     }
 
-    // Write merged config
     const config = existingConfig || { version: 1, shells: [] };
     config.whitelist = merged;
     fs.writeFileSync(shellsPath, JSON.stringify(config, null, 2) + '\n');

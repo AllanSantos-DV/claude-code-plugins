@@ -1,23 +1,33 @@
 #!/usr/bin/env node
 /**
- * curation-stop.js — Stop hook (in-loop curation trigger).
+ * curation-stop.js — Stop hook (in-loop curation trigger, escalating).
  *
  * DESIGN (in-loop, no subagent): during the turn, curation-detect.js appends
- * lightweight entries to a per-turn state file. At Stop, we read those entries,
- * filter the actionable ones, and (if any) inject a `decision: 'block' + reason`
- * that asks the main agent — which already has full turn context — to create
- * or refine curated `.mjs` scripts.
+ * lightweight entries to a per-turn state file. At Stop, we read those entries
+ * and inject `decision: 'block' + reason` asking the main agent — which already
+ * has full turn context — to refine existing curated scripts or create new ones.
  *
- * Mirrors the brain in-loop pattern (commit bff3e40): kill the token-burning
- * subagent, lean on the loop that already has context.
+ * Naive anti-loop (`stop_hook_active → {}`) is too weak: the LLM can ignore
+ * the first block, retry stopping, and the second fire's anti-loop guard lets
+ * it escape without ever reading the curated script. We mirror brain-stop's
+ * escalation pattern:
  *
- * Anti-loop: honors `stop_hook_active` per
- * https://code.claude.com/docs/en/hooks#stop_hook_active
+ *   1. Track per-session state in .runtime/curation-stop-<sid>.json
+ *      ({ attempts, blockedSignature, firstBlockedAt }).
+ *   2. Detect PROGRESS: if the new turn produces no overlap with previously
+ *      blocked scripts/commands, the agent acted → clear state, allow stop.
+ *   3. Escalate REASON across retries (each retry more forceful).
+ *   4. Safety cap: after `maxAttempts` (default 3) consecutive blocks with NO
+ *      progress, relent (log warning, allow stop) — prevents UX deadlock.
+ *
+ * Docs: https://code.claude.com/docs/en/hooks#stop_hook_active
  */
 'use strict';
 const fs   = require('fs');
 const path = require('path');
 const os   = require('os');
+
+const { loadCurationConfig } = require('./curation-paths.js');
 
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
   || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
@@ -26,65 +36,112 @@ const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
 
 function loadConfig() {
+  return require('./lib/hooks-config.js').getCurationStop();
+}
+
+const { readStdin, emitStopBlock } = require('./lib/hook-io.js');
+const { sanitizeSessionId } = require('./lib/session-id.js');
+const turnJournal = require('./lib/turn-journal.js');
+
+function escalationPath(sessionId) {
+  return path.join(RUNTIME_DIR, `curation-stop-${sanitizeSessionId(sessionId)}.json`);
+}
+
+function loadJson(p) {
   try {
-    const cfg = JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'config', 'hooks-config.json'), 'utf-8'));
-    return cfg.curationStop || {};
-  } catch (err) {
-    console.error(`[CURATION-STOP] config load failed: ${err.message}`);
-    return {};
-  }
-}
-
-function readStdin() {
-  return new Promise((resolve) => {
-    let d = '';
-    process.stdin.setEncoding('utf-8');
-    process.stdin.on('data', c => d += c);
-    process.stdin.on('end', () => resolve(d));
-  });
-}
-
-function turnStatePath(sessionId) {
-  const safe = String(sessionId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
-  return path.join(RUNTIME_DIR, `curation-turn-${safe}.json`);
-}
-
-function loadTurnState(sessionId) {
-  try {
-    const p = turnStatePath(sessionId);
     if (!fs.existsSync(p)) return null;
     return JSON.parse(fs.readFileSync(p, 'utf-8'));
   } catch (err) {
-    console.error(`[CURATION-STOP] turn state load failed: ${err.message}`);
+    console.error(`[CURATION-STOP] load failed (${p}): ${err.message}`);
     return null;
   }
 }
 
-function clearTurnState(sessionId) {
+function saveJson(p, data) {
   try {
-    const p = turnStatePath(sessionId);
-    if (fs.existsSync(p)) fs.unlinkSync(p);
-  } catch { /* best effort */ }
+    if (!fs.existsSync(RUNTIME_DIR)) fs.mkdirSync(RUNTIME_DIR, { recursive: true });
+    fs.writeFileSync(p, JSON.stringify(data));
+  } catch (err) {
+    console.error(`[CURATION-STOP] save failed (${p}): ${err.message}`);
+  }
 }
 
-function buildReason(entries) {
-  const lines = entries.map(e => {
-    const tag = e.reason || 'unknown';
-    const target = e.curatedScript ? ` → script atual: \`${e.curatedScript}\`` : ' → sem script curado';
-    return `  • \`${e.command}\` — ${e.lines} linhas, ${e.chars} chars${target} (${tag})`;
-  });
+function unlinkSafe(p) {
+  try { if (fs.existsSync(p)) fs.unlinkSync(p); } catch { /* best effort */ }
+}
 
-  return [
-    `Antes de terminar, este turn registrou ${entries.length} comando(s) com output volumoso ou script curado vazando.`,
-    `Crie/refine os scripts \`.mjs\` em \`.vscode/scripts/\` e atualize \`.vscode/shells.json\` antes de parar.`,
-    ``,
-    `Comandos do turn:`,
-    ...lines,
-    ``,
-    `Padrão (output contract OK/FAIL, shells.json schema, outputFilter cheatsheet):`,
-    `leia a skill \`curation-script-pattern\` em \`skills/curation-script-pattern/SKILL.md\` do plugin.`,
-    `Se algum comando for one-shot/raro, basta anotar e seguir.`,
-  ].join('\n');
+function signatureOf(entries) {
+  return entries
+    .map(e => `${e.command || ''}|${e.curatedScript || ''}`)
+    .sort()
+    .join('\n');
+}
+
+function hasOverlap(prevSig, currEntries) {
+  if (!prevSig) return false;
+  const prevSet = new Set(prevSig.split('\n').filter(Boolean));
+  for (const e of currEntries) {
+    const key = `${e.command || ''}|${e.curatedScript || ''}`;
+    if (prevSet.has(key)) return true;
+  }
+  return false;
+}
+
+/**
+ * Detect "progress via curated-script edit": if any blocked entry referenced a
+ * curated script AND that script's mtime is newer than firstBlockedAt, the
+ * agent acted on the block (refined the script). Treat as progress — even
+ * without a re-run — because the script may legitimately be one-shot.
+ * The next time it runs (whenever that happens), PostToolUse will re-validate.
+ */
+function curatedScriptsTouchedSince(prev, cwd) {
+  if (!prev || !prev.firstBlockedAt || !Array.isArray(prev.blockedEntries)) return false;
+  const since = new Date(prev.firstBlockedAt).getTime();
+  if (!Number.isFinite(since)) return false;
+  for (const e of prev.blockedEntries) {
+    const rel = e && e.curatedScript;
+    if (!rel) continue;
+    const abs = path.isAbsolute(rel) ? rel : path.resolve(cwd, rel);
+    try {
+      const st = fs.statSync(abs);
+      if (st.mtimeMs > since) return true;
+    } catch { /* missing/unreadable — ignore */ }
+  }
+  return false;
+}
+
+function buildReason(entries, attempt, maxAttempts) {
+  const curationCfg = loadCurationConfig();
+  const refineEntries = entries.filter(e => e.curatedScript);
+  const createEntries = entries.filter(e => !e.curatedScript);
+
+  const sections = [];
+
+  if (attempt === 1) {
+    sections.push(`${entries.length} command(s) need curation. See skill \`curation-script-pattern\`.`);
+  } else if (attempt < maxAttempts) {
+    sections.push(`[RETRY ${attempt}/${maxAttempts}] Still pending — act, don't acknowledge.`);
+  } else {
+    sections.push(`[FINAL ${attempt}/${maxAttempts}] Last block before hook relents.`);
+  }
+  sections.push(``);
+
+  if (refineEntries.length > 0) {
+    sections.push(`REFINE:`);
+    for (const e of refineEntries) {
+      sections.push(`  • \`${e.curatedScript}\` — ${e.command} (${e.lines}L/${e.chars}c, ${e.reason})`);
+    }
+    sections.push(``);
+  }
+
+  if (createEntries.length > 0) {
+    sections.push(`CREATE in \`${curationCfg.scriptsDir}/\` + register in \`${curationCfg.shellsConfigPath}\`:`);
+    for (const e of createEntries) {
+      sections.push(`  • \`${e.command}\` (${e.lines}L/${e.chars}c, ${e.reason})`);
+    }
+  }
+
+  return sections.join('\n').trimEnd();
 }
 
 (async () => {
@@ -93,29 +150,87 @@ function buildReason(entries) {
     let event = {};
     try { event = JSON.parse(raw || '{}'); } catch { /* fall through */ }
 
-    // Anti-loop guard: if Claude already retried this hook, allow stop.
-    if (event.stop_hook_active) { process.stdout.write('{}'); return; }
-
     const cfg = loadConfig();
     if (cfg.enabled === false) { process.stdout.write('{}'); return; }
 
-    const sessionId = event.session_id || event.sessionId || 'default';
-    const state = loadTurnState(sessionId);
+    const { maxAttempts } = cfg;
 
-    if (!state || !Array.isArray(state.entries) || state.entries.length === 0) {
+    const sessionId = event.session_id || event.sessionId || 'default';
+    const entries = turnJournal.readEntries(sessionId);
+
+    const escPath = escalationPath(sessionId);
+    const prev = loadJson(escPath);
+    const isRetry = !!event.stop_hook_active && !!prev;
+
+    if (isRetry) {
+      // Progress detection:
+      //   - empty turn-state = agent didn't run any new tool calls this turn
+      //     (text-only "noted, moving on" reply) → NO progress, escalate.
+      //   - new entries that overlap with previously blocked sig → NO progress.
+      //   - new entries with no overlap → agent moved on to different work,
+      //     accept as progress and release.
+      //   - curated script(s) referenced by blocked entries were edited since
+      //     firstBlockedAt → agent acted on the block (refine), accept even if
+      //     they didn't re-run (script may be one-shot; PostToolUse re-validates
+      //     whenever it next runs).
+      const hasNew = entries.length > 0;
+      const overlap = hasOverlap(prev.blockedSignature, entries);
+      const editedCurated = curatedScriptsTouchedSince(prev, event.cwd || process.cwd());
+      const noProgress = (!hasNew || overlap) && !editedCurated;
+
+      if (!noProgress) {
+        const why = editedCurated
+          ? 'curated script(s) edited since first block'
+          : 'new non-overlapping work';
+        console.error(`[CURATION-STOP] progress detected (${why}), releasing stop`);
+        unlinkSafe(escPath);
+        turnJournal.clearEntries(sessionId);
+        process.stdout.write('{}');
+        return;
+      }
+
+      // Safety cap: relent after maxAttempts with no progress.
+      if (prev.attempts >= maxAttempts) {
+        console.error(`[CURATION-STOP] gave up after ${prev.attempts} attempts (no progress) — relenting`);
+        unlinkSafe(escPath);
+        turnJournal.clearEntries(sessionId);
+        process.stdout.write('{}');
+        return;
+      }
+
+      // Escalate: reuse prior blocked entries if no new ones this turn so the
+      // reason keeps pointing at the same unresolved work.
+      const escalateEntries = hasNew ? entries : (prev.blockedEntries || []);
+      const nextAttempt = prev.attempts + 1;
+      saveJson(escPath, {
+        attempts: nextAttempt,
+        blockedSignature: prev.blockedSignature,
+        blockedEntries: prev.blockedEntries || escalateEntries,
+        firstBlockedAt: prev.firstBlockedAt,
+      });
+      turnJournal.clearEntries(sessionId);
+      const reason = buildReason(escalateEntries, nextAttempt, maxAttempts);
+      emitStopBlock(reason);
+      return;
+    }
+
+    // First block (or stale escalation state without retry flag).
+    if (entries.length === 0) {
+      // Nothing to block on; clear any stale escalation state.
+      unlinkSafe(escPath);
       process.stdout.write('{}');
       return;
     }
 
-    // All recorded entries are actionable (detect already filtered via classifier).
-    // We just emit them. Clear state regardless (turn ended).
-    const entries = state.entries;
-    clearTurnState(sessionId);
-
-    if (entries.length === 0) { process.stdout.write('{}'); return; }
-
-    const reason = buildReason(entries);
-    process.stdout.write(JSON.stringify({ decision: 'block', reason }));
+    saveJson(escPath, {
+      attempts: 1,
+      blockedSignature: signatureOf(entries),
+      blockedEntries: entries,
+      firstBlockedAt: new Date().toISOString(),
+    });
+    turnJournal.clearEntries(sessionId);
+    const reason = buildReason(entries, 1, maxAttempts);
+    emitStopBlock(reason);
   } catch (err) {
     console.error(`[CURATION-STOP] Error: ${err.message}`);
     process.stdout.write('{}');

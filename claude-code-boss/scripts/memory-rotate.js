@@ -16,15 +16,7 @@ const os = require('os');
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
 const AGENT_MEMORY_DIR = path.join(os.homedir(), '.claude', 'agent-memory');
 
-function loadHooksCfg() {
-  try {
-    return JSON.parse(fs.readFileSync(path.join(PLUGIN_ROOT, 'config', 'hooks-config.json'), 'utf-8'));
-  } catch (err) {
-    console.error(`[MEMORY-ROTATE] Failed to load hooks-config.json: ${err.message}`);
-    return {};
-  }
-}
-const MAX_LINES = loadHooksCfg().memoryRotate?.maxLines ?? 150;
+const MAX_LINES = require('./lib/hooks-config.js').load().memoryRotate?.maxLines ?? 150;
 
 function main() {
   const rotated = [];
