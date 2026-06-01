@@ -15,7 +15,6 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
   || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
 const PENDING_DIR = path.join(DATA_DIR, 'brain-pending');

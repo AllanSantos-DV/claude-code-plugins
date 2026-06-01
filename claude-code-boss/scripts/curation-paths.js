@@ -23,7 +23,6 @@
 const fs   = require('fs');
 const path = require('path');
 
-const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
 
 const DEFAULTS = {
   scriptsDir: '.vscode/scripts',

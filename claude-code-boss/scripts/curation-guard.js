@@ -19,13 +19,11 @@
  *   3. denyUnknown=true → deny (paranoid mode)
  *   4. default → allow (PostToolUse/Stop discovery loop handles the rest)
  */
-const path = require('path');
 const { hookLog } = require('./hook-logger.js');
 const { loadCurationConfig } = require('./curation-paths.js');
 const { readStdin } = require('./lib/hook-io.js');
 const { findProjectRoot, loadShellsConfig, matchCuratedShell, _pathMatches, _tokenize } = require('./shells-config.js');
 
-const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
 const _guardCfg = require('./lib/hooks-config.js').getCurationGuard();
 
 /**
