@@ -16,28 +16,12 @@ const path = require('path');
 const os = require('os');
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
-const CONFIG_PATH = path.join(PLUGIN_ROOT, 'config', 'brain-config.json');
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
   || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
 const PENDING_DIR = path.join(DATA_DIR, 'brain-pending');
 
-function readStdin() {
-  return new Promise((resolve) => {
-    let data = '';
-    process.stdin.setEncoding('utf-8');
-    process.stdin.on('data', chunk => data += chunk);
-    process.stdin.on('end', () => resolve(data));
-  });
-}
-
-function loadConfig() {
-  try {
-    if (fs.existsSync(CONFIG_PATH)) {
-      return JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
-    }
-  } catch (err) { console.error(`[BRAIN-SUBMIT] Config read error: ${err.message}`); }
-  return { kb: { submission: { minOutputChars: 500, dedupThreshold: 0.95 } } };
-}
+const { readStdin } = require('./lib/hook-io.js');
+const { sanitizeSessionId } = require('./lib/session-id.js');
 
 // Commands whose output is almost always worth indexing
 const SIGNIFICANT_COMMANDS = [
@@ -49,6 +33,21 @@ const SIGNIFICANT_COMMANDS = [
   'python -m pytest', 'pytest', 'poetry run pytest',
   'git commit', 'git push',
 ];
+
+// Trivial commands — bypass even if output is large (e.g. `git log` dumping
+// 5000 chars of history is noise, not knowledge). Bash invocations starting
+// with these prefixes are dropped before the significant/output checks.
+const TRIVIAL_COMMAND_PREFIXES = [
+  'git status', 'git log', 'git diff', 'git show', 'git branch', 'git remote',
+  'ls', 'dir', 'pwd', 'cd ', 'echo ', 'whoami', 'date', 'hostname',
+  'cat ', 'type ', 'head ', 'tail ', 'less ', 'more ',
+  'which ', 'where ', 'env', 'printenv',
+];
+
+function isTrivialCommand(command) {
+  const c = command.trim().toLowerCase();
+  return TRIVIAL_COMMAND_PREFIXES.some(s => c === s.trim() || c.startsWith(s));
+}
 
 function isSignificantCommand(command) {
   const c = command.trim().toLowerCase();
@@ -102,13 +101,18 @@ function guessWorkType(command) {
     const charCount = output.length;
     const lineCount = output.split('\n').length;
 
-    const config = loadConfig();
-    const subConfig = config.kb?.submission || {};
-    const minChars = subConfig.minOutputChars || 500;
+    const { minBashLines: minLines, minOutputChars: minChars } = require('./lib/brain-config.js').getSubmission();
+
+    // Drop trivial commands BEFORE the size/significance gates — `git log`
+    // dumping 5000 chars of history is noise, not knowledge.
+    if (isTrivialCommand(command)) {
+      process.stdout.write(JSON.stringify({ skipped: 'trivial_command' }));
+      return;
+    }
 
     // Determine if this is worth submitting
     const significant = isSignificantCommand(command);
-    const hasOutput = charCount > minChars;
+    const hasOutput = charCount > minChars && lineCount >= minLines;
 
     if (!significant && !hasOutput) {
       process.stdout.write(JSON.stringify({ skipped: 'not_significant' }));
@@ -136,7 +140,8 @@ function guessWorkType(command) {
         : 'unknown',
     };
 
-    const filename = `work-${sessionId.slice(0, 8)}-${Date.now()}.json`;
+    const safeSid = sanitizeSessionId(sessionId).slice(0, 8);
+    const filename = `work-${safeSid}-${Date.now()}.json`;
     fs.writeFileSync(
       path.join(PENDING_DIR, filename),
       JSON.stringify(payload, null, 2)

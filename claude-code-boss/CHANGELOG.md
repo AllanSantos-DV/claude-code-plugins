@@ -1,5 +1,72 @@
 # Changelog
 
+## [1.6.0] — 2026-05-31
+
+### Changed — brain-indexer trigger refactored to in-loop Stop pattern
+
+Replaces the UserPromptSubmit advisory (which the LLM routinely ignored, letting
+the pending backlog grow to 389+ payloads) with a blocking Stop hook that emits
+`decision:"block" + reason` directly to the main agent. Same pattern as
+`pattern-detect.js` and `curation-stop.js`: the main agent has live turn context
+and a Task tool, so it can launch `brain-indexer` immediately.
+
+- **Added** `scripts/brain-stop.js` — Stop hook with per-session state file
+  (`.runtime/brain-stop-<sid>.json`) tracking `{attempts, lastPendingCount,
+  firstBlockedAt}`. Progress detection: if pending dropped vs last block, the
+  agent processed payloads — clear state and release. Escalating reason across
+  attempts (informative → `[RETRY N/M]` forceful → `[FINAL RETRY]` literal Task
+  call). Safety cap via `brainStop.maxAttempts` (default 3) prevents UX
+  lock-up.
+- **Updated** `agents/brain-indexer.agent.md` — `maxTurns 10 → 20` and
+  two-phase workflow (Phase 1 admission triage up to 100 files using Step 0;
+  Phase 2 indexes cap 30 admitted files through Steps 1-5).
+- **Updated** `scripts/brain-retrieve-prompt.js` — advisory line silenced when
+  `pending >= brainStop.threshold` (the Stop hook owns the trigger from there).
+- **Config** `config/hooks-config.json` — added
+  `brainStop: { enabled: true, threshold: 10, maxAttempts: 3 }`.
+
+### Changed — brain-submit admission gates tightened
+
+Cuts payload volume by rejecting trivial captures before they reach the queue.
+
+- **Added** `TRIVIAL_COMMAND_PREFIXES` blacklist in `scripts/brain-submit.js`
+  (git status/log/diff/show/branch/remote, ls/dir/pwd/cd/echo/whoami/date/
+  hostname/cat/type/head/tail/less/more/which/where/env/printenv) — rejected
+  before any other gate.
+- **Wired** `minBashLines: 3` gate (was unused in config).
+- **Config** `config/brain-config.json` — `minOutputChars 500 → 1500`.
+
+### Added — dashboard surface for brain-stop
+
+- **`dashboard/index.html`** — replaced the dead "Auto-Trigger de Agentes"
+  card with a live "Brain Indexer Auto-Trigger" card bound to
+  `brainStop.enabled` and `brainStop.threshold` (render + save handlers).
+
+### Fixed — LLM-facing strings translated to English
+
+Hook `reason` / `additionalContext` fields and skill/agent prose are injected
+verbatim into the model's context. Mixed-language injection wastes tokens and
+weakens instruction following. Audit pass translated remaining PT-BR strings
+to terse English; human-facing docs (README, CHANGELOG, plan files) stay in
+PT-BR.
+
+- `scripts/brain-stop.js` — reasons in English, no cost noise.
+- `scripts/curation-stop.js` — reason in English.
+- `scripts/curation-guard.js` — three block/warn reasons translated; the
+  build-tool warning also fixed semantically (it claimed "the system will
+  auto-create a curated script", which never happens — now correctly states
+  the Stop hook will block and require the agent to create one before ending
+  the turn).
+- `scripts/brain-retrieve-prompt.js` — "Conhecimento relevante encontrado"
+  → "Relevant knowledge found".
+
+### Tests
+
+- `scripts/test-hooks.js` — 37/37 passing. New coverage: 8 brain-stop cases
+  (no-pending, below-threshold, first-block, retry-no-progress-escalate,
+  retry-progress-detected, max-attempts-relent, disabled) and 4 brain-submit
+  trivial/significant/min-lines cases.
+
 ## [1.5.0] — 2026-05-31
 
 ### Changed — curation loop refactored to in-loop Stop pattern (BREAKING)

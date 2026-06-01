@@ -1,140 +1,140 @@
 ---
 name: shell-execution
-description: Curated shell execution protocol — blocking mode, redirect flow, script output contract, and the learning loop from raw command to curated script. How the guard, detector, and improver work together.
+description: Curated shell execution protocol — how curation-guard (PreToolUse), curation-detect (PostToolUse), and curation-stop (Stop) work together to keep raw command output out of the context window. Language-agnostic — curated scripts may be .mjs, .ps1, .sh, .py, etc.
 ---
 
 # Shell Execution (Curated)
 
 ## The Problem
 
-Build commands (npm test, cargo build, dotnet test) produce massive output — progress bars, pass markers, timestamps, banners. This wastes context tokens and distracts the LLM from real work.
+Build commands (`npm test`, `cargo build`, `dotnet test`, `pytest`) produce massive output — progress bars, pass markers, timestamps, banners. Raw output wastes context tokens and drowns the real signal.
 
 ## The Solution
 
-A 3-layer system that automatically curates shell commands:
+A 3-hook system that quietly curates shell commands. **No subagent** — everything stays in the main loop.
 
 ```
-┌─────────────┐    ┌──────────────┐    ┌──────────────────┐
-│ curation-guard  │    │ curation-detect│    │ curation-improver  │
-│ (PreToolUse)    │    │ (PostToolUse)  │    │ (subagent)         │
-│ BLOCKS raw cmd  │    │ detects large  │    │ creates .mjs script│
-│ when curated    │    │ output >5K/80L │    │ updates shells.json│
-│ entry exists    │    │ writes payload │    │                    │
-└──────┬──────────┘    └──────┬─────────┘    └────────┬─────────┘
-       │                      │                       │
-       │ denied + redirect    │ exceeds threshold      │ creates/updates
-       ▼                      ▼                       ▼
-   You run curated      detect-curation/         .vscode/scripts/*.mjs
-   .mjs script          gets payload              + shells.json entry
-                              │
-                              ▼
-                    curation-backlog.js
-                    (UserPromptSubmit)
-                    injects reminder to
-                    invoke curation-improver
+┌────────────────────┐    ┌─────────────────────┐    ┌──────────────────────┐
+│ curation-guard     │    │ curation-detect     │    │ curation-stop        │
+│ (PreToolUse/Bash)  │    │ (PostToolUse/Bash)  │    │ (Stop)               │
+│                    │    │                     │    │                      │
+│ Routes raw cmds to │    │ Tracks commands that│    │ At end of turn, asks │
+│ their curated      │    │ produced bulky      │    │ the main agent to    │
+│ script when an     │    │ output or leaked    │    │ create new scripts   │
+│ alias matches.     │    │ from a curated      │    │ or refine existing   │
+│                    │    │ script.             │    │ ones (in-loop).      │
+└─────────┬──────────┘    └──────────┬──────────┘    └──────────┬───────────┘
+          │                          │                          │
+          ▼                          ▼                          ▼
+   redirects to script        appends to per-turn         decision:'block' +
+   when alias matches         state file                  reason listing entries
+                                                          to REFINE vs CREATE
 ```
 
 ## The Learning Loop
 
 ```
-Step 1: You run "npm test" (raw, first time)
-  → Guard: ALLOWED (no curated entry yet, but warned)
-  → Script runs, output is 200 lines
-  → Detect: writes payload "200 lines, npm test"
-  → Improver: creates .vscode/scripts/test.mjs + shells.json entry
+Turn 1 — first run, no curated entry yet
+  → Guard: ALLOW (warns "no curated script, Stop hook will require one if bulky")
+  → Command runs, output is 200 lines, 8 KB
+  → Detect: appends entry to per-turn state, reason=needs-curation
+  → Stop hook: emits decision:'block' + reason →
+      "1 command produced bulky output. CREATE new script for `npm test`..."
+  → Main agent (with full turn context) authors the script + shells config entry
+  → Turn ends
 
-Step 2: You run "npm test" (next time)
-  → Guard: DENIED + "use .vscode/scripts/test.mjs" 
-  → You: run the .mjs script
-  → Output: "OK 312 passed, 3 failed (4523ms)" — 1 line
-
-Step 3: Test output changes (more failures)
-  → Guard: ALLOWS .mjs script (it's the curated one)
-  → Detect: output still under threshold → fine
+Turn 2 — same command again
+  → Guard sees `npm test` matches the alias of the new entry → redirect
+  → Main agent runs the curated script instead
+  → Output: "OK 312 passed (4523ms)" — 1 line. No bulk.
 ```
 
-## Script Output Contract
+## Refine vs Create (priority order)
 
-Every curated `.mjs` script MUST follow this contract:
+When the Stop reason fires, it **already separates** entries into two groups:
+
+- **REFINE existing** — the reason gives the path of the existing script. You MUST `Read` it first with the Read tool, find the actual bulk source in the script's code, then edit in place. **Never invent reasons** like "script ignores args" without reading.
+- **CREATE new** — only when the reason says "no existing script". Use the language **already in use** in the project's scripts dir (don't introduce `.mjs` into a `.ps1`-only project).
+
+Details + templates: see `curation-script-pattern` skill.
+
+## Script Output Contract (language-agnostic)
+
+Every curated script — regardless of language — MUST follow this contract:
 
 ```
-# Success case
-OK  <summary>  (<N>ms)
+# Success
+OK  <summary> (<N>ms)
 
-# Failure case — relevant errors only, no banners/pass markers
+# Failure — relevant errors only, no banners/pass markers
 error: TS2345: Type 'X' is not assignable to type 'Y'
   at src/app.ts:12:3
-FAIL  <tool>  (<N>ms)
+FAIL  <tool> (<N>ms)
 ```
 
 - **Last line** is `OK ...` or `FAIL ...` with timing in ms
 - **Preceding lines**: only relevant content (errors, summary — no noise)
-- **Exit code**: 0 = OK, 1 = FAIL
-- **stderr**: captured into error output, never printed separately
+- **Exit code**: 0 = OK, non-zero = FAIL
+- **stderr**: captured into the output stream
 
 ## How to Use Curated Scripts
 
-### 1. Check if a curated entry exists
+### 1. Inspect existing entries
 
-Look at `shells.json`:
-```bash
-cat .vscode/shells.json 2>/dev/null
+The shells config path is configurable via `hooks-config.json` → `curation.shellsConfigPath` (default `.vscode/shells.json`). To inspect:
+```
+Read tool → <projectRoot>/<shellsConfigPath>
 ```
 
-### 2. If the guard denies your command
+### 2. If the guard redirects your command
 
 When you see hook output like:
 ```
-[CURATION-GUARD] 🔒 Command "npm test" has a curated script. Run ".vscode/scripts/test.mjs" instead
+[curation-guard] Command `npm test` has a curated script. Run `.vscode/scripts/test.mjs` instead — output filtered (summary, limit 80 lines).
 ```
-
-**Do NOT retry the raw command.** Switch to the curated script:
-```
-bash "node .vscode/scripts/test.mjs"
-```
+**Do NOT retry the raw command.** Invoke the curated script directly (the matcher recognizes any invocation form that carries the script path — `node script.mjs`, `powershell -File script.ps1`, `bash script.sh`).
 
 ### 3. Reading the result
 
-- `OK 312 passed, 3 failed (4523ms)` → read the summary, check count
-- `FAIL ...` → read the error lines above, understand the failure
+- `OK 312 passed (4523ms)` → read the summary, done
+- `FAIL ...` → read the error lines above the FAIL marker
 
-### 4. If the curated script is wrong or outdated
+### 4. If a curated script is wrong or outdated
 
-- Do NOT try to fix it in the current Bash call
-- The **curation-backlog.js** hook automatically injects a reminder on the next `UserPromptSubmit` when pending payloads exist, instructing Claude to invoke the curation-improver via Task tool — no manual intervention needed
-- Or you can explicitly ask: "Improve the curated test script"
-- Or edit the .mjs file directly
+Don't try to fix it inline during the Bash call. The Stop hook will fire and instruct you to refine it. Do the refinement at end of turn (or proactively `Read` it and edit if you already see the problem).
 
-## Common Curated Commands
+## Shells Config Schema (per entry)
 
-| Raw command | Curated script | outputFilter |
-|------------|----------------|-------------|
-| `npm test`, `npx vitest ...` | `.vscode/scripts/test.mjs` | `summary` |
-| `npx tsc --noEmit` | `.vscode/scripts/typecheck.mjs` | `errors-only` |
-| `npx eslint .` | `.vscode/scripts/lint.mjs` | `errors-only` |
-| `npm run build` | `.vscode/scripts/build.mjs` | `summary` |
-| `cargo test` | `.vscode/scripts/cargo-test.mjs` | `summary` |
-| `dotnet test` | `.vscode/scripts/dotnet-test.mjs` | `summary` |
-| `go test ./...` | `.vscode/scripts/go-test.mjs` | `summary` |
+```jsonc
+{
+  "id": "<unique slug>",
+  "script": "<path/to/script>",          // any extension
+  "aliases": ["<raw form 1>", "<raw form 2>"],
+  "outputFilter": "summary|errors-only",
+  "outputLines": 80,
+  "timeoutMs": 600000
+}
+```
+
+Matcher binds a command to an entry when either:
+- the command string **contains** `script` (catches `script.ps1`, `powershell -File script.ps1`, `node script.mjs`, etc.), or
+- the command **starts with** any `alias` (catches `npm test`, `pnpm test`, etc., redirecting them to the script)
 
 ## The Guard's Decision Logic
 
 ```
 For every Bash command:
 
-  1. Is it a .mjs script?                → ALLOW (already curated)
-  2. Is there a shells.json entry?        → DENY + redirect to curated script
-  3. Is it whitelisted (git/gh/code)?     → ALLOW
-  4. Is it trivial (ls/pwd/cat/echo)?     → ALLOW
-  5. Is it a build tool?                  → ALLOW + warn (learning loop)
-  6. Unknown command                      → ALLOW (or DENY if denyUnknown=true in hooks-config.json)
+  1. Match the shells config?
+       a. Command contains the registered `script` path  → ALLOW (already curated)
+       b. Command starts with a registered alias         → DENY + redirect to script
+  2. Whitelisted (git/gh/code or project additions)?      → ALLOW
+  3. Trivial (ls/pwd/cat/echo)?                           → ALLOW
+  4. Build tool (npm/cargo/dotnet/...)?                   → ALLOW + warn (learning loop)
+  5. Unknown command                                      → ALLOW
+       (or DENY if curationGuard.denyUnknown=true)
 ```
 
-### denyUnknown mode
+## denyUnknown mode
 
-When `curationGuard.denyUnknown: true` is set in `config/hooks-config.json`, outcome 6 returns `denied` with an `additionalContext` explaining that the command is unknown and should be whitelisted or curated. Default is `false` (allow unknown commands silently).
-
-The blocking is intentional and safe:
-- If a curated script exists, you SHOULD use it (that's why it was created)
-- If no curated script exists, the command runs freely
-- After the first run, if output was large, the system creates a script automatically
+Set `curationGuard.denyUnknown: true` in `config/hooks-config.json` to deny anything not whitelisted/trivial/curated. Default `false`. Useful for locked-down environments; expect more denials and more curation work up front.

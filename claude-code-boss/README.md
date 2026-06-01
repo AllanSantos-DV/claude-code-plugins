@@ -1,6 +1,6 @@
 # claude-code-boss
 
-Plugin para Claude Code Desktop — **v1.5.0**
+Plugin para Claude Code Desktop — **v1.6.0**
 
 Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizado leve para Claude Code. A orquestração fica a cargo das ferramentas nativas (Agent/Workflow) — o plugin foca no que o nativo não tem.
 
@@ -40,10 +40,8 @@ claude-code-boss/
 ├── .claude-plugin/
 │   └── plugin.json            # Manifesto do plugin (versão canônica)
 ├── .mcp.json                  # Servidor MCP: brain-server
-├── agents/                    # 6 subagentes (.agent.md)
-│   ├── brain-*.agent.md       # Indexer (haiku), Retriever, Consolidator, Source-Researcher
-│   ├── curation-improver.agent.md
-│   └── refine-researcher.agent.md
+├── agents/                    # subagentes (.agent.md)
+│   └── brain-indexer.agent.md
 ├── config/
 │   ├── brain-config.json      # Provider de embedding, backend (local|mcp-memory), thresholds
 │   └── hooks-config.json      # Configuração dos hooks (memoryRotate, curationGuard, etc.)
@@ -79,9 +77,10 @@ Todos os hooks estão declarados em `hooks/hooks.json`. Eventos e scripts ativos
 | PostToolUse (Bash) | `brain-submit.js` | Indexa outputs relevantes (>500 chars) |
 | Stop | `pattern-detect.js` | Nudge advisory (throttled): capturar padrão reusável via `capture_lesson` |
 | Stop | `refine-research.js` | Injeta lembrete de pesquisa (web → Brain → usuário) |
+| Stop | `brain-stop.js` | Bloqueia stop se há submissões Brain pendentes (escalating, anti-loop) |
+| Stop | `curation-stop.js` | Bloqueia stop se há comandos noisy detectados no turno (escalating, anti-loop) |
 | UserPromptSubmit | `correction-detect.js` | Detecta sinal de correção → nudge p/ `capture_lesson` (sem ler transcript) |
 | UserPromptSubmit | `brain-retrieve-prompt.js` | Busca KB semântica + injeta lessons + advisory de pendências (cooldown de backpressure) |
-| UserPromptSubmit | `curation-backlog.js` | Verifica payloads pendentes em `detect-curation/` (advisory); cooldown de 5 turnos; move payloads >7 dias para `processed/orphaned/` |
 
 > **Captura de lição in-loop:** quando o usuário corrige, o agente (no loop, com
 > contexto completo) chama a tool MCP **`capture_lesson`** com a lição curada — que

@@ -13,6 +13,7 @@
  *   await index.deindex(entryId);
  */
 const fs = require('fs');
+const _textUtils = require('./lib/text-utils.js');
 const path = require('path');
 const os = require('os');
 
@@ -63,13 +64,10 @@ function save() {
 }
 
 function extractKeywords(text) {
-  if (!text) return [];
-  const words = text.toLowerCase()
-    .replace(/[^a-z0-9\s]/g, ' ')
-    .split(/\s+/)
-    .filter(w => w.length > 2)
-    .filter(w => !STOP_WORDS.has(w));
-  return [...new Set(words)];
+  // minLen 3 / allowPath false preserved from original implementation.
+  // Indexer keeps narrower regime than retrievers (minLen 4 / allowPath true)
+  // to avoid bloating the inverted index with path fragments.
+  return [...new Set(_textUtils.extractKeywords(text, { minLen: 3, maxTokens: 1000, allowPath: false }))];
 }
 
 async function index(entry) {
@@ -183,15 +181,5 @@ function getStatus() {
     typeCount: Object.keys(_index.types).length,
   };
 }
-
-const STOP_WORDS = new Set([
-  'the', 'this', 'that', 'and', 'for', 'with', 'from', 'was', 'are',
-  'have', 'has', 'had', 'not', 'but', 'all', 'can', 'will', 'just',
-  'been', 'were', 'they', 'them', 'their', 'what', 'when', 'where',
-  'which', 'who', 'how', 'about', 'into', 'over', 'such', 'each',
-  'than', 'then', 'these', 'those', 'also', 'very', 'because',
-  'para', 'que', 'com', 'uma', 'mais', 'mas', 'como', 'por',
-  'dos', 'das', 'era', 'sao', 'seu', 'sua', 'pelo', 'pela',
-]);
 
 module.exports = { init, index, deindex, lookup, search, clear, getStatus };

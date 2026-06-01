@@ -185,7 +185,7 @@ async function getRelatedMcp(id) {
 
 // ── Local mode: wraps store + index + graph + embedder ──
 
-async function initLocal() {
+async function initLocal(opts = {}) {
   _store = require('./brain-store.js');
   _index = require('./brain-index.js');
   _graph = require('./brain-graph.js');
@@ -193,15 +193,16 @@ async function initLocal() {
   await _store.init({ project: _project });
   await _index.init({ project: _project });
   if (_graph.init) await _graph.init({ project: _project });
-  await _embedder.init();
+  // Skipping the embedder init avoids loading the @xenova/transformers ONNX
+  // model (~tens of MB into memory + cold-start latency). The hot retrieval
+  // path (PreToolUse / UserPromptSubmit hooks) only needs keyword fallback,
+  // so callers pass {skipEmbedder:true} to keep hook latency low. searchLocal
+  // already handles missing embedder gracefully (embedOk=false → keyword path).
+  if (!opts.skipEmbedder) await _embedder.init();
 }
 
 function extractKeywords(text) {
-  if (!text) return [];
-  return text.toLowerCase()
-    .replace(/[^a-z0-9\s/._-]/g, ' ')
-    .split(/\s+/)
-    .filter(w => w.length > 3 && !STOP_WORDS.has(w));
+  return _textUtils.extractKeywords(text, { minLen: 4, maxTokens: 50 });
 }
 
 async function searchLocal(query, opts = {}) {
@@ -223,8 +224,13 @@ async function searchLocal(query, opts = {}) {
     const keywords = extractKeywords(query);
     if (keywords.length === 0) return [];
     const kwResults = await _index.lookup(keywords, { topK: Math.max(topK * 3, 15), type: typeFilter });
+    // _index.lookup ignores minScore — apply it here so callers get a consistent contract
+    // regardless of which path (embed vs keyword) served the result.
+    const filtered = minScore > 0
+      ? kwResults.filter(r => (typeof r.score === 'number' ? r.score : 0) >= minScore)
+      : kwResults;
     const entries = [];
-    for (const r of kwResults.slice(0, topK)) {
+    for (const r of filtered.slice(0, topK)) {
       const entry = await _store.get(r.id);
       if (entry) entries.push({ ...entry, score: r.score });
     }
@@ -255,7 +261,8 @@ async function saveLocal(entry) {
     await _index.index(entry);
   }
   if (_graph && _graph.registerNode) {
-    await _graph.registerNode(id, entry.type || 'note');
+    // registerNode expects the full entry (uses entry.id, entry.type, entry.title, ...).
+    await _graph.registerNode({ ...entry, id });
   }
   return id;
 }
@@ -332,7 +339,7 @@ async function init(opts = {}) {
   if (_mode === 'mcp-memory') {
     await initMcp();
   } else {
-    await initLocal();
+    await initLocal({ skipEmbedder: !!opts.skipEmbedder });
   }
   _initialized = true;
 }
@@ -397,16 +404,8 @@ function getStatus() {
 
 function getMode() { return _mode; }
 
-const STOP_WORDS = new Set([
-  'the', 'this', 'that', 'and', 'for', 'with', 'from', 'was', 'are',
-  'have', 'has', 'had', 'not', 'but', 'all', 'can', 'will', 'just',
-  'been', 'were', 'they', 'them', 'their', 'what', 'when', 'where',
-  'which', 'who', 'how', 'about', 'into', 'over', 'such', 'each',
-  'than', 'then', 'these', 'those', 'also', 'very', 'because',
-  'para', 'que', 'com', 'uma', 'mais', 'mas', 'como', 'por',
-  'dos', 'das', 'era', 'sao', 'seu', 'sua', 'pelo', 'pela',
-  'node', 'npm', 'npx', 'file', 'path', 'src', 'lib', 'test',
-]);
+// text utilities centralized in lib/text-utils.js (STOP_WORDS + extractKeywords)
+const _textUtils = require('./lib/text-utils.js');
 
 module.exports = {
   init, save, get, search, searchByKeywords,

@@ -65,13 +65,14 @@ The hook signals "N payload(s) pending indexing" when payloads are in `brain-pen
 
 If the hook returned nothing useful but you know knowledge exists on the topic:
 
-1. Spawn the **brain-retriever** subagent
-2. Pass the query and project
-3. It performs semantic search + LLM re-rank, returns top-3
+1. Call the `brain_search` MCP tool directly (server: `brain-server`)
+2. Pass `{ query, project, limit }`
+3. Inspect the returned entries inline — no subagent hop needed
 
 ### 4. Cross-project search
 
-If the current project has no relevant entries, brain-retriever can search neighboring projects:
+To search neighboring projects, pass a different `project` to `brain_search`, or
+inspect databases directly under:
 ```
 ~/.claude/projects/<project>/brain/brain.db
 ```

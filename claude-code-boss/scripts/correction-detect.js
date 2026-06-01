@@ -24,14 +24,7 @@ function looksLikeCorrection(msg) {
   return SIGNALS.some(re => re.test(msg));
 }
 
-function readStdin() {
-  return new Promise((resolve) => {
-    let d = '';
-    process.stdin.setEncoding('utf-8');
-    process.stdin.on('data', c => d += c);
-    process.stdin.on('end', () => resolve(d));
-  });
-}
+const { readStdin } = require('./lib/hook-io.js');
 
 (async () => {
   try {

@@ -20,15 +20,11 @@
     "projectScope": true,
     "maxEntriesPerProject": 10000,
     "archiveAfterDays": 90,
-    "hybridSearch": true,
-    "vectorWeight": 0.7,
-    "keywordWeight": 0.2,
-    "metadataWeight": 0.1,
     "retrieval": {
       "fastTopK": 5,
       "deepTopK": 3,
-      "minScoreFast": 0.3,
-      "minScoreDeep": 0.5
+      "minScoreFast": 0.5,
+      "minScoreDeep": 0.6
     },
     "rerank": {
       "enabled": true,
@@ -37,8 +33,7 @@
     },
     "submission": {
       "minBashLines": 3,
-      "minOutputChars": 500,
-      "dedupThreshold": 0.95
+      "minOutputChars": 1500
     },
     "skillPromotion": {
       "enabled": true,

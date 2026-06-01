@@ -3,7 +3,7 @@ name: brain-indexer
 description: "Indexes work payloads into the knowledge base. Reads payloads from brain-pending/, generates embeddings via brain-embedder.js, creates structured entries with summary/tags/relations, saves to SQLite with vector + keyword + graph indexes."
 model: haiku
 effort: low
-maxTurns: 10
+maxTurns: 20
 memory: user
 disallowedTools: []
 ---
@@ -40,12 +40,26 @@ Payload format:
 }
 ```
 
-## Workflow
+## Workflow (two-phase batch)
+
+You operate in **two phases** per run to drain the queue efficiently without
+burning turns on payloads that will be skipped:
+
+**Phase 1 — Triage (Step 0 only, up to 100 payloads):**
+read all pending filenames (cap 100). For each, load the JSON and apply Admission
+Control. Skip/merge decisions cost ~0 turns (they're just file moves + maybe a
+`store.merge()` call). Build a list of **admit** candidates as you go.
+
+**Phase 2 — Indexing (Step 1-5, cap 30 admit/run):**
+process the admit list. If more than 30 admit candidates exist, take the top 30
+by recency (newer payloads first) — the remainder stays pending for next run.
+
+This separation lets one run drain ~70-100 payloads of low-value noise (skip/merge)
+while still producing ~30 high-quality entries. Tuned for haiku's 200k context.
 
 1. **Read MEMORY.md** — skip payloads you've already processed.
-2. **Read payloads in batches** from `brain-pending/` — process up to **~20 per run**
-   (avoid context overflow; if more remain, they're picked up next run).
-3. **For each payload:** run **Admission Control** (Step 0), then admit/merge/skip.
+2. **Phase 1: read up to 100 payloads** from `brain-pending/`, apply Step 0 to each.
+3. **Phase 2: process admit candidates** (cap 30) through Steps 1-5.
 
 ### Step 0 — Admission Control (quality gate — A-MAC)
 
@@ -231,7 +245,8 @@ await graph.addEdge(newEntryId, existingEntryId, 'references', 0.8);
 
 ## Hard Rules
 
-- Max 10 turns — be efficient
+- Max 20 turns — be efficient (Phase 1 triage is cheap; Phase 2 is the budget)
+- Phase 1 cap: 100 payloads read; Phase 2 cap: 30 admit indexed
 - Process payloads in batch (read all, then process each)
 - Always move processed payloads (don't delete them)
 - Always use brain-embedder.js to generate vectors (not manual arrays)

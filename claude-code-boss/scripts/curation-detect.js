@@ -3,10 +3,12 @@
  * Curation Detect — PostToolUse / PostToolUseFailure hook for Bash.
  *
  * In-loop design (replaces the old payload-on-disk + subagent pipeline):
- *  - During the turn, append a lightweight entry to a per-turn state file
- *    at ${CLAUDE_PLUGIN_DATA}/.runtime/curation-turn-<sessionId>.json.
- *  - At end of turn, curation-stop.js reads the state and asks the main loop
- *    (with full turn context) to create/refine the .mjs scripts.
+ *  - During the turn, append-only journal entries land at
+ *    ${CLAUDE_PLUGIN_DATA}/.runtime/curation-turn-<sid>--<ts>-<rand>.json
+ *    (one file per entry — race-free, no read-modify-write).
+ *  - At end of turn, curation-stop.js aggregates the journal via
+ *    lib/turn-journal.js#readEntries and asks the main loop to act on the
+ *    captured signals.
  *
  * Delegates classification to curation-classifier.js (pure function).
  * Delegates shells.json access to shells-config.js.
@@ -17,91 +19,27 @@
  *   curated-failure-noisy — curated script failed, output exceeded raw thresholds
  *   (null)                — no condition matched; no entry recorded
  */
-const fs = require('fs');
+const { readStdin } = require('./lib/hook-io.js');
+const turnJournal = require('./lib/turn-journal.js');
 const path = require('path');
-const os = require('os');
 
 const { findProjectRoot, loadShellsConfig, matchCuratedShell } = require('./shells-config.js');
 const { classify }                                              = require('./curation-classifier.js');
 
-const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
-const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.join(__dirname, '..');
-const CONFIG_PATH = path.join(PLUGIN_ROOT, 'config', 'brain-config.json');
 
-/** Cap entries per turn to prevent unbounded growth on pathological sessions. */
-const MAX_ENTRIES_PER_TURN = 50;
-
-function loadThresholds() {
-  try {
-    const cfg = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
-    return { maxChars: cfg.curation?.maxOutputChars ?? 1500, maxLines: cfg.curation?.maxOutputLines ?? 30 };
-  } catch (err) {
-    console.error(`[CURATION-DETECT] config load failed, using defaults: ${err.message}`);
-    return { maxChars: 1500, maxLines: 30 };
-  }
-}
-
-const thresholds = loadThresholds();
+const _curationCfg = require('./lib/brain-config.js').getCuration();
+const thresholds = { maxChars: _curationCfg.maxOutputChars, maxLines: _curationCfg.maxOutputLines };
 
 // ─── Turn state ──────────────────────────────────────────────────────────────
-
-function turnStatePath(sessionId) {
-  const safe = String(sessionId || 'default').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
-  return path.join(RUNTIME_DIR, `curation-turn-${safe}.json`);
-}
-
-function loadTurnState(sessionId) {
-  try {
-    const p = turnStatePath(sessionId);
-    if (!fs.existsSync(p)) return null;
-    return JSON.parse(fs.readFileSync(p, 'utf-8'));
-  } catch (err) {
-    console.error(`[CURATION-DETECT] turn state load failed: ${err.message}`);
-    return null;
-  }
-}
-
-function saveTurnState(sessionId, state) {
-  try {
-    fs.mkdirSync(RUNTIME_DIR, { recursive: true });
-    const tmp = turnStatePath(sessionId) + '.tmp';
-    fs.writeFileSync(tmp, JSON.stringify(state, null, 2));
-    fs.renameSync(tmp, turnStatePath(sessionId));
-  } catch (err) {
-    console.error(`[CURATION-DETECT] Failed to save turn state: ${err.message}`);
-  }
-}
+// All state lives in the append-only turn journal (lib/turn-journal.js) —
+// race-free because each entry writes its own file.
 
 function appendTurnEntry(sessionId, entry) {
-  const state = loadTurnState(sessionId) || {
-    sessionId,
-    startedAt: new Date().toISOString(),
-    entries: [],
-  };
-  // Dedup by command+reason (same noisy command repeated → keep most recent metrics only)
-  const dupIdx = state.entries.findIndex(e => e.command === entry.command && e.reason === entry.reason);
-  if (dupIdx >= 0) {
-    state.entries[dupIdx] = entry;
-  } else {
-    state.entries.push(entry);
-  }
-  if (state.entries.length > MAX_ENTRIES_PER_TURN) {
-    state.entries = state.entries.slice(-MAX_ENTRIES_PER_TURN);
-  }
-  saveTurnState(sessionId, state);
+  turnJournal.appendEntry(sessionId, entry);
 }
 
 // ─── Main ────────────────────────────────────────────────────────────────────
-
-function readStdin() {
-  return new Promise((resolve) => {
-    let data = '';
-    process.stdin.setEncoding('utf-8');
-    process.stdin.on('data', chunk => data += chunk);
-    process.stdin.on('end', () => resolve(data));
-  });
-}
 
 (async () => {
   try {

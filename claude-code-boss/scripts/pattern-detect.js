@@ -18,14 +18,7 @@ const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
 const STATE = path.join(DATA_DIR, '.runtime', 'pattern-detect-state.json');
 const EVERY = 6; // remind at most once per 6 stops
 
-function readStdin() {
-  return new Promise((resolve) => {
-    let d = '';
-    process.stdin.setEncoding('utf-8');
-    process.stdin.on('data', c => d += c);
-    process.stdin.on('end', () => resolve(d));
-  });
-}
+const { readStdin, emitStopBlock } = require('./lib/hook-io.js');
 
 function tick() {
   let n = 0;
@@ -49,13 +42,11 @@ function tick() {
     } catch { /* malformed input — fall through */ }
     const n = tick();
     if (n % EVERY !== 0) { process.stdout.write('{}'); return; }
-    process.stdout.write(JSON.stringify({
-      decision: 'block',
-      reason:
-        'If a reusable workflow pattern emerged in this session (a shape worth ' +
-        'repeating), capture it via the `capture_lesson` MCP tool (type: "pattern"). ' +
-        'Only durable, generalizable patterns — skip one-offs.',
-    }));
+    emitStopBlock(
+      'If a reusable workflow pattern emerged in this session (a shape worth ' +
+      'repeating), capture it via the `capture_lesson` MCP tool (type: "pattern"). ' +
+      'Only durable, generalizable patterns — skip one-offs.'
+    );
   } catch {
     process.stdout.write('{}');
   }

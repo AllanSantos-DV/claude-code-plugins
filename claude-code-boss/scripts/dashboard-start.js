@@ -9,10 +9,13 @@
  */
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { spawn } = require('child_process');
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
-const RUNTIME_DIR = path.join(PLUGIN_ROOT, '.runtime');
+const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
+  || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');
 const PID_FILE = path.join(RUNTIME_DIR, 'dashboard.pid');
 const DASHBOARD_SCRIPT = path.join(PLUGIN_ROOT, 'scripts', 'dashboard.js');
 

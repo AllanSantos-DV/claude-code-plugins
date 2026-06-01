@@ -6,7 +6,7 @@ Monorepo de plugins para [Claude Code Desktop](https://claude.ai/download) — d
 
 | Plugin | Versão | Descrição |
 | --- | --- | --- |
-| [claude-code-boss](./claude-code-boss) | 1.5.0 | Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizado in-loop para Claude Code |
+| [claude-code-boss](./claude-code-boss) | 1.6.0 | Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizado in-loop para Claude Code |
 
 ## O que é o claude-code-boss?
 
@@ -20,7 +20,7 @@ O que está entregue:
 - **Hooks pipeline (advisory)** — 5 eventos (SessionStart, PreToolUse, PostToolUse, Stop, UserPromptSubmit), ~9 scripts. Tom **informativo, não coercitivo**, com backpressure (cooldown + cap de contagem) para evitar context bloat
 - **Execução curada (Shell Workbench)** — `curation-guard` bloqueia/redireciona comandos curados; `curation-detect` detecta outputs grandes; `session-whitelist` popula ecossistema no boot
 - **Dashboard local** — servidor HTTP em `localhost` (porta dinâmica, token auth), **4 abas**: Home, Brain KB, Hooks, Logs. Lançado **sob demanda** (não auto-inicia mais no SessionStart). Ring buffer de 500 entradas + agregação de erros via `.runtime/hook-errors.jsonl`
-- **6 subagentes** — `brain-indexer` (haiku, pinned), `brain-retriever`, `brain-consolidator`, `brain-source-researcher`, `curation-improver`, `refine-researcher`
+- **Subagentes** — `brain-indexer` (haiku, pinned). Captura de lições/consolidação/refine/curation rodam **in-loop** via tool MCP `capture_lesson` e hooks Stop (`pattern-detect`/`curation-stop`/`refine-research`), sem subagentes dedicados
 
 ## Estrutura
 
@@ -29,7 +29,7 @@ claude-code-plugins/
 ├── claude-code-boss/          # Plugin principal
 │   ├── .claude-plugin/        # Manifesto do plugin (plugin.json)
 │   ├── .mcp.json              # Servidor MCP: brain-server
-│   ├── agents/                # 6 subagentes (.agent.md)
+│   ├── agents/                # subagentes (.agent.md)
 │   ├── config/                # brain-config.json, hooks-config.json
 │   ├── dashboard/             # index.html — SPA (4 abas)
 │   ├── docs/                  # Guias de upgrade (Ollama, Voyage, MCP Memory)

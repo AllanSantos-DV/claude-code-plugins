@@ -171,28 +171,6 @@ pre { background: #f5f5f5; padding: .6rem; border-radius: 4px; font-size: .7rem;
 
     <!-- KB SETTINGS -->
     <div class="card">
-      <h2>Knowledge Base — Search Weights</h2>
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:.75rem;margin-bottom:.75rem">
-        <div>
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Hybrid Search</label>
-          <select id="kb-hybridSearch">
-            <option value="true">Enabled</option>
-            <option value="false">Disabled</option>
-          </select>
-        </div>
-        <div>
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Vector Weight</label>
-          <input type="number" id="kb-vectorWeight" step="0.1" min="0" max="1" placeholder="0.7">
-        </div>
-        <div>
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Keyword Weight</label>
-          <input type="number" id="kb-keywordWeight" step="0.1" min="0" max="1" placeholder="0.2">
-        </div>
-        <div>
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Metadata Weight</label>
-          <input type="number" id="kb-metadataWeight" step="0.1" min="0" max="1" placeholder="0.1">
-        </div>
-      </div>
       <h2 style="margin-bottom:.5rem">Retrieval</h2>
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:.75rem;margin-bottom:.75rem">
         <div>
@@ -274,33 +252,19 @@ pre { background: #f5f5f5; padding: .6rem; border-radius: 4px; font-size: .7rem;
 
     <!-- Auto-Trigger -->
     <div class="card">
-      <h2>Auto-Trigger de Agentes <span class="text-muted" style="font-size:.75rem;font-weight:400">— quando payloads pendentes ≥ threshold, injeta instrução OBRIGATÓRIA</span></h2>
-      <p class="text-muted" style="font-size:.72rem;margin-bottom:.75rem">Abaixo do threshold: sugestão. Acima ou igual: o LLM é instruído a spawnar o agente ANTES de responder.</p>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
-        <div style="border:1px solid #e8e8e8;border-radius:6px;padding:.75rem">
-          <div class="flex" style="align-items:center;justify-content:space-between;margin-bottom:.5rem">
-            <strong style="font-size:.85rem">Correction Analyzer</strong>
-            <label style="display:flex;align-items:center;gap:.4rem;font-size:.75rem;cursor:pointer">
-              <input type="checkbox" id="hcfg-autotrigger-correction-enabled" style="width:auto">
-              Ativado
-            </label>
-          </div>
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Threshold (payloads pendentes) <span style="color:#aaa">· default: 3 · mín: 1</span></label>
-          <input type="number" id="hcfg-autotrigger-correction-threshold" min="1" placeholder="3">
-          <p class="text-muted" style="font-size:.7rem;margin-top:.2rem">Ao atingir X correções acumuladas, o agente é disparado automaticamente</p>
+      <h2>Brain Indexer Auto-Trigger <span class="text-muted" style="font-size:.75rem;font-weight:400">— Stop hook bloqueante quando payloads pendentes ≥ threshold</span></h2>
+      <p class="text-muted" style="font-size:.72rem;margin-bottom:.75rem">Ativado: o agente é instruído a lançar o <code>brain-indexer</code> antes de terminar o turn. Desativado: apenas advisory passivo no UserPromptSubmit.</p>
+      <div style="border:1px solid #e8e8e8;border-radius:6px;padding:.75rem;max-width:480px">
+        <div class="flex" style="align-items:center;justify-content:space-between;margin-bottom:.5rem">
+          <strong style="font-size:.85rem">Brain Indexer</strong>
+          <label style="display:flex;align-items:center;gap:.4rem;font-size:.75rem;cursor:pointer">
+            <input type="checkbox" id="hcfg-brainstop-enabled" style="width:auto">
+            Ativado
+          </label>
         </div>
-        <div style="border:1px solid #e8e8e8;border-radius:6px;padding:.75rem">
-          <div class="flex" style="align-items:center;justify-content:space-between;margin-bottom:.5rem">
-            <strong style="font-size:.85rem">Curation Improver</strong>
-            <label style="display:flex;align-items:center;gap:.4rem;font-size:.75rem;cursor:pointer">
-              <input type="checkbox" id="hcfg-autotrigger-curation-enabled" style="width:auto">
-              Ativado
-            </label>
-          </div>
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Threshold (payloads pendentes) <span style="color:#aaa">· default: 5 · mín: 1</span></label>
-          <input type="number" id="hcfg-autotrigger-curation-threshold" min="1" placeholder="5">
-          <p class="text-muted" style="font-size:.7rem;margin-top:.2rem">Ao atingir X outputs grandes acumulados, o agente é disparado automaticamente</p>
-        </div>
+        <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Threshold (payloads pendentes) <span style="color:#aaa">· default: 10 · mín: 1</span></label>
+        <input type="number" id="hcfg-brainstop-threshold" min="1" placeholder="10">
+        <p class="text-muted" style="font-size:.7rem;margin-top:.2rem">Ao atingir X payloads em <code>brain-pending/</code>, o Stop hook bloqueia o agente até processar a fila</p>
       </div>
     </div>
 
@@ -364,43 +328,7 @@ pre { background: #f5f5f5; padding: .6rem; border-radius: 4px; font-size: .7rem;
 
     <!-- Curation Guard -->
     <div class="card">
-      <h2>Curation Guard <span class="text-muted" style="font-size:.75rem;font-weight:400">— PreToolUse/Bash, classifica comandos</span></h2>
-
-      <!-- Built-in lists (read-only, collapsible) -->
-      <div class="panel" style="margin-bottom:.75rem">
-        <h3 onclick="this.nextElementSibling.style.display=this.nextElementSibling.style.display==='none'?'block':'none'">
-          <span>Lista base embutida <span class="text-muted" style="font-weight:400;font-size:.75rem">— sempre permitidos, sem aviso</span></span>
-          <span class="text-muted" style="font-size:.75rem">▼ expandir</span>
-        </h3>
-        <div class="panel-body" style="display:none" id="builtin-panel">
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:.5rem">
-            <div>
-              <p class="text-muted" style="font-size:.72rem;margin-bottom:.25rem;font-weight:600">Trivial (sempre allow)</p>
-              <div id="builtin-trivial" style="font-size:.75rem;line-height:1.8"></div>
-            </div>
-            <div>
-              <p class="text-muted" style="font-size:.72rem;margin-bottom:.25rem;font-weight:600">git — todos os subcomandos</p>
-              <div id="builtin-git" style="font-size:.75rem;line-height:1.8"></div>
-            </div>
-          </div>
-          <div>
-            <p class="text-muted" style="font-size:.72rem;margin-bottom:.25rem;font-weight:600">Build tools (allow com aviso → curation-detect monitora saída)</p>
-            <div id="builtin-build" style="font-size:.75rem;line-height:1.8"></div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Extra commands -->
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem;margin-bottom:.75rem">
-        <div>
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Extra Trivial Commands <span style="color:#888">(um por linha — adicionados à lista base)</span></label>
-          <textarea id="hcfg-guard-trivial" rows="4" placeholder="jq&#10;curl&#10;wget"></textarea>
-        </div>
-        <div>
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Extra Build Tools <span style="color:#888">(um por linha — adicionados à lista de monitorados)</span></label>
-          <textarea id="hcfg-guard-build" rows="4" placeholder="deno&#10;nx&#10;turbo"></textarea>
-        </div>
-      </div>
+      <h2>Curation Guard <span class="text-muted" style="font-size:.75rem;font-weight:400">— PreToolUse/Bash, redireciona para curated; resto cai no discovery loop (PostToolUse/Stop)</span></h2>
 
       <!-- Curated Shells viewer -->
       <div style="border-top:1px solid #eee;padding-top:.75rem">
@@ -513,10 +441,6 @@ async function loadBrain() {
 
     // KB
     const kb = _brainConfig.kb || {};
-    document.getElementById('kb-hybridSearch').value = String(kb.hybridSearch !== false);
-    document.getElementById('kb-vectorWeight').value = kb.vectorWeight ?? '';
-    document.getElementById('kb-keywordWeight').value = kb.keywordWeight ?? '';
-    document.getElementById('kb-metadataWeight').value = kb.metadataWeight ?? '';
     document.getElementById('kb-maxEntries').value = kb.maxEntriesPerProject ?? '';
     document.getElementById('kb-archiveDays').value = kb.archiveAfterDays ?? '';
     const ret = kb.retrieval || {};
@@ -591,13 +515,6 @@ async function saveBrainBackendConfig() {
 
   // KB
   cfg.kb = cfg.kb || {};
-  cfg.kb.hybridSearch = document.getElementById('kb-hybridSearch').value === 'true';
-  const vw = parseFloat(document.getElementById('kb-vectorWeight').value);
-  const kw = parseFloat(document.getElementById('kb-keywordWeight').value);
-  const mw = parseFloat(document.getElementById('kb-metadataWeight').value);
-  if (!isNaN(vw)) cfg.kb.vectorWeight = vw;
-  if (!isNaN(kw)) cfg.kb.keywordWeight = kw;
-  if (!isNaN(mw)) cfg.kb.metadataWeight = mw;
   const maxEnt = parseInt(document.getElementById('kb-maxEntries').value);
   const archDays = parseInt(document.getElementById('kb-archiveDays').value);
   if (maxEnt > 0) cfg.kb.maxEntriesPerProject = maxEnt;
@@ -712,7 +629,6 @@ async function loadHooks() {
     _hooksConfig = await api('GET', '/api/hooks/config');
     renderHooksConfig();
   } catch {}
-  loadCurationBuiltin();
   loadCurationProjects();
 }
 
@@ -754,21 +670,6 @@ function onShellsProjectChange(cwdEnc) {
   if (!cwdEnc) return;
   const cwd = decodeURIComponent(cwdEnc);
   loadCuratedShells(cwd);
-}
-
-async function loadCurationBuiltin() {
-  try {
-    const b = await api('GET', '/api/curation/builtin');
-    const tag = v => `<span class="tag" style="margin:1px 2px">${v}</span>`;
-    document.getElementById('builtin-trivial').innerHTML =
-      b.trivialCommands.map(tag).join('') + ' ' + tag('gh');
-    document.getElementById('builtin-git').innerHTML =
-      '<span class="tag tag-green" style="margin:1px 2px">git *</span> ' +
-      '(read-only: ' + b.gitReadOnly.map(tag).join('') + ')<br>' +
-      'safe writes: ' + b.gitSafe.map(v => `<span class="tag tag-warn" style="margin:1px 2px">${v}</span>`).join('');
-    document.getElementById('builtin-build').innerHTML =
-      b.buildTools.map(v => `<span class="tag tag-warn" style="margin:1px 2px">${v}</span>`).join('');
-  } catch {}
 }
 
 async function loadCuratedShells(cwd) {
@@ -834,12 +735,10 @@ async function deleteShell(idx, cwdEnc) {
 function renderHooksConfig() {
   if (!_hooksConfig) return;
   const c = _hooksConfig;
-  // Auto-trigger
-  const at = c.autoTrigger || {};
-  document.getElementById('hcfg-autotrigger-correction-enabled').checked = at.correctionAnalyzer?.enabled !== false;
-  document.getElementById('hcfg-autotrigger-correction-threshold').value = at.correctionAnalyzer?.threshold ?? '';
-  document.getElementById('hcfg-autotrigger-curation-enabled').checked = at.curationImprover?.enabled !== false;
-  document.getElementById('hcfg-autotrigger-curation-threshold').value = at.curationImprover?.threshold ?? '';
+  // Brain Indexer auto-trigger (Stop hook)
+  const bs = c.brainStop || {};
+  document.getElementById('hcfg-brainstop-enabled').checked = bs.enabled !== false;
+  document.getElementById('hcfg-brainstop-threshold').value = bs.threshold ?? '';
   // Detect intervals
   document.getElementById('hcfg-correction-interval').value = c.correctionDetect?.detectInterval ?? '';
   document.getElementById('hcfg-correction-transcript').value = c.correctionDetect?.maxTranscriptLines ?? '';
@@ -847,8 +746,6 @@ function renderHooksConfig() {
   document.getElementById('hcfg-pattern-transcript').value = c.patternDetect?.maxTranscriptLines ?? '';
   document.getElementById('hcfg-lesson-max').value = c.lessonInject?.maxLessons ?? '';
   document.getElementById('hcfg-memory-maxlines').value = c.memoryRotate?.maxLines ?? '';
-  document.getElementById('hcfg-guard-trivial').value = (c.curationGuard?.extraTrivialCommands || []).join('\n');
-  document.getElementById('hcfg-guard-build').value = (c.curationGuard?.extraBuildTools || []).join('\n');
 }
 
 async function saveHooksConfig() {
@@ -859,15 +756,10 @@ async function saveHooksConfig() {
   const fv = n => { const v = parseFloat(n); return !isNaN(v) ? v : undefined; };
   const lines = s => s.split('\n').map(l => l.trim()).filter(Boolean);
 
-  cfg.autoTrigger = cfg.autoTrigger || {};
-  cfg.autoTrigger.correctionAnalyzer = cfg.autoTrigger.correctionAnalyzer || {};
-  cfg.autoTrigger.correctionAnalyzer.enabled = document.getElementById('hcfg-autotrigger-correction-enabled').checked;
-  const act = iv(document.getElementById('hcfg-autotrigger-correction-threshold').value);
-  if (act) cfg.autoTrigger.correctionAnalyzer.threshold = act;
-  cfg.autoTrigger.curationImprover = cfg.autoTrigger.curationImprover || {};
-  cfg.autoTrigger.curationImprover.enabled = document.getElementById('hcfg-autotrigger-curation-enabled').checked;
-  const ait = iv(document.getElementById('hcfg-autotrigger-curation-threshold').value);
-  if (ait) cfg.autoTrigger.curationImprover.threshold = ait;
+  cfg.brainStop = cfg.brainStop || {};
+  cfg.brainStop.enabled = document.getElementById('hcfg-brainstop-enabled').checked;
+  const bst = iv(document.getElementById('hcfg-brainstop-threshold').value);
+  if (bst) cfg.brainStop.threshold = bst;
 
   cfg.correctionDetect = cfg.correctionDetect || {};
   const ci = iv(document.getElementById('hcfg-correction-interval').value);
@@ -888,10 +780,6 @@ async function saveHooksConfig() {
   cfg.memoryRotate = cfg.memoryRotate || {};
   const mm = iv(document.getElementById('hcfg-memory-maxlines').value);
   if (mm) cfg.memoryRotate.maxLines = mm;
-
-  cfg.curationGuard = cfg.curationGuard || {};
-  cfg.curationGuard.extraTrivialCommands = lines(document.getElementById('hcfg-guard-trivial').value);
-  cfg.curationGuard.extraBuildTools = lines(document.getElementById('hcfg-guard-build').value);
 
   await api('PUT', '/api/hooks/config', cfg);
   _hooksConfig = cfg;

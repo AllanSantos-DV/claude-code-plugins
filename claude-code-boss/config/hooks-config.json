@@ -2,12 +2,22 @@
   "memoryRotate": {
     "maxLines": 150
   },
+  "curation": {
+    "scriptsDir": ".vscode/scripts",
+    "shellsConfigPath": ".vscode/shells.json",
+    "scriptsDirSearch": [".vscode/scripts", ".curation/scripts", "scripts"],
+    "shellsConfigSearch": [".vscode/shells.json", ".curation/shells.json", "shells.json"]
+  },
   "curationGuard": {
-    "extraTrivialCommands": [],
-    "extraBuildTools": [],
     "denyUnknown": false
   },
   "curationStop": {
-    "enabled": true
+    "enabled": true,
+    "maxAttempts": 3
+  },
+  "brainStop": {
+    "enabled": true,
+    "threshold": 10,
+    "maxAttempts": 3
   }
 }
