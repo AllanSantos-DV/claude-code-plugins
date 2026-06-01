@@ -21,12 +21,10 @@
  */
 const { readStdin } = require('./lib/hook-io.js');
 const turnJournal = require('./lib/turn-journal.js');
-const path = require('path');
 
 const { findProjectRoot, loadShellsConfig, matchCuratedShell } = require('./shells-config.js');
 const { classify }                                              = require('./curation-classifier.js');
 
-const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.join(__dirname, '..');
 
 const _curationCfg = require('./lib/brain-config.js').getCuration();
 const thresholds = { maxChars: _curationCfg.maxOutputChars, maxLines: _curationCfg.maxOutputLines };

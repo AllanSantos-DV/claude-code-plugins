@@ -13,7 +13,6 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
 const AGENT_MEMORY_DIR = path.join(os.homedir(), '.claude', 'agent-memory');
 
 const MAX_LINES = require('./lib/hooks-config.js').load().memoryRotate?.maxLines ?? 150;

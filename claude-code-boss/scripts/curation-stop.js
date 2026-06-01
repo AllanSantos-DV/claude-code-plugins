@@ -33,7 +33,6 @@ const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
   || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
 const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');
 
-const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
 
 function loadConfig() {
   return require('./lib/hooks-config.js').getCurationStop();
