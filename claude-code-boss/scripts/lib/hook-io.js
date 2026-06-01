@@ -50,7 +50,8 @@ function parsePayload(raw) {
   if (!raw) return null;
   try {
     return JSON.parse(raw);
-  } catch {
+  } catch (err) {
+    console.error('[hook-io] parsePayload: invalid JSON on stdin:', err.message);
     return null;
   }
 }
