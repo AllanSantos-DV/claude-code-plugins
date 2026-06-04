@@ -385,7 +385,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           const embedder = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-embedder.js'));
           await embedder.init();
           if (embedder.getStatus().ready) vector = await embedder.embed(title + ': ' + summary);
-        } catch { /* embedding optional; brain-indexer re-embeds later */ }
+        } catch { /* embedding optional */ }
 
         await kbStore.save(entry, vector);   // mutates entry.id
         await kbIndex.index(entry);          // extracts keywords/tags internally

@@ -23,16 +23,6 @@ function load() {
   return _cache;
 }
 
-function getBrainStop() {
-  const cfg = load();
-  const bs = cfg.brainStop || {};
-  return {
-    enabled: bs.enabled !== false,
-    threshold: Number.isInteger(bs.threshold) && bs.threshold > 0 ? bs.threshold : 10,
-    maxAttempts: Number.isInteger(bs.maxAttempts) && bs.maxAttempts > 0 ? bs.maxAttempts : 3,
-  };
-}
-
 function getCurationStop() {
   const cfg = load();
   const cs = cfg.curationStop || {};
@@ -56,7 +46,6 @@ function _resetCache() { _cache = null; }
 
 module.exports = {
   load,
-  getBrainStop,
   getCurationStop,
   getCurationGuard,
   getCuration,

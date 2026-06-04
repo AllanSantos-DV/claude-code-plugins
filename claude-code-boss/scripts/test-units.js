@@ -178,13 +178,6 @@ test('session-id: non-string coerced', () => {
 // ─── hooks-config ────────────────────────────────────────────────────────────
 const hooksConfig = require('./lib/hooks-config.js');
 
-test('hooks-config: getBrainStop defaults', () => {
-  const bs = hooksConfig.getBrainStop();
-  assert(typeof bs.enabled === 'boolean');
-  assert(Number.isInteger(bs.threshold) && bs.threshold > 0);
-  assert(Number.isInteger(bs.maxAttempts) && bs.maxAttempts > 0);
-});
-
 test('hooks-config: getCurationStop defaults', () => {
   const cs = hooksConfig.getCurationStop();
   assert(typeof cs.enabled === 'boolean');
