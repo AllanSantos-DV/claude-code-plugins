@@ -40,8 +40,6 @@ claude-code-boss/
 ├── .claude-plugin/
 │   └── plugin.json            # Manifesto do plugin (versão canônica)
 ├── .mcp.json                  # Servidor MCP: brain-server
-├── agents/                    # subagentes (.agent.md)
-│   └── brain-indexer.agent.md
 ├── config/
 │   ├── brain-config.json      # Provider de embedding, backend (local|mcp-memory), thresholds
 │   └── hooks-config.json      # Configuração dos hooks (memoryRotate, curationGuard, etc.)
@@ -56,7 +54,7 @@ claude-code-boss/
 │   ├── hook-logger.js         # Utilitário: append a .runtime/hook-errors.jsonl
 │   └── sync-version.js        # Propaga versão para todos os arquivos de versão
 ├── servers/
-│   └── brain-server/          # MCP server v2: brain_search/store/related/count
+│   └── brain-server/          # MCP server: brain_search/store/related/count + capture_lesson
 ├── skills/                    # 5 skills do Claude Code
 ├── package.json               # scripts: test, version:sync
 └── TASK-MAP.md                # Histórico de entrega (parcialmente obsoleto pós slim-down)

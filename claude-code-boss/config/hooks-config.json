@@ -14,10 +14,5 @@
   "curationStop": {
     "enabled": true,
     "maxAttempts": 3
-  },
-  "brainStop": {
-    "enabled": true,
-    "threshold": 10,
-    "maxAttempts": 3
   }
 }

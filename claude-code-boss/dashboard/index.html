@@ -250,70 +250,6 @@ pre { background: #f5f5f5; padding: .6rem; border-radius: 4px; font-size: .7rem;
       <span id="hooks-config-saved" class="text-muted"></span>
     </div>
 
-    <!-- Auto-Trigger -->
-    <div class="card">
-      <h2>Brain Indexer Auto-Trigger <span class="text-muted" style="font-size:.75rem;font-weight:400">— Stop hook bloqueante quando payloads pendentes ≥ threshold</span></h2>
-      <p class="text-muted" style="font-size:.72rem;margin-bottom:.75rem">Ativado: o agente é instruído a lançar o <code>brain-indexer</code> antes de terminar o turn. Desativado: apenas advisory passivo no UserPromptSubmit.</p>
-      <div style="border:1px solid #e8e8e8;border-radius:6px;padding:.75rem;max-width:480px">
-        <div class="flex" style="align-items:center;justify-content:space-between;margin-bottom:.5rem">
-          <strong style="font-size:.85rem">Brain Indexer</strong>
-          <label style="display:flex;align-items:center;gap:.4rem;font-size:.75rem;cursor:pointer">
-            <input type="checkbox" id="hcfg-brainstop-enabled" style="width:auto">
-            Ativado
-          </label>
-        </div>
-        <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Threshold (payloads pendentes) <span style="color:#aaa">· default: 10 · mín: 1</span></label>
-        <input type="number" id="hcfg-brainstop-threshold" min="1" placeholder="10">
-        <p class="text-muted" style="font-size:.7rem;margin-top:.2rem">Ao atingir X payloads em <code>brain-pending/</code>, o Stop hook bloqueia o agente até processar a fila</p>
-      </div>
-    </div>
-
-    <!-- Correction Detect -->
-    <div class="card">
-      <h2>Correction Detect <span class="text-muted" style="font-size:.75rem;font-weight:400">— UserPromptSubmit, a cada N turns</span></h2>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
-        <div>
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Detect Interval (turns) <span style="color:#aaa">· default: 2 · mín: 1</span></label>
-          <input type="number" id="hcfg-correction-interval" min="1" placeholder="2">
-          <p class="text-muted" style="font-size:.7rem;margin-top:.2rem">A cada quantos turns o hook coleta transcript para análise</p>
-        </div>
-        <div>
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Max Transcript Lines <span style="color:#aaa">· default: 6 · mín: 2</span></label>
-          <input type="number" id="hcfg-correction-transcript" min="2" placeholder="6">
-          <p class="text-muted" style="font-size:.7rem;margin-top:.2rem">Quantas linhas do transcript são enviadas ao correction-analyzer</p>
-        </div>
-      </div>
-    </div>
-
-    <!-- Pattern Detect -->
-    <div class="card">
-      <h2>Pattern Detect <span class="text-muted" style="font-size:.75rem;font-weight:400">— Stop hook, a cada N turns</span></h2>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
-        <div>
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Detect Interval (turns) <span style="color:#aaa">· default: 4 · mín: 1</span></label>
-          <input type="number" id="hcfg-pattern-interval" min="1" placeholder="4">
-          <p class="text-muted" style="font-size:.7rem;margin-top:.2rem">A cada N respostas do assistente, captura transcript para análise de padrões</p>
-        </div>
-        <div>
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Max Transcript Lines <span style="color:#aaa">· default: 10 · mín: 4</span></label>
-          <input type="number" id="hcfg-pattern-transcript" min="4" placeholder="10">
-          <p class="text-muted" style="font-size:.7rem;margin-top:.2rem">Linhas de contexto enviadas ao pattern-analyzer (mais = mais preciso, mais caro)</p>
-        </div>
-      </div>
-    </div>
-
-    <!-- Lesson Inject -->
-    <div class="card">
-      <h2>Lesson Inject <span class="text-muted" style="font-size:.75rem;font-weight:400">— UserPromptSubmit, injeta lessons relevantes</span></h2>
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
-        <div>
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Max Lessons Injetadas <span style="color:#aaa">· default: 5 · mín: 1 · máx: 20</span></label>
-          <input type="number" id="hcfg-lesson-max" min="1" max="20" placeholder="5">
-          <p class="text-muted" style="font-size:.7rem;margin-top:.2rem">Máximo de regras aprendidas injetadas no contexto por turno (mais = mais contexto gasto)</p>
-        </div>
-      </div>
-    </div>
-
     <!-- Memory Rotate -->
     <div class="card">
       <h2>Memory Rotate <span class="text-muted" style="font-size:.75rem;font-weight:400">— SessionStart, rota MEMORY.md quando excede N linhas</span></h2>
@@ -735,16 +671,6 @@ async function deleteShell(idx, cwdEnc) {
 function renderHooksConfig() {
   if (!_hooksConfig) return;
   const c = _hooksConfig;
-  // Brain Indexer auto-trigger (Stop hook)
-  const bs = c.brainStop || {};
-  document.getElementById('hcfg-brainstop-enabled').checked = bs.enabled !== false;
-  document.getElementById('hcfg-brainstop-threshold').value = bs.threshold ?? '';
-  // Detect intervals
-  document.getElementById('hcfg-correction-interval').value = c.correctionDetect?.detectInterval ?? '';
-  document.getElementById('hcfg-correction-transcript').value = c.correctionDetect?.maxTranscriptLines ?? '';
-  document.getElementById('hcfg-pattern-interval').value = c.patternDetect?.detectInterval ?? '';
-  document.getElementById('hcfg-pattern-transcript').value = c.patternDetect?.maxTranscriptLines ?? '';
-  document.getElementById('hcfg-lesson-max').value = c.lessonInject?.maxLessons ?? '';
   document.getElementById('hcfg-memory-maxlines').value = c.memoryRotate?.maxLines ?? '';
 }
 
@@ -753,29 +679,6 @@ async function saveHooksConfig() {
   const cfg = JSON.parse(JSON.stringify(_hooksConfig));
 
   const iv = n => { const v = parseInt(n); return v > 0 ? v : undefined; };
-  const fv = n => { const v = parseFloat(n); return !isNaN(v) ? v : undefined; };
-  const lines = s => s.split('\n').map(l => l.trim()).filter(Boolean);
-
-  cfg.brainStop = cfg.brainStop || {};
-  cfg.brainStop.enabled = document.getElementById('hcfg-brainstop-enabled').checked;
-  const bst = iv(document.getElementById('hcfg-brainstop-threshold').value);
-  if (bst) cfg.brainStop.threshold = bst;
-
-  cfg.correctionDetect = cfg.correctionDetect || {};
-  const ci = iv(document.getElementById('hcfg-correction-interval').value);
-  const ct = iv(document.getElementById('hcfg-correction-transcript').value);
-  if (ci) cfg.correctionDetect.detectInterval = ci;
-  if (ct) cfg.correctionDetect.maxTranscriptLines = ct;
-
-  cfg.patternDetect = cfg.patternDetect || {};
-  const pi = iv(document.getElementById('hcfg-pattern-interval').value);
-  const pt = iv(document.getElementById('hcfg-pattern-transcript').value);
-  if (pi) cfg.patternDetect.detectInterval = pi;
-  if (pt) cfg.patternDetect.maxTranscriptLines = pt;
-
-  cfg.lessonInject = cfg.lessonInject || {};
-  const lm = iv(document.getElementById('hcfg-lesson-max').value);
-  if (lm) cfg.lessonInject.maxLessons = lm;
 
   cfg.memoryRotate = cfg.memoryRotate || {};
   const mm = iv(document.getElementById('hcfg-memory-maxlines').value);
