@@ -143,10 +143,10 @@ function getStatus(req, res) {
   }
 
   let brainProjects = [], brainTotal = 0;
-  const projectsDir = path.join(os.homedir(), '.claude', 'projects');
-  if (fs.existsSync(projectsDir)) {
-    for (const p of fs.readdirSync(projectsDir)) {
-      const dbPath = path.join(projectsDir, p, 'brain', 'brain.db');
+  const brainBaseDir = path.join(DATA_DIR, 'brain');
+  if (fs.existsSync(brainBaseDir)) {
+    for (const p of fs.readdirSync(brainBaseDir)) {
+      const dbPath = path.join(brainBaseDir, p, 'brain.db');
       if (fs.existsSync(dbPath)) {
         try {
           const store = require('./brain-store.js');
@@ -232,10 +232,10 @@ function restartDashboard(req, res) {
 
 function getBrainProjects(req, res) {
   const projects = [];
-  const projectsDir = path.join(os.homedir(), '.claude', 'projects');
-  if (!fs.existsSync(projectsDir)) return json(res, []);
-  for (const p of fs.readdirSync(projectsDir)) {
-    const dbPath = path.join(projectsDir, p, 'brain', 'brain.db');
+  const brainBaseDir = path.join(DATA_DIR, 'brain');
+  if (!fs.existsSync(brainBaseDir)) return json(res, []);
+  for (const p of fs.readdirSync(brainBaseDir)) {
+    const dbPath = path.join(brainBaseDir, p, 'brain.db');
     if (fs.existsSync(dbPath)) {
       try {
         const store = require('./brain-store.js');
@@ -263,7 +263,7 @@ async function searchBrain(req, res, url) {
     let results = [];
     if (embedder.getStatus().ready) {
       const vec = await embedder.embed(q);
-      if (vec) results = await store.search(vec, { topK: k, minScore: 0.1 });
+      if (vec) results = await store.search(vec, { topK: k, minScore: 0.05 });
     }
     if (results.length < 2) {
       const index = require('./brain-index.js');
