@@ -32,8 +32,20 @@ const { readStdin, emitEmpty, emitJson, parsePayload } = require('./lib/hook-io.
       await backend.init({ project, skipEmbedder: true });
       entries = await backend.search(userMessage, { topK, minScore });
     } catch (err) {
+      // Backend failure here mirrors what the brain MCP server hits in-process
+      // — surface it instead of silent emitEmpty so the user/agent can recover.
       console.error(`[BRAIN-RETRIEVE-PROMPT] backend search failed: ${err.message}`);
-      emitEmpty();
+      emitJson({
+        hookSpecificOutput: {
+          hookEventName: 'UserPromptSubmit',
+          additionalContext:
+            `[BRAIN] Knowledge base unreachable: ${err.message}. ` +
+            'The brain MCP server likely failed to connect this session. ' +
+            'Action: re-run `.vscode/scripts/install-local.mjs` (takes effect on next turn — ' +
+            'no Claude Code restart needed) or check node_modules / data-dir permissions. ' +
+            'Proceeding without KB context.',
+        },
+      });
       return;
     }
 
