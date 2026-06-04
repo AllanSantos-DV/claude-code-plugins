@@ -317,7 +317,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // ── KB Search ────────────────────────────────────────────────────────
     case 'brain_search': {
       try {
-        const { query, project: projectArg, topK = 5, minScore = 0.2 } = args;
+        const { query, project: projectArg, topK = 5, minScore = 0.05 } = args;
         const project = projectArg || path.basename(process.cwd() || 'default');
         const { store: kbStore, index: kbIndex } = await getKB(project);
 

@@ -13,7 +13,7 @@
   },
   "embedder": {
     "provider": "transformers",
-    "model": "Xenova/all-MiniLM-L6-v2",
+    "model": "Xenova/paraphrase-multilingual-MiniLM-L12-v2",
     "dimensions": 384
   },
   "kb": {
@@ -23,8 +23,8 @@
     "retrieval": {
       "fastTopK": 5,
       "deepTopK": 3,
-      "minScoreFast": 0.5,
-      "minScoreDeep": 0.6
+      "minScoreFast": 0.05,
+      "minScoreDeep": 0.08
     },
     "rerank": {
       "enabled": true,

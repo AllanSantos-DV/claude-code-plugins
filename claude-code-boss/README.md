@@ -104,6 +104,14 @@ Base de conhecimento local com 3 layers:
 | `ollama` | `embedder.provider: "ollama"` | Ollama rodando localmente | Zero |
 | `voyage` | `embedder.provider: "voyage"` | Chave API Voyage AI | ~$0.10/1M tokens |
 
+**Modelo padrão**: `Xenova/paraphrase-multilingual-MiniLM-L12-v2` (384-dim, 50 idiomas) — recupera lessons EN a partir de prompts em qualquer idioma suportado.
+
+**Breaking change — cutover de modelo**: ao trocar o `embedder.model`, vetores antigos ficam incompatíveis. Rode uma vez:
+```bash
+node claude-code-boss/scripts/brain-reembed.js
+```
+O script wipa a tabela `embeddings` de todo project DB e re-embeda usando o modelo atual. Sem fallback, sem `previousModel`, sem dual-read — plugin é single-tenant.
+
 **Backend alternativo MCP Memory** (Java 21+): veja `docs/UPGRADE-MCP-MEMORY.md`.
 
 ## Dashboard
