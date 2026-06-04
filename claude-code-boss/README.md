@@ -68,6 +68,7 @@ Todos os hooks estão declarados em `hooks/hooks.json`. Eventos e scripts ativos
 | --- | --- | --- |
 | SessionStart | `memory-rotate.js` | Rotaciona MEMORY.md quando >150 linhas |
 | SessionStart | `session-whitelist.js` | Detecta ecossistema do projeto, popula whitelist |
+| SessionStart | `brain-health.js` | Liveness probe (static + active backend.init/count): se MCP estiver caído, injeta advisory acionável; senão, silencioso |
 | PreToolUse (Write\|Edit) | `brain-retrieve.js` | Busca KB antes de editar |
 | PreToolUse (Bash) | `brain-retrieve.js` | Busca KB antes de Bash |
 | PreToolUse (Bash) | `curation-guard.js` | Bloqueia/redireciona comandos curados |
@@ -75,6 +76,7 @@ Todos os hooks estão declarados em `hooks/hooks.json`. Eventos e scripts ativos
 | Stop | `pattern-detect.js` | Nudge advisory (throttled): capturar padrão reusável via `capture_lesson` |
 | Stop | `refine-research.js` | Injeta lembrete de pesquisa (web → Brain → usuário) |
 | Stop | `curation-stop.js` | Bloqueia stop se há comandos noisy detectados no turno (escalating, anti-loop) |
+| UserPromptSubmit | `brain-health.js` | Mesma probe do SessionStart, com cooldown de 60s — captura MCP caído em sessões resumidas |
 | UserPromptSubmit | `correction-detect.js` | Detecta sinal de correção → nudge p/ `capture_lesson` (sem ler transcript) |
 | UserPromptSubmit | `brain-retrieve-prompt.js` | Busca KB semântica + injeta lessons + advisory de pendências (cooldown de backpressure) |
 

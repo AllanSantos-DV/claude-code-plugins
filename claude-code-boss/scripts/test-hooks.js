@@ -125,6 +125,34 @@ const TESTS = [
     payload: { session_id: SESSION },
     expect: { noError: true },
   },
+  {
+    name: 'brain-health      [SessionStart/healthy]',
+    script: 'brain-health.js',
+    payload: { hook_event_name: 'SessionStart' },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bh-ok-')) }),
+    expect: { noError: true },
+  },
+  {
+    name: 'brain-health      [SessionStart/defects→advisory]',
+    script: 'brain-health.js',
+    payload: { hook_event_name: 'SessionStart' },
+    extraEnv: { CLAUDE_PLUGIN_ROOT: '/nonexistent-plugin-root' },
+    expect: { hookEvent: 'SessionStart' },
+  },
+  {
+    name: 'brain-health      [UserPromptSubmit/healthy]',
+    script: 'brain-health.js',
+    payload: { hook_event_name: 'UserPromptSubmit', cwd: process.cwd() },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bh-ups-')) }),
+    expect: { noError: true },
+  },
+  {
+    name: 'brain-health      [UserPromptSubmit/defects→advisory]',
+    script: 'brain-health.js',
+    payload: { hook_event_name: 'UserPromptSubmit', cwd: process.cwd() },
+    extraEnv: { CLAUDE_PLUGIN_ROOT: '/nonexistent-plugin-root', CLAUDE_PLUGIN_DATA: '/tmp/ccb-bh-broken' },
+    expect: { hookEvent: 'UserPromptSubmit' },
+  },
 
   // ── PreToolUse / Write|Edit ───────────────────────────────────────────────
   {

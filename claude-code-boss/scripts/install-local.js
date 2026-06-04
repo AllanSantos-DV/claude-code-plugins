@@ -88,4 +88,4 @@ entry.lastUpdated  = new Date().toISOString();
 fs.writeFileSync(INSTALLED_PLUGINS, JSON.stringify(registry, null, 2));
 
 console.log(`✅  installed ${key} sha=${sha}`);
-console.log(`   Code + data resolve to the identity above. Restart Claude Code to load.\n`);
+console.log(`   Code + data resolve to the identity above. Active on next turn — no Claude Code restart needed.\n`);
