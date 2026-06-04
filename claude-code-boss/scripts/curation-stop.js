@@ -9,8 +9,8 @@
  *
  * Naive anti-loop (`stop_hook_active → {}`) is too weak: the LLM can ignore
  * the first block, retry stopping, and the second fire's anti-loop guard lets
- * it escape without ever reading the curated script. We mirror brain-stop's
- * escalation pattern:
+ * it escape without ever reading the curated script. We use an escalation
+ * pattern:
  *
  *   1. Track per-session state in .runtime/curation-stop-<sid>.json
  *      ({ attempts, blockedSignature, firstBlockedAt }).
