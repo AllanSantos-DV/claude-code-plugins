@@ -236,15 +236,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'capture_lesson',
-      description: 'Capture a CURATED lesson in-loop (the agent post-mortem pattern). Call this when the user corrects you, or when a reusable pattern emerges — YOU write the clean summary + correction + generalized lesson (you have full context; do not make the KB re-read transcripts). Runs admission control inline: a near-duplicate is MERGED (bumping recurrence, which drives skill promotion) instead of duplicated. No transcript parsing, no expensive indexer pass.',
+      description: 'Capture a CURATED lesson in-loop (the agent post-mortem pattern). Call this when the user corrects you, or when a reusable pattern emerges — YOU write the clean summary + correction + generalized lesson (you have full context; do not make the KB re-read transcripts). WRITE IN ENGLISH — the KB is English-canonical so entries stay retrievable regardless of the user\'s prompt language. Runs admission control inline: a near-duplicate is MERGED (bumping recurrence, which drives skill promotion) instead of duplicated.',
       inputSchema: {
         type: 'object',
         properties: {
-          title: { type: 'string', description: 'Short lesson title (max 80 chars)' },
-          summary: { type: 'string', description: 'One-line: what went wrong / the pattern, and what to do instead' },
-          detail: { type: 'string', description: 'Full lesson: what happened + the correction + the generalized rule. Keep the valuable specifics.' },
+          title: { type: 'string', description: 'Short lesson title in English (max 80 chars)' },
+          summary: { type: 'string', description: 'One-line in English: what went wrong / the pattern, and what to do instead' },
+          detail: { type: 'string', description: 'Full lesson in English: what happened + the correction + the generalized rule. Keep the valuable specifics.' },
           type: { type: 'string', enum: ['lesson', 'pattern'], description: 'lesson (correction) or pattern (reusable workflow). Default: lesson' },
-          tags: { type: 'array', items: { type: 'string' }, description: '3-8 semantic tags' },
+          tags: { type: 'array', items: { type: 'string' }, description: '3-8 CANONICAL English concept tags, lowercase, hyphenated (e.g. "error-handling", "token-efficiency", "cross-lingual"). These are the language-neutral retrieval anchor — choose the terms a future query (in any language) would map to.' },
           confidence: { type: 'number', description: '0.0-1.0 (default 0.85)' },
           project: { type: 'string', description: 'Project name (default: auto-detect from CWD)' }
         },
@@ -432,7 +432,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           title: String(title).slice(0, 80),
           summary: String(summary).slice(0, 500),
           content: { detail: detail || summary, files: [] },
-          tags: Array.isArray(tags) ? tags.slice(0, 8) : [],
+          tags: [...new Set(
+            (Array.isArray(tags) ? tags : [])
+              .map(t => String(t).toLowerCase().trim().replace(/\s+/g, '-'))
+              .filter(Boolean)
+          )].slice(0, 8),
           confidence,
         };
         await kbStore.save(entry, vector);
