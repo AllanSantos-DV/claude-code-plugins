@@ -37,7 +37,21 @@ const { readStdin, emitEmpty, emitJson, parsePayload } = require('./lib/hook-io.
       return;
     }
 
-    if (entries.length === 0) { emitEmpty(); return; }
+    if (entries.length === 0) {
+      // Passive search (English-canonical KB) found nothing — often because the
+      // prompt is in another language or uses different wording. Nudge an active,
+      // curated search so saved patterns actually get reused (cross-lingual).
+      emitJson({
+        hookSpecificOutput: {
+          hookEventName: 'UserPromptSubmit',
+          additionalContext:
+            '[BRAIN] No direct matches. If this task may relate to prior work, call the ' +
+            '`brain_search` MCP tool with 2-4 English concept terms/tags (the KB is stored ' +
+            'in English) to retrieve and reuse relevant lessons/patterns before proceeding.',
+        },
+      });
+      return;
+    }
 
     const lines = entries.map((e, i) => `${i + 1}. "${e.title}" (${e.type}) — ${e.summary}`);
     emitJson({
