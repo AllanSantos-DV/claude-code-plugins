@@ -4,51 +4,120 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Plugin Dashboard</title>
+<script>
+  // Pre-paint theme application to avoid flash-of-light-theme
+  (function() {
+    var t = localStorage.getItem('dash.theme') || 'dark';
+    if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
+  })();
+</script>
 <style>
-* { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #f5f5f5; color: #222; line-height: 1.5; }
+:root {
+  /* dark theme — default */
+  --bg: #0d1117;
+  --bg-card: #161b22;
+  --bg-soft: #1c2128;
+  --bg-hover: #21262d;
+  --fg: #e6edf3;
+  --fg-muted: #8892b0;
+  --fg-dim: #6e7681;
+  --border: #30363d;
+  --nav-bg: #010409;
+  --nav-fg: #8892b0;
+  --nav-fg-active: #64ffda;
+  --accent: #64ffda;
+  --accent-fg: #0d1117;
+  --primary: #1f6feb;
+  --primary-hover: #388bfd;
+  --danger: #f85149;
+  --warning: #d29922;
+  --success: #3fb950;
+  --pre-bg: #161b22;
+  --shadow: 0 1px 3px rgba(0,0,0,.4);
+  --tag-bg: #1f6feb33;
+  --tag-fg: #79c0ff;
+  --tag-warn-bg: #d2992233;
+  --tag-warn-fg: #e3b341;
+  --tag-green-bg: #3fb95033;
+  --tag-green-fg: #56d364;
+}
+[data-theme="light"] {
+  --bg: #f5f5f5;
+  --bg-card: #fff;
+  --bg-soft: #fafafa;
+  --bg-hover: #f0f0f0;
+  --fg: #222;
+  --fg-muted: #666;
+  --fg-dim: #888;
+  --border: #e0e0e0;
+  --nav-bg: #1a1a2e;
+  --nav-fg: #8892b0;
+  --nav-fg-active: #64ffda;
+  --accent: #1a73e8;
+  --accent-fg: #fff;
+  --primary: #1a1a2e;
+  --primary-hover: #16213e;
+  --danger: #dc3545;
+  --warning: #ffc107;
+  --success: #28a745;
+  --pre-bg: #f5f5f5;
+  --shadow: 0 1px 3px rgba(0,0,0,.08);
+  --tag-bg: #e8f4fd;
+  --tag-fg: #1a73e8;
+  --tag-warn-bg: #fff3cd;
+  --tag-warn-fg: #856404;
+  --tag-green-bg: #d4edda;
+  --tag-green-fg: #155724;
+}
 
-nav { background: #1a1a2e; color: #fff; padding: 0 1rem; display: flex; gap: 0; align-items: stretch; overflow-x: auto; }
-nav a { color: #8892b0; text-decoration: none; padding: 0.9rem 1.2rem; font-size: 0.85rem; border-bottom: 2px solid transparent; transition: all .15s; white-space: nowrap; }
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--fg); line-height: 1.5; transition: background .15s, color .15s; }
+
+nav { background: var(--nav-bg); color: #fff; padding: 0 1rem; display: flex; gap: 0; align-items: stretch; overflow-x: auto; }
+nav a { color: var(--nav-fg); text-decoration: none; padding: 0.9rem 1.2rem; font-size: 0.85rem; border-bottom: 2px solid transparent; transition: all .15s; white-space: nowrap; }
 nav a:hover { color: #fff; background: rgba(255,255,255,.05); }
-nav a.active { color: #64ffda; border-bottom-color: #64ffda; }
+nav a.active { color: var(--nav-fg-active); border-bottom-color: var(--nav-fg-active); }
+nav .nav-spacer { flex: 1; }
+nav .nav-toggle { background: none; border: 1px solid transparent; color: var(--nav-fg); padding: .4rem .7rem; margin: .4rem .25rem; border-radius: 4px; cursor: pointer; font-size: .8rem; }
+nav .nav-toggle:hover { background: rgba(255,255,255,.06); color: #fff; border-color: rgba(255,255,255,.15); }
 
 main { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
 .tab { display: none; }
 .tab.active { display: block; }
 
-h1 { font-size: 1.3rem; margin-bottom: 1rem; color: #1a1a2e; }
-h2 { font-size: 1.05rem; margin-bottom: .75rem; color: #333; }
+h1 { font-size: 1.3rem; margin-bottom: 1rem; color: var(--fg); }
+h2 { font-size: 1.05rem; margin-bottom: .75rem; color: var(--fg); }
 
-.card { background: #fff; border-radius: 8px; padding: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,.08); margin-bottom: 1rem; }
+.card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; box-shadow: var(--shadow); margin-bottom: 1rem; }
 
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: .75rem; margin-bottom: 1rem; }
-.stat { background: #fff; border-radius: 8px; padding: 1rem; box-shadow: 0 1px 3px rgba(0,0,0,.08); text-align: center; }
-.stat .value { font-size: 1.5rem; font-weight: 700; color: #1a1a2e; }
-.stat .label { font-size: .75rem; color: #666; margin-top: .25rem; }
+.stat { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; box-shadow: var(--shadow); text-align: center; }
+.stat .value { font-size: 1.5rem; font-weight: 700; color: var(--fg); }
+.stat .label { font-size: .75rem; color: var(--fg-muted); margin-top: .25rem; }
 .stat .badge { display: inline-block; font-size: .65rem; padding: 2px 8px; border-radius: 10px; margin-top: .25rem; }
-.badge-green { background: #d4edda; color: #155724; }
-.badge-yellow { background: #fff3cd; color: #856404; }
-.badge-red { background: #f8d7da; color: #721c24; }
+.badge-green { background: var(--tag-green-bg); color: var(--tag-green-fg); }
+.badge-yellow { background: var(--tag-warn-bg); color: var(--tag-warn-fg); }
+.badge-red { background: rgba(248,81,73,.2); color: var(--danger); }
 
-table { width: 100%; border-collapse: collapse; font-size: .8rem; }
-th, td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid #eee; }
-th { font-weight: 600; color: #555; font-size: .75rem; text-transform: uppercase; letter-spacing: .03em; }
-tr:hover { background: #f8f9fa; }
+table { width: 100%; border-collapse: collapse; font-size: .8rem; color: var(--fg); }
+th, td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--border); }
+th { font-weight: 600; color: var(--fg-muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .03em; }
+tr:hover { background: var(--bg-hover); }
 
-input, select, textarea { font-family: inherit; font-size: .8rem; padding: .4rem .6rem; border: 1px solid #ddd; border-radius: 4px; width: 100%; }
+input, select, textarea { font-family: inherit; font-size: .8rem; padding: .4rem .6rem; border: 1px solid var(--border); border-radius: 4px; width: 100%; background: var(--bg-soft); color: var(--fg); }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
 textarea { font-family: 'SF Mono', Monaco, monospace; font-size: .75rem; }
 button { font-family: inherit; font-size: .8rem; padding: .4rem 1rem; border: none; border-radius: 4px; cursor: pointer; }
-.btn-primary { background: #1a1a2e; color: #fff; }
-.btn-primary:hover { background: #16213e; }
-.btn-danger { background: #dc3545; color: #fff; }
+.btn-primary { background: var(--primary); color: #fff; }
+.btn-primary:hover { background: var(--primary-hover); }
+.btn-danger { background: var(--danger); color: #fff; }
 .btn-sm { padding: .2rem .6rem; font-size: .75rem; }
-.btn-success { background: #28a745; color: #fff; }
-.btn-warning { background: #ffc107; color: #222; }
+.btn-success { background: var(--success); color: #fff; }
+.btn-warning { background: var(--warning); color: #222; }
 
-.panel { border: 1px solid #eee; border-radius: 6px; margin-bottom: .75rem; overflow: hidden; }
-.panel h3 { font-size: .85rem; padding: .6rem .8rem; background: #fafafa; border-bottom: 1px solid #eee; cursor: pointer; display: flex; justify-content: space-between; align-items: center; }
-.panel h3:hover { background: #f0f0f0; }
+.panel { border: 1px solid var(--border); border-radius: 6px; margin-bottom: .75rem; overflow: hidden; }
+.panel h3 { font-size: .85rem; padding: .6rem .8rem; background: var(--bg-soft); border-bottom: 1px solid var(--border); cursor: pointer; display: flex; justify-content: space-between; align-items: center; color: var(--fg); }
+.panel h3:hover { background: var(--bg-hover); }
 .panel-body { padding: .8rem; }
 
 .flex { display: flex; gap: .5rem; align-items: center; }
@@ -57,12 +126,28 @@ button { font-family: inherit; font-size: .8rem; padding: .4rem 1rem; border: no
 .mb-1 { margin-bottom: 1rem; }
 .mt-1 { margin-top: 1rem; }
 .text-right { text-align: right; }
-.text-muted { color: #888; font-size: .75rem; }
+.text-muted { color: var(--fg-muted); font-size: .75rem; }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 250px; }
 
-.tag { display: inline-block; background: #e8f4fd; color: #1a73e8; font-size: .65rem; padding: 1px 6px; border-radius: 3px; margin: 1px; }
-.tag-warn { background: #fff3cd; color: #856404; }
-.tag-green { background: #d4edda; color: #155724; }
+.tag { display: inline-block; background: var(--tag-bg); color: var(--tag-fg); font-size: .65rem; padding: 1px 6px; border-radius: 3px; margin: 1px; }
+.tag-warn { background: var(--tag-warn-bg); color: var(--tag-warn-fg); }
+.tag-green { background: var(--tag-green-bg); color: var(--tag-green-fg); }
+
+/* Tooltip — hover-popover replacing inline help text */
+.tip { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; margin-left: .35rem; border-radius: 50%; background: var(--bg-soft); color: var(--fg-muted); font-size: .65rem; font-weight: 700; cursor: help; border: 1px solid var(--border); position: relative; user-select: none; }
+.tip:hover { color: var(--accent); border-color: var(--accent); }
+.tip::after {
+  content: attr(data-tip);
+  position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%);
+  background: var(--bg-card); color: var(--fg); border: 1px solid var(--border);
+  padding: .5rem .7rem; border-radius: 6px; font-size: .72rem; font-weight: 400;
+  width: max-content; max-width: 280px; white-space: normal; line-height: 1.4;
+  box-shadow: 0 4px 12px rgba(0,0,0,.35); pointer-events: none;
+  opacity: 0; visibility: hidden; transition: opacity .12s; z-index: 100;
+}
+.tip:hover::after { opacity: 1; visibility: visible; }
+
+.field-label { display: flex; align-items: center; margin-bottom: .25rem; font-size: .75rem; color: var(--fg-muted); }
 
 @media (max-width: 600px) {
   main { padding: 1rem; }
@@ -70,100 +155,122 @@ button { font-family: inherit; font-size: .8rem; padding: .4rem 1rem; border: no
   nav a { padding: .7rem .8rem; font-size: .78rem; }
 }
 
-.spinner { display: inline-block; width: 1.5rem; height: 1.5rem; border: 2px solid #ddd; border-top-color: #1a1a2e; border-radius: 50%; animation: spin .6s linear infinite; }
+.spinner { display: inline-block; width: 1.5rem; height: 1.5rem; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .6s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-pre { background: #f5f5f5; padding: .6rem; border-radius: 4px; font-size: .7rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+pre { background: var(--pre-bg); color: var(--fg); padding: .6rem; border-radius: 4px; font-size: .7rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word; border: 1px solid var(--border); }
+code { color: var(--fg); }
 
-.empty-state { text-align: center; padding: 2rem; color: #888; }
+.empty-state { text-align: center; padding: 2rem; color: var(--fg-muted); }
 </style>
 </head>
 <body>
 
 <nav id="tabs">
-  <a href="#home" class="active">Home</a>
-  <a href="#brain">Brain KB</a>
-  <a href="#hooks">Hooks</a>
-  <a href="#logs">Logs</a>
+  <a href="#home" class="active" data-i18n="nav.home">Home</a>
+  <a href="#brain" data-i18n="nav.brain">Brain KB</a>
+  <a href="#hooks" data-i18n="nav.hooks">Hooks</a>
+  <a href="#logs" data-i18n="nav.logs">Logs</a>
+  <span class="nav-spacer"></span>
+  <button class="nav-toggle" id="lang-toggle" onclick="toggleLang()" title="Language">EN</button>
+  <button class="nav-toggle" id="theme-toggle" onclick="toggleTheme()" title="Theme">🌙</button>
 </nav>
 
 <main>
   <!-- HOME -->
   <section id="tab-home" class="tab active">
-    <h1>System Overview</h1>
+    <h1 data-i18n="home.title">System Overview</h1>
     <div class="grid" id="home-grid"></div>
     <div class="card">
-      <h2>Brain Knowledge Base</h2>
+      <h2 data-i18n="home.brain">Brain Knowledge Base</h2>
       <div id="home-brain"></div>
     </div>
   </section>
 
   <!-- BRAIN -->
   <section id="tab-brain" class="tab">
-    <h1>Knowledge Base</h1>
+    <h1 data-i18n="brain.title">Knowledge Base</h1>
     <div class="card" id="brain-backend-card">
       <div class="flex mb-1" style="align-items:center;justify-content:space-between">
-        <h2 style="margin:0">Backend Configuration</h2>
+        <h2 style="margin:0" data-i18n="brain.backend">Backend Configuration</h2>
         <div class="flex" style="gap:.5rem;align-items:center">
           <span class="text-muted" id="brain-backend-status-label">—</span>
-          <button class="btn-primary btn-sm" onclick="saveBrainBackendConfig()">Save</button>
+          <button class="btn-primary btn-sm" onclick="saveBrainBackendConfig()" data-i18n="action.save">Save</button>
           <span id="brain-config-saved" class="text-muted"></span>
         </div>
       </div>
 
-      <div id="brain-restart-banner" style="display:none;background:#fff3cd;border:1px solid #ffc107;border-radius:6px;padding:.6rem .9rem;margin-bottom:.75rem;display:none;align-items:center;gap:.75rem">
-        <span style="font-size:.85rem">⚠️ <strong>Restart necessário</strong> para aplicar as mudanças.</span>
-        <button class="btn-sm btn-warning" onclick="doRestartDashboard()" id="restart-btn">Restart Dashboard</button>
+      <div id="brain-restart-banner" style="display:none;background:var(--tag-warn-bg);border:1px solid var(--warning);border-radius:6px;padding:.6rem .9rem;margin-bottom:.75rem;align-items:center;gap:.75rem">
+        <span style="font-size:.85rem">⚠️ <strong data-i18n="brain.restartNeeded">Restart necessário</strong> <span data-i18n="brain.restartHint">para aplicar as mudanças.</span></span>
+        <button class="btn-sm btn-warning" onclick="doRestartDashboard()" id="restart-btn" data-i18n="brain.restartBtn">Restart Dashboard</button>
         <span id="restart-status" class="text-muted"></span>
       </div>
 
       <div class="flex flex-wrap gap-1" style="align-items:flex-start">
         <div style="min-width:200px">
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Backend Type</label>
+          <label class="field-label">
+            <span data-i18n="brain.backendType">Backend Type</span>
+            <span class="tip" data-i18n-tip="tip.backendType" data-tip="local = SQLite embarcado (default). mcp-memory = servidor Java externo via MCP.">i</span>
+          </label>
           <select id="backend-type-select" onchange="onBackendTypeChange(this.value)" style="width:auto">
             <option value="local">local (SQLite)</option>
             <option value="mcp-memory">mcp-memory (Java JAR)</option>
           </select>
         </div>
         <div style="min-width:160px">
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Status atual</label>
+          <label class="field-label" data-i18n="brain.currentStatus">Status atual</label>
           <span id="brain-backend-status" style="font-size:.85rem">—</span>
         </div>
       </div>
 
-      <div id="mcp-fields" style="display:none;margin-top:.75rem;border-top:1px solid #eee;padding-top:.75rem">
+      <div id="mcp-fields" style="display:none;margin-top:.75rem;border-top:1px solid var(--border);padding-top:.75rem">
         <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
           <div>
-            <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">JAR Path <span style="color:#888">(deixe vazio para download automático)</span></label>
+            <label class="field-label">
+              <span data-i18n="brain.jarPath">JAR Path</span>
+              <span class="tip" data-i18n-tip="tip.jarPath" data-tip="Caminho para o .jar do mcp-memory-server. Deixe vazio para baixar automaticamente da última release.">i</span>
+            </label>
             <input type="text" id="mcp-jar-path" placeholder="C:/path/to/mcp-memory-server.jar">
           </div>
           <div>
-            <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Java Args</label>
+            <label class="field-label">
+              <span data-i18n="brain.javaArgs">Java Args</span>
+              <span class="tip" data-i18n-tip="tip.javaArgs" data-tip="Argumentos passados ao processo Java. Default: -Xmx512m (limita heap a 512MB).">i</span>
+            </label>
             <input type="text" id="mcp-java-args" placeholder="-Xmx512m">
           </div>
         </div>
         <p id="java-check-msg" class="text-muted" style="margin-top:.5rem;font-size:.75rem"></p>
-        <p class="text-muted" style="font-size:.72rem;margin-top:.25rem">Se o JAR não existir no caminho acima, será baixado automaticamente da última release do repositório.</p>
       </div>
     </div>
 
     <!-- EMBEDDER -->
     <div class="card">
-      <h2>Embedder</h2>
+      <h2 data-i18n="brain.embedder">Embedder</h2>
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.75rem">
         <div>
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Provider</label>
+          <label class="field-label">
+            <span data-i18n="brain.provider">Provider</span>
+            <span class="tip" data-i18n-tip="tip.provider" data-tip="transformers = local via @xenova/transformers (offline). ollama/voyage = HTTP externo.">i</span>
+          </label>
           <select id="embedder-provider">
             <option value="transformers">transformers (local)</option>
-            <option value="openai">openai</option>
+            <option value="ollama">ollama</option>
+            <option value="voyage">voyage</option>
           </select>
         </div>
         <div>
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Model</label>
-          <input type="text" id="embedder-model" placeholder="Xenova/all-MiniLM-L6-v2">
+          <label class="field-label">
+            <span data-i18n="brain.model">Model</span>
+            <span class="tip" data-i18n-tip="tip.model" data-tip="Modelo de embedding. Default: paraphrase-multilingual-MiniLM-L12-v2 (50 idiomas, 384 dim). Trocar requer re-embed: node scripts/brain-reembed.js.">i</span>
+          </label>
+          <input type="text" id="embedder-model" placeholder="Xenova/paraphrase-multilingual-MiniLM-L12-v2">
         </div>
         <div>
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Dimensions</label>
+          <label class="field-label">
+            <span data-i18n="brain.dimensions">Dimensions</span>
+            <span class="tip" data-i18n-tip="tip.dimensions" data-tip="Tamanho do vetor de embedding (deve casar com o modelo escolhido).">i</span>
+          </label>
           <input type="number" id="embedder-dimensions" placeholder="384" min="1">
         </div>
       </div>
@@ -171,41 +278,65 @@ pre { background: #f5f5f5; padding: .6rem; border-radius: 4px; font-size: .7rem;
 
     <!-- KB SETTINGS -->
     <div class="card">
-      <h2 style="margin-bottom:.5rem">Retrieval</h2>
+      <h2 style="margin-bottom:.5rem" data-i18n="brain.retrieval">Retrieval</h2>
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:.75rem;margin-bottom:.75rem">
         <div>
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Fast Top-K</label>
+          <label class="field-label">
+            <span data-i18n="brain.fastTopK">Fast Top-K</span>
+            <span class="tip" data-i18n-tip="tip.fastTopK" data-tip="Quantidade de resultados retornados em buscas rápidas (in-loop hints). Default: 5.">i</span>
+          </label>
           <input type="number" id="kb-fastTopK" min="1" placeholder="5">
         </div>
         <div>
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Deep Top-K</label>
+          <label class="field-label">
+            <span data-i18n="brain.deepTopK">Deep Top-K</span>
+            <span class="tip" data-i18n-tip="tip.deepTopK" data-tip="Quantidade de resultados em buscas profundas (research). Default: 3.">i</span>
+          </label>
           <input type="number" id="kb-deepTopK" min="1" placeholder="3">
         </div>
         <div>
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Min Score Fast</label>
-          <input type="number" id="kb-minScoreFast" step="0.05" min="0" max="1" placeholder="0.3">
+          <label class="field-label">
+            <span data-i18n="brain.minScoreFast">Min Score Fast</span>
+            <span class="tip" data-i18n-tip="tip.minScoreFast" data-tip="Score mínimo (cosine) para incluir um hit em busca rápida. Default: 0.05 (calibrado para multilingual).">i</span>
+          </label>
+          <input type="number" id="kb-minScoreFast" step="0.01" min="0" max="1" placeholder="0.05">
         </div>
         <div>
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Min Score Deep</label>
-          <input type="number" id="kb-minScoreDeep" step="0.05" min="0" max="1" placeholder="0.5">
+          <label class="field-label">
+            <span data-i18n="brain.minScoreDeep">Min Score Deep</span>
+            <span class="tip" data-i18n-tip="tip.minScoreDeep" data-tip="Score mínimo (cosine) para busca profunda. Default: 0.08.">i</span>
+          </label>
+          <input type="number" id="kb-minScoreDeep" step="0.01" min="0" max="1" placeholder="0.08">
         </div>
       </div>
-      <h2 style="margin-bottom:.5rem">Submission</h2>
+      <h2 style="margin-bottom:.5rem" data-i18n="brain.submission">Submission</h2>
       <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:.75rem">
         <div>
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Max Entries / Project</label>
+          <label class="field-label">
+            <span data-i18n="brain.maxEntries">Max Entries / Project</span>
+            <span class="tip" data-i18n-tip="tip.maxEntries" data-tip="Limite total de entradas por projeto. Default: 10000.">i</span>
+          </label>
           <input type="number" id="kb-maxEntries" min="1" placeholder="10000">
         </div>
         <div>
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Archive After (days)</label>
+          <label class="field-label">
+            <span data-i18n="brain.archiveDays">Archive After (days)</span>
+            <span class="tip" data-i18n-tip="tip.archiveDays" data-tip="Idade após a qual entradas viram candidatas a arquivo. Default: 90 dias.">i</span>
+          </label>
           <input type="number" id="kb-archiveDays" min="1" placeholder="90">
         </div>
         <div>
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Min Bash Lines</label>
+          <label class="field-label">
+            <span data-i18n="brain.minBashLines">Min Bash Lines</span>
+            <span class="tip" data-i18n-tip="tip.minBashLines" data-tip="Linhas mínimas de output Bash para considerar submissão à KB. Default: 3.">i</span>
+          </label>
           <input type="number" id="kb-minBashLines" min="1" placeholder="3">
         </div>
         <div>
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Min Output Chars</label>
+          <label class="field-label">
+            <span data-i18n="brain.minOutputChars">Min Output Chars</span>
+            <span class="tip" data-i18n-tip="tip.minOutputChars" data-tip="Chars mínimos de output para submissão. Default: 1500.">i</span>
+          </label>
           <input type="number" id="kb-minOutputChars" min="1" placeholder="500">
         </div>
       </div>
@@ -213,23 +344,28 @@ pre { background: #f5f5f5; padding: .6rem; border-radius: 4px; font-size: .7rem;
 
     <!-- CURATION -->
     <div class="card">
-      <h2>Curation Thresholds</h2>
-      <p class="text-muted" style="margin-bottom:.75rem;font-size:.75rem">Quando output de Bash excede estes limites, curation-detect cria um payload para o curation-improver analisar.</p>
+      <h2 data-i18n="brain.curation">Curation Thresholds</h2>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
         <div>
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Max Output Chars</label>
+          <label class="field-label">
+            <span data-i18n="brain.maxOutputChars">Max Output Chars</span>
+            <span class="tip" data-i18n-tip="tip.maxOutputChars" data-tip="Quando output Bash excede este limite, curation-detect cria um payload para o curation-improver analisar. Default: 1500.">i</span>
+          </label>
           <input type="number" id="curation-maxChars" min="100" placeholder="1500">
         </div>
         <div>
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Max Output Lines</label>
+          <label class="field-label">
+            <span data-i18n="brain.maxOutputLines">Max Output Lines</span>
+            <span class="tip" data-i18n-tip="tip.maxOutputLines" data-tip="Limite de linhas para acionar o curation-improver. Default: 30.">i</span>
+          </label>
           <input type="number" id="curation-maxLines" min="5" placeholder="30">
         </div>
       </div>
     </div>
     <div class="flex flex-wrap gap-1 mb-1">
-      <select id="brain-project" onchange="loadBrainStats()" style="max-width:200px"><option value="">Select project...</option></select>
-      <input type="text" id="brain-query" placeholder="Search query..." style="max-width:300px">
-      <button class="btn-primary" onclick="searchBrain()">Search</button>
+      <select id="brain-project" onchange="loadBrainStats()" style="max-width:200px"><option value="" data-i18n="brain.selectProject">Select project...</option></select>
+      <input type="text" id="brain-query" data-i18n-placeholder="brain.searchPlaceholder" placeholder="Search query..." style="max-width:300px">
+      <button class="btn-primary" onclick="searchBrain()" data-i18n="action.search">Search</button>
     </div>
     <div id="brain-stats"></div>
     <div id="brain-results"></div>
@@ -238,39 +374,53 @@ pre { background: #f5f5f5; padding: .6rem; border-radius: 4px; font-size: .7rem;
 
   <!-- HOOKS -->
   <section id="tab-hooks" class="tab">
-    <h1>Hook Registry</h1>
+    <h1 data-i18n="hooks.title">Hook Registry</h1>
     <div class="card">
-      <table><thead><tr><th>Event</th><th>Matcher</th><th>Script</th><th>Status</th><th>Action</th></tr></thead>
+      <table><thead><tr>
+        <th data-i18n="hooks.event">Event</th>
+        <th data-i18n="hooks.matcher">Matcher</th>
+        <th data-i18n="hooks.script">Script</th>
+        <th data-i18n="hooks.status">Status</th>
+        <th data-i18n="hooks.action">Action</th>
+      </tr></thead>
       <tbody id="hooks-rows"></tbody></table>
     </div>
 
     <div class="flex mb-1 mt-1">
-      <h1>Hook Configuration</h1>
-      <button class="btn-primary" onclick="saveHooksConfig()">Save</button>
+      <h1 data-i18n="hooks.config">Hook Configuration</h1>
+      <button class="btn-primary" onclick="saveHooksConfig()" data-i18n="action.save">Save</button>
       <span id="hooks-config-saved" class="text-muted"></span>
     </div>
 
     <!-- Memory Rotate -->
     <div class="card">
-      <h2>Memory Rotate <span class="text-muted" style="font-size:.75rem;font-weight:400">— SessionStart, rota MEMORY.md quando excede N linhas</span></h2>
+      <h2>
+        <span data-i18n="hooks.memoryRotate">Memory Rotate</span>
+        <span class="tip" data-i18n-tip="tip.memoryRotate" data-tip="SessionStart hook: rota MEMORY.md quando excede N linhas. Claude Code carrega até 200 linhas — manter abaixo de 200 garante leitura completa.">i</span>
+      </h2>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
         <div>
-          <label class="text-muted" style="display:block;margin-bottom:.25rem;font-size:.75rem">Max Lines (MEMORY.md) <span style="color:#aaa">· default: 150 · mín: 20 · máx: 500</span></label>
+          <label class="field-label">
+            <span data-i18n="hooks.maxLines">Max Lines (MEMORY.md)</span>
+            <span class="tip" data-i18n-tip="tip.maxLines" data-tip="Default: 150 · mín: 20 · máx: 500. Acima de 200 linhas, Claude Code trunca o arquivo.">i</span>
+          </label>
           <input type="number" id="hcfg-memory-maxlines" min="20" max="500" placeholder="150">
-          <p class="text-muted" style="font-size:.7rem;margin-top:.2rem">Claude Code carrega até 200 linhas de MEMORY.md — manter abaixo de 200 garante que tudo seja lido</p>
         </div>
       </div>
     </div>
 
     <!-- Curation Guard -->
     <div class="card">
-      <h2>Curation Guard <span class="text-muted" style="font-size:.75rem;font-weight:400">— PreToolUse/Bash, redireciona para curated; resto cai no discovery loop (PostToolUse/Stop)</span></h2>
+      <h2>
+        <span data-i18n="hooks.curationGuard">Curation Guard</span>
+        <span class="tip" data-i18n-tip="tip.curationGuard" data-tip="PreToolUse/Bash: redireciona comandos curados para wrappers; comandos não-curados caem no discovery loop (PostToolUse + Stop).">i</span>
+      </h2>
 
       <!-- Curated Shells viewer -->
-      <div style="border-top:1px solid #eee;padding-top:.75rem">
+      <div style="border-top:1px solid var(--border);padding-top:.75rem">
         <div class="flex mb-1" style="align-items:center;gap:.75rem">
-          <h2 style="margin:0">Curated Shells</h2>
-          <span class="text-muted" style="font-size:.75rem">Scripts auto-gerados pelo curation-improver quando threshold é atingido</span>
+          <h2 style="margin:0" data-i18n="hooks.curatedShells">Curated Shells</h2>
+          <span class="tip" data-i18n-tip="tip.curatedShells" data-tip="Scripts auto-gerados pelo curation-improver quando o threshold de output é atingido.">i</span>
         </div>
         <div class="flex mb-1" style="gap:.5rem;align-items:center">
           <select id="shells-project-select" onchange="onShellsProjectChange(this.value)" style="flex:1;max-width:500px">
@@ -287,17 +437,17 @@ pre { background: #f5f5f5; padding: .6rem; border-radius: 4px; font-size: .7rem;
   <section id="tab-logs" class="tab">
     <div class="card">
       <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.5rem;margin-bottom:.75rem">
-        <h2 style="margin:0">Server &amp; Hook Logs</h2>
+        <h2 style="margin:0" data-i18n="logs.title">Server &amp; Hook Logs</h2>
         <div style="display:flex;gap:.5rem;align-items:center">
           <span id="logs-meta" class="text-muted" style="font-size:.75rem"></span>
-          <button id="logs-copy-btn" style="padding:.3rem .7rem;font-size:.78rem;cursor:pointer">Copy JSON</button>
-          <button id="logs-clear-btn" style="padding:.3rem .7rem;font-size:.78rem;cursor:pointer;color:#ff7070">Clear</button>
+          <button id="logs-copy-btn" class="btn-sm" data-i18n="logs.copy">Copy JSON</button>
+          <button id="logs-clear-btn" class="btn-sm" style="color:var(--danger)" data-i18n="logs.clear">Clear</button>
           <label style="font-size:.78rem;display:flex;align-items:center;gap:.3rem">
-            <input type="checkbox" id="logs-auto" checked> Auto-refresh
+            <input type="checkbox" id="logs-auto" checked> <span data-i18n="logs.autoRefresh">Auto-refresh</span>
           </label>
         </div>
       </div>
-      <div id="logs-list" style="font-family:monospace;font-size:.75rem;max-height:70vh;overflow-y:auto;border:1px solid #1e2a45;border-radius:4px;padding:.5rem;background:#0d1117"></div>
+      <div id="logs-list" style="font-family:monospace;font-size:.75rem;max-height:70vh;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:.5rem;background:var(--pre-bg);color:var(--fg)"></div>
     </div>
   </section>
 </main>
@@ -305,6 +455,117 @@ pre { background: #f5f5f5; padding: .6rem; border-radius: 4px; font-size: .7rem;
 <script>
 const API = '';
 let state = { hooks: null, brainProjects: [] };
+
+// ─── Theme + i18n ────────────────────────────────────────────────
+
+const I18N = {
+  en: {
+    'nav.home': 'Home', 'nav.brain': 'Brain KB', 'nav.hooks': 'Hooks', 'nav.logs': 'Logs',
+    'home.title': 'System Overview', 'home.brain': 'Brain Knowledge Base',
+    'brain.title': 'Knowledge Base', 'brain.backend': 'Backend Configuration',
+    'brain.restartNeeded': 'Restart required', 'brain.restartHint': 'to apply the changes.',
+    'brain.restartBtn': 'Restart Dashboard', 'brain.backendType': 'Backend Type',
+    'brain.currentStatus': 'Current status', 'brain.jarPath': 'JAR Path', 'brain.javaArgs': 'Java Args',
+    'brain.embedder': 'Embedder', 'brain.provider': 'Provider', 'brain.model': 'Model', 'brain.dimensions': 'Dimensions',
+    'brain.retrieval': 'Retrieval', 'brain.fastTopK': 'Fast Top-K', 'brain.deepTopK': 'Deep Top-K',
+    'brain.minScoreFast': 'Min Score Fast', 'brain.minScoreDeep': 'Min Score Deep',
+    'brain.submission': 'Submission', 'brain.maxEntries': 'Max Entries / Project',
+    'brain.archiveDays': 'Archive After (days)', 'brain.minBashLines': 'Min Bash Lines', 'brain.minOutputChars': 'Min Output Chars',
+    'brain.curation': 'Curation Thresholds', 'brain.maxOutputChars': 'Max Output Chars', 'brain.maxOutputLines': 'Max Output Lines',
+    'brain.selectProject': 'Select project...', 'brain.searchPlaceholder': 'Search query...',
+    'action.save': 'Save', 'action.search': 'Search',
+    'hooks.title': 'Hook Registry', 'hooks.event': 'Event', 'hooks.matcher': 'Matcher',
+    'hooks.script': 'Script', 'hooks.status': 'Status', 'hooks.action': 'Action',
+    'hooks.config': 'Hook Configuration', 'hooks.memoryRotate': 'Memory Rotate',
+    'hooks.maxLines': 'Max Lines (MEMORY.md)', 'hooks.curationGuard': 'Curation Guard', 'hooks.curatedShells': 'Curated Shells',
+    'logs.title': 'Server & Hook Logs', 'logs.copy': 'Copy JSON', 'logs.clear': 'Clear', 'logs.autoRefresh': 'Auto-refresh',
+    'tip.backendType': 'local = embedded SQLite (default). mcp-memory = external Java server via MCP.',
+    'tip.jarPath': 'Path to mcp-memory-server .jar. Leave empty to auto-download from latest release.',
+    'tip.javaArgs': 'Args passed to Java process. Default: -Xmx512m (512MB heap).',
+    'tip.provider': 'transformers = local via @xenova/transformers (offline). ollama/voyage = external HTTP.',
+    'tip.model': 'Embedding model. Default: paraphrase-multilingual-MiniLM-L12-v2 (50 langs, 384 dim). Switching requires re-embed: node scripts/brain-reembed.js.',
+    'tip.dimensions': 'Embedding vector size (must match the chosen model).',
+    'tip.fastTopK': 'Number of results returned in fast searches (in-loop hints). Default: 5.',
+    'tip.deepTopK': 'Number of results in deep searches (research). Default: 3.',
+    'tip.minScoreFast': 'Minimum cosine score for a hit to count in fast search. Default: 0.05 (calibrated for multilingual).',
+    'tip.minScoreDeep': 'Minimum cosine score for deep search. Default: 0.08.',
+    'tip.maxEntries': 'Total entry limit per project. Default: 10000.',
+    'tip.archiveDays': 'Age (days) after which entries become archive candidates. Default: 90.',
+    'tip.minBashLines': 'Minimum Bash output lines to consider KB submission. Default: 3.',
+    'tip.minOutputChars': 'Minimum output chars for submission. Default: 1500.',
+    'tip.maxOutputChars': 'When Bash output exceeds this, curation-detect creates a payload for curation-improver. Default: 1500.',
+    'tip.maxOutputLines': 'Line limit to trigger curation-improver. Default: 30.',
+    'tip.memoryRotate': 'SessionStart hook: rotates MEMORY.md when N lines exceeded. Claude Code loads up to 200 lines — keeping below 200 ensures full read.',
+    'tip.maxLines': 'Default: 150 · min: 20 · max: 500. Above 200, Claude Code truncates the file.',
+    'tip.curationGuard': 'PreToolUse/Bash: redirects curated commands to wrappers; non-curated fall into the discovery loop (PostToolUse + Stop).',
+    'tip.curatedShells': 'Scripts auto-generated by curation-improver when output threshold is reached.'
+  },
+  pt: {
+    'nav.home': 'Home', 'nav.brain': 'Brain KB', 'nav.hooks': 'Hooks', 'nav.logs': 'Logs',
+    'home.title': 'Visão Geral', 'home.brain': 'Base de Conhecimento (Brain)',
+    'brain.title': 'Base de Conhecimento', 'brain.backend': 'Configuração do Backend',
+    'brain.restartNeeded': 'Restart necessário', 'brain.restartHint': 'para aplicar as mudanças.',
+    'brain.restartBtn': 'Reiniciar Dashboard', 'brain.backendType': 'Tipo de Backend',
+    'brain.currentStatus': 'Status atual', 'brain.jarPath': 'Caminho do JAR', 'brain.javaArgs': 'Args Java',
+    'brain.embedder': 'Embedder', 'brain.provider': 'Provider', 'brain.model': 'Modelo', 'brain.dimensions': 'Dimensões',
+    'brain.retrieval': 'Retrieval', 'brain.fastTopK': 'Fast Top-K', 'brain.deepTopK': 'Deep Top-K',
+    'brain.minScoreFast': 'Score Mín. Fast', 'brain.minScoreDeep': 'Score Mín. Deep',
+    'brain.submission': 'Submissão', 'brain.maxEntries': 'Entradas Máx. / Projeto',
+    'brain.archiveDays': 'Arquivar após (dias)', 'brain.minBashLines': 'Linhas Bash Mín.', 'brain.minOutputChars': 'Chars Output Mín.',
+    'brain.curation': 'Thresholds de Curation', 'brain.maxOutputChars': 'Chars Output Máx.', 'brain.maxOutputLines': 'Linhas Output Máx.',
+    'brain.selectProject': 'Selecione um projeto...', 'brain.searchPlaceholder': 'Buscar...',
+    'action.save': 'Salvar', 'action.search': 'Buscar',
+    'hooks.title': 'Registro de Hooks', 'hooks.event': 'Evento', 'hooks.matcher': 'Matcher',
+    'hooks.script': 'Script', 'hooks.status': 'Status', 'hooks.action': 'Ação',
+    'hooks.config': 'Configuração de Hooks', 'hooks.memoryRotate': 'Memory Rotate',
+    'hooks.maxLines': 'Linhas Máx. (MEMORY.md)', 'hooks.curationGuard': 'Curation Guard', 'hooks.curatedShells': 'Shells Curados',
+    'logs.title': 'Logs do Servidor e Hooks', 'logs.copy': 'Copiar JSON', 'logs.clear': 'Limpar', 'logs.autoRefresh': 'Auto-refresh',
+    'tip.backendType': 'local = SQLite embarcado (padrão). mcp-memory = servidor Java externo via MCP.',
+    'tip.jarPath': 'Caminho para o .jar do mcp-memory-server. Deixe vazio para baixar automaticamente da última release.',
+    'tip.javaArgs': 'Argumentos passados ao processo Java. Padrão: -Xmx512m (heap 512MB).',
+    'tip.provider': 'transformers = local via @xenova/transformers (offline). ollama/voyage = HTTP externo.',
+    'tip.model': 'Modelo de embedding. Padrão: paraphrase-multilingual-MiniLM-L12-v2 (50 idiomas, 384 dim). Trocar requer re-embed: node scripts/brain-reembed.js.',
+    'tip.dimensions': 'Tamanho do vetor de embedding (deve casar com o modelo escolhido).',
+    'tip.fastTopK': 'Quantidade de resultados em buscas rápidas (hints in-loop). Padrão: 5.',
+    'tip.deepTopK': 'Quantidade de resultados em buscas profundas (research). Padrão: 3.',
+    'tip.minScoreFast': 'Score mínimo (cosine) para incluir hit em busca rápida. Padrão: 0.05 (calibrado p/ multilingual).',
+    'tip.minScoreDeep': 'Score mínimo (cosine) para busca profunda. Padrão: 0.08.',
+    'tip.maxEntries': 'Limite total de entradas por projeto. Padrão: 10000.',
+    'tip.archiveDays': 'Idade (dias) a partir da qual entradas viram candidatas a arquivo. Padrão: 90.',
+    'tip.minBashLines': 'Linhas mínimas de output Bash para considerar submissão à KB. Padrão: 3.',
+    'tip.minOutputChars': 'Chars mínimos de output para submissão. Padrão: 1500.',
+    'tip.maxOutputChars': 'Quando output Bash excede este limite, curation-detect gera payload para o curation-improver. Padrão: 1500.',
+    'tip.maxOutputLines': 'Limite de linhas para acionar curation-improver. Padrão: 30.',
+    'tip.memoryRotate': 'SessionStart hook: rota MEMORY.md quando excede N linhas. Claude Code carrega até 200 — manter abaixo garante leitura completa.',
+    'tip.maxLines': 'Padrão: 150 · mín: 20 · máx: 500. Acima de 200, Claude Code trunca o arquivo.',
+    'tip.curationGuard': 'PreToolUse/Bash: redireciona comandos curados; não-curados caem no discovery loop (PostToolUse + Stop).',
+    'tip.curatedShells': 'Scripts auto-gerados pelo curation-improver quando o threshold de output é atingido.'
+  }
+};
+
+let _lang = localStorage.getItem('dash.lang') || 'en';
+let _theme = localStorage.getItem('dash.theme') || 'dark';
+
+function t(key) { return (I18N[_lang] && I18N[_lang][key]) || I18N.en[key] || key; }
+
+function applyI18n() {
+  document.querySelectorAll('[data-i18n]').forEach(el => { el.textContent = t(el.getAttribute('data-i18n')); });
+  document.querySelectorAll('[data-i18n-tip]').forEach(el => { el.setAttribute('data-tip', t(el.getAttribute('data-i18n-tip'))); });
+  document.querySelectorAll('[data-i18n-placeholder]').forEach(el => { el.placeholder = t(el.getAttribute('data-i18n-placeholder')); });
+  document.documentElement.lang = _lang;
+  const lt = document.getElementById('lang-toggle');
+  if (lt) lt.textContent = _lang === 'en' ? 'EN' : 'PT';
+}
+
+function applyTheme() {
+  if (_theme === 'light') document.documentElement.setAttribute('data-theme', 'light');
+  else document.documentElement.removeAttribute('data-theme');
+  const tt = document.getElementById('theme-toggle');
+  if (tt) tt.textContent = _theme === 'dark' ? '🌙' : '☀';
+}
+
+function toggleLang() { _lang = _lang === 'en' ? 'pt' : 'en'; localStorage.setItem('dash.lang', _lang); applyI18n(); }
+function toggleTheme() { _theme = _theme === 'dark' ? 'light' : 'dark'; localStorage.setItem('dash.theme', _theme); applyTheme(); }
 
 // ─── Navigation ──────────────────────────────────────────────────
 
@@ -316,7 +577,7 @@ function navigate() {
   if (fns[hash]) fns[hash]();
 }
 window.addEventListener('hashchange', navigate);
-window.addEventListener('load', navigate);
+window.addEventListener('load', () => { applyTheme(); applyI18n(); navigate(); });
 
 // ─── HTTP ─────────────────────────────────────────────────────────
 
@@ -402,11 +663,11 @@ async function loadBrain() {
     if (backend.mode === 'mcp-memory') {
       const ok = backend.connected;
       statusEl.textContent = ok ? '● Connected' : '● Disconnected';
-      statusEl.style.color = ok ? '#155724' : '#721c24';
+      statusEl.style.color = ok ? 'var(--success)' : 'var(--danger)';
       labelEl.textContent = 'mcp-memory';
     } else {
       statusEl.textContent = '● Active';
-      statusEl.style.color = '#155724';
+      statusEl.style.color = 'var(--success)';
       labelEl.textContent = 'local';
     }
   } catch {}
