@@ -20,12 +20,15 @@ A **persistent knowledge base** with real semantic search (vector embeddings). A
 
 ## Flow
 
-### Indexing (automatic)
+### Capture (in-loop, via tool)
 
 ```
-PostToolUse (Bash) → brain-submit.js → brain-pending/ → 
-  brain-indexer (subagent) → embedder + store + index + graph
+user correction / reusable pattern
+  → agent calls capture_lesson MCP tool (curated {title, summary, detail})
+  → inline admission control (embed → cosine dedup → merge|store, recurrence++)
 ```
+The Stop hook (`pattern-detect.js`) reminds the agent to capture; there is NO
+automatic payload-scraping of command output (it was ~99% noise and burned tokens).
 
 ### Retrieval (automatic)
 
@@ -53,13 +56,13 @@ The PreToolUse hook outputs something like:
 
 Read the entries. Use the knowledge without asking the user.
 
-### 2. Pending indexing
+### 2. Capturing knowledge in-loop
 
-The hook signals "N payload(s) pending indexing" when payloads are in `brain-pending/`. When you see this:
-
-1. Spawn the **brain-indexer** subagent via Task
-2. It processes all payloads, generates embeddings, saves to KB
-3. Continue what you were doing
+When the user corrects you, or a reusable pattern/lesson emerges, call the
+**`capture_lesson`** MCP tool yourself with a curated `{title, summary, detail}`.
+You have full turn context — write the lesson directly (~1k tokens). The tool runs
+admission control inline (dedup/merge → bumps `recurrence`, which drives skill
+promotion). No subagent, no payload queue.
 
 ### 3. Manual deep search
 
