@@ -60,6 +60,12 @@ async function getKB(project) {
   return { store, index, graph };
 }
 
+// Plan #7 — scope helpers (sanitizer + two-pass retrieval).
+const scopeSanitizer = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'scope-sanitizer.js'));
+const scopeSearch = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'scope-search.js'));
+const { USER_SENTINEL, inferDefaultScope, sanitizeForUserScope, detectSecrets } = scopeSanitizer;
+const { searchTwoPass } = scopeSearch;
+
 // ─── Simple file-based cache ────────────────────────────────────────────────
 
 const cache = new Map();
@@ -181,7 +187,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           query: { type: 'string', description: 'The search query in natural language' },
           project: { type: 'string', description: 'Project name (default: auto-detect from CWD)' },
           topK: { type: 'number', description: 'Number of results (default: 5)' },
-          minScore: { type: 'number', description: 'Minimum relevance score (default: 0.2)' }
+          minScore: { type: 'number', description: 'Minimum relevance score (default: 0.2)' },
+          scope: { type: 'string', enum: ['both', 'project', 'user'], description: 'Plan #7: which memory scope to search. "both" (default) = two-pass merge of current project + global __user__ entries. "project" = current project only. "user" = global __user__ only.' }
         },
         required: ['query']
       }
@@ -207,7 +214,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           },
           project: { type: 'string', description: 'Project name (default: auto-detect)' },
           confidence: { type: 'number', description: 'Confidence score 0.0-1.0 (default: 0.8)' },
-          sourceUrl: { type: 'string', description: 'Source URL if applicable' }
+          sourceUrl: { type: 'string', description: 'Source URL if applicable' },
+          scope: { type: 'string', enum: ['auto', 'project', 'user'], description: 'Plan #7: where to store. "auto" (default) infers from type+tags (reference/research/user-tag → user; decision/code → project). "user" routes to global __user__ DB and sanitizes user paths/emails/project name. Entries with detected secrets are rejected if scope=user.' }
         },
         required: ['title', 'summary']
       }
@@ -246,7 +254,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           type: { type: 'string', enum: ['lesson', 'pattern'], description: 'lesson (correction) or pattern (reusable workflow). Default: lesson' },
           tags: { type: 'array', items: { type: 'string' }, description: '3-8 CANONICAL English concept tags, lowercase, hyphenated (e.g. "error-handling", "token-efficiency", "cross-lingual"). These are the language-neutral retrieval anchor — choose the terms a future query (in any language) would map to.' },
           confidence: { type: 'number', description: '0.0-1.0 (default 0.85)' },
-          project: { type: 'string', description: 'Project name (default: auto-detect from CWD)' }
+          project: { type: 'string', description: 'Project name (default: auto-detect from CWD)' },
+          scope: { type: 'string', enum: ['auto', 'project', 'user'], description: 'Plan #7: where to store. "auto" (default) infers from type+tags (user-tag hints like workflow/preferences/agent-behavior → user). "user" routes to global __user__ DB and sanitizes user paths/emails/project name. Entries with detected secrets are rejected if scope=user.' }
         },
         required: ['title', 'summary']
       }
@@ -317,25 +326,37 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // ── KB Search ────────────────────────────────────────────────────────
     case 'brain_search': {
       try {
-        const { query, project: projectArg, topK = 5, minScore = 0.05 } = args;
-        const project = projectArg || path.basename(process.cwd() || 'default');
-        const { store: kbStore, index: kbIndex } = await getKB(project);
+        const { query, project: projectArg, topK = 5, minScore = 0.05, scope = 'both' } = args;
+        const currentProject = projectArg || path.basename(process.cwd() || 'default');
 
-        let results = [];
-
-        // Try vector search
+        // Embed once
+        let vector = null;
         try {
           const embedder = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-embedder.js'));
           await embedder.init();
-          if (embedder.getStatus().ready) {
-            const vector = await embedder.embed(query);
-            if (vector) {
-              results = await kbStore.search(vector, { topK, minScore });
-            }
-          }
-        } catch {}
+          if (embedder.getStatus().ready) vector = await embedder.embed(query);
+        } catch { /* embedding optional */ }
 
-        // Keyword fallback
+        // scope='user' → search only __user__ DB, then restore current project.
+        if (scope === 'user') {
+          const { store: userStore } = await getKB(USER_SENTINEL);
+          let results = [];
+          if (vector) results = await userStore.search(vector, { topK, minScore });
+          await getKB(currentProject); // restore singleton to current project
+          const text = JSON.stringify({ query, project: USER_SENTINEL, scope: 'user', count: results.length, results }, null, 2);
+          return { content: [{ type: 'text', text }] };
+        }
+
+        // scope='project' or 'both'
+        const { store: kbStore, index: kbIndex } = await getKB(currentProject);
+        let results = [];
+        if (scope === 'both' && vector) {
+          results = await searchTwoPass(kbStore, currentProject, vector, { topK, minScore });
+        } else if (vector) {
+          results = await kbStore.search(vector, { topK, minScore });
+        }
+
+        // Keyword fallback (project scope only; singleton is restored above by searchTwoPass)
         if (results.length < 2) {
           const kw = extractKeywords(query);
           if (kw.length > 0) {
@@ -343,15 +364,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             for (const r of kwResults) {
               if (!results.find(e => e.id === r.id)) {
                 const entry = await kbStore.get(r.id);
-                if (entry) results.push({ ...entry, score: r.score });
+                if (entry) results.push({ ...entry, score: r.score, scope: entry.scope || 'project' });
               }
             }
           }
         }
 
         const text = results.length > 0
-          ? JSON.stringify({ query, project, count: results.length, results }, null, 2)
-          : JSON.stringify({ query, project, count: 0, results: [], message: 'No entries found. Try brain_store to add knowledge first.' });
+          ? JSON.stringify({ query, project: currentProject, scope, count: results.length, results }, null, 2)
+          : JSON.stringify({ query, project: currentProject, scope, count: 0, results: [], message: 'No entries found. Try brain_store to add knowledge first.' });
 
         return { content: [{ type: 'text', text }] };
       } catch (err) {
@@ -362,18 +383,38 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // ── KB Store ─────────────────────────────────────────────────────────
     case 'brain_store': {
       try {
-        const { title, summary, detail, type = 'note', tags, project: projectArg, confidence = 0.8, sourceUrl } = args;
-        const project = projectArg || path.basename(process.cwd() || 'default');
-        const { store: kbStore, index: kbIndex, graph: kbGraph } = await getKB(project);
+        const { title, summary, detail, type = 'note', tags, project: projectArg, confidence = 0.8, sourceUrl, scope = 'auto' } = args;
+        const currentProject = projectArg || path.basename(process.cwd() || 'default');
+
+        // Resolve scope (auto-infer from type+tags).
+        const effectiveScope = (scope === 'project' || scope === 'user')
+          ? scope
+          : inferDefaultScope(type, tags);
+
+        // Sanitize + secret-check when storing to user scope.
+        let safeTitle = title, safeSummary = summary, safeDetail = detail;
+        if (effectiveScope === 'user') {
+          const combined = `${title}\n${summary}\n${detail || ''}`;
+          if (detectSecrets(combined)) {
+            return { isError: true, content: [{ type: 'text', text: 'brain_store rejected: scope=user but secret-like pattern (sk-/ghp_/AKIA/AIza/xox/etc) detected. Strip the secret or use scope=project.' }] };
+          }
+          safeTitle = sanitizeForUserScope(title, currentProject);
+          safeSummary = sanitizeForUserScope(summary, currentProject);
+          safeDetail = detail ? sanitizeForUserScope(detail, currentProject) : detail;
+        }
+
+        const storageProject = effectiveScope === 'user' ? USER_SENTINEL : currentProject;
+        const { store: kbStore, index: kbIndex, graph: kbGraph } = await getKB(storageProject);
 
         const entry = {
-          title,
-          summary,
-          detail: detail || summary,
-          content: { detail: detail || summary, files: [] },
+          title: safeTitle,
+          summary: safeSummary,
+          detail: safeDetail || safeSummary,
+          content: { detail: safeDetail || safeSummary, files: [] },
           type,
           tags: Array.isArray(tags) ? tags : [],
-          project,
+          project: storageProject,
+          scope: effectiveScope,
           confidence,
           sourceUrl: sourceUrl || '',
           created: new Date().toISOString(),
@@ -384,15 +425,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         try {
           const embedder = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-embedder.js'));
           await embedder.init();
-          if (embedder.getStatus().ready) vector = await embedder.embed(title + ': ' + summary);
+          if (embedder.getStatus().ready) vector = await embedder.embed(safeTitle + ': ' + safeSummary);
         } catch { /* embedding optional */ }
 
         await kbStore.save(entry, vector);   // mutates entry.id
         await kbIndex.index(entry);          // extracts keywords/tags internally
         await kbGraph.registerNode(entry);   // registers node by entry.id
 
+        // Restore singleton to current project so subsequent tool calls don't drift.
+        if (storageProject !== currentProject) await getKB(currentProject);
+
         return {
-          content: [{ type: 'text', text: JSON.stringify({ id: entry.id, project, status: 'saved', title, type }, null, 2) }]
+          content: [{ type: 'text', text: JSON.stringify({ id: entry.id, project: storageProject, scope: effectiveScope, status: 'saved', title: safeTitle, type }, null, 2) }]
         };
       } catch (err) {
         return { isError: true, content: [{ type: 'text', text: `brain_store failed: ${err.message}` }] };
@@ -402,11 +446,30 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // ── Capture Lesson (in-loop, admission control inline) ───────────────
     case 'capture_lesson': {
       try {
-        const { title, summary, detail, type = 'lesson', tags = [], confidence = 0.85, project: projectArg } = args;
-        const project = projectArg || path.basename(process.cwd() || 'default');
-        const { store: kbStore, index: kbIndex, graph: kbGraph } = await getKB(project);
+        const { title, summary, detail, type = 'lesson', tags = [], confidence = 0.85, project: projectArg, scope = 'auto' } = args;
+        const currentProject = projectArg || path.basename(process.cwd() || 'default');
 
-        const text = `${title} ${summary} ${detail || ''}`.trim();
+        // Resolve scope (lessons/patterns default to project unless tags hint user-facing).
+        const effectiveScope = (scope === 'project' || scope === 'user')
+          ? scope
+          : inferDefaultScope(type, tags);
+
+        // Sanitize + secret-check when storing to user scope.
+        let safeTitle = title, safeSummary = summary, safeDetail = detail;
+        if (effectiveScope === 'user') {
+          const combined = `${title}\n${summary}\n${detail || ''}`;
+          if (detectSecrets(combined)) {
+            return { isError: true, content: [{ type: 'text', text: 'capture_lesson rejected: scope=user but secret-like pattern detected. Strip the secret or use scope=project.' }] };
+          }
+          safeTitle = sanitizeForUserScope(title, currentProject);
+          safeSummary = sanitizeForUserScope(summary, currentProject);
+          safeDetail = detail ? sanitizeForUserScope(detail, currentProject) : detail;
+        }
+
+        const storageProject = effectiveScope === 'user' ? USER_SENTINEL : currentProject;
+        const { store: kbStore, index: kbIndex, graph: kbGraph } = await getKB(storageProject);
+
+        const text = `${safeTitle} ${safeSummary} ${safeDetail || ''}`.trim();
 
         // Embed for dedup + storage
         let vector = null;
@@ -421,17 +484,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (vector) {
           const hits = await kbStore.search(vector, { topK: 1, minScore: DEDUP, rerank: false });
           if (hits.length > 0) {
-            const merged = await kbStore.merge(hits[0].id, { summary, content: { detail: detail || summary }, confidence });
-            return { content: [{ type: 'text', text: JSON.stringify({ decision: 'merge', id: hits[0].id, recurrence: merged?.recurrence, title: hits[0].title, project }, null, 2) }] };
+            const merged = await kbStore.merge(hits[0].id, { summary: safeSummary, content: { detail: safeDetail || safeSummary }, confidence });
+            if (storageProject !== currentProject) await getKB(currentProject);
+            return { content: [{ type: 'text', text: JSON.stringify({ decision: 'merge', id: hits[0].id, recurrence: merged?.recurrence, title: hits[0].title, project: storageProject, scope: effectiveScope }, null, 2) }] };
           }
         }
 
         // Admit: new curated entry
         const entry = {
-          type, project, session_id: '',
-          title: String(title).slice(0, 80),
-          summary: String(summary).slice(0, 500),
-          content: { detail: detail || summary, files: [] },
+          type, project: storageProject, scope: effectiveScope, session_id: '',
+          title: String(safeTitle).slice(0, 80),
+          summary: String(safeSummary).slice(0, 500),
+          content: { detail: safeDetail || safeSummary, files: [] },
           tags: [...new Set(
             (Array.isArray(tags) ? tags : [])
               .map(t => String(t).toLowerCase().trim().replace(/\s+/g, '-'))
@@ -442,7 +506,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         await kbStore.save(entry, vector);
         await kbIndex.index(entry);
         await kbGraph.registerNode(entry);
-        return { content: [{ type: 'text', text: JSON.stringify({ decision: 'admit', id: entry.id, type, project }, null, 2) }] };
+
+        if (storageProject !== currentProject) await getKB(currentProject);
+        return { content: [{ type: 'text', text: JSON.stringify({ decision: 'admit', id: entry.id, type, project: storageProject, scope: effectiveScope }, null, 2) }] };
       } catch (err) {
         return { isError: true, content: [{ type: 'text', text: `capture_lesson failed: ${err.message}` }] };
       }

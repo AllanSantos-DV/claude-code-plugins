@@ -215,6 +215,7 @@ function createTablesSqlite() {
       confidence REAL NOT NULL DEFAULT 0.5,
       access_count INTEGER NOT NULL DEFAULT 0,
       recurrence INTEGER NOT NULL DEFAULT 1,
+      scope TEXT NOT NULL DEFAULT 'project',
       last_accessed TEXT,
       created_at TEXT NOT NULL
     );
@@ -278,6 +279,13 @@ function migrateSqlite() {
     if (!cols.includes('last_cited_ts')) {
       _db.exec(`ALTER TABLE entries ADD COLUMN last_cited_ts INTEGER`);
     }
+    // Plan #7: scope column for cross-project memory federation. Default
+    // 'project' preserves existing semantics; 'user' rows live in the
+    // __user__ project DB and travel across repos via two-pass retrieval.
+    if (!cols.includes('scope')) {
+      _db.exec(`ALTER TABLE entries ADD COLUMN scope TEXT NOT NULL DEFAULT 'project'`);
+    }
+    _db.exec(`CREATE INDEX IF NOT EXISTS idx_entries_scope ON entries(scope, project)`);
     // Plan #5: metrics_event table for ROI dashboard. Schema lives on createTablesSqlite for fresh DBs;
     // this branch handles pre-existing brain.db files from older plugin versions.
     const tables = _db.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all().map(t => t.name);
@@ -312,14 +320,15 @@ async function saveSqlite(entry, vector) {
   const stmt = _db.prepare(`
     INSERT OR REPLACE INTO entries
       (id, type, project, session_id, title, summary, content, source, tags,
-       confidence, access_count, recurrence, last_accessed, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       confidence, access_count, recurrence, scope, last_accessed, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(
     entry.id, entry.type, entry.project, entry.session_id || '',
     entry.title, entry.summary || '', JSON.stringify(entry.content || {}),
     JSON.stringify(entry.source || {}), JSON.stringify(entry.tags || []),
     entry.confidence || 0.5, entry.access_count || 0, entry.recurrence || 1,
+    entry.scope === 'user' ? 'user' : 'project',
     entry.last_accessed || null, entry.created_at || now()
   );
 
@@ -369,6 +378,7 @@ function rowToEntry(row) {
     confidence: row.confidence,
     access_count: row.access_count,
     recurrence: row.recurrence != null ? row.recurrence : 1,
+    scope: row.scope || 'project',
     last_accessed: row.last_accessed,
     created_at: row.created_at,
   };
