@@ -169,6 +169,7 @@ code { color: var(--fg); }
 <nav id="tabs">
   <a href="#home" class="active" data-i18n="nav.home">Home</a>
   <a href="#brain" data-i18n="nav.brain">Brain KB</a>
+  <a href="#skills" data-i18n="nav.skills">Skills</a>
   <a href="#hooks" data-i18n="nav.hooks">Hooks</a>
   <a href="#insights" data-i18n="nav.insights">Insights</a>
   <a href="#logs" data-i18n="nav.logs">Logs</a>
@@ -392,6 +393,49 @@ code { color: var(--fg); }
     </div>
     <div id="brain-stats"></div>
     <div id="brain-results"></div>
+  </section>
+
+
+  <!-- SKILLS -->
+  <section id="tab-skills" class="tab">
+    <h1 data-i18n="skills.title">Skill Promotion</h1>
+    <div class="card">
+      <div class="flex mb-1" style="align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.5rem">
+        <div>
+          <h2 style="margin:0" data-i18n="skills.threshold">Promotion Threshold</h2>
+          <div class="text-muted" id="skills-threshold-line">—</div>
+        </div>
+        <div class="flex" style="gap:.5rem;align-items:center;flex-wrap:wrap">
+          <label class="text-muted" style="font-size:.85rem" data-i18n="skills.project">Project</label>
+          <select id="skills-project" class="input" style="min-width:180px"></select>
+          <button class="btn-primary btn-sm" onclick="scanSkillCandidates()" data-i18n="skills.scan">Scan</button>
+          <span id="skills-scan-result" class="text-muted" style="font-size:.85rem"></span>
+        </div>
+      </div>
+      <div class="text-muted" style="font-size:.85rem" data-i18n="skills.help">
+        Scan reads brain entries (lessons + patterns) whose recurrence and confidence meet the threshold and writes draft SKILL.md files to staging. Approve to install into ~/.claude/skills/ as a global skill.
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="flex mb-1" style="align-items:center;justify-content:space-between">
+        <h2 style="margin:0" data-i18n="skills.pending">Pending Drafts</h2>
+        <button class="btn-sm" onclick="loadSkillDrafts()" data-i18n="action.refresh">Refresh</button>
+      </div>
+      <div id="skills-drafts">—</div>
+    </div>
+
+    <div class="card" id="skills-preview-card" style="display:none">
+      <div class="flex mb-1" style="align-items:center;justify-content:space-between">
+        <h2 style="margin:0"><span data-i18n="skills.preview">Preview</span>: <code id="skills-preview-slug"></code></h2>
+        <div class="flex" style="gap:.5rem">
+          <button class="btn-primary btn-sm" id="skills-approve-btn" data-i18n="skills.approve">Approve</button>
+          <button class="btn-sm" id="skills-discard-btn" data-i18n="skills.discard">Discard</button>
+          <button class="btn-sm" onclick="document.getElementById('skills-preview-card').style.display='none'" data-i18n="action.close">Close</button>
+        </div>
+      </div>
+      <pre id="skills-preview-content" style="white-space:pre-wrap;background:var(--bg-elev);padding:.75rem;border-radius:6px;max-height:60vh;overflow:auto"></pre>
+    </div>
   </section>
 
 
@@ -647,7 +691,7 @@ function navigate() {
   const hash = location.hash.slice(1) || 'home';
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.id === 'tab-' + hash));
   document.querySelectorAll('nav a').forEach(a => a.classList.toggle('active', a.hash === '#' + hash));
-  const fns = { home: loadHome, brain: loadBrain, hooks: loadHooks, insights: loadInsights, logs: loadLogs };
+  const fns = { home: loadHome, brain: loadBrain, skills: loadSkills, hooks: loadHooks, insights: loadInsights, logs: loadLogs };
   if (fns[hash]) fns[hash]();
 }
 window.addEventListener('hashchange', navigate);
@@ -1478,6 +1522,109 @@ async function loadInsightsLog() {
     meta.textContent = `${events.length} event(s)`;
   } catch (err) {
     list.innerHTML = `<p class="text-muted">Failed to load log: ${escapeHtml(err.message)}</p>`;
+  }
+}
+
+// ─── SKILL PROMOTION ──────────────────────────────────────────────
+
+let _skillsCfg = null;
+
+async function loadSkills() {
+  try {
+    const data = await api('GET', '/api/skill-promotion/config');
+    if (!data.ok) throw new Error(data.error || 'config load failed');
+    _skillsCfg = data;
+    const c = data.config;
+    document.getElementById('skills-threshold-line').textContent =
+      `min recurrence: ${c.minRecurrence} · min confidence: ${c.minConfidence} · types: ${c.types.join(', ')} · staging: ${data.stagingDir}`;
+    const sel = document.getElementById('skills-project');
+    sel.innerHTML = '<option value="">(current cwd)</option>' +
+      data.projects.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('');
+  } catch (err) {
+    document.getElementById('skills-threshold-line').textContent = 'Error: ' + err.message;
+  }
+  loadSkillDrafts();
+}
+
+async function scanSkillCandidates() {
+  const project = document.getElementById('skills-project').value;
+  const result = document.getElementById('skills-scan-result');
+  result.textContent = 'scanning…';
+  try {
+    const data = await api('POST', '/api/skill-promotion/scan', project ? { project } : {});
+    if (!data.ok) throw new Error(data.error || 'scan failed');
+    const n = (data.drafts || []).length;
+    result.textContent = `${data.candidates ?? n} candidate(s) staged`;
+    loadSkillDrafts();
+  } catch (err) {
+    result.textContent = 'Error: ' + err.message;
+  }
+}
+
+async function loadSkillDrafts() {
+  const el = document.getElementById('skills-drafts');
+  el.innerHTML = '<div class="spinner" style="margin:1rem auto"></div>';
+  try {
+    const data = await api('GET', '/api/skill-promotion/pending');
+    if (!data.ok) throw new Error(data.error || 'list failed');
+    if (!data.pending.length) {
+      el.innerHTML = '<p class="text-muted">No pending drafts. Run Scan to generate candidates from KB entries that cleared the threshold.</p>';
+      return;
+    }
+    el.innerHTML = `<table>
+      <thead><tr><th>Slug</th><th>Title</th><th>Description</th><th>Created</th><th>Action</th></tr></thead>
+      <tbody>${data.pending.map(d => `
+        <tr>
+          <td><code>${escapeHtml(d.slug)}</code></td>
+          <td>${escapeHtml(d.title)}</td>
+          <td class="text-muted">${escapeHtml((d.description || '').slice(0, 100))}</td>
+          <td class="text-muted">${new Date(d.mtime).toLocaleString()}</td>
+          <td><button class="btn-sm" onclick="previewSkillDraft('${escapeHtml(d.slug)}')">Preview</button></td>
+        </tr>
+      `).join('')}</tbody>
+    </table>`;
+  } catch (err) {
+    el.innerHTML = `<p class="text-muted">Error: ${escapeHtml(err.message)}</p>`;
+  }
+}
+
+async function previewSkillDraft(slug) {
+  try {
+    const data = await api('GET', '/api/skill-promotion/draft?slug=' + encodeURIComponent(slug));
+    if (!data.ok) throw new Error(data.error || 'load failed');
+    document.getElementById('skills-preview-slug').textContent = slug;
+    document.getElementById('skills-preview-content').textContent = data.content;
+    document.getElementById('skills-preview-card').style.display = '';
+    document.getElementById('skills-approve-btn').onclick = () => approveSkillDraft(slug);
+    document.getElementById('skills-discard-btn').onclick = () => discardSkillDraft(slug);
+    document.getElementById('skills-preview-card').scrollIntoView({ behavior: 'smooth' });
+  } catch (err) {
+    alert('Error: ' + err.message);
+  }
+}
+
+async function approveSkillDraft(slug) {
+  if (!confirm(`Install "${slug}" as a global skill at ~/.claude/skills/${slug}/?`)) return;
+  try {
+    const data = await api('POST', '/api/skill-promotion/approve', { slug });
+    if (!data.ok) throw new Error(data.error || 'approve failed');
+    document.getElementById('skills-preview-card').style.display = 'none';
+    loadSkillDrafts();
+    alert(`Approved. Installed at: ${data.installedAt}`);
+  } catch (err) {
+    alert('Error: ' + err.message);
+  }
+}
+
+async function discardSkillDraft(slug) {
+  if (!confirm(`Discard the draft "${slug}"?`)) return;
+  try {
+    const data = await api('DELETE', '/api/skill-promotion/draft?slug=' + encodeURIComponent(slug));
+    if (!data.ok) throw new Error(data.error || 'discard failed');
+    document.getElementById('skills-preview-card').style.display = 'none';
+    loadSkillDrafts();
+  } catch (err) {
+    alert('Error: ' + err.message);
   }
 }
 
