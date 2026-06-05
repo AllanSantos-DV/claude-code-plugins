@@ -320,6 +320,68 @@ test('brain-backend: keyword path applies minScore threshold', async () => {
   await backend.close();
 });
 
+// ─── decision-detect (regex extractors + heuristic) ─────────────────────────
+const dd = require('./decision-detect.js');
+
+test('decision-detect: extractCommitMsg — -m "..."', () => {
+  const out = dd.extractCommitMsg('git commit -m "feat(x): use foo over bar because perf"');
+  assertEq(out, 'feat(x): use foo over bar because perf');
+});
+
+test('decision-detect: extractCommitMsg — -m \'...\'', () => {
+  const out = dd.extractCommitMsg("git commit -m 'fix: typo'");
+  assertEq(out, 'fix: typo');
+});
+
+test('decision-detect: extractCommitMsg — --message=...', () => {
+  const out = dd.extractCommitMsg('git commit --message="chore: bump"');
+  assertEq(out, 'chore: bump');
+});
+
+test('decision-detect: extractCommitMsg — heredoc', () => {
+  const cmd = "git commit -m \"$(cat <<'EOF'\nfeat(brain): swap voyage for v4\n\nbecause v3 is paid\nEOF\n)\"";
+  const out = dd.extractCommitMsg(cmd);
+  assert(out.startsWith('feat(brain): swap voyage for v4'), 'heredoc body extracted');
+  assert(out.includes('because v3 is paid'), 'heredoc preserves rationale');
+});
+
+test('decision-detect: extractCommitMsg — non-git returns null', () => {
+  assertEq(dd.extractCommitMsg('ls -la'), null);
+});
+
+test('decision-detect: extractPrBody — --body "..."', () => {
+  const out = dd.extractPrBody('gh pr create --title "x" --body "we picked X over Y because perf"');
+  assertEq(out, 'we picked X over Y because perf');
+});
+
+test('decision-detect: extractPrBody — heredoc', () => {
+  const cmd = "gh pr edit 12 --body \"$(cat <<'EOF'\n## Summary\n\nWe adopted X instead of Y.\nEOF\n)\"";
+  const out = dd.extractPrBody(cmd);
+  assert(out.includes('adopted X instead of Y'), 'pr heredoc extracted');
+});
+
+test('decision-detect: looksLikeDecision — verb of choice', () => {
+  assert(dd.looksLikeDecision('we chose redis over memcached'), 'verb of choice');
+});
+
+test('decision-detect: looksLikeDecision — rationale connector', () => {
+  assert(dd.looksLikeDecision('refactored the module because tests were brittle'), 'rationale connector');
+});
+
+test('decision-detect: looksLikeDecision — pt-BR verb', () => {
+  assert(dd.looksLikeDecision('trocamos voyage por v4 em vez de v3'), 'pt-BR verb of choice + connector');
+});
+
+test('decision-detect: looksLikeDecision — multi-paragraph body', () => {
+  const body = 'feat: refactor\n\nsome reasoning line one\nsome reasoning line two\nthird thought';
+  assert(dd.looksLikeDecision(body), 'multi-paragraph >=3 non-empty lines');
+});
+
+test('decision-detect: looksLikeDecision — trivial chore rejected', () => {
+  assert(!dd.looksLikeDecision('chore: bump version'), 'no choice verb, no rationale, single line → false');
+  assert(!dd.looksLikeDecision('fix typo'), 'trivial fix rejected');
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
