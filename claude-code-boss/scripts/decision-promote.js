@@ -18,6 +18,7 @@ const path = require('path');
 const os = require('os');
 
 const { readStdin, emitStopBlock, emitEmpty } = require('./lib/hook-io.js');
+const metrics = require('./lib/metrics.js');
 
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
   || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
@@ -96,6 +97,10 @@ function shortKey(k) {
     // Promote first (so a hook retry doesn't double-nudge) then emit.
     promote(fresh.map(p => p.key));
     writeJsonSafe(PENDING, { pending: [] });
+
+    for (const item of fresh) {
+      metrics.fire('decision.captured', { kind: item.kind, key: item.key, repoUrl: item.repoUrl });
+    }
 
     emitStopBlock(buildReason(fresh));
   } catch {

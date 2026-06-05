@@ -20,6 +20,7 @@ const path = require('path');
 const { readStdin, parsePayload, emitEmpty, emitJson } = require('./lib/hook-io.js');
 const hooksConfig = require('./lib/hooks-config.js');
 const state = require('./lib/active-research-state.js');
+const metrics = require('./lib/metrics.js');
 
 const LIBS_FILE = path.join(__dirname, 'data', 'research-libs.json');
 
@@ -174,6 +175,11 @@ async function main() {
   if (state.isCoolingDown(query, cooldownMs)) return emitEmpty();
 
   state.recordFire(sid, query);
+
+  metrics.fire('research.auto.triggered', {
+    signals: signals.map(s => s.kind),
+    queryLen: query.length,
+  }, { sessionId: sid, cwd: ev.cwd });
 
   return emitJson({
     hookSpecificOutput: {

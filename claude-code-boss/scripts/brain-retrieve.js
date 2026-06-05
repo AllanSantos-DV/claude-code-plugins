@@ -6,6 +6,7 @@ const brainConfig = require('./lib/brain-config.js');
 const { extractKeywords } = require('./lib/text-utils.js');
 const { readStdin, emitEmpty, emitJson, parsePayload } = require('./lib/hook-io.js');
 const retrievalJournal = require('./lib/retrieval-journal.js');
+const metrics = require('./lib/metrics.js');
 
 function formatEntries(entries) {
   if (!entries || entries.length === 0) return '';
@@ -70,6 +71,12 @@ function formatEntries(entries) {
     } catch (err) {
       console.error(`[BRAIN-RETRIEVE] journal append failed: ${err.message}`);
     }
+
+    metrics.fire('retrieve.fired', {
+      tool: toolName,
+      returnedCount: entries.length,
+      topScore: Number((entries[0]?.score || 0).toFixed(3)),
+    }, { sessionId: event.session_id || event.sessionId, project, cwd: event.cwd });
 
     emitJson({
       found: entries.length,

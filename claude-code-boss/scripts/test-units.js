@@ -834,6 +834,103 @@ test('active-research-state: recordFire bumps count + cooldown applies', () => {
   arstate.resetForTests();
 });
 
+// ─── metrics (Plan #5) ───────────────────────────────────────────────────────
+
+test('metrics: recordMetric inserts + getMetricsSummary aggregates', async () => {
+  delete require.cache[require.resolve('./brain-store.js')];
+  const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
+  process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-metrics-'));
+  const isolated = require('./brain-store.js');
+  try {
+    await isolated.init({ project: 'ccb-units-metrics' });
+    if (isolated.getStorageType() !== 'sqlite') {
+      assertEq(isolated.recordMetric('retrieve.fired', { x: 1 }, 'sid'), 0);
+      return;
+    }
+    const id1 = isolated.recordMetric('retrieve.fired', { topScore: 0.5 }, 'sid-a');
+    const id2 = isolated.recordMetric('retrieve.fired', { topScore: 0.7 }, 'sid-a');
+    const id3 = isolated.recordMetric('retrieve.cited', { entryId: 'x' }, 'sid-a');
+    assert(id1 > 0 && id2 > id1 && id3 > id2, `ids should be increasing, got ${id1},${id2},${id3}`);
+
+    const summary = isolated.getMetricsSummary(7);
+    assertEq(summary.totals['retrieve.fired'], 2);
+    assertEq(summary.totals['retrieve.cited'], 1);
+    assert(Array.isArray(summary.daily) && summary.daily.length >= 1, 'daily rows present');
+  } finally {
+    try { await isolated.close(); } catch { /* ignore */ }
+    delete require.cache[require.resolve('./brain-store.js')];
+    process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
+  }
+});
+
+test('metrics: recordMetric rejects invalid event names', async () => {
+  delete require.cache[require.resolve('./brain-store.js')];
+  const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
+  process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-metrics-bad-'));
+  const isolated = require('./brain-store.js');
+  try {
+    await isolated.init({ project: 'ccb-units-metrics-bad' });
+    if (isolated.getStorageType() !== 'sqlite') return;
+    assertEq(isolated.recordMetric('', {}, 'sid'), 0);
+    assertEq(isolated.recordMetric('UPPER.case', {}, 'sid'), 0);
+    assertEq(isolated.recordMetric('1starts.with.digit', {}, 'sid'), 0);
+    assertEq(isolated.recordMetric('has spaces', {}, 'sid'), 0);
+    assert(isolated.recordMetric('valid.name_ok-1', {}, 'sid') > 0, 'valid name accepted');
+  } finally {
+    try { await isolated.close(); } catch { /* ignore */ }
+    delete require.cache[require.resolve('./brain-store.js')];
+    process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
+  }
+});
+
+test('metrics: getEventLog filters + caps to 500', async () => {
+  delete require.cache[require.resolve('./brain-store.js')];
+  const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
+  process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-metrics-log-'));
+  const isolated = require('./brain-store.js');
+  try {
+    await isolated.init({ project: 'ccb-units-metrics-log' });
+    if (isolated.getStorageType() !== 'sqlite') return;
+    for (let i = 0; i < 5; i++) isolated.recordMetric('retrieve.fired', { i }, 'sid');
+    for (let i = 0; i < 3; i++) isolated.recordMetric('failure.retro.fired', { i }, 'sid');
+    const all = isolated.getEventLog({ limit: 50 });
+    assertEq(all.length, 8);
+    const filtered = isolated.getEventLog({ eventName: 'retrieve.fired', limit: 50 });
+    assertEq(filtered.length, 5);
+    const capped = isolated.getEventLog({ limit: 99999 });
+    assert(capped.length <= 500, `cap applied, got ${capped.length}`);
+  } finally {
+    try { await isolated.close(); } catch { /* ignore */ }
+    delete require.cache[require.resolve('./brain-store.js')];
+    process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
+  }
+});
+
+test('metrics: cleanupMetrics deletes rows older than cutoff', async () => {
+  delete require.cache[require.resolve('./brain-store.js')];
+  const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
+  process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-metrics-cleanup-'));
+  const isolated = require('./brain-store.js');
+  try {
+    await isolated.init({ project: 'ccb-units-metrics-cleanup' });
+    if (isolated.getStorageType() !== 'sqlite') return;
+    // Insert 3 fresh rows, then manually backdate two of them to >40d ago.
+    const ids = [];
+    for (let i = 0; i < 3; i++) ids.push(isolated.recordMetric('retrieve.fired', { i }, 'sid'));
+    const db = isolated._getDbForTests();
+    const oldTs = Date.now() - 40 * 86400_000;
+    db.prepare(`UPDATE metrics_event SET ts = ? WHERE id IN (?, ?)`).run(oldTs, ids[0], ids[1]);
+    const deleted = isolated.cleanupMetrics(30);
+    assertEq(deleted, 2);
+    const remaining = isolated.getEventLog({ limit: 50 });
+    assertEq(remaining.length, 1);
+  } finally {
+    try { await isolated.close(); } catch { /* ignore */ }
+    delete require.cache[require.resolve('./brain-store.js')];
+    process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
+  }
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
