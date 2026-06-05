@@ -14,9 +14,43 @@ const SESSION_TOKEN = crypto.randomBytes(16).toString('hex');
 const ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
 const DASHBOARD_DIR = path.join(ROOT, 'dashboard');
 
-const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
-  || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || resolveBestDataDir();
 const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');
+
+// Pick the most populated brain data dir among ~/.claude/plugins/data/claude-code-boss*.
+// Fall back to the canonical bare name if nothing is populated yet.
+function resolveBestDataDir() {
+  const base = path.join(require('os').homedir(), '.claude', 'plugins', 'data');
+  const fallback = path.join(base, 'claude-code-boss');
+  if (!fs.existsSync(base)) return fallback;
+  const candidates = fs.readdirSync(base)
+    .filter(d => /^claude-code-boss/.test(d))
+    .map(d => path.join(base, d))
+    .filter(p => fs.existsSync(path.join(p, 'brain')));
+  if (candidates.length === 0) return fallback;
+  let best = candidates[0], bestCount = -1;
+  for (const dir of candidates) {
+    let total = 0;
+    const brainDir = path.join(dir, 'brain');
+    for (const proj of fs.readdirSync(brainDir)) {
+      const dbPath = path.join(brainDir, proj, 'brain.db');
+      if (fs.existsSync(dbPath)) total += countEntriesInDb(dbPath);
+    }
+    if (total > bestCount) { bestCount = total; best = dir; }
+  }
+  return best;
+}
+
+function countEntriesInDb(dbPath) {
+  let Database;
+  try { Database = require('better-sqlite3'); } catch { return 0; }
+  try {
+    const db = new Database(dbPath, { readonly: true });
+    const row = db.prepare('SELECT COUNT(*) AS c FROM entries').get();
+    db.close();
+    return row?.c || 0;
+  } catch { return 0; }
+}
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -122,6 +156,13 @@ function atomicWriteJSON(filePath, data) {
 // ─── API: Status ───────────────────────────────────────────────────
 
 function getStatus(req, res) {
+  return getStatusAsync(req, res).catch(err => {
+    console.error(`[DASHBOARD] /api/status failed: ${err.message}`);
+    fail(res, err.message, 500);
+  });
+}
+
+async function getStatusAsync(req, res) {
   const hooksRaw = readJSON(path.join(ROOT, 'hooks', 'hooks.json'));
 
   let hooksTotal = 0, hooksActive = 0, hookEntries = [];
@@ -148,15 +189,12 @@ function getStatus(req, res) {
     for (const p of fs.readdirSync(brainBaseDir)) {
       const dbPath = path.join(brainBaseDir, p, 'brain.db');
       if (fs.existsSync(dbPath)) {
-        try {
-          const store = require('./brain-store.js');
-          store.init({ project: p });
-          const count = store.count();
-          brainProjects.push({ project: p, entries: count });
-          brainTotal += count;
-        } catch (err) { console.error(`[DASHBOARD] Brain store count error (${p}): ${err.message}`); }
+        const count = countEntriesInDb(dbPath);
+        brainTotal += count;
+        if (count > 0) brainProjects.push({ project: p, entries: count });
       }
     }
+    brainProjects.sort((a, b) => b.entries - a.entries);
   }
 
   let backendMode = 'local', backendConnected = false;
@@ -228,6 +266,67 @@ function restartDashboard(req, res) {
   }, 500);
 }
 
+async function testEmbedder(req, res) {
+  let body;
+  try { body = JSON.parse(await readBody(req)); }
+  catch { return fail(res, 'Invalid JSON body', 400); }
+  const provider = body.provider;
+  const model = (body.model || '').trim();
+  if (!['transformers', 'ollama', 'voyage'].includes(provider)) return fail(res, 'Invalid provider', 400);
+  if (!model) return fail(res, 'Model is required', 400);
+  const t0 = Date.now();
+  try {
+    if (provider === 'transformers') {
+      const { pipeline } = await import('@xenova/transformers');
+      const extractor = await pipeline('feature-extraction', model, { quantized: true });
+      const out = await extractor('test', { pooling: 'mean', normalize: true });
+      const dim = out.data.length;
+      return json(res, { ok: true, dim, ms: Date.now() - t0 });
+    }
+    if (provider === 'ollama') {
+      const { spawn } = require('child_process');
+      const pullResult = await new Promise((resolve) => {
+        const p = spawn('ollama', ['pull', model], { stdio: ['ignore', 'pipe', 'pipe'] });
+        let stderr = '';
+        p.stderr.on('data', (d) => { stderr += d.toString(); });
+        p.on('error', (err) => resolve({ ok: false, error: `Ollama not installed or not in PATH: ${err.message}` }));
+        p.on('close', (code) => resolve(code === 0 ? { ok: true } : { ok: false, error: `ollama pull exited ${code}: ${stderr.slice(-200)}` }));
+      });
+      if (!pullResult.ok) return json(res, pullResult);
+      const embedRes = await fetch('http://localhost:11434/api/embeddings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, prompt: 'test' }),
+      }).catch(err => ({ ok: false, _err: err.message }));
+      if (embedRes._err) return json(res, { ok: false, error: `Ollama embed call failed: ${embedRes._err}` });
+      if (!embedRes.ok) return json(res, { ok: false, error: `Ollama embed HTTP ${embedRes.status}` });
+      const data = await embedRes.json();
+      const dim = (data.embedding || []).length;
+      if (!dim) return json(res, { ok: false, error: 'Ollama returned empty embedding' });
+      return json(res, { ok: true, dim, ms: Date.now() - t0 });
+    }
+    if (provider === 'voyage') {
+      const apiKey = process.env.VOYAGE_API_KEY;
+      if (!apiKey) return json(res, { ok: false, error: 'VOYAGE_API_KEY env var not set. Set it before starting the dashboard.' });
+      const r = await fetch('https://api.voyageai.com/v1/embeddings', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ input: 'test', model }),
+      });
+      if (!r.ok) {
+        const txt = await r.text().catch(() => '');
+        return json(res, { ok: false, error: `Voyage HTTP ${r.status}: ${txt.slice(0, 200)}` });
+      }
+      const data = await r.json();
+      const dim = (data.data?.[0]?.embedding || []).length;
+      if (!dim) return json(res, { ok: false, error: 'Voyage returned empty embedding' });
+      return json(res, { ok: true, dim, ms: Date.now() - t0 });
+    }
+  } catch (err) {
+    return json(res, { ok: false, error: err.message });
+  }
+}
+
 // ─── API: Brain ────────────────────────────────────────────────────
 
 function getBrainProjects(req, res) {
@@ -238,14 +337,14 @@ function getBrainProjects(req, res) {
     const dbPath = path.join(brainBaseDir, p, 'brain.db');
     if (fs.existsSync(dbPath)) {
       try {
-        const store = require('./brain-store.js');
-        store.init({ project: p });
-        const count = store.count();
+        const count = countEntriesInDb(dbPath);
+        if (count === 0) continue;
         const stats = fs.statSync(dbPath);
         projects.push({ project: p, entries: count, dbSize: stats.size, lastModified: stats.mtime });
       } catch (err) { console.error(`[DASHBOARD] Brain project stat error (${p}): ${err.message}`); }
     }
   }
+  projects.sort((a, b) => b.entries - a.entries);
   json(res, projects);
 }
 
@@ -509,6 +608,7 @@ function handleAPI(req, res, url) {
   if (p === '/api/brain/backend-config' && m === 'GET') return getBrainConfig(req, res);
   if (p === '/api/brain/backend-config' && m === 'PUT') return saveBrainConfig(req, res);
   if (p === '/api/brain/backend-restart' && m === 'POST') return restartDashboard(req, res);
+  if (p === '/api/brain/embedder/test' && m === 'POST') return testEmbedder(req, res);
   if (p === '/api/brain/projects' && m === 'GET') return getBrainProjects(req, res);
   if (p === '/api/brain/search' && m === 'GET') return searchBrain(req, res, url);
   if (p.match(/^\/api\/brain\/entry\//) && m === 'GET') return getBrainEntry(req, res, url);

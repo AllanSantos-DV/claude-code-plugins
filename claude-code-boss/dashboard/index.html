@@ -253,7 +253,7 @@ code { color: var(--fg); }
             <span data-i18n="brain.provider">Provider</span>
             <span class="tip" data-i18n-tip="tip.provider" data-tip="transformers = local via @xenova/transformers (offline). ollama/voyage = HTTP externo.">i</span>
           </label>
-          <select id="embedder-provider">
+          <select id="embedder-provider" onchange="onEmbedderProviderChange()">
             <option value="transformers">transformers (local)</option>
             <option value="ollama">ollama</option>
             <option value="voyage">voyage</option>
@@ -262,17 +262,27 @@ code { color: var(--fg); }
         <div>
           <label class="field-label">
             <span data-i18n="brain.model">Model</span>
-            <span class="tip" data-i18n-tip="tip.model" data-tip="Modelo de embedding. Default: paraphrase-multilingual-MiniLM-L12-v2 (50 idiomas, 384 dim). Trocar requer re-embed: node scripts/brain-reembed.js.">i</span>
+            <span class="tip" data-i18n-tip="tip.model" data-tip="Modelo de embedding (dimensão é derivada). Trocar requer re-embed: node scripts/brain-reembed.js.">i</span>
           </label>
-          <input type="text" id="embedder-model" placeholder="Xenova/paraphrase-multilingual-MiniLM-L12-v2">
+          <select id="embedder-model" onchange="onEmbedderModelChange()"></select>
+          <input type="text" id="embedder-model-custom" placeholder="org/model-name" oninput="updateEmbedderWarning()" style="display:none;margin-top:.25rem">
         </div>
         <div>
           <label class="field-label">
             <span data-i18n="brain.dimensions">Dimensions</span>
-            <span class="tip" data-i18n-tip="tip.dimensions" data-tip="Tamanho do vetor de embedding (deve casar com o modelo escolhido).">i</span>
+            <span class="tip" data-i18n-tip="tip.dimensions" data-tip="Derivada do modelo. Editável apenas em modo Custom.">i</span>
           </label>
-          <input type="number" id="embedder-dimensions" placeholder="384" min="1">
+          <input type="number" id="embedder-dimensions" min="1" readonly style="background:var(--bg-hover);cursor:not-allowed">
         </div>
+      </div>
+      <div id="embedder-warn" class="text-muted" style="display:none;margin-top:.5rem;font-size:.72rem;color:var(--warning)">
+        ⚠ <span data-i18n="brain.reembedWarn">Trocar o modelo invalida embeddings existentes. Após salvar, rode</span> <code>node scripts/brain-reembed.js</code>.
+      </div>
+      <div id="embedder-provider-help" class="text-muted" style="margin-top:.5rem;font-size:.72rem;line-height:1.4;padding:.5rem;background:var(--bg-soft);border-radius:4px;border-left:3px solid var(--primary)"></div>
+      <div id="embedder-model-help" class="text-muted" style="margin-top:.4rem;font-size:.72rem;line-height:1.4"></div>
+      <div style="display:flex;gap:.5rem;align-items:center;margin-top:.6rem">
+        <button class="btn-primary btn-sm" onclick="testEmbedder()" id="embedder-test-btn" data-i18n="brain.testInstall">Test / Install</button>
+        <span id="embedder-test-status" class="text-muted" style="font-size:.75rem"></span>
       </div>
     </div>
 
@@ -467,6 +477,7 @@ const I18N = {
     'brain.restartBtn': 'Restart Dashboard', 'brain.backendType': 'Backend Type',
     'brain.currentStatus': 'Current status', 'brain.jarPath': 'JAR Path', 'brain.javaArgs': 'Java Args',
     'brain.embedder': 'Embedder', 'brain.provider': 'Provider', 'brain.model': 'Model', 'brain.dimensions': 'Dimensions',
+    'brain.reembedWarn': 'Changing the model invalidates existing embeddings. After saving, run',
     'brain.retrieval': 'Retrieval', 'brain.fastTopK': 'Fast Top-K', 'brain.deepTopK': 'Deep Top-K',
     'brain.minScoreFast': 'Min Score Fast', 'brain.minScoreDeep': 'Min Score Deep',
     'brain.submission': 'Submission', 'brain.maxEntries': 'Max Entries / Project',
@@ -508,6 +519,7 @@ const I18N = {
     'brain.restartBtn': 'Reiniciar Dashboard', 'brain.backendType': 'Tipo de Backend',
     'brain.currentStatus': 'Status atual', 'brain.jarPath': 'Caminho do JAR', 'brain.javaArgs': 'Args Java',
     'brain.embedder': 'Embedder', 'brain.provider': 'Provider', 'brain.model': 'Modelo', 'brain.dimensions': 'Dimensões',
+    'brain.reembedWarn': 'Trocar o modelo invalida embeddings existentes. Após salvar, rode',
     'brain.retrieval': 'Retrieval', 'brain.fastTopK': 'Fast Top-K', 'brain.deepTopK': 'Deep Top-K',
     'brain.minScoreFast': 'Score Mín. Fast', 'brain.minScoreDeep': 'Score Mín. Deep',
     'brain.submission': 'Submissão', 'brain.maxEntries': 'Entradas Máx. / Projeto',
@@ -583,6 +595,7 @@ window.addEventListener('load', () => { applyTheme(); applyI18n(); navigate(); }
 
 async function api(method, path, body) {
   const opts = { method, headers: {} };
+  if (window.__DASHBOARD_TOKEN__) opts.headers['x-dashboard-token'] = window.__DASHBOARD_TOKEN__;
   if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
   const r = await fetch(API + path, opts);
   return r.json();
@@ -615,6 +628,160 @@ async function loadHome() {
 
 let _brainConfig = null;
 
+const EMBEDDER_MODELS = {
+  transformers: [
+    { value: 'Xenova/paraphrase-multilingual-MiniLM-L12-v2', label: 'paraphrase-multilingual-MiniLM-L12-v2 — multilingual (default)', dim: 384, desc: 'Multilingual (50+ idiomas, inclui PT-BR). ~120 MB. Recomendado para conteúdo em PT/EN misto.' },
+    { value: 'Xenova/multilingual-e5-small', label: 'multilingual-e5-small — multilingual', dim: 384, desc: 'Multilingual E5 small. Bom para retrieval cross-lingual. ~120 MB.' },
+    { value: 'Xenova/all-MiniLM-L6-v2', label: 'all-MiniLM-L6-v2 — EN, fastest', dim: 384, desc: 'Apenas inglês, mais rápido e leve (~25 MB). Use somente se todo conteúdo for em inglês.' },
+    { value: 'Xenova/all-mpnet-base-v2', label: 'all-mpnet-base-v2 — EN, best quality', dim: 768, desc: 'Apenas inglês, melhor qualidade. ~110 MB. Mais lento que MiniLM.' },
+    { value: '__custom__', label: 'Custom (advanced)…', dim: 0, desc: 'Qualquer modelo Xenova/* compatível com feature-extraction.' },
+  ],
+  ollama: [
+    { value: 'nomic-embed-text', label: 'nomic-embed-text — recommended', dim: 768, desc: 'Recomendado pelo Ollama. ~274 MB. Suporta inglês principalmente.' },
+    { value: 'mxbai-embed-large', label: 'mxbai-embed-large — high quality', dim: 1024, desc: 'Maior qualidade. ~669 MB. Pode ser overkill para KB pequena.' },
+    { value: 'all-minilm', label: 'all-minilm — small, fast', dim: 384, desc: 'Pequeno e rápido. ~46 MB. Apenas inglês.' },
+    { value: '__custom__', label: 'Custom (advanced)…', dim: 0, desc: 'Qualquer modelo de embedding disponível no Ollama.' },
+  ],
+  voyage: [
+    { value: 'voyage-3', label: 'voyage-3 — general (recommended)', dim: 1024, desc: 'Modelo geral, multilingual. Pago via API. ~$0.06 / 1M tokens.' },
+    { value: 'voyage-3-lite', label: 'voyage-3-lite — cheaper, smaller', dim: 512, desc: 'Mais barato e leve. ~$0.02 / 1M tokens.' },
+    { value: 'voyage-code-3', label: 'voyage-code-3 — code-tuned', dim: 1024, desc: 'Especializado em código. Use se KB é majoritariamente código.' },
+    { value: '__custom__', label: 'Custom (advanced)…', dim: 0, desc: 'Qualquer modelo Voyage AI disponível.' },
+  ],
+};
+
+const EMBEDDER_PROVIDER_HELP = {
+  transformers: '🌐 <b>Local, offline</b> via @xenova/transformers. Modelos baixam automaticamente do HuggingFace na primeira utilização (cache em <code>~/.cache/huggingface</code>). Clique em <b>Test / Install</b> para forçar o download agora.',
+  ollama: '🦙 <b>Local via Ollama</b> (separado). Requer Ollama rodando (<code>ollama serve</code>). Clique em <b>Test / Install</b> para fazer <code>ollama pull &lt;modelo&gt;</code> automaticamente.',
+  voyage: '☁️ <b>Cloud, pago</b>. Requer variável de ambiente <code>VOYAGE_API_KEY</code> definida antes de iniciar o dashboard. Clique em <b>Test / Install</b> para validar a chave + modelo.',
+};
+
+function populateEmbedderModels(provider, currentModel) {
+  const sel = document.getElementById('embedder-model');
+  const list = EMBEDDER_MODELS[provider] || EMBEDDER_MODELS.transformers;
+  sel.innerHTML = list.map(m => `<option value="${m.value}">${m.label}</option>`).join('');
+  const known = list.find(m => m.value === currentModel);
+  if (known) {
+    sel.value = currentModel;
+    setEmbedderCustomMode(false, currentModel, known.dim);
+  } else if (currentModel) {
+    sel.value = '__custom__';
+    setEmbedderCustomMode(true, currentModel, _brainConfig?.embedder?.dimensions || 0);
+  } else {
+    sel.value = list[0].value;
+    setEmbedderCustomMode(false, list[0].value, list[0].dim);
+  }
+  refreshEmbedderHelp();
+}
+
+function refreshEmbedderHelp() {
+  const provider = document.getElementById('embedder-provider').value;
+  const sel = document.getElementById('embedder-model');
+  const providerHelp = document.getElementById('embedder-provider-help');
+  const modelHelp = document.getElementById('embedder-model-help');
+  if (providerHelp) providerHelp.innerHTML = EMBEDDER_PROVIDER_HELP[provider] || '';
+  const list = EMBEDDER_MODELS[provider] || [];
+  const picked = list.find(m => m.value === sel.value);
+  if (modelHelp) modelHelp.innerHTML = picked ? `<i>${picked.desc || ''}</i>` : '';
+}
+
+function setEmbedderCustomMode(isCustom, modelValue, dim) {
+  const customInput = document.getElementById('embedder-model-custom');
+  const dimInput = document.getElementById('embedder-dimensions');
+  if (isCustom) {
+    customInput.style.display = '';
+    customInput.value = modelValue || '';
+    dimInput.readOnly = false;
+    dimInput.style.background = '';
+    dimInput.style.cursor = '';
+    if (dim > 0) dimInput.value = dim;
+  } else {
+    customInput.style.display = 'none';
+    customInput.value = '';
+    dimInput.readOnly = true;
+    dimInput.style.background = 'var(--bg-hover)';
+    dimInput.style.cursor = 'not-allowed';
+    dimInput.value = dim || '';
+  }
+}
+
+function onEmbedderProviderChange() {
+  const provider = document.getElementById('embedder-provider').value;
+  populateEmbedderModels(provider, '');
+  resetEmbedderTestStatus();
+  updateEmbedderWarning();
+}
+
+function onEmbedderModelChange() {
+  const provider = document.getElementById('embedder-provider').value;
+  const sel = document.getElementById('embedder-model');
+  const list = EMBEDDER_MODELS[provider] || [];
+  const picked = list.find(m => m.value === sel.value);
+  if (sel.value === '__custom__') {
+    setEmbedderCustomMode(true, '', 0);
+  } else if (picked) {
+    setEmbedderCustomMode(false, picked.value, picked.dim);
+  }
+  refreshEmbedderHelp();
+  resetEmbedderTestStatus();
+  updateEmbedderWarning();
+}
+
+function resetEmbedderTestStatus() {
+  const el = document.getElementById('embedder-test-status');
+  if (el) { el.textContent = ''; el.style.color = ''; }
+}
+
+async function testEmbedder() {
+  const btn = document.getElementById('embedder-test-btn');
+  const status = document.getElementById('embedder-test-status');
+  const provider = document.getElementById('embedder-provider').value;
+  const model = getEffectiveEmbedderModel();
+  if (!model) { alert('Selecione ou informe um modelo.'); return; }
+  btn.disabled = true;
+  status.style.color = 'var(--fg-muted)';
+  status.textContent = (provider === 'transformers' || provider === 'ollama')
+    ? '⏳ Baixando/instalando modelo (pode levar 10–120s)…'
+    : '⏳ Validando…';
+  try {
+    const r = await api('POST', '/api/brain/embedder/test', { provider, model });
+    if (r && r.ok) {
+      status.style.color = 'var(--success)';
+      status.textContent = `✓ Pronto (dim=${r.dim}, ${r.ms}ms)`;
+      const dimInput = document.getElementById('embedder-dimensions');
+      if (r.dim && (dimInput.readOnly === false || !dimInput.value)) {
+        dimInput.value = r.dim;
+      }
+    } else {
+      status.style.color = 'var(--danger)';
+      status.textContent = `✗ ${r?.error || 'Falhou'}`;
+    }
+  } catch (err) {
+    status.style.color = 'var(--danger)';
+    status.textContent = `✗ ${err.message}`;
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function getEffectiveEmbedderModel() {
+  const sel = document.getElementById('embedder-model');
+  if (sel.value === '__custom__') {
+    return document.getElementById('embedder-model-custom').value.trim();
+  }
+  return sel.value;
+}
+
+function updateEmbedderWarning() {
+  const warn = document.getElementById('embedder-warn');
+  if (!warn || !_brainConfig) return;
+  const savedProvider = (_brainConfig.embedder || {}).provider || 'transformers';
+  const savedModel = (_brainConfig.embedder || {}).model || '';
+  const curProvider = document.getElementById('embedder-provider').value;
+  const curModel = getEffectiveEmbedderModel();
+  warn.style.display = (curProvider !== savedProvider || curModel !== savedModel) ? '' : 'none';
+}
+
 async function loadBrain() {
   // Load backend config into the form
   try {
@@ -632,9 +799,13 @@ async function loadBrain() {
 
     // Embedder
     const emb = _brainConfig.embedder || {};
-    document.getElementById('embedder-provider').value = emb.provider || 'transformers';
-    document.getElementById('embedder-model').value = emb.model || '';
-    document.getElementById('embedder-dimensions').value = emb.dimensions || '';
+    const provider = emb.provider || 'transformers';
+    document.getElementById('embedder-provider').value = provider;
+    populateEmbedderModels(provider, emb.model || '');
+    if (document.getElementById('embedder-model').value === '__custom__' && emb.dimensions) {
+      document.getElementById('embedder-dimensions').value = emb.dimensions;
+    }
+    updateEmbedderWarning();
 
     // KB
     const kb = _brainConfig.kb || {};
@@ -706,7 +877,12 @@ async function saveBrainBackendConfig() {
   // Embedder
   cfg.embedder = cfg.embedder || {};
   cfg.embedder.provider = document.getElementById('embedder-provider').value;
-  cfg.embedder.model = document.getElementById('embedder-model').value.trim();
+  const effectiveModel = getEffectiveEmbedderModel();
+  if (!effectiveModel) {
+    alert('Please choose an embedder model.');
+    return;
+  }
+  cfg.embedder.model = effectiveModel;
   const dims = parseInt(document.getElementById('embedder-dimensions').value);
   if (dims > 0) cfg.embedder.dimensions = dims;
 
