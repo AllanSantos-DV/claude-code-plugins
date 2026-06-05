@@ -379,6 +379,11 @@ code { color: var(--fg); }
     </div>
     <div class="flex flex-wrap gap-1 mb-1">
       <select id="brain-project" onchange="loadBrainStats()" style="max-width:200px"><option value="" data-i18n="brain.selectProject">Select project...</option></select>
+      <select id="brain-scope" style="max-width:140px" title="Plan #7: which memory scope to search">
+        <option value="project" data-i18n="brain.scopeProject">project</option>
+        <option value="user" data-i18n="brain.scopeUser">user (__user__)</option>
+        <option value="both" data-i18n="brain.scopeBoth">both</option>
+      </select>
       <input type="text" id="brain-query" data-i18n-placeholder="brain.searchPlaceholder" placeholder="Search query..." style="max-width:300px">
       <button class="btn-primary" onclick="searchBrain()" data-i18n="action.search">Search</button>
     </div>
@@ -532,6 +537,7 @@ const I18N = {
     'brain.archiveDays': 'Archive After (days)', 'brain.minBashLines': 'Min Bash Lines', 'brain.minOutputChars': 'Min Output Chars',
     'brain.curation': 'Curation Thresholds', 'brain.maxOutputChars': 'Max Output Chars', 'brain.maxOutputLines': 'Max Output Lines',
     'brain.selectProject': 'Select project...', 'brain.searchPlaceholder': 'Search query...',
+    'brain.scopeProject': 'project', 'brain.scopeUser': 'user (global)', 'brain.scopeBoth': 'both',
     'action.save': 'Save', 'action.search': 'Search',
     'hooks.title': 'Hook Registry', 'hooks.event': 'Event', 'hooks.matcher': 'Matcher',
     'hooks.script': 'Script', 'hooks.status': 'Status', 'hooks.action': 'Action',
@@ -576,6 +582,7 @@ const I18N = {
     'brain.archiveDays': 'Arquivar após (dias)', 'brain.minBashLines': 'Linhas Bash Mín.', 'brain.minOutputChars': 'Chars Output Mín.',
     'brain.curation': 'Thresholds de Curation', 'brain.maxOutputChars': 'Chars Output Máx.', 'brain.maxOutputLines': 'Linhas Output Máx.',
     'brain.selectProject': 'Selecione um projeto...', 'brain.searchPlaceholder': 'Buscar...',
+    'brain.scopeProject': 'projeto', 'brain.scopeUser': 'usuário (global)', 'brain.scopeBoth': 'ambos',
     'action.save': 'Salvar', 'action.search': 'Buscar',
     'hooks.title': 'Registro de Hooks', 'hooks.event': 'Evento', 'hooks.matcher': 'Matcher',
     'hooks.script': 'Script', 'hooks.status': 'Status', 'hooks.action': 'Ação',
@@ -1071,22 +1078,44 @@ function loadBrainStats() {
 async function searchBrain() {
   const project = document.getElementById('brain-project').value;
   const query = document.getElementById('brain-query').value;
+  const scope = document.getElementById('brain-scope').value || 'project';
   const el = document.getElementById('brain-results');
   if (!project || !query) { el.innerHTML = '<p class="text-muted">Select a project and enter a query.</p>'; return; }
   el.innerHTML = '<div class="spinner" style="margin:1rem auto"></div>';
   try {
-    const results = await api('GET', `/api/brain/search?q=${encodeURIComponent(query)}&project=${encodeURIComponent(project)}&k=20`);
+    const results = await api('GET', `/api/brain/search?q=${encodeURIComponent(query)}&project=${encodeURIComponent(project)}&scope=${encodeURIComponent(scope)}&k=20`);
     if (results.length === 0) { el.innerHTML = '<p class="text-muted">No results found.</p>'; return; }
-    el.innerHTML = '<table><thead><tr><th>Score</th><th>Type</th><th>Title</th><th>Summary</th><th>Actions</th></tr></thead><tbody>' +
-      results.map(r => `<tr>
+    el.innerHTML = '<table><thead><tr><th>Score</th><th>Scope</th><th>Type</th><th>Title</th><th>Summary</th><th>Actions</th></tr></thead><tbody>' +
+      results.map(r => {
+        const rowScope = r.scope || 'project';
+        const srcProject = rowScope === 'user' ? '__user__' : (r.project || project);
+        const moveTarget = rowScope === 'user' ? 'project' : 'user';
+        const moveLabel = rowScope === 'user' ? '→ project' : '→ user';
+        const chipClass = rowScope === 'user' ? 'tag-green' : '';
+        return `<tr>
         <td>${(r.score || 0).toFixed(2)}</td>
+        <td><span class="tag ${chipClass}">${rowScope}</span></td>
         <td><span class="tag">${r.type || 'note'}</span></td>
         <td class="truncate" style="max-width:200px" title="${r.title}">${r.title}</td>
         <td class="text-muted truncate" style="max-width:250px" title="${r.summary}">${r.summary || ''}</td>
-        <td><button class="btn-sm btn-primary" onclick="viewBrainEntry('${project}','${r.id}')">View</button> <button class="btn-sm btn-danger" onclick="deleteBrainEntry('${project}','${r.id}')">Delete</button></td>
-      </tr>`).join('') +
+        <td>
+          <button class="btn-sm btn-primary" onclick="viewBrainEntry('${srcProject}','${r.id}')">View</button>
+          <button class="btn-sm" onclick="moveBrainEntryScope('${srcProject}','${r.id}','${moveTarget}')">${moveLabel}</button>
+          <button class="btn-sm btn-danger" onclick="deleteBrainEntry('${srcProject}','${r.id}')">Delete</button>
+        </td>
+      </tr>`;
+      }).join('') +
       '</tbody></table>';
   } catch { el.innerHTML = '<p class="text-muted">Search failed.</p>'; }
+}
+
+async function moveBrainEntryScope(srcProject, id, targetScope) {
+  const label = targetScope === 'user' ? 'global user scope' : 'project scope';
+  if (!confirm(`Move this entry to ${label}? Paths/emails/project-name will be sanitized when promoting to user.`)) return;
+  try {
+    await api('PATCH', `/api/brain/entry/${id}/scope?project=${encodeURIComponent(srcProject)}`, { scope: targetScope });
+    searchBrain();
+  } catch (e) { alert('Move failed: ' + (e.message || e)); }
 }
 
 async function viewBrainEntry(project, id) {
