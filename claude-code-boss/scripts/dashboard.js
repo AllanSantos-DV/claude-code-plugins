@@ -469,6 +469,112 @@ async function moveBrainEntryScope(req, res, url) {
   } catch (e) { fail(res, e.message); }
 }
 
+// Plan #7 — export entries as portable JSON bundle.
+// GET /api/brain/export?scope=user
+// GET /api/brain/export?project=<name>
+// Response: { version, exportedAt, project, scope, entries: [{...entry, vector?}] }
+async function exportBrain(req, res, url) {
+  const scope = url.searchParams.get('scope') || '';
+  const projectArg = url.searchParams.get('project') || '';
+  const project = scope === 'user' ? USER_SENTINEL : projectArg;
+  if (!project) return fail(res, 'Missing scope=user or project=<name>', 400);
+  try {
+    const store = require('./brain-store.js');
+    store.init({ project });
+    const entries = await store.list();
+    const db = store._getDbForTests && store._getDbForTests();
+    const vectors = new Map();
+    if (db) {
+      const rows = db.prepare('SELECT entry_id, vector, dimensions FROM embeddings').all();
+      for (const r of rows) {
+        if (r.vector) vectors.set(r.entry_id, { vector: Array.from(new Float32Array(r.vector.buffer || r.vector)), dimensions: r.dimensions });
+      }
+    }
+    const out = entries.map(e => {
+      const v = vectors.get(e.id);
+      return v ? { ...e, vector: v.vector, dimensions: v.dimensions } : e;
+    });
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Content-Disposition': `attachment; filename="brain-${project}-${new Date().toISOString().slice(0, 10)}.json"`,
+    });
+    res.end(JSON.stringify({
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      project,
+      scope: scope || 'project',
+      count: out.length,
+      entries: out,
+    }, null, 2));
+  } catch (e) { fail(res, e.message); }
+}
+
+// Plan #7 — import entries from a JSON bundle.
+// POST /api/brain/import  body: { project?, scope?, conflict, entries }
+//   conflict: 'skip' | 'overwrite' | 'merge' (default: 'skip')
+//   project: destination override (else uses bundle.project / __user__ if scope=user)
+async function importBrain(req, res) {
+  let body = '';
+  for await (const chunk of req) body += chunk;
+  let bundle;
+  try { bundle = JSON.parse(body || '{}'); }
+  catch { return fail(res, 'Invalid JSON body', 400); }
+
+  const conflict = String(bundle.conflict || 'skip').toLowerCase();
+  if (!['skip', 'overwrite', 'merge'].includes(conflict)) {
+    return fail(res, 'conflict must be skip|overwrite|merge', 400);
+  }
+  const entries = Array.isArray(bundle.entries) ? bundle.entries : null;
+  if (!entries) return fail(res, 'entries[] required', 400);
+
+  const dstProject = bundle.scope === 'user' || bundle.project === USER_SENTINEL
+    ? USER_SENTINEL
+    : (bundle.project || '');
+  if (!dstProject) return fail(res, 'project or scope=user required', 400);
+
+  try {
+    const store = require('./brain-store.js');
+    const index = require('./brain-index.js');
+    const graph = require('./brain-graph.js');
+    store.init({ project: dstProject });
+    index.init({ project: dstProject });
+    graph.init({ project: dstProject });
+
+    let added = 0, skipped = 0, overwritten = 0, merged = 0, failed = 0;
+    for (const e of entries) {
+      try {
+        const incoming = { ...e, project: dstProject, scope: e.scope === 'user' ? 'user' : 'project' };
+        const vector = Array.isArray(e.vector) ? e.vector : null;
+        delete incoming.vector;
+        delete incoming.dimensions;
+
+        const existing = incoming.id ? store.getRaw(incoming.id) : null;
+        if (existing) {
+          if (conflict === 'skip') { skipped++; continue; }
+          if (conflict === 'merge') {
+            await store.merge(existing.id, { summary: incoming.summary, content: incoming.content, confidence: incoming.confidence });
+            merged++;
+            continue;
+          }
+          await store.save(incoming, vector);
+          await index.index(incoming);
+          await graph.registerNode(incoming);
+          overwritten++;
+        } else {
+          await store.save(incoming, vector);
+          await index.index(incoming);
+          await graph.registerNode(incoming);
+          added++;
+        }
+      } catch (err) {
+        console.error(`[DASHBOARD] import entry failed: ${err.message}`);
+        failed++;
+      }
+    }
+    json(res, { ok: true, project: dstProject, conflict, total: entries.length, added, skipped, overwritten, merged, failed });
+  } catch (e) { fail(res, e.message); }
+}
+
 function getBrainRelated(req, res, url) {
   const parts = url.pathname.split('/');
   const id = parts[parts.length - 1];
@@ -765,6 +871,8 @@ function handleAPI(req, res, url) {
   if (p === '/api/config/domains' && m === 'GET') return listConfigDomains(req, res);
   if (p === '/api/brain/projects' && m === 'GET') return getBrainProjects(req, res);
   if (p === '/api/brain/search' && m === 'GET') return searchBrain(req, res, url);
+  if (p === '/api/brain/export' && m === 'GET') return exportBrain(req, res, url);
+  if (p === '/api/brain/import' && m === 'POST') return importBrain(req, res);
   if (p.match(/^\/api\/brain\/entry\/[^/]+\/scope$/) && m === 'PATCH') return moveBrainEntryScope(req, res, url);
   if (p.match(/^\/api\/brain\/entry\//) && m === 'GET') return getBrainEntry(req, res, url);
   if (p.match(/^\/api\/brain\/entry\//) && m === 'DELETE') return deleteBrainEntry(req, res, url);
