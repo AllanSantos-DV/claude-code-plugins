@@ -1092,6 +1092,75 @@ test('scope: brain-store persists scope column and survives migration', async ()
   }
 });
 
+// ─── skill-promote-trigger (cooldown + cfg loader) ──────────────────────────
+const skillTrigger = require('./skill-promote-trigger.js');
+
+test('skill-promote-trigger.shouldRun: missing stamp → true', () => {
+  const stamp = path.join(process.env.CLAUDE_PLUGIN_DATA, 'skill-trigger-missing.stamp');
+  try { fs.unlinkSync(stamp); } catch { /* ok */ }
+  assert(skillTrigger.shouldRun(stamp, 60_000) === true);
+});
+
+test('skill-promote-trigger.shouldRun: fresh stamp → false', () => {
+  const stamp = path.join(process.env.CLAUDE_PLUGIN_DATA, 'skill-trigger-fresh.stamp');
+  fs.writeFileSync(stamp, String(Date.now()));
+  assert(skillTrigger.shouldRun(stamp, 60_000) === false);
+});
+
+test('skill-promote-trigger.shouldRun: stale stamp → true', () => {
+  const stamp = path.join(process.env.CLAUDE_PLUGIN_DATA, 'skill-trigger-stale.stamp');
+  fs.writeFileSync(stamp, String(Date.now() - 10 * 60_000));
+  assert(skillTrigger.shouldRun(stamp, 60_000) === true);
+});
+
+test('skill-promote-trigger.shouldRun: garbage stamp → true', () => {
+  const stamp = path.join(process.env.CLAUDE_PLUGIN_DATA, 'skill-trigger-garbage.stamp');
+  fs.writeFileSync(stamp, 'not-a-number');
+  assert(skillTrigger.shouldRun(stamp, 60_000) === true);
+});
+
+test('skill-promote-trigger.loadCfg: missing config → {}', () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-trigger-'));
+  assertEq(skillTrigger.loadCfg(tmpRoot), {});
+});
+
+test('skill-promote-trigger.loadCfg: reads kb.skillPromotion block', () => {
+  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-trigger-'));
+  fs.mkdirSync(path.join(tmpRoot, 'config'), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmpRoot, 'config', 'brain-config.json'),
+    JSON.stringify({ kb: { skillPromotion: { enabled: false, minRecurrence: 5 } } }),
+  );
+  const cfg = skillTrigger.loadCfg(tmpRoot);
+  assertEq(cfg.enabled, false);
+  assertEq(cfg.minRecurrence, 5);
+});
+
+// ─── brain-health (countPendingDrafts) ───────────────────────────────────────
+const brainHealth = require('./brain-health.js');
+
+test('brain-health.countPendingDrafts: missing dir → 0', () => {
+  if (!brainHealth.countPendingDrafts) return; // not exported yet
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pending-'));
+  const r = brainHealth.countPendingDrafts(tmp);
+  assertEq(r.count, 0);
+});
+
+test('brain-health.countPendingDrafts: counts only subdirs with SKILL.md', () => {
+  if (!brainHealth.countPendingDrafts) return;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pending-'));
+  const staging = path.join(tmp, 'skills-pending');
+  fs.mkdirSync(path.join(staging, 'a'), { recursive: true });
+  fs.writeFileSync(path.join(staging, 'a', 'SKILL.md'), '# a');
+  fs.mkdirSync(path.join(staging, 'b'), { recursive: true });
+  // b has no SKILL.md
+  fs.mkdirSync(path.join(staging, 'c'), { recursive: true });
+  fs.writeFileSync(path.join(staging, 'c', 'SKILL.md'), '# c');
+  fs.writeFileSync(path.join(staging, 'orphan.md'), '# not a dir');
+  const r = brainHealth.countPendingDrafts(tmp);
+  assertEq(r.count, 2);
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
