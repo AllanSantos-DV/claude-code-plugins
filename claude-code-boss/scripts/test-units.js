@@ -382,6 +382,90 @@ test('decision-detect: looksLikeDecision — trivial chore rejected', () => {
   assert(!dd.looksLikeDecision('fix typo'), 'trivial fix rejected');
 });
 
+// ─── config-testers (registry + per-domain) ──────────────────────────────────
+const testers = require('./config-testers');
+
+test('config-testers: registry lists all 4 domains', () => {
+  const list = testers.list();
+  for (const d of ['embedder', 'mcp-memory', 'curation', 'hooks']) {
+    assert(list.includes(d), `missing domain: ${d}`);
+  }
+});
+
+test('config-testers: unknown domain returns ok=false', async () => {
+  const out = await testers.run('unknown-domain-xyz', {});
+  assert(out.ok === false, 'should be false');
+  assert(/Unknown domain/.test(out.error), `expected "Unknown domain" got: ${out.error}`);
+});
+
+test('config-testers: embedder rejects invalid provider', async () => {
+  const out = await testers.run('embedder', { provider: 'bogus', model: 'x' });
+  assert(out.ok === false, 'should be false');
+  assert(/Invalid provider/.test(out.error), `expected "Invalid provider" got: ${out.error}`);
+});
+
+test('config-testers: embedder requires model', async () => {
+  const out = await testers.run('embedder', { provider: 'transformers', model: '' });
+  assert(out.ok === false, 'should be false');
+  assert(/Model is required/.test(out.error), `expected "Model is required" got: ${out.error}`);
+});
+
+test('config-testers: mcp-memory rejects nonexistent jar', async () => {
+  const out = await testers.run('mcp-memory', { jarPath: '/nonexistent/path/to.jar' });
+  assert(out.ok === false, 'should be false');
+  assert(/JAR file not found/.test(out.error), `expected "JAR file not found" got: ${out.error}`);
+});
+
+test('config-testers: mcp-memory rejects empty jar and empty url', async () => {
+  const out = await testers.run('mcp-memory', { jarPath: '', downloadUrl: '' });
+  assert(out.ok === false, 'should be false');
+  assert(/downloadUrl is empty|empty/.test(out.error), `expected empty-url err got: ${out.error}`);
+});
+
+test('config-testers: mcp-memory rejects non-JAR file (no PK magic)', async () => {
+  const tmp = path.join(process.env.CLAUDE_PLUGIN_DATA, 'not-a-jar.jar');
+  fs.writeFileSync(tmp, 'hello world this is not a jar');
+  const out = await testers.run('mcp-memory', { jarPath: tmp });
+  assert(out.ok === false, 'should be false');
+  assert(/not a valid JAR/.test(out.error), `expected "not a valid JAR" got: ${out.error}`);
+});
+
+test('config-testers: curation resolves valid paths', async () => {
+  const dataDir = process.env.CLAUDE_PLUGIN_DATA;
+  const scriptsDir = path.join(dataDir, 'scripts');
+  const shellsCfg = path.join(dataDir, 'shells.json');
+  fs.mkdirSync(scriptsDir, { recursive: true });
+  fs.writeFileSync(path.join(scriptsDir, 'foo.mjs'), '// test');
+  fs.writeFileSync(shellsCfg, JSON.stringify({ shells: [{ id: 'x', command: 'echo' }] }));
+  const out = await testers.run('curation', { cwd: dataDir, scriptsDir: 'scripts', shellsConfigPath: 'shells.json' });
+  assert(out.ok === true, `expected ok=true, got ${JSON.stringify(out)}`);
+  assert(out.details.scriptCount === 1, `expected 1 script, got ${out.details.scriptCount}`);
+  assert(out.details.shellCount === 1, `expected 1 shell, got ${out.details.shellCount}`);
+});
+
+test('config-testers: curation rejects invalid JSON in shells', async () => {
+  const dataDir = process.env.CLAUDE_PLUGIN_DATA;
+  const shellsCfg = path.join(dataDir, 'shells-bad.json');
+  fs.writeFileSync(shellsCfg, '{ not: valid json ');
+  const out = await testers.run('curation', { cwd: dataDir, shellsConfigPath: 'shells-bad.json' });
+  assert(out.ok === false, 'should be false');
+  assert(/invalid JSON/.test(out.error), `expected "invalid JSON" got: ${out.error}`);
+});
+
+test('config-testers: hooks validates this repo hooks.json (all green)', async () => {
+  const out = await testers.run('hooks', { hooksRoot: ROOT });
+  assert(out.ok === true, `expected ok=true, got: ${out.error || ''} (missing=${out.details?.missing?.length}, syntaxErrors=${out.details?.syntaxErrors?.length})`);
+  assert(out.details.checked > 5, `expected >5 hooks, got ${out.details.checked}`);
+  assert(out.details.missing.length === 0, `unexpected missing: ${JSON.stringify(out.details.missing)}`);
+});
+
+test('config-testers: hooks reports missing script', async () => {
+  const fakeCfg = { hooks: { SessionStart: [{ hooks: [{ command: 'node "${CLAUDE_PLUGIN_ROOT}/scripts/does-not-exist.js"' }] }] } };
+  const out = await testers.run('hooks', { hooksRoot: ROOT, hooksConfig: fakeCfg });
+  assert(out.ok === false, 'should be false');
+  assert(out.details.missing.length === 1, `expected 1 missing, got ${out.details.missing.length}`);
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);

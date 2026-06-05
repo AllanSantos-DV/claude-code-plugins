@@ -7,6 +7,7 @@ const os = require('os');
 const crypto = require('crypto');
 
 const { getShellsConfigPath } = require('./curation-paths.js');
+const configTesters = require('./config-testers');
 
 // Session token — generated at boot, injected into index.html, required on all /api/* requests.
 const SESSION_TOKEN = crypto.randomBytes(16).toString('hex');
@@ -270,61 +271,24 @@ async function testEmbedder(req, res) {
   let body;
   try { body = JSON.parse(await readBody(req)); }
   catch { return fail(res, 'Invalid JSON body', 400); }
-  const provider = body.provider;
-  const model = (body.model || '').trim();
-  if (!['transformers', 'ollama', 'voyage'].includes(provider)) return fail(res, 'Invalid provider', 400);
-  if (!model) return fail(res, 'Model is required', 400);
-  const t0 = Date.now();
-  try {
-    if (provider === 'transformers') {
-      const { pipeline } = await import('@xenova/transformers');
-      const extractor = await pipeline('feature-extraction', model, { quantized: true });
-      const out = await extractor('test', { pooling: 'mean', normalize: true });
-      const dim = out.data.length;
-      return json(res, { ok: true, dim, ms: Date.now() - t0 });
-    }
-    if (provider === 'ollama') {
-      const { spawn } = require('child_process');
-      const pullResult = await new Promise((resolve) => {
-        const p = spawn('ollama', ['pull', model], { stdio: ['ignore', 'pipe', 'pipe'] });
-        let stderr = '';
-        p.stderr.on('data', (d) => { stderr += d.toString(); });
-        p.on('error', (err) => resolve({ ok: false, error: `Ollama not installed or not in PATH: ${err.message}` }));
-        p.on('close', (code) => resolve(code === 0 ? { ok: true } : { ok: false, error: `ollama pull exited ${code}: ${stderr.slice(-200)}` }));
-      });
-      if (!pullResult.ok) return json(res, pullResult);
-      const embedRes = await fetch('http://localhost:11434/api/embeddings', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model, prompt: 'test' }),
-      }).catch(err => ({ ok: false, _err: err.message }));
-      if (embedRes._err) return json(res, { ok: false, error: `Ollama embed call failed: ${embedRes._err}` });
-      if (!embedRes.ok) return json(res, { ok: false, error: `Ollama embed HTTP ${embedRes.status}` });
-      const data = await embedRes.json();
-      const dim = (data.embedding || []).length;
-      if (!dim) return json(res, { ok: false, error: 'Ollama returned empty embedding' });
-      return json(res, { ok: true, dim, ms: Date.now() - t0 });
-    }
-    if (provider === 'voyage') {
-      const apiKey = process.env.VOYAGE_API_KEY;
-      if (!apiKey) return json(res, { ok: false, error: 'VOYAGE_API_KEY env var not set. Set it before starting the dashboard.' });
-      const r = await fetch('https://api.voyageai.com/v1/embeddings', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ input: 'test', model }),
-      });
-      if (!r.ok) {
-        const txt = await r.text().catch(() => '');
-        return json(res, { ok: false, error: `Voyage HTTP ${r.status}: ${txt.slice(0, 200)}` });
-      }
-      const data = await r.json();
-      const dim = (data.data?.[0]?.embedding || []).length;
-      if (!dim) return json(res, { ok: false, error: 'Voyage returned empty embedding' });
-      return json(res, { ok: true, dim, ms: Date.now() - t0 });
-    }
-  } catch (err) {
-    return json(res, { ok: false, error: err.message });
-  }
+  const out = await configTesters.run('embedder', body);
+  // Legacy shape: {ok, dim, ms} flat — keep for backwards-compat.
+  if (out.ok) return json(res, { ok: true, dim: out.dim, ms: out.ms });
+  return json(res, { ok: false, error: out.error, ms: out.ms });
+}
+
+async function testConfig(req, res) {
+  let body;
+  try { body = JSON.parse(await readBody(req)); }
+  catch { return fail(res, 'Invalid JSON body', 400); }
+  const domain = body && body.domain;
+  if (!domain) return fail(res, 'Missing "domain"', 400);
+  const out = await configTesters.run(domain, body.input || {});
+  json(res, out);
+}
+
+function listConfigDomains(req, res) {
+  json(res, { domains: configTesters.list() });
 }
 
 // ─── API: Brain ────────────────────────────────────────────────────
@@ -609,6 +573,8 @@ function handleAPI(req, res, url) {
   if (p === '/api/brain/backend-config' && m === 'PUT') return saveBrainConfig(req, res);
   if (p === '/api/brain/backend-restart' && m === 'POST') return restartDashboard(req, res);
   if (p === '/api/brain/embedder/test' && m === 'POST') return testEmbedder(req, res);
+  if (p === '/api/config/test' && m === 'POST') return testConfig(req, res);
+  if (p === '/api/config/domains' && m === 'GET') return listConfigDomains(req, res);
   if (p === '/api/brain/projects' && m === 'GET') return getBrainProjects(req, res);
   if (p === '/api/brain/search' && m === 'GET') return searchBrain(req, res, url);
   if (p.match(/^\/api\/brain\/entry\//) && m === 'GET') return getBrainEntry(req, res, url);
