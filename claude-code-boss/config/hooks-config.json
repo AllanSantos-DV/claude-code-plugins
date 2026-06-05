@@ -14,5 +14,12 @@
   "curationStop": {
     "enabled": true,
     "maxAttempts": 3
+  },
+  "projectSnapshot": {
+    "enabled": true,
+    "includeGh": "auto",
+    "dirtyAgeThresholdHours": 24,
+    "maxItemsPerSection": 5,
+    "cacheTtlSeconds": 300
   }
 }
