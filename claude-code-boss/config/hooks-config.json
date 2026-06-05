@@ -21,5 +21,11 @@
     "dirtyAgeThresholdHours": 24,
     "maxItemsPerSection": 5,
     "cacheTtlSeconds": 300
+  },
+  "failureRetro": {
+    "enabled": true,
+    "minFailures": 2,
+    "timeWindowMin": 10,
+    "consecutiveThreshold": 3
   }
 }

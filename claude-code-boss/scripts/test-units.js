@@ -528,6 +528,115 @@ test('project-snapshot: relTime sane formatting', () => {
   assert(snap.relTime(t) === '3h ago', `expected "3h ago", got ${snap.relTime(t)}`);
 });
 
+// ─── failure-detect + failure-retro (loop detection) ─────────────────────────
+const fdetect = require('./failure-detect.js');
+const fretro = require('./failure-retro.js');
+const fjournal = require('./lib/failure-journal.js');
+const cooldownStore = require('./lib/cooldown-store.js');
+
+test('failure-detect: normalizeCmd strips timestamps and SHAs', () => {
+  const a = fdetect.normalizeCmd('git log --since 1733433600');
+  assert(a.includes('<TS>'), `expected <TS>, got ${a}`);
+  const b = fdetect.normalizeCmd('git checkout 4407bcf28a');
+  assert(b.includes('<SHA>'), `expected <SHA>, got ${b}`);
+});
+
+test('failure-detect: normalizeCmd caps length + collapses whitespace', () => {
+  const long = 'x'.repeat(500);
+  const out = fdetect.normalizeCmd(long);
+  assert(out.length === 200, `expected 200, got ${out.length}`);
+  assert(fdetect.normalizeCmd('a   b\n\tc') === 'a b c', 'whitespace collapse');
+});
+
+test('failure-detect: parseExitCode reads leading Exit code N', () => {
+  assert(fdetect.parseExitCode('Exit code 137\nKilled') === 137);
+  assert(fdetect.parseExitCode('no exit here') === null);
+});
+
+test('failure-detect: extractTarget pulls command then file_path', () => {
+  assertEq(fdetect.extractTarget({ command: 'npm test' }), 'npm test');
+  assertEq(fdetect.extractTarget({ file_path: '/x/y.ts' }), '/x/y.ts');
+  assertEq(fdetect.extractTarget(null), '');
+});
+
+test('failure-detect: buildEntry shape', () => {
+  const ev = { tool_name: 'Bash', tool_input: { command: 'npm test' }, error: 'Exit code 1\nfoo', duration_ms: 42 };
+  const e = fdetect.buildEntry(ev);
+  assertEq(e.tool, 'Bash');
+  assertEq(e.cmd, 'npm test');
+  assertEq(e.exitCode, 1);
+  assert(e.snippet === 'foo', `snippet=${e.snippet}`);
+  assert(e.duration === 42, 'duration kept');
+  assert(Number.isFinite(e.ts), 'ts set');
+});
+
+test('failure-retro: 1 failure → no trigger', () => {
+  const entries = [{ ts: Date.now(), tool: 'Bash', cmd: 'npm test', exitCode: 1 }];
+  const trig = fretro.evaluateTriggers(entries, { minFailures: 2, timeWindowMin: 10, consecutiveThreshold: 3 });
+  assert(trig.length === 0, `expected 0, got ${trig.length}`);
+});
+
+test('failure-retro: same cmd 2x within window → repeated trigger', () => {
+  const now = Date.now();
+  const entries = [
+    { ts: now - 60000, tool: 'Bash', cmd: 'npm test', exitCode: 1 },
+    { ts: now, tool: 'Bash', cmd: 'npm test', exitCode: 1 },
+  ];
+  const trig = fretro.evaluateTriggers(entries, { minFailures: 2, timeWindowMin: 10, consecutiveThreshold: 3 }, now);
+  assert(trig.some(t => t.kind === 'repeated'), `expected repeated, got ${JSON.stringify(trig.map(x => x.kind))}`);
+});
+
+test('failure-retro: failures outside window ignored', () => {
+  const now = Date.now();
+  const entries = [
+    { ts: now - 30 * 60 * 1000, tool: 'Bash', cmd: 'npm test', exitCode: 1 },
+    { ts: now - 25 * 60 * 1000, tool: 'Bash', cmd: 'npm test', exitCode: 1 },
+  ];
+  const trig = fretro.evaluateTriggers(entries, { minFailures: 2, timeWindowMin: 10, consecutiveThreshold: 3 }, now);
+  assert(trig.length === 0, `expected 0, got ${trig.length}`);
+});
+
+test('failure-retro: 3 different failures → consecutive trigger', () => {
+  const now = Date.now();
+  const entries = [
+    { ts: now - 3000, tool: 'Bash', cmd: 'a', exitCode: 1 },
+    { ts: now - 2000, tool: 'Bash', cmd: 'b', exitCode: 2 },
+    { ts: now - 1000, tool: 'Bash', cmd: 'c', exitCode: 3 },
+  ];
+  const trig = fretro.evaluateTriggers(entries, { minFailures: 5, timeWindowMin: 10, consecutiveThreshold: 3 }, now);
+  assert(trig.some(t => t.kind === 'consecutive'), `expected consecutive, got ${JSON.stringify(trig.map(x => x.kind))}`);
+});
+
+test('failure-retro: buildRetroPrompt has 4 numbered steps', () => {
+  const trig = [{ kind: 'repeated', key: 'k', group: [{ tool: 'Bash', cmd: 'npm test', exitCode: 1, ts: Date.now() }] }];
+  const md = fretro.buildRetroPrompt(trig);
+  assert(md.includes('1. '), '1.');
+  assert(md.includes('2. '), '2.');
+  assert(md.includes('3. '), '3.');
+  assert(md.includes('4. '), '4.');
+  assert(md.includes('capture_lesson'), 'mentions capture_lesson');
+});
+
+test('cooldown-store: has/add roundtrip + isolation', () => {
+  const sid = `cooltest-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  assert(!cooldownStore.has(sid, 'k1'), 'fresh has nothing');
+  cooldownStore.add(sid, 'k1');
+  assert(cooldownStore.has(sid, 'k1'), 'add registered');
+  assert(!cooldownStore.has(sid, 'k2'), 'k2 still absent');
+  cooldownStore.clear(sid);
+  assert(!cooldownStore.has(sid, 'k1'), 'clear wiped');
+});
+
+test('failure-journal: append + read roundtrip', () => {
+  const sid = `fjtest-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  fjournal.appendEntry(sid, { ts: 1, tool: 'Bash', cmd: 'a', exitCode: 1 });
+  fjournal.appendEntry(sid, { ts: 2, tool: 'Bash', cmd: 'b', exitCode: 2 });
+  const all = fjournal.readEntries(sid);
+  assert(all.length === 2, `expected 2 entries, got ${all.length}`);
+  fjournal.clearEntries(sid);
+  assert(fjournal.readEntries(sid).length === 0, 'clear wiped');
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
