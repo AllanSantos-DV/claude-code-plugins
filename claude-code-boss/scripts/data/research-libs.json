@@ -1,0 +1,21 @@
+{
+  "_comment": "Curated external libs/frameworks/SaaS the active-research detector watches for. Word-boundary matched, case-insensitive. Add liberally; remove only on proven false-positive volume.",
+  "libs": [
+    "next.js", "nextjs", "react", "vue", "svelte", "sveltekit", "angular", "solidjs", "qwik", "astro", "remix", "nuxt",
+    "express", "fastify", "hono", "koa", "nestjs", "django", "flask", "fastapi", "rails", "laravel",
+    "prisma", "drizzle", "typeorm", "sequelize", "mongoose", "kysely",
+    "postgres", "postgresql", "mysql", "sqlite", "mongodb", "redis", "elasticsearch", "opensearch", "clickhouse",
+    "stripe", "twilio", "sendgrid", "mailgun", "resend", "auth0", "clerk", "supabase", "firebase", "vercel", "netlify", "cloudflare",
+    "openai", "anthropic", "claude", "gemini", "langchain", "llamaindex", "ollama",
+    "axios", "fetch", "got", "ky", "undici",
+    "tailwind", "tailwindcss", "shadcn", "radix", "headlessui", "chakra", "mui", "antd",
+    "zustand", "redux", "recoil", "jotai", "mobx",
+    "tanstack", "react-query", "swr", "trpc",
+    "vite", "webpack", "esbuild", "rollup", "turbopack", "parcel",
+    "jest", "vitest", "mocha", "playwright", "cypress", "puppeteer",
+    "bun", "deno", "node", "pnpm", "yarn",
+    "docker", "kubernetes", "terraform", "ansible",
+    "github actions", "gitlab ci", "circleci",
+    "webhook", "webhooks", "oauth", "oauth2", "jwt", "saml"
+  ]
+}

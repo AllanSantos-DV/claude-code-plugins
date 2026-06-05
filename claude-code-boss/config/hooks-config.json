@@ -27,5 +27,18 @@
     "minFailures": 2,
     "timeWindowMin": 10,
     "consecutiveThreshold": 3
+  },
+  "activeResearch": {
+    "enabled": true,
+    "triggers": {
+      "libMention": true,
+      "versionMention": true,
+      "bestPracticeAsk": true,
+      "integrationMention": true
+    },
+    "maxPerSession": 3,
+    "cooldownMinutes": 60,
+    "depth": "quick",
+    "fireThreshold": 1.0
   }
 }

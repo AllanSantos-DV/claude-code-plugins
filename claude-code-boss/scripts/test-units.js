@@ -756,6 +756,84 @@ test('brain-store: recordCitation persists + bumps when SQLite available', async
   }
 });
 
+// ─── active-research-detect (Plan #4) ────────────────────────────────────────
+const ardetect = require('./active-research-detect.js');
+const arstate = require('./lib/active-research-state.js');
+
+test('active-research: detectSignals — libMention fires for known lib', () => {
+  const sigs = ardetect.detectSignals('How do I configure Stripe webhooks?', ardetect.DEFAULTS.triggers);
+  const kinds = sigs.map(s => s.kind).sort();
+  // stripe → libMention; "webhooks" → integrationMention
+  assert(kinds.includes('libMention'), `expected libMention, got ${kinds.join(',')}`);
+  assert(kinds.includes('integrationMention'), `expected integrationMention, got ${kinds.join(',')}`);
+});
+
+test('active-research: detectSignals — neutral prompt → 0 signals', () => {
+  const sigs = ardetect.detectSignals('rename function getCwd to getCurrentWorkingDirectory', ardetect.DEFAULTS.triggers);
+  assertEq(sigs.length, 0);
+});
+
+test('active-research: detectSignals — bestPracticeAsk', () => {
+  const sigs = ardetect.detectSignals('what is the best way to handle errors here?', ardetect.DEFAULTS.triggers);
+  assert(sigs.some(s => s.kind === 'bestPracticeAsk'), 'bestPracticeAsk expected');
+});
+
+test('active-research: detectSignals — versionMention', () => {
+  const sigs = ardetect.detectSignals('upgrade to next.js v15.0.0', ardetect.DEFAULTS.triggers);
+  const kinds = sigs.map(s => s.kind);
+  assert(kinds.includes('versionMention'), `expected versionMention, got ${kinds}`);
+  assert(kinds.includes('libMention'), `expected libMention (next.js), got ${kinds}`);
+});
+
+test('active-research: shouldFire — libMention (1.0) alone passes threshold', () => {
+  assert(ardetect.shouldFire([{ kind: 'libMention', weight: 1.0 }]) === true);
+});
+
+test('active-research: shouldFire — bestPractice alone (0.7) below threshold', () => {
+  assert(ardetect.shouldFire([{ kind: 'bestPracticeAsk', weight: 0.7 }]) === false);
+});
+
+test('active-research: shouldFire — best+integration (0.7+0.8=1.5) passes', () => {
+  assert(ardetect.shouldFire([
+    { kind: 'bestPracticeAsk', weight: 0.7 },
+    { kind: 'integrationMention', weight: 0.8 },
+  ]) === true);
+});
+
+test('active-research: normalizeQuery — strips code/url, lowercases, caps 120', () => {
+  const long = 'How do I integrate Stripe `webhooks` with my app? See https://stripe.com/docs. Also more.';
+  const q = ardetect.normalizeQuery(long);
+  assert(q.length <= 120, `len=${q.length}`);
+  assert(!q.includes('https://'), 'url stripped');
+  assert(!q.includes('`'), 'backticks stripped');
+  assert(q === q.toLowerCase(), 'lowercased');
+  assert(q.includes('stripe'), 'kept stripe');
+});
+
+test('active-research: normalizeQuery — takes first sentence only', () => {
+  const q = ardetect.normalizeQuery('First sentence. Second one with lib stripe.');
+  assertEq(q, 'first sentence');
+});
+
+test('active-research: lib regex word-boundary — "next month" not matched as next.js', () => {
+  const sigs = ardetect.detectSignals('see you next month at the conference', ardetect.DEFAULTS.triggers);
+  const libs = sigs.filter(s => s.kind === 'libMention');
+  assertEq(libs.length, 0);
+});
+
+test('active-research-state: recordFire bumps count + cooldown applies', () => {
+  arstate.resetForTests();
+  const sid = `arstest-${Date.now()}`;
+  assertEq(arstate.getSessionCount(sid), 0);
+  arstate.recordFire(sid, 'how do i use stripe');
+  assertEq(arstate.getSessionCount(sid), 1);
+  assert(arstate.isCoolingDown('how do i use stripe', 60_000) === true, 'cooldown active');
+  assert(arstate.isCoolingDown('different query', 60_000) === false, 'other query not cooled');
+  arstate.recordFire(sid, 'another query');
+  assertEq(arstate.getSessionCount(sid), 2);
+  arstate.resetForTests();
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
