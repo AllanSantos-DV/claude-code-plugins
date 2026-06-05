@@ -241,6 +241,10 @@ code { color: var(--fg); }
           </div>
         </div>
         <p id="java-check-msg" class="text-muted" style="margin-top:.5rem;font-size:.75rem"></p>
+        <div style="margin-top:.5rem;display:flex;align-items:center;gap:.5rem">
+          <button class="btn-primary btn-sm" id="mcp-test-btn" onclick="testMcpMemory()" data-i18n="brain.testInstall">Test / Install</button>
+          <span id="mcp-test-status" class="text-muted" style="font-size:.75rem"></span>
+        </div>
       </div>
     </div>
 
@@ -771,6 +775,67 @@ function getEffectiveEmbedderModel() {
     return document.getElementById('embedder-model-custom').value.trim();
   }
   return sel.value;
+}
+
+// ─── Generic config Test helper ────────────────────────────────────
+// Usage: wireConfigTest({btnId, statusId, domain, getInput, onSuccess?, pendingLabel?})
+function wireConfigTest({ btnId, statusId, domain, getInput, onSuccess, pendingLabel }) {
+  const btn = document.getElementById(btnId);
+  if (!btn) return;
+  btn.addEventListener('click', async () => {
+    const status = document.getElementById(statusId);
+    btn.disabled = true;
+    if (status) { status.style.color = 'var(--fg-muted)'; status.textContent = pendingLabel || '⏳ Testing…'; }
+    try {
+      const r = await api('POST', '/api/config/test', { domain, input: getInput() });
+      if (r && r.ok) {
+        if (status) {
+          status.style.color = 'var(--success)';
+          const detail = r.details ? Object.entries(r.details).filter(([k,v])=>v!=null).slice(0,3).map(([k,v])=>`${k}=${typeof v==='string'?v:JSON.stringify(v)}`).join(' ') : '';
+          status.textContent = `✓ ${detail} (${r.ms}ms)`;
+        }
+        if (onSuccess) onSuccess(r);
+      } else {
+        if (status) { status.style.color = 'var(--danger)'; status.textContent = `✗ ${r?.error || 'Failed'}`; }
+      }
+    } catch (err) {
+      if (status) { status.style.color = 'var(--danger)'; status.textContent = `✗ ${err.message}`; }
+    } finally {
+      btn.disabled = false;
+    }
+  });
+}
+
+async function testMcpMemory() {
+  const btn = document.getElementById('mcp-test-btn');
+  const status = document.getElementById('mcp-test-status');
+  const jarPath = document.getElementById('mcp-jar-path').value.trim();
+  const downloadUrl = (_brainConfig && _brainConfig.backend && _brainConfig.backend.mcpMemory && _brainConfig.backend.mcpMemory.downloadUrl) || '';
+  const expectedSha256 = (_brainConfig && _brainConfig.backend && _brainConfig.backend.mcpMemory && _brainConfig.backend.mcpMemory.expectedSha256) || '';
+  btn.disabled = true;
+  status.style.color = 'var(--fg-muted)';
+  status.textContent = '⏳ Validating jar + Java…';
+  try {
+    const r = await api('POST', '/api/config/test', { domain: 'mcp-memory', input: { jarPath, downloadUrl, expectedSha256 } });
+    if (r && r.ok) {
+      status.style.color = 'var(--success)';
+      const d = r.details || {};
+      const parts = [];
+      if (d.action) parts.push(d.action);
+      if (d.jarSize) parts.push(`${Math.round(d.jarSize/1024/1024)}MB`);
+      else if (d.downloadSize) parts.push(`download ${Math.round(d.downloadSize/1024/1024)}MB`);
+      if (d.javaVersion) parts.push(`java ${d.javaVersion}`);
+      status.textContent = `✓ ${parts.join(' · ')} (${r.ms}ms)`;
+    } else {
+      status.style.color = 'var(--danger)';
+      status.textContent = `✗ ${r?.error || 'Failed'}`;
+    }
+  } catch (err) {
+    status.style.color = 'var(--danger)';
+    status.textContent = `✗ ${err.message}`;
+  } finally {
+    btn.disabled = false;
+  }
 }
 
 function updateEmbedderWarning() {
