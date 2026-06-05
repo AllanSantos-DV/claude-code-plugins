@@ -1227,6 +1227,43 @@ test('research-followup.decideNudge: newer trigger after stamp → nudge again',
   assertEq(r.reason, 'pending-capture');
 });
 
+// ─── decision-scan-response (response-mode shape detector) ──────────────────
+const dsr = require('./decision-scan-response.js');
+
+test('decision-scan-response: choice + rationale (en) → match', () => {
+  const t = "I'll use SQLite instead of DuckDB because it's embed-friendly and zero-config.";
+  const out = dsr.findDecisionSpan(t);
+  assert(out, `expected match, got ${out}`);
+  assert(/SQLite/.test(out));
+});
+
+test('decision-scan-response: choice + rationale (pt-BR) → match', () => {
+  const t = 'Vou usar SQLite em vez de DuckDB porque embed é mais simples.';
+  const out = dsr.findDecisionSpan(t);
+  assert(out, `expected match, got ${out}`);
+});
+
+test('decision-scan-response: choice without rationale → no match', () => {
+  assertEq(dsr.findDecisionSpan("I'll use SQLite for storage."), null);
+});
+
+test('decision-scan-response: rationale without choice verb → no match', () => {
+  assertEq(dsr.findDecisionSpan('this works because of caching'), null);
+});
+
+test('decision-scan-response: too short → no match', () => {
+  assertEq(dsr.findDecisionSpan('use X over Y'), null);
+});
+
+test('decision-scan-response: spanKey is sid+hash deterministic', () => {
+  const k1 = dsr.spanKey('s1', 'use foo over bar because perf');
+  const k2 = dsr.spanKey('s1', 'use foo over bar because perf');
+  const k3 = dsr.spanKey('s2', 'use foo over bar because perf');
+  assertEq(k1, k2);
+  assert(k1 !== k3);
+  assert(k1.startsWith('resp:s1:'));
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
