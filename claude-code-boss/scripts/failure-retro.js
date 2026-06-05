@@ -25,6 +25,7 @@ const failureJournal = require('./lib/failure-journal.js');
 const cooldown = require('./lib/cooldown-store.js');
 const turnJournal = require('./lib/turn-journal.js');
 const hooksCfg = require('./lib/hooks-config.js');
+const metrics = require('./lib/metrics.js');
 
 function loadConfig() {
   const cfg = hooksCfg.load();
@@ -118,6 +119,10 @@ async function main() {
   if (!fresh.length) return emitEmpty();
 
   for (const t of fresh) cooldown.add(sid, t.key);
+  for (const t of fresh) {
+    metrics.fire('failure.retro.fired', { kind: t.kind, count: t.group?.length || 0 },
+      { sessionId: sid, cwd: ev.cwd });
+  }
   emitStopBlock(buildRetroPrompt(fresh));
 }
 

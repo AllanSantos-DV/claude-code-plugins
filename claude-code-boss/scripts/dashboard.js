@@ -561,6 +561,101 @@ function clearLogs(req, res) {
   json(res, { ok: true });
 }
 
+// ─── API: Metrics (Plan #5) ────────────────────────────────────────
+
+function listMetricsProjects() {
+  const brainBaseDir = path.join(DATA_DIR, 'brain');
+  if (!fs.existsSync(brainBaseDir)) return [];
+  return fs.readdirSync(brainBaseDir)
+    .filter(p => fs.existsSync(path.join(brainBaseDir, p, 'brain.db')));
+}
+
+async function aggregateAcrossProjects(projects, op) {
+  const store = require('./brain-store.js');
+  const results = [];
+  for (const project of projects) {
+    try {
+      // Cycle the store per-project (single-instance module).
+      try { await store.close(); } catch { /* noop */ }
+      await store.init({ project, skipEmbedder: true });
+      results.push({ project, value: op(store) });
+    } catch (err) {
+      console.error(`[DASHBOARD] metrics aggregate failed (${project}): ${err.message}`);
+    }
+  }
+  return results;
+}
+
+async function getMetricsSummary(req, res, url) {
+  try {
+    const range = Math.max(1, Math.min(90, parseInt(url.searchParams.get('range') || '7', 10)));
+    const projectFilter = url.searchParams.get('project') || '';
+    const projects = projectFilter ? [projectFilter] : listMetricsProjects();
+    if (projects.length === 0) {
+      return json(res, { rangeDays: range, totals: {}, daily: [], projects: [] });
+    }
+
+    const perProject = await aggregateAcrossProjects(projects, s => s.getMetricsSummary(range));
+
+    const totals = {};
+    const dailyMap = new Map(); // `${date}|${event}` → count
+    for (const { value } of perProject) {
+      for (const [name, n] of Object.entries(value.totals || {})) {
+        totals[name] = (totals[name] || 0) + n;
+      }
+      for (const row of value.daily || []) {
+        const key = `${row.date}|${row.event_name}`;
+        dailyMap.set(key, (dailyMap.get(key) || 0) + row.count);
+      }
+    }
+    const daily = [...dailyMap.entries()].map(([k, count]) => {
+      const [date, event_name] = k.split('|');
+      return { date, event_name, count };
+    }).sort((a, b) => a.date.localeCompare(b.date) || a.event_name.localeCompare(b.event_name));
+
+    json(res, {
+      rangeDays: range,
+      projects: projects,
+      totals,
+      daily,
+    });
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/metrics/summary failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
+async function getMetricsEventLog(req, res, url) {
+  try {
+    const eventName = url.searchParams.get('event') || null;
+    const limit = Math.max(1, Math.min(500, parseInt(url.searchParams.get('limit') || '50', 10)));
+    const projectFilter = url.searchParams.get('project') || '';
+    const projects = projectFilter ? [projectFilter] : listMetricsProjects();
+
+    const perProject = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName, limit }));
+    const all = [];
+    for (const { value } of perProject) all.push(...value);
+    all.sort((a, b) => b.ts - a.ts);
+    json(res, { events: all.slice(0, limit) });
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/metrics/event-log failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
+async function postMetricsCleanup(req, res, url) {
+  try {
+    const keepDays = Math.max(1, Math.min(365, parseInt(url.searchParams.get('keepDays') || '30', 10)));
+    const projects = listMetricsProjects();
+    const per = await aggregateAcrossProjects(projects, s => s.cleanupMetrics(keepDays));
+    const deleted = per.reduce((s, p) => s + (p.value || 0), 0);
+    json(res, { ok: true, keepDays, deleted, projects: per.map(p => ({ project: p.project, deleted: p.value })) });
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/metrics/cleanup failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
 // ─── Router ────────────────────────────────────────────────────────
 
 function handleAPI(req, res, url) {
@@ -589,6 +684,9 @@ function handleAPI(req, res, url) {
   if (p.match(/^\/api\/curation\/shells\/\d+$/) && m === 'DELETE') return deleteCurationShell(req, res, url);
   if (p === '/api/logs' && m === 'GET') return getLogs(req, res);
   if (p === '/api/logs/clear' && m === 'POST') return clearLogs(req, res);
+  if (p === '/api/metrics/summary' && m === 'GET') return getMetricsSummary(req, res, url);
+  if (p === '/api/metrics/event-log' && m === 'GET') return getMetricsEventLog(req, res, url);
+  if (p === '/api/metrics/cleanup' && m === 'POST') return postMetricsCleanup(req, res, url);
 
   json(res, { error: 'Not found' }, 404);
 }

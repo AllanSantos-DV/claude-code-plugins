@@ -161,6 +161,7 @@ async function main() {
       await store.init({ project });
       for (const c of cited) {
         store.recordCitation(c.id);
+        store.recordMetric('retrieve.cited', { entryId: c.id }, sid);
       }
     } catch (err) {
       console.error(`[retrieval-feedback] recordCitation failed: ${err.message}`);
