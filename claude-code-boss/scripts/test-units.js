@@ -931,6 +931,142 @@ test('metrics: cleanupMetrics deletes rows older than cutoff', async () => {
   }
 });
 
+// ─── Plan #7 — scope sanitizer + two-pass retrieval helpers ─────────────────
+
+test('scope: inferDefaultScope routes by type then by tag hints', () => {
+  const { inferDefaultScope } = require('./lib/scope-sanitizer.js');
+  assertEq(inferDefaultScope('decision', []), 'project');
+  assertEq(inferDefaultScope('code', []), 'project');
+  assertEq(inferDefaultScope('reference', []), 'user');
+  assertEq(inferDefaultScope('research', []), 'user');
+  assertEq(inferDefaultScope('lesson', []), 'project');
+  assertEq(inferDefaultScope('lesson', ['workflow']), 'user');
+  assertEq(inferDefaultScope('lesson', ['Token-Efficiency']), 'user');
+  assertEq(inferDefaultScope('pattern', ['agent-behavior']), 'user');
+  assertEq(inferDefaultScope('note', ['some-random-tag']), 'project');
+});
+
+test('scope: sanitizeForUserScope strips paths, emails, project name', () => {
+  const { sanitizeForUserScope } = require('./lib/scope-sanitizer.js');
+  const out = sanitizeForUserScope(
+    'In C:\\Users\\allan\\Desktop\\Projetos\\claude-code, also /home/joe/repo and /Users/anna/work; ping me at user@example.com — see claude-code thing',
+    'claude-code'
+  );
+  if (out.includes('allan')) throw new Error(`Windows path not stripped: ${out}`);
+  if (out.includes('/home/joe')) throw new Error(`Unix /home not stripped: ${out}`);
+  if (out.includes('/Users/anna')) throw new Error(`/Users not stripped: ${out}`);
+  if (out.includes('user@example.com')) throw new Error(`Email not stripped: ${out}`);
+  if (/\bclaude-code\b/.test(out)) throw new Error(`Project name not stripped: ${out}`);
+  if (!out.includes('<email>') || !out.includes('<project>') || !out.includes('~')) {
+    throw new Error(`Expected sanitization tokens in: ${out}`);
+  }
+});
+
+test('scope: sanitizeForUserScope is safe with empty/null and no project', () => {
+  const { sanitizeForUserScope } = require('./lib/scope-sanitizer.js');
+  assertEq(sanitizeForUserScope('', 'anything'), '');
+  assertEq(sanitizeForUserScope(null, 'anything'), '');
+  // No project arg → don't try to escape, just clean paths/emails
+  const out = sanitizeForUserScope('hello /home/x and foo@bar.io', null);
+  if (out.includes('/home/x')) throw new Error('path not stripped');
+  if (out.includes('foo@bar.io')) throw new Error('email not stripped');
+});
+
+test('scope: detectSecrets catches well-known prefixes, ignores benign text', () => {
+  const { detectSecrets } = require('./lib/scope-sanitizer.js');
+  // Positive cases
+  if (!detectSecrets('here is sk-' + 'A'.repeat(40) + ' token')) throw new Error('sk- not detected');
+  if (!detectSecrets('ghp_' + 'a'.repeat(36))) throw new Error('ghp_ not detected');
+  if (!detectSecrets('AKIA' + 'BCDEFGHIJKLMNOP1')) throw new Error('AKIA not detected');
+  if (!detectSecrets('AIza' + 'a'.repeat(35))) throw new Error('AIza not detected');
+  if (!detectSecrets('xoxb-' + 'a'.repeat(20))) throw new Error('xoxb not detected');
+  // Negative
+  if (detectSecrets('totally benign text about an api key')) throw new Error('false positive on benign');
+  if (detectSecrets('')) throw new Error('false positive on empty');
+  if (detectSecrets(null)) throw new Error('false positive on null');
+});
+
+test('scope: splitTopK splits topK by ratio with sensible floors', () => {
+  const { splitTopK } = require('./lib/scope-search.js');
+  // Default ratio 0.6
+  let s = splitTopK(5, 0.6);
+  assertEq(s.projectK, 3);
+  assertEq(s.userK, 2);
+  s = splitTopK(10, 0.6);
+  assertEq(s.projectK, 6);
+  assertEq(s.userK, 4);
+  // All project
+  s = splitTopK(5, 1);
+  assertEq(s.projectK, 5);
+  assertEq(s.userK, 0);
+  // All user (project floors to 1)
+  s = splitTopK(5, 0);
+  assertEq(s.projectK, 1);
+  assertEq(s.userK, 4);
+  // Edge: topK=1 → projectK=1, userK=0
+  s = splitTopK(1, 0.6);
+  assertEq(s.projectK, 1);
+  assertEq(s.userK, 0);
+  // Invalid ratio → clamped to [0,1], default fallback
+  s = splitTopK(5);
+  assertEq(s.projectK + s.userK, 5);
+});
+
+test('scope: mergeResults dedups by id (project wins) and sorts by score', () => {
+  const { mergeResults } = require('./lib/scope-search.js');
+  const project = [
+    { id: 'a', score: 0.9, title: 'project-A' },
+    { id: 'b', score: 0.5, title: 'project-B' },
+  ];
+  const user = [
+    { id: 'a', score: 0.95, title: 'user-A' }, // dup id — project wins
+    { id: 'c', score: 0.7, title: 'user-C' },
+  ];
+  const merged = mergeResults(project, user, 5);
+  assertEq(merged.length, 3);
+  // Order by score desc
+  assertEq(merged[0].id, 'a');
+  assertEq(merged[0].title, 'project-A'); // project version, not user's
+  assertEq(merged[0].scope, 'project');
+  assertEq(merged[1].id, 'c');
+  assertEq(merged[1].scope, 'user');
+  assertEq(merged[2].id, 'b');
+  assertEq(merged[2].scope, 'project');
+  // Cap to topK
+  const capped = mergeResults(project, user, 2);
+  assertEq(capped.length, 2);
+});
+
+test('scope: brain-store persists scope column and survives migration', async () => {
+  const fs = require('fs');
+  const os = require('os');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'brain-scope-'));
+  const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
+  process.env.CLAUDE_PLUGIN_DATA = tmp;
+  delete require.cache[require.resolve('./brain-store.js')];
+  const isolated = require('./brain-store.js');
+  try {
+    await isolated.init({ project: 'p1', skipEmbedder: true });
+    const e1 = { type: 'note', title: 'project-default', summary: 's', tags: [], scope: 'project' };
+    await isolated.save(e1);
+    const e2 = { type: 'note', title: 'user-scope', summary: 's', tags: [], scope: 'user' };
+    await isolated.save(e2);
+    const got1 = await isolated.get(e1.id);
+    const got2 = await isolated.get(e2.id);
+    assertEq(got1.scope, 'project');
+    assertEq(got2.scope, 'user');
+    // Entry without explicit scope falls back to 'project'
+    const e3 = { type: 'note', title: 'no-scope', summary: 's', tags: [] };
+    await isolated.save(e3);
+    const got3 = await isolated.get(e3.id);
+    assertEq(got3.scope, 'project');
+  } finally {
+    try { await isolated.close(); } catch { /* ignore */ }
+    delete require.cache[require.resolve('./brain-store.js')];
+    process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
+  }
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
