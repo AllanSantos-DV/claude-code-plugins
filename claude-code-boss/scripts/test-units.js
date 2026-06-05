@@ -1161,6 +1161,72 @@ test('brain-health.countPendingDrafts: counts only subdirs with SKILL.md', () =>
   assertEq(r.count, 2);
 });
 
+// ─── research-followup-detect (decideNudge purity) ──────────────────────────
+const researchFollowup = require('./research-followup-detect.js');
+
+test('research-followup.decideNudge: no fire → no nudge', () => {
+  const r = researchFollowup.decideNudge([], null);
+  assert(r.nudge === false);
+  assertEq(r.reason, 'no-fire');
+});
+
+test('research-followup.decideNudge: fire + no capture → nudge', () => {
+  const events = [
+    { eventName: 'research.auto.triggered', ts: 1000, payload: { signals: ['libMention'] } },
+  ];
+  const r = researchFollowup.decideNudge(events, null);
+  assert(r.nudge === true);
+  assertEq(r.reason, 'pending-capture');
+});
+
+test('research-followup.decideNudge: fire + capture(type=research) AFTER → no nudge', () => {
+  const events = [
+    { eventName: 'lesson.captured', ts: 2000, payload: { type: 'research' } },
+    { eventName: 'research.auto.triggered', ts: 1000, payload: { signals: ['libMention'] } },
+  ];
+  const r = researchFollowup.decideNudge(events, null);
+  assert(r.nudge === false);
+  assertEq(r.reason, 'captured');
+});
+
+test('research-followup.decideNudge: fire + capture(type=lesson) → still nudge', () => {
+  const events = [
+    { eventName: 'lesson.captured', ts: 2000, payload: { type: 'lesson' } },
+    { eventName: 'research.auto.triggered', ts: 1000, payload: { signals: ['libMention'] } },
+  ];
+  const r = researchFollowup.decideNudge(events, null);
+  assert(r.nudge === true);
+  assertEq(r.reason, 'pending-capture');
+});
+
+test('research-followup.decideNudge: fire + capture BEFORE fire → still nudge', () => {
+  const events = [
+    { eventName: 'research.auto.triggered', ts: 2000, payload: { signals: ['libMention'] } },
+    { eventName: 'lesson.captured', ts: 1000, payload: { type: 'research' } },
+  ];
+  const r = researchFollowup.decideNudge(events, null);
+  assert(r.nudge === true);
+});
+
+test('research-followup.decideNudge: stamp matches latest trigger → already-nudged', () => {
+  const events = [
+    { eventName: 'research.auto.triggered', ts: 1000, payload: { signals: ['libMention'] } },
+  ];
+  const r = researchFollowup.decideNudge(events, { firedAt: 1000 });
+  assert(r.nudge === false);
+  assertEq(r.reason, 'already-nudged');
+});
+
+test('research-followup.decideNudge: newer trigger after stamp → nudge again', () => {
+  const events = [
+    { eventName: 'research.auto.triggered', ts: 3000, payload: { signals: ['libMention'] } },
+    { eventName: 'research.auto.triggered', ts: 1000, payload: { signals: ['libMention'] } },
+  ];
+  const r = researchFollowup.decideNudge(events, { firedAt: 1000 });
+  assert(r.nudge === true);
+  assertEq(r.reason, 'pending-capture');
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
