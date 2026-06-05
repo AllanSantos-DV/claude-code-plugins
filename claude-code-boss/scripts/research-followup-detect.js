@@ -22,7 +22,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const { readStdin, parsePayload, emitEmpty, emitJson } = require('./lib/hook-io.js');
+const { readStdin, parsePayload, emitEmpty, emitStopBlock } = require('./lib/hook-io.js');
 
 function dataDir() {
   const env = process.env.CLAUDE_PLUGIN_DATA;
@@ -117,12 +117,7 @@ async function main() {
 
   writeStamp(sp, { firedAt: decision.latestTrigger.ts, nudgedAt: Date.now() });
 
-  return emitJson({
-    hookSpecificOutput: {
-      hookEventName: 'Stop',
-      additionalContext: buildNudgeText(decision.latestTrigger),
-    },
-  });
+  return emitStopBlock(buildNudgeText(decision.latestTrigger));
 }
 
 if (require.main === module) {
