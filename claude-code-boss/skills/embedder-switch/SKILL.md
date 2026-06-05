@@ -97,3 +97,7 @@ When the user is undecided, recommend by use case:
 - ❌ Skipping re-embed "to save time" — searches will silently return wrong results until re-embed runs.
 - ❌ Telling the user "now restart Claude Code" — hooks handle it on next turn.
 - ❌ Running Test/Install for a custom model without warning the user about download size (mpnet ~110 MB, mxbai ~669 MB).
+
+## Decision capture
+
+If the user made a non-trivial choice during this workflow (e.g. picked one provider/model over another with a stated reason), call `capture_lesson({type:'decision', title, summary, detail, tags:["decision","architecture","embedder"], sourceUrl: <commit-sha-or-PR-url>})` once after the swap is done. The `decision-detect` hook will also nudge you on the next Stop if a `git commit` / `gh pr create` body looked decision-shaped — don't capture twice for the same key.
