@@ -894,6 +894,11 @@ function handleAPI(req, res, url) {
 }
 
 function serveStatic(req, res) {
+  // Browsers always probe /favicon.ico — no asset, no log spam.
+  if (req.url === '/favicon.ico') {
+    res.writeHead(204);
+    return res.end();
+  }
   let filePath = req.url === '/' ? path.join(DASHBOARD_DIR, 'index.html') : path.join(DASHBOARD_DIR, req.url);
   filePath = path.normalize(filePath);
   if (!filePath.startsWith(DASHBOARD_DIR)) {
@@ -903,7 +908,6 @@ function serveStatic(req, res) {
   try {
     let content = fs.readFileSync(filePath);
     const ext = path.extname(filePath);
-    // Inject session token into index.html so the SPA can authenticate API calls.
     if (filePath === path.join(DASHBOARD_DIR, 'index.html')) {
       const html = content.toString('utf-8').replace(
         '</head>',
@@ -915,14 +919,25 @@ function serveStatic(req, res) {
     res.writeHead(200, { 'Content-Type': MIME[ext] || 'application/octet-stream' });
     res.end(content);
   } catch (err) {
+    if (err.code === 'ENOENT') {
+      // SPA fallback only for navigation (no extension or .html); other missing
+      // assets get a quiet 404 so browser asset probes don't spam the log.
+      const ext = path.extname(filePath);
+      if (ext && ext !== '.html') {
+        res.writeHead(404);
+        return res.end('Not found');
+      }
+      const index = fs.readFileSync(path.join(DASHBOARD_DIR, 'index.html'));
+      const html = index.toString('utf-8').replace(
+        '</head>',
+        `<script>window.__DASHBOARD_TOKEN__ = '${SESSION_TOKEN}';</script>\n</head>`
+      );
+      res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+      return res.end(html);
+    }
     console.error(`[DASHBOARD] Static serve error: ${err.message}`);
-    const index = fs.readFileSync(path.join(DASHBOARD_DIR, 'index.html'));
-    const html = index.toString('utf-8').replace(
-      '</head>',
-      `<script>window.__DASHBOARD_TOKEN__ = '${SESSION_TOKEN}';</script>\n</head>`
-    );
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    res.end(html);
+    res.writeHead(500);
+    res.end('Server error');
   }
 }
 
