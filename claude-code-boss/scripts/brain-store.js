@@ -48,6 +48,7 @@ const DEFAULT_RERANK = {
   enabled: true,
   weights: { relevance: 0.5, recency: 0.2, frequency: 0.15, confidence: 0.15 },
   halfLifeDays: 30,
+  citationBoost: { enabled: true, alpha: 0.1, cap: 1.5 },
 };
 let _rerankCfg = null;
 
@@ -66,6 +67,7 @@ function loadRerankConfig() {
         enabled: r.enabled !== false,
         weights: { ...DEFAULT_RERANK.weights, ...(r.weights || {}) },
         halfLifeDays: r.halfLifeDays || DEFAULT_RERANK.halfLifeDays,
+        citationBoost: { ...DEFAULT_RERANK.citationBoost, ...(r.citationBoost || {}) },
       };
     }
   } catch { /* defaults */ }
@@ -80,9 +82,24 @@ function recencyScore(iso, halfLifeDays, nowMs) {
 }
 
 /**
+ * Multiplicative citation boost — entries that were actually cited in a past
+ * agent reply get re-ranked up softly. log1p damps so a single cite doesn't
+ * dominate; cap prevents runaway dominance for ancient hits.
+ * pure → unit-testable.
+ */
+function citationMultiplier(citedCount, cfg) {
+  if (!cfg || cfg.enabled === false) return 1;
+  const c = Math.max(0, Number(citedCount) || 0);
+  const alpha = typeof cfg.alpha === 'number' ? cfg.alpha : 0.1;
+  const cap = typeof cfg.cap === 'number' ? cfg.cap : 1.5;
+  const raw = 1 + alpha * Math.log1p(c);
+  return Math.min(raw, cap);
+}
+
+/**
  * Rerank candidates by combined score. Each candidate: { score (cosine),
- * confidence, accessCount, createdAt, lastAccessed, ... }. minScore already
- * applied on cosine (relevance gate) before calling this.
+ * confidence, accessCount, createdAt, lastAccessed, citedCount, ... }. minScore
+ * already applied on cosine (relevance gate) before calling this.
  */
 function applyRerank(candidates, opts = {}) {
   const cfg = loadRerankConfig();
@@ -110,13 +127,17 @@ function applyRerank(candidates, opts = {}) {
   };
   const nRel = norm('rel'), nRec = norm('rec'), nFreq = norm('freq');
 
+  const cb = cfg.citationBoost || {};
   for (const r of rows) {
     r.c.relevanceScore = r.rel;
-    r.c.rerankScore =
+    const base =
       w.relevance * nRel(r.rel) +
       w.recency * nRec(r.rec) +
       w.frequency * nFreq(r.freq) +
       w.confidence * r.conf;
+    const mult = citationMultiplier(r.c.citedCount || 0, cb);
+    r.c.citationMultiplier = mult;
+    r.c.rerankScore = base * mult;
   }
   return rows.sort((a, b) => b.c.rerankScore - a.c.rerankScore).map(r => r.c);
 }
@@ -241,6 +262,12 @@ function migrateSqlite() {
     if (!cols.includes('recurrence')) {
       _db.exec(`ALTER TABLE entries ADD COLUMN recurrence INTEGER NOT NULL DEFAULT 1`);
     }
+    if (!cols.includes('cited_count')) {
+      _db.exec(`ALTER TABLE entries ADD COLUMN cited_count INTEGER NOT NULL DEFAULT 0`);
+    }
+    if (!cols.includes('last_cited_ts')) {
+      _db.exec(`ALTER TABLE entries ADD COLUMN last_cited_ts INTEGER`);
+    }
   } catch (err) {
     console.error(`[BRAIN-STORE] migration error: ${err.message}`);
   }
@@ -336,7 +363,8 @@ async function searchSqlite(queryVector, opts = {}) {
   // Load all vectors + entries for this project
   const rows = _db.prepare(`
     SELECT e.id, e.title, e.summary, e.type, e.confidence, e.created_at,
-           e.last_accessed, e.access_count, em.vector, em.dimensions
+           e.last_accessed, e.access_count, e.cited_count, e.last_cited_ts,
+           em.vector, em.dimensions
     FROM entries e
     LEFT JOIN embeddings em ON em.entry_id = e.id
     WHERE e.project = ? ${type ? 'AND e.type = ?' : ''}
@@ -359,6 +387,8 @@ async function searchSqlite(queryVector, opts = {}) {
         createdAt: row.created_at,
         lastAccessed: row.last_accessed,
         accessCount: row.access_count,
+        citedCount: row.cited_count || 0,
+        lastCitedTs: row.last_cited_ts || null,
         score,
       });
     }
@@ -723,6 +753,28 @@ async function close() {
 
 function getStorageType() { return _useSqlite ? 'sqlite' : 'json'; }
 
+/**
+ * Mark an entry as cited (the agent actually used it in its reply). Bumps
+ * cited_count and refreshes last_cited_ts. SQLite-only; JSON fallback is a
+ * no-op (feedback loop only meaningful when persistence supports counters).
+ * Returns the new cited_count, or 0 on no-op / not-found.
+ */
+function recordCitation(id) {
+  if (!id || !_useSqlite) return 0;
+  try {
+    const ts = Date.now();
+    const info = _db.prepare(
+      `UPDATE entries SET cited_count = cited_count + 1, last_cited_ts = ? WHERE id = ?`
+    ).run(ts, id);
+    if (info.changes === 0) return 0;
+    const row = _db.prepare(`SELECT cited_count FROM entries WHERE id = ?`).get(id);
+    return row ? (row.cited_count || 0) : 0;
+  } catch (err) {
+    console.error(`[BRAIN-STORE] recordCitation(${id}) failed: ${err.message}`);
+    return 0;
+  }
+}
+
 function getStatus() {
   return {
     storage: _useSqlite ? 'sqlite' : (_useJson ? 'json' : 'none'),
@@ -736,4 +788,5 @@ module.exports = {
   init, save, get, getRaw, merge, prune, search, searchByKeywords,
   delete: delete_, list, count, close,
   getStorageType, getStatus, cosineSimilarity,
+  recordCitation, citationMultiplier,
 };
