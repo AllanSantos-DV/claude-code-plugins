@@ -48,17 +48,21 @@ function promote(keys) {
 function buildReason(items) {
   const lines = items.map((it, i) => {
     const snip = (it.snippet || '').replace(/\s+/g, ' ').trim().slice(0, 160);
-    const tag = it.kind === 'commit' ? 'commit' : (it.kind === 'pr-create' ? 'PR' : 'PR-edit');
+    const tag = it.kind === 'commit' ? 'commit'
+      : it.kind === 'pr-create' ? 'PR'
+      : it.kind === 'pr-edit' ? 'PR-edit'
+      : it.kind === 'response' ? 'response'
+      : it.kind || 'item';
     return `${i + 1}. [${tag} ${shortKey(it.key)}] ${snip}`;
   }).join('\n');
 
   return [
-    'You just committed/opened a PR whose message looks like an architectural decision (verb of choice + rationale, or multi-paragraph body):',
+    'You just committed/opened a PR/wrote a response whose content looks like an architectural decision (verb of choice + rationale, or multi-paragraph body):',
     '',
     lines,
     '',
     'For EACH that is a real decision (choice between alternatives + the *why*), call the `capture_lesson` MCP tool ONCE with:',
-    '  { type: "decision", title, summary, detail, tags: ["decision","architecture", <area>], sourceUrl: <commit-sha-or-PR-url> }',
+    '  { type: "decision", title, summary, detail, tags: ["decision","architecture", <area>], sourceUrl: <commit-sha-or-PR-url-or-empty-for-response> }',
     '',
     'Skip any that are pure chores/fixes with no rationale. Do not over-capture.',
   ].join('\n');
