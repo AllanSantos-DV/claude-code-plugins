@@ -643,17 +643,18 @@ const EMBEDDER_MODELS = {
     { value: '__custom__', label: 'Custom (advanced)…', dim: 0, desc: 'Qualquer modelo de embedding disponível no Ollama.' },
   ],
   voyage: [
-    { value: 'voyage-3', label: 'voyage-3 — general (recommended)', dim: 1024, desc: 'Modelo geral, multilingual. Pago via API. ~$0.06 / 1M tokens.' },
-    { value: 'voyage-3-lite', label: 'voyage-3-lite — cheaper, smaller', dim: 512, desc: 'Mais barato e leve. ~$0.02 / 1M tokens.' },
-    { value: 'voyage-code-3', label: 'voyage-code-3 — code-tuned', dim: 1024, desc: 'Especializado em código. Use se KB é majoritariamente código.' },
-    { value: '__custom__', label: 'Custom (advanced)…', dim: 0, desc: 'Qualquer modelo Voyage AI disponível.' },
+    { value: 'voyage-4-lite', label: 'voyage-4-lite — recommended (free tier)', dim: 1024, desc: 'Geral, multilingual. ✨ 200M tokens/mês grátis. $0.02/1M depois.' },
+    { value: 'voyage-4-large', label: 'voyage-4-large — best quality (free tier)', dim: 1024, desc: 'Melhor qualidade geral. ✨ 200M tokens/mês grátis. $0.12/1M depois.' },
+    { value: 'voyage-code-3', label: 'voyage-code-3 — code-tuned (free tier)', dim: 1024, desc: 'Otimizado para código. ✨ 200M tokens/mês grátis. $0.18/1M depois.' },
+    { value: 'voyage-context-3', label: 'voyage-context-3 — long context', dim: 1024, desc: 'Contexto longo (32K). ✨ 200M tokens/mês grátis.' },
+    { value: '__custom__', label: 'Custom (advanced)…', dim: 0, desc: 'Qualquer modelo Voyage AI disponível (incluindo voyage-3 legacy, sem free tier).' },
   ],
 };
 
 const EMBEDDER_PROVIDER_HELP = {
   transformers: '🌐 <b>Local, offline</b> via @xenova/transformers. Modelos baixam automaticamente do HuggingFace na primeira utilização (cache em <code>~/.cache/huggingface</code>). Clique em <b>Test / Install</b> para forçar o download agora.',
   ollama: '🦙 <b>Local via Ollama</b> (separado). Requer Ollama rodando (<code>ollama serve</code>). Clique em <b>Test / Install</b> para fazer <code>ollama pull &lt;modelo&gt;</code> automaticamente.',
-  voyage: '☁️ <b>Cloud, pago</b>. Requer variável de ambiente <code>VOYAGE_API_KEY</code> definida antes de iniciar o dashboard. Clique em <b>Test / Install</b> para validar a chave + modelo.',
+  voyage: '☁️ <b>Cloud</b>. ✨ Free tier: 200M tokens/mês grátis nos modelos voyage-4* e voyage-code-3. Crie chave em <code>dashboard.voyageai.com</code> e exporte <code>VOYAGE_API_KEY=pa-xxxx</code> antes de iniciar o dashboard. Clique em <b>Test / Install</b> para validar.',
 };
 
 function populateEmbedderModels(provider, currentModel) {
