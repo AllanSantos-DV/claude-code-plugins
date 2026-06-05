@@ -594,6 +594,102 @@ function getBrainRelated(req, res, url) {
   } catch (e) { fail(res, e.message); }
 }
 
+// ─── API: Skill Promotion ───────────────────────────────────────────
+// Lessons/patterns whose recurrence + confidence cleared the threshold can be
+// drafted into staged SKILL.md files, then approved into ~/.claude/skills/.
+// Backed by scripts/brain-promote.js (CLI). The dashboard shells out to it so
+// the CLI and UI agree on logic and avoid sqlite lock conflicts.
+
+const SKILL_STAGING_DIR = path.join(DATA_DIR, 'skills-pending');
+const GLOBAL_SKILLS_DIR = path.join(os.homedir(), '.claude', 'skills');
+
+function runBrainPromote(args) {
+  const scriptPath = path.join(ROOT, 'scripts', 'brain-promote.js');
+  const out = execSync(`"${process.execPath}" "${scriptPath}" ${args}`, {
+    encoding: 'utf-8',
+    env: { ...process.env, CLAUDE_PLUGIN_ROOT: ROOT, CLAUDE_PLUGIN_DATA: DATA_DIR },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  return JSON.parse(out.trim());
+}
+
+function getSkillPromotionConfig(req, res) {
+  let cfg = { enabled: true, minRecurrence: 3, minConfidence: 0.8, types: ['lesson', 'pattern'] };
+  try {
+    const cfgPath = path.join(ROOT, 'config', 'brain-config.json');
+    const sp = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'))?.kb?.skillPromotion;
+    if (sp) cfg = { ...cfg, ...sp };
+  } catch { /* defaults */ }
+  const brainDir = path.join(DATA_DIR, 'brain');
+  const projects = fs.existsSync(brainDir)
+    ? fs.readdirSync(brainDir).filter(d => fs.existsSync(path.join(brainDir, d, 'brain.db')))
+    : [];
+  json(res, { ok: true, config: cfg, projects, stagingDir: SKILL_STAGING_DIR, globalSkillsDir: GLOBAL_SKILLS_DIR });
+}
+
+async function scanSkillCandidates(req, res) {
+  let body = '';
+  for await (const chunk of req) body += chunk;
+  let parsed;
+  try { parsed = JSON.parse(body || '{}'); } catch { return fail(res, 'Invalid JSON body', 400); }
+  try {
+    const argv = ['scan'];
+    if (parsed.project) argv.push('--project', JSON.stringify(parsed.project));
+    if (parsed.minRecurrence) argv.push('--min-recurrence', String(parsed.minRecurrence));
+    if (parsed.minConfidence) argv.push('--min-confidence', String(parsed.minConfidence));
+    json(res, runBrainPromote(argv.join(' ')));
+  } catch (e) { fail(res, e.message); }
+}
+
+function listSkillDrafts(req, res) {
+  if (!fs.existsSync(SKILL_STAGING_DIR)) return json(res, { ok: true, pending: [] });
+  const slugs = fs.readdirSync(SKILL_STAGING_DIR)
+    .filter(d => fs.existsSync(path.join(SKILL_STAGING_DIR, d, 'SKILL.md')));
+  const pending = slugs.map(slug => {
+    const file = path.join(SKILL_STAGING_DIR, slug, 'SKILL.md');
+    const stat = fs.statSync(file);
+    let title = slug, description = '';
+    try {
+      const md = fs.readFileSync(file, 'utf-8');
+      const titleMatch = md.match(/^#\s+(.+)$/m);
+      if (titleMatch) title = titleMatch[1].trim();
+      const descMatch = md.match(/^description:\s*"([^"]*)"/m);
+      if (descMatch) description = descMatch[1];
+    } catch { /* leave defaults */ }
+    return { slug, title, description, mtime: stat.mtimeMs };
+  }).sort((a, b) => b.mtime - a.mtime);
+  json(res, { ok: true, pending });
+}
+
+function getSkillDraft(req, res, url) {
+  const slug = (url.searchParams.get('slug') || '').replace(/[^a-z0-9-]/gi, '');
+  if (!slug) return fail(res, 'slug required', 400);
+  const file = path.join(SKILL_STAGING_DIR, slug, 'SKILL.md');
+  if (!fs.existsSync(file)) return fail(res, 'draft not found', 404);
+  json(res, { ok: true, slug, content: fs.readFileSync(file, 'utf-8') });
+}
+
+async function approveSkillDraft(req, res) {
+  let body = '';
+  for await (const chunk of req) body += chunk;
+  let parsed;
+  try { parsed = JSON.parse(body || '{}'); } catch { return fail(res, 'Invalid JSON body', 400); }
+  const slug = (parsed.slug || '').replace(/[^a-z0-9-]/gi, '');
+  if (!slug) return fail(res, 'slug required', 400);
+  try {
+    json(res, runBrainPromote(`approve ${slug}`));
+  } catch (e) { fail(res, e.message); }
+}
+
+function discardSkillDraft(req, res, url) {
+  const slug = (url.searchParams.get('slug') || '').replace(/[^a-z0-9-]/gi, '');
+  if (!slug) return fail(res, 'slug required', 400);
+  const dir = path.join(SKILL_STAGING_DIR, slug);
+  if (!fs.existsSync(dir)) return fail(res, 'draft not found', 404);
+  fs.rmSync(dir, { recursive: true, force: true });
+  json(res, { ok: true, discarded: slug });
+}
+
 // ─── API: Curation ─────────────────────────────────────────────────
 
 function getCurationProjects(req, res) {
@@ -873,6 +969,12 @@ function handleAPI(req, res, url) {
   if (p === '/api/brain/search' && m === 'GET') return searchBrain(req, res, url);
   if (p === '/api/brain/export' && m === 'GET') return exportBrain(req, res, url);
   if (p === '/api/brain/import' && m === 'POST') return importBrain(req, res);
+  if (p === '/api/skill-promotion/config' && m === 'GET') return getSkillPromotionConfig(req, res);
+  if (p === '/api/skill-promotion/scan' && m === 'POST') return scanSkillCandidates(req, res);
+  if (p === '/api/skill-promotion/pending' && m === 'GET') return listSkillDrafts(req, res);
+  if (p === '/api/skill-promotion/draft' && m === 'GET') return getSkillDraft(req, res, url);
+  if (p === '/api/skill-promotion/draft' && m === 'DELETE') return discardSkillDraft(req, res, url);
+  if (p === '/api/skill-promotion/approve' && m === 'POST') return approveSkillDraft(req, res);
   if (p.match(/^\/api\/brain\/entry\/[^/]+\/scope$/) && m === 'PATCH') return moveBrainEntryScope(req, res, url);
   if (p.match(/^\/api\/brain\/entry\//) && m === 'GET') return getBrainEntry(req, res, url);
   if (p.match(/^\/api\/brain\/entry\//) && m === 'DELETE') return deleteBrainEntry(req, res, url);
