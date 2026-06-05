@@ -482,6 +482,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           if (hits.length > 0) {
             const merged = await kbStore.merge(hits[0].id, { summary: safeSummary, content: { detail: safeDetail || safeSummary }, confidence });
             if (storageProject !== currentProject) await getKB(currentProject);
+            try { kbStore.recordMetric('lesson.captured', { type, decision: 'merge', scope: effectiveScope, recurrence: merged?.recurrence }, null); } catch { /* metrics best-effort */ }
             return { content: [{ type: 'text', text: JSON.stringify({ decision: 'merge', id: hits[0].id, recurrence: merged?.recurrence, title: hits[0].title, project: storageProject, scope: effectiveScope }, null, 2) }] };
           }
         }
@@ -504,6 +505,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         await kbGraph.registerNode(entry);
 
         if (storageProject !== currentProject) await getKB(currentProject);
+        try { kbStore.recordMetric('lesson.captured', { type, decision: 'admit', scope: effectiveScope }, null); } catch { /* metrics best-effort */ }
         return { content: [{ type: 'text', text: JSON.stringify({ decision: 'admit', id: entry.id, type, project: storageProject, scope: effectiveScope }, null, 2) }] };
       } catch (err) {
         return { isError: true, content: [{ type: 'text', text: `capture_lesson failed: ${err.message}` }] };

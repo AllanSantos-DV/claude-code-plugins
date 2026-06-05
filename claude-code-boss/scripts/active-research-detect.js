@@ -143,6 +143,12 @@ function formatNudge(query, signals, depth) {
     `research_query({ query: ${JSON.stringify(query)}, depth: ${JSON.stringify(depth)} })`,
     '```',
     '',
+    'After researching, persist the findings so the next similar query reuses them:',
+    '',
+    '```',
+    `capture_lesson({ type: 'research', title: <short>, summary: <one-line>, detail: <findings + sources>, tags: ['research', <area>] })`,
+    '```',
+    '',
     'Skip if you already know the answer cold. One trigger per turn; throttled per session.',
   ].join('\n');
 }
