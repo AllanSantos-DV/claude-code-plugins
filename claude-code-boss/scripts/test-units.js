@@ -466,6 +466,68 @@ test('config-testers: hooks reports missing script', async () => {
   assert(out.details.missing.length === 1, `expected 1 missing, got ${out.details.missing.length}`);
 });
 
+// ─── project-snapshot (formatter + parsers) ──────────────────────────────────
+const snap = require('./project-snapshot.js');
+
+test('project-snapshot: parseGhJson handles valid array', () => {
+  const v = snap.parseGhJson('[{"a":1}]');
+  assert(Array.isArray(v) && v[0].a === 1, `expected parsed array, got ${JSON.stringify(v)}`);
+});
+
+test('project-snapshot: parseGhJson returns null on garbage', () => {
+  assert(snap.parseGhJson('not json') === null, 'should be null');
+  assert(snap.parseGhJson('') === null, 'empty should be null');
+});
+
+test('project-snapshot: format returns empty string when no data', () => {
+  assert(snap.formatSnapshot({ local: null, gh: null }) === '', 'empty inputs → empty');
+  assert(snap.formatSnapshot({ local: {}, gh: null }) === '', 'empty local + no gh → empty (no useful fields)');
+});
+
+test('project-snapshot: format renders branch + age', () => {
+  const md = snap.formatSnapshot({ local: { branch: 'main', branchAgeDays: 3, ahead: 0, behind: 0, dirtyOld: [], stashCount: 0 }, gh: null });
+  assert(/Project snapshot/.test(md), 'has header');
+  assert(/main \(tip 3d old\)/.test(md), `expected branch+age, got: ${md}`);
+  assert(!/Stashes/.test(md), 'should omit stash section when 0');
+  assert(!/vs main/.test(md), 'should omit ahead/behind when both 0');
+});
+
+test('project-snapshot: format renders ahead/behind only when non-zero', () => {
+  const md = snap.formatSnapshot({ local: { branch: 'feat/x', branchAgeDays: 1, ahead: 2, behind: 5, dirtyOld: [], stashCount: 0 }, gh: null });
+  assert(/vs main:\*\* 2 ahead, 5 behind/.test(md), `expected vs main, got: ${md}`);
+});
+
+test('project-snapshot: format truncates dirty file list at max', () => {
+  const dirty = Array.from({ length: 8 }, (_, i) => ({ file: `f${i}.js`, ageDays: 30 - i }));
+  const md = snap.formatSnapshot({ local: { branch: 'x', branchAgeDays: 0, ahead: 0, behind: 0, dirtyOld: dirty, stashCount: 0 }, gh: null, max: 3 });
+  assert(/\+5 more/.test(md), `expected "+5 more" tail, got: ${md}`);
+});
+
+test('project-snapshot: format renders CI status icons', () => {
+  const ok = snap.formatSnapshot({ local: null, gh: { lastCi: { conclusion: 'success', workflowName: 'CI', headBranch: 'main', createdAt: new Date().toISOString() }, openPRs: null, reviewRequests: null } });
+  assert(/✓ CI on main/.test(ok), `expected success icon, got: ${ok}`);
+  const fail = snap.formatSnapshot({ local: null, gh: { lastCi: { conclusion: 'failure', workflowName: 'CI', headBranch: 'main', createdAt: new Date().toISOString() }, openPRs: null, reviewRequests: null } });
+  assert(/✗ CI/.test(fail), `expected failure icon, got: ${fail}`);
+});
+
+test('project-snapshot: format flags draft PRs', () => {
+  const md = snap.formatSnapshot({ local: null, gh: { openPRs: [{ number: 87, title: 'wip', isDraft: true }], lastCi: null, reviewRequests: null } });
+  assert(/#87\(draft\) wip/.test(md), `expected draft tag, got: ${md}`);
+});
+
+test('project-snapshot: format hard-caps total length', () => {
+  const huge = Array.from({ length: 200 }, (_, i) => ({ file: `path/to/some/file${i}.tsx`, ageDays: i }));
+  const md = snap.formatSnapshot({ local: { branch: 'x', branchAgeDays: 0, ahead: 0, behind: 0, dirtyOld: huge, stashCount: 0 }, gh: null, max: 200 });
+  assert(md.length <= 1400, `expected <=1400, got ${md.length}`);
+});
+
+test('project-snapshot: relTime sane formatting', () => {
+  assert(snap.relTime(null) === '?', 'null → ?');
+  assert(snap.relTime(new Date().toISOString()) === 'now', `expected "now", got ${snap.relTime(new Date().toISOString())}`);
+  const t = new Date(Date.now() - 3 * 3600 * 1000).toISOString();
+  assert(snap.relTime(t) === '3h ago', `expected "3h ago", got ${snap.relTime(t)}`);
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
