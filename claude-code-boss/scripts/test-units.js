@@ -1264,6 +1264,113 @@ test('decision-scan-response: spanKey is sid+hash deterministic', () => {
   assert(k1.startsWith('resp:s1:'));
 });
 
+// ─── skill-roi (aggregateSkillRoi) ───────────────────────────────────────────
+const skillRoi = require('./lib/skill-roi.js');
+
+test('skill-roi: empty inputs → []', () => {
+  assertEq(skillRoi.aggregateSkillRoi([], []).length, 0);
+});
+
+test('skill-roi: counts invocations and outcomes per skill', () => {
+  const inv = [
+    { payload: { skillName: 'a' } },
+    { payload: { skillName: 'a' } },
+    { payload: { skillName: 'b' } },
+  ];
+  const out = [
+    { payload: { skillName: 'a', success: 1 } },
+    { payload: { skillName: 'a', success: 0 } },
+    { payload: { skillName: 'b', success: 1 } },
+  ];
+  const rows = skillRoi.aggregateSkillRoi(inv, out);
+  const a = rows.find(r => r.skillName === 'a');
+  const b = rows.find(r => r.skillName === 'b');
+  assertEq(a.invocations, 2);
+  assertEq(a.outcomes_recorded, 2);
+  assertEq(a.successes, 1);
+  assertEq(a.success_rate, 0.5);
+  assertEq(b.success_rate, 1);
+});
+
+test('skill-roi: success_rate null when no outcomes recorded', () => {
+  const rows = skillRoi.aggregateSkillRoi([{ payload: { skillName: 'x' } }], []);
+  assertEq(rows[0].success_rate, null);
+  assertEq(rows[0].warn, false);
+});
+
+test('skill-roi: warn flag fires only at threshold (≥10 invocations & <30%)', () => {
+  const inv = Array.from({ length: 12 }, () => ({ payload: { skillName: 'low' } }));
+  const out = Array.from({ length: 10 }, (_, i) => ({ payload: { skillName: 'low', success: i < 2 ? 1 : 0 } }));
+  const rows = skillRoi.aggregateSkillRoi(inv, out);
+  assertEq(rows[0].warn, true);
+  assertEq(rows[0].invocations, 12);
+});
+
+test('skill-roi: warn=false when invocations <10 even with low rate', () => {
+  const inv = Array.from({ length: 5 }, () => ({ payload: { skillName: 'few' } }));
+  const out = Array.from({ length: 5 }, () => ({ payload: { skillName: 'few', success: 0 } }));
+  const rows = skillRoi.aggregateSkillRoi(inv, out);
+  assertEq(rows[0].warn, false);
+});
+
+test('skill-roi: rows sorted by invocations desc', () => {
+  const inv = [
+    { payload: { skillName: 'low' } },
+    { payload: { skillName: 'high' } },
+    { payload: { skillName: 'high' } },
+    { payload: { skillName: 'high' } },
+  ];
+  const rows = skillRoi.aggregateSkillRoi(inv, []);
+  assertEq(rows[0].skillName, 'high');
+  assertEq(rows[1].skillName, 'low');
+});
+
+test('skill-roi: skips events without skillName', () => {
+  const inv = [{ payload: {} }, { payload: { skillName: 'ok' } }];
+  const rows = skillRoi.aggregateSkillRoi(inv, []);
+  assertEq(rows.length, 1);
+  assertEq(rows[0].skillName, 'ok');
+});
+
+// ─── skill-success-detect (computeOutcomes) ──────────────────────────────────
+const ssd = require('./skill-success-detect.js');
+
+test('skill-success-detect: skill before any failure → success=1', () => {
+  const inv = [{ id: 1, ts: 100, payload: { skillName: 'foo' } }];
+  const fail = [];
+  const out = ssd.computeOutcomes(inv, fail, []);
+  assertEq(out.length, 1);
+  assertEq(out[0].success, 1);
+  assertEq(out[0].skillName, 'foo');
+});
+
+test('skill-success-detect: failure after skill → success=0', () => {
+  const inv = [{ id: 1, ts: 100, payload: { skillName: 'foo' } }];
+  const fail = [{ id: 9, ts: 200 }];
+  const out = ssd.computeOutcomes(inv, fail, []);
+  assertEq(out[0].success, 0);
+});
+
+test('skill-success-detect: failure BEFORE skill → success=1', () => {
+  const inv = [{ id: 1, ts: 200, payload: { skillName: 'foo' } }];
+  const fail = [{ id: 9, ts: 100 }];
+  const out = ssd.computeOutcomes(inv, fail, []);
+  assertEq(out[0].success, 1);
+});
+
+test('skill-success-detect: settled ids are skipped', () => {
+  const inv = [{ id: 1, ts: 100, payload: { skillName: 'foo' } }];
+  const out = ssd.computeOutcomes(inv, [], [1]);
+  assertEq(out.length, 0);
+});
+
+test('skill-success-detect: skips entries without skillName', () => {
+  const inv = [{ id: 1, ts: 100, payload: {} }, { id: 2, ts: 100, payload: { skillName: 'ok' } }];
+  const out = ssd.computeOutcomes(inv, [], []);
+  assertEq(out.length, 1);
+  assertEq(out[0].skillName, 'ok');
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);

@@ -11,6 +11,7 @@ const configTesters = require('./config-testers');
 const { USER_SENTINEL, prepareForUserScope } = require('./lib/scope-sanitizer.js');
 const { searchTwoPass } = require('./lib/scope-search.js');
 const { extractKeywords } = require('./lib/text-utils.js');
+const { aggregateSkillRoi } = require('./lib/skill-roi.js');
 
 // Session token — generated at boot, injected into index.html, required on all /api/* requests.
 const SESSION_TOKEN = crypto.randomBytes(16).toString('hex');
@@ -951,6 +952,23 @@ async function postMetricsCleanup(req, res, url) {
   }
 }
 
+async function getSkillRoi(req, res, url) {
+  try {
+    const projectFilter = url.searchParams.get('project') || '';
+    const projects = projectFilter ? [projectFilter] : listMetricsProjects();
+    if (projects.length === 0) return json(res, { skills: [] });
+
+    const inv = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName: 'skill.invoked', limit: 2000 }));
+    const out = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName: 'skill.outcome', limit: 2000 }));
+    const allInv = []; for (const { value } of inv) allInv.push(...value);
+    const allOut = []; for (const { value } of out) allOut.push(...value);
+    json(res, { skills: aggregateSkillRoi(allInv, allOut) });
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/metrics/skill-roi failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
 // ─── Router ────────────────────────────────────────────────────────
 
 function handleAPI(req, res, url) {
@@ -991,6 +1009,7 @@ function handleAPI(req, res, url) {
   if (p === '/api/metrics/summary' && m === 'GET') return getMetricsSummary(req, res, url);
   if (p === '/api/metrics/event-log' && m === 'GET') return getMetricsEventLog(req, res, url);
   if (p === '/api/metrics/cleanup' && m === 'POST') return postMetricsCleanup(req, res, url);
+  if (p === '/api/metrics/skill-roi' && m === 'GET') return getSkillRoi(req, res, url);
 
   json(res, { error: 'Not found' }, 404);
 }
