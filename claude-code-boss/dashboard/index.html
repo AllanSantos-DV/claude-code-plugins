@@ -527,6 +527,11 @@ code { color: var(--fg); }
     </div>
 
     <div class="card">
+      <h2 data-i18n="insights.skillRoi">Skill ROI</h2>
+      <div id="insights-skill-roi" style="font-size:.82rem"></div>
+    </div>
+
+    <div class="card">
       <h2 data-i18n="insights.eventLog">Recent events</h2>
       <div class="flex mb-1" style="gap:.5rem;align-items:center">
         <select id="insights-event-filter" onchange="loadInsightsLog()" style="font-size:.78rem">
@@ -536,6 +541,8 @@ code { color: var(--fg); }
           <option value="failure.retro.fired">failure.retro.fired</option>
           <option value="research.auto.triggered">research.auto.triggered</option>
           <option value="decision.captured">decision.captured</option>
+          <option value="skill.invoked">skill.invoked</option>
+          <option value="skill.outcome">skill.outcome</option>
         </select>
         <span id="insights-log-meta" class="text-muted" style="font-size:.75rem"></span>
       </div>
@@ -593,6 +600,7 @@ const I18N = {
     'logs.title': 'Server & Hook Logs', 'logs.copy': 'Copy JSON', 'logs.clear': 'Clear', 'logs.autoRefresh': 'Auto-refresh',
     'insights.title': 'Insights', 'insights.range': 'Range', 'insights.project': 'Project', 'insights.refresh': 'Refresh',
     'insights.daily': 'Events per day', 'insights.eventLog': 'Recent events',
+    'insights.skillRoi': 'Skill ROI',
     'tip.backendType': 'local = embedded SQLite (default). mcp-memory = external Java server via MCP.',
     'tip.jarPath': 'Path to mcp-memory-server .jar. Leave empty to auto-download from latest release.',
     'tip.javaArgs': 'Args passed to Java process. Default: -Xmx512m (512MB heap).',
@@ -638,6 +646,7 @@ const I18N = {
     'logs.title': 'Logs do Servidor e Hooks', 'logs.copy': 'Copiar JSON', 'logs.clear': 'Limpar', 'logs.autoRefresh': 'Auto-refresh',
     'insights.title': 'Insights', 'insights.range': 'Período', 'insights.project': 'Projeto', 'insights.refresh': 'Atualizar',
     'insights.daily': 'Eventos por dia', 'insights.eventLog': 'Eventos recentes',
+    'insights.skillRoi': 'ROI de Skills',
     'tip.backendType': 'local = SQLite embarcado (padrão). mcp-memory = servidor Java externo via MCP.',
     'tip.jarPath': 'Caminho para o .jar do mcp-memory-server. Deixe vazio para baixar automaticamente da última release.',
     'tip.javaArgs': 'Argumentos passados ao processo Java. Padrão: -Xmx512m (heap 512MB).',
@@ -1495,6 +1504,46 @@ async function loadInsights() {
     meta.textContent = '';
   }
   loadInsightsLog();
+  loadSkillRoi();
+}
+
+async function loadSkillRoi() {
+  const el = document.getElementById('insights-skill-roi');
+  if (!el) return;
+  const project = document.getElementById('insights-project').value;
+  el.innerHTML = '<div class="spinner" style="margin:1rem auto"></div>';
+  try {
+    const qs = new URLSearchParams();
+    if (project) qs.set('project', project);
+    const data = await api('GET', '/api/metrics/skill-roi' + (qs.toString() ? '?' + qs : ''));
+    const skills = data.skills || [];
+    if (skills.length === 0) {
+      el.innerHTML = '<p class="text-muted">No skill invocations recorded yet.</p>';
+      return;
+    }
+    const rows = skills.map(s => {
+      const rate = s.success_rate === null ? '—' : `${Math.round(s.success_rate * 100)}%`;
+      const cls = s.warn ? 'badge-yellow' : 'badge-green';
+      const flag = s.warn ? '<span class="badge badge-yellow">low ROI</span>' : '';
+      return `<tr>
+        <td style="padding:.3rem .5rem">${escapeHtml(s.skillName)}</td>
+        <td style="padding:.3rem .5rem;text-align:right">${s.invocations}</td>
+        <td style="padding:.3rem .5rem;text-align:right">${s.successes}/${s.outcomes_recorded}</td>
+        <td style="padding:.3rem .5rem;text-align:right"><span class="badge ${cls}">${rate}</span> ${flag}</td>
+      </tr>`;
+    }).join('');
+    el.innerHTML = `<table style="width:100%;border-collapse:collapse">
+      <thead><tr style="text-align:left;border-bottom:1px solid var(--border)">
+        <th style="padding:.3rem .5rem">Skill</th>
+        <th style="padding:.3rem .5rem;text-align:right">Invocations</th>
+        <th style="padding:.3rem .5rem;text-align:right">Successes</th>
+        <th style="padding:.3rem .5rem;text-align:right">Rate</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>`;
+  } catch (err) {
+    el.innerHTML = `<p class="text-muted">Failed to load skill ROI: ${escapeHtml(err.message)}</p>`;
+  }
 }
 
 async function loadInsightsLog() {
