@@ -101,3 +101,7 @@ When the user is undecided, recommend by use case:
 ## Decision capture
 
 If the user made a non-trivial choice during this workflow (e.g. picked one provider/model over another with a stated reason), call `capture_lesson({type:'decision', title, summary, detail, tags:["decision","architecture","embedder"], sourceUrl: <commit-sha-or-PR-url>})` once after the swap is done. The `decision-detect` hook will also nudge you on the next Stop if a `git commit` / `gh pr create` body looked decision-shaped — don't capture twice for the same key.
+
+## Memory scope note (Plan #7)
+
+The embedder config (`config/brain-config.json`) lives next to the plugin and behaves per-machine. The brain KB is per-project (one DB per `cwd` basename) plus a global `__user__` DB for cross-repo entries (lessons about the user / agent behavior). When recording a decision about the embedder swap itself, prefer `scope: 'user'` if the rationale generalizes ("I prefer voyage on cloud-only machines"); use the default project scope when the choice is tied to this codebase ("this repo's KB is large, ollama is faster locally").

@@ -386,6 +386,9 @@ code { color: var(--fg); }
       </select>
       <input type="text" id="brain-query" data-i18n-placeholder="brain.searchPlaceholder" placeholder="Search query..." style="max-width:300px">
       <button class="btn-primary" onclick="searchBrain()" data-i18n="action.search">Search</button>
+      <button class="btn-sm" onclick="exportBrainScope()" title="Download JSON bundle of the selected scope">Export</button>
+      <button class="btn-sm" onclick="document.getElementById('brain-import-file').click()" title="Import a JSON bundle">Import</button>
+      <input type="file" id="brain-import-file" accept="application/json,.json" style="display:none" onchange="importBrainBundle(event)">
     </div>
     <div id="brain-stats"></div>
     <div id="brain-results"></div>
@@ -1138,6 +1141,50 @@ async function deleteBrainEntry(project, id) {
   if (!confirm('Delete this entry?')) return;
   await api('DELETE', `/api/brain/entry/${id}?project=${encodeURIComponent(project)}`);
   searchBrain();
+}
+
+async function exportBrainScope() {
+  const project = document.getElementById('brain-project').value;
+  const scope = document.getElementById('brain-scope').value || 'project';
+  if (!project && scope !== 'user') { alert('Select a project (or set scope=user) first.'); return; }
+  const qs = scope === 'user' ? 'scope=user' : `project=${encodeURIComponent(project)}`;
+  try {
+    const r = await fetch(`/api/brain/export?${qs}`, { headers: { 'x-dashboard-token': window.__DASHBOARD_TOKEN__ } });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const blob = await r.blob();
+    const cd = r.headers.get('Content-Disposition') || '';
+    const m = /filename="([^"]+)"/.exec(cd);
+    const filename = m ? m[1] : `brain-${scope === 'user' ? '__user__' : project}.json`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch (e) { alert('Export failed: ' + (e.message || e)); }
+}
+
+async function importBrainBundle(ev) {
+  const file = ev.target.files && ev.target.files[0];
+  ev.target.value = '';
+  if (!file) return;
+  const conflict = prompt('Conflict strategy: skip | overwrite | merge', 'skip');
+  if (!conflict) return;
+  if (!['skip', 'overwrite', 'merge'].includes(conflict)) {
+    alert('Invalid strategy. Use skip, overwrite, or merge.');
+    return;
+  }
+  try {
+    const text = await file.text();
+    const bundle = JSON.parse(text);
+    bundle.conflict = conflict;
+    const r = await api('POST', '/api/brain/import', bundle);
+    alert(`Import: total=${r.total} added=${r.added} skipped=${r.skipped} overwritten=${r.overwritten} merged=${r.merged} failed=${r.failed}`);
+    searchBrain();
+    loadBrainStats();
+  } catch (e) { alert('Import failed: ' + (e.message || e)); }
 }
 
 // ─── HOOKS ────────────────────────────────────────────────────────
