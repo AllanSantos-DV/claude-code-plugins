@@ -986,6 +986,31 @@ test('scope: detectSecrets catches well-known prefixes, ignores benign text', ()
   if (detectSecrets(null)) throw new Error('false positive on null');
 });
 
+test('scope: prepareForUserScope sanitizes safe fields and rejects secrets', () => {
+  const { prepareForUserScope } = require('./lib/scope-sanitizer.js');
+  const ok = prepareForUserScope(
+    { title: 'note about myproj', summary: 'see /home/alice/x', detail: 'ping foo@bar.io' },
+    'myproj'
+  );
+  if (ok.rejected) throw new Error('benign entry should not be rejected');
+  assertEq(ok.safe.title, 'note about <project>');
+  assertEq(ok.safe.summary, 'see ~/x');
+  assertEq(ok.safe.detail, 'ping <email>');
+
+  const bad = prepareForUserScope(
+    { title: 't', summary: 'tok=ghp_' + 'a'.repeat(36), detail: '' },
+    'myproj'
+  );
+  if (!bad.rejected) throw new Error('secret should be rejected');
+  if (!bad.reason || !/secret/i.test(bad.reason)) throw new Error('reason should mention secret');
+
+  // Missing fields tolerated.
+  const partial = prepareForUserScope({ title: 'x' }, 'myproj');
+  if (partial.rejected) throw new Error('partial entry should not be rejected');
+  assertEq(partial.safe.summary, '');
+  assertEq(partial.safe.detail, '');
+});
+
 test('scope: splitTopK splits topK by ratio with sensible floors', () => {
   const { splitTopK } = require('./lib/scope-search.js');
   // Default ratio 0.6

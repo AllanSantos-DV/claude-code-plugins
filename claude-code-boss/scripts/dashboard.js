@@ -8,8 +8,9 @@ const crypto = require('crypto');
 
 const { getShellsConfigPath } = require('./curation-paths.js');
 const configTesters = require('./config-testers');
-const { USER_SENTINEL } = require('./lib/scope-sanitizer.js');
+const { USER_SENTINEL, prepareForUserScope } = require('./lib/scope-sanitizer.js');
 const { searchTwoPass } = require('./lib/scope-search.js');
+const { extractKeywords } = require('./lib/text-utils.js');
 
 // Session token — generated at boot, injected into index.html, required on all /api/* requests.
 const SESSION_TOKEN = crypto.randomBytes(16).toString('hex');
@@ -344,7 +345,7 @@ async function searchBrain(req, res, url) {
     if (results.length < 2 && scope !== 'both') {
       const index = require('./brain-index.js');
       index.init({ project: startProject });
-      const kw = q.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 3);
+      const kw = extractKeywords(q);
       if (kw.length > 0) {
         const kwResults = await index.lookup(kw, { topK: k });
         for (const r of kwResults) {
@@ -392,61 +393,70 @@ function deleteBrainEntry(req, res, url) {
 }
 
 // Plan #7 — move an entry between scopes (project ↔ user).
-// PATCH /api/brain/entry/:id/scope?project=<src>  body: { scope: 'user'|'project' }
+// PATCH /api/brain/entry/:id/scope?project=<src>
+// body: { scope: 'user'|'project', targetProject?: '<name>' }
+// targetProject is required when demoting user→project (src is __user__, can't infer destination).
 async function moveBrainEntryScope(req, res, url) {
-  // path is /api/brain/entry/:id/scope
   const parts = url.pathname.split('/');
   const id = parts[parts.length - 2];
   const srcProject = url.searchParams.get('project') || '';
   if (!id || !srcProject) return fail(res, 'Missing id or project', 400);
   let body = '';
   for await (const chunk of req) body += chunk;
-  let targetScope;
-  try { targetScope = (JSON.parse(body || '{}').scope || '').toLowerCase(); }
+  let parsed;
+  try { parsed = JSON.parse(body || '{}'); }
   catch { return fail(res, 'Invalid JSON body', 400); }
+  const targetScope = String(parsed.scope || '').toLowerCase();
+  const targetProject = String(parsed.targetProject || '').trim();
   if (targetScope !== 'user' && targetScope !== 'project') {
     return fail(res, 'scope must be "user" or "project"', 400);
   }
+
+  let dstProject;
+  if (targetScope === 'user') {
+    dstProject = USER_SENTINEL;
+  } else if (srcProject !== USER_SENTINEL) {
+    dstProject = srcProject;
+  } else if (targetProject && targetProject !== USER_SENTINEL) {
+    dstProject = targetProject;
+  } else {
+    return fail(res, 'targetProject required when demoting from user scope', 400);
+  }
+
   try {
     const store = require('./brain-store.js');
     const index = require('./brain-index.js');
     const graph = require('./brain-graph.js');
-    const { sanitizeForUserScope, detectSecrets } = require('./lib/scope-sanitizer.js');
 
-    // Read entry from source DB
     store.init({ project: srcProject });
     const entry = store.get(id);
     if (!entry) return fail(res, 'Entry not found', 404);
 
-    // Already in target scope? no-op.
     const currentScope = entry.scope || 'project';
-    const dstProject = targetScope === 'user' ? USER_SENTINEL : (entry.originProject || srcProject);
     if (currentScope === targetScope && srcProject === dstProject) {
       return json(res, { ok: true, status: 'noop', scope: currentScope });
     }
 
-    // Sanitize + secret-check when promoting to user.
     let safeEntry = { ...entry, scope: targetScope, project: dstProject };
     if (targetScope === 'user') {
-      const combined = `${entry.title || ''}\n${entry.summary || ''}\n${(entry.content && entry.content.detail) || entry.detail || ''}`;
-      if (detectSecrets(combined)) {
-        return fail(res, 'Refused: entry contains secret-like pattern. Strip before moving to user scope.', 400);
-      }
-      safeEntry.title = sanitizeForUserScope(entry.title, srcProject);
-      safeEntry.summary = sanitizeForUserScope(entry.summary, srcProject);
       const detail = (entry.content && entry.content.detail) || entry.detail || '';
-      safeEntry.detail = sanitizeForUserScope(detail, srcProject);
-      safeEntry.content = { ...(entry.content || {}), detail: safeEntry.detail };
+      const prep = prepareForUserScope({ title: entry.title, summary: entry.summary, detail }, srcProject);
+      if (prep.rejected) {
+        return fail(res, `Refused: ${prep.reason}. Strip before moving to user scope.`, 400);
+      }
+      safeEntry.title = prep.safe.title;
+      safeEntry.summary = prep.safe.summary;
+      safeEntry.detail = prep.safe.detail;
+      safeEntry.content = { ...(entry.content || {}), detail: prep.safe.detail };
     }
-    // Drop old id so save() mints a fresh one on the destination DB.
     delete safeEntry.id;
 
-    // Remove from source
     index.init({ project: srcProject });
+    graph.init({ project: srcProject });
     store.delete(id);
     index.deindex(id);
+    await graph.unregisterNode(id);
 
-    // Save into destination
     store.init({ project: dstProject });
     index.init({ project: dstProject });
     graph.init({ project: dstProject });
@@ -454,7 +464,6 @@ async function moveBrainEntryScope(req, res, url) {
     await index.index(safeEntry);
     await graph.registerNode(safeEntry);
 
-    // Restore singleton to the requested srcProject so subsequent calls don't drift.
     store.init({ project: srcProject });
     json(res, { ok: true, id: safeEntry.id, scope: targetScope, project: dstProject });
   } catch (e) { fail(res, e.message); }

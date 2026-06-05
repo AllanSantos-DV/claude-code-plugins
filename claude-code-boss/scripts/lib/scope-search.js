@@ -2,23 +2,22 @@
 /**
  * scope-search.js — Plan #7. Two-pass scope-aware retrieval.
  *
- * Brain-store is a singleton: each instance opens ONE per-project brain.db.
- * To merge results from the current project AND the global __user__ project
- * in a single call, we close + re-init the store between passes (same
- * pattern the dashboard uses for cross-project aggregation).
- *
- * Trade-off: extra open/close per retrieval, but no concurrent DB instances
- * (better-sqlite3 is sync; concurrency would require a separate Database
- * handle anyway). For typical hook retrieval (1-2 calls per turn) the cost
- * is negligible.
- *
- * Strategy: top-K slots split via `userProjectRatio` (default 0.6 project,
- * 0.4 user). Dedup by entry id (project wins on tie). Final sort by score.
- * If either side returns fewer than its slot, the other side absorbs the
- * leftover budget (gap-fill).
+ * Brain-store is a singleton holding ONE per-project brain.db, so reading
+ * the global __user__ DB in the same call requires close + re-init.
+ * Restore failure MUST propagate — silently leaving the store on the wrong
+ * project would poison every subsequent write/read in the session.
  */
 
+const fs = require('fs');
+const path = require('path');
 const { USER_SENTINEL } = require('./scope-sanitizer.js');
+
+const STORE_DIR = process.env.CLAUDE_PLUGIN_DATA
+  || path.join(require('os').homedir(), '.claude', 'plugins', 'data', 'claude-code-boss-inline');
+
+function userDbExists() {
+  return fs.existsSync(path.join(STORE_DIR, 'brain', USER_SENTINEL, 'brain.db'));
+}
 
 function splitTopK(topK, userProjectRatio) {
   const k = Math.max(1, topK || 5);
@@ -28,10 +27,6 @@ function splitTopK(topK, userProjectRatio) {
   return { projectK, userK };
 }
 
-/**
- * Merge two scored result arrays by id (project wins) and sort by score desc.
- * Caps at topK. Pure function.
- */
 function mergeResults(projectResults, userResults, topK) {
   const byId = new Map();
   for (const r of projectResults || []) {
@@ -45,49 +40,33 @@ function mergeResults(projectResults, userResults, topK) {
     .slice(0, Math.max(1, topK || 5));
 }
 
-/**
- * Run a two-pass search across the current project and __user__.
- * `store` is the brain-store module (singleton). `currentProject` is the
- * project we want to land on at the end (restored before return).
- *
- * Options:
- *   - topK (default 5)
- *   - userProjectRatio (default 0.6 → 60% project / 40% user)
- *   - minScore, type, ...passed through to store.search
- *
- * Returns: merged scored result array (length ≤ topK).
- */
 async function searchTwoPass(store, currentProject, queryVector, opts = {}) {
   const topK = opts.topK || 5;
   const { projectK, userK } = splitTopK(topK, opts.userProjectRatio);
 
   let projectResults = [];
-  let userResults = [];
-
-  // Pass 1 — current project (singleton already on this project).
   try {
-    projectResults = await store.search(queryVector, { ...opts, topK: topK });
-    // Cap projectK; remaining slots flow to user (gap-fill).
+    projectResults = await store.search(queryVector, { ...opts, topK: projectK });
   } catch (err) {
     console.error(`[scope-search] project pass failed: ${err.message}`);
   }
   const projectTrimmed = (projectResults || []).slice(0, projectK);
 
-  // Pass 2 — __user__ project. Switch DBs via close + re-init.
-  if (userK > 0 || projectTrimmed.length < projectK) {
+  // Skip the user pass entirely when nothing's there yet — avoids the
+  // close+reopen churn on every retrieval before any user-scope entry exists.
+  const needUser = (userK > 0 || projectTrimmed.length < projectK) && userDbExists();
+  let userResults = [];
+  if (needUser) {
     try {
       await store.close();
       await store.init({ project: USER_SENTINEL, skipEmbedder: true });
-      // Ask for enough to cover both the user slot and any gap-fill the project missed.
       const want = userK + Math.max(0, projectK - projectTrimmed.length);
       userResults = await store.search(queryVector, { ...opts, topK: want });
     } catch (err) {
       console.error(`[scope-search] user pass failed: ${err.message}`);
     } finally {
       try { await store.close(); } catch { /* noop */ }
-      try { await store.init({ project: currentProject, skipEmbedder: true }); } catch (err) {
-        console.error(`[scope-search] restore failed: ${err.message}`);
-      }
+      await store.init({ project: currentProject, skipEmbedder: true });
     }
   }
 
@@ -98,5 +77,6 @@ module.exports = {
   splitTopK,
   mergeResults,
   searchTwoPass,
+  userDbExists,
   USER_SENTINEL,
 };

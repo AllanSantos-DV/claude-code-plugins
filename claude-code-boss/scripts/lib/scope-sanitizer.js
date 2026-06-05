@@ -1,22 +1,12 @@
 'use strict';
 /**
  * scope-sanitizer.js — Plan #7. Pure helpers for cross-project memory scope.
- *
- * The KB lives per-project (one brain.db per project). Lessons that are really
- * about the USER (preferences, habits, agent behavior) belong in a global
- * "__user__" project so they survive across repos. This module owns:
- *
- *   - inferDefaultScope(type, tags) → 'user' | 'project'
- *   - sanitizeForUserScope(text, currentProject) — strips paths/emails/project
- *   - detectSecrets(text) — boolean
- *
- * All exports are pure (no I/O) so they're trivial to unit-test.
+ * Owns scope inference, secret detection, sanitization, and the write-time
+ * preflight (`prepareForUserScope`) shared by all three KB write paths.
  */
 
 const USER_SENTINEL = '__user__';
 
-// Tags that strongly imply the lesson is about the user/agent itself, not the
-// code in front of us. Lowercased + hyphenated (canonical KB tag format).
 const USER_TAG_HINTS = new Set([
   'workflow', 'ux', 'tone', 'style', 'preferences', 'user-habits',
   'agent-behavior', 'tooling-discipline', 'communication-style',
@@ -26,15 +16,12 @@ const USER_TAG_HINTS = new Set([
 function inferDefaultScope(type, tags = []) {
   if (type === 'decision' || type === 'code') return 'project';
   if (type === 'reference' || type === 'research') return 'user';
-  const set = new Set((tags || []).map(t => String(t).toLowerCase()));
-  for (const hint of set) {
-    if (USER_TAG_HINTS.has(hint)) return 'user';
+  for (const tag of tags) {
+    if (USER_TAG_HINTS.has(String(tag).toLowerCase())) return 'user';
   }
   return 'project';
 }
 
-// Conservative regex of well-known secret formats. Better to false-negative
-// than false-positive; callers can still reject via separate review.
 const SECRET_RE = /(sk-[A-Za-z0-9]{20,}|pa-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{36}|gho_[A-Za-z0-9]{36}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{35})/;
 
 function detectSecrets(text) {
@@ -45,19 +32,33 @@ function detectSecrets(text) {
 function sanitizeForUserScope(text, currentProject) {
   if (!text) return '';
   let t = String(text);
-  // Windows: C:\Users\<name>\... → ~
   t = t.replace(/[A-Za-z]:[\\/]Users[\\/][^\\/\s"'`]+/g, '~');
-  // Unix: /home/<name>/... or /Users/<name>/... → ~
   t = t.replace(/\/home\/[^\/\s"'`]+/g, '~');
   t = t.replace(/\/Users\/[^\/\s"'`]+/g, '~');
-  // Emails → <email>
   t = t.replace(/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, '<email>');
-  // Current project name as bare word → <project>
   if (currentProject && currentProject !== USER_SENTINEL) {
     const escaped = currentProject.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     t = t.replace(new RegExp(`\\b${escaped}\\b`, 'g'), '<project>');
   }
   return t;
+}
+
+// Write-time preflight for scope=user entries. Returns `{rejected, reason}`
+// when a secret is detected in any field, otherwise `{safe}` with sanitized
+// title/summary/detail. Centralizes the contract shared by brain_store,
+// capture_lesson, and the dashboard move endpoint.
+function prepareForUserScope({ title, summary, detail }, currentProject) {
+  const combined = `${title || ''}\n${summary || ''}\n${detail || ''}`;
+  if (detectSecrets(combined)) {
+    return { rejected: true, reason: 'secret detected in entry text' };
+  }
+  return {
+    safe: {
+      title: sanitizeForUserScope(title || '', currentProject),
+      summary: sanitizeForUserScope(summary || '', currentProject),
+      detail: sanitizeForUserScope(detail || '', currentProject),
+    },
+  };
 }
 
 module.exports = {
@@ -66,4 +67,5 @@ module.exports = {
   inferDefaultScope,
   detectSecrets,
   sanitizeForUserScope,
+  prepareForUserScope,
 };
