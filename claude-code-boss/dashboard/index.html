@@ -1112,8 +1112,16 @@ async function searchBrain() {
 async function moveBrainEntryScope(srcProject, id, targetScope) {
   const label = targetScope === 'user' ? 'global user scope' : 'project scope';
   if (!confirm(`Move this entry to ${label}? Paths/emails/project-name will be sanitized when promoting to user.`)) return;
+  // Demoting user→project needs an explicit destination project (the dropdown's current value).
+  const body = { scope: targetScope };
+  if (targetScope === 'project' && srcProject === '__user__') {
+    const sel = document.getElementById('brain-project');
+    const dest = sel && sel.value && sel.value !== '__user__' ? sel.value : '';
+    if (!dest) { alert('Select a destination project in the Brain Project dropdown first.'); return; }
+    body.targetProject = dest;
+  }
   try {
-    await api('PATCH', `/api/brain/entry/${id}/scope?project=${encodeURIComponent(srcProject)}`, { scope: targetScope });
+    await api('PATCH', `/api/brain/entry/${id}/scope?project=${encodeURIComponent(srcProject)}`, body);
     searchBrain();
   } catch (e) { alert('Move failed: ' + (e.message || e)); }
 }

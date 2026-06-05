@@ -63,7 +63,7 @@ async function getKB(project) {
 // Plan #7 — scope helpers (sanitizer + two-pass retrieval).
 const scopeSanitizer = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'scope-sanitizer.js'));
 const scopeSearch = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'scope-search.js'));
-const { USER_SENTINEL, inferDefaultScope, sanitizeForUserScope, detectSecrets } = scopeSanitizer;
+const { USER_SENTINEL, inferDefaultScope, prepareForUserScope } = scopeSanitizer;
 const { searchTwoPass } = scopeSearch;
 
 // ─── Simple file-based cache ────────────────────────────────────────────────
@@ -394,13 +394,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Sanitize + secret-check when storing to user scope.
         let safeTitle = title, safeSummary = summary, safeDetail = detail;
         if (effectiveScope === 'user') {
-          const combined = `${title}\n${summary}\n${detail || ''}`;
-          if (detectSecrets(combined)) {
-            return { isError: true, content: [{ type: 'text', text: 'brain_store rejected: scope=user but secret-like pattern (sk-/ghp_/AKIA/AIza/xox/etc) detected. Strip the secret or use scope=project.' }] };
+          const prep = prepareForUserScope({ title, summary, detail }, currentProject);
+          if (prep.rejected) {
+            return { isError: true, content: [{ type: 'text', text: `brain_store rejected: scope=user but ${prep.reason}. Strip the secret or use scope=project.` }] };
           }
-          safeTitle = sanitizeForUserScope(title, currentProject);
-          safeSummary = sanitizeForUserScope(summary, currentProject);
-          safeDetail = detail ? sanitizeForUserScope(detail, currentProject) : detail;
+          ({ title: safeTitle, summary: safeSummary, detail: safeDetail } = prep.safe);
         }
 
         const storageProject = effectiveScope === 'user' ? USER_SENTINEL : currentProject;
@@ -457,13 +455,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Sanitize + secret-check when storing to user scope.
         let safeTitle = title, safeSummary = summary, safeDetail = detail;
         if (effectiveScope === 'user') {
-          const combined = `${title}\n${summary}\n${detail || ''}`;
-          if (detectSecrets(combined)) {
-            return { isError: true, content: [{ type: 'text', text: 'capture_lesson rejected: scope=user but secret-like pattern detected. Strip the secret or use scope=project.' }] };
+          const prep = prepareForUserScope({ title, summary, detail }, currentProject);
+          if (prep.rejected) {
+            return { isError: true, content: [{ type: 'text', text: `capture_lesson rejected: scope=user but ${prep.reason}. Strip the secret or use scope=project.` }] };
           }
-          safeTitle = sanitizeForUserScope(title, currentProject);
-          safeSummary = sanitizeForUserScope(summary, currentProject);
-          safeDetail = detail ? sanitizeForUserScope(detail, currentProject) : detail;
+          ({ title: safeTitle, summary: safeSummary, detail: safeDetail } = prep.safe);
         }
 
         const storageProject = effectiveScope === 'user' ? USER_SENTINEL : currentProject;
