@@ -8,6 +8,8 @@ const crypto = require('crypto');
 
 const { getShellsConfigPath } = require('./curation-paths.js');
 const configTesters = require('./config-testers');
+const { USER_SENTINEL } = require('./lib/scope-sanitizer.js');
+const { searchTwoPass } = require('./lib/scope-search.js');
 
 // Session token — generated at boot, injected into index.html, required on all /api/* requests.
 const SESSION_TOKEN = crypto.randomBytes(16).toString('hex');
@@ -316,21 +318,32 @@ async function searchBrain(req, res, url) {
   const q = url.searchParams.get('q') || '';
   const project = url.searchParams.get('project') || '';
   const k = parseInt(url.searchParams.get('k') || '10', 10);
+  const scope = url.searchParams.get('scope') || 'project'; // 'project' | 'user' | 'both'
   if (!q || !project) return json(res, []);
   try {
     const embedder = require('./brain-embedder.js');
     await embedder.init();
     const store = require('./brain-store.js');
-    store.init({ project });
+
+    // For scope=user, swap to __user__ DB; for project/both stay on requested project.
+    const startProject = scope === 'user' ? USER_SENTINEL : project;
+    store.init({ project: startProject });
+
+    let vec = null;
+    if (embedder.getStatus().ready) vec = await embedder.embed(q);
 
     let results = [];
-    if (embedder.getStatus().ready) {
-      const vec = await embedder.embed(q);
-      if (vec) results = await store.search(vec, { topK: k, minScore: 0.05 });
+    if (vec) {
+      if (scope === 'both') {
+        results = await searchTwoPass(store, project, vec, { topK: k, minScore: 0.05 });
+      } else {
+        results = await store.search(vec, { topK: k, minScore: 0.05 });
+      }
     }
-    if (results.length < 2) {
+    // Keyword fallback (project/user scope only — keep simple, no two-pass kw)
+    if (results.length < 2 && scope !== 'both') {
       const index = require('./brain-index.js');
-      index.init({ project });
+      index.init({ project: startProject });
       const kw = q.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter(w => w.length > 3);
       if (kw.length > 0) {
         const kwResults = await index.lookup(kw, { topK: k });
@@ -342,6 +355,8 @@ async function searchBrain(req, res, url) {
         }
       }
     }
+    // Restore singleton to the requested project so subsequent calls don't drift.
+    if (startProject !== project) store.init({ project });
     json(res, results.slice(0, k));
   } catch (e) { fail(res, e.message); }
 }
@@ -373,6 +388,75 @@ function deleteBrainEntry(req, res, url) {
     store.delete(id);
     index.deindex(id);
     json(res, { ok: true });
+  } catch (e) { fail(res, e.message); }
+}
+
+// Plan #7 — move an entry between scopes (project ↔ user).
+// PATCH /api/brain/entry/:id/scope?project=<src>  body: { scope: 'user'|'project' }
+async function moveBrainEntryScope(req, res, url) {
+  // path is /api/brain/entry/:id/scope
+  const parts = url.pathname.split('/');
+  const id = parts[parts.length - 2];
+  const srcProject = url.searchParams.get('project') || '';
+  if (!id || !srcProject) return fail(res, 'Missing id or project', 400);
+  let body = '';
+  for await (const chunk of req) body += chunk;
+  let targetScope;
+  try { targetScope = (JSON.parse(body || '{}').scope || '').toLowerCase(); }
+  catch { return fail(res, 'Invalid JSON body', 400); }
+  if (targetScope !== 'user' && targetScope !== 'project') {
+    return fail(res, 'scope must be "user" or "project"', 400);
+  }
+  try {
+    const store = require('./brain-store.js');
+    const index = require('./brain-index.js');
+    const graph = require('./brain-graph.js');
+    const { sanitizeForUserScope, detectSecrets } = require('./lib/scope-sanitizer.js');
+
+    // Read entry from source DB
+    store.init({ project: srcProject });
+    const entry = store.get(id);
+    if (!entry) return fail(res, 'Entry not found', 404);
+
+    // Already in target scope? no-op.
+    const currentScope = entry.scope || 'project';
+    const dstProject = targetScope === 'user' ? USER_SENTINEL : (entry.originProject || srcProject);
+    if (currentScope === targetScope && srcProject === dstProject) {
+      return json(res, { ok: true, status: 'noop', scope: currentScope });
+    }
+
+    // Sanitize + secret-check when promoting to user.
+    let safeEntry = { ...entry, scope: targetScope, project: dstProject };
+    if (targetScope === 'user') {
+      const combined = `${entry.title || ''}\n${entry.summary || ''}\n${(entry.content && entry.content.detail) || entry.detail || ''}`;
+      if (detectSecrets(combined)) {
+        return fail(res, 'Refused: entry contains secret-like pattern. Strip before moving to user scope.', 400);
+      }
+      safeEntry.title = sanitizeForUserScope(entry.title, srcProject);
+      safeEntry.summary = sanitizeForUserScope(entry.summary, srcProject);
+      const detail = (entry.content && entry.content.detail) || entry.detail || '';
+      safeEntry.detail = sanitizeForUserScope(detail, srcProject);
+      safeEntry.content = { ...(entry.content || {}), detail: safeEntry.detail };
+    }
+    // Drop old id so save() mints a fresh one on the destination DB.
+    delete safeEntry.id;
+
+    // Remove from source
+    index.init({ project: srcProject });
+    store.delete(id);
+    index.deindex(id);
+
+    // Save into destination
+    store.init({ project: dstProject });
+    index.init({ project: dstProject });
+    graph.init({ project: dstProject });
+    await store.save(safeEntry);
+    await index.index(safeEntry);
+    await graph.registerNode(safeEntry);
+
+    // Restore singleton to the requested srcProject so subsequent calls don't drift.
+    store.init({ project: srcProject });
+    json(res, { ok: true, id: safeEntry.id, scope: targetScope, project: dstProject });
   } catch (e) { fail(res, e.message); }
 }
 
@@ -672,6 +756,7 @@ function handleAPI(req, res, url) {
   if (p === '/api/config/domains' && m === 'GET') return listConfigDomains(req, res);
   if (p === '/api/brain/projects' && m === 'GET') return getBrainProjects(req, res);
   if (p === '/api/brain/search' && m === 'GET') return searchBrain(req, res, url);
+  if (p.match(/^\/api\/brain\/entry\/[^/]+\/scope$/) && m === 'PATCH') return moveBrainEntryScope(req, res, url);
   if (p.match(/^\/api\/brain\/entry\//) && m === 'GET') return getBrainEntry(req, res, url);
   if (p.match(/^\/api\/brain\/entry\//) && m === 'DELETE') return deleteBrainEntry(req, res, url);
   if (p.match(/^\/api\/brain\/related\//) && m === 'GET') return getBrainRelated(req, res, url);
