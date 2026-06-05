@@ -129,7 +129,32 @@ function emitAdvisory(eventName, defects) {
   });
 }
 
-(async () => {
+function countPendingDrafts(data) {
+  const dir = path.join(data, 'skills-pending');
+  try {
+    if (!fs.existsSync(dir)) return { count: 0, dir };
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    let n = 0;
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      if (fs.existsSync(path.join(dir, e.name, 'SKILL.md'))) n++;
+    }
+    return { count: n, dir };
+  } catch { return { count: 0, dir }; }
+}
+
+function emitPendingDraftsNotice(eventName, count, dir) {
+  emitJson({
+    hookSpecificOutput: {
+      hookEventName: eventName,
+      additionalContext:
+        `[BRAIN-HEALTH] ${count} pending skill draft${count === 1 ? '' : 's'} at ${dir} — ` +
+        'review via dashboard #skills tab or `node scripts/brain-promote.js list`.',
+    },
+  });
+}
+
+async function main() {
   try {
     const raw = await readStdin();
     const event = parsePayload(raw) || {};
@@ -146,8 +171,6 @@ function emitAdvisory(eventName, defects) {
 
     const defects = staticChecks(root, data);
 
-    // Only attempt the live probe when static checks passed — otherwise the
-    // require() inside liveProbe would itself throw with a confusing path error.
     if (defects.length === 0) {
       const liveErr = await liveProbe(root, project);
       if (liveErr) defects.push(liveErr);
@@ -155,10 +178,20 @@ function emitAdvisory(eventName, defects) {
 
     recordRun(data);
 
-    if (defects.length === 0) { emitEmpty(); return; }
-    emitAdvisory(eventName, defects);
+    if (defects.length > 0) { emitAdvisory(eventName, defects); return; }
+
+    if (eventName === 'SessionStart') {
+      const { count, dir } = countPendingDrafts(data);
+      if (count > 0) { emitPendingDraftsNotice(eventName, count, dir); return; }
+    }
+
+    emitEmpty();
   } catch (err) {
     console.error(`[BRAIN-HEALTH] probe crashed: ${err.message}`);
     emitEmpty();
   }
-})();
+}
+
+if (require.main === module) main();
+
+module.exports = { countPendingDrafts, shouldRunOnPrompt };
