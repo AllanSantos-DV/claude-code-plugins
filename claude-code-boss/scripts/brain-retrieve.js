@@ -5,6 +5,7 @@ const backend = require('./brain-backend.js');
 const brainConfig = require('./lib/brain-config.js');
 const { extractKeywords } = require('./lib/text-utils.js');
 const { readStdin, emitEmpty, emitJson, parsePayload } = require('./lib/hook-io.js');
+const retrievalJournal = require('./lib/retrieval-journal.js');
 
 function formatEntries(entries) {
   if (!entries || entries.length === 0) return '';
@@ -50,6 +51,25 @@ function formatEntries(entries) {
     }
 
     const message = formatEntries(entries);
+
+    // Persist retrieval for the Stop-hook citation matcher (Plan #1).
+    // Best-effort — never fail the hook if journal write errors.
+    try {
+      const sid = event.session_id || event.sessionId || 'default';
+      const retrievalId = retrievalJournal.newRetrievalId();
+      retrievalJournal.appendEntry(sid, {
+        retrievalId,
+        ts: Date.now(),
+        sid,
+        tool: toolName,
+        queryTokens: context.slice(0, 10),
+        project,
+        returnedIds: entries.map(e => e.id),
+        returnedTitles: entries.map(e => e.title),
+      });
+    } catch (err) {
+      console.error(`[BRAIN-RETRIEVE] journal append failed: ${err.message}`);
+    }
 
     emitJson({
       found: entries.length,

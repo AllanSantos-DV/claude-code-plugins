@@ -12,6 +12,7 @@ const backend = require('./brain-backend.js');
 const brainConfig = require('./lib/brain-config.js');
 const { extractKeywords } = require('./lib/text-utils.js');
 const { readStdin, emitEmpty, emitJson, parsePayload } = require('./lib/hook-io.js');
+const retrievalJournal = require('./lib/retrieval-journal.js');
 
 (async () => {
   try {
@@ -66,6 +67,25 @@ const { readStdin, emitEmpty, emitJson, parsePayload } = require('./lib/hook-io.
     }
 
     const lines = entries.map((e, i) => `${i + 1}. "${e.title}" (${e.type}) — ${e.summary}`);
+
+    // Persist retrieval for the Stop-hook citation matcher (Plan #1). Best-effort.
+    try {
+      const sid = event.session_id || event.sessionId || 'default';
+      const retrievalId = retrievalJournal.newRetrievalId();
+      retrievalJournal.appendEntry(sid, {
+        retrievalId,
+        ts: Date.now(),
+        sid,
+        tool: 'UserPromptSubmit',
+        queryTokens: keywords.slice(0, 10),
+        project,
+        returnedIds: entries.map(e => e.id),
+        returnedTitles: entries.map(e => e.title),
+      });
+    } catch (err) {
+      console.error(`[BRAIN-RETRIEVE-PROMPT] journal append failed: ${err.message}`);
+    }
+
     emitJson({
       hookSpecificOutput: {
         hookEventName: 'UserPromptSubmit',

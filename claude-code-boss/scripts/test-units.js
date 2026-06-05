@@ -637,6 +637,125 @@ test('failure-journal: append + read roundtrip', () => {
   assert(fjournal.readEntries(sid).length === 0, 'clear wiped');
 });
 
+// ─── retrieval-feedback (Plan #1) ────────────────────────────────────────────
+const rfeedback = require('./retrieval-feedback.js');
+const rjournal = require('./lib/retrieval-journal.js');
+const brainStore = require('./brain-store.js');
+
+test('retrieval-feedback: titleTokens dedupes + drops short/stopwords', () => {
+  const t = rfeedback.titleTokens('The The local install via install-local takes effect');
+  assert(t.length === new Set(t).size, 'tokens deduped');
+  for (const tok of t) assert(tok.length >= 4, `token "${tok}" too short`);
+  assert(t.includes('install'), 'kept "install"');
+});
+
+test('retrieval-feedback: citationMatch — 2 token matches → cited', () => {
+  const title = 'Local install via install-local takes effect immediately';
+  const reply = 'I just ran install-local — it took effect for the hooks immediately.';
+  const m = rfeedback.citationMatch(title, reply);
+  assert(m.cited === true, `expected cited, got ${JSON.stringify(m)}`);
+});
+
+test('retrieval-feedback: citationMatch — 1 token only → not cited', () => {
+  const title = 'Local install via install-local takes effect immediately';
+  const reply = 'Some generic mention of install but nothing else relevant.';
+  const m = rfeedback.citationMatch(title, reply);
+  // "install" is the only distinctive token shared; should NOT trigger citation
+  assert(m.cited === false, `expected not cited, got ${JSON.stringify(m)}`);
+});
+
+test('retrieval-feedback: citationMatch — paraphrase via long substring → cited', () => {
+  const title = 'Pre-paint inline script for localStorage theme to avoid FOUC';
+  const reply = 'Use a pre-paint inline script for localStorage to dodge the flash.';
+  const m = rfeedback.citationMatch(title, reply);
+  assert(m.cited === true, `expected cited via substring, got ${JSON.stringify(m)}`);
+});
+
+test('retrieval-feedback: findCitations dedupes ids across retrievals', () => {
+  const journal = [
+    { returnedIds: ['id-a', 'id-b'], returnedTitles: ['Local install via install-local takes effect immediately', 'Pre-paint inline script for localStorage theme'] },
+    { returnedIds: ['id-a'], returnedTitles: ['Local install via install-local takes effect immediately'] },
+  ];
+  const reply = 'I ran install-local and it took effect for the hooks immediately. Also the pre-paint inline script for localStorage tip is gold.';
+  const out = rfeedback.findCitations(journal, reply);
+  const ids = out.map(c => c.id).sort();
+  assertEq(ids, ['id-a', 'id-b']);
+});
+
+test('retrieval-feedback: extractAssistantText handles array + string content', () => {
+  assertEq(
+    rfeedback.extractAssistantText({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'hi' }, { type: 'text', text: 'there' }] } }),
+    'hi there',
+  );
+  assertEq(
+    rfeedback.extractAssistantText({ role: 'assistant', content: 'plain' }),
+    'plain',
+  );
+  assertEq(
+    rfeedback.extractAssistantText({ role: 'user', content: 'nope' }),
+    '',
+  );
+});
+
+test('retrieval-journal: append + read + clear roundtrip', () => {
+  const sid = `rjtest-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  rjournal.appendEntry(sid, { retrievalId: 'r1', returnedIds: ['x'], returnedTitles: ['T'] });
+  rjournal.appendEntry(sid, { retrievalId: 'r2', returnedIds: ['y'], returnedTitles: ['U'] });
+  const all = rjournal.readEntries(sid);
+  assert(all.length === 2, `expected 2 entries, got ${all.length}`);
+  rjournal.clearEntries(sid);
+  assert(rjournal.readEntries(sid).length === 0, 'clear wiped');
+});
+
+test('brain-store: citationMultiplier monotonic + capped', () => {
+  const cfg = { enabled: true, alpha: 0.1, cap: 1.5 };
+  const m0 = brainStore.citationMultiplier(0, cfg);
+  const m1 = brainStore.citationMultiplier(1, cfg);
+  const m10 = brainStore.citationMultiplier(10, cfg);
+  const m1000 = brainStore.citationMultiplier(1000, cfg);
+  assert(m0 === 1, `m0=${m0}`);
+  assert(m1 > m0, 'mono 0→1');
+  assert(m10 > m1, 'mono 1→10');
+  assert(m1000 <= 1.5, `cap respected, got ${m1000}`);
+});
+
+test('brain-store: citationMultiplier disabled returns 1', () => {
+  assertEq(brainStore.citationMultiplier(999, { enabled: false }), 1);
+  assertEq(brainStore.citationMultiplier(999, null), 1);
+});
+
+test('brain-store: recordCitation persists + bumps when SQLite available', async () => {
+  // Isolate from other brain-* tests: fresh module + fresh data dir (same
+  // pattern as the brain-backend test below, to avoid races on _db / _project).
+  delete require.cache[require.resolve('./brain-store.js')];
+  const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
+  process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cite-'));
+  const isolatedStore = require('./brain-store.js');
+  try {
+    await isolatedStore.init({ project: 'ccb-units-citation' });
+    if (isolatedStore.getStorageType() !== 'sqlite') {
+      // JSON fallback: recordCitation is a no-op by design; just verify it doesn't throw.
+      assertEq(isolatedStore.recordCitation('nonexistent'), 0);
+      return;
+    }
+    const id = `cite-test-${Date.now()}`;
+    await isolatedStore.save({
+      id, type: 'lesson', title: 'T', summary: 'S',
+      content: { text: 'x' }, tags: [], confidence: 0.5,
+    });
+    const c1 = isolatedStore.recordCitation(id);
+    const c2 = isolatedStore.recordCitation(id);
+    assert(c1 === 1, `first bump → 1, got ${c1}`);
+    assert(c2 === 2, `second bump → 2, got ${c2}`);
+    // missing id is a safe noop
+    assertEq(isolatedStore.recordCitation('does-not-exist'), 0);
+  } finally {
+    try { await isolatedStore.close(); } catch { /* ignore */ }
+    delete require.cache[require.resolve('./brain-store.js')];
+    process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
+  }
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
