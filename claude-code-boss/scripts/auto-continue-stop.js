@@ -8,7 +8,7 @@ const os = require('os');
 const { readStdin, parsePayload, emitEmpty, emitStopBlock } = require('./lib/hook-io.js');
 
 const DEFAULT_MAX = 1;
-const REASON = '[auto-continue] Continue se o próximo passo for óbvio pelo plano/todos. Caso contrário, encerre normalmente — esta é a única tentativa, não haverá nova chance.';
+const REASON = '[auto-continue] Continue if the next step is obvious from the plan/todos. Otherwise just end the reply normally — this is the only attempt, there is no retry.';
 
 function counterPath(dataDir, sid) {
   return path.join(dataDir, '.runtime', `auto-continue-${sid}.json`);
