@@ -779,6 +779,89 @@ const TESTS = [
     },
   },
 
+  // ── auto-continue-stop ────────────────────────────────────────────────────
+  {
+    name: 'auto-continue-stop [Stop→sentinel-present→release]',
+    script: 'auto-continue-stop.js',
+    payload: (env) => ({
+      hook_event_name: 'Stop',
+      session_id: SESSION,
+      transcript_path: path.join(env.CLAUDE_PLUGIN_DATA, 'transcript.jsonl'),
+    }),
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-acs-rel-'));
+      const tFile = path.join(tmpData, 'transcript.jsonl');
+      fs.writeFileSync(tFile, JSON.stringify({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'all done\n===done===' }] },
+      }) + '\n');
+      return { CLAUDE_PLUGIN_DATA: tmpData, _transcriptPath: tFile };
+    },
+    validateWithEnv: (r, env) => {
+      if (Object.keys(r.parsed || {}).length !== 0) {
+        return `expected empty release, got: ${JSON.stringify(r.parsed)}`;
+      }
+      return null;
+    },
+  },
+  {
+    name: 'auto-continue-stop [Stop→no-sentinel→block+counter=1]',
+    script: 'auto-continue-stop.js',
+    payload: (env) => ({
+      hook_event_name: 'Stop',
+      session_id: SESSION,
+      transcript_path: path.join(env.CLAUDE_PLUGIN_DATA, 'transcript.jsonl'),
+    }),
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-acs-blk-'));
+      const tFile = path.join(tmpData, 'transcript.jsonl');
+      fs.writeFileSync(tFile, JSON.stringify({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'still working' }] },
+      }) + '\n');
+      return { CLAUDE_PLUGIN_DATA: tmpData };
+    },
+    validateWithEnv: (r, env) => {
+      if (r.parsed?.decision !== 'block') return `expected decision:'block', got: ${JSON.stringify(r.parsed)}`;
+      if (!String(r.parsed?.reason || '').includes('===done===')) return `reason missing sentinel hint`;
+      const cFile = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime', `auto-continue-${SESSION}.json`);
+      if (!fs.existsSync(cFile)) return `counter file not written at ${cFile}`;
+      const c = JSON.parse(fs.readFileSync(cFile, 'utf-8'));
+      if (c.count !== 1) return `counter expected 1, got ${c.count}`;
+      return null;
+    },
+  },
+  {
+    name: 'auto-continue-stop [Stop→counter-at-max→release]',
+    script: 'auto-continue-stop.js',
+    payload: (env) => ({
+      hook_event_name: 'Stop',
+      session_id: SESSION,
+      transcript_path: path.join(env.CLAUDE_PLUGIN_DATA, 'transcript.jsonl'),
+    }),
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-acs-max-'));
+      const runtimeDir = path.join(tmpData, '.runtime');
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      fs.writeFileSync(path.join(runtimeDir, `auto-continue-${SESSION}.json`), JSON.stringify({ count: 5 }));
+      const tFile = path.join(tmpData, 'transcript.jsonl');
+      fs.writeFileSync(tFile, JSON.stringify({
+        type: 'assistant',
+        message: { role: 'assistant', content: [{ type: 'text', text: 'no sentinel here' }] },
+      }) + '\n');
+      return { CLAUDE_PLUGIN_DATA: tmpData };
+    },
+    validateWithEnv: (r) => {
+      if (Object.keys(r.parsed || {}).length !== 0) {
+        return `expected release at cap, got: ${JSON.stringify(r.parsed)}`;
+      }
+      return null;
+    },
+  },
+
   // ── UserPromptSubmit ──────────────────────────────────────────────────────
   {
     name: 'correction-detect [UserPromptSubmit]',
@@ -815,7 +898,8 @@ console.log(DIM('─'.repeat(70)));
 
 for (const test of filtered) {
   const extraEnv = typeof test.extraEnv === 'function' ? test.extraEnv() : (test.extraEnv || {});
-  const result = run(test.script, test.payload, test.args || [], extraEnv);
+  const payload = typeof test.payload === 'function' ? test.payload(extraEnv) : test.payload;
+  const result = run(test.script, payload, test.args || [], extraEnv);
   const { ok, issues, parsed } = check(result, test.expect || {});
 
   let extraIssue = null;
