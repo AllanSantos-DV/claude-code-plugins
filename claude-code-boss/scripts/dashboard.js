@@ -327,9 +327,8 @@ async function searchBrain(req, res, url) {
     await embedder.init();
     const store = require('./brain-store.js');
 
-    // For scope=user, swap to __user__ DB; for project/both stay on requested project.
     const startProject = scope === 'user' ? USER_SENTINEL : project;
-    store.init({ project: startProject });
+    await store.init({ project: startProject });
 
     let vec = null;
     if (embedder.getStatus().ready) vec = await embedder.embed(q);
@@ -342,23 +341,21 @@ async function searchBrain(req, res, url) {
         results = await store.search(vec, { topK: k, minScore: 0.05 });
       }
     }
-    // Keyword fallback (project/user scope only — keep simple, no two-pass kw)
     if (results.length < 2 && scope !== 'both') {
       const index = require('./brain-index.js');
-      index.init({ project: startProject });
+      await index.init({ project: startProject });
       const kw = extractKeywords(q);
       if (kw.length > 0) {
         const kwResults = await index.lookup(kw, { topK: k });
         for (const r of kwResults) {
           if (!results.find(e => e.id === r.id)) {
-            const entry = store.get(r.id);
+            const entry = await store.get(r.id);
             if (entry) results.push({ ...entry, score: r.score });
           }
         }
       }
     }
-    // Restore singleton to the requested project so subsequent calls don't drift.
-    if (startProject !== project) store.init({ project });
+    if (startProject !== project) await store.init({ project });
     json(res, results.slice(0, k));
   } catch (e) { fail(res, e.message); }
 }
@@ -393,10 +390,6 @@ function deleteBrainEntry(req, res, url) {
   } catch (e) { fail(res, e.message); }
 }
 
-// Move an entry between scopes (project ↔ user).
-// PATCH /api/brain/entry/:id/scope?project=<src>
-// body: { scope: 'user'|'project', targetProject?: '<name>' }
-// targetProject is required when demoting user→project (src is __user__, can't infer destination).
 async function moveBrainEntryScope(req, res, url) {
   const parts = url.pathname.split('/');
   const id = parts[parts.length - 2];

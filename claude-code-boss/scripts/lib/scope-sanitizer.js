@@ -38,9 +38,6 @@ function sanitizeForUserScope(text, currentProject) {
   return t;
 }
 
-// Write-time preflight for scope=user entries. Returns `{rejected, reason}`
-// when a secret is detected in any field, otherwise `{safe}` with sanitized
-// title/summary/detail.
 function prepareForUserScope({ title, summary, detail }, currentProject) {
   const combined = `${title || ''}\n${summary || ''}\n${detail || ''}`;
   if (detectSecrets(combined)) {
