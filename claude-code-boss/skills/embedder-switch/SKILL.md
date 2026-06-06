@@ -86,9 +86,9 @@ The brain-server MCP process is restarted automatically by the SessionStart + Us
 
 When the user is undecided, recommend by use case:
 
-- **Default (português + inglês, offline, grátis)**: `transformers` + `Xenova/paraphrase-multilingual-MiniLM-L12-v2` (384 dim, ~120 MB)
-- **Best free cloud quality**: `voyage` + `voyage-4-lite` (1024 dim, 200M tokens/mês grátis)
-- **Best self-hosted quality**: `ollama` + `mxbai-embed-large` (1024 dim, requer Ollama instalado)
+- **Default (Portuguese + English, offline, free)**: `transformers` + `Xenova/paraphrase-multilingual-MiniLM-L12-v2` (384 dim, ~120 MB)
+- **Best free cloud quality**: `voyage` + `voyage-4-lite` (1024 dim, 200M tokens/month free)
+- **Best self-hosted quality**: `ollama` + `mxbai-embed-large` (1024 dim, requires Ollama installed)
 
 ## Common Pitfalls
 
