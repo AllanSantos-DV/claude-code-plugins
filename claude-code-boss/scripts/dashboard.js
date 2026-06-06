@@ -360,21 +360,21 @@ async function searchBrain(req, res, url) {
   } catch (e) { fail(res, e.message); }
 }
 
-function getBrainEntry(req, res, url) {
+async function getBrainEntry(req, res, url) {
   const parts = url.pathname.split('/');
   const id = parts[parts.length - 1];
   const project = url.searchParams.get('project') || '';
   if (!id || !project) return fail(res, 'Missing id or project', 400);
   try {
     const store = require('./brain-store.js');
-    store.init({ project });
-    const entry = store.get(id);
+    await store.init({ project });
+    const entry = await store.get(id);
     if (!entry) return fail(res, 'Not found', 404);
     json(res, entry);
   } catch (e) { fail(res, e.message); }
 }
 
-function deleteBrainEntry(req, res, url) {
+async function deleteBrainEntry(req, res, url) {
   const parts = url.pathname.split('/');
   const id = parts[parts.length - 1];
   const project = url.searchParams.get('project') || '';
@@ -382,9 +382,9 @@ function deleteBrainEntry(req, res, url) {
   try {
     const store = require('./brain-store.js');
     const index = require('./brain-index.js');
-    store.init({ project });
-    index.init({ project });
-    store.delete(id);
+    await store.init({ project });
+    await index.init({ project });
+    await store.delete(id);
     index.deindex(id);
     json(res, { ok: true });
   } catch (e) { fail(res, e.message); }
@@ -474,7 +474,7 @@ async function exportBrain(req, res, url) {
   if (!project) return fail(res, 'Missing scope=user or project=<name>', 400);
   try {
     const store = require('./brain-store.js');
-    store.init({ project });
+    await store.init({ project });
     const entries = await store.list();
     const db = store._getDbForTests && store._getDbForTests();
     const vectors = new Map();
@@ -530,9 +530,9 @@ async function importBrain(req, res) {
     const store = require('./brain-store.js');
     const index = require('./brain-index.js');
     const graph = require('./brain-graph.js');
-    store.init({ project: dstProject });
-    index.init({ project: dstProject });
-    graph.init({ project: dstProject });
+    await store.init({ project: dstProject });
+    await index.init({ project: dstProject });
+    await graph.init({ project: dstProject });
 
     let added = 0, skipped = 0, overwritten = 0, merged = 0, failed = 0;
     for (const e of entries) {
@@ -569,7 +569,7 @@ async function importBrain(req, res) {
   } catch (e) { fail(res, e.message); }
 }
 
-function getBrainRelated(req, res, url) {
+async function getBrainRelated(req, res, url) {
   const parts = url.pathname.split('/');
   const id = parts[parts.length - 1];
   const project = url.searchParams.get('project') || '';
@@ -577,14 +577,14 @@ function getBrainRelated(req, res, url) {
   try {
     const graph = require('./brain-graph.js');
     const store = require('./brain-store.js');
-    store.init({ project });
-    graph.init({ project });
+    await store.init({ project });
+    await graph.init({ project });
     const related = graph.getRelated(id);
-    const full = related.map(r => {
-      const entry = store.get(r.id);
+    const full = await Promise.all(related.map(async r => {
+      const entry = await store.get(r.id);
       return entry ? { ...entry, edgeType: r.edgeType } : null;
-    }).filter(Boolean);
-    json(res, full);
+    }));
+    json(res, full.filter(Boolean));
   } catch (e) { fail(res, e.message); }
 }
 
