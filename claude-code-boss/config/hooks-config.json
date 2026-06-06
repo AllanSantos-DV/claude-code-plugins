@@ -40,5 +40,9 @@
     "cooldownMinutes": 60,
     "depth": "quick",
     "fireThreshold": 1.0
+  },
+  "autoContinue": {
+    "enabled": true,
+    "maxConsecutive": 5
   }
 }
