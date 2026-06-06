@@ -429,8 +429,8 @@ async function moveBrainEntryScope(req, res, url) {
     const index = require('./brain-index.js');
     const graph = require('./brain-graph.js');
 
-    store.init({ project: srcProject });
-    const entry = store.get(id);
+    await store.init({ project: srcProject });
+    const entry = await store.get(id);
     if (!entry) return fail(res, 'Entry not found', 404);
 
     const currentScope = entry.scope || 'project';
@@ -452,20 +452,20 @@ async function moveBrainEntryScope(req, res, url) {
     }
     delete safeEntry.id;
 
-    index.init({ project: srcProject });
-    graph.init({ project: srcProject });
-    store.delete(id);
+    await index.init({ project: srcProject });
+    await graph.init({ project: srcProject });
+    await store.delete({ id });
     index.deindex(id);
     await graph.unregisterNode(id);
 
-    store.init({ project: dstProject });
-    index.init({ project: dstProject });
-    graph.init({ project: dstProject });
+    await store.init({ project: dstProject });
+    await index.init({ project: dstProject });
+    await graph.init({ project: dstProject });
     await store.save(safeEntry);
     await index.index(safeEntry);
     await graph.registerNode(safeEntry);
 
-    store.init({ project: srcProject });
+    await store.init({ project: srcProject });
     json(res, { ok: true, id: safeEntry.id, scope: targetScope, project: dstProject });
   } catch (e) { fail(res, e.message); }
 }

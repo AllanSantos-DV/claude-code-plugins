@@ -855,50 +855,100 @@ console.log(DIM('─'.repeat(70)));
 // timestamp + 4-byte random suffix) must allow N truly-concurrent spawns
 // to all land their entries without loss.
 (async () => {
-  if (FILTER && !'curation-detect concurrent appends'.toLowerCase().includes(FILTER.toLowerCase())) {
-    finalize();
-    return;
+  // ─── curation-detect [concurrent appends → no lost entries] ────────────────
+  const raceTestName = 'curation-detect   [concurrent appends→no lost entries]';
+  if (!FILTER || raceTestName.toLowerCase().includes(FILTER.toLowerCase())) {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-race-'));
+    const N = 5;
+    const fixture = require('./__fixtures__/post-tool-use-success-noisy.json');
+    const { spawn } = require('child_process');
+
+    const env = {
+      ...process.env,
+      CLAUDE_PLUGIN_ROOT: path.resolve(SCRIPTS, '..'),
+      CLAUDE_PLUGIN_DATA: dataDir,
+    };
+
+    const promises = [];
+    for (let i = 0; i < N; i++) {
+      const payload = { ...fixture, session_id: SESSION, tool_input: { ...(fixture.tool_input || {}), command: `echo race-${i}` } };
+      promises.push(new Promise((resolve) => {
+        const child = spawn('node', [path.join(SCRIPTS, 'curation-detect.js')], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+        child.stdin.end(JSON.stringify(payload));
+        child.on('close', () => resolve());
+      }));
+    }
+    await Promise.all(promises);
+
+    const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+    const runtimeDir = path.join(dataDir, '.runtime');
+    const prefix = `curation-turn-${safe}--`;
+    const files = fs.existsSync(runtimeDir)
+      ? fs.readdirSync(runtimeDir).filter(f => f.startsWith(prefix) && f.endsWith('.json'))
+      : [];
+
+    if (files.length === N) {
+      passed++;
+      console.log(`  ${GREEN('✓')} ${raceTestName}`);
+    } else {
+      failed++;
+      console.log(`  ${RED('✗')} ${raceTestName}`);
+      console.log(`      ${YELLOW('→')} expected ${N} journal files, got ${files.length}`);
+    }
   }
-  const testName = 'curation-detect   [concurrent appends→no lost entries]';
-  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-race-'));
-  const N = 5;
-  const fixture = require('./__fixtures__/post-tool-use-success-noisy.json');
-  const { spawn } = require('child_process');
 
-  const env = {
-    ...process.env,
-    CLAUDE_PLUGIN_ROOT: path.resolve(SCRIPTS, '..'),
-    CLAUDE_PLUGIN_DATA: dataDir,
-  };
+  // ─── skill-metric [UserPromptExpansion → records skill.invoked] ─────────────
+  // Validates Loop 4 contract: hook reads `command` from UserPromptExpansion
+  // payload, derives skillName, and persists a `skill.invoked` row in
+  // metrics_event. Stdout-only validation can't see this — must inspect DB.
+  const smTestName = 'skill-metric      [UserPromptExpansion→metrics_event row]';
+  if (!FILTER || smTestName.toLowerCase().includes(FILTER.toLowerCase())) {
+    const smDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-skm-'));
+    const projectName = `skm-proj-${Date.now()}`;
+    const projectCwd = path.join(smDataDir, projectName);
+    fs.mkdirSync(projectCwd, { recursive: true });
+    const skillName = 'loop';
 
-  // Spawn N children with distinct commands so dedup-by-command doesn't merge them.
-  const promises = [];
-  for (let i = 0; i < N; i++) {
-    const payload = { ...fixture, session_id: SESSION, tool_input: { ...(fixture.tool_input || {}), command: `echo race-${i}` } };
-    promises.push(new Promise((resolve) => {
-      const child = spawn('node', [path.join(SCRIPTS, 'curation-detect.js')], { env, stdio: ['pipe', 'pipe', 'pipe'] });
-      child.stdin.end(JSON.stringify(payload));
-      child.on('close', () => resolve());
-    }));
+    const r = run('skill-metric.js', {
+      command: `/${skillName} 5m /foo`,
+      session_id: SESSION,
+      cwd: projectCwd,
+    }, [], { CLAUDE_PLUGIN_DATA: smDataDir });
+
+    let issue = null;
+    if (r.status !== 0) issue = `exit code ${r.status}: ${r.stderr || ''}`;
+    else if ((r.stdout || '').trim() !== '{}') issue = `stdout not "{}": ${r.stdout}`;
+    else {
+      let Database;
+      try { Database = require('better-sqlite3'); } catch { /* skip if not available */ }
+      if (Database) {
+        const dbPath = path.join(smDataDir, 'brain', projectName, 'brain.db');
+        if (!fs.existsSync(dbPath)) issue = `brain.db not created at ${dbPath}`;
+        else {
+          const db = new Database(dbPath, { readonly: true });
+          const row = db.prepare(
+            "SELECT event_name, payload FROM metrics_event WHERE event_name = 'skill.invoked' ORDER BY id DESC LIMIT 1",
+          ).get();
+          db.close();
+          if (!row) issue = `no skill.invoked row in metrics_event`;
+          else {
+            const p = JSON.parse(row.payload || '{}');
+            if (p.skillName !== skillName) issue = `skillName mismatch: got ${p.skillName}, want ${skillName}`;
+          }
+        }
+      }
+    }
+
+    if (issue) {
+      failed++;
+      console.log(`  ${RED('✗')} ${smTestName}`);
+      console.log(`      ${YELLOW('→')} ${issue}`);
+    } else {
+      passed++;
+      console.log(`  ${GREEN('✓')} ${smTestName}`);
+    }
   }
-  await Promise.all(promises);
 
-  // Verify N journal files landed.
-  const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
-  const runtimeDir = path.join(dataDir, '.runtime');
-  const prefix = `curation-turn-${safe}--`;
-  const files = fs.existsSync(runtimeDir)
-    ? fs.readdirSync(runtimeDir).filter(f => f.startsWith(prefix) && f.endsWith('.json'))
-    : [];
-
-  if (files.length === N) {
-    passed++;
-    console.log(`  ${GREEN('✓')} ${testName}`);
-  } else {
-    failed++;
-    console.log(`  ${RED('✗')} ${testName}`);
-    console.log(`      ${YELLOW('→')} expected ${N} journal files, got ${files.length}`);
-  }
   finalize();
 })();
 
