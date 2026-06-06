@@ -122,22 +122,9 @@ const SOURCES = {
 
 // ─── Helper: extract keywords ───────────────────────────────────────────────
 
-const STOP_WORDS = new Set([
-  'the', 'this', 'that', 'and', 'for', 'with', 'from', 'was', 'are',
-  'have', 'has', 'had', 'not', 'but', 'all', 'can', 'will', 'just',
-  'been', 'were', 'they', 'them', 'their', 'what', 'when', 'where',
-  'which', 'who', 'how', 'about', 'into', 'over', 'such', 'each',
-  'than', 'then', 'these', 'those', 'also', 'very', 'because',
-  'para', 'que', 'com', 'uma', 'mais', 'mas', 'como', 'por',
-  'dos', 'das', 'era', 'sao', 'seu', 'sua', 'pelo', 'pela',
-]);
-
+const _textUtils = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'text-utils.js'));
 function extractKeywords(text) {
-  if (!text) return [];
-  return text.toLowerCase()
-    .replace(/[^a-z0-9\s/._-]/g, ' ')
-    .split(/\s+/)
-    .filter(w => w.length > 3 && !STOP_WORDS.has(w));
+  return _textUtils.extractKeywords(text, { minLen: 4, maxTokens: 1000, allowPath: true });
 }
 
 // ─── Server setup ───────────────────────────────────────────────────────────

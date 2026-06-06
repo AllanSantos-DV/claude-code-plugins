@@ -32,8 +32,10 @@ function getIndexPath() {
 }
 
 async function init(opts = {}) {
-  if (_initialized) return;
-  _project = opts.project || 'default';
+  const newProject = opts.project || 'default';
+  if (_initialized && _project === newProject) return;
+  _project = newProject;
+  _index = null;
   _indexPath = getIndexPath();
 
   if (fs.existsSync(_indexPath)) {
