@@ -1,17 +1,8 @@
 #!/usr/bin/env node
-// scripts/scope-bulk-reclassify.js — Plan #7. Heuristic batch promotion of
-// existing project entries to scope=user when type+tags match the
-// inferDefaultScope rules. Idempotent: dry-run by default.
-//
 // Usage:
 //   node scripts/scope-bulk-reclassify.js <project>            # dry-run
-//   node scripts/scope-bulk-reclassify.js <project> --commit   # actually move
+//   node scripts/scope-bulk-reclassify.js <project> --commit   # apply
 //   node scripts/scope-bulk-reclassify.js <project> --type=lesson --commit
-//
-// Strategy: load every entry from the source project, run inferDefaultScope.
-// If the inferred scope is 'user' AND the entry isn't already user-scoped,
-// emit a proposal. With --commit, the move is performed via the same
-// sanitize+save+unregister-on-source path as the dashboard endpoint.
 
 'use strict';
 const path = require('path');
@@ -41,7 +32,7 @@ async function main() {
     process.exit(2);
   }
 
-  store.init({ project });
+  await store.init({ project });
   const all = await store.list(type || undefined);
 
   const proposals = [];
@@ -88,16 +79,16 @@ async function main() {
       };
       delete safe.id;
 
-      store.init({ project });
-      index.init({ project });
-      graph.init({ project });
-      store.delete(e.id);
+      await store.init({ project });
+      await index.init({ project });
+      await graph.init({ project });
+      await store.delete(e.id);
       index.deindex(e.id);
       await graph.unregisterNode(e.id);
 
-      store.init({ project: USER_SENTINEL });
-      index.init({ project: USER_SENTINEL });
-      graph.init({ project: USER_SENTINEL });
+      await store.init({ project: USER_SENTINEL });
+      await index.init({ project: USER_SENTINEL });
+      await graph.init({ project: USER_SENTINEL });
       await store.save(safe);
       await index.index(safe);
       await graph.registerNode(safe);
@@ -107,7 +98,7 @@ async function main() {
       failed++;
     }
   }
-  store.init({ project });
+  await store.init({ project });
   console.log(`\npromoted=${promoted} rejected=${rejected} failed=${failed}`);
 }
 

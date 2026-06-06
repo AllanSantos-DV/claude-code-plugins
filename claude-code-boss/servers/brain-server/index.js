@@ -324,17 +324,18 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           if (embedder.getStatus().ready) vector = await embedder.embed(query);
         } catch { /* embedding optional */ }
 
-        // scope='user' → search only __user__ DB, then restore current project.
         if (scope === 'user') {
           const { store: userStore } = await getKB(USER_SENTINEL);
           let results = [];
-          if (vector) results = await userStore.search(vector, { topK, minScore });
-          await getKB(currentProject); // restore singleton to current project
+          try {
+            if (vector) results = await userStore.search(vector, { topK, minScore });
+          } finally {
+            await getKB(currentProject);
+          }
           const text = JSON.stringify({ query, project: USER_SENTINEL, scope: 'user', count: results.length, results }, null, 2);
           return { content: [{ type: 'text', text }] };
         }
 
-        // scope='project' or 'both'
         const { store: kbStore, index: kbIndex } = await getKB(currentProject);
         let results = [];
         if (scope === 'both' && vector) {
@@ -373,12 +374,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const { title, summary, detail, type = 'note', tags, project: projectArg, confidence = 0.8, sourceUrl, scope = 'auto' } = args;
         const currentProject = projectArg || path.basename(process.cwd() || 'default');
 
-        // Resolve scope (auto-infer from type+tags).
         const effectiveScope = (scope === 'project' || scope === 'user')
           ? scope
           : inferDefaultScope(type, tags);
 
-        // Sanitize + secret-check when storing to user scope.
         let safeTitle = title, safeSummary = summary, safeDetail = detail;
         if (effectiveScope === 'user') {
           const prep = prepareForUserScope({ title, summary, detail }, currentProject);
@@ -405,7 +404,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           created: new Date().toISOString(),
         };
 
-        // Generate embedding upfront so we save+index in one pass (optional)
         let vector = null;
         try {
           const embedder = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-embedder.js'));
@@ -413,11 +411,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           if (embedder.getStatus().ready) vector = await embedder.embed(safeTitle + ': ' + safeSummary);
         } catch { /* embedding optional */ }
 
-        await kbStore.save(entry, vector);   // mutates entry.id
-        await kbIndex.index(entry);          // extracts keywords/tags internally
-        await kbGraph.registerNode(entry);   // registers node by entry.id
+        await kbStore.save(entry, vector);
+        await kbIndex.index(entry);
+        await kbGraph.registerNode(entry);
 
-        // Restore singleton to current project so subsequent tool calls don't drift.
         if (storageProject !== currentProject) await getKB(currentProject);
 
         return {
@@ -434,12 +431,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const { title, summary, detail, type = 'lesson', tags = [], confidence = 0.85, project: projectArg, scope = 'auto' } = args;
         const currentProject = projectArg || path.basename(process.cwd() || 'default');
 
-        // Resolve scope (lessons/patterns default to project unless tags hint user-facing).
         const effectiveScope = (scope === 'project' || scope === 'user')
           ? scope
           : inferDefaultScope(type, tags);
 
-        // Sanitize + secret-check when storing to user scope.
         let safeTitle = title, safeSummary = summary, safeDetail = detail;
         if (effectiveScope === 'user') {
           const prep = prepareForUserScope({ title, summary, detail }, currentProject);
@@ -454,7 +449,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
         const text = `${safeTitle} ${safeSummary} ${safeDetail || ''}`.trim();
 
-        // Embed for dedup + storage
         let vector = null;
         try {
           const embedder = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-embedder.js'));
@@ -462,19 +456,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           if (embedder.getStatus().ready) vector = await embedder.embed(text);
         } catch { /* embedding optional */ }
 
-        // Admission control inline: near-duplicate → MERGE (bump recurrence)
         const DEDUP = 0.9;
         if (vector) {
           const hits = await kbStore.search(vector, { topK: 1, minScore: DEDUP, rerank: false });
           if (hits.length > 0) {
             const merged = await kbStore.merge(hits[0].id, { summary: safeSummary, content: { detail: safeDetail || safeSummary }, confidence });
+            kbStore.recordMetric('lesson.captured', { type, decision: 'merge', scope: effectiveScope, recurrence: merged?.recurrence }, null);
             if (storageProject !== currentProject) await getKB(currentProject);
-            try { kbStore.recordMetric('lesson.captured', { type, decision: 'merge', scope: effectiveScope, recurrence: merged?.recurrence }, null); } catch { /* metrics best-effort */ }
             return { content: [{ type: 'text', text: JSON.stringify({ decision: 'merge', id: hits[0].id, recurrence: merged?.recurrence, title: hits[0].title, project: storageProject, scope: effectiveScope }, null, 2) }] };
           }
         }
 
-        // Admit: new curated entry
         const entry = {
           type, project: storageProject, scope: effectiveScope, session_id: '',
           title: String(safeTitle).slice(0, 80),
@@ -491,8 +483,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         await kbIndex.index(entry);
         await kbGraph.registerNode(entry);
 
+        kbStore.recordMetric('lesson.captured', { type, decision: 'admit', scope: effectiveScope }, null);
         if (storageProject !== currentProject) await getKB(currentProject);
-        try { kbStore.recordMetric('lesson.captured', { type, decision: 'admit', scope: effectiveScope }, null); } catch { /* metrics best-effort */ }
         return { content: [{ type: 'text', text: JSON.stringify({ decision: 'admit', id: entry.id, type, project: storageProject, scope: effectiveScope }, null, 2) }] };
       } catch (err) {
         return { isError: true, content: [{ type: 'text', text: `capture_lesson failed: ${err.message}` }] };

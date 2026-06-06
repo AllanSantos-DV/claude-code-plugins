@@ -283,8 +283,6 @@ function migrateSqlite() {
       _db.exec(`ALTER TABLE entries ADD COLUMN scope TEXT NOT NULL DEFAULT 'project'`);
     }
     _db.exec(`CREATE INDEX IF NOT EXISTS idx_entries_scope ON entries(scope, project)`);
-    // Plan #5: metrics_event table for ROI dashboard. Schema lives on createTablesSqlite for fresh DBs;
-    // this branch handles pre-existing brain.db files from older plugin versions.
     const tables = _db.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all().map(t => t.name);
     if (!tables.includes('metrics_event')) {
       _db.exec(`
@@ -628,15 +626,8 @@ async function init(opts = {}) {
   _project = newProject;
   const _dir = getProjectDir();
 
-  // Try SQLite first
   const sqliteOk = await tryInitSqlite();
-  if (sqliteOk) {
-    _useSqlite = true;
-  } else {
-    // Fallback to JSON
-    await initJson();
-    _useJson = true;
-  }
+  if (!sqliteOk) await initJson();
   _initialized = true;
 }
 
