@@ -393,7 +393,7 @@ function deleteBrainEntry(req, res, url) {
   } catch (e) { fail(res, e.message); }
 }
 
-// Plan #7 — move an entry between scopes (project ↔ user).
+// Move an entry between scopes (project ↔ user).
 // PATCH /api/brain/entry/:id/scope?project=<src>
 // body: { scope: 'user'|'project', targetProject?: '<name>' }
 // targetProject is required when demoting user→project (src is __user__, can't infer destination).
@@ -470,7 +470,7 @@ async function moveBrainEntryScope(req, res, url) {
   } catch (e) { fail(res, e.message); }
 }
 
-// Plan #7 — export entries as portable JSON bundle.
+// Export entries as portable JSON bundle.
 // GET /api/brain/export?scope=user
 // GET /api/brain/export?project=<name>
 // Response: { version, exportedAt, project, scope, entries: [{...entry, vector?}] }
@@ -510,7 +510,7 @@ async function exportBrain(req, res, url) {
   } catch (e) { fail(res, e.message); }
 }
 
-// Plan #7 — import entries from a JSON bundle.
+// Import entries from a JSON bundle.
 // POST /api/brain/import  body: { project?, scope?, conflict, entries }
 //   conflict: 'skip' | 'overwrite' | 'merge' (default: 'skip')
 //   project: destination override (else uses bundle.project / __user__ if scope=user)

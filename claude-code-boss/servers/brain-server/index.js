@@ -60,7 +60,7 @@ async function getKB(project) {
   return { store, index, graph };
 }
 
-// Plan #7 — scope helpers (sanitizer + two-pass retrieval).
+// Scope helpers (sanitizer + two-pass retrieval).
 const scopeSanitizer = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'scope-sanitizer.js'));
 const scopeSearch = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'scope-search.js'));
 const { USER_SENTINEL, inferDefaultScope, prepareForUserScope } = scopeSanitizer;
@@ -175,7 +175,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           project: { type: 'string', description: 'Project name (default: auto-detect from CWD)' },
           topK: { type: 'number', description: 'Number of results (default: 5)' },
           minScore: { type: 'number', description: 'Minimum relevance score (default: 0.2)' },
-          scope: { type: 'string', enum: ['both', 'project', 'user'], description: 'Plan #7: which memory scope to search. "both" (default) = two-pass merge of current project + global __user__ entries. "project" = current project only. "user" = global __user__ only.' }
+          scope: { type: 'string', enum: ['both', 'project', 'user'], description: 'Which memory scope to search. "both" (default) = two-pass merge of current project + global __user__ entries. "project" = current project only. "user" = global __user__ only.' }
         },
         required: ['query']
       }
@@ -202,7 +202,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           project: { type: 'string', description: 'Project name (default: auto-detect)' },
           confidence: { type: 'number', description: 'Confidence score 0.0-1.0 (default: 0.8)' },
           sourceUrl: { type: 'string', description: 'Source URL if applicable' },
-          scope: { type: 'string', enum: ['auto', 'project', 'user'], description: 'Plan #7: where to store. "auto" (default) infers from type+tags (reference/research/user-tag → user; decision/code → project). "user" routes to global __user__ DB and sanitizes user paths/emails/project name. Entries with detected secrets are rejected if scope=user.' }
+          scope: { type: 'string', enum: ['auto', 'project', 'user'], description: 'Where to store. "auto" (default) infers from type+tags (reference/research/user-tag → user; decision/code → project). "user" routes to global __user__ DB and sanitizes user paths/emails/project name. Entries with detected secrets are rejected if scope=user.' }
         },
         required: ['title', 'summary']
       }
@@ -242,7 +242,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           tags: { type: 'array', items: { type: 'string' }, description: '3-8 CANONICAL English concept tags, lowercase, hyphenated (e.g. "error-handling", "token-efficiency", "cross-lingual"). These are the language-neutral retrieval anchor — choose the terms a future query (in any language) would map to.' },
           confidence: { type: 'number', description: '0.0-1.0 (default 0.85)' },
           project: { type: 'string', description: 'Project name (default: auto-detect from CWD)' },
-          scope: { type: 'string', enum: ['auto', 'project', 'user'], description: 'Plan #7: where to store. "auto" (default) infers from type+tags (user-tag hints like workflow/preferences/agent-behavior → user). "user" routes to global __user__ DB and sanitizes user paths/emails/project name. Entries with detected secrets are rejected if scope=user.' }
+          scope: { type: 'string', enum: ['auto', 'project', 'user'], description: 'Where to store. "auto" (default) infers from type+tags (user-tag hints like workflow/preferences/agent-behavior → user). "user" routes to global __user__ DB and sanitizes user paths/emails/project name. Entries with detected secrets are rejected if scope=user.' }
         },
         required: ['title', 'summary']
       }
@@ -351,7 +351,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
             for (const r of kwResults) {
               if (!results.find(e => e.id === r.id)) {
                 const entry = await kbStore.get(r.id);
-                if (entry) results.push({ ...entry, score: r.score, scope: entry.scope || 'project' });
+                if (entry) results.push({ ...entry, score: r.score, scope: entry.scope });
               }
             }
           }

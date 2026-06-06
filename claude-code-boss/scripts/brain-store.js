@@ -279,9 +279,6 @@ function migrateSqlite() {
     if (!cols.includes('last_cited_ts')) {
       _db.exec(`ALTER TABLE entries ADD COLUMN last_cited_ts INTEGER`);
     }
-    // Plan #7: scope column for cross-project memory federation. Default
-    // 'project' preserves existing semantics; 'user' rows live in the
-    // __user__ project DB and travel across repos via two-pass retrieval.
     if (!cols.includes('scope')) {
       _db.exec(`ALTER TABLE entries ADD COLUMN scope TEXT NOT NULL DEFAULT 'project'`);
     }
@@ -328,7 +325,7 @@ async function saveSqlite(entry, vector) {
     entry.title, entry.summary || '', JSON.stringify(entry.content || {}),
     JSON.stringify(entry.source || {}), JSON.stringify(entry.tags || []),
     entry.confidence || 0.5, entry.access_count || 0, entry.recurrence || 1,
-    entry.scope === 'user' ? 'user' : 'project',
+    entry.scope || 'project',
     entry.last_accessed || null, entry.created_at || now()
   );
 

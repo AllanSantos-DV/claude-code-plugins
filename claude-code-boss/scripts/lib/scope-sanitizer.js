@@ -1,9 +1,4 @@
 'use strict';
-/**
- * scope-sanitizer.js — Plan #7. Pure helpers for cross-project memory scope.
- * Owns scope inference, secret detection, sanitization, and the write-time
- * preflight (`prepareForUserScope`) shared by all three KB write paths.
- */
 
 const USER_SENTINEL = '__user__';
 
@@ -45,8 +40,7 @@ function sanitizeForUserScope(text, currentProject) {
 
 // Write-time preflight for scope=user entries. Returns `{rejected, reason}`
 // when a secret is detected in any field, otherwise `{safe}` with sanitized
-// title/summary/detail. Centralizes the contract shared by brain_store,
-// capture_lesson, and the dashboard move endpoint.
+// title/summary/detail.
 function prepareForUserScope({ title, summary, detail }, currentProject) {
   const combined = `${title || ''}\n${summary || ''}\n${detail || ''}`;
   if (detectSecrets(combined)) {
