@@ -33,8 +33,10 @@ function getGraphPath() {
 }
 
 async function init(opts = {}) {
-  if (_initialized) return;
-  _project = opts.project || 'default';
+  const newProject = opts.project || 'default';
+  if (_initialized && _project === newProject) return;
+  _project = newProject;
+  _graph = null;
   _graphPath = getGraphPath();
 
   if (fs.existsSync(_graphPath)) {

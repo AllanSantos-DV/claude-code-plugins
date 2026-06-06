@@ -625,8 +625,10 @@ async function listJson(type, project) {
 // ── Public API ──
 
 async function init(opts = {}) {
-  if (_initialized) return;
-  _project = opts.project || 'default';
+  const newProject = opts.project || 'default';
+  if (_initialized && _project === newProject) return;
+  if (_initialized) await close();
+  _project = newProject;
   const _dir = getProjectDir();
 
   // Try SQLite first
