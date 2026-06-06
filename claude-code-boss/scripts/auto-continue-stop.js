@@ -6,11 +6,9 @@ const path = require('path');
 const os = require('os');
 
 const { readStdin, parsePayload, emitEmpty, emitStopBlock } = require('./lib/hook-io.js');
-const { readLastAssistantText } = require('./retrieval-feedback.js');
 
-const SENTINEL = '===done===';
-const DEFAULT_MAX = 5;
-const REASON = '[auto-continue] Continue if next step is obvious from plan/todos. Else end reply with line "===done===" to release.';
+const DEFAULT_MAX = 1;
+const REASON = '[auto-continue] Continue se o próximo passo for óbvio pelo plano/todos. Caso contrário, encerre normalmente — esta é a única tentativa, não haverá nova chance.';
 
 function counterPath(dataDir, sid) {
   return path.join(dataDir, '.runtime', `auto-continue-${sid}.json`);
@@ -35,12 +33,6 @@ function loadConfig() {
   } catch { return {}; }
 }
 
-function hasSentinel(replyText) {
-  if (!replyText) return false;
-  const lines = String(replyText).split('\n').map(l => l.trim()).filter(Boolean);
-  return lines[lines.length - 1] === SENTINEL;
-}
-
 async function main() {
   const raw = await readStdin();
   const ev = parsePayload(raw) || {};
@@ -48,16 +40,11 @@ async function main() {
   if (cfg.enabled === false) return emitEmpty();
 
   const sid = ev.session_id || ev.sessionId || 'default';
-  const transcriptPath = ev.transcript_path || ev.transcriptPath || '';
-
   const dataDir = process.env.CLAUDE_PLUGIN_DATA
     || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
   const cFile = counterPath(dataDir, sid);
 
-  const reply = readLastAssistantText(transcriptPath);
-  if (hasSentinel(reply)) return emitEmpty();
-
-  const max = cfg.maxConsecutive || DEFAULT_MAX;
+  const max = cfg.maxBlocks || DEFAULT_MAX;
   const cur = readCounter(cFile);
   if (cur.count >= max) return emitEmpty();
 
@@ -72,4 +59,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { SENTINEL, REASON, hasSentinel, readCounter, writeCounter, counterPath };
+module.exports = { REASON, readCounter, writeCounter, counterPath };

@@ -43,6 +43,6 @@
   },
   "autoContinue": {
     "enabled": true,
-    "maxConsecutive": 5
+    "maxBlocks": 1
   }
 }
