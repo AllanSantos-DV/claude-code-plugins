@@ -1011,29 +1011,20 @@ test('scope: prepareForUserScope sanitizes safe fields and rejects secrets', () 
   assertEq(partial.safe.detail, '');
 });
 
-test('scope: splitTopK splits topK by ratio with sensible floors', () => {
+test('scope: splitTopK splits topK by 60/40 ratio with sensible floors', () => {
   const { splitTopK } = require('./lib/scope-search.js');
-  // Default ratio 0.6
-  let s = splitTopK(5, 0.6);
+  let s = splitTopK(5);
   assertEq(s.projectK, 3);
   assertEq(s.userK, 2);
-  s = splitTopK(10, 0.6);
+  s = splitTopK(10);
   assertEq(s.projectK, 6);
   assertEq(s.userK, 4);
-  // All project
-  s = splitTopK(5, 1);
-  assertEq(s.projectK, 5);
-  assertEq(s.userK, 0);
-  // All user (project floors to 1)
-  s = splitTopK(5, 0);
-  assertEq(s.projectK, 1);
-  assertEq(s.userK, 4);
   // Edge: topK=1 → projectK=1, userK=0
-  s = splitTopK(1, 0.6);
+  s = splitTopK(1);
   assertEq(s.projectK, 1);
   assertEq(s.userK, 0);
-  // Invalid ratio → clamped to [0,1], default fallback
-  s = splitTopK(5);
+  // Falsy → defaults to 5
+  s = splitTopK();
   assertEq(s.projectK + s.userK, 5);
 });
 
