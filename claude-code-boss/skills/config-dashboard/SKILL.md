@@ -22,11 +22,10 @@ cd "<plugin_root>"; $env:DASHBOARD_PORT=4500; Start-Process -NoNewWindow node -A
 
 ## What to Tell the User
 
-After launching, read the output for the URL (pattern: `http://localhost:<port>`) and tell the user:
+After launching, read the output for the URL (pattern: `http://localhost:<port>`) and tell the user (in the user's preferred language):
 
-> **Dashboard aberto em: http://localhost:XXXX**
->
-> Abas disponíveis: Home, Brain KB, Hooks, Logs
+- The dashboard URL.
+- The available tabs: Home, Brain KB, Hooks, Logs.
 
 ## When the User Asks
 
