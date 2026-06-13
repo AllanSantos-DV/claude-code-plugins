@@ -60,7 +60,7 @@ function readCache(cwd, ttlSec) {
     if (typeof obj.ts !== 'number') return null;
     if ((Date.now() - obj.ts) > ttlSec * 1000) return null;
     return obj.md || null;
-  } catch { return null; }
+  } catch { /* unreadable/invalid cache: treat as miss */ return null; }
 }
 
 function writeCache(cwd, md) {
@@ -92,7 +92,7 @@ function runCmd(cmd, args, cwd, timeoutMs) {
 async function gatherLocal(cwd, deadlineFn) {
   const out = { branch: null, branchAgeDays: null, ahead: 0, behind: 0, dirtyOld: [], stashCount: 0 };
 
-  const [branchR, mainR, hbR, dirtyR, stashR] = await Promise.all([
+  const [branchR, _mainR, hbR, dirtyR, stashR] = await Promise.all([
     runCmd('git', ['rev-parse', '--abbrev-ref', 'HEAD'], cwd, 1000),
     runCmd('git', ['log', '-1', '--format=%ct', 'main'], cwd, 1000),
     runCmd('git', ['rev-list', '--left-right', '--count', 'main...HEAD'], cwd, 1000),
@@ -141,7 +141,7 @@ async function gatherLocal(cwd, deadlineFn) {
 
 function parseGhJson(stdout) {
   if (!stdout) return null;
-  try { return JSON.parse(stdout); } catch { return null; }
+  try { return JSON.parse(stdout); } catch { /* non-JSON gh output: treat as null */ return null; }
 }
 
 async function ghAvailable(cwd) {

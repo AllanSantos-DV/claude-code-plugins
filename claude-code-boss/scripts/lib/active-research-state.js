@@ -32,7 +32,7 @@ function _read() {
     o.sessions = o.sessions && typeof o.sessions === 'object' ? o.sessions : {};
     o.cooldown = o.cooldown && typeof o.cooldown === 'object' ? o.cooldown : {};
     return o;
-  } catch { return { sessions: {}, cooldown: {} }; }
+  } catch { /* absent/corrupt: empty state */ return { sessions: {}, cooldown: {} }; }
 }
 
 function _write(s) {

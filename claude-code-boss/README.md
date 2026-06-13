@@ -9,7 +9,7 @@ Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizad
 ## Pré-requisitos
 
 - [Claude Code Desktop](https://claude.ai/download)
-- Node.js 20+
+- Node.js **22.13+** (usa o módulo nativo `node:sqlite`; em Node mais antigo o Brain cai no fallback JSON — **sem compilação nativa em nenhum caso**)
 - (Opcional) Java 21+ para backend MCP Memory
 - (Opcional) Ollama para embeddings locais via GPU
 
@@ -19,6 +19,8 @@ Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizad
 cd claude-code-boss
 npm install
 ```
+
+O `npm install` (postinstall) **baixa o modelo de embedding** (~100-200 MB, uma vez) para um cache durável em `<CLAUDE_PLUGIN_DATA>/models/` (default `~/.claude/plugins/data/claude-code-boss/models/`) — habilita o search semântico **e** o loop de aprendizado (pattern→skill). Internet é assumida (você já baixou o plugin online). Pular (CI/automação): `CLAUDE_SKIP_EMBED_WARM=1`. (Re)baixar depois: `npm run setup:brain`.
 
 Registre o plugin:
 
@@ -55,7 +57,7 @@ claude-code-boss/
 │   └── sync-version.js        # Propaga versão para todos os arquivos de versão
 ├── servers/
 │   └── brain-server/          # MCP server: brain_search/store/related/count + capture_lesson
-├── skills/                    # 5 skills do Claude Code
+├── skills/                    # skills do Claude Code (inclui plugin-install)
 ├── package.json               # scripts: test, version:sync
 └── TASK-MAP.md                # Histórico de entrega (parcialmente obsoleto pós slim-down)
 ```
@@ -92,7 +94,7 @@ Todos os hooks estão declarados em `hooks/hooks.json`. Eventos e scripts ativos
 
 Base de conhecimento local com 3 layers:
 
-1. **Storage** (`brain-store.js`) — SQLite via `better-sqlite3` + fallback JSON. Busca vetorial (cosine similarity JS, suficiente para <10K entradas), FTS keyword search
+1. **Storage** (`brain-store.js`) — SQLite via `node:sqlite` (built-in do Node 22.13+, **zero deps nativas**) com fallback automático para `better-sqlite3` (se instalado) e, por fim, JSON. Busca vetorial (cosine similarity JS, suficiente para <10K entradas), FTS keyword search
 2. **Index** (`brain-index.js`) — Índice invertido de palavras-chave com TF scoring
 3. **Graph** (`brain-graph.js`) — Grafo de citação com 6 tipos de aresta
 
@@ -100,11 +102,11 @@ Base de conhecimento local com 3 layers:
 
 | Provider | Config | Requisito | Custo |
 | --- | --- | --- | --- |
-| `transformers` (padrão) | `embedder.provider: "transformers"` | Zero — ONNX puro JS | Zero |
+| `transformers` (padrão) | `embedder.provider: "transformers"` | Zero build; baixa o modelo (~100-200 MB) no install | Zero |
 | `ollama` | `embedder.provider: "ollama"` | Ollama rodando localmente | Zero |
 | `voyage` | `embedder.provider: "voyage"` | Chave API Voyage AI | ~$0.10/1M tokens |
 
-**Modelo padrão**: `Xenova/paraphrase-multilingual-MiniLM-L12-v2` (384-dim, 50 idiomas) — recupera lessons EN a partir de prompts em qualquer idioma suportado.
+**Modelo padrão**: `Xenova/paraphrase-multilingual-MiniLM-L12-v2` (384-dim, 50 idiomas) — recupera lessons EN a partir de prompts em qualquer idioma suportado. Baixado automaticamente no `npm install` para um cache durável (`<CLAUDE_PLUGIN_DATA>/models/`, sobrevive a reinstalls); refaça/verifique com `npm run setup:brain`.
 
 **Breaking change — cutover de modelo**: ao trocar o `embedder.model`, vetores antigos ficam incompatíveis. Rode uma vez:
 ```bash

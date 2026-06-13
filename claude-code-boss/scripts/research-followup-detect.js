@@ -36,7 +36,7 @@ function stampPath(data, sid) {
 }
 
 function readStamp(p) {
-  try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { return null; }
+  try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { /* absent or corrupt: null */ return null; }
 }
 
 function writeStamp(p, obj) {
@@ -98,14 +98,14 @@ async function main() {
     store = require('./brain-store.js');
     await store.init({ project, skipEmbedder: true });
     if (store.getStorageType() !== 'sqlite') return emitEmpty();
-  } catch { return emitEmpty(); }
+  } catch { /* store unavailable: no-op */ return emitEmpty(); }
 
   let triggers, captures;
   try {
     triggers = store.getEventLog({ eventName: 'research.auto.triggered', limit: 50 })
       .filter(e => e.sessionId === sid);
     captures = store.getEventLog({ eventName: 'lesson.captured', limit: 100 });
-  } catch { return emitEmpty(); }
+  } catch { /* event log read failed: no-op */ return emitEmpty(); }
 
   const events = [...triggers, ...captures].sort((a, b) => b.ts - a.ts);
 

@@ -103,7 +103,7 @@ function sweepOld(maxAgeMs) {
       } catch { /* best effort */ }
     }
     return n;
-  } catch { return 0; }
+  } catch { /* read failed: zero */ return 0; }
 }
 
 module.exports = { appendEntry, readEntries, clearEntries, sweepOld, newRetrievalId, RUNTIME_DIR };

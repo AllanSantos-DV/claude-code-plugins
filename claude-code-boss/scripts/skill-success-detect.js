@@ -31,7 +31,7 @@ function settledPath(sid) {
 }
 
 function readSettled(p) {
-  try { const a = JSON.parse(fs.readFileSync(p, 'utf-8')); return Array.isArray(a) ? a : []; } catch { return []; }
+  try { const a = JSON.parse(fs.readFileSync(p, 'utf-8')); return Array.isArray(a) ? a : []; } catch { /* absent or corrupt: empty */ return []; }
 }
 
 function writeSettled(p, ids) {
@@ -73,7 +73,7 @@ async function main() {
     store = require('./brain-store.js');
     await store.init({ project, skipEmbedder: true });
     if (store.getStorageType() !== 'sqlite') return emitEmpty();
-  } catch { return emitEmpty(); }
+  } catch { /* store unavailable: no-op */ return emitEmpty(); }
 
   let invocations, failures;
   try {
@@ -81,7 +81,7 @@ async function main() {
       .filter(e => e.sessionId === sid);
     failures = store.getEventLog({ eventName: 'failure.retro.fired', limit: 200 })
       .filter(e => e.sessionId === sid);
-  } catch { return emitEmpty(); }
+  } catch { /* event log read failed: no-op */ return emitEmpty(); }
 
   if (!invocations.length) return emitEmpty();
 

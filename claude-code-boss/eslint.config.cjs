@@ -20,6 +20,8 @@ module.exports = [
         clearInterval: 'readonly',
         URL: 'readonly',
         fetch: 'readonly',
+        AbortController: 'readonly',
+        AbortSignal: 'readonly',
       },
     },
     rules: {

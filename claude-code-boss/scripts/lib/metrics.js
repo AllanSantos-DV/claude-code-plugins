@@ -33,7 +33,7 @@ function _getStore(project) {
 function _resolveProject(ctx) {
   if (ctx && ctx.project) return ctx.project;
   const cwd = (ctx && ctx.cwd) || process.cwd();
-  try { return path.basename(cwd); } catch { return 'default'; }
+  try { return path.basename(cwd); } catch { /* basename failed: default */ return 'default'; }
 }
 
 /**

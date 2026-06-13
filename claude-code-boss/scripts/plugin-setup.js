@@ -1,13 +1,26 @@
 #!/usr/bin/env node
 /**
  * plugin-setup.js — runs after npm install (postinstall) and after plugin updates.
- * Ensures native modules (sharp, better-sqlite3) are compiled for the current platform.
+ *
+ * Two jobs:
+ *  1. Ensure dependencies are present (installs them when node_modules is missing,
+ *     e.g. the plugin was copied into the Claude Code cache without them).
+ *  2. Warm the embedding model so the Brain learning loop works out of the box
+ *     (semantic search + dedup → recurrence → skill promotion). See brain-warm.js.
+ *
+ * The plugin has NO required native module — it runs on any machine with a modern
+ * Node, no C/C++ build toolchain: SQLite uses the built-in `node:sqlite`. The
+ * embedder model (`@xenova/transformers`, pure JS/WASM) is REQUIRED for full value
+ * and is downloaded here — internet is assumed, since the plugin was just fetched
+ * online. The warm is skipped in CI and is non-fatal: the model is also fetched
+ * lazily on first use, and keyword search keeps working meanwhile.
  */
 const { execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
+const MIN_NODE = [22, 13, 0];
 
 function run(cmd, opts = {}) {
   try {
@@ -19,35 +32,70 @@ function run(cmd, opts = {}) {
   }
 }
 
-function needsInstall() {
-  const nm = path.join(PLUGIN_ROOT, 'node_modules');
-  if (!fs.existsSync(nm)) return true;
-  // Check if sharp binary exists for current platform
-  try {
-    require(path.join(nm, 'sharp'));
-    return false;
-  } catch (err) {
-    console.error(`[PLUGIN-SETUP] sharp probe failed, will reinstall: ${err.message}`);
-    return true;
+function meetsMinNode() {
+  const [maj, min] = process.versions.node.split('.').map((n) => parseInt(n, 10));
+  if (maj !== MIN_NODE[0]) return maj > MIN_NODE[0];
+  return min >= MIN_NODE[1];
+}
+
+function warnNodeVersion() {
+  if (meetsMinNode()) return;
+  process.stderr.write(
+    `[plugin-setup] WARNING: Node ${process.versions.node} detected. This plugin ` +
+    `recommends Node >= ${MIN_NODE.join('.')} for the built-in node:sqlite backend. ` +
+    `On older Node the Brain KB falls back to JSON (slower, no metrics). ` +
+    `Upgrade Node to enable SQLite.\n`
+  );
+}
+
+/**
+ * Download + verify the embedding model so the Brain learning loop is ready out
+ * of the box. Internet is assumed (the plugin was just fetched over the network).
+ * Skipped in CI (tests don't need the model) and when CLAUDE_SKIP_EMBED_WARM=1.
+ * Non-fatal but LOUD on failure — the model is also fetched lazily on first use.
+ */
+function warmEmbedder() {
+  if (process.env.CI || process.env.CLAUDE_SKIP_EMBED_WARM === '1') {
+    process.stdout.write('[plugin-setup] Skipping embedder warm (CI or CLAUDE_SKIP_EMBED_WARM=1).\n');
+    return;
+  }
+  process.stdout.write(
+    '[plugin-setup] Warming embedding model (one-time download; required for ' +
+    'semantic search + the learning loop)…\n'
+  );
+  const warmed = run(
+    `"${process.execPath}" "${path.join(PLUGIN_ROOT, 'scripts', 'brain-warm.js')}"`,
+    { timeout: 600000 }
+  );
+  if (!warmed) {
+    process.stderr.write(
+      '[plugin-setup] Embedding model warm FAILED. The Brain runs in keyword mode ' +
+      'for now; the model is fetched on first capture. To retry: npm run setup:brain\n'
+    );
   }
 }
 
 (async () => {
-  if (!needsInstall()) {
-    process.stdout.write('[plugin-setup] Dependencies OK\n');
-    return;
+  warnNodeVersion();
+
+  const nodeModules = path.join(PLUGIN_ROOT, 'node_modules');
+  if (fs.existsSync(nodeModules)) {
+    process.stdout.write('[plugin-setup] Dependencies present\n');
+  } else {
+    process.stdout.write('[plugin-setup] Installing dependencies...\n');
+    // An optional prebuilt binary (e.g. onnxruntime for the embedder) may fail to
+    // fetch on some platforms — that is expected and non-fatal. The plugin still
+    // runs on node:sqlite + JSON fallback, so we never fail the whole setup on it.
+    const ok = run('npm install --prefer-offline --no-audit --no-fund');
+    if (!ok) {
+      process.stderr.write(
+        '[plugin-setup] npm install reported errors (likely an optional prebuilt ' +
+        'dependency). The plugin still works via node:sqlite + JSON fallback.\n'
+      );
+    }
   }
 
-  process.stdout.write('[plugin-setup] Installing dependencies...\n');
-
-  // Install all deps
-  const ok = run('npm install --prefer-offline --no-audit --no-fund');
-  if (!ok) {
-    // Fallback: install sharp for explicit platform
-    const plat = process.platform;
-    const arch = process.arch;
-    run(`npm install --platform=${plat} --arch=${arch} sharp --no-audit --no-fund`);
-  }
+  warmEmbedder();
 
   process.stdout.write('[plugin-setup] Done\n');
 })();

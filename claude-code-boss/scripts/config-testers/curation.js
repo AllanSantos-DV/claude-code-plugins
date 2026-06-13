@@ -44,17 +44,24 @@ async function test(input) {
       const entries = fs.readdirSync(scriptsDir).filter(f => /\.(mjs|js|sh|ps1|cmd)$/.test(f));
       details.scriptCount = entries.length;
     } catch (err) {
-      return { ok: false, error: `scriptsDir unreadable: ${err.message}`, details, ms: Date.now() - t0 };
+      const error = `scriptsDir unreadable: ${err.message}`;
+      return { ok: false, error, details, ms: Date.now() - t0 };
     }
   }
 
   if (shellsCfg) {
     let raw;
     try { raw = fs.readFileSync(shellsCfg, 'utf-8'); }
-    catch (err) { return { ok: false, error: `shells config unreadable: ${err.message}`, details, ms: Date.now() - t0 }; }
+    catch (err) {
+      const error = `shells config unreadable: ${err.message}`;
+      return { ok: false, error, details, ms: Date.now() - t0 };
+    }
     let parsed;
     try { parsed = JSON.parse(raw); }
-    catch (err) { return { ok: false, error: `shells config invalid JSON: ${err.message}`, details, ms: Date.now() - t0 }; }
+    catch (err) {
+      const error = `shells config invalid JSON: ${err.message}`;
+      return { ok: false, error, details, ms: Date.now() - t0 };
+    }
     const shells = Array.isArray(parsed?.shells) ? parsed.shells : null;
     if (!shells) return { ok: false, error: 'shells config missing "shells" array', details, ms: Date.now() - t0 };
     details.shellCount = shells.length;

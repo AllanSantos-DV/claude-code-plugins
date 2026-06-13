@@ -27,14 +27,14 @@ const PROMOTED = path.join(DATA_DIR, '.runtime', 'decision-promoted-sha.json');
 const PROMOTED_LRU = 50;
 
 function readJsonSafe(p, fallback) {
-  try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { return fallback; }
+  try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { /* absent or corrupt: use fallback */ return fallback; }
 }
 function writeJsonSafe(p, obj) {
   try {
     fs.mkdirSync(path.dirname(p), { recursive: true });
     fs.writeFileSync(p, JSON.stringify(obj));
     return true;
-  } catch { return false; }
+  } catch { /* write failed (perms/disk): caller sees false */ return false; }
 }
 
 function promote(keys) {

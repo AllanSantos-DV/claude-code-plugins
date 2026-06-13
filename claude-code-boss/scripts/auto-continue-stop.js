@@ -16,7 +16,7 @@ function counterPath(dataDir, sid) {
 
 function readCounter(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf-8')); }
-  catch { return { count: 0 }; }
+  catch { /* absent/corrupt: start at zero */ return { count: 0 }; }
 }
 
 function writeCounter(file, n) {
@@ -30,7 +30,7 @@ function loadConfig() {
   try {
     const cfg = JSON.parse(fs.readFileSync(path.join(root, 'config', 'hooks-config.json'), 'utf-8'));
     return cfg.autoContinue || {};
-  } catch { return {}; }
+  } catch { /* missing/invalid config: defaults */ return {}; }
 }
 
 async function main() {

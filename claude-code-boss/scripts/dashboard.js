@@ -12,6 +12,7 @@ const { USER_SENTINEL, prepareForUserScope } = require('./lib/scope-sanitizer.js
 const { searchTwoPass } = require('./lib/scope-search.js');
 const { extractKeywords } = require('./lib/text-utils.js');
 const { aggregateSkillRoi } = require('./lib/skill-roi.js');
+const { loadSqlite } = require('./lib/sqlite-compat.js');
 
 // Session token — generated at boot, injected into index.html, required on all /api/* requests.
 const SESSION_TOKEN = crypto.randomBytes(16).toString('hex');
@@ -47,14 +48,17 @@ function resolveBestDataDir() {
 }
 
 function countEntriesInDb(dbPath) {
-  let Database;
-  try { Database = require('better-sqlite3'); } catch { return 0; }
+  const Database = loadSqlite();
+  if (!Database) return 0;
   try {
     const db = new Database(dbPath, { readonly: true });
     const row = db.prepare('SELECT COUNT(*) AS c FROM entries').get();
     db.close();
     return row?.c || 0;
-  } catch { return 0; }
+  } catch (err) {
+    console.error(`[dashboard] countEntriesInDb(${dbPath}) failed: ${err.message}`);
+    return 0;
+  }
 }
 
 const MIME = {
@@ -274,7 +278,7 @@ function restartDashboard(req, res) {
 async function testEmbedder(req, res) {
   let body;
   try { body = JSON.parse(await readBody(req)); }
-  catch { return fail(res, 'Invalid JSON body', 400); }
+  catch { /* malformed JSON body → 400 */ return fail(res, 'Invalid JSON body', 400); }
   const out = await configTesters.run('embedder', body);
   // Legacy shape: {ok, dim, ms} flat — keep for backwards-compat.
   if (out.ok) return json(res, { ok: true, dim: out.dim, ms: out.ms });
@@ -284,7 +288,7 @@ async function testEmbedder(req, res) {
 async function testConfig(req, res) {
   let body;
   try { body = JSON.parse(await readBody(req)); }
-  catch { return fail(res, 'Invalid JSON body', 400); }
+  catch { /* malformed JSON body → 400 */ return fail(res, 'Invalid JSON body', 400); }
   const domain = body && body.domain;
   if (!domain) return fail(res, 'Missing "domain"', 400);
   const out = await configTesters.run(domain, body.input || {});
@@ -399,7 +403,7 @@ async function moveBrainEntryScope(req, res, url) {
   for await (const chunk of req) body += chunk;
   let parsed;
   try { parsed = JSON.parse(body || '{}'); }
-  catch { return fail(res, 'Invalid JSON body', 400); }
+  catch { /* malformed JSON body → 400 */ return fail(res, 'Invalid JSON body', 400); }
   const targetScope = String(parsed.scope || '').toLowerCase();
   const targetProject = String(parsed.targetProject || '').trim();
   if (targetScope !== 'user' && targetScope !== 'project') {
@@ -512,7 +516,7 @@ async function importBrain(req, res) {
   for await (const chunk of req) body += chunk;
   let bundle;
   try { bundle = JSON.parse(body || '{}'); }
-  catch { return fail(res, 'Invalid JSON body', 400); }
+  catch { /* malformed JSON body → 400 */ return fail(res, 'Invalid JSON body', 400); }
 
   const conflict = String(bundle.conflict || 'skip').toLowerCase();
   if (!['skip', 'overwrite', 'merge'].includes(conflict)) {
@@ -625,7 +629,7 @@ async function scanSkillCandidates(req, res) {
   let body = '';
   for await (const chunk of req) body += chunk;
   let parsed;
-  try { parsed = JSON.parse(body || '{}'); } catch { return fail(res, 'Invalid JSON body', 400); }
+  try { parsed = JSON.parse(body || '{}'); } catch { /* malformed JSON body → 400 */ return fail(res, 'Invalid JSON body', 400); }
   try {
     const argv = ['scan'];
     if (parsed.project) argv.push('--project', JSON.stringify(parsed.project));
@@ -667,7 +671,7 @@ async function approveSkillDraft(req, res) {
   let body = '';
   for await (const chunk of req) body += chunk;
   let parsed;
-  try { parsed = JSON.parse(body || '{}'); } catch { return fail(res, 'Invalid JSON body', 400); }
+  try { parsed = JSON.parse(body || '{}'); } catch { /* malformed JSON body → 400 */ return fail(res, 'Invalid JSON body', 400); }
   const slug = (parsed.slug || '').replace(/[^a-z0-9-]/gi, '');
   if (!slug) return fail(res, 'slug required', 400);
   try {

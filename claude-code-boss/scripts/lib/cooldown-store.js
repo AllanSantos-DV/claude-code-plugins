@@ -35,7 +35,7 @@ function _load(sessionId) {
       if (typeof obj.keys[k] !== 'number' || (now - obj.keys[k]) > TTL_MS) delete obj.keys[k];
     }
     return obj;
-  } catch { return { keys: {} }; }
+  } catch { /* absent/corrupt: empty */ return { keys: {} }; }
 }
 
 function _save(sessionId, obj) {

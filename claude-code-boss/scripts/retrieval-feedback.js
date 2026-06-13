@@ -85,7 +85,7 @@ function readLastAssistantText(transcriptPath, lookback = 30) {
       } catch { /* skip malformed line */ }
     }
     return chunks.reverse().join('\n');
-  } catch { return ''; }
+  } catch { /* unreadable transcript: empty */ return ''; }
 }
 
 function extractAssistantText(rec) {

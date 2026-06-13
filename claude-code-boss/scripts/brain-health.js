@@ -46,7 +46,8 @@ function checkExists(p, kind) {
   try {
     return fs.existsSync(p) ? null : `${kind} missing: ${p}`;
   } catch (err) {
-    return `${kind} stat failed: ${err.message}`;
+    const reason = `${kind} stat failed: ${err.message}`;
+    return reason;
   }
 }
 
@@ -58,7 +59,8 @@ function checkWritable(dir) {
     fs.unlinkSync(probe);
     return null;
   } catch (err) {
-    return `data dir not writable: ${dir} (${err.message})`;
+    const reason = `data dir not writable: ${dir} (${err.message})`;
+    return reason;
   }
 }
 
@@ -89,7 +91,8 @@ async function liveProbe(root, projectKey) {
     if (backend.close) await backend.close();
     return null;
   } catch (err) {
-    return `live probe failed: ${err.message}`;
+    const reason = `live probe failed: ${err.message}`;
+    return reason;
   }
 }
 
@@ -140,7 +143,7 @@ function countPendingDrafts(data) {
       if (fs.existsSync(path.join(dir, e.name, 'SKILL.md'))) n++;
     }
     return { count: n, dir };
-  } catch { return { count: 0, dir }; }
+  } catch { /* unreadable dir: report zero */ return { count: 0, dir }; }
 }
 
 function emitPendingDraftsNotice(eventName, count, dir) {
@@ -150,6 +153,35 @@ function emitPendingDraftsNotice(eventName, count, dir) {
       additionalContext:
         `[BRAIN-HEALTH] ${count} pending skill draft${count === 1 ? '' : 's'} at ${dir} — ` +
         'review via dashboard #skills tab or `node scripts/brain-promote.js list`.',
+    },
+  });
+}
+
+/**
+ * Cheap filesystem check (no model load): is the transformers model cached?
+ * A missing model means the Brain is keyword-only and the pattern→skill loop
+ * cannot advance recurrence (dedup needs vectors).
+ */
+function embedderModelMissing() {
+  try {
+    const embedder = require('./brain-embedder.js');
+    const model = embedder.getModel(); // loads config → sets provider/model
+    if (embedder.getProvider() !== 'transformers') return false; // external provider, no local model
+    return !fs.existsSync(path.join(embedder.getModelCacheDir(), model));
+  } catch (err) {
+    console.error(`[BRAIN-HEALTH] embedder check skipped: ${err.message}`);
+    return false;
+  }
+}
+
+function emitEmbedderNotice(eventName) {
+  emitJson({
+    hookSpecificOutput: {
+      hookEventName: eventName,
+      additionalContext:
+        '[BRAIN-HEALTH] Embedding model not downloaded — the Brain is in keyword-only mode ' +
+        '(no semantic search, and the pattern→skill loop cannot advance recurrence). ' +
+        'Run `npm run setup:brain` to fetch it (or it downloads on first capture).',
     },
   });
 }
@@ -181,6 +213,7 @@ async function main() {
     if (defects.length > 0) { emitAdvisory(eventName, defects); return; }
 
     if (eventName === 'SessionStart') {
+      if (embedderModelMissing()) { emitEmbedderNotice(eventName); return; }
       const { count, dir } = countPendingDrafts(data);
       if (count > 0) { emitPendingDraftsNotice(eventName, count, dir); return; }
     }

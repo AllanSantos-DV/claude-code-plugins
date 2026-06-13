@@ -30,7 +30,12 @@ if (dataDirs.length === 0) {
   process.exit(0);
 }
 
-const Database = require(path.join(PLUGIN_ROOT, 'node_modules', 'better-sqlite3'));
+const { loadSqlite } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'sqlite-compat'));
+const Database = loadSqlite();
+if (!Database) {
+  console.error('No SQLite backend available — need Node >= 22.13 (built-in node:sqlite) or a compiled better-sqlite3. Nothing to re-embed.');
+  process.exit(1);
+}
 const embedder = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-embedder.js'));
 
 function vectorToBlob(vec) {
@@ -78,7 +83,6 @@ function vectorToBlob(vec) {
       const insert = db.prepare(`
         INSERT INTO embeddings (entry_id, vector, dimensions, model) VALUES (?, ?, ?, ?)
       `);
-      const tx = db.transaction(async (rows) => {});
 
       for (const row of entries) {
         let detail = '';
