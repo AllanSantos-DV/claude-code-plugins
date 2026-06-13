@@ -1,5 +1,21 @@
 # Changelog
 
+## [1.8.1] — 2026-06-13
+
+### Fixed — Brain MCP was DOWN on fresh install (brain-server deps not installed)
+
+The brain-server is a separate package (`servers/brain-server/`, ESM) whose only
+dependency is `@modelcontextprotocol/sdk`. The postinstall installed the plugin
+root but never the brain-server, so on any fresh install (marketplace or the
+install-local cache) `node_modules` was missing there and the MCP server
+(`brain_search` / `brain_store` / `capture_lesson`) failed to start. The
+`.mcp.json` `NODE_PATH` points at the root `node_modules`, which does not contain
+the SDK either.
+
+- **Changed** `scripts/plugin-setup.js` — postinstall now installs the brain-server
+  deps (`npm install` in `servers/brain-server/`) when missing; loud but non-fatal
+  on failure. `brain-health` already surfaces the defect, so a miss is visible.
+
 ## [1.8.0] — 2026-06-13
 
 ### Changed — embedding model is now part of setup (not silently optional)
