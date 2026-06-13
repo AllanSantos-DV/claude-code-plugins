@@ -2,10 +2,13 @@
 /**
  * plugin-setup.js — runs after npm install (postinstall) and after plugin updates.
  *
- * Two jobs:
- *  1. Ensure dependencies are present (installs them when node_modules is missing,
- *     e.g. the plugin was copied into the Claude Code cache without them).
- *  2. Warm the embedding model so the Brain learning loop works out of the box
+ * Three jobs:
+ *  1. Ensure root dependencies are present (installs them when node_modules is
+ *     missing, e.g. the plugin was copied into the Claude Code cache without them).
+ *  2. Ensure the brain-server (MCP) dependencies are present. It is a SEPARATE
+ *     package (servers/brain-server/package.json) that the root install does NOT
+ *     cover — without it the Brain MCP is DOWN on a fresh install.
+ *  3. Warm the embedding model so the Brain learning loop works out of the box
  *     (semantic search + dedup → recurrence → skill promotion). See brain-warm.js.
  *
  * The plugin has NO required native module — it runs on any machine with a modern
@@ -75,6 +78,29 @@ function warmEmbedder() {
   }
 }
 
+/**
+ * Install the brain-server (MCP) dependencies. It is a separate package
+ * (servers/brain-server/package.json, ESM) that the root `npm install` does NOT
+ * cover. Without it the Brain MCP (brain_search / brain_store / capture_lesson)
+ * fails to start — `@modelcontextprotocol/sdk` is unresolved.
+ */
+function installBrainServer() {
+  const bsDir = path.join(PLUGIN_ROOT, 'servers', 'brain-server');
+  if (!fs.existsSync(path.join(bsDir, 'package.json'))) return;
+  if (fs.existsSync(path.join(bsDir, 'node_modules'))) {
+    process.stdout.write('[plugin-setup] brain-server (MCP) deps present\n');
+    return;
+  }
+  process.stdout.write('[plugin-setup] Installing brain-server (MCP) deps...\n');
+  const ok = run('npm install --omit=dev --no-audit --no-fund', { cwd: bsDir });
+  if (!ok) {
+    process.stderr.write(
+      '[plugin-setup] brain-server install FAILED — the Brain MCP (brain_search/' +
+      'brain_store/capture_lesson) will be DOWN. Retry: cd servers/brain-server && npm install\n'
+    );
+  }
+}
+
 (async () => {
   warnNodeVersion();
 
@@ -95,6 +121,7 @@ function warmEmbedder() {
     }
   }
 
+  installBrainServer();
   warmEmbedder();
 
   process.stdout.write('[plugin-setup] Done\n');
