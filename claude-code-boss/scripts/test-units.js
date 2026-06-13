@@ -466,6 +466,18 @@ test('config-testers: hooks reports missing script', async () => {
   assert(out.details.missing.length === 1, `expected 1 missing, got ${out.details.missing.length}`);
 });
 
+test('config-testers: hooks parses exec form (command:node + args)', async () => {
+  const okCfg = { hooks: { SessionStart: [{ hooks: [{ command: 'node', args: ['${CLAUDE_PLUGIN_ROOT}/scripts/brain-health.js'] }] }] } };
+  const okOut = await testers.run('hooks', { hooksRoot: ROOT, hooksConfig: okCfg });
+  assert(okOut.ok === true, `exec form valid script should pass, got: ${okOut.error || ''}`);
+  assert(okOut.details.invalidCommands.length === 0, `exec form should be parseable, got ${JSON.stringify(okOut.details.invalidCommands)}`);
+
+  const missCfg = { hooks: { SessionStart: [{ hooks: [{ command: 'node', args: ['${CLAUDE_PLUGIN_ROOT}/scripts/does-not-exist.js'] }] }] } };
+  const missOut = await testers.run('hooks', { hooksRoot: ROOT, hooksConfig: missCfg });
+  assert(missOut.ok === false, 'exec form missing script should fail');
+  assert(missOut.details.missing.length === 1, `expected 1 missing, got ${missOut.details.missing.length}`);
+});
+
 // ─── project-snapshot (formatter + parsers) ──────────────────────────────────
 const snap = require('./project-snapshot.js');
 

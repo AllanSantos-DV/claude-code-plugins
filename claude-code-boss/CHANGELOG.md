@@ -1,5 +1,51 @@
 # Changelog
 
+## [1.8.3] — 2026-06-13
+
+### Fixed — hooks now use exec form so plugin paths survive Windows shells
+
+Every handler in `hooks/hooks.json` was in **shell form**
+(`"command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/x.js\""`). On Windows, Claude
+Code runs shell-form hook commands through **Git Bash** (or PowerShell when Git
+Bash is absent), which tokenizes the string and can mangle `${CLAUDE_PLUGIN_ROOT}`
+or a path containing spaces. Per the Claude Code hooks reference, the fix is
+**exec form**: set `args`, and `command` is spawned directly with no shell, so each
+path is passed verbatim on every platform.
+
+- **Changed** `hooks/hooks.json` — all 27 handlers converted to exec form
+  (`"command": "node", "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/x.js"]`). No shell
+  tokenization on any platform; `node` is a real binary that resolves on PATH
+  everywhere.
+- **Changed** `scripts/config-testers/hooks.js` — the validator now extracts the
+  script path from `args` (exec form) as well as the `command` string (shell form),
+  so the on-disk/syntax checks still cover every hook.
+- **Changed** `scripts/dashboard.js` — the Hooks tab parses both forms (shared
+  `hookScriptPath` / `hookDisplayCmd` helpers); previously exec-form hooks showed
+  as inactive with no script name.
+- **Added** exec-form coverage to `scripts/test-units.js`.
+
+### Added — brain-health surfaces the JSON-fallback (degraded SQLite) state
+
+When neither `node:sqlite` (Node < 22.13) nor `better-sqlite3` is available, the
+Brain silently falls back to a JSON store (no metrics, dashboard count = 0). The
+SessionStart probe now reports this via `getSqliteBackend() === 'none'` with the
+running Node version and the upgrade path. (A *missing* Node can't be detected by
+a Node hook — if `node` is off PATH the hook never spawns; see
+anthropics/claude-code#66183, #35175 — that case is covered in docs.)
+
+- **Changed** `scripts/brain-health.js` — adds a degraded-SQLite advisory
+  (SessionStart only, ahead of the embedder/pending-drafts notices).
+
+### Docs — Node on the system PATH is the #1 prerequisite
+
+- **Changed** root `README.md`, `claude-code-boss/README.md`, and the
+  `plugin-install` skill — lead with **Node ≥ 22.13 on the system `PATH`** and the
+  real cause of "it only works on your machine": Claude Code spawns plugin hooks
+  and MCP servers with bare `node` from the **system PATH**, not the Node bundled
+  in Claude Desktop (anthropics/claude-code#66183, #35175). No system Node → hooks
+  no-op and the Brain MCP is DOWN (`spawn node ENOENT`). Added troubleshooting rows
+  and corrected the hooks summary (7 events, 24 scripts).
+
 ## [1.8.2] — 2026-06-13
 
 ### Fixed — brain-index crashed on keywords colliding with `Object.prototype`

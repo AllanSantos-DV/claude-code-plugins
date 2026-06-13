@@ -1,6 +1,6 @@
 # claude-code-boss
 
-Plugin para Claude Code Desktop — **v1.8.2**
+Plugin para Claude Code Desktop — **v1.8.3**
 
 Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizado leve para Claude Code. A orquestração fica a cargo das ferramentas nativas (Agent/Workflow) — o plugin foca no que o nativo não tem.
 
@@ -9,7 +9,15 @@ Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizad
 ## Pré-requisitos
 
 - [Claude Code Desktop](https://claude.ai/download)
-- Node.js **22.13+** (usa o módulo nativo `node:sqlite`; em Node mais antigo o Brain cai no fallback JSON — **sem compilação nativa em nenhum caso**)
+- **Node.js 22.13+ no `PATH` do sistema** — requisito #1. O Claude Code dispara os
+  hooks e o servidor MCP com `node` puro resolvido pelo **PATH do sistema**, **não**
+  pelo Node embutido no Desktop ([claude-code#66183](https://github.com/anthropics/claude-code/issues/66183),
+  [#35175](https://github.com/anthropics/claude-code/issues/35175)). Sem Node no
+  PATH: os hooks viram no-op silencioso e o Brain MCP fica **DOWN** (`spawn node
+  ENOENT`). No Windows, instale o MSI oficial e **feche o Claude Code por completo
+  (tray + Gerenciador de Tarefas) e reabra** para herdar o PATH. Usa o `node:sqlite`
+  nativo; em Node mais antigo o Brain cai no fallback JSON — **sem compilação nativa
+  em nenhum caso**. Troubleshooting completo: skill `plugin-install`.
 - (Opcional) Java 21+ para backend MCP Memory
 - (Opcional) Ollama para embeddings locais via GPU
 
@@ -48,7 +56,7 @@ claude-code-boss/
 ├── dashboard/
 │   └── index.html             # SPA — 4 abas: Home / Brain KB / Hooks / Logs
 ├── hooks/
-│   └── hooks.json             # 5 eventos, ~9 scripts registrados
+│   └── hooks.json             # 7 eventos, 24 scripts (exec form: command "node" + args[])
 ├── scripts/                   # Scripts Node.js (zero deps extras para hooks)
 │   ├── dashboard.js           # Servidor HTTP local com ring buffer de logs
 │   ├── brain-*.js             # Brain KB: store, index, graph, embedder, backend, CLI

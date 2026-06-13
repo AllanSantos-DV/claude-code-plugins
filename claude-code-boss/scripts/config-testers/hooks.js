@@ -18,10 +18,26 @@ function resolvePluginRoot(input) {
   return path.resolve(__dirname, '..', '..');
 }
 
-function extractScriptPath(cmd, root) {
+function extractScriptPath(hook, root) {
+  if (!hook) return null;
+  const rootSlashes = root.replace(/\\/g, '/');
+  const expand = (s) => String(s).replace(/\$\{?CLAUDE_PLUGIN_ROOT\}?/g, rootSlashes);
+  const isScript = (s) => /\.(?:js|mjs|cjs)$/.test(s);
+
+  // Exec form: { command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/scripts/x.js", ...] }
+  // Each args element is a literal argument (no shell), so take the first script path.
+  if (Array.isArray(hook.args)) {
+    for (const a of hook.args) {
+      const candidate = expand(a);
+      if (isScript(candidate)) return path.normalize(candidate);
+    }
+    return null;
+  }
+
+  // Shell form: { command: 'node "${CLAUDE_PLUGIN_ROOT}/scripts/x.js"' }
+  const cmd = hook.command;
   if (!cmd) return null;
-  // Match: node "<...>/scripts/<file>"  or  node ${CLAUDE_PLUGIN_ROOT}/scripts/<file>
-  const expanded = cmd.replace(/\$\{?CLAUDE_PLUGIN_ROOT\}?/g, root.replace(/\\/g, '/'));
+  const expanded = expand(cmd);
   const m = expanded.match(/node\s+"?([^"\s]+(?:\.js|\.mjs|\.cjs))"?/);
   if (!m) return null;
   return path.normalize(m[1]);
@@ -59,10 +75,9 @@ async function test(input) {
   for (const [event, handlers] of Object.entries(hooksConfig.hooks || {})) {
     for (const h of handlers) {
       for (const hook of (h.hooks || [])) {
-        const cmd = hook.command || '';
         checked++;
-        const scriptPath = extractScriptPath(cmd, root);
-        if (!scriptPath) { invalidCommands.push({ event, cmd }); continue; }
+        const scriptPath = extractScriptPath(hook, root);
+        if (!scriptPath) { invalidCommands.push({ event, cmd: hook.command }); continue; }
         if (!fs.existsSync(scriptPath)) { missing.push({ event, scriptPath }); continue; }
         const chk = syntaxCheck(scriptPath);
         if (!chk.ok) syntaxErrors.push({ event, scriptPath, error: chk.error });
