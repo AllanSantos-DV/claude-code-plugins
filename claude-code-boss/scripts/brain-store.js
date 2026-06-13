@@ -2,8 +2,8 @@
 /**
  * Brain Store — SQLite wrapper for knowledge base with JSON fallback.
  *
- * Storage: SQLite via better-sqlite3 (prebuilt binaries).
- * Fallback: JSON files (when better-sqlite3 not installed).
+ * Storage: SQLite via the built-in node:sqlite (better-sqlite3 fallback if present).
+ * Fallback: JSON files (when no SQLite backend is available).
  *
  * Usage:
  *   const store = require('./brain-store');
