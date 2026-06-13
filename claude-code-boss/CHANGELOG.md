@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.8.2] — 2026-06-13
+
+### Fixed — brain-index crashed on keywords colliding with `Object.prototype`
+
+`brain-index.js` stored its inverted index in plain objects and tested presence
+with `if (!_index.keywords[kw])`. For a keyword equal to an `Object.prototype`
+member (`constructor`, `toString`, `valueOf`, `hasOwnProperty`, …) this returned
+the inherited method, skipped the array initialization, and threw
+`x.includes is not a function` — silently breaking the keyword index for any entry
+whose text contained such a technical term (and thus dropping it from keyword
+search).
+
+- **Changed** `scripts/brain-index.js` — the `keywords` / `tags` / `projects` /
+  `types` maps are now prototype-less (`Object.create(null)`), both on creation
+  and when loading an existing `index.json`, so no keyword can collide with a
+  built-in member.
+
 ## [1.8.1] — 2026-06-13
 
 ### Fixed — Brain MCP was DOWN on fresh install (brain-server deps not installed)

@@ -47,14 +47,13 @@ async function init(opts = {}) {
   }
 
   if (!_index) {
-    _index = {
-      version: 1,
-      updatedAt: new Date().toISOString(),
-      keywords: {},
-      tags: {},
-      projects: {},
-      types: {},
-    };
+    _index = { version: 1, updatedAt: new Date().toISOString() };
+  }
+  // Prototype-less maps so keywords like "constructor"/"toString"/"valueOf" don't
+  // collide with Object.prototype members (which broke index()/lookup() with a
+  // "x.includes is not a function" TypeError).
+  for (const m of ['keywords', 'tags', 'projects', 'types']) {
+    _index[m] = Object.assign(Object.create(null), _index[m] || {});
   }
   _initialized = true;
 }
@@ -164,10 +163,10 @@ async function clear() {
   _index = {
     version: 1,
     updatedAt: new Date().toISOString(),
-    keywords: {},
-    tags: {},
-    projects: {},
-    types: {},
+    keywords: Object.create(null),
+    tags: Object.create(null),
+    projects: Object.create(null),
+    types: Object.create(null),
   };
   save();
 }
