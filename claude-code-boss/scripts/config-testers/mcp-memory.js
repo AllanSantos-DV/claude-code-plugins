@@ -8,13 +8,12 @@
  * large files (guarded), no MCP handshake. `deepTest:true` is a no-op placeholder.
  */
 const fs = require('fs');
-const path = require('path');
 const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 
 const MIN_JAVA_MAJOR = 21;
 
-function detectJava(t0) {
+function detectJava() {
   const r = spawnSync('java', ['-version'], { encoding: 'utf-8', timeout: 5000 });
   if (r.error) {
     if (r.error.code === 'ENOENT') return { ok: false, error: 'Java not installed or not in PATH (install JDK 21+)' };
@@ -29,7 +28,7 @@ function detectJava(t0) {
   return { ok: true, version: m[0].replace(/.*"([^"]+)".*/, '$1') };
 }
 
-async function checkDownloadUrl(url, t0) {
+async function checkDownloadUrl(url) {
   if (!url) return { ok: false, error: 'downloadUrl is empty and jarPath is empty — nothing to test' };
   try {
     const ctrl = new AbortController();
@@ -40,7 +39,8 @@ async function checkDownloadUrl(url, t0) {
     const size = parseInt(r.headers.get('content-length') || '0', 10);
     return { ok: true, size };
   } catch (err) {
-    return { ok: false, error: `downloadUrl unreachable: ${err.message}` };
+    const error = `downloadUrl unreachable: ${err.message}`;
+    return { ok: false, error };
   }
 }
 
@@ -64,9 +64,9 @@ async function test(input) {
 
   // Path A — no jar yet; verify downloadUrl reachable.
   if (!jarPath) {
-    const url = await checkDownloadUrl(downloadUrl, t0);
+    const url = await checkDownloadUrl(downloadUrl);
     if (!url.ok) return { ok: false, error: url.error, ms: Date.now() - t0 };
-    const java = detectJava(t0);
+    const java = detectJava();
     return {
       ok: java.ok,
       error: java.ok ? undefined : java.error,
@@ -81,7 +81,8 @@ async function test(input) {
   }
   let stat;
   try { stat = fs.statSync(jarPath); } catch (err) {
-    return { ok: false, error: `JAR stat failed: ${err.message}`, ms: Date.now() - t0 };
+    const error = `JAR stat failed: ${err.message}`;
+    return { ok: false, error, ms: Date.now() - t0 };
   }
   if (!stat.isFile()) return { ok: false, error: `jarPath is not a regular file: ${jarPath}`, ms: Date.now() - t0 };
   try {
@@ -89,7 +90,8 @@ async function test(input) {
       return { ok: false, error: `File is not a valid JAR (missing PK magic): ${jarPath}`, ms: Date.now() - t0 };
     }
   } catch (err) {
-    return { ok: false, error: `Failed to read JAR magic: ${err.message}`, ms: Date.now() - t0 };
+    const error = `Failed to read JAR magic: ${err.message}`;
+    return { ok: false, error, ms: Date.now() - t0 };
   }
 
   let sha256;
@@ -106,7 +108,7 @@ async function test(input) {
     }
   }
 
-  const java = detectJava(t0);
+  const java = detectJava();
   if (!java.ok) {
     return { ok: false, error: java.error, details: { jarPath, jarSize: stat.size, sha256 }, ms: Date.now() - t0 };
   }

@@ -959,8 +959,7 @@ console.log(DIM('─'.repeat(70)));
     if (r.status !== 0) issue = `exit code ${r.status}: ${r.stderr || ''}`;
     else if ((r.stdout || '').trim() !== '{}') issue = `stdout not "{}": ${r.stdout}`;
     else {
-      let Database;
-      try { Database = require('better-sqlite3'); } catch { /* skip if not available */ }
+      const Database = require('./lib/sqlite-compat').loadSqlite();
       if (Database) {
         const dbPath = path.join(smDataDir, 'brain', projectName, 'brain.db');
         if (!fs.existsSync(dbPath)) issue = `brain.db not created at ${dbPath}`;

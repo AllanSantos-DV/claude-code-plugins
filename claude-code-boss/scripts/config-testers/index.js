@@ -25,7 +25,8 @@ async function run(domain, input) {
     if (typeof out.ms !== 'number') out.ms = 0;
     return out;
   } catch (err) {
-    return { ok: false, error: err.message, ms: 0 };
+    const error = err.message;
+    return { ok: false, error, ms: 0 };
   }
 }
 

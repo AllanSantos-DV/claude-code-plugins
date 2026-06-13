@@ -30,7 +30,7 @@ function loadFixture(file) {
 }
 
 function readJson(p, fallback) {
-  try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { return fallback; }
+  try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { /* absent or corrupt: use fallback */ return fallback; }
 }
 
 function runHook(scriptName, stdin) {

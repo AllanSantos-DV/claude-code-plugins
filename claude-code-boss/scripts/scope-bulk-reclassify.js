@@ -5,7 +5,6 @@
 //   node scripts/scope-bulk-reclassify.js <project> --type=lesson --commit
 
 'use strict';
-const path = require('path');
 const store = require('./brain-store.js');
 const index = require('./brain-index.js');
 const graph = require('./brain-graph.js');

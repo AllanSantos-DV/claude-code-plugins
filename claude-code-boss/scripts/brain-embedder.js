@@ -15,10 +15,26 @@
  */
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const { execSync } = require('child_process');
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
 const CONFIG_PATH = path.join(PLUGIN_ROOT, 'config', 'brain-config.json');
+
+/**
+ * Durable model cache — user-level, NOT inside node_modules.
+ * @xenova/transformers defaults its cache to `node_modules/@xenova/transformers/.cache`,
+ * which is wiped whenever node_modules is deleted/reinstalled (forcing a ~120 MB
+ * re-download). Anchoring it under CLAUDE_PLUGIN_DATA keeps the model across reinstalls.
+ */
+function embedderDataDir() {
+  const env = process.env.CLAUDE_PLUGIN_DATA;
+  if (env && !env.includes('${')) return env;
+  return path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+}
+function modelCacheDir() {
+  return path.join(embedderDataDir(), 'models');
+}
 
 let _initialized = false;
 let _provider = 'transformers';
@@ -43,7 +59,10 @@ function loadConfig() {
 
 async function initTransformers() {
   try {
-    const { pipeline } = await import('@xenova/transformers');
+    const tf = await import('@xenova/transformers');
+    // Redirect the model cache to a durable, user-level location (see modelCacheDir).
+    tf.env.cacheDir = modelCacheDir();
+    const { pipeline } = tf;
     _extractor = await pipeline('feature-extraction', _model, {
       quantized: true,
     });
@@ -188,6 +207,12 @@ function getDimensions() { return _dimensions; }
 
 function getProvider() { return _provider; }
 
+/** Active model identifier (after loadConfig). */
+function getModel() { loadConfig(); return _model; }
+
+/** Durable cache dir where the transformers model is stored. */
+function getModelCacheDir() { return modelCacheDir(); }
+
 function getStatus() {
   return {
     provider: _provider,
@@ -198,4 +223,4 @@ function getStatus() {
   };
 }
 
-module.exports = { init, embed, embedBatch, getDimensions, getProvider, getStatus };
+module.exports = { init, embed, embedBatch, getDimensions, getProvider, getModel, getModelCacheDir, getStatus };

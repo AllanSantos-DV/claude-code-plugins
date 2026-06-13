@@ -40,7 +40,7 @@ function loadCfg(root) {
   try {
     const raw = fs.readFileSync(path.join(root, 'config', 'brain-config.json'), 'utf-8');
     return JSON.parse(raw)?.kb?.skillPromotion || {};
-  } catch { return {}; }
+  } catch { /* missing/invalid config: defaults */ return {}; }
 }
 
 function shouldRun(stampPath, cooldownMs) {
@@ -48,7 +48,7 @@ function shouldRun(stampPath, cooldownMs) {
     if (!fs.existsSync(stampPath)) return true;
     const last = parseInt(fs.readFileSync(stampPath, 'utf-8'), 10);
     return !Number.isFinite(last) || (Date.now() - last) >= cooldownMs;
-  } catch { return true; }
+  } catch { /* unreadable stamp: allow run */ return true; }
 }
 
 function recordRun(stampPath) {

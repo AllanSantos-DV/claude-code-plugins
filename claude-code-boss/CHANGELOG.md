@@ -1,5 +1,75 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed — embedding model is now part of setup (not silently optional)
+
+The embedder powers semantic search **and** the pattern→skill learning loop
+(dedup→recurrence needs vectors). It was treated as silently optional: the model
+downloaded lazily on first use, into a cache inside `node_modules` (wiped on
+reinstall), with no setup step and no health visibility — so the learning loop
+could die invisibly. Now it is a verified, durable part of setup.
+
+- **Added** `scripts/brain-warm.js` + `npm run setup:brain` — downloads and
+  verifies the model (test embed → checks dimensions). Idempotent; one-time
+  migration copies an existing model out of the legacy `node_modules` cache
+  instead of re-downloading.
+- **Changed** `scripts/plugin-setup.js` (postinstall) — now warms the embedding
+  model after deps. Internet is assumed (the plugin was just fetched online).
+  Skipped in CI and via `CLAUDE_SKIP_EMBED_WARM=1`; non-fatal but LOUD on failure
+  (the model also fetches lazily on first use).
+- **Changed** `scripts/brain-embedder.js` — model cache moved to a durable,
+  user-level path (`<CLAUDE_PLUGIN_DATA>/models/`) via `transformers env.cacheDir`,
+  so it survives `node_modules` deletion/reinstall.
+- **Changed** `scripts/brain-health.js` — SessionStart now surfaces a soft advisory
+  when the model is not downloaded (cheap filesystem check, no model load),
+  instead of skipping the embedder entirely.
+- **Docs** — README + `plugin-install` skill reframe the embedder as REQUIRED for
+  full value (no longer "optional/degrades"), with the durable cache and
+  `npm run setup:brain` documented.
+- **Investigated** transformers→`sharp`: confirmed `sharp` is a hard, eagerly-imported
+  native dependency of `@xenova/transformers` in **all** versions (v2/v3/v4) — a
+  version bump cannot remove it. It ships prebuilts for mainstream platforms (no
+  compiler on a normal `npm install`). `brain-warm` now hints at `npm rebuild sharp`
+  on a sharp failure, and the `plugin-install` skill documents the `ollama`/`voyage`
+  escape hatch for platforms without a prebuilt.
+
+### Changed — SQLite backend is now Node's built-in `node:sqlite` (zero native deps)
+
+Makes the plugin install and run on any machine with a modern Node — no C/C++
+build toolchain, no `node-gyp`, no native compilation. Previously the Brain KB
+required the native `better-sqlite3` addon, which failed to compile on fresh
+machines (no Build Tools) and on newer Node without a prebuilt binary, silently
+degrading the KB.
+
+- **Added** `scripts/lib/sqlite-compat.js` — backend-agnostic loader. Prefers the
+  built-in `node:sqlite` (Node >= 22.13), falls back to a compiled `better-sqlite3`
+  only if already present, then to the JSON store. Bridges the API deltas
+  (`readonly` → `readOnly`, no `.pragma()` → routed to `exec`, BLOB → `Uint8Array`)
+  and suppresses the benign `node:sqlite` ExperimentalWarning. Never throws.
+- **Changed** `package.json` — removed the required native `better-sqlite3`
+  dependency and the unused native `sharp` optional dependency; added
+  `engines.node >= 22.13.0`. The plugin now declares **no native dependency**.
+- **Changed** `scripts/brain-store.js`, `brain-reembed.js`, `dashboard.js`,
+  `test-hooks.js` — load SQLite through the adapter. `brain-reembed.js` previously
+  hard-required `better-sqlite3` with no fallback; it now works on `node:sqlite`.
+- **Fixed** `brain-store.js` `blobToVector` — honors `byteOffset` so Float32
+  vectors round-trip correctly from a `Uint8Array` (node:sqlite) as well as a
+  `Buffer` (better-sqlite3).
+- **Fixed** `brain-store.js` `save()` — now returns the entry id. A latent bug
+  returned `undefined`, breaking `brain-backend.saveLocal` (`get(undefined)` under
+  the stricter `node:sqlite` binding) whenever the embedder was ready.
+- **Changed** `scripts/plugin-setup.js` — reinstalls only when `node_modules` is
+  missing (no longer hinges on the optional `sharp` probe); warns on Node < 22.13.
+- **Changed** CI — test matrix bumped from Node 20 to Node 22 + 24 (Node 20 lacks
+  `node:sqlite`).
+
+### Added — `plugin-install` skill
+
+Clear, machine-agnostic install + troubleshooting workflow: missing `node_modules`,
+`gyp ERR` / Build Tools errors (no longer needed), old Node → JSON fallback, and
+install verification via `getSqliteBackend()`.
+
 ## [1.6.0] — 2026-05-31
 
 ### Changed — brain-indexer trigger refactored to in-loop Stop pattern

@@ -45,7 +45,10 @@ async function test(input) {
     const p = path.join(root, 'hooks', 'hooks.json');
     if (!fs.existsSync(p)) return { ok: false, error: `hooks.json not found at ${p}`, ms: Date.now() - t0 };
     try { hooksConfig = JSON.parse(fs.readFileSync(p, 'utf-8')); }
-    catch (err) { return { ok: false, error: `hooks.json invalid: ${err.message}`, ms: Date.now() - t0 }; }
+    catch (err) {
+      const error = `hooks.json invalid: ${err.message}`;
+      return { ok: false, error, ms: Date.now() - t0 };
+    }
   }
 
   const missing = [];

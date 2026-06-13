@@ -62,7 +62,8 @@ async function test(input) {
       return { ok: true, dim, details: { provider, model }, ms: Date.now() - t0 };
     }
   } catch (err) {
-    return { ok: false, error: err.message, ms: Date.now() - t0 };
+    const error = err.message;
+    return { ok: false, error, ms: Date.now() - t0 };
   }
 }
 

@@ -17,6 +17,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
+const { loadSqlite, getSqliteBackend } = require('./lib/sqlite-compat');
 
 const STORE_DIR = process.env.CLAUDE_PLUGIN_DATA
   || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
@@ -185,7 +186,8 @@ function now() {
 
 async function tryInitSqlite() {
   try {
-    const Database = require('better-sqlite3');
+    const Database = loadSqlite();
+    if (!Database) return false;
     const dbPath = path.join(getProjectDir(), 'brain.db');
     _db = new Database(dbPath);
     _db.pragma('journal_mode = WAL');
@@ -308,7 +310,12 @@ function vectorToBlob(vec) {
 }
 
 function blobToVector(blob) {
-  return Array.from(new Float32Array(blob.buffer || blob));
+  // better-sqlite3 returns a Node Buffer; node:sqlite returns a Uint8Array whose
+  // byteOffset may be non-zero. slice() yields a fresh, offset-0 ArrayBuffer of the
+  // exact length, which we reinterpret as Float32 (vectors are written as Float32Array).
+  const u8 = blob instanceof Uint8Array ? blob : Uint8Array.from(blob);
+  const copy = u8.slice();
+  return Array.from(new Float32Array(copy.buffer, 0, copy.byteLength >> 2));
 }
 
 async function saveSqlite(entry, vector) {
@@ -637,8 +644,11 @@ async function save(entry, vector) {
   entry.project = entry.project || _project;
   entry.access_count = entry.access_count || 0;
 
-  if (_useSqlite) return saveSqlite(entry, vector);
-  return saveJson(entry, vector);
+  // Return the id so callers (brain-backend.saveLocal, brain-cli) can chain a
+  // get()/embed step. saveSqlite/saveJson are side-effecting and return nothing.
+  if (_useSqlite) await saveSqlite(entry, vector);
+  else await saveJson(entry, vector);
+  return entry.id;
 }
 
 async function get(id) {
@@ -805,6 +815,7 @@ function recordCitation(id) {
 function getStatus() {
   return {
     storage: _useSqlite ? 'sqlite' : (_useJson ? 'json' : 'none'),
+    backend: _useSqlite ? getSqliteBackend() : (_useJson ? 'json' : 'none'),
     project: _project,
     dir: getProjectDir(),
     initialized: _initialized,
@@ -890,7 +901,7 @@ function getEventLog({ eventName = null, limit = 50 } = {}) {
 
 function safeParseJson(s) {
   if (s == null) return null;
-  try { return JSON.parse(s); } catch { return null; }
+  try { return JSON.parse(s); } catch { /* non-JSON value: null */ return null; }
 }
 
 /** Delete metrics_event rows older than `keepDays`. Returns count deleted. */
