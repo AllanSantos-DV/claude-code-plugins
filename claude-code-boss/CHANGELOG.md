@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.8.0] — 2026-06-13
 
 ### Changed — embedding model is now part of setup (not silently optional)
 
