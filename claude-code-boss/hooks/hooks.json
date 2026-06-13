@@ -5,22 +5,26 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/memory-rotate.js\"",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/memory-rotate.js"],
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/session-whitelist.js\"",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/session-whitelist.js"],
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/brain-health.js\"",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/brain-health.js"],
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/project-snapshot.js\"",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/project-snapshot.js"],
             "timeout": 5
           }
         ]
@@ -32,7 +36,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/brain-retrieve.js\"",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/brain-retrieve.js"],
             "timeout": 10
           }
         ]
@@ -42,12 +47,14 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/brain-retrieve.js\"",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/brain-retrieve.js"],
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/curation-guard.js\"",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/curation-guard.js"],
             "timeout": 5
           }
         ]
@@ -59,12 +66,14 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/curation-detect.js\"",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/curation-detect.js"],
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/decision-detect.js\"",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/decision-detect.js"],
             "timeout": 5
           }
         ]
@@ -76,7 +85,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/skill-metric.js\"",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/skill-metric.js"],
             "timeout": 5
           }
         ]
@@ -88,7 +98,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/curation-detect.js\"",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/curation-detect.js"],
             "timeout": 10
           }
         ]
@@ -97,7 +108,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/failure-detect.js\"",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/failure-detect.js"],
             "timeout": 5
           }
         ]
@@ -108,57 +120,68 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/pattern-detect.js\"",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/pattern-detect.js"],
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/skill-promote-trigger.js\"",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/skill-promote-trigger.js"],
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/decision-scan-response.js\"",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/decision-scan-response.js"],
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/decision-promote.js\"",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/decision-promote.js"],
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/refine-research.js\"",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/refine-research.js"],
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/research-followup-detect.js\"",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/research-followup-detect.js"],
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/curation-stop.js\"",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/curation-stop.js"],
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/failure-retro.js\"",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/failure-retro.js"],
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/skill-success-detect.js\"",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/skill-success-detect.js"],
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/retrieval-feedback.js\"",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/retrieval-feedback.js"],
             "timeout": 10
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/auto-continue-stop.js\"",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/auto-continue-stop.js"],
             "timeout": 5
           }
         ]
@@ -169,22 +192,26 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/brain-health.js\"",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/brain-health.js"],
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/correction-detect.js\"",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/correction-detect.js"],
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/active-research-detect.js\"",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/active-research-detect.js"],
             "timeout": 5
           },
           {
             "type": "command",
-            "command": "node \"${CLAUDE_PLUGIN_ROOT}/scripts/brain-retrieve-prompt.js\"",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/brain-retrieve-prompt.js"],
             "timeout": 10
           }
         ]

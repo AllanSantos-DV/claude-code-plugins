@@ -126,6 +126,33 @@ function readJSON(file) {
   }
 }
 
+/**
+ * Absolute path to the script a hook runs, supporting both hook forms:
+ *   exec form  → { command: "node", args: ["${CLAUDE_PLUGIN_ROOT}/scripts/x.js"] }
+ *   shell form → { command: 'node "${CLAUDE_PLUGIN_ROOT}/scripts/x.js"' }
+ * Returns '' when no script path can be extracted.
+ */
+function hookScriptPath(hook) {
+  const expand = (s) => String(s).replace(/\$\{?CLAUDE_PLUGIN_ROOT\}?/gi, ROOT.replace(/\\/g, '/'));
+  const isScript = (s) => /\.(?:js|mjs|cjs)$/.test(s);
+  if (Array.isArray(hook && hook.args)) {
+    for (const a of hook.args) {
+      const c = expand(a);
+      if (isScript(c)) return path.normalize(c);
+    }
+    return '';
+  }
+  const cmd = (hook && hook.command) || '';
+  const m = expand(cmd).match(/node\s+"?([^"\s]+(?:\.js|\.mjs|\.cjs))"?/);
+  return m ? path.normalize(m[1]) : '';
+}
+
+/** Human-readable command string for display (joins exec-form args). */
+function hookDisplayCmd(hook) {
+  if (Array.isArray(hook && hook.args)) return `${hook.command} ${hook.args.join(' ')}`.trim();
+  return (hook && hook.command) || '';
+}
+
 // ─── Config validators ────────────────────────────────────────────
 
 function validateBrainConfig(data) {
@@ -180,10 +207,10 @@ async function getStatusAsync(req, res) {
       for (const h of handlers) {
         for (const hook of (h.hooks || [])) {
           hooksTotal++;
-          const cmd = hook.command || '';
-          const scriptFile = cmd.replace(/^node\s+"?\${?CLAUDE_PLUGIN_ROOT}?(?:\/|\\)?/i, '').replace(/"?$/, '');
-          const fullPath = path.join(ROOT, scriptFile);
-          if (fs.existsSync(fullPath) && !fullPath.endsWith('.disabled')) {
+          const cmd = hookDisplayCmd(hook);
+          const fullPath = hookScriptPath(hook);
+          const scriptFile = fullPath ? path.relative(ROOT, fullPath).replace(/\\/g, '/') : '';
+          if (fullPath && fs.existsSync(fullPath) && !fullPath.endsWith('.disabled')) {
             hooksActive++;
           }
           hookEntries.push({ event, script: scriptFile, cmd });
@@ -789,21 +816,16 @@ function getHooks(req, res) {
     for (const h of handlers) {
       const matcher = h.matcher || '*';
       for (const hook of (h.hooks || [])) {
-        const cmd = hook.command || '';
-        let scriptPath = '';
-        const m = cmd.match(/node\s+"[^"]*\/scripts\/([^"]+)"/);
-        if (m) {
-          scriptPath = path.join(ROOT, 'scripts', m[1]);
-        }
-        const fullPath = path.normalize(scriptPath);
-        const exists = fs.existsSync(fullPath);
+        const cmd = hookDisplayCmd(hook);
+        const fullPath = hookScriptPath(hook);
+        const exists = fullPath ? fs.existsSync(fullPath) : false;
         const disabled = fullPath.endsWith('.disabled');
         const active = exists && !disabled;
         result.push({
           event,
           matcher,
           command: cmd,
-          scriptFile: path.basename(scriptPath),
+          scriptFile: fullPath ? path.basename(fullPath) : '',
           active,
           exists,
         });

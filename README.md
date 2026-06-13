@@ -6,7 +6,7 @@ Monorepo de plugins para [Claude Code Desktop](https://claude.ai/download) — d
 
 | Plugin | Versão | Descrição |
 | --- | --- | --- |
-| [claude-code-boss](./claude-code-boss) | 1.8.2 | Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizado in-loop para Claude Code |
+| [claude-code-boss](./claude-code-boss) | 1.8.3 | Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizado in-loop para Claude Code |
 
 ## O que é o claude-code-boss?
 
@@ -45,6 +45,8 @@ claude-code-plugins/
 ## Instalação
 
 > Requer Claude Code Desktop. Consulte [docs.anthropic.com/en/docs/claude-code](https://docs.anthropic.com/en/docs/claude-code) para detalhes sobre a plataforma.
+>
+> **Node.js 22.13+ precisa estar no `PATH` do sistema.** O Claude Code dispara os hooks e o servidor MCP com `node` puro do **PATH do sistema**, não pelo Node embutido no Desktop ([claude-code#66183](https://github.com/anthropics/claude-code/issues/66183)). Sem Node no PATH, os hooks viram no-op e o Brain MCP fica DOWN (`spawn node ENOENT`). No Windows: instale o MSI oficial e reabra o Claude Code por completo (tray + Gerenciador de Tarefas).
 
 ```bash
 # 1. Clone o repositório

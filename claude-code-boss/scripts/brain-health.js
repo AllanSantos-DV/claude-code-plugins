@@ -28,6 +28,7 @@ const path = require('path');
 const os = require('os');
 
 const { readStdin, emitEmpty, emitJson, parsePayload } = require('./lib/hook-io.js');
+const { getSqliteBackend } = require('./lib/sqlite-compat.js');
 
 const COOLDOWN_MS = 60_000;
 
@@ -186,6 +187,29 @@ function emitEmbedderNotice(eventName) {
   });
 }
 
+/**
+ * After a healthy probe, report when the active SQLite backend is the JSON
+ * fallback ('none') — neither node:sqlite (Node < 22.13) nor better-sqlite3 is
+ * available. The Brain still works but loses durable structured storage, metrics
+ * and dashboard counts. getSqliteBackend() is cached/free here (the live probe
+ * already resolved it), and accurately predicts the MCP server because Claude
+ * Code spawns both with the same system-PATH Node and the same plugin code.
+ * Note: a *missing* Node can't be detected here — if `node` is not on PATH the
+ * hook never spawns (anthropics/claude-code#66183); that path is covered by docs.
+ */
+function emitDegradedSqliteNotice(eventName) {
+  emitJson({
+    hookSpecificOutput: {
+      hookEventName: eventName,
+      additionalContext:
+        '[BRAIN-HEALTH] SQLite backend unavailable — the Brain is using the JSON fallback ' +
+        '(no metrics, dashboard count = 0, slower search). You are on Node ' +
+        `${process.versions.node}; the built-in node:sqlite needs Node >= 22.13. ` +
+        'Upgrade Node (on the system PATH) and restart Claude Code to restore it.',
+    },
+  });
+}
+
 async function main() {
   try {
     const raw = await readStdin();
@@ -213,6 +237,7 @@ async function main() {
     if (defects.length > 0) { emitAdvisory(eventName, defects); return; }
 
     if (eventName === 'SessionStart') {
+      if (getSqliteBackend() === 'none') { emitDegradedSqliteNotice(eventName); return; }
       if (embedderModelMissing()) { emitEmbedderNotice(eventName); return; }
       const { count, dir } = countPendingDrafts(data);
       if (count > 0) { emitPendingDraftsNotice(eventName, count, dir); return; }
