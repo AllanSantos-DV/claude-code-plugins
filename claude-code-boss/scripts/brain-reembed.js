@@ -37,6 +37,7 @@ if (!Database) {
   process.exit(1);
 }
 const embedder = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-embedder.js'));
+const { buildEmbedText } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'embed-text.js'));
 
 function vectorToBlob(vec) {
   const buf = Buffer.alloc(vec.length * 4);
@@ -85,12 +86,7 @@ function vectorToBlob(vec) {
       `);
 
       for (const row of entries) {
-        let detail = '';
-        try {
-          const c = JSON.parse(row.content || '{}');
-          detail = c.detail || c.text || '';
-        } catch { /* ignore */ }
-        const text = `${row.title} ${row.summary || ''} ${detail}`.trim();
+        const text = buildEmbedText({ title: row.title, summary: row.summary });
         const vec = await embedder.embed(text);
         if (!vec) {
           console.error(`    FAIL embed: ${row.id}`);

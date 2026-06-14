@@ -420,8 +420,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         let vector = null;
         try {
           const embedder = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-embedder.js'));
+          const { buildEmbedText } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'embed-text.js'));
           await embedder.init();
-          if (embedder.getStatus().ready) vector = await embedder.embed(safeTitle + ': ' + safeSummary);
+          if (embedder.getStatus().ready) vector = await embedder.embed(buildEmbedText({ title: safeTitle, summary: safeSummary }));
         } catch { /* embedding optional */ }
 
         await kbStore.save(entry, vector);
@@ -460,7 +461,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const storageProject = effectiveScope === 'user' ? USER_SENTINEL : currentProject;
         const { store: kbStore, index: kbIndex, graph: kbGraph } = await getKB(storageProject);
 
-        const text = `${safeTitle} ${safeSummary} ${safeDetail || ''}`.trim();
+        const { buildEmbedText } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'embed-text.js'));
+        const text = buildEmbedText({ title: safeTitle, summary: safeSummary });
 
         let vector = null;
         try {

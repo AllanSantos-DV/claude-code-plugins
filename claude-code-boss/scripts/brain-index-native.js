@@ -20,6 +20,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const { buildEmbedText } = require('./lib/embed-text.js');
 
 const store = require('./brain-store.js');
 const index = require('./brain-index.js');
@@ -137,7 +138,7 @@ async function run() {
         tags: ['native-memory', project],
         confidence: 0.7,
       };
-      const vector = await embedder.embed(`${entry.title} ${entry.summary} ${entry.content.detail}`);
+      const vector = await embedder.embed(buildEmbedText(entry));
       await store.save(entry, vector);     // deterministic id → INSERT OR REPLACE (no dup)
       await index.index(entry);
       chunks++;
