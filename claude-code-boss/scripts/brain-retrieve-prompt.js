@@ -1,14 +1,25 @@
 #!/usr/bin/env node
 /**
- * brain-retrieve-prompt.js — UserPromptSubmit hook
+ * brain-retrieve-prompt.js — UserPromptSubmit hook (adaptive, vector path)
  *
- * Semantic retrieval for the prompt step: surfaces relevant Brain knowledge
- * (captured lessons/patterns via capture_lesson) so it gets reused. Advisory:
- * the hook informs, the agent decides.
+ * Surfaces relevant Brain knowledge for the prompt, ONCE per turn. Uses the
+ * MULTILINGUAL vector path so pt-BR prompts match the English-canonical KB
+ * (the old keyword path could not — cross-lingual miss).
+ *
+ * Adaptive gate: inject ONLY when cosine relevance clears a real threshold
+ * (config kb.retrieval.minScoreFast). If nothing is relevant enough, inject
+ * NOTHING — no blind "call brain_search" nudge. Injected context accumulates in
+ * the conversation (anthropics/claude-code#45849), so we keep it minimal and
+ * high-signal: small topK + real threshold.
+ *
+ * Runs the embedder in-process (~600ms cold load, once per turn — tolerable;
+ * see IMPROVEMENT-PLAN latency sub-gate). Advisory: the hook informs, the agent
+ * decides.
  */
 const path = require('path');
 
-const backend = require('./brain-backend.js');
+const embedder = require('./brain-embedder.js');
+const store = require('./brain-store.js');
 const brainConfig = require('./lib/brain-config.js');
 const { extractKeywords } = require('./lib/text-utils.js');
 const { readStdin, emitEmpty, emitJson, parsePayload } = require('./lib/hook-io.js');
@@ -19,65 +30,55 @@ const retrievalJournal = require('./lib/retrieval-journal.js');
     const raw = await readStdin();
     const event = parsePayload(raw);
     if (!event) { emitEmpty(); return; }
+
     const userMessage = event.prompt || event.userMessage || event.text || '';
     const project = event.cwd ? path.basename(event.cwd) : 'default';
 
-    // Semantic retrieval (surfaces captured lessons/patterns for reuse).
-    // Backend honors minScore on the keyword fallback path; just consume config.
+    // Cheap pre-filter: skip trivial/short prompts (don't even load the model).
+    const kw = extractKeywords(userMessage, { minLen: 4, maxTokens: 15 });
+    if (kw.length < 3) { emitEmpty(); return; }
+
     const { topK, minScore } = brainConfig.getRetrievalFast();
-    const keywords = extractKeywords(userMessage, { minLen: 4, maxTokens: 15 });
-    if (keywords.length < 3) { emitEmpty(); return; }
 
     let entries = [];
     try {
-      await backend.init({ project, skipEmbedder: true });
-      entries = await backend.search(userMessage, { topK, minScore });
+      await store.init({ project });
+      if (!embedder.getStatus().ready) await embedder.init();
+      const vector = await embedder.embed(userMessage);
+      if (!vector) { emitEmpty(); return; }            // no model → degrade silently
+      // minScore is applied to RAW cosine (relevance gate) before rerank.
+      // Over-fetch + dedup by title: the KB can hold duplicate entries (same
+      // title, different id — a known hygiene gap) that would waste topK slots.
+      const raw = await store.search(vector, { topK: topK + 4, minScore });
+      const seenTitles = new Set();
+      for (const e of raw) {
+        const t = (e.title || '').trim().toLowerCase();
+        if (t && seenTitles.has(t)) continue;
+        seenTitles.add(t);
+        entries.push(e);
+        if (entries.length >= topK) break;
+      }
     } catch (err) {
-      // Backend failure here mirrors what the brain MCP server hits in-process
-      // — surface it instead of silent emitEmpty so the user/agent can recover.
-      console.error(`[BRAIN-RETRIEVE-PROMPT] backend search failed: ${err.message}`);
-      emitJson({
-        hookSpecificOutput: {
-          hookEventName: 'UserPromptSubmit',
-          additionalContext:
-            `[BRAIN] Knowledge base unreachable: ${err.message}. ` +
-            'The brain MCP server likely failed to connect this session. ' +
-            'Action: re-run `.vscode/scripts/install-local.mjs` (takes effect on next turn — ' +
-            'no Claude Code restart needed) or check node_modules / data-dir permissions. ' +
-            'Proceeding without KB context.',
-        },
-      });
+      // brain-health already surfaces a KB-down advisory; don't double-inject here.
+      console.error(`[BRAIN-RETRIEVE-PROMPT] search failed: ${err.message}`);
+      emitEmpty();
       return;
     }
 
-    if (entries.length === 0) {
-      // Passive search (English-canonical KB) found nothing — often because the
-      // prompt is in another language or uses different wording. Nudge an active,
-      // curated search so saved patterns actually get reused (cross-lingual).
-      emitJson({
-        hookSpecificOutput: {
-          hookEventName: 'UserPromptSubmit',
-          additionalContext:
-            '[BRAIN] No direct matches. If this task may relate to prior work, call the ' +
-            '`brain_search` MCP tool with 2-4 English concept terms/tags (the KB is stored ' +
-            'in English) to retrieve and reuse relevant lessons/patterns before proceeding.',
-        },
-      });
-      return;
-    }
+    // Adaptive gate: nothing cleared the relevance threshold → inject NOTHING.
+    if (!entries.length) { emitEmpty(); return; }
 
     const lines = entries.map((e, i) => `${i + 1}. "${e.title}" (${e.type}) — ${e.summary}`);
 
-    // Persist retrieval for the Stop-hook citation matcher (Plan #1). Best-effort.
+    // Persist the retrieval so the Stop-hook can score citations/exposure. Best-effort.
     try {
       const sid = event.session_id || event.sessionId || 'default';
-      const retrievalId = retrievalJournal.newRetrievalId();
       retrievalJournal.appendEntry(sid, {
-        retrievalId,
+        retrievalId: retrievalJournal.newRetrievalId(),
         ts: Date.now(),
         sid,
         tool: 'UserPromptSubmit',
-        queryTokens: keywords.slice(0, 10),
+        queryTokens: kw.slice(0, 10),
         project,
         returnedIds: entries.map(e => e.id),
         returnedTitles: entries.map(e => e.title),
@@ -89,7 +90,7 @@ const retrievalJournal = require('./lib/retrieval-journal.js');
     emitJson({
       hookSpecificOutput: {
         hookEventName: 'UserPromptSubmit',
-        additionalContext: `[BRAIN-RETRIEVE] Relevant knowledge found:\n${lines.join('\n')}`,
+        additionalContext: `[BRAIN] ${entries.length} relevant lesson(s):\n${lines.join('\n')}`,
       },
     });
   } catch (err) {

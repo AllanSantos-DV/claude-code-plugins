@@ -154,29 +154,7 @@ const TESTS = [
     expect: { hookEvent: 'UserPromptSubmit' },
   },
 
-  // ── PreToolUse / Write|Edit ───────────────────────────────────────────────
-  {
-    name: 'brain-retrieve    [PreToolUse/Edit]',
-    script: 'brain-retrieve.js',
-    payload: {
-      tool_name: 'Edit',
-      tool_input: { file_path: path.join(SCRIPTS, '..', 'scripts', 'curation-guard.js') },
-      session_id: SESSION,
-    },
-    expect: { noError: true },
-  },
-
   // ── PreToolUse / Bash ─────────────────────────────────────────────────────
-  {
-    name: 'brain-retrieve    [PreToolUse/Bash]',
-    script: 'brain-retrieve.js',
-    payload: {
-      tool_name: 'Bash',
-      tool_input: { command: 'git status' },
-      session_id: SESSION,
-    },
-    expect: { noError: true },
-  },
   {
     name: 'curation-guard    [PreToolUse/no-curated,no-whitelist→allow-default]',
     script: 'curation-guard.js',

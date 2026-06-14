@@ -21,9 +21,9 @@
     "maxEntriesPerProject": 10000,
     "archiveAfterDays": 90,
     "retrieval": {
-      "fastTopK": 5,
+      "fastTopK": 2,
       "deepTopK": 3,
-      "minScoreFast": 0.05,
+      "minScoreFast": 0.45,
       "minScoreDeep": 0.08
     },
     "rerank": {

@@ -14,7 +14,7 @@
  * Usage:  node scripts/brain-index-native.js [--cwd <path>] [--project <key>]
  *
  * Cross-project: each project's native memory lands in its own Brain project DB;
- * `brain_search` (MCP) + `brain-retrieve.js` (hook) both support cross-project search.
+ * `brain_search` (MCP) + `brain-retrieve-prompt.js` (hook) both support cross-project search.
  */
 const fs = require('fs');
 const path = require('path');
