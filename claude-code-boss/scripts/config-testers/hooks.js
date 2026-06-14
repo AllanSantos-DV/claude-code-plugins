@@ -75,6 +75,8 @@ async function test(input) {
   for (const [event, handlers] of Object.entries(hooksConfig.hooks || {})) {
     for (const h of handlers) {
       for (const hook of (h.hooks || [])) {
+        // Only command hooks reference a script to validate; mcp_tool/http/prompt/agent don't.
+        if (hook.type && hook.type !== 'command') continue;
         checked++;
         const scriptPath = extractScriptPath(hook, root);
         if (!scriptPath) { invalidCommands.push({ event, cmd: hook.command }); continue; }

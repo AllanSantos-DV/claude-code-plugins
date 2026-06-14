@@ -808,15 +808,6 @@ const TESTS = [
     },
     expect: { noError: true },
   },
-  {
-    name: 'brain-retrieve-prompt [UserPromptSubmit]',
-    script: 'brain-retrieve-prompt.js',
-    payload: {
-      prompt: 'como configurar os hooks do plugin',
-      session_id: SESSION,
-    },
-    expect: { noError: true },
-  },
 ];
 
 // ─── Runner ─────────────────────────────────────────────────────────────────

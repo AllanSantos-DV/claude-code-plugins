@@ -23,7 +23,7 @@
     "retrieval": {
       "fastTopK": 2,
       "deepTopK": 3,
-      "minScoreFast": 0.45,
+      "minScoreFast": 0.20,
       "minScoreDeep": 0.08
     },
     "rerank": {
