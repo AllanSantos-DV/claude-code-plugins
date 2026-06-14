@@ -149,6 +149,7 @@ function hookScriptPath(hook) {
 
 /** Human-readable command string for display (joins exec-form args). */
 function hookDisplayCmd(hook) {
+  if (hook && hook.type === 'mcp_tool') return `[mcp_tool] ${hook.server || '?'} / ${hook.tool || '?'}`;
   if (Array.isArray(hook && hook.args)) return `${hook.command} ${hook.args.join(' ')}`.trim();
   return (hook && hook.command) || '';
 }
@@ -208,9 +209,10 @@ async function getStatusAsync(req, res) {
         for (const hook of (h.hooks || [])) {
           hooksTotal++;
           const cmd = hookDisplayCmd(hook);
+          const isMcp = hook && hook.type === 'mcp_tool';
           const fullPath = hookScriptPath(hook);
-          const scriptFile = fullPath ? path.relative(ROOT, fullPath).replace(/\\/g, '/') : '';
-          if (fullPath && fs.existsSync(fullPath) && !fullPath.endsWith('.disabled')) {
+          const scriptFile = isMcp ? `${hook.server}/${hook.tool}` : (fullPath ? path.relative(ROOT, fullPath).replace(/\\/g, '/') : '');
+          if (isMcp || (fullPath && fs.existsSync(fullPath) && !fullPath.endsWith('.disabled'))) {
             hooksActive++;
           }
           hookEntries.push({ event, script: scriptFile, cmd });
@@ -817,15 +819,16 @@ function getHooks(req, res) {
       const matcher = h.matcher || '*';
       for (const hook of (h.hooks || [])) {
         const cmd = hookDisplayCmd(hook);
+        const isMcp = hook && hook.type === 'mcp_tool';
         const fullPath = hookScriptPath(hook);
-        const exists = fullPath ? fs.existsSync(fullPath) : false;
+        const exists = isMcp ? true : (fullPath ? fs.existsSync(fullPath) : false);
         const disabled = fullPath.endsWith('.disabled');
         const active = exists && !disabled;
         result.push({
           event,
           matcher,
           command: cmd,
-          scriptFile: fullPath ? path.basename(fullPath) : '',
+          scriptFile: isMcp ? `${hook.server}/${hook.tool}` : (fullPath ? path.basename(fullPath) : ''),
           active,
           exists,
         });

@@ -35,20 +35,18 @@ async function searchTwoPass(store, currentProject, queryVector, opts = {}) {
   const topK = opts.topK || 5;
   const { projectK, userK } = splitTopK(topK);
 
+  // Project pass: the shared singleton, already init'd to currentProject by the caller.
   const projectResults = await store.search(queryVector, { ...opts, topK: projectK });
 
+  // User pass: a THROWAWAY connection to the __user__ DB — never close()/init() the
+  // shared singleton mid-search. On the long-lived MCP server the old close/init
+  // dance corrupted singleton state across concurrent tool calls, silently zeroing
+  // out retrieval. searchIsolated leaves _db/_project untouched.
   const needUser = (userK > 0 || projectResults.length < projectK) && userDbExists();
   let userResults = [];
   if (needUser) {
-    try {
-      await store.close();
-      await store.init({ project: USER_SENTINEL, skipEmbedder: true });
-      const want = userK + Math.max(0, projectK - projectResults.length);
-      userResults = await store.search(queryVector, { ...opts, topK: want });
-    } finally {
-      await store.close();
-      await store.init({ project: currentProject, skipEmbedder: true });
-    }
+    const want = userK + Math.max(0, projectK - projectResults.length);
+    userResults = await store.searchIsolated(USER_SENTINEL, queryVector, { ...opts, topK: want });
   }
 
   return mergeResults(projectResults, userResults, topK);

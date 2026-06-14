@@ -246,6 +246,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
         required: ['title', 'summary']
       }
+    },
+    {
+      name: 'brain_retrieve_context',
+      description: 'Internal — adaptive KB retrieval for the UserPromptSubmit hook (runs with the embedder warm in this server). Embeds the prompt, vector-searches the project KB behind a relevance gate, and returns a short formatted context block (or empty). Prefer brain_search for explicit lookups.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          prompt: { type: 'string', description: 'The user prompt text' },
+          cwd: { type: 'string', description: 'Working directory (project = its basename)' },
+          session_id: { type: 'string', description: 'Session id (for the retrieval journal)' }
+        },
+        required: ['prompt']
+      }
     }
   ]
 }));
@@ -521,6 +534,38 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return { content: [{ type: 'text', text: JSON.stringify({ project, count }, null, 2) }] };
       } catch (err) {
         return { isError: true, content: [{ type: 'text', text: `brain_count failed: ${err.message}` }] };
+      }
+    }
+
+    // ── Retrieve Context (warm embedder; powers the UserPromptSubmit hook) ─
+    case 'brain_retrieve_context': {
+      try {
+        const { prompt, cwd, session_id } = args || {};
+        const project = cwd ? path.basename(cwd) : path.basename(process.cwd() || 'default');
+        const retrieveCore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'retrieve-core.js'));
+        const { entries } = await retrieveCore.retrieve(prompt || '', { project });
+        if (entries.length) {
+          try {
+            const journal = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'retrieval-journal.js'));
+            const sid = session_id || 'default';
+            journal.appendEntry(sid, {
+              retrievalId: journal.newRetrievalId(), ts: Date.now(), sid,
+              tool: 'UserPromptSubmit', project,
+              returnedIds: entries.map(e => e.id), returnedTitles: entries.map(e => e.title),
+            });
+          } catch (err) { console.error(`[brain_retrieve_context] journal: ${err.message}`); }
+        }
+        // mcp_tool hooks on UserPromptSubmit only inject context when the tool
+        // returns a JSON output with hookSpecificOutput.additionalContext — plain
+        // text is shown, not injected. Empty → no output (no injection).
+        const text = retrieveCore.formatContext(entries);
+        const payload = text
+          ? JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: text } })
+          : '';
+        return { content: [{ type: 'text', text: payload }] };
+      } catch (err) {
+        console.error(`[brain_retrieve_context] ${err.message}`);
+        return { content: [{ type: 'text', text: '' }] }; // fail-open: never break the prompt
       }
     }
 

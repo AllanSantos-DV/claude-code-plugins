@@ -192,9 +192,14 @@
             "timeout": 5
           },
           {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/brain-retrieve-prompt.js"],
+            "type": "mcp_tool",
+            "server": "plugin:claude-code-boss:brain-server",
+            "tool": "brain_retrieve_context",
+            "input": {
+              "prompt": "${prompt}",
+              "cwd": "${cwd}",
+              "session_id": "${session_id}"
+            },
             "timeout": 10
           }
         ]

@@ -1374,6 +1374,26 @@ test('skill-success-detect: skips entries without skillName', () => {
   assertEq(out[0].skillName, 'ok');
 });
 
+// ─── retrieve-core (pure parts; no model load) ───────────────────────────────
+const retrieveCore = require('./lib/retrieve-core.js');
+
+test('retrieve-core: formatContext empty → ""', () => {
+  assertEq(retrieveCore.formatContext([]), '');
+  assertEq(retrieveCore.formatContext(null), '');
+});
+
+test('retrieve-core: formatContext renders title + summary', () => {
+  const s = retrieveCore.formatContext([{ title: 'Use Read not cat', type: 'lesson', summary: 'always Read' }]);
+  assert(s.startsWith('[BRAIN] 1 relevant lesson(s):'), `header missing: ${s}`);
+  assert(s.includes('"Use Read not cat"') && s.includes('always Read'), 'title/summary missing');
+});
+
+test('retrieve-core: short prompt pre-filters (no embedder)', async () => {
+  const r = await retrieveCore.retrieve('oi', { project: 'ccb-nonexistent-test' });
+  assertEq(r.reason, 'short');
+  assertEq(r.entries.length, 0);
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);

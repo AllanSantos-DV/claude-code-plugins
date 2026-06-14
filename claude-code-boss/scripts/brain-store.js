@@ -438,6 +438,56 @@ async function searchSqlite(queryVector, opts = {}) {
   return applyRerank(scored, opts).slice(0, topK);
 }
 
+/**
+ * Vector search against an ARBITRARY project DB via a throwaway connection,
+ * WITHOUT touching the module singleton (`_db`/`_project`). This is what makes
+ * cross-scope retrieval (project + __user__) safe on the long-lived MCP server:
+ * the old approach of close()/init()-ing the singleton mid-search corrupted
+ * shared state across concurrent tool calls. Read-only; returns [] if the DB
+ * file or sqlite backend is unavailable.
+ */
+async function searchIsolated(project, queryVector, opts = {}) {
+  const topK = opts.topK || 5;
+  const minScore = opts.minScore || 0;
+  const type = opts.type || null;
+  const Database = loadSqlite();
+  if (!Database) return [];
+  const dbPath = path.join(STORE_DIR, 'brain', project, 'brain.db');
+  if (!fs.existsSync(dbPath)) return [];
+  let db;
+  try { db = new Database(dbPath); } catch { return []; }
+  try {
+    const rows = db.prepare(`
+      SELECT e.id, e.title, e.summary, e.type, e.confidence, e.created_at,
+             e.last_accessed, e.access_count, e.cited_count, e.last_cited_ts,
+             em.vector, em.dimensions
+      FROM entries e
+      LEFT JOIN embeddings em ON em.entry_id = e.id
+      WHERE e.project = ? ${type ? 'AND e.type = ?' : ''}
+    `).all(...[project, type].filter(Boolean));
+    const scored = [];
+    for (const row of rows) {
+      const vec = row.vector ? blobToVector(row.vector) : null;
+      let score = 0;
+      if (queryVector && vec && vec.length === queryVector.length) {
+        score = cosineSimilarity(queryVector, vec);
+      }
+      if (score >= minScore) {
+        scored.push({
+          id: row.id, title: row.title, summary: row.summary, type: row.type,
+          confidence: row.confidence, createdAt: row.created_at,
+          lastAccessed: row.last_accessed, accessCount: row.access_count,
+          citedCount: row.cited_count || 0, lastCitedTs: row.last_cited_ts || null,
+          score,
+        });
+      }
+    }
+    return applyRerank(scored, opts).slice(0, topK);
+  } finally {
+    try { db.close(); } catch { /* throwaway connection */ }
+  }
+}
+
 async function searchByKeywordsSqlite(keywords, opts = {}) {
   const topK = opts.topK || 5;
   const type = opts.type || null;
@@ -918,7 +968,7 @@ function cleanupMetrics(keepDays = 30) {
 }
 
 module.exports = {
-  init, save, get, getRaw, merge, prune, search, searchByKeywords,
+  init, save, get, getRaw, merge, prune, search, searchByKeywords, searchIsolated,
   delete: delete_, list, count, close,
   getStorageType, getStatus, cosineSimilarity,
   recordCitation, citationMultiplier,
