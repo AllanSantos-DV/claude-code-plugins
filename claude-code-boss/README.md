@@ -79,8 +79,6 @@ Todos os hooks estão declarados em `hooks/hooks.json`. Eventos e scripts ativos
 | SessionStart | `memory-rotate.js` | Rotaciona MEMORY.md quando >150 linhas |
 | SessionStart | `session-whitelist.js` | Detecta ecossistema do projeto, popula whitelist |
 | SessionStart | `brain-health.js` | Liveness probe (static + active backend.init/count): se MCP estiver caído, injeta advisory acionável; senão, silencioso |
-| PreToolUse (Write\|Edit) | `brain-retrieve.js` | Busca KB antes de editar |
-| PreToolUse (Bash) | `brain-retrieve.js` | Busca KB antes de Bash |
 | PreToolUse (Bash) | `curation-guard.js` | Bloqueia/redireciona comandos curados |
 | PostToolUse (Bash) | `curation-detect.js` | Detecta outputs grandes para curação |
 | Stop | `pattern-detect.js` | Nudge advisory (throttled): capturar padrão reusável via `capture_lesson` |

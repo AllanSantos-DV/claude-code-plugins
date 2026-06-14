@@ -33,10 +33,6 @@ automatic payload-scraping of command output (it was ~99% noise and burned token
 ### Retrieval (automatic)
 
 ```
-PreToolUse (Bash/Write/Edit) → brain-retrieve.js
-  → command/path embedding → cosine sim on SQLite
-  → hookSpecificOutput with top-5 relevant entries
-
 UserPromptSubmit → brain-retrieve-prompt.js
   → query embedding → semantic search
   → hookSpecificOutput with relevant entries
