@@ -5,6 +5,7 @@ planos/
 taskmap/
 planning/
 claude-code-boss/PLANOS.md
+*-PLAN.md
 
 # Smoke tests (local-only, never versioned)
 smoke/
@@ -47,6 +48,7 @@ claude-code-boss/logs/
 # Temporary files
 *.tmp
 *.temp
+.tmp*
 */tmp/
 */temp/
 
