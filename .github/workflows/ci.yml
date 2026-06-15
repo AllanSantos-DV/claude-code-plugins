@@ -29,32 +29,6 @@ jobs:
         run: npm ci
         working-directory: claude-code-boss
 
-      - name: Run tests
-        run: npm test
-        working-directory: claude-code-boss
-
-      - name: Lint
-        run: npx eslint --config eslint.config.cjs scripts/ --max-warnings=0
-        working-directory: claude-code-boss
-
-      - name: Check for empty catch blocks
-        run: |
-          if grep -rE 'catch\s*\(?\s*[_]?\s*\)?\s*\{\s*\}' scripts/; then
-            echo "ERROR: empty catch{} found — fix them (R5 rule)"
-            exit 1
-          fi
-          echo "OK: no empty catch{} found"
-        working-directory: claude-code-boss
-
-      - name: Check for return-only catch masking
-        run: |
-          if grep -rPzo 'catch\s*(\([a-zA-Z_]*\))?\s*\{\s*return[^}]*\}' scripts/ | grep -q .; then
-            echo "ERROR: catch{ return ...; } masking found — log the error first"
-            exit 1
-          fi
-          echo "OK: no return-only catch masking found"
-        working-directory: claude-code-boss
-
-      - name: Check version sync
-        run: node scripts/sync-version.js --check
+      - name: Quality gate (eslint + version sync + tests)
+        run: npm run gate
         working-directory: claude-code-boss
