@@ -111,6 +111,7 @@ function curatedScriptsTouchedSince(prev, cwd) {
 
 function buildReason(entries, attempt, maxAttempts) {
   const curationCfg = loadCurationConfig();
+  const { oneHitMaxRecurrence } = require('./lib/brain-config.js').getCuration();
   const refineEntries = entries.filter(e => e.curatedScript);
   const createEntries = entries.filter(e => !e.curatedScript);
 
@@ -134,9 +135,14 @@ function buildReason(entries, attempt, maxAttempts) {
   }
 
   if (createEntries.length > 0) {
-    sections.push(`CREATE in \`${curationCfg.scriptsDir}/\` + register in \`${curationCfg.shellsConfigPath}\`:`);
+    sections.push(`CREATE a curated script in \`${curationCfg.scriptsDir}/\` (+ register in \`${curationCfg.shellsConfigPath}\`) — OR, if genuinely single-use, call \`curation_mark_oneoff({ aliases:[...] })\` to skip it (the \`x/${oneHitMaxRecurrence}\` is how often it recurred; at the ceiling you must curate):`);
     for (const e of createEntries) {
-      sections.push(`  • \`${e.command}\` (${e.lines}L/${e.chars}c, ${e.reason})`);
+      const parts = [`\`${e.command}\``];
+      if (e.sig) parts.push(`sig \`${e.sig}\``);
+      if (Number.isInteger(e.recurrence)) parts.push(`${e.recurrence}/${oneHitMaxRecurrence}`);
+      parts.push(`${e.lines}L/${e.chars}c`);
+      parts.push(e.reason);
+      sections.push(`  • ${parts.join(' · ')}`);
     }
   }
 
