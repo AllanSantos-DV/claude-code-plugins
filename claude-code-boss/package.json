@@ -17,6 +17,7 @@
     "postinstall": "node scripts/plugin-setup.js",
     "setup:brain": "node scripts/brain-warm.js",
     "test": "node scripts/test-hooks.js && node scripts/test-units.js",
+    "gate": "node scripts/gate.mjs",
     "test:hooks": "node scripts/test-hooks.js",
     "test:units": "node scripts/test-units.js",
     "test:verbose": "node scripts/test-hooks.js --verbose",

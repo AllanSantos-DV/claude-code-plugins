@@ -31,7 +31,7 @@ const { readStdin } = require('./lib/hook-io.js');
     const raw = await readStdin();
     if (!raw) { process.stdout.write('{}'); return; }
     let event;
-    try { event = JSON.parse(raw); } catch { process.stdout.write('{}'); return; }
+    try { event = JSON.parse(raw); } catch { /* malformed stdin → no-op */ process.stdout.write('{}'); return; }
     const msg = event.prompt || event.userMessage || event.text || '';
 
     if (!looksLikeCorrection(msg)) { process.stdout.write('{}'); return; }

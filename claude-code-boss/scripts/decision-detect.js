@@ -133,7 +133,7 @@ function getHeadSha() {
     const raw = await readStdin();
     if (!raw) { process.stdout.write('{}'); return; }
     let event;
-    try { event = JSON.parse(raw); } catch { process.stdout.write('{}'); return; }
+    try { event = JSON.parse(raw); } catch { /* malformed stdin → no-op */ process.stdout.write('{}'); return; }
 
     if (event.tool_name !== 'Bash') { process.stdout.write('{}'); return; }
     const cmd = event.tool_input?.command || '';
