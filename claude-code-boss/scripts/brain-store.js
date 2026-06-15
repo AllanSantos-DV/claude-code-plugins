@@ -455,7 +455,7 @@ async function searchIsolated(project, queryVector, opts = {}) {
   const dbPath = path.join(STORE_DIR, 'brain', project, 'brain.db');
   if (!fs.existsSync(dbPath)) return [];
   let db;
-  try { db = new Database(dbPath); } catch { return []; }
+  try { db = new Database(dbPath); } catch (e) { console.error('[brain] isolated DB open failed:', dbPath, e.message); return []; }
   try {
     const rows = db.prepare(`
       SELECT e.id, e.title, e.summary, e.type, e.confidence, e.created_at,

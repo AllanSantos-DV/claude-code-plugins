@@ -25,7 +25,7 @@ async function readJsonBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
   if (chunks.length === 0) return undefined;
-  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { return undefined; }
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch (e) { void e; return undefined; }
 }
 
 /**
