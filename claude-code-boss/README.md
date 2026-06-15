@@ -56,7 +56,7 @@ claude-code-boss/
 ├── dashboard/
 │   └── index.html             # SPA — 4 abas: Home / Brain KB / Hooks / Logs
 ├── hooks/
-│   └── hooks.json             # 7 eventos, 24 scripts (exec form: command "node" + args[])
+│   └── hooks.json             # 7 eventos, 24 scripts (command "node") + 1 mcp_tool (brain_retrieve_context)
 ├── scripts/                   # Scripts Node.js (zero deps extras para hooks)
 │   ├── dashboard.js           # Servidor HTTP local com ring buffer de logs
 │   ├── brain-*.js             # Brain KB: store, index, graph, embedder, backend, CLI
@@ -64,7 +64,7 @@ claude-code-boss/
 │   ├── hook-logger.js         # Utilitário: append a .runtime/hook-errors.jsonl
 │   └── sync-version.js        # Propaga versão para todos os arquivos de versão
 ├── servers/
-│   └── brain-server/          # MCP server: brain_search/store/related/count + capture_lesson
+│   └── brain-server/          # MCP server (stdio + HTTP daemon) — ver servers/brain-server/README.md
 ├── skills/                    # skills do Claude Code (inclui plugin-install)
 ├── package.json               # scripts: test, version:sync
 └── TASK-MAP.md                # Histórico de entrega (parcialmente obsoleto pós slim-down)
@@ -86,7 +86,7 @@ Todos os hooks estão declarados em `hooks/hooks.json`. Eventos e scripts ativos
 | Stop | `curation-stop.js` | Bloqueia stop se há comandos noisy detectados no turno (escalating, anti-loop) |
 | UserPromptSubmit | `brain-health.js` | Mesma probe do SessionStart, com cooldown de 60s — captura MCP caído em sessões resumidas |
 | UserPromptSubmit | `correction-detect.js` | Detecta sinal de correção → nudge p/ `capture_lesson` (sem ler transcript) |
-| UserPromptSubmit | `brain-retrieve-prompt.js` | Busca KB semântica + injeta lessons + advisory de pendências (cooldown de backpressure) |
+| UserPromptSubmit | `mcp_tool` → `brain_retrieve_context` | Retrieval QUENTE por-turno: embeda o prompt no brain-server (warm ~12–26ms), gate 0.20, federa `__user__`, injeta bloco `[BRAIN]` (substitui o antigo `brain-retrieve-prompt.js`) |
 
 > **Captura de lição in-loop:** quando o usuário corrige, o agente (no loop, com
 > contexto completo) chama a tool MCP **`capture_lesson`** com a lição curada — que
@@ -148,6 +148,9 @@ cada atualização do plugin, **troca um daemon obsoleto pelo novo** (lock em
 URL estável: fixe `BRAIN_HTTP_PORT` e aponte para um MCP remoto
 `http://127.0.0.1:<port>/mcp` (passando `project` explícito). O Claude Code segue em
 stdio pelo `.mcp.json` inalterado.
+
+> **Referência técnica completa** (tools, endpoints, supervisor, config):
+> [`servers/brain-server/README.md`](servers/brain-server/README.md).
 
 ## Dashboard
 
