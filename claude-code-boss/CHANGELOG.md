@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [1.9.0] — 2026-06-14
 
 ### Added — brain-server can run as a long-lived HTTP service (additive, opt-in)
 
@@ -39,6 +39,37 @@ one SQLite.
 endpoint `http://127.0.0.1:<port>/mcp` (and always pass an explicit `project` per
 call). Claude Code keeps using stdio via the unchanged `.mcp.json`. The two modes
 share the same SQLite/KB.
+
+### Added — warm adaptive retrieval auto-injected on every prompt
+
+The Brain now feeds relevant lessons into context automatically. A new
+`brain_retrieve_context` tool — called by a `mcp_tool` `UserPromptSubmit` hook —
+embeds the prompt in the warm server (~26 ms), vector-searches behind an adaptive
+relevance gate, federates `project` + `__user__` scopes, dedups by title, and
+injects a short `[BRAIN]` block. No per-tool-call cold retrieval.
+
+- **Added** `scripts/lib/retrieve-core.js` + the `brain_retrieve_context` brain-server
+  tool (embed → two-pass scope search → relevance gate → title-dedup →
+  `hookSpecificOutput.additionalContext` envelope, the only form a UserPromptSubmit
+  `mcp_tool` hook injects).
+- **Changed** `hooks/hooks.json` — `UserPromptSubmit` calls the `mcp_tool` hook
+  against `plugin:claude-code-boss:brain-server` (warm embedder) instead of a cold
+  per-call script. The relevance gate was calibrated (`0.45 → 0.20`, measured against
+  the embedder's real score distribution) and retrieval now federates the global
+  `__user__` scope (parity with `brain_search`, via an isolated read connection so
+  the warm server's singleton isn't churned).
+
+### Fixed — KB entries vectorized by title+summary, not the (diluting) detail
+
+Including the long, dense `detail` in the embed text diluted the vector below the
+retrieval gate (measured cos **0.51** for `title+summary` vs **0.13** for
+`title+summary+detail` on the same entry/query) — so even an exact-title match
+wasn't retrieved.
+
+- **Added** `scripts/lib/embed-text.js` (`buildEmbedText`) as the single canonical
+  embed-text builder, used by `capture_lesson`, `brain_store`, `brain-index-native`,
+  and `brain-reembed`. `detail` is still stored and shown on retrieval; it just no
+  longer steers the vector. Existing entries migrate by re-running `brain-reembed`.
 
 ## [1.8.3] — 2026-06-13
 
