@@ -122,6 +122,33 @@ O script wipa a tabela `embeddings` de todo project DB e re-embeda usando o mode
 
 **Backend alternativo MCP Memory** (Java 21+): veja `docs/UPGRADE-MCP-MEMORY.md`.
 
+## Brain MCP: stdio (padrão) + HTTP (opt-in)
+
+O brain-server (`servers/brain-server/`) atende em **dois transportes**, com a mesma
+lógica e o mesmo SQLite/KB:
+
+- **stdio (padrão, inalterado)** — cada host (Claude Code, via `.mcp.json`) spawna
+  seu próprio processo. Comportamento idêntico ao histórico; o `project` é inferido
+  do CWD. **Nada muda para quem já usa** — sem reinstalar, sem mexer no `.mcp.json`.
+- **HTTP (opt-in, aditivo)** — um **daemon único de longa duração** (StreamableHTTP,
+  *stateful*) que N workspaces/clientes compartilham (**um modelo, um SQLite**), em
+  vez de N processos stdio. Sobe com:
+  ```bash
+  node servers/brain-server/index.js --http [--port <N>] --plugin-data <DATA_DIR>
+  ```
+  A porta é determinística por data-dir (ou fixe com `BRAIN_HTTP_PORT`). Em HTTP o
+  `project` é **obrigatório** por chamada (não há CWD para inferir — sem `project`,
+  rejeita em vez de cair em `'default'`).
+
+**Auto-start + auto-upgrade**: o launcher stdio sobe o daemon sozinho (detached) e, a
+cada atualização do plugin, **troca um daemon obsoleto pelo novo** (lock em
+`DATA_DIR` + checagem de versão via `/health`). Desligue com `BRAIN_HTTP_AUTOSTART=0`.
+
+**Migrar um consumidor externo (ex.: OpenCode)** do cache de SHA rotativo para uma
+URL estável: fixe `BRAIN_HTTP_PORT` e aponte para um MCP remoto
+`http://127.0.0.1:<port>/mcp` (passando `project` explícito). O Claude Code segue em
+stdio pelo `.mcp.json` inalterado.
+
 ## Dashboard
 
 Iniciado **sob demanda** (não mais no SessionStart). Configura o **plugin**
