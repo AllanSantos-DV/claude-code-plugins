@@ -1,5 +1,45 @@
 # Changelog
 
+## [Unreleased]
+
+### Added — brain-server can run as a long-lived HTTP service (additive, opt-in)
+
+The brain-server (MCP) was stdio-only: every host connection spawned its own
+process + ~118MB model, all competing for the same SQLite, and external consumers
+(e.g. OpenCode) had to point at the rotating-SHA plugin cache (unstable; the brain
+vanished when the SHA was cleaned). It can now ALSO run as a single long-lived HTTP
+daemon (StreamableHTTP, **stateful**) shared by N workspaces/clients — one model,
+one SQLite.
+
+**stdio stays the default and behaves exactly as before** — no reinstall and no
+`.mcp.json` change for Claude Code users.
+
+- **Added** `servers/brain-server/lib/mcp-server.js` — `createBrainServer()`, the
+  transport-agnostic MCP assembly (tools + handlers) reused by both transports. An
+  async mutex serializes the KB tools so concurrent HTTP sessions can't corrupt the
+  process-singleton DB. Tool logic is a faithful move from `index.js` (no stdio
+  behavior change).
+- **Added** `servers/brain-server/lib/http-daemon.js` — `--http` daemon: stateful
+  StreamableHTTP (a per-session `createBrainServer` keyed by `mcp-session-id`),
+  `/health`, `/mcp`, port-as-singleton-lock, idle-session reaper, graceful
+  `/shutdown` (forces keep-alive connections closed).
+- **Added** `servers/brain-server/lib/daemon-supervisor.js` + `daemon-common.js` —
+  the stdio launcher best-effort auto-starts the daemon (detached, survives the
+  host) and, on a plugin update, **version-swaps a stale daemon for the new one**
+  (lock in `DATA_DIR` + `/health` `pluginRoot` check). Disable with
+  `BRAIN_HTTP_AUTOSTART=0`.
+- **Changed** `servers/brain-server/index.js` — now a thin transport selector:
+  stdio by default (`StdioServerTransport`); `--http [--port N | env
+  BRAIN_HTTP_PORT]` runs the daemon. Project scoping: **stdio infers from CWD
+  (unchanged); HTTP requires an explicit `project`** and rejects otherwise (never
+  falls back to `'default'`).
+
+**Migration — point an external consumer (e.g. OpenCode) at the daemon:** set
+`BRAIN_HTTP_PORT` to a known value, then configure the consumer with a remote MCP
+endpoint `http://127.0.0.1:<port>/mcp` (and always pass an explicit `project` per
+call). Claude Code keeps using stdio via the unchanged `.mcp.json`. The two modes
+share the same SQLite/KB.
+
 ## [1.8.3] — 2026-06-13
 
 ### Fixed — hooks now use exec form so plugin paths survive Windows shells
