@@ -25,7 +25,7 @@ async function fetchHealth(port, timeoutMs = 600) {
     const r = await fetch(`http://127.0.0.1:${port}/health`, { signal: ctrl.signal });
     clearTimeout(t);
     return r.ok ? await r.json() : null;
-  } catch { return null; }
+  } catch (e) { void e; return null; }
 }
 
 async function postShutdown(port, timeoutMs = 800) {
