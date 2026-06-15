@@ -45,6 +45,8 @@
   },
   "curation": {
     "maxOutputChars": 1500,
-    "maxOutputLines": 30
+    "maxOutputLines": 30,
+    "oneHitMaxRecurrence": 3,
+    "oneHitWindowDays": 90
   }
 }

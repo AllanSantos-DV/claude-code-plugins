@@ -19,13 +19,16 @@
  *   curated-failure-noisy — curated script failed, output exceeded raw thresholds
  *   (null)                — no condition matched; no entry recorded
  */
+const path = require('path');
+const os = require('os');
 const { readStdin } = require('./lib/hook-io.js');
 const turnJournal = require('./lib/turn-journal.js');
+const oneoff = require('./lib/oneoff-store.js');
 
 const { findProjectRoot, loadShellsConfig, matchCuratedShell } = require('./shells-config.js');
 const { classify }                                              = require('./curation-classifier.js');
 
-
+const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
 const _curationCfg = require('./lib/brain-config.js').getCuration();
 const thresholds = { maxChars: _curationCfg.maxOutputChars, maxLines: _curationCfg.maxOutputLines };
 
@@ -103,12 +106,30 @@ function appendTurnEntry(sessionId, entry) {
     // Classify
     const { reason } = classify({ command, isCurated, isSuccess, charCount, lineCount, thresholds });
 
+    // One-hit / recurrence accounting (cross-session, per-project). Count every
+    // invocation that matches a known signature (D1); create a fresh entry only
+    // for volume-heavy commands (those that would be curated).
+    const projectKey = oneoff.resolveProjectKey(cwd);
+    const seen = oneoff.touch(DATA_DIR, projectKey, command, {
+      sessionId, windowDays: _curationCfg.oneHitWindowDays, create: !!reason,
+    });
+
     if (!reason) {
       process.stdout.write(JSON.stringify({}));
       return;
     }
 
-    // Append to per-turn state (curation-stop.js will read at end of turn).
+    // A valid one-hit marking (still under the ceiling) suppresses the block, so
+    // the Stop hook never re-asks to curate a genuine single-use command.
+    if (seen.matched && seen.oneHit && seen.count < _curationCfg.oneHitMaxRecurrence) {
+      console.error(`[CURATION-DETECT] suppressed one-hit (${seen.sig} ${seen.count}/${_curationCfg.oneHitMaxRecurrence})`);
+      process.stdout.write(JSON.stringify({}));
+      return;
+    }
+
+    // Append to per-turn state (curation-stop.js reads it at end of turn). The
+    // signature + windowed recurrence travel with the entry so the Stop reason
+    // can orient the agent (O1/O2).
     appendTurnEntry(sessionId, {
       command,
       reason,
@@ -120,10 +141,12 @@ function appendTurnEntry(sessionId, entry) {
       interrupted,
       hookEvent,
       exitCode,
+      sig: seen.sig,
+      recurrence: seen.count,
       timestamp: new Date().toISOString(),
     });
 
-    console.error(`[CURATION-DETECT] ${reason}: ${charCount} chars, ${lineCount} lines — turn state updated`);
+    console.error(`[CURATION-DETECT] ${reason} (${seen.sig} ${seen.count}/${_curationCfg.oneHitMaxRecurrence}): ${charCount} chars, ${lineCount} lines`);
     process.stdout.write(JSON.stringify({}));
   } catch (err) {
     console.error(`[CURATION-DETECT] Error: ${err.message}`);

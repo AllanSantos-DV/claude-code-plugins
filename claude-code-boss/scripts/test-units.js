@@ -1394,6 +1394,88 @@ test('retrieve-core: short prompt pre-filters (no embedder)', async () => {
   assertEq(r.entries.length, 0);
 });
 
+// ─── command-signature ────────────────────────────────────────────────────────
+const cmdSig = require(path.join(SCRIPTS, 'lib', 'command-signature.js'));
+
+test('command-signature: strips cd prefix + flags', () => {
+  assertEq(cmdSig.canonicalSig('cd /proj && git --no-pager log -5'), 'git log');
+});
+test('command-signature: strips leading env assignment', () => {
+  assertEq(cmdSig.canonicalSig('NODE_ENV=test npm test -- --watch'), 'npm test');
+});
+test('command-signature: strips wrapper (env/sudo)', () => {
+  assertEq(cmdSig.canonicalSig('env FOO=bar sudo npm ci'), 'npm ci');
+});
+test('command-signature: pipe is NOT a separator', () => {
+  assertEq(cmdSig.canonicalSig('git log | head'), 'git log');
+});
+test('command-signature: picks first non-nav across separators', () => {
+  assertEq(cmdSig.canonicalSig('cd a ; pushd b && npm run build'), 'npm run build');
+});
+test('command-signature: masked variants collapse to same sig', () => {
+  assertEq(cmdSig.canonicalSig('git log'), cmdSig.canonicalSig('cd /x && git --no-pager log --stat'));
+});
+test('command-signature: empty → ""', () => {
+  assertEq(cmdSig.canonicalSig('   '), '');
+});
+test('command-signature: isGenericAlias (D4)', () => {
+  assert(cmdSig.isGenericAlias('git'), 'git generic');
+  assert(cmdSig.isGenericAlias('cat'), 'cat generic');
+  assert(cmdSig.isGenericAlias(''), 'empty generic');
+  assert(!cmdSig.isGenericAlias('git log'), 'git log specific');
+  assert(!cmdSig.isGenericAlias('npm test'), 'npm test specific');
+});
+
+// ─── oneoff-store ─────────────────────────────────────────────────────────────
+const oneoff = require(path.join(SCRIPTS, 'lib', 'oneoff-store.js'));
+const freshDataDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-oneoff-'));
+
+test('oneoff-store: touch creates + counts masked recurrence (D1)', () => {
+  const dd = freshDataDir(); const pk = 'p'; const t0 = 1_700_000_000_000;
+  let r = oneoff.touch(dd, pk, 'git log', { sessionId: 's1', now: t0, create: true });
+  assertEq([r.matched, r.created, r.count], [true, true, 1]);
+  r = oneoff.touch(dd, pk, 'cd /x && git --no-pager log -5', { sessionId: 's2', now: t0 + 1000, create: false });
+  assertEq([r.matched, r.created, r.count], [true, false, 2]);
+});
+test('oneoff-store: touch no-create on miss', () => {
+  const dd = freshDataDir();
+  assertEq(oneoff.touch(dd, 'p', 'npm test', { create: false }).matched, false);
+});
+test('oneoff-store: window excludes stale occurrences (D5)', () => {
+  const dd = freshDataDir(); const pk = 'p'; const now = 2_000_000_000_000;
+  oneoff.touch(dd, pk, 'git log', { now: now - 100 * 86400000, create: true });
+  assertEq(oneoff.touch(dd, pk, 'git log', { now, create: false }).count, 1);
+});
+test('oneoff-store: ceiling refuses re-mark (D2)', () => {
+  const dd = freshDataDir(); const pk = 'p'; let now = 1_700_000_000_000;
+  oneoff.touch(dd, pk, 'git log', { now: now++, create: true });
+  assertEq(oneoff.mark(dd, pk, { aliases: ['git log'], now: now++, maxRecurrence: 3 }).decision, 'merged');
+  oneoff.touch(dd, pk, 'git log', { now: now++, create: false });
+  oneoff.touch(dd, pk, 'git log', { now: now++, create: false });
+  const m = oneoff.mark(dd, pk, { aliases: ['git log'], now: now++, maxRecurrence: 3 });
+  assertEq(m.decision, 'rejected');
+  assert(m.count >= 3, `count ${m.count}`);
+});
+test('oneoff-store: mark merges overlapping alias, no fragment (D3)', () => {
+  const dd = freshDataDir(); const pk = 'p';
+  oneoff.mark(dd, pk, { aliases: ['git log'], maxRecurrence: 99 });
+  assertEq(oneoff.mark(dd, pk, { aliases: ['git log --stat'], maxRecurrence: 99 }).decision, 'merged');
+  assertEq(Object.keys(oneoff.load(dd, pk).entries).length, 1);
+});
+test('oneoff-store: prune removes cold entries (D5)', () => {
+  const dd = freshDataDir(); const pk = 'p'; const now = 2_000_000_000_000;
+  oneoff.touch(dd, pk, 'git log', { now: now - 200 * 86400000, create: true });
+  oneoff.touch(dd, pk, 'npm test', { now, create: true });
+  assertEq(oneoff.prune(dd, pk, { now, windowDays: 90 }), 1);
+  assertEq(oneoff.summary(dd, pk).total, 1);
+});
+test('oneoff-store: marked one-hit under ceiling is suppressible (detect path)', () => {
+  const dd = freshDataDir(); const pk = 'p'; let now = 1_700_000_000_000;
+  oneoff.mark(dd, pk, { aliases: ['npm run weird'], now: now++, maxRecurrence: 3 });
+  const r = oneoff.touch(dd, pk, 'cd /x && npm run weird --flag', { now: now++, create: false });
+  assert(r.matched && r.oneHit && r.count < 3, `expected suppressible, got ${JSON.stringify(r)}`);
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
