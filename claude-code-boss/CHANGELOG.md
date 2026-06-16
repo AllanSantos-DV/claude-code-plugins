@@ -1,5 +1,57 @@
 # Changelog
 
+## [1.10.0] — 2026-06-15
+
+### Added — curation "one-hit" marking with a recurrence ceiling
+
+The curation Stop hook re-fired on **one-hit** commands (single-use, e.g. a one-off
+`git log`): detection was output-VOLUME only, with no notion of recurrence, and the
+only sanctioned "skip" — a text-only "it's one-shot, moving on" reply — was treated
+as no-progress and escalated. So a genuinely single-use command got blocked up to
+`maxAttempts` times, every time it appeared.
+
+Now the agent can **mark a command one-hit** so the Stop hook stops asking to curate
+it — but it can't become a cheap bypass:
+
+- **Added** the `curation_mark_oneoff` MCP tool — the agent passes the command's
+  `aliases` (the SAME forms it would register when curating, so marking costs the
+  same work as doing it right). A 1-token alias (e.g. `git`) is rejected — it would
+  silence unrelated subcommands.
+- **Added** `scripts/lib/command-signature.js` — a canonical signature that
+  normalizes `cd …`, env assignments, wrappers (`bash -c`, `pwsh -File`, …), pipes
+  and flags, so the same command isn't fragmented by cwd or masked by variation
+  (`cd /p && git --no-pager log -5` → `git log`).
+- **Added** `scripts/lib/oneoff-store.js` — a per-project store (in the data dir,
+  not the versioned `shells.json`) counting every matching invocation in a sliding
+  window. Past the configurable ceiling the marking is **refused** — a recurring
+  command must be curated; one-hit can't silence it forever. Overlapping markings
+  merge (no count fragmentation); cold entries are pruned.
+- **Changed** `curation-detect.js` — counts recurrence and **suppresses** valid
+  one-hit markings at the source (they never reach the Stop list).
+- **Changed** `curation-stop.js` — the block reason is now **oriented**: each
+  command shows its signature and `count/ceiling`, plus the two ways out (curate or
+  `curation_mark_oneoff`), so the agent decides on data, not a guess.
+- **Added** `curation-session.js` (SessionStart) — prunes cold entries and injects a
+  short curation panorama (how many curated scripts + one-hits the project tracks).
+- **Config** `curation.oneHitMaxRecurrence` (default 3) + `curation.oneHitWindowDays`
+  (default 90) in `brain-config.json`.
+
+### Changed — unified quality gate (`npm run gate`)
+
+Local and CI now run the **same** gate (`npm run gate`): ESLint over `scripts/` AND
+`servers/`, version-sync, and the test suite. The catch-masking checks moved from
+GNU-only CI greps to an AST ESLint rule (`no-silent-return-catch`) — cross-platform
+and finally covering the brain-server. The CI workflow just calls the gate, so "lint
+passed locally but a separate CI grep failed" can't happen again.
+
+### Fixed
+
+- Return-only `catch { return … }` blocks in the brain-server daemon + `searchIsolated`
+  now log/acknowledge the error before returning (CI gate).
+- Plugin README: the hooks table referenced the deleted `brain-retrieve-prompt.js`;
+  it now points to the `mcp_tool` → `brain_retrieve_context` warm retrieval. Added a
+  dedicated `servers/brain-server/README.md` (transports, daemon, config).
+
 ## [1.9.0] — 2026-06-14
 
 ### Added — brain-server can run as a long-lived HTTP service (additive, opt-in)
