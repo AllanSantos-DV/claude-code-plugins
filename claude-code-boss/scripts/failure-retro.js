@@ -120,7 +120,7 @@ async function main() {
 
   for (const t of fresh) cooldown.add(sid, t.key);
   for (const t of fresh) {
-    metrics.fire('failure.retro.fired', { kind: t.kind, count: t.group?.length || 0 },
+    metrics.fire('nudge.emitted', { kind: 'failure', trigger: t.kind, count: t.group?.length || 0 },
       { sessionId: sid, cwd: ev.cwd });
   }
   emitStopBlock(buildRetroPrompt(fresh));

@@ -25,6 +25,7 @@ function looksLikeCorrection(msg) {
 }
 
 const { readStdin } = require('./lib/hook-io.js');
+const metrics = require('./lib/metrics.js');
 
 (async () => {
   try {
@@ -36,6 +37,7 @@ const { readStdin } = require('./lib/hook-io.js');
 
     if (!looksLikeCorrection(msg)) { process.stdout.write('{}'); return; }
 
+    metrics.fire('nudge.emitted', { kind: 'correction' }, { sessionId: event.session_id || event.sessionId, cwd: event.cwd });
     process.stdout.write(JSON.stringify({
       hookSpecificOutput: {
         hookEventName: 'UserPromptSubmit',

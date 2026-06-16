@@ -78,11 +78,10 @@ function shortKey(k) {
 (async () => {
   try {
     const raw = await readStdin();
+    let input = {};
+    try { input = JSON.parse(raw || '{}'); } catch { /* malformed input — fall through */ }
     // Anti-loop guard: if Claude already retried this Stop, let it stop.
-    try {
-      const input = JSON.parse(raw || '{}');
-      if (input.stop_hook_active) { emitEmpty(); return; }
-    } catch { /* malformed input — fall through */ }
+    if (input.stop_hook_active) { emitEmpty(); return; }
 
     const state = readJsonSafe(PENDING, { pending: [] });
     const pending = Array.isArray(state.pending) ? state.pending : [];
@@ -103,7 +102,8 @@ function shortKey(k) {
     writeJsonSafe(PENDING, { pending: [] });
 
     for (const item of fresh) {
-      metrics.fire('decision.captured', { kind: item.kind, key: item.key, repoUrl: item.repoUrl });
+      metrics.fire('nudge.emitted', { kind: 'decision', decisionKind: item.kind, key: item.key, repoUrl: item.repoUrl },
+        { sessionId: input.session_id || input.sessionId, cwd: input.cwd });
     }
 
     emitStopBlock(buildReason(fresh));
