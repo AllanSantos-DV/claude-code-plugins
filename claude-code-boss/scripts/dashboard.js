@@ -12,6 +12,7 @@ const { USER_SENTINEL, prepareForUserScope } = require('./lib/scope-sanitizer.js
 const { searchTwoPass } = require('./lib/scope-search.js');
 const { extractKeywords } = require('./lib/text-utils.js');
 const { aggregateSkillRoi } = require('./lib/skill-roi.js');
+const { aggregateCaptureRate } = require('./lib/capture-rate.js');
 const { loadSqlite } = require('./lib/sqlite-compat.js');
 
 // Session token — generated at boot, injected into index.html, required on all /api/* requests.
@@ -991,6 +992,24 @@ async function getSkillRoi(req, res, url) {
   }
 }
 
+async function getCaptureRate(req, res, url) {
+  try {
+    const projectFilter = url.searchParams.get('project') || '';
+    const projects = projectFilter ? [projectFilter] : listMetricsProjects();
+    if (projects.length === 0) return json(res, { byKind: {}, spontaneous: {} });
+
+    const nud = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName: 'nudge.emitted', limit: 2000 }));
+    const cap = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName: 'lesson.captured', limit: 2000 }));
+    const events = [];
+    for (const { value } of nud) events.push(...value);
+    for (const { value } of cap) events.push(...value);
+    json(res, aggregateCaptureRate(events));
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/metrics/capture-rate failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
 // ─── Router ────────────────────────────────────────────────────────
 
 function handleAPI(req, res, url) {
@@ -1032,6 +1051,7 @@ function handleAPI(req, res, url) {
   if (p === '/api/metrics/event-log' && m === 'GET') return getMetricsEventLog(req, res, url);
   if (p === '/api/metrics/cleanup' && m === 'POST') return postMetricsCleanup(req, res, url);
   if (p === '/api/metrics/skill-roi' && m === 'GET') return getSkillRoi(req, res, url);
+  if (p === '/api/metrics/capture-rate' && m === 'GET') return getCaptureRate(req, res, url);
 
   json(res, { error: 'Not found' }, 404);
 }

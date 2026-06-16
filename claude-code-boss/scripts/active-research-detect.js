@@ -182,7 +182,8 @@ async function main() {
 
   state.recordFire(sid, query);
 
-  metrics.fire('research.auto.triggered', {
+  metrics.fire('nudge.emitted', {
+    kind: 'research',
     signals: signals.map(s => s.kind),
     queryLen: query.length,
   }, { sessionId: sid, cwd: ev.cwd });
