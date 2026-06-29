@@ -41,6 +41,9 @@ const STATE_DIR  = path.join(DATA_DIR, 'model-router');
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
 const LOG_FILE   = path.join(STATE_DIR, 'router.log');
 const CONFIG_FILE = path.join(PLUGIN_ROOT, 'config', 'router-config.json');
+// Override do usuário (chave NVIDIA + toggles). Vive SÓ no DATA_DIR, nunca
+// versionado. Sobrescreve os defaults shipados quando presente.
+const USER_CONFIG_FILE = path.join(STATE_DIR, 'user-config.json');
 
 // ── Logger ────────────────────────────────────────────────────────────────────
 
@@ -64,14 +67,37 @@ const logger = {
 // ── Config ───────────────────────────────────────────────────────────────────
 
 function loadConfig() {
+  let config = {};
   try {
     if (fs.existsSync(CONFIG_FILE)) {
-      return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+      config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
     }
   } catch (e) {
     logger.warn('Config load failed, using defaults', { err: e.message });
   }
-  return {};
+  // Deep-merge do override do usuário POR CIMA dos defaults (override vence).
+  // `nim` e `routing` são mesclados raso; escalares (enabled) são sobrescritos.
+  try {
+    if (fs.existsSync(USER_CONFIG_FILE)) {
+      const override = JSON.parse(fs.readFileSync(USER_CONFIG_FILE, 'utf-8'));
+      config = mergeUserConfig(config, override);
+    }
+  } catch (e) {
+    logger.warn('User config override ignorado (falha ao ler)', { err: e.message });
+  }
+  return config;
+}
+
+function mergeUserConfig(base, override) {
+  const merged = { ...base };
+  for (const key of Object.keys(override || {})) {
+    if ((key === 'nim' || key === 'routing') && override[key] && typeof override[key] === 'object') {
+      merged[key] = { ...(base[key] || {}), ...override[key] };
+    } else {
+      merged[key] = override[key];
+    }
+  }
+  return merged;
 }
 
 // ── Classifier ───────────────────────────────────────────────────────────────

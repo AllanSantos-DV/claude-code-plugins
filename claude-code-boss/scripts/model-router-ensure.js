@@ -32,6 +32,9 @@ const STATE_FILE    = path.join(DATA_DIR, 'model-router', 'state.json');
 const LOG_FILE      = path.join(DATA_DIR, 'model-router', 'router.log');
 const SERVER_SCRIPT = path.join(PLUGIN_ROOT, 'servers', 'model-router', 'index.js');
 const CONFIG_FILE   = path.join(PLUGIN_ROOT, 'config', 'router-config.json');
+// Override do usuário (chave NVIDIA + toggles) + carimbo do nudge de primeira execução.
+const USER_CONFIG_FILE = path.join(DATA_DIR, 'model-router', 'user-config.json');
+const NUDGE_STAMP      = path.join(DATA_DIR, 'model-router', '.nudge-stamp');
 
 // ── Logger ────────────────────────────────────────────────────────────────────
 
@@ -58,6 +61,29 @@ function readConfig() {
     if (fs.existsSync(CONFIG_FILE)) return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
   } catch (_) { /* */ }
   return {};
+}
+
+function readUserConfig() {
+  try {
+    if (fs.existsSync(USER_CONFIG_FILE)) return JSON.parse(fs.readFileSync(USER_CONFIG_FILE, 'utf-8'));
+  } catch (_) { void _; /* override ausente/ilegível → trata como não configurado */ }
+  return null;
+}
+
+// Nudge ONE-SHOT: avisa que o roteador existe enquanto o usuário ainda não
+// aceitou os termos. O carimbo garante que aparece só uma vez (não a cada sessão).
+function firstRunNudge() {
+  try {
+    if (fs.existsSync(NUDGE_STAMP)) return '';
+    const uc = readUserConfig();
+    if (uc && uc.acceptedTerms === true) return '';
+    fs.mkdirSync(path.dirname(NUDGE_STAMP), { recursive: true });
+    fs.writeFileSync(NUDGE_STAMP, ts());
+    return '⚙️ Roteador de modelo disponível — configure a chave NVIDIA (grátis) e ative em /dashboard.';
+  } catch (e) {
+    log(`AVISO: falha ao gravar nudge stamp: ${e.message}`);
+    return '';
+  }
 }
 
 function healthCheck(port) {
@@ -260,6 +286,11 @@ async function main() {
       additionalContext: contextMsg,
     },
   };
+
+  // Nudge aditivo de primeira execução (não quebra o contrato do hook).
+  const nudge = firstRunNudge();
+  if (nudge) output.hookSpecificOutput.additionalContext = `${contextMsg}\n${nudge}`;
+
   process.stdout.write(JSON.stringify(output) + '\n');
   process.exit(0);
 }
