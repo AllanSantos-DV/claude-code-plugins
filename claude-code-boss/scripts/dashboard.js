@@ -23,6 +23,12 @@ const DASHBOARD_DIR = path.join(ROOT, 'dashboard');
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || resolveBestDataDir();
 const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');
 
+// model-router (F3) — shipped defaults vs. user override (key + toggles).
+// The override lives only in DATA_DIR and is NEVER committed.
+const ROUTER_SHIPPED_CONFIG = path.join(ROOT, 'config', 'router-config.json');
+const ROUTER_USER_CONFIG = path.join(DATA_DIR, 'model-router', 'user-config.json');
+const ROUTER_STATE_FILE = path.join(DATA_DIR, 'model-router', 'state.json');
+
 // Pick the most populated brain data dir among ~/.claude/plugins/data/claude-code-boss*.
 // Fall back to the canonical bare name if nothing is populated yet.
 function resolveBestDataDir() {
@@ -991,6 +997,112 @@ async function getSkillRoi(req, res, url) {
   }
 }
 
+// ─── API: Model Router (F3) ────────────────────────────────────────
+
+/**
+ * Merge the POST body ({ enabled, acceptedTerms, nimApiKey?, routing? }) into
+ * DATA_DIR/model-router/user-config.json. Never clobbers an existing NVIDIA
+ * key unless nimApiKey === null (clear) or a non-empty string (replace).
+ */
+function writeRouterOverride(body) {
+  fs.mkdirSync(path.dirname(ROUTER_USER_CONFIG), { recursive: true });
+  const existing = fs.existsSync(ROUTER_USER_CONFIG) ? (readJSON(ROUTER_USER_CONFIG) || {}) : {};
+  const out = { ...existing };
+  if (typeof body.enabled === 'boolean') out.enabled = body.enabled;
+  if (typeof body.acceptedTerms === 'boolean') out.acceptedTerms = body.acceptedTerms;
+
+  const nim = { ...(existing.nim || {}) };
+  if (body.nimApiKey === null) {
+    nim.apiKey = '';
+  } else if (typeof body.nimApiKey === 'string' && body.nimApiKey.trim() !== '') {
+    nim.apiKey = body.nimApiKey.trim();
+  } // else: omitted/empty → keep existing nim.apiKey untouched
+  out.nim = nim;
+
+  if (body.routing && typeof body.routing === 'object') {
+    out.routing = { ...(existing.routing || {}), ...body.routing };
+  }
+  atomicWriteJSON(ROUTER_USER_CONFIG, out);
+  return out;
+}
+
+function getRouterConfig(req, res) {
+  try {
+    const shipped = readJSON(ROUTER_SHIPPED_CONFIG) || {};
+    const override = fs.existsSync(ROUTER_USER_CONFIG) ? (readJSON(ROUTER_USER_CONFIG) || {}) : {};
+    const nim = { ...(shipped.nim || {}), ...(override.nim || {}) };
+    const routing = { ...(shipped.routing || {}), ...(override.routing || {}) };
+    const key = String(nim.apiKey || '').trim();
+    const enabled = override.enabled !== undefined ? override.enabled !== false : shipped.enabled !== false;
+    json(res, {
+      enabled,
+      acceptedTerms: override.acceptedTerms === true,
+      hasNvidiaKey: key.length > 0,
+      nimMasked: key.length >= 4 ? key.slice(-4) : '',
+      routing,
+      shippedPort: shipped.port || 13456,
+    });
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/router/config failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
+async function saveRouterConfig(req, res) {
+  try {
+    const body = JSON.parse(await readBody(req));
+    writeRouterOverride(body);
+    json(res, { ok: true, restartRequired: true });
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/router/config (POST) failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
+function routerHealthCheck(port) {
+  return new Promise((resolve) => {
+    const r = http.get(`http://127.0.0.1:${port}/health`, { timeout: 800 }, (resp) => {
+      resp.resume();
+      resolve(resp.statusCode === 200);
+    });
+    r.on('error', () => resolve(false));
+    r.on('timeout', () => { r.destroy(); resolve(false); });
+  });
+}
+
+function getRouterStatus(req, res) {
+  return getRouterStatusAsync(req, res).catch(err => {
+    console.error(`[DASHBOARD] /api/router/status failed: ${err.message}`);
+    fail(res, err.message, 500);
+  });
+}
+
+async function getRouterStatusAsync(req, res) {
+  const shipped = readJSON(ROUTER_SHIPPED_CONFIG) || {};
+  const state = fs.existsSync(ROUTER_STATE_FILE) ? (readJSON(ROUTER_STATE_FILE) || {}) : {};
+  const port = state.port || shipped.port || 13456;
+  const running = await routerHealthCheck(port);
+  json(res, { running, port, pid: state.pid, lastError: state.lastError });
+}
+
+async function applyRouter(req, res) {
+  try {
+    const body = JSON.parse(await readBody(req));
+    writeRouterOverride(body);
+    const ensureScript = path.join(ROOT, 'scripts', 'model-router-ensure.js');
+    const child = require('child_process').spawn(process.execPath, [ensureScript], {
+      detached: true,
+      stdio: 'ignore',
+      env: { ...process.env, CLAUDE_PLUGIN_ROOT: ROOT, CLAUDE_PLUGIN_DATA: DATA_DIR },
+    });
+    child.unref();
+    json(res, { ok: true, restartRequired: true });
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/router/apply failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
 // ─── Router ────────────────────────────────────────────────────────
 
 function handleAPI(req, res, url) {
@@ -1032,6 +1144,10 @@ function handleAPI(req, res, url) {
   if (p === '/api/metrics/event-log' && m === 'GET') return getMetricsEventLog(req, res, url);
   if (p === '/api/metrics/cleanup' && m === 'POST') return postMetricsCleanup(req, res, url);
   if (p === '/api/metrics/skill-roi' && m === 'GET') return getSkillRoi(req, res, url);
+  if (p === '/api/router/config' && m === 'GET') return getRouterConfig(req, res);
+  if (p === '/api/router/config' && m === 'POST') return saveRouterConfig(req, res);
+  if (p === '/api/router/status' && m === 'GET') return getRouterStatus(req, res);
+  if (p === '/api/router/apply' && m === 'POST') return applyRouter(req, res);
 
   json(res, { error: 'Not found' }, 404);
 }
