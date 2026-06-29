@@ -523,24 +523,30 @@ function handleLimitExceeded(reqBody, config, res, hint) {
 
 // ── Circuit breaker (cooldown da janela do Claude) ────────────────────────────
 // Ao tomar 429 (janela esgotada), em vez de continuar martelando a Anthropic a
-// cada request (e tomando 429 toda vez), lemos ATÉ QUANDO a janela reseta — dos
-// headers do 429 — e, nesse intervalo, vamos DIRETO ao plano B sem nem tocar na
-// Anthropic. Quando o horário do reset passa, o próximo request testa o Claude de
-// novo e, se voltou, retomamos. Estado persistido p/ sobreviver a reinícios do
-// router (novas sessões do Claude Code).
+// cada request, decidimos quando voltar a testar o Claude. Dois casos:
+//  • A Anthropic informa o reset (headers retry-after / unified-reset): esperamos
+//    EXATAMENTE até lá (autoritativo).
+//  • Não informa (caso comum da assinatura): o 429 é ESPORÁDICO (janela deslizante).
+//    Um 429 isolado cai no plano B só naquela request — a PRÓXIMA já testa o Claude
+//    de novo (se ele voltou, você usa na hora). Só depois de `tripAfter` 429s
+//    SEGUIDOS (sem nenhum sucesso no meio) armamos um cooldown CURTO (`noHeaderMs`)
+//    e re-sondamos logo. Qualquer resposta do Claude zera o contador → recuperação
+//    imediata. Estado persistido p/ sobreviver a reinícios do router.
 
 const COOLDOWN_FILE = path.join(STATE_DIR, 'cooldown.json');
 let _cooldownUntil  = 0;    // epoch ms; 0 = inativo
-let _cooldownSource = '';   // origem do reset: header | default
+let _cooldownSource = '';   // origem do reset: 'header' (autoritativo) | 'probe' (chute curto)
+let _consec429      = 0;    // 429 consecutivos sem header (zera em qualquer sucesso)
 
 function cooldownCfg(config) {
   const c = (config && config.fallback && config.fallback.cooldown) || {};
   const num = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d);
   return {
-    enabled:   c.enabled !== false,                // default: ligado
-    defaultMs: num(c.defaultMs, 60000),            // espera quando o 429 não traz reset
-    minMs:     num(c.minMs, 1000),                 // piso (evita cooldown ~0)
-    maxMs:     num(c.maxMs, 6 * 60 * 60 * 1000),   // teto de segurança (6h)
+    enabled:    c.enabled !== false,                                 // default: ligado
+    noHeaderMs: num(c.noHeaderMs != null ? c.noHeaderMs : c.defaultMs, 15000), // sem header → cooldown curto p/ re-sondar
+    minMs:      num(c.minMs, 1000),                                  // piso (evita cooldown ~0)
+    maxMs:      num(c.maxMs, 6 * 60 * 60 * 1000),                    // teto de segurança (6h)
+    tripAfter:  Math.max(1, num(c.tripAfter, 2)),                    // 429s seguidos p/ armar quando não há header
   };
 }
 
@@ -578,13 +584,14 @@ function parseResetMs(headers, nowMs) {
   return latest;
 }
 
-// Decide até quando ficar em cooldown: reset dos headers, senão defaultMs; com clamp.
+// Decide até quando ficar em cooldown: reset dos headers (source 'header') ou um
+// chute curto noHeaderMs (source 'probe') quando não há header; com clamp.
 function computeCooldownUntil(headers, config, nowMs) {
   const now = nowMs || Date.now();
   const cfg = cooldownCfg(config);
-  let until = parseResetMs(headers, now);
-  const source = until != null ? 'header' : 'default';
-  if (until == null) until = now + cfg.defaultMs;
+  const reset = parseResetMs(headers, now);
+  const source = reset != null ? 'header' : 'probe';
+  let until = reset != null ? reset : now + cfg.noHeaderMs;
   const min = now + cfg.minMs;
   const max = now + cfg.maxMs;
   if (until < min) until = min;
@@ -625,27 +632,57 @@ function clearCooldown() {
   }
 }
 
+// Decide se entra em cooldown a partir de um 429. Retorna true se armou.
+// Com header de reset: arma na hora (autoritativo). Sem header: só arma após
+// `tripAfter` 429s consecutivos — um 429 isolado NÃO trava (deixa a próxima request
+// testar o Claude). Qualquer sucesso (ver forwardRequest) zera _consec429.
 function armCooldown(headers, config) {
+  const cfg = cooldownCfg(config);
   const { until, source } = computeCooldownUntil(headers, config, Date.now());
+  if (source === 'header') {
+    _consec429      = 0;            // reset autoritativo: a Anthropic disse a janela
+    _cooldownUntil  = until;
+    _cooldownSource = source;
+    persistCooldown();
+    logger.warn('Cooldown armado (reset do header) — plano B até a janela do Claude resetar', {
+      ate:        new Date(until).toISOString(),
+      emSegundos: Math.round((until - Date.now()) / 1000),
+      retryAfter: headers ? headers['retry-after'] : undefined,
+      unified:    headers ? headers['anthropic-ratelimit-unified-reset'] : undefined,
+    });
+    return true;
+  }
+  // Sem header → 429 esporádico. Conta consecutivos; só arma quando passa do limiar.
+  _consec429 += 1;
+  if (_consec429 < cfg.tripAfter) {
+    logger.info('429 sem header — plano B só nesta request (próxima testa o Claude)', {
+      consecutivos: _consec429, tripAfter: cfg.tripAfter,
+    });
+    return false;
+  }
   _cooldownUntil  = until;
   _cooldownSource = source;
   persistCooldown();
-  logger.warn('Cooldown armado — plano B direto até a janela do Claude resetar', {
-    ate:        new Date(until).toISOString(),
-    emSegundos: Math.round((until - Date.now()) / 1000),
-    fonte:      source,
-    retryAfter: headers ? headers['retry-after'] : undefined,
-    unified:    headers ? headers['anthropic-ratelimit-unified-reset'] : undefined,
+  logger.warn('Cooldown curto armado (429 sustentado, sem header) — re-sonda o Claude em breve', {
+    ate:          new Date(until).toISOString(),
+    emSegundos:   Math.round((until - Date.now()) / 1000),
+    consecutivos: _consec429, tripAfter: cfg.tripAfter,
   });
+  return true;
 }
 
-// Dica amigável p/ o usuário: "Claude volta ~HH:MM" (hora local).
+// Dica honesta p/ o usuário. Com header: "Claude volta ~HH:MM" (hora real do reset).
+// Sem header (chute): "reavaliando o Claude em ~Ns" — não inventa horário.
 function resumeHint() {
   if (!_cooldownUntil) return '';
-  const d = new Date(_cooldownUntil);
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  return `Claude volta ~${hh}:${mm}`;
+  if (_cooldownSource === 'header') {
+    const d = new Date(_cooldownUntil);
+    const hh = String(d.getHours()).padStart(2, '0');
+    const mm = String(d.getMinutes()).padStart(2, '0');
+    return `Claude volta ~${hh}:${mm}`;
+  }
+  const secs = Math.max(1, Math.ceil((_cooldownUntil - Date.now()) / 1000));
+  return `reavaliando o Claude em ~${secs}s`;
 }
 
 // ── Proxy core: forward ───────────────────────────────────────────────────────
@@ -708,6 +745,11 @@ function forwardRequest(reqBody, originalHeaders, res, config) {
         handleLimitExceeded(reqBody, config, res, hint);
       });
       return;
+    }
+    // Claude respondeu (não é trigger) → não estamos em outage: zera o contador.
+    if (_consec429 !== 0) {
+      logger.debug('Claude respondeu — zerando 429 consecutivos', { eram: _consec429 });
+      _consec429 = 0;
     }
     res.writeHead(upRes.statusCode, upRes.headers);
     upRes.pipe(res);
