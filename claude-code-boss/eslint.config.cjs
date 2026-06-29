@@ -89,4 +89,22 @@ module.exports = [
     },
     rules: sharedRules,
   },
+  {
+    // servers/model-router/ — CommonJS HTTP proxy + NODE_OPTIONS=--require
+    // patcher. Runs under Node's default CJS loader (no package.json
+    // type:module here), unlike the ESM brain-server above, so it needs the
+    // CommonJS module globals. This block is last → wins for these files.
+    files: ['servers/model-router/**/*.js'],
+    plugins: { local: localPlugin },
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: 'commonjs',
+      globals: {
+        ...nodeGlobals,
+        __dirname: 'readonly', __filename: 'readonly',
+        require: 'readonly', module: 'readonly', exports: 'readonly',
+      },
+    },
+    rules: sharedRules,
+  },
 ];

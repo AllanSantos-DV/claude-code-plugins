@@ -6,6 +6,12 @@
           {
             "type": "command",
             "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/model-router-ensure.js"],
+            "timeout": 15
+          },
+          {
+            "type": "command",
+            "command": "node",
             "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/memory-rotate.js"],
             "timeout": 10
           },
@@ -179,6 +185,12 @@
     "UserPromptSubmit": [
       {
         "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/model-router-ensure.js"],
+            "timeout": 10
+          },
           {
             "type": "command",
             "command": "node",

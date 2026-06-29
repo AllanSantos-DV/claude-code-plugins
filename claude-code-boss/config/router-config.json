@@ -1,0 +1,46 @@
+{
+  "_comment": "Model Router — proxy que intercepta chamadas do Claude Code e roteia pelo modelo certo",
+  "enabled": true,
+  "port": 13456,
+  "_comment_port": "Porta fixa do proxy. Deve coincidir com ANTHROPIC_BASE_URL na variável de sistema do Windows. Se a porta estiver ocupada, o servidor tenta até port+10.",
+  "nim": {
+    "apiKey": "",
+    "_comment_apiKey": "Opcional. Chave da Nvidia NIM (gratuita em build.nvidia.com). Se vazia, usa classificador local (MiniLM).",
+    "classifierModel": "qwen/qwen2.5-1.5b-instruct",
+    "endpoint": "https://integrate.api.nvidia.com/v1/chat/completions"
+  },
+  "routing": {
+    "_comment": "Modelos Claude usados por tier. nimModel opcional: se preenchido e nim.apiKey configurada, executa no NIM em vez do Claude (custo zero).",
+    "haikuTier":  { "model": "claude-haiku-4-5-20251001", "nimModel": "" },
+    "sonnetTier": { "model": "claude-sonnet-4-6",         "nimModel": "" },
+    "opusTier":   { "model": "claude-opus-4-8",           "nimModel": "" }
+  },
+  "anchors": {
+    "_comment": "Frases âncora usadas pelo classificador local (MiniLM). Ajuste para melhorar acurácia.",
+    "haiku": [
+      "rename variable, simple find and replace, fix typo",
+      "git add commit push, check git status, simple git operation",
+      "format code, run prettier, fix indentation, lint fix",
+      "list files, read file content, quick lookup, show content",
+      "one line fix, trivial change, simple edit, small patch",
+      "add console log, quick debug print, temporary log statement"
+    ],
+    "sonnet": [
+      "implement new feature, add functionality to existing code",
+      "debug error, find and fix bug, investigate issue, troubleshoot",
+      "write unit tests, add test coverage, test implementation",
+      "refactor module, improve code structure, clean up code",
+      "code review, analyze code quality, suggest improvements",
+      "create new component, build UI element, add API endpoint"
+    ],
+    "opus": [
+      "system architecture design, high level design decision, technical strategy",
+      "complex multi-file refactor, large scale code change, broad migration",
+      "security audit, vulnerability analysis, threat modeling, penetration test",
+      "performance optimization, profiling, bottleneck analysis, benchmark",
+      "deep analysis of complex algorithm, mathematical reasoning, proof",
+      "design pattern selection, architectural trade-off analysis, system design",
+      "migrate entire system, fundamental architecture change, platform switch"
+    ]
+  }
+}
