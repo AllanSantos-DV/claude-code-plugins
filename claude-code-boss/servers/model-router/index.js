@@ -580,8 +580,9 @@ function handleLimitExceeded(reqBody, config, res, hint) {
 
 const COOLDOWN_FILE = path.join(STATE_DIR, 'cooldown.json');
 let _cooldownUntil  = 0;    // epoch ms; 0 = inativo
-let _cooldownSource = '';   // origem do reset: 'header' (autoritativo) | 'probe' (chute curto)
+let _cooldownSource = '';   // origem do reset: 'header'/'body' (autoritativo) | 'probe' (chute curto)
 let _consec429      = 0;    // 429 consecutivos sem header (zera em qualquer sucesso)
+let _lastClaudeOkAt = 0;    // epoch ms do último 200 limpo do Claude (prova de janela aberta)
 
 function cooldownCfg(config) {
   const c = (config && config.fallback && config.fallback.cooldown) || {};
@@ -592,6 +593,7 @@ function cooldownCfg(config) {
     minMs:      num(c.minMs, 1000),                                  // piso (evita cooldown ~0)
     maxMs:      num(c.maxMs, 6 * 60 * 60 * 1000),                    // teto de segurança (6h)
     tripAfter:  Math.max(1, num(c.tripAfter, 2)),                    // 429s seguidos p/ armar quando não há header
+    probeSuppressMs: num(c.probeSuppressMs, 30000),                  // 429 sem header logo após 200 do Claude = concorrência, não janela → não arma
   };
 }
 
@@ -737,6 +739,22 @@ function clearCooldown() {
   }
 }
 
+// Registra um 200 LIMPO do Claude: (1) marca o instante — prova de que a janela
+// está aberta, usada por armCooldown p/ suprimir cooldown de palpite durante
+// rajadas de concorrência; (2) derruba na hora um cooldown de PALPITE (probe)
+// que tenha sido armado por uma rajada concorrente de 429 sem reset. Cooldowns
+// AUTORITATIVOS (header/body) têm reset real e NÃO são derrubados aqui — só
+// expiram pelo relógio. Idempotente.
+function noteClaudeOk() {
+  _lastClaudeOkAt = Date.now();
+  if (_cooldownUntil && _cooldownSource === 'probe') {
+    logger.info('200 do Claude durante cooldown de palpite — derrubando (concorrência, não janela)', {
+      eraAte: new Date(_cooldownUntil).toISOString(),
+    });
+    clearCooldown();
+  }
+}
+
 // Decide se entra em cooldown a partir de um 429. Retorna true se armou.
 // Com reset autoritativo (header OU corpo): arma na hora. Sem nada legível: só
 // arma após `tripAfter` 429s consecutivos — um 429 isolado NÃO trava (deixa a
@@ -761,6 +779,16 @@ function armCooldown(headers, config, bodyStr) {
     return true;
   }
   // Sem header → 429 esporádico. Conta consecutivos; só arma quando passa do limiar.
+  // GUARD anti-falso-positivo: se o Claude ACABOU de responder 200 (rajada de
+  // concorrência paralela do Claude Code, NÃO janela esgotada), não arma nem conta —
+  // cai no plano B só nesta request. Resets autoritativos (header/body) já saíram acima.
+  const sinceOk = _lastClaudeOkAt ? (Date.now() - _lastClaudeOkAt) : Infinity;
+  if (sinceOk < cfg.probeSuppressMs) {
+    logger.info('429 sem header logo após 200 do Claude — concorrência, não janela; não arma cooldown', {
+      msDesdeUltimo200: Math.round(sinceOk), limiteMs: cfg.probeSuppressMs,
+    });
+    return false;
+  }
   _consec429 += 1;
   if (_consec429 < cfg.tripAfter) {
     logger.info('429 sem header — plano B só nesta request (próxima testa o Claude)', {
@@ -1005,11 +1033,13 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
       });
       return;
     }
-    // Claude respondeu (não é trigger) → não estamos em outage: zera o contador.
+    // Claude respondeu (não é trigger) → não estamos em outage: zera o contador
+    // e registra o 200 limpo (marca a janela aberta + derruba cooldown de palpite).
     if (_consec429 !== 0) {
       logger.debug('Claude respondeu — zerando 429 consecutivos', { eram: _consec429 });
       _consec429 = 0;
     }
+    noteClaudeOk();
     metricsOutcome('claude', route, config);
     res.writeHead(upRes.statusCode, upRes.headers);
     // "Tee" leve no 200: repassamos o stream verbatim ao cliente E o escaneamos
@@ -1247,6 +1277,13 @@ if (require.main === module) {
     computeCooldownUntil,
     cooldownCfg,
     clearCooldown,
+    armCooldown,
+    noteClaudeOk,
+    __testHooks: {
+      reset() { _cooldownUntil = 0; _cooldownSource = ''; _consec429 = 0; _lastClaudeOkAt = 0; },
+      getState() { return { until: _cooldownUntil, source: _cooldownSource, consec: _consec429, lastOkAt: _lastClaudeOkAt }; },
+      setLastClaudeOkAt(ms) { _lastClaudeOkAt = ms; },
+    },
     modelTier,
     tierWeight,
     applyCeiling,

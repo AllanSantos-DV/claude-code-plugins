@@ -64,6 +64,21 @@ quando o trabalho realmente pede.
   custo-Claude zero). Persistida em `DATA_DIR/model-router/metrics.json` (sobrevive a restart),
   com `POST /metrics/reset` p/ zerar. Os pesos afetam **só o relatório**, nunca o roteamento.
 
+### Fixed — model-router: 429 de concorrência não trava mais o plano B com o Claude vivo
+
+- **Falso-positivo do cooldown de palpite** (`config.fallback.cooldown.probeSuppressMs`,
+  padrão 30s): o Claude Code dispara **várias requisições em paralelo** por turno e a
+  Anthropic devolve **429 de concorrência** (corpo `rate_limit_error` genérico, **sem**
+  reset em header/corpo) p/ algumas enquanto **serve 200** p/ outras. O heurístico
+  headerless contava esses 429 como "janela esgotada" e, após `tripAfter`, armava um
+  cooldown que mandava **tudo** pro plano B por ~15s — e re-armava a cada turno, deixando
+  o usuário **preso no plano B mesmo com o Claude disponível**. Agora há dois guardas: (1)
+  um 429 **sem reset legível** é **ignorado** (não conta, não arma) se o Claude respondeu
+  **200 nos últimos `probeSuppressMs`** — é concorrência, não janela; (2) um **200 limpo**
+  **derruba na hora** um cooldown de **palpite** já armado por uma rajada concorrente. Os
+  cooldowns **autoritativos** (reset real via header/corpo) seguem armando **imediatamente**
+  e **não** são afetados — só a heurística de último recurso deixou de dar falso-positivo.
+
 ## [1.10.0] — 2026-06-15
 
 ### Added — curation "one-hit" marking with a recurrence ceiling
