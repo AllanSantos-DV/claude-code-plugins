@@ -584,13 +584,73 @@ function parseResetMs(headers, nowMs) {
   return latest;
 }
 
-// Decide até quando ficar em cooldown: reset dos headers (source 'header') ou um
-// chute curto noHeaderMs (source 'probe') quando não há header; com clamp.
-function computeCooldownUntil(headers, config, nowMs) {
+// Sinais DETERMINÍSTICOS de janela esgotada que vêm no CORPO da resposta (não em
+// header) — o caso típico da ASSINATURA (Claude Pro/Max). Dois formatos confirmados
+// em ~15 projetos reais + doc oficial:
+//  • evento stream-json:
+//      {"type":"rate_limit_event","rate_limit_info":{"status":"rejected",
+//        "resetsAt":<unix>,"rateLimitType":"five_hour"}}
+//    (status "allowed"/"allowed_warning" NÃO esgota — só "rejected")
+//  • string renderizada (o que o Claude Code mostra ao usuário):
+//      "Claude AI usage limit reached|<unix>[|<tipo>]"
+// <unix>/resetsAt em segundos (10 díg) ou ms (13 díg) — detectado por magnitude.
+// Retorna { ms, rejected, rateLimitType }: ms = epoch ms do reset (ou null);
+// rejected = a janela foi REJEITADA (não é só aviso/allowed).
+function parseResetFromBody(bodyStr, nowMs) {
+  const empty = { ms: null, rejected: false, rateLimitType: '' };
+  if (!bodyStr || typeof bodyStr !== 'string') return empty;
+  void nowMs;
+  const toMs = (n) => {
+    const v = Number(n);
+    if (!Number.isFinite(v) || v <= 0) return null;
+    return v > 1e12 ? v : v * 1000;                      // <1e12 → segundos
+  };
+  // (1) Marcador string — sempre é REJEIÇÃO e carrega o próprio timestamp.
+  const marker = bodyStr.match(/Claude AI usage limit reached\|(\d{10,13})(?:\|([a-z_]+))?/i);
+  // (2) Evento: rejeição = status "rejected".
+  const rejected = !!marker || /"status"\s*:\s*"rejected"/i.test(bodyStr);
+  const typeM = bodyStr.match(/"rateLimitType"\s*:\s*"([a-z_]+)"/i);
+  const rateLimitType = (marker && marker[2]) ? marker[2] : (typeM ? typeM[1] : '');
+  let ms = marker ? toMs(marker[1]) : null;
+  if (ms == null) {
+    // Último resetsAt do corpo (numérico epoch; aceita também ISO entre aspas).
+    let last = null, m;
+    const re = /"resetsAt"\s*:\s*(?:"([^"]+)"|(\d{10,13}))/g;
+    while ((m = re.exec(bodyStr)) !== null) last = m[1] != null ? m[1] : m[2];
+    if (last != null) {
+      if (/^\d{10,13}$/.test(last)) ms = toMs(last);
+      else { const d = Date.parse(last); ms = Number.isNaN(d) ? null : d; }
+    }
+  }
+  return { ms, rejected, rateLimitType };
+}
+
+// Headers de rate limit (captura diagnóstica): registra a forma EXATA que a
+// Anthropic mandar no próximo limite real — evidência, sem depender de chute.
+function ratelimitHeaders(h) {
+  if (!h) return undefined;
+  const out = {};
+  for (const k of Object.keys(h)) {
+    const lk = k.toLowerCase();
+    if (lk.startsWith('anthropic-ratelimit') || lk === 'retry-after') out[k] = h[k];
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+// Decide até quando ficar em cooldown. Reset AUTORITATIVO vem dos headers
+// (source 'header') OU do corpo da resposta (source 'body', caso da assinatura).
+// Sem nada legível, cai num chute curto noHeaderMs (source 'probe'). Com clamp.
+// bodyStr é opcional (4º arg p/ compatibilidade com chamadas antigas).
+function computeCooldownUntil(headers, config, nowMs, bodyStr) {
   const now = nowMs || Date.now();
   const cfg = cooldownCfg(config);
-  const reset = parseResetMs(headers, now);
-  const source = reset != null ? 'header' : 'probe';
+  let reset = parseResetMs(headers, now);
+  let source = reset != null ? 'header' : null;
+  if (reset == null) {
+    const b = parseResetFromBody(bodyStr, now);
+    if (b.ms != null && b.ms > now) { reset = b.ms; source = 'body'; }
+  }
+  if (source == null) source = 'probe';
   let until = reset != null ? reset : now + cfg.noHeaderMs;
   const min = now + cfg.minMs;
   const max = now + cfg.maxMs;
@@ -633,18 +693,20 @@ function clearCooldown() {
 }
 
 // Decide se entra em cooldown a partir de um 429. Retorna true se armou.
-// Com header de reset: arma na hora (autoritativo). Sem header: só arma após
-// `tripAfter` 429s consecutivos — um 429 isolado NÃO trava (deixa a próxima request
-// testar o Claude). Qualquer sucesso (ver forwardRequest) zera _consec429.
-function armCooldown(headers, config) {
+// Com reset autoritativo (header OU corpo): arma na hora. Sem nada legível: só
+// arma após `tripAfter` 429s consecutivos — um 429 isolado NÃO trava (deixa a
+// próxima request testar o Claude). Qualquer sucesso (ver forwardRequest) zera
+// _consec429. bodyStr é opcional (corpo do 429 — pode trazer o reset da assinatura).
+function armCooldown(headers, config, bodyStr) {
   const cfg = cooldownCfg(config);
-  const { until, source } = computeCooldownUntil(headers, config, Date.now());
-  if (source === 'header') {
-    _consec429      = 0;            // reset autoritativo: a Anthropic disse a janela
+  const { until, source } = computeCooldownUntil(headers, config, Date.now(), bodyStr);
+  if (source === 'header' || source === 'body') {
+    _consec429      = 0;            // reset autoritativo: a Anthropic informou a janela
     _cooldownUntil  = until;
     _cooldownSource = source;
     persistCooldown();
-    logger.warn('Cooldown armado (reset do header) — plano B até a janela do Claude resetar', {
+    logger.warn('Cooldown armado (reset autoritativo) — plano B até a janela do Claude resetar', {
+      fonte:      source,
       ate:        new Date(until).toISOString(),
       emSegundos: Math.round((until - Date.now()) / 1000),
       retryAfter: headers ? headers['retry-after'] : undefined,
@@ -671,11 +733,34 @@ function armCooldown(headers, config) {
   return true;
 }
 
-// Dica honesta p/ o usuário. Com header: "Claude volta ~HH:MM" (hora real do reset).
-// Sem header (chute): "reavaliando o Claude em ~Ns" — não inventa horário.
+// Arma cooldown a partir de uma REJEIÇÃO detectada no CORPO de uma resposta 200
+// (stream da assinatura: rate_limit_event status:rejected, ou o marcador string).
+// Só age quando há rejeição COM horário de reset legível. Autoritativo → 'body'.
+function armCooldownFromBody(bodyStr, config) {
+  const b = parseResetFromBody(bodyStr, Date.now());
+  if (!b.rejected || b.ms == null) return false;
+  const now = Date.now();
+  const cfg = cooldownCfg(config);
+  let until = b.ms;
+  if (until < now + cfg.minMs) until = now + cfg.minMs;
+  if (until > now + cfg.maxMs) until = now + cfg.maxMs;
+  _consec429      = 0;
+  _cooldownUntil  = until;
+  _cooldownSource = 'body';
+  persistCooldown();
+  logger.warn('Janela esgotada detectada no stream do Claude (rate_limit_event) — cooldown até o reset real', {
+    ate:           new Date(until).toISOString(),
+    emSegundos:    Math.round((until - now) / 1000),
+    rateLimitType: b.rateLimitType || undefined,
+  });
+  return true;
+}
+
+// Dica honesta p/ o usuário. Com reset autoritativo (header/corpo): "Claude volta
+// ~HH:MM" (hora real do reset). Sem nada (chute): "reavaliando o Claude em ~Ns".
 function resumeHint() {
   if (!_cooldownUntil) return '';
-  if (_cooldownSource === 'header') {
+  if (_cooldownSource === 'header' || _cooldownSource === 'body') {
     const d = new Date(_cooldownUntil);
     const hh = String(d.getHours()).padStart(2, '0');
     const mm = String(d.getMinutes()).padStart(2, '0');
@@ -727,22 +812,26 @@ function forwardRequest(reqBody, originalHeaders, res, config) {
   const upstream = UPSTREAM_LIB.request(options, (upRes) => {
     // Janela esgotada / limite → plano B (NÃO repassa o erro ao cliente).
     if (triggers.includes(upRes.statusCode)) {
-      if (cd.enabled) armCooldown(upRes.headers, config);
-      const hint = resumeHint();
       let errBody = '';
-      upRes.on('data', c => errBody += c);
+      upRes.on('data', (c) => { if (errBody.length < 16384) errBody += c; }); // limita memória
       upRes.on('end', () => {
+        // Arma DEPOIS de ler o corpo: na assinatura o reset pode vir no CORPO
+        // (rate_limit_event/marcador), não só nos headers.
+        if (cd.enabled) armCooldown(upRes.headers, config, errBody);
+        const hint = resumeHint();
         logger.warn('Limite upstream detectado — acionando plano B', {
           status:     upRes.statusCode,
-          preview:    errBody.slice(0, 200).replace(/\n/g, ' '),
+          preview:    errBody.slice(0, 500).replace(/\n/g, ' '),
           retryAfter: upRes.headers['retry-after'],
           unified:    upRes.headers['anthropic-ratelimit-unified-reset'],
+          rlHeaders:  ratelimitHeaders(upRes.headers),   // captura total p/ evidência
         });
         handleLimitExceeded(reqBody, config, res, hint);
       });
       upRes.on('error', (e) => {
+        if (cd.enabled) armCooldown(upRes.headers, config, '');
         logger.warn('Erro lendo corpo do limite — acionando plano B mesmo assim', { err: e.message });
-        handleLimitExceeded(reqBody, config, res, hint);
+        handleLimitExceeded(reqBody, config, res, resumeHint());
       });
       return;
     }
@@ -752,6 +841,23 @@ function forwardRequest(reqBody, originalHeaders, res, config) {
       _consec429 = 0;
     }
     res.writeHead(upRes.statusCode, upRes.headers);
+    // A ASSINATURA pode sinalizar a janela esgotada DENTRO de um 200 (evento
+    // stream-json rate_limit_event status:rejected, ou o marcador string). Fazemos
+    // um "tee" leve: repassamos o stream verbatim ao cliente E escaneamos por esse
+    // sinal determinístico p/ armar o cooldown até o resetsAt real — a PRÓXIMA
+    // request já vai direto ao plano B até a janela voltar. Não altera o corpo.
+    if (cd.enabled && !_cooldownUntil) {
+      let scanBuf = '';
+      let armed = false;
+      upRes.on('data', (c) => {
+        if (armed) return;
+        scanBuf += c.toString('utf8');
+        if (scanBuf.length > 65536) scanBuf = scanBuf.slice(-65536); // cauda; limita memória
+        if (scanBuf.includes('rate_limit_event') || scanBuf.includes('Claude AI usage limit reached')) {
+          if (armCooldownFromBody(scanBuf, config)) armed = true;
+        }
+      });
+    }
     upRes.pipe(res);
   });
 
@@ -921,6 +1027,7 @@ if (require.main === module) {
     extractPrompt,
     mergeUserConfig,
     parseResetMs,
+    parseResetFromBody,
     computeCooldownUntil,
     cooldownCfg,
     clearCooldown,

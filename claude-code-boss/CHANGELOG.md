@@ -33,17 +33,23 @@ quando o trabalho realmente pede.
   global, barra mais alta para opus (score absoluto + margem) e rebaixamento para o
   melhor tier não-opus; tudo ajustável sem código.
 - **Circuit breaker no limite excedido** (`config.fallback.cooldown`): evita a rajada de
-  429 sem prender o usuário no plano B quando o Claude volta. Se a Anthropic informa o
-  reset da janela (`retry-after` → `anthropic-ratelimit-unified-reset` → buckets), espera
-  **exatamente** até lá. Como a assinatura normalmente **não** manda esse header, o 429 é
-  tratado como **esporádico** (janela deslizante): um 429 isolado cai no plano B só naquela
-  request e a **próxima já testa o Claude**; só após `tripAfter` 429s **seguidos** arma um
-  cooldown **curto** (`noHeaderMs`, padrão 15s) e re-sonda — **qualquer resposta do Claude
-  zera o contador** e retoma na hora. Estado persistido em
-  `DATA_DIR/model-router/cooldown.json` (sobrevive a restart). As mensagens de plano B
-  trazem dica **honesta**: "Claude volta ~HH:MM" só quando há reset real; senão
-  "reavaliando o Claude em ~Ns". Ajustável (`enabled`, `noHeaderMs`, `tripAfter`,
-  `minMs`, `maxMs`).
+  429 sem prender o usuário no plano B quando o Claude volta. **Reset determinístico,
+  multi-fonte** (na ordem): headers do 429 (`retry-after` → `anthropic-ratelimit-unified-reset`
+  → buckets) **e** — caso típico da **assinatura** (Claude Pro/Max) — o **reset embutido no
+  CORPO da resposta**: o evento `rate_limit_event` (`rate_limit_info.status:"rejected"` +
+  `resetsAt` em epoch) ou o marcador `Claude AI usage limit reached|<unix>[|tipo]`. O proxy
+  agora faz um **"tee" leve do stream 200** (repassa verbatim ao cliente **e** escaneia esse
+  sinal), porque a assinatura sinaliza a janela esgotada **dentro de um 200**, não só via 429.
+  Achando o reset (header **ou** corpo), espera **exatamente** até lá (`source:'body'`/`'header'`).
+  Só quando **nada** legível existe é que o 429 vira **esporádico** (janela deslizante): um 429
+  isolado cai no plano B só naquela request e a **próxima já testa o Claude**; após `tripAfter`
+  429s **seguidos** arma um cooldown **curto** (`noHeaderMs`, padrão 15s) e re-sonda —
+  **qualquer resposta do Claude zera o contador** e retoma na hora. Todo 429 registra **captura
+  diagnóstica** (todos os headers `anthropic-ratelimit-*` + preview do corpo) p/ travar a forma
+  real no próximo limite. Estado persistido em `DATA_DIR/model-router/cooldown.json` (sobrevive a
+  restart). Mensagens de plano B com dica **honesta**: "Claude volta ~HH:MM" quando há reset real
+  (header/corpo); senão "reavaliando o Claude em ~Ns". Ajustável (`enabled`, `noHeaderMs`,
+  `tripAfter`, `minMs`, `maxMs`).
 
 ## [1.10.0] — 2026-06-15
 
