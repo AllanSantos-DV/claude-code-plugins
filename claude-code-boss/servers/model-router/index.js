@@ -427,6 +427,19 @@ function extractPrompt(body) {
   return '';
 }
 
+// Tamanho (em chars) do system prompt — string OU array de blocos {type,text}.
+// Telemetria p/ separar tarefa auxiliar (sys pequeno) de raciocínio (sys grande).
+function systemLen(system) {
+  try {
+    if (!system) return 0;
+    if (typeof system === 'string') return system.length;
+    if (Array.isArray(system)) {
+      return system.reduce((a, s) => a + (s && typeof s.text === 'string' ? s.text.length : 0), 0);
+    }
+  } catch (_) { /* sys ilegível → 0 */ }
+  return 0;
+}
+
 // ── Proxy core ────────────────────────────────────────────────────────────────
 
 // Upstream Anthropic. Override via env existe SÓ para testes; produção usa
@@ -1251,6 +1264,14 @@ async function createServer(config) {
           novo:        dec.newModel,
           teto:        blocked || undefined,
           effort:      effortAdj.action !== 'none' ? { acao: effortAdj.action, de: effortAdj.from, para: effortAdj.to } : undefined,
+          // Telemetria de FORMATO p/ decidir offload (auxiliar vs raciocínio):
+          // maxTok pequeno + nMsg baixo = tarefa auxiliar (título/classificação);
+          // bytes = contexto REAL enviado (o que pesa na janela de uso).
+          maxTok:      typeof body.max_tokens === 'number' ? body.max_tokens : undefined,
+          nMsg:        Array.isArray(body.messages) ? body.messages.length : 0,
+          sysLen:      systemLen(body.system),
+          bytes:       Buffer.byteLength(rawBody),
+          stream:      body.stream || undefined,
           preview:     prompt.slice(0, 80).replace(/\n/g, ' '),
         });
       } else {
