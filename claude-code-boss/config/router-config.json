@@ -21,6 +21,13 @@
     "sonnetTier": { "model": "claude-sonnet-4-6",         "nimModel": "" },
     "opusTier":   { "model": "claude-opus-4-8",           "nimModel": "" }
   },
+  "classifier": {
+    "_comment": "Política do classificador local (MiniLM), calibrada com tráfego real para ESTICAR a janela: na dúvida vai pra sonnet, e opus só com sinal forte. Calibração: opus tinha o MENOR score médio (~0.22) — era eleito quando nada casava. minScore: confiança global mínima; abaixo disso usa defaultTier. opusMinScore: score absoluto mínimo p/ aceitar opus. opusMargin: vantagem mínima do opus sobre o 2º colocado.",
+    "minScore": 0.30,
+    "defaultTier": "sonnet",
+    "opusMinScore": 0.40,
+    "opusMargin": 0.05
+  },
   "anchors": {
     "_comment": "Frases âncora usadas pelo classificador local (MiniLM). Ajuste para melhorar acurácia.",
     "haiku": [

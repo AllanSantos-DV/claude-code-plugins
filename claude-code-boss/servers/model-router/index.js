@@ -148,17 +148,64 @@ async function buildAnchors(embedder, anchorConfig) {
   return result;
 }
 
-async function classifyLocal(prompt, anchors) {
+// Política de decisão calibrada com tráfego real (router.log): o classificador
+// por cosseno tende a eleger OPUS como argmax justamente quando NADA casa bem
+// (opus teve o menor score médio ~0.22 e mínimo 0.07). Para "esticar a janela",
+// nunca caímos em opus no escuro: exigimos confiança mínima global e uma barra
+// mais alta (absoluta + margem) especificamente para opus; na dúvida, sonnet.
+function classifierPolicy(config) {
+  const c = (config && config.classifier) || {};
+  return {
+    minScore:     typeof c.minScore     === 'number' ? c.minScore     : 0.30,
+    defaultTier:  c.defaultTier || 'sonnet',
+    opusMinScore: typeof c.opusMinScore === 'number' ? c.opusMinScore : 0.40,
+    opusMargin:   typeof c.opusMargin   === 'number' ? c.opusMargin   : 0.05,
+  };
+}
+
+function fmtScores(scores) {
+  const out = {};
+  for (const [t, s] of Object.entries(scores)) out[t] = Number(s.toFixed(3));
+  return out;
+}
+
+function applyClassifierPolicy(scores, policy) {
+  const entries = Object.entries(scores);
+  if (!entries.length) return null;
+  const sorted = entries.slice().sort((a, b) => b[1] - a[1]);
+  const [winTier, winScore] = sorted[0];
+  const second = sorted[1] || [null, -Infinity];
+  const bestNonOpus = (sorted.find(([t]) => t !== 'opus') || [policy.defaultTier])[0];
+
+  // 1. Confiança global baixa → tier padrão (seguro/barato), nunca opus no escuro.
+  if (winScore < policy.minScore) {
+    logger.debug('Classificação local: baixa confiança → default', { argmax: winTier, score: Number(winScore.toFixed(3)), tier: policy.defaultTier, scores: fmtScores(scores) });
+    return policy.defaultTier;
+  }
+  // 2. Opus exige barra mais alta — absoluta e em margem — senão rebaixa.
+  if (winTier === 'opus') {
+    if (winScore < policy.opusMinScore) {
+      logger.debug('Classificação local: opus abaixo do mínimo → rebaixa', { score: Number(winScore.toFixed(3)), tier: bestNonOpus, scores: fmtScores(scores) });
+      return bestNonOpus;
+    }
+    if (second[0] && second[0] !== 'opus' && (winScore - second[1]) < policy.opusMargin) {
+      logger.debug('Classificação local: opus sem margem → rebaixa', { score: Number(winScore.toFixed(3)), runnerUp: second[0], tier: second[0], scores: fmtScores(scores) });
+      return second[0];
+    }
+  }
+  logger.debug('Classificação local', { tier: winTier, score: Number(winScore.toFixed(3)), scores: fmtScores(scores) });
+  return winTier;
+}
+
+async function classifyLocal(prompt, anchors, policy) {
   if (!_embedder) return null;
   const vec = await _embedder.embed(prompt);
   if (!vec) return null;
-  let best = null, bestScore = -Infinity;
+  const scores = {};
   for (const [tier, anchor] of Object.entries(anchors)) {
-    const score = cosineSim(vec, anchor);
-    if (score > bestScore) { bestScore = score; best = tier; }
+    scores[tier] = cosineSim(vec, anchor);
   }
-  logger.debug('Classificação local', { tier: best, score: bestScore.toFixed(3) });
-  return best;
+  return applyClassifierPolicy(scores, policy || classifierPolicy(null));
 }
 
 async function classifyNim(prompt, config) {
@@ -223,7 +270,7 @@ async function classify(prompt, config) {
     logger.warn('NIM falhou, fallback para MiniLM local');
   }
   // Fallback: MiniLM local
-  if (_anchors) return await classifyLocal(prompt, _anchors);
+  if (_anchors) return await classifyLocal(prompt, _anchors, classifierPolicy(config));
   return null;
 }
 
@@ -665,7 +712,20 @@ async function main() {
   process.on('SIGINT',  () => { logger.info('SIGINT recebido, encerrando');  server.close(() => process.exit(0)); });
 }
 
-main().catch(e => {
-  logger.error('Fatal startup error', { err: e.message, stack: e.stack });
-  process.exit(1);
-});
+// Executa o servidor apenas quando rodado direto. Quando requerido (testes),
+// exporta os helpers puros para validação isolada — sem subir o proxy.
+if (require.main === module) {
+  main().catch(e => {
+    logger.error('Fatal startup error', { err: e.message, stack: e.stack });
+    process.exit(1);
+  });
+} else {
+  module.exports = {
+    classifierPolicy,
+    applyClassifierPolicy,
+    anthropicToOpenAI,
+    resolveModel,
+    extractPrompt,
+    mergeUserConfig,
+  };
+}
