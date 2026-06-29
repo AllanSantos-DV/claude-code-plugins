@@ -7,7 +7,13 @@
     "apiKey": "",
     "_comment_apiKey": "Opcional. Chave da Nvidia NIM (gratuita em build.nvidia.com). Se vazia, usa classificador local (MiniLM).",
     "classifierModel": "qwen/qwen2.5-1.5b-instruct",
+    "fallbackModel": "meta/llama-3.3-70b-instruct",
+    "_comment_fallbackModel": "Modelo de GERAÇÃO usado no plano B (quando a janela do Claude esgota e há apiKey configurada). Qualquer modelo de chat do build.nvidia.com.",
     "endpoint": "https://integrate.api.nvidia.com/v1/chat/completions"
+  },
+  "fallback": {
+    "_comment": "Plano B quando a janela de acesso do Claude esgota. triggerStatuses: status HTTP do upstream que disparam o fallback (429 = limite). Se nim.apiKey estiver configurada, roteia para a NVIDIA (com aviso de que NÃO é mais o Claude); senão devolve uma mensagem orientando rodar /dashboard.",
+    "triggerStatuses": [429]
   },
   "routing": {
     "_comment": "Modelos Claude usados por tier. nimModel opcional: se preenchido e nim.apiKey configurada, executa no NIM em vez do Claude (custo zero).",
