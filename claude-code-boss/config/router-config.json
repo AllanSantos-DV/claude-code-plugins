@@ -32,7 +32,18 @@
     "_comment_costWeights": "Pesos de custo (proxy dos preços públicos: opus ~15x haiku) usados SÓ na estimativa de economia do dashboard. Não afetam o roteamento.",
     "haikuTier":  { "model": "claude-haiku-4-5-20251001", "nimModel": "" },
     "sonnetTier": { "model": "claude-sonnet-4-6",         "nimModel": "" },
-    "opusTier":   { "model": "claude-opus-4-8",           "nimModel": "" }
+    "opusTier":   { "model": "claude-opus-4-8",           "nimModel": "" },
+    "effort": {
+      "_comment": "Reconciliação do parâmetro `effort` (Anthropic, em body.output_config.effort) ao REBAIXAR o modelo. A escala é POR MODELO (doc oficial): Opus 4.8/4.7 têm xhigh; Sonnet 4.6/Opus 4.6 têm max mas NÃO xhigh; Haiku NÃO suporta effort. Ao trocar o modelo: mantém se o destino aceita o valor, clampa p/ o maior suportado <= pedido (ex.: opus xhigh -> sonnet high), ou remove se o destino não tem effort (haiku). order = ranking de capacidade; support = valores válidos por modelo (match por prefixo; modelo ausente = sem effort). Modelo MANTIDO pelo teto preserva o effort intacto.",
+      "order": ["low", "medium", "high", "xhigh", "max"],
+      "support": {
+        "claude-opus-4-8":   ["low", "medium", "high", "xhigh", "max"],
+        "claude-opus-4-7":   ["low", "medium", "high", "xhigh", "max"],
+        "claude-opus-4-6":   ["low", "medium", "high", "max"],
+        "claude-sonnet-4-6": ["low", "medium", "high", "max"],
+        "claude-opus-4-5":   ["low", "medium", "high"]
+      }
+    }
   },
   "classifier": {
     "_comment": "Política do classificador local (MiniLM), calibrada com tráfego real para ESTICAR a janela: na dúvida vai pra sonnet, e opus só com sinal forte. Calibração: opus tinha o MENOR score médio (~0.22) — era eleito quando nada casava. minScore: confiança global mínima; abaixo disso usa defaultTier. opusMinScore: score absoluto mínimo p/ aceitar opus. opusMargin: vantagem mínima do opus sobre o 2º colocado.",

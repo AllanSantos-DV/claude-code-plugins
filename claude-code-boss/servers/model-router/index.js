@@ -330,22 +330,85 @@ function applyCeiling(classifiedTier, origTier, originalModel, config) {
   return { routedTier, newModel, blocked };
 }
 
-// Parâmetros ESPECÍFICOS do modelo que o usuário escolheu e que NÃO são aceitos
-// por todos os modelos: ao REBAIXAR (trocar o modelo), eles quebram a request com
-// HTTP 400. Caso real: o seletor de "effort" do Opus 4.x — o Claude Code manda
-// `effort` no body, mas haiku/sonnet respondem `400 This model does not support
-// the effort parameter`. Quando o router TROCA o modelo, removemos esses campos; se
-// o modelo continua o mesmo (teto manteve a escolha), preservamos tudo (o original
-// aceita). Pura/determinística e exportada p/ teste. Devolve a lista removida (log).
-const MODEL_SPECIFIC_PARAMS = ['effort'];
+// ── Reconciliação do parâmetro `effort` (output_config) ───────────────────────
+// O `effort` (Anthropic) controla quanto o modelo "gasta" de tokens. Vive em
+// `body.output_config.effort` (forma canônica da API; tratamos top-level como
+// defensivo). PONTO-CHAVE: a ESCALA é POR MODELO — não é "tem/não tem". Pela doc
+// oficial (platform.claude.com/docs/.../effort): Opus 4.8/4.7 têm `xhigh`; Sonnet
+// 4.6 e Opus 4.6 têm `max` mas NÃO `xhigh`; Haiku 4.5 NÃO suporta effort. Logo, ao
+// REBAIXAR o modelo (teto/economia) não dá p/ "stripar cego": isso jogaria fora um
+// effort válido no destino. Reconciliamos contra o suporte do modelo de DESTINO.
+const DEFAULT_EFFORT = {
+  order: ['low', 'medium', 'high', 'xhigh', 'max'], // ranking de capacidade (asc)
+  support: {
+    'claude-opus-4-8':   ['low', 'medium', 'high', 'xhigh', 'max'],
+    'claude-opus-4-7':   ['low', 'medium', 'high', 'xhigh', 'max'],
+    'claude-opus-4-6':   ['low', 'medium', 'high', 'max'],
+    'claude-sonnet-4-6': ['low', 'medium', 'high', 'max'],
+    'claude-opus-4-5':   ['low', 'medium', 'high'],
+    // modelos AUSENTES (ex.: claude-haiku-4-5, sonnet-4-5) → não suportam effort.
+  },
+};
 
-function stripIncompatibleParams(body, originalModel, newModel) {
-  const dropped = [];
-  if (!body || newModel === originalModel) return dropped;
-  for (const k of MODEL_SPECIFIC_PARAMS) {
-    if (body[k] !== undefined) { delete body[k]; dropped.push(k); }
+function effortConfig(config) {
+  const e = (config && config.routing && config.routing.effort) || {};
+  const order   = Array.isArray(e.order) && e.order.length ? e.order : DEFAULT_EFFORT.order;
+  const support = (e.support && typeof e.support === 'object') ? e.support : DEFAULT_EFFORT.support;
+  return { order, support };
+}
+
+// Valores de effort suportados por um modelo (match exato; senão por PREFIXO, p/
+// cobrir sufixo de data tipo "claude-sonnet-4-6-20251101"). null = não suporta.
+function effortSupportFor(model, support) {
+  if (!model) return null;
+  if (support[model]) return support[model];
+  const key = Object.keys(support).find(k => model.startsWith(k));
+  return key ? support[key] : null;
+}
+
+// Onde o effort vive no body (canônico output_config.effort; defensivo top-level).
+function findEffort(body) {
+  if (!body) return null;
+  if (body.output_config && body.output_config.effort !== undefined) return { container: body.output_config, nested: true };
+  if (body.effort !== undefined) return { container: body, nested: false };
+  return null;
+}
+
+// Reconcilia o effort do body com o modelo de DESTINO. Muta o body. Devolve
+// { action: 'none'|'keep'|'clamp'|'strip', from, to } p/ log/teste.
+//   - destino suporta o valor          → keep
+//   - suporta effort mas NÃO o valor    → clamp p/ o maior suportado com rank<=pedido
+//   - destino não suporta effort        → strip (e remove output_config se ficar vazio)
+//   - valor desconhecido (fora do order)→ strip (não dá p/ clampar com segurança)
+function reconcileEffort(body, newModel, config) {
+  const loc = findEffort(body);
+  if (!loc) return { action: 'none' };
+  const cur = loc.container.effort;
+  const { order, support } = effortConfig(config);
+  const sup = effortSupportFor(newModel, support);
+
+  const strip = () => {
+    delete loc.container.effort;
+    if (loc.nested && body.output_config && Object.keys(body.output_config).length === 0) delete body.output_config;
+  };
+
+  if (!sup || sup.length === 0) { strip(); return { action: 'strip', from: cur, to: null }; }
+  if (sup.includes(cur)) return { action: 'keep', from: cur, to: cur };
+
+  const rCur = order.indexOf(cur);
+  if (rCur < 0) { strip(); return { action: 'strip', from: cur, to: null }; } // valor que não conhecemos
+
+  let best = null, bestRank = -1;
+  for (const v of sup) {
+    const r = order.indexOf(v);
+    if (r >= 0 && r <= rCur && r > bestRank) { best = v; bestRank = r; }
   }
-  return dropped;
+  if (best === null) { // nenhum <= pedido (raro): menor suportado conhecido
+    for (const v of sup) { const r = order.indexOf(v); if (r >= 0 && (best === null || r < bestRank)) { best = v; bestRank = r; } }
+  }
+  if (best === null) { strip(); return { action: 'strip', from: cur, to: null }; }
+  loc.container.effort = best;
+  return { action: 'clamp', from: cur, to: best };
 }
 
 // ── Extração de prompt do body ────────────────────────────────────────────────
@@ -1176,14 +1239,18 @@ async function createServer(config) {
         }
         body.model = dec.newModel;
         finalTier  = dec.routedTier;
-        const dropped = stripIncompatibleParams(body, originalModel, dec.newModel);
+        // Reconcilia `effort` (output_config) com o modelo de DESTINO: cada modelo tem
+        // escala própria (Opus 4.8 tem xhigh; Sonnet 4.6 não; Haiku não tem effort).
+        // Só mexe quando o modelo MUDA — mantém / clampa / remove conforme o suporte.
+        let effortAdj = { action: 'none' };
+        if (dec.newModel !== originalModel) effortAdj = reconcileEffort(body, dec.newModel, config);
         logger.info('Roteado', {
           tier:        dec.routedTier,
           classificou: tier,
           original:    originalModel,
           novo:        dec.newModel,
           teto:        blocked || undefined,
-          removidos:   dropped.length ? dropped : undefined,
+          effort:      effortAdj.action !== 'none' ? { acao: effortAdj.action, de: effortAdj.from, para: effortAdj.to } : undefined,
           preview:     prompt.slice(0, 80).replace(/\n/g, ' '),
         });
       } else {
@@ -1307,7 +1374,9 @@ if (require.main === module) {
     modelTier,
     tierWeight,
     applyCeiling,
-    stripIncompatibleParams,
+    reconcileEffort,
+    effortSupportFor,
+    effortConfig,
     metricsRoute,
     metricsOutcome,
     metricsSnapshot,
