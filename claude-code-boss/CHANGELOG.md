@@ -32,6 +32,14 @@ quando o trabalho realmente pede.
   mandar prompt trivial pra opus (que era eleito quando nada casava). Piso de confiança
   global, barra mais alta para opus (score absoluto + margem) e rebaixamento para o
   melhor tier não-opus; tudo ajustável sem código.
+- **Circuit breaker no limite excedido** (`config.fallback.cooldown`): ao tomar 429, o
+  proxy lê o horário de reset da janela nos headers (`retry-after` →
+  `anthropic-ratelimit-unified-reset` → buckets) e entra em **cooldown** — até o reset,
+  manda tudo **direto para o plano B sem martelar a Anthropic** (evita rajada de 429);
+  quando a janela vira, testa o Claude de novo e **volta sozinho**. O cooldown é
+  persistido em `DATA_DIR/model-router/cooldown.json` (sobrevive a restart do servidor) e
+  as mensagens de plano B passam a trazer a dica **"Claude volta ~HH:MM"**. Ajustável
+  (`enabled`, `defaultMs`, `minMs`, `maxMs`).
 
 ## [1.10.0] — 2026-06-15
 
