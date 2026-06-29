@@ -257,27 +257,261 @@ function extractPrompt(body) {
 
 // ── Proxy core ────────────────────────────────────────────────────────────────
 
-const ANTHROPIC_API_HOST = 'api.anthropic.com';
+// Upstream Anthropic. Override via env existe SÓ para testes; produção usa
+// api.anthropic.com:443 (https) — comportamento idêntico ao anterior.
+const UPSTREAM_HOST     = process.env.ROUTER_UPSTREAM_HOST || 'api.anthropic.com';
+const UPSTREAM_PORT     = process.env.ROUTER_UPSTREAM_PORT ? Number(process.env.ROUTER_UPSTREAM_PORT) : 443;
+const UPSTREAM_PROTOCOL = process.env.ROUTER_UPSTREAM_PROTOCOL || 'https:';
+const UPSTREAM_LIB      = UPSTREAM_PROTOCOL === 'http:' ? http : https;
 
-function forwardRequest(reqBody, originalHeaders, res) {
+// ── Fallback "limite excedido" (plano B) ──────────────────────────────────────
+
+function sseHeaders(res) {
+  res.writeHead(200, {
+    'content-type':  'text/event-stream; charset=utf-8',
+    'cache-control': 'no-cache',
+    'connection':    'keep-alive',
+  });
+}
+
+function sseEvent(res, event, data) {
+  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+}
+
+// Emite uma mensagem assistant de texto único — em SSE (se stream) ou JSON —
+// no formato da Anthropic Messages API, para o Claude Code renderizar normal.
+function respondAnthropicText(reqBody, res, text) {
+  const model = reqBody.model || 'claude';
+  const id = 'msg_fb_' + Date.now();
+  if (reqBody.stream) {
+    sseHeaders(res);
+    sseEvent(res, 'message_start', { type: 'message_start', message: { id, type: 'message', role: 'assistant', model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } });
+    sseEvent(res, 'content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+    sseEvent(res, 'content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text } });
+    sseEvent(res, 'content_block_stop', { type: 'content_block_stop', index: 0 });
+    sseEvent(res, 'message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 0 } });
+    sseEvent(res, 'message_stop', { type: 'message_stop' });
+    res.end();
+  } else {
+    const payload = { id, type: 'message', role: 'assistant', model, content: [{ type: 'text', text }], stop_reason: 'end_turn', stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } };
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(payload));
+  }
+}
+
+const NO_NIM_MESSAGE =
+  '⚠️ Limite de acesso do Claude atingido — a janela de uso esgotou.\n\n' +
+  'O plano B (NVIDIA) ainda não está configurado. Rode /dashboard, ative o roteador ' +
+  'e cole sua chave gratuita da NVIDIA (build.nvidia.com) para continuar trabalhando ' +
+  'mesmo com o limite excedido.';
+
+// Traduz o corpo Anthropic Messages → OpenAI chat/completions (NVIDIA NIM).
+function anthropicToOpenAI(body, config) {
+  const messages = [];
+  if (body.system) {
+    const sys = typeof body.system === 'string'
+      ? body.system
+      : Array.isArray(body.system)
+        ? body.system.filter(b => b.type === 'text').map(b => b.text).join('\n')
+        : '';
+    if (sys) messages.push({ role: 'system', content: sys });
+  }
+  for (const m of body.messages || []) {
+    const role = m.role === 'assistant' ? 'assistant' : 'user';
+    let content = '';
+    if (typeof m.content === 'string') {
+      content = m.content;
+    } else if (Array.isArray(m.content)) {
+      const parts = [];
+      for (const b of m.content) {
+        if (b.type === 'text') {
+          parts.push(b.text || '');
+        } else if (b.type === 'tool_result') {
+          const tr = typeof b.content === 'string'
+            ? b.content
+            : Array.isArray(b.content)
+              ? b.content.filter(x => x.type === 'text').map(x => x.text).join('\n')
+              : '';
+          parts.push(`[resultado de ferramenta] ${tr}`);
+        } else if (b.type === 'tool_use') {
+          parts.push(`[uso de ferramenta ${b.name}] ${JSON.stringify(b.input || {})}`);
+        } else if (b.type === 'image') {
+          parts.push('[imagem omitida no plano B]');
+        }
+      }
+      content = parts.join('\n');
+    }
+    messages.push({ role, content });
+  }
+  const nim = config.nim || {};
+  return {
+    model:       nim.fallbackModel || 'meta/llama-3.3-70b-instruct',
+    messages,
+    max_tokens:  Math.min(body.max_tokens || 1024, 4096),
+    temperature: typeof body.temperature === 'number' ? body.temperature : 0.7,
+    stream:      !!body.stream,
+  };
+}
+
+// Stream OpenAI SSE (NVIDIA) → Anthropic SSE, com o aviso de plano B no início.
+function streamNvidiaToAnthropic(nvRes, res, reqBody, warning) {
+  const model = reqBody.model || 'claude';
+  const id = 'msg_fb_' + Date.now();
+  sseHeaders(res);
+  sseEvent(res, 'message_start', { type: 'message_start', message: { id, type: 'message', role: 'assistant', model, content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 0, output_tokens: 0 } } });
+  sseEvent(res, 'content_block_start', { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } });
+  // Aviso primeiro — o usuário precisa saber que NÃO é mais o Claude.
+  sseEvent(res, 'content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: warning } });
+
+  let buf = '';
+  nvRes.setEncoding('utf-8');
+  nvRes.on('data', (chunk) => {
+    buf += chunk;
+    let idx;
+    while ((idx = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, idx).trim();
+      buf = buf.slice(idx + 1);
+      if (!line.startsWith('data:')) continue;
+      const data = line.slice(5).trim();
+      if (!data || data === '[DONE]') continue;
+      try {
+        const j = JSON.parse(data);
+        const delta = j.choices && j.choices[0] && j.choices[0].delta && j.choices[0].delta.content;
+        if (delta) sseEvent(res, 'content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: delta } });
+      } catch (e) {
+        logger.debug('NVIDIA SSE parse skip', { err: e.message });
+      }
+    }
+  });
+  nvRes.on('end', () => finishStream(res));
+  nvRes.on('error', (e) => {
+    logger.error('NVIDIA stream erro', { err: e.message });
+    finishStream(res);
+  });
+}
+
+function finishStream(res) {
+  sseEvent(res, 'content_block_stop', { type: 'content_block_stop', index: 0 });
+  sseEvent(res, 'message_delta', { type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: 0 } });
+  sseEvent(res, 'message_stop', { type: 'message_stop' });
+  res.end();
+}
+
+// Resposta única OpenAI (NVIDIA) → Anthropic JSON, com o aviso de plano B.
+function jsonNvidiaToAnthropic(nvRes, res, reqBody, warning) {
+  let data = '';
+  nvRes.setEncoding('utf-8');
+  nvRes.on('data', c => data += c);
+  nvRes.on('end', () => {
+    let text = warning;
+    try {
+      const j = JSON.parse(data);
+      text += (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '';
+    } catch (e) {
+      logger.error('NVIDIA JSON parse erro', { err: e.message });
+      text += '(resposta do plano B ilegível)';
+    }
+    respondAnthropicText(reqBody, res, text);
+  });
+  nvRes.on('error', (e) => {
+    logger.error('NVIDIA JSON erro', { err: e.message });
+    respondAnthropicText(reqBody, res, warning + '(falha ao ler a resposta do plano B)');
+  });
+}
+
+// Plano B: roteia a chamada para a NVIDIA NIM (OpenAI-compat), traduzindo o
+// protocolo nos dois sentidos e SEMPRE avisando que a resposta não é do Claude.
+function nvidiaFallback(reqBody, config, res, nimKey) {
+  const openaiBody = anthropicToOpenAI(reqBody, config);
+  const fbModel = openaiBody.model;
+  const warning = `⚠️ Plano B ativo — limite do Claude esgotado. Esta resposta foi gerada pela NVIDIA (${fbModel}), NÃO pelo Claude.\n\n`;
+  const payload = JSON.stringify(openaiBody);
+  const endpoint = new URL((config.nim && config.nim.endpoint) || 'https://integrate.api.nvidia.com/v1/chat/completions');
+  const isHttps = endpoint.protocol === 'https:';
+  const lib = isHttps ? https : http;
+  const options = {
+    hostname: endpoint.hostname,
+    port:     endpoint.port || (isHttps ? 443 : 80),
+    path:     endpoint.pathname,
+    method:   'POST',
+    headers: {
+      'Authorization':  `Bearer ${nimKey}`,
+      'Content-Type':   'application/json',
+      'Content-Length': Buffer.byteLength(payload),
+      'Accept':         openaiBody.stream ? 'text/event-stream' : 'application/json',
+    },
+  };
+  logger.info('Acionando plano B NVIDIA', { model: fbModel, stream: openaiBody.stream });
+  const upstream = lib.request(options, (nvRes) => {
+    if (nvRes.statusCode >= 400) {
+      let eb = '';
+      nvRes.on('data', c => eb += c);
+      nvRes.on('end', () => {
+        logger.error('NVIDIA fallback HTTP erro', { status: nvRes.statusCode, body: eb.slice(0, 300) });
+        respondAnthropicText(reqBody, res, `⚠️ Limite do Claude esgotado e o plano B (NVIDIA) recusou a chamada (HTTP ${nvRes.statusCode}). Revise sua chave em /dashboard.`);
+      });
+      return;
+    }
+    if (openaiBody.stream) streamNvidiaToAnthropic(nvRes, res, reqBody, warning);
+    else                   jsonNvidiaToAnthropic(nvRes, res, reqBody, warning);
+  });
+  upstream.on('error', (e) => {
+    logger.error('NVIDIA fallback inacessível', { err: e.message });
+    respondAnthropicText(reqBody, res, `⚠️ Limite do Claude esgotado e o plano B (NVIDIA) está inacessível (${e.message}). Tente de novo ou revise /dashboard.`);
+  });
+  upstream.write(payload);
+  upstream.end();
+}
+
+function handleLimitExceeded(reqBody, config, res) {
+  const nimKey = (config && config.nim && config.nim.apiKey) || process.env.NVIDIA_NIM_KEY || '';
+  if (nimKey) {
+    try { nvidiaFallback(reqBody, config, res, nimKey); return; }
+    catch (e) { logger.error('Falha ao iniciar o plano B NVIDIA', { err: e.message }); }
+  }
+  respondAnthropicText(reqBody, res, NO_NIM_MESSAGE);
+}
+
+// ── Proxy core: forward ───────────────────────────────────────────────────────
+
+function forwardRequest(reqBody, originalHeaders, res, config) {
   const bodyStr = JSON.stringify(reqBody);
   const headers = {
     'content-type':      'application/json',
     'content-length':    Buffer.byteLength(bodyStr),
     'anthropic-version': originalHeaders['anthropic-version'] || '2023-06-01',
   };
-  if (originalHeaders['x-api-key'])     headers['x-api-key']     = originalHeaders['x-api-key'];
-  if (originalHeaders['authorization']) headers['authorization'] = originalHeaders['authorization'];
+  if (originalHeaders['x-api-key'])      headers['x-api-key']      = originalHeaders['x-api-key'];
+  if (originalHeaders['authorization'])  headers['authorization']  = originalHeaders['authorization'];
   if (originalHeaders['anthropic-beta']) headers['anthropic-beta'] = originalHeaders['anthropic-beta'];
 
   const options = {
-    hostname: ANTHROPIC_API_HOST,
+    hostname: UPSTREAM_HOST,
+    port:     UPSTREAM_PORT,
     path:     '/v1/messages',
     method:   'POST',
     headers,
   };
 
-  const upstream = https.request(options, (upRes) => {
+  const triggers = (config && config.fallback && Array.isArray(config.fallback.triggerStatuses))
+    ? config.fallback.triggerStatuses
+    : [429];
+
+  const upstream = UPSTREAM_LIB.request(options, (upRes) => {
+    // Janela esgotada / limite → plano B (NÃO repassa o erro ao cliente).
+    if (triggers.includes(upRes.statusCode)) {
+      let errBody = '';
+      upRes.on('data', c => errBody += c);
+      upRes.on('end', () => {
+        logger.warn('Limite upstream detectado — acionando plano B', { status: upRes.statusCode, preview: errBody.slice(0, 200).replace(/\n/g, ' ') });
+        handleLimitExceeded(reqBody, config, res);
+      });
+      upRes.on('error', (e) => {
+        logger.warn('Erro lendo corpo do limite — acionando plano B mesmo assim', { err: e.message });
+        handleLimitExceeded(reqBody, config, res);
+      });
+      return;
+    }
     res.writeHead(upRes.statusCode, upRes.headers);
     upRes.pipe(res);
   });
@@ -351,7 +585,7 @@ async function createServer(config) {
         logger.warn('Classify error — modelo original mantido', { err: e.message });
       }
 
-      forwardRequest(body, req.headers, res);
+      forwardRequest(body, req.headers, res, config);
     });
   });
 
@@ -394,43 +628,37 @@ async function main() {
 
   const server = await createServer(config);
 
-  // Tenta porta configurada; se ocupada, tenta até +10
+  // Tenta a porta configurada; se ocupada, tenta as próximas (até +10).
   const basePort = config.port || 13456;
-  let tried = 0;
-  const tryBind = (port) => {
+  const MAX_TRIES = 10;
+
+  const bind = (port, attempt) => {
+    const onError = (e) => {
+      if (e.code === 'EADDRINUSE' && attempt < MAX_TRIES) {
+        logger.warn(`Porta ${port} ocupada, tentando ${port + 1}...`);
+        bind(port + 1, attempt + 1);
+        return;
+      }
+      logger.error('Server error fatal', { err: e.message });
+      process.exit(1);
+    };
+    // `once`: só UM handler de bind ativo por vez (evita exit duplo no EADDRINUSE).
+    server.once('error', onError);
     server.listen(port, '127.0.0.1', () => {
+      server.removeListener('error', onError);
+      // Handler permanente para erros de runtime após o bind (não derruba o processo).
+      server.on('error', (e) => logger.error('Server runtime error', { err: e.message }));
       const actual = server.address().port;
       logger.info(`=== Servidor pronto em http://127.0.0.1:${actual} ===`, { port: actual });
       writeState(actual);
       if (actual !== basePort) {
-        logger.warn(`ATENÇÃO: servidor na porta ${actual} mas config tem ${basePort}. Atualize ANTHROPIC_BASE_URL no sistema para http://127.0.0.1:${actual}`);
+        logger.warn(`ATENÇÃO: servidor na porta ${actual} mas config base é ${basePort}. ANTHROPIC_BASE_URL deve apontar para http://127.0.0.1:${actual}`);
       }
       process.stdout.write(`ROUTER_PORT=${actual}\n`);
     });
   };
 
-  server.on('error', (e) => {
-    if (e.code === 'EADDRINUSE' && tried < 10) {
-      tried++;
-      logger.warn(`Porta ${basePort + tried - 1} ocupada, tentando ${basePort + tried}...`);
-      server.removeAllListeners('error');
-      server.on('error', (e2) => {
-        logger.error('Server error fatal', { err: e2.message });
-        process.exit(1);
-      });
-      tryBind(basePort + tried);
-      return;
-    }
-    logger.error('Server error fatal', { err: e.message });
-    process.exit(1);
-  });
-
-  tryBind(basePort);
-
-  server.on('error', (e) => {
-    logger.error('Server error fatal', { err: e.message });
-    process.exit(1);
-  });
+  bind(basePort, 0);
 
   // Graceful shutdown
   process.on('SIGTERM', () => { logger.info('SIGTERM recebido, encerrando'); server.close(() => process.exit(0)); });
