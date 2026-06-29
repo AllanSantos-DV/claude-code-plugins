@@ -286,6 +286,50 @@ function resolveModel(tier, config) {
   return map[tier] || map.sonnet;
 }
 
+// Ordem de "peso" dos tiers (haiku < sonnet < opus). Usado pelo TETO: o roteador
+// nunca escala acima do que o usuário escolheu no dropdown — só rebaixa.
+const TIER_RANK = { haiku: 0, sonnet: 1, opus: 2 };
+
+// Mapeia um NOME de modelo (o que veio no body.model = escolha do dropdown) ao tier.
+function modelTier(modelStr) {
+  const s = (modelStr || '').toLowerCase();
+  if (s.includes('haiku'))  return 'haiku';
+  if (s.includes('opus'))   return 'opus';
+  if (s.includes('sonnet')) return 'sonnet';
+  return null; // desconhecido (não dá p/ aplicar teto com segurança)
+}
+
+// Pesos de custo (proxy dos preços públicos) p/ a ESTIMATIVA de economia. Só
+// afetam o relatório de telemetria, nunca o roteamento. Configuráveis.
+function costWeights(config) {
+  const w = (config && config.routing && config.routing.costWeights) || {};
+  const num = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d);
+  return { haiku: num(w.haiku, 1), sonnet: num(w.sonnet, 3), opus: num(w.opus, 15) };
+}
+
+function tierWeight(tier, config) {
+  const w = costWeights(config);
+  return (tier && w[tier] != null) ? w[tier] : w.sonnet; // desconhecido → peso sonnet (neutro)
+}
+
+// TETO (puro/determinístico): dado o tier classificado, o tier do dropdown e o
+// modelo original, devolve { routedTier, newModel, blocked }. Nunca escala ACIMA
+// do escolhido — só rebaixa p/ economizar. Ligado por padrão (routing.ceiling !==
+// false). origTier null (modelo desconhecido) → sem teto. Extraído do handler p/
+// ser testável sem depender do classificador.
+function applyCeiling(classifiedTier, origTier, originalModel, config) {
+  let routedTier = classifiedTier;
+  let newModel   = resolveModel(classifiedTier, config);
+  let blocked    = false;
+  const ceilingOn = !(config && config.routing && config.routing.ceiling === false);
+  if (ceilingOn && origTier && TIER_RANK[classifiedTier] > TIER_RANK[origTier]) {
+    routedTier = origTier;
+    newModel   = originalModel; // mantém EXATAMENTE o que o usuário escolheu
+    blocked    = true;
+  }
+  return { routedTier, newModel, blocked };
+}
+
 // ── Extração de prompt do body ────────────────────────────────────────────────
 
 function extractPrompt(body) {
@@ -518,6 +562,7 @@ function handleLimitExceeded(reqBody, config, res, hint) {
     catch (e) { logger.error('Falha ao iniciar o plano B NVIDIA', { err: e.message }); }
   }
   const msg = hint ? `${NO_NIM_MESSAGE}\n\n⏳ ${hint}.` : NO_NIM_MESSAGE;
+  metricsNoKey();
   respondAnthropicText(reqBody, res, msg);
 }
 
@@ -712,6 +757,7 @@ function armCooldown(headers, config, bodyStr) {
       retryAfter: headers ? headers['retry-after'] : undefined,
       unified:    headers ? headers['anthropic-ratelimit-unified-reset'] : undefined,
     });
+    metricsCooldownArm();
     return true;
   }
   // Sem header → 429 esporádico. Conta consecutivos; só arma quando passa do limiar.
@@ -730,6 +776,7 @@ function armCooldown(headers, config, bodyStr) {
     emSegundos:   Math.round((until - Date.now()) / 1000),
     consecutivos: _consec429, tripAfter: cfg.tripAfter,
   });
+  metricsCooldownArm();
   return true;
 }
 
@@ -753,6 +800,7 @@ function armCooldownFromBody(bodyStr, config) {
     emSegundos:    Math.round((until - now) / 1000),
     rateLimitType: b.rateLimitType || undefined,
   });
+  metricsCooldownArm();
   return true;
 }
 
@@ -770,9 +818,128 @@ function resumeHint() {
   return `reavaliando o Claude em ~${secs}s`;
 }
 
+// ── Telemetria (validação de economia) ───────────────────────────────────────
+// Conta requisições, rebaixamentos (downgrades), teto aplicado e plano B, e estima
+// a economia em "unidades de custo" (pesos proxy dos preços) vs. rodar TUDO no
+// modelo que o usuário escolheu. Persistido p/ sobreviver a reinícios (economia
+// cumulativa). Best-effort: NUNCA interfere no proxy (try/catch onde necessário).
+
+const METRICS_FILE = path.join(STATE_DIR, 'metrics.json');
+let _metricsDirty = false;
+
+function emptyTierMap() { return { haiku: 0, sonnet: 0, opus: 0, unknown: 0 }; }
+
+function newMetrics() {
+  return {
+    startedAt:       new Date().toISOString(),
+    lastReqAt:       null,
+    total:           0,   // requisições /messages roteadas
+    classified:      0,   // classificador retornou um tier
+    byOriginal:      emptyTierMap(),  // tier do modelo escolhido no dropdown
+    byFinal:         emptyTierMap(),  // tier que decidimos mandar pro Claude
+    downgrades:      0,   // final mais barato que o escolhido
+    kept:            0,   // manteve o mesmo tier
+    upgradesBlocked: 0,   // teto impediu subir acima do escolhido
+    servedClaude:    0,   // respondido pelo Claude
+    servedPlanB:     0,   // respondido pelo plano B (NVIDIA = custo-Claude zero)
+    planBNoKey:      0,   // limite batido mas sem chave NVIDIA (só aviso)
+    cooldownArms:    0,   // vezes que a janela esgotou e armou cooldown
+    cost:            { baselineUnits: 0, actualUnits: 0 },
+    tokens:          { in: 0, out: 0 },
+  };
+}
+
+let metrics = newMetrics();
+
+function loadMetrics() {
+  try {
+    if (fs.existsSync(METRICS_FILE)) {
+      const saved = JSON.parse(fs.readFileSync(METRICS_FILE, 'utf8'));
+      metrics = Object.assign(newMetrics(), saved, {
+        byOriginal: Object.assign(emptyTierMap(), saved.byOriginal || {}),
+        byFinal:    Object.assign(emptyTierMap(), saved.byFinal || {}),
+        cost:       Object.assign({ baselineUnits: 0, actualUnits: 0 }, saved.cost || {}),
+        tokens:     Object.assign({ in: 0, out: 0 }, saved.tokens || {}),
+      });
+    }
+  } catch (e) {
+    logger.warn('Falha ao carregar metrics.json (recomeçando do zero)', { err: e.message });
+    metrics = newMetrics();
+  }
+}
+
+function persistMetrics() {
+  if (!_metricsDirty) return;
+  try {
+    fs.mkdirSync(STATE_DIR, { recursive: true });
+    fs.writeFileSync(METRICS_FILE, JSON.stringify(metrics, null, 2));
+    _metricsDirty = false;
+  } catch (e) {
+    logger.debug('Falha ao persistir metrics.json (ignorado)', { err: e.message });
+  }
+}
+
+function resetMetrics() {
+  metrics = newMetrics();
+  _metricsDirty = true;
+  persistMetrics();
+}
+
+// Registra a DECISÃO de rota. origTier = dropdown do usuário; finalTier = o que
+// vamos mandar pro Claude; blocked = teto impediu um upgrade.
+function metricsRoute(origTier, finalTier, classified, blocked) {
+  metrics.total += 1;
+  metrics.lastReqAt = new Date().toISOString();
+  metrics.byOriginal[origTier || 'unknown'] += 1;
+  metrics.byFinal[finalTier || 'unknown'] += 1;
+  if (classified) metrics.classified += 1;
+  if (blocked) {
+    metrics.upgradesBlocked += 1;
+  } else if (origTier && finalTier && TIER_RANK[finalTier] < TIER_RANK[origTier]) {
+    metrics.downgrades += 1;
+  } else {
+    metrics.kept += 1;
+  }
+  _metricsDirty = true;
+}
+
+// Registra o DESFECHO econômico. kind: 'claude' (servido pelo Claude) ou 'planB'
+// (NVIDIA = custo-Claude zero). baseline = peso do modelo escolhido pelo usuário.
+function metricsOutcome(kind, route, config) {
+  if (!route) return;
+  metrics.cost.baselineUnits += tierWeight(route.origTier, config);
+  if (kind === 'planB') {
+    metrics.servedPlanB += 1; // actual += 0 (grátis, fora do Claude)
+  } else {
+    metrics.servedClaude += 1;
+    metrics.cost.actualUnits += tierWeight(route.finalTier, config);
+  }
+  _metricsDirty = true;
+}
+
+function metricsNoKey()       { metrics.planBNoKey += 1; _metricsDirty = true; }
+function metricsCooldownArm() { metrics.cooldownArms += 1; _metricsDirty = true; }
+
+function metricsTokens(inTok, outTok) {
+  if (inTok)  metrics.tokens.in  += inTok;
+  if (outTok) metrics.tokens.out += outTok;
+  _metricsDirty = true;
+}
+
+// Snapshot + economia calculada (em %). economiaPct = 1 - actual/baseline.
+function metricsSnapshot() {
+  const b = metrics.cost.baselineUnits;
+  const a = metrics.cost.actualUnits;
+  const economiaPct = b > 0 ? Math.round((1 - a / b) * 1000) / 10 : 0;
+  return Object.assign({}, metrics, {
+    economiaPct,
+    savedUnits: Math.round((b - a) * 10) / 10,
+  });
+}
+
 // ── Proxy core: forward ───────────────────────────────────────────────────────
 
-function forwardRequest(reqBody, originalHeaders, res, config) {
+function forwardRequest(reqBody, originalHeaders, res, config, route) {
   const cd = cooldownCfg(config);
   // Circuit breaker: janela em cooldown? vai DIRETO ao plano B (sem martelar a Anthropic).
   if (cd.enabled && _cooldownUntil) {
@@ -781,6 +948,7 @@ function forwardRequest(reqBody, originalHeaders, res, config) {
         restamSeg: Math.round((_cooldownUntil - Date.now()) / 1000),
         ate:       new Date(_cooldownUntil).toISOString(),
       });
+      metricsOutcome('planB', route, config);
       handleLimitExceeded(reqBody, config, res, resumeHint());
       return;
     }
@@ -826,11 +994,13 @@ function forwardRequest(reqBody, originalHeaders, res, config) {
           unified:    upRes.headers['anthropic-ratelimit-unified-reset'],
           rlHeaders:  ratelimitHeaders(upRes.headers),   // captura total p/ evidência
         });
+        metricsOutcome('planB', route, config);
         handleLimitExceeded(reqBody, config, res, hint);
       });
       upRes.on('error', (e) => {
         if (cd.enabled) armCooldown(upRes.headers, config, '');
         logger.warn('Erro lendo corpo do limite — acionando plano B mesmo assim', { err: e.message });
+        metricsOutcome('planB', route, config);
         handleLimitExceeded(reqBody, config, res, resumeHint());
       });
       return;
@@ -840,23 +1010,36 @@ function forwardRequest(reqBody, originalHeaders, res, config) {
       logger.debug('Claude respondeu — zerando 429 consecutivos', { eram: _consec429 });
       _consec429 = 0;
     }
+    metricsOutcome('claude', route, config);
     res.writeHead(upRes.statusCode, upRes.headers);
-    // A ASSINATURA pode sinalizar a janela esgotada DENTRO de um 200 (evento
-    // stream-json rate_limit_event status:rejected, ou o marcador string). Fazemos
-    // um "tee" leve: repassamos o stream verbatim ao cliente E escaneamos por esse
-    // sinal determinístico p/ armar o cooldown até o resetsAt real — a PRÓXIMA
-    // request já vai direto ao plano B até a janela voltar. Não altera o corpo.
-    if (cd.enabled && !_cooldownUntil) {
+    // "Tee" leve no 200: repassamos o stream verbatim ao cliente E o escaneamos
+    // para (1) detectar a janela esgotada DENTRO de um 200 (evento stream-json
+    // rate_limit_event status:rejected, ou o marcador string) e armar o cooldown
+    // até o resetsAt real; (2) capturar `usage` (tokens reais) p/ telemetria.
+    // Nunca altera/pausa o corpo; tudo best-effort (try/catch).
+    {
+      const wantRLScan = cd.enabled && !_cooldownUntil;
       let scanBuf = '';
       let armed = false;
+      let inTok = 0, outTok = 0;
       upRes.on('data', (c) => {
-        if (armed) return;
-        scanBuf += c.toString('utf8');
-        if (scanBuf.length > 65536) scanBuf = scanBuf.slice(-65536); // cauda; limita memória
-        if (scanBuf.includes('rate_limit_event') || scanBuf.includes('Claude AI usage limit reached')) {
-          if (armCooldownFromBody(scanBuf, config)) armed = true;
-        }
+        try {
+          const s = c.toString('utf8');
+          if (wantRLScan && !armed) {
+            scanBuf += s;
+            if (scanBuf.length > 65536) scanBuf = scanBuf.slice(-65536); // cauda; limita memória
+            if (scanBuf.includes('rate_limit_event') || scanBuf.includes('Claude AI usage limit reached')) {
+              if (armCooldownFromBody(scanBuf, config)) armed = true;
+            }
+          }
+          const mi = s.match(/"input_tokens"\s*:\s*(\d+)/);     // 1ª ocorrência (message_start)
+          if (mi && !inTok) inTok = Number(mi[1]);
+          let mo;                                                // output_tokens cresce nos deltas → pega o MAIOR
+          const reOut = /"output_tokens"\s*:\s*(\d+)/g;
+          while ((mo = reOut.exec(s)) !== null) { const v = Number(mo[1]); if (v > outTok) outTok = v; }
+        } catch (_) { void _; /* telemetria/scan nunca quebram o pipe */ }
       });
+      upRes.on('end', () => { if (inTok || outTok) metricsTokens(inTok, outTok); });
     }
     upRes.pipe(res);
   });
@@ -881,6 +1064,19 @@ async function createServer(config) {
     if (req.method === 'GET' && req.url === '/health') {
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ status: 'ok', pid: process.pid }));
+      return;
+    }
+
+    // Telemetria: snapshot dos contadores + economia estimada (lido pelo dashboard).
+    if (req.method === 'GET' && req.url === '/metrics') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(metricsSnapshot()));
+      return;
+    }
+    if (req.method === 'POST' && req.url === '/metrics/reset') {
+      resetMetrics();
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
       return;
     }
 
@@ -910,27 +1106,44 @@ async function createServer(config) {
       }
 
       const originalModel = body.model || 'unknown';
+      const origTier = modelTier(originalModel);
       const prompt = extractPrompt(body);
 
+      let tier = null;
       try {
-        const tier = await classify(prompt.slice(0, 800), config);
-        if (tier) {
-          const newModel = resolveModel(tier, config);
-          body.model = newModel;
-          logger.info('Roteado', {
-            tier,
-            original: originalModel,
-            novo: newModel,
-            preview: prompt.slice(0, 80).replace(/\n/g, ' '),
-          });
-        } else {
-          logger.debug('Sem tier — modelo original mantido', { model: originalModel });
-        }
+        tier = await classify(prompt.slice(0, 800), config);
       } catch (e) {
         logger.warn('Classify error — modelo original mantido', { err: e.message });
       }
 
-      forwardRequest(body, req.headers, res, config);
+      let finalTier = origTier;
+      let blocked = false;
+      if (tier) {
+        const dec = applyCeiling(tier, origTier, originalModel, config);
+        blocked = dec.blocked;
+        if (blocked) {
+          logger.info('Teto — classificador acima do escolhido; mantido o modelo do usuário', {
+            escolhido: origTier, classificou: tier, modelo: originalModel,
+          });
+        }
+        body.model = dec.newModel;
+        finalTier  = dec.routedTier;
+        logger.info('Roteado', {
+          tier:        dec.routedTier,
+          classificou: tier,
+          original:    originalModel,
+          novo:        dec.newModel,
+          teto:        blocked || undefined,
+          preview:     prompt.slice(0, 80).replace(/\n/g, ' '),
+        });
+      } else {
+        logger.debug('Sem tier — modelo original mantido', { model: originalModel });
+      }
+
+      try { metricsRoute(origTier, finalTier, !!tier, blocked); }
+      catch (e) { logger.debug('metricsRoute falhou (ignorado)', { err: e.message }); }
+
+      forwardRequest(body, req.headers, res, config, { origTier, finalTier });
     });
   });
 
@@ -957,6 +1170,9 @@ async function main() {
 
   const config = loadConfig();
   loadCooldown();
+  loadMetrics();
+  const _metricsTimer = setInterval(persistMetrics, 5000);
+  if (_metricsTimer.unref) _metricsTimer.unref(); // não segura o processo vivo
 
   if (config.enabled === false) {
     logger.warn('Router desabilitado em router-config.json (enabled: false). Saindo.');
@@ -1007,8 +1223,8 @@ async function main() {
   bind(basePort, 0);
 
   // Graceful shutdown
-  process.on('SIGTERM', () => { logger.info('SIGTERM recebido, encerrando'); server.close(() => process.exit(0)); });
-  process.on('SIGINT',  () => { logger.info('SIGINT recebido, encerrando');  server.close(() => process.exit(0)); });
+  process.on('SIGTERM', () => { logger.info('SIGTERM recebido, encerrando'); persistMetrics(); server.close(() => process.exit(0)); });
+  process.on('SIGINT',  () => { logger.info('SIGINT recebido, encerrando');  persistMetrics(); server.close(() => process.exit(0)); });
 }
 
 // Executa o servidor apenas quando rodado direto. Quando requerido (testes),
@@ -1031,5 +1247,13 @@ if (require.main === module) {
     computeCooldownUntil,
     cooldownCfg,
     clearCooldown,
+    modelTier,
+    tierWeight,
+    applyCeiling,
+    metricsRoute,
+    metricsOutcome,
+    metricsSnapshot,
+    resetMetrics,
+    newMetrics,
   };
 }

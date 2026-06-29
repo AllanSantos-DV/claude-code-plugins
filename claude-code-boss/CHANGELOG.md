@@ -50,6 +50,19 @@ quando o trabalho realmente pede.
   restart). Mensagens de plano B com dica **honesta**: "Claude volta ~HH:MM" quando há reset real
   (header/corpo); senão "reavaliando o Claude em ~Ns". Ajustável (`enabled`, `noHeaderMs`,
   `tripAfter`, `minMs`, `maxMs`).
+- **Teto de modelo** (`config.routing.ceiling`, padrão ligado): o modelo escolhido no
+  dropdown do Claude Code vira um **teto**, não uma sugestão. O classificador pode
+  **rebaixar** livremente p/ economizar (ex.: opus→haiku num rename trivial), mas **nunca
+  escala acima** do que o usuário pediu — se o prompt pareceria opus mas o usuário escolheu
+  sonnet, mantém **exatamente** o modelo do usuário. Modelo desconhecido no dropdown → sem
+  teto (segurança). Desligável com `routing.ceiling:false` (volta ao roteamento livre).
+- **Telemetria de economia** (endpoint `/metrics`, aba **Router** do dashboard): contadores
+  de requisições roteadas, classificadas, rebaixadas, bloqueadas pelo teto, servidas pelo
+  Claude vs. plano B, cooldowns e tokens; e uma **economia estimada** por pesos de custo
+  (proxy dos preços públicos: opus ~15× haiku, em `config.routing.costWeights`) — `baseline`
+  = sempre o modelo do dropdown, `actual` = só o que o Claude de fato serviu (plano B conta
+  custo-Claude zero). Persistida em `DATA_DIR/model-router/metrics.json` (sobrevive a restart),
+  com `POST /metrics/reset` p/ zerar. Os pesos afetam **só o relatório**, nunca o roteamento.
 
 ## [1.10.0] — 2026-06-15
 

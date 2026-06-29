@@ -28,6 +28,7 @@ const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');
 const ROUTER_SHIPPED_CONFIG = path.join(ROOT, 'config', 'router-config.json');
 const ROUTER_USER_CONFIG = path.join(DATA_DIR, 'model-router', 'user-config.json');
 const ROUTER_STATE_FILE = path.join(DATA_DIR, 'model-router', 'state.json');
+const ROUTER_METRICS_FILE = path.join(DATA_DIR, 'model-router', 'metrics.json');
 
 // Pick the most populated brain data dir among ~/.claude/plugins/data/claude-code-boss*.
 // Fall back to the canonical bare name if nothing is populated yet.
@@ -1103,6 +1104,65 @@ async function applyRouter(req, res) {
   }
 }
 
+// GET http://127.0.0.1:<port><pathName> → JSON (ou null se o router estiver fora).
+function routerHttpGetJson(port, pathName) {
+  return new Promise((resolve) => {
+    const r = http.get(`http://127.0.0.1:${port}${pathName}`, { timeout: 800 }, (resp) => {
+      let data = '';
+      resp.on('data', c => { data += c; });
+      resp.on('end', () => {
+        try { resolve(JSON.parse(data)); }
+        catch (e) { console.error(`[DASHBOARD] router ${pathName} parse: ${e.message}`); resolve(null); }
+      });
+    });
+    r.on('error', () => resolve(null));
+    r.on('timeout', () => { r.destroy(); resolve(null); });
+  });
+}
+
+function routerHttpPost(port, pathName) {
+  return new Promise((resolve) => {
+    const r = http.request(`http://127.0.0.1:${port}${pathName}`, { method: 'POST', timeout: 800 }, (resp) => {
+      resp.resume();
+      resolve(resp.statusCode >= 200 && resp.statusCode < 300);
+    });
+    r.on('error', () => resolve(false));
+    r.on('timeout', () => { r.destroy(); resolve(false); });
+    r.end();
+  });
+}
+
+function getRouterMetrics(req, res) {
+  return getRouterMetricsAsync(req, res).catch(err => {
+    console.error(`[DASHBOARD] /api/router/metrics failed: ${err.message}`);
+    fail(res, err.message, 500);
+  });
+}
+
+async function getRouterMetricsAsync(req, res) {
+  const shipped = readJSON(ROUTER_SHIPPED_CONFIG) || {};
+  const state = fs.existsSync(ROUTER_STATE_FILE) ? (readJSON(ROUTER_STATE_FILE) || {}) : {};
+  const port = state.port || shipped.port || 13456;
+  // Fresco: tenta o /metrics ao vivo; se o router estiver fora, lê o arquivo persistido.
+  let m = await routerHttpGetJson(port, '/metrics');
+  const live = !!m;
+  if (!m) m = fs.existsSync(ROUTER_METRICS_FILE) ? (readJSON(ROUTER_METRICS_FILE) || null) : null;
+  json(res, { live, metrics: m });
+}
+
+async function resetRouterMetrics(req, res) {
+  try {
+    const shipped = readJSON(ROUTER_SHIPPED_CONFIG) || {};
+    const state = fs.existsSync(ROUTER_STATE_FILE) ? (readJSON(ROUTER_STATE_FILE) || {}) : {};
+    const port = state.port || shipped.port || 13456;
+    const ok = await routerHttpPost(port, '/metrics/reset');
+    json(res, { ok });
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/router/metrics/reset failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
 // ─── Router ────────────────────────────────────────────────────────
 
 function handleAPI(req, res, url) {
@@ -1148,6 +1208,8 @@ function handleAPI(req, res, url) {
   if (p === '/api/router/config' && m === 'POST') return saveRouterConfig(req, res);
   if (p === '/api/router/status' && m === 'GET') return getRouterStatus(req, res);
   if (p === '/api/router/apply' && m === 'POST') return applyRouter(req, res);
+  if (p === '/api/router/metrics' && m === 'GET') return getRouterMetrics(req, res);
+  if (p === '/api/router/metrics/reset' && m === 'POST') return resetRouterMetrics(req, res);
 
   json(res, { error: 'Not found' }, 404);
 }
