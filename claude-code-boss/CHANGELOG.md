@@ -78,16 +78,20 @@ quando o trabalho realmente pede.
   **derruba na hora** um cooldown de **palpite** já armado por uma rajada concorrente. Os
   cooldowns **autoritativos** (reset real via header/corpo) seguem armando **imediatamente**
   e **não** são afetados — só a heurística de último recurso deixou de dar falso-positivo.
-- **Parâmetro `effort` removido ao rebaixar o modelo** (corrige `400 This model does not
-  support the effort parameter`): quando o usuário escolhe **Opus 4.x com nível de _effort_**
-  ("Alto/Médio/Baixo") no Claude Code, o body carrega um campo `effort` que **só o Opus
-  aceita**. Ao **rebaixar** o modelo (teto/economia, ex.: opus→haiku), o router reescrevia
-  `model` mas **mantinha** `effort`, e haiku/sonnet respondiam **400** — repassado verbatim
-  como "Requisição inválida", quebrando até um "oi". Agora `stripIncompatibleParams` (pura,
-  exportada) **remove** os parâmetros específicos do modelo original (hoje `effort`) sempre
-  que o router **troca** o modelo; se o modelo é **mantido** (teto preservou a escolha do
-  usuário), `effort` é **preservado** intacto. O remoção é logada (`removidos`) e o plano B
-  já era imune (monta o próprio body OpenAI).
+- **Parâmetro `effort` reconciliado por modelo ao rebaixar** (corrige `400 ... does
+  not support the effort parameter` e o erro de valor inválido entre modelos): o
+  `effort` (Anthropic) vive em **`body.output_config.effort`** e tem **escala própria
+  por modelo** — pela doc oficial, **Opus 4.8/4.7** têm `xhigh`; **Sonnet 4.6/Opus 4.6**
+  têm `max` mas **não** `xhigh`; **Haiku 4.5 não suporta `effort`**. Quando o usuário
+  escolhe Opus 4.x com nível de _effort_ e o router **rebaixa** o modelo (teto/economia),
+  não dá p/ "passar reto" (Sonnet rejeita `xhigh`) nem "stripar cego" (jogaria fora um
+  `effort` válido no Sonnet). Agora `reconcileEffort` resolve contra o **modelo de
+  destino**: **mantém** se o destino aceita o valor, **clampa** p/ o maior suportado
+  (ex.: Opus `xhigh` → Sonnet `high`) quando suporta `effort` mas não aquele valor, e
+  **remove** só quando o destino não tem `effort` (Haiku). Modelo **mantido** pelo teto
+  preserva o `effort` intacto. A matriz é **configurável** (`routing.effort.{order,support}`,
+  match por prefixo cobre sufixo de data) e a decisão é logada (`Roteado.effort`). O plano
+  B já era imune (monta o próprio body OpenAI).
 
 ## [1.10.0] — 2026-06-15
 
