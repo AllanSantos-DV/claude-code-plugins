@@ -330,6 +330,24 @@ function applyCeiling(classifiedTier, origTier, originalModel, config) {
   return { routedTier, newModel, blocked };
 }
 
+// Parâmetros ESPECÍFICOS do modelo que o usuário escolheu e que NÃO são aceitos
+// por todos os modelos: ao REBAIXAR (trocar o modelo), eles quebram a request com
+// HTTP 400. Caso real: o seletor de "effort" do Opus 4.x — o Claude Code manda
+// `effort` no body, mas haiku/sonnet respondem `400 This model does not support
+// the effort parameter`. Quando o router TROCA o modelo, removemos esses campos; se
+// o modelo continua o mesmo (teto manteve a escolha), preservamos tudo (o original
+// aceita). Pura/determinística e exportada p/ teste. Devolve a lista removida (log).
+const MODEL_SPECIFIC_PARAMS = ['effort'];
+
+function stripIncompatibleParams(body, originalModel, newModel) {
+  const dropped = [];
+  if (!body || newModel === originalModel) return dropped;
+  for (const k of MODEL_SPECIFIC_PARAMS) {
+    if (body[k] !== undefined) { delete body[k]; dropped.push(k); }
+  }
+  return dropped;
+}
+
 // ── Extração de prompt do body ────────────────────────────────────────────────
 
 function extractPrompt(body) {
@@ -1158,12 +1176,14 @@ async function createServer(config) {
         }
         body.model = dec.newModel;
         finalTier  = dec.routedTier;
+        const dropped = stripIncompatibleParams(body, originalModel, dec.newModel);
         logger.info('Roteado', {
           tier:        dec.routedTier,
           classificou: tier,
           original:    originalModel,
           novo:        dec.newModel,
           teto:        blocked || undefined,
+          removidos:   dropped.length ? dropped : undefined,
           preview:     prompt.slice(0, 80).replace(/\n/g, ' '),
         });
       } else {
@@ -1287,6 +1307,7 @@ if (require.main === module) {
     modelTier,
     tierWeight,
     applyCeiling,
+    stripIncompatibleParams,
     metricsRoute,
     metricsOutcome,
     metricsSnapshot,
