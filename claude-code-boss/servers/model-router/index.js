@@ -468,10 +468,11 @@ function jsonNvidiaToAnthropic(nvRes, res, reqBody, warning) {
 
 // Plano B: roteia a chamada para a NVIDIA NIM (OpenAI-compat), traduzindo o
 // protocolo nos dois sentidos e SEMPRE avisando que a resposta não é do Claude.
-function nvidiaFallback(reqBody, config, res, nimKey) {
+function nvidiaFallback(reqBody, config, res, nimKey, hint) {
   const openaiBody = anthropicToOpenAI(reqBody, config);
   const fbModel = openaiBody.model;
-  const warning = `⚠️ Plano B ativo — limite do Claude esgotado. Esta resposta foi gerada pela NVIDIA (${fbModel}), NÃO pelo Claude.\n\n`;
+  const aviso = hint ? ` (${hint})` : '';
+  const warning = `⚠️ Plano B ativo — limite do Claude esgotado${aviso}. Esta resposta foi gerada pela NVIDIA (${fbModel}), NÃO pelo Claude.\n\n`;
   const payload = JSON.stringify(openaiBody);
   const endpoint = new URL((config.nim && config.nim.endpoint) || 'https://integrate.api.nvidia.com/v1/chat/completions');
   const isHttps = endpoint.protocol === 'https:';
@@ -510,18 +511,160 @@ function nvidiaFallback(reqBody, config, res, nimKey) {
   upstream.end();
 }
 
-function handleLimitExceeded(reqBody, config, res) {
+function handleLimitExceeded(reqBody, config, res, hint) {
   const nimKey = (config && config.nim && config.nim.apiKey) || process.env.NVIDIA_NIM_KEY || '';
   if (nimKey) {
-    try { nvidiaFallback(reqBody, config, res, nimKey); return; }
+    try { nvidiaFallback(reqBody, config, res, nimKey, hint); return; }
     catch (e) { logger.error('Falha ao iniciar o plano B NVIDIA', { err: e.message }); }
   }
-  respondAnthropicText(reqBody, res, NO_NIM_MESSAGE);
+  const msg = hint ? `${NO_NIM_MESSAGE}\n\n⏳ ${hint}.` : NO_NIM_MESSAGE;
+  respondAnthropicText(reqBody, res, msg);
+}
+
+// ── Circuit breaker (cooldown da janela do Claude) ────────────────────────────
+// Ao tomar 429 (janela esgotada), em vez de continuar martelando a Anthropic a
+// cada request (e tomando 429 toda vez), lemos ATÉ QUANDO a janela reseta — dos
+// headers do 429 — e, nesse intervalo, vamos DIRETO ao plano B sem nem tocar na
+// Anthropic. Quando o horário do reset passa, o próximo request testa o Claude de
+// novo e, se voltou, retomamos. Estado persistido p/ sobreviver a reinícios do
+// router (novas sessões do Claude Code).
+
+const COOLDOWN_FILE = path.join(STATE_DIR, 'cooldown.json');
+let _cooldownUntil  = 0;    // epoch ms; 0 = inativo
+let _cooldownSource = '';   // origem do reset: header | default
+
+function cooldownCfg(config) {
+  const c = (config && config.fallback && config.fallback.cooldown) || {};
+  const num = (v, d) => (Number.isFinite(Number(v)) ? Number(v) : d);
+  return {
+    enabled:   c.enabled !== false,                // default: ligado
+    defaultMs: num(c.defaultMs, 60000),            // espera quando o 429 não traz reset
+    minMs:     num(c.minMs, 1000),                 // piso (evita cooldown ~0)
+    maxMs:     num(c.maxMs, 6 * 60 * 60 * 1000),   // teto de segurança (6h)
+  };
+}
+
+// Extrai o epoch ms do reset a partir dos headers de um 429 da Anthropic.
+// Preferência: retry-after (relativo, imune a relógio torto) → unified-reset
+// (timestamp absoluto) → buckets individuais (RFC3339/epoch). null = nada legível.
+function parseResetMs(headers, nowMs) {
+  if (!headers) return null;
+  const now = nowMs || Date.now();
+  const ra = headers['retry-after'];
+  if (ra != null) {
+    const secs = Number(ra);
+    if (Number.isFinite(secs) && secs >= 0) return now + secs * 1000;
+    const d = Date.parse(ra);                       // retry-after também aceita data HTTP
+    if (!Number.isNaN(d) && d > now) return d;
+  }
+  const toMs = (v) => {
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) return n > 1e12 ? n : n * 1000;  // <1e12 → segundos
+    const d = Date.parse(v);
+    return Number.isNaN(d) ? null : d;
+  };
+  const unified = headers['anthropic-ratelimit-unified-reset'];
+  if (unified != null) {
+    const ms = toMs(unified);
+    if (ms != null && ms > now) return ms;
+  }
+  let latest = null;
+  for (const key of ['anthropic-ratelimit-requests-reset', 'anthropic-ratelimit-tokens-reset',
+                     'anthropic-ratelimit-input-tokens-reset', 'anthropic-ratelimit-output-tokens-reset']) {
+    if (headers[key] == null) continue;
+    const ms = toMs(headers[key]);
+    if (ms != null && ms > now && (latest == null || ms > latest)) latest = ms;
+  }
+  return latest;
+}
+
+// Decide até quando ficar em cooldown: reset dos headers, senão defaultMs; com clamp.
+function computeCooldownUntil(headers, config, nowMs) {
+  const now = nowMs || Date.now();
+  const cfg = cooldownCfg(config);
+  let until = parseResetMs(headers, now);
+  const source = until != null ? 'header' : 'default';
+  if (until == null) until = now + cfg.defaultMs;
+  const min = now + cfg.minMs;
+  const max = now + cfg.maxMs;
+  if (until < min) until = min;
+  if (until > max) until = max;
+  return { until, source };
+}
+
+function loadCooldown() {
+  try {
+    if (fs.existsSync(COOLDOWN_FILE)) {
+      const j = JSON.parse(fs.readFileSync(COOLDOWN_FILE, 'utf-8'));
+      if (j && Number.isFinite(j.until) && j.until > Date.now()) {
+        _cooldownUntil  = j.until;
+        _cooldownSource = j.source || '';
+        logger.info('Cooldown restaurado do disco', { ate: new Date(_cooldownUntil).toISOString() });
+      }
+    }
+  } catch (e) {
+    logger.warn('Falha ao restaurar cooldown (ignorado)', { err: e.message });
+  }
+}
+
+function persistCooldown() {
+  try {
+    fs.writeFileSync(COOLDOWN_FILE, JSON.stringify({ until: _cooldownUntil, source: _cooldownSource, armedAt: Date.now() }));
+  } catch (e) {
+    logger.warn('Falha ao persistir cooldown (ignorado)', { err: e.message });
+  }
+}
+
+function clearCooldown() {
+  _cooldownUntil = 0;
+  _cooldownSource = '';
+  try {
+    if (fs.existsSync(COOLDOWN_FILE)) fs.unlinkSync(COOLDOWN_FILE);
+  } catch (e) {
+    logger.debug('Falha ao limpar cooldown (ignorado)', { err: e.message });
+  }
+}
+
+function armCooldown(headers, config) {
+  const { until, source } = computeCooldownUntil(headers, config, Date.now());
+  _cooldownUntil  = until;
+  _cooldownSource = source;
+  persistCooldown();
+  logger.warn('Cooldown armado — plano B direto até a janela do Claude resetar', {
+    ate:        new Date(until).toISOString(),
+    emSegundos: Math.round((until - Date.now()) / 1000),
+    fonte:      source,
+    retryAfter: headers ? headers['retry-after'] : undefined,
+    unified:    headers ? headers['anthropic-ratelimit-unified-reset'] : undefined,
+  });
+}
+
+// Dica amigável p/ o usuário: "Claude volta ~HH:MM" (hora local).
+function resumeHint() {
+  if (!_cooldownUntil) return '';
+  const d = new Date(_cooldownUntil);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `Claude volta ~${hh}:${mm}`;
 }
 
 // ── Proxy core: forward ───────────────────────────────────────────────────────
 
 function forwardRequest(reqBody, originalHeaders, res, config) {
+  const cd = cooldownCfg(config);
+  // Circuit breaker: janela em cooldown? vai DIRETO ao plano B (sem martelar a Anthropic).
+  if (cd.enabled && _cooldownUntil) {
+    if (Date.now() < _cooldownUntil) {
+      logger.info('Cooldown ativo — plano B direto (sem tocar na Anthropic)', {
+        restamSeg: Math.round((_cooldownUntil - Date.now()) / 1000),
+        ate:       new Date(_cooldownUntil).toISOString(),
+      });
+      handleLimitExceeded(reqBody, config, res, resumeHint());
+      return;
+    }
+    logger.info('Cooldown expirou — testando o Claude novamente', { eraAte: new Date(_cooldownUntil).toISOString() });
+    clearCooldown();
+  }
   const bodyStr = JSON.stringify(reqBody);
   const headers = {
     'content-type':      'application/json',
@@ -547,15 +690,22 @@ function forwardRequest(reqBody, originalHeaders, res, config) {
   const upstream = UPSTREAM_LIB.request(options, (upRes) => {
     // Janela esgotada / limite → plano B (NÃO repassa o erro ao cliente).
     if (triggers.includes(upRes.statusCode)) {
+      if (cd.enabled) armCooldown(upRes.headers, config);
+      const hint = resumeHint();
       let errBody = '';
       upRes.on('data', c => errBody += c);
       upRes.on('end', () => {
-        logger.warn('Limite upstream detectado — acionando plano B', { status: upRes.statusCode, preview: errBody.slice(0, 200).replace(/\n/g, ' ') });
-        handleLimitExceeded(reqBody, config, res);
+        logger.warn('Limite upstream detectado — acionando plano B', {
+          status:     upRes.statusCode,
+          preview:    errBody.slice(0, 200).replace(/\n/g, ' '),
+          retryAfter: upRes.headers['retry-after'],
+          unified:    upRes.headers['anthropic-ratelimit-unified-reset'],
+        });
+        handleLimitExceeded(reqBody, config, res, hint);
       });
       upRes.on('error', (e) => {
         logger.warn('Erro lendo corpo do limite — acionando plano B mesmo assim', { err: e.message });
-        handleLimitExceeded(reqBody, config, res);
+        handleLimitExceeded(reqBody, config, res, hint);
       });
       return;
     }
@@ -658,6 +808,7 @@ async function main() {
   fs.mkdirSync(STATE_DIR, { recursive: true });
 
   const config = loadConfig();
+  loadCooldown();
 
   if (config.enabled === false) {
     logger.warn('Router desabilitado em router-config.json (enabled: false). Saindo.');
@@ -727,5 +878,9 @@ if (require.main === module) {
     resolveModel,
     extractPrompt,
     mergeUserConfig,
+    parseResetMs,
+    computeCooldownUntil,
+    cooldownCfg,
+    clearCooldown,
   };
 }
