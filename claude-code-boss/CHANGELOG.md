@@ -78,6 +78,16 @@ quando o trabalho realmente pede.
   **derruba na hora** um cooldown de **palpite** já armado por uma rajada concorrente. Os
   cooldowns **autoritativos** (reset real via header/corpo) seguem armando **imediatamente**
   e **não** são afetados — só a heurística de último recurso deixou de dar falso-positivo.
+- **Parâmetro `effort` removido ao rebaixar o modelo** (corrige `400 This model does not
+  support the effort parameter`): quando o usuário escolhe **Opus 4.x com nível de _effort_**
+  ("Alto/Médio/Baixo") no Claude Code, o body carrega um campo `effort` que **só o Opus
+  aceita**. Ao **rebaixar** o modelo (teto/economia, ex.: opus→haiku), o router reescrevia
+  `model` mas **mantinha** `effort`, e haiku/sonnet respondiam **400** — repassado verbatim
+  como "Requisição inválida", quebrando até um "oi". Agora `stripIncompatibleParams` (pura,
+  exportada) **remove** os parâmetros específicos do modelo original (hoje `effort`) sempre
+  que o router **troca** o modelo; se o modelo é **mantido** (teto preservou a escolha do
+  usuário), `effort` é **preservado** intacto. O remoção é logada (`removidos`) e o plano B
+  já era imune (monta o próprio body OpenAI).
 
 ## [1.10.0] — 2026-06-15
 
