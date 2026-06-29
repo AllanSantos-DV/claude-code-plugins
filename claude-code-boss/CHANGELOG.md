@@ -1,5 +1,38 @@
 # Changelog
 
+## [Unreleased]
+
+### Added — model-router: roteamento de modelo por peso do prompt (proxy local)
+
+Um proxy HTTP local (`servers/model-router/`) que fica **entre o Claude Code e a
+API da Anthropic**: classifica o "peso" de cada prompt com um embedder MiniLM local
+e reescreve o campo `model` para rotear **haiku / sonnet / opus** dentro da própria
+assinatura do usuário — o objetivo é **esticar a janela de acesso**, gastando opus só
+quando o trabalho realmente pede.
+
+- **Engine** (`servers/model-router/index.js`, `patcher.js`, `wrapper.cs`): bind em
+  porta configurável (13456, com retry até +10), classificação local por âncoras de
+  cosseno e estado/log em `DATA_DIR/model-router/`. A redireção usa env de escopo de
+  usuário no Windows (`ANTHROPIC_BASE_URL` + `NODE_OPTIONS=--require <patcher>`),
+  porque o Claude Desktop ignora o bloco `env` do `settings.json`.
+- **Ativação por hook** (`scripts/model-router-ensure.js`, `model-router-wrapper-install.js`):
+  SessionStart + UserPromptSubmit aplicam o env, compilam/instalam o wrapper e sobem o
+  servidor de forma idempotente.
+- **Dashboard + ativação guiada**: nova aba **Router** (toggle, chave NVIDIA mascarada,
+  aceite de termos, status e banner de restart), rotas `/api/router/{config,status,apply}`,
+  o slash command **`/dashboard`** e um aviso de primeira execução. A chave da NVIDIA
+  vive **somente** em `DATA_DIR/model-router/user-config.json` (nunca versionada); a API
+  devolve apenas `hasNvidiaKey` + os últimos 4 dígitos.
+- **Plano B no limite excedido**: quando a janela do Claude esgota (HTTP 429), o proxy
+  **não propaga o erro** — com chave NVIDIA, roteia para a NVIDIA NIM (OpenAI-compat),
+  traduzindo Anthropic↔OpenAI em streaming e não-streaming, **sempre com um aviso de
+  que a resposta veio da NVIDIA, não do Claude**; sem chave, devolve uma mensagem no
+  formato Anthropic orientando rodar `/dashboard`. Configurável em `config.fallback`.
+- **Classificador opus-averse** (`config.classifier`): calibrado com tráfego real, evita
+  mandar prompt trivial pra opus (que era eleito quando nada casava). Piso de confiança
+  global, barra mais alta para opus (score absoluto + margem) e rebaixamento para o
+  melhor tier não-opus; tudo ajustável sem código.
+
 ## [1.10.0] — 2026-06-15
 
 ### Added — curation "one-hit" marking with a recurrence ceiling
