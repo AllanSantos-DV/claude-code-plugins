@@ -25,6 +25,10 @@
   },
   "routing": {
     "_comment": "Modelos Claude usados por tier. nimModel opcional: se preenchido e nim.apiKey configurada, executa no NIM em vez do Claude (custo zero).",
+    "ceiling": true,
+    "_comment_ceiling": "TETO: o roteador NUNCA escala acima do modelo que o usuário escolheu no dropdown — só rebaixa p/ economizar (esticar a janela). true = teto ligado (recomendado). false = classificador livre (pode subir p/ opus mesmo se você escolheu sonnet).",
+    "costWeights": { "haiku": 1, "sonnet": 3, "opus": 15 },
+    "_comment_costWeights": "Pesos de custo (proxy dos preços públicos: opus ~15x haiku) usados SÓ na estimativa de economia do dashboard. Não afetam o roteamento.",
     "haikuTier":  { "model": "claude-haiku-4-5-20251001", "nimModel": "" },
     "sonnetTier": { "model": "claude-sonnet-4-6",         "nimModel": "" },
     "opusTier":   { "model": "claude-opus-4-8",           "nimModel": "" }

@@ -608,6 +608,19 @@ code { color: var(--fg); }
         <span id="router-saved" class="text-muted"></span>
       </div>
     </div>
+
+    <div class="card">
+      <h2>
+        <span data-i18n="router.metricsTitle">Economia &amp; uso</span>
+        <span class="tip" data-i18n-tip="tip.routerMetrics" data-tip="Estimativa por pesos de custo (proxy dos preços: opus ~15x haiku). Baseline = o modelo que você escolheu no dropdown. Plano B (NVIDIA) conta como custo-Claude zero.">i</span>
+      </h2>
+      <p class="text-muted" data-i18n="router.metricsIntro">Quantas requisições o roteador redirecionou e a economia estimada vs. rodar tudo no modelo que você escolheu.</p>
+      <div id="router-metrics" class="text-muted">…</div>
+      <div class="flex" style="gap:.5rem;margin-top:.75rem">
+        <button class="btn-sm" onclick="refreshRouterMetrics()" data-i18n="router.metricsRefresh">Atualizar</button>
+        <button class="btn-sm btn-warning" onclick="resetRouterMetrics()" data-i18n="router.metricsReset">Zerar</button>
+      </div>
+    </div>
   </section>
 </main>
 
@@ -635,6 +648,22 @@ const I18N = {
     'router.stopped': 'stopped',
     'router.saving': 'Saving...',
     'router.saved': 'Saved!',
+    'router.metricsTitle': 'Savings & usage',
+    'router.metricsIntro': 'How many requests the router redirected and the estimated savings vs. running everything on the model you picked.',
+    'router.metricsRefresh': 'Refresh',
+    'router.metricsReset': 'Reset',
+    'router.metricsNone': 'No data yet — send a few prompts with the router on.',
+    'router.metricsResetConfirm': 'Reset router metrics counters?',
+    'router.mTotal': 'requests',
+    'router.mDowngrades': 'downgrades',
+    'router.mCeiling': 'ceiling hits',
+    'router.mPlanB': 'plan B (free)',
+    'router.mEconomy': 'est. savings',
+    'router.mClassified': 'classified',
+    'router.mServedClaude': 'via Claude',
+    'router.mCooldowns': 'window resets',
+    'router.mStale': 'router offline (last saved)',
+    'tip.routerMetrics': 'Estimate by cost weights (proxy for prices: opus ~15x haiku). Baseline = the model you picked. Plan B (NVIDIA) counts as zero Claude cost.',
     'skills.title': 'Skill Promotion',
     'skills.threshold': 'Promotion Threshold',
     'skills.project': 'Project',
@@ -708,6 +737,22 @@ const I18N = {
     'router.stopped': 'parado',
     'router.saving': 'Salvando...',
     'router.saved': 'Salvo!',
+    'router.metricsTitle': 'Economia & uso',
+    'router.metricsIntro': 'Quantas requisições o roteador redirecionou e a economia estimada vs. rodar tudo no modelo que você escolheu.',
+    'router.metricsRefresh': 'Atualizar',
+    'router.metricsReset': 'Zerar',
+    'router.metricsNone': 'Sem dados ainda — mande alguns prompts com o roteador ligado.',
+    'router.metricsResetConfirm': 'Zerar os contadores de métricas do roteador?',
+    'router.mTotal': 'requisições',
+    'router.mDowngrades': 'rebaixadas',
+    'router.mCeiling': 'teto aplicado',
+    'router.mPlanB': 'plano B (grátis)',
+    'router.mEconomy': 'economia est.',
+    'router.mClassified': 'classificadas',
+    'router.mServedClaude': 'via Claude',
+    'router.mCooldowns': 'resets de janela',
+    'router.mStale': 'roteador offline (último salvo)',
+    'tip.routerMetrics': 'Estimativa por pesos de custo (proxy dos preços: opus ~15x haiku). Baseline = o modelo que você escolheu. Plano B (NVIDIA) conta como custo-Claude zero.',
     'skills.title': 'Promoção de Skills',
     'skills.threshold': 'Threshold de Promoção',
     'skills.project': 'Projeto',
@@ -817,6 +862,7 @@ async function api(method, path, body) {
 async function loadRouter() {
   await loadRouterConfig();
   refreshRouterStatus();
+  refreshRouterMetrics();
 }
 
 async function loadRouterConfig() {
@@ -845,6 +891,58 @@ async function refreshRouterStatus() {
     label.textContent = `${word} · porta ${s.port}` + (s.pid ? ` · PID ${s.pid}` : '');
   } catch (e) {
     label.textContent = '—';
+  }
+}
+
+function routerStatTile(label, value, accent) {
+  const color = accent ? `;color:${accent}` : '';
+  return `<div style="background:rgba(127,127,127,.10);border-radius:8px;padding:.5rem .7rem;min-width:86px">`
+    + `<div style="font-size:1.3rem;font-weight:700${color}">${value}</div>`
+    + `<div class="text-muted" style="font-size:.72rem">${label}</div></div>`;
+}
+
+function renderRouterMetrics(m, live) {
+  const eco = (m.economiaPct != null ? m.economiaPct : 0);
+  const ecoColor = eco > 0 ? 'var(--success, #3fb950)' : 'inherit';
+  const tiles = [
+    routerStatTile(t('router.mTotal'),      m.total || 0),
+    routerStatTile(t('router.mDowngrades'), m.downgrades || 0),
+    routerStatTile(t('router.mCeiling'),    m.upgradesBlocked || 0),
+    routerStatTile(t('router.mPlanB'),      m.servedPlanB || 0),
+    routerStatTile(t('router.mEconomy'),    eco + '%', ecoColor),
+  ].join('');
+  const tokIn = (m.tokens && m.tokens.in) || 0;
+  const tokOut = (m.tokens && m.tokens.out) || 0;
+  const sub = `${t('router.mClassified')}: ${m.classified || 0} · `
+    + `${t('router.mServedClaude')}: ${m.servedClaude || 0} · `
+    + `${t('router.mCooldowns')}: ${m.cooldownArms || 0} · `
+    + `tokens ${tokIn.toLocaleString()}/${tokOut.toLocaleString()}`
+    + (live ? '' : ` · ${t('router.mStale')}`);
+  return `<div style="display:flex;flex-wrap:wrap;gap:.5rem">${tiles}</div>`
+    + `<div class="text-muted" style="font-size:.74rem;margin-top:.5rem">${sub}</div>`;
+}
+
+async function refreshRouterMetrics() {
+  const box = document.getElementById('router-metrics');
+  if (!box) return;
+  box.textContent = '…';
+  try {
+    const r = await api('GET', '/api/router/metrics');
+    if (!r || !r.metrics) { box.textContent = t('router.metricsNone'); return; }
+    box.innerHTML = renderRouterMetrics(r.metrics, r.live);
+  } catch (e) {
+    box.textContent = '— ' + e.message;
+  }
+}
+
+async function resetRouterMetrics() {
+  if (!confirm(t('router.metricsResetConfirm'))) return;
+  try {
+    await api('POST', '/api/router/metrics/reset');
+    refreshRouterMetrics();
+  } catch (e) {
+    const box = document.getElementById('router-metrics');
+    if (box) box.textContent = 'Erro: ' + e.message;
   }
 }
 
