@@ -32,14 +32,18 @@ quando o trabalho realmente pede.
   mandar prompt trivial pra opus (que era eleito quando nada casava). Piso de confiança
   global, barra mais alta para opus (score absoluto + margem) e rebaixamento para o
   melhor tier não-opus; tudo ajustável sem código.
-- **Circuit breaker no limite excedido** (`config.fallback.cooldown`): ao tomar 429, o
-  proxy lê o horário de reset da janela nos headers (`retry-after` →
-  `anthropic-ratelimit-unified-reset` → buckets) e entra em **cooldown** — até o reset,
-  manda tudo **direto para o plano B sem martelar a Anthropic** (evita rajada de 429);
-  quando a janela vira, testa o Claude de novo e **volta sozinho**. O cooldown é
-  persistido em `DATA_DIR/model-router/cooldown.json` (sobrevive a restart do servidor) e
-  as mensagens de plano B passam a trazer a dica **"Claude volta ~HH:MM"**. Ajustável
-  (`enabled`, `defaultMs`, `minMs`, `maxMs`).
+- **Circuit breaker no limite excedido** (`config.fallback.cooldown`): evita a rajada de
+  429 sem prender o usuário no plano B quando o Claude volta. Se a Anthropic informa o
+  reset da janela (`retry-after` → `anthropic-ratelimit-unified-reset` → buckets), espera
+  **exatamente** até lá. Como a assinatura normalmente **não** manda esse header, o 429 é
+  tratado como **esporádico** (janela deslizante): um 429 isolado cai no plano B só naquela
+  request e a **próxima já testa o Claude**; só após `tripAfter` 429s **seguidos** arma um
+  cooldown **curto** (`noHeaderMs`, padrão 15s) e re-sonda — **qualquer resposta do Claude
+  zera o contador** e retoma na hora. Estado persistido em
+  `DATA_DIR/model-router/cooldown.json` (sobrevive a restart). As mensagens de plano B
+  trazem dica **honesta**: "Claude volta ~HH:MM" só quando há reset real; senão
+  "reavaliando o Claude em ~Ns". Ajustável (`enabled`, `noHeaderMs`, `tripAfter`,
+  `minMs`, `maxMs`).
 
 ## [1.10.0] — 2026-06-15
 

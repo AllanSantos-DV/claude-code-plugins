@@ -15,9 +15,10 @@
     "_comment": "Plano B quando a janela de acesso do Claude esgota. triggerStatuses: status HTTP do upstream que disparam o fallback (429 = limite). Se nim.apiKey estiver configurada, roteia para a NVIDIA (com aviso de que NÃO é mais o Claude); senão devolve uma mensagem orientando rodar /dashboard.",
     "triggerStatuses": [429],
     "cooldown": {
-      "_comment": "Circuit breaker: ao tomar 429, lê o horário de reset da janela (headers retry-after / anthropic-ratelimit-unified-reset) e, até lá, manda tudo DIRETO pro plano B sem martelar a Anthropic; quando o reset passa, testa o Claude de novo e volta sozinho. enabled: liga/desliga. defaultMs: espera usada quando o 429 não traz reset. minMs/maxMs: piso e teto de segurança (ms).",
+      "_comment": "Circuit breaker p/ o limite (429). Quando a Anthropic informa o reset da janela (headers retry-after / anthropic-ratelimit-unified-reset), espera EXATAMENTE até lá. Como a assinatura normalmente NÃO manda esse header, o 429 é tratado como esporádico (janela deslizante): um 429 isolado cai no plano B só naquela request e a PRÓXIMA já testa o Claude de novo; só após `tripAfter` 429s seguidos (sem sucesso no meio) arma um cooldown CURTO de `noHeaderMs` e re-sonda — qualquer resposta do Claude zera o contador e volta na hora. enabled: liga/desliga. noHeaderMs: cooldown curto sem header (ms). tripAfter: 429s consecutivos p/ armar sem header. minMs/maxMs: piso/teto de segurança (ms).",
       "enabled": true,
-      "defaultMs": 60000,
+      "noHeaderMs": 15000,
+      "tripAfter": 2,
       "minMs": 1000,
       "maxMs": 21600000
     }
