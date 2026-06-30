@@ -2,7 +2,7 @@
   "_comment": "Model Router — proxy que intercepta chamadas do Claude Code e roteia pelo modelo certo",
   "enabled": true,
   "port": 13456,
-  "_comment_port": "Porta fixa do proxy. Deve coincidir com ANTHROPIC_BASE_URL na variável de sistema do Windows. Se a porta estiver ocupada, o servidor tenta até port+10.",
+  "_comment_port": "Porta FIXA do proxy. O hook grava ANTHROPIC_BASE_URL=http://127.0.0.1:<porta> no bloco env do ~/.claude/settings.json (escopo Claude Code). Se a porta já tiver um router nosso saudável, a instância nova faz reuso e sai; nunca incrementa.",
   "nim": {
     "apiKey": "",
     "_comment_apiKey": "Opcional. Chave da Nvidia NIM (gratuita em build.nvidia.com). Se vazia, usa classificador local (MiniLM).",
