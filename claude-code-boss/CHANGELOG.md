@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+## [1.13.0] - 2026-06-30
+
+### Added — learning: telemetria de eficácia do loop (nudge → captura)
+
+O loop de aprendizado curado agora é **medido**: dá pra ver quantos "empurrões"
+(nudges) dos detectores realmente viram lição salva, em vez de confiar no escuro.
+
+- **Evento canônico `nudge.emitted{kind}`**: todo detector que sugere capturar uma
+  lição passa a emitir um evento padronizado. `correction-detect` e `pattern-detect`
+  (que antes não emitiam nada) agora emitem; `decision-promote`, `failure-retro`,
+  `active-research-detect` e `research-followup-detect` tiveram seus eventos
+  renomeados para o formato único `nudge.emitted` com o `kind` da origem.
+- **Taxa de conversão por tipo** (`scripts/lib/capture-rate.js` →
+  `aggregateCaptureRate`): cruza `nudge.emitted{kind}` com `lesson.captured{type}`
+  para calcular a taxa nudge→captura por tipo, mais um bucket `spontaneous` (lições
+  salvas sem nudge prévio). A correlação é **por projeto** (o `lesson.captured` vem
+  com `session_id` nulo), agregando todos os projetos com métricas.
+- **Dashboard**: endpoint `/api/metrics/capture-rate` (via `getCaptureRate`, que
+  reusa `listMetricsProjects`/`aggregateAcrossProjects`) e um card **"Loop efficacy"**
+  mostrando a eficácia do loop por tipo.
+- Mantém-se retrocompatível e sem efeito no caminho quente — é instrumentação de
+  leitura sobre o ledger de métricas que já existia.
+
 ## [1.12.0] - 2026-06-30
 
 ### Added — brain: backend remoto via Native Java (MCP StreamableHTTP)
