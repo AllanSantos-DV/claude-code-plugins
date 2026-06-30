@@ -1281,7 +1281,7 @@ test('research-followup.decideNudge: no fire → no nudge', () => {
 
 test('research-followup.decideNudge: fire + no capture → nudge', () => {
   const events = [
-    { eventName: 'research.auto.triggered', ts: 1000, payload: { signals: ['libMention'] } },
+    { eventName: 'nudge.emitted', ts: 1000, payload: { kind: 'research', signals: ['libMention'] } },
   ];
   const r = researchFollowup.decideNudge(events, null);
   assert(r.nudge === true);
@@ -1291,7 +1291,7 @@ test('research-followup.decideNudge: fire + no capture → nudge', () => {
 test('research-followup.decideNudge: fire + capture(type=research) AFTER → no nudge', () => {
   const events = [
     { eventName: 'lesson.captured', ts: 2000, payload: { type: 'research' } },
-    { eventName: 'research.auto.triggered', ts: 1000, payload: { signals: ['libMention'] } },
+    { eventName: 'nudge.emitted', ts: 1000, payload: { kind: 'research', signals: ['libMention'] } },
   ];
   const r = researchFollowup.decideNudge(events, null);
   assert(r.nudge === false);
@@ -1301,7 +1301,7 @@ test('research-followup.decideNudge: fire + capture(type=research) AFTER → no 
 test('research-followup.decideNudge: fire + capture(type=lesson) → still nudge', () => {
   const events = [
     { eventName: 'lesson.captured', ts: 2000, payload: { type: 'lesson' } },
-    { eventName: 'research.auto.triggered', ts: 1000, payload: { signals: ['libMention'] } },
+    { eventName: 'nudge.emitted', ts: 1000, payload: { kind: 'research', signals: ['libMention'] } },
   ];
   const r = researchFollowup.decideNudge(events, null);
   assert(r.nudge === true);
@@ -1310,7 +1310,7 @@ test('research-followup.decideNudge: fire + capture(type=lesson) → still nudge
 
 test('research-followup.decideNudge: fire + capture BEFORE fire → still nudge', () => {
   const events = [
-    { eventName: 'research.auto.triggered', ts: 2000, payload: { signals: ['libMention'] } },
+    { eventName: 'nudge.emitted', ts: 2000, payload: { kind: 'research', signals: ['libMention'] } },
     { eventName: 'lesson.captured', ts: 1000, payload: { type: 'research' } },
   ];
   const r = researchFollowup.decideNudge(events, null);
@@ -1319,7 +1319,7 @@ test('research-followup.decideNudge: fire + capture BEFORE fire → still nudge'
 
 test('research-followup.decideNudge: stamp matches latest trigger → already-nudged', () => {
   const events = [
-    { eventName: 'research.auto.triggered', ts: 1000, payload: { signals: ['libMention'] } },
+    { eventName: 'nudge.emitted', ts: 1000, payload: { kind: 'research', signals: ['libMention'] } },
   ];
   const r = researchFollowup.decideNudge(events, { firedAt: 1000 });
   assert(r.nudge === false);
@@ -1328,8 +1328,8 @@ test('research-followup.decideNudge: stamp matches latest trigger → already-nu
 
 test('research-followup.decideNudge: newer trigger after stamp → nudge again', () => {
   const events = [
-    { eventName: 'research.auto.triggered', ts: 3000, payload: { signals: ['libMention'] } },
-    { eventName: 'research.auto.triggered', ts: 1000, payload: { signals: ['libMention'] } },
+    { eventName: 'nudge.emitted', ts: 3000, payload: { kind: 'research', signals: ['libMention'] } },
+    { eventName: 'nudge.emitted', ts: 1000, payload: { kind: 'research', signals: ['libMention'] } },
   ];
   const r = researchFollowup.decideNudge(events, { firedAt: 1000 });
   assert(r.nudge === true);
@@ -1580,6 +1580,48 @@ test('oneoff-store: marked one-hit under ceiling is suppressible (detect path)',
   oneoff.mark(dd, pk, { aliases: ['npm run weird'], now: now++, maxRecurrence: 3 });
   const r = oneoff.touch(dd, pk, 'cd /x && npm run weird --flag', { now: now++, create: false });
   assert(r.matched && r.oneHit && r.count < 3, `expected suppressible, got ${JSON.stringify(r)}`);
+});
+
+// ─── capture-rate (nudge→capture conversion) ──────────────────────────────────
+const capRate = require(path.join(SCRIPTS, 'lib', 'capture-rate.js'));
+
+test('capture-rate: nudge converted by following capture → rate 1', () => {
+  const r = capRate.aggregateCaptureRate([
+    { eventName: 'nudge.emitted', payload: { kind: 'correction' }, project: 'p', ts: 1 },
+    { eventName: 'lesson.captured', payload: { type: 'lesson' }, project: 'p', ts: 2 },
+  ]);
+  assertEq([r.byKind.correction.nudges, r.byKind.correction.captures, r.byKind.correction.rate], [1, 1, 1]);
+});
+test('capture-rate: nudge with no capture → rate 0', () => {
+  const r = capRate.aggregateCaptureRate([
+    { eventName: 'nudge.emitted', payload: { kind: 'decision' }, project: 'p', ts: 1 },
+  ]);
+  assertEq([r.byKind.decision.nudges, r.byKind.decision.captures, r.byKind.decision.rate], [1, 0, 0]);
+});
+test('capture-rate: capture with no preceding nudge → spontaneous', () => {
+  const r = capRate.aggregateCaptureRate([
+    { eventName: 'lesson.captured', payload: { type: 'pattern' }, project: 'p', ts: 5 },
+  ]);
+  assertEq(r.spontaneous.pattern, 1);
+  assertEq(r.byKind.pattern.captures, 0);
+});
+test('capture-rate: one capture consumed by one nudge only (no double-count)', () => {
+  const r = capRate.aggregateCaptureRate([
+    { eventName: 'nudge.emitted', payload: { kind: 'correction' }, project: 'p', ts: 1 },
+    { eventName: 'nudge.emitted', payload: { kind: 'failure' }, project: 'p', ts: 2 },
+    { eventName: 'lesson.captured', payload: { type: 'lesson' }, project: 'p', ts: 3 },
+  ]);
+  assertEq(r.byKind.correction.captures, 1);
+  assertEq(r.byKind.failure.captures, 0);
+  assertEq(Object.keys(r.spontaneous).length, 0);
+});
+test('capture-rate: cross-project capture does not convert another project nudge', () => {
+  const r = capRate.aggregateCaptureRate([
+    { eventName: 'nudge.emitted', payload: { kind: 'research' }, project: 'A', ts: 1 },
+    { eventName: 'lesson.captured', payload: { type: 'research' }, project: 'B', ts: 2 },
+  ]);
+  assertEq(r.byKind.research.captures, 0);
+  assertEq(r.spontaneous.research, 1);
 });
 
 // ─── Runner ──────────────────────────────────────────────────────────────────

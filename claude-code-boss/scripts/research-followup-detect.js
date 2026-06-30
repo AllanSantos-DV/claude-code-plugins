@@ -51,7 +51,7 @@ function writeStamp(p, obj) {
  * Pure function — testable in isolation.
  */
 function decideNudge(events, stamp) {
-  const triggers = events.filter(e => e.eventName === 'research.auto.triggered');
+  const triggers = events.filter(e => e.eventName === 'nudge.emitted' && e.payload && e.payload.kind === 'research');
   if (!triggers.length) return { nudge: false, reason: 'no-fire' };
   const latestTrigger = triggers[0]; // events list is newest-first
 
@@ -102,8 +102,8 @@ async function main() {
 
   let triggers, captures;
   try {
-    triggers = store.getEventLog({ eventName: 'research.auto.triggered', limit: 50 })
-      .filter(e => e.sessionId === sid);
+    triggers = store.getEventLog({ eventName: 'nudge.emitted', limit: 100 })
+      .filter(e => e.payload && e.payload.kind === 'research' && e.sessionId === sid);
     captures = store.getEventLog({ eventName: 'lesson.captured', limit: 100 });
   } catch { /* event log read failed: no-op */ return emitEmpty(); }
 

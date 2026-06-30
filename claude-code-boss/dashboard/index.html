@@ -533,6 +533,11 @@ code { color: var(--fg); }
     </div>
 
     <div class="card">
+      <h2>Loop efficacy — nudge → capture</h2>
+      <div id="insights-capture-rate" style="font-size:.82rem"></div>
+    </div>
+
+    <div class="card">
       <h2 data-i18n="insights.eventLog">Recent events</h2>
       <div class="flex mb-1" style="gap:.5rem;align-items:center">
         <select id="insights-event-filter" onchange="loadInsightsLog()" style="font-size:.78rem">
@@ -1768,6 +1773,48 @@ async function loadInsights() {
   }
   loadInsightsLog();
   loadSkillRoi();
+  loadCaptureRate();
+}
+
+async function loadCaptureRate() {
+  const el = document.getElementById('insights-capture-rate');
+  if (!el) return;
+  const project = document.getElementById('insights-project').value;
+  el.innerHTML = '<div class="spinner" style="margin:1rem auto"></div>';
+  try {
+    const qs = new URLSearchParams();
+    if (project) qs.set('project', project);
+    const data = await api('GET', '/api/metrics/capture-rate' + (qs.toString() ? '?' + qs : ''));
+    const byKind = data.byKind || {};
+    const kinds = Object.keys(byKind).filter(k => byKind[k].nudges > 0);
+    const spont = Object.entries(data.spontaneous || {}).map(([t, n]) => `${t}: ${n}`).join(', ');
+    if (kinds.length === 0 && !spont) {
+      el.innerHTML = '<p class="text-muted">No nudges recorded yet.</p>';
+      return;
+    }
+    const rows = kinds.map(k => {
+      const r = byKind[k];
+      const pct = r.rate === null ? '—' : `${Math.round(r.rate * 100)}%`;
+      const cls = r.rate !== null && r.rate < 0.3 ? 'badge-yellow' : 'badge-green';
+      return `<tr>
+        <td style="padding:.3rem .5rem">${escapeHtml(k)}</td>
+        <td style="padding:.3rem .5rem;text-align:right">${r.nudges}</td>
+        <td style="padding:.3rem .5rem;text-align:right">${r.captures}</td>
+        <td style="padding:.3rem .5rem;text-align:right"><span class="badge ${cls}">${pct}</span></td>
+      </tr>`;
+    }).join('');
+    el.innerHTML = `<table style="width:100%;border-collapse:collapse">
+      <thead><tr style="text-align:left;border-bottom:1px solid var(--border)">
+        <th style="padding:.3rem .5rem">Signal</th>
+        <th style="padding:.3rem .5rem;text-align:right">Nudges</th>
+        <th style="padding:.3rem .5rem;text-align:right">Captures</th>
+        <th style="padding:.3rem .5rem;text-align:right">Rate</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>${spont ? `<p class="text-muted" style="margin-top:.4rem">Spontaneous (no nudge): ${escapeHtml(spont)}</p>` : ''}`;
+  } catch (err) {
+    el.innerHTML = `<p class="text-muted">Failed to load loop efficacy: ${escapeHtml(err.message)}</p>`;
+  }
 }
 
 async function loadSkillRoi() {
