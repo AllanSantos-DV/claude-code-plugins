@@ -10,14 +10,16 @@ e reescreve o campo `model` para rotear **haiku / sonnet / opus** dentro da pró
 assinatura do usuário — o objetivo é **esticar a janela de acesso**, gastando opus só
 quando o trabalho realmente pede.
 
-- **Engine** (`servers/model-router/index.js`, `patcher.js`, `wrapper.cs`): bind em
+- **Engine** (`servers/model-router/index.js`, `wrapper.cs`): bind em
   porta configurável (13456, com retry até +10), classificação local por âncoras de
-  cosseno e estado/log em `DATA_DIR/model-router/`. A redireção usa env de escopo de
-  usuário no Windows (`ANTHROPIC_BASE_URL` + `NODE_OPTIONS=--require <patcher>`),
-  porque o Claude Desktop ignora o bloco `env` do `settings.json`.
+  cosseno e estado/log em `DATA_DIR/model-router/`. A redireção é **isolada no Claude
+  Code** pelo wrapper do `claude.exe` (C#), que injeta `ANTHROPIC_BASE_URL` **só no
+  próprio processo**, lendo a URL de `~/.claude/model-router-url.txt` — porque o Claude
+  Desktop ignora o bloco `env` do `settings.json` e **variáveis globais vazariam para
+  outros apps**.
 - **Ativação por hook** (`scripts/model-router-ensure.js`, `model-router-wrapper-install.js`):
-  SessionStart + UserPromptSubmit aplicam o env, compilam/instalam o wrapper e sobem o
-  servidor de forma idempotente.
+  SessionStart + UserPromptSubmit compilam/instalam o wrapper, publicam a URL do proxy e
+  sobem o servidor de forma idempotente — **sem nunca tocar em variáveis de ambiente globais**.
 - **Dashboard + ativação guiada**: nova aba **Router** (toggle, chave NVIDIA mascarada,
   aceite de termos, status e banner de restart), rotas `/api/router/{config,status,apply}`,
   o slash command **`/dashboard`** e um aviso de primeira execução. A chave da NVIDIA
@@ -92,6 +94,20 @@ quando o trabalho realmente pede.
   preserva o `effort` intacto. A matriz é **configurável** (`routing.effort.{order,support}`,
   match por prefixo cobre sufixo de data) e a decisão é logada (`Roteado.effort`). O plano
   B já era imune (monta o próprio body OpenAI).
+- **Isolamento total no Claude Code (sem vazamento global)**: o mecanismo antigo definia
+  `NODE_OPTIONS` e `ANTHROPIC_BASE_URL` no **escopo User do Windows** — variáveis
+  **machine-wide** que **vazavam para outros apps** (ex.: GitHub Copilot/hermes) e corrompiam
+  o launch deles (`NODE_OPTIONS` com aspas quebrava `--settings`; `ANTHROPIC_BASE_URL` apontando
+  p/ porta morta gerava "Solicitação falhou"). Agora o roteamento é **exclusivo do Claude Code**:
+  o `ensure.js` publica a URL do proxy em `~/.claude/model-router-url.txt` e o **wrapper do
+  `claude.exe`** injeta `ANTHROPIC_BASE_URL` **apenas no próprio processo** (lendo esse arquivo).
+  O hook **nunca** define env global e ainda faz **self-heal**, removendo qualquer
+  `NODE_OPTIONS`/`ANTHROPIC_BASE_URL` global residual e o patcher órfão de versões antigas;
+  quando o router para ou é desabilitado, o arquivo de URL é **apagado** (o wrapper nunca injeta
+  porta morta — auto-cura). O mecanismo `patcher.js`/`NODE_OPTIONS` foi **aposentado**
+  (sem nenhum `require` vivo; substituído pelo wrapper). O **quoting de argumentos** do
+  wrapper foi corrigido para o algoritmo canônico `CommandLineToArgvW`, preservando o JSON
+  de `--settings` (antes uma flag com espaços/aspas era remontada errada).
 
 ## [1.10.0] — 2026-06-15
 
