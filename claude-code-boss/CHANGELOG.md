@@ -2,6 +2,47 @@
 
 ## [Unreleased]
 
+### Added — brain: backend remoto via Native Java (MCP StreamableHTTP)
+
+O cérebro (Brain KB) do Boss agora pode usar um **servidor de memória externo**
+(o daemon "Native Java" / `mcp-memory-server`) como backend, em vez do SQLite local
+— sem perder a retrocompatibilidade (o **default continua local**).
+
+- **Transport HTTP no MCP client** (`scripts/mcp-client.js`): além do `stdio` (jar
+  via spawn), o cliente fala **MCP StreamableHTTP** (`POST /mcp`, respostas JSON
+  puras). Faz discovery do daemon por `~/.mcp-memory/run/daemon.json` (override
+  `runDir`), sonda `/health`, faz `initialize` carimbando o `projectId` (escopo da
+  sessão inteira), captura o header `Mcp-Session-Id` e o repassa em toda request,
+  manda `notifications/initialized` (204) e `DELETE /mcp` no close. Protocolo
+  `2025-06-18`. Não envia header `Origin` (evita 403 fora de loopback).
+- **Dispatcher reescrito pro contrato real do daemon** (`scripts/brain-backend.js`):
+  os wrappers MCP foram corrigidos contra o servidor v2.10.1 — `add_document`
+  manda `{content, metadata}` e lê o id do texto `Document added with ID: <uuid>`;
+  `search_memory` usa `topK` e parseia o **objeto** `{results:[…]}` (antes esperava
+  um array → vinha sempre vazio); `get/delete/list_document(s)` usam `documentId`;
+  `get_related_documents` (inexistente no daemon) é **emulado** via `search_memory`
+  do texto do doc. `peekMode()` lê o modo sem conectar.
+- **Caminho quente roteável**: leitura (`scripts/lib/retrieve-core.js` →
+  `retrieveRemote`) e escrita/busca do brain-server (`servers/brain-server/lib/mcp-server.js`
+  → `handleRemoteKbTool`, `REMOTE_KB_TOOLS`) passam pelo dispatcher quando o backend
+  está em modo `mcp-memory` — então a injeção de contexto e o `brain_store` realmente
+  usam o servidor externo, não só CLI/dashboard.
+- **Config** (`config/brain-config.json`): `backend.mcpMemory` ganhou
+  `transport`/`serverUrl`/`runDir`/`projectId` (defaults `stdio`/vazios; `backend.type`
+  segue `local`). **Config-tester** (`scripts/config-testers/mcp-memory.js`) valida o
+  modo `http` sondando o `/health` do daemon e reportando a versão.
+- **Limitação v1 (honesta)**: o scope `user` (lições cross-project) não é modelado
+  remotamente — em modo remoto tudo fica sob o `projectId`; `scope` vira só metadata.
+- Testes herméticos novos (daemon `/mcp` fake): transport HTTP (sessão+projectId),
+  mapeadores do dispatcher e config-tester remoto. Gate **161/0**.
+
+### Fixed — teste flaky de isolamento (`brain-health [UserPromptSubmit/defects→advisory]`)
+
+Usava um data-dir **fixo** (`/tmp/ccb-bh-broken`), então o stamp de throttle
+(`.brain-health-last`, cooldown 60s) vazava entre execuções do gate e estrangulava o
+advisory no 2º run rápido → falso negativo. Agora usa um `mkdtemp` fresco como os
+demais brain-health tests.
+
 ## [1.11.0] - 2026-06-30
 
 ### Added — model-router: roteamento de modelo por peso do prompt (proxy local)

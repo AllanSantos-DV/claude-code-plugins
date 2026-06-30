@@ -32,6 +32,15 @@ const KB_TOOLS = new Set([
   'brain_search', 'brain_store', 'capture_lesson', 'brain_related', 'brain_count', 'brain_retrieve_context',
 ]);
 
+/**
+ * KB tools routed to the external daemon when backend.type === 'mcp-memory'.
+ * brain_retrieve_context is excluded on purpose: its handler calls retrieve-core,
+ * which is itself remote-aware, so routing it twice would be redundant.
+ */
+const REMOTE_KB_TOOLS = new Set([
+  'brain_search', 'brain_store', 'capture_lesson', 'brain_related', 'brain_count',
+]);
+
 export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
   const PLUGIN_ROOT = pluginRoot;
 
@@ -44,6 +53,50 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
     await index.init({ project });
     await graph.init({ project });
     return { store, index, graph };
+  }
+
+  /**
+   * Remote-backend KB handler: when backend.type === 'mcp-memory', write/search/
+   * related/count tools delegate to the dispatcher (which talks to the external
+   * Native Java daemon) instead of the local SQLite store. The local-only scope
+   * sentinel + graph dedup are NOT modeled remotely — the daemon scopes by the
+   * projectId stamped at the MCP handshake.
+   */
+  async function handleRemoteKbTool(backend, name, args) {
+    const a = args || {};
+    const asText = (o) => ({ content: [{ type: 'text', text: JSON.stringify(o, null, 2) }] });
+    let project;
+    try { project = resolveProject(a); }
+    catch (err) { return { isError: true, content: [{ type: 'text', text: `${name} failed: ${err.message}` }] }; }
+    try {
+      await backend.init({ project, skipEmbedder: true });
+      switch (name) {
+        case 'brain_search': {
+          const hits = await backend.search(a.query, { topK: a.topK || 5, minScore: typeof a.minScore === 'number' ? a.minScore : 0 });
+          return asText({ query: a.query, project, scope: a.scope || 'both', count: hits.length, results: hits, backend: 'mcp-memory' });
+        }
+        case 'brain_store': {
+          const id = await backend.save({ title: a.title, summary: a.summary, content: { detail: a.detail || a.summary }, type: a.type || 'note', tags: Array.isArray(a.tags) ? a.tags : [], confidence: typeof a.confidence === 'number' ? a.confidence : 0.8, scope: a.scope || 'auto', source: a.sourceUrl ? { url: a.sourceUrl } : {} });
+          return asText({ id, project, scope: a.scope || 'auto', status: 'saved', title: a.title, type: a.type || 'note', backend: 'mcp-memory' });
+        }
+        case 'capture_lesson': {
+          const id = await backend.save({ title: a.title, summary: a.summary, content: { detail: a.detail || a.summary }, type: a.type || 'lesson', tags: Array.isArray(a.tags) ? a.tags : [], confidence: typeof a.confidence === 'number' ? a.confidence : 0.85, scope: a.scope || 'auto' });
+          return asText({ decision: 'admit', id, type: a.type || 'lesson', project, scope: a.scope || 'auto', backend: 'mcp-memory' });
+        }
+        case 'brain_related': {
+          const related = await backend.getRelated(a.id);
+          return asText({ id: a.id, project, count: related.length, related, backend: 'mcp-memory' });
+        }
+        case 'brain_count': {
+          const count = await backend.count();
+          return asText({ project, count, backend: 'mcp-memory' });
+        }
+        default:
+          return { isError: true, content: [{ type: 'text', text: `Unknown remote KB tool: ${name}` }] };
+      }
+    } catch (err) {
+      return { isError: true, content: [{ type: 'text', text: `${name} failed (remote): ${err.message}` }] };
+    }
   }
 
   const scopeSanitizer = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'scope-sanitizer.js'));
@@ -168,6 +221,15 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
 
   // ─── Tool handlers (faithful move from the previous index.js switch) ───────
   async function handleTool(name, args) {
+    // Remote brain (Native Java daemon): route write/search/related/count KB tools
+    // through the backend dispatcher. brain_retrieve_context is excluded — its case
+    // calls retrieve-core, which is itself remote-aware.
+    if (REMOTE_KB_TOOLS.has(name)) {
+      const backend = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-backend.js'));
+      if (backend.peekMode() === 'mcp-memory') {
+        return handleRemoteKbTool(backend, name, args);
+      }
+    }
     switch (name) {
       case 'research_query': {
         const { query, depth } = args;

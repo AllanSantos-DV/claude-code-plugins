@@ -13,15 +13,41 @@
  */
 const embedder = require('../brain-embedder.js');
 const store = require('../brain-store.js');
+const backend = require('../brain-backend.js');
 const brainConfig = require('./brain-config.js');
 const { extractKeywords } = require('./text-utils.js');
 const { searchTwoPass } = require('./scope-search.js');
 
 /**
+ * Remote brain (Native Java daemon): delegate retrieval to the backend dispatcher,
+ * which embeds + searches server-side. No local embedder is loaded in this path.
+ * @returns {Promise<{entries:object[], keywords:string[], project:string, reason?:string}>}
+ */
+async function retrieveRemote(prompt, { project, topK, keywords }) {
+  try {
+    await backend.init({ project, skipEmbedder: true });
+    const hits = await backend.search(prompt, { topK: topK + 4 });
+    const seenTitles = new Set();
+    const entries = [];
+    for (const h of hits) {
+      const t = (h.title || '').trim().toLowerCase();
+      if (t && seenTitles.has(t)) continue;
+      seenTitles.add(t);
+      entries.push({ id: h.id, title: h.title, type: h.type || 'memory', summary: h.summary || '' });
+      if (entries.length >= topK) break;
+    }
+    return { entries, keywords, project, reason: entries.length ? undefined : 'no-match' };
+  } catch (err) {
+    console.error(`[retrieve-core] remote retrieve failed: ${err.message}`);
+    return { entries: [], keywords, project, reason: 'remote-error' };
+  }
+}
+
+/**
  * @param {string} prompt
  * @param {{project?:string}} opts
  * @returns {Promise<{entries:object[], keywords:string[], project:string, reason?:string}>}
- *   reason (when entries is empty): 'short' | 'no-embedder' | 'no-match'.
+ *   reason (when entries is empty): 'short' | 'no-embedder' | 'no-match' | 'remote-error'.
  */
 async function retrieve(prompt, opts = {}) {
   const project = opts.project || 'default';
@@ -30,6 +56,12 @@ async function retrieve(prompt, opts = {}) {
   if (keywords.length < 3) return { entries: [], keywords, project, reason: 'short' };
 
   const { topK, minScore } = brainConfig.getRetrievalFast();
+
+  // Remote backend → the external daemon owns embeddings + search.
+  if (backend.peekMode() === 'mcp-memory') {
+    return retrieveRemote(prompt, { project, topK, keywords });
+  }
+
   await store.init({ project });
   if (!embedder.getStatus().ready) await embedder.init();
   const vector = await embedder.embed(prompt);

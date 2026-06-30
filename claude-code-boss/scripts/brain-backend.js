@@ -36,6 +36,15 @@ function uuid() { return crypto.randomUUID(); }
 function now() { return new Date().toISOString(); }
 
 // ── MCP mode wrappers ──
+//
+// These target the Native Java mcp-memory-server tool contract (v2.10.x):
+//   add_document    { content, metadata?, documentId? } → "Document added with ID: <uuid>"
+//   search_memory   { query, topK?, minScore?, metadata? } → {results:[{text,score,documentId,chunkIndex}]}
+//   get_document    { documentId }    delete_document { documentId }
+//   list_documents  { metadata? }     summarize_memory { query?, maxItems?, metadata? }
+// There is no get_related_documents — relatedness is emulated via a semantic search.
+// Project scope is set ONCE at the MCP `initialize` handshake (projectId), so the
+// per-call payloads never repeat it.
 
 function parseResult(result) {
   if (!result || !result.text) return null;
@@ -46,69 +55,118 @@ function parseResult(result) {
   }
 }
 
-function parseResultArray(result) {
-  if (!result || !result.text) return [];
-  try {
-    const parsed = JSON.parse(result.text);
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (err) {
-    console.error(`[BRAIN-BACKEND] parseResultArray: ${err.message}`);
-    return [];
-  }
+/** search_memory returns an OBJECT {results:[...]}, not a bare array. */
+function parseSearchResults(result) {
+  const data = parseResult(result);
+  if (!data) return [];
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data.results)) return data.results;
+  if (Array.isArray(data.documents)) return data.documents;
+  return [];
+}
+
+/** list_documents may return an array or {documents|results|items:[...]}. */
+function parseListResults(result) {
+  const data = parseResult(result);
+  if (!data) return [];
+  if (Array.isArray(data)) return data;
+  return data.documents || data.results || data.items || [];
+}
+
+/** add_document returns plain text "Document added with ID: <uuid>" (not JSON). */
+function parseAddedId(result) {
+  if (!result || !result.text) return '';
+  const m = String(result.text).match(/ID:\s*([0-9a-fA-F-]{8,})/);
+  return m ? m[1] : '';
+}
+
+/** Build a one-line title from free text when the daemon returns no metadata. */
+function deriveTitle(text) {
+  const first = String(text || '').split(/\r?\n/)[0].trim();
+  return first.length > 80 ? `${first.slice(0, 77)}...` : (first || 'memory');
 }
 
 async function initMcp() {
   const config = loadConfig();
   const mcpCfg = (config.backend && config.backend.mcpMemory) || {};
+  const transport = mcpCfg.transport === 'http' ? 'http' : 'stdio';
+  const McpClient = require('./mcp-client.js');
+
+  if (transport === 'http') {
+    // Remote mode: talk to an already-running daemon. URL is explicit or
+    // auto-discovered from ~/.mcp-memory/run/daemon.json. No JAR, no spawn.
+    _mcp = new McpClient({
+      transport: 'http',
+      serverUrl: mcpCfg.serverUrl || '',
+      runDir: mcpCfg.runDir || '',
+      projectId: mcpCfg.projectId || _project,
+      timeout: mcpCfg.timeout || 60000,
+    });
+    await _mcp.connect();
+    return;
+  }
+
   const jarDir = path.join(DATA_DIR, 'mcp');
   if (!fs.existsSync(jarDir)) fs.mkdirSync(jarDir, { recursive: true });
   const jarPath = mcpCfg.jarPath || path.join(jarDir, 'mcp-memory-server.jar');
-  const McpClient = require('./mcp-client.js');
   _mcp = new McpClient({
     jarPath,
     workspacePath: path.join(DATA_DIR, 'brain', _project),
     javaArgs: mcpCfg.javaArgs || ['-Xmx512m'],
     downloadUrl: mcpCfg.downloadUrl || '',
     expectedSha256: mcpCfg.expectedSha256 || '',
+    projectId: mcpCfg.projectId || _project,
     timeout: mcpCfg.timeout || 60000,
   });
   await _mcp.connect();
 }
 
+/** Pack a Boss entry into a single searchable content blob for the daemon. */
+function entryToContent(entry) {
+  const detail = typeof entry.content === 'string'
+    ? entry.content
+    : (entry.content && entry.content.detail) || '';
+  return [entry.title, entry.summary, detail].map(s => (s || '').trim()).filter(Boolean).join('\n\n')
+    || JSON.stringify(entry.content || {});
+}
+
 async function saveMcp(entry) {
-  const result = await _mcp.callTool('add_document', {
+  const metadata = {
     title: entry.title || '',
-    summary: entry.summary || '',
-    detail: typeof entry.content === 'string' ? entry.content
-      : JSON.stringify(entry.content || {}),
     type: entry.type || 'note',
     tags: entry.tags || [],
     confidence: entry.confidence || 0.5,
-    source: JSON.stringify(entry.source || {}),
+    scope: entry.scope || '',
     sessionId: entry.session_id || '',
+    source: entry.source || {},
+    ...(entry.id ? { brainId: entry.id } : {}),
+  };
+  const result = await _mcp.callTool('add_document', {
+    content: entryToContent(entry),
+    metadata,
   });
-  const data = parseResult(result) || {};
-  return data.id || entry.id || uuid();
+  return parseAddedId(result) || entry.id || uuid();
 }
 
 async function getMcp(id) {
-  const result = await _mcp.callTool('get_document', { id });
+  const result = await _mcp.callTool('get_document', { documentId: id });
   const data = parseResult(result);
   if (!data) return null;
   return normalizeEntry(data);
 }
 
 function normalizeEntry(data) {
+  const meta = data.metadata || {};
   const entry = { ...data };
-  entry.id = data.id || data.documentId || '';
-  entry.title = data.title || '';
-  entry.summary = data.summary || '';
-  entry.type = data.type || 'note';
-  entry.tags = data.tags || [];
+  entry.id = data.documentId || data.id || meta.brainId || '';
+  entry.title = data.title || meta.title || deriveTitle(data.content || data.text || '');
+  entry.summary = data.summary || meta.summary || (typeof data.content === 'string' ? data.content : data.text || '');
+  entry.type = data.type || meta.type || 'note';
+  entry.tags = data.tags || meta.tags || [];
   entry.content = data.content || {};
-  entry.source = data.source || {};
-  entry.confidence = data.confidence || 0.5;
-  entry.session_id = data.sessionId || data.session_id || '';
+  entry.source = data.source || meta.source || {};
+  entry.confidence = data.confidence || meta.confidence || 0.5;
+  entry.session_id = data.sessionId || meta.sessionId || data.session_id || '';
   entry.created_at = data.createdAt || data.created_at || now();
   entry.access_count = data.accessCount || data.access_count || 0;
   if (typeof entry.content === 'string') {
@@ -126,21 +184,22 @@ async function searchMcp(query, opts = {}) {
   const result = await _mcp.callTool('search_memory', {
     query: typeof query === 'string' ? query : '',
     topK,
-    minScore,
-    typeFilter: opts.type || '',
+    ...(minScore > 0 ? { minScore } : {}),
+    ...(opts.type ? { metadata: { type: opts.type } } : {}),
   });
-  const items = parseResultArray(result);
-  return items.slice(0, topK).map(item => normalizeSearchItem(item));
+  return parseSearchResults(result).slice(0, topK).map(item => normalizeSearchItem(item));
 }
 
 function normalizeSearchItem(item) {
+  const meta = item.metadata || {};
+  const text = item.text || item.summary || '';
   return {
-    id: item.id || item.documentId || '',
-    title: item.title || '',
-    summary: item.summary || '',
-    type: item.type || 'note',
+    id: item.documentId || item.id || '',
+    title: item.title || meta.title || deriveTitle(text),
+    summary: item.summary || text,
+    type: item.type || meta.type || 'memory',
     score: item.score || item.relevance || 0,
-    confidence: item.confidence || 0.5,
+    confidence: item.confidence || meta.confidence || 0.5,
     createdAt: item.createdAt || item.created_at || '',
     accessCount: item.accessCount || item.access_count || 0,
   };
@@ -152,34 +211,42 @@ async function searchByKeywordsMcp(keywords, opts = {}) {
 }
 
 async function deleteMcp(id) {
-  await _mcp.callTool('delete_document', { id });
+  await _mcp.callTool('delete_document', { documentId: id });
 }
 
-async function listMcp(type, project) {
+async function listMcp(type, _project) {
   const result = await _mcp.callTool('list_documents', {
-    ...(type ? { typeFilter: type } : {}),
-    ...(project ? { project } : {}),
+    ...(type ? { metadata: { type } } : {}),
   });
-  return parseResultArray(result);
+  return parseListResults(result).map(item => normalizeSearchItem(item));
 }
 
 async function countMcp() {
-  const result = await _mcp.callTool('summarize_memory', {});
+  // No dedicated count tool — list (scoped by the session projectId) and count.
+  const result = await _mcp.callTool('list_documents', {});
   const data = parseResult(result);
   if (data && typeof data.count === 'number') return data.count;
   if (data && typeof data.totalDocuments === 'number') return data.totalDocuments;
-  return 0;
+  return parseListResults(result).length;
 }
 
 async function getRelatedMcp(id) {
-  const result = await _mcp.callTool('get_related_documents', { id, topK: 10 });
-  const items = parseResultArray(result);
-  return items.map(item => ({
-    id: item.id || item.documentId || '',
-    title: item.title || '',
-    type: item.type || 'note',
-    score: item.score || item.relevance || 0,
-    edgeType: item.edgeType || item.relation || 'related',
+  // The daemon has no relatedness tool — emulate it: fetch the doc, then run a
+  // semantic search with its own text and drop the seed document from the hits.
+  let seed;
+  try { seed = await getMcp(id); }
+  catch (err) { console.error(`[BRAIN-BACKEND] getRelatedMcp seed: ${err.message}`); return []; }
+  if (!seed) return [];
+  const queryText = [seed.title, seed.summary].filter(Boolean).join(' ').trim()
+    || deriveTitle(seed.content && seed.content.text);
+  if (!queryText) return [];
+  const hits = await searchMcp(queryText, { topK: 11 });
+  return hits.filter(h => h.id && h.id !== id).slice(0, 10).map(h => ({
+    id: h.id,
+    title: h.title,
+    type: h.type,
+    score: h.score,
+    edgeType: 'related',
   }));
 }
 
@@ -404,11 +471,23 @@ function getStatus() {
 
 function getMode() { return _mode; }
 
+/** Read the configured backend type WITHOUT connecting (for hot-path routing). */
+function peekMode() {
+  if (_mode) return _mode;
+  const config = loadConfig();
+  return (config.backend && config.backend.type) || 'local';
+}
+
 // text utilities centralized in lib/text-utils.js (STOP_WORDS + extractKeywords)
 const _textUtils = require('./lib/text-utils.js');
 
 module.exports = {
   init, save, get, search, searchByKeywords,
   delete: delete_, list, count, getRelated, close,
-  getStatus, getMode,
+  getStatus, getMode, peekMode,
+  // Exposed for deterministic offline tests of the MCP-tool mappings.
+  __testHooks: {
+    parseSearchResults, parseListResults, parseAddedId, deriveTitle,
+    entryToContent, normalizeSearchItem, normalizeEntry,
+  },
 };

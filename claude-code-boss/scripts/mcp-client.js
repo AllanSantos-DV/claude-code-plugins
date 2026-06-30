@@ -4,6 +4,8 @@ const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const https = require('https');
+const http = require('http');
+const { URL } = require('url');
 const crypto = require('crypto');
 const EventEmitter = require('events');
 
@@ -25,10 +27,31 @@ class McpClient extends EventEmitter {
     this._process = null;
     this._initialized = false;
     this._startTime = 0;
+
+    // ── HTTP (StreamableHTTP /mcp) transport — talk to an already-running daemon ──
+    // transport: 'stdio' (default, spawns the JAR) | 'http' (connects to a daemon).
+    this.transport = opts.transport === 'http' ? 'http' : 'stdio';
+    // Explicit daemon base URL (e.g. http://127.0.0.1:61756). Empty in http mode
+    // → auto-discover via the daemon registry (~/.mcp-memory/run/daemon.json).
+    this.serverUrl = opts.serverUrl || '';
+    // project_id stamped into the MCP `initialize` handshake so the unified DB
+    // scopes this connection to the caller's project (frozen contract param).
+    this.projectId = opts.projectId || '';
+    this.runDir = opts.runDir || process.env.MCP_RUN_DIR
+      || path.join(os.homedir(), '.mcp-memory', 'run');
+    this._protocolVersion = this.transport === 'http' ? '2025-06-18' : '2024-11-05';
+    this._sessionId = '';
+    this._resolvedUrl = '';
   }
 
   async connect() {
     if (this._initialized) return;
+
+    if (this.transport === 'http') {
+      await this._connectHttp();
+      this._initialized = true;
+      return;
+    }
 
     const jarExists = fs.existsSync(this.jarPath);
     if (!jarExists && this.downloadUrl) {
@@ -85,6 +108,105 @@ class McpClient extends EventEmitter {
     this._startTime = Date.now();
     await this._handshake();
     this._initialized = true;
+  }
+
+  // ─── HTTP (StreamableHTTP /mcp) transport ──────────────────────────────────
+
+  /** Connect to an already-running daemon over /mcp (no process spawn). */
+  async _connectHttp() {
+    this._resolvedUrl = (this.serverUrl || this._discoverDaemonUrl() || '').replace(/\/+$/, '');
+    if (!this._resolvedUrl) {
+      throw new Error(
+        'MCP remote mode: no server URL. Set "backend.mcpMemory.serverUrl" in ' +
+        'config/brain-config.json or start the Native Java daemon so it announces ' +
+        `itself in ${path.join(this.runDir, 'daemon.json')}.`,
+      );
+    }
+    const alive = await this._httpHealth(this._resolvedUrl);
+    if (!alive) {
+      throw new Error(`MCP daemon at ${this._resolvedUrl} is not reachable (/health failed). Is it running?`);
+    }
+    this._startTime = Date.now();
+    await this._handshake();
+  }
+
+  /** Read the daemon registry (~/.mcp-memory/run/daemon.json) and return its base URL. */
+  _discoverDaemonUrl() {
+    const reg = path.join(this.runDir, 'daemon.json');
+    try {
+      const raw = JSON.parse(fs.readFileSync(reg, 'utf8'));
+      if (raw && raw.url && raw.port) return String(raw.url);
+      console.error(`[MCP] daemon.json at ${reg} missing url/port`);
+      return '';
+    } catch (err) {
+      console.error(`[MCP] daemon registry not found/readable (${reg}): ${err.message}`);
+      return '';
+    }
+  }
+
+  /** GET <url>/health — 200 or 503 both mean "process alive". Returns boolean. */
+  _httpHealth(baseUrl) {
+    return new Promise((resolve) => {
+      let u;
+      try { u = new URL(baseUrl + '/health'); }
+      catch (err) { console.error(`[MCP] bad server URL "${baseUrl}": ${err.message}`); return resolve(false); }
+      const lib = u.protocol === 'https:' ? https : http;
+      const req = lib.get({ hostname: u.hostname, port: u.port, path: u.pathname, timeout: 5000 }, (res) => {
+        res.resume();
+        resolve(res.statusCode === 200 || res.statusCode === 503);
+      });
+      req.on('timeout', () => { req.destroy(); resolve(false); });
+      req.on('error', () => resolve(false));
+    });
+  }
+
+  /** POST one JSON-RPC message to <url>/mcp. Resolves the unwrapped result (or void for notifications). */
+  _httpSend(method, params, isNotification) {
+    return new Promise((resolve, reject) => {
+      let u;
+      try { u = new URL(this._resolvedUrl + '/mcp'); }
+      catch (err) { return reject(new Error(`MCP bad URL: ${err.message}`)); }
+      const payload = { jsonrpc: '2.0', method };
+      if (!isNotification) payload.id = ++this._requestId;
+      if (params !== undefined) payload.params = params;
+      const data = Buffer.from(JSON.stringify(payload), 'utf8');
+
+      const headers = { 'Content-Type': 'application/json', 'Content-Length': data.length };
+      // NOTE: deliberately NO `Origin` header — the daemon 403s a non-loopback Origin; absent = allowed.
+      if (this._sessionId) headers['Mcp-Session-Id'] = this._sessionId;
+
+      const lib = u.protocol === 'https:' ? https : http;
+      const req = lib.request(
+        { hostname: u.hostname, port: u.port, path: u.pathname, method: 'POST', headers, timeout: this.requestTimeout },
+        (res) => {
+          // The initialize response carries the session id every later call must echo.
+          const sid = res.headers['mcp-session-id'];
+          if (sid) this._sessionId = sid;
+          let body = '';
+          res.on('data', (c) => (body += c));
+          res.on('end', () => {
+            if (isNotification) {
+              if (res.statusCode !== 202 && res.statusCode !== 204 && res.statusCode !== 200) {
+                console.error(`[MCP] notification "${method}" unexpected HTTP ${res.statusCode}`);
+              }
+              return resolve(undefined);
+            }
+            if (res.statusCode < 200 || res.statusCode >= 300) {
+              return reject(new Error(`MCP "${method}" HTTP ${res.statusCode}: ${body.slice(0, 300)}`));
+            }
+            let msg;
+            try { msg = JSON.parse(body); }
+            catch (err) { return reject(new Error(`MCP "${method}" bad JSON: ${err.message}`)); }
+            if (msg.error) return reject(new Error(`MCP "${method}" error: ${JSON.stringify(msg.error)}`));
+            resolve(this._unwrapResult(msg.result));
+          });
+        },
+      );
+      req.on('timeout', () => { req.destroy(new Error(`MCP request "${method}" timed out after ${this.requestTimeout}ms`)); });
+      req.on('error', reject);
+      req.write(data);
+      req.end();
+    });
   }
 
   _findJava() {
@@ -222,9 +344,11 @@ class McpClient extends EventEmitter {
 
   async _handshake() {
     await this._sendRequest('initialize', {
-      protocolVersion: '2024-11-05',
+      protocolVersion: this._protocolVersion,
       capabilities: {},
       clientInfo: { name: 'claude-code-brain', version: '1.0.0' },
+      // Frozen contract: stamps the unified-DB scope for this whole session.
+      ...(this.projectId ? { projectId: this.projectId } : {}),
     });
 
     this._sendNotification('notifications/initialized');
@@ -239,6 +363,7 @@ class McpClient extends EventEmitter {
   }
 
   _sendRequest(method, params) {
+    if (this.transport === 'http') return this._httpSend(method, params, false);
     return new Promise((resolve, reject) => {
       const id = ++this._requestId;
       const msg = JSON.stringify({
@@ -259,12 +384,25 @@ class McpClient extends EventEmitter {
   }
 
   _sendNotification(method, params) {
+    if (this.transport === 'http') {
+      this._httpSend(method, params, true).catch(err => console.error(`[MCP] notification "${method}": ${err.message}`));
+      return;
+    }
     const msg = JSON.stringify({
       jsonrpc: '2.0',
       method,
       ...(params ? { params } : {}),
     }) + '\n';
     this._process.stdin.write(msg);
+  }
+
+  /** Unwrap a JSON-RPC result into {text, raw} when it's MCP text content, else the raw result. */
+  _unwrapResult(result) {
+    const content = result?.content;
+    if (Array.isArray(content) && content.length > 0 && content[0].type === 'text') {
+      return { text: content[0].text, raw: result };
+    }
+    return result || {};
   }
 
   _processBuffer() {
@@ -288,25 +426,40 @@ class McpClient extends EventEmitter {
       if (msg.error) {
         reject(new Error(`MCP "${method}" error: ${JSON.stringify(msg.error)}`));
       } else {
-        const content = msg.result?.content;
-        if (Array.isArray(content) && content.length > 0 && content[0].type === 'text') {
-          try {
-            resolve({ text: content[0].text, raw: msg.result });
-          } catch {
-            resolve({ text: content[0].text, raw: msg.result });
-          }
-        } else {
-          resolve(msg.result || {});
-        }
+        resolve(this._unwrapResult(msg.result));
       }
     }
   }
 
   isConnected() {
+    if (this.transport === 'http') return this._initialized;
     return this._initialized && this._process !== null && !this._process.killed;
   }
 
   close() {
+    if (this.transport === 'http') {
+      // Best-effort DELETE /mcp to end the daemon session; never throw on close.
+      if (this._sessionId && this._resolvedUrl) {
+        try {
+          const u = new URL(this._resolvedUrl + '/mcp');
+          const lib = u.protocol === 'https:' ? https : http;
+          const req = lib.request(
+            { hostname: u.hostname, port: u.port, path: u.pathname, method: 'DELETE', headers: { 'Mcp-Session-Id': this._sessionId }, timeout: 3000 },
+            (res) => res.resume(),
+          );
+          req.on('timeout', () => req.destroy());
+          req.on('error', (err) => console.error(`[MCP] close DELETE: ${err.message}`));
+          req.end();
+        } catch (err) { console.error(`[MCP] close DELETE: ${err.message}`); }
+      }
+      for (const [id, { reject }] of this._pending) {
+        reject(new Error('MCP client closed'));
+        this._pending.delete(id);
+      }
+      this._sessionId = '';
+      this._initialized = false;
+      return;
+    }
     if (this._process) {
       this._sendNotification('notifications/exit');
       setTimeout(() => {

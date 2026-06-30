@@ -150,7 +150,7 @@ const TESTS = [
     name: 'brain-health      [UserPromptSubmit/defects→advisory]',
     script: 'brain-health.js',
     payload: { hook_event_name: 'UserPromptSubmit', cwd: process.cwd() },
-    extraEnv: { CLAUDE_PLUGIN_ROOT: '/nonexistent-plugin-root', CLAUDE_PLUGIN_DATA: '/tmp/ccb-bh-broken' },
+    extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: '/nonexistent-plugin-root', CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bh-broken-')) }),
     expect: { hookEvent: 'UserPromptSubmit' },
   },
 
