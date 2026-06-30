@@ -320,8 +320,114 @@ test('brain-backend: keyword path applies minScore threshold', async () => {
   await backend.close();
 });
 
+// ─── MCP HTTP (StreamableHTTP) transport + remote mappings ───────────────────
+const http = require('http');
+
+/** Start a fake daemon mimicking the /mcp contract; returns {url, port, seen, close}. */
+function startFakeDaemon(opts = {}) {
+  const seen = { initProjectId: null, initHadSession: false, toolsListSession: null, callSession: null, callArgs: null };
+  const server = http.createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ status: 'healthy', version: opts.version || '9.9.9' }));
+    }
+    if (req.method === 'DELETE' && req.url === '/mcp') { res.writeHead(200); return res.end(); }
+    if (req.method === 'POST' && req.url === '/mcp') {
+      let body = '';
+      req.on('data', (c) => (body += c));
+      req.on('end', () => {
+        let msg = {}; try { msg = JSON.parse(body); } catch (err) { console.error('fake parse', err.message); }
+        const sid = req.headers['mcp-session-id'] || null;
+        if (msg.method === 'initialize') {
+          seen.initProjectId = msg.params && msg.params.projectId;
+          seen.initHadSession = !!sid;
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Mcp-Session-Id': 'sess-123', 'MCP-Protocol-Version': '2025-06-18' });
+          return res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2025-06-18', serverInfo: { name: 'fake', version: '9.9.9' }, capabilities: {} } }));
+        }
+        if (msg.method === 'notifications/initialized') { res.writeHead(204); return res.end(); }
+        if (msg.method === 'tools/list') {
+          seen.toolsListSession = sid;
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { tools: [{ name: 'add_document' }, { name: 'search_memory' }] } }));
+        }
+        if (msg.method === 'tools/call') {
+          seen.callSession = sid;
+          seen.callArgs = msg.params;
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: 'OK:' + (msg.params && msg.params.name) }] } }));
+        }
+        res.writeHead(400); return res.end('bad');
+      });
+      return;
+    }
+    res.writeHead(404); res.end();
+  });
+  return new Promise((resolve) => {
+    server.listen(0, '127.0.0.1', () => {
+      const port = server.address().port;
+      resolve({ url: `http://127.0.0.1:${port}`, port, seen, close: () => new Promise((r) => server.close(r)) });
+    });
+  });
+}
+
+test('mcp-client http: handshake captures session + stamps projectId + echoes session id', async () => {
+  const McpClient = require('./mcp-client.js');
+  const daemon = await startFakeDaemon();
+  try {
+    const c = new McpClient({ transport: 'http', serverUrl: daemon.url, projectId: 'P1', timeout: 4000 });
+    await c.connect();
+    assert(c.isConnected(), 'should be connected');
+    assertEq(c._sessionId, 'sess-123');
+    assertEq(daemon.seen.initProjectId, 'P1');
+    assert(!daemon.seen.initHadSession, 'initialize must NOT carry a session id');
+    assertEq(daemon.seen.toolsListSession, 'sess-123');
+    const r = await c.callTool('search_memory', { query: 'x' });
+    assertEq(r.text, 'OK:search_memory');
+    assertEq(daemon.seen.callSession, 'sess-123');
+    assertEq(daemon.seen.callArgs.arguments.query, 'x');
+    c.close();
+    await new Promise((r) => setTimeout(r, 60));
+  } finally {
+    await daemon.close();
+  }
+});
+
+test('brain-backend __testHooks: MCP-tool mappings match the real daemon contract', () => {
+  const h = require('./brain-backend.js').__testHooks;
+  // add_document returns plain text "Document added with ID: <uuid>"
+  assertEq(h.parseAddedId({ text: 'Document added with ID: de2d91b3-08f4-4129-95e7-27292c75cf8e' }), 'de2d91b3-08f4-4129-95e7-27292c75cf8e');
+  assertEq(h.parseAddedId({ text: 'no id here' }), '');
+  // search_memory returns an OBJECT {results:[...]} — not a bare array
+  const sr = h.parseSearchResults({ text: JSON.stringify({ results: [{ text: 'hello', score: 0.9, documentId: 'd1' }] }) });
+  assertEq(sr.length, 1);
+  assertEq(sr[0].documentId, 'd1');
+  assertEq(h.parseSearchResults({ text: JSON.stringify([{ documentId: 'a' }]) }).length, 1);
+  // content packing + result normalization (no metadata in search hits → derive)
+  assertEq(h.entryToContent({ title: 'T', summary: 'S', content: { detail: 'D' } }), 'T\n\nS\n\nD');
+  const item = h.normalizeSearchItem({ text: 'hello world', score: 0.5, documentId: 'd2' });
+  assertEq(item.id, 'd2');
+  assertEq(item.summary, 'hello world');
+  assertEq(item.type, 'memory');
+  assertEq(h.deriveTitle('first line\nsecond line'), 'first line');
+});
+
+test('config-testers: mcp-memory http mode probes the daemon /health', async () => {
+  const tester = require('./config-testers/mcp-memory.js');
+  const daemon = await startFakeDaemon({ version: '2.10.1' });
+  try {
+    const ok = await tester.test({ transport: 'http', serverUrl: daemon.url });
+    assert(ok.ok, `remote health should pass: ${ok.error || ''}`);
+    assertEq(ok.details.daemonVersion, '2.10.1');
+    const bad = await tester.test({ transport: 'http', serverUrl: '', runDir: path.join(os.tmpdir(), 'no-daemon-' + Date.now()) });
+    assert(!bad.ok, 'missing daemon should fail');
+  } finally {
+    await daemon.close();
+  }
+});
+
 // ─── decision-detect (regex extractors + heuristic) ─────────────────────────
 const dd = require('./decision-detect.js');
+
 
 test('decision-detect: extractCommitMsg — -m "..."', () => {
   const out = dd.extractCommitMsg('git commit -m "feat(x): use foo over bar because perf"');

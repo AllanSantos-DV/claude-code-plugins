@@ -1,17 +1,72 @@
 'use strict';
 /**
  * config-testers/mcp-memory.js — validates a brain-config.backend.mcpMemory subtree.
- * Input:  { jarPath, javaArgs?, downloadUrl?, expectedSha256? }
+ * Input:  { transport?, serverUrl?, runDir?, jarPath, javaArgs?, downloadUrl?, expectedSha256? }
  * Output: { ok, details?, error?, ms }
  *
- * Phase 1 (this PR): cheap checks only — no JAR download, no full sha256 over very
- * large files (guarded), no MCP handshake. `deepTest:true` is a no-op placeholder.
+ * transport 'http'  → probe an already-running daemon (/health), no JAR involved.
+ * transport 'stdio' → cheap local checks (Java present, JAR magic, optional sha256).
  */
 const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const http = require('http');
+const https = require('https');
+const { URL } = require('url');
 const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 
 const MIN_JAVA_MAJOR = 21;
+
+/** Resolve the daemon base URL from an explicit serverUrl or the daemon registry. */
+function resolveDaemonUrl(input) {
+  if (input && input.serverUrl && input.serverUrl.trim()) return input.serverUrl.trim();
+  const runDir = (input && input.runDir && input.runDir.trim())
+    || process.env.MCP_RUN_DIR || path.join(os.homedir(), '.mcp-memory', 'run');
+  const reg = path.join(runDir, 'daemon.json');
+  try {
+    const raw = JSON.parse(fs.readFileSync(reg, 'utf8'));
+    return raw && raw.url ? String(raw.url) : '';
+  } catch (err) {
+    console.error(`[mcp-memory tester] daemon registry unreadable (${reg}): ${err.message}`);
+    return '';
+  }
+}
+
+/** GET <url>/health — 200 or 503 both mean "process alive". */
+function httpHealth(baseUrl) {
+  return new Promise((resolve) => {
+    let u;
+    try { u = new URL(baseUrl.replace(/\/+$/, '') + '/health'); }
+    catch (err) { return resolve({ ok: false, error: `bad URL: ${err.message}` }); }
+    const lib = u.protocol === 'https:' ? https : http;
+    const req = lib.get({ hostname: u.hostname, port: u.port, path: u.pathname, timeout: 5000 }, (res) => {
+      let b = '';
+      res.on('data', (c) => (b += c));
+      res.on('end', () => resolve({ ok: res.statusCode === 200 || res.statusCode === 503, status: res.statusCode, body: b }));
+    });
+    req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: 'timeout' }); });
+    req.on('error', (e) => resolve({ ok: false, error: e.message }));
+  });
+}
+
+async function checkRemote(input, t0) {
+  const url = resolveDaemonUrl(input);
+  if (!url) {
+    return { ok: false, error: 'http mode: no serverUrl and no daemon.json found — start the Native Java daemon or set serverUrl', ms: Date.now() - t0 };
+  }
+  const h = await httpHealth(url);
+  if (!h.ok) {
+    return { ok: false, error: `daemon /health failed at ${url}: ${h.error || ('HTTP ' + h.status)}`, ms: Date.now() - t0 };
+  }
+  let info = {};
+  try { info = JSON.parse(h.body); } catch (err) { console.error(`[mcp-memory tester] health parse: ${err.message}`); }
+  return {
+    ok: true,
+    details: { action: 'remote-daemon', serverUrl: url, daemonStatus: info.status || 'ok', daemonVersion: info.version || '' },
+    ms: Date.now() - t0,
+  };
+}
 
 function detectJava() {
   const r = spawnSync('java', ['-version'], { encoding: 'utf-8', timeout: 5000 });
@@ -58,6 +113,11 @@ function checkJarMagic(jarPath) {
 
 async function test(input) {
   const t0 = Date.now();
+  const transport = (input && input.transport || 'stdio').trim();
+
+  // Remote mode — probe the running daemon; no JAR/Java needed.
+  if (transport === 'http') return checkRemote(input, t0);
+
   const jarPath = (input && input.jarPath || '').trim();
   const downloadUrl = (input && input.downloadUrl || '').trim();
   const expectedSha256 = (input && input.expectedSha256 || '').trim().toLowerCase();
