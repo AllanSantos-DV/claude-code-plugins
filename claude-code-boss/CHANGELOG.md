@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.11.0] - 2026-06-30
+
 ### Added — model-router: roteamento de modelo por peso do prompt (proxy local)
 
 Um proxy HTTP local (`servers/model-router/`) que fica **entre o Claude Code e a
