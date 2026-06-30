@@ -1299,6 +1299,25 @@ function writeState(port) {
   }, null, 2));
 }
 
+// Sonda /health da porta fixa para saber se quem a ocupa é um model-router NOSSO
+// (vs. outro processo qualquer). Usado no EADDRINUSE para decidir reuso vs. abort.
+function probeOurHealth(port) {
+  return new Promise((resolve) => {
+    const req = http.get(`http://127.0.0.1:${port}/health`, { timeout: 1200 }, (res) => {
+      let buf = '';
+      res.on('data', (d) => { buf += d; });
+      res.on('end', () => {
+        let ok = false;
+        try { ok = res.statusCode === 200 && JSON.parse(buf).status === 'ok'; }
+        catch (err) { void err; ok = false; }
+        resolve(ok);
+      });
+    });
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+  });
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -1328,37 +1347,38 @@ async function main() {
 
   const server = await createServer(config);
 
-  // Tenta a porta configurada; se ocupada, tenta as próximas (até +10).
-  const basePort = config.port || 13456;
-  const MAX_TRIES = 10;
+  // PORTA FIXA: o settings.json env aponta para ela. NUNCA incrementa — se a porta
+  // já tem um model-router NOSSO saudável, esta instância é redundante e sai limpa
+  // (reuso). Se for outro processo, falha sem sequestrar porta alheia. Isso elimina
+  // o "port sprawl" (várias instâncias em portas +1) e mantém a URL estável/fixa.
+  const FIXED_PORT = config.port || 13456;
 
-  const bind = (port, attempt) => {
-    const onError = (e) => {
-      if (e.code === 'EADDRINUSE' && attempt < MAX_TRIES) {
-        logger.warn(`Porta ${port} ocupada, tentando ${port + 1}...`);
-        bind(port + 1, attempt + 1);
-        return;
-      }
-      logger.error('Server error fatal', { err: e.message });
-      process.exit(1);
-    };
-    // `once`: só UM handler de bind ativo por vez (evita exit duplo no EADDRINUSE).
-    server.once('error', onError);
-    server.listen(port, '127.0.0.1', () => {
-      server.removeListener('error', onError);
-      // Handler permanente para erros de runtime após o bind (não derruba o processo).
-      server.on('error', (e) => logger.error('Server runtime error', { err: e.message }));
-      const actual = server.address().port;
-      logger.info(`=== Servidor pronto em http://127.0.0.1:${actual} ===`, { port: actual });
-      writeState(actual);
-      if (actual !== basePort) {
-        logger.warn(`ATENÇÃO: servidor na porta ${actual} mas config base é ${basePort}. ANTHROPIC_BASE_URL deve apontar para http://127.0.0.1:${actual}`);
-      }
-      process.stdout.write(`ROUTER_PORT=${actual}\n`);
-    });
+  const onError = (e) => {
+    if (e.code === 'EADDRINUSE') {
+      probeOurHealth(FIXED_PORT).then((ours) => {
+        if (ours) {
+          logger.info(`Porta ${FIXED_PORT} já tem um model-router saudável — instância redundante, saindo (reuso).`);
+          process.exit(0);
+          return;
+        }
+        logger.error(`Porta ${FIXED_PORT} ocupada por outro processo (não é o model-router). Abortando.`);
+        process.exit(1);
+      });
+      return;
+    }
+    logger.error('Server error fatal', { err: e.message });
+    process.exit(1);
   };
-
-  bind(basePort, 0);
+  // `once`: só UM handler de bind ativo por vez (evita exit duplo no EADDRINUSE).
+  server.once('error', onError);
+  server.listen(FIXED_PORT, '127.0.0.1', () => {
+    server.removeListener('error', onError);
+    // Handler permanente para erros de runtime após o bind (não derruba o processo).
+    server.on('error', (e) => logger.error('Server runtime error', { err: e.message }));
+    logger.info(`=== Servidor pronto em http://127.0.0.1:${FIXED_PORT} ===`, { port: FIXED_PORT });
+    writeState(FIXED_PORT);
+    process.stdout.write(`ROUTER_PORT=${FIXED_PORT}\n`);
+  });
 
   // Graceful shutdown
   process.on('SIGTERM', () => { logger.info('SIGTERM recebido, encerrando'); persistMetrics(); server.close(() => process.exit(0)); });

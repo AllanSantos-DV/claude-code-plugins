@@ -10,16 +10,21 @@ e reescreve o campo `model` para rotear **haiku / sonnet / opus** dentro da pró
 assinatura do usuário — o objetivo é **esticar a janela de acesso**, gastando opus só
 quando o trabalho realmente pede.
 
-- **Engine** (`servers/model-router/index.js`, `wrapper.cs`): bind em
-  porta configurável (13456, com retry até +10), classificação local por âncoras de
-  cosseno e estado/log em `DATA_DIR/model-router/`. A redireção é **isolada no Claude
-  Code** pelo wrapper do `claude.exe` (C#), que injeta `ANTHROPIC_BASE_URL` **só no
-  próprio processo**, lendo a URL de `~/.claude/model-router-url.txt` — porque o Claude
-  Desktop ignora o bloco `env` do `settings.json` e **variáveis globais vazariam para
-  outros apps**.
-- **Ativação por hook** (`scripts/model-router-ensure.js`, `model-router-wrapper-install.js`):
-  SessionStart + UserPromptSubmit compilam/instalam o wrapper, publicam a URL do proxy e
-  sobem o servidor de forma idempotente — **sem nunca tocar em variáveis de ambiente globais**.
+- **Engine** (`servers/model-router/index.js`): bind em **porta fixa** (13456),
+  classificação local por âncoras de cosseno e estado/log em `DATA_DIR/model-router/`.
+  Porta já ocupada por um router nosso saudável → **reuso** (sai limpo, sem incrementar),
+  mantendo a URL estável.
+- **Isolamento via `settings.json` env** (PROVADO em Claude Desktop v42.4.0): a redireção é
+  **escopada ao Claude Code** gravando `ANTHROPIC_BASE_URL=http://127.0.0.1:13456` no bloco
+  `env` do `~/.claude/settings.json`. O cowork do Desktop **respeita** esse env e o aplica
+  **só aos processos do Claude Code** → zero efeito em outros apps (ex.: GitHub Copilot/hermes).
+  **Nunca** definimos variáveis no nível User/sistema (vazariam e corromperiam outros apps) nem
+  dependemos de wrapper do `claude.exe` (incompatível com a instalação MSIX/Store, read-only).
+  O wrapper C# e o patcher via `NODE_OPTIONS` de versões anteriores foram **aposentados**.
+- **Ativação por hook** (`scripts/model-router-ensure.js`): SessionStart + UserPromptSubmit
+  sobem o servidor na porta fixa e gravam `env.ANTHROPIC_BASE_URL` **só quando o roteador está
+  vivo**, removendo-o no instante em que não está (porta morta = "Solicitação falhou") —
+  idempotente, escrita atômica, e com **self-heal** de qualquer resíduo global de versões antigas.
 - **Dashboard + ativação guiada**: nova aba **Router** (toggle, chave NVIDIA mascarada,
   aceite de termos, status e banner de restart), rotas `/api/router/{config,status,apply}`,
   o slash command **`/dashboard`** e um aviso de primeira execução. A chave da NVIDIA

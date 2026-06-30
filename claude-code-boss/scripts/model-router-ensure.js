@@ -2,16 +2,21 @@
 /**
  * model-router-ensure.js — SessionStart + UserPromptSubmit hook
  *
- * Garante que o proxy model-router está rodando.
+ * Garante que o proxy model-router está rodando na PORTA FIXA e que o Claude Code
+ * aponta para ele.
  *
- * DESIGN (isolamento): o roteamento é aplicado SOMENTE dentro do Claude Code,
- * através do wrapper do claude.exe (servers/model-router/wrapper.cs). O wrapper
- * injeta ANTHROPIC_BASE_URL apenas no processo do Claude Code, lendo a URL de um
- * arquivo fixo (PROXY_URL_FILE). NUNCA definimos variáveis no nível User/sistema:
- * elas vazam para OUTROS apps (ex.: GitHub Copilot/hermes) e corrompem o launch
- * deles (NODE_OPTIONS com aspas quebrou --settings; ANTHROPIC_BASE_URL apontando
- * pra porta morta gerou "Solicitação falhou"). Este hook também faz self-heal,
- * removendo qualquer resíduo global deixado por versões antigas.
+ * DESIGN (isolamento — PROVADO 30/06, Claude Desktop v42.4.0): o roteamento é
+ * aplicado SOMENTE dentro do Claude Code via o bloco `env` do ~/.claude/settings.json
+ * (env.ANTHROPIC_BASE_URL = http://127.0.0.1:<porta fixa>). O cowork do Desktop
+ * RESPEITA esse env e o aplica apenas aos processos do Claude Code → zero efeito em
+ * outros apps (ex.: GitHub Copilot/hermes). NUNCA definimos variáveis no nível
+ * User/sistema (vazam e corrompem outros apps) nem dependemos de wrapper do claude.exe
+ * (incompatível com a instalação MSIX/Store, read-only).
+ *
+ * Self-heal: a URL é gravada APENAS quando o roteador está vivo, e REMOVIDA no
+ * instante em que não está (porta morta = "Solicitação falhou"). Também removemos
+ * qualquer resíduo global (NODE_OPTIONS/ANTHROPIC_BASE_URL User-scope) deixado por
+ * versões antigas.
  *
  * Falha sempre silenciosa: se algo der errado, loga e sai sem bloquear o Claude Code.
  */
@@ -41,11 +46,11 @@ const CONFIG_FILE   = path.join(PLUGIN_ROOT, 'config', 'router-config.json');
 // Override do usuário (chave NVIDIA + toggles) + carimbo do nudge de primeira execução.
 const USER_CONFIG_FILE = path.join(DATA_DIR, 'model-router', 'user-config.json');
 const NUDGE_STAMP      = path.join(DATA_DIR, 'model-router', '.nudge-stamp');
-// Arquivo-fonte-da-verdade da URL do proxy, em local FIXO (independente do sufixo
-// do data-dir). O wrapper do claude.exe lê este arquivo para injetar
-// ANTHROPIC_BASE_URL apenas dentro do Claude Code. Quando o roteador para ou é
-// desabilitado, o arquivo é removido → o wrapper não injeta porta morta (self-heal).
+// Arquivo de URL legado do mecanismo wrapper antigo (nada mais o lê; limpamos para
+// higiene de instalações antigas). O mecanismo atual é o bloco `env` do settings.json.
 const PROXY_URL_FILE = path.join(os.homedir(), '.claude', 'model-router-url.txt');
+// settings.json do Claude Code — onde gravamos env.ANTHROPIC_BASE_URL (escopo Claude).
+const SETTINGS_FILE  = path.join(os.homedir(), '.claude', 'settings.json');
 
 // ── Logger ────────────────────────────────────────────────────────────────────
 
@@ -172,18 +177,74 @@ function cleanupGlobalEnv() {
   }
 }
 
-function writeProxyUrlFile(url) {
+// ── settings.json (escopo Claude Code) ───────────────────────────────────────
+// O mecanismo de roteamento é o bloco `env` do ~/.claude/settings.json. PROVADO
+// (30/06): o cowork do Claude Desktop RESPEITA env.ANTHROPIC_BASE_URL e o aplica
+// só aos processos do Claude Code — zero efeito em outros apps (Copilot/hermes).
+// Escrevemos a URL APENAS quando o roteador está vivo; removemos no instante em que
+// não está. Escrita atômica (temp + rename). Só tocamos no NOSSO valor (localhost) —
+// uma ANTHROPIC_BASE_URL custom do usuário é preservada e nunca sobrescrita.
+
+function readSettings() {
   try {
-    fs.mkdirSync(path.dirname(PROXY_URL_FILE), { recursive: true });
-    fs.writeFileSync(PROXY_URL_FILE, url, 'utf-8');
+    if (fs.existsSync(SETTINGS_FILE)) return JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf-8'));
+    return {};
+  } catch (e) {
+    log(`AVISO: settings.json ilegível (${e.message}) — não vou alterá-lo.`);
+    return null; // null = não mexer (evita corromper um arquivo já quebrado)
+  }
+}
+
+function writeSettings(obj) {
+  const tmp = SETTINGS_FILE + '.tmp-router';
+  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n');
+  fs.renameSync(tmp, SETTINGS_FILE);
+}
+
+function isOurProxyUrl(url) {
+  return typeof url === 'string' && /^https?:\/\/(127\.0\.0\.1|localhost):\d+/.test(url);
+}
+
+// Idempotente: grava env.ANTHROPIC_BASE_URL só se mudou. Retorna true se, ao final,
+// o settings.json aponta para o nosso proxy.
+function enableSettingsRouting(url) {
+  const s = readSettings();
+  if (s === null) return false;
+  const cur = s.env && s.env.ANTHROPIC_BASE_URL;
+  if (cur && !isOurProxyUrl(cur)) {
+    log(`AVISO: settings.json já tem ANTHROPIC_BASE_URL custom ("${cur}") — preservado, roteador NÃO sobrescreve.`);
+    return false;
+  }
+  if (cur === url) return true; // já correto → no-op (não reescreve o arquivo)
+  s.env = s.env || {};
+  s.env.ANTHROPIC_BASE_URL = url;
+  try {
+    writeSettings(s);
+    log(`settings.json: env.ANTHROPIC_BASE_URL → ${url}`);
     return true;
   } catch (e) {
-    log(`AVISO: não foi possível escrever ${PROXY_URL_FILE}: ${e.message}`);
+    log(`AVISO: não foi possível escrever settings.json: ${e.message}`);
     return false;
   }
 }
 
-function clearProxyUrlFile() {
+// Remove SÓ o nosso valor (localhost). Nunca apaga uma ANTHROPIC_BASE_URL custom.
+function disableSettingsRouting() {
+  const s = readSettings();
+  if (s === null || !s.env) return;
+  if (!isOurProxyUrl(s.env.ANTHROPIC_BASE_URL)) return; // não é nosso → não mexe
+  delete s.env.ANTHROPIC_BASE_URL;
+  if (Object.keys(s.env).length === 0) delete s.env;
+  try {
+    writeSettings(s);
+    log('settings.json: env.ANTHROPIC_BASE_URL removido (roteador indisponível → Claude direto).');
+  } catch (e) {
+    log(`AVISO: não foi possível limpar settings.json: ${e.message}`);
+  }
+}
+
+// Remove arquivo de URL legado (mecanismo wrapper antigo — nada mais o lê).
+function clearLegacyUrlFile() {
   try {
     if (fs.existsSync(PROXY_URL_FILE)) fs.unlinkSync(PROXY_URL_FILE);
   } catch (e) {
@@ -191,11 +252,12 @@ function clearProxyUrlFile() {
   }
 }
 
-// Garante isolamento total: nenhum global, nenhum arquivo de URL apontando pra
-// roteador inexistente. Chamado em todo caminho de saída "sem roteamento".
+// Caminho de saída "sem roteamento": tira a URL do settings.json, limpa resíduo
+// global de versões antigas e o arquivo de URL legado. Claude Code usa Anthropic direto.
 function disableRoutingFootprint() {
+  disableSettingsRouting();
   cleanupGlobalEnv();
-  clearProxyUrlFile();
+  clearLegacyUrlFile();
 }
 
 function startServer() {
@@ -249,74 +311,42 @@ async function main() {
     process.exit(0);
   }
 
-  // ── 0. Instala/verifica wrapper do claude.exe ────────────────────────────
-  // O Desktop App (Electron) strip NODE_OPTIONS e sobrescreve ANTHROPIC_BASE_URL.
-  // O wrapper resolve isso interceptando ANTES do SDK Anthropic inicializar.
-  let wrapperResult = null;
-  try {
-    const wrapperInstall = require('./model-router-wrapper-install');
-    wrapperResult = wrapperInstall.install(PLUGIN_ROOT);
-    if (wrapperResult.reason === 'fresh-install') {
-      log(`Wrapper instalado para versão ${wrapperResult.version}. Reinício do Claude Code necessário.`);
-    } else if (wrapperResult.reason === 'compile-failed' || wrapperResult.reason === 'install-failed') {
-      log(`AVISO: falha na instalação do wrapper (${wrapperResult.reason}). Roteamento pode não funcionar.`);
-    }
-  } catch (e) {
-    log(`AVISO: erro no wrapper-install: ${e.message}`);
-  }
+  // ── 1. Garante servidor rodando na PORTA FIXA ────────────────────────────
+  const FIXED_PORT = config.port || 13456;
+  log(`Verificando model-router na porta fixa ${FIXED_PORT}...`);
 
-  // ── 1. Garante servidor rodando ──────────────────────────────────────────
-  log('Verificando status do model-router...');
-
-  let state   = readState();
-  let isRunning = false;
-
-  if (state?.port) {
-    isRunning = await healthCheck(state.port);
-    if (isRunning) {
-      log(`Servidor OK na porta ${state.port} (PID ${state.pid}).`);
-    } else {
-      log(`State file existe (porta ${state.port}) mas servidor offline. Reiniciando...`);
-    }
-  }
-
-  if (!isRunning) {
+  let isRunning = await healthCheck(FIXED_PORT);
+  if (isRunning) {
+    const st = readState();
+    log(`Servidor OK na porta ${FIXED_PORT}${st && st.pid ? ` (PID ${st.pid})` : ''}.`);
+  } else {
+    log(`Porta ${FIXED_PORT} sem resposta. Iniciando servidor...`);
     const started = await startServer();
-    if (!started) {
-      log('AVISO: roteamento indisponível nesta sessão. Limpando footprint; Claude Code usará Anthropic API diretamente.');
+    if (started) isRunning = await healthCheck(FIXED_PORT);
+    if (!isRunning) {
+      log('AVISO: roteamento indisponível nesta sessão. Removendo footprint; Claude Code usará Anthropic API diretamente.');
       disableRoutingFootprint();
       process.exit(0);
     }
-    state = readState();
   }
 
-  if (!state?.port) {
-    log('ERRO interno: sem porta no state. Limpando footprint e continuando sem roteamento.');
-    disableRoutingFootprint();
-    process.exit(0);
-  }
+  const proxyUrl = `http://127.0.0.1:${FIXED_PORT}`;
 
-  const proxyUrl = `http://127.0.0.1:${state.port}`;
-
-  // ── 2. Publica a URL do proxy SÓ para o Claude Code (via wrapper) ──────────
-  // NUNCA setamos variáveis globais (User/sistema): elas vazam para outros apps
-  // (GitHub Copilot/hermes) e corrompem o launch deles. Em vez disso, gravamos a
-  // URL num arquivo fixo que o wrapper do claude.exe lê e injeta APENAS dentro do
-  // processo do Claude Code. Também limpamos qualquer resíduo global antigo.
+  // ── 2. Publica a URL via settings.json env (escopo Claude Code) ───────────
+  // PROVADO: o cowork respeita env.ANTHROPIC_BASE_URL e o aplica só ao Claude Code.
+  // Nenhuma variável global é definida → zero efeito em outros apps. Resíduo global
+  // de versões antigas é removido (self-heal), assim como o arquivo de URL legado.
+  const wired = enableSettingsRouting(proxyUrl);
   cleanupGlobalEnv();
-  writeProxyUrlFile(proxyUrl);
-
-  const wrapperActive = !!(wrapperResult && wrapperResult.installed);
-  log(`Proxy em ${proxyUrl} | wrapper instalado=${wrapperActive} | URL publicada em ${PROXY_URL_FILE}`);
+  clearLegacyUrlFile();
 
   let contextMsg;
-  if (wrapperActive) {
-    contextMsg = `[model-router] ATIVO ✓ — porta ${state.port} (via wrapper do claude.exe). Classificador: ${config.nim?.apiKey ? 'NIM' : 'MiniLM local'}. Prompts roteados (haiku/sonnet/opus). Isolado no Claude Code — outros apps não são afetados.`;
-    log('Roteamento ATIVO (wrapper instalado).');
+  if (wired) {
+    contextMsg = `[model-router] ATIVO ✓ — porta ${FIXED_PORT} via settings.json env (escopo Claude Code). Classificador: ${config.nim?.apiKey ? 'NIM' : 'MiniLM local'}. Prompts roteados (haiku/sonnet/opus). Isolado: outros apps não são afetados. Se acabou de instalar/ativar, reinicie o Claude Code uma vez para o roteamento engatar.`;
+    log('Roteamento ATIVO (settings.json env).');
   } else {
-    const why = wrapperResult ? wrapperResult.reason : 'desconhecido';
-    contextMsg = `[model-router] Servidor OK na porta ${state.port}, mas o wrapper do claude.exe NÃO está instalado (${why}). O roteamento só ativa quando o Claude Code Desktop estiver acessível para o wrapper. Nenhuma variável global foi definida (zero efeito em outros apps).`;
-    log(`Roteamento INATIVO — wrapper não instalado (${why}).`);
+    contextMsg = `[model-router] Servidor OK na porta ${FIXED_PORT}, mas não gravei env.ANTHROPIC_BASE_URL no settings.json (já existe uma URL custom, ou o arquivo está ilegível). Nenhuma variável global foi definida (zero efeito em outros apps).`;
+    log('Roteamento INATIVO — settings.json não atualizado.');
   }
 
   const output = {
