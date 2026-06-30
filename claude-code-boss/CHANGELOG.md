@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-06-30
+
 ### Added — brain: backend remoto via Native Java (MCP StreamableHTTP)
 
 O cérebro (Brain KB) do Boss agora pode usar um **servidor de memória externo**
