@@ -14,6 +14,13 @@ quando o trabalho realmente pede.
   classificação local por âncoras de cosseno e estado/log em `DATA_DIR/model-router/`.
   Porta já ocupada por um router nosso saudável → **reuso** (sai limpo, sem incrementar),
   mantendo a URL estável.
+- **Contagem de tokens isenta** (`/v1/messages/count_tokens`): essas chamadas são
+  **gratuitas** na Anthropic e independem do modelo (tokenizer compartilhado) — o proxy
+  as **repassa verbatim**, preservando o path original, **sem** classificar, trocar de
+  modelo ou acionar o plano B. Antes o forward reescrevia **qualquer** path para
+  `/v1/messages` (hardcoded), convertendo a contagem **grátis** em **geração paga** e
+  saturando o rate limit no boot (rajada de 429 → planos-B inúteis). O forward agora
+  **preserva o path/query original** em todas as requisições.
 - **Isolamento via `settings.json` env** (PROVADO em Claude Desktop v42.4.0): a redireção é
   **escopada ao Claude Code** gravando `ANTHROPIC_BASE_URL=http://127.0.0.1:13456` no bloco
   `env` do `~/.claude/settings.json`. O cowork do Desktop **respeita** esse env e o aplica

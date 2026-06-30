@@ -1061,6 +1061,46 @@ function metricsSnapshot() {
 
 // ── Proxy core: forward ───────────────────────────────────────────────────────
 
+// Repasse VERBATIM ao upstream, preservando o path original. Usado para
+// `/v1/messages/count_tokens` (e qualquer endpoint não-geração): a contagem de
+// tokens é GRÁTIS na Anthropic e independe do modelo (tokenizer compartilhado).
+// Reescrever pra `/v1/messages` converteria a contagem grátis em geração paga e,
+// no boot, satura o rate limit (RPM) → 429 em massa. Aqui NÃO classificamos, NÃO
+// trocamos o modelo, NÃO acionamos plano B e NÃO fazemos tee de telemetria: só
+// repassamos a request e a resposta como se o proxy não existisse para ela.
+function passthrough(rawBody, originalHeaders, res, pathOriginal) {
+  const headers = {
+    'content-type':      'application/json',
+    'content-length':    Buffer.byteLength(rawBody),
+    'anthropic-version': originalHeaders['anthropic-version'] || '2023-06-01',
+  };
+  if (originalHeaders['x-api-key'])      headers['x-api-key']      = originalHeaders['x-api-key'];
+  if (originalHeaders['authorization'])  headers['authorization']  = originalHeaders['authorization'];
+  if (originalHeaders['anthropic-beta']) headers['anthropic-beta'] = originalHeaders['anthropic-beta'];
+
+  const options = {
+    hostname: UPSTREAM_HOST,
+    port:     UPSTREAM_PORT,
+    path:     pathOriginal || '/v1/messages/count_tokens',
+    method:   'POST',
+    headers,
+  };
+
+  const upstream = UPSTREAM_LIB.request(options, (upRes) => {
+    res.writeHead(upRes.statusCode, upRes.headers);
+    upRes.pipe(res);
+  });
+  upstream.on('error', (e) => {
+    logger.error('Passthrough upstream error', { err: e.message, path: pathOriginal });
+    if (!res.headersSent) {
+      res.writeHead(502);
+      res.end(JSON.stringify({ error: { type: 'proxy_error', message: e.message } }));
+    }
+  });
+  upstream.write(rawBody);
+  upstream.end();
+}
+
 function forwardRequest(reqBody, originalHeaders, res, config, route) {
   const cd = cooldownCfg(config);
   // Circuit breaker: janela em cooldown? vai DIRETO ao plano B (sem martelar a Anthropic).
@@ -1090,7 +1130,7 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
   const options = {
     hostname: UPSTREAM_HOST,
     port:     UPSTREAM_PORT,
-    path:     '/v1/messages',
+    path:     (route && route.path) || '/v1/messages',
     method:   'POST',
     headers,
   };
@@ -1220,6 +1260,14 @@ async function createServer(config) {
       res.end();
     });
     req.on('end', async () => {
+      // count_tokens é o endpoint GRÁTIS de contagem (beta token-counting): repassa
+      // verbatim preservando o path. Classificar/reescrever pra /v1/messages
+      // converteria contagem grátis em geração paga e saturaria o RPM no boot.
+      if (req.url.includes('/count_tokens')) {
+        logger.debug('count_tokens — passthrough verbatim (sem rota)', { path: req.url, bytes: Buffer.byteLength(rawBody) });
+        passthrough(rawBody, req.headers, res, req.url);
+        return;
+      }
       let body;
       try { body = JSON.parse(rawBody); }
       catch (e) {
@@ -1281,7 +1329,7 @@ async function createServer(config) {
       try { metricsRoute(origTier, finalTier, !!tier, blocked); }
       catch (e) { logger.debug('metricsRoute falhou (ignorado)', { err: e.message }); }
 
-      forwardRequest(body, req.headers, res, config, { origTier, finalTier });
+      forwardRequest(body, req.headers, res, config, { origTier, finalTier, path: req.url });
     });
   });
 
