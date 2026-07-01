@@ -51,6 +51,11 @@ const CONFIG_FILE   = path.join(PLUGIN_ROOT, 'config', 'router-config.json');
 // Override do usuário (chave NVIDIA + toggles) + carimbo do nudge de primeira execução.
 const USER_CONFIG_FILE = path.join(DATA_DIR, 'model-router', 'user-config.json');
 const NUDGE_STAMP      = path.join(DATA_DIR, 'model-router', '.nudge-stamp');
+// Carimbo de "aviso ATIVO já injetado nesta sessão" — evita repetir o mesmo texto
+// informativo em todo UserPromptSubmit (ruído de contexto). Mapa { chave: ts }.
+const ANNOUNCE_FILE    = path.join(DATA_DIR, 'model-router', '.announced-sessions.json');
+const ANNOUNCE_TTL_MS  = 24 * 60 * 60 * 1000;  // GC de sessões com > 24h
+const ANON_COOLDOWN_MS = 10 * 60 * 1000;       // fallback quando não há session_id
 // Arquivo de URL que o WRAPPER (shim do claude.exe) lê para descobrir o proxy
 // vivo. PROVADO E2E: no Claude Desktop 2.1.197 o app força ANTHROPIC_BASE_URL=
 // api.anthropic.com no processo claude-code e este passa a IGNORAR o `env` do
@@ -87,6 +92,44 @@ function readConfig() {
     if (fs.existsSync(CONFIG_FILE)) return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
   } catch (_) { /* */ }
   return {};
+}
+
+// Lê o payload do hook no stdin (session_id, hook_event_name…) sem travar quando
+// rodado manualmente num terminal interativo (isTTY) ou sem stdin.
+function readHookInput() {
+  try {
+    if (process.stdin.isTTY) return {};
+    const raw = fs.readFileSync(0, 'utf-8');
+    return raw ? JSON.parse(raw) : {};
+  } catch (_) { /* stdin ausente/ilegível: segue sem payload */ }
+  return {};
+}
+
+// Decide se o aviso "[model-router] ATIVO" deve ser injetado neste turno.
+// Regra: sempre que o servidor (re)subiu agora; caso contrário, no máximo 1x por
+// session_id; sem session_id, cai num cooldown por tempo. Persiste o carimbo.
+function shouldAnnounce(sessionId, justStarted) {
+  let store = {};
+  try {
+    if (fs.existsSync(ANNOUNCE_FILE)) store = JSON.parse(fs.readFileSync(ANNOUNCE_FILE, 'utf-8')) || {};
+  } catch (_) { store = {}; }
+  const now = Date.now();
+  for (const k of Object.keys(store)) {
+    if (typeof store[k] !== 'number' || now - store[k] > ANNOUNCE_TTL_MS) delete store[k];
+  }
+  const key = sessionId ? `s:${sessionId}` : '_anon';
+  let announce;
+  if (justStarted) announce = true;
+  else if (sessionId) announce = !store[key];
+  else announce = !store[key] || (now - store[key]) > ANON_COOLDOWN_MS;
+  if (announce) {
+    store[key] = now;
+    try {
+      fs.mkdirSync(path.dirname(ANNOUNCE_FILE), { recursive: true });
+      fs.writeFileSync(ANNOUNCE_FILE, JSON.stringify(store));
+    } catch (_) { /* */ }
+  }
+  return announce;
 }
 
 function readUserConfig() {
@@ -343,6 +386,8 @@ function startServer() {
 
 async function main() {
   const config = readConfig();
+  const hookInput = readHookInput();
+  const sessionId = hookInput.session_id || hookInput.sessionId || null;
 
   if (config.enabled === false) {
     log('Roteador desabilitado (enabled: false). Limpando footprint e saindo.');
@@ -357,6 +402,7 @@ async function main() {
   const FIXED_PORT = config.port || 13456;
   log(`Verificando model-router na porta fixa ${FIXED_PORT}...`);
 
+  let justStarted = false;
   let isRunning = await healthCheck(FIXED_PORT);
   if (isRunning) {
     const st = readState();
@@ -370,6 +416,7 @@ async function main() {
       disableRoutingFootprint();
       process.exit(0);
     }
+    justStarted = true;
   }
 
   const proxyUrl = `http://127.0.0.1:${FIXED_PORT}`;
@@ -395,18 +442,24 @@ async function main() {
     log('Roteamento INATIVO — settings.json não atualizado.');
   }
 
-  const output = {
-    hookSpecificOutput: {
-      hookEventName: 'UserPromptSubmit',
-      additionalContext: contextMsg,
-    },
-  };
-
-  // Nudge aditivo de primeira execução (não quebra o contrato do hook).
+  // O aviso "[model-router] ATIVO" é informativo e idêntico a cada turno — repeti-lo
+  // em todo UserPromptSubmit vira ruído de contexto (~89 tokens/turno). Emitimos o
+  // aviso completo no máximo 1x por sessão (ou quando o servidor (re)subiu agora). O
+  // trabalho real (garantir o router + re-armar settings/url.txt) continua todo turno;
+  // só a injeção de contexto passa a ser 1x. O nudge de primeira execução tem carimbo
+  // próprio (.nudge-stamp) e sempre passa quando existe.
   const nudge = firstRunNudge();
-  if (nudge) output.hookSpecificOutput.additionalContext = `${contextMsg}\n${nudge}`;
+  const announce = shouldAnnounce(sessionId, justStarted);
+  let additionalContext = null;
+  if (announce && nudge) additionalContext = `${contextMsg}\n${nudge}`;
+  else if (announce)     additionalContext = contextMsg;
+  else if (nudge)        additionalContext = nudge;
 
-  process.stdout.write(JSON.stringify(output) + '\n');
+  if (additionalContext) {
+    process.stdout.write(JSON.stringify({
+      hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext },
+    }) + '\n');
+  }
   process.exit(0);
 }
 
