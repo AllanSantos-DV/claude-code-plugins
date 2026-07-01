@@ -5,18 +5,22 @@
  * Garante que o proxy model-router está rodando na PORTA FIXA e que o Claude Code
  * aponta para ele.
  *
- * DESIGN (isolamento — PROVADO 30/06, Claude Desktop v42.4.0): o roteamento é
- * aplicado SOMENTE dentro do Claude Code via o bloco `env` do ~/.claude/settings.json
- * (env.ANTHROPIC_BASE_URL = http://127.0.0.1:<porta fixa>). O cowork do Desktop
- * RESPEITA esse env e o aplica apenas aos processos do Claude Code → zero efeito em
- * outros apps (ex.: GitHub Copilot/hermes). NUNCA definimos variáveis no nível
- * User/sistema (vazam e corrompem outros apps) nem dependemos de wrapper do claude.exe
- * (incompatível com a instalação MSIX/Store, read-only).
+ * DESIGN (isolamento — dois mecanismos, conforme o entrypoint):
+ *   • CLI (entrypoint=cli): o cowork RESPEITA env.ANTHROPIC_BASE_URL do
+ *     ~/.claude/settings.json e o aplica só aos processos do Claude Code.
+ *   • Desktop (entrypoint=claude-desktop, 2.1.197+): PROVADO que o app FORÇA
+ *     ANTHROPIC_BASE_URL=api.anthropic.com no processo claude-code e este passa a
+ *     IGNORAR o settings.json env. Aí o roteamento é aplicado por um SHIM do
+ *     binário (claude.exe→claude-real.exe + wrapper que troca a URL pelo proxy),
+ *     instalado/mantido por model-router-shim.js. O shim é FAIL-OPEN (router morto
+ *     → Claude direto) e afeta SÓ o claude.exe do Claude Code.
+ * Em ambos os casos NUNCA definimos variáveis no nível User/sistema (vazam e
+ * corrompem outros apps, ex.: GitHub Copilot/hermes) nem mexemos em PATH/hosts/CA.
  *
- * Self-heal: a URL é gravada APENAS quando o roteador está vivo, e REMOVIDA no
- * instante em que não está (porta morta = "Solicitação falhou"). Também removemos
- * qualquer resíduo global (NODE_OPTIONS/ANTHROPIC_BASE_URL User-scope) deixado por
- * versões antigas.
+ * Self-heal: a URL (settings.json env + ~/.claude/model-router-url.txt lido pelo
+ * shim) é gravada APENAS quando o roteador está vivo, e REMOVIDA do url.txt quando
+ * não está. Também removemos qualquer resíduo global (NODE_OPTIONS/
+ * ANTHROPIC_BASE_URL User-scope) deixado por versões antigas.
  *
  * Falha sempre silenciosa: se algo der errado, loga e sai sem bloquear o Claude Code.
  */
@@ -28,6 +32,7 @@ const fs     = require('fs');
 const path   = require('path');
 const os     = require('os');
 const { spawn, execSync } = require('child_process');
+const shim   = require('./model-router-shim.js');
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -46,8 +51,13 @@ const CONFIG_FILE   = path.join(PLUGIN_ROOT, 'config', 'router-config.json');
 // Override do usuário (chave NVIDIA + toggles) + carimbo do nudge de primeira execução.
 const USER_CONFIG_FILE = path.join(DATA_DIR, 'model-router', 'user-config.json');
 const NUDGE_STAMP      = path.join(DATA_DIR, 'model-router', '.nudge-stamp');
-// Arquivo de URL legado do mecanismo wrapper antigo (nada mais o lê; limpamos para
-// higiene de instalações antigas). O mecanismo atual é o bloco `env` do settings.json.
+// Arquivo de URL que o WRAPPER (shim do claude.exe) lê para descobrir o proxy
+// vivo. PROVADO E2E: no Claude Desktop 2.1.197 o app força ANTHROPIC_BASE_URL=
+// api.anthropic.com no processo claude-code e este passa a IGNORAR o `env` do
+// settings.json — então, no Desktop, quem aplica o roteamento é o shim. Escrito
+// SOMENTE quando o roteador está de pé; removido quando não está (o wrapper cai
+// no fail-open e o Claude vai direto). O settings.json env continua mantido por
+// compat com o modo CLI (entrypoint=cli respeita o env block).
 const PROXY_URL_FILE = path.join(os.homedir(), '.claude', 'model-router-url.txt');
 // settings.json do Claude Code — onde gravamos env.ANTHROPIC_BASE_URL (escopo Claude).
 const SETTINGS_FILE  = path.join(os.homedir(), '.claude', 'settings.json');
@@ -243,12 +253,41 @@ function disableSettingsRouting() {
   }
 }
 
-// Remove arquivo de URL legado (mecanismo wrapper antigo — nada mais o lê).
+// Remove arquivo de URL quando o roteador NÃO está vivo (wrapper cai no fail-open).
 function clearLegacyUrlFile() {
   try {
     if (fs.existsSync(PROXY_URL_FILE)) fs.unlinkSync(PROXY_URL_FILE);
   } catch (e) {
     log(`AVISO: não foi possível remover ${PROXY_URL_FILE}: ${e.message}`);
+  }
+}
+
+// Publica a URL viva do proxy para o WRAPPER (shim) ler. Escrita atômica
+// (temp + rename). Chamado só quando o roteador respondeu /health.
+function writeProxyUrlFile(url) {
+  try {
+    fs.mkdirSync(path.dirname(PROXY_URL_FILE), { recursive: true });
+    const tmp = PROXY_URL_FILE + '.tmp-router';
+    fs.writeFileSync(tmp, url);
+    fs.renameSync(tmp, PROXY_URL_FILE);
+  } catch (e) {
+    log(`AVISO: não foi possível escrever ${PROXY_URL_FILE}: ${e.message}`);
+  }
+}
+
+// Mantém o shim do claude.exe na versão ativa do Claude Code (Windows-only).
+// Best-effort e fail-open: qualquer falha loga e segue sem bloquear o Claude.
+// Vale a partir da PRÓXIMA vez que o app spawnar o claude.exe (o hook roda tarde,
+// dentro do claude-code já em execução).
+function maintainShimSafe() {
+  if (process.platform !== 'win32') return;
+  try {
+    const r = shim.maintainShim(PLUGIN_ROOT, DATA_DIR, log);
+    if (r && r.result && r.result !== 'ok' && r.result !== 'already') {
+      log(`Shim do claude.exe: ${r.result}${r.dir ? ` @ ${r.dir}` : ''}`);
+    }
+  } catch (e) {
+    log(`AVISO: manutenção do shim falhou: ${e.message}`);
   }
 }
 
@@ -308,6 +347,9 @@ async function main() {
   if (config.enabled === false) {
     log('Roteador desabilitado (enabled: false). Limpando footprint e saindo.');
     disableRoutingFootprint();
+    if (process.platform === 'win32') {
+      try { shim.removeShimAll(log); } catch (e) { log(`AVISO: remoção do shim falhou: ${e.message}`); }
+    }
     process.exit(0);
   }
 
@@ -332,13 +374,17 @@ async function main() {
 
   const proxyUrl = `http://127.0.0.1:${FIXED_PORT}`;
 
-  // ── 2. Publica a URL via settings.json env (escopo Claude Code) ───────────
-  // PROVADO: o cowork respeita env.ANTHROPIC_BASE_URL e o aplica só ao Claude Code.
-  // Nenhuma variável global é definida → zero efeito em outros apps. Resíduo global
-  // de versões antigas é removido (self-heal), assim como o arquivo de URL legado.
+  // ── 2. Publica a URL: settings.json env (CLI) + url.txt p/ o shim (Desktop) ─
+  // PROVADO: via CLI (entrypoint=cli) o cowork respeita env.ANTHROPIC_BASE_URL do
+  // settings.json. Mas no Desktop (entrypoint=claude-desktop, 2.1.197+) o app força
+  // api.anthropic.com no processo e o claude-code IGNORA o settings.json env → quem
+  // roteia é o SHIM do claude.exe, que lê a URL viva do url.txt. Mantemos os dois
+  // mecanismos: settings.json (CLI) + shim (Desktop). Nenhuma variável global é
+  // definida → zero efeito em outros apps. Resíduo global antigo é removido (self-heal).
   const wired = enableSettingsRouting(proxyUrl);
   cleanupGlobalEnv();
-  clearLegacyUrlFile();
+  writeProxyUrlFile(proxyUrl);   // canal oficial wrapper(shim) ↔ ensure
+  maintainShimSafe();            // instala/reaplica o shim do claude.exe (Windows)
 
   let contextMsg;
   if (wired) {

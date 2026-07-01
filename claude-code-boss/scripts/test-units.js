@@ -1624,6 +1624,248 @@ test('capture-rate: cross-project capture does not convert another project nudge
   assertEq(r.spontaneous.research, 1);
 });
 
+// ─── model-router: dynamic model catalog (cat) ───────────────────────────────
+const catalog = require('../servers/model-router/catalog.js');
+const router  = require('../servers/model-router/index.js');
+
+const CAT_RAW = [
+  { id: 'claude-sonnet-4-6', display_name: 'Sonnet 4.6', created_at: '2025-09-01T00:00:00Z',
+    capabilities: { effort: { supported: true, low: { supported: true }, medium: { supported: true }, high: { supported: true }, max: { supported: true } } } },
+  { id: 'claude-sonnet-5-20260101', display_name: 'Sonnet 5', created_at: '2026-01-01T00:00:00Z',
+    capabilities: { effort: { supported: true, low: { supported: true }, medium: { supported: true }, high: { supported: true }, xhigh: { supported: true }, max: { supported: true } } } },
+  { id: 'claude-opus-5', display_name: 'Opus 5', created_at: '2026-01-05T00:00:00Z',
+    capabilities: { effort: { supported: true, low: { supported: true }, medium: { supported: true }, high: { supported: true }, xhigh: { supported: true }, max: { supported: true } } } },
+  { id: 'claude-haiku-4-5-20251001', display_name: 'Haiku 4.5', created_at: '2025-10-01T00:00:00Z',
+    capabilities: { effort: { supported: false } } },
+];
+
+function startFakeModelsServer(handler) {
+  return new Promise((resolve) => {
+    const srv = http.createServer(handler);
+    srv.listen(0, '127.0.0.1', () => resolve({ port: srv.address().port, close: () => srv.close() }));
+  });
+}
+
+test('catalog: familyOf classifies by substring', () => {
+  assertEq(catalog.familyOf('claude-sonnet-5-x'), 'sonnet');
+  assertEq(catalog.familyOf('claude-opus-5'), 'opus');
+  assertEq(catalog.familyOf('claude-haiku-4-5'), 'haiku');
+  assertEq(catalog.familyOf('gpt-4o'), null);
+});
+
+test('catalog: effortLevelsFrom reads capabilities.effort in canonical order', () => {
+  assertEq(catalog.effortLevelsFrom(CAT_RAW[1]), ['low', 'medium', 'high', 'xhigh', 'max']);
+  assertEq(catalog.effortLevelsFrom(CAT_RAW[3]), []); // haiku: effort.supported=false
+  assertEq(catalog.effortLevelsFrom({}), []);
+});
+
+test('catalog: buildCatalog elects newest model per family by created_at', () => {
+  const snap = catalog.buildCatalog(CAT_RAW);
+  assertEq(snap.byFamily.sonnet.model, 'claude-sonnet-5-20260101'); // newer than 4-6
+  assertEq(snap.byFamily.opus.model, 'claude-opus-5');
+  assertEq(snap.byFamily.haiku.model, 'claude-haiku-4-5-20251001');
+  assertEq(snap.byFamily.sonnet.effort, ['low', 'medium', 'high', 'xhigh', 'max']);
+  assertEq(snap.byFamily.haiku.effort, []);
+  assertEq(snap.count, 4);
+});
+
+test('catalog: effortForModel exact / prefix / [] / null', () => {
+  catalog._setSnapshot(CAT_RAW);
+  assertEq(catalog.effortForModel('claude-sonnet-5-20260101'), ['low', 'medium', 'high', 'xhigh', 'max']);
+  assertEq(catalog.effortForModel('claude-opus-5-20260105'), ['low', 'medium', 'high', 'xhigh', 'max']); // prefix match
+  assertEq(catalog.effortForModel('claude-haiku-4-5-20251001'), []); // known, no effort
+  assertEq(catalog.effortForModel('gpt-foo'), null); // unknown
+  catalog._reset();
+  assertEq(catalog.effortForModel('claude-sonnet-5-20260101'), null); // no snapshot
+});
+
+test('catalog: modelForFamily null without snapshot', () => {
+  catalog._reset();
+  assertEq(catalog.modelForFamily('sonnet'), null);
+});
+
+test('router.resolveModel: catalog-aware when warmed, static when disabled', () => {
+  catalog._setSnapshot(CAT_RAW);
+  const on = { routing: { catalog: { enabled: true } } };
+  assertEq(router.resolveModel('sonnet', on), 'claude-sonnet-5-20260101'); // dynamic newest
+  assertEq(router.resolveModel('opus', on), 'claude-opus-5');
+  const off = { routing: { catalog: { enabled: false } } };
+  assertEq(router.resolveModel('sonnet', off), 'claude-sonnet-4-6'); // static fallback
+  catalog._reset();
+  assertEq(router.resolveModel('sonnet', on), 'claude-sonnet-4-6'); // not warmed → static
+});
+
+test('router.reconcileEffort: catalog effort overrides static (keep + strip)', () => {
+  catalog._setSnapshot(CAT_RAW);
+  const cfg = { routing: { catalog: { enabled: true } } };
+  const keep = { output_config: { effort: 'xhigh' } }; // sonnet-5 supports xhigh
+  assertEq(router.reconcileEffort(keep, 'claude-sonnet-5-20260101', cfg).action, 'keep');
+  const strip = { output_config: { effort: 'high' } }; // haiku has no effort
+  assertEq(router.reconcileEffort(strip, 'claude-haiku-4-5-20251001', cfg).action, 'strip');
+  assertEq(strip.output_config, undefined);
+  catalog._reset();
+});
+
+test('catalog.fetchModels: paginates via has_more/last_id', async () => {
+  catalog._reset();
+  const srv = await startFakeModelsServer((req, res) => {
+    const after = new URL(req.url, 'http://x').searchParams.get('after_id');
+    res.writeHead(200, { 'content-type': 'application/json' });
+    if (!after) res.end(JSON.stringify({ data: [CAT_RAW[0], CAT_RAW[1]], has_more: true, last_id: CAT_RAW[1].id }));
+    else res.end(JSON.stringify({ data: [CAT_RAW[2], CAT_RAW[3]], has_more: false, last_id: CAT_RAW[3].id }));
+  });
+  const models = await new Promise((resolve, reject) => {
+    catalog.fetchModels({ host: '127.0.0.1', port: srv.port, protocol: 'http:', headers: {}, timeoutMs: 2000 },
+      (err, m) => (err ? reject(err) : resolve(m)));
+  });
+  srv.close();
+  assertEq(models.length, 4);
+  assertEq(models.map((m) => m.id).sort(), ['claude-haiku-4-5-20251001', 'claude-opus-5', 'claude-sonnet-4-6', 'claude-sonnet-5-20260101']);
+});
+
+test('catalog.fetchModels: 403 → error so caller keeps static map', async () => {
+  catalog._reset();
+  const srv = await startFakeModelsServer((req, res) => {
+    res.writeHead(403, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ type: 'error', error: { type: 'permission_error' } }));
+  });
+  let errMsg = null;
+  await new Promise((resolve) => {
+    catalog.fetchModels({ host: '127.0.0.1', port: srv.port, protocol: 'http:', headers: {}, timeoutMs: 2000 },
+      (err) => { errMsg = err ? err.message : null; resolve(); });
+  });
+  srv.close();
+  assert(errMsg && errMsg.includes('403'), `expected 403 error, got ${errMsg}`);
+});
+
+test('catalog.maybeRefresh: warms snapshot then serves modelForFamily', async () => {
+  catalog._reset();
+  const srv = await startFakeModelsServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ data: CAT_RAW, has_more: false, last_id: CAT_RAW[3].id }));
+  });
+  await new Promise((resolve, reject) => {
+    catalog.maybeRefresh({ host: '127.0.0.1', port: srv.port, protocol: 'http:', headers: {}, ttlMs: 60000,
+      onRefresh: () => resolve(), onError: (e) => reject(e) });
+  });
+  srv.close();
+  assertEq(catalog.modelForFamily('sonnet'), 'claude-sonnet-5-20260101');
+  const snap = catalog.getSnapshot();
+  assert(snap && snap.count === 4, 'snapshot should be warmed with 4 models');
+  catalog._reset();
+});
+
+// ─── model-router-shim (instalador do shim do claude.exe, Windows) ────────────
+// Testes herméticos: NUNCA tocam no claude.exe real — usam dirs temporários com
+// arquivos "grandes" (>1MB = original) e "pequenos" (<1MB = wrapper). A lógica de
+// estado/instalação/remoção é agnóstica de plataforma; só a compilação via csc é
+// Windows-only (guardada). O rename-in-use real do Windows já foi provado ao vivo.
+const shimMod = require('./model-router-shim.js');
+
+function mkBig(p) { fs.writeFileSync(p, Buffer.alloc(shimMod.WRAPPER_MAX_BYTES + 4096, 0x41)); }
+function mkSmall(p) { fs.writeFileSync(p, Buffer.alloc(8192, 0x42)); }
+function shimTmp(name) {
+  const d = path.join(process.env.CLAUDE_PLUGIN_DATA, 'shim-' + name + '-' + Math.random().toString(36).slice(2));
+  fs.mkdirSync(d, { recursive: true });
+  return d;
+}
+const NOLOG = () => {};
+
+test('shim.cmpVer: 2.1.197 > 2.1.187', () => assert(shimMod.cmpVer('2.1.197', '2.1.187') > 0));
+test('shim.cmpVer: 2.1.9 < 2.1.10 (numérico, não lexical)', () => assert(shimMod.cmpVer('2.1.9', '2.1.10') < 0));
+test('shim.cmpVer: iguais → 0', () => assertEq(shimMod.cmpVer('2.1.0', '2.1.0'), 0));
+
+test('shim.shimState: not-installed (só claude.exe grande)', () => {
+  const d = shimTmp('st1'); mkBig(path.join(d, 'claude.exe'));
+  assertEq(shimMod.shimState(d), 'not-installed');
+});
+test('shim.shimState: ok (wrapper pequeno + real grande)', () => {
+  const d = shimTmp('st2'); mkSmall(path.join(d, 'claude.exe')); mkBig(path.join(d, 'claude-real.exe'));
+  assertEq(shimMod.shimState(d), 'ok');
+});
+test('shim.shimState: redownloaded (claude grande + real grande)', () => {
+  const d = shimTmp('st3'); mkBig(path.join(d, 'claude.exe')); mkBig(path.join(d, 'claude-real.exe'));
+  assertEq(shimMod.shimState(d), 'redownloaded');
+});
+test('shim.shimState: orphan-wrapper (só wrapper, sem real)', () => {
+  const d = shimTmp('st4'); mkSmall(path.join(d, 'claude.exe'));
+  assertEq(shimMod.shimState(d), 'orphan-wrapper');
+});
+
+test('shim.installShim: instala (rename + wrapper) e é idempotente', () => {
+  const d = shimTmp('in1'); mkBig(path.join(d, 'claude.exe'));
+  const wrap = path.join(d, '_wrap.exe'); mkSmall(wrap);
+  assertEq(shimMod.installShim(d, wrap, NOLOG), 'installed');
+  assert(fs.existsSync(path.join(d, 'claude-real.exe')), 'claude-real.exe ausente');
+  assert(fs.statSync(path.join(d, 'claude-real.exe')).size >= shimMod.WRAPPER_MAX_BYTES, 'real não é o grande');
+  assert(fs.statSync(path.join(d, 'claude.exe')).size < shimMod.WRAPPER_MAX_BYTES, 'claude.exe não é o wrapper');
+  assertEq(shimMod.installShim(d, wrap, NOLOG), 'already');
+});
+test('shim.installShim: reaplica após app rebaixar claude.exe (redownloaded→ok)', () => {
+  const d = shimTmp('in2'); mkBig(path.join(d, 'claude-real.exe')); mkBig(path.join(d, 'claude.exe'));
+  const wrap = path.join(d, '_wrap.exe'); mkSmall(wrap);
+  assertEq(shimMod.installShim(d, wrap, NOLOG), 'reinstalled');
+  assertEq(shimMod.shimState(d), 'ok');
+});
+test('shim.installShim: orphan-wrapper → orphan (não restaura sozinho)', () => {
+  const d = shimTmp('in3'); mkSmall(path.join(d, 'claude.exe'));
+  const wrap = path.join(d, '_wrap.exe'); mkSmall(wrap);
+  assertEq(shimMod.installShim(d, wrap, NOLOG), 'orphan');
+});
+test('shim.installShim: wrapper inválido → no-wrapper (não mexe no claude.exe)', () => {
+  const d = shimTmp('in4'); mkBig(path.join(d, 'claude.exe'));
+  const wrap = path.join(d, '_tiny.exe'); fs.writeFileSync(wrap, Buffer.alloc(16));
+  assertEq(shimMod.installShim(d, wrap, NOLOG), 'no-wrapper');
+  assert(!fs.existsSync(path.join(d, 'claude-real.exe')), 'não deveria ter renomeado');
+  assert(fs.statSync(path.join(d, 'claude.exe')).size >= shimMod.WRAPPER_MAX_BYTES, 'claude.exe alterado indevidamente');
+});
+
+test('shim.removeShim: restaura o original', () => {
+  const d = shimTmp('rm1'); mkBig(path.join(d, 'claude.exe'));
+  const wrap = path.join(d, '_wrap.exe'); mkSmall(wrap);
+  shimMod.installShim(d, wrap, NOLOG);
+  assertEq(shimMod.removeShim(d, NOLOG), 'removed');
+  assert(!fs.existsSync(path.join(d, 'claude-real.exe')), 'claude-real.exe sobrou');
+  assert(fs.statSync(path.join(d, 'claude.exe')).size >= shimMod.WRAPPER_MAX_BYTES, 'original não restaurado');
+});
+test('shim.removeShim: claude.exe já grande → cleaned (remove real duplicado)', () => {
+  const d = shimTmp('rm2'); mkBig(path.join(d, 'claude.exe')); mkBig(path.join(d, 'claude-real.exe'));
+  assertEq(shimMod.removeShim(d, NOLOG), 'cleaned');
+  assert(!fs.existsSync(path.join(d, 'claude-real.exe')), 'real duplicado sobrou');
+});
+test('shim.removeShim: ausente → absent (no-op)', () => {
+  const d = shimTmp('rm3'); mkBig(path.join(d, 'claude.exe'));
+  assertEq(shimMod.removeShim(d, NOLOG), 'absent');
+});
+
+test('shim.findActiveClaudeDir: escolhe a versão mais nova (home fake, MSIX)', () => {
+  const home = shimTmp('home');
+  const base = path.join(home, 'AppData', 'Local', 'Packages', 'Claude_fake', 'LocalCache', 'Roaming', 'Claude', 'claude-code');
+  fs.mkdirSync(path.join(base, '2.1.100'), { recursive: true }); mkSmall(path.join(base, '2.1.100', 'claude.exe'));
+  fs.mkdirSync(path.join(base, '2.1.200'), { recursive: true }); mkSmall(path.join(base, '2.1.200', 'claude.exe'));
+  const got = shimMod.findActiveClaudeDir(home);
+  assertEq(path.basename(got), '2.1.200');
+});
+test('shim.findActiveClaudeDir: sem instalação → null', () => {
+  const home = shimTmp('home-empty');
+  assertEq(shimMod.findActiveClaudeDir(home), null);
+});
+
+// Windows-only: compilação real do wrapper via csc (.NET Framework). Guardado
+// porque o CI roda em Linux (sem csc); o rename-in-use já foi provado ao vivo.
+if (process.platform === 'win32') {
+  test('shim.findCsc: encontra csc.exe (.NET Framework)', () => {
+    const c = shimMod.findCsc(); assert(c && fs.existsSync(c), 'csc não achado: ' + c);
+  });
+  test('shim.buildWrapper: compila e reusa o cache no 2º call', () => {
+    const dd = shimTmp('build');
+    const w1 = shimMod.buildWrapper(ROOT, dd, NOLOG);
+    assert(w1 && fs.existsSync(w1), 'wrapper não compilou');
+    assert(fs.statSync(w1).size >= shimMod.WRAPPER_MIN_BYTES, 'wrapper pequeno demais');
+    assertEq(shimMod.buildWrapper(ROOT, dd, NOLOG), w1);
+  });
+}
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);

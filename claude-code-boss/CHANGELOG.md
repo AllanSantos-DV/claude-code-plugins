@@ -1,6 +1,67 @@
 # Changelog
 
-## [Unreleased]
+## [1.14.0] - 2026-06-30
+
+### Added — router: catálogo DINÂMICO de modelos por assinatura
+
+O roteador deixa de ficar **travado em modelos hardcoded** (`sonnet-4-6`/`opus-4-8`/
+`haiku-4-5`) e passa a descobrir os modelos da **sua própria assinatura** em runtime,
+para acompanhar lançamentos (ex.: Sonnet 5, mais barato) sem editar config nem
+esperar release.
+
+- **Novo módulo `servers/model-router/catalog.js`**: consulta `GET /v1/models` da
+  Anthropic usando a **credencial que o Claude Code já manda** (logo o resultado já
+  vem escopado pelo seu plano Pro/Max/API). Por família (haiku/sonnet/opus) elege o
+  modelo **mais novo** (`created_at`) e lê os níveis de `effort` **reais** de
+  `capabilities.effort` — fim do mapa estático de effort que defasava a cada modelo
+  novo.
+- **`resolveModel` e `reconcileEffort` cientes do catálogo**: quando o catálogo está
+  aquecido, o tier resolve para o modelo dinâmico e o effort é reconciliado pela
+  capacidade real do destino; sem catálogo, comportamento **idêntico** ao mapa
+  estático.
+- **À prova de hot path**: o refresh é assíncrono (fire-and-forget) e a leitura é
+  síncrona com **fallback total** ao estático. Se `/v1/models` estiver offline ou o
+  token não tiver escopo de listagem (401/403), nada quebra — segue no mapa shipado.
+  Cache com TTL (1h), backoff de erro (5min) e guarda anti-rajada.
+- **Config `routing.catalog`** (`enabled` default ON, `ttlMs`, `errorBackoffMs`) e
+  endpoint **`GET /catalog`** no proxy para observabilidade (snapshot + idade).
+- **+11 testes herméticos** (servidor `/v1/models` fake): eleição do mais novo,
+  extração de effort, paginação por cursor, fallback em 403, e integração
+  `resolveModel`/`reconcileEffort` ligado/desligado.
+
+### Fixed — Desktop: roteamento restaurado via shim do claude.exe
+
+O Claude **Desktop 2.1.197** passou a **forçar** `ANTHROPIC_BASE_URL=
+https://api.anthropic.com` no processo do claude-code (entrypoint `claude-desktop`),
+fazendo o claude-code **ignorar** o bloco `env` do `settings.json` — então o
+roteamento (proxy local) deixou de valer na GUI. Causa provada em laboratório e no
+próprio código do app (host de produção hardcoded). Não é algo que o plugin ou a
+assinatura controlem.
+
+- **Shim isolado do binário** (`servers/model-router/wrapper.cs` +
+  `scripts/model-router-shim.js`): o plugin renomeia `claude.exe`→`claude-real.exe` e
+  instala um wrapper minúsculo como `claude.exe`. Quando o Desktop spawna o
+  claude-code, o wrapper troca a URL pelo **proxy local** e chama o binário real,
+  herdando stdio (stream-json passa transparente). A GUI não muda.
+- **Cirúrgico e reversível**: afeta **somente** o `claude.exe` do Claude Code — zero
+  variável global, zero PATH, zero hosts, zero CA (o oposto de mexer no ambiente do
+  sistema, que vazaria para outros apps). Instalação **atômica com rollback** e
+  **fail-open**: se o roteador estiver fora do ar, o wrapper deixa o Claude ir
+  **direto** — nunca derruba o app. O Job Object usa
+  `KILL_ON_JOB_CLOSE | SILENT_BREAKAWAY_OK`: fechar o app encerra o claude-code (sem
+  órfãos), **mas** os netos **detached** — em especial o proxy `model-router`, que
+  precisa persistir entre reaberturas — **escapam do job e sobrevivem**. Sem o
+  `SILENT_BREAKAWAY_OK`, o roteador morreria junto ao fechar o Desktop e a reabertura
+  seguinte ficaria sem rota na 1ª mensagem (validado ao vivo).
+- **Auto-mantido**: o hook `ensure` (SessionStart) instala/reaplica o shim na versão
+  ativa do claude-code e, após updates do app, reinstala na nova versão. Publica a URL
+  viva em `~/.claude/model-router-url.txt` (lida pelo wrapper). O `env` do
+  `settings.json` continua mantido para o modo **CLI** (que o respeita). `.verified`
+  não é tocado (o Windows não revalida o hash em runtime).
+- **+18 testes herméticos** (dirs fake, nunca tocam no binário real): comparação de
+  versão, detecção de estado (instalado/reaplicar/órfão), instalação idempotente,
+  rollback, remoção e seleção da versão mais nova; compilação via csc validada no
+  Windows.
 
 ## [1.13.0] - 2026-06-30
 

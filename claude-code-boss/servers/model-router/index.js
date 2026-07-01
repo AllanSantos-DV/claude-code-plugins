@@ -19,6 +19,7 @@ const fs    = require('fs');
 const path  = require('path');
 const os    = require('os');
 const { URL } = require('url');
+const catalog = require('./catalog.js');
 
 // ── Resolução de paths ────────────────────────────────────────────────────────
 
@@ -276,8 +277,29 @@ async function classify(prompt, config) {
 
 // ── Model selection ───────────────────────────────────────────────────────────
 
+// ── Catálogo dinâmico de modelos (por assinatura) ─────────────────────────────
+// Liga/desliga + TTL/backoff do catalog.js (GET /v1/models). Default LIGADO, mas
+// 100% seguro: sem credencial ou com o endpoint indisponível (offline/401/403),
+// tudo cai no mapa ESTÁTICO abaixo — comportamento idêntico ao de antes.
+function catalogConfig(config) {
+  const c = (config && config.routing && config.routing.catalog) || {};
+  return {
+    enabled:        c.enabled !== false,
+    ttlMs:          Number.isFinite(c.ttlMs) ? c.ttlMs : 3600000,
+    errorBackoffMs: Number.isFinite(c.errorBackoffMs) ? c.errorBackoffMs : 300000,
+  };
+}
+function catalogEnabled(config) { return catalogConfig(config).enabled; }
+
 function resolveModel(tier, config) {
   const routing = config.routing || {};
+  // Catálogo DINÂMICO (se habilitado e aquecido): elege o modelo MAIS NOVO da
+  // família — pega lançamentos (ex.: Sonnet 5) sem editar config. Sem catálogo
+  // cai no mapa estático abaixo.
+  if (catalogEnabled(config)) {
+    const dyn = catalog.modelForFamily(tier);
+    if (dyn) return dyn;
+  }
   const map = {
     haiku:  routing.haikuTier?.model  || 'claude-haiku-4-5-20251001',
     sonnet: routing.sonnetTier?.model || 'claude-sonnet-4-6',
@@ -385,7 +407,14 @@ function reconcileEffort(body, newModel, config) {
   if (!loc) return { action: 'none' };
   const cur = loc.container.effort;
   const { order, support } = effortConfig(config);
-  const sup = effortSupportFor(newModel, support);
+  let sup = effortSupportFor(newModel, support);
+  // Catálogo dinâmico: a fonte da verdade do effort é o `capabilities.effort` do
+  // /v1/models. Se o catálogo conhece o destino, usa os níveis REAIS dele
+  // (null = não conhece → mantém o estático; [] = conhece e NÃO tem effort → strip).
+  if (catalogEnabled(config)) {
+    const dyn = catalog.effortForModel(newModel);
+    if (dyn !== null) sup = dyn;
+  }
 
   const strip = () => {
     delete loc.container.effort;
@@ -1220,6 +1249,41 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
   upstream.end();
 }
 
+// ── Catálogo dinâmico: aquecimento (fire-and-forget) ──────────────────────────
+
+// Monta os headers de auth p/ chamar /v1/models com a credencial de ENTRADA
+// (escopo da assinatura). Sem x-api-key NEM authorization → não dá p/ escopar.
+function catalogAuthHeaders(h) {
+  const out = { 'anthropic-version': h['anthropic-version'] || '2023-06-01' };
+  if (h['x-api-key'])      out['x-api-key']      = h['x-api-key'];
+  if (h['authorization'])  out['authorization']  = h['authorization'];
+  if (h['anthropic-beta']) out['anthropic-beta'] = h['anthropic-beta'];
+  return out;
+}
+
+// Aquece/atualiza o catálogo com a credencial desta request. Fire-and-forget: a
+// request atual NÃO espera — usa o snapshot já aquecido (ou o estático); as
+// próximas pegam o catálogo fresco. Guard de TTL/inflight/backoff vive no catalog.
+function maybeWarmCatalog(originalHeaders, config) {
+  const cc = catalogConfig(config);
+  if (!cc.enabled) return;
+  const h = originalHeaders || {};
+  if (!h['x-api-key'] && !h['authorization']) return;
+  catalog.maybeRefresh({
+    host:           UPSTREAM_HOST,
+    port:           UPSTREAM_PORT,
+    protocol:       UPSTREAM_PROTOCOL,
+    headers:        catalogAuthHeaders(h),
+    ttlMs:          cc.ttlMs,
+    errorBackoffMs: cc.errorBackoffMs,
+    onRefresh: (snap) => logger.info('Catálogo de modelos atualizado via /v1/models', {
+      modelos:  snap.count,
+      familias: Object.fromEntries(Object.entries(snap.byFamily).map(([f, e]) => [f, e.model])),
+    }),
+    onError: (err) => logger.warn('Catálogo: /v1/models indisponível — usando mapa estático (fallback)', { err: err.message }),
+  });
+}
+
 // ── HTTP Server ───────────────────────────────────────────────────────────────
 
 async function createServer(config) {
@@ -1244,6 +1308,20 @@ async function createServer(config) {
       return;
     }
 
+    // Catálogo dinâmico (observabilidade): snapshot atual + idade (lido pelo dashboard).
+    if (req.method === 'GET' && req.url === '/catalog') {
+      const snap = catalog.getSnapshot();
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        enabled:  catalogEnabled(config),
+        warmed:   !!snap,
+        ageMs:    snap ? snap.ageMs : null,
+        count:    snap ? snap.count : 0,
+        byFamily: snap ? snap.byFamily : {},
+      }));
+      return;
+    }
+
     // Só intercepta POST /v1/messages
     if (req.method !== 'POST' || !req.url.includes('/messages')) {
       res.writeHead(404);
@@ -1260,6 +1338,9 @@ async function createServer(config) {
       res.end();
     });
     req.on('end', async () => {
+      // Aquece o catálogo dinâmico com a credencial desta request (fire-and-forget).
+      // Roda ANTES do count_tokens p/ aproveitar a rajada de boot como gatilho.
+      maybeWarmCatalog(req.headers, config);
       // count_tokens é o endpoint GRÁTIS de contagem (beta token-counting): repassa
       // verbatim preservando o path. Classificar/reescrever pra /v1/messages
       // converteria contagem grátis em geração paga e saturaria o RPM no boot.
@@ -1466,6 +1547,9 @@ if (require.main === module) {
     reconcileEffort,
     effortSupportFor,
     effortConfig,
+    catalogConfig,
+    catalogEnabled,
+    catalog,
     metricsRoute,
     metricsOutcome,
     metricsSnapshot,

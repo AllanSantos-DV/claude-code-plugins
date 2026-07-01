@@ -43,6 +43,12 @@
         "claude-sonnet-4-6": ["low", "medium", "high", "max"],
         "claude-opus-4-5":   ["low", "medium", "high"]
       }
+    },
+    "catalog": {
+      "_comment": "Catálogo DINÂMICO de modelos por assinatura. Em vez de travar nos modelos acima (haikuTier/sonnetTier/opusTier + effort.support), consulta GET /v1/models da Anthropic com a credencial que o Claude Code já manda — logo, reflete o SEU plano (Pro/Max/API) — e por família (haiku/sonnet/opus) elege o modelo MAIS NOVO (created_at) e lê os níveis de effort reais (capabilities.effort). Assim novos lançamentos (ex.: Sonnet 5, mais barato) entram sozinhos, sem editar config nem esperar release. 100% seguro: o refresh é assíncrono e a leitura é síncrona com FALLBACK TOTAL pro mapa estático acima — se /v1/models estiver offline ou o token não tiver escopo de listagem (401/403), o comportamento é idêntico ao de antes. enabled: liga/desliga (default true). ttlMs: validade do cache em memória (ms; default 1h). errorBackoffMs: espera após um erro antes de tentar de novo (ms; default 5min).",
+      "enabled": true,
+      "ttlMs": 3600000,
+      "errorBackoffMs": 300000
     }
   },
   "classifier": {
