@@ -92,4 +92,17 @@ function formatContext(entries) {
   return `[BRAIN] ${entries.length} relevant lesson(s):\n${lines.join('\n')}`;
 }
 
-module.exports = { retrieve, formatContext };
+/**
+ * Filter entries down to the INJECTABLE set, dropping any whose type is listed
+ * in kb.retrieval.contextExcludeTypes (config-driven; default [] = keep all).
+ * Pure: does not touch retrieval or scoring — only what actually gets injected,
+ * so retrieval efficacy stays measured on the full result set by the caller.
+ */
+function filterInjectableEntries(entries) {
+  if (!entries || !entries.length) return entries || [];
+  const ex = new Set(brainConfig.getContextExcludeTypes());
+  if (!ex.size) return entries;
+  return entries.filter((e) => !ex.has(String((e && e.type) || '').toLowerCase()));
+}
+
+module.exports = { retrieve, formatContext, filterInjectableEntries };

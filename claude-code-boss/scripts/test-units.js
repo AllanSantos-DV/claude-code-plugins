@@ -1500,6 +1500,84 @@ test('retrieve-core: short prompt pre-filters (no embedder)', async () => {
   assertEq(r.entries.length, 0);
 });
 
+// ─── brain-config: contextExcludeTypes + DATA_DIR user-override deep-merge ────
+const brainConfig = require('./lib/brain-config.js');
+
+// Run `fn` with a temp DATA_DIR user-override (brain/user-config.json = `obj`).
+// `obj === undefined` writes no override (exercises the "absent" path). Restores
+// CLAUDE_PLUGIN_DATA + the brain-config cache afterwards no matter what.
+function withUserConfig(obj, fn) {
+  const saved = process.env.CLAUDE_PLUGIN_DATA;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-usercfg-'));
+  if (obj !== undefined) {
+    fs.mkdirSync(path.join(dir, 'brain'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'brain', 'user-config.json'), JSON.stringify(obj));
+  }
+  process.env.CLAUDE_PLUGIN_DATA = dir;
+  brainConfig._resetCache();
+  try {
+    return fn();
+  } finally {
+    process.env.CLAUDE_PLUGIN_DATA = saved;
+    brainConfig._resetCache();
+  }
+}
+
+test('brain-config.getContextExcludeTypes: absent override → [] (shipped default)', () => {
+  withUserConfig(undefined, () => {
+    assertEq(brainConfig.getContextExcludeTypes(), []);
+  });
+});
+
+test('brain-config.getContextExcludeTypes: normalizes (trim + lowercase)', () => {
+  withUserConfig({ kb: { retrieval: { contextExcludeTypes: [' Lesson ', 'PATTERN', ''] } } }, () => {
+    assertEq(brainConfig.getContextExcludeTypes(), ['lesson', 'pattern']);
+  });
+});
+
+test('brain-config.getContextExcludeTypes: non-array → []', () => {
+  withUserConfig({ kb: { retrieval: { contextExcludeTypes: 'lesson' } } }, () => {
+    assertEq(brainConfig.getContextExcludeTypes(), []);
+  });
+});
+
+test('brain-config user-override: deep-merge keeps shipped retrieval fields', () => {
+  // Capture shipped retrieval getters with NO override…
+  const shippedFast = withUserConfig(undefined, () => brainConfig.getRetrievalFast());
+  const shippedDeep = withUserConfig(undefined, () => brainConfig.getRetrievalDeep());
+  // …then prove the override merges (exclude wins) WITHOUT wiping the siblings.
+  withUserConfig({ kb: { retrieval: { contextExcludeTypes: ['lesson'] } } }, () => {
+    assertEq(brainConfig.getContextExcludeTypes(), ['lesson']);
+    assertEq(brainConfig.getRetrievalFast(), shippedFast);
+    assertEq(brainConfig.getRetrievalDeep(), shippedDeep);
+  });
+});
+
+// ─── retrieve-core.filterInjectableEntries ───────────────────────────────────
+test('retrieve-core.filterInjectableEntries: empty/null → []', () => {
+  assertEq(retrieveCore.filterInjectableEntries([]), []);
+  assertEq(retrieveCore.filterInjectableEntries(null), []);
+});
+
+test('retrieve-core.filterInjectableEntries: default [] passes all types', () => {
+  withUserConfig(undefined, () => {
+    const es = [{ type: 'lesson' }, { type: 'reference' }, { type: 'pattern' }];
+    assertEq(retrieveCore.filterInjectableEntries(es), es);
+  });
+});
+
+test('retrieve-core.filterInjectableEntries: excludes lesson, keeps others (case-insensitive)', () => {
+  withUserConfig({ kb: { retrieval: { contextExcludeTypes: ['lesson'] } } }, () => {
+    const es = [
+      { id: 1, type: 'Lesson' },
+      { id: 2, type: 'reference' },
+      { id: 3, type: 'pattern' },
+      { id: 4, type: 'LESSON' },
+    ];
+    assertEq(retrieveCore.filterInjectableEntries(es).map((e) => e.id), [2, 3]);
+  });
+});
+
 // ─── command-signature ────────────────────────────────────────────────────────
 const cmdSig = require(path.join(SCRIPTS, 'lib', 'command-signature.js'));
 

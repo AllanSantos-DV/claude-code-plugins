@@ -3,8 +3,15 @@
  *
  * Avoids re-parsing on every hook invocation; exposes typed getters with sane
  * defaults so consumers never see undefined.
+ *
+ * The shipped config is merged with an optional per-user override living in
+ * DATA_DIR/brain/user-config.json (never committed), mirroring the model-router
+ * pattern (shipped ⊕ DATA_DIR/model-router/user-config.json). This lets a single
+ * user tweak behavior (e.g. exclude a KB type from injection) without affecting
+ * other contributors or surviving-across auto-update concerns.
  */
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..', '..');
@@ -12,14 +19,45 @@ const CONFIG_PATH = path.join(PLUGIN_ROOT, 'config', 'brain-config.json');
 
 let _cache = null;
 
+// Resolved at load() time (not frozen at module load) so tests can repoint
+// CLAUDE_PLUGIN_DATA + _resetCache(), and so it tracks the canonical DATA_DIR.
+function userConfigPath() {
+  const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
+    || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+  return path.join(DATA_DIR, 'brain', 'user-config.json');
+}
+
+function isPlainObject(v) {
+  return !!v && typeof v === 'object' && !Array.isArray(v);
+}
+
+// Deep-merge `override` onto `base`: plain objects merge recursively; arrays and
+// scalars from the override REPLACE the base value.
+function deepMerge(base, override) {
+  const out = isPlainObject(base) ? { ...base } : {};
+  if (!isPlainObject(override)) return out;
+  for (const k of Object.keys(override)) {
+    const ov = override[k];
+    out[k] = (isPlainObject(ov) && isPlainObject(out[k])) ? deepMerge(out[k], ov) : ov;
+  }
+  return out;
+}
+
 function load() {
   if (_cache) return _cache;
+  let shipped = {};
   try {
-    _cache = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+    shipped = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
   } catch (err) {
     console.error(`[brain-config] load failed (${CONFIG_PATH}): ${err.message}`);
-    _cache = {};
+    shipped = {};
   }
+  let override = null;
+  try {
+    const p = userConfigPath();
+    if (fs.existsSync(p)) override = JSON.parse(fs.readFileSync(p, 'utf-8'));
+  } catch (err) { void err; /* override ausente/ilegível → ignora, usa só o shipped */ }
+  _cache = isPlainObject(override) ? deepMerge(shipped, override) : shipped;
   return _cache;
 }
 
@@ -50,6 +88,20 @@ function getSubmission() {
   };
 }
 
+/**
+ * Types (lesson/pattern/reference/memory) excluded from the [BRAIN] block
+ * injected on UserPromptSubmit. Normalized to trimmed lowercase; non-array or
+ * missing → [] (default: inject all types). Set via the DATA_DIR user-override.
+ * @returns {string[]}
+ */
+function getContextExcludeTypes() {
+  const cfg = load();
+  const r = (cfg.kb && cfg.kb.retrieval) || {};
+  const raw = r.contextExcludeTypes;
+  if (!Array.isArray(raw)) return [];
+  return raw.map((x) => String(x).trim().toLowerCase()).filter(Boolean);
+}
+
 function getCuration() {
   const cfg = load();
   const c = cfg.curation || {};
@@ -68,6 +120,7 @@ module.exports = {
   getRetrievalFast,
   getRetrievalDeep,
   getSubmission,
+  getContextExcludeTypes,
   getCuration,
   _resetCache,
 };
