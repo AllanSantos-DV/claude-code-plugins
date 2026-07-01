@@ -427,7 +427,10 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
           }
           // mcp_tool hooks on UserPromptSubmit only inject when the tool returns a
           // JSON output with hookSpecificOutput.additionalContext; empty → no inject.
-          const text = retrieveCore.formatContext(entries);
+          // Journal above measures the REAL retrieval (full entries); injection
+          // respects the config-driven exclude filter (e.g. drop lessons).
+          const injectable = retrieveCore.filterInjectableEntries(entries);
+          const text = retrieveCore.formatContext(injectable);
           const payload = text ? JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: text } }) : '';
           return { content: [{ type: 'text', text: payload }] };
         } catch (err) {
