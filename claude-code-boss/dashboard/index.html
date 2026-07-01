@@ -158,6 +158,14 @@ button { font-family: inherit; font-size: .8rem; padding: .4rem 1rem; border: no
 .spinner { display: inline-block; width: 1.5rem; height: 1.5rem; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .6s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* Router live-traffic pulse */
+.router-dot { display:inline-block; width:.6rem; height:.6rem; border-radius:50%; background:var(--fg-muted); flex:0 0 auto; }
+.router-dot.live { background:#3fb950; animation:rpulse 1.6s infinite; }
+.router-dot.wait { background:#3fb950; opacity:.5; }
+.router-dot.idle { background:#d29922; }
+.router-dot.off  { background:#8b949e; }
+@keyframes rpulse { 0%{box-shadow:0 0 0 0 rgba(63,185,80,.6);} 70%{box-shadow:0 0 0 .5rem rgba(63,185,80,0);} 100%{box-shadow:0 0 0 0 rgba(63,185,80,0);} }
+
 pre { background: var(--pre-bg); color: var(--fg); padding: .6rem; border-radius: 4px; font-size: .7rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word; border: 1px solid var(--border); }
 code { color: var(--fg); }
 
@@ -668,6 +676,11 @@ const I18N = {
     'router.mServedClaude': 'via Claude',
     'router.mCooldowns': 'window resets',
     'router.mStale': 'router offline (last saved)',
+    'router.tLive': 'routing now',
+    'router.tIdle': 'idle',
+    'router.tWait': 'online — no traffic yet',
+    'router.tOff': 'offline (last saved)',
+    'router.tLastAgo': 'last req {v} ago',
     'tip.routerMetrics': 'Estimate by cost weights (proxy for prices: opus ~15x haiku). Baseline = the model you picked. Plan B (NVIDIA) counts as zero Claude cost.',
     'skills.title': 'Skill Promotion',
     'skills.threshold': 'Promotion Threshold',
@@ -757,6 +770,11 @@ const I18N = {
     'router.mServedClaude': 'via Claude',
     'router.mCooldowns': 'resets de janela',
     'router.mStale': 'roteador offline (último salvo)',
+    'router.tLive': 'roteando agora',
+    'router.tIdle': 'ocioso',
+    'router.tWait': 'online — sem tráfego ainda',
+    'router.tOff': 'offline (último salvo)',
+    'router.tLastAgo': 'última req há {v}',
     'tip.routerMetrics': 'Estimativa por pesos de custo (proxy dos preços: opus ~15x haiku). Baseline = o modelo que você escolheu. Plano B (NVIDIA) conta como custo-Claude zero.',
     'skills.title': 'Promoção de Skills',
     'skills.threshold': 'Threshold de Promoção',
@@ -868,6 +886,14 @@ async function loadRouter() {
   await loadRouterConfig();
   refreshRouterStatus();
   refreshRouterMetrics();
+  if (!_routerInterval) {
+    _routerInterval = setInterval(() => {
+      if (document.getElementById('tab-router').classList.contains('active')) {
+        refreshRouterStatus(true);
+        refreshRouterMetrics(true);
+      }
+    }, 4000);
+  }
 }
 
 async function loadRouterConfig() {
@@ -887,9 +913,9 @@ async function loadRouterConfig() {
   }
 }
 
-async function refreshRouterStatus() {
+async function refreshRouterStatus(silent) {
   const label = document.getElementById('router-status-label');
-  label.textContent = '…';
+  if (!silent) label.textContent = '…';
   try {
     const s = await api('GET', '/api/router/status');
     const word = s.running ? t('router.running') : t('router.stopped');
@@ -904,6 +930,37 @@ function routerStatTile(label, value, accent) {
   return `<div style="background:rgba(127,127,127,.10);border-radius:8px;padding:.5rem .7rem;min-width:86px">`
     + `<div style="font-size:1.3rem;font-weight:700${color}">${value}</div>`
     + `<div class="text-muted" style="font-size:.72rem">${label}</div></div>`;
+}
+
+function agoText(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return s + 's';
+  const mn = Math.round(s / 60);
+  if (mn < 60) return mn + 'min';
+  const h = Math.round(mn / 60);
+  if (h < 24) return h + 'h';
+  return Math.round(h / 24) + 'd';
+}
+
+function routerTrafficBanner(m, live) {
+  const last = m.lastReqAt ? new Date(m.lastReqAt).getTime() : null;
+  const age = last != null ? (Date.now() - last) : null;
+  let cls, word, tail = '';
+  if (!live) {
+    cls = 'off'; word = t('router.tOff');
+    if (last != null) tail = ' · ' + t('router.tLastAgo').replace('{v}', agoText(age));
+  } else if (age == null) {
+    cls = 'wait'; word = t('router.tWait');
+  } else if (age < 60000) {
+    cls = 'live'; word = t('router.tLive');
+    tail = ' · ' + t('router.tLastAgo').replace('{v}', agoText(age));
+  } else {
+    cls = 'idle'; word = t('router.tIdle');
+    tail = ' · ' + t('router.tLastAgo').replace('{v}', agoText(age));
+  }
+  return `<div style="display:flex;align-items:center;gap:.45rem;margin-bottom:.65rem;font-size:.85rem">`
+    + `<span class="router-dot ${cls}"></span><strong>${word}</strong>`
+    + `<span class="text-muted">${tail}</span></div>`;
 }
 
 function renderRouterMetrics(m, live) {
@@ -923,14 +980,15 @@ function renderRouterMetrics(m, live) {
     + `${t('router.mCooldowns')}: ${m.cooldownArms || 0} · `
     + `tokens ${tokIn.toLocaleString()}/${tokOut.toLocaleString()}`
     + (live ? '' : ` · ${t('router.mStale')}`);
-  return `<div style="display:flex;flex-wrap:wrap;gap:.5rem">${tiles}</div>`
+  return routerTrafficBanner(m, live)
+    + `<div style="display:flex;flex-wrap:wrap;gap:.5rem">${tiles}</div>`
     + `<div class="text-muted" style="font-size:.74rem;margin-top:.5rem">${sub}</div>`;
 }
 
-async function refreshRouterMetrics() {
+async function refreshRouterMetrics(silent) {
   const box = document.getElementById('router-metrics');
   if (!box) return;
-  box.textContent = '…';
+  if (!silent) box.textContent = '…';
   try {
     const r = await api('GET', '/api/router/metrics');
     if (!r || !r.metrics) { box.textContent = t('router.metricsNone'); return; }
@@ -1651,6 +1709,7 @@ async function saveHooksConfig() {
 
 let _logsData = null;
 let _logsInterval = null;
+let _routerInterval = null;
 
 const LEVEL_COLOR = { error: '#ff7070', warn: '#ffa94d', info: '#8892b0', debug: '#4a5568' };
 
