@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.15.0] - 2026-07-01
+
+### Added — opt-out de auto-injeção de LIÇÕES do Brain
+
+- **Nova config `kb.retrieval.contextExcludeTypes`** (default `[]`): lista de tipos
+  (`lesson`/`pattern`/`reference`/`memory`) que **não** entram no bloco `[BRAIN]`
+  auto-injetado no `UserPromptSubmit`. Não afeta o **retrieval** nem a **captura** —
+  só o que é efetivamente injetado no prompt. Default `[]` = injeta todos
+  (comportamento atual), **retrocompatível**.
+- **Getter `getContextExcludeTypes()`** (normaliza para trim/lowercase; não-array →
+  `[]`) e função pura **`filterInjectableEntries(entries)`** (exportada e testável)
+  em `scripts/lib/retrieve-core.js`.
+- **User-override durável em `DATA_DIR/brain/user-config.json`**: deep-merge sobre o
+  config shipado (mesmo padrão do model-router), então a preferência **sobrevive ao
+  auto-update** do plugin e liga o filtro só para o usuário, sem tocar no repo.
+- **+6 testes herméticos**: `getContextExcludeTypes` (default/normalização/não-array),
+  deep-merge do override preservando os demais campos do shipado, e
+  `filterInjectableEntries` (exclui `lesson`, mantém `reference`/`pattern`,
+  case-insensitive, vazio → `[]`).
+
+### Changed
+
+- O Brain **deixa de auto-injetar LIÇÕES** (`type=lesson`) no prompt quando
+  `contextExcludeTypes` inclui `"lesson"`, **eliminando a dupla-injeção**: o
+  skill-kit semântico (bge-m3) passa a ser a **fonte única** de lições no prompt.
+  `retrieve()` e `formatContext()` permanecem **intactos** e o journal segue medindo
+  o retrieval **real** — só a **injeção** passa pelo filtro. Captura
+  (`capture_lesson`), skill-promotion, `brain_search` sob demanda e a injeção de
+  `reference`/`pattern`/`memory` seguem **inalterados**.
+
 ## [1.14.0] - 2026-06-30
 
 ### Added — router: catálogo DINÂMICO de modelos por assinatura
