@@ -87,11 +87,31 @@ function readState() {
   return null;
 }
 
+// Merge do override do usuário POR CIMA dos defaults shipados (override vence).
+// Espelha servers/model-router/index.js#mergeUserConfig: `nim` e `routing` são
+// mesclados RASO (preserva chaves shipadas); escalares (enabled/port) sobrescrevem.
+// É o que torna o OPT-IN durável: /dashboard grava {enabled:true} no user-config e
+// tanto o ensure (aqui) quanto o server passam a ver enabled:true — sobrevive a
+// updates do plugin (user-config vive no DATA_DIR, fora do pacote versionado).
+function mergeRouterConfig(shipped, override) {
+  const merged = { ...(shipped || {}) };
+  if (!override || typeof override !== 'object') return merged;
+  for (const key of Object.keys(override)) {
+    if ((key === 'nim' || key === 'routing') && override[key] && typeof override[key] === 'object') {
+      merged[key] = { ...(merged[key] || {}), ...override[key] };
+    } else {
+      merged[key] = override[key];
+    }
+  }
+  return merged;
+}
+
 function readConfig() {
+  let shipped = {};
   try {
-    if (fs.existsSync(CONFIG_FILE)) return JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
-  } catch (_) { /* */ }
-  return {};
+    if (fs.existsSync(CONFIG_FILE)) shipped = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
+  } catch (_) { void _; /* shipped ilegível → defaults vazios */ }
+  return mergeRouterConfig(shipped, readUserConfig());
 }
 
 // Lê o payload do hook no stdin (session_id, hook_event_name…) sem travar quando
@@ -463,7 +483,13 @@ async function main() {
   process.exit(0);
 }
 
-main().catch(e => {
-  log(`ERRO fatal no ensure hook: ${e.message}`);
-  process.exit(0); // Não bloqueia
-});
+if (require.main === module) {
+  main().catch(e => {
+    log(`ERRO fatal no ensure hook: ${e.message}`);
+    process.exit(0); // Não bloqueia
+  });
+}
+
+// Export p/ testes herméticos da lógica de opt-in. O guard require.main===module
+// acima garante que um require() em teste NÃO dispara main() (nenhum efeito colateral).
+module.exports = { mergeRouterConfig, readConfig };

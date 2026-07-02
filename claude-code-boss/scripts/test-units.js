@@ -2004,6 +2004,46 @@ test('plugin-updater.computeUpdateState: missing tag → latest null, no update'
   assert(s.hasUpdate === false, 'no tag → no update');
 });
 
+// ─── model-router-ensure: opt-in merge (shipped ⊕ DATA_DIR user-config) ──────
+const routerEnsure = require('./model-router-ensure.js');
+
+test('mergeRouterConfig: sem override → shipped inalterado (enabled:false fica false)', () => {
+  const m = routerEnsure.mergeRouterConfig({ enabled: false, port: 13456, nim: { apiKey: '' } }, null);
+  assertEq(m.enabled, false);
+  assertEq(m.port, 13456);
+});
+
+test('mergeRouterConfig: override {enabled:true} liga (opt-in vence o shipped)', () => {
+  const m = routerEnsure.mergeRouterConfig({ enabled: false, port: 13456 }, { enabled: true });
+  assertEq(m.enabled, true);
+  assertEq(m.port, 13456);
+});
+
+test('mergeRouterConfig: override {enabled:false} mantém desligado', () => {
+  const m = routerEnsure.mergeRouterConfig({ enabled: true }, { enabled: false });
+  assertEq(m.enabled, false);
+});
+
+test('mergeRouterConfig: nim/routing merge RASO preserva chaves shipadas', () => {
+  const shipped = { enabled: false, nim: { apiKey: '', endpoint: 'E' }, routing: { catalog: { enabled: true }, a: 1 } };
+  const m = routerEnsure.mergeRouterConfig(shipped, { nim: { apiKey: 'K' }, routing: { a: 2 } });
+  assertEq(m.nim.apiKey, 'K');
+  assertEq(m.nim.endpoint, 'E');       // preservado do shipped
+  assertEq(m.routing.a, 2);            // sobrescrito pelo override
+  assertEq(m.routing.catalog.enabled, true); // preservado do shipped
+  assertEq(m.enabled, false);          // não veio no override → shipped
+});
+
+test('mergeRouterConfig: override não-objeto (undefined) → retorna shipped', () => {
+  const m = routerEnsure.mergeRouterConfig({ enabled: false }, undefined);
+  assertEq(m.enabled, false);
+});
+
+test('router-config.json shipped: enabled === false (opt-in, off por padrão)', () => {
+  const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'router-config.json'), 'utf-8'));
+  assertEq(cfg.enabled, false);
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
