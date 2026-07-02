@@ -1,6 +1,7 @@
 {
   "_comment": "Model Router — proxy que intercepta chamadas do Claude Code e roteia pelo modelo certo",
-  "enabled": true,
+  "_comment_enabled": "OPT-IN: desligado por padrao (enabled:false). Rotear por-modelo a CADA request QUEBRA o prompt cache da Anthropic: o cache e POR MODELO, entao a cada troca (haiku/sonnet/opus) o prefixo inteiro (system+tools+historico) vira cache-miss e e cobrado como input cheio (1.0x) + cache-write (1.25x em 5min / 2x em 1h), no lugar do cache-read (0.1x) -- ou seja, 'o cache todo vira pago' e o custo SOBE. Alem disso a Anthropic ja oferece controle first-party de custo/qualidade via parametro effort NO MESMO modelo (sem quebrar cache). Para ativar: /dashboard -> Router -> ligar (grava DATA_DIR/model-router/user-config.json {enabled:true}, sobrevive a updates do plugin). ensure e server fazem merge shipped(+)user-config, entao o opt-in vale para os dois.",
+  "enabled": false,
   "port": 13456,
   "_comment_port": "Porta FIXA do proxy. O hook grava ANTHROPIC_BASE_URL=http://127.0.0.1:<porta> no bloco env do ~/.claude/settings.json (escopo Claude Code). Se a porta já tiver um router nosso saudável, a instância nova faz reuso e sai; nunca incrementa.",
   "nim": {
