@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.16.0] - 2026-07-01
+
+### Added — dashboard: status do roteador ao vivo + auto-update do plugin
+
+O plugin é instalado por um **marketplace local** (git-subdir), então o `/plugin` do
+Claude Code **não puxa atualização** sozinho — só o aviso de 24h. Esta versão fecha
+esse buraco pelo próprio dashboard e torna a atividade do roteador **visível**.
+
+- **Luz de status ao vivo** na aba do Roteador: um ponto ao lado de **Status** fica
+  **verde pulsante** quando o proxy está no ar e **cinza** quando parado (reusa
+  `.router-dot`), complementando o texto `running · porta · PID` que já existia.
+- **Card "Plugin & atualização"**: mostra a **versão instalada** (+ sha curto e versão
+  do Node), a **última release no GitHub**, botão **Verificar atualizações** e, quando
+  há versão nova, **Atualizar agora** — com dica de rodar `/reload-plugins` depois.
+- **Novo módulo `scripts/lib/plugin-updater.js`** (self-update): consulta
+  `releases/latest`, baixa o ZIP do asset (seguindo redirects de CDN), valida o
+  `package.json` extraído, copia para o cache `~/.claude/plugins/cache/.../<sha>/`,
+  roda `npm install --omit=dev` e reaponta o `installed_plugins.json` (com backup).
+  Mata `brain-server` **stale** de caches antigos — **nunca** o próprio PID que
+  responde ao POST. Faz deref de tag anotada para o SHA real (fallback `rel-X-Y-Z`).
+- **Rotas no dashboard**: `GET /api/plugin/version`, `GET /api/plugin/update-check`
+  (cache 6h em memória, API anônima do GitHub — sem misturar credencial) e
+  `POST /api/plugin/update`.
+- **Aviso `[model-router] ATIVO` 1x por sessão** (antes repetia todo turno): reduz o
+  ruído de contexto que consumia tokens à toa.
+- **+6 testes herméticos** (`parseVersion`/`compareSemver`/`pickAsset`/
+  `computeUpdateState`), validados contra a release real do GitHub.
+
 ## [1.15.0] - 2026-07-01
 
 ### Added — opt-out de auto-injeção de LIÇÕES do Brain
