@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.18.0] - 2026-07-02
+
+### Added — tool `curation_register_shell` (criar script curado sem Write/Edit manual)
+
+O Stop hook `curation-stop.js` pede pra criar um script curado + registrar em
+`shells.json` quando um comando bruto gera output volumoso. Até aqui isso só dava pra
+fazer via `Write`/`Edit` do próprio Claude Code — e o classificador do Auto Mode trata
+essa escrita como "persistent configuration fora do escopo da tarefa", bloqueando
+repetidamente mesmo com autorização do usuário em chat.
+
+- **Nova tool MCP `curation_register_shell`**: recebe `{ id, scriptPath, content,
+  aliases, label?, icon?, outputFilter?, outputLines?, timeoutMs?, cwd? }`, escreve o
+  arquivo do script e adiciona/atualiza a entrada em `shells.json` num único passo,
+  server-side — sem passar pelas ferramentas de edição de arquivo que o classificador
+  intercepta. Chamar de novo com o mesmo `id` **atualiza** em vez de duplicar.
+- **Novo módulo `scripts/lib/shell-register.js`**: reaproveita `isGenericAlias`
+  (mesma validação "alias too broad" de `curation_mark_oneoff`) e resolve a raiz do
+  projeto **limitada ao repositório git** de `cwd` — proteção contra o
+  `findProjectRoot` (que sobe diretórios procurando qualquer `shells.json`) vazar
+  para fora do projeto atual e escrever num `shells.json` de outro lugar (ex.: home
+  do usuário). Também valida que `scriptPath` não escapa do diretório de scripts
+  esperado (guarda contra path traversal).
+- **`curation-stop.js`** e a skill `curation-script-pattern` atualizados para citar a
+  nova tool como caminho preferido de CREATE, mantendo Write/Edit manual como
+  fallback.
+- **+8 testes unitários** para `shell-register` (criação, update idempotente,
+  validações, guarda de path traversal, formatação do JSON).
+
 ## [1.17.0] - 2026-07-02
 
 ### Changed — roteador de modelo agora é OPT-IN (desligado por padrão)

@@ -1660,6 +1660,82 @@ test('oneoff-store: marked one-hit under ceiling is suppressible (detect path)',
   assert(r.matched && r.oneHit && r.count < 3, `expected suppressible, got ${JSON.stringify(r)}`);
 });
 
+// ─── shell-register (curation_register_shell backing module) ─────────────────
+const shellRegister = require(path.join(SCRIPTS, 'lib', 'shell-register.js'));
+const freshProjectRoot = () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-shellreg-'));
+  fs.mkdirSync(path.join(dir, '.vscode'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.vscode', 'shells.json'), JSON.stringify({ version: 1, shells: [] }, null, 2));
+  return dir;
+};
+
+test('shell-register: creates script + entry when shells.json already has version/shells', () => {
+  const root = freshProjectRoot();
+  const res = shellRegister.register({
+    id: 'grep-file', scriptPath: '.vscode/scripts/grep-file.mjs', content: '#!/usr/bin/env node\nconsole.log("OK  0 matches (0ms)");\n',
+    aliases: ['grep -n foo'], cwd: root,
+  });
+  assertEq(res.decision, 'registered');
+  assert(fs.existsSync(path.join(root, '.vscode', 'scripts', 'grep-file.mjs')), 'script file written');
+  const shells = JSON.parse(fs.readFileSync(path.join(root, '.vscode', 'shells.json'), 'utf-8'));
+  assertEq(shells.shells.length, 1);
+  assertEq(shells.shells[0].id, 'grep-file');
+  assertEq(shells.shells[0].command, '.vscode/scripts/grep-file.mjs');
+  assertEq(shells.shells[0].aliases, ['grep -n foo']);
+});
+
+test('shell-register: creates shells.json from scratch when missing', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-shellreg-'));
+  const res = shellRegister.register({
+    id: 'foo', scriptPath: '.vscode/scripts/foo.mjs', content: 'console.log("OK  x (0ms)");\n',
+    aliases: ['npm run foo'], cwd: root,
+  });
+  assertEq(res.decision, 'registered');
+  const shells = JSON.parse(fs.readFileSync(path.join(root, '.vscode', 'shells.json'), 'utf-8'));
+  assertEq(shells.shells.length, 1);
+});
+
+test('shell-register: same id twice updates in place, no duplicate', () => {
+  const root = freshProjectRoot();
+  shellRegister.register({ id: 'dup', scriptPath: '.vscode/scripts/dup.mjs', content: 'v1', aliases: ['npm run dup'], cwd: root });
+  const res2 = shellRegister.register({ id: 'dup', scriptPath: '.vscode/scripts/dup.mjs', content: 'v2', aliases: ['npm run dup2'], cwd: root });
+  assertEq(res2.decision, 'updated');
+  const shells = JSON.parse(fs.readFileSync(path.join(root, '.vscode', 'shells.json'), 'utf-8'));
+  assertEq(shells.shells.length, 1);
+  assertEq(shells.shells[0].aliases, ['npm run dup2']);
+  assertEq(fs.readFileSync(path.join(root, '.vscode', 'scripts', 'dup.mjs'), 'utf-8'), 'v2');
+});
+
+test('shell-register: rejects generic alias (D4 parity with curation_mark_oneoff)', () => {
+  const root = freshProjectRoot();
+  const res = shellRegister.register({ id: 'x', scriptPath: '.vscode/scripts/x.mjs', content: 'c', aliases: ['git'], cwd: root });
+  assert(res.isError, 'expected isError');
+  assert(/alias too broad/.test(res.message), `got: ${res.message}`);
+});
+
+test('shell-register: rejects missing required fields', () => {
+  const root = freshProjectRoot();
+  assert(shellRegister.register({ scriptPath: '.vscode/scripts/x.mjs', content: 'c', aliases: ['npm run x'], cwd: root }).isError, 'missing id');
+  assert(shellRegister.register({ id: 'x', content: 'c', aliases: ['npm run x'], cwd: root }).isError, 'missing scriptPath');
+  assert(shellRegister.register({ id: 'x', scriptPath: '.vscode/scripts/x.mjs', aliases: ['npm run x'], cwd: root }).isError, 'missing content');
+  assert(shellRegister.register({ id: 'x', scriptPath: '.vscode/scripts/x.mjs', content: 'c', aliases: [], cwd: root }).isError, 'empty aliases');
+});
+
+test('shell-register: rejects scriptPath escaping the scripts dir', () => {
+  const root = freshProjectRoot();
+  const res = shellRegister.register({ id: 'escape', scriptPath: '.vscode/scripts/../../outside.mjs', content: 'c', aliases: ['npm run escape'], cwd: root });
+  assert(res.isError, 'expected isError for path traversal');
+  assert(!fs.existsSync(path.join(root, '..', 'outside.mjs')), 'no file written outside project root');
+});
+
+test('shell-register: shells.json stays pretty-printed (2-space indent)', () => {
+  const root = freshProjectRoot();
+  shellRegister.register({ id: 'pretty', scriptPath: '.vscode/scripts/pretty.mjs', content: 'c', aliases: ['npm run pretty'], cwd: root });
+  const raw = fs.readFileSync(path.join(root, '.vscode', 'shells.json'), 'utf-8');
+  assert(raw.includes('\n  "version"') || raw.includes('\n  "shells"'), `expected 2-space indent, got: ${raw.slice(0, 80)}`);
+  JSON.parse(raw); // must still be valid JSON
+});
+
 // ─── capture-rate (nudge→capture conversion) ──────────────────────────────────
 const capRate = require(path.join(SCRIPTS, 'lib', 'capture-rate.js'));
 
