@@ -15,6 +15,7 @@ const { aggregateSkillRoi } = require('./lib/skill-roi.js');
 const { aggregateCaptureRate } = require('./lib/capture-rate.js');
 const { loadSqlite } = require('./lib/sqlite-compat.js');
 const pluginUpdater = require('./lib/plugin-updater.js');
+const { resolveMode } = require('./lib/router-mode.js');
 
 // Session token — generated at boot, injected into index.html, required on all /api/* requests.
 const SESSION_TOKEN = crypto.randomBytes(16).toString('hex');
@@ -1003,9 +1004,14 @@ async function getSkillRoi(req, res, url) {
 // ─── API: Model Router (F3) ────────────────────────────────────────
 
 /**
- * Merge the POST body ({ enabled, acceptedTerms, nimApiKey?, routing? }) into
- * DATA_DIR/model-router/user-config.json. Never clobbers an existing NVIDIA
+ * Merge the POST body ({ enabled, stickyEnabled?, fallbackEnabled?, acceptedTerms, nimApiKey?, routing? })
+ * into DATA_DIR/model-router/user-config.json. Never clobbers an existing NVIDIA
  * key unless nimApiKey === null (clear) or a non-empty string (replace).
+ * `stickyEnabled` is the RECOMMENDED cache-safe router switch (opt-in), persisted
+ * as {sticky:{enabled}} so the shipped sticky.ttlMs survives the shipped⊕user
+ * deep-merge in ensure/server. `fallbackEnabled` is the INDEPENDENT limit
+ * safety-net switch (opt-in), persisted as {fallback:{enabled}} so the shipped
+ * fallback.triggerStatuses/cooldown survive the deep-merge.
  */
 function writeRouterOverride(body) {
   fs.mkdirSync(path.dirname(ROUTER_USER_CONFIG), { recursive: true });
@@ -1013,6 +1019,14 @@ function writeRouterOverride(body) {
   const out = { ...existing };
   if (typeof body.enabled === 'boolean') out.enabled = body.enabled;
   if (typeof body.acceptedTerms === 'boolean') out.acceptedTerms = body.acceptedTerms;
+
+  if (typeof body.stickyEnabled === 'boolean') {
+    out.sticky = { ...(existing.sticky || {}), enabled: body.stickyEnabled };
+  }
+
+  if (typeof body.fallbackEnabled === 'boolean') {
+    out.fallback = { ...(existing.fallback || {}), enabled: body.fallbackEnabled };
+  }
 
   const nim = { ...(existing.nim || {}) };
   if (body.nimApiKey === null) {
@@ -1029,16 +1043,44 @@ function writeRouterOverride(body) {
   return out;
 }
 
+// Deriva os 3 flags EFETIVOS (shipped ⊕ override) — fonte única p/ /config e /status.
+// Espelha exatamente a precedência do server: override.<flag> vence o shipped; ausência
+// no override cai no default do shipped. Usado para computar o modo CONFIGURADO.
+function resolveRouterFlags() {
+  const shipped = readJSON(ROUTER_SHIPPED_CONFIG) || {};
+  const override = fs.existsSync(ROUTER_USER_CONFIG) ? (readJSON(ROUTER_USER_CONFIG) || {}) : {};
+  const enabled = override.enabled !== undefined ? override.enabled !== false : shipped.enabled !== false;
+  const shippedSticky = (shipped.sticky && shipped.sticky.enabled === true);
+  const stickyEnabled = (override.sticky && override.sticky.enabled !== undefined)
+    ? override.sticky.enabled === true
+    : shippedSticky;
+  const shippedFb = (shipped.fallback && shipped.fallback.enabled === true);
+  const fallbackEnabled = (override.fallback && override.fallback.enabled !== undefined)
+    ? override.fallback.enabled === true
+    : shippedFb;
+  return { shipped, override, enabled, stickyEnabled, fallbackEnabled };
+}
+
+// Modo CONFIGURADO (o que o proxy DEVERIA rodar após um reload) via a fonte única.
+function configuredRouterMode() {
+  const { enabled, stickyEnabled, fallbackEnabled } = resolveRouterFlags();
+  return resolveMode({
+    enabled,
+    sticky:   { enabled: stickyEnabled },
+    fallback: { enabled: fallbackEnabled },
+  });
+}
+
 function getRouterConfig(req, res) {
   try {
-    const shipped = readJSON(ROUTER_SHIPPED_CONFIG) || {};
-    const override = fs.existsSync(ROUTER_USER_CONFIG) ? (readJSON(ROUTER_USER_CONFIG) || {}) : {};
+    const { shipped, override, enabled, stickyEnabled, fallbackEnabled } = resolveRouterFlags();
     const nim = { ...(shipped.nim || {}), ...(override.nim || {}) };
     const routing = { ...(shipped.routing || {}), ...(override.routing || {}) };
     const key = String(nim.apiKey || '').trim();
-    const enabled = override.enabled !== undefined ? override.enabled !== false : shipped.enabled !== false;
     json(res, {
       enabled,
+      stickyEnabled,
+      fallbackEnabled,
       acceptedTerms: override.acceptedTerms === true,
       hasNvidiaKey: key.length > 0,
       nimMasked: key.length >= 4 ? key.slice(-4) : '',
@@ -1062,17 +1104,6 @@ async function saveRouterConfig(req, res) {
   }
 }
 
-function routerHealthCheck(port) {
-  return new Promise((resolve) => {
-    const r = http.get(`http://127.0.0.1:${port}/health`, { timeout: 800 }, (resp) => {
-      resp.resume();
-      resolve(resp.statusCode === 200);
-    });
-    r.on('error', () => resolve(false));
-    r.on('timeout', () => { r.destroy(); resolve(false); });
-  });
-}
-
 function getRouterStatus(req, res) {
   return getRouterStatusAsync(req, res).catch(err => {
     console.error(`[DASHBOARD] /api/router/status failed: ${err.message}`);
@@ -1084,8 +1115,15 @@ async function getRouterStatusAsync(req, res) {
   const shipped = readJSON(ROUTER_SHIPPED_CONFIG) || {};
   const state = fs.existsSync(ROUTER_STATE_FILE) ? (readJSON(ROUTER_STATE_FILE) || {}) : {};
   const port = state.port || shipped.port || 13456;
-  const running = await routerHealthCheck(port);
-  json(res, { running, port, pid: state.pid, lastError: state.lastError });
+  // Modo RODANDO: o /health ao vivo é a verdade (o proxy só sobe quando mode!=='off');
+  // se o /health estiver fora mas o state file existir, cai nele; se nada responde, o
+  // proxy está fora → modo rodando = 'off'. O CONFIGURADO vem dos flags mesclados: se
+  // divergir do rodando, há reload pendente (o dashboard sinaliza).
+  const health = await routerHttpGetJson(port, '/health');
+  const running = !!(health && health.status === 'ok');
+  const runningMode = running ? (health.mode || state.mode || 'off') : 'off';
+  const configuredMode = configuredRouterMode();
+  json(res, { running, port, pid: state.pid, lastError: state.lastError, runningMode, configuredMode });
 }
 
 async function applyRouter(req, res) {

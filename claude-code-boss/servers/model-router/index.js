@@ -18,8 +18,10 @@ const https = require('https');
 const fs    = require('fs');
 const path  = require('path');
 const os    = require('os');
+const crypto = require('crypto');
 const { URL } = require('url');
 const catalog = require('./catalog.js');
+const { resolveMode } = require('../../scripts/lib/router-mode.js');
 
 // ── Resolução de paths ────────────────────────────────────────────────────────
 
@@ -77,7 +79,10 @@ function loadConfig() {
     logger.warn('Config load failed, using defaults', { err: e.message });
   }
   // Deep-merge do override do usuário POR CIMA dos defaults (override vence).
-  // `nim` e `routing` são mesclados raso; escalares (enabled) são sobrescritos.
+  // `nim`, `routing`, `fallback` e `sticky` são mesclados raso (preserva chaves
+  // shipadas — ex.: {sticky:{enabled:true}} liga o sticky SEM apagar ttlMs;
+  // {fallback:{enabled:true}} liga o fallback SEM apagar triggerStatuses/cooldown);
+  // escalares (enabled) são sobrescritos.
   try {
     if (fs.existsSync(USER_CONFIG_FILE)) {
       const override = JSON.parse(fs.readFileSync(USER_CONFIG_FILE, 'utf-8'));
@@ -92,7 +97,7 @@ function loadConfig() {
 function mergeUserConfig(base, override) {
   const merged = { ...base };
   for (const key of Object.keys(override || {})) {
-    if ((key === 'nim' || key === 'routing') && override[key] && typeof override[key] === 'object') {
+    if ((key === 'nim' || key === 'routing' || key === 'fallback' || key === 'sticky') && override[key] && typeof override[key] === 'object') {
       merged[key] = { ...(base[key] || {}), ...override[key] };
     } else {
       merged[key] = override[key];
@@ -469,8 +474,105 @@ function systemLen(system) {
   return 0;
 }
 
-// ── Proxy core ────────────────────────────────────────────────────────────────
+// ── Sticky-tier router (cache-safe) ───────────────────────────────────────────
+// L2a: o roteador CORRETO. Rotear por-request (modo 'routing') QUEBRA o prompt
+// cache da Anthropic — o cache é POR MODELO, então trocar o modelo turno-a-turno
+// força cache-miss do prefixo inteiro (system+tools+histórico). O sticky-tier
+// classifica UMA vez por sessão (no turno 0, quando ainda NÃO há cache = grátis) e
+// FIXA o modelo pelo resto da sessão: modelo constante mantém o cache quente.
+// Reusa o classificador + o teto (downgrade-only), mudando só QUANDO classifica.
 
+// Chave estável de sessão: hash do PREFIXO da conversa (system normalizado + a
+// PRIMEIRA mensagem do usuário). Esse prefixo é imutável ao longo da sessão (o
+// histórico só cresce no fim), então turnos seguintes da MESMA sessão colidem na
+// MESMA chave. Barato (sha1 do texto). system: string OU array de blocos {text};
+// content da 1ª msg: string OU array de blocos {type:'text'}. Partes ausentes → ''.
+function computeSessionKey(body) {
+  const b = body || {};
+  let sysText = '';
+  const sys = b.system;
+  if (typeof sys === 'string') sysText = sys;
+  else if (Array.isArray(sys)) {
+    sysText = sys.map(s => (s && typeof s.text === 'string') ? s.text : '').join('\n');
+  }
+  let firstUser = '';
+  const messages = Array.isArray(b.messages) ? b.messages : [];
+  const first = messages.find(m => m && m.role === 'user');
+  if (first) {
+    const content = first.content;
+    if (typeof content === 'string') firstUser = content;
+    else if (Array.isArray(content)) {
+      firstUser = content.filter(c => c && c.type === 'text').map(c => c.text).join(' ');
+    }
+  }
+  return crypto.createHash('sha1').update(`${sysText}\u0000${firstUser}`).digest('hex');
+}
+
+// PIN STORE em memória: sessionKey → { tier, expiresAt }. Lazy-expire na leitura +
+// varredura leve na escrita (poda sessões vencidas) p/ limitar memória.
+const _stickyPins = new Map();
+
+function stickyTtlMs(config) {
+  const t = config && config.sticky && Number(config.sticky.ttlMs);
+  return Number.isFinite(t) && t > 0 ? t : 21600000; // default 6h
+}
+
+function sweepStickyPins(pins, now) {
+  for (const [k, v] of pins) { if (!v || now > v.expiresAt) pins.delete(k); }
+}
+
+// Decisão sticky (NÚCLEO PURO/TESTÁVEL). Olha o pin da sessão: se há pin VIVO,
+// reusa o tier SEM classificar; se não, é o turno 0 → classifica UMA vez e fixa o
+// tier (via teto sobre o classificado). Em AMBOS os casos reaplica o TETO com o
+// modelo ATUAL do body — assim, se o usuário trocar /model no meio da sessão,
+// rebaixamos graciosamente (nunca escalamos acima do escolhido). deps injetáveis
+// p/ teste determinístico: { pins (Map), now (ms epoch), classifyFn(prompt,config) }.
+// classifyFn é async → decideStickyModel é async, mas a lógica de pin/teto é pura.
+async function decideStickyModel(body, config, deps) {
+  const d = deps || {};
+  const pins = d.pins || _stickyPins;
+  const now = Number.isFinite(d.now) ? d.now : Date.now();
+  const classifyFn = d.classifyFn || ((p, c) => classify(p, c));
+
+  const key = computeSessionKey(body);
+  const originalModel = (body && body.model) || 'unknown';
+  const origTier = modelTier(originalModel);
+
+  const existing = pins.get(key);
+  const live = !!(existing && now <= existing.expiresAt);
+
+  let pinnedTier;
+  let created = false;
+  if (live) {
+    pinnedTier = existing.tier; // reusa SEM classificar (cache-safe)
+  } else {
+    // Turno 0 da sessão: classifica UMA vez (sem cache ainda = grátis).
+    let classified = null;
+    try {
+      const prompt = extractPrompt(body).slice(0, 800);
+      classified = await classifyFn(prompt, config);
+    } catch (e) {
+      logger.warn('Sticky classify error — usando o tier do modelo escolhido', { err: e.message });
+    }
+    // Aplica o teto sobre o classificado p/ derivar o tier a FIXAR (null → origTier).
+    pinnedTier = classified
+      ? applyCeiling(classified, origTier, originalModel, config).routedTier
+      : (origTier || null);
+    pins.set(key, { tier: pinnedTier, expiresAt: now + stickyTtlMs(config) });
+    created = true;
+    sweepStickyPins(pins, now);
+  }
+
+  // pinnedTier null (turno 0 sem classificação E sem origTier conhecido): não dá p/
+  // rotear com segurança → mantém o modelo original (pin registrado evita reclassificar).
+  if (!pinnedTier) {
+    return { key, model: originalModel, tier: origTier, pinned: false, created, blocked: false };
+  }
+  const dec = applyCeiling(pinnedTier, origTier, originalModel, config);
+  return { key, model: dec.newModel, tier: dec.routedTier, pinned: true, created, blocked: dec.blocked };
+}
+
+// ── Proxy core ────────────────────────────────────────────────────────────────
 // Upstream Anthropic. Override via env existe SÓ para testes; produção usa
 // api.anthropic.com:443 (https) — comportamento idêntico ao anterior.
 const UPSTREAM_HOST     = process.env.ROUTER_UPSTREAM_HOST || 'api.anthropic.com';
@@ -1286,12 +1388,12 @@ function maybeWarmCatalog(originalHeaders, config) {
 
 // ── HTTP Server ───────────────────────────────────────────────────────────────
 
-async function createServer(config) {
+async function createServer(config, mode) {
   const server = http.createServer(async (req, res) => {
     // Health check
     if (req.method === 'GET' && req.url === '/health') {
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', pid: process.pid }));
+      res.end(JSON.stringify({ status: 'ok', pid: process.pid, mode }));
       return;
     }
 
@@ -1358,6 +1460,61 @@ async function createServer(config) {
         return;
       }
 
+      // MODO 'fallback-only': PASSTHROUGH cache-safe. Encaminha o body INALTERADO ao
+      // upstream (NÃO classifica, NÃO reescreve model/effort) — o prefixo do prompt
+      // cache fica byte-idêntico a uma chamada direta à Anthropic. A única intervenção
+      // é no 429: forwardRequest já embute a detecção de limite + cooldown + plano B,
+      // que reage ao STATUS do upstream (independe de classificação). Reusamos a MESMA
+      // função (sem duplicar a lógica de fallback). origTier=finalTier=modelo do body
+      // → telemetria honesta (baseline == actual, zero "economia" fabricada).
+      if (mode === 'fallback-only') {
+        const t = modelTier(body.model || 'unknown');
+        logger.debug('fallback-only — passthrough sem classificar', { model: body.model || 'unknown', bytes: Buffer.byteLength(rawBody) });
+        forwardRequest(body, req.headers, res, config, { origTier: t, finalTier: t, path: req.url });
+        return;
+      }
+
+      // MODO 'sticky-tier': roteador CACHE-SAFE. O tier é escolhido UMA vez por
+      // sessão (turno 0) e o modelo é FIXADO pelo resto da sessão — modelo constante
+      // preserva o prompt cache quente (nada de flip turno-a-turno). Reusa o
+      // classificador + o teto. O 429→plano B vive DENTRO do forwardRequest (reage ao
+      // STATUS do upstream), então é reusado automaticamente — NÃO duplicamos nada.
+      if (mode === 'sticky-tier') {
+        const originalModel = body.model || 'unknown';
+        const origTier = modelTier(originalModel);
+        let dec;
+        try {
+          dec = await decideStickyModel(body, config, {});
+        } catch (e) {
+          // Falha inesperada da decisão → passthrough cache-safe (modelo do usuário).
+          logger.warn('Sticky decide error — passthrough do modelo original', { err: e.message });
+          forwardRequest(body, req.headers, res, config, { origTier, finalTier: origTier, path: req.url });
+          return;
+        }
+        body.model = dec.model;
+        // Reconcilia o `effort` só quando o modelo MUDA (mesma regra do per-turn).
+        let effortAdj = { action: 'none' };
+        if (dec.model !== originalModel) effortAdj = reconcileEffort(body, dec.model, config);
+        logger.info(dec.created ? 'Sticky — tier FIXADO (turno 0)' : 'Sticky — pin REUSADO (cache-safe)', {
+          tier:     dec.tier,
+          original: originalModel,
+          novo:     dec.model,
+          teto:     dec.blocked || undefined,
+          key:      dec.key.slice(0, 8),
+          effort:   effortAdj.action !== 'none' ? { acao: effortAdj.action, de: effortAdj.from, para: effortAdj.to } : undefined,
+          nMsg:     Array.isArray(body.messages) ? body.messages.length : 0,
+          sysLen:   systemLen(body.system),
+          bytes:    Buffer.byteLength(rawBody),
+          stream:   body.stream || undefined,
+        });
+        // Telemetria honesta: classified=true (houve decisão de tier na sessão),
+        // blocked = teto barrou um upgrade do tier fixado sobre o modelo atual.
+        try { metricsRoute(origTier, dec.tier, true, dec.blocked); }
+        catch (e) { logger.debug('metricsRoute falhou (ignorado)', { err: e.message }); }
+        forwardRequest(body, req.headers, res, config, { origTier, finalTier: modelTier(body.model), path: req.url });
+        return;
+      }
+
       const originalModel = body.model || 'unknown';
       const origTier = modelTier(originalModel);
       const prompt = extractPrompt(body);
@@ -1419,11 +1576,14 @@ async function createServer(config) {
 
 // ── State file ────────────────────────────────────────────────────────────────
 
-function writeState(port) {
+// O `mode` é o modo em que o server REALMENTE subiu (resolveMode no boot). Persisti-
+// lo aqui deixa o dashboard ler o modo rodando mesmo quando o /health estiver fora.
+function writeState(port, mode) {
   fs.mkdirSync(STATE_DIR, { recursive: true });
   fs.writeFileSync(STATE_FILE, JSON.stringify({
     pid:       process.pid,
     port,
+    mode,
     startedAt: new Date().toISOString(),
   }, null, 2));
 }
@@ -1460,21 +1620,43 @@ async function main() {
   const _metricsTimer = setInterval(persistMetrics, 5000);
   if (_metricsTimer.unref) _metricsTimer.unref(); // não segura o processo vivo
 
-  if (config.enabled === false) {
-    logger.warn('Router desabilitado em router-config.json (enabled: false). Saindo.');
+  // MODO (fonte única: scripts/lib/router-mode.js). 'off' = totalmente inerte → sai.
+  // 'sticky-tier' = roteador cache-safe (classifica 1x/sessão e fixa o modelo; 429→
+  // plano B). 'routing' = cost-routing per-turn DEPRECADO (classifica+reescreve a cada
+  // request — quebra o prompt cache; inclui 429→plano B). 'fallback-only' = passthrough
+  // cache-safe (NÃO classifica/reescreve) + 429→plano B. O ensure pode passar
+  // BOSS_ROUTER_MODE, mas a config local é a fonte de verdade (recomputamos aqui).
+  const mode = resolveMode(config);
+  if (mode === 'off') {
+    logger.warn('Router e fallback desabilitados (mode: off). Saindo.');
     process.exit(0);
   }
+  logger.info('Modo do proxy resolvido', { mode, envHint: process.env.BOSS_ROUTER_MODE || undefined });
 
-  // Inicializa classificador local (MiniLM)
-  try {
-    _embedder = await loadEmbedder(config);
-    const anchorCfg = config.anchors || {};
-    _anchors = await buildAnchors(_embedder, anchorCfg);
-  } catch (e) {
-    logger.warn('Classificador local não inicializado — será usado NIM ou sem roteamento', { err: e.message });
+  // DEPRECAÇÃO: o per-turn routing reescreve o modelo a CADA request → flipa o modelo
+  // turno-a-turno → QUEBRA o prompt cache (cache é POR MODELO). Continua funcionando,
+  // mas avisamos p/ migrar ao sticky-tier (cache-safe: fixa o modelo por sessão).
+  if (mode === 'routing') {
+    logger.warn('Per-turn routing (enabled) é DEPRECADO: rotear por-request quebra o prompt cache da Anthropic. Prefira o roteador cache-safe {sticky:{enabled:true}} (/dashboard → Sticky Router).');
   }
 
-  const server = await createServer(config);
+  // Inicializa classificador local (MiniLM) nos modos que CLASSIFICAM: 'routing'
+  // (a cada request) e 'sticky-tier' (uma vez por sessão). Em 'fallback-only' não
+  // classificamos nada (passthrough), então pular o embedder/anchors deixa o boot
+  // mais leve e rápido, sem carregar o modelo MiniLM.
+  if (mode === 'routing' || mode === 'sticky-tier') {
+    try {
+      _embedder = await loadEmbedder(config);
+      const anchorCfg = config.anchors || {};
+      _anchors = await buildAnchors(_embedder, anchorCfg);
+    } catch (e) {
+      logger.warn('Classificador local não inicializado — será usado NIM ou sem roteamento', { err: e.message });
+    }
+  } else {
+    logger.info('fallback-only: classificador/anchors NÃO inicializados (passthrough cache-safe).');
+  }
+
+  const server = await createServer(config, mode);
 
   // PORTA FIXA: o settings.json env aponta para ela. NUNCA incrementa — se a porta
   // já tem um model-router NOSSO saudável, esta instância é redundante e sai limpa
@@ -1505,7 +1687,7 @@ async function main() {
     // Handler permanente para erros de runtime após o bind (não derruba o processo).
     server.on('error', (e) => logger.error('Server runtime error', { err: e.message }));
     logger.info(`=== Servidor pronto em http://127.0.0.1:${FIXED_PORT} ===`, { port: FIXED_PORT });
-    writeState(FIXED_PORT);
+    writeState(FIXED_PORT, mode);
     process.stdout.write(`ROUTER_PORT=${FIXED_PORT}\n`);
   });
 
@@ -1529,6 +1711,7 @@ if (require.main === module) {
     resolveModel,
     extractPrompt,
     mergeUserConfig,
+    resolveMode,
     parseResetMs,
     parseResetFromBody,
     computeCooldownUntil,
@@ -1544,6 +1727,9 @@ if (require.main === module) {
     modelTier,
     tierWeight,
     applyCeiling,
+    computeSessionKey,
+    decideStickyModel,
+    stickyTtlMs,
     reconcileEffort,
     effortSupportFor,
     effortConfig,
