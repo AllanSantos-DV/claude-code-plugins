@@ -4,6 +4,10 @@
   "private": true,
   "description": "Claude Code plugin — Brain Research knowledge base",
   "type": "commonjs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/AllanSantos-DV/claude-code-plugins.git"
+  },
   "engines": {
     "node": ">=22.13.0"
   },
