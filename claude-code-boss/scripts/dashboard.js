@@ -14,6 +14,7 @@ const { extractKeywords } = require('./lib/text-utils.js');
 const { aggregateSkillRoi } = require('./lib/skill-roi.js');
 const { aggregateCaptureRate } = require('./lib/capture-rate.js');
 const { loadSqlite } = require('./lib/sqlite-compat.js');
+const pluginUpdater = require('./lib/plugin-updater.js');
 
 // Session token — generated at boot, injected into index.html, required on all /api/* requests.
 const SESSION_TOKEN = crypto.randomBytes(16).toString('hex');
@@ -1164,6 +1165,45 @@ async function resetRouterMetrics(req, res) {
   }
 }
 
+// ─── API: Plugin version + self-update (F4) ───────────────────────
+// The plugin is installed from a LOCAL marketplace, so Claude Code's /plugin
+// command never pulls updates for it — the dashboard is the update surface.
+let _updateCheckCache = null; // { at, data } — cached to avoid hammering GitHub
+
+function getPluginVersion(req, res) {
+  try {
+    const info = pluginUpdater.getInstalledInfo(ROOT);
+    const repo = pluginUpdater.readPluginRepo(ROOT);
+    json(res, { installed: info.version, sha: info.sha, node: info.node, repo, installPath: info.installPath });
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/plugin/version failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
+function checkPluginUpdate(req, res, url) {
+  const force = !!(url && url.searchParams.get('force') === '1');
+  const TTL = 6 * 60 * 60 * 1000;
+  if (!force && _updateCheckCache && (Date.now() - _updateCheckCache.at) < TTL) {
+    return json(res, { ..._updateCheckCache.data, cached: true });
+  }
+  pluginUpdater.checkForUpdate(ROOT)
+    .then((data) => { _updateCheckCache = { at: Date.now(), data }; json(res, { ...data, cached: false }); })
+    .catch((err) => {
+      console.error(`[DASHBOARD] /api/plugin/update-check failed: ${err.message}`);
+      fail(res, err.message, 502);
+    });
+}
+
+function postPluginUpdate(req, res) {
+  pluginUpdater.performUpdate(ROOT)
+    .then((result) => { _updateCheckCache = null; json(res, result); })
+    .catch((err) => {
+      console.error(`[DASHBOARD] /api/plugin/update failed: ${err.message}`);
+      fail(res, err.message, 500);
+    });
+}
+
 async function getCaptureRate(req, res, url) {
   try {
     const projectFilter = url.searchParams.get('project') || '';
@@ -1230,6 +1270,9 @@ function handleAPI(req, res, url) {
   if (p === '/api/router/metrics' && m === 'GET') return getRouterMetrics(req, res);
   if (p === '/api/router/metrics/reset' && m === 'POST') return resetRouterMetrics(req, res);
   if (p === '/api/metrics/capture-rate' && m === 'GET') return getCaptureRate(req, res, url);
+  if (p === '/api/plugin/version' && m === 'GET') return getPluginVersion(req, res);
+  if (p === '/api/plugin/update-check' && m === 'GET') return checkPluginUpdate(req, res, url);
+  if (p === '/api/plugin/update' && m === 'POST') return postPluginUpdate(req, res);
 
   json(res, { error: 'Not found' }, 404);
 }

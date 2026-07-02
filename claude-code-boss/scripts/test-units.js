@@ -1944,6 +1944,66 @@ if (process.platform === 'win32') {
   });
 }
 
+// ─── plugin-updater (pure helpers) ───────────────────────────────────────────
+const pu = require('./lib/plugin-updater.js');
+
+test('plugin-updater.parseVersion: strips v + fills missing parts', () => {
+  assertEq(pu.parseVersion('v1.15.0'), [1, 15, 0]);
+  assertEq(pu.parseVersion('1.15'), [1, 15, 0]);
+  assertEq(pu.parseVersion(''), [0, 0, 0]);
+  assertEq(pu.parseVersion('1.15.0-beta.2'), [1, 15, 0]);
+});
+
+test('plugin-updater.compareSemver: ordering across major/minor/patch', () => {
+  assert(pu.compareSemver('1.15.0', '1.14.0') === 1, 'minor greater');
+  assert(pu.compareSemver('1.14.0', '1.15.0') === -1, 'minor lesser');
+  assert(pu.compareSemver('1.15.0', '1.15.0') === 0, 'equal');
+  assert(pu.compareSemver('2.0.0', '1.99.99') === 1, 'major dominates');
+  assert(pu.compareSemver('v1.15.1', '1.15.0') === 1, 'patch greater with v prefix');
+});
+
+test('plugin-updater.pickAsset: exact name → fallback zip → null', () => {
+  const rel = { assets: [
+    { name: 'other.txt', browser_download_url: 'u0', size: 1 },
+    { name: 'claude-code-boss-1.15.0.zip', browser_download_url: 'u1', size: 2 },
+    { name: 'random.zip', browser_download_url: 'u2', size: 3 },
+  ] };
+  assertEq(pu.pickAsset(rel, '1.15.0').name, 'claude-code-boss-1.15.0.zip');
+  const rel2 = { assets: [{ name: 'random.zip', browser_download_url: 'u2', size: 3 }] };
+  assertEq(pu.pickAsset(rel2, '1.15.0').name, 'random.zip');
+  assertEq(pu.pickAsset({ assets: [] }, '1.15.0'), null);
+  assertEq(pu.pickAsset(null, '1.15.0'), null);
+});
+
+test('plugin-updater.computeUpdateState: hasUpdate true when latest > installed', () => {
+  const rel = {
+    tag_name: 'v1.15.0',
+    html_url: 'https://github.com/x/y/releases/v1.15.0',
+    published_at: '2026-07-01T00:00:00Z',
+    body: 'notes',
+    assets: [{ name: 'claude-code-boss-1.15.0.zip', browser_download_url: 'u1', size: 42 }],
+  };
+  const s = pu.computeUpdateState('1.14.0', rel);
+  assertEq(s.installed, '1.14.0');
+  assertEq(s.latest, '1.15.0');
+  assertEq(s.tag, 'v1.15.0');
+  assert(s.hasUpdate === true, 'hasUpdate true');
+  assert(s.asset && s.asset.name === 'claude-code-boss-1.15.0.zip', 'asset picked');
+  assert(s.asset.url === 'u1' && s.asset.size === 42, 'asset url/size mapped');
+});
+
+test('plugin-updater.computeUpdateState: no update when equal or installed newer', () => {
+  const rel = { tag_name: 'v1.15.0', assets: [] };
+  assert(pu.computeUpdateState('1.15.0', rel).hasUpdate === false, 'equal → false');
+  assert(pu.computeUpdateState('1.16.0', rel).hasUpdate === false, 'installed newer → false');
+});
+
+test('plugin-updater.computeUpdateState: missing tag → latest null, no update', () => {
+  const s = pu.computeUpdateState('1.14.0', {});
+  assertEq(s.latest, null);
+  assert(s.hasUpdate === false, 'no tag → no update');
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
