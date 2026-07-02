@@ -33,6 +33,7 @@ const path   = require('path');
 const os     = require('os');
 const { spawn, execSync } = require('child_process');
 const shim   = require('./model-router-shim.js');
+const { resolveMode } = require('./lib/router-mode.js');
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -88,16 +89,19 @@ function readState() {
 }
 
 // Merge do override do usuário POR CIMA dos defaults shipados (override vence).
-// Espelha servers/model-router/index.js#mergeUserConfig: `nim` e `routing` são
-// mesclados RASO (preserva chaves shipadas); escalares (enabled/port) sobrescrevem.
-// É o que torna o OPT-IN durável: /dashboard grava {enabled:true} no user-config e
-// tanto o ensure (aqui) quanto o server passam a ver enabled:true — sobrevive a
-// updates do plugin (user-config vive no DATA_DIR, fora do pacote versionado).
+// Espelha servers/model-router/index.js#mergeUserConfig: `nim`, `routing`,
+// `fallback` e `sticky` são mesclados RASO (preserva chaves shipadas — ex.: um
+// user-config {sticky:{enabled:true}} liga o sticky SEM apagar ttlMs; um
+// {fallback:{enabled:true}} liga o fallback SEM apagar triggerStatuses/cooldown);
+// escalares (enabled/port) sobrescrevem. É o que torna o OPT-IN durável: /dashboard
+// grava {enabled:true} ou {fallback:{enabled:true}} no user-config e tanto o ensure
+// (aqui) quanto o server passam a ver o opt-in — sobrevive a updates do plugin
+// (user-config vive no DATA_DIR, fora do pacote versionado).
 function mergeRouterConfig(shipped, override) {
   const merged = { ...(shipped || {}) };
   if (!override || typeof override !== 'object') return merged;
   for (const key of Object.keys(override)) {
-    if ((key === 'nim' || key === 'routing') && override[key] && typeof override[key] === 'object') {
+    if ((key === 'nim' || key === 'routing' || key === 'fallback' || key === 'sticky') && override[key] && typeof override[key] === 'object') {
       merged[key] = { ...(merged[key] || {}), ...override[key] };
     } else {
       merged[key] = override[key];
@@ -362,7 +366,7 @@ function disableRoutingFootprint() {
   clearLegacyUrlFile();
 }
 
-function startServer() {
+function startServer(mode) {
   return new Promise((resolve) => {
     log('Iniciando servidor model-router em background...');
 
@@ -384,7 +388,9 @@ function startServer() {
     ], {
       detached: true,
       stdio:    ['ignore', 'ignore', 'ignore'],
-      env: { ...process.env, CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT, CLAUDE_PLUGIN_DATA: DATA_DIR },
+      // BOSS_ROUTER_MODE é só diagnóstico: o server recomputa o modo da própria
+      // config (fonte única lib/router-mode.js). Não é a fonte de verdade.
+      env: { ...process.env, CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT, CLAUDE_PLUGIN_DATA: DATA_DIR, BOSS_ROUTER_MODE: mode || '' },
     });
     child.unref();
 
@@ -409,14 +415,20 @@ async function main() {
   const hookInput = readHookInput();
   const sessionId = hookInput.session_id || hookInput.sessionId || null;
 
-  if (config.enabled === false) {
-    log('Roteador desabilitado (enabled: false). Limpando footprint e saindo.');
+  // MODO (fonte única: lib/router-mode.js). 'off' = inerte → limpa o footprint e sai.
+  // 'routing' (cost-routing) e 'fallback-only' (passthrough cache-safe + 429→plano B)
+  // exigem o proxy NO CAMINHO: publicam ANTHROPIC_BASE_URL/shim igual. O server lê a
+  // própria config e computa o próprio modo; passamos BOSS_ROUTER_MODE só p/ log/diag.
+  const mode = resolveMode(config);
+  if (mode === 'off') {
+    log('Roteador e fallback desabilitados (mode: off). Limpando footprint e saindo.');
     disableRoutingFootprint();
     if (process.platform === 'win32') {
       try { shim.removeShimAll(log); } catch (e) { log(`AVISO: remoção do shim falhou: ${e.message}`); }
     }
     process.exit(0);
   }
+  log(`Modo do proxy: ${mode}${mode === 'fallback-only' ? ' (passthrough cache-safe + fallback de limite)' : ''}${mode === 'sticky-tier' ? ' (sticky cache-safe: tier fixo por sessao + fallback de limite)' : ''}.`);
 
   // ── 1. Garante servidor rodando na PORTA FIXA ────────────────────────────
   const FIXED_PORT = config.port || 13456;
@@ -429,7 +441,7 @@ async function main() {
     log(`Servidor OK na porta ${FIXED_PORT}${st && st.pid ? ` (PID ${st.pid})` : ''}.`);
   } else {
     log(`Porta ${FIXED_PORT} sem resposta. Iniciando servidor...`);
-    const started = await startServer();
+    const started = await startServer(mode);
     if (started) isRunning = await healthCheck(FIXED_PORT);
     if (!isRunning) {
       log('AVISO: roteamento indisponível nesta sessão. Removendo footprint; Claude Code usará Anthropic API diretamente.');
@@ -455,8 +467,16 @@ async function main() {
 
   let contextMsg;
   if (wired) {
-    contextMsg = `[model-router] ATIVO ✓ — porta ${FIXED_PORT} via settings.json env (escopo Claude Code). Classificador: ${config.nim?.apiKey ? 'NIM' : 'MiniLM local'}. Prompts roteados (haiku/sonnet/opus). Isolado: outros apps não são afetados. Se acabou de instalar/ativar, reinicie o Claude Code uma vez para o roteamento engatar.`;
-    log('Roteamento ATIVO (settings.json env).');
+    if (mode === 'fallback-only') {
+      contextMsg = `[model-router] FALLBACK DE LIMITE ATIVO ✓ — porta ${FIXED_PORT} via settings.json env (escopo Claude Code). Passthrough cache-safe para o Claude (NÃO troca modelo/effort; o prompt cache é preservado). Só no 429 (janela esgotada) aciona o plano B: ${config.nim?.apiKey ? 'NVIDIA (não é mais o Claude)' : '/dashboard p/ configurar a chave NVIDIA'}. Isolado: outros apps não são afetados. Se acabou de ativar, reinicie o Claude Code uma vez.`;
+      log('Fallback de limite ATIVO (passthrough cache-safe, settings.json env).');
+    } else if (mode === 'sticky-tier') {
+      contextMsg = `[model-router] STICKY ROUTER ATIVO ✓ (cache-safe) — porta ${FIXED_PORT} via settings.json env (escopo Claude Code). Classificador: ${config.nim?.apiKey ? 'NIM' : 'MiniLM local'}. O tier é escolhido UMA vez por sessão (turno 0) e o modelo é FIXADO pelo resto da sessão — modelo constante preserva o prompt cache quente. Isolado: outros apps não são afetados. Se acabou de ativar, reinicie o Claude Code uma vez para o roteamento engatar.`;
+      log('Sticky router ATIVO (cache-safe, settings.json env).');
+    } else {
+      contextMsg = `[model-router] ATIVO ✓ — porta ${FIXED_PORT} via settings.json env (escopo Claude Code). Classificador: ${config.nim?.apiKey ? 'NIM' : 'MiniLM local'}. Prompts roteados (haiku/sonnet/opus). Isolado: outros apps não são afetados. Se acabou de instalar/ativar, reinicie o Claude Code uma vez para o roteamento engatar.`;
+      log('Roteamento ATIVO (settings.json env).');
+    }
   } else {
     contextMsg = `[model-router] Servidor OK na porta ${FIXED_PORT}, mas não gravei env.ANTHROPIC_BASE_URL no settings.json (já existe uma URL custom, ou o arquivo está ilegível). Nenhuma variável global foi definida (zero efeito em outros apps).`;
     log('Roteamento INATIVO — settings.json não atualizado.');
