@@ -6,7 +6,7 @@ Monorepo de plugins para [Claude Code Desktop](https://claude.ai/download) — d
 
 | Plugin | Versão | Descrição |
 | --- | --- | --- |
-| [claude-code-boss](./claude-code-boss) | 1.16.0 | Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizado in-loop para Claude Code |
+| [claude-code-boss](./claude-code-boss) | 1.17.0 | Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizado in-loop para Claude Code |
 
 ## O que é o claude-code-boss?
 

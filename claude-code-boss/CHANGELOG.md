@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.17.0] - 2026-07-02
+
+### Changed — roteador de modelo agora é OPT-IN (desligado por padrão)
+
+Rotear cada request para um modelo diferente **quebra o prompt cache da Anthropic** e
+**aumenta o custo**. O cache é **por modelo**: a cada troca (haiku/sonnet/opus) o prefixo
+inteiro (system + tools + histórico) vira **cache-miss** no modelo novo e é cobrado como
+**input cheio (1,0×)** + **cache-write (1,25× em 5 min / 2× em 1 h)**, no lugar do
+**cache-read (0,1×)**. Em ferramentas como o Claude Code — que mantêm um prefixo enorme
+quente entre turnos — isso faz "o cache todo virar pago". A Anthropic ainda oferece
+controle **first-party** de custo/qualidade pelo parâmetro `effort` **no mesmo modelo**
+(sem quebrar cache), tornando o roteador externo redundante e caro como default.
+
+- **`config/router-config.json`**: `enabled` **`true` → `false`** (+ `_comment_enabled`
+  documentando o custo/cache e como ativar).
+- **`scripts/model-router-ensure.js`**: `readConfig()` passa a fazer **merge
+  `shipped ⊕ DATA_DIR/model-router/user-config.json`** (novo `mergeRouterConfig`, espelha
+  o `mergeUserConfig` do server — `nim`/`routing` raso, escalares sobrescrevem). É o que
+  torna o **opt-in durável**: ligar em `/dashboard → Router` grava `{enabled:true}` no
+  user-config e **sobrevive a updates**. `main()` agora é guardado por
+  `require.main === module`; o módulo exporta `mergeRouterConfig`/`readConfig` p/ testes.
+- **Dashboard**: o toggle `#router-enable` já existia e continua sendo o caminho de
+  opt-in — nenhuma mudança de UI necessária.
+- **Nota**: com o roteador off, o **plano B de limite (429 → NVIDIA/aviso)** também fica
+  inativo até ligar — é o mesmo proxy.
+- **+6 testes** herméticos (`mergeRouterConfig` + lock `enabled === false` no shipped).
+
 ## [1.16.0] - 2026-07-01
 
 ### Added — dashboard: status do roteador ao vivo + auto-update do plugin
