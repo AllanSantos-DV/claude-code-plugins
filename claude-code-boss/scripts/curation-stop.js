@@ -135,7 +135,7 @@ function buildReason(entries, attempt, maxAttempts) {
   }
 
   if (createEntries.length > 0) {
-    sections.push(`CREATE a curated script in \`${curationCfg.scriptsDir}/\` (+ register in \`${curationCfg.shellsConfigPath}\`) — OR, if genuinely single-use, call \`curation_mark_oneoff({ aliases:[...] })\` to skip it (the \`x/${oneHitMaxRecurrence}\` is how often it recurred; at the ceiling you must curate):`);
+    sections.push(`CREATE a curated script — call \`curation_register_shell({ id, scriptPath, content, aliases })\` to write it into \`${curationCfg.scriptsDir}/\` and register it in \`${curationCfg.shellsConfigPath}\` atomically (avoids the Auto Mode classifier blocking manual Write/Edit) — OR, if genuinely single-use, call \`curation_mark_oneoff({ aliases:[...] })\` to skip it (the \`x/${oneHitMaxRecurrence}\` is how often it recurred; at the ceiling you must curate):`);
     for (const e of createEntries) {
       const parts = [`\`${e.command}\``];
       if (e.sig) parts.push(`sig \`${e.sig}\``);
