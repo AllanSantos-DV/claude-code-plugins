@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.19.0] - 2026-07-02
+
+### Added
+
+- Sticky Tier Router (opt-in, cache-safe): picks the model tier once per session (turn 0) via a content-hash session key and holds it constant, so Anthropic's per-model prompt cache is preserved instead of being broken every turn.
+- Limit Fallback decoupled into its own opt-in `fallback-only` passthrough mode: forwards requests unchanged (cache-safe) and only diverts on HTTP 429 (Claude usage-window exhausted) to NVIDIA NIM when a key is set, else prompts `/dashboard`. Works even with per-turn routing disabled.
+- Dashboard: live router mode indicator (off / sticky-tier / fallback-only / per-turn) with a color dot and a "reload pending" hint, surfaced from the server `/health` and state file.
+- Dashboard: full visual reskin using Anthropic's official brand (Poppins/Lora typography, brand palette) with light and dark themes.
+
+### Changed
+
+- Per-turn cost-routing (`enabled`) is now DEPRECATED (kept functional): routing to a different model per request breaks the per-model prompt cache (documented anti-pattern). Prefer the Sticky router. Router remains OFF by default.
+
 ## [1.18.0] - 2026-07-02
 
 ### Added — tool `curation_register_shell` (criar script curado sem Write/Edit manual)
