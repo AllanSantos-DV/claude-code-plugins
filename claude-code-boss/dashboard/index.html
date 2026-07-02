@@ -585,6 +585,29 @@ code { color: var(--fg); }
   <!-- ROUTER -->
   <section id="tab-router" class="tab">
     <h1 data-i18n="router.title">Roteador de Modelo</h1>
+
+    <div class="card">
+      <h2><span data-i18n="plugin.title">Plugin &amp; atualização</span></h2>
+      <div style="display:flex;flex-wrap:wrap;gap:1.5rem;align-items:flex-start;margin:.5rem 0 .3rem">
+        <div>
+          <div class="text-muted" style="font-size:.72rem" data-i18n="plugin.installed">Versão instalada</div>
+          <div style="font-size:1.25rem;font-weight:700" id="plugin-version">…</div>
+          <div class="text-muted" style="font-size:.66rem" id="plugin-sha"></div>
+        </div>
+        <div>
+          <div class="text-muted" style="font-size:.72rem" data-i18n="plugin.latest">Última no GitHub</div>
+          <div style="font-size:1.25rem;font-weight:700" id="plugin-latest">—</div>
+          <div class="text-muted" style="font-size:.66rem" id="plugin-published"></div>
+        </div>
+      </div>
+      <div id="plugin-update-msg" class="text-muted" style="font-size:.82rem;margin:.35rem 0">…</div>
+      <div class="flex" style="gap:.5rem;align-items:center;margin-top:.4rem">
+        <button class="btn-sm" onclick="checkPluginUpdate(true)" data-i18n="plugin.check">Verificar atualizações</button>
+        <button class="btn-primary" id="plugin-update-btn" onclick="doPluginUpdate()" style="display:none" data-i18n="plugin.update">Atualizar agora</button>
+        <span id="plugin-update-progress" class="text-muted" style="font-size:.8rem"></span>
+      </div>
+      <div class="text-muted" style="font-size:.7rem;margin-top:.45rem" data-i18n="plugin.updateHint">Plugin externo (marketplace local): o /plugin do Claude não atualiza sozinho. Após atualizar, rode /reload-plugins.</div>
+    </div>
     <div class="card">
       <p class="text-muted" data-i18n="router.intro">O roteador classifica cada prompt localmente e reescreve o modelo (haiku/sonnet/opus) para esticar sua janela de acesso. A chave NVIDIA é opcional e fica só nesta máquina.</p>
 
@@ -593,6 +616,7 @@ code { color: var(--fg); }
       </div>
 
       <div style="margin:.75rem 0">
+        <span id="router-status-dot" class="router-dot off" style="margin-right:.4rem;vertical-align:middle" title=""></span>
         <span class="text-muted" data-i18n="router.status">Status</span>:
         <span id="router-status-label" style="font-size:.85rem">—</span>
       </div>
@@ -659,6 +683,18 @@ const I18N = {
     'router.keyNone': 'No key stored — using local MiniLM classifier.',
     'router.running': 'running',
     'router.stopped': 'stopped',
+    'plugin.title': 'Plugin & update',
+    'plugin.installed': 'Installed version',
+    'plugin.latest': 'Latest on GitHub',
+    'plugin.check': 'Check for updates',
+    'plugin.update': 'Update now',
+    'plugin.checking': 'Checking GitHub…',
+    'plugin.uptodate': 'You are on the latest version.',
+    'plugin.available': 'Update available: {v}',
+    'plugin.updating': 'Downloading + installing… (may take a minute)',
+    'plugin.updated': 'Updated {f} → {t}. Run /reload-plugins in Claude Code.',
+    'plugin.confirmUpdate': 'Download the latest release and install it over the current plugin? Claude Code will need /reload-plugins afterwards.',
+    'plugin.updateHint': 'External plugin (local marketplace): Claude\'s /plugin does not auto-update it. After updating, run /reload-plugins.',
     'router.saving': 'Saving...',
     'router.saved': 'Saved!',
     'router.metricsTitle': 'Savings & usage',
@@ -753,6 +789,18 @@ const I18N = {
     'router.keyNone': 'Sem chave salva — usando classificador local MiniLM.',
     'router.running': 'rodando',
     'router.stopped': 'parado',
+    'plugin.title': 'Plugin & atualização',
+    'plugin.installed': 'Versão instalada',
+    'plugin.latest': 'Última no GitHub',
+    'plugin.check': 'Verificar atualizações',
+    'plugin.update': 'Atualizar agora',
+    'plugin.checking': 'Consultando o GitHub…',
+    'plugin.uptodate': 'Você está na última versão.',
+    'plugin.available': 'Atualização disponível: {v}',
+    'plugin.updating': 'Baixando + instalando… (pode levar um minuto)',
+    'plugin.updated': 'Atualizado {f} → {t}. Rode /reload-plugins no Claude Code.',
+    'plugin.confirmUpdate': 'Baixar a última release e instalar por cima do plugin atual? O Claude Code vai precisar de /reload-plugins depois.',
+    'plugin.updateHint': 'Plugin externo (marketplace local): o /plugin do Claude não atualiza sozinho. Após atualizar, rode /reload-plugins.',
     'router.saving': 'Salvando...',
     'router.saved': 'Salvo!',
     'router.metricsTitle': 'Economia & uso',
@@ -886,6 +934,8 @@ async function loadRouter() {
   await loadRouterConfig();
   refreshRouterStatus();
   refreshRouterMetrics();
+  loadPluginVersion();
+  checkPluginUpdate(false);
   if (!_routerInterval) {
     _routerInterval = setInterval(() => {
       if (document.getElementById('tab-router').classList.contains('active')) {
@@ -915,13 +965,88 @@ async function loadRouterConfig() {
 
 async function refreshRouterStatus(silent) {
   const label = document.getElementById('router-status-label');
+  const dot = document.getElementById('router-status-dot');
   if (!silent) label.textContent = '…';
   try {
     const s = await api('GET', '/api/router/status');
     const word = s.running ? t('router.running') : t('router.stopped');
     label.textContent = `${word} · porta ${s.port}` + (s.pid ? ` · PID ${s.pid}` : '');
+    if (dot) {
+      dot.className = 'router-dot ' + (s.running ? 'live' : 'off');
+      dot.title = s.running ? `${word} · porta ${s.port}${s.pid ? ' · PID ' + s.pid : ''}` : t('router.stopped');
+    }
   } catch (e) {
     label.textContent = '—';
+    if (dot) { dot.className = 'router-dot off'; dot.title = '—'; }
+  }
+}
+
+async function loadPluginVersion() {
+  const vEl = document.getElementById('plugin-version');
+  try {
+    const v = await api('GET', '/api/plugin/version');
+    if (v && v.error) { if (vEl) vEl.textContent = '—'; return; }
+    if (vEl) vEl.textContent = v.installed ? 'v' + v.installed : '—';
+    const shaEl = document.getElementById('plugin-sha');
+    if (shaEl) {
+      const bits = [];
+      if (v.sha) bits.push(v.sha);
+      if (v.node) bits.push('node ' + v.node);
+      shaEl.textContent = bits.join(' · ');
+    }
+  } catch (e) {
+    if (vEl) vEl.textContent = '—';
+  }
+}
+
+async function checkPluginUpdate(force) {
+  const msg = document.getElementById('plugin-update-msg');
+  const btn = document.getElementById('plugin-update-btn');
+  const latestEl = document.getElementById('plugin-latest');
+  const pubEl = document.getElementById('plugin-published');
+  if (msg) msg.textContent = t('plugin.checking');
+  try {
+    const r = await api('GET', '/api/plugin/update-check' + (force ? '?force=1' : ''));
+    if (r && r.error) {
+      if (msg) msg.textContent = '— ' + r.error;
+      if (btn) btn.style.display = 'none';
+      return;
+    }
+    if (latestEl) latestEl.textContent = r.latest ? 'v' + r.latest : '—';
+    if (pubEl) pubEl.textContent = r.publishedAt ? new Date(r.publishedAt).toLocaleDateString() : '';
+    if (r.hasUpdate) {
+      if (msg) msg.innerHTML = '<span style="color:var(--warning,#d29922)">⬆ ' + t('plugin.available').replace('{v}', 'v' + r.latest) + '</span>';
+      if (btn) { btn.style.display = ''; btn.textContent = t('plugin.update') + ' → v' + r.latest; }
+    } else {
+      if (msg) msg.innerHTML = '<span style="color:var(--success,#3fb950)">✓ ' + t('plugin.uptodate') + '</span>';
+      if (btn) btn.style.display = 'none';
+    }
+  } catch (e) {
+    if (msg) msg.textContent = '— ' + e.message;
+  }
+}
+
+async function doPluginUpdate() {
+  const btn = document.getElementById('plugin-update-btn');
+  const prog = document.getElementById('plugin-update-progress');
+  if (!confirm(t('plugin.confirmUpdate'))) return;
+  if (btn) btn.disabled = true;
+  if (prog) prog.textContent = t('plugin.updating');
+  try {
+    const r = await api('POST', '/api/plugin/update');
+    if (r && r.updated) {
+      if (prog) prog.innerHTML = '<span style="color:var(--success,#3fb950)">✓ ' + t('plugin.updated').replace('{f}', 'v' + r.from).replace('{t}', 'v' + r.to) + '</span>';
+      await loadPluginVersion();
+      await checkPluginUpdate(true);
+    } else if (r && r.error) {
+      if (prog) prog.innerHTML = '<span style="color:var(--danger,#f85149)">✗ ' + r.error + '</span>';
+    } else {
+      if (prog) prog.textContent = t('plugin.uptodate');
+    }
+  } catch (e) {
+    if (prog) prog.innerHTML = '<span style="color:var(--danger,#f85149)">✗ ' + e.message + '</span>';
+  } finally {
+    if (btn) btn.disabled = false;
   }
 }
 
