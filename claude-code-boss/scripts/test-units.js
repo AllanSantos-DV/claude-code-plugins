@@ -2120,6 +2120,234 @@ test('router-config.json shipped: enabled === false (opt-in, off por padrão)', 
   assertEq(cfg.enabled, false);
 });
 
+test('router-config.json shipped: fallback.enabled === false (opt-in, decoupled)', () => {
+  const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'router-config.json'), 'utf-8'));
+  assertEq(cfg.fallback.enabled, false);
+  // Preserva os campos que o merge do opt-in NÃO pode apagar.
+  assertEq(cfg.fallback.triggerStatuses, [429]);
+  assert(cfg.fallback.cooldown && cfg.fallback.cooldown.enabled === true, 'cooldown.enabled shipped');
+});
+
+test('router-config.json shipped: sticky.enabled === false + ttlMs shipado (opt-in cache-safe)', () => {
+  const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'router-config.json'), 'utf-8'));
+  assert(cfg.sticky && typeof cfg.sticky === 'object', 'bloco sticky presente');
+  assertEq(cfg.sticky.enabled, false);
+  assertEq(cfg.sticky.ttlMs, 21600000); // 6h default
+});
+
+// ─── router-mode: resolveMode (fonte única de modo) ──────────────────────────
+const { resolveMode, modeMeta, MODE_META } = require('./lib/router-mode.js');
+
+test('resolveMode: off quando enabled!==true E fallback.enabled!==true', () => {
+  assertEq(resolveMode({ enabled: false, fallback: { enabled: false } }), 'off');
+  assertEq(resolveMode({}), 'off');
+  assertEq(resolveMode(null), 'off');
+  assertEq(resolveMode({ enabled: false }), 'off'); // sem bloco fallback
+});
+
+test('resolveMode: routing quando enabled===true (independe do fallback)', () => {
+  assertEq(resolveMode({ enabled: true }), 'routing');
+  assertEq(resolveMode({ enabled: true, fallback: { enabled: true } }), 'routing');
+  assertEq(resolveMode({ enabled: true, fallback: { enabled: false } }), 'routing');
+});
+
+test('resolveMode: fallback-only quando enabled:false + fallback.enabled:true', () => {
+  assertEq(resolveMode({ enabled: false, fallback: { enabled: true } }), 'fallback-only');
+});
+
+test('resolveMode: sticky-tier quando sticky.enabled===true (vence enabled e fallback)', () => {
+  assertEq(resolveMode({ sticky: { enabled: true } }), 'sticky-tier');
+  assertEq(resolveMode({ sticky: { enabled: true }, enabled: true }), 'sticky-tier');
+  assertEq(resolveMode({ sticky: { enabled: true }, fallback: { enabled: true } }), 'sticky-tier');
+});
+
+test('resolveMode: precedência sticky > enabled > fallback > off', () => {
+  assertEq(resolveMode({ sticky: { enabled: false }, enabled: true }), 'routing');
+  assertEq(resolveMode({ sticky: { enabled: false }, enabled: false, fallback: { enabled: true } }), 'fallback-only');
+  assertEq(resolveMode({ sticky: { enabled: false }, enabled: false, fallback: { enabled: false } }), 'off');
+  assertEq(resolveMode({ sticky: {} }), 'off'); // bloco sticky sem enabled
+});
+
+test('mergeRouterConfig (ensure): user {fallback:{enabled:true}} preserva cooldown/triggerStatuses', () => {
+  const shipped = { enabled: false, fallback: { enabled: false, triggerStatuses: [429], cooldown: { enabled: true, noHeaderMs: 15000, tripAfter: 2 } } };
+  const m = routerEnsure.mergeRouterConfig(shipped, { fallback: { enabled: true } });
+  assertEq(m.fallback.enabled, true);               // opt-in aplicado
+  assertEq(m.fallback.triggerStatuses, [429]);      // preservado do shipped
+  assertEq(m.fallback.cooldown.enabled, true);      // preservado do shipped
+  assertEq(m.fallback.cooldown.noHeaderMs, 15000);  // preservado do shipped
+  assertEq(m.fallback.cooldown.tripAfter, 2);       // preservado do shipped
+  assertEq(resolveMode(m), 'fallback-only');         // merge → modo correto
+});
+
+test('mergeRouterConfig (ensure): user {sticky:{enabled:true}} preserva ttlMs (e outros blocos)', () => {
+  const shipped = { enabled: false, sticky: { enabled: false, ttlMs: 21600000 }, fallback: { enabled: false, triggerStatuses: [429] } };
+  const m = routerEnsure.mergeRouterConfig(shipped, { sticky: { enabled: true } });
+  assertEq(m.sticky.enabled, true);                  // opt-in aplicado
+  assertEq(m.sticky.ttlMs, 21600000);                // preservado do shipped
+  assertEq(m.fallback.triggerStatuses, [429]);       // outro bloco intacto
+  assertEq(resolveMode(m), 'sticky-tier');           // merge → modo correto
+});
+
+// ─── router-mode: modeMeta (rótulo/cor por modo, usado pelo dashboard) ────────
+test('modeMeta: mapeia cada modo para cor/deprecado corretos', () => {
+  assertEq(modeMeta('off').color, 'grey');
+  assertEq(modeMeta('off').deprecated, false);
+  assertEq(modeMeta('fallback-only').color, 'blue');
+  assertEq(modeMeta('fallback-only').deprecated, false);
+  assertEq(modeMeta('sticky-tier').color, 'green');
+  assertEq(modeMeta('sticky-tier').deprecated, false);
+  assertEq(modeMeta('routing').color, 'amber');
+  assertEq(modeMeta('routing').deprecated, true);      // per-turn é deprecado
+});
+
+test('modeMeta: cada modo tem uma chave i18n mode.*', () => {
+  for (const mode of ['off', 'fallback-only', 'sticky-tier', 'routing']) {
+    assert(/^mode\./.test(modeMeta(mode).i18n), `i18n key p/ ${mode}`);
+  }
+});
+
+test('modeMeta: modo desconhecido/ausente cai em off (fail-safe)', () => {
+  assertEq(modeMeta('nope'), MODE_META.off);
+  assertEq(modeMeta(undefined), MODE_META.off);
+  assertEq(modeMeta(null), MODE_META.off);
+});
+
+test('resolveMode→modeMeta: cadeia config→modo→apresentação coerente', () => {
+  assertEq(modeMeta(resolveMode({ sticky: { enabled: true } })).color, 'green');
+  assertEq(modeMeta(resolveMode({ enabled: true })).color, 'amber');
+  assertEq(modeMeta(resolveMode({ fallback: { enabled: true } })).color, 'blue');
+  assertEq(modeMeta(resolveMode({})).color, 'grey');
+});
+
+// ─── model-router (server): merge + resolveMode reexportado ──────────────────
+const routerServer = require('../servers/model-router/index.js');
+
+test('mergeUserConfig (server): {fallback:{enabled:true}} preserva cooldown/triggerStatuses', () => {
+  const shipped = { enabled: false, fallback: { enabled: false, triggerStatuses: [429], cooldown: { enabled: true, minMs: 1000, maxMs: 21600000 } } };
+  const m = routerServer.mergeUserConfig(shipped, { fallback: { enabled: true } });
+  assertEq(m.fallback.enabled, true);
+  assertEq(m.fallback.triggerStatuses, [429]);
+  assertEq(m.fallback.cooldown.enabled, true);
+  assertEq(m.fallback.cooldown.minMs, 1000);
+  assertEq(m.fallback.cooldown.maxMs, 21600000);
+});
+
+test('server.resolveMode === lib impl (mesma regra nos dois processos)', () => {
+  assertEq(routerServer.resolveMode({ enabled: false, fallback: { enabled: true } }), 'fallback-only');
+  assertEq(routerServer.resolveMode({ enabled: true }), 'routing');
+  assertEq(routerServer.resolveMode({ sticky: { enabled: true }, enabled: true }), 'sticky-tier');
+  assertEq(routerServer.resolveMode({}), 'off');
+});
+
+test('mergeUserConfig (server): {sticky:{enabled:true}} preserva ttlMs (deep-merge raso)', () => {
+  const shipped = { enabled: false, sticky: { enabled: false, ttlMs: 21600000 } };
+  const m = routerServer.mergeUserConfig(shipped, { sticky: { enabled: true } });
+  assertEq(m.sticky.enabled, true);
+  assertEq(m.sticky.ttlMs, 21600000);
+  assertEq(m.enabled, false); // não veio no override → shipped
+});
+
+// ─── model-router (server): sticky-tier — chave de sessão + decisor puro ──────
+
+test('computeSessionKey: mesmo system+1ª msg → MESMA chave (histórico cresce no fim)', () => {
+  const t0 = { system: 'S', messages: [{ role: 'user', content: 'first' }] };
+  const t1 = { system: 'S', messages: [
+    { role: 'user', content: 'first' },
+    { role: 'assistant', content: 'reply' },
+    { role: 'user', content: 'second turn' },
+  ] };
+  assertEq(routerServer.computeSessionKey(t0), routerServer.computeSessionKey(t1));
+});
+
+test('computeSessionKey: 1ª msg diferente → chave DIFERENTE', () => {
+  const a = { system: 'S', messages: [{ role: 'user', content: 'first' }] };
+  const b = { system: 'S', messages: [{ role: 'user', content: 'DIFFERENT' }] };
+  assert(routerServer.computeSessionKey(a) !== routerServer.computeSessionKey(b), 'chaves devem diferir');
+});
+
+test('computeSessionKey: system em array de blocos é normalizado p/ texto', () => {
+  const asStr = { system: 'Hello\nWorld', messages: [{ role: 'user', content: 'q' }] };
+  const asArr = { system: [{ type: 'text', text: 'Hello' }, { type: 'text', text: 'World' }], messages: [{ role: 'user', content: 'q' }] };
+  assertEq(routerServer.computeSessionKey(asStr), routerServer.computeSessionKey(asArr));
+});
+
+test('computeSessionKey: sem system/messages não quebra (sha1 hex) + content em blocos', () => {
+  const k = routerServer.computeSessionKey({});
+  assert(typeof k === 'string' && k.length === 40, 'sha1 hex de 40 chars');
+  const kBlocks = routerServer.computeSessionKey({ messages: [{ role: 'user', content: [{ type: 'text', text: 'hey' }] }] });
+  assert(typeof kBlocks === 'string' && kBlocks.length === 40, 'content em blocos vira texto');
+});
+
+test('decideStickyModel: 1ª call classifica+fixa; 2ª REUSA sem reclassificar; TTL → re-pin', async () => {
+  const config = { sticky: { enabled: true, ttlMs: 1000 }, routing: { ceiling: true, catalog: { enabled: false } } };
+  const pins = new Map();
+  let calls = 0;
+  const classifyFn = async () => { calls += 1; return 'haiku'; };
+  const body0 = { model: 'claude-sonnet-4-6', system: 'sys', messages: [{ role: 'user', content: 'hi' }] };
+
+  const d1 = await routerServer.decideStickyModel(body0, config, { pins, now: 1000, classifyFn });
+  assertEq(calls, 1);            // classificou uma vez (turno 0)
+  assertEq(d1.created, true);    // pin criado
+  assertEq(d1.pinned, true);
+  assertEq(d1.tier, 'haiku');
+  assert(d1.model.includes('haiku'), 'modelo fixado no haiku');
+
+  // 2ª request da MESMA sessão (mais mensagens, mesmo prefixo) → mesma chave.
+  const body1 = { model: 'claude-sonnet-4-6', system: 'sys', messages: [
+    { role: 'user', content: 'hi' },
+    { role: 'assistant', content: 'yo' },
+    { role: 'user', content: 'again' },
+  ] };
+  const d2 = await routerServer.decideStickyModel(body1, config, { pins, now: 1500, classifyFn });
+  assertEq(calls, 1);            // NÃO reclassificou (cache-safe)
+  assertEq(d2.created, false);   // pin reusado
+  assertEq(d2.tier, d1.tier);    // MESMO tier
+  assertEq(d2.model, d1.model);  // MESMO modelo (cache preservado)
+
+  // Após o TTL (now > expiresAt), re-pina (classifica de novo).
+  const d3 = await routerServer.decideStickyModel(body1, config, { pins, now: 5000, classifyFn });
+  assertEq(calls, 2);            // reclassificou após expiração
+  assertEq(d3.created, true);
+});
+
+test('decideStickyModel: teto respeita o /model ATUAL (classificou opus, escolheu sonnet → sonnet)', async () => {
+  const config = { sticky: { enabled: true, ttlMs: 1000 }, routing: { ceiling: true, catalog: { enabled: false } } };
+  const pins = new Map();
+  const classifyFn = async () => 'opus';
+  const body = { model: 'claude-sonnet-4-6', system: 'sys', messages: [{ role: 'user', content: 'design a system' }] };
+  const d = await routerServer.decideStickyModel(body, config, { pins, now: 1000, classifyFn });
+  // O teto já rebaixa o classificado (opus) ao escolhido (sonnet) NA HORA de fixar,
+  // então o tier fixado é sonnet e a reaplicação do teto não precisa barrar de novo.
+  assertEq(d.tier, 'sonnet');    // nunca escala acima do escolhido
+  assertEq(d.model, 'claude-sonnet-4-6');
+  assertEq(d.blocked, false);    // pinnedTier já é sonnet → nada a barrar na reaplicação
+});
+
+test('decideStickyModel: usuário REBAIXA /model no meio (pin haiku, escolhe... ) mantém <= escolhido', async () => {
+  // Pin fixado em sonnet; usuário troca p/ haiku no /model → teto rebaixa p/ haiku.
+  const config = { sticky: { enabled: true, ttlMs: 10000 }, routing: { ceiling: true, catalog: { enabled: false } } };
+  const pins = new Map();
+  const classifyFn = async () => 'sonnet';
+  const first = { model: 'claude-sonnet-4-6', system: 'sys', messages: [{ role: 'user', content: 'q' }] };
+  const d1 = await routerServer.decideStickyModel(first, config, { pins, now: 1000, classifyFn });
+  assertEq(d1.tier, 'sonnet');
+  // Mesma sessão (mesmo prefixo), mas agora o body chega com haiku escolhido.
+  const second = { model: 'claude-haiku-4-5-20251001', system: 'sys', messages: [{ role: 'user', content: 'q' }, { role: 'assistant', content: 'a' }, { role: 'user', content: 'b' }] };
+  const d2 = await routerServer.decideStickyModel(second, config, { pins, now: 1500, classifyFn });
+  assertEq(d2.tier, 'haiku');    // teto rebaixa graciosamente p/ o /model atual
+  assert(d2.model.includes('haiku'), 'modelo <= escolhido');
+});
+
+test('decideStickyModel: classify falha (null) + modelo desconhecido → passthrough sem rotear', async () => {
+  const config = { sticky: { enabled: true, ttlMs: 1000 }, routing: { ceiling: true, catalog: { enabled: false } } };
+  const pins = new Map();
+  const classifyFn = async () => null;
+  const body = { model: 'weird-model', system: 'sys', messages: [{ role: 'user', content: 'x' }] };
+  const d = await routerServer.decideStickyModel(body, config, { pins, now: 1000, classifyFn });
+  assertEq(d.pinned, false);
+  assertEq(d.model, 'weird-model'); // mantém o modelo do usuário
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);

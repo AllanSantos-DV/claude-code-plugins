@@ -11,111 +11,144 @@
     if (t === 'light') document.documentElement.setAttribute('data-theme', 'light');
   })();
 </script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Lora:ital,wght@0,400;0,500;0,600;1,400&display=swap">
 <style>
+/* ─── Anthropic brand tokens (theme-independent) ───────────────── */
 :root {
-  /* dark theme — default */
-  --bg: #0d1117;
-  --bg-card: #161b22;
-  --bg-soft: #1c2128;
-  --bg-hover: #21262d;
-  --fg: #e6edf3;
-  --fg-muted: #8892b0;
-  --fg-dim: #6e7681;
-  --border: #30363d;
-  --nav-bg: #010409;
-  --nav-fg: #8892b0;
-  --nav-fg-active: #64ffda;
-  --accent: #64ffda;
-  --accent-fg: #0d1117;
-  --primary: #1f6feb;
-  --primary-hover: #388bfd;
-  --danger: #f85149;
-  --warning: #d29922;
-  --success: #3fb950;
-  --pre-bg: #161b22;
-  --shadow: 0 1px 3px rgba(0,0,0,.4);
-  --tag-bg: #1f6feb33;
-  --tag-fg: #79c0ff;
-  --tag-warn-bg: #d2992233;
-  --tag-warn-fg: #e3b341;
-  --tag-green-bg: #3fb95033;
-  --tag-green-fg: #56d364;
+  --brand-dark: #141413;
+  --brand-light: #faf9f5;
+  --brand-mid: #b0aea5;
+  --brand-light-gray: #e8e6dc;
+  --brand-orange: #d97757;
+  --brand-blue: #6a9bcc;
+  --brand-green: #788c5d;
+
+  --font-head: 'Poppins', Arial, 'Segoe UI', sans-serif;
+  --font-body: 'Lora', Georgia, 'Times New Roman', serif;
+  --font-mono: 'SF Mono', 'Cascadia Code', Consolas, Monaco, monospace;
+
+  --radius: 12px;
+  --radius-sm: 8px;
 }
+
+/* ─── DARK theme (default) ─────────────────────────────────────── */
+:root {
+  --bg: #141413;
+  --bg-card: #1d1c1a;
+  --bg-soft: #232220;
+  --bg-elev: #232220;
+  --bg-hover: #2a2927;
+  --fg: #faf9f5;
+  --fg-muted: #b0aea5;
+  --fg-dim: #8a887f;
+  --border: #2a2927;
+  --nav-bg: #0f0f0e;
+  --nav-fg: #b0aea5;
+  --nav-fg-active: #d97757;
+  --accent: #d97757;
+  --accent-fg: #141413;
+  --primary: #d97757;
+  --primary-hover: #c56341;
+  --on-primary: #141413;
+  --danger: #c0402b;
+  --warning: #c68a3c;
+  --on-warning: #141413;
+  --success: #6b7f4e;
+  --pre-bg: #232220;
+  --shadow: 0 1px 2px rgba(0,0,0,.5), 0 4px 16px rgba(0,0,0,.25);
+  --tag-bg: rgba(106,155,204,.18);
+  --tag-fg: #9bbde0;
+  --tag-warn-bg: rgba(217,119,87,.18);
+  --tag-warn-fg: #e6a487;
+  --tag-green-bg: rgba(120,140,93,.20);
+  --tag-green-fg: #a8bd85;
+}
+
+/* ─── LIGHT theme (Anthropic cream) ────────────────────────────── */
 [data-theme="light"] {
-  --bg: #f5f5f5;
-  --bg-card: #fff;
-  --bg-soft: #fafafa;
-  --bg-hover: #f0f0f0;
-  --fg: #222;
-  --fg-muted: #666;
-  --fg-dim: #888;
-  --border: #e0e0e0;
-  --nav-bg: #1a1a2e;
-  --nav-fg: #8892b0;
-  --nav-fg-active: #64ffda;
-  --accent: #1a73e8;
-  --accent-fg: #fff;
-  --primary: #1a1a2e;
-  --primary-hover: #16213e;
-  --danger: #dc3545;
-  --warning: #ffc107;
-  --success: #28a745;
-  --pre-bg: #f5f5f5;
-  --shadow: 0 1px 3px rgba(0,0,0,.08);
-  --tag-bg: #e8f4fd;
-  --tag-fg: #1a73e8;
-  --tag-warn-bg: #fff3cd;
-  --tag-warn-fg: #856404;
-  --tag-green-bg: #d4edda;
-  --tag-green-fg: #155724;
+  --bg: #faf9f5;
+  --bg-card: #ffffff;
+  --bg-soft: #f4f2ea;
+  --bg-elev: #f4f2ea;
+  --bg-hover: #efece2;
+  --fg: #141413;
+  --fg-muted: #6b6a62;
+  --fg-dim: #8a887f;
+  --border: #e8e6dc;
+  --nav-bg: #141413;
+  --nav-fg: #b0aea5;
+  --nav-fg-active: #d97757;
+  --accent: #d97757;
+  --accent-fg: #ffffff;
+  --primary: #d97757;
+  --primary-hover: #c56341;
+  --on-primary: #141413;
+  --danger: #b23a26;
+  --warning: #b47a2c;
+  --on-warning: #141413;
+  --success: #5f7048;
+  --pre-bg: #f4f2ea;
+  --shadow: 0 1px 2px rgba(20,20,19,.06), 0 4px 14px rgba(20,20,19,.05);
+  --tag-bg: #e6eef6;
+  --tag-fg: #3d6b96;
+  --tag-warn-bg: #f6e7df;
+  --tag-warn-fg: #a1512f;
+  --tag-green-bg: #e7ecdd;
+  --tag-green-fg: #4c5c37;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: var(--bg); color: var(--fg); line-height: 1.5; transition: background .15s, color .15s; }
+body { font-family: var(--font-body); background: var(--bg); color: var(--fg); line-height: 1.55; transition: background .15s, color .15s; -webkit-font-smoothing: antialiased; }
 
-nav { background: var(--nav-bg); color: #fff; padding: 0 1rem; display: flex; gap: 0; align-items: stretch; overflow-x: auto; }
-nav a { color: var(--nav-fg); text-decoration: none; padding: 0.9rem 1.2rem; font-size: 0.85rem; border-bottom: 2px solid transparent; transition: all .15s; white-space: nowrap; }
+h1, h2, h3, h4 { font-family: var(--font-head); font-weight: 600; letter-spacing: -.01em; }
+
+nav { background: var(--nav-bg); color: #fff; padding: 0 1rem; display: flex; gap: 0; align-items: stretch; overflow-x: auto; border-bottom: 1px solid rgba(255,255,255,.06); }
+nav a { font-family: var(--font-head); color: var(--nav-fg); text-decoration: none; padding: 0.9rem 1.2rem; font-size: 0.82rem; font-weight: 500; border-bottom: 2px solid transparent; transition: all .15s; white-space: nowrap; }
 nav a:hover { color: #fff; background: rgba(255,255,255,.05); }
 nav a.active { color: var(--nav-fg-active); border-bottom-color: var(--nav-fg-active); }
 nav .nav-spacer { flex: 1; }
-nav .nav-toggle { background: none; border: 1px solid transparent; color: var(--nav-fg); padding: .4rem .7rem; margin: .4rem .25rem; border-radius: 4px; cursor: pointer; font-size: .8rem; }
+nav .nav-toggle { font-family: var(--font-head); background: none; border: 1px solid transparent; color: var(--nav-fg); padding: .4rem .7rem; margin: .4rem .25rem; border-radius: 6px; cursor: pointer; font-size: .8rem; }
 nav .nav-toggle:hover { background: rgba(255,255,255,.06); color: #fff; border-color: rgba(255,255,255,.15); }
 
-main { max-width: 1100px; margin: 0 auto; padding: 1.5rem; }
+main { max-width: 1100px; margin: 0 auto; padding: 1.75rem 1.5rem; }
 .tab { display: none; }
 .tab.active { display: block; }
 
-h1 { font-size: 1.3rem; margin-bottom: 1rem; color: var(--fg); }
-h2 { font-size: 1.05rem; margin-bottom: .75rem; color: var(--fg); }
+h1 { font-size: 1.5rem; margin-bottom: 1rem; color: var(--fg); }
+h2 { font-size: 1.15rem; margin-bottom: .75rem; color: var(--fg); }
 
-.card { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; box-shadow: var(--shadow); margin-bottom: 1rem; }
+.card { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.15rem; box-shadow: var(--shadow); margin-bottom: 1.15rem; }
 
-.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: .75rem; margin-bottom: 1rem; }
-.stat { background: var(--bg-card); border: 1px solid var(--border); border-radius: 8px; padding: 1rem; box-shadow: var(--shadow); text-align: center; }
-.stat .value { font-size: 1.5rem; font-weight: 700; color: var(--fg); }
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: .85rem; margin-bottom: 1.15rem; }
+.stat { background: var(--bg-card); border: 1px solid var(--border); border-radius: var(--radius); padding: 1.1rem 1rem; box-shadow: var(--shadow); text-align: center; }
+.stat .value { font-family: var(--font-head); font-size: 1.6rem; font-weight: 700; color: var(--fg); }
 .stat .label { font-size: .75rem; color: var(--fg-muted); margin-top: .25rem; }
-.stat .badge { display: inline-block; font-size: .65rem; padding: 2px 8px; border-radius: 10px; margin-top: .25rem; }
+.stat .badge { display: inline-block; font-family: var(--font-head); font-size: .65rem; font-weight: 600; padding: 2px 8px; border-radius: 10px; margin-top: .35rem; }
 .badge-green { background: var(--tag-green-bg); color: var(--tag-green-fg); }
 .badge-yellow { background: var(--tag-warn-bg); color: var(--tag-warn-fg); }
-.badge-red { background: rgba(248,81,73,.2); color: var(--danger); }
+.badge-red { background: rgba(192,64,43,.18); color: var(--danger); }
 
-table { width: 100%; border-collapse: collapse; font-size: .8rem; color: var(--fg); }
+table { width: 100%; border-collapse: collapse; font-size: .82rem; color: var(--fg); }
 th, td { text-align: left; padding: .5rem .6rem; border-bottom: 1px solid var(--border); }
-th { font-weight: 600; color: var(--fg-muted); font-size: .75rem; text-transform: uppercase; letter-spacing: .03em; }
+th { font-family: var(--font-head); font-weight: 600; color: var(--fg-muted); font-size: .72rem; text-transform: uppercase; letter-spacing: .04em; }
 tr:hover { background: var(--bg-hover); }
 
-input, select, textarea { font-family: inherit; font-size: .8rem; padding: .4rem .6rem; border: 1px solid var(--border); border-radius: 4px; width: 100%; background: var(--bg-soft); color: var(--fg); }
-input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); }
-textarea { font-family: 'SF Mono', Monaco, monospace; font-size: .75rem; }
-button { font-family: inherit; font-size: .8rem; padding: .4rem 1rem; border: none; border-radius: 4px; cursor: pointer; }
-.btn-primary { background: var(--primary); color: #fff; }
+input, select, textarea { font-family: var(--font-head); font-size: .82rem; padding: .45rem .6rem; border: 1px solid var(--border); border-radius: var(--radius-sm); width: 100%; background: var(--bg-soft); color: var(--fg); }
+input:focus, select:focus, textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(217,119,87,.25); }
+textarea { font-family: var(--font-mono); font-size: .75rem; }
+button { font-family: var(--font-head); font-weight: 600; font-size: .82rem; padding: .45rem 1.05rem; border: 1px solid transparent; border-radius: var(--radius-sm); cursor: pointer; transition: background .12s, border-color .12s, opacity .12s; }
+.btn-primary { background: var(--primary); color: var(--on-primary); }
 .btn-primary:hover { background: var(--primary-hover); }
 .btn-danger { background: var(--danger); color: #fff; }
-.btn-sm { padding: .2rem .6rem; font-size: .75rem; }
+.btn-sm { padding: .28rem .65rem; font-size: .75rem; }
 .btn-success { background: var(--success); color: #fff; }
-.btn-warning { background: var(--warning); color: #222; }
+.btn-warning { background: var(--warning); color: var(--on-warning); }
+.btn-sm:not(.btn-primary):not(.btn-danger):not(.btn-success):not(.btn-warning) { background: var(--bg-soft); color: var(--fg); border-color: var(--border); }
+.btn-sm:not(.btn-primary):not(.btn-danger):not(.btn-success):not(.btn-warning):hover { background: var(--bg-hover); }
 
-.panel { border: 1px solid var(--border); border-radius: 6px; margin-bottom: .75rem; overflow: hidden; }
+.panel { border: 1px solid var(--border); border-radius: var(--radius-sm); margin-bottom: .75rem; overflow: hidden; }
 .panel h3 { font-size: .85rem; padding: .6rem .8rem; background: var(--bg-soft); border-bottom: 1px solid var(--border); cursor: pointer; display: flex; justify-content: space-between; align-items: center; color: var(--fg); }
 .panel h3:hover { background: var(--bg-hover); }
 .panel-body { padding: .8rem; }
@@ -126,50 +159,94 @@ button { font-family: inherit; font-size: .8rem; padding: .4rem 1rem; border: no
 .mb-1 { margin-bottom: 1rem; }
 .mt-1 { margin-top: 1rem; }
 .text-right { text-align: right; }
-.text-muted { color: var(--fg-muted); font-size: .75rem; }
+.text-muted { color: var(--fg-muted); font-size: .78rem; }
 .truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 250px; }
+.mono { font-family: var(--font-mono); }
 
-.tag { display: inline-block; background: var(--tag-bg); color: var(--tag-fg); font-size: .65rem; padding: 1px 6px; border-radius: 3px; margin: 1px; }
+.tag { display: inline-block; font-family: var(--font-head); background: var(--tag-bg); color: var(--tag-fg); font-size: .65rem; font-weight: 600; padding: 1px 6px; border-radius: 4px; margin: 1px; }
 .tag-warn { background: var(--tag-warn-bg); color: var(--tag-warn-fg); }
 .tag-green { background: var(--tag-green-bg); color: var(--tag-green-fg); }
 
 /* Tooltip — hover-popover replacing inline help text */
-.tip { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; margin-left: .35rem; border-radius: 50%; background: var(--bg-soft); color: var(--fg-muted); font-size: .65rem; font-weight: 700; cursor: help; border: 1px solid var(--border); position: relative; user-select: none; }
+.tip { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; margin-left: .35rem; border-radius: 50%; background: var(--bg-soft); color: var(--fg-muted); font-size: .65rem; font-weight: 700; cursor: help; border: 1px solid var(--border); position: relative; user-select: none; font-family: var(--font-head); }
 .tip:hover { color: var(--accent); border-color: var(--accent); }
 .tip::after {
   content: attr(data-tip);
   position: absolute; bottom: calc(100% + 6px); left: 50%; transform: translateX(-50%);
   background: var(--bg-card); color: var(--fg); border: 1px solid var(--border);
-  padding: .5rem .7rem; border-radius: 6px; font-size: .72rem; font-weight: 400;
+  padding: .5rem .7rem; border-radius: var(--radius-sm); font-size: .72rem; font-weight: 400; font-family: var(--font-body);
   width: max-content; max-width: 280px; white-space: normal; line-height: 1.4;
-  box-shadow: 0 4px 12px rgba(0,0,0,.35); pointer-events: none;
+  box-shadow: var(--shadow); pointer-events: none;
   opacity: 0; visibility: hidden; transition: opacity .12s; z-index: 100;
 }
 .tip:hover::after { opacity: 1; visibility: visible; }
 
-.field-label { display: flex; align-items: center; margin-bottom: .25rem; font-size: .75rem; color: var(--fg-muted); }
+.field-label { display: flex; align-items: center; margin-bottom: .3rem; font-family: var(--font-head); font-size: .75rem; font-weight: 500; color: var(--fg-muted); }
+
+/* Visible keyboard focus (quality floor) */
+a:focus-visible, button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible, [tabindex]:focus-visible, label:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 
 @media (max-width: 600px) {
   main { padding: 1rem; }
   .grid { grid-template-columns: repeat(2, 1fr); }
   nav a { padding: .7rem .8rem; font-size: .78rem; }
+  .hero-mode-label { font-size: 1.4rem !important; }
+  .router-switches { grid-template-columns: 1fr !important; }
 }
 
 .spinner { display: inline-block; width: 1.5rem; height: 1.5rem; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .6s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* Router live-traffic pulse */
-.router-dot { display:inline-block; width:.6rem; height:.6rem; border-radius:50%; background:var(--fg-muted); flex:0 0 auto; }
-.router-dot.live { background:#3fb950; animation:rpulse 1.6s infinite; }
-.router-dot.wait { background:#3fb950; opacity:.5; }
-.router-dot.idle { background:#d29922; }
-.router-dot.off  { background:#8b949e; }
-@keyframes rpulse { 0%{box-shadow:0 0 0 0 rgba(63,185,80,.6);} 70%{box-shadow:0 0 0 .5rem rgba(63,185,80,0);} 100%{box-shadow:0 0 0 0 rgba(63,185,80,0);} }
+/* ─── HERO: live router state (the one signature moment) ───────── */
+.hero-status { position: relative; overflow: hidden; padding: 1.4rem 1.5rem; border-color: var(--border); }
+.hero-status::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--accent); }
+.hero-kicker { display: block; font-family: var(--font-head); font-size: .7rem; font-weight: 600; letter-spacing: .12em; text-transform: uppercase; color: var(--fg-muted); margin-bottom: .5rem; }
+.hero-main { display: flex; align-items: center; gap: .7rem; }
+.hero-main .mode-dot { width: .95rem; height: .95rem; }
+.hero-mode-label { font-family: var(--font-head); font-size: 1.85rem; font-weight: 700; line-height: 1.1; color: var(--fg); text-transform: capitalize; }
+.hero-explain { font-family: var(--font-body); font-size: .9rem; color: var(--fg-muted); line-height: 1.5; margin: .55rem 0 .8rem; max-width: 62ch; }
+.hero-meta { display: flex; align-items: center; gap: .4rem; flex-wrap: wrap; font-size: .8rem; color: var(--fg-muted); }
+.hero-meta #router-status-label { font-family: var(--font-mono); font-size: .78rem; color: var(--fg); }
+.hero-hint { font-style: italic; }
 
-pre { background: var(--pre-bg); color: var(--fg); padding: .6rem; border-radius: 4px; font-size: .7rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word; border: 1px solid var(--border); }
-code { color: var(--fg); }
+/* ─── Router control switches ──────────────────────────────────── */
+.router-switches { display: grid; grid-template-columns: 1fr; gap: .6rem; margin: .25rem 0 1rem; }
+.switch-row { display: flex; align-items: flex-start; gap: .65rem; margin: 0; max-width: 640px; padding: .8rem .9rem; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--bg-soft); transition: border-color .12s, background .12s; }
+.switch-row:hover { border-color: var(--fg-dim); }
+.switch-row input[type="checkbox"] { width: auto; margin-top: .15rem; accent-color: var(--accent); flex: 0 0 auto; }
+.switch-title { font-family: var(--font-head); font-weight: 600; font-size: .9rem; display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; }
+.switch-recommended { border-color: var(--brand-green); }
+.switch-deprecated { opacity: .72; }
+.switch-deprecated:hover { opacity: .9; }
+.switch-deprecated .switch-title { color: var(--fg-muted); }
+.badge-pill { font-family: var(--font-head); font-size: .6rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; padding: 2px 7px; border-radius: 20px; }
+.badge-recommend { background: var(--tag-green-bg); color: var(--tag-green-fg); }
+.badge-deprecated { background: rgba(217,119,87,.18); color: var(--tag-warn-fg); border: 1px solid rgba(217,119,87,.35); }
+
+/* Router live-traffic pulse (brand accents) */
+.router-dot { display:inline-block; width:.6rem; height:.6rem; border-radius:50%; background:var(--fg-dim); flex:0 0 auto; vertical-align:middle; }
+.router-dot.live { background:var(--brand-green); animation:rpulse 1.7s infinite; }
+.router-dot.wait { background:var(--brand-green); opacity:.5; }
+.router-dot.idle { background:var(--brand-orange); }
+.router-dot.off  { background:var(--brand-mid); }
+.mode-dot { display:inline-block; width:.6rem; height:.6rem; border-radius:50%; background:var(--brand-mid); flex:0 0 auto; vertical-align:middle; }
+.mode-dot.mode-grey  { background:#b0aea5; }
+.mode-dot.mode-blue  { background:#6a9bcc; --pulse:106,155,204; animation:dotpulse 1.9s infinite; }
+.mode-dot.mode-green { background:#788c5d; --pulse:120,140,93; animation:dotpulse 1.9s infinite; }
+.mode-dot.mode-amber { background:#d97757; --pulse:217,119,87; animation:dotpulse 1.9s infinite; }
+@keyframes rpulse { 0%{box-shadow:0 0 0 0 rgba(120,140,93,.55);} 70%{box-shadow:0 0 0 .5rem rgba(120,140,93,0);} 100%{box-shadow:0 0 0 0 rgba(120,140,93,0);} }
+@keyframes dotpulse { 0%{box-shadow:0 0 0 0 rgba(var(--pulse),.5);} 70%{box-shadow:0 0 0 .5rem rgba(var(--pulse),0);} 100%{box-shadow:0 0 0 0 rgba(var(--pulse),0);} }
+
+/* Respect reduced-motion: kill the pulse, keep meaning via color */
+@media (prefers-reduced-motion: reduce) {
+  .router-dot.live, .mode-dot.mode-blue, .mode-dot.mode-green, .mode-dot.mode-amber { animation: none !important; }
+}
+
+pre { background: var(--pre-bg); color: var(--fg); padding: .6rem; border-radius: var(--radius-sm); font-size: .7rem; overflow-x: auto; white-space: pre-wrap; word-break: break-word; border: 1px solid var(--border); font-family: var(--font-mono); }
+code { color: var(--fg); font-family: var(--font-mono); }
 
 .empty-state { text-align: center; padding: 2rem; color: var(--fg-muted); }
+
 </style>
 </head>
 <body>
@@ -608,23 +685,54 @@ code { color: var(--fg); }
       </div>
       <div class="text-muted" style="font-size:.7rem;margin-top:.45rem" data-i18n="plugin.updateHint">Plugin externo (marketplace local): o /plugin do Claude não atualiza sozinho. Após atualizar, rode /reload-plugins.</div>
     </div>
-    <div class="card">
-      <p class="text-muted" data-i18n="router.intro">O roteador classifica cada prompt localmente e reescreve o modelo (haiku/sonnet/opus) para esticar sua janela de acesso. A chave NVIDIA é opcional e fica só nesta máquina.</p>
-
-      <div id="router-restart-banner" style="display:none;background:var(--tag-warn-bg);border:1px solid var(--warning);border-radius:6px;padding:.6rem .9rem;margin:.75rem 0;align-items:center;gap:.75rem">
+    <!-- HERO: live router state (signature moment) -->
+    <div class="card hero-status" id="router-hero">
+      <span class="hero-kicker" data-i18n="router.heroKicker">Live router state</span>
+      <div class="hero-main">
+        <span id="router-mode-dot" class="mode-dot mode-grey" title=""></span>
+        <span id="router-mode-label" class="hero-mode-label">—</span>
+        <span id="router-mode-hint" class="text-muted hero-hint" style="font-size:.78rem"></span>
+      </div>
+      <p class="hero-explain" data-i18n="router.intro">O roteador classifica cada prompt localmente e reescreve o modelo (haiku/sonnet/opus) para esticar sua janela de acesso. A chave NVIDIA é opcional e fica só nesta máquina.</p>
+      <div class="hero-meta">
+        <span id="router-status-dot" class="router-dot off" title=""></span>
+        <span class="text-muted" data-i18n="router.status">Status</span>:
+        <span id="router-status-label">—</span>
+      </div>
+      <div id="router-restart-banner" style="display:none;background:var(--tag-warn-bg);border:1px solid var(--warning);border-radius:6px;padding:.6rem .9rem;margin-top:.9rem;align-items:center;gap:.75rem">
         <span style="font-size:.85rem">⚠️ <strong data-i18n="router.restartNeeded">Reinicie o Claude Code para aplicar o roteador.</strong></span>
       </div>
+    </div>
 
-      <div style="margin:.75rem 0">
-        <span id="router-status-dot" class="router-dot off" style="margin-right:.4rem;vertical-align:middle" title=""></span>
-        <span class="text-muted" data-i18n="router.status">Status</span>:
-        <span id="router-status-label" style="font-size:.85rem">—</span>
+    <!-- Router controls (recommended first, deprecated last) -->
+    <div class="card">
+      <h2 data-i18n="router.controlsTitle">Router controls</h2>
+
+      <div class="router-switches">
+        <label class="switch-row switch-recommended">
+          <input type="checkbox" id="router-sticky-enable" onchange="updateRouterSaveState()">
+          <span>
+            <span class="switch-title"><span data-i18n="router.stickyEnable">Ativar Sticky Router (cache-safe)</span> <span class="badge-pill badge-recommend" data-i18n="router.recommended">Recommended</span></span>
+            <span class="text-muted" style="display:block;font-size:.78rem;margin-top:.25rem" data-i18n="router.stickyHint">Recomendado. Escolhe o tier UMA vez por sessão (turno 0) e FIXA o modelo pelo resto da sessão — modelo constante preserva o prompt cache quente. Reusa o classificador + teto.</span>
+          </span>
+        </label>
+
+        <label class="switch-row">
+          <input type="checkbox" id="router-fallback-enable" onchange="updateRouterSaveState()">
+          <span>
+            <span class="switch-title"><span data-i18n="router.fallbackEnable">Ativar fallback de limite (429)</span></span>
+            <span class="text-muted" style="display:block;font-size:.78rem;margin-top:.25rem" data-i18n="router.fallbackHint">Independente do roteador. Passa direto pro Claude (sem trocar modelo, preserva o cache) e só entra em ação quando a janela esgota (429): usa a NVIDIA se houver chave, senão avisa aqui. Preenche a lacuna do fallbackModel nativo (que só cobre 529).</span>
+          </span>
+        </label>
+
+        <label class="switch-row switch-deprecated">
+          <input type="checkbox" id="router-enable" onchange="updateRouterSaveState()">
+          <span>
+            <span class="switch-title"><span data-i18n="router.enable">Ativar reescrita de modelo per-turn (roteador)</span> <span class="badge-pill badge-deprecated" data-i18n="router.deprecatedBadge">Deprecated</span></span>
+            <span class="text-muted" style="display:block;font-size:.78rem;margin-top:.25rem" data-i18n="router.enableDeprecated">DEPRECADO: reescrever o modelo a cada request quebra o prompt cache da Anthropic (cache é por modelo). Prefira o Sticky Router acima.</span>
+          </span>
+        </label>
       </div>
-
-      <label style="display:flex;align-items:center;gap:.5rem;margin:1rem 0">
-        <input type="checkbox" id="router-enable" onchange="updateRouterSaveState()">
-        <span data-i18n="router.enable">Ativar reescrita de modelo (roteador)</span>
-      </label>
 
       <div style="margin:1rem 0;max-width:480px">
         <label class="field-label">
@@ -636,7 +744,7 @@ code { color: var(--fg); }
       </div>
 
       <label style="display:flex;align-items:flex-start;gap:.5rem;margin:1rem 0;max-width:560px">
-        <input type="checkbox" id="router-accept" onchange="updateRouterSaveState()" style="margin-top:.2rem">
+        <input type="checkbox" id="router-accept" onchange="updateRouterSaveState()" style="width:auto;margin-top:.2rem">
         <span data-i18n="router.acceptTerms">Li e aceito: a chave e a reescrita rodam localmente; uso por minha conta.</span>
       </label>
 
@@ -672,9 +780,18 @@ const I18N = {
     'nav.home': 'Home', 'nav.brain': 'Brain KB', 'nav.skills': 'Skills', 'nav.hooks': 'Hooks', 'nav.insights': 'Insights', 'nav.logs': 'Logs', 'nav.router': 'Router',
     'router.title': 'Model Router',
     'router.intro': 'The router classifies each prompt locally and rewrites the model (haiku/sonnet/opus) to stretch your access window. The NVIDIA key is optional and stays only on this machine.',
-    'router.enable': 'Enable model rewriting (router)',
+    'router.enable': 'Enable per-turn model rewriting (router)',
+    'router.enableDeprecated': 'DEPRECATED: rewriting the model on every request breaks Anthropic prompt cache (cache is per-model). Prefer the Sticky Router above.',
+    'router.stickyEnable': 'Enable Sticky Router (cache-safe)',
+    'router.stickyHint': 'Recommended. Picks the tier ONCE per session (turn 0) and HOLDS the model for the rest of the session — a constant model keeps the prompt cache warm. Reuses the classifier + ceiling.',
+    'router.fallbackEnable': 'Enable limit fallback (429)',
+    'router.fallbackHint': 'Independent from the router. Passes straight through to Claude (no model switch, cache preserved) and only kicks in when the window is exhausted (429): uses NVIDIA if a key is set, otherwise warns here. Fills the gap in the native fallbackModel (which only covers 529).',
     'router.nvidiaKey': 'NVIDIA API key (optional)',
     'router.nvidiaHint': 'Optional. Free key at build.nvidia.com. Stays only on your machine (DATA_DIR), never committed.',
+    'router.heroKicker': 'Live router state',
+    'router.controlsTitle': 'Router controls',
+    'router.recommended': 'Recommended',
+    'router.deprecatedBadge': 'Deprecated',
     'router.acceptTerms': 'I have read and accept: the key and the rewriting run locally; use at my own risk.',
     'router.status': 'Status',
     'router.save': 'Save & apply',
@@ -717,6 +834,13 @@ const I18N = {
     'router.tWait': 'online — no traffic yet',
     'router.tOff': 'offline (last saved)',
     'router.tLastAgo': 'last req {v} ago',
+    'mode.current': 'Current mode',
+    'mode.off': 'off',
+    'mode.fallbackOnly': 'limit fallback',
+    'mode.stickyTier': 'sticky router',
+    'mode.routing': 'per-turn routing',
+    'mode.deprecated': '(deprecated)',
+    'mode.reloadPending': '(reload pending — run /reload-plugins)',
     'tip.routerMetrics': 'Estimate by cost weights (proxy for prices: opus ~15x haiku). Baseline = the model you picked. Plan B (NVIDIA) counts as zero Claude cost.',
     'skills.title': 'Skill Promotion',
     'skills.threshold': 'Promotion Threshold',
@@ -778,9 +902,18 @@ const I18N = {
     'nav.home': 'Home', 'nav.brain': 'Brain KB', 'nav.skills': 'Skills', 'nav.hooks': 'Hooks', 'nav.insights': 'Insights', 'nav.logs': 'Logs', 'nav.router': 'Router',
     'router.title': 'Roteador de Modelo',
     'router.intro': 'O roteador classifica cada prompt localmente e reescreve o modelo (haiku/sonnet/opus) para esticar sua janela de acesso. A chave NVIDIA é opcional e fica só nesta máquina.',
-    'router.enable': 'Ativar reescrita de modelo (roteador)',
+    'router.enable': 'Ativar reescrita de modelo per-turn (roteador)',
+    'router.enableDeprecated': 'DEPRECADO: reescrever o modelo a cada request quebra o prompt cache da Anthropic (cache é por modelo). Prefira o Sticky Router acima.',
+    'router.stickyEnable': 'Ativar Sticky Router (cache-safe)',
+    'router.stickyHint': 'Recomendado. Escolhe o tier UMA vez por sessão (turno 0) e FIXA o modelo pelo resto da sessão — modelo constante preserva o prompt cache quente. Reusa o classificador + teto.',
+    'router.fallbackEnable': 'Ativar fallback de limite (429)',
+    'router.fallbackHint': 'Independente do roteador. Passa direto pro Claude (sem trocar modelo, preserva o cache) e só entra em ação quando a janela esgota (429): usa a NVIDIA se houver chave, senão avisa aqui. Preenche a lacuna do fallbackModel nativo (que só cobre 529).',
     'router.nvidiaKey': 'Chave NVIDIA API (opcional)',
     'router.nvidiaHint': 'Opcional. Chave grátis em build.nvidia.com. Fica só na sua máquina (DATA_DIR), nunca é commitada.',
+    'router.heroKicker': 'Estado do roteador',
+    'router.controlsTitle': 'Controles do roteador',
+    'router.recommended': 'Recomendado',
+    'router.deprecatedBadge': 'Deprecado',
     'router.acceptTerms': 'Li e aceito: a chave e a reescrita rodam localmente; uso por minha conta.',
     'router.status': 'Status',
     'router.save': 'Salvar & aplicar',
@@ -823,6 +956,13 @@ const I18N = {
     'router.tWait': 'online — sem tráfego ainda',
     'router.tOff': 'offline (último salvo)',
     'router.tLastAgo': 'última req há {v}',
+    'mode.current': 'Modo atual',
+    'mode.off': 'desligado',
+    'mode.fallbackOnly': 'fallback de limite',
+    'mode.stickyTier': 'roteador sticky',
+    'mode.routing': 'roteamento per-turn',
+    'mode.deprecated': '(deprecado)',
+    'mode.reloadPending': '(reload pendente — rode /reload-plugins)',
     'tip.routerMetrics': 'Estimativa por pesos de custo (proxy dos preços: opus ~15x haiku). Baseline = o modelo que você escolheu. Plano B (NVIDIA) conta como custo-Claude zero.',
     'skills.title': 'Promoção de Skills',
     'skills.threshold': 'Threshold de Promoção',
@@ -950,6 +1090,10 @@ async function loadRouterConfig() {
   try {
     const cfg = await api('GET', '/api/router/config');
     document.getElementById('router-enable').checked = !!cfg.enabled;
+    const stEl = document.getElementById('router-sticky-enable');
+    if (stEl) stEl.checked = !!cfg.stickyEnabled;
+    const fbEl = document.getElementById('router-fallback-enable');
+    if (fbEl) fbEl.checked = !!cfg.fallbackEnabled;
     document.getElementById('router-accept').checked = !!cfg.acceptedTerms;
     const keyState = document.getElementById('router-key-state');
     keyState.textContent = cfg.hasNvidiaKey
@@ -961,6 +1105,30 @@ async function loadRouterConfig() {
   } catch (e) {
     document.getElementById('router-key-state').textContent = 'Erro: ' + e.message;
   }
+}
+
+// Espelha scripts/lib/router-mode.js (MODE_META) — rótulo i18n + cor do dot + deprecado.
+const MODE_META = {
+  'off':           { i18n: 'mode.off',          color: 'grey',  deprecated: false },
+  'fallback-only': { i18n: 'mode.fallbackOnly', color: 'blue',  deprecated: false },
+  'sticky-tier':   { i18n: 'mode.stickyTier',   color: 'green', deprecated: false },
+  'routing':       { i18n: 'mode.routing',      color: 'amber', deprecated: true  },
+};
+function modeMeta(mode) { return MODE_META[mode] || MODE_META.off; }
+
+function renderRouterMode(runningMode, configuredMode) {
+  const label = document.getElementById('router-mode-label');
+  const dot = document.getElementById('router-mode-dot');
+  const hint = document.getElementById('router-mode-hint');
+  if (!label || !dot) return;
+  const meta = modeMeta(runningMode || 'off');
+  let text = t(meta.i18n);
+  if (meta.deprecated) text += ' ' + t('mode.deprecated');
+  label.textContent = text;
+  dot.className = 'mode-dot mode-' + meta.color;
+  dot.title = text;
+  // Mismatch entre configurado e rodando → reload pendente (subtil).
+  if (hint) hint.textContent = (configuredMode && configuredMode !== runningMode) ? t('mode.reloadPending') : '';
 }
 
 async function refreshRouterStatus(silent) {
@@ -975,9 +1143,11 @@ async function refreshRouterStatus(silent) {
       dot.className = 'router-dot ' + (s.running ? 'live' : 'off');
       dot.title = s.running ? `${word} · porta ${s.port}${s.pid ? ' · PID ' + s.pid : ''}` : t('router.stopped');
     }
+    renderRouterMode(s.runningMode || 'off', s.configuredMode);
   } catch (e) {
     label.textContent = '—';
     if (dot) { dot.className = 'router-dot off'; dot.title = '—'; }
+    renderRouterMode('off', null);
   }
 }
 
@@ -1137,17 +1307,27 @@ async function resetRouterMetrics() {
 // Enabling the router requires the terms checkbox to be ticked.
 function updateRouterSaveState() {
   const enabled = document.getElementById('router-enable').checked;
+  const stEl = document.getElementById('router-sticky-enable');
+  const stickyEnabled = stEl ? stEl.checked : false;
+  const fbEl = document.getElementById('router-fallback-enable');
+  const fallbackEnabled = fbEl ? fbEl.checked : false;
   const accepted = document.getElementById('router-accept').checked;
   const btn = document.getElementById('router-save-btn');
-  btn.disabled = enabled && !accepted;
+  // Aceite dos termos é exigido para LIGAR qualquer um dos três (todos rodam o
+  // proxy local / plano B por sua conta). Desligar nunca exige aceite.
+  btn.disabled = (enabled || stickyEnabled || fallbackEnabled) && !accepted;
 }
 
 async function applyRouter() {
   const enabled = document.getElementById('router-enable').checked;
+  const stEl = document.getElementById('router-sticky-enable');
+  const stickyEnabled = stEl ? stEl.checked : false;
+  const fbEl = document.getElementById('router-fallback-enable');
+  const fallbackEnabled = fbEl ? fbEl.checked : false;
   const accepted = document.getElementById('router-accept').checked;
-  if (enabled && !accepted) return;
+  if ((enabled || stickyEnabled || fallbackEnabled) && !accepted) return;
   const typed = document.getElementById('router-nvidia-key').value.trim();
-  const body = { enabled, acceptedTerms: accepted };
+  const body = { enabled, stickyEnabled, fallbackEnabled, acceptedTerms: accepted };
   if (typed !== '') body.nimApiKey = typed; // only send a new key when typed
   const btn = document.getElementById('router-save-btn');
   const saved = document.getElementById('router-saved');
