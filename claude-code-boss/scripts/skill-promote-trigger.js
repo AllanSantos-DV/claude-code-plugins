@@ -73,10 +73,14 @@ async function run(event) {
   const project = ev.cwd ? path.basename(ev.cwd) : '';
   const args = [path.join(root, 'scripts', 'brain-promote.js'), 'scan'];
   if (project) { args.push('--project', project); }
+  // Thread the session's project root so the D3 checklist is written where
+  // review-checklist-advisory.js (event.cwd) reads it — not the scan's cwd.
+  if (ev.cwd) { args.push('--cwd', ev.cwd); }
 
   const child = spawn(process.execPath, args, {
     detached: true,
     stdio: 'ignore',
+    cwd: ev.cwd && fs.existsSync(ev.cwd) ? ev.cwd : undefined,
     env: { ...process.env, CLAUDE_PLUGIN_ROOT: root, CLAUDE_PLUGIN_DATA: data },
   });
   child.unref();

@@ -1108,6 +1108,34 @@ const TESTS = [
     validate: r => Object.keys(r.parsed || {}).length === 0 ? null : `expected {} (no lessons), got: ${JSON.stringify(r.parsed)}`,
   },
 
+  // ── D3 review-checklist advisory ──────────────────────────────────────────
+  {
+    name: 'review-checklist-advisory [SessionStart→no checklist→{}]',
+    script: 'review-checklist-advisory.js',
+    payload: { hook_event_name: 'SessionStart', session_id: SESSION, cwd: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rc-none-')) },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rc-data-')) }),
+    validate: r => Object.keys(r.parsed || {}).length === 0 ? null : `expected {} (no checklist), got: ${JSON.stringify(r.parsed)}`,
+  },
+  {
+    name: 'review-checklist-advisory [SessionStart→checklist present→advisory]',
+    script: 'review-checklist-advisory.js',
+    payload: (() => {
+      const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rc-yes-'));
+      fs.mkdirSync(path.join(proj, '.claude'), { recursive: true });
+      fs.writeFileSync(path.join(proj, '.claude', 'brain-review-checklist.md'), '# Brain review checklist\n\n- [ ] **Empty catch** (recurred 5×)\n- [ ] **Race** (recurred 3×)\n');
+      return { hook_event_name: 'SessionStart', session_id: SESSION, cwd: proj };
+    })(),
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rc-data2-')) }),
+    validate: r => {
+      const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+      if (!ctx.includes('[REVIEW]')) return `expected [REVIEW] advisory, got: ${JSON.stringify(r.parsed)}`;
+      if (!ctx.includes('2 recurring lessons')) return `expected item count, got: ${ctx}`;
+      return null;
+    },
+  },
+
   // ── UserPromptSubmit ──────────────────────────────────────────────────────
   {
     name: 'correction-detect [UserPromptSubmit]',

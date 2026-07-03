@@ -105,11 +105,39 @@ async function scan() {
     drafted.push({ slug, title: e.title, recurrence: e.recurrence, confidence: e.confidence });
   }
 
+  // D3: (re)generate the project review checklist from recurring CODE lessons.
+  // Piggybacks on the scan (no new hook); best-effort so it never fails the scan.
+  let checklist = null;
+  try {
+    const { selectCodeLessons, renderChecklist, CHECKLIST_RELPATH, CHECKLIST_MARKER } = require('./lib/review-checklist.js');
+    const full = [];
+    for (const row of entries) {
+      const e = store.getRaw(row.id);
+      if (e) full.push(e);
+    }
+    const lessons = selectCodeLessons(full, { minRecurrence: minRec });
+    // Write into the SESSION's project root (--cwd), not the scan process cwd —
+    // this must match where review-checklist-advisory.js (event.cwd) reads it.
+    const projectRoot = arg('cwd', process.cwd());
+    const target = path.join(projectRoot, ...CHECKLIST_RELPATH);
+    if (lessons.length > 0) {
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      fs.writeFileSync(target, renderChecklist(lessons, { project }));
+      checklist = { path: target, items: lessons.length };
+    } else if (fs.existsSync(target)) {
+      // No code lessons anymore → remove, but ONLY our own auto-generated file
+      // (never a hand-written one at the same path).
+      let owned = false;
+      try { owned = fs.readFileSync(target, 'utf8').includes(CHECKLIST_MARKER); } catch (e) { void e; }
+      if (owned) { fs.rmSync(target); checklist = { path: target, items: 0, removed: true }; }
+    }
+  } catch (err) { console.error(`[brain-promote] checklist: ${err.message}`); }
+
   await store.close();
   console.log(JSON.stringify({
     ok: true, project, candidates: drafted.length,
     thresholds: { minRecurrence: minRec, minConfidence: minConf },
-    drafts: drafted, stagingDir: STAGING_DIR,
+    drafts: drafted, stagingDir: STAGING_DIR, checklist,
     note: drafted.length ? 'Review drafts, then `approve <slug>` to install globally.' : 'No recurring lessons cleared the threshold yet.',
   }, null, 2));
 }
