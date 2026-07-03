@@ -903,6 +903,96 @@ const TESTS = [
     },
   },
 
+  // ── D2 verify-nudge ───────────────────────────────────────────────────────
+  {
+    name: 'file-edit-detect  [PostToolUse Edit→journals edit]',
+    script: 'file-edit-detect.js',
+    payload: { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/foo.js' }, session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-fed-')) }),
+    validateWithEnv: (r, env) => {
+      if (Object.keys(r.parsed || {}).length !== 0) return `expected {} (silent journaler), got: ${JSON.stringify(r.parsed)}`;
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      const runtimeDir = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime');
+      const files = fs.existsSync(runtimeDir)
+        ? fs.readdirSync(runtimeDir).filter(f => f.startsWith(`turn-verify-${safe}--`) && f.endsWith('.json'))
+        : [];
+      if (files.length !== 1) return `expected 1 verify-journal file, got ${files.length}`;
+      const entry = JSON.parse(fs.readFileSync(path.join(runtimeDir, files[0]), 'utf-8'));
+      if (entry.kind !== 'edit' || entry.path !== 'src/foo.js') return `unexpected journal entry: ${JSON.stringify(entry)}`;
+      return null;
+    },
+  },
+  {
+    name: 'verify-nudge      [Stop→edits+no-test→block]',
+    script: 'verify-nudge.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-vn-blk-'));
+      const runtimeDir = path.join(tmpData, '.runtime');
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      fs.writeFileSync(path.join(runtimeDir, `turn-verify-${safe}--1000000000000-aaaaaaaa.json`),
+        JSON.stringify({ ts: 1000000000000, kind: 'edit', path: 'src/a.js' }));
+      fs.writeFileSync(path.join(runtimeDir, `turn-verify-${safe}--1000000000001-bbbbbbbb.json`),
+        JSON.stringify({ ts: 1000000000001, kind: 'cmd', sig: 'git status', curated: null }));
+      return { CLAUDE_PLUGIN_DATA: tmpData };
+    },
+    validateWithEnv: (r, env) => {
+      if (r.parsed?.decision !== 'block') return `expected decision:'block', got: ${JSON.stringify(r.parsed)}`;
+      if (!String(r.parsed?.reason || '').includes('[verify]')) return `reason missing [verify] tag`;
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      // Journal cleared (turn boundary) + counter bumped to 1.
+      const runtimeDir = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime');
+      const left = fs.readdirSync(runtimeDir).filter(f => f.startsWith(`turn-verify-${safe}--`));
+      if (left.length !== 0) return `verify-journal should be cleared, ${left.length} left`;
+      const cFile = path.join(runtimeDir, `verify-nudge-${safe}.json`);
+      if (!fs.existsSync(cFile)) return `counter file not written`;
+      if (JSON.parse(fs.readFileSync(cFile, 'utf-8')).count !== 1) return `counter expected 1`;
+      return null;
+    },
+  },
+  {
+    name: 'verify-nudge      [Stop→edits+test-ran→{}]',
+    script: 'verify-nudge.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-vn-sup-'));
+      const runtimeDir = path.join(tmpData, '.runtime');
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      fs.writeFileSync(path.join(runtimeDir, `turn-verify-${safe}--1000000000000-aaaaaaaa.json`),
+        JSON.stringify({ ts: 1000000000000, kind: 'edit', path: 'src/a.js' }));
+      fs.writeFileSync(path.join(runtimeDir, `turn-verify-${safe}--1000000000001-bbbbbbbb.json`),
+        JSON.stringify({ ts: 1000000000001, kind: 'cmd', sig: 'npm test', curated: null }));
+      return { CLAUDE_PLUGIN_DATA: tmpData };
+    },
+    validate: r => {
+      return Object.keys(r.parsed || {}).length === 0 ? null : `expected {} (test ran), got: ${JSON.stringify(r.parsed)}`;
+    },
+  },
+  {
+    name: 'verify-nudge      [Stop→edits+no-test but counter at cap→{}]',
+    script: 'verify-nudge.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-vn-cap-'));
+      const runtimeDir = path.join(tmpData, '.runtime');
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      fs.writeFileSync(path.join(runtimeDir, `turn-verify-${safe}--1000000000000-aaaaaaaa.json`),
+        JSON.stringify({ ts: 1000000000000, kind: 'edit', path: 'src/a.js' }));
+      fs.writeFileSync(path.join(runtimeDir, `verify-nudge-${safe}.json`), JSON.stringify({ count: 1 }));
+      return { CLAUDE_PLUGIN_DATA: tmpData };
+    },
+    validate: r => {
+      return Object.keys(r.parsed || {}).length === 0 ? null : `expected {} (cap reached), got: ${JSON.stringify(r.parsed)}`;
+    },
+  },
+
   // ── UserPromptSubmit ──────────────────────────────────────────────────────
   {
     name: 'correction-detect [UserPromptSubmit]',

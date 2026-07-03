@@ -2,6 +2,30 @@
 
 ## [1.20.0] - 2026-07-02
 
+### Added — D2 verify-nudge: "editou mas não testou" (Fase 1, self-review)
+
+Primeiro detector de autocrítica alimentado pela atividade do turno. Se o agente
+editou arquivos **e não rodou nenhum comando de teste/verificação** no turno, o
+Stop injeta **um** aviso curto (advisory), pedindo pra rodar os testes antes de
+entregar. É **nudge, não gate**: um contador por sessão limita o total
+(`maxBlocks`, padrão 1) e não há escalonamento.
+
+- Novo journal por-turno `lib/verify-journal.js` (race-free, prefixo próprio
+  `turn-verify-<sid>--` — isolado do turn-journal de curadoria).
+- Novo hook PostToolUse `Edit|Write|NotebookEdit` → `file-edit-detect.js` grava
+  `{kind:'edit', path}`. A captura de assinatura de comando pega carona no hook
+  Bash já existente (`curation-detect.js`) → **zero spawns novos** no caminho Bash.
+- Novo detector in-process `verify-nudge` no dispatcher (12 detectores agora).
+  Heurística de "rodou verificação": a sig canônica OU o id/script do shell
+  curado contém um token de teste (`test`, `spec`, `vitest`, `pytest`, `gate`,
+  `lint`, `tsc`, …), com `\b…\b` pra não casar `latest`/`investigate`. Extensível
+  via `hooksConfig.verifyNudge.testPatterns`.
+- Config nova `verifyNudge {enabled, maxBlocks, testPatterns}` (ligado no perfil
+  dev, que é o padrão; U1 depois desliga no perfil standard).
+- Testes: +10 unitários (regex de teste, `evaluate`, roundtrip do journal) e +4
+  E2E de hook (journal de edit; nudge dispara; suprimido quando teste rodou;
+  suprimido no teto do contador). Gate verde.
+
 ### Changed — Stop dispatcher: 11 spawns viram 1 passo in-process (Fase 0)
 
 Cada `Stop` disparava 11 processos Node (um por detector) — o maior custo do hook
