@@ -2454,6 +2454,83 @@ test('decideStickyModel: classify falha (null) + modelo desconhecido → passthr
   assertEq(d.model, 'weird-model'); // mantém o modelo do usuário
 });
 
+// ─── verify-journal: roundtrip (D2) ──────────────────────────────────────────
+test('verify-journal: append edit+cmd, read chronological, clear (D2)', () => {
+  const saved = process.env.CLAUDE_PLUGIN_DATA;
+  process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-vj-'));
+  // Re-require with the fresh DATA_DIR baked into module scope.
+  delete require.cache[require.resolve('./lib/verify-journal.js')];
+  const vj = require('./lib/verify-journal.js');
+  try {
+    const sid = 'vjsid';
+    vj.appendEdit(sid, 'src/a.js');
+    vj.appendCommand(sid, { sig: 'npm test', curated: null });
+    vj.appendEdit(sid, 'src/b.js');
+    const entries = vj.readEntries(sid);
+    assertEq(entries.length, 3);
+    assertEq(entries.map(e => e.kind), ['edit', 'cmd', 'edit']);
+    assertEq(entries[0].path, 'src/a.js');
+    assertEq(entries[1].sig, 'npm test');
+    vj.clearEntries(sid);
+    assertEq(vj.readEntries(sid).length, 0);
+  } finally {
+    process.env.CLAUDE_PLUGIN_DATA = saved;
+    delete require.cache[require.resolve('./lib/verify-journal.js')];
+  }
+});
+
+// ─── verify-nudge: test detection + evaluate (D2) ─────────────────────────────
+const verifyNudge = require('./verify-nudge.js');
+
+test('verify-nudge.buildTestRegex: matches test/verify tokens, not lookalikes', () => {
+  const re = verifyNudge.buildTestRegex([]);
+  for (const cmd of ['npm test', 'vitest run', 'pytest -q', 'npm run gate', 'go test ./...', 'npm run lint', 'tsc --noEmit', 'npm run spec']) {
+    assert(verifyNudge.isVerifyCommand({ kind: 'cmd', sig: cmd }, re), `should match: ${cmd}`);
+  }
+  for (const cmd of ['git checkout latest', 'git investigate', 'ls -la', 'git status', 'echo hi']) {
+    assert(!verifyNudge.isVerifyCommand({ kind: 'cmd', sig: cmd }, re), `should NOT match: ${cmd}`);
+  }
+});
+
+test('verify-nudge.buildTestRegex: config testPatterns extend defaults (escaped literal)', () => {
+  const re = verifyNudge.buildTestRegex(['smoke', 'make verify']);
+  assert(verifyNudge.isVerifyCommand({ kind: 'cmd', sig: 'npm run smoke' }, re), 'custom token smoke');
+  assert(verifyNudge.isVerifyCommand({ kind: 'cmd', sig: 'make verify' }, re), 'custom phrase');
+  assert(!verifyNudge.isVerifyCommand({ kind: 'cmd', sig: 'npm run build' }, re), 'unrelated stays unmatched');
+});
+
+test('verify-nudge.isVerifyCommand: curated id/script counts as verify', () => {
+  const re = verifyNudge.buildTestRegex([]);
+  assert(verifyNudge.isVerifyCommand({ kind: 'cmd', sig: 'powershell -File x.ps1', curated: 'vitest' }, re),
+    'curated id vitest');
+  assert(!verifyNudge.isVerifyCommand({ kind: 'edit', path: 'a.js' }, re), 'edit entry is never a verify command');
+});
+
+test('verify-nudge.evaluate: edits + no verify → nudge', () => {
+  const re = verifyNudge.buildTestRegex([]);
+  const s = verifyNudge.evaluate([{ kind: 'edit', path: 'a.js' }, { kind: 'edit', path: 'b.js' }, { kind: 'cmd', sig: 'ls' }], re);
+  assertEq(s, { edits: 2, ranVerify: false, shouldNudge: true });
+});
+
+test('verify-nudge.evaluate: edits + verify ran → suppressed', () => {
+  const re = verifyNudge.buildTestRegex([]);
+  const s = verifyNudge.evaluate([{ kind: 'edit', path: 'a.js' }, { kind: 'cmd', sig: 'npm test' }], re);
+  assertEq(s.shouldNudge, false);
+  assertEq(s.ranVerify, true);
+});
+
+test('verify-nudge.evaluate: no edits → no nudge (even with no verify)', () => {
+  const re = verifyNudge.buildTestRegex([]);
+  assertEq(verifyNudge.evaluate([{ kind: 'cmd', sig: 'ls' }], re).shouldNudge, false);
+  assertEq(verifyNudge.evaluate([], re).shouldNudge, false);
+});
+
+test('verify-nudge.buildReason: singular/plural + agent-facing tag', () => {
+  assert(verifyNudge.buildReason(1).includes('1 file edited'), 'singular');
+  assert(verifyNudge.buildReason(3).includes('3 files edited'), 'plural');
+  assert(verifyNudge.buildReason(2).startsWith('[verify]'), 'tag');
+});
+
 // ─── stop-dispatcher: merge + priority ───────────────────────────────────────
 const dispatcher = require('./stop-dispatcher.js');
 
@@ -2501,9 +2578,10 @@ test('stop-dispatcher.rank: known priorities + default', () => {
   assertEq(dispatcher.rank('anything'), 2);
 });
 
-test('stop-dispatcher.DETECTORS: 11 detectors, ordering invariants hold', () => {
+test('stop-dispatcher.DETECTORS: 12 detectors, ordering invariants hold', () => {
   const names = dispatcher.DETECTORS.map(d => d.name);
-  assertEq(names.length, 11);
+  assertEq(names.length, 12);
+  assert(names.includes('verify-nudge'), 'verify-nudge (D2) registered');
   assert(names.indexOf('failure-retro') < names.indexOf('curation-stop'),
     'failure-retro must run before curation-stop (defer-before-clear)');
   assert(names.indexOf('decision-scan-response') < names.indexOf('decision-promote'),

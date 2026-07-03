@@ -44,5 +44,10 @@
   "autoContinue": {
     "enabled": true,
     "maxBlocks": 1
+  },
+  "verifyNudge": {
+    "enabled": true,
+    "maxBlocks": 1,
+    "testPatterns": []
   }
 }
