@@ -1,5 +1,35 @@
 # Changelog
 
+## [1.20.0] - 2026-07-02
+
+### Changed — Stop dispatcher: 11 spawns viram 1 passo in-process (Fase 0)
+
+Cada `Stop` disparava 11 processos Node (um por detector) — o maior custo do hook
+de Stop, e os detectores de autocrítica planejados (D1/D2) só somariam mais. Um
+único `scripts/stop-dispatcher.js` agora lê o evento uma vez e roda os 11
+detectores **in-process**, em sequência, medindo cada um e mesclando os bloqueios
+num único `{decision:'block', reason}` (ou `{}`).
+
+- Cada detector de Stop expõe agora um `run(event) → {block,reason} | {}` puro
+  (sem ler stdin / escrever stdout) e mantém um wrapper CLI fino
+  (`require.main===module` → `hook-io.runStopDetectorCli`), então rodar
+  `node <script>.js` isolado e os testes de regressão seguem idênticos.
+- Os 5 scripts que executavam no `require` (`pattern-detect`,
+  `skill-promote-trigger`, `decision-promote`, `refine-research`,
+  `curation-stop`) viraram **import-safe**.
+- Ordem preservando comportamento: `decision-scan-response` grava o pending antes
+  de `decision-promote` ler; `failure-retro` roda **antes** de `curation-stop`
+  para ainda enxergar o turn-journal pendente e ceder a vez ("curation priority")
+  antes da limpeza. Prioridade de merge: `curation-stop` > `failure-retro` > resto.
+- Detectores com SQLite (`research-followup-detect`, `skill-success-detect`,
+  `retrieval-feedback`) passam a compartilhar **um** handle de banco aberto em vez
+  de reabrir por spawn.
+- Latência: novo métrico `stop.detector {name, ms}` por detector (+ `stop.dispatch`)
+  — insumo do card de latência do dashboard.
+- `hooks.json` Stop agora tem **uma** entrada (`stop-dispatcher.js`, timeout 30).
+- Testes: +7 unitários (merge / prioridade / invariantes de ordem) e +2 E2E de
+  hook (all-quiet → `{}`; 2 bloqueios → merge em ordem de prioridade). Gate verde.
+
 ## [1.19.1] - 2026-07-02
 
 ### Fixed — curation Stop retry ignorava `curation_mark_oneoff` (deadlock de 3 retries)
