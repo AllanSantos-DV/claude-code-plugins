@@ -146,18 +146,19 @@ async function run(event) {
   const entries = retrievalJournal.readEntries(sid);
   if (!entries.length) return {};
 
-  const replyText = readLastAssistantText(transcriptPath);
-  if (!replyText) {
-    // Nothing to score against — clear the session journal and exit.
-    retrievalJournal.clearEntries(sid);
-    return {};
-  }
+  // Distinct KB entries injected this turn — the precision denominator (F3 #7).
+  const injectedIds = new Set();
+  for (const e of entries) for (const id of (e.returnedIds || [])) if (id) injectedIds.add(id);
 
-  const cited = findCitations(entries, replyText);
-  if (cited.length > 0) {
+  const replyText = readLastAssistantText(transcriptPath);
+  // Only record precision signals on turns we can actually score (assistant reply
+  // present) — recording injected without a scoreable reply biases precision down.
+  if (replyText) {
+    const cited = findCitations(entries, replyText);
     try {
       const store = require('./brain-store.js');
       await store.init({ project });
+      if (injectedIds.size) store.recordMetric('retrieve.injected', { count: injectedIds.size }, sid);
       for (const c of cited) {
         store.recordCitation(c.id);
         store.recordMetric('retrieve.cited', { entryId: c.id }, sid);

@@ -953,6 +953,22 @@ async function getMetricsSummary(req, res, url) {
   }
 }
 
+async function postBrainConsolidate(req, res, url) {
+  try {
+    const project = url.searchParams.get('project');
+    const apply = url.searchParams.get('apply') === 'true';
+    if (!project) return fail(res, 'project required', 400);
+    const { consolidate } = require('./brain-consolidate.js');
+    const store = require('./brain-store.js');
+    try { await store.close(); } catch (e) { void e; }
+    const result = await consolidate({ project, apply });
+    json(res, result);
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/brain/consolidate failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
 async function getDoctor(req, res) {
   try {
     const doctor = require('./doctor.js');
@@ -970,7 +986,7 @@ async function getValueSummary(req, res, url) {
     const sinceTs = Date.now() - range * 86400_000;
     const projectFilter = url.searchParams.get('project') || '';
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
-    const EVENTS = ['curation.flagged', 'lesson.captured', 'retrieve.cited'];
+    const EVENTS = ['curation.flagged', 'lesson.captured', 'retrieve.cited', 'retrieve.injected'];
 
     const rows = [];
     for (const ev of EVENTS) {
@@ -1336,6 +1352,7 @@ function handleAPI(req, res, url) {
   if (p === '/api/metrics/summary' && m === 'GET') return getMetricsSummary(req, res, url);
   if (p === '/api/metrics/value-summary' && m === 'GET') return getValueSummary(req, res, url);
   if (p === '/api/doctor' && m === 'GET') return getDoctor(req, res);
+  if (p === '/api/brain/consolidate' && m === 'POST') return postBrainConsolidate(req, res, url);
   if (p === '/api/metrics/event-log' && m === 'GET') return getMetricsEventLog(req, res, url);
   if (p === '/api/metrics/cleanup' && m === 'POST') return postMetricsCleanup(req, res, url);
   if (p === '/api/metrics/skill-roi' && m === 'GET') return getSkillRoi(req, res, url);

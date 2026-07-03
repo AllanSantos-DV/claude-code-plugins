@@ -2,6 +2,29 @@
 
 ## [1.22.0] - 2026-07-03
 
+### Added — F3 higiene do KB (#5) + precisão do retrieval (#7) (Fase 3)
+
+Fecha o ciclo de memória.
+
+**#5 — Consolidação do KB (`brain-consolidate.js`)**: agrupa lições
+near-duplicate (cosseno em **0.7–0.9**, mesmo tipo) usando os **vetores já
+armazenados** (sem carregar o modelo), mescla cada grupo num sobrevivente
+**somando recurrence** e apaga os absorvidos. Planner puro/testável
+(`lib/consolidate-plan.js`, union-find + sobrevivente determinístico). **Dry-run
+por padrão**; `--apply` para efetivar. Gatilho manual no dashboard (Preview/Apply)
++ **cooldown semanal** no SessionStart (fire-and-forget). O prune de one-hits já
+roda no SessionStart (`curation-session.js`). Novos `brain-store.listWithVectors`
++ `setRecurrence`.
+
+**#7 — Precisão do retrieval**: `retrieval-feedback.js` agora grava
+`retrieve.injected {count}` (denominador) além de `retrieve.cited`. O card
+"Retrieval precision (cited/injected)" na Home mostra a % de blocos `[BRAIN]`
+efetivamente citados — insumo pra calibrar o gate de relevância **0.20**
+(precisão baixa e estável = gate frouxo; alta = pode apertar). Agregação em
+`lib/value-summary.js`.
+
+- Testes: +8 unitários (planner, runner com fake store, precisão). Gate verde.
+
 ### Added — D3 checklist de review a partir de lições recorrentes (Fase 1)
 
 Lições de **código** recorrentes viram um `.claude/brain-review-checklist.md`
