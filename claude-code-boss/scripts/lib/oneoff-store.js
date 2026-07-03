@@ -95,6 +95,36 @@ function matchEntry(store, command) {
   return null;
 }
 
+/**
+ * True when a command/sig is covered by a VALID one-hit marking (marked AND still
+ * under the recurrence ceiling) — the same suppression rule curation-detect
+ * applies, exposed so curation-stop can reconcile blocked entries mid-retry.
+ */
+function isOneHit(store, { command, sig } = {}, { now = Date.now(), windowDays = 90, maxRecurrence = 3 } = {}) {
+  const s = (sig && String(sig).trim()) || canonicalSig(command || '');
+  if (!s) return false;
+  for (const key of Object.keys(store.entries)) {
+    const e = store.entries[key];
+    if (e.oneHit && entryMatchesSig(e, s)) {
+      return countInWindow(e, now, windowDays) < maxRecurrence;
+    }
+  }
+  return false;
+}
+
+/**
+ * True when ANY one-hit marking landed at/after `sinceMs` — a good-faith progress
+ * signal for the Stop hook even when the marked sig didn't match the blocked
+ * entries (the agent acted on the block; don't deadlock it).
+ */
+function markedSince(store, sinceMs) {
+  if (!Number.isFinite(sinceMs)) return false;
+  return Object.keys(store.entries).some(k => {
+    const e = store.entries[k];
+    return e.oneHit && Number.isFinite(e.markedAt) && e.markedAt >= sinceMs;
+  });
+}
+
 function pushCapped(arr, val, cap) {
   arr.push(val);
   if (arr.length > cap) arr.splice(0, arr.length - cap);
@@ -125,16 +155,22 @@ function touch(dataDir, projectKey, command, { sessionId, now = Date.now(), wind
 }
 
 /**
- * Mark a command (by its aliases) as one-hit, MERGING into an overlapping entry
- * (D3). Refuses (D2) when the windowed count already crossed the ceiling — the
- * command recurs too much to be one-hit and must be curated.
+ * Mark a command (by its aliases and/or exact canonical sigs) as one-hit,
+ * MERGING into an overlapping entry (D3). Refuses (D2) when the windowed count
+ * already crossed the ceiling — the command recurs too much to be one-hit and
+ * must be curated.
+ *
+ * `sigs` are canonical signatures taken verbatim (e.g. copied from the Stop-hook
+ * reason's `sig \`...\``) — preferred over aliases because they match the store
+ * exactly, with no alias→sig derivation to get wrong.
  *
  * @returns {{ decision:'marked'|'merged'|'rejected', sig, count, sessions?, aliases? }}
  */
-function mark(dataDir, projectKey, { aliases = [], sessionId, now = Date.now(), maxRecurrence = 3, windowDays = 90 } = {}) {
+function mark(dataDir, projectKey, { aliases = [], sigs = [], sessionId, now = Date.now(), maxRecurrence = 3, windowDays = 90 } = {}) {
   const store = load(dataDir, projectKey);
   const cleanAliases = [...new Set((Array.isArray(aliases) ? aliases : []).map(a => String(a || '').trim()).filter(Boolean))];
-  const aliasSigs = [...new Set(cleanAliases.map(canonicalSig).filter(Boolean))];
+  const explicitSigs = [...new Set((Array.isArray(sigs) ? sigs : []).map(s => String(s || '').trim()).filter(Boolean))];
+  const aliasSigs = [...new Set([...explicitSigs, ...cleanAliases.map(canonicalSig)].filter(Boolean))];
   const sig = aliasSigs[0];
   if (!sig) return { decision: 'rejected', sig: '', count: 0, reason: 'empty-signature' };
 
@@ -192,4 +228,5 @@ function summary(dataDir, projectKey) {
 module.exports = {
   resolveProjectKey, storePath, load, save,
   touch, mark, prune, summary, matchEntry, countInWindow, entryMatchesSig,
+  isOneHit, markedSince,
 };

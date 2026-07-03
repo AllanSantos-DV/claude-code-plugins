@@ -1609,6 +1609,29 @@ test('command-signature: isGenericAlias (D4)', () => {
   assert(!cmdSig.isGenericAlias('git log'), 'git log specific');
   assert(!cmdSig.isGenericAlias('npm test'), 'npm test specific');
 });
+test('command-signature: quoted/escaped metachars are data, not a cut point', () => {
+  // Observed live (v1.19.0): the \| inside the grep pattern truncated the sig
+  // to `grep "oneoff\` — losing operands and colliding unrelated greps.
+  assertEq(
+    cmdSig.canonicalSig('grep -n "oneoff\\|curation-stop" scripts/a.js | head -30'),
+    'grep "oneoff\\|curation-stop" scripts/a.js',
+  );
+  assertEq(cmdSig.canonicalSig('echo "a > b" > out.txt'), 'echo "a > b"');
+  assertEq(cmdSig.canonicalSig("awk '{print $1 > \"f\"}' data.txt"), "awk '{print $1 > \"f\"}' data.txt");
+  // Escaped pipe outside quotes is data too.
+  assertEq(cmdSig.canonicalSig('grep a\\|b file.txt'), 'grep a\\|b file.txt');
+});
+test('command-signature: distinct quoted greps no longer collide', () => {
+  const a = cmdSig.canonicalSig('grep -n "oneoff\\|curation-stop" scripts/test-units.js | head');
+  const b = cmdSig.canonicalSig('grep -n "ANTHROPIC_BASE_URL\\|apiKey" scripts/model-router-ensure.js | head');
+  assert(a !== b, `sigs must differ, both = ${a}`);
+});
+test('command-signature: unquoted pipe/redirect still cuts (sig identity preserved)', () => {
+  // Historical identity `npm test 2` (from `2>&1`) must survive the fix —
+  // stored one-off entries keyed on it stay matchable.
+  assertEq(cmdSig.canonicalSig('CLAUDE_SKIP_EMBED_WARM=1 npm test 2>&1 | tail -40'), 'npm test 2');
+  assertEq(cmdSig.canonicalSig('git log | head -5'), 'git log');
+});
 
 // ─── oneoff-store ─────────────────────────────────────────────────────────────
 const oneoff = require(path.join(SCRIPTS, 'lib', 'oneoff-store.js'));
@@ -1658,6 +1681,89 @@ test('oneoff-store: marked one-hit under ceiling is suppressible (detect path)',
   oneoff.mark(dd, pk, { aliases: ['npm run weird'], now: now++, maxRecurrence: 3 });
   const r = oneoff.touch(dd, pk, 'cd /x && npm run weird --flag', { now: now++, create: false });
   assert(r.matched && r.oneHit && r.count < 3, `expected suppressible, got ${JSON.stringify(r)}`);
+});
+test('oneoff-store: mark accepts exact sigs verbatim (no alias derivation)', () => {
+  const dd = freshDataDir(); const pk = 'p'; const now = 1_700_000_000_000;
+  // sig copied verbatim from a Stop-hook reason — includes a token an alias
+  // derivation would never produce ("npm test 2" from `npm test 2>&1 | tail`).
+  const m = oneoff.mark(dd, pk, { sigs: ['npm test 2'], now, maxRecurrence: 3 });
+  assertEq(m.decision, 'marked');
+  assertEq(m.sig, 'npm test 2');
+  const store = oneoff.load(dd, pk);
+  assert(oneoff.isOneHit(store, { command: 'CLAUDE_SKIP_EMBED_WARM=1 npm test 2>&1 | tail -40' }, { now }),
+    'raw command must resolve to the sig-marked entry');
+});
+test('oneoff-store: isOneHit matches by journaled sig and respects ceiling', () => {
+  const dd = freshDataDir(); const pk = 'p'; let now = 1_700_000_000_000;
+  oneoff.mark(dd, pk, { aliases: ['git ls-files'], now: now++, maxRecurrence: 3 });
+  let store = oneoff.load(dd, pk);
+  assert(oneoff.isOneHit(store, { sig: 'git ls-files' }, { now, maxRecurrence: 3 }), 'marked → one-hit');
+  assert(!oneoff.isOneHit(store, { sig: 'git log' }, { now }), 'unrelated sig → false');
+  // Past the ceiling the marking no longer suppresses.
+  oneoff.touch(dd, pk, 'git ls-files', { now: now++, create: false });
+  oneoff.touch(dd, pk, 'git ls-files', { now: now++, create: false });
+  oneoff.touch(dd, pk, 'git ls-files', { now: now++, create: false });
+  store = oneoff.load(dd, pk);
+  assert(!oneoff.isOneHit(store, { sig: 'git ls-files' }, { now, maxRecurrence: 3 }), 'at ceiling → not suppressible');
+});
+test('oneoff-store: markedSince sees only markings at/after the cutoff', () => {
+  const dd = freshDataDir(); const pk = 'p'; const t0 = 1_700_000_000_000;
+  oneoff.mark(dd, pk, { aliases: ['npm run one'], now: t0, maxRecurrence: 3 });
+  const store = oneoff.load(dd, pk);
+  assert(oneoff.markedSince(store, t0 - 1), 'mark after cutoff → true');
+  assert(oneoff.markedSince(store, t0), 'mark at cutoff → true');
+  assert(!oneoff.markedSince(store, t0 + 1), 'mark before cutoff → false');
+  assert(!oneoff.markedSince(store, NaN), 'invalid cutoff → false');
+});
+
+// ─── curation-reconcile (Stop-hook blocked-entry reconciliation) ─────────────
+const reconcile = require(path.join(SCRIPTS, 'lib', 'curation-reconcile.js'));
+
+test('curation-reconcile: one-hit-marked entries drop from pending (mid-retry mark)', () => {
+  const dd = freshDataDir(); const pk = 'p'; const now = 1_700_000_000_000;
+  oneoff.mark(dd, pk, { sigs: ['npm test 2'], now, maxRecurrence: 3 });
+  const store = oneoff.load(dd, pk);
+  const entries = [
+    { command: 'CLAUDE_SKIP_EMBED_WARM=1 npm test 2>&1 | tail -40', sig: 'npm test 2', curatedScript: null, reason: 'needs-curation' },
+    { command: 'git diff HEAD~3', sig: 'git diff HEAD~3', curatedScript: null, reason: 'needs-curation' },
+  ];
+  const { pending, resolved } = reconcile.reconcileEntries(entries, { store, now });
+  assertEq(pending.length, 1);
+  assertEq(pending[0].sig, 'git diff HEAD~3');
+  assertEq(resolved.length, 1);
+});
+test('curation-reconcile: all entries resolved → pending empty (release path)', () => {
+  const dd = freshDataDir(); const pk = 'p'; const now = 1_700_000_000_000;
+  oneoff.mark(dd, pk, { sigs: ['npm test 2', 'git ls-files'], now, maxRecurrence: 3 });
+  const store = oneoff.load(dd, pk);
+  const entries = [
+    { command: 'npm test 2>&1', sig: 'npm test 2', curatedScript: null },
+    { command: 'git ls-files | grep x', sig: 'git ls-files', curatedScript: null },
+  ];
+  assertEq(reconcile.reconcileEntries(entries, { store, now }).pending.length, 0);
+});
+test('curation-reconcile: newly-curated command resolves; refine entries stay pending', () => {
+  const store = { entries: {} }; // no one-hit markings
+  const matchShell = (cmd) => (/^npm run build/.test(cmd) ? { id: 'build' } : null);
+  const entries = [
+    { command: 'npm run build', sig: 'npm run build', curatedScript: null, reason: 'needs-curation' },
+    // Already-curated entry (refine case): a shells match must NOT resolve it.
+    { command: 'node .vscode/scripts/build.mjs', sig: 'node .vscode/scripts/build.mjs', curatedScript: '.vscode/scripts/build.mjs', reason: 'curated-success-noisy' },
+  ];
+  const { pending, resolved } = reconcile.reconcileEntries(entries, { store, matchShell });
+  assertEq(resolved.length, 1);
+  assertEq(resolved[0].sig, 'npm run build');
+  assertEq(pending.length, 1);
+  assertEq(pending[0].curatedScript, '.vscode/scripts/build.mjs');
+});
+test('curation-reconcile: no markings, no shells → everything stays pending (regression)', () => {
+  const entries = [
+    { command: 'npm test', sig: 'npm test', curatedScript: null },
+    { command: 'git log', sig: 'git log', curatedScript: null },
+  ];
+  const { pending, resolved } = reconcile.reconcileEntries(entries, { store: { entries: {} } });
+  assertEq(pending.length, 2);
+  assertEq(resolved.length, 0);
 });
 
 // ─── shell-register (curation_register_shell backing module) ─────────────────

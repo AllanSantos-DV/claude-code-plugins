@@ -59,6 +59,28 @@ function significantTokens(segment) {
 }
 
 /**
+ * Index of the first SHELL-ACTIVE pipe/redirection metachar (`|`, `<`, `>`) —
+ * i.e. outside quotes and not backslash-escaped. A `\|` inside a grep pattern
+ * (`grep "a\|b" file`) is data, not a pipe: cutting there truncated the sig to
+ * `grep "a\` — losing the operands and colliding unrelated greps (observed
+ * live, v1.19.0). Best-effort like the rest of this module (single-quote
+ * backslash semantics are approximated).
+ * @param {string} s
+ * @returns {number} index, or -1 when none
+ */
+function indexOfShellMeta(s) {
+  let inSingle = false, inDouble = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '\\' && !inSingle) { i++; continue; } // escaped char is data
+    if (c === "'" && !inDouble) { inSingle = !inSingle; continue; }
+    if (c === '"' && !inSingle) { inDouble = !inDouble; continue; }
+    if (!inSingle && !inDouble && (c === '|' || c === '<' || c === '>')) return i;
+  }
+  return -1;
+}
+
+/**
  * Canonical signature: principal segment, env/wrapper/nav stripped, non-flag
  * tokens joined. Returns '' for an empty/whitespace command.
  * @param {string} command
@@ -68,8 +90,9 @@ function canonicalSig(command) {
   let seg = principalSegment(command);
   if (!seg) return '';
   // A pipe/redirection filters the command's output — it is not part of the
-  // command's identity, so the signature is the command BEFORE it.
-  const cut = seg.search(/[|<>]/);
+  // command's identity, so the signature is the command BEFORE it. Quoted or
+  // escaped metachars are argument data and do NOT cut (see indexOfShellMeta).
+  const cut = indexOfShellMeta(seg);
   if (cut >= 0) seg = seg.slice(0, cut);
   return significantTokens(seg).join(' ');
 }
@@ -88,4 +111,4 @@ function isGenericAlias(alias) {
   return sig.split(' ').filter(Boolean).length < 2;
 }
 
-module.exports = { canonicalSig, isGenericAlias, principalSegment, significantTokens };
+module.exports = { canonicalSig, isGenericAlias, principalSegment, significantTokens, indexOfShellMeta };

@@ -628,6 +628,50 @@ const TESTS = [
       return null;
     },
   },
+  (() => {
+    // Regression (v1.19.0, observed live): the agent answers a curation block by
+    // calling curation_mark_oneoff — an MCP tool, no Bash trace — and the retry
+    // path kept re-blocking with the stale blockedEntries for all 3 attempts.
+    // After reconciliation, a valid one-hit marking must RELEASE the retry.
+    const PROJ = mkTempProject({ shells: [], whitelist: [] });
+    return {
+      name: 'curation-stop     [Stop→retry+one-hit-marked→release {}]',
+      script: 'curation-stop.js',
+      payload: { hook_event_name: 'Stop', session_id: SESSION, stop_hook_active: true, cwd: PROJ },
+      expect: { noError: true },
+      extraEnv: () => {
+        const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-stop-oneoff-rel-'));
+        const runtimeDir = path.join(tmpData, '.runtime');
+        fs.mkdirSync(runtimeDir, { recursive: true });
+        const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+        fs.writeFileSync(
+          path.join(runtimeDir, `curation-stop-${safe}.json`),
+          JSON.stringify({
+            attempts: 1,
+            blockedSignature: 'CLAUDE_SKIP_EMBED_WARM=1 npm test 2>&1 | tail -40|',
+            blockedEntries: [{ command: 'CLAUDE_SKIP_EMBED_WARM=1 npm test 2>&1 | tail -40', sig: 'npm test 2', curatedScript: null, reason: 'needs-curation', lines: 39, chars: 2572 }],
+            firstBlockedAt: new Date(Date.now() - 10_000).toISOString(),
+          }),
+        );
+        // The agent's mid-retry action: mark the blocked sig one-hit (exactly
+        // what the block's reason asks for), via the real store lib.
+        const oneoffLib = require('./lib/oneoff-store.js');
+        const pk = oneoffLib.resolveProjectKey(PROJ);
+        oneoffLib.mark(tmpData, pk, { sigs: ['npm test 2'], maxRecurrence: 3 });
+        return { CLAUDE_PLUGIN_DATA: tmpData };
+      },
+      validateWithEnv: (r, env) => {
+        if (Object.keys(r.parsed || {}).length !== 0) {
+          return `expected {} (release after one-hit mark), got: ${JSON.stringify(r.parsed)}`;
+        }
+        // Escalation state must be cleared so the next turn starts fresh.
+        const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+        const escPath = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime', `curation-stop-${safe}.json`);
+        if (fs.existsSync(escPath)) return `escalation state should be cleared, still exists at ${escPath}`;
+        return null;
+      },
+    };
+  })(),
   {
     name: 'curation-stop     [Stop→max-attempts-reached→relent {}]',
     script: 'curation-stop.js',

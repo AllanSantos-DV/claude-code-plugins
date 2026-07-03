@@ -13,7 +13,7 @@
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolvePort } from './daemon-common.js';
+import { resolvePort, readToken } from './daemon-common.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const INDEX = path.join(__dirname, '..', 'index.js');
@@ -28,11 +28,15 @@ async function fetchHealth(port, timeoutMs = 600) {
   } catch (e) { void e; return null; }
 }
 
-async function postShutdown(port, timeoutMs = 800) {
+async function postShutdown(port, dataDir, timeoutMs = 800) {
   try {
     const ctrl = new AbortController();
     const t = setTimeout(() => ctrl.abort(), timeoutMs);
-    await fetch(`http://127.0.0.1:${port}/shutdown`, { method: 'POST', signal: ctrl.signal });
+    // Token from the shared DATA_DIR file — harmless extra header for pre-auth
+    // (<= 1.19.1) daemons, required by current ones.
+    const token = readToken(dataDir);
+    const headers = token ? { authorization: `Bearer ${token}` } : {};
+    await fetch(`http://127.0.0.1:${port}/shutdown`, { method: 'POST', headers, signal: ctrl.signal });
     clearTimeout(t);
   } catch { /* daemon may drop the socket before responding — that's fine */ }
 }
@@ -79,7 +83,7 @@ export async function ensureDaemon({ pluginRoot, dataDir, env = process.env } = 
     if (health) {
       if (health.pluginRoot === pluginRoot) return { status: 'current', pid: health.pid, port };
       // Stale daemon from an older plugin version → swap it for this one.
-      await postShutdown(port);
+      await postShutdown(port, dataDir);
       const gone = await waitGone(port);
       if (!gone) {
         try { if (health.pid) process.kill(health.pid, 'SIGTERM'); } catch (e) { void e; }

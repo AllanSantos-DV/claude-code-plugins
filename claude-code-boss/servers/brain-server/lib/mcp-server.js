@@ -214,8 +214,8 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
     },
     {
       name: 'curation_mark_oneoff',
-      description: 'Mark a volume-heavy command the curation Stop hook flagged as ONE-HIT (single-use), so it stops asking to curate it. Provide the alias forms of the command (the SAME you would register when curating, e.g. ["npm test","npm run test"]). Refused if the command already recurs past the configured ceiling — then create a curated script instead. Aliases must name the subcommand (e.g. "git log", not "git").',
-      inputSchema: { type: 'object', properties: { aliases: { type: 'array', items: { type: 'string' }, description: 'Raw command forms identifying this one-hit command (>=2 significant tokens each, e.g. ["git log","git lg"])' }, cwd: { type: 'string', description: 'Working directory (for project scoping)' }, session_id: { type: 'string', description: 'Session id' } }, required: ['aliases'] },
+      description: 'Mark a volume-heavy command the curation Stop hook flagged as ONE-HIT (single-use), so it stops asking to curate it. PREFERRED: pass `sigs` with each `sig` string from the Stop-hook reason VERBATIM (exact match, no guessing). Alternatively provide alias forms of the command via `aliases` (e.g. ["npm test","npm run test"]). Refused if the command already recurs past the configured ceiling — then create a curated script instead. Aliases/sigs must name the subcommand (e.g. "git log", not "git").',
+      inputSchema: { type: 'object', properties: { sigs: { type: 'array', items: { type: 'string' }, description: 'Canonical signatures copied VERBATIM from the Stop-hook reason (the `sig \\`...\\`` field). Preferred over aliases — matches the store exactly.' }, aliases: { type: 'array', items: { type: 'string' }, description: 'Raw command forms identifying this one-hit command (>=2 significant tokens each, e.g. ["git log","git lg"])' }, cwd: { type: 'string', description: 'Working directory (for project scoping)' }, session_id: { type: 'string', description: 'Session id' } } },
     },
     {
       name: 'curation_register_shell',
@@ -463,18 +463,19 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
         try {
           const a = args || {};
           const aliases = Array.isArray(a.aliases) ? a.aliases.map(x => String(x || '').trim()).filter(Boolean) : [];
-          if (aliases.length === 0) {
-            return { isError: true, content: [{ type: 'text', text: 'curation_mark_oneoff: aliases[] required — the raw command forms, e.g. ["npm test","npm run test"].' }] };
+          const sigs = Array.isArray(a.sigs) ? a.sigs.map(x => String(x || '').trim()).filter(Boolean) : [];
+          if (aliases.length === 0 && sigs.length === 0) {
+            return { isError: true, content: [{ type: 'text', text: 'curation_mark_oneoff: sigs[] or aliases[] required — pass the `sig` values from the Stop-hook reason verbatim (preferred), or raw command forms, e.g. ["npm test","npm run test"].' }] };
           }
           const cmdSig = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'command-signature.js'));
-          const tooBroad = aliases.filter(x => cmdSig.isGenericAlias(x));
+          const tooBroad = [...aliases, ...sigs].filter(x => cmdSig.isGenericAlias(x));
           if (tooBroad.length) {
-            return { isError: true, content: [{ type: 'text', text: `curation_mark_oneoff: alias too broad: ${tooBroad.join(', ')}. A 1-token alias (e.g. "git") would silence unrelated subcommands — name the subcommand (e.g. "git log").` }] };
+            return { isError: true, content: [{ type: 'text', text: `curation_mark_oneoff: alias/sig too broad: ${tooBroad.join(', ')}. A 1-token form (e.g. "git") would silence unrelated subcommands — name the subcommand (e.g. "git log").` }] };
           }
           const oneoff = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'oneoff-store.js'));
           const cfg = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'brain-config.js')).getCuration();
           const projectKey = oneoff.resolveProjectKey(a.cwd || process.cwd());
-          const res = oneoff.mark(process.env.CLAUDE_PLUGIN_DATA, projectKey, { aliases, sessionId: a.session_id || null, maxRecurrence: cfg.oneHitMaxRecurrence, windowDays: cfg.oneHitWindowDays });
+          const res = oneoff.mark(process.env.CLAUDE_PLUGIN_DATA, projectKey, { aliases, sigs, sessionId: a.session_id || null, maxRecurrence: cfg.oneHitMaxRecurrence, windowDays: cfg.oneHitWindowDays });
           if (res.decision === 'rejected') {
             return { content: [{ type: 'text', text: JSON.stringify({ decision: 'rejected', signature: res.sig, count: res.count, ceiling: cfg.oneHitMaxRecurrence, message: `"${res.sig}" already recurs ${res.count}x in this project (>= ceiling ${cfg.oneHitMaxRecurrence}). Create a curated script instead of marking one-hit.` }, null, 2) }] };
           }
