@@ -993,6 +993,82 @@ const TESTS = [
     },
   },
 
+  // ── U1 profile gating ─────────────────────────────────────────────────────
+  {
+    name: 'verify-nudge      [profile=standard→disabled→{}]',
+    script: 'verify-nudge.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-u1root-vn-'));
+      fs.mkdirSync(path.join(tmpRoot, 'config'), { recursive: true });
+      fs.writeFileSync(path.join(tmpRoot, 'config', 'hooks-config.json'),
+        JSON.stringify({ profile: 'standard', verifyNudge: { maxBlocks: 1, testPatterns: [] } }));
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-u1data-vn-'));
+      const runtimeDir = path.join(tmpData, '.runtime');
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      // Seed an edit with NO test → would nudge in dev; standard must suppress.
+      fs.writeFileSync(path.join(runtimeDir, `turn-verify-${safe}--1000000000000-aaaaaaaa.json`),
+        JSON.stringify({ ts: 1000000000000, kind: 'edit', path: 'src/a.js' }));
+      return { CLAUDE_PLUGIN_ROOT: tmpRoot, CLAUDE_PLUGIN_DATA: tmpData };
+    },
+    validate: r => Object.keys(r.parsed || {}).length === 0 ? null : `expected {} (standard disables verify), got: ${JSON.stringify(r.parsed)}`,
+  },
+  {
+    name: 'pattern-detect    [profile=standard→disabled→{}]',
+    script: 'pattern-detect.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-u1root-pd-'));
+      fs.mkdirSync(path.join(tmpRoot, 'config'), { recursive: true });
+      fs.writeFileSync(path.join(tmpRoot, 'config', 'hooks-config.json'), JSON.stringify({ profile: 'standard' }));
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-u1data-pd-'));
+      const runtimeDir = path.join(tmpData, '.runtime');
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      // n=5 → next tick would fire in dev; standard must suppress before ticking.
+      fs.writeFileSync(path.join(runtimeDir, 'pattern-detect-state.json'), JSON.stringify({ n: 5 }));
+      return { CLAUDE_PLUGIN_ROOT: tmpRoot, CLAUDE_PLUGIN_DATA: tmpData };
+    },
+    validate: r => Object.keys(r.parsed || {}).length === 0 ? null : `expected {} (standard disables pattern), got: ${JSON.stringify(r.parsed)}`,
+  },
+  {
+    name: 'pattern-detect    [profile=dev+n=5→fires→block]',
+    script: 'pattern-detect.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-u1root-pd2-'));
+      fs.mkdirSync(path.join(tmpRoot, 'config'), { recursive: true });
+      fs.writeFileSync(path.join(tmpRoot, 'config', 'hooks-config.json'), JSON.stringify({ profile: 'dev' }));
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-u1data-pd2-'));
+      const runtimeDir = path.join(tmpData, '.runtime');
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      fs.writeFileSync(path.join(runtimeDir, 'pattern-detect-state.json'), JSON.stringify({ n: 5 }));
+      return { CLAUDE_PLUGIN_ROOT: tmpRoot, CLAUDE_PLUGIN_DATA: tmpData };
+    },
+    validate: r => {
+      const p = r.parsed || {};
+      if (p.decision !== 'block') return `expected block (dev, n=5 → 6th fires), got: ${JSON.stringify(p)}`;
+      if (!String(p.reason || '').includes('capture_lesson')) return 'reason missing capture hint';
+      return null;
+    },
+  },
+  {
+    name: 'correction-detect [profile=standard→disabled→{}]',
+    script: 'correction-detect.js',
+    payload: { prompt: 'nao era isso, esta errado', session_id: SESSION, transcript_path: '' },
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-u1root-cd-'));
+      fs.mkdirSync(path.join(tmpRoot, 'config'), { recursive: true });
+      fs.writeFileSync(path.join(tmpRoot, 'config', 'hooks-config.json'), JSON.stringify({ profile: 'standard' }));
+      return { CLAUDE_PLUGIN_ROOT: tmpRoot, CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-u1data-cd-')) };
+    },
+    validate: r => Object.keys(r.parsed || {}).length === 0 ? null : `expected {} (standard disables correction), got: ${JSON.stringify(r.parsed)}`,
+  },
+
   // ── UserPromptSubmit ──────────────────────────────────────────────────────
   {
     name: 'correction-detect [UserPromptSubmit]',

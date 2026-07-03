@@ -20,6 +20,7 @@ const EVERY = 6; // remind at most once per 6 stops
 
 const { runStopDetectorCli } = require('./lib/hook-io.js');
 const metrics = require('./lib/metrics.js');
+const hooksCfg = require('./lib/hooks-config.js');
 
 const REASON =
   'If a reusable workflow pattern emerged in this session (a shape worth ' +
@@ -39,6 +40,7 @@ function tick() {
 
 async function run(event) {
   const input = event || {};
+  if (!hooksCfg.getPatternDetect().enabled) return {};
   // Anti-loop guard: if Claude already retried this hook, allow stop.
   // https://code.claude.com/docs/en/hooks#stop_hook_active
   if (input.stop_hook_active) return {};

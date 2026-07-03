@@ -31,6 +31,14 @@ const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');
 
 const SEP = '--';
 
+// Monotonic per-process counter: breaks ordering ties when multiple appends land
+// in the SAME millisecond (Date.now() collision). Without it, the random suffix
+// alone would sort same-ms entries in arbitrary order — verify-journal promises
+// chronological order, so we make the filename sort deterministic within a
+// process: <ts(13)>-<seq(6)>-<rand>. Across processes ts still orders (and a
+// cross-process same-ms collision is irrelevant to the edits-vs-verify tally).
+let _seq = 0;
+
 function _prefix(sessionId) {
   return `turn-verify-${sanitizeSessionId(sessionId)}${SEP}`;
 }
@@ -45,8 +53,9 @@ function _append(sessionId, entry) {
   try {
     if (!fs.existsSync(RUNTIME_DIR)) fs.mkdirSync(RUNTIME_DIR, { recursive: true });
     const ts = Date.now();
-    const rand = crypto.randomBytes(4).toString('hex');
-    const file = path.join(RUNTIME_DIR, `${_prefix(sessionId)}${ts}-${rand}.json`);
+    const seq = String(_seq++ % 1000000).padStart(6, '0');
+    const rand = crypto.randomBytes(3).toString('hex');
+    const file = path.join(RUNTIME_DIR, `${_prefix(sessionId)}${ts}-${seq}-${rand}.json`);
     fs.writeFileSync(file, JSON.stringify({ ts, ...entry }));
   } catch (err) {
     console.error(`[verify-journal] append failed: ${err.message}`);

@@ -2,6 +2,31 @@
 
 ## [1.20.0] - 2026-07-02
 
+### Added — U1 perfil `standard`: abre o plugin pra não-mantenedores (Fase 2)
+
+`hooks-config.json` ganha um campo `profile` (`"dev"` | `"standard"`, padrão
+`"dev"` — comportamento atual **intocado**). O perfil é um **overlay de defaults,
+não uma trava**: a resolução é `deepMerge(PRESET[profile], arquivo)`, então
+qualquer valor explícito no arquivo **vence** o preset (override ganha).
+
+- Resolução centralizada em `lib/hooks-config.js` (função pura
+  `resolveProfileConfig`, testável): o preset `dev` é vazio (os defaults dos
+  getters já reproduzem o comportamento atual); só `standard` carrega o delta.
+- Perfil `standard` (silencioso, "informa 1x, não escala"):
+  `curationStop.maxAttempts=1`; `patternDetect`/`correctionDetect`/`decisionScan`
+  e `verifyNudge` **OFF**. Retrieval `[BRAIN]`, brain-health, memory-rotate e
+  session-whitelist seguem **ON** nos dois perfis (invisíveis, só ajudam).
+- Gates de `enabled` adicionados a `pattern-detect`, `decision-scan-response` e
+  `correction-detect` (curation-stop/verify-nudge já liam o getter). Novos
+  getters `getProfile/getPatternDetect/getCorrectionDetect/getDecisionScan`.
+- Dashboard (aba Hooks): seletor de perfil dev|standard com descrição de 1 linha;
+  salvar grava o campo `profile` via o endpoint existente (validação real).
+- `config/hooks-config.json`: `curationStop.maxAttempts` e `verifyNudge.enabled`
+  saem do arquivo (passam a ser controlados pelo perfil); `profile: "dev"` entra.
+- Testes: +11 unitários (resolução pura, override-wins, getters por perfil,
+  regressão do shipped config) e +4 E2E (verify/pattern/correction OFF em
+  standard; pattern dispara em dev). Gate verde.
+
 ### Added — D2 verify-nudge: "editou mas não testou" (Fase 1, self-review)
 
 Primeiro detector de autocrítica alimentado pela atividade do turno. Se o agente

@@ -24,6 +24,7 @@ const os = require('os');
 
 const { runStopDetectorCli } = require('./lib/hook-io.js');
 const { readLastAssistantText } = require('./retrieval-feedback.js');
+const hooksCfg = require('./lib/hooks-config.js');
 
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
   || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
@@ -65,6 +66,7 @@ function spanKey(sid, span) {
 
 async function run(event) {
   const ev = event || {};
+  if (!hooksCfg.getDecisionScan().enabled) return {};
   if (ev.stop_hook_active) return {};
 
   const sid = ev.session_id || ev.sessionId || 'default';
