@@ -1,6 +1,6 @@
 # claude-code-boss
 
-Plugin para Claude Code Desktop — **v1.22.0**
+Plugin para Claude Code Desktop — **v1.22.1**
 
 Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizado leve para Claude Code. A orquestração fica a cargo das ferramentas nativas (Agent/Workflow) — o plugin foca no que o nativo não tem.
 
@@ -56,11 +56,13 @@ claude-code-boss/
 ├── dashboard/
 │   └── index.html             # SPA — 4 abas: Home / Brain KB / Hooks / Logs
 ├── hooks/
-│   └── hooks.json             # 7 eventos, 24 scripts (command "node") + 1 mcp_tool (brain_retrieve_context)
+│   └── hooks.json             # 7 eventos; Stop consolidado em 1 script (stop-dispatcher.js), os demais somam ~15 scripts + 1 mcp_tool (brain_retrieve_context)
 ├── scripts/                   # Scripts Node.js (zero deps extras para hooks)
 │   ├── dashboard.js           # Servidor HTTP local com ring buffer de logs
-│   ├── brain-*.js             # Brain KB: store, index, graph, embedder, backend, CLI
+│   ├── brain-*.js             # Brain KB: store, index, graph, embedder, backend, CLI, consolidate (higiene)
 │   ├── curation-guard.js      # PreToolUse: bloqueia/redireciona comandos curados
+│   ├── stop-dispatcher.js     # Stop: roda todos os detectores in-process (1 spawn, não 11)
+│   ├── doctor.js              # CLI + dashboard: diagnóstico zero-config (Node/PATH, data-dirs, daemon, hooks)
 │   ├── hook-logger.js         # Utilitário: append a .runtime/hook-errors.jsonl
 │   └── sync-version.js        # Propaga versão para todos os arquivos de versão
 ├── servers/
@@ -79,11 +81,19 @@ Todos os hooks estão declarados em `hooks/hooks.json`. Eventos e scripts ativos
 | SessionStart | `memory-rotate.js` | Rotaciona MEMORY.md quando >150 linhas |
 | SessionStart | `session-whitelist.js` | Detecta ecossistema do projeto, popula whitelist |
 | SessionStart | `brain-health.js` | Liveness probe (static + active backend.init/count): se MCP estiver caído, injeta advisory acionável; senão, silencioso |
+| SessionStart | `doctor-advisory.js` | Roda `doctor.js` com cooldown; advisory de 1 linha só se algo crítico falhar (Node/PATH, data-dir fragmentado, daemon, token) |
+| SessionStart | `review-checklist-advisory.js` | Se existir `.claude/brain-review-checklist.md` (lições recorrentes de código), lembra o `/code-review` nativo de consultá-lo |
 | PreToolUse (Bash) | `curation-guard.js` | Bloqueia/redireciona comandos curados |
 | PostToolUse (Bash) | `curation-detect.js` | Detecta outputs grandes para curação |
-| Stop | `pattern-detect.js` | Nudge advisory (throttled): capturar padrão reusável via `capture_lesson` |
-| Stop | `refine-research.js` | Injeta lembrete de pesquisa (web → Brain → usuário) |
-| Stop | `curation-stop.js` | Bloqueia stop se há comandos noisy detectados no turno (escalating, anti-loop) |
+| PostToolUse (Edit\|Write\|NotebookEdit) | `file-edit-detect.js` | Journala arquivos editados no turno (alimenta `verify-nudge` e `self-review`) |
+| **Stop** | **`stop-dispatcher.js`** | **Entry único** — roda in-process, em ordem, todos os detectores abaixo e funde os blocks num só `{decision:'block', reason}` (1 spawn de Node, não 11+) |
+| Stop (via dispatcher) | `pattern-detect.js` | Nudge advisory (throttled): capturar padrão reusável via `capture_lesson` |
+| Stop (via dispatcher) | `self-review.js` | Se o turno editou arquivos, recupera lições/failures relevantes do Brain (daemon HTTP autenticado, fallback keyword) e injeta advisory — "você já errou X nisso antes" |
+| Stop (via dispatcher) | `verify-nudge.js` | Se o turno editou arquivos e nenhum comando de teste/lint rodou, injeta 1 advisory (cap por sessão, sem escalonamento) |
+| Stop (via dispatcher) | `refine-research.js` | Injeta lembrete de pesquisa (web → Brain → usuário) |
+| Stop (via dispatcher) | `curation-stop.js` | Bloqueia stop se há comandos noisy detectados no turno (escalating, anti-loop) |
+| Stop (via dispatcher) | `session-summary.js` | Cap 1/sessão: resumo positivo ("N lições capturadas") quando a sessão gerou aprendizado |
+| Stop (via dispatcher) | + 7 outros | `skill-promote-trigger`, `decision-scan-response`, `decision-promote`, `research-followup-detect`, `failure-retro`, `skill-success-detect`, `retrieval-feedback`, `auto-continue-stop` — mesmo comportamento de antes, agora in-process |
 | UserPromptSubmit | `brain-health.js` | Mesma probe do SessionStart, com cooldown de 60s — captura MCP caído em sessões resumidas |
 | UserPromptSubmit | `correction-detect.js` | Detecta sinal de correção → nudge p/ `capture_lesson` (sem ler transcript) |
 | UserPromptSubmit | `mcp_tool` → `brain_retrieve_context` | Retrieval QUENTE por-turno: embeda o prompt no brain-server (warm ~12–26ms), gate 0.20, federa `__user__`, injeta bloco `[BRAIN]` (substitui o antigo `brain-retrieve-prompt.js`) |
@@ -95,6 +105,13 @@ Todos os hooks estão declarados em `hooks/hooks.json`. Eventos e scripts ativos
 >
 > **Tom advisory:** os hooks informam, não coagem. Sem orquestrador próprio:
 > a delegação usa as ferramentas nativas (Agent/Workflow).
+>
+> **Perfis (`hooks-config.json` → `profile`)**: `dev` (padrão, tudo ligado) ou
+> `standard` — preset silencioso para quem só quer usar o plugin: nudges de captura
+> (`pattern-detect`, `correction-detect`, `decisionScan`) e as ferramentas de dev
+> (`verifyNudge`, `selfReview`) desligados; `curation-stop` bloqueia 1x e relenta
+> (sem escalonar). Override individual em `hooks-config.json` sempre vence o preset.
+> Selecionável na aba Hooks do dashboard.
 
 ## Brain KB
 
@@ -167,6 +184,25 @@ Iniciado **sob demanda** (não mais no SessionStart). Configura o **plugin**
 - **Porta**: dinâmica (0 → auto-assign, sempre `127.0.0.1`); fixe com `DASHBOARD_PORT`
 - **Auth**: token aleatório gerado no boot (salvo em `.runtime/dashboard.json`)
 - **Logs tab**: ring buffer de 500 entradas + `hook-errors.jsonl` agregado. Auto-refresh a cada 2s, Copy JSON, Clear
+- **Home tab**: cards de valor (tokens de output curados, lições aprendidas, %
+  de retrieval citado) + card "learning loop" (capturadas vs. mescladas por
+  semana) + botão de consolidação do KB (ver abaixo).
+
+## Diagnóstico e higiene do KB
+
+- **`node scripts/doctor.js`** — checklist zero-config: Node no PATH + versão,
+  `CLAUDE_PLUGIN_ROOT`/`CLAUDE_PLUGIN_DATA` resolvidos, **fragmentação de
+  data-dir** (múltiplos `claude-code-boss*` populados sob
+  `~/.claude/plugins/data/` — comum entre install via `--plugin-dir` e via
+  marketplace), modelo de embedding presente, daemon HTTP + token legível, e
+  quais eventos de `hooks.json` a versão instalada do Claude Code suporta.
+  Mesmo diagnóstico acessível pelo dashboard (botão) e via advisory de
+  SessionStart (só quando algo crítico falha, com cooldown).
+- **`node scripts/brain-consolidate.js [--project <k>] [--apply]`** — funde
+  lições quase-duplicadas (similaridade 0.7–0.9, mesmo tipo) num único
+  sobrevivente somando `recurrence`; **dry-run por padrão**. Roda também
+  semanalmente sozinho (cooldown via SessionStart) e tem botão dedicado na aba
+  Home do dashboard.
 
 ## Versionamento
 

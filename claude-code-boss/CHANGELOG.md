@@ -1,5 +1,32 @@
 # Changelog
 
+## [1.22.1] - 2026-07-03
+
+### Fixed — `doctor.js` nunca detectava a fragmentação REAL de data-dir
+
+`findDataDirCandidates` procurava dirs aninhados
+(`~/.claude/plugins/<marketplace>/claude-code-boss`), mas a fragmentação real
+(já registrada como lição no Brain) é por **prefixo em dirs irmãos** direto sob
+`~/.claude/plugins/data/` (`claude-code-boss`, `claude-code-boss-inline`,
+`claude-code-boss-<marketplace>`) — o mesmo padrão que `dashboard.js` já varria
+corretamente em `resolveBestDataDir`. O check `data-dir` do `doctor` nunca
+disparava o warn de fragmentação em nenhum ambiente real. Encontrado escrevendo
+o smoke E2E `smoke/doctor.mjs` (as funções puras já testadas com ctx sintético
+não cobriam a varredura de disco). +1 teste unitário de regressão
+(`findDataDirCandidates`), +1 smoke (4 cenários: env saudável, `${...}` não
+resolvido, fragmentação real, evento de hook desconhecido).
+
+### Added — smokes E2E para Fase 0 / D1 / U3 (fechamento de processo)
+
+O plano de auto-crítica (dispatcher, self-review, doctor) previa "gate verde +
+smoke local por entrega"; os 3 componentes ficaram sem smoke dedicado.
+Adicionados agora: `smoke/stop-dispatcher.mjs` (spawna o hook real — prova que é
+1 processo Node só, prioridade de merge de blocks, nudge incondicional do
+auto-continue), `smoke/self-review.mjs` (lição semeada no KB + arquivo "editado"
+→ advisory nomeando a lição via fallback keyword-only, **sem daemon rodando** —
+valida a hard constraint "nunca carregar o embedder no hook"), `smoke/doctor.mjs`
+(4 cenários acima).
+
 ## [1.22.0] - 2026-07-03
 
 ### Added — F3 higiene do KB (#5) + precisão do retrieval (#7) (Fase 3)
