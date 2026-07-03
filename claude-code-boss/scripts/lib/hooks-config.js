@@ -42,6 +42,18 @@ function getCuration() {
   return cfg.curation || {};
 }
 
+function getVerifyNudge() {
+  const cfg = load();
+  const vn = cfg.verifyNudge || {};
+  return {
+    enabled: vn.enabled !== false,
+    maxBlocks: Number.isInteger(vn.maxBlocks) && vn.maxBlocks > 0 ? vn.maxBlocks : 1,
+    testPatterns: Array.isArray(vn.testPatterns)
+      ? vn.testPatterns.filter(s => typeof s === 'string' && s.trim())
+      : [],
+  };
+}
+
 function _resetCache() { _cache = null; }
 
 module.exports = {
@@ -49,5 +61,6 @@ module.exports = {
   getCurationStop,
   getCurationGuard,
   getCuration,
+  getVerifyNudge,
   _resetCache,
 };

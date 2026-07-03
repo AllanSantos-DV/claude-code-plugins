@@ -23,6 +23,8 @@ const path = require('path');
 const os = require('os');
 const { readStdin } = require('./lib/hook-io.js');
 const turnJournal = require('./lib/turn-journal.js');
+const verifyJournal = require('./lib/verify-journal.js');
+const { canonicalSig } = require('./lib/command-signature.js');
 const oneoff = require('./lib/oneoff-store.js');
 
 const { findProjectRoot, loadShellsConfig, matchCuratedShell } = require('./shells-config.js');
@@ -102,6 +104,15 @@ function appendTurnEntry(sessionId, entry) {
     const { shells } = loadShellsConfig(projectRoot);
     const curatedShell = matchCuratedShell(command, shells);
     const isCurated = curatedShell !== null;
+
+    // D2 verify-nudge: record EVERY Bash command's signature in the per-turn
+    // verify-journal (separate from the curation turn-journal) so the Stop
+    // detector can tell whether a test/verify command ran this turn. Cheap and
+    // spawn-free — piggybacks on this already-running Bash PostToolUse hook.
+    verifyJournal.appendCommand(sessionId, {
+      sig: canonicalSig(command),
+      curated: curatedShell ? (curatedShell.id || curatedShell.script || null) : null,
+    });
 
     // Classify
     const { reason } = classify({ command, isCurated, isSuccess, charCount, lineCount, thresholds });

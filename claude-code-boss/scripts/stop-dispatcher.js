@@ -41,6 +41,7 @@ const DETECTORS = [
   { name: 'decision-scan-response',   mod: require('./decision-scan-response.js') },
   { name: 'decision-promote',         mod: require('./decision-promote.js') },
   { name: 'refine-research',          mod: require('./refine-research.js') },
+  { name: 'verify-nudge',             mod: require('./verify-nudge.js') },
   { name: 'research-followup-detect', mod: require('./research-followup-detect.js') },
   { name: 'failure-retro',            mod: require('./failure-retro.js') },
   { name: 'curation-stop',            mod: require('./curation-stop.js') },
