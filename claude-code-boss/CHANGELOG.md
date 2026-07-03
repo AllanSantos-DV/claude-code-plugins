@@ -1,5 +1,43 @@
 # Changelog
 
+## [1.21.0] - 2026-07-03
+
+### Added — D1 self-review alimentado pela memória (Fase 1)
+
+Quando o turno editou arquivos, o Stop procura lições/failures passadas
+relevantes a esses arquivos e injeta **um** aviso curto para o agente revisar o
+próprio trabalho contra erros que ele já registrou:
+
+```
+[SELF-REVIEW] Files edited this turn resemble past lessons — verify before delivering:
+  • "widget parser off-by-one" (recurrence 2) [lesson]
+```
+
+- **Restrição dura respeitada**: o modelo de embedding **nunca** é carregado no
+  processo do hook. Retrieval em `lib/self-review-retrieve.js` com duas rotas:
+  1. **Primária** — o daemon HTTP do brain-server (modelo já quente lá). Cliente
+     MCP-sobre-HTTP mínimo e **autenticado por token** (`brain-http.token`),
+     best-effort: porta lida do `brain-http.lock.json`, timeout curto, qualquer
+     falha → `null` (cai pro fallback).
+  2. **Fallback** — keyword-only via índice invertido `brain-index` +
+     `brain-store.get` (sem embedder). Sempre disponível.
+- Sinal de arquivos editados vem do verify-journal por-turno (D2). `self-review`
+  é ordenado **antes** de `verify-nudge` no dispatcher (13 detectores agora):
+  self-review só lê; verify-nudge é dono do clear de fim-de-turno.
+- Gate de score + `topK` + filtro por tipo (`['lesson','failure']`). Guard
+  por-sessão de "já mostrado" evita re-nagging da mesma lição em turnos seguintes.
+- Injeção journaled no retrieval-journal com `tool:'Stop/self-review'` → alimenta
+  a métrica de precisão do F3.
+- Config `selfReview {enabled, topK:2, minScore:0.2, types}`. OFF no perfil
+  `standard` (é ferramenta de dev, como os demais nudges de autocrítica).
+
+### Fixed — verify-journal: clear de fim-de-turno agora é incondicional
+
+`verify-nudge` retornava antes de limpar o verify-journal quando desabilitado
+(perfil standard) ou em retry — mas `file-edit-detect`/`curation-detect` seguem
+escrevendo, então o journal crescia sem limite. Agora o dreno acontece **sempre**
+(o `self-review`, ordenado antes, já leu as edições do turno).
+
 ## [1.20.0] - 2026-07-02
 
 ### Added — U1 perfil `standard`: abre o plugin pra não-mantenedores (Fase 2)

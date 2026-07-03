@@ -14,6 +14,8 @@
  * Ordering is behavior-preserving, not arbitrary:
  *   - decision-scan-response (stages decision-pending.json) runs BEFORE
  *     decision-promote (reads + clears it).
+ *   - self-review (reads the per-turn verify-journal) runs BEFORE verify-nudge,
+ *     which owns the journal's turn-boundary clear — so both see this turn's edits.
  *   - failure-retro runs BEFORE curation-stop so it still observes this turn's
  *     pending turn-journal entries and defers ("curation priority") before
  *     curation-stop clears the journal. In the old multi-hook setup this held
@@ -41,6 +43,7 @@ const DETECTORS = [
   { name: 'decision-scan-response',   mod: require('./decision-scan-response.js') },
   { name: 'decision-promote',         mod: require('./decision-promote.js') },
   { name: 'refine-research',          mod: require('./refine-research.js') },
+  { name: 'self-review',              mod: require('./self-review.js') },
   { name: 'verify-nudge',             mod: require('./verify-nudge.js') },
   { name: 'research-followup-detect', mod: require('./research-followup-detect.js') },
   { name: 'failure-retro',            mod: require('./failure-retro.js') },
