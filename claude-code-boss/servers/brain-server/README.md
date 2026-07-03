@@ -57,11 +57,27 @@ workspaces/clients (one model load, one SQLite) instead of N stdio processes.
   collide across workspaces.
 - `EADDRINUSE` on start → another daemon already owns the port; the process exits 0.
 
-| Endpoint | Method | Purpose |
-| --- | --- | --- |
-| `/mcp` | POST / GET / DELETE | StreamableHTTP MCP channel (session via `mcp-session-id`). |
-| `/health` | GET | `{ pluginRoot, pid, ... }` — liveness + version checks. |
-| `/shutdown` | POST | Graceful drain + close. |
+| Endpoint | Method | Auth | Purpose |
+| --- | --- | --- | --- |
+| `/mcp` | POST / GET / DELETE | token | StreamableHTTP MCP channel (session via `mcp-session-id`). |
+| `/health` | GET | open | `{ pluginRoot, pid, ... }` — liveness + version checks. |
+| `/shutdown` | POST | token | Graceful drain + close. |
+
+### Auth (v1.19.1+)
+
+`127.0.0.1` bind is not authorization: any local process — or a browser page via
+DNS rebinding — could otherwise read/poison the KB or kill the daemon. Same
+pattern as the dashboard:
+
+- **Token**: generated at first boot, persisted at `<DATA_DIR>/brain-http.token`
+  (next to the lock file, survives upgrades). Every same-user consumer reads it
+  from disk and sends `Authorization: Bearer <token>` (or `X-Brain-Token`).
+  Fix/override with `BRAIN_HTTP_TOKEN`. `/health` stays open so any version's
+  supervisor can probe stale-vs-current.
+- **Origin guard**: requests carrying a non-localhost `Origin` header are
+  rejected with 403 (DNS-rebinding defense; native clients don't send Origin).
+
+E2E coverage: `smoke/brain-http-auth.mjs` (local-only, like the other smokes).
 
 ## Auto-start & version swap
 
@@ -89,6 +105,7 @@ the running daemon.
 | `CLAUDE_PLUGIN_ROOT` | `../..` of `index.js` | Plugin root — where KB logic + the model live. |
 | `CLAUDE_PLUGIN_DATA` / `--plugin-data <DIR>` | `~/.claude/plugins/data/claude-code-boss` | KB data dir (SQLite + models). |
 | `BRAIN_HTTP_PORT` | deterministic per data-dir | Pin the daemon port (stable URL for external consumers). |
+| `BRAIN_HTTP_TOKEN` | read/created at `<DATA_DIR>/brain-http.token` | Fix the auth token (containerized/remote-configured clients). |
 | `BRAIN_HTTP_AUTOSTART` | `1` | `0` disables the launcher's daemon auto-start. |
 | `--http` / `--port <N>` | — | Run the HTTP daemon / pin its port. |
 
@@ -99,7 +116,9 @@ the running daemon.
 
 To move a consumer off the rotating SHA cache onto a stable URL: pin
 `BRAIN_HTTP_PORT`, then point the consumer at a remote MCP
-`http://127.0.0.1:<port>/mcp`, passing an explicit `project` per call. Claude Code
+`http://127.0.0.1:<port>/mcp`, passing an explicit `project` per call **and the
+auth header** `Authorization: Bearer <token>` (token at
+`<DATA_DIR>/brain-http.token`, or pin it via `BRAIN_HTTP_TOKEN`). Claude Code
 keeps using stdio via the unchanged `.mcp.json`; both modes share the same SQLite.
 
 ## Dependencies

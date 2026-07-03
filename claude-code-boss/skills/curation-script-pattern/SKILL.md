@@ -14,7 +14,7 @@ You already have full turn context — don't reload payloads from disk; act on w
 
 1. **Refine existing**: if the Stop reason lists an existing script path, `Read` it first with the Read tool. Diagnose the actual cause of bulkiness from the script's source — never invent reasons. Then edit in place.
 2. **Create new — prefer `curation_register_shell`**: when the Stop reason explicitly says "no existing script", call the `curation_register_shell({ id, scriptPath, content, aliases, ... })` MCP tool with the script's content (per the templates below) instead of using Write/Edit directly. The tool writes the script file and adds/updates its `shells.json` entry server-side in one call — this avoids the Auto Mode classifier blocking manual Write/Edit on `.vscode/scripts/**` and `shells.json` as "persistent configuration outside task scope". Calling it again with the same `id` updates the entry instead of duplicating it. Only fall back to manual Write + Edit of `shells.json` if this tool is unavailable (e.g. an older plugin install without it).
-3. **Skip**: if the command is one-shot or genuinely rare, note that briefly in your response and move on.
+3. **Skip — one-hit**: if the command is one-shot or genuinely rare, call `curation_mark_oneoff({ sigs: [...] })` passing each `sig` shown in the Stop reason **verbatim** (exact store match — no alias guessing). The `aliases` param still works for raw command forms, but `sigs` is preferred. Marks made mid-retry are reconciled by the Stop hook and release the block immediately.
 
 ## What "curated" means here
 
