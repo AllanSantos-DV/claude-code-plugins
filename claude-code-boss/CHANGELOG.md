@@ -1,5 +1,55 @@
 # Changelog
 
+## [1.19.1] - 2026-07-02
+
+### Fixed — curation Stop retry ignorava `curation_mark_oneoff` (deadlock de 3 retries)
+
+Bug observado ao vivo (dogfooding): o agente respondia ao bloqueio do `curation-stop.js`
+chamando `curation_mark_oneoff` — exatamente o que o reason pede — mas a detecção de
+progresso do retry só enxergava entradas Bash do turn-journal e mtime de script curado.
+Chamadas de tool MCP não deixam rastro Bash, então o agente ficava bloqueado pelos 3
+retries refazendo trabalho já feito.
+
+- `curation-stop.js` agora **reconcilia** `blockedEntries` com o one-hit store (por `sig`
+  do journal) e com o `shells.json` (só quando a mtime é posterior ao primeiro bloqueio —
+  registro mid-turn via `curation_register_shell`) antes de escalar; qualquer entrada
+  resolvida libera o Stop. Novo lib puro `lib/curation-reconcile.js` (testes herméticos).
+- Sinal anti-deadlock adicional: qualquer marcação one-hit com `markedAt >= firstBlockedAt`
+  conta como progresso, mesmo se o sig não casar (ação de boa-fé).
+- `curation_mark_oneoff` aceita novo parâmetro **`sigs`** — os `sig` do reason passados
+  verbatim (match exato no store, sem derivação de alias que pode errar). O reason do
+  Stop agora instrui a usá-lo. `aliases` segue funcionando.
+- Estado legado de escalonamento sem `blockedEntries` preserva o comportamento antigo
+  (overlap por assinatura) — sem release espúrio.
+- Testes: +7 unitários (isOneHit, markedSince, mark por sigs, reconcile) e +1 E2E de hook
+  (retry + one-hit marcado → release `{}` + estado de escalonamento limpo).
+
+### Fixed — `canonicalSig` cortava em `|`/`<`/`>` dentro de aspas
+
+Observado ao vivo: `grep -n "oneoff\|curation-stop" arquivo` gerava sig truncada
+`grep "oneoff\` — perdia os operandos e colidia greps não relacionados (contagem de
+recorrência fragmentada/inflada). O corte agora é **quote-aware**
+(`indexOfShellMeta`): metachar entre aspas ou escapado é dado do argumento, não pipe.
+Sigs históricas sem aspas (ex.: `npm test 2`) preservam a identidade; entradas
+antigas com sig truncada envelhecem via prune (cutover limpo, sem migração).
+
+### Security — auth no daemon HTTP do Brain (token + Origin guard)
+
+Bind em `127.0.0.1` não é autorização: qualquer processo local (ou página via DNS
+rebinding) podia ler/poluir o KB via `/mcp` ou derrubar o daemon via `/shutdown`.
+Mesmo padrão do dashboard:
+
+- Token gerado no primeiro boot e persistido em `<DATA_DIR>/brain-http.token`
+  (sobrevive a upgrades; fixável via `BRAIN_HTTP_TOKEN`). `/mcp` e `/shutdown`
+  exigem `Authorization: Bearer <token>` (ou `X-Brain-Token`), comparação
+  constant-time; `/health` permanece aberto para o supervisor stale-vs-current.
+- Requests com `Origin` não-localhost → 403 (guarda anti DNS-rebinding; clientes
+  nativos não enviam Origin).
+- `daemon-supervisor` envia o token no `POST /shutdown` (header extra inofensivo
+  para daemons pré-auth durante o swap de versão).
+- Novo smoke E2E `smoke/brain-http-auth.mjs` (7 asserções: health aberto, 401 sem
+  token, 403 Origin estrangeira, handshake com token, shutdown gated).
+
 ## [1.19.0] - 2026-07-02
 
 ### Added
