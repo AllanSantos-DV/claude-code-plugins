@@ -2454,6 +2454,64 @@ test('decideStickyModel: classify falha (null) + modelo desconhecido → passthr
   assertEq(d.model, 'weird-model'); // mantém o modelo do usuário
 });
 
+// ─── stop-dispatcher: merge + priority ───────────────────────────────────────
+const dispatcher = require('./stop-dispatcher.js');
+
+test('stop-dispatcher.mergeBlocks: no blocks → {}', () => {
+  assertEq(dispatcher.mergeBlocks([]), {});
+  assertEq(dispatcher.mergeBlocks(null), {});
+});
+
+test('stop-dispatcher.mergeBlocks: single block → {decision:block, reason}', () => {
+  assertEq(dispatcher.mergeBlocks([{ name: 'auto-continue-stop', reason: 'go' }]),
+    { decision: 'block', reason: 'go' });
+});
+
+test('stop-dispatcher.mergeBlocks: 2 blocks concatenate with the separator', () => {
+  const out = dispatcher.mergeBlocks([
+    { name: 'pattern-detect', reason: 'A' },
+    { name: 'auto-continue-stop', reason: 'B' },
+  ]);
+  assertEq(out.decision, 'block');
+  assertEq(out.reason, 'A' + dispatcher.SEP + 'B');
+});
+
+test('stop-dispatcher.mergeBlocks: priority curation > failure-retro > rest', () => {
+  const out = dispatcher.mergeBlocks([
+    { name: 'pattern-detect', reason: 'rest' },
+    { name: 'failure-retro', reason: 'retro' },
+    { name: 'curation-stop', reason: 'curation' },
+  ]);
+  assertEq(out.reason, ['curation', 'retro', 'rest'].join(dispatcher.SEP));
+});
+
+test('stop-dispatcher.mergeBlocks: stable within same rank (exec order kept)', () => {
+  const out = dispatcher.mergeBlocks([
+    { name: 'pattern-detect', reason: '1' },
+    { name: 'refine-research', reason: '2' },
+    { name: 'auto-continue-stop', reason: '3' },
+  ]);
+  assertEq(out.reason, ['1', '2', '3'].join(dispatcher.SEP));
+});
+
+test('stop-dispatcher.rank: known priorities + default', () => {
+  assertEq(dispatcher.rank('curation-stop'), 0);
+  assertEq(dispatcher.rank('failure-retro'), 1);
+  assertEq(dispatcher.rank('pattern-detect'), 2);
+  assertEq(dispatcher.rank('anything'), 2);
+});
+
+test('stop-dispatcher.DETECTORS: 11 detectors, ordering invariants hold', () => {
+  const names = dispatcher.DETECTORS.map(d => d.name);
+  assertEq(names.length, 11);
+  assert(names.indexOf('failure-retro') < names.indexOf('curation-stop'),
+    'failure-retro must run before curation-stop (defer-before-clear)');
+  assert(names.indexOf('decision-scan-response') < names.indexOf('decision-promote'),
+    'decision-scan-response must stage before decision-promote reads');
+  assert(dispatcher.DETECTORS.every(d => typeof d.mod.run === 'function'),
+    'every detector exposes run()');
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
