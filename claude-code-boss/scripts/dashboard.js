@@ -953,6 +953,17 @@ async function getMetricsSummary(req, res, url) {
   }
 }
 
+async function getDoctor(req, res) {
+  try {
+    const doctor = require('./doctor.js');
+    const results = doctor.runChecks(await doctor.gatherContext());
+    json(res, { results, summary: doctor.summarize(results) });
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/doctor failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
 async function getValueSummary(req, res, url) {
   try {
     const range = Math.max(1, Math.min(365, parseInt(url.searchParams.get('days') || '30', 10)));
@@ -1324,6 +1335,7 @@ function handleAPI(req, res, url) {
   if (p === '/api/logs/clear' && m === 'POST') return clearLogs(req, res);
   if (p === '/api/metrics/summary' && m === 'GET') return getMetricsSummary(req, res, url);
   if (p === '/api/metrics/value-summary' && m === 'GET') return getValueSummary(req, res, url);
+  if (p === '/api/doctor' && m === 'GET') return getDoctor(req, res);
   if (p === '/api/metrics/event-log' && m === 'GET') return getMetricsEventLog(req, res, url);
   if (p === '/api/metrics/cleanup' && m === 'POST') return postMetricsCleanup(req, res, url);
   if (p === '/api/metrics/skill-roi' && m === 'GET') return getSkillRoi(req, res, url);

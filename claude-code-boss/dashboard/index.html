@@ -283,6 +283,13 @@ code { color: var(--fg); font-family: var(--font-mono); }
       <div id="home-learning-loop-weeks"></div>
     </div>
     <div class="card">
+      <div class="flex mb-1" style="align-items:center;justify-content:space-between">
+        <h2 style="margin:0">Doctor <span class="text-muted" style="font-size:.8rem">setup health</span></h2>
+        <button class="btn-sm" onclick="runDoctor()">Run check</button>
+      </div>
+      <div id="home-doctor"><p class="text-muted" style="font-size:.85rem">Click "Run check" to diagnose the plugin setup.</p></div>
+    </div>
+    <div class="card">
       <h2 data-i18n="home.brain">Brain Knowledge Base</h2>
       <div id="home-brain"></div>
     </div>
@@ -1423,6 +1430,22 @@ async function loadValueSummary() {
   } catch { el.innerHTML = '<p class="text-muted">No metrics yet.</p>'; return; }
   // Isolated: a D4-card failure must not wipe the value cards above.
   try { renderLearningLoop(v.learningLoop); } catch (e) { void e; }
+}
+
+async function runDoctor() {
+  const el = document.getElementById('home-doctor');
+  if (!el) return;
+  el.innerHTML = '<div class="spinner" style="margin:1rem auto"></div>';
+  try {
+    const d = await api('GET', '/api/doctor');
+    const icon = { ok: '✓', warn: '!', fail: '✗' };
+    const cls = { ok: 'badge-green', warn: 'badge-yellow', fail: 'badge-red' };
+    el.innerHTML = '<table style="width:100%;font-size:.85rem"><tbody>' + d.results.map(r =>
+      `<tr><td style="white-space:nowrap"><span class="badge ${cls[r.status] || ''}">${icon[r.status] || '?'}</span></td>`
+      + `<td><strong>${r.label}</strong><div class="text-muted">${r.detail}${r.status !== 'ok' && r.fix ? '<br>→ ' + r.fix : ''}</div></td></tr>`
+    ).join('') + '</tbody></table>'
+      + `<p class="text-muted" style="font-size:.8rem;margin-top:.5rem">${d.summary.counts.ok} ok · ${d.summary.counts.warn} warn · ${d.summary.counts.fail} fail</p>`;
+  } catch { el.innerHTML = '<p class="text-muted">Doctor check failed to run.</p>'; }
 }
 
 // D4 — learning-loop card: captured vs merged per week + merge-rate reading.
