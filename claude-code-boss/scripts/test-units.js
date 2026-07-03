@@ -2899,6 +2899,90 @@ test('session-summary.run: missing start stamp → counts nothing (no all-time r
   assertEq(Object.keys(r).length, 0);
 });
 
+// ─── U3 doctor (pure checks) ─────────────────────────────────────────────────
+const doctor = require('./doctor.js');
+
+test('doctor.checkNode: old → fail, current → ok', () => {
+  assertEq(doctor.checkNode({ nodeVersion: 'v20.10.0' }).status, 'fail');
+  assertEq(doctor.checkNode({ nodeVersion: 'v22.13.0' }).status, 'ok');
+  assertEq(doctor.checkNode({ nodeVersion: 'v24.0.0' }).status, 'ok');
+  assert(doctor.checkNode({ nodeVersion: 'v20.0.0' }).critical, 'node is critical');
+});
+
+test('doctor.checkEnv: literal ${...} or missing → fail', () => {
+  assertEq(doctor.checkEnv({ env: { root: '/plug', data: '/data' } }).status, 'ok');
+  assertEq(doctor.checkEnv({ env: { root: '${CLAUDE_PLUGIN_ROOT}', data: '/data' } }).status, 'fail');
+  assertEq(doctor.checkEnv({ env: { root: '/plug', data: '' } }).status, 'fail');
+  assert(doctor.checkEnv({ env: {} }).critical, 'env is critical');
+});
+
+test('doctor.checkDataDirs: >1 populated → warn (fragmentation)', () => {
+  assertEq(doctor.checkDataDirs({ dataDirCandidates: [{ path: '/a', populated: true }] }).status, 'ok');
+  assertEq(doctor.checkDataDirs({ dataDirCandidates: [{ path: '/a', populated: false }] }).status, 'ok');
+  const w = doctor.checkDataDirs({ env: { data: '/a' }, dataDirCandidates: [{ path: '/a', populated: true }, { path: '/b', populated: true }] });
+  assertEq(w.status, 'warn');
+  assert(w.detail.includes('/b'), 'lists the fragmented dir');
+});
+
+test('doctor.checkModel: present → ok, absent → warn', () => {
+  assertEq(doctor.checkModel({ modelPresent: true, modelCacheDir: '/m' }).status, 'ok');
+  assertEq(doctor.checkModel({ modelPresent: false }).status, 'warn');
+});
+
+test('doctor.checkDaemon: no lock → ok, unhealthy lock → warn, healthy → ok', () => {
+  assertEq(doctor.checkDaemon({ daemon: { lockPresent: false } }).status, 'ok');
+  assertEq(doctor.checkDaemon({ daemon: { lockPresent: true, healthy: true, tokenReadable: true, port: 5 } }).status, 'ok');
+  assertEq(doctor.checkDaemon({ daemon: { lockPresent: true, healthy: false } }).status, 'warn');
+  assertEq(doctor.checkDaemon({ daemon: { lockPresent: true, healthy: true, tokenReadable: false } }).status, 'warn');
+});
+
+test('doctor.checkHooksEvents: standard ok, runtime-dependent warn, unknown fail', () => {
+  assertEq(doctor.checkHooksEvents({ hooksEvents: ['SessionStart', 'Stop', 'PreToolUse'] }).status, 'ok');
+  assertEq(doctor.checkHooksEvents({ hooksEvents: ['Stop', 'UserPromptExpansion', 'PostToolUseFailure'] }).status, 'warn');
+  assertEq(doctor.checkHooksEvents({ hooksEvents: ['Stop', 'BogusEvent'] }).status, 'fail');
+});
+
+test('doctor.runChecks + summarize: criticalFail flagged, counts add up', () => {
+  const ctx = {
+    nodeVersion: 'v20.0.0', // critical fail
+    env: { root: '/p', data: '/d' },
+    dataDirCandidates: [{ path: '/d', populated: true }],
+    modelPresent: true, modelCacheDir: '/m',
+    daemon: { lockPresent: false },
+    hooksEvents: ['Stop'],
+  };
+  const results = doctor.runChecks(ctx);
+  assertEq(results.length, 6);
+  const s = doctor.summarize(results);
+  assert(s.criticalFail, 'old node → criticalFail');
+  assertEq(s.ok, false);
+  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 6);
+});
+
+test('doctor.runChecks: all-healthy ctx → ok summary', () => {
+  const ctx = {
+    nodeVersion: 'v22.13.0', env: { root: '/p', data: '/d' },
+    dataDirCandidates: [{ path: '/d', populated: true }],
+    modelPresent: true, modelCacheDir: '/m',
+    daemon: { lockPresent: true, healthy: true, tokenReadable: true, port: 9 },
+    hooksEvents: ['SessionStart', 'Stop'],
+  };
+  const s = doctor.summarize(doctor.runChecks(ctx));
+  assertEq(s.ok, true);
+  assertEq(s.criticalFail, false);
+});
+
+test('doctor-advisory.stampPath: absolute + literal-env-safe (no ${} in path)', () => {
+  const advisory = require('./doctor-advisory.js');
+  const saved = process.env.CLAUDE_PLUGIN_DATA;
+  process.env.CLAUDE_PLUGIN_DATA = '${CLAUDE_PLUGIN_DATA}'; // the broken-env case it warns about
+  try {
+    const p = advisory.stampPath();
+    assert(path.isAbsolute(p), 'stamp path must be absolute (falls back to homedir), not a CWD-relative literal');
+    assert(!p.includes('${'), 'stamp path must not contain the unresolved literal');
+  } finally { if (saved !== undefined) process.env.CLAUDE_PLUGIN_DATA = saved; else delete process.env.CLAUDE_PLUGIN_DATA; }
+});
+
 // ─── stop-dispatcher: merge + priority ───────────────────────────────────────
 const dispatcher = require('./stop-dispatcher.js');
 test('stop-dispatcher.mergeBlocks: no blocks → {}', () => {
