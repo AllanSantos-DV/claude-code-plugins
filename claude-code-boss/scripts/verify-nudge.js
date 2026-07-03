@@ -113,16 +113,21 @@ function writeCounter(file, n) {
 
 async function run(event) {
   const ev = event || {};
+  const sid = ev.session_id || ev.sessionId || 'default';
+
+  // Turn boundary: ALWAYS drain the per-turn verify-journal — even when this
+  // detector is disabled (standard profile) or on a Stop retry. file-edit-detect
+  // + curation-detect keep writing to it every turn, so if verify-nudge (the
+  // designated clearer) skipped the clear when off, the journal would grow
+  // unbounded. self-review (ordered before this detector) already read it.
+  const entries = verifyJournal.readEntries(sid);
+  verifyJournal.clearEntries(sid);
+
   const cfg = hooksCfg.getVerifyNudge();
   if (!cfg.enabled) return {};
 
-  const sid = ev.session_id || ev.sessionId || 'default';
-
   // Anti-loop: on a Stop retry the fresh-turn evaluation already happened.
   if (ev.stop_hook_active) return {};
-
-  const entries = verifyJournal.readEntries(sid);
-  verifyJournal.clearEntries(sid); // turn boundary — always reset
 
   const summary = evaluate(entries, buildTestRegex(cfg.testPatterns));
   if (!summary.shouldNudge) return {};

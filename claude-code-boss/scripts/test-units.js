@@ -2617,9 +2617,182 @@ test('verify-nudge.buildReason: singular/plural + agent-facing tag', () => {
   assert(verifyNudge.buildReason(2).startsWith('[verify]'), 'tag');
 });
 
+// ─── D1 self-review: retrieval (no embedder) + detector helpers ──────────────
+const srRetrieve = require('./lib/self-review-retrieve.js');
+const selfReview = require('./self-review.js');
+const verifyJournalTop = require('./lib/verify-journal.js');
+const retrievalJournalTop = require('./lib/retrieval-journal.js');
+
+test('self-review-retrieve.parseSearchResult: unwraps results, tolerant of junk', () => {
+  const good = srRetrieve.parseSearchResult({ content: [{ type: 'text', text: JSON.stringify({ results: [{ id: 'a', title: 'T' }] }) }] });
+  assertEq(good.length, 1);
+  assertEq(good[0].id, 'a');
+  assertEq(srRetrieve.parseSearchResult({}).length, 0);
+  assertEq(srRetrieve.parseSearchResult({ content: [{ text: 'not json' }] }).length, 0);
+});
+
+test('self-review-retrieve.filterByType: keeps only requested types (case-insensitive)', () => {
+  const es = [{ id: '1', type: 'Lesson' }, { id: '2', type: 'reference' }, { id: '3', type: 'failure' }];
+  assertEq(srRetrieve.filterByType(es, ['lesson', 'failure']).map(e => e.id), ['1', '3']);
+  assertEq(srRetrieve.filterByType(es, []).length, 3); // empty types keeps all
+});
+
+test('self-review-retrieve.applyGate: minScore gate + score sort + topK', () => {
+  const es = [{ id: 'lo', score: 0.1 }, { id: 'hi', score: 0.9 }, { id: 'mid', score: 0.5 }];
+  const g = srRetrieve.applyGate(es, { minScore: 0.2, topK: 2 });
+  assertEq(g.map(e => e.id), ['hi', 'mid']); // 'lo' gated out, sorted desc, capped 2
+});
+
+test('self-review-retrieve.applyGate: entries without score pass (keyword fallback)', () => {
+  const es = [{ id: 'a' }, { id: 'b' }];
+  assertEq(srRetrieve.applyGate(es, { minScore: 0.5, topK: 5 }).length, 2);
+});
+
+test('self-review-retrieve.readDaemonPort/Token: absent → null', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sr-nolock-'));
+  assertEq(srRetrieve.readDaemonPort(dir), null);
+  const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
+  assertEq(srRetrieve.readDaemonToken(dir), null);
+  if (savedTok !== undefined) process.env.BRAIN_HTTP_TOKEN = savedTok;
+});
+
+/** Fake warm brain-server HTTP daemon: token-gated /mcp with initialize→tools/call. */
+function startFakeBrainHttp({ results = [], toolError = false } = {}) {
+  const seen = { auth: null, calledTool: null, callArgs: null };
+  const server = http.createServer((req, res) => {
+    seen.auth = req.headers['authorization'] || null;
+    let body = '';
+    req.on('data', c => { body += c; });
+    req.on('end', () => {
+      let msg = {}; try { msg = JSON.parse(body); } catch (err) { void err; }
+      if (msg.method === 'initialize') {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Mcp-Session-Id': 'sess-1' });
+        return res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2025-06-18', capabilities: {} } }));
+      }
+      if (msg.method === 'notifications/initialized') { res.writeHead(202); return res.end(); }
+      if (msg.method === 'tools/call') {
+        seen.calledTool = msg.params && msg.params.name;
+        seen.callArgs = msg.params && msg.params.arguments;
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        // Tool-level failure: a SUCCESSFUL JSON-RPC response with result.isError.
+        const result = toolError
+          ? { isError: true, content: [{ type: 'text', text: 'brain_search failed: boom' }] }
+          : { content: [{ type: 'text', text: JSON.stringify({ results }) }] };
+        return res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }));
+      }
+      res.writeHead(400); res.end('bad');
+    });
+  });
+  return new Promise(resolve => {
+    server.listen(0, '127.0.0.1', () => resolve({
+      port: server.address().port, seen, close: () => new Promise(r => server.close(r)),
+    }));
+  });
+}
+
+test('self-review-retrieve.retrieveViaDaemon: token handshake + brain_search parse', async () => {
+  const daemon = await startFakeBrainHttp({ results: [{ id: 'x', title: 'past bug', type: 'lesson', score: 0.8, recurrence: 2 }] });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sr-daemon-'));
+  fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: daemon.port }));
+  fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
+  try {
+    const entries = await srRetrieve.retrieveViaDaemon('hooks config', { dataDir: dir, project: 'p1', topK: 2, minScore: 0.2, timeoutMs: 3000 });
+    assert(Array.isArray(entries), 'entries array');
+    assertEq(entries[0].id, 'x');
+    assert(String(daemon.seen.auth || '').includes('tok'), 'daemon received bearer token');
+    assertEq(daemon.seen.calledTool, 'brain_search');
+  } finally {
+    if (savedTok !== undefined) process.env.BRAIN_HTTP_TOKEN = savedTok;
+    await daemon.close();
+  }
+});
+
+test('self-review-retrieve.retrieveViaDaemon: no lock/token → null (fall back)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sr-nodaemon-'));
+  const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
+  try {
+    assertEq(await srRetrieve.retrieveViaDaemon('q', { dataDir: dir, project: 'p', topK: 2 }), null);
+  } finally { if (savedTok !== undefined) process.env.BRAIN_HTTP_TOKEN = savedTok; }
+});
+
+test('self-review-retrieve.retrieveViaDaemon: tool-level error (isError) → null (fall back)', async () => {
+  const daemon = await startFakeBrainHttp({ toolError: true });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sr-toolerr-'));
+  fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: daemon.port }));
+  fs.writeFileSync(path.join(dir, 'brain-http.token'), 'tok');
+  const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
+  try {
+    // A reachable daemon whose brain_search errors must return null (not []), so
+    // retrieve() degrades to the keyword index rather than silently yielding nothing.
+    assertEq(await srRetrieve.retrieveViaDaemon('q', { dataDir: dir, project: 'p1', topK: 2, minScore: 0.2, timeoutMs: 3000 }), null);
+  } finally {
+    if (savedTok !== undefined) process.env.BRAIN_HTTP_TOKEN = savedTok;
+    await daemon.close();
+  }
+});
+
+test('self-review-retrieve.retrieveViaIndex: lookup → store.get wiring + score merge', async () => {
+  // In-memory fakes via DI: verifies the orchestration (index.lookup → per-hit
+  // store.get → attach score) without touching the real singletons/fs, so it's
+  // immune to concurrent-test races. Real brain-index/brain-store are covered
+  // by their own tests.
+  const fakeIndex = {
+    init: async () => {},
+    lookup: async (kw) => (kw.includes('profile') ? [{ id: 'les1', score: 0.9 }, { id: 'missing', score: 0.4 }] : []),
+  };
+  const store = {
+    les1: { id: 'les1', title: 'profile deepMerge alias', type: 'lesson', recurrence: 3 },
+  };
+  const fakeStore = { init: async () => {}, get: async (id) => store[id] || null };
+  const got = await srRetrieve.retrieveViaIndex(['profile', 'merge', 'alias'], { project: 'p1', topK: 2, _store: fakeStore, _index: fakeIndex });
+  assert(got.some(x => x.id === 'les1'), 'seeded lesson retrieved');
+  assertEq(got.find(x => x.id === 'les1').recurrence, 3);
+  assertEq(got.find(x => x.id === 'les1').score, 0.9); // score attached from the hit
+  assert(!got.some(x => x.id === 'missing'), 'hits with no store entry are dropped');
+});
+
+test('self-review.buildQuery: basenames + non-generic dirs, split keywords', () => {
+  const q = selfReview.buildQuery(['scripts/lib/hooks-config.js', 'C:\\x\\verify-nudge.js', 'src/index.js']);
+  assert(q.query.includes('hooks-config.js'), 'basename kept');
+  assert(q.query.includes('verify-nudge.js'), 'windows path basename kept');
+  assert(!q.query.split(' ').includes('src'), 'generic dir dropped');
+  assert(q.keywords.includes('hooks') && q.keywords.includes('config'), 'keywords split on punctuation');
+});
+
+test('self-review.buildAdvisory: [SELF-REVIEW] header + recurrence + type', () => {
+  const a = selfReview.buildAdvisory([{ title: 'Broke the build', type: 'lesson', recurrence: 4 }, { title: 'Flaky test', type: 'failure' }]);
+  assert(a.startsWith('[SELF-REVIEW]'), 'tag');
+  assert(a.includes('"Broke the build"') && a.includes('recurrence 4') && a.includes('[lesson]'), 'first entry');
+  assert(a.includes('"Flaky test"') && a.includes('[failure]'), 'second entry (no recurrence)');
+  assert(!a.includes('recurrence 1'), 'recurrence<=1 omitted');
+});
+
+test('self-review.run: edits + retrieved lesson → block, journals, dedups next turn', async () => {
+  // Uses the top-level journal singletons (bound to the units temp data dir) with
+  // a UNIQUE sid + a STUB retrieve (DI) → no cache/env swapping, no store race.
+  const sid = 'srsession-' + Date.now();
+  const cwd = path.join(os.tmpdir(), 'srproj');
+  const dir = process.env.CLAUDE_PLUGIN_DATA; // where the top-level journals live
+  const stubRetrieve = async () => ({ entries: [{ id: 'lesX', title: 'widget parser off-by-one', type: 'lesson', recurrence: 2, score: 0.8 }], source: 'index' });
+  const noopMetrics = { fire: () => {} }; // don't touch the shared brain-store singleton in-process
+
+  verifyJournalTop.appendEdit(sid, 'scripts/lib/widget-parser.js');
+  const first = await selfReview.run({ hook_event_name: 'Stop', session_id: sid, cwd }, { retrieve: stubRetrieve, dataDir: dir, metrics: noopMetrics });
+  assertEq(first.block, true);
+  assert(String(first.reason).includes('[SELF-REVIEW]') && first.reason.includes('widget parser off-by-one'), 'advisory content');
+
+  // Injection journaled with the self-review tool tag (F3 precision signal).
+  assert(retrievalJournalTop.readEntries(sid).some(j => j.tool === 'Stop/self-review' && (j.returnedIds || []).includes('lesX')), 'retrieval-journal entry written');
+
+  // Second turn, same lesson → deduped (already surfaced) → no block.
+  verifyJournalTop.appendEdit(sid, 'scripts/lib/widget-parser.js');
+  const second = await selfReview.run({ hook_event_name: 'Stop', session_id: sid, cwd }, { retrieve: stubRetrieve, dataDir: dir, metrics: noopMetrics });
+  assertEq(Object.keys(second).length, 0);
+});
+
 // ─── stop-dispatcher: merge + priority ───────────────────────────────────────
 const dispatcher = require('./stop-dispatcher.js');
-
 test('stop-dispatcher.mergeBlocks: no blocks → {}', () => {
   assertEq(dispatcher.mergeBlocks([]), {});
   assertEq(dispatcher.mergeBlocks(null), {});
@@ -2664,10 +2837,13 @@ test('stop-dispatcher.rank: known priorities + default', () => {
   assertEq(dispatcher.rank('anything'), 2);
 });
 
-test('stop-dispatcher.DETECTORS: 12 detectors, ordering invariants hold', () => {
+test('stop-dispatcher.DETECTORS: 13 detectors, ordering invariants hold', () => {
   const names = dispatcher.DETECTORS.map(d => d.name);
-  assertEq(names.length, 12);
+  assertEq(names.length, 13);
   assert(names.includes('verify-nudge'), 'verify-nudge (D2) registered');
+  assert(names.includes('self-review'), 'self-review (D1) registered');
+  assert(names.indexOf('self-review') < names.indexOf('verify-nudge'),
+    'self-review must read verify-journal before verify-nudge clears it');
   assert(names.indexOf('failure-retro') < names.indexOf('curation-stop'),
     'failure-retro must run before curation-stop (defer-before-clear)');
   assert(names.indexOf('decision-scan-response') < names.indexOf('decision-promote'),

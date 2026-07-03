@@ -33,6 +33,7 @@ const PROFILE_PRESETS = {
     correctionDetect: { enabled: false },   // dev-only capture nudge
     decisionScan:     { enabled: false },   // dev-only capture nudge
     verifyNudge:      { enabled: false },   // dev tool
+    selfReview:       { enabled: false },   // dev self-review nudge
   },
 };
 
@@ -144,6 +145,18 @@ function getDecisionScan() {
   return { enabled: ds.enabled !== false };
 }
 
+function getSelfReview() {
+  const sr = _resolved().selfReview || {};
+  return {
+    enabled: sr.enabled !== false,
+    topK: Number.isInteger(sr.topK) && sr.topK > 0 ? sr.topK : 2,
+    minScore: typeof sr.minScore === 'number' ? sr.minScore : 0.2,
+    types: Array.isArray(sr.types) && sr.types.length
+      ? sr.types.filter(s => typeof s === 'string' && s.trim())
+      : ['lesson', 'failure'],
+  };
+}
+
 function _resetCache() { _cache = null; _resolvedCache = null; }
 
 module.exports = {
@@ -157,6 +170,7 @@ module.exports = {
   getPatternDetect,
   getCorrectionDetect,
   getDecisionScan,
+  getSelfReview,
   PROFILE_PRESETS,
   _resetCache,
 };

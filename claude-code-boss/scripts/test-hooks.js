@@ -1069,6 +1069,35 @@ const TESTS = [
     validate: r => Object.keys(r.parsed || {}).length === 0 ? null : `expected {} (standard disables correction), got: ${JSON.stringify(r.parsed)}`,
   },
 
+  // ── D1 self-review ────────────────────────────────────────────────────────
+  // NOTE: the "fires a block" path needs entries in the brain-store (not just the
+  // inverted index), which can't be seeded synchronously here — it's covered by a
+  // run()-level unit test in test-units.js. These E2E cases cover the {} paths.
+  {
+    name: 'self-review       [Stop→no edits→{}]',
+    script: 'self-review.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sr-noedit-')) }),
+    validate: r => Object.keys(r.parsed || {}).length === 0 ? null : `expected {} (no edits), got: ${JSON.stringify(r.parsed)}`,
+  },
+  {
+    name: 'self-review       [Stop→edits but no KB match→{}]',
+    script: 'self-review.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sr-nomatch-'));
+      const runtimeDir = path.join(tmpData, '.runtime');
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      fs.writeFileSync(path.join(runtimeDir, `turn-verify-${safe}--1000000000000-aaaaaaaa.json`),
+        JSON.stringify({ ts: 1000000000000, kind: 'edit', path: 'scripts/zzz-unmatched.js' }));
+      return { CLAUDE_PLUGIN_DATA: tmpData };
+    },
+    validate: r => Object.keys(r.parsed || {}).length === 0 ? null : `expected {} (no KB match), got: ${JSON.stringify(r.parsed)}`,
+  },
+
   // ── UserPromptSubmit ──────────────────────────────────────────────────────
   {
     name: 'correction-detect [UserPromptSubmit]',
