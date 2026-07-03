@@ -2,6 +2,22 @@
 
 ## [1.22.0] - 2026-07-03
 
+### Added — D3 checklist de review a partir de lições recorrentes (Fase 1)
+
+Lições de **código** recorrentes viram um `.claude/brain-review-checklist.md`
+curto que o `/code-review` nativo lê como contexto de projeto (1 item por lição,
+com link `<!-- kb:id -->`).
+
+- Geração **pega carona no fluxo de promoção** (`brain-promote.js scan`, já
+  disparado pelo `skill-promote-trigger`): sem hook novo pra escrever. Filtra
+  lições/patterns com `recurrence >= minRecurrence` **e** tags de código
+  (`lib/review-checklist.js`, puro/testável); corpo determinístico (sem
+  timestamp) pra não gerar reescritas ruidosas; se não há mais lições de código,
+  remove o arquivo (mantém verdade).
+- Advisory de 1 linha no SessionStart (`review-checklist-advisory.js`, cooldown
+  6h) menciona o checklist quando ele existe, apontando o `/code-review` pra ele.
+- Testes: +5 (seleção/render puros, countItems) + 2 E2E (presente/ausente).
+
 ### Added — U3 doctor: diagnóstico zero-config (Fase 2)
 
 Novo `scripts/doctor.js` (`npm run doctor`, botão no dashboard e advisory de 1

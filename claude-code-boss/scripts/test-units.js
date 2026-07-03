@@ -2983,6 +2983,54 @@ test('doctor-advisory.stampPath: absolute + literal-env-safe (no ${} in path)', 
   } finally { if (saved !== undefined) process.env.CLAUDE_PLUGIN_DATA = saved; else delete process.env.CLAUDE_PLUGIN_DATA; }
 });
 
+// ─── D3 review checklist ─────────────────────────────────────────────────────
+const reviewChecklist = require('./lib/review-checklist.js');
+
+test('review-checklist.selectCodeLessons: code tags + recurrence gate, sorted', () => {
+  const entries = [
+    { id: 'l1', type: 'lesson', title: 'Empty catch', recurrence: 5, tags: ['code', 'error-handling'] },
+    { id: 'l2', type: 'lesson', title: 'Prose pref', recurrence: 9, tags: ['style', 'writing'] },
+    { id: 'l3', type: 'pattern', title: 'Race', recurrence: 3, tags: ['race'] },
+    { id: 'l4', type: 'lesson', title: 'Low rec', recurrence: 1, tags: ['bug'] },
+    { id: 'l5', type: 'reference', title: 'Ref w/ code tag', recurrence: 8, tags: ['api'] },
+  ];
+  const sel = reviewChecklist.selectCodeLessons(entries, { minRecurrence: 3 });
+  assertEq(sel.map(e => e.id), ['l1', 'l3']); // l2 no code tag, l4 low rec, l5 wrong type
+});
+
+test('review-checklist.selectCodeLessons: limit caps output', () => {
+  const many = Array.from({ length: 40 }, (_, i) => ({ id: 'x' + i, type: 'lesson', title: 't' + i, recurrence: 5, tags: ['bug'] }));
+  assertEq(reviewChecklist.selectCodeLessons(many, { minRecurrence: 3, limit: 10 }).length, 10);
+});
+
+test('review-checklist.renderChecklist: header, checkboxes, kb ids, deterministic', () => {
+  const md = reviewChecklist.renderChecklist([{ id: 'l1', title: 'Empty catch masks errors', recurrence: 5 }], { project: 'demo' });
+  assert(md.includes('# Brain review checklist — demo'), 'header');
+  assert(md.includes('- [ ] **Empty catch masks errors** (recurred 5×)'), 'item');
+  assert(md.includes('<!-- kb:l1 -->'), 'kb id link');
+  assert(md.includes(reviewChecklist.CHECKLIST_MARKER), 'auto-generated marker present (delete-guard relies on it)');
+  assert(!/\d{4}-\d\d-\d\dT/.test(md), 'no timestamp (deterministic body)');
+  assertEq(reviewChecklist.renderChecklist([], {}).includes('No recurring code lessons yet.'), true);
+});
+
+test('review-checklist.selectCodeLessons: equal recurrence → deterministic id order', () => {
+  const entries = [
+    { id: 'zeta', type: 'lesson', title: 'z', recurrence: 4, tags: ['bug'] },
+    { id: 'alpha', type: 'lesson', title: 'a', recurrence: 4, tags: ['bug'] },
+    { id: 'mid', type: 'lesson', title: 'm', recurrence: 4, tags: ['bug'] },
+  ];
+  const a = reviewChecklist.selectCodeLessons(entries, { minRecurrence: 3 }).map(e => e.id);
+  const b = reviewChecklist.selectCodeLessons([...entries].reverse(), { minRecurrence: 3 }).map(e => e.id);
+  assertEq(a, ['alpha', 'mid', 'zeta']);
+  assertEq(a, b); // order independent of input order
+});
+
+test('review-checklist-advisory.countItems: counts unchecked boxes', () => {
+  const advisory = require('./review-checklist-advisory.js');
+  assertEq(advisory.countItems('- [ ] a\n- [ ] b\n- [x] done\ntext'), 2);
+  assertEq(advisory.countItems(''), 0);
+});
+
 // ─── stop-dispatcher: merge + priority ───────────────────────────────────────
 const dispatcher = require('./stop-dispatcher.js');
 test('stop-dispatcher.mergeBlocks: no blocks → {}', () => {
