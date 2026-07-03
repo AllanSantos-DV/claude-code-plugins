@@ -2,6 +2,20 @@
 
 ## [1.21.0] - 2026-07-03
 
+### Added — D4 card learning-loop no dashboard (Fase 1)
+
+Novo card na Home ("Learning loop") sobre o sinal que já existe: `lesson.captured`
+com `decision:'merge'` = a MESMA lição recorreu. Mostra capturadas vs. mescladas
+por semana (mini-barras) + a taxa de merge com leitura interpretativa:
+
+- **Taxa de merge caindo** → a autocrítica está mudando o comportamento (menos
+  repetição de erros).
+- **Subindo** → a lição não está sendo aplicada (o loop precisa de atenção).
+
+Zero hook novo e zero métrica nova: usa `lib/value-summary.js` (learningLoop) e o
+endpoint `/api/metrics/value-summary` já entregues no U2. Só agregação existente +
+UI.
+
 ### Added — U2 valor visível: cards no dashboard + resumo de sessão (Fase 2)
 
 O processo é invisível; agora o **valor** aparece. Home do dashboard ganha um

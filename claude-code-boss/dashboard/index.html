@@ -275,6 +275,13 @@ code { color: var(--fg); font-family: var(--font-mono); }
       </div>
       <div class="grid" id="home-value"><div class="spinner" style="margin:1rem auto"></div></div>
     </div>
+    <div class="card" id="home-learning-loop-card" style="display:none">
+      <h2 style="margin:0 0 .25rem 0">Learning loop
+        <span class="tip" data-tip="Lições capturadas vs. mescladas (uma lição recorreu) por semana. Taxa de merge caindo = a autocrítica está mudando o comportamento (menos repetição). Subindo = lição não está sendo aplicada.">i</span>
+      </h2>
+      <div class="text-muted" id="home-learning-loop-summary" style="font-size:.85rem;margin-bottom:.5rem"></div>
+      <div id="home-learning-loop-weeks"></div>
+    </div>
     <div class="card">
       <h2 data-i18n="home.brain">Brain Knowledge Base</h2>
       <div id="home-brain"></div>
@@ -1398,8 +1405,9 @@ async function loadHome() {
 async function loadValueSummary() {
   const el = document.getElementById('home-value');
   if (!el) return;
+  let v;
   try {
-    const v = await api('GET', '/api/metrics/value-summary?days=30');
+    v = await api('GET', '/api/metrics/value-summary?days=30');
     const learned = v.learned?.total || 0;
     const cited = v.memoryCited || 0;
     const tokens = v.contextSaved?.tokens || 0;
@@ -1412,7 +1420,35 @@ async function loadValueSummary() {
     el.innerHTML = cards.map(c =>
       `<div class="stat"><div class="value">${c.value}</div><div class="label">${c.label}</div><span class="badge ${c.cls}">${c.badge}</span></div>`
     ).join('');
-  } catch { el.innerHTML = '<p class="text-muted">No metrics yet.</p>'; }
+  } catch { el.innerHTML = '<p class="text-muted">No metrics yet.</p>'; return; }
+  // Isolated: a D4-card failure must not wipe the value cards above.
+  try { renderLearningLoop(v.learningLoop); } catch (e) { void e; }
+}
+
+// D4 — learning-loop card: captured vs merged per week + merge-rate reading.
+function renderLearningLoop(loop) {
+  const card = document.getElementById('home-learning-loop-card');
+  if (!card) return;
+  if (!loop || !loop.captured) { card.style.display = 'none'; return; }
+  card.style.display = '';
+  const pct = Math.round((loop.mergeRate || 0) * 100);
+  const reading = pct >= 50
+    ? 'High merge rate — lessons keep recurring; the loop may not be changing behavior yet.'
+    : 'Low merge rate — most captures are new; recurring mistakes are staying down.';
+  document.getElementById('home-learning-loop-summary').textContent =
+    `${loop.captured} captured · ${loop.merged} merged (recurred) · ${pct}% merge rate. ${reading}`;
+  const weeks = (loop.byWeek || []).slice(-8);
+  const max = Math.max(1, ...weeks.map(w => w.captured));
+  document.getElementById('home-learning-loop-weeks').innerHTML = weeks.length
+    ? '<table style="width:100%;font-size:.8rem"><tbody>' + weeks.map(w => {
+        const capW = Math.round((w.captured / max) * 100);
+        const mrgW = Math.round((w.merged / max) * 100);
+        return `<tr><td style="white-space:nowrap;color:var(--text-muted)">${w.week}</td>`
+          + `<td style="width:100%"><div style="background:var(--accent,#4a9);height:8px;width:${capW}%;border-radius:3px;display:inline-block"></div>`
+          + `<div style="background:var(--warning,#c94);height:8px;width:${mrgW}%;border-radius:3px;display:inline-block;margin-left:2px"></div></td>`
+          + `<td style="white-space:nowrap;text-align:right">${w.captured}/${w.merged}</td></tr>`;
+      }).join('') + '</tbody></table>'
+    : '<p class="text-muted" style="font-size:.8rem">No weekly data yet.</p>';
 }
 
 // ─── BRAIN ────────────────────────────────────────────────────────
