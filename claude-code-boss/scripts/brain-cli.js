@@ -91,11 +91,14 @@ function usage() {
       const index = require('./brain-index.js');
       await store.init({ project });
       await index.init({ project });
-      const all = await store.list();
-      for (const entry of all) {
-        await index.index(entry);
+      // store.list() is a LOSSY projection; re-read each entry via getRaw so the
+      // rebuilt index includes body keywords + tags, not just title+summary.
+      const listed = await store.list();
+      for (const it of listed) {
+        const full = store.getRaw(it.id);
+        if (full) await index.index(full);
       }
-      console.log(JSON.stringify({ reindexed: all.length }));
+      console.log(JSON.stringify({ reindexed: listed.length }));
       break;
     }
     case 'status': {

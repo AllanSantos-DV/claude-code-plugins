@@ -77,7 +77,7 @@ async function main() {
           await index.init({ project: ${JSON.stringify(srcProject)} });
           await graph.init({ project: ${JSON.stringify(srcProject)} });
           for (let i = 0; i < 3; i++) {
-            const e = { id: 'eximport-'+i, type: 'lesson', title: 'Smoke '+i, summary: 'smoke summary '+i, content: 'body '+i, tags: ['smoke'], scope: 'project', project: ${JSON.stringify(srcProject)}, confidence: 0.8, createdAt: new Date().toISOString() };
+            const e = { id: 'eximport-'+i, type: 'lesson', title: 'Smoke '+i, summary: 'smoke summary '+i, content: { detail: 'body '+i }, tags: ['smoke', 'kw'+i], scope: 'project', project: ${JSON.stringify(srcProject)}, confidence: 0.8, createdAt: new Date().toISOString() };
             await store.save(e);
             await index.index(e);
             await graph.registerNode(e);
@@ -94,12 +94,34 @@ async function main() {
     else if (exp.body.project !== srcProject) bad('export project', `project field: ${exp.body.project}`);
     else ok('export project → 3 entries with project field');
 
+    // Fidelity: export must carry the FULL entry (content/tags/scope), not the lossy
+    // store.list() projection. Guards the data-loss bug where import silently dropped
+    // lesson bodies because export only shipped id/title/summary/confidence.
+    {
+      const e0 = (exp.body?.entries || []).find(x => x.id === 'eximport-0');
+      if (!e0) bad('export fidelity', 'eximport-0 missing from export');
+      else if (!e0.content || e0.content.detail !== 'body 0') bad('export fidelity', `content dropped: ${JSON.stringify(e0.content)}`);
+      else if (!Array.isArray(e0.tags) || e0.tags.length === 0) bad('export fidelity', `tags dropped: ${JSON.stringify(e0.tags)}`);
+      else if (e0.scope !== 'project') bad('export fidelity', `scope dropped: ${e0.scope}`);
+      else ok('export fidelity → content/tags/scope preserved');
+    }
+
     // 2) Import into fresh dst with conflict=skip
     const importBody = { ...exp.body, project: dstProject, conflict: 'skip' };
     const imp1 = await fetchJson(port, token, 'POST', '/api/brain/import', importBody);
     if (imp1.status !== 200) bad('import skip', `status=${imp1.status} body=${JSON.stringify(imp1.body).slice(0, 200)}`);
     else if (imp1.body?.added !== 3 || imp1.body?.skipped !== 0) bad('import skip', `added=${imp1.body?.added} skipped=${imp1.body?.skipped} failed=${imp1.body?.failed}`);
     else ok('import into fresh project → added=3 skipped=0');
+
+    // Round-trip fidelity: re-export the destination and confirm the lesson body
+    // survived export→import (the exact failure this smoke now guards).
+    {
+      const rexp = await fetchJson(port, token, 'GET', `/api/brain/export?project=${encodeURIComponent(dstProject)}`);
+      const e0 = (rexp.body?.entries || []).find(x => x.id === 'eximport-0');
+      if (!e0 || !e0.content || e0.content.detail !== 'body 0') bad('round-trip fidelity', `content lost after import: ${JSON.stringify(e0 && e0.content)}`);
+      else if (!Array.isArray(e0.tags) || e0.tags.length === 0) bad('round-trip fidelity', `tags lost after import: ${JSON.stringify(e0 && e0.tags)}`);
+      else ok('round-trip fidelity → content+tags survived export→import');
+    }
 
     // 3) Re-import with conflict=skip (should skip all)
     const imp2 = await fetchJson(port, token, 'POST', '/api/brain/import', importBody);

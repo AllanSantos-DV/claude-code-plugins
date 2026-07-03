@@ -32,7 +32,16 @@ async function main() {
   }
 
   await store.init({ project });
-  const all = await store.list(type || undefined);
+  // store.list() is a LOSSY projection (no content/tags/scope/source/recurrence).
+  // Re-read each via getRaw (SELECT *) so scope/tag inference sees real values AND
+  // the promoted copy keeps its body — otherwise --commit deletes the original and
+  // writes an empty-bodied entry to __user__ (unrecoverable data loss).
+  const listed = await store.list(type || undefined);
+  const all = [];
+  for (const it of listed) {
+    const full = store.getRaw(it.id);
+    if (full) all.push(full);
+  }
 
   const proposals = [];
   for (const e of all) {

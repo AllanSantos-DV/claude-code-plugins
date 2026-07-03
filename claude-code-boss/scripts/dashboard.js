@@ -518,7 +518,7 @@ async function exportBrain(req, res, url) {
   try {
     const store = require('./brain-store.js');
     await store.init({ project });
-    const entries = await store.list();
+    const listed = await store.list();
     const db = store._getDbForTests && store._getDbForTests();
     const vectors = new Map();
     if (db) {
@@ -527,10 +527,17 @@ async function exportBrain(req, res, url) {
         if (r.vector) vectors.set(r.entry_id, { vector: Array.from(new Float32Array(r.vector.buffer || r.vector)), dimensions: r.dimensions });
       }
     }
-    const out = entries.map(e => {
-      const v = vectors.get(e.id);
-      return v ? { ...e, vector: v.vector, dimensions: v.dimensions } : e;
-    });
+    // store.list() is a LOSSY projection (id/title/type/summary/confidence/
+    // created_at/access_count) — it omits content/tags/scope/source/recurrence.
+    // Re-read each entry via getRaw (SELECT * -> rowToEntry) so the exported bundle
+    // round-trips with FULL fidelity; otherwise import silently drops lesson bodies.
+    const out = [];
+    for (const it of listed) {
+      const full = store.getRaw(it.id);
+      if (!full) continue;
+      const v = vectors.get(full.id);
+      out.push(v ? { ...full, vector: v.vector, dimensions: v.dimensions } : full);
+    }
     res.writeHead(200, {
       'Content-Type': 'application/json',
       'Content-Disposition': `attachment; filename="brain-${project}-${new Date().toISOString().slice(0, 10)}.json"`,
@@ -590,6 +597,10 @@ async function importBrain(req, res) {
           if (conflict === 'skip') { skipped++; continue; }
           if (conflict === 'merge') {
             await store.merge(existing.id, { summary: incoming.summary, content: incoming.content, confidence: incoming.confidence });
+            // Keep the search index + graph consistent with the merged body,
+            // mirroring the add/overwrite branches (else the update isn't findable).
+            const mergedEntry = store.getRaw(existing.id);
+            if (mergedEntry) { await index.index(mergedEntry); await graph.registerNode(mergedEntry); }
             merged++;
             continue;
           }
