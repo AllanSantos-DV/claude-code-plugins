@@ -20,7 +20,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const { readStdin, parsePayload, emitEmpty } = require('./lib/hook-io.js');
+const { runStopDetectorCli } = require('./lib/hook-io.js');
 
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
   || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
@@ -60,10 +60,9 @@ function computeOutcomes(invocations, failures, settledIds) {
   return out;
 }
 
-async function main() {
-  const raw = await readStdin();
-  const ev = parsePayload(raw) || {};
-  if (ev.stop_hook_active) return emitEmpty();
+async function run(event) {
+  const ev = event || {};
+  if (ev.stop_hook_active) return {};
 
   const sid = ev.session_id || ev.sessionId || 'default';
   const project = ev.cwd ? path.basename(ev.cwd) : 'default';
@@ -72,8 +71,8 @@ async function main() {
   try {
     store = require('./brain-store.js');
     await store.init({ project, skipEmbedder: true });
-    if (store.getStorageType() !== 'sqlite') return emitEmpty();
-  } catch { /* store unavailable: no-op */ return emitEmpty(); }
+    if (store.getStorageType() !== 'sqlite') return {};
+  } catch { /* store unavailable: no-op */ return {}; }
 
   let invocations, failures;
   try {
@@ -81,14 +80,14 @@ async function main() {
       .filter(e => e.sessionId === sid);
     failures = store.getEventLog({ eventName: 'failure.retro.fired', limit: 200 })
       .filter(e => e.sessionId === sid);
-  } catch { /* event log read failed: no-op */ return emitEmpty(); }
+  } catch { /* event log read failed: no-op */ return {}; }
 
-  if (!invocations.length) return emitEmpty();
+  if (!invocations.length) return {};
 
   const sp = settledPath(sid);
   const settledIds = readSettled(sp);
   const outcomes = computeOutcomes(invocations, failures, settledIds);
-  if (!outcomes.length) return emitEmpty();
+  if (!outcomes.length) return {};
 
   for (const o of outcomes) {
     try { store.recordMetric('skill.outcome', { skillName: o.skillName, success: o.success }, sid); }
@@ -96,14 +95,11 @@ async function main() {
   }
 
   writeSettled(sp, [...settledIds, ...outcomes.map(o => o.eventId)]);
-  return emitEmpty();
+  return {};
 }
 
 if (require.main === module) {
-  main().catch((err) => {
-    console.error(`[skill-success-detect] crashed: ${err.message}`);
-    emitEmpty();
-  });
+  runStopDetectorCli(run, 'skill-success-detect');
 }
 
-module.exports = { computeOutcomes, settledPath };
+module.exports = { run, computeOutcomes, settledPath };

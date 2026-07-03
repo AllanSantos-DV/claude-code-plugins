@@ -38,7 +38,7 @@ function loadConfig() {
   return require('./lib/hooks-config.js').getCurationStop();
 }
 
-const { readStdin, emitStopBlock } = require('./lib/hook-io.js');
+const { runStopDetectorCli } = require('./lib/hook-io.js');
 const { sanitizeSessionId } = require('./lib/session-id.js');
 const turnJournal = require('./lib/turn-journal.js');
 const oneoff = require('./lib/oneoff-store.js');
@@ -184,14 +184,11 @@ function buildReason(entries, attempt, maxAttempts) {
   return sections.join('\n').trimEnd();
 }
 
-(async () => {
+async function run(event) {
+  event = event || {};
   try {
-    const raw = await readStdin();
-    let event = {};
-    try { event = JSON.parse(raw || '{}'); } catch { /* fall through */ }
-
     const cfg = loadConfig();
-    if (cfg.enabled === false) { process.stdout.write('{}'); return; }
+    if (cfg.enabled === false) return {};
 
     const { maxAttempts } = cfg;
 
@@ -248,8 +245,7 @@ function buildReason(entries, attempt, maxAttempts) {
         console.error(`[CURATION-STOP] progress detected (${why}), releasing stop`);
         unlinkSafe(escPath);
         turnJournal.clearEntries(sessionId);
-        process.stdout.write('{}');
-        return;
+        return {};
       }
 
       // Safety cap: relent after maxAttempts with no progress.
@@ -257,8 +253,7 @@ function buildReason(entries, attempt, maxAttempts) {
         console.error(`[CURATION-STOP] gave up after ${prev.attempts} attempts (no progress) — relenting`);
         unlinkSafe(escPath);
         turnJournal.clearEntries(sessionId);
-        process.stdout.write('{}');
-        return;
+        return {};
       }
 
       // Escalate: reuse prior blocked entries if no new ones this turn so the
@@ -273,8 +268,7 @@ function buildReason(entries, attempt, maxAttempts) {
       });
       turnJournal.clearEntries(sessionId);
       const reason = buildReason(escalateEntries, nextAttempt, maxAttempts);
-      emitStopBlock(reason);
-      return;
+      return { block: true, reason };
     }
 
     // First block (or stale escalation state without retry flag). Reconcile
@@ -285,8 +279,7 @@ function buildReason(entries, attempt, maxAttempts) {
       // Nothing to block on; clear any stale escalation state.
       unlinkSafe(escPath);
       turnJournal.clearEntries(sessionId);
-      process.stdout.write('{}');
-      return;
+      return {};
     }
 
     saveJson(escPath, {
@@ -297,9 +290,15 @@ function buildReason(entries, attempt, maxAttempts) {
     });
     turnJournal.clearEntries(sessionId);
     const reason = buildReason(pending, 1, maxAttempts);
-    emitStopBlock(reason);
+    return { block: true, reason };
   } catch (err) {
     console.error(`[CURATION-STOP] Error: ${err.message}`);
-    process.stdout.write('{}');
+    return {};
   }
-})();
+}
+
+if (require.main === module) {
+  runStopDetectorCli(run, 'curation-stop');
+}
+
+module.exports = { run };

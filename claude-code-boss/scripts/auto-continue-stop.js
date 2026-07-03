@@ -5,7 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const { readStdin, parsePayload, emitEmpty, emitStopBlock } = require('./lib/hook-io.js');
+const { runStopDetectorCli } = require('./lib/hook-io.js');
 
 const DEFAULT_MAX = 1;
 const REASON = '[auto-continue] Continue if the next step is obvious from the plan/todos. Otherwise just end the reply normally — this is the only attempt, there is no retry.';
@@ -33,11 +33,10 @@ function loadConfig() {
   } catch { /* missing/invalid config: defaults */ return {}; }
 }
 
-async function main() {
-  const raw = await readStdin();
-  const ev = parsePayload(raw) || {};
+async function run(event) {
+  const ev = event || {};
   const cfg = loadConfig();
-  if (cfg.enabled === false) return emitEmpty();
+  if (cfg.enabled === false) return {};
 
   const sid = ev.session_id || ev.sessionId || 'default';
   const dataDir = process.env.CLAUDE_PLUGIN_DATA
@@ -46,17 +45,14 @@ async function main() {
 
   const max = cfg.maxBlocks || DEFAULT_MAX;
   const cur = readCounter(cFile);
-  if (cur.count >= max) return emitEmpty();
+  if (cur.count >= max) return {};
 
   writeCounter(cFile, cur.count + 1);
-  emitStopBlock(REASON);
+  return { block: true, reason: REASON };
 }
 
 if (require.main === module) {
-  main().catch(err => {
-    console.error(`[auto-continue-stop] ${err.message}`);
-    emitEmpty();
-  });
+  runStopDetectorCli(run, 'auto-continue-stop');
 }
 
-module.exports = { REASON, readCounter, writeCounter, counterPath };
+module.exports = { run, REASON, readCounter, writeCounter, counterPath };

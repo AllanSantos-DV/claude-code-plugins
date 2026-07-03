@@ -18,7 +18,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const { readStdin, parsePayload, emitEmpty } = require('./lib/hook-io.js');
+const { runStopDetectorCli } = require('./lib/hook-io.js');
 const retrievalJournal = require('./lib/retrieval-journal.js');
 const { extractKeywords } = require('./lib/text-utils.js');
 
@@ -134,9 +134,8 @@ function findCitations(journalEntries, replyText) {
 
 // ── Main (hook entry) ─────────────────────────────────────────────────────
 
-async function main() {
-  const raw = await readStdin();
-  const ev = parsePayload(raw) || {};
+async function run(event) {
+  const ev = event || {};
   const sid = ev.session_id || ev.sessionId || 'default';
   const transcriptPath = ev.transcript_path || ev.transcriptPath || '';
   const project = ev.cwd ? path.basename(ev.cwd) : 'default';
@@ -145,13 +144,13 @@ async function main() {
   retrievalJournal.sweepOld(60 * 60 * 1000);
 
   const entries = retrievalJournal.readEntries(sid);
-  if (!entries.length) return emitEmpty();
+  if (!entries.length) return {};
 
   const replyText = readLastAssistantText(transcriptPath);
   if (!replyText) {
     // Nothing to score against — clear the session journal and exit.
     retrievalJournal.clearEntries(sid);
-    return emitEmpty();
+    return {};
   }
 
   const cited = findCitations(entries, replyText);
@@ -169,17 +168,15 @@ async function main() {
   }
 
   retrievalJournal.clearEntries(sid);
-  return emitEmpty();
+  return {};
 }
 
 if (require.main === module) {
-  main().catch((err) => {
-    console.error(`[retrieval-feedback] crashed: ${err.message}`);
-    emitEmpty();
-  });
+  runStopDetectorCli(run, 'retrieval-feedback');
 }
 
 module.exports = {
+  run,
   titleTokens,
   citationMatch,
   findCitations,

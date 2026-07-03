@@ -21,7 +21,7 @@ const path = require('path');
 const os = require('os');
 const { spawn } = require('child_process');
 
-const { readStdin, parsePayload, emitEmpty } = require('./lib/hook-io.js');
+const { runStopDetectorCli } = require('./lib/hook-io.js');
 
 const COOLDOWN_MS = 10 * 60 * 1000;
 
@@ -58,36 +58,34 @@ function recordRun(stampPath) {
   } catch { /* nothing actionable */ }
 }
 
-(async () => {
-  try {
-    const raw = await readStdin();
-    const ev = parsePayload(raw) || {};
-    const root = pluginRoot();
-    const data = dataDir();
+async function run(event) {
+  const ev = event || {};
+  const root = pluginRoot();
+  const data = dataDir();
 
-    const cfg = loadCfg(root);
-    if (cfg.enabled === false) return emitEmpty();
+  const cfg = loadCfg(root);
+  if (cfg.enabled === false) return {};
 
-    const stampPath = path.join(data, '.skill-scan-last');
-    if (!shouldRun(stampPath, COOLDOWN_MS)) return emitEmpty();
-    recordRun(stampPath);
+  const stampPath = path.join(data, '.skill-scan-last');
+  if (!shouldRun(stampPath, COOLDOWN_MS)) return {};
+  recordRun(stampPath);
 
-    const project = ev.cwd ? path.basename(ev.cwd) : '';
-    const args = [path.join(root, 'scripts', 'brain-promote.js'), 'scan'];
-    if (project) { args.push('--project', project); }
+  const project = ev.cwd ? path.basename(ev.cwd) : '';
+  const args = [path.join(root, 'scripts', 'brain-promote.js'), 'scan'];
+  if (project) { args.push('--project', project); }
 
-    const child = spawn(process.execPath, args, {
-      detached: true,
-      stdio: 'ignore',
-      env: { ...process.env, CLAUDE_PLUGIN_ROOT: root, CLAUDE_PLUGIN_DATA: data },
-    });
-    child.unref();
+  const child = spawn(process.execPath, args, {
+    detached: true,
+    stdio: 'ignore',
+    env: { ...process.env, CLAUDE_PLUGIN_ROOT: root, CLAUDE_PLUGIN_DATA: data },
+  });
+  child.unref();
 
-    emitEmpty();
-  } catch (err) {
-    console.error(`[skill-promote-trigger] crashed: ${err.message}`);
-    emitEmpty();
-  }
-})();
+  return {};
+}
 
-module.exports = { shouldRun, loadCfg };
+if (require.main === module) {
+  runStopDetectorCli(run, 'skill-promote-trigger');
+}
+
+module.exports = { run, shouldRun, loadCfg };

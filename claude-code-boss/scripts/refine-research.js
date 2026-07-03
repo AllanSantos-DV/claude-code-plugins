@@ -19,7 +19,13 @@ const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
 const STATE = path.join(DATA_DIR, '.runtime', 'refine-research-state.json');
 const EVERY = 4; // remind at most once per 4 stops
 
-const { readStdin, emitStopBlock } = require('./lib/hook-io.js');
+const { runStopDetectorCli } = require('./lib/hook-io.js');
+
+const REASON =
+  '[refine] If you asked questions in your previous response, research the ' +
+  'answers now using project files (Read, Grep, Glob) and web search ' +
+  '(WebSearch, WebFetch). Do NOT wait for the user — resolve the gaps ' +
+  'yourself, then proceed with the task.';
 
 function tick() {
   let n = 0;
@@ -32,26 +38,19 @@ function tick() {
   return n;
 }
 
-(async () => {
-  try {
-    const raw = await readStdin();
-    if (!raw) { process.stdout.write('{}'); return; }
+async function run(event) {
+  const ev = event || {};
+  // Anti-loop guard: if Claude already retried this hook, allow stop.
+  if (ev.stop_hook_active) return {};
 
-    const event = JSON.parse(raw);
-    // Anti-loop guard: if Claude already retried this hook, allow stop.
-    if (event.stop_hook_active) { process.stdout.write('{}'); return; }
+  const n = tick();
+  if (n % EVERY !== 0) return {};
 
-    const n = tick();
-    if (n % EVERY !== 0) { process.stdout.write('{}'); return; }
+  return { block: true, reason: REASON };
+}
 
-    emitStopBlock(
-      '[refine] If you asked questions in your previous response, research the ' +
-      'answers now using project files (Read, Grep, Glob) and web search ' +
-      '(WebSearch, WebFetch). Do NOT wait for the user — resolve the gaps ' +
-      'yourself, then proceed with the task.'
-    );
-  } catch (err) {
-    console.error(`[REFINE-RESEARCH] Error: ${err.message}`);
-    process.stdout.write('{}');
-  }
-})();
+if (require.main === module) {
+  runStopDetectorCli(run, 'refine-research');
+}
+
+module.exports = { run };
