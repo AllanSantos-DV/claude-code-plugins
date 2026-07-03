@@ -270,6 +270,12 @@ code { color: var(--fg); font-family: var(--font-mono); }
     <h1 data-i18n="home.title">System Overview</h1>
     <div class="grid" id="home-grid"></div>
     <div class="card">
+      <div class="flex mb-1" style="align-items:center;justify-content:space-between">
+        <h2 style="margin:0" data-i18n="home.value">Value at a glance <span class="text-muted" style="font-size:.8rem">(last 30 days)</span></h2>
+      </div>
+      <div class="grid" id="home-value"><div class="spinner" style="margin:1rem auto"></div></div>
+    </div>
+    <div class="card">
       <h2 data-i18n="home.brain">Brain Knowledge Base</h2>
       <div id="home-brain"></div>
     </div>
@@ -1386,6 +1392,27 @@ async function loadHome() {
         '</tbody></table>';
     }
   } catch { el.innerHTML = '<p class="text-muted">Failed to load status.</p>'; }
+  loadValueSummary();
+}
+
+async function loadValueSummary() {
+  const el = document.getElementById('home-value');
+  if (!el) return;
+  try {
+    const v = await api('GET', '/api/metrics/value-summary?days=30');
+    const learned = v.learned?.total || 0;
+    const cited = v.memoryCited || 0;
+    const tokens = v.contextSaved?.tokens || 0;
+    const fmt = n => n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n);
+    const cards = [
+      { value: '~' + fmt(tokens), label: 'Tokens of raw output curated away', badge: (v.contextSaved?.events || 0) + ' commands', cls: 'badge-green' },
+      { value: fmt(learned), label: 'Lessons learned', badge: Object.keys(v.learned?.byType || {}).length + ' types', cls: 'badge-green' },
+      { value: fmt(cited), label: 'Memories cited in replies', badge: 'retrieval in action', cls: cited > 0 ? 'badge-green' : 'badge-yellow' },
+    ];
+    el.innerHTML = cards.map(c =>
+      `<div class="stat"><div class="value">${c.value}</div><div class="label">${c.label}</div><span class="badge ${c.cls}">${c.badge}</span></div>`
+    ).join('');
+  } catch { el.innerHTML = '<p class="text-muted">No metrics yet.</p>'; }
 }
 
 // ─── BRAIN ────────────────────────────────────────────────────────

@@ -11,6 +11,7 @@
  *
  * Best-effort and silent when there's nothing to report.
  */
+const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const { readStdin, emitEmpty, emitJson } = require('./lib/hook-io.js');
@@ -28,6 +29,20 @@ const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || path.join(os.homedir(), '.cla
     const eventName = event.hook_event_name || 'SessionStart';
     const { oneHitWindowDays } = getCuration();
     const projectKey = oneoff.resolveProjectKey(cwd);
+
+    // Session-start stamp (U2 session summary): record the earliest ts for this
+    // session so the Stop summary can count lessons captured during it. Best-effort.
+    try {
+      const sid = event.session_id || event.sessionId;
+      if (sid) {
+        const safe = String(sid).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+        const stamp = path.join(DATA_DIR, '.runtime', `session-start-${safe}.json`);
+        if (!fs.existsSync(stamp)) {
+          fs.mkdirSync(path.dirname(stamp), { recursive: true });
+          fs.writeFileSync(stamp, JSON.stringify({ ts: Date.now(), project: path.basename(cwd) }));
+        }
+      }
+    } catch (e) { void e; /* stamp is best-effort */ }
 
     oneoff.prune(DATA_DIR, projectKey, { windowDays: oneHitWindowDays });
     const { oneHits } = oneoff.summary(DATA_DIR, projectKey);

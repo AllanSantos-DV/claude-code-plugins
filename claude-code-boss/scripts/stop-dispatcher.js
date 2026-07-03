@@ -50,6 +50,7 @@ const DETECTORS = [
   { name: 'curation-stop',            mod: require('./curation-stop.js') },
   { name: 'skill-success-detect',     mod: require('./skill-success-detect.js') },
   { name: 'retrieval-feedback',       mod: require('./retrieval-feedback.js') },
+  { name: 'session-summary',          mod: require('./session-summary.js') },
   { name: 'auto-continue-stop',       mod: require('./auto-continue-stop.js') },
 ];
 

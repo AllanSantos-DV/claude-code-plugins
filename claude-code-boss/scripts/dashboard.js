@@ -953,6 +953,31 @@ async function getMetricsSummary(req, res, url) {
   }
 }
 
+async function getValueSummary(req, res, url) {
+  try {
+    const range = Math.max(1, Math.min(365, parseInt(url.searchParams.get('days') || '30', 10)));
+    const sinceTs = Date.now() - range * 86400_000;
+    const projectFilter = url.searchParams.get('project') || '';
+    const projects = projectFilter ? [projectFilter] : listMetricsProjects();
+    const EVENTS = ['curation.flagged', 'lesson.captured', 'retrieve.cited'];
+
+    const rows = [];
+    for (const ev of EVENTS) {
+      const perProject = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName: ev, limit: 500 }));
+      for (const { value } of perProject) {
+        for (const r of value) { if (r.ts >= sinceTs) rows.push(r); }
+      }
+    }
+
+    const { summarize } = require('./lib/value-summary.js');
+    const summary = summarize(rows, projectFilter ? { project: projectFilter } : {});
+    json(res, { rangeDays: range, projects, ...summary });
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/metrics/value-summary failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
 async function getMetricsEventLog(req, res, url) {
   try {
     const eventName = url.searchParams.get('event') || null;
@@ -1298,6 +1323,7 @@ function handleAPI(req, res, url) {
   if (p === '/api/logs' && m === 'GET') return getLogs(req, res);
   if (p === '/api/logs/clear' && m === 'POST') return clearLogs(req, res);
   if (p === '/api/metrics/summary' && m === 'GET') return getMetricsSummary(req, res, url);
+  if (p === '/api/metrics/value-summary' && m === 'GET') return getValueSummary(req, res, url);
   if (p === '/api/metrics/event-log' && m === 'GET') return getMetricsEventLog(req, res, url);
   if (p === '/api/metrics/cleanup' && m === 'POST') return postMetricsCleanup(req, res, url);
   if (p === '/api/metrics/skill-roi' && m === 'GET') return getSkillRoi(req, res, url);

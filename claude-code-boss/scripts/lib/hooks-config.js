@@ -157,6 +157,11 @@ function getSelfReview() {
   };
 }
 
+function getSessionSummary() {
+  const ss = _resolved().sessionSummary || {};
+  return { enabled: ss.enabled !== false };
+}
+
 function _resetCache() { _cache = null; _resolvedCache = null; }
 
 module.exports = {
@@ -171,6 +176,7 @@ module.exports = {
   getCorrectionDetect,
   getDecisionScan,
   getSelfReview,
+  getSessionSummary,
   PROFILE_PRESETS,
   _resetCache,
 };
