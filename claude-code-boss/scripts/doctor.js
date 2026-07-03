@@ -171,20 +171,25 @@ function dataDir() {
   return env && !env.includes('${') ? env : path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
 }
 
-/** Candidate data dirs to detect fragmentation. Marks which hold a populated KB. */
+/**
+ * Candidate data dirs to detect fragmentation. Marks which hold a populated KB.
+ *
+ * The REAL fragmentation shape (captured as a Brain lesson): every install mode
+ * gets its own SIBLING directory directly under `~/.claude/plugins/data/`, named
+ * by prefix — `claude-code-boss` (legacy/bare), `claude-code-boss-inline` (dev /
+ * `--plugin-dir`), `claude-code-boss-<marketplace-name>` (marketplace install).
+ * They are NOT nested under a marketplace folder. Mirrors dashboard.js's
+ * `resolveBestDataDir()` scan so both surfaces agree on where the KB lives.
+ */
 function findDataDirCandidates(active) {
+  const base = path.join(os.homedir(), '.claude', 'plugins', 'data');
   const candidates = new Set();
   if (active) candidates.add(active);
-  candidates.add(path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss'));
-  // Marketplace/inline installs nest under ~/.claude/plugins/<something>/claude-code-boss.
+  candidates.add(path.join(base, 'claude-code-boss'));
   try {
-    const base = path.join(os.homedir(), '.claude', 'plugins');
     if (fs.existsSync(base)) {
       for (const entry of fs.readdirSync(base)) {
-        const p = path.join(base, entry, 'claude-code-boss');
-        if (fs.existsSync(p)) candidates.add(p);
-        const p2 = path.join(base, entry, 'data', 'claude-code-boss');
-        if (fs.existsSync(p2)) candidates.add(p2);
+        if (/^claude-code-boss/.test(entry)) candidates.add(path.join(base, entry));
       }
     }
   } catch (e) { void e; }
