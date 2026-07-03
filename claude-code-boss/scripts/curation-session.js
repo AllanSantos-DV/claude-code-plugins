@@ -45,6 +45,29 @@ const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || path.join(os.homedir(), '.cla
     } catch (e) { void e; /* stamp is best-effort */ }
 
     oneoff.prune(DATA_DIR, projectKey, { windowDays: oneHitWindowDays });
+
+    // Weekly KB consolidation (F3 #5): spawn the hygiene job at most once a week
+    // (fire-and-forget, like the skill-promotion trigger). Manual control lives
+    // in the dashboard; this keeps the KB tidy without user action.
+    try {
+      const cstamp = path.join(DATA_DIR, '.runtime', 'brain-consolidate-last.json');
+      let due = true;
+      try {
+        const last = JSON.parse(fs.readFileSync(cstamp, 'utf8')).ts;
+        due = !(Number.isFinite(last) && (Date.now() - last) < 7 * 24 * 60 * 60 * 1000);
+      } catch (e) { void e; }
+      const root = process.env.CLAUDE_PLUGIN_ROOT;
+      if (due && root && !root.includes('${')) {
+        fs.mkdirSync(path.dirname(cstamp), { recursive: true });
+        fs.writeFileSync(cstamp, JSON.stringify({ ts: Date.now() }));
+        const { spawn } = require('child_process');
+        const child = spawn(process.execPath,
+          [path.join(root, 'scripts', 'brain-consolidate.js'), '--project', path.basename(cwd), '--apply'],
+          { detached: true, stdio: 'ignore', env: process.env });
+        child.unref();
+      }
+    } catch (e) { void e; }
+
     const { oneHits } = oneoff.summary(DATA_DIR, projectKey);
 
     let curated = 0;
