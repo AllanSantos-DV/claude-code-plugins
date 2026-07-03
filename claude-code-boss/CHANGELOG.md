@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.22.0] - 2026-07-03
+
+### Added — U3 doctor: diagnóstico zero-config (Fase 2)
+
+Novo `scripts/doctor.js` (`npm run doctor`, botão no dashboard e advisory de 1
+linha no SessionStart) que reporta OK/WARN/FAIL por item, cada um com o conserto
+em 1 linha:
+
+- **Node no PATH + versão >= 22.13** (requisito do `node:sqlite`);
+- **`CLAUDE_PLUGIN_ROOT`/`CLAUDE_PLUGIN_DATA` resolvidos** (detecta literais `${...}`);
+- **fragmentação de data-dir**: detecta múltiplos dirs populados (inline vs
+  marketplace vs legacy), aponta o ativo e sugere consolidar via export/import;
+- **modelo de embedding** presente no cache durável (senão, roda em modo keyword);
+- **daemon HTTP**: health + token legível (lock stale → warn);
+- **eventos de hook declarados vs suportados**: resolve o pendente —
+  `UserPromptExpansion`/`PostToolUseFailure` são marcados como
+  **runtime-dependent** (VS Code Copilot / Claude Code novo; no-op em runtimes que
+  não os disparam).
+- Checks são funções **puras** sobre um snapshot de contexto (testáveis);
+  `gatherContext()` faz o probe real (best-effort, nunca lança).
+- Advisory no SessionStart (`doctor-advisory.js`) roda só os checks críticos e
+  baratos (Node + env), com cooldown de 6h, e é silencioso quando está tudo bem.
+- Endpoint `/api/doctor` + botão "Run check" na Home.
+- Testes: +8 unitários (cada check + runChecks/summarize). Gate verde.
+
 ## [1.21.0] - 2026-07-03
 
 ### Added — D4 card learning-loop no dashboard (Fase 1)
