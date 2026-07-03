@@ -1098,6 +1098,16 @@ const TESTS = [
     validate: r => Object.keys(r.parsed || {}).length === 0 ? null : `expected {} (no KB match), got: ${JSON.stringify(r.parsed)}`,
   },
 
+  // ── U2 session-summary ────────────────────────────────────────────────────
+  {
+    name: 'session-summary   [Stop→no lessons→{}]',
+    script: 'session-summary.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ss-e2e-')) }),
+    validate: r => Object.keys(r.parsed || {}).length === 0 ? null : `expected {} (no lessons), got: ${JSON.stringify(r.parsed)}`,
+  },
+
   // ── UserPromptSubmit ──────────────────────────────────────────────────────
   {
     name: 'correction-detect [UserPromptSubmit]',

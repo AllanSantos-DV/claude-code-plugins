@@ -2,6 +2,31 @@
 
 ## [1.21.0] - 2026-07-03
 
+### Added — U2 valor visível: cards no dashboard + resumo de sessão (Fase 2)
+
+O processo é invisível; agora o **valor** aparece. Home do dashboard ganha um
+bloco "Value at a glance (last 30 days)" com 3 cards baratos, sobre dados que já
+existem nas métricas:
+
+1. **Tokens of raw output curated away** — soma de `curation.flagged.chars`
+   (output bruto que estourou os limites de curadoria) ÷ 4.
+2. **Lessons learned** — contagem de `lesson.captured`.
+3. **Memories cited in replies** — contagem de `retrieve.cited`.
+
+- Novo métrico `curation.flagged {chars, lines, reason}` em `curation-detect.js`
+  (fire-and-forget, nunca bloqueia) — a única instrumentação nova; os demais
+  cards usam métricas já existentes.
+- Agregação pura e testável em `lib/value-summary.js` (também já calcula o sinal
+  de learning-loop do D4). Endpoint `/api/metrics/value-summary?days=30`.
+- **Resumo de sessão**: novo detector `session-summary` (14 detectores no
+  dispatcher) injeta **uma** linha por sessão — "[SESSION] Captured N lesson(s)
+  this session — the Brain is learning." — quando a sessão capturou ≥1 lição.
+  Cap 1/sessão; janela ancorada no stamp de SessionStart (gravado por
+  `curation-session.js`, sem novo spawn). Agent-facing EN; ligado nos dois perfis.
+- Config `sessionSummary {enabled}`.
+- Testes: +7 unitários (agregação, learning-loop, janela de sessão, resumo) e +1
+  E2E. Gate verde.
+
 ### Added — D1 self-review alimentado pela memória (Fase 1)
 
 Quando o turno editou arquivos, o Stop procura lições/failures passadas
