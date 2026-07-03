@@ -1,6 +1,6 @@
 # claude-code-boss
 
-Plugin para Claude Code Desktop — **v1.19.0**
+Plugin para Claude Code Desktop — **v1.19.1**
 
 Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizado leve para Claude Code. A orquestração fica a cargo das ferramentas nativas (Agent/Workflow) — o plugin foca no que o nativo não tem.
 
@@ -146,8 +146,13 @@ cada atualização do plugin, **troca um daemon obsoleto pelo novo** (lock em
 
 **Migrar um consumidor externo (ex.: OpenCode)** do cache de SHA rotativo para uma
 URL estável: fixe `BRAIN_HTTP_PORT` e aponte para um MCP remoto
-`http://127.0.0.1:<port>/mcp` (passando `project` explícito). O Claude Code segue em
-stdio pelo `.mcp.json` inalterado.
+`http://127.0.0.1:<port>/mcp` (passando `project` explícito **e** o header
+`Authorization: Bearer <token>` — token em `<DATA_DIR>/brain-http.token`, fixável
+via `BRAIN_HTTP_TOKEN`). O Claude Code segue em stdio pelo `.mcp.json` inalterado.
+
+**Auth do daemon HTTP (v1.19.1+)**: `/mcp` e `/shutdown` exigem o token (mesmo
+padrão do dashboard: token local + guarda de `Origin` contra DNS rebinding);
+`/health` permanece aberto para o supervisor de versão.
 
 > **Referência técnica completa** (tools, endpoints, supervisor, config):
 > [`servers/brain-server/README.md`](servers/brain-server/README.md).
