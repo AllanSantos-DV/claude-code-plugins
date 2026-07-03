@@ -24,6 +24,7 @@ const os = require('os');
 const { readStdin } = require('./lib/hook-io.js');
 const turnJournal = require('./lib/turn-journal.js');
 const verifyJournal = require('./lib/verify-journal.js');
+const metrics = require('./lib/metrics.js');
 const { canonicalSig } = require('./lib/command-signature.js');
 const oneoff = require('./lib/oneoff-store.js');
 
@@ -158,6 +159,10 @@ function appendTurnEntry(sessionId, entry) {
     });
 
     console.error(`[CURATION-DETECT] ${reason} (${seen.sig} ${seen.count}/${_curationCfg.oneHitMaxRecurrence}): ${charCount} chars, ${lineCount} lines`);
+    // Value signal (U2): raw output that tripped the curation thresholds — the
+    // dashboard sums these chars as "context saved". Fire-and-forget; never blocks.
+    metrics.fire('curation.flagged', { chars: charCount, lines: lineCount, reason, isCurated },
+      { sessionId, cwd });
     process.stdout.write(JSON.stringify({}));
   } catch (err) {
     console.error(`[CURATION-DETECT] Error: ${err.message}`);

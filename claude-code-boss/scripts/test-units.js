@@ -2791,6 +2791,114 @@ test('self-review.run: edits + retrieved lesson → block, journals, dedups next
   assertEq(Object.keys(second).length, 0);
 });
 
+// ─── U2 value-summary (aggregation) + session-summary detector ───────────────
+const valueSummary = require('./lib/value-summary.js');
+const sessionSummary = require('./session-summary.js');
+
+test('value-summary.summarize: context saved (chars→tokens), learned, cited', () => {
+  const now = Date.UTC(2026, 6, 3);
+  const rows = [
+    { eventName: 'curation.flagged', ts: now, payload: { chars: 4000, lines: 100 }, project: 'a' },
+    { eventName: 'curation.flagged', ts: now, payload: { chars: 2000 }, project: 'a' },
+    { eventName: 'lesson.captured', ts: now, payload: { type: 'lesson', decision: 'admit' }, project: 'a' },
+    { eventName: 'lesson.captured', ts: now, payload: { type: 'pattern', decision: 'merge', recurrence: 3 }, project: 'a' },
+    { eventName: 'retrieve.cited', ts: now, payload: { entryId: 'x' }, project: 'a' },
+  ];
+  const s = valueSummary.summarize(rows);
+  assertEq(s.contextSaved.chars, 6000);
+  assertEq(s.contextSaved.tokens, 1500);
+  assertEq(s.contextSaved.events, 2);
+  assertEq(s.learned.total, 2);
+  assertEq(s.learned.byType, { lesson: 1, pattern: 1 });
+  assertEq(s.memoryCited, 1);
+});
+
+test('value-summary.summarize: learning loop (D4) captured vs merged + byWeek', () => {
+  const now = Date.UTC(2026, 6, 3);
+  const rows = [
+    { eventName: 'lesson.captured', ts: now, payload: { decision: 'admit' }, project: 'a' },
+    { eventName: 'lesson.captured', ts: now, payload: { decision: 'merge' }, project: 'a' },
+    { eventName: 'lesson.captured', ts: now - 8 * 86400000, payload: { decision: 'merge' }, project: 'a' },
+  ];
+  const s = valueSummary.summarize(rows);
+  assertEq(s.learningLoop.captured, 3);
+  assertEq(s.learningLoop.merged, 2);
+  assertEq(s.learningLoop.admitted, 1);
+  assert(Math.abs(s.learningLoop.mergeRate - 0.67) < 0.01, 'mergeRate ~0.67');
+  assertEq(s.learningLoop.byWeek.length, 2);
+});
+
+test('value-summary.summarize: project filter isolates a project', () => {
+  const now = Date.UTC(2026, 6, 3);
+  const rows = [
+    { eventName: 'lesson.captured', ts: now, payload: { decision: 'admit' }, project: 'a' },
+    { eventName: 'lesson.captured', ts: now, payload: { decision: 'admit' }, project: 'b' },
+  ];
+  assertEq(valueSummary.summarize(rows, { project: 'a' }).learned.total, 1);
+});
+
+test('value-summary.countLessonsSince: ts window + project match', () => {
+  const now = Date.UTC(2026, 6, 3);
+  const rows = [
+    { eventName: 'lesson.captured', ts: now, project: 'a' },
+    { eventName: 'lesson.captured', ts: now - 1000, project: 'a' },
+    { eventName: 'lesson.captured', ts: now, project: 'b' },
+    { eventName: 'retrieve.cited', ts: now, project: 'a' },
+  ];
+  assertEq(valueSummary.countLessonsSince(rows, { sinceTs: now - 500, project: 'a' }), 1);
+  assertEq(valueSummary.countLessonsSince(rows, { sinceTs: 0, project: 'a' }), 2);
+});
+
+test('session-summary.buildReason: [SESSION] header + singular/plural', () => {
+  assert(sessionSummary.buildReason(1).startsWith('[SESSION]') && sessionSummary.buildReason(1).includes('1 lesson '), 'singular');
+  assert(sessionSummary.buildReason(4).includes('4 lessons'), 'plural');
+});
+
+test('session-summary.run: counts lessons since stamp, fires once (cap), disabled→{}', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ss-'));
+  fs.mkdirSync(path.join(dir, '.runtime'), { recursive: true });
+  const sid = 'sssid';
+  const cwd = path.join(os.tmpdir(), 'ssproj');
+  const start = Date.now() - 1000;
+  fs.writeFileSync(path.join(dir, '.runtime', `session-start-${sid}.json`), JSON.stringify({ ts: start, project: 'ssproj' }));
+  // Scope-aware fake store: project DB has 2 in-session lessons (+1 before start),
+  // the __user__ DB has 1 more (user-scoped capture) → total 3.
+  let inited = null;
+  const fakeStore = {
+    init: async ({ project }) => { inited = project; },
+    getStorageType: () => 'sqlite',
+    getEventLog: () => {
+      if (inited === 'ssproj') return [
+        { eventName: 'lesson.captured', ts: start + 10, project: 'ssproj' },
+        { eventName: 'lesson.captured', ts: start + 20, project: 'ssproj' },
+        { eventName: 'lesson.captured', ts: start - 50, project: 'ssproj' },
+      ];
+      if (inited === '__user__') return [
+        { eventName: 'lesson.captured', ts: start + 30, project: '__user__' },
+      ];
+      return [];
+    },
+  };
+  const first = await sessionSummary.run({ hook_event_name: 'Stop', session_id: sid, cwd }, { dataDir: dir, store: fakeStore });
+  assertEq(first.block, true);
+  assert(first.reason.includes('Captured 3 lesson'), 'counts 2 project + 1 user-scoped in-session lessons');
+  // Cap: second call returns {} (counter written).
+  const second = await sessionSummary.run({ hook_event_name: 'Stop', session_id: sid, cwd }, { dataDir: dir, store: fakeStore });
+  assertEq(Object.keys(second).length, 0);
+});
+
+test('session-summary.run: missing start stamp → counts nothing (no all-time report)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ss-nostamp-'));
+  fs.mkdirSync(path.join(dir, '.runtime'), { recursive: true });
+  const fakeStore = {
+    init: async () => {}, getStorageType: () => 'sqlite',
+    // Old lessons exist, but with no stamp sinceTs=now → none counted.
+    getEventLog: () => ([{ eventName: 'lesson.captured', ts: Date.now() - 999999, project: 'p' }]),
+  };
+  const r = await sessionSummary.run({ hook_event_name: 'Stop', session_id: 'nostamp', cwd: path.join(os.tmpdir(), 'p') }, { dataDir: dir, store: fakeStore });
+  assertEq(Object.keys(r).length, 0);
+});
+
 // ─── stop-dispatcher: merge + priority ───────────────────────────────────────
 const dispatcher = require('./stop-dispatcher.js');
 test('stop-dispatcher.mergeBlocks: no blocks → {}', () => {
@@ -2837,11 +2945,12 @@ test('stop-dispatcher.rank: known priorities + default', () => {
   assertEq(dispatcher.rank('anything'), 2);
 });
 
-test('stop-dispatcher.DETECTORS: 13 detectors, ordering invariants hold', () => {
+test('stop-dispatcher.DETECTORS: 14 detectors, ordering invariants hold', () => {
   const names = dispatcher.DETECTORS.map(d => d.name);
-  assertEq(names.length, 13);
+  assertEq(names.length, 14);
   assert(names.includes('verify-nudge'), 'verify-nudge (D2) registered');
   assert(names.includes('self-review'), 'self-review (D1) registered');
+  assert(names.includes('session-summary'), 'session-summary (U2) registered');
   assert(names.indexOf('self-review') < names.indexOf('verify-nudge'),
     'self-review must read verify-journal before verify-nudge clears it');
   assert(names.indexOf('failure-retro') < names.indexOf('curation-stop'),

@@ -53,5 +53,8 @@
     "topK": 2,
     "minScore": 0.2,
     "types": ["lesson", "failure"]
+  },
+  "sessionSummary": {
+    "enabled": true
   }
 }
