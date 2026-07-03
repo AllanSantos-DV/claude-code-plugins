@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.22.2] - 2026-07-03
+
+### Fixed — export/import (e outros) perdiam o CORPO das lições (`store.list()` lossy)
+
+`brain-store.listSqlite/listJson` retorna uma projeção enxuta
+(id/title/type/summary/confidence/created_at/access_count) — **sem**
+`content`/`tags`/`scope`/`source`/`recurrence`. Três consumidores tratavam essas
+linhas como se fossem completas:
+
+- **`dashboard.exportBrain`**: o bundle exportado não levava o corpo das lições →
+  no import as entradas viravam `content:{}`. Um usuário que exportasse e
+  reimportasse seu KB (migração de máquina) **destruiria o conteúdo**. Agora relê
+  cada entrada via `store.getRaw` (SELECT * → `rowToEntry`) antes de anexar vetores.
+- **`scope-bulk-reclassify --commit` (crítico, destrutivo)**: lia linhas lossy,
+  **deletava a original** e salvava uma cópia sem corpo em `__user__` → perda
+  irreversível; a inferência de scope/tags também via sempre `undefined`. Agora
+  relê via `getRaw` antes de inferir e promover.
+- **`brain-cli reindex`**: reconstruía o índice só de `title+summary`, descartando
+  keywords do corpo + tags. Agora `getRaw` por entrada.
+- **`importBrain conflict=merge`**: passa a re-indexar + registrar a entrada
+  mesclada (antes deixava índice/grafo defasados).
+
+Descoberto ao verificar o artefato durante uma consolidação real de data-dirs (o
+smoke revelou `content` vazio — o padrão "teste com ctx sintético não exercita o
+contrato real"). +`smoke-scope-reclassify.js` (corpo+tags sobrevivem à promoção);
+`smoke-export-import.js` agora assera fidelidade de content/tags/scope no export e
+no round-trip. Gate verde (319 unit/hooks).
+
 ## [1.22.1] - 2026-07-03
 
 ### Fixed — `doctor.js` nunca detectava a fragmentação REAL de data-dir
