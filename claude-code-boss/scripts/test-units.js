@@ -189,6 +189,92 @@ test('hooks-config: getCuration returns object', () => {
   assert(c && typeof c === 'object');
 });
 
+// ─── hooks-config: profiles (U1) ─────────────────────────────────────────────
+test('hooks-config.resolveProfileConfig: dev preset is empty (behavior untouched)', () => {
+  const r = hooksConfig.resolveProfileConfig({ curationStop: { enabled: true } });
+  // No standard delta → maxAttempts stays absent (getter default 3 applies).
+  assertEq(r.curationStop.maxAttempts, undefined);
+  assertEq(r.patternDetect, undefined);
+});
+
+test('hooks-config.resolveProfileConfig: standard applies the full delta', () => {
+  const r = hooksConfig.resolveProfileConfig({ profile: 'standard', curationStop: { enabled: true } });
+  assertEq(r.curationStop.maxAttempts, 1);
+  assertEq(r.curationStop.enabled, true);            // file value preserved
+  assertEq(r.patternDetect.enabled, false);
+  assertEq(r.correctionDetect.enabled, false);
+  assertEq(r.decisionScan.enabled, false);
+  assertEq(r.verifyNudge.enabled, false);
+});
+
+test('hooks-config.resolveProfileConfig: explicit file value beats preset (override wins)', () => {
+  const r = hooksConfig.resolveProfileConfig({ profile: 'standard', verifyNudge: { enabled: true }, curationStop: { maxAttempts: 5 } });
+  assertEq(r.verifyNudge.enabled, true);
+  assertEq(r.curationStop.maxAttempts, 5);
+});
+
+test('hooks-config.resolveProfileConfig: unknown profile falls back to dev', () => {
+  const r = hooksConfig.resolveProfileConfig({ profile: 'bogus' });
+  assertEq(r.patternDetect, undefined); // no standard delta
+});
+
+test('hooks-config.resolveProfileConfig: non-object input tolerated', () => {
+  assert(hooksConfig.resolveProfileConfig(null) && typeof hooksConfig.resolveProfileConfig(null) === 'object');
+});
+
+test('hooks-config.resolveProfileConfig: result never aliases PROFILE_PRESETS (pure)', () => {
+  const r = hooksConfig.resolveProfileConfig({ profile: 'standard' });
+  r.patternDetect.enabled = true; // mutate the returned "pure" result
+  // Shared preset must be untouched → a fresh resolve still reports disabled.
+  assertEq(hooksConfig.resolveProfileConfig({ profile: 'standard' }).patternDetect.enabled, false);
+  assertEq(hooksConfig.PROFILE_PRESETS.standard.patternDetect.enabled, false);
+});
+
+// Getter-level resolution via a temp CLAUDE_PLUGIN_ROOT + fresh module instance.
+function withHooksConfigFile(obj, fn) {
+  const savedRoot = process.env.CLAUDE_PLUGIN_ROOT;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hcfg-'));
+  fs.mkdirSync(path.join(dir, 'config'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'config', 'hooks-config.json'), JSON.stringify(obj));
+  process.env.CLAUDE_PLUGIN_ROOT = dir;
+  delete require.cache[require.resolve('./lib/hooks-config.js')];
+  const hc = require('./lib/hooks-config.js');
+  try { return fn(hc); }
+  finally {
+    process.env.CLAUDE_PLUGIN_ROOT = savedRoot;
+    delete require.cache[require.resolve('./lib/hooks-config.js')];
+  }
+}
+
+test('hooks-config getters: dev profile → all detectors enabled, maxAttempts=3', () => {
+  withHooksConfigFile({ profile: 'dev', curationStop: { enabled: true }, verifyNudge: { maxBlocks: 1, testPatterns: [] } }, (hc) => {
+    assertEq(hc.getProfile(), 'dev');
+    assertEq(hc.getCurationStop().maxAttempts, 3);
+    assertEq(hc.getVerifyNudge().enabled, true);
+    assertEq(hc.getPatternDetect().enabled, true);
+    assertEq(hc.getCorrectionDetect().enabled, true);
+    assertEq(hc.getDecisionScan().enabled, true);
+  });
+});
+
+test('hooks-config getters: standard profile → capture/verify off, maxAttempts=1', () => {
+  withHooksConfigFile({ profile: 'standard', curationStop: { enabled: true }, verifyNudge: { maxBlocks: 1, testPatterns: [] } }, (hc) => {
+    assertEq(hc.getProfile(), 'standard');
+    assertEq(hc.getCurationStop().maxAttempts, 1);
+    assertEq(hc.getVerifyNudge().enabled, false);
+    assertEq(hc.getPatternDetect().enabled, false);
+    assertEq(hc.getCorrectionDetect().enabled, false);
+    assertEq(hc.getDecisionScan().enabled, false);
+  });
+});
+
+test('hooks-config getters: shipped config is valid dev (regression)', () => {
+  // The real shipped file must resolve to dev with all defaults intact.
+  assertEq(hooksConfig.getProfile(), 'dev');
+  assertEq(hooksConfig.getCurationStop().maxAttempts, 3);
+  assertEq(hooksConfig.getVerifyNudge().enabled, true);
+});
+
 // ─── hook-io.emitStopBlock (Stop wire shape) ─────────────────────────────────
 // Both Claude Code and VS Code Copilot Chat require Stop hooks to use the
 // top-level {decision, reason} shape. Nested hookSpecificOutput is rejected

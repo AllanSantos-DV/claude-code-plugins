@@ -26,11 +26,13 @@ function looksLikeCorrection(msg) {
 
 const { readStdin } = require('./lib/hook-io.js');
 const metrics = require('./lib/metrics.js');
+const hooksCfg = require('./lib/hooks-config.js');
 
 (async () => {
   try {
     const raw = await readStdin();
     if (!raw) { process.stdout.write('{}'); return; }
+    if (!hooksCfg.getCorrectionDetect().enabled) { process.stdout.write('{}'); return; }
     let event;
     try { event = JSON.parse(raw); } catch { /* malformed stdin → no-op */ process.stdout.write('{}'); return; }
     const msg = event.prompt || event.userMessage || event.text || '';
