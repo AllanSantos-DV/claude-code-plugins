@@ -116,68 +116,8 @@
           {
             "type": "command",
             "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/pattern-detect.js"],
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/skill-promote-trigger.js"],
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/decision-scan-response.js"],
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/decision-promote.js"],
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/refine-research.js"],
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/research-followup-detect.js"],
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/curation-stop.js"],
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/failure-retro.js"],
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/skill-success-detect.js"],
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/retrieval-feedback.js"],
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/auto-continue-stop.js"],
-            "timeout": 5
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/stop-dispatcher.js"],
+            "timeout": 30
           }
         ]
       }
