@@ -841,6 +841,68 @@ const TESTS = [
     },
   },
 
+  // ── Stop dispatcher ───────────────────────────────────────────────────────
+  {
+    name: 'stop-dispatcher   [Stop→all-quiet→{}]',
+    script: 'stop-dispatcher.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-disp-empty-'));
+      const runtimeDir = path.join(tmpData, '.runtime');
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      // Neutralize the two detectors that fire from zero state:
+      //   - skill-promote-trigger would spawn a detached scan → stamp it fresh.
+      //   - auto-continue-stop blocks on the first Stop → pre-seed counter at cap.
+      fs.writeFileSync(path.join(tmpData, '.skill-scan-last'), String(Date.now()));
+      fs.writeFileSync(path.join(runtimeDir, `auto-continue-${SESSION}.json`), JSON.stringify({ count: 1 }));
+      return { CLAUDE_PLUGIN_DATA: tmpData };
+    },
+    validate: r => {
+      const keys = Object.keys(r.parsed || {});
+      return keys.length === 0 ? null : `expected {} (all detectors quiet), got: ${JSON.stringify(r.parsed)}`;
+    },
+  },
+  {
+    name: 'stop-dispatcher   [Stop→2 blocks→merged in priority order]',
+    script: 'stop-dispatcher.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-disp-merge-'));
+      const runtimeDir = path.join(tmpData, '.runtime');
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      fs.writeFileSync(path.join(tmpData, '.skill-scan-last'), String(Date.now()));
+      // Seed one pending curation entry → curation-stop blocks (and clears the
+      // journal). auto-continue-stop also blocks (fresh counter). failure-retro
+      // runs first, sees the pending journal, and defers — proving the ordering.
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      fs.writeFileSync(
+        path.join(runtimeDir, `curation-turn-${safe}.json`),
+        JSON.stringify({
+          sessionId: SESSION,
+          startedAt: new Date().toISOString(),
+          entries: [
+            { command: 'npm test', reason: 'needs-curation', lines: 487, chars: 12000, isCurated: false, curatedScript: null, isSuccess: true, timestamp: new Date().toISOString() },
+          ],
+        }),
+      );
+      return { CLAUDE_PLUGIN_DATA: tmpData };
+    },
+    validate: r => {
+      const p = r.parsed || {};
+      if (p.decision !== 'block') return `expected decision:'block', got: ${JSON.stringify(p)}`;
+      const reason = String(p.reason || '');
+      const iCuration = reason.indexOf('npm test');
+      const iAuto = reason.indexOf('[auto-continue]');
+      if (iCuration < 0) return `merged reason missing curation block, got: ${reason.slice(0, 160)}`;
+      if (iAuto < 0) return `merged reason missing auto-continue block, got: ${reason.slice(0, 160)}`;
+      if (!reason.includes('---')) return 'expected separator between merged reasons';
+      if (iCuration > iAuto) return 'priority order wrong: curation-stop must precede auto-continue';
+      return null;
+    },
+  },
+
   // ── UserPromptSubmit ──────────────────────────────────────────────────────
   {
     name: 'correction-detect [UserPromptSubmit]',
