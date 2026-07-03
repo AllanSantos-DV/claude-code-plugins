@@ -2924,6 +2924,34 @@ test('doctor.checkDataDirs: >1 populated → warn (fragmentation)', () => {
   assert(w.detail.includes('/b'), 'lists the fragmented dir');
 });
 
+test('doctor.findDataDirCandidates: real fragmentation shape (sibling dirs by prefix)', () => {
+  // Regression: install modes produce SIBLING dirs directly under
+  // .../plugins/data/ named by prefix (claude-code-boss-inline,
+  // claude-code-boss-<marketplace>) — NOT nested under a marketplace folder.
+  // A prior version scanned .../plugins/<mkt>/claude-code-boss and NEVER found
+  // the real fragmentation (caught live by smoke/doctor.mjs).
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-doctor-frag-'));
+  const dataBase = path.join(home, '.claude', 'plugins', 'data');
+  const dirs = ['claude-code-boss', 'claude-code-boss-inline', 'claude-code-boss-allansantos-plugins'];
+  for (const d of dirs) {
+    fs.mkdirSync(path.join(dataBase, d, 'brain', 'someproj'), { recursive: true });
+    fs.writeFileSync(path.join(dataBase, d, 'brain', 'someproj', 'brain.db'), '');
+  }
+  const homeVar = process.platform === 'win32' ? 'USERPROFILE' : 'HOME';
+  const prevHome = process.env[homeVar];
+  process.env[homeVar] = home;
+  try {
+    const active = path.join(dataBase, 'claude-code-boss-inline');
+    const candidates = doctor.findDataDirCandidates(active);
+    const populatedPaths = candidates.filter(c => c.populated).map(c => c.path).sort();
+    assertEq(populatedPaths.length, 3);
+    for (const d of dirs) assert(populatedPaths.includes(path.join(dataBase, d)), `missing ${d}`);
+  } finally {
+    if (prevHome === undefined) delete process.env[homeVar]; else process.env[homeVar] = prevHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('doctor.checkModel: present → ok, absent → warn', () => {
   assertEq(doctor.checkModel({ modelPresent: true, modelCacheDir: '/m' }).status, 'ok');
   assertEq(doctor.checkModel({ modelPresent: false }).status, 'warn');
