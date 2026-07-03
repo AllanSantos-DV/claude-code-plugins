@@ -22,7 +22,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const { readStdin, parsePayload, emitEmpty, emitStopBlock } = require('./lib/hook-io.js');
+const { runStopDetectorCli } = require('./lib/hook-io.js');
 
 function dataDir() {
   const env = process.env.CLAUDE_PLUGIN_DATA;
@@ -86,9 +86,8 @@ function buildNudgeText(latestTrigger) {
   ].join('\n');
 }
 
-async function main() {
-  const raw = await readStdin();
-  const ev = parsePayload(raw) || {};
+async function run(event) {
+  const ev = event || {};
   const sid = ev.session_id || ev.sessionId || 'default';
   const project = ev.cwd ? path.basename(ev.cwd) : 'default';
   const data = dataDir();
@@ -97,15 +96,15 @@ async function main() {
   try {
     store = require('./brain-store.js');
     await store.init({ project, skipEmbedder: true });
-    if (store.getStorageType() !== 'sqlite') return emitEmpty();
-  } catch { /* store unavailable: no-op */ return emitEmpty(); }
+    if (store.getStorageType() !== 'sqlite') return {};
+  } catch { /* store unavailable: no-op */ return {}; }
 
   let triggers, captures;
   try {
     triggers = store.getEventLog({ eventName: 'nudge.emitted', limit: 100 })
       .filter(e => e.payload && e.payload.kind === 'research' && e.sessionId === sid);
     captures = store.getEventLog({ eventName: 'lesson.captured', limit: 100 });
-  } catch { /* event log read failed: no-op */ return emitEmpty(); }
+  } catch { /* event log read failed: no-op */ return {}; }
 
   const events = [...triggers, ...captures].sort((a, b) => b.ts - a.ts);
 
@@ -113,18 +112,15 @@ async function main() {
   const stamp = readStamp(sp);
   const decision = decideNudge(events, stamp);
 
-  if (!decision.nudge) return emitEmpty();
+  if (!decision.nudge) return {};
 
   writeStamp(sp, { firedAt: decision.latestTrigger.ts, nudgedAt: Date.now() });
 
-  return emitStopBlock(buildNudgeText(decision.latestTrigger));
+  return { block: true, reason: buildNudgeText(decision.latestTrigger) };
 }
 
 if (require.main === module) {
-  main().catch((err) => {
-    console.error(`[research-followup-detect] crashed: ${err.message}`);
-    emitEmpty();
-  });
+  runStopDetectorCli(run, 'research-followup-detect');
 }
 
-module.exports = { decideNudge, buildNudgeText, stampPath };
+module.exports = { run, decideNudge, buildNudgeText, stampPath };

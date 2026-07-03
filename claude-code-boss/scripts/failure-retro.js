@@ -20,7 +20,7 @@
  */
 'use strict';
 
-const { readStdin, parsePayload, emitEmpty, emitStopBlock } = require('./lib/hook-io.js');
+const { runStopDetectorCli } = require('./lib/hook-io.js');
 const failureJournal = require('./lib/failure-journal.js');
 const cooldown = require('./lib/cooldown-store.js');
 const turnJournal = require('./lib/turn-journal.js');
@@ -101,36 +101,32 @@ function buildRetroPrompt(triggers) {
   return lines.join('\n');
 }
 
-async function main() {
+async function run(event) {
   const cfg = loadConfig();
-  if (!cfg.enabled) return emitEmpty();
+  if (!cfg.enabled) return {};
 
-  const raw = await readStdin();
-  const ev = parsePayload(raw) || {};
+  const ev = event || {};
   const sid = ev.session_id || ev.sessionId || 'default';
 
-  if (turnJournal.readEntries(sid).length > 0) return emitEmpty();
+  if (turnJournal.readEntries(sid).length > 0) return {};
 
   const entries = failureJournal.readEntries(sid);
-  if (!entries.length) return emitEmpty();
+  if (!entries.length) return {};
 
   const triggers = evaluateTriggers(entries, cfg);
   const fresh = triggers.filter(t => !cooldown.has(sid, t.key));
-  if (!fresh.length) return emitEmpty();
+  if (!fresh.length) return {};
 
   for (const t of fresh) cooldown.add(sid, t.key);
   for (const t of fresh) {
     metrics.fire('nudge.emitted', { kind: 'failure', trigger: t.kind, count: t.group?.length || 0 },
       { sessionId: sid, cwd: ev.cwd });
   }
-  emitStopBlock(buildRetroPrompt(fresh));
+  return { block: true, reason: buildRetroPrompt(fresh) };
 }
 
 if (require.main === module) {
-  main().catch((err) => {
-    console.error(`[failure-retro] crashed: ${err.message}`);
-    emitEmpty();
-  });
+  runStopDetectorCli(run, 'failure-retro');
 }
 
-module.exports = { evaluateTriggers, buildRetroPrompt, repeatedKey, consecutiveKey, summarizeGroup, loadConfig };
+module.exports = { run, evaluateTriggers, buildRetroPrompt, repeatedKey, consecutiveKey, summarizeGroup, loadConfig };

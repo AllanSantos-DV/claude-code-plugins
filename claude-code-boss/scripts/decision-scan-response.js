@@ -22,7 +22,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const { readStdin, parsePayload, emitEmpty } = require('./lib/hook-io.js');
+const { runStopDetectorCli } = require('./lib/hook-io.js');
 const { readLastAssistantText } = require('./retrieval-feedback.js');
 
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
@@ -63,27 +63,26 @@ function spanKey(sid, span) {
   return `resp:${sid}:${h}`;
 }
 
-async function main() {
-  const raw = await readStdin();
-  const ev = parsePayload(raw) || {};
-  if (ev.stop_hook_active) return emitEmpty();
+async function run(event) {
+  const ev = event || {};
+  if (ev.stop_hook_active) return {};
 
   const sid = ev.session_id || ev.sessionId || 'default';
   const transcriptPath = ev.transcript_path || ev.transcriptPath || '';
   const text = readLastAssistantText(transcriptPath);
-  if (!text) return emitEmpty();
+  if (!text) return {};
 
   const span = findDecisionSpan(text);
-  if (!span) return emitEmpty();
+  if (!span) return {};
 
   const key = spanKey(sid, span);
 
   const promoted = readJsonSafe(PROMOTED, []);
-  if (Array.isArray(promoted) && promoted.includes(key)) return emitEmpty();
+  if (Array.isArray(promoted) && promoted.includes(key)) return {};
 
   const state = readJsonSafe(PENDING, { pending: [] });
   if (!Array.isArray(state.pending)) state.pending = [];
-  if (state.pending.some(p => p.key === key)) return emitEmpty();
+  if (state.pending.some(p => p.key === key)) return {};
 
   state.pending.push({
     kind: 'response',
@@ -96,14 +95,11 @@ async function main() {
   if (state.pending.length > 10) state.pending = state.pending.slice(-10);
   writeJsonSafe(PENDING, state);
 
-  return emitEmpty();
+  return {};
 }
 
 if (require.main === module) {
-  main().catch((err) => {
-    console.error(`[decision-scan-response] crashed: ${err.message}`);
-    emitEmpty();
-  });
+  runStopDetectorCli(run, 'decision-scan-response');
 }
 
-module.exports = { findDecisionSpan, spanKey };
+module.exports = { run, findDecisionSpan, spanKey };

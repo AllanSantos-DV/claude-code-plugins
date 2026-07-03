@@ -17,7 +17,7 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 
-const { readStdin, emitStopBlock, emitEmpty } = require('./lib/hook-io.js');
+const { runStopDetectorCli } = require('./lib/hook-io.js');
 const metrics = require('./lib/metrics.js');
 
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
@@ -75,39 +75,38 @@ function shortKey(k) {
   return k.slice(0, 7); // sha
 }
 
-(async () => {
-  try {
-    const raw = await readStdin();
-    let input = {};
-    try { input = JSON.parse(raw || '{}'); } catch { /* malformed input — fall through */ }
-    // Anti-loop guard: if Claude already retried this Stop, let it stop.
-    if (input.stop_hook_active) { emitEmpty(); return; }
+async function run(event) {
+  const input = event || {};
+  // Anti-loop guard: if Claude already retried this Stop, let it stop.
+  if (input.stop_hook_active) return {};
 
-    const state = readJsonSafe(PENDING, { pending: [] });
-    const pending = Array.isArray(state.pending) ? state.pending : [];
-    if (pending.length === 0) { emitEmpty(); return; }
+  const state = readJsonSafe(PENDING, { pending: [] });
+  const pending = Array.isArray(state.pending) ? state.pending : [];
+  if (pending.length === 0) return {};
 
-    // Filter out anything already promoted (defensive — detect already filters).
-    const promotedSet = new Set(readJsonSafe(PROMOTED, []));
-    const fresh = pending.filter(p => p.key && !promotedSet.has(p.key));
-    if (fresh.length === 0) {
-      // Nothing fresh — clear stale pending and exit.
-      writeJsonSafe(PENDING, { pending: [] });
-      emitEmpty();
-      return;
-    }
-
-    // Promote first (so a hook retry doesn't double-nudge) then emit.
-    promote(fresh.map(p => p.key));
+  // Filter out anything already promoted (defensive — detect already filters).
+  const promotedSet = new Set(readJsonSafe(PROMOTED, []));
+  const fresh = pending.filter(p => p.key && !promotedSet.has(p.key));
+  if (fresh.length === 0) {
+    // Nothing fresh — clear stale pending and exit.
     writeJsonSafe(PENDING, { pending: [] });
-
-    for (const item of fresh) {
-      metrics.fire('nudge.emitted', { kind: 'decision', decisionKind: item.kind, key: item.key, repoUrl: item.repoUrl },
-        { sessionId: input.session_id || input.sessionId, cwd: input.cwd });
-    }
-
-    emitStopBlock(buildReason(fresh));
-  } catch {
-    emitEmpty();
+    return {};
   }
-})();
+
+  // Promote first (so a hook retry doesn't double-nudge) then emit.
+  promote(fresh.map(p => p.key));
+  writeJsonSafe(PENDING, { pending: [] });
+
+  for (const item of fresh) {
+    metrics.fire('nudge.emitted', { kind: 'decision', decisionKind: item.kind, key: item.key, repoUrl: item.repoUrl },
+      { sessionId: input.session_id || input.sessionId, cwd: input.cwd });
+  }
+
+  return { block: true, reason: buildReason(fresh) };
+}
+
+if (require.main === module) {
+  runStopDetectorCli(run, 'decision-promote');
+}
+
+module.exports = { run };
