@@ -290,6 +290,17 @@ code { color: var(--fg); font-family: var(--font-mono); }
       <div id="home-doctor"><p class="text-muted" style="font-size:.85rem">Click "Run check" to diagnose the plugin setup.</p></div>
     </div>
     <div class="card">
+      <div class="flex mb-1" style="align-items:center;justify-content:space-between;gap:.5rem;flex-wrap:wrap">
+        <h2 style="margin:0">KB hygiene <span class="text-muted" style="font-size:.8rem">merge near-duplicate lessons</span></h2>
+        <div class="flex" style="gap:.4rem;align-items:center">
+          <input id="consolidate-project" placeholder="project" style="width:9rem">
+          <button class="btn-sm" onclick="runConsolidate(false)">Preview</button>
+          <button class="btn-sm btn-warning" onclick="runConsolidate(true)">Apply</button>
+        </div>
+      </div>
+      <div id="home-consolidate"><p class="text-muted" style="font-size:.85rem">Preview groups near-duplicate lessons (cosine 0.7–0.9); Apply merges them (recurrence summed). Runs weekly on its own too.</p></div>
+    </div>
+    <div class="card">
       <h2 data-i18n="home.brain">Brain Knowledge Base</h2>
       <div id="home-brain"></div>
     </div>
@@ -1418,11 +1429,14 @@ async function loadValueSummary() {
     const learned = v.learned?.total || 0;
     const cited = v.memoryCited || 0;
     const tokens = v.contextSaved?.tokens || 0;
+    const prec = v.retrievalPrecision || { injected: 0, cited: 0, rate: 0 };
+    const precPct = Math.round((prec.rate || 0) * 100);
     const fmt = n => n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n);
     const cards = [
       { value: '~' + fmt(tokens), label: 'Tokens of raw output curated away', badge: (v.contextSaved?.events || 0) + ' commands', cls: 'badge-green' },
       { value: fmt(learned), label: 'Lessons learned', badge: Object.keys(v.learned?.byType || {}).length + ' types', cls: 'badge-green' },
       { value: fmt(cited), label: 'Memories cited in replies', badge: 'retrieval in action', cls: cited > 0 ? 'badge-green' : 'badge-yellow' },
+      { value: prec.injected > 0 ? precPct + '%' : '—', label: 'Retrieval precision (cited/injected)', badge: prec.injected + ' injected', cls: prec.injected === 0 ? 'badge-yellow' : precPct >= 20 ? 'badge-green' : 'badge-yellow' },
     ];
     el.innerHTML = cards.map(c =>
       `<div class="stat"><div class="value">${c.value}</div><div class="label">${c.label}</div><span class="badge ${c.cls}">${c.badge}</span></div>`
@@ -1430,6 +1444,24 @@ async function loadValueSummary() {
   } catch { el.innerHTML = '<p class="text-muted">No metrics yet.</p>'; return; }
   // Isolated: a D4-card failure must not wipe the value cards above.
   try { renderLearningLoop(v.learningLoop); } catch (e) { void e; }
+}
+
+async function runConsolidate(apply) {
+  const el = document.getElementById('home-consolidate');
+  const proj = (document.getElementById('consolidate-project').value || '').trim();
+  if (!proj) { el.innerHTML = '<p class="text-muted">Enter a project name first.</p>'; return; }
+  if (apply && !confirm(`Merge near-duplicate lessons in "${proj}"? Absorbed entries are deleted (recurrence is summed into the survivor).`)) return;
+  el.innerHTML = '<div class="spinner" style="margin:1rem auto"></div>';
+  try {
+    const r = await api('POST', `/api/brain/consolidate?project=${encodeURIComponent(proj)}&apply=${apply ? 'true' : 'false'}`);
+    if (r.reason === 'not-sqlite') { el.innerHTML = '<p class="text-muted">This project has no SQLite KB to consolidate.</p>'; return; }
+    const groups = r.groups || 0;
+    if (groups === 0) { el.innerHTML = '<p class="text-muted">No near-duplicate groups found — KB is tidy.</p>'; return; }
+    const rows = (r.plans || []).slice(0, 20).map(p =>
+      `<tr><td>${p.type}</td><td>${p.size} entries → 1</td><td>recurrence → ${p.newRecurrence}</td></tr>`).join('');
+    el.innerHTML = `<p style="font-size:.85rem">${apply ? `Merged <strong>${r.merged}</strong> group(s), deleted <strong>${r.deleted}</strong> duplicate(s).` : `<strong>${groups}</strong> mergeable group(s) (preview) — click Apply to consolidate.`}</p>`
+      + `<table style="width:100%;font-size:.8rem"><thead><tr><th>Type</th><th>Group</th><th>Result</th></tr></thead><tbody>${rows}</tbody></table>`;
+  } catch { el.innerHTML = '<p class="text-muted">Consolidation failed to run.</p>'; }
 }
 
 async function runDoctor() {

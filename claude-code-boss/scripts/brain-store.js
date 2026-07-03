@@ -192,6 +192,7 @@ async function tryInitSqlite() {
     _db = new Database(dbPath);
     _db.pragma('journal_mode = WAL');
     _db.pragma('synchronous = NORMAL');
+    _db.pragma('busy_timeout = 5000');
     createTablesSqlite();
     migrateSqlite();
     _useSqlite = true;
@@ -760,6 +761,76 @@ function getRaw(id) {
 }
 
 /**
+ * List all entries of a project with their stored embedding vectors (SQLite
+ * only). Used by brain-consolidate to find near-duplicate neighbors WITHOUT
+ * re-embedding (no model load). Entries without a vector get `vector: null`.
+ * @param {string} [project]
+ * @returns {Array<{id, title, type, confidence, recurrence, createdAt, vector:number[]|null}>}
+ */
+function listWithVectors(project) {
+  if (!_useSqlite) return [];
+  try {
+    const rows = _db.prepare(`
+      SELECT e.id, e.title, e.type, e.confidence, e.recurrence, e.created_at, em.vector
+      FROM entries e LEFT JOIN embeddings em ON em.entry_id = e.id
+      WHERE e.project = ?`).all(project || _project);
+    return rows.map(r => ({
+      id: r.id, title: r.title, type: r.type,
+      confidence: r.confidence != null ? r.confidence : 0.5,
+      recurrence: r.recurrence != null ? r.recurrence : 1,
+      createdAt: r.created_at,
+      vector: r.vector ? blobToVector(r.vector) : null,
+    }));
+  } catch (err) {
+    console.error(`[BRAIN-STORE] listWithVectors failed: ${err.message}`);
+    return [];
+  }
+}
+
+/** Set an entry's recurrence to an explicit value (consolidation). SQLite only. */
+function setRecurrence(id, value) {
+  if (!_useSqlite) return false;
+  try {
+    const n = Math.max(1, Math.floor(Number(value) || 1));
+    const info = _db.prepare('UPDATE entries SET recurrence = ? WHERE id = ?').run(n, id);
+    return info.changes > 0;
+  } catch (err) {
+    console.error(`[BRAIN-STORE] setRecurrence failed for ${id}: ${err.message}`);
+    return false;
+  }
+}
+
+/**
+ * Atomically apply one consolidation group: set the survivor's recurrence and
+ * delete the absorbed entries (with their embeddings/keywords/edges) in a single
+ * transaction. All-or-nothing, so a mid-group failure can't leave the survivor
+ * with an inflated recurrence AND a surviving duplicate (which would double-count
+ * on the next run). SQLite only.
+ * @returns {{ok:boolean, deleted:number}}
+ */
+function applyConsolidation(survivorId, newRecurrence, absorbedIds) {
+  if (!_useSqlite) return { ok: false, deleted: 0 };
+  const ids = Array.isArray(absorbedIds) ? absorbedIds.filter(id => id && id !== survivorId) : [];
+  const n = Math.max(1, Math.floor(Number(newRecurrence) || 1));
+  try {
+    _db.exec('BEGIN');
+    _db.prepare('UPDATE entries SET recurrence = ? WHERE id = ?').run(n, survivorId);
+    for (const id of ids) {
+      _db.prepare('DELETE FROM embeddings WHERE entry_id = ?').run(id);
+      _db.prepare('DELETE FROM keywords WHERE entry_id = ?').run(id);
+      _db.prepare('DELETE FROM graph_edges WHERE from_id = ? OR to_id = ?').run(id, id);
+      _db.prepare('DELETE FROM entries WHERE id = ?').run(id);
+    }
+    _db.exec('COMMIT');
+    return { ok: true, deleted: ids.length };
+  } catch (err) {
+    try { _db.exec('ROLLBACK'); } catch (e) { void e; }
+    console.error(`[BRAIN-STORE] applyConsolidation failed for ${survivorId}: ${err.message}`);
+    return { ok: false, deleted: 0 };
+  }
+}
+
+/**
  * Merge a duplicate into an existing entry (admission control "merge" decision).
  * Bumps recurrence, refreshes last_accessed, keeps the higher confidence, and
  * applies an optional patch (summary/content/tags). Preserves the existing
@@ -970,6 +1041,7 @@ function cleanupMetrics(keepDays = 30) {
 module.exports = {
   init, save, get, getRaw, merge, prune, search, searchByKeywords, searchIsolated,
   delete: delete_, list, count, close,
+  listWithVectors, setRecurrence, applyConsolidation,
   getStorageType, getStatus, cosineSimilarity,
   recordCitation, citationMultiplier,
   recordMetric, getMetricsSummary, getEventLog, cleanupMetrics,

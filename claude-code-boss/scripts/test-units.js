@@ -3031,6 +3031,110 @@ test('review-checklist-advisory.countItems: counts unchecked boxes', () => {
   assertEq(advisory.countItems(''), 0);
 });
 
+// ─── F3 #5 KB consolidation planner + runner ─────────────────────────────────
+const consolidatePlan = require('./lib/consolidate-plan.js');
+const brainConsolidate = require('./brain-consolidate.js');
+
+const _fakeEntries = () => ([
+  { id: 'a', type: 'lesson', recurrence: 2, confidence: 0.9, createdAt: '2026-01-01', vector: [1] },
+  { id: 'b', type: 'lesson', recurrence: 5, confidence: 0.8, createdAt: '2026-01-02', vector: [1] },
+  { id: 'c', type: 'lesson', recurrence: 1, confidence: 0.5, createdAt: '2026-01-03', vector: [2] },
+  { id: 'd', type: 'pattern', recurrence: 9, confidence: 0.9, createdAt: '2026-01-01', vector: [1] },
+  { id: 'e', type: 'lesson', recurrence: 3, confidence: 0.5, createdAt: '2026-01-04', vector: null },
+]);
+const _clusterSim = (a, b) => (a[0] === b[0] ? 0.8 : 0.2);
+
+test('consolidate-plan.planMerges: groups same-type near-dupes, sums recurrence', () => {
+  const plans = consolidatePlan.planMerges(_fakeEntries(), _clusterSim, { minSim: 0.7, maxSim: 0.9 });
+  assertEq(plans.length, 1);
+  assertEq(plans[0].survivorId, 'b'); // highest recurrence
+  assertEq(plans[0].absorbedIds, ['a']);
+  assertEq(plans[0].newRecurrence, 7); // 2 + 5
+  assertEq(plans[0].type, 'lesson');
+});
+
+test('consolidate-plan.planMerges: respects type boundary + similarity band + null vectors', () => {
+  const plans = consolidatePlan.planMerges(_fakeEntries(), _clusterSim, { minSim: 0.7, maxSim: 0.9 });
+  const touched = new Set([plans[0].survivorId, ...plans[0].absorbedIds]);
+  assert(!touched.has('d'), 'pattern d not merged with lessons');
+  assert(!touched.has('c'), 'different-cluster c not merged');
+  assert(!touched.has('e'), 'null-vector e excluded');
+});
+
+test('consolidate-plan.planMerges: sim above maxSim (exact dup) is NOT merged here', () => {
+  // maxSim gate: identical (sim=1.0) entries are out of the [0.7,0.9] band.
+  const sim = () => 1.0;
+  const es = [
+    { id: 'x', type: 'lesson', recurrence: 1, vector: [1] },
+    { id: 'y', type: 'lesson', recurrence: 1, vector: [1] },
+  ];
+  assertEq(consolidatePlan.planMerges(es, sim, { minSim: 0.7, maxSim: 0.9 }).length, 0);
+});
+
+test('consolidate-plan.planMerges: survivor-anchored — chained-but-dissimilar entry is NOT absorbed', () => {
+  // A~B and B~C in band, but A~C below minSim. Single-linkage would group all
+  // three; survivor-anchored must NOT absorb the entry dissimilar to the survivor.
+  const sim = (a, b) => {
+    const k = a[0] + '-' + b[0], k2 = b[0] + '-' + a[0];
+    const band = { 'A-B': 0.85, 'B-A': 0.85, 'B-C': 0.85, 'C-B': 0.85 };
+    return band[k] || band[k2] || 0.4; // A-C = 0.4 (below minSim)
+  };
+  const es = [
+    { id: 'A', type: 'lesson', recurrence: 9, confidence: 0.9, createdAt: '2026-01-01', vector: ['A'] },
+    { id: 'B', type: 'lesson', recurrence: 2, confidence: 0.5, createdAt: '2026-01-02', vector: ['B'] },
+    { id: 'C', type: 'lesson', recurrence: 1, confidence: 0.5, createdAt: '2026-01-03', vector: ['C'] },
+  ];
+  const plans = consolidatePlan.planMerges(es, sim, { minSim: 0.7, maxSim: 0.9 });
+  assertEq(plans.length, 1);
+  assertEq(plans[0].survivorId, 'A'); // highest recurrence
+  assertEq(plans[0].absorbedIds, ['B']); // B is in-band with A; C (0.4 to A) is NOT
+  assert(!plans[0].absorbedIds.includes('C'), 'dissimilar C must not be deleted');
+  assertEq(plans[0].newRecurrence, 11); // 9 + 2 (C excluded)
+});
+
+test('brain-consolidate.consolidate: dry-run plans, --apply merges atomically (fake store)', async () => {
+  const state = { entries: _fakeEntries(), applied: [] };
+  const fakeStore = {
+    init: async () => {}, getStorageType: () => 'sqlite',
+    cosineSimilarity: _clusterSim,
+    listWithVectors: () => state.entries,
+    applyConsolidation: (survivorId, newRecurrence, absorbedIds) => {
+      state.applied.push({ survivorId, newRecurrence, absorbedIds });
+      return { ok: true, deleted: absorbedIds.length };
+    },
+  };
+  const dry = await brainConsolidate.consolidate({ project: 'p', apply: false, _store: fakeStore });
+  assertEq(dry.groups, 1);
+  assertEq(dry.merged, 0);
+  assertEq(state.applied.length, 0); // dry run mutates nothing
+  const applied = await brainConsolidate.consolidate({ project: 'p', apply: true, _store: fakeStore });
+  assertEq(applied.merged, 1);
+  assertEq(applied.deleted, 1);
+  assertEq(state.applied[0].survivorId, 'b');
+  assertEq(state.applied[0].newRecurrence, 7);
+  assertEq(state.applied[0].absorbedIds, ['a']);
+});
+
+test('brain-consolidate.consolidate: non-sqlite store → no-op', async () => {
+  const fakeStore = { init: async () => {}, getStorageType: () => 'json' };
+  const r = await brainConsolidate.consolidate({ project: 'p', apply: true, _store: fakeStore });
+  assertEq(r.reason, 'not-sqlite');
+  assertEq(r.groups, 0);
+});
+
+test('value-summary.summarize: retrieval precision (cited / injected)', () => {
+  const s = valueSummary.summarize([
+    { eventName: 'retrieve.injected', ts: 1, payload: { count: 10 } },
+    { eventName: 'retrieve.injected', ts: 2, payload: { count: 10 } },
+    { eventName: 'retrieve.cited', ts: 1, payload: { entryId: 'x' } },
+    { eventName: 'retrieve.cited', ts: 2, payload: { entryId: 'y' } },
+  ]);
+  assertEq(s.retrievalPrecision.injected, 20);
+  assertEq(s.retrievalPrecision.cited, 2);
+  assertEq(s.retrievalPrecision.rate, 0.1);
+  assertEq(valueSummary.summarize([]).retrievalPrecision.rate, 0); // no injections → 0, no div-by-zero
+});
+
 // ─── stop-dispatcher: merge + priority ───────────────────────────────────────
 const dispatcher = require('./stop-dispatcher.js');
 test('stop-dispatcher.mergeBlocks: no blocks → {}', () => {

@@ -45,6 +45,7 @@ function summarize(rows, opts = {}) {
     contextSaved: { chars: 0, tokens: 0, events: 0 },
     learned: { total: 0, byType: {} },
     memoryCited: 0,
+    retrievalPrecision: { injected: 0, cited: 0, rate: 0 },
     learningLoop: { captured: 0, merged: 0, admitted: 0, mergeRate: 0, byWeek: [] },
   };
   const weekMap = new Map(); // week → {captured, merged}
@@ -75,6 +76,11 @@ function summarize(rows, opts = {}) {
       }
       case 'retrieve.cited': {
         out.memoryCited += 1;
+        out.retrievalPrecision.cited += 1;
+        break;
+      }
+      case 'retrieve.injected': {
+        out.retrievalPrecision.injected += _num(p.count);
         break;
       }
       default: break;
@@ -82,6 +88,9 @@ function summarize(rows, opts = {}) {
   }
 
   out.contextSaved.tokens = Math.round(out.contextSaved.chars / CHARS_PER_TOKEN);
+  out.retrievalPrecision.rate = out.retrievalPrecision.injected > 0
+    ? Math.round((out.retrievalPrecision.cited / out.retrievalPrecision.injected) * 100) / 100
+    : 0;
   out.learningLoop.mergeRate = out.learningLoop.captured > 0
     ? Math.round((out.learningLoop.merged / out.learningLoop.captured) * 100) / 100
     : 0;
