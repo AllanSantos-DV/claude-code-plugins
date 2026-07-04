@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.22.3] - 2026-07-04
+
+### Fixed — `research-followup-detect.js` false-nega captura quando `capture_lesson({type:'research'})` cai no escopo `__user__`
+
+Mesma classe de falha corrigida em `curation-stop.js` na v1.19.1: uma chamada
+MCP não deixa rastro no turn journal / Bash PostToolUse, então detectores Stop
+precisam reconciliar contra o store real que a tool escreveu — não só contra o
+que o hook já tinha em mãos.
+
+Aqui o desvio é mais sutil: `capture_lesson({type:'research', ...})` sempre
+resolve para `scope:'user'` (`inferDefaultScope` mapeia o tipo `research` →
+`'user'` incondicionalmente, em `lib/scope-sanitizer.js`), então tanto a
+entrada quanto sua métrica `lesson.captured` são gravadas no banco SQLite do
+projeto `__user__` — um arquivo `brain.db` **fisicamente separado** do projeto
+atual. `research-followup-detect.run()` só lia `store.getEventLog(...)` do
+singleton já inicializado para o projeto corrente, então nunca via aquela
+captura e reabria o nudge "no capture_lesson(...) followed" mesmo com uma
+lição já admitida na mesma resposta.
+
+Corrigido lendo também o `__user__` via uma conexão descartável
+(`brain-store.getEventLogIsolated`, mesmo padrão de `searchIsolated`: nunca
+faz `close()`/`init()` no singleton compartilhado) e mesclando os dois fluxos
+de eventos antes de decidir. Reproduzido de forma hermética (nudge no projeto
+atual + `lesson.captured` gravado em `__user__`) antes e depois da correção;
++2 testes de regressão em `test-units.js` (falso-negativo cross-scope
+corrigido; e um guard confirmando que "nenhuma captura" ainda dispara o
+nudge). Gate verde (322 unit + 61 hooks).
+
 ## [1.22.2] - 2026-07-03
 
 ### Fixed — export/import (e outros) perdiam o CORPO das lições (`store.list()` lossy)
