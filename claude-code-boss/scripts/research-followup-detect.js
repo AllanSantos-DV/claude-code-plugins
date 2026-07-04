@@ -15,6 +15,17 @@
  * Per-sid stamp avoids nagging on every Stop while the agent is still
  * working through the research in the same turn cluster. The stamp resets
  * when a fresh `research.auto.triggered` happens (newer ts).
+ *
+ * Cross-scope capture read: capture_lesson({type:'research', ...}) always
+ * resolves to scope 'user' (inferDefaultScope maps type 'research' → 'user'
+ * unconditionally — see scope-sanitizer.js), so the entry AND its
+ * `lesson.captured` metric row land in the __user__ project's OWN brain.db,
+ * a physically separate SQLite file from the current project's. Reading only
+ * the current-project singleton's getEventLog() never observes that capture,
+ * so we additionally read the __user__ DB in isolation (getEventLogIsolated —
+ * same throwaway-connection pattern as brain-store.searchIsolated, no
+ * close()/init() of the shared singleton) and merge both event streams before
+ * deciding.
  */
 'use strict';
 
@@ -23,6 +34,7 @@ const path = require('path');
 const os = require('os');
 
 const { runStopDetectorCli } = require('./lib/hook-io.js');
+const { USER_SENTINEL } = require('./lib/scope-sanitizer.js');
 
 function dataDir() {
   const env = process.env.CLAUDE_PLUGIN_DATA;
@@ -99,14 +111,20 @@ async function run(event) {
     if (store.getStorageType() !== 'sqlite') return {};
   } catch { /* store unavailable: no-op */ return {}; }
 
-  let triggers, captures;
+  let triggers, captures, userCaptures;
   try {
     triggers = store.getEventLog({ eventName: 'nudge.emitted', limit: 100 })
       .filter(e => e.payload && e.payload.kind === 'research' && e.sessionId === sid);
     captures = store.getEventLog({ eventName: 'lesson.captured', limit: 100 });
+    // capture_lesson({type:'research'}) always resolves to scope 'user' (see
+    // header) and lands in the __user__ project's own DB — read it in isolation
+    // (no singleton mutation) so those captures aren't invisible to this project.
+    userCaptures = project === USER_SENTINEL
+      ? []
+      : store.getEventLogIsolated(USER_SENTINEL, { eventName: 'lesson.captured', limit: 100 });
   } catch { /* event log read failed: no-op */ return {}; }
 
-  const events = [...triggers, ...captures].sort((a, b) => b.ts - a.ts);
+  const events = [...triggers, ...captures, ...userCaptures].sort((a, b) => b.ts - a.ts);
 
   const sp = stampPath(data, sid);
   const stamp = readStamp(sp);
