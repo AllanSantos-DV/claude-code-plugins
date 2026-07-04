@@ -996,6 +996,46 @@ function getMetricsSummary(rangeDays = 7) {
   }
 }
 
+/**
+ * Read metrics_event from an ARBITRARY project DB via a throwaway connection,
+ * WITHOUT touching the module singleton (`_db`/`_project`) — same rationale as
+ * searchIsolated: capture_lesson({scope:'user'|'auto'→'user'}) always writes
+ * (entry AND its lesson.captured metric row) into the __user__ DB, a physically
+ * separate SQLite file from the current project's. A Stop-hook detector reading
+ * only the singleton's getEventLog() never sees that capture and false-negatives
+ * ("no capture followed") even though one was admitted. Read-only; returns []
+ * if the DB file or sqlite backend is unavailable.
+ */
+function getEventLogIsolated(project, { eventName = null, limit = 50 } = {}) {
+  const Database = loadSqlite();
+  if (!Database) return [];
+  const dbPath = path.join(STORE_DIR, 'brain', project, 'brain.db');
+  if (!fs.existsSync(dbPath)) return [];
+  const cap = Math.max(1, Math.min(500, Number(limit) || 50));
+  let db;
+  try { db = new Database(dbPath); } catch (e) { console.error('[brain] isolated event-log open failed:', dbPath, e.message); return []; }
+  try {
+    const rows = eventName
+      ? db.prepare(`SELECT id, ts, event_name, payload, session_id, project
+                      FROM metrics_event WHERE event_name = ? ORDER BY ts DESC LIMIT ?`).all(eventName, cap)
+      : db.prepare(`SELECT id, ts, event_name, payload, session_id, project
+                      FROM metrics_event ORDER BY ts DESC LIMIT ?`).all(cap);
+    return rows.map(r => ({
+      id: r.id,
+      ts: r.ts,
+      eventName: r.event_name,
+      payload: safeParseJson(r.payload),
+      sessionId: r.session_id,
+      project: r.project,
+    }));
+  } catch (err) {
+    console.error(`[BRAIN-STORE] getEventLogIsolated(${project}) failed: ${err.message}`);
+    return [];
+  } finally {
+    try { db.close(); } catch { /* throwaway connection */ }
+  }
+}
+
 /** List recent raw events (newest first). Filterable by event name. */
 function getEventLog({ eventName = null, limit = 50 } = {}) {
   if (!_useSqlite) return [];
@@ -1044,6 +1084,6 @@ module.exports = {
   listWithVectors, setRecurrence, applyConsolidation,
   getStorageType, getStatus, cosineSimilarity,
   recordCitation, citationMultiplier,
-  recordMetric, getMetricsSummary, getEventLog, cleanupMetrics,
+  recordMetric, getMetricsSummary, getEventLog, getEventLogIsolated, cleanupMetrics,
   _getDbForTests: () => _db,
 };

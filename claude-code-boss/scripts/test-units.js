@@ -1087,6 +1087,42 @@ test('metrics: recordMetric rejects invalid event names', async () => {
   }
 });
 
+test('metrics: getEventLogIsolated reads another project\'s DB without touching the singleton', async () => {
+  delete require.cache[require.resolve('./brain-store.js')];
+  const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
+  process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-metrics-iso-'));
+  const isolated = require('./brain-store.js');
+  try {
+    // Write a metric into '__user__' project's own DB.
+    await isolated.init({ project: '__user__' });
+    if (isolated.getStorageType() !== 'sqlite') return;
+    isolated.recordMetric('lesson.captured', { type: 'research' }, null);
+    await isolated.close();
+
+    // Re-init the SAME module instance to a DIFFERENT project — this is what
+    // a Stop detector's store.init({project: currentProject}) leaves in
+    // place. (No require-cache dance: STORE_DIR is read once at require time
+    // from CLAUDE_PLUGIN_DATA, so re-requiring under a concurrently-mutated
+    // env var — other tests run interleaved via Promise.all — would race;
+    // reusing the instance and switching _project via init() does not.)
+    await isolated.init({ project: 'other-proj' });
+    if (isolated.getStorageType() !== 'sqlite') return;
+
+    // The singleton's own getEventLog must NOT see the __user__ event.
+    assertEq(isolated.getEventLog({ eventName: 'lesson.captured', limit: 50 }).length, 0);
+
+    // getEventLogIsolated reads the __user__ DB directly, singleton untouched.
+    const rows = isolated.getEventLogIsolated('__user__', { eventName: 'lesson.captured', limit: 50 });
+    assertEq(rows.length, 1);
+    assertEq(rows[0].payload.type, 'research');
+    assertEq(isolated.getStatus().project, 'other-proj', 'singleton project unchanged by isolated read');
+  } finally {
+    try { await isolated.close(); } catch { /* ignore */ }
+    delete require.cache[require.resolve('./brain-store.js')];
+    process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
+  }
+});
+
 test('metrics: getEventLog filters + caps to 500', async () => {
   delete require.cache[require.resolve('./brain-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
@@ -1420,6 +1456,74 @@ test('research-followup.decideNudge: newer trigger after stamp → nudge again',
   const r = researchFollowup.decideNudge(events, { firedAt: 1000 });
   assert(r.nudge === true);
   assertEq(r.reason, 'pending-capture');
+});
+
+// ─── research-followup-detect.run: cross-scope capture regression ──────────
+// Bug: capture_lesson({type:'research', ...}) always resolves to scope 'user'
+// (inferDefaultScope maps type 'research' → 'user' unconditionally), so the
+// admitted entry's `lesson.captured` metric lands in the __user__ project's
+// OWN brain.db — a separate SQLite file from the current project's. run()
+// used to read only the current-project singleton's getEventLog(), so it
+// never saw that capture and false-nudged "no capture followed" even though
+// one was admitted in the same turn. Fixed by also reading __user__ via
+// getEventLogIsolated (no singleton mutation) and merging both streams.
+test('research-followup.run: capture_lesson({type:research}) in __user__ scope suppresses the nudge', async () => {
+  delete require.cache[require.resolve('./brain-store.js')];
+  const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
+  process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rf-xscope-'));
+  const isolatedStore = require('./brain-store.js');
+  delete require.cache[require.resolve('./research-followup-detect.js')];
+  const rf = require('./research-followup-detect.js');
+  try {
+    const currentProject = 'rf-xscope-proj';
+
+    // 1) active-research-detect fires a nudge in the CURRENT project.
+    await isolatedStore.init({ project: currentProject, skipEmbedder: true });
+    if (isolatedStore.getStorageType() !== 'sqlite') return;
+    isolatedStore.recordMetric('nudge.emitted', { kind: 'research', signals: ['libMention'] }, 'sid-1');
+
+    // 2) capture_lesson({type:'research'}) admits — MCP handler writes into
+    //    __user__ (mirrors mcp-server.js's storageProject switch + restore).
+    await isolatedStore.close();
+    await isolatedStore.init({ project: '__user__', skipEmbedder: true });
+    isolatedStore.recordMetric('lesson.captured', { type: 'research', decision: 'admit', scope: 'user' }, null);
+    await isolatedStore.close();
+    await isolatedStore.init({ project: currentProject, skipEmbedder: true });
+
+    // 3) Stop hook runs for this session/project.
+    const result = await rf.run({ session_id: 'sid-1', cwd: `/fake/${currentProject}` });
+    assertEq(result.block, undefined, `expected no block, got: ${JSON.stringify(result)}`);
+
+    await isolatedStore.close();
+  } finally {
+    delete require.cache[require.resolve('./brain-store.js')];
+    delete require.cache[require.resolve('./research-followup-detect.js')];
+    process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
+  }
+});
+
+test('research-followup.run: no capture at all still nudges (regression guard)', async () => {
+  delete require.cache[require.resolve('./brain-store.js')];
+  const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
+  process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rf-nocap-'));
+  const isolatedStore = require('./brain-store.js');
+  delete require.cache[require.resolve('./research-followup-detect.js')];
+  const rf = require('./research-followup-detect.js');
+  try {
+    const currentProject = 'rf-nocap-proj';
+    await isolatedStore.init({ project: currentProject, skipEmbedder: true });
+    if (isolatedStore.getStorageType() !== 'sqlite') return;
+    isolatedStore.recordMetric('nudge.emitted', { kind: 'research', signals: ['libMention'] }, 'sid-2');
+
+    const result = await rf.run({ session_id: 'sid-2', cwd: `/fake/${currentProject}` });
+    assertEq(result.block, true, 'nudge should still fire with no capture at all');
+
+    await isolatedStore.close();
+  } finally {
+    delete require.cache[require.resolve('./brain-store.js')];
+    delete require.cache[require.resolve('./research-followup-detect.js')];
+    process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
+  }
 });
 
 // ─── decision-scan-response (response-mode shape detector) ──────────────────
