@@ -505,6 +505,29 @@ const TESTS = [
     expect: { noError: true },
     extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-det-cs-noisy-')) }),
   },
+  {
+    // Regression: content-surfacing curated script declaring outputLines must
+    // NOT be flagged on legitimate output (35 lines < 60-line declared budget).
+    // Before the fix the hardcoded 3L/500c summary budget flagged every run.
+    name: 'curation-detect   [PostToolUse/curated-success-within-declared-budget→no-trigger]',
+    script: 'curation-detect.js',
+    payload: (() => {
+      const f = require('./__fixtures__/post-tool-use-success-noisy.json');
+      const projDir = mkTempProject({ shells: [{ id: 'test', script: '.vscode/scripts/test.mjs', aliases: ['npm test'], outputLines: 60 }], whitelist: [] });
+      return { ...f, session_id: SESSION, cwd: projDir };
+    })(),
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-det-cs-budget-')) }),
+    validateWithEnv: (_r, env) => {
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      const runtimeDir = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime');
+      const prefix = `curation-turn-${safe}--`;
+      if (!fs.existsSync(runtimeDir)) return null;
+      const files = fs.readdirSync(runtimeDir).filter(f => f.startsWith(prefix) && f.endsWith('.json'));
+      if (files.length > 0) return `output within declared outputLines budget must not be flagged, got journal entry: ${files[0]}`;
+      return null;
+    },
+  },
 
   // ── Stop ─────────────────────────────────────────────────────────────────
   {

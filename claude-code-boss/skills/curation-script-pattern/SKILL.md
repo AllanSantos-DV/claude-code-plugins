@@ -149,9 +149,17 @@ print(f'OK  {passes} passed ({ms}ms)')
   "aliases": ["<raw command form 1>", "<raw form 2>"],
   "outputFilter": "summary|errors-only",
   "outputLines": 80,
+  "outputChars": 8000,                   // optional; default = outputLines * 100
   "timeoutMs": 600000
 }
 ```
+
+`outputLines` is **enforced**, not just a hint: on a successful run, output beyond
+`outputLines` lines (or `outputChars` chars, default `outputLines * 100`) is flagged
+`curated-success-noisy` by `curation-classifier.js`. Entries without `outputLines`
+fall back to the tight summary budget (3 lines / 500 chars) — content-surfacing
+scripts (log miners, `--full` dumps) must declare a realistic `outputLines` or every
+legitimate run gets flagged.
 
 `aliases` is critical: any raw command form (`npm test`, `npm run test`, `pnpm test`, `npx vitest`) you want routed to this script must be listed, so `curation-guard.js` can redirect.
 
