@@ -60,7 +60,7 @@ function assertEq(actual, expected, msg) {
 }
 
 // ─── curation-classifier ─────────────────────────────────────────────────────
-const { classify, CURATED_SUCCESS_MAX_CHARS, CURATED_SUCCESS_MAX_LINES } = require('./curation-classifier.js');
+const { classify, successBudgetFor, CURATED_SUCCESS_MAX_CHARS, CURATED_SUCCESS_MAX_LINES, CURATED_CHARS_PER_LINE } = require('./curation-classifier.js');
 const TH = { maxChars: 1000, maxLines: 20 };
 
 test('curation-classifier: uncurated small → null', () => {
@@ -101,6 +101,46 @@ test('curation-classifier: curated failure small → null', () => {
 test('curation-classifier: curated failure noisy → curated-failure-noisy', () => {
   const r = classify({ command: 'cur.mjs', isCurated: true, isSuccess: false, charCount: 5000, lineCount: 5, thresholds: TH });
   assertEq(r.reason, 'curated-failure-noisy');
+});
+
+// Per-shell success budget (outputLines/outputChars from shells.json) — the
+// live bug: a content-surfacing script (outputLines: 60) emitting 4L/563c was
+// flagged curated-success-noisy against the hardcoded 3L/500c on every run.
+test('curation-classifier: per-shell budget → legitimate content output not flagged', () => {
+  const budget = successBudgetFor({ outputLines: 60 });
+  const r = classify({ command: 'mine.mjs', isCurated: true, isSuccess: true, charCount: 563, lineCount: 4, thresholds: TH, successBudget: budget });
+  assertEq(r.reason, null);
+});
+
+test('curation-classifier: per-shell budget exceeded → curated-success-noisy with that budget', () => {
+  const budget = successBudgetFor({ outputLines: 60 });
+  const r = classify({ command: 'mine.mjs', isCurated: true, isSuccess: true, charCount: 100, lineCount: 61, thresholds: TH, successBudget: budget });
+  assertEq(r.reason, 'curated-success-noisy');
+  assertEq(r.threshold, { maxChars: 6000, maxLines: 60 });
+});
+
+test('curation-classifier: no budget passed → default still flags 4-line curated success', () => {
+  const r = classify({ command: 'cur.mjs', isCurated: true, isSuccess: true, charCount: 100, lineCount: 4, thresholds: TH });
+  assertEq(r.reason, 'curated-success-noisy');
+  assertEq(r.threshold, { maxChars: CURATED_SUCCESS_MAX_CHARS, maxLines: CURATED_SUCCESS_MAX_LINES });
+});
+
+test('curation-classifier: successBudgetFor without declared fields → summary defaults', () => {
+  assertEq(successBudgetFor({}), { maxLines: CURATED_SUCCESS_MAX_LINES, maxChars: CURATED_SUCCESS_MAX_CHARS });
+  assertEq(successBudgetFor(null), { maxLines: CURATED_SUCCESS_MAX_LINES, maxChars: CURATED_SUCCESS_MAX_CHARS });
+});
+
+test('curation-classifier: successBudgetFor derives chars from outputLines', () => {
+  assertEq(successBudgetFor({ outputLines: 60 }), { maxLines: 60, maxChars: 60 * CURATED_CHARS_PER_LINE });
+});
+
+test('curation-classifier: successBudgetFor honors explicit outputChars', () => {
+  assertEq(successBudgetFor({ outputLines: 60, outputChars: 2500 }), { maxLines: 60, maxChars: 2500 });
+});
+
+test('curation-classifier: successBudgetFor rejects invalid declarations', () => {
+  assertEq(successBudgetFor({ outputLines: 0, outputChars: -5 }), { maxLines: CURATED_SUCCESS_MAX_LINES, maxChars: CURATED_SUCCESS_MAX_CHARS });
+  assertEq(successBudgetFor({ outputLines: '60' }), { maxLines: CURATED_SUCCESS_MAX_LINES, maxChars: CURATED_SUCCESS_MAX_CHARS });
 });
 
 // ─── text-utils ──────────────────────────────────────────────────────────────

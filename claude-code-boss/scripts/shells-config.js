@@ -11,7 +11,8 @@
  *     script:      string,           // path to the script file (any extension)
  *     aliases?:    string[],         // raw command forms that should route to this script
  *     outputFilter?: string,         // hint for the script's filter mode
- *     outputLines?:  number,
+ *     outputLines?:  number,         // enforced curated-success line budget (curation-classifier)
+ *     outputChars?:  number,         // optional char budget (default: outputLines * 100)
  *     timeoutMs?:    number,
  *     ...                            // arbitrary extras tolerated
  *   }

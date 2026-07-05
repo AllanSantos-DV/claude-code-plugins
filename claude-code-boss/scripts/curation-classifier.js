@@ -12,25 +12,49 @@
  *   null                    — no action needed
  */
 
-/** Max lines a curated script should emit on success. */
+/** Max lines a curated script should emit on success (entries without `outputLines`). */
 const CURATED_SUCCESS_MAX_LINES = 3;
-/** Max chars a curated script should emit on success. */
+/** Max chars a curated script should emit on success (entries without `outputLines`/`outputChars`). */
 const CURATED_SUCCESS_MAX_CHARS = 500;
+/** Chars allowed per declared output line when the entry has `outputLines` but no `outputChars`. */
+const CURATED_CHARS_PER_LINE = 100;
+
+/**
+ * Success budget for a curated shell entry. Content-surfacing scripts declare
+ * `outputLines` (and optionally `outputChars`) in shells.json — that declared
+ * budget is enforced instead of the tight summary defaults, otherwise every
+ * legitimate run of such a script gets flagged curated-success-noisy.
+ *
+ * @param {{ outputLines?: number, outputChars?: number }|null|undefined} shell
+ * @returns {{ maxLines: number, maxChars: number }}
+ */
+function successBudgetFor(shell) {
+  const lines = Number.isFinite(shell?.outputLines) && shell.outputLines > 0 ? shell.outputLines : null;
+  const chars = Number.isFinite(shell?.outputChars) && shell.outputChars > 0 ? shell.outputChars : null;
+  return {
+    maxLines: lines ?? CURATED_SUCCESS_MAX_LINES,
+    maxChars: chars ?? (lines !== null ? lines * CURATED_CHARS_PER_LINE : CURATED_SUCCESS_MAX_CHARS),
+  };
+}
 
 /**
  * Classify a PostToolUse / PostToolUseFailure event.
  *
  * @param {{ command: string, isCurated: boolean, isSuccess: boolean,
  *            charCount: number, lineCount: number,
- *            thresholds: { maxChars: number, maxLines: number } }} params
+ *            thresholds: { maxChars: number, maxLines: number },
+ *            successBudget?: { maxChars: number, maxLines: number } }} params
+ *   `successBudget` — per-shell curated-success budget (from successBudgetFor);
+ *   omitted → the hardcoded summary defaults apply.
  * @returns {{ reason: string, threshold: object } | { reason: null }}
  */
-function classify({ command: _command, isCurated, isSuccess, charCount, lineCount, thresholds }) {
+function classify({ command: _command, isCurated, isSuccess, charCount, lineCount, thresholds, successBudget }) {
   if (isCurated) {
-    if (isSuccess && (lineCount > CURATED_SUCCESS_MAX_LINES || charCount > CURATED_SUCCESS_MAX_CHARS)) {
+    const budget = successBudget || { maxLines: CURATED_SUCCESS_MAX_LINES, maxChars: CURATED_SUCCESS_MAX_CHARS };
+    if (isSuccess && (lineCount > budget.maxLines || charCount > budget.maxChars)) {
       return {
         reason: 'curated-success-noisy',
-        threshold: { maxChars: CURATED_SUCCESS_MAX_CHARS, maxLines: CURATED_SUCCESS_MAX_LINES },
+        threshold: { maxChars: budget.maxChars, maxLines: budget.maxLines },
       };
     }
     if (!isSuccess && (charCount > thresholds.maxChars || lineCount > thresholds.maxLines)) {
@@ -46,4 +70,4 @@ function classify({ command: _command, isCurated, isSuccess, charCount, lineCoun
   return { reason: null };
 }
 
-module.exports = { classify, CURATED_SUCCESS_MAX_LINES, CURATED_SUCCESS_MAX_CHARS };
+module.exports = { classify, successBudgetFor, CURATED_SUCCESS_MAX_LINES, CURATED_SUCCESS_MAX_CHARS, CURATED_CHARS_PER_LINE };

@@ -29,7 +29,7 @@ const { canonicalSig } = require('./lib/command-signature.js');
 const oneoff = require('./lib/oneoff-store.js');
 
 const { findProjectRoot, loadShellsConfig, matchCuratedShell } = require('./shells-config.js');
-const { classify }                                              = require('./curation-classifier.js');
+const { classify, successBudgetFor }                            = require('./curation-classifier.js');
 
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
 const _curationCfg = require('./lib/brain-config.js').getCuration();
@@ -115,8 +115,12 @@ function appendTurnEntry(sessionId, entry) {
       curated: curatedShell ? (curatedShell.id || curatedShell.script || null) : null,
     });
 
-    // Classify
-    const { reason } = classify({ command, isCurated, isSuccess, charCount, lineCount, thresholds });
+    // Classify — curated shells carry their declared outputLines/outputChars
+    // budget so content-surfacing scripts aren't flagged on legitimate output.
+    const { reason } = classify({
+      command, isCurated, isSuccess, charCount, lineCount, thresholds,
+      successBudget: curatedShell ? successBudgetFor(curatedShell) : undefined,
+    });
 
     // One-hit / recurrence accounting (cross-session, per-project). Count every
     // invocation that matches a known signature (D1); create a fresh entry only

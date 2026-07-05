@@ -101,6 +101,7 @@ function loadShellsFile(shellsPath) {
  * @param {string} [args.icon]
  * @param {string} [args.outputFilter]
  * @param {number} [args.outputLines]
+ * @param {number} [args.outputChars]
  * @param {number} [args.timeoutMs]
  * @param {string} [args.cwd] - working directory for project root resolution
  * @returns {{isError:true, message:string} | {decision:'registered'|'updated', id:string, scriptPath:string, shellsConfigPath:string, aliases:string[], message:string}}
@@ -161,6 +162,7 @@ function register(args) {
     aliases,
     outputFilter: a.outputFilter ? String(a.outputFilter) : DEFAULT_OUTPUT_FILTER,
     outputLines: Number.isFinite(a.outputLines) ? a.outputLines : DEFAULT_OUTPUT_LINES,
+    ...(Number.isFinite(a.outputChars) && a.outputChars > 0 ? { outputChars: a.outputChars } : {}),
     timeoutMs: Number.isFinite(a.timeoutMs) ? a.timeoutMs : DEFAULT_TIMEOUT_MS,
   };
 
