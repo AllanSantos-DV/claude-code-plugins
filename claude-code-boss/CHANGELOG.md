@@ -1,5 +1,30 @@
 # Changelog
 
+## [1.22.4] - 2026-07-05
+
+### Fixed — `curation-classifier.js` ignorava o `outputLines` declarado e flagava scripts curados de conteúdo em toda execução legítima
+
+O budget de sucesso curado era hardcoded (3 linhas / 500 chars) para TODO
+script curado, ignorando o `outputLines` que a entrada em `shells.json`
+declara e que `curation_register_shell` aceita. Scripts que existem para
+**surfar conteúdo** (ex.: `session-transcript-mine.mjs` registrado com
+`outputLines: 60`, `commits-ahead.mjs --full`) eram flagados
+`curated-success-noisy` em toda execução legítima — um loop de refine
+invencível (observado ao vivo: 4L/563c contra o teto fixo de 3L/500c).
+
+Correção: novo helper puro `successBudgetFor(shell)` em
+`curation-classifier.js` deriva o budget da entrada casada
+(`maxLines = outputLines`; `maxChars = outputChars` ou `outputLines * 100`),
+e `curation-detect.js` o injeta em `classify()` via o `curatedShell` que
+`matchCuratedShell` já resolvia. `classify()` continua pura (budget chega por
+parâmetro); entradas sem `outputLines` mantêm o default 3L/500c. Campo
+opcional `outputChars` agora aceito em `shells.json` e no
+`curation_register_shell`; skill `curation-script-pattern` documenta que
+`outputLines` é **enforced**, não mais só hint. +7 testes unitários
+(budget por shell, derivação, regressão do default) e +1 smoke em
+`test-hooks.js` (fixture de 35 linhas com `outputLines: 60` → não flagra).
+Gate verde (329 unit + hooks).
+
 ## [1.22.3] - 2026-07-04
 
 ### Fixed — `research-followup-detect.js` false-nega captura quando `capture_lesson({type:'research'})` cai no escopo `__user__`
