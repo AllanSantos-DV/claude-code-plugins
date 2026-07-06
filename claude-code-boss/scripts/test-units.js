@@ -1226,6 +1226,34 @@ test('scope: inferDefaultScope routes by type then by tag hints', () => {
   assertEq(inferDefaultScope('note', ['some-random-tag']), 'project');
 });
 
+// ─── capture_lesson schema ⊇ hook-requested types (regression) ──────────────
+// Bug: the tool's inputSchema enum only listed ['lesson','pattern'], but the
+// plugin's OWN Stop hooks instruct the agent to call
+// capture_lesson({type:'decision'}) (decision-scan-response.js) and
+// capture_lesson({type:'research'}) (active-research-detect.js /
+// research-followup-detect.js). The handler accepts any type string, so this
+// was silent today — but a schema-enforcing MCP host would reject exactly the
+// calls the hooks request. Guard: every type any hook nudge text asks for must
+// be in the declared enum.
+test('mcp-server: capture_lesson schema enum covers every type hooks nudge for', () => {
+  const src = fs.readFileSync(path.join(SCRIPTS, '..', 'servers', 'brain-server', 'lib', 'mcp-server.js'), 'utf-8');
+  const toolMatch = src.match(/name:\s*'capture_lesson'[\s\S]*?inputSchema:\s*\{[\s\S]*?\}\s*,\s*\n\s*\},/);
+  assert(toolMatch, 'capture_lesson tool definition not found in mcp-server.js');
+  const enumMatch = toolMatch[0].match(/type:\s*\{\s*type:\s*'string',\s*enum:\s*\[([^\]]+)\]/);
+  assert(enumMatch, 'capture_lesson type enum not found');
+  const declared = new Set(enumMatch[1].split(',').map(s => s.trim().replace(/^'|'$/g, '')));
+
+  const requested = new Set();
+  for (const f of fs.readdirSync(SCRIPTS)) {
+    if (!f.endsWith('.js')) continue;
+    const body = fs.readFileSync(path.join(SCRIPTS, f), 'utf-8');
+    for (const m of body.matchAll(/capture_lesson\(\{\s*type\s*:\s*'([a-z]+)'/g)) requested.add(m[1]);
+  }
+  assert(requested.size > 0, 'no capture_lesson({type:...}) nudge found in scripts/ — test fixture drifted');
+  const missing = [...requested].filter(t => !declared.has(t));
+  assertEq(missing, [], `hook(s) nudge type(s) not in the declared enum: ${missing.join(', ')}`);
+});
+
 test('scope: sanitizeForUserScope strips paths, emails, project name', () => {
   const { sanitizeForUserScope } = require('./lib/scope-sanitizer.js');
   const out = sanitizeForUserScope(

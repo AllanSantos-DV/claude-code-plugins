@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.22.5] - 2026-07-05
+
+### Fixed — schema da tool `capture_lesson` não declarava os types que os próprios hooks pedem
+
+O `inputSchema` de `capture_lesson` só listava `enum: ['lesson', 'pattern']`,
+mas os Stop hooks do próprio plugin instruem o agente a chamá-la com **outros**
+types: `decision-scan-response.js` pede `capture_lesson({type:'decision'})` e
+`active-research-detect.js`/`research-followup-detect.js` pedem
+`capture_lesson({type:'research'})`. O handler sempre aceitou qualquer string
+de type — então isso era silencioso hoje — mas um host MCP que valide o schema
+rejeitaria exatamente as chamadas que os próprios nudges pedem. `brain_store`
+já tinha o enum completo (`note/pattern/lesson/research/code/reference/decision`);
+`capture_lesson` ficou pra trás.
+
+- `capture_lesson` agora aceita `['lesson', 'pattern', 'decision', 'research']`,
+  com a descrição de cada type explicando que hooks do plugin os pedem.
+  `inferDefaultScope`/`scope-sanitizer.js` já tratava `decision`→project e
+  `research`→user corretamente; nenhuma mudança de runtime, só o schema
+  declarado alcançou o comportamento real.
+- +1 teste de regressão: varre `scripts/*.js` por todo padrão
+  `capture_lesson({type:'...'})` e assere que cada type pedido está no enum
+  declarado — evita o schema divergir de novo silenciosamente.
+- Gate verde (330 unit/hooks).
+
 ## [1.22.4] - 2026-07-05
 
 ### Fixed — `curation-classifier.js` ignorava o `outputLines` declarado e flagava scripts curados de conteúdo em toda execução legítima
