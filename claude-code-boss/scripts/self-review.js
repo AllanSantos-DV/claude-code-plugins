@@ -105,7 +105,7 @@ function writeSurfaced(p, ids) {
 
 async function run(event, deps = {}) {
   const ev = event || {};
-  const cfg = hooksCfg.getSelfReview();
+  const cfg = deps.cfg || hooksCfg.getSelfReview();
   if (!cfg.enabled) return {};
   if (ev.stop_hook_active) return {};
 

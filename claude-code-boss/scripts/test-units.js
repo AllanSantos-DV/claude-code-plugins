@@ -308,11 +308,12 @@ test('hooks-config getters: standard profile → capture/verify off, maxAttempts
   });
 });
 
-test('hooks-config getters: shipped config is valid dev (regression)', () => {
-  // The real shipped file must resolve to dev with all defaults intact.
-  assertEq(hooksConfig.getProfile(), 'dev');
-  assertEq(hooksConfig.getCurationStop().maxAttempts, 3);
-  assertEq(hooksConfig.getVerifyNudge().enabled, true);
+test('hooks-config getters: shipped config is valid standard (regression)', () => {
+  // The shipped default profile is 'standard' (quiet/net-positive for normal use):
+  // dev-only capture/verify nudges are off and curation blocks once (maxAttempts=1).
+  assertEq(hooksConfig.getProfile(), 'standard');
+  assertEq(hooksConfig.getCurationStop().maxAttempts, 1);
+  assertEq(hooksConfig.getVerifyNudge().enabled, false);
 });
 
 // ─── hook-io.emitStopBlock (Stop wire shape) ─────────────────────────────────
@@ -2948,9 +2949,10 @@ test('self-review.run: edits + retrieved lesson → block, journals, dedups next
   const dir = process.env.CLAUDE_PLUGIN_DATA; // where the top-level journals live
   const stubRetrieve = async () => ({ entries: [{ id: 'lesX', title: 'widget parser off-by-one', type: 'lesson', recurrence: 2, score: 0.8 }], source: 'index' });
   const noopMetrics = { fire: () => {} }; // don't touch the shared brain-store singleton in-process
+  const srCfg = { enabled: true, topK: 2, minScore: 0.2, types: ['lesson', 'failure'] }; // shipped default is now 'standard' (self-review off) → force dev config via DI
 
   verifyJournalTop.appendEdit(sid, 'scripts/lib/widget-parser.js');
-  const first = await selfReview.run({ hook_event_name: 'Stop', session_id: sid, cwd }, { retrieve: stubRetrieve, dataDir: dir, metrics: noopMetrics });
+  const first = await selfReview.run({ hook_event_name: 'Stop', session_id: sid, cwd }, { retrieve: stubRetrieve, dataDir: dir, metrics: noopMetrics, cfg: srCfg });
   assertEq(first.block, true);
   assert(String(first.reason).includes('[SELF-REVIEW]') && first.reason.includes('widget parser off-by-one'), 'advisory content');
 
@@ -2959,7 +2961,7 @@ test('self-review.run: edits + retrieved lesson → block, journals, dedups next
 
   // Second turn, same lesson → deduped (already surfaced) → no block.
   verifyJournalTop.appendEdit(sid, 'scripts/lib/widget-parser.js');
-  const second = await selfReview.run({ hook_event_name: 'Stop', session_id: sid, cwd }, { retrieve: stubRetrieve, dataDir: dir, metrics: noopMetrics });
+  const second = await selfReview.run({ hook_event_name: 'Stop', session_id: sid, cwd }, { retrieve: stubRetrieve, dataDir: dir, metrics: noopMetrics, cfg: srCfg });
   assertEq(Object.keys(second).length, 0);
 });
 
