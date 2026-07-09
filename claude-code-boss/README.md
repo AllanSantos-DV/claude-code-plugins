@@ -106,11 +106,12 @@ Todos os hooks estão declarados em `hooks/hooks.json`. Eventos e scripts ativos
 > **Tom advisory:** os hooks informam, não coagem. Sem orquestrador próprio:
 > a delegação usa as ferramentas nativas (Agent/Workflow).
 >
-> **Perfis (`hooks-config.json` → `profile`)**: `dev` (padrão, tudo ligado) ou
-> `standard` — preset silencioso para quem só quer usar o plugin: nudges de captura
+> **Perfis (`hooks-config.json` → `profile`)**: `standard` (padrão) — preset
+> silencioso e econômico em tokens para quem só quer usar o plugin: nudges de captura
 > (`pattern-detect`, `correction-detect`, `decisionScan`) e as ferramentas de dev
 > (`verifyNudge`, `selfReview`) desligados; `curation-stop` bloqueia 1x e relenta
-> (sem escalonar). Override individual em `hooks-config.json` sempre vence o preset.
+> (sem escalonar). Ou `dev` — tudo ligado, para quem desenvolve/estende o plugin.
+> Override individual em `hooks-config.json` sempre vence o preset.
 > Selecionável na aba Hooks do dashboard.
 
 ## Brain KB
