@@ -25,10 +25,10 @@
     "maxEntriesPerProject": 10000,
     "archiveAfterDays": 90,
     "retrieval": {
-      "fastTopK": 2,
+      "fastTopK": 1,
       "deepTopK": 3,
-      "minScoreFast": 0.20,
-      "minScoreDeep": 0.08,
+      "minScoreFast": 0.50,
+      "minScoreDeep": 0.20,
       "contextExcludeTypes": [],
       "_comment_contextExcludeTypes": "Tipos (lesson/pattern/reference/memory) que NÃO entram no bloco [BRAIN] injetado no UserPromptSubmit; default [] = injeta todos (comportamento atual). Ative por usuário via DATA_DIR/brain/user-config.json (não aqui, pra não afetar terceiros)."
     },
