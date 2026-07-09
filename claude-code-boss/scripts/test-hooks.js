@@ -614,7 +614,7 @@ const TESTS = [
         path.join(runtimeDir, `curation-turn-${safe}.json`),
         JSON.stringify({ entries: [{ command: 'powershell -File .vscode/scripts/vitest.ps1', reason: 'curated-success-noisy', lines: 53, chars: 5114, isCurated: true, curatedScript: '.vscode/scripts/vitest.ps1' }] }),
       );
-      return { CLAUDE_PLUGIN_DATA: tmpData };
+      return { CLAUDE_PLUGIN_DATA: tmpData, CLAUDE_PLUGIN_ROOT: mkTempPluginRoot({ profile: 'dev' }) };
     },
     validate: r => {
       if (r.parsed?.decision !== 'block') return `expected escalated block, got: ${JSON.stringify(r.parsed)}`;
@@ -643,7 +643,7 @@ const TESTS = [
           firstBlockedAt: new Date().toISOString(),
         }),
       );
-      return { CLAUDE_PLUGIN_DATA: tmpData };
+      return { CLAUDE_PLUGIN_DATA: tmpData, CLAUDE_PLUGIN_ROOT: mkTempPluginRoot({ profile: 'dev' }) };
     },
     validate: r => {
       if (r.parsed?.decision !== 'block') return `expected escalated block (text-only ignore), got: ${JSON.stringify(r.parsed)}`;
@@ -960,7 +960,7 @@ const TESTS = [
         JSON.stringify({ ts: 1000000000000, kind: 'edit', path: 'src/a.js' }));
       fs.writeFileSync(path.join(runtimeDir, `turn-verify-${safe}--1000000000001-bbbbbbbb.json`),
         JSON.stringify({ ts: 1000000000001, kind: 'cmd', sig: 'git status', curated: null }));
-      return { CLAUDE_PLUGIN_DATA: tmpData };
+      return { CLAUDE_PLUGIN_DATA: tmpData, CLAUDE_PLUGIN_ROOT: mkTempPluginRoot({ profile: 'dev' }) };
     },
     validateWithEnv: (r, env) => {
       if (r.parsed?.decision !== 'block') return `expected decision:'block', got: ${JSON.stringify(r.parsed)}`;
