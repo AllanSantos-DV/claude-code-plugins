@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.22.6] - 2026-07-08
+
+### Changed — economia de token: plugin voltou a ser net-positive
+
+Diagnóstico (custo por turno vs. o que a curadoria/memória poupa) apontou que o
+default estava gastando mais do que economizava. Dois ajustes, sem código de feature
+novo:
+
+- **Gate do `[BRAIN]` apertado** (`config/brain-config.json`): `minScoreFast`
+  `0.20 → 0.50` (0.20 era permissivo — ~30-40% das injeções eram ruído de baixa
+  relevância), `fastTopK` `2 → 1` (injeta só a melhor lição), `minScoreDeep`
+  `0.08 → 0.20`. Era o maior driver de custo por turno; independe de perfil e mantém
+  todas as features.
+- **Perfil default `dev → standard`** (`config/hooks-config.json`): desliga os 5
+  detectores de dev no Stop (`pattern-detect`, `correction-detect`, `decisionScan`,
+  `verifyNudge`, `selfReview`) e faz `curation-stop` bloquear 1x sem escalar
+  (`maxAttempts: 1`). Quem desenvolve/estende o plugin volta ao comportamento
+  completo com `profile: "dev"` (override sempre vence o preset).
+
+`self-review.js` passou a aceitar config via DI (`deps.cfg`) para teste isolado
+race-free; testes de comportamento `dev` (curation-stop escalation, verify-nudge)
+tornados profile-explícitos. README atualizado (novo default). Gate: 62 hooks + 330
+unitários verdes.
+
 ## [1.22.5] - 2026-07-05
 
 ### Fixed — schema da tool `capture_lesson` não declarava os types que os próprios hooks pedem
