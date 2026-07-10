@@ -149,17 +149,24 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
   }
 
   // ─── Project scoping (stdio = CWD; http = explicit-or-reject) ──────────────
+  // Client-chosen identity: an explicit `project` arg wins, then the shared
+  // resolver (env CCB_PROJECT_ID → .claude-boss-project marker → basename(cwd)),
+  // so the id we stamp on the daemon is stable across machines/clones instead of
+  // the raw folder name. Default (no override) stays basename(cwd) — unchanged.
+  const projectId = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'project-id.js'));
   function resolveProject(args) {
     const a = args || {};
-    const explicit = a.project || (a.cwd ? path.basename(a.cwd) : null);
-    if (explicit) return explicit;
+    if (a.project) return a.project;
+    const forced = projectId.sanitize(process.env.CCB_PROJECT_ID);
+    if (forced) return forced;
+    if (a.cwd) return projectId.resolveProjectId({ cwd: a.cwd });
     if (mode === 'http') {
       throw Object.assign(
         new Error('project is required in HTTP mode (a long-lived service has no CWD to infer the workspace from)'),
         { code: 'PROJECT_REQUIRED' },
       );
     }
-    return path.basename(process.cwd() || 'default');
+    return projectId.resolveProjectId({ cwd: process.cwd() });
   }
 
   // ─── Async mutex (serialize KB ops over the process-singleton DB) ──────────
