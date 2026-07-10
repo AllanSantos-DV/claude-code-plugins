@@ -173,6 +173,19 @@ function validateBrainConfig(data) {
     if ('type' in data.backend && !['local', 'mcp-memory'].includes(data.backend.type)) {
       return `backend.type must be "local" or "mcp-memory"`;
     }
+    if ('mcpMemory' in data.backend) {
+      if (typeof data.backend.mcpMemory !== 'object') return 'backend.mcpMemory must be object';
+      const tr = data.backend.mcpMemory.transport;
+      if (tr !== undefined && !['stdio', 'http'].includes(tr)) {
+        return 'backend.mcpMemory.transport must be "stdio" or "http"';
+      }
+    }
+    if ('ingestion' in data.backend) {
+      if (typeof data.backend.ingestion !== 'object') return 'backend.ingestion must be object';
+      if ('enabled' in data.backend.ingestion && typeof data.backend.ingestion.enabled !== 'boolean') {
+        return 'backend.ingestion.enabled must be a boolean';
+      }
+    }
   }
   if ('embedder' in data) {
     if (typeof data.embedder !== 'object') return 'embedder must be object';
@@ -277,11 +290,17 @@ function getBrainBackend(req, res) {
 
 // ─── API: Brain Backend Config (read/write brain-config.json) ────────
 
+// Per-user override lives here; the shipped config is the factory default.
+const BRAIN_USER_CONFIG = path.join(DATA_DIR, 'brain', 'user-config.json');
+
 function getBrainConfig(req, res) {
-  const configPath = path.join(ROOT, 'config', 'brain-config.json');
-  const data = readJSON(configPath);
-  if (!data) return fail(res, 'brain-config.json not found', 404);
-  json(res, data);
+  try {
+    const brainConfig = require('./lib/brain-config.js');
+    brainConfig._resetCache(); // reflect any on-disk change since the last read
+    json(res, brainConfig.load()); // shipped ⊕ DATA_DIR/brain/user-config.json
+  } catch (e) {
+    fail(res, `brain-config load failed: ${e.message}`, 500);
+  }
 }
 
 async function saveBrainConfig(req, res) {
@@ -290,8 +309,16 @@ async function saveBrainConfig(req, res) {
     const parsed = JSON.parse(body);
     const err = validateBrainConfig(parsed);
     if (err) return fail(res, `Invalid brain-config.json: ${err}`, 400);
-    const configPath = path.join(ROOT, 'config', 'brain-config.json');
-    atomicWriteJSON(configPath, parsed);
+    // Persist ONLY to the per-user override, and only the delta vs the shipped
+    // defaults. The shipped config stays untouched so users who never open the
+    // dashboard (and don't run the external daemon) keep working on the local
+    // backend, and the override survives plugin auto-update.
+    const brainConfig = require('./lib/brain-config.js');
+    const shipped = readJSON(path.join(ROOT, 'config', 'brain-config.json')) || {};
+    const delta = brainConfig.deepDiff(shipped, parsed);
+    fs.mkdirSync(path.dirname(BRAIN_USER_CONFIG), { recursive: true });
+    atomicWriteJSON(BRAIN_USER_CONFIG, delta);
+    brainConfig._resetCache();
     json(res, { ok: true, requiresRestart: true });
   } catch (e) { fail(res, e.message); }
 }

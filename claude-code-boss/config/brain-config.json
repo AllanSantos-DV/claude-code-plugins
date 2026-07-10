@@ -13,6 +13,10 @@
       "downloadUrl": "https://github.com/AllanSantos-DV/mcp-memory-server-releases/releases/download/v2.6.0/mcp-memory-server-2.6.0.jar",
       "expectedSha256": "",
       "timeout": 60000
+    },
+    "ingestion": {
+      "enabled": false,
+      "_comment_ingestion": "Quando true E backend.type=mcp-memory, o hook Stop envia a conversa do turno ao memory server (add_document, type=conversation) para curadoria/dreaming server-side. Ative por-usuário no dashboard (grava em DATA_DIR/brain/user-config.json, nunca aqui). Default false: enviar o chat é opt-in explícito (privacidade)."
     }
   },
   "embedder": {
