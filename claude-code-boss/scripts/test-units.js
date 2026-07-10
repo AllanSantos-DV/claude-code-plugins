@@ -1924,6 +1924,60 @@ test('conversation-ingest.run: mcp-memory but ingestion OFF → no-op', async ()
   assertEq(Object.keys(r || {}).length, 0);
 });
 
+// ─── project-id: client-side identity resolver (env → marker → basename) ─────
+const projectId = require('./lib/project-id.js');
+
+// Fake fs where `present` is a set of absolute marker paths → contents.
+function fakeFs(present) {
+  return {
+    existsSync: (p) => Object.prototype.hasOwnProperty.call(present, p),
+    readFileSync: (p) => {
+      if (!Object.prototype.hasOwnProperty.call(present, p)) throw new Error('ENOENT');
+      return present[p];
+    },
+  };
+}
+
+test('project-id.sanitize: first non-empty line, trimmed, control-stripped, capped', () => {
+  assertEq(projectId.sanitize('  positiva  '), 'positiva');
+  assertEq(projectId.sanitize('\n\n  minha-app \nsegunda'), 'minha-app');
+  assertEq(projectId.sanitize('a\u0000b\u0007c'), 'abc');
+  assertEq(projectId.sanitize(123), '');
+  assertEq(projectId.sanitize('x'.repeat(200)).length, 120);
+});
+
+test('project-id: env CCB_PROJECT_ID wins over everything', () => {
+  const cwd = path.join('C:', 'Users', 'x', 'Hpositiva');
+  const fs = fakeFs({ [path.join(cwd, '.claude-boss-project')]: 'marker-name' });
+  assertEq(
+    projectId.resolveProjectId({ cwd, env: { CCB_PROJECT_ID: ' forced ' }, fs }),
+    'forced',
+  );
+});
+
+test('project-id: .claude-boss-project marker beats the folder name (the positiva case)', () => {
+  const cwd = path.join('C:', 'Users', 'x', 'Hpositiva');
+  const fs = fakeFs({ [path.join(cwd, '.claude-boss-project')]: 'positiva\n' });
+  assertEq(projectId.resolveProjectId({ cwd, env: {}, fs }), 'positiva');
+});
+
+test('project-id: marker found by walking up from a subdir', () => {
+  const root = path.join('C:', 'proj');
+  const sub = path.join(root, 'packages', 'api', 'src');
+  const fs = fakeFs({ [path.join(root, '.claude-boss-project')]: 'monorepo-id' });
+  assertEq(projectId.resolveProjectId({ cwd: sub, env: {}, fs }), 'monorepo-id');
+});
+
+test('project-id: no override → basename(cwd) (unchanged legacy default)', () => {
+  const cwd = path.join('C:', 'Users', 'x', 'my-repo');
+  const fs = fakeFs({});
+  assertEq(projectId.resolveProjectId({ cwd, env: {}, fs }), 'my-repo');
+});
+
+test('project-id: no cwd and no env → default', () => {
+  assertEq(projectId.resolveProjectId({ cwd: '', env: {}, fs: fakeFs({}) }), 'default');
+});
+
 // ─── retrieve-core.filterInjectableEntries ───────────────────────────────────
 test('retrieve-core.filterInjectableEntries: empty/null → []', () => {
   assertEq(retrieveCore.filterInjectableEntries([]), []);

@@ -149,6 +149,23 @@ opt-in e desligada por padrão. O ajuste é gravado só para você em
 sobrevive ao auto-update. O modo **stdio** (o plugin sobe o `.jar`, requer
 Java 21+) fica disponível como opção avançada.
 
+**Identidade do projeto (recall entre máquinas/pastas)**: o cliente escopa a
+memória por um `projectId`. Por padrão ele é o **nome da pasta** (`basename` do
+`cwd`) — o que muda entre máquinas/clones e pode colidir. Para fixar um id
+estável e escolhido por você (resolve o caso "estou na pasta `Hpositiva` mas
+quero que a sessão use o projeto `positiva`"), a precedência do cliente é:
+
+1. variável de ambiente **`CCB_PROJECT_ID`** — força o id da sessão inteira
+   (ex.: iniciar o Claude Code com `CCB_PROJECT_ID=positiva`);
+2. arquivo **`.claude-boss-project`** na pasta do projeto (ou em um ancestral) —
+   contém o nome escolhido (`positiva`); viaja com a pasta, **independe de git**,
+   do nome da pasta e do path absoluto;
+3. **`basename(cwd)`** — default legado (inalterado quando não há override).
+
+Todos os hooks (recall no `UserPromptSubmit` e ingestão da conversa) passam a
+mandar esse id ao servidor, então a busca semântica casa mesmo com a pasta tendo
+outro nome. O servidor escopa/filtra por esse `projectId` (metadata/override).
+
 ## Brain MCP: stdio (padrão) + HTTP (opt-in)
 
 O brain-server (`servers/brain-server/`) atende em **dois transportes**, com a mesma

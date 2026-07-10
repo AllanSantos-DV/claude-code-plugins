@@ -29,9 +29,18 @@ daemon real (v2.11.9): ativar → salvar conversa → recall semântico project-
   lições curadas. Três gates (backend remoto → opt-in → dedup por hash do turno),
   silencioso, fail-open, zero-token (vai direto ao daemon por HTTP, nunca pelo
   contexto do modelo). **Default desligado** (enviar o chat é escolha explícita).
+- **Identidade de projeto portável (`lib/project-id.js`)**. O `projectId` que o
+  cliente carimba (handshake + ingestão + recall) deixa de ser fatalmente o nome
+  da pasta. Precedência: env `CCB_PROJECT_ID` → arquivo `.claude-boss-project` na
+  pasta (nome escolhido, viaja com o repo, independe de git/path) → `basename(cwd)`
+  (default legado inalterado). Resolve recall entre máquinas/clones e o override
+  explícito "estou na pasta X mas quero o projeto Y". `resolveProject` (recall) e
+  `conversation-ingest` (ingestão) usam o MESMO resolvedor, então gravação e busca
+  concordam no id.
 
-Gate: eslint + version-sync + 343 unitários + 62 hooks verdes. Smoke ao vivo
-(daemon real) cobrindo ativação, `add_document` e recall project-scoped.
+Gate: eslint + version-sync + 349 unitários + 62 hooks verdes. Smoke ao vivo
+(daemon real) cobrindo ativação, `add_document`, recall project-scoped e o
+override de identidade (pasta `Hpositiva` → id `positiva`).
 
 ## [1.22.6] - 2026-07-08
 

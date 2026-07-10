@@ -97,7 +97,9 @@ async function run(event) {
 
   const sid = ev.session_id || ev.sessionId || 'default';
   const transcriptPath = ev.transcript_path || ev.transcriptPath || '';
-  const project = ev.cwd ? path.basename(ev.cwd) : 'default';
+  // Same client-side identity the recall path uses (resolveProject in the
+  // brain-server), so ingested docs and later semantic recall agree on the id.
+  const project = require('./lib/project-id.js').resolveProjectId({ cwd: ev.cwd });
 
   const userText = readLastUserText(transcriptPath);
   const assistantText = readLastAssistantText(transcriptPath);
