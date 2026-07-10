@@ -343,26 +343,54 @@ code { color: var(--fg); font-family: var(--font-mono); }
       </div>
 
       <div id="mcp-fields" style="display:none;margin-top:.75rem;border-top:1px solid var(--border);padding-top:.75rem">
-        <div style="display:grid;grid-template-columns:1fr 1fr;gap:.75rem">
+        <div class="flex flex-wrap gap-1" style="align-items:flex-start">
+          <div style="min-width:220px">
+            <label class="field-label">
+              <span data-i18n="brain.transport">Connection mode</span>
+              <span class="tip" data-i18n-tip="tip.transport" data-tip="http = conectar a um mcp-memory-server já rodando (recomendado). stdio = o plugin sobe o JAR localmente.">i</span>
+            </label>
+            <select id="mcp-transport" onchange="onTransportChange(this.value)" style="width:auto">
+              <option value="http">http (conectar a servidor rodando)</option>
+              <option value="stdio">stdio (subir o JAR local)</option>
+            </select>
+          </div>
+          <div style="flex:1;min-width:240px" id="mcp-http-fields">
+            <label class="field-label">
+              <span data-i18n="brain.serverUrl">Server URL</span>
+              <span class="tip" data-i18n-tip="tip.serverUrl" data-tip="Deixe vazio para auto-descobrir via ~/.mcp-memory/run/daemon.json. Ex.: http://127.0.0.1:60707">i</span>
+            </label>
+            <input type="text" id="mcp-server-url" placeholder="auto-descobrir (daemon.json)">
+          </div>
+        </div>
+
+        <div id="mcp-stdio-fields" style="display:none;grid-template-columns:1fr 1fr;gap:.75rem;margin-top:.75rem">
           <div>
             <label class="field-label">
               <span data-i18n="brain.jarPath">JAR Path</span>
-              <span class="tip" data-i18n-tip="tip.jarPath" data-tip="Caminho para o .jar do mcp-memory-server. Deixe vazio para baixar automaticamente da última release.">i</span>
+              <span class="tip" data-i18n-tip="tip.jarPath" data-tip="Caminho para o .jar do mcp-memory-server (modo stdio).">i</span>
             </label>
             <input type="text" id="mcp-jar-path" placeholder="C:/path/to/mcp-memory-server.jar">
           </div>
           <div>
             <label class="field-label">
               <span data-i18n="brain.javaArgs">Java Args</span>
-              <span class="tip" data-i18n-tip="tip.javaArgs" data-tip="Argumentos passados ao processo Java. Default: -Xmx512m (limita heap a 512MB).">i</span>
+              <span class="tip" data-i18n-tip="tip.javaArgs" data-tip="Argumentos do processo Java. Default: -Xmx512m.">i</span>
             </label>
             <input type="text" id="mcp-java-args" placeholder="-Xmx512m">
           </div>
         </div>
+
+        <label class="flex" style="align-items:center;gap:.5rem;margin-top:.75rem;cursor:pointer">
+          <input type="checkbox" id="mcp-ingestion" style="width:auto">
+          <span data-i18n="brain.ingestion">Send the conversation to the server (ingest for curation)</span>
+          <span class="tip" data-i18n-tip="tip.ingestion" data-tip="Opt-in. Quando ligado, ao fim de cada turno o plugin envia a conversa (add_document) ao seu servidor para curadoria server-side. Desligado = só save + recall semântico. Os dados não passam pelo contexto do modelo.">i</span>
+        </label>
+
         <p id="java-check-msg" class="text-muted" style="margin-top:.5rem;font-size:.75rem"></p>
-        <div style="margin-top:.5rem;display:flex;align-items:center;gap:.5rem">
-          <button class="btn-primary btn-sm" id="mcp-test-btn" onclick="testMcpMemory()" data-i18n="brain.testInstall">Test / Install</button>
+        <div style="margin-top:.5rem;display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
+          <button class="btn-primary btn-sm" id="mcp-test-btn" onclick="testMcpMemory()" data-i18n="brain.testConn">Test connection</button>
           <span id="mcp-test-status" class="text-muted" style="font-size:.75rem"></span>
+          <a href="https://github.com/AllanSantos-DV/mcp-memory-server-releases/releases/latest" target="_blank" rel="noopener" style="font-size:.75rem" data-i18n="brain.downloadServer">↓ Download memory server</a>
         </div>
       </div>
     </div>
@@ -908,6 +936,12 @@ const I18N = {
     'brain.restartNeeded': 'Restart required', 'brain.restartHint': 'to apply the changes.',
     'brain.restartBtn': 'Restart Dashboard', 'brain.backendType': 'Backend Type',
     'brain.currentStatus': 'Current status', 'brain.jarPath': 'JAR Path', 'brain.javaArgs': 'Java Args',
+    'brain.transport': 'Connection mode', 'brain.serverUrl': 'Server URL',
+    'brain.ingestion': 'Send the conversation to the server (ingest for curation)',
+    'brain.downloadServer': '↓ Download memory server', 'brain.testConn': 'Test connection',
+    'tip.transport': 'http = connect to a running mcp-memory-server (recommended). stdio = the plugin spawns the JAR locally.',
+    'tip.serverUrl': 'Leave empty to auto-discover via ~/.mcp-memory/run/daemon.json. e.g. http://127.0.0.1:60707',
+    'tip.ingestion': 'Opt-in. When on, at the end of each turn the plugin sends the conversation (add_document) to your server for server-side curation. Off = only save + semantic recall.',
     'brain.embedder': 'Embedder', 'brain.provider': 'Provider', 'brain.model': 'Model', 'brain.dimensions': 'Dimensions',
     'brain.reembedWarn': 'Changing the model invalidates existing embeddings. After saving, run',
     'brain.retrieval': 'Retrieval', 'brain.fastTopK': 'Fast Top-K', 'brain.deepTopK': 'Deep Top-K',
@@ -1030,6 +1064,12 @@ const I18N = {
     'brain.restartNeeded': 'Restart necessário', 'brain.restartHint': 'para aplicar as mudanças.',
     'brain.restartBtn': 'Reiniciar Dashboard', 'brain.backendType': 'Tipo de Backend',
     'brain.currentStatus': 'Status atual', 'brain.jarPath': 'Caminho do JAR', 'brain.javaArgs': 'Args Java',
+    'brain.transport': 'Modo de conexão', 'brain.serverUrl': 'URL do servidor',
+    'brain.ingestion': 'Enviar a conversa ao servidor (ingestão para curadoria)',
+    'brain.downloadServer': '↓ Baixar memory server', 'brain.testConn': 'Testar conexão',
+    'tip.transport': 'http = conectar a um mcp-memory-server já rodando (recomendado). stdio = o plugin sobe o JAR localmente.',
+    'tip.serverUrl': 'Deixe vazio para auto-descobrir via ~/.mcp-memory/run/daemon.json. Ex.: http://127.0.0.1:60707',
+    'tip.ingestion': 'Opt-in. Quando ligado, ao fim de cada turno o plugin envia a conversa (add_document) ao seu servidor para curadoria server-side. Desligado = só save + recall semântico.',
     'brain.embedder': 'Embedder', 'brain.provider': 'Provider', 'brain.model': 'Modelo', 'brain.dimensions': 'Dimensões',
     'brain.reembedWarn': 'Trocar o modelo invalida embeddings existentes. Após salvar, rode',
     'brain.retrieval': 'Retrieval', 'brain.fastTopK': 'Fast Top-K', 'brain.deepTopK': 'Deep Top-K',
@@ -1687,19 +1727,27 @@ function wireConfigTest({ btnId, statusId, domain, getInput, onSuccess, pendingL
 async function testMcpMemory() {
   const btn = document.getElementById('mcp-test-btn');
   const status = document.getElementById('mcp-test-status');
-  const jarPath = document.getElementById('mcp-jar-path').value.trim();
-  const downloadUrl = (_brainConfig && _brainConfig.backend && _brainConfig.backend.mcpMemory && _brainConfig.backend.mcpMemory.downloadUrl) || '';
-  const expectedSha256 = (_brainConfig && _brainConfig.backend && _brainConfig.backend.mcpMemory && _brainConfig.backend.mcpMemory.expectedSha256) || '';
+  const transport = document.getElementById('mcp-transport').value === 'stdio' ? 'stdio' : 'http';
   btn.disabled = true;
   status.style.color = 'var(--fg-muted)';
-  status.textContent = '⏳ Validating jar + Java…';
+  status.textContent = transport === 'http' ? '⏳ Testando conexão…' : '⏳ Validating jar + Java…';
   try {
-    const r = await api('POST', '/api/config/test', { domain: 'mcp-memory', input: { jarPath, downloadUrl, expectedSha256 } });
+    let input;
+    if (transport === 'http') {
+      input = { transport: 'http', serverUrl: document.getElementById('mcp-server-url').value.trim() };
+    } else {
+      const jarPath = document.getElementById('mcp-jar-path').value.trim();
+      const mcp = (_brainConfig && _brainConfig.backend && _brainConfig.backend.mcpMemory) || {};
+      input = { transport: 'stdio', jarPath, downloadUrl: mcp.downloadUrl || '', expectedSha256: mcp.expectedSha256 || '' };
+    }
+    const r = await api('POST', '/api/config/test', { domain: 'mcp-memory', input });
     if (r && r.ok) {
       status.style.color = 'var(--success)';
       const d = r.details || {};
       const parts = [];
       if (d.action) parts.push(d.action);
+      if (d.serverUrl) parts.push(d.serverUrl);
+      if (d.daemonVersion) parts.push(`v${d.daemonVersion}`);
       if (d.jarSize) parts.push(`${Math.round(d.jarSize/1024/1024)}MB`);
       else if (d.downloadSize) parts.push(`download ${Math.round(d.downloadSize/1024/1024)}MB`);
       if (d.javaVersion) parts.push(`java ${d.javaVersion}`);
@@ -1737,9 +1785,15 @@ async function loadBrain() {
 
     if (backendType === 'mcp-memory' && _brainConfig.backend.mcpMemory) {
       const mcp = _brainConfig.backend.mcpMemory;
+      const transport = mcp.transport === 'stdio' ? 'stdio' : 'http';
+      document.getElementById('mcp-transport').value = transport;
+      onTransportChange(transport);
+      document.getElementById('mcp-server-url').value = mcp.serverUrl || '';
       document.getElementById('mcp-jar-path').value = mcp.jarPath || '';
       document.getElementById('mcp-java-args').value = (mcp.javaArgs || []).join(' ');
     }
+    document.getElementById('mcp-ingestion').checked =
+      !!(_brainConfig.backend && _brainConfig.backend.ingestion && _brainConfig.backend.ingestion.enabled);
 
     // Embedder
     const emb = _brainConfig.embedder || {};
@@ -1797,12 +1851,19 @@ async function loadBrain() {
   } catch {}
 }
 
-function onBackendTypeChange(value, silent) {
+function onBackendTypeChange(value) {
   const mcpFields = document.getElementById('mcp-fields');
   mcpFields.style.display = value === 'mcp-memory' ? 'block' : 'none';
-  if (value === 'mcp-memory' && !silent) {
-    document.getElementById('java-check-msg').textContent = 'Requer Java 21+ instalado na máquina.';
+  if (value === 'mcp-memory') {
+    onTransportChange(document.getElementById('mcp-transport').value);
   }
+}
+
+function onTransportChange(value) {
+  document.getElementById('mcp-http-fields').style.display = value === 'http' ? '' : 'none';
+  document.getElementById('mcp-stdio-fields').style.display = value === 'stdio' ? 'grid' : 'none';
+  const msg = document.getElementById('java-check-msg');
+  if (msg) msg.textContent = value === 'stdio' ? 'Modo stdio: requer Java 21+ instalado na máquina.' : '';
 }
 
 async function saveBrainBackendConfig() {
@@ -1813,10 +1874,14 @@ async function saveBrainBackendConfig() {
   cfg.backend.type = type;
   if (type === 'mcp-memory') {
     cfg.backend.mcpMemory = cfg.backend.mcpMemory || {};
+    cfg.backend.mcpMemory.transport = document.getElementById('mcp-transport').value === 'stdio' ? 'stdio' : 'http';
+    cfg.backend.mcpMemory.serverUrl = document.getElementById('mcp-server-url').value.trim();
     cfg.backend.mcpMemory.jarPath = document.getElementById('mcp-jar-path').value.trim();
     const argsRaw = document.getElementById('mcp-java-args').value.trim();
     cfg.backend.mcpMemory.javaArgs = argsRaw ? argsRaw.split(/\s+/) : ['-Xmx512m'];
   }
+  cfg.backend.ingestion = cfg.backend.ingestion || {};
+  cfg.backend.ingestion.enabled = document.getElementById('mcp-ingestion').checked;
 
   // Embedder
   cfg.embedder = cfg.embedder || {};
