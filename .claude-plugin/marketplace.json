@@ -21,6 +21,22 @@
       "homepage": "https://github.com/AllanSantos-DV/claude-code-plugins",
       "license": "MIT",
       "keywords": ["orchestration", "multi-agent", "research", "discovery", "brain", "boss"]
+    },
+    {
+      "name": "rf-reviewer",
+      "displayName": "RF Reviewer — Revisão de Requisitos em Excel",
+      "source": {
+        "source": "git-subdir",
+        "url": "https://github.com/AllanSantos-DV/claude-code-plugins.git",
+        "path": "rf-reviewer"
+      },
+      "description": "Motor determinístico de revisão de RF em Excel (La Positiva / InsureMO): extrai, o agente analisa cruzando com a memória, e injeta a análise de volta na MESMA planilha de forma mecânica e não-destrutiva. Perfis de coluna por assunto. Escopo tabular (xlsx/csv).",
+      "author": {
+        "name": "Allan Santos"
+      },
+      "homepage": "https://github.com/AllanSantos-DV/claude-code-plugins",
+      "license": "MIT",
+      "keywords": ["excel", "requisitos-funcionales", "insuremo", "la-positiva", "openpyxl", "revisao"]
     }
   ]
 }

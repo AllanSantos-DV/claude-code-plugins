@@ -1,0 +1,18 @@
+{
+  "name": "rf-reviewer",
+  "displayName": "RF Reviewer — Revisão de Requisitos em Excel",
+  "description": "Motor determinístico para revisar entregáveis de Requisitos Funcionais (Excel) do projeto La Positiva / InsureMO: extrai a planilha, deixa o agente preencher a análise cruzada com a memória do projeto, e INJETA a análise de volta na MESMA planilha do cliente de forma mecânica e não-destrutiva (colunas anexadas, original 100% preservado, versionado). Perfis de coluna trocáveis por assunto. Escopo: arquivos TABULARES (xlsx/csv); documentos (pdf/docx/pptx) seguem outro fluxo.",
+  "author": {
+    "name": "Allan Santos"
+  },
+  "homepage": "https://github.com/AllanSantos-DV/claude-code-plugins",
+  "license": "MIT",
+  "keywords": [
+    "excel",
+    "requisitos-funcionales",
+    "insuremo",
+    "la-positiva",
+    "openpyxl",
+    "revisao"
+  ]
+}

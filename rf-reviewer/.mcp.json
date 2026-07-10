@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "rf-engine": {
+      "command": "python",
+      "args": ["-m", "rf_engine.mcp_server"],
+      "env": {
+        "PYTHONPATH": "${CLAUDE_PLUGIN_ROOT}/servers/rf-engine"
+      }
+    }
+  }
+}
