@@ -43,6 +43,23 @@ function deepMerge(base, override) {
   return out;
 }
 
+// Inverse of deepMerge, for persistence: the subtree of `next` that differs from
+// `base`, so a caller stores ONLY what changed from the factory defaults. Future
+// shipped changes to untouched keys then still reach the user via deepMerge.
+function deepDiff(base, next) {
+  if (!isPlainObject(base) || !isPlainObject(next)) return next;
+  const out = {};
+  for (const k of Object.keys(next)) {
+    if (isPlainObject(next[k]) && isPlainObject(base[k])) {
+      const d = deepDiff(base[k], next[k]);
+      if (isPlainObject(d) && Object.keys(d).length) out[k] = d;
+    } else if (JSON.stringify(next[k]) !== JSON.stringify(base[k])) {
+      out[k] = next[k];
+    }
+  }
+  return out;
+}
+
 function load() {
   if (_cache) return _cache;
   let shipped = {};
@@ -117,6 +134,7 @@ function _resetCache() { _cache = null; }
 
 module.exports = {
   load,
+  deepDiff,
   getRetrievalFast,
   getRetrievalDeep,
   getSubmission,

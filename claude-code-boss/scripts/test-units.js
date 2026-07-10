@@ -1812,6 +1812,58 @@ test('brain-config user-override: deep-merge keeps shipped retrieval fields', ()
   });
 });
 
+// ─── GAP2: deepDiff (dashboard persists only the delta vs the shipped config) ─
+test('brain-config.deepDiff: identical trees → {}', () => {
+  assertEq(brainConfig.deepDiff({ a: 1, b: { c: 2 } }, { a: 1, b: { c: 2 } }), {});
+});
+
+test('brain-config.deepDiff: captures only the changed nested leaf', () => {
+  assertEq(
+    brainConfig.deepDiff(
+      { backend: { type: 'local', mcpMemory: { transport: 'stdio' } } },
+      { backend: { type: 'mcp-memory', mcpMemory: { transport: 'stdio' } } },
+    ),
+    { backend: { type: 'mcp-memory' } },
+  );
+});
+
+test('brain-config.deepDiff: a brand-new key in next is captured', () => {
+  assertEq(
+    brainConfig.deepDiff(
+      { backend: { type: 'local' } },
+      { backend: { type: 'local', ingestion: { enabled: true } } },
+    ),
+    { backend: { ingestion: { enabled: true } } },
+  );
+});
+
+test('brain-config.deepDiff: arrays replace wholesale (never merged)', () => {
+  assertEq(brainConfig.deepDiff({ a: [1, 2] }, { a: [1, 2, 3] }), { a: [1, 2, 3] });
+  assertEq(brainConfig.deepDiff({ a: [1, 2] }, { a: [1, 2] }), {});
+});
+
+// ─── GAP2: brain-backend activates the backend from shipped ⊕ per-user override
+const brainBackend = require('./brain-backend.js');
+
+test('brain-backend.peekMode: no override → local (shipped factory default)', () => {
+  withUserConfig(undefined, () => {
+    brainBackend._resetConfig();
+    assertEq(brainBackend.peekMode(), 'local');
+  });
+});
+
+test('brain-backend.peekMode: per-user override flips to mcp-memory (shipped untouched)', () => {
+  withUserConfig({ backend: { type: 'mcp-memory' } }, () => {
+    brainBackend._resetConfig();
+    assertEq(brainBackend.peekMode(), 'mcp-memory');
+  });
+  // Absent override → back to shipped default: the flip was per-user, not global.
+  withUserConfig(undefined, () => {
+    brainBackend._resetConfig();
+    assertEq(brainBackend.peekMode(), 'local');
+  });
+});
+
 // ─── retrieve-core.filterInjectableEntries ───────────────────────────────────
 test('retrieve-core.filterInjectableEntries: empty/null → []', () => {
   assertEq(retrieveCore.filterInjectableEntries([]), []);
