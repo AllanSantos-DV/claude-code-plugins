@@ -109,6 +109,51 @@ function extractAssistantText(rec) {
   return '';
 }
 
+/** User counterpart of extractAssistantText — pulls the text of a user turn. */
+function extractUserText(rec) {
+  if (!rec || typeof rec !== 'object') return '';
+  const isUser =
+    rec.type === 'user' ||
+    rec.role === 'user' ||
+    rec.message?.role === 'user';
+  if (!isUser) return '';
+  const content =
+    (rec.message && rec.message.content) ??
+    rec.content ??
+    rec.text ?? '';
+  if (typeof content === 'string') return content;
+  if (Array.isArray(content)) {
+    // Skip tool_result blocks — those are tool output echoed back as a "user"
+    // turn, not something the human typed.
+    return content
+      .filter(c => c && c.type !== 'tool_result' && (c.type === 'text' || typeof c.text === 'string'))
+      .map(c => c.text || '')
+      .join(' ');
+  }
+  return '';
+}
+
+/**
+ * Last human user prompt in the transcript (mirrors readLastAssistantText).
+ * Defensive: tolerates schema variations and partial reads.
+ */
+function readLastUserText(transcriptPath, lookback = 30) {
+  try {
+    if (!transcriptPath || !fs.existsSync(transcriptPath)) return '';
+    const buf = fs.readFileSync(transcriptPath, 'utf-8');
+    const lines = buf.split('\n').filter(Boolean);
+    const tail = lines.slice(-lookback);
+    for (let i = tail.length - 1; i >= 0; i--) {
+      try {
+        const rec = JSON.parse(tail[i]);
+        const text = extractUserText(rec);
+        if (text && text.trim()) return text.trim();
+      } catch { /* skip malformed line */ }
+    }
+    return '';
+  } catch { /* unreadable transcript: empty */ return ''; }
+}
+
 /**
  * From a journal of retrievals + an agent reply, decide which entry IDs to
  * bump as cited. Dedupes IDs across retrievals (per-turn cooldown).
@@ -183,4 +228,6 @@ module.exports = {
   findCitations,
   readLastAssistantText,
   extractAssistantText,
+  readLastUserText,
+  extractUserText,
 };

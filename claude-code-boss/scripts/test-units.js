@@ -942,6 +942,20 @@ test('retrieval-feedback: extractAssistantText handles array + string content', 
   );
 });
 
+test('retrieval-feedback: extractUserText pulls user turns, skips tool_result + assistant', () => {
+  assertEq(
+    rfeedback.extractUserText({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: 'faça' }, { type: 'text', text: 'X' }] } }),
+    'faça X',
+  );
+  assertEq(rfeedback.extractUserText({ role: 'user', content: 'oi' }), 'oi');
+  // tool_result blocks are tool output echoed as a "user" turn — not the human.
+  assertEq(
+    rfeedback.extractUserText({ role: 'user', content: [{ type: 'tool_result', text: 'output' }] }),
+    '',
+  );
+  assertEq(rfeedback.extractUserText({ role: 'assistant', content: 'nope' }), '');
+});
+
 test('retrieval-journal: append + read + clear roundtrip', () => {
   const sid = `rjtest-${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
   rjournal.appendEntry(sid, { retrievalId: 'r1', returnedIds: ['x'], returnedTitles: ['T'] });
@@ -1862,6 +1876,52 @@ test('brain-backend.peekMode: per-user override flips to mcp-memory (shipped unt
     brainBackend._resetConfig();
     assertEq(brainBackend.peekMode(), 'local');
   });
+});
+
+// ─── GAP1: conversation-ingest (opt-in daemon ingestion) ─────────────────────
+const convIngest = require('./conversation-ingest.js');
+
+test('conversation-ingest.buildConversationEntry: both sides empty → null', () => {
+  assertEq(convIngest.buildConversationEntry('', '', {}), null);
+  assertEq(convIngest.buildConversationEntry('   ', null, {}), null);
+});
+
+test('conversation-ingest.buildConversationEntry: carries both sides + conversation type', () => {
+  const e = convIngest.buildConversationEntry('como faz X?', 'faz assim Y', { project: 'proj', sid: 's1' });
+  assertEq(e.type, 'conversation');
+  assert(e.title.startsWith('Conversa: como faz X?'), `title from first user line, got ${e.title}`);
+  assert(e.content.detail.includes('## Usuário'), 'detail has user section');
+  assert(e.content.detail.includes('## Assistente'), 'detail has assistant section');
+  assertEq(e.session_id, 's1');
+  assertEq(e.source.project, 'proj');
+});
+
+test('conversation-ingest.buildConversationEntry: truncates oversize content', () => {
+  const big = 'x'.repeat(20000);
+  const e = convIngest.buildConversationEntry(big, big, {});
+  assert(e.content.detail.includes('…[truncated]'), 'clips oversize content');
+  assert(e.content.detail.length < 2 * 20000, 'shorter than the raw concatenation');
+});
+
+test('conversation-ingest.turnKey: stable for same content, differs by content', () => {
+  assertEq(convIngest.turnKey('s', 'a', 'b'), convIngest.turnKey('s', 'a', 'b'));
+  assert(convIngest.turnKey('s', 'a', 'b') !== convIngest.turnKey('s', 'a', 'c'), 'content change → new key');
+});
+
+test('conversation-ingest.run: backend=local → no-op (never ingests to local KB)', async () => {
+  const r = await withUserConfig(undefined, () => {
+    brainBackend._resetConfig();
+    return convIngest.run({ session_id: 's', transcript_path: '' });
+  });
+  assertEq(Object.keys(r || {}).length, 0);
+});
+
+test('conversation-ingest.run: mcp-memory but ingestion OFF → no-op', async () => {
+  const r = await withUserConfig({ backend: { type: 'mcp-memory', ingestion: { enabled: false } } }, () => {
+    brainBackend._resetConfig();
+    return convIngest.run({ session_id: 's', transcript_path: '' });
+  });
+  assertEq(Object.keys(r || {}).length, 0);
 });
 
 // ─── retrieve-core.filterInjectableEntries ───────────────────────────────────
@@ -3435,12 +3495,13 @@ test('stop-dispatcher.rank: known priorities + default', () => {
   assertEq(dispatcher.rank('anything'), 2);
 });
 
-test('stop-dispatcher.DETECTORS: 14 detectors, ordering invariants hold', () => {
+test('stop-dispatcher.DETECTORS: 15 detectors, ordering invariants hold', () => {
   const names = dispatcher.DETECTORS.map(d => d.name);
-  assertEq(names.length, 14);
+  assertEq(names.length, 15);
   assert(names.includes('verify-nudge'), 'verify-nudge (D2) registered');
   assert(names.includes('self-review'), 'self-review (D1) registered');
   assert(names.includes('session-summary'), 'session-summary (U2) registered');
+  assert(names.includes('conversation-ingest'), 'conversation-ingest (GAP1) registered');
   assert(names.indexOf('self-review') < names.indexOf('verify-nudge'),
     'self-review must read verify-journal before verify-nudge clears it');
   assert(names.indexOf('failure-retro') < names.indexOf('curation-stop'),
