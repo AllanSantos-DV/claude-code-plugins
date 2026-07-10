@@ -395,6 +395,32 @@ code { color: var(--fg); font-family: var(--font-mono); }
       </div>
     </div>
 
+    <!-- PROJECT IDENTITY -->
+    <div class="card" id="project-identity-card">
+      <div class="flex mb-1" style="align-items:center;justify-content:space-between">
+        <h2 style="margin:0" data-i18n="brain.identity">Identidade do projeto</h2>
+        <span id="project-marker-status" class="text-muted" style="font-size:.8rem"></span>
+      </div>
+      <p class="text-muted" style="font-size:.8rem;line-height:1.5;margin:.25rem 0 .75rem" data-i18n="brain.identityHelp">
+        O recall é escopado por um projectId. Por padrão é o nome da pasta, que muda entre máquinas. Escreva um <code>.claude-boss-project</code> na pasta do projeto para fixar um nome escolhido (ex.: pasta <code>Hpositiva</code> → id <code>positiva</code>). Também vale a env <code>CCB_PROJECT_ID</code>.
+      </p>
+      <div class="flex flex-wrap gap-1" style="align-items:flex-end">
+        <div style="flex:2;min-width:280px">
+          <label class="field-label" data-i18n="brain.projectFolder">Pasta do projeto</label>
+          <input type="text" id="project-marker-folder" placeholder="C:\\Users\\voce\\Projetos\\Hpositiva">
+        </div>
+        <div style="flex:1;min-width:160px">
+          <label class="field-label" data-i18n="brain.projectChosenId">projectId escolhido</label>
+          <input type="text" id="project-marker-id" placeholder="positiva">
+        </div>
+        <div class="flex" style="gap:.5rem">
+          <button class="btn-sm" onclick="loadProjectMarker()" data-i18n="brain.projectRead">Ler</button>
+          <button class="btn-primary btn-sm" onclick="saveProjectMarker()" data-i18n="action.save">Salvar</button>
+        </div>
+      </div>
+      <p id="project-marker-resolved" class="text-muted" style="font-size:.75rem;margin-top:.5rem"></p>
+    </div>
+
     <!-- EMBEDDER -->
     <div class="card">
       <h2 data-i18n="brain.embedder">Embedder</h2>
@@ -939,6 +965,9 @@ const I18N = {
     'brain.transport': 'Connection mode', 'brain.serverUrl': 'Server URL',
     'brain.ingestion': 'Send the conversation to the server (ingest for curation)',
     'brain.downloadServer': '↓ Download memory server', 'brain.testConn': 'Test connection',
+    'brain.identity': 'Project identity', 'brain.identityHelp': 'Recall is scoped by a projectId. It defaults to the folder name, which changes across machines. Write a <code>.claude-boss-project</code> file in the project folder to pin a chosen name (e.g. folder <code>Hpositiva</code> → id <code>positiva</code>). The env <code>CCB_PROJECT_ID</code> also works.',
+    'brain.projectFolder': 'Project folder', 'brain.projectChosenId': 'chosen projectId',
+    'brain.projectRead': 'Read',
     'tip.transport': 'http = connect to a running mcp-memory-server (recommended). stdio = the plugin spawns the JAR locally.',
     'tip.serverUrl': 'Leave empty to auto-discover via ~/.mcp-memory/run/daemon.json. e.g. http://127.0.0.1:60707',
     'tip.ingestion': 'Opt-in. When on, at the end of each turn the plugin sends the conversation (add_document) to your server for server-side curation. Off = only save + semantic recall.',
@@ -1067,6 +1096,9 @@ const I18N = {
     'brain.transport': 'Modo de conexão', 'brain.serverUrl': 'URL do servidor',
     'brain.ingestion': 'Enviar a conversa ao servidor (ingestão para curadoria)',
     'brain.downloadServer': '↓ Baixar memory server', 'brain.testConn': 'Testar conexão',
+    'brain.identity': 'Identidade do projeto', 'brain.identityHelp': 'O recall é escopado por um projectId. Por padrão é o nome da pasta, que muda entre máquinas. Escreva um <code>.claude-boss-project</code> na pasta do projeto para fixar um nome escolhido (ex.: pasta <code>Hpositiva</code> → id <code>positiva</code>). Também vale a env <code>CCB_PROJECT_ID</code>.',
+    'brain.projectFolder': 'Pasta do projeto', 'brain.projectChosenId': 'projectId escolhido',
+    'brain.projectRead': 'Ler',
     'tip.transport': 'http = conectar a um mcp-memory-server já rodando (recomendado). stdio = o plugin sobe o JAR localmente.',
     'tip.serverUrl': 'Deixe vazio para auto-descobrir via ~/.mcp-memory/run/daemon.json. Ex.: http://127.0.0.1:60707',
     'tip.ingestion': 'Opt-in. Quando ligado, ao fim de cada turno o plugin envia a conversa (add_document) ao seu servidor para curadoria server-side. Desligado = só save + recall semântico.',
@@ -1761,6 +1793,38 @@ async function testMcpMemory() {
     status.textContent = `✗ ${err.message}`;
   } finally {
     btn.disabled = false;
+  }
+}
+
+async function loadProjectMarker() {
+  const folder = document.getElementById('project-marker-folder').value.trim();
+  const status = document.getElementById('project-marker-status');
+  const resolvedEl = document.getElementById('project-marker-resolved');
+  if (!folder) { status.textContent = 'informe a pasta'; return; }
+  try {
+    const r = await api('GET', `/api/brain/project-marker?folder=${encodeURIComponent(folder)}`);
+    document.getElementById('project-marker-id').value = r.projectId || '';
+    status.textContent = r.exists ? 'marker encontrado' : 'sem marker (usa nome da pasta)';
+    resolvedEl.textContent = `projectId atual desta pasta: ${r.resolved || '—'}`;
+  } catch (err) {
+    status.textContent = `✗ ${err.message}`;
+  }
+}
+
+async function saveProjectMarker() {
+  const folder = document.getElementById('project-marker-folder').value.trim();
+  const projectId = document.getElementById('project-marker-id').value.trim();
+  const status = document.getElementById('project-marker-status');
+  const resolvedEl = document.getElementById('project-marker-resolved');
+  if (!folder) { status.textContent = 'informe a pasta'; return; }
+  try {
+    const r = await api('POST', '/api/brain/project-marker', { folder, projectId });
+    if (r.removed) { status.textContent = 'marker removido (volta ao nome da pasta)'; }
+    else { status.textContent = `✓ salvo: ${r.projectId}`; }
+    const check = await api('GET', `/api/brain/project-marker?folder=${encodeURIComponent(folder)}`);
+    resolvedEl.textContent = `projectId atual desta pasta: ${check.resolved || '—'}`;
+  } catch (err) {
+    status.textContent = `✗ ${err.message}`;
   }
 }
 

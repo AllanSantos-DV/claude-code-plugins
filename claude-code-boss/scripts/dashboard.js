@@ -323,6 +323,44 @@ async function saveBrainConfig(req, res) {
   } catch (e) { fail(res, e.message); }
 }
 
+// Read the .claude-boss-project marker for a given folder (project identity).
+function getProjectMarker(req, res, url) {
+  const folder = (url.searchParams.get('folder') || '').trim();
+  if (!folder) return fail(res, 'folder query param required', 400);
+  const projectIdLib = require('./lib/project-id.js');
+  const markerPath = path.join(folder, projectIdLib.MARKER_FILE);
+  let current = '';
+  try { if (fs.existsSync(markerPath)) current = projectIdLib.sanitize(fs.readFileSync(markerPath, 'utf-8')); }
+  catch (err) { console.error(`[DASHBOARD] read marker: ${err.message}`); }
+  // Also report what the resolver would pick for that folder right now.
+  const resolved = projectIdLib.resolveProjectId({ cwd: folder });
+  json(res, { folder, projectId: current, exists: !!current, resolved });
+}
+
+// Write (or clear) the .claude-boss-project marker inside a user-named folder.
+async function saveProjectMarker(req, res) {
+  const body = await readBody(req);
+  try {
+    const { folder, projectId } = JSON.parse(body || '{}');
+    const dir = (folder || '').trim();
+    if (!dir) return fail(res, 'folder is required', 400);
+    let stat;
+    try { stat = fs.statSync(dir); } catch (err) { void err; return fail(res, `folder not found: ${dir}`, 400); }
+    if (!stat.isDirectory()) return fail(res, `not a directory: ${dir}`, 400);
+    const projectIdLib = require('./lib/project-id.js');
+    const clean = projectIdLib.sanitize(projectId);
+    const markerPath = path.join(dir, projectIdLib.MARKER_FILE);
+    if (!clean) {
+      // Empty name → remove the marker (revert to basename default).
+      try { if (fs.existsSync(markerPath)) fs.unlinkSync(markerPath); }
+      catch (err) { return fail(res, `could not remove marker: ${err.message}`); }
+      return json(res, { ok: true, projectId: '', removed: true });
+    }
+    fs.writeFileSync(markerPath, clean + '\n', 'utf-8');
+    json(res, { ok: true, projectId: clean, path: markerPath });
+  } catch (e) { fail(res, e.message); }
+}
+
 function restartDashboard(req, res) {
   const port = server.address().port;
   json(res, { ok: true, port, restarting: true });
@@ -1360,6 +1398,8 @@ function handleAPI(req, res, url) {
   if (p === '/api/brain/backend' && m === 'GET') return getBrainBackend(req, res);
   if (p === '/api/brain/backend-config' && m === 'GET') return getBrainConfig(req, res);
   if (p === '/api/brain/backend-config' && m === 'PUT') return saveBrainConfig(req, res);
+  if (p === '/api/brain/project-marker' && m === 'GET') return getProjectMarker(req, res, url);
+  if (p === '/api/brain/project-marker' && m === 'POST') return saveProjectMarker(req, res);
   if (p === '/api/brain/backend-restart' && m === 'POST') return restartDashboard(req, res);
   if (p === '/api/brain/embedder/test' && m === 'POST') return testEmbedder(req, res);
   if (p === '/api/config/test' && m === 'POST') return testConfig(req, res);
