@@ -1,6 +1,6 @@
 # claude-code-boss
 
-Plugin para Claude Code Desktop — **v1.22.6**
+Plugin para Claude Code Desktop — **v1.23.0**
 
 Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizado leve para Claude Code. A orquestração fica a cargo das ferramentas nativas (Agent/Workflow) — o plugin foca no que o nativo não tem.
 
@@ -138,7 +138,16 @@ node claude-code-boss/scripts/brain-reembed.js
 ```
 O script wipa a tabela `embeddings` de todo project DB e re-embeda usando o modelo atual. Sem fallback, sem `previousModel`, sem dual-read — plugin é single-tenant.
 
-**Backend alternativo MCP Memory** (Java 21+): veja `docs/UPGRADE-MCP-MEMORY.md`.
+**Backend alternativo MCP Memory** (servidor externo): abra o dashboard
+(`node claude-code-boss/scripts/dashboard.js`) → aba **Brain** → **Backend
+Configuration**. Escolha `mcp-memory`, modo **http** (conectar a um
+mcp-memory-server já rodando; deixe a URL vazia para auto-descobrir via
+`~/.mcp-memory/run/daemon.json`), e use **Testar conexão**. Opcional: ligue a
+**ingestão** para enviar a conversa ao servidor (curadoria server-side) — é
+opt-in e desligada por padrão. O ajuste é gravado só para você em
+`DATA_DIR/brain/user-config.json` (o config publicado continua `local`) e
+sobrevive ao auto-update. O modo **stdio** (o plugin sobe o `.jar`, requer
+Java 21+) fica disponível como opção avançada.
 
 ## Brain MCP: stdio (padrão) + HTTP (opt-in)
 

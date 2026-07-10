@@ -1,5 +1,38 @@
 # Changelog
 
+## [1.23.0] - 2026-07-09
+
+### Added — integração real com o MCP Memory Server (backend por-usuário + ingestão)
+
+O switch `local ↔ mcp-memory` existia mas era incompleto e frágil. Esta release
+fecha a integração de ponta a ponta para quem roda o **mcp-memory-server** (daemon
+Java nativo) e quer usá-lo como cérebro do Brain — validado ao vivo contra um
+daemon real (v2.11.9): ativar → salvar conversa → recall semântico project-scoped.
+
+- **Ativação por-usuário (não quebra terceiros)**: `backend.type`/`mcpMemory`/
+  `ingestion` agora resolvem do config publicado **mesclado** com um override
+  pessoal em `DATA_DIR/brain/user-config.json`. Ligar o servidor é uma escolha
+  sua — o config publicado continua `local` (default seguro para quem instala o
+  plugin sem o daemon), e o ajuste **sobrevive ao auto-update**. `brain-backend`
+  passou a ler o merge (`lib/brain-config.load()`); o dashboard grava só o *delta*
+  vs. o shipped (`lib/brain-config.deepDiff`).
+- **Dashboard: conectar em vez de baixar**. O card de Backend agora lidera com
+  **http (conectar a um servidor já rodando)**, com campo de URL (vazio =
+  auto-descobrir via `~/.mcp-memory/run/daemon.json`), botão **Testar conexão**
+  (probe `/health`), e um **link de download manual** da release — sem baixar o
+  JAR automaticamente ao ativar (redundante para quem já tem o servidor). O modo
+  `stdio` (o plugin sobe o JAR) fica como avançado. i18n pt/en.
+- **Ingestão da conversa (opt-in)**. Novo Stop hook `conversation-ingest` que,
+  **quando ligado E no backend mcp-memory**, envia cada turno (prompt + resposta)
+  ao daemon como documento `conversation` para curadoria/index server-side — então
+  o recall semântico do `UserPromptSubmit` passa a encontrar a conversa, não só as
+  lições curadas. Três gates (backend remoto → opt-in → dedup por hash do turno),
+  silencioso, fail-open, zero-token (vai direto ao daemon por HTTP, nunca pelo
+  contexto do modelo). **Default desligado** (enviar o chat é escolha explícita).
+
+Gate: eslint + version-sync + 343 unitários + 62 hooks verdes. Smoke ao vivo
+(daemon real) cobrindo ativação, `add_document` e recall project-scoped.
+
 ## [1.22.6] - 2026-07-08
 
 ### Changed — economia de token: plugin voltou a ser net-positive
