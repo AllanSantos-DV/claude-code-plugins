@@ -130,6 +130,18 @@ function getCuration() {
   };
 }
 
+/**
+ * Conversation ingestion setting (backend.ingestion). Opt-in: when enabled AND
+ * the backend is the external mcp-memory server, the Stop hook ships each turn's
+ * conversation to the daemon for server-side curation. Default OFF (privacy).
+ * @returns {{enabled:boolean}}
+ */
+function getIngestion() {
+  const cfg = load();
+  const i = (cfg.backend && cfg.backend.ingestion) || {};
+  return { enabled: i.enabled === true };
+}
+
 function _resetCache() { _cache = null; }
 
 module.exports = {
@@ -140,5 +152,6 @@ module.exports = {
   getSubmission,
   getContextExcludeTypes,
   getCuration,
+  getIngestion,
   _resetCache,
 };
