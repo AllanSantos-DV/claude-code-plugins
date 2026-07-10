@@ -284,7 +284,45 @@ def _handle(msg: dict) -> None:
         _error(rid, -32601, f"método não suportado: {method}")
 
 
+def _ensure_deps() -> None:
+    """Auto-provisiona a única dependência (openpyxl, pura-Python).
+
+    Se faltar, instala via pip na primeira subida (self-healing). TODO o output
+    vai para stderr — nada pode ir ao stdout (corromperia o protocolo MCP).
+    """
+    try:
+        import openpyxl  # noqa: F401
+        return
+    except ImportError:
+        pass
+    sys.stderr.write("[rf-engine mcp] openpyxl ausente — instalando via pip (uma vez)...\n")
+    sys.stderr.flush()
+    import subprocess
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--user", "--quiet", "openpyxl"],
+            stdout=sys.stderr, stderr=sys.stderr, check=False, timeout=240,
+        )
+    except Exception as exc:  # noqa: BLE001
+        sys.stderr.write(f"[rf-engine mcp] pip falhou: {exc}\n")
+    import importlib
+    try:
+        import site
+        site.main()  # re-inclui o user site no sys.path da sessão atual
+    except Exception:  # noqa: BLE001
+        pass
+    importlib.invalidate_caches()
+    try:
+        import openpyxl  # noqa: F401
+        sys.stderr.write("[rf-engine mcp] openpyxl OK após instalação.\n")
+    except ImportError:
+        sys.stderr.write("[rf-engine mcp] AVISO: openpyxl ainda ausente; instale manualmente "
+                         "(python -m pip install openpyxl) — as tools de Excel falharão até lá.\n")
+    sys.stderr.flush()
+
+
 def main() -> None:
+    _ensure_deps()
     sys.stderr.write(f"[rf-engine mcp] iniciado v{__version__} ({len(TOOLS)} tools)\n")
     sys.stderr.flush()
     for line in sys.stdin:
