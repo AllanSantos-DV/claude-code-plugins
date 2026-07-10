@@ -4,8 +4,6 @@ const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
 
-const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
-const CONFIG_PATH = path.join(PLUGIN_ROOT, 'config', 'brain-config.json');
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
   || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
 
@@ -19,17 +17,28 @@ let _graph = null;
 let _embedder = null;
 let _mcp = null;
 
+// Shipped config (config/brain-config.json) ⊕ per-user override
+// (DATA_DIR/brain/user-config.json). Delegating to lib/brain-config keeps the
+// merge in ONE place: this is what lets a user enable the mcp-memory backend +
+// ingestion for THEMSELVES without editing the shipped file (which would break
+// everyone who installs the plugin without the external daemon), and the
+// override survives plugin auto-update.
 function loadConfig() {
   if (_config) return _config;
   try {
-    if (fs.existsSync(CONFIG_PATH)) {
-      _config = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
-    }
+    _config = require('./lib/brain-config.js').load();
   } catch (e) {
-    console.error(`[BRAIN-BACKEND] Config parse error: ${e.message}`);
+    console.error(`[BRAIN-BACKEND] Config load error: ${e.message}`);
+    _config = {};
   }
-  _config = _config || {};
   return _config;
+}
+
+/** Test/dashboard hook: drop cached config + mode so the next load re-reads disk. */
+function _resetConfig() {
+  _config = null;
+  _mode = null;
+  try { require('./lib/brain-config.js')._resetCache(); } catch (err) { void err; }
 }
 
 function uuid() { return crypto.randomUUID(); }
@@ -484,7 +493,7 @@ const _textUtils = require('./lib/text-utils.js');
 module.exports = {
   init, save, get, search, searchByKeywords,
   delete: delete_, list, count, getRelated, close,
-  getStatus, getMode, peekMode,
+  getStatus, getMode, peekMode, _resetConfig,
   // Exposed for deterministic offline tests of the MCP-tool mappings.
   __testHooks: {
     parseSearchResults, parseListResults, parseAddedId, deriveTitle,
