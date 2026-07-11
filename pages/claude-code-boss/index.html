@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>claude-code-boss — memória semântica e execução curada para o Claude Code</title>
+<meta name="description" content="Plugin para Claude Code Desktop: base de conhecimento local com busca semântica, execução curada anti context-bloat e aprendizado no loop. Backend de memória externo opcional." />
+<style>
+  :root{
+    --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
+    --panel:#0e0d11; --panel-ink:#efece4; --panel-line:rgba(255,255,255,.12);
+    --accent:#b4611e;            /* âmbar-memória: arquivo/conhecimento */
+    --accent-soft:rgba(180,97,30,.12);
+    --maxw:1060px;
+    --mono:ui-monospace,"Cascadia Code","JetBrains Mono",Consolas,"Liberation Mono",monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{ --paper:#121116; --ink:#efece4; --muted:#9a978f; --line:rgba(255,255,255,.13);
+           --panel:#09080b; --accent:#d98a3d; --accent-soft:rgba(217,138,61,.14); }
+  }
+  *{ box-sizing:border-box }
+  html{ -webkit-text-size-adjust:100% }
+  body{
+    margin:0; background:var(--paper); color:var(--ink);
+    font-family:var(--sans); font-size:17px; line-height:1.6;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{ max-width:var(--maxw); margin:0 auto; padding:0 24px }
+  a{ color:inherit }
+  a:focus-visible,button:focus-visible{ outline:2px solid var(--accent); outline-offset:3px; border-radius:3px }
+  code{ font-family:var(--mono); font-size:.86em; background:var(--accent-soft); color:inherit; padding:1px 6px; border-radius:5px }
+
+  .top{ display:flex; align-items:center; justify-content:space-between;
+    padding:20px 0; border-bottom:1px solid var(--line); font-family:var(--mono); font-size:12.5px; letter-spacing:.02em }
+  .top a{ text-decoration:none; color:var(--muted) }
+  .top a:hover{ color:var(--ink) }
+  .ver{ color:var(--accent); border:1px solid var(--accent); border-radius:999px; padding:3px 10px; font-size:11.5px }
+
+  .hero{ padding:clamp(56px,10vw,120px) 0 clamp(40px,7vw,72px) }
+  .eyebrow{ font-family:var(--mono); font-size:12.5px; letter-spacing:.28em; text-transform:uppercase; color:var(--muted); margin:0 0 22px }
+  h1.mark{
+    font-family:var(--mono); font-weight:700; letter-spacing:-.03em; line-height:.95;
+    font-size:clamp(2.6rem,8.5vw,5.4rem); margin:0; word-break:break-word;
+  }
+  h1.mark b{ color:var(--accent); font-weight:700 }
+  .thesis{ font-size:clamp(1.15rem,2.4vw,1.5rem); line-height:1.4; max-width:34ch; margin:26px 0 0; color:var(--ink) }
+  .herolinks{ margin-top:26px; font-family:var(--mono); font-size:13px; color:var(--muted) }
+  .herolinks a{ color:var(--muted); text-decoration:none; border-bottom:1px solid var(--line); padding-bottom:2px }
+  .herolinks a:hover{ color:var(--accent); border-color:var(--accent) }
+  .herolinks span{ margin:0 10px; opacity:.5 }
+
+  .term{ margin-top:40px; background:var(--panel); color:var(--panel-ink);
+    border-radius:12px; overflow:hidden; box-shadow:0 24px 60px -30px rgba(23,22,27,.6);
+    max-width:640px }
+  .term .bar{ display:flex; align-items:center; gap:8px; padding:12px 16px; border-bottom:1px solid var(--panel-line) }
+  .dot{ width:11px; height:11px; border-radius:50% }
+  .term .name{ margin-left:8px; font-family:var(--mono); font-size:12px; color:#8a877f }
+  .term .body{ padding:18px 18px 22px; font-family:var(--mono); font-size:13.5px; line-height:1.9 }
+  .term .cmd{ color:var(--panel-ink); white-space:nowrap; overflow:auto; scrollbar-width:none }
+  .term .cmd::before{ content:"/"; color:var(--accent) }
+  .term .cmd::-webkit-scrollbar{ display:none }
+  .caret{ display:inline-block; width:9px; height:1.05em; background:var(--accent); vertical-align:-2px; margin-left:4px; animation:blink 1.1s steps(1) infinite }
+  @keyframes blink{ 50%{ opacity:0 } }
+
+  section{ padding:clamp(48px,7vw,84px) 0; border-top:1px solid var(--line) }
+  .label{ font-family:var(--mono); font-size:12px; letter-spacing:.22em; text-transform:uppercase; color:var(--muted); margin:0 0 34px }
+
+  .grid{ display:grid; grid-template-columns:repeat(2,1fr); gap:1px; background:var(--line); border:1px solid var(--line) }
+  .cell{ background:var(--paper); padding:28px 26px }
+  .kick{ font-family:var(--mono); font-size:11.5px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); margin:0 0 12px }
+  .cell h3{ font-size:1.18rem; line-height:1.25; margin:0 0 8px; letter-spacing:-.01em }
+  .cell p{ margin:0; color:var(--muted); font-size:15px; line-height:1.55 }
+
+  .flow{ background:var(--panel); color:var(--panel-ink); border-radius:14px; padding:clamp(30px,5vw,52px) }
+  .flow .label{ color:#8a877f }
+  .steps{ display:grid; gap:26px; counter-reset:s; max-width:760px }
+  .step{ display:grid; grid-template-columns:auto 1fr; gap:20px; align-items:start }
+  .step .n{ font-family:var(--mono); font-size:13px; color:var(--accent);
+    border:1px solid var(--panel-line); border-radius:8px; width:38px; height:38px; display:grid; place-items:center }
+  .step .n::before{ counter-increment:s; content:counter(s,decimal-leading-zero) }
+  .step p{ margin:0; font-size:16px; line-height:1.5 }
+  .step b{ font-family:var(--mono); font-weight:600; color:var(--panel-ink) }
+
+  footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
+  footer a{ color:var(--muted); text-decoration:none }
+  footer a:hover{ color:var(--accent) }
+  .frow{ display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between }
+  .flinks a{ margin-right:16px }
+
+  @media (max-width:680px){ .grid{ grid-template-columns:1fr } body{ font-size:16px } }
+  @media (prefers-reduced-motion:reduce){ .caret{ animation:none } .reveal{ opacity:1 !important; transform:none !important } }
+  .reveal{ opacity:0; transform:translateY(14px); animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards }
+  @keyframes rise{ to{ opacity:1; transform:none } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <nav class="top">
+    <a href="../../README.md">← allansantos-plugins</a>
+    <span class="ver">v1.23.0</span>
+  </nav>
+
+  <header class="hero">
+    <p class="eyebrow reveal">Plugin · Claude Code Desktop</p>
+    <h1 class="mark reveal" style="animation-delay:.05s">claude-code-<b>boss</b></h1>
+    <p class="thesis reveal" style="animation-delay:.12s">Memória semântica, execução curada e aprendizado no loop. O que o Claude Code nativo não entrega.</p>
+
+    <div class="term reveal" style="animation-delay:.2s" aria-label="Instalação via marketplace">
+      <div class="bar">
+        <span class="dot" style="background:#ff5f57"></span>
+        <span class="dot" style="background:#febc2e"></span>
+        <span class="dot" style="background:#28c840"></span>
+        <span class="name">Claude Code</span>
+      </div>
+      <div class="body">
+        <div class="cmd">plugin marketplace add AllanSantos-DV/claude-code-plugins</div>
+        <div class="cmd">plugin install claude-code-boss@allansantos-plugins<span class="caret" aria-hidden="true"></span></div>
+      </div>
+    </div>
+
+    <p class="herolinks reveal" style="animation-delay:.28s">
+      <a href="../../claude-code-boss/README.md">README</a><span>·</span>
+      <a href="../../claude-code-boss/CHANGELOG.md">CHANGELOG</a><span>·</span>
+      <a href="https://github.com/AllanSantos-DV/claude-code-plugins">repositório</a>
+    </p>
+  </header>
+
+  <section>
+    <p class="label">O que entrega</p>
+    <div class="grid">
+      <div class="cell">
+        <p class="kick">Brain KB</p>
+        <h3>Base de conhecimento local</h3>
+        <p>Busca semântica sobre SQLite e embeddings. Indexa o que importa e recupera contexto antes de cada ação, com rerank por relevância, recência e frequência.</p>
+      </div>
+      <div class="cell">
+        <p class="kick">Backend opcional</p>
+        <h3>Servidor MCP Memory externo</h3>
+        <p>Troque o SQLite local por um servidor de memória seu ou da equipe. A ativação é por usuário, sobrevive ao auto-update e não afeta quem não usa.</p>
+      </div>
+      <div class="cell">
+        <p class="kick">Identidade de projeto</p>
+        <h3>Recall que casa entre máquinas</h3>
+        <p>O escopo vem de um id estável: <code>CCB_PROJECT_ID</code>, depois o arquivo <code>.claude-boss-project</code>, depois o nome da pasta. A memória segue o projeto, não o caminho.</p>
+      </div>
+      <div class="cell">
+        <p class="kick">Aprendizado no loop</p>
+        <h3>Lições sem reler o transcript</h3>
+        <p>A tool <code>capture_lesson</code> destila lições no próprio turno, mescla duplicatas e promove padrões recorrentes a skills.</p>
+      </div>
+      <div class="cell">
+        <p class="kick">Execução curada</p>
+        <h3>Sinal acima de ruído</h3>
+        <p>Redireciona comandos ruidosos e injeta contexto de forma advisory, com backpressure para não inflar a janela.</p>
+      </div>
+      <div class="cell">
+        <p class="kick">Dashboard</p>
+        <h3>Inspeção sob demanda</h3>
+        <p>Um painel em <code>localhost</code> para ver a KB, os hooks e os logs. Abre quando você chama, não no boot.</p>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="flow">
+      <p class="label">Como funciona</p>
+      <div class="steps">
+        <div class="step"><div class="n"></div><p>Você escreve um prompt. O hook <b>UserPromptSubmit</b> recupera do Brain e injeta um bloco de contexto do projeto.</p></div>
+        <div class="step"><div class="n"></div><p>O agente age com a memória do projeto à mão, escopada pelo id estável do projeto.</p></div>
+        <div class="step"><div class="n"></div><p>Ao terminar, os hooks de <b>Stop</b> destilam lições e curam comandos ruidosos. Nada disso relê o transcript nem gasta a janela.</p></div>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    <div class="frow">
+      <span class="flinks">
+        <a href="../../claude-code-boss/README.md">README</a>
+        <a href="../../claude-code-boss/CHANGELOG.md">CHANGELOG</a>
+        <a href="https://github.com/AllanSantos-DV/claude-code-plugins">GitHub</a>
+      </span>
+      <span>MIT · parte do marketplace allansantos-plugins</span>
+    </div>
+  </footer>
+
+</div>
+</body>
+</html>
