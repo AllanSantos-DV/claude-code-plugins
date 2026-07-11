@@ -1,0 +1,27 @@
+name: Pages Guard
+
+# Barreira dura: um PR/merge na main só passa se a página de cada plugin
+# (pages/<plugin>/index.html + .source-hash) estiver desenhada e atualizada.
+# É o MESMO guard determinístico do hook local — script puro, zero IA, zero cota.
+# Marque este check como "required" na branch protection da main para travar de vez.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+jobs:
+  pages-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verificar frescor das páginas dos plugins
+        run: node .github/scripts/pages-guard.mjs check
