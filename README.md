@@ -4,68 +4,75 @@ Monorepo de plugins para [Claude Code Desktop](https://claude.ai/download) — d
 
 ## Plugins
 
-| Plugin | Versão | Descrição |
+| Plugin | Versão | O que faz |
 | --- | --- | --- |
-| [claude-code-boss](./claude-code-boss) | 1.23.0 | Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizado in-loop para Claude Code |
+| [**claude-code-boss**](./claude-code-boss) | 1.23.0 | Brain KB (busca semântica local), execução curada anti context-bloat e aprendizado in-loop. Opcionalmente conecta a um servidor **MCP Memory** externo. |
+| [**rf-reviewer**](./rf-reviewer) | 0.1.0 | Motor determinístico que revisa Requisitos Funcionais em Excel: extrai a planilha, o agente analisa cruzando com a memória, e injeta a análise de volta na **mesma** planilha — mecânico e não-destrutivo. |
 
-## O que é o claude-code-boss?
+Cada plugin é independente e vive na sua própria subpasta; instale só o que precisar.
 
-Plugin para Claude Code Desktop focado no que o nativo **não** entrega. A orquestração fica a cargo das ferramentas nativas (Agent/Workflow) — após o slim-down de 2026-05 a camada própria de orquestração foi removida.
+## claude-code-boss
 
-O que está entregue:
+Foco no que o Claude Code nativo **não** entrega. A orquestração fica com as ferramentas nativas (Agent/Workflow); o boss agrega memória, curadoria e aprendizado:
 
-- **Brain KB** — base de conhecimento local (SQLite + embeddings via Transformers.js/Ollama/Voyage), indexação automática de outputs relevantes, recuperação híbrida (vetor + keyword) com **rerank por decay** (relevância + recência + frequência + confiança), grafos de citação, servidor MCP com 7 tools — KB: `brain_search`, `brain_store`, `brain_related`, `brain_count`, `capture_lesson`; Web research: `research_query`, `research_status`
-- **Aprendizado in-loop** — tool MCP `capture_lesson` para captura curada de lições no loop (sem reler transcript), com **admission control (A-MAC)** que mescla duplicatas e incrementa `recurrence`. Promoção curada de lições recorrentes a skills via `brain-promote.js`
-- **Native Memory Indexing** — `brain-index-native.js` indexa a Auto Memory nativa (`~/.claude/projects/<cwd>/memory/*.md`) no Brain para busca semântica e cross-project que a camada nativa não oferece
-- **Hooks pipeline (advisory)** — 5 eventos (SessionStart, PreToolUse, PostToolUse, Stop, UserPromptSubmit), ~9 scripts. Tom **informativo, não coercitivo**, com backpressure (cooldown + cap de contagem) para evitar context bloat
-- **Execução curada (Shell Workbench)** — `curation-guard` bloqueia/redireciona comandos curados; `curation-detect` detecta outputs grandes; `session-whitelist` popula ecossistema no boot
-- **Dashboard local** — servidor HTTP em `localhost` (porta dinâmica, token auth), **4 abas**: Home, Brain KB, Hooks, Logs. Lançado **sob demanda** (não auto-inicia mais no SessionStart). Ring buffer de 500 entradas + agregação de erros via `.runtime/hook-errors.jsonl`
-- **Subagentes** — `brain-indexer` (haiku, pinned). Captura de lições/consolidação/refine/curation rodam **in-loop** via tool MCP `capture_lesson` e hooks Stop (`pattern-detect`/`curation-stop`/`refine-research`), sem subagentes dedicados
+- **Brain KB** — base local (SQLite + embeddings via Transformers.js/Ollama/Voyage), indexação automática de outputs relevantes, recuperação híbrida (vetor + keyword) com rerank por decay, e servidor MCP com as tools de KB e web research.
+- **Backend MCP Memory (opt-in)** — em vez do SQLite local, aponte o Brain para um servidor **mcp-memory** externo (seu ou da equipe) pelo dashboard. Ativação **por-usuário** (sobrevive a auto-update), com **ingestão opcional** da conversa para curadoria server-side.
+- **Identidade de projeto portável** — o recall é escopado por um `projectId` estável: `CCB_PROJECT_ID` → arquivo `.claude-boss-project` na pasta → nome da pasta. Casa a memória entre máquinas/clones em vez de depender do nome do diretório.
+- **Aprendizado in-loop** — tool `capture_lesson` com admission control (mescla duplicatas, incrementa recorrência) e promoção de lições recorrentes a skills.
+- **Execução curada + hooks advisory** — bloqueia/redireciona comandos curados, detecta outputs grandes, e injeta contexto de forma informativa (não coercitiva), com backpressure para evitar bloat.
+- **Dashboard local** — SPA em `localhost` (token auth), abas Home / Brain KB / Hooks / Logs, lançado sob demanda.
+
+Detalhes, providers de embedding e configuração: **[claude-code-boss/README.md](./claude-code-boss/README.md)** · histórico em **[CHANGELOG.md](./claude-code-boss/CHANGELOG.md)**.
+
+## rf-reviewer
+
+Revisão determinística de **Requisitos Funcionais em Excel** (La Positiva / InsureMO). Faz a parte mecânica como um MCP (`rf-engine`, Python + openpyxl) e deixa para o agente **só o julgamento**:
+
+- **9 tools** (`rf_prep`, `rf_validar`, `rf_apply`, `rf_verificar_preservacao`, `rf_brain_*`, perfis…) que extraem a planilha, injetam as colunas de análise de volta na **mesma** planilha do cliente e provam a preservação célula a célula (original 100% intacto, versionado).
+- **Skill `revisar-rf` + agente `revisor-rf`** conduzem o fluxo; **hooks de enforcement** (`rf-remind`, `rf-guard`) garantem o caminho mecânico e evitam edição manual do `.xlsx`.
+- **Escopo:** arquivos tabulares (`.xlsx`/`.csv`), qualquer assunto via perfil de colunas. Documentos (`pdf`/`docx`/`pptx`) seguem outro fluxo.
+
+Visão geral: **[rf-reviewer/README.md](./rf-reviewer/README.md)** · instalação e uso: **[rf-reviewer/INSTALL.md](./rf-reviewer/INSTALL.md)**.
 
 ## Estrutura
 
 ```text
 claude-code-plugins/
-├── claude-code-boss/          # Plugin principal
-│   ├── .claude-plugin/        # Manifesto do plugin (plugin.json)
-│   ├── .mcp.json              # Servidor MCP: brain-server
-│   ├── agents/                # subagentes (.agent.md)
+├── .claude-plugin/
+│   └── marketplace.json       # Catálogo do marketplace (allansantos-plugins)
+├── claude-code-boss/          # Plugin: Brain KB + curadoria + aprendizado
+│   ├── .claude-plugin/        # plugin.json
+│   ├── .mcp.json              # MCP: brain-server
 │   ├── config/                # brain-config.json, hooks-config.json
-│   ├── dashboard/             # index.html — SPA (4 abas)
-│   ├── docs/                  # Guias de upgrade (Ollama, Voyage, MCP Memory)
-│   ├── hooks/                 # hooks.json (5 eventos, ~9 scripts)
-│   ├── scripts/               # Scripts Node.js (hooks + CLI + Brain + Dashboard)
+│   ├── dashboard/             # SPA (Home / Brain / Hooks / Logs)
+│   ├── hooks/                 # hooks.json (5 eventos)
+│   ├── scripts/               # hooks + CLI + Brain + Dashboard (Node.js)
 │   ├── servers/brain-server/  # MCP server (Node.js ESM)
-│   ├── skills/                # 5 skills do Claude Code
-│   ├── package.json           # npm test, version:sync
-│   └── CHANGELOG.md           # Notas de release
-└── .github/workflows/ci.yml   # CI: test + lint + grep anti-patterns + version sync
+│   ├── skills/                # skills do Claude Code
+│   └── CHANGELOG.md
+├── rf-reviewer/               # Plugin: revisão de RF em Excel
+│   ├── .claude-plugin/        # plugin.json
+│   ├── .mcp.json              # MCP: rf-engine (Python)
+│   ├── agents/ · skills/      # revisor-rf · revisar-rf
+│   ├── hooks/                 # rf-remind, rf-guard (enforcement)
+│   ├── servers/rf-engine/     # MCP server (Python + openpyxl)
+│   └── INSTALL.md
+└── .github/workflows/ci.yml   # CI: test + lint + version sync
 ```
 
-## Instalação
+## Instalação (via marketplace)
 
-> Requer Claude Code Desktop. Consulte [docs.anthropic.com/en/docs/claude-code](https://docs.anthropic.com/en/docs/claude-code) para detalhes sobre a plataforma.
->
-> **Node.js 22.13+ precisa estar no `PATH` do sistema.** O Claude Code dispara os hooks e o servidor MCP com `node` puro do **PATH do sistema**, não pelo Node embutido no Desktop ([claude-code#66183](https://github.com/anthropics/claude-code/issues/66183)). Sem Node no PATH, os hooks viram no-op e o Brain MCP fica DOWN (`spawn node ENOENT`). No Windows: instale o MSI oficial e reabra o Claude Code por completo (tray + Gerenciador de Tarefas).
+> Requer **Claude Code Desktop**. **Node.js 22.13+ precisa estar no `PATH` do sistema** — o Claude Code dispara hooks e MCP servers com o `node` do PATH, não pelo Node embutido no Desktop ([claude-code#66183](https://github.com/anthropics/claude-code/issues/66183)). Sem Node no PATH, os hooks viram no-op e o MCP fica DOWN (`spawn node ENOENT`). No Windows: instale o MSI oficial e reabra o Claude Code por completo. O `rf-reviewer` também exige **Python 3.11+** no PATH.
 
-```bash
-# 1. Clone o repositório
-git clone https://github.com/AllanSantos-DV/claude-code-plugins.git
-cd claude-code-plugins/claude-code-boss
+No Claude Code, adicione o marketplace uma vez e instale os plugins que quiser:
 
-# 2. Instale dependências Node.js
-npm install
-
-# 3. Registre o plugin no Claude Code Desktop
-#    No Claude Code, abra Settings → Plugins → Add local plugin
-#    Aponte para: <caminho-do-repo>/claude-code-boss/.claude-plugin/plugin.json
-
-# 4. Configure a variável de ambiente (necessária para os hooks)
-#    No seu ~/.bashrc / ~/.zshrc / ~/.profile:
-export CLAUDE_PLUGIN_ROOT="<caminho-do-repo>/claude-code-boss"
+```text
+/plugin marketplace add AllanSantos-DV/claude-code-plugins
+/plugin install claude-code-boss@allansantos-plugins
+/plugin install rf-reviewer@allansantos-plugins
 ```
 
-Veja [claude-code-boss/README.md](./claude-code-boss/README.md) para configuração detalhada, providers de embedding, e guias de upgrade.
+Depois de instalar o `claude-code-boss`, rode `npm install` na pasta dele (dependências do Node) — ou deixe o `postinstall` cuidar disso. Configuração detalhada (providers de embedding, backend MCP Memory, dashboard) em **[claude-code-boss/README.md](./claude-code-boss/README.md)**; setup do rf-reviewer em **[rf-reviewer/INSTALL.md](./rf-reviewer/INSTALL.md)**.
 
 ## Licença
 
