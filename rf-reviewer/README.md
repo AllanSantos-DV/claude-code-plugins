@@ -42,3 +42,8 @@ comparação célula a célula).
 ## Fluxo
 `rf_perfis_listar` → `rf_prep` → (agente preenche) → `rf_validar` → `rf_apply` →
 `rf_verificar_preservacao`. Detalhe na skill `revisar-rf`.
+
+## Mais
+- **[INSTALL.md](./INSTALL.md)** — instalação, configuração do servidor de memória, uso e troubleshooting.
+- **[PROFILES.md](./PROFILES.md)** — perfis de coluna (`rf-end`, `fernando-siniestros`) e como criar um novo.
+- **[CHANGELOG.md](./CHANGELOG.md)** — histórico de versões.
