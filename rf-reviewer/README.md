@@ -21,6 +21,13 @@ comparação célula a célula).
 - **Skill `revisar-rf`** — dispara em tarefa de RF em Excel e conduz o fluxo pelas tools.
 - **Agente `revisor-rf`** — persona/disciplina para operar o motor sem depender do agente
   principal.
+- **Hooks de enforcement (determinístico)** — `hooks/`:
+  - `rf-remind.js` (UserPromptSubmit): quando o pedido é de RF em planilha, injeta no
+    contexto o fluxo do RF Reviewer (rf_prep → … → rf_apply) — lembra sempre, não depende
+    do modelo "lembrar".
+  - `rf-guard.js` (PreToolUse/Bash): se o agente tentar mexer no `.xlsx` na mão
+    (openpyxl/pandas gravando workbook), pede confirmação e redireciona para `rf_apply`.
+    Não bloqueia leitura nem a CLI legítima do próprio motor.
 
 ## Requisitos
 - **Python 3.11+** no PATH e **openpyxl** (`pip install openpyxl`). O `.mcp.json` aponta o
