@@ -79,7 +79,8 @@ project = la-positiva
 ## 7. Perfis por assunto
 
 `rf_perfis_listar` mostra os disponíveis. Assunto novo com colunas diferentes → crie com
-`rf_perfil_definir` (uma vez); a mecânica é a mesma, só muda o molde de colunas.
+`rf_perfil_definir` (uma vez); a mecânica é a mesma, só muda o molde de colunas. Referência
+completa dos perfis embutidos e das colunas/chaves: **[PROFILES.md](./PROFILES.md)**.
 
 ## 8. Verificação rápida (opcional, fora do Claude Code)
 
