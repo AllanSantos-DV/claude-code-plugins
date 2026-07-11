@@ -1,0 +1,14 @@
+#!/bin/sh
+# pre-merge-commit — bloqueia um merge local se a página de algum plugin estiver
+# ausente/desatualizada. Chama o MESMO guard determinístico que o CI usa, então
+# o block é idêntico em qualquer runtime (Copilot, Claude, Hermes) ou humano.
+#
+# Ative uma vez por clone:
+#   git config core.hooksPath .githooks
+#
+# Zero cota: é só comparação de hash; quando bloqueia, aponta o agente vitrine.
+if ! command -v node >/dev/null 2>&1; then
+  echo "[pages-guard] node nao encontrado no PATH — gate local pulado (o CI ainda enforça)." >&2
+  exit 0
+fi
+exec node ".github/scripts/pages-guard.mjs" check
