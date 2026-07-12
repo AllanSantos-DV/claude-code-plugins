@@ -1,5 +1,34 @@
 # Changelog
 
+## [1.25.0] - 2026-07-12
+
+### Added — observabilidade honesta do Stop-hook (fundação de telemetria por perfil)
+
+O perfil fazia bypass mas **não media nada**: um detector desligado pelo perfil
+fazia `return {}` silencioso, então era impossível saber "quanto o perfil bypassou".
+Esta release instrumenta o Stop de forma honesta e de baixo volume (1 linha por
+Stop), alinhada ao OpenTelemetry `feature_flag` e aos Golden Signals:
+
+- **Gate no dispatcher**: `stop-dispatcher` resolve o gate de cada detector a partir
+  do perfil (novo `lib/stop-telemetry.js`, puro/testável) — inclusive `free`, que
+  gateia tudo. Sem mais short-circuit cego.
+- **Evento consolidado `stop.dispatch`**: por Stop, uma linha com `{profile, run_id,
+  schema, evaluated, blocked, gated, shadow, enforcedChars, avoidedChars,
+  detectors[]}` — dá pra cruzar bypass × perfil sem inchar o SQLite.
+- **Honestidade (validado por revisor externo)**: um detector PULADO não é "bloqueio
+  suprimido". Distinguimos `gated` (desligado pelo perfil) de `shadow_block` (rodou
+  numa amostra sombra e teria bloqueado — estimativa rotulada, nunca aplicada). Nada
+  de "tokens salvos": só `chars` de mensagem de Stop evitada.
+- **Privacidade**: payloads só com contagens/comprimentos/nomes — nunca código,
+  prompt, path ou texto cru.
+- **Saúde**: `stop.detector.error` (telemetria de saúde separada do comportamento).
+- **Mecanismo de shadow** (amostragem determinística, `observability.shadowSampleRate`,
+  padrão 3%) construído e testado por injeção. O rollout em produção (detectores com
+  `detect()` puro + **estado sombra isolado**, para não poluir contadores reais) é o
+  próximo incremento — feito assim justamente para ser honesto.
+
+Fundação para o redesenho dos Insights (card "Impacto do Perfil") nas próximas fases.
+
 ## [1.24.0] - 2026-07-12
 
 ### Changed — perfis de hooks consolidados (dev · standard · free) + troca update-safe
