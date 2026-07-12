@@ -1,5 +1,23 @@
 # Changelog
 
+## [1.26.0] - 2026-07-12
+
+### Added — Insights: card "Impacto do Perfil" (consome a telemetria da 1.25.0)
+
+Primeira metade do redesenho dos Insights (RED + cruzamento de dados). A aba agora
+responde **"quanto cada perfil bypassou o Stop"**, cruzando as linhas `stop.dispatch`:
+
+- **`lib/profile-impact.js`** (puro/testável) + endpoint `GET /api/metrics/profile-impact`:
+  por perfil → stops, blocked, gated, would-block (amostra sombra), msg evitada
+  (chars — estimativa de tamanho, **não** tokens), ms/Stop e os detectores mais bypassados.
+- **Card "Impacto do Perfil"** no topo dos Insights, com anotação do que cada número
+  significa e um alerta honesto: `blocked > 0` no perfil `free` = passthrough não respeitado.
+- **Corte de vaidade**: "Events per day" rotulado como volume bruto (contexto, não
+  acionável por si só).
+
+Próximo: funis (após definir os contratos de evento que faltam) e a Fase 3 (declutter
+de config + retenção/rollups).
+
 ## [1.25.0] - 2026-07-12
 
 ### Added — observabilidade honesta do Stop-hook (fundação de telemetria por perfil)
