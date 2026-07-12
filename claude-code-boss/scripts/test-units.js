@@ -271,17 +271,23 @@ test('hooks-config.resolveProfileConfig: result never aliases PROFILE_PRESETS (p
 });
 
 // Getter-level resolution via a temp CLAUDE_PLUGIN_ROOT + fresh module instance.
+// CLAUDE_PLUGIN_DATA is repointed at the same temp dir so a stray real user
+// override (DATA_DIR/hooks/user-config.json) never leaks into these assertions.
 function withHooksConfigFile(obj, fn) {
   const savedRoot = process.env.CLAUDE_PLUGIN_ROOT;
+  const savedData = process.env.CLAUDE_PLUGIN_DATA;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hcfg-'));
   fs.mkdirSync(path.join(dir, 'config'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'config', 'hooks-config.json'), JSON.stringify(obj));
   process.env.CLAUDE_PLUGIN_ROOT = dir;
+  process.env.CLAUDE_PLUGIN_DATA = dir;
   delete require.cache[require.resolve('./lib/hooks-config.js')];
   const hc = require('./lib/hooks-config.js');
   try { return fn(hc); }
   finally {
     process.env.CLAUDE_PLUGIN_ROOT = savedRoot;
+    if (savedData === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
+    else process.env.CLAUDE_PLUGIN_DATA = savedData;
     delete require.cache[require.resolve('./lib/hooks-config.js')];
   }
 }
@@ -298,14 +304,116 @@ test('hooks-config getters: dev profile → all detectors enabled, maxAttempts=3
 });
 
 test('hooks-config getters: standard profile → capture/verify off, maxAttempts=1', () => {
-  withHooksConfigFile({ profile: 'standard', curationStop: { enabled: true }, verifyNudge: { maxBlocks: 1, testPatterns: [] } }, (hc) => {
+  withHooksConfigFile({ profile: 'standard', verifyNudge: { maxBlocks: 1, testPatterns: [] } }, (hc) => {
     assertEq(hc.getProfile(), 'standard');
+    assertEq(hc.getCurationStop().enabled, true);      // the one soft block stays
     assertEq(hc.getCurationStop().maxAttempts, 1);
     assertEq(hc.getVerifyNudge().enabled, false);
     assertEq(hc.getPatternDetect().enabled, false);
     assertEq(hc.getCorrectionDetect().enabled, false);
     assertEq(hc.getDecisionScan().enabled, false);
+    // newly profile-gated Stop blockers → silent in standard
+    assertEq(hc.getRefineResearch().enabled, false);
+    assertEq(hc.getFailureRetro().enabled, false);
+    assertEq(hc.getResearchFollowup().enabled, false);
+    assertEq(hc.getAutoContinue().enabled, false);
+    // session-summary stays (1x/session positive) in standard
+    assertEq(hc.getSessionSummary().enabled, true);
   });
+});
+
+test('hooks-config getters: dev profile → newly gated blockers all enabled', () => {
+  withHooksConfigFile({ profile: 'dev' }, (hc) => {
+    assertEq(hc.getRefineResearch().enabled, true);
+    assertEq(hc.getFailureRetro().enabled, true);
+    assertEq(hc.getResearchFollowup().enabled, true);
+    assertEq(hc.getAutoContinue().enabled, true);
+    assertEq(hc.getSessionSummary().enabled, true);
+    // thresholds preserved from getter defaults
+    assertEq(hc.getFailureRetro().minFailures, 2);
+    assertEq(hc.getAutoContinue().maxBlocks, 1);
+  });
+});
+
+test('hooks-config getters: free profile → EVERYTHING off (passthrough)', () => {
+  withHooksConfigFile({ profile: 'free' }, (hc) => {
+    assertEq(hc.getProfile(), 'free');
+    assertEq(hc.getCurationStop().enabled, false);
+    assertEq(hc.getVerifyNudge().enabled, false);
+    assertEq(hc.getPatternDetect().enabled, false);
+    assertEq(hc.getCorrectionDetect().enabled, false);
+    assertEq(hc.getDecisionScan().enabled, false);
+    assertEq(hc.getSelfReview().enabled, false);
+    assertEq(hc.getRefineResearch().enabled, false);
+    assertEq(hc.getFailureRetro().enabled, false);
+    assertEq(hc.getResearchFollowup().enabled, false);
+    assertEq(hc.getAutoContinue().enabled, false);
+    assertEq(hc.getSessionSummary().enabled, false);
+  });
+});
+
+test('hooks-config: resolveProfileConfig free preset disables curationStop + sessionSummary', () => {
+  const r = hooksConfig.resolveProfileConfig({ profile: 'free' });
+  assertEq(r.curationStop.enabled, false);
+  assertEq(r.sessionSummary.enabled, false);
+  assertEq(r.refineResearch.enabled, false);
+});
+
+test('hooks-config: profileNames lists dev/standard/free', () => {
+  const names = hooksConfig.profileNames();
+  assert(names.includes('dev') && names.includes('standard') && names.includes('free'),
+    `expected dev/standard/free, got ${names.join(',')}`);
+});
+
+test('hooks-config: DATA_DIR user-config overrides shipped profile (update-safe)', () => {
+  const savedRoot = process.env.CLAUDE_PLUGIN_ROOT;
+  const savedData = process.env.CLAUDE_PLUGIN_DATA;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hcfg-ovr-'));
+  fs.mkdirSync(path.join(dir, 'config'), { recursive: true });
+  // shipped says standard...
+  fs.writeFileSync(path.join(dir, 'config', 'hooks-config.json'), JSON.stringify({ profile: 'standard' }));
+  // ...DATA_DIR user-config says dev → user wins, survives shipped updates.
+  fs.mkdirSync(path.join(dir, 'hooks'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'hooks', 'user-config.json'), JSON.stringify({ profile: 'dev' }));
+  process.env.CLAUDE_PLUGIN_ROOT = dir;
+  process.env.CLAUDE_PLUGIN_DATA = dir;
+  delete require.cache[require.resolve('./lib/hooks-config.js')];
+  const hc = require('./lib/hooks-config.js');
+  try {
+    assertEq(hc.getProfile(), 'dev');
+    assertEq(hc.getRefineResearch().enabled, true); // dev turns the blockers back on
+  } finally {
+    process.env.CLAUDE_PLUGIN_ROOT = savedRoot;
+    if (savedData === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
+    else process.env.CLAUDE_PLUGIN_DATA = savedData;
+    delete require.cache[require.resolve('./lib/hooks-config.js')];
+  }
+});
+
+test('hooks-config: saveProfile writes DATA_DIR override; invalid name throws', () => {
+  const savedRoot = process.env.CLAUDE_PLUGIN_ROOT;
+  const savedData = process.env.CLAUDE_PLUGIN_DATA;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hcfg-save-'));
+  fs.mkdirSync(path.join(dir, 'config'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'config', 'hooks-config.json'), JSON.stringify({ profile: 'dev' }));
+  process.env.CLAUDE_PLUGIN_ROOT = dir;
+  process.env.CLAUDE_PLUGIN_DATA = dir;
+  delete require.cache[require.resolve('./lib/hooks-config.js')];
+  const hc = require('./lib/hooks-config.js');
+  try {
+    const p = hc.saveProfile('free');
+    assert(fs.existsSync(p), 'user-config not written');
+    assertEq(JSON.parse(fs.readFileSync(p, 'utf-8')).profile, 'free');
+    assertEq(hc.getProfile(), 'free'); // cache reset inside saveProfile
+    let threw = false;
+    try { hc.saveProfile('nope'); } catch { threw = true; }
+    assert(threw, 'saveProfile should throw on invalid name');
+  } finally {
+    process.env.CLAUDE_PLUGIN_ROOT = savedRoot;
+    if (savedData === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
+    else process.env.CLAUDE_PLUGIN_DATA = savedData;
+    delete require.cache[require.resolve('./lib/hooks-config.js')];
+  }
 });
 
 test('hooks-config getters: shipped config is valid standard (regression)', () => {
@@ -1554,6 +1662,10 @@ test('research-followup.run: capture_lesson({type:research}) in __user__ scope s
   delete require.cache[require.resolve('./brain-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
   process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rf-xscope-'));
+  // research-followup is dev-only now; force dev so run() actually exercises suppression.
+  fs.mkdirSync(path.join(process.env.CLAUDE_PLUGIN_DATA, 'hooks'), { recursive: true });
+  fs.writeFileSync(path.join(process.env.CLAUDE_PLUGIN_DATA, 'hooks', 'user-config.json'), JSON.stringify({ profile: 'dev' }));
+  hooksConfig._resetCache();
   const isolatedStore = require('./brain-store.js');
   delete require.cache[require.resolve('./research-followup-detect.js')];
   const rf = require('./research-followup-detect.js');
@@ -1582,6 +1694,7 @@ test('research-followup.run: capture_lesson({type:research}) in __user__ scope s
     delete require.cache[require.resolve('./brain-store.js')];
     delete require.cache[require.resolve('./research-followup-detect.js')];
     process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
+    hooksConfig._resetCache();
   }
 });
 
@@ -1589,6 +1702,10 @@ test('research-followup.run: no capture at all still nudges (regression guard)',
   delete require.cache[require.resolve('./brain-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
   process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rf-nocap-'));
+  // research-followup is dev-only now; force dev so run() emits the nudge.
+  fs.mkdirSync(path.join(process.env.CLAUDE_PLUGIN_DATA, 'hooks'), { recursive: true });
+  fs.writeFileSync(path.join(process.env.CLAUDE_PLUGIN_DATA, 'hooks', 'user-config.json'), JSON.stringify({ profile: 'dev' }));
+  hooksConfig._resetCache();
   const isolatedStore = require('./brain-store.js');
   delete require.cache[require.resolve('./research-followup-detect.js')];
   const rf = require('./research-followup-detect.js');
@@ -1606,6 +1723,7 @@ test('research-followup.run: no capture at all still nudges (regression guard)',
     delete require.cache[require.resolve('./brain-store.js')];
     delete require.cache[require.resolve('./research-followup-detect.js')];
     process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
+    hooksConfig._resetCache();
   }
 });
 
