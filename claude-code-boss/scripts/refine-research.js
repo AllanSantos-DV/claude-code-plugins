@@ -20,6 +20,7 @@ const STATE = path.join(DATA_DIR, '.runtime', 'refine-research-state.json');
 const EVERY = 4; // remind at most once per 4 stops
 
 const { runStopDetectorCli } = require('./lib/hook-io.js');
+const hooksCfg = require('./lib/hooks-config.js');
 
 const REASON =
   '[refine] If you asked questions in your previous response, research the ' +
@@ -42,6 +43,9 @@ async function run(event) {
   const ev = event || {};
   // Anti-loop guard: if Claude already retried this hook, allow stop.
   if (ev.stop_hook_active) return {};
+
+  // Profile gate: silenced in standard/free (dev-only nag).
+  if (!hooksCfg.getRefineResearch().enabled) return {};
 
   const n = tick();
   if (n % EVERY !== 0) return {};

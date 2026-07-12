@@ -28,14 +28,9 @@ const hooksCfg = require('./lib/hooks-config.js');
 const metrics = require('./lib/metrics.js');
 
 function loadConfig() {
-  const cfg = hooksCfg.load();
-  const fr = cfg.failureRetro || {};
-  return {
-    enabled: fr.enabled !== false,
-    minFailures: Number.isFinite(fr.minFailures) ? fr.minFailures : 2,
-    timeWindowMin: Number.isFinite(fr.timeWindowMin) ? fr.timeWindowMin : 10,
-    consecutiveThreshold: Number.isFinite(fr.consecutiveThreshold) ? fr.consecutiveThreshold : 3,
-  };
+  // Read through the profile-resolved getter so `standard`/`free` can silence it
+  // (returns { enabled, minFailures, timeWindowMin, consecutiveThreshold }).
+  return hooksCfg.getFailureRetro();
 }
 
 function repeatedKey(entry) {
