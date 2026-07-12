@@ -6,6 +6,7 @@ const path = require('path');
 const os = require('os');
 
 const { runStopDetectorCli } = require('./lib/hook-io.js');
+const hooksCfg = require('./lib/hooks-config.js');
 
 const DEFAULT_MAX = 1;
 const REASON = '[auto-continue] Continue if the next step is obvious from the plan/todos. Otherwise just end the reply normally — this is the only attempt, there is no retry.';
@@ -25,18 +26,15 @@ function writeCounter(file, n) {
 }
 
 function loadConfig() {
-  const root = process.env.CLAUDE_PLUGIN_ROOT;
-  if (!root) return {};
-  try {
-    const cfg = JSON.parse(fs.readFileSync(path.join(root, 'config', 'hooks-config.json'), 'utf-8'));
-    return cfg.autoContinue || {};
-  } catch { /* missing/invalid config: defaults */ return {}; }
+  // Read through the profile-resolved getter so `standard`/`free` can silence it
+  // (returns { enabled, maxBlocks }).
+  return hooksCfg.getAutoContinue();
 }
 
 async function run(event) {
   const ev = event || {};
   const cfg = loadConfig();
-  if (cfg.enabled === false) return {};
+  if (!cfg.enabled) return {};
 
   const sid = ev.session_id || ev.sessionId || 'default';
   const dataDir = process.env.CLAUDE_PLUGIN_DATA

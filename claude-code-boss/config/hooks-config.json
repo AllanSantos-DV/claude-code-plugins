@@ -12,9 +12,6 @@
   "curationGuard": {
     "denyUnknown": false
   },
-  "curationStop": {
-    "enabled": true
-  },
   "projectSnapshot": {
     "enabled": true,
     "includeGh": "auto",
@@ -23,7 +20,6 @@
     "cacheTtlSeconds": 300
   },
   "failureRetro": {
-    "enabled": true,
     "minFailures": 2,
     "timeWindowMin": 10,
     "consecutiveThreshold": 3
@@ -42,7 +38,6 @@
     "fireThreshold": 1.0
   },
   "autoContinue": {
-    "enabled": true,
     "maxBlocks": 1
   },
   "verifyNudge": {
@@ -53,8 +48,5 @@
     "topK": 2,
     "minScore": 0.2,
     "types": ["lesson", "failure"]
-  },
-  "sessionSummary": {
-    "enabled": true
   }
 }

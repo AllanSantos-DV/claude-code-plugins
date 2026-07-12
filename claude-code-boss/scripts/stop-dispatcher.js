@@ -35,6 +35,7 @@
 const { performance } = require('node:perf_hooks');
 const { readStdin, parsePayload, emitStopBlock, emitEmpty } = require('./lib/hook-io.js');
 const metrics = require('./lib/metrics.js');
+const hooksConfig = require('./lib/hooks-config.js');
 
 // Execution order — see the header for the invariants this encodes.
 const DETECTORS = [
@@ -114,6 +115,14 @@ async function main() {
   const raw = await readStdin();
   const event = parsePayload(raw) || {};
   const ctx = { sessionId: event.session_id || event.sessionId, cwd: event.cwd };
+
+  // Free profile: passthrough. Skip every Stop detector so nothing can block the
+  // turn. Retrieval on UserPromptSubmit is a separate hook and stays on.
+  if (hooksConfig.getProfile() === 'free') {
+    metrics.fire('stop.dispatch', { detectors: 0, blocks: 0, profile: 'free' }, ctx);
+    emitEmpty();
+    return;
+  }
 
   const blocks = await dispatch(event, {
     onTiming: (name, ms) => metrics.fire('stop.detector', { name, ms }, ctx),

@@ -35,6 +35,7 @@ const os = require('os');
 
 const { runStopDetectorCli } = require('./lib/hook-io.js');
 const { USER_SENTINEL } = require('./lib/scope-sanitizer.js');
+const hooksCfg = require('./lib/hooks-config.js');
 
 function dataDir() {
   const env = process.env.CLAUDE_PLUGIN_DATA;
@@ -100,6 +101,9 @@ function buildNudgeText(latestTrigger) {
 
 async function run(event) {
   const ev = event || {};
+  // Profile gate: silenced in standard/free (dev-only research-capture nag).
+  if (!hooksCfg.getResearchFollowup().enabled) return {};
+
   const sid = ev.session_id || ev.sessionId || 'default';
   const project = ev.cwd ? path.basename(ev.cwd) : 'default';
   const data = dataDir();
