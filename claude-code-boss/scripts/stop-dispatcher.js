@@ -36,6 +36,7 @@ const { performance } = require('node:perf_hooks');
 const { readStdin, parsePayload, emitStopBlock, emitEmpty } = require('./lib/hook-io.js');
 const metrics = require('./lib/metrics.js');
 const hooksConfig = require('./lib/hooks-config.js');
+const telem = require('./lib/stop-telemetry.js');
 
 // Execution order — see the header for the invariants this encodes.
 const DETECTORS = [
@@ -65,34 +66,85 @@ function rank(name) {
   return Object.prototype.hasOwnProperty.call(PRIORITY, name) ? PRIORITY[name] : DEFAULT_RANK;
 }
 
+function _errMsg(err) { return err && err.message ? err.message : String(err); }
+function _round(ms) { return Math.round(ms * 1000) / 1000; }
+
+const DEFAULT_SHADOW_RATE = telem.DEFAULT_SHADOW_RATE;
+function getShadowRate() {
+  try {
+    const o = hooksConfig.load().observability;
+    const r = o && o.shadowSampleRate;
+    return (typeof r === 'number' && r >= 0 && r <= 1) ? r : DEFAULT_SHADOW_RATE;
+  } catch (err) { void err; return DEFAULT_SHADOW_RATE; }
+}
+
 /**
- * Run every detector against the same event, in-process and in order.
- * Never throws: a detector crash is logged and treated as no-block.
+ * Run every detector against the same event, in-process and in order, applying
+ * the profile gate at the DISPATCHER (not inside detectors). Never throws.
+ *
+ * Per detector we record an outcome the summary folds into ONE Stop row:
+ *   - enabled  → run(); `ran` (+ `blocked` if it fired).
+ *   - gated    → skipped by profile (cheap, honest). If sampled AND the detector
+ *     exposes `detect()` (ungated logic), run a SHADOW pass → `would_block`
+ *     (labeled estimate, never enforced). `free` gates everything.
  *
  * @param {object} event  parsed Stop payload
- * @param {{ onTiming?: (name:string, ms:number)=>void }} [hooks]
- * @returns {Promise<Array<{name:string, reason:string}>>} blocks in exec order
+ * @param {{ profile?:string, runId?:string, shadowRate?:number,
+ *           onError?:(name:string,msg:string)=>void }} [opts]
+ * @returns {Promise<{ blocks:Array<{name,reason}>, profile:string, runId:string,
+ *                     detectors:Array<object> }>}
  */
-async function dispatch(event, { onTiming } = {}) {
+async function dispatch(event, opts = {}) {
+  const profile = opts.profile || hooksConfig.getProfile();
+  const runId = opts.runId || telem.newRunId();
+  const shadowRate = typeof opts.shadowRate === 'number' ? opts.shadowRate : getShadowRate();
+  const onError = typeof opts.onError === 'function' ? opts.onError : () => {};
+  const list = Array.isArray(opts.detectors) ? opts.detectors : DETECTORS;
   const blocks = [];
-  for (const { name, mod } of DETECTORS) {
-    const t0 = performance.now();
-    let res = null;
-    try {
-      res = typeof mod.run === 'function' ? await mod.run(event) : null;
-    } catch (err) {
-      console.error(`[stop-dispatcher] ${name}: ${err && err.message ? err.message : err}`);
-      res = null;
+  const detectors = [];
+
+  for (const { name, mod } of list) {
+    const gs = telem.gateState(name, profile, hooksConfig);
+    const entry = { name, gated: !gs.enabled, blocked: false, would_block: null, chars: 0, ms: 0, reason: gs.reason };
+
+    if (gs.enabled) {
+      const t0 = performance.now();
+      let res = null;
+      try {
+        res = typeof mod.run === 'function' ? await mod.run(event) : null;
+      } catch (err) {
+        const msg = _errMsg(err);
+        console.error(`[stop-dispatcher] ${name}: ${msg}`);
+        try { onError(name, msg); } catch (e) { console.error(`[stop-dispatcher] onError(${name}): ${_errMsg(e)}`); }
+        res = null;
+      }
+      entry.ms = _round(performance.now() - t0);
+      if (res && res.block && typeof res.reason === 'string' && res.reason) {
+        entry.blocked = true;
+        entry.chars = telem.estChars(res.reason);
+        blocks.push({ name, reason: res.reason });
+      }
+    } else if (typeof mod.detect === 'function' && telem.shouldShadow(runId, name, shadowRate)) {
+      // Sampled shadow pass: run the ungated detection to learn if it WOULD have
+      // blocked. Never enforced — this only measures the bypass's impact.
+      const t0 = performance.now();
+      let sres = null;
+      try {
+        sres = await mod.detect(event);
+      } catch (err) {
+        const msg = _errMsg(err);
+        try { onError(name, `shadow:${msg}`); } catch (e) { console.error(`[stop-dispatcher] onError(${name}): ${_errMsg(e)}`); }
+        sres = null;
+      }
+      entry.ms = _round(performance.now() - t0);
+      entry.would_block = !!(sres && sres.block && typeof sres.reason === 'string' && sres.reason);
+      entry.chars = entry.would_block ? telem.estChars(sres.reason) : 0;
     }
-    const ms = Math.round((performance.now() - t0) * 1000) / 1000;
-    if (typeof onTiming === 'function') {
-      try { onTiming(name, ms); } catch (err) { console.error(`[stop-dispatcher] onTiming(${name}): ${err.message}`); }
-    }
-    if (res && res.block && typeof res.reason === 'string' && res.reason) {
-      blocks.push({ name, reason: res.reason });
-    }
+
+    detectors.push(entry);
   }
-  return blocks;
+
+  return { blocks, profile, runId, detectors };
 }
 
 /**
@@ -115,19 +167,20 @@ async function main() {
   const raw = await readStdin();
   const event = parsePayload(raw) || {};
   const ctx = { sessionId: event.session_id || event.sessionId, cwd: event.cwd };
+  const profile = hooksConfig.getProfile();
+  const runId = telem.newRunId();
 
-  // Free profile: passthrough. Skip every Stop detector so nothing can block the
-  // turn. Retrieval on UserPromptSubmit is a separate hook and stays on.
-  if (hooksConfig.getProfile() === 'free') {
-    metrics.fire('stop.dispatch', { detectors: 0, blocks: 0, profile: 'free' }, ctx);
-    emitEmpty();
-    return;
-  }
-
-  const blocks = await dispatch(event, {
-    onTiming: (name, ms) => metrics.fire('stop.detector', { name, ms }, ctx),
+  // Gating is resolved per detector inside dispatch() (including `free`, which
+  // gates everything). No early return: even a full passthrough emits the Stop
+  // summary so the bypass's impact is observable.
+  const { blocks, detectors } = await dispatch(event, {
+    profile,
+    runId,
+    onError: (name, message) => metrics.fire('stop.detector.error',
+      { name, message: String(message).slice(0, 200), profile, run_id: runId, schema: telem.SCHEMA_VERSION }, ctx),
   });
-  metrics.fire('stop.dispatch', { detectors: DETECTORS.length, blocks: blocks.length }, ctx);
+
+  metrics.fire('stop.dispatch', telem.summarize(profile, runId, detectors), ctx);
 
   const out = mergeBlocks(blocks);
   if (out.decision === 'block') emitStopBlock(out.reason);
@@ -141,4 +194,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { dispatch, mergeBlocks, rank, DETECTORS, PRIORITY, SEP };
+module.exports = { dispatch, mergeBlocks, rank, DETECTORS, PRIORITY, SEP, getShadowRate };

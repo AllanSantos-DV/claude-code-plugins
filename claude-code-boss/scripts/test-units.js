@@ -3684,6 +3684,95 @@ test('stop-dispatcher.DETECTORS: 15 detectors, ordering invariants hold', () => 
     'every detector exposes run()');
 });
 
+// ─── stop-telemetry + dispatcher gate model (Phase 1 observability) ──────────
+const telem = require('./lib/stop-telemetry.js');
+
+test('stop-telemetry.gateState: dev enables flagged; free gates everything', () => {
+  const on = { getRefineResearch: () => ({ enabled: true }) };
+  const off = { getRefineResearch: () => ({ enabled: false }) };
+  assertEq(telem.gateState('refine-research', 'dev', on).enabled, true);
+  assertEq(telem.gateState('refine-research', 'standard', off).enabled, false);
+  const g = telem.gateState('decision-promote', 'free', {});
+  assertEq(g.enabled, false);
+  assertEq(g.reason, 'free_passthrough');
+  assertEq(telem.gateState('decision-promote', 'dev', {}).enabled, true); // non-gated always on
+});
+
+test('stop-telemetry.shouldShadow: bounds + deterministic per (runId,name)', () => {
+  assertEq(telem.shouldShadow('r', 'n', 0), false);
+  assertEq(telem.shouldShadow('r', 'n', 1), true);
+  assertEq(telem.shouldShadow('run-x', 'refine-research', 0.5), telem.shouldShadow('run-x', 'refine-research', 0.5));
+});
+
+test('stop-telemetry.estChars: length or 0 (privacy — count not text)', () => {
+  assertEq(telem.estChars('abcd'), 4);
+  assertEq(telem.estChars(null), 0);
+  assertEq(telem.estChars(undefined), 0);
+});
+
+test('stop-telemetry.summarize: folds ran/gated/shadow + char sums', () => {
+  const s = telem.summarize('standard', 'run1', [
+    { name: 'a', gated: false, blocked: true, would_block: null, chars: 10, ms: 1 },
+    { name: 'b', gated: false, blocked: false, would_block: null, chars: 0, ms: 1 },
+    { name: 'c', gated: true, blocked: false, would_block: null, chars: 0, ms: 0 },
+    { name: 'd', gated: true, blocked: false, would_block: true, chars: 20, ms: 2 },
+    { name: 'e', gated: true, blocked: false, would_block: false, chars: 0, ms: 2 },
+  ]);
+  assertEq(s.profile, 'standard');
+  assertEq(s.run_id, 'run1');
+  assertEq(s.schema, telem.SCHEMA_VERSION);
+  assertEq(s.evaluated, 5);
+  assertEq(s.blocked, 1);
+  assertEq(s.gated, 3);
+  assertEq(s.shadow, 2);
+  assertEq(s.enforcedChars, 10);
+  assertEq(s.avoidedChars, 20);
+  assertEq(s.detectors.find(x => x.name === 'a').s, 'block');
+  assertEq(s.detectors.find(x => x.name === 'c').s, 'gated');
+  assertEq(s.detectors.find(x => x.name === 'd').s, 'shadow_block');
+  assertEq(s.detectors.find(x => x.name === 'e').s, 'shadow_quiet');
+});
+
+test('stop-dispatcher.dispatch: enabled detector runs + blocks (injected)', async () => {
+  const fake = { name: 'decision-promote', mod: { run: async () => ({ block: true, reason: 'HELLO' }) } };
+  const r = await dispatcher.dispatch({}, { profile: 'dev', runId: 'r', detectors: [fake] });
+  assertEq(r.blocks.length, 1);
+  assertEq(r.blocks[0].reason, 'HELLO');
+  assertEq(r.detectors[0].blocked, true);
+  assertEq(r.detectors[0].chars, 5);
+});
+
+test('stop-dispatcher.dispatch: free gates everything — no run, no block', async () => {
+  let ran = false;
+  const fake = { name: 'decision-promote', mod: { run: async () => { ran = true; return { block: true, reason: 'X' }; } } };
+  const r = await dispatcher.dispatch({}, { profile: 'free', runId: 'r', detectors: [fake] });
+  assertEq(ran, false);
+  assertEq(r.blocks.length, 0);
+  assertEq(r.detectors[0].gated, true);
+});
+
+test('stop-dispatcher.dispatch: gated + detect + sampled → shadow would_block, NEVER enforced', async () => {
+  let detectRan = false;
+  const fake = { name: 'refine-research', mod: {
+    run: async () => ({ block: true, reason: 'R' }),
+    detect: async () => { detectRan = true; return { block: true, reason: 'WOULD' }; },
+  } };
+  const r = await dispatcher.dispatch({}, { profile: 'free', runId: 'r', shadowRate: 1, detectors: [fake] });
+  assertEq(detectRan, true);
+  assertEq(r.blocks.length, 0);
+  assertEq(r.detectors[0].would_block, true);
+  assertEq(r.detectors[0].chars, 5);
+});
+
+test('stop-dispatcher.dispatch: detector error → onError called, no block', async () => {
+  const errs = [];
+  const fake = { name: 'decision-promote', mod: { run: async () => { throw new Error('boom'); } } };
+  const r = await dispatcher.dispatch({}, { profile: 'dev', runId: 'r', detectors: [fake], onError: (n, m) => errs.push([n, m]) });
+  assertEq(r.blocks.length, 0);
+  assertEq(errs.length, 1);
+  assertEq(errs[0][0], 'decision-promote');
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
