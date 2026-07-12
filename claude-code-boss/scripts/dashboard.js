@@ -1099,6 +1099,25 @@ async function getValueSummary(req, res, url) {
   }
 }
 
+async function getProfileImpact(req, res, url) {
+  try {
+    const range = Math.max(1, Math.min(365, parseInt(url.searchParams.get('days') || '7', 10)));
+    const sinceTs = Date.now() - range * 86400_000;
+    const projectFilter = url.searchParams.get('project') || '';
+    const projects = projectFilter ? [projectFilter] : listMetricsProjects();
+    const perProject = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName: 'stop.dispatch', limit: 2000 }));
+    const rows = [];
+    for (const { value } of perProject) {
+      for (const r of value) { if (r.ts >= sinceTs) rows.push(r); }
+    }
+    const { aggregateProfileImpact } = require('./lib/profile-impact.js');
+    json(res, { rangeDays: range, ...aggregateProfileImpact(rows) });
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/metrics/profile-impact failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
 async function getMetricsEventLog(req, res, url) {
   try {
     const eventName = url.searchParams.get('event') || null;
@@ -1461,6 +1480,7 @@ function handleAPI(req, res, url) {
   if (p === '/api/router/metrics' && m === 'GET') return getRouterMetrics(req, res);
   if (p === '/api/router/metrics/reset' && m === 'POST') return resetRouterMetrics(req, res);
   if (p === '/api/metrics/capture-rate' && m === 'GET') return getCaptureRate(req, res, url);
+  if (p === '/api/metrics/profile-impact' && m === 'GET') return getProfileImpact(req, res, url);
   if (p === '/api/plugin/version' && m === 'GET') return getPluginVersion(req, res);
   if (p === '/api/plugin/update-check' && m === 'GET') return checkPluginUpdate(req, res, url);
   if (p === '/api/plugin/update' && m === 'POST') return postPluginUpdate(req, res);

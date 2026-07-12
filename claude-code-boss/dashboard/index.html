@@ -711,8 +711,17 @@ code { color: var(--fg); font-family: var(--font-mono); }
 
     <div class="grid" id="insights-cards"></div>
 
+    <div class="card" id="insights-profile-impact-card">
+      <h2>Impacto do perfil <span class="text-muted" style="font-size:.8rem">quanto cada perfil bypassou o Stop</span>
+        <span class="tip" data-tip="gated = ações puladas pelo perfil (fato observado). would-block = amostra sombra que TERIA bloqueado (estimativa rotulada). 'msg evitada' = tamanho de texto de Stop não injetado (estimativa de tamanho, NÃO tokens). Alerta: 'blocked' > 0 no perfil free significa que o passthrough não está sendo respeitado.">i</span>
+      </h2>
+      <div id="insights-profile-impact"><div class="spinner" style="margin:1rem auto"></div></div>
+    </div>
+
     <div class="card">
-      <h2 data-i18n="insights.daily">Events per day</h2>
+      <h2 data-i18n="insights.daily">Events per day
+        <span class="text-muted" style="font-size:.72rem">· volume bruto (contexto, não acionável por si só)</span>
+      </h2>
       <div id="insights-daily-chart" style="min-height:160px"></div>
     </div>
 
@@ -2437,6 +2446,63 @@ async function loadInsights() {
   loadInsightsLog();
   loadSkillRoi();
   loadCaptureRate();
+  loadProfileImpact();
+}
+
+async function loadProfileImpact() {
+  const el = document.getElementById('insights-profile-impact');
+  if (!el) return;
+  const rangeDays = parseInt(document.getElementById('insights-range').value, 10) || 7;
+  const project = document.getElementById('insights-project').value;
+  el.innerHTML = '<div class="spinner" style="margin:1rem auto"></div>';
+  try {
+    const qs = new URLSearchParams({ days: String(rangeDays) });
+    if (project) qs.set('project', project);
+    const data = await api('GET', '/api/metrics/profile-impact?' + qs.toString());
+    const profiles = data.profiles || [];
+    if (profiles.length === 0) {
+      el.innerHTML = '<p class="text-muted">Sem Stops registrados ainda. Rode alguns turnos para o impacto do perfil aparecer.</p>';
+      return;
+    }
+    const rows = profiles.map(p => {
+      const freeLeak = p.profile === 'free' && p.blocked > 0;
+      const blockedCell = freeLeak
+        ? `<span class="badge badge-yellow">${p.blocked} ⚠</span>`
+        : String(p.blocked);
+      const top = (p.topGated || []).slice(0, 4).map(d => `${escapeHtml(d.name)}×${d.count}`).join(', ');
+      const wb = p.shadowSamples > 0 ? `${p.wouldBlock}/${p.shadowSamples}` : '—';
+      return `<tr>
+        <td style="padding:.3rem .5rem"><span class="tag">${escapeHtml(p.profile)}</span></td>
+        <td style="padding:.3rem .5rem;text-align:right">${p.stops}</td>
+        <td style="padding:.3rem .5rem;text-align:right">${blockedCell}</td>
+        <td style="padding:.3rem .5rem;text-align:right">${p.gated}</td>
+        <td style="padding:.3rem .5rem;text-align:right" title="amostra sombra que teria bloqueado (estimativa)">${wb}</td>
+        <td style="padding:.3rem .5rem;text-align:right" title="tamanho estimado de mensagem de Stop evitada (não são tokens)">~${p.avoidedChars}</td>
+        <td style="padding:.3rem .5rem;text-align:right">${p.avgStopMs}</td>
+        <td style="padding:.3rem .5rem;font-size:.72rem;color:var(--muted)">${top || '—'}</td>
+      </tr>`;
+    }).join('');
+    el.innerHTML = `<table style="width:100%;border-collapse:collapse">
+      <thead><tr style="text-align:left;border-bottom:1px solid var(--border)">
+        <th style="padding:.3rem .5rem">Perfil</th>
+        <th style="padding:.3rem .5rem;text-align:right">Stops</th>
+        <th style="padding:.3rem .5rem;text-align:right">Blocked</th>
+        <th style="padding:.3rem .5rem;text-align:right">Gated</th>
+        <th style="padding:.3rem .5rem;text-align:right">Would-block*</th>
+        <th style="padding:.3rem .5rem;text-align:right">Msg evitada*</th>
+        <th style="padding:.3rem .5rem;text-align:right">ms/Stop</th>
+        <th style="padding:.3rem .5rem">Top bypassados</th>
+      </tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+    <p class="text-muted" style="margin-top:.5rem;font-size:.72rem">
+      <b>gated</b> = ações puladas pelo perfil (fato). <b>would-block*</b> = amostra sombra que teria bloqueado (estimativa; só quando há amostra).
+      <b>Msg evitada*</b> = caracteres de mensagem de Stop não injetados (estimativa de tamanho, <b>não</b> tokens).
+      Se <b>Blocked</b> &gt; 0 no perfil <b>free</b>, o passthrough não está sendo respeitado.
+    </p>`;
+  } catch (err) {
+    el.innerHTML = `<p class="text-muted">Falha ao carregar impacto do perfil: ${escapeHtml(err.message)}</p>`;
+  }
 }
 
 async function loadCaptureRate() {
