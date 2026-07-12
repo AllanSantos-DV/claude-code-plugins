@@ -16,6 +16,7 @@ const { aggregateCaptureRate } = require('./lib/capture-rate.js');
 const { loadSqlite } = require('./lib/sqlite-compat.js');
 const pluginUpdater = require('./lib/plugin-updater.js');
 const { resolveMode } = require('./lib/router-mode.js');
+const hooksConfig = require('./lib/hooks-config.js');
 
 // Session token — generated at boot, injected into index.html, required on all /api/* requests.
 const SESSION_TOKEN = crypto.randomBytes(16).toString('hex');
@@ -894,6 +895,23 @@ async function saveHooksConfig(req, res) {
   } catch (e) { fail(res, e.message); }
 }
 
+// Active profile — read/written UPDATE-SAFE (DATA_DIR/hooks/user-config.json),
+// never the shipped file, so a plugin auto-update can't revert the user's choice.
+function getHooksProfile(req, res) {
+  hooksConfig._resetCache(); // long-running server: reflect any out-of-band edit
+  json(res, { profile: hooksConfig.getProfile(), names: hooksConfig.profileNames() });
+}
+
+async function setHooksProfile(req, res) {
+  const body = await readBody(req);
+  try {
+    const parsed = JSON.parse(body);
+    const name = String((parsed && parsed.profile) || '').trim().toLowerCase();
+    hooksConfig.saveProfile(name); // validates + writes DATA_DIR + resets cache
+    json(res, { ok: true, profile: hooksConfig.getProfile() });
+  } catch (e) { fail(res, e.message, 400); }
+}
+
 // ─── API: Hooks ────────────────────────────────────────────────────
 
 function getHooks(req, res) {
@@ -1422,6 +1440,8 @@ function handleAPI(req, res, url) {
   if (p.match(/^\/api\/hooks\/toggle\//) && m === 'PUT') return toggleHook(req, res, url);
   if (p === '/api/hooks/config' && m === 'GET') return getHooksConfig(req, res);
   if (p === '/api/hooks/config' && m === 'PUT') return saveHooksConfig(req, res);
+  if (p === '/api/hooks/profile' && m === 'GET') return getHooksProfile(req, res);
+  if (p === '/api/hooks/profile' && m === 'PUT') return setHooksProfile(req, res);
   if (p === '/api/curation/projects' && m === 'GET') return getCurationProjects(req, res);
   if (p === '/api/curation/shells' && m === 'GET') return getCurationShells(req, res, url);
   if (p.match(/^\/api\/curation\/shells\/\d+$/) && m === 'DELETE') return deleteCurationShell(req, res, url);

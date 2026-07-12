@@ -634,14 +634,15 @@ code { color: var(--fg); font-family: var(--font-mono); }
     <div class="card">
       <h2>
         <span data-i18n="hooks.profile">Profile</span>
-        <span class="tip" data-i18n-tip="tip.profile" data-tip="dev = todos os nudges de captura/curadoria ligados (mantenedores). standard = silencioso: informa 1x, sem escalonar; ideal para quem só quer usar o plugin. Overrides individuais abaixo sempre vencem o preset.">i</span>
+        <span class="tip" data-i18n-tip="tip.profile" data-tip="dev = tudo ligado (mantenedores; curadoria escala 3×). standard = silencioso: só a curadoria informa 1×, blockers extras do Stop desligados. free = passa tudo (nenhum bloqueio; retrieval do prompt continua). Troca é update-safe (gravada no DATA_DIR).">i</span>
       </h2>
       <div style="display:grid;grid-template-columns:1fr 2fr;gap:.75rem;align-items:center">
         <div>
           <label class="field-label"><span data-i18n="hooks.profileSelect">Active profile</span></label>
-          <select id="hcfg-profile" onchange="onProfileChange()">
+          <select id="hcfg-profile" onchange="onProfileChange();applyProfile()">
             <option value="dev">dev</option>
             <option value="standard">standard</option>
+            <option value="free">free</option>
           </select>
         </div>
         <div class="text-muted" id="hcfg-profile-desc" style="font-size:.85rem"></div>
@@ -2149,7 +2150,26 @@ async function loadHooks() {
     _hooksConfig = await api('GET', '/api/hooks/config');
     renderHooksConfig();
   } catch {}
+  loadProfile();
   loadCurationProjects();
+}
+
+async function loadProfile() {
+  try {
+    const pr = await api('GET', '/api/hooks/profile');
+    const sel = document.getElementById('hcfg-profile');
+    if (sel && pr && pr.profile) { sel.value = pr.profile; onProfileChange(); }
+  } catch (e) { void e; }
+}
+
+async function applyProfile() {
+  const sel = document.getElementById('hcfg-profile');
+  if (!sel) return;
+  const el = document.getElementById('hooks-config-saved');
+  try {
+    await api('PUT', '/api/hooks/profile', { profile: sel.value });
+    if (el) { el.textContent = 'Profile: ' + sel.value + ' \u2713'; setTimeout(() => { el.textContent = ''; }, 2500); }
+  } catch (e) { if (el) el.textContent = 'Profile error: ' + (e && e.message ? e.message : e); }
 }
 
 function renderHooks() {
@@ -2253,8 +2273,9 @@ async function deleteShell(idx, cwdEnc) {
 }
 
 const PROFILE_DESCS = {
-  dev: 'Maintainers: all capture/curation nudges on (pattern, correction, decision, verify; curation escalates up to 3×).',
-  standard: 'Everyone else: quiet. Curation informs once (no escalation); capture nudges and verify-nudge off. Memory/retrieval stay on.',
+  dev: 'Maintainers: everything on — capture/curation nudges + every Stop blocker (curation escalates up to 3×). Builds the KB.',
+  standard: 'Default: quiet. Only curation informs once (no escalation); capture nudges, verify, refine-research, failure-retro, research-followup and auto-continue all off. Retrieval stays on.',
+  free: 'Passthrough: no Stop blocks at all. Prompt-time context retrieval stays on (read-only). Written update-safe (survives plugin updates).',
 };
 
 function onProfileChange() {
@@ -2267,9 +2288,8 @@ function renderHooksConfig() {
   if (!_hooksConfig) return;
   const c = _hooksConfig;
   document.getElementById('hcfg-memory-maxlines').value = c.memoryRotate?.maxLines ?? '';
-  const prof = (c.profile === 'standard') ? 'standard' : 'dev';
-  const profSel = document.getElementById('hcfg-profile');
-  if (profSel) { profSel.value = prof; onProfileChange(); }
+  // Profile is loaded + saved separately, update-safe, via /api/hooks/profile
+  // (see loadProfile/applyProfile) — never through the shipped-config Save.
 }
 
 async function saveHooksConfig() {
@@ -2277,9 +2297,6 @@ async function saveHooksConfig() {
   const cfg = JSON.parse(JSON.stringify(_hooksConfig));
 
   const iv = n => { const v = parseInt(n); return v > 0 ? v : undefined; };
-
-  const profSel = document.getElementById('hcfg-profile');
-  if (profSel) cfg.profile = (profSel.value === 'standard') ? 'standard' : 'dev';
 
   cfg.memoryRotate = cfg.memoryRotate || {};
   const mm = iv(document.getElementById('hcfg-memory-maxlines').value);
