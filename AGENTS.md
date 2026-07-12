@@ -45,6 +45,32 @@ Use the slash command **`/release`** (defined in `.claude/commands/release.md`).
 
 CI green ≠ plugin works. Smoke in real CC Desktop is the only end-to-end gate. Skipping it = releases that break for users (and auto-update propagates the damage).
 
+## Plugin pages (vitrine + merge guard)
+
+Every plugin in `marketplace.json` must ship a landing page at
+`pages/<plugin>/index.html`. Freshness is enforced deterministically — **no AI,
+no model quota** — by `.github/scripts/pages-guard.mjs`, which hashes each
+plugin's sources (`plugin.json` + `README.md` + `CHANGELOG.md`, EOL-normalized so
+Windows and CI agree) against `pages/<plugin>/.source-hash`.
+
+- **CI gate** (`.github/workflows/pages-guard.yml`) runs on every PR/push to
+  `main`. Mark it **required** in branch protection to hard-block stale merges.
+- **Local gate** (`.githooks/pre-merge-commit`) mirrors the CI check. Enable it
+  **once per clone**:
+  ```
+  git config core.hooksPath .githooks
+  ```
+- **When it blocks**, it points at the `vitrine` agent
+  (`.github/agents/vitrine.agent.md`). Run that agent to (re)draw the page(s),
+  then it seals the hash:
+  ```
+  node .github/scripts/pages-guard.mjs stamp <plugin>
+  node .github/scripts/pages-guard.mjs check   # must print OK
+  ```
+- Editing a plugin's `README`/`CHANGELOG`/`plugin.json` **drifts the hash** →
+  merge blocked until the page is redrawn and re-stamped. Only the `vitrine`
+  agent writes under `pages/`; never hand-edit `.source-hash`.
+
 ## Coding rules in the plugin
 
 - **No empty `catch {}`** — CI greps and fails.

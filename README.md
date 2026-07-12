@@ -57,7 +57,11 @@ claude-code-plugins/
 │   ├── hooks/                 # rf-remind, rf-guard (enforcement)
 │   ├── servers/rf-engine/     # MCP server (Python + openpyxl)
 │   └── INSTALL.md
-└── .github/workflows/ci.yml   # CI: test + lint + version sync
+├── pages/                     # Landing page de cada plugin (pages/<plugin>/index.html)
+└── .github/
+    ├── workflows/             # ci.yml · release.yml · pages-guard.yml
+    ├── scripts/               # pages-guard.mjs (guard determinístico, zero cota)
+    └── agents/                # vitrine.agent.md (redesenha as páginas)
 ```
 
 ## Instalação (via marketplace)
@@ -73,6 +77,17 @@ No Claude Code, adicione o marketplace uma vez e instale os plugins que quiser:
 ```
 
 Depois de instalar o `claude-code-boss`, rode `npm install` na pasta dele (dependências do Node) — ou deixe o `postinstall` cuidar disso. Configuração detalhada (providers de embedding, backend MCP Memory, dashboard) em **[claude-code-boss/README.md](./claude-code-boss/README.md)**; setup do rf-reviewer em **[rf-reviewer/INSTALL.md](./rf-reviewer/INSTALL.md)**.
+
+## Páginas dos plugins
+
+Cada plugin tem uma landing page autocontida em `pages/<plugin>/index.html`
+([claude-code-boss](./pages/claude-code-boss/index.html) ·
+[rf-reviewer](./pages/rf-reviewer/index.html)). Um guard determinístico
+(`.github/scripts/pages-guard.mjs`, sem IA, sem cota) garante que a página
+acompanhe as fontes do plugin: o CI (`pages-guard.yml`) bloqueia merge com página
+desatualizada, e o mesmo check roda como git hook local — ative uma vez por clone
+com `git config core.hooksPath .githooks`. Quem redesenha as páginas é o agente
+[`vitrine`](./.github/agents/vitrine.agent.md). Detalhes em [AGENTS.md](./AGENTS.md).
 
 ## Licença
 
