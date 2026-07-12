@@ -1,5 +1,42 @@
 # Changelog
 
+## [1.24.0] - 2026-07-12
+
+### Changed — perfis de hooks consolidados (dev · standard · free) + troca update-safe
+
+Mesmo no perfil `standard`, o plugin fazia demais no Stop-hook — drift para quem
+usa o Claude Code com o agente normal. O perfil só silenciava 5 nudges de captura,
+mas ~6 detectores capazes de **bloquear** (refine-research a cada 4º Stop,
+failure-retro, research-followup, auto-continue, session-summary, curation-stop)
+não passavam pelo perfil e continuavam disparando. Esta release consolida os hooks
+num único eixo de enforcement, com três perfis claros:
+
+- **`dev`** — tudo ligado: constrói a KB e enforça (a curadoria escala até 3×).
+  Para quem desenvolve/estende o plugin.
+- **`standard`** (padrão) — silencioso: só a curadoria dá **1 aviso soft**; os
+  nudges de captura E os blockers extras do Stop (refine-research, failure-retro,
+  research-followup, auto-continue) ficam desligados. O `session-summary`
+  (1×/sessão) e o retrieval no início do turno continuam.
+- **`free`** — passa tudo: o Stop-dispatcher faz short-circuit e **nenhum detector
+  bloqueia**. O retrieval de contexto no prompt (read-only, cache-safe) continua.
+
+Detalhes:
+- **Fonte única de verdade**: `lib/hooks-config.js` ganhou o preset `free`,
+  estendeu `standard` e novos getters (`getRefineResearch`, `getFailureRetro`,
+  `getResearchFollowup`, `getAutoContinue`). Os detectores que antes ignoravam o
+  perfil agora o respeitam; os `enabled:true` fixos saíram do config shipped para
+  o preset ser autoritativo.
+- **Troca update-safe**: o perfil é lido de `config/hooks-config.json` (shipped)
+  mesclado com `DATA_DIR/hooks/user-config.json` (nunca versionado) — mesmo padrão
+  do brain e do router. Trocar de perfil não edita mais arquivo versionado, então
+  o auto-update **não reverte** a escolha.
+- **Como trocar**: comando **`/boss-profile <dev|standard|free>`** (script
+  `scripts/profile-set.js`) ou a aba **Hooks** do dashboard, agora com o seletor
+  dos 3 perfis gravando update-safe (`GET`/`PUT /api/hooks/profile`). Vale a partir
+  do próximo turno — sem reiniciar o Claude Code.
+- **Testes**: matriz dos 3 perfis — getters por perfil, `free` passthrough no
+  dispatcher, override `DATA_DIR` vencendo o shipped, e `saveProfile`.
+
 ## [1.23.0] - 2026-07-09
 
 ### Added — integração real com o MCP Memory Server (backend por-usuário + ingestão)

@@ -1,6 +1,6 @@
 # claude-code-boss
 
-Plugin para Claude Code Desktop — **v1.23.0**
+Plugin para Claude Code Desktop — **v1.24.0**
 
 Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizado leve para Claude Code. A orquestração fica a cargo das ferramentas nativas (Agent/Workflow) — o plugin foca no que o nativo não tem.
 
@@ -106,13 +106,21 @@ Todos os hooks estão declarados em `hooks/hooks.json`. Eventos e scripts ativos
 > **Tom advisory:** os hooks informam, não coagem. Sem orquestrador próprio:
 > a delegação usa as ferramentas nativas (Agent/Workflow).
 >
-> **Perfis (`hooks-config.json` → `profile`)**: `standard` (padrão) — preset
-> silencioso e econômico em tokens para quem só quer usar o plugin: nudges de captura
-> (`pattern-detect`, `correction-detect`, `decisionScan`) e as ferramentas de dev
-> (`verifyNudge`, `selfReview`) desligados; `curation-stop` bloqueia 1x e relenta
-> (sem escalonar). Ou `dev` — tudo ligado, para quem desenvolve/estende o plugin.
-> Override individual em `hooks-config.json` sempre vence o preset.
-> Selecionável na aba Hooks do dashboard.
+> **Perfis (`hooks-config.json` → `profile`)** — um único eixo de enforcement, três modos:
+> - **`standard`** (padrão) — silencioso: só a curadoria dá **1 aviso soft** e relenta;
+>   os nudges de captura (`pattern-detect`, `correction-detect`, `decisionScan`), as
+>   ferramentas de dev (`verifyNudge`, `selfReview`) e os blockers extras do Stop
+>   (`refine-research`, `failure-retro`, `research-followup`, `auto-continue`) ficam
+>   desligados. `session-summary` (1×/sessão) e o retrieval continuam.
+> - **`dev`** — tudo ligado (curadoria escala até 3×), para quem estende o plugin.
+> - **`free`** — passa tudo: o Stop-dispatcher faz short-circuit e **nada bloqueia**;
+>   só o retrieval de contexto no prompt (read-only) segue ativo.
+>
+> **Troca update-safe:** o perfil é lido do config shipped **mesclado** com
+> `DATA_DIR/hooks/user-config.json` (nunca versionado), então trocar não edita arquivo
+> versionado e **sobrevive ao auto-update**. Use o comando **`/boss-profile <dev|standard|free>`**
+> ou o seletor na aba **Hooks** do dashboard. Override individual em `hooks-config.json`
+> ainda vence o preset. Vale a partir do próximo turno (sem reiniciar o Claude Code).
 
 ## Brain KB
 
