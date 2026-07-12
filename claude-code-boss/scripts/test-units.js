@@ -3773,6 +3773,43 @@ test('stop-dispatcher.dispatch: detector error → onError called, no block', as
   assertEq(errs[0][0], 'decision-promote');
 });
 
+// ─── profile-impact aggregator (Phase 2 Insights) ────────────────────────────
+const profileImpact = require('./lib/profile-impact.js');
+
+test('profile-impact.aggregate: folds stop.dispatch per profile', () => {
+  const evs = [
+    { payload: { profile: 'standard', blocked: 1, gated: 3, shadow: 1, enforcedChars: 100, avoidedChars: 50,
+      detectors: [
+        { name: 'refine-research', s: 'gated', ms: 0 },
+        { name: 'failure-retro', s: 'shadow_block', ms: 2 },
+        { name: 'auto-continue-stop', s: 'gated', ms: 0 },
+        { name: 'curation-stop', s: 'block', ms: 1 },
+      ] } },
+    { payload: { profile: 'standard', blocked: 0, gated: 2, shadow: 0, enforcedChars: 0, avoidedChars: 0,
+      detectors: [
+        { name: 'refine-research', s: 'gated', ms: 0 },
+        { name: 'failure-retro', s: 'gated', ms: 0 },
+      ] } },
+    { payload: { profile: 'free', blocked: 0, gated: 5, shadow: 0, enforcedChars: 0, avoidedChars: 0, detectors: [] } },
+  ];
+  const r = profileImpact.aggregateProfileImpact(evs);
+  const std = r.profiles.find(p => p.profile === 'standard');
+  assertEq(std.stops, 2);
+  assertEq(std.blocked, 1);
+  assertEq(std.gated, 5);
+  assertEq(std.wouldBlock, 1);
+  assertEq(std.avoidedChars, 50);
+  assertEq(std.topGated[0].name, 'refine-research'); // gated twice → top
+  assertEq(std.topGated[0].count, 2);
+  assertEq(r.profiles[0].profile, 'standard'); // sorted by stops desc
+  assertEq(r.profiles.find(p => p.profile === 'free').gated, 5);
+});
+
+test('profile-impact.aggregate: empty/garbage tolerated', () => {
+  assertEq(profileImpact.aggregateProfileImpact([]).profiles.length, 0);
+  assertEq(profileImpact.aggregateProfileImpact(null).profiles.length, 0);
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
