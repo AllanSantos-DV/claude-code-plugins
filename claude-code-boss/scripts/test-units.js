@@ -3810,6 +3810,55 @@ test('profile-impact.aggregate: empty/garbage tolerated', () => {
   assertEq(profileImpact.aggregateProfileImpact(null).profiles.length, 0);
 });
 
+// ─── tuning-advisor (mechanical, zero-quota recommendations) ─────────────────
+const tuningAdvisor = require('./lib/tuning-advisor.js');
+
+test('tuning-advisor: free with blocks → warn (leak)', () => {
+  const r = tuningAdvisor.analyze({ activeProfile: 'free',
+    impact: { profiles: [{ profile: 'free', stops: 50, blocked: 3, gated: 100, wouldBlock: 0, shadowSamples: 0 }] } });
+  assert(r.recommendations.some(x => x.id === 'free-leak' && x.level === 'warn'), 'expected free-leak warn');
+});
+
+test('tuning-advisor: dev with zero blocks → suggest standard', () => {
+  const r = tuningAdvisor.analyze({ activeProfile: 'dev',
+    impact: { profiles: [{ profile: 'dev', stops: 40, blocked: 0, gated: 0, wouldBlock: 0, shadowSamples: 0 }] } });
+  assert(r.recommendations.some(x => x.id === 'dev-quiet' && x.level === 'suggest'));
+});
+
+test('tuning-advisor: standard high would-block → suggest dev; low → info good', () => {
+  const hi = tuningAdvisor.analyze({ activeProfile: 'standard',
+    impact: { profiles: [{ profile: 'standard', stops: 30, blocked: 1, gated: 60, wouldBlock: 8, shadowSamples: 10 }] } });
+  assert(hi.recommendations.some(x => x.id === 'standard-costly' && x.level === 'suggest'));
+  const lo = tuningAdvisor.analyze({ activeProfile: 'standard',
+    impact: { profiles: [{ profile: 'standard', stops: 30, blocked: 1, gated: 60, wouldBlock: 1, shadowSamples: 10 }] } });
+  assert(lo.recommendations.some(x => x.id === 'standard-good' && x.level === 'info'));
+});
+
+test('tuning-advisor: recall precision low → suggest raise minScore', () => {
+  const r = tuningAdvisor.analyze({ retrieval: { fired: 40, cited: 8 } });
+  assert(r.recommendations.some(x => x.id === 'recall-noisy' && x.level === 'suggest'));
+});
+
+test('tuning-advisor: weak nudge → suggest disable', () => {
+  const r = tuningAdvisor.analyze({ captureRate: { byKind: { pattern: { nudges: 10, captures: 0, rate: 0 } } } });
+  assert(r.recommendations.some(x => x.id === 'nudge-weak-pattern'));
+});
+
+test('tuning-advisor: below sample size → silent (no advice on noise)', () => {
+  const r = tuningAdvisor.analyze({ activeProfile: 'dev',
+    impact: { profiles: [{ profile: 'dev', stops: 5, blocked: 0, gated: 0, wouldBlock: 0, shadowSamples: 0 }] },
+    retrieval: { fired: 3, cited: 0 },
+    captureRate: { byKind: { pattern: { nudges: 2, captures: 0, rate: 0 } } } });
+  assertEq(r.recommendations.length, 0);
+});
+
+test('tuning-advisor: warn sorts before suggest', () => {
+  const r = tuningAdvisor.analyze({ activeProfile: 'free',
+    impact: { profiles: [{ profile: 'free', stops: 50, blocked: 2, gated: 10, wouldBlock: 0, shadowSamples: 0 }] },
+    retrieval: { fired: 40, cited: 8 } });
+  assertEq(r.recommendations[0].level, 'warn');
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);

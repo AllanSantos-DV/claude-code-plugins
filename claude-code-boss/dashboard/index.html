@@ -269,6 +269,13 @@ code { color: var(--fg); font-family: var(--font-mono); }
   <section id="tab-home" class="tab active">
     <h1 data-i18n="home.title">System Overview</h1>
     <div class="grid" id="home-grid"></div>
+    <div class="card" id="home-tuning-card">
+      <h2 style="margin:0 0 .25rem 0">Recomendações de tuning
+        <span class="text-muted" style="font-size:.8rem">mecânico · zero cota</span>
+        <span class="tip" data-tip="Regras determinísticas sobre a telemetria (impacto do perfil, taxa de captura, precisão do recall). Recomenda; não altera nada sozinho. Silencioso quando não há sinal claro.">i</span>
+      </h2>
+      <div id="home-tuning"><p class="text-muted" style="font-size:.85rem">Analisando telemetria…</p></div>
+    </div>
     <div class="card">
       <div class="flex mb-1" style="align-items:center;justify-content:space-between">
         <h2 style="margin:0" data-i18n="home.value">Value at a glance <span class="text-muted" style="font-size:.8rem">(last 30 days)</span></h2>
@@ -1524,6 +1531,32 @@ async function loadHome() {
     }
   } catch { el.innerHTML = '<p class="text-muted">Failed to load status.</p>'; }
   loadValueSummary();
+  loadTuningRecs();
+}
+
+async function loadTuningRecs() {
+  const el = document.getElementById('home-tuning');
+  if (!el) return;
+  try {
+    const data = await api('GET', '/api/tuning/recommendations?days=7');
+    const recs = data.recommendations || [];
+    if (recs.length === 0) {
+      el.innerHTML = `<p class="text-muted" style="font-size:.85rem">Nada a ajustar por ora — perfil <b>${escapeHtml(data.activeProfile || '?')}</b>. (Silencioso é bom: sem sinal claro, sem ruído.)</p>`;
+      return;
+    }
+    const badge = { warn: 'badge-red', suggest: 'badge-yellow', info: 'badge-green' };
+    el.innerHTML = recs.map(r => `
+      <div style="padding:.5rem .6rem;border-left:3px solid var(--border);margin-bottom:.4rem">
+        <div style="display:flex;gap:.5rem;align-items:center">
+          <span class="badge ${badge[r.level] || ''}">${escapeHtml(r.level)}</span>
+          <b style="font-size:.9rem">${escapeHtml(r.title)}</b>
+        </div>
+        <div class="text-muted" style="font-size:.82rem;margin-top:.25rem">${escapeHtml(r.detail)} <span style="opacity:.7">(${escapeHtml(r.evidence)})</span></div>
+      </div>`).join('') +
+      `<p class="text-muted" style="font-size:.72rem;margin-top:.3rem">Mecânico e determinístico (zero cota). Trocar perfil: aba Hooks ou <code>/boss-profile</code>. Thresholds: Brain → Avançado.</p>`;
+  } catch (e) {
+    el.innerHTML = `<p class="text-muted" style="font-size:.85rem">Falha ao carregar recomendações: ${escapeHtml(e && e.message ? e.message : e)}</p>`;
+  }
 }
 
 async function loadValueSummary() {
