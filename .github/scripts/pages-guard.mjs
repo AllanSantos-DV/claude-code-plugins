@@ -62,9 +62,14 @@ function sourceHash(pluginDir) {
     let buf = null;
     try { buf = fs.readFileSync(f); } catch (err) { void err; /* absent -> skip */ }
     if (buf === null) continue;
-    // Tag with the path + length so reordering/renaming can't collide.
-    h.update(`\u0000${rel}\u0000${buf.length}\u0000`);
-    h.update(buf);
+    // Normalize line endings before hashing so the digest is identical on
+    // Windows (CRLF working copy) and Linux/CI (LF) regardless of git's
+    // autocrlf. Without this, EOL translation alone would flip the hash and
+    // CI would report a page as "stale" even though its sources are unchanged.
+    const norm = Buffer.from(buf.toString('utf8').replace(/\r\n?/g, '\n'), 'utf8');
+    // Tag with the path + normalized length so reordering/renaming can't collide.
+    h.update(`\u0000${rel}\u0000${norm.length}\u0000`);
+    h.update(norm);
   }
   return h.digest('hex');
 }
