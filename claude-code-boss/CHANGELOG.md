@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.28.0] - 2026-07-12
+
+### Added — auto-tuner mecânico (a telemetria vira ação, zero cota)
+
+Fecha o loop da observabilidade: os dados das 1.25–1.27 viravam um relatório que
+**você** tinha que interpretar. Agora uma camada **determinística** (regras puras,
+zero modelo/cota) lê a telemetria e produz a conclusão — "mantenha o mecânico
+mecânico; só o que exige julgamento vem pra gente".
+
+- **`lib/tuning-advisor.js`** (puro/testável): `analyze({activeProfile, impact,
+  captureRate, retrieval})` → recomendações `warn/suggest/info` sobre **perfil**
+  (ex.: `free` com bloqueios = vazamento; `dev` sem bloqueios = use `standard`;
+  `standard` com would-block alto = o bypass está custando), **thresholds do recall**
+  (precisão de citação baixa → suba `minScore`) e **eficácia de nudge** (nudge que
+  nunca vira captura → o perfil pode desligá-lo). Guardas de amostra mínima evitam
+  conselho sobre ruído.
+- **`tuning-advisory.js`** — SessionStart hook no padrão `doctor-advisory`: lê a
+  telemetria do projeto, injeta a **top recomendação** (warn/suggest) em uma linha,
+  cooldown 6h, silencioso quando não há sinal. Zero cota — a análise é mecânica, só
+  a conclusão curta chega ao agente.
+- **`GET /api/tuning/recommendations`** + card **"Recomendações de tuning"** no Home.
+- **Recomenda, não aplica**: nunca altera perfil/threshold sozinho. Trocar continua
+  sendo `/boss-profile` / aba Hooks / Brain → Avançado.
+
 ## [1.27.0] - 2026-07-12
 
 ### Changed — Brain: declutter de config (progressive disclosure)
