@@ -832,7 +832,7 @@ const TESTS = [
     expect: { noError: true },
     extraEnv: () => {
       const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-acs-blk-'));
-      return { CLAUDE_PLUGIN_DATA: tmpData };
+      return { CLAUDE_PLUGIN_DATA: tmpData, CLAUDE_PLUGIN_ROOT: mkTempPluginRoot({ profile: 'dev' }) };
     },
     validateWithEnv: (r, env) => {
       if (r.parsed?.decision !== 'block') return `expected decision:'block', got: ${JSON.stringify(r.parsed)}`;
@@ -854,7 +854,7 @@ const TESTS = [
       const runtimeDir = path.join(tmpData, '.runtime');
       fs.mkdirSync(runtimeDir, { recursive: true });
       fs.writeFileSync(path.join(runtimeDir, `auto-continue-${SESSION}.json`), JSON.stringify({ count: 1 }));
-      return { CLAUDE_PLUGIN_DATA: tmpData };
+      return { CLAUDE_PLUGIN_DATA: tmpData, CLAUDE_PLUGIN_ROOT: mkTempPluginRoot({ profile: 'dev' }) };
     },
     validateWithEnv: (r) => {
       if (Object.keys(r.parsed || {}).length !== 0) {
@@ -910,7 +910,7 @@ const TESTS = [
           ],
         }),
       );
-      return { CLAUDE_PLUGIN_DATA: tmpData };
+      return { CLAUDE_PLUGIN_DATA: tmpData, CLAUDE_PLUGIN_ROOT: mkTempPluginRoot({ profile: 'dev' }) };
     },
     validate: r => {
       const p = r.parsed || {};
@@ -923,6 +923,35 @@ const TESTS = [
       if (!reason.includes('---')) return 'expected separator between merged reasons';
       if (iCuration > iAuto) return 'priority order wrong: curation-stop must precede auto-continue';
       return null;
+    },
+  },
+  {
+    name: 'stop-dispatcher   [profile=free→passthrough→{}]',
+    script: 'stop-dispatcher.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-disp-free-'));
+      const runtimeDir = path.join(tmpData, '.runtime');
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      // Seed a pending curation entry that WOULD block under dev/standard — the
+      // free short-circuit must skip every detector regardless.
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      fs.writeFileSync(
+        path.join(runtimeDir, `curation-turn-${safe}.json`),
+        JSON.stringify({
+          sessionId: SESSION,
+          startedAt: new Date().toISOString(),
+          entries: [
+            { command: 'npm test', reason: 'needs-curation', lines: 487, chars: 12000, isCurated: false, curatedScript: null, isSuccess: true, timestamp: new Date().toISOString() },
+          ],
+        }),
+      );
+      return { CLAUDE_PLUGIN_DATA: tmpData, CLAUDE_PLUGIN_ROOT: mkTempPluginRoot({ profile: 'free' }) };
+    },
+    validate: r => {
+      const keys = Object.keys(r.parsed || {});
+      return keys.length === 0 ? null : `expected {} (free passthrough), got: ${JSON.stringify(r.parsed)}`;
     },
   },
 
