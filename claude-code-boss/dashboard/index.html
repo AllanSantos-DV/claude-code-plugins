@@ -463,6 +463,28 @@ code { color: var(--fg); font-family: var(--font-mono); }
       </div>
     </div>
 
+    <!-- Memory budget (human-facing primary control) -->
+    <div class="card">
+      <h2 style="margin-bottom:.5rem">Orçamento de memória
+        <span class="tip" data-tip="Controle simples: quantas entradas por projeto e por quanto tempo antes de arquivar. Os ajustes finos ficam em 'Configurações avançadas' abaixo.">i</span>
+      </h2>
+      <div style="display:flex;gap:.6rem;align-items:center;flex-wrap:wrap">
+        <select id="mem-preset" onchange="onMemoryPresetChange()" style="max-width:260px">
+          <option value="">Escolha um perfil…</option>
+          <option value="lean">Enxuto — 3k entradas · arquiva em 45d</option>
+          <option value="balanced">Equilibrado — 10k · 90d (padrão)</option>
+          <option value="ample">Amplo — 30k · 180d</option>
+        </select>
+        <span class="text-muted" style="font-size:.78rem">Preenche os limites abaixo; clique em <b>Save</b> para aplicar.</span>
+      </div>
+    </div>
+
+    <!-- Advanced (progressive disclosure) — sensible defaults; hidden by default -->
+    <details style="margin-bottom:1rem">
+      <summary style="cursor:pointer;padding:.6rem .2rem;font-weight:600">⚙ Configurações avançadas
+        <span class="text-muted" style="font-weight:400;font-size:.8rem">— 10 ajustes com defaults sensatos. Só altere se entender o efeito.</span>
+      </summary>
+
     <!-- KB SETTINGS -->
     <div class="card">
       <h2 style="margin-bottom:.5rem" data-i18n="brain.retrieval">Retrieval</h2>
@@ -549,6 +571,8 @@ code { color: var(--fg); font-family: var(--font-mono); }
         </div>
       </div>
     </div>
+    </details>
+
     <div class="flex flex-wrap gap-1 mb-1">
       <select id="brain-project" onchange="loadBrainStats()" style="max-width:200px"><option value="" data-i18n="brain.selectProject">Select project...</option></select>
       <select id="brain-scope" style="max-width:140px" title="Which memory scope to search">
@@ -1938,6 +1962,19 @@ function onTransportChange(value) {
   document.getElementById('mcp-stdio-fields').style.display = value === 'stdio' ? 'grid' : 'none';
   const msg = document.getElementById('java-check-msg');
   if (msg) msg.textContent = value === 'stdio' ? 'Modo stdio: requer Java 21+ instalado na máquina.' : '';
+}
+
+const MEM_PRESETS = {
+  lean:     { maxEntries: 3000,  archiveDays: 45 },
+  balanced: { maxEntries: 10000, archiveDays: 90 },
+  ample:    { maxEntries: 30000, archiveDays: 180 },
+};
+function onMemoryPresetChange() {
+  const sel = document.getElementById('mem-preset');
+  const p = sel && MEM_PRESETS[sel.value];
+  if (!p) return;
+  document.getElementById('kb-maxEntries').value = p.maxEntries;
+  document.getElementById('kb-archiveDays').value = p.archiveDays;
 }
 
 async function saveBrainBackendConfig() {
