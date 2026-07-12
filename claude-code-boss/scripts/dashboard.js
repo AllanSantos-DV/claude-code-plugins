@@ -1427,6 +1427,39 @@ async function getCaptureRate(req, res, url) {
 
 // ─── Router ────────────────────────────────────────────────────────
 
+async function getTuningRecommendations(req, res, url) {
+  try {
+    const range = Math.max(1, Math.min(365, parseInt(url.searchParams.get('days') || '7', 10)));
+    const sinceTs = Date.now() - range * 86400_000;
+    const projectFilter = url.searchParams.get('project') || '';
+    const projects = projectFilter ? [projectFilter] : listMetricsProjects();
+    const gather = async (eventName) => {
+      const per = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName, limit: 2000 }));
+      const rows = [];
+      for (const { value } of per) for (const r of value) { if (r.ts >= sinceTs) rows.push(r); }
+      return rows;
+    };
+    const dispatch = await gather('stop.dispatch');
+    const nudges = await gather('nudge.emitted');
+    const caps = await gather('lesson.captured');
+    const fired = (await gather('retrieve.fired')).length;
+    const cited = (await gather('retrieve.cited')).length;
+    const { aggregateProfileImpact } = require('./lib/profile-impact.js');
+    const { analyze } = require('./lib/tuning-advisor.js');
+    const activeProfile = hooksConfig.getProfile();
+    const out = analyze({
+      activeProfile,
+      impact: aggregateProfileImpact(dispatch),
+      captureRate: aggregateCaptureRate([...nudges, ...caps]),
+      retrieval: { fired, cited },
+    });
+    json(res, { rangeDays: range, activeProfile, ...out });
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/tuning/recommendations failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
 function handleAPI(req, res, url) {
   const m = req.method;
   const p = url.pathname;
@@ -1481,6 +1514,7 @@ function handleAPI(req, res, url) {
   if (p === '/api/router/metrics/reset' && m === 'POST') return resetRouterMetrics(req, res);
   if (p === '/api/metrics/capture-rate' && m === 'GET') return getCaptureRate(req, res, url);
   if (p === '/api/metrics/profile-impact' && m === 'GET') return getProfileImpact(req, res, url);
+  if (p === '/api/tuning/recommendations' && m === 'GET') return getTuningRecommendations(req, res, url);
   if (p === '/api/plugin/version' && m === 'GET') return getPluginVersion(req, res);
   if (p === '/api/plugin/update-check' && m === 'GET') return checkPluginUpdate(req, res, url);
   if (p === '/api/plugin/update' && m === 'POST') return postPluginUpdate(req, res);
