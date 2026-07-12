@@ -6,7 +6,7 @@ Monorepo de plugins para [Claude Code Desktop](https://claude.ai/download) — d
 
 | Plugin | Versão | O que faz |
 | --- | --- | --- |
-| [**claude-code-boss**](./claude-code-boss) | 1.27.0 | Brain KB (busca semântica local), execução curada anti context-bloat e aprendizado in-loop. Opcionalmente conecta a um servidor **MCP Memory** externo. |
+| [**claude-code-boss**](./claude-code-boss) | 1.28.0 | Brain KB (busca semântica local), execução curada anti context-bloat e aprendizado in-loop. Opcionalmente conecta a um servidor **MCP Memory** externo. |
 | [**rf-reviewer**](./rf-reviewer) | 0.1.0 | Motor determinístico que revisa Requisitos Funcionais em Excel: extrai a planilha, o agente analisa cruzando com a memória, e injeta a análise de volta na **mesma** planilha — mecânico e não-destrutivo. |
 
 Cada plugin é independente e vive na sua própria subpasta; instale só o que precisar.
