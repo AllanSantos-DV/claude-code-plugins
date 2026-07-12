@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.27.0] - 2026-07-12
+
+### Changed — Brain: declutter de config (progressive disclosure)
+
+Fase 3/3 da auditoria da dashboard. O Brain expunha 10 knobs numéricos que um humano
+não consegue calibrar (fastTopK, deepTopK, minScoreFast/Deep, maxEntries, archiveDays,
+minBashLines, minOutputChars, curation-maxChars/maxLines). Aplicando NNG (progressive
+disclosure) e convention-over-configuration:
+
+- **Orçamento de memória** (novo controle humano): preset **Enxuto / Equilibrado /
+  Amplo** que preenche `maxEntries` + `archiveDays` — uma escolha que o humano entende.
+- **Configurações avançadas**: os 10 knobs foram para uma seção colapsável (`<details>`),
+  fechada por padrão, com o aviso "defaults sensatos; só altere se entender o efeito".
+  Os inputs continuam no DOM, então o Save existente persiste tudo igual.
+
+Sem mudança de comportamento — só de exposição. Retenção de métricas já é coberta pelo
+`/api/metrics/cleanup`; rollups diários ficam como evolução futura (o volume já é baixo:
+1 linha `stop.dispatch` por Stop desde a 1.25.0).
+
 ## [1.26.0] - 2026-07-12
 
 ### Added — Insights: card "Impacto do Perfil" (consome a telemetria da 1.25.0)
