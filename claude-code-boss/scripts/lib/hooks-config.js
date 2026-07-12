@@ -5,19 +5,35 @@
  * Exposes typed getters with documented defaults so consumers never see undefined.
  *
  * PROFILES (U1): `hooks-config.json` may carry a top-level `profile` field
- * ("dev" | "standard", default "dev"). A profile is a DEFAULTS overlay, not a
- * lock:
+ * ("dev" | "standard" | "free", default "dev"). A profile is a DEFAULTS overlay,
+ * not a lock:
  *   effective = deepMerge(PROFILE_PRESETS[profile], rawFileConfig)
  * so any value explicitly present in the file WINS over the preset (override
  * beats preset). The `dev` preset is intentionally empty — every getter's
- * hardcoded fallback already reproduces today's dev behavior — so only
- * `standard` carries a delta (quieter, non-maintainer-friendly).
+ * hardcoded fallback already reproduces today's dev behavior — so `standard`
+ * (quiet/advisory) and `free` (passthrough) carry the deltas.
+ *
+ * UPDATE-SAFE SWITCH: the active profile (and any override) is read from
+ * `config/hooks-config.json` (shipped) merged with an optional
+ * `DATA_DIR/hooks/user-config.json` (never committed), mirroring brain-config
+ * and model-router. This lets `/boss profile <name>` or the dashboard switch the
+ * profile without editing a versioned file — so a plugin auto-update never
+ * reverts the user's choice.
  */
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..', '..');
 const CONFIG_PATH = path.join(PLUGIN_ROOT, 'config', 'hooks-config.json');
+
+// Resolved at call time (not frozen at module load) so tests can repoint
+// CLAUDE_PLUGIN_DATA + _resetCache(), and so it tracks the canonical DATA_DIR.
+function userConfigPath() {
+  const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
+    || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+  return path.join(DATA_DIR, 'hooks', 'user-config.json');
+}
 
 const DEFAULT_PROFILE = 'dev';
 
@@ -26,7 +42,9 @@ const DEFAULT_PROFILE = 'dev';
 const PROFILE_PRESETS = {
   // dev = current behavior; getters' hardcoded defaults already produce it.
   dev: {},
-  // standard = open the plugin to non-maintainers: inform once, never nag.
+  // standard = open the plugin to non-maintainers: inform once, never nag. The
+  // ONLY Stop block kept is curation-stop (once, soft); every other block-capable
+  // detector is silenced. session-summary stays (1x/session, positive).
   standard: {
     curationStop:     { maxAttempts: 1 },   // block once then relent (advisory)
     patternDetect:    { enabled: false },   // dev-only capture nudge
@@ -34,10 +52,30 @@ const PROFILE_PRESETS = {
     decisionScan:     { enabled: false },   // dev-only capture nudge
     verifyNudge:      { enabled: false },   // dev tool
     selfReview:       { enabled: false },   // dev self-review nudge
+    refineResearch:   { enabled: false },   // every-4th-Stop nag → off
+    failureRetro:     { enabled: false },   // retro prompt on repeated failures → off
+    researchFollowup: { enabled: false },   // research-capture nag → off
+    autoContinue:     { enabled: false },   // forces continuation → drift → off
+  },
+  // free = passthrough: the Stop dispatcher short-circuits entirely (retrieval on
+  // UserPromptSubmit stays — pure value, no block). These flags mirror "all off"
+  // as defense-in-depth if the short-circuit is ever bypassed.
+  free: {
+    curationStop:     { enabled: false },
+    patternDetect:    { enabled: false },
+    correctionDetect: { enabled: false },
+    decisionScan:     { enabled: false },
+    verifyNudge:      { enabled: false },
+    selfReview:       { enabled: false },
+    refineResearch:   { enabled: false },
+    failureRetro:     { enabled: false },
+    researchFollowup: { enabled: false },
+    sessionSummary:   { enabled: false },
+    autoContinue:     { enabled: false },
   },
 };
 
-let _cache = null;          // raw file contents
+let _cache = null;          // raw (shipped ⊕ user) file contents
 let _resolvedCache = null;  // profile-resolved contents
 
 function isPlainObject(v) {
@@ -58,12 +96,19 @@ function deepMerge(base, override) {
 
 function load() {
   if (_cache) return _cache;
+  let shipped = {};
   try {
-    _cache = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+    shipped = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
   } catch (err) {
     console.error(`[hooks-config] load failed (${CONFIG_PATH}): ${err.message}`);
-    _cache = {};
+    shipped = {};
   }
+  let override = null;
+  try {
+    const p = userConfigPath();
+    if (fs.existsSync(p)) override = JSON.parse(fs.readFileSync(p, 'utf-8'));
+  } catch (err) { void err; /* override ausente/ilegível → ignora, usa só o shipped */ }
+  _cache = isPlainObject(override) ? deepMerge(shipped, override) : shipped;
   return _cache;
 }
 
@@ -157,9 +202,66 @@ function getSelfReview() {
   };
 }
 
+function getRefineResearch() {
+  const rr = _resolved().refineResearch || {};
+  return { enabled: rr.enabled !== false };
+}
+
+function getResearchFollowup() {
+  const rf = _resolved().researchFollowup || {};
+  return { enabled: rf.enabled !== false };
+}
+
+function getFailureRetro() {
+  const fr = _resolved().failureRetro || {};
+  return {
+    enabled: fr.enabled !== false,
+    minFailures: Number.isFinite(fr.minFailures) ? fr.minFailures : 2,
+    timeWindowMin: Number.isFinite(fr.timeWindowMin) ? fr.timeWindowMin : 10,
+    consecutiveThreshold: Number.isFinite(fr.consecutiveThreshold) ? fr.consecutiveThreshold : 3,
+  };
+}
+
+function getAutoContinue() {
+  const ac = _resolved().autoContinue || {};
+  return {
+    enabled: ac.enabled !== false,
+    maxBlocks: Number.isInteger(ac.maxBlocks) && ac.maxBlocks > 0 ? ac.maxBlocks : 1,
+  };
+}
+
 function getSessionSummary() {
   const ss = _resolved().sessionSummary || {};
   return { enabled: ss.enabled !== false };
+}
+
+/** Valid profile names (the presets we ship). */
+function profileNames() {
+  return Object.keys(PROFILE_PRESETS);
+}
+
+/**
+ * Persist the active profile to DATA_DIR/hooks/user-config.json (update-safe,
+ * never committed). Merges with any existing user-config so unrelated overrides
+ * survive. Returns the path written. Throws on invalid name or write failure.
+ * @param {string} name  one of PROFILE_PRESETS
+ * @returns {string} the user-config path written
+ */
+function saveProfile(name) {
+  if (typeof name !== 'string' || !Object.prototype.hasOwnProperty.call(PROFILE_PRESETS, name)) {
+    throw new Error(`invalid profile '${name}'. Valid: ${profileNames().join(', ')}`);
+  }
+  const p = userConfigPath();
+  let current = {};
+  try {
+    if (fs.existsSync(p)) current = JSON.parse(fs.readFileSync(p, 'utf-8')) || {};
+  } catch (err) { void err; /* corrupt/absent → start fresh */ }
+  if (!isPlainObject(current)) current = {};
+  current.profile = name;
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, `${JSON.stringify(current, null, 2)}\n`, 'utf-8');
+  _resetCache();
+  return p;
 }
 
 function _resetCache() { _cache = null; _resolvedCache = null; }
@@ -167,6 +269,9 @@ function _resetCache() { _cache = null; _resolvedCache = null; }
 module.exports = {
   load,
   getProfile,
+  profileNames,
+  saveProfile,
+  userConfigPath,
   resolveProfileConfig,
   getCurationStop,
   getCurationGuard,
@@ -176,6 +281,10 @@ module.exports = {
   getCorrectionDetect,
   getDecisionScan,
   getSelfReview,
+  getRefineResearch,
+  getResearchFollowup,
+  getFailureRetro,
+  getAutoContinue,
   getSessionSummary,
   PROFILE_PRESETS,
   _resetCache,
