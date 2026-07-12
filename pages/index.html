@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>allansantos-plugins — marketplace de plugins para Claude Code</title>
+<meta name="description" content="Marketplace de plugins para o Claude Code Desktop: claude-code-boss (memória semântica e execução curada) e rf-reviewer (revisão determinística de Requisitos Funcionais em Excel)." />
+<style>
+  :root{
+    --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
+    --panel:#0e0d11; --panel-ink:#efece4; --panel-line:rgba(255,255,255,.12);
+    --accent:#3a3836;            /* grafite neutro: o hub deixa os plugins terem cor */
+    --accent-soft:rgba(58,56,54,.10);
+    --maxw:1060px;
+    --mono:ui-monospace,"Cascadia Code","JetBrains Mono",Consolas,"Liberation Mono",monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{ --paper:#121116; --ink:#efece4; --muted:#9a978f; --line:rgba(255,255,255,.13);
+           --panel:#09080b; --accent:#c9c5bd; --accent-soft:rgba(201,197,189,.12); }
+  }
+  *{ box-sizing:border-box }
+  html{ -webkit-text-size-adjust:100% }
+  body{ margin:0; background:var(--paper); color:var(--ink);
+    font-family:var(--sans); font-size:17px; line-height:1.6; -webkit-font-smoothing:antialiased }
+  .wrap{ max-width:var(--maxw); margin:0 auto; padding:0 24px }
+  a{ color:inherit }
+  a:focus-visible{ outline:2px solid var(--accent); outline-offset:3px; border-radius:3px }
+  code{ font-family:var(--mono); font-size:.86em; background:var(--accent-soft); padding:1px 6px; border-radius:5px }
+
+  .top{ display:flex; align-items:center; justify-content:space-between;
+    padding:20px 0; border-bottom:1px solid var(--line); font-family:var(--mono); font-size:12.5px }
+  .top a{ text-decoration:none; color:var(--muted) }
+  .top a:hover{ color:var(--ink) }
+
+  .hero{ padding:clamp(56px,10vw,120px) 0 clamp(36px,6vw,60px) }
+  .eyebrow{ font-family:var(--mono); font-size:12.5px; letter-spacing:.28em; text-transform:uppercase; color:var(--muted); margin:0 0 22px }
+  h1.mark{ font-family:var(--mono); font-weight:700; letter-spacing:-.03em; line-height:.95;
+    font-size:clamp(2.3rem,7vw,4.6rem); margin:0; word-break:break-word }
+  h1.mark b{ color:var(--accent); font-weight:700 }
+  .thesis{ font-size:clamp(1.1rem,2.3vw,1.42rem); line-height:1.42; max-width:40ch; margin:24px 0 0 }
+
+  .term{ margin-top:38px; background:var(--panel); color:var(--panel-ink);
+    border-radius:12px; overflow:hidden; box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:640px }
+  .term .bar{ display:flex; align-items:center; gap:8px; padding:12px 16px; border-bottom:1px solid var(--panel-line) }
+  .dot{ width:11px; height:11px; border-radius:50% }
+  .term .name{ margin-left:8px; font-family:var(--mono); font-size:12px; color:#8a877f }
+  .term .body{ padding:18px 18px 22px; font-family:var(--mono); font-size:13.5px; line-height:1.9 }
+  .term .cmd{ white-space:nowrap; overflow:auto; scrollbar-width:none }
+  .term .cmd::before{ content:"/"; color:#8a877f }
+  .term .cmd::-webkit-scrollbar{ display:none }
+
+  section{ padding:clamp(44px,6vw,72px) 0; border-top:1px solid var(--line) }
+  .label{ font-family:var(--mono); font-size:12px; letter-spacing:.22em; text-transform:uppercase; color:var(--muted); margin:0 0 30px }
+
+  .tiles{ display:grid; grid-template-columns:repeat(2,1fr); gap:20px }
+  .tile{ display:flex; flex-direction:column; background:var(--paper); border:1px solid var(--line);
+    border-radius:14px; padding:26px 26px 22px; text-decoration:none; color:inherit;
+    transition:border-color .18s ease, transform .18s ease }
+  .tile:hover{ border-color:var(--pa); transform:translateY(-2px) }
+  .tile:focus-visible{ outline:2px solid var(--pa); outline-offset:3px }
+  .tile .id{ display:flex; align-items:center; gap:10px; font-family:var(--mono); font-size:14px; letter-spacing:-.01em }
+  .tile .swatch{ width:12px; height:12px; border-radius:50%; background:var(--pa); flex:none }
+  .tile .id b{ font-weight:700 }
+  .tile .id .v{ margin-left:auto; font-size:11px; color:var(--muted); border:1px solid var(--line); border-radius:999px; padding:2px 9px }
+  .tile h2{ font-size:1.28rem; letter-spacing:-.01em; margin:18px 0 8px }
+  .tile p{ margin:0; color:var(--muted); font-size:15px; line-height:1.55 }
+  .tile .go{ margin-top:20px; font-family:var(--mono); font-size:12.5px; color:var(--pa); letter-spacing:.02em }
+  .tile:hover .go .arw{ transform:translateX(4px) }
+  .tile .go .arw{ display:inline-block; margin-left:4px; transition:transform .18s ease }
+
+  footer{ border-top:1px solid var(--line); padding:40px 0 60px; color:var(--muted); font-family:var(--mono); font-size:13px }
+  footer a{ color:var(--muted); text-decoration:none }
+  footer a:hover{ color:var(--ink) }
+  .frow{ display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between }
+
+  @media (max-width:680px){ .tiles{ grid-template-columns:1fr } body{ font-size:16px } }
+  @media (prefers-reduced-motion:reduce){ .tile{ transition:none } .reveal{ opacity:1 !important; transform:none !important } }
+  .reveal{ opacity:0; transform:translateY(14px); animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards }
+  @keyframes rise{ to{ opacity:1; transform:none } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <nav class="top">
+    <span>allansantos-plugins</span>
+    <a href="https://github.com/AllanSantos-DV/claude-code-plugins">GitHub ↗</a>
+  </nav>
+
+  <header class="hero">
+    <p class="eyebrow reveal">Marketplace · Claude Code Desktop</p>
+    <h1 class="mark reveal" style="animation-delay:.05s">allansantos-<b>plugins</b></h1>
+    <p class="thesis reveal" style="animation-delay:.12s">Dois plugins que estendem o Claude Code onde ele para: memória de projeto e revisão determinística de planilhas.</p>
+
+    <div class="term reveal" style="animation-delay:.2s" aria-label="Adicionar o marketplace">
+      <div class="bar">
+        <span class="dot" style="background:#ff5f57"></span>
+        <span class="dot" style="background:#febc2e"></span>
+        <span class="dot" style="background:#28c840"></span>
+        <span class="name">Claude Code</span>
+      </div>
+      <div class="body">
+        <div class="cmd">plugin marketplace add AllanSantos-DV/claude-code-plugins</div>
+      </div>
+    </div>
+  </header>
+
+  <section>
+    <p class="label">Plugins</p>
+    <div class="tiles">
+      <a class="tile" href="./claude-code-boss/index.html" style="--pa:#b4611e">
+        <span class="id"><span class="swatch"></span>claude-code-<b>boss</b><span class="v">v1.23.0</span></span>
+        <h2>Memória e execução curada</h2>
+        <p>Base de conhecimento local com busca semântica, backend MCP Memory opcional, aprendizado no loop e curadoria anti context-bloat.</p>
+        <span class="go">abrir página<span class="arw">→</span></span>
+      </a>
+      <a class="tile" href="./rf-reviewer/index.html" style="--pa:#1e6e52">
+        <span class="id"><span class="swatch"></span>rf-<b>reviewer</b><span class="v">v0.1.0</span></span>
+        <h2>Revisão de RF em Excel</h2>
+        <p>Motor determinístico que injeta a análise de Requisitos Funcionais na mesma planilha, sem tocar no original. Perfis de coluna e prova de preservação.</p>
+        <span class="go">abrir página<span class="arw">→</span></span>
+      </a>
+    </div>
+  </section>
+
+  <footer>
+    <div class="frow">
+      <span><a href="https://github.com/AllanSantos-DV/claude-code-plugins">github.com/AllanSantos-DV/claude-code-plugins</a></span>
+      <span>MIT</span>
+    </div>
+  </footer>
+
+</div>
+</body>
+</html>
