@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>claude-code-boss — memória semântica e execução curada para o Claude Code</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica que fundamenta a resposta (recall em dois níveis), execução curada anti context-bloat e aprendizado no loop. Backend de memória externo opcional (memory-server ≥ 2.18)." />
+<meta name="description" content="Plugin para Claude Code Desktop: memória que fundamenta a resposta (recall em dois níveis), execução curada anti context-bloat e aprendizado no loop. A v2.1.0 fecha o laço com pool-warming: a conversa ingerida gradua pro spine. Backend externo opcional (memory-server ≥ 2.18; warming ≥ 2.20)." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -134,13 +134,50 @@
 
   @media (prefers-color-scheme:dark){ .callout code{ background:rgba(255,255,255,.10) } }
 
+  /* v2.1.0 — pool-warming: o laço fechado */
+  .loop{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:720px; font-family:var(--mono); margin:0 0 36px }
+  .loop-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .loop-bar .k{ color:var(--accent) }
+  .loop-bar .m{ color:#8a877f }
+  .loop-body{ padding:22px 22px 6px }
+  .loop-trigger{ font-size:12.5px; color:#a29f97; margin:0 0 16px }
+  .loop-trigger b{ color:var(--panel-ink); font-weight:600 }
+  .loop-fork{ display:grid; grid-template-columns:1fr 1fr; gap:14px; margin:0 0 22px }
+  .path{ border-radius:9px; padding:14px 15px }
+  .path-tag{ display:block; font-size:10px; letter-spacing:.16em; text-transform:uppercase; margin:0 0 9px }
+  .path b{ display:block; font-size:12.5px; line-height:1.4; word-break:break-word }
+  .path-note{ display:block; font-size:11px; color:#8a877f; margin-top:8px }
+  .path--seen{ border:1px solid var(--accent); background:rgba(255,255,255,.05) }
+  .path--seen .path-tag{ color:var(--accent) }
+  .path--seen b{ color:var(--panel-ink) }
+  .path--warm{ border:1px dashed rgba(255,255,255,.26); background:transparent }
+  .path--warm .path-tag{ color:#8a877f }
+  .path--warm b{ color:#a29f97 }
+  .cycle{ list-style:none; counter-reset:c; margin:0; padding:2px 0 0; border-left:2px solid var(--accent) }
+  .cycle li{ position:relative; counter-increment:c; padding:0 0 15px 42px;
+    font-size:12.5px; line-height:1.5; color:#a29f97 }
+  .cycle li:last-child{ padding-bottom:2px }
+  .cycle li::before{ content:counter(c); position:absolute; left:-11px; top:-2px;
+    width:20px; height:20px; border-radius:50%; background:var(--panel);
+    border:1px solid var(--accent); color:var(--accent); font-size:11px; display:grid; place-items:center }
+  .cycle b{ color:var(--panel-ink); font-weight:600 }
+  .cycle code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+  .loop-close{ display:flex; align-items:center; gap:10px; font-size:12px; color:#a29f97;
+    border-top:1px solid rgba(255,255,255,.06); margin:16px 0 0; padding:14px 0 4px }
+  .loop-close::before{ content:"\21ba"; color:var(--accent); font-size:19px; line-height:1 }
+  .loop-close b{ color:var(--panel-ink); font-weight:600 }
+  .loop-foot{ padding:13px 22px; border-top:1px solid var(--panel-line);
+    font-size:11px; line-height:1.55; color:#8a877f }
+
   footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
   footer a{ color:var(--muted); text-decoration:none }
   footer a:hover{ color:var(--accent) }
   .frow{ display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between }
   .flinks a{ margin-right:16px }
 
-  @media (max-width:680px){ .grid{ grid-template-columns:1fr } body{ font-size:16px } }
+  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
   @media (prefers-reduced-motion:reduce){ .caret{ animation:none } .reveal{ opacity:1 !important; transform:none !important } }
   .reveal{ opacity:0; transform:translateY(14px); animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards }
   @keyframes rise{ to{ opacity:1; transform:none } }
@@ -151,7 +188,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.0.0</span>
+    <span class="ver">v2.1.0</span>
   </nav>
 
   <header class="hero">
@@ -186,17 +223,17 @@
       <div class="cell">
         <p class="kick">Brain KB</p>
         <h3>Base de conhecimento local</h3>
-        <p>Busca semântica sobre SQLite e embeddings. Indexa o que importa e recupera contexto antes de cada ação, com rerank por relevância, recência e frequência. É o backend padrão e segue <b>inalterado</b> na v2.0.0.</p>
+        <p>Busca semântica sobre SQLite e embeddings. Indexa o que importa e recupera contexto antes de cada ação, com rerank por relevância, recência e frequência. É o backend padrão e segue <b>inalterado</b>: a v2.1.0 não toca nele.</p>
       </div>
       <div class="cell">
         <p class="kick">Backend opcional</p>
         <h3>Servidor MCP Memory externo</h3>
-        <p>Troque o SQLite local por um servidor de memória seu ou da equipe. A ativação é por usuário, sobrevive ao auto-update e não afeta quem não usa. Na v2.0.0 ele fala o contrato <code>compose</code>/<code>ingest</code> — exige <code>memory-server ≥ 2.18</code>.</p>
+        <p>Troque o SQLite local por um servidor de memória seu ou da equipe. A ativação é por usuário, sobrevive ao auto-update e não afeta quem não usa. No backend externo ele fala o contrato <code>compose</code>/<code>ingest</code> e exige <code>memory-server ≥ 2.18</code> (o pool-warming da v2.1.0 pede <code>≥ 2.20</code>).</p>
       </div>
       <div class="cell">
         <p class="kick">Identidade de projeto</p>
         <h3>Recall que casa entre máquinas</h3>
-        <p>O escopo vem de um id estável: <code>CCB_PROJECT_ID</code>, depois o arquivo <code>.claude-boss-project</code>, depois o nome da pasta. A memória segue o projeto, não o caminho — e, na v2.0.0, não vaza para outro projeto.</p>
+        <p>O escopo vem de um id estável: <code>CCB_PROJECT_ID</code>, depois o arquivo <code>.claude-boss-project</code>, depois o nome da pasta. A memória segue o projeto, não o caminho, e não vaza para outro projeto.</p>
       </div>
       <div class="cell">
         <p class="kick">Aprendizado no loop</p>
@@ -217,12 +254,72 @@
   </section>
 
   <section>
-    <p class="label">Novo na v2.0.0 · recall em dois níveis</p>
-    <p class="lede">A v2.0.0 muda <b>como o boss lembra</b>. No backend externo, o recall vem em dois níveis: os <b>fatos</b> relevantes entram com o trecho que casou — a resposta fica fundamentada; as <b>capacidades</b> entram como ponteiros leves, que o agente abre só quando precisa.</p>
+    <p class="label">Novo na v2.1.0 · o laço fechado</p>
+    <p class="lede">A v2.0.0 fez o recall <b>100% compose</b>, e isso deixou um laço em aberto. A conversa ingerida é gravada <b>home-scoped</b> e só gradua pro spine se acumular sinal de recall; esse sinal vem do <code>search_memory</code>, que o compose <b>não</b> gera (por design). Sem search no caminho, os docs ingeridos ficavam <b>write-only</b>. A v2.1.0 fecha esse laço.</p>
 
     <div class="callout">
-      <span class="tag">Breaking change</span>
-      No backend externo <code>mcp-memory</code>, o recall agora usa <code>compose_recall</code> e exige <code>memory-server ≥ 2.18</code> — o <code>search_memory</code> raso sai do caminho. O <b>backend local (SQLite) fica intacto</b>: quem usa local não muda nada.
+      <span class="tag">O laço que faltava</span>
+      O <b>Dreaming</b> promove uma memória home pro spine quando ela acumula sinal, e o sinal vem do <code>search_memory</code>, nunca do <code>compose_recall</code>. Resultado até a v2.0.0: tudo que a sessão ingeria entrava, mas nunca voltava pra ser lido.
+    </div>
+
+    <div class="loop" aria-label="Pool-warming: a cada UserPromptSubmit o compose_recall injetado roda em paralelo com um search_memory não-injetado que aquece o pool home; o Dreaming promove os docs úteis para procedural HOME e o compose passa a lê-los">
+      <div class="loop-bar">
+        <span class="k">pool-warming</span>
+        <span class="m">kb.retrieval.compose.poolWarming · default ON</span>
+      </div>
+      <div class="loop-body">
+        <p class="loop-trigger">a cada <b>UserPromptSubmit</b>, dois disparos em paralelo:</p>
+        <div class="loop-fork">
+          <div class="path path--seen">
+            <span class="path-tag">o que você vê</span>
+            <b>compose_recall</b>
+            <span class="path-note">injetado · grounding</span>
+          </div>
+          <div class="path path--warm">
+            <span class="path-tag">o que aquece</span>
+            <b>search_memory {includeHome:true}</b>
+            <span class="path-note">não-injetado · só sinal</span>
+          </div>
+        </div>
+        <ol class="cycle">
+          <li>o pool <b>home</b> acumula sinal (<code>recordTopRecall</code>)</li>
+          <li>o <b>Dreaming</b> (async) promove os úteis → <code>procedural[HOME]</code></li>
+          <li>o <b>compose_recall</b> passa a ler, injeta como fato no próximo turno</li>
+        </ol>
+        <p class="loop-close">laço fechado: a injeção que você vê continua <b>100% compose</b></p>
+      </div>
+      <div class="loop-foot">best-effort: falha ou timeout do warming nunca quebra o recall · em daemon &lt; 2.20 vira no-op gracioso</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>Aquecimento em paralelo</h4>
+        <p>Junto do <code>compose_recall</code> injetado, o boss dispara um <code>search_memory {includeHome:true}</code> <b>não-injetado</b>. O <code>includeHome</code> (ADR-017) federa <code>project_id = P OU ausente</code>: a busca do boss, antes estrita por projeto, passa a alcançar o pool home sem vazar entre projetos.</p>
+      </div>
+      <div class="win">
+        <h4>Um knob, ligado por padrão</h4>
+        <p>Em <code>kb.retrieval.compose.poolWarming</code> (default <b>on</b>). Best-effort de verdade: falha ou timeout do warming <b>nunca</b> quebra o recall. A injeção que você vê continua 100% compose.</p>
+      </div>
+      <div class="win">
+        <h4>Degradação graciosa</h4>
+        <p>O warming pede <code>memory-server ≥ 2.20</code> pra alcançar o pool home. Em daemon anterior vira <b>no-op silencioso</b>: o recall via compose segue intacto, nada trava.</p>
+      </div>
+      <div class="win">
+        <h4>Conversa que gradua</h4>
+        <p>Com o pool aquecido, o Dreaming promove os docs úteis pra <code>procedural[HOME]</code> e o compose passa a injetá-los como fato. A ingestão cooperativa da v2.0.0 deixa de ser write-only.</p>
+      </div>
+    </div>
+
+    <p class="trust">Tudo atrás de gate e testado: <b>65</b> suítes de hooks + <b>382</b> unitários no verde, com smoke real contra o daemon <b>2.20</b> (o <code>includeHome</code> federa o pool home: <b>0</b> estrito → <b>15</b> federados).</p>
+  </section>
+
+  <section>
+    <p class="label">A base · recall em dois níveis (v2.0.0)</p>
+    <p class="lede">O pool-warming se apoia na entrega da v2.0.0: <b>como o boss lembra</b>. No backend externo, o recall vem em dois níveis. Os <b>fatos</b> relevantes entram com o trecho que casou (grounding); as <b>capacidades</b> entram como ponteiros leves, que o agente abre só quando precisa.</p>
+
+    <div class="callout">
+      <span class="tag">Breaking change · v2.0.0</span>
+      No backend externo <code>mcp-memory</code>, o recall usa <code>compose_recall</code> e exige <code>memory-server ≥ 2.18</code>: o <code>search_memory</code> raso sai do <b>caminho de injeção</b> (a v2.1.0 o traz de volta só pra aquecer, sem injetar). O <b>backend local (SQLite) fica intacto</b>: quem usa local não muda nada.
     </div>
 
     <div class="envelope" aria-label="Envelope do compose_recall: fatos injetados inline, capacidades como ponteiros">
@@ -250,13 +347,13 @@
           </ul>
         </div>
       </div>
-      <div class="env-foot">itens invalidados (lifecycle) saem do lado do cliente · sem <code>compose_recall</code> no daemon, o recall degrada para vazio <b>e registra</b> — nunca cai numa busca rasa em silêncio</div>
+      <div class="env-foot">itens invalidados (lifecycle) saem do lado do cliente · sem <code>compose_recall</code> no daemon, o recall degrada para vazio <b>e registra</b>: nunca cai numa busca rasa em silêncio</div>
     </div>
 
     <div class="wins">
       <div class="win">
         <h4>Ingestão cooperativa</h4>
-        <p>No <code>Stop</code>, o transcript acumulado da sessão vai pro <code>ingest_conversation</code>. O servidor descobre o template, destila, tipa, escopa e deduplica por event-id — o cliente só envia, reenviar o acumulado é seguro.</p>
+        <p>No <code>Stop</code>, o transcript acumulado da sessão vai pro <code>ingest_conversation</code>. O servidor descobre o template, destila, tipa, escopa e deduplica por event-id. O cliente só envia; reenviar o acumulado é seguro.</p>
       </div>
       <div class="win">
         <h4>Sem vazamento entre projetos</h4>
@@ -264,7 +361,7 @@
       </div>
       <div class="win">
         <h4>Falha visível (fail-loud)</h4>
-        <p>O <code>recall-health</code> marca cada recall como ok ou degradado; o <code>brain-health</code> avisa no <code>SessionStart</code> quando o recall vem vazio de forma recorrente — daemon &lt; 2.18 ou fora do ar.</p>
+        <p>O <code>recall-health</code> marca cada recall como ok ou degradado; o <code>brain-health</code> avisa no <code>SessionStart</code> quando o recall vem vazio de forma recorrente: daemon &lt; 2.18 ou fora do ar.</p>
       </div>
       <div class="win">
         <h4>Orçamento de injeção + knobs</h4>
@@ -272,15 +369,15 @@
       </div>
     </div>
 
-    <p class="trust">Tudo atrás de gate e testado — <b>65</b> suítes de hooks + <b>380</b> unitários no verde, com smoke real contra o daemon <b>2.18</b>.</p>
+    <p class="trust">A v2.0.0 já vinha atrás de gate: o recall degrada <b>fail-loud</b> em daemon &lt; 2.18. Registra o vazio, nunca cai numa busca rasa em silêncio.</p>
   </section>
 
   <section>
     <div class="flow">
       <p class="label">Como funciona</p>
       <div class="steps">
-        <div class="step"><div class="n"></div><p>Você escreve um prompt. O hook <b>UserPromptSubmit</b> chama o Brain e injeta o bloco <b>[BRAIN]</b>: no backend externo, os fatos vêm com o trecho casado e as capacidades como ponteiros.</p></div>
-        <div class="step"><div class="n"></div><p>O agente age com a memória do projeto à mão, escopada por um id estável — e, na v2.0.0, sem puxar contexto de outro projeto.</p></div>
+        <div class="step"><div class="n"></div><p>Você escreve um prompt. O hook <b>UserPromptSubmit</b> chama o Brain e injeta o bloco <b>[BRAIN]</b>: no backend externo, os fatos vêm com o trecho casado e as capacidades como ponteiros. Em paralelo, um <b>search_memory</b> não-injetado aquece o pool home: sinal pro Dreaming, sem tocar no que você vê.</p></div>
+        <div class="step"><div class="n"></div><p>O agente age com a memória do projeto à mão, escopada por um id estável, sem puxar contexto de outro projeto.</p></div>
         <div class="step"><div class="n"></div><p>No <b>Stop</b>, o boss destila o aprendizado e cura comandos ruidosos. No backend externo, manda o transcript acumulado pro servidor destilar. Nada relê o transcript à toa nem infla a janela.</p></div>
       </div>
     </div>
