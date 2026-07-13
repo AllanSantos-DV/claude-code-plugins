@@ -761,6 +761,78 @@ const TESTS = [
       ? null : `editing curated script must count as progress (release stop), got: ${JSON.stringify(r.parsed)}`,
   },
   {
+    // Regression: a CREATE block (curatedScript:null) resolved by the agent
+    // registering a NEW curated alias mid-turn must be detected as progress by
+    // filterUnresolved()/reconcileEntries() — not just REFINE blocks that
+    // already reference a curatedScript path. Forces profile=dev (maxAttempts=3)
+    // so the assertion exercises the reconciliation path itself, not the
+    // standard profile's maxAttempts=1 safety-cap-relent (a different code path
+    // that would also return {} for the wrong reason).
+    name: 'curation-stop     [Stop→retry+CREATE-now-curated-via-alias→release {}]',
+    script: 'curation-stop.js',
+    payload: (() => {
+      const cwd = mkTempProject({
+        shells: [{ id: 'commit-overview', script: '.vscode/scripts/commit-overview.ps1', aliases: ['git show --stat HEAD'] }],
+      });
+      return { hook_event_name: 'Stop', session_id: SESSION, stop_hook_active: true, cwd };
+    })(),
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-stop-create-curated-'));
+      const runtimeDir = path.join(tmpData, '.runtime');
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      fs.writeFileSync(
+        path.join(runtimeDir, `curation-stop-${safe}.json`),
+        JSON.stringify({
+          attempts: 1,
+          blockedSignature: 'cd /x && git show --stat HEAD | tail -45|',
+          blockedEntries: [{ command: 'cd /x && git show --stat HEAD | tail -45', reason: 'needs-curation', curatedScript: null }],
+          firstBlockedAt: new Date(Date.now() - 10_000).toISOString(),
+        }),
+      );
+      // Empty journal — agent only authored+registered the script this turn.
+      return { CLAUDE_PLUGIN_DATA: tmpData, CLAUDE_PLUGIN_ROOT: mkTempPluginRoot({ profile: 'dev' }) };
+    },
+    validate: r => Object.keys(r.parsed || {}).length === 0
+      ? null : `CREATE entry resolved by a registered alias must count as progress (release), got: ${JSON.stringify(r.parsed)}`,
+  },
+  {
+    // Negative guard: shells.json has no alias for the blocked command and was
+    // NOT touched after the block → must still escalate, never over-release.
+    name: 'curation-stop     [Stop→retry+CREATE-still-uncurated→escalated block]',
+    script: 'curation-stop.js',
+    payload: (() => {
+      const cwd = mkTempProject({ shells: [{ id: 'other', script: '.vscode/scripts/other.ps1', aliases: ['npm run build'] }] });
+      // Backdate shells.json so its mtime predates firstBlockedAt below.
+      const old = new Date(Date.now() - 60_000);
+      fs.utimesSync(path.join(cwd, '.vscode', 'shells.json'), old, old);
+      return { hook_event_name: 'Stop', session_id: SESSION, stop_hook_active: true, cwd };
+    })(),
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-stop-create-uncurated-'));
+      const runtimeDir = path.join(tmpData, '.runtime');
+      fs.mkdirSync(runtimeDir, { recursive: true });
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      fs.writeFileSync(
+        path.join(runtimeDir, `curation-stop-${safe}.json`),
+        JSON.stringify({
+          attempts: 1,
+          blockedSignature: 'cd /x && git show --stat HEAD | tail -45|',
+          blockedEntries: [{ command: 'cd /x && git show --stat HEAD | tail -45', reason: 'needs-curation', curatedScript: null }],
+          firstBlockedAt: new Date(Date.now() - 10_000).toISOString(),
+        }),
+      );
+      return { CLAUDE_PLUGIN_DATA: tmpData, CLAUDE_PLUGIN_ROOT: mkTempPluginRoot({ profile: 'dev' }) };
+    },
+    validate: r => {
+      if (r.parsed?.decision !== 'block') return `unresolved CREATE must still escalate, got: ${JSON.stringify(r.parsed)}`;
+      if (!(r.parsed?.reason || '').includes('[RETRY 2/3]')) return `expected [RETRY 2/3] marker, got: ${(r.parsed?.reason || '').slice(0, 200)}`;
+      return null;
+    },
+  },
+  {
     name: 'curation-stop     [Stop→refine-section→READ instruction in reason]',
     script: 'curation-stop.js',
     payload: { hook_event_name: 'Stop', session_id: SESSION },
