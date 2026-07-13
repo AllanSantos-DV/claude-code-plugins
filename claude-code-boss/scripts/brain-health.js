@@ -210,6 +210,32 @@ function emitDegradedSqliteNotice(eventName) {
   });
 }
 
+/** Emit a SessionStart notice when memory recall has been recently degraded. */
+function emitRecallDegradedNotice(eventName, status) {
+  const reason = status.lastDegraded && status.lastDegraded.reason;
+  emitJson({
+    hookSpecificOutput: {
+      hookEventName: eventName,
+      additionalContext:
+        `[BRAIN-HEALTH] Memory recall is DEGRADED — ${status.degraded} of ${status.total} recent recalls came back empty` +
+        (reason ? ` (last reason: ${reason})` : '') + '. ' +
+        'compose_recall is the required path on the mcp-memory backend: check the daemon is running and is version >= 2.18.',
+    },
+  });
+}
+
+/**
+ * Recall-health snapshot when it warrants a notice: >= 3 degraded recalls AND the
+ * last one within the hour. Absent file (fresh/tests) → null (no notice).
+ */
+function recallDegradedStatus() {
+  try {
+    const status = require('./lib/recall-health.js').getStatus();
+    const recent = status.lastDegraded && (Date.now() - status.lastDegraded.ts) < 60 * 60 * 1000;
+    return (status.degraded >= 3 && recent) ? status : null;
+  } catch (err) { void err; return null; }
+}
+
 async function main() {
   try {
     const raw = await readStdin();
@@ -237,6 +263,8 @@ async function main() {
     if (defects.length > 0) { emitAdvisory(eventName, defects); return; }
 
     if (eventName === 'SessionStart') {
+      const rstat = recallDegradedStatus();
+      if (rstat) { emitRecallDegradedNotice(eventName, rstat); return; }
       if (getSqliteBackend() === 'none') { emitDegradedSqliteNotice(eventName); return; }
       if (embedderModelMissing()) { emitEmbedderNotice(eventName); return; }
       const { count, dir } = countPendingDrafts(data);

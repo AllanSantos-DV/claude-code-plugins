@@ -42,6 +42,9 @@ class McpClient extends EventEmitter {
     this._protocolVersion = this.transport === 'http' ? '2025-06-18' : '2024-11-05';
     this._sessionId = '';
     this._resolvedUrl = '';
+    // Tool names advertised by the daemon's tools/list at handshake. Populated in
+    // _handshake; initialized here so hasToolAvailable() is safe before connect().
+    this._availableTools = [];
   }
 
   async connect() {
@@ -360,6 +363,16 @@ class McpClient extends EventEmitter {
   async callTool(name, args = {}) {
     if (!this._initialized) await this.connect();
     return this._sendRequest('tools/call', { name, arguments: args });
+  }
+
+  /**
+   * True iff the daemon advertised `name` in its tools/list at handshake.
+   * Safe to call before connect() (returns false). This is the fail-loud guard
+   * the recall path uses to REQUIRE compose_recall rather than silently falling
+   * back to the flat search_memory paradigm.
+   */
+  hasToolAvailable(name) {
+    return Array.isArray(this._availableTools) && this._availableTools.includes(name);
   }
 
   _sendRequest(method, params) {

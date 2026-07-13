@@ -219,6 +219,83 @@ async function searchByKeywordsMcp(keywords, opts = {}) {
   return searchMcp(keywords.join(' '), opts);
 }
 
+// ── compose_recall: the two-level relevance-injected entry point (server >=2.18) ──
+// FACT blocks carry the matched `text` inline (grounding); CAPABILITY blocks stay
+// pointers (progressive disclosure). scope === 'home' is the never-filtered spine.
+const COMPOSE_FACT_BLOCKS = new Set(['procedural', 'knowledge']);
+const COMPOSE_CAPABILITY_BLOCKS = new Set(['skill', 'skill_global', 'setup']);
+
+/** ADR-008 lifecycle: hard-exclude invalidated items client-side (annotation ships since 2.12). */
+function isInvalidated(item) {
+  const ls = item && item.lifecycleState;
+  const status = ls && (ls.status || ls.state);
+  return String(status || '').toLowerCase() === 'invalidated';
+}
+
+/**
+ * Split a compose_recall envelope into grounding FACTS (with inline text, a title
+ * derived from `text` when the raw doc has name=null — DH4) and CAPABILITY pointers.
+ * Pure → unit-testable against the live envelope shape.
+ */
+function splitComposeBlocks(blocks) {
+  const facts = [];
+  const capabilities = [];
+  for (const b of (Array.isArray(blocks) ? blocks : [])) {
+    const block = b && b.block;
+    const scope = (b && b.scope) || '';
+    const items = (b && Array.isArray(b.items)) ? b.items : [];
+    for (const it of items) {
+      if (!it || isInvalidated(it)) continue;
+      const id = it.id || it.documentId || '';
+      const score = it.score || 0;
+      if (COMPOSE_FACT_BLOCKS.has(block)) {
+        const text = typeof it.text === 'string' ? it.text : '';
+        const title = it.name || deriveTitle(text) || deriveTitle(it.description || '') || '(memory)';
+        facts.push({ id, title, type: it.type || block, scope, summary: text || it.description || '', text, score });
+      } else if (COMPOSE_CAPABILITY_BLOCKS.has(block)) {
+        capabilities.push({ id, name: it.name || '(unnamed)', description: it.description || '', type: it.type || block, scope, score });
+      }
+    }
+  }
+  return { facts, capabilities };
+}
+
+/** compose_recall envelope → { blocks:[...] } → structured {facts, capabilities, entries}. */
+function parseComposeEnvelope(result) {
+  const data = parseResult(result);
+  const blocks = (data && Array.isArray(data.blocks)) ? data.blocks : [];
+  const { facts, capabilities } = splitComposeBlocks(blocks);
+  // entries mirrors the legacy flat shape so retrieval telemetry (% cited) keeps working.
+  const entries = facts.map(f => ({ id: f.id, title: f.title, type: f.type, summary: f.summary, score: f.score }));
+  return { facts, capabilities, entries };
+}
+
+async function composeMcp(query, opts = {}) {
+  const args = { query: typeof query === 'string' ? query : '', includeLifecycleState: true };
+  if (opts.metadata && typeof opts.metadata === 'object') args.metadata = opts.metadata;
+  if (opts.setup) args.setup = true;
+  const result = await _mcp.callTool('compose_recall', args);
+  return parseComposeEnvelope(result);
+}
+
+// ── cooperative ingestion: send raw transcript; the server distills/types/scopes ──
+async function ingestConversationMcp(raw, opts = {}) {
+  const result = await _mcp.callTool('ingest_conversation', {
+    consumerId: opts.consumerId || 'claude-code-boss',
+    sessionId: opts.sessionId || 'default',
+    raw: String(raw == null ? '' : raw),
+  });
+  return parseResult(result) || {};
+}
+
+async function ingestStatusMcp(opts = {}) {
+  const result = await _mcp.callTool('ingest_status', {
+    consumerId: opts.consumerId || 'claude-code-boss',
+    ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
+  });
+  return parseResult(result) || {};
+}
+
 async function deleteMcp(id) {
   await _mcp.callTool('delete_document', { documentId: id });
 }
@@ -406,8 +483,29 @@ function statusMcp() {
 
 // ── Public API ──
 
+/**
+ * Whether an already-initialized backend must RE-initialize because the caller
+ * asked for a DIFFERENT project. The project scopes the MCP handshake (projectId
+ * in mcp-memory mode) and the local store path — reusing the first project's
+ * client/store for a second project silently cross-contaminates scope (the
+ * persistent brain-server serves multiple sessions). A project-less call
+ * (no `requestedProject`) NEVER clobbers the current scope. Pure → unit-testable.
+ */
+function needsReinit(state, requestedProject) {
+  if (!state || !state.initialized) return false;
+  if (requestedProject == null || requestedProject === '') return false;
+  return requestedProject !== state.project;
+}
+
 async function init(opts = {}) {
-  if (_initialized) return;
+  if (_initialized) {
+    if (!needsReinit({ initialized: _initialized, mode: _mode, project: _project }, opts.project)) {
+      return;
+    }
+    // Explicit different project → tear down the first-project client/store and
+    // re-scope, so recall/save never leak across projects.
+    await close();
+  }
   _project = opts.project || 'default';
   const config = loadConfig();
   _mode = (config.backend && config.backend.type) || 'local';
@@ -435,6 +533,37 @@ async function get(id) {
 async function search(query, opts = {}) {
   if (_mode === 'mcp-memory') return searchMcp(query, opts);
   return searchLocal(query, opts);
+}
+
+/** True iff the mcp-memory daemon advertised compose_recall (fail-loud guard). */
+function hasCompose() {
+  return _mode === 'mcp-memory' && !!_mcp && _mcp.hasToolAvailable('compose_recall');
+}
+
+/**
+ * Two-level relevance recall via compose_recall. mcp-memory ONLY — compose is a
+ * server capability; the local flat backend has no equivalent. Returns
+ * { facts, capabilities, entries }.
+ */
+async function compose(query, opts = {}) {
+  if (_mode !== 'mcp-memory') throw new Error('compose is only available on the mcp-memory backend');
+  return composeMcp(query, opts);
+}
+
+/**
+ * Ship a raw conversation transcript to the server's cooperative ingestion
+ * (`ingest_conversation`). The server distills/types/scopes/curates + dedups by
+ * event-id — the client is the "dumb consumer". mcp-memory ONLY.
+ */
+async function ingestConversation(raw, opts = {}) {
+  if (_mode !== 'mcp-memory') throw new Error('ingestConversation is only available on the mcp-memory backend');
+  return ingestConversationMcp(raw, opts);
+}
+
+/** Staging observability for a consumer×session (pending/cooldown/success/…). mcp-memory ONLY. */
+async function ingestStatus(opts = {}) {
+  if (_mode !== 'mcp-memory') throw new Error('ingestStatus is only available on the mcp-memory backend');
+  return ingestStatusMcp(opts);
 }
 
 async function searchByKeywords(keywords, opts = {}) {
@@ -492,11 +621,16 @@ const _textUtils = require('./lib/text-utils.js');
 
 module.exports = {
   init, save, get, search, searchByKeywords,
+  compose, hasCompose, ingestConversation, ingestStatus,
   delete: delete_, list, count, getRelated, close,
   getStatus, getMode, peekMode, _resetConfig,
   // Exposed for deterministic offline tests of the MCP-tool mappings.
   __testHooks: {
     parseSearchResults, parseListResults, parseAddedId, deriveTitle,
     entryToContent, normalizeSearchItem, normalizeEntry,
+    needsReinit, splitComposeBlocks, parseComposeEnvelope,
+    /** Inject a config object so a freshly-required module can init() a mode
+     *  without touching env/files (avoids global-state races in the runner). */
+    _injectConfig: (cfg) => { _config = cfg; },
   },
 };

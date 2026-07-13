@@ -464,7 +464,7 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
           const { prompt, session_id } = args || {};
           const project = resolveProject(args);
           const retrieveCore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'retrieve-core.js'));
-          const { entries } = await retrieveCore.retrieve(prompt || '', { project });
+          const { entries, capabilities } = await retrieveCore.retrieve(prompt || '', { project });
           if (entries.length) {
             try {
               const journal = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'retrieval-journal.js'));
@@ -477,7 +477,7 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
           // Journal above measures the REAL retrieval (full entries); injection
           // respects the config-driven exclude filter (e.g. drop lessons).
           const injectable = retrieveCore.filterInjectableEntries(entries);
-          const text = retrieveCore.formatContext(injectable);
+          const text = retrieveCore.formatContext(injectable, capabilities);
           const payload = text ? JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: text } }) : '';
           return { content: [{ type: 'text', text: payload }] };
         } catch (err) {

@@ -1,5 +1,49 @@
 # Changelog
 
+## [2.0.0] - 2026-07-13
+
+### BREAKING — recall e ingestão no backend `mcp-memory` passam a usar o contrato `compose`/`ingest_conversation` (exige memory-server ≥ 2.18)
+
+Quando `backend.type: mcp-memory`, o boss agora ativa por inteiro os hooks do
+memory-server. **É breaking change consciente:** o caminho de recall no
+`mcp-memory` deixa de usar o `search_memory` raso — quem usa o servidor externo
+precisa dele na **versão ≥ 2.18**. O backend **local (SQLite) fica intacto**.
+
+- **Recall em DOIS NÍVEIS (`compose_recall`, ADR-015) como via primária, sem
+  fallback.** O `UserPromptSubmit` passa a chamar `compose_recall` e consome o
+  envelope de 5 blocos em duas seções: **① FATOS** (`knowledge`/`procedural`)
+  injetam o **trecho casado inline** (grounding); **② CAPACIDADES**
+  (`skill`/`skill_global`/`setup`) entram como **ponteiros** `name — description`
+  (disclosure progressivo). Itens `invalidated` (lifecycle, ADR-008) são
+  excluídos client-side; o título de um fato cru (`name` nulo) é derivado do
+  próprio texto. Guard **fail-loud**: se o daemon não expõe `compose_recall`
+  (versão < 2.18), o recall degrada para vazio **e registra** — nunca cai
+  silenciosamente numa busca rasa.
+- **Vazamento entre projetos corrigido.** `brain-backend.init()` agora é
+  *project-aware*: ao receber um projeto diferente, refaz o handshake MCP
+  (re-escopo) em vez de reusar silenciosamente o primeiro projeto. Uma chamada
+  sem projeto nunca sobrescreve o escopo atual.
+- **Ingestão cooperativa da conversa (`ingest_conversation`).** O `Stop` passa a
+  enviar o **transcript JSONL acumulado da sessão** ao servidor (consumer burro,
+  servidor inteligente): o server descobre o template uma vez, distila, tipa,
+  escopa e **deduplica por event-id** — reenviar o acumulado é seguro e o cliente
+  fica stateless. Substitui a ponte anterior que mandava só o último turno via
+  `add_document`. **Fail-loud:** se o LLM do servidor estiver fora, o estado
+  degradado é logado (o staging é durável e drena depois) — nunca finge sucesso.
+- **Visibilidade de degradação** (`lib/recall-health.js`): cada recall registra
+  ok/degradado; o `brain-health` avisa no `SessionStart` quando o recall vem
+  vazio de forma recorrente (ex.: daemon < 2.18 / fora do ar).
+- **Orçamento de injeção + knobs** (`kb.retrieval.compose`): `includeHomeSpine`
+  (default on), `maxInjectChars` (teto de texto injetado), `timeoutMs` (compose
+  lento → degrada), e um `overlay` de metadados genérico (sem hardcode de
+  domínio).
+
+> **Nota de integração (servidor):** para a **conversa ingerida** aparecer no
+> `compose_recall` e alimentar o **Dreaming**, o `Curator` do memory-server
+> precisa emitir tipos que o compose consulta (`knowledge`/`procedural`). O boss
+> já está pronto para consumir assim que o servidor tipar — é ajuste do lado do
+> memory-server, não do plugin.
+
 ## [1.29.0] - 2026-07-13
 
 ### Fixed — métrica agora tem armazenamento próprio, independente do backend do KB
