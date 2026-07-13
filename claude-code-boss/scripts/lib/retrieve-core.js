@@ -72,10 +72,18 @@ async function retrieveRemote(prompt, { project, topK, keywords }) {
       recallHealth.record('no-compose');
       return { entries: [], capabilities: [], keywords, project, reason: 'no-compose' };
     }
+    // Pool-warming (ADR-017): fire a home-federated search IN PARALLEL with compose
+    // so ingested HOME docs accumulate recall signal and graduate (async Dreaming).
+    // Best-effort, NOT injected — the user context stays pure compose; never breaks recall.
+    const warmP = (cc.poolWarming && backend.warmPool)
+      ? withTimeout(backend.warmPool(prompt, { topK }), cc.timeoutMs)
+        .catch((err) => { console.error(`[retrieve-core] pool-warming skipped: ${err.message}`); })
+      : Promise.resolve();
     const composed = await withTimeout(
       backend.compose(prompt, cc.overlay ? { metadata: cc.overlay } : {}),
       cc.timeoutMs,
     );
+    await warmP; // let the signal call finish (persistent server), but its result is discarded
     const { facts, capabilities } = pickInjectable(composed.facts, composed.capabilities, {
       topK, maxChars: cc.maxInjectChars, includeHomeSpine: cc.includeHomeSpine,
     });

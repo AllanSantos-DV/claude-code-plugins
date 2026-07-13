@@ -158,6 +158,10 @@ function getRecallCompose() {
     maxInjectChars: Number.isInteger(c.maxInjectChars) && c.maxInjectChars > 0 ? c.maxInjectChars : 6000,
     timeoutMs: Number.isInteger(c.timeoutMs) && c.timeoutMs > 0 ? c.timeoutMs : 8000,
     overlay,
+    // Pool-warming (ADR-017): fire a home-federated search alongside compose so
+    // ingested HOME docs accumulate recall signal and graduate (async Dreaming).
+    // Non-injected; default ON. Set false to disable the extra background search.
+    poolWarming: c.poolWarming !== false,
   };
 }
 
