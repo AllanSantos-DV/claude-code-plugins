@@ -45,6 +45,25 @@ Use the slash command **`/release`** (defined in `.claude/commands/release.md`).
 
 CI green ≠ plugin works. Smoke in real CC Desktop is the only end-to-end gate. Skipping it = releases that break for users (and auto-update propagates the damage).
 
+### Release drift guard (mechanical)
+
+A plugin's in-repo version must have a matching git tag, or the published release
+channel silently drifts behind `main` (this happened: `main` reached
+claude-code-boss 1.29.0 while the latest release was still v1.23.0). A
+deterministic guard — **no AI, no quota**, like pages-guard —
+(`.github/scripts/release-guard.mjs`) flags it:
+
+- **Tag scheme**: `claude-code-boss` version `V` → tag `v<V>`; `rf-reviewer`
+  version `V` → tag `rf-v<V>`.
+- **CI signal** (`.github/workflows/release-guard.yml`) runs on push to `main`
+  (not on PRs, so it never blocks development) and goes **red** while any plugin's
+  version has no tag — a loud, mechanical drift signal.
+- **Local**: `node .github/scripts/release-guard.mjs check` (exit 1 on drift) ·
+  `... list` (json).
+- Pushing a tag (`v*` or `rf-v*`) triggers `.github/workflows/release.yml`, which
+  packages that plugin and publishes the GitHub Release. The guard only *detects*;
+  **publishing stays a human/agent action so the smoke gate above is preserved.**
+
 ## Plugin pages (vitrine + merge guard)
 
 Every plugin in `marketplace.json` must ship a landing page at

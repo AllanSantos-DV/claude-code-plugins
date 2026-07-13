@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - 'v*'
+      - 'rf-v*'
 
 permissions:
   contents: write
@@ -16,39 +17,52 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v6.0.2
 
-      - name: Extract version from tag
-        id: version
+      - name: Resolve plugin + version from tag
+        id: meta
         run: |
           TAG="${{ github.ref_name }}"
-          VERSION="${TAG#v}"
-          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          if [[ "$TAG" == rf-v* ]]; then
+            echo "plugin=rf-reviewer" >> $GITHUB_OUTPUT
+            echo "dir=rf-reviewer" >> $GITHUB_OUTPUT
+            echo "version=${TAG#rf-v}" >> $GITHUB_OUTPUT
+            echo "zip=rf-reviewer-${TAG#rf-v}.zip" >> $GITHUB_OUTPUT
+          else
+            echo "plugin=claude-code-boss" >> $GITHUB_OUTPUT
+            echo "dir=claude-code-boss" >> $GITHUB_OUTPUT
+            echo "version=${TAG#v}" >> $GITHUB_OUTPUT
+            echo "zip=claude-code-boss-${TAG#v}.zip" >> $GITHUB_OUTPUT
+          fi
           echo "tag=$TAG" >> $GITHUB_OUTPUT
 
       - name: Package plugin
         run: |
-          cd claude-code-boss
-          zip -r ../claude-code-boss-${{ steps.version.outputs.version }}.zip . \
+          cd "${{ steps.meta.outputs.dir }}"
+          zip -r "../${{ steps.meta.outputs.zip }}" . \
             --exclude "node_modules/*" \
             --exclude ".git/*" \
             --exclude "*.log" \
             --exclude "*.download" \
-            --exclude "output-styles/*"
+            --exclude "output-styles/*" \
+            --exclude "**/__pycache__/*" \
+            --exclude "**/.venv/*"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3.0.0
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
-          name: "v${{ steps.version.outputs.version }}"
+          tag_name: ${{ steps.meta.outputs.tag }}
+          name: "${{ steps.meta.outputs.plugin }} v${{ steps.meta.outputs.version }}"
           body: |
-            ## claude-code-boss v${{ steps.version.outputs.version }}
+            ## ${{ steps.meta.outputs.plugin }} v${{ steps.meta.outputs.version }}
 
-            ### Instalação
-            Baixe o ZIP e extraia em `~/.claude/plugins/` ou use o marketplace do Claude Code.
+            ### Instalação (marketplace)
+            ```
+            /plugin marketplace add AllanSantos-DV/claude-code-plugins
+            /plugin install ${{ steps.meta.outputs.plugin }}@allansantos-plugins
+            ```
 
-            ### Atualização
-            O plugin verifica atualizações automaticamente (intervalo: 24h).
-            Se houver update disponível, você será notificado no terminal.
+            Ou baixe o ZIP e extraia em `~/.claude/plugins/`.
           files: |
-            claude-code-boss-${{ steps.version.outputs.version }}.zip
+            ${{ steps.meta.outputs.zip }}
           draft: false
           prerelease: false
+

@@ -1,0 +1,29 @@
+name: Release Guard
+
+# Sinal mecânico (não bloqueia PR): quando a versão de um plugin na main não tem
+# tag publicada, este check fica vermelho na main até a release ser cortada.
+# Mesmo guard determinístico usável localmente: node .github/scripts/release-guard.mjs check
+# Publicar continua sendo ação humana/agente (preserva o smoke gate do AGENTS.md).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  release-guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (com tags)
+        uses: actions/checkout@v6.0.2
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Verificar drift de release (versão vs tag)
+        run: node .github/scripts/release-guard.mjs check
