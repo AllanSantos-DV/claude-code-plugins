@@ -23,6 +23,8 @@ mecânico; só o que exige julgamento vem pra gente".
 - **`GET /api/tuning/recommendations`** + card **"Recomendações de tuning"** no Home.
 - **Recomenda, não aplica**: nunca altera perfil/threshold sozinho. Trocar continua
   sendo `/boss-profile` / aba Hooks / Brain → Avançado.
+- Mesma limitação SQLite-only da 1.25.0: sem telemetria acumulada (fallback JSON),
+  `analyze()` roda sobre zero amostras e não recomenda nada — silencioso, não quebra.
 
 ## [1.27.0] - 2026-07-12
 
@@ -57,6 +59,8 @@ responde **"quanto cada perfil bypassou o Stop"**, cruzando as linhas `stop.disp
   significa e um alerta honesto: `blocked > 0` no perfil `free` = passthrough não respeitado.
 - **Corte de vaidade**: "Events per day" rotulado como volume bruto (contexto, não
   acionável por si só).
+- Herda a limitação SQLite-only da 1.25.0: sem `stop.dispatch` acumulado (fallback
+  JSON), o card fica vazio, sem erro.
 
 Próximo: funis (após definir os contratos de evento que faltam) e a Fase 3 (declutter
 de config + retenção/rollups).
@@ -87,6 +91,12 @@ Stop), alinhada ao OpenTelemetry `feature_flag` e aos Golden Signals:
   padrão 3%) construído e testado por injeção. O rollout em produção (detectores com
   `detect()` puro + **estado sombra isolado**, para não poluir contadores reais) é o
   próximo incremento — feito assim justamente para ser honesto.
+- **Limitação conhecida: SQLite-only.** `stop.dispatch` é lido via
+  `brain-store.getEventLog()`, que devolve `[]` sem erro quando o backend caiu
+  para o fallback JSON (ex.: `better-sqlite3` nativo não instalou). Quem está
+  nesse fallback não vê crash, mas também não acumula telemetria — e por
+  extensão, o card "Impacto do Perfil" (1.26.0) e o auto-tuner (1.28.0), que
+  consomem esses dados, ficam silenciosamente inertes para esse usuário.
 
 Fundação para o redesenho dos Insights (card "Impacto do Perfil") nas próximas fases.
 
