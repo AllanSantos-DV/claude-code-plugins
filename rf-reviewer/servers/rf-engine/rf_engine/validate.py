@@ -226,11 +226,14 @@ def validate_xlsx(xlsx_path: str, extract_json: str | None, profile_id: str | No
     if profile.build_leyenda and names and names[-1] != "Leyenda de Gaps":
         warns.append(f"Última aba não é 'Leyenda de Gaps' (é '{names[-1]}').")
 
-    # colunas do perfil presentes; (rf-end) 8 antes das 5
+    # colunas do perfil presentes; (rf-end) 8 antes das 5.
+    # Também localizamos, por aba, a partir de qual coluna começam as NOSSAS colunas
+    # novas — é o limite usado abaixo para nunca varrer dado ORIGINAL do cliente.
     analyzable = []
     if extract_json:
         ex = json.loads(Path(extract_json).read_text(encoding="utf-8"))
         analyzable = [s for s in ex["sheets"] if s["analyzable"]]
+    new_col_start: dict[str, int] = {}  # nome da aba -> 1ª coluna nossa (1-based)
     for s in analyzable:
         ws = wb[s["name"]] if s["name"] in wb.sheetnames else None
         if not ws:
@@ -248,12 +251,33 @@ def validate_xlsx(xlsx_path: str, extract_json: str | None, profile_id: str | No
                     errors.append(f"{s['name']}: colunas consultivas antes das de validação.")
             except ValueError:
                 pass
+        found_idxs = [hdrs.index(col) for col in expected_cols if col in hdrs]
+        if found_idxs:
+            new_col_start[s["name"]] = min(found_idxs) + 1  # 1-based
 
-    # erros de fórmula + termos proibidos em todo o workbook
+    # abas geradas inteiramente pela tool (Resumo/Leyenda) — 100% conteúdo nosso
+    generated_sheets = {
+        name for name, built in (
+            ("1. Resumo Executivo", profile.build_resumo),
+            ("Leyenda de Gaps", profile.build_leyenda),
+        ) if built and name in wb.sheetnames
+    }
+
+    # erros de fórmula + termos proibidos SÓ no que a tool escreveu: as colunas
+    # novas (a partir de new_col_start) nas abas de RF + as abas geradas inteiras.
+    # NUNCA nas colunas originais do cliente — dado preexistente do cliente (uma
+    # fórmula quebrada legada, ou um requisito de negócio que mencione "inteligencia
+    # artificial") não é nosso escopo, e o princípio não-destrutivo proíbe corrigi-lo.
     formula_hits = 0
     forbidden_hits = []
     for ws in wb.worksheets:
-        for row in ws.iter_rows():
+        if ws.title in generated_sheets:
+            col_min = 1
+        elif ws.title in new_col_start:
+            col_min = new_col_start[ws.title]
+        else:
+            continue  # aba não tocada pela tool (ou sem coluna nova encontrada)
+        for row in ws.iter_rows(min_col=col_min):
             for cell in row:
                 if isinstance(cell.value, str):
                     v = cell.value
