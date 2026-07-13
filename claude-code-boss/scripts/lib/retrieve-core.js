@@ -15,31 +15,77 @@ const embedder = require('../brain-embedder.js');
 const store = require('../brain-store.js');
 const backend = require('../brain-backend.js');
 const brainConfig = require('./brain-config.js');
+const recallHealth = require('./recall-health.js');
 const { extractKeywords } = require('./text-utils.js');
 const { searchTwoPass } = require('./scope-search.js');
 
+/** Race a promise against a timeout (ms<=0 disables). Rejects with a timeout error. */
+function withTimeout(promise, ms) {
+  if (!ms || ms <= 0) return promise;
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error(`compose timed out after ${ms}ms`)), ms);
+    promise.then((v) => { clearTimeout(t); resolve(v); }, (e) => { clearTimeout(t); reject(e); });
+  });
+}
+
 /**
- * Remote brain (Native Java daemon): delegate retrieval to the backend dispatcher,
- * which embeds + searches server-side. No local embedder is loaded in this path.
- * @returns {Promise<{entries:object[], keywords:string[], project:string, reason?:string}>}
+ * Choose what actually gets injected from a compose result: optionally drop the
+ * home spine, dedup facts by title, cap to topK, and respect a total char budget
+ * (facts carry inline text ≤1024 each — an unbounded set would bloat the prompt).
+ * Always keeps at least the top fact. Pure → unit-testable.
+ */
+function pickInjectable(facts, caps, { topK, maxChars, includeHomeSpine }) {
+  let f = Array.isArray(facts) ? facts : [];
+  let c = Array.isArray(caps) ? caps : [];
+  if (!includeHomeSpine) {
+    f = f.filter((x) => x && x.scope !== 'home');
+    c = c.filter((x) => x && x.scope !== 'home');
+  }
+  const seen = new Set();
+  const outFacts = [];
+  let used = 0;
+  for (const x of f) {
+    const key = (x.title || '').trim().toLowerCase();
+    if (key && seen.has(key)) continue;
+    seen.add(key);
+    const cost = (x.summary || '').length;
+    if (outFacts.length > 0 && used + cost > maxChars) break;
+    outFacts.push(x);
+    used += cost;
+    if (outFacts.length >= topK) break;
+  }
+  return { facts: outFacts, capabilities: c.slice(0, topK) };
+}
+
+/**
+ * Remote brain (Native Java daemon): compose_recall is the REQUIRED two-level
+ * recall path on mcp-memory (breaking change: no silent flat fallback). Degrades
+ * fail-loud (empty context + recorded health) so a bad daemon never breaks a turn.
+ * @returns {Promise<{entries:object[], capabilities:object[], keywords:string[], project:string, reason?:string}>}
  */
 async function retrieveRemote(prompt, { project, topK, keywords }) {
+  const cc = brainConfig.getRecallCompose();
   try {
     await backend.init({ project, skipEmbedder: true });
-    const hits = await backend.search(prompt, { topK: topK + 4 });
-    const seenTitles = new Set();
-    const entries = [];
-    for (const h of hits) {
-      const t = (h.title || '').trim().toLowerCase();
-      if (t && seenTitles.has(t)) continue;
-      seenTitles.add(t);
-      entries.push({ id: h.id, title: h.title, type: h.type || 'memory', summary: h.summary || '' });
-      if (entries.length >= topK) break;
+    if (!backend.hasCompose || !backend.hasCompose()) {
+      console.error('[retrieve-core] compose_recall unavailable on mcp-memory daemon — recall degraded to empty (requires memory-server >=2.18)');
+      recallHealth.record('no-compose');
+      return { entries: [], capabilities: [], keywords, project, reason: 'no-compose' };
     }
-    return { entries, keywords, project, reason: entries.length ? undefined : 'no-match' };
+    const composed = await withTimeout(
+      backend.compose(prompt, cc.overlay ? { metadata: cc.overlay } : {}),
+      cc.timeoutMs,
+    );
+    const { facts, capabilities } = pickInjectable(composed.facts, composed.capabilities, {
+      topK, maxChars: cc.maxInjectChars, includeHomeSpine: cc.includeHomeSpine,
+    });
+    recallHealth.record(facts.length ? undefined : 'no-match');
+    return { entries: facts, capabilities, keywords, project, reason: facts.length ? undefined : 'no-match' };
   } catch (err) {
-    console.error(`[retrieve-core] remote retrieve failed: ${err.message}`);
-    return { entries: [], keywords, project, reason: 'remote-error' };
+    const reason = /timed out|timeout/i.test(err.message || '') ? 'timeout' : 'remote-error';
+    console.error(`[retrieve-core] remote retrieve failed (${reason}): ${err.message}`);
+    recallHealth.record(reason);
+    return { entries: [], capabilities: [], keywords, project, reason };
   }
 }
 
@@ -85,11 +131,25 @@ async function retrieve(prompt, opts = {}) {
   return { entries, keywords, project, reason: entries.length ? undefined : 'no-match' };
 }
 
-/** Format retrieved entries as the injected context string (empty when none). */
-function formatContext(entries) {
-  if (!entries || !entries.length) return '';
-  const lines = entries.map((e, i) => `${i + 1}. "${e.title}" (${e.type}) — ${e.summary}`);
-  return `[BRAIN] ${entries.length} relevant lesson(s):\n${lines.join('\n')}`;
+/**
+ * Format retrieved memory as the injected context string (empty when none).
+ * Two sections (compose two-level, ADR-015): ① FACTS carry inline grounding text;
+ * ② CAPABILITIES are name/description pointers (progressive disclosure). The flat
+ * local path passes only `entries` → just the facts section (label unchanged).
+ */
+function formatContext(entries, capabilities) {
+  const facts = entries || [];
+  const caps = capabilities || [];
+  const parts = [];
+  if (facts.length) {
+    const lines = facts.map((e, i) => `${i + 1}. "${e.title}" (${e.type}) — ${e.summary}`);
+    parts.push(`[BRAIN] ${facts.length} relevant lesson(s):\n${lines.join('\n')}`);
+  }
+  if (caps.length) {
+    const lines = caps.map((c) => `- ${c.name}${c.description ? ' — ' + c.description : ''}`);
+    parts.push(`[BRAIN·SKILLS] ${caps.length} available capability pointer(s):\n${lines.join('\n')}`);
+  }
+  return parts.join('\n\n');
 }
 
 /**
@@ -105,4 +165,4 @@ function filterInjectableEntries(entries) {
   return entries.filter((e) => !ex.has(String((e && e.type) || '').toLowerCase()));
 }
 
-module.exports = { retrieve, formatContext, filterInjectableEntries };
+module.exports = { retrieve, formatContext, filterInjectableEntries, pickInjectable };

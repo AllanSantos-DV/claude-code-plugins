@@ -627,6 +627,109 @@ test('mcp-client http: handshake captures session + stamps projectId + echoes se
   }
 });
 
+test('mcp-client: hasToolAvailable() reflects tools/list (fail-loud guard for compose_recall)', () => {
+  const McpClient = require('./mcp-client.js');
+  const c = new McpClient({ transport: 'http', serverUrl: 'http://127.0.0.1:1', projectId: 'P' });
+  // Before handshake it must be SAFE (no throw) and report nothing available.
+  assertEq(typeof c.hasToolAvailable, 'function');
+  assertEq(c.hasToolAvailable('compose_recall'), false);
+  // After a handshake populates the advertised tool list:
+  c._availableTools = ['search_memory', 'compose_recall', 'ingest_conversation'];
+  assertEq(c.hasToolAvailable('compose_recall'), true);
+  assertEq(c.hasToolAvailable('ingest_conversation'), true);
+  assertEq(c.hasToolAvailable('nope'), false);
+  assertEq(c.hasToolAvailable(''), false);
+  assertEq(c.hasToolAvailable(), false);
+});
+
+test('brain-backend: needsReinit() re-scopes on explicit project change (cross-project leak guard)', () => {
+  const { needsReinit } = require('./brain-backend.js').__testHooks;
+  assertEq(typeof needsReinit, 'function');
+  // Not initialized → never reinit.
+  assertEq(needsReinit({ initialized: false, mode: 'mcp-memory', project: 'A' }, 'B'), false);
+  // Same project → no-op (no churn on repeated same-project init).
+  assertEq(needsReinit({ initialized: true, mode: 'mcp-memory', project: 'A' }, 'A'), false);
+  // Different explicit project → MUST reinit (the leak the gate found in brain-backend.js:410).
+  assertEq(needsReinit({ initialized: true, mode: 'mcp-memory', project: 'A' }, 'B'), true);
+  assertEq(needsReinit({ initialized: true, mode: 'local', project: 'A' }, 'B'), true);
+  // No explicit project (undefined/empty) → never clobber the current scope.
+  assertEq(needsReinit({ initialized: true, mode: 'mcp-memory', project: 'A' }, undefined), false);
+  assertEq(needsReinit({ initialized: true, mode: 'mcp-memory', project: 'A' }, ''), false);
+});
+
+test('brain-backend mcp: init() re-handshakes on project change (BLOCKING-B leak fix)', async () => {
+  const daemon = await startFakeDaemon();
+  delete require.cache[require.resolve('./brain-backend.js')];
+  const backend = require('./brain-backend.js');
+  backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
+  try {
+    await backend.init({ project: 'projA' });
+    assertEq(daemon.seen.initProjectId, 'projA');
+    // Second session, DIFFERENT project → must re-handshake scoped to projB.
+    daemon.seen.initProjectId = null;
+    await backend.init({ project: 'projB' });
+    assertEq(daemon.seen.initProjectId, 'projB');
+    // Same project again → NO re-handshake (no churn).
+    daemon.seen.initProjectId = null;
+    await backend.init({ project: 'projB' });
+    assertEq(daemon.seen.initProjectId, null);
+    await backend.close();
+  } finally {
+    delete require.cache[require.resolve('./brain-backend.js')];
+    await daemon.close();
+  }
+});
+
+test('brain-backend compose: parseComposeEnvelope splits facts(text)/capabilities(pointers), excludes invalidated, derives title (DH4)', () => {
+  const { parseComposeEnvelope } = require('./brain-backend.js').__testHooks;
+  const envelope = { text: JSON.stringify({
+    query: 'q',
+    blocks: [
+      { block: 'procedural', scope: 'home', items: [{ id: 'p1', name: null, description: null, type: 'procedural', score: 0.9, text: 'restart the pod then flush cache' }] },
+      { block: 'skill_global', scope: 'home', items: [{ id: 'sg1', name: 'global-skill', description: 'a global skill', type: 'skill', score: 0.8 }] },
+      { block: 'knowledge', scope: 'projA', items: [
+        { id: 'k1', name: null, description: null, type: 'knowledge', score: 0.87, text: 'the deploy runbook lives here' },
+        { id: 'k2', name: 'named', description: 'd', type: 'knowledge', score: 0.5, text: 'x', lifecycleState: { status: 'invalidated' } },
+      ] },
+      { block: 'skill', scope: 'projA', items: [{ id: 's1', name: 'rollback', description: 'rollback a release', type: 'skill', score: 0.7 }] },
+      { block: 'setup', scope: 'projA', items: [{ id: 'setup1', name: 'setup-x', description: 'project setup', type: 'setup', score: 0.6 }] },
+    ],
+  }) };
+  const { facts, capabilities, entries } = parseComposeEnvelope(envelope);
+  // FACTS = procedural + knowledge(k1); k2 excluded (invalidated); title derived from text when name=null (DH4).
+  assertEq(facts.length, 2);
+  assertEq(facts[0].id, 'p1');
+  assert(facts[0].title && facts[0].title.indexOf('restart') === 0, `title derived from text, got "${facts[0].title}"`);
+  assertEq(facts[0].text, 'restart the pod then flush cache');
+  assertEq(facts[1].id, 'k1');
+  assert(facts.every(f => f.id !== 'k2'), 'invalidated k2 must be excluded');
+  // CAPABILITIES = skill_global + skill + setup (pointers, no text).
+  assertEq(capabilities.map(c => c.id).sort(), ['s1', 'setup1', 'sg1']);
+  assert(capabilities.every(c => c.text === undefined), 'capabilities are pointers (no text)');
+  // entries mirror facts for retrieval telemetry (% cited) — every one has a usable title.
+  assertEq(entries.length, 2);
+  assert(entries.every(e => e.title && e.title.length > 0), 'every fact entry has a usable title (DH4 fix)');
+});
+
+test('brain-backend mcp: ingestConversation ships raw transcript to ingest_conversation (consumerId/session/raw)', async () => {
+  const daemon = await startFakeDaemon();
+  delete require.cache[require.resolve('./brain-backend.js')];
+  const backend = require('./brain-backend.js');
+  backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
+  try {
+    await backend.init({ project: 'projX' });
+    await backend.ingestConversation('raw-jsonl-here', { sessionId: 'sessX' });
+    assertEq(daemon.seen.callArgs.name, 'ingest_conversation');
+    assertEq(daemon.seen.callArgs.arguments.consumerId, 'claude-code-boss');
+    assertEq(daemon.seen.callArgs.arguments.sessionId, 'sessX');
+    assertEq(daemon.seen.callArgs.arguments.raw, 'raw-jsonl-here');
+    await backend.close();
+  } finally {
+    delete require.cache[require.resolve('./brain-backend.js')];
+    await daemon.close();
+  }
+});
+
 test('brain-backend __testHooks: MCP-tool mappings match the real daemon contract', () => {
   const h = require('./brain-backend.js').__testHooks;
   // add_document returns plain text "Document added with ID: <uuid>"
@@ -1876,6 +1979,59 @@ test('retrieve-core: formatContext renders title + summary', () => {
   assert(s.includes('"Use Read not cat"') && s.includes('always Read'), 'title/summary missing');
 });
 
+test('retrieve-core: formatContext two sections (facts + capability pointers, ADR-015)', () => {
+  const s = retrieveCore.formatContext(
+    [{ title: 'Deploy runbook', type: 'knowledge', summary: 'restart pod then flush' }],
+    [{ name: 'rollback', description: 'rollback a release' }, { name: 'setup-x', description: '' }],
+  );
+  assert(s.startsWith('[BRAIN] 1 relevant lesson(s):'), `facts header: ${s}`);
+  assert(s.includes('[BRAIN·SKILLS] 2 available capability pointer(s):'), `skills header: ${s}`);
+  assert(s.includes('- rollback — rollback a release'), `pointer line: ${s}`);
+  assert(s.includes('- setup-x'), `pointer without desc: ${s}`);
+});
+
+test('retrieve-core: formatContext facts-only (no capabilities arg) has no skills section', () => {
+  const s = retrieveCore.formatContext([{ title: 'X', type: 'lesson', summary: 'y' }]);
+  assert(s.startsWith('[BRAIN] 1 relevant lesson(s):'), s);
+  assert(s.indexOf('SKILLS') === -1, 'no skills section when no capabilities');
+});
+
+test('retrieve-core.pickInjectable: home-spine filter + dedup + topK + char budget', () => {
+  const facts = [
+    { title: 'A', summary: 'x'.repeat(100), scope: 'home' },
+    { title: 'B', summary: 'y'.repeat(100), scope: 'projX' },
+    { title: 'B', summary: 'dup', scope: 'projX' },
+    { title: 'C', summary: 'z'.repeat(100), scope: 'projX' },
+  ];
+  const caps = [{ name: 'g', scope: 'home' }, { name: 'p', scope: 'projX' }];
+  // home spine ON: keep A; dedup B; big budget/topK.
+  let r = retrieveCore.pickInjectable(facts, caps, { topK: 5, maxChars: 10000, includeHomeSpine: true });
+  assertEq(r.facts.map((f) => f.title), ['A', 'B', 'C']);
+  assertEq(r.capabilities.map((c) => c.name), ['g', 'p']);
+  // home spine OFF: drop home fact A + home capability g.
+  r = retrieveCore.pickInjectable(facts, caps, { topK: 5, maxChars: 10000, includeHomeSpine: false });
+  assertEq(r.facts.map((f) => f.title), ['B', 'C']);
+  assertEq(r.capabilities.map((c) => c.name), ['p']);
+  // topK cap.
+  assertEq(retrieveCore.pickInjectable(facts, caps, { topK: 1, maxChars: 10000, includeHomeSpine: true }).facts.length, 1);
+  // char budget: first always kept, second exceeds remaining → stop.
+  assertEq(retrieveCore.pickInjectable(facts, caps, { topK: 5, maxChars: 150, includeHomeSpine: true }).facts.length, 1);
+});
+
+test('recall-health.isDegraded: classifies degraded vs ok reasons', () => {
+  const rh = require('./lib/recall-health.js');
+  assert(rh.isDegraded('no-compose') && rh.isDegraded('remote-error') && rh.isDegraded('timeout'), 'degraded reasons');
+  assert(!rh.isDegraded('no-match') && !rh.isDegraded(undefined) && !rh.isDegraded(''), 'ok reasons');
+});
+
+test('brain-config.getRecallCompose: sane defaults', () => {
+  const c = require('./lib/brain-config.js').getRecallCompose();
+  assertEq(c.includeHomeSpine, true);
+  assert(c.maxInjectChars > 0, 'maxInjectChars default');
+  assert(c.timeoutMs > 0, 'timeoutMs default');
+  assertEq(c.overlay, null);
+});
+
 test('retrieve-core: short prompt pre-filters (no embedder)', async () => {
   const r = await retrieveCore.retrieve('oi', { project: 'ccb-nonexistent-test' });
   assertEq(r.reason, 'short');
@@ -1990,31 +2146,20 @@ test('brain-backend.peekMode: per-user override flips to mcp-memory (shipped unt
 // ─── GAP1: conversation-ingest (opt-in daemon ingestion) ─────────────────────
 const convIngest = require('./conversation-ingest.js');
 
-test('conversation-ingest.buildConversationEntry: both sides empty → null', () => {
-  assertEq(convIngest.buildConversationEntry('', '', {}), null);
-  assertEq(convIngest.buildConversationEntry('   ', null, {}), null);
+test('conversation-ingest.clampRaw: small passes through; oversize → line-aligned trailing window', () => {
+  assertEq(convIngest.clampRaw('line1\nline2\n'), 'line1\nline2\n');
+  assertEq(convIngest.clampRaw(''), '');
+  assertEq(convIngest.clampRaw(null), '');
+  const oversize = 'x'.repeat(3800000) + '\n' + 'y'.repeat(3800000); // 7,600,001 > SAFE_MAX
+  const clamped = convIngest.clampRaw(oversize);
+  assert(clamped.length <= 7500000, `windowed to <= SAFE_MAX, got ${clamped.length}`);
+  assertEq(clamped[0], 'y'); // aligned past the newline boundary → valid JSONL tail
 });
 
-test('conversation-ingest.buildConversationEntry: carries both sides + conversation type', () => {
-  const e = convIngest.buildConversationEntry('como faz X?', 'faz assim Y', { project: 'proj', sid: 's1' });
-  assertEq(e.type, 'conversation');
-  assert(e.title.startsWith('Conversa: como faz X?'), `title from first user line, got ${e.title}`);
-  assert(e.content.detail.includes('## Usuário'), 'detail has user section');
-  assert(e.content.detail.includes('## Assistente'), 'detail has assistant section');
-  assertEq(e.session_id, 's1');
-  assertEq(e.source.project, 'proj');
-});
-
-test('conversation-ingest.buildConversationEntry: truncates oversize content', () => {
-  const big = 'x'.repeat(20000);
-  const e = convIngest.buildConversationEntry(big, big, {});
-  assert(e.content.detail.includes('…[truncated]'), 'clips oversize content');
-  assert(e.content.detail.length < 2 * 20000, 'shorter than the raw concatenation');
-});
-
-test('conversation-ingest.turnKey: stable for same content, differs by content', () => {
-  assertEq(convIngest.turnKey('s', 'a', 'b'), convIngest.turnKey('s', 'a', 'b'));
-  assert(convIngest.turnKey('s', 'a', 'b') !== convIngest.turnKey('s', 'a', 'c'), 'content change → new key');
+test('conversation-ingest.transcriptKey: stable per (sid, transcript), differs by content/session', () => {
+  assertEq(convIngest.transcriptKey('s', 'abc'), convIngest.transcriptKey('s', 'abc'));
+  assert(convIngest.transcriptKey('s', 'abc') !== convIngest.transcriptKey('s', 'abd'), 'content change → new key');
+  assert(convIngest.transcriptKey('s1', 'abc') !== convIngest.transcriptKey('s2', 'abc'), 'session change → new key');
 });
 
 test('conversation-ingest.run: backend=local → no-op (never ingests to local KB)', async () => {

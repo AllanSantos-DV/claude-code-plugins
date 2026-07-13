@@ -142,6 +142,25 @@ function getIngestion() {
   return { enabled: i.enabled === true };
 }
 
+/**
+ * compose_recall knobs (mcp-memory recall path). Config: kb.retrieval.compose.
+ *   includeHomeSpine (bool, default true) — inject the never-filtered global spine.
+ *   maxInjectChars   (int,  default 6000) — hard cap on total injected fact text.
+ *   timeoutMs        (int,  default 8000) — abort a slow compose → degraded (empty).
+ *   overlay          (obj  | null)        — generic metadata overlay for active blocks.
+ */
+function getRecallCompose() {
+  const cfg = load();
+  const c = (cfg.kb && cfg.kb.retrieval && cfg.kb.retrieval.compose) || {};
+  const overlay = (c.overlay && typeof c.overlay === 'object' && !Array.isArray(c.overlay)) ? c.overlay : null;
+  return {
+    includeHomeSpine: c.includeHomeSpine !== false,
+    maxInjectChars: Number.isInteger(c.maxInjectChars) && c.maxInjectChars > 0 ? c.maxInjectChars : 6000,
+    timeoutMs: Number.isInteger(c.timeoutMs) && c.timeoutMs > 0 ? c.timeoutMs : 8000,
+    overlay,
+  };
+}
+
 function _resetCache() { _cache = null; }
 
 module.exports = {
@@ -153,5 +172,6 @@ module.exports = {
   getContextExcludeTypes,
   getCuration,
   getIngestion,
+  getRecallCompose,
   _resetCache,
 };
