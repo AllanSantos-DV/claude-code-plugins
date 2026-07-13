@@ -1,5 +1,40 @@
 # Changelog
 
+## [2.1.0] - 2026-07-13
+
+### Added — pool-warming: a memória de conversa ingerida agora gradua pro spine (ADR-017 / server ≥ 2.20)
+
+Fecha o laço da ingestão→Dreaming que a v2.0.0 deixou em aberto. A conversa
+ingerida (`ingest_conversation`) é gravada **home-scoped** (sem `project_id`) e
+só é promovida pelo Dreaming se acumular **sinal de recall** — que vem do
+`search_memory`, não do `compose_recall` (o compose é excluído do sinal de
+promoção por design, ADR-008). Como a v2.0.0 tirou o `search_memory` do caminho
+de recall, os docs ingeridos nunca acumulavam sinal e ficavam **write-only**.
+
+E há um detalhe de escopo: a busca do boss é sempre *project-scoped* (o handshake
+carimba o projeto) e o filtro é **igualdade estrita** — então uma busca do boss
+**nunca alcançava** os docs home. O servidor resolveu isso no **ADR-017 (2.20)**
+com o flag `includeHome`, que federa `project_id = P OR ausente` (paridade com o
+que o `compose` já faz), com isolamento cross-project provado.
+
+- **Pool-warming** (`kb.retrieval.compose.poolWarming`, default ON): a cada
+  `UserPromptSubmit`, além do `compose_recall` injetado, o boss dispara **em
+  paralelo** um `search_memory { query, includeHome: true }` **não-injetado** — a
+  camada-pool que gera o `recordTopRecall` nos docs home. Assim a conversa
+  ingerida (e qualquer memória home) acumula sinal, o Dreaming promove os úteis
+  pra `procedural[HOME]`, e o `compose` passa a lê-los. A injeção que o usuário vê
+  **continua 100% compose** (o warming é só sinal). Best-effort: falha/timeout do
+  warming nunca quebra o recall; degrada silencioso no `search_memory` sem
+  `includeHome` em daemons < 2.20.
+- **`brain-backend.warmPool()`** + `searchMcp` agora aceita `includeHome`.
+- Requer **memory-server ≥ 2.20** pra o warming alcançar o pool home; em versões
+  anteriores o pool-warming vira no-op gracioso (recall via compose intacto).
+
+> **Nota de deploy (servidor):** pro laço realmente promover, o deploy precisa
+> ligar (vêm OFF por padrão): `promotion_mode=multi_signal`,
+> `promote_ingests_document=true` e um gatilho de sweep
+> (`deep_sweep_interval_ms>0` ou o agente chamando `memory_usage_sweep`).
+
 ## [2.0.0] - 2026-07-13
 
 ### BREAKING — recall e ingestão no backend `mcp-memory` passam a usar o contrato `compose`/`ingest_conversation` (exige memory-server ≥ 2.18)
