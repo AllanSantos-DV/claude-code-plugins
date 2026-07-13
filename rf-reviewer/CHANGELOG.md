@@ -4,6 +4,27 @@ Todas as mudanças relevantes do **rf-reviewer** são documentadas aqui. O forma
 segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); a versão vive
 em `servers/rf-engine/rf_engine/__init__.py` (`__version__`).
 
+## [0.1.1] - 2026-07-12
+
+### Fixed
+
+- **`rf_validar` não varre mais dado ORIGINAL do cliente ao checar termos
+  proibidos/erros de fórmula** — `validate_xlsx` escaneava o workbook inteiro;
+  um requisito de negócio legítimo (ex.: "el sistema debe usar inteligencia
+  artificial...") ou uma fórmula quebrada preexistente no arquivo do cliente
+  podia reprovar o gate por algo fora do escopo da tool e que o princípio
+  não-destrutivo proíbe corrigir. Agora a varredura fica restrita às colunas
+  que a própria tool anexou + às abas geradas (Resumo/Leyenda) — nunca aos
+  dados originais do cliente. Validado com teste funcional (apply real +
+  validate) confirmando ambos os lados: termo original ignorado, termo em
+  coluna nova continua detectado.
+- Removido código morto em `formatting.py` (`copy_sheet_full`,
+  `scrub_workbook`) — nenhum dos dois era chamado; `apply.py` usa uma
+  estratégia mais simples e segura (abre o workbook original e só ANEXA
+  colunas, nunca recria células), então a rotina de cópia célula-a-célula
+  nunca foi necessária. O docstring do módulo foi corrigido para refletir o
+  que de fato acontece.
+
 ## [0.1.0] - 2026-07-10
 
 Release inicial — motor determinístico de revisão de Requisitos Funcionais (RF)

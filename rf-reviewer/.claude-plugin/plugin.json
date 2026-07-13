@@ -1,5 +1,6 @@
 {
   "name": "rf-reviewer",
+  "version": "0.1.1",
   "displayName": "RF Reviewer — Revisão de Requisitos em Excel",
   "description": "Motor determinístico para revisar entregáveis de Requisitos Funcionais (Excel) do projeto La Positiva / InsureMO: extrai a planilha, deixa o agente preencher a análise cruzada com a memória do projeto, e INJETA a análise de volta na MESMA planilha do cliente de forma mecânica e não-destrutiva (colunas anexadas, original 100% preservado, versionado). Perfis de coluna trocáveis por assunto. Escopo: arquivos TABULARES (xlsx/csv); documentos (pdf/docx/pptx) seguem outro fluxo.",
   "author": {

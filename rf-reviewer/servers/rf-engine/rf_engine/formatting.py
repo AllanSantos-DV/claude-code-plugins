@@ -1,13 +1,14 @@
 """
-rf_engine.formatting — helpers determinísticos de estilo/cópia de planilha.
+rf_engine.formatting — helpers determinísticos de estilo de planilha.
 
-copy_sheet_full é portado de restore_client_sheets.py (skill principal do Fernando):
-copia valores + estilos + dimensões + merges + freeze + autofiltro + validações,
-para que as abas do CLIENTE fiquem idênticas ao original (integração invisível).
+apply.py NÃO copia célula a célula para um workbook novo: abre o arquivo original
+diretamente (openpyxl.load_workbook) e só ANEXA as colunas novas nos mesmos objetos
+de planilha, salvando num caminho versionado. Como as células originais nunca são
+recriadas, estilos/merges/hyperlinks/validações do cliente ficam intocados por
+construção — não há necessidade de uma rotina de cópia separada.
 """
 from __future__ import annotations
 
-import copy
 import math
 import re
 
@@ -32,61 +33,6 @@ def align(h: str = "left", v: str = "center", wrap: bool = True) -> Alignment:
 def border_thin(hex_color: str = "BFBFBF") -> Border:
     s = Side(style="thin", color=hex_color)
     return Border(left=s, right=s, top=s, bottom=s)
-
-
-# ── cópia fiel de aba (valores + estilos + layout) ───────────────────────────
-def copy_sheet_full(ws_src, ws_dst) -> list[str]:
-    """Copia uma aba inteira preservando formatação. Retorna avisos (imagens etc.)."""
-    warnings: list[str] = []
-    for row in ws_src.iter_rows():
-        for sc in row:
-            tc = ws_dst[sc.coordinate]
-            tc.value = sc.value
-            if sc.has_style:
-                tc._style = copy.copy(sc._style)
-            if sc.number_format:
-                tc.number_format = sc.number_format
-            if sc.font:
-                tc.font = copy.copy(sc.font)
-            if sc.fill:
-                tc.fill = copy.copy(sc.fill)
-            if sc.border:
-                tc.border = copy.copy(sc.border)
-            if sc.alignment:
-                tc.alignment = copy.copy(sc.alignment)
-            if sc.hyperlink:
-                tc._hyperlink = copy.copy(sc.hyperlink)
-
-    for key, dim in ws_src.column_dimensions.items():
-        ws_dst.column_dimensions[key].width = dim.width
-        ws_dst.column_dimensions[key].hidden = dim.hidden
-    for key, dim in ws_src.row_dimensions.items():
-        ws_dst.row_dimensions[key].height = dim.height
-        ws_dst.row_dimensions[key].hidden = dim.hidden
-
-    for mr in list(ws_dst.merged_cells.ranges):
-        ws_dst.unmerge_cells(str(mr))
-    for mr in ws_src.merged_cells.ranges:
-        ws_dst.merge_cells(str(mr))
-
-    ws_dst.freeze_panes = ws_src.freeze_panes
-    try:
-        ws_dst.sheet_view.showGridLines = ws_src.sheet_view.showGridLines
-    except Exception:
-        pass
-    if ws_src.auto_filter and ws_src.auto_filter.ref:
-        ws_dst.auto_filter.ref = ws_src.auto_filter.ref
-
-    try:
-        for dv in ws_src.data_validations.dataValidation:
-            ws_dst.add_data_validation(copy.copy(dv))
-    except Exception as exc:  # noqa: BLE001
-        warnings.append(f"data_validations '{ws_src.title}': {exc}")
-
-    imgs = getattr(ws_src, "_images", [])
-    if imgs:
-        warnings.append(f"aba '{ws_src.title}': {len(imgs)} imagem(ns) podem NÃO ser copiadas — revisar manual")
-    return warnings
 
 
 # ── altura dinâmica de linha (rf-end-format-standard §4) ─────────────────────
@@ -116,17 +62,3 @@ def scrub_text(text: str) -> tuple[str, list[str]]:
     if found:
         out = re.sub(r"[ ]{2,}", " ", out).strip()
     return out, found
-
-
-def scrub_workbook(wb) -> int:
-    """Passa em todas as células de texto e remove termos proibidos. Retorna nº de hits."""
-    hits = 0
-    for ws in wb.worksheets:
-        for row in ws.iter_rows():
-            for cell in row:
-                if isinstance(cell.value, str):
-                    cleaned, found = scrub_text(cell.value)
-                    if found:
-                        cell.value = cleaned
-                        hits += len(found)
-    return hits
