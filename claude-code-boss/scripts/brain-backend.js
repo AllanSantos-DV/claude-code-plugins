@@ -195,6 +195,7 @@ async function searchMcp(query, opts = {}) {
     topK,
     ...(minScore > 0 ? { minScore } : {}),
     ...(opts.type ? { metadata: { type: opts.type } } : {}),
+    ...(opts.includeHome ? { includeHome: true } : {}),
   });
   return parseSearchResults(result).slice(0, topK).map(item => normalizeSearchItem(item));
 }
@@ -566,6 +567,20 @@ async function ingestStatus(opts = {}) {
   return ingestStatusMcp(opts);
 }
 
+/**
+ * Pool-warming exposure (ADR-017, server >=2.20). Runs a home-FEDERATED
+ * `search_memory` (`includeHome:true`) so HOME-scoped docs — the ingested
+ * conversation pool — become candidates and the server records recall telemetry
+ * (`recordTopRecall`) on the top hit. This is the graduation signal: docs that
+ * prove useful across queries get promoted (async Dreaming) into procedural[HOME],
+ * which compose then reads. Results are NOT injected into the user prompt — this
+ * is a signal-generation pass only. mcp-memory ONLY; best-effort at the call site.
+ */
+async function warmPool(query, opts = {}) {
+  if (_mode !== 'mcp-memory') return [];
+  return searchMcp(query, { topK: opts.topK || 5, includeHome: true });
+}
+
 async function searchByKeywords(keywords, opts = {}) {
   if (_mode === 'mcp-memory') return searchByKeywordsMcp(keywords, opts);
   return searchByKeywordsLocal(keywords, opts);
@@ -621,7 +636,7 @@ const _textUtils = require('./lib/text-utils.js');
 
 module.exports = {
   init, save, get, search, searchByKeywords,
-  compose, hasCompose, ingestConversation, ingestStatus,
+  compose, hasCompose, ingestConversation, ingestStatus, warmPool,
   delete: delete_, list, count, getRelated, close,
   getStatus, getMode, peekMode, _resetConfig,
   // Exposed for deterministic offline tests of the MCP-tool mappings.

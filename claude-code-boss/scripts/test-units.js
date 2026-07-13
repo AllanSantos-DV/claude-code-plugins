@@ -730,6 +730,36 @@ test('brain-backend mcp: ingestConversation ships raw transcript to ingest_conve
   }
 });
 
+test('brain-backend mcp: warmPool fires home-federated search_memory (includeHome:true) for graduation signal', async () => {
+  const daemon = await startFakeDaemon();
+  delete require.cache[require.resolve('./brain-backend.js')];
+  const backend = require('./brain-backend.js');
+  backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
+  try {
+    await backend.init({ project: 'projW' });
+    await backend.warmPool('deploy runbook', { topK: 7 });
+    assertEq(daemon.seen.callArgs.name, 'search_memory');
+    assertEq(daemon.seen.callArgs.arguments.query, 'deploy runbook');
+    assertEq(daemon.seen.callArgs.arguments.includeHome, true);
+    assertEq(daemon.seen.callArgs.arguments.topK, 7);
+    await backend.close();
+  } finally {
+    delete require.cache[require.resolve('./brain-backend.js')];
+    await daemon.close();
+  }
+});
+
+test('brain-backend: warmPool off the mcp-memory backend → no-op (compose/pool are server capabilities)', async () => {
+  delete require.cache[require.resolve('./brain-backend.js')];
+  const backend = require('./brain-backend.js');
+  try {
+    // No init → _mode is not 'mcp-memory' → warmPool must short-circuit without any MCP/store call.
+    assertEq(await backend.warmPool('x'), []);
+  } finally {
+    delete require.cache[require.resolve('./brain-backend.js')];
+  }
+});
+
 test('brain-backend __testHooks: MCP-tool mappings match the real daemon contract', () => {
   const h = require('./brain-backend.js').__testHooks;
   // add_document returns plain text "Document added with ID: <uuid>"
@@ -2030,6 +2060,7 @@ test('brain-config.getRecallCompose: sane defaults', () => {
   assert(c.maxInjectChars > 0, 'maxInjectChars default');
   assert(c.timeoutMs > 0, 'timeoutMs default');
   assertEq(c.overlay, null);
+  assertEq(c.poolWarming, true);
 });
 
 test('retrieve-core: short prompt pre-filters (no embedder)', async () => {
