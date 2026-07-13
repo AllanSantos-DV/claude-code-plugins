@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>claude-code-boss — memória semântica e execução curada para o Claude Code</title>
-<meta name="description" content="Plugin para Claude Code Desktop: base de conhecimento local com busca semântica, execução curada anti context-bloat e aprendizado no loop. Backend de memória externo opcional." />
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica que fundamenta a resposta (recall em dois níveis), execução curada anti context-bloat e aprendizado no loop. Backend de memória externo opcional (memory-server ≥ 2.18)." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -82,6 +82,58 @@
   .step p{ margin:0; font-size:16px; line-height:1.5 }
   .step b{ font-family:var(--mono); font-weight:600; color:var(--panel-ink) }
 
+  .term .note{ color:#8a877f }
+  .term .note::before{ content:"# " }
+
+  /* v2.0.0 — release story */
+  .lede{ font-size:clamp(1.02rem,2vw,1.24rem); line-height:1.5; max-width:64ch; margin:0 0 30px }
+  .lede b{ font-weight:600 }
+
+  .callout{ border:1px solid var(--line); border-radius:10px;
+    background:var(--accent-soft); padding:16px 20px; margin:0 0 36px;
+    max-width:74ch; font-size:15px; line-height:1.55 }
+  .callout .tag{ font-family:var(--mono); font-size:10.5px; letter-spacing:.18em; text-transform:uppercase;
+    color:var(--accent); display:block; margin:0 0 8px }
+  .callout code{ background:rgba(120,72,20,.16) }
+
+  .envelope{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:720px; font-family:var(--mono) }
+  .env-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .env-bar .k{ color:var(--accent) }
+  .env-bar .m{ color:#8a877f }
+  .env-sec{ display:grid; grid-template-columns:26px 1fr; gap:16px; padding:22px 22px }
+  .env-sec + .env-sec{ border-top:1px solid rgba(255,255,255,.06) }
+  .env-mark{ font-size:20px; line-height:1.2; color:var(--accent) }
+  .env-head{ display:flex; flex-wrap:wrap; align-items:baseline; gap:10px; margin:0 0 3px }
+  .env-head b{ font-size:13.5px; letter-spacing:.03em }
+  .env-head span{ font-size:11px; color:#8a877f }
+  .env-cap{ font-size:11.5px; color:#8a877f; margin:0 0 12px }
+  .env-cap i{ color:var(--accent); font-style:normal }
+  .env-fact{ border-left:2px solid var(--accent); background:rgba(255,255,255,.05);
+    color:var(--panel-ink); font-size:12.5px; line-height:1.5; padding:8px 12px;
+    border-radius:0 6px 6px 0; margin:0 0 8px }
+  .env-fact:last-child{ margin:0 }
+  .env-ptr{ list-style:none; margin:0; padding:0 }
+  .env-ptr li{ font-size:12.5px; line-height:1.7; color:#a29f97 }
+  .env-ptr li::before{ content:"→ "; color:var(--accent) }
+  .env-ptr b{ color:var(--panel-ink); font-weight:600 }
+  .env-foot{ padding:13px 22px; border-top:1px solid var(--panel-line);
+    font-size:11px; line-height:1.55; color:#8a877f }
+  .env-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+  .env-foot b{ color:#a29f97 }
+
+  .wins{ display:grid; grid-template-columns:repeat(2,1fr); gap:26px 44px; margin:36px 0 0; max-width:920px }
+  .win h4{ font-family:var(--mono); font-size:11.5px; letter-spacing:.09em; text-transform:uppercase;
+    color:var(--accent); margin:0 0 11px; padding-bottom:10px; border-bottom:1px solid var(--line) }
+  .win p{ margin:0; color:var(--muted); font-size:14.5px; line-height:1.56 }
+  .win p code{ font-size:.82em }
+  .trust{ font-family:var(--mono); font-size:12.5px; color:var(--muted); line-height:1.6;
+    margin:36px 0 0; border-top:1px solid var(--line); padding-top:20px }
+  .trust b{ color:var(--accent); font-weight:600 }
+
+  @media (prefers-color-scheme:dark){ .callout code{ background:rgba(255,255,255,.10) } }
+
   footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
   footer a{ color:var(--muted); text-decoration:none }
   footer a:hover{ color:var(--accent) }
@@ -99,13 +151,13 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v1.29.0</span>
+    <span class="ver">v2.0.0</span>
   </nav>
 
   <header class="hero">
     <p class="eyebrow reveal">Plugin · Claude Code Desktop</p>
     <h1 class="mark reveal" style="animation-delay:.05s">claude-code-<b>boss</b></h1>
-    <p class="thesis reveal" style="animation-delay:.12s">Memória semântica, execução curada e aprendizado no loop. O que o Claude Code nativo não entrega.</p>
+    <p class="thesis reveal" style="animation-delay:.12s">Uma memória que fundamenta cada resposta, execução curada e aprendizado no loop — o que o Claude Code nativo não entrega.</p>
 
     <div class="term reveal" style="animation-delay:.2s" aria-label="Instalação via marketplace">
       <div class="bar">
@@ -117,6 +169,7 @@
       <div class="body">
         <div class="cmd">plugin marketplace add AllanSantos-DV/claude-code-plugins</div>
         <div class="cmd">plugin install claude-code-boss@allansantos-plugins<span class="caret" aria-hidden="true"></span></div>
+        <div class="note">requer Node 22.13+ no PATH do sistema · sem build nativo</div>
       </div>
     </div>
 
@@ -133,17 +186,17 @@
       <div class="cell">
         <p class="kick">Brain KB</p>
         <h3>Base de conhecimento local</h3>
-        <p>Busca semântica sobre SQLite e embeddings. Indexa o que importa e recupera contexto antes de cada ação, com rerank por relevância, recência e frequência.</p>
+        <p>Busca semântica sobre SQLite e embeddings. Indexa o que importa e recupera contexto antes de cada ação, com rerank por relevância, recência e frequência. É o backend padrão e segue <b>inalterado</b> na v2.0.0.</p>
       </div>
       <div class="cell">
         <p class="kick">Backend opcional</p>
         <h3>Servidor MCP Memory externo</h3>
-        <p>Troque o SQLite local por um servidor de memória seu ou da equipe. A ativação é por usuário, sobrevive ao auto-update e não afeta quem não usa.</p>
+        <p>Troque o SQLite local por um servidor de memória seu ou da equipe. A ativação é por usuário, sobrevive ao auto-update e não afeta quem não usa. Na v2.0.0 ele fala o contrato <code>compose</code>/<code>ingest</code> — exige <code>memory-server ≥ 2.18</code>.</p>
       </div>
       <div class="cell">
         <p class="kick">Identidade de projeto</p>
         <h3>Recall que casa entre máquinas</h3>
-        <p>O escopo vem de um id estável: <code>CCB_PROJECT_ID</code>, depois o arquivo <code>.claude-boss-project</code>, depois o nome da pasta. A memória segue o projeto, não o caminho.</p>
+        <p>O escopo vem de um id estável: <code>CCB_PROJECT_ID</code>, depois o arquivo <code>.claude-boss-project</code>, depois o nome da pasta. A memória segue o projeto, não o caminho — e, na v2.0.0, não vaza para outro projeto.</p>
       </div>
       <div class="cell">
         <p class="kick">Aprendizado no loop</p>
@@ -164,12 +217,71 @@
   </section>
 
   <section>
+    <p class="label">Novo na v2.0.0 · recall em dois níveis</p>
+    <p class="lede">A v2.0.0 muda <b>como o boss lembra</b>. No backend externo, o recall vem em dois níveis: os <b>fatos</b> relevantes entram com o trecho que casou — a resposta fica fundamentada; as <b>capacidades</b> entram como ponteiros leves, que o agente abre só quando precisa.</p>
+
+    <div class="callout">
+      <span class="tag">Breaking change</span>
+      No backend externo <code>mcp-memory</code>, o recall agora usa <code>compose_recall</code> e exige <code>memory-server ≥ 2.18</code> — o <code>search_memory</code> raso sai do caminho. O <b>backend local (SQLite) fica intacto</b>: quem usa local não muda nada.
+    </div>
+
+    <div class="envelope" aria-label="Envelope do compose_recall: fatos injetados inline, capacidades como ponteiros">
+      <div class="env-bar">
+        <span class="k">compose_recall</span>
+        <span class="m">envelope · 5 blocos · 2 seções</span>
+      </div>
+      <div class="env-sec">
+        <div class="env-mark" aria-hidden="true">①</div>
+        <div class="env-main">
+          <div class="env-head"><b>Fatos</b> <span>knowledge · procedural</span></div>
+          <p class="env-cap">o trecho que casou entra <i>inline</i> — grounding</p>
+          <div class="env-fact">"os hooks herdam o node do PATH do sistema, não o Node embutido no Desktop"</div>
+          <div class="env-fact">"ao trocar embedder.model, rode brain-reembed.js uma vez"</div>
+        </div>
+      </div>
+      <div class="env-sec">
+        <div class="env-mark" aria-hidden="true">②</div>
+        <div class="env-main">
+          <div class="env-head"><b>Capacidades</b> <span>skill · skill_global · setup</span></div>
+          <p class="env-cap">só o ponteiro <i>nome — descrição</i> — disclosure progressivo</p>
+          <ul class="env-ptr">
+            <li><b>plugin-install</b> — resolve Node no PATH e o daemon</li>
+            <li><b>config-dashboard</b> — abre o painel local sob demanda</li>
+          </ul>
+        </div>
+      </div>
+      <div class="env-foot">itens invalidados (lifecycle) saem do lado do cliente · sem <code>compose_recall</code> no daemon, o recall degrada para vazio <b>e registra</b> — nunca cai numa busca rasa em silêncio</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>Ingestão cooperativa</h4>
+        <p>No <code>Stop</code>, o transcript acumulado da sessão vai pro <code>ingest_conversation</code>. O servidor descobre o template, destila, tipa, escopa e deduplica por event-id — o cliente só envia, reenviar o acumulado é seguro.</p>
+      </div>
+      <div class="win">
+        <h4>Sem vazamento entre projetos</h4>
+        <p>O <code>brain-backend.init()</code> virou project-aware: em outro projeto refaz o handshake e re-escopa, em vez de reusar o primeiro. Chamada sem projeto nunca sobrescreve o escopo atual.</p>
+      </div>
+      <div class="win">
+        <h4>Falha visível (fail-loud)</h4>
+        <p>O <code>recall-health</code> marca cada recall como ok ou degradado; o <code>brain-health</code> avisa no <code>SessionStart</code> quando o recall vem vazio de forma recorrente — daemon &lt; 2.18 ou fora do ar.</p>
+      </div>
+      <div class="win">
+        <h4>Orçamento de injeção + knobs</h4>
+        <p>Em <code>kb.retrieval.compose</code>: <code>includeHomeSpine</code>, <code>maxInjectChars</code> (teto de texto), <code>timeoutMs</code> (compose lento degrada) e um <code>overlay</code> de metadados genérico.</p>
+      </div>
+    </div>
+
+    <p class="trust">Tudo atrás de gate e testado — <b>65</b> suítes de hooks + <b>380</b> unitários no verde, com smoke real contra o daemon <b>2.18</b>.</p>
+  </section>
+
+  <section>
     <div class="flow">
       <p class="label">Como funciona</p>
       <div class="steps">
-        <div class="step"><div class="n"></div><p>Você escreve um prompt. O hook <b>UserPromptSubmit</b> recupera do Brain e injeta um bloco de contexto do projeto.</p></div>
-        <div class="step"><div class="n"></div><p>O agente age com a memória do projeto à mão, escopada pelo id estável do projeto.</p></div>
-        <div class="step"><div class="n"></div><p>Ao terminar, os hooks de <b>Stop</b> destilam lições e curam comandos ruidosos. Nada disso relê o transcript nem gasta a janela.</p></div>
+        <div class="step"><div class="n"></div><p>Você escreve um prompt. O hook <b>UserPromptSubmit</b> chama o Brain e injeta o bloco <b>[BRAIN]</b>: no backend externo, os fatos vêm com o trecho casado e as capacidades como ponteiros.</p></div>
+        <div class="step"><div class="n"></div><p>O agente age com a memória do projeto à mão, escopada por um id estável — e, na v2.0.0, sem puxar contexto de outro projeto.</p></div>
+        <div class="step"><div class="n"></div><p>No <b>Stop</b>, o boss destila o aprendizado e cura comandos ruidosos. No backend externo, manda o transcript acumulado pro servidor destilar. Nada relê o transcript à toa nem infla a janela.</p></div>
       </div>
     </div>
   </section>
