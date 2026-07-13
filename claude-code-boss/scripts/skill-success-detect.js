@@ -67,18 +67,17 @@ async function run(event) {
   const sid = ev.session_id || ev.sessionId || 'default';
   const project = ev.cwd ? path.basename(ev.cwd) : 'default';
 
-  let store;
+  let metricsStore;
   try {
-    store = require('./brain-store.js');
-    await store.init({ project, skipEmbedder: true });
-    if (store.getStorageType() !== 'sqlite') return {};
+    metricsStore = require('./lib/metrics-store.js');
+    if (!metricsStore.init({ project })) return {};
   } catch { /* store unavailable: no-op */ return {}; }
 
   let invocations, failures;
   try {
-    invocations = store.getEventLog({ eventName: 'skill.invoked', limit: 500 })
+    invocations = metricsStore.getEventLog({ eventName: 'skill.invoked', limit: 500 })
       .filter(e => e.sessionId === sid);
-    failures = store.getEventLog({ eventName: 'failure.retro.fired', limit: 200 })
+    failures = metricsStore.getEventLog({ eventName: 'failure.retro.fired', limit: 200 })
       .filter(e => e.sessionId === sid);
   } catch { /* event log read failed: no-op */ return {}; }
 
@@ -90,7 +89,7 @@ async function run(event) {
   if (!outcomes.length) return {};
 
   for (const o of outcomes) {
-    try { store.recordMetric('skill.outcome', { skillName: o.skillName, success: o.success }, sid); }
+    try { metricsStore.recordMetric('skill.outcome', { skillName: o.skillName, success: o.success }, sid); }
     catch { /* best effort */ }
   }
 

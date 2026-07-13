@@ -1,5 +1,45 @@
 # Changelog
 
+## [1.29.0] - 2026-07-13
+
+### Fixed — métrica agora tem armazenamento próprio, independente do backend do KB
+
+A telemetria (`stop.dispatch`, `nudge.emitted`, `lesson.captured`, etc.) vivia
+dentro do `brain-store.js` — o mesmo SQLite da base de conhecimento — sem
+nunca passar pelo `brain-backend.js` (a camada que decide `local` vs
+`mcp-memory`). Isso não era um design explícito: métrica é um dado
+por-máquina, e não deveria depender de qual backend o KB usa.
+
+Além disso, o caminho `capture_lesson` para `backend.type: mcp-memory` nunca
+gravava `lesson.captured` — o handler remoto (`handleRemoteKbTool`) não tinha
+a chamada de métrica que o handler local sempre teve. Quem usa o servidor de
+memória externo tinha o card "Impacto do Perfil", o resumo de sessão
+(`session-summary.js`, "Captured N lessons") e o loop de acompanhamento de
+pesquisa (`research-followup-detect.js`) sistematicamente vazios por essa
+lacuna no caminho remoto.
+
+- **`lib/metrics-store.js`** (novo): armazenamento dedicado, por-máquina, por-
+  projeto, num arquivo próprio (`DATA_DIR/metrics/<projeto>/metrics.db`) —
+  nunca roteado pelo `brain-backend.js`, nunca afetado pela escolha
+  `local`/`mcp-memory` do KB. Mesma API que já existia
+  (`recordMetric`/`getEventLog`/`getEventLogIsolated`/`getMetricsSummary`/
+  `cleanupMetrics`), sem fallback JSON — se não há SQLite disponível
+  (quase teórico: `node:sqlite` vem no Node ≥22.5, sem compilar nada, e o
+  plugin já exige ≥22.13), a métrica só no-opa, honesto, nunca lança.
+- **Migração automática, uma vez só**: ao abrir pela primeira vez, copia as
+  linhas de `metrics_event` que já existiam dentro do `brain.db` de cada
+  projeto pro arquivo novo, e remove a tabela antiga — corte limpo, sem
+  ficar lendo dos dois lugares.
+- **`brain-store.js`** perdeu `recordMetric`/`getEventLog`/
+  `getEventLogIsolated`/`getMetricsSummary`/`cleanupMetrics` e a tabela
+  `metrics_event` — não fazem mais sentido lá.
+- **`servers/brain-server/lib/mcp-server.js`**: `capture_lesson` agora grava
+  a métrica nos DOIS caminhos (local e `mcp-memory`), via o novo
+  `metrics-store.js` — corrige a lacuna do caminho remoto.
+- Todos os consumidores (`metrics.js`, `dashboard.js`, `session-summary.js`,
+  `skill-success-detect.js`, `research-followup-detect.js`,
+  `retrieval-feedback.js`, `tuning-advisory.js`) migrados para o módulo novo.
+
 ## [1.28.0] - 2026-07-12
 
 ### Added — auto-tuner mecânico (a telemetria vira ação, zero cota)
@@ -23,8 +63,6 @@ mecânico; só o que exige julgamento vem pra gente".
 - **`GET /api/tuning/recommendations`** + card **"Recomendações de tuning"** no Home.
 - **Recomenda, não aplica**: nunca altera perfil/threshold sozinho. Trocar continua
   sendo `/boss-profile` / aba Hooks / Brain → Avançado.
-- Mesma limitação SQLite-only da 1.25.0: sem telemetria acumulada (fallback JSON),
-  `analyze()` roda sobre zero amostras e não recomenda nada — silencioso, não quebra.
 
 ## [1.27.0] - 2026-07-12
 
@@ -59,8 +97,6 @@ responde **"quanto cada perfil bypassou o Stop"**, cruzando as linhas `stop.disp
   significa e um alerta honesto: `blocked > 0` no perfil `free` = passthrough não respeitado.
 - **Corte de vaidade**: "Events per day" rotulado como volume bruto (contexto, não
   acionável por si só).
-- Herda a limitação SQLite-only da 1.25.0: sem `stop.dispatch` acumulado (fallback
-  JSON), o card fica vazio, sem erro.
 
 Próximo: funis (após definir os contratos de evento que faltam) e a Fase 3 (declutter
 de config + retenção/rollups).
@@ -91,12 +127,6 @@ Stop), alinhada ao OpenTelemetry `feature_flag` e aos Golden Signals:
   padrão 3%) construído e testado por injeção. O rollout em produção (detectores com
   `detect()` puro + **estado sombra isolado**, para não poluir contadores reais) é o
   próximo incremento — feito assim justamente para ser honesto.
-- **Limitação conhecida: SQLite-only.** `stop.dispatch` é lido via
-  `brain-store.getEventLog()`, que devolve `[]` sem erro quando o backend caiu
-  para o fallback JSON (ex.: `better-sqlite3` nativo não instalou). Quem está
-  nesse fallback não vê crash, mas também não acumula telemetria — e por
-  extensão, o card "Impacto do Perfil" (1.26.0) e o auto-tuner (1.28.0), que
-  consomem esses dados, ficam silenciosamente inertes para esse usuário.
 
 Fundação para o redesenho dos Insights (card "Impacto do Perfil") nas próximas fases.
 

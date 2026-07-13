@@ -1201,16 +1201,15 @@ test('active-research-state: recordFire bumps count + cooldown applies', () => {
   arstate.resetForTests();
 });
 
-// ─── metrics (Plan #5) ───────────────────────────────────────────────────────
+// ─── metrics (Plan #5 — lib/metrics-store.js, independent of brain-store/KB backend) ──
 
-test('metrics: recordMetric inserts + getMetricsSummary aggregates', async () => {
-  delete require.cache[require.resolve('./brain-store.js')];
+test('metrics-store: recordMetric inserts + getMetricsSummary aggregates', () => {
+  delete require.cache[require.resolve('./lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
   process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-metrics-'));
-  const isolated = require('./brain-store.js');
+  const isolated = require('./lib/metrics-store.js');
   try {
-    await isolated.init({ project: 'ccb-units-metrics' });
-    if (isolated.getStorageType() !== 'sqlite') {
+    if (!isolated.init({ project: 'ccb-units-metrics' })) {
       assertEq(isolated.recordMetric('retrieve.fired', { x: 1 }, 'sid'), 0);
       return;
     }
@@ -1224,52 +1223,49 @@ test('metrics: recordMetric inserts + getMetricsSummary aggregates', async () =>
     assertEq(summary.totals['retrieve.cited'], 1);
     assert(Array.isArray(summary.daily) && summary.daily.length >= 1, 'daily rows present');
   } finally {
-    try { await isolated.close(); } catch { /* ignore */ }
-    delete require.cache[require.resolve('./brain-store.js')];
+    isolated.close();
+    delete require.cache[require.resolve('./lib/metrics-store.js')];
     process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
   }
 });
 
-test('metrics: recordMetric rejects invalid event names', async () => {
-  delete require.cache[require.resolve('./brain-store.js')];
+test('metrics-store: recordMetric rejects invalid event names', () => {
+  delete require.cache[require.resolve('./lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
   process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-metrics-bad-'));
-  const isolated = require('./brain-store.js');
+  const isolated = require('./lib/metrics-store.js');
   try {
-    await isolated.init({ project: 'ccb-units-metrics-bad' });
-    if (isolated.getStorageType() !== 'sqlite') return;
+    if (!isolated.init({ project: 'ccb-units-metrics-bad' })) return;
     assertEq(isolated.recordMetric('', {}, 'sid'), 0);
     assertEq(isolated.recordMetric('UPPER.case', {}, 'sid'), 0);
     assertEq(isolated.recordMetric('1starts.with.digit', {}, 'sid'), 0);
     assertEq(isolated.recordMetric('has spaces', {}, 'sid'), 0);
     assert(isolated.recordMetric('valid.name_ok-1', {}, 'sid') > 0, 'valid name accepted');
   } finally {
-    try { await isolated.close(); } catch { /* ignore */ }
-    delete require.cache[require.resolve('./brain-store.js')];
+    isolated.close();
+    delete require.cache[require.resolve('./lib/metrics-store.js')];
     process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
   }
 });
 
-test('metrics: getEventLogIsolated reads another project\'s DB without touching the singleton', async () => {
-  delete require.cache[require.resolve('./brain-store.js')];
+test('metrics-store: getEventLogIsolated reads another project\'s DB without touching the singleton', () => {
+  delete require.cache[require.resolve('./lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
   process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-metrics-iso-'));
-  const isolated = require('./brain-store.js');
+  const isolated = require('./lib/metrics-store.js');
   try {
     // Write a metric into '__user__' project's own DB.
-    await isolated.init({ project: '__user__' });
-    if (isolated.getStorageType() !== 'sqlite') return;
+    if (!isolated.init({ project: '__user__' })) return;
     isolated.recordMetric('lesson.captured', { type: 'research' }, null);
-    await isolated.close();
+    isolated.close();
 
     // Re-init the SAME module instance to a DIFFERENT project — this is what
-    // a Stop detector's store.init({project: currentProject}) leaves in
+    // a Stop detector's metricsStore.init({project: currentProject}) leaves in
     // place. (No require-cache dance: STORE_DIR is read once at require time
     // from CLAUDE_PLUGIN_DATA, so re-requiring under a concurrently-mutated
     // env var — other tests run interleaved via Promise.all — would race;
-    // reusing the instance and switching _project via init() does not.)
-    await isolated.init({ project: 'other-proj' });
-    if (isolated.getStorageType() !== 'sqlite') return;
+    // reusing the instance and switching project via init() does not.)
+    if (!isolated.init({ project: 'other-proj' })) return;
 
     // The singleton's own getEventLog must NOT see the __user__ event.
     assertEq(isolated.getEventLog({ eventName: 'lesson.captured', limit: 50 }).length, 0);
@@ -1278,22 +1274,20 @@ test('metrics: getEventLogIsolated reads another project\'s DB without touching 
     const rows = isolated.getEventLogIsolated('__user__', { eventName: 'lesson.captured', limit: 50 });
     assertEq(rows.length, 1);
     assertEq(rows[0].payload.type, 'research');
-    assertEq(isolated.getStatus().project, 'other-proj', 'singleton project unchanged by isolated read');
   } finally {
-    try { await isolated.close(); } catch { /* ignore */ }
-    delete require.cache[require.resolve('./brain-store.js')];
+    isolated.close();
+    delete require.cache[require.resolve('./lib/metrics-store.js')];
     process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
   }
 });
 
-test('metrics: getEventLog filters + caps to 500', async () => {
-  delete require.cache[require.resolve('./brain-store.js')];
+test('metrics-store: getEventLog filters + caps to 500', () => {
+  delete require.cache[require.resolve('./lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
   process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-metrics-log-'));
-  const isolated = require('./brain-store.js');
+  const isolated = require('./lib/metrics-store.js');
   try {
-    await isolated.init({ project: 'ccb-units-metrics-log' });
-    if (isolated.getStorageType() !== 'sqlite') return;
+    if (!isolated.init({ project: 'ccb-units-metrics-log' })) return;
     for (let i = 0; i < 5; i++) isolated.recordMetric('retrieve.fired', { i }, 'sid');
     for (let i = 0; i < 3; i++) isolated.recordMetric('failure.retro.fired', { i }, 'sid');
     const all = isolated.getEventLog({ limit: 50 });
@@ -1303,20 +1297,19 @@ test('metrics: getEventLog filters + caps to 500', async () => {
     const capped = isolated.getEventLog({ limit: 99999 });
     assert(capped.length <= 500, `cap applied, got ${capped.length}`);
   } finally {
-    try { await isolated.close(); } catch { /* ignore */ }
-    delete require.cache[require.resolve('./brain-store.js')];
+    isolated.close();
+    delete require.cache[require.resolve('./lib/metrics-store.js')];
     process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
   }
 });
 
-test('metrics: cleanupMetrics deletes rows older than cutoff', async () => {
-  delete require.cache[require.resolve('./brain-store.js')];
+test('metrics-store: cleanupMetrics deletes rows older than cutoff', () => {
+  delete require.cache[require.resolve('./lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
   process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-metrics-cleanup-'));
-  const isolated = require('./brain-store.js');
+  const isolated = require('./lib/metrics-store.js');
   try {
-    await isolated.init({ project: 'ccb-units-metrics-cleanup' });
-    if (isolated.getStorageType() !== 'sqlite') return;
+    if (!isolated.init({ project: 'ccb-units-metrics-cleanup' })) return;
     // Insert 3 fresh rows, then manually backdate two of them to >40d ago.
     const ids = [];
     for (let i = 0; i < 3; i++) ids.push(isolated.recordMetric('retrieve.fired', { i }, 'sid'));
@@ -1328,8 +1321,8 @@ test('metrics: cleanupMetrics deletes rows older than cutoff', async () => {
     const remaining = isolated.getEventLog({ limit: 50 });
     assertEq(remaining.length, 1);
   } finally {
-    try { await isolated.close(); } catch { /* ignore */ }
-    delete require.cache[require.resolve('./brain-store.js')];
+    isolated.close();
+    delete require.cache[require.resolve('./lib/metrics-store.js')];
     process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
   }
 });
@@ -1659,39 +1652,38 @@ test('research-followup.decideNudge: newer trigger after stamp → nudge again',
 // one was admitted in the same turn. Fixed by also reading __user__ via
 // getEventLogIsolated (no singleton mutation) and merging both streams.
 test('research-followup.run: capture_lesson({type:research}) in __user__ scope suppresses the nudge', async () => {
-  delete require.cache[require.resolve('./brain-store.js')];
+  delete require.cache[require.resolve('./lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
   process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rf-xscope-'));
   // research-followup is dev-only now; force dev so run() actually exercises suppression.
   fs.mkdirSync(path.join(process.env.CLAUDE_PLUGIN_DATA, 'hooks'), { recursive: true });
   fs.writeFileSync(path.join(process.env.CLAUDE_PLUGIN_DATA, 'hooks', 'user-config.json'), JSON.stringify({ profile: 'dev' }));
   hooksConfig._resetCache();
-  const isolatedStore = require('./brain-store.js');
+  const isolatedStore = require('./lib/metrics-store.js');
   delete require.cache[require.resolve('./research-followup-detect.js')];
   const rf = require('./research-followup-detect.js');
   try {
     const currentProject = 'rf-xscope-proj';
 
     // 1) active-research-detect fires a nudge in the CURRENT project.
-    await isolatedStore.init({ project: currentProject, skipEmbedder: true });
-    if (isolatedStore.getStorageType() !== 'sqlite') return;
+    if (!isolatedStore.init({ project: currentProject })) return;
     isolatedStore.recordMetric('nudge.emitted', { kind: 'research', signals: ['libMention'] }, 'sid-1');
 
     // 2) capture_lesson({type:'research'}) admits — MCP handler writes into
     //    __user__ (mirrors mcp-server.js's storageProject switch + restore).
-    await isolatedStore.close();
-    await isolatedStore.init({ project: '__user__', skipEmbedder: true });
+    isolatedStore.close();
+    isolatedStore.init({ project: '__user__' });
     isolatedStore.recordMetric('lesson.captured', { type: 'research', decision: 'admit', scope: 'user' }, null);
-    await isolatedStore.close();
-    await isolatedStore.init({ project: currentProject, skipEmbedder: true });
+    isolatedStore.close();
+    isolatedStore.init({ project: currentProject });
 
     // 3) Stop hook runs for this session/project.
     const result = await rf.run({ session_id: 'sid-1', cwd: `/fake/${currentProject}` });
     assertEq(result.block, undefined, `expected no block, got: ${JSON.stringify(result)}`);
 
-    await isolatedStore.close();
+    isolatedStore.close();
   } finally {
-    delete require.cache[require.resolve('./brain-store.js')];
+    delete require.cache[require.resolve('./lib/metrics-store.js')];
     delete require.cache[require.resolve('./research-followup-detect.js')];
     process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
     hooksConfig._resetCache();
@@ -1699,28 +1691,27 @@ test('research-followup.run: capture_lesson({type:research}) in __user__ scope s
 });
 
 test('research-followup.run: no capture at all still nudges (regression guard)', async () => {
-  delete require.cache[require.resolve('./brain-store.js')];
+  delete require.cache[require.resolve('./lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
   process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rf-nocap-'));
   // research-followup is dev-only now; force dev so run() emits the nudge.
   fs.mkdirSync(path.join(process.env.CLAUDE_PLUGIN_DATA, 'hooks'), { recursive: true });
   fs.writeFileSync(path.join(process.env.CLAUDE_PLUGIN_DATA, 'hooks', 'user-config.json'), JSON.stringify({ profile: 'dev' }));
   hooksConfig._resetCache();
-  const isolatedStore = require('./brain-store.js');
+  const isolatedStore = require('./lib/metrics-store.js');
   delete require.cache[require.resolve('./research-followup-detect.js')];
   const rf = require('./research-followup-detect.js');
   try {
     const currentProject = 'rf-nocap-proj';
-    await isolatedStore.init({ project: currentProject, skipEmbedder: true });
-    if (isolatedStore.getStorageType() !== 'sqlite') return;
+    if (!isolatedStore.init({ project: currentProject })) return;
     isolatedStore.recordMetric('nudge.emitted', { kind: 'research', signals: ['libMention'] }, 'sid-2');
 
     const result = await rf.run({ session_id: 'sid-2', cwd: `/fake/${currentProject}` });
     assertEq(result.block, true, 'nudge should still fire with no capture at all');
 
-    await isolatedStore.close();
+    isolatedStore.close();
   } finally {
-    delete require.cache[require.resolve('./brain-store.js')];
+    delete require.cache[require.resolve('./lib/metrics-store.js')];
     delete require.cache[require.resolve('./research-followup-detect.js')];
     process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
     hooksConfig._resetCache();
@@ -3322,9 +3313,8 @@ test('session-summary.run: counts lessons since stamp, fires once (cap), disable
   // Scope-aware fake store: project DB has 2 in-session lessons (+1 before start),
   // the __user__ DB has 1 more (user-scoped capture) → total 3.
   let inited = null;
-  const fakeStore = {
-    init: async ({ project }) => { inited = project; },
-    getStorageType: () => 'sqlite',
+  const fakeMetricsStore = {
+    init: ({ project }) => { inited = project; return true; },
     getEventLog: () => {
       if (inited === 'ssproj') return [
         { eventName: 'lesson.captured', ts: start + 10, project: 'ssproj' },
@@ -3337,23 +3327,23 @@ test('session-summary.run: counts lessons since stamp, fires once (cap), disable
       return [];
     },
   };
-  const first = await sessionSummary.run({ hook_event_name: 'Stop', session_id: sid, cwd }, { dataDir: dir, store: fakeStore });
+  const first = await sessionSummary.run({ hook_event_name: 'Stop', session_id: sid, cwd }, { dataDir: dir, metricsStore: fakeMetricsStore });
   assertEq(first.block, true);
   assert(first.reason.includes('Captured 3 lesson'), 'counts 2 project + 1 user-scoped in-session lessons');
   // Cap: second call returns {} (counter written).
-  const second = await sessionSummary.run({ hook_event_name: 'Stop', session_id: sid, cwd }, { dataDir: dir, store: fakeStore });
+  const second = await sessionSummary.run({ hook_event_name: 'Stop', session_id: sid, cwd }, { dataDir: dir, metricsStore: fakeMetricsStore });
   assertEq(Object.keys(second).length, 0);
 });
 
 test('session-summary.run: missing start stamp → counts nothing (no all-time report)', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ss-nostamp-'));
   fs.mkdirSync(path.join(dir, '.runtime'), { recursive: true });
-  const fakeStore = {
-    init: async () => {}, getStorageType: () => 'sqlite',
+  const fakeMetricsStore = {
+    init: () => true,
     // Old lessons exist, but with no stamp sinceTs=now → none counted.
     getEventLog: () => ([{ eventName: 'lesson.captured', ts: Date.now() - 999999, project: 'p' }]),
   };
-  const r = await sessionSummary.run({ hook_event_name: 'Stop', session_id: 'nostamp', cwd: path.join(os.tmpdir(), 'p') }, { dataDir: dir, store: fakeStore });
+  const r = await sessionSummary.run({ hook_event_name: 'Stop', session_id: 'nostamp', cwd: path.join(os.tmpdir(), 'p') }, { dataDir: dir, metricsStore: fakeMetricsStore });
   assertEq(Object.keys(r).length, 0);
 });
 

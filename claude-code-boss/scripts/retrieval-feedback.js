@@ -202,11 +202,12 @@ async function run(event) {
     const cited = findCitations(entries, replyText);
     try {
       const store = require('./brain-store.js');
+      const metrics = require('./lib/metrics.js');
       await store.init({ project });
-      if (injectedIds.size) store.recordMetric('retrieve.injected', { count: injectedIds.size }, sid);
+      if (injectedIds.size) metrics.fire('retrieve.injected', { count: injectedIds.size }, { project, sessionId: sid });
       for (const c of cited) {
         store.recordCitation(c.id);
-        store.recordMetric('retrieve.cited', { entryId: c.id }, sid);
+        metrics.fire('retrieve.cited', { entryId: c.id }, { project, sessionId: sid });
       }
     } catch (err) {
       console.error(`[retrieval-feedback] recordCitation failed: ${err.message}`);

@@ -986,20 +986,17 @@ function clearLogs(req, res) {
 // ─── API: Metrics (Plan #5) ────────────────────────────────────────
 
 function listMetricsProjects() {
-  const brainBaseDir = path.join(DATA_DIR, 'brain');
-  if (!fs.existsSync(brainBaseDir)) return [];
-  return fs.readdirSync(brainBaseDir)
-    .filter(p => fs.existsSync(path.join(brainBaseDir, p, 'brain.db')));
+  return require('./lib/metrics-store.js').listProjects();
 }
 
 async function aggregateAcrossProjects(projects, op) {
-  const store = require('./brain-store.js');
+  const store = require('./lib/metrics-store.js');
   const results = [];
   for (const project of projects) {
     try {
       // Cycle the store per-project (single-instance module).
-      try { await store.close(); } catch { /* noop */ }
-      await store.init({ project, skipEmbedder: true });
+      store.close();
+      if (!store.init({ project })) continue;
       results.push({ project, value: op(store) });
     } catch (err) {
       console.error(`[DASHBOARD] metrics aggregate failed (${project}): ${err.message}`);

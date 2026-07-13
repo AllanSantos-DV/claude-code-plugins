@@ -1299,8 +1299,10 @@ console.log(DIM('─'.repeat(70)));
 
   // ─── skill-metric [UserPromptExpansion → records skill.invoked] ─────────────
   // Validates Loop 4 contract: hook reads `command` from UserPromptExpansion
-  // payload, derives skillName, and persists a `skill.invoked` row in
-  // metrics_event. Stdout-only validation can't see this — must inspect DB.
+  // payload, derives skillName, and persists a `skill.invoked` row in the
+  // dedicated metrics store (lib/metrics-store.js, its own DB — independent of
+  // brain-store/the KB backend). Stdout-only validation can't see this — must
+  // inspect the DB.
   const smTestName = 'skill-metric      [UserPromptExpansion→metrics_event row]';
   if (!FILTER || smTestName.toLowerCase().includes(FILTER.toLowerCase())) {
     const smDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-skm-'));
@@ -1321,8 +1323,8 @@ console.log(DIM('─'.repeat(70)));
     else {
       const Database = require('./lib/sqlite-compat').loadSqlite();
       if (Database) {
-        const dbPath = path.join(smDataDir, 'brain', projectName, 'brain.db');
-        if (!fs.existsSync(dbPath)) issue = `brain.db not created at ${dbPath}`;
+        const dbPath = path.join(smDataDir, 'metrics', projectName, 'metrics.db');
+        if (!fs.existsSync(dbPath)) issue = `metrics.db not created at ${dbPath}`;
         else {
           const db = new Database(dbPath, { readonly: true });
           const row = db.prepare(

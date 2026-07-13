@@ -1,34 +1,15 @@
 /**
  * metrics.js — Plan #5 metrics writer (fire-and-forget).
  *
- * Hooks call `record(eventName, payload, ctx)` to drop a row in the metrics_event
- * table via brain-store. Never throws — instrumentation MUST NOT break a hook.
- *
- * Init is lazy and cached by project to keep hot-path latency minimal. Async by
- * design so callers can `await` if they want to (but most won't).
+ * Hooks call `record(eventName, payload, ctx)` to drop a row in the dedicated
+ * metrics store (lib/metrics-store.js — its own SQLite file, independent of
+ * the KB backend/brain-store). Never throws — instrumentation MUST NOT break
+ * a hook.
  */
 'use strict';
 
 const path = require('path');
-
-const _ready = new Map(); // project → Promise<store|null>
-
-function _getStore(project) {
-  if (_ready.has(project)) return _ready.get(project);
-  const p = (async () => {
-    try {
-      const store = require('../brain-store.js');
-      await store.init({ project, skipEmbedder: true });
-      if (store.getStorageType() !== 'sqlite') return null;
-      return store;
-    } catch (err) {
-      console.error(`[metrics] init failed (${project}): ${err.message}`);
-      return null;
-    }
-  })();
-  _ready.set(project, p);
-  return p;
-}
+const metricsStore = require('./metrics-store.js');
 
 function _resolveProject(ctx) {
   if (ctx && ctx.project) return ctx.project;
@@ -47,9 +28,8 @@ function _resolveProject(ctx) {
 async function record(eventName, payload = {}, ctx = {}) {
   try {
     const project = _resolveProject(ctx);
-    const store = await _getStore(project);
-    if (!store) return 0;
-    return store.recordMetric(eventName, payload, ctx.sessionId || ctx.session_id || null);
+    if (!metricsStore.init({ project })) return 0;
+    return metricsStore.recordMetric(eventName, payload, ctx.sessionId || ctx.session_id || null);
   } catch (err) {
     console.error(`[metrics] record(${eventName}) failed: ${err.message}`);
     return 0;
@@ -62,7 +42,7 @@ function fire(eventName, payload, ctx) {
 }
 
 function _resetForTests() {
-  _ready.clear();
+  metricsStore.close();
 }
 
 module.exports = { record, fire, _resetForTests };
