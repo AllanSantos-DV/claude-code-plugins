@@ -49,12 +49,11 @@ function buildReason(n) {
     + `If more durable lessons emerged, capture them before you finish.`;
 }
 
-/** Read this project's lesson.captured rows (embedder-free). Fail-open to []. */
-async function readLessons(store, project) {
+/** Read this project's lesson.captured rows. Fail-open to []. */
+function readLessons(metricsStore, project) {
   try {
-    await store.init({ project, skipEmbedder: true });
-    if (store.getStorageType() !== 'sqlite') return [];
-    return store.getEventLog({ eventName: 'lesson.captured', limit: 500 });
+    if (!metricsStore.init({ project })) return [];
+    return metricsStore.getEventLog({ eventName: 'lesson.captured', limit: 500 });
   } catch (err) { console.error(`[session-summary] read(${project}): ${err.message}`); return []; }
 }
 
@@ -77,12 +76,12 @@ async function run(event, deps = {}) {
   const sinceTs = start && Number.isFinite(start.ts) ? start.ts : Date.now();
   const project = ev.cwd ? path.basename(ev.cwd) : (start && start.project) || 'default';
 
-  const store = deps.store || require('./brain-store.js');
+  const metricsStore = deps.metricsStore || require('./lib/metrics-store.js');
   // Count lessons captured this session across BOTH the project DB and the global
   // __user__ DB — user-scoped captures (type reference/research or user-tagged)
   // land in __user__, so a project-only read would miss/undercount them.
-  const projRows = await readLessons(store, project);
-  const userRows = project === '__user__' ? [] : await readLessons(store, '__user__');
+  const projRows = readLessons(metricsStore, project);
+  const userRows = project === '__user__' ? [] : readLessons(metricsStore, '__user__');
   const n = countLessonsSince(projRows, { sinceTs, project })
     + countLessonsSince(userRows, { sinceTs });
   if (n <= 0) return {};

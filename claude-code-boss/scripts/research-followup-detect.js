@@ -18,14 +18,14 @@
  *
  * Cross-scope capture read: capture_lesson({type:'research', ...}) always
  * resolves to scope 'user' (inferDefaultScope maps type 'research' → 'user'
- * unconditionally — see scope-sanitizer.js), so the entry AND its
- * `lesson.captured` metric row land in the __user__ project's OWN brain.db,
- * a physically separate SQLite file from the current project's. Reading only
- * the current-project singleton's getEventLog() never observes that capture,
- * so we additionally read the __user__ DB in isolation (getEventLogIsolated —
- * same throwaway-connection pattern as brain-store.searchIsolated, no
- * close()/init() of the shared singleton) and merge both event streams before
- * deciding.
+ * unconditionally — see scope-sanitizer.js), so the entry lands in the
+ * __user__ KB, and its `lesson.captured` metric row lands in the __user__
+ * project's OWN metrics DB (lib/metrics-store.js) — a physically separate
+ * SQLite file from the current project's. Reading only the current-project
+ * singleton's getEventLog() never observes that capture, so we additionally
+ * read the __user__ metrics DB in isolation (getEventLogIsolated — throwaway
+ * connection, no close()/init() of the shared singleton) and merge both
+ * event streams before deciding.
  */
 'use strict';
 
@@ -108,24 +108,23 @@ async function run(event) {
   const project = ev.cwd ? path.basename(ev.cwd) : 'default';
   const data = dataDir();
 
-  let store;
+  let metricsStore;
   try {
-    store = require('./brain-store.js');
-    await store.init({ project, skipEmbedder: true });
-    if (store.getStorageType() !== 'sqlite') return {};
+    metricsStore = require('./lib/metrics-store.js');
+    if (!metricsStore.init({ project })) return {};
   } catch { /* store unavailable: no-op */ return {}; }
 
   let triggers, captures, userCaptures;
   try {
-    triggers = store.getEventLog({ eventName: 'nudge.emitted', limit: 100 })
+    triggers = metricsStore.getEventLog({ eventName: 'nudge.emitted', limit: 100 })
       .filter(e => e.payload && e.payload.kind === 'research' && e.sessionId === sid);
-    captures = store.getEventLog({ eventName: 'lesson.captured', limit: 100 });
+    captures = metricsStore.getEventLog({ eventName: 'lesson.captured', limit: 100 });
     // capture_lesson({type:'research'}) always resolves to scope 'user' (see
     // header) and lands in the __user__ project's own DB — read it in isolation
     // (no singleton mutation) so those captures aren't invisible to this project.
     userCaptures = project === USER_SENTINEL
       ? []
-      : store.getEventLogIsolated(USER_SENTINEL, { eventName: 'lesson.captured', limit: 100 });
+      : metricsStore.getEventLogIsolated(USER_SENTINEL, { eventName: 'lesson.captured', limit: 100 });
   } catch { /* event log read failed: no-op */ return {}; }
 
   const events = [...triggers, ...captures, ...userCaptures].sort((a, b) => b.ts - a.ts);

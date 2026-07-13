@@ -255,16 +255,6 @@ function createTablesSqlite() {
       archived_at TEXT NOT NULL,
       reason TEXT NOT NULL DEFAULT ''
     );
-    CREATE TABLE IF NOT EXISTS metrics_event (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      ts INTEGER NOT NULL,
-      event_name TEXT NOT NULL,
-      payload TEXT,
-      session_id TEXT,
-      project TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_metrics_event_ts ON metrics_event(ts);
-    CREATE INDEX IF NOT EXISTS idx_metrics_event_name ON metrics_event(event_name);
   `);
 }
 
@@ -286,21 +276,6 @@ function migrateSqlite() {
       _db.exec(`ALTER TABLE entries ADD COLUMN scope TEXT NOT NULL DEFAULT 'project'`);
     }
     _db.exec(`CREATE INDEX IF NOT EXISTS idx_entries_scope ON entries(scope, project)`);
-    const tables = _db.prepare(`SELECT name FROM sqlite_master WHERE type='table'`).all().map(t => t.name);
-    if (!tables.includes('metrics_event')) {
-      _db.exec(`
-        CREATE TABLE metrics_event (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          ts INTEGER NOT NULL,
-          event_name TEXT NOT NULL,
-          payload TEXT,
-          session_id TEXT,
-          project TEXT
-        );
-        CREATE INDEX idx_metrics_event_ts ON metrics_event(ts);
-        CREATE INDEX idx_metrics_event_name ON metrics_event(event_name);
-      `);
-    }
   } catch (err) {
     console.error(`[BRAIN-STORE] migration error: ${err.message}`);
   }
@@ -943,147 +918,11 @@ function getStatus() {
   };
 }
 
-// ── Plan #5: metrics ─────────────────────────────────────────────────────
-
-const VALID_EVENT_NAME = /^[a-z][a-z0-9._-]{1,63}$/;
-
-/** Append a single event row. Returns inserted id (or 0 on no-op). */
-function recordMetric(eventName, payload, sessionId) {
-  if (!_useSqlite || !eventName || !VALID_EVENT_NAME.test(eventName)) return 0;
-  try {
-    const info = _db.prepare(
-      `INSERT INTO metrics_event (ts, event_name, payload, session_id, project) VALUES (?, ?, ?, ?, ?)`
-    ).run(
-      Date.now(),
-      eventName,
-      payload ? JSON.stringify(payload) : null,
-      sessionId || null,
-      _project || null,
-    );
-    return Number(info.lastInsertRowid) || 0;
-  } catch (err) {
-    console.error(`[BRAIN-STORE] recordMetric(${eventName}) failed: ${err.message}`);
-    return 0;
-  }
-}
-
-/**
- * Aggregate counts per event_name within a time window (days back from now).
- * Returns { totals: {evt: n}, daily: [{date, event_name, count}], windowMs }.
- */
-function getMetricsSummary(rangeDays = 7) {
-  const empty = { totals: {}, daily: [], windowMs: rangeDays * 86400_000, sinceTs: 0 };
-  if (!_useSqlite) return empty;
-  try {
-    const sinceTs = Date.now() - rangeDays * 86400_000;
-    const totalRows = _db.prepare(
-      `SELECT event_name, COUNT(*) AS count FROM metrics_event WHERE ts >= ? GROUP BY event_name`
-    ).all(sinceTs);
-    const totals = {};
-    for (const r of totalRows) totals[r.event_name] = r.count;
-
-    const dailyRows = _db.prepare(
-      `SELECT date(ts/1000, 'unixepoch') AS date, event_name, COUNT(*) AS count
-         FROM metrics_event WHERE ts >= ?
-         GROUP BY date, event_name
-         ORDER BY date ASC, event_name ASC`
-    ).all(sinceTs);
-
-    return { totals, daily: dailyRows, windowMs: rangeDays * 86400_000, sinceTs };
-  } catch (err) {
-    console.error(`[BRAIN-STORE] getMetricsSummary failed: ${err.message}`);
-    return empty;
-  }
-}
-
-/**
- * Read metrics_event from an ARBITRARY project DB via a throwaway connection,
- * WITHOUT touching the module singleton (`_db`/`_project`) — same rationale as
- * searchIsolated: capture_lesson({scope:'user'|'auto'→'user'}) always writes
- * (entry AND its lesson.captured metric row) into the __user__ DB, a physically
- * separate SQLite file from the current project's. A Stop-hook detector reading
- * only the singleton's getEventLog() never sees that capture and false-negatives
- * ("no capture followed") even though one was admitted. Read-only; returns []
- * if the DB file or sqlite backend is unavailable.
- */
-function getEventLogIsolated(project, { eventName = null, limit = 50 } = {}) {
-  const Database = loadSqlite();
-  if (!Database) return [];
-  const dbPath = path.join(STORE_DIR, 'brain', project, 'brain.db');
-  if (!fs.existsSync(dbPath)) return [];
-  const cap = Math.max(1, Math.min(500, Number(limit) || 50));
-  let db;
-  try { db = new Database(dbPath); } catch (e) { console.error('[brain] isolated event-log open failed:', dbPath, e.message); return []; }
-  try {
-    const rows = eventName
-      ? db.prepare(`SELECT id, ts, event_name, payload, session_id, project
-                      FROM metrics_event WHERE event_name = ? ORDER BY ts DESC LIMIT ?`).all(eventName, cap)
-      : db.prepare(`SELECT id, ts, event_name, payload, session_id, project
-                      FROM metrics_event ORDER BY ts DESC LIMIT ?`).all(cap);
-    return rows.map(r => ({
-      id: r.id,
-      ts: r.ts,
-      eventName: r.event_name,
-      payload: safeParseJson(r.payload),
-      sessionId: r.session_id,
-      project: r.project,
-    }));
-  } catch (err) {
-    console.error(`[BRAIN-STORE] getEventLogIsolated(${project}) failed: ${err.message}`);
-    return [];
-  } finally {
-    try { db.close(); } catch { /* throwaway connection */ }
-  }
-}
-
-/** List recent raw events (newest first). Filterable by event name. */
-function getEventLog({ eventName = null, limit = 50 } = {}) {
-  if (!_useSqlite) return [];
-  const cap = Math.max(1, Math.min(500, Number(limit) || 50));
-  try {
-    const rows = eventName
-      ? _db.prepare(`SELECT id, ts, event_name, payload, session_id, project
-                       FROM metrics_event WHERE event_name = ? ORDER BY ts DESC LIMIT ?`).all(eventName, cap)
-      : _db.prepare(`SELECT id, ts, event_name, payload, session_id, project
-                       FROM metrics_event ORDER BY ts DESC LIMIT ?`).all(cap);
-    return rows.map(r => ({
-      id: r.id,
-      ts: r.ts,
-      eventName: r.event_name,
-      payload: safeParseJson(r.payload),
-      sessionId: r.session_id,
-      project: r.project,
-    }));
-  } catch (err) {
-    console.error(`[BRAIN-STORE] getEventLog failed: ${err.message}`);
-    return [];
-  }
-}
-
-function safeParseJson(s) {
-  if (s == null) return null;
-  try { return JSON.parse(s); } catch { /* non-JSON value: null */ return null; }
-}
-
-/** Delete metrics_event rows older than `keepDays`. Returns count deleted. */
-function cleanupMetrics(keepDays = 30) {
-  if (!_useSqlite) return 0;
-  try {
-    const cutoff = Date.now() - keepDays * 86400_000;
-    const info = _db.prepare(`DELETE FROM metrics_event WHERE ts < ?`).run(cutoff);
-    return info.changes || 0;
-  } catch (err) {
-    console.error(`[BRAIN-STORE] cleanupMetrics failed: ${err.message}`);
-    return 0;
-  }
-}
-
 module.exports = {
   init, save, get, getRaw, merge, prune, search, searchByKeywords, searchIsolated,
   delete: delete_, list, count, close,
   listWithVectors, setRecurrence, applyConsolidation,
   getStorageType, getStatus, cosineSimilarity,
   recordCitation, citationMultiplier,
-  recordMetric, getMetricsSummary, getEventLog, getEventLogIsolated, cleanupMetrics,
   _getDbForTests: () => _db,
 };

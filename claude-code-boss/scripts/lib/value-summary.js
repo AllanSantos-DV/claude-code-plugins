@@ -2,7 +2,7 @@
  * value-summary.js — pure aggregation of metric rows into the dashboard's
  * "value made visible" numbers (U2) and the learning-loop signal (D4).
  *
- * Input is the raw event rows from brain-store.getEventLog (newest-first is fine;
+ * Input is the raw event rows from metrics-store.getEventLog (newest-first is fine;
  * order doesn't matter). All functions are pure so they're trivially testable and
  * the dashboard endpoint stays a thin adapter.
  *

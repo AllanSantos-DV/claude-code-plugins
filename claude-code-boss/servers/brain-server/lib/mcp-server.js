@@ -55,6 +55,21 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
     return { store, index, graph };
   }
 
+  // Metrics are a per-machine concern, independent of backend.type (local vs
+  // mcp-memory) — lib/metrics-store.js owns its own SQLite file and is never
+  // routed through the KB backend switch. Used by BOTH the local and remote
+  // capture_lesson paths below, so telemetry doesn't silently disappear for
+  // mcp-memory users (it previously did: the remote path never recorded
+  // lesson.captured at all).
+  function recordLessonMetric(project, payload) {
+    try {
+      const metricsStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'metrics-store.js'));
+      if (metricsStore.init({ project })) metricsStore.recordMetric('lesson.captured', payload, null);
+    } catch (err) {
+      console.error(`[BRAIN-SERVER] recordLessonMetric failed: ${err.message}`);
+    }
+  }
+
   /**
    * Remote-backend KB handler: when backend.type === 'mcp-memory', write/search/
    * related/count tools delegate to the dispatcher (which talks to the external
@@ -81,6 +96,10 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
         }
         case 'capture_lesson': {
           const id = await backend.save({ title: a.title, summary: a.summary, content: { detail: a.detail || a.summary }, type: a.type || 'lesson', tags: Array.isArray(a.tags) ? a.tags : [], confidence: typeof a.confidence === 'number' ? a.confidence : 0.85, scope: a.scope || 'auto' });
+          // No dedup/merge tool on the mcp-memory daemon's contract (unlike the
+          // local path below) — every capture here is an 'admit'. Recorded
+          // locally regardless: metrics are per-machine, not part of the KB.
+          recordLessonMetric(project, { type: a.type || 'lesson', decision: 'admit', scope: a.scope || 'auto' });
           return asText({ decision: 'admit', id, type: a.type || 'lesson', project, scope: a.scope || 'auto', backend: 'mcp-memory' });
         }
         case 'brain_related': {
@@ -395,7 +414,7 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
             const hits = await kbStore.search(vector, { topK: 1, minScore: DEDUP, rerank: false });
             if (hits.length > 0) {
               const merged = await kbStore.merge(hits[0].id, { summary: safeSummary, content: { detail: safeDetail || safeSummary }, confidence });
-              kbStore.recordMetric('lesson.captured', { type, decision: 'merge', scope: effectiveScope, recurrence: merged?.recurrence }, null);
+              recordLessonMetric(storageProject, { type, decision: 'merge', scope: effectiveScope, recurrence: merged?.recurrence });
               if (storageProject !== currentProject) await getKB(currentProject);
               return { content: [{ type: 'text', text: JSON.stringify({ decision: 'merge', id: hits[0].id, recurrence: merged?.recurrence, title: hits[0].title, project: storageProject, scope: effectiveScope }, null, 2) }] };
             }
@@ -404,7 +423,7 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
           await kbStore.save(entry, vector);
           await kbIndex.index(entry);
           await kbGraph.registerNode(entry);
-          kbStore.recordMetric('lesson.captured', { type, decision: 'admit', scope: effectiveScope }, null);
+          recordLessonMetric(storageProject, { type, decision: 'admit', scope: effectiveScope });
           if (storageProject !== currentProject) await getKB(currentProject);
           return { content: [{ type: 'text', text: JSON.stringify({ decision: 'admit', id: entry.id, type, project: storageProject, scope: effectiveScope }, null, 2) }] };
         } catch (err) {

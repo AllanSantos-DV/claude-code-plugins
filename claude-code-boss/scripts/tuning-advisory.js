@@ -44,16 +44,15 @@ function stamp(p) {
 
 /** Read one project's telemetry into the shape tuning-advisor.analyze() expects. */
 async function gather(project) {
-  const store = require('./brain-store.js');
-  await store.init({ project, skipEmbedder: true });
-  if (store.getStorageType() !== 'sqlite') return null;
-  const dispatch = store.getEventLog({ eventName: 'stop.dispatch', limit: 2000 });
-  const nudges = store.getEventLog({ eventName: 'nudge.emitted', limit: 1000 })
+  const metricsStore = require('./lib/metrics-store.js');
+  if (!metricsStore.init({ project })) return null;
+  const dispatch = metricsStore.getEventLog({ eventName: 'stop.dispatch', limit: 2000 });
+  const nudges = metricsStore.getEventLog({ eventName: 'nudge.emitted', limit: 1000 })
     .map(e => ({ eventName: 'nudge.emitted', payload: e.payload, project, ts: e.ts }));
-  const caps = store.getEventLog({ eventName: 'lesson.captured', limit: 1000 })
+  const caps = metricsStore.getEventLog({ eventName: 'lesson.captured', limit: 1000 })
     .map(e => ({ eventName: 'lesson.captured', payload: e.payload, project, ts: e.ts }));
-  const fired = store.getEventLog({ eventName: 'retrieve.fired', limit: 2000 }).length;
-  const cited = store.getEventLog({ eventName: 'retrieve.cited', limit: 2000 }).length;
+  const fired = metricsStore.getEventLog({ eventName: 'retrieve.fired', limit: 2000 }).length;
+  const cited = metricsStore.getEventLog({ eventName: 'retrieve.cited', limit: 2000 }).length;
   return {
     activeProfile: hooksConfig.getProfile(),
     impact: aggregateProfileImpact(dispatch),
