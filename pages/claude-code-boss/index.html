@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>claude-code-boss — memória semântica e execução curada para o Claude Code</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória que fundamenta a resposta (recall em dois níveis), execução curada anti context-bloat e aprendizado no loop. A v2.6.0 é performance (Sprint 4 do review): quatro caminhos quentes com trabalho desperdiçado, cortado failing-first com prova de mutação num gate de 3 avaliadores: a busca de warm-up saiu do caminho do turno e o recall caiu de ~253ms para 21ms medidos (fire-and-forget no daemon + single-flight), um git log main morto no SessionStart removido, o failure-journal ganhou teto (sweepOld) e o cache de contagem do dashboard virou WAL-aware (invalida pelo -wal, não só pelo .db, que servia contagem stale). Backend externo opcional (memory-server ≥ 2.18; pool-warming ≥ 2.20)." />
+<meta name="description" content="Plugin para Claude Code Desktop: memória que fundamenta a resposta (recall em dois níveis), execução curada anti context-bloat e aprendizado no loop. A v2.7.0 é robustez (Sprint 5 do review): duas classes de bug em como os hooks persistem estado. Escrita atômica de estado que publica via temp e rename (o leitor nunca vê parcial), com retry no Windows para o EPERM do rename: 0 escritas perdidas em 2000 concorrentes (era 25–94%) e 0 leituras rasgadas em 24 mil (vs 799 na versão ingênua). Publicação sem-rasgo e resistência a crash, não serialização entre processos. Mais um resolvedor único de data-dir que rejeita o placeholder ${…} não-expandido, encerrando o estado fragmentado em dois diretórios. Backend externo opcional (memory-server ≥ 2.18; pool-warming ≥ 2.20)." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -85,7 +85,7 @@
   .term .note{ color:#8a877f }
   .term .note::before{ content:"# " }
 
-  /* v2.0.0 — release story */
+  /* v2.0.0 : release story */
   .lede{ font-size:clamp(1.02rem,2vw,1.24rem); line-height:1.5; max-width:64ch; margin:0 0 30px }
   .lede b{ font-weight:600 }
 
@@ -134,7 +134,7 @@
 
   @media (prefers-color-scheme:dark){ .callout code{ background:rgba(255,255,255,.10) } }
 
-  /* v2.1.0 — pool-warming: o laço fechado */
+  /* v2.1.0 : pool-warming: o laço fechado */
   .loop{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
     box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:720px; font-family:var(--mono); margin:0 0 36px }
   .loop-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
@@ -171,7 +171,7 @@
   .loop-foot{ padding:13px 22px; border-top:1px solid var(--panel-line);
     font-size:11px; line-height:1.55; color:#8a877f }
 
-  /* v2.2.0 — onboarding de identidade: o gate consent-first */
+  /* v2.2.0 : onboarding de identidade: o gate consent-first */
   .gate{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
     box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:720px; font-family:var(--mono); margin:0 0 36px }
   .gate-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
@@ -204,7 +204,7 @@
   .gate-foot b{ color:#a29f97 }
   .gate-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
 
-  /* v2.3.0 — blindagem: os 7 vetores fechados */
+  /* v2.3.0 : blindagem: os 7 vetores fechados */
   .shield{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
     box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:720px; font-family:var(--mono); margin:0 0 36px }
   .shield-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
@@ -348,13 +348,70 @@
   .hot-foot b{ color:#a29f97 }
   .hot-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
 
+  /* v2.7.0 : atomic-write - publica estado via temp unico -> rename; prova de concorrencia ao vivo (0/2000, 0/24k) */
+  .atomic{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:720px; font-family:var(--mono); margin:0 0 36px }
+  .atom-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .atom-bar .k{ color:var(--accent) }
+  .atom-bar .m{ color:#8a877f }
+
+  /* assinatura: a gravacao publica por temp unico e um rename atomico faz a troca */
+  .swap{ padding:20px 22px 18px; border-bottom:1px solid rgba(255,255,255,.06) }
+  .swap-ctx{ margin:0 0 15px; font-size:11.5px; line-height:1.6; color:#8a877f }
+  .swap-ctx b{ color:#a29f97; font-weight:600 }
+  .swap-ctx code{ background:rgba(255,255,255,.08); color:inherit; font-size:11px; padding:1px 5px; border-radius:4px }
+  .pipe{ display:flex; flex-wrap:wrap; align-items:center; gap:9px 10px; margin:0 0 13px;
+    padding:13px 15px; border:1px solid var(--panel-line); border-radius:9px; background:var(--accent-soft) }
+  .pipe .st{ font-size:11.5px; color:#a29f97 }
+  .pipe .ar{ color:#8a877f; font-weight:700 }
+  .pipe .ar.big{ color:var(--accent); font-size:16px; line-height:1 }
+  .pipe .tmp{ font-size:11.5px; background:rgba(255,255,255,.06); color:#a29f97; padding:2px 8px; border-radius:5px }
+  .pipe .tmp b{ color:#e4e1d9; font-weight:600 }
+  .pipe .op{ font-size:12px; color:var(--panel); background:var(--accent); font-weight:700;
+    letter-spacing:.02em; padding:3px 10px; border-radius:6px }
+  .pipe .dest{ font-size:12.5px; color:var(--panel-ink); background:rgba(255,255,255,.1); padding:2px 9px; border-radius:5px }
+  .pipe .pub{ margin-left:auto; font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent) }
+  .swap-read{ margin:0; font-size:11.5px; line-height:1.55; color:#8a877f }
+  .swap-read b{ color:var(--panel-ink); font-weight:600 }
+
+  /* prova de concorrencia ao vivo */
+  .proof{ display:grid; grid-template-columns:1fr 1fr; gap:1px; background:rgba(255,255,255,.06);
+    border-bottom:1px solid rgba(255,255,255,.06) }
+  .stat{ background:var(--panel); padding:18px 22px }
+  .pair{ display:flex; align-items:baseline; gap:10px; margin:0 0 8px }
+  .pair .zero{ font-size:40px; line-height:.85; letter-spacing:-.03em; color:var(--accent); font-weight:700 }
+  .pair .den{ font-size:15px; color:#8a877f }
+  .stat .pl{ margin:0 0 5px; font-size:11.5px; line-height:1.4; color:#e4e1d9 }
+  .stat .was{ margin:0; font-size:11px; line-height:1.45; color:#8a877f }
+  .stat .was s{ text-decoration-color:rgba(255,255,255,.34) }
+  .stat .was b{ color:#a29f97; font-weight:600 }
+
+  /* linhas: retry no Windows + resolvedor unico (fim do split-brain) */
+  .atom-line{ display:grid; grid-template-columns:auto 1fr; gap:14px; padding:15px 22px }
+  .atom-line + .atom-line{ border-top:1px solid rgba(255,255,255,.06) }
+  .atom-line .tk{ align-self:start; margin-top:1px; height:20px; padding:0 8px; border:1px solid var(--accent);
+    border-radius:5px; color:var(--accent); font-size:10px; letter-spacing:.07em; text-transform:uppercase;
+    font-weight:600; display:inline-grid; place-items:center; white-space:nowrap }
+  .atom-line p{ margin:0; font-size:11.5px; line-height:1.55; color:#8a877f }
+  .atom-line p b{ color:#a29f97; font-weight:600 }
+  .atom-line code{ background:rgba(255,255,255,.08); color:inherit; font-size:11px; padding:1px 5px; border-radius:4px }
+  .res-row{ display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin:0 0 9px }
+  .res-row .bad{ color:#8a877f; background:rgba(255,255,255,.04); border:1px dashed rgba(255,255,255,.24) }
+  .res-row .good{ color:var(--panel-ink); background:rgba(255,255,255,.09); border:1px solid var(--panel-line) }
+  .res-row .arw{ color:var(--accent); font-weight:700; font-size:14px }
+
+  .atom-foot{ padding:14px 22px; border-top:1px solid var(--panel-line); font-size:11px; line-height:1.6; color:#8a877f }
+  .atom-foot b{ color:#a29f97 }
+  .atom-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+
   footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
   footer a{ color:var(--muted); text-decoration:none }
   footer a:hover{ color:var(--accent) }
   .frow{ display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between }
   .flinks a{ margin-right:16px }
 
-  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
+  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
   @media (prefers-reduced-motion:reduce){ .caret{ animation:none } .reveal{ opacity:1 !important; transform:none !important } }
   .reveal{ opacity:0; transform:translateY(14px); animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards }
   @keyframes rise{ to{ opacity:1; transform:none } }
@@ -365,7 +422,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.6.0</span>
+    <span class="ver">v2.7.0</span>
   </nav>
 
   <header class="hero">
@@ -428,6 +485,85 @@
         <p>Um painel em <code>localhost</code> para ver a KB, os hooks e os logs. Abre quando você chama, não no boot.</p>
       </div>
     </div>
+  </section>
+
+  <section>
+    <p class="label">Novo na v2.7.0 · robustez</p>
+    <p class="lede">A v2.7.0 não muda <b>o que</b> o boss faz. Muda <b>o quanto você confia no que ele guarda</b>. O Sprint 5 do review completo mirou <b>como os hooks persistem estado</b> e fechou <b>duas classes de bug</b>. O <code>hooks.json</code> dispara <b>~10 hooks em paralelo</b> no SessionStart: duas gravações no mesmo arquivo de estado podiam deixá-lo <b>truncado</b>, o <code>JSON.parse</code> estourava e o store <b>zerava</b> (perda silenciosa). Agora cada escrita <b>publica via temp → rename</b>: <b>0 perdas em 2000</b> concorrentes, provado ao vivo. Cada classe entrou <b>failing-first</b>, com prova de mutação, num gate de <b>3 avaliadores</b> + re-gate.</p>
+
+    <div class="callout">
+      <span class="tag">Robustez, não comportamento</span>
+      Nada muda no que você vê: mesmo recall, mesma memória, mesma curadoria. O que endurece é <b>como o estado chega ao disco</b>. Antes, ~30 stores gravavam com <code>fs.writeFileSync</code> direto (não atômico) e ~30 scripts resolviam o data-dir <b>sem</b> guardar o placeholder <code>${…}</code> não-expandido: o primeiro <b>truncava</b> sob concorrência, o segundo <b>fragmentava</b> o estado em dois diretórios. Duas classes fechadas, com prova <b>ao vivo</b>.
+    </div>
+
+    <div class="atomic" aria-label="Artefato de escrita atômica da v2.7.0: publica o estado via temp único mais rename, com prova de concorrência ao vivo. O hooks.json dispara cerca de 10 hooks em paralelo no SessionStart; antes, duas gravações no mesmo arquivo de estado podiam truncá-lo, o JSON.parse estourava e o store zerava o estado, uma perda silenciosa. Agora cada escrita vai para um arquivo temporário de nome único e um rename atômico o publica sobre o destino: um leitor vê o arquivo antigo ou o novo inteiro, nunca um parse pela metade, e escritores concorrentes não colidem no caminho temporário. No Windows um rename contencioso lança EPERM pelo MoveFileEx, então um retry limitado, no máximo 20 vezes com backoff, fecha a janela. Medido ao vivo: zero escritas perdidas em 2000 concorrentes, contra 25 a 94 por cento sem o retry, e zero leituras rasgadas em 24 mil, contra 799 na versão ingênua. Segunda classe, o fim do split-brain de data-dir: cerca de 30 scripts embutiam env ou fallback sem guardar o placeholder não-expandido do CLAUDE_PLUGIN_DATA, então os desprotegidos gravavam num diretório literal e o estado fragmentava em dois lugares; um resolvedor único, dataDir, rejeita o placeholder, string vazia e whitespace, e um teste exaustivo varre toda a árvore de scripts travando o invariante. Honesto: isto é publicação sem-rasgo e resistência a crash, não serialização entre processos; os quatro stores read-modify-write mantêm um resíduo last-writer-wins documentado. 441 testes unitários e 65 suítes de hooks no verde.">
+      <div class="atom-bar">
+        <span class="k">atomic-write</span>
+        <span class="m">robustez · Sprint 5 · publish = rename</span>
+      </div>
+      <div class="swap">
+        <p class="swap-ctx"><b>SessionStart:</b> ~10 hooks em paralelo → duas gravações no mesmo arquivo podiam <b>truncá-lo</b> → <code>JSON.parse</code> estoura → o store <b>zera o estado</b> (perda silenciosa)</p>
+        <div class="pipe">
+          <span class="st">write</span>
+          <span class="ar">→</span>
+          <code class="tmp">state.json.tmp.<b>9f3c1a</b></code>
+          <span class="op">rename()</span>
+          <span class="ar big">→</span>
+          <code class="dest">state.json</code>
+          <span class="pub">publish atômico</span>
+        </div>
+        <p class="swap-read">o leitor vê <b>o arquivo antigo</b> ou <b>o novo inteiro</b>: nunca um parse rasgado. escritores concorrentes usam <b>temps únicos</b>, então não colidem no caminho temporário.</p>
+      </div>
+      <div class="proof">
+        <div class="stat">
+          <div class="pair"><b class="zero">0</b><span class="den">/ 2000</span></div>
+          <p class="pl">escritas perdidas, sob concorrência</p>
+          <p class="was">era <s>25–94%</s> sem o <b>retry</b> de rename</p>
+        </div>
+        <div class="stat">
+          <div class="pair"><b class="zero">0</b><span class="den">/ 24.000</span></div>
+          <p class="pl">leituras rasgadas</p>
+          <p class="was">vs <s>799</s> na versão <b>ingênua</b></p>
+        </div>
+      </div>
+      <div class="atom-line">
+        <span class="tk">Windows</span>
+        <p>um <code>rename</code> contencioso lança <code>EPERM</code> (MoveFileEx, sharing violation): um <b>retry limitado</b> (≤20×, com backoff) fecha a janela. É daí que vêm os <b>0 em 2000</b>.</p>
+      </div>
+      <div class="atom-line">
+        <span class="tk">split-brain</span>
+        <div>
+          <div class="res-row">
+            <code class="bad">${CLAUDE_PLUGIN_DATA}</code>
+            <span class="arw">→</span>
+            <code class="good">dataDir()</code>
+          </div>
+          <p>~30 scripts embutiam <code>env || fallback</code> <b>sem</b> guardar o placeholder não-expandido: os desprotegidos gravavam num diretório <b>literal</b> <code>${…}</code> e o estado <b>fragmentava em dois lugares</b>. Um resolvedor único rejeita <code>${…}</code>, vazio e whitespace; um teste <b>exaustivo</b> varre a árvore de scripts e trava o invariante.</p>
+        </div>
+      </div>
+      <div class="atom-foot"><b>Honesto:</b> isto é <b>publicação sem-rasgo</b> + resistência a crash, <b>não</b> serialização entre processos. Os 4 stores read-modify-write mantêm um <b>last-writer-wins</b> documentado. · gate de <b>3 avaliadores</b> + re-gate + prova de concorrência <b>ao vivo</b> · <b>441</b> unitários + <b>65</b> suítes de hooks no verde</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>Escrita que não trunca</h4>
+        <p>Cada store publica via <b>temp único + <code>rename</code></b>: um leitor vê o arquivo antigo ou o novo <b>inteiro</b>, nunca um <code>JSON.parse</code> pela metade. Escritores concorrentes não colidem no temp. Migrados os 8 stores quentes e os demais gravadores de snapshot (decisão, model-router, hooks-config, índices/grafo do brain, dashboard…).</p>
+      </div>
+      <div class="win">
+        <h4>Zero perda sob pressão</h4>
+        <p>No Windows, um <code>rename</code> contencioso lança <code>EPERM</code> (MoveFileEx); um <b>retry limitado</b> fecha a janela. Medido <b>ao vivo</b>: <b>0 escritas perdidas</b> em 2000 concorrentes (era <b>25–94%</b>) e <b>0 leituras rasgadas</b> em 24 mil (vs <b>799</b> na versão ingênua).</p>
+      </div>
+      <div class="win">
+        <h4>Um diretório, não dois</h4>
+        <p>~30 resolvedores embutiam <code>env || fallback</code> <b>sem</b> guardar o placeholder <code>${…}</code> não-expandido: os desprotegidos gravavam num diretório literal e o estado <b>fragmentava</b>. Agora um <code>dataDir()</code> único rejeita <code>${…}</code>, string vazia e whitespace, encerrando o <b>split-brain</b>.</p>
+      </div>
+      <div class="win">
+        <h4>Invariante travado por teste</h4>
+        <p>Um teste <b>exaustivo</b> varre toda a árvore de <code>scripts/</code> e falha se qualquer resolvedor <code>env || fallback</code> voltar <b>sem guard</b>. O split-brain não reaparece sem quebrar o CI.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Honesto sobre o alcance:</b> isto garante <b>publicação sem-rasgo</b> e resistência a crash, <b>não</b> serialização entre processos. Os 4 stores read-modify-write (<code>oneoff</code>, <code>cooldown</code>, <code>recall-health</code>, <code>active-research</code>) mantêm um resíduo <b>last-writer-wins</b>, documentado em cada um; a serialização real exigiria lock/journal por-entrada (follow-up). <b>441</b> unitários + <b>65</b> suítes de hooks no verde; <code>eslint</code> + <code>version-sync</code> ok.</p>
   </section>
 
   <section>
@@ -897,7 +1033,7 @@
         <div class="env-mark" aria-hidden="true">①</div>
         <div class="env-main">
           <div class="env-head"><b>Fatos</b> <span>knowledge · procedural</span></div>
-          <p class="env-cap">o trecho que casou entra <i>inline</i> — grounding</p>
+          <p class="env-cap">o trecho que casou entra <i>inline</i> (grounding)</p>
           <div class="env-fact">"os hooks herdam o node do PATH do sistema, não o Node embutido no Desktop"</div>
           <div class="env-fact">"ao trocar embedder.model, rode brain-reembed.js uma vez"</div>
         </div>
@@ -906,10 +1042,10 @@
         <div class="env-mark" aria-hidden="true">②</div>
         <div class="env-main">
           <div class="env-head"><b>Capacidades</b> <span>skill · skill_global · setup</span></div>
-          <p class="env-cap">só o ponteiro <i>nome — descrição</i> — disclosure progressivo</p>
+          <p class="env-cap">só o ponteiro <i>nome/descrição</i> (disclosure progressivo)</p>
           <ul class="env-ptr">
-            <li><b>plugin-install</b> — resolve Node no PATH e o daemon</li>
-            <li><b>config-dashboard</b> — abre o painel local sob demanda</li>
+            <li><b>plugin-install</b>: resolve Node no PATH e o daemon</li>
+            <li><b>config-dashboard</b>: abre o painel local sob demanda</li>
           </ul>
         </div>
       </div>
