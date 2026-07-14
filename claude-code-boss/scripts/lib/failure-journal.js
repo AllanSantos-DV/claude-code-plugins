@@ -77,4 +77,28 @@ function clearEntries(sessionId) {
   }
 }
 
-module.exports = { appendEntry, readEntries, clearEntries, RUNTIME_DIR };
+/**
+ * Delete failure-journal files (across ALL sessions) older than maxAgeMs.
+ * Called from failure-retro to bound disk usage — entries past the retro window
+ * are already logically ignored, so dropping them is safe. Mirrors
+ * retrieval-journal.sweepOld.
+ */
+function sweepOld(maxAgeMs) {
+  try {
+    if (!fs.existsSync(RUNTIME_DIR)) return 0;
+    const cutoff = Date.now() - maxAgeMs;
+    let n = 0;
+    for (const f of fs.readdirSync(RUNTIME_DIR)) {
+      if (!f.startsWith('failure-turn-') || !f.endsWith('.json')) continue;
+      try {
+        if (fs.statSync(path.join(RUNTIME_DIR, f)).mtimeMs < cutoff) {
+          fs.unlinkSync(path.join(RUNTIME_DIR, f));
+          n++;
+        }
+      } catch { /* best effort */ }
+    }
+    return n;
+  } catch { /* read failed: zero */ return 0; }
+}
+
+module.exports = { appendEntry, readEntries, clearEntries, sweepOld, RUNTIME_DIR };

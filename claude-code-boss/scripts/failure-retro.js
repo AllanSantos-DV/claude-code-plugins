@@ -98,6 +98,13 @@ function buildRetroPrompt(triggers) {
 
 async function run(event) {
   const cfg = loadConfig();
+
+  // Housekeeping FIRST, before any gate/early-return: bound the failure journal
+  // every Stop even when retro is disabled or a curation turn short-circuits below.
+  // Retain max(24h, configured retro window) so we never drop a file still in-window.
+  const retainMs = Math.max(24 * 60 * 60 * 1000, (cfg.timeWindowMin || 0) * 60 * 1000);
+  failureJournal.sweepOld(retainMs);
+
   if (!cfg.enabled) return {};
 
   const ev = event || {};

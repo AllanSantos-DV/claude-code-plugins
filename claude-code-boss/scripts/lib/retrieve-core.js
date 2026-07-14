@@ -74,16 +74,17 @@ async function retrieveRemote(prompt, { project, topK, keywords }) {
     }
     // Pool-warming (ADR-017): fire a home-federated search IN PARALLEL with compose
     // so ingested HOME docs accumulate recall signal and graduate (async Dreaming).
-    // Best-effort, NOT injected — the user context stays pure compose; never breaks recall.
-    const warmP = (cc.poolWarming && backend.warmPool)
-      ? withTimeout(backend.warmPool(prompt, { topK }), cc.timeoutMs)
-        .catch((err) => { console.error(`[retrieve-core] pool-warming skipped: ${err.message}`); })
-      : Promise.resolve();
+    // Best-effort, NOT injected, result DISCARDED — and fire-and-forget: retrieve-core
+    // runs in the persistent brain-server daemon, so the search completes in the
+    // background without adding its latency (up to timeoutMs) to this per-turn recall.
+    if (cc.poolWarming && backend.warmPool) {
+      withTimeout(backend.warmPool(prompt, { topK }), cc.timeoutMs)
+        .catch((err) => { console.error(`[retrieve-core] pool-warming skipped: ${err.message}`); });
+    }
     const composed = await withTimeout(
       backend.compose(prompt, cc.overlay ? { metadata: cc.overlay } : {}),
       cc.timeoutMs,
     );
-    await warmP; // let the signal call finish (persistent server), but its result is discarded
     const { facts, capabilities } = pickInjectable(composed.facts, composed.capabilities, {
       topK, maxChars: cc.maxInjectChars, includeHomeSpine: cc.includeHomeSpine,
     });
