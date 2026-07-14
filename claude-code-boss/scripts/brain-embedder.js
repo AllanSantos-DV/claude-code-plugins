@@ -16,7 +16,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { execSync } = require('child_process');
+const { execFileSync } = require('child_process');
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
 const CONFIG_PATH = path.join(PLUGIN_ROOT, 'config', 'brain-config.json');
@@ -87,10 +87,16 @@ async function embedBatchTransformers(texts) {
 
 function embedOllama(text) {
   try {
-    const out = execSync(
-      `ollama run ${_model.replace(/^.*\//, '')} "${text.replace(/"/g, '\\"')}"`,
-      { encoding: 'utf-8', timeout: 15000, stdio: ['pipe', 'pipe', 'pipe'] }
-    );
+    // execFileSync (no shell): the model name and the prompt text are passed as
+    // literal argv/stdin, so entry/prompt content can't inject shell commands
+    // ($(...), backticks, ;). Replaces an execSync shell string.
+    const model = _model.replace(/^.*\//, '');
+    const out = execFileSync('ollama', ['run', model], {
+      input: text,
+      encoding: 'utf-8',
+      timeout: 15000,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
     return JSON.parse(out.trim());
   } catch (err) {
     _error = `Ollama embed error: ${err.message}`;

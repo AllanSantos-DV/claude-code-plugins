@@ -1,5 +1,40 @@
 # Changelog
 
+## [2.3.0] - 2026-07-14
+
+### Security — hardening (Sprint 1 do review completo do plugin)
+
+Fecha 7 vetores encontrados num review adversarial de 5 áreas + gate de 3
+avaliadores independentes (reviewer + tester + revisor externo), cada fix
+failing-first com prova de mutação:
+
+- **Command injection (dashboard)** — `runBrainPromote` trocou `execSync(string
+  de shell)` por `execFileSync(node, [script, ...argv])`; os callers passam argv
+  como array. Valores não-confiáveis (nome de projeto, thresholds do corpo HTTP)
+  nunca mais são interpretados como metacaracteres de shell.
+- **Stored XSS (dashboard)** — todos os campos dinâmicos influenciáveis (KB
+  title/summary/type/scope/id da busca; `project`/`type` de tabelas e `<option>`;
+  diagnósticos do doctor; catálogo de modelos; `err.message` de logs) agora passam
+  por `escapeHtml`; os botões de ação usam `data-*` + listener delegado no lugar de
+  `onclick` com interpolação crua.
+- **Shell injection (embedder ollama)** — `embedOllama` usa `execFileSync('ollama',
+  ['run', model], {input:text})`; o texto vai por stdin, sem shell.
+- **Path traversal (project id)** — novo `sanitizeProjectId` **rejeita** (não coage)
+  ids com separador/`:`/`..` → evita tanto escapar de `path.join(brainDir, id)`
+  quanto colisão silenciosa de escopos (`orgA/api` vs `api`). Aplicado no
+  `resolveProject` (brain-server), no sink do `brain-promote scan`, e em **toda a
+  superfície HTTP do dashboard** (busca/get/delete/move/export/import/related +
+  filtros de métricas) — a superfície mais exposta, antes no valor cru.
+- **DNS-rebinding + CSRF (model-router)** — `POST /metrics/reset` exige Host loopback
+  **e** Origin ausente/loopback.
+- **Traversal de estático (dashboard)** — `serveStatic` delimita com `DASHBOARD_DIR
+  + path.sep` (fecha o bypass de diretório-irmão).
+- **Interpolação PowerShell (model-router-ensure)** — nome de env-var validado por
+  allowlist antes de entrar no comando.
+
+Sem breaking changes de API; comportamento observável muda só para entradas
+maliciosas (agora rejeitadas). 405 unit + 65 hooks verdes; eslint + version-sync ok.
+
 ## [2.2.0] - 2026-07-13
 
 ### Added — onboarding de identidade de projeto: advisory guiado quando o recall cai no basename frágil

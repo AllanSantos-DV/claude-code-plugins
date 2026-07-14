@@ -1526,7 +1526,7 @@ async function loadHome() {
       brainEl.innerHTML = '<p class="text-muted">No projects with KB data found.</p>';
     } else {
       brainEl.innerHTML = '<table><thead><tr><th>Project</th><th>Entries</th></tr></thead><tbody>' +
-        s.brain.projects.map(p => `<tr><td>${p.project}</td><td>${p.entries}</td></tr>`).join('') +
+        s.brain.projects.map(p => `<tr><td>${escapeHtml(p.project)}</td><td>${p.entries}</td></tr>`).join('') +
         '</tbody></table>';
     }
   } catch { el.innerHTML = '<p class="text-muted">Failed to load status.</p>'; }
@@ -1597,7 +1597,7 @@ async function runConsolidate(apply) {
     const groups = r.groups || 0;
     if (groups === 0) { el.innerHTML = '<p class="text-muted">No near-duplicate groups found — KB is tidy.</p>'; return; }
     const rows = (r.plans || []).slice(0, 20).map(p =>
-      `<tr><td>${p.type}</td><td>${p.size} entries → 1</td><td>recurrence → ${p.newRecurrence}</td></tr>`).join('');
+      `<tr><td>${escapeHtml(p.type)}</td><td>${p.size} entries → 1</td><td>recurrence → ${p.newRecurrence}</td></tr>`).join('');
     el.innerHTML = `<p style="font-size:.85rem">${apply ? `Merged <strong>${r.merged}</strong> group(s), deleted <strong>${r.deleted}</strong> duplicate(s).` : `<strong>${groups}</strong> mergeable group(s) (preview) — click Apply to consolidate.`}</p>`
       + `<table style="width:100%;font-size:.8rem"><thead><tr><th>Type</th><th>Group</th><th>Result</th></tr></thead><tbody>${rows}</tbody></table>`;
   } catch { el.innerHTML = '<p class="text-muted">Consolidation failed to run.</p>'; }
@@ -1613,7 +1613,7 @@ async function runDoctor() {
     const cls = { ok: 'badge-green', warn: 'badge-yellow', fail: 'badge-red' };
     el.innerHTML = '<table style="width:100%;font-size:.85rem"><tbody>' + d.results.map(r =>
       `<tr><td style="white-space:nowrap"><span class="badge ${cls[r.status] || ''}">${icon[r.status] || '?'}</span></td>`
-      + `<td><strong>${r.label}</strong><div class="text-muted">${r.detail}${r.status !== 'ok' && r.fix ? '<br>→ ' + r.fix : ''}</div></td></tr>`
+      + `<td><strong>${escapeHtml(r.label)}</strong><div class="text-muted">${escapeHtml(r.detail)}${r.status !== 'ok' && r.fix ? '<br>→ ' + escapeHtml(r.fix) : ''}</div></td></tr>`
     ).join('') + '</tbody></table>'
       + `<p class="text-muted" style="font-size:.8rem;margin-top:.5rem">${d.summary.counts.ok} ok · ${d.summary.counts.warn} warn · ${d.summary.counts.fail} fail</p>`;
   } catch { el.innerHTML = '<p class="text-muted">Doctor check failed to run.</p>'; }
@@ -1681,7 +1681,7 @@ const EMBEDDER_PROVIDER_HELP = {
 function populateEmbedderModels(provider, currentModel) {
   const sel = document.getElementById('embedder-model');
   const list = EMBEDDER_MODELS[provider] || EMBEDDER_MODELS.transformers;
-  sel.innerHTML = list.map(m => `<option value="${m.value}">${m.label}</option>`).join('');
+  sel.innerHTML = list.map(m => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.label)}</option>`).join('');
   const known = list.find(m => m.value === currentModel);
   if (known) {
     sel.value = currentModel;
@@ -1977,7 +1977,7 @@ async function loadBrain() {
     state.brainProjects = await api('GET', '/api/brain/projects');
     const sel = document.getElementById('brain-project');
     sel.innerHTML = '<option value="">Select project...</option>' +
-      state.brainProjects.map(p => `<option value="${p.project}">${p.project} (${p.entries} entries)</option>`).join('');
+      state.brainProjects.map(p => `<option value="${escapeHtml(p.project)}">${escapeHtml(p.project)} (${p.entries} entries)</option>`).join('');
     loadBrainStats();
   } catch {}
 }
@@ -2124,20 +2124,31 @@ async function searchBrain() {
         const moveTarget = rowScope === 'user' ? 'project' : 'user';
         const moveLabel = rowScope === 'user' ? '→ project' : '→ user';
         const chipClass = rowScope === 'user' ? 'tag-green' : '';
+        // KB content (title/summary/type) is attacker-influenceable (ingested from
+        // web/conversations) → escape all interpolations. Action args go through
+        // data-* attributes + delegated listeners (below), never an onclick string.
         return `<tr>
         <td>${(r.score || 0).toFixed(2)}</td>
-        <td><span class="tag ${chipClass}">${rowScope}</span></td>
-        <td><span class="tag">${r.type || 'note'}</span></td>
-        <td class="truncate" style="max-width:200px" title="${r.title}">${r.title}</td>
-        <td class="text-muted truncate" style="max-width:250px" title="${r.summary}">${r.summary || ''}</td>
+        <td><span class="tag ${escapeHtml(chipClass)}">${escapeHtml(rowScope)}</span></td>
+        <td><span class="tag">${escapeHtml(r.type || 'note')}</span></td>
+        <td class="truncate" style="max-width:200px" title="${escapeHtml(r.title)}">${escapeHtml(r.title)}</td>
+        <td class="text-muted truncate" style="max-width:250px" title="${escapeHtml(r.summary || '')}">${escapeHtml(r.summary || '')}</td>
         <td>
-          <button class="btn-sm btn-primary" onclick="viewBrainEntry('${srcProject}','${r.id}')">View</button>
-          <button class="btn-sm" onclick="moveBrainEntryScope('${srcProject}','${r.id}','${moveTarget}')">${moveLabel}</button>
-          <button class="btn-sm btn-danger" onclick="deleteBrainEntry('${srcProject}','${r.id}')">Delete</button>
+          <button class="btn-sm btn-primary" data-act="view" data-project="${escapeHtml(srcProject)}" data-id="${escapeHtml(r.id)}">View</button>
+          <button class="btn-sm" data-act="move" data-project="${escapeHtml(srcProject)}" data-id="${escapeHtml(r.id)}" data-target="${escapeHtml(moveTarget)}">${escapeHtml(moveLabel)}</button>
+          <button class="btn-sm btn-danger" data-act="delete" data-project="${escapeHtml(srcProject)}" data-id="${escapeHtml(r.id)}">Delete</button>
         </td>
       </tr>`;
       }).join('') +
       '</tbody></table>';
+    el.querySelectorAll('button[data-act]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const { act, project: p, id, target } = btn.dataset;
+        if (act === 'view') viewBrainEntry(p, id);
+        else if (act === 'move') moveBrainEntryScope(p, id, target);
+        else if (act === 'delete') deleteBrainEntry(p, id);
+      });
+    });
   } catch { el.innerHTML = '<p class="text-muted">Search failed.</p>'; }
 }
 
@@ -2792,7 +2803,7 @@ async function loadLogs() {
     renderLogs(data);
   } catch (err) {
     const list = document.getElementById('logs-list');
-    if (list) list.innerHTML = `<div style="color:#ff7070">Error fetching logs: ${err.message}</div>`;
+    if (list) list.innerHTML = `<div style="color:#ff7070">Error fetching logs: ${escapeHtml(err.message)}</div>`;
   }
 
   // Setup auto-refresh when tab becomes visible
