@@ -2,13 +2,14 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execSync, execFileSync } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
 const { getShellsConfigPath } = require('./curation-paths.js');
 const configTesters = require('./config-testers');
 const { USER_SENTINEL, prepareForUserScope } = require('./lib/scope-sanitizer.js');
+const { sanitizeProjectId } = require('./lib/project-id.js');
 const { searchTwoPass } = require('./lib/scope-search.js');
 const { extractKeywords } = require('./lib/text-utils.js');
 const { aggregateSkillRoi } = require('./lib/skill-roi.js');
@@ -427,7 +428,7 @@ function getBrainProjects(req, res) {
 
 async function searchBrain(req, res, url) {
   const q = url.searchParams.get('q') || '';
-  const project = url.searchParams.get('project') || '';
+  const project = sanitizeProjectId(url.searchParams.get('project') || '');
   const k = parseInt(url.searchParams.get('k') || '10', 10);
   const scope = url.searchParams.get('scope') || 'project'; // 'project' | 'user' | 'both'
   if (!q || !project) return json(res, []);
@@ -472,7 +473,7 @@ async function searchBrain(req, res, url) {
 async function getBrainEntry(req, res, url) {
   const parts = url.pathname.split('/');
   const id = parts[parts.length - 1];
-  const project = url.searchParams.get('project') || '';
+  const project = sanitizeProjectId(url.searchParams.get('project') || '');
   if (!id || !project) return fail(res, 'Missing id or project', 400);
   try {
     const store = require('./brain-store.js');
@@ -486,7 +487,7 @@ async function getBrainEntry(req, res, url) {
 async function deleteBrainEntry(req, res, url) {
   const parts = url.pathname.split('/');
   const id = parts[parts.length - 1];
-  const project = url.searchParams.get('project') || '';
+  const project = sanitizeProjectId(url.searchParams.get('project') || '');
   if (!id || !project) return fail(res, 'Missing id or project', 400);
   try {
     const store = require('./brain-store.js');
@@ -502,7 +503,7 @@ async function deleteBrainEntry(req, res, url) {
 async function moveBrainEntryScope(req, res, url) {
   const parts = url.pathname.split('/');
   const id = parts[parts.length - 2];
-  const srcProject = url.searchParams.get('project') || '';
+  const srcProject = sanitizeProjectId(url.searchParams.get('project') || '');
   if (!id || !srcProject) return fail(res, 'Missing id or project', 400);
   let body = '';
   for await (const chunk of req) body += chunk;
@@ -510,7 +511,7 @@ async function moveBrainEntryScope(req, res, url) {
   try { parsed = JSON.parse(body || '{}'); }
   catch { /* malformed JSON body → 400 */ return fail(res, 'Invalid JSON body', 400); }
   const targetScope = String(parsed.scope || '').toLowerCase();
-  const targetProject = String(parsed.targetProject || '').trim();
+  const targetProject = sanitizeProjectId(parsed.targetProject || '');
   if (targetScope !== 'user' && targetScope !== 'project') {
     return fail(res, 'scope must be "user" or "project"', 400);
   }
@@ -578,7 +579,7 @@ async function moveBrainEntryScope(req, res, url) {
 // Response: { version, exportedAt, project, scope, entries: [{...entry, vector?}] }
 async function exportBrain(req, res, url) {
   const scope = url.searchParams.get('scope') || '';
-  const projectArg = url.searchParams.get('project') || '';
+  const projectArg = sanitizeProjectId(url.searchParams.get('project') || '');
   const project = scope === 'user' ? USER_SENTINEL : projectArg;
   if (!project) return fail(res, 'Missing scope=user or project=<name>', 400);
   try {
@@ -639,7 +640,7 @@ async function importBrain(req, res) {
 
   const dstProject = bundle.scope === 'user' || bundle.project === USER_SENTINEL
     ? USER_SENTINEL
-    : (bundle.project || '');
+    : sanitizeProjectId(bundle.project || '');
   if (!dstProject) return fail(res, 'project or scope=user required', 400);
 
   try {
@@ -692,7 +693,7 @@ async function importBrain(req, res) {
 async function getBrainRelated(req, res, url) {
   const parts = url.pathname.split('/');
   const id = parts[parts.length - 1];
-  const project = url.searchParams.get('project') || '';
+  const project = sanitizeProjectId(url.searchParams.get('project') || '');
   if (!id || !project) return fail(res, 'Missing id or project', 400);
   try {
     const graph = require('./brain-graph.js');
@@ -717,9 +718,12 @@ async function getBrainRelated(req, res, url) {
 const SKILL_STAGING_DIR = path.join(DATA_DIR, 'skills-pending');
 const GLOBAL_SKILLS_DIR = path.join(os.homedir(), '.claude', 'skills');
 
-function runBrainPromote(args) {
+function runBrainPromote(argvArray) {
   const scriptPath = path.join(ROOT, 'scripts', 'brain-promote.js');
-  const out = execSync(`"${process.execPath}" "${scriptPath}" ${args}`, {
+  // execFileSync (no shell) — each argv element is passed literally, so untrusted
+  // values (project name, numeric thresholds from the HTTP body) can never be
+  // interpreted as shell metacharacters. Replaces a `execSync(shell string)`.
+  const out = execFileSync(process.execPath, [scriptPath, ...argvArray], {
     encoding: 'utf-8',
     env: { ...process.env, CLAUDE_PLUGIN_ROOT: ROOT, CLAUDE_PLUGIN_DATA: DATA_DIR },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -748,10 +752,10 @@ async function scanSkillCandidates(req, res) {
   try { parsed = JSON.parse(body || '{}'); } catch { /* malformed JSON body → 400 */ return fail(res, 'Invalid JSON body', 400); }
   try {
     const argv = ['scan'];
-    if (parsed.project) argv.push('--project', JSON.stringify(parsed.project));
+    if (parsed.project) argv.push('--project', String(parsed.project));
     if (parsed.minRecurrence) argv.push('--min-recurrence', String(parsed.minRecurrence));
     if (parsed.minConfidence) argv.push('--min-confidence', String(parsed.minConfidence));
-    json(res, runBrainPromote(argv.join(' ')));
+    json(res, runBrainPromote(argv));
   } catch (e) { fail(res, e.message); }
 }
 
@@ -791,7 +795,7 @@ async function approveSkillDraft(req, res) {
   const slug = (parsed.slug || '').replace(/[^a-z0-9-]/gi, '');
   if (!slug) return fail(res, 'slug required', 400);
   try {
-    json(res, runBrainPromote(`approve ${slug}`));
+    json(res, runBrainPromote(['approve', slug]));
   } catch (e) { fail(res, e.message); }
 }
 
@@ -1008,7 +1012,7 @@ async function aggregateAcrossProjects(projects, op) {
 async function getMetricsSummary(req, res, url) {
   try {
     const range = Math.max(1, Math.min(90, parseInt(url.searchParams.get('range') || '7', 10)));
-    const projectFilter = url.searchParams.get('project') || '';
+    const projectFilter = sanitizeProjectId(url.searchParams.get('project') || '');
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
     if (projects.length === 0) {
       return json(res, { rangeDays: range, totals: {}, daily: [], projects: [] });
@@ -1075,7 +1079,7 @@ async function getValueSummary(req, res, url) {
   try {
     const range = Math.max(1, Math.min(365, parseInt(url.searchParams.get('days') || '30', 10)));
     const sinceTs = Date.now() - range * 86400_000;
-    const projectFilter = url.searchParams.get('project') || '';
+    const projectFilter = sanitizeProjectId(url.searchParams.get('project') || '');
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
     const EVENTS = ['curation.flagged', 'lesson.captured', 'retrieve.cited', 'retrieve.injected'];
 
@@ -1100,7 +1104,7 @@ async function getProfileImpact(req, res, url) {
   try {
     const range = Math.max(1, Math.min(365, parseInt(url.searchParams.get('days') || '7', 10)));
     const sinceTs = Date.now() - range * 86400_000;
-    const projectFilter = url.searchParams.get('project') || '';
+    const projectFilter = sanitizeProjectId(url.searchParams.get('project') || '');
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
     const perProject = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName: 'stop.dispatch', limit: 2000 }));
     const rows = [];
@@ -1119,7 +1123,7 @@ async function getMetricsEventLog(req, res, url) {
   try {
     const eventName = url.searchParams.get('event') || null;
     const limit = Math.max(1, Math.min(500, parseInt(url.searchParams.get('limit') || '50', 10)));
-    const projectFilter = url.searchParams.get('project') || '';
+    const projectFilter = sanitizeProjectId(url.searchParams.get('project') || '');
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
 
     const perProject = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName, limit }));
@@ -1148,7 +1152,7 @@ async function postMetricsCleanup(req, res, url) {
 
 async function getSkillRoi(req, res, url) {
   try {
-    const projectFilter = url.searchParams.get('project') || '';
+    const projectFilter = sanitizeProjectId(url.searchParams.get('project') || '');
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
     if (projects.length === 0) return json(res, { skills: [] });
 
@@ -1406,7 +1410,7 @@ function postPluginUpdate(req, res) {
 
 async function getCaptureRate(req, res, url) {
   try {
-    const projectFilter = url.searchParams.get('project') || '';
+    const projectFilter = sanitizeProjectId(url.searchParams.get('project') || '');
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
     if (projects.length === 0) return json(res, { byKind: {}, spontaneous: {} });
 
@@ -1428,7 +1432,7 @@ async function getTuningRecommendations(req, res, url) {
   try {
     const range = Math.max(1, Math.min(365, parseInt(url.searchParams.get('days') || '7', 10)));
     const sinceTs = Date.now() - range * 86400_000;
-    const projectFilter = url.searchParams.get('project') || '';
+    const projectFilter = sanitizeProjectId(url.searchParams.get('project') || '');
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
     const gather = async (eventName) => {
       const per = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName, limit: 2000 }));
@@ -1527,7 +1531,7 @@ function serveStatic(req, res) {
   }
   let filePath = req.url === '/' ? path.join(DASHBOARD_DIR, 'index.html') : path.join(DASHBOARD_DIR, req.url);
   filePath = path.normalize(filePath);
-  if (!filePath.startsWith(DASHBOARD_DIR)) {
+  if (filePath !== DASHBOARD_DIR && !filePath.startsWith(DASHBOARD_DIR + path.sep)) {
     res.writeHead(403);
     return res.end('Forbidden');
   }

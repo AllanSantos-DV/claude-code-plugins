@@ -2350,6 +2350,121 @@ test('pia.buildAdvisory: names the marker file + the basename, consent-first', (
   assert(/OFEREÇA|ofere/i.test(msg), 'consent-first (offers, never auto-writes)');
 });
 
+// ─── Sprint 1 — security hardening (injection / XSS / traversal / rebinding) ──
+test('project-id.sanitizeProjectId: rejects separators/traversal (no coercion → no scope collision)', () => {
+  // Reject, don't coerce: distinct ids must never collapse to one segment.
+  assertEq(projectId.sanitizeProjectId('../../etc'), '');
+  assertEq(projectId.sanitizeProjectId('..\\..\\win'), '');
+  assertEq(projectId.sanitizeProjectId('foo/bar'), '');
+  assertEq(projectId.sanitizeProjectId('a\\b\\c'), '');
+  assertEq(projectId.sanitizeProjectId('orgA/api'), '');   // would collide with 'api' if coerced
+  assertEq(projectId.sanitizeProjectId('C:\\abs'), '');
+  assertEq(projectId.sanitizeProjectId('C:foo'), '');       // drive-colon
+  assertEq(projectId.sanitizeProjectId('x::$DATA'), '');    // NTFS ADS
+  assertEq(projectId.sanitizeProjectId('/etc/passwd'), '');
+  assertEq(projectId.sanitizeProjectId('..'), '');
+  assertEq(projectId.sanitizeProjectId('.'), '');
+  assertEq(projectId.sanitizeProjectId(''), '');
+  assertEq(projectId.sanitizeProjectId('   '), '');
+  // clean flat ids pass unchanged (spaces/accents ok — no separators)
+  assertEq(projectId.sanitizeProjectId('normal-id'), 'normal-id');
+  assertEq(projectId.sanitizeProjectId('my_proj.2'), 'my_proj.2');
+  assertEq(projectId.sanitizeProjectId('café-app'), 'café-app');
+  // every accepted id is separator-free → path.join(brainDir, id) can't escape
+  for (const raw of ['../../etc', 'orgA/api', 'C:\\abs', 'x::$DATA', '..']) {
+    assertEq(projectId.sanitizeProjectId(raw), '');
+  }
+});
+
+test('S2+ dashboard index.html: project/type/doctor/model fields escaped (no unescaped innerHTML sinks)', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf-8');
+  assert(!/<td>\$\{p\.project\}<\/td>/.test(src), 'p.project must be escaped in the projects table');
+  assert(!/<td>\$\{p\.type\}<\/td>/.test(src), 'p.type must be escaped in the consolidate table');
+  assert(!/<option value="\$\{p\.project\}">\$\{p\.project\}/.test(src), 'project <option> must escape p.project');
+  assert(!/<option value="\$\{m\.value\}">\$\{m\.label\}/.test(src), 'model <option> must escape value/label');
+  assert(/escapeHtml\(p\.project\)/.test(src), 'p.project must be escaped');
+  assert(/escapeHtml\(p\.type\)/.test(src), 'p.type must be escaped');
+  assert(/escapeHtml\(r\.label\)/.test(src) && /escapeHtml\(r\.detail\)/.test(src), 'doctor label/detail must be escaped');
+  assert(/escapeHtml\(m\.value\)/.test(src) && /escapeHtml\(m\.label\)/.test(src), 'model option must be escaped');
+});
+
+test('S1 dashboard: runBrainPromote uses execFileSync (no shell); callers pass argv arrays', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'scripts', 'dashboard.js'), 'utf-8');
+  const fn = src.match(/function runBrainPromote[\s\S]*?\n\}/);
+  assert(fn, 'runBrainPromote not found');
+  assert(/execFileSync\(process\.execPath,\s*\[scriptPath,\s*\.\.\.argvArray\]/.test(fn[0]), 'must call execFileSync with an argv array');
+  assert(!/execSync\(`/.test(fn[0]), 'must not build a shell string');
+  assert(!/runBrainPromote\(argv\.join/.test(src), 'scanSkillCandidates must pass the argv array, not a joined string');
+  assert(/runBrainPromote\(\['approve', slug\]\)/.test(src), 'approveSkillDraft must pass an array');
+});
+
+test('S5 sink: brain-promote scan() sanitizes --project (sibling traversal sink closed)', () => {
+  const src = fs.readFileSync(path.join(SCRIPTS, 'brain-promote.js'), 'utf-8');
+  assert(/require\('\.\/lib\/project-id\.js'\)/.test(src), 'brain-promote must import project-id');
+  assert(/sanitizeProjectId\(arg\('project'/.test(src), 'scan() must run --project through sanitizeProjectId before store.init');
+});
+
+test('S4 brain-embedder: embedOllama uses execFileSync (no shell)', () => {
+  const src = fs.readFileSync(path.join(SCRIPTS, 'brain-embedder.js'), 'utf-8');
+  const fn = src.match(/function embedOllama[\s\S]*?\n\}/);
+  assert(fn, 'embedOllama not found');
+  assert(/execFileSync\('ollama',\s*\['run', model\]/.test(fn[0]), 'must use execFileSync with argv');
+  assert(!/execSync\(/.test(fn[0]), 'must not use execSync');
+});
+
+test('S2 dashboard index.html: brain-search results escape KB content + use data-* handlers', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf-8');
+  assert(/title="\$\{escapeHtml\(r\.title\)\}">\$\{escapeHtml\(r\.title\)\}/.test(src), 'r.title must be escaped in the results row');
+  assert(/\$\{escapeHtml\(r\.summary/.test(src), 'r.summary must be escaped');
+  assert(!/onclick="viewBrainEntry\('\$\{srcProject\}/.test(src), 'must not build an onclick with raw interpolated args');
+  assert(/data-act="view"/.test(src) && /data-id="\$\{escapeHtml\(r\.id\)\}"/.test(src), 'action buttons must use escaped data-* attributes');
+});
+
+test('S5 model-router: isLoopbackHost blocks non-loopback Host AND cross-site Origin', () => {
+  const mr = require(path.join(ROOT, 'servers', 'model-router', 'index.js'));
+  const H = (host, origin) => ({ headers: origin === undefined ? { host } : { host, origin } });
+  // loopback Host, no Origin (curl / same-origin) → allow
+  assert(mr.isLoopbackHost(H('127.0.0.1:8080')) === true);
+  assert(mr.isLoopbackHost(H('localhost:8080')) === true);
+  assert(mr.isLoopbackHost(H('[::1]:8080')) === true);
+  // non-loopback Host → block (DNS-rebinding)
+  assert(mr.isLoopbackHost(H('evil.com')) === false);
+  assert(mr.isLoopbackHost(H('127.0.0.1.evil.com:8080')) === false);
+  assert(mr.isLoopbackHost(H('')) === false);
+  // loopback Host BUT cross-site Origin → block (drive-by CSRF)
+  assert(mr.isLoopbackHost(H('localhost:8080', 'http://evil.com')) === false);
+  assert(mr.isLoopbackHost(H('127.0.0.1:8080', 'https://attacker.example')) === false);
+  assert(mr.isLoopbackHost(H('localhost:8080', 'not-a-url')) === false);
+  // loopback Host + loopback Origin → allow (legit dashboard fetch)
+  assert(mr.isLoopbackHost(H('localhost:8080', 'http://localhost:8080')) === true);
+  assert(mr.isLoopbackHost(H('127.0.0.1:8080', 'http://127.0.0.1:8080')) === true);
+});
+
+test('S5 model-router: /metrics/reset calls isLoopbackHost before resetMetrics', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'servers', 'model-router', 'index.js'), 'utf-8');
+  const block = src.match(/req\.url === '\/metrics\/reset'[\s\S]*?resetMetrics\(\)/);
+  assert(block && /isLoopbackHost\(req\)/.test(block[0]), '/metrics/reset must check isLoopbackHost before resetMetrics');
+});
+
+test('S-minor dashboard serveStatic: traversal guard uses path.sep boundary', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'scripts', 'dashboard.js'), 'utf-8');
+  assert(/filePath !== DASHBOARD_DIR && !filePath\.startsWith\(DASHBOARD_DIR \+ path\.sep\)/.test(src), 'serveStatic must bound with DASHBOARD_DIR + path.sep');
+});
+
+test('S-minor model-router-ensure: env-var name validated before the PowerShell string', () => {
+  const src = fs.readFileSync(path.join(SCRIPTS, 'model-router-ensure.js'), 'utf-8');
+  const matches = src.match(/\/\^\[A-Za-z_\]\[A-Za-z0-9_\]\*\$\/\.test\(name\)/g) || [];
+  assert(matches.length >= 2, 'both getSystemEnvVar and clearSystemEnvVar must validate name');
+});
+
+test('R1 dashboard brain HTTP handlers sanitize project (traversal class closed on the exposed surface)', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'scripts', 'dashboard.js'), 'utf-8');
+  assert(/require\('\.\/lib\/project-id\.js'\)/.test(src), 'dashboard must import sanitizeProjectId');
+  assert(!/=\s*url\.searchParams\.get\('project'\)\s*\|\|\s*'';/.test(src), 'no raw project query read may reach store.init');
+  const wrapped = src.match(/sanitizeProjectId\((?:url\.searchParams\.get\('project'\)|parsed\.targetProject|bundle\.project)/g) || [];
+  assert(wrapped.length >= 6, `expected >=6 sanitized project reads in brain handlers, got ${wrapped.length}`);
+});
+
 // ─── retrieve-core.filterInjectableEntries ───────────────────────────────────
 test('retrieve-core.filterInjectableEntries: empty/null → []', () => {
   assertEq(retrieveCore.filterInjectableEntries([]), []);

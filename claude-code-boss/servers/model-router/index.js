@@ -1388,6 +1388,24 @@ function maybeWarmCatalog(originalHeaders, config) {
 
 // ── HTTP Server ───────────────────────────────────────────────────────────────
 
+// DNS-rebinding + drive-by CSRF guard: the router binds 127.0.0.1, but a malicious
+// page can still POST to http://localhost:<port>. We require BOTH a loopback Host
+// AND (if the browser sent one) a loopback Origin — a cross-site page sends its own
+// Origin → blocked; a curl/local same-origin call omits Origin → allowed. Applied to
+// state-changing routes (/metrics/reset).
+function isLoopbackHost(req) {
+  const h = (req && req.headers) || {};
+  const hostname = String(h.host || '').replace(/:\d+$/, '');
+  const loopback = (n) => n === '127.0.0.1' || n === 'localhost' || n === '[::1]' || n === '::1';
+  if (!loopback(hostname)) return false;
+  if (h.origin) {
+    try {
+      if (!loopback(new URL(h.origin).hostname)) return false;
+    } catch (err) { void err; return false; } // unparseable Origin → reject
+  }
+  return true;
+}
+
 async function createServer(config, mode) {
   const server = http.createServer(async (req, res) => {
     // Health check
@@ -1404,6 +1422,11 @@ async function createServer(config, mode) {
       return;
     }
     if (req.method === 'POST' && req.url === '/metrics/reset') {
+      if (!isLoopbackHost(req)) {
+        res.writeHead(403, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Forbidden: non-loopback Host' }));
+        return;
+      }
       resetMetrics();
       res.writeHead(200, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ ok: true }));
@@ -1712,6 +1735,7 @@ if (require.main === module) {
     extractPrompt,
     mergeUserConfig,
     resolveMode,
+    isLoopbackHost,
     parseResetMs,
     parseResetFromBody,
     computeCooldownUntil,
