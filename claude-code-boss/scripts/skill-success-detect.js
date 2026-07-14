@@ -5,11 +5,16 @@
  * Pairs each `skill.invoked` event in this session with a heuristic
  * success/failure verdict, recorded as `skill.outcome`. Heuristic:
  *   - For each unsettled `skill.invoked` in this sid:
- *     - if any `failure.retro.fired` event in this sid has ts > skill ts → outcome=0
+ *     - if any `nudge.emitted{kind:'failure'}` event in this sid has ts > skill ts → outcome=0
  *     - else → outcome=1
  *   - Record `skill.outcome` metric { skillName, success: 0|1 }
  *   - Track settled skill-event ids in `.runtime/skill-outcome-settled-<sid>.json`
  *     so we don't double-count across Stop ticks.
+ *
+ * NOTE (rough heuristic, by design): any failure nudge after the invocation in
+ * the session marks it failed — a later unrelated failure can taint an earlier
+ * skill. Refining this to correlate PostToolUseFailure within the invocation
+ * window is a known follow-up.
  *
  * Heuristic is rough by design (per Plan #9 D2 — auto-disable disabled, banner
  * is just a hint). Refinement comes from instrumentation feedback.
@@ -77,8 +82,11 @@ async function run(event) {
   try {
     invocations = metricsStore.getEventLog({ eventName: 'skill.invoked', limit: 500 })
       .filter(e => e.sessionId === sid);
-    failures = metricsStore.getEventLog({ eventName: 'failure.retro.fired', limit: 200 })
-      .filter(e => e.sessionId === sid);
+    // A post-invocation failure is signalled by failure-retro as nudge.emitted{kind:'failure'}
+    // — there is NO 'failure.retro.fired' event (that name was never emitted), which made
+    // every skill score success:1 forever and the low-ROI warn unreachable.
+    failures = metricsStore.getEventLog({ eventName: 'nudge.emitted', limit: 200 })
+      .filter(e => e.sessionId === sid && e.payload && e.payload.kind === 'failure');
   } catch { /* event log read failed: no-op */ return {}; }
 
   if (!invocations.length) return {};

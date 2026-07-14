@@ -474,10 +474,11 @@ class McpClient extends EventEmitter {
       return;
     }
     if (this._process) {
+      const proc = this._process; // capture BEFORE nulling, else the 2s fallback kill sees null and never fires (JVM leak)
       this._sendNotification('notifications/exit');
       setTimeout(() => {
-        if (this._process && !this._process.killed) {
-          this._process.kill();
+        if (proc && !proc.killed) {
+          proc.kill();
         }
       }, 2000);
       for (const [id, { reject }] of this._pending) {

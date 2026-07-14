@@ -1,5 +1,45 @@
 # Changelog
 
+## [2.5.0] - 2026-07-14
+
+### Fixed — bugs de correção que degradavam recall/estado em silêncio (Sprint 3 do review)
+
+Seis bugs que falhavam silenciosamente, achados no review completo, cada fix
+failing-first com prova de mutação + gate de 3 avaliadores (reviewer + tester +
+revisor externo):
+
+- **C1 — embedding diluído (recall):** `saveLocal` embedava `título+resumo+detalhe`;
+  o detalhe dilui o vetor abaixo do gate de recall (cos 0.51→0.13). Agora usa
+  `buildEmbedText` (título+resumo, igual aos outros write-paths) e faz **uma única**
+  escrita com o vetor (era save→get→re-save, que dobrava a escrita e inflava
+  `access_count`). O embed roda em try/catch — uma falha transitória não perde mais
+  a entrada (salva sem vetor; `brain-reembed` preenche depois).
+- **C2 — vazamento de JVM:** `McpClient.close()` (stdio) nulava `_process` antes do
+  timer de kill de 2s disparar → o Java de 512MB sobrevivia a cada troca de projeto.
+  Agora captura a referência antes de nular.
+- **C3 — detector lendo evento fantasma:** `skill-success-detect` lia
+  `failure.retro.fired` (que ninguém emite) → toda skill marcada `success:1` pra
+  sempre. Agora lê o evento real `nudge.emitted{kind:'failure'}`.
+- **C4 — regex fail-open:** com a lista de libs vazia, `buildLibRegex` gerava uma
+  alternação vazia que casava quase todo prompt (nudge em todo turno). Agora retorna
+  um regex que nunca casa.
+- **C5 — flags de backend presas:** `brain-store.close()` não resetava
+  `_useSqlite/_useJson` → após uma troca de projeto com falha de reinit, ficava
+  `_useSqlite=true` com `_db=null` → null-deref. Resetadas no close.
+- **C6 — busca por palavra-chave ignorando os termos:** o atalho vector-less
+  (`searchSqlite(null)`) zerava todos os scores e retornava por confiança, ignorando
+  os keywords. Agora usa a tabela de keywords, **escopada por projeto** (sem vazamento
+  cross-project).
+
+**Follow-ups conhecidos (design pré-existente, não regressões):** a heurística de
+correlação falha↔skill do C3 é aproximada (uma falha posterior não-relacionada pode
+marcar uma skill anterior); a concorrência do singleton do brain-store no dashboard
+(a ser serializada); a migração dos vetores diluídos já gravados (até rodar
+`brain-reembed`); e o card "Failure retros fired" do dashboard, que lê o mesmo evento
+fantasma (será corrigido na frente do dashboard).
+
+419 unit + 65 hooks verdes; eslint + version-sync ok.
+
 ## [2.4.0] - 2026-07-14
 
 ### Security — auto-updater endurecido (Sprint 2 do review completo do plugin)
