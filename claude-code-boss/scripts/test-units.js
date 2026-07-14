@@ -2263,6 +2263,93 @@ test('project-id: no cwd and no env → default', () => {
   assertEq(projectId.resolveProjectId({ cwd: '', env: {}, fs: fakeFs({}) }), 'default');
 });
 
+// ─── project-identity-advisory: fragile-basename nudge (SessionStart) ─────────
+const pia = require('./project-identity-advisory.js');
+
+test('pia.needsNudge: local backend → never nudge (basename is by design)', () => {
+  const cwd = path.join('C:', 'proj', 'app');
+  assert(pia.needsProjectIdentityNudge({ mode: 'local', cwd, env: {}, fs: fakeFs({}) }) === false);
+});
+
+test('pia.needsNudge: mcp-memory + CCB_PROJECT_ID → stable, no nudge', () => {
+  const cwd = path.join('C:', 'proj', 'app');
+  const env = { CCB_PROJECT_ID: ' positiva ' };
+  assert(pia.needsProjectIdentityNudge({ mode: 'mcp-memory', cwd, env, fs: fakeFs({}) }) === false);
+});
+
+test('pia.needsNudge: mcp-memory + config mcpProjectId → stable, no nudge (handshake override)', () => {
+  const cwd = path.join('C:', 'proj', 'app');
+  const opts = { mode: 'mcp-memory', cwd, env: {}, mcpProjectId: 'my-stable-id', fs: fakeFs({}) };
+  assert(pia.needsProjectIdentityNudge(opts) === false);
+});
+
+test('pia.needsNudge: mcp-memory + whitespace-only mcpProjectId → still stamped raw by handshake → no nudge', () => {
+  // brain-backend: `mcpCfg.projectId || _project` + mcp-client: `projectId ? {projectId} : {}`
+  // → a truthy '   ' is sent RAW as the scope (wins over the marker), so the marker
+  // remedy would be inert; nudging there repeats Finding 1. Faithful superset ⇒ silent.
+  const cwd = path.join('C:', 'proj', 'app');
+  const opts = { mode: 'mcp-memory', cwd, env: {}, mcpProjectId: '   ', fs: fakeFs({}) };
+  assert(pia.needsProjectIdentityNudge(opts) === false);
+});
+
+test('pia.needsNudge: mcp-memory + marker in tree → stable, no nudge', () => {
+  const cwd = path.join('C:', 'proj', 'app');
+  const fs = fakeFs({ [path.join(cwd, '.claude-boss-project')]: 'positiva\n' });
+  assert(pia.needsProjectIdentityNudge({ mode: 'mcp-memory', cwd, env: {}, fs }) === false);
+});
+
+test('pia.needsNudge: mcp-memory + no marker + no env + no config id → nudge (basename fallback)', () => {
+  const cwd = path.join('C:', 'proj', 'app');
+  assert(pia.needsProjectIdentityNudge({ mode: 'mcp-memory', cwd, env: {}, fs: fakeFs({}) }) === true);
+});
+
+test('pia.needsNudge: marker in an ANCESTOR (monorepo) → no nudge', () => {
+  const root = path.join('C:', 'mono');
+  const sub = path.join(root, 'packages', 'api');
+  const fs = fakeFs({ [path.join(root, '.claude-boss-project')]: 'mono-id' });
+  assert(pia.needsProjectIdentityNudge({ mode: 'mcp-memory', cwd: sub, env: {}, fs }) === false);
+});
+
+test('pia cooldown: absent→false; stamped→true; boundary half-open at +COOLDOWN_MS', () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pia-')), 'f.json');
+  const t0 = 1000000;
+  assert(pia.onCooldown(file, t0) === false, 'absent → not on cooldown');
+  pia.stamp(file, t0);
+  assert(pia.onCooldown(file, t0 + pia.COOLDOWN_MS - 1) === true, 'inside window → cooldown');
+  assert(pia.onCooldown(file, t0 + pia.COOLDOWN_MS) === false, 'at boundary → fires (half-open)');
+  assert(pia.onCooldown(file, t0 + pia.COOLDOWN_MS + 1) === false, 'past window → fires');
+});
+
+test('pia cooldown: corrupt/torn stamp file → fail-open (fires), no crash', () => {
+  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pia-')), 'f.json');
+  fs.writeFileSync(file, '{ this is not json');
+  assert(pia.onCooldown(file, Date.now()) === false, 'unparseable → not on cooldown (fail-open)');
+});
+
+test('pia stampFileFor: same cwd → same file; different cwd → different file (per-folder isolation)', () => {
+  const a = path.join('C:', 'proj', 'a');
+  const b = path.join('C:', 'proj', 'b');
+  assert(pia.stampFileFor(a) === pia.stampFileFor(a), 'stable per folder');
+  assert(pia.stampFileFor(a) !== pia.stampFileFor(b), 'distinct folders → distinct files (no shared mutation)');
+});
+
+test('pia stamp: two folders write independent files — no cross-folder lost update', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pia-'));
+  const fileA = path.join(dir, 'A.json');
+  const fileB = path.join(dir, 'B.json');
+  pia.stamp(fileA, 100);
+  pia.stamp(fileB, 200);
+  assertEq(pia.readTs(fileA), 100);
+  assertEq(pia.readTs(fileB), 200);
+});
+
+test('pia.buildAdvisory: names the marker file + the basename, consent-first', () => {
+  const msg = pia.buildAdvisory('my-repo');
+  assert(msg.includes(projectId.MARKER_FILE), 'mentions .claude-boss-project');
+  assert(msg.includes('my-repo'), 'mentions the fragile basename');
+  assert(/OFEREÇA|ofere/i.test(msg), 'consent-first (offers, never auto-writes)');
+});
+
 // ─── retrieve-core.filterInjectableEntries ───────────────────────────────────
 test('retrieve-core.filterInjectableEntries: empty/null → []', () => {
   assertEq(retrieveCore.filterInjectableEntries([]), []);

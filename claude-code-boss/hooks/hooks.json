@@ -56,6 +56,12 @@
             "command": "node",
             "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/tuning-advisory.js"],
             "timeout": 8
+          },
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/project-identity-advisory.js"],
+            "timeout": 5
           }
         ]
       }
