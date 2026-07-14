@@ -18,6 +18,8 @@ const { loadSqlite } = require('./lib/sqlite-compat.js');
 const pluginUpdater = require('./lib/plugin-updater.js');
 const { resolveMode } = require('./lib/router-mode.js');
 const hooksConfig = require('./lib/hooks-config.js');
+const { validEnvDir } = require('./lib/data-dir.js');
+const { writeFileAtomic, writeJsonAtomic } = require('./lib/atomic-write.js');
 
 // Session token — generated at boot, injected into index.html, required on all /api/* requests.
 const SESSION_TOKEN = crypto.randomBytes(16).toString('hex');
@@ -31,7 +33,7 @@ const DASHBOARD_DIR = path.join(ROOT, 'dashboard');
 // made every boot-time count throw (caught → 0) and pick the wrong data dir.
 const _countCache = new Map(); // dbPath -> { mtimeMs, count } — avoids a sync COUNT(*) per project on every /api/status poll
 
-const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || resolveBestDataDir();
+const DATA_DIR = validEnvDir(process.env.CLAUDE_PLUGIN_DATA) || resolveBestDataDir();
 const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');
 
 // model-router (F3) — shipped defaults vs. user override (key + toggles).
@@ -834,9 +836,8 @@ function discardSkillDraft(req, res, url) {
 // ─── API: Curation ─────────────────────────────────────────────────
 
 function getCurationProjects(req, res) {
-  // Collect unique cwd values from detect-curation payloads (pending + processed)
-  const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA ||
-    path.join(require('os').homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+  // Collect unique cwd values from detect-curation payloads (pending + processed).
+  // Reuse the module-level DATA_DIR so this never resolves to a different dir.
   const dirs = [
     path.join(DATA_DIR, 'detect-curation'),
     path.join(DATA_DIR, 'detect-curation', 'processed'),
@@ -1004,7 +1005,7 @@ function getLogs(req, res) {
 function clearLogs(req, res) {
   _logRing.length = 0;
   if (fs.existsSync(HOOK_ERRORS_PATH)) {
-    try { fs.writeFileSync(HOOK_ERRORS_PATH, ''); }
+    try { writeFileAtomic(HOOK_ERRORS_PATH, ''); }
     catch (err) { console.error(`[DASHBOARD] Failed to clear hook-errors.jsonl: ${err.message}`); }
   }
   json(res, { ok: true });
@@ -1633,10 +1634,9 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`\n  \u{1F4CA} Plugin Dashboard: http://localhost:${port}  (token: ${SESSION_TOKEN})\n`);
   // Write discovery file for dashboard-start.js and other consumers
   try {
-    fs.mkdirSync(RUNTIME_DIR, { recursive: true });
-    fs.writeFileSync(
+    writeJsonAtomic(
       path.join(RUNTIME_DIR, 'dashboard.json'),
-      JSON.stringify({ port, token: SESSION_TOKEN, startTime: SERVER_START_TIME, pid: process.pid })
+      { port, token: SESSION_TOKEN, startTime: SERVER_START_TIME, pid: process.pid }
     );
   } catch (err) { console.error(`[DASHBOARD] Failed to write dashboard.json: ${err.message}`); }
   const browser = { win32: 'start', darwin: 'open', linux: 'xdg-open' }[process.platform];

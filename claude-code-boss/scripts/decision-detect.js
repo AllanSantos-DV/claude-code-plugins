@@ -16,14 +16,14 @@
  */
 'use strict';
 const fs = require('fs');
+const { writeJsonAtomic } = require('./lib/atomic-write.js');
 const path = require('path');
-const os = require('os');
 const { spawnSync } = require('child_process');
 
 const { readStdin } = require('./lib/hook-io.js');
 
-const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
-  || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+const { dataDir } = require('./lib/data-dir.js');
+const DATA_DIR = dataDir();
 const PENDING = path.join(DATA_DIR, '.runtime', 'decision-pending.json');
 const PROMOTED = path.join(DATA_DIR, '.runtime', 'decision-promoted-sha.json');
 
@@ -100,7 +100,7 @@ function readJsonSafe(p, fallback) {
 function writeJsonSafe(p, obj) {
   try {
     fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, JSON.stringify(obj));
+    writeJsonAtomic(p, obj);
     return true;
   } catch { /* write failed (perms/disk): caller sees false */ return false; }
 }

@@ -21,12 +21,12 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const os = require('os');
 
 const { sanitizeSessionId } = require('./session-id.js');
+const { dataDir } = require('./data-dir.js');
+const { writeJsonAtomic } = require('./atomic-write.js');
 
-const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
-  || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+const DATA_DIR = dataDir();
 const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');
 
 const SEP = '--';
@@ -51,12 +51,11 @@ function _prefix(sessionId) {
  */
 function _append(sessionId, entry) {
   try {
-    if (!fs.existsSync(RUNTIME_DIR)) fs.mkdirSync(RUNTIME_DIR, { recursive: true });
     const ts = Date.now();
     const seq = String(_seq++ % 1000000).padStart(6, '0');
     const rand = crypto.randomBytes(3).toString('hex');
     const file = path.join(RUNTIME_DIR, `${_prefix(sessionId)}${ts}-${seq}-${rand}.json`);
-    fs.writeFileSync(file, JSON.stringify({ ts, ...entry }));
+    writeJsonAtomic(file, { ts, ...entry });
   } catch (err) {
     console.error(`[verify-journal] append failed: ${err.message}`);
   }

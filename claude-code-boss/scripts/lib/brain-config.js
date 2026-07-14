@@ -11,7 +11,6 @@
  * other contributors or surviving-across auto-update concerns.
  */
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..', '..');
@@ -22,8 +21,8 @@ let _cache = null;
 // Resolved at load() time (not frozen at module load) so tests can repoint
 // CLAUDE_PLUGIN_DATA + _resetCache(), and so it tracks the canonical DATA_DIR.
 function userConfigPath() {
-  const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
-    || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+  const { dataDir } = require('./data-dir.js');
+  const DATA_DIR = dataDir();
   return path.join(DATA_DIR, 'brain', 'user-config.json');
 }
 
