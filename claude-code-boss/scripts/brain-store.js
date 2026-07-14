@@ -16,11 +16,10 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const os = require('os');
 const { loadSqlite, getSqliteBackend } = require('./lib/sqlite-compat');
 
-const STORE_DIR = process.env.CLAUDE_PLUGIN_DATA
-  || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+const { dataDir } = require('./lib/data-dir.js');
+const STORE_DIR = dataDir();
 
 let _db = null;
 let _useSqlite = false;

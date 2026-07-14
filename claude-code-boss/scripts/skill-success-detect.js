@@ -22,13 +22,13 @@
 'use strict';
 
 const fs = require('fs');
+const { writeJsonAtomic } = require('./lib/atomic-write.js');
 const path = require('path');
-const os = require('os');
 
 const { runStopDetectorCli } = require('./lib/hook-io.js');
 
-const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
-  || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+const { dataDir } = require('./lib/data-dir.js');
+const DATA_DIR = dataDir();
 
 function settledPath(sid) {
   const safe = String(sid).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64) || 'default';
@@ -43,7 +43,7 @@ function writeSettled(p, ids) {
   try {
     fs.mkdirSync(path.dirname(p), { recursive: true });
     const capped = ids.slice(-200);
-    fs.writeFileSync(p, JSON.stringify(capped));
+    writeJsonAtomic(p, capped);
   } catch { /* best effort */ }
 }
 

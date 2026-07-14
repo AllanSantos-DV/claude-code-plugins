@@ -24,13 +24,13 @@
  */
 'use strict';
 const fs   = require('fs');
+const { writeJsonAtomic } = require('./lib/atomic-write.js');
 const path = require('path');
-const os   = require('os');
 
 const { loadCurationConfig, getShellsConfigPath } = require('./curation-paths.js');
 
-const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
-  || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+const { dataDir } = require('./lib/data-dir.js');
+const DATA_DIR = dataDir();
 const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');
 
 
@@ -94,7 +94,7 @@ function loadJson(p) {
 function saveJson(p, data) {
   try {
     if (!fs.existsSync(RUNTIME_DIR)) fs.mkdirSync(RUNTIME_DIR, { recursive: true });
-    fs.writeFileSync(p, JSON.stringify(data));
+    writeJsonAtomic(p, data);
   } catch (err) {
     console.error(`[CURATION-STOP] save failed (${p}): ${err.message}`);
   }

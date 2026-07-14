@@ -10,6 +10,7 @@
 'use strict';
 
 const fs = require('fs');
+const { writeJsonAtomic } = require('./lib/atomic-write.js');
 const path = require('path');
 const os = require('os');
 
@@ -36,7 +37,7 @@ function onCooldown(p) {
 }
 
 function stamp(p) {
-  try { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, JSON.stringify({ ts: Date.now() })); }
+  try { fs.mkdirSync(path.dirname(p), { recursive: true }); writeJsonAtomic(p, { ts: Date.now() }); }
   catch (e) { void e; }
 }
 

@@ -14,6 +14,7 @@ const path = require('path');
 
 const { loadCurationConfig, findProjectRoot, getShellsConfigPath } = require('./curation-paths.js');
 const { readStdin } = require('./lib/hook-io.js');
+const { writeFileAtomic } = require('./lib/atomic-write.js');
 
 // Safe defaults applied regardless of ecosystem: idempotent, non-destructive,
 // small-output, high-frequency commands.
@@ -94,7 +95,7 @@ function loadExistingConfig(shellsPath) {
 
     const config = existingConfig || { version: 1, shells: [] };
     config.whitelist = merged;
-    fs.writeFileSync(shellsPath, JSON.stringify(config, null, 2) + '\n');
+    writeFileAtomic(shellsPath, JSON.stringify(config, null, 2) + '\n');
 
     console.error(`[SESSION-WHITELIST] Detected ${ecosystem} ecosystem — whitelist: ${merged.join(', ')}`);
 

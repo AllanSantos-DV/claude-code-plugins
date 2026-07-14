@@ -21,7 +21,7 @@
  * reverts the user's choice.
  */
 const fs = require('fs');
-const os = require('os');
+const { writeFileAtomic } = require('./atomic-write.js');
 const path = require('path');
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..', '..');
@@ -30,8 +30,8 @@ const CONFIG_PATH = path.join(PLUGIN_ROOT, 'config', 'hooks-config.json');
 // Resolved at call time (not frozen at module load) so tests can repoint
 // CLAUDE_PLUGIN_DATA + _resetCache(), and so it tracks the canonical DATA_DIR.
 function userConfigPath() {
-  const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
-    || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+  const { dataDir } = require('./data-dir.js');
+  const DATA_DIR = dataDir();
   return path.join(DATA_DIR, 'hooks', 'user-config.json');
 }
 
@@ -259,7 +259,7 @@ function saveProfile(name) {
   if (!isPlainObject(current)) current = {};
   current.profile = name;
   fs.mkdirSync(path.dirname(p), { recursive: true });
-  fs.writeFileSync(p, `${JSON.stringify(current, null, 2)}\n`, 'utf-8');
+  writeFileAtomic(p, `${JSON.stringify(current, null, 2)}\n`);
   _resetCache();
   return p;
 }

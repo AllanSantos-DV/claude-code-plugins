@@ -2,8 +2,8 @@
 'use strict';
 
 const fs = require('fs');
+const { writeJsonAtomic } = require('./lib/atomic-write.js');
 const path = require('path');
-const os = require('os');
 
 const { runStopDetectorCli } = require('./lib/hook-io.js');
 const hooksCfg = require('./lib/hooks-config.js');
@@ -22,7 +22,7 @@ function readCounter(file) {
 
 function writeCounter(file, n) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify({ count: n }));
+  writeJsonAtomic(file, { count: n });
 }
 
 function loadConfig() {
@@ -37,8 +37,8 @@ async function run(event) {
   if (!cfg.enabled) return {};
 
   const sid = ev.session_id || ev.sessionId || 'default';
-  const dataDir = process.env.CLAUDE_PLUGIN_DATA
-    || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+  const { dataDir: resolveDataDir } = require('./lib/data-dir.js');
+  const dataDir = resolveDataDir();
   const cFile = counterPath(dataDir, sid);
 
   const max = cfg.maxBlocks || DEFAULT_MAX;

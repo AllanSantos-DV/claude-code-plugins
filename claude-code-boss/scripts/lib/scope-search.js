@@ -4,8 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const { USER_SENTINEL } = require('./scope-sanitizer.js');
 
-const STORE_DIR = process.env.CLAUDE_PLUGIN_DATA
-  || path.join(require('os').homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+const { dataDir } = require('./data-dir.js');
+const STORE_DIR = dataDir();
 
 function userDbExists() {
   return fs.existsSync(path.join(STORE_DIR, 'brain', USER_SENTINEL, 'brain.db'));

@@ -11,11 +11,11 @@
  * Silently fails if RUNTIME_DIR is unavailable — hooks must never crash.
  */
 const fs = require('fs');
+const { writeFileAtomic } = require('./lib/atomic-write.js');
 const path = require('path');
-const os = require('os');
 
-const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
-  || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+const { dataDir } = require('./lib/data-dir.js');
+const DATA_DIR = dataDir();
 const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');
 const HOOK_ERRORS_PATH = path.join(RUNTIME_DIR, 'hook-errors.jsonl');
 const MAX_LINES = 1000;
@@ -31,7 +31,7 @@ function hookLog(level, source, message) {
       const content = fs.readFileSync(HOOK_ERRORS_PATH, 'utf-8');
       const lines = content.split('\n').filter(Boolean);
       if (lines.length > MAX_LINES) {
-        fs.writeFileSync(HOOK_ERRORS_PATH, lines.slice(-MAX_LINES).join('\n') + '\n');
+        writeFileAtomic(HOOK_ERRORS_PATH, lines.slice(-MAX_LINES).join('\n') + '\n');
       }
     }
   } catch (err) {

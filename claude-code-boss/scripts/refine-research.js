@@ -11,11 +11,11 @@
  */
 'use strict';
 const fs = require('fs');
+const { writeJsonAtomic } = require('./lib/atomic-write.js');
 const path = require('path');
-const os = require('os');
 
-const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
-  || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+const { dataDir } = require('./lib/data-dir.js');
+const DATA_DIR = dataDir();
 const STATE = path.join(DATA_DIR, '.runtime', 'refine-research-state.json');
 const EVERY = 4; // remind at most once per 4 stops
 
@@ -34,7 +34,7 @@ function tick() {
   n += 1;
   try {
     fs.mkdirSync(path.dirname(STATE), { recursive: true });
-    fs.writeFileSync(STATE, JSON.stringify({ n }));
+    writeJsonAtomic(STATE, { n });
   } catch { /* best effort */ }
   return n;
 }

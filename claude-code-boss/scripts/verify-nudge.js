@@ -20,8 +20,8 @@
 'use strict';
 
 const fs = require('fs');
+const { writeJsonAtomic } = require('./lib/atomic-write.js');
 const path = require('path');
-const os = require('os');
 
 const verifyJournal = require('./lib/verify-journal.js');
 const hooksCfg = require('./lib/hooks-config.js');
@@ -90,8 +90,7 @@ function buildReason(edits) {
 // ── Per-session counter cap (mirrors auto-continue-stop) ──────────────────────
 
 function dataDir() {
-  return process.env.CLAUDE_PLUGIN_DATA
-    || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+  return require('./lib/data-dir.js').dataDir();
 }
 
 function counterPath(dir, sid) {
@@ -107,7 +106,7 @@ function readCounter(file) {
 function writeCounter(file, n) {
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify({ count: n }));
+    writeJsonAtomic(file, { count: n });
   } catch (err) { console.error(`[verify-nudge] counter write failed: ${err.message}`); }
 }
 

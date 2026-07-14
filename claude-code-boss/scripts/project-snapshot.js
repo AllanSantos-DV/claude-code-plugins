@@ -15,7 +15,7 @@
 'use strict';
 
 const fs = require('fs');
-const os = require('os');
+const { writeFileAtomic } = require('./lib/atomic-write.js');
 const path = require('path');
 const { spawn } = require('child_process');
 
@@ -39,8 +39,7 @@ function loadConfig() {
 }
 
 function dataDir() {
-  return process.env.CLAUDE_PLUGIN_DATA
-    || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+  return require('./lib/data-dir.js').dataDir();
 }
 
 function cachePath(cwd) {
@@ -64,7 +63,7 @@ function readCache(cwd, ttlSec) {
 }
 
 function writeCache(cwd, md) {
-  try { fs.writeFileSync(cachePath(cwd), JSON.stringify({ cwd, ts: Date.now(), md })); }
+  try { writeFileAtomic(cachePath(cwd), JSON.stringify({ cwd, ts: Date.now(), md })); }
   catch { /* nothing actionable */ }
 }
 

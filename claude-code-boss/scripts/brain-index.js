@@ -15,10 +15,10 @@
 const fs = require('fs');
 const _textUtils = require('./lib/text-utils.js');
 const path = require('path');
-const os = require('os');
 
-const STORE_DIR = process.env.CLAUDE_PLUGIN_DATA
-  || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+const { dataDir } = require('./lib/data-dir.js');
+const { writeFileAtomic } = require('./lib/atomic-write.js');
+const STORE_DIR = dataDir();
 
 let _project = 'default';
 let _indexPath = null;
@@ -61,7 +61,7 @@ async function init(opts = {}) {
 function save() {
   if (!_indexPath) return;
   _index.updatedAt = new Date().toISOString();
-  fs.writeFileSync(_indexPath, JSON.stringify(_index, null, 2));
+  writeFileAtomic(_indexPath, JSON.stringify(_index, null, 2));
 }
 
 function extractKeywords(text) {

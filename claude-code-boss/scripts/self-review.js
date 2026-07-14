@@ -22,8 +22,8 @@
 'use strict';
 
 const fs = require('fs');
+const { writeJsonAtomic } = require('./lib/atomic-write.js');
 const path = require('path');
-const os = require('os');
 
 const verifyJournal = require('./lib/verify-journal.js');
 const retrievalJournal = require('./lib/retrieval-journal.js');
@@ -33,8 +33,7 @@ const { extractKeywords } = require('./lib/text-utils.js');
 const metrics = require('./lib/metrics.js');
 
 function dataDir() {
-  return process.env.CLAUDE_PLUGIN_DATA
-    || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+  return require('./lib/data-dir.js').dataDir();
 }
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
@@ -97,7 +96,7 @@ function readSurfaced(p) {
 function writeSurfaced(p, ids) {
   try {
     fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, JSON.stringify(ids.slice(-200)));
+    writeJsonAtomic(p, ids.slice(-200));
   } catch (err) { console.error(`[self-review] surfaced write failed: ${err.message}`); }
 }
 

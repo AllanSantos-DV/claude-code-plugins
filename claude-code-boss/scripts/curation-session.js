@@ -12,13 +12,14 @@
  * Best-effort and silent when there's nothing to report.
  */
 const fs = require('fs');
+const { writeJsonAtomic, writeFileAtomic } = require('./lib/atomic-write.js');
 const path = require('path');
-const os = require('os');
 const { readStdin, emitEmpty, emitJson } = require('./lib/hook-io.js');
 const oneoff = require('./lib/oneoff-store.js');
 const { getCuration } = require('./lib/brain-config.js');
 
-const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+const { dataDir } = require('./lib/data-dir.js');
+const DATA_DIR = dataDir();
 
 (async () => {
   try {
@@ -39,7 +40,7 @@ const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || path.join(os.homedir(), '.cla
         const stamp = path.join(DATA_DIR, '.runtime', `session-start-${safe}.json`);
         if (!fs.existsSync(stamp)) {
           fs.mkdirSync(path.dirname(stamp), { recursive: true });
-          fs.writeFileSync(stamp, JSON.stringify({ ts: Date.now(), project: path.basename(cwd) }));
+          writeFileAtomic(stamp, JSON.stringify({ ts: Date.now(), project: path.basename(cwd) }));
         }
       }
     } catch (e) { void e; /* stamp is best-effort */ }
@@ -59,7 +60,7 @@ const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || path.join(os.homedir(), '.cla
       const root = process.env.CLAUDE_PLUGIN_ROOT;
       if (due && root && !root.includes('${')) {
         fs.mkdirSync(path.dirname(cstamp), { recursive: true });
-        fs.writeFileSync(cstamp, JSON.stringify({ ts: Date.now() }));
+        writeJsonAtomic(cstamp, { ts: Date.now() });
         const { spawn } = require('child_process');
         const child = spawn(process.execPath,
           [path.join(root, 'scripts', 'brain-consolidate.js'), '--project', path.basename(cwd), '--apply'],

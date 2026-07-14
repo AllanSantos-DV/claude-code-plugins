@@ -25,8 +25,8 @@ const { sanitizeProjectId } = require('./lib/project-id.js');
 const store = require('./brain-store.js');
 
 const HOME = os.homedir();
-const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
-  || path.join(HOME, '.claude', 'plugins', 'data', 'claude-code-boss');
+const { dataDir } = require('./lib/data-dir.js');
+const DATA_DIR = dataDir();
 const STAGING_DIR = path.join(DATA_DIR, 'skills-pending');
 const GLOBAL_SKILLS_DIR = path.join(HOME, '.claude', 'skills');
 

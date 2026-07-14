@@ -16,12 +16,10 @@
 
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const http = require('http');
 
 function dataDir() {
-  return process.env.CLAUDE_PLUGIN_DATA
-    || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+  return require('./data-dir.js').dataDir();
 }
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────

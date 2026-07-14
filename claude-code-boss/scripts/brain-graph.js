@@ -13,11 +13,11 @@
  *   const cites = await graph.getCites('id-a');
  */
 const fs = require('fs');
+const { writeFileAtomic } = require('./lib/atomic-write.js');
 const path = require('path');
-const os = require('os');
 
-const STORE_DIR = process.env.CLAUDE_PLUGIN_DATA
-  || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+const { dataDir } = require('./lib/data-dir.js');
+const STORE_DIR = dataDir();
 
 let _project = 'default';
 let _graphPath = null;
@@ -55,7 +55,7 @@ async function init(opts = {}) {
 
 function save() {
   if (!_graphPath) return;
-  fs.writeFileSync(_graphPath, JSON.stringify(_graph, null, 2));
+  writeFileAtomic(_graphPath, JSON.stringify(_graph, null, 2));
 }
 
 async function registerNode(entry) {
