@@ -25,6 +25,12 @@ const SESSION_TOKEN = crypto.randomBytes(16).toString('hex');
 const ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
 const DASHBOARD_DIR = path.join(ROOT, 'dashboard');
 
+// Declared BEFORE DATA_DIR: resolveBestDataDir() (called on the next line when
+// CLAUDE_PLUGIN_DATA is unset) calls countEntriesInDb → _countCache. A `const`
+// is in the temporal dead zone until its line runs, so declaring it after DATA_DIR
+// made every boot-time count throw (caught → 0) and pick the wrong data dir.
+const _countCache = new Map(); // dbPath -> { mtimeMs, count } — avoids a sync COUNT(*) per project on every /api/status poll
+
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || resolveBestDataDir();
 const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');
 
@@ -59,14 +65,31 @@ function resolveBestDataDir() {
   return best;
 }
 
+// Cache key = newest mtime of the db AND its -wal sidecar: brain-store opens WAL
+// (journal_mode=WAL), so a commit lands in <db>-wal and the main file's mtime
+// wouldn't change until checkpoint — keying on the main file alone would serve a
+// stale count. Taking the max invalidates on every WAL write. (_countCache is
+// declared up top, before DATA_DIR, to avoid a TDZ during resolveBestDataDir.)
+function _dbMtime(dbPath) {
+  let m = 0;
+  for (const p of [dbPath, `${dbPath}-wal`]) {
+    try { m = Math.max(m, fs.statSync(p).mtimeMs); } catch { /* sidecar may not exist */ }
+  }
+  return m;
+}
 function countEntriesInDb(dbPath) {
   const Database = loadSqlite();
   if (!Database) return 0;
   try {
+    const mtimeMs = _dbMtime(dbPath);
+    const cached = _countCache.get(dbPath);
+    if (cached && cached.mtimeMs === mtimeMs) return cached.count; // db + wal unchanged → reuse
     const db = new Database(dbPath, { readonly: true });
     const row = db.prepare('SELECT COUNT(*) AS c FROM entries').get();
     db.close();
-    return row?.c || 0;
+    const count = row?.c || 0;
+    _countCache.set(dbPath, { mtimeMs, count });
+    return count;
   } catch (err) {
     console.error(`[dashboard] countEntriesInDb(${dbPath}) failed: ${err.message}`);
     return 0;

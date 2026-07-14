@@ -3270,6 +3270,51 @@ test('C6 brain-store.searchByKeywords: uses the keywords table, not a null-vecto
   assert(sqliteFn && /AND e\.project = \?/.test(sqliteFn[0]), 'searchByKeywordsSqlite must scope by project');
 });
 
+// ─── Sprint 4 — performance hot-paths ─────────────────────────────────────────
+const failJournalS4 = require('./lib/failure-journal.js');
+test('S4 failure-journal.sweepOld: deletes old files, keeps recent + sibling journals (disk bound)', () => {
+  const dir = failJournalS4.RUNTIME_DIR;
+  fs.mkdirSync(dir, { recursive: true });
+  const oldF = path.join(dir, `failure-turn-s4test${'--'}${Date.now()}-old.json`);
+  const newF = path.join(dir, `failure-turn-s4test${'--'}${Date.now()}-new.json`);
+  const siblingF = path.join(dir, `retrieval-turn-s4test${'--'}${Date.now()}-x.json`); // must NOT be swept
+  fs.writeFileSync(oldF, '{}'); fs.writeFileSync(newF, '{}'); fs.writeFileSync(siblingF, '{}');
+  // age the "old" failure file AND the sibling 48h back
+  const past = Date.now() - 48 * 60 * 60 * 1000;
+  fs.utimesSync(oldF, new Date(past), new Date(past));
+  fs.utimesSync(siblingF, new Date(past), new Date(past));
+  const removed = failJournalS4.sweepOld(24 * 60 * 60 * 1000);
+  assert(removed >= 1, 'must remove at least the aged failure file');
+  assert(!fs.existsSync(oldF), 'aged failure file deleted');
+  assert(fs.existsSync(newF), 'recent failure file kept');
+  assert(fs.existsSync(siblingF), 'aged SIBLING journal (retrieval-turn-) must NOT be swept — prefix safety');
+  try { fs.unlinkSync(newF); fs.unlinkSync(siblingF); } catch { /* cleanup */ }
+});
+
+test('S4 retrieve-core: pool-warming is fire-and-forget (no await blocking recall)', () => {
+  const src = fs.readFileSync(path.join(SCRIPTS, 'lib', 'retrieve-core.js'), 'utf-8');
+  assert(!/await warmP/.test(src), 'must not await the discarded pool-warming call on the hot path');
+  assert(/fire-and-forget/.test(src), 'the fire-and-forget intent should be documented');
+});
+
+test('S4 project-snapshot: dead `git log main` spawn removed', () => {
+  const src = fs.readFileSync(path.join(SCRIPTS, 'project-snapshot.js'), 'utf-8');
+  assert(!/_mainR/.test(src), 'the unused _mainR slot must be gone');
+  assert(!/'log', '-1', '--format=%ct', 'main'/.test(src), 'the dead git log main spawn must be removed');
+});
+
+test('S4 dashboard.countEntriesInDb: caches by db+wal mtime (WAL-safe) + cache declared before DATA_DIR (no TDZ)', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'scripts', 'dashboard.js'), 'utf-8');
+  const fn = src.match(/function countEntriesInDb[\s\S]*?\n\}/);
+  assert(fn, 'countEntriesInDb not found');
+  assert(/_countCache/.test(fn[0]) && /_dbMtime/.test(fn[0]), 'must cache the count keyed by _dbMtime');
+  const mt = src.match(/function _dbMtime[\s\S]*?\n\}/);
+  assert(mt && /-wal/.test(mt[0]), '_dbMtime must include the -wal sidecar so WAL commits invalidate the cache');
+  // TDZ guard: the const cache must be declared BEFORE DATA_DIR = ...resolveBestDataDir()
+  // (which counts at boot), else a temporal-dead-zone throw makes every count 0.
+  assert(src.indexOf('const _countCache') < src.indexOf('const DATA_DIR'), '_countCache must be declared before DATA_DIR (its first boot-time use)');
+});
+
 // ─── model-router-ensure: opt-in merge (shipped ⊕ DATA_DIR user-config) ──────
 const routerEnsure = require('./model-router-ensure.js');
 

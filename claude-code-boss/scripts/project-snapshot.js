@@ -92,9 +92,8 @@ function runCmd(cmd, args, cwd, timeoutMs) {
 async function gatherLocal(cwd, deadlineFn) {
   const out = { branch: null, branchAgeDays: null, ahead: 0, behind: 0, dirtyOld: [], stashCount: 0 };
 
-  const [branchR, _mainR, hbR, dirtyR, stashR] = await Promise.all([
+  const [branchR, hbR, dirtyR, stashR] = await Promise.all([
     runCmd('git', ['rev-parse', '--abbrev-ref', 'HEAD'], cwd, 1000),
-    runCmd('git', ['log', '-1', '--format=%ct', 'main'], cwd, 1000),
     runCmd('git', ['rev-list', '--left-right', '--count', 'main...HEAD'], cwd, 1000),
     runCmd('git', ['status', '--porcelain=v1'], cwd, 1500),
     runCmd('git', ['stash', 'list'], cwd, 1000),

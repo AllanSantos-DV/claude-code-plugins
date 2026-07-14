@@ -577,9 +577,19 @@ async function ingestStatus(opts = {}) {
  * which compose then reads. Results are NOT injected into the user prompt — this
  * is a signal-generation pass only. mcp-memory ONLY; best-effort at the call site.
  */
+let _warmInFlight = false;
 async function warmPool(query, opts = {}) {
   if (_mode !== 'mcp-memory') return [];
-  return searchMcp(query, { topK: opts.topK || 5, includeHome: true });
+  // Single-flight: warmups are best-effort and their result is discarded, so if one
+  // is already in flight (fire-and-forget from a prior recall) skip stacking another
+  // — this bounds pending search_memory calls competing with compose on the client.
+  if (_warmInFlight) return [];
+  _warmInFlight = true;
+  try {
+    return await searchMcp(query, { topK: opts.topK || 5, includeHome: true });
+  } finally {
+    _warmInFlight = false;
+  }
 }
 
 async function searchByKeywords(keywords, opts = {}) {
