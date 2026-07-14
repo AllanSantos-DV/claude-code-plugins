@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>claude-code-boss — memória semântica e execução curada para o Claude Code</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória que fundamenta a resposta (recall em dois níveis), execução curada anti context-bloat e aprendizado no loop. A v2.4.0 endurece o auto-updater (Sprint 2 do review completo): um portão de integridade confere o SHA-256 do release (publicado como asset .sha256 irmão) antes de extrair ou instalar, fail-closed por padrão (divergência ou digest ausente aborta), com allowlist de host/redirect e poda de backups. Honesto: é integridade em trânsito (MITM/redirect), não autenticidade; a assinatura destacada fica como follow-up. Backend externo opcional (memory-server ≥ 2.18; pool-warming ≥ 2.20)." />
+<meta name="description" content="Plugin para Claude Code Desktop: memória que fundamenta a resposta (recall em dois níveis), execução curada anti context-bloat e aprendizado no loop. A v2.5.0 é correção, não recurso (Sprint 3 do review completo): seis bugs que degradavam recall e estado em silêncio, cada um corrigido failing-first com prova de mutação num gate de 3 avaliadores: embedding diluído que sumia da busca (cos 0.51→0.13), vazamento do JVM de 512MB a cada troca de projeto, detector lendo evento fantasma, regex fail-open, flags de backend presas e busca por palavra-chave que ignorava os termos. Backend externo opcional (memory-server ≥ 2.18; pool-warming ≥ 2.20)." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -278,6 +278,40 @@
   .verify-foot i{ color:#a29f97; font-style:italic }
   .verify-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
 
+  /* v2.5.0 : diagnostics - 6 sinais que liam/escreviam errado, degradando em silencio */
+  .diagnostics{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:720px; font-family:var(--mono); margin:0 0 36px }
+  .diag-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .diag-bar .k{ color:var(--accent) }
+  .diag-bar .m{ color:#8a877f }
+  .diag-lead{ padding:18px 22px 4px; margin:0; font-size:12.5px; line-height:1.6; color:#a29f97 }
+  .diag-lead b{ color:var(--panel-ink); font-weight:600 }
+  .diag-lead .sig{ color:var(--accent); font-weight:600 }
+  .repairs{ list-style:none; margin:0; padding:8px 0 0 }
+  .rep{ display:grid; grid-template-columns:auto 1fr; gap:14px; padding:15px 22px;
+    border-top:1px solid rgba(255,255,255,.06) }
+  .rep-id{ align-self:start; margin-top:1px; min-width:28px; height:20px; padding:0 6px;
+    border:1px solid var(--accent); border-radius:5px; color:var(--accent);
+    font-size:10.5px; letter-spacing:.06em; font-weight:600; display:grid; place-items:center }
+  .rep-head{ display:flex; flex-wrap:wrap; align-items:baseline; gap:7px 10px; margin:0 0 7px }
+  .rep-head b{ font-size:12.5px; letter-spacing:.02em; color:var(--panel-ink) }
+  .rep-head .site{ font-size:10.5px; letter-spacing:.03em; color:#8a877f }
+  .rep-sym{ font-size:11.5px; line-height:1.55; color:#8a877f; margin:0 0 9px }
+  .rep-sym em{ color:var(--accent); font-style:normal; white-space:nowrap }
+  .rep-fix{ display:flex; flex-wrap:wrap; align-items:baseline; gap:7px 11px; margin:0;
+    font-size:11.5px; line-height:1.5 }
+  .rep-fix .was{ color:#8a877f }
+  .rep-fix .arw{ color:var(--accent); font-weight:700 }
+  .rep-fix .now{ color:#e4e1d9 }
+  .rep-note{ font-size:11px; line-height:1.5; color:#8a877f; margin:8px 0 0 }
+  .rep-note b{ color:#a29f97; font-weight:600 }
+  .rep code{ background:rgba(255,255,255,.08); color:inherit; font-size:11px; padding:1px 5px; border-radius:4px }
+  .diag-foot{ padding:14px 22px; border-top:1px solid var(--panel-line);
+    font-size:11px; line-height:1.6; color:#8a877f }
+  .diag-foot b{ color:#a29f97 }
+  .diag-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+
   footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
   footer a{ color:var(--muted); text-decoration:none }
   footer a:hover{ color:var(--accent) }
@@ -295,7 +329,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.4.0</span>
+    <span class="ver">v2.5.0</span>
   </nav>
 
   <header class="hero">
@@ -358,6 +392,98 @@
         <p>Um painel em <code>localhost</code> para ver a KB, os hooks e os logs. Abre quando você chama, não no boot.</p>
       </div>
     </div>
+  </section>
+
+  <section>
+    <p class="label">Novo na v2.5.0 · correção</p>
+    <p class="lede">A v2.5.0 não adiciona recurso: <b>conserta</b>. O Sprint 3 do review completo achou <b>seis bugs que falhavam em silêncio</b>: cada um degradando o recall ou o estado <b>sem levantar erro</b>, então ninguém via. Um lia um evento que <b>nunca</b> é emitido; outro diluía o vetor abaixo do gate de busca; outro deixava um Java de 512MB vazar a cada troca de projeto. Cada correção entrou <b>failing-first</b>, com prova de mutação, num gate de <b>3 avaliadores</b> (reviewer, tester e revisor externo).</p>
+
+    <div class="callout">
+      <span class="tag">São correções, não features</span>
+      Não há nada novo pra aprender aqui, só coisas que <b>já</b> deviam funcionar e não funcionavam. O sintoma comum era a <b>degradação silenciosa</b>: o recall trazia menos (ou nada), o daemon vazava memória, um detector marcava sucesso pra sempre, tudo <b>sem erro visível</b>. Consertar exigiu primeiro <b>provar a falha</b> com um teste que falha, depois a correção.
+    </div>
+
+    <div class="diagnostics" aria-label="Diagnóstico de correção da v2.5.0: seis bugs que degradavam recall ou estado em silêncio, cada um corrigido failing-first com prova de mutação num gate de 3 avaliadores. C1, embedding diluído no saveLocal do brain: embedava título mais resumo mais detalhe, e o detalhe diluía o vetor abaixo do gate de recall (cosseno caindo de 0.51 para 0.13), então a entrada sumia da busca; agora usa buildEmbedText de título e resumo, com uma única escrita do vetor e o embed em try/catch para não perder a entrada numa falha transitória. C2, vazamento de JVM no close do mcp-client: nulava o processo antes do kill de 2 segundos disparar, então o Java de 512MB sobrevivia a cada troca de projeto; agora captura a referência antes de nular. C3, evento fantasma no skill-success-detect: lia failure.retro.fired, que ninguém emite, marcando toda skill como sucesso para sempre; agora lê o evento real nudge.emitted com kind failure. C4, regex fail-open no buildLibRegex: com a lista de libs vazia gerava uma alternação vazia que casava quase todo prompt, disparando nudge em todo turno; agora retorna um regex que nunca casa. C5, flags de backend presas no close do brain-store: não resetava useSqlite e useJson, então numa troca de projeto com falha ficava com o banco nulo e a flag presa em verdadeiro, causando null-deref; agora reseta as flags no close. C6, busca por palavra-chave ignorando os termos: o atalho sem vetor zerava todos os scores e retornava só por confiança, ignorando os keywords; agora usa a tabela de keywords, escopada por projeto, sem vazamento entre projetos.">
+      <div class="diag-bar">
+        <span class="k">diagnostics</span>
+        <span class="m">correctness · Sprint 3 · 6 falhas silenciosas</span>
+      </div>
+      <p class="diag-lead"><span class="sig">6 sinais liam ou escreviam errado.</span> Nenhum levantava erro: o recall e o estado escorregavam <b>sem aviso</b>. Abaixo, o sintoma silencioso de cada um e o reparo.</p>
+      <ul class="repairs">
+        <li class="rep">
+          <span class="rep-id">C1</span>
+          <div class="rep-main">
+            <div class="rep-head"><b>Embedding diluído</b> <span class="site">brain · saveLocal</span></div>
+            <p class="rep-sym">o detalhe diluía o vetor abaixo do gate de recall; a entrada sumia da busca (<em>cos 0.51→0.13</em>)</p>
+            <p class="rep-fix"><span class="was">título+resumo+<b>detalhe</b></span><span class="arw">→</span><span class="now"><code>buildEmbedText</code> (título+resumo)</span></p>
+            <p class="rep-note">uma <b>única</b> escrita com o vetor (era save→get→re-save, que inflava <code>access_count</code>) · embed em <code>try/catch</code>: falha transitória não perde mais a entrada</p>
+          </div>
+        </li>
+        <li class="rep">
+          <span class="rep-id">C2</span>
+          <div class="rep-main">
+            <div class="rep-head"><b>Vazamento de JVM</b> <span class="site">mcp-client · close()</span></div>
+            <p class="rep-sym">nulava <code>_process</code> antes do kill de 2s disparar, e o Java de <em>512MB</em> sobrevivia a cada troca de projeto</p>
+            <p class="rep-fix"><span class="was">nula, depois tenta matar</span><span class="arw">→</span><span class="now">captura a ref, <b>depois</b> nula</span></p>
+          </div>
+        </li>
+        <li class="rep">
+          <span class="rep-id">C3</span>
+          <div class="rep-main">
+            <div class="rep-head"><b>Evento fantasma</b> <span class="site">skill-success-detect</span></div>
+            <p class="rep-sym">lia um evento que ninguém emite, então toda skill ficava <em>success:1</em> pra sempre</p>
+            <p class="rep-fix"><span class="was"><code>failure.retro.fired</code></span><span class="arw">→</span><span class="now"><code>nudge.emitted{kind:'failure'}</code></span></p>
+          </div>
+        </li>
+        <li class="rep">
+          <span class="rep-id">C4</span>
+          <div class="rep-main">
+            <div class="rep-head"><b>Regex fail-open</b> <span class="site">buildLibRegex</span></div>
+            <p class="rep-sym">lista de libs vazia virava alternação vazia que casava quase todo prompt (<em>nudge em todo turno</em>)</p>
+            <p class="rep-fix"><span class="was">alternação vazia (casa tudo)</span><span class="arw">→</span><span class="now">regex que <b>nunca</b> casa</span></p>
+          </div>
+        </li>
+        <li class="rep">
+          <span class="rep-id">C5</span>
+          <div class="rep-main">
+            <div class="rep-head"><b>Flags de backend presas</b> <span class="site">brain-store · close()</span></div>
+            <p class="rep-sym">não resetava <code>_useSqlite/_useJson</code>; numa troca de projeto com falha, <code>_db=null</code> com a flag stale-true causava <em>null-deref</em></p>
+            <p class="rep-fix"><span class="was">flags ficam presas</span><span class="arw">→</span><span class="now">reseta <code>_useSqlite/_useJson</code> no <code>close()</code></span></p>
+          </div>
+        </li>
+        <li class="rep">
+          <span class="rep-id">C6</span>
+          <div class="rep-main">
+            <div class="rep-head"><b>Busca ignorava os termos</b> <span class="site">searchSqlite · keyword</span></div>
+            <p class="rep-sym">o atalho sem vetor zerava todos os scores e retornava só por confiança, ignorando os <em>keywords</em></p>
+            <p class="rep-fix"><span class="was"><code>searchSqlite(null)</code> zera scores</span><span class="arw">→</span><span class="now">usa a tabela de keywords</span></p>
+            <p class="rep-note"><b>escopada por projeto</b>, sem vazamento cross-project</p>
+          </div>
+        </li>
+      </ul>
+      <div class="diag-foot">cada fix <b>failing-first</b> + prova de mutação · gate de <b>3 avaliadores</b> + re-gate · <b>419</b> unitários + <b>65</b> suítes de hooks no verde</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>Recall que não some</h4>
+        <p>Os dois bugs de recall, fechados: o embedding volta a usar só <code>título+resumo</code> (<b>C1</b>), então o vetor não afunda abaixo do gate de busca; e a busca por palavra-chave passa a <b>usar os keywords</b>, escopada por projeto (<b>C6</b>), em vez de zerar os scores e retornar só por confiança.</p>
+      </div>
+      <div class="win">
+        <h4>Estado que não trava</h4>
+        <p>O daemon Java de 512MB para de vazar a cada troca de projeto: o <code>close()</code> captura a ref antes de nular (<b>C2</b>). E o <code>brain-store.close()</code> reseta <code>_useSqlite/_useJson</code> (<b>C5</b>): fim do <code>_db=null</code> com flag presa que derrubava a próxima troca de projeto num null-deref.</p>
+      </div>
+      <div class="win">
+        <h4>Sinal que não mente</h4>
+        <p>O detector lia <code>failure.retro.fired</code>, que <b>ninguém emite</b>, e marcava toda skill como <code>success:1</code> pra sempre; agora lê o evento real (<b>C3</b>). E o nudge de libs para de disparar em todo turno com a lista vazia: a alternação vazia virou um regex que nunca casa (<b>C4</b>).</p>
+      </div>
+      <div class="win">
+        <h4>Provado antes de existir</h4>
+        <p>Falha silenciosa só se conserta se você <b>consegue vê-la</b> primeiro. As seis entraram <b>failing-first</b>, com prova de mutação pra garantir que o teste pega a regressão, num gate de <b>3 avaliadores</b> independentes + re-gate. <b>419</b> unitários + <b>65</b> suítes de hooks no verde.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Honesto sobre o que falta:</b> os vetores já gravados diluídos só melhoram quando você roda <code>brain-reembed</code>; a correlação falha↔skill do <b>C3</b> é aproximada (uma falha posterior não-relacionada ainda pode marcar uma skill anterior); a concorrência do singleton do brain-store no dashboard segue pra serializar; e o card "Failure retros fired" do dashboard lê o mesmo evento fantasma, a corrigir na frente do dashboard. <b>419</b> unitários + <b>65</b> suítes de hooks no verde; <code>eslint</code> + <code>version-sync</code> ok.</p>
   </section>
 
   <section>
