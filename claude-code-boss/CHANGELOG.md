@@ -1,5 +1,34 @@
 # Changelog
 
+## [2.2.0] - 2026-07-13
+
+### Added — onboarding de identidade de projeto: advisory guiado quando o recall cai no basename frágil
+
+No backend `mcp-memory`, o cliente escopa a memória por um `projectId`. Sem
+`.claude-boss-project`, sem `CCB_PROJECT_ID` e sem `backend.mcpMemory.projectId`,
+o recall cai no `basename(cwd)` — que muda entre máquinas/clones e pode colidir
+no daemon compartilhado (memória trocada/dividida). O marcador que resolve isso
+já existia, mas nada induzia o usuário a criá-lo, então na prática quase nenhum
+projeto ganhava a identidade estável para a qual o marcador foi feito.
+
+Novo hook de `SessionStart` (`project-identity-advisory.js`) detecta esse estado
+e injeta **um** advisory guiado, pedindo ao agente que **ofereça** (com o "ok" do
+usuário) fixar um id estável criando o `.claude-boss-project`. Consent-first: o
+hook **nunca** escreve o marcador — a identidade é escolha humana; o agente media.
+
+- **Gating fiel ao handshake**: silencioso quando há id estável por qualquer
+  fonte que o handshake realmente usa (`backend.mcpMemory.projectId` cru — vence
+  RAW via `mcpCfg.projectId || _project`; `CCB_PROJECT_ID`; ou marcador em
+  cwd/ancestral), no backend `local` (onde o `basename` é o esperado por design),
+  e sob cooldown por-pasta.
+- **Cooldown por-pasta atômico**: um arquivo de stamp por pasta (hash do `cwd`),
+  escrito via temp+rename — sem *lost update* entre sessões simultâneas.
+- **Opt-out**: `onboarding.projectIdentity: false`.
+- README "Identidade do projeto" ganhou um quickstart **"Projeto novo?"**.
+
+Sem mudança no servidor; fecha o gap de usabilidade que fazia o recall cross-máquina
+depender de um marcador que ninguém era lembrado de criar.
+
 ## [2.1.0] - 2026-07-13
 
 ### Added — pool-warming: a memória de conversa ingerida agora gradua pro spine (ADR-017 / server ≥ 2.20)
