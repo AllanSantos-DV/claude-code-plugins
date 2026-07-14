@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>claude-code-boss — memória semântica e execução curada para o Claude Code</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória que fundamenta a resposta (recall em dois níveis), execução curada anti context-bloat e aprendizado no loop. A v2.2.0 adiciona onboarding de identidade: um advisory consent-first no SessionStart que oferece fixar um id estável de projeto quando o recall externo cairia no basename(cwd) frágil. Backend externo opcional (memory-server ≥ 2.18; pool-warming ≥ 2.20)." />
+<meta name="description" content="Plugin para Claude Code Desktop: memória que fundamenta a resposta (recall em dois níveis), execução curada anti context-bloat e aprendizado no loop. A v2.3.0 é um release de blindagem (Sprint 1 do review completo do plugin): fecha 7 classes de vulnerabilidade (command e shell injection, stored XSS, path traversal de project id, DNS-rebinding/CSRF, traversal de estático e interpolação PowerShell), cada fix failing-first com prova de mutação e sem breaking de API. Backend externo opcional (memory-server ≥ 2.18; pool-warming ≥ 2.20)." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -204,6 +204,39 @@
   .gate-foot b{ color:#a29f97 }
   .gate-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
 
+  /* v2.3.0 — blindagem: os 7 vetores fechados */
+  .shield{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:720px; font-family:var(--mono); margin:0 0 36px }
+  .shield-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .shield-bar .k{ color:var(--accent) }
+  .shield-bar .m{ color:#8a877f }
+  .shield-count{ display:grid; grid-template-columns:auto 1fr; gap:18px; align-items:center; padding:20px 22px 12px }
+  .shield-count b{ font-size:34px; line-height:.9; letter-spacing:-.02em; color:var(--accent) }
+  .shield-count span{ font-size:11.5px; color:#a29f97; line-height:1.5 }
+  .vectors{ list-style:none; margin:0; padding:2px 0 0 }
+  .vec{ display:grid; grid-template-columns:auto 1fr; gap:14px; padding:14px 22px;
+    border-top:1px solid rgba(255,255,255,.06) }
+  .vec-seal{ width:19px; height:19px; border-radius:5px; border:1px solid var(--accent);
+    color:var(--accent); font-size:11px; line-height:1; display:grid; place-items:center; margin-top:2px }
+  .vec-seal::before{ content:"\2714" }
+  .vec-head{ display:flex; flex-wrap:wrap; align-items:baseline; gap:7px 10px; margin:0 0 9px }
+  .vec-head b{ font-size:12.5px; letter-spacing:.02em; color:var(--panel-ink) }
+  .vec-head .site{ font-size:10.5px; letter-spacing:.03em; color:#8a877f }
+  .vec-fix{ display:grid; gap:5px }
+  .vec-line{ display:grid; grid-template-columns:12px 1fr; gap:9px; align-items:baseline;
+    font-size:11.5px; line-height:1.5 }
+  .vec-line span{ min-width:0; overflow-wrap:anywhere }
+  .vec-line .s{ font-weight:700; text-align:center }
+  .vec-del{ color:#8a877f }
+  .vec-add{ color:#cbc8c0 }
+  .vec-add .s{ color:var(--accent) }
+  .vec code{ background:rgba(255,255,255,.08); color:inherit; font-size:11px; padding:1px 5px }
+  .shield-foot{ padding:14px 22px; border-top:1px solid var(--panel-line);
+    font-size:11px; line-height:1.55; color:#8a877f }
+  .shield-foot b{ color:#a29f97 }
+  .shield-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+
   footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
   footer a{ color:var(--muted); text-decoration:none }
   footer a:hover{ color:var(--accent) }
@@ -221,7 +254,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.2.0</span>
+    <span class="ver">v2.3.0</span>
   </nav>
 
   <header class="hero">
@@ -284,6 +317,121 @@
         <p>Um painel em <code>localhost</code> para ver a KB, os hooks e os logs. Abre quando você chama, não no boot.</p>
       </div>
     </div>
+  </section>
+
+  <section>
+    <p class="label">Novo na v2.3.0 · blindagem de segurança</p>
+    <p class="lede">A v2.3.0 é um release de <b>blindagem</b>: o Sprint 1 do review completo do plugin. Um review adversarial de <b>5 áreas</b>, mais um gate de <b>3 avaliadores</b> independentes (reviewer, tester e revisor externo), achou e fechou <b>7 classes de vulnerabilidade</b>. Cada correção entrou <b>failing-first</b>, com prova de mutação, e <b>sem breaking de API</b>: o comportamento observável só muda para entrada maliciosa, que agora é rejeitada.</p>
+
+    <div class="callout">
+      <span class="tag">Sprint 1 do review completo</span>
+      A superfície mais exposta era a HTTP do dashboard: valor vindo do atacante chegava cru até um <code>execSync</code> de shell, até o HTML e até o <code>path.join</code>. O review tratou toda entrada não-confiável como hostil por padrão: <b>argv</b> no lugar de string de shell, <b>escape</b> no lugar de interpolação, <b>rejeitar</b> no lugar de coagir.
+    </div>
+
+    <div class="shield" aria-label="Ledger de blindagem da v2.3.0: 7 classes de vulnerabilidade fechadas. Command injection no dashboard e shell injection no embedder ollama trocados por execFileSync com argv e stdin. Stored XSS fechado com escapeHtml em todo campo influenciável, e botões com atributos data e listener delegado. Path traversal de project id rejeitado por sanitizeProjectId, que recusa separador, dois-pontos e ponto-ponto. DNS-rebinding e CSRF no metrics reset barrados por checagem de Host e Origin loopback. Traversal de estático delimitado por path.sep. Interpolação de PowerShell restrita por allowlist de nome de env-var.">
+      <div class="shield-bar">
+        <span class="k">hardening</span>
+        <span class="m">review adversarial · 5 áreas · gate de 3 avaliadores</span>
+      </div>
+      <div class="shield-count">
+        <b>7</b>
+        <span>classes de vulnerabilidade fechadas. Cada uma achada por review adversarial, corrigida failing-first e provada por mutação.</span>
+      </div>
+      <ul class="vectors">
+        <li class="vec">
+          <span class="vec-seal" aria-hidden="true"></span>
+          <div>
+            <div class="vec-head"><b>Command injection</b> <span class="site">dashboard · brain-promote</span></div>
+            <div class="vec-fix">
+              <div class="vec-line vec-del"><span class="s">-</span><span><code>execSync(string de shell)</code></span></div>
+              <div class="vec-line vec-add"><span class="s">+</span><span><code>execFileSync(node, [script, ...argv])</code></span></div>
+            </div>
+          </div>
+        </li>
+        <li class="vec">
+          <span class="vec-seal" aria-hidden="true"></span>
+          <div>
+            <div class="vec-head"><b>Stored XSS</b> <span class="site">dashboard · KB · projeto · doctor · modelos</span></div>
+            <div class="vec-fix">
+              <div class="vec-line vec-del"><span class="s">-</span><span><code>onclick="…"</code> com valor cru interpolado</span></div>
+              <div class="vec-line vec-add"><span class="s">+</span><span><code>escapeHtml</code> · <code>data-*</code> + listener delegado</span></div>
+            </div>
+          </div>
+        </li>
+        <li class="vec">
+          <span class="vec-seal" aria-hidden="true"></span>
+          <div>
+            <div class="vec-head"><b>Shell injection</b> <span class="site">embedder ollama</span></div>
+            <div class="vec-fix">
+              <div class="vec-line vec-del"><span class="s">-</span><span>shell <code>ollama run …</code></span></div>
+              <div class="vec-line vec-add"><span class="s">+</span><span><code>execFileSync(ollama, [run, model], {input})</code> · stdin</span></div>
+            </div>
+          </div>
+        </li>
+        <li class="vec">
+          <span class="vec-seal" aria-hidden="true"></span>
+          <div>
+            <div class="vec-head"><b>Path traversal</b> <span class="site">project id · brain-server · promote · HTTP</span></div>
+            <div class="vec-fix">
+              <div class="vec-line vec-del"><span class="s">-</span><span><code>path.join(brainDir, id)</code> com id cru</span></div>
+              <div class="vec-line vec-add"><span class="s">+</span><span><code>sanitizeProjectId</code> rejeita <code>/ \ : ..</code></span></div>
+            </div>
+          </div>
+        </li>
+        <li class="vec">
+          <span class="vec-seal" aria-hidden="true"></span>
+          <div>
+            <div class="vec-head"><b>DNS-rebinding + CSRF</b> <span class="site">model-router · /metrics/reset</span></div>
+            <div class="vec-fix">
+              <div class="vec-line vec-del"><span class="s">-</span><span><code>POST /metrics/reset</code> sem checagem de origem</span></div>
+              <div class="vec-line vec-add"><span class="s">+</span><span>Host loopback <b>e</b> Origin ausente/loopback</span></div>
+            </div>
+          </div>
+        </li>
+        <li class="vec">
+          <span class="vec-seal" aria-hidden="true"></span>
+          <div>
+            <div class="vec-head"><b>Traversal de estático</b> <span class="site">dashboard · serveStatic</span></div>
+            <div class="vec-fix">
+              <div class="vec-line vec-del"><span class="s">-</span><span>prefixo de string, escapa pro diretório-irmão</span></div>
+              <div class="vec-line vec-add"><span class="s">+</span><span>limite por <code>DASHBOARD_DIR + path.sep</code></span></div>
+            </div>
+          </div>
+        </li>
+        <li class="vec">
+          <span class="vec-seal" aria-hidden="true"></span>
+          <div>
+            <div class="vec-head"><b>Interpolação PowerShell</b> <span class="site">model-router-ensure</span></div>
+            <div class="vec-fix">
+              <div class="vec-line vec-del"><span class="s">-</span><span>nome de env-var cru no comando</span></div>
+              <div class="vec-line vec-add"><span class="s">+</span><span>allowlist antes de interpolar</span></div>
+            </div>
+          </div>
+        </li>
+      </ul>
+      <div class="shield-foot">cada fix <b>failing-first</b> + prova de mutação · sem breaking de API · o observável só muda para entrada maliciosa, agora rejeitada</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>Rejeitar, não coagir</h4>
+        <p>O novo <code>sanitizeProjectId</code> <b>rejeita</b> ids com separador, <code>:</code> ou <code>..</code>, em vez de tentar limpá-los. Fecha de uma vez o escape do <code>path.join(brainDir, id)</code> <b>e</b> a colisão silenciosa de escopo (<code>orgA/api</code> vs <code>api</code>), em toda a superfície HTTP do dashboard, no brain-server e no brain-promote.</p>
+      </div>
+      <div class="win">
+        <h4>Argv, nunca string de shell</h4>
+        <p>Injeção de comando e de shell morre na fonte: <code>execFileSync</code> com array de argumentos, texto por stdin, sem shell. Vale pro <code>brain-promote</code> do dashboard e pro embedder <code>ollama</code>. Metacaractere de shell não é mais interpretado.</p>
+      </div>
+      <div class="win">
+        <h4>Nada de atacante entra cru no HTML</h4>
+        <p>Todo campo influenciável passa por <code>escapeHtml</code>: título, resumo, tipo e escopo da KB; projeto e modelo; saída do doctor; <code>err.message</code> de log. Os botões de ação trocaram <code>onclick</code> interpolado por <code>data-*</code> e listener delegado. Fim do stored XSS no dashboard.</p>
+      </div>
+      <div class="win">
+        <h4>Só loopback, só allowlist</h4>
+        <p>O <code>POST /metrics/reset</code> do model-router agora exige Host <b>e</b> Origin loopback, o que barra DNS-rebinding e CSRF drive-by. O <code>serveStatic</code> delimita por <code>path.sep</code> (fim do diretório-irmão), e o nome de env-var no PowerShell passa por allowlist antes de entrar no comando.</p>
+      </div>
+    </div>
+
+    <p class="trust">Provado antes de existir: cada correção entrou <b>failing-first</b>, com prova de mutação pra garantir que o teste pega a regressão. <b>405</b> unitários + <b>65</b> suítes de hooks no verde; <code>eslint</code> + <code>version-sync</code> ok. Sem breaking de API: só entrada maliciosa muda de comportamento.</p>
   </section>
 
   <section>
