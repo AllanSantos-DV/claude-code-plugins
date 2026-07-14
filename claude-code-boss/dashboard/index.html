@@ -773,7 +773,6 @@ code { color: var(--fg); font-family: var(--font-mono); }
           <option value="">All events</option>
           <option value="retrieve.fired">retrieve.fired</option>
           <option value="retrieve.cited">retrieve.cited</option>
-          <option value="failure.retro.fired">failure.retro.fired</option>
           <option value="research.auto.triggered">research.auto.triggered</option>
           <option value="decision.captured">decision.captured</option>
           <option value="skill.invoked">skill.invoked</option>
@@ -2497,7 +2496,6 @@ async function loadInsights() {
     const fired = totals['retrieve.fired'] || 0;
     const cited = totals['retrieve.cited'] || 0;
     const precision = fired > 0 ? Math.round((cited / fired) * 100) : 0;
-    const retro = totals['failure.retro.fired'] || 0;
     const research = totals['research.auto.triggered'] || 0;
     const decisions = totals['decision.captured'] || 0;
 
@@ -2505,7 +2503,6 @@ async function loadInsights() {
       <div class="stat"><div class="value">${fired}</div><div class="label">Retrievals (${rangeDays}d)</div><span class="badge badge-green">${cited} cited</span></div>
       <div class="stat"><div class="value">${precision}%</div><div class="label">Citation precision</div><span class="badge ${precision >= 30 ? 'badge-green' : 'badge-yellow'}">${precision >= 30 ? 'healthy' : 'low'}</span></div>
       <div class="stat"><div class="value">${research}</div><div class="label">Active research nudges</div></div>
-      <div class="stat"><div class="value">${retro}</div><div class="label">Failure retros fired</div></div>
       <div class="stat"><div class="value">${decisions}</div><div class="label">Decisions captured</div></div>
     `;
 

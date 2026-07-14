@@ -1,5 +1,39 @@
 # Changelog
 
+## [2.8.0] - 2026-07-14
+
+### Testability + correção — primitivas de segurança do dashboard extraídas (Sprint 6 do review)
+
+Escopo honesto: isto **não** é a decomposição completa do `dashboard.js` em rotas
+(os ~40 handlers e o estado de módulo seguem lá, deliberadamente — separá-los
+mecanicamente é alto risco e baixo valor). O que este sprint entrega:
+
+- **Primitivas de segurança extraídas p/ módulos puros e testáveis.** As duas peças
+  críticas do `dashboard.js` que só podiam ser exercidas subindo o servidor viraram
+  funções puras com testes diretos:
+  - `lib/dashboard-auth.js` — `isValidHost` (Host só loopback:porta, guard anti
+    DNS-rebinding) + `tokenMatches` (compare constante `timingSafeEqual`, com length
+    guard). **Endurecimento achado na extração:** um segredo vazio não autentica mais
+    ninguém (dois buffers vazios comparam "iguais" — agora exige `expected` não-vazio).
+  - `lib/dashboard-static.js` — `resolveStaticPath` (guard de path traversal com a
+    borda `+ path.sep`, load-bearing: sem ela um dir-irmão `x-evil` passaria).
+- **`require.main` guard.** O bootstrap do servidor (listen/browser/dashboard.json)
+  foi para uma função só chamada quando rodado direto — assim o módulo pode ser
+  `require`-ado sem subir o listener HTTP. (Não é um seam livre-de-efeitos ainda; a
+  fábrica `createRequestHandler(context)` fica como follow-up.)
+- **Bug de UI morto (follow-up do Sprint 3).** Removidos o card "Failure retros fired"
+  e a opção de dropdown `failure.retro.fired` — evento que **nenhum** código emite
+  (card ficava sempre 0, filtro nunca retornava nada).
+- **Lacunas de teste fechadas.** Testes novos: os predicados de auth + o guard de
+  traversal (incl. escape por dir-irmão), o `requestAllowed` do daemon do brain
+  (guard de origin + token, via import ESM), e dois cenários do brain-backend rodados
+  em **subprocessos isolados** (durabilidade do saveLocal sem embedder via
+  `skipEmbedder:true`; troca de projeto A→B→A sem vazamento e com dados preservados).
+
+Provas por mutação nas duas funções de segurança; 449 unitários + 65 de hooks verdes;
+eslint + version-sync ok. Follow-up documentado: `createRequestHandler(context)` +
+um teste HTTP de ponta-a-ponta (startup, rejeição de Host/token, dispatch).
+
 ## [2.7.0] - 2026-07-14
 
 ### Robustez — estado atômico + resolvedor único de data-dir (Sprint 5 do review)
