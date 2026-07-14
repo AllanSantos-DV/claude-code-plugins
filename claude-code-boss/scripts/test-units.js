@@ -555,6 +555,79 @@ test('brain-backend: keyword path applies minScore threshold', async () => {
   await backend.close();
 });
 
+// Brain-backend is a module singleton and the runner awaits async tests
+// concurrently — two in-process tests mutating the singleton + process.env race.
+// Run each brain scenario in an isolated child process (synchronous → no race).
+function runBrainScenario(script) {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-brain-'));
+  const env = { ...process.env, CLAUDE_PLUGIN_DATA: tmp, CLAUDE_PLUGIN_ROOT: ROOT };
+  const body = `const backend=require(${JSON.stringify(path.join(SCRIPTS, 'brain-backend.js'))});`
+    + `const assert=(c,m)=>{if(!c){console.error('FAIL: '+m);process.exit(1)}};`
+    + `(async()=>{try{${script};process.exit(0)}catch(e){console.error(e&&e.stack||e);process.exit(1)}})();`;
+  try {
+    require('child_process').execFileSync(process.execPath, ['-e', body], { env, stdio: ['ignore', 'pipe', 'pipe'], timeout: 120000 });
+  } catch (e) {
+    throw new Error((e.stderr && e.stderr.toString().trim()) || e.message);
+  }
+}
+
+test('SP6 brain-backend saveLocal: entry persists + is retrievable without an embedder (durability)', () => {
+  // Sprint-3 C1 durability: a cold/failed embedder must NOT lose the entry — it's
+  // saved WITHOUT a vector (a later brain-reembed backfills) and keyword search
+  // still finds it. The test embedder is cold, so this exercises the no-vector path.
+  // skipEmbedder:true deterministically forces the no-vector path (no model
+  // load / network) so this really exercises the cold-embedder durability path.
+  runBrainScenario(`
+    await backend.init({project:'dur',skipEmbedder:true});
+    const id = await backend.save({type:'note',tags:['xylophone'],confidence:0.8,source:{kind:'test'},title:'quokka xylophone',summary:'quokka xylophone',content:{text:'quokka xylophone'}});
+    assert(id,'save must return an id');
+    const r = await backend.search('quokka xylophone',{topK:5,minScore:0});
+    assert(r.some(x=>x&&x.id===id),'saved entry must be retrievable (persisted despite no embedder)');
+    await backend.close();
+  `);
+});
+
+test('SP6 brain-backend project switch: close+reinit re-scopes with no leak or null-deref (C2/B)', () => {
+  // The realistic contract behind Sprint-3 C2 (close() resets _useSqlite/_useJson/
+  // _initialized) and B (project isolation): init(A) → init(B) tears down A and
+  // re-scopes. Flags must reset (no _useSqlite=true+_db=null null-deref), B must not
+  // see A's entries, and switching back to A must reload A's data from disk.
+  runBrainScenario(`
+    const E={type:'note',tags:[],confidence:0.8,source:{kind:'test'}};
+    await backend.init({project:'projA',skipEmbedder:true});
+    await backend.save({...E,id:'a1',title:'apple apple',summary:'apple apple',content:{text:'apple apple'}});
+    await backend.init({project:'projB',skipEmbedder:true});
+    const bView = await backend.search('apple apple',{topK:5,minScore:0});
+    assert(!bView.some(r=>r&&r.id==='a1'),'projA entry must NOT leak into projB (isolation)');
+    await backend.save({...E,id:'b1',title:'banana banana',summary:'banana banana',content:{text:'banana banana'}});
+    await backend.init({project:'projA',skipEmbedder:true});
+    const aView = await backend.search('apple apple',{topK:5,minScore:0});
+    assert(aView.some(r=>r&&r.id==='a1'),'projA entry must survive the round-trip (close reset flags, reinit reloaded)');
+    assert(!aView.some(r=>r&&r.id==='b1'),'projB entry must not leak into projA');
+    await backend.close();
+  `);
+});
+
+test('SP6 brain daemon requestAllowed: origin guard (DNS-rebinding) + token auth', async () => {
+  const fileUrl = require('url').pathToFileURL(
+    path.join(ROOT, 'servers', 'brain-server', 'lib', 'daemon-common.js'),
+  ).href;
+  const { requestAllowed } = await import(fileUrl);
+  const TOKEN = 'secret-token-123'; // 16 chars
+  // Foreign origin → 403 (DNS-rebinding guard) even with the right token.
+  const foreign = requestAllowed({ headers: { origin: 'http://evil.example.com', 'x-brain-token': TOKEN } }, TOKEN, '/d');
+  assertEq(foreign.ok, false); assertEq(foreign.code, 403);
+  // Loopback origin + correct token → allowed.
+  const ok = requestAllowed({ headers: { origin: 'http://127.0.0.1:9111', 'x-brain-token': TOKEN } }, TOKEN, '/d');
+  assertEq(ok.ok, true);
+  // Same-length WRONG token → 401.
+  const bad = requestAllowed({ headers: { origin: 'http://localhost:9111', 'x-brain-token': 'wrong-token-1234' } }, TOKEN, '/d');
+  assertEq(bad.ok, false); assertEq(bad.code, 401);
+  // No Origin header (native/curl client) + correct token → allowed.
+  const noOrigin = requestAllowed({ headers: { 'x-brain-token': TOKEN } }, TOKEN, '/d');
+  assertEq(noOrigin.ok, true);
+});
+
 // ─── MCP HTTP (StreamableHTTP) transport + remote mappings ───────────────────
 const http = require('http');
 
@@ -2447,8 +2520,15 @@ test('S5 model-router: /metrics/reset calls isLoopbackHost before resetMetrics',
 });
 
 test('S-minor dashboard serveStatic: traversal guard uses path.sep boundary', () => {
-  const src = fs.readFileSync(path.join(ROOT, 'scripts', 'dashboard.js'), 'utf-8');
-  assert(/filePath !== DASHBOARD_DIR && !filePath\.startsWith\(DASHBOARD_DIR \+ path\.sep\)/.test(src), 'serveStatic must bound with DASHBOARD_DIR + path.sep');
+  // The guard now lives in the extracted lib/dashboard-static.js (SP6), and
+  // dashboard.js routes through it. Assert both: the boundary check is present
+  // in the lib, and serveStatic uses resolveStaticPath (no inline re-implementation).
+  const lib = fs.readFileSync(path.join(SCRIPTS, 'lib', 'dashboard-static.js'), 'utf-8');
+  assert(/filePath !== dashboardDir && !filePath\.startsWith\(dashboardDir \+ path\.sep\)/.test(lib),
+    'resolveStaticPath must bound with dashboardDir + path.sep');
+  const dash = fs.readFileSync(path.join(SCRIPTS, 'dashboard.js'), 'utf-8');
+  assert(/resolveStaticPath\(DASHBOARD_DIR, req\.url\)/.test(dash),
+    'serveStatic must route through resolveStaticPath');
 });
 
 test('S-minor model-router-ensure: env-var name validated before the PowerShell string', () => {
@@ -3233,6 +3313,69 @@ test('C3 skill-success-detect: reads the REAL event (nudge.emitted{kind:failure}
   // and the pure scorer still turns a post-invocation failure into success:0
   const out = ssd.computeOutcomes([{ id: 1, ts: 100, payload: { skillName: 'x' } }], [{ ts: 200 }], []);
   assertEq(out, [{ eventId: 1, skillName: 'x', success: 0 }]);
+});
+
+test('SP6 dashboard: no phantom `failure.retro.fired` UI (never-emitted event)', () => {
+  // SP3 follow-up: the dashboard showed a "Failure retros fired" stat card + an
+  // event-log dropdown option for `failure.retro.fired`, which NO code emits — so
+  // the card was permanently 0 and the filter returned nothing. Remove both.
+  const html = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf-8');
+  assert(!html.includes('failure.retro.fired'),
+    'dashboard must not reference the never-emitted failure.retro.fired event');
+  assert(!/Failure retros fired/i.test(html),
+    'dashboard must not render the phantom "Failure retros fired" stat card');
+});
+
+// ─── SP6 — dashboard decomposition: extracted, now-testable auth predicates ───
+const dashAuth = require('./lib/dashboard-auth.js');
+
+test('dashboard-auth.isValidHost: accepts only loopback names on the bound port', () => {
+  assert(dashAuth.isValidHost('localhost:8123', 8123), 'localhost:<port> ok');
+  assert(dashAuth.isValidHost('127.0.0.1:8123', 8123), '127.0.0.1:<port> ok');
+  assert(!dashAuth.isValidHost('evil.example.com:8123', 8123), 'reject foreign host (DNS-rebinding)');
+  assert(!dashAuth.isValidHost('localhost:9999', 8123), 'reject wrong port');
+  assert(!dashAuth.isValidHost('localhost', 8123), 'reject host with no port');
+  assert(!dashAuth.isValidHost('', 8123), 'reject empty host');
+  assert(!dashAuth.isValidHost(undefined, 8123), 'reject missing host');
+});
+
+test('dashboard-auth.tokenMatches: length-guarded constant-time compare', () => {
+  assert(dashAuth.tokenMatches('a1b2c3', 'a1b2c3'), 'equal tokens match');
+  assert(!dashAuth.tokenMatches('a1b2c3', 'a1b2c4'), 'reject wrong token of equal length');
+  // TEETH: timingSafeEqual THROWS on a length mismatch; the guard must prevent it.
+  let threw = false;
+  try { assert(!dashAuth.tokenMatches('abc', 'a1b2c3'), 'reject shorter token'); } catch { threw = true; }
+  assert(!threw, 'length mismatch must return false, never throw');
+  assert(!dashAuth.tokenMatches('', 'a1b2c3'), 'reject empty given');
+  assert(!dashAuth.tokenMatches('x', ''), 'reject empty expected');
+  assert(!dashAuth.tokenMatches(null, null), 'reject null/null (both empty → no match on empty secret)');
+});
+
+test('SP6 dashboard.js: HTTP server does not start on require (bootstrap behind require.main)', () => {
+  // Honest scope: this guard stops the listener from binding on `require` (so the
+  // module is safe to import); it does NOT make dashboard.js side-effect-free — a
+  // full application-factory seam (createRequestHandler(context)) is a follow-up.
+  const src = fs.readFileSync(path.join(SCRIPTS, 'dashboard.js'), 'utf-8');
+  assert(/require\.main === module/.test(src),
+    'the server must only start when run directly, not on require');
+  assert(/require\(['"]\.\/lib\/dashboard-auth\.js['"]\)/.test(src),
+    'dashboard.js must use the extracted lib/dashboard-auth.js');
+  assert(!/function isValidHost\(/.test(src),
+    'isValidHost must live in lib/dashboard-auth.js, not inline in dashboard.js');
+});
+
+const dashStatic = require('./lib/dashboard-static.js');
+
+test('dashboard-static.resolveStaticPath: serves inside the root, rejects traversal', () => {
+  const dir = path.join(os.tmpdir(), 'ccb-dash');
+  assertEq(dashStatic.resolveStaticPath(dir, '/'), path.join(dir, 'index.html'));
+  assertEq(dashStatic.resolveStaticPath(dir, '/app.js'), path.join(dir, 'app.js'));
+  assertEq(dashStatic.resolveStaticPath(dir, '/assets/x.css'), path.join(dir, 'assets', 'x.css'));
+  assertEq(dashStatic.resolveStaticPath(dir, '/../../../etc/passwd'), null, 'reject ../ traversal escape');
+  // TEETH for the path.sep suffix in the guard: a sibling dir that shares the
+  // prefix (dash vs dash-evil) must be rejected — a bare startsWith would pass it.
+  assertEq(dashStatic.resolveStaticPath(path.join(os.tmpdir(), 'dash'), '/../dash-evil/x'), null,
+    'reject sibling-dir escape (path.sep guard is load-bearing)');
 });
 
 test('C1 brain-backend.saveLocal: embeds buildEmbedText (title+summary), single write', () => {

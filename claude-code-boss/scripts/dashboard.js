@@ -19,10 +19,16 @@ const pluginUpdater = require('./lib/plugin-updater.js');
 const { resolveMode } = require('./lib/router-mode.js');
 const hooksConfig = require('./lib/hooks-config.js');
 const { validEnvDir } = require('./lib/data-dir.js');
+const { isValidHost, tokenMatches } = require('./lib/dashboard-auth.js');
+const { resolveStaticPath } = require('./lib/dashboard-static.js');
 const { writeFileAtomic, writeJsonAtomic } = require('./lib/atomic-write.js');
 
 // Session token — generated at boot, injected into index.html, required on all /api/* requests.
 const SESSION_TOKEN = crypto.randomBytes(16).toString('hex');
+
+// The HTTP server — assigned when startDashboardServer() runs (guarded by
+// require.main), read by handlers like restartDashboard for the live port.
+let server = null;
 
 const ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
 const DASHBOARD_DIR = path.join(ROOT, 'dashboard');
@@ -1553,9 +1559,8 @@ function serveStatic(req, res) {
     res.writeHead(204);
     return res.end();
   }
-  let filePath = req.url === '/' ? path.join(DASHBOARD_DIR, 'index.html') : path.join(DASHBOARD_DIR, req.url);
-  filePath = path.normalize(filePath);
-  if (filePath !== DASHBOARD_DIR && !filePath.startsWith(DASHBOARD_DIR + path.sep)) {
+  let filePath = resolveStaticPath(DASHBOARD_DIR, req.url);
+  if (filePath === null) {
     res.writeHead(403);
     return res.end('Forbidden');
   }
@@ -1597,28 +1602,21 @@ function serveStatic(req, res) {
 
 // ─── Auth helpers ─────────────────────────────────────────────────
 
-function isValidHost(host, port) {
-  if (!host) return false;
-  return host === `localhost:${port}` || host === `127.0.0.1:${port}`;
-}
-
 function checkAuth(req, res, port) {
   const host = req.headers['host'] || '';
   if (!isValidHost(host, port)) {
     json(res, { error: 'Forbidden: invalid Host header' }, 403);
     return false;
   }
-  const token = req.headers['x-dashboard-token'] || '';
-  const expected = Buffer.from(SESSION_TOKEN);
-  const actual = Buffer.from(token);
-  if (actual.length !== expected.length || !crypto.timingSafeEqual(actual, expected)) {
+  if (!tokenMatches(req.headers['x-dashboard-token'] || '', SESSION_TOKEN)) {
     json(res, { error: 'Unauthorized' }, 401);
     return false;
   }
   return true;
 }
 
-const server = http.createServer((req, res) => {
+function startDashboardServer() {
+server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   if (url.pathname.startsWith('/api/')) {
     const port = server.address()?.port;
@@ -1644,3 +1642,6 @@ server.listen(PORT, '127.0.0.1', () => {
     try { execSync(`${browser} http://localhost:${port}`, { stdio: 'ignore', timeout: 5000 }); } catch (err) { console.error(`[DASHBOARD] Browser open failed: ${err.message}`); }
   }
 });
+}
+
+if (require.main === module) startDashboardServer();
