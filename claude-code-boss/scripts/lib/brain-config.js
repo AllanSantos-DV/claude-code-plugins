@@ -165,6 +165,44 @@ function getRecallCompose() {
   };
 }
 
+/**
+ * Configured backend type WITHOUT connecting. `local` (SQLite, keys by basename
+ * BY DESIGN) or `mcp-memory` (shared daemon, scopes by the handshake projectId).
+ * @returns {'local'|'mcp-memory'|string}
+ */
+function getBackendType() {
+  const cfg = load();
+  return (cfg.backend && cfg.backend.type) || 'local';
+}
+
+/**
+ * The mcp-memory handshake projectId pinned in config (`backend.mcpMemory.projectId`).
+ * When non-empty it WINS over the cwd-resolved id (`brain-backend`: `mcpCfg.projectId
+ * || _project`), so recall is stable regardless of marker/env/basename. Empty → the
+ * cwd resolution (env → marker → basename) decides. Used by the onboarding advisory
+ * so its "is identity stable?" test is a true superset of the handshake's sources.
+ * @returns {string}
+ */
+function getMcpProjectId() {
+  const cfg = load();
+  const m = (cfg.backend && cfg.backend.mcpMemory) || {};
+  return typeof m.projectId === 'string' ? m.projectId : '';
+}
+
+/**
+ * Onboarding nudges (config: `onboarding`).
+ *   projectIdentity (bool, default true) — SessionStart advisory when a
+ *     mcp-memory session has no stable project identity (no `.claude-boss-project`
+ *     marker and no `CCB_PROJECT_ID`), so recall is silently riding the fragile
+ *     `basename(cwd)` fallback. Set false to opt out (keep basename silently).
+ * @returns {{projectIdentity:boolean}}
+ */
+function getOnboarding() {
+  const cfg = load();
+  const o = cfg.onboarding || {};
+  return { projectIdentity: o.projectIdentity !== false };
+}
+
 function _resetCache() { _cache = null; }
 
 module.exports = {
@@ -177,5 +215,8 @@ module.exports = {
   getCuration,
   getIngestion,
   getRecallCompose,
+  getBackendType,
+  getMcpProjectId,
+  getOnboarding,
   _resetCache,
 };

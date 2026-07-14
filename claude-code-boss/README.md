@@ -1,6 +1,6 @@
 # claude-code-boss
 
-Plugin para Claude Code Desktop — **v2.1.0**
+Plugin para Claude Code Desktop — **v2.2.0**
 
 Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizado leve para Claude Code. A orquestração fica a cargo das ferramentas nativas (Agent/Workflow) — o plugin foca no que o nativo não tem.
 
@@ -173,6 +173,21 @@ quero que a sessão use o projeto `positiva`"), a precedência do cliente é:
 Todos os hooks (recall no `UserPromptSubmit` e ingestão da conversa) passam a
 mandar esse id ao servidor, então a busca semântica casa mesmo com a pasta tendo
 outro nome. O servidor escopa/filtra por esse `projectId` (metadata/override).
+
+**Projeto novo? Fixe a identidade em 10 segundos.** No backend `mcp-memory`, se a
+pasta não tiver `.claude-boss-project` nem `CCB_PROJECT_ID`, o recall cai no
+`basename(cwd)` — frágil. Um advisory no `SessionStart` detecta isso e pede pro
+agente **oferecer** (com o seu ok) criar o marcador. O processo é:
+
+1. escolha um id estável e único (ex.: `positiva`, `acme-checkout`);
+2. crie o arquivo `.claude-boss-project` na **raiz** do projeto com esse id numa
+   **única linha** (ex.: `echo positiva > .claude-boss-project`);
+3. pronto — todo hook nessa árvore passa a mandar `positiva`. Commite o arquivo
+   pra o id viajar com o repo (todos os clones/máquinas usam o mesmo escopo).
+
+O advisory é silencioso quando já há id estável, no backend `local` (onde o
+`basename` é o esperado), e sob cooldown por-pasta. Para desligar de vez:
+`onboarding.projectIdentity: false` na config.
 
 ## Brain MCP: stdio (padrão) + HTTP (opt-in)
 
