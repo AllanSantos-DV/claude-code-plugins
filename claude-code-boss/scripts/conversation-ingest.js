@@ -28,16 +28,16 @@
 'use strict';
 
 const crypto = require('crypto');
+const { writeJsonAtomic } = require('./lib/atomic-write.js');
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 
 const { runStopDetectorCli } = require('./lib/hook-io.js');
 const brainConfig = require('./lib/brain-config.js');
 const backend = require('./brain-backend.js');
 
-const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
-  || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+const { dataDir } = require('./lib/data-dir.js');
+const DATA_DIR = dataDir();
 const STAMP = path.join(DATA_DIR, '.runtime', 'ingest-stamp.json');
 
 const CONSUMER_ID = 'claude-code-boss';
@@ -71,7 +71,7 @@ function readStamp() {
 function writeStamp(state) {
   try {
     fs.mkdirSync(path.dirname(STAMP), { recursive: true });
-    fs.writeFileSync(STAMP, JSON.stringify(state));
+    writeJsonAtomic(STAMP, state);
     return true;
   } catch (err) {
     console.error(`[conversation-ingest] stamp write failed: ${err.message}`);

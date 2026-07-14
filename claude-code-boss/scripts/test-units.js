@@ -4444,6 +4444,259 @@ test('tuning-advisor: warn sorts before suggest', () => {
   assertEq(r.recommendations[0].level, 'warn');
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// Sprint 5 — atomicity + de-duplication (state-write corruption & data-dir split-brain)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ─── lib/data-dir.js — one guarded resolver (kills the ${...} split-brain) ────
+const dataDirLib = require('./lib/data-dir.js');
+
+test('data-dir: honors a real CLAUDE_PLUGIN_DATA value', () => {
+  const saved = process.env.CLAUDE_PLUGIN_DATA;
+  try {
+    process.env.CLAUDE_PLUGIN_DATA = path.join(os.tmpdir(), 'ccb-dd-real');
+    assertEq(dataDirLib.dataDir(), path.join(os.tmpdir(), 'ccb-dd-real'));
+  } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+});
+
+test('data-dir: falls back to the stable home path when env is absent', () => {
+  const saved = process.env.CLAUDE_PLUGIN_DATA;
+  try {
+    delete process.env.CLAUDE_PLUGIN_DATA;
+    assertEq(dataDirLib.dataDir(),
+      path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss'));
+  } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+});
+
+test('data-dir: REJECTS an unexpanded ${...} placeholder (no literal-dir split-brain)', () => {
+  // TEETH: some hook contexts don't substitute ${CLAUDE_PLUGIN_DATA}; a naive
+  // `env || fallback` would return the literal "${CLAUDE_PLUGIN_DATA}" as a dir,
+  // splitting state away from the guarded scripts. dataDir() must fall back.
+  const saved = process.env.CLAUDE_PLUGIN_DATA;
+  try {
+    process.env.CLAUDE_PLUGIN_DATA = '${CLAUDE_PLUGIN_DATA}';
+    const d = dataDirLib.dataDir();
+    assert(!d.includes('${'), `must not resolve to a placeholder dir, got ${d}`);
+    assertEq(d, path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss'));
+  } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+});
+
+test('data-dir: REJECTS an empty-string env (falls back)', () => {
+  const saved = process.env.CLAUDE_PLUGIN_DATA;
+  try {
+    process.env.CLAUDE_PLUGIN_DATA = '';
+    assertEq(dataDirLib.dataDir(),
+      path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss'));
+  } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+});
+
+test('data-dir: validEnvDir mirrors the guard (unit)', () => {
+  assertEq(dataDirLib.validEnvDir('/real/dir'), '/real/dir');
+  assertEq(dataDirLib.validEnvDir('${X}'), null);
+  assertEq(dataDirLib.validEnvDir(''), null);
+  assertEq(dataDirLib.validEnvDir(undefined), null);
+});
+
+// ─── lib/atomic-write.js — temp+rename so readers never see a partial file ───
+const atomicLib = require('./lib/atomic-write.js');
+
+test('atomic-write: writeJsonAtomic roundtrips through a real file', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-atomic-'));
+  const f = path.join(dir, 'state.json');
+  atomicLib.writeJsonAtomic(f, { a: 1, b: [2, 3] });
+  assertEq(JSON.parse(fs.readFileSync(f, 'utf-8')), { a: 1, b: [2, 3] });
+});
+
+test('atomic-write: creates missing parent dirs', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-atomic-'));
+  const f = path.join(dir, 'nested', 'deep', 'state.json');
+  atomicLib.writeJsonAtomic(f, { ok: true });
+  assert(fs.existsSync(f), 'nested file must exist');
+});
+
+test('atomic-write: leaves the destination UNTOUCHED when rename fails (no truncation)', () => {
+  // TEETH: the whole point of temp+rename. If the write is interrupted at the
+  // commit step, a concurrent reader must still see the OLD content — never a
+  // half-written destination. A naive writeFileSync(dest) would truncate it.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-atomic-'));
+  const f = path.join(dir, 'state.json');
+  fs.writeFileSync(f, JSON.stringify({ version: 'OLD' }));
+  const io = {
+    mkdirSync: fs.mkdirSync,
+    writeFileSync: fs.writeFileSync,
+    renameSync: () => { throw new Error('simulated crash at commit'); },
+    unlinkSync: fs.unlinkSync,
+  };
+  let threw = false;
+  try { atomicLib.writeFileAtomic(f, JSON.stringify({ version: 'NEW' }), io); }
+  catch { threw = true; }
+  assert(threw, 'a failed commit must surface as a throw');
+  // Destination still holds the OLD, complete content.
+  assertEq(JSON.parse(fs.readFileSync(f, 'utf-8')), { version: 'OLD' });
+  // No temp litter left behind.
+  const litter = fs.readdirSync(dir).filter(n => n.includes('.tmp-'));
+  assertEq(litter.length, 0, `temp files must be cleaned up, found ${JSON.stringify(litter)}`);
+});
+
+test('atomic-write: temp path is unique per call (concurrent writers do not collide)', () => {
+  const f = path.join(os.tmpdir(), 'x', 'state.json');
+  const seen = new Set();
+  for (let i = 0; i < 200; i++) seen.add(atomicLib.tempPathFor(f));
+  assertEq(seen.size, 200, 'every temp path must be distinct');
+  for (const p of seen) assert(p.startsWith(f + '.tmp-'), `temp must be a sibling of dest: ${p}`);
+});
+
+test('atomic-write: success leaves no temp sibling behind', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-atomic-'));
+  const f = path.join(dir, 'state.json');
+  atomicLib.writeJsonAtomic(f, { n: 1 });
+  atomicLib.writeJsonAtomic(f, { n: 2 });
+  const litter = fs.readdirSync(dir).filter(n => n.includes('.tmp-'));
+  assertEq(litter.length, 0, `no temp litter, found ${JSON.stringify(litter)}`);
+  assertEq(JSON.parse(fs.readFileSync(f, 'utf-8')), { n: 2 });
+});
+
+// ─── consumers actually route state writes through atomic-write (structural) ──
+test('atomic-write: hot state stores route writes through writeJsonAtomic (no raw writeFileSync)', () => {
+  const stores = [
+    'lib/oneoff-store.js', 'lib/cooldown-store.js',
+    'lib/recall-health.js', 'lib/active-research-state.js',
+    'lib/failure-journal.js', 'lib/turn-journal.js',
+    'lib/retrieval-journal.js', 'lib/verify-journal.js',
+  ];
+  for (const rel of stores) {
+    const src = fs.readFileSync(path.join(SCRIPTS, rel), 'utf-8');
+    assert(/require\(['"]\.\/atomic-write\.js['"]\)/.test(src),
+      `${rel} must require lib/atomic-write.js`);
+    // No direct fs.writeFileSync of a state payload left in these stores.
+    assert(!/fs\.writeFileSync\(/.test(src),
+      `${rel} must not call fs.writeFileSync directly (use writeJsonAtomic)`);
+  }
+});
+
+test('data-dir: NO script keeps a bare unguarded `env || fallback` resolver (EXHAUSTIVE)', () => {
+  // Rubber-duck gate finding: a representative sample can't lock the invariant.
+  // Walk EVERY script and fail on any bare `process.env.CLAUDE_PLUGIN_DATA ||`
+  // (the split-brain form that accepts an unexpanded `${...}` literal). Guarded
+  // forms — validEnvDir(...)/valid(...)/an `env` var checked with !includes('${')
+  // — never place `||` immediately after the env read, so they don't match.
+  const offenders = [];
+  const walk = (dir) => {
+    for (const n of fs.readdirSync(dir)) {
+      const p = path.join(dir, n);
+      const st = fs.statSync(p);
+      if (st.isDirectory()) { walk(p); continue; }
+      if (!n.endsWith('.js') || /^(test-|smoke-)/.test(n) || n === 'data-dir.js') continue;
+      const src = fs.readFileSync(p, 'utf-8');
+      // Genuine split-brain form: env falls back to a real directory expression
+      // (`path.join(...)` / `require('os').homedir()`). Benign `|| ''` display
+      // defaults in diagnostic reports are not resolvers and don't match.
+      if (/process\.env\.CLAUDE_PLUGIN_DATA\s*\|\|\s*(path\.join|require\()/.test(src)) {
+        offenders.push(path.relative(SCRIPTS, p));
+      }
+    }
+  };
+  walk(SCRIPTS);
+  assertEq(offenders, [], `unguarded CLAUDE_PLUGIN_DATA resolvers remain: ${offenders.join(', ')}`);
+});
+
+test('data-dir: migrated consumers import the shared resolver', () => {
+  const consumers = [
+    'lib/cooldown-store.js', 'lib/verify-journal.js', 'lib/failure-journal.js',
+    'lib/recall-health.js', 'lib/scope-search.js', 'conversation-ingest.js',
+    'curation-session.js', 'curation-detect.js', 'decision-detect.js',
+    'brain-index-native.js', 'brain-promote.js', 'dashboard.js',
+  ];
+  for (const rel of consumers) {
+    const src = fs.readFileSync(path.join(SCRIPTS, rel), 'utf-8');
+    assert(/require\(['"](\.\/|\.\/lib\/)data-dir\.js['"]\)/.test(src),
+      `${rel} must resolve its data dir via lib/data-dir.js`);
+  }
+});
+
+test('atomic-write: broadened shared-snapshot writers route through atomic-write.js', () => {
+  // Gate finding (scope): the same torn-write class covered more than the first 8
+  // stores. These hook-writable shared-snapshot writers were migrated too.
+  const writers = [
+    'auto-continue-stop.js', 'brain-graph.js', 'brain-index.js', 'brain-index-native.js',
+    'brain-health.js', 'session-whitelist.js', 'decision-detect.js', 'decision-promote.js',
+    'decision-scan-response.js', 'model-router-ensure.js', 'pattern-detect.js', 'refine-research.js',
+    'self-review.js', 'session-summary.js', 'skill-success-detect.js', 'verify-nudge.js',
+    'research-followup-detect.js', 'curation-stop.js', 'hook-logger.js', 'project-snapshot.js',
+    'doctor-advisory.js', 'review-checklist-advisory.js', 'tuning-advisory.js',
+    'conversation-ingest.js', 'curation-session.js', 'lib/hooks-config.js', 'dashboard.js',
+  ];
+  for (const rel of writers) {
+    const src = fs.readFileSync(path.join(SCRIPTS, rel), 'utf-8');
+    assert(/require\(['"](\.\/|\.\/lib\/)atomic-write\.js['"]\)/.test(src),
+      `${rel} must import lib/atomic-write.js`);
+  }
+});
+
+// ─── Sprint 5 fix-loop — gate findings (Windows rename retry, whitespace, dashboard) ──
+test('atomic-write: retries a transient rename failure (EPERM) instead of dropping the write', () => {
+  // TEETH (Windows liveness): fs.renameSync throws EPERM/EACCES/EBUSY when a
+  // concurrent writer/reader holds the destination (MoveFileEx sharing violation).
+  // Without a retry, swallow-catch stores silently DROP the update. writeFileAtomic
+  // must retry transient rename errors and eventually commit.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-atomic-'));
+  const f = path.join(dir, 'state.json');
+  let calls = 0;
+  const io = {
+    mkdirSync: fs.mkdirSync,
+    writeFileSync: fs.writeFileSync,
+    renameSync: (tmp, dest) => {
+      calls += 1;
+      if (calls <= 2) { const e = new Error('EPERM: contention'); e.code = 'EPERM'; throw e; }
+      fs.renameSync(tmp, dest);
+    },
+    unlinkSync: fs.unlinkSync,
+  };
+  atomicLib.writeFileAtomic(f, JSON.stringify({ v: 'committed' }), io);
+  assert(calls === 3, `expected 3 rename attempts (2 EPERM + 1 ok), got ${calls}`);
+  assertEq(JSON.parse(fs.readFileSync(f, 'utf-8')), { v: 'committed' });
+});
+
+test('atomic-write: a NON-transient rename error is NOT retried (fails fast, dest untouched)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-atomic-'));
+  const f = path.join(dir, 'state.json');
+  fs.writeFileSync(f, JSON.stringify({ v: 'OLD' }));
+  let calls = 0;
+  const io = {
+    mkdirSync: fs.mkdirSync, writeFileSync: fs.writeFileSync, unlinkSync: fs.unlinkSync,
+    renameSync: () => { calls += 1; throw new Error('ENOSPC: no space'); },
+  };
+  let threw = false;
+  try { atomicLib.writeFileAtomic(f, JSON.stringify({ v: 'NEW' }), io); } catch { threw = true; }
+  assert(threw, 'a non-transient error must surface');
+  assert(calls === 1, `non-transient must not retry, got ${calls} attempts`);
+  assertEq(JSON.parse(fs.readFileSync(f, 'utf-8')), { v: 'OLD' });
+});
+
+test('data-dir: REJECTS a whitespace-only env value (falls back)', () => {
+  const saved = process.env.CLAUDE_PLUGIN_DATA;
+  try {
+    for (const ws of ['   ', '\t', '\n']) {
+      process.env.CLAUDE_PLUGIN_DATA = ws;
+      assertEq(dataDirLib.dataDir(),
+        path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss'),
+        `whitespace ${JSON.stringify(ws)} must fall back`);
+    }
+    assertEq(dataDirLib.validEnvDir('   '), null);
+    assertEq(dataDirLib.validEnvDir('\t'), null);
+  } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+});
+
+test('data-dir: dashboard.js resolvers are guarded (no bare `env || fallback` split-brain)', () => {
+  const src = fs.readFileSync(path.join(SCRIPTS, 'dashboard.js'), 'utf-8');
+  // Every CLAUDE_PLUGIN_DATA read must be wrapped by the guard (validEnvDir/dataDir),
+  // never the naive `process.env.CLAUDE_PLUGIN_DATA ||` that accepts a ${...} literal.
+  assert(!/process\.env\.CLAUDE_PLUGIN_DATA\s*\|\|/.test(src),
+    'dashboard.js must not keep an unguarded `process.env.CLAUDE_PLUGIN_DATA ||` resolver');
+  assert(/require\(['"]\.\/lib\/data-dir\.js['"]\)/.test(src),
+    'dashboard.js must resolve its data dir via lib/data-dir.js');
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);

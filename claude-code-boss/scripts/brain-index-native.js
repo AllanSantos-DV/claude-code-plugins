@@ -27,8 +27,9 @@ const index = require('./brain-index.js');
 const embedder = require('./brain-embedder.js');
 
 const HOME = os.homedir();
-const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
-  || path.join(HOME, '.claude', 'plugins', 'data', 'claude-code-boss');
+const { dataDir } = require('./lib/data-dir.js');
+const { writeFileAtomic } = require('./lib/atomic-write.js');
+const DATA_DIR = dataDir();
 
 function arg(name, fallback) {
   const i = process.argv.indexOf(`--${name}`);
@@ -91,8 +92,7 @@ function loadState(project) {
 }
 function saveState(project, state) {
   const dir = path.join(DATA_DIR, 'brain', project);
-  fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(path.join(dir, 'native-index-state.json'), JSON.stringify(state, null, 2));
+  writeFileAtomic(path.join(dir, 'native-index-state.json'), JSON.stringify(state, null, 2));
 }
 
 async function run() {

@@ -15,10 +15,11 @@
 
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 
-const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
-  || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+const { dataDir } = require('./data-dir.js');
+const { writeJsonAtomic } = require('./atomic-write.js');
+
+const DATA_DIR = dataDir();
 const FILE = path.join(DATA_DIR, '.runtime', 'recall-health.json');
 
 const DEGRADED_REASONS = new Set(['no-compose', 'remote-error', 'timeout']);
@@ -46,9 +47,9 @@ function record(reason) {
   } else {
     h.ok += 1;
   }
+  // Best-effort, last-writer-wins (tear-free publish, no cross-process lock).
   try {
-    fs.mkdirSync(path.dirname(FILE), { recursive: true });
-    fs.writeFileSync(FILE, JSON.stringify(h));
+    writeJsonAtomic(FILE, h);
   } catch (err) {
     console.error(`[recall-health] write failed: ${err.message}`);
   }

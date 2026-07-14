@@ -167,8 +167,7 @@ function pluginRoot() {
 }
 
 function dataDir() {
-  const env = process.env.CLAUDE_PLUGIN_DATA;
-  return env && !env.includes('${') ? env : path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+  return require('./lib/data-dir.js').dataDir();
 }
 
 /**

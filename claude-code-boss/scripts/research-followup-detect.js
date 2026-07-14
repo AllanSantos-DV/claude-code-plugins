@@ -30,6 +30,7 @@
 'use strict';
 
 const fs = require('fs');
+const { writeJsonAtomic } = require('./lib/atomic-write.js');
 const path = require('path');
 const os = require('os');
 
@@ -55,7 +56,7 @@ function readStamp(p) {
 function writeStamp(p, obj) {
   try {
     fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, JSON.stringify(obj));
+    writeJsonAtomic(p, obj);
   } catch { /* best effort */ }
 }
 

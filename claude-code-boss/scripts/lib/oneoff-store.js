@@ -18,6 +18,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { canonicalSig } = require('./command-signature.js');
+const { writeJsonAtomic } = require('./atomic-write.js');
 
 const DAY_MS = 86400_000;
 const MAX_SEEN = 50;        // cap of retained per-entry occurrence timestamps
@@ -58,11 +59,12 @@ function load(dataDir, projectKey) {
   }
 }
 
+// Best-effort, last-writer-wins: writeJsonAtomic publishes tear-free, but two
+// concurrent load→mutate→save cycles can still lose an update (see atomic-write.js).
 function save(dataDir, projectKey, store) {
   const p = storePath(dataDir, projectKey);
   try {
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    fs.writeFileSync(p, JSON.stringify(store));
+    writeJsonAtomic(p, store);
     return true;
   } catch (err) {
     console.error(`[oneoff-store] save failed (${p}): ${err.message}`);

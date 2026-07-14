@@ -34,6 +34,8 @@ const os     = require('os');
 const { spawn, execSync } = require('child_process');
 const shim   = require('./model-router-shim.js');
 const { resolveMode } = require('./lib/router-mode.js');
+const { writeJsonAtomic } = require('./lib/atomic-write.js');
+const { dataDir } = require('./lib/data-dir.js');
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -42,8 +44,7 @@ function valid(v) { return v && !v.includes('${') ? v : null; }
 const PLUGIN_ROOT = valid(process.env.CLAUDE_PLUGIN_ROOT)
   || path.resolve(__dirname, '..');
 
-const DATA_DIR = valid(process.env.CLAUDE_PLUGIN_DATA)
-  || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+const DATA_DIR = dataDir();
 
 const STATE_FILE    = path.join(DATA_DIR, 'model-router', 'state.json');
 const LOG_FILE      = path.join(DATA_DIR, 'model-router', 'router.log');
@@ -150,7 +151,7 @@ function shouldAnnounce(sessionId, justStarted) {
     store[key] = now;
     try {
       fs.mkdirSync(path.dirname(ANNOUNCE_FILE), { recursive: true });
-      fs.writeFileSync(ANNOUNCE_FILE, JSON.stringify(store));
+      writeJsonAtomic(ANNOUNCE_FILE, store);
     } catch (_) { /* */ }
   }
   return announce;

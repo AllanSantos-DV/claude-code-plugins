@@ -9,8 +9,8 @@ const { URL } = require('url');
 const crypto = require('crypto');
 const EventEmitter = require('events');
 
-const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
-  || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+const { dataDir } = require('./lib/data-dir.js');
+const DATA_DIR = dataDir();
 
 class McpClient extends EventEmitter {
   constructor(opts = {}) {

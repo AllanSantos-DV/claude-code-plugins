@@ -1,5 +1,44 @@
 # Changelog
 
+## [2.7.0] - 2026-07-14
+
+### Robustez — estado atômico + resolvedor único de data-dir (Sprint 5 do review)
+
+Duas classes de bug em como os hooks persistem estado, cada uma failing-first com
+prova de mutação, gate de 3 avaliadores (revisor + testador + advogado-do-diabo) +
+re-gate, e prova de concorrência ao vivo.
+
+- **Escrita atômica de estado.** ~30 stores de estado JSON gravavam com
+  `fs.writeFileSync(dest, JSON…)` direto — **não atômico**. Como o `hooks.json`
+  dispara ~10 hooks em paralelo no SessionStart (e 2 no PostToolUse-Bash), duas
+  gravações simultâneas no mesmo arquivo podiam deixá-lo **truncado** → o próximo
+  `JSON.parse` estoura → o catch do store **zera o estado** (perda silenciosa).
+  Novo `lib/atomic-write.js` publica via **temp-único + rename** (o leitor nunca vê
+  parcial; escritores concorrentes não colidem no temp). No **Windows** um rename
+  contencioso lança `EPERM`/`EACCES`/`EBUSY` (MoveFileEx) — adicionamos **retry
+  limitado** (≤20×, backoff), medido ao vivo: **0 escritas perdidas em 2000
+  concorrentes** (era 25–94% sem o retry) e **0 leituras rasgadas em 24 mil** (vs
+  799 na versão ingênua). Migrados os 8 stores quentes + os demais gravadores de
+  snapshot compartilhado (estado de decisão, mapa de sessões do model-router,
+  hooks-config, índices/grafo do brain, brain-health, session-whitelist,
+  dashboard.json, cooldowns de advisory, journals…).
+  **Escopo honesto:** isto garante *publicação sem-rasgo* e resistência a crash —
+  **não** serialização entre processos. Os 4 stores read-modify-write
+  (oneoff/cooldown/recall-health/active-research) mantêm um resíduo
+  *last-writer-wins* (documentado em cada um); a serialização real exigiria
+  lock/journal por-entrada — follow-up.
+- **Resolvedor único de data-dir (fim do split-brain).** ~30 scripts embutiam
+  `process.env.CLAUDE_PLUGIN_DATA || <fallback>` **sem** proteger contra o
+  placeholder não-expandido `${CLAUDE_PLUGIN_DATA}` (que alguns contextos de hook
+  não substituem) — os desprotegidos gravavam num diretório literal `${…}`
+  enquanto os poucos protegidos caíam no fallback → **estado fragmentado em dois
+  lugares**. Novo `lib/data-dir.js` `dataDir()` centraliza a resolução com um guard
+  robusto (rejeita `${…}`, string vazia e whitespace-only). Todos os resolvedores
+  foram migrados; um teste **exaustivo** (varre toda a árvore de scripts) trava o
+  invariante "nenhum resolvedor `env || fallback` sem guard".
+
+441 testes unitários + 65 de hooks verdes; eslint + version-sync ok.
+
 ## [2.6.0] - 2026-07-14
 
 ### Performance — trabalho desperdiçado nos hot-paths (Sprint 4 do review)

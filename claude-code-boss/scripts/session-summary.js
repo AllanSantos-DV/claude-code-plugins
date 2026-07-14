@@ -16,15 +16,14 @@
 'use strict';
 
 const fs = require('fs');
+const { writeFileAtomic } = require('./lib/atomic-write.js');
 const path = require('path');
-const os = require('os');
 
 const hooksCfg = require('./lib/hooks-config.js');
 const { countLessonsSince } = require('./lib/value-summary.js');
 
 function dataDir() {
-  return process.env.CLAUDE_PLUGIN_DATA
-    || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+  return require('./lib/data-dir.js').dataDir();
 }
 
 function safeSid(sid) {
@@ -88,7 +87,7 @@ async function run(event, deps = {}) {
 
   try {
     fs.mkdirSync(path.dirname(cFile), { recursive: true });
-    fs.writeFileSync(cFile, JSON.stringify({ firedAt: Date.now(), count: n }));
+    writeFileAtomic(cFile, JSON.stringify({ firedAt: Date.now(), count: n }));
   } catch (err) { console.error(`[session-summary] counter write failed: ${err.message}`); }
 
   return { block: true, reason: buildReason(n) };

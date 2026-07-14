@@ -25,7 +25,7 @@
 
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
+const { writeFileAtomic } = require('./lib/atomic-write.js');
 
 const { readStdin, emitEmpty, emitJson, parsePayload } = require('./lib/hook-io.js');
 const { getSqliteBackend } = require('./lib/sqlite-compat.js');
@@ -38,9 +38,7 @@ function pluginRoot() {
 }
 
 function dataDir() {
-  const env = process.env.CLAUDE_PLUGIN_DATA;
-  if (env && !env.includes('${')) return env;
-  return path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+  return require('./lib/data-dir.js').dataDir();
 }
 
 function checkExists(p, kind) {
@@ -113,7 +111,7 @@ function shouldRunOnPrompt(data) {
 function recordRun(data) {
   try {
     fs.mkdirSync(data, { recursive: true });
-    fs.writeFileSync(path.join(data, '.brain-health-last'), String(Date.now()));
+    writeFileAtomic(path.join(data, '.brain-health-last'), String(Date.now()));
   } catch { /* nothing actionable */ }
 }
 

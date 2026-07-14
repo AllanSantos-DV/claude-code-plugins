@@ -15,10 +15,11 @@
 
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 
-const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
-  || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+const { dataDir } = require('./data-dir.js');
+const { writeJsonAtomic } = require('./atomic-write.js');
+
+const DATA_DIR = dataDir();
 const STATE = path.join(DATA_DIR, '.runtime', 'active-research-state.json');
 
 const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
@@ -35,10 +36,10 @@ function _read() {
   } catch { /* absent/corrupt: empty state */ return { sessions: {}, cooldown: {} }; }
 }
 
+// Best-effort, last-writer-wins (tear-free publish, no cross-process lock).
 function _write(s) {
   try {
-    fs.mkdirSync(path.dirname(STATE), { recursive: true });
-    fs.writeFileSync(STATE, JSON.stringify(s));
+    writeJsonAtomic(STATE, s);
   } catch (err) {
     console.error(`[active-research-state] write failed: ${err.message}`);
   }

@@ -19,8 +19,6 @@
  *   curated-failure-noisy — curated script failed, output exceeded raw thresholds
  *   (null)                — no condition matched; no entry recorded
  */
-const path = require('path');
-const os = require('os');
 const { readStdin } = require('./lib/hook-io.js');
 const turnJournal = require('./lib/turn-journal.js');
 const verifyJournal = require('./lib/verify-journal.js');
@@ -31,7 +29,8 @@ const oneoff = require('./lib/oneoff-store.js');
 const { findProjectRoot, loadShellsConfig, matchCuratedShell } = require('./shells-config.js');
 const { classify, successBudgetFor }                            = require('./curation-classifier.js');
 
-const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+const { dataDir } = require('./lib/data-dir.js');
+const DATA_DIR = dataDir();
 const _curationCfg = require('./lib/brain-config.js').getCuration();
 const thresholds = { maxChars: _curationCfg.maxOutputChars, maxLines: _curationCfg.maxOutputLines };
 
