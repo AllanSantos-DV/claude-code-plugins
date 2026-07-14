@@ -1,5 +1,34 @@
 # Changelog
 
+## [2.6.0] - 2026-07-14
+
+### Performance — trabalho desperdiçado nos hot-paths (Sprint 4 do review)
+
+Quatro otimizações em caminhos que rodam a cada turno/sessão, cada uma
+failing-first com prova de mutação + gate de 3 avaliadores + re-gate:
+
+- **Recall (todo turno):** o pool-warming (`search_memory` cujo resultado é
+  descartado) era **aguardado** depois do compose, somando até `timeoutMs` ao
+  recall. Agora é **fire-and-forget** — o retrieve-core roda no daemon persistente,
+  então a busca completa em background sem custar latência ao turno (medido: 21ms
+  vs ~253ms antes). Com **single-flight** pra não empilhar warmups concorrentes.
+- **SessionStart:** removido um `git log -1 --format=%ct main` cujo resultado nunca
+  era lido (spawn de git desperdiçado na latência de abertura de sessão).
+- **Stop:** `failure-journal` ganhou `sweepOld` (roda como housekeeping antes dos
+  gates, retenção `max(24h, janela de retro)`) pra limitar o crescimento do journal
+  — antes acumulava pra sempre e pesava o `readdir` de todo Stop.
+- **Dashboard:** `countEntriesInDb` agora cacheia o `COUNT(*)` por projeto,
+  invalidando pelo mtime do `brain.db` **e do `-wal`** — o brain-store abre em WAL,
+  então o mtime do arquivo principal congela até o checkpoint; sem o `-wal` o cache
+  serviria contagem **stale** (provado ao vivo). A declaração do cache foi movida
+  pra antes do `DATA_DIR` (evita uma TDZ que zerava a seleção de data-dir no boot).
+
+**Follow-ups de perf (incrementais, não incluídos):** memoização da leitura dupla
+da transcrição no dispatcher do Stop, e um dispatcher único pro PostToolUse-Bash
+(hoje 2 spawns de Node por chamada Bash) — o de maior ROI dos dois.
+
+423 unit + 65 hooks verdes; eslint + version-sync ok.
+
 ## [2.5.0] - 2026-07-14
 
 ### Fixed — bugs de correção que degradavam recall/estado em silêncio (Sprint 3 do review)
