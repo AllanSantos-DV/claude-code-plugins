@@ -71,9 +71,14 @@ function escapeRegex(s) {
 
 let _libRegexCache = null;
 function buildLibRegex(libs) {
+  // Cache keyed by ARRAY REFERENCE (loadLibs reassigns a fresh array on reload, so
+  // this is safe); an in-place-mutated libs array would return a stale regex.
   if (_libRegexCache && _libRegexCache.k === libs) return _libRegexCache.re;
-  const alts = libs.map(escapeRegex).sort((a, b) => b.length - a.length);
-  const re = new RegExp(`(?:^|[^a-z0-9])(?:${alts.join('|')})(?=$|[^a-z0-9])`, 'i');
+  // Empty lib list → a NEVER-matching regex, not an empty alternation `(?:)` which
+  // matches almost any punctuated prompt (fail-open) and would nudge every turn.
+  const re = libs.length
+    ? new RegExp(`(?:^|[^a-z0-9])(?:${libs.map(escapeRegex).sort((a, b) => b.length - a.length).join('|')})(?=$|[^a-z0-9])`, 'i')
+    : /(?!x)x/; // matches nothing
   _libRegexCache = { k: libs, re };
   return re;
 }

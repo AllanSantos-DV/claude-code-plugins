@@ -3,6 +3,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const os = require('os');
+const { buildEmbedText } = require('./lib/embed-text.js');
 
 const DATA_DIR = process.env.CLAUDE_PLUGIN_DATA
   || path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
@@ -397,19 +398,19 @@ async function searchLocal(query, opts = {}) {
 async function saveLocal(entry) {
   if (!entry.id) entry.id = uuid();
   if (!entry.created_at) entry.created_at = now();
-  const id = await _store.save(entry);
+  // Embed title+summary ONLY (buildEmbedText) — including `detail` dilutes the
+  // vector below the retrieval gate (measured cos 0.51→0.13). Single write WITH
+  // the vector: the old path did save() then get()+re-save, which double-wrote and
+  // bumped access_count on brand-new entries (skewing the frequency rerank term).
+  // A failing embed must NOT lose the entry — persist it without a vector (a later
+  // brain-reembed can backfill), matching the old save-first durability.
   const embedOk = _embedder && _embedder.getStatus && _embedder.getStatus().ready;
+  let vector = null;
   if (embedOk) {
-    const text = `${entry.title} ${entry.summary} ${entry.content?.detail || ''}`;
-    const vector = await _embedder.embed(text);
-    if (vector) {
-      const store2 = _store;
-      const entry2 = await store2.get(id);
-      if (entry2) {
-        await store2.save({ ...entry2, id }, vector);
-      }
-    }
+    try { vector = await _embedder.embed(buildEmbedText(entry)); }
+    catch (err) { console.error(`[brain] embed failed, saving entry without vector: ${err.message}`); }
   }
+  const id = await _store.save(entry, vector || undefined);
   const keywords = extractKeywords(`${entry.title} ${entry.summary} ${JSON.stringify(entry.content || {})}`);
   if (keywords.length > 0) {
     await _index.index(entry);
