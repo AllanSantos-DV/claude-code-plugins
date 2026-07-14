@@ -3098,6 +3098,123 @@ test('plugin-updater.computeUpdateState: missing tag → latest null, no update'
   assert(s.hasUpdate === false, 'no tag → no update');
 });
 
+// ─── plugin-updater sprint 2 hardening (digest verify + redirect allowlist) ───
+test('plugin-updater.isAllowedReleaseHost: only https GitHub hosts', () => {
+  assert(pu.isAllowedReleaseHost('https://github.com/a/b/releases/download/v1/x.zip') === true);
+  assert(pu.isAllowedReleaseHost('https://objects.githubusercontent.com/x') === true);
+  assert(pu.isAllowedReleaseHost('https://release-assets.githubusercontent.com/x') === true);
+  assert(pu.isAllowedReleaseHost('https://codeload.github.com/x') === true);
+  assert(pu.isAllowedReleaseHost('http://github.com/x') === false, 'http rejected');
+  assert(pu.isAllowedReleaseHost('https://evil.com/x') === false);
+  assert(pu.isAllowedReleaseHost('https://github.com.evil.com/x') === false);
+  assert(pu.isAllowedReleaseHost('https://githubusercontent.com.evil.com/x') === false);
+  assert(pu.isAllowedReleaseHost('not-a-url') === false);
+  assert(pu.isAllowedReleaseHost('') === false);
+});
+
+test('plugin-updater.verifyDigest: matches hex (case/space-tolerant), fail-closed', () => {
+  const h = 'a'.repeat(64);
+  assert(pu.verifyDigest(h, h) === true);
+  assert(pu.verifyDigest(h.toUpperCase(), h) === true);
+  assert(pu.verifyDigest(h, `${h}  claude-code-boss-2.0.0.zip\n`) === true, 'sha256sum format');
+  assert(pu.verifyDigest(h, 'b'.repeat(64)) === false);
+  assert(pu.verifyDigest(h, '') === false, 'empty expected → fail-closed');
+  assert(pu.verifyDigest('', h) === false);
+  assert(pu.verifyDigest('xyz', h) === false, 'non-hex → false');
+  assert(pu.verifyDigest(h, 'deadbeef') === false, 'short → false');
+});
+
+test('plugin-updater.pickDigestAsset + computeUpdateState.digestUrl', () => {
+  const rel = { tag_name: 'v2.0.0', assets: [
+    { name: 'claude-code-boss-2.0.0.zip', browser_download_url: 'https://github.com/a/b/releases/download/v2.0.0/claude-code-boss-2.0.0.zip', size: 10 },
+    { name: 'claude-code-boss-2.0.0.zip.sha256', browser_download_url: 'https://github.com/a/b/releases/download/v2.0.0/claude-code-boss-2.0.0.zip.sha256' },
+  ] };
+  assertEq(pu.pickDigestAsset(rel, '2.0.0').name, 'claude-code-boss-2.0.0.zip.sha256');
+  assertEq(pu.computeUpdateState('1.0.0', rel).digestUrl, 'https://github.com/a/b/releases/download/v2.0.0/claude-code-boss-2.0.0.zip.sha256');
+  assertEq(pu.pickDigestAsset({ assets: [] }, '2.0.0'), null);
+});
+
+test('plugin-updater.planBackupPrune: keep newest N by NUMERIC ts (not lexical)', () => {
+  // mixed-width ts so lexical != numeric — a lexical sort would wrongly keep bak.9 over bak.10/100
+  const names = ['ip.json.bak.9', 'ip.json.bak.10', 'ip.json.bak.100', 'ip.json.bak.2', 'other.txt'];
+  assertEq(pu.planBackupPrune(names, 3).sort(), ['ip.json.bak.2']); // keep 100,10,9 → drop 2
+  assertEq(pu.planBackupPrune(names, 1).sort(), ['ip.json.bak.10', 'ip.json.bak.2', 'ip.json.bak.9']); // keep 100
+  assertEq(pu.planBackupPrune([], 3), []);
+  assertEq(pu.planBackupPrune(['x.bak.1', 'x.bak.2'], 3), []);
+});
+
+function _updRoot() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-upd-root-'));
+  fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ version: '1.0.0', repository: 'github.com/foo/bar' }));
+  return root;
+}
+const _updRel = { tag_name: 'v2.0.0', assets: [
+  { name: 'claude-code-boss-2.0.0.zip', browser_download_url: 'https://github.com/foo/bar/releases/download/v2.0.0/claude-code-boss-2.0.0.zip', size: 10 },
+  { name: 'claude-code-boss-2.0.0.zip.sha256', browser_download_url: 'https://github.com/foo/bar/releases/download/v2.0.0/claude-code-boss-2.0.0.zip.sha256' },
+] };
+const _updRelNoDigest = { tag_name: 'v2.0.0', assets: [
+  { name: 'claude-code-boss-2.0.0.zip', browser_download_url: 'https://github.com/foo/bar/releases/download/v2.0.0/claude-code-boss-2.0.0.zip', size: 10 },
+] };
+
+test('plugin-updater.performUpdate: digest MISMATCH aborts before unzip/npm (integrity gate)', async () => {
+  let unzipCalled = false, spawnCalled = false;
+  const io = {
+    fetchRelease: async () => _updRel,
+    resolveSha: async () => 'abc123def456',
+    download: async (url, dest) => { fs.writeFileSync(dest, url.endsWith('.sha256') ? 'b'.repeat(64) : 'fakezip'); return dest; },
+    sha256File: () => 'a'.repeat(64),
+    unzip: () => { unzipCalled = true; },
+    spawnSync: () => { spawnCalled = true; return { status: 0 }; },
+  };
+  let threw = null;
+  try { await pu.performUpdate(_updRoot(), { io }); } catch (e) { threw = e; }
+  assert(threw && /SHA-256|confere|digest/i.test(threw.message), `expected digest-mismatch abort, got ${threw && threw.message}`);
+  assert(unzipCalled === false, 'unzip must NOT run on digest mismatch');
+  assert(spawnCalled === false, 'npm install must NOT run on digest mismatch');
+});
+
+test('plugin-updater.performUpdate: digest MATCH passes the gate (reaches unzip)', async () => {
+  const io = {
+    fetchRelease: async () => _updRel,
+    resolveSha: async () => 'abc123def456',
+    download: async (url, dest) => { fs.writeFileSync(dest, url.endsWith('.sha256') ? 'a'.repeat(64) : 'fakezip'); return dest; },
+    sha256File: () => 'a'.repeat(64),
+    unzip: () => { throw new Error('UNZIP_REACHED'); }, // stop before touching the real home
+  };
+  let threw = null;
+  try { await pu.performUpdate(_updRoot(), { io }); } catch (e) { threw = e; }
+  assert(threw && /UNZIP_REACHED/.test(threw.message), `digest match should pass gate to unzip, got ${threw && threw.message}`);
+});
+
+test('plugin-updater.performUpdate: NO digest + default opts → MANDATORY abort (F1 fail-closed)', async () => {
+  let unzipCalled = false, spawnCalled = false;
+  const io = {
+    fetchRelease: async () => _updRelNoDigest,
+    resolveSha: async () => 'abc123def456',
+    download: async (url, dest) => { fs.writeFileSync(dest, 'fakezip'); return dest; },
+    sha256File: () => 'a'.repeat(64),
+    unzip: () => { unzipCalled = true; },
+    spawnSync: () => { spawnCalled = true; return { status: 0 }; },
+  };
+  let threw = null;
+  try { await pu.performUpdate(_updRoot(), { io }); } catch (e) { threw = e; }
+  assert(threw && /sem digest|não verificável|integridade/i.test(threw.message), `expected mandatory-digest abort, got ${threw && threw.message}`);
+  assert(unzipCalled === false && spawnCalled === false, 'no-digest default must NOT reach unzip/npm');
+});
+
+test('plugin-updater.performUpdate: NO digest + allowUnsignedLegacy → escape hatch passes gate', async () => {
+  const io = {
+    fetchRelease: async () => _updRelNoDigest,
+    resolveSha: async () => 'abc123def456',
+    download: async (url, dest) => { fs.writeFileSync(dest, 'fakezip'); return dest; },
+    sha256File: () => 'a'.repeat(64),
+    unzip: () => { throw new Error('UNZIP_REACHED'); },
+  };
+  let threw = null;
+  try { await pu.performUpdate(_updRoot(), { io, allowUnsignedLegacy: true }); } catch (e) { threw = e; }
+  assert(threw && /UNZIP_REACHED/.test(threw.message), `escape hatch should pass gate to unzip, got ${threw && threw.message}`);
+});
+
 // ─── model-router-ensure: opt-in merge (shipped ⊕ DATA_DIR user-config) ──────
 const routerEnsure = require('./model-router-ensure.js');
 

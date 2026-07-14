@@ -45,6 +45,8 @@ jobs:
             --exclude "output-styles/*" \
             --exclude "**/__pycache__/*" \
             --exclude "**/.venv/*"
+          cd ..
+          sha256sum "${{ steps.meta.outputs.zip }}" | awk '{print $1}' > "${{ steps.meta.outputs.zip }}.sha256"
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v3.0.0
@@ -61,8 +63,12 @@ jobs:
             ```
 
             Ou baixe o ZIP e extraia em `~/.claude/plugins/`.
+
+            O `.sha256` ao lado do ZIP permite ao auto-updater verificar a
+            integridade do download antes de extrair/instalar.
           files: |
             ${{ steps.meta.outputs.zip }}
+            ${{ steps.meta.outputs.zip }}.sha256
           draft: false
           prerelease: false
 
