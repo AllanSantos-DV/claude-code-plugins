@@ -1,5 +1,41 @@
 # Changelog
 
+## [2.4.0] - 2026-07-14
+
+### Security — auto-updater endurecido (Sprint 2 do review completo do plugin)
+
+O auto-updater baixava a release ZIP e rodava `npm install` (postinstall =
+código arbitrário) validando só a presença do `package.json`. Esta versão
+adiciona um **portão de integridade** verificado, com gate de 3 avaliadores
+independentes + re-gate, cada fix failing-first com prova de mutação:
+
+- **Verificação SHA-256 (fail-closed, mandatória)** — o `release.yml` agora
+  publica um `<zip>.sha256` como asset irmão; o updater baixa o digest e confere
+  o hash do ZIP **antes** de extrair/instalar. Divergência **ou digest ausente**
+  aborta por padrão (o caller de produção não passa opção → gate obrigatório); o
+  escape-hatch explícito é `allowUnsignedLegacy` para releases legados.
+- **Allowlist de host/redirect** — o download só aceita URLs/redirects `https`
+  para hosts do GitHub (`github.com`, `*.githubusercontent.com`, …); um `Location`
+  para host atacante é recusado antes de escrever um byte.
+- **Poda de backups** — os `installed_plugins.json.bak.<ts>` param de acumular
+  (mantém os 3 mais recentes, por timestamp numérico).
+- **Testabilidade** — `performUpdate` ganhou seams injetáveis (`opts.io`) e testes
+  herméticos que provam o gate rodando antes de extrair/instalar.
+
+**Limite honesto (não é autenticidade):** o digest é um asset irmão da **mesma
+release**, então protege contra corrupção/MITM/redirect em trânsito — **não**
+contra uma release comprometida (um atacante com acesso à release publica um ZIP
+malicioso *com* um digest que confere). Fechar isso exige **assinatura destacada**
+verificada contra uma chave pinada no código do updater — registrado como
+follow-up, não incluído aqui.
+
+**Follow-up conhecido (mesma classe, outro sink):** o download do JAR do
+mcp-memory (`mcp-client.js`) tem o mesmo padrão download→executa sem verificação
+obrigatória (`expectedSha256` em branco por padrão) — a ser endereçado numa
+próxima frente.
+
+413 unit + 65 hooks verdes; eslint + version-sync ok.
+
 ## [2.3.0] - 2026-07-14
 
 ### Security — hardening (Sprint 1 do review completo do plugin)

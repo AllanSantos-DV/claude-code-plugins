@@ -29,6 +29,7 @@ const path = require('path');
 const os = require('os');
 const https = require('https');
 const { spawnSync } = require('child_process');
+const crypto = require('crypto');
 
 const DEFAULT_REPO = 'AllanSantos-DV/claude-code-plugins';
 const MARKETPLACE = 'allansantos-plugins';
@@ -65,6 +66,55 @@ function pickAsset(release, version) {
   );
 }
 
+// Release-host allowlist: an integrity-checked download must only come from
+// GitHub's own hosts. Redirects ARE followed (github.com → CDN), but only to
+// these — an attacker-controlled `Location` is refused before a byte is written.
+// https only.
+const RELEASE_HOSTS = new Set([
+  'github.com', 'api.github.com', 'codeload.github.com', 'objects.githubusercontent.com',
+]);
+function isAllowedReleaseHost(urlStr) {
+  let u;
+  try { u = new URL(String(urlStr)); } catch (err) { void err; return false; }
+  if (u.protocol !== 'https:') return false;
+  const h = u.hostname.toLowerCase();
+  return RELEASE_HOSTS.has(h) || h.endsWith('.githubusercontent.com');
+}
+
+// The sibling `<asset>.sha256` published next to the ZIP (release.yml). Its body
+// is the hex digest (`<hex>` or `<hex>  <filename>`); the ZIP is verified against
+// it BEFORE extraction or `npm install` (which can execute postinstall code).
+function pickDigestAsset(release, version) {
+  const assets = (release && release.assets) || [];
+  const zip = `${PLUGIN}-${version}.zip`;
+  return (
+    assets.find((a) => a.name === `${zip}.sha256`) ||
+    assets.find((a) => /\.sha256$/i.test(a.name)) ||
+    null
+  );
+}
+
+// Compare a computed hex digest against the raw contents of a .sha256 file.
+// Case-insensitive, whitespace-tolerant. Non-64-hex on either side → false
+// (fail-closed: no valid digest = no trust). Constant-time compare.
+function verifyDigest(actualHex, expectedRaw) {
+  const expected = String(expectedRaw || '').trim().split(/\s+/)[0].toLowerCase();
+  const actual = String(actualHex || '').trim().toLowerCase();
+  if (!/^[0-9a-f]{64}$/.test(expected) || !/^[0-9a-f]{64}$/.test(actual)) return false;
+  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(actual));
+}
+
+// Given existing registry backup filenames (`<name>.bak.<ts>`), return the ones
+// to delete, keeping the newest keepN. Pure → unit-tested.
+function planBackupPrune(names, keepN = 3) {
+  return (names || [])
+    .map((n) => { const m = String(n).match(/\.bak\.(\d+)$/); return m ? { name: n, ts: Number(m[1]) } : null; })
+    .filter(Boolean)
+    .sort((a, b) => b.ts - a.ts)
+    .slice(keepN)
+    .map((b) => b.name);
+}
+
 /**
  * Derive the update state from an installed version + a GitHub release object.
  * Pure: no IO. Returns a shape the dashboard renders directly.
@@ -74,6 +124,7 @@ function computeUpdateState(installedVersion, release) {
   const latest = tag.replace(/^v/i, '');
   const cmp = latest ? compareSemver(latest, installedVersion) : 0;
   const asset = pickAsset(release, latest);
+  const digest = pickDigestAsset(release, latest);
   return {
     installed: installedVersion,
     latest: latest || null,
@@ -85,6 +136,7 @@ function computeUpdateState(installedVersion, release) {
     asset: asset
       ? { name: asset.name, url: asset.browser_download_url, size: asset.size }
       : null,
+    digestUrl: digest ? digest.browser_download_url : null,
   };
 }
 
@@ -194,6 +246,10 @@ async function resolveCommitSha(repo, tag) {
 
 function download(url, destFile, redirectsLeft = 5) {
   return new Promise((resolve, reject) => {
+    if (!isAllowedReleaseHost(url)) {
+      reject(new Error(`refused download from non-GitHub host: ${url}`));
+      return;
+    }
     const req = https.get(
       url,
       {
@@ -208,6 +264,10 @@ function download(url, destFile, redirectsLeft = 5) {
           res.resume();
           if (redirectsLeft <= 0) {
             reject(new Error('too many redirects'));
+            return;
+          }
+          if (!isAllowedReleaseHost(res.headers.location)) {
+            reject(new Error(`refused redirect to non-GitHub host: ${res.headers.location}`));
             return;
           }
           resolve(download(res.headers.location, destFile, redirectsLeft - 1));
@@ -230,6 +290,10 @@ function download(url, destFile, redirectsLeft = 5) {
 }
 
 // ─── IO: extraction + process cleanup ───────────────────────────────────────
+
+function sha256File(file) {
+  return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+}
 
 function unzip(zipFile, destDir) {
   fs.mkdirSync(destDir, { recursive: true });
@@ -294,9 +358,19 @@ async function checkForUpdate(root) {
 }
 
 async function performUpdate(root, opts = {}) {
+  // Injectable IO seams (default = the real functions) so the apply/registry/
+  // rollback path is hermetically unit-testable without network or a shell.
+  const io = opts.io || {};
+  const _download = io.download || download;
+  const _unzip = io.unzip || unzip;
+  const _sha256File = io.sha256File || sha256File;
+  const _spawnSync = io.spawnSync || spawnSync;
+  const _fetchRelease = io.fetchRelease || fetchLatestRelease;
+  const _resolveSha = io.resolveSha || resolveCommitSha;
+
   const info = getInstalledInfo(root);
   const repo = readPluginRepo(root);
-  const release = await fetchLatestRelease(repo);
+  const release = await _fetchRelease(repo);
   const state = computeUpdateState(info.version, release);
 
   if (!state.hasUpdate && !opts.force) {
@@ -316,8 +390,30 @@ async function performUpdate(root, opts = {}) {
   const zipFile = path.join(tmpRoot, state.asset.name);
   const extractDir = path.join(tmpRoot, 'extract');
   try {
-    await download(state.asset.url, zipFile);
-    unzip(zipFile, extractDir);
+    await _download(state.asset.url, zipFile);
+
+    // Integrity gate — verify the published SHA-256 BEFORE extracting or running
+    // npm install (postinstall = arbitrary code). Fail-CLOSED: a mismatch OR a
+    // missing digest aborts by default (the production caller passes no opts, so
+    // the gate is mandatory). `allowUnsignedLegacy` is the explicit escape hatch
+    // for pre-digest releases. NOTE: this is a TRANSIT/CORRUPTION check only — the
+    // digest is a sibling asset in the SAME release, so it does NOT prove
+    // authenticity (a compromised release can ship a matching malicious digest).
+    // Closing that needs a detached signature verified against a key pinned in
+    // this source — tracked as a follow-up, not provided here.
+    if (state.digestUrl) {
+      const digestFile = path.join(tmpRoot, 'asset.sha256');
+      await _download(state.digestUrl, digestFile);
+      const expected = fs.readFileSync(digestFile, 'utf8');
+      const actual = _sha256File(zipFile);
+      if (!verifyDigest(actual, expected)) {
+        throw new Error('SHA-256 do asset não confere com o digest publicado — abortando (possível corrupção/adulteração em trânsito).');
+      }
+    } else if (!opts.allowUnsignedLegacy) {
+      throw new Error('Release sem digest .sha256 publicado — abortando (integridade não verificável). Passe allowUnsignedLegacy para forçar num release legado.');
+    }
+
+    _unzip(zipFile, extractDir);
 
     const pkgPath = path.join(extractDir, 'package.json');
     if (!fs.existsSync(pkgPath)) {
@@ -326,7 +422,7 @@ async function performUpdate(root, opts = {}) {
     const newPkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
     const newVersion = String(newPkg.version || state.latest);
 
-    let sha = await resolveCommitSha(repo, state.tag);
+    let sha = await _resolveSha(repo, state.tag);
     sha = sha ? sha.slice(0, 12) : `rel-${newVersion.replace(/\./g, '-')}`;
 
     const destDir = path.join(
@@ -343,7 +439,7 @@ async function performUpdate(root, opts = {}) {
     fs.cpSync(extractDir, destDir, { recursive: true });
 
     if (!opts.skipInstall) {
-      const r = spawnSync('npm', ['install', '--omit=dev', '--no-audit', '--no-fund'], {
+      const r = _spawnSync('npm', ['install', '--omit=dev', '--no-audit', '--no-fund'], {
         cwd: destDir,
         encoding: 'utf8',
         timeout: 5 * 60 * 1000,
@@ -359,6 +455,16 @@ async function performUpdate(root, opts = {}) {
     let registry = { version: 2, plugins: {} };
     if (fs.existsSync(registryPath)) {
       fs.copyFileSync(registryPath, `${registryPath}.bak.${Date.now()}`);
+      // Prune old registry backups (keep newest 3) so they don't accumulate for
+      // the life of the plugin.
+      try {
+        const dir = path.dirname(registryPath);
+        const base = path.basename(registryPath);
+        const names = fs.readdirSync(dir).filter((n) => n.startsWith(`${base}.bak.`));
+        for (const stale of planBackupPrune(names, 3)) {
+          fs.rmSync(path.join(dir, stale), { force: true });
+        }
+      } catch (err) { void err; }
       registry = JSON.parse(fs.readFileSync(registryPath, 'utf8'));
     }
     if (!registry.plugins) registry.plugins = {};
@@ -401,9 +507,14 @@ module.exports = {
   parseVersion,
   compareSemver,
   pickAsset,
+  pickDigestAsset,
+  isAllowedReleaseHost,
+  verifyDigest,
+  planBackupPrune,
   computeUpdateState,
   readPluginRepo,
   // io
+  sha256File,
   getInstalledInfo,
   fetchLatestRelease,
   checkForUpdate,
