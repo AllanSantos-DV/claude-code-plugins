@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>claude-code-boss — memória semântica e execução curada para o Claude Code</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória que fundamenta a resposta (recall em dois níveis), execução curada anti context-bloat e aprendizado no loop. A v2.3.0 é um release de blindagem (Sprint 1 do review completo do plugin): fecha 7 classes de vulnerabilidade (command e shell injection, stored XSS, path traversal de project id, DNS-rebinding/CSRF, traversal de estático e interpolação PowerShell), cada fix failing-first com prova de mutação e sem breaking de API. Backend externo opcional (memory-server ≥ 2.18; pool-warming ≥ 2.20)." />
+<meta name="description" content="Plugin para Claude Code Desktop: memória que fundamenta a resposta (recall em dois níveis), execução curada anti context-bloat e aprendizado no loop. A v2.4.0 endurece o auto-updater (Sprint 2 do review completo): um portão de integridade confere o SHA-256 do release (publicado como asset .sha256 irmão) antes de extrair ou instalar, fail-closed por padrão (divergência ou digest ausente aborta), com allowlist de host/redirect e poda de backups. Honesto: é integridade em trânsito (MITM/redirect), não autenticidade; a assinatura destacada fica como follow-up. Backend externo opcional (memory-server ≥ 2.18; pool-warming ≥ 2.20)." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -237,13 +237,54 @@
   .shield-foot b{ color:#a29f97 }
   .shield-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
 
+  /* v2.4.0 : portao de integridade (download > sha256 verify > gate ou abort) */
+  .verify{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:720px; font-family:var(--mono); margin:0 0 36px }
+  .verify-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .verify-bar .k{ color:var(--accent) }
+  .verify-bar .m{ color:#8a877f }
+  .verify-body{ padding:22px 22px 6px }
+  .verify-pipe{ list-style:none; counter-reset:v; margin:0 0 18px; padding:2px 0 0; border-left:2px solid var(--accent) }
+  .verify-pipe li{ position:relative; counter-increment:v; padding:0 0 14px 42px;
+    font-size:12.5px; line-height:1.5; color:#a29f97 }
+  .verify-pipe li:last-child{ padding-bottom:2px }
+  .verify-pipe li::before{ content:counter(v); position:absolute; left:-11px; top:-2px;
+    width:20px; height:20px; border-radius:50%; background:var(--panel);
+    border:1px solid var(--accent); color:var(--accent); font-size:11px; display:grid; place-items:center }
+  .verify-pipe .op{ color:var(--panel-ink); font-weight:600; letter-spacing:.05em; margin-right:8px }
+  .verify-pipe code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+  .verify-pipe .note{ display:block; font-size:11px; color:#8a877f; margin-top:4px }
+  .verify-cmp{ display:flex; align-items:center; flex-wrap:wrap; gap:12px;
+    font-size:13px; color:#a29f97; margin:0 0 16px }
+  .verify-cmp code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+  .verify-cmp .eq{ color:var(--accent); font-weight:700; letter-spacing:.05em }
+  .verify-fork{ display:grid; grid-template-columns:1fr 1fr; gap:14px; margin:0 0 6px }
+  .vpath{ border:1px solid rgba(255,255,255,.14); border-radius:9px; padding:14px 15px }
+  .vpath-tag{ display:block; font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:#8a877f; margin:0 0 9px }
+  .vpath b{ display:block; font-size:13px; line-height:1.35; color:var(--panel-ink); word-break:break-word }
+  .vpath b::before{ font-weight:700; margin-right:8px; color:var(--accent) }
+  .vpath-note{ display:block; font-size:11px; color:#8a877f; margin-top:8px; line-height:1.5 }
+  .vpath-note code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+  .vpath--pass{ border-color:var(--accent); background:rgba(255,255,255,.05) }
+  .vpath--pass .vpath-tag{ color:var(--accent) }
+  .vpath--pass b::before{ content:"\2714" }
+  .vpath--abort{ border-style:dashed; border-color:rgba(217,138,61,.5) }
+  .vpath--abort .vpath-tag{ color:var(--accent) }
+  .vpath--abort b::before{ content:"\2717" }
+  .verify-foot{ padding:13px 22px; border-top:1px solid var(--panel-line);
+    font-size:11px; line-height:1.6; color:#8a877f }
+  .verify-foot b{ color:#a29f97 }
+  .verify-foot i{ color:#a29f97; font-style:italic }
+  .verify-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+
   footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
   footer a{ color:var(--muted); text-decoration:none }
   footer a:hover{ color:var(--accent) }
   .frow{ display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between }
   .flinks a{ margin-right:16px }
 
-  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
+  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
   @media (prefers-reduced-motion:reduce){ .caret{ animation:none } .reveal{ opacity:1 !important; transform:none !important } }
   .reveal{ opacity:0; transform:translateY(14px); animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards }
   @keyframes rise{ to{ opacity:1; transform:none } }
@@ -254,7 +295,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.3.0</span>
+    <span class="ver">v2.4.0</span>
   </nav>
 
   <header class="hero">
@@ -317,6 +358,65 @@
         <p>Um painel em <code>localhost</code> para ver a KB, os hooks e os logs. Abre quando você chama, não no boot.</p>
       </div>
     </div>
+  </section>
+
+  <section>
+    <p class="label">Novo na v2.4.0 · portão de integridade</p>
+    <p class="lede">O auto-updater do boss baixava a release e rodava <code>npm install</code> (e <code>postinstall</code> é código arbitrário), validando só que o <code>package.json</code> existia. A v2.4.0 fecha essa porta com um <b>portão de integridade</b>: ele baixa o ZIP <b>e</b> um digest <code>sha256</code> irmão, confere o hash <b>antes</b> de extrair ou instalar, e <b>aborta</b> se não bater. É o Sprint 2 do review completo, cada correção <b>failing-first</b>, com prova de mutação num gate de <b>3 avaliadores</b> + re-gate.</p>
+
+    <div class="callout">
+      <span class="tag">Antes: baixar e confiar</span>
+      O updater extraía e passava pro <code>npm install</code> o que quer que a release entregasse, checando apenas a presença do <code>package.json</code>. Um ZIP corrompido em trânsito, ou entregue por um <code>Location</code> de redirect adulterado, ia direto pro <code>postinstall</code>. A v2.4.0 não confia mais no download: <b>verifica antes de tocar</b>.
+    </div>
+
+    <div class="verify" aria-label="Portão de integridade do auto-update. O updater baixa a release ZIP seguindo redirect só para hosts do GitHub via https, baixa o digest sha256 irmão, e computa o sha256 do ZIP antes de extrair. Compara o hash do ZIP com o digest esperado: se bate, extrai e roda npm install; se diverge ou o digest está ausente, aborta fail-closed sem extrair nenhum byte, com escape-hatch explícito allowUnsignedLegacy só para releases legadas. Limite honesto: o digest é asset irmão da mesma release, então cobre corrupção, MITM e redirect em trânsito, mas não uma release comprometida, que publicaria um ZIP malicioso com um digest que confere. Fechar isso exige assinatura destacada contra chave pinada, registrada como follow-up.">
+      <div class="verify-bar">
+        <span class="k">integrity gate</span>
+        <span class="m">self-update · fail-closed por padrão</span>
+      </div>
+      <div class="verify-body">
+        <ol class="verify-pipe">
+          <li><span class="op">GET</span><code>release.zip</code><span class="note">https · redirect só pra hosts do GitHub</span></li>
+          <li><span class="op">GET</span><code>release.zip.sha256</code><span class="note">asset irmão · o digest esperado</span></li>
+          <li><span class="op">HASH</span><code>sha256(zip)</code><span class="note">computado antes de extrair ou instalar</span></li>
+        </ol>
+        <p class="verify-cmp"><code>sha256(zip)</code> <span class="eq">=?=</span> <code>digest</code></p>
+        <div class="verify-fork">
+          <div class="vpath vpath--pass">
+            <span class="vpath-tag">bate</span>
+            <b>extrai + npm install</b>
+            <span class="vpath-note">o install roda só depois do gate passar</span>
+          </div>
+          <div class="vpath vpath--abort">
+            <span class="vpath-tag">diverge · ou digest ausente</span>
+            <b>ABORTA · fail-closed</b>
+            <span class="vpath-note">nenhum byte extraído · escape p/ legado: <code>allowUnsignedLegacy</code></span>
+          </div>
+        </div>
+      </div>
+      <div class="verify-foot"><b>integridade, não autenticidade:</b> o digest é asset irmão da <b>mesma release</b>, então cobre corrupção, MITM e redirect em trânsito, <b>não</b> uma release comprometida (que publicaria um ZIP malicioso <i>com</i> um digest que confere). Fechar isso pede <b>assinatura destacada</b> contra chave pinada, registrada como follow-up e fora deste release.</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>SHA-256, fail-closed</h4>
+        <p>O digest confere <b>antes</b> de extrair ou instalar. Divergência <b>ou</b> digest ausente aborta por padrão: o caller de produção não passa opção, então o gate é obrigatório. O escape é explícito e só pra release legado: <code>allowUnsignedLegacy</code>.</p>
+      </div>
+      <div class="win">
+        <h4>Só GitHub, só https</h4>
+        <p>Allowlist de host e redirect: o download só segue <code>https</code> pra hosts do GitHub (<code>github.com</code>, <code>*.githubusercontent.com</code>). Um <code>Location</code> apontando pra host de atacante é recusado <b>antes</b> de escrever um byte.</p>
+      </div>
+      <div class="win">
+        <h4>Backups não acumulam</h4>
+        <p>A poda mantém os <b>3</b> <code>installed_plugins.json.bak.&lt;ts&gt;</code> mais recentes, por timestamp numérico. O registry para de crescer sem teto a cada update.</p>
+      </div>
+      <div class="win">
+        <h4>Provado antes de existir</h4>
+        <p><code>performUpdate</code> ganhou seams injetáveis (<code>opts.io</code>) e testes herméticos que provam o gate rodando <b>antes</b> de extrair. Cada fix entrou failing-first, com prova de mutação, num gate de 3 avaliadores + re-gate.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Portão de integridade, não assinatura:</b> cobre o trânsito, não a autenticidade da release. A assinatura destacada fica como follow-up, junto do mesmo padrão no download do JAR do <code>mcp-memory</code>. <b>413</b> unitários + <b>65</b> suítes de hooks no verde; <code>eslint</code> + <code>version-sync</code> ok.</p>
   </section>
 
   <section>
