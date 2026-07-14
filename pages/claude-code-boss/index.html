@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>claude-code-boss — memória semântica e execução curada para o Claude Code</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória que fundamenta a resposta (recall em dois níveis), execução curada anti context-bloat e aprendizado no loop. A v2.1.0 fecha o laço com pool-warming: a conversa ingerida gradua pro spine. Backend externo opcional (memory-server ≥ 2.18; warming ≥ 2.20)." />
+<meta name="description" content="Plugin para Claude Code Desktop: memória que fundamenta a resposta (recall em dois níveis), execução curada anti context-bloat e aprendizado no loop. A v2.2.0 adiciona onboarding de identidade: um advisory consent-first no SessionStart que oferece fixar um id estável de projeto quando o recall externo cairia no basename(cwd) frágil. Backend externo opcional (memory-server ≥ 2.18; pool-warming ≥ 2.20)." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -171,6 +171,39 @@
   .loop-foot{ padding:13px 22px; border-top:1px solid var(--panel-line);
     font-size:11px; line-height:1.55; color:#8a877f }
 
+  /* v2.2.0 — onboarding de identidade: o gate consent-first */
+  .gate{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:720px; font-family:var(--mono); margin:0 0 36px }
+  .gate-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .gate-bar .k{ color:var(--accent) }
+  .gate-bar .m{ color:#8a877f }
+  .gate-body{ padding:22px 22px 10px }
+  .gate-q{ font-size:12.5px; color:#a29f97; margin:0 0 15px }
+  .gate-q b{ color:var(--panel-ink); font-weight:600 }
+  .gate-probe{ list-style:none; margin:0; padding:0; display:grid; gap:10px }
+  .gate-probe li{ display:grid; grid-template-columns:auto 1fr; gap:11px;
+    align-items:baseline; font-size:12.5px; line-height:1.45 }
+  .gate-probe li::before{ content:"\2717"; color:#8a877f; font-size:11px }
+  .gate-probe .src{ color:var(--panel-ink) }
+  .gate-probe .src code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:12px }
+  .gate-probe .where{ color:#8a877f }
+  .gate-verdict{ display:grid; grid-template-columns:auto 1fr; gap:11px; align-items:baseline;
+    font-size:12.5px; color:#a29f97; border-top:1px solid rgba(255,255,255,.06);
+    padding:15px 0; margin:14px 0 0 }
+  .gate-verdict::before{ content:"\21b3"; color:var(--accent); font-size:15px; line-height:1 }
+  .gate-verdict code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+  .gate-out{ border-left:2px solid var(--accent); background:rgba(255,255,255,.05);
+    color:var(--panel-ink); font-size:12.5px; line-height:1.55; padding:12px 14px;
+    border-radius:0 6px 6px 0 }
+  .gate-out .lead{ display:block; font-size:10px; letter-spacing:.16em; text-transform:uppercase;
+    color:var(--accent); margin:0 0 6px }
+  .gate-out code{ background:rgba(255,255,255,.09); color:var(--panel-ink) }
+  .gate-foot{ padding:13px 22px; border-top:1px solid var(--panel-line);
+    font-size:11px; line-height:1.55; color:#8a877f }
+  .gate-foot b{ color:#a29f97 }
+  .gate-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+
   footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
   footer a{ color:var(--muted); text-decoration:none }
   footer a:hover{ color:var(--accent) }
@@ -188,7 +221,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.1.0</span>
+    <span class="ver">v2.2.0</span>
   </nav>
 
   <header class="hero">
@@ -223,7 +256,7 @@
       <div class="cell">
         <p class="kick">Brain KB</p>
         <h3>Base de conhecimento local</h3>
-        <p>Busca semântica sobre SQLite e embeddings. Indexa o que importa e recupera contexto antes de cada ação, com rerank por relevância, recência e frequência. É o backend padrão e segue <b>inalterado</b>: a v2.1.0 não toca nele.</p>
+        <p>Busca semântica sobre SQLite e embeddings. Indexa o que importa e recupera contexto antes de cada ação, com rerank por relevância, recência e frequência. É o backend padrão e segue <b>inalterado</b>: nem o recall externo nem o onboarding da v2.2.0 tocam nele.</p>
       </div>
       <div class="cell">
         <p class="kick">Backend opcional</p>
@@ -233,7 +266,7 @@
       <div class="cell">
         <p class="kick">Identidade de projeto</p>
         <h3>Recall que casa entre máquinas</h3>
-        <p>O escopo vem de um id estável: <code>CCB_PROJECT_ID</code>, depois o arquivo <code>.claude-boss-project</code>, depois o nome da pasta. A memória segue o projeto, não o caminho, e não vaza para outro projeto.</p>
+        <p>O escopo vem de um id estável: <code>CCB_PROJECT_ID</code>, o arquivo <code>.claude-boss-project</code>, senão o nome da pasta. Sem id no backend externo, um advisory <b>consent-first</b> te oferece fixá-lo. A memória segue o projeto, não o caminho, e não vaza pra outro projeto.</p>
       </div>
       <div class="cell">
         <p class="kick">Aprendizado no loop</p>
@@ -254,7 +287,56 @@
   </section>
 
   <section>
-    <p class="label">Novo na v2.1.0 · o laço fechado</p>
+    <p class="label">Novo na v2.2.0 · onboarding de identidade</p>
+    <p class="lede">Recall que casa entre máquinas depende de um <b>id estável de projeto</b>. Sem ele, no backend externo o escopo cai no <code>basename(cwd)</code>: o nome da pasta, que muda de máquina pra máquina e pode colidir no daemon compartilhado. A v2.2.0 fecha esse gap de usabilidade com <b>um</b> advisory guiado no <code>SessionStart</code>, consent-first: ele te oferece fixar o id, sem nunca escrever por você.</p>
+
+    <div class="callout">
+      <span class="tag">O gap que faltava</span>
+      O marcador que fixa a identidade, o <code>.claude-boss-project</code>, <b>já existia</b>. Só que nada lembrava você de criá-lo, então quase nenhum projeto ganhava a identidade estável pra qual o marcador foi feito. No backend externo, o recall escorregava (silencioso) pro <code>basename(cwd)</code>, que muda entre máquinas e clones e pode colidir no daemon compartilhado.
+    </div>
+
+    <div class="gate" aria-label="Hook de SessionStart project-identity-advisory: só no backend mcp-memory, checa as fontes de id que o handshake usa (variável CCB_PROJECT_ID, marcador .claude-boss-project em cwd ou ancestral, e backend.mcpMemory.projectId na config). Com todas ausentes o recall cai no basename(cwd) e o hook injeta um único advisory consent-first pedindo ao agente que ofereça fixar o id. O hook nunca escreve o marcador; é silencioso quando já há id, no backend local ou sob cooldown por-pasta.">
+      <div class="gate-bar">
+        <span class="k">SessionStart · project-identity-advisory</span>
+        <span class="m">só no backend mcp-memory</span>
+      </div>
+      <div class="gate-body">
+        <p class="gate-q">tem id estável por <b>alguma fonte que o handshake usa</b>?</p>
+        <ul class="gate-probe">
+          <li><span class="src"><code>CCB_PROJECT_ID</code> <span class="where">· variável de ambiente da sessão</span></span></li>
+          <li><span class="src"><code>.claude-boss-project</code> <span class="where">· marcador em cwd ou ancestral</span></span></li>
+          <li><span class="src"><code>backend.mcpMemory.projectId</code> <span class="where">· id fixado na config</span></span></li>
+        </ul>
+        <p class="gate-verdict">com todas ausentes, o recall cai no <code>basename(cwd)</code>: frágil e colidível no daemon compartilhado</p>
+        <div class="gate-out"><span class="lead">injeta 1 advisory</span>peça ao agente que <b>ofereça</b> (com o seu ok) fixar o id criando <code>.claude-boss-project</code></div>
+      </div>
+      <div class="gate-foot">o hook <b>nunca</b> escreve o marcador: identidade é escolha humana, o agente só media. Silencioso quando já há id, no backend <code>local</code> ou sob cooldown por-pasta.</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>Gating fiel ao handshake</h4>
+        <p>Silencioso quando há id por qualquer fonte que o handshake <b>realmente</b> usa: <code>backend.mcpMemory.projectId</code>, <code>CCB_PROJECT_ID</code> ou o marcador em cwd/ancestral. No backend <code>local</code>, onde o <code>basename</code> é o esperado, ele nem roda.</p>
+      </div>
+      <div class="win">
+        <h4>Consent-first: nunca escreve</h4>
+        <p>O hook injeta o pedido, não o marcador. Quem cria o <code>.claude-boss-project</code> é você, com o seu ok. A identidade é uma escolha humana e o agente só media a oferta.</p>
+      </div>
+      <div class="win">
+        <h4>Cooldown por-pasta, atômico</h4>
+        <p>Um stamp por pasta (hash do <code>cwd</code>), gravado via temp+rename. Sem <i>lost update</i> entre sessões simultâneas: o convite não repete a cada abertura da mesma árvore.</p>
+      </div>
+      <div class="win">
+        <h4>Um knob pra desligar</h4>
+        <p>Não quer o convite? <code>onboarding.projectIdentity: false</code> silencia de vez. Sem mudança no servidor: é 100% cliente e best-effort.</p>
+      </div>
+    </div>
+
+    <p class="trust">Sem mudança no servidor: o advisory roda <b>100%</b> no cliente e é best-effort, então degrada em silêncio se algo falhar. Fecha o gap que fazia o recall cross-máquina depender de um marcador que <b>ninguém</b> era lembrado de criar; o README ganhou o quickstart <b>Projeto novo?</b>.</p>
+  </section>
+
+  <section>
+    <p class="label">O laço fechado · pool-warming (v2.1.0)</p>
     <p class="lede">A v2.0.0 fez o recall <b>100% compose</b>, e isso deixou um laço em aberto. A conversa ingerida é gravada <b>home-scoped</b> e só gradua pro spine se acumular sinal de recall; esse sinal vem do <code>search_memory</code>, que o compose <b>não</b> gera (por design). Sem search no caminho, os docs ingeridos ficavam <b>write-only</b>. A v2.1.0 fecha esse laço.</p>
 
     <div class="callout">
@@ -376,6 +458,7 @@
     <div class="flow">
       <p class="label">Como funciona</p>
       <div class="steps">
+        <div class="step"><div class="n"></div><p>No <b>SessionStart</b>, se o backend externo está sem id estável de projeto, o boss injeta um advisory <b>consent-first</b>: o agente te oferece fixar o id criando <code>.claude-boss-project</code>. Ele nunca escreve por você, e cala se o id já existe ou sob cooldown.</p></div>
         <div class="step"><div class="n"></div><p>Você escreve um prompt. O hook <b>UserPromptSubmit</b> chama o Brain e injeta o bloco <b>[BRAIN]</b>: no backend externo, os fatos vêm com o trecho casado e as capacidades como ponteiros. Em paralelo, um <b>search_memory</b> não-injetado aquece o pool home: sinal pro Dreaming, sem tocar no que você vê.</p></div>
         <div class="step"><div class="n"></div><p>O agente age com a memória do projeto à mão, escopada por um id estável, sem puxar contexto de outro projeto.</p></div>
         <div class="step"><div class="n"></div><p>No <b>Stop</b>, o boss destila o aprendizado e cura comandos ruidosos. No backend externo, manda o transcript acumulado pro servidor destilar. Nada relê o transcript à toa nem infla a janela.</p></div>
