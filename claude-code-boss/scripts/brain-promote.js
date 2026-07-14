@@ -20,6 +20,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { sanitizeProjectId } = require('./lib/project-id.js');
 
 const store = require('./brain-store.js');
 
@@ -78,7 +79,7 @@ Promoted from Brain entry \`${entry.id}\` (project: ${entry.project}).
 async function scan() {
   const cfg = loadPromotionCfg();
   if (!cfg.enabled) { console.log(JSON.stringify({ ok: true, skipped: 'disabled' })); return; }
-  const project = arg('project', path.basename(process.cwd()));
+  const project = sanitizeProjectId(arg('project', path.basename(process.cwd()))) || path.basename(process.cwd());
   const minRec = parseInt(arg('min-recurrence', cfg.minRecurrence), 10);
   const minConf = parseFloat(arg('min-confidence', cfg.minConfidence));
 

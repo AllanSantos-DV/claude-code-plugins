@@ -175,7 +175,13 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
   const projectId = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'project-id.js'));
   function resolveProject(args) {
     const a = args || {};
-    if (a.project) return a.project;
+    if (a.project) {
+      // Explicit caller id → sanitize to a single path segment (no `..`/separators
+      // that could escape brainDir via path.join). Empty (pure traversal) falls
+      // through to the safe resolution below rather than trusting the raw value.
+      const safe = projectId.sanitizeProjectId(a.project);
+      if (safe) return safe;
+    }
     const forced = projectId.sanitize(process.env.CCB_PROJECT_ID);
     if (forced) return forced;
     if (a.cwd) return projectId.resolveProjectId({ cwd: a.cwd });

@@ -80,4 +80,27 @@ function resolveProjectId({ cwd, env = process.env, fs = fsDefault } = {}) {
   return 'default';
 }
 
-module.exports = { resolveProjectId, readMarker, sanitize, MARKER_FILE };
+/**
+ * Sanitize a CALLER-SUPPLIED project id into a single safe path segment.
+ * Unlike the resolver (which basenames the cwd), an explicit `project` arg can
+ * carry `..`/separators straight into `path.join(brainDir, <id>)` and escape the
+ * KB dir. This strips directory components + parent-refs; returns '' for a
+ * pure-traversal/empty input so the caller can fall through to safe resolution.
+ * @param {string} raw
+ * @returns {string}
+ */
+function sanitizeProjectId(raw) {
+  const s = sanitize(raw);
+  if (!s) return '';
+  // REJECT (don't coerce) ids with a path separator, drive-colon, or a pure
+  // parent-ref. Coercing (e.g. basename) would silently collapse distinct ids
+  // (`orgA/api`, `orgB/api`, `api`) into one segment → cross-project memory
+  // mixing. A clean flat id passes unchanged; a rejected one makes the caller
+  // fall back to safe resolution. This both prevents `path.join` traversal and
+  // avoids scope collisions.
+  if (/[\\/:]/.test(s)) return '';
+  if (s === '.' || s === '..') return '';
+  return s;
+}
+
+module.exports = { resolveProjectId, readMarker, sanitize, sanitizeProjectId, MARKER_FILE };

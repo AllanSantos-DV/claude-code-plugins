@@ -205,6 +205,7 @@ function waitForFreshState(minStartedAt, maxMs) {
 
 function getSystemEnvVar(name) {
   // Lê variável de ambiente do nível User no Windows (não só da sessão atual)
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return null; // guard: only real env-var names reach the PowerShell string
   try {
     const out = execSync(
       `powershell -NoProfile -Command "[System.Environment]::GetEnvironmentVariable('${name}', 'User')"`,
@@ -215,6 +216,7 @@ function getSystemEnvVar(name) {
 }
 
 function clearSystemEnvVar(name) {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return false; // guard: reject anything that isn't a plain env-var name
   try {
     execSync(
       `powershell -NoProfile -Command "[System.Environment]::SetEnvironmentVariable('${name}', $null, 'User')"`,
