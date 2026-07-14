@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>claude-code-boss — memória semântica e execução curada para o Claude Code</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória que fundamenta a resposta (recall em dois níveis), execução curada anti context-bloat e aprendizado no loop. A v2.5.0 é correção, não recurso (Sprint 3 do review completo): seis bugs que degradavam recall e estado em silêncio, cada um corrigido failing-first com prova de mutação num gate de 3 avaliadores: embedding diluído que sumia da busca (cos 0.51→0.13), vazamento do JVM de 512MB a cada troca de projeto, detector lendo evento fantasma, regex fail-open, flags de backend presas e busca por palavra-chave que ignorava os termos. Backend externo opcional (memory-server ≥ 2.18; pool-warming ≥ 2.20)." />
+<meta name="description" content="Plugin para Claude Code Desktop: memória que fundamenta a resposta (recall em dois níveis), execução curada anti context-bloat e aprendizado no loop. A v2.6.0 é performance (Sprint 4 do review): quatro caminhos quentes com trabalho desperdiçado, cortado failing-first com prova de mutação num gate de 3 avaliadores: a busca de warm-up saiu do caminho do turno e o recall caiu de ~253ms para 21ms medidos (fire-and-forget no daemon + single-flight), um git log main morto no SessionStart removido, o failure-journal ganhou teto (sweepOld) e o cache de contagem do dashboard virou WAL-aware (invalida pelo -wal, não só pelo .db, que servia contagem stale). Backend externo opcional (memory-server ≥ 2.18; pool-warming ≥ 2.20)." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -312,13 +312,49 @@
   .diag-foot b{ color:#a29f97 }
   .diag-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
 
+  /* v2.6.0 : hot-paths - trabalho desperdicado nos caminhos quentes (medido: 21ms vs ~253ms) */
+  .hotpath{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:720px; font-family:var(--mono); margin:0 0 36px }
+  .hot-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .hot-bar .k{ color:var(--accent) }
+  .hot-bar .m{ color:#8a877f }
+  .hot-hero{ display:grid; grid-template-columns:auto 1fr; gap:22px; align-items:center;
+    padding:22px 22px; border-bottom:1px solid rgba(255,255,255,.06) }
+  .hot-clock{ display:flex; align-items:baseline; gap:12px; white-space:nowrap }
+  .hot-clock .was{ font-size:17px; color:#8a877f; text-decoration:line-through; text-decoration-color:rgba(255,255,255,.28) }
+  .hot-clock .arw{ color:var(--accent); font-weight:700; font-size:20px }
+  .hot-clock .now{ font-size:40px; line-height:.9; letter-spacing:-.02em; color:var(--accent); font-weight:700 }
+  .hot-cap{ margin:0; font-size:11.5px; line-height:1.55; color:#a29f97 }
+  .hot-cap .tag{ display:block; font-size:10px; letter-spacing:.16em; text-transform:uppercase; color:var(--accent); margin:0 0 6px }
+  .hot-cap b{ color:var(--panel-ink); font-weight:600 }
+  .hot-list{ list-style:none; margin:0; padding:4px 0 0 }
+  .hot{ padding:16px 22px; border-top:1px solid rgba(255,255,255,.06) }
+  .hot-when{ font-size:10px; letter-spacing:.16em; text-transform:uppercase; color:var(--accent); margin:0 0 8px }
+  .hot-head{ display:flex; flex-wrap:wrap; align-items:baseline; gap:7px 10px; margin:0 0 7px }
+  .hot-head b{ font-size:12.5px; letter-spacing:.02em; color:var(--panel-ink) }
+  .hot-head .site{ font-size:10.5px; letter-spacing:.03em; color:#8a877f }
+  .hot-sym{ font-size:11.5px; line-height:1.55; color:#8a877f; margin:0 0 9px }
+  .hot-sym em{ color:var(--accent); font-style:normal; white-space:nowrap }
+  .hot-delta{ display:flex; flex-wrap:wrap; align-items:baseline; gap:7px 11px; margin:0; font-size:11.5px; line-height:1.5 }
+  .hot-delta .was{ color:#8a877f }
+  .hot-delta .arw{ color:var(--accent); font-weight:700 }
+  .hot-delta .now{ color:#e4e1d9 }
+  .hot-note{ font-size:11px; line-height:1.5; color:#8a877f; margin:8px 0 0 }
+  .hot-note b{ color:#a29f97; font-weight:600 }
+  .hot code{ background:rgba(255,255,255,.08); color:inherit; font-size:11px; padding:1px 5px; border-radius:4px }
+  .hot-foot{ padding:14px 22px; border-top:1px solid var(--panel-line);
+    font-size:11px; line-height:1.6; color:#8a877f }
+  .hot-foot b{ color:#a29f97 }
+  .hot-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+
   footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
   footer a{ color:var(--muted); text-decoration:none }
   footer a:hover{ color:var(--accent) }
   .frow{ display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between }
   .flinks a{ margin-right:16px }
 
-  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
+  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
   @media (prefers-reduced-motion:reduce){ .caret{ animation:none } .reveal{ opacity:1 !important; transform:none !important } }
   .reveal{ opacity:0; transform:translateY(14px); animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards }
   @keyframes rise{ to{ opacity:1; transform:none } }
@@ -329,7 +365,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.5.0</span>
+    <span class="ver">v2.6.0</span>
   </nav>
 
   <header class="hero">
@@ -392,6 +428,80 @@
         <p>Um painel em <code>localhost</code> para ver a KB, os hooks e os logs. Abre quando você chama, não no boot.</p>
       </div>
     </div>
+  </section>
+
+  <section>
+    <p class="label">Novo na v2.6.0 · performance</p>
+    <p class="lede">A v2.6.0 não muda <b>o que</b> o boss faz. Muda <b>o quanto ele gasta pra fazer</b>. O Sprint 4 do review completo mirou <b>quatro caminhos quentes</b>, que rodam a cada turno ou sessão, e cortou o <b>trabalho desperdiçado</b> de cada um. O mais visível: a busca de warm-up saiu do caminho do turno e o recall caiu de <b>~253ms pra 21ms</b> medidos. Cada otimização entrou <b>failing-first</b>, com prova de mutação, num gate de <b>3 avaliadores</b> + re-gate.</p>
+
+    <div class="callout">
+      <span class="tag">Performance, não comportamento</span>
+      Nada muda no que você vê: mesmo recall, mesma memória, mesma curadoria. O que muda é o <b>custo escondido</b> em caminhos que rodam o tempo todo: uma busca <b>aguardada</b> à toa, um <code>git log main</code> que ninguém lia, um journal que crescia <b>sem teto</b> e um cache que servia contagem <b>velha</b>. Quatro desperdícios, medidos e cortados.
+    </div>
+
+    <div class="hotpath" aria-label="Caminhos quentes da v2.6.0: quatro otimizações de performance em caminhos que rodam a cada turno ou sessão, cada uma failing-first com prova de mutação num gate de 3 avaliadores mais re-gate. Recall, a cada turno: o pool-warming, uma busca cujo resultado é descartado, era aguardado depois do compose e somava latência ao turno; agora é fire-and-forget rodando no daemon persistente, com single-flight para não empilhar warmups concorrentes, então a busca termina em background e o recall caiu de cerca de 253 milissegundos para 21 milissegundos medidos. SessionStart: removido um git log do main cujo resultado nunca era lido, um spawn de git desperdiçado na latência de abrir a sessão. Stop: o failure-journal ganhou sweepOld, que roda como housekeeping antes dos gates e retém o máximo entre 24 horas e a janela de retro, limitando o crescimento antes ilimitado que pesava o readdir de todo Stop. Dashboard: countEntriesInDb passa a cachear o COUNT por projeto, invalidando pelo maior mtime do brain.db e também do arquivo sidecar wal; como o brain-store abre em WAL, o mtime do arquivo principal congela até o checkpoint e uma chave só do db servia contagem stale, provado ao vivo; a declaração do cache foi movida para antes do DATA_DIR, evitando uma TDZ no boot. 423 unitários e 65 suítes de hooks no verde.">
+      <div class="hot-bar">
+        <span class="k">hot-paths</span>
+        <span class="m">performance · Sprint 4 · 4 caminhos quentes</span>
+      </div>
+      <div class="hot-hero">
+        <div class="hot-clock">
+          <span class="was">~253ms</span><span class="arw">→</span><span class="now">21ms</span>
+        </div>
+        <p class="hot-cap"><span class="tag">recall · todo turno · medido</span>a busca de warm-up saiu do caminho do turno: agora roda no daemon persistente, <b>fire-and-forget</b>, e não soma mais a própria latência à sua vez.</p>
+      </div>
+      <ul class="hot-list">
+        <li class="hot">
+          <p class="hot-when">todo turno</p>
+          <div class="hot-head"><b>Warm-up fora do turno</b> <span class="site">recall · retrieve-core</span></div>
+          <p class="hot-sym">o pool-warming (busca cujo resultado é <em>descartado</em>) era <b>aguardado</b> depois do compose, somando até <code>timeoutMs</code> ao recall</p>
+          <p class="hot-delta"><span class="was"><code>await</code> warm-up (~253ms)</span><span class="arw">→</span><span class="now">fire-and-forget no daemon (21ms)</span></p>
+          <p class="hot-note">o retrieve-core roda no daemon persistente: a busca termina em <b>background</b> · <b>single-flight</b> pra não empilhar warmups concorrentes</p>
+        </li>
+        <li class="hot">
+          <p class="hot-when">SessionStart</p>
+          <div class="hot-head"><b>Spawn de git morto</b> <span class="site">abertura de sessão</span></div>
+          <p class="hot-sym">um <code>git log -1 --format=%ct main</code> cujo resultado <em>nunca era lido</em>: processo de git desperdiçado na latência de abrir a sessão</p>
+          <p class="hot-delta"><span class="was">spawn de git (descartado)</span><span class="arw">→</span><span class="now">removido</span></p>
+        </li>
+        <li class="hot">
+          <p class="hot-when">Stop</p>
+          <div class="hot-head"><b>Journal sem teto</b> <span class="site">failure-journal</span></div>
+          <p class="hot-sym">o journal de falhas acumulava <em>pra sempre</em> e pesava o <code>readdir</code> de <b>todo</b> Stop</p>
+          <p class="hot-delta"><span class="was">crescimento ilimitado</span><span class="arw">→</span><span class="now"><code>sweepOld</code> · retém <code>max(24h, janela de retro)</code></span></p>
+          <p class="hot-note">roda como <b>housekeeping</b>, antes dos gates</p>
+        </li>
+        <li class="hot">
+          <p class="hot-when">dashboard</p>
+          <div class="hot-head"><b>Contagem stale</b> <span class="site">countEntriesInDb</span></div>
+          <p class="hot-sym">cacheava o <code>COUNT(*)</code> pelo mtime só do <code>brain.db</code>; em WAL o mtime do principal <em>congela</em> até o checkpoint, servindo contagem <b>stale</b> (provado ao vivo)</p>
+          <p class="hot-delta"><span class="was">chave só do <code>.db</code></span><span class="arw">→</span><span class="now">invalida pelo mtime do <code>.db</code> <b>e</b> do <code>-wal</code></span></p>
+          <p class="hot-note">o <code>const</code> do cache subiu pra <b>antes</b> do <code>DATA_DIR</code>, evitando uma <b>TDZ</b> que zerava a seleção de data-dir no boot</p>
+        </li>
+      </ul>
+      <div class="hot-foot">cada otimização <b>failing-first</b> + prova de mutação · gate de <b>3 avaliadores</b> + re-gate · <b>423</b> unitários + <b>65</b> suítes de hooks no verde</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>Recall que não paga pela busca</h4>
+        <p>O pool-warming (busca cujo resultado é <b>descartado</b>) era <b>aguardado</b> depois do compose, somando até <code>timeoutMs</code> ao turno. Agora é <b>fire-and-forget</b>: o retrieve-core roda no daemon persistente, então a busca completa em background: <b>21ms</b> no turno, contra <b>~253ms</b> antes. Com <b>single-flight</b> pra não empilhar warmups concorrentes.</p>
+      </div>
+      <div class="win">
+        <h4>Menos spawn na abertura</h4>
+        <p>O <code>SessionStart</code> disparava um <code>git log</code> do último commit no <code>main</code> cujo resultado <b>nunca era lido</b>. Um processo de git a menos na latência de abrir a sessão: código morto que só custava.</p>
+      </div>
+      <div class="win">
+        <h4>Journal com teto</h4>
+        <p>O <code>failure-journal</code> ganhou <code>sweepOld</code>: roda como housekeeping <b>antes</b> dos gates e retém <code>max(24h, janela de retro)</code>. O journal para de crescer sem limite, e o <code>readdir</code> de todo Stop deixa de pesar mais a cada sessão.</p>
+      </div>
+      <div class="win">
+        <h4>Contagem que não mente</h4>
+        <p>O <code>countEntriesInDb</code> cacheia o <code>COUNT(*)</code> por projeto e invalida pelo maior mtime do <code>brain.db</code> <b>e do <code>-wal</code></b>. Em WAL, o mtime do arquivo principal congela até o checkpoint: sem o <code>-wal</code>, o cache servia contagem <b>stale</b> (provado ao vivo). O <code>const</code> do cache subiu pra antes do <code>DATA_DIR</code>, evitando uma <b>TDZ</b> no boot.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Honesto sobre o que ficou pra depois:</b> dois follow-ups de perf <b>não</b> entraram: memoizar a leitura dupla da transcrição no dispatcher do Stop, e unificar o dispatcher do <code>PostToolUse-Bash</code> (hoje <b>2</b> spawns de Node por chamada Bash), o de maior ROI dos dois. <b>423</b> unitários + <b>65</b> suítes de hooks no verde; <code>eslint</code> + <code>version-sync</code> ok.</p>
   </section>
 
   <section>
