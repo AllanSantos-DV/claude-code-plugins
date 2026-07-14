@@ -467,17 +467,22 @@ async function searchIsolated(project, queryVector, opts = {}) {
 async function searchByKeywordsSqlite(keywords, opts = {}) {
   const topK = opts.topK || 5;
   const type = opts.type || null;
+  const project = opts.project || _project;
 
   const placeholders = keywords.map(() => '?').join(',');
   const params = keywords.map(k => k.toLowerCase());
+  params.push(project);
   if (type) params.push(type);
 
+  // Scope to the active project — mirrors searchSqlite's `WHERE e.project = ?`.
+  // Without it, keyword matches leak across every project's entries.
   const rows = _db.prepare(`
     SELECT e.id, e.title, e.summary, e.type, e.confidence,
            COUNT(k.keyword) AS match_count
     FROM keywords k
     JOIN entries e ON e.id = k.entry_id
     WHERE k.keyword IN (${placeholders})
+      AND e.project = ?
       ${type ? 'AND e.type = ?' : ''}
     GROUP BY e.id
     ORDER BY match_count DESC, e.confidence DESC
@@ -691,10 +696,9 @@ async function searchByKeywords(keywords, opts = {}) {
   const normalized = keywords.map(k => k.toLowerCase().trim()).filter(Boolean);
   if (normalized.length === 0) return [];
 
-  // Try vector search first, fall back to keyword
-  if (opts.useVector !== false && _useSqlite) {
-    return searchSqlite(null, opts); // vector-less search returns all, sorted by confidence
-  }
+  // Keyword search must use the keywords table. The old "vector-less" shortcut
+  // called searchSqlite(null) → every entry scored 0 → results were confidence/
+  // recency-sorted, IGNORING the keywords entirely (silently wrong).
   if (_useSqlite) return searchByKeywordsSqlite(normalized, opts);
   return searchByKeywordsJson(normalized, opts);
 }
@@ -881,6 +885,11 @@ async function close() {
     _db.close();
     _db = null;
   }
+  // Reset the backend flags too — they were only ever set true, so after a
+  // project switch where SQLite fails on reinit, _useSqlite stayed true with
+  // _db=null → null-deref in searchSqlite/getSqlite. Cleared here + re-derived in init().
+  _useSqlite = false;
+  _useJson = false;
   _initialized = false;
 }
 

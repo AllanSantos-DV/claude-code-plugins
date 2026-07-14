@@ -3215,6 +3215,61 @@ test('plugin-updater.performUpdate: NO digest + allowUnsignedLegacy → escape h
   assert(threw && /UNZIP_REACHED/.test(threw.message), `escape hatch should pass gate to unzip, got ${threw && threw.message}`);
 });
 
+// ─── Sprint 3 — correctness fixes (recall/state that failed silently) ─────────
+const arDetectS3 = require('./active-research-detect.js');
+test('C4 active-research: buildLibRegex([]) never matches (no fail-open noise)', () => {
+  const empty = arDetectS3.buildLibRegex([]);
+  assert(empty.test('please fix the bug.') === false, 'empty lib list must not match a plain prompt');
+  assert(empty.test('use react and stripe') === false, 'empty lib list matches nothing');
+  const withLibs = arDetectS3.buildLibRegex(['react', 'stripe']);
+  assert(withLibs.test('use react here') === true, 'known lib still matches');
+  assert(withLibs.test('rename a function') === false, 'unrelated prompt does not match');
+});
+
+test('C3 skill-success-detect: reads the REAL event (nudge.emitted{kind:failure}), not a phantom', () => {
+  const src = fs.readFileSync(path.join(SCRIPTS, 'skill-success-detect.js'), 'utf-8');
+  assert(!/eventName:\s*'failure\.retro\.fired'/.test(src), 'must not READ the never-emitted failure.retro.fired');
+  assert(/eventName:\s*'nudge\.emitted'/.test(src) && /payload\.kind === 'failure'/.test(src), 'must read nudge.emitted filtered by kind=failure');
+  // and the pure scorer still turns a post-invocation failure into success:0
+  const out = ssd.computeOutcomes([{ id: 1, ts: 100, payload: { skillName: 'x' } }], [{ ts: 200 }], []);
+  assertEq(out, [{ eventId: 1, skillName: 'x', success: 0 }]);
+});
+
+test('C1 brain-backend.saveLocal: embeds buildEmbedText (title+summary), single write', () => {
+  const src = fs.readFileSync(path.join(SCRIPTS, 'brain-backend.js'), 'utf-8');
+  const fn = src.match(/async function saveLocal[\s\S]*?\n\}/);
+  assert(fn, 'saveLocal not found');
+  assert(/buildEmbedText\(entry\)/.test(fn[0]), 'must embed buildEmbedText(entry), not title+summary+detail');
+  assert(!/content\?\.detail/.test(fn[0]), 'must not fold detail into the embed text');
+  assert(!/store2\.get\(id\)/.test(fn[0]) && !/entry2/.test(fn[0]), 'must not double-write via get()+re-save');
+  assert(/_store\.save\(entry, vector/.test(fn[0]), 'single save with the vector');
+  assert(/try \{[\s\S]*?_embedder\.embed/.test(fn[0]) && /catch/.test(fn[0]), 'a failing embed must not lose the entry (embed in try/catch, still save)');
+});
+
+test('C2 mcp-client.close: captures the process ref before nulling (JVM kill fires)', () => {
+  const src = fs.readFileSync(path.join(SCRIPTS, 'mcp-client.js'), 'utf-8');
+  assert(/const proc = this\._process;/.test(src), 'must capture proc before nulling');
+  assert(/if \(proc && !proc\.killed\)/.test(src) && /proc\.kill\(\)/.test(src), 'the timeout must kill the captured proc, not this._process (which is null by then)');
+});
+
+test('C5 brain-store.close: resets _useSqlite/_useJson (no stale-true null-deref)', () => {
+  const src = fs.readFileSync(path.join(SCRIPTS, 'brain-store.js'), 'utf-8');
+  const fn = src.match(/async function close\(\)[\s\S]*?\n\}/);
+  assert(fn, 'close() not found');
+  assert(/_useSqlite = false/.test(fn[0]) && /_useJson = false/.test(fn[0]), 'close() must reset both backend flags');
+});
+
+test('C6 brain-store.searchByKeywords: uses the keywords table, not a null-vector search', () => {
+  const src = fs.readFileSync(path.join(SCRIPTS, 'brain-store.js'), 'utf-8');
+  const fn = src.match(/async function searchByKeywords\(keywords[\s\S]*?\n\}/);
+  assert(fn, 'searchByKeywords not found');
+  assert(!/return searchSqlite\(null/.test(fn[0]), 'must not fall into the vector-less searchSqlite(null) that ignores keywords');
+  assert(/searchByKeywordsSqlite\(normalized/.test(fn[0]), 'SQLite path must use searchByKeywordsSqlite');
+  // and searchByKeywordsSqlite must stay project-scoped (no cross-project leak)
+  const sqliteFn = src.match(/async function searchByKeywordsSqlite[\s\S]*?\n\}/);
+  assert(sqliteFn && /AND e\.project = \?/.test(sqliteFn[0]), 'searchByKeywordsSqlite must scope by project');
+});
+
 // ─── model-router-ensure: opt-in merge (shipped ⊕ DATA_DIR user-config) ──────
 const routerEnsure = require('./model-router-ensure.js');
 
