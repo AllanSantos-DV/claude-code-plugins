@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>claude-code-boss — memória semântica e execução curada para o Claude Code</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória que fundamenta a resposta (recall em dois níveis), execução curada anti context-bloat e aprendizado no loop. A v2.7.0 é robustez (Sprint 5 do review): duas classes de bug em como os hooks persistem estado. Escrita atômica de estado que publica via temp e rename (o leitor nunca vê parcial), com retry no Windows para o EPERM do rename: 0 escritas perdidas em 2000 concorrentes (era 25–94%) e 0 leituras rasgadas em 24 mil (vs 799 na versão ingênua). Publicação sem-rasgo e resistência a crash, não serialização entre processos. Mais um resolvedor único de data-dir que rejeita o placeholder ${…} não-expandido, encerrando o estado fragmentado em dois diretórios. Backend externo opcional (memory-server ≥ 2.18; pool-warming ≥ 2.20)." />
+<meta name="description" content="Plugin para Claude Code Desktop: memória que fundamenta a resposta (recall em dois níveis), execução curada anti context-bloat e aprendizado no loop. A v2.8.0 é testabilidade + correção (Sprint 6 do review): duas primitivas críticas de segurança saíram do dashboard.js (1600 linhas) para módulos puros e testáveis — o guarda de Host/token em lib/dashboard-auth.js (isValidHost, loopback-only anti DNS-rebinding; tokenMatches, timingSafeEqual com length guard) e o guarda de path-traversal em lib/dashboard-static.js (resolveStaticPath, onde a borda + path.sep é load-bearing: sem ela um dir-irmão como dash-evil passaria um startsWith nu). Um endurecimento achado na extração: um segredo vazio não autentica mais ninguém. Prova adversarial: 0 escapes de filesystem em 70+ vetores de traversal, incluindo uma subida ao C:\Windows\win.ini real. Também removeu um card de UI fantasma (Failure retros fired, evento que nenhum código emite) e fechou lacunas de teste. Escopo honesto: extração de primitivas + endurecimento de teste, não o route-split completo do dashboard — a fábrica createRequestHandler(context) e um teste HTTP de ponta-a-ponta ficam como follow-up. 449 unitários + 65 de hooks no verde." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -405,13 +405,85 @@
   .atom-foot b{ color:#a29f97 }
   .atom-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
 
+  /* v2.8.0 : extract - 2 primitivas de seguranca saem do dashboard.js (1600 linhas) p/ modulos puros; 0 escapes de FS em 70+ vetores (incl. subida ao win.ini real) */
+  .extract{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:720px; font-family:var(--mono); margin:0 0 36px }
+  .ex-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .ex-bar .k{ color:var(--accent) }
+  .ex-bar .m{ color:#8a877f }
+
+  /* o monolito de origem: dashboard.js, denso, hachurado */
+  .ex-mono{ display:flex; align-items:baseline; justify-content:space-between; gap:12px;
+    margin:20px 22px 0; padding:14px 16px; border:1px solid var(--panel-line); border-radius:9px;
+    background:repeating-linear-gradient(135deg,rgba(255,255,255,.05) 0 7px,transparent 7px 14px),rgba(255,255,255,.02) }
+  .ex-mono b{ font-size:12.5px; color:var(--panel-ink); letter-spacing:.02em }
+  .ex-mono b::before{ content:"\25a6  "; color:#8a877f }
+  .ex-mono span{ font-size:11px; color:#8a877f; white-space:nowrap }
+
+  /* a divisao: 2 primitivas extraidas byte-a-byte */
+  .ex-split{ display:flex; align-items:center; gap:12px; padding:14px 22px 6px; font-size:11px;
+    letter-spacing:.02em; color:#8a877f }
+  .ex-split::before,.ex-split::after{ content:""; height:1px; flex:1 1 18px;
+    background:linear-gradient(90deg,transparent,rgba(255,255,255,.18)) }
+  .ex-split::after{ transform:scaleX(-1) }
+  .ex-split span{ flex:0 1 auto; text-align:center }
+  .ex-split i{ color:var(--accent); font-style:normal; margin-right:5px }
+  .ex-split b{ color:var(--panel-ink); font-weight:600 }
+
+  /* os dois seams extraidos */
+  .ex-seams{ display:grid; grid-template-columns:1fr 1fr; gap:14px; padding:2px 22px 4px }
+  .ex-seam{ border:1px solid var(--panel-line); border-radius:10px; padding:15px 16px; background:rgba(255,255,255,.03) }
+  .ex-file{ display:flex; flex-wrap:wrap; align-items:baseline; gap:8px; margin:0 0 12px;
+    font-size:12px; letter-spacing:.02em; color:var(--panel-ink) }
+  .ex-file .pure{ font-size:9px; letter-spacing:.1em; text-transform:uppercase; color:#8a877f;
+    border:1px solid rgba(255,255,255,.16); border-radius:4px; padding:1px 6px }
+  .ex-prim{ list-style:none; margin:0 0 12px; padding:0; display:grid; gap:9px }
+  .ex-prim li{ font-size:11.5px; line-height:1.5; color:#8a877f; padding-left:14px; position:relative }
+  .ex-prim li::before{ content:"\203a"; position:absolute; left:0; top:-1px; color:var(--accent); font-weight:700 }
+  .ex-prim li b{ display:block; color:var(--panel-ink); font-weight:600 }
+  .ex-load{ border-left:2px solid var(--accent); background:rgba(255,255,255,.05); color:#cbc8c0;
+    font-size:11px; line-height:1.5; padding:8px 11px; border-radius:0 6px 6px 0 }
+  .ex-load .lead{ display:block; font-size:9px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--accent); margin:0 0 5px }
+  .ex-load b{ color:var(--panel-ink); font-weight:600 }
+  .ex-seam code,.ex-load code{ background:rgba(255,255,255,.08); color:inherit; font-size:10.5px; padding:1px 5px; border-radius:4px }
+
+  /* prova adversarial: 0 escapes de FS em 70+ vetores (incl. subida ao win.ini real) */
+  .ex-proof{ display:grid; grid-template-columns:auto 1fr; gap:20px; align-items:center;
+    margin:16px 22px 0; padding:18px 20px; border:1px solid var(--panel-line); border-radius:10px;
+    background:var(--accent-soft) }
+  .ex-count{ text-align:center; line-height:.85 }
+  .ex-count b{ display:block; font-size:42px; letter-spacing:-.03em; color:var(--accent); font-weight:700 }
+  .ex-count span{ font-size:9.5px; letter-spacing:.13em; text-transform:uppercase; color:#a29f97 }
+  .ex-proof p{ margin:0; font-size:11.5px; line-height:1.55; color:#a29f97 }
+  .ex-proof .tag{ display:block; font-size:9.5px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--accent); margin:0 0 5px }
+  .ex-proof p b{ color:var(--panel-ink); font-weight:600 }
+  .ex-proof code{ background:rgba(255,255,255,.09); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+
+  /* linhas: require.main guard + card fantasma removido */
+  .ex-lines{ margin-top:16px; border-top:1px solid rgba(255,255,255,.06) }
+  .ex-line{ display:grid; grid-template-columns:auto 1fr; gap:14px; padding:14px 22px }
+  .ex-line + .ex-line{ border-top:1px solid rgba(255,255,255,.06) }
+  .ex-line .tk{ align-self:start; margin-top:1px; height:20px; padding:0 8px; border:1px solid var(--accent);
+    border-radius:5px; color:var(--accent); font-size:10px; letter-spacing:.06em; text-transform:uppercase;
+    font-weight:600; display:inline-grid; place-items:center; white-space:nowrap }
+  .ex-line p{ margin:0; font-size:11.5px; line-height:1.55; color:#8a877f }
+  .ex-line p b{ color:#a29f97; font-weight:600 }
+  .ex-line code{ background:rgba(255,255,255,.08); color:inherit; font-size:11px; padding:1px 5px; border-radius:4px }
+
+  .ex-foot{ padding:14px 22px; border-top:1px solid var(--panel-line); font-size:11px; line-height:1.6; color:#8a877f }
+  .ex-foot b{ color:#a29f97 }
+  .ex-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+
   footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
   footer a{ color:var(--muted); text-decoration:none }
   footer a:hover{ color:var(--accent) }
   .frow{ display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between }
   .flinks a{ margin-right:16px }
 
-  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
+  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
   @media (prefers-reduced-motion:reduce){ .caret{ animation:none } .reveal{ opacity:1 !important; transform:none !important } }
   .reveal{ opacity:0; transform:translateY(14px); animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards }
   @keyframes rise{ to{ opacity:1; transform:none } }
@@ -422,7 +494,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.7.0</span>
+    <span class="ver">v2.8.0</span>
   </nav>
 
   <header class="hero">
@@ -485,6 +557,89 @@
         <p>Um painel em <code>localhost</code> para ver a KB, os hooks e os logs. Abre quando você chama, não no boot.</p>
       </div>
     </div>
+  </section>
+
+  <section>
+    <p class="label">Novo na v2.8.0 · testabilidade + correção</p>
+    <p class="lede">A v2.8.0 não muda <b>o que</b> o boss faz. Muda <b>o quanto dá pra testar o que o protege</b>. O Sprint 6 do review completo tirou <b>duas primitivas críticas de segurança</b> de dentro do <code>dashboard.js</code> (1600 linhas), o guarda de <b>Host/token</b> e o guarda de <b>path-traversal</b>, e as transformou em <b>módulos puros e testáveis</b>, idênticos byte-a-byte ao código inline antigo. Na extração apareceu um <b>endurecimento</b>: um segredo vazio não autentica mais ninguém. E o guarda de traversal foi martelado por um gate adversarial: <b>0 escapes de filesystem</b> em 70+ vetores, incl. uma subida ao <code>win.ini</code> real. Escopo <b>honesto</b>: é extração e endurecimento de teste, <b>não</b> a quebra do dashboard em rotas.</p>
+
+    <div class="callout">
+      <span class="tag">Testabilidade, não comportamento</span>
+      Nada muda no que você vê: mesmo dashboard, mesmo recall, mesma curadoria. O que endurece é <b>o que dá pra provar em isolamento</b>. As duas peças que só rodavam subindo o servidor viraram funções puras com teste direto. E a extração ainda <b>fechou um furo</b> (segredo vazio autenticava qualquer um) e <b>matou um card fantasma</b> que ficava sempre 0. O route-split completo do <code>dashboard.js</code> é follow-up assumido.
+    </div>
+
+    <div class="extract" aria-label="Artefato de extração da v2.8.0: duas primitivas críticas de segurança saem do dashboard.js, um monólito de cerca de 1600 linhas, para módulos puros e testáveis, byte-a-byte idênticos ao código inline antigo. Primeiro módulo, lib/dashboard-auth.js: isValidHost aceita só Host loopback com a porta, barrando DNS-rebinding; tokenMatches compara em tempo constante com timingSafeEqual e um length guard. O endurecimento achado na extração: dois buffers vazios comparam iguais, então antes um segredo vazio autenticava qualquer requisição; agora tokenMatches exige que o expected seja não-vazio. Segundo módulo, lib/dashboard-static.js: resolveStaticPath é o guarda de path-traversal antes de servir um arquivo, e a borda mais path.sep é load-bearing, porque sem ela um diretório-irmão como dash-evil passaria um startsWith nu. Prova adversarial: no gate, o resolveStaticPath sobreviveu a mais de 70 vetores de traversal, incluindo uma subida ao arquivo real C dois-pontos barra Windows barra win.ini, com zero escapes de filesystem; o tester deu 4 de 4 PASS. Um require.main guard move o bootstrap, ou seja listen, browser e dashboard.json, para uma função só chamada quando o arquivo roda direto, então o módulo pode ser importado sem subir o listener HTTP. Bug de UI morto removido: o card Failure retros fired e o filtro failure.retro.fired do dropdown liam um evento que nenhum código emite, então o card ficava sempre zero e o filtro nunca retornava nada. Honesto: isto é extração de primitivas de segurança mais endurecimento de teste, não o route-split completo do dashboard; a fábrica createRequestHandler de context e um teste HTTP de ponta-a-ponta ficam como follow-up documentado. Reviewer aprovou, tester 4 de 4, os 2 blockings do rubber-duck fechados, mutação provada nas duas funções de segurança, 449 testes unitários e 65 suítes de hooks no verde.">
+      <div class="ex-bar">
+        <span class="k">extract</span>
+        <span class="m">testabilidade · Sprint 6 · dashboard.js</span>
+      </div>
+      <div class="ex-mono">
+        <b>dashboard.js</b>
+        <span>~1600 linhas · monólito</span>
+      </div>
+      <div class="ex-split">
+        <span><i>↳</i> <b>2 primitivas</b> extraídas · byte-a-byte, comportamento idêntico</span>
+      </div>
+      <div class="ex-seams">
+        <div class="ex-seam">
+          <p class="ex-file">lib/dashboard-auth.js <span class="pure">puro · testável</span></p>
+          <ul class="ex-prim">
+            <li><b>isValidHost</b> Host só <code>loopback:porta</code>, barra DNS-rebinding</li>
+            <li><b>tokenMatches</b> <code>timingSafeEqual</code> (compare constante) com length guard</li>
+          </ul>
+          <div class="ex-load">
+            <span class="lead">⚠ endurecimento na extração</span>
+            dois buffers vazios comparam <b>iguais</b>, então um <b>segredo vazio</b> autenticava qualquer um. Agora exige <code>expected</code> não-vazio.
+          </div>
+        </div>
+        <div class="ex-seam">
+          <p class="ex-file">lib/dashboard-static.js <span class="pure">puro · testável</span></p>
+          <ul class="ex-prim">
+            <li><b>resolveStaticPath</b> guarda de path-traversal antes de servir o arquivo</li>
+          </ul>
+          <div class="ex-load">
+            <span class="lead">a borda <code>+ path.sep</code> é load-bearing</span>
+            sem ela, o dir-irmão <code>dash-evil</code> passaria um <code>startsWith</code> nu e escaparia da raiz estática.
+          </div>
+        </div>
+      </div>
+      <div class="ex-proof">
+        <div class="ex-count"><b>0</b><span>escapes de FS</span></div>
+        <p><span class="tag">gate adversarial · tester 4/4 PASS</span><code>resolveStaticPath</code> sobreviveu a <b>70+ vetores</b> de traversal, incl. uma subida ao <code>C:\Windows\win.ini</code> <b>real</b>. Nenhum saiu da raiz.</p>
+      </div>
+      <div class="ex-lines">
+        <div class="ex-line">
+          <span class="tk">require.main</span>
+          <p>o bootstrap (<code>listen</code> · browser · <code>dashboard.json</code>) só roda quando o arquivo é chamado direto: o módulo pode ser <code>require</code>-ado <b>sem subir o listener</b> HTTP.</p>
+        </div>
+        <div class="ex-line">
+          <span class="tk">card fantasma</span>
+          <p>removido o card <b>“Failure retros fired”</b> e o filtro <code>failure.retro.fired</code> do dropdown. É um evento que <b>nenhum</b> código emite: o card ficava <b>sempre 0</b> e o filtro nunca retornava nada.</p>
+        </div>
+      </div>
+      <div class="ex-foot"><b>Honesto:</b> extração das <b>primitivas de segurança</b> + <b>hardening de teste</b>, <b>não</b> o route-split do <code>dashboard.js</code> (os ~40 handlers seguem lá, de propósito). Follow-up documentado: a fábrica <code>createRequestHandler(context)</code> + um teste HTTP de ponta-a-ponta. · reviewer <b>APPROVED</b> · tester <b>4/4</b> · 2 blockings do rubber-duck fechados · <b>mutação</b> nas 2 funções · <b>449</b> unitários + <b>65</b> suítes de hooks no verde</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>Duas primitivas, agora puras</h4>
+        <p>O guarda de auth (<code>isValidHost</code> loopback-only + <code>tokenMatches</code> por <code>timingSafeEqual</code>) e o guarda de traversal (<code>resolveStaticPath</code>) saíram do <code>dashboard.js</code> para <code>lib/dashboard-auth.js</code> e <code>lib/dashboard-static.js</code>. <b>Byte-a-byte</b> idênticos ao inline antigo, mas testáveis direto, sem subir o servidor.</p>
+      </div>
+      <div class="win">
+        <h4>0 escapes em 70+ vetores</h4>
+        <p>O gate adversarial jogou <b>mais de 70</b> payloads de traversal em <code>resolveStaticPath</code>, incl. uma subida ao <code>C:\Windows\win.ini</code> <b>real</b>: <b>0 escapes</b> de filesystem. A borda <code>+ path.sep</code> é <b>load-bearing</b>: sem ela, o dir-irmão <code>dash-evil</code> passaria um <code>startsWith</code> nu.</p>
+      </div>
+      <div class="win">
+        <h4>Segredo vazio não passa mais</h4>
+        <p>Dois buffers vazios comparam <b>iguais</b>: antes, um secret vazio autenticava qualquer requisição. Agora <code>tokenMatches</code> exige <code>expected</code> não-vazio. Furo <b>achado na extração</b> e provado por <b>mutação</b>.</p>
+      </div>
+      <div class="win">
+        <h4>Card fantasma, enfim removido</h4>
+        <p>Foi-se o card <b>“Failure retros fired”</b> e o filtro <code>failure.retro.fired</code>, o evento fantasma que a v2.5.0 marcou <b>pra corrigir na frente do dashboard</b>. E o <code>require.main</code> guard deixa o <code>dashboard.js</code> ser importado sem subir o listener.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Honesto sobre o alcance:</b> isto extrai as <b>primitivas de segurança</b> e fecha <b>lacunas de teste</b>, <b>não</b> decompõe o <code>dashboard.js</code> em rotas (os ~40 handlers e o estado de módulo seguem lá, de propósito). Follow-up documentado: a fábrica <code>createRequestHandler(context)</code> + um teste HTTP de ponta-a-ponta (startup, rejeição de Host/token, dispatch). Testes novos cobrem os predicados de auth, o guarda de traversal (com escape por dir-irmão), o <code>requestAllowed</code> do daemon do brain (origin + token) e <b>dois cenários do brain-backend em subprocessos isolados</b> (durabilidade do <code>saveLocal</code> sem embedder; troca de projeto A→B→A sem vazamento e com dados preservados). Mutação nas <b>2</b> funções de segurança. <b>449</b> unitários + <b>65</b> suítes de hooks no verde; <code>eslint</code> + <code>version-sync</code> ok.</p>
   </section>
 
   <section>
