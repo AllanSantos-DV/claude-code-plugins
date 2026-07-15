@@ -27,6 +27,7 @@ const marker = require('./lib/session-marker.js');
 const { extractCycles, renderBlock } = require('./lib/transcript-block.js');
 const { budgetForModel, shouldFire, DEFAULT_BOUNDS } = require('./lib/turn-budget.js');
 const { redact } = require('./lib/redact.js');
+const metrics = require('./lib/metrics.js');
 
 let _resolveProjectId = null;
 function _project(event) {
@@ -123,6 +124,7 @@ function run(event) {
   if (_decide({ pending: !!st.pending, stopHookActive: !!ev.stop_hook_active, fire: false }) === 'reconcile') {
     const to = st.pending.to;
     marker.commit(project, sid, to, marker.anchorAt(transcriptPath, to), _safeSize(transcriptPath));
+    metrics.fire('capture.reconciled', { to }, { sessionId: sid, cwd: ev.cwd });
     return {};
   }
 
@@ -154,6 +156,7 @@ function run(event) {
   const safe = redact(text).text;
   const boundary = marker._boundaryAtOrBefore(transcriptPath, size);
   marker.beginPending(project, sid, from, boundary, String(safe.length));
+  metrics.fire('capture.offered', { cycles: cycles.length, chars: text.length, model, reason: decision.reason }, { sessionId: sid, cwd: ev.cwd });
   return { block: true, reason: buildInstruction(safe) };
 }
 
