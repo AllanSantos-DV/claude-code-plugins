@@ -15,7 +15,10 @@ const PATTERNS = [
   [/\bgh[pousr]_[A-Za-z0-9]{20,}\b/g, '[GH_TOKEN]'],
   [/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, '[SLACK_TOKEN]'],
   [/\bAKIA[0-9A-Z]{16}\b/g, '[AWS_KEY]'],
-  [/\bsk-[A-Za-z0-9]{20,}\b/g, '[API_KEY]'],
+  // `sk-` API keys. Modern Anthropic (sk-ant-api03-…) and OpenAI (sk-proj-…) keys
+  // carry '-'/'_' in the body, so the classic sk-[A-Za-z0-9]{20,} misses them —
+  // include '-' and '_' in the body class (still \b-anchored, 20+ chars → not prose).
+  [/\bsk-[A-Za-z0-9_-]{20,}\b/g, '[API_KEY]'],
   // authorization scheme: Bearer/Basic/Token <value> → redact the VALUE, keep the scheme.
   // Value >=16 so we don't mangle prose ("token expired").
   [/\b(bearer|basic|token)\s+([A-Za-z0-9._~+/=-]{16,})/gi, '$1 [REDACTED]'],
