@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>claude-code-boss — memória semântica e execução curada para o Claude Code</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória que fundamenta a resposta (recall em dois níveis), execução curada anti context-bloat e aprendizado no loop. A v2.8.0 é testabilidade + correção (Sprint 6 do review): duas primitivas críticas de segurança saíram do dashboard.js (1600 linhas) para módulos puros e testáveis — o guarda de Host/token em lib/dashboard-auth.js (isValidHost, loopback-only anti DNS-rebinding; tokenMatches, timingSafeEqual com length guard) e o guarda de path-traversal em lib/dashboard-static.js (resolveStaticPath, onde a borda + path.sep é load-bearing: sem ela um dir-irmão como dash-evil passaria um startsWith nu). Um endurecimento achado na extração: um segredo vazio não autentica mais ninguém. Prova adversarial: 0 escapes de filesystem em 70+ vetores de traversal, incluindo uma subida ao C:\Windows\win.ini real. Também removeu um card de UI fantasma (Failure retros fired, evento que nenhum código emite) e fechou lacunas de teste. Escopo honesto: extração de primitivas + endurecimento de teste, não o route-split completo do dashboard — a fábrica createRequestHandler(context) e um teste HTTP de ponta-a-ponta ficam como follow-up. 449 unitários + 65 de hooks no verde." />
+<meta name="description" content="Plugin para Claude Code Desktop: memória que fundamenta a resposta (recall em dois níveis), execução curada anti context-bloat e aprendizado no loop. A v2.9.0 conserta um defeito de design reportado por usuário: no perfil standard (o default, quieto), o plugin tinha parado de capturar lições. Causa-raiz: o preset gateava por 'é hook de dev?' em vez de 'interrompe o usuário?', e por isso silenciava o correction-detect — uma injeção de additionalContext no UserPromptSubmit, invisível ao usuário e o gatilho nº1 de aprendizado — junto com os nags interruptivos. O eixo certo é interrupção, não aprendizado. F1 (correção cirúrgica, 2 edições): o standard mantém o correction-detect ligado, então o nudge silencioso volta a induzir a captura curada quando você corrige o agente, sem bloqueio ou interrupção visível; os nags que interrompem (pattern-detect, failure-retro, auto-continue) seguem desligados, então o standard continua quieto. E foi removida a regra nudge-weak do tuning-advisor, que recomendava 'o perfil poderia desligá-lo sem perda' para um nudge de baixa conversão — o anti-padrão que calou o aprendizado. dev e free inalterados. Este é o F1, o hotfix estreito e seguro, de um plano maior de auto-aprendizado revisado 3× por revisão externa; as próximas fases trazem um piso de sinal durável independente de modelo, entrega deferida de decisões/falhas sem bloquear, e observabilidade correlacionável do funil. 450 unitários + 65 de hooks no verde, incluindo um wire test (prompt corretivo no standard → additionalContext + sem Stop-block); failing-first + prova de mutação." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -477,13 +477,93 @@
   .ex-foot b{ color:#a29f97 }
   .ex-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
 
+  /* v2.9.0 : relearn - o perfil standard volta a aprender; eixo certo = "interrompe o usuario?", nao "e hook de dev?" (F1 do review de auto-aprendizado) */
+  .relearn{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:720px; font-family:var(--mono); margin:0 0 36px }
+  .rl-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .rl-bar .k{ color:var(--accent) }
+  .rl-bar .m{ color:#8a877f }
+
+  /* contexto: o preset perguntava a coisa errada */
+  .rl-ctx{ margin:0; padding:18px 22px 2px; font-size:11.5px; line-height:1.6; color:#8a877f }
+  .rl-ctx b{ color:#a29f97; font-weight:600 }
+  .rl-ctx code{ background:rgba(255,255,255,.08); color:inherit; font-size:11px; padding:1px 5px; border-radius:4px }
+
+  /* assinatura 1: eixo errado (riscado) vs eixo certo (escolhido) */
+  .rl-axis{ margin:14px 22px 0; border:1px solid var(--panel-line); border-radius:10px; overflow:hidden }
+  .rl-ask{ display:grid; grid-template-columns:22px 1fr; gap:12px; align-items:start; padding:13px 15px }
+  .rl-ask + .rl-ask{ border-top:1px solid rgba(255,255,255,.07) }
+  .rl-ask .mk{ font-size:13px; font-weight:700; line-height:1.3; text-align:center }
+  .rl-ask .lab{ display:block; font-size:9.5px; letter-spacing:.14em; text-transform:uppercase; margin:0 0 4px }
+  .rl-ask .q{ display:block; font-size:13px; letter-spacing:.01em }
+  .rl-ask--wrong{ background:rgba(255,255,255,.02); color:#8a877f }
+  .rl-ask--wrong .mk{ color:#8a877f }
+  .rl-ask--wrong .q{ text-decoration:line-through; text-decoration-color:rgba(255,255,255,.3) }
+  .rl-ask--right{ background:var(--accent-soft); color:var(--panel-ink) }
+  .rl-ask--right .mk{ color:var(--accent) }
+  .rl-ask--right .lab{ color:var(--accent) }
+  .rl-ask--right .q b{ color:var(--panel-ink); font-weight:700 }
+
+  /* assinatura 2: particiona pelo eixo certo - silencioso LIGA, interrompe DESLIGA */
+  .rl-split{ display:grid; grid-template-columns:1fr 1fr; gap:14px; padding:14px 22px 4px }
+  .rl-col{ border-radius:10px; padding:15px 15px }
+  .rl-col--on{ border:1px solid var(--accent); background:rgba(255,255,255,.05) }
+  .rl-col--off{ border:1px dashed rgba(255,255,255,.24); background:transparent }
+  .rl-tag{ display:block; font-size:9.5px; letter-spacing:.12em; text-transform:uppercase; margin:0 0 12px }
+  .rl-col--on .rl-tag{ color:var(--accent) }
+  .rl-col--off .rl-tag{ color:#8a877f }
+  .rl-hooks{ list-style:none; margin:0 0 13px; padding:0; display:grid; gap:8px }
+  .rl-hooks li{ font-size:11.5px; line-height:1.5; color:#a29f97; padding-left:15px; position:relative }
+  .rl-hooks li::before{ content:"\203a"; position:absolute; left:0; top:-1px; font-weight:700 }
+  .rl-col--on .rl-hooks li::before{ color:var(--accent) }
+  .rl-col--off .rl-hooks li::before{ color:#8a877f }
+  .rl-hooks b{ color:var(--panel-ink); font-weight:600 }
+  .rl-hooks code{ background:rgba(255,255,255,.08); color:inherit; font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .rl-verdict{ margin:0; padding-top:12px; border-top:1px solid rgba(255,255,255,.09);
+    font-size:11px; line-height:1.5; color:#8a877f }
+  .rl-verdict .v{ display:block; font-weight:600; margin:0 0 2px }
+  .rl-col--on .rl-verdict .v{ color:var(--accent) }
+  .rl-col--off .rl-verdict .v{ color:#a29f97 }
+
+  /* a regra anti-padrao removida do tuning-advisor */
+  .rl-rule{ display:grid; grid-template-columns:auto 1fr; gap:14px; margin:16px 22px 0;
+    padding:14px 16px; border:1px solid var(--panel-line); border-radius:10px; background:rgba(255,255,255,.02) }
+  .rl-rule .tk{ align-self:start; margin-top:1px; height:20px; padding:0 8px; border:1px solid var(--accent);
+    border-radius:5px; color:var(--accent); font-size:10px; letter-spacing:.06em; text-transform:uppercase;
+    font-weight:600; display:inline-grid; place-items:center; white-space:nowrap }
+  .rl-rule p{ margin:0; font-size:11.5px; line-height:1.55; color:#8a877f }
+  .rl-rule .del{ text-decoration:line-through; text-decoration-color:rgba(255,255,255,.32) }
+  .rl-rule b{ color:#a29f97; font-weight:600 }
+  .rl-rule code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:11px; padding:1px 5px; border-radius:4px }
+
+  /* enquadramento honesto: F1 de um plano maior, revisado 3x */
+  .rl-plan{ margin:16px 22px 0; padding:15px 16px; border:1px solid var(--panel-line);
+    border-radius:10px; background:rgba(255,255,255,.02) }
+  .rl-plan-h{ margin:0 0 12px; font-size:10px; letter-spacing:.13em; text-transform:uppercase; color:#8a877f; line-height:1.5 }
+  .rl-plan-h b{ color:var(--accent); font-weight:700; letter-spacing:.04em }
+  .rl-phases{ list-style:none; margin:0; padding:0; display:grid; gap:9px }
+  .rl-ph{ display:grid; grid-template-columns:66px 1fr; gap:12px; align-items:baseline;
+    font-size:11px; line-height:1.45; color:#8a877f }
+  .rl-ph .ph{ font-size:8.5px; letter-spacing:.05em; font-weight:700; text-transform:uppercase;
+    text-align:center; padding:3px 0; border-radius:5px; white-space:nowrap }
+  .rl-ph--done .ph{ color:var(--panel); background:var(--accent) }
+  .rl-ph--done{ color:#a29f97 }
+  .rl-ph--next .ph{ color:#8a877f; border:1px dashed rgba(255,255,255,.24) }
+  .rl-ph b{ color:var(--panel-ink); font-weight:600 }
+  .rl-ph code{ background:rgba(255,255,255,.08); color:inherit; font-size:10.5px; padding:1px 5px; border-radius:4px }
+
+  .rl-foot{ padding:14px 22px; border-top:1px solid var(--panel-line); font-size:11px; line-height:1.6; color:#8a877f }
+  .rl-foot b{ color:#a29f97 }
+  .rl-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+
   footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
   footer a{ color:var(--muted); text-decoration:none }
   footer a:hover{ color:var(--accent) }
   .frow{ display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between }
   .flinks a{ margin-right:16px }
 
-  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
+  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
   @media (prefers-reduced-motion:reduce){ .caret{ animation:none } .reveal{ opacity:1 !important; transform:none !important } }
   .reveal{ opacity:0; transform:translateY(14px); animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards }
   @keyframes rise{ to{ opacity:1; transform:none } }
@@ -494,7 +574,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.8.0</span>
+    <span class="ver">v2.9.0</span>
   </nav>
 
   <header class="hero">
@@ -557,6 +637,87 @@
         <p>Um painel em <code>localhost</code> para ver a KB, os hooks e os logs. Abre quando você chama, não no boot.</p>
       </div>
     </div>
+  </section>
+
+  <section>
+    <p class="label">Novo na v2.9.0 · aprendizado</p>
+    <p class="lede">A v2.9.0 conserta um defeito de design que um usuário pegou: no perfil <b>standard</b> (o default, quieto), o boss tinha <b>parado de aprender</b>. A causa foi classificar os hooks pelo <b>eixo errado</b>: o preset perguntava <i>"é hook de dev?"</i> e, com isso, calava o <code>correction-detect</code> junto com os nags. Só que o <code>correction-detect</code> é <b>silencioso</b>: injeta contexto no seu próximo prompt (<code>additionalContext</code>), invisível e sem bloquear, e é o <b>gatilho nº1</b> de captura. O eixo certo é <b>interrupção, não aprendizado</b>. Agora o <b>standard</b> mantém o <code>correction-detect</code> ligado e <b>volta a aprender</b>. E segue quieto, porque o que interrompe continua desligado.</p>
+
+    <div class="callout">
+      <span class="tag">Aprende de novo, e continua quieto</span>
+      O único hook que volta é <b>silencioso</b>: quando você corrige o agente, um empurrãozinho invisível induz a captura curada (<code>capture_lesson</code>), <b>sem</b> bloqueio nem interrupção. Os nags que de fato aparecem (<code>pattern-detect</code>, <code>failure-retro</code>, <code>auto-continue</code>) seguem desligados no <b>standard</b>. E some a regra do <code>tuning-advisor</code> que recomendava <b>desligar</b> um nudge de captura: o anti-padrão que tinha calado o aprendizado.
+    </div>
+
+    <div class="relearn" aria-label="Artefato de re-aprendizado da versão 2.9.0: o perfil standard, o default quieto, volta a aprender. Causa-raiz: o preset standard classificava os hooks pelo eixo errado, perguntando é hook de dev?, e por isso silenciava o correction-detect junto com os nags interruptivos. Mas o correction-detect é silencioso: no UserPromptSubmit ele injeta additionalContext, invisível ao usuário e sem bloquear, e é o gatilho número 1 de captura de lição. O eixo certo é interrupção, não aprendizado. Particionando pelo eixo certo: do lado silencioso, que não interrompe, o correction-detect fica ligado no standard, então o boss volta a aprender quando você corrige o agente; do lado que interrompe, com nag visível, o pattern-detect, o failure-retro e o auto-continue seguem desligados no standard, então o standard continua quieto. Foi removida também a regra nudge-weak do tuning-advisor, que recomendava que o perfil poderia desligar o nudge sem perda para uma captura de baixa conversão: era o anti-padrão que calou o aprendizado; baixa conversão significa mirar melhor o nudge, nunca desligar o aprendizado. dev e free ficam inalterados. Enquadramento honesto: este é o F1, o hotfix estreito e seguro, de um plano maior de auto-aprendizado revisado três vezes por revisão externa; as próximas fases trazem um piso de sinal durável e independente de modelo, entrega deferida de decisões e falhas sem bloquear, e observabilidade correlacionável do funil de captura. A correção são duas edições cirúrgicas, entrou failing-first com prova de mutação, e um wire test trava o invariante: um prompt corretivo no standard produz additionalContext e nenhum Stop-block. 450 testes unitários e 65 suítes de hooks no verde.">
+      <div class="rl-bar">
+        <span class="k">standard</span>
+        <span class="m">aprendizado · F1 · o eixo certo</span>
+      </div>
+      <p class="rl-ctx">o preset gateava por <b>"é hook de dev?"</b> e jogava o <code>correction-detect</code> (<b>silencioso</b>) no mesmo balde dos nags. o eixo certo:</p>
+      <div class="rl-axis" role="group" aria-label="A escolha do eixo de classificação">
+        <div class="rl-ask rl-ask--wrong">
+          <span class="mk" aria-hidden="true">✗</span>
+          <span><span class="lab">eixo errado · descartado</span><span class="q">"é hook de dev?"</span></span>
+        </div>
+        <div class="rl-ask rl-ask--right">
+          <span class="mk" aria-hidden="true">✓</span>
+          <span><span class="lab">eixo certo</span><span class="q"><b>"interrompe o usuário?"</b></span></span>
+        </div>
+      </div>
+      <div class="rl-split">
+        <div class="rl-col rl-col--on">
+          <span class="rl-tag">silencioso · não interrompe</span>
+          <ul class="rl-hooks">
+            <li><b>correction-detect</b> injeta <code>additionalContext</code> no próximo prompt (invisível, sem bloquear)</li>
+          </ul>
+          <p class="rl-verdict"><span class="v">✔ fica ligado no standard</span>o boss volta a aprender quando você corrige o agente</p>
+        </div>
+        <div class="rl-col rl-col--off">
+          <span class="rl-tag">interrompe o usuário · nag visível</span>
+          <ul class="rl-hooks">
+            <li><b>pattern-detect</b> · nudge no Stop</li>
+            <li><b>failure-retro</b> · retro no Stop</li>
+            <li><b>auto-continue</b> · segue sozinho</li>
+          </ul>
+          <p class="rl-verdict"><span class="v">✖ segue desligado</span>o standard continua quieto, como sempre foi</p>
+        </div>
+      </div>
+      <div class="rl-rule">
+        <span class="tk">regra removida</span>
+        <p><b>tuning-advisor · <code>nudge-weak</code></b> recomendava <span class="del">"o perfil poderia desligá-lo sem perda"</span> para um nudge de captura de <b>baixa conversão</b>: o anti-padrão que calou o aprendizado. Baixa conversão = <b>mirar melhor</b> o nudge, nunca desligar o aprendizado.</p>
+      </div>
+      <div class="rl-plan">
+        <p class="rl-plan-h"><b>F1</b> · o hotfix estreito e seguro · plano de auto-aprendizado revisado <b>3×</b> por revisão externa</p>
+        <ul class="rl-phases">
+          <li class="rl-ph rl-ph--done"><span class="ph">F1</span><span><b>standard volta a aprender</b>: <code>correction-detect</code> religado + regra anti-padrão removida <b>(esta release)</b></span></li>
+          <li class="rl-ph rl-ph--next"><span class="ph">a seguir</span><span><b>piso de sinal durável</b>, independente de modelo</span></li>
+          <li class="rl-ph rl-ph--next"><span class="ph">a seguir</span><span><b>entrega deferida</b> de decisões/falhas, sem bloquear</span></li>
+          <li class="rl-ph rl-ph--next"><span class="ph">a seguir</span><span><b>observabilidade correlacionável</b> do funil de captura</span></li>
+        </ul>
+      </div>
+      <div class="rl-foot"><b>Cirúrgico:</b> 2 edições: <code>correction-detect</code> religado no <code>standard</code> (sem block, sem interrupção visível) e regra <code>nudge-weak</code> removida. <code>dev</code>/<code>free</code> inalterados. Wire test: prompt corretivo no <code>standard</code> → <b>additionalContext</b> presente + <b>sem Stop-block</b>. Failing-first + prova de mutação · <b>450</b> unitários + <b>65</b> suítes de hooks no verde</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>O standard volta a aprender</h4>
+        <p>Quando você corrige o agente, o <code>correction-detect</code> religado injeta um empurrãozinho <b>silencioso</b> (<code>additionalContext</code>) que induz o <code>capture_lesson</code>. <b>Sem</b> reler transcript, sem bloquear, sem interromper. E o <code>standard</code> segue quieto.</p>
+      </div>
+      <div class="win">
+        <h4>O eixo certo: interrupção</h4>
+        <p>Antes o preset separava os hooks por <i>"é de dev?"</i> e calava o <code>correction-detect</code> junto com os nags. Agora separa por <b>"interrompe o usuário?"</b>: o silencioso <b>fica</b>, e o que aparece (<code>pattern-detect</code>, <code>failure-retro</code>, <code>auto-continue</code>) segue desligado.</p>
+      </div>
+      <div class="win">
+        <h4>A regra que matava o aprendizado, fora</h4>
+        <p>O <code>tuning-advisor</code> tinha a regra <code>nudge-weak</code> sugerindo <i>"o perfil pode desligar sem perda"</i> para nudges de baixa conversão. Era o anti-padrão. Baixa conversão = <b>mirar melhor</b> o nudge, nunca desligar o aprendizado.</p>
+      </div>
+      <div class="win">
+        <h4>dev e free intactos</h4>
+        <p>O <code>dev</code> segue com tudo ligado (curadoria escala até 3×); o <code>free</code> segue <b>passthrough</b> (nada bloqueia). A correção mira só o <code>standard</code>, e é <b>cirúrgica</b>: 2 edições, comportamento dos outros perfis idêntico.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Honesto sobre o alcance:</b> isto é o <b>F1</b>, o hotfix estreito e seguro, de um plano maior de auto-aprendizado, <b>revisado 3×</b> por revisão externa. As próximas fases trazem um <b>piso de sinal durável</b> independente de modelo, <b>entrega deferida</b> de decisões/falhas sem bloquear, e <b>observabilidade correlacionável</b> do funil de captura. Cada correção entrou <b>failing-first</b>, com prova de mutação; um <b>wire test</b> trava o invariante (prompt corretivo no <code>standard</code> → <code>additionalContext</code> + <b>sem Stop-block</b>). <b>450</b> unitários + <b>65</b> suítes de hooks no verde; <code>eslint</code> + <code>version-sync</code> ok.</p>
   </section>
 
   <section>
