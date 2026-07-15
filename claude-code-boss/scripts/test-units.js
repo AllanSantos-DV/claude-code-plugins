@@ -4866,20 +4866,19 @@ test('data-dir: dashboard.js resolvers are guarded (no bare `env || fallback` sp
 
 // ─── session-marker (capture-window cursor state machine — Phase 1 task 1) ───
 // Failing-first: lazy require so only these RED until lib/session-marker.js exists.
-test('session-marker: initIfAbsent sets committed at transcript end; idempotent', () => {
+test('session-marker: initIfAbsent baselines committed at START (offset 0); idempotent', () => {
   const sm = require('./lib/session-marker.js');
   const project = 'sm-init-' + Date.now();
   const sid = 's1-' + Date.now();
   const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `t1-${sid}.jsonl`);
   fs.writeFileSync(tp, 'line1\nline2\n');
-  const size = fs.statSync(tp).size;
   const st1 = sm.initIfAbsent(project, sid, tp);
   assert(st1.committed, 'committed set');
-  assertEq(st1.committed.offset, size, 'committed at file end');
+  assertEq(st1.committed.offset, 0, 'committed at transcript start (nothing before first Stop is skipped)');
   assertEq(st1.pending, null, 'no pending initially');
   fs.appendFileSync(tp, 'line3\n');
   const st2 = sm.initIfAbsent(project, sid, tp);
-  assertEq(st2.committed.offset, size, 'init idempotent (committed unchanged)');
+  assertEq(st2.committed.offset, 0, 'init idempotent (committed unchanged)');
   sm.resetAll(project, sid);
 });
 
@@ -4894,7 +4893,7 @@ test('session-marker: beginPending keeps committed; commit advances + clears pen
   const size = fs.statSync(tp).size;
   sm.beginPending(project, sid, 4, size, 'win1');
   let st = sm.getState(project, sid);
-  assertEq(st.committed.offset, 4, 'committed unchanged during pending');
+  assertEq(st.committed.offset, 0, 'committed unchanged during pending');
   assert(st.pending && st.pending.to === size, 'pending open at window end');
   sm.commit(project, sid, size, sm.anchorAt(tp, size), size);
   st = sm.getState(project, sid);
@@ -4915,7 +4914,7 @@ test('session-marker: clearPending aborts window; committed stays', () => {
   sm.beginPending(project, sid, 2, size, 'w');
   sm.clearPending(project, sid);
   const st = sm.getState(project, sid);
-  assertEq(st.committed.offset, 2, 'committed unchanged after abort');
+  assertEq(st.committed.offset, 0, 'committed unchanged after abort');
   assertEq(st.pending, null, 'pending cleared');
   sm.resetAll(project, sid);
 });
@@ -5157,6 +5156,44 @@ test('capture-dispatch: emits capture.offered metric on fire', () => {
   assert(offered, 'capture.offered emitted');
   assertEq(offered.p.cycles, 6, 'cycles in payload');
   assert(typeof offered.p.model === 'string', 'model in payload');
+  marker.resetAll(project, sid);
+});
+
+test('capture-dispatch: over-budget window is offered in chunks, never skipping cycles (regression)', () => {
+  const cd = require('./capture-dispatch.js');
+  const marker = require('./lib/session-marker.js');
+  const cwd = process.env.CLAUDE_PLUGIN_DATA;
+  const project = require('./lib/project-id.js').resolveProjectId({ cwd });
+  const sid = 'cap-budget-' + Date.now();
+  const tp = path.join(cwd, `capb-${sid}.jsonl`);
+  marker.resetAll(project, sid);
+  fs.writeFileSync(tp, '');
+  marker.initIfAbsent(project, sid, tp);
+  // 12 cycles, each ~1.8KB → window >> sonnet 8KB cap, so it MUST be offered in
+  // contiguous chunks (4/chunk). 12 = 3 full chunks (last chunk >= minTurns), so it
+  // drains fully — proving no cycle is skipped past the cursor.
+  const big = 'x'.repeat(1800);
+  const lines = [];
+  for (let i = 1; i <= 12; i++) {
+    lines.push(JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: 'MARK' + i + '_ ' + big } }));
+    lines.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'ans' + i }] } }));
+  }
+  fs.writeFileSync(tp, lines.join('\n') + '\n');
+  const seen = new Set();
+  const deps = { config: { cooldownMs: 0, maxCapturesPerSession: 50 } }; // isolate chunking from cadence bounds
+  for (let stop = 0; stop < 30; stop++) {
+    const res = cd.run({ session_id: sid, cwd, transcript_path: tp }, deps);
+    if (res && res.block) {
+      for (let i = 1; i <= 12; i++) if (res.reason.includes('MARK' + i + '_')) seen.add(i);
+    }
+  }
+  // No-skip invariant: offers start at the OLDEST cycle and are a CONTIGUOUS prefix
+  // {1,2,...,K} — the old (keep-newest) bug offered recent cycles and advanced past
+  // the older ones, yielding a set that does NOT start at 1.
+  const arr = [...seen].sort((a, b) => a - b);
+  assert(arr.length >= 8, `multiple chunks drained, got ${arr.join(',')}`);
+  assertEq(arr[0], 1, 'offers start at the oldest uncaptured cycle');
+  assert(arr.every((v, i) => v === i + 1), `offered cycles are a contiguous prefix (no skip), got ${arr.join(',')}`);
   marker.resetAll(project, sid);
 });
 

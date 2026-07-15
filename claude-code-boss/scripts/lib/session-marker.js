@@ -51,8 +51,10 @@ function _appendTransition(project, sid, obj) {
       `${_key(project, sid)}${SEP}${String(ts).padStart(15, '0')}-${seq}-${rand}.json`,
     );
     fs.writeFileSync(file, JSON.stringify({ ts, ...obj }));
+    return true;
   } catch (err) {
     console.error(`[session-marker] append failed: ${err.message}`);
+    return false;
   }
 }
 
@@ -170,8 +172,10 @@ function validateAnchor(transcriptPath, committed) {
 }
 
 /**
- * Set the committed baseline at the transcript's current end (last complete
- * line) IF no marker exists yet. Idempotent: never moves an existing cursor.
+ * Set the committed baseline at the transcript START (offset 0) IF no marker
+ * exists yet, so the first Stop captures the whole session so far — nothing
+ * before the first Stop is skipped. Resumption is via the persisted committed
+ * cursor (reopening a session does not re-curate). Idempotent.
  */
 function initIfAbsent(project, sid, transcriptPath) {
   const st = getState(project, sid);
@@ -183,15 +187,14 @@ function initIfAbsent(project, sid, transcriptPath) {
     void err; // transcript may not exist yet at SessionStart
     size = 0;
   }
-  const offset = _boundaryAtOrBefore(transcriptPath, size);
-  _appendTransition(project, sid, { type: 'init', offset, anchorHash: anchorAt(transcriptPath, offset), size });
+  _appendTransition(project, sid, { type: 'init', offset: 0, anchorHash: anchorAt(transcriptPath, 0), size });
   return getState(project, sid);
 }
 
-/** Open a capture window [from,to). committed stays put until commit(). */
+/** Open a capture window [from,to). committed stays put until commit().
+ *  Returns true only if the transition was durably persisted. */
 function beginPending(project, sid, from, to, windowHash) {
-  _appendTransition(project, sid, { type: 'pending', from, to, windowHash });
-  return getState(project, sid);
+  return _appendTransition(project, sid, { type: 'pending', from, to, windowHash });
 }
 
 /** Advance committed to `to` and clear pending — after capture OR "no lesson" ack. */

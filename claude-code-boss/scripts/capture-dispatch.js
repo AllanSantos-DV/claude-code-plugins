@@ -24,7 +24,7 @@
 const fs = require('fs');
 const path = require('path');
 const marker = require('./lib/session-marker.js');
-const { extractCycles, renderBlock } = require('./lib/transcript-block.js');
+const { extractCyclesFromBuffer, renderBlock, packCycles } = require('./lib/transcript-block.js');
 const { budgetForModel, shouldFire, DEFAULT_BOUNDS } = require('./lib/turn-budget.js');
 const { redact } = require('./lib/redact.js');
 const metrics = require('./lib/metrics.js');
@@ -44,29 +44,31 @@ function _safeSize(p) {
   try { return fs.statSync(p).size; } catch (err) { void err; return 0; }
 }
 
-function _readLines(transcriptPath, from, to) {
+function _readBuf(transcriptPath, from, to) {
   const len = Math.max(0, to - from);
-  if (len === 0) return [];
+  if (len === 0) return Buffer.alloc(0);
   try {
     const fd = fs.openSync(transcriptPath, 'r');
     try {
       const buf = Buffer.alloc(len);
-      fs.readSync(fd, buf, 0, len, from);
-      return buf.toString('utf-8').split('\n').filter(Boolean);
+      const bytesRead = fs.readSync(fd, buf, 0, len, from);
+      return bytesRead === len ? buf : buf.subarray(0, bytesRead);
     } finally {
       fs.closeSync(fd);
     }
   } catch (err) {
     void err;
-    return [];
+    return Buffer.alloc(0);
   }
 }
 
-function _lastModel(lines) {
+function _lastModel(buf) {
+  const lines = buf.toString('utf-8').split('\n');
   for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i]) continue;
     try {
       const o = JSON.parse(lines[i]);
-      if (o.type === 'assistant' && o.message && o.message.model) return o.message.model;
+      if (o.type === 'assistant' && !o.isSidechain && !o.agentId && o.message && o.message.model) return o.message.model;
     } catch (err) { void err; }
   }
   return '';
@@ -107,9 +109,9 @@ function _decide({ pending, stopHookActive, fire }) {
   return fire ? 'fire' : 'skip';
 }
 
-function run(event) {
+function run(event, deps) {
   const ev = event || {};
-  const cfg = _captureConfig();
+  const cfg = (deps && deps.config) || _captureConfig();
   if (cfg.enabled === false) return {};
 
   const sid = ev.session_id || ev.sessionId;
@@ -131,32 +133,47 @@ function run(event) {
   // 2. Mid-continuation → do not open a new capture.
   if (ev.stop_hook_active) return {};
 
-  // 3. Evaluate a fresh window.
-  const committed = st.committed || { offset: 0, anchorHash: '', size: 0 };
-  const v = marker.validateAnchor(transcriptPath, committed);
-  const from = v.ok ? committed.offset : 0; // anchor mismatch (compaction) → recover by re-scan, never skip
-  const size = _safeSize(transcriptPath);
-  const lines = _readLines(transcriptPath, from, size);
-  const cycles = extractCycles(lines);
-  const model = _lastModel(lines);
-  const budget = budgetForModel(model);
-  const text = renderBlock(cycles, budget.maxChars);
-
-  const stats = marker.stats(project, sid);
+  // 3. Bounds pre-check BEFORE the expensive read: after the session cap or during
+  //    cooldown the cursor stops advancing, so [from,size) would grow unbounded and
+  //    be re-read every Stop for nothing.
   const bounds = {
     maxCapturesPerSession: cfg.maxCapturesPerSession != null ? cfg.maxCapturesPerSession : DEFAULT_BOUNDS.maxCapturesPerSession,
     cooldownMs: cfg.cooldownMs != null ? cfg.cooldownMs : DEFAULT_BOUNDS.cooldownMs,
   };
+  const stats = marker.stats(project, sid);
+  if (stats.captures >= bounds.maxCapturesPerSession) return {};
+  if (stats.lastTs && (Date.now() - stats.lastTs) < bounds.cooldownMs) return {};
+
+  // 4. One snapshot: resolve the cursor, snap to a complete-line boundary, read once.
+  const committed = st.committed || { offset: 0, anchorHash: '', size: 0 };
+  const v = marker.validateAnchor(transcriptPath, committed);
+  const from = v.ok ? committed.offset : 0; // anchor mismatch (compaction) → recover by re-scan, never skip
+  const size = _safeSize(transcriptPath);
+  const boundary = marker._boundaryAtOrBefore(transcriptPath, size);
+  if (!(boundary > from)) return {}; // nothing complete to offer (also rejects to<=from)
+  const buf = _readBuf(transcriptPath, from, boundary);
+  const cycles = extractCyclesFromBuffer(buf, from);
+  if (cycles.length === 0) return {};
+  const model = _lastModel(buf);
+  const budget = budgetForModel(model);
+  const windowChars = renderBlock(cycles, 1e9).length; // full window size drives the fire trigger
+
   const decision = shouldFire(
-    { cycles: cycles.length, chars: text.length, model, capturesThisSession: stats.captures, lastCaptureTs: stats.lastTs },
+    { cycles: cycles.length, chars: windowChars, model, capturesThisSession: stats.captures, lastCaptureTs: stats.lastTs },
     bounds,
   );
   if (_decide({ pending: false, stopHookActive: false, fire: decision.fire }) !== 'fire') return {};
 
+  // 5. Offer the OLDEST cycles that fit; advance the cursor only over THOSE (the
+  //    rest are re-offered next Stop — nothing is skipped).
+  const { text, kept } = packCycles(cycles, budget.maxChars);
+  if (!text || kept === 0) return {}; // never hand the agent an empty block
+  const to = cycles[kept - 1].endOffset;
+  if (!(to > from)) return {};
   const safe = redact(text).text;
-  const boundary = marker._boundaryAtOrBefore(transcriptPath, size);
-  marker.beginPending(project, sid, from, boundary, String(safe.length));
-  metrics.fire('capture.offered', { cycles: cycles.length, chars: text.length, model, reason: decision.reason }, { sessionId: sid, cwd: ev.cwd });
+  if (!safe) return {};
+  if (!marker.beginPending(project, sid, from, to, String(safe.length))) return {}; // persist failed → don't emit an untracked offer
+  metrics.fire('capture.offered', { cycles: kept, windowCycles: cycles.length, chars: safe.length, model, reason: decision.reason }, { sessionId: sid, cwd: ev.cwd });
   return { block: true, reason: buildInstruction(safe) };
 }
 
