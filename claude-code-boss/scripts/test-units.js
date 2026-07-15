@@ -1649,6 +1649,8 @@ test('scope: detectSecrets catches well-known prefixes, ignores benign text', ()
   const { detectSecrets } = require('./lib/scope-sanitizer.js');
   // Positive cases
   if (!detectSecrets('here is sk-' + 'A'.repeat(40) + ' token')) throw new Error('sk- not detected');
+  if (!detectSecrets('sk-ant-api03-' + 'AbCd12-_'.repeat(6) + 'ZZ')) throw new Error('modern Anthropic key not detected');
+  if (!detectSecrets('sk-proj-' + 'Ab12Cd34'.repeat(5))) throw new Error('modern OpenAI project key not detected');
   if (!detectSecrets('ghp_' + 'a'.repeat(36))) throw new Error('ghp_ not detected');
   if (!detectSecrets('AKIA' + 'BCDEFGHIJKLMNOP1')) throw new Error('AKIA not detected');
   if (!detectSecrets('AIza' + 'a'.repeat(35))) throw new Error('AIza not detected');
@@ -5073,6 +5075,13 @@ test('redact: masks common secrets and PII, preserves auth scheme, spares prose'
   assert(env.includes('[REDACTED]') && !env.includes('hunter2secret'), 'env assignment masked');
   const email = redact('ping a.user@example.com ok').text;
   assert(email.includes('[EMAIL]') && !email.includes('a.user@example.com'), 'email masked');
+  // Modern key formats carry '-'/'_' in the body (Anthropic sk-ant-api03-…, OpenAI sk-proj-…).
+  const antKey = 'sk-ant-api03-' + 'AbCd12-_'.repeat(6) + 'ZZ';
+  const ant = redact('key ' + antKey + ' end').text;
+  assert(ant.includes('[API_KEY]') && !ant.includes(antKey), 'modern Anthropic key masked');
+  const projKey = 'sk-proj-' + 'Ab12Cd34'.repeat(5);
+  const proj = redact('use ' + projKey + ' now').text;
+  assert(proj.includes('[API_KEY]') && !proj.includes(projKey), 'modern OpenAI project key masked');
   assertEq(redact('the token expired and I fixed the bug').text, 'the token expired and I fixed the bug', 'prose not over-redacted');
   assert(redact('x ghp_ABCDEFGHIJKLMNOPQRSTUVWX y').count >= 1, 'count reflects redactions');
 });
