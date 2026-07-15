@@ -1180,7 +1180,7 @@ const TESTS = [
     },
   },
   {
-    name: 'correction-detect [profile=standard→disabled→{}]',
+    name: 'correction-detect [profile=standard→ENABLED→nudge] (F1 wire)',
     script: 'correction-detect.js',
     payload: { prompt: 'nao era isso, esta errado', session_id: SESSION, transcript_path: '' },
     expect: { noError: true },
@@ -1190,7 +1190,17 @@ const TESTS = [
       fs.writeFileSync(path.join(tmpRoot, 'config', 'hooks-config.json'), JSON.stringify({ profile: 'standard' }));
       return { CLAUDE_PLUGIN_ROOT: tmpRoot, CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-u1data-cd-')) };
     },
-    validate: r => Object.keys(r.parsed || {}).length === 0 ? null : `expected {} (standard disables correction), got: ${JSON.stringify(r.parsed)}`,
+    // F1: standard KEEPS the silent learning trigger. A corrective prompt must emit
+    // the UserPromptSubmit additionalContext nudge (→ capture_lesson) and NEVER a
+    // Stop block. This is the auto-learning-review wire test.
+    validate: r => {
+      const p = r.parsed || {};
+      const hso = p.hookSpecificOutput || {};
+      if (p.decision) return `must NOT emit a Stop block, got: ${JSON.stringify(p)}`;
+      if (hso.hookEventName !== 'UserPromptSubmit') return `expected UserPromptSubmit nudge, got: ${JSON.stringify(p)}`;
+      if (!/capture_lesson/.test(hso.additionalContext || '')) return `expected capture_lesson advisory, got: ${JSON.stringify(p)}`;
+      return null;
+    },
   },
 
   // ── D1 self-review ────────────────────────────────────────────────────────
