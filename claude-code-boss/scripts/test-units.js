@@ -5197,6 +5197,52 @@ test('capture-dispatch: over-budget window is offered in chunks, never skipping 
   marker.resetAll(project, sid);
 });
 
+// ─── capture-queue (Phase 1.5a: durable redacted cycle queue) ────────────────
+test('capture-queue: ingest extracts + redacts cycles into a durable queue and advances the scan cursor', () => {
+  const q = require('./lib/capture-queue.js');
+  const { redact } = require('./lib/redact.js');
+  const project = 'cq-ing-' + Date.now();
+  const sid = 'cq-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cq-${sid}.jsonl`);
+  q.reset(project, sid);
+  const lines = [];
+  for (let i = 1; i <= 3; i++) {
+    lines.push(JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: 'question ' + i } }));
+    lines.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'answer ' + i + ' token ghp_ABCDEFGHIJKLMNOPQRSTUVWX end' }] } }));
+  }
+  fs.writeFileSync(tp, lines.join('\n') + '\n');
+  const r = q.ingest(project, sid, tp, s => redact(s).text);
+  assertEq(r.added, 3, 'three cycles queued');
+  const st = q.getState(project, sid);
+  assertEq(st.queue.length, 3);
+  assertEq(st.queue[0].promptId, 'p1');
+  assert(st.queue.every(c => !c.assistant.includes('ghp_ABCDEF')), 'secret redacted at rest');
+  assert(st.scan.offset > 0, 'scan cursor advanced');
+  q.reset(project, sid);
+});
+
+test('capture-queue: re-ingest is idempotent and dedups across a compaction rewrite (content-hash)', () => {
+  const q = require('./lib/capture-queue.js');
+  const { redact } = require('./lib/redact.js');
+  const project = 'cq-comp-' + Date.now();
+  const sid = 'cq2-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cq2-${sid}.jsonl`);
+  q.reset(project, sid);
+  const cyc = (i) => [
+    JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: 'q' + i } }),
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'a' + i }] } }),
+  ];
+  fs.writeFileSync(tp, [cyc(1), cyc(2), cyc(3)].flat().join('\n') + '\n');
+  assertEq(q.ingest(project, sid, tp, s => redact(s).text).added, 3);
+  assertEq(q.ingest(project, sid, tp, s => redact(s).text).added, 0, 'idempotent on unchanged file');
+  // compaction: rewrite SHORTER with a summary event + the SAME 3 cycles at new offsets
+  const summary = JSON.stringify({ type: 'user', isCompactSummary: true, message: { role: 'user', content: 'summary of prior context' } });
+  fs.writeFileSync(tp, [summary, cyc(1), cyc(2), cyc(3)].flat().join('\n') + '\n');
+  assertEq(q.ingest(project, sid, tp, s => redact(s).text).added, 0, 'compaction rebase re-scans but content-hash dedups');
+  assertEq(q.getState(project, sid).queue.length, 3, 'still exactly 3, no duplicates');
+  q.reset(project, sid);
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
