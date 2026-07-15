@@ -76,12 +76,13 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
   // to guess from the transcript. Keyed by windowId (filesystem-shared across the
   // brain-server and Stop-hook processes).
   function recordCaptureAck(windowId, outcome) {
-    if (!windowId) return;
+    if (!windowId) return false;
     try {
       const cq = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'capture-queue.js'));
-      cq.recordAck(windowId, outcome);
+      return cq.recordAck(windowId, outcome);
     } catch (err) {
       console.error(`[BRAIN-SERVER] recordCaptureAck failed: ${err.message}`);
+      return false;
     }
   }
 
@@ -461,8 +462,8 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
       }
 
       case 'capture_ack': {
-        recordCaptureAck(args.windowId, args.outcome || 'none');
-        return { content: [{ type: 'text', text: JSON.stringify({ status: 'acked', windowId: args.windowId || null, outcome: args.outcome || 'none' }, null, 2) }] };
+        const ok = recordCaptureAck(args.windowId, args.outcome || 'none');
+        return { content: [{ type: 'text', text: JSON.stringify({ status: ok ? 'acked' : 'ack-failed', ok, windowId: args.windowId || null, outcome: args.outcome || 'none' }, null, 2) }] };
       }
 
       case 'brain_related': {
@@ -570,5 +571,9 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
     return KB_TOOLS.has(name) ? withLock(() => handleTool(name, args)) : handleTool(name, args);
   });
 
+  // Test/automation seam: expose the raw tool dispatcher so the capture ACK bridge
+  // (capture_ack / capture_lesson → recordCaptureAck → capture-queue) can be driven
+  // end-to-end without a live MCP transport. The SDK ignores extra instance props.
+  server.handleTool = handleTool;
   return server;
 }

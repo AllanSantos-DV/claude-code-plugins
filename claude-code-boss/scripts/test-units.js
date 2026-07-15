@@ -5090,6 +5090,37 @@ test('capture-dispatch: run offers from the queue, then acks when capture_lesson
   queue.reset(project, sid);
 });
 
+test('capture-dispatch: an OPEN offer re-blocks even on stop_hook_active until the agent acks (real block-until-ack)', () => {
+  const cd = require('./capture-dispatch.js');
+  const queue = require('./lib/capture-queue.js');
+  const sid = 'cap-block-' + Date.now();
+  const cwd = process.env.CLAUDE_PLUGIN_DATA;
+  const project = require('./lib/project-id.js').resolveProjectId({ cwd });
+  const tp = path.join(cwd, `capbl-${sid}.jsonl`);
+  queue.reset(project, sid);
+  const lines = [];
+  for (let i = 1; i <= 6; i++) {
+    lines.push(JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: 'question ' + i } }));
+    lines.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'answer ' + i }] } }));
+  }
+  fs.writeFileSync(tp, lines.join('\n') + '\n');
+  const first = cd.run({ session_id: sid, cwd, transcript_path: tp });
+  assert(first && first.block, 'first Stop opens an offer and blocks');
+  const wid = queue.getState(project, sid).offer.windowId;
+  // The agent CONTINUED (stop_hook_active) but did NOT ack — the turn must NOT be
+  // allowed to end: the dispatcher re-blocks. (The old bug returned {} here, letting
+  // the agent ignore the instruction and stop.)
+  const cont = cd.run({ session_id: sid, cwd, transcript_path: tp, stop_hook_active: true });
+  assert(cont && cont.block, 're-blocks on the continuation while unacked');
+  assert(cont.reason.includes(wid) || /capture_ack/.test(cont.reason), 're-inject carries the same window instruction');
+  // Now the agent acks → the continuation Stop drains and lets the turn end.
+  queue.recordAck(wid, 'none');
+  const done = cd.run({ session_id: sid, cwd, transcript_path: tp, stop_hook_active: true });
+  assert(!done.block, 'after the explicit ack, the turn is released');
+  assert(!queue.getState(project, sid).offer, 'offer cleared on ack');
+  queue.reset(project, sid);
+});
+
 test('capture-dispatch: run stays silent below budget and when stop_hook_active', () => {
   const cd = require('./capture-dispatch.js');
   const marker = require('./lib/session-marker.js');
@@ -5176,12 +5207,16 @@ test('capture-dispatch: over-budget window is offered in chunks, never skipping 
   }
   fs.writeFileSync(tp, lines.join('\n') + '\n');
   const seen = new Set();
+  const cq = require('./lib/capture-queue.js');
   const deps = { config: { cooldownMs: 0, maxCapturesPerSession: 50 } }; // isolate chunking from cadence bounds
+  // Progress by ACKING each offered chunk (the agent's tool call) — NOT by parking.
+  // A drop/park would lose cycles; an ack advances to the next contiguous chunk.
   for (let stop = 0; stop < 30; stop++) {
     const res = cd.run({ session_id: sid, cwd, transcript_path: tp }, deps);
-    if (res && res.block) {
-      for (let i = 1; i <= 12; i++) if (res.reason.includes('MARK' + i + '_')) seen.add(i);
-    }
+    if (!(res && res.block)) break;
+    for (let i = 1; i <= 12; i++) if (res.reason.includes('MARK' + i + '_')) seen.add(i);
+    const off = cq.getState(project, sid).offer;
+    if (off) cq.recordAck(off.windowId, 'captured');
   }
   // No-skip invariant: offers start at the OLDEST cycle and are a CONTIGUOUS prefix
   // {1,2,...,K} — the old (keep-newest) bug offered recent cycles and advanced past
@@ -5294,23 +5329,125 @@ test('capture-queue: reconcile drains on an explicit ack marker (no transcript g
   q.reset(project, sid);
 });
 
-test('capture-queue: reconcile re-blocks until acked, then PARKS (never deletes) after parkAfter', () => {
+test('capture-queue: reconcile re-blocks indefinitely until acked — NEVER parks/deletes (no-loss)', () => {
   const q = require('./lib/capture-queue.js');
   const { redact } = require('./lib/redact.js');
-  const project = 'cq-park-' + Date.now(); const sid = 'cqp-' + Date.now();
+  const project = 'cq-nopark-' + Date.now(); const sid = 'cqp-' + Date.now();
   const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cqp-${sid}.jsonl`);
   _cqSeed(q, redact, project, sid, tp, 3);
   q.offer(project, sid, 100000);
-  const r1 = q.reconcile(project, sid, 2); // no ack → re-block
-  assert(!r1.acked && r1.retry, 'first reconcile re-blocks (no ack yet)');
-  assert(q.getState(project, sid).offer, 'offer stays open to re-block the Stop');
-  const r2 = q.reconcile(project, sid, 2); // attempts >= parkAfter → park
-  assert(r2.parked, 'parked, not dropped');
+  // Many un-acked reconciles: the offer STAYS OPEN (re-block) and cycles STAY in
+  // the durable queue. Allan's design: the turn never proceeds until the agent
+  // acks; a stuck window is re-offered on the next Stop, never lost to a terminal
+  // `deferred` collection that nothing re-offers.
+  for (let i = 0; i < 12; i++) {
+    const r = q.reconcile(project, sid);
+    assert(!r.acked && r.retry && !r.parked, `reconcile ${i} re-blocks (no ack, no park)`);
+  }
   const st = q.getState(project, sid);
-  assert(!st.offer, 'active offer cleared on park');
-  assertEq(st.queue.length, 0, 'moved out of the active queue');
-  assert(st.deferred && st.deferred.length === 3, 'cycles PARKED (kept), never deleted');
+  assert(st.offer, 'offer stays open to keep re-blocking');
+  assertEq(st.queue.length, 3, 'cycles stay in the durable queue — never parked/deleted');
+  assert(!st.deferred || st.deferred.length === 0, 'no terminal deferred collection');
   q.reset(project, sid);
+});
+
+test('capture-queue: reconcile counts captured separately from offers; "none" does not', () => {
+  const q = require('./lib/capture-queue.js');
+  const { redact } = require('./lib/redact.js');
+  const project = 'cq-cap-' + Date.now(); const sid = 'cqc-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cqcap-${sid}.jsonl`);
+  q.reset(project, sid);
+  const cyc = (i) => [
+    JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: 'question ' + i } }),
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'answer ' + i }] } }),
+  ].join('\n');
+  fs.writeFileSync(tp, cyc(1) + '\n' + cyc(2) + '\n' + cyc(3) + '\n');
+  q.ingest(project, sid, tp, s => redact(s).text);
+  const off1 = q.offer(project, sid, 100000);
+  q.recordAck(off1.windowId, 'captured');
+  q.reconcile(project, sid);
+  assertEq(q.getState(project, sid).captured, 1, 'captured incremented on a real capture');
+  fs.appendFileSync(tp, cyc(4) + '\n' + cyc(5) + '\n' + cyc(6) + '\n');
+  q.ingest(project, sid, tp, s => redact(s).text);
+  const off2 = q.offer(project, sid, 100000);
+  q.recordAck(off2.windowId, 'none');
+  q.reconcile(project, sid);
+  assertEq(q.getState(project, sid).captured, 1, '"none" ack does NOT count as a capture');
+  assert(q.getState(project, sid).offers >= 2, 'offers counts review interruptions (both windows)');
+  q.reset(project, sid);
+});
+
+test('capture-queue: reconcile keeps the ack marker if the drain _save FAILS (no ack loss)', () => {
+  const q = require('./lib/capture-queue.js');
+  const { redact } = require('./lib/redact.js');
+  const project = 'cq-saveguard-' + Date.now(); const sid = 'cqsg-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cqsg-${sid}.jsonl`);
+  _cqSeed(q, redact, project, sid, tp, 3);
+  const off = q.offer(project, sid, 100000);
+  q.recordAck(off.windowId, 'captured');
+  // Inject a failing save (CAS/disk failure) into the drain via the seam.
+  const r = q.reconcile(project, sid, { save: () => false });
+  assert(!r.acked, 'drain reports not-acked when the commit fails');
+  assert(q.readAck(off.windowId), 'ack marker PRESERVED for retry (not cleared on a failed save)');
+  assert(q.getState(project, sid).offer, 'offer still open (drain rolled back)');
+  // a subsequent NORMAL reconcile still drains it
+  const r2 = q.reconcile(project, sid);
+  assert(r2.acked, 'retry drains once the save succeeds');
+  assert(!q.readAck(off.windowId), 'marker consumed after the successful drain');
+  q.reset(project, sid);
+});
+
+test('capture-queue: offer windowId is a random nonce — identical content across sessions never collides', () => {
+  const q = require('./lib/capture-queue.js');
+  const { redact } = require('./lib/redact.js');
+  const ts = Date.now();
+  const mk = (tag) => {
+    const project = 'cq-nonce-' + tag + '-' + ts; const sid = 'cqn-' + tag + '-' + ts;
+    const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cqn-${tag}-${ts}.jsonl`);
+    _cqSeed(q, redact, project, sid, tp, 3); // IDENTICAL seeded content in both
+    const off = q.offer(project, sid, 100000);
+    return { project, sid, wid: off.windowId };
+  };
+  const a = mk('a'); const b = mk('b');
+  assert(a.wid && b.wid, 'both offers created');
+  assert(a.wid !== b.wid, 'identical content in two sessions yields DISTINCT nonce windowIds (no cross-session collision)');
+  // re-offering the same window after a reset also yields a fresh nonce
+  q.reset(a.project, a.sid);
+  q.reset(b.project, b.sid);
+});
+
+test('capture bridge: the REAL capture_ack MCP tool writes the marker the queue drains (no fiction)', async () => {
+  const url = require('url');
+  const q = require('./lib/capture-queue.js');
+  const { redact } = require('./lib/redact.js');
+  // Import the ESM server FIRST — this is the only real await. Everything that
+  // touches the shared process.env.CLAUDE_PLUGIN_DATA runs synchronously AFTER it,
+  // so interleaved async tests can't swap the data dir mid-flight.
+  const mod = await import(url.pathToFileURL(path.join(process.env.CLAUDE_PLUGIN_ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+  const server = mod.createBrainServer({ pluginRoot: process.env.CLAUDE_PLUGIN_ROOT, mode: 'stdio' });
+  assert(typeof server.handleTool === 'function', 'server exposes the tool dispatcher seam');
+  const prevData = process.env.CLAUDE_PLUGIN_DATA;
+  const myData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bridge-'));
+  process.env.CLAUDE_PLUGIN_DATA = myData;
+  try {
+    const project = 'cq-bridge-' + Date.now(); const sid = 'cqbr-' + Date.now();
+    const tp = path.join(myData, `cqbr-${sid}.jsonl`);
+    _cqSeed(q, redact, project, sid, tp, 3);
+    const off = q.offer(project, sid, 100000);
+    // capture_ack's handler is synchronous (recordCaptureAck → capture-queue.recordAck)
+    // and writes the marker before returning, so no await is needed here — keeping the
+    // whole env-sensitive section atomic against interleaving async tests.
+    server.handleTool('capture_ack', { windowId: off.windowId, outcome: 'none' });
+    assert(q.readAck(off.windowId), 'the REAL MCP tool wrote the ack marker (tool→recordCaptureAck→queue bridge)');
+    // The deterministic Stop-side reconcile drains PURELY from what the tool wrote.
+    const r = q.reconcile(project, sid);
+    assert(r.acked && r.outcome === 'none', 'reconcile drains from the tool-written marker (real bridge, not a stubbed name)');
+    assertEq(q.getState(project, sid).queue.length, 0, 'offered cycles drained via the real tool path');
+    q.reset(project, sid);
+  } finally {
+    process.env.CLAUDE_PLUGIN_DATA = prevData;
+    try { fs.rmSync(myData, { recursive: true, force: true }); } catch (err) { void err; }
+  }
 });
 
 test('capture-queue: _save CAS refuses a stale write (cross-Stop concurrency safety)', () => {
