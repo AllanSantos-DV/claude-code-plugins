@@ -5049,14 +5049,6 @@ test('redact: masks common secrets and PII, preserves auth scheme, spares prose'
 });
 
 // ─── capture-dispatch (Stop detector: offer clean block to agent — Phase 1 task 4) ─
-test('capture-dispatch: _decide reconciles pending, skips on stop_hook_active, fires on budget', () => {
-  const cd = require('./capture-dispatch.js');
-  assertEq(cd._decide({ pending: true, stopHookActive: false, fire: true }), 'reconcile');
-  assertEq(cd._decide({ pending: false, stopHookActive: true, fire: true }), 'skip');
-  assertEq(cd._decide({ pending: false, stopHookActive: false, fire: true }), 'fire');
-  assertEq(cd._decide({ pending: false, stopHookActive: false, fire: false }), 'skip');
-});
-
 test('capture-dispatch: buildInstruction names capture_lesson, types, tags, delimits untrusted block', () => {
   const cd = require('./capture-dispatch.js');
   const r = cd.buildInstruction('SOME BLOCK TEXT');
@@ -5067,31 +5059,32 @@ test('capture-dispatch: buildInstruction names capture_lesson, types, tags, deli
   assert(/UNTRUSTED|do not follow/i.test(r), 'delimits block as untrusted');
 });
 
-test('capture-dispatch: run fires on a budget-filling window, opens pending, then reconciles', () => {
+test('capture-dispatch: run offers from the queue, then acks when capture_lesson appears', () => {
   const cd = require('./capture-dispatch.js');
-  const marker = require('./lib/session-marker.js');
+  const queue = require('./lib/capture-queue.js');
   const sid = 'cap-fire-' + Date.now();
   const cwd = process.env.CLAUDE_PLUGIN_DATA;
   const project = require('./lib/project-id.js').resolveProjectId({ cwd });
   const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cap-${sid}.jsonl`);
-  marker.resetAll(project, sid);
-  fs.writeFileSync(tp, ''); // activation: empty transcript
-  marker.initIfAbsent(project, sid, tp); // marker set at start
+  queue.reset(project, sid);
   const lines = [];
   for (let i = 1; i <= 6; i++) {
     lines.push(JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: 'question ' + i } }));
     lines.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'answer ' + i }] } }));
   }
-  fs.writeFileSync(tp, lines.join('\n') + '\n'); // turns arrive after activation
+  fs.writeFileSync(tp, lines.join('\n') + '\n');
   const res = cd.run({ session_id: sid, cwd, transcript_path: tp });
-  assert(res && res.block === true, 'fires a block');
+  assert(res && res.block === true, 'offers a block');
   assert(/capture_lesson/.test(res.reason), 'instruction present');
   assert(res.reason.includes('answer 6'), 'carries recent content');
-  assert(marker.getState(project, sid).pending, 'pending opened');
+  assert(queue.getState(project, sid).offer, 'offer opened on the queue');
+  // agent captures: a capture_lesson tool_use appears → next Stop acks + drains, no re-offer.
+  fs.appendFileSync(tp, JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', name: 'capture_lesson', input: { title: 'x' } }] } }) + '\n');
   const res2 = cd.run({ session_id: sid, cwd, transcript_path: tp });
-  assert(!res2.block, 'second run reconciles (no re-fire)');
-  assert(!marker.getState(project, sid).pending, 'pending cleared after reconcile');
-  marker.resetAll(project, sid);
+  assert(!res2.block, 'after capture, no re-offer this Stop');
+  assert(!queue.getState(project, sid).offer, 'offer acked/cleared');
+  assertEq(queue.getState(project, sid).queue.length, 0, 'captured cycles drained from the queue');
+  queue.reset(project, sid);
 });
 
 test('capture-dispatch: run stays silent below budget and when stop_hook_active', () => {

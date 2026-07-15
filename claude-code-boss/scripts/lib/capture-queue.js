@@ -29,7 +29,7 @@ function _file(project, sid) {
   return path.join(_runtimeDir(), `capture-queue-${sanitizeSessionId(project)}--${sanitizeSessionId(sid)}.json`);
 }
 
-function _default() { return { rev: 0, scan: { offset: 0, anchorHash: '' }, seen: [], queue: [], offer: null }; }
+function _default() { return { rev: 0, scan: { offset: 0, anchorHash: '' }, seen: [], queue: [], offer: null, offers: 0, lastOfferTs: 0 }; }
 
 function _load(project, sid) {
   try {
@@ -40,6 +40,8 @@ function _load(project, sid) {
       seen: Array.isArray(o.seen) ? o.seen : [],
       queue: Array.isArray(o.queue) ? o.queue : [],
       offer: o.offer || null,
+      offers: o.offers || 0,
+      lastOfferTs: o.lastOfferTs || 0,
     };
   } catch (err) { void err; return _default(); }
 }
@@ -164,6 +166,8 @@ function offer(project, sid, maxChars) {
   const windowId = crypto.createHash('sha256').update(ids.join('|')).digest('hex').slice(0, 16);
   const expect = state.rev;
   state.offer = { windowId, ids, at: Date.now(), attempts: 1, scanAt: state.scan.offset };
+  state.offers = (state.offers || 0) + 1;   // cadence bounds (per-session count)
+  state.lastOfferTs = Date.now();
   state.rev = expect + 1;
   if (!_save(project, sid, state, expect)) return null; // CAS: never emit an untracked offer
   return { windowId, text, cycles: kept };
