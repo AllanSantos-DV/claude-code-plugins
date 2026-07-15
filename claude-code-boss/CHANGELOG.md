@@ -1,5 +1,38 @@
 # Changelog
 
+## [2.9.0] - 2026-07-15
+
+### Aprendizado — o perfil `standard` volta a aprender (F1 do review de auto-aprendizado)
+
+Correção de um defeito de design reportado por usuário: no perfil `standard` (o
+default, "quieto" para não-mantenedores), o plugin **parou de capturar lições**.
+
+**Causa-raiz:** o preset `standard` gateava por "é hook de dev?" em vez de "interrompe
+o usuário?", e por isso silenciava o `correction-detect` — que é um gatilho de captura
+**silencioso** (injeção de `additionalContext` no UserPromptSubmit, **invisível** ao
+usuário, o disparador nº1 de aprendizado) — junto com os nags de verdade. O eixo certo
+é **interrupção, não aprendizado**.
+
+**F1 (correção cirúrgica, escopo estreito):**
+- **`standard` mantém o `correction-detect` LIGADO.** Quando o usuário corrige o agente,
+  o nudge silencioso volta a induzir a captura curada (`capture_lesson`) — **sem** nenhum
+  bloqueio ou interrupção visível. O `standard` continua quieto (os nags interruptivos —
+  `pattern-detect`, `failure-retro`, `auto-continue`, etc. — seguem desligados).
+- **Removida a regra `nudge-weak` do tuning-advisor**, que recomendava *"o perfil poderia
+  desligá-lo sem perda"* para um nudge de captura de baixa conversão — exatamente o
+  anti-padrão que silenciou o aprendizado. Baixa conversão significa mirar/apresentar
+  melhor o nudge, nunca desligar o aprendizado.
+
+`dev` e `free` inalterados (no `free`, tudo segue desligado — passthrough).
+
+Este é o primeiro passo de um plano maior de reforço do auto-aprendizado (revisado 3×
+por revisão externa): as próximas fases adicionam um piso de sinal durável
+model-independent, entrega deferida de decisões/falhas sem bloquear, e observabilidade
+correlacionável do funil de captura.
+
+450 testes unitários + 65 de hooks verdes (inclui o wire test: prompt corretivo em
+`standard` → `additionalContext` + sem Stop-block). Failing-first + prova de mutação.
+
 ## [2.8.0] - 2026-07-14
 
 ### Testability + correção — primitivas de segurança do dashboard extraídas (Sprint 6 do review)
