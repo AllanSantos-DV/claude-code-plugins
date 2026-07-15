@@ -5127,6 +5127,39 @@ test('capture-dispatch: run stays silent below budget and when stop_hook_active'
   marker.resetAll(project, sid2);
 });
 
+test('capture-dispatch: emits capture.offered metric on fire', () => {
+  const cd = require('./capture-dispatch.js');
+  const marker = require('./lib/session-marker.js');
+  const metrics = require('./lib/metrics.js');
+  const cwd = process.env.CLAUDE_PLUGIN_DATA;
+  const project = require('./lib/project-id.js').resolveProjectId({ cwd });
+  const sid = 'cap-metric-' + Date.now();
+  const tp = path.join(cwd, `capm-${sid}.jsonl`);
+  marker.resetAll(project, sid);
+  fs.writeFileSync(tp, '');
+  marker.initIfAbsent(project, sid, tp);
+  const lines = [];
+  for (let i = 1; i <= 6; i++) {
+    lines.push(JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: 'q' + i } }));
+    lines.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'a' + i }] } }));
+  }
+  fs.writeFileSync(tp, lines.join('\n') + '\n');
+  const calls = [];
+  const orig = metrics.fire;
+  metrics.fire = (n, p) => calls.push({ n, p });
+  try {
+    const res = cd.run({ session_id: sid, cwd, transcript_path: tp });
+    assert(res.block === true, 'fired');
+  } finally {
+    metrics.fire = orig;
+  }
+  const offered = calls.find(c => c.n === 'capture.offered');
+  assert(offered, 'capture.offered emitted');
+  assertEq(offered.p.cycles, 6, 'cycles in payload');
+  assert(typeof offered.p.model === 'string', 'model in payload');
+  marker.resetAll(project, sid);
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
