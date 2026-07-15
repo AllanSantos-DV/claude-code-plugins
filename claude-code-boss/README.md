@@ -107,11 +107,13 @@ Todos os hooks estão declarados em `hooks/hooks.json`. Eventos e scripts ativos
 > a delegação usa as ferramentas nativas (Agent/Workflow).
 >
 > **Perfis (`hooks-config.json` → `profile`)** — um único eixo de enforcement, três modos:
-> - **`standard`** (padrão) — silencioso: só a curadoria dá **1 aviso soft** e relenta;
->   os nudges de captura (`pattern-detect`, `correction-detect`, `decisionScan`), as
->   ferramentas de dev (`verifyNudge`, `selfReview`) e os blockers extras do Stop
->   (`refine-research`, `failure-retro`, `research-followup`, `auto-continue`) ficam
->   desligados. `session-summary` (1×/sessão) e o retrieval continuam.
+> - **`standard`** (padrão) — silencioso, mas **aprende**: só a curadoria dá **1 aviso
+>   soft** e relenta. O `correction-detect` (nudge de captura **silencioso** no
+>   UserPromptSubmit, invisível ao usuário) fica **LIGADO** — o perfil quieto não mata o
+>   auto-aprendizado (v2.9.0). Ficam desligados os nudges **interruptivos** e as
+>   ferramentas de dev: `pattern-detect`, `decisionScan`, `verifyNudge`, `selfReview`,
+>   `refine-research`, `failure-retro`, `research-followup`, `auto-continue`.
+>   `session-summary` (1×/sessão) e o retrieval continuam.
 > - **`dev`** — tudo ligado (curadoria escala até 3×), para quem estende o plugin.
 > - **`free`** — passa tudo: o Stop-dispatcher faz short-circuit e **nada bloqueia**;
 >   só o retrieval de contexto no prompt (read-only) segue ativo.
