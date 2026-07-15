@@ -5049,10 +5049,12 @@ test('redact: masks common secrets and PII, preserves auth scheme, spares prose'
 });
 
 // ─── capture-dispatch (Stop detector: offer clean block to agent — Phase 1 task 4) ─
-test('capture-dispatch: buildInstruction names capture_lesson, types, tags, delimits untrusted block', () => {
+test('capture-dispatch: buildInstruction names capture_lesson, types, tags, windowId, delimits untrusted block', () => {
   const cd = require('./capture-dispatch.js');
-  const r = cd.buildInstruction('SOME BLOCK TEXT');
+  const r = cd.buildInstruction('SOME BLOCK TEXT', 'win-123');
   assert(/capture_lesson/.test(r), 'names the tool');
+  assert(/capture_ack/.test(r), 'names the no-lesson ack tool');
+  assert(/win-123/.test(r), 'carries the windowId to ack');
   assert(/lesson/.test(r) && /pattern/.test(r) && /decision/.test(r) && /research/.test(r), 'lists lesson types');
   assert(/tags/i.test(r), 'mentions tags');
   assert(r.includes('SOME BLOCK TEXT'), 'includes the block');
@@ -5078,10 +5080,11 @@ test('capture-dispatch: run offers from the queue, then acks when capture_lesson
   assert(/capture_lesson/.test(res.reason), 'instruction present');
   assert(res.reason.includes('answer 6'), 'carries recent content');
   assert(queue.getState(project, sid).offer, 'offer opened on the queue');
-  // agent captures: a capture_lesson tool_use appears → next Stop acks + drains, no re-offer.
-  fs.appendFileSync(tp, JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', name: 'capture_lesson', input: { title: 'x' } }] } }) + '\n');
+  // agent acks via the tool (capture_lesson(windowId) or capture_ack) → next Stop drains, no re-offer.
+  const wid = queue.getState(project, sid).offer.windowId;
+  queue.recordAck(wid, 'captured');
   const res2 = cd.run({ session_id: sid, cwd, transcript_path: tp });
-  assert(!res2.block, 'after capture, no re-offer this Stop');
+  assert(!res2.block, 'after ack, no re-offer this Stop');
   assert(!queue.getState(project, sid).offer, 'offer acked/cleared');
   assertEq(queue.getState(project, sid).queue.length, 0, 'captured cycles drained from the queue');
   queue.reset(project, sid);
@@ -5265,33 +5268,48 @@ test('capture-queue: offer packs oldest queued cycles under a windowId; ack drai
   q.reset(project, sid);
 });
 
-test('capture-queue: reconcile acks CAPTURED when capture_lesson appears after the offer', () => {
+test('capture-queue: recordAck/readAck/clearAck round-trip by windowId', () => {
+  const q = require('./lib/capture-queue.js');
+  const wid = 'w-rt-' + Date.now();
+  q.clearAck(wid);
+  assert(!q.readAck(wid), 'no ack initially');
+  q.recordAck(wid, 'none');
+  assertEq(q.readAck(wid).outcome, 'none', 'ack read back');
+  q.clearAck(wid);
+  assert(!q.readAck(wid), 'ack cleared');
+});
+
+test('capture-queue: reconcile drains on an explicit ack marker (no transcript guessing)', () => {
   const q = require('./lib/capture-queue.js');
   const { redact } = require('./lib/redact.js');
   const project = 'cq-ack-' + Date.now(); const sid = 'cqa-' + Date.now();
   const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cqa-${sid}.jsonl`);
   _cqSeed(q, redact, project, sid, tp, 3);
-  q.offer(project, sid, 100000);
-  fs.appendFileSync(tp, JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', name: 'capture_lesson', input: { title: 'x' } }] } }) + '\n');
-  const r = q.reconcile(project, sid, tp, 2);
-  assert(r.acked && r.outcome === 'captured', 'reconcile acks captured');
+  const off = q.offer(project, sid, 100000);
+  q.recordAck(off.windowId, 'captured'); // the agent's capture_lesson/capture_ack tool wrote this
+  const r = q.reconcile(project, sid, 6);
+  assert(r.acked && r.outcome === 'captured', 'reconcile drains on the explicit ack');
   assertEq(q.getState(project, sid).queue.length, 0, 'captured cycles drained');
+  assert(!q.readAck(off.windowId), 'ack marker consumed');
   q.reset(project, sid);
 });
 
-test('capture-queue: reconcile retries then drops (bounded) when no capture_lesson appears', () => {
+test('capture-queue: reconcile re-blocks until acked, then PARKS (never deletes) after parkAfter', () => {
   const q = require('./lib/capture-queue.js');
   const { redact } = require('./lib/redact.js');
-  const project = 'cq-drop-' + Date.now(); const sid = 'cqd-' + Date.now();
-  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cqd-${sid}.jsonl`);
+  const project = 'cq-park-' + Date.now(); const sid = 'cqp-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cqp-${sid}.jsonl`);
   _cqSeed(q, redact, project, sid, tp, 3);
   q.offer(project, sid, 100000);
-  const r1 = q.reconcile(project, sid, tp, 2);
-  assert(!r1.acked && r1.retry, 'first reconcile retries (no capture yet)');
-  assert(q.getState(project, sid).offer, 'offer stays open on retry');
-  const r2 = q.reconcile(project, sid, tp, 2);
-  assert(r2.acked && r2.dropped, 'second reconcile drops (bounded give-up, no infinite nag)');
-  assertEq(q.getState(project, sid).queue.length, 0, 'dropped cycles leave the queue');
+  const r1 = q.reconcile(project, sid, 2); // no ack → re-block
+  assert(!r1.acked && r1.retry, 'first reconcile re-blocks (no ack yet)');
+  assert(q.getState(project, sid).offer, 'offer stays open to re-block the Stop');
+  const r2 = q.reconcile(project, sid, 2); // attempts >= parkAfter → park
+  assert(r2.parked, 'parked, not dropped');
+  const st = q.getState(project, sid);
+  assert(!st.offer, 'active offer cleared on park');
+  assertEq(st.queue.length, 0, 'moved out of the active queue');
+  assert(st.deferred && st.deferred.length === 3, 'cycles PARKED (kept), never deleted');
   q.reset(project, sid);
 });
 
