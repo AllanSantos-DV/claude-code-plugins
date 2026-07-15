@@ -20,7 +20,7 @@ const crypto = require('crypto');
 const { sanitizeSessionId } = require('./session-id.js');
 const { dataDir } = require('./data-dir.js');
 const { anchorAt, validateAnchor, _boundaryAtOrBefore } = require('./session-marker.js');
-const { extractCyclesFromBuffer } = require('./transcript-block.js');
+const { extractCyclesFromBuffer, packCycles } = require('./transcript-block.js');
 
 const SEEN_CAP = 5000;
 
@@ -131,4 +131,90 @@ function ingest(project, sid, transcriptPath, redactFn) {
 function getState(project, sid) { return _load(project, sid); }
 function reset(project, sid) { try { fs.unlinkSync(_file(project, sid)); } catch (err) { void err; } }
 
-module.exports = { ingest, getState, reset, _hash, _load, _save, _file };
+function _safeSize(p) { try { return fs.statSync(p).size; } catch (err) { void err; return 0; } }
+
+// Detect a capture_lesson tool_use anywhere in the transcript AFTER `fromOffset`
+// (the agent's machine-verifiable acknowledgment of an offered window).
+function _hasCaptureLessonAfter(transcriptPath, fromOffset) {
+  const size = _safeSize(transcriptPath);
+  if (!(size > fromOffset)) return false;
+  const buf = _readBuf(transcriptPath, fromOffset, size);
+  for (const line of buf.toString('utf-8').split('\n')) {
+    if (!line || line.indexOf('capture_lesson') === -1) continue; // cheap prefilter
+    try {
+      const o = JSON.parse(line);
+      const content = o && o.message && o.message.content;
+      if (Array.isArray(content) && content.some(b => b && b.type === 'tool_use' && b.name === 'capture_lesson')) return true;
+    } catch (err) { void err; }
+  }
+  return false;
+}
+
+/**
+ * Open an offer over the OLDEST queued cycles that fit maxChars (FIFO). Cycles
+ * are NOT removed until ack(). Returns { windowId, text, cycles } or null.
+ */
+function offer(project, sid, maxChars) {
+  const state = _load(project, sid);
+  if (state.offer) return null;        // an offer is already open — reconcile it first
+  if (state.queue.length === 0) return null;
+  const { text, kept } = packCycles(state.queue, maxChars);
+  if (!text || kept === 0) return null;
+  const ids = state.queue.slice(0, kept).map(c => c.id);
+  const windowId = crypto.createHash('sha256').update(ids.join('|')).digest('hex').slice(0, 16);
+  const expect = state.rev;
+  state.offer = { windowId, ids, at: Date.now(), attempts: 1, scanAt: state.scan.offset };
+  state.rev = expect + 1;
+  if (!_save(project, sid, state, expect)) return null; // CAS: never emit an untracked offer
+  return { windowId, text, cycles: kept };
+}
+
+/** Re-pack an already-open offer's cycles for a retry re-inject, or null. */
+function currentOfferText(project, sid, maxChars) {
+  const state = _load(project, sid);
+  if (!state.offer) return null;
+  const ids = new Set(state.offer.ids);
+  const cycles = state.queue.filter(c => ids.has(c.id));
+  if (cycles.length === 0) return null;
+  const { text } = packCycles(cycles, maxChars);
+  return text ? { windowId: state.offer.windowId, text } : null;
+}
+
+/** Remove the offered window's cycles and clear the offer — only for a MATCHING windowId. */
+function ack(project, sid, windowId, outcome) {
+  const state = _load(project, sid);
+  if (!state.offer || state.offer.windowId !== windowId) return false;
+  void outcome;
+  const ids = new Set(state.offer.ids);
+  const expect = state.rev;
+  state.queue = state.queue.filter(c => !ids.has(c.id));
+  state.offer = null;
+  state.rev = expect + 1;
+  return _save(project, sid, state, expect);
+}
+
+/**
+ * Drive the open offer: ack CAPTURED when a capture_lesson appears after it,
+ * else bounded retry, else drop (give up) so a stuck window never nags forever.
+ * @returns {{acked:boolean, dropped:boolean, outcome?:string, retry?:number}}
+ */
+function reconcile(project, sid, transcriptPath, maxAttempts) {
+  const state = _load(project, sid);
+  if (!state.offer) return { acked: false, dropped: false };
+  if (_hasCaptureLessonAfter(transcriptPath, state.offer.scanAt)) {
+    ack(project, sid, state.offer.windowId, 'captured');
+    return { acked: true, dropped: false, outcome: 'captured' };
+  }
+  const max = typeof maxAttempts === 'number' ? maxAttempts : 2;
+  if (state.offer.attempts >= max) {
+    ack(project, sid, state.offer.windowId, 'none');
+    return { acked: true, dropped: true, outcome: 'none' };
+  }
+  const expect = state.rev;
+  state.offer.attempts++;
+  state.rev = expect + 1;
+  _save(project, sid, state, expect);
+  return { acked: false, dropped: false, retry: state.offer.attempts };
+}
+
+module.exports = { ingest, getState, reset, offer, currentOfferText, ack, reconcile, _hash, _load, _save, _file };
