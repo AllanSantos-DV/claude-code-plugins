@@ -5506,6 +5506,25 @@ test('capture_lesson local: a null merge (vanished dedup hit) does NOT phantom-a
   assertEq(saved.length, 1, 'the lesson was actually persisted before the ack (no silent loss)');
 });
 
+test('capture_ack: a forged outcome:"captured" is neutralized to "none" (only capture_lesson can mark captured)', async () => {
+  const url = require('url');
+  const q = require('./lib/capture-queue.js');
+  const R = process.env.CLAUDE_PLUGIN_ROOT;
+  const wid = 'w-forge-' + Date.now();
+  q.clearAck(wid);
+  const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+  const server = mod.createBrainServer({ pluginRoot: R, mode: 'stdio' });
+  // capture_ack's handler is synchronous (records the marker before returning), so no
+  // await is needed — the read below is atomic against env-swapping async tests.
+  // A forged/injected capture_ack claiming 'captured' must NOT write a captured marker:
+  // that would inflate the captured metric and mark a window captured with no persisted
+  // lesson. The handler hard-codes 'none' regardless of the passed outcome.
+  server.handleTool('capture_ack', { windowId: wid, outcome: 'captured' });
+  const rec = q.readAck(wid);
+  assert(rec && rec.outcome === 'none', `capture_ack always records 'none' regardless of a passed outcome, got: ${rec && rec.outcome}`);
+  q.clearAck(wid);
+});
+
 test('capture-queue: _save CAS refuses a stale write (cross-Stop concurrency safety)', () => {
   const q = require('./lib/capture-queue.js');
   const project = 'cq-cas-' + Date.now(); const sid = 'cqc-' + Date.now();

@@ -472,8 +472,14 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
       }
 
       case 'capture_ack': {
-        const ok = recordCaptureAck(args.windowId, args.outcome || 'none');
-        return { content: [{ type: 'text', text: JSON.stringify({ status: ok ? 'acked' : 'ack-failed', ok, windowId: args.windowId || null, outcome: args.outcome || 'none' }, null, 2) }] };
+        // capture_ack is the NO-LESSON path by definition, so the outcome is ALWAYS
+        // 'none' — never trust a passed-through value. The schema enum is advisory
+        // (dispatch does not enforce it, and the SDK accepts arbitrary args), so a
+        // forged/injected capture_ack({outcome:'captured'}) must NOT mark a window
+        // captured. This preserves the invariant "a 'captured' marker ⟺ a lesson
+        // persisted via capture_lesson", keeping the captured metric honest.
+        const ok = recordCaptureAck(args.windowId, 'none');
+        return { content: [{ type: 'text', text: JSON.stringify({ status: ok ? 'acked' : 'ack-failed', ok, windowId: args.windowId || null, outcome: 'none' }, null, 2) }] };
       }
 
       case 'brain_related': {
