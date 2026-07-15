@@ -5243,6 +5243,76 @@ test('capture-queue: re-ingest is idempotent and dedups across a compaction rewr
   q.reset(project, sid);
 });
 
+// ─── capture-queue offer/ACK (Phase 1.5b) ────────────────────────────────────
+function _cqSeed(q, redact, project, sid, tp, n) {
+  q.reset(project, sid);
+  const lines = [];
+  for (let i = 1; i <= n; i++) {
+    lines.push(JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: 'q' + i } }));
+    lines.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'a' + i }] } }));
+  }
+  fs.writeFileSync(tp, lines.join('\n') + '\n');
+  q.ingest(project, sid, tp, s => redact(s).text);
+}
+
+test('capture-queue: offer packs oldest queued cycles under a windowId; ack drains them', () => {
+  const q = require('./lib/capture-queue.js');
+  const { redact } = require('./lib/redact.js');
+  const project = 'cq-off-' + Date.now(); const sid = 'cqo-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cqo-${sid}.jsonl`);
+  _cqSeed(q, redact, project, sid, tp, 3);
+  const off = q.offer(project, sid, 100000);
+  assert(off && off.windowId, 'offer created');
+  assert(off.text.includes('q1') && off.text.includes('a3'), 'packs the queued cycles');
+  assertEq(q.getState(project, sid).queue.length, 3, 'offer does not remove from queue yet');
+  assert(q.ack(project, sid, off.windowId, 'captured'), 'ack matches windowId');
+  assertEq(q.getState(project, sid).queue.length, 0, 'ack drains the offered cycles');
+  assert(!q.getState(project, sid).offer, 'offer cleared');
+  assert(!q.ack(project, sid, 'bogus', 'captured'), 'ack rejects a non-matching windowId');
+  q.reset(project, sid);
+});
+
+test('capture-queue: reconcile acks CAPTURED when capture_lesson appears after the offer', () => {
+  const q = require('./lib/capture-queue.js');
+  const { redact } = require('./lib/redact.js');
+  const project = 'cq-ack-' + Date.now(); const sid = 'cqa-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cqa-${sid}.jsonl`);
+  _cqSeed(q, redact, project, sid, tp, 3);
+  q.offer(project, sid, 100000);
+  fs.appendFileSync(tp, JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', name: 'capture_lesson', input: { title: 'x' } }] } }) + '\n');
+  const r = q.reconcile(project, sid, tp, 2);
+  assert(r.acked && r.outcome === 'captured', 'reconcile acks captured');
+  assertEq(q.getState(project, sid).queue.length, 0, 'captured cycles drained');
+  q.reset(project, sid);
+});
+
+test('capture-queue: reconcile retries then drops (bounded) when no capture_lesson appears', () => {
+  const q = require('./lib/capture-queue.js');
+  const { redact } = require('./lib/redact.js');
+  const project = 'cq-drop-' + Date.now(); const sid = 'cqd-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cqd-${sid}.jsonl`);
+  _cqSeed(q, redact, project, sid, tp, 3);
+  q.offer(project, sid, 100000);
+  const r1 = q.reconcile(project, sid, tp, 2);
+  assert(!r1.acked && r1.retry, 'first reconcile retries (no capture yet)');
+  assert(q.getState(project, sid).offer, 'offer stays open on retry');
+  const r2 = q.reconcile(project, sid, tp, 2);
+  assert(r2.acked && r2.dropped, 'second reconcile drops (bounded give-up, no infinite nag)');
+  assertEq(q.getState(project, sid).queue.length, 0, 'dropped cycles leave the queue');
+  q.reset(project, sid);
+});
+
+test('capture-queue: _save CAS refuses a stale write (cross-Stop concurrency safety)', () => {
+  const q = require('./lib/capture-queue.js');
+  const project = 'cq-cas-' + Date.now(); const sid = 'cqc-' + Date.now();
+  q.reset(project, sid);
+  q._save(project, sid, { rev: 0, scan: { offset: 0, anchorHash: '' }, seen: [], queue: [{ id: 'a', promptId: 'p', user: 'u', assistant: 'x' }], offer: null });
+  assert(q._save(project, sid, { rev: 1, scan: { offset: 0, anchorHash: '' }, seen: [], queue: [], offer: null }, 0), 'writer with matching expectRev 0 wins');
+  assert(!q._save(project, sid, { rev: 1, scan: { offset: 0, anchorHash: '' }, seen: ['stale'], queue: [{ id: 'a' }], offer: null }, 0), 'stale writer (expectRev 0) refused after rev moved to 1');
+  assertEq(q.getState(project, sid).queue.length, 0, 'the winning committed state stands');
+  q.reset(project, sid);
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
