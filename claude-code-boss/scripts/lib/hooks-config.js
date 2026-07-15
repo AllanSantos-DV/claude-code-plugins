@@ -42,9 +42,13 @@ const DEFAULT_PROFILE = 'dev';
 const PROFILE_PRESETS = {
   // dev = current behavior; getters' hardcoded defaults already produce it.
   dev: {},
-  // standard = open the plugin to non-maintainers: inform once, never nag. The
-  // ONLY Stop block kept is curation-stop (once, soft); every other block-capable
-  // detector is silenced. session-summary stays (1x/session, positive).
+  // standard = open the plugin to non-maintainers: inform once, never nag. TWO Stop
+  // blocks are kept BY DESIGN: curation-stop (once, soft) and capture-dispatch — the
+  // block-until-ack that GUARANTEES lesson capture (on Stop the agent must call
+  // capture_lesson or capture_ack before the turn can end; the user keeps control via
+  // Stop). Every OTHER block-capable detector is silenced. A silent trigger alone
+  // (correction-detect) does NOT guarantee a lesson is written — the Stop block does.
+  // session-summary stays (1x/session, positive). capture opt-out lives in kb.capture.
   standard: {
     curationStop:     { maxAttempts: 1 },   // block once then relent (advisory)
     patternDetect:    { enabled: false },   // dev-only capture nudge (Stop-block)
