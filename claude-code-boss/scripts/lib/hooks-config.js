@@ -47,15 +47,17 @@ const PROFILE_PRESETS = {
   // detector is silenced. session-summary stays (1x/session, positive).
   standard: {
     curationStop:     { maxAttempts: 1 },   // block once then relent (advisory)
-    patternDetect:    { enabled: false },   // dev-only capture nudge
-    correctionDetect: { enabled: false },   // dev-only capture nudge
-    decisionScan:     { enabled: false },   // dev-only capture nudge
+    patternDetect:    { enabled: false },   // dev-only capture nudge (Stop-block)
+    decisionScan:     { enabled: false },   // stays off until F1b (decision-promote would block); re-enabled with deferred surface
     verifyNudge:      { enabled: false },   // dev tool
     selfReview:       { enabled: false },   // dev self-review nudge
     refineResearch:   { enabled: false },   // every-4th-Stop nag → off
     failureRetro:     { enabled: false },   // retro prompt on repeated failures → off
     researchFollowup: { enabled: false },   // research-capture nag → off
     autoContinue:     { enabled: false },   // forces continuation → drift → off
+    // correction-detect INTENTIONALLY absent → stays ON: it's a SILENT
+    // UserPromptSubmit context injection (invisible to the user) and the #1
+    // learning trigger. `standard` must stay quiet WITHOUT killing auto-learning.
   },
   // free = passthrough: the Stop dispatcher short-circuits entirely (retrieval on
   // UserPromptSubmit stays — pure value, no block). These flags mirror "all off"
