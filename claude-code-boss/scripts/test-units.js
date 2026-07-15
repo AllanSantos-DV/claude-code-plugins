@@ -4950,6 +4950,57 @@ test('session-marker: append-only transitions — latest pending wins (race-free
   sm.resetAll(project, sid);
 });
 
+// ─── transcript-block (deterministic JSONL clean — Phase 1 task 2) ───────────
+// Failing-first: lazy require until lib/transcript-block.js exists.
+test('transcript-block: extractCycles keeps human cycles, drops tool/meta/sidechain, assistant text-only', () => {
+  const tb = require('./lib/transcript-block.js');
+  const lines = [
+    JSON.stringify({ type: 'user', promptId: 'p1', isSidechain: false, message: { role: 'user', content: 'How do I center a div?' } }),
+    JSON.stringify({ type: 'assistant', isSidechain: false, message: { role: 'assistant', model: 'claude-sonnet-5', content: [
+      { type: 'thinking', thinking: 'hmm let me think' },
+      { type: 'text', text: 'Use flexbox.' },
+      { type: 'tool_use', name: 'edit', input: {} },
+    ] } }),
+    JSON.stringify({ type: 'user', isSidechain: false, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'x', content: 'ok' }] } }),
+    JSON.stringify({ type: 'user', isMeta: true, promptId: 'meta1', message: { role: 'user', content: '[hook feedback] capture the lesson' } }),
+    JSON.stringify({ type: 'assistant', isSidechain: true, agentId: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'subagent noise' }] } }),
+    JSON.stringify({ type: 'user', promptId: 'p2', isSidechain: false, message: { role: 'user', content: 'no, use grid instead' } }),
+    JSON.stringify({ type: 'assistant', isSidechain: false, message: { role: 'assistant', content: [{ type: 'text', text: 'Okay, grid works too.' }] } }),
+    JSON.stringify({ type: 'user', isCompactSummary: true, message: { role: 'user', content: 'summary of prior context' } }),
+  ];
+  const cycles = tb.extractCycles(lines);
+  assertEq(cycles.length, 2, 'two human cycles');
+  assertEq(cycles[0].promptId, 'p1');
+  assert(cycles[0].user.includes('center a div'), 'user text kept');
+  assert(cycles[0].assistant.includes('Use flexbox'), 'assistant text kept');
+  assert(!cycles[0].assistant.includes('hmm'), 'thinking dropped');
+  assert(!cycles[0].assistant.includes('edit'), 'tool_use dropped');
+  assertEq(cycles[1].promptId, 'p2');
+  assert(cycles.every(c => !c.user.includes('hook feedback')), 'isMeta excluded');
+  assert(cycles.every(c => !c.assistant.includes('subagent')), 'sidechain excluded');
+});
+
+test('transcript-block: extractCycles dedupes multi-envelope human turn by promptId', () => {
+  const tb = require('./lib/transcript-block.js');
+  const lines = [
+    JSON.stringify({ type: 'user', promptId: 'p1', message: { role: 'user', content: 'part one' } }),
+    JSON.stringify({ type: 'user', promptId: 'p1', message: { role: 'user', content: 'part two' } }),
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'answer' }] } }),
+  ];
+  assertEq(tb.extractCycles(lines).length, 1, 'same promptId = one cycle');
+});
+
+test('transcript-block: renderBlock marks roles and respects hard char cap', () => {
+  const tb = require('./lib/transcript-block.js');
+  const cycles = [{ promptId: 'p1', user: 'Q1', assistant: 'A1' }, { promptId: 'p2', user: 'Q2', assistant: 'A2' }];
+  const full = tb.renderBlock(cycles, 10000);
+  assert(/USER/.test(full) && /ASSISTANT/.test(full), 'role markers present');
+  assert(full.includes('Q1') && full.includes('A2'), 'content present');
+  assert(full.length <= 10000, 'within cap');
+  const capped = tb.renderBlock(cycles, 40);
+  assert(capped.length <= 40, `hard cap respected: got ${capped.length}`);
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
