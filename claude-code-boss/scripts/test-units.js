@@ -5479,6 +5479,33 @@ test('capture bridge: the REAL capture_ack MCP tool writes the marker the queue 
   }
 });
 
+test('capture_lesson local: a null merge (vanished dedup hit) does NOT phantom-ack — it admits (stores) instead', async () => {
+  const url = require('url');
+  const R = process.env.CLAUDE_PLUGIN_ROOT;
+  const saved = [];
+  // Injected KB where a dedup hit is returned by search but merge() finds nothing
+  // (the entry vanished — e.g. a concurrent consolidation deleted it) → returns null.
+  // This is the exact race the guard defends against. Stubs are passed via a test
+  // seam (no require.cache mutation), so assertions depend only on the return value
+  // and the in-memory `saved` array — never on shared process env.
+  const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+  const server = mod.createBrainServer({ pluginRoot: R, mode: 'stdio', _testHooks: {
+    getKB: async () => ({
+      store: { search: async () => [{ id: 'vanished-id', title: 'Ghost' }], merge: async () => null, save: async (e) => { saved.push(e); } },
+      index: { index: async () => {} },
+      graph: { registerNode: async () => {} },
+    }),
+    embedder: { init: async () => {}, getStatus: () => ({ ready: true }), embed: async () => [0.1, 0.2, 0.3] },
+  } });
+  // The injected _testHooks.getKB forces handleTool onto the LOCAL path, so this test
+  // never reads or mutates the shared brain-backend singleton mode (no cross-test race).
+  const res = await server.handleTool('capture_lesson', { title: 'T', summary: 'S', detail: 'D', type: 'decision', scope: 'project', project: 'pMergeNull', windowId: 'w-mergenull-' + Date.now() });
+  const out = JSON.parse(res.content[0].text);
+  // With the pre-fix bug (ack on a null merge), decision would be 'merge' and nothing saved.
+  assertEq(out.decision, 'admit', 'a vanished merge target falls through to admit (stores the lesson), never a phantom merge');
+  assertEq(saved.length, 1, 'the lesson was actually persisted before the ack (no silent loss)');
+});
+
 test('capture-queue: _save CAS refuses a stale write (cross-Stop concurrency safety)', () => {
   const q = require('./lib/capture-queue.js');
   const project = 'cq-cas-' + Date.now(); const sid = 'cqc-' + Date.now();

@@ -41,11 +41,12 @@ const REMOTE_KB_TOOLS = new Set([
   'brain_search', 'brain_store', 'capture_lesson', 'brain_related', 'brain_count',
 ]);
 
-export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
+export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {}) {
   const PLUGIN_ROOT = pluginRoot;
 
   // ─── KB modules (lazy-loaded) ──────────────────────────────────────────────
   async function getKB(project) {
+    if (_testHooks && typeof _testHooks.getKB === 'function') return _testHooks.getKB(project);
     const store = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-store.js'));
     const index = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-index.js'));
     const graph = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-graph.js'));
@@ -298,8 +299,11 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
   async function handleTool(name, args) {
     // Remote brain (Native Java daemon): route write/search/related/count KB tools
     // through the backend dispatcher. brain_retrieve_context is excluded — its case
-    // calls retrieve-core, which is itself remote-aware.
-    if (REMOTE_KB_TOOLS.has(name)) {
+    // calls retrieve-core, which is itself remote-aware. A test that injects a local
+    // KB via _testHooks.getKB forces the LOCAL path (so it exercises the local case
+    // without depending on / mutating the shared brain-backend singleton mode).
+    const forceLocal = !!(_testHooks && _testHooks.getKB);
+    if (!forceLocal && REMOTE_KB_TOOLS.has(name)) {
       const backend = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-backend.js'));
       if (backend.peekMode() === 'mcp-memory') {
         return handleRemoteKbTool(backend, name, args);
@@ -433,7 +437,7 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
           const text = buildEmbedText({ title: safeTitle, summary: safeSummary });
           let vector = null;
           try {
-            const embedder = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-embedder.js'));
+            const embedder = (_testHooks && _testHooks.embedder) || require(path.join(PLUGIN_ROOT, 'scripts', 'brain-embedder.js'));
             await embedder.init();
             if (embedder.getStatus().ready) vector = await embedder.embed(text);
           } catch { /* embedding optional */ }
@@ -442,10 +446,16 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
             const hits = await kbStore.search(vector, { topK: 1, minScore: DEDUP, rerank: false });
             if (hits.length > 0) {
               const merged = await kbStore.merge(hits[0].id, { summary: safeSummary, content: { detail: safeDetail || safeSummary }, confidence });
-              recordLessonMetric(storageProject, { type, decision: 'merge', scope: effectiveScope, recurrence: merged?.recurrence });
-              recordCaptureAck(args.windowId, 'captured');
-              if (storageProject !== currentProject) await getKB(currentProject);
-              return { content: [{ type: 'text', text: JSON.stringify({ decision: 'merge', id: hits[0].id, recurrence: merged?.recurrence, title: hits[0].title, project: storageProject, scope: effectiveScope }, null, 2) }] };
+              if (merged) {
+                recordLessonMetric(storageProject, { type, decision: 'merge', scope: effectiveScope, recurrence: merged.recurrence });
+                recordCaptureAck(args.windowId, 'captured');
+                if (storageProject !== currentProject) await getKB(currentProject);
+                return { content: [{ type: 'text', text: JSON.stringify({ decision: 'merge', id: hits[0].id, recurrence: merged.recurrence, title: hits[0].title, project: storageProject, scope: effectiveScope }, null, 2) }] };
+              }
+              // merge() returned null: the dedup target vanished between search and
+              // merge (e.g. a concurrent detached consolidation deleted it). Do NOT
+              // ack a phantom merge that persisted nothing — fall through to the admit
+              // path so the lesson is actually stored before we ack.
             }
           }
           const entry = { type, project: storageProject, scope: effectiveScope, session_id: '', title: String(safeTitle).slice(0, 80), summary: String(safeSummary).slice(0, 500), content: { detail: safeDetail || safeSummary, files: [] }, tags: [...new Set((Array.isArray(tags) ? tags : []).map(t => String(t).toLowerCase().trim().replace(/\s+/g, '-')).filter(Boolean))].slice(0, 8), confidence };
