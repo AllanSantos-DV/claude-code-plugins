@@ -206,6 +206,19 @@ function clearPending(project, sid) {
   return getState(project, sid);
 }
 
+/** Cadence counters for bounds: how many windows were offered + last offer ts. */
+function stats(project, sid) {
+  let captures = 0;
+  let lastTs = 0;
+  for (const t of _readTransitions(project, sid)) {
+    if (t.type === 'pending') {
+      captures++;
+      if (t.ts > lastTs) lastTs = t.ts;
+    }
+  }
+  return { captures, lastTs };
+}
+
 /** Remove all transition files for (project, sid). For tests / hard reset. */
 function resetAll(project, sid) {
   const dir = _runtimeDir();
@@ -229,6 +242,7 @@ module.exports = {
   beginPending,
   commit,
   clearPending,
+  stats,
   anchorAt,
   validateAnchor,
   resetAll,

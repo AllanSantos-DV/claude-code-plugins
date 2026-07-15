@@ -4409,13 +4409,14 @@ test('stop-dispatcher.rank: known priorities + default', () => {
   assertEq(dispatcher.rank('anything'), 2);
 });
 
-test('stop-dispatcher.DETECTORS: 15 detectors, ordering invariants hold', () => {
+test('stop-dispatcher.DETECTORS: 16 detectors, ordering invariants hold', () => {
   const names = dispatcher.DETECTORS.map(d => d.name);
-  assertEq(names.length, 15);
+  assertEq(names.length, 16);
   assert(names.includes('verify-nudge'), 'verify-nudge (D2) registered');
   assert(names.includes('self-review'), 'self-review (D1) registered');
   assert(names.includes('session-summary'), 'session-summary (U2) registered');
   assert(names.includes('conversation-ingest'), 'conversation-ingest (GAP1) registered');
+  assert(names.includes('capture-dispatch'), 'capture-dispatch (Phase 1 capture) registered');
   assert(names.indexOf('self-review') < names.indexOf('verify-nudge'),
     'self-review must read verify-journal before verify-nudge clears it');
   assert(names.indexOf('failure-retro') < names.indexOf('curation-stop'),
@@ -5046,6 +5047,84 @@ test('redact: masks common secrets and PII, preserves auth scheme, spares prose'
   assert(email.includes('[EMAIL]') && !email.includes('a.user@example.com'), 'email masked');
   assertEq(redact('the token expired and I fixed the bug').text, 'the token expired and I fixed the bug', 'prose not over-redacted');
   assert(redact('x ghp_ABCDEFGHIJKLMNOPQRSTUVWX y').count >= 1, 'count reflects redactions');
+});
+
+// ─── capture-dispatch (Stop detector: offer clean block to agent — Phase 1 task 4) ─
+test('capture-dispatch: _decide reconciles pending, skips on stop_hook_active, fires on budget', () => {
+  const cd = require('./capture-dispatch.js');
+  assertEq(cd._decide({ pending: true, stopHookActive: false, fire: true }), 'reconcile');
+  assertEq(cd._decide({ pending: false, stopHookActive: true, fire: true }), 'skip');
+  assertEq(cd._decide({ pending: false, stopHookActive: false, fire: true }), 'fire');
+  assertEq(cd._decide({ pending: false, stopHookActive: false, fire: false }), 'skip');
+});
+
+test('capture-dispatch: buildInstruction names capture_lesson, types, tags, delimits untrusted block', () => {
+  const cd = require('./capture-dispatch.js');
+  const r = cd.buildInstruction('SOME BLOCK TEXT');
+  assert(/capture_lesson/.test(r), 'names the tool');
+  assert(/lesson/.test(r) && /pattern/.test(r) && /decision/.test(r) && /research/.test(r), 'lists lesson types');
+  assert(/tags/i.test(r), 'mentions tags');
+  assert(r.includes('SOME BLOCK TEXT'), 'includes the block');
+  assert(/UNTRUSTED|do not follow/i.test(r), 'delimits block as untrusted');
+});
+
+test('capture-dispatch: run fires on a budget-filling window, opens pending, then reconciles', () => {
+  const cd = require('./capture-dispatch.js');
+  const marker = require('./lib/session-marker.js');
+  const sid = 'cap-fire-' + Date.now();
+  const cwd = process.env.CLAUDE_PLUGIN_DATA;
+  const project = require('./lib/project-id.js').resolveProjectId({ cwd });
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cap-${sid}.jsonl`);
+  marker.resetAll(project, sid);
+  fs.writeFileSync(tp, ''); // activation: empty transcript
+  marker.initIfAbsent(project, sid, tp); // marker set at start
+  const lines = [];
+  for (let i = 1; i <= 6; i++) {
+    lines.push(JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: 'question ' + i } }));
+    lines.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'answer ' + i }] } }));
+  }
+  fs.writeFileSync(tp, lines.join('\n') + '\n'); // turns arrive after activation
+  const res = cd.run({ session_id: sid, cwd, transcript_path: tp });
+  assert(res && res.block === true, 'fires a block');
+  assert(/capture_lesson/.test(res.reason), 'instruction present');
+  assert(res.reason.includes('answer 6'), 'carries recent content');
+  assert(marker.getState(project, sid).pending, 'pending opened');
+  const res2 = cd.run({ session_id: sid, cwd, transcript_path: tp });
+  assert(!res2.block, 'second run reconciles (no re-fire)');
+  assert(!marker.getState(project, sid).pending, 'pending cleared after reconcile');
+  marker.resetAll(project, sid);
+});
+
+test('capture-dispatch: run stays silent below budget and when stop_hook_active', () => {
+  const cd = require('./capture-dispatch.js');
+  const marker = require('./lib/session-marker.js');
+  const cwd = process.env.CLAUDE_PLUGIN_DATA;
+  const project = require('./lib/project-id.js').resolveProjectId({ cwd });
+  const sid = 'cap-quiet-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `capq-${sid}.jsonl`);
+  marker.resetAll(project, sid);
+  fs.writeFileSync(tp, '');
+  marker.initIfAbsent(project, sid, tp);
+  fs.writeFileSync(tp, [
+    JSON.stringify({ type: 'user', promptId: 'p1', message: { role: 'user', content: 'hi' } }),
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'hello' }] } }),
+  ].join('\n') + '\n');
+  assert(!(cd.run({ session_id: sid, cwd, transcript_path: tp })).block, 'below min turns → silent');
+  marker.resetAll(project, sid);
+
+  const sid2 = 'cap-active-' + Date.now();
+  const tp2 = path.join(process.env.CLAUDE_PLUGIN_DATA, `capa-${sid2}.jsonl`);
+  marker.resetAll(project, sid2);
+  fs.writeFileSync(tp2, '');
+  marker.initIfAbsent(project, sid2, tp2);
+  const many = [];
+  for (let i = 1; i <= 6; i++) {
+    many.push(JSON.stringify({ type: 'user', promptId: 'q' + i, message: { role: 'user', content: 'q' + i } }));
+    many.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'a' + i }] } }));
+  }
+  fs.writeFileSync(tp2, many.join('\n') + '\n');
+  assert(!(cd.run({ session_id: sid2, cwd, transcript_path: tp2, stop_hook_active: true })).block, 'stop_hook_active → silent');
+  marker.resetAll(project, sid2);
 });
 
 // ─── Runner ──────────────────────────────────────────────────────────────────
