@@ -5001,6 +5001,30 @@ test('transcript-block: renderBlock marks roles and respects hard char cap', () 
   assert(capped.length <= 40, `hard cap respected: got ${capped.length}`);
 });
 
+// ─── turn-budget (per-model cadence + fire condition — Phase 1 task 3) ────────
+test('turn-budget: budgetForModel scales by family; maxChars hard-capped; unknown→smallest', () => {
+  const tbud = require('./lib/turn-budget.js');
+  const opus = tbud.budgetForModel('claude-opus-4-8');
+  const son = tbud.budgetForModel('claude-sonnet-5');
+  const hai = tbud.budgetForModel('claude-haiku-4-5');
+  const unk = tbud.budgetForModel('');
+  assert(opus.maxTurns >= son.maxTurns && son.maxTurns >= hai.maxTurns, 'opus>=sonnet>=haiku turns');
+  assert(opus.maxChars <= 9000 && son.maxChars <= 9000 && hai.maxChars <= 9000, 'hook-safe hard cap');
+  assertEq(unk.maxTurns, hai.maxTurns, 'unknown model uses smallest budget');
+  assert(unk.minTurns >= 3, 'smallest keeps a floor');
+});
+
+test('turn-budget: shouldFire respects floor, ceilings, session-cap and cooldown', () => {
+  const tbud = require('./lib/turn-budget.js');
+  const m = 'claude-sonnet-5';
+  assertEq(tbud.shouldFire({ cycles: 3, chars: 100, model: m }).fire, false, 'below min turns');
+  assertEq(tbud.shouldFire({ cycles: 6, chars: 100, model: m }).fire, true, 'hit max turns');
+  assertEq(tbud.shouldFire({ cycles: 4, chars: 8000, model: m }).fire, true, 'hit max chars');
+  assertEq(tbud.shouldFire({ cycles: 5, chars: 100, model: m }).fire, false, 'accumulating between floor and ceilings');
+  assertEq(tbud.shouldFire({ cycles: 9, chars: 9999, model: m, capturesThisSession: 8 }).fire, false, 'session cap blocks');
+  assertEq(tbud.shouldFire({ cycles: 9, chars: 9999, model: m, lastCaptureTs: 1000, now: 1500 }, { cooldownMs: 10000 }).fire, false, 'cooldown blocks');
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
