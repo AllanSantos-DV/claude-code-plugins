@@ -1,7 +1,7 @@
 'use strict';
 /**
- * capture-dispatch.js — Stop detector that offers a clean conversation block to
- * the SESSION agent for lesson capture (Phase 1, task 4).
+ * capture-dispatch.js — Stop detector that offers cleaned conversation cycles to
+ * the SESSION agent for lesson capture (Phase 1 + 1.5).
  *
  * Registered in stop-dispatcher's DETECTORS. Deterministic; it does NOT spawn a
  * model — it hands a cleaned, redacted block back to the already-running agent
@@ -9,24 +9,24 @@
  * the correct cross-runtime Stop mechanism (hookSpecificOutput.additionalContext
  * is rejected for Stop in Copilot Chat — see hook-io.js).
  *
- * Per Stop:
- *   1. reconcile: if a pending window exists, the PREVIOUS Stop already offered
- *      it — commit (advance the cursor) so the same window is never re-asked.
- *   2. loop guard: if stop_hook_active, we're mid-continuation — do not open a
- *      new capture.
- *   3. else read [committed, end), clean → human cycles, and if turn-budget says
- *      fire, redact the rendered block, open pending, and return {block, reason}.
+ * Per Stop (all state in capture-queue.js — durable, redacted-at-rest, CAS):
+ *   1. ingest: scan new human cycles into the durable queue (compaction-safe).
+ *   2. reconcile: ack the open offer when a capture_lesson appears after it
+ *      (machine-verifiable), else bounded retry, else drop.
+ *   3. if an offer is STILL open (a retry) → re-inject it (unless mid-continuation).
+ *   4. else, gated by cadence bounds + budget, OFFER the oldest queued cycles.
  *
- * The marker's committed cursor advances ONLY on commit() — i.e. after the agent
- * has had its turn to capture (or ignore). Bounds (maxCapturesPerSession,
- * cooldown) + an opt-out come from config so the `standard` profile stays sane.
+ * Cycles leave the queue ONLY on a matching ack — a lesson is never dropped just
+ * because the agent's turn was interrupted. Bounds + an update-safe opt-out come
+ * from the merged config so the `standard` profile stays sane.
  */
 const fs = require('fs');
 const path = require('path');
-const marker = require('./lib/session-marker.js');
-const { extractCyclesFromBuffer, renderBlock, packCycles } = require('./lib/transcript-block.js');
+const queue = require('./lib/capture-queue.js');
 const { budgetForModel, shouldFire, DEFAULT_BOUNDS } = require('./lib/turn-budget.js');
+const { renderBlock } = require('./lib/transcript-block.js');
 const { redact } = require('./lib/redact.js');
+const { dataDir } = require('./lib/data-dir.js');
 const metrics = require('./lib/metrics.js');
 
 let _resolveProjectId = null;
@@ -74,15 +74,27 @@ function _lastModel(buf) {
   return '';
 }
 
+function _readTail(transcriptPath, bytes) {
+  const size = _safeSize(transcriptPath);
+  const from = Math.max(0, size - (bytes || 65536));
+  return _readBuf(transcriptPath, from, size);
+}
+
 function _captureConfig() {
+  const out = {};
   try {
     const root = process.env.CLAUDE_PLUGIN_ROOT;
     if (root && !root.includes('${')) {
       const cfg = JSON.parse(fs.readFileSync(path.join(root, 'config', 'brain-config.json'), 'utf-8'));
-      return (cfg && cfg.kb && cfg.kb.capture) || {};
+      Object.assign(out, (cfg && cfg.kb && cfg.kb.capture) || {});
     }
   } catch (err) { void err; }
-  return {};
+  try {
+    // update-safe user override (the shipped config is replaced on plugin update)
+    const cfg = JSON.parse(fs.readFileSync(path.join(dataDir(), 'brain', 'user-config.json'), 'utf-8'));
+    Object.assign(out, (cfg && cfg.kb && cfg.kb.capture) || {});
+  } catch (err) { void err; }
+  return out;
 }
 
 /** The instruction handed to the session agent (its own context is the curator). */
@@ -102,13 +114,6 @@ function buildInstruction(blockText) {
   ].join('\n');
 }
 
-/** Pure decision core (testable): what to do this Stop. */
-function _decide({ pending, stopHookActive, fire }) {
-  if (pending) return 'reconcile';
-  if (stopHookActive) return 'skip';
-  return fire ? 'fire' : 'skip';
-}
-
 function run(event, deps) {
   const ev = event || {};
   const cfg = (deps && deps.config) || _captureConfig();
@@ -118,63 +123,46 @@ function run(event, deps) {
   const transcriptPath = ev.transcript_path || ev.transcriptPath;
   if (!sid || !transcriptPath || !fs.existsSync(transcriptPath)) return {};
   const project = _project(ev);
+  const redactText = s => redact(s).text;
+  const maxAttempts = cfg.maxAttempts != null ? cfg.maxAttempts : 2;
 
-  marker.initIfAbsent(project, sid, transcriptPath);
-  const st = marker.getState(project, sid);
+  // 1. Scan new cycles into the durable, redacted-at-rest, compaction-safe queue.
+  queue.ingest(project, sid, transcriptPath, redactText);
+  // 2. Reconcile the open offer: ack CAPTURED (capture_lesson seen) / bounded retry / drop.
+  queue.reconcile(project, sid, transcriptPath, maxAttempts);
 
-  // 1. Reconcile a previously-offered window (advance so it is never re-asked).
-  if (_decide({ pending: !!st.pending, stopHookActive: !!ev.stop_hook_active, fire: false }) === 'reconcile') {
-    const to = st.pending.to;
-    marker.commit(project, sid, to, marker.anchorAt(transcriptPath, to), _safeSize(transcriptPath));
-    metrics.fire('capture.reconciled', { to }, { sessionId: sid, cwd: ev.cwd });
-    return {};
+  const st = queue.getState(project, sid);
+  const model = _lastModel(_readTail(transcriptPath));
+  const budget = budgetForModel(model);
+
+  // 3. An offer still open after reconcile = a retry → re-inject it (unless mid-continuation).
+  if (st.offer) {
+    if (ev.stop_hook_active) return {};
+    const cur = queue.currentOfferText(project, sid, budget.maxChars);
+    if (!cur) return {};
+    metrics.fire('capture.reoffered', { windowId: cur.windowId, model }, { sessionId: sid, cwd: ev.cwd });
+    return { block: true, reason: buildInstruction(cur.text) };
   }
 
-  // 2. Mid-continuation → do not open a new capture.
+  // 4. No open offer → consider a NEW one, gated by cadence bounds + budget.
   if (ev.stop_hook_active) return {};
-
-  // 3. Bounds pre-check BEFORE the expensive read: after the session cap or during
-  //    cooldown the cursor stops advancing, so [from,size) would grow unbounded and
-  //    be re-read every Stop for nothing.
   const bounds = {
     maxCapturesPerSession: cfg.maxCapturesPerSession != null ? cfg.maxCapturesPerSession : DEFAULT_BOUNDS.maxCapturesPerSession,
     cooldownMs: cfg.cooldownMs != null ? cfg.cooldownMs : DEFAULT_BOUNDS.cooldownMs,
   };
-  const stats = marker.stats(project, sid);
-  if (stats.captures >= bounds.maxCapturesPerSession) return {};
-  if (stats.lastTs && (Date.now() - stats.lastTs) < bounds.cooldownMs) return {};
-
-  // 4. One snapshot: resolve the cursor, snap to a complete-line boundary, read once.
-  const committed = st.committed || { offset: 0, anchorHash: '', size: 0 };
-  const v = marker.validateAnchor(transcriptPath, committed);
-  const from = v.ok ? committed.offset : 0; // anchor mismatch (compaction) → recover by re-scan, never skip
-  const size = _safeSize(transcriptPath);
-  const boundary = marker._boundaryAtOrBefore(transcriptPath, size);
-  if (!(boundary > from)) return {}; // nothing complete to offer (also rejects to<=from)
-  const buf = _readBuf(transcriptPath, from, boundary);
-  const cycles = extractCyclesFromBuffer(buf, from);
-  if (cycles.length === 0) return {};
-  const model = _lastModel(buf);
-  const budget = budgetForModel(model);
-  const windowChars = renderBlock(cycles, 1e9).length; // full window size drives the fire trigger
-
+  if ((st.offers || 0) >= bounds.maxCapturesPerSession) return {};
+  if (st.lastOfferTs && (Date.now() - st.lastOfferTs) < bounds.cooldownMs) return {};
+  if (st.queue.length === 0) return {};
+  const queueChars = renderBlock(st.queue, 1e9).length;
   const decision = shouldFire(
-    { cycles: cycles.length, chars: windowChars, model, capturesThisSession: stats.captures, lastCaptureTs: stats.lastTs },
+    { cycles: st.queue.length, chars: queueChars, model, capturesThisSession: st.offers || 0, lastCaptureTs: st.lastOfferTs || 0 },
     bounds,
   );
-  if (_decide({ pending: false, stopHookActive: false, fire: decision.fire }) !== 'fire') return {};
-
-  // 5. Offer the OLDEST cycles that fit; advance the cursor only over THOSE (the
-  //    rest are re-offered next Stop — nothing is skipped).
-  const { text, kept } = packCycles(cycles, budget.maxChars);
-  if (!text || kept === 0) return {}; // never hand the agent an empty block
-  const to = cycles[kept - 1].endOffset;
-  if (!(to > from)) return {};
-  const safe = redact(text).text;
-  if (!safe) return {};
-  if (!marker.beginPending(project, sid, from, to, String(safe.length))) return {}; // persist failed → don't emit an untracked offer
-  metrics.fire('capture.offered', { cycles: kept, windowCycles: cycles.length, chars: safe.length, model, reason: decision.reason }, { sessionId: sid, cwd: ev.cwd });
-  return { block: true, reason: buildInstruction(safe) };
+  if (!decision.fire) return {};
+  const off = queue.offer(project, sid, budget.maxChars);
+  if (!off) return {};
+  metrics.fire('capture.offered', { cycles: off.cycles, windowId: off.windowId, queueLen: st.queue.length, model, reason: decision.reason }, { sessionId: sid, cwd: ev.cwd });
+  return { block: true, reason: buildInstruction(off.text) };
 }
 
-module.exports = { run, buildInstruction, _decide };
+module.exports = { run, buildInstruction, _captureConfig };
