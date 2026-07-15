@@ -4863,6 +4863,93 @@ test('data-dir: dashboard.js resolvers are guarded (no bare `env || fallback` sp
     'dashboard.js must resolve its data dir via lib/data-dir.js');
 });
 
+// ─── session-marker (capture-window cursor state machine — Phase 1 task 1) ───
+// Failing-first: lazy require so only these RED until lib/session-marker.js exists.
+test('session-marker: initIfAbsent sets committed at transcript end; idempotent', () => {
+  const sm = require('./lib/session-marker.js');
+  const project = 'sm-init-' + Date.now();
+  const sid = 's1-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `t1-${sid}.jsonl`);
+  fs.writeFileSync(tp, 'line1\nline2\n');
+  const size = fs.statSync(tp).size;
+  const st1 = sm.initIfAbsent(project, sid, tp);
+  assert(st1.committed, 'committed set');
+  assertEq(st1.committed.offset, size, 'committed at file end');
+  assertEq(st1.pending, null, 'no pending initially');
+  fs.appendFileSync(tp, 'line3\n');
+  const st2 = sm.initIfAbsent(project, sid, tp);
+  assertEq(st2.committed.offset, size, 'init idempotent (committed unchanged)');
+  sm.resetAll(project, sid);
+});
+
+test('session-marker: beginPending keeps committed; commit advances + clears pending', () => {
+  const sm = require('./lib/session-marker.js');
+  const project = 'sm-commit-' + Date.now();
+  const sid = 's2-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `t2-${sid}.jsonl`);
+  fs.writeFileSync(tp, 'a\nb\n');
+  sm.initIfAbsent(project, sid, tp);
+  fs.appendFileSync(tp, 'c\nd\n');
+  const size = fs.statSync(tp).size;
+  sm.beginPending(project, sid, 4, size, 'win1');
+  let st = sm.getState(project, sid);
+  assertEq(st.committed.offset, 4, 'committed unchanged during pending');
+  assert(st.pending && st.pending.to === size, 'pending open at window end');
+  sm.commit(project, sid, size, sm.anchorAt(tp, size), size);
+  st = sm.getState(project, sid);
+  assertEq(st.committed.offset, size, 'committed advanced to window end');
+  assertEq(st.pending, null, 'pending cleared on commit');
+  sm.resetAll(project, sid);
+});
+
+test('session-marker: clearPending aborts window; committed stays', () => {
+  const sm = require('./lib/session-marker.js');
+  const project = 'sm-abort-' + Date.now();
+  const sid = 's3-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `t3-${sid}.jsonl`);
+  fs.writeFileSync(tp, 'x\n');
+  sm.initIfAbsent(project, sid, tp);
+  fs.appendFileSync(tp, 'y\n');
+  const size = fs.statSync(tp).size;
+  sm.beginPending(project, sid, 2, size, 'w');
+  sm.clearPending(project, sid);
+  const st = sm.getState(project, sid);
+  assertEq(st.committed.offset, 2, 'committed unchanged after abort');
+  assertEq(st.pending, null, 'pending cleared');
+  sm.resetAll(project, sid);
+});
+
+test('session-marker: validateAnchor matches unchanged file, detects truncation', () => {
+  const sm = require('./lib/session-marker.js');
+  const project = 'sm-anchor-' + Date.now();
+  const sid = 's4-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `t4-${sid}.jsonl`);
+  fs.writeFileSync(tp, 'aaaa\nbbbb\n');
+  const size = fs.statSync(tp).size;
+  sm.initIfAbsent(project, sid, tp);
+  sm.commit(project, sid, size, sm.anchorAt(tp, size), size);
+  let v = sm.validateAnchor(tp, sm.getState(project, sid).committed);
+  assert(v.ok, 'anchor matches on unchanged file');
+  fs.writeFileSync(tp, 'zz\n'); // compaction rewrites the file shorter
+  v = sm.validateAnchor(tp, sm.getState(project, sid).committed);
+  assert(!v.ok, 'anchor mismatch detected after truncation');
+  sm.resetAll(project, sid);
+});
+
+test('session-marker: append-only transitions — latest pending wins (race-free)', () => {
+  const sm = require('./lib/session-marker.js');
+  const project = 'sm-race-' + Date.now();
+  const sid = 's5-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `t5-${sid}.jsonl`);
+  fs.writeFileSync(tp, 'a\n');
+  sm.initIfAbsent(project, sid, tp);
+  sm.beginPending(project, sid, 2, 4, 'w1');
+  sm.beginPending(project, sid, 2, 6, 'w2');
+  const st = sm.getState(project, sid);
+  assertEq(st.pending.windowHash, 'w2', 'latest pending wins');
+  sm.resetAll(project, sid);
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
