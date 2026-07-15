@@ -70,6 +70,21 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
     }
   }
 
+  // Phase 1.5 capture ACK: when the offered block carried a windowId, the agent's
+  // capture_lesson(windowId) / capture_ack(windowId) tool call writes the explicit
+  // ack marker the Stop-hook reconcile reads — so the deterministic side never has
+  // to guess from the transcript. Keyed by windowId (filesystem-shared across the
+  // brain-server and Stop-hook processes).
+  function recordCaptureAck(windowId, outcome) {
+    if (!windowId) return;
+    try {
+      const cq = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'capture-queue.js'));
+      cq.recordAck(windowId, outcome);
+    } catch (err) {
+      console.error(`[BRAIN-SERVER] recordCaptureAck failed: ${err.message}`);
+    }
+  }
+
   /**
    * Remote-backend KB handler: when backend.type === 'mcp-memory', write/search/
    * related/count tools delegate to the dispatcher (which talks to the external
@@ -100,6 +115,7 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
           // local path below) — every capture here is an 'admit'. Recorded
           // locally regardless: metrics are per-machine, not part of the KB.
           recordLessonMetric(project, { type: a.type || 'lesson', decision: 'admit', scope: a.scope || 'auto' });
+          recordCaptureAck(a.windowId, 'captured');
           return asText({ decision: 'admit', id, type: a.type || 'lesson', project, scope: a.scope || 'auto', backend: 'mcp-memory' });
         }
         case 'brain_related': {
@@ -237,7 +253,12 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
     {
       name: 'capture_lesson',
       description: 'Capture a CURATED lesson in-loop (the agent post-mortem pattern). Call this when the user corrects you, or when a reusable pattern emerges — YOU write the clean summary + correction + generalized lesson (you have full context; do not make the KB re-read transcripts). WRITE IN ENGLISH — the KB is English-canonical so entries stay retrievable regardless of the user\'s prompt language. Runs admission control inline: a near-duplicate is MERGED (bumping recurrence, which drives skill promotion) instead of duplicated.',
-      inputSchema: { type: 'object', properties: { title: { type: 'string', description: 'Short lesson title in English (max 80 chars)' }, summary: { type: 'string', description: 'One-line in English: what went wrong / the pattern, and what to do instead' }, detail: { type: 'string', description: 'Full lesson in English: what happened + the correction + the generalized rule. Keep the valuable specifics.' }, type: { type: 'string', enum: ['lesson', 'pattern', 'decision', 'research'], description: 'lesson (correction), pattern (reusable workflow), decision (architectural choice + rationale — plugin Stop hooks nudge this type), or research (external findings worth reusing — plugin Stop hooks nudge this type too). Default: lesson' }, tags: { type: 'array', items: { type: 'string' }, description: '3-8 CANONICAL English concept tags, lowercase, hyphenated (e.g. "error-handling", "token-efficiency", "cross-lingual"). These are the language-neutral retrieval anchor — choose the terms a future query (in any language) would map to.' }, confidence: { type: 'number', description: '0.0-1.0 (default 0.85)' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode)' }, scope: { type: 'string', enum: ['auto', 'project', 'user'], description: 'Where to store. "auto" (default) infers from type+tags (decision/code → project; reference/research/user-tag hints like workflow/preferences/agent-behavior → user). "user" routes to global __user__ DB and sanitizes user paths/emails/project name. Entries with detected secrets are rejected if scope=user.' } }, required: ['title', 'summary'] },
+      inputSchema: { type: 'object', properties: { title: { type: 'string', description: 'Short lesson title in English (max 80 chars)' }, summary: { type: 'string', description: 'One-line in English: what went wrong / the pattern, and what to do instead' }, detail: { type: 'string', description: 'Full lesson in English: what happened + the correction + the generalized rule. Keep the valuable specifics.' }, type: { type: 'string', enum: ['lesson', 'pattern', 'decision', 'research'], description: 'lesson (correction), pattern (reusable workflow), decision (architectural choice + rationale — plugin Stop hooks nudge this type), or research (external findings worth reusing — plugin Stop hooks nudge this type too). Default: lesson' }, tags: { type: 'array', items: { type: 'string' }, description: '3-8 CANONICAL English concept tags, lowercase, hyphenated (e.g. "error-handling", "token-efficiency", "cross-lingual"). These are the language-neutral retrieval anchor — choose the terms a future query (in any language) would map to.' }, confidence: { type: 'number', description: '0.0-1.0 (default 0.85)' }, windowId: { type: 'string', description: 'When the plugin offered a review block, pass its windowId to close (ack) that capture window as captured.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode)' }, scope: { type: 'string', enum: ['auto', 'project', 'user'], description: 'Where to store. "auto" (default) infers from type+tags (decision/code → project; reference/research/user-tag hints like workflow/preferences/agent-behavior → user). "user" routes to global __user__ DB and sanitizes user paths/emails/project name. Entries with detected secrets are rejected if scope=user.' } }, required: ['title', 'summary'] },
+    },
+    {
+      name: 'capture_ack',
+      description: 'Close a lesson-capture review window when there is NO lesson to capture. When the plugin offers a review block and nothing is worth capturing, call this with the block\'s windowId to release the Stop. (Capturing via capture_lesson with the same windowId already closes it — you do not need both.)',
+      inputSchema: { type: 'object', properties: { windowId: { type: 'string', description: 'The windowId from the offered review block' }, outcome: { type: 'string', enum: ['none'], description: 'Always "none" (no lesson to capture).' } }, required: ['windowId'] },
     },
     {
       name: 'brain_retrieve_context',
@@ -421,6 +442,7 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
             if (hits.length > 0) {
               const merged = await kbStore.merge(hits[0].id, { summary: safeSummary, content: { detail: safeDetail || safeSummary }, confidence });
               recordLessonMetric(storageProject, { type, decision: 'merge', scope: effectiveScope, recurrence: merged?.recurrence });
+              recordCaptureAck(args.windowId, 'captured');
               if (storageProject !== currentProject) await getKB(currentProject);
               return { content: [{ type: 'text', text: JSON.stringify({ decision: 'merge', id: hits[0].id, recurrence: merged?.recurrence, title: hits[0].title, project: storageProject, scope: effectiveScope }, null, 2) }] };
             }
@@ -430,11 +452,17 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
           await kbIndex.index(entry);
           await kbGraph.registerNode(entry);
           recordLessonMetric(storageProject, { type, decision: 'admit', scope: effectiveScope });
+          recordCaptureAck(args.windowId, 'captured');
           if (storageProject !== currentProject) await getKB(currentProject);
           return { content: [{ type: 'text', text: JSON.stringify({ decision: 'admit', id: entry.id, type, project: storageProject, scope: effectiveScope }, null, 2) }] };
         } catch (err) {
           return { isError: true, content: [{ type: 'text', text: `capture_lesson failed: ${err.message}` }] };
         }
+      }
+
+      case 'capture_ack': {
+        recordCaptureAck(args.windowId, args.outcome || 'none');
+        return { content: [{ type: 'text', text: JSON.stringify({ status: 'acked', windowId: args.windowId || null, outcome: args.outcome || 'none' }, null, 2) }] };
       }
 
       case 'brain_related': {

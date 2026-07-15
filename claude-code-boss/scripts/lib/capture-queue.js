@@ -29,7 +29,7 @@ function _file(project, sid) {
   return path.join(_runtimeDir(), `capture-queue-${sanitizeSessionId(project)}--${sanitizeSessionId(sid)}.json`);
 }
 
-function _default() { return { rev: 0, scan: { offset: 0, anchorHash: '' }, seen: [], queue: [], offer: null, offers: 0, lastOfferTs: 0 }; }
+function _default() { return { rev: 0, scan: { offset: 0, anchorHash: '' }, seen: [], queue: [], offer: null, offers: 0, lastOfferTs: 0, deferred: [] }; }
 
 function _load(project, sid) {
   try {
@@ -42,6 +42,7 @@ function _load(project, sid) {
       offer: o.offer || null,
       offers: o.offers || 0,
       lastOfferTs: o.lastOfferTs || 0,
+      deferred: Array.isArray(o.deferred) ? o.deferred : [],
     };
   } catch (err) { void err; return _default(); }
 }
@@ -133,23 +134,30 @@ function ingest(project, sid, transcriptPath, redactFn) {
 function getState(project, sid) { return _load(project, sid); }
 function reset(project, sid) { try { fs.unlinkSync(_file(project, sid)); } catch (err) { void err; } }
 
-function _safeSize(p) { try { return fs.statSync(p).size; } catch (err) { void err; return 0; } }
+function _ackFile(windowId) {
+  return path.join(_runtimeDir(), `capture-ack-${sanitizeSessionId(windowId)}.json`);
+}
 
-// Detect a capture_lesson tool_use anywhere in the transcript AFTER `fromOffset`
-// (the agent's machine-verifiable acknowledgment of an offered window).
-function _hasCaptureLessonAfter(transcriptPath, fromOffset) {
-  const size = _safeSize(transcriptPath);
-  if (!(size > fromOffset)) return false;
-  const buf = _readBuf(transcriptPath, fromOffset, size);
-  for (const line of buf.toString('utf-8').split('\n')) {
-    if (!line || line.indexOf('capture_lesson') === -1) continue; // cheap prefilter
-    try {
-      const o = JSON.parse(line);
-      const content = o && o.message && o.message.content;
-      if (Array.isArray(content) && content.some(b => b && b.type === 'tool_use' && b.name === 'capture_lesson')) return true;
-    } catch (err) { void err; }
+// Explicit ACK channel keyed by windowId (NOT by sid) so the MCP tool handler —
+// running in the brain-server process — and the Stop hook (a separate process)
+// coordinate purely through the filesystem. The deterministic side READS this
+// marker; it never guesses from the transcript.
+function recordAck(windowId, outcome) {
+  try {
+    const dir = _runtimeDir();
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(_ackFile(windowId), JSON.stringify({ outcome: outcome || 'captured', ts: Date.now() }));
+    return true;
+  } catch (err) {
+    console.error(`[capture-queue] recordAck failed: ${err.message}`);
+    return false;
   }
-  return false;
+}
+function readAck(windowId) {
+  try { return JSON.parse(fs.readFileSync(_ackFile(windowId), 'utf-8')); } catch (err) { void err; return null; }
+}
+function clearAck(windowId) {
+  try { fs.unlinkSync(_ackFile(windowId)); } catch (err) { void err; }
 }
 
 /**
@@ -198,21 +206,39 @@ function ack(project, sid, windowId, outcome) {
 }
 
 /**
- * Drive the open offer: ack CAPTURED when a capture_lesson appears after it,
- * else bounded retry, else drop (give up) so a stuck window never nags forever.
- * @returns {{acked:boolean, dropped:boolean, outcome?:string, retry?:number}}
+ * Drive the open offer via the EXPLICIT ack marker (written by the agent's
+ * capture_lesson(windowId) or capture_ack(windowId) tool call): drain on ack;
+ * else re-block (keep the offer open so the Stop hook re-injects); after
+ * `parkAfter` un-acked reconciles, PARK the cycles (kept in `deferred`, never
+ * deleted) so a stuck window can't nag forever.
+ * @returns {{acked:boolean, dropped:boolean, outcome?:string, retry?:number, parked?:boolean}}
  */
-function reconcile(project, sid, transcriptPath, maxAttempts) {
+function reconcile(project, sid, parkAfter) {
   const state = _load(project, sid);
   if (!state.offer) return { acked: false, dropped: false };
-  if (_hasCaptureLessonAfter(transcriptPath, state.offer.scanAt)) {
-    ack(project, sid, state.offer.windowId, 'captured');
-    return { acked: true, dropped: false, outcome: 'captured' };
+  const wid = state.offer.windowId;
+  const ackRec = readAck(wid);
+  if (ackRec) {
+    const ids = new Set(state.offer.ids);
+    const expect = state.rev;
+    state.queue = state.queue.filter(c => !ids.has(c.id));
+    state.offer = null;
+    state.rev = expect + 1;
+    _save(project, sid, state, expect);
+    clearAck(wid);
+    return { acked: true, dropped: false, outcome: ackRec.outcome || 'captured' };
   }
-  const max = typeof maxAttempts === 'number' ? maxAttempts : 2;
-  if (state.offer.attempts >= max) {
-    ack(project, sid, state.offer.windowId, 'none');
-    return { acked: true, dropped: true, outcome: 'none' };
+  const park = typeof parkAfter === 'number' ? parkAfter : 6;
+  if (state.offer.attempts >= park) {
+    const ids = new Set(state.offer.ids);
+    const expect = state.rev;
+    const parked = state.queue.filter(c => ids.has(c.id));
+    state.queue = state.queue.filter(c => !ids.has(c.id));
+    state.deferred = (state.deferred || []).concat(parked); // kept durably — never deleted
+    state.offer = null;
+    state.rev = expect + 1;
+    _save(project, sid, state, expect);
+    return { acked: false, dropped: false, parked: true };
   }
   const expect = state.rev;
   state.offer.attempts++;
@@ -221,4 +247,4 @@ function reconcile(project, sid, transcriptPath, maxAttempts) {
   return { acked: false, dropped: false, retry: state.offer.attempts };
 }
 
-module.exports = { ingest, getState, reset, offer, currentOfferText, ack, reconcile, _hash, _load, _save, _file };
+module.exports = { ingest, getState, reset, offer, currentOfferText, ack, reconcile, recordAck, readAck, clearAck, _hash, _load, _save, _file };
