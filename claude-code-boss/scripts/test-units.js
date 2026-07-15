@@ -676,7 +676,10 @@ function startFakeDaemon(opts = {}) {
           seen.callSession = sid;
           seen.callArgs = msg.params;
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          return res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: 'OK:' + (msg.params && msg.params.name) }] } }));
+          const result = (typeof opts.toolResult === 'function')
+            ? opts.toolResult(msg.params)
+            : { content: [{ type: 'text', text: 'OK:' + (msg.params && msg.params.name) }] };
+          return res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }));
         }
         res.writeHead(400); return res.end('bad');
       });
@@ -817,6 +820,32 @@ test('brain-backend mcp: ingestConversation ships raw transcript to ingest_conve
   }
 });
 
+test('brain-backend mcp: saveMcp REJECTS on a tool-level isError (no fabricated uuid → no phantom capture)', async () => {
+  const daemon = await startFakeDaemon({ toolResult: (p) => p.name === 'add_document'
+    ? { isError: true, content: [{ type: 'text', text: 'add_document failed: disk full' }] }
+    : { content: [{ type: 'text', text: 'OK:' + (p && p.name) }] } });
+  delete require.cache[require.resolve('./brain-backend.js')];
+  const backend = require('./brain-backend.js');
+  backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
+  try {
+    await backend.init({ project: 'projErr' });
+    let threw = false;
+    try {
+      await backend.save({ title: 't', summary: 's', content: { detail: 'd' }, type: 'lesson' });
+    } catch (err) {
+      threw = true;
+      assert(/add_document|failed|isError/i.test(err.message), `error surfaces the tool failure, got: ${err.message}`);
+    }
+    // Without the fix, saveMcp returns parseAddedId(errResult) || uuid() → a FABRICATED
+    // id → resolves as success → the remote capture_lesson path acks 'captured' → the
+    // Stop reconcile drains cycles that were never stored (silent lesson loss).
+    assert(threw, 'a failed remote add_document MUST reject (not fabricate a uuid and resolve)');
+    await backend.close();
+  } finally {
+    delete require.cache[require.resolve('./brain-backend.js')];
+    await daemon.close();
+  }
+});
 test('brain-backend mcp: warmPool fires home-federated search_memory (includeHome:true) for graduation signal', async () => {
   const daemon = await startFakeDaemon();
   delete require.cache[require.resolve('./brain-backend.js')];
