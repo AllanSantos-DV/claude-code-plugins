@@ -5025,6 +5025,29 @@ test('turn-budget: shouldFire respects floor, ceilings, session-cap and cooldown
   assertEq(tbud.shouldFire({ cycles: 9, chars: 9999, model: m, lastCaptureTs: 1000, now: 1500 }, { cooldownMs: 10000 }).fire, false, 'cooldown blocks');
 });
 
+// ─── redact (secret/PII redaction before injection — Phase 1 task 5) ─────────
+test('redact: masks common secrets and PII, preserves auth scheme, spares prose', () => {
+  const { redact } = require('./lib/redact.js');
+  const jwt = redact('x eyJhbGciOiJI.eyJzdWIiOiI.SflKxwRJSMkey y').text;
+  assert(jwt.includes('[JWT]') && !jwt.includes('eyJhbGciOiJI'), 'JWT masked');
+  const gh = redact('use ghp_ABCDEFGHIJKLMNOPQRSTUVWX now').text;
+  assert(gh.includes('[GH_TOKEN]') && !gh.includes('ghp_ABCDEF'), 'GH token masked');
+  const aws = redact('key AKIAIOSFODNN7EXAMPLE end').text;
+  assert(aws.includes('[AWS_KEY]') && !aws.includes('AKIAIOSFODNN7EXAMPLE'), 'AWS masked');
+  const pem = redact('-----BEGIN PRIVATE KEY-----\nabc123\n-----END PRIVATE KEY-----').text;
+  assert(pem.includes('[PRIVATE_KEY]') && !pem.includes('abc123'), 'PEM masked');
+  const bearer = redact('Authorization: Bearer abcdef1234567890ABCDEF').text;
+  assert(bearer.includes('[REDACTED]') && /Bearer/i.test(bearer) && !bearer.includes('abcdef1234567890ABCDEF'), 'bearer value masked, scheme kept');
+  const url = redact('db postgres://user:secretpass@host/db').text;
+  assert(url.includes('[CRED]@') && !url.includes('secretpass'), 'url cred masked');
+  const env = redact('DB_PASSWORD=hunter2secret').text;
+  assert(env.includes('[REDACTED]') && !env.includes('hunter2secret'), 'env assignment masked');
+  const email = redact('ping a.user@example.com ok').text;
+  assert(email.includes('[EMAIL]') && !email.includes('a.user@example.com'), 'email masked');
+  assertEq(redact('the token expired and I fixed the bug').text, 'the token expired and I fixed the bug', 'prose not over-redacted');
+  assert(redact('x ghp_ABCDEFGHIJKLMNOPQRSTUVWX y').count >= 1, 'count reflects redactions');
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
