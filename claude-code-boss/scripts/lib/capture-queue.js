@@ -29,7 +29,7 @@ function _file(project, sid) {
   return path.join(_runtimeDir(), `capture-queue-${sanitizeSessionId(project)}--${sanitizeSessionId(sid)}.json`);
 }
 
-function _default() { return { rev: 0, scan: { offset: 0, anchorHash: '' }, seen: [], queue: [], offer: null, offers: 0, lastOfferTs: 0, deferred: [] }; }
+function _default() { return { rev: 0, scan: { offset: 0, anchorHash: '' }, seen: [], queue: [], offer: null, offers: 0, captured: 0, lastOfferTs: 0 }; }
 
 function _load(project, sid) {
   try {
@@ -40,9 +40,9 @@ function _load(project, sid) {
       seen: Array.isArray(o.seen) ? o.seen : [],
       queue: Array.isArray(o.queue) ? o.queue : [],
       offer: o.offer || null,
-      offers: o.offers || 0,
+      offers: o.offers || 0,       // review interruptions opened this session (cadence cap)
+      captured: o.captured || 0,   // real captures (non-'none' acks) — evolution telemetry
       lastOfferTs: o.lastOfferTs || 0,
-      deferred: Array.isArray(o.deferred) ? o.deferred : [],
     };
   } catch (err) { void err; return _default(); }
 }
@@ -141,12 +141,17 @@ function _ackFile(windowId) {
 // Explicit ACK channel keyed by windowId (NOT by sid) so the MCP tool handler —
 // running in the brain-server process — and the Stop hook (a separate process)
 // coordinate purely through the filesystem. The deterministic side READS this
-// marker; it never guesses from the transcript.
+// marker; it never guesses from the transcript. The write is atomic (tmp+rename)
+// so a concurrent reader never sees a partial marker.
 function recordAck(windowId, outcome) {
+  if (!windowId) return false;
   try {
     const dir = _runtimeDir();
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(_ackFile(windowId), JSON.stringify({ outcome: outcome || 'captured', ts: Date.now() }));
+    const f = _ackFile(windowId);
+    const tmp = `${f}.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`;
+    fs.writeFileSync(tmp, JSON.stringify({ outcome: outcome || 'captured', ts: Date.now() }));
+    fs.renameSync(tmp, f);
     return true;
   } catch (err) {
     console.error(`[capture-queue] recordAck failed: ${err.message}`);
@@ -171,10 +176,14 @@ function offer(project, sid, maxChars) {
   const { text, kept } = packCycles(state.queue, maxChars);
   if (!text || kept === 0) return null;
   const ids = state.queue.slice(0, kept).map(c => c.id);
-  const windowId = crypto.createHash('sha256').update(ids.join('|')).digest('hex').slice(0, 16);
+  // Single-use RANDOM nonce — NOT derived from content. A content-hash windowId
+  // would collide across sessions/projects for identical/anonymous cycles, letting
+  // one session's ack marker drain another's offer. A random nonce is unique per
+  // offer, so the ack marker binds to exactly this window.
+  const windowId = crypto.randomBytes(12).toString('hex');
   const expect = state.rev;
   state.offer = { windowId, ids, at: Date.now(), attempts: 1, scanAt: state.scan.offset };
-  state.offers = (state.offers || 0) + 1;   // cadence bounds (per-session count)
+  state.offers = (state.offers || 0) + 1;   // cadence bounds (review interruptions per session)
   state.lastOfferTs = Date.now();
   state.rev = expect + 1;
   if (!_save(project, sid, state, expect)) return null; // CAS: never emit an untracked offer
@@ -207,43 +216,41 @@ function ack(project, sid, windowId, outcome) {
 
 /**
  * Drive the open offer via the EXPLICIT ack marker (written by the agent's
- * capture_lesson(windowId) or capture_ack(windowId) tool call): drain on ack;
- * else re-block (keep the offer open so the Stop hook re-injects); after
- * `parkAfter` un-acked reconciles, PARK the cycles (kept in `deferred`, never
- * deleted) so a stuck window can't nag forever.
- * @returns {{acked:boolean, dropped:boolean, outcome?:string, retry?:number, parked?:boolean}}
+ * capture_lesson(windowId) or capture_ack(windowId) tool call):
+ *   - ack present → DRAIN the offered cycles (clearing the marker ONLY after the
+ *     queue commit succeeds, so a valid ack is never lost to a failed/stale write);
+ *     a non-'none' outcome increments `captured` (evolution telemetry, distinct
+ *     from `offers`);
+ *   - no ack → keep the offer OPEN so the Stop hook re-blocks the turn. Allan's
+ *     design: the turn does not proceed until the agent acks. Cycles STAY in the
+ *     durable queue — a stuck/interrupted window is re-offered on the next Stop,
+ *     never parked into a terminal collection, never deleted (no-loss).
+ * @param {{save?:Function}} [deps] optional save seam for fault-injection tests
+ * @returns {{acked:boolean, dropped:boolean, outcome?:string, retry?:number}}
  */
-function reconcile(project, sid, parkAfter) {
+function reconcile(project, sid, deps) {
+  const save = (deps && typeof deps.save === 'function') ? deps.save : _save;
   const state = _load(project, sid);
   if (!state.offer) return { acked: false, dropped: false };
   const wid = state.offer.windowId;
   const ackRec = readAck(wid);
   if (ackRec) {
     const ids = new Set(state.offer.ids);
+    const outcome = ackRec.outcome || 'captured';
     const expect = state.rev;
     state.queue = state.queue.filter(c => !ids.has(c.id));
     state.offer = null;
+    if (outcome !== 'none') state.captured = (state.captured || 0) + 1;
     state.rev = expect + 1;
-    _save(project, sid, state, expect);
-    clearAck(wid);
-    return { acked: true, dropped: false, outcome: ackRec.outcome || 'captured' };
+    if (!save(project, sid, state, expect)) return { acked: false, dropped: false }; // commit failed → keep marker + offer for a retry
+    clearAck(wid); // consume the marker only after the drain is durably committed
+    return { acked: true, dropped: false, outcome };
   }
-  const park = typeof parkAfter === 'number' ? parkAfter : 6;
-  if (state.offer.attempts >= park) {
-    const ids = new Set(state.offer.ids);
-    const expect = state.rev;
-    const parked = state.queue.filter(c => ids.has(c.id));
-    state.queue = state.queue.filter(c => !ids.has(c.id));
-    state.deferred = (state.deferred || []).concat(parked); // kept durably — never deleted
-    state.offer = null;
-    state.rev = expect + 1;
-    _save(project, sid, state, expect);
-    return { acked: false, dropped: false, parked: true };
-  }
+  // No ack → re-block (offer stays open, cycles stay queued). attempts is metrics-only.
   const expect = state.rev;
-  state.offer.attempts++;
+  state.offer.attempts = (state.offer.attempts || 1) + 1;
   state.rev = expect + 1;
-  _save(project, sid, state, expect);
+  save(project, sid, state, expect);
   return { acked: false, dropped: false, retry: state.offer.attempts };
 }
 

@@ -11,9 +11,10 @@
  *
  * Per Stop (all state in capture-queue.js — durable, redacted-at-rest, CAS):
  *   1. ingest: scan new human cycles into the durable queue (compaction-safe).
- *   2. reconcile: ack the open offer when a capture_lesson appears after it
- *      (machine-verifiable), else bounded retry, else drop.
- *   3. if an offer is STILL open (a retry) → re-inject it (unless mid-continuation).
+ *   2. reconcile: drain the open offer when the agent's explicit ack marker
+ *      (capture_lesson/capture_ack windowId) is present, else keep it open.
+ *   3. if an offer is STILL open → re-block the turn (even on the continuation)
+ *      until the agent acks — the turn does not proceed otherwise.
  *   4. else, gated by cadence bounds + budget, OFFER the oldest queued cycles.
  *
  * Cycles leave the queue ONLY on a matching ack — a lesson is never dropped just
@@ -126,20 +127,21 @@ function run(event, deps) {
   if (!sid || !transcriptPath || !fs.existsSync(transcriptPath)) return {};
   const project = _project(ev);
   const redactText = s => redact(s).text;
-  const parkAfter = cfg.parkAfter != null ? cfg.parkAfter : 6;
 
   // 1. Scan new cycles into the durable, redacted-at-rest, compaction-safe queue.
   queue.ingest(project, sid, transcriptPath, redactText);
-  // 2. Reconcile the open offer via the explicit ack marker: drain / re-block / park.
-  queue.reconcile(project, sid, parkAfter);
+  // 2. Reconcile the open offer via the explicit ack marker: drain on ack, else re-block.
+  queue.reconcile(project, sid);
 
   const st = queue.getState(project, sid);
   const model = _lastModel(_readTail(transcriptPath));
   const budget = budgetForModel(model);
 
-  // 3. An offer still open after reconcile = a retry → re-inject it (unless mid-continuation).
+  // 3. An offer still open after reconcile = NOT yet acked → re-block the turn until
+  //    the agent acks (capture_lesson/capture_ack). This holds EVEN on the
+  //    continuation (stop_hook_active): Allan's design is that the turn does not
+  //    proceed until the agent calls one of the two tools. No ack ⇒ keep asking.
   if (st.offer) {
-    if (ev.stop_hook_active) return {};
     const cur = queue.currentOfferText(project, sid, budget.maxChars);
     if (!cur) return {};
     metrics.fire('capture.reoffered', { windowId: cur.windowId, model }, { sessionId: sid, cwd: ev.cwd });
