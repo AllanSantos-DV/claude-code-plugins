@@ -242,7 +242,7 @@ test('hooks-config.resolveProfileConfig: standard applies the full delta', () =>
   assertEq(r.curationStop.maxAttempts, 1);
   assertEq(r.curationStop.enabled, true);            // file value preserved
   assertEq(r.patternDetect.enabled, false);
-  assertEq(r.correctionDetect.enabled, false);
+  assert(r.correctionDetect === undefined, 'correction-detect is no longer forced off by standard (silent learning stays ON)');
   assertEq(r.decisionScan.enabled, false);
   assertEq(r.verifyNudge.enabled, false);
 });
@@ -310,8 +310,8 @@ test('hooks-config getters: standard profile → capture/verify off, maxAttempts
     assertEq(hc.getCurationStop().maxAttempts, 1);
     assertEq(hc.getVerifyNudge().enabled, false);
     assertEq(hc.getPatternDetect().enabled, false);
-    assertEq(hc.getCorrectionDetect().enabled, false);
-    assertEq(hc.getDecisionScan().enabled, false);
+    assertEq(hc.getCorrectionDetect().enabled, true);   // F1: silent learning trigger STAYS ON in standard
+    assertEq(hc.getDecisionScan().enabled, false);       // still off until F1b (deferred surface)
     // newly profile-gated Stop blockers → silent in standard
     assertEq(hc.getRefineResearch().enabled, false);
     assertEq(hc.getFailureRetro().enabled, false);
@@ -332,6 +332,20 @@ test('hooks-config getters: dev profile → newly gated blockers all enabled', (
     // thresholds preserved from getter defaults
     assertEq(hc.getFailureRetro().minFailures, 2);
     assertEq(hc.getAutoContinue().maxBlocks, 1);
+  });
+});
+
+test('F1: standard KEEPS the silent learning trigger (correction-detect) ON — auto-learning is the soul', () => {
+  // The `standard` profile must stay QUIET (no Stop-block nags) WITHOUT killing
+  // capture. correction-detect is a SILENT UserPromptSubmit additionalContext
+  // injection (invisible to the user) — the #1 learning trigger. Silencing it made
+  // `standard` stop learning (the reported regression). It stays ON; the truly
+  // interruptive nudges remain OFF.
+  withHooksConfigFile({ profile: 'standard' }, (hc) => {
+    assertEq(hc.getCorrectionDetect().enabled, true);
+    assertEq(hc.getPatternDetect().enabled, false);
+    assertEq(hc.getFailureRetro().enabled, false);
+    assertEq(hc.getAutoContinue().enabled, false);
   });
 });
 
@@ -4567,9 +4581,18 @@ test('tuning-advisor: recall precision low → suggest raise minScore', () => {
   assert(r.recommendations.some(x => x.id === 'recall-noisy' && x.level === 'suggest'));
 });
 
-test('tuning-advisor: weak nudge → suggest disable', () => {
-  const r = tuningAdvisor.analyze({ captureRate: { byKind: { pattern: { nudges: 10, captures: 0, rate: 0 } } } });
-  assert(r.recommendations.some(x => x.id === 'nudge-weak-pattern'));
+
+
+test('F1: tuning-advisor NEVER recommends disabling a learning nudge (no nudge-weak)', () => {
+  // Anti-pattern that caused the regression: advising "the profile could disable it
+  // without loss" for a low-conversion capture nudge. Low conversion means aim/
+  // surface it better, NOT kill learning. The nudge-weak rule is gone.
+  const r = tuningAdvisor.analyze({ captureRate: { byKind: {
+    correction: { nudges: 50, captures: 0, rate: 0 },
+    pattern: { nudges: 20, captures: 1, rate: 0.05 },
+  } } });
+  assert(!r.recommendations.some(x => String(x.id).startsWith('nudge-weak')),
+    `must not recommend disabling a learning nudge; got ${JSON.stringify(r.recommendations.map(x => x.id))}`);
 });
 
 test('tuning-advisor: below sample size → silent (no advice on noise)', () => {

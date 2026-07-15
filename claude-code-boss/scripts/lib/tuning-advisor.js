@@ -94,19 +94,10 @@ function analyze(input = {}) {
     }
   }
 
-  // ── Nudge efficacy rules (a nudge that never converts is mis-aimed) ──────────
-  const byKind = (input.captureRate && input.captureRate.byKind) || {};
-  for (const k of Object.keys(byKind)) {
-    const r = byKind[k];
-    if (r && r.nudges >= SAMPLE_MIN.nudges && r.rate !== null && r.rate !== undefined && r.rate < 0.1) {
-      recs.push({
-        id: `nudge-weak-${k}`, level: 'suggest',
-        title: `nudge "${k}" quase nunca vira captura`,
-        detail: `${r.nudges} nudges → ${r.captures} capturas (${asPct(r.rate)}%). Mal-mirado: o perfil poderia desligá-lo sem perda.`,
-        evidence: `${r.captures}/${r.nudges}`,
-      });
-    }
-  }
+  // NOTE: there is intentionally NO "weak nudge → disable" rule here. Recommending
+  // that a low-conversion CAPTURE nudge be turned off is the exact anti-pattern that
+  // silently killed auto-learning in `standard`. Low conversion means aim/surface the
+  // nudge better — never disable learning. (Removed in F1 of the auto-learning review.)
 
   const rank = { warn: 0, suggest: 1, info: 2 };
   recs.sort((a, z) => (rank[a.level] - rank[z.level]) || a.id.localeCompare(z.id));
