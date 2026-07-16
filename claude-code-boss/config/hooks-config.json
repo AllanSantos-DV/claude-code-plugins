@@ -12,6 +12,11 @@
   "curationGuard": {
     "denyUnknown": false
   },
+  "errorGuard": {
+    "enabled": true,
+    "threshold": 2,
+    "windowDays": 90
+  },
   "projectSnapshot": {
     "enabled": true,
     "includeGh": "auto",
