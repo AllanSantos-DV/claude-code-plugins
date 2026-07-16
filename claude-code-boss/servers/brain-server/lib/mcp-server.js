@@ -496,6 +496,16 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
       description: 'Delete the OPT-IN captured trigger evidence (Fase 3 micro-B1) for a project — YOU control your captured code. With no filter, purges ALL of the project\'s captured trigger proposals; pass policyId to purge only that policy\'s evidence (by its activationId), and/or olderThanDays to purge only records older than N days. Returns the count removed. This is the user\'s off-switch/eraser for the locally-stored redacted snippets; it never mutates any policy.',
       inputSchema: { type: 'object', properties: { policyId: { type: 'string', description: 'Optional: restrict the purge to this policy id (its activationId).' }, olderThanDays: { type: 'number', description: 'Optional: only purge records older than this many days.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Working directory (for project scoping when project is omitted).' } } },
     },
+    {
+      name: 'policy_self_update_report',
+      description: 'READ-ONLY self-update ADVISORY (Fase 3 micro-C). For each ACTIVE glob/shadow policy, reads its LATEST policy-adjudication disposition and computes a structured, HONEST recommendation: too-broad (judged to flag mostly-legitimate code) → a demote-to-advisory candidate; well-calibrated (judged to mostly flag real problems) → enforce-ELIGIBLE (surfaced ONLY); insufficient-data → adjudicate more first. These are JUDGED, best-effort estimates derived from the policy-auditor\'s dispositions — heuristic, NOT proven, NOT a measured false-positive rate, and LOCAL to this machine. This tool MUTATES NOTHING (no activate/deactivate): apply a demote candidate EXPLICITLY with policy_apply_candidate, passing the exact expectedSourceHash shown here. Enforce-eligibility is a recommendation only — promotion to enforce is not implemented and is never applied.',
+      inputSchema: { type: 'object', properties: { project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Working directory (for project scoping when project is omitted).' } } },
+    },
+    {
+      name: 'policy_apply_candidate',
+      description: 'EXPLICIT, user-invoked APPLY of the ONE safe self-update micro-C performs: demote-to-advisory — turn a shadow-assertion policy back into a plain glob advisory (drop its `assert` + shadow `enforcement`; KEEP its globs + text). It is triple-gated and audited: (1) the JUDGED signal must actually recommend a demote (per policy_self_update_report) — you CANNOT force-demote a well-calibrated rule; (2) CAS — expectedSourceHash must equal the policy\'s CURRENT sourceHash, else it refuses (re-run the report and retry with the fresh hash), so a policy that changed since the report is never clobbered; (3) the change is appended to an append-only revision-ledger (before/after sourceHash + activationId; NO snippets); and it is REVERSIBLE — re-activate the policy WITH its assertion to restore the shadow measurement. NEVER promotes to enforce, NEVER changes globs/literals beyond the demote, NEVER touches other policies. Everything here rests on a JUDGED estimate, not proven truth.',
+      inputSchema: { type: 'object', properties: { policyId: { type: 'string', description: 'The glob/shadow policy id to demote (from policy_self_update_report / policy_list).' }, expectedSourceHash: { type: 'string', description: 'The EXACT current sourceHash of the policy as shown by policy_self_update_report — a CAS guard; a mismatch refuses the apply and changes nothing.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Working directory (for project scoping when project is omitted).' } }, required: ['policyId', 'expectedSourceHash'] },
+    },
   ];
 
   // ─── Tool handlers (faithful move from the previous index.js switch) ───────
@@ -965,6 +975,137 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
           return { content: [{ type: 'text', text: JSON.stringify(report, null, 2) }] };
         } catch (err) {
           return { isError: true, content: [{ type: 'text', text: `policy_shadow_report failed: ${err.message}` }] };
+        }
+      }
+
+      case 'policy_self_update_report': {
+        // READ-ONLY. Auto-computes JUDGED self-update advisories for the active
+        // glob/shadow policies from their latest dispositions. It MUST NOT mutate
+        // anything: no policy mutation (activate or deactivate) appears in this case.
+        try {
+          const a = args || {};
+          const pid = resolveProject(a);
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
+          const adjStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'adjudication-store.js'));
+          const { planSelfUpdate } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'self-update-plan.js'));
+
+          // Active glob/shadow policies only (listVisible also returns always-mode
+          // policies, which have no globs/dispositions and cannot be self-updated).
+          const globPolicies = policyStore.listVisible(dataDir(), { projectId: pid }).filter((r) => r && r.mode === 'glob');
+          const advisories = globPolicies.map((pol) => {
+            // Newest disposition for this policy (listDispositions is newest-first).
+            const latest = adjStore.listDispositions(dataDir(), pid, { policyId: String(pol.id) })[0] || null;
+            const advisory = planSelfUpdate(pol, latest);
+            // Surface the CURRENT sourceHash so an explicit policy_apply_candidate can
+            // CAS on the EXACT value, and flag whether this is a shadow-assertion policy
+            // (only a shadow policy can actually be demoted — a plain advisory has nothing
+            // to demote even if its judged signal reads 'too-broad'). Read-only enrichment.
+            advisory.sourceHash = pol.sourceHash != null ? String(pol.sourceHash) : null;
+            advisory.isShadowAssertion = !!(pol.assert || pol.enforcement);
+            return advisory;
+          });
+
+          return adjJson({
+            kind: 'policy-self-update-report',
+            projectId: pid,
+            count: advisories.length,
+            note: 'These are JUDGED, best-effort recommendations from the policy-auditor\'s dispositions — heuristic, not proven, LOCAL to this machine. NOTHING here changes a policy; apply a candidate explicitly with policy_apply_candidate, passing its policyId and the EXACT sourceHash shown here (a CAS guard). Only a shadow-assertion policy can be demoted. Enforce-eligibility is a recommendation only — enforcement is not implemented.',
+            advisories,
+          });
+        } catch (err) {
+          return { isError: true, content: [{ type: 'text', text: `policy_self_update_report failed: ${err.message}` }] };
+        }
+      }
+
+      case 'policy_apply_candidate': {
+        // The ONLY mutation in micro-C, and it does EXACTLY ONE safe thing:
+        // demote-to-advisory (drop the shadow assert + enforcement, KEEP globs +
+        // text), gated by the JUDGED signal + a CAS on sourceHash + a ledger entry.
+        try {
+          const a = args || {};
+          const policyId = typeof a.policyId === 'string' ? a.policyId.trim() : '';
+          const expectedSourceHash = typeof a.expectedSourceHash === 'string' ? a.expectedSourceHash.trim() : '';
+          if (!policyId) return adjErr('policy_apply_candidate: policyId is required (from policy_self_update_report / policy_list).');
+          if (!expectedSourceHash) return adjErr('policy_apply_candidate: expectedSourceHash is required — the EXACT current sourceHash from policy_self_update_report (a CAS guard); nothing was applied.');
+          const pid = resolveProject(a);
+
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
+          const adjStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'adjudication-store.js'));
+          const ledger = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'revision-ledger.js'));
+          const { planSelfUpdate } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'self-update-plan.js'));
+
+          const pol = policyStore.listVisible(dataDir(), { projectId: pid }).find((r) => r && String(r.id) === policyId);
+          if (!pol) return adjErr(`policy_apply_candidate: no active policy with id "${policyId}" in this project. Use policy_self_update_report / policy_list.`);
+          if (pol.mode !== 'glob') return adjErr(`policy_apply_candidate: policy "${policyId}" is not a glob/shadow policy; only a shadow-assertion policy can be demoted to an advisory.`);
+          // Nothing to demote if it is already a plain glob advisory (no assert).
+          if (!pol.assert && !pol.enforcement) return adjErr(`policy_apply_candidate: policy "${policyId}" is already a plain glob advisory (no shadow assertion to demote); nothing was applied.`);
+
+          // SIGNAL-GATE: apply only when the JUDGED estimate recommends a demote.
+          // You cannot force-demote a well-calibrated / insufficient-data policy.
+          const latest = adjStore.listDispositions(dataDir(), pid, { policyId })[0] || null;
+          const advisory = planSelfUpdate(pol, latest);
+          if (advisory.candidate.action !== 'demote-to-advisory') {
+            return adjErr(`policy_apply_candidate: policy "${policyId}" is not a demote candidate (judged signal: ${advisory.signal}; candidate: ${advisory.candidate.action}). policy_self_update_report shows its signal — you cannot force a demote the judged estimate does not recommend. Nothing was applied.`);
+          }
+
+          // CAS: refuse if the policy changed since the report was computed.
+          const beforeSourceHash = String(pol.sourceHash);
+          if (expectedSourceHash !== beforeSourceHash) {
+            return adjErr('policy_apply_candidate: sourceHash mismatch (CAS) — the policy changed since the report. Re-run policy_self_update_report and retry with the CURRENT expectedSourceHash. Nothing was applied.');
+          }
+
+          const beforeActivationId = pol.activationId != null ? String(pol.activationId) : null;
+          // Apply the demote by RE-ACTIVATING as a plain glob advisory: NO assert,
+          // NO enforcement. This drops the shadow fields (assert + enforcement +
+          // activationId) and mints a fresh sourceHash. entryId:pol.id is idempotent
+          // under sanitizeId, so it UPSERTs the SAME record (never a duplicate).
+          const res = policyStore.activate(dataDir(), { entryId: pol.id, text: pol.text, projectId: pid, globs: pol.globs });
+          if (!res || res.activated !== true) {
+            return adjErr(`policy_apply_candidate: re-activation as a plain advisory failed (${res && res.reason ? res.reason : 'unknown'}); nothing changed.`);
+          }
+
+          // Read the demoted record back to report its NEW identity honestly.
+          const after = policyStore.listVisible(dataDir(), { projectId: pid }).find((r) => r && String(r.id) === policyId) || {};
+          const afterSourceHash = after.sourceHash != null ? String(after.sourceHash) : (res.sig != null ? String(res.sig) : null);
+          const afterActivationId = after.activationId != null ? String(after.activationId) : null;
+
+          const ledgerEntry = {
+            ts: Date.now(),
+            policyId,
+            action: 'demote-to-advisory',
+            beforeSourceHash,
+            afterSourceHash,
+            beforeActivationId,
+            afterActivationId,
+            note: 'Explicit user-invoked demote from a JUDGED estimate: shadow assertion + shadow enforcement removed; the glob advisory (globs + text) is unchanged. Reversible by re-activating with the assertion.',
+          };
+          const ledgerWritten = ledger.appendRevision(dataDir(), pid, ledgerEntry);
+
+          return adjJson({
+            kind: 'policy-self-update-apply',
+            projectId: pid,
+            policyId,
+            applied: 'demote-to-advisory',
+            changed: {
+              shadowAssertionRemoved: true,
+              shadowEnforcementRemoved: true,
+              stillGlobAdvisory: after.mode === 'glob',
+              globsUnchanged: true,
+              textUnchanged: true,
+              beforeSourceHash,
+              afterSourceHash,
+              beforeActivationId,
+              afterActivationId,
+            },
+            judged: advisory.judged,
+            ledgerWritten,
+            ledgerEntry,
+            note: 'This was YOUR explicit action, gated by a JUDGED estimate (heuristic, NOT proven), a CAS check on the exact sourceHash, and the judged signal recommending a demote. Only the shadow assertion + enforcement were removed (globs + text unchanged). It is REVERSIBLE — re-activate the policy WITH its assertion to restore the shadow measurement. Enforce promotion is never applied here.',
+          });
+        } catch (err) {
+          return { isError: true, content: [{ type: 'text', text: `policy_apply_candidate failed: ${err.message}` }] };
         }
       }
 
