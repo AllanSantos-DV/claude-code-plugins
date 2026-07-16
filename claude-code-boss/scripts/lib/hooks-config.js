@@ -165,6 +165,17 @@ function getCurationGuard() {
   return cfg.curationGuard || {};
 }
 
+// Not profile-controlled — read straight from the raw file (like getCurationGuard).
+// Backs the deterministic error-guard (DENY-on-recurring-Bash-failure). Defaults ON.
+function getErrorGuard() {
+  const eg = load().errorGuard || {};
+  return {
+    enabled: eg.enabled !== false,
+    threshold: Number.isInteger(eg.threshold) && eg.threshold > 0 ? eg.threshold : 2,
+    windowDays: Number.isInteger(eg.windowDays) && eg.windowDays > 0 ? eg.windowDays : 90,
+  };
+}
+
 function getCuration() {
   const cfg = load();
   return cfg.curation || {};
@@ -281,6 +292,7 @@ module.exports = {
   resolveProfileConfig,
   getCurationStop,
   getCurationGuard,
+  getErrorGuard,
   getCuration,
   getVerifyNudge,
   getPatternDetect,

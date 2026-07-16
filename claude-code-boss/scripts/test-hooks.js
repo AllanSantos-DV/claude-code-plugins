@@ -111,6 +111,34 @@ function check(result, expectations = {}) {
 
 const SESSION = 'test-00000000-0000-0000-0000-000000000001';
 
+// ─── error-guard fixtures (deterministic recurring-failure guard) ───────────
+// The error-guard PreToolUse hook DENIES a Bash command whose canonical sig has
+// already failed >= threshold times. To exercise it across a spawned subprocess
+// we must seed the SAME error-store the hook reads: build each fixture ONCE so
+// payload.cwd, the seeded projectKey (resolveProjectKey(cwd)) and
+// CLAUDE_PLUGIN_DATA all agree. Each fixture gets its own temp cwd + dataDir.
+const _errorStore = require('./lib/error-store.js');
+function seedErrorGuard(command, { threshold = 2, cause = 'TS2345: type error in foo.ts', exitCode = 2 } = {}) {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-eg-proj-'));
+  fs.mkdirSync(path.join(cwd, '.git'), { recursive: true }); // stable projectKey
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-eg-data-'));
+  const pk = _errorStore.resolveProjectKey(cwd);
+  for (let i = 0; i < threshold; i++) {
+    _errorStore.record(dataDir, pk, { command, cause, exitCode });
+  }
+  return { cwd, dataDir, command };
+}
+// Recorded recurring failure — read-only across guard tests (deny/allow/gate).
+const _egHit = seedErrorGuard('npm run build');
+// Dedicated fixture the error-resolve test MUTATES (cleared on success).
+const _egResolve = seedErrorGuard('npm run build');
+// Fresh project (no seed) — failure-detect must POPULATE its error-store.
+const _fdIntegration = (() => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-fd-proj-'));
+  fs.mkdirSync(path.join(cwd, '.git'), { recursive: true });
+  return { cwd, command: 'cd /x && npm run typecheck -- --strict' };
+})();
+
 const TESTS = [
   // ── SessionStart ──────────────────────────────────────────────────────────
   {
@@ -404,6 +432,115 @@ const TESTS = [
       // to the default allow. Either way, expected: allow with no deny redirect.
       const d = r.parsed?.hookSpecificOutput?.permissionDecision;
       if (d !== 'allow') return `quoted-arg must not trigger curated-redirect, got: ${d} (ctx: ${r.parsed?.hookSpecificOutput?.additionalContext})`;
+      return null;
+    },
+  },
+
+  // ── PreToolUse / Bash — error-guard (deterministic recurring-failure DENY) ─
+  {
+    name: 'error-guard       [PreToolUse/recurring-failure→deny+inject]',
+    script: 'error-guard.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: _egHit.command },
+      session_id: SESSION,
+      cwd: _egHit.cwd,
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _egHit.dataDir }),
+    validate: r => {
+      const out = r.parsed?.hookSpecificOutput || {};
+      if (out.permissionDecision !== 'deny') return `recurring failure must DENY, got: ${out.permissionDecision}`;
+      const ctx = out.additionalContext || '';
+      if (!ctx.includes('[error-guard]')) return `deny reason must be tagged [error-guard], got: ${ctx}`;
+      if (!ctx.includes('npm run build')) return `deny reason must name the sig, got: ${ctx}`;
+      if (!/já falhou 2×/.test(ctx)) return `deny reason must state the recurring count, got: ${ctx}`;
+      if (!ctx.includes('TS2345')) return `deny reason must inject the recorded cause, got: ${ctx}`;
+      if (out.permissionDecisionReason !== ctx) return 'permissionDecisionReason must mirror the injected reason';
+      return null;
+    },
+  },
+  {
+    name: 'error-guard       [PreToolUse/clean-command→allow]',
+    script: 'error-guard.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: 'git status' },
+      session_id: SESSION,
+      cwd: _egHit.cwd,
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _egHit.dataDir }),
+    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+      ? null : `a command with no recorded failure must allow, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
+  },
+  {
+    name: 'error-guard       [PreToolUse/non-Bash→allow]',
+    script: 'error-guard.js',
+    payload: { tool_name: 'Write', tool_input: { file_path: 'foo.js' }, session_id: SESSION },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+      ? null : `non-Bash tool must allow, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
+  },
+  {
+    name: 'error-guard       [PreToolUse/errorGuard.enabled=false→allow-despite-hit]',
+    script: 'error-guard.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: _egHit.command },
+      session_id: SESSION,
+      cwd: _egHit.cwd,
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    extraEnv: () => ({
+      CLAUDE_PLUGIN_ROOT: mkTempPluginRoot({ errorGuard: { enabled: false } }),
+      CLAUDE_PLUGIN_DATA: _egHit.dataDir,
+    }),
+    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+      ? null : `errorGuard.enabled=false must allow even a recurring failure, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
+  },
+  {
+    name: 'error-resolve     [PostToolUse/Bash-success→clears recorded failure]',
+    script: 'error-resolve.js',
+    payload: {
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: _egResolve.command },
+      session_id: SESSION,
+      cwd: _egResolve.cwd,
+    },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _egResolve.dataDir }),
+    validateWithEnv: (r, env) => {
+      const pk = _errorStore.resolveProjectKey(_egResolve.cwd);
+      const store = _errorStore.load(env.CLAUDE_PLUGIN_DATA, pk);
+      if (Object.keys(store.entries).length !== 0) return `success must clear the sig, entries remain: ${JSON.stringify(Object.keys(store.entries))}`;
+      if (_errorStore.lookup(env.CLAUDE_PLUGIN_DATA, pk, _egResolve.command, { threshold: 2 }).hit) return 'guard must no longer hit after resolve';
+      return null;
+    },
+  },
+  {
+    name: 'failure-detect    [PostToolUseFailure/Bash→records error-store]',
+    script: 'failure-detect.js',
+    payload: {
+      hook_event_name: 'PostToolUseFailure',
+      tool_name: 'Bash',
+      tool_input: { command: _fdIntegration.command },
+      error: 'Exit code 2\nsrc/foo.ts(3,5): error TS2345: boom',
+      is_interrupt: false,
+      session_id: SESSION,
+      cwd: _fdIntegration.cwd,
+    },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-fd-data-')) }),
+    validateWithEnv: (r, env) => {
+      const pk = _errorStore.resolveProjectKey(_fdIntegration.cwd);
+      // RAW command 'cd /x && npm run typecheck -- --strict' → sig 'npm run typecheck'.
+      const l = _errorStore.lookup(env.CLAUDE_PLUGIN_DATA, pk, 'npm run typecheck', { threshold: 1 });
+      if (!l.hit) return `failure-detect must record the Bash failure sig, got: ${JSON.stringify(l)}`;
+      if (l.sig !== 'npm run typecheck') return `expected sig 'npm run typecheck', got '${l.sig}'`;
+      if (l.exitCode !== 2) return `expected exitCode 2 (parsed from the failure), got ${l.exitCode}`;
+      if (!/TS2345/.test(l.cause || '')) return `expected recorded cause to include the error snippet, got: ${l.cause}`;
       return null;
     },
   },

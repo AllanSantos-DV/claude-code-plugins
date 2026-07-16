@@ -2753,6 +2753,91 @@ test('oneoff-store: markedSince sees only markings at/after the cutoff', () => {
   assert(!oneoff.markedSince(store, NaN), 'invalid cutoff → false');
 });
 
+// ─── error-store (deterministic error-guard: recurring Bash failures) ────────
+const errstore = require(path.join(SCRIPTS, 'lib', 'error-store.js'));
+const freshErrDataDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-errstore-'));
+
+test('error-store: record creates an entry keyed by canonicalSig', () => {
+  const dd = freshErrDataDir(); const pk = 'p'; const now = 1_700_000_000_000;
+  const r = errstore.record(dd, pk, { command: 'cd /proj && npm run build', cause: 'TS2345', exitCode: 2, sessionId: 's1', now });
+  assertEq([r.recorded, r.sig, r.count], [true, 'npm run build', 1]);
+  const store = errstore.load(dd, pk);
+  // Keyed by the canonical signature — the nav prefix (`cd /proj &&`) is dropped.
+  assertEq(Object.keys(store.entries), ['npm run build']);
+  assertEq(store.entries['npm run build'].exitCode, 2);
+  assertEq(store.entries['npm run build'].cause, 'TS2345');
+});
+
+test('error-store: record on empty/whitespace command is a no-op', () => {
+  const dd = freshErrDataDir();
+  assertEq(errstore.record(dd, 'p', { command: '   ' }).recorded, false);
+  assertEq(Object.keys(errstore.load(dd, 'p').entries).length, 0);
+});
+
+test('error-store: second record bumps the windowed count (same sig)', () => {
+  const dd = freshErrDataDir(); const pk = 'p'; let now = 1_700_000_000_000;
+  assertEq(errstore.record(dd, pk, { command: 'npm test', now: now++ }).count, 1);
+  assertEq(errstore.record(dd, pk, { command: 'npm test', now: now++ }).count, 2);
+  assertEq(Object.keys(errstore.load(dd, pk).entries).length, 1);
+});
+
+test('error-store: lookup is hit:false below threshold, hit:true at/above it', () => {
+  const dd = freshErrDataDir(); const pk = 'p'; let now = 1_700_000_000_000;
+  errstore.record(dd, pk, { command: 'npm run lint', cause: 'eslint boom', exitCode: 1, now: now++ });
+  let l = errstore.lookup(dd, pk, 'npm run lint', { now, threshold: 2 });
+  assertEq([l.hit, l.count], [false, 1]);
+  errstore.record(dd, pk, { command: 'npm run lint', cause: 'eslint boom 2', exitCode: 1, now: now++ });
+  l = errstore.lookup(dd, pk, 'npm run lint', { now, threshold: 2 });
+  assertEq([l.hit, l.count, l.sig, l.cause, l.exitCode], [true, 2, 'npm run lint', 'eslint boom 2', 1]);
+});
+
+test('error-store: lookup normalizes cwd/env/flags/pipe to the SAME sig', () => {
+  const dd = freshErrDataDir(); const pk = 'p'; let now = 1_700_000_000_000;
+  errstore.record(dd, pk, { command: 'cd /p && npm test', now: now++ });
+  errstore.record(dd, pk, { command: 'NODE_ENV=x npm test -- --watch', now: now++ });
+  // Both variants collapse to a single entry keyed 'npm test' (no fragmentation).
+  assertEq(Object.keys(errstore.load(dd, pk).entries), ['npm test']);
+  assert(errstore.lookup(dd, pk, 'cd /y && npm test | grep FAIL', { now, threshold: 2 }).hit,
+    'a wrapped/piped variant must resolve to the same sig-entry and hit');
+});
+
+test('error-store: resolve clears the entry → subsequent lookup is hit:false', () => {
+  const dd = freshErrDataDir(); const pk = 'p'; let now = 1_700_000_000_000;
+  errstore.record(dd, pk, { command: 'npm run build', now: now++ });
+  errstore.record(dd, pk, { command: 'npm run build', now: now++ });
+  assert(errstore.lookup(dd, pk, 'npm run build', { now, threshold: 2 }).hit, 'precondition: recurring → hit');
+  const rv = errstore.resolve(dd, pk, 'cd /x && npm run build --flag', { now });
+  assertEq([rv.resolved, rv.sig], [true, 'npm run build']);
+  assertEq(Object.keys(errstore.load(dd, pk).entries).length, 0);
+  assertEq(errstore.lookup(dd, pk, 'npm run build', { now, threshold: 2 }).hit, false);
+});
+
+test('error-store: resolve on an unrecorded sig is a no-op', () => {
+  const dd = freshErrDataDir();
+  assertEq(errstore.resolve(dd, 'p', 'git status').resolved, false);
+});
+
+test('error-store: window excludes stale failures (90d)', () => {
+  const dd = freshErrDataDir(); const pk = 'p'; const now = 2_000_000_000_000;
+  errstore.record(dd, pk, { command: 'npm test', now: now - 100 * 86400000 });
+  errstore.record(dd, pk, { command: 'npm test', now });
+  // The 100d-old failure falls outside the 90d window; only the fresh one counts.
+  assertEq(errstore.lookup(dd, pk, 'npm test', { now, windowDays: 90, threshold: 2 }).count, 1);
+});
+
+test('error-store: prune removes cold entries', () => {
+  const dd = freshErrDataDir(); const pk = 'p'; const now = 2_000_000_000_000;
+  errstore.record(dd, pk, { command: 'git log', now: now - 200 * 86400000 });
+  errstore.record(dd, pk, { command: 'npm test', now });
+  assertEq(errstore.prune(dd, pk, { now, windowDays: 90 }), 1);
+  assertEq(Object.keys(errstore.load(dd, pk).entries), ['npm test']);
+});
+
+test('error-store: reuses oneoff resolveProjectKey (stores agree on key)', () => {
+  assert(errstore.resolveProjectKey === oneoff.resolveProjectKey,
+    'error-store must re-export oneoff-store.resolveProjectKey so both stores key alike');
+});
+
 // ─── curation-reconcile (Stop-hook blocked-entry reconciliation) ─────────────
 const reconcile = require(path.join(SCRIPTS, 'lib', 'curation-reconcile.js'));
 
