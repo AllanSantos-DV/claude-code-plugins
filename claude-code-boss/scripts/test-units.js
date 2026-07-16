@@ -2838,6 +2838,25 @@ test('error-store: reuses oneoff resolveProjectKey (stores agree on key)', () =>
     'error-store must re-export oneoff-store.resolveProjectKey so both stores key alike');
 });
 
+test('error-store: redacts secrets/PII in the sig AND the cause (no durable secret, stable matching)', () => {
+  const dd = freshErrDataDir(); const pk = 'p'; let now = 1_700_000_000_000;
+  const SECRET = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWX';
+  const cmd = `curl -H "Authorization: Bearer ${SECRET}" https://api.example.com/x`;
+  const cause = `401 Unauthorized: token ${SECRET} rejected; contact a.user@example.com`;
+  const r = errstore.record(dd, pk, { command: cmd, cause, exitCode: 22, now: now++ });
+  // The PERSISTED key (sig) — which is also injected back to the agent — must not carry the raw secret.
+  assert(!r.sig.includes(SECRET), `sig must be redacted, got: ${r.sig}`);
+  const entry = errstore.load(dd, pk).entries[r.sig];
+  assert(entry && !JSON.stringify(entry).includes(SECRET), 'no raw secret anywhere in the stored entry (sig+cause)');
+  assert(!entry.cause.includes(SECRET) && !entry.cause.includes('a.user@example.com'), 'cause redacts secret + email PII');
+  // Matching stays STABLE: the same secret-command (redacted deterministically) resolves
+  // to the same entry and hits at threshold — leak-free without breaking the guard.
+  errstore.record(dd, pk, { command: cmd, cause, now: now++ });
+  const l = errstore.lookup(dd, pk, cmd, { now, threshold: 2 });
+  assert(l.hit && !l.sig.includes(SECRET) && !(l.cause || '').includes(SECRET),
+    'lookup hits with a redacted sig/cause (stable + leak-free)');
+});
+
 // ─── curation-reconcile (Stop-hook blocked-entry reconciliation) ─────────────
 const reconcile = require(path.join(SCRIPTS, 'lib', 'curation-reconcile.js'));
 

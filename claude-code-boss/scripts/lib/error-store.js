@@ -24,6 +24,7 @@
 const fs = require('fs');
 const path = require('path');
 const { canonicalSig } = require('./command-signature.js');
+const { redact } = require('./redact.js');
 const { resolveProjectKey } = require('./oneoff-store.js');
 const { writeJsonAtomic } = require('./atomic-write.js');
 
@@ -33,6 +34,15 @@ const DEFAULT_THRESHOLD = 2;
 const MAX_SEEN = 50;        // cap of retained per-entry failure timestamps
 const MAX_SESSIONS = 25;
 const MAX_CAUSE = 500;      // cap of retained cause text (matches buildEntry snippet)
+
+// Signature = canonicalSig over a REDACTED command, so a secret/PII passed as a
+// positional/quoted arg (e.g. `curl -H "Authorization: Bearer sk-..."`) never
+// becomes part of the persisted key NOR the reason injected back to the agent.
+// Redaction is deterministic (same secret -> same placeholder), so the sig stays
+// stable across record/lookup/resolve — matching is unaffected for normal commands.
+function _sig(command) {
+  return canonicalSig(redact(String(command || '')).text);
+}
 
 // The project key is already sanitized by resolveProjectKey (basename+hash), so
 // like oneoff-store this path builder trusts it — no user string reaches the path.
@@ -90,7 +100,7 @@ function pushCapped(arr, val, cap) {
  * @returns {{ recorded:boolean, sig:string, count:number }}
  */
 function record(dataDir, projectKey, { command, cause, exitCode = null, sessionId, now = Date.now() } = {}) {
-  const sig = canonicalSig(command);
+  const sig = _sig(command);
   if (!sig) return { recorded: false, sig: '', count: 0 };
   const store = load(dataDir, projectKey);
   let entry = store.entries[sig];
@@ -100,7 +110,7 @@ function record(dataDir, projectKey, { command, cause, exitCode = null, sessionI
   }
   pushCapped(entry.seen, now, MAX_SEEN);
   entry.lastSeen = now;
-  if (typeof cause === 'string' && cause) entry.cause = cause.slice(0, MAX_CAUSE);
+  if (typeof cause === 'string' && cause) entry.cause = redact(cause).text.slice(0, MAX_CAUSE);
   entry.exitCode = Number.isFinite(exitCode) ? exitCode : null;
   if (sessionId && !entry.sessions.includes(sessionId)) pushCapped(entry.sessions, sessionId, MAX_SESSIONS);
   save(dataDir, projectKey, store);
@@ -114,7 +124,7 @@ function record(dataDir, projectKey, { command, cause, exitCode = null, sessionI
  * @returns {{ hit:boolean, sig:string, count:number, cause?:string, exitCode?:number|null }}
  */
 function lookup(dataDir, projectKey, command, { now = Date.now(), windowDays = DEFAULT_WINDOW_DAYS, threshold = DEFAULT_THRESHOLD } = {}) {
-  const sig = canonicalSig(command);
+  const sig = _sig(command);
   if (!sig) return { hit: false, sig: '', count: 0 };
   const store = load(dataDir, projectKey);
   const entry = matchEntry(store, sig);
@@ -135,7 +145,7 @@ function lookup(dataDir, projectKey, command, { now = Date.now(), windowDays = D
  */
 function resolve(dataDir, projectKey, command, { now = Date.now() } = {}) {
   void now; // accepted for signature symmetry; resolve clears unconditionally.
-  const sig = canonicalSig(command);
+  const sig = _sig(command);
   if (!sig) return { resolved: false, sig: '' };
   const store = load(dataDir, projectKey);
   if (!store.entries[sig]) return { resolved: false, sig };
