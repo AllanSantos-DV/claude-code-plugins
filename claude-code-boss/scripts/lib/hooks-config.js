@@ -44,11 +44,13 @@ const PROFILE_PRESETS = {
   dev: {},
   // standard = open the plugin to non-maintainers: inform once, never nag. TWO Stop
   // blocks are kept BY DESIGN: curation-stop (once, soft) and capture-dispatch — the
-  // block-until-ack that GUARANTEES lesson capture (on Stop the agent must call
-  // capture_lesson or capture_ack before the turn can end; the user keeps control via
-  // Stop). Every OTHER block-capable detector is silenced. A silent trigger alone
-  // (correction-detect) does NOT guarantee a lesson is written — the Stop block does.
-  // session-summary stays (1x/session, positive). capture opt-out lives in kb.capture.
+  // block-until-ack that DRIVES lesson capture best-effort (on Stop the agent is asked to
+  // call capture_lesson or capture_ack; the guard re-prompts until it does). This is
+  // best-effort, NOT a hard guarantee: the host can still end the turn on user interrupt,
+  // API failure, or after its Stop-continuation cap. Every OTHER block-capable detector is
+  // silenced. A silent trigger alone (correction-detect) does NOT drive a write — the Stop
+  // block does (best-effort). session-summary stays (1x/session, positive). capture opt-out
+  // lives in kb.capture.
   standard: {
     curationStop:     { maxAttempts: 1 },   // block once then relent (advisory)
     patternDetect:    { enabled: false },   // dev-only capture nudge (Stop-block)
