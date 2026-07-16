@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>claude-code-boss — memória semântica e execução curada para o Claude Code</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória que fundamenta a resposta (recall em dois níveis), execução curada anti context-bloat e aprendizado no loop. A v2.10.0 reforça o auto-aprendizado em duas fases (plano revisado 3× por revisão externa). Fase 1: a captura deixa de adivinhar o transcript e vira durável, com uma fila redigida de ciclos limpos e um ACK explícito no fim do turno, quando o agente chama capture_lesson (lição curada) ou capture_ack (nada a capturar); o windowId com nonce torna o ACK atômico, e é fail-closed (um isError no add_document remoto não drena a fila, e um merge nulo cai em admit, não em ACK-fantasma). Fase 2: políticas que você ativa explicitamente (nunca auto-promovidas de lições), injetadas de forma determinística: error-guard (um Bash cuja falha reincide ≥2× vira DENY no PreToolUse), políticas always-apply (injetadas no SessionStart e no SubagentStart) e políticas por glob (aviso pós-edição). Honesto: surfacing ≠ enforcement. As políticas ficam presentes no contexto, não bloqueiam, exceto o error-guard determinístico; enforcement de padrão foi adiado para a Fase 3. E o block-until-ack foi suavizado: o Stop induz a captura best-effort, mas não garante. 523 testes unitários + 85 de hooks no verde; failing-first + prova de mutação + smoke offline E2E pelas superfícies reais." />
+<meta name="description" content="Plugin para Claude Code Desktop: memória que fundamenta a resposta (recall em dois níveis), execução curada anti context-bloat e aprendizado no loop. A v2.11.0 abre a Fase 3 do auto-aprendizado com medição em modo sombra (candidate-guard): uma política por glob pode carregar uma asserção forbid-added-literal com enforcement shadow; a cada edição que casa, um hook PreToolUse só para Edit registra em SILÊNCIO se a edição ADICIONA o literal (a contagem sobe de old→new = trigger): sempre emite {}, nunca bloqueia nem fala com o agente. Honesto: modo sombra MEDE, não é enforcement; mede INCIDÊNCIA DE GATILHO, não taxa de falso positivo (FP real exige rótulo humano num micro futuro, reportado como N/A, nunca 0%); um trigger é um candidate-guard hit, não uma violação; os resultados são LOCAIS à máquina, lidos pela nova tool MCP policy_shadow_report. Telemetria mínima ({schema, activationId, outcome}); um literal com segredo é rejeitado na ativação. Inclui dois consertos da v2.10.0: toRelPath deixava passar um ../ relativo (agora ancora relativo e absoluto ao cwd e rejeita segmentos ..) e policy_activate reportava sucesso com persistência falha/registro corrompido (agora activated:false com reason persist ou corrupt). 538 testes unitários + 90 de hooks no verde; failing-first + prova de mutação + smoke offline E2E." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -632,13 +632,83 @@
   .al-foot b{ color:#a29f97 }
   .al-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
 
+  /* v2.11.0 : modo sombra - candidate-guard MEDE (nao bloqueia): PreToolUse Edit registra em silencio se um Edit ADICIONA um literal proibido (contagem old->new sobe = trigger); incidencia de gatilho != FP (N/A ate rotulo humano); trigger != violacao; local a maquina; report via policy_shadow_report */
+  .shadow{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:720px; font-family:var(--mono); margin:0 0 36px }
+  .sh-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .sh-bar .k{ color:var(--accent) }
+  .sh-bar .m{ color:#8a877f }
+
+  /* a assinatura: a assercao shadow numa politica por glob */
+  .sh-assert{ margin:20px 22px 0; padding:13px 15px; border:1px solid var(--panel-line);
+    border-radius:9px; background:rgba(255,255,255,.03) }
+  .sh-assert .lab{ display:block; font-size:9.5px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent); margin:0 0 10px }
+  .sh-assert .row{ display:flex; flex-wrap:wrap; align-items:center; gap:8px 10px; font-size:11.5px; color:#a29f97 }
+  .sh-assert .glob{ color:var(--panel-ink); font-weight:600 }
+  .sh-assert code{ background:rgba(255,255,255,.08); color:#e4e1d9; font-size:11px; padding:2px 7px; border-radius:5px }
+  .sh-assert .mode{ margin-left:auto; font-size:10px; letter-spacing:.05em; text-transform:uppercase; font-weight:700;
+    color:var(--accent); border:1px solid var(--accent); border-radius:5px; padding:3px 10px; white-space:nowrap }
+
+  /* o mecanismo: conta ocorrencias do literal old -> new; sobe = trigger, igual = pass */
+  .sh-mech{ padding:18px 22px 6px }
+  .sh-mech-lead{ margin:0 0 13px; font-size:11.5px; line-height:1.6; color:#8a877f }
+  .sh-mech-lead b{ color:#a29f97; font-weight:600 }
+  .sh-count{ display:flex; flex-wrap:wrap; align-items:center; justify-content:center; gap:10px 14px; margin:0 0 14px;
+    padding:14px 16px; border:1px solid var(--panel-line); border-radius:9px; background:var(--accent-soft) }
+  .sh-count .side{ font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:#8a877f }
+  .sh-count .n{ font-size:30px; line-height:.9; font-weight:700; color:var(--panel-ink); letter-spacing:-.02em }
+  .sh-count .arw{ color:var(--accent); font-weight:700; font-size:19px; line-height:1 }
+  .sh-fork{ display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:0 0 12px }
+  .shpath{ border-radius:9px; padding:13px 14px }
+  .shpath .tag{ display:block; font-size:10px; letter-spacing:.14em; text-transform:uppercase; margin:0 0 8px }
+  .shpath b{ display:block; font-size:13px; line-height:1.3 }
+  .shpath .sub{ display:block; font-size:11px; color:#8a877f; margin-top:7px; line-height:1.5 }
+  .shpath .sub b{ display:inline; color:#a29f97; font-weight:600 }
+  .shpath--trigger{ border:1px solid var(--accent); background:rgba(255,255,255,.05) }
+  .shpath--trigger .tag{ color:var(--accent) }
+  .shpath--trigger b{ color:var(--panel-ink) }
+  .shpath--pass{ border:1px dashed rgba(255,255,255,.24) }
+  .shpath--pass .tag{ color:#8a877f }
+  .shpath--pass b{ color:#a29f97 }
+
+  /* o silencio: sempre emite {}, nunca bloqueia nem fala com o agente */
+  .sh-silent{ display:flex; flex-wrap:wrap; align-items:center; gap:9px 13px; margin:0;
+    padding:11px 14px; border-left:2px solid var(--accent); background:rgba(255,255,255,.05); border-radius:0 6px 6px 0 }
+  .sh-silent .emit{ font-size:12.5px; font-weight:700; color:var(--accent); white-space:nowrap }
+  .sh-silent .emit code{ background:rgba(255,255,255,.1); color:var(--panel-ink); font-size:12px; padding:1px 6px; border-radius:5px }
+  .sh-silent .txt{ font-size:11px; line-height:1.5; color:#cbc8c0 }
+  .sh-silent .txt b{ color:var(--panel-ink); font-weight:600 }
+
+  /* honestidade: o que isto NAO e (tres nao-igualdades, marcador != no ::before) */
+  .sh-honest{ margin:14px 22px 0; padding:14px 16px; border:1px solid var(--accent); border-radius:10px; background:var(--accent-soft) }
+  .sh-honest .eq{ display:block; font-size:10px; letter-spacing:.14em; text-transform:uppercase; font-weight:700; color:var(--accent); margin:0 0 11px }
+  .sh-honest ul{ list-style:none; margin:0; padding:0; display:grid; gap:9px }
+  .sh-honest li{ font-size:11.5px; line-height:1.5; color:#cbc8c0; padding-left:18px; position:relative }
+  .sh-honest li::before{ content:"\2260"; position:absolute; left:0; top:0; color:var(--accent); font-weight:700 }
+  .sh-honest li b{ color:var(--panel-ink); font-weight:600 }
+  .sh-honest li code{ background:rgba(255,255,255,.09); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+
+  /* privacidade + rejeicao de segredo + report local a maquina */
+  .sh-meta{ display:grid; gap:11px; padding:16px 22px 2px }
+  .sh-mrow{ display:grid; grid-template-columns:auto 1fr; gap:14px; align-items:start }
+  .sh-mrow .tk{ margin-top:1px; height:20px; padding:0 8px; border:1px solid var(--accent); border-radius:5px; color:var(--accent);
+    font-size:10px; letter-spacing:.05em; text-transform:uppercase; font-weight:600; display:inline-grid; place-items:center; white-space:nowrap }
+  .sh-mrow p{ margin:0; font-size:11.5px; line-height:1.55; color:#8a877f }
+  .sh-mrow p b{ color:#a29f97; font-weight:600 }
+  .sh-mrow code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+
+  .sh-foot{ margin-top:14px; padding:14px 22px; border-top:1px solid var(--panel-line); font-size:11px; line-height:1.6; color:#8a877f }
+  .sh-foot b{ color:#a29f97 }
+  .sh-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+
   footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
   footer a{ color:var(--muted); text-decoration:none }
   footer a:hover{ color:var(--accent) }
   .frow{ display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between }
   .flinks a{ margin-right:16px }
 
-  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
+  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
   @media (prefers-reduced-motion:reduce){ .caret{ animation:none } .reveal{ opacity:1 !important; transform:none !important } }
   .reveal{ opacity:0; transform:translateY(14px); animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards }
   @keyframes rise{ to{ opacity:1; transform:none } }
@@ -649,7 +719,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.10.0</span>
+    <span class="ver">v2.11.0</span>
   </nav>
 
   <header class="hero">
@@ -714,9 +784,107 @@
       <div class="cell" style="grid-column:1/-1">
         <p class="kick">Políticas</p>
         <h3>Constraints que você ativa</h3>
-        <p>Ative constraints explicitamente com <code>policy_activate</code>, nunca auto-promovidas de lições: o <code>error-guard</code> nega no <code>PreToolUse</code> um Bash cuja falha reincide, políticas <b>always-apply</b> entram no contexto no início da sessão, e políticas <b>por glob</b> avisam ao editar um arquivo que casa o padrão. <b>Surfacing ≠ enforcement</b>: ficam presentes no contexto, não bloqueiam (exceto o <code>error-guard</code>).</p>
+        <p>Ative constraints explicitamente com <code>policy_activate</code>, nunca auto-promovidas de lições: o <code>error-guard</code> nega no <code>PreToolUse</code> um Bash cuja falha reincide, políticas <b>always-apply</b> entram no contexto no início da sessão, e políticas <b>por glob</b> avisam ao editar um arquivo que casa o padrão. <b>Surfacing ≠ enforcement</b>: ficam presentes no contexto, não bloqueiam (exceto o <code>error-guard</code>). Na v2.11.0 (Fase 3), uma política por glob pode ainda carregar uma asserção em <b>modo sombra</b> que só <b>mede</b> a incidência de gatilho no Edit: <b>modo sombra = medir ≠ enforcement</b>, nunca bloqueia.</p>
       </div>
     </div>
+  </section>
+
+  <section>
+    <p class="label">Novo na v2.11.0 · medição em modo sombra</p>
+    <p class="lede">A v2.11.0 abre a <b>Fase 3</b> do auto-aprendizado, a capacidade de <b>enforcement determinístico</b>, mas entrega o primeiro passo em <b>modo sombra</b>: ele <b>mede antes de bloquear</b>. Uma política por glob pode ganhar uma <b>asserção</b> (<code>forbid-added-literal</code>) com <code>enforcement:'shadow'</code>. A cada edição que casa o padrão, um hook <b>PreToolUse só para Edit</b> registra, <b>em silêncio</b>, se a edição <b>adiciona</b> uma ocorrência do literal. Nunca bloqueia, nunca fala com o agente. É medição pura da <b>incidência de gatilho</b>, para calibrar antes de ligar qualquer bloqueio no futuro. Junto vêm dois consertos de bugs revelados na revisão externa da v2.10.0.</p>
+
+    <div class="callout">
+      <span class="tag">modo sombra = medir ≠ enforcement</span>
+      O modo sombra <b>não bloqueia, não força e não garante</b> nada: ele <b>mede</b>. E mede <b>incidência de gatilho</b>, <b>não</b> taxa de falso positivo. Um <i>gatilho</i> é um <b>candidate-guard hit</b> (a contagem do literal subiu numa edição), <b>não</b> uma violação. Falso positivo real exige <b>rótulo humano</b> (um micro futuro) e é reportado como <code>N/A</code>, <b>nunca 0%</b>. Os resultados são <b>locais à máquina</b>. É o mesmo enquadramento de sempre: <b>surfacing ≠ enforcement</b>.
+    </div>
+
+    <div class="shadow" aria-label="Artefato de medição em modo sombra da versão 2.11.0, o candidate-guard da Fase 3 micro-A. Uma política por glob pode ganhar uma asserção determinística, do tipo forbid-added-literal, com enforcement shadow. A cada edição que casa o glob, um hook PreToolUse só para Edit conta as ocorrências do literal no arquivo, de antes para depois: se a contagem sobe, é um trigger; se ela se preserva, é um pass. Tudo em silêncio: o hook sempre emite chaves vazias, nunca bloqueia a edição nem fala com o agente, para não enviesar a medição. Honestidade explícita, três não igualdades. Primeira: modo sombra mede, não é enforcement, ou seja não bloqueia, não força e não garante. Segunda: ele mede incidência de gatilho, não taxa de falso positivo, que fica como N A, nunca zero por cento, porque falso positivo real exige rótulo humano num micro futuro. Terceira: um trigger é um candidate-guard hit, não uma violação. A telemetria tem privacidade limitada: o payload é só schema, activationId e outcome, nunca o caminho, um trecho, o literal ou a tool. Um literal que contenha segredo é rejeitado já na ativação, porque não dá para redigi-lo sem quebrar o match. A nova tool MCP policy_shadow_report agrega por activationId via SQL exato e nomeia cada política, e os resultados são locais à máquina. Uma chave canônica de projeto faz o hook, que escreve, e o report, que lê, concordarem no banco de métricas. Escopo do micro: só Edit, com Write, MultiEdit e NotebookEdit adiados, e sem regex, require, Stop-audit, auditor por LLM ou enforce neste passo. 538 testes unitários e 90 de hooks no verde. Prova de mutação nas travas de aumento líquido de contagem, silêncio, rejeição de segredo e escape ponto ponto. Smoke offline E2E do loop tool, hook, métricas, report.">
+      <div class="sh-bar">
+        <span class="k">modo sombra</span>
+        <span class="m">candidate-guard · Fase 3 micro-A · Edit-only</span>
+      </div>
+
+      <div class="sh-assert">
+        <span class="lab">uma política por glob ganha uma asserção</span>
+        <div class="row">
+          <span class="glob">glob <code>src/**/*.ts</code></span>
+          <code>assert: forbid-added-literal</code>
+          <span class="mode">enforcement: shadow</span>
+        </div>
+      </div>
+
+      <div class="sh-mech">
+        <p class="sh-mech-lead">a cada <b>Edit</b> que casa o glob, o hook conta as ocorrências do literal <b>de antes (old) para depois (new)</b>:</p>
+        <div class="sh-count" role="img" aria-label="a contagem do literal vai de old, um, para new, dois: subiu, então é um trigger">
+          <span class="side">old</span><span class="n">1</span>
+          <span class="arw" aria-hidden="true">→</span>
+          <span class="side">new</span><span class="n">2</span>
+        </div>
+        <div class="sh-fork">
+          <div class="shpath shpath--trigger">
+            <span class="tag">contagem subiu</span>
+            <b>trigger</b>
+            <span class="sub">a edição <b>adicionaria</b> o literal proibido. registrado, e nada mais.</span>
+          </div>
+          <div class="shpath shpath--pass">
+            <span class="tag">contagem igual</span>
+            <b>pass</b>
+            <span class="sub">a edição <b>preserva</b> a contagem. registrado como pass.</span>
+          </div>
+        </div>
+        <div class="sh-silent">
+          <span class="emit">emite <code>{}</code></span>
+          <span class="txt"><b>sempre.</b> o hook <b>nunca bloqueia</b> a edição nem fala com o agente, para <b>não enviesar</b> a medição.</span>
+        </div>
+      </div>
+
+      <div class="sh-honest">
+        <span class="eq">o que isto NÃO é</span>
+        <ul>
+          <li><b>medir</b> não é <b>enforcement</b>. o modo sombra não bloqueia, não força, não garante.</li>
+          <li><b>incidência de gatilho</b> não é <b>taxa de falso positivo</b>. FP real exige rótulo humano (um micro futuro) e sai como <code>N/A</code>, nunca <code>0%</code>.</li>
+          <li>um <b>trigger</b> não é uma <b>violação</b>. é um <b>candidate-guard hit</b>: a contagem do literal subiu numa edição.</li>
+        </ul>
+      </div>
+
+      <div class="sh-meta">
+        <div class="sh-mrow">
+          <span class="tk">privado</span>
+          <p>telemetria limitada: o payload é só <code>{schema, activationId, outcome}</code>. <b>nunca</b> o caminho, um trecho, o literal ou a tool.</p>
+        </div>
+        <div class="sh-mrow">
+          <span class="tk">rejeita segredo</span>
+          <p>um literal com <b>segredo</b> é <b>rejeitado na ativação</b>: não dá para redigi-lo sem quebrar o match.</p>
+        </div>
+        <div class="sh-mrow">
+          <span class="tk">local</span>
+          <p>a nova tool MCP <code>policy_shadow_report</code> agrega por <code>activationId</code> via <b>SQL exato</b> e nomeia cada política; os resultados são <b>locais à máquina</b>. uma <b>chave canônica de projeto</b> faz o hook (escreve) e o report (lê) concordarem no banco de métricas.</p>
+        </div>
+      </div>
+
+      <div class="sh-foot"><b>Escopo do micro:</b> só <b>Edit</b> (<code>Write</code>/<code>MultiEdit</code>/<code>NotebookEdit</code> adiados); <b>sem</b> regex, require, Stop-audit, auditor-LLM ou enforce neste passo. Ativar uma política de medição persiste o literal <b>localmente</b> e inicia o monitoramento por máquina; leia com <code>policy_shadow_report</code>. <b>538</b> unitários + <b>90</b> de hooks no verde; <b>prova de mutação</b> nas travas (aumento-líquido-de-contagem, silêncio, rejeição de segredo, escape <code>..</code>); <b>smoke offline E2E</b> do loop tool → hook → métricas → report.</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>Mede, não bloqueia</h4>
+        <p>Uma política por glob pode carregar uma asserção <code>forbid-added-literal</code> com <code>enforcement:'shadow'</code>. Um hook <b>PreToolUse só para Edit</b> registra, <b>em silêncio</b>, se a edição <b>adiciona</b> o literal (contagem <code>old→new</code> sobe). Sempre emite <code>{}</code>: <b>nunca</b> bloqueia nem fala com o agente.</p>
+      </div>
+      <div class="win">
+        <h4>Incidência de gatilho, não FP</h4>
+        <p>Isto mede <b>incidência de gatilho</b>, <b>não</b> taxa de falso positivo. FP real exige <b>rótulo humano</b> (um micro futuro) e sai como <code>N/A</code>, <b>nunca 0%</b>. Um <i>trigger</i> é um <b>candidate-guard hit</b>, <b>não</b> uma violação.</p>
+      </div>
+      <div class="win">
+        <h4>Privado e local à máquina</h4>
+        <p>O payload é só <code>{schema, activationId, outcome}</code>: nunca o caminho, o trecho, o literal ou a tool. Um literal com <b>segredo</b> é <b>rejeitado</b> na ativação. A nova tool <code>policy_shadow_report</code> agrega por <code>activationId</code>, e os resultados são <b>locais</b>.</p>
+      </div>
+      <div class="win">
+        <h4>Dois bugs da v2.10.0, fechados</h4>
+        <p><code>toRelPath</code> deixava passar um <code>../</code> <b>relativo</b> (só barrava escape absoluto); agora ancora relativo e absoluto ao cwd e rejeita segmentos <code>..</code>. E <code>policy_activate</code> reportava sucesso mesmo com persistência falha ou registro corrompido; agora retorna <code>{activated:false, reason:'persist'|'corrupt'}</code>.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Honesto sobre o alcance:</b> <b>modo sombra = medir ≠ enforcement</b>. Este micro-A da Fase 3 <b>não bloqueia, não força e não garante</b>; ele mede <b>incidência de gatilho</b> (um candidate-guard hit), <b>não</b> falso positivo (que fica <code>N/A</code> até um micro de rótulo humano), e os resultados são <b>locais à máquina</b>. Mesmo rigor de sempre: <b>revisão adversarial externa</b>, <b>failing-first</b> + prova de mutação nas travas, e <b>smoke offline E2E</b> do loop tool → hook → métricas → report. <b>538</b> unitários + <b>90</b> de hooks no verde.</p>
   </section>
 
   <section>
@@ -1572,6 +1740,7 @@
         <div class="step"><div class="n"></div><p>O agente age com a memória do projeto à mão, escopada por um id estável, sem puxar contexto de outro projeto.</p></div>
         <div class="step"><div class="n"></div><p>No <b>Stop</b>, o boss induz o <b>ACK</b> da captura: sobre uma fila <b>redigida</b> de ciclos limpos, o agente chama <code>capture_lesson</code> (lição curada) ou <code>capture_ack</code> (nada a capturar), sem reler o transcript à toa. No backend externo, manda o transcript acumulado pro servidor destilar. Nada infla a janela.</p></div>
         <div class="step"><div class="n"></div><p>Se você <b>ativou políticas</b>, elas aparecem onde importam: o <code>error-guard</code> <b>nega</b> no <code>PreToolUse</code> um Bash cuja falha reincide; as <b>always-apply</b> entram no contexto no início da sessão; as de <b>glob</b> avisam ao editar um arquivo que casa. <b>Surfacing ≠ enforcement</b>: só o error-guard bloqueia.</p></div>
+        <div class="step"><div class="n"></div><p>Ativou uma <b>política de medição em modo sombra</b> (Fase 3, opt-in)? Um hook <b>PreToolUse só para Edit</b> registra <b>em silêncio</b> se uma edição adiciona um literal proibido, medindo a <b>incidência de gatilho</b>, <b>nunca</b> bloqueando nem falando com o agente. Você lê o placar com <code>policy_shadow_report</code>, <b>local à sua máquina</b>. <b>Modo sombra = medir ≠ enforcement.</b></p></div>
       </div>
     </div>
   </section>
