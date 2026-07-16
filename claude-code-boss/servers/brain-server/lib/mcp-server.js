@@ -293,6 +293,21 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
         required: ['id', 'scriptPath', 'content', 'aliases'],
       },
     },
+    {
+      name: 'policy_activate',
+      description: 'Activate a standing always-apply policy (explicit user action; injected every session/subagent start). NOT for automatic capture. Use ONLY when the user explicitly asks for a persistent constraint (e.g. "never let pre-existing code errors pass"). The text is redacted + capped and stored in a local registry; it is then surfaced deterministically at every SessionStart and SubagentStart. Surfacing ≠ enforcement — this makes the policy PRESENT in context, it does not block.',
+      inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'The policy / standing constraint in plain language (required). Redacted + capped before storage.' }, entryId: { type: 'string', description: 'Optional stable id (e.g. a KB entry id) so re-activating the same policy upserts instead of duplicating. Default: a hash of text+scope+project.' }, scope: { type: 'string', enum: ['project', 'user'], description: 'project (default) = applies only in this project; user = applies in every project.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode). Ignored for user scope.' }, cwd: { type: 'string', description: 'Working directory (for project scoping when project is omitted).' } }, required: ['text'] },
+    },
+    {
+      name: 'policy_list',
+      description: 'List the standing always-apply policies currently active for a project (user-scope policies always included). Returns id, scope, projectId, and a text preview for each.',
+      inputSchema: { type: 'object', properties: { project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Working directory (for project scoping when project is omitted).' } } },
+    },
+    {
+      name: 'policy_deactivate',
+      description: 'Deactivate (remove) a standing policy by id so it stops being injected immediately. Use the id returned by policy_activate or policy_list. Invalidation must deactivate right away.',
+      inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'The policy id to deactivate (from policy_activate / policy_list).' } }, required: ['id'] },
+    },
   ];
 
   // ─── Tool handlers (faithful move from the previous index.js switch) ───────
@@ -571,6 +586,62 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
           return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
         } catch (err) {
           return { isError: true, content: [{ type: 'text', text: `curation_register_shell failed: ${err.message}` }] };
+        }
+      }
+
+      case 'policy_activate': {
+        try {
+          const a = args || {};
+          const text = typeof a.text === 'string' ? a.text : '';
+          if (!text.trim()) {
+            return { isError: true, content: [{ type: 'text', text: 'policy_activate: text is required (the standing constraint to activate).' }] };
+          }
+          const scope = a.scope === 'user' ? 'user' : 'project';
+          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          // user-scope policies are project-independent; only resolve a project id
+          // for project-scope activations.
+          const pid = scope === 'user' ? '' : resolveProject(a);
+          const res = policyStore.activate(dataDir(), { entryId: a.entryId, text, scope, projectId: pid });
+          if (!res.activated) {
+            const msg = res.reason === 'budget'
+              ? 'policy_activate: refused — activating this policy would exceed the injected-policy budget (too many active policies or too much total text). Deactivate an existing policy first (policy_list / policy_deactivate).'
+              : `policy_activate: refused (${res.reason || 'invalid'}).`;
+            return { content: [{ type: 'text', text: JSON.stringify({ activated: false, reason: res.reason || 'invalid', message: msg }, null, 2) }] };
+          }
+          return { content: [{ type: 'text', text: JSON.stringify({ activated: true, id: res.id, scope, projectId: pid, message: 'Policy activated — it will be injected at every session and subagent start until deactivated.' }, null, 2) }] };
+        } catch (err) {
+          return { isError: true, content: [{ type: 'text', text: `policy_activate failed: ${err.message}` }] };
+        }
+      }
+
+      case 'policy_list': {
+        try {
+          const a = args || {};
+          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const pid = resolveProject(a);
+          const active = policyStore.list(dataDir(), { projectId: pid });
+          const policies = active.map(r => ({ id: r.id, scope: r.scope, projectId: r.projectId, text: String(r.text || '').slice(0, 160) }));
+          return { content: [{ type: 'text', text: JSON.stringify({ projectId: pid, count: policies.length, policies }, null, 2) }] };
+        } catch (err) {
+          return { isError: true, content: [{ type: 'text', text: `policy_list failed: ${err.message}` }] };
+        }
+      }
+
+      case 'policy_deactivate': {
+        try {
+          const a = args || {};
+          const id = typeof a.id === 'string' ? a.id : '';
+          if (!id.trim()) {
+            return { isError: true, content: [{ type: 'text', text: 'policy_deactivate: id is required (from policy_activate / policy_list).' }] };
+          }
+          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const res = policyStore.deactivate(dataDir(), id);
+          return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
+        } catch (err) {
+          return { isError: true, content: [{ type: 'text', text: `policy_deactivate failed: ${err.message}` }] };
         }
       }
 

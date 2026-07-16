@@ -176,6 +176,19 @@ function getErrorGuard() {
   };
 }
 
+// Not profile-controlled — read straight from the raw file (like getErrorGuard).
+// Backs the deterministic always-apply POLICY injection (SessionStart +
+// SubagentStart). Defaults ON; budgets bound how much standing-policy text may be
+// injected per session/subagent start.
+function getPolicyInject() {
+  const pi = load().policyInject || {};
+  return {
+    enabled: pi.enabled !== false,
+    maxPolicies: Number.isInteger(pi.maxPolicies) && pi.maxPolicies > 0 ? pi.maxPolicies : 10,
+    maxChars: Number.isInteger(pi.maxChars) && pi.maxChars > 0 ? pi.maxChars : 4000,
+  };
+}
+
 function getCuration() {
   const cfg = load();
   return cfg.curation || {};
@@ -293,6 +306,7 @@ module.exports = {
   getCurationStop,
   getCurationGuard,
   getErrorGuard,
+  getPolicyInject,
   getCuration,
   getVerifyNudge,
   getPatternDetect,

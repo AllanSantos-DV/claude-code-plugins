@@ -17,6 +17,11 @@
     "threshold": 2,
     "windowDays": 90
   },
+  "policyInject": {
+    "enabled": true,
+    "maxPolicies": 10,
+    "maxChars": 4000
+  },
   "projectSnapshot": {
     "enabled": true,
     "includeGh": "auto",

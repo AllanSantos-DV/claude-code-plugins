@@ -139,6 +139,39 @@ const _fdIntegration = (() => {
   return { cwd, command: 'cd /x && npm run typecheck -- --strict' };
 })();
 
+// ─── policy-inject fixtures (deterministic always-apply POLICY injection) ────
+// The policy-inject SessionStart/SubagentStart hook LISTS the active policies for
+// the current project and injects them as additionalContext. To make the spawned
+// subprocess resolve the SAME projectId we seeded, each fixture computes
+// projectId = basename(cwd) (resolveProjectId's marker-less fallback) and the
+// tests pass CCB_PROJECT_ID:'' so the env-forced id can't shadow it.
+const _policyStore = require('./lib/policy-store.js');
+const POLICY_TEXT = 'never let pre-existing code errors pass';
+function seedPolicy(text, { scope = 'project' } = {}) {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pol-proj-'));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pol-data-'));
+  const projectId = path.basename(cwd);
+  _policyStore.activate(dataDir, { text, scope, projectId });
+  return { cwd, dataDir, text, projectId };
+}
+// One active project-scoped policy — reused (read-only) by the SessionStart,
+// SubagentStart, and enabled=false tests.
+const _polActive = seedPolicy(POLICY_TEXT, { scope: 'project' });
+// Corrupt registry fixture: a garbage registry file → the hook must still emit a
+// warning (never silently drop the user's standing constraints).
+const _polCorrupt = (() => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pol-corrupt-proj-'));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pol-corrupt-data-'));
+  fs.mkdirSync(path.join(dataDir, 'policies'), { recursive: true });
+  fs.writeFileSync(_policyStore.storePath(dataDir), 'not json {{{');
+  return { cwd, dataDir };
+})();
+// Fresh empty dataDir + cwd — no active policy → the hook must stay silent.
+const _polEmpty = {
+  cwd: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pol-empty-proj-')),
+  dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pol-empty-data-')),
+};
+
 const TESTS = [
   // ── SessionStart ──────────────────────────────────────────────────────────
   {
@@ -541,6 +574,68 @@ const TESTS = [
       if (l.sig !== 'npm run typecheck') return `expected sig 'npm run typecheck', got '${l.sig}'`;
       if (l.exitCode !== 2) return `expected exitCode 2 (parsed from the failure), got ${l.exitCode}`;
       if (!/TS2345/.test(l.cause || '')) return `expected recorded cause to include the error snippet, got: ${l.cause}`;
+      return null;
+    },
+  },
+
+  // ── SessionStart / SubagentStart — policy-inject (always-apply POLICY) ─────
+  {
+    name: 'policy-inject     [SessionStart/active-policy→inject]',
+    script: 'policy-inject.js',
+    payload: { hook_event_name: 'SessionStart', cwd: _polActive.cwd },
+    expect: { hasKey: 'hookSpecificOutput', noError: true, hookEvent: 'SessionStart' },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _polActive.dataDir, CCB_PROJECT_ID: '' }),
+    validate: r => {
+      const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+      if (!ctx.includes('[BRAIN policy]')) return `injected block must be tagged [BRAIN policy], got: ${ctx}`;
+      if (!ctx.includes(POLICY_TEXT)) return `injected block must contain the policy text, got: ${ctx}`;
+      return null;
+    },
+  },
+  {
+    name: 'policy-inject     [SubagentStart/active-policy→inject+echo event]',
+    script: 'policy-inject.js',
+    payload: { hook_event_name: 'SubagentStart', cwd: _polActive.cwd },
+    expect: { hasKey: 'hookSpecificOutput', noError: true, hookEvent: 'SubagentStart' },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _polActive.dataDir, CCB_PROJECT_ID: '' }),
+    validate: r => {
+      const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+      if (!ctx.includes('[BRAIN policy]')) return `injected block must be tagged [BRAIN policy], got: ${ctx}`;
+      if (!ctx.includes(POLICY_TEXT)) return `injected block must contain the policy text, got: ${ctx}`;
+      return null;
+    },
+  },
+  {
+    name: 'policy-inject     [policyInject.enabled=false→empty despite active]',
+    script: 'policy-inject.js',
+    payload: { hook_event_name: 'SessionStart', cwd: _polActive.cwd },
+    expect: { noError: true },
+    extraEnv: () => ({
+      CLAUDE_PLUGIN_ROOT: mkTempPluginRoot({ policyInject: { enabled: false } }),
+      CLAUDE_PLUGIN_DATA: _polActive.dataDir,
+      CCB_PROJECT_ID: '',
+    }),
+    validate: r => (r.parsed && !r.parsed.hookSpecificOutput)
+      ? null : `enabled=false must emit empty {} even with an active policy, got: ${JSON.stringify(r.parsed)}`,
+  },
+  {
+    name: 'policy-inject     [no-active-policy→empty]',
+    script: 'policy-inject.js',
+    payload: { hook_event_name: 'SessionStart', cwd: _polEmpty.cwd },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _polEmpty.dataDir, CCB_PROJECT_ID: '' }),
+    validate: r => (r.parsed && !r.parsed.hookSpecificOutput)
+      ? null : `no active policy must emit empty {}, got: ${JSON.stringify(r.parsed)}`,
+  },
+  {
+    name: 'policy-inject     [corrupt-registry→inject warning]',
+    script: 'policy-inject.js',
+    payload: { hook_event_name: 'SessionStart', cwd: _polCorrupt.cwd },
+    expect: { hasKey: 'hookSpecificOutput', noError: true, hookEvent: 'SessionStart' },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _polCorrupt.dataDir, CCB_PROJECT_ID: '' }),
+    validate: r => {
+      const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+      if (!ctx.includes('unreadable')) return `a corrupt registry must inject a warning, got: ${ctx}`;
       return null;
     },
   },

@@ -2857,6 +2857,89 @@ test('error-store: redacts secrets/PII in the sig AND the cause (no durable secr
     'lookup hits with a redacted sig/cause (stable + leak-free)');
 });
 
+// ─── policy-store (deterministic always-apply POLICY injection registry) ─────
+const polstore = require(path.join(SCRIPTS, 'lib', 'policy-store.js'));
+const freshPolDataDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-polstore-'));
+
+test('policy-store: activate stores a REDACTED, capped record and list returns it for the project', () => {
+  const dd = freshPolDataDir(); const now = 1_700_000_000_000;
+  const SECRET = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWX';
+  const r = polstore.activate(dd, { text: `never let errors pass token ${SECRET}`, scope: 'project', projectId: 'acme/api', now });
+  assertEq([r.activated, typeof r.id, /^[0-9a-f]{64}$/.test(r.sig)], [true, 'string', true]);
+  const active = polstore.list(dd, { projectId: 'acme/api' });
+  assertEq(active.length, 1);
+  const rec = active[0];
+  // The stored (and injected) text must NOT carry the raw secret, and must be capped.
+  assert(!JSON.stringify(rec).includes(SECRET), `policy text must be redacted, got: ${rec.text}`);
+  assert(rec.text.includes('[GH_TOKEN]'), 'redaction replaces the token with a placeholder');
+  assert(rec.text.length <= polstore.MAX_POLICY_CHARS, 'stored text is capped');
+  assertEq([rec.mode, rec.scope, rec.projectId], ['always', 'project', 'acme/api']);
+});
+
+test('policy-store: user-scope is visible from any project; project-scope is NOT cross-visible', () => {
+  const dd = freshPolDataDir(); let now = 1_700_000_000_000;
+  polstore.activate(dd, { text: 'project rule', scope: 'project', projectId: 'acme/api', now: now++ });
+  polstore.activate(dd, { text: 'global rule', scope: 'user', projectId: '', now: now++ });
+  // The project policy is scoped to acme/api; the user policy applies everywhere.
+  const here = polstore.list(dd, { projectId: 'acme/api' }).map(r => r.text);
+  const elsewhere = polstore.list(dd, { projectId: 'other/x' }).map(r => r.text);
+  assertEq(here.sort(), ['global rule', 'project rule']);
+  assertEq(elsewhere, ['global rule']);
+});
+
+test('policy-store: deactivate removes the record (idempotent second call)', () => {
+  const dd = freshPolDataDir(); const now = 1_700_000_000_000;
+  const r = polstore.activate(dd, { text: 'temp rule', scope: 'project', projectId: 'z', now });
+  assertEq(polstore.list(dd, { projectId: 'z' }).length, 1);
+  assertEq(polstore.deactivate(dd, r.id), { deactivated: true, id: r.id });
+  assertEq(polstore.list(dd, { projectId: 'z' }).length, 0);
+  // Second deactivate is a no-op, not a false success.
+  assertEq(polstore.deactivate(dd, r.id), { deactivated: false, id: r.id });
+});
+
+test('policy-store: budget — activating past maxPolicies is refused and NOT stored', () => {
+  const dd = freshPolDataDir(); let now = 1_700_000_000_000;
+  for (let i = 0; i < 3; i++) {
+    assertEq(polstore.activate(dd, { text: `rule ${i}`, scope: 'project', projectId: 'z', now: now++ }, { maxPolicies: 3, maxChars: 99999 }).activated, true);
+  }
+  const over = polstore.activate(dd, { text: 'rule 4', scope: 'project', projectId: 'z', now: now++ }, { maxPolicies: 3, maxChars: 99999 });
+  assertEq(over, { activated: false, reason: 'budget' });
+  // Refusal must not have stored the 4th policy.
+  assertEq(polstore.list(dd, { projectId: 'z' }).length, 3);
+});
+
+test('policy-store: budget — total-chars overflow is refused (no silent truncation)', () => {
+  const dd = freshPolDataDir(); const now = 1_700_000_000_000;
+  const big = 'x'.repeat(300);
+  const r = polstore.activate(dd, { text: big, scope: 'project', projectId: 'z', now }, { maxPolicies: 10, maxChars: 200 });
+  assertEq(r, { activated: false, reason: 'budget' });
+  assertEq(polstore.list(dd, { projectId: 'z' }).length, 0);
+});
+
+test('policy-store: empty/whitespace text is refused', () => {
+  const dd = freshPolDataDir();
+  assertEq(polstore.activate(dd, { text: '   ', scope: 'project', projectId: 'z' }), { activated: false, reason: 'empty' });
+  assertEq(polstore.activate(dd, { text: '', scope: 'user', projectId: '' }), { activated: false, reason: 'empty' });
+});
+
+test('policy-store: corrupt registry → loadResult.corrupt===true and list returns []', () => {
+  const dd = freshPolDataDir();
+  fs.mkdirSync(path.join(dd, 'policies'), { recursive: true });
+  fs.writeFileSync(polstore.storePath(dd), 'not json {{{');
+  const lr = polstore.loadResult(dd);
+  assertEq(lr.corrupt, true);
+  assertEq(polstore.list(dd, { projectId: 'z' }), []);
+});
+
+test('policy-store: re-activating the same entryId UPSERTS (no duplicate)', () => {
+  const dd = freshPolDataDir(); let now = 1_700_000_000_000;
+  polstore.activate(dd, { entryId: 'kb-42', text: 'first', scope: 'project', projectId: 'z', now: now++ });
+  polstore.activate(dd, { entryId: 'kb-42', text: 'second', scope: 'project', projectId: 'z', now: now++ });
+  const active = polstore.list(dd, { projectId: 'z' });
+  assertEq(active.length, 1);
+  assertEq(active[0].text, 'second');
+});
+
 // ─── curation-reconcile (Stop-hook blocked-entry reconciliation) ─────────────
 const reconcile = require(path.join(SCRIPTS, 'lib', 'curation-reconcile.js'));
 
