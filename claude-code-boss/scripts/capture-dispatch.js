@@ -106,7 +106,7 @@ function buildInstruction(blockText, windowId) {
     'this window — a correction you received, a reusable pattern/workflow, an architectural decision + rationale,',
     `or an external finding worth reusing — call the \`capture_lesson\` MCP tool with a curated`,
     `{title, summary, detail, type, tags} AND windowId "${wid}". IF there is nothing worth capturing, call the`,
-    `\`capture_ack\` MCP tool with windowId "${wid}" and outcome "none". Your turn will not end until you call one.`,
+    `\`capture_ack\` MCP tool with windowId "${wid}" and outcome "none". Call one before ending this turn — the capture guard re-prompts until you do.`,
     '  - type: lesson (correction) | pattern (workflow) | decision (choice+rationale) | research (external finding)',
     '  - tags: 3-8 canonical lowercase hyphenated English concept tags (the language-neutral retrieval anchor)',
     '  - write the lesson in ENGLISH; you are the judge — capture only the few real lessons.',
