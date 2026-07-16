@@ -676,7 +676,10 @@ function startFakeDaemon(opts = {}) {
           seen.callSession = sid;
           seen.callArgs = msg.params;
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          return res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { content: [{ type: 'text', text: 'OK:' + (msg.params && msg.params.name) }] } }));
+          const result = (typeof opts.toolResult === 'function')
+            ? opts.toolResult(msg.params)
+            : { content: [{ type: 'text', text: 'OK:' + (msg.params && msg.params.name) }] };
+          return res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result }));
         }
         res.writeHead(400); return res.end('bad');
       });
@@ -817,6 +820,32 @@ test('brain-backend mcp: ingestConversation ships raw transcript to ingest_conve
   }
 });
 
+test('brain-backend mcp: saveMcp REJECTS on a tool-level isError (no fabricated uuid → no phantom capture)', async () => {
+  const daemon = await startFakeDaemon({ toolResult: (p) => p.name === 'add_document'
+    ? { isError: true, content: [{ type: 'text', text: 'add_document failed: disk full' }] }
+    : { content: [{ type: 'text', text: 'OK:' + (p && p.name) }] } });
+  delete require.cache[require.resolve('./brain-backend.js')];
+  const backend = require('./brain-backend.js');
+  backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
+  try {
+    await backend.init({ project: 'projErr' });
+    let threw = false;
+    try {
+      await backend.save({ title: 't', summary: 's', content: { detail: 'd' }, type: 'lesson' });
+    } catch (err) {
+      threw = true;
+      assert(/add_document|failed|isError/i.test(err.message), `error surfaces the tool failure, got: ${err.message}`);
+    }
+    // Without the fix, saveMcp returns parseAddedId(errResult) || uuid() → a FABRICATED
+    // id → resolves as success → the remote capture_lesson path acks 'captured' → the
+    // Stop reconcile drains cycles that were never stored (silent lesson loss).
+    assert(threw, 'a failed remote add_document MUST reject (not fabricate a uuid and resolve)');
+    await backend.close();
+  } finally {
+    delete require.cache[require.resolve('./brain-backend.js')];
+    await daemon.close();
+  }
+});
 test('brain-backend mcp: warmPool fires home-federated search_memory (includeHome:true) for graduation signal', async () => {
   const daemon = await startFakeDaemon();
   delete require.cache[require.resolve('./brain-backend.js')];
@@ -1620,6 +1649,8 @@ test('scope: detectSecrets catches well-known prefixes, ignores benign text', ()
   const { detectSecrets } = require('./lib/scope-sanitizer.js');
   // Positive cases
   if (!detectSecrets('here is sk-' + 'A'.repeat(40) + ' token')) throw new Error('sk- not detected');
+  if (!detectSecrets('sk-ant-api03-' + 'AbCd12-_'.repeat(6) + 'ZZ')) throw new Error('modern Anthropic key not detected');
+  if (!detectSecrets('sk-proj-' + 'Ab12Cd34'.repeat(5))) throw new Error('modern OpenAI project key not detected');
   if (!detectSecrets('ghp_' + 'a'.repeat(36))) throw new Error('ghp_ not detected');
   if (!detectSecrets('AKIA' + 'BCDEFGHIJKLMNOP1')) throw new Error('AKIA not detected');
   if (!detectSecrets('AIza' + 'a'.repeat(35))) throw new Error('AIza not detected');
@@ -2720,6 +2751,377 @@ test('oneoff-store: markedSince sees only markings at/after the cutoff', () => {
   assert(oneoff.markedSince(store, t0), 'mark at cutoff → true');
   assert(!oneoff.markedSince(store, t0 + 1), 'mark before cutoff → false');
   assert(!oneoff.markedSince(store, NaN), 'invalid cutoff → false');
+});
+
+// ─── error-store (deterministic error-guard: recurring Bash failures) ────────
+const errstore = require(path.join(SCRIPTS, 'lib', 'error-store.js'));
+const freshErrDataDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-errstore-'));
+
+test('error-store: record creates an entry keyed by canonicalSig', () => {
+  const dd = freshErrDataDir(); const pk = 'p'; const now = 1_700_000_000_000;
+  const r = errstore.record(dd, pk, { command: 'cd /proj && npm run build', cause: 'TS2345', exitCode: 2, sessionId: 's1', now });
+  assertEq([r.recorded, r.sig, r.count], [true, 'npm run build', 1]);
+  const store = errstore.load(dd, pk);
+  // Keyed by the canonical signature — the nav prefix (`cd /proj &&`) is dropped.
+  assertEq(Object.keys(store.entries), ['npm run build']);
+  assertEq(store.entries['npm run build'].exitCode, 2);
+  assertEq(store.entries['npm run build'].cause, 'TS2345');
+});
+
+test('error-store: record on empty/whitespace command is a no-op', () => {
+  const dd = freshErrDataDir();
+  assertEq(errstore.record(dd, 'p', { command: '   ' }).recorded, false);
+  assertEq(Object.keys(errstore.load(dd, 'p').entries).length, 0);
+});
+
+test('error-store: second record bumps the windowed count (same sig)', () => {
+  const dd = freshErrDataDir(); const pk = 'p'; let now = 1_700_000_000_000;
+  assertEq(errstore.record(dd, pk, { command: 'npm test', now: now++ }).count, 1);
+  assertEq(errstore.record(dd, pk, { command: 'npm test', now: now++ }).count, 2);
+  assertEq(Object.keys(errstore.load(dd, pk).entries).length, 1);
+});
+
+test('error-store: lookup is hit:false below threshold, hit:true at/above it', () => {
+  const dd = freshErrDataDir(); const pk = 'p'; let now = 1_700_000_000_000;
+  errstore.record(dd, pk, { command: 'npm run lint', cause: 'eslint boom', exitCode: 1, now: now++ });
+  let l = errstore.lookup(dd, pk, 'npm run lint', { now, threshold: 2 });
+  assertEq([l.hit, l.count], [false, 1]);
+  errstore.record(dd, pk, { command: 'npm run lint', cause: 'eslint boom 2', exitCode: 1, now: now++ });
+  l = errstore.lookup(dd, pk, 'npm run lint', { now, threshold: 2 });
+  assertEq([l.hit, l.count, l.sig, l.cause, l.exitCode], [true, 2, 'npm run lint', 'eslint boom 2', 1]);
+});
+
+test('error-store: lookup normalizes cwd/env/flags/pipe to the SAME sig', () => {
+  const dd = freshErrDataDir(); const pk = 'p'; let now = 1_700_000_000_000;
+  errstore.record(dd, pk, { command: 'cd /p && npm test', now: now++ });
+  errstore.record(dd, pk, { command: 'NODE_ENV=x npm test -- --watch', now: now++ });
+  // Both variants collapse to a single entry keyed 'npm test' (no fragmentation).
+  assertEq(Object.keys(errstore.load(dd, pk).entries), ['npm test']);
+  assert(errstore.lookup(dd, pk, 'cd /y && npm test | grep FAIL', { now, threshold: 2 }).hit,
+    'a wrapped/piped variant must resolve to the same sig-entry and hit');
+});
+
+test('error-store: resolve clears the entry → subsequent lookup is hit:false', () => {
+  const dd = freshErrDataDir(); const pk = 'p'; let now = 1_700_000_000_000;
+  errstore.record(dd, pk, { command: 'npm run build', now: now++ });
+  errstore.record(dd, pk, { command: 'npm run build', now: now++ });
+  assert(errstore.lookup(dd, pk, 'npm run build', { now, threshold: 2 }).hit, 'precondition: recurring → hit');
+  const rv = errstore.resolve(dd, pk, 'cd /x && npm run build --flag', { now });
+  assertEq([rv.resolved, rv.sig], [true, 'npm run build']);
+  assertEq(Object.keys(errstore.load(dd, pk).entries).length, 0);
+  assertEq(errstore.lookup(dd, pk, 'npm run build', { now, threshold: 2 }).hit, false);
+});
+
+test('error-store: resolve on an unrecorded sig is a no-op', () => {
+  const dd = freshErrDataDir();
+  assertEq(errstore.resolve(dd, 'p', 'git status').resolved, false);
+});
+
+test('error-store: window excludes stale failures (90d)', () => {
+  const dd = freshErrDataDir(); const pk = 'p'; const now = 2_000_000_000_000;
+  errstore.record(dd, pk, { command: 'npm test', now: now - 100 * 86400000 });
+  errstore.record(dd, pk, { command: 'npm test', now });
+  // The 100d-old failure falls outside the 90d window; only the fresh one counts.
+  assertEq(errstore.lookup(dd, pk, 'npm test', { now, windowDays: 90, threshold: 2 }).count, 1);
+});
+
+test('error-store: prune removes cold entries', () => {
+  const dd = freshErrDataDir(); const pk = 'p'; const now = 2_000_000_000_000;
+  errstore.record(dd, pk, { command: 'git log', now: now - 200 * 86400000 });
+  errstore.record(dd, pk, { command: 'npm test', now });
+  assertEq(errstore.prune(dd, pk, { now, windowDays: 90 }), 1);
+  assertEq(Object.keys(errstore.load(dd, pk).entries), ['npm test']);
+});
+
+test('error-store: reuses oneoff resolveProjectKey (stores agree on key)', () => {
+  assert(errstore.resolveProjectKey === oneoff.resolveProjectKey,
+    'error-store must re-export oneoff-store.resolveProjectKey so both stores key alike');
+});
+
+test('error-store: redacts secrets/PII in the sig AND the cause (no durable secret, stable matching)', () => {
+  const dd = freshErrDataDir(); const pk = 'p'; let now = 1_700_000_000_000;
+  const SECRET = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWX';
+  const cmd = `curl -H "Authorization: Bearer ${SECRET}" https://api.example.com/x`;
+  const cause = `401 Unauthorized: token ${SECRET} rejected; contact a.user@example.com`;
+  const r = errstore.record(dd, pk, { command: cmd, cause, exitCode: 22, now: now++ });
+  // The PERSISTED key (sig) — which is also injected back to the agent — must not carry the raw secret.
+  assert(!r.sig.includes(SECRET), `sig must be redacted, got: ${r.sig}`);
+  const entry = errstore.load(dd, pk).entries[r.sig];
+  assert(entry && !JSON.stringify(entry).includes(SECRET), 'no raw secret anywhere in the stored entry (sig+cause)');
+  assert(!entry.cause.includes(SECRET) && !entry.cause.includes('a.user@example.com'), 'cause redacts secret + email PII');
+  // Matching stays STABLE: the same secret-command (redacted deterministically) resolves
+  // to the same entry and hits at threshold — leak-free without breaking the guard.
+  errstore.record(dd, pk, { command: cmd, cause, now: now++ });
+  const l = errstore.lookup(dd, pk, cmd, { now, threshold: 2 });
+  assert(l.hit && !l.sig.includes(SECRET) && !(l.cause || '').includes(SECRET),
+    'lookup hits with a redacted sig/cause (stable + leak-free)');
+});
+
+// ─── policy-store (deterministic always-apply POLICY injection registry) ─────
+const polstore = require(path.join(SCRIPTS, 'lib', 'policy-store.js'));
+const freshPolDataDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-polstore-'));
+
+test('policy-store: activate stores a REDACTED, capped record and list returns it for the project', () => {
+  const dd = freshPolDataDir(); const now = 1_700_000_000_000;
+  const SECRET = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWX';
+  const r = polstore.activate(dd, { text: `never let errors pass token ${SECRET}`, scope: 'project', projectId: 'acme/api', now });
+  assertEq([r.activated, typeof r.id, /^[0-9a-f]{64}$/.test(r.sig)], [true, 'string', true]);
+  const active = polstore.list(dd, { projectId: 'acme/api' });
+  assertEq(active.length, 1);
+  const rec = active[0];
+  // The stored (and injected) text must NOT carry the raw secret, and must be capped.
+  assert(!JSON.stringify(rec).includes(SECRET), `policy text must be redacted, got: ${rec.text}`);
+  assert(rec.text.includes('[GH_TOKEN]'), 'redaction replaces the token with a placeholder');
+  assert(rec.text.length <= polstore.MAX_POLICY_CHARS, 'stored text is capped');
+  assertEq([rec.mode, rec.scope, rec.projectId], ['always', 'project', 'acme/api']);
+});
+
+test('policy-store: user-scope is visible from any project; project-scope is NOT cross-visible', () => {
+  const dd = freshPolDataDir(); let now = 1_700_000_000_000;
+  polstore.activate(dd, { text: 'project rule', scope: 'project', projectId: 'acme/api', now: now++ });
+  polstore.activate(dd, { text: 'global rule', scope: 'user', projectId: '', now: now++ });
+  // The project policy is scoped to acme/api; the user policy applies everywhere.
+  const here = polstore.list(dd, { projectId: 'acme/api' }).map(r => r.text);
+  const elsewhere = polstore.list(dd, { projectId: 'other/x' }).map(r => r.text);
+  assertEq(here.sort(), ['global rule', 'project rule']);
+  assertEq(elsewhere, ['global rule']);
+});
+
+test('policy-store: deactivate removes the record (idempotent second call)', () => {
+  const dd = freshPolDataDir(); const now = 1_700_000_000_000;
+  const r = polstore.activate(dd, { text: 'temp rule', scope: 'project', projectId: 'z', now });
+  assertEq(polstore.list(dd, { projectId: 'z' }).length, 1);
+  assertEq(polstore.deactivate(dd, r.id), { deactivated: true, id: r.id });
+  assertEq(polstore.list(dd, { projectId: 'z' }).length, 0);
+  // Second deactivate is a no-op, not a false success.
+  assertEq(polstore.deactivate(dd, r.id), { deactivated: false, id: r.id });
+});
+
+test('policy-store: budget — activating past maxPolicies is refused and NOT stored', () => {
+  const dd = freshPolDataDir(); let now = 1_700_000_000_000;
+  for (let i = 0; i < 3; i++) {
+    assertEq(polstore.activate(dd, { text: `rule ${i}`, scope: 'project', projectId: 'z', now: now++ }, { maxPolicies: 3, maxChars: 99999 }).activated, true);
+  }
+  const over = polstore.activate(dd, { text: 'rule 4', scope: 'project', projectId: 'z', now: now++ }, { maxPolicies: 3, maxChars: 99999 });
+  assertEq(over, { activated: false, reason: 'budget' });
+  // Refusal must not have stored the 4th policy.
+  assertEq(polstore.list(dd, { projectId: 'z' }).length, 3);
+});
+
+test('policy-store: budget — total-chars overflow is refused (no silent truncation)', () => {
+  const dd = freshPolDataDir(); const now = 1_700_000_000_000;
+  const big = 'x'.repeat(300);
+  const r = polstore.activate(dd, { text: big, scope: 'project', projectId: 'z', now }, { maxPolicies: 10, maxChars: 200 });
+  assertEq(r, { activated: false, reason: 'budget' });
+  assertEq(polstore.list(dd, { projectId: 'z' }).length, 0);
+});
+
+test('policy-store: empty/whitespace text is refused', () => {
+  const dd = freshPolDataDir();
+  assertEq(polstore.activate(dd, { text: '   ', scope: 'project', projectId: 'z' }), { activated: false, reason: 'empty' });
+  assertEq(polstore.activate(dd, { text: '', scope: 'user', projectId: '' }), { activated: false, reason: 'empty' });
+});
+
+test('policy-store: corrupt registry → loadResult.corrupt===true and list returns []', () => {
+  const dd = freshPolDataDir();
+  fs.mkdirSync(path.join(dd, 'policies'), { recursive: true });
+  fs.writeFileSync(polstore.storePath(dd), 'not json {{{');
+  const lr = polstore.loadResult(dd);
+  assertEq(lr.corrupt, true);
+  assertEq(polstore.list(dd, { projectId: 'z' }), []);
+});
+
+test('policy-store: re-activating the same entryId UPSERTS (no duplicate)', () => {
+  const dd = freshPolDataDir(); let now = 1_700_000_000_000;
+  polstore.activate(dd, { entryId: 'kb-42', text: 'first', scope: 'project', projectId: 'z', now: now++ });
+  polstore.activate(dd, { entryId: 'kb-42', text: 'second', scope: 'project', projectId: 'z', now: now++ });
+  const active = polstore.list(dd, { projectId: 'z' });
+  assertEq(active.length, 1);
+  assertEq(active[0].text, 'second');
+});
+
+// ─── glob-match (ReDoS-safe SEGMENT matcher for glob-scoped policies, micro-3) ─
+const globm = require(path.join(SCRIPTS, 'lib', 'glob-match.js'));
+
+test('glob-match: basename fallback — *.ts matches app.ts AND src/app.ts', () => {
+  assertEq([globm.matchGlob('*.ts', 'app.ts'), globm.matchGlob('*.ts', 'src/app.ts')], [true, true]);
+});
+
+test('glob-match: src/** matches nested + shallow, rejects a sibling dir', () => {
+  assertEq([
+    globm.matchGlob('src/**', 'src/a/b.ts'),
+    globm.matchGlob('src/**', 'src/x.ts'),
+    globm.matchGlob('src/**', 'lib/x.ts'),
+  ], [true, true, false]);
+});
+
+test('glob-match: src/**/*.ts matches .ts under src, rejects .js', () => {
+  assertEq([
+    globm.matchGlob('src/**/*.ts', 'src/a/b.ts'),
+    globm.matchGlob('src/**/*.ts', 'src/a/b.js'),
+  ], [true, false]);
+});
+
+test('glob-match: a/*/c — single-star segment consumes EXACTLY one dir', () => {
+  assertEq([globm.matchGlob('a/*/c', 'a/b/c'), globm.matchGlob('a/*/c', 'a/b/d/c')], [true, false]);
+});
+
+test('glob-match: ** matches anything; ? matches exactly one char', () => {
+  assertEq([
+    globm.matchGlob('**', 'a/b/c'),
+    globm.matchGlob('**', 'x'),
+    globm.matchGlob('?', 'a'),
+    globm.matchGlob('?', 'ab'),
+    globm.matchGlob('?', ''),
+  ], [true, true, true, false, false]);
+});
+
+test('glob-match: ** consumes ZERO directories (src/** matches src)', () => {
+  assertEq(globm.matchGlob('src/**', 'src'), true);
+});
+
+test('glob-match: Windows backslash input normalizes on BOTH sides', () => {
+  assertEq([
+    globm.matchGlob('src/api/**', 'src\\api\\x.ts'),
+    globm.matchGlob('src\\api\\**', 'src/api/x.ts'),
+  ], [true, true]);
+});
+
+test('glob-match: leading ./ is stripped on both glob and path', () => {
+  assertEq([globm.matchGlob('./src/**', 'src/a.ts'), globm.matchGlob('src/**', './src/a.ts')], [true, true]);
+});
+
+test('glob-match: anyGlobMatches / firstGlobMatch (deterministic first)', () => {
+  assertEq(globm.anyGlobMatches(['docs/**', '*.md'], 'README.md'), true);
+  assertEq(globm.anyGlobMatches(['docs/**'], 'src/a.ts'), false);
+  assertEq(globm.firstGlobMatch(['docs/**', 'src/**'], 'src/a.ts'), 'src/**');
+  assertEq(globm.firstGlobMatch(['*.md'], 'a.ts'), null);
+  assertEq(globm.anyGlobMatches('not-array', 'a'), false);
+});
+
+test('glob-match: ADVERSARIAL pathological glob returns quickly (no ReDoS)', () => {
+  const evil = '*a'.repeat(30) + 'b';   // regex-from-glob would backtrack pathologically
+  const hay = 'a'.repeat(2000);          // long, never-matching (no trailing 'b')
+  const t0 = Date.now();
+  const res = globm.matchGlob(evil, hay);
+  const dt = Date.now() - t0;
+  assertEq(res, false);
+  assert(dt < 1000, `matcher must be polynomial, took ${dt}ms`);
+});
+
+// ─── policy-store glob-scoped extensions (Phase 2 micro-3) ───────────────────
+test('policy-store: glob activate stores mode:glob with CANONICAL (sorted+deduped) globs', () => {
+  const dd = freshPolDataDir(); const now = 1_700_000_000_000;
+  const r = polstore.activate(dd, { text: 'no console.log in src', projectId: 'acme/api', globs: ['src/**/*.ts', 'src/**/*.ts', 'docs/**'], now });
+  assertEq([r.activated, r.mode], [true, 'glob']);
+  const rec = polstore.loadResult(dd).records[r.id];
+  assertEq([rec.mode, rec.scope, rec.projectId], ['glob', 'project', 'acme/api']);
+  assertEq(rec.globs, ['docs/**', 'src/**/*.ts']); // sorted + deduped
+});
+
+test('policy-store: glob activate FORCES project scope even when scope:user is passed', () => {
+  const dd = freshPolDataDir(); const now = 1_700_000_000_000;
+  const r = polstore.activate(dd, { text: 'rule', scope: 'user', projectId: 'z', globs: ['*.ts'], now });
+  assertEq(r.activated, true);
+  assertEq(polstore.loadResult(dd).records[r.id].scope, 'project');
+});
+
+test('policy-store: listAlways EXCLUDES glob policies; listVisible INCLUDES both', () => {
+  const dd = freshPolDataDir(); let now = 1_700_000_000_000;
+  polstore.activate(dd, { text: 'always rule', projectId: 'z', now: now++ });
+  polstore.activate(dd, { text: 'glob rule', projectId: 'z', globs: ['src/**'], now: now++ });
+  assertEq(polstore.listAlways(dd, { projectId: 'z' }).map(r => r.text), ['always rule']);
+  assertEq(polstore.listVisible(dd, { projectId: 'z' }).map(r => r.text).sort(), ['always rule', 'glob rule']);
+});
+
+test('policy-store: a glob policy is NEVER returned by listAlways (SessionStart leak guard)', () => {
+  const dd = freshPolDataDir(); const now = 1_700_000_000_000;
+  polstore.activate(dd, { text: 'glob only', projectId: 'z', globs: ['**'], now });
+  assertEq(polstore.listAlways(dd, { projectId: 'z' }), []);
+});
+
+test('policy-store: legacy record with missing mode is treated as always', () => {
+  const dd = freshPolDataDir();
+  fs.mkdirSync(path.join(dd, 'policies'), { recursive: true });
+  fs.writeFileSync(polstore.storePath(dd), JSON.stringify({ records: {
+    legacy: { id: 'legacy', scope: 'project', projectId: 'z', text: 'legacy rule', activatedAt: 1 },
+  } }));
+  assertEq(polstore.listAlways(dd, { projectId: 'z' }).map(r => r.text), ['legacy rule']);
+});
+
+test('policy-store: listGlobMatching returns only path-matching glob policies for the project', () => {
+  const dd = freshPolDataDir(); let now = 1_700_000_000_000;
+  polstore.activate(dd, { text: 'ts rule', projectId: 'proj', globs: ['src/**/*.ts'], now: now++ });
+  polstore.activate(dd, { text: 'docs rule', projectId: 'proj', globs: ['docs/**'], now: now++ });
+  polstore.activate(dd, { text: 'always', projectId: 'proj', now: now++ }); // always → never surfaces here
+  assertEq(polstore.listGlobMatching(dd, { projectId: 'proj', filePath: 'src/a/b.ts' }).map(r => r.text), ['ts rule']);
+  assertEq(polstore.listGlobMatching(dd, { projectId: 'proj', filePath: 'lib/x.ts' }), []);
+});
+
+test('policy-store: listGlobMatching is project-scoped (no cross-project leak)', () => {
+  const dd = freshPolDataDir(); const now = 1_700_000_000_000;
+  polstore.activate(dd, { text: 'projA rule', projectId: 'projA', globs: ['**'], now });
+  assertEq(polstore.listGlobMatching(dd, { projectId: 'projB', filePath: 'x.ts' }), []);
+});
+
+test('policy-store: invalid/empty globs → {activated:false, reason:invalid-globs}, NOTHING stored (atomic)', () => {
+  const dd = freshPolDataDir(); const now = 1_700_000_000_000;
+  for (const bad of [[], ['   '], 'not-array', [''], ['x'.repeat(201)]]) {
+    assertEq(polstore.activate(dd, { text: 'rule', projectId: 'z', globs: bad, now }), { activated: false, reason: 'invalid-globs' });
+  }
+  const tooMany = Array.from({ length: 21 }, (_, i) => `d${i}/**`);
+  assertEq(polstore.activate(dd, { text: 'rule', projectId: 'z', globs: tooMany, now }), { activated: false, reason: 'invalid-globs' });
+  // No always fallback, no partial glob record — registry stays empty.
+  assertEq(Object.keys(polstore.loadResult(dd).records).length, 0);
+});
+
+test('policy-store: different glob SETS on the same text produce DIFFERENT ids (no overwrite)', () => {
+  const dd = freshPolDataDir(); const now = 1_700_000_000_000;
+  const a = polstore.activate(dd, { text: 'same text', projectId: 'z', globs: ['src/**'], now });
+  const b = polstore.activate(dd, { text: 'same text', projectId: 'z', globs: ['docs/**'], now });
+  assert(a.id !== b.id, `distinct glob sets must not collide: ${a.id} vs ${b.id}`);
+  assertEq(polstore.listVisible(dd, { projectId: 'z' }).length, 2);
+});
+
+test('policy-store: glob budget — activating past MAX_GLOB_POLICIES_PER_PROJECT is refused', () => {
+  const dd = freshPolDataDir(); let now = 1_700_000_000_000;
+  const MAX = polstore.MAX_GLOB_POLICIES_PER_PROJECT;
+  for (let i = 0; i < MAX; i++) {
+    assertEq(polstore.activate(dd, { text: `rule ${i}`, projectId: 'z', globs: [`d${i}/**`], now: now++ }).activated, true);
+  }
+  assertEq(polstore.activate(dd, { text: 'one too many', projectId: 'z', globs: ['extra/**'], now: now++ }), { activated: false, reason: 'budget' });
+  assertEq(polstore.activeGlob(polstore.loadResult(dd).records, 'z').length, MAX);
+});
+
+test('policy-store: glob policy budget is SEPARATE from the always budget', () => {
+  const dd = freshPolDataDir(); let now = 1_700_000_000_000;
+  // Fill the always budget to its max; a glob policy must still activate.
+  for (let i = 0; i < 3; i++) {
+    assertEq(polstore.activate(dd, { text: `always ${i}`, projectId: 'z', now: now++ }, { maxPolicies: 3, maxChars: 99999 }).activated, true);
+  }
+  const g = polstore.activate(dd, { text: 'glob one', projectId: 'z', globs: ['src/**'], now: now++ }, { maxPolicies: 3, maxChars: 99999 });
+  assertEq(g.activated, true);
+  // And the glob policy did not consume an always slot: a 4th always is still refused.
+  assertEq(polstore.activate(dd, { text: 'always 4', projectId: 'z', now: now++ }, { maxPolicies: 3, maxChars: 99999 }).reason, 'budget');
+});
+
+test('policy-store: glob policy text is REDACTED before storage', () => {
+  const dd = freshPolDataDir(); const now = 1_700_000_000_000;
+  const SECRET = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWX';
+  const r = polstore.activate(dd, { text: `avoid leaking ${SECRET}`, projectId: 'z', globs: ['**'], now });
+  const rec = polstore.loadResult(dd).records[r.id];
+  assert(!JSON.stringify(rec).includes(SECRET), `glob policy text must be redacted, got: ${rec.text}`);
+});
+
+test('policy-store: toRelPath — inside-project normalizes; outside/other-drive/empty → null', () => {
+  assertEq(polstore.toRelPath('src\\a\\b.ts'), 'src/a/b.ts');       // relative input normalized
+  assertEq(polstore.toRelPath('./src/a.ts'), 'src/a.ts');           // leading ./ stripped
+  const cwd = process.platform === 'win32' ? 'C:\\proj' : '/proj';
+  const inside = process.platform === 'win32' ? 'C:\\proj\\src\\a.ts' : '/proj/src/a.ts';
+  const outside = process.platform === 'win32' ? 'D:\\other\\a.ts' : '/other/a.ts';
+  assertEq(polstore.toRelPath(inside, cwd), 'src/a.ts');            // absolute inside cwd → rel
+  assertEq(polstore.toRelPath(outside, cwd), null);                 // outside / other drive → null
+  assertEq(polstore.toRelPath('', cwd), null);                      // empty → null
 });
 
 // ─── curation-reconcile (Stop-hook blocked-entry reconciliation) ─────────────
@@ -4409,13 +4811,14 @@ test('stop-dispatcher.rank: known priorities + default', () => {
   assertEq(dispatcher.rank('anything'), 2);
 });
 
-test('stop-dispatcher.DETECTORS: 15 detectors, ordering invariants hold', () => {
+test('stop-dispatcher.DETECTORS: 16 detectors, ordering invariants hold', () => {
   const names = dispatcher.DETECTORS.map(d => d.name);
-  assertEq(names.length, 15);
+  assertEq(names.length, 16);
   assert(names.includes('verify-nudge'), 'verify-nudge (D2) registered');
   assert(names.includes('self-review'), 'self-review (D1) registered');
   assert(names.includes('session-summary'), 'session-summary (U2) registered');
   assert(names.includes('conversation-ingest'), 'conversation-ingest (GAP1) registered');
+  assert(names.includes('capture-dispatch'), 'capture-dispatch (Phase 1 capture) registered');
   assert(names.indexOf('self-review') < names.indexOf('verify-nudge'),
     'self-review must read verify-journal before verify-nudge clears it');
   assert(names.indexOf('failure-retro') < names.indexOf('curation-stop'),
@@ -4861,6 +5264,656 @@ test('data-dir: dashboard.js resolvers are guarded (no bare `env || fallback` sp
     'dashboard.js must not keep an unguarded `process.env.CLAUDE_PLUGIN_DATA ||` resolver');
   assert(/require\(['"]\.\/lib\/data-dir\.js['"]\)/.test(src),
     'dashboard.js must resolve its data dir via lib/data-dir.js');
+});
+
+// ─── session-marker (capture-window cursor state machine — Phase 1 task 1) ───
+// Failing-first: lazy require so only these RED until lib/session-marker.js exists.
+test('session-marker: initIfAbsent baselines committed at START (offset 0); idempotent', () => {
+  const sm = require('./lib/session-marker.js');
+  const project = 'sm-init-' + Date.now();
+  const sid = 's1-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `t1-${sid}.jsonl`);
+  fs.writeFileSync(tp, 'line1\nline2\n');
+  const st1 = sm.initIfAbsent(project, sid, tp);
+  assert(st1.committed, 'committed set');
+  assertEq(st1.committed.offset, 0, 'committed at transcript start (nothing before first Stop is skipped)');
+  assertEq(st1.pending, null, 'no pending initially');
+  fs.appendFileSync(tp, 'line3\n');
+  const st2 = sm.initIfAbsent(project, sid, tp);
+  assertEq(st2.committed.offset, 0, 'init idempotent (committed unchanged)');
+  sm.resetAll(project, sid);
+});
+
+test('session-marker: beginPending keeps committed; commit advances + clears pending', () => {
+  const sm = require('./lib/session-marker.js');
+  const project = 'sm-commit-' + Date.now();
+  const sid = 's2-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `t2-${sid}.jsonl`);
+  fs.writeFileSync(tp, 'a\nb\n');
+  sm.initIfAbsent(project, sid, tp);
+  fs.appendFileSync(tp, 'c\nd\n');
+  const size = fs.statSync(tp).size;
+  sm.beginPending(project, sid, 4, size, 'win1');
+  let st = sm.getState(project, sid);
+  assertEq(st.committed.offset, 0, 'committed unchanged during pending');
+  assert(st.pending && st.pending.to === size, 'pending open at window end');
+  sm.commit(project, sid, size, sm.anchorAt(tp, size), size);
+  st = sm.getState(project, sid);
+  assertEq(st.committed.offset, size, 'committed advanced to window end');
+  assertEq(st.pending, null, 'pending cleared on commit');
+  sm.resetAll(project, sid);
+});
+
+test('session-marker: clearPending aborts window; committed stays', () => {
+  const sm = require('./lib/session-marker.js');
+  const project = 'sm-abort-' + Date.now();
+  const sid = 's3-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `t3-${sid}.jsonl`);
+  fs.writeFileSync(tp, 'x\n');
+  sm.initIfAbsent(project, sid, tp);
+  fs.appendFileSync(tp, 'y\n');
+  const size = fs.statSync(tp).size;
+  sm.beginPending(project, sid, 2, size, 'w');
+  sm.clearPending(project, sid);
+  const st = sm.getState(project, sid);
+  assertEq(st.committed.offset, 0, 'committed unchanged after abort');
+  assertEq(st.pending, null, 'pending cleared');
+  sm.resetAll(project, sid);
+});
+
+test('session-marker: validateAnchor matches unchanged file, detects truncation', () => {
+  const sm = require('./lib/session-marker.js');
+  const project = 'sm-anchor-' + Date.now();
+  const sid = 's4-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `t4-${sid}.jsonl`);
+  fs.writeFileSync(tp, 'aaaa\nbbbb\n');
+  const size = fs.statSync(tp).size;
+  sm.initIfAbsent(project, sid, tp);
+  sm.commit(project, sid, size, sm.anchorAt(tp, size), size);
+  let v = sm.validateAnchor(tp, sm.getState(project, sid).committed);
+  assert(v.ok, 'anchor matches on unchanged file');
+  fs.writeFileSync(tp, 'zz\n'); // compaction rewrites the file shorter
+  v = sm.validateAnchor(tp, sm.getState(project, sid).committed);
+  assert(!v.ok, 'anchor mismatch detected after truncation');
+  sm.resetAll(project, sid);
+});
+
+test('session-marker: append-only transitions — latest pending wins (race-free)', () => {
+  const sm = require('./lib/session-marker.js');
+  const project = 'sm-race-' + Date.now();
+  const sid = 's5-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `t5-${sid}.jsonl`);
+  fs.writeFileSync(tp, 'a\n');
+  sm.initIfAbsent(project, sid, tp);
+  sm.beginPending(project, sid, 2, 4, 'w1');
+  sm.beginPending(project, sid, 2, 6, 'w2');
+  const st = sm.getState(project, sid);
+  assertEq(st.pending.windowHash, 'w2', 'latest pending wins');
+  sm.resetAll(project, sid);
+});
+
+// ─── transcript-block (deterministic JSONL clean — Phase 1 task 2) ───────────
+// Failing-first: lazy require until lib/transcript-block.js exists.
+test('transcript-block: extractCycles keeps human cycles, drops tool/meta/sidechain, assistant text-only', () => {
+  const tb = require('./lib/transcript-block.js');
+  const lines = [
+    JSON.stringify({ type: 'user', promptId: 'p1', isSidechain: false, message: { role: 'user', content: 'How do I center a div?' } }),
+    JSON.stringify({ type: 'assistant', isSidechain: false, message: { role: 'assistant', model: 'claude-sonnet-5', content: [
+      { type: 'thinking', thinking: 'hmm let me think' },
+      { type: 'text', text: 'Use flexbox.' },
+      { type: 'tool_use', name: 'edit', input: {} },
+    ] } }),
+    JSON.stringify({ type: 'user', isSidechain: false, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'x', content: 'ok' }] } }),
+    JSON.stringify({ type: 'user', isMeta: true, promptId: 'meta1', message: { role: 'user', content: '[hook feedback] capture the lesson' } }),
+    JSON.stringify({ type: 'assistant', isSidechain: true, agentId: 'a1', message: { role: 'assistant', content: [{ type: 'text', text: 'subagent noise' }] } }),
+    JSON.stringify({ type: 'user', promptId: 'p2', isSidechain: false, message: { role: 'user', content: 'no, use grid instead' } }),
+    JSON.stringify({ type: 'assistant', isSidechain: false, message: { role: 'assistant', content: [{ type: 'text', text: 'Okay, grid works too.' }] } }),
+    JSON.stringify({ type: 'user', isCompactSummary: true, message: { role: 'user', content: 'summary of prior context' } }),
+  ];
+  const cycles = tb.extractCycles(lines);
+  assertEq(cycles.length, 2, 'two human cycles');
+  assertEq(cycles[0].promptId, 'p1');
+  assert(cycles[0].user.includes('center a div'), 'user text kept');
+  assert(cycles[0].assistant.includes('Use flexbox'), 'assistant text kept');
+  assert(!cycles[0].assistant.includes('hmm'), 'thinking dropped');
+  assert(!cycles[0].assistant.includes('edit'), 'tool_use dropped');
+  assertEq(cycles[1].promptId, 'p2');
+  assert(cycles.every(c => !c.user.includes('hook feedback')), 'isMeta excluded');
+  assert(cycles.every(c => !c.assistant.includes('subagent')), 'sidechain excluded');
+});
+
+test('transcript-block: extractCycles dedupes multi-envelope human turn by promptId', () => {
+  const tb = require('./lib/transcript-block.js');
+  const lines = [
+    JSON.stringify({ type: 'user', promptId: 'p1', message: { role: 'user', content: 'part one' } }),
+    JSON.stringify({ type: 'user', promptId: 'p1', message: { role: 'user', content: 'part two' } }),
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'answer' }] } }),
+  ];
+  assertEq(tb.extractCycles(lines).length, 1, 'same promptId = one cycle');
+});
+
+test('transcript-block: renderBlock marks roles and respects hard char cap', () => {
+  const tb = require('./lib/transcript-block.js');
+  const cycles = [{ promptId: 'p1', user: 'Q1', assistant: 'A1' }, { promptId: 'p2', user: 'Q2', assistant: 'A2' }];
+  const full = tb.renderBlock(cycles, 10000);
+  assert(/USER/.test(full) && /ASSISTANT/.test(full), 'role markers present');
+  assert(full.includes('Q1') && full.includes('A2'), 'content present');
+  assert(full.length <= 10000, 'within cap');
+  const capped = tb.renderBlock(cycles, 40);
+  assert(capped.length <= 40, `hard cap respected: got ${capped.length}`);
+});
+
+// ─── turn-budget (per-model cadence + fire condition — Phase 1 task 3) ────────
+test('turn-budget: budgetForModel scales by family; maxChars hard-capped; unknown→smallest', () => {
+  const tbud = require('./lib/turn-budget.js');
+  const opus = tbud.budgetForModel('claude-opus-4-8');
+  const son = tbud.budgetForModel('claude-sonnet-5');
+  const hai = tbud.budgetForModel('claude-haiku-4-5');
+  const unk = tbud.budgetForModel('');
+  assert(opus.maxTurns >= son.maxTurns && son.maxTurns >= hai.maxTurns, 'opus>=sonnet>=haiku turns');
+  assert(opus.maxChars <= 9000 && son.maxChars <= 9000 && hai.maxChars <= 9000, 'hook-safe hard cap');
+  assertEq(unk.maxTurns, hai.maxTurns, 'unknown model uses smallest budget');
+  assert(unk.minTurns >= 3, 'smallest keeps a floor');
+});
+
+test('turn-budget: shouldFire respects floor, ceilings, session-cap and cooldown', () => {
+  const tbud = require('./lib/turn-budget.js');
+  const m = 'claude-sonnet-5';
+  assertEq(tbud.shouldFire({ cycles: 3, chars: 100, model: m }).fire, false, 'below min turns');
+  assertEq(tbud.shouldFire({ cycles: 6, chars: 100, model: m }).fire, true, 'hit max turns');
+  assertEq(tbud.shouldFire({ cycles: 4, chars: 8000, model: m }).fire, true, 'hit max chars');
+  assertEq(tbud.shouldFire({ cycles: 5, chars: 100, model: m }).fire, false, 'accumulating between floor and ceilings');
+  assertEq(tbud.shouldFire({ cycles: 9, chars: 9999, model: m, capturesThisSession: 8 }).fire, false, 'session cap blocks');
+  assertEq(tbud.shouldFire({ cycles: 9, chars: 9999, model: m, lastCaptureTs: 1000, now: 1500 }, { cooldownMs: 10000 }).fire, false, 'cooldown blocks');
+});
+
+// ─── redact (secret/PII redaction before injection — Phase 1 task 5) ─────────
+test('redact: masks common secrets and PII, preserves auth scheme, spares prose', () => {
+  const { redact } = require('./lib/redact.js');
+  const jwt = redact('x eyJhbGciOiJI.eyJzdWIiOiI.SflKxwRJSMkey y').text;
+  assert(jwt.includes('[JWT]') && !jwt.includes('eyJhbGciOiJI'), 'JWT masked');
+  const gh = redact('use ghp_ABCDEFGHIJKLMNOPQRSTUVWX now').text;
+  assert(gh.includes('[GH_TOKEN]') && !gh.includes('ghp_ABCDEF'), 'GH token masked');
+  const aws = redact('key AKIAIOSFODNN7EXAMPLE end').text;
+  assert(aws.includes('[AWS_KEY]') && !aws.includes('AKIAIOSFODNN7EXAMPLE'), 'AWS masked');
+  const pem = redact('-----BEGIN PRIVATE KEY-----\nabc123\n-----END PRIVATE KEY-----').text;
+  assert(pem.includes('[PRIVATE_KEY]') && !pem.includes('abc123'), 'PEM masked');
+  const bearer = redact('Authorization: Bearer abcdef1234567890ABCDEF').text;
+  assert(bearer.includes('[REDACTED]') && /Bearer/i.test(bearer) && !bearer.includes('abcdef1234567890ABCDEF'), 'bearer value masked, scheme kept');
+  const url = redact('db postgres://user:secretpass@host/db').text;
+  assert(url.includes('[CRED]@') && !url.includes('secretpass'), 'url cred masked');
+  const env = redact('DB_PASSWORD=hunter2secret').text;
+  assert(env.includes('[REDACTED]') && !env.includes('hunter2secret'), 'env assignment masked');
+  const email = redact('ping a.user@example.com ok').text;
+  assert(email.includes('[EMAIL]') && !email.includes('a.user@example.com'), 'email masked');
+  // Modern key formats carry '-'/'_' in the body (Anthropic sk-ant-api03-…, OpenAI sk-proj-…).
+  const antKey = 'sk-ant-api03-' + 'AbCd12-_'.repeat(6) + 'ZZ';
+  const ant = redact('key ' + antKey + ' end').text;
+  assert(ant.includes('[API_KEY]') && !ant.includes(antKey), 'modern Anthropic key masked');
+  const projKey = 'sk-proj-' + 'Ab12Cd34'.repeat(5);
+  const proj = redact('use ' + projKey + ' now').text;
+  assert(proj.includes('[API_KEY]') && !proj.includes(projKey), 'modern OpenAI project key masked');
+  assertEq(redact('the token expired and I fixed the bug').text, 'the token expired and I fixed the bug', 'prose not over-redacted');
+  assert(redact('x ghp_ABCDEFGHIJKLMNOPQRSTUVWX y').count >= 1, 'count reflects redactions');
+});
+
+// ─── capture-dispatch (Stop detector: offer clean block to agent — Phase 1 task 4) ─
+test('capture-dispatch: buildInstruction names capture_lesson, types, tags, windowId, delimits untrusted block', () => {
+  const cd = require('./capture-dispatch.js');
+  const r = cd.buildInstruction('SOME BLOCK TEXT', 'win-123');
+  assert(/capture_lesson/.test(r), 'names the tool');
+  assert(/capture_ack/.test(r), 'names the no-lesson ack tool');
+  assert(/win-123/.test(r), 'carries the windowId to ack');
+  assert(/lesson/.test(r) && /pattern/.test(r) && /decision/.test(r) && /research/.test(r), 'lists lesson types');
+  assert(/tags/i.test(r), 'mentions tags');
+  assert(r.includes('SOME BLOCK TEXT'), 'includes the block');
+  assert(/UNTRUSTED|do not follow/i.test(r), 'delimits block as untrusted');
+});
+
+test('capture-dispatch: run offers from the queue, then acks when capture_lesson appears', () => {
+  const cd = require('./capture-dispatch.js');
+  const queue = require('./lib/capture-queue.js');
+  const sid = 'cap-fire-' + Date.now();
+  const cwd = process.env.CLAUDE_PLUGIN_DATA;
+  const project = require('./lib/project-id.js').resolveProjectId({ cwd });
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cap-${sid}.jsonl`);
+  queue.reset(project, sid);
+  const lines = [];
+  for (let i = 1; i <= 6; i++) {
+    lines.push(JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: 'question ' + i } }));
+    lines.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'answer ' + i }] } }));
+  }
+  fs.writeFileSync(tp, lines.join('\n') + '\n');
+  const res = cd.run({ session_id: sid, cwd, transcript_path: tp });
+  assert(res && res.block === true, 'offers a block');
+  assert(/capture_lesson/.test(res.reason), 'instruction present');
+  assert(res.reason.includes('answer 6'), 'carries recent content');
+  assert(queue.getState(project, sid).offer, 'offer opened on the queue');
+  // agent acks via the tool (capture_lesson(windowId) or capture_ack) → next Stop drains, no re-offer.
+  const wid = queue.getState(project, sid).offer.windowId;
+  queue.recordAck(wid, 'captured');
+  const res2 = cd.run({ session_id: sid, cwd, transcript_path: tp });
+  assert(!res2.block, 'after ack, no re-offer this Stop');
+  assert(!queue.getState(project, sid).offer, 'offer acked/cleared');
+  assertEq(queue.getState(project, sid).queue.length, 0, 'captured cycles drained from the queue');
+  queue.reset(project, sid);
+});
+
+test('capture-dispatch: an OPEN offer re-blocks even on stop_hook_active until the agent acks (real block-until-ack)', () => {
+  const cd = require('./capture-dispatch.js');
+  const queue = require('./lib/capture-queue.js');
+  const sid = 'cap-block-' + Date.now();
+  const cwd = process.env.CLAUDE_PLUGIN_DATA;
+  const project = require('./lib/project-id.js').resolveProjectId({ cwd });
+  const tp = path.join(cwd, `capbl-${sid}.jsonl`);
+  queue.reset(project, sid);
+  const lines = [];
+  for (let i = 1; i <= 6; i++) {
+    lines.push(JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: 'question ' + i } }));
+    lines.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'answer ' + i }] } }));
+  }
+  fs.writeFileSync(tp, lines.join('\n') + '\n');
+  const first = cd.run({ session_id: sid, cwd, transcript_path: tp });
+  assert(first && first.block, 'first Stop opens an offer and blocks');
+  const wid = queue.getState(project, sid).offer.windowId;
+  // The agent CONTINUED (stop_hook_active) but did NOT ack — the turn must NOT be
+  // allowed to end: the dispatcher re-blocks. (The old bug returned {} here, letting
+  // the agent ignore the instruction and stop.)
+  const cont = cd.run({ session_id: sid, cwd, transcript_path: tp, stop_hook_active: true });
+  assert(cont && cont.block, 're-blocks on the continuation while unacked');
+  assert(cont.reason.includes(wid) || /capture_ack/.test(cont.reason), 're-inject carries the same window instruction');
+  // Now the agent acks → the continuation Stop drains and lets the turn end.
+  queue.recordAck(wid, 'none');
+  const done = cd.run({ session_id: sid, cwd, transcript_path: tp, stop_hook_active: true });
+  assert(!done.block, 'after the explicit ack, the turn is released');
+  assert(!queue.getState(project, sid).offer, 'offer cleared on ack');
+  queue.reset(project, sid);
+});
+
+test('capture-dispatch: run stays silent below budget and when stop_hook_active', () => {
+  const cd = require('./capture-dispatch.js');
+  const marker = require('./lib/session-marker.js');
+  const cwd = process.env.CLAUDE_PLUGIN_DATA;
+  const project = require('./lib/project-id.js').resolveProjectId({ cwd });
+  const sid = 'cap-quiet-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `capq-${sid}.jsonl`);
+  marker.resetAll(project, sid);
+  fs.writeFileSync(tp, '');
+  marker.initIfAbsent(project, sid, tp);
+  fs.writeFileSync(tp, [
+    JSON.stringify({ type: 'user', promptId: 'p1', message: { role: 'user', content: 'hi' } }),
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'hello' }] } }),
+  ].join('\n') + '\n');
+  assert(!(cd.run({ session_id: sid, cwd, transcript_path: tp })).block, 'below min turns → silent');
+  marker.resetAll(project, sid);
+
+  const sid2 = 'cap-active-' + Date.now();
+  const tp2 = path.join(process.env.CLAUDE_PLUGIN_DATA, `capa-${sid2}.jsonl`);
+  marker.resetAll(project, sid2);
+  fs.writeFileSync(tp2, '');
+  marker.initIfAbsent(project, sid2, tp2);
+  const many = [];
+  for (let i = 1; i <= 6; i++) {
+    many.push(JSON.stringify({ type: 'user', promptId: 'q' + i, message: { role: 'user', content: 'q' + i } }));
+    many.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'a' + i }] } }));
+  }
+  fs.writeFileSync(tp2, many.join('\n') + '\n');
+  assert(!(cd.run({ session_id: sid2, cwd, transcript_path: tp2, stop_hook_active: true })).block, 'stop_hook_active → silent');
+  marker.resetAll(project, sid2);
+});
+
+test('capture-dispatch: emits capture.offered metric on fire', () => {
+  const cd = require('./capture-dispatch.js');
+  const marker = require('./lib/session-marker.js');
+  const metrics = require('./lib/metrics.js');
+  const cwd = process.env.CLAUDE_PLUGIN_DATA;
+  const project = require('./lib/project-id.js').resolveProjectId({ cwd });
+  const sid = 'cap-metric-' + Date.now();
+  const tp = path.join(cwd, `capm-${sid}.jsonl`);
+  marker.resetAll(project, sid);
+  fs.writeFileSync(tp, '');
+  marker.initIfAbsent(project, sid, tp);
+  const lines = [];
+  for (let i = 1; i <= 6; i++) {
+    lines.push(JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: 'q' + i } }));
+    lines.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'a' + i }] } }));
+  }
+  fs.writeFileSync(tp, lines.join('\n') + '\n');
+  const calls = [];
+  const orig = metrics.fire;
+  metrics.fire = (n, p) => calls.push({ n, p });
+  try {
+    const res = cd.run({ session_id: sid, cwd, transcript_path: tp });
+    assert(res.block === true, 'fired');
+  } finally {
+    metrics.fire = orig;
+  }
+  const offered = calls.find(c => c.n === 'capture.offered');
+  assert(offered, 'capture.offered emitted');
+  assertEq(offered.p.cycles, 6, 'cycles in payload');
+  assert(typeof offered.p.model === 'string', 'model in payload');
+  marker.resetAll(project, sid);
+});
+
+test('capture-dispatch: over-budget window is offered in chunks, never skipping cycles (regression)', () => {
+  const cd = require('./capture-dispatch.js');
+  const marker = require('./lib/session-marker.js');
+  const cwd = process.env.CLAUDE_PLUGIN_DATA;
+  const project = require('./lib/project-id.js').resolveProjectId({ cwd });
+  const sid = 'cap-budget-' + Date.now();
+  const tp = path.join(cwd, `capb-${sid}.jsonl`);
+  marker.resetAll(project, sid);
+  fs.writeFileSync(tp, '');
+  marker.initIfAbsent(project, sid, tp);
+  // 12 cycles, each ~1.8KB → window >> sonnet 8KB cap, so it MUST be offered in
+  // contiguous chunks (4/chunk). 12 = 3 full chunks (last chunk >= minTurns), so it
+  // drains fully — proving no cycle is skipped past the cursor.
+  const big = 'x'.repeat(1800);
+  const lines = [];
+  for (let i = 1; i <= 12; i++) {
+    lines.push(JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: 'MARK' + i + '_ ' + big } }));
+    lines.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'ans' + i }] } }));
+  }
+  fs.writeFileSync(tp, lines.join('\n') + '\n');
+  const seen = new Set();
+  const cq = require('./lib/capture-queue.js');
+  const deps = { config: { cooldownMs: 0, maxCapturesPerSession: 50 } }; // isolate chunking from cadence bounds
+  // Progress by ACKING each offered chunk (the agent's tool call) — NOT by parking.
+  // A drop/park would lose cycles; an ack advances to the next contiguous chunk.
+  for (let stop = 0; stop < 30; stop++) {
+    const res = cd.run({ session_id: sid, cwd, transcript_path: tp }, deps);
+    if (!(res && res.block)) break;
+    for (let i = 1; i <= 12; i++) if (res.reason.includes('MARK' + i + '_')) seen.add(i);
+    const off = cq.getState(project, sid).offer;
+    if (off) cq.recordAck(off.windowId, 'captured');
+  }
+  // No-skip invariant: offers start at the OLDEST cycle and are a CONTIGUOUS prefix
+  // {1,2,...,K} — the old (keep-newest) bug offered recent cycles and advanced past
+  // the older ones, yielding a set that does NOT start at 1.
+  const arr = [...seen].sort((a, b) => a - b);
+  assert(arr.length >= 8, `multiple chunks drained, got ${arr.join(',')}`);
+  assertEq(arr[0], 1, 'offers start at the oldest uncaptured cycle');
+  assert(arr.every((v, i) => v === i + 1), `offered cycles are a contiguous prefix (no skip), got ${arr.join(',')}`);
+  marker.resetAll(project, sid);
+});
+
+// ─── capture-queue (Phase 1.5a: durable redacted cycle queue) ────────────────
+test('capture-queue: ingest extracts + redacts cycles into a durable queue and advances the scan cursor', () => {
+  const q = require('./lib/capture-queue.js');
+  const { redact } = require('./lib/redact.js');
+  const project = 'cq-ing-' + Date.now();
+  const sid = 'cq-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cq-${sid}.jsonl`);
+  q.reset(project, sid);
+  const lines = [];
+  for (let i = 1; i <= 3; i++) {
+    lines.push(JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: 'question ' + i } }));
+    lines.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'answer ' + i + ' token ghp_ABCDEFGHIJKLMNOPQRSTUVWX end' }] } }));
+  }
+  fs.writeFileSync(tp, lines.join('\n') + '\n');
+  const r = q.ingest(project, sid, tp, s => redact(s).text);
+  assertEq(r.added, 3, 'three cycles queued');
+  const st = q.getState(project, sid);
+  assertEq(st.queue.length, 3);
+  assertEq(st.queue[0].promptId, 'p1');
+  assert(st.queue.every(c => !c.assistant.includes('ghp_ABCDEF')), 'secret redacted at rest');
+  assert(st.scan.offset > 0, 'scan cursor advanced');
+  q.reset(project, sid);
+});
+
+test('capture-queue: re-ingest is idempotent and dedups across a compaction rewrite (content-hash)', () => {
+  const q = require('./lib/capture-queue.js');
+  const { redact } = require('./lib/redact.js');
+  const project = 'cq-comp-' + Date.now();
+  const sid = 'cq2-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cq2-${sid}.jsonl`);
+  q.reset(project, sid);
+  const cyc = (i) => [
+    JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: 'q' + i } }),
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'a' + i }] } }),
+  ];
+  fs.writeFileSync(tp, [cyc(1), cyc(2), cyc(3)].flat().join('\n') + '\n');
+  assertEq(q.ingest(project, sid, tp, s => redact(s).text).added, 3);
+  assertEq(q.ingest(project, sid, tp, s => redact(s).text).added, 0, 'idempotent on unchanged file');
+  // compaction: rewrite SHORTER with a summary event + the SAME 3 cycles at new offsets
+  const summary = JSON.stringify({ type: 'user', isCompactSummary: true, message: { role: 'user', content: 'summary of prior context' } });
+  fs.writeFileSync(tp, [summary, cyc(1), cyc(2), cyc(3)].flat().join('\n') + '\n');
+  assertEq(q.ingest(project, sid, tp, s => redact(s).text).added, 0, 'compaction rebase re-scans but content-hash dedups');
+  assertEq(q.getState(project, sid).queue.length, 3, 'still exactly 3, no duplicates');
+  q.reset(project, sid);
+});
+
+// ─── capture-queue offer/ACK (Phase 1.5b) ────────────────────────────────────
+function _cqSeed(q, redact, project, sid, tp, n) {
+  q.reset(project, sid);
+  const lines = [];
+  for (let i = 1; i <= n; i++) {
+    lines.push(JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: 'q' + i } }));
+    lines.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'a' + i }] } }));
+  }
+  fs.writeFileSync(tp, lines.join('\n') + '\n');
+  q.ingest(project, sid, tp, s => redact(s).text);
+}
+
+test('capture-queue: offer packs oldest queued cycles under a windowId; ack drains them', () => {
+  const q = require('./lib/capture-queue.js');
+  const { redact } = require('./lib/redact.js');
+  const project = 'cq-off-' + Date.now(); const sid = 'cqo-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cqo-${sid}.jsonl`);
+  _cqSeed(q, redact, project, sid, tp, 3);
+  const off = q.offer(project, sid, 100000);
+  assert(off && off.windowId, 'offer created');
+  assert(off.text.includes('q1') && off.text.includes('a3'), 'packs the queued cycles');
+  assertEq(q.getState(project, sid).queue.length, 3, 'offer does not remove from queue yet');
+  assert(q.ack(project, sid, off.windowId, 'captured'), 'ack matches windowId');
+  assertEq(q.getState(project, sid).queue.length, 0, 'ack drains the offered cycles');
+  assert(!q.getState(project, sid).offer, 'offer cleared');
+  assert(!q.ack(project, sid, 'bogus', 'captured'), 'ack rejects a non-matching windowId');
+  q.reset(project, sid);
+});
+
+test('capture-queue: recordAck/readAck/clearAck round-trip by windowId', () => {
+  const q = require('./lib/capture-queue.js');
+  const wid = 'w-rt-' + Date.now();
+  q.clearAck(wid);
+  assert(!q.readAck(wid), 'no ack initially');
+  q.recordAck(wid, 'none');
+  assertEq(q.readAck(wid).outcome, 'none', 'ack read back');
+  q.clearAck(wid);
+  assert(!q.readAck(wid), 'ack cleared');
+});
+
+test('capture-queue: reconcile drains on an explicit ack marker (no transcript guessing)', () => {
+  const q = require('./lib/capture-queue.js');
+  const { redact } = require('./lib/redact.js');
+  const project = 'cq-ack-' + Date.now(); const sid = 'cqa-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cqa-${sid}.jsonl`);
+  _cqSeed(q, redact, project, sid, tp, 3);
+  const off = q.offer(project, sid, 100000);
+  q.recordAck(off.windowId, 'captured'); // the agent's capture_lesson/capture_ack tool wrote this
+  const r = q.reconcile(project, sid, 6);
+  assert(r.acked && r.outcome === 'captured', 'reconcile drains on the explicit ack');
+  assertEq(q.getState(project, sid).queue.length, 0, 'captured cycles drained');
+  assert(!q.readAck(off.windowId), 'ack marker consumed');
+  q.reset(project, sid);
+});
+
+test('capture-queue: reconcile re-blocks indefinitely until acked — NEVER parks/deletes (no-loss)', () => {
+  const q = require('./lib/capture-queue.js');
+  const { redact } = require('./lib/redact.js');
+  const project = 'cq-nopark-' + Date.now(); const sid = 'cqp-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cqp-${sid}.jsonl`);
+  _cqSeed(q, redact, project, sid, tp, 3);
+  q.offer(project, sid, 100000);
+  // Many un-acked reconciles: the offer STAYS OPEN (re-block) and cycles STAY in
+  // the durable queue. Allan's design: the turn never proceeds until the agent
+  // acks; a stuck window is re-offered on the next Stop, never lost to a terminal
+  // `deferred` collection that nothing re-offers.
+  for (let i = 0; i < 12; i++) {
+    const r = q.reconcile(project, sid);
+    assert(!r.acked && r.retry && !r.parked, `reconcile ${i} re-blocks (no ack, no park)`);
+  }
+  const st = q.getState(project, sid);
+  assert(st.offer, 'offer stays open to keep re-blocking');
+  assertEq(st.queue.length, 3, 'cycles stay in the durable queue — never parked/deleted');
+  assert(!st.deferred || st.deferred.length === 0, 'no terminal deferred collection');
+  q.reset(project, sid);
+});
+
+test('capture-queue: reconcile counts captured separately from offers; "none" does not', () => {
+  const q = require('./lib/capture-queue.js');
+  const { redact } = require('./lib/redact.js');
+  const project = 'cq-cap-' + Date.now(); const sid = 'cqc-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cqcap-${sid}.jsonl`);
+  q.reset(project, sid);
+  const cyc = (i) => [
+    JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: 'question ' + i } }),
+    JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'answer ' + i }] } }),
+  ].join('\n');
+  fs.writeFileSync(tp, cyc(1) + '\n' + cyc(2) + '\n' + cyc(3) + '\n');
+  q.ingest(project, sid, tp, s => redact(s).text);
+  const off1 = q.offer(project, sid, 100000);
+  q.recordAck(off1.windowId, 'captured');
+  q.reconcile(project, sid);
+  assertEq(q.getState(project, sid).captured, 1, 'captured incremented on a real capture');
+  fs.appendFileSync(tp, cyc(4) + '\n' + cyc(5) + '\n' + cyc(6) + '\n');
+  q.ingest(project, sid, tp, s => redact(s).text);
+  const off2 = q.offer(project, sid, 100000);
+  q.recordAck(off2.windowId, 'none');
+  q.reconcile(project, sid);
+  assertEq(q.getState(project, sid).captured, 1, '"none" ack does NOT count as a capture');
+  assert(q.getState(project, sid).offers >= 2, 'offers counts review interruptions (both windows)');
+  q.reset(project, sid);
+});
+
+test('capture-queue: reconcile keeps the ack marker if the drain _save FAILS (no ack loss)', () => {
+  const q = require('./lib/capture-queue.js');
+  const { redact } = require('./lib/redact.js');
+  const project = 'cq-saveguard-' + Date.now(); const sid = 'cqsg-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cqsg-${sid}.jsonl`);
+  _cqSeed(q, redact, project, sid, tp, 3);
+  const off = q.offer(project, sid, 100000);
+  q.recordAck(off.windowId, 'captured');
+  // Inject a failing save (CAS/disk failure) into the drain via the seam.
+  const r = q.reconcile(project, sid, { save: () => false });
+  assert(!r.acked, 'drain reports not-acked when the commit fails');
+  assert(q.readAck(off.windowId), 'ack marker PRESERVED for retry (not cleared on a failed save)');
+  assert(q.getState(project, sid).offer, 'offer still open (drain rolled back)');
+  // a subsequent NORMAL reconcile still drains it
+  const r2 = q.reconcile(project, sid);
+  assert(r2.acked, 'retry drains once the save succeeds');
+  assert(!q.readAck(off.windowId), 'marker consumed after the successful drain');
+  q.reset(project, sid);
+});
+
+test('capture-queue: offer windowId is a random nonce — identical content across sessions never collides', () => {
+  const q = require('./lib/capture-queue.js');
+  const { redact } = require('./lib/redact.js');
+  const ts = Date.now();
+  const mk = (tag) => {
+    const project = 'cq-nonce-' + tag + '-' + ts; const sid = 'cqn-' + tag + '-' + ts;
+    const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `cqn-${tag}-${ts}.jsonl`);
+    _cqSeed(q, redact, project, sid, tp, 3); // IDENTICAL seeded content in both
+    const off = q.offer(project, sid, 100000);
+    return { project, sid, wid: off.windowId };
+  };
+  const a = mk('a'); const b = mk('b');
+  assert(a.wid && b.wid, 'both offers created');
+  assert(a.wid !== b.wid, 'identical content in two sessions yields DISTINCT nonce windowIds (no cross-session collision)');
+  // re-offering the same window after a reset also yields a fresh nonce
+  q.reset(a.project, a.sid);
+  q.reset(b.project, b.sid);
+});
+
+test('capture bridge: the REAL capture_ack MCP tool writes the marker the queue drains (no fiction)', async () => {
+  const url = require('url');
+  const q = require('./lib/capture-queue.js');
+  const { redact } = require('./lib/redact.js');
+  // Import the ESM server FIRST — this is the only real await. Everything that
+  // touches the shared process.env.CLAUDE_PLUGIN_DATA runs synchronously AFTER it,
+  // so interleaved async tests can't swap the data dir mid-flight.
+  const mod = await import(url.pathToFileURL(path.join(process.env.CLAUDE_PLUGIN_ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+  const server = mod.createBrainServer({ pluginRoot: process.env.CLAUDE_PLUGIN_ROOT, mode: 'stdio' });
+  assert(typeof server.handleTool === 'function', 'server exposes the tool dispatcher seam');
+  const prevData = process.env.CLAUDE_PLUGIN_DATA;
+  const myData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bridge-'));
+  process.env.CLAUDE_PLUGIN_DATA = myData;
+  try {
+    const project = 'cq-bridge-' + Date.now(); const sid = 'cqbr-' + Date.now();
+    const tp = path.join(myData, `cqbr-${sid}.jsonl`);
+    _cqSeed(q, redact, project, sid, tp, 3);
+    const off = q.offer(project, sid, 100000);
+    // capture_ack's handler is synchronous (recordCaptureAck → capture-queue.recordAck)
+    // and writes the marker before returning, so no await is needed here — keeping the
+    // whole env-sensitive section atomic against interleaving async tests.
+    server.handleTool('capture_ack', { windowId: off.windowId, outcome: 'none' });
+    assert(q.readAck(off.windowId), 'the REAL MCP tool wrote the ack marker (tool→recordCaptureAck→queue bridge)');
+    // The deterministic Stop-side reconcile drains PURELY from what the tool wrote.
+    const r = q.reconcile(project, sid);
+    assert(r.acked && r.outcome === 'none', 'reconcile drains from the tool-written marker (real bridge, not a stubbed name)');
+    assertEq(q.getState(project, sid).queue.length, 0, 'offered cycles drained via the real tool path');
+    q.reset(project, sid);
+  } finally {
+    process.env.CLAUDE_PLUGIN_DATA = prevData;
+    try { fs.rmSync(myData, { recursive: true, force: true }); } catch (err) { void err; }
+  }
+});
+
+test('capture_lesson local: a null merge (vanished dedup hit) does NOT phantom-ack — it admits (stores) instead', async () => {
+  const url = require('url');
+  const R = process.env.CLAUDE_PLUGIN_ROOT;
+  const saved = [];
+  // Injected KB where a dedup hit is returned by search but merge() finds nothing
+  // (the entry vanished — e.g. a concurrent consolidation deleted it) → returns null.
+  // This is the exact race the guard defends against. Stubs are passed via a test
+  // seam (no require.cache mutation), so assertions depend only on the return value
+  // and the in-memory `saved` array — never on shared process env.
+  const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+  const server = mod.createBrainServer({ pluginRoot: R, mode: 'stdio', _testHooks: {
+    getKB: async () => ({
+      store: { search: async () => [{ id: 'vanished-id', title: 'Ghost' }], merge: async () => null, save: async (e) => { saved.push(e); } },
+      index: { index: async () => {} },
+      graph: { registerNode: async () => {} },
+    }),
+    embedder: { init: async () => {}, getStatus: () => ({ ready: true }), embed: async () => [0.1, 0.2, 0.3] },
+  } });
+  // The injected _testHooks.getKB forces handleTool onto the LOCAL path, so this test
+  // never reads or mutates the shared brain-backend singleton mode (no cross-test race).
+  const res = await server.handleTool('capture_lesson', { title: 'T', summary: 'S', detail: 'D', type: 'decision', scope: 'project', project: 'pMergeNull', windowId: 'w-mergenull-' + Date.now() });
+  const out = JSON.parse(res.content[0].text);
+  // With the pre-fix bug (ack on a null merge), decision would be 'merge' and nothing saved.
+  assertEq(out.decision, 'admit', 'a vanished merge target falls through to admit (stores the lesson), never a phantom merge');
+  assertEq(saved.length, 1, 'the lesson was actually persisted before the ack (no silent loss)');
+});
+
+test('capture_ack: a forged outcome:"captured" is neutralized to "none" (only capture_lesson can mark captured)', async () => {
+  const url = require('url');
+  const q = require('./lib/capture-queue.js');
+  const R = process.env.CLAUDE_PLUGIN_ROOT;
+  const wid = 'w-forge-' + Date.now();
+  q.clearAck(wid);
+  const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+  const server = mod.createBrainServer({ pluginRoot: R, mode: 'stdio' });
+  // capture_ack's handler is synchronous (records the marker before returning), so no
+  // await is needed — the read below is atomic against env-swapping async tests.
+  // A forged/injected capture_ack claiming 'captured' must NOT write a captured marker:
+  // that would inflate the captured metric and mark a window captured with no persisted
+  // lesson. The handler hard-codes 'none' regardless of the passed outcome.
+  server.handleTool('capture_ack', { windowId: wid, outcome: 'captured' });
+  const rec = q.readAck(wid);
+  assert(rec && rec.outcome === 'none', `capture_ack always records 'none' regardless of a passed outcome, got: ${rec && rec.outcome}`);
+  q.clearAck(wid);
+});
+
+test('capture-queue: _save CAS refuses a stale write (cross-Stop concurrency safety)', () => {
+  const q = require('./lib/capture-queue.js');
+  const project = 'cq-cas-' + Date.now(); const sid = 'cqc-' + Date.now();
+  q.reset(project, sid);
+  q._save(project, sid, { rev: 0, scan: { offset: 0, anchorHash: '' }, seen: [], queue: [{ id: 'a', promptId: 'p', user: 'u', assistant: 'x' }], offer: null });
+  assert(q._save(project, sid, { rev: 1, scan: { offset: 0, anchorHash: '' }, seen: [], queue: [], offer: null }, 0), 'writer with matching expectRev 0 wins');
+  assert(!q._save(project, sid, { rev: 1, scan: { offset: 0, anchorHash: '' }, seen: ['stale'], queue: [{ id: 'a' }], offer: null }, 0), 'stale writer (expectRev 0) refused after rev moved to 1');
+  assertEq(q.getState(project, sid).queue.length, 0, 'the winning committed state stands');
+  q.reset(project, sid);
 });
 
 // ─── Runner ──────────────────────────────────────────────────────────────────

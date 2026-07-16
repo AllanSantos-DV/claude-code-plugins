@@ -11,6 +11,9 @@
 
 const { readStdin, parsePayload, emitEmpty } = require('./lib/hook-io.js');
 const failureJournal = require('./lib/failure-journal.js');
+const { dataDir } = require('./lib/data-dir.js');
+const errorStore = require('./lib/error-store.js');
+const { getErrorGuard } = require('./lib/hooks-config.js');
 
 function normalizeCmd(cmd) {
   return String(cmd || '')
@@ -47,6 +50,35 @@ function buildEntry(ev) {
   };
 }
 
+/**
+ * Deterministic error-guard recording (Phase 2 micro-1): on a Bash failure,
+ * durably record the RAW command's canonical signature into lib/error-store so
+ * error-guard (PreToolUse) can DENY a recurring re-run. Uses the RAW command
+ * (event.tool_input.command), NOT the masked/truncated normalizeCmd string, so
+ * canonicalSig sees the real command. Best-effort and gated — never blocks the
+ * failure-journal path above.
+ * @param {object} ev   the PostToolUseFailure event
+ * @param {object} entry the buildEntry() result (reuses snippet + exitCode)
+ * @param {string} sid  session id
+ */
+function recordErrorGuard(ev, entry, sid) {
+  if (ev.tool_name !== 'Bash') return;
+  try {
+    if (getErrorGuard().enabled === false) return;
+    const command = (ev.tool_input && ev.tool_input.command) || '';
+    if (!command) return;
+    const projectKey = errorStore.resolveProjectKey(ev.cwd || process.cwd());
+    errorStore.record(dataDir(), projectKey, {
+      command,
+      cause: entry.snippet,
+      exitCode: entry.exitCode,
+      sessionId: sid,
+    });
+  } catch (err) {
+    console.error(`[failure-detect] error-store record failed: ${err.message}`);
+  }
+}
+
 async function main() {
   const raw = await readStdin();
   const ev = parsePayload(raw);
@@ -54,11 +86,13 @@ async function main() {
   if (ev.hook_event_name !== 'PostToolUseFailure') return emitEmpty();
   if (ev.is_interrupt === true) return emitEmpty();
   const sid = ev.session_id || ev.sessionId || 'default';
+  const entry = buildEntry(ev);
   try {
-    failureJournal.appendEntry(sid, buildEntry(ev));
+    failureJournal.appendEntry(sid, entry);
   } catch (err) {
     console.error(`[failure-detect] ${err.message}`);
   }
+  recordErrorGuard(ev, entry, sid);
   emitEmpty();
 }
 

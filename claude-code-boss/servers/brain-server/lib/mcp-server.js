@@ -41,11 +41,12 @@ const REMOTE_KB_TOOLS = new Set([
   'brain_search', 'brain_store', 'capture_lesson', 'brain_related', 'brain_count',
 ]);
 
-export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
+export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {}) {
   const PLUGIN_ROOT = pluginRoot;
 
   // ─── KB modules (lazy-loaded) ──────────────────────────────────────────────
   async function getKB(project) {
+    if (_testHooks && typeof _testHooks.getKB === 'function') return _testHooks.getKB(project);
     const store = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-store.js'));
     const index = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-index.js'));
     const graph = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-graph.js'));
@@ -67,6 +68,22 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
       if (metricsStore.init({ project })) metricsStore.recordMetric('lesson.captured', payload, null);
     } catch (err) {
       console.error(`[BRAIN-SERVER] recordLessonMetric failed: ${err.message}`);
+    }
+  }
+
+  // Phase 1.5 capture ACK: when the offered block carried a windowId, the agent's
+  // capture_lesson(windowId) / capture_ack(windowId) tool call writes the explicit
+  // ack marker the Stop-hook reconcile reads — so the deterministic side never has
+  // to guess from the transcript. Keyed by windowId (filesystem-shared across the
+  // brain-server and Stop-hook processes).
+  function recordCaptureAck(windowId, outcome) {
+    if (!windowId) return false;
+    try {
+      const cq = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'capture-queue.js'));
+      return cq.recordAck(windowId, outcome);
+    } catch (err) {
+      console.error(`[BRAIN-SERVER] recordCaptureAck failed: ${err.message}`);
+      return false;
     }
   }
 
@@ -100,6 +117,7 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
           // local path below) — every capture here is an 'admit'. Recorded
           // locally regardless: metrics are per-machine, not part of the KB.
           recordLessonMetric(project, { type: a.type || 'lesson', decision: 'admit', scope: a.scope || 'auto' });
+          recordCaptureAck(a.windowId, 'captured');
           return asText({ decision: 'admit', id, type: a.type || 'lesson', project, scope: a.scope || 'auto', backend: 'mcp-memory' });
         }
         case 'brain_related': {
@@ -237,7 +255,12 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
     {
       name: 'capture_lesson',
       description: 'Capture a CURATED lesson in-loop (the agent post-mortem pattern). Call this when the user corrects you, or when a reusable pattern emerges — YOU write the clean summary + correction + generalized lesson (you have full context; do not make the KB re-read transcripts). WRITE IN ENGLISH — the KB is English-canonical so entries stay retrievable regardless of the user\'s prompt language. Runs admission control inline: a near-duplicate is MERGED (bumping recurrence, which drives skill promotion) instead of duplicated.',
-      inputSchema: { type: 'object', properties: { title: { type: 'string', description: 'Short lesson title in English (max 80 chars)' }, summary: { type: 'string', description: 'One-line in English: what went wrong / the pattern, and what to do instead' }, detail: { type: 'string', description: 'Full lesson in English: what happened + the correction + the generalized rule. Keep the valuable specifics.' }, type: { type: 'string', enum: ['lesson', 'pattern', 'decision', 'research'], description: 'lesson (correction), pattern (reusable workflow), decision (architectural choice + rationale — plugin Stop hooks nudge this type), or research (external findings worth reusing — plugin Stop hooks nudge this type too). Default: lesson' }, tags: { type: 'array', items: { type: 'string' }, description: '3-8 CANONICAL English concept tags, lowercase, hyphenated (e.g. "error-handling", "token-efficiency", "cross-lingual"). These are the language-neutral retrieval anchor — choose the terms a future query (in any language) would map to.' }, confidence: { type: 'number', description: '0.0-1.0 (default 0.85)' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode)' }, scope: { type: 'string', enum: ['auto', 'project', 'user'], description: 'Where to store. "auto" (default) infers from type+tags (decision/code → project; reference/research/user-tag hints like workflow/preferences/agent-behavior → user). "user" routes to global __user__ DB and sanitizes user paths/emails/project name. Entries with detected secrets are rejected if scope=user.' } }, required: ['title', 'summary'] },
+      inputSchema: { type: 'object', properties: { title: { type: 'string', description: 'Short lesson title in English (max 80 chars)' }, summary: { type: 'string', description: 'One-line in English: what went wrong / the pattern, and what to do instead' }, detail: { type: 'string', description: 'Full lesson in English: what happened + the correction + the generalized rule. Keep the valuable specifics.' }, type: { type: 'string', enum: ['lesson', 'pattern', 'decision', 'research'], description: 'lesson (correction), pattern (reusable workflow), decision (architectural choice + rationale — plugin Stop hooks nudge this type), or research (external findings worth reusing — plugin Stop hooks nudge this type too). Default: lesson' }, tags: { type: 'array', items: { type: 'string' }, description: '3-8 CANONICAL English concept tags, lowercase, hyphenated (e.g. "error-handling", "token-efficiency", "cross-lingual"). These are the language-neutral retrieval anchor — choose the terms a future query (in any language) would map to.' }, confidence: { type: 'number', description: '0.0-1.0 (default 0.85)' }, windowId: { type: 'string', description: 'When the plugin offered a review block, pass its windowId to close (ack) that capture window as captured.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode)' }, scope: { type: 'string', enum: ['auto', 'project', 'user'], description: 'Where to store. "auto" (default) infers from type+tags (decision/code → project; reference/research/user-tag hints like workflow/preferences/agent-behavior → user). "user" routes to global __user__ DB and sanitizes user paths/emails/project name. Entries with detected secrets are rejected if scope=user.' } }, required: ['title', 'summary'] },
+    },
+    {
+      name: 'capture_ack',
+      description: 'Close a lesson-capture review window when there is NO lesson to capture. When the plugin offers a review block and nothing is worth capturing, call this with the block\'s windowId to release the Stop. (Capturing via capture_lesson with the same windowId already closes it — you do not need both.)',
+      inputSchema: { type: 'object', properties: { windowId: { type: 'string', description: 'The windowId from the offered review block' }, outcome: { type: 'string', enum: ['none'], description: 'Always "none" (no lesson to capture).' } }, required: ['windowId'] },
     },
     {
       name: 'brain_retrieve_context',
@@ -270,14 +293,32 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
         required: ['id', 'scriptPath', 'content', 'aliases'],
       },
     },
+    {
+      name: 'policy_activate',
+      description: 'Activate a standing user policy (explicit user action only; NOT for automatic capture). Two modes: (1) ALWAYS-mode (default, no `globs`) — injected every session/subagent start, for a persistent global constraint (e.g. "never let pre-existing code errors pass"). (2) GLOB-mode (pass `globs`) — a project-scoped POST-EDIT ADVISORY that surfaces ONLY when an edited file path matches one of the globs (e.g. globs:["src/**/*.ts"] text:"keep this layer free of console.log"). Glob policies are ALWAYS project-scoped and never injected at session start. In both modes the text is redacted + capped and stored in a local registry. Surfacing ≠ enforcement — this makes the policy PRESENT in context, it does not block.',
+      inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'The policy / standing constraint in plain language (required). Redacted + capped before storage.' }, entryId: { type: 'string', description: 'Optional stable id (e.g. a KB entry id) so re-activating the same policy upserts instead of duplicating. Default: a hash of text+mode+project(+globs).' }, scope: { type: 'string', enum: ['project', 'user'], description: 'project (default) = applies only in this project; user = applies in every project. IGNORED when globs are given (glob policies are always project-scoped).' }, globs: { type: 'array', items: { type: 'string' }, description: 'Optional glob patterns (e.g. ["src/**/*.ts","*.md"]). When present the policy becomes a project-scoped GLOB-mode advisory, surfaced ONLY when an edited file matches — never at session start. Must be a non-empty array of valid patterns (≤20 patterns, each ≤200 chars); otherwise activation is rejected.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode). Ignored for user scope.' }, cwd: { type: 'string', description: 'Working directory (for project scoping when project is omitted).' } }, required: ['text'] },
+    },
+    {
+      name: 'policy_list',
+      description: 'List the standing policies currently active for a project (user-scope always-policies always included). Returns id, mode (always | glob), scope, projectId, globs (for glob policies), and a text preview for each. Glob policies are surfaced here for visibility even though they only inject on a matching edit.',
+      inputSchema: { type: 'object', properties: { project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Working directory (for project scoping when project is omitted).' } } },
+    },
+    {
+      name: 'policy_deactivate',
+      description: 'Deactivate (remove) a standing policy by id so it stops being injected immediately. Use the id returned by policy_activate or policy_list. Invalidation must deactivate right away.',
+      inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'The policy id to deactivate (from policy_activate / policy_list).' } }, required: ['id'] },
+    },
   ];
 
   // ─── Tool handlers (faithful move from the previous index.js switch) ───────
   async function handleTool(name, args) {
     // Remote brain (Native Java daemon): route write/search/related/count KB tools
     // through the backend dispatcher. brain_retrieve_context is excluded — its case
-    // calls retrieve-core, which is itself remote-aware.
-    if (REMOTE_KB_TOOLS.has(name)) {
+    // calls retrieve-core, which is itself remote-aware. A test that injects a local
+    // KB via _testHooks.getKB forces the LOCAL path (so it exercises the local case
+    // without depending on / mutating the shared brain-backend singleton mode).
+    const forceLocal = !!(_testHooks && _testHooks.getKB);
+    if (!forceLocal && REMOTE_KB_TOOLS.has(name)) {
       const backend = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-backend.js'));
       if (backend.peekMode() === 'mcp-memory') {
         return handleRemoteKbTool(backend, name, args);
@@ -411,7 +452,7 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
           const text = buildEmbedText({ title: safeTitle, summary: safeSummary });
           let vector = null;
           try {
-            const embedder = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-embedder.js'));
+            const embedder = (_testHooks && _testHooks.embedder) || require(path.join(PLUGIN_ROOT, 'scripts', 'brain-embedder.js'));
             await embedder.init();
             if (embedder.getStatus().ready) vector = await embedder.embed(text);
           } catch { /* embedding optional */ }
@@ -420,9 +461,16 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
             const hits = await kbStore.search(vector, { topK: 1, minScore: DEDUP, rerank: false });
             if (hits.length > 0) {
               const merged = await kbStore.merge(hits[0].id, { summary: safeSummary, content: { detail: safeDetail || safeSummary }, confidence });
-              recordLessonMetric(storageProject, { type, decision: 'merge', scope: effectiveScope, recurrence: merged?.recurrence });
-              if (storageProject !== currentProject) await getKB(currentProject);
-              return { content: [{ type: 'text', text: JSON.stringify({ decision: 'merge', id: hits[0].id, recurrence: merged?.recurrence, title: hits[0].title, project: storageProject, scope: effectiveScope }, null, 2) }] };
+              if (merged) {
+                recordLessonMetric(storageProject, { type, decision: 'merge', scope: effectiveScope, recurrence: merged.recurrence });
+                recordCaptureAck(args.windowId, 'captured');
+                if (storageProject !== currentProject) await getKB(currentProject);
+                return { content: [{ type: 'text', text: JSON.stringify({ decision: 'merge', id: hits[0].id, recurrence: merged.recurrence, title: hits[0].title, project: storageProject, scope: effectiveScope }, null, 2) }] };
+              }
+              // merge() returned null: the dedup target vanished between search and
+              // merge (e.g. a concurrent detached consolidation deleted it). Do NOT
+              // ack a phantom merge that persisted nothing — fall through to the admit
+              // path so the lesson is actually stored before we ack.
             }
           }
           const entry = { type, project: storageProject, scope: effectiveScope, session_id: '', title: String(safeTitle).slice(0, 80), summary: String(safeSummary).slice(0, 500), content: { detail: safeDetail || safeSummary, files: [] }, tags: [...new Set((Array.isArray(tags) ? tags : []).map(t => String(t).toLowerCase().trim().replace(/\s+/g, '-')).filter(Boolean))].slice(0, 8), confidence };
@@ -430,11 +478,23 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
           await kbIndex.index(entry);
           await kbGraph.registerNode(entry);
           recordLessonMetric(storageProject, { type, decision: 'admit', scope: effectiveScope });
+          recordCaptureAck(args.windowId, 'captured');
           if (storageProject !== currentProject) await getKB(currentProject);
           return { content: [{ type: 'text', text: JSON.stringify({ decision: 'admit', id: entry.id, type, project: storageProject, scope: effectiveScope }, null, 2) }] };
         } catch (err) {
           return { isError: true, content: [{ type: 'text', text: `capture_lesson failed: ${err.message}` }] };
         }
+      }
+
+      case 'capture_ack': {
+        // capture_ack is the NO-LESSON path by definition, so the outcome is ALWAYS
+        // 'none' — never trust a passed-through value. The schema enum is advisory
+        // (dispatch does not enforce it, and the SDK accepts arbitrary args), so a
+        // forged/injected capture_ack({outcome:'captured'}) must NOT mark a window
+        // captured. This preserves the invariant "a 'captured' marker ⟺ a lesson
+        // persisted via capture_lesson", keeping the captured metric honest.
+        const ok = recordCaptureAck(args.windowId, 'none');
+        return { content: [{ type: 'text', text: JSON.stringify({ status: ok ? 'acked' : 'ack-failed', ok, windowId: args.windowId || null, outcome: 'none' }, null, 2) }] };
       }
 
       case 'brain_related': {
@@ -529,6 +589,83 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
         }
       }
 
+      case 'policy_activate': {
+        try {
+          const a = args || {};
+          const text = typeof a.text === 'string' ? a.text : '';
+          if (!text.trim()) {
+            return { isError: true, content: [{ type: 'text', text: 'policy_activate: text is required (the standing constraint to activate).' }] };
+          }
+          // Glob policies are project-scoped only (this micro): force project scope
+          // even if the caller passed scope:'user' alongside globs.
+          const hasGlobs = a.globs !== undefined && a.globs !== null;
+          const scope = hasGlobs ? 'project' : (a.scope === 'user' ? 'user' : 'project');
+          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          // user-scope policies are project-independent; only resolve a project id
+          // for project-scope activations (all glob policies are project-scoped).
+          const pid = scope === 'user' ? '' : resolveProject(a);
+          const res = policyStore.activate(dataDir(), { entryId: a.entryId, text, scope, projectId: pid, globs: hasGlobs ? a.globs : undefined });
+          if (!res.activated) {
+            let msg;
+            if (res.reason === 'invalid-globs') {
+              msg = 'policy_activate: refused — `globs` must be a non-empty array of valid glob patterns (≤20 patterns, each ≤200 chars, no empty patterns). Fix the patterns and retry; nothing was stored.';
+            } else if (res.reason === 'budget') {
+              msg = hasGlobs
+                ? 'policy_activate: refused — activating this glob policy would exceed the per-project glob-policy budget. Deactivate an existing glob policy first (policy_list / policy_deactivate).'
+                : 'policy_activate: refused — activating this policy would exceed the injected-policy budget (too many active policies or too much total text). Deactivate an existing policy first (policy_list / policy_deactivate).';
+            } else {
+              msg = `policy_activate: refused (${res.reason || 'invalid'}).`;
+            }
+            return { content: [{ type: 'text', text: JSON.stringify({ activated: false, reason: res.reason || 'invalid', message: msg }, null, 2) }] };
+          }
+          const mode = res.mode || (hasGlobs ? 'glob' : 'always');
+          const okMsg = mode === 'glob'
+            ? 'Glob policy activated — it will surface as a post-edit advisory only when an edited file matches one of its globs (never at session start).'
+            : 'Policy activated — it will be injected at every session and subagent start until deactivated.';
+          return { content: [{ type: 'text', text: JSON.stringify({ activated: true, id: res.id, mode, scope, projectId: pid, message: okMsg }, null, 2) }] };
+        } catch (err) {
+          return { isError: true, content: [{ type: 'text', text: `policy_activate failed: ${err.message}` }] };
+        }
+      }
+
+      case 'policy_list': {
+        try {
+          const a = args || {};
+          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const pid = resolveProject(a);
+          const active = policyStore.listVisible(dataDir(), { projectId: pid });
+          const policies = active.map(r => ({
+            id: r.id,
+            mode: r.mode || 'always',
+            scope: r.scope,
+            projectId: r.projectId,
+            globs: Array.isArray(r.globs) ? r.globs : undefined,
+            text: String(r.text || '').slice(0, 160),
+          }));
+          return { content: [{ type: 'text', text: JSON.stringify({ projectId: pid, count: policies.length, policies }, null, 2) }] };
+        } catch (err) {
+          return { isError: true, content: [{ type: 'text', text: `policy_list failed: ${err.message}` }] };
+        }
+      }
+
+      case 'policy_deactivate': {
+        try {
+          const a = args || {};
+          const id = typeof a.id === 'string' ? a.id : '';
+          if (!id.trim()) {
+            return { isError: true, content: [{ type: 'text', text: 'policy_deactivate: id is required (from policy_activate / policy_list).' }] };
+          }
+          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const res = policyStore.deactivate(dataDir(), id);
+          return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
+        } catch (err) {
+          return { isError: true, content: [{ type: 'text', text: `policy_deactivate failed: ${err.message}` }] };
+        }
+      }
+
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
@@ -542,5 +679,9 @@ export function createBrainServer({ pluginRoot, mode = 'stdio' } = {}) {
     return KB_TOOLS.has(name) ? withLock(() => handleTool(name, args)) : handleTool(name, args);
   });
 
+  // Test/automation seam: expose the raw tool dispatcher so the capture ACK bridge
+  // (capture_ack / capture_lesson → recordCaptureAck → capture-queue) can be driven
+  // end-to-end without a live MCP transport. The SDK ignores extra instance props.
+  server.handleTool = handleTool;
   return server;
 }

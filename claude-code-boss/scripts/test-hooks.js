@@ -111,6 +111,102 @@ function check(result, expectations = {}) {
 
 const SESSION = 'test-00000000-0000-0000-0000-000000000001';
 
+// ─── error-guard fixtures (deterministic recurring-failure guard) ───────────
+// The error-guard PreToolUse hook DENIES a Bash command whose canonical sig has
+// already failed >= threshold times. To exercise it across a spawned subprocess
+// we must seed the SAME error-store the hook reads: build each fixture ONCE so
+// payload.cwd, the seeded projectKey (resolveProjectKey(cwd)) and
+// CLAUDE_PLUGIN_DATA all agree. Each fixture gets its own temp cwd + dataDir.
+const _errorStore = require('./lib/error-store.js');
+function seedErrorGuard(command, { threshold = 2, cause = 'TS2345: type error in foo.ts', exitCode = 2 } = {}) {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-eg-proj-'));
+  fs.mkdirSync(path.join(cwd, '.git'), { recursive: true }); // stable projectKey
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-eg-data-'));
+  const pk = _errorStore.resolveProjectKey(cwd);
+  for (let i = 0; i < threshold; i++) {
+    _errorStore.record(dataDir, pk, { command, cause, exitCode });
+  }
+  return { cwd, dataDir, command };
+}
+// Recorded recurring failure — read-only across guard tests (deny/allow/gate).
+const _egHit = seedErrorGuard('npm run build');
+// Dedicated fixture the error-resolve test MUTATES (cleared on success).
+const _egResolve = seedErrorGuard('npm run build');
+// Fresh project (no seed) — failure-detect must POPULATE its error-store.
+const _fdIntegration = (() => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-fd-proj-'));
+  fs.mkdirSync(path.join(cwd, '.git'), { recursive: true });
+  return { cwd, command: 'cd /x && npm run typecheck -- --strict' };
+})();
+
+// ─── policy-inject fixtures (deterministic always-apply POLICY injection) ────
+// The policy-inject SessionStart/SubagentStart hook LISTS the active policies for
+// the current project and injects them as additionalContext. To make the spawned
+// subprocess resolve the SAME projectId we seeded, each fixture computes
+// projectId = basename(cwd) (resolveProjectId's marker-less fallback) and the
+// tests pass CCB_PROJECT_ID:'' so the env-forced id can't shadow it.
+const _policyStore = require('./lib/policy-store.js');
+const POLICY_TEXT = 'never let pre-existing code errors pass';
+function seedPolicy(text, { scope = 'project' } = {}) {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pol-proj-'));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pol-data-'));
+  const projectId = path.basename(cwd);
+  _policyStore.activate(dataDir, { text, scope, projectId });
+  return { cwd, dataDir, text, projectId };
+}
+// One active project-scoped policy — reused (read-only) by the SessionStart,
+// SubagentStart, and enabled=false tests.
+const _polActive = seedPolicy(POLICY_TEXT, { scope: 'project' });
+// Corrupt registry fixture: a garbage registry file → the hook must still emit a
+// warning (never silently drop the user's standing constraints).
+const _polCorrupt = (() => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pol-corrupt-proj-'));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pol-corrupt-data-'));
+  fs.mkdirSync(path.join(dataDir, 'policies'), { recursive: true });
+  fs.writeFileSync(_policyStore.storePath(dataDir), 'not json {{{');
+  return { cwd, dataDir };
+})();
+// Fresh empty dataDir + cwd — no active policy → the hook must stay silent.
+const _polEmpty = {
+  cwd: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pol-empty-proj-')),
+  dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pol-empty-data-')),
+};
+// GLOB-only policy: a per-file (mode:'glob') rule with NO always-mode record. The
+// leak-guard regression asserts policy-inject (now listAlways) never surfaces it at
+// SessionStart — a conditional advisory must not become an unconditional constraint.
+const _polGlobOnly = (() => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pol-globonly-proj-'));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pol-globonly-data-'));
+  const projectId = path.basename(cwd);
+  _policyStore.activate(dataDir, { text: 'glob-only rule that must stay conditional', projectId, globs: ['src/**'] });
+  return { cwd, dataDir, projectId };
+})();
+
+// ─── policy-glob-inject fixtures (PostToolUse post-edit GLOB advisory) ───────
+// The policy-glob-inject hook fires after Edit|Write|MultiEdit|NotebookEdit, and
+// surfaces a project-scoped glob policy ONLY when the edited path matches. Each
+// fixture seeds a glob policy under projectId=basename(cwd) and passes
+// CCB_PROJECT_ID:'' so the spawned subprocess resolves the same id we seeded.
+const GLOB_POLICY_TEXT = 'flag any leftover console.log in production source';
+function seedGlobPolicy(text, globs) {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-gpol-proj-'));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-gpol-data-'));
+  const projectId = path.basename(cwd);
+  const res = _policyStore.activate(dataDir, { text, projectId, globs });
+  return { cwd, dataDir, projectId, text, globs, id: res.id };
+}
+// Matching fixture — reused read-only by match / NotebookEdit / non-file / disabled.
+const _gpMatch = seedGlobPolicy(GLOB_POLICY_TEXT, ['src/**']);
+// Redaction fixture: a secret in the policy text must NEVER reach the injected block.
+const GLOB_SECRET = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWX12';
+const _gpRedact = seedGlobPolicy(`avoid committing ${GLOB_SECRET} into source`, ['**']);
+// Outside-project fixture: a matches-everything glob, but an out-of-tree path → empty.
+const _gpOutside = seedGlobPolicy('nothing should surface for an out-of-project path', ['**']);
+// A different-project cwd sharing _gpMatch's registry — proves cross-project isolation.
+const _gpOtherCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-gpol-otherproj-'));
+// An absolute path guaranteed to be OUTSIDE the fixture cwd (other drive on Windows).
+const _gpOutsidePath = process.platform === 'win32' ? 'Z:\\elsewhere\\secret.ts' : '/elsewhere/secret.ts';
+
 const TESTS = [
   // ── SessionStart ──────────────────────────────────────────────────────────
   {
@@ -406,6 +502,281 @@ const TESTS = [
       if (d !== 'allow') return `quoted-arg must not trigger curated-redirect, got: ${d} (ctx: ${r.parsed?.hookSpecificOutput?.additionalContext})`;
       return null;
     },
+  },
+
+  // ── PreToolUse / Bash — error-guard (deterministic recurring-failure DENY) ─
+  {
+    name: 'error-guard       [PreToolUse/recurring-failure→deny+inject]',
+    script: 'error-guard.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: _egHit.command },
+      session_id: SESSION,
+      cwd: _egHit.cwd,
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _egHit.dataDir }),
+    validate: r => {
+      const out = r.parsed?.hookSpecificOutput || {};
+      if (out.permissionDecision !== 'deny') return `recurring failure must DENY, got: ${out.permissionDecision}`;
+      const ctx = out.additionalContext || '';
+      if (!ctx.includes('[error-guard]')) return `deny reason must be tagged [error-guard], got: ${ctx}`;
+      if (!ctx.includes('npm run build')) return `deny reason must name the sig, got: ${ctx}`;
+      if (!/já falhou 2×/.test(ctx)) return `deny reason must state the recurring count, got: ${ctx}`;
+      if (!ctx.includes('TS2345')) return `deny reason must inject the recorded cause, got: ${ctx}`;
+      if (out.permissionDecisionReason !== ctx) return 'permissionDecisionReason must mirror the injected reason';
+      return null;
+    },
+  },
+  {
+    name: 'error-guard       [PreToolUse/clean-command→allow]',
+    script: 'error-guard.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: 'git status' },
+      session_id: SESSION,
+      cwd: _egHit.cwd,
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _egHit.dataDir }),
+    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+      ? null : `a command with no recorded failure must allow, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
+  },
+  {
+    name: 'error-guard       [PreToolUse/non-Bash→allow]',
+    script: 'error-guard.js',
+    payload: { tool_name: 'Write', tool_input: { file_path: 'foo.js' }, session_id: SESSION },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+      ? null : `non-Bash tool must allow, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
+  },
+  {
+    name: 'error-guard       [PreToolUse/errorGuard.enabled=false→allow-despite-hit]',
+    script: 'error-guard.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: _egHit.command },
+      session_id: SESSION,
+      cwd: _egHit.cwd,
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    extraEnv: () => ({
+      CLAUDE_PLUGIN_ROOT: mkTempPluginRoot({ errorGuard: { enabled: false } }),
+      CLAUDE_PLUGIN_DATA: _egHit.dataDir,
+    }),
+    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+      ? null : `errorGuard.enabled=false must allow even a recurring failure, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
+  },
+  {
+    name: 'error-resolve     [PostToolUse/Bash-success→clears recorded failure]',
+    script: 'error-resolve.js',
+    payload: {
+      hook_event_name: 'PostToolUse',
+      tool_name: 'Bash',
+      tool_input: { command: _egResolve.command },
+      session_id: SESSION,
+      cwd: _egResolve.cwd,
+    },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _egResolve.dataDir }),
+    validateWithEnv: (r, env) => {
+      const pk = _errorStore.resolveProjectKey(_egResolve.cwd);
+      const store = _errorStore.load(env.CLAUDE_PLUGIN_DATA, pk);
+      if (Object.keys(store.entries).length !== 0) return `success must clear the sig, entries remain: ${JSON.stringify(Object.keys(store.entries))}`;
+      if (_errorStore.lookup(env.CLAUDE_PLUGIN_DATA, pk, _egResolve.command, { threshold: 2 }).hit) return 'guard must no longer hit after resolve';
+      return null;
+    },
+  },
+  {
+    name: 'failure-detect    [PostToolUseFailure/Bash→records error-store]',
+    script: 'failure-detect.js',
+    payload: {
+      hook_event_name: 'PostToolUseFailure',
+      tool_name: 'Bash',
+      tool_input: { command: _fdIntegration.command },
+      error: 'Exit code 2\nsrc/foo.ts(3,5): error TS2345: boom',
+      is_interrupt: false,
+      session_id: SESSION,
+      cwd: _fdIntegration.cwd,
+    },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-fd-data-')) }),
+    validateWithEnv: (r, env) => {
+      const pk = _errorStore.resolveProjectKey(_fdIntegration.cwd);
+      // RAW command 'cd /x && npm run typecheck -- --strict' → sig 'npm run typecheck'.
+      const l = _errorStore.lookup(env.CLAUDE_PLUGIN_DATA, pk, 'npm run typecheck', { threshold: 1 });
+      if (!l.hit) return `failure-detect must record the Bash failure sig, got: ${JSON.stringify(l)}`;
+      if (l.sig !== 'npm run typecheck') return `expected sig 'npm run typecheck', got '${l.sig}'`;
+      if (l.exitCode !== 2) return `expected exitCode 2 (parsed from the failure), got ${l.exitCode}`;
+      if (!/TS2345/.test(l.cause || '')) return `expected recorded cause to include the error snippet, got: ${l.cause}`;
+      return null;
+    },
+  },
+
+  // ── SessionStart / SubagentStart — policy-inject (always-apply POLICY) ─────
+  {
+    name: 'policy-inject     [SessionStart/active-policy→inject]',
+    script: 'policy-inject.js',
+    payload: { hook_event_name: 'SessionStart', cwd: _polActive.cwd },
+    expect: { hasKey: 'hookSpecificOutput', noError: true, hookEvent: 'SessionStart' },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _polActive.dataDir, CCB_PROJECT_ID: '' }),
+    validate: r => {
+      const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+      if (!ctx.includes('[BRAIN policy]')) return `injected block must be tagged [BRAIN policy], got: ${ctx}`;
+      if (!ctx.includes(POLICY_TEXT)) return `injected block must contain the policy text, got: ${ctx}`;
+      return null;
+    },
+  },
+  {
+    name: 'policy-inject     [SubagentStart/active-policy→inject+echo event]',
+    script: 'policy-inject.js',
+    payload: { hook_event_name: 'SubagentStart', cwd: _polActive.cwd },
+    expect: { hasKey: 'hookSpecificOutput', noError: true, hookEvent: 'SubagentStart' },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _polActive.dataDir, CCB_PROJECT_ID: '' }),
+    validate: r => {
+      const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+      if (!ctx.includes('[BRAIN policy]')) return `injected block must be tagged [BRAIN policy], got: ${ctx}`;
+      if (!ctx.includes(POLICY_TEXT)) return `injected block must contain the policy text, got: ${ctx}`;
+      return null;
+    },
+  },
+  {
+    name: 'policy-inject     [policyInject.enabled=false→empty despite active]',
+    script: 'policy-inject.js',
+    payload: { hook_event_name: 'SessionStart', cwd: _polActive.cwd },
+    expect: { noError: true },
+    extraEnv: () => ({
+      CLAUDE_PLUGIN_ROOT: mkTempPluginRoot({ policyInject: { enabled: false } }),
+      CLAUDE_PLUGIN_DATA: _polActive.dataDir,
+      CCB_PROJECT_ID: '',
+    }),
+    validate: r => (r.parsed && !r.parsed.hookSpecificOutput)
+      ? null : `enabled=false must emit empty {} even with an active policy, got: ${JSON.stringify(r.parsed)}`,
+  },
+  {
+    name: 'policy-inject     [no-active-policy→empty]',
+    script: 'policy-inject.js',
+    payload: { hook_event_name: 'SessionStart', cwd: _polEmpty.cwd },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _polEmpty.dataDir, CCB_PROJECT_ID: '' }),
+    validate: r => (r.parsed && !r.parsed.hookSpecificOutput)
+      ? null : `no active policy must emit empty {}, got: ${JSON.stringify(r.parsed)}`,
+  },
+  {
+    name: 'policy-inject     [corrupt-registry→inject warning]',
+    script: 'policy-inject.js',
+    payload: { hook_event_name: 'SessionStart', cwd: _polCorrupt.cwd },
+    expect: { hasKey: 'hookSpecificOutput', noError: true, hookEvent: 'SessionStart' },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _polCorrupt.dataDir, CCB_PROJECT_ID: '' }),
+    validate: r => {
+      const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+      if (!ctx.includes('unreadable')) return `a corrupt registry must inject a warning, got: ${ctx}`;
+      return null;
+    },
+  },
+  {
+    // LEAK GUARD (micro-3 regression): policy-inject switched list→listAlways, so a
+    // GLOB-mode policy must NOT be surfaced at SessionStart as an always constraint.
+    name: 'policy-inject     [glob-only policy→NOT surfaced at SessionStart (leak guard)]',
+    script: 'policy-inject.js',
+    payload: { hook_event_name: 'SessionStart', cwd: _polGlobOnly.cwd },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _polGlobOnly.dataDir, CCB_PROJECT_ID: '' }),
+    validate: r => (r.parsed && !r.parsed.hookSpecificOutput)
+      ? null : `a glob-only policy must NOT inject at SessionStart, got: ${JSON.stringify(r.parsed)}`,
+  },
+
+  // ── PostToolUse — policy-glob-inject (post-edit GLOB advisory) ─────────────
+  {
+    name: 'policy-glob-inject[matching Edit path→inject [BRAIN policy]+text+PostToolUse]',
+    script: 'policy-glob-inject.js',
+    payload: { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/app.ts' }, cwd: _gpMatch.cwd },
+    expect: { hasKey: 'hookSpecificOutput', noError: true, hookEvent: 'PostToolUse' },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _gpMatch.dataDir, CCB_PROJECT_ID: '' }),
+    validate: r => {
+      const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+      if (!ctx.includes('[BRAIN policy]')) return `injected block must be tagged [BRAIN policy], got: ${ctx}`;
+      if (!ctx.includes('completed edit')) return `injected block must be temporal ("completed edit"), got: ${ctx}`;
+      if (!ctx.includes(GLOB_POLICY_TEXT)) return `injected block must contain the policy text, got: ${ctx}`;
+      if (!ctx.includes('src/**')) return `injected block must cite the matched glob, got: ${ctx}`;
+      if (!ctx.includes('"src/app.ts"')) return `injected block must JSON-quote the edited path, got: ${ctx}`;
+      return null;
+    },
+  },
+  {
+    name: 'policy-glob-inject[non-matching path→empty]',
+    script: 'policy-glob-inject.js',
+    payload: { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'lib/app.ts' }, cwd: _gpMatch.cwd },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _gpMatch.dataDir, CCB_PROJECT_ID: '' }),
+    validate: r => (r.parsed && !r.parsed.hookSpecificOutput)
+      ? null : `a non-matching path must emit empty {}, got: ${JSON.stringify(r.parsed)}`,
+  },
+  {
+    name: 'policy-glob-inject[non-file tool (Bash)→empty]',
+    script: 'policy-glob-inject.js',
+    payload: { hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { file_path: 'src/app.ts' }, cwd: _gpMatch.cwd },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _gpMatch.dataDir, CCB_PROJECT_ID: '' }),
+    validate: r => (r.parsed && !r.parsed.hookSpecificOutput)
+      ? null : `a non-edit tool must emit empty {}, got: ${JSON.stringify(r.parsed)}`,
+  },
+  {
+    name: 'policy-glob-inject[NotebookEdit notebook_path honored→inject]',
+    script: 'policy-glob-inject.js',
+    payload: { hook_event_name: 'PostToolUse', tool_name: 'NotebookEdit', tool_input: { notebook_path: 'src/analysis.ipynb' }, cwd: _gpMatch.cwd },
+    expect: { hasKey: 'hookSpecificOutput', noError: true, hookEvent: 'PostToolUse' },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _gpMatch.dataDir, CCB_PROJECT_ID: '' }),
+    validate: r => {
+      const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+      if (!ctx.includes('[BRAIN policy]')) return `NotebookEdit path must be honored + injected, got: ${JSON.stringify(r.parsed)}`;
+      if (!ctx.includes('src/analysis.ipynb')) return `injected block must cite the notebook path, got: ${ctx}`;
+      return null;
+    },
+  },
+  {
+    name: 'policy-glob-inject[cross-project→no leak (projB edit, projA policy)]',
+    script: 'policy-glob-inject.js',
+    payload: { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/app.ts' }, cwd: _gpOtherCwd },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _gpMatch.dataDir, CCB_PROJECT_ID: '' }),
+    validate: r => (r.parsed && !r.parsed.hookSpecificOutput)
+      ? null : `a policy under project A must NOT inject for an edit under project B, got: ${JSON.stringify(r.parsed)}`,
+  },
+  {
+    name: 'policy-glob-inject[redaction→secret never in injected block]',
+    script: 'policy-glob-inject.js',
+    payload: { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'anything.ts' }, cwd: _gpRedact.cwd },
+    expect: { hasKey: 'hookSpecificOutput', noError: true, hookEvent: 'PostToolUse' },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _gpRedact.dataDir, CCB_PROJECT_ID: '' }),
+    validate: r => {
+      const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+      if (!ctx.includes('[BRAIN policy]')) return `a **-glob policy must inject for any path, got: ${JSON.stringify(r.parsed)}`;
+      if (ctx.includes(GLOB_SECRET)) return `the raw secret must be REDACTED out of the injected block, got: ${ctx}`;
+      return null;
+    },
+  },
+  {
+    name: 'policy-glob-inject[outside-project path→empty]',
+    script: 'policy-glob-inject.js',
+    payload: { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: _gpOutsidePath }, cwd: _gpOutside.cwd },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _gpOutside.dataDir, CCB_PROJECT_ID: '' }),
+    validate: r => (r.parsed && !r.parsed.hookSpecificOutput)
+      ? null : `an out-of-project path must emit empty {} (never inject), got: ${JSON.stringify(r.parsed)}`,
+  },
+  {
+    name: 'policy-glob-inject[policyInject.enabled=false→empty despite match]',
+    script: 'policy-glob-inject.js',
+    payload: { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/app.ts' }, cwd: _gpMatch.cwd },
+    expect: { noError: true },
+    extraEnv: () => ({
+      CLAUDE_PLUGIN_ROOT: mkTempPluginRoot({ policyInject: { enabled: false } }),
+      CLAUDE_PLUGIN_DATA: _gpMatch.dataDir,
+      CCB_PROJECT_ID: '',
+    }),
+    validate: r => (r.parsed && !r.parsed.hookSpecificOutput)
+      ? null : `enabled=false must emit empty {} even on a match, got: ${JSON.stringify(r.parsed)}`,
   },
 
   // ── PostToolUse / Bash ────────────────────────────────────────────────────

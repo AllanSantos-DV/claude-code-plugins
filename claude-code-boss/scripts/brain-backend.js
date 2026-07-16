@@ -154,6 +154,16 @@ async function saveMcp(entry) {
     content: entryToContent(entry),
     metadata,
   });
+  // A tool-level failure is a SUCCESSFUL JSON-RPC response carrying isError:true —
+  // callTool RESOLVES it (only protocol errors reject). Fail-closed: throw instead
+  // of fabricating a uuid() below, so callers (e.g. capture_lesson) do NOT record a
+  // phantom "captured" ACK that would drain the Stop queue on a write that never
+  // landed (silent lesson loss).
+  const raw = (result && result.raw) || result;
+  if (raw && raw.isError) {
+    const detail = (result && result.text ? String(result.text) : 'add_document returned isError').slice(0, 200);
+    throw new Error(`add_document failed (remote tool error): ${detail}`);
+  }
   return parseAddedId(result) || entry.id || uuid();
 }
 

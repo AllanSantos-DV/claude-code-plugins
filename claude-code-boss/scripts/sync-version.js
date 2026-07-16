@@ -66,8 +66,9 @@ function jsonVersionFile(filePath, ...keys) {
 }
 
 function markdownTableFile(filePath, pluginName) {
-  // Matches: | pluginName | X.Y.Z | ...
-  const re = new RegExp(`(\\|\\s*\\[?${pluginName}\\]?[^|]*\\|\\s*)([0-9]+\\.[0-9]+\\.[0-9]+)(\\s*\\|)`, 'g');
+  // Matches: | pluginName | X.Y.Z | ... — tolerating markdown bold/link wrappers
+  // around the name, e.g. | [**pluginName**](./path) | X.Y.Z |
+  const re = new RegExp(`(\\|\\s*\\[?\\*{0,2}${pluginName}\\*{0,2}\\]?[^|]*\\|\\s*)([0-9]+\\.[0-9]+\\.[0-9]+)(\\s*\\|)`, 'g');
   return {
     path: filePath,
     read() {
