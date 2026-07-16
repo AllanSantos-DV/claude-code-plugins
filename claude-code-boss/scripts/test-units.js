@@ -6071,6 +6071,227 @@ test('capture-queue: _save CAS refuses a stale write (cross-Stop concurrency saf
   q.reset(project, sid);
 });
 
+// ─── Policy adjudication (Fase 3 micro-B0) — the JUDGE loop ───────────────────
+// Shared helpers: unique project ids + isolated temp workspaces let these tests run
+// against the ONE global CLAUDE_PLUGIN_DATA (set at file top) without swapping env —
+// the adjudication tools + store scope everything by project, and the handlers run
+// synchronously (no await before the switch for these tools), so concurrent async
+// tests can't cross-contaminate.
+async function _adjImportServer() {
+  const url = require('url');
+  const R = process.env.CLAUDE_PLUGIN_ROOT;
+  const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+  return mod.createBrainServer({ pluginRoot: R, mode: 'stdio' });
+}
+function _adjText(res) { return res.content[0].text; }
+function _adjMakeFiles(work, n, ext, body) {
+  fs.mkdirSync(work, { recursive: true });
+  for (let i = 1; i <= n; i++) {
+    fs.writeFileSync(path.join(work, `f${String(i).padStart(2, '0')}.${ext}`), body(i));
+  }
+}
+
+test('adjudication-store: save + list roundtrip, newest first, project-scoped + policyId filter', () => {
+  const adj = require('./lib/adjudication-store.js');
+  const dd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjs-'));
+  const mkRec = (policyId, ts, problem) => ({ policyId, manifestHash: 'abcdef01', ts, counts: { legit: 1, problem, uncertain: 0, injectionSuspected: 0, total: 1 + problem }, coverage: { sampled: 1 + problem, eligible: 10 }, provenance: { scannerVersion: 'sv', promptVersion: 'pv' } });
+  assert(adj.saveDisposition(dd, 'projA', mkRec('p1', 1000, 0)), 'save 1 ok');
+  assert(adj.saveDisposition(dd, 'projA', mkRec('p1', 2000, 1)), 'save 2 ok');
+  assert(adj.saveDisposition(dd, 'projA', mkRec('p2', 1500, 2)), 'save 3 ok');
+  const all = adj.listDispositions(dd, 'projA');
+  assertEq(all.length, 3, 'three dispositions listed');
+  assert(all[0].ts >= all[1].ts && all[1].ts >= all[2].ts, 'newest first');
+  assertEq(adj.listDispositions(dd, 'projA', { policyId: 'p1' }).length, 2, 'policyId filter narrows to p1');
+  assertEq(adj.listDispositions(dd, 'projB').length, 0, 'project scoping isolates projB');
+});
+
+test('adjudication-store: normalizeRecord drops snippets/unknown keys (only tally/coverage/provenance persisted)', () => {
+  const adj = require('./lib/adjudication-store.js');
+  const dd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjs-'));
+  adj.saveDisposition(dd, 'projX', { policyId: 'p', manifestHash: 'deadbe', ts: 5, counts: { legit: 0, problem: 1, uncertain: 0, injectionSuspected: 0, total: 1 }, coverage: { sampled: 1, eligible: 1 }, provenance: { scannerVersion: 's', promptVersion: 'p' }, occurrences: [{ context: 'SECRET_CODE()' }], snippet: 'SECRET_CODE()', activationId: 'act1' });
+  const [rec] = adj.listDispositions(dd, 'projX');
+  assert(!JSON.stringify(rec).includes('SECRET_CODE'), 'no snippet/context survives persistence');
+  assert(rec.occurrences === undefined && rec.snippet === undefined, 'unknown keys stripped');
+  assertEq(rec.activationId, 'act1', 'activationId (when present) is kept');
+  assert(rec.counts && rec.coverage && rec.provenance, 'tally/coverage/provenance kept');
+});
+
+test('adjudication-store: load returns empty shape on a corrupt registry (never throws)', () => {
+  const adj = require('./lib/adjudication-store.js');
+  const dd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjs-'));
+  const p = adj.dispositionsPath(dd, 'projC');
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, '{ this is not json');
+  assertEq(adj.listDispositions(dd, 'projC'), [], 'corrupt registry → empty list, no throw');
+});
+
+test('policy_adjudication_prepare: deterministic sampling capped at 25 (+ honest note)', async () => {
+  const server = await _adjImportServer();
+  const policyStore = require('./lib/policy-store.js');
+  const { dataDir } = require('./lib/data-dir.js');
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjw-'));
+  const project = 'adj-det-' + Date.now();
+  try {
+    _adjMakeFiles(work, 30, 'ts', (i) => `// f${i}\nfunction g${i}(){\n  console.log('x${i}');\n}\n`);
+    const act = policyStore.activate(dataDir(), { text: 'no console.log in prod', scope: 'project', projectId: project, globs: ['**/*.ts'], assert: { kind: 'forbid-added-literal', literal: 'console.log' }, enforcement: 'shadow' });
+    assert(act.activated, 'shadow glob policy activated');
+    const r1 = JSON.parse(_adjText(await server.handleTool('policy_adjudication_prepare', { policyId: act.id, project, cwd: work })));
+    const r2 = JSON.parse(_adjText(await server.handleTool('policy_adjudication_prepare', { policyId: act.id, project, cwd: work })));
+    assertEq(r1.occurrenceCount, 25, 'sample capped at 25');
+    assertEq(r1.manifestHash, r2.manifestHash, 'manifestHash deterministic across runs');
+    const b1 = JSON.parse(fs.readFileSync(r1.bundlePath, 'utf-8'));
+    const b2 = JSON.parse(fs.readFileSync(r2.bundlePath, 'utf-8'));
+    assertEq(b1.occurrences.map((o) => o.id), b2.occurrences.map((o) => o.id), 'sampled ids identical across runs (deterministic)');
+    assertEq(b1.eligible, 30, 'eligible reflects the true total (30), not the sample');
+    assertEq(b1.occurrences.length, 25, 'bundle holds exactly 25 occurrences');
+    assert(r1.note.includes('model provider') && r1.note.includes('not a measured false-positive rate'), 'note discloses provider send + not-an-FP-rate');
+  } finally {
+    try { fs.rmSync(work, { recursive: true, force: true }); } catch (err) { void err; }
+  }
+});
+
+test('policy_adjudication_prepare: glob-only policy (no literal) samples one occurrence per matching file', async () => {
+  const server = await _adjImportServer();
+  const policyStore = require('./lib/policy-store.js');
+  const { dataDir } = require('./lib/data-dir.js');
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjw-'));
+  const project = 'adj-file-' + Date.now();
+  try {
+    _adjMakeFiles(work, 4, 'md', (i) => `# doc ${i}\n\nbody ${i}\n`);
+    const act = policyStore.activate(dataDir(), { text: 'keep docs tidy', scope: 'project', projectId: project, globs: ['**/*.md'] });
+    assert(act.activated && act.mode === 'glob', 'plain glob policy activated');
+    const prep = JSON.parse(_adjText(await server.handleTool('policy_adjudication_prepare', { policyId: act.id, project, cwd: work })));
+    const bundle = JSON.parse(fs.readFileSync(prep.bundlePath, 'utf-8'));
+    assertEq(prep.occurrenceCount, 4, 'one occurrence per matching file');
+    assertEq(bundle.eligible, 4, 'eligible = matching file count');
+    const files = bundle.occurrences.map((o) => o.file);
+    assertEq(files.length, new Set(files).size, 'occurrences are distinct files');
+    assert(bundle.literal === null, 'file-mode bundle has literal:null');
+  } finally {
+    try { fs.rmSync(work, { recursive: true, force: true }); } catch (err) { void err; }
+  }
+});
+
+test('policy_adjudication_prepare: refuses an ALWAYS-mode (globless) policy; unknown id errors', async () => {
+  const server = await _adjImportServer();
+  const policyStore = require('./lib/policy-store.js');
+  const { dataDir } = require('./lib/data-dir.js');
+  const project = 'adj-always-' + Date.now();
+  const act = policyStore.activate(dataDir(), { text: 'always: never let errors pass', scope: 'project', projectId: project });
+  assert(act.activated, 'always policy activated');
+  const res = await server.handleTool('policy_adjudication_prepare', { policyId: act.id, project, cwd: process.cwd() });
+  assert(res.isError, 'always-mode policy cannot be adjudicated (no globs)');
+  const unk = await server.handleTool('policy_adjudication_prepare', { policyId: 'no-such-policy', project, cwd: process.cwd() });
+  assert(unk.isError, 'unknown policyId is rejected');
+});
+
+test('policy_adjudication_record: honest disposition (kind/disclaimer, no FP-rate field, no snippet persisted)', async () => {
+  const server = await _adjImportServer();
+  const policyStore = require('./lib/policy-store.js');
+  const adjStore = require('./lib/adjudication-store.js');
+  const { dataDir } = require('./lib/data-dir.js');
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjw-'));
+  const project = 'adj-rec-' + Date.now();
+  try {
+    _adjMakeFiles(work, 3, 'ts', (i) => `// f${i}\nconsole.log('secretword${i}');\n`);
+    const act = policyStore.activate(dataDir(), { text: 'no console.log', scope: 'project', projectId: project, globs: ['**/*.ts'], assert: { kind: 'forbid-added-literal', literal: 'console.log' }, enforcement: 'shadow' });
+    const prep = JSON.parse(_adjText(await server.handleTool('policy_adjudication_prepare', { policyId: act.id, project, cwd: work })));
+    const bundle = JSON.parse(fs.readFileSync(prep.bundlePath, 'utf-8'));
+    const verdicts = { schema: 1, verdicts: bundle.occurrences.map((o, k) => ({ id: o.id, label: k === 0 ? 'likely_problem' : 'uncertain', promptInjectionSuspected: false, reason: 'r' })) };
+    const rr = JSON.parse(_adjText(await server.handleTool('policy_adjudication_record', { policyId: act.id, manifestHash: prep.manifestHash, verdictsJson: JSON.stringify(verdicts), project, cwd: work })));
+    assertEq(rr.kind, 'llm-current-snapshot-occurrence-disposition', 'honest kind, not a false-positive rate');
+    assert(rr.falsePositiveRate === undefined, 'no falsePositiveRate value is claimed');
+    assert(typeof rr.disclaimer === 'string' && rr.disclaimer.includes('NOT a measured false-positive rate'), 'disclaimer states it is NOT a false-positive rate');
+    assert(rr.disclaimer.includes('model provider'), 'disclaimer discloses provider send');
+    assertEq(rr.counts.total, 3, 'counts total = sampled');
+    assertEq(rr.counts.problem, 1, 'one likely_problem tallied');
+    const stored = adjStore.listDispositions(dataDir(), project);
+    assert(stored.length >= 1, 'a disposition was persisted');
+    const recJson = JSON.stringify(stored[0]);
+    assert(!recJson.includes('secretword') && !recJson.includes('console.log'), 'no code snippet stored in the disposition');
+    assert(stored[0].occurrences === undefined && stored[0].context === undefined && stored[0].snippet === undefined, 'disposition has no occurrence/context/snippet keys');
+    assert(stored[0].counts && stored[0].coverage && stored[0].provenance, 'disposition keeps only tally/coverage/provenance');
+  } finally {
+    try { fs.rmSync(work, { recursive: true, force: true }); } catch (err) { void err; }
+  }
+});
+
+test('policy_adjudication_record: rejects unknown, duplicate, missing, and bad-label verdicts (nothing persisted)', async () => {
+  const server = await _adjImportServer();
+  const policyStore = require('./lib/policy-store.js');
+  const adjStore = require('./lib/adjudication-store.js');
+  const { dataDir } = require('./lib/data-dir.js');
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjw-'));
+  const project = 'adj-val-' + Date.now();
+  try {
+    _adjMakeFiles(work, 3, 'ts', (i) => `console.log('a${i}');\n`);
+    const act = policyStore.activate(dataDir(), { text: 't', scope: 'project', projectId: project, globs: ['**/*.ts'], assert: { kind: 'forbid-added-literal', literal: 'console.log' }, enforcement: 'shadow' });
+    const prep = JSON.parse(_adjText(await server.handleTool('policy_adjudication_prepare', { policyId: act.id, project, cwd: work })));
+    const ids = JSON.parse(fs.readFileSync(prep.bundlePath, 'utf-8')).occurrences.map((o) => o.id);
+    const mk = (verds) => ({ policyId: act.id, manifestHash: prep.manifestHash, verdictsJson: JSON.stringify({ schema: 1, verdicts: verds }), project, cwd: work });
+    const v = (id, label) => ({ id, label: label || 'uncertain', promptInjectionSuspected: false, reason: 'r' });
+    const unk = await server.handleTool('policy_adjudication_record', mk([...ids.map((id) => v(id)), v('occ-000000000000')]));
+    assert(unk.isError, 'unknown id rejected');
+    const dup = await server.handleTool('policy_adjudication_record', mk([v(ids[0]), v(ids[0]), v(ids[1]), v(ids[2])]));
+    assert(dup.isError, 'duplicate id rejected');
+    const miss = await server.handleTool('policy_adjudication_record', mk(ids.slice(1).map((id) => v(id))));
+    assert(miss.isError, 'missing id rejected');
+    const bad = await server.handleTool('policy_adjudication_record', mk(ids.map((id, k) => v(id, k === 0 ? 'legit' : 'uncertain'))));
+    assert(bad.isError, 'invalid label rejected');
+    assertEq(adjStore.listDispositions(dataDir(), project).length, 0, 'no malformed disposition persisted');
+  } finally {
+    try { fs.rmSync(work, { recursive: true, force: true }); } catch (err) { void err; }
+  }
+});
+
+test('policy_adjudication_prepare/record: never mutate the policy (no activate/deactivate; policy byte-identical)', async () => {
+  const server = await _adjImportServer();
+  const policyStore = require('./lib/policy-store.js');
+  const { dataDir } = require('./lib/data-dir.js');
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjw-'));
+  const project = 'adj-nomut-' + Date.now();
+  try {
+    _adjMakeFiles(work, 2, 'ts', (i) => `console.log('z${i}');\n`);
+    const act = policyStore.activate(dataDir(), { text: 't', scope: 'project', projectId: project, globs: ['**/*.ts'], assert: { kind: 'forbid-added-literal', literal: 'console.log' }, enforcement: 'shadow' });
+    const before = JSON.stringify(policyStore.listVisible(dataDir(), { projectId: project }));
+    const prep = JSON.parse(_adjText(await server.handleTool('policy_adjudication_prepare', { policyId: act.id, project, cwd: work })));
+    const bundle = JSON.parse(fs.readFileSync(prep.bundlePath, 'utf-8'));
+    // all-legit → low problem-share → an INFORMATIONAL tuning suggestion that must change NOTHING.
+    const verdicts = { schema: 1, verdicts: bundle.occurrences.map((o) => ({ id: o.id, label: 'likely_legitimate', promptInjectionSuspected: false, reason: 'r' })) };
+    const rr = JSON.parse(_adjText(await server.handleTool('policy_adjudication_record', { policyId: act.id, manifestHash: prep.manifestHash, verdictsJson: JSON.stringify(verdicts), project, cwd: work })));
+    assert(typeof rr.tuningRecommendation === 'string', 'low problem-share yields an INFORMATIONAL tuning suggestion');
+    assertEq(JSON.stringify(policyStore.listVisible(dataDir(), { projectId: project })), before, 'policy record byte-identical after adjudication (no mutation, no deactivate)');
+    // Static proof: the adjudication handler block calls no activate/deactivate.
+    const src = fs.readFileSync(path.join(process.env.CLAUDE_PLUGIN_ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js'), 'utf-8');
+    const start = src.indexOf("case 'policy_adjudication_prepare'");
+    const end = src.indexOf('default:', start);
+    assert(start > 0 && end > start, 'located the adjudication handler block');
+    const slice = src.slice(start, end);
+    assert(!slice.includes('.activate(') && !slice.includes('.deactivate('), 'adjudication handlers contain no activate/deactivate calls (no auto-mutation)');
+  } finally {
+    try { fs.rmSync(work, { recursive: true, force: true }); } catch (err) { void err; }
+  }
+});
+
+test('adjudication assets: agent + command markdown have valid frontmatter', () => {
+  const R = process.env.CLAUDE_PLUGIN_ROOT;
+  const parseFm = (p) => {
+    const raw = fs.readFileSync(p, 'utf-8').replace(/\r\n/g, '\n');
+    assert(raw.startsWith('---\n'), `${p}: starts with a frontmatter fence`);
+    const end = raw.indexOf('\n---', 4);
+    assert(end > 0, `${p}: has a closing frontmatter fence`);
+    assert(raw.slice(end + 4).trim().length > 50, `${p}: has a non-trivial body`);
+    return raw.slice(4, end);
+  };
+  const agentFm = parseFm(path.join(R, 'agents', 'policy-auditor.md'));
+  assert(/^name:\s*policy-auditor\s*$/m.test(agentFm), 'agent declares name: policy-auditor');
+  assert(/^tools:\s*Read\s*$/m.test(agentFm), 'agent restricts tools to Read only');
+  assert(/^description:\s*\S/m.test(agentFm), 'agent has a description');
+  const cmdFm = parseFm(path.join(R, 'commands', 'policy-adjudicate.md'));
+  assert(/^description:\s*\S/m.test(cmdFm), 'command has a description');
+  assert(/^argument-hint:\s*\S/m.test(cmdFm), 'command has an argument-hint');
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);

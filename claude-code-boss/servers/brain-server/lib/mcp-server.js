@@ -26,6 +26,164 @@ import { createRequire } from 'module';
 import path from 'path';
 
 const require = createRequire(import.meta.url);
+const fs = require('fs');
+const crypto = require('crypto');
+
+// ─── Policy adjudication (Fase 3 micro-B0) — trusted evidence-bundle builder ───
+// The prepare tool scans the CURRENT code for a glob/shadow policy's matches,
+// deterministically samples ≤25, and writes a REDACTED evidence bundle the
+// `policy-auditor` sub-agent judges. Honest framing lives in the strings below.
+const ADJ_SAMPLE_CAP = 25;              // max occurrences materialized per bundle
+const ADJ_CONTEXT_RADIUS = 20;          // ±lines of context per occurrence
+const ADJ_MAX_FILE_BYTES = 512 * 1024;  // skip larger files (binary/minified/data)
+const ADJ_MAX_LINE_CHARS = 400;         // truncate each context line (bounds bundle)
+const ADJ_BUNDLE_MAX_BYTES = 1024 * 1024; // ~1MiB cap on the serialized bundle
+const ADJ_MAX_FILES_WALK = 20000;       // safety bound on the workspace walk
+const ADJ_IGNORE_DIRS = new Set([
+  '.git', 'node_modules', '.claude', '.hg', '.svn', 'dist', 'build', 'out',
+  'coverage', '.next', '.nuxt', '.cache', 'vendor', '__pycache__', '.venv', 'venv',
+  '.idea', '.vscode',
+]);
+const ADJ_SCANNER_VERSION = 'ccb-adjudicate-scan/1';
+const ADJ_PROMPT_VERSION = 'policy-auditor/1';
+const ADJ_NOTE = 'This sends redacted code context to your model provider when the auditor runs. Results are a best-effort LLM judgment of the CURRENT code, not a measured false-positive rate.';
+const ADJ_DISCLAIMER = "Best-effort LLM judgment of CURRENT code occurrences against the policy's stated intent. NOT a measured false-positive rate, NOT human-verified, and it does not establish whether any specific edit was a violation. Local to this machine; code context was sent to your model provider.";
+const ADJ_TUNING = 'This rule flags mostly-legitimate current code; consider narrowing its globs/literal.';
+
+/** Standard MCP result envelopes for the adjudication tools. */
+function adjErr(msg) {
+  return { isError: true, content: [{ type: 'text', text: msg }] };
+}
+function adjJson(obj) {
+  return { content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] };
+}
+
+/** Heuristic binary sniff: a NUL byte in the first 4KB → treat as non-text. */
+function adjIsProbablyText(buf) {
+  const n = Math.min(buf.length, 4096);
+  for (let i = 0; i < n; i++) { if (buf[i] === 0) return false; }
+  return true;
+}
+
+/**
+ * Walk `realRoot` (already realpath'd) and return the glob-matching regular files
+ * as `{rel, abs}`, sorted by `rel` for determinism. ALL symlinks are skipped — a
+ * symlink is the only way a child's realpath could escape realRoot, so refusing
+ * them guarantees every kept file lives inside the workspace.
+ */
+function adjCollectFiles(realRoot, globs, anyGlobMatches) {
+  const out = [];
+  const stack = [realRoot];
+  let visited = 0;
+  while (stack.length) {
+    const dir = stack.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (err) {
+      console.error(`[adjudicate] readdir failed (${dir}): ${err.message}`);
+      continue;
+    }
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const ent of entries) {
+      if (visited >= ADJ_MAX_FILES_WALK) break;
+      if (ent.isSymbolicLink()) continue; // refuse symlink escapes (and loops)
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) {
+        if (!ADJ_IGNORE_DIRS.has(ent.name)) stack.push(full);
+        continue;
+      }
+      if (!ent.isFile()) continue;
+      visited++;
+      const rel = path.relative(realRoot, full).split(path.sep).join('/');
+      if (rel && !rel.startsWith('..') && anyGlobMatches(globs, rel)) out.push({ rel, abs: full });
+    }
+    if (visited >= ADJ_MAX_FILES_WALK) break;
+  }
+  out.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+  return out;
+}
+
+/** First non-blank line (1-based) of `lines`, or 1 if all blank. */
+function adjFirstRelevantLine(lines) {
+  for (let i = 0; i < lines.length; i++) { if (lines[i].trim() !== '') return i + 1; }
+  return 1;
+}
+
+/** The redacted-ready ±radius context slice around 1-based `line1`, per-line capped. */
+function adjContext(lines, line1) {
+  const start = Math.max(0, line1 - 1 - ADJ_CONTEXT_RADIUS);
+  const end = Math.min(lines.length, line1 - 1 + ADJ_CONTEXT_RADIUS + 1);
+  const slice = lines.slice(start, end).map((l) => (l.length > ADJ_MAX_LINE_CHARS ? `${l.slice(0, ADJ_MAX_LINE_CHARS)}…` : l));
+  return slice.join('\n');
+}
+
+/** Char offsets where each line begins (offset→line lookup support). */
+function adjLineStarts(text) {
+  const starts = [0];
+  for (let i = 0; i < text.length; i++) { if (text[i] === '\n') starts.push(i + 1); }
+  return starts;
+}
+
+/** 1-based line number containing char `offset` (binary search over line starts). */
+function adjLineForOffset(lineStarts, offset) {
+  let lo = 0;
+  let hi = lineStarts.length - 1;
+  let ans = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (lineStarts[mid] <= offset) { ans = mid; lo = mid + 1; } else { hi = mid - 1; }
+  }
+  return ans + 1;
+}
+
+/** Count non-overlapping occurrences of `needle` in `hay` (case-adjusted). */
+function adjCountOccurrences(hay, needle, caseSensitive) {
+  if (!needle) return 0;
+  const h = caseSensitive ? hay : hay.toLowerCase();
+  const n = caseSensitive ? needle : needle.toLowerCase();
+  let count = 0;
+  let from = 0;
+  for (;;) {
+    const idx = h.indexOf(n, from);
+    if (idx === -1) break;
+    count++;
+    from = idx + n.length;
+  }
+  return count;
+}
+
+/** First `cap` non-overlapping match offsets of `needle` in `hay` (case-adjusted). */
+function adjFindLiteralOffsets(hay, needle, caseSensitive, cap) {
+  const out = [];
+  if (!needle) return out;
+  const h = caseSensitive ? hay : hay.toLowerCase();
+  const n = caseSensitive ? needle : needle.toLowerCase();
+  let from = 0;
+  while (out.length < cap) {
+    const idx = h.indexOf(n, from);
+    if (idx === -1) break;
+    out.push(idx);
+    from = idx + n.length;
+  }
+  return out;
+}
+
+/** Stable per-occurrence id from (relPath, line, ordinal). */
+function adjOccId(rel, line, ord) {
+  return `occ-${crypto.createHash('sha1').update(`${rel}\u0000${line}\u0000${ord}`).digest('hex').slice(0, 12)}`;
+}
+
+/** Tolerate a judge that wrapped its JSON in a ```json fence despite instructions. */
+function adjStripFences(s) {
+  let t = String(s == null ? '' : s).trim();
+  if (t.startsWith('```')) {
+    t = t.replace(/^```[a-zA-Z0-9_-]*\s*\n?/, '');
+    if (t.endsWith('```')) t = t.slice(0, -3);
+    t = t.trim();
+  }
+  return t;
+}
 
 /** Tools that touch the shared KB singleton — serialized by the per-server mutex. */
 const KB_TOOLS = new Set([
@@ -312,6 +470,21 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
       name: 'policy_shadow_report',
       description: 'Report the LOCAL, per-machine MEASUREMENT for shadow-assertion (measurement) policies in a project: for each activationId, how many matching Edits were seen (eligible), how many WOULD have triggered a future guard (triggers), the trigger incidence (triggers / (trigger+pass)), and how many were unevaluable (too large to scan). These are CANDIDATE-guard triggers, NOT violations, and the numbers are LOCAL to this machine only. The false-positive rate is reported as "N/A" (there are no human labels yet — real FP needs human adjudication, a later micro); it is NEVER 0%. Joins the telemetry to policy_list so each row names the policy (text preview + globs).',
       inputSchema: { type: 'object', properties: { project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Working directory (for project scoping + the canonical metrics key when project is omitted).' }, rangeDays: { type: 'number', description: 'How many days back to aggregate (default: 7).' } } },
+    },
+    {
+      name: 'policy_adjudication_prepare',
+      description: 'TRUSTED evidence-bundle builder for the policy-adjudication JUDGE loop (Fase 3 micro-B0). Given a GLOB (or shadow-assertion) policyId, re-scans the CURRENT code under the workspace for the policy\'s globs (+literal if it has a shadow assert), DETERMINISTICALLY samples at most 25 occurrences, captures a REDACTED ±20-line context for each, and writes an EPHEMERAL bundle JSON the `policy-auditor` sub-agent reads. Returns { bundlePath, manifestHash, occurrenceCount, intent, note }. Does NOT judge and does NOT change the policy. HONEST: the auditor produces a best-effort LLM judgment of the CURRENT code, NOT a measured false-positive rate; running it sends redacted code context to your model provider (see `note`). ALWAYS-mode (globless) policies cannot be adjudicated.',
+      inputSchema: { type: 'object', properties: { policyId: { type: 'string', description: 'The glob/shadow policy id to adjudicate (from policy_list).' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Workspace directory to scan (default: process CWD). Realpath-bound; symlink escapes are refused.' } }, required: ['policyId'] },
+    },
+    {
+      name: 'policy_adjudication_record',
+      description: 'Record the `policy-auditor` verdict for a prepared bundle and return an HONEST disposition summary (Fase 3 micro-B0). Validates the auditor JSON against the bundle: verdict ids must EXACTLY equal the bundle\'s occurrence ids (unknown / duplicate / missing → error, nothing persisted). Tallies legit/problem/uncertain/injectionSuspected and persists a "current-snapshot occurrence disposition" (counts + coverage + provenance only — NO code snippets). Returns kind:"llm-current-snapshot-occurrence-disposition" with a disclaimer (NOT a false-positive rate, not human-verified, code sent to the provider) and, when problem-share is low, an INFORMATIONAL-ONLY tuningRecommendation. NEVER mutates, deactivates, or promotes the policy.',
+      inputSchema: { type: 'object', properties: { policyId: { type: 'string', description: 'The policy id that was prepared.' }, manifestHash: { type: 'string', description: 'The manifestHash returned by policy_adjudication_prepare (locates the bundle).' }, verdictsJson: { type: 'string', description: 'The policy-auditor sub-agent\'s RAW strict-JSON output: {schema:1, verdicts:[{id,label,promptInjectionSuspected,reason}]}.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Workspace directory (for project scoping when project is omitted).' } }, required: ['policyId', 'manifestHash', 'verdictsJson'] },
+    },
+    {
+      name: 'policy_adjudication_report',
+      description: 'Read back the stored policy-adjudication dispositions for a project (Fase 3 micro-B0), newest first, optionally filtered by policyId. Each is an HONEST "current-snapshot occurrence disposition" (counts + coverage + provenance, NO snippets) — a best-effort LLM judgment of the code at adjudication time, NOT a measured false-positive rate and NOT human-verified.',
+      inputSchema: { type: 'object', properties: { policyId: { type: 'string', description: 'Optional: restrict to one policy id.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Working directory (for project scoping when project is omitted).' } } },
     },
   ];
 
@@ -782,6 +955,243 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
           return { content: [{ type: 'text', text: JSON.stringify(report, null, 2) }] };
         } catch (err) {
           return { isError: true, content: [{ type: 'text', text: `policy_shadow_report failed: ${err.message}` }] };
+        }
+      }
+
+      case 'policy_adjudication_prepare': {
+        try {
+          const a = args || {};
+          const policyId = typeof a.policyId === 'string' ? a.policyId.trim() : '';
+          if (!policyId) return adjErr('policy_adjudication_prepare: policyId is required (from policy_list).');
+          const cwd = typeof a.cwd === 'string' && a.cwd ? a.cwd : process.cwd();
+          const pid = resolveProject(a);
+
+          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const { anyGlobMatches } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'glob-match.js'));
+          const { redact } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'redact.js'));
+          const { writeFileAtomic } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'atomic-write.js'));
+          const adjStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'adjudication-store.js'));
+
+          const visible = policyStore.listVisible(dataDir(), { projectId: pid });
+          const policy = visible.find((r) => r && String(r.id) === policyId);
+          if (!policy) return adjErr(`policy_adjudication_prepare: no active policy with id "${policyId}" in this project. Use policy_list.`);
+          if (policy.mode !== 'glob' || !Array.isArray(policy.globs) || policy.globs.length === 0) {
+            return adjErr('policy_adjudication_prepare: only GLOB (or shadow-assertion) policies can be adjudicated — this policy has no globs. ALWAYS-mode policies apply globally and have no code occurrences to sample.');
+          }
+          const intent = typeof policy.text === 'string' ? policy.text : '';
+          const literal = (policy.assert && policy.assert.kind === 'forbid-added-literal' && typeof policy.assert.literal === 'string')
+            ? policy.assert.literal
+            : null;
+          const caseSensitive = policy.assert ? policy.assert.caseSensitive !== false : true;
+
+          let realRoot;
+          try {
+            realRoot = fs.realpathSync(cwd);
+          } catch (err) {
+            return adjErr(`policy_adjudication_prepare: workspace cwd is not accessible (${err.message}).`);
+          }
+
+          const candidates = adjCollectFiles(realRoot, policy.globs, anyGlobMatches);
+          const sampled = [];
+          let eligible = 0;
+
+          if (literal != null) {
+            for (const f of candidates) {
+              let buf;
+              try {
+                buf = fs.readFileSync(f.abs);
+              } catch (err) {
+                console.error(`[adjudicate] read failed (${f.rel}): ${err.message}`);
+                continue;
+              }
+              if (buf.length > ADJ_MAX_FILE_BYTES || !adjIsProbablyText(buf)) continue;
+              const content = buf.toString('utf-8');
+              const total = adjCountOccurrences(content, literal, caseSensitive);
+              if (total === 0) continue;
+              eligible += total;
+              if (sampled.length < ADJ_SAMPLE_CAP) {
+                const lines = content.split('\n');
+                const lineStarts = adjLineStarts(content);
+                const offsets = adjFindLiteralOffsets(content, literal, caseSensitive, ADJ_SAMPLE_CAP - sampled.length);
+                let ord = 0;
+                for (const off of offsets) {
+                  const line1 = adjLineForOffset(lineStarts, off);
+                  sampled.push({ id: adjOccId(f.rel, line1, ord), file: f.rel, line: line1, context: redact(adjContext(lines, line1)).text });
+                  ord++;
+                  if (sampled.length >= ADJ_SAMPLE_CAP) break;
+                }
+              }
+            }
+          } else {
+            eligible = candidates.length; // occurrence == a matching file
+            for (const f of candidates) {
+              if (sampled.length >= ADJ_SAMPLE_CAP) break;
+              let buf;
+              try {
+                buf = fs.readFileSync(f.abs);
+              } catch (err) {
+                console.error(`[adjudicate] read failed (${f.rel}): ${err.message}`);
+                continue;
+              }
+              if (buf.length > ADJ_MAX_FILE_BYTES || !adjIsProbablyText(buf)) continue;
+              const lines = buf.toString('utf-8').split('\n');
+              const line1 = adjFirstRelevantLine(lines);
+              sampled.push({ id: adjOccId(f.rel, line1, 0), file: f.rel, line: line1, context: redact(adjContext(lines, line1)).text });
+            }
+          }
+
+          // Safety valve: keep the serialized bundle under ~1MiB (rarely triggers,
+          // since 25 occurrences × capped lines is well under the cap).
+          while (sampled.length > 1 && Buffer.byteLength(JSON.stringify(sampled)) > (ADJ_BUNDLE_MAX_BYTES - 16384)) {
+            sampled.pop();
+          }
+
+          const occIds = sampled.map((o) => o.id);
+          const manifestHash = crypto.createHash('sha256')
+            .update(`${policyId}\n${intent}\n${literal == null ? '\u0000null' : literal}\n${caseSensitive}\n${occIds.join(',')}`)
+            .digest('hex').slice(0, 16);
+
+          const bundle = {
+            schema: 1,
+            policyId,
+            projectId: pid,
+            intent,
+            literal: literal == null ? null : literal,
+            caseSensitive,
+            occurrences: sampled,
+            eligible,
+            manifestHash,
+            scannerVersion: ADJ_SCANNER_VERSION,
+            promptVersion: ADJ_PROMPT_VERSION,
+            createdAt: Date.now(),
+            ephemeral: true,
+          };
+          const bundlePath = path.join(adjStore.adjudicationDir(dataDir(), pid), `bundle-${manifestHash}.json`);
+          try {
+            writeFileAtomic(bundlePath, JSON.stringify(bundle));
+          } catch (err) {
+            return adjErr(`policy_adjudication_prepare: failed to write the evidence bundle (${err.message}). Nothing to adjudicate.`);
+          }
+
+          return adjJson({ bundlePath, manifestHash, occurrenceCount: sampled.length, intent, note: ADJ_NOTE });
+        } catch (err) {
+          return { isError: true, content: [{ type: 'text', text: `policy_adjudication_prepare failed: ${err.message}` }] };
+        }
+      }
+
+      case 'policy_adjudication_record': {
+        try {
+          const a = args || {};
+          const policyId = typeof a.policyId === 'string' ? a.policyId.trim() : '';
+          const manifestHash = typeof a.manifestHash === 'string' ? a.manifestHash.trim() : '';
+          const verdictsJson = typeof a.verdictsJson === 'string' ? a.verdictsJson : '';
+          if (!policyId) return adjErr('policy_adjudication_record: policyId is required.');
+          if (!/^[0-9a-f]{6,64}$/i.test(manifestHash)) return adjErr('policy_adjudication_record: manifestHash is missing or malformed (expect the hex hash from policy_adjudication_prepare).');
+          const pid = resolveProject(a);
+
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
+          const adjStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'adjudication-store.js'));
+
+          const bundlePath = path.join(adjStore.adjudicationDir(dataDir(), pid), `bundle-${manifestHash}.json`);
+          let bundle;
+          try {
+            bundle = JSON.parse(fs.readFileSync(bundlePath, 'utf-8'));
+          } catch (err) {
+            return adjErr(`policy_adjudication_record: evidence bundle for this manifestHash was not found or is unreadable (${err.message}). Re-run policy_adjudication_prepare.`);
+          }
+          if (!bundle || bundle.schema !== 1 || String(bundle.policyId) !== policyId || String(bundle.manifestHash) !== manifestHash) {
+            return adjErr('policy_adjudication_record: the bundle does not match this policyId/manifestHash. Re-run policy_adjudication_prepare.');
+          }
+          const bundleOcc = Array.isArray(bundle.occurrences) ? bundle.occurrences : [];
+          const occIds = new Set(bundleOcc.map((o) => o && o.id).filter(Boolean));
+
+          let parsed;
+          try {
+            parsed = JSON.parse(adjStripFences(verdictsJson));
+          } catch (err) {
+            return adjErr(`policy_adjudication_record: verdictsJson is not valid JSON (${err.message}). Pass the auditor's raw JSON.`);
+          }
+          if (!parsed || typeof parsed !== 'object' || parsed.schema !== 1 || !Array.isArray(parsed.verdicts)) {
+            return adjErr('policy_adjudication_record: verdictsJson must be { "schema": 1, "verdicts": [ … ] }.');
+          }
+
+          const LABELS = new Set(['likely_legitimate', 'likely_problem', 'uncertain']);
+          const seen = new Set();
+          const counts = { legit: 0, problem: 0, uncertain: 0, injectionSuspected: 0, total: 0 };
+          for (const v of parsed.verdicts) {
+            if (!v || typeof v !== 'object') return adjErr('policy_adjudication_record: a verdict entry is not an object; nothing persisted.');
+            const id = typeof v.id === 'string' ? v.id : '';
+            if (!occIds.has(id)) return adjErr(`policy_adjudication_record: verdict references an unknown occurrence id "${id}" (not in the bundle); nothing persisted.`);
+            if (seen.has(id)) return adjErr(`policy_adjudication_record: duplicate verdict for occurrence id "${id}"; nothing persisted.`);
+            if (!LABELS.has(v.label)) return adjErr(`policy_adjudication_record: verdict for "${id}" has an invalid label "${v.label}" (expect likely_legitimate|likely_problem|uncertain); nothing persisted.`);
+            seen.add(id);
+            counts.total++;
+            if (v.label === 'likely_legitimate') counts.legit++;
+            else if (v.label === 'likely_problem') counts.problem++;
+            else counts.uncertain++;
+            if (v.promptInjectionSuspected === true) counts.injectionSuspected++;
+          }
+          const missing = [...occIds].filter((id) => !seen.has(id));
+          if (missing.length > 0) {
+            const shown = missing.slice(0, 5).join(', ');
+            return adjErr(`policy_adjudication_record: missing verdict(s) for occurrence id(s): ${shown}${missing.length > 5 ? ', …' : ''}; nothing persisted (exactly one verdict per occurrence is required).`);
+          }
+
+          const coverage = { sampled: bundleOcc.length, eligible: Number.isFinite(bundle.eligible) ? bundle.eligible : bundleOcc.length };
+          const provenance = {
+            scannerVersion: typeof bundle.scannerVersion === 'string' ? bundle.scannerVersion : ADJ_SCANNER_VERSION,
+            promptVersion: typeof bundle.promptVersion === 'string' ? bundle.promptVersion : ADJ_PROMPT_VERSION,
+          };
+          // Best-effort: name the activation for the disposition (does NOT mutate it).
+          const pol = policyStore.listVisible(dataDir(), { projectId: pid }).find((r) => r && String(r.id) === policyId);
+          const activationId = pol && pol.activationId ? String(pol.activationId) : undefined;
+
+          const record = { policyId, manifestHash, ts: Date.now(), counts, coverage, provenance };
+          if (activationId) record.activationId = activationId;
+          adjStore.saveDisposition(dataDir(), pid, record);
+
+          const summary = {
+            kind: 'llm-current-snapshot-occurrence-disposition',
+            policyId,
+            manifestHash,
+            projectId: pid,
+            counts,
+            coverage,
+            provenance,
+            disclaimer: ADJ_DISCLAIMER,
+          };
+          if (activationId) summary.activationId = activationId;
+          // Informational-only nudge when the current code looks mostly legitimate.
+          // TEXT ONLY — this tool NEVER narrows globs/literals or deactivates a policy.
+          if (counts.total > 0 && (counts.problem / counts.total) < 0.2) {
+            summary.tuningRecommendation = ADJ_TUNING;
+          }
+          return adjJson(summary);
+        } catch (err) {
+          return { isError: true, content: [{ type: 'text', text: `policy_adjudication_record failed: ${err.message}` }] };
+        }
+      }
+
+      case 'policy_adjudication_report': {
+        try {
+          const a = args || {};
+          const pid = resolveProject(a);
+          const policyId = typeof a.policyId === 'string' && a.policyId.trim() ? a.policyId.trim() : undefined;
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const adjStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'adjudication-store.js'));
+          const dispositions = adjStore.listDispositions(dataDir(), pid, { policyId });
+          return adjJson({
+            kind: 'llm-current-snapshot-occurrence-disposition',
+            projectId: pid,
+            policyId: policyId || null,
+            count: dispositions.length,
+            disclaimer: ADJ_DISCLAIMER,
+            dispositions,
+          });
+        } catch (err) {
+          return { isError: true, content: [{ type: 'text', text: `policy_adjudication_report failed: ${err.message}` }] };
         }
       }
 
