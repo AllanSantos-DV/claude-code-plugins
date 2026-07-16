@@ -25,14 +25,25 @@
  *
  * Fail-open: any error → `{}`. Disabled (policyInject.enabled=false), non-Edit tool,
  * no path, outside-project path, or no matching shadow policy → `{}` (no metric).
+ *
+ * PROSPECTIVE TRIGGER-EVIDENCE CAPTURE (Fase 3 micro-B1, OPT-IN, DEFAULT OFF): when
+ * (and only when) `captureTriggerEvidence.enabled` is true, a matching `outcome:'trigger'`
+ * ALSO appends a bounded, REDACTED, TTL-limited record of the ADDED text to the
+ * per-project trigger-evidence queue (lib/trigger-evidence-store.js), so the judge can
+ * adjudicate the ACTUAL trigger proposals (not just current code). Capture is
+ * best-effort and wrapped so it can NEVER break the silent hook — the hook still
+ * ALWAYS emits `{}`. Off by default: nothing is stored unless the user opts in.
  */
 const { readStdin, emitEmpty } = require('./lib/hook-io.js');
 const { dataDir } = require('./lib/data-dir.js');
 const { resolveProjectId } = require('./lib/project-id.js');
 const policyStore = require('./lib/policy-store.js');
-const { getPolicyInject } = require('./lib/hooks-config.js');
+const { getPolicyInject, getCaptureTriggerEvidence } = require('./lib/hooks-config.js');
 const metrics = require('./lib/metrics.js');
 const { metricsProjectKey } = require('./lib/metrics-project.js');
+const crypto = require('crypto');
+const { redact } = require('./lib/redact.js');
+const triggerEvidenceStore = require('./lib/trigger-evidence-store.js');
 
 // Belt-and-suspenders beyond the hooks.json matcher: this micro measures ONLY Edit.
 // EXACT string set (not a substring regex) so no other tool can slip in.
@@ -108,6 +119,11 @@ async function run(event) {
   const newStr = typeof ti.new_string === 'string' ? ti.new_string : '';
   const tooBig = newStr.length > LITMAX_INPUT || oldStr.length > LITMAX_INPUT;
 
+  // OPT-IN capture gate (DEFAULT OFF). Read once: when disabled, no evidence is ever
+  // stored — the privacy default. Keyed by the SAME resolved projectId the judge's
+  // `policy_adjudication_prepare` reads under, so the write and the read agree.
+  const capture = getCaptureTriggerEvidence();
+
   for (const r of matches) {
     const assert = (r && r.assert) || {};
     const literal = assert.literal;
@@ -124,6 +140,30 @@ async function run(event) {
       { schema: 1, activationId: r.activationId, outcome },
       { project: projKey, cwd: ev.cwd, sessionId: ev.session_id },
     );
+
+    // micro-B1: on a REAL trigger AND only when the user opted in, capture the
+    // triggering Edit proposal as bounded, REDACTED evidence for later adjudication.
+    // Wrapped so a capture failure can NEVER break the silent measurement path.
+    if (outcome === 'trigger' && capture.enabled === true) {
+      try {
+        const addedSnippet = redact(newStr).text.slice(0, capture.maxSnippetChars);
+        triggerEvidenceStore.appendEvidence(
+          DATA_DIR,
+          projectId,
+          {
+            eventId: crypto.randomBytes(9).toString('hex'),
+            activationId: r.activationId,
+            sourceHash: r.sourceHash,
+            file: rel,
+            addedSnippet,
+            ts: Date.now(),
+          },
+          { ttlDays: capture.ttlDays, maxPerProject: capture.maxPerProject },
+        );
+      } catch (err) {
+        console.error('[POLICY-SHADOW] capture failed: ' + (err && err.message ? err.message : err));
+      }
+    }
   }
 
   // ALWAYS silent — shadow mode never blocks and never speaks to the agent.

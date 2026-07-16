@@ -97,6 +97,11 @@ function normalizeRecord(record) {
       promptVersion: prov.promptVersion != null ? String(prov.promptVersion) : null,
     },
   };
+  // micro-B1: preserve the disposition kind + evidence source when present, so a
+  // triggers-sourced disposition (llm-trigger-proposal-disposition) reads back
+  // distinctly from a current-snapshot one. Absent → the record stays as before.
+  if (r.kind != null) out.kind = String(r.kind);
+  if (prov.source != null) out.provenance.source = String(prov.source);
   if (r.activationId != null) out.activationId = String(r.activationId);
   return out;
 }

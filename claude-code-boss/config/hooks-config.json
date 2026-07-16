@@ -22,6 +22,12 @@
     "maxPolicies": 10,
     "maxChars": 4000
   },
+  "captureTriggerEvidence": {
+    "enabled": false,
+    "ttlDays": 7,
+    "maxPerProject": 500,
+    "maxSnippetChars": 2000
+  },
   "projectSnapshot": {
     "enabled": true,
     "includeGh": "auto",

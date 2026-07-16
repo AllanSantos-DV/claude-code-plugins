@@ -49,6 +49,11 @@ const ADJ_PROMPT_VERSION = 'policy-auditor/1';
 const ADJ_NOTE = 'This sends redacted code context to your model provider when the auditor runs. Results are a best-effort LLM judgment of the CURRENT code, not a measured false-positive rate.';
 const ADJ_DISCLAIMER = "Best-effort LLM judgment of CURRENT code occurrences against the policy's stated intent. NOT a measured false-positive rate, NOT human-verified, and it does not establish whether any specific edit was a violation. Local to this machine; code context was sent to your model provider.";
 const ADJ_TUNING = 'This rule flags mostly-legitimate current code; consider narrowing its globs/literal.';
+// micro-B1: honest framing for the `source:'triggers'` mode, which adjudicates the
+// OPT-IN captured trigger PROPOSALS (what the shadow policy would have fired on) rather
+// than re-scanning current code. It is a JUDGED estimate — never a measured FP rate.
+const ADJ_TRIGGERS_NOTE = 'This adjudicates CAPTURED TRIGGER PROPOSALS (opt-in evidence: the redacted added text that fired the shadow policy), and sends that redacted context to your model provider when the auditor runs. The result is a JUDGED likely-FP estimate, NOT a measured false-positive rate.';
+const ADJ_TRIGGERS_DISCLAIMER = 'Best-effort LLM judgment of CAPTURED trigger proposals (opt-in evidence) against the policy\'s stated intent — a JUDGED likely-FP estimate, NOT a measured false-positive rate, NOT human-verified. Local to this machine; code context was sent to your model provider.';
 
 /** Standard MCP result envelopes for the adjudication tools. */
 function adjErr(msg) {
@@ -473,18 +478,23 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
     },
     {
       name: 'policy_adjudication_prepare',
-      description: 'TRUSTED evidence-bundle builder for the policy-adjudication JUDGE loop (Fase 3 micro-B0). Given a GLOB (or shadow-assertion) policyId, re-scans the CURRENT code under the workspace for the policy\'s globs (+literal if it has a shadow assert), DETERMINISTICALLY samples at most 25 occurrences, captures a REDACTED ±20-line context for each, and writes an EPHEMERAL bundle JSON the `policy-auditor` sub-agent reads. Returns { bundlePath, manifestHash, occurrenceCount, intent, note }. Does NOT judge and does NOT change the policy. HONEST: the auditor produces a best-effort LLM judgment of the CURRENT code, NOT a measured false-positive rate; running it sends redacted code context to your model provider (see `note`). ALWAYS-mode (globless) policies cannot be adjudicated.',
-      inputSchema: { type: 'object', properties: { policyId: { type: 'string', description: 'The glob/shadow policy id to adjudicate (from policy_list).' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Workspace directory to scan (default: process CWD). Realpath-bound; symlink escapes are refused.' } }, required: ['policyId'] },
+      description: 'TRUSTED evidence-bundle builder for the policy-adjudication JUDGE loop. Given a GLOB (or shadow-assertion) policyId, builds a DETERMINISTIC, REDACTED, EPHEMERAL bundle of ≤25 occurrences the `policy-auditor` sub-agent reads. `source` selects what is judged: "current-snapshot" (DEFAULT, Fase 3 micro-B0) re-scans the CURRENT code under the workspace for the policy\'s globs (+literal); "triggers" (Fase 3 micro-B1) instead adjudicates the OPT-IN CAPTURED trigger PROPOSALS — the redacted added text that actually fired the shadow policy (empty → occurrenceCount:0 with guidance to enable captureTriggerEvidence). Returns { bundlePath, manifestHash, occurrenceCount, intent, note, source }. Does NOT judge and does NOT change the policy. HONEST: the auditor produces a best-effort LLM JUDGED estimate, NOT a measured false-positive rate; running it sends redacted code context to your model provider (see `note`). ALWAYS-mode (globless) policies cannot be adjudicated.',
+      inputSchema: { type: 'object', properties: { policyId: { type: 'string', description: 'The glob/shadow policy id to adjudicate (from policy_list).' }, source: { type: 'string', enum: ['current-snapshot', 'triggers'], description: 'Evidence origin: "current-snapshot" (default) re-scans CURRENT code; "triggers" adjudicates the opt-in CAPTURED trigger proposals (requires captureTriggerEvidence to have been enabled while edits triggered).' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Workspace directory to scan (default: process CWD). Realpath-bound; symlink escapes are refused.' } }, required: ['policyId'] },
     },
     {
       name: 'policy_adjudication_record',
-      description: 'Record the `policy-auditor` verdict for a prepared bundle and return an HONEST disposition summary (Fase 3 micro-B0). Validates the auditor JSON against the bundle: verdict ids must EXACTLY equal the bundle\'s occurrence ids (unknown / duplicate / missing → error, nothing persisted). Tallies legit/problem/uncertain/injectionSuspected and persists a "current-snapshot occurrence disposition" (counts + coverage + provenance only — NO code snippets). Returns kind:"llm-current-snapshot-occurrence-disposition" with a disclaimer (NOT a false-positive rate, not human-verified, code sent to the provider) and, when problem-share is low, an INFORMATIONAL-ONLY tuningRecommendation. NEVER mutates, deactivates, or promotes the policy.',
-      inputSchema: { type: 'object', properties: { policyId: { type: 'string', description: 'The policy id that was prepared.' }, manifestHash: { type: 'string', description: 'The manifestHash returned by policy_adjudication_prepare (locates the bundle).' }, verdictsJson: { type: 'string', description: 'The policy-auditor sub-agent\'s RAW strict-JSON output: {schema:1, verdicts:[{id,label,promptInjectionSuspected,reason}]}.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Workspace directory (for project scoping when project is omitted).' } }, required: ['policyId', 'manifestHash', 'verdictsJson'] },
+      description: 'Record the `policy-auditor` verdict for a prepared bundle and return an HONEST disposition summary. Validates the auditor JSON against the bundle: verdict ids must EXACTLY equal the bundle\'s occurrence ids (unknown / duplicate / missing → error, nothing persisted). Tallies legit/problem/uncertain/injectionSuspected and persists a disposition (counts + coverage + provenance only — NO code snippets). The disposition KIND follows the bundle\'s source (or an explicit dispositionKind): "llm-current-snapshot-occurrence-disposition" (micro-B0) or "llm-trigger-proposal-disposition" (micro-B1). For the triggers kind it returns a judgedLikelyFpShare = likely_legitimate/(likely_legitimate+likely_problem) as a clearly-labeled JUDGED estimate (uncertain shown separately) — NEVER a measured falsePositiveRate, and micro-A\'s shadow-report trigger FP stays N/A. NEVER mutates, deactivates, or promotes the policy.',
+      inputSchema: { type: 'object', properties: { policyId: { type: 'string', description: 'The policy id that was prepared.' }, manifestHash: { type: 'string', description: 'The manifestHash returned by policy_adjudication_prepare (locates the bundle).' }, verdictsJson: { type: 'string', description: 'The policy-auditor sub-agent\'s RAW strict-JSON output: {schema:1, verdicts:[{id,label,promptInjectionSuspected,reason}]}.' }, dispositionKind: { type: 'string', enum: ['llm-current-snapshot-occurrence-disposition', 'llm-trigger-proposal-disposition'], description: 'Optional override of the stored disposition kind; normally inferred from the bundle\'s source. Use "llm-trigger-proposal-disposition" for a triggers-sourced bundle.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Workspace directory (for project scoping when project is omitted).' } }, required: ['policyId', 'manifestHash', 'verdictsJson'] },
     },
     {
       name: 'policy_adjudication_report',
       description: 'Read back the stored policy-adjudication dispositions for a project (Fase 3 micro-B0), newest first, optionally filtered by policyId. Each is an HONEST "current-snapshot occurrence disposition" (counts + coverage + provenance, NO snippets) — a best-effort LLM judgment of the code at adjudication time, NOT a measured false-positive rate and NOT human-verified.',
       inputSchema: { type: 'object', properties: { policyId: { type: 'string', description: 'Optional: restrict to one policy id.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Working directory (for project scoping when project is omitted).' } } },
+    },
+    {
+      name: 'policy_trigger_evidence_purge',
+      description: 'Delete the OPT-IN captured trigger evidence (Fase 3 micro-B1) for a project — YOU control your captured code. With no filter, purges ALL of the project\'s captured trigger proposals; pass policyId to purge only that policy\'s evidence (by its activationId), and/or olderThanDays to purge only records older than N days. Returns the count removed. This is the user\'s off-switch/eraser for the locally-stored redacted snippets; it never mutates any policy.',
+      inputSchema: { type: 'object', properties: { policyId: { type: 'string', description: 'Optional: restrict the purge to this policy id (its activationId).' }, olderThanDays: { type: 'number', description: 'Optional: only purge records older than this many days.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Working directory (for project scoping when project is omitted).' } } },
     },
   ];
 
@@ -985,6 +995,76 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
             : null;
           const caseSensitive = policy.assert ? policy.assert.caseSensitive !== false : true;
 
+          // micro-B1: `source` selects the evidence origin.
+          //   'current-snapshot' (DEFAULT): the micro-B0 re-scan of CURRENT code (below).
+          //   'triggers': adjudicate the OPT-IN CAPTURED trigger proposals instead.
+          // Both keep the mode!=='glob' refusal above; a plain glob policy has no
+          // activationId, so triggers-mode naturally yields the occ0 "no evidence" path.
+          const source = a.source === 'triggers' ? 'triggers' : 'current-snapshot';
+          if (source === 'triggers') {
+            const triggerStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'trigger-evidence-store.js'));
+            // Read under the SAME resolved projectId (pid) the shadow hook wrote under —
+            // the hook passes resolveProjectId({cwd}) and the store sanitizes it, exactly
+            // as resolveProject(a) here does, so the write and the read agree.
+            const activationId = policy.activationId ? String(policy.activationId) : null;
+            const evidence = activationId ? triggerStore.listEvidence(dataDir(), pid, { activationId }) : [];
+            if (!evidence.length) {
+              return adjJson({
+                source: 'triggers',
+                policyId,
+                occurrenceCount: 0,
+                intent,
+                note: 'no captured trigger evidence — enable captureTriggerEvidence and let some edits trigger first',
+              });
+            }
+            // Deterministic order: newest first, tie-broken by eventId for stability.
+            const sortedT = evidence.slice().sort((x, y) => (y.ts || 0) - (x.ts || 0) || String(x.eventId).localeCompare(String(y.eventId)));
+            const sampledT = sortedT.slice(0, ADJ_SAMPLE_CAP).map((e) => ({
+              id: String(e.eventId),
+              file: typeof e.file === 'string' ? e.file : '',
+              line: null, // a captured PROPOSAL has no current-code line
+              context: redact(String(e.addedSnippet == null ? '' : e.addedSnippet)).text, // re-redact defensively
+            }));
+            // Safety valve: keep the serialized bundle under ~1MiB.
+            while (sampledT.length > 1 && Buffer.byteLength(JSON.stringify(sampledT)) > (ADJ_BUNDLE_MAX_BYTES - 16384)) {
+              sampledT.pop();
+            }
+            const occIdsT = sampledT.map((o) => o.id);
+            const manifestHashT = crypto.createHash('sha256')
+              .update(`${policyId}\n${intent}\ntriggers\n${occIdsT.join(',')}`)
+              .digest('hex').slice(0, 16);
+            const bundleT = {
+              schema: 1,
+              policyId,
+              projectId: pid,
+              intent,
+              literal: literal == null ? null : literal,
+              caseSensitive,
+              occurrences: sampledT,
+              eligible: sortedT.length,
+              manifestHash: manifestHashT,
+              scannerVersion: ADJ_SCANNER_VERSION,
+              promptVersion: ADJ_PROMPT_VERSION,
+              createdAt: Date.now(),
+              ephemeral: true,
+              source: 'triggers',
+            };
+            const bundlePathT = path.join(adjStore.adjudicationDir(dataDir(), pid), `bundle-${manifestHashT}.json`);
+            try {
+              writeFileAtomic(bundlePathT, JSON.stringify(bundleT));
+            } catch (err) {
+              return adjErr(`policy_adjudication_prepare: failed to write the evidence bundle (${err.message}). Nothing to adjudicate.`);
+            }
+            return adjJson({
+              bundlePath: bundlePathT,
+              manifestHash: manifestHashT,
+              occurrenceCount: sampledT.length,
+              intent,
+              note: ADJ_TRIGGERS_NOTE,
+              source: 'triggers',
+            });
+          }
+
           let realRoot;
           try {
             realRoot = fs.realpathSync(cwd);
@@ -1066,6 +1146,7 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
             promptVersion: ADJ_PROMPT_VERSION,
             createdAt: Date.now(),
             ephemeral: true,
+            source: 'current-snapshot',
           };
           const bundlePath = path.join(adjStore.adjudicationDir(dataDir(), pid), `bundle-${manifestHash}.json`);
           try {
@@ -1074,7 +1155,7 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
             return adjErr(`policy_adjudication_prepare: failed to write the evidence bundle (${err.message}). Nothing to adjudicate.`);
           }
 
-          return adjJson({ bundlePath, manifestHash, occurrenceCount: sampled.length, intent, note: ADJ_NOTE });
+          return adjJson({ bundlePath, manifestHash, occurrenceCount: sampled.length, intent, note: ADJ_NOTE, source: 'current-snapshot' });
         } catch (err) {
           return { isError: true, content: [{ type: 'text', text: `policy_adjudication_prepare failed: ${err.message}` }] };
         }
@@ -1140,32 +1221,48 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
           }
 
           const coverage = { sampled: bundleOcc.length, eligible: Number.isFinite(bundle.eligible) ? bundle.eligible : bundleOcc.length };
+          // micro-B1: honor the bundle's source (or an explicit dispositionKind) so a
+          // triggers-sourced disposition is stored and disclosed distinctly from a
+          // current-snapshot one. Default stays 'current-snapshot' (B0 behavior).
+          const bundleSource = bundle.source === 'triggers' ? 'triggers' : 'current-snapshot';
+          const isTriggers = bundleSource === 'triggers' || a.dispositionKind === 'llm-trigger-proposal-disposition';
+          const dispositionKind = isTriggers ? 'llm-trigger-proposal-disposition' : 'llm-current-snapshot-occurrence-disposition';
+          const disclaimer = isTriggers ? ADJ_TRIGGERS_DISCLAIMER : ADJ_DISCLAIMER;
           const provenance = {
             scannerVersion: typeof bundle.scannerVersion === 'string' ? bundle.scannerVersion : ADJ_SCANNER_VERSION,
             promptVersion: typeof bundle.promptVersion === 'string' ? bundle.promptVersion : ADJ_PROMPT_VERSION,
+            source: bundleSource,
           };
           // Best-effort: name the activation for the disposition (does NOT mutate it).
           const pol = policyStore.listVisible(dataDir(), { projectId: pid }).find((r) => r && String(r.id) === policyId);
           const activationId = pol && pol.activationId ? String(pol.activationId) : undefined;
 
-          const record = { policyId, manifestHash, ts: Date.now(), counts, coverage, provenance };
+          const record = { policyId, manifestHash, ts: Date.now(), kind: dispositionKind, counts, coverage, provenance };
           if (activationId) record.activationId = activationId;
           adjStore.saveDisposition(dataDir(), pid, record);
 
           const summary = {
-            kind: 'llm-current-snapshot-occurrence-disposition',
+            kind: dispositionKind,
             policyId,
             manifestHash,
             projectId: pid,
             counts,
             coverage,
             provenance,
-            disclaimer: ADJ_DISCLAIMER,
+            disclaimer,
           };
           if (activationId) summary.activationId = activationId;
-          // Informational-only nudge when the current code looks mostly legitimate.
-          // TEXT ONLY — this tool NEVER narrows globs/literals or deactivates a policy.
-          if (counts.total > 0 && (counts.problem / counts.total) < 0.2) {
+          if (isTriggers) {
+            // A JUDGED estimate of the likely-FP SHARE among DECISIVE judgments — NOT a
+            // measured false-positive rate. `uncertain` is shown separately, never folded
+            // into the ratio. NO plain `falsePositiveRate` is ever exposed, and micro-A's
+            // shadow-report trigger FP stays N/A (this estimate is NOT wired into it).
+            const decisive = counts.legit + counts.problem;
+            summary.judgedLikelyFpShare = decisive > 0 ? counts.legit / decisive : null;
+            summary.judgedLikelyFpShareNote = 'JUDGED estimate = likely_legitimate / (likely_legitimate + likely_problem) among decisive judgments; uncertain (' + counts.uncertain + ') is shown separately. NOT a measured false-positive rate; the shadow report trigger FP stays N/A.';
+          } else if (counts.total > 0 && (counts.problem / counts.total) < 0.2) {
+            // Informational-only nudge when the current code looks mostly legitimate.
+            // TEXT ONLY — this tool NEVER narrows globs/literals or deactivates a policy.
             summary.tuningRecommendation = ADJ_TUNING;
           }
           return adjJson(summary);
@@ -1192,6 +1289,45 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
           });
         } catch (err) {
           return { isError: true, content: [{ type: 'text', text: `policy_adjudication_report failed: ${err.message}` }] };
+        }
+      }
+
+      case 'policy_trigger_evidence_purge': {
+        try {
+          const a = args || {};
+          const pid = resolveProject(a);
+          const policyId = typeof a.policyId === 'string' && a.policyId.trim() ? a.policyId.trim() : undefined;
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
+          const triggerStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'trigger-evidence-store.js'));
+
+          const opts = {};
+          // Scope to one policy's captured evidence via its activationId (only
+          // shadow-assertion policies carry one). Refuse an unknown/ineligible id
+          // rather than silently purging everything.
+          if (policyId) {
+            const pol = policyStore.listVisible(dataDir(), { projectId: pid }).find((r) => r && String(r.id) === policyId);
+            if (!pol) return adjErr(`policy_trigger_evidence_purge: no active policy with id "${policyId}" in this project. Use policy_list.`);
+            if (!pol.activationId) return adjErr(`policy_trigger_evidence_purge: policy "${policyId}" has no activationId (only shadow-assertion policies capture trigger evidence); nothing to purge for it.`);
+            opts.activationId = String(pol.activationId);
+          }
+          // Optional age filter: purge records strictly older than N days.
+          const olderThanDays = Number(a.olderThanDays);
+          if (Number.isFinite(olderThanDays) && olderThanDays > 0) {
+            opts.olderThanTs = Date.now() - olderThanDays * 86400000;
+          }
+
+          const removed = triggerStore.purgeEvidence(dataDir(), pid, opts);
+          return adjJson({
+            kind: 'trigger-evidence-purge',
+            projectId: pid,
+            policyId: policyId || null,
+            olderThanDays: Number.isFinite(olderThanDays) && olderThanDays > 0 ? olderThanDays : null,
+            removed,
+            note: 'Deleted the locally-stored, opt-in captured trigger evidence (redacted proposed-edit snippets) — you control your captured code. No policy was changed.',
+          });
+        } catch (err) {
+          return { isError: true, content: [{ type: 'text', text: `policy_trigger_evidence_purge failed: ${err.message}` }] };
         }
       }
 
