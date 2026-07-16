@@ -213,6 +213,71 @@ function getEventLogIsolated(project, { eventName = null, limit = 50 } = {}) {
   }
 }
 
+/**
+ * EXACT windowed aggregation of shadow-evaluation events for the CURRENTLY-OPEN
+ * project — the count `policy_shadow_report` needs. Unlike `getEventLog` (capped at
+ * 500 rows, grouped only by event_name), this groups by the payload's `activationId`
+ * AND `outcome` in SQL with NO row cap, so the per-policy trigger/pass/unevaluable
+ * tallies are exact regardless of volume. `json_extract` requires SQLite's JSON1
+ * (bundled in node:sqlite) — if it's ever unavailable it throws, which we log and
+ * turn into `[]` (honest empty, never a crash).
+ * @param {{eventName:string, sinceTs:number}} opts
+ * @returns {Array<{activationId:(string|null), outcome:(string|null), count:number}>}
+ */
+function getEvaluationCounts({ eventName, sinceTs = 0 } = {}) {
+  if (!_db || !eventName) return [];
+  try {
+    const rows = _db.prepare(
+      `SELECT json_extract(payload,'$.activationId') AS activation_id,
+              json_extract(payload,'$.outcome')      AS outcome,
+              COUNT(*) AS count
+         FROM metrics_event
+        WHERE event_name = ? AND ts >= ?
+        GROUP BY activation_id, outcome`
+    ).all(eventName, Number(sinceTs) || 0);
+    return rows.map((r) => ({ activationId: r.activation_id, outcome: r.outcome, count: r.count }));
+  } catch (err) {
+    console.error(`[metrics-store] getEvaluationCounts(${eventName}) failed: ${err.message}`);
+    return [];
+  }
+}
+
+/**
+ * Isolated (throwaway-connection) variant of `getEvaluationCounts` for an ARBITRARY
+ * project — mirrors `getEventLogIsolated` so the report can read a SPECIFIC project's
+ * db without disturbing the singleton bound to the active hook run. Read-only; `[]`
+ * if the db file or SQLite backend is unavailable.
+ * @param {string} project
+ * @param {{eventName:string, sinceTs:number}} opts
+ * @returns {Array<{activationId:(string|null), outcome:(string|null), count:number}>}
+ */
+function getEvaluationCountsIsolated(project, { eventName, sinceTs = 0 } = {}) {
+  if (!eventName) return [];
+  const Database = loadSqlite();
+  if (!Database) return [];
+  const p = dbPath(project);
+  if (!fs.existsSync(p)) return [];
+  let db;
+  try { db = new Database(p, { readonly: true }); }
+  catch (e) { console.error('[metrics-store] isolated open failed:', p, e.message); return []; }
+  try {
+    const rows = db.prepare(
+      `SELECT json_extract(payload,'$.activationId') AS activation_id,
+              json_extract(payload,'$.outcome')      AS outcome,
+              COUNT(*) AS count
+         FROM metrics_event
+        WHERE event_name = ? AND ts >= ?
+        GROUP BY activation_id, outcome`
+    ).all(eventName, Number(sinceTs) || 0);
+    return rows.map((r) => ({ activationId: r.activation_id, outcome: r.outcome, count: r.count }));
+  } catch (err) {
+    console.error(`[metrics-store] getEvaluationCountsIsolated(${project}) failed: ${err.message}`);
+    return [];
+  } finally {
+    try { db.close(); } catch { /* throwaway connection */ }
+  }
+}
+
 /** Aggregate counts per event_name within a time window (days back from now). */
 function getMetricsSummary(rangeDays = 7) {
   const empty = { totals: {}, daily: [], windowMs: rangeDays * 86400_000, sinceTs: 0 };
@@ -261,7 +326,9 @@ function listProjects() {
 
 module.exports = {
   init, isReady, close,
-  recordMetric, getEventLog, getEventLogIsolated, getMetricsSummary, cleanupMetrics,
+  recordMetric, getEventLog, getEventLogIsolated,
+  getEvaluationCounts, getEvaluationCountsIsolated,
+  getMetricsSummary, cleanupMetrics,
   listProjects,
   _getDbForTests: () => _db,
 };

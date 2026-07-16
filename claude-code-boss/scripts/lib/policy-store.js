@@ -56,6 +56,15 @@ const MAX_GLOBS_PER_POLICY = 20;         // max glob patterns a single policy ma
 const MAX_GLOB_LEN = 200;                // max chars per glob pattern
 const MAX_GLOB_POLICIES_PER_PROJECT = 50; // max active glob policies per project
 
+// ── Shadow-assertion glob policies (Phase 3 micro-A) ────────────────────────
+// A shadow-assertion glob policy carries a DETERMINISTIC content assert that a
+// FUTURE guard WOULD test (kind:'forbid-added-literal'). This micro only MEASURES
+// how often that assert WOULD trigger (enforcement:'shadow') — it never blocks and
+// is silent. The literal is stored UNREDACTED (a redacted literal can't match), so
+// a secret-bearing literal is REJECTED at activation rather than stored.
+const MAX_LITERAL_CHARS = 256;               // max chars for an assert literal (reject, don't truncate)
+const MAX_SHADOW_POLICIES_PER_PROJECT = 10;  // SEPARATE budget: max shadow-assertion policies per project
+
 function sha256(s) {
   return crypto.createHash('sha256').update(String(s || '')).digest('hex');
 }
@@ -142,6 +151,25 @@ function activeGlob(records, projectId) {
   return activeFor(records, projectId, null).filter((r) => r.mode === 'glob');
 }
 
+/**
+ * True iff `r` is a SHADOW-ASSERTION glob policy: a glob-mode record carrying a
+ * `forbid-added-literal` assert AND `enforcement:'shadow'`. A legacy/hand-edited
+ * glob record with a different (or missing) enforcement is NOT one of these — it
+ * is excluded from both the shadow budget and the shadow-matching set.
+ */
+function isShadowAssertion(r) {
+  return !!(r && r.mode === 'glob' && r.enforcement === 'shadow'
+    && r.assert && r.assert.kind === 'forbid-added-literal');
+}
+
+/**
+ * The SHADOW-ASSERTION subset of `activeGlob` for `projectId` — the set the
+ * SEPARATE shadow budget (`MAX_SHADOW_POLICIES_PER_PROJECT`) bounds.
+ */
+function activeShadow(records, projectId) {
+  return activeGlob(records, projectId).filter(isShadowAssertion);
+}
+
 // Deterministic injection order: oldest-activated first, id as a stable tiebreak.
 function byActivatedThenId(a, b) {
   return (a.activatedAt || 0) - (b.activatedAt || 0) || String(a.id).localeCompare(String(b.id));
@@ -181,9 +209,18 @@ function canonicalizeGlobs(globs) {
 /**
  * Resolve `filePath` to a PROJECT-RELATIVE, POSIX-normalized path, or null when it
  * can't be located inside the project (absolute path on another drive, or one that
- * escapes `cwd`). An absolute path is made relative to `cwd`; a relative path is
- * used as-is. NEVER returns an absolute path (so a glob can't be matched against a
- * machine-specific prefix). `\`→`/` and a single leading `./` are stripped.
+ * escapes `cwd` via `..`). NEVER returns an absolute path nor a `../…` traversal.
+ *
+ * With a `cwd`, BOTH relative and absolute inputs are anchored against it
+ * (`path.relative(cwd, path.resolve(cwd, fp))`) and rejected when the result climbs
+ * out (leading `..`) or lands on another drive (absolute). Without a `cwd`, an
+ * absolute input can't be anchored → null; a relative input is kept as-is but still
+ * rejected if it contains a `..` SEGMENT (a bare relative `../outside.js` must NOT
+ * pass through unchanged — the pre-fix escape). `\`→`/` and a leading `./` stripped.
+ *
+ * The escape check is SEGMENT-AWARE: a filename that merely starts with `..`
+ * (e.g. `..config`) is a distinct segment and is allowed; only a `..` path segment
+ * is an escape.
  * @param {string} filePath  the edited file path (absolute or relative)
  * @param {string} [cwd]     the session working directory
  * @returns {string|null}
@@ -191,18 +228,25 @@ function canonicalizeGlobs(globs) {
 function toRelPath(filePath, cwd) {
   const fp = typeof filePath === 'string' ? filePath : '';
   if (!fp) return null;
+  const base = typeof cwd === 'string' && cwd ? cwd : '';
   let rel;
-  if (path.isAbsolute(fp)) {
-    const base = typeof cwd === 'string' && cwd ? cwd : '';
-    if (!base) return null; // can't anchor an absolute path without a cwd
-    rel = path.relative(base, fp);
-    // Escapes the project (../…) or resolves to another drive (absolute) → outside.
-    if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) return null;
+  if (base) {
+    // Anchor BOTH relative and absolute inputs against cwd; reject other-drive
+    // (absolute residual) escapes. `path.relative` collapses interior `..` that
+    // stays inside, so only a genuine escape surfaces as a leading `..`.
+    rel = path.relative(base, path.resolve(base, fp));
+    if (!rel || path.isAbsolute(rel)) return null;
+  } else if (path.isAbsolute(fp)) {
+    return null; // can't anchor an absolute path without a cwd
   } else {
-    rel = fp;
+    rel = fp; // no cwd: keep the relative path as-is (escape-checked below)
   }
   let norm = rel.replace(/\\/g, '/');
   if (norm.startsWith('./')) norm = norm.slice(2);
+  // Segment-aware escape guard: a `..` SEGMENT (leading or interior) climbs out of
+  // the project — reject rather than return a traversing path. This closes the
+  // pre-fix hole where a bare relative `../outside.js` was returned unchanged.
+  if (norm.split('/').some((s) => s === '..')) return null;
   return norm || null;
 }
 
@@ -225,13 +269,36 @@ function toRelPath(filePath, cwd) {
  *     into the id AND sourceHash so distinct globs (or a matcher/mode change) yield
  *     a distinct record/definition hash.
  *
+ *   - GLOB + SHADOW-ASSERTION (micro-A): a GLOB policy that ALSO carries an `assert`
+ *     ({kind:'forbid-added-literal', literal, caseSensitive?}) with
+ *     `enforcement:'shadow'`. It only MEASURES how often the assert WOULD trigger a
+ *     future guard — never blocks, silent. The literal is stored UNREDACTED (a
+ *     redacted literal can't match), so a secret-bearing literal is REJECTED
+ *     (`reason:'sensitive-literal'`, nothing stored). Other refusals:
+ *     `bad-assert-kind`, `bad-literal`, `literal-too-long`, `unsupported-enforcement`,
+ *     and a SEPARATE `MAX_SHADOW_POLICIES_PER_PROJECT` budget (`reason:'budget'`).
+ *     A per-definition opaque `activationId` (the telemetry key) is minted on the
+ *     first definition and REUSED across upserts while the definition (sourceHash)
+ *     is unchanged; any change to globs/kind/literal/caseSensitive/enforcement mints
+ *     a fresh one.
+ *
  * Text is REDACTED + capped in BOTH modes. Empty text is refused (`reason:'empty'`).
- * @returns {{activated:boolean, id?:string, sig?:string, mode?:string, reason?:string}}
+ * A CORRUPT registry refuses activation up-front (`reason:'corrupt'`) rather than
+ * overwriting it, and a failed persist surfaces (`reason:'persist'`) instead of a
+ * false success.
+ * @returns {{activated:boolean, id?:string, sig?:string, mode?:string, activationId?:string, enforcement?:string, reason?:string}}
  */
-function activate(dataDir, { entryId, text, scope = 'project', projectId, globs, now = Date.now() } = {},
+function activate(dataDir, { entryId, text, scope = 'project', projectId, globs, assert, enforcement, now = Date.now() } = {},
   { maxPolicies = DEFAULT_MAX_POLICIES, maxChars = DEFAULT_MAX_CHARS } = {}) {
   const raw = typeof text === 'string' ? text : '';
   if (!raw.trim()) return { activated: false, reason: 'empty' };
+
+  // Load the registry ONCE up-front and refuse on corruption so a parse failure
+  // can't be clobbered by an overwrite (the load-bearing state is the user's
+  // standing constraints). Both branches mutate this same `records`.
+  const loaded = loadResult(dataDir);
+  if (loaded.corrupt) return { activated: false, reason: 'corrupt' };
+  const records = loaded.records;
 
   const safeText = redact(raw).text.slice(0, MAX_POLICY_CHARS);
   const pid = String(projectId != null ? projectId : '');
@@ -243,10 +310,73 @@ function activate(dataDir, { entryId, text, scope = 'project', projectId, globs,
     const canon = canonicalizeGlobs(globs);
     if (canon === null) return { activated: false, reason: 'invalid-globs' };
 
-    const { records } = loadResult(dataDir);
     const id = entryId
       ? sanitizeId(entryId)
       : sha256(`${safeText}|glob|${pid}|${canon.join(',')}`).slice(0, 16);
+
+    // ── SHADOW-ASSERTION sub-branch ─────────────────────────────────────────
+    // A glob policy carrying an `assert` is a shadow-assertion policy (micro-A).
+    if (assert !== undefined && assert !== null) {
+      if (typeof assert !== 'object' || Array.isArray(assert) || assert.kind !== 'forbid-added-literal') {
+        return { activated: false, reason: 'bad-assert-kind' };
+      }
+      const literal = assert.literal;
+      if (typeof literal !== 'string' || literal.length === 0) {
+        return { activated: false, reason: 'bad-literal' };
+      }
+      // Reject (don't truncate) an oversized literal — a truncated literal would
+      // silently measure a DIFFERENT assertion than the user approved.
+      if (literal.length > MAX_LITERAL_CHARS) {
+        return { activated: false, reason: 'literal-too-long' };
+      }
+      // Secret gate: the literal is stored UNREDACTED (redaction would break exact
+      // matching). If the redactor WOULD change it, it carries a secret → refuse.
+      if (redact(literal).text !== literal) {
+        return { activated: false, reason: 'sensitive-literal' };
+      }
+      // Only 'shadow' (measure) is supported this micro — 'enforce' (block) is a
+      // LATER micro and must be refused, not silently downgraded.
+      if (enforcement !== 'shadow') {
+        return { activated: false, reason: 'unsupported-enforcement' };
+      }
+      const caseSensitive = assert.caseSensitive !== false; // DEFAULT true
+
+      // SEPARATE shadow budget (this same-id record excluded so an upsert doesn't
+      // count itself). Independent of the plain-glob budget.
+      const existingShadow = activeShadow(records, pid).filter((r) => r.id !== id);
+      if (existingShadow.length + 1 > MAX_SHADOW_POLICIES_PER_PROJECT) {
+        return { activated: false, reason: 'budget' };
+      }
+
+      // Definition hash folds globs + the FULL assert (kind/literal/caseSensitive)
+      // + enforcement so ANY definition change yields a new hash → new activationId.
+      const sourceHash = sha256(
+        `${raw}\nglob\n${canon.join(',')}\nshadow\n${assert.kind}\n${literal}\n${caseSensitive}\n${enforcement}`);
+      // activationId is the IMMUTABLE-per-definition telemetry key: reuse the prior
+      // one when the definition is unchanged, else mint a fresh opaque id.
+      const prior = records[id];
+      const activationId = (prior && prior.sourceHash === sourceHash && prior.activationId)
+        ? prior.activationId
+        : crypto.randomBytes(12).toString('hex');
+
+      records[id] = {
+        id,
+        entryId: entryId ? String(entryId) : null,
+        mode: 'glob',
+        scope: 'project',
+        projectId: pid,
+        text: safeText,
+        globs: canon,
+        assert: { kind: 'forbid-added-literal', literal, caseSensitive },
+        enforcement: 'shadow',
+        activationId,
+        sourceHash,
+        activatedAt: now,
+      };
+      if (!save(dataDir, { records })) return { activated: false, reason: 'persist' };
+      return { activated: true, id, activationId, mode: 'glob', enforcement: 'shadow' };
+    }
+
     // Separate glob budget (this same-id record excluded so an upsert doesn't
     // count itself). Glob policies do NOT consume the always maxPolicies/maxChars.
     const existing = activeGlob(records, pid).filter((r) => r.id !== id);
@@ -268,7 +398,7 @@ function activate(dataDir, { entryId, text, scope = 'project', projectId, globs,
       sourceHash,
       activatedAt: now,
     };
-    save(dataDir, { records });
+    if (!save(dataDir, { records })) return { activated: false, reason: 'persist' };
     return { activated: true, id, sig: sourceHash, mode: 'glob' };
   }
 
@@ -277,7 +407,6 @@ function activate(dataDir, { entryId, text, scope = 'project', projectId, globs,
   const sourceHash = sha256(raw);
   const id = entryId ? sanitizeId(entryId) : sha256(`${safeText}|${sc}|${pid}`).slice(0, 16);
 
-  const { records } = loadResult(dataDir);
   // Bound the ALWAYS set that would be INJECTED together (excluding this same-id
   // record, since an upsert replaces it). Glob policies are NOT counted here.
   const active = activeAlways(records, pid, id);
@@ -297,7 +426,7 @@ function activate(dataDir, { entryId, text, scope = 'project', projectId, globs,
     sourceHash,
     activatedAt: now,
   };
-  save(dataDir, { records });
+  if (!save(dataDir, { records })) return { activated: false, reason: 'persist' };
   return { activated: true, id, sig: sourceHash };
 }
 
@@ -355,6 +484,26 @@ function listGlobMatching(dataDir, { projectId, filePath, cwd } = {}) {
 }
 
 /**
+ * The SHADOW-MEASUREMENT set: SHADOW-ASSERTION glob records for `projectId` whose
+ * globs match the edited file's project-relative path, deterministically ordered.
+ * Legacy/hand-edited glob records WITHOUT `enforcement:'shadow'` (or without a
+ * `forbid-added-literal` assert) are EXCLUDED — only records that went through the
+ * shadow-activation gate are measured. Path outside the project (other drive /
+ * escapes cwd via the FIXED `toRelPath`) → `[]`.
+ * @returns {Array<object>}
+ */
+function listShadowMatching(dataDir, { projectId, filePath, cwd } = {}) {
+  const rel = toRelPath(filePath, cwd);
+  if (rel == null) return [];
+  const { records } = loadResult(dataDir);
+  return activeGlob(records, projectId)
+    .filter((r) => r.enforcement === 'shadow'
+      && r.assert && r.assert.kind === 'forbid-added-literal'
+      && anyGlobMatches(r.globs, rel))
+    .sort(byActivatedThenId);
+}
+
+/**
  * Back-compat alias of `listVisible` (mode-blind). Retained for any legacy caller;
  * the always-injection path uses `listAlways` and MCP listing uses `listVisible`.
  * @returns {Array<object>}
@@ -366,9 +515,10 @@ function list(dataDir, opts) {
 module.exports = {
   storePath, loadResult, save,
   activate, deactivate,
-  list, listAlways, listVisible, listGlobMatching,
-  activeFor, activeAlways, activeGlob,
+  list, listAlways, listVisible, listGlobMatching, listShadowMatching,
+  activeFor, activeAlways, activeGlob, activeShadow, isShadowAssertion,
   canonicalizeGlobs, toRelPath,
   MAX_POLICY_CHARS, DEFAULT_MAX_POLICIES, DEFAULT_MAX_CHARS,
   MAX_GLOBS_PER_POLICY, MAX_GLOB_LEN, MAX_GLOB_POLICIES_PER_PROJECT,
+  MAX_LITERAL_CHARS, MAX_SHADOW_POLICIES_PER_PROJECT,
 };
