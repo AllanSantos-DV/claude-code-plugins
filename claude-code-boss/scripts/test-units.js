@@ -2940,6 +2940,190 @@ test('policy-store: re-activating the same entryId UPSERTS (no duplicate)', () =
   assertEq(active[0].text, 'second');
 });
 
+// ─── glob-match (ReDoS-safe SEGMENT matcher for glob-scoped policies, micro-3) ─
+const globm = require(path.join(SCRIPTS, 'lib', 'glob-match.js'));
+
+test('glob-match: basename fallback — *.ts matches app.ts AND src/app.ts', () => {
+  assertEq([globm.matchGlob('*.ts', 'app.ts'), globm.matchGlob('*.ts', 'src/app.ts')], [true, true]);
+});
+
+test('glob-match: src/** matches nested + shallow, rejects a sibling dir', () => {
+  assertEq([
+    globm.matchGlob('src/**', 'src/a/b.ts'),
+    globm.matchGlob('src/**', 'src/x.ts'),
+    globm.matchGlob('src/**', 'lib/x.ts'),
+  ], [true, true, false]);
+});
+
+test('glob-match: src/**/*.ts matches .ts under src, rejects .js', () => {
+  assertEq([
+    globm.matchGlob('src/**/*.ts', 'src/a/b.ts'),
+    globm.matchGlob('src/**/*.ts', 'src/a/b.js'),
+  ], [true, false]);
+});
+
+test('glob-match: a/*/c — single-star segment consumes EXACTLY one dir', () => {
+  assertEq([globm.matchGlob('a/*/c', 'a/b/c'), globm.matchGlob('a/*/c', 'a/b/d/c')], [true, false]);
+});
+
+test('glob-match: ** matches anything; ? matches exactly one char', () => {
+  assertEq([
+    globm.matchGlob('**', 'a/b/c'),
+    globm.matchGlob('**', 'x'),
+    globm.matchGlob('?', 'a'),
+    globm.matchGlob('?', 'ab'),
+    globm.matchGlob('?', ''),
+  ], [true, true, true, false, false]);
+});
+
+test('glob-match: ** consumes ZERO directories (src/** matches src)', () => {
+  assertEq(globm.matchGlob('src/**', 'src'), true);
+});
+
+test('glob-match: Windows backslash input normalizes on BOTH sides', () => {
+  assertEq([
+    globm.matchGlob('src/api/**', 'src\\api\\x.ts'),
+    globm.matchGlob('src\\api\\**', 'src/api/x.ts'),
+  ], [true, true]);
+});
+
+test('glob-match: leading ./ is stripped on both glob and path', () => {
+  assertEq([globm.matchGlob('./src/**', 'src/a.ts'), globm.matchGlob('src/**', './src/a.ts')], [true, true]);
+});
+
+test('glob-match: anyGlobMatches / firstGlobMatch (deterministic first)', () => {
+  assertEq(globm.anyGlobMatches(['docs/**', '*.md'], 'README.md'), true);
+  assertEq(globm.anyGlobMatches(['docs/**'], 'src/a.ts'), false);
+  assertEq(globm.firstGlobMatch(['docs/**', 'src/**'], 'src/a.ts'), 'src/**');
+  assertEq(globm.firstGlobMatch(['*.md'], 'a.ts'), null);
+  assertEq(globm.anyGlobMatches('not-array', 'a'), false);
+});
+
+test('glob-match: ADVERSARIAL pathological glob returns quickly (no ReDoS)', () => {
+  const evil = '*a'.repeat(30) + 'b';   // regex-from-glob would backtrack pathologically
+  const hay = 'a'.repeat(2000);          // long, never-matching (no trailing 'b')
+  const t0 = Date.now();
+  const res = globm.matchGlob(evil, hay);
+  const dt = Date.now() - t0;
+  assertEq(res, false);
+  assert(dt < 1000, `matcher must be polynomial, took ${dt}ms`);
+});
+
+// ─── policy-store glob-scoped extensions (Phase 2 micro-3) ───────────────────
+test('policy-store: glob activate stores mode:glob with CANONICAL (sorted+deduped) globs', () => {
+  const dd = freshPolDataDir(); const now = 1_700_000_000_000;
+  const r = polstore.activate(dd, { text: 'no console.log in src', projectId: 'acme/api', globs: ['src/**/*.ts', 'src/**/*.ts', 'docs/**'], now });
+  assertEq([r.activated, r.mode], [true, 'glob']);
+  const rec = polstore.loadResult(dd).records[r.id];
+  assertEq([rec.mode, rec.scope, rec.projectId], ['glob', 'project', 'acme/api']);
+  assertEq(rec.globs, ['docs/**', 'src/**/*.ts']); // sorted + deduped
+});
+
+test('policy-store: glob activate FORCES project scope even when scope:user is passed', () => {
+  const dd = freshPolDataDir(); const now = 1_700_000_000_000;
+  const r = polstore.activate(dd, { text: 'rule', scope: 'user', projectId: 'z', globs: ['*.ts'], now });
+  assertEq(r.activated, true);
+  assertEq(polstore.loadResult(dd).records[r.id].scope, 'project');
+});
+
+test('policy-store: listAlways EXCLUDES glob policies; listVisible INCLUDES both', () => {
+  const dd = freshPolDataDir(); let now = 1_700_000_000_000;
+  polstore.activate(dd, { text: 'always rule', projectId: 'z', now: now++ });
+  polstore.activate(dd, { text: 'glob rule', projectId: 'z', globs: ['src/**'], now: now++ });
+  assertEq(polstore.listAlways(dd, { projectId: 'z' }).map(r => r.text), ['always rule']);
+  assertEq(polstore.listVisible(dd, { projectId: 'z' }).map(r => r.text).sort(), ['always rule', 'glob rule']);
+});
+
+test('policy-store: a glob policy is NEVER returned by listAlways (SessionStart leak guard)', () => {
+  const dd = freshPolDataDir(); const now = 1_700_000_000_000;
+  polstore.activate(dd, { text: 'glob only', projectId: 'z', globs: ['**'], now });
+  assertEq(polstore.listAlways(dd, { projectId: 'z' }), []);
+});
+
+test('policy-store: legacy record with missing mode is treated as always', () => {
+  const dd = freshPolDataDir();
+  fs.mkdirSync(path.join(dd, 'policies'), { recursive: true });
+  fs.writeFileSync(polstore.storePath(dd), JSON.stringify({ records: {
+    legacy: { id: 'legacy', scope: 'project', projectId: 'z', text: 'legacy rule', activatedAt: 1 },
+  } }));
+  assertEq(polstore.listAlways(dd, { projectId: 'z' }).map(r => r.text), ['legacy rule']);
+});
+
+test('policy-store: listGlobMatching returns only path-matching glob policies for the project', () => {
+  const dd = freshPolDataDir(); let now = 1_700_000_000_000;
+  polstore.activate(dd, { text: 'ts rule', projectId: 'proj', globs: ['src/**/*.ts'], now: now++ });
+  polstore.activate(dd, { text: 'docs rule', projectId: 'proj', globs: ['docs/**'], now: now++ });
+  polstore.activate(dd, { text: 'always', projectId: 'proj', now: now++ }); // always → never surfaces here
+  assertEq(polstore.listGlobMatching(dd, { projectId: 'proj', filePath: 'src/a/b.ts' }).map(r => r.text), ['ts rule']);
+  assertEq(polstore.listGlobMatching(dd, { projectId: 'proj', filePath: 'lib/x.ts' }), []);
+});
+
+test('policy-store: listGlobMatching is project-scoped (no cross-project leak)', () => {
+  const dd = freshPolDataDir(); const now = 1_700_000_000_000;
+  polstore.activate(dd, { text: 'projA rule', projectId: 'projA', globs: ['**'], now });
+  assertEq(polstore.listGlobMatching(dd, { projectId: 'projB', filePath: 'x.ts' }), []);
+});
+
+test('policy-store: invalid/empty globs → {activated:false, reason:invalid-globs}, NOTHING stored (atomic)', () => {
+  const dd = freshPolDataDir(); const now = 1_700_000_000_000;
+  for (const bad of [[], ['   '], 'not-array', [''], ['x'.repeat(201)]]) {
+    assertEq(polstore.activate(dd, { text: 'rule', projectId: 'z', globs: bad, now }), { activated: false, reason: 'invalid-globs' });
+  }
+  const tooMany = Array.from({ length: 21 }, (_, i) => `d${i}/**`);
+  assertEq(polstore.activate(dd, { text: 'rule', projectId: 'z', globs: tooMany, now }), { activated: false, reason: 'invalid-globs' });
+  // No always fallback, no partial glob record — registry stays empty.
+  assertEq(Object.keys(polstore.loadResult(dd).records).length, 0);
+});
+
+test('policy-store: different glob SETS on the same text produce DIFFERENT ids (no overwrite)', () => {
+  const dd = freshPolDataDir(); const now = 1_700_000_000_000;
+  const a = polstore.activate(dd, { text: 'same text', projectId: 'z', globs: ['src/**'], now });
+  const b = polstore.activate(dd, { text: 'same text', projectId: 'z', globs: ['docs/**'], now });
+  assert(a.id !== b.id, `distinct glob sets must not collide: ${a.id} vs ${b.id}`);
+  assertEq(polstore.listVisible(dd, { projectId: 'z' }).length, 2);
+});
+
+test('policy-store: glob budget — activating past MAX_GLOB_POLICIES_PER_PROJECT is refused', () => {
+  const dd = freshPolDataDir(); let now = 1_700_000_000_000;
+  const MAX = polstore.MAX_GLOB_POLICIES_PER_PROJECT;
+  for (let i = 0; i < MAX; i++) {
+    assertEq(polstore.activate(dd, { text: `rule ${i}`, projectId: 'z', globs: [`d${i}/**`], now: now++ }).activated, true);
+  }
+  assertEq(polstore.activate(dd, { text: 'one too many', projectId: 'z', globs: ['extra/**'], now: now++ }), { activated: false, reason: 'budget' });
+  assertEq(polstore.activeGlob(polstore.loadResult(dd).records, 'z').length, MAX);
+});
+
+test('policy-store: glob policy budget is SEPARATE from the always budget', () => {
+  const dd = freshPolDataDir(); let now = 1_700_000_000_000;
+  // Fill the always budget to its max; a glob policy must still activate.
+  for (let i = 0; i < 3; i++) {
+    assertEq(polstore.activate(dd, { text: `always ${i}`, projectId: 'z', now: now++ }, { maxPolicies: 3, maxChars: 99999 }).activated, true);
+  }
+  const g = polstore.activate(dd, { text: 'glob one', projectId: 'z', globs: ['src/**'], now: now++ }, { maxPolicies: 3, maxChars: 99999 });
+  assertEq(g.activated, true);
+  // And the glob policy did not consume an always slot: a 4th always is still refused.
+  assertEq(polstore.activate(dd, { text: 'always 4', projectId: 'z', now: now++ }, { maxPolicies: 3, maxChars: 99999 }).reason, 'budget');
+});
+
+test('policy-store: glob policy text is REDACTED before storage', () => {
+  const dd = freshPolDataDir(); const now = 1_700_000_000_000;
+  const SECRET = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWX';
+  const r = polstore.activate(dd, { text: `avoid leaking ${SECRET}`, projectId: 'z', globs: ['**'], now });
+  const rec = polstore.loadResult(dd).records[r.id];
+  assert(!JSON.stringify(rec).includes(SECRET), `glob policy text must be redacted, got: ${rec.text}`);
+});
+
+test('policy-store: toRelPath — inside-project normalizes; outside/other-drive/empty → null', () => {
+  assertEq(polstore.toRelPath('src\\a\\b.ts'), 'src/a/b.ts');       // relative input normalized
+  assertEq(polstore.toRelPath('./src/a.ts'), 'src/a.ts');           // leading ./ stripped
+  const cwd = process.platform === 'win32' ? 'C:\\proj' : '/proj';
+  const inside = process.platform === 'win32' ? 'C:\\proj\\src\\a.ts' : '/proj/src/a.ts';
+  const outside = process.platform === 'win32' ? 'D:\\other\\a.ts' : '/other/a.ts';
+  assertEq(polstore.toRelPath(inside, cwd), 'src/a.ts');            // absolute inside cwd → rel
+  assertEq(polstore.toRelPath(outside, cwd), null);                 // outside / other drive → null
+  assertEq(polstore.toRelPath('', cwd), null);                      // empty → null
+});
+
 // ─── curation-reconcile (Stop-hook blocked-entry reconciliation) ─────────────
 const reconcile = require(path.join(SCRIPTS, 'lib', 'curation-reconcile.js'));
 

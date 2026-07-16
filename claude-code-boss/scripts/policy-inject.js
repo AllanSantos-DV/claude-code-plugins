@@ -61,10 +61,12 @@ function renderBlock(active, corrupt) {
 
     const DATA_DIR = dataDir();
     // loadResult gives the `corrupt` flag (so we can WARN); the active set comes
-    // from list() (applies the user/project scope filter + deterministic order).
+    // from listAlways() — ALWAYS-mode records only. Glob-mode (per-file) policies are
+    // deliberately EXCLUDED here so a conditional advisory can never be injected as an
+    // unconditional constraint; those surface post-edit via policy-glob-inject.
     const { records, corrupt } = policyStore.loadResult(DATA_DIR);
-    void records; // consulted only for `corrupt`; active set is list()'s job.
-    const active = policyStore.list(DATA_DIR, { projectId });
+    void records; // consulted only for `corrupt`; active set is listAlways()'s job.
+    const active = policyStore.listAlways(DATA_DIR, { projectId });
 
     // Nothing to surface AND nothing to warn about → stay silent.
     if (active.length === 0 && !corrupt) return emitEmpty();

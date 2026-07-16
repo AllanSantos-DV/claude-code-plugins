@@ -295,12 +295,12 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
     },
     {
       name: 'policy_activate',
-      description: 'Activate a standing always-apply policy (explicit user action; injected every session/subagent start). NOT for automatic capture. Use ONLY when the user explicitly asks for a persistent constraint (e.g. "never let pre-existing code errors pass"). The text is redacted + capped and stored in a local registry; it is then surfaced deterministically at every SessionStart and SubagentStart. Surfacing ≠ enforcement — this makes the policy PRESENT in context, it does not block.',
-      inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'The policy / standing constraint in plain language (required). Redacted + capped before storage.' }, entryId: { type: 'string', description: 'Optional stable id (e.g. a KB entry id) so re-activating the same policy upserts instead of duplicating. Default: a hash of text+scope+project.' }, scope: { type: 'string', enum: ['project', 'user'], description: 'project (default) = applies only in this project; user = applies in every project.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode). Ignored for user scope.' }, cwd: { type: 'string', description: 'Working directory (for project scoping when project is omitted).' } }, required: ['text'] },
+      description: 'Activate a standing user policy (explicit user action only; NOT for automatic capture). Two modes: (1) ALWAYS-mode (default, no `globs`) — injected every session/subagent start, for a persistent global constraint (e.g. "never let pre-existing code errors pass"). (2) GLOB-mode (pass `globs`) — a project-scoped POST-EDIT ADVISORY that surfaces ONLY when an edited file path matches one of the globs (e.g. globs:["src/**/*.ts"] text:"keep this layer free of console.log"). Glob policies are ALWAYS project-scoped and never injected at session start. In both modes the text is redacted + capped and stored in a local registry. Surfacing ≠ enforcement — this makes the policy PRESENT in context, it does not block.',
+      inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'The policy / standing constraint in plain language (required). Redacted + capped before storage.' }, entryId: { type: 'string', description: 'Optional stable id (e.g. a KB entry id) so re-activating the same policy upserts instead of duplicating. Default: a hash of text+mode+project(+globs).' }, scope: { type: 'string', enum: ['project', 'user'], description: 'project (default) = applies only in this project; user = applies in every project. IGNORED when globs are given (glob policies are always project-scoped).' }, globs: { type: 'array', items: { type: 'string' }, description: 'Optional glob patterns (e.g. ["src/**/*.ts","*.md"]). When present the policy becomes a project-scoped GLOB-mode advisory, surfaced ONLY when an edited file matches — never at session start. Must be a non-empty array of valid patterns (≤20 patterns, each ≤200 chars); otherwise activation is rejected.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode). Ignored for user scope.' }, cwd: { type: 'string', description: 'Working directory (for project scoping when project is omitted).' } }, required: ['text'] },
     },
     {
       name: 'policy_list',
-      description: 'List the standing always-apply policies currently active for a project (user-scope policies always included). Returns id, scope, projectId, and a text preview for each.',
+      description: 'List the standing policies currently active for a project (user-scope always-policies always included). Returns id, mode (always | glob), scope, projectId, globs (for glob policies), and a text preview for each. Glob policies are surfaced here for visibility even though they only inject on a matching edit.',
       inputSchema: { type: 'object', properties: { project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Working directory (for project scoping when project is omitted).' } } },
     },
     {
@@ -596,20 +596,34 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
           if (!text.trim()) {
             return { isError: true, content: [{ type: 'text', text: 'policy_activate: text is required (the standing constraint to activate).' }] };
           }
-          const scope = a.scope === 'user' ? 'user' : 'project';
+          // Glob policies are project-scoped only (this micro): force project scope
+          // even if the caller passed scope:'user' alongside globs.
+          const hasGlobs = a.globs !== undefined && a.globs !== null;
+          const scope = hasGlobs ? 'project' : (a.scope === 'user' ? 'user' : 'project');
           const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
           const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
           // user-scope policies are project-independent; only resolve a project id
-          // for project-scope activations.
+          // for project-scope activations (all glob policies are project-scoped).
           const pid = scope === 'user' ? '' : resolveProject(a);
-          const res = policyStore.activate(dataDir(), { entryId: a.entryId, text, scope, projectId: pid });
+          const res = policyStore.activate(dataDir(), { entryId: a.entryId, text, scope, projectId: pid, globs: hasGlobs ? a.globs : undefined });
           if (!res.activated) {
-            const msg = res.reason === 'budget'
-              ? 'policy_activate: refused — activating this policy would exceed the injected-policy budget (too many active policies or too much total text). Deactivate an existing policy first (policy_list / policy_deactivate).'
-              : `policy_activate: refused (${res.reason || 'invalid'}).`;
+            let msg;
+            if (res.reason === 'invalid-globs') {
+              msg = 'policy_activate: refused — `globs` must be a non-empty array of valid glob patterns (≤20 patterns, each ≤200 chars, no empty patterns). Fix the patterns and retry; nothing was stored.';
+            } else if (res.reason === 'budget') {
+              msg = hasGlobs
+                ? 'policy_activate: refused — activating this glob policy would exceed the per-project glob-policy budget. Deactivate an existing glob policy first (policy_list / policy_deactivate).'
+                : 'policy_activate: refused — activating this policy would exceed the injected-policy budget (too many active policies or too much total text). Deactivate an existing policy first (policy_list / policy_deactivate).';
+            } else {
+              msg = `policy_activate: refused (${res.reason || 'invalid'}).`;
+            }
             return { content: [{ type: 'text', text: JSON.stringify({ activated: false, reason: res.reason || 'invalid', message: msg }, null, 2) }] };
           }
-          return { content: [{ type: 'text', text: JSON.stringify({ activated: true, id: res.id, scope, projectId: pid, message: 'Policy activated — it will be injected at every session and subagent start until deactivated.' }, null, 2) }] };
+          const mode = res.mode || (hasGlobs ? 'glob' : 'always');
+          const okMsg = mode === 'glob'
+            ? 'Glob policy activated — it will surface as a post-edit advisory only when an edited file matches one of its globs (never at session start).'
+            : 'Policy activated — it will be injected at every session and subagent start until deactivated.';
+          return { content: [{ type: 'text', text: JSON.stringify({ activated: true, id: res.id, mode, scope, projectId: pid, message: okMsg }, null, 2) }] };
         } catch (err) {
           return { isError: true, content: [{ type: 'text', text: `policy_activate failed: ${err.message}` }] };
         }
@@ -621,8 +635,15 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
           const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
           const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
           const pid = resolveProject(a);
-          const active = policyStore.list(dataDir(), { projectId: pid });
-          const policies = active.map(r => ({ id: r.id, scope: r.scope, projectId: r.projectId, text: String(r.text || '').slice(0, 160) }));
+          const active = policyStore.listVisible(dataDir(), { projectId: pid });
+          const policies = active.map(r => ({
+            id: r.id,
+            mode: r.mode || 'always',
+            scope: r.scope,
+            projectId: r.projectId,
+            globs: Array.isArray(r.globs) ? r.globs : undefined,
+            text: String(r.text || '').slice(0, 160),
+          }));
           return { content: [{ type: 'text', text: JSON.stringify({ projectId: pid, count: policies.length, policies }, null, 2) }] };
         } catch (err) {
           return { isError: true, content: [{ type: 'text', text: `policy_list failed: ${err.message}` }] };

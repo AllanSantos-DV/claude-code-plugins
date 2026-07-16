@@ -171,6 +171,41 @@ const _polEmpty = {
   cwd: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pol-empty-proj-')),
   dataDir: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pol-empty-data-')),
 };
+// GLOB-only policy: a per-file (mode:'glob') rule with NO always-mode record. The
+// leak-guard regression asserts policy-inject (now listAlways) never surfaces it at
+// SessionStart — a conditional advisory must not become an unconditional constraint.
+const _polGlobOnly = (() => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pol-globonly-proj-'));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pol-globonly-data-'));
+  const projectId = path.basename(cwd);
+  _policyStore.activate(dataDir, { text: 'glob-only rule that must stay conditional', projectId, globs: ['src/**'] });
+  return { cwd, dataDir, projectId };
+})();
+
+// ─── policy-glob-inject fixtures (PostToolUse post-edit GLOB advisory) ───────
+// The policy-glob-inject hook fires after Edit|Write|MultiEdit|NotebookEdit, and
+// surfaces a project-scoped glob policy ONLY when the edited path matches. Each
+// fixture seeds a glob policy under projectId=basename(cwd) and passes
+// CCB_PROJECT_ID:'' so the spawned subprocess resolves the same id we seeded.
+const GLOB_POLICY_TEXT = 'flag any leftover console.log in production source';
+function seedGlobPolicy(text, globs) {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-gpol-proj-'));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-gpol-data-'));
+  const projectId = path.basename(cwd);
+  const res = _policyStore.activate(dataDir, { text, projectId, globs });
+  return { cwd, dataDir, projectId, text, globs, id: res.id };
+}
+// Matching fixture — reused read-only by match / NotebookEdit / non-file / disabled.
+const _gpMatch = seedGlobPolicy(GLOB_POLICY_TEXT, ['src/**']);
+// Redaction fixture: a secret in the policy text must NEVER reach the injected block.
+const GLOB_SECRET = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWX12';
+const _gpRedact = seedGlobPolicy(`avoid committing ${GLOB_SECRET} into source`, ['**']);
+// Outside-project fixture: a matches-everything glob, but an out-of-tree path → empty.
+const _gpOutside = seedGlobPolicy('nothing should surface for an out-of-project path', ['**']);
+// A different-project cwd sharing _gpMatch's registry — proves cross-project isolation.
+const _gpOtherCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-gpol-otherproj-'));
+// An absolute path guaranteed to be OUTSIDE the fixture cwd (other drive on Windows).
+const _gpOutsidePath = process.platform === 'win32' ? 'Z:\\elsewhere\\secret.ts' : '/elsewhere/secret.ts';
 
 const TESTS = [
   // ── SessionStart ──────────────────────────────────────────────────────────
@@ -638,6 +673,110 @@ const TESTS = [
       if (!ctx.includes('unreadable')) return `a corrupt registry must inject a warning, got: ${ctx}`;
       return null;
     },
+  },
+  {
+    // LEAK GUARD (micro-3 regression): policy-inject switched list→listAlways, so a
+    // GLOB-mode policy must NOT be surfaced at SessionStart as an always constraint.
+    name: 'policy-inject     [glob-only policy→NOT surfaced at SessionStart (leak guard)]',
+    script: 'policy-inject.js',
+    payload: { hook_event_name: 'SessionStart', cwd: _polGlobOnly.cwd },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _polGlobOnly.dataDir, CCB_PROJECT_ID: '' }),
+    validate: r => (r.parsed && !r.parsed.hookSpecificOutput)
+      ? null : `a glob-only policy must NOT inject at SessionStart, got: ${JSON.stringify(r.parsed)}`,
+  },
+
+  // ── PostToolUse — policy-glob-inject (post-edit GLOB advisory) ─────────────
+  {
+    name: 'policy-glob-inject[matching Edit path→inject [BRAIN policy]+text+PostToolUse]',
+    script: 'policy-glob-inject.js',
+    payload: { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/app.ts' }, cwd: _gpMatch.cwd },
+    expect: { hasKey: 'hookSpecificOutput', noError: true, hookEvent: 'PostToolUse' },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _gpMatch.dataDir, CCB_PROJECT_ID: '' }),
+    validate: r => {
+      const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+      if (!ctx.includes('[BRAIN policy]')) return `injected block must be tagged [BRAIN policy], got: ${ctx}`;
+      if (!ctx.includes('completed edit')) return `injected block must be temporal ("completed edit"), got: ${ctx}`;
+      if (!ctx.includes(GLOB_POLICY_TEXT)) return `injected block must contain the policy text, got: ${ctx}`;
+      if (!ctx.includes('src/**')) return `injected block must cite the matched glob, got: ${ctx}`;
+      if (!ctx.includes('"src/app.ts"')) return `injected block must JSON-quote the edited path, got: ${ctx}`;
+      return null;
+    },
+  },
+  {
+    name: 'policy-glob-inject[non-matching path→empty]',
+    script: 'policy-glob-inject.js',
+    payload: { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'lib/app.ts' }, cwd: _gpMatch.cwd },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _gpMatch.dataDir, CCB_PROJECT_ID: '' }),
+    validate: r => (r.parsed && !r.parsed.hookSpecificOutput)
+      ? null : `a non-matching path must emit empty {}, got: ${JSON.stringify(r.parsed)}`,
+  },
+  {
+    name: 'policy-glob-inject[non-file tool (Bash)→empty]',
+    script: 'policy-glob-inject.js',
+    payload: { hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { file_path: 'src/app.ts' }, cwd: _gpMatch.cwd },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _gpMatch.dataDir, CCB_PROJECT_ID: '' }),
+    validate: r => (r.parsed && !r.parsed.hookSpecificOutput)
+      ? null : `a non-edit tool must emit empty {}, got: ${JSON.stringify(r.parsed)}`,
+  },
+  {
+    name: 'policy-glob-inject[NotebookEdit notebook_path honored→inject]',
+    script: 'policy-glob-inject.js',
+    payload: { hook_event_name: 'PostToolUse', tool_name: 'NotebookEdit', tool_input: { notebook_path: 'src/analysis.ipynb' }, cwd: _gpMatch.cwd },
+    expect: { hasKey: 'hookSpecificOutput', noError: true, hookEvent: 'PostToolUse' },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _gpMatch.dataDir, CCB_PROJECT_ID: '' }),
+    validate: r => {
+      const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+      if (!ctx.includes('[BRAIN policy]')) return `NotebookEdit path must be honored + injected, got: ${JSON.stringify(r.parsed)}`;
+      if (!ctx.includes('src/analysis.ipynb')) return `injected block must cite the notebook path, got: ${ctx}`;
+      return null;
+    },
+  },
+  {
+    name: 'policy-glob-inject[cross-project→no leak (projB edit, projA policy)]',
+    script: 'policy-glob-inject.js',
+    payload: { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/app.ts' }, cwd: _gpOtherCwd },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _gpMatch.dataDir, CCB_PROJECT_ID: '' }),
+    validate: r => (r.parsed && !r.parsed.hookSpecificOutput)
+      ? null : `a policy under project A must NOT inject for an edit under project B, got: ${JSON.stringify(r.parsed)}`,
+  },
+  {
+    name: 'policy-glob-inject[redaction→secret never in injected block]',
+    script: 'policy-glob-inject.js',
+    payload: { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'anything.ts' }, cwd: _gpRedact.cwd },
+    expect: { hasKey: 'hookSpecificOutput', noError: true, hookEvent: 'PostToolUse' },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _gpRedact.dataDir, CCB_PROJECT_ID: '' }),
+    validate: r => {
+      const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+      if (!ctx.includes('[BRAIN policy]')) return `a **-glob policy must inject for any path, got: ${JSON.stringify(r.parsed)}`;
+      if (ctx.includes(GLOB_SECRET)) return `the raw secret must be REDACTED out of the injected block, got: ${ctx}`;
+      return null;
+    },
+  },
+  {
+    name: 'policy-glob-inject[outside-project path→empty]',
+    script: 'policy-glob-inject.js',
+    payload: { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: _gpOutsidePath }, cwd: _gpOutside.cwd },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _gpOutside.dataDir, CCB_PROJECT_ID: '' }),
+    validate: r => (r.parsed && !r.parsed.hookSpecificOutput)
+      ? null : `an out-of-project path must emit empty {} (never inject), got: ${JSON.stringify(r.parsed)}`,
+  },
+  {
+    name: 'policy-glob-inject[policyInject.enabled=false→empty despite match]',
+    script: 'policy-glob-inject.js',
+    payload: { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/app.ts' }, cwd: _gpMatch.cwd },
+    expect: { noError: true },
+    extraEnv: () => ({
+      CLAUDE_PLUGIN_ROOT: mkTempPluginRoot({ policyInject: { enabled: false } }),
+      CLAUDE_PLUGIN_DATA: _gpMatch.dataDir,
+      CCB_PROJECT_ID: '',
+    }),
+    validate: r => (r.parsed && !r.parsed.hookSpecificOutput)
+      ? null : `enabled=false must emit empty {} even on a match, got: ${JSON.stringify(r.parsed)}`,
   },
 
   // ── PostToolUse / Bash ────────────────────────────────────────────────────
