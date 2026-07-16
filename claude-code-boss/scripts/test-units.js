@@ -6546,6 +6546,290 @@ test('policy trigger-evidence tools: never mutate a policy (no activate/deactiva
   assert(!slice.includes('.activate(') && !slice.includes('.deactivate('), 'triggers capture/adjudicate/purge handlers contain no activate/deactivate (no auto-mutation)');
 });
 
+// ─── Self-update advisory + safe user-invoked apply (Fase 3 micro-C) ─────────
+// Pure planner + append-only ledger + two MCP tools. The hard invariant: advice
+// is auto-computed (read-only); APPLYING is explicit, CAS-guarded, signal-gated,
+// ledgered, reversible, and demote-only. Everything framed as a JUDGED estimate.
+
+// A minimal policy + disposition maker for the PURE planner tests.
+const _suPolicy = (over) => Object.assign({ id: 'p1', activationId: 'aid-pol', mode: 'glob', globs: ['**/*.ts'], text: 't', assert: { kind: 'forbid-added-literal', literal: 'x' }, enforcement: 'shadow', sourceHash: 'sh0' }, over || {});
+const _suDisp = (legit, problem, uncertain, source) => ({ policyId: 'p1', counts: { legit, problem, uncertain, injectionSuspected: 0, total: legit + problem + uncertain }, provenance: source ? { source } : {}, activationId: 'aid-disp' });
+
+test('self-update-plan: exports named thresholds (MIN_SAMPLE/HIGH_FP/LOW_FP) + planSelfUpdate', () => {
+  const su = require('./lib/self-update-plan.js');
+  assertEq([su.MIN_SAMPLE, su.HIGH_FP, su.LOW_FP], [5, 0.6, 0.15]);
+  assert(typeof su.planSelfUpdate === 'function', 'planSelfUpdate is exported');
+});
+
+test('self-update-plan: no disposition → insufficient-data / none (points to /policy-adjudicate)', () => {
+  const { planSelfUpdate } = require('./lib/self-update-plan.js');
+  const p = planSelfUpdate(_suPolicy(), null);
+  assertEq([p.signal, p.candidate.action, p.candidate.requiresExplicitApply], ['insufficient-data', 'none', false]);
+  assertEq(p.judged.likelyFpShare, null);
+  assert(/policy-adjudicate/.test(p.recommendation), 'nudges to adjudicate more first');
+  assertEq(p.policyId, 'p1');
+});
+
+test('self-update-plan: small sample (total < MIN_SAMPLE) → insufficient-data / none', () => {
+  const { planSelfUpdate } = require('./lib/self-update-plan.js');
+  const p = planSelfUpdate(_suPolicy(), _suDisp(2, 1, 1)); // total=4 < 5
+  assertEq([p.signal, p.candidate.action], ['insufficient-data', 'none']);
+  assertEq(p.judged.total, 4);
+});
+
+test('self-update-plan: all-uncertain (decisive=0) → insufficient-data / none (no share invented)', () => {
+  const { planSelfUpdate } = require('./lib/self-update-plan.js');
+  const p = planSelfUpdate(_suPolicy(), _suDisp(0, 0, 6)); // total=6 ≥ 5 but decisive=0
+  assertEq([p.signal, p.candidate.action], ['insufficient-data', 'none']);
+  assertEq(p.judged.likelyFpShare, null);
+});
+
+test('self-update-plan: too-broad at HIGH_FP → demote-to-advisory candidate (requiresExplicitApply)', () => {
+  const { planSelfUpdate, HIGH_FP } = require('./lib/self-update-plan.js');
+  const p = planSelfUpdate(_suPolicy(), _suDisp(6, 2, 1, 'triggers')); // 6/8 = .75 ≥ .6
+  assertEq([p.signal, p.candidate.action, p.candidate.requiresExplicitApply], ['too-broad', 'demote-to-advisory', true]);
+  assertEq(p.judged.likelyFpShare, 0.75);
+  assertEq(p.judged.source, 'triggers');
+  // Boundary: EXACTLY HIGH_FP still counts as too-broad (>=).
+  const b = planSelfUpdate(_suPolicy(), _suDisp(3, 2, 0)); // 3/5 = .6
+  assertEq(b.judged.likelyFpShare, HIGH_FP);
+  assertEq([b.signal, b.candidate.action], ['too-broad', 'demote-to-advisory']);
+});
+
+test('self-update-plan: well-calibrated at LOW_FP (decisive ≥ MIN) → enforce-eligible (SURFACE ONLY)', () => {
+  const { planSelfUpdate, LOW_FP } = require('./lib/self-update-plan.js');
+  const p = planSelfUpdate(_suPolicy(), _suDisp(0, 8, 0, 'current-snapshot')); // 0/8 = 0 ≤ .15, decisive 8 ≥ 5
+  assertEq([p.signal, p.candidate.action, p.candidate.requiresExplicitApply], ['well-calibrated', 'enforce-eligible', true]);
+  assert(/recommendation only|is not implemented|never applied/i.test(p.recommendation), 'enforce is surfaced only, never applied');
+  // Boundary: EXACTLY LOW_FP with enough decisive is enforce-eligible (<=).
+  const b = planSelfUpdate(_suPolicy(), _suDisp(3, 17, 0)); // 3/20 = .15
+  assertEq(b.judged.likelyFpShare, LOW_FP);
+  assertEq([b.signal, b.candidate.action], ['well-calibrated', 'enforce-eligible']);
+});
+
+test('self-update-plan: low FP but too few decisive → NOT enforce-eligible (middling / none)', () => {
+  const { planSelfUpdate } = require('./lib/self-update-plan.js');
+  const p = planSelfUpdate(_suPolicy(), _suDisp(0, 1, 5)); // share 0 but decisive=1 < MIN
+  assertEq([p.signal, p.candidate.action], ['well-calibrated', 'none']);
+});
+
+test('self-update-plan: middling share → well-calibrated / none', () => {
+  const { planSelfUpdate } = require('./lib/self-update-plan.js');
+  const p = planSelfUpdate(_suPolicy(), _suDisp(4, 4, 0)); // .5, between thresholds
+  assertEq([p.signal, p.candidate.action], ['well-calibrated', 'none']);
+  assertEq(p.judged.likelyFpShare, 0.5);
+});
+
+test('self-update-plan: likelyFpShare is computed over DECISIVE judgments only (uncertain excluded)', () => {
+  const { planSelfUpdate } = require('./lib/self-update-plan.js');
+  const p = planSelfUpdate(_suPolicy(), _suDisp(3, 1, 100)); // decisive=4 → 3/4=.75, NOT 3/104
+  assertEq(p.judged.likelyFpShare, 0.75);
+  assertEq([p.judged.decisive, p.judged.uncertain, p.judged.total], [4, 100, 104]);
+});
+
+test('self-update-plan: EVERY recommendation carries the JUDGED-estimate caveat (heuristic, not proven, no change without explicit apply)', () => {
+  const { planSelfUpdate } = require('./lib/self-update-plan.js');
+  const variants = [
+    planSelfUpdate(_suPolicy(), null),
+    planSelfUpdate(_suPolicy(), _suDisp(2, 1, 1)),
+    planSelfUpdate(_suPolicy(), _suDisp(0, 0, 6)),
+    planSelfUpdate(_suPolicy(), _suDisp(6, 2, 0)),
+    planSelfUpdate(_suPolicy(), _suDisp(0, 8, 0)),
+    planSelfUpdate(_suPolicy(), _suDisp(4, 4, 0)),
+  ];
+  for (const v of variants) {
+    assert(/JUDGED estimate/.test(v.recommendation), `recommendation states JUDGED estimate: ${v.signal}`);
+    assert(/heuristic/i.test(v.recommendation), `recommendation says heuristic: ${v.signal}`);
+    assert(/nothing changes unless you explicitly apply/i.test(v.recommendation), `recommendation says nothing changes without explicit apply: ${v.signal}`);
+  }
+});
+
+test('self-update-plan: PURE — no filesystem/store side effects (frozen inputs untouched)', () => {
+  const { planSelfUpdate } = require('./lib/self-update-plan.js');
+  const pol = Object.freeze(_suPolicy());
+  const disp = Object.freeze(_suDisp(6, 2, 0, 'triggers'));
+  const out = planSelfUpdate(pol, disp); // must not throw (no mutation of frozen inputs)
+  assertEq(out.candidate.action, 'demote-to-advisory');
+});
+
+test('revision-ledger: append/list roundtrip — newest first, project-scoped, policyId filter', () => {
+  const led = require('./lib/revision-ledger.js');
+  const dd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-led-'));
+  assertEq(led.listRevisions(dd, 'projA'), [], 'empty on a fresh project (never throws)');
+  assert(led.appendRevision(dd, 'projA', { ts: 1000, policyId: 'p1', action: 'demote-to-advisory', beforeSourceHash: 'a', afterSourceHash: 'b', beforeActivationId: 'act1', afterActivationId: null, note: 'n' }), 'append 1');
+  assert(led.appendRevision(dd, 'projA', { ts: 3000, policyId: 'p1', action: 'demote-to-advisory', beforeSourceHash: 'c', afterSourceHash: 'd' }), 'append 2');
+  assert(led.appendRevision(dd, 'projA', { ts: 2000, policyId: 'p2', action: 'demote-to-advisory' }), 'append 3');
+  const all = led.listRevisions(dd, 'projA');
+  assertEq(all.length, 3, 'three revisions listed');
+  assert(all[0].ts >= all[1].ts && all[1].ts >= all[2].ts, 'newest first');
+  assertEq(led.listRevisions(dd, 'projA', { policyId: 'p1' }).length, 2, 'policyId filter narrows to p1');
+  assertEq(led.listRevisions(dd, 'projB').length, 0, 'project scoping isolates projB');
+});
+
+test('revision-ledger: normalizeEntry keeps ONLY transition metadata (NO snippets/globs/text/unknown keys)', () => {
+  const led = require('./lib/revision-ledger.js');
+  const dd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-led-'));
+  led.appendRevision(dd, 'projX', { ts: 5, policyId: 'p', action: 'demote-to-advisory', beforeSourceHash: 'a', afterSourceHash: 'b', beforeActivationId: 'act', afterActivationId: null, note: 'ok', snippet: 'SECRET_CODE()', globs: ['src/**'], text: 'leaky text', extra: 1 });
+  const [rec] = led.listRevisions(dd, 'projX');
+  const raw = JSON.stringify(rec);
+  assert(!raw.includes('SECRET_CODE') && !raw.includes('leaky text') && !raw.includes('src/**'), 'no snippet/text/globs survive persistence');
+  assertEq(Object.keys(rec).sort(), ['action', 'afterActivationId', 'afterSourceHash', 'beforeActivationId', 'beforeSourceHash', 'note', 'policyId', 'ts'], 'only the 8 transition-metadata keys are stored');
+  assert(rec.snippet === undefined && rec.globs === undefined && rec.text === undefined && rec.extra === undefined, 'unknown keys stripped');
+});
+
+test('revision-ledger: note is length-capped; never-throws on a corrupt ledger (empty shape)', () => {
+  const led = require('./lib/revision-ledger.js');
+  const dd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-led-'));
+  led.appendRevision(dd, 'projC', { policyId: 'p', action: 'demote-to-advisory', note: 'x'.repeat(5000) });
+  assert(led.listRevisions(dd, 'projC')[0].note.length <= led.MAX_NOTE_CHARS, 'note capped to MAX_NOTE_CHARS');
+  // Corrupt the file → load returns the empty shape, list never throws.
+  fs.writeFileSync(led.ledgerPath(dd, 'projC'), '{ not json');
+  assertEq(led.listRevisions(dd, 'projC'), [], 'corrupt ledger reads back as empty (never throws)');
+});
+
+test('policy_self_update_report: computes JUDGED advisories for active glob/shadow policies + honest top-level note', async () => {
+  const server = await _adjImportServer();
+  const policyStore = require('./lib/policy-store.js');
+  const adjStore = require('./lib/adjudication-store.js');
+  const { dataDir } = require('./lib/data-dir.js');
+  const project = 'su-report-' + Date.now();
+  // Policy A: too-broad (mostly-legit judged) → demote candidate.
+  const a = policyStore.activate(dataDir(), { text: 'no console.log', scope: 'project', projectId: project, globs: ['**/*.ts'], assert: { kind: 'forbid-added-literal', literal: 'console.log' }, enforcement: 'shadow' });
+  adjStore.saveDisposition(dataDir(), project, { policyId: a.id, manifestHash: 'aa', ts: Date.now(), counts: { legit: 6, problem: 2, uncertain: 0, injectionSuspected: 0, total: 8 }, coverage: { sampled: 8, eligible: 20 }, provenance: { source: 'triggers' }, activationId: a.activationId });
+  // Policy B: no disposition → insufficient-data.
+  const b = policyStore.activate(dataDir(), { text: 'no eval', scope: 'project', projectId: project, globs: ['**/*.js'], assert: { kind: 'forbid-added-literal', literal: 'eval(' }, enforcement: 'shadow' });
+  const rep = JSON.parse(_adjText(await server.handleTool('policy_self_update_report', { project })));
+  assertEq(rep.kind, 'policy-self-update-report');
+  assertEq(rep.count, 2, 'both active shadow policies advised');
+  const advA = rep.advisories.find((x) => x.policyId === a.id);
+  const advB = rep.advisories.find((x) => x.policyId === b.id);
+  assertEq([advA.signal, advA.candidate.action], ['too-broad', 'demote-to-advisory']);
+  assertEq([advB.signal, advB.candidate.action], ['insufficient-data', 'none']);
+  // The report surfaces the EXACT current sourceHash (so an explicit apply can CAS
+  // on it) and flags shadow-assertion policies (the only demotable kind).
+  const liveA = policyStore.listVisible(dataDir(), { projectId: project }).find((r) => r.id === a.id);
+  assertEq(advA.sourceHash, liveA.sourceHash);
+  assertEq([advA.isShadowAssertion, advB.isShadowAssertion], [true, true]);
+  assert(/JUDGED|judged/.test(rep.note) && /NOTHING here changes|apply a candidate explicitly/.test(rep.note), 'note is honest: judged + nothing changes without explicit apply');
+  assert(/enforce/i.test(rep.note), 'note discloses enforce-eligibility is a recommendation only');
+});
+
+test('policy_self_update_report: MUTATES NOTHING (listVisible byte-identical) + static: handler has no activate/deactivate', async () => {
+  const server = await _adjImportServer();
+  const policyStore = require('./lib/policy-store.js');
+  const adjStore = require('./lib/adjudication-store.js');
+  const { dataDir } = require('./lib/data-dir.js');
+  const project = 'su-report-nomut-' + Date.now();
+  const a = policyStore.activate(dataDir(), { text: 'no console.log', scope: 'project', projectId: project, globs: ['**/*.ts'], assert: { kind: 'forbid-added-literal', literal: 'console.log' }, enforcement: 'shadow' });
+  adjStore.saveDisposition(dataDir(), project, { policyId: a.id, manifestHash: 'aa', ts: Date.now(), counts: { legit: 6, problem: 2, uncertain: 0, injectionSuspected: 0, total: 8 }, coverage: { sampled: 8, eligible: 20 }, provenance: { source: 'triggers' }, activationId: a.activationId });
+  const before = JSON.stringify(policyStore.listVisible(dataDir(), { projectId: project }));
+  await server.handleTool('policy_self_update_report', { project });
+  await server.handleTool('policy_self_update_report', { project }); // idempotent, still read-only
+  assertEq(JSON.stringify(policyStore.listVisible(dataDir(), { projectId: project })), before, 'report leaves every policy byte-identical (no activate/deactivate)');
+  // Static proof: the REPORT handler slice calls no activate/deactivate.
+  const src = fs.readFileSync(path.join(process.env.CLAUDE_PLUGIN_ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js'), 'utf-8');
+  const start = src.indexOf("case 'policy_self_update_report'");
+  const end = src.indexOf("case 'policy_apply_candidate'", start);
+  assert(start > 0 && end > start, 'located the report handler block');
+  const slice = src.slice(start, end);
+  assert(!slice.includes('.activate(') && !slice.includes('.deactivate('), 'policy_self_update_report handler contains no activate/deactivate (read-only)');
+});
+
+test('policy_apply_candidate: CAS mismatch REFUSES and changes nothing', async () => {
+  const server = await _adjImportServer();
+  const policyStore = require('./lib/policy-store.js');
+  const adjStore = require('./lib/adjudication-store.js');
+  const { dataDir } = require('./lib/data-dir.js');
+  const ledger = require('./lib/revision-ledger.js');
+  const project = 'su-cas-' + Date.now();
+  const a = policyStore.activate(dataDir(), { text: 'no console.log', scope: 'project', projectId: project, globs: ['**/*.ts'], assert: { kind: 'forbid-added-literal', literal: 'console.log' }, enforcement: 'shadow' });
+  adjStore.saveDisposition(dataDir(), project, { policyId: a.id, manifestHash: 'aa', ts: Date.now(), counts: { legit: 6, problem: 2, uncertain: 0, injectionSuspected: 0, total: 8 }, coverage: { sampled: 8, eligible: 20 }, provenance: { source: 'triggers' }, activationId: a.activationId });
+  const before = JSON.stringify(policyStore.listVisible(dataDir(), { projectId: project }));
+  const res = await server.handleTool('policy_apply_candidate', { policyId: a.id, expectedSourceHash: 'deadbeefstale', project });
+  assert(res.isError, 'stale sourceHash is refused');
+  assert(/CAS|mismatch|changed since/i.test(_adjText(res)), 'message explains the CAS refusal');
+  assertEq(JSON.stringify(policyStore.listVisible(dataDir(), { projectId: project })), before, 'nothing mutated on CAS refuse');
+  assertEq(ledger.listRevisions(dataDir(), project).length, 0, 'no ledger entry written on CAS refuse');
+});
+
+test('policy_apply_candidate: signal-gate — a well-calibrated policy CANNOT be force-demoted', async () => {
+  const server = await _adjImportServer();
+  const policyStore = require('./lib/policy-store.js');
+  const adjStore = require('./lib/adjudication-store.js');
+  const { dataDir } = require('./lib/data-dir.js');
+  const project = 'su-gate-' + Date.now();
+  const a = policyStore.activate(dataDir(), { text: 'no eval', scope: 'project', projectId: project, globs: ['**/*.ts'], assert: { kind: 'forbid-added-literal', literal: 'eval(' }, enforcement: 'shadow' });
+  const pol = policyStore.listVisible(dataDir(), { projectId: project }).find((r) => r.id === a.id);
+  adjStore.saveDisposition(dataDir(), project, { policyId: a.id, manifestHash: 'bb', ts: Date.now(), counts: { legit: 0, problem: 8, uncertain: 0, injectionSuspected: 0, total: 8 }, coverage: { sampled: 8, eligible: 8 }, provenance: { source: 'current-snapshot' }, activationId: a.activationId });
+  const res = await server.handleTool('policy_apply_candidate', { policyId: a.id, expectedSourceHash: pol.sourceHash, project });
+  assert(res.isError, 'a well-calibrated (non-demote) policy is refused even with the correct hash');
+  assert(/not a demote candidate/i.test(_adjText(res)), 'message explains the signal-gate refusal');
+  const after = policyStore.listVisible(dataDir(), { projectId: project }).find((r) => r.id === a.id);
+  assert(!!after.assert && after.enforcement === 'shadow', 'the policy is untouched — still a shadow assertion');
+});
+
+test('policy_apply_candidate: valid demote drops assert/enforcement, KEEPS globs/text, writes a ledger entry, mints a new sourceHash', async () => {
+  const server = await _adjImportServer();
+  const policyStore = require('./lib/policy-store.js');
+  const adjStore = require('./lib/adjudication-store.js');
+  const ledger = require('./lib/revision-ledger.js');
+  const { dataDir } = require('./lib/data-dir.js');
+  const project = 'su-apply-' + Date.now();
+  const a = policyStore.activate(dataDir(), { text: 'no console.log', scope: 'project', projectId: project, globs: ['**/*.ts'], assert: { kind: 'forbid-added-literal', literal: 'console.log' }, enforcement: 'shadow' });
+  const pol0 = policyStore.listVisible(dataDir(), { projectId: project }).find((r) => r.id === a.id);
+  adjStore.saveDisposition(dataDir(), project, { policyId: a.id, manifestHash: 'aa', ts: Date.now(), counts: { legit: 6, problem: 2, uncertain: 0, injectionSuspected: 0, total: 8 }, coverage: { sampled: 8, eligible: 20 }, provenance: { source: 'triggers' }, activationId: a.activationId });
+  const res = JSON.parse(_adjText(await server.handleTool('policy_apply_candidate', { policyId: a.id, expectedSourceHash: pol0.sourceHash, project })));
+  assertEq([res.kind, res.applied], ['policy-self-update-apply', 'demote-to-advisory']);
+  assert(/REVERSIBLE|reversible/.test(res.note) && /JUDGED/.test(res.note), 'result note is honest: reversible + judged');
+  // The record is now a plain glob advisory: assert/enforcement/activationId gone, globs+text kept, SAME id (no dup).
+  const rows = policyStore.listVisible(dataDir(), { projectId: project }).filter((r) => r.id === a.id);
+  assertEq(rows.length, 1, 'exactly one record for the id (clean UPSERT, no duplicate)');
+  const pol1 = rows[0];
+  assert(pol1.assert === undefined && pol1.enforcement === undefined && pol1.activationId === undefined, 'shadow assert + enforcement + activationId removed');
+  assertEq(pol1.mode, 'glob');
+  assertEq(pol1.globs, pol0.globs);
+  assertEq(pol1.text, pol0.text);
+  assert(pol1.sourceHash && pol1.sourceHash !== pol0.sourceHash, 'a NEW sourceHash was minted for the demoted advisory');
+  // Ledger records the transition (before/after hash + activationId; no snippets).
+  const led = ledger.listRevisions(dataDir(), project, { policyId: a.id });
+  assertEq(led.length, 1, 'one ledger entry written');
+  assertEq([led[0].action, led[0].beforeSourceHash, led[0].afterSourceHash, led[0].beforeActivationId, led[0].afterActivationId], ['demote-to-advisory', pol0.sourceHash, pol1.sourceHash, a.activationId, null]);
+  // Lineage guarantee: re-promoting to shadow mints a FRESH activationId (never reuses the retired one).
+  const re = policyStore.activate(dataDir(), { text: 'no console.log', scope: 'project', projectId: project, globs: ['**/*.ts'], assert: { kind: 'forbid-added-literal', literal: 'console.log' }, enforcement: 'shadow' });
+  assert(re.activationId && re.activationId !== a.activationId, 'a demote retires the old activationId — re-promotion mints a fresh one');
+});
+
+test('policy_apply_candidate: refuses an already-plain advisory and an unknown/always policy (nothing to demote)', async () => {
+  const server = await _adjImportServer();
+  const policyStore = require('./lib/policy-store.js');
+  const { dataDir } = require('./lib/data-dir.js');
+  const project = 'su-refuse-' + Date.now();
+  // Plain glob advisory (no assert) → nothing to demote.
+  const g = policyStore.activate(dataDir(), { text: 'plain advisory', scope: 'project', projectId: project, globs: ['**/*.ts'] });
+  const gp = policyStore.listVisible(dataDir(), { projectId: project }).find((r) => r.id === g.id);
+  const r1 = await server.handleTool('policy_apply_candidate', { policyId: g.id, expectedSourceHash: gp.sourceHash, project });
+  assert(r1.isError && /already a plain glob advisory/i.test(_adjText(r1)), 'a plain advisory has no assertion to demote');
+  // Always-mode policy → not a glob/shadow policy.
+  const al = policyStore.activate(dataDir(), { text: 'always rule', scope: 'project', projectId: project });
+  const r2 = await server.handleTool('policy_apply_candidate', { policyId: al.id, expectedSourceHash: 'whatever', project });
+  assert(r2.isError && /not a glob\/shadow policy/i.test(_adjText(r2)), 'an always policy cannot be demoted');
+  // Unknown id.
+  const r3 = await server.handleTool('policy_apply_candidate', { policyId: 'no-such', expectedSourceHash: 'x', project });
+  assert(r3.isError && /no active policy/i.test(_adjText(r3)), 'unknown policy id is refused');
+  // Missing expectedSourceHash is refused up front.
+  const r4 = await server.handleTool('policy_apply_candidate', { policyId: g.id, project });
+  assert(r4.isError && /expectedSourceHash is required/i.test(_adjText(r4)), 'expectedSourceHash is mandatory (CAS)');
+});
+
+test('policy_self_update_report + apply: both tools are OUT of KB_TOOLS/REMOTE_KB_TOOLS and declared in TOOLS', () => {
+  const src = fs.readFileSync(path.join(process.env.CLAUDE_PLUGIN_ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js'), 'utf-8');
+  const kbBlock = src.slice(src.indexOf('const KB_TOOLS'), src.indexOf('export function createBrainServer'));
+  for (const t of ['policy_self_update_report', 'policy_apply_candidate']) {
+    assert(src.includes(`name: '${t}'`), `${t} is declared in the TOOLS array`);
+    assert(!kbBlock.includes(`'${t}'`), `${t} is neither a KB tool nor a remote KB tool`);
+  }
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
