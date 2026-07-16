@@ -1,5 +1,33 @@
 # Changelog
 
+## [2.10.0] - 2026-07-16
+
+Reforço do auto-aprendizado (Fase 1 + Fase 2 do plano revisado 3× por revisão externa): um pipeline de **captura** durável e à prova de fraude, e um sistema de **políticas** que o usuário ativa explicitamente, injetadas de forma determinística. Mesmo rigor em tudo: failing-first, prova de mutação, revisão adversarial externa e smoke offline E2E pelas superfícies reais.
+
+### Fase 1 — Captura durável de lições (substitui o "adivinha o transcript")
+
+A captura deixou de depender de heurística sobre o transcript e virou um protocolo **dirigido pelo agente, com ACK explícito**:
+- **Fila durável e redigida** de ciclos limpos da conversa (segredos/PII redigidos ANTES de persistir), com cursor por sessão (state machine) e CAS por sessão.
+- **ACK explícito** no fim do turno: o agente chama `capture_lesson` (lição curada) ou `capture_ack` (nada a capturar). `windowId` com nonce aleatório, ACK atômico e guardado. `capture_ack` sempre grava `outcome:'none'` — um `'captured'` forjado não falsifica a métrica.
+- **Fail-closed** no `add_document` remoto: um `isError` não drena a fila (sem sucesso-fantasma); um merge local nulo cai em "admit" (armazena) em vez de ACK-fantasma.
+- Métricas `capture.offered` / `capture.reconciled` para observabilidade do funil.
+
+### Fase 2 — Políticas ativadas pelo usuário (recall determinístico)
+
+Constraints que o usuário ativa EXPLICITAMENTE (nunca auto-promovidas de lições capturadas — isso governaria projetos sem consentimento) e que são injetadas de forma determinística, para não depender de recall semântico que erra:
+- **micro-1 · error-guard** (determinístico): um comando Bash cuja assinatura de falha recorre ≥2× vira DENY no PreToolUse com a causa injetada; um sucesso limpa o registro (anti-falso-positivo). Segredos/PII redigidos na assinatura E na causa antes de persistir.
+- **micro-2 · políticas always-apply**: registro em DATA_DIR (não materializa `~/.claude/rules`, que órfã após uninstall), injetadas em SessionStart + SubagentStart. Texto redigido + capado; budget que **rejeita** em vez de truncar; registro corrompido vira aviso, não silêncio.
+- **micro-3 · políticas por glob**: uma política com `globs` vira um **aviso pós-edição** (PostToolUse), surgindo só quando o arquivo editado casa o padrão. Matcher segment-based, dependency-free e ReDoS-safe. Escopo de projeto; nunca vaza no SessionStart.
+- Ferramentas MCP `policy_activate` / `policy_list` / `policy_deactivate` (ativação explícita; desativação remove na hora).
+
+Honestidade: **surfacing ≠ enforcement** — estas políticas ficam PRESENTES no contexto, não bloqueiam (exceto o error-guard, que é determinístico sobre um sinal concreto). Enforcement de padrão foi desenhado, revisado externamente e **adiado para a Fase 3** (o bloqueio determinístico só cobre o input das tools Edit/Write, e falso positivo exige um caminho de escape — não é enforcement de repositório).
+
+### Correção de honestidade
+
+Suavizada a redação do block-until-ack: o Stop **induz** a captura best-effort (o guard re-injeta até o ACK), mas não pode GARANTIR — o host pode encerrar o turno em interrupção do usuário, falha de API, ou após o teto de continuations do Stop.
+
+523 testes unitários + 85 de hooks verdes. Failing-first + prova de mutação em cada trava; smoke offline E2E das políticas pelas superfícies reais (ferramentas MCP + hooks spawnados).
+
 ## [2.9.0] - 2026-07-15
 
 ### Aprendizado — o perfil `standard` volta a aprender (F1 do review de auto-aprendizado)
