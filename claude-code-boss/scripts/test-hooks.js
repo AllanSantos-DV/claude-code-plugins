@@ -207,6 +207,53 @@ const _gpOtherCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-gpol-otherproj-')
 // An absolute path guaranteed to be OUTSIDE the fixture cwd (other drive on Windows).
 const _gpOutsidePath = process.platform === 'win32' ? 'Z:\\elsewhere\\secret.ts' : '/elsewhere/secret.ts';
 
+// ─── policy-enforce-shadow fixtures (PreToolUse Edit-only SILENT measurement) ─
+// The shadow hook fires BEFORE an Edit, measures whether the edit ADDS an
+// occurrence of a shadow policy's literal (net count new>old), records ONE
+// policy.shadow.evaluated metric (outcome trigger|pass|unevaluable), and ALWAYS
+// emits {} — it never blocks and never speaks to the agent. Seed a shadow-assertion
+// policy under projectId=basename(cwd) and pass CCB_PROJECT_ID:'' so the subprocess
+// resolves the same id. The metric lands in
+// <dataDir>/metrics/<sha256(basename(cwd)).slice(0,16)>/metrics.db — read it to
+// prove the outcome (stdout is silent by design, so the DB is the only witness).
+const _crypto = require('crypto');
+const SHADOW_LITERAL = 'console.log';
+function seedShadowPolicy(literal = SHADOW_LITERAL, globs = ['src/**']) {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-shpol-proj-'));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-shpol-data-'));
+  const projectId = path.basename(cwd);
+  const res = _policyStore.activate(dataDir, {
+    entryId: 'shadow-fixture', text: 'flag added ' + literal, projectId, globs,
+    assert: { kind: 'forbid-added-literal', literal, caseSensitive: true }, enforcement: 'shadow',
+  });
+  return { cwd, dataDir, projectId, literal, activationId: res.activationId };
+}
+// The metrics project key the hook stamps: sha256(resolveProjectId(cwd)).slice(0,16);
+// under CCB_PROJECT_ID:'' with no marker, resolveProjectId(cwd) === basename(cwd).
+function shadowMetricsKey(cwd) {
+  return _crypto.createHash('sha256').update(path.basename(cwd)).digest('hex').slice(0, 16);
+}
+// Read the recorded shadow-evaluation payloads under a fixture's dataDir. Returns an
+// array of payload objects, null if none were written (a proven no-metric path), or
+// {skip:true} if no SQLite backend is present (outcome unverifiable; silence still checked).
+function readShadowOutcomes(dataDir, cwd) {
+  const Database = require('./lib/sqlite-compat').loadSqlite();
+  if (!Database) return { skip: true };
+  const dbPath = path.join(dataDir, 'metrics', shadowMetricsKey(cwd), 'metrics.db');
+  if (!fs.existsSync(dbPath)) return null;
+  const db = new Database(dbPath, { readonly: true });
+  try {
+    const rows = db.prepare("SELECT payload FROM metrics_event WHERE event_name = 'policy.shadow.evaluated'").all();
+    return rows.length ? rows.map(r => JSON.parse(r.payload || '{}')) : null;
+  } finally { db.close(); }
+}
+// Distinct fixtures (each its own dataDir/cwd → single-row, contamination-free reads).
+const _shTrigger = seedShadowPolicy();  // Edit ADDS the literal → outcome 'trigger'
+const _shPass = seedShadowPolicy();     // Edit PRESERVES the literal (same count) → 'pass'
+const _shNoMatch = seedShadowPolicy();  // non-matching path → no metric
+const _shNonEdit = seedShadowPolicy();  // non-Edit tool → no metric
+const _shDisabled = seedShadowPolicy(); // policyInject.enabled=false → no metric
+
 const TESTS = [
   // ── SessionStart ──────────────────────────────────────────────────────────
   {
@@ -777,6 +824,94 @@ const TESTS = [
     }),
     validate: r => (r.parsed && !r.parsed.hookSpecificOutput)
       ? null : `enabled=false must emit empty {} even on a match, got: ${JSON.stringify(r.parsed)}`,
+  },
+
+  // ── PreToolUse — policy-enforce-shadow (Edit-only SILENT measurement) ──────
+  {
+    name: 'policy-enforce-shadow[Edit ADDS literal on matching path→SILENT {} + outcome trigger + minimal payload]',
+    script: 'policy-enforce-shadow.js',
+    payload: { hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/app.ts', old_string: 'const x = 1;\n', new_string: 'const x = 1;\nconsole.log(x);\n' }, cwd: _shTrigger.cwd, session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _shTrigger.dataDir, CCB_PROJECT_ID: '' }),
+    validateWithEnv: (r, env) => {
+      // (1) SILENT: shadow mode must emit {} — never a permissionDecision/additionalContext.
+      if (r.parsed && r.parsed.hookSpecificOutput) return `shadow hook must be SILENT (no hookSpecificOutput), got: ${JSON.stringify(r.parsed)}`;
+      const out = readShadowOutcomes(env.CLAUDE_PLUGIN_DATA, _shTrigger.cwd);
+      if (out && out.skip) return null; // no sqlite backend → outcome unverifiable; silence already checked
+      if (!out) return 'expected ONE policy.shadow.evaluated row, found none';
+      if (out.length !== 1) return `expected exactly 1 evaluation, got ${out.length}`;
+      const ev = out[0];
+      // (2) outcome is NET-COUNT-INCREASE (0→1) → 'trigger'.
+      if (ev.outcome !== 'trigger') return `added literal must yield outcome 'trigger', got: ${ev.outcome}`;
+      if (ev.activationId !== _shTrigger.activationId) return `activationId must match the seeded policy, got: ${ev.activationId}`;
+      // (3) privacy: payload must be EXACTLY {schema,activationId,outcome} — no file/snippet/literal/tool.
+      const keys = Object.keys(ev).sort();
+      if (JSON.stringify(keys) !== JSON.stringify(['activationId', 'outcome', 'schema'])) return `payload must be ONLY {schema,activationId,outcome}, got keys: ${keys}`;
+      return null;
+    },
+  },
+  {
+    name: 'policy-enforce-shadow[Edit PRESERVES literal (same count)→outcome pass, not trigger]',
+    script: 'policy-enforce-shadow.js',
+    payload: { hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/app.ts', old_string: "console.log('a');\nconst x = 1;\n", new_string: "console.log('a');\nconst x = 2;\n" }, cwd: _shPass.cwd, session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _shPass.dataDir, CCB_PROJECT_ID: '' }),
+    validateWithEnv: (r, env) => {
+      if (r.parsed && r.parsed.hookSpecificOutput) return `shadow hook must be SILENT, got: ${JSON.stringify(r.parsed)}`;
+      const out = readShadowOutcomes(env.CLAUDE_PLUGIN_DATA, _shPass.cwd);
+      if (out && out.skip) return null;
+      if (!out) return 'expected ONE policy.shadow.evaluated row, found none';
+      // The literal is PRESERVED (count 1→1): net count did NOT increase → 'pass'. An
+      // includes()-based rule would falsely fire 'trigger' here (the mutation-(a) guard).
+      if (out[0].outcome !== 'pass') return `a preserved literal (1→1) must yield 'pass', got: ${out[0].outcome}`;
+      return null;
+    },
+  },
+  {
+    name: 'policy-enforce-shadow[non-matching path→SILENT {} + NO metric]',
+    script: 'policy-enforce-shadow.js',
+    payload: { hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: 'lib/app.ts', old_string: '', new_string: 'console.log(1)\n' }, cwd: _shNoMatch.cwd, session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _shNoMatch.dataDir, CCB_PROJECT_ID: '' }),
+    validateWithEnv: (r, env) => {
+      if (r.parsed && r.parsed.hookSpecificOutput) return `must be SILENT, got: ${JSON.stringify(r.parsed)}`;
+      const out = readShadowOutcomes(env.CLAUDE_PLUGIN_DATA, _shNoMatch.cwd);
+      if (out && out.skip) return null;
+      if (out) return `a non-matching path must record NO evaluation, got: ${JSON.stringify(out)}`;
+      return null;
+    },
+  },
+  {
+    name: 'policy-enforce-shadow[non-Edit tool (Write)→SILENT {} + NO metric]',
+    script: 'policy-enforce-shadow.js',
+    payload: { hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: 'src/app.ts', content: 'console.log(1)\n' }, cwd: _shNonEdit.cwd, session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _shNonEdit.dataDir, CCB_PROJECT_ID: '' }),
+    validateWithEnv: (r, env) => {
+      if (r.parsed && r.parsed.hookSpecificOutput) return `must be SILENT, got: ${JSON.stringify(r.parsed)}`;
+      const out = readShadowOutcomes(env.CLAUDE_PLUGIN_DATA, _shNonEdit.cwd);
+      if (out && out.skip) return null;
+      if (out) return `Write (out of the Edit-only allowlist) must record NO evaluation, got: ${JSON.stringify(out)}`;
+      return null;
+    },
+  },
+  {
+    name: 'policy-enforce-shadow[policyInject.enabled=false→SILENT {} + NO metric]',
+    script: 'policy-enforce-shadow.js',
+    payload: { hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/app.ts', old_string: 'const x = 1;\n', new_string: 'const x = 1;\nconsole.log(x);\n' }, cwd: _shDisabled.cwd, session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => ({
+      CLAUDE_PLUGIN_ROOT: mkTempPluginRoot({ policyInject: { enabled: false } }),
+      CLAUDE_PLUGIN_DATA: _shDisabled.dataDir,
+      CCB_PROJECT_ID: '',
+    }),
+    validateWithEnv: (r, env) => {
+      if (r.parsed && r.parsed.hookSpecificOutput) return `disabled must emit empty {}, got: ${JSON.stringify(r.parsed)}`;
+      const out = readShadowOutcomes(env.CLAUDE_PLUGIN_DATA, _shDisabled.cwd);
+      if (out && out.skip) return null;
+      if (out) return `enabled=false must record NO evaluation, got: ${JSON.stringify(out)}`;
+      return null;
+    },
   },
 
   // ── PostToolUse / Bash ────────────────────────────────────────────────────

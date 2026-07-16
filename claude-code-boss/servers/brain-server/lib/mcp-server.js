@@ -295,18 +295,23 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
     },
     {
       name: 'policy_activate',
-      description: 'Activate a standing user policy (explicit user action only; NOT for automatic capture). Two modes: (1) ALWAYS-mode (default, no `globs`) — injected every session/subagent start, for a persistent global constraint (e.g. "never let pre-existing code errors pass"). (2) GLOB-mode (pass `globs`) — a project-scoped POST-EDIT ADVISORY that surfaces ONLY when an edited file path matches one of the globs (e.g. globs:["src/**/*.ts"] text:"keep this layer free of console.log"). Glob policies are ALWAYS project-scoped and never injected at session start. In both modes the text is redacted + capped and stored in a local registry. Surfacing ≠ enforcement — this makes the policy PRESENT in context, it does not block.',
-      inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'The policy / standing constraint in plain language (required). Redacted + capped before storage.' }, entryId: { type: 'string', description: 'Optional stable id (e.g. a KB entry id) so re-activating the same policy upserts instead of duplicating. Default: a hash of text+mode+project(+globs).' }, scope: { type: 'string', enum: ['project', 'user'], description: 'project (default) = applies only in this project; user = applies in every project. IGNORED when globs are given (glob policies are always project-scoped).' }, globs: { type: 'array', items: { type: 'string' }, description: 'Optional glob patterns (e.g. ["src/**/*.ts","*.md"]). When present the policy becomes a project-scoped GLOB-mode advisory, surfaced ONLY when an edited file matches — never at session start. Must be a non-empty array of valid patterns (≤20 patterns, each ≤200 chars); otherwise activation is rejected.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode). Ignored for user scope.' }, cwd: { type: 'string', description: 'Working directory (for project scoping when project is omitted).' } }, required: ['text'] },
+      description: 'Activate a standing user policy (explicit user action only; NOT for automatic capture). THREE modes: (1) ALWAYS-mode (default, no `globs`) — injected every session/subagent start, for a persistent global constraint (e.g. "never let pre-existing code errors pass"). (2) GLOB-mode (pass `globs`) — a project-scoped POST-EDIT ADVISORY that surfaces ONLY when an edited file path matches one of the globs (e.g. globs:["src/**/*.ts"] text:"keep this layer free of console.log"). (3) SHADOW-ASSERTION mode (pass `globs` AND `assert` with `enforcement:"shadow"`) — a project-scoped, Edit-ONLY MEASUREMENT that is SILENT and NEVER blocks: it records how often an Edit WOULD add the asserted literal on a matching path, so you can size a future guard before enabling it (a "trigger" is a candidate-guard hit, not a violation). The assert literal is stored UNREDACTED (a redacted literal could not match), so a secret-bearing literal is REJECTED (reason:"sensitive-literal") — never pass a token/key as a literal. Only enforcement:"shadow" is supported now (enforce/block is a later micro). NOTE: activating a shadow-assertion policy PERSISTS your literal locally and BEGINS local, per-machine monitoring on the next matching Edit (results stay on this machine; read them with policy_shadow_report). Glob and shadow policies are ALWAYS project-scoped and never injected at session start. In all modes the non-assert `text` is redacted + capped and stored in a local registry. Surfacing/measuring ≠ enforcement — none of these modes block.',
+      inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'The policy / standing constraint in plain language (required). Redacted + capped before storage.' }, entryId: { type: 'string', description: 'Optional stable id (e.g. a KB entry id) so re-activating the same policy upserts instead of duplicating. Default: a hash of text+mode+project(+globs).' }, scope: { type: 'string', enum: ['project', 'user'], description: 'project (default) = applies only in this project; user = applies in every project. IGNORED when globs are given (glob/shadow policies are always project-scoped).' }, globs: { type: 'array', items: { type: 'string' }, description: 'Optional glob patterns (e.g. ["src/**/*.ts","*.md"]). When present the policy becomes a project-scoped GLOB-mode advisory (or SHADOW-ASSERTION when `assert` is also given), surfaced/measured ONLY when an edited file matches — never at session start. Must be a non-empty array of valid patterns (≤20 patterns, each ≤200 chars); otherwise activation is rejected.' }, assert: { type: 'object', description: 'Optional deterministic content assertion that turns a GLOB policy into a SHADOW-ASSERTION MEASUREMENT (requires `globs` and `enforcement:"shadow"`). Edit-only, silent, never blocks.', properties: { kind: { type: 'string', enum: ['forbid-added-literal'], description: 'The only supported assertion this micro: measure when an Edit ADDS an occurrence of `literal` (net count increase old→new).' }, literal: { type: 'string', description: 'The exact substring to watch for (≤256 chars, stored UNREDACTED). A literal that would be redacted (secret-bearing) is REJECTED.' }, caseSensitive: { type: 'boolean', description: 'Match case-sensitively (default: true).' } }, required: ['kind', 'literal'] }, enforcement: { type: 'string', enum: ['shadow'], description: 'Required when `assert` is given. Only "shadow" (measure, never block) is supported this release; anything else is rejected.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode). Ignored for user scope.' }, cwd: { type: 'string', description: 'Working directory (for project scoping when project is omitted).' } }, required: ['text'] },
     },
     {
       name: 'policy_list',
-      description: 'List the standing policies currently active for a project (user-scope always-policies always included). Returns id, mode (always | glob), scope, projectId, globs (for glob policies), and a text preview for each. Glob policies are surfaced here for visibility even though they only inject on a matching edit.',
+      description: 'List the standing policies currently active for a project (user-scope always-policies always included). Returns id, mode (always | glob), scope, projectId, globs (for glob policies), and a text preview for each. Shadow-assertion (measurement) policies additionally carry enforcement:"shadow", an assert summary (kind + a short literal preview), and an activationId (the telemetry key policy_shadow_report joins on). Glob/shadow policies are surfaced here for visibility even though they only act on a matching edit.',
       inputSchema: { type: 'object', properties: { project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Working directory (for project scoping when project is omitted).' } } },
     },
     {
       name: 'policy_deactivate',
       description: 'Deactivate (remove) a standing policy by id so it stops being injected immediately. Use the id returned by policy_activate or policy_list. Invalidation must deactivate right away.',
       inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'The policy id to deactivate (from policy_activate / policy_list).' } }, required: ['id'] },
+    },
+    {
+      name: 'policy_shadow_report',
+      description: 'Report the LOCAL, per-machine MEASUREMENT for shadow-assertion (measurement) policies in a project: for each activationId, how many matching Edits were seen (eligible), how many WOULD have triggered a future guard (triggers), the trigger incidence (triggers / (trigger+pass)), and how many were unevaluable (too large to scan). These are CANDIDATE-guard triggers, NOT violations, and the numbers are LOCAL to this machine only. The false-positive rate is reported as "N/A" (there are no human labels yet — real FP needs human adjudication, a later micro); it is NEVER 0%. Joins the telemetry to policy_list so each row names the policy (text preview + globs).',
+      inputSchema: { type: 'object', properties: { project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Working directory (for project scoping + the canonical metrics key when project is omitted).' }, rangeDays: { type: 'number', description: 'How many days back to aggregate (default: 7).' } } },
     },
   ];
 
@@ -599,31 +604,70 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
           // Glob policies are project-scoped only (this micro): force project scope
           // even if the caller passed scope:'user' alongside globs.
           const hasGlobs = a.globs !== undefined && a.globs !== null;
+          const hasAssert = a.assert !== undefined && a.assert !== null;
+          // A shadow assertion is a GLOB policy that ALSO carries an assert — an
+          // assert without globs would be silently ignored by the store's always
+          // branch, so refuse it explicitly rather than store the wrong thing.
+          if (hasAssert && !hasGlobs) {
+            const msg = 'policy_activate: refused — a shadow assertion (`assert`) requires `globs` (it measures matching Edits). Provide globs and enforcement:"shadow", or drop assert. Nothing was stored.';
+            return { content: [{ type: 'text', text: JSON.stringify({ activated: false, reason: 'assert-requires-globs', message: msg }, null, 2) }] };
+          }
           const scope = hasGlobs ? 'project' : (a.scope === 'user' ? 'user' : 'project');
           const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
           const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
           // user-scope policies are project-independent; only resolve a project id
           // for project-scope activations (all glob policies are project-scoped).
           const pid = scope === 'user' ? '' : resolveProject(a);
-          const res = policyStore.activate(dataDir(), { entryId: a.entryId, text, scope, projectId: pid, globs: hasGlobs ? a.globs : undefined });
+          // When an assert is present this is a shadow-assertion activation: default
+          // enforcement to 'shadow' but pass the caller's value through so an
+          // unsupported enforcement (e.g. 'enforce') is REJECTED, not silently coerced.
+          const enforcement = hasAssert ? (typeof a.enforcement === 'string' ? a.enforcement : 'shadow') : undefined;
+          const res = policyStore.activate(dataDir(), {
+            entryId: a.entryId, text, scope, projectId: pid,
+            globs: hasGlobs ? a.globs : undefined,
+            assert: hasAssert ? a.assert : undefined,
+            enforcement,
+          });
           if (!res.activated) {
             let msg;
             if (res.reason === 'invalid-globs') {
               msg = 'policy_activate: refused — `globs` must be a non-empty array of valid glob patterns (≤20 patterns, each ≤200 chars, no empty patterns). Fix the patterns and retry; nothing was stored.';
+            } else if (res.reason === 'bad-assert-kind') {
+              msg = 'policy_activate: refused — `assert.kind` must be "forbid-added-literal" (the only supported assertion this release). Nothing was stored.';
+            } else if (res.reason === 'bad-literal') {
+              msg = 'policy_activate: refused — `assert.literal` must be a non-empty string. Nothing was stored.';
+            } else if (res.reason === 'literal-too-long') {
+              msg = 'policy_activate: refused — `assert.literal` exceeds the maximum length (256 chars). Shorten it and retry; it is NOT truncated, so nothing was stored.';
+            } else if (res.reason === 'sensitive-literal') {
+              msg = 'policy_activate: refused — `assert.literal` looks secret-bearing (the redactor would change it, which would break exact matching). Never store a token/key as a literal. Nothing was stored.';
+            } else if (res.reason === 'unsupported-enforcement') {
+              msg = 'policy_activate: refused — only enforcement:"shadow" (measure, never block) is supported this release. Nothing was stored.';
+            } else if (res.reason === 'corrupt') {
+              msg = 'policy_activate: refused — the local policy registry is unreadable (corrupt); activation was declined rather than overwrite it. Inspect/repair the registry and retry.';
+            } else if (res.reason === 'persist') {
+              msg = 'policy_activate: refused — failed to persist the policy to the local registry (write error). Nothing was reliably stored; retry.';
             } else if (res.reason === 'budget') {
-              msg = hasGlobs
-                ? 'policy_activate: refused — activating this glob policy would exceed the per-project glob-policy budget. Deactivate an existing glob policy first (policy_list / policy_deactivate).'
-                : 'policy_activate: refused — activating this policy would exceed the injected-policy budget (too many active policies or too much total text). Deactivate an existing policy first (policy_list / policy_deactivate).';
+              msg = hasAssert
+                ? 'policy_activate: refused — activating this shadow-assertion policy would exceed the per-project measurement-policy budget (max 10). Deactivate an existing shadow policy first (policy_list / policy_deactivate).'
+                : hasGlobs
+                  ? 'policy_activate: refused — activating this glob policy would exceed the per-project glob-policy budget. Deactivate an existing glob policy first (policy_list / policy_deactivate).'
+                  : 'policy_activate: refused — activating this policy would exceed the injected-policy budget (too many active policies or too much total text). Deactivate an existing policy first (policy_list / policy_deactivate).';
             } else {
               msg = `policy_activate: refused (${res.reason || 'invalid'}).`;
             }
             return { content: [{ type: 'text', text: JSON.stringify({ activated: false, reason: res.reason || 'invalid', message: msg }, null, 2) }] };
           }
+          const isShadow = res.enforcement === 'shadow';
           const mode = res.mode || (hasGlobs ? 'glob' : 'always');
-          const okMsg = mode === 'glob'
-            ? 'Glob policy activated — it will surface as a post-edit advisory only when an edited file matches one of its globs (never at session start).'
-            : 'Policy activated — it will be injected at every session and subagent start until deactivated.';
-          return { content: [{ type: 'text', text: JSON.stringify({ activated: true, id: res.id, mode, scope, projectId: pid, message: okMsg }, null, 2) }] };
+          const okMsg = isShadow
+            ? 'Shadow-assertion policy activated — it MEASURES (silently) how often a matching Edit would ADD the asserted literal, and NEVER blocks. Results are LOCAL to this machine; read them with policy_shadow_report. Your literal is stored locally and monitoring begins on the next matching Edit.'
+            : mode === 'glob'
+              ? 'Glob policy activated — it will surface as a post-edit advisory only when an edited file matches one of its globs (never at session start).'
+              : 'Policy activated — it will be injected at every session and subagent start until deactivated.';
+          const out = { activated: true, id: res.id, mode, scope, projectId: pid, message: okMsg };
+          if (res.activationId) out.activationId = res.activationId;
+          if (res.enforcement) out.enforcement = res.enforcement;
+          return { content: [{ type: 'text', text: JSON.stringify(out, null, 2) }] };
         } catch (err) {
           return { isError: true, content: [{ type: 'text', text: `policy_activate failed: ${err.message}` }] };
         }
@@ -642,6 +686,11 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
             scope: r.scope,
             projectId: r.projectId,
             globs: Array.isArray(r.globs) ? r.globs : undefined,
+            enforcement: r.enforcement || undefined,
+            assert: (r.assert && r.assert.kind)
+              ? { kind: r.assert.kind, literalPreview: String(r.assert.literal || '').slice(0, 40), caseSensitive: r.assert.caseSensitive !== false }
+              : undefined,
+            activationId: r.activationId || undefined,
             text: String(r.text || '').slice(0, 160),
           }));
           return { content: [{ type: 'text', text: JSON.stringify({ projectId: pid, count: policies.length, policies }, null, 2) }] };
@@ -663,6 +712,76 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
           return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
         } catch (err) {
           return { isError: true, content: [{ type: 'text', text: `policy_deactivate failed: ${err.message}` }] };
+        }
+      }
+
+      case 'policy_shadow_report': {
+        try {
+          const a = args || {};
+          // The report reads the SAME canonical metrics key the hook writes under, so
+          // the read/write agree on the metrics db regardless of marker/env/basename.
+          const cwd = typeof a.cwd === 'string' && a.cwd ? a.cwd : process.cwd();
+          const pid = resolveProject(a);
+          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const metricsStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'metrics-store.js'));
+          const { metricsProjectKey } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'metrics-project.js'));
+
+          const rangeDays = (typeof a.rangeDays === 'number' && a.rangeDays > 0) ? a.rangeDays : 7;
+          const sinceTs = Date.now() - rangeDays * 86400000;
+          const projKey = metricsProjectKey(cwd);
+          const rows = metricsStore.getEvaluationCountsIsolated(projKey, { eventName: 'policy.shadow.evaluated', sinceTs });
+
+          // Tally per activationId (the immutable-per-definition telemetry key).
+          const byAct = new Map();
+          for (const row of rows) {
+            const act = row.activationId;
+            if (!act) continue; // rows with no activationId (legacy/none) can't be named
+            if (!byAct.has(act)) byAct.set(act, { trigger: 0, pass: 0, unevaluable: 0 });
+            const t = byAct.get(act);
+            if (row.outcome === 'trigger') t.trigger += row.count;
+            else if (row.outcome === 'pass') t.pass += row.count;
+            else if (row.outcome === 'unevaluable') t.unevaluable += row.count;
+          }
+
+          // JOIN to the registry so each activationId names its policy. A definition
+          // change mints a NEW activationId, so old metrics may be orphans (known:false).
+          const active = policyStore.listVisible(dataDir(), { projectId: pid });
+          const byActMeta = new Map();
+          for (const r of active) { if (r && r.activationId) byActMeta.set(r.activationId, r); }
+
+          const policies = [];
+          for (const [act, t] of byAct.entries()) {
+            const r = byActMeta.get(act);
+            const denom = t.trigger + t.pass; // unevaluable is NOT a decision → excluded from incidence
+            policies.push({
+              activationId: act,
+              policyId: r ? r.id : null,
+              known: !!r,
+              globs: (r && Array.isArray(r.globs)) ? r.globs : undefined,
+              textPreview: r ? String(r.text || '').slice(0, 80) : undefined,
+              literalPreview: (r && r.assert) ? String(r.assert.literal || '').slice(0, 40) : undefined,
+              eligible: t.trigger + t.pass + t.unevaluable,
+              triggers: t.trigger,
+              incidence: denom > 0 ? t.trigger / denom : 0,
+              unevaluable: t.unevaluable,
+              humanAdjudicated: 0,
+              falsePositiveRate: 'N/A',
+            });
+          }
+          policies.sort((x, y) => (y.triggers - x.triggers) || String(x.activationId).localeCompare(String(y.activationId)));
+
+          const report = {
+            projectId: pid,
+            rangeDays,
+            sinceTs,
+            note: 'Results are LOCAL to this machine only. falsePositiveRate is N/A (no human labels yet — real FP needs human adjudication, a later micro; it is NEVER 0%). "triggers" are CANDIDATE-guard hits (an Edit would ADD the asserted literal), NOT violations.',
+            count: policies.length,
+            policies,
+          };
+          return { content: [{ type: 'text', text: JSON.stringify(report, null, 2) }] };
+        } catch (err) {
+          return { isError: true, content: [{ type: 'text', text: `policy_shadow_report failed: ${err.message}` }] };
         }
       }
 
