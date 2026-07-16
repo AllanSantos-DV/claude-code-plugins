@@ -1,5 +1,30 @@
 # Changelog
 
+## [2.11.0] - 2026-07-16
+
+Início da **Fase 3** do auto-aprendizado: a capacidade de enforcement determinístico, entregue em **modo sombra** (mede antes de bloquear), mais dois consertos de bugs da v2.10.0. Mesmo rigor: revisão adversarial externa, failing-first + prova de mutação, smoke offline E2E.
+
+### Fase 3 micro-A — medição em modo sombra (candidate-guard)
+
+Uma política por glob pode ganhar uma **asserção determinística** (`assert:{kind:'forbid-added-literal', literal, caseSensitive}`) com `enforcement:'shadow'`. Um hook PreToolUse **só para Edit** registra, a cada edição que casa, se a edição **ADICIONA** uma ocorrência do literal (a contagem sobe de old→new = *trigger*) ou o preserva (*pass*) — de forma **SILENCIOSA**: sempre emite `{}`, nunca bloqueia nem fala com o agente (para não enviesar a medição).
+
+Honestidade explícita: isto mede **incidência de gatilho**, NÃO taxa de falso positivo — FP real exige rótulo humano (um micro futuro) e é reportado como **N/A**, nunca 0%. Um *trigger* é um "candidate-guard hit", não uma violação.
+
+- Telemetria com privacidade limitada: o payload é só `{schema, activationId, outcome}` — nunca o caminho, um trecho, o literal ou a tool.
+- **Literal com segredo é REJEITADO** na ativação (não pode ser redigido sem quebrar o match).
+- Nova tool MCP `policy_shadow_report`: agrega por `activationId` via SQL exato e nomeia cada política; resultados são **LOCAIS à máquina**.
+- Uma chave canônica de projeto faz o hook (que escreve) e o report (que lê) concordarem no banco de métricas.
+
+Edit-only (Write/MultiEdit/NotebookEdit adiados); sem regex/require/Stop-audit/auditor-LLM/enforce neste micro. A ativação de uma política de medição persiste o literal localmente e inicia o monitoramento por máquina — leia com `policy_shadow_report`.
+
+### Correções
+
+Dois bugs revelados pela revisão externa, presentes na v2.10.0:
+- `toRelPath` deixava passar um `../` **relativo** (só rejeitava escape em caminho absoluto) — agora ancora relativo e absoluto ao cwd e rejeita segmentos `..`.
+- `policy_activate` reportava sucesso mesmo quando a persistência falhava ou o registro estava corrompido — agora retorna `{activated:false, reason:'persist'|'corrupt'}`.
+
+538 testes unitários + 90 de hooks verdes. Prova de mutação nas travas (aumento-líquido-de-contagem, silêncio, rejeição de segredo, escape `..`); smoke offline E2E do loop tool→hook→métricas→report.
+
 ## [2.10.0] - 2026-07-16
 
 Reforço do auto-aprendizado (Fase 1 + Fase 2 do plano revisado 3× por revisão externa): um pipeline de **captura** durável e à prova de fraude, e um sistema de **políticas** que o usuário ativa explicitamente, injetadas de forma determinística. Mesmo rigor em tudo: failing-first, prova de mutação, revisão adversarial externa e smoke offline E2E pelas superfícies reais.

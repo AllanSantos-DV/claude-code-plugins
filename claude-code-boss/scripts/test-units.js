@@ -3124,6 +3124,161 @@ test('policy-store: toRelPath — inside-project normalizes; outside/other-drive
   assertEq(polstore.toRelPath('', cwd), null);                      // empty → null
 });
 
+// ─── policy shadow-assertion + shipped bug fixes (Phase 3 micro-A) ───────────
+const shadowHook = require(path.join(SCRIPTS, 'policy-enforce-shadow.js'));
+const { metricsProjectKey } = require(path.join(SCRIPTS, 'lib', 'metrics-project.js'));
+const SHADOW_CWD = process.platform === 'win32' ? 'C:\\proj' : '/proj';
+const shadowAssert = (extra) => ({ kind: 'forbid-added-literal', literal: 'console.log', ...(extra || {}) });
+
+// — shipped bug #1: toRelPath must reject a RELATIVE ../escape (pre-fix returned it) —
+test('policy-store: toRelPath rejects a RELATIVE ../escape and keeps inside paths (shipped bug fix)', () => {
+  assertEq(polstore.toRelPath('../outside.js', SHADOW_CWD), null);   // relative escape → null (was returned unchanged)
+  assertEq(polstore.toRelPath('src/a.js', SHADOW_CWD), 'src/a.js');  // inside stays
+  const inside = process.platform === 'win32' ? 'C:\\proj\\src\\a.js' : '/proj/src/a.js';
+  const other = process.platform === 'win32' ? 'D:\\o\\a.js' : '/other/a.js';
+  assertEq(polstore.toRelPath(inside, SHADOW_CWD), 'src/a.js');      // absolute inside → rel
+  assertEq(polstore.toRelPath(other, SHADOW_CWD), null);            // other drive / outside → null
+});
+
+// — shipped bug #2: activate must honor save() and refuse a corrupt registry —
+test('policy-store: activate surfaces {reason:persist} when save() cannot write (shipped bug fix)', () => {
+  const dd = freshPolDataDir();
+  // Plant a FILE where the registry DIR must be → writeJsonAtomic mkdir fails → save()=false.
+  fs.writeFileSync(path.join(dd, 'policies'), 'x');
+  assertEq(polstore.activate(dd, { text: 'rule', projectId: 'z', now: 1 }), { activated: false, reason: 'persist' });
+});
+
+test('policy-store: activate REFUSES up-front on a corrupt registry (never overwrites it)', () => {
+  const dd = freshPolDataDir();
+  fs.mkdirSync(path.join(dd, 'policies'), { recursive: true });
+  const reg = path.join(dd, 'policies', 'registry.json');
+  fs.writeFileSync(reg, '{ this is not json');
+  assertEq(polstore.activate(dd, { text: 'rule', projectId: 'z', now: 1 }), { activated: false, reason: 'corrupt' });
+  assertEq(fs.readFileSync(reg, 'utf-8'), '{ this is not json'); // nothing stored — corrupt bytes untouched
+});
+
+test('policy-store: shadow-assertion activate stores activationId + enforcement:shadow (caseSensitive default true)', () => {
+  const dd = freshPolDataDir();
+  const r = polstore.activate(dd, { entryId: 'sh1', text: 'no console.log in prod', projectId: 'z', globs: ['src/**'], assert: shadowAssert(), enforcement: 'shadow', now: 1 });
+  assertEq([r.activated, r.mode, r.enforcement, /^[0-9a-f]{24}$/.test(r.activationId)], [true, 'glob', 'shadow', true]);
+  const rec = polstore.loadResult(dd).records[r.id];
+  assertEq([rec.enforcement, rec.assert.kind, rec.assert.literal, rec.assert.caseSensitive], ['shadow', 'forbid-added-literal', 'console.log', true]);
+  assertEq(rec.activationId, r.activationId);
+});
+
+test('policy-store: shadow — a wrong assert.kind is refused (bad-assert-kind, nothing stored)', () => {
+  const dd = freshPolDataDir();
+  assertEq(polstore.activate(dd, { entryId: 'shK', text: 't', projectId: 'z', globs: ['**'], assert: { kind: 'nope', literal: 'x' }, enforcement: 'shadow', now: 1 }),
+    { activated: false, reason: 'bad-assert-kind' });
+  assertEq(Object.keys(polstore.loadResult(dd).records).length, 0);
+});
+
+test('policy-store: shadow — oversized literal → literal-too-long (nothing stored, no truncation)', () => {
+  const dd = freshPolDataDir();
+  const big = 'x'.repeat(polstore.MAX_LITERAL_CHARS + 1);
+  assertEq(polstore.activate(dd, { entryId: 'shBig', text: 'big', projectId: 'z', globs: ['**'], assert: shadowAssert({ literal: big }), enforcement: 'shadow', now: 1 }),
+    { activated: false, reason: 'literal-too-long' });
+  assertEq(Object.keys(polstore.loadResult(dd).records).length, 0);
+});
+
+test('policy-store: shadow — secret-bearing literal is REJECTED (sensitive-literal), never stored unredacted', () => {
+  const dd = freshPolDataDir();
+  const SECRET = 'ghp_ABCDEFGHIJKLMNOPQRSTUVWX';
+  assertEq(polstore.activate(dd, { entryId: 'shTok', text: 't', projectId: 'z', globs: ['**'], assert: shadowAssert({ literal: SECRET }), enforcement: 'shadow', now: 1 }),
+    { activated: false, reason: 'sensitive-literal' });
+  const raw = JSON.stringify(polstore.loadResult(dd).records);
+  assert(!raw.includes(SECRET) && raw === '{}', 'a secret literal is neither stored nor leaked');
+});
+
+test('policy-store: shadow — enforcement must be shadow this micro (enforce → unsupported-enforcement)', () => {
+  const dd = freshPolDataDir();
+  assertEq(polstore.activate(dd, { entryId: 'shEnf', text: 't', projectId: 'z', globs: ['**'], assert: shadowAssert(), enforcement: 'enforce', now: 1 }),
+    { activated: false, reason: 'unsupported-enforcement' });
+  assertEq(Object.keys(polstore.loadResult(dd).records).length, 0);
+});
+
+test('policy-store: shadow budget is SEPARATE and capped at MAX_SHADOW_POLICIES_PER_PROJECT', () => {
+  const dd = freshPolDataDir(); let now = 1;
+  for (let i = 0; i < polstore.MAX_SHADOW_POLICIES_PER_PROJECT; i++) {
+    assertEq(polstore.activate(dd, { entryId: 'shb' + i, text: 'r' + i, projectId: 'z', globs: ['src/' + i + '/**'], assert: shadowAssert(), enforcement: 'shadow', now: now++ }).activated, true);
+  }
+  assertEq(polstore.activate(dd, { entryId: 'shbX', text: 'rX', projectId: 'z', globs: ['x/**'], assert: shadowAssert(), enforcement: 'shadow', now: now++ }),
+    { activated: false, reason: 'budget' });
+  assertEq(polstore.activeShadow(polstore.loadResult(dd).records, 'z').length, polstore.MAX_SHADOW_POLICIES_PER_PROJECT);
+});
+
+test('policy-store: shadow upsert REUSES activationId for the same definition, MINTS a new one when the literal changes', () => {
+  const dd = freshPolDataDir(); let now = 1;
+  const a1 = polstore.activate(dd, { entryId: 'up', text: 'r', projectId: 'z', globs: ['src/**'], assert: shadowAssert({ literal: 'AAA' }), enforcement: 'shadow', now: now++ });
+  const a2 = polstore.activate(dd, { entryId: 'up', text: 'r', projectId: 'z', globs: ['src/**'], assert: shadowAssert({ literal: 'AAA' }), enforcement: 'shadow', now: now++ });
+  assertEq(a2.activationId, a1.activationId); // unchanged definition → REUSE the telemetry key
+  const a3 = polstore.activate(dd, { entryId: 'up', text: 'r', projectId: 'z', globs: ['src/**'], assert: shadowAssert({ literal: 'BBB' }), enforcement: 'shadow', now: now++ });
+  assert(a3.activationId !== a1.activationId, 'a changed literal is a new definition → new activationId');
+  assertEq(Object.keys(polstore.loadResult(dd).records).length, 1); // same id → upsert, not a fork
+});
+
+test('policy-store: listShadowMatching returns ONLY shadow+matching records (excludes plain-glob and non-shadow enforcement)', () => {
+  const dd = freshPolDataDir(); let now = 1;
+  const sh = polstore.activate(dd, { entryId: 'lm-shadow', text: 'shadow rule', projectId: 'proj', globs: ['src/**'], assert: shadowAssert(), enforcement: 'shadow', now: now++ });
+  polstore.activate(dd, { entryId: 'lm-plain', text: 'plain glob', projectId: 'proj', globs: ['src/**'], now: now++ }); // plain glob (no assert) → excluded
+  // Hand-craft a legacy record: assert present but enforcement !== 'shadow' → MUST be excluded.
+  const { records } = polstore.loadResult(dd);
+  records['lm-legacy'] = { id: 'lm-legacy', entryId: 'lm-legacy', mode: 'glob', scope: 'project', projectId: 'proj', text: 'legacy', globs: ['src/**'], assert: { kind: 'forbid-added-literal', literal: 'x', caseSensitive: true }, enforcement: 'enforce', activationId: 'deadbeefdeadbeefdeadbeef', sourceHash: 'x', activatedAt: now++ };
+  polstore.save(dd, { records });
+  assertEq(polstore.listShadowMatching(dd, { projectId: 'proj', filePath: 'src/a.ts', cwd: SHADOW_CWD }).map(r => r.id), [sh.id]);
+  assertEq(polstore.listShadowMatching(dd, { projectId: 'proj', filePath: 'lib/x.ts', cwd: SHADOW_CWD }), []); // non-matching path → none
+});
+
+test('policy-shadow: countOccurrences counts NON-OVERLAPPING and respects caseSensitive', () => {
+  const c = shadowHook.countOccurrences;
+  assertEq(c('a console.log b console.log', 'console.log', true), 2);
+  assertEq(c('aaaa', 'aa', true), 2);                  // non-overlapping (not 3)
+  assertEq(c('CONSOLE.LOG', 'console.log', true), 0);  // case-sensitive miss
+  assertEq(c('CONSOLE.LOG', 'console.log', false), 1); // case-insensitive hit
+  assertEq(c('anything', '', true), 0);                // empty needle → 0
+});
+
+test('policy-shadow: outcome is NET-COUNT-INCREASE (preserve=pass, add=trigger) — not includes()', () => {
+  const c = shadowHook.countOccurrences;
+  const lit = 'console.log';
+  // PRESERVE: literal present before AND after with the SAME count → NOT a trigger. Under an
+  // includes()-based rule this would falsely fire — this is the (a) mutation-guard invariant.
+  assert(!(c('x console.log y', lit, true) > c('a console.log b', lit, true)), 'preserved literal (1→1) is a pass');
+  assert(c('console.log', lit, true) > c('nothing', lit, true), 'added literal (0→1) is a trigger');
+  assert(c('console.log console.log', lit, true) > c('console.log', lit, true), 'added literal (1→2) is a trigger');
+});
+
+test('metrics-project: metricsProjectKey is stable + path-safe (no separators) for the same cwd', () => {
+  const k1 = metricsProjectKey(SHADOW_CWD);
+  assertEq(k1, metricsProjectKey(SHADOW_CWD));            // stable across calls
+  assert(/^[0-9a-f]{16}$/.test(k1), `path-safe 16-hex (no / \\ :), got: ${k1}`);
+});
+
+test('metrics-store: getEvaluationCounts aggregates EXACT per-(activationId,outcome) counts past 500 (no log cap)', () => {
+  const ms = require(path.join(SCRIPTS, 'lib', 'metrics-store.js'));
+  const project = 'evalcounts-' + Date.now();
+  assert(ms.init({ project }), 'metrics db init');
+  try {
+    const plan = [['AA', 'trigger', 200], ['AA', 'pass', 150], ['BB', 'trigger', 100], ['BB', 'pass', 100], ['BB', 'unevaluable', 50]];
+    let total = 0;
+    for (const [aid, outcome, n] of plan) {
+      for (let i = 0; i < n; i++) { ms.recordMetric('policy.shadow.evaluated', { schema: 1, activationId: aid, outcome }, 's'); total++; }
+    }
+    assertEq(total, 600); // inserted MORE than the 500-row event-log cap
+    const rows = ms.getEvaluationCounts({ eventName: 'policy.shadow.evaluated', sinceTs: 0 });
+    const cell = (aid, o) => (rows.find(r => r.activationId === aid && r.outcome === o) || {}).count;
+    assertEq([cell('AA', 'trigger'), cell('AA', 'pass'), cell('BB', 'trigger'), cell('BB', 'pass'), cell('BB', 'unevaluable')], [200, 150, 100, 100, 50]);
+    assertEq(rows.reduce((s, r) => s + r.count, 0), 600); // EXACT total — SQL GROUP BY, not truncated at 500
+    // Isolated (throwaway-connection) read of the SAME project sees identical tallies.
+    const iso = ms.getEvaluationCountsIsolated(project, { eventName: 'policy.shadow.evaluated', sinceTs: 0 });
+    assertEq(iso.reduce((s, r) => s + r.count, 0), 600);
+    // Windowing: a future sinceTs excludes everything (honest empty).
+    assertEq(ms.getEvaluationCounts({ eventName: 'policy.shadow.evaluated', sinceTs: Date.now() + 3_600_000 }), []);
+  } finally {
+    ms.close();
+  }
+});
+
 // ─── curation-reconcile (Stop-hook blocked-entry reconciliation) ─────────────
 const reconcile = require(path.join(SCRIPTS, 'lib', 'curation-reconcile.js'));
 
