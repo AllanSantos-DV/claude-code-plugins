@@ -17,7 +17,7 @@ function inferDefaultScope(type, tags = []) {
   return 'project';
 }
 
-const SECRET_RE = /(sk-[A-Za-z0-9]{20,}|pa-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{36}|gho_[A-Za-z0-9]{36}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{35})/;
+const SECRET_RE = /(sk-[A-Za-z0-9_-]{20,}|pa-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{36}|gho_[A-Za-z0-9]{36}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|AIza[0-9A-Za-z_-]{35})/;
 
 function detectSecrets(text) {
   if (!text) return false;

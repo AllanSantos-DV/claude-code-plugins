@@ -54,6 +54,7 @@ const DETECTORS = [
   { name: 'retrieval-feedback',       mod: require('./retrieval-feedback.js') },
   { name: 'session-summary',          mod: require('./session-summary.js') },
   { name: 'conversation-ingest',      mod: require('./conversation-ingest.js') },
+  { name: 'capture-dispatch',         mod: require('./capture-dispatch.js') },
   { name: 'auto-continue-stop',       mod: require('./auto-continue-stop.js') },
 ];
 

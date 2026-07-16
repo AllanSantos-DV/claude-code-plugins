@@ -62,6 +62,24 @@
             "command": "node",
             "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/project-identity-advisory.js"],
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/policy-inject.js"],
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/policy-inject.js"],
+            "timeout": 10
           }
         ]
       }
@@ -74,6 +92,12 @@
             "type": "command",
             "command": "node",
             "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/curation-guard.js"],
+            "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/error-guard.js"],
             "timeout": 5
           }
         ]
@@ -94,6 +118,12 @@
             "command": "node",
             "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/decision-detect.js"],
             "timeout": 5
+          },
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/error-resolve.js"],
+            "timeout": 5
           }
         ]
       },
@@ -105,6 +135,17 @@
             "command": "node",
             "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/file-edit-detect.js"],
             "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/policy-glob-inject.js"],
+            "timeout": 10
           }
         ]
       }

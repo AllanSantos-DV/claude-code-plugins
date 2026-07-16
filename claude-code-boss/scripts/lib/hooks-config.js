@@ -42,9 +42,15 @@ const DEFAULT_PROFILE = 'dev';
 const PROFILE_PRESETS = {
   // dev = current behavior; getters' hardcoded defaults already produce it.
   dev: {},
-  // standard = open the plugin to non-maintainers: inform once, never nag. The
-  // ONLY Stop block kept is curation-stop (once, soft); every other block-capable
-  // detector is silenced. session-summary stays (1x/session, positive).
+  // standard = open the plugin to non-maintainers: inform once, never nag. TWO Stop
+  // blocks are kept BY DESIGN: curation-stop (once, soft) and capture-dispatch — the
+  // block-until-ack that DRIVES lesson capture best-effort (on Stop the agent is asked to
+  // call capture_lesson or capture_ack; the guard re-prompts until it does). This is
+  // best-effort, NOT a hard guarantee: the host can still end the turn on user interrupt,
+  // API failure, or after its Stop-continuation cap. Every OTHER block-capable detector is
+  // silenced. A silent trigger alone (correction-detect) does NOT drive a write — the Stop
+  // block does (best-effort). session-summary stays (1x/session, positive). capture opt-out
+  // lives in kb.capture.
   standard: {
     curationStop:     { maxAttempts: 1 },   // block once then relent (advisory)
     patternDetect:    { enabled: false },   // dev-only capture nudge (Stop-block)
@@ -159,6 +165,30 @@ function getCurationStop() {
 function getCurationGuard() {
   const cfg = load();
   return cfg.curationGuard || {};
+}
+
+// Not profile-controlled — read straight from the raw file (like getCurationGuard).
+// Backs the deterministic error-guard (DENY-on-recurring-Bash-failure). Defaults ON.
+function getErrorGuard() {
+  const eg = load().errorGuard || {};
+  return {
+    enabled: eg.enabled !== false,
+    threshold: Number.isInteger(eg.threshold) && eg.threshold > 0 ? eg.threshold : 2,
+    windowDays: Number.isInteger(eg.windowDays) && eg.windowDays > 0 ? eg.windowDays : 90,
+  };
+}
+
+// Not profile-controlled — read straight from the raw file (like getErrorGuard).
+// Backs the deterministic always-apply POLICY injection (SessionStart +
+// SubagentStart). Defaults ON; budgets bound how much standing-policy text may be
+// injected per session/subagent start.
+function getPolicyInject() {
+  const pi = load().policyInject || {};
+  return {
+    enabled: pi.enabled !== false,
+    maxPolicies: Number.isInteger(pi.maxPolicies) && pi.maxPolicies > 0 ? pi.maxPolicies : 10,
+    maxChars: Number.isInteger(pi.maxChars) && pi.maxChars > 0 ? pi.maxChars : 4000,
+  };
 }
 
 function getCuration() {
@@ -277,6 +307,8 @@ module.exports = {
   resolveProfileConfig,
   getCurationStop,
   getCurationGuard,
+  getErrorGuard,
+  getPolicyInject,
   getCuration,
   getVerifyNudge,
   getPatternDetect,
