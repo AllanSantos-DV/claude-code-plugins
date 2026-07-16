@@ -6292,6 +6292,260 @@ test('adjudication assets: agent + command markdown have valid frontmatter', () 
   assert(/^argument-hint:\s*\S/m.test(cmdFm), 'command has an argument-hint');
 });
 
+// ─── Trigger-evidence capture (Fase 3 micro-B1) — OPT-IN prospective evidence ─
+// Mirrors the adjudication block: unique flat project ids + a shared temp dataDir
+// isolate each test against the global CLAUDE_PLUGIN_DATA. The store + tools scope
+// everything by (sanitized) project id.
+
+test('trigger-evidence-store: append/list/purge roundtrip — newest first, project-scoped, activationId filter', () => {
+  const te = require('./lib/trigger-evidence-store.js');
+  const dd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-te-'));
+  const mk = (eventId, activationId, ts) => ({ eventId, activationId, sourceHash: 'sh', file: 'src/a.ts', addedSnippet: 'x', ts });
+  assert(te.appendEvidence(dd, 'teA', mk('e1', 'act1', 1000), { ttlDays: 0 }), 'append 1 ok');
+  assert(te.appendEvidence(dd, 'teA', mk('e2', 'act1', 3000), { ttlDays: 0 }), 'append 2 ok');
+  assert(te.appendEvidence(dd, 'teA', mk('e3', 'act2', 2000), { ttlDays: 0 }), 'append 3 ok');
+  const all = te.listEvidence(dd, 'teA', {});
+  assertEq(all.length, 3, 'three evidence records');
+  assert(all[0].ts >= all[1].ts && all[1].ts >= all[2].ts, 'newest first');
+  assertEq(te.listEvidence(dd, 'teA', { activationId: 'act1' }).length, 2, 'activationId filter narrows to act1');
+  assertEq(te.listEvidence(dd, 'teA', { sinceTs: 2500 }).length, 1, 'sinceTs filter keeps only newer');
+  assertEq(te.listEvidence(dd, 'teB', {}).length, 0, 'project scoping isolates teB');
+  assertEq(te.purgeEvidence(dd, 'teA', { activationId: 'act1' }), 2, 'purge by activationId removes 2');
+  assertEq(te.listEvidence(dd, 'teA', {}).length, 1, 'one record remains after scoped purge');
+  assertEq(te.purgeEvidence(dd, 'teA', {}), 1, 'purge-all removes the rest');
+  assertEq(te.listEvidence(dd, 'teA', {}).length, 0, 'queue empty after purge-all');
+});
+
+test('trigger-evidence-store: TTL purge-on-write drops records older than ttlDays', () => {
+  const te = require('./lib/trigger-evidence-store.js');
+  const dd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-te-'));
+  const now = Date.now();
+  const DAY = 86400000;
+  // Seed an OLD record (10 days ago); it is written as-is on its own append…
+  assert(te.appendEvidence(dd, 'teTTL', { eventId: 'old', activationId: 'a', sourceHash: 's', file: 'f.ts', addedSnippet: 'x', ts: now - 10 * DAY }, { ttlDays: 7 }), 'old append ok');
+  assertEq(te.listEvidence(dd, 'teTTL', {}).length, 1, 'old record present before the next write');
+  // …then the NEXT write (fresh) purges anything older than the 7-day cutoff.
+  assert(te.appendEvidence(dd, 'teTTL', { eventId: 'fresh', activationId: 'a', sourceHash: 's', file: 'f.ts', addedSnippet: 'x', ts: now }, { ttlDays: 7 }), 'fresh append ok');
+  const after = te.listEvidence(dd, 'teTTL', {});
+  assertEq(after.length, 1, 'TTL purge-on-write dropped the expired record');
+  assertEq(after[0].eventId, 'fresh', 'only the fresh record survives');
+});
+
+test('trigger-evidence-store: caps the queue to the newest maxPerProject on write', () => {
+  const te = require('./lib/trigger-evidence-store.js');
+  const dd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-te-'));
+  for (let i = 1; i <= 6; i++) {
+    te.appendEvidence(dd, 'teCap', { eventId: 'e' + i, activationId: 'a', sourceHash: 's', file: 'f.ts', addedSnippet: 'x', ts: 1000 + i }, { maxPerProject: 3, ttlDays: 0 });
+  }
+  const list = te.listEvidence(dd, 'teCap', {});
+  assertEq(list.length, 3, 'queue capped to maxPerProject (3)');
+  assertEq(list.map((e) => e.eventId), ['e6', 'e5', 'e4'], 'the newest 3 are kept (oldest evicted)');
+});
+
+test('trigger-evidence-store: normalizeRecord redacts+caps the snippet and strips unknown/un-relative fields', () => {
+  const te = require('./lib/trigger-evidence-store.js');
+  const secret = "const k='sk-abcdefghijklmnopqrstuvwxyz012345';";
+  const rec = te.normalizeRecord({
+    eventId: 'e1', activationId: 'a', sourceHash: 's',
+    file: 'C:\\\\Users\\\\me\\\\secret\\\\path\\\\app.ts', // absolute → collapsed to basename
+    addedSnippet: secret + 'a'.repeat(5000),               // secret + overlong → redacted + capped
+    ts: 123,
+    tool: 'Edit', new_string: secret, extra: { nope: true }, // unknown keys must not survive
+  });
+  assertEq(Object.keys(rec).sort().join(','), 'activationId,addedSnippet,eventId,file,sourceHash,ts', 'only the 6 honest fields survive');
+  assert(!rec.addedSnippet.includes('sk-abcdefghijklmnopqrstuvwxyz012345'), 'the API key is redacted out of the stored snippet');
+  assert(rec.addedSnippet.length <= te.MAX_SNIPPET_CHARS, 'snippet capped to MAX_SNIPPET_CHARS');
+  assertEq(rec.file, 'app.ts', 'absolute path collapsed to a bare basename (no path leak)');
+  assert(!JSON.stringify(rec).includes('nope') && rec.tool === undefined && rec.new_string === undefined, 'unknown keys stripped');
+});
+
+test('trigger-evidence-store: load returns empty shape on a corrupt queue (never throws)', () => {
+  const te = require('./lib/trigger-evidence-store.js');
+  const dd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-te-'));
+  const p = te.queuePath(dd, 'teCorrupt');
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, '{ not valid json');
+  assertEq(te.listEvidence(dd, 'teCorrupt', {}), [], 'corrupt queue → empty list, no throw');
+  assert(te.appendEvidence(dd, 'teCorrupt', { eventId: 'e', activationId: 'a', sourceHash: 's', file: 'f.ts', addedSnippet: 'x', ts: 1 }), 'append recovers over a corrupt queue');
+  assertEq(te.listEvidence(dd, 'teCorrupt', {}).length, 1, 'one record after recovery');
+});
+
+test('trigger-evidence-store: purge by olderThanTs removes only strictly-older records', () => {
+  const te = require('./lib/trigger-evidence-store.js');
+  const dd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-te-'));
+  te.appendEvidence(dd, 'teAge', { eventId: 'old', activationId: 'a', sourceHash: 's', file: 'f.ts', addedSnippet: 'x', ts: 1000 }, { ttlDays: 0 });
+  te.appendEvidence(dd, 'teAge', { eventId: 'new', activationId: 'a', sourceHash: 's', file: 'f.ts', addedSnippet: 'x', ts: 5000 }, { ttlDays: 0 });
+  assertEq(te.purgeEvidence(dd, 'teAge', { olderThanTs: 3000 }), 1, 'one record older than the cutoff removed');
+  const rest = te.listEvidence(dd, 'teAge', {});
+  assertEq(rest.map((e) => e.eventId), ['new'], 'only the newer record remains');
+});
+
+test('hooks-config getCaptureTriggerEvidence: DEFAULT OFF; enabled ONLY when === true; validates bounds', () => {
+  // Absent block → the privacy default: OFF, with the documented fallbacks.
+  withHooksConfigFile({ profile: 'dev' }, (hc) => {
+    const c = hc.getCaptureTriggerEvidence();
+    assertEq(c.enabled, false, 'absent → capture OFF by default');
+    assertEq(c.ttlDays, 7, 'default ttlDays');
+    assertEq(c.maxPerProject, 500, 'default maxPerProject');
+    assertEq(c.maxSnippetChars, 2000, 'default maxSnippetChars');
+  });
+  // A truthy-but-not-true value must NOT enable capture (strict === true gate).
+  withHooksConfigFile({ captureTriggerEvidence: { enabled: 'yes', ttlDays: 0, maxPerProject: -5, maxSnippetChars: 'x' } }, (hc) => {
+    const c = hc.getCaptureTriggerEvidence();
+    assertEq(c.enabled, false, 'non-boolean truthy enabled stays OFF (=== true only)');
+    assertEq(c.ttlDays, 7, 'invalid ttlDays falls back to default');
+    assertEq(c.maxPerProject, 500, 'invalid maxPerProject falls back to default');
+    assertEq(c.maxSnippetChars, 2000, 'invalid maxSnippetChars falls back to default');
+  });
+  // Explicit opt-in with valid overrides is honored.
+  withHooksConfigFile({ captureTriggerEvidence: { enabled: true, ttlDays: 3, maxPerProject: 10, maxSnippetChars: 50 } }, (hc) => {
+    const c = hc.getCaptureTriggerEvidence();
+    assertEq(c.enabled, true, 'explicit enabled:true opts in');
+    assertEq(c.ttlDays, 3, 'valid ttlDays override honored');
+    assertEq(c.maxPerProject, 10, 'valid maxPerProject override honored');
+    assertEq(c.maxSnippetChars, 50, 'valid maxSnippetChars override honored');
+  });
+});
+
+// Seed captured trigger evidence under the SAME project key the prepare tool reads:
+// both call the store with the resolved project id (sanitizeProjectId), so a flat id
+// like 'tev-…' agrees on both sides — this IS the hook-write ↔ prepare-read agreement.
+function _teSeed(project, activationId, n, snippet) {
+  const te = require('./lib/trigger-evidence-store.js');
+  const { dataDir } = require('./lib/data-dir.js');
+  for (let i = 1; i <= n; i++) {
+    te.appendEvidence(dataDir(), project, {
+      eventId: 'ev' + String(i).padStart(2, '0'),
+      activationId, sourceHash: 'sh',
+      file: 'src/f' + i + '.ts',
+      addedSnippet: typeof snippet === 'function' ? snippet(i) : (snippet || ('console.log("x' + i + '")')),
+      ts: 1000 + i,
+    }, { maxPerProject: 500, ttlDays: 0 });
+  }
+}
+
+test('policy_adjudication_prepare source:triggers — builds bundle from CAPTURED evidence, capped at 25, honest note', async () => {
+  const server = await _adjImportServer();
+  const policyStore = require('./lib/policy-store.js');
+  const { dataDir } = require('./lib/data-dir.js');
+  const project = 'tev-prep-' + Date.now();
+  const act = policyStore.activate(dataDir(), { text: 'no console.log in prod', scope: 'project', projectId: project, globs: ['**/*.ts'], assert: { kind: 'forbid-added-literal', literal: 'console.log' }, enforcement: 'shadow' });
+  assert(act.activated && act.activationId, 'shadow policy activated with an activationId');
+  _teSeed(project, act.activationId, 30);
+  const r1 = JSON.parse(_adjText(await server.handleTool('policy_adjudication_prepare', { policyId: act.id, source: 'triggers', project })));
+  const r2 = JSON.parse(_adjText(await server.handleTool('policy_adjudication_prepare', { policyId: act.id, source: 'triggers', project })));
+  assertEq(r1.source, 'triggers', 'result marks the triggers source');
+  assertEq(r1.occurrenceCount, 25, 'sample capped at 25');
+  assertEq(r1.manifestHash, r2.manifestHash, 'manifestHash deterministic across runs');
+  const b1 = JSON.parse(fs.readFileSync(r1.bundlePath, 'utf-8'));
+  assertEq(b1.source, 'triggers', 'bundle records source:triggers');
+  assertEq(b1.eligible, 30, 'eligible reflects the true captured total (30)');
+  assertEq(b1.occurrences.length, 25, 'bundle holds exactly 25 occurrences');
+  assert(b1.occurrences.every((o) => o.line === null), 'a captured proposal has no current-code line');
+  assertEq(b1.occurrences[0].id, 'ev30', 'newest captured evidence is sampled first (deterministic)');
+  assert(r1.note.includes('CAPTURED TRIGGER PROPOSALS') && r1.note.toLowerCase().includes('judged') && r1.note.includes('NOT a measured false-positive rate'), 'note is the honest triggers framing');
+});
+
+test('policy_adjudication_prepare source:triggers — no captured evidence → occurrenceCount 0 with guidance', async () => {
+  const server = await _adjImportServer();
+  const policyStore = require('./lib/policy-store.js');
+  const { dataDir } = require('./lib/data-dir.js');
+  const project = 'tev-empty-' + Date.now();
+  const act = policyStore.activate(dataDir(), { text: 'no console.log', scope: 'project', projectId: project, globs: ['**/*.ts'], assert: { kind: 'forbid-added-literal', literal: 'console.log' }, enforcement: 'shadow' });
+  const res = JSON.parse(_adjText(await server.handleTool('policy_adjudication_prepare', { policyId: act.id, source: 'triggers', project })));
+  assertEq(res.occurrenceCount, 0, 'no captured evidence → occurrenceCount 0');
+  assertEq(res.source, 'triggers', 'still marked triggers');
+  assert(res.bundlePath === undefined, 'no bundle written when there is nothing to adjudicate');
+  assert(res.note.includes('no captured trigger evidence') && res.note.includes('captureTriggerEvidence'), 'note guides the user to opt in first');
+});
+
+test('policy_adjudication_record source:triggers — JUDGED estimate: trigger kind, judged share, disclaimer, NO measured-FP', async () => {
+  const server = await _adjImportServer();
+  const policyStore = require('./lib/policy-store.js');
+  const adjStore = require('./lib/adjudication-store.js');
+  const { dataDir } = require('./lib/data-dir.js');
+  const project = 'tev-rec-' + Date.now();
+  const act = policyStore.activate(dataDir(), { text: 'no console.log', scope: 'project', projectId: project, globs: ['**/*.ts'], assert: { kind: 'forbid-added-literal', literal: 'console.log' }, enforcement: 'shadow' });
+  _teSeed(project, act.activationId, 3, (i) => "console.log('sekret-tok" + i + "')");
+  const prep = JSON.parse(_adjText(await server.handleTool('policy_adjudication_prepare', { policyId: act.id, source: 'triggers', project })));
+  const bundle = JSON.parse(fs.readFileSync(prep.bundlePath, 'utf-8'));
+  // 2 likely_legitimate + 1 likely_problem → judged FP share = 2/3.
+  const verdicts = { schema: 1, verdicts: bundle.occurrences.map((o, k) => ({ id: o.id, label: k === 0 ? 'likely_problem' : 'likely_legitimate', promptInjectionSuspected: false, reason: 'r' })) };
+  const rr = JSON.parse(_adjText(await server.handleTool('policy_adjudication_record', { policyId: act.id, manifestHash: prep.manifestHash, verdictsJson: JSON.stringify(verdicts), project })));
+  assertEq(rr.kind, 'llm-trigger-proposal-disposition', 'triggers-sourced disposition kind');
+  assert(rr.falsePositiveRate === undefined, 'NO measured falsePositiveRate is exposed');
+  assert(typeof rr.judgedLikelyFpShare === 'number' && Math.abs(rr.judgedLikelyFpShare - 2 / 3) < 1e-9, 'judgedLikelyFpShare = legit/(legit+problem) = 2/3');
+  assert(rr.judgedLikelyFpShareNote.includes('NOT a measured false-positive rate') && rr.judgedLikelyFpShareNote.includes('N/A'), 'the share note keeps the shadow FP N/A and disclaims measurement');
+  assert(typeof rr.disclaimer === 'string' && rr.disclaimer.includes('JUDGED likely-FP estimate') && rr.disclaimer.includes('NOT a measured false-positive rate'), 'disclaimer frames it as a JUDGED estimate, not a measured rate');
+  assert(rr.tuningRecommendation === undefined, 'no snapshot tuning nudge on a triggers disposition');
+  // Persisted distinctly + no snippet leaks into the disposition.
+  const stored = adjStore.listDispositions(dataDir(), project).filter((d) => String(d.policyId) === String(act.id));
+  assert(stored.length >= 1, 'a disposition was persisted');
+  assertEq(stored[0].kind, 'llm-trigger-proposal-disposition', 'stored disposition carries the triggers kind');
+  assertEq(stored[0].provenance.source, 'triggers', 'stored provenance records source:triggers');
+  assert(!JSON.stringify(stored[0]).includes('sekret-tok'), 'no captured snippet leaks into the persisted disposition');
+});
+
+test('policy_adjudication_record: dispositionKind override forces the triggers kind on a snapshot bundle', async () => {
+  const server = await _adjImportServer();
+  const policyStore = require('./lib/policy-store.js');
+  const { dataDir } = require('./lib/data-dir.js');
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjw-'));
+  const project = 'tev-ovr-' + Date.now();
+  try {
+    _adjMakeFiles(work, 2, 'ts', (i) => `console.log('o${i}');\n`);
+    const act = policyStore.activate(dataDir(), { text: 't', scope: 'project', projectId: project, globs: ['**/*.ts'], assert: { kind: 'forbid-added-literal', literal: 'console.log' }, enforcement: 'shadow' });
+    const prep = JSON.parse(_adjText(await server.handleTool('policy_adjudication_prepare', { policyId: act.id, project, cwd: work })));
+    const bundle = JSON.parse(fs.readFileSync(prep.bundlePath, 'utf-8'));
+    assertEq(bundle.source, 'current-snapshot', 'the default bundle is a current-snapshot');
+    const verdicts = { schema: 1, verdicts: bundle.occurrences.map((o) => ({ id: o.id, label: 'likely_legitimate', promptInjectionSuspected: false, reason: 'r' })) };
+    const rr = JSON.parse(_adjText(await server.handleTool('policy_adjudication_record', { policyId: act.id, manifestHash: prep.manifestHash, verdictsJson: JSON.stringify(verdicts), dispositionKind: 'llm-trigger-proposal-disposition', project, cwd: work })));
+    assertEq(rr.kind, 'llm-trigger-proposal-disposition', 'explicit dispositionKind override honored');
+    assert(typeof rr.judgedLikelyFpShare === 'number', 'override path emits the judged share, not a measured rate');
+    assert(rr.falsePositiveRate === undefined, 'still no measured falsePositiveRate');
+  } finally {
+    try { fs.rmSync(work, { recursive: true, force: true }); } catch (err) { void err; }
+  }
+});
+
+test('policy_trigger_evidence_purge: removes a policy\'s captured evidence, then all; static: not a KB tool', async () => {
+  const server = await _adjImportServer();
+  const policyStore = require('./lib/policy-store.js');
+  const te = require('./lib/trigger-evidence-store.js');
+  const { dataDir } = require('./lib/data-dir.js');
+  const project = 'tev-purge-' + Date.now();
+  const act1 = policyStore.activate(dataDir(), { text: 'p1', scope: 'project', projectId: project, globs: ['**/*.ts'], assert: { kind: 'forbid-added-literal', literal: 'console.log' }, enforcement: 'shadow' });
+  const act2 = policyStore.activate(dataDir(), { text: 'p2', scope: 'project', projectId: project, globs: ['**/*.js'], assert: { kind: 'forbid-added-literal', literal: 'debugger' }, enforcement: 'shadow' });
+  _teSeed(project, act1.activationId, 3);
+  _teSeed(project, act2.activationId, 2);
+  assertEq(te.listEvidence(dataDir(), project, {}).length, 5, 'five records seeded across two policies');
+  const p1 = JSON.parse(_adjText(await server.handleTool('policy_trigger_evidence_purge', { policyId: act1.id, project })));
+  assertEq(p1.removed, 3, 'purge by policyId removed only that policy\'s 3 records');
+  assertEq(te.listEvidence(dataDir(), project, {}).length, 2, 'the other policy\'s evidence is untouched');
+  const pAll = JSON.parse(_adjText(await server.handleTool('policy_trigger_evidence_purge', { project })));
+  assertEq(pAll.removed, 2, 'purge-all removed the rest');
+  assertEq(te.listEvidence(dataDir(), project, {}).length, 0, 'queue empty after purge-all');
+  // An unknown policyId is refused (never silently purges everything).
+  const bad = await server.handleTool('policy_trigger_evidence_purge', { policyId: 'no-such', project });
+  assert(bad.isError, 'unknown policyId is rejected');
+  // Static proof: the purge tool is NOT wired into the KB singleton sets.
+  const src = fs.readFileSync(path.join(process.env.CLAUDE_PLUGIN_ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js'), 'utf-8');
+  const kbStart = src.indexOf('const KB_TOOLS');
+  const kbEnd = src.indexOf('export function createBrainServer');
+  const kbSlice = src.slice(kbStart, kbEnd);
+  assert(kbStart > 0 && kbEnd > kbStart, 'located the KB_TOOLS/REMOTE_KB_TOOLS declarations');
+  assert(!kbSlice.includes('policy_trigger_evidence_purge'), 'purge tool is neither a KB tool nor a remote KB tool');
+});
+
+test('policy trigger-evidence tools: never mutate a policy (no activate/deactivate in the handlers)', () => {
+  const src = fs.readFileSync(path.join(process.env.CLAUDE_PLUGIN_ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js'), 'utf-8');
+  const start = src.indexOf("case 'policy_adjudication_prepare'");
+  const end = src.indexOf('default:', start);
+  assert(start > 0 && end > start, 'located the adjudication+purge handler block');
+  const slice = src.slice(start, end);
+  assert(!slice.includes('.activate(') && !slice.includes('.deactivate('), 'triggers capture/adjudicate/purge handlers contain no activate/deactivate (no auto-mutation)');
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
