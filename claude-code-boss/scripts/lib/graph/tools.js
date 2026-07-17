@@ -148,15 +148,23 @@ const DEFINITIONS = [
 const GRAPH_TOOL_NAMES = new Set(DEFINITIONS.map((d) => d.name));
 
 /**
- * Build the graph tool surface. Dependency-injected (cwd/fetchImpl/discover) so tests can drive
- * the full handlers against a mock daemon without any live process.
+ * Build the graph tool surface. Dependency-injected (cwd/fetchImpl/discover/resolveDaemon) so tests
+ * can drive the full handlers against a mock daemon without any live process.
+ *
+ * `resolveDaemon` is the SAME-SERVER seam (ADR-020): a discover()-shaped async fn — typically built
+ * from the mcp-memory backend config (daemon.makeResolver) — so the graph rides the SAME daemon the
+ * KB backend targets instead of independently discovering its own. When provided it takes precedence
+ * over `discover`; otherwise `discover` (default: the plain registry discovery) is used, preserving
+ * the existing behavior for any caller/test that injects only `discover`.
  * @returns {{ definitions: object[], names: Set<string>, handle(name:string, args:object): Promise<object> }}
  */
-function createGraphTools({ cwd = () => process.cwd(), fetchImpl = globalThis.fetch, discover = realDiscover } = {}) {
+function createGraphTools({ cwd = () => process.cwd(), fetchImpl = globalThis.fetch, discover = realDiscover, resolveDaemon } = {}) {
+  // Same-server resolver wins; else the injected/real discover (own-daemon registry discovery).
+  const resolve = typeof resolveDaemon === 'function' ? resolveDaemon : discover;
   // prep: resolve base + capability + context, or { error } (fail-open).
   async function prep(rootArg) {
     let base;
-    try { base = await G.graphBase({ discover, fetchImpl }); }
+    try { base = await G.graphBase({ discover: resolve, fetchImpl }); }
     catch (e) { return { error: explainError(e) }; }
     if (!base) return { error: '🕸️ Graph unavailable: the memory daemon is offline. (Run memory_setup / memory_status to bring it up.)' };
     const ctx = G.graphContextFor(rootArg, cwd());
