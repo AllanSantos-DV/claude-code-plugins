@@ -83,9 +83,12 @@ Todos os hooks estão declarados em `hooks/hooks.json`. Eventos e scripts ativos
 | SessionStart | `brain-health.js` | Liveness probe (static + active backend.init/count): se MCP estiver caído, injeta advisory acionável; senão, silencioso |
 | SessionStart | `doctor-advisory.js` | Roda `doctor.js` com cooldown; advisory de 1 linha só se algo crítico falhar (Node/PATH, data-dir fragmentado, daemon, token) |
 | SessionStart | `review-checklist-advisory.js` | Se existir `.claude/brain-review-checklist.md` (lições recorrentes de código), lembra o `/code-review` nativo de consultá-lo |
+| SubagentStart | `policy-inject.js` | Injeta as políticas standing (always) no contexto próprio do subagente — mesma injeção do SessionStart |
 | PreToolUse (Bash) | `curation-guard.js` | Bloqueia/redireciona comandos curados |
 | PostToolUse (Bash) | `curation-detect.js` | Detecta outputs grandes para curação |
 | PostToolUse (Edit\|Write\|NotebookEdit) | `file-edit-detect.js` | Journala arquivos editados no turno (alimenta `verify-nudge` e `self-review`) |
+| UserPromptExpansion | `skill-metric.js` | Métrica de uso de skill (matcher `.*`) |
+| PostToolUseFailure | `curation-detect.js` / `failure-detect.js` | Em falha de Bash, detecta output p/ curação; e captura a assinatura da falha (alimenta o `error-guard`) |
 | **Stop** | **`stop-dispatcher.js`** | **Entry único** — roda in-process, em ordem, todos os detectores abaixo e funde os blocks num só `{decision:'block', reason}` (1 spawn de Node, não 11+) |
 | Stop (via dispatcher) | `pattern-detect.js` | Nudge advisory (throttled): capturar padrão reusável via `capture_lesson` |
 | Stop (via dispatcher) | `self-review.js` | Se o turno editou arquivos, recupera lições/failures relevantes do Brain (daemon HTTP autenticado, fallback keyword) e injeta advisory — "você já errou X nisso antes" |
