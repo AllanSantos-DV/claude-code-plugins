@@ -1,0 +1,28 @@
+name: Release Audit
+
+# Camada MECÂNICA do gate de release (determinística, sem cota de modelo): checa
+# docs-drift de hooks, CHANGELOG vs versão e marcadores de conflito. Roda em PR e
+# na main — marque como required na branch protection para barrar merge com drift.
+# A camada de RACIOCÍNIO (auth/credencial, privacidade, concorrência) é o auditor
+# adversarial .github/agents/release-auditor.agent.md (consultivo, fora do CI).
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  release-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6.0.2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Auditoria mecânica pré-release
+        run: node .github/scripts/release-audit.mjs check

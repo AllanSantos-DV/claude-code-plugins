@@ -45,6 +45,35 @@ Use the slash command **`/release`** (defined in `.claude/commands/release.md`).
 
 CI green ≠ plugin works. Smoke in real CC Desktop is the only end-to-end gate. Skipping it = releases that break for users (and auto-update propagates the damage).
 
+### Pre-release audit (two layers: mechanical + adversarial)
+
+Releases accumulate defects that per-commit CI (lint/test/version) doesn't see —
+doc drift, an unpinned downloader, a stray conflict marker, or reasoning-heavy
+risks (credential/auth on a fixed port, data egress vs. what the docs promise,
+missing CAS/TOCTOU on a store). A full manual audit found ~10 of these at once;
+the lesson: audit **before** the tag, systematically. Two layers, on purpose —
+because a regex can only ever prove the mechanical few, and you must not
+hard-block a release on a *judged* opinion (which can be a false positive):
+
+- **Mechanical layer — `.github/scripts/release-audit.mjs`** (`no AI, no quota`,
+  like pages-guard). Exact, low-false-positive checks that **block**:
+  `hooks-doc-drift` (every event in `hooks/hooks.json` must be documented in the
+  plugin README), `changelog-current` (CHANGELOG has an entry for the
+  package.json version), `no-conflict-marks` (no unresolved `<<<<<<<`/`>>>>>>>`).
+  CI: `.github/workflows/release-audit.yml` (PR + push to `main`; mark **required**
+  in branch protection to hard-block drift). Local:
+  `node .github/scripts/release-audit.mjs check` (exit 1 on failure) · `... list`
+  (json). Extend by adding a `{ name, run }` to `CHECKS` — keep each exact.
+- **Adversarial layer — `.github/agents/release-auditor.agent.md`** (the reasoning
+  the regex can't do). A read-only agent that reviews the **diff since the last
+  tag** by risk surface (credential/auth, privacy/egress, concurrency/state,
+  resource lifecycle, docs, dead code) and emits a **triaged, advisory** report —
+  severity + confidence + `file:line`, verified against **current** source (never
+  from memory: a past audit false-flagged an already-fixed bug that way). It does
+  **not** block; the owner who cuts the tag makes one go/no-go call
+  (*surfacing ≠ enforcement*). Run it before a release: invoke the `release-auditor`
+  agent, read the report, decide.
+
 ### Release drift guard (mechanical)
 
 A plugin's in-repo version must have a matching git tag, or the published release
