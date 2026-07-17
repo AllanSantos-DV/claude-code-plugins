@@ -387,10 +387,37 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
   // The graph_* tools give fast repo exploration (symbols / CALLS / PageRank) by
   // consuming the local memory daemon's /api/v1/graph API. Client-pure: no Java is
   // embedded; they fail open when the daemon is offline/old. They touch the EXTERNAL
-  // daemon, not the local KB singleton, so they bypass withLock AND the local/remote
-  // KB backend switch. Default root = the session CWD (stdio); HTTP callers pass `root`.
+  // daemon, not the local KB singleton, so they bypass withLock. Dispatch is GATED on
+  // the KB backend mode (Part A, in handleTool) exactly like the remote KB tools:
+  // advertised always, reached only when the backend IS mcp-memory. Default root =
+  // the session CWD (stdio); HTTP callers pass `root`.
   const { createGraphTools } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'graph', 'tools.js'));
-  const graphTools = createGraphTools({ cwd: () => process.cwd() });
+  const graphDaemon = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'graph', 'daemon.js'));
+  // Part B — SAME-SERVER graph resolution (ADR-020 coherence). The graph is HOSTED BY the memory
+  // daemon; it must ride the SAME server the mcp-memory KB backend targets — not a daemon it
+  // discovers independently (which could be a DIFFERENT process → a server mismatch). Build the
+  // daemon resolver from the SAME merged config the KB path reads (lib/brain-config.load(), which
+  // is what brain-backend.loadConfig() delegates to), read LAZILY at each resolve so a dashboard
+  // backend change is honored without restarting this persistent server. Precedence mirrors
+  // mcp-client._connectHttp: explicit serverUrl → that base (health-checked); else the configured
+  // runDir's daemon.json; else the default run dir (only when both are unset).
+  function graphConfigResolver(opts) {
+    let mcp = {};
+    try {
+      const cfg = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'brain-config.js')).load();
+      mcp = (cfg && cfg.backend && cfg.backend.mcpMemory) || {};
+    } catch (err) { void err; /* config unreadable → default run-dir discovery (fail-open) */ }
+    return graphDaemon.makeResolver({ serverUrl: mcp.serverUrl || '', runDir: mcp.runDir || '' })(opts);
+  }
+  // Tests inject a hermetic graph surface (fetch + discover/resolver) via _testHooks.graph so the
+  // dispatch gate AND same-server resolution are exercised WITHOUT a live daemon. An injected
+  // discover/resolver takes precedence over the config-derived one.
+  const graphInject = (_testHooks && _testHooks.graph) || {};
+  const graphTools = createGraphTools({
+    cwd: () => process.cwd(),
+    ...(graphInject.fetchImpl ? { fetchImpl: graphInject.fetchImpl } : {}),
+    resolveDaemon: graphInject.resolveDaemon || graphInject.discover || graphConfigResolver,
+  });
 
   // ─── Tool list ──────────────────────────────────────────────────────────────
   const TOOLS = [
@@ -533,9 +560,23 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
     // KB via _testHooks.getKB forces the LOCAL path (so it exercises the local case
     // without depending on / mutating the shared brain-backend singleton mode).
     const forceLocal = !!(_testHooks && _testHooks.getKB);
-    // Session Graph Engine tools: pure REST client of the memory daemon, independent of the
-    // KB backend (local/mcp-memory) and the KB mutex — dispatch directly, fail-open.
-    if (graphTools.names.has(name)) return graphTools.handle(name, args);
+    // Session Graph Engine tools — Part A COHERENCE GATE. The graph is HOSTED BY the memory
+    // (mcp-memory) daemon, and the mcp-memory backend is precisely what points at that server.
+    // When the KB backend is 'local', the graph-hosting daemon is opt-in and is NOT the configured
+    // backend, so reaching it would be an incoherent cross-dependency (a FOREIGN daemon). Gate
+    // EXACTLY like the remote KB tools below: the tools are always advertised (TOOLS.push above),
+    // but routed by mode — only reach the daemon when the backend IS mcp-memory. In 'local' mode
+    // return an honest message and make ZERO daemon contact. Reads peekMode() from the SAME backend
+    // singleton the KB gate uses; _testHooks.peekMode keeps this hermetic (daemon-free) in tests.
+    if (graphTools.names.has(name)) {
+      const graphMode = (_testHooks && typeof _testHooks.peekMode === 'function')
+        ? _testHooks.peekMode()
+        : require(path.join(PLUGIN_ROOT, 'scripts', 'brain-backend.js')).peekMode();
+      if (graphMode !== 'mcp-memory') {
+        return { content: [{ type: 'text', text: `🕸️ As tools de grafo exigem o backend "mcp-memory" (o grafo vive no memory server). O backend atual é "${graphMode}". Ative em /dashboard → Brain → backend: mcp-memory (o grafo passa a apontar para o MESMO servidor).` }] };
+      }
+      return graphTools.handle(name, args);
+    }
     if (!forceLocal && REMOTE_KB_TOOLS.has(name)) {
       const backend = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-backend.js'));
       if (backend.peekMode() === 'mcp-memory') {

@@ -7359,6 +7359,88 @@ test('graph/tools: ROOT_CONFLICT reports both roots', async () => {
   assert(txt.includes('/a') && txt.includes('/b') && txt.includes('Root conflict'), 'both roots + label');
 });
 
+// ─── graph Part B: same-server daemon resolution (daemon-free, mock health) ────
+// The graph must ride the SAME daemon the mcp-memory backend targets. makeResolver mirrors
+// mcp-client._connectHttp precedence: explicit serverUrl wins (health-checked, NO registry read);
+// else discover via the configured runDir's daemon.json.
+test('graph/daemon: makeResolver prefers explicit serverUrl (same server, no registry read)', async () => {
+  // A runDir that announces a DIFFERENT url — it must be ignored when serverUrl is set.
+  const otherDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-graphres-'));
+  fs.writeFileSync(path.join(otherDir, 'daemon.json'), JSON.stringify({ url: 'http://from-registry:9', port: 9 }));
+  const seen = [];
+  const fetchImpl = async (u) => { seen.push(String(u)); return { status: 200 }; };
+  const info = await graphDaemon.makeResolver({ serverUrl: 'http://explicit:7', runDir: otherDir })({ fetchImpl });
+  assertEq(info, { url: 'http://explicit:7' });
+  assert(seen.length > 0 && seen.every((u) => u.startsWith('http://explicit:7/health')), 'health-checked the EXPLICIT url only');
+  assert(seen.every((u) => !u.includes('from-registry')), 'the registry url was NOT consulted');
+});
+test('graph/daemon: makeResolver falls back to runDir daemon.json when no serverUrl', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-graphres-'));
+  fs.writeFileSync(path.join(dir, 'daemon.json'), JSON.stringify({ url: 'http://from-registry:9', port: 9 }));
+  const seen = [];
+  const fetchImpl = async (u) => { seen.push(String(u)); return { status: 200 }; };
+  const info = await graphDaemon.makeResolver({ serverUrl: '', runDir: dir })({ fetchImpl });
+  assert(info && info.url === 'http://from-registry:9', 'discovered from the configured runDir');
+  assert(seen.some((u) => u.includes('from-registry')), 'health-checked the discovered registry url');
+});
+
+// ─── graph Part A: backend-mode dispatch gate (hermetic via _testHooks) ────────
+// The graph lives INSIDE the memory (mcp-memory) server. With the default 'local' backend the
+// graph-hosting daemon is opt-in and NOT the configured backend, so the tools must gate exactly
+// like the remote KB tools: reach the daemon ONLY in mcp-memory mode, else an honest message with
+// ZERO daemon contact. _testHooks.{peekMode,graph} keep these daemon-free.
+async function loadBrainServerModule() {
+  const urlMod = require('url');
+  const R = process.env.CLAUDE_PLUGIN_ROOT;
+  return import(urlMod.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+}
+test('graph/dispatch: local backend gates graph tools — honest message, ZERO daemon contact', async () => {
+  const mod = await loadBrainServerModule();
+  let discoverCalls = 0, fetchCalls = 0;
+  const server = mod.createBrainServer({ pluginRoot: process.env.CLAUDE_PLUGIN_ROOT, mode: 'stdio', _testHooks: {
+    peekMode: () => 'local',
+    graph: {
+      discover: async () => { discoverCalls++; return { url: 'http://should-not-be-reached' }; },
+      fetchImpl: async () => { fetchCalls++; return { status: 200, headers: { get: () => null }, json: async () => ({}) }; },
+    },
+  } });
+  const out = await server.handleTool('graph_status', {});
+  assert(!out.isError, 'not an error result');
+  const txt = out.content[0].text;
+  assert(txt.includes('"mcp-memory"') && txt.includes('"local"'), 'names the required backend + the current one');
+  assertEq([discoverCalls, fetchCalls], [0, 0], 'no daemon discovery/fetch happened in local mode');
+});
+test('graph/dispatch: mcp-memory backend routes graph tools to the daemon path', async () => {
+  graphClient.__clearCapCache();
+  const mod = await loadBrainServerModule();
+  const m = makeGraphFetch({ status: { status: 200, json: { project_id: 'github.com/acme/graphgate', root: '/r', state: 'ready', nodes: 5, edges: 4 } } });
+  let discoverCalls = 0;
+  const server = mod.createBrainServer({ pluginRoot: process.env.CLAUDE_PLUGIN_ROOT, mode: 'stdio', _testHooks: {
+    peekMode: () => 'mcp-memory',
+    graph: { discover: async () => { discoverCalls++; return { url: 'http://graphgate' }; }, fetchImpl: m.fetchImpl },
+  } });
+  const out = await server.handleTool('graph_status', { root: ROOT });
+  assert(!out.isError, 'not an error result');
+  assert(out.content[0].text.includes('github.com/acme/graphgate'), 'daemon-derived project_id surfaced (reached the daemon)');
+  assert(discoverCalls >= 1, 'the injected same-server resolver was consulted');
+  assert(m.calls.some((c) => c.sub === 'status'), 'a /status call hit the daemon');
+});
+test('graph/dispatch: mcp-memory + unreachable daemon fails open (offline guidance, no throw)', async () => {
+  const mod = await loadBrainServerModule();
+  let discoverCalls = 0;
+  const server = mod.createBrainServer({ pluginRoot: process.env.CLAUDE_PLUGIN_ROOT, mode: 'stdio', _testHooks: {
+    peekMode: () => 'mcp-memory',
+    graph: {
+      discover: async () => { discoverCalls++; return null; }, // daemon offline/absent
+      fetchImpl: async () => { throw new Error('fetch must not run after a null discover'); },
+    },
+  } });
+  const out = await server.handleTool('graph_status', {});
+  assert(!out.isError, 'never throws to the host (fail-open)');
+  assert(out.content[0].text.startsWith('🕸️ Graph unavailable'), 'normal offline guidance, not the gate message');
+  assert(discoverCalls >= 1, 'the gate PASSED (mcp-memory) and reached the daemon resolver');
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
