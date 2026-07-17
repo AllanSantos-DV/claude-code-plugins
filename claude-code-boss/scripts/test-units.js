@@ -2753,6 +2753,56 @@ test('oneoff-store: markedSince sees only markings at/after the cutoff', () => {
   assert(!oneoff.markedSince(store, NaN), 'invalid cutoff → false');
 });
 
+// ── FIX #9: curation_mark_oneoff response must reflect ALL marked signatures ──
+// A batch mark COALESCES its sigs into ONE entry (aliasSigs cover them all) — the
+// suppression/count semantics are correct and UNCHANGED here; the only gap was that
+// the response echoed just the representative `sig`. These tests pin that `signatures`
+// now lists every covered sig, while `sig` stays the first for backward compat.
+test('oneoff-store (FIX #9): mark surfaces ALL batch signatures, not just the representative first', () => {
+  const dd = freshDataDir(); const pk = 'p'; const now = 1_700_000_000_000;
+  const m = oneoff.mark(dd, pk, { sigs: ['npm run alpha', 'npm run beta'], now, maxRecurrence: 3 });
+  assertEq(m.decision, 'marked');
+  assert(Array.isArray(m.signatures), 'response carries a signatures[] array');
+  assertEq(m.signatures.slice().sort(), ['npm run alpha', 'npm run beta'], 'BOTH marked sigs surfaced (not only the first)');
+  assertEq(m.sig, 'npm run alpha', 'sig stays the representative (first) for backward compat');
+  // Semantics UNCHANGED: one coalesced entry; BOTH sigs resolve to it (suppression covers all).
+  const store = oneoff.load(dd, pk);
+  assertEq(Object.keys(store.entries).length, 1, 'still a single coalesced entry');
+  assert(oneoff.isOneHit(store, { sig: 'npm run alpha' }, { now, maxRecurrence: 3 }), 'first sig suppressible');
+  assert(oneoff.isOneHit(store, { sig: 'npm run beta' }, { now, maxRecurrence: 3 }), 'second sig ALSO suppressible');
+});
+test('oneoff-store (FIX #9): a single-sig mark still returns exactly that one signature', () => {
+  const dd = freshDataDir(); const pk = 'p'; const now = 1_700_000_000_000;
+  const m = oneoff.mark(dd, pk, { sigs: ['npm run solo'], now, maxRecurrence: 3 });
+  assertEq(m.decision, 'marked');
+  assertEq(m.signatures, ['npm run solo'], 'signatures has the single sig');
+  assertEq(m.sig, 'npm run solo', 'sig unchanged');
+});
+test('oneoff-store (FIX #9): a merge surfaces the FULL post-merge signature set', () => {
+  const dd = freshDataDir(); const pk = 'p'; let now = 1_700_000_000_000;
+  oneoff.mark(dd, pk, { sigs: ['npm run alpha'], now: now++, maxRecurrence: 99 });
+  const m = oneoff.mark(dd, pk, { sigs: ['npm run alpha', 'npm run gamma'], now: now++, maxRecurrence: 99 });
+  assertEq(m.decision, 'merged');
+  assert(m.signatures.includes('npm run alpha') && m.signatures.includes('npm run gamma'),
+    `merged signatures cover the whole entry, got ${JSON.stringify(m.signatures)}`);
+});
+test('curation_mark_oneoff (FIX #9): handler response lists ALL batch signatures + an accurate count', async () => {
+  const url = require('url');
+  const R = process.env.CLAUDE_PLUGIN_ROOT;
+  const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+  const server = mod.createBrainServer({ pluginRoot: R, mode: 'stdio' });
+  // Isolated project key: a fresh temp cwd with a .git marker (resolveProjectKey stops there).
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mark9-'));
+  fs.mkdirSync(path.join(work, '.git'), { recursive: true });
+  const res = await server.handleTool('curation_mark_oneoff', { sigs: ['npm run alpha', 'npm run beta'], cwd: work });
+  const out = JSON.parse(res.content[0].text);
+  assertEq(out.decision, 'marked');
+  assert(Array.isArray(out.signatures), 'handler response has a signatures[] array');
+  assertEq(out.signatures.slice().sort(), ['npm run alpha', 'npm run beta'], 'BOTH sigs surfaced in the handler response');
+  assertEq(out.signature, 'npm run alpha', 'signature stays the representative (backward compat)');
+  assert(/2 signature/.test(out.message || ''), `message reflects the batch count, got: ${out.message}`);
+});
+
 // ─── error-store (deterministic error-guard: recurring Bash failures) ────────
 const errstore = require(path.join(SCRIPTS, 'lib', 'error-store.js'));
 const freshErrDataDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-errstore-'));
@@ -3155,6 +3205,55 @@ test('policy-store: activate REFUSES up-front on a corrupt registry (never overw
   fs.writeFileSync(reg, '{ this is not json');
   assertEq(polstore.activate(dd, { text: 'rule', projectId: 'z', now: 1 }), { activated: false, reason: 'corrupt' });
   assertEq(fs.readFileSync(reg, 'utf-8'), '{ this is not json'); // nothing stored — corrupt bytes untouched
+});
+
+// — finding #4 (LWW window narrowed): mutate() re-reads the FRESHEST on-disk state —
+test('policy-store: mutate() applies its change to the FRESHEST on-disk state (narrows the lost-update window)', () => {
+  const dd = freshPolDataDir();
+  const rec = (id) => ({ id, entryId: null, mode: 'always', scope: 'project', projectId: 'z', text: id, sourceHash: id, activatedAt: 1 });
+  assert(polstore.save(dd, { records: { A: rec('A') } }), 'seed record A on disk');
+
+  // Model a CONCURRENT writer that lands record C AFTER mutate() is entered but BEFORE
+  // its read: an io.loadResult that (once) writes C, then returns the fresh load. If the
+  // read were a stale top-of-function snapshot ({A}), the subsequent write would clobber
+  // C; because mutate() reads LATE, C is present and survives.
+  let injected = false;
+  const io = {
+    loadResult: (d) => {
+      if (!injected) { injected = true; const cur = polstore.loadResult(d); cur.records.C = rec('C'); polstore.save(d, { records: cur.records }); }
+      return polstore.loadResult(d);
+    },
+  };
+  const out = polstore.mutate(dd, (loaded) => { loaded.records.B = rec('B'); return { commit: true, result: 'ok' }; }, io);
+  assertEq([out.saved, out.result], [true, 'ok'], 'commit:true persists and passes the result through');
+  assertEq(Object.keys(polstore.loadResult(dd).records).sort(), ['A', 'B', 'C'],
+    'B is written on top of the concurrent {A,C} — C is NOT lost to a stale snapshot');
+
+  // commit:false must write nothing and surface {saved:null, result}.
+  const noop = polstore.mutate(dd, () => ({ commit: false, result: 42 }));
+  assertEq([noop.saved, noop.result], [null, 42], 'commit:false → no write, result surfaced');
+  assertEq(Object.keys(polstore.loadResult(dd).records).sort(), ['A', 'B', 'C'], 'commit:false left the store untouched');
+});
+
+test('policy-store: activate() routes its read through the io seam so a CONCURRENT activation is not clobbered', () => {
+  const dd = freshPolDataDir();
+  assertEq(polstore.activate(dd, { entryId: 'p1', text: 'rule one', projectId: 'zc', now: 1 }).activated, true);
+
+  // While p3 is being activated, a concurrent writer activates p2 (a real save) right
+  // before the LATE read. Pre-fix, activate() captured its records snapshot at
+  // function-top and would DROP p2; routing the read through mutate(io) means p3 is
+  // written on top of {p1,p2}, so all three survive.
+  let injected = false;
+  const io = {
+    loadResult: (d) => {
+      if (!injected) { injected = true; polstore.activate(d, { entryId: 'p2', text: 'rule two', projectId: 'zc', now: 2 }); }
+      return polstore.loadResult(d);
+    },
+  };
+  const r3 = polstore.activate(dd, { entryId: 'p3', text: 'rule three', projectId: 'zc', now: 3 }, {}, io);
+  assertEq(r3.activated, true, 'p3 activated');
+  const ids = polstore.listVisible(dd, { projectId: 'zc' }).map((r) => r.id).sort();
+  assertEq(ids, ['p1', 'p2', 'p3'], 'the concurrent p2 survives alongside p1 and p3 (no lost update)');
 });
 
 test('policy-store: shadow-assertion activate stores activationId + enforcement:shadow (caseSensitive default true)', () => {
@@ -4195,6 +4294,149 @@ test('mergeUserConfig (server): {sticky:{enabled:true}} preserva ttlMs (deep-mer
   assertEq(m.sticky.ttlMs, 21600000);
   assertEq(m.enabled, false); // não veio no override → shipped
 });
+
+// ═══ FIX 1 — identidade na porta fixa (verify-before-trust / anti credential-leak) ═══
+// Helpers herméticos: sobem um server real em porta efêmera (0) no loopback e sondam
+// /health. Sem rede externa, sem daemon — determinístico.
+function _listen0(server) {
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
+}
+function _getHealth(port, headers) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(`http://127.0.0.1:${port}/health`, { headers: headers || {} }, (res) => {
+      let buf = '';
+      res.on('data', (d) => { buf += d; });
+      res.on('end', () => {
+        let body = null;
+        try { body = JSON.parse(buf); } catch (_) { void _; } // corpo não-JSON → body null
+        resolve({ status: res.statusCode, body });
+      });
+    });
+    req.on('error', reject);
+  });
+}
+
+test('FIX1 routerTokenMatches: true só na igualdade exata; guarda tamanho; vazio nunca autentica', () => {
+  assertEq(routerServer.routerTokenMatches('a'.repeat(64), 'a'.repeat(64)), true);
+  assertEq(routerServer.routerTokenMatches('a'.repeat(64), 'a'.repeat(63)), false); // tamanhos diferentes → sem throw, false
+  assertEq(routerServer.routerTokenMatches('', ''), false);                          // segredo vazio não autentica
+  assertEq(routerServer.routerTokenMatches(null, 'a'.repeat(64)), false);
+  assertEq(routerServer.routerTokenMatches('a'.repeat(64), null), false);
+});
+
+test('FIX1 ensureRouterToken: gera 64-hex e REUSA entre chamadas (idempotente, read-or-create)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-tok-'));
+  const t1 = routerServer.ensureRouterToken(dir);
+  assert(/^[0-9a-f]{64}$/.test(t1), 'token deve ser 32 bytes em hex'); // NÃO checamos mode (Windows mapeia só read-only)
+  const t2 = routerServer.ensureRouterToken(dir);
+  assertEq(t2, t1, 'segunda chamada REUSA o token existente (não regenera entre reinícios)');
+  assertEq(routerServer.readRouterToken(dir), t1, 'readRouterToken lê exatamente o valor gravado');
+});
+
+test('FIX1 server /health: authenticated:true só com x-router-token correto; 200 SEMPRE (liveness)', async () => {
+  const TOKEN = 'a'.repeat(64);
+  const server = await routerServer.createServer({}, 'fallback-only', TOKEN);
+  const port = await _listen0(server);
+  try {
+    const noTok = await _getHealth(port, {});
+    assertEq(noTok.status, 200, 'liveness: /health continua 200 mesmo sem token');
+    assertEq(noTok.body.authenticated, false, 'sem token → authenticated:false');
+    const wrong = await _getHealth(port, { 'x-router-token': 'b'.repeat(64) });
+    assertEq(wrong.status, 200);
+    assertEq(wrong.body.authenticated, false, 'token errado → authenticated:false');
+    const right = await _getHealth(port, { 'x-router-token': TOKEN });
+    assertEq(right.status, 200);
+    assertEq(right.body.authenticated, true, 'token certo → authenticated:true');
+  } finally {
+    server.close();
+  }
+});
+
+test('FIX1 healthCheck: contra o NOSSO server, true SÓ com o token certo (verify-before-trust)', async () => {
+  const TOKEN = 'c'.repeat(64);
+  const server = await routerServer.createServer({}, 'fallback-only', TOKEN);
+  const port = await _listen0(server);
+  try {
+    assertEq(await routerEnsure.healthCheck(port, { token: null }), false, 'sem token → false');
+    assertEq(await routerEnsure.healthCheck(port, { token: 'd'.repeat(64) }), false, 'token errado → false');
+    assertEq(await routerEnsure.healthCheck(port, { token: TOKEN }), true, 'token certo → true');
+  } finally {
+    server.close();
+  }
+});
+
+test('FIX1 healthCheck: SQUATTER (200 mas authenticated:false) → false → roteamento NÃO ativa', async () => {
+  // Um squatter: responde 200 no /health, mas não prova identidade (não conhece o token).
+  const squatter = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ status: 'ok', authenticated: false }));
+  });
+  const port = await _listen0(squatter);
+  try {
+    // Mesmo mandando um token, o squatter não ecoa authenticated:true → healthCheck false.
+    // É isto que impede o Claude Code de mandar a credencial real a um processo alheio.
+    assertEq(await routerEnsure.healthCheck(port, { token: 'a'.repeat(64) }), false);
+    // probeAlive só constata que ALGO responde 200 (usado p/ o AVISO), nunca ativa nada.
+    assertEq(await routerEnsure.probeAlive(port), true);
+  } finally {
+    squatter.close();
+  }
+});
+
+// ═══ FIX 2 — classificação NIM opt-in (privacidade: default LOCAL) ═══
+// classify() aceita deps injetáveis (classifyNim/classifyLocal) p/ contarmos chamadas
+// sem tocar no embedder/anchors do módulo nem bater na rede.
+// Determinismo: a chave também pode vir de NVIDIA_NIM_KEY; limpamos p/ os casos "sem chave".
+delete process.env.NVIDIA_NIM_KEY;
+
+test('FIX2 classify: chave NIM setada mas classifyRemote OFF → NÃO chama NIM (fica LOCAL)', async () => {
+  let nimCalls = 0, localCalls = 0;
+  const deps = {
+    classifyNim:   async () => { nimCalls++;   return 'opus'; },
+    classifyLocal: async () => { localCalls++; return 'sonnet'; },
+  };
+  const tier = await routerServer.classify('oi', { nim: { apiKey: 'nvapi-x' } }, deps);
+  assertEq(nimCalls, 0, 'sem opt-in, NENHUM prompt vai à NVIDIA para classificar');
+  assertEq(localCalls, 1, 'classificação fica local (MiniLM)');
+  assertEq(tier, 'sonnet');
+});
+
+test('FIX2 classify: classifyRemote:true + chave → TENTA NIM (opt-in explícito)', async () => {
+  let nimCalls = 0, localCalls = 0;
+  const deps = {
+    classifyNim:   async () => { nimCalls++;   return 'opus'; },
+    classifyLocal: async () => { localCalls++; return 'sonnet'; },
+  };
+  const tier = await routerServer.classify('oi', { nim: { apiKey: 'nvapi-x', classifyRemote: true } }, deps);
+  assertEq(nimCalls, 1, 'com opt-in + chave, o caminho remoto é tentado');
+  assertEq(localCalls, 0, 'remoto teve sucesso → local não é chamado (sem trabalho dobrado)');
+  assertEq(tier, 'opus');
+});
+
+test('FIX2 classify: classifyRemote:true SEM chave → fica LOCAL (nada sai da máquina)', async () => {
+  let nimCalls = 0, localCalls = 0;
+  const deps = {
+    classifyNim:   async () => { nimCalls++;   return 'opus'; },
+    classifyLocal: async () => { localCalls++; return 'haiku'; },
+  };
+  const tier = await routerServer.classify('oi', { nim: { classifyRemote: true } }, deps);
+  assertEq(nimCalls, 0, 'sem chave não há (nem deve haver) chamada à NVIDIA');
+  assertEq(localCalls, 1);
+  assertEq(tier, 'haiku');
+});
+
+test('FIX2 mergeUserConfig: {nim:{apiKey}} preserva classifyRemote:false; opt-in explícito vence', () => {
+  const shipped = { nim: { classifyRemote: false, apiKey: '', endpoint: 'e' } };
+  // Usuário setou só a chave (p/ o plano-B): o default LOCAL sobrevive ao merge raso.
+  const m = routerServer.mergeUserConfig(shipped, { nim: { apiKey: 'nvapi-x' } });
+  assertEq(m.nim.classifyRemote, false, 'default local preservado ao adicionar a chave');
+  assertEq(m.nim.apiKey, 'nvapi-x');
+  assertEq(m.nim.endpoint, 'e', 'chave shipada (endpoint) preservada no merge raso');
+  // E quando o usuário OPTA explicitamente, o flag flui:
+  const m2 = routerServer.mergeUserConfig(shipped, { nim: { classifyRemote: true } });
+  assertEq(m2.nim.classifyRemote, true);
+});
+
 
 // ─── model-router (server): sticky-tier — chave de sessão + decisor puro ──────
 
@@ -5792,6 +6034,84 @@ test('capture-dispatch: over-budget window is offered in chunks, never skipping 
   marker.resetAll(project, sid);
 });
 
+// ── FIX #6: capture-dispatch anti-deadlock SAFETY RELENT (mirrors curation-stop) ──
+// Below the cap the open offer still re-blocks (Allan's block-until-ack is intact);
+// at the cap it RELENTS (allows the Stop) so a down brain-server / stuck model can't
+// hard-deadlock the turn — and the un-captured cycle is NEVER dropped. An ack drains
+// the offer so a LATER offer starts the counter fresh (structural per-offer reset).
+function _capRelentSeed(nCycles, big) {
+  const cd = require('./capture-dispatch.js');
+  const cq = require('./lib/capture-queue.js');
+  const marker = require('./lib/session-marker.js');
+  const cwd = process.env.CLAUDE_PLUGIN_DATA;
+  const project = require('./lib/project-id.js').resolveProjectId({ cwd });
+  const sid = 'cap-relent-' + Math.random().toString(16).slice(2) + '-' + Date.now();
+  const tp = path.join(cwd, `capr-${sid}.jsonl`);
+  marker.resetAll(project, sid);
+  fs.writeFileSync(tp, '');
+  marker.initIfAbsent(project, sid, tp);
+  const pad = big ? ('x'.repeat(1800)) : '';
+  const lines = [];
+  for (let i = 1; i <= nCycles; i++) {
+    lines.push(JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: 'q' + i + '_ ' + pad } }));
+    lines.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'a' + i }] } }));
+  }
+  fs.writeFileSync(tp, lines.join('\n') + '\n');
+  return { cd, cq, marker, project, sid, evt: { session_id: sid, cwd, transcript_path: tp } };
+}
+
+test('capture-dispatch (FIX #6): below the cap an open un-acked offer keeps re-blocking (block-until-ack preserved)', () => {
+  const t = _capRelentSeed(6, false);
+  const deps = { config: { maxBlockAttempts: 5, cooldownMs: 0, maxCapturesPerSession: 50 } };
+  const r1 = t.cd.run(t.evt, deps);
+  assert(r1 && r1.block === true, 'first Stop opens the offer and blocks');
+  assertEq(t.cq.getState(t.project, t.sid).offer.blockCount, 0, 'a fresh offer starts at blockCount 0');
+  // Re-Stop WITHOUT acking, still well below the cap → must RE-BLOCK (the normal flow).
+  const r2 = t.cd.run(t.evt, deps);
+  assert(r2 && r2.block === true, 'below the cap an un-acked offer re-blocks');
+  assert(/capture_lesson|capture_ack/.test(r2.reason || ''), 're-block carries the capture instruction');
+  assert(t.cq.getState(t.project, t.sid).offer.blockCount >= 1, 'each re-block advances the per-offer counter');
+  t.marker.resetAll(t.project, t.sid);
+});
+
+test('capture-dispatch (FIX #6): after maxBlockAttempts un-acked blocks it RELENTS (allows stop) and never drops the cycle', () => {
+  const t = _capRelentSeed(6, false);
+  const deps = { config: { maxBlockAttempts: 2, cooldownMs: 0, maxCapturesPerSession: 50 } };
+  const r1 = t.cd.run(t.evt, deps); assert(r1 && r1.block === true, 'Stop 1: opens offer + blocks (blockCount 0)');
+  const r2 = t.cd.run(t.evt, deps); assert(r2 && r2.block === true, 'Stop 2: re-block below cap (blockCount 1 < 2)');
+  const r3 = t.cd.run(t.evt, deps);
+  assert(!(r3 && r3.block), 'Stop 3: at the cap it RELENTS — returns {} so the turn can end');
+  // No-loss invariant: the offer + queued cycles are PRESERVED — only the block yielded.
+  const st = t.cq.getState(t.project, t.sid);
+  assert(st.offer, 'the offer stays OPEN after relenting (not cleared)');
+  assertEq(st.queue.length, 6, 'the un-captured cycles are NEVER dropped by the relent');
+  assert(st.offer.blockCount >= 2, 'the per-offer block counter reached the cap');
+  // A further Stop keeps relenting (no re-nag, still no drop) — the cycle waits for a future session.
+  const r4 = t.cd.run(t.evt, deps);
+  assert(!(r4 && r4.block), 'past the cap it keeps allowing the stop');
+  assertEq(t.cq.getState(t.project, t.sid).queue.length, 6, 'cycle still queued after repeated relents');
+  t.marker.resetAll(t.project, t.sid);
+});
+
+test('capture-dispatch (FIX #6): an ack drains the offer so a LATER offer starts the block counter fresh', () => {
+  // 12 big cycles → offer1 packs a prefix; after acking it, the remainder (>= maxTurns)
+  // opens a NEW offer whose blockCount must be 0 (the counter is per-offer, not global).
+  const t = _capRelentSeed(12, true);
+  const deps = { config: { maxBlockAttempts: 5, cooldownMs: 0, maxCapturesPerSession: 50 } };
+  const r1 = t.cd.run(t.evt, deps); assert(r1 && r1.block === true, 'offer1 opens + blocks');
+  const off1 = t.cq.getState(t.project, t.sid).offer.windowId;
+  const r2 = t.cd.run(t.evt, deps); assert(r2 && r2.block === true, 're-block bumps offer1 blockCount below cap');
+  assert(t.cq.getState(t.project, t.sid).offer.blockCount >= 1, 'offer1 counter advanced before the ack');
+  // Ack offer1 (the agent's capture_lesson/capture_ack) → reconcile drains it next Stop.
+  t.cq.recordAck(off1, 'captured');
+  const r3 = t.cd.run(t.evt, deps);
+  assert(r3 && r3.block === true, 'a LATER offer opens over the remaining cycles');
+  const off2 = t.cq.getState(t.project, t.sid).offer;
+  assert(off2 && off2.windowId !== off1, 'a genuinely NEW offer window opened');
+  assertEq(off2.blockCount, 0, 'the ack reset the counter — the later offer starts fresh (no cross-offer carryover)');
+  t.marker.resetAll(t.project, t.sid);
+});
+
 // ─── capture-queue (Phase 1.5a: durable redacted cycle queue) ────────────────
 test('capture-queue: ingest extracts + redacts cycles into a durable queue and advances the scan cursor', () => {
   const q = require('./lib/capture-queue.js');
@@ -6216,6 +6536,35 @@ test('policy_adjudication_record: honest disposition (kind/disclaimer, no FP-rat
   }
 });
 
+// — finding #7 (bundles never purged): consume-then-delete on record + orphan sweep —
+test('policy_adjudication_record: CONSUMES the bundle (deleted after record); a re-run errors with re-prepare guidance', async () => {
+  const server = await _adjImportServer();
+  const policyStore = require('./lib/policy-store.js');
+  const { dataDir } = require('./lib/data-dir.js');
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjw-'));
+  const project = 'adj-consume-' + Date.now();
+  try {
+    _adjMakeFiles(work, 2, 'ts', (i) => `console.log('c${i}');\n`);
+    const act = policyStore.activate(dataDir(), { text: 't', scope: 'project', projectId: project, globs: ['**/*.ts'], assert: { kind: 'forbid-added-literal', literal: 'console.log' }, enforcement: 'shadow' });
+    const prep = JSON.parse(_adjText(await server.handleTool('policy_adjudication_prepare', { policyId: act.id, project, cwd: work })));
+    assert(fs.existsSync(prep.bundlePath), 'the bundle exists after prepare');
+    const bundle = JSON.parse(fs.readFileSync(prep.bundlePath, 'utf-8'));
+    const verdicts = { schema: 1, verdicts: bundle.occurrences.map((o) => ({ id: o.id, label: 'likely_problem', promptInjectionSuspected: false, reason: 'r' })) };
+    const rr = JSON.parse(_adjText(await server.handleTool('policy_adjudication_record', { policyId: act.id, manifestHash: prep.manifestHash, verdictsJson: JSON.stringify(verdicts), project, cwd: work })));
+    assertEq(rr.counts.total, 2, 'record succeeded');
+    assert(!fs.existsSync(prep.bundlePath), 'the ephemeral bundle is DELETED once its disposition is recorded (consume-then-delete)');
+    // The disposition IS persisted (delete only cleans the read-once bundle, not the record).
+    const { dataDir: dd2 } = require('./lib/data-dir.js');
+    assert(require('./lib/adjudication-store.js').listDispositions(dd2(), project).length === 1, 'the disposition survives the bundle delete');
+    // A re-run cannot find the consumed bundle → clear, actionable error (not a silent success).
+    const again = await server.handleTool('policy_adjudication_record', { policyId: act.id, manifestHash: prep.manifestHash, verdictsJson: JSON.stringify(verdicts), project, cwd: work });
+    assert(again.isError, 're-running record after the bundle is consumed is an error');
+    assert(_adjText(again).includes('policy_adjudication_prepare'), 'the error tells the user to re-run prepare');
+  } finally {
+    try { fs.rmSync(work, { recursive: true, force: true }); } catch (err) { void err; }
+  }
+});
+
 test('policy_adjudication_record: rejects unknown, duplicate, missing, and bad-label verdicts (nothing persisted)', async () => {
   const server = await _adjImportServer();
   const policyStore = require('./lib/policy-store.js');
@@ -6535,6 +6884,41 @@ test('policy_trigger_evidence_purge: removes a policy\'s captured evidence, then
   const kbSlice = src.slice(kbStart, kbEnd);
   assert(kbStart > 0 && kbEnd > kbStart, 'located the KB_TOOLS/REMOTE_KB_TOOLS declarations');
   assert(!kbSlice.includes('policy_trigger_evidence_purge'), 'purge tool is neither a KB tool nor a remote KB tool');
+});
+
+test('policy_adjudication_purge: removes ORPHAN bundle-*.json only; keeps dispositions.json + other projects; static: not a KB tool', async () => {
+  const server = await _adjImportServer();
+  const adjStore = require('./lib/adjudication-store.js');
+  const { dataDir } = require('./lib/data-dir.js');
+  const { writeFileAtomic } = require('./lib/atomic-write.js');
+  const projA = 'adj-purge-a-' + Date.now();
+  const projB = 'adj-purge-b-' + Date.now();
+  const dirA = adjStore.adjudicationDir(dataDir(), projA);
+  const dirB = adjStore.adjudicationDir(dataDir(), projB);
+  fs.mkdirSync(dirA, { recursive: true });
+  fs.mkdirSync(dirB, { recursive: true });
+  // Two ORPHAN bundles + a durable disposition in project A; one bundle in project B.
+  writeFileAtomic(path.join(dirA, 'bundle-aaaa1111.json'), JSON.stringify({ schema: 1 }));
+  writeFileAtomic(path.join(dirA, 'bundle-bbbb2222.json'), JSON.stringify({ schema: 1 }));
+  assert(adjStore.saveDisposition(dataDir(), projA, { policyId: 'p', manifestHash: 'aaaa1111', ts: 1, counts: { legit: 0, problem: 0, uncertain: 0, injectionSuspected: 0, total: 0 }, coverage: { sampled: 0, eligible: 0 }, provenance: {} }), 'seed a durable disposition in A');
+  writeFileAtomic(path.join(dirB, 'bundle-cccc3333.json'), JSON.stringify({ schema: 1 }));
+
+  const res = JSON.parse(_adjText(await server.handleTool('policy_adjudication_purge', { project: projA })));
+  assertEq([res.kind, res.projectId, res.removed], ['adjudication-bundle-purge', res.projectId, 2], 'both orphan bundles in A removed, count returned');
+  assert(!fs.existsSync(path.join(dirA, 'bundle-aaaa1111.json')) && !fs.existsSync(path.join(dirA, 'bundle-bbbb2222.json')), 'A bundles are gone');
+  assert(fs.existsSync(adjStore.dispositionsPath(dataDir(), projA)), 'the durable dispositions.json is PRESERVED (never matched by BUNDLE_RE)');
+  assert(fs.existsSync(path.join(dirB, 'bundle-cccc3333.json')), 'another project\'s bundle is untouched');
+  // Idempotent: re-running on the now-clean project removes nothing.
+  const res2 = JSON.parse(_adjText(await server.handleTool('policy_adjudication_purge', { project: projA })));
+  assertEq(res2.removed, 0, 'nothing left to purge on a clean project');
+
+  // Static proof: the purge tool is NOT wired into the KB singleton sets (no lock, like its sibling).
+  const src = fs.readFileSync(path.join(process.env.CLAUDE_PLUGIN_ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js'), 'utf-8');
+  const kbStart = src.indexOf('const KB_TOOLS');
+  const kbEnd = src.indexOf('export function createBrainServer');
+  const kbSlice = src.slice(kbStart, kbEnd);
+  assert(kbStart > 0 && kbEnd > kbStart, 'located the KB_TOOLS/REMOTE_KB_TOOLS declarations');
+  assert(!kbSlice.includes('policy_adjudication_purge'), 'purge tool is neither a KB tool nor a remote KB tool');
 });
 
 test('policy trigger-evidence tools: never mutate a policy (no activate/deactivate in the handlers)', () => {
@@ -6973,6 +7357,88 @@ test('graph/tools: ROOT_CONFLICT reports both roots', async () => {
   const out = await t.handle('graph_status', {});
   const txt = out.content[0].text;
   assert(txt.includes('/a') && txt.includes('/b') && txt.includes('Root conflict'), 'both roots + label');
+});
+
+// ─── graph Part B: same-server daemon resolution (daemon-free, mock health) ────
+// The graph must ride the SAME daemon the mcp-memory backend targets. makeResolver mirrors
+// mcp-client._connectHttp precedence: explicit serverUrl wins (health-checked, NO registry read);
+// else discover via the configured runDir's daemon.json.
+test('graph/daemon: makeResolver prefers explicit serverUrl (same server, no registry read)', async () => {
+  // A runDir that announces a DIFFERENT url — it must be ignored when serverUrl is set.
+  const otherDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-graphres-'));
+  fs.writeFileSync(path.join(otherDir, 'daemon.json'), JSON.stringify({ url: 'http://from-registry:9', port: 9 }));
+  const seen = [];
+  const fetchImpl = async (u) => { seen.push(String(u)); return { status: 200 }; };
+  const info = await graphDaemon.makeResolver({ serverUrl: 'http://explicit:7', runDir: otherDir })({ fetchImpl });
+  assertEq(info, { url: 'http://explicit:7' });
+  assert(seen.length > 0 && seen.every((u) => u.startsWith('http://explicit:7/health')), 'health-checked the EXPLICIT url only');
+  assert(seen.every((u) => !u.includes('from-registry')), 'the registry url was NOT consulted');
+});
+test('graph/daemon: makeResolver falls back to runDir daemon.json when no serverUrl', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-graphres-'));
+  fs.writeFileSync(path.join(dir, 'daemon.json'), JSON.stringify({ url: 'http://from-registry:9', port: 9 }));
+  const seen = [];
+  const fetchImpl = async (u) => { seen.push(String(u)); return { status: 200 }; };
+  const info = await graphDaemon.makeResolver({ serverUrl: '', runDir: dir })({ fetchImpl });
+  assert(info && info.url === 'http://from-registry:9', 'discovered from the configured runDir');
+  assert(seen.some((u) => u.includes('from-registry')), 'health-checked the discovered registry url');
+});
+
+// ─── graph Part A: backend-mode dispatch gate (hermetic via _testHooks) ────────
+// The graph lives INSIDE the memory (mcp-memory) server. With the default 'local' backend the
+// graph-hosting daemon is opt-in and NOT the configured backend, so the tools must gate exactly
+// like the remote KB tools: reach the daemon ONLY in mcp-memory mode, else an honest message with
+// ZERO daemon contact. _testHooks.{peekMode,graph} keep these daemon-free.
+async function loadBrainServerModule() {
+  const urlMod = require('url');
+  const R = process.env.CLAUDE_PLUGIN_ROOT;
+  return import(urlMod.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+}
+test('graph/dispatch: local backend gates graph tools — honest message, ZERO daemon contact', async () => {
+  const mod = await loadBrainServerModule();
+  let discoverCalls = 0, fetchCalls = 0;
+  const server = mod.createBrainServer({ pluginRoot: process.env.CLAUDE_PLUGIN_ROOT, mode: 'stdio', _testHooks: {
+    peekMode: () => 'local',
+    graph: {
+      discover: async () => { discoverCalls++; return { url: 'http://should-not-be-reached' }; },
+      fetchImpl: async () => { fetchCalls++; return { status: 200, headers: { get: () => null }, json: async () => ({}) }; },
+    },
+  } });
+  const out = await server.handleTool('graph_status', {});
+  assert(!out.isError, 'not an error result');
+  const txt = out.content[0].text;
+  assert(txt.includes('"mcp-memory"') && txt.includes('"local"'), 'names the required backend + the current one');
+  assertEq([discoverCalls, fetchCalls], [0, 0], 'no daemon discovery/fetch happened in local mode');
+});
+test('graph/dispatch: mcp-memory backend routes graph tools to the daemon path', async () => {
+  graphClient.__clearCapCache();
+  const mod = await loadBrainServerModule();
+  const m = makeGraphFetch({ status: { status: 200, json: { project_id: 'github.com/acme/graphgate', root: '/r', state: 'ready', nodes: 5, edges: 4 } } });
+  let discoverCalls = 0;
+  const server = mod.createBrainServer({ pluginRoot: process.env.CLAUDE_PLUGIN_ROOT, mode: 'stdio', _testHooks: {
+    peekMode: () => 'mcp-memory',
+    graph: { discover: async () => { discoverCalls++; return { url: 'http://graphgate' }; }, fetchImpl: m.fetchImpl },
+  } });
+  const out = await server.handleTool('graph_status', { root: ROOT });
+  assert(!out.isError, 'not an error result');
+  assert(out.content[0].text.includes('github.com/acme/graphgate'), 'daemon-derived project_id surfaced (reached the daemon)');
+  assert(discoverCalls >= 1, 'the injected same-server resolver was consulted');
+  assert(m.calls.some((c) => c.sub === 'status'), 'a /status call hit the daemon');
+});
+test('graph/dispatch: mcp-memory + unreachable daemon fails open (offline guidance, no throw)', async () => {
+  const mod = await loadBrainServerModule();
+  let discoverCalls = 0;
+  const server = mod.createBrainServer({ pluginRoot: process.env.CLAUDE_PLUGIN_ROOT, mode: 'stdio', _testHooks: {
+    peekMode: () => 'mcp-memory',
+    graph: {
+      discover: async () => { discoverCalls++; return null; }, // daemon offline/absent
+      fetchImpl: async () => { throw new Error('fetch must not run after a null discover'); },
+    },
+  } });
+  const out = await server.handleTool('graph_status', {});
+  assert(!out.isError, 'never throws to the host (fail-open)');
+  assert(out.content[0].text.startsWith('🕸️ Graph unavailable'), 'normal offline guidance, not the gate message');
+  assert(discoverCalls >= 1, 'the gate PASSED (mcp-memory) and reached the daemon resolver');
 });
 
 // ─── Runner ──────────────────────────────────────────────────────────────────

@@ -1,5 +1,27 @@
 # Changelog
 
+## [2.13.0] - 2026-07-17
+
+Endurecimento de **segurança e robustez** a partir de uma auditoria adversarial da v2.12.0 (6 achados reais, cada um verificado na FONTE antes de corrigir — um 7º achado da auditoria era falso-positivo, já corrigido) + um **gate de release em duas camadas** que institucionaliza essa auditoria. Rigor de sempre: verificação na fonte, testes failing-first, gate verde rodado localmente.
+
+### Segurança (P1)
+
+- **Model-router — autenticação mútua na porta fixa (vazamento de credencial).** O hook apontava o `ANTHROPIC_BASE_URL` do Claude Code para QUALQUER processo que respondesse 200 em `/health` na porta 13456 — e o Claude Code mandava a credencial REAL (`Authorization`/`x-api-key`) para lá; um processo local que tomasse a porta antes (squatter) as colhia. Agora o servidor cunha um token por-instalação (`router.token`, 0600, espelhando o `brain-http.token`); `/health` continua 200 para liveness mas só devolve `authenticated:true` a quem prova o token (comparação timing-safe, o token nunca é ecoado); e o hook **verifica a identidade ANTES de ativar o roteamento** — um processo não reconhecido deixa o roteamento desligado (fail-open, Claude direto). Honesto: isto reduz a superfície à fronteira de confiança do MESMO usuário do SO (um atacante que leia o DATA_DIR ainda lê o token), não elimina.
+- **Classificação NIM agora é opt-in e divulgada (privacidade).** A classificação remota pela NVIDIA rodava SEMPRE que havia chave configurada — enviando até ~500 chars de cada prompt — mesmo para quem configurou a chave só para o plano-B de geração no 429. Agora a classificação é **LOCAL por padrão** (MiniLM, nenhum dado sai da máquina); a classificação remota exige o opt-in explícito `nim.classifyRemote`. Divulgação corrigida no config e no dashboard (PT/EN). O plano-B de geração no 429 é independente e inalterado.
+
+### Robustez e consistência de estado (P2/P3)
+
+- **policy-store — janela de perda de update estreitada.** `activate`/`deactivate` agora releem o registro mais fresco imediatamente antes de gravar (RMW via `mutate()`), estreitando a corrida last-writer-wins. Honesto: estreita, não elimina (sem lock cross-processo — é ação manual de baixa frequência); os return shapes são idênticos.
+- **capture — válvula de segurança anti-deadlock.** O bloqueio "capture até dar o ACK" não tinha cap interno: se o brain-server/MCP caísse, o agente não conseguia nem chamar `capture_lesson`/`capture_ack` — deadlock. Agora, após `kb.capture.maxBlockAttempts` (padrão 5) bloqueios seguidos sem ACK, o hook **relenta** (deixa o turno encerrar). Preserva o block-until-ack normal e **nunca descarta** o ciclo (fica na fila para uma sessão futura).
+- **Adjudicação — purga dos bundles efêmeros.** Os `bundle-<hash>.json` (contexto de código redigido) eram gravados mas nunca apagados. Agora `policy_adjudication_record` **consome-e-apaga** seu bundle ao concluir, e uma nova tool `policy_adjudication_purge` varre órfãos (só `bundle-*.json`, nunca `dispositions.json` nem outro projeto).
+- **`curation_mark_oneoff` — confirmação completa.** Uma chamada em lote coalesce num único registro cobrindo todos os sigs, mas a resposta ecoava só o primeiro (os demais registravam e eram suprimidos — não era bug de persistência). A resposta agora lista TODAS as assinaturas marcadas.
+- **Grafo amarrado ao backend (coerência).** As tools `graph_*` ficavam SEMPRE ativas e descobriam o daemon por conta própria — mesmo com o backend padrão `local` (onde o Brain não tem grafo), alcançando um daemon alheio ao backend. Agora elas são **gated no modo do backend** (só operam quando `backend.type = mcp-memory`, onde o grafo vive; senão, mensagem clara e ZERO contato com daemon) e resolvem o daemon a partir da **mesma** config do backend (mesmo `serverUrl`/`runDir`) — o grafo passa a apontar para o MESMO servidor, sem dependência cíclica. O contrato das tools é inalterado.
+
+### Gate de release em duas camadas
+
+- **Camada mecânica (`release-audit.mjs`, sem cota):** checa drift de docs de hooks, CHANGELOG×versão e marcadores de conflito; bloqueia via CI em PR e main.
+- **Camada adversarial (`release-auditor.agent.md`):** agente read-only que revisa o diff desde a última tag por superfície de risco e emite parecer **triado e consultivo** (verifica no código atual — anti falso-positivo), o dono decide o go/no-go.
+
 ## [2.12.0] - 2026-07-16
 
 Conclusão da **Fase 3** do auto-aprendizado (o juiz LLM independente que adjudica, sem humano recorrente) + integração do **grafo semântico** do daemon de memória (exploração rápida de repositório). Mesmo rigor: revisão adversarial externa, revisão do código na fonte, gate verde (599 unit + hooks), sem release parcial.

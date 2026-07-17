@@ -883,7 +883,7 @@ code { color: var(--fg); font-family: var(--font-mono); }
         </label>
         <input type="password" id="router-nvidia-key" autocomplete="off" placeholder="nvapi-..." style="width:100%">
         <div id="router-key-state" class="text-muted" style="font-size:.78rem;margin-top:.25rem"></div>
-        <div class="text-muted" style="font-size:.78rem;margin-top:.25rem" data-i18n="router.nvidiaHint">Opcional. Chave grátis em build.nvidia.com. Fica só na sua máquina (DATA_DIR), nunca é commitada.</div>
+        <div class="text-muted" style="font-size:.78rem;margin-top:.25rem" data-i18n="router.nvidiaHint">Opcional. Chave grátis em build.nvidia.com. Fica só na sua máquina (DATA_DIR), nunca é commitada. Por padrão a classificação é LOCAL: nenhum prompt sai da máquina. A chave só envia dados em 2 casos: (1) plano-B de geração no 429; (2) classificação remota, se você ativar classifyRemote (opt-in), enviando ~500 chars de cada prompt à NVIDIA.</div>
       </div>
 
       <label style="display:flex;align-items:flex-start;gap:.5rem;margin:1rem 0;max-width:560px">
@@ -930,7 +930,7 @@ const I18N = {
     'router.fallbackEnable': 'Enable limit fallback (429)',
     'router.fallbackHint': 'Independent from the router. Passes straight through to Claude (no model switch, cache preserved) and only kicks in when the window is exhausted (429): uses NVIDIA if a key is set, otherwise warns here. Fills the gap in the native fallbackModel (which only covers 529).',
     'router.nvidiaKey': 'NVIDIA API key (optional)',
-    'router.nvidiaHint': 'Optional. Free key at build.nvidia.com. Stays only on your machine (DATA_DIR), never committed.',
+    'router.nvidiaHint': 'Optional. Free key at build.nvidia.com. Stays only on your machine (DATA_DIR), never committed. By default classification is LOCAL: no prompt leaves the machine. The key only sends data in 2 cases: (1) plan-B generation on 429; (2) remote classification, if you enable classifyRemote (opt-in), sending ~500 chars of each prompt to NVIDIA.',
     'router.heroKicker': 'Live router state',
     'router.controlsTitle': 'Router controls',
     'router.recommended': 'Recommended',
@@ -1061,7 +1061,7 @@ const I18N = {
     'router.fallbackEnable': 'Ativar fallback de limite (429)',
     'router.fallbackHint': 'Independente do roteador. Passa direto pro Claude (sem trocar modelo, preserva o cache) e só entra em ação quando a janela esgota (429): usa a NVIDIA se houver chave, senão avisa aqui. Preenche a lacuna do fallbackModel nativo (que só cobre 529).',
     'router.nvidiaKey': 'Chave NVIDIA API (opcional)',
-    'router.nvidiaHint': 'Opcional. Chave grátis em build.nvidia.com. Fica só na sua máquina (DATA_DIR), nunca é commitada.',
+    'router.nvidiaHint': 'Opcional. Chave grátis em build.nvidia.com. Fica só na sua máquina (DATA_DIR), nunca é commitada. Por padrão a classificação é LOCAL: nenhum prompt sai da máquina. A chave só envia dados em 2 casos: (1) plano-B de geração no 429; (2) classificação remota, se você ativar classifyRemote (opt-in), enviando ~500 chars de cada prompt à NVIDIA.',
     'router.heroKicker': 'Estado do roteador',
     'router.controlsTitle': 'Controles do roteador',
     'router.recommended': 'Recomendado',

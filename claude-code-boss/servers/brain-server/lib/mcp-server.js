@@ -387,10 +387,37 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
   // The graph_* tools give fast repo exploration (symbols / CALLS / PageRank) by
   // consuming the local memory daemon's /api/v1/graph API. Client-pure: no Java is
   // embedded; they fail open when the daemon is offline/old. They touch the EXTERNAL
-  // daemon, not the local KB singleton, so they bypass withLock AND the local/remote
-  // KB backend switch. Default root = the session CWD (stdio); HTTP callers pass `root`.
+  // daemon, not the local KB singleton, so they bypass withLock. Dispatch is GATED on
+  // the KB backend mode (Part A, in handleTool) exactly like the remote KB tools:
+  // advertised always, reached only when the backend IS mcp-memory. Default root =
+  // the session CWD (stdio); HTTP callers pass `root`.
   const { createGraphTools } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'graph', 'tools.js'));
-  const graphTools = createGraphTools({ cwd: () => process.cwd() });
+  const graphDaemon = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'graph', 'daemon.js'));
+  // Part B — SAME-SERVER graph resolution (ADR-020 coherence). The graph is HOSTED BY the memory
+  // daemon; it must ride the SAME server the mcp-memory KB backend targets — not a daemon it
+  // discovers independently (which could be a DIFFERENT process → a server mismatch). Build the
+  // daemon resolver from the SAME merged config the KB path reads (lib/brain-config.load(), which
+  // is what brain-backend.loadConfig() delegates to), read LAZILY at each resolve so a dashboard
+  // backend change is honored without restarting this persistent server. Precedence mirrors
+  // mcp-client._connectHttp: explicit serverUrl → that base (health-checked); else the configured
+  // runDir's daemon.json; else the default run dir (only when both are unset).
+  function graphConfigResolver(opts) {
+    let mcp = {};
+    try {
+      const cfg = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'brain-config.js')).load();
+      mcp = (cfg && cfg.backend && cfg.backend.mcpMemory) || {};
+    } catch (err) { void err; /* config unreadable → default run-dir discovery (fail-open) */ }
+    return graphDaemon.makeResolver({ serverUrl: mcp.serverUrl || '', runDir: mcp.runDir || '' })(opts);
+  }
+  // Tests inject a hermetic graph surface (fetch + discover/resolver) via _testHooks.graph so the
+  // dispatch gate AND same-server resolution are exercised WITHOUT a live daemon. An injected
+  // discover/resolver takes precedence over the config-derived one.
+  const graphInject = (_testHooks && _testHooks.graph) || {};
+  const graphTools = createGraphTools({
+    cwd: () => process.cwd(),
+    ...(graphInject.fetchImpl ? { fetchImpl: graphInject.fetchImpl } : {}),
+    resolveDaemon: graphInject.resolveDaemon || graphInject.discover || graphConfigResolver,
+  });
 
   // ─── Tool list ──────────────────────────────────────────────────────────────
   const TOOLS = [
@@ -501,6 +528,11 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
       inputSchema: { type: 'object', properties: { policyId: { type: 'string', description: 'Optional: restrict to one policy id.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Working directory (for project scoping when project is omitted).' } } },
     },
     {
+      name: 'policy_adjudication_purge',
+      description: 'Sweep ORPHANED ephemeral evidence bundles (Fase 3 micro-B0/B1) for a project — the redacted `bundle-<manifestHash>.json` files that policy_adjudication_prepare writes and policy_adjudication_record CONSUMES (deletes) on success. A record run normally removes its own bundle; this is the eraser for bundles left behind when prepare ran but record never did, so their redacted code context can\'t linger on disk. Removes EVERY bundle-*.json in the project\'s adjudication dir and returns the count; it NEVER touches the durable dispositions (dispositions.json) or any other project, and never mutates a policy. (For the separately-stored opt-in trigger evidence, use policy_trigger_evidence_purge instead.)',
+      inputSchema: { type: 'object', properties: { project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Working directory (for project scoping when project is omitted).' } } },
+    },
+    {
       name: 'policy_trigger_evidence_purge',
       description: 'Delete the OPT-IN captured trigger evidence (Fase 3 micro-B1) for a project — YOU control your captured code. With no filter, purges ALL of the project\'s captured trigger proposals; pass policyId to purge only that policy\'s evidence (by its activationId), and/or olderThanDays to purge only records older than N days. Returns the count removed. This is the user\'s off-switch/eraser for the locally-stored redacted snippets; it never mutates any policy.',
       inputSchema: { type: 'object', properties: { policyId: { type: 'string', description: 'Optional: restrict the purge to this policy id (its activationId).' }, olderThanDays: { type: 'number', description: 'Optional: only purge records older than this many days.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Working directory (for project scoping when project is omitted).' } } },
@@ -528,9 +560,23 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
     // KB via _testHooks.getKB forces the LOCAL path (so it exercises the local case
     // without depending on / mutating the shared brain-backend singleton mode).
     const forceLocal = !!(_testHooks && _testHooks.getKB);
-    // Session Graph Engine tools: pure REST client of the memory daemon, independent of the
-    // KB backend (local/mcp-memory) and the KB mutex — dispatch directly, fail-open.
-    if (graphTools.names.has(name)) return graphTools.handle(name, args);
+    // Session Graph Engine tools — Part A COHERENCE GATE. The graph is HOSTED BY the memory
+    // (mcp-memory) daemon, and the mcp-memory backend is precisely what points at that server.
+    // When the KB backend is 'local', the graph-hosting daemon is opt-in and is NOT the configured
+    // backend, so reaching it would be an incoherent cross-dependency (a FOREIGN daemon). Gate
+    // EXACTLY like the remote KB tools below: the tools are always advertised (TOOLS.push above),
+    // but routed by mode — only reach the daemon when the backend IS mcp-memory. In 'local' mode
+    // return an honest message and make ZERO daemon contact. Reads peekMode() from the SAME backend
+    // singleton the KB gate uses; _testHooks.peekMode keeps this hermetic (daemon-free) in tests.
+    if (graphTools.names.has(name)) {
+      const graphMode = (_testHooks && typeof _testHooks.peekMode === 'function')
+        ? _testHooks.peekMode()
+        : require(path.join(PLUGIN_ROOT, 'scripts', 'brain-backend.js')).peekMode();
+      if (graphMode !== 'mcp-memory') {
+        return { content: [{ type: 'text', text: `🕸️ As tools de grafo exigem o backend "mcp-memory" (o grafo vive no memory server). O backend atual é "${graphMode}". Ative em /dashboard → Brain → backend: mcp-memory (o grafo passa a apontar para o MESMO servidor).` }] };
+      }
+      return graphTools.handle(name, args);
+    }
     if (!forceLocal && REMOTE_KB_TOOLS.has(name)) {
       const backend = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-backend.js'));
       if (backend.peekMode() === 'mcp-memory') {
@@ -785,7 +831,11 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
           if (res.decision === 'rejected') {
             return { content: [{ type: 'text', text: JSON.stringify({ decision: 'rejected', signature: res.sig, count: res.count, ceiling: cfg.oneHitMaxRecurrence, message: `"${res.sig}" already recurs ${res.count}x in this project (>= ceiling ${cfg.oneHitMaxRecurrence}). Create a curated script instead of marking one-hit.` }, null, 2) }] };
           }
-          return { content: [{ type: 'text', text: JSON.stringify({ decision: res.decision, signature: res.sig, count: res.count, aliases: res.aliases, message: 'Marked one-hit — the Stop hook will not ask to curate it again until it recurs past the ceiling.' }, null, 2) }] };
+          // Surface EVERY signature that registered (a batch call coalesces into one
+          // entry whose aliasSigs cover them all) — the old response echoed only the
+          // representative `sig`, hiding the others (they DID register + are suppressed).
+          const sigList = Array.isArray(res.signatures) && res.signatures.length ? res.signatures : (res.sig ? [res.sig] : []);
+          return { content: [{ type: 'text', text: JSON.stringify({ decision: res.decision, signature: res.sig, signatures: sigList, count: res.count, aliases: res.aliases, message: `Marked one-hit: ${sigList.length} signature(s) — the Stop hook will not ask to curate ${sigList.length === 1 ? 'it' : 'them'} again until they recur past the ceiling.` }, null, 2) }] };
         } catch (err) {
           return { isError: true, content: [{ type: 'text', text: `curation_mark_oneoff failed: ${err.message}` }] };
         }
@@ -1397,6 +1447,18 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
           if (activationId) record.activationId = activationId;
           adjStore.saveDisposition(dataDir(), pid, record);
 
+          // Consume-then-delete: the bundle is READ-ONCE by design, and the disposition
+          // is now persisted, so the ephemeral bundle (redacted code context) has served
+          // its purpose — remove it so it can't linger on disk. Best-effort ONLY (cleanup):
+          // deleted strictly AFTER validation + persist succeed, so a failed record above
+          // is still retryable against the same bundle; a failed unlink here just leaves an
+          // orphan that `policy_adjudication_purge` can sweep later.
+          try {
+            fs.unlinkSync(bundlePath);
+          } catch (err) {
+            void err;
+          }
+
           const summary = {
             kind: dispositionKind,
             policyId,
@@ -1445,6 +1507,28 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
           });
         } catch (err) {
           return { isError: true, content: [{ type: 'text', text: `policy_adjudication_report failed: ${err.message}` }] };
+        }
+      }
+
+      case 'policy_adjudication_purge': {
+        try {
+          const a = args || {};
+          const pid = resolveProject(a);
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const adjStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'adjudication-store.js'));
+          // Project-wide orphan sweep: bundles are keyed by manifestHash (not by
+          // activationId/ts), so a policyId/age filter wouldn't map cleanly — the honest
+          // shape is "remove every leftover bundle for this project". dispositions.json and
+          // other projects are untouched (see adjudication-store.purgeBundles / BUNDLE_RE).
+          const removed = adjStore.purgeBundles(dataDir(), pid);
+          return adjJson({
+            kind: 'adjudication-bundle-purge',
+            projectId: pid,
+            removed,
+            note: 'Deleted leftover ephemeral adjudication bundles (redacted code context from prepare runs that were never recorded) — you control your captured code. Durable dispositions and other projects were not touched, and no policy was changed.',
+          });
+        } catch (err) {
+          return { isError: true, content: [{ type: 'text', text: `policy_adjudication_purge failed: ${err.message}` }] };
         }
       }
 
