@@ -3157,6 +3157,55 @@ test('policy-store: activate REFUSES up-front on a corrupt registry (never overw
   assertEq(fs.readFileSync(reg, 'utf-8'), '{ this is not json'); // nothing stored — corrupt bytes untouched
 });
 
+// — finding #4 (LWW window narrowed): mutate() re-reads the FRESHEST on-disk state —
+test('policy-store: mutate() applies its change to the FRESHEST on-disk state (narrows the lost-update window)', () => {
+  const dd = freshPolDataDir();
+  const rec = (id) => ({ id, entryId: null, mode: 'always', scope: 'project', projectId: 'z', text: id, sourceHash: id, activatedAt: 1 });
+  assert(polstore.save(dd, { records: { A: rec('A') } }), 'seed record A on disk');
+
+  // Model a CONCURRENT writer that lands record C AFTER mutate() is entered but BEFORE
+  // its read: an io.loadResult that (once) writes C, then returns the fresh load. If the
+  // read were a stale top-of-function snapshot ({A}), the subsequent write would clobber
+  // C; because mutate() reads LATE, C is present and survives.
+  let injected = false;
+  const io = {
+    loadResult: (d) => {
+      if (!injected) { injected = true; const cur = polstore.loadResult(d); cur.records.C = rec('C'); polstore.save(d, { records: cur.records }); }
+      return polstore.loadResult(d);
+    },
+  };
+  const out = polstore.mutate(dd, (loaded) => { loaded.records.B = rec('B'); return { commit: true, result: 'ok' }; }, io);
+  assertEq([out.saved, out.result], [true, 'ok'], 'commit:true persists and passes the result through');
+  assertEq(Object.keys(polstore.loadResult(dd).records).sort(), ['A', 'B', 'C'],
+    'B is written on top of the concurrent {A,C} — C is NOT lost to a stale snapshot');
+
+  // commit:false must write nothing and surface {saved:null, result}.
+  const noop = polstore.mutate(dd, () => ({ commit: false, result: 42 }));
+  assertEq([noop.saved, noop.result], [null, 42], 'commit:false → no write, result surfaced');
+  assertEq(Object.keys(polstore.loadResult(dd).records).sort(), ['A', 'B', 'C'], 'commit:false left the store untouched');
+});
+
+test('policy-store: activate() routes its read through the io seam so a CONCURRENT activation is not clobbered', () => {
+  const dd = freshPolDataDir();
+  assertEq(polstore.activate(dd, { entryId: 'p1', text: 'rule one', projectId: 'zc', now: 1 }).activated, true);
+
+  // While p3 is being activated, a concurrent writer activates p2 (a real save) right
+  // before the LATE read. Pre-fix, activate() captured its records snapshot at
+  // function-top and would DROP p2; routing the read through mutate(io) means p3 is
+  // written on top of {p1,p2}, so all three survive.
+  let injected = false;
+  const io = {
+    loadResult: (d) => {
+      if (!injected) { injected = true; polstore.activate(d, { entryId: 'p2', text: 'rule two', projectId: 'zc', now: 2 }); }
+      return polstore.loadResult(d);
+    },
+  };
+  const r3 = polstore.activate(dd, { entryId: 'p3', text: 'rule three', projectId: 'zc', now: 3 }, {}, io);
+  assertEq(r3.activated, true, 'p3 activated');
+  const ids = polstore.listVisible(dd, { projectId: 'zc' }).map((r) => r.id).sort();
+  assertEq(ids, ['p1', 'p2', 'p3'], 'the concurrent p2 survives alongside p1 and p3 (no lost update)');
+});
+
 test('policy-store: shadow-assertion activate stores activationId + enforcement:shadow (caseSensitive default true)', () => {
   const dd = freshPolDataDir();
   const r = polstore.activate(dd, { entryId: 'sh1', text: 'no console.log in prod', projectId: 'z', globs: ['src/**'], assert: shadowAssert(), enforcement: 'shadow', now: 1 });
@@ -6359,6 +6408,35 @@ test('policy_adjudication_record: honest disposition (kind/disclaimer, no FP-rat
   }
 });
 
+// — finding #7 (bundles never purged): consume-then-delete on record + orphan sweep —
+test('policy_adjudication_record: CONSUMES the bundle (deleted after record); a re-run errors with re-prepare guidance', async () => {
+  const server = await _adjImportServer();
+  const policyStore = require('./lib/policy-store.js');
+  const { dataDir } = require('./lib/data-dir.js');
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adjw-'));
+  const project = 'adj-consume-' + Date.now();
+  try {
+    _adjMakeFiles(work, 2, 'ts', (i) => `console.log('c${i}');\n`);
+    const act = policyStore.activate(dataDir(), { text: 't', scope: 'project', projectId: project, globs: ['**/*.ts'], assert: { kind: 'forbid-added-literal', literal: 'console.log' }, enforcement: 'shadow' });
+    const prep = JSON.parse(_adjText(await server.handleTool('policy_adjudication_prepare', { policyId: act.id, project, cwd: work })));
+    assert(fs.existsSync(prep.bundlePath), 'the bundle exists after prepare');
+    const bundle = JSON.parse(fs.readFileSync(prep.bundlePath, 'utf-8'));
+    const verdicts = { schema: 1, verdicts: bundle.occurrences.map((o) => ({ id: o.id, label: 'likely_problem', promptInjectionSuspected: false, reason: 'r' })) };
+    const rr = JSON.parse(_adjText(await server.handleTool('policy_adjudication_record', { policyId: act.id, manifestHash: prep.manifestHash, verdictsJson: JSON.stringify(verdicts), project, cwd: work })));
+    assertEq(rr.counts.total, 2, 'record succeeded');
+    assert(!fs.existsSync(prep.bundlePath), 'the ephemeral bundle is DELETED once its disposition is recorded (consume-then-delete)');
+    // The disposition IS persisted (delete only cleans the read-once bundle, not the record).
+    const { dataDir: dd2 } = require('./lib/data-dir.js');
+    assert(require('./lib/adjudication-store.js').listDispositions(dd2(), project).length === 1, 'the disposition survives the bundle delete');
+    // A re-run cannot find the consumed bundle → clear, actionable error (not a silent success).
+    const again = await server.handleTool('policy_adjudication_record', { policyId: act.id, manifestHash: prep.manifestHash, verdictsJson: JSON.stringify(verdicts), project, cwd: work });
+    assert(again.isError, 're-running record after the bundle is consumed is an error');
+    assert(_adjText(again).includes('policy_adjudication_prepare'), 'the error tells the user to re-run prepare');
+  } finally {
+    try { fs.rmSync(work, { recursive: true, force: true }); } catch (err) { void err; }
+  }
+});
+
 test('policy_adjudication_record: rejects unknown, duplicate, missing, and bad-label verdicts (nothing persisted)', async () => {
   const server = await _adjImportServer();
   const policyStore = require('./lib/policy-store.js');
@@ -6678,6 +6756,41 @@ test('policy_trigger_evidence_purge: removes a policy\'s captured evidence, then
   const kbSlice = src.slice(kbStart, kbEnd);
   assert(kbStart > 0 && kbEnd > kbStart, 'located the KB_TOOLS/REMOTE_KB_TOOLS declarations');
   assert(!kbSlice.includes('policy_trigger_evidence_purge'), 'purge tool is neither a KB tool nor a remote KB tool');
+});
+
+test('policy_adjudication_purge: removes ORPHAN bundle-*.json only; keeps dispositions.json + other projects; static: not a KB tool', async () => {
+  const server = await _adjImportServer();
+  const adjStore = require('./lib/adjudication-store.js');
+  const { dataDir } = require('./lib/data-dir.js');
+  const { writeFileAtomic } = require('./lib/atomic-write.js');
+  const projA = 'adj-purge-a-' + Date.now();
+  const projB = 'adj-purge-b-' + Date.now();
+  const dirA = adjStore.adjudicationDir(dataDir(), projA);
+  const dirB = adjStore.adjudicationDir(dataDir(), projB);
+  fs.mkdirSync(dirA, { recursive: true });
+  fs.mkdirSync(dirB, { recursive: true });
+  // Two ORPHAN bundles + a durable disposition in project A; one bundle in project B.
+  writeFileAtomic(path.join(dirA, 'bundle-aaaa1111.json'), JSON.stringify({ schema: 1 }));
+  writeFileAtomic(path.join(dirA, 'bundle-bbbb2222.json'), JSON.stringify({ schema: 1 }));
+  assert(adjStore.saveDisposition(dataDir(), projA, { policyId: 'p', manifestHash: 'aaaa1111', ts: 1, counts: { legit: 0, problem: 0, uncertain: 0, injectionSuspected: 0, total: 0 }, coverage: { sampled: 0, eligible: 0 }, provenance: {} }), 'seed a durable disposition in A');
+  writeFileAtomic(path.join(dirB, 'bundle-cccc3333.json'), JSON.stringify({ schema: 1 }));
+
+  const res = JSON.parse(_adjText(await server.handleTool('policy_adjudication_purge', { project: projA })));
+  assertEq([res.kind, res.projectId, res.removed], ['adjudication-bundle-purge', res.projectId, 2], 'both orphan bundles in A removed, count returned');
+  assert(!fs.existsSync(path.join(dirA, 'bundle-aaaa1111.json')) && !fs.existsSync(path.join(dirA, 'bundle-bbbb2222.json')), 'A bundles are gone');
+  assert(fs.existsSync(adjStore.dispositionsPath(dataDir(), projA)), 'the durable dispositions.json is PRESERVED (never matched by BUNDLE_RE)');
+  assert(fs.existsSync(path.join(dirB, 'bundle-cccc3333.json')), 'another project\'s bundle is untouched');
+  // Idempotent: re-running on the now-clean project removes nothing.
+  const res2 = JSON.parse(_adjText(await server.handleTool('policy_adjudication_purge', { project: projA })));
+  assertEq(res2.removed, 0, 'nothing left to purge on a clean project');
+
+  // Static proof: the purge tool is NOT wired into the KB singleton sets (no lock, like its sibling).
+  const src = fs.readFileSync(path.join(process.env.CLAUDE_PLUGIN_ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js'), 'utf-8');
+  const kbStart = src.indexOf('const KB_TOOLS');
+  const kbEnd = src.indexOf('export function createBrainServer');
+  const kbSlice = src.slice(kbStart, kbEnd);
+  assert(kbStart > 0 && kbEnd > kbStart, 'located the KB_TOOLS/REMOTE_KB_TOOLS declarations');
+  assert(!kbSlice.includes('policy_adjudication_purge'), 'purge tool is neither a KB tool nor a remote KB tool');
 });
 
 test('policy trigger-evidence tools: never mutate a policy (no activate/deactivate in the handlers)', () => {
