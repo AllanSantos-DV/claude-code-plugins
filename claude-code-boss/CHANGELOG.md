@@ -1,5 +1,27 @@
 # Changelog
 
+## [2.12.0] - 2026-07-16
+
+Conclusão da **Fase 3** do auto-aprendizado (o juiz LLM independente que adjudica, sem humano recorrente) + integração do **grafo semântico** do daemon de memória (exploração rápida de repositório). Mesmo rigor: revisão adversarial externa, revisão do código na fonte, gate verde (599 unit + hooks), sem release parcial.
+
+### Fase 3 micro-B0 — adjudicação por juiz nativo (não humano recorrente)
+
+Regras "duras" viram dinâmicas via um **juiz LLM independente** — um sub-agente nativo do plugin (`agents/policy-auditor.md`, só-leitura, trata o código como não-confiável, JSON estrito), invocado pelo comando `/policy-adjudicate`. As tools `policy_adjudication_prepare`/`record` montam um bundle redigido e persistem uma **disposição honesta** (`judgedLikelyFpShare` sobre os julgamentos decisivos — NUNCA uma taxa de FP medida). Sem humano no loop recorrente; o agente se auto-revisa.
+
+### Fase 3 micro-B1 — captura opt-in de evidência de gatilho
+
+Fila **opt-in (default OFF)**, redigida, com TTL e teto, das ocorrências reais de gatilho (do hook de shadow), para o juiz adjudicar sobre casos reais em vez de só um re-scan do snapshot. Purgável por tool.
+
+### Fase 3 micro-C — auto-update advisory + apply seguro
+
+`policy_self_update_report` (só-leitura) auto-computa recomendações ("afinar" se o gatilho parece amplo, "enforce-elegível" se bem calibrado) — **surfaçar ≠ enforce**. A ÚNICA mutação, `policy_apply_candidate`, é um **demote-para-advisory** reversível, com triple-gate (sinal + CAS no sourceHash + ledger de auditoria), só por comando explícito. Nunca auto-muta uma regra ativada pelo usuário; nunca promove a enforce sozinho.
+
+### Grafo semântico — exploração rápida de repositório (via daemon de memória)
+
+7 tools `graph_*` (analyze/search/symbols/status/ingest/callers/references) expõem o **Session Graph Engine** do daemon native-java (PageRank + CALLS/CONTAINS/IMPORTS, parser AST universal) para entender um repo GIGANTE sem garimpar arquivo por arquivo. **Cliente REST puro** (`POST /api/v1/graph/*`): nenhum Java embarcado, **fail-open** quando o daemon está offline. Path-autoritativo (o daemon deriva o `project_id` do caminho e o devolve na resposta). Invariantes: status-first (leituras nunca auto-indexam), capability probe (orienta atualizar o daemon), guard de raiz, ressalva de CALLS-só-Java, mensagem honesta de 0 nós, clamps. Fica **FORA** do KB_TOOLS/mutex — independente do Brain KB local. Porta de entrada: `graph_analyze`/`graph_search`/`graph_symbols`.
+
+599 testes unitários + hooks verdes; 18 testes daemon-free do grafo (mock de fetch/discover) cobrem read-never-ingest, a state machine, o mapeamento de erro e o fail-open. Código do grafo revisado na fonte.
+
 ## [2.11.0] - 2026-07-16
 
 Início da **Fase 3** do auto-aprendizado: a capacidade de enforcement determinístico, entregue em **modo sombra** (mede antes de bloquear), mais dois consertos de bugs da v2.10.0. Mesmo rigor: revisão adversarial externa, failing-first + prova de mutação, smoke offline E2E.

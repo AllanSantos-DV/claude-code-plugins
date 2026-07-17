@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>claude-code-boss — memória semântica e execução curada para o Claude Code</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória que fundamenta a resposta (recall em dois níveis), execução curada anti context-bloat e aprendizado no loop. A v2.11.0 abre a Fase 3 do auto-aprendizado com medição em modo sombra (candidate-guard): uma política por glob pode carregar uma asserção forbid-added-literal com enforcement shadow; a cada edição que casa, um hook PreToolUse só para Edit registra em SILÊNCIO se a edição ADICIONA o literal (a contagem sobe de old→new = trigger): sempre emite {}, nunca bloqueia nem fala com o agente. Honesto: modo sombra MEDE, não é enforcement; mede INCIDÊNCIA DE GATILHO, não taxa de falso positivo (FP real exige rótulo humano num micro futuro, reportado como N/A, nunca 0%); um trigger é um candidate-guard hit, não uma violação; os resultados são LOCAIS à máquina, lidos pela nova tool MCP policy_shadow_report. Telemetria mínima ({schema, activationId, outcome}); um literal com segredo é rejeitado na ativação. Inclui dois consertos da v2.10.0: toRelPath deixava passar um ../ relativo (agora ancora relativo e absoluto ao cwd e rejeita segmentos ..) e policy_activate reportava sucesso com persistência falha/registro corrompido (agora activated:false com reason persist ou corrupt). 538 testes unitários + 90 de hooks no verde; failing-first + prova de mutação + smoke offline E2E." />
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. A v2.12.0 conclui a Fase 3 do auto-aprendizado com um juiz LLM independente, sem humano recorrente: regras duras viram dinâmicas via agents/policy-auditor.md, invocado por /policy-adjudicate; evidência real de gatilho é capturada só por opt-in; policy_self_update_report recomenda, e policy_apply_candidate só demove para advisory com triple-gate e ledger. Honesto: é estimativa de juiz, não FP medido; surfaçar ≠ enforce; nunca auto-muta regra ativada pelo usuário. A versão também adiciona exploração por grafo semântico: 7 tools graph_* falam REST puro com o Session Graph Engine do daemon native-java (PageRank + CALLS/CONTAINS/IMPORTS), sem Java embarcado, fail-open offline, path-autoritativo e fora do mutex do Brain KB." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -702,13 +702,50 @@
   .sh-foot b{ color:#a29f97 }
   .sh-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
 
+
+
+  /* v2.12.0 : juiz independente + grafo semantico - regras duras ficam dinamicas por adjudicacao nativa; graph_* explora repos via Session Graph Engine (REST puro, fail-open, path-autoritativo) */
+  .graphship{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:820px; font-family:var(--mono); margin:0 0 36px }
+  .gs-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .gs-bar .k{ color:var(--accent) }
+  .gs-bar .m{ color:#8a877f }
+  .gs-map{ padding:18px 22px 8px; display:grid; grid-template-columns:minmax(260px,1.15fr) minmax(240px,.85fr); gap:18px; align-items:stretch }
+  .gs-svg{ width:100%; min-height:310px; border:1px solid var(--panel-line); border-radius:12px; background:radial-gradient(circle at 30% 24%, rgba(180,97,30,.18), transparent 34%), rgba(255,255,255,.025) }
+  .gs-svg text{ font-family:var(--mono); fill:#d8d4cc; font-size:11px }
+  .gs-svg .mut{ fill:#8a877f }
+  .gs-svg .edge{ stroke:#6d6257; stroke-width:1.6; opacity:.82 }
+  .gs-svg .edge-hot{ stroke:var(--accent); stroke-width:2.5; opacity:.95 }
+  .gs-svg .node{ fill:#141319; stroke:#8a877f; stroke-width:1.2 }
+  .gs-svg .node-hot{ fill:#20150e; stroke:var(--accent); stroke-width:2.2 }
+  .gs-svg .rank{ fill:none; stroke:var(--accent); stroke-width:1.2; stroke-dasharray:4 5; opacity:.65 }
+  .gs-panel{ display:grid; gap:12px }
+  .gs-card{ border:1px solid var(--panel-line); border-radius:10px; padding:14px 15px; background:rgba(255,255,255,.035) }
+  .gs-card .ey{ display:block; font-size:10px; letter-spacing:.16em; text-transform:uppercase; color:var(--accent); margin:0 0 9px }
+  .gs-card p{ margin:0; font-size:11.5px; line-height:1.55; color:#a29f97 }
+  .gs-card b{ color:var(--panel-ink); font-weight:600 }
+  .gs-card code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .gs-tools{ display:flex; flex-wrap:wrap; gap:7px; margin-top:10px }
+  .gs-tools span{ border:1px solid rgba(180,97,30,.65); color:var(--accent); border-radius:999px; padding:3px 8px; font-size:10.5px; line-height:1.2 }
+  .gs-rails{ display:grid; grid-template-columns:1fr 1fr; gap:12px; padding:4px 22px 18px }
+  .gs-rail{ border:1px solid var(--panel-line); border-radius:10px; padding:13px 14px; background:rgba(255,255,255,.025) }
+  .gs-rail h4{ margin:0 0 8px; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent) }
+  .gs-rail ul{ margin:0; padding:0; list-style:none; display:grid; gap:7px }
+  .gs-rail li{ position:relative; padding-left:16px; font-size:11.5px; line-height:1.45; color:#a29f97 }
+  .gs-rail li::before{ content:"·"; position:absolute; left:0; top:-1px; color:var(--accent); font-weight:700 }
+  .gs-rail b{ color:var(--panel-ink); font-weight:600 }
+  .gs-foot{ padding:14px 22px; border-top:1px solid var(--panel-line); font-size:11px; line-height:1.6; color:#8a877f }
+  .gs-foot b{ color:#a29f97 }
+  .gs-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+
   footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
   footer a{ color:var(--muted); text-decoration:none }
   footer a:hover{ color:var(--accent) }
   .frow{ display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between }
   .flinks a{ margin-right:16px }
 
-  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
+  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
   @media (prefers-reduced-motion:reduce){ .caret{ animation:none } .reveal{ opacity:1 !important; transform:none !important } }
   .reveal{ opacity:0; transform:translateY(14px); animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards }
   @keyframes rise{ to{ opacity:1; transform:none } }
@@ -719,7 +756,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.11.0</span>
+    <span class="ver">v2.12.0</span>
   </nav>
 
   <header class="hero">
@@ -757,6 +794,11 @@
         <p>Busca semântica sobre SQLite e embeddings. Indexa o que importa e recupera contexto antes de cada ação, com rerank por relevância, recência e frequência. É o backend padrão e segue <b>inalterado</b>: nem o recall externo nem o onboarding da v2.2.0 tocam nele.</p>
       </div>
       <div class="cell">
+        <p class="kick">Grafo semântico</p>
+        <h3>Exploração por PageRank</h3>
+        <p>As 7 tools <code>graph_*</code> falam REST puro com o Session Graph Engine do daemon native-java: hubs por <b>PageRank</b>, vizinhança <b>CALLS/CONTAINS/IMPORTS</b> e referências para entender um repo grande sem garimpar arquivo por arquivo. Offline? <b>Fail-open</b>.</p>
+      </div>
+      <div class="cell">
         <p class="kick">Backend opcional</p>
         <h3>Servidor MCP Memory externo</h3>
         <p>Troque o SQLite local por um servidor de memória seu ou da equipe. A ativação é por usuário, sobrevive ao auto-update e não afeta quem não usa. No backend externo ele fala o contrato <code>compose</code>/<code>ingest</code> e exige <code>memory-server ≥ 2.18</code> (o pool-warming da v2.1.0 pede <code>≥ 2.20</code>).</p>
@@ -784,9 +826,113 @@
       <div class="cell" style="grid-column:1/-1">
         <p class="kick">Políticas</p>
         <h3>Constraints que você ativa</h3>
-        <p>Ative constraints explicitamente com <code>policy_activate</code>, nunca auto-promovidas de lições: o <code>error-guard</code> nega no <code>PreToolUse</code> um Bash cuja falha reincide, políticas <b>always-apply</b> entram no contexto no início da sessão, e políticas <b>por glob</b> avisam ao editar um arquivo que casa o padrão. <b>Surfacing ≠ enforcement</b>: ficam presentes no contexto, não bloqueiam (exceto o <code>error-guard</code>). Na v2.11.0 (Fase 3), uma política por glob pode ainda carregar uma asserção em <b>modo sombra</b> que só <b>mede</b> a incidência de gatilho no Edit: <b>modo sombra = medir ≠ enforcement</b>, nunca bloqueia.</p>
+        <p>Ative constraints explicitamente com <code>policy_activate</code>, nunca auto-promovidas de lições: o <code>error-guard</code> nega no <code>PreToolUse</code> um Bash cuja falha reincide, políticas <b>always-apply</b> entram no contexto no início da sessão, e políticas <b>por glob</b> avisam ao editar um arquivo que casa o padrão. <b>Surfacing ≠ enforcement</b>: ficam presentes no contexto, não bloqueiam (exceto o <code>error-guard</code>). A Fase 3 agora fecha o ciclo: modo sombra mede, e <code>/policy-adjudicate</code> chama um <b>juiz LLM independente</b> para estimar disposições — estimativa de juiz, <b>não FP medido</b>.</p>
       </div>
     </div>
+  </section>
+
+
+  <section>
+    <p class="label">Novo na v2.12.0 · juiz independente + grafo semântico</p>
+    <p class="lede">A v2.12.0 fecha a <b>Fase 3</b> do auto-aprendizado e adiciona uma nova porta de leitura de código. De um lado, regras duras viram <b>dinâmicas</b> por um <b>juiz LLM independente</b>, nativo do plugin e sem humano recorrente. De outro, 7 tools <code>graph_*</code> expõem o <b>Session Graph Engine</b> do daemon de memória para navegar um repositório grande por <b>PageRank</b> e vizinhanças <b>CALLS/CONTAINS/IMPORTS</b>, sem garimpar arquivo por arquivo.</p>
+
+    <div class="callout">
+      <span class="tag">honestidade operacional</span>
+      O juiz não transforma estimativa em verdade absoluta: <code>judgedLikelyFpShare</code> é <b>estimativa sobre julgamentos decisivos</b>, <b>não</b> taxa de falso positivo medida. <b>Surfaçar ≠ enforce</b>: recomendações aparecem para decisão explícita. A única mutação nova é <code>policy_apply_candidate</code>, e só faz <b>demote para advisory</b>, reversível, com triple-gate e ledger. Nunca auto-muta uma regra ativada pelo usuário.
+    </div>
+
+    <div class="graphship" aria-label="Artefato da versão 2.12.0: um mapa de grafo semântico e uma bancada de adjudicação. No lado esquerdo, nós de repositório ligados por arestas CALLS, CONTAINS e IMPORTS, com um nó hub marcado por anéis de PageRank. As entradas graph analyze, graph search e graph symbols chegam por cliente REST puro ao Session Graph Engine do daemon native-java, que devolve project id derivado do caminho. No lado direito, um juiz LLM independente, policy-auditor, só-leitura e com JSON estrito, recebe bundles redigidos de policy adjudication prepare e grava disposições honestas por policy adjudication record. A captura de evidência real de gatilho é opt-in e desligada por padrão. O self-update só recomenda; aplicar candidato faz demote reversível para advisory com triple-gate e ledger. Honestidade: estimativa de juiz não é FP medido, surfaçar não é enforce, e regra ativada pelo usuário nunca é auto-mutada. O grafo é independente do Brain KB, fora do mutex, fail-open quando o daemon está offline, e não embarca Java no plugin.">
+      <div class="gs-bar">
+        <span class="k">v2.12.0</span>
+        <span class="m">Fase 3 concluída · Session Graph Engine</span>
+      </div>
+
+      <div class="gs-map">
+        <svg class="gs-svg" viewBox="0 0 520 330" role="img" aria-label="Grafo de repositório com PageRank, chamadas, imports e contém">
+          <defs>
+            <marker id="gs-arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,6 L7,3 z" fill="#b4611e"></path>
+            </marker>
+          </defs>
+          <text x="22" y="30" class="mut">graph_analyze / graph_search / graph_symbols</text>
+          <line x1="116" y1="82" x2="235" y2="132" class="edge-hot" marker-end="url(#gs-arrow)"></line>
+          <line x1="116" y1="236" x2="235" y2="186" class="edge" marker-end="url(#gs-arrow)"></line>
+          <line x1="260" y1="158" x2="394" y2="82" class="edge" marker-end="url(#gs-arrow)"></line>
+          <line x1="260" y1="158" x2="396" y2="238" class="edge-hot" marker-end="url(#gs-arrow)"></line>
+          <line x1="398" y1="82" x2="398" y2="238" class="edge" marker-end="url(#gs-arrow)"></line>
+          <circle cx="260" cy="158" r="74" class="rank"></circle>
+          <circle cx="260" cy="158" r="54" class="rank"></circle>
+          <circle cx="116" cy="82" r="34" class="node"></circle>
+          <circle cx="116" cy="236" r="34" class="node"></circle>
+          <circle cx="260" cy="158" r="42" class="node-hot"></circle>
+          <circle cx="398" cy="82" r="34" class="node"></circle>
+          <circle cx="398" cy="238" r="34" class="node"></circle>
+          <text x="83" y="87">parser AST</text>
+          <text x="80" y="241">imports</text>
+          <text x="225" y="153">HUB</text>
+          <text x="224" y="170" class="mut">PageRank</text>
+          <text x="365" y="87">callers</text>
+          <text x="356" y="243">refs</text>
+          <text x="198" y="286" class="mut">CALLS · CONTAINS · IMPORTS</text>
+        </svg>
+
+        <div class="gs-panel">
+          <div class="gs-card">
+            <span class="ey">juiz independente</span>
+            <p><b><code>agents/policy-auditor.md</code></b> é um sub-agente nativo, só-leitura, JSON estrito, que trata o código como não-confiável. <code>/policy-adjudicate</code> usa <code>policy_adjudication_prepare</code>/<code>record</code> para bundle redigido e disposição honesta.</p>
+          </div>
+          <div class="gs-card">
+            <span class="ey">grafo semântico</span>
+            <p>Cliente <b>REST puro</b> para <code>POST /api/v1/graph/*</code>: nenhum Java embarcado; se o daemon está offline, as tools falham graciosamente. O caminho é autoritativo: o daemon deriva e devolve o <code>project_id</code>.</p>
+            <div class="gs-tools" aria-label="Sete tools graph disponíveis">
+              <span>analyze</span><span>search</span><span>symbols</span><span>status</span><span>ingest</span><span>callers</span><span>references</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="gs-rails">
+        <div class="gs-rail">
+          <h4>Fase 3 concluída</h4>
+          <ul>
+            <li><b>micro-B0:</b> adjudicação por juiz nativo, sem humano recorrente.</li>
+            <li><b>micro-B1:</b> evidência real de gatilho em fila <b>opt-in</b>, default OFF, redigida, com TTL/teto e purga por tool.</li>
+            <li><b>micro-C:</b> <code>policy_self_update_report</code> recomenda; <code>policy_apply_candidate</code> só demove para advisory com sinal + CAS + ledger.</li>
+          </ul>
+        </div>
+        <div class="gs-rail">
+          <h4>Grafo fora do garimpo</h4>
+          <ul>
+            <li><b>PageRank</b> encontra hubs antes de abrir arquivos.</li>
+            <li><b>Busca semântica + vizinhança</b> expande CALLS/CONTAINS/IMPORTS.</li>
+            <li><b>Status-first</b>: leituras não auto-indexam; capability probe orienta atualização; fica <b>fora</b> do mutex do Brain KB.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="gs-foot"><b>Escopo real:</b> o grafo consome o Session Graph Engine do daemon native-java; o plugin é só cliente. Há guard de raiz, clamps, mensagem honesta de 0 nós e ressalva de <b>CALLS-só-Java</b>. Mesmo rigor: <b>599</b> unit + hooks verdes; <b>18</b> testes daemon-free do grafo cobrem read-never-ingest, state machine, mapeamento de erro e fail-open.</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>Juiz, não palpite solto</h4>
+        <p>O comando <code>/policy-adjudicate</code> invoca um auditor nativo (<code>agents/policy-auditor.md</code>) só-leitura, com código tratado como não-confiável e saída JSON estrita. As tools preparam bundle redigido e registram a disposição.</p>
+      </div>
+      <div class="win">
+        <h4>Evidência real, só com opt-in</h4>
+        <p>Ocorrências reais de gatilho vindas do shadow entram numa fila <b>desligada por padrão</b>, redigida, com TTL e teto. A ideia é julgar casos reais, não apenas re-escanear um snapshot. Pode ser purgada por tool.</p>
+      </div>
+      <div class="win">
+        <h4>Recomendação não vira enforcement</h4>
+        <p><code>policy_self_update_report</code> é read-only: recomenda afinar ou marcar como enforce-elegível. A mutação segura é só <code>policy_apply_candidate</code>: demote reversível para advisory, com triple-gate e auditoria.</p>
+      </div>
+      <div class="win">
+        <h4>Repo grande sem varrer no olho</h4>
+        <p><code>graph_analyze</code>, <code>graph_search</code> e <code>graph_symbols</code> são a entrada: hubs por PageRank, sementes semânticas e vizinhança de símbolos. O cliente é REST puro, path-autoritativo e fail-open.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Honesto sobre o alcance:</b> <code>judgedLikelyFpShare</code> é <b>estimativa de juiz</b>, não FP medido. <b>Surfaçar ≠ enforce</b>; a versão nunca promove enforcement sozinha e <b>nunca auto-muta regra ativada pelo usuário</b>. O grafo é independente do Brain KB local e degrada com clareza quando o daemon não está disponível.</p>
   </section>
 
   <section>
@@ -1740,7 +1886,8 @@
         <div class="step"><div class="n"></div><p>O agente age com a memória do projeto à mão, escopada por um id estável, sem puxar contexto de outro projeto.</p></div>
         <div class="step"><div class="n"></div><p>No <b>Stop</b>, o boss induz o <b>ACK</b> da captura: sobre uma fila <b>redigida</b> de ciclos limpos, o agente chama <code>capture_lesson</code> (lição curada) ou <code>capture_ack</code> (nada a capturar), sem reler o transcript à toa. No backend externo, manda o transcript acumulado pro servidor destilar. Nada infla a janela.</p></div>
         <div class="step"><div class="n"></div><p>Se você <b>ativou políticas</b>, elas aparecem onde importam: o <code>error-guard</code> <b>nega</b> no <code>PreToolUse</code> um Bash cuja falha reincide; as <b>always-apply</b> entram no contexto no início da sessão; as de <b>glob</b> avisam ao editar um arquivo que casa. <b>Surfacing ≠ enforcement</b>: só o error-guard bloqueia.</p></div>
-        <div class="step"><div class="n"></div><p>Ativou uma <b>política de medição em modo sombra</b> (Fase 3, opt-in)? Um hook <b>PreToolUse só para Edit</b> registra <b>em silêncio</b> se uma edição adiciona um literal proibido, medindo a <b>incidência de gatilho</b>, <b>nunca</b> bloqueando nem falando com o agente. Você lê o placar com <code>policy_shadow_report</code>, <b>local à sua máquina</b>. <b>Modo sombra = medir ≠ enforcement.</b></p></div>
+        <div class="step"><div class="n"></div><p>Ativou uma <b>política de medição em modo sombra</b> (Fase 3, opt-in)? Um hook <b>PreToolUse só para Edit</b> registra <b>em silêncio</b> se uma edição adiciona um literal proibido, medindo a <b>incidência de gatilho</b>, <b>nunca</b> bloqueando nem falando com o agente. Na v2.12.0, <code>/policy-adjudicate</code> aciona um <b>juiz LLM independente</b> para adjudicar bundles redigidos e casos reais opt-in; <code>policy_self_update_report</code> recomenda, mas <b>surfaçar ≠ enforce</b>.</p></div>
+        <div class="step"><div class="n"></div><p>Para entender um repositório grande, use <code>graph_analyze</code>, <code>graph_search</code> ou <code>graph_symbols</code>. O plugin chama o Session Graph Engine por REST puro, recebe hubs por <b>PageRank</b> e vizinhança <b>CALLS/CONTAINS/IMPORTS</b>, e falha em modo <b>fail-open</b> se o daemon estiver offline.</p></div>
       </div>
     </div>
   </section>
