@@ -254,6 +254,21 @@ const _shNoMatch = seedShadowPolicy();  // non-matching path → no metric
 const _shNonEdit = seedShadowPolicy();  // non-Edit tool → no metric
 const _shDisabled = seedShadowPolicy(); // policyInject.enabled=false → no metric
 
+// micro-B1 trigger-evidence capture fixtures (each its own dataDir → contamination-free
+// evidence reads). Capture is OPT-IN: only the enabled tests set captureTriggerEvidence.
+const _shCapOff = seedShadowPolicy();    // trigger + DEFAULT config (capture OFF) → NO evidence
+const _shCapOn = seedShadowPolicy();     // trigger + capture ON → ONE redacted evidence record
+const _shCapPass = seedShadowPolicy();   // pass    + capture ON → NO evidence (only triggers capture)
+const _shCapSecret = seedShadowPolicy(); // trigger whose added text holds a secret → redacted in store
+// Read the captured trigger evidence a fixture stored. The hook keys it under the id it
+// resolves — basename(cwd) when CCB_PROJECT_ID:'' (same as the metrics key), which the
+// store sanitizes; passing basename(cwd) here reproduces that exact key. Array (maybe empty).
+function readTriggerEvidence(dataDir, cwd) {
+  return require('./lib/trigger-evidence-store.js').listEvidence(dataDir, path.basename(cwd), {});
+}
+// Reusable opted-in capture config (privacy default is OFF; these tests turn it ON).
+const _capOnRoot = () => mkTempPluginRoot({ captureTriggerEvidence: { enabled: true, ttlDays: 7, maxPerProject: 500, maxSnippetChars: 2000 } });
+
 const TESTS = [
   // ── SessionStart ──────────────────────────────────────────────────────────
   {
@@ -910,6 +925,76 @@ const TESTS = [
       const out = readShadowOutcomes(env.CLAUDE_PLUGIN_DATA, _shDisabled.cwd);
       if (out && out.skip) return null;
       if (out) return `enabled=false must record NO evaluation, got: ${JSON.stringify(out)}`;
+      return null;
+    },
+  },
+  // ── PreToolUse — micro-B1 OPT-IN trigger-evidence capture (still SILENT) ────
+  {
+    // Mutation-proof (a): the `capture.enabled === true` gate. Under the DEFAULT
+    // (shipped) config capture is OFF, so a trigger must store NOTHING. Remove the
+    // gate and this goes RED (evidence would be written whenever outcome==='trigger').
+    name: 'policy-enforce-shadow[capture DEFAULT-OFF: a trigger writes NO evidence + stays SILENT]',
+    script: 'policy-enforce-shadow.js',
+    payload: { hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/app.ts', old_string: 'const x = 1;\n', new_string: 'const x = 1;\nconsole.log(x);\n' }, cwd: _shCapOff.cwd, session_id: SESSION },
+    expect: { noError: true },
+    // NO CLAUDE_PLUGIN_ROOT override → the real shipped config (captureTriggerEvidence.enabled=false).
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _shCapOff.dataDir, CCB_PROJECT_ID: '' }),
+    validateWithEnv: (r, env) => {
+      if (r.parsed && r.parsed.hookSpecificOutput) return `shadow hook must be SILENT, got: ${JSON.stringify(r.parsed)}`;
+      const ev = readTriggerEvidence(env.CLAUDE_PLUGIN_DATA, _shCapOff.cwd);
+      if (ev.length !== 0) return `capture is OFF by default — a trigger must write NO evidence, got ${ev.length}`;
+      return null;
+    },
+  },
+  {
+    name: 'policy-enforce-shadow[capture ON: a trigger writes ONE redacted evidence record + stays SILENT]',
+    script: 'policy-enforce-shadow.js',
+    payload: { hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/app.ts', old_string: 'const x = 1;\n', new_string: 'const x = 1;\nconsole.log(x);\n' }, cwd: _shCapOn.cwd, session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _capOnRoot(), CLAUDE_PLUGIN_DATA: _shCapOn.dataDir, CCB_PROJECT_ID: '' }),
+    validateWithEnv: (r, env) => {
+      // Capture must NEVER break the silent measurement path.
+      if (r.parsed && r.parsed.hookSpecificOutput) return `capture must not break silence, got: ${JSON.stringify(r.parsed)}`;
+      const ev = readTriggerEvidence(env.CLAUDE_PLUGIN_DATA, _shCapOn.cwd);
+      if (ev.length !== 1) return `an opted-in trigger must write exactly ONE evidence record, got ${ev.length}`;
+      const rec = ev[0];
+      if (rec.activationId !== _shCapOn.activationId) return `evidence activationId must match the seeded policy, got ${rec.activationId}`;
+      if (rec.file !== 'src/app.ts') return `evidence file must be the project-relative path, got ${rec.file}`;
+      if (typeof rec.addedSnippet !== 'string' || !rec.addedSnippet.includes('console.log')) return `evidence snippet must hold the added (triggering) text, got ${JSON.stringify(rec.addedSnippet)}`;
+      const keys = Object.keys(rec).sort().join(',');
+      if (keys !== 'activationId,addedSnippet,eventId,file,sourceHash,ts') return `evidence record must hold ONLY the 6 honest fields, got ${keys}`;
+      return null;
+    },
+  },
+  {
+    name: 'policy-enforce-shadow[capture ON: a PASS writes NO evidence (only triggers are captured)]',
+    script: 'policy-enforce-shadow.js',
+    payload: { hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/app.ts', old_string: "console.log('a');\nconst x = 1;\n", new_string: "console.log('a');\nconst x = 2;\n" }, cwd: _shCapPass.cwd, session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _capOnRoot(), CLAUDE_PLUGIN_DATA: _shCapPass.dataDir, CCB_PROJECT_ID: '' }),
+    validateWithEnv: (r, env) => {
+      if (r.parsed && r.parsed.hookSpecificOutput) return `must stay SILENT, got: ${JSON.stringify(r.parsed)}`;
+      const ev = readTriggerEvidence(env.CLAUDE_PLUGIN_DATA, _shCapPass.cwd);
+      if (ev.length !== 0) return `a 'pass' outcome must NOT capture evidence, got ${ev.length}`;
+      return null;
+    },
+  },
+  {
+    // Mutation-proof (b): the snippet redaction. A secret in the added text must be
+    // REDACTED in the stored snippet. Skip the redact() and this goes RED.
+    name: 'policy-enforce-shadow[capture ON: a secret in the added text is REDACTED in the stored snippet]',
+    script: 'policy-enforce-shadow.js',
+    payload: { hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/app.ts', old_string: '', new_string: "console.log('x'); const k='sk-abcdefghijklmnopqrstuvwxyz012345';\n" }, cwd: _shCapSecret.cwd, session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _capOnRoot(), CLAUDE_PLUGIN_DATA: _shCapSecret.dataDir, CCB_PROJECT_ID: '' }),
+    validateWithEnv: (r, env) => {
+      if (r.parsed && r.parsed.hookSpecificOutput) return `must stay SILENT, got: ${JSON.stringify(r.parsed)}`;
+      const ev = readTriggerEvidence(env.CLAUDE_PLUGIN_DATA, _shCapSecret.cwd);
+      if (ev.length !== 1) return `the trigger must capture one record, got ${ev.length}`;
+      const snip = ev[0].addedSnippet;
+      if (typeof snip !== 'string') return 'snippet missing';
+      if (snip.includes('sk-abcdefghijklmnopqrstuvwxyz012345')) return 'the raw secret must be REDACTED out of the stored snippet';
+      if (!snip.includes('[API_KEY]')) return `the secret must be replaced by a redaction marker, got ${JSON.stringify(snip)}`;
       return null;
     },
   },

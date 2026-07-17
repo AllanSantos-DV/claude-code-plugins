@@ -25,6 +25,52 @@ plugin.
 KB-mutating tools are serialized by an async mutex (`withLock`) so concurrent HTTP
 sessions can't corrupt the process-singleton DB.
 
+### Session Graph Engine (`graph_*`) — pure REST client
+
+Seven additional tools give **fast repository exploration** (symbols · CALLS /
+CONTAINS / IMPORTS edges · PageRank) by consuming the local **native-java memory
+daemon**'s Session Graph Engine (`POST /api/v1/graph/{status|ingest|symbols|search|callers|references}`).
+
+| Tool | Purpose |
+| --- | --- |
+| `graph_analyze` | **Primary entry point.** Ensure the graph is ready (reuse if indexed, index if not) → top-PageRank **hubs** + an optional **ContextBundle** for a `query`. The fast way to grok a huge repo without grepping file by file. |
+| `graph_search` | Semantic seeds + N-hop neighborhood (CALLS/CONTAINS/IMPORTS) — a ContextBundle. Read-only. |
+| `graph_symbols` | Hubs (no `query`) or a symbol by exact name. Read-only. |
+| `graph_status` | Cheap read of index state (nodes/edges) — never indexes. |
+| `graph_ingest` | Index / re-index (`refresh`) with a deadline; status-first (skips if already ready). |
+| `graph_callers` | Inbound CALLS of a node id. Read-only. |
+| `graph_references` | All refs (CALLS + CONTAINS + IMPORTS) of a node id. Read-only. |
+
+Architecture — **client-pure, no Java embedded** (logic in `scripts/lib/graph/`):
+
+- **Discovery** (`graph/daemon.js`): reads the daemon's self-announced registry
+  `~/.mcp-memory/run/daemon.json`, health-checks it (`200`/`503` = alive), and reuses
+  the URL. It **never spawns/manages the JAR** — that is native-java's own OS-autostart
+  infra.
+- **Fail-open**: when the daemon is offline these tools return an actionable message,
+  never throwing to the host. They touch the **external daemon**, not the KB singleton,
+  so they bypass `withLock` and the local/`mcp-memory` KB backend switch.
+- **Path-authoritative**: the client sends only the `path`; the daemon derives `project_id`
+  from it and **returns it on every response**, which the tools display. No client-side id
+  derivation — that would risk drift vs the daemon's resolver and is unnecessary since the
+  path is the single source of truth (so no `expected_project_id`, no spurious `ID_MISMATCH`).
+- **Status-first**: reads never auto-ingest — if the graph isn't `ready` they guide the
+  user to `graph_analyze`. Ingest fires only for `not_indexed`/`failed` (or `refresh`),
+  and `ensureReady` polls with backoff + a deadline (never infinite); `429` returns the
+  `Retry-After`.
+- **Capability probe** (cached per daemon): a `404` on `/api/v1/graph` → the daemon is
+  too old; the tool tells the user to update the native-java memory daemon (Graph API
+  requires ≥ 2.23; validated live on 2.24.0).
+- **Caveats surfaced honestly**: root guard (refuses disk-root/UNC/home before the daemon
+  walks the filesystem); CALLS is Java-only in Cut 1 (empty on other languages = "not
+  extracted", not "no callers"); client-side truncation of huge caller/reference lists by
+  PageRank; an honest "0 nodes" explanation.
+
+Default `root` = the session CWD (stdio); HTTP-daemon callers pass `root` explicitly.
+Zero `.mcp.json` change — the tools ride this same brain-server registration. Fully
+unit-tested against a mocked `fetch`/registry (no live daemon needed) in
+`scripts/test-units.js`.
+
 ## Transports
 
 The same MCP assembly (`lib/mcp-server.js` → `createBrainServer`) is served over two

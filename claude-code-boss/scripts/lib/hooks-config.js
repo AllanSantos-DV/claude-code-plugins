@@ -191,6 +191,22 @@ function getPolicyInject() {
   };
 }
 
+// Not profile-controlled — read straight from the raw file (like getPolicyInject).
+// Backs the OPT-IN, prospective trigger-evidence capture (Fase 3 micro-B1). When
+// enabled, the shadow hook stores a bounded, REDACTED, TTL-limited record of the
+// ADDED text that triggered a shadow policy so the judge can adjudicate the actual
+// TRIGGER proposals. DEFAULT OFF for privacy: `enabled` is true ONLY when the file
+// explicitly sets it to true (an absent/invalid value stays off — the opt-in gate).
+function getCaptureTriggerEvidence() {
+  const ct = load().captureTriggerEvidence || {};
+  return {
+    enabled: ct.enabled === true,
+    ttlDays: Number.isInteger(ct.ttlDays) && ct.ttlDays > 0 ? ct.ttlDays : 7,
+    maxPerProject: Number.isInteger(ct.maxPerProject) && ct.maxPerProject > 0 ? ct.maxPerProject : 500,
+    maxSnippetChars: Number.isInteger(ct.maxSnippetChars) && ct.maxSnippetChars > 0 ? ct.maxSnippetChars : 2000,
+  };
+}
+
 function getCuration() {
   const cfg = load();
   return cfg.curation || {};
@@ -309,6 +325,7 @@ module.exports = {
   getCurationGuard,
   getErrorGuard,
   getPolicyInject,
+  getCaptureTriggerEvidence,
   getCuration,
   getVerifyNudge,
   getPatternDetect,
