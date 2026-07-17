@@ -12,7 +12,9 @@
   "_comment_port": "Porta FIXA do proxy. O hook grava ANTHROPIC_BASE_URL=http://127.0.0.1:<porta> no bloco env do ~/.claude/settings.json (escopo Claude Code). Se a porta já tiver um router nosso saudável, a instância nova faz reuso e sai; nunca incrementa.",
   "nim": {
     "apiKey": "",
-    "_comment_apiKey": "Opcional. Chave da Nvidia NIM (gratuita em build.nvidia.com). Se vazia, usa classificador local (MiniLM).",
+    "_comment_apiKey": "Opcional. Chave da Nvidia NIM (gratuita em build.nvidia.com). A chave SOZINHA NÃO envia prompts à NVIDIA para classificação: por padrão a classificação é LOCAL (MiniLM) e nenhum dado de prompt sai da máquina. A chave serve para (a) o plano-B de GERAÇÃO no 429 (bloco fallback), e (b) classificação REMOTA apenas se você ligar nim.classifyRemote abaixo (opt-in).",
+    "classifyRemote": false,
+    "_comment_classifyRemote": "OPT-IN de privacidade — DESLIGADO por padrão. false = a chave NIM é usada SÓ no plano-B de GERAÇÃO (429); a classificação fica LOCAL (MiniLM) e NENHUM dado de prompt sai da máquina para classificar. true = você opta EXPLICITAMENTE por classificação remota pela NVIDIA: até ~500 chars de CADA prompt são enviados à NVIDIA para escolher o tier (haiku/sonnet/opus). É INDEPENDENTE do plano-B de geração (que continua usando a chave no 429, esteja isto ligado ou não). Merge raso de nim: {nim:{classifyRemote:true}} no user-config liga o opt-in sem apagar as demais chaves.",
     "classifierModel": "qwen/qwen2.5-1.5b-instruct",
     "fallbackModel": "meta/llama-3.3-70b-instruct",
     "_comment_fallbackModel": "Modelo de GERAÇÃO usado no plano B (quando a janela do Claude esgota e há apiKey configurada). Qualquer modelo de chat do build.nvidia.com.",

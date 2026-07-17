@@ -107,6 +107,11 @@ function loadResult(dataDir) {
 
 // Best-effort, last-writer-wins: writeJsonAtomic publishes tear-free, but two
 // concurrent load->mutate->save cycles can still lose an update (see atomic-write.js).
+// policy-store is in the SAME known best-effort last-writer-wins class as the other
+// manual-action snapshot stores (oneoff/cooldown/recall-health). `mutate()` below
+// NARROWS that window by re-reading immediately before the write; it deliberately
+// does NOT add cross-process locking — activate/deactivate are low-frequency, EXPLICIT
+// user actions, so a proportionate mitigation (not a lock) is the honest fit here.
 function save(dataDir, store) {
   const p = storePath(dataDir);
   try {
@@ -116,6 +121,43 @@ function save(dataDir, store) {
     console.error(`[policy-store] save failed (${p}): ${err.message}`);
     return false;
   }
+}
+
+/**
+ * Read-modify-write against the FRESHEST on-disk registry — the single seam both
+ * `activate()` and `deactivate()` use so the load happens as LATE as possible (right
+ * before the write) instead of from a snapshot captured earlier in the call. This
+ * NARROWS the lost-update window: a concurrent writer whose record landed between
+ * "call start" and this read is present in `records`, so the subsequent write merges
+ * it forward rather than clobbering it with a stale in-memory copy.
+ *
+ * `fn(loaded)` receives the fresh `loadResult` (`{records, corrupt}`), MUTATES
+ * `records` IN PLACE for the single-record change it wants to commit, and returns
+ * `{ commit, result }`:
+ *   - commit:true  → the mutated records are persisted; returns
+ *                    `{ saved:<boolean from save()>, result }` so the caller can
+ *                    surface a persist failure (e.g. as reason:'persist');
+ *   - commit:false → nothing is written; returns `{ saved:null, result }`.
+ * The corrupt-registry decision is left to `fn` (via `loaded.corrupt`) so each caller
+ * chooses its own refusal shape WITHOUT overwriting the unreadable file.
+ *
+ * HONEST GUARANTEE: this NARROWS — it does NOT eliminate — the race. Two truly
+ * simultaneous cross-process writers can still interleave (the later rename wins);
+ * policy-store stays a best-effort, last-writer-wins store (no cross-process lock).
+ * `io` is an optional `{ loadResult, save }` seam so a test can simulate a concurrent
+ * writer landing right before the read; production uses the module functions.
+ * @param {string} dataDir
+ * @param {(loaded:{records:object,corrupt:boolean}) => {commit:boolean, result:*}} fn
+ * @param {{loadResult?:Function, save?:Function}} [io]
+ * @returns {{saved:(boolean|null), result:*}}
+ */
+function mutate(dataDir, fn, io) {
+  const readFresh = (io && io.loadResult) || loadResult;
+  const writeStore = (io && io.save) || save;
+  const loaded = readFresh(dataDir);          // the LATE read — freshest on-disk state
+  const { commit, result } = fn(loaded);
+  if (commit) return { saved: writeStore(dataDir, { records: loaded.records }), result };
+  return { saved: null, result };
 }
 
 /**
@@ -289,76 +331,109 @@ function toRelPath(filePath, cwd) {
  * @returns {{activated:boolean, id?:string, sig?:string, mode?:string, activationId?:string, enforcement?:string, reason?:string}}
  */
 function activate(dataDir, { entryId, text, scope = 'project', projectId, globs, assert, enforcement, now = Date.now() } = {},
-  { maxPolicies = DEFAULT_MAX_POLICIES, maxChars = DEFAULT_MAX_CHARS } = {}) {
+  { maxPolicies = DEFAULT_MAX_POLICIES, maxChars = DEFAULT_MAX_CHARS } = {}, io) {
   const raw = typeof text === 'string' ? text : '';
   if (!raw.trim()) return { activated: false, reason: 'empty' };
 
-  // Load the registry ONCE up-front and refuse on corruption so a parse failure
-  // can't be clobbered by an overwrite (the load-bearing state is the user's
-  // standing constraints). Both branches mutate this same `records`.
-  const loaded = loadResult(dataDir);
-  if (loaded.corrupt) return { activated: false, reason: 'corrupt' };
-  const records = loaded.records;
-
+  // Pure input → derived once (functions of the args only, independent of the
+  // registry), so their position relative to the on-disk read is immaterial.
   const safeText = redact(raw).text.slice(0, MAX_POLICY_CHARS);
   const pid = String(projectId != null ? projectId : '');
 
-  // ── GLOB branch ───────────────────────────────────────────────────────────
-  // Presence of `globs` selects glob mode. Glob policies are project-scoped only
-  // this micro — force it even if the caller passed scope:'user'.
-  if (globs !== undefined && globs !== null) {
-    const canon = canonicalizeGlobs(globs);
-    if (canon === null) return { activated: false, reason: 'invalid-globs' };
+  // Apply the single-record change to the FRESHEST on-disk registry via mutate():
+  // the store is (re)read INSIDE this closure, immediately before the write, so a
+  // concurrent activation that already landed isn't clobbered by a stale snapshot
+  // (narrows the last-writer-wins window; see mutate()). The corrupt check AND every
+  // records-dependent decision (budget, activationId reuse, the upsert) run against
+  // that fresh `records`.
+  const { saved, result } = mutate(dataDir, ({ records, corrupt }) => {
+    // Refuse up-front on corruption so a parse failure can't be clobbered by an
+    // overwrite (the load-bearing state is the user's standing constraints).
+    if (corrupt) return { commit: false, result: { activated: false, reason: 'corrupt' } };
 
-    const id = entryId
-      ? sanitizeId(entryId)
-      : sha256(`${safeText}|glob|${pid}|${canon.join(',')}`).slice(0, 16);
+    // ── GLOB branch ───────────────────────────────────────────────────────────
+    // Presence of `globs` selects glob mode. Glob policies are project-scoped only
+    // this micro — force it even if the caller passed scope:'user'.
+    if (globs !== undefined && globs !== null) {
+      const canon = canonicalizeGlobs(globs);
+      if (canon === null) return { commit: false, result: { activated: false, reason: 'invalid-globs' } };
 
-    // ── SHADOW-ASSERTION sub-branch ─────────────────────────────────────────
-    // A glob policy carrying an `assert` is a shadow-assertion policy (micro-A).
-    if (assert !== undefined && assert !== null) {
-      if (typeof assert !== 'object' || Array.isArray(assert) || assert.kind !== 'forbid-added-literal') {
-        return { activated: false, reason: 'bad-assert-kind' };
-      }
-      const literal = assert.literal;
-      if (typeof literal !== 'string' || literal.length === 0) {
-        return { activated: false, reason: 'bad-literal' };
-      }
-      // Reject (don't truncate) an oversized literal — a truncated literal would
-      // silently measure a DIFFERENT assertion than the user approved.
-      if (literal.length > MAX_LITERAL_CHARS) {
-        return { activated: false, reason: 'literal-too-long' };
-      }
-      // Secret gate: the literal is stored UNREDACTED (redaction would break exact
-      // matching). If the redactor WOULD change it, it carries a secret → refuse.
-      if (redact(literal).text !== literal) {
-        return { activated: false, reason: 'sensitive-literal' };
-      }
-      // Only 'shadow' (measure) is supported this micro — 'enforce' (block) is a
-      // LATER micro and must be refused, not silently downgraded.
-      if (enforcement !== 'shadow') {
-        return { activated: false, reason: 'unsupported-enforcement' };
-      }
-      const caseSensitive = assert.caseSensitive !== false; // DEFAULT true
+      const id = entryId
+        ? sanitizeId(entryId)
+        : sha256(`${safeText}|glob|${pid}|${canon.join(',')}`).slice(0, 16);
 
-      // SEPARATE shadow budget (this same-id record excluded so an upsert doesn't
-      // count itself). Independent of the plain-glob budget.
-      const existingShadow = activeShadow(records, pid).filter((r) => r.id !== id);
-      if (existingShadow.length + 1 > MAX_SHADOW_POLICIES_PER_PROJECT) {
-        return { activated: false, reason: 'budget' };
+      // ── SHADOW-ASSERTION sub-branch ─────────────────────────────────────────
+      // A glob policy carrying an `assert` is a shadow-assertion policy (micro-A).
+      if (assert !== undefined && assert !== null) {
+        if (typeof assert !== 'object' || Array.isArray(assert) || assert.kind !== 'forbid-added-literal') {
+          return { commit: false, result: { activated: false, reason: 'bad-assert-kind' } };
+        }
+        const literal = assert.literal;
+        if (typeof literal !== 'string' || literal.length === 0) {
+          return { commit: false, result: { activated: false, reason: 'bad-literal' } };
+        }
+        // Reject (don't truncate) an oversized literal — a truncated literal would
+        // silently measure a DIFFERENT assertion than the user approved.
+        if (literal.length > MAX_LITERAL_CHARS) {
+          return { commit: false, result: { activated: false, reason: 'literal-too-long' } };
+        }
+        // Secret gate: the literal is stored UNREDACTED (redaction would break exact
+        // matching). If the redactor WOULD change it, it carries a secret → refuse.
+        if (redact(literal).text !== literal) {
+          return { commit: false, result: { activated: false, reason: 'sensitive-literal' } };
+        }
+        // Only 'shadow' (measure) is supported this micro — 'enforce' (block) is a
+        // LATER micro and must be refused, not silently downgraded.
+        if (enforcement !== 'shadow') {
+          return { commit: false, result: { activated: false, reason: 'unsupported-enforcement' } };
+        }
+        const caseSensitive = assert.caseSensitive !== false; // DEFAULT true
+
+        // SEPARATE shadow budget (this same-id record excluded so an upsert doesn't
+        // count itself). Independent of the plain-glob budget.
+        const existingShadow = activeShadow(records, pid).filter((r) => r.id !== id);
+        if (existingShadow.length + 1 > MAX_SHADOW_POLICIES_PER_PROJECT) {
+          return { commit: false, result: { activated: false, reason: 'budget' } };
+        }
+
+        // Definition hash folds globs + the FULL assert (kind/literal/caseSensitive)
+        // + enforcement so ANY definition change yields a new hash → new activationId.
+        const sourceHash = sha256(
+          `${raw}\nglob\n${canon.join(',')}\nshadow\n${assert.kind}\n${literal}\n${caseSensitive}\n${enforcement}`);
+        // activationId is the IMMUTABLE-per-definition telemetry key: reuse the prior
+        // one when the definition is unchanged, else mint a fresh opaque id.
+        const prior = records[id];
+        const activationId = (prior && prior.sourceHash === sourceHash && prior.activationId)
+          ? prior.activationId
+          : crypto.randomBytes(12).toString('hex');
+
+        records[id] = {
+          id,
+          entryId: entryId ? String(entryId) : null,
+          mode: 'glob',
+          scope: 'project',
+          projectId: pid,
+          text: safeText,
+          globs: canon,
+          assert: { kind: 'forbid-added-literal', literal, caseSensitive },
+          enforcement: 'shadow',
+          activationId,
+          sourceHash,
+          activatedAt: now,
+        };
+        return { commit: true, result: { activated: true, id, activationId, mode: 'glob', enforcement: 'shadow' } };
       }
 
-      // Definition hash folds globs + the FULL assert (kind/literal/caseSensitive)
-      // + enforcement so ANY definition change yields a new hash → new activationId.
-      const sourceHash = sha256(
-        `${raw}\nglob\n${canon.join(',')}\nshadow\n${assert.kind}\n${literal}\n${caseSensitive}\n${enforcement}`);
-      // activationId is the IMMUTABLE-per-definition telemetry key: reuse the prior
-      // one when the definition is unchanged, else mint a fresh opaque id.
-      const prior = records[id];
-      const activationId = (prior && prior.sourceHash === sourceHash && prior.activationId)
-        ? prior.activationId
-        : crypto.randomBytes(12).toString('hex');
-
+      // Separate glob budget (this same-id record excluded so an upsert doesn't
+      // count itself). Glob policies do NOT consume the always maxPolicies/maxChars.
+      const existing = activeGlob(records, pid).filter((r) => r.id !== id);
+      if (existing.length + 1 > MAX_GLOB_POLICIES_PER_PROJECT) {
+        return { commit: false, result: { activated: false, reason: 'budget' } };
+      }
+      // Fold mode + globs into the definition hash so a later glob/matcher change
+      // (different globs → different hash) can require re-approval, and distinct
+      // glob sets on the same text never collide.
+      const sourceHash = sha256(`${raw}\nglob\n${canon.join(',')}`);
       records[id] = {
         id,
         entryId: entryId ? String(entryId) : null,
@@ -367,82 +442,65 @@ function activate(dataDir, { entryId, text, scope = 'project', projectId, globs,
         projectId: pid,
         text: safeText,
         globs: canon,
-        assert: { kind: 'forbid-added-literal', literal, caseSensitive },
-        enforcement: 'shadow',
-        activationId,
         sourceHash,
         activatedAt: now,
       };
-      if (!save(dataDir, { records })) return { activated: false, reason: 'persist' };
-      return { activated: true, id, activationId, mode: 'glob', enforcement: 'shadow' };
+      return { commit: true, result: { activated: true, id, sig: sourceHash, mode: 'glob' } };
     }
 
-    // Separate glob budget (this same-id record excluded so an upsert doesn't
-    // count itself). Glob policies do NOT consume the always maxPolicies/maxChars.
-    const existing = activeGlob(records, pid).filter((r) => r.id !== id);
-    if (existing.length + 1 > MAX_GLOB_POLICIES_PER_PROJECT) {
-      return { activated: false, reason: 'budget' };
+    // ── ALWAYS branch (micro-2 id/hash preserved) ─────────────────────────────
+    const sc = scope === 'user' ? 'user' : 'project';
+    const sourceHash = sha256(raw);
+    const id = entryId ? sanitizeId(entryId) : sha256(`${safeText}|${sc}|${pid}`).slice(0, 16);
+
+    // Bound the ALWAYS set that would be INJECTED together (excluding this same-id
+    // record, since an upsert replaces it). Glob policies are NOT counted here.
+    const active = activeAlways(records, pid, id);
+    const wouldCount = active.length + 1;
+    const wouldChars = active.reduce((n, r) => n + (typeof r.text === 'string' ? r.text.length : 0), 0) + safeText.length;
+    if (wouldCount > maxPolicies || wouldChars > maxChars) {
+      return { commit: false, result: { activated: false, reason: 'budget' } };
     }
-    // Fold mode + globs into the definition hash so a later glob/matcher change
-    // (different globs → different hash) can require re-approval, and distinct
-    // glob sets on the same text never collide.
-    const sourceHash = sha256(`${raw}\nglob\n${canon.join(',')}`);
+
     records[id] = {
       id,
       entryId: entryId ? String(entryId) : null,
-      mode: 'glob',
-      scope: 'project',
+      mode: 'always',
+      scope: sc,
       projectId: pid,
       text: safeText,
-      globs: canon,
       sourceHash,
       activatedAt: now,
     };
-    if (!save(dataDir, { records })) return { activated: false, reason: 'persist' };
-    return { activated: true, id, sig: sourceHash, mode: 'glob' };
-  }
+    return { commit: true, result: { activated: true, id, sig: sourceHash } };
+  }, io);
 
-  // ── ALWAYS branch (micro-2 id/hash preserved) ─────────────────────────────
-  const sc = scope === 'user' ? 'user' : 'project';
-  const sourceHash = sha256(raw);
-  const id = entryId ? sanitizeId(entryId) : sha256(`${safeText}|${sc}|${pid}`).slice(0, 16);
-
-  // Bound the ALWAYS set that would be INJECTED together (excluding this same-id
-  // record, since an upsert replaces it). Glob policies are NOT counted here.
-  const active = activeAlways(records, pid, id);
-  const wouldCount = active.length + 1;
-  const wouldChars = active.reduce((n, r) => n + (typeof r.text === 'string' ? r.text.length : 0), 0) + safeText.length;
-  if (wouldCount > maxPolicies || wouldChars > maxChars) {
-    return { activated: false, reason: 'budget' };
-  }
-
-  records[id] = {
-    id,
-    entryId: entryId ? String(entryId) : null,
-    mode: 'always',
-    scope: sc,
-    projectId: pid,
-    text: safeText,
-    sourceHash,
-    activatedAt: now,
-  };
-  if (!save(dataDir, { records })) return { activated: false, reason: 'persist' };
-  return { activated: true, id, sig: sourceHash };
+  // A COMMITTED change whose persist failed surfaces as reason:'persist' (never a
+  // false success); refusals and the corrupt gate return the closure result verbatim.
+  if (saved === false) return { activated: false, reason: 'persist' };
+  return result;
 }
 
 /**
  * Deactivate a policy by id (as returned by `list`/`activate`). Matches the exact
  * stored key, falling back to the sanitized form so a raw entryId still resolves.
+ * Uses mutate() so the delete is applied to the FRESHEST on-disk registry (narrows
+ * the lost-update window; a concurrent activation isn't clobbered by a stale read).
+ * A corrupt registry loads as empty records → no key match → no write (unchanged).
+ * @param {{loadResult?:Function, save?:Function}} [io] optional test seam
  * @returns {{deactivated:boolean, id:string}}
  */
-function deactivate(dataDir, id) {
+function deactivate(dataDir, id, io) {
   const raw = id != null ? String(id) : '';
-  const { records } = loadResult(dataDir);
-  const key = records[raw] ? raw : (records[sanitizeId(raw)] ? sanitizeId(raw) : '');
-  if (!key) return { deactivated: false, id: raw };
-  delete records[key];
-  save(dataDir, { records });
-  return { deactivated: true, id: key };
+  const { result } = mutate(dataDir, ({ records }) => {
+    const key = records[raw] ? raw : (records[sanitizeId(raw)] ? sanitizeId(raw) : '');
+    if (!key) return { commit: false, result: { deactivated: false, id: raw } };
+    delete records[key];
+    return { commit: true, result: { deactivated: true, id: key } };
+  }, io);
+  // Mirrors the prior behavior of ignoring save()'s return here (a persist failure
+  // leaves the record active, surfaced on the next list rather than as an error).
+  return result;
 }
 
 /**
@@ -513,7 +571,7 @@ function list(dataDir, opts) {
 }
 
 module.exports = {
-  storePath, loadResult, save,
+  storePath, loadResult, save, mutate,
   activate, deactivate,
   list, listAlways, listVisible, listGlobMatching, listShadowMatching,
   activeFor, activeAlways, activeGlob, activeShadow, isShadowAssertion,

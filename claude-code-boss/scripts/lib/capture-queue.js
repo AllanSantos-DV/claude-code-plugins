@@ -182,7 +182,12 @@ function offer(project, sid, maxChars) {
   // offer, so the ack marker binds to exactly this window.
   const windowId = crypto.randomBytes(12).toString('hex');
   const expect = state.rev;
-  state.offer = { windowId, ids, at: Date.now(), attempts: 1, scanAt: state.scan.offset };
+  // `attempts` = reconcile retry telemetry (bumped on each un-acked reconcile).
+  // `blockCount` = capture-dispatch's anti-deadlock safety-cap counter (bumped by
+  // noteBlock each time step 3 RE-blocks an un-acked offer). Both live ON the offer,
+  // so both RESET structurally: a fresh offer starts them here, and an ack drains the
+  // offer to null — a later offer starts fresh, never a cross-offer carryover.
+  state.offer = { windowId, ids, at: Date.now(), attempts: 1, blockCount: 0, scanAt: state.scan.offset };
   state.offers = (state.offers || 0) + 1;   // cadence bounds (review interruptions per session)
   state.lastOfferTs = Date.now();
   state.rev = expect + 1;
@@ -199,6 +204,31 @@ function currentOfferText(project, sid, maxChars) {
   if (cycles.length === 0) return null;
   const { text } = packCycles(cycles, maxChars);
   return text ? { windowId: state.offer.windowId, text } : null;
+}
+
+/**
+ * Bump the open offer's BLOCK counter and return the new value. capture-dispatch's
+ * safety valve calls this each time step 3 RE-blocks an un-acked offer; once the
+ * count reaches the configured max it RELENTS (allows the Stop) to avoid a hard
+ * deadlock when acking is impossible (brain-server/MCP down ⇒ capture_lesson/
+ * capture_ack unavailable) or the model is stuck. The counter lives ON the offer, so
+ * it RESETS structurally — a fresh offer() starts it at 0 and an ack drains the offer
+ * to null (a later offer starts fresh). CAS-safe: it never emits a torn/lost write
+ * (a concurrent Stop that moved `rev` is retried, mirroring offer()/reconcile()).
+ * @returns {number} the new blockCount, or 0 when no offer is open.
+ */
+function noteBlock(project, sid) {
+  for (let i = 0; i < 5; i++) {
+    const state = _load(project, sid);
+    if (!state.offer) return 0;
+    const expect = state.rev;
+    state.offer.blockCount = (state.offer.blockCount || 0) + 1;
+    state.rev = expect + 1;
+    if (_save(project, sid, state, expect)) return state.offer.blockCount;
+    // lost the CAS to a concurrent writer — reload and retry.
+  }
+  const s = _load(project, sid); // best-effort: report the observed count so the caller can still relent
+  return (s.offer && s.offer.blockCount) || 0;
 }
 
 /** Remove the offered window's cycles and clear the offer — only for a MATCHING windowId. */
@@ -254,4 +284,4 @@ function reconcile(project, sid, deps) {
   return { acked: false, dropped: false, retry: state.offer.attempts };
 }
 
-module.exports = { ingest, getState, reset, offer, currentOfferText, ack, reconcile, recordAck, readAck, clearAck, _hash, _load, _save, _file };
+module.exports = { ingest, getState, reset, offer, currentOfferText, noteBlock, ack, reconcile, recordAck, readAck, clearAck, _hash, _load, _save, _file };

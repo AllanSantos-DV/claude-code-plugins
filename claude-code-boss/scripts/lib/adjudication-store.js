@@ -28,6 +28,14 @@ const { sanitizeProjectId } = require('./project-id.js');
 /** Cap of retained dispositions per project (newest kept) — bounds file growth. */
 const MAX_DISPOSITIONS = 200;
 
+/**
+ * Matches ONLY the ephemeral evidence bundles (`bundle-<manifestHash>.json`) that the
+ * trusted prepare tool drops into a project's adjudicationDir. Deliberately excludes
+ * `dispositions.json` (the durable registry) and any other file, so an orphan sweep
+ * can never touch persisted state or another project's data.
+ */
+const BUNDLE_RE = /^bundle-.*\.json$/;
+
 /** Project id → a single safe path segment (never empty, never a traversal). */
 function safeProject(projectId) {
   return sanitizeProjectId(projectId) || 'default';
@@ -143,11 +151,46 @@ function listDispositions(dataDir, projectId, { policyId } = {}) {
   return out;
 }
 
+/**
+ * Orphan-sweep the ephemeral evidence bundles for a project. A bundle is written by
+ * `policy_adjudication_prepare` and CONSUMED (deleted) by `policy_adjudication_record`;
+ * a bundle left behind means prepare ran but record never did, so its redacted code
+ * context would otherwise linger on disk forever. This removes EVERY `bundle-*.json`
+ * in the project's adjudicationDir (see BUNDLE_RE) and returns the count removed.
+ *
+ * Scoped + safe: only that one project's dir is scanned, only files matching BUNDLE_RE
+ * are unlinked (never `dispositions.json`, never another project), and it NEVER throws —
+ * a missing dir yields 0, a per-file failure is console.error'd and skipped, mirroring
+ * the trigger-evidence purge convention.
+ * @returns {number} how many bundle files were deleted
+ */
+function purgeBundles(dataDir, projectId) {
+  const dir = adjudicationDir(dataDir, projectId);
+  let removed = 0;
+  try {
+    if (!fs.existsSync(dir)) return 0;
+    for (const name of fs.readdirSync(dir)) {
+      if (!BUNDLE_RE.test(name)) continue; // leave dispositions.json / anything else
+      try {
+        fs.unlinkSync(path.join(dir, name));
+        removed += 1;
+      } catch (err) {
+        console.error(`[adjudication-store] purgeBundles unlink failed (${name}): ${err.message}`);
+      }
+    }
+    return removed;
+  } catch (err) {
+    console.error(`[adjudication-store] purgeBundles failed (${dir}): ${err.message}`);
+    return removed;
+  }
+}
+
 module.exports = {
   adjudicationDir,
   dispositionsPath,
   load,
   saveDisposition,
   listDispositions,
+  purgeBundles,
   MAX_DISPOSITIONS,
 };

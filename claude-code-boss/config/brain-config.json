@@ -51,6 +51,10 @@
       "minRecurrence": 3,
       "minConfidence": 0.8,
       "types": ["lesson", "pattern"]
+    },
+    "capture": {
+      "maxBlockAttempts": 5,
+      "_comment_capture": "Phase 1.5 lesson-capture guard (scripts/capture-dispatch.js). maxBlockAttempts is a SAFETY cap: after this many consecutive Stops where the agent never acked the open capture offer (via capture_lesson/capture_ack), the Stop hook RELENTS and lets the turn end — preventing a hard deadlock when the brain-server/MCP is down (acking is literally impossible) or the model is stuck. Generous on purpose (capture matters, so it re-asks several times first). It does NOT weaken block-until-ack in the normal case, and the un-captured cycle is NEVER dropped — it stays queued for a future session. Override per-user in DATA_DIR/brain/user-config.json under kb.capture, not here (the shipped file is replaced on plugin update)."
     }
   },
   "curation": {
