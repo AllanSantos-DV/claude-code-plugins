@@ -26,6 +26,169 @@ import { createRequire } from 'module';
 import path from 'path';
 
 const require = createRequire(import.meta.url);
+const fs = require('fs');
+const crypto = require('crypto');
+
+// ─── Policy adjudication (Fase 3 micro-B0) — trusted evidence-bundle builder ───
+// The prepare tool scans the CURRENT code for a glob/shadow policy's matches,
+// deterministically samples ≤25, and writes a REDACTED evidence bundle the
+// `policy-auditor` sub-agent judges. Honest framing lives in the strings below.
+const ADJ_SAMPLE_CAP = 25;              // max occurrences materialized per bundle
+const ADJ_CONTEXT_RADIUS = 20;          // ±lines of context per occurrence
+const ADJ_MAX_FILE_BYTES = 512 * 1024;  // skip larger files (binary/minified/data)
+const ADJ_MAX_LINE_CHARS = 400;         // truncate each context line (bounds bundle)
+const ADJ_BUNDLE_MAX_BYTES = 1024 * 1024; // ~1MiB cap on the serialized bundle
+const ADJ_MAX_FILES_WALK = 20000;       // safety bound on the workspace walk
+const ADJ_IGNORE_DIRS = new Set([
+  '.git', 'node_modules', '.claude', '.hg', '.svn', 'dist', 'build', 'out',
+  'coverage', '.next', '.nuxt', '.cache', 'vendor', '__pycache__', '.venv', 'venv',
+  '.idea', '.vscode',
+]);
+const ADJ_SCANNER_VERSION = 'ccb-adjudicate-scan/1';
+const ADJ_PROMPT_VERSION = 'policy-auditor/1';
+const ADJ_NOTE = 'This sends redacted code context to your model provider when the auditor runs. Results are a best-effort LLM judgment of the CURRENT code, not a measured false-positive rate.';
+const ADJ_DISCLAIMER = "Best-effort LLM judgment of CURRENT code occurrences against the policy's stated intent. NOT a measured false-positive rate, NOT human-verified, and it does not establish whether any specific edit was a violation. Local to this machine; code context was sent to your model provider.";
+const ADJ_TUNING = 'This rule flags mostly-legitimate current code; consider narrowing its globs/literal.';
+// micro-B1: honest framing for the `source:'triggers'` mode, which adjudicates the
+// OPT-IN captured trigger PROPOSALS (what the shadow policy would have fired on) rather
+// than re-scanning current code. It is a JUDGED estimate — never a measured FP rate.
+const ADJ_TRIGGERS_NOTE = 'This adjudicates CAPTURED TRIGGER PROPOSALS (opt-in evidence: the redacted added text that fired the shadow policy), and sends that redacted context to your model provider when the auditor runs. The result is a JUDGED likely-FP estimate, NOT a measured false-positive rate.';
+const ADJ_TRIGGERS_DISCLAIMER = 'Best-effort LLM judgment of CAPTURED trigger proposals (opt-in evidence) against the policy\'s stated intent — a JUDGED likely-FP estimate, NOT a measured false-positive rate, NOT human-verified. Local to this machine; code context was sent to your model provider.';
+
+/** Standard MCP result envelopes for the adjudication tools. */
+function adjErr(msg) {
+  return { isError: true, content: [{ type: 'text', text: msg }] };
+}
+function adjJson(obj) {
+  return { content: [{ type: 'text', text: JSON.stringify(obj, null, 2) }] };
+}
+
+/** Heuristic binary sniff: a NUL byte in the first 4KB → treat as non-text. */
+function adjIsProbablyText(buf) {
+  const n = Math.min(buf.length, 4096);
+  for (let i = 0; i < n; i++) { if (buf[i] === 0) return false; }
+  return true;
+}
+
+/**
+ * Walk `realRoot` (already realpath'd) and return the glob-matching regular files
+ * as `{rel, abs}`, sorted by `rel` for determinism. ALL symlinks are skipped — a
+ * symlink is the only way a child's realpath could escape realRoot, so refusing
+ * them guarantees every kept file lives inside the workspace.
+ */
+function adjCollectFiles(realRoot, globs, anyGlobMatches) {
+  const out = [];
+  const stack = [realRoot];
+  let visited = 0;
+  while (stack.length) {
+    const dir = stack.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (err) {
+      console.error(`[adjudicate] readdir failed (${dir}): ${err.message}`);
+      continue;
+    }
+    entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+    for (const ent of entries) {
+      if (visited >= ADJ_MAX_FILES_WALK) break;
+      if (ent.isSymbolicLink()) continue; // refuse symlink escapes (and loops)
+      const full = path.join(dir, ent.name);
+      if (ent.isDirectory()) {
+        if (!ADJ_IGNORE_DIRS.has(ent.name)) stack.push(full);
+        continue;
+      }
+      if (!ent.isFile()) continue;
+      visited++;
+      const rel = path.relative(realRoot, full).split(path.sep).join('/');
+      if (rel && !rel.startsWith('..') && anyGlobMatches(globs, rel)) out.push({ rel, abs: full });
+    }
+    if (visited >= ADJ_MAX_FILES_WALK) break;
+  }
+  out.sort((a, b) => (a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0));
+  return out;
+}
+
+/** First non-blank line (1-based) of `lines`, or 1 if all blank. */
+function adjFirstRelevantLine(lines) {
+  for (let i = 0; i < lines.length; i++) { if (lines[i].trim() !== '') return i + 1; }
+  return 1;
+}
+
+/** The redacted-ready ±radius context slice around 1-based `line1`, per-line capped. */
+function adjContext(lines, line1) {
+  const start = Math.max(0, line1 - 1 - ADJ_CONTEXT_RADIUS);
+  const end = Math.min(lines.length, line1 - 1 + ADJ_CONTEXT_RADIUS + 1);
+  const slice = lines.slice(start, end).map((l) => (l.length > ADJ_MAX_LINE_CHARS ? `${l.slice(0, ADJ_MAX_LINE_CHARS)}…` : l));
+  return slice.join('\n');
+}
+
+/** Char offsets where each line begins (offset→line lookup support). */
+function adjLineStarts(text) {
+  const starts = [0];
+  for (let i = 0; i < text.length; i++) { if (text[i] === '\n') starts.push(i + 1); }
+  return starts;
+}
+
+/** 1-based line number containing char `offset` (binary search over line starts). */
+function adjLineForOffset(lineStarts, offset) {
+  let lo = 0;
+  let hi = lineStarts.length - 1;
+  let ans = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (lineStarts[mid] <= offset) { ans = mid; lo = mid + 1; } else { hi = mid - 1; }
+  }
+  return ans + 1;
+}
+
+/** Count non-overlapping occurrences of `needle` in `hay` (case-adjusted). */
+function adjCountOccurrences(hay, needle, caseSensitive) {
+  if (!needle) return 0;
+  const h = caseSensitive ? hay : hay.toLowerCase();
+  const n = caseSensitive ? needle : needle.toLowerCase();
+  let count = 0;
+  let from = 0;
+  for (;;) {
+    const idx = h.indexOf(n, from);
+    if (idx === -1) break;
+    count++;
+    from = idx + n.length;
+  }
+  return count;
+}
+
+/** First `cap` non-overlapping match offsets of `needle` in `hay` (case-adjusted). */
+function adjFindLiteralOffsets(hay, needle, caseSensitive, cap) {
+  const out = [];
+  if (!needle) return out;
+  const h = caseSensitive ? hay : hay.toLowerCase();
+  const n = caseSensitive ? needle : needle.toLowerCase();
+  let from = 0;
+  while (out.length < cap) {
+    const idx = h.indexOf(n, from);
+    if (idx === -1) break;
+    out.push(idx);
+    from = idx + n.length;
+  }
+  return out;
+}
+
+/** Stable per-occurrence id from (relPath, line, ordinal). */
+function adjOccId(rel, line, ord) {
+  return `occ-${crypto.createHash('sha1').update(`${rel}\u0000${line}\u0000${ord}`).digest('hex').slice(0, 12)}`;
+}
+
+/** Tolerate a judge that wrapped its JSON in a ```json fence despite instructions. */
+function adjStripFences(s) {
+  let t = String(s == null ? '' : s).trim();
+  if (t.startsWith('```')) {
+    t = t.replace(/^```[a-zA-Z0-9_-]*\s*\n?/, '');
+    if (t.endsWith('```')) t = t.slice(0, -3);
+    t = t.trim();
+  }
+  return t;
+}
 
 /** Tools that touch the shared KB singleton — serialized by the per-server mutex. */
 const KB_TOOLS = new Set([
@@ -220,6 +383,15 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
     return result;
   }
 
+  // ─── Session Graph Engine (native-java daemon) — pure REST client ────────────
+  // The graph_* tools give fast repo exploration (symbols / CALLS / PageRank) by
+  // consuming the local memory daemon's /api/v1/graph API. Client-pure: no Java is
+  // embedded; they fail open when the daemon is offline/old. They touch the EXTERNAL
+  // daemon, not the local KB singleton, so they bypass withLock AND the local/remote
+  // KB backend switch. Default root = the session CWD (stdio); HTTP callers pass `root`.
+  const { createGraphTools } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'graph', 'tools.js'));
+  const graphTools = createGraphTools({ cwd: () => process.cwd() });
+
   // ─── Tool list ──────────────────────────────────────────────────────────────
   const TOOLS = [
     {
@@ -313,7 +485,40 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
       description: 'Report the LOCAL, per-machine MEASUREMENT for shadow-assertion (measurement) policies in a project: for each activationId, how many matching Edits were seen (eligible), how many WOULD have triggered a future guard (triggers), the trigger incidence (triggers / (trigger+pass)), and how many were unevaluable (too large to scan). These are CANDIDATE-guard triggers, NOT violations, and the numbers are LOCAL to this machine only. The false-positive rate is reported as "N/A" (there are no human labels yet — real FP needs human adjudication, a later micro); it is NEVER 0%. Joins the telemetry to policy_list so each row names the policy (text preview + globs).',
       inputSchema: { type: 'object', properties: { project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Working directory (for project scoping + the canonical metrics key when project is omitted).' }, rangeDays: { type: 'number', description: 'How many days back to aggregate (default: 7).' } } },
     },
+    {
+      name: 'policy_adjudication_prepare',
+      description: 'TRUSTED evidence-bundle builder for the policy-adjudication JUDGE loop. Given a GLOB (or shadow-assertion) policyId, builds a DETERMINISTIC, REDACTED, EPHEMERAL bundle of ≤25 occurrences the `policy-auditor` sub-agent reads. `source` selects what is judged: "current-snapshot" (DEFAULT, Fase 3 micro-B0) re-scans the CURRENT code under the workspace for the policy\'s globs (+literal); "triggers" (Fase 3 micro-B1) instead adjudicates the OPT-IN CAPTURED trigger PROPOSALS — the redacted added text that actually fired the shadow policy (empty → occurrenceCount:0 with guidance to enable captureTriggerEvidence). Returns { bundlePath, manifestHash, occurrenceCount, intent, note, source }. Does NOT judge and does NOT change the policy. HONEST: the auditor produces a best-effort LLM JUDGED estimate, NOT a measured false-positive rate; running it sends redacted code context to your model provider (see `note`). ALWAYS-mode (globless) policies cannot be adjudicated.',
+      inputSchema: { type: 'object', properties: { policyId: { type: 'string', description: 'The glob/shadow policy id to adjudicate (from policy_list).' }, source: { type: 'string', enum: ['current-snapshot', 'triggers'], description: 'Evidence origin: "current-snapshot" (default) re-scans CURRENT code; "triggers" adjudicates the opt-in CAPTURED trigger proposals (requires captureTriggerEvidence to have been enabled while edits triggered).' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Workspace directory to scan (default: process CWD). Realpath-bound; symlink escapes are refused.' } }, required: ['policyId'] },
+    },
+    {
+      name: 'policy_adjudication_record',
+      description: 'Record the `policy-auditor` verdict for a prepared bundle and return an HONEST disposition summary. Validates the auditor JSON against the bundle: verdict ids must EXACTLY equal the bundle\'s occurrence ids (unknown / duplicate / missing → error, nothing persisted). Tallies legit/problem/uncertain/injectionSuspected and persists a disposition (counts + coverage + provenance only — NO code snippets). The disposition KIND follows the bundle\'s source (or an explicit dispositionKind): "llm-current-snapshot-occurrence-disposition" (micro-B0) or "llm-trigger-proposal-disposition" (micro-B1). For the triggers kind it returns a judgedLikelyFpShare = likely_legitimate/(likely_legitimate+likely_problem) as a clearly-labeled JUDGED estimate (uncertain shown separately) — NEVER a measured falsePositiveRate, and micro-A\'s shadow-report trigger FP stays N/A. NEVER mutates, deactivates, or promotes the policy.',
+      inputSchema: { type: 'object', properties: { policyId: { type: 'string', description: 'The policy id that was prepared.' }, manifestHash: { type: 'string', description: 'The manifestHash returned by policy_adjudication_prepare (locates the bundle).' }, verdictsJson: { type: 'string', description: 'The policy-auditor sub-agent\'s RAW strict-JSON output: {schema:1, verdicts:[{id,label,promptInjectionSuspected,reason}]}.' }, dispositionKind: { type: 'string', enum: ['llm-current-snapshot-occurrence-disposition', 'llm-trigger-proposal-disposition'], description: 'Optional override of the stored disposition kind; normally inferred from the bundle\'s source. Use "llm-trigger-proposal-disposition" for a triggers-sourced bundle.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Workspace directory (for project scoping when project is omitted).' } }, required: ['policyId', 'manifestHash', 'verdictsJson'] },
+    },
+    {
+      name: 'policy_adjudication_report',
+      description: 'Read back the stored policy-adjudication dispositions for a project (Fase 3 micro-B0), newest first, optionally filtered by policyId. Each is an HONEST "current-snapshot occurrence disposition" (counts + coverage + provenance, NO snippets) — a best-effort LLM judgment of the code at adjudication time, NOT a measured false-positive rate and NOT human-verified.',
+      inputSchema: { type: 'object', properties: { policyId: { type: 'string', description: 'Optional: restrict to one policy id.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Working directory (for project scoping when project is omitted).' } } },
+    },
+    {
+      name: 'policy_trigger_evidence_purge',
+      description: 'Delete the OPT-IN captured trigger evidence (Fase 3 micro-B1) for a project — YOU control your captured code. With no filter, purges ALL of the project\'s captured trigger proposals; pass policyId to purge only that policy\'s evidence (by its activationId), and/or olderThanDays to purge only records older than N days. Returns the count removed. This is the user\'s off-switch/eraser for the locally-stored redacted snippets; it never mutates any policy.',
+      inputSchema: { type: 'object', properties: { policyId: { type: 'string', description: 'Optional: restrict the purge to this policy id (its activationId).' }, olderThanDays: { type: 'number', description: 'Optional: only purge records older than this many days.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Working directory (for project scoping when project is omitted).' } } },
+    },
+    {
+      name: 'policy_self_update_report',
+      description: 'READ-ONLY self-update ADVISORY (Fase 3 micro-C). For each ACTIVE glob/shadow policy, reads its LATEST policy-adjudication disposition and computes a structured, HONEST recommendation: too-broad (judged to flag mostly-legitimate code) → a demote-to-advisory candidate; well-calibrated (judged to mostly flag real problems) → enforce-ELIGIBLE (surfaced ONLY); insufficient-data → adjudicate more first. These are JUDGED, best-effort estimates derived from the policy-auditor\'s dispositions — heuristic, NOT proven, NOT a measured false-positive rate, and LOCAL to this machine. This tool MUTATES NOTHING (no activate/deactivate): apply a demote candidate EXPLICITLY with policy_apply_candidate, passing the exact expectedSourceHash shown here. Enforce-eligibility is a recommendation only — promotion to enforce is not implemented and is never applied.',
+      inputSchema: { type: 'object', properties: { project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Working directory (for project scoping when project is omitted).' } } },
+    },
+    {
+      name: 'policy_apply_candidate',
+      description: 'EXPLICIT, user-invoked APPLY of the ONE safe self-update micro-C performs: demote-to-advisory — turn a shadow-assertion policy back into a plain glob advisory (drop its `assert` + shadow `enforcement`; KEEP its globs + text). It is triple-gated and audited: (1) the JUDGED signal must actually recommend a demote (per policy_self_update_report) — you CANNOT force-demote a well-calibrated rule; (2) CAS — expectedSourceHash must equal the policy\'s CURRENT sourceHash, else it refuses (re-run the report and retry with the fresh hash), so a policy that changed since the report is never clobbered; (3) the change is appended to an append-only revision-ledger (before/after sourceHash + activationId; NO snippets); and it is REVERSIBLE — re-activate the policy WITH its assertion to restore the shadow measurement. NEVER promotes to enforce, NEVER changes globs/literals beyond the demote, NEVER touches other policies. Everything here rests on a JUDGED estimate, not proven truth.',
+      inputSchema: { type: 'object', properties: { policyId: { type: 'string', description: 'The glob/shadow policy id to demote (from policy_self_update_report / policy_list).' }, expectedSourceHash: { type: 'string', description: 'The EXACT current sourceHash of the policy as shown by policy_self_update_report — a CAS guard; a mismatch refuses the apply and changes nothing.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Working directory (for project scoping when project is omitted).' } }, required: ['policyId', 'expectedSourceHash'] },
+    },
   ];
+
+  // Advertise the Session Graph Engine tools alongside the KB/research tools.
+  TOOLS.push(...graphTools.definitions);
 
   // ─── Tool handlers (faithful move from the previous index.js switch) ───────
   async function handleTool(name, args) {
@@ -323,6 +528,9 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
     // KB via _testHooks.getKB forces the LOCAL path (so it exercises the local case
     // without depending on / mutating the shared brain-backend singleton mode).
     const forceLocal = !!(_testHooks && _testHooks.getKB);
+    // Session Graph Engine tools: pure REST client of the memory daemon, independent of the
+    // KB backend (local/mcp-memory) and the KB mutex — dispatch directly, fail-open.
+    if (graphTools.names.has(name)) return graphTools.handle(name, args);
     if (!forceLocal && REMOTE_KB_TOOLS.has(name)) {
       const backend = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-backend.js'));
       if (backend.peekMode() === 'mcp-memory') {
@@ -782,6 +990,500 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
           return { content: [{ type: 'text', text: JSON.stringify(report, null, 2) }] };
         } catch (err) {
           return { isError: true, content: [{ type: 'text', text: `policy_shadow_report failed: ${err.message}` }] };
+        }
+      }
+
+      case 'policy_self_update_report': {
+        // READ-ONLY. Auto-computes JUDGED self-update advisories for the active
+        // glob/shadow policies from their latest dispositions. It MUST NOT mutate
+        // anything: no policy mutation (activate or deactivate) appears in this case.
+        try {
+          const a = args || {};
+          const pid = resolveProject(a);
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
+          const adjStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'adjudication-store.js'));
+          const { planSelfUpdate } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'self-update-plan.js'));
+
+          // Active glob/shadow policies only (listVisible also returns always-mode
+          // policies, which have no globs/dispositions and cannot be self-updated).
+          const globPolicies = policyStore.listVisible(dataDir(), { projectId: pid }).filter((r) => r && r.mode === 'glob');
+          const advisories = globPolicies.map((pol) => {
+            // Newest disposition for this policy (listDispositions is newest-first).
+            const latest = adjStore.listDispositions(dataDir(), pid, { policyId: String(pol.id) })[0] || null;
+            const advisory = planSelfUpdate(pol, latest);
+            // Surface the CURRENT sourceHash so an explicit policy_apply_candidate can
+            // CAS on the EXACT value, and flag whether this is a shadow-assertion policy
+            // (only a shadow policy can actually be demoted — a plain advisory has nothing
+            // to demote even if its judged signal reads 'too-broad'). Read-only enrichment.
+            advisory.sourceHash = pol.sourceHash != null ? String(pol.sourceHash) : null;
+            advisory.isShadowAssertion = !!(pol.assert || pol.enforcement);
+            return advisory;
+          });
+
+          return adjJson({
+            kind: 'policy-self-update-report',
+            projectId: pid,
+            count: advisories.length,
+            note: 'These are JUDGED, best-effort recommendations from the policy-auditor\'s dispositions — heuristic, not proven, LOCAL to this machine. NOTHING here changes a policy; apply a candidate explicitly with policy_apply_candidate, passing its policyId and the EXACT sourceHash shown here (a CAS guard). Only a shadow-assertion policy can be demoted. Enforce-eligibility is a recommendation only — enforcement is not implemented.',
+            advisories,
+          });
+        } catch (err) {
+          return { isError: true, content: [{ type: 'text', text: `policy_self_update_report failed: ${err.message}` }] };
+        }
+      }
+
+      case 'policy_apply_candidate': {
+        // The ONLY mutation in micro-C, and it does EXACTLY ONE safe thing:
+        // demote-to-advisory (drop the shadow assert + enforcement, KEEP globs +
+        // text), gated by the JUDGED signal + a CAS on sourceHash + a ledger entry.
+        try {
+          const a = args || {};
+          const policyId = typeof a.policyId === 'string' ? a.policyId.trim() : '';
+          const expectedSourceHash = typeof a.expectedSourceHash === 'string' ? a.expectedSourceHash.trim() : '';
+          if (!policyId) return adjErr('policy_apply_candidate: policyId is required (from policy_self_update_report / policy_list).');
+          if (!expectedSourceHash) return adjErr('policy_apply_candidate: expectedSourceHash is required — the EXACT current sourceHash from policy_self_update_report (a CAS guard); nothing was applied.');
+          const pid = resolveProject(a);
+
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
+          const adjStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'adjudication-store.js'));
+          const ledger = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'revision-ledger.js'));
+          const { planSelfUpdate } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'self-update-plan.js'));
+
+          const pol = policyStore.listVisible(dataDir(), { projectId: pid }).find((r) => r && String(r.id) === policyId);
+          if (!pol) return adjErr(`policy_apply_candidate: no active policy with id "${policyId}" in this project. Use policy_self_update_report / policy_list.`);
+          if (pol.mode !== 'glob') return adjErr(`policy_apply_candidate: policy "${policyId}" is not a glob/shadow policy; only a shadow-assertion policy can be demoted to an advisory.`);
+          // Nothing to demote if it is already a plain glob advisory (no assert).
+          if (!pol.assert && !pol.enforcement) return adjErr(`policy_apply_candidate: policy "${policyId}" is already a plain glob advisory (no shadow assertion to demote); nothing was applied.`);
+
+          // SIGNAL-GATE: apply only when the JUDGED estimate recommends a demote.
+          // You cannot force-demote a well-calibrated / insufficient-data policy.
+          const latest = adjStore.listDispositions(dataDir(), pid, { policyId })[0] || null;
+          const advisory = planSelfUpdate(pol, latest);
+          if (advisory.candidate.action !== 'demote-to-advisory') {
+            return adjErr(`policy_apply_candidate: policy "${policyId}" is not a demote candidate (judged signal: ${advisory.signal}; candidate: ${advisory.candidate.action}). policy_self_update_report shows its signal — you cannot force a demote the judged estimate does not recommend. Nothing was applied.`);
+          }
+
+          // CAS: refuse if the policy changed since the report was computed.
+          const beforeSourceHash = String(pol.sourceHash);
+          if (expectedSourceHash !== beforeSourceHash) {
+            return adjErr('policy_apply_candidate: sourceHash mismatch (CAS) — the policy changed since the report. Re-run policy_self_update_report and retry with the CURRENT expectedSourceHash. Nothing was applied.');
+          }
+
+          const beforeActivationId = pol.activationId != null ? String(pol.activationId) : null;
+          // Apply the demote by RE-ACTIVATING as a plain glob advisory: NO assert,
+          // NO enforcement. This drops the shadow fields (assert + enforcement +
+          // activationId) and mints a fresh sourceHash. entryId:pol.id is idempotent
+          // under sanitizeId, so it UPSERTs the SAME record (never a duplicate).
+          const res = policyStore.activate(dataDir(), { entryId: pol.id, text: pol.text, projectId: pid, globs: pol.globs });
+          if (!res || res.activated !== true) {
+            return adjErr(`policy_apply_candidate: re-activation as a plain advisory failed (${res && res.reason ? res.reason : 'unknown'}); nothing changed.`);
+          }
+
+          // Read the demoted record back to report its NEW identity honestly.
+          const after = policyStore.listVisible(dataDir(), { projectId: pid }).find((r) => r && String(r.id) === policyId) || {};
+          const afterSourceHash = after.sourceHash != null ? String(after.sourceHash) : (res.sig != null ? String(res.sig) : null);
+          const afterActivationId = after.activationId != null ? String(after.activationId) : null;
+
+          const ledgerEntry = {
+            ts: Date.now(),
+            policyId,
+            action: 'demote-to-advisory',
+            beforeSourceHash,
+            afterSourceHash,
+            beforeActivationId,
+            afterActivationId,
+            note: 'Explicit user-invoked demote from a JUDGED estimate: shadow assertion + shadow enforcement removed; the glob advisory (globs + text) is unchanged. Reversible by re-activating with the assertion.',
+          };
+          const ledgerWritten = ledger.appendRevision(dataDir(), pid, ledgerEntry);
+
+          return adjJson({
+            kind: 'policy-self-update-apply',
+            projectId: pid,
+            policyId,
+            applied: 'demote-to-advisory',
+            changed: {
+              shadowAssertionRemoved: true,
+              shadowEnforcementRemoved: true,
+              stillGlobAdvisory: after.mode === 'glob',
+              globsUnchanged: true,
+              textUnchanged: true,
+              beforeSourceHash,
+              afterSourceHash,
+              beforeActivationId,
+              afterActivationId,
+            },
+            judged: advisory.judged,
+            ledgerWritten,
+            ledgerEntry,
+            note: 'This was YOUR explicit action, gated by a JUDGED estimate (heuristic, NOT proven), a CAS check on the exact sourceHash, and the judged signal recommending a demote. Only the shadow assertion + enforcement were removed (globs + text unchanged). It is REVERSIBLE — re-activate the policy WITH its assertion to restore the shadow measurement. Enforce promotion is never applied here.',
+          });
+        } catch (err) {
+          return { isError: true, content: [{ type: 'text', text: `policy_apply_candidate failed: ${err.message}` }] };
+        }
+      }
+
+      case 'policy_adjudication_prepare': {
+        try {
+          const a = args || {};
+          const policyId = typeof a.policyId === 'string' ? a.policyId.trim() : '';
+          if (!policyId) return adjErr('policy_adjudication_prepare: policyId is required (from policy_list).');
+          const cwd = typeof a.cwd === 'string' && a.cwd ? a.cwd : process.cwd();
+          const pid = resolveProject(a);
+
+          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const { anyGlobMatches } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'glob-match.js'));
+          const { redact } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'redact.js'));
+          const { writeFileAtomic } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'atomic-write.js'));
+          const adjStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'adjudication-store.js'));
+
+          const visible = policyStore.listVisible(dataDir(), { projectId: pid });
+          const policy = visible.find((r) => r && String(r.id) === policyId);
+          if (!policy) return adjErr(`policy_adjudication_prepare: no active policy with id "${policyId}" in this project. Use policy_list.`);
+          if (policy.mode !== 'glob' || !Array.isArray(policy.globs) || policy.globs.length === 0) {
+            return adjErr('policy_adjudication_prepare: only GLOB (or shadow-assertion) policies can be adjudicated — this policy has no globs. ALWAYS-mode policies apply globally and have no code occurrences to sample.');
+          }
+          const intent = typeof policy.text === 'string' ? policy.text : '';
+          const literal = (policy.assert && policy.assert.kind === 'forbid-added-literal' && typeof policy.assert.literal === 'string')
+            ? policy.assert.literal
+            : null;
+          const caseSensitive = policy.assert ? policy.assert.caseSensitive !== false : true;
+
+          // micro-B1: `source` selects the evidence origin.
+          //   'current-snapshot' (DEFAULT): the micro-B0 re-scan of CURRENT code (below).
+          //   'triggers': adjudicate the OPT-IN CAPTURED trigger proposals instead.
+          // Both keep the mode!=='glob' refusal above; a plain glob policy has no
+          // activationId, so triggers-mode naturally yields the occ0 "no evidence" path.
+          const source = a.source === 'triggers' ? 'triggers' : 'current-snapshot';
+          if (source === 'triggers') {
+            const triggerStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'trigger-evidence-store.js'));
+            // Read under the SAME resolved projectId (pid) the shadow hook wrote under —
+            // the hook passes resolveProjectId({cwd}) and the store sanitizes it, exactly
+            // as resolveProject(a) here does, so the write and the read agree.
+            const activationId = policy.activationId ? String(policy.activationId) : null;
+            const evidence = activationId ? triggerStore.listEvidence(dataDir(), pid, { activationId }) : [];
+            if (!evidence.length) {
+              return adjJson({
+                source: 'triggers',
+                policyId,
+                occurrenceCount: 0,
+                intent,
+                note: 'no captured trigger evidence — enable captureTriggerEvidence and let some edits trigger first',
+              });
+            }
+            // Deterministic order: newest first, tie-broken by eventId for stability.
+            const sortedT = evidence.slice().sort((x, y) => (y.ts || 0) - (x.ts || 0) || String(x.eventId).localeCompare(String(y.eventId)));
+            const sampledT = sortedT.slice(0, ADJ_SAMPLE_CAP).map((e) => ({
+              id: String(e.eventId),
+              file: typeof e.file === 'string' ? e.file : '',
+              line: null, // a captured PROPOSAL has no current-code line
+              context: redact(String(e.addedSnippet == null ? '' : e.addedSnippet)).text, // re-redact defensively
+            }));
+            // Safety valve: keep the serialized bundle under ~1MiB.
+            while (sampledT.length > 1 && Buffer.byteLength(JSON.stringify(sampledT)) > (ADJ_BUNDLE_MAX_BYTES - 16384)) {
+              sampledT.pop();
+            }
+            const occIdsT = sampledT.map((o) => o.id);
+            const manifestHashT = crypto.createHash('sha256')
+              .update(`${policyId}\n${intent}\ntriggers\n${occIdsT.join(',')}`)
+              .digest('hex').slice(0, 16);
+            const bundleT = {
+              schema: 1,
+              policyId,
+              projectId: pid,
+              intent,
+              literal: literal == null ? null : literal,
+              caseSensitive,
+              occurrences: sampledT,
+              eligible: sortedT.length,
+              manifestHash: manifestHashT,
+              scannerVersion: ADJ_SCANNER_VERSION,
+              promptVersion: ADJ_PROMPT_VERSION,
+              createdAt: Date.now(),
+              ephemeral: true,
+              source: 'triggers',
+            };
+            const bundlePathT = path.join(adjStore.adjudicationDir(dataDir(), pid), `bundle-${manifestHashT}.json`);
+            try {
+              writeFileAtomic(bundlePathT, JSON.stringify(bundleT));
+            } catch (err) {
+              return adjErr(`policy_adjudication_prepare: failed to write the evidence bundle (${err.message}). Nothing to adjudicate.`);
+            }
+            return adjJson({
+              bundlePath: bundlePathT,
+              manifestHash: manifestHashT,
+              occurrenceCount: sampledT.length,
+              intent,
+              note: ADJ_TRIGGERS_NOTE,
+              source: 'triggers',
+            });
+          }
+
+          let realRoot;
+          try {
+            realRoot = fs.realpathSync(cwd);
+          } catch (err) {
+            return adjErr(`policy_adjudication_prepare: workspace cwd is not accessible (${err.message}).`);
+          }
+
+          const candidates = adjCollectFiles(realRoot, policy.globs, anyGlobMatches);
+          const sampled = [];
+          let eligible = 0;
+
+          if (literal != null) {
+            for (const f of candidates) {
+              let buf;
+              try {
+                buf = fs.readFileSync(f.abs);
+              } catch (err) {
+                console.error(`[adjudicate] read failed (${f.rel}): ${err.message}`);
+                continue;
+              }
+              if (buf.length > ADJ_MAX_FILE_BYTES || !adjIsProbablyText(buf)) continue;
+              const content = buf.toString('utf-8');
+              const total = adjCountOccurrences(content, literal, caseSensitive);
+              if (total === 0) continue;
+              eligible += total;
+              if (sampled.length < ADJ_SAMPLE_CAP) {
+                const lines = content.split('\n');
+                const lineStarts = adjLineStarts(content);
+                const offsets = adjFindLiteralOffsets(content, literal, caseSensitive, ADJ_SAMPLE_CAP - sampled.length);
+                let ord = 0;
+                for (const off of offsets) {
+                  const line1 = adjLineForOffset(lineStarts, off);
+                  sampled.push({ id: adjOccId(f.rel, line1, ord), file: f.rel, line: line1, context: redact(adjContext(lines, line1)).text });
+                  ord++;
+                  if (sampled.length >= ADJ_SAMPLE_CAP) break;
+                }
+              }
+            }
+          } else {
+            eligible = candidates.length; // occurrence == a matching file
+            for (const f of candidates) {
+              if (sampled.length >= ADJ_SAMPLE_CAP) break;
+              let buf;
+              try {
+                buf = fs.readFileSync(f.abs);
+              } catch (err) {
+                console.error(`[adjudicate] read failed (${f.rel}): ${err.message}`);
+                continue;
+              }
+              if (buf.length > ADJ_MAX_FILE_BYTES || !adjIsProbablyText(buf)) continue;
+              const lines = buf.toString('utf-8').split('\n');
+              const line1 = adjFirstRelevantLine(lines);
+              sampled.push({ id: adjOccId(f.rel, line1, 0), file: f.rel, line: line1, context: redact(adjContext(lines, line1)).text });
+            }
+          }
+
+          // Safety valve: keep the serialized bundle under ~1MiB (rarely triggers,
+          // since 25 occurrences × capped lines is well under the cap).
+          while (sampled.length > 1 && Buffer.byteLength(JSON.stringify(sampled)) > (ADJ_BUNDLE_MAX_BYTES - 16384)) {
+            sampled.pop();
+          }
+
+          const occIds = sampled.map((o) => o.id);
+          const manifestHash = crypto.createHash('sha256')
+            .update(`${policyId}\n${intent}\n${literal == null ? '\u0000null' : literal}\n${caseSensitive}\n${occIds.join(',')}`)
+            .digest('hex').slice(0, 16);
+
+          const bundle = {
+            schema: 1,
+            policyId,
+            projectId: pid,
+            intent,
+            literal: literal == null ? null : literal,
+            caseSensitive,
+            occurrences: sampled,
+            eligible,
+            manifestHash,
+            scannerVersion: ADJ_SCANNER_VERSION,
+            promptVersion: ADJ_PROMPT_VERSION,
+            createdAt: Date.now(),
+            ephemeral: true,
+            source: 'current-snapshot',
+          };
+          const bundlePath = path.join(adjStore.adjudicationDir(dataDir(), pid), `bundle-${manifestHash}.json`);
+          try {
+            writeFileAtomic(bundlePath, JSON.stringify(bundle));
+          } catch (err) {
+            return adjErr(`policy_adjudication_prepare: failed to write the evidence bundle (${err.message}). Nothing to adjudicate.`);
+          }
+
+          return adjJson({ bundlePath, manifestHash, occurrenceCount: sampled.length, intent, note: ADJ_NOTE, source: 'current-snapshot' });
+        } catch (err) {
+          return { isError: true, content: [{ type: 'text', text: `policy_adjudication_prepare failed: ${err.message}` }] };
+        }
+      }
+
+      case 'policy_adjudication_record': {
+        try {
+          const a = args || {};
+          const policyId = typeof a.policyId === 'string' ? a.policyId.trim() : '';
+          const manifestHash = typeof a.manifestHash === 'string' ? a.manifestHash.trim() : '';
+          const verdictsJson = typeof a.verdictsJson === 'string' ? a.verdictsJson : '';
+          if (!policyId) return adjErr('policy_adjudication_record: policyId is required.');
+          if (!/^[0-9a-f]{6,64}$/i.test(manifestHash)) return adjErr('policy_adjudication_record: manifestHash is missing or malformed (expect the hex hash from policy_adjudication_prepare).');
+          const pid = resolveProject(a);
+
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
+          const adjStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'adjudication-store.js'));
+
+          const bundlePath = path.join(adjStore.adjudicationDir(dataDir(), pid), `bundle-${manifestHash}.json`);
+          let bundle;
+          try {
+            bundle = JSON.parse(fs.readFileSync(bundlePath, 'utf-8'));
+          } catch (err) {
+            return adjErr(`policy_adjudication_record: evidence bundle for this manifestHash was not found or is unreadable (${err.message}). Re-run policy_adjudication_prepare.`);
+          }
+          if (!bundle || bundle.schema !== 1 || String(bundle.policyId) !== policyId || String(bundle.manifestHash) !== manifestHash) {
+            return adjErr('policy_adjudication_record: the bundle does not match this policyId/manifestHash. Re-run policy_adjudication_prepare.');
+          }
+          const bundleOcc = Array.isArray(bundle.occurrences) ? bundle.occurrences : [];
+          const occIds = new Set(bundleOcc.map((o) => o && o.id).filter(Boolean));
+
+          let parsed;
+          try {
+            parsed = JSON.parse(adjStripFences(verdictsJson));
+          } catch (err) {
+            return adjErr(`policy_adjudication_record: verdictsJson is not valid JSON (${err.message}). Pass the auditor's raw JSON.`);
+          }
+          if (!parsed || typeof parsed !== 'object' || parsed.schema !== 1 || !Array.isArray(parsed.verdicts)) {
+            return adjErr('policy_adjudication_record: verdictsJson must be { "schema": 1, "verdicts": [ … ] }.');
+          }
+
+          const LABELS = new Set(['likely_legitimate', 'likely_problem', 'uncertain']);
+          const seen = new Set();
+          const counts = { legit: 0, problem: 0, uncertain: 0, injectionSuspected: 0, total: 0 };
+          for (const v of parsed.verdicts) {
+            if (!v || typeof v !== 'object') return adjErr('policy_adjudication_record: a verdict entry is not an object; nothing persisted.');
+            const id = typeof v.id === 'string' ? v.id : '';
+            if (!occIds.has(id)) return adjErr(`policy_adjudication_record: verdict references an unknown occurrence id "${id}" (not in the bundle); nothing persisted.`);
+            if (seen.has(id)) return adjErr(`policy_adjudication_record: duplicate verdict for occurrence id "${id}"; nothing persisted.`);
+            if (!LABELS.has(v.label)) return adjErr(`policy_adjudication_record: verdict for "${id}" has an invalid label "${v.label}" (expect likely_legitimate|likely_problem|uncertain); nothing persisted.`);
+            seen.add(id);
+            counts.total++;
+            if (v.label === 'likely_legitimate') counts.legit++;
+            else if (v.label === 'likely_problem') counts.problem++;
+            else counts.uncertain++;
+            if (v.promptInjectionSuspected === true) counts.injectionSuspected++;
+          }
+          const missing = [...occIds].filter((id) => !seen.has(id));
+          if (missing.length > 0) {
+            const shown = missing.slice(0, 5).join(', ');
+            return adjErr(`policy_adjudication_record: missing verdict(s) for occurrence id(s): ${shown}${missing.length > 5 ? ', …' : ''}; nothing persisted (exactly one verdict per occurrence is required).`);
+          }
+
+          const coverage = { sampled: bundleOcc.length, eligible: Number.isFinite(bundle.eligible) ? bundle.eligible : bundleOcc.length };
+          // micro-B1: honor the bundle's source (or an explicit dispositionKind) so a
+          // triggers-sourced disposition is stored and disclosed distinctly from a
+          // current-snapshot one. Default stays 'current-snapshot' (B0 behavior).
+          const bundleSource = bundle.source === 'triggers' ? 'triggers' : 'current-snapshot';
+          const isTriggers = bundleSource === 'triggers' || a.dispositionKind === 'llm-trigger-proposal-disposition';
+          const dispositionKind = isTriggers ? 'llm-trigger-proposal-disposition' : 'llm-current-snapshot-occurrence-disposition';
+          const disclaimer = isTriggers ? ADJ_TRIGGERS_DISCLAIMER : ADJ_DISCLAIMER;
+          const provenance = {
+            scannerVersion: typeof bundle.scannerVersion === 'string' ? bundle.scannerVersion : ADJ_SCANNER_VERSION,
+            promptVersion: typeof bundle.promptVersion === 'string' ? bundle.promptVersion : ADJ_PROMPT_VERSION,
+            source: bundleSource,
+          };
+          // Best-effort: name the activation for the disposition (does NOT mutate it).
+          const pol = policyStore.listVisible(dataDir(), { projectId: pid }).find((r) => r && String(r.id) === policyId);
+          const activationId = pol && pol.activationId ? String(pol.activationId) : undefined;
+
+          const record = { policyId, manifestHash, ts: Date.now(), kind: dispositionKind, counts, coverage, provenance };
+          if (activationId) record.activationId = activationId;
+          adjStore.saveDisposition(dataDir(), pid, record);
+
+          const summary = {
+            kind: dispositionKind,
+            policyId,
+            manifestHash,
+            projectId: pid,
+            counts,
+            coverage,
+            provenance,
+            disclaimer,
+          };
+          if (activationId) summary.activationId = activationId;
+          if (isTriggers) {
+            // A JUDGED estimate of the likely-FP SHARE among DECISIVE judgments — NOT a
+            // measured false-positive rate. `uncertain` is shown separately, never folded
+            // into the ratio. NO plain `falsePositiveRate` is ever exposed, and micro-A's
+            // shadow-report trigger FP stays N/A (this estimate is NOT wired into it).
+            const decisive = counts.legit + counts.problem;
+            summary.judgedLikelyFpShare = decisive > 0 ? counts.legit / decisive : null;
+            summary.judgedLikelyFpShareNote = 'JUDGED estimate = likely_legitimate / (likely_legitimate + likely_problem) among decisive judgments; uncertain (' + counts.uncertain + ') is shown separately. NOT a measured false-positive rate; the shadow report trigger FP stays N/A.';
+          } else if (counts.total > 0 && (counts.problem / counts.total) < 0.2) {
+            // Informational-only nudge when the current code looks mostly legitimate.
+            // TEXT ONLY — this tool NEVER narrows globs/literals or deactivates a policy.
+            summary.tuningRecommendation = ADJ_TUNING;
+          }
+          return adjJson(summary);
+        } catch (err) {
+          return { isError: true, content: [{ type: 'text', text: `policy_adjudication_record failed: ${err.message}` }] };
+        }
+      }
+
+      case 'policy_adjudication_report': {
+        try {
+          const a = args || {};
+          const pid = resolveProject(a);
+          const policyId = typeof a.policyId === 'string' && a.policyId.trim() ? a.policyId.trim() : undefined;
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const adjStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'adjudication-store.js'));
+          const dispositions = adjStore.listDispositions(dataDir(), pid, { policyId });
+          return adjJson({
+            kind: 'llm-current-snapshot-occurrence-disposition',
+            projectId: pid,
+            policyId: policyId || null,
+            count: dispositions.length,
+            disclaimer: ADJ_DISCLAIMER,
+            dispositions,
+          });
+        } catch (err) {
+          return { isError: true, content: [{ type: 'text', text: `policy_adjudication_report failed: ${err.message}` }] };
+        }
+      }
+
+      case 'policy_trigger_evidence_purge': {
+        try {
+          const a = args || {};
+          const pid = resolveProject(a);
+          const policyId = typeof a.policyId === 'string' && a.policyId.trim() ? a.policyId.trim() : undefined;
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
+          const triggerStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'trigger-evidence-store.js'));
+
+          const opts = {};
+          // Scope to one policy's captured evidence via its activationId (only
+          // shadow-assertion policies carry one). Refuse an unknown/ineligible id
+          // rather than silently purging everything.
+          if (policyId) {
+            const pol = policyStore.listVisible(dataDir(), { projectId: pid }).find((r) => r && String(r.id) === policyId);
+            if (!pol) return adjErr(`policy_trigger_evidence_purge: no active policy with id "${policyId}" in this project. Use policy_list.`);
+            if (!pol.activationId) return adjErr(`policy_trigger_evidence_purge: policy "${policyId}" has no activationId (only shadow-assertion policies capture trigger evidence); nothing to purge for it.`);
+            opts.activationId = String(pol.activationId);
+          }
+          // Optional age filter: purge records strictly older than N days.
+          const olderThanDays = Number(a.olderThanDays);
+          if (Number.isFinite(olderThanDays) && olderThanDays > 0) {
+            opts.olderThanTs = Date.now() - olderThanDays * 86400000;
+          }
+
+          const removed = triggerStore.purgeEvidence(dataDir(), pid, opts);
+          return adjJson({
+            kind: 'trigger-evidence-purge',
+            projectId: pid,
+            policyId: policyId || null,
+            olderThanDays: Number.isFinite(olderThanDays) && olderThanDays > 0 ? olderThanDays : null,
+            removed,
+            note: 'Deleted the locally-stored, opt-in captured trigger evidence (redacted proposed-edit snippets) — you control your captured code. No policy was changed.',
+          });
+        } catch (err) {
+          return { isError: true, content: [{ type: 'text', text: `policy_trigger_evidence_purge failed: ${err.message}` }] };
         }
       }
 
