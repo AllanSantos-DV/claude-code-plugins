@@ -501,6 +501,11 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
       inputSchema: { type: 'object', properties: { policyId: { type: 'string', description: 'Optional: restrict to one policy id.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Working directory (for project scoping when project is omitted).' } } },
     },
     {
+      name: 'policy_adjudication_purge',
+      description: 'Sweep ORPHANED ephemeral evidence bundles (Fase 3 micro-B0/B1) for a project — the redacted `bundle-<manifestHash>.json` files that policy_adjudication_prepare writes and policy_adjudication_record CONSUMES (deletes) on success. A record run normally removes its own bundle; this is the eraser for bundles left behind when prepare ran but record never did, so their redacted code context can\'t linger on disk. Removes EVERY bundle-*.json in the project\'s adjudication dir and returns the count; it NEVER touches the durable dispositions (dispositions.json) or any other project, and never mutates a policy. (For the separately-stored opt-in trigger evidence, use policy_trigger_evidence_purge instead.)',
+      inputSchema: { type: 'object', properties: { project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Working directory (for project scoping when project is omitted).' } } },
+    },
+    {
       name: 'policy_trigger_evidence_purge',
       description: 'Delete the OPT-IN captured trigger evidence (Fase 3 micro-B1) for a project — YOU control your captured code. With no filter, purges ALL of the project\'s captured trigger proposals; pass policyId to purge only that policy\'s evidence (by its activationId), and/or olderThanDays to purge only records older than N days. Returns the count removed. This is the user\'s off-switch/eraser for the locally-stored redacted snippets; it never mutates any policy.',
       inputSchema: { type: 'object', properties: { policyId: { type: 'string', description: 'Optional: restrict the purge to this policy id (its activationId).' }, olderThanDays: { type: 'number', description: 'Optional: only purge records older than this many days.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode).' }, cwd: { type: 'string', description: 'Working directory (for project scoping when project is omitted).' } } },
@@ -1397,6 +1402,18 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
           if (activationId) record.activationId = activationId;
           adjStore.saveDisposition(dataDir(), pid, record);
 
+          // Consume-then-delete: the bundle is READ-ONCE by design, and the disposition
+          // is now persisted, so the ephemeral bundle (redacted code context) has served
+          // its purpose — remove it so it can't linger on disk. Best-effort ONLY (cleanup):
+          // deleted strictly AFTER validation + persist succeed, so a failed record above
+          // is still retryable against the same bundle; a failed unlink here just leaves an
+          // orphan that `policy_adjudication_purge` can sweep later.
+          try {
+            fs.unlinkSync(bundlePath);
+          } catch (err) {
+            void err;
+          }
+
           const summary = {
             kind: dispositionKind,
             policyId,
@@ -1445,6 +1462,28 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
           });
         } catch (err) {
           return { isError: true, content: [{ type: 'text', text: `policy_adjudication_report failed: ${err.message}` }] };
+        }
+      }
+
+      case 'policy_adjudication_purge': {
+        try {
+          const a = args || {};
+          const pid = resolveProject(a);
+          const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
+          const adjStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'adjudication-store.js'));
+          // Project-wide orphan sweep: bundles are keyed by manifestHash (not by
+          // activationId/ts), so a policyId/age filter wouldn't map cleanly — the honest
+          // shape is "remove every leftover bundle for this project". dispositions.json and
+          // other projects are untouched (see adjudication-store.purgeBundles / BUNDLE_RE).
+          const removed = adjStore.purgeBundles(dataDir(), pid);
+          return adjJson({
+            kind: 'adjudication-bundle-purge',
+            projectId: pid,
+            removed,
+            note: 'Deleted leftover ephemeral adjudication bundles (redacted code context from prepare runs that were never recorded) — you control your captured code. Durable dispositions and other projects were not touched, and no policy was changed.',
+          });
+        } catch (err) {
+          return { isError: true, content: [{ type: 'text', text: `policy_adjudication_purge failed: ${err.message}` }] };
         }
       }
 
