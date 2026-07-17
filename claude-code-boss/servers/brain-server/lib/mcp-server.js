@@ -790,7 +790,11 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
           if (res.decision === 'rejected') {
             return { content: [{ type: 'text', text: JSON.stringify({ decision: 'rejected', signature: res.sig, count: res.count, ceiling: cfg.oneHitMaxRecurrence, message: `"${res.sig}" already recurs ${res.count}x in this project (>= ceiling ${cfg.oneHitMaxRecurrence}). Create a curated script instead of marking one-hit.` }, null, 2) }] };
           }
-          return { content: [{ type: 'text', text: JSON.stringify({ decision: res.decision, signature: res.sig, count: res.count, aliases: res.aliases, message: 'Marked one-hit — the Stop hook will not ask to curate it again until it recurs past the ceiling.' }, null, 2) }] };
+          // Surface EVERY signature that registered (a batch call coalesces into one
+          // entry whose aliasSigs cover them all) — the old response echoed only the
+          // representative `sig`, hiding the others (they DID register + are suppressed).
+          const sigList = Array.isArray(res.signatures) && res.signatures.length ? res.signatures : (res.sig ? [res.sig] : []);
+          return { content: [{ type: 'text', text: JSON.stringify({ decision: res.decision, signature: res.sig, signatures: sigList, count: res.count, aliases: res.aliases, message: `Marked one-hit: ${sigList.length} signature(s) — the Stop hook will not ask to curate ${sigList.length === 1 ? 'it' : 'them'} again until they recur past the ceiling.` }, null, 2) }] };
         } catch (err) {
           return { isError: true, content: [{ type: 'text', text: `curation_mark_oneoff failed: ${err.message}` }] };
         }

@@ -166,7 +166,10 @@ function touch(dataDir, projectKey, command, { sessionId, now = Date.now(), wind
  * reason's `sig \`...\``) — preferred over aliases because they match the store
  * exactly, with no alias→sig derivation to get wrong.
  *
- * @returns {{ decision:'marked'|'merged'|'rejected', sig, count, sessions?, aliases? }}
+ * @returns {{ decision:'marked'|'merged'|'rejected', sig, signatures?, count, sessions?, aliases? }}
+ *   `sig` is the REPRESENTATIVE (first) signature; `signatures` (marked/merged only)
+ *   is the COMPLETE set actually covered by the entry (all sigs/aliases), so a batch
+ *   caller can see every signature that registered — not just the first.
  */
 function mark(dataDir, projectKey, { aliases = [], sigs = [], sessionId, now = Date.now(), maxRecurrence = 3, windowDays = 90 } = {}) {
   const store = load(dataDir, projectKey);
@@ -195,7 +198,9 @@ function mark(dataDir, projectKey, { aliases = [], sigs = [], sessionId, now = D
     entry.lastSeen = now;
     if (sessionId && !entry.sessions.includes(sessionId)) pushCapped(entry.sessions, sessionId, MAX_SESSIONS);
     save(dataDir, projectKey, store);
-    return { decision: 'merged', sig: entry.sig, count: countInWindow(entry, now, windowDays), aliases: entry.aliases.slice() };
+    // `signatures` = the entry's FULL merged coverage (every sig/alias), so a batch
+    // caller sees all of them; `sig` stays the representative for backward compat.
+    return { decision: 'merged', sig: entry.sig, signatures: (entry.aliasSigs || []).slice(), count: countInWindow(entry, now, windowDays), aliases: entry.aliases.slice() };
   }
 
   store.entries[sig] = {
@@ -203,7 +208,9 @@ function mark(dataDir, projectKey, { aliases = [], sigs = [], sessionId, now = D
     sessions: sessionId ? [sessionId] : [], firstSeen: now, lastSeen: now, oneHit: true, markedAt: now,
   };
   save(dataDir, projectKey, store);
-  return { decision: 'marked', sig, count: 0, aliases: cleanAliases.slice() };
+  // `signatures` = every signature this new entry covers (all passed sigs+aliases),
+  // not just the representative `sig` — a batch mark registered all of them.
+  return { decision: 'marked', sig, signatures: aliasSigs.slice(), count: 0, aliases: cleanAliases.slice() };
 }
 
 /** Remove entries with no occurrence/marking inside the window (cold). #removed. */

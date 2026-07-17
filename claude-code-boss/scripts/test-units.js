@@ -2753,6 +2753,56 @@ test('oneoff-store: markedSince sees only markings at/after the cutoff', () => {
   assert(!oneoff.markedSince(store, NaN), 'invalid cutoff → false');
 });
 
+// ── FIX #9: curation_mark_oneoff response must reflect ALL marked signatures ──
+// A batch mark COALESCES its sigs into ONE entry (aliasSigs cover them all) — the
+// suppression/count semantics are correct and UNCHANGED here; the only gap was that
+// the response echoed just the representative `sig`. These tests pin that `signatures`
+// now lists every covered sig, while `sig` stays the first for backward compat.
+test('oneoff-store (FIX #9): mark surfaces ALL batch signatures, not just the representative first', () => {
+  const dd = freshDataDir(); const pk = 'p'; const now = 1_700_000_000_000;
+  const m = oneoff.mark(dd, pk, { sigs: ['npm run alpha', 'npm run beta'], now, maxRecurrence: 3 });
+  assertEq(m.decision, 'marked');
+  assert(Array.isArray(m.signatures), 'response carries a signatures[] array');
+  assertEq(m.signatures.slice().sort(), ['npm run alpha', 'npm run beta'], 'BOTH marked sigs surfaced (not only the first)');
+  assertEq(m.sig, 'npm run alpha', 'sig stays the representative (first) for backward compat');
+  // Semantics UNCHANGED: one coalesced entry; BOTH sigs resolve to it (suppression covers all).
+  const store = oneoff.load(dd, pk);
+  assertEq(Object.keys(store.entries).length, 1, 'still a single coalesced entry');
+  assert(oneoff.isOneHit(store, { sig: 'npm run alpha' }, { now, maxRecurrence: 3 }), 'first sig suppressible');
+  assert(oneoff.isOneHit(store, { sig: 'npm run beta' }, { now, maxRecurrence: 3 }), 'second sig ALSO suppressible');
+});
+test('oneoff-store (FIX #9): a single-sig mark still returns exactly that one signature', () => {
+  const dd = freshDataDir(); const pk = 'p'; const now = 1_700_000_000_000;
+  const m = oneoff.mark(dd, pk, { sigs: ['npm run solo'], now, maxRecurrence: 3 });
+  assertEq(m.decision, 'marked');
+  assertEq(m.signatures, ['npm run solo'], 'signatures has the single sig');
+  assertEq(m.sig, 'npm run solo', 'sig unchanged');
+});
+test('oneoff-store (FIX #9): a merge surfaces the FULL post-merge signature set', () => {
+  const dd = freshDataDir(); const pk = 'p'; let now = 1_700_000_000_000;
+  oneoff.mark(dd, pk, { sigs: ['npm run alpha'], now: now++, maxRecurrence: 99 });
+  const m = oneoff.mark(dd, pk, { sigs: ['npm run alpha', 'npm run gamma'], now: now++, maxRecurrence: 99 });
+  assertEq(m.decision, 'merged');
+  assert(m.signatures.includes('npm run alpha') && m.signatures.includes('npm run gamma'),
+    `merged signatures cover the whole entry, got ${JSON.stringify(m.signatures)}`);
+});
+test('curation_mark_oneoff (FIX #9): handler response lists ALL batch signatures + an accurate count', async () => {
+  const url = require('url');
+  const R = process.env.CLAUDE_PLUGIN_ROOT;
+  const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+  const server = mod.createBrainServer({ pluginRoot: R, mode: 'stdio' });
+  // Isolated project key: a fresh temp cwd with a .git marker (resolveProjectKey stops there).
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mark9-'));
+  fs.mkdirSync(path.join(work, '.git'), { recursive: true });
+  const res = await server.handleTool('curation_mark_oneoff', { sigs: ['npm run alpha', 'npm run beta'], cwd: work });
+  const out = JSON.parse(res.content[0].text);
+  assertEq(out.decision, 'marked');
+  assert(Array.isArray(out.signatures), 'handler response has a signatures[] array');
+  assertEq(out.signatures.slice().sort(), ['npm run alpha', 'npm run beta'], 'BOTH sigs surfaced in the handler response');
+  assertEq(out.signature, 'npm run alpha', 'signature stays the representative (backward compat)');
+  assert(/2 signature/.test(out.message || ''), `message reflects the batch count, got: ${out.message}`);
+});
+
 // ─── error-store (deterministic error-guard: recurring Bash failures) ────────
 const errstore = require(path.join(SCRIPTS, 'lib', 'error-store.js'));
 const freshErrDataDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-errstore-'));
@@ -5982,6 +6032,84 @@ test('capture-dispatch: over-budget window is offered in chunks, never skipping 
   assertEq(arr[0], 1, 'offers start at the oldest uncaptured cycle');
   assert(arr.every((v, i) => v === i + 1), `offered cycles are a contiguous prefix (no skip), got ${arr.join(',')}`);
   marker.resetAll(project, sid);
+});
+
+// ── FIX #6: capture-dispatch anti-deadlock SAFETY RELENT (mirrors curation-stop) ──
+// Below the cap the open offer still re-blocks (Allan's block-until-ack is intact);
+// at the cap it RELENTS (allows the Stop) so a down brain-server / stuck model can't
+// hard-deadlock the turn — and the un-captured cycle is NEVER dropped. An ack drains
+// the offer so a LATER offer starts the counter fresh (structural per-offer reset).
+function _capRelentSeed(nCycles, big) {
+  const cd = require('./capture-dispatch.js');
+  const cq = require('./lib/capture-queue.js');
+  const marker = require('./lib/session-marker.js');
+  const cwd = process.env.CLAUDE_PLUGIN_DATA;
+  const project = require('./lib/project-id.js').resolveProjectId({ cwd });
+  const sid = 'cap-relent-' + Math.random().toString(16).slice(2) + '-' + Date.now();
+  const tp = path.join(cwd, `capr-${sid}.jsonl`);
+  marker.resetAll(project, sid);
+  fs.writeFileSync(tp, '');
+  marker.initIfAbsent(project, sid, tp);
+  const pad = big ? ('x'.repeat(1800)) : '';
+  const lines = [];
+  for (let i = 1; i <= nCycles; i++) {
+    lines.push(JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: 'q' + i + '_ ' + pad } }));
+    lines.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'a' + i }] } }));
+  }
+  fs.writeFileSync(tp, lines.join('\n') + '\n');
+  return { cd, cq, marker, project, sid, evt: { session_id: sid, cwd, transcript_path: tp } };
+}
+
+test('capture-dispatch (FIX #6): below the cap an open un-acked offer keeps re-blocking (block-until-ack preserved)', () => {
+  const t = _capRelentSeed(6, false);
+  const deps = { config: { maxBlockAttempts: 5, cooldownMs: 0, maxCapturesPerSession: 50 } };
+  const r1 = t.cd.run(t.evt, deps);
+  assert(r1 && r1.block === true, 'first Stop opens the offer and blocks');
+  assertEq(t.cq.getState(t.project, t.sid).offer.blockCount, 0, 'a fresh offer starts at blockCount 0');
+  // Re-Stop WITHOUT acking, still well below the cap → must RE-BLOCK (the normal flow).
+  const r2 = t.cd.run(t.evt, deps);
+  assert(r2 && r2.block === true, 'below the cap an un-acked offer re-blocks');
+  assert(/capture_lesson|capture_ack/.test(r2.reason || ''), 're-block carries the capture instruction');
+  assert(t.cq.getState(t.project, t.sid).offer.blockCount >= 1, 'each re-block advances the per-offer counter');
+  t.marker.resetAll(t.project, t.sid);
+});
+
+test('capture-dispatch (FIX #6): after maxBlockAttempts un-acked blocks it RELENTS (allows stop) and never drops the cycle', () => {
+  const t = _capRelentSeed(6, false);
+  const deps = { config: { maxBlockAttempts: 2, cooldownMs: 0, maxCapturesPerSession: 50 } };
+  const r1 = t.cd.run(t.evt, deps); assert(r1 && r1.block === true, 'Stop 1: opens offer + blocks (blockCount 0)');
+  const r2 = t.cd.run(t.evt, deps); assert(r2 && r2.block === true, 'Stop 2: re-block below cap (blockCount 1 < 2)');
+  const r3 = t.cd.run(t.evt, deps);
+  assert(!(r3 && r3.block), 'Stop 3: at the cap it RELENTS — returns {} so the turn can end');
+  // No-loss invariant: the offer + queued cycles are PRESERVED — only the block yielded.
+  const st = t.cq.getState(t.project, t.sid);
+  assert(st.offer, 'the offer stays OPEN after relenting (not cleared)');
+  assertEq(st.queue.length, 6, 'the un-captured cycles are NEVER dropped by the relent');
+  assert(st.offer.blockCount >= 2, 'the per-offer block counter reached the cap');
+  // A further Stop keeps relenting (no re-nag, still no drop) — the cycle waits for a future session.
+  const r4 = t.cd.run(t.evt, deps);
+  assert(!(r4 && r4.block), 'past the cap it keeps allowing the stop');
+  assertEq(t.cq.getState(t.project, t.sid).queue.length, 6, 'cycle still queued after repeated relents');
+  t.marker.resetAll(t.project, t.sid);
+});
+
+test('capture-dispatch (FIX #6): an ack drains the offer so a LATER offer starts the block counter fresh', () => {
+  // 12 big cycles → offer1 packs a prefix; after acking it, the remainder (>= maxTurns)
+  // opens a NEW offer whose blockCount must be 0 (the counter is per-offer, not global).
+  const t = _capRelentSeed(12, true);
+  const deps = { config: { maxBlockAttempts: 5, cooldownMs: 0, maxCapturesPerSession: 50 } };
+  const r1 = t.cd.run(t.evt, deps); assert(r1 && r1.block === true, 'offer1 opens + blocks');
+  const off1 = t.cq.getState(t.project, t.sid).offer.windowId;
+  const r2 = t.cd.run(t.evt, deps); assert(r2 && r2.block === true, 're-block bumps offer1 blockCount below cap');
+  assert(t.cq.getState(t.project, t.sid).offer.blockCount >= 1, 'offer1 counter advanced before the ack');
+  // Ack offer1 (the agent's capture_lesson/capture_ack) → reconcile drains it next Stop.
+  t.cq.recordAck(off1, 'captured');
+  const r3 = t.cd.run(t.evt, deps);
+  assert(r3 && r3.block === true, 'a LATER offer opens over the remaining cycles');
+  const off2 = t.cq.getState(t.project, t.sid).offer;
+  assert(off2 && off2.windowId !== off1, 'a genuinely NEW offer window opened');
+  assertEq(off2.blockCount, 0, 'the ack reset the counter — the later offer starts fresh (no cross-offer carryover)');
+  t.marker.resetAll(t.project, t.sid);
 });
 
 // ─── capture-queue (Phase 1.5a: durable redacted cycle queue) ────────────────

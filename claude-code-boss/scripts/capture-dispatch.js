@@ -14,12 +14,17 @@
  *   2. reconcile: drain the open offer when the agent's explicit ack marker
  *      (capture_lesson/capture_ack windowId) is present, else keep it open.
  *   3. if an offer is STILL open → re-block the turn (even on the continuation)
- *      until the agent acks — the turn does not proceed otherwise.
+ *      until the agent acks — the turn does not proceed otherwise, EXCEPT a safety
+ *      valve relents after `maxBlockAttempts` consecutive un-acked re-blocks
+ *      (anti-deadlock: if the brain-server/MCP is down the agent CANNOT ack, and if
+ *      the model is stuck it never will — blocking forever would hard-deadlock).
  *   4. else, gated by cadence bounds + budget, OFFER the oldest queued cycles.
  *
  * Cycles leave the queue ONLY on a matching ack — a lesson is never dropped just
- * because the agent's turn was interrupted. Bounds + an update-safe opt-out come
- * from the merged config so the `standard` profile stays sane.
+ * because the agent's turn was interrupted (nor when the safety valve relents: the
+ * offer + cycles stay durable for a future session, only the BLOCKING yields). Bounds
+ * + an update-safe opt-out come from the merged config so the `standard` profile
+ * stays sane.
  */
 const fs = require('fs');
 const path = require('path');
@@ -29,6 +34,14 @@ const { renderBlock } = require('./lib/transcript-block.js');
 const { redact } = require('./lib/redact.js');
 const { dataDir } = require('./lib/data-dir.js');
 const metrics = require('./lib/metrics.js');
+
+// Safety valve for the block-until-ack loop (step 3): after this many CONSECUTIVE
+// un-acked Stop re-blocks we RELENT (allow the stop) to avoid a hard deadlock when
+// acking is impossible (brain-server/MCP down ⇒ capture_lesson/capture_ack are not
+// callable) or the model is simply stuck. Generous on purpose — capture matters, so
+// the guard re-asks several times before giving up. Overridable via the merged
+// `kb.capture.maxBlockAttempts` (brain-config.json + the update-safe user override).
+const DEFAULT_MAX_BLOCK_ATTEMPTS = 5;
 
 let _resolveProjectId = null;
 function _project(event) {
@@ -141,9 +154,24 @@ function run(event, deps) {
   //    the agent acks (capture_lesson/capture_ack). This holds EVEN on the
   //    continuation (stop_hook_active): Allan's design is that the turn does not
   //    proceed until the agent calls one of the two tools. No ack ⇒ keep asking.
+  //    SAFETY VALVE (mirrors curation-stop's relent): if acking is IMPOSSIBLE — the
+  //    brain-server/MCP is down so capture_lesson/capture_ack literally can't be
+  //    called — or the model is stuck, re-blocking every Stop would hard-deadlock the
+  //    turn (Claude Code's continuation cap is the only backstop). So after
+  //    `maxBlockAttempts` consecutive un-acked re-blocks we relent and allow the stop.
+  //    This does NOT weaken block-until-ack for the normal case (the agent still must
+  //    ack within `maxBlockAttempts` Stops), and it NEVER drops the cycle: the offer +
+  //    queued cycles stay durable for a future session — only the BLOCKING yields.
   if (st.offer) {
     const cur = queue.currentOfferText(project, sid, budget.maxChars);
     if (!cur) return {};
+    const maxBlockAttempts = cfg.maxBlockAttempts != null ? cfg.maxBlockAttempts : DEFAULT_MAX_BLOCK_ATTEMPTS;
+    const blocks = queue.noteBlock(project, sid); // per-offer re-block counter (CAS-safe, resets per offer)
+    if (blocks >= maxBlockAttempts) {
+      console.error(`[capture] relenting after ${blocks} blocks with no ack — allowing stop to avoid deadlock`);
+      metrics.fire('capture.relented', { windowId: cur.windowId, blocks, model }, { sessionId: sid, cwd: ev.cwd });
+      return {}; // cycle stays queued (lessons-never-dropped) — only the block yields this turn
+    }
     metrics.fire('capture.reoffered', { windowId: cur.windowId, model }, { sessionId: sid, cwd: ev.cwd });
     return { block: true, reason: buildInstruction(cur.text, cur.windowId) };
   }
