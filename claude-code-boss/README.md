@@ -1,6 +1,6 @@
 # claude-code-boss
 
-Plugin para Claude Code Desktop — **v2.11.0**
+Plugin para Claude Code Desktop — **v2.12.0**
 
 Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizado leve para Claude Code. A orquestração fica a cargo das ferramentas nativas (Agent/Workflow) — o plugin foca no que o nativo não tem.
 
@@ -225,6 +225,10 @@ padrão do dashboard: token local + guarda de `Origin` contra DNS rebinding);
 
 > **Referência técnica completa** (tools, endpoints, supervisor, config):
 > [`servers/brain-server/README.md`](servers/brain-server/README.md).
+
+## Graph — exploração de repositório (via daemon de memória)
+
+7 tools `graph_*` (`graph_analyze`/`graph_search`/`graph_symbols`/`graph_status`/`graph_ingest`/`graph_callers`/`graph_references`) dão **exploração rápida de um repositório** — hubs por PageRank, busca semântica com vizinhança (CALLS/CONTAINS/IMPORTS), quem chama um símbolo — para entender um repo grande sem garimpar arquivo por arquivo. São **cliente REST puro** do Session Graph Engine do daemon native-java (`POST /api/v1/graph/*`): **nenhum Java é embarcado** e, se o daemon estiver offline, as tools **falham graciosamente** (fail-open). Path-autoritativo (o daemon deriva o `project_id` do caminho e o devolve). Ficam **fora** do KB/mutex — independentes do Brain KB local. Porta de entrada: `graph_analyze`. Ref. técnica: [`servers/brain-server/README.md`](servers/brain-server/README.md).
 
 ## Dashboard
 
