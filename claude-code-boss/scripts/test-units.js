@@ -27,6 +27,16 @@ process.env.CLAUDE_PLUGIN_ROOT = ROOT;
 // Isolate runtime artifacts.
 process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-units-'));
 
+// Isolate os.homedir()-derived state (the GLOBAL dir: active-data-dir pointer +
+// brain user-config) into a throwaway home for the WHOLE run. data-dir.js now
+// PUBLISHES a pointer on every valid-env dataDir() call and brain-config backfills
+// the user-config up to globalDir(); without this, the test run would scribble
+// into — and read back from — the developer's real ~/.claude/claude-code-boss,
+// hijacking a live session's backend choice. Set BOTH vars so os.homedir()
+// resolves here on every platform (Windows prefers USERPROFILE, POSIX HOME).
+process.env.USERPROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-units-home-'));
+process.env.HOME = process.env.USERPROFILE;
+
 // ─── Tiny test runner ────────────────────────────────────────────────────────
 const RESULTS = [];
 const PENDING = [];
@@ -57,6 +67,27 @@ function assertEq(actual, expected, msg) {
   const a = JSON.stringify(actual);
   const e = JSON.stringify(expected);
   if (a !== e) throw new Error(`${msg || 'expected =='}: got ${a}, want ${e}`);
+}
+
+// Run `fn` with os.homedir() pointed at a FRESH throwaway home (both HOME and
+// USERPROFILE, so it holds on every platform), restoring the prior values after.
+// Needed because data-dir.js publishes an active-data-dir pointer and reads it
+// back: a test asserting the bare HOME_FALLBACK must start from a home with no
+// pointer, and must not inherit one written by an earlier test in the shared
+// run-wide temp home. Returns whatever `fn` returns; `fn` receives the home path.
+function withTempHome(fn) {
+  const savedHome = process.env.HOME;
+  const savedProfile = process.env.USERPROFILE;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-home-'));
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  try {
+    return fn(home);
+  } finally {
+    if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+    if (savedProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = savedProfile;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 }
 
 // ─── curation-classifier ─────────────────────────────────────────────────────
@@ -2190,22 +2221,32 @@ test('retrieve-core: short prompt pre-filters (no embedder)', async () => {
 // ─── brain-config: contextExcludeTypes + DATA_DIR user-override deep-merge ────
 const brainConfig = require('./lib/brain-config.js');
 
-// Run `fn` with a temp DATA_DIR user-override (brain/user-config.json = `obj`).
-// `obj === undefined` writes no override (exercises the "absent" path). Restores
-// CLAUDE_PLUGIN_DATA + the brain-config cache afterwards no matter what.
+// Run `fn` with a temp per-user override at the GLOBAL path (globalDir()/
+// user-config.json — the new canonical location load() reads). Isolates a fresh
+// home AND data dir per call so each exercises a clean override with no bleed from
+// a prior call's global file. `obj === undefined` writes nothing (the "absent"
+// path). Restores HOME/USERPROFILE/CLAUDE_PLUGIN_DATA + the cache no matter what.
 function withUserConfig(obj, fn) {
-  const saved = process.env.CLAUDE_PLUGIN_DATA;
+  const savedData = process.env.CLAUDE_PLUGIN_DATA;
+  const savedHome = process.env.HOME;
+  const savedProfile = process.env.USERPROFILE;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-usercfg-home-'));
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-usercfg-'));
-  if (obj !== undefined) {
-    fs.mkdirSync(path.join(dir, 'brain'), { recursive: true });
-    fs.writeFileSync(path.join(dir, 'brain', 'user-config.json'), JSON.stringify(obj));
-  }
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
   process.env.CLAUDE_PLUGIN_DATA = dir;
+  if (obj !== undefined) {
+    const gp = path.join(home, '.claude', 'claude-code-boss', 'user-config.json');
+    fs.mkdirSync(path.dirname(gp), { recursive: true });
+    fs.writeFileSync(gp, JSON.stringify(obj));
+  }
   brainConfig._resetCache();
   try {
     return fn();
   } finally {
-    process.env.CLAUDE_PLUGIN_DATA = saved;
+    process.env.CLAUDE_PLUGIN_DATA = savedData;
+    if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+    if (savedProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = savedProfile;
     brainConfig._resetCache();
   }
 }
@@ -5417,43 +5458,100 @@ test('tuning-advisor: warn sorts before suggest', () => {
 // ─── lib/data-dir.js — one guarded resolver (kills the ${...} split-brain) ────
 const dataDirLib = require('./lib/data-dir.js');
 
-test('data-dir: honors a real CLAUDE_PLUGIN_DATA value', () => {
-  const saved = process.env.CLAUDE_PLUGIN_DATA;
-  try {
-    process.env.CLAUDE_PLUGIN_DATA = path.join(os.tmpdir(), 'ccb-dd-real');
-    assertEq(dataDirLib.dataDir(), path.join(os.tmpdir(), 'ccb-dd-real'));
-  } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+test('data-dir: honors a real CLAUDE_PLUGIN_DATA value AND publishes the active pointer', () => {
+  // (a) env wins — and dataDir() PUBLISHES it to the global pointer so env-less
+  // hooks (SessionStart etc.) can follow the SAME live folder instead of forking.
+  withTempHome((home) => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const real = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dd-real-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = real;
+      assertEq(dataDirLib.dataDir(), real);
+      assertEq(dataDirLib.readActivePointer(), real);
+      assert(fs.existsSync(path.join(home, '.claude', 'claude-code-boss', 'active-data-dir.json')),
+        'dataDir() with a real env must publish the active-data-dir pointer');
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+  });
 });
 
-test('data-dir: falls back to the stable home path when env is absent', () => {
-  const saved = process.env.CLAUDE_PLUGIN_DATA;
-  try {
-    delete process.env.CLAUDE_PLUGIN_DATA;
-    assertEq(dataDirLib.dataDir(),
-      path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss'));
-  } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+test('data-dir: FOLLOWS the published pointer when env is absent', () => {
+  // (b) no env → resolve the app's live folder from the global pointer that an
+  // env-aware process (brain-server / a guarded hook) previously published.
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const live = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dd-live-'));
+    try {
+      delete process.env.CLAUDE_PLUGIN_DATA;
+      dataDirLib.writeActivePointer(live);
+      assertEq(dataDirLib.dataDir(), live);
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+  });
+});
+
+test('data-dir: bootstraps the most-recently-written claude-code-boss* sibling (excludes other plugins)', () => {
+  // (c) no env, no pointer → pick the live install by brain/ mtime, and NEVER a
+  // non-claude-code-boss sibling (codex-inline, rf-reviewer-*) even if it is newer.
+  withTempHome((home) => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    try {
+      delete process.env.CLAUDE_PLUGIN_DATA;
+      const base = path.join(home, '.claude', 'plugins', 'data');
+      const mk = (name, mtimeSec) => {
+        const b = path.join(base, name, 'brain');
+        fs.mkdirSync(b, { recursive: true });
+        fs.utimesSync(b, mtimeSec, mtimeSec);
+      };
+      const now = Date.now() / 1000;
+      mk('claude-code-boss', now - 100);
+      mk('claude-code-boss-abcd1234', now - 10);   // most-recent claude-code-boss
+      mk('claude-code-boss-old', now - 500);
+      mk('codex-inline', now + 1000);              // newer, but a DIFFERENT plugin
+      mk('rf-reviewer-xyz', now + 2000);           // newer, but a DIFFERENT plugin
+      const want = path.join(base, 'claude-code-boss-abcd1234');
+      assertEq(dataDirLib.bootstrapMostRecent(), want);
+      assertEq(dataDirLib.dataDir(), want);
+      // and bootstrapping self-publishes the pick so the next env-less call is O(1)
+      assertEq(dataDirLib.readActivePointer(), want);
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+  });
+});
+
+test('data-dir: falls back to the stable home path when nothing exists', () => {
+  // (d) no env, no pointer, no siblings → the bare, stable home fallback.
+  withTempHome((home) => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    try {
+      delete process.env.CLAUDE_PLUGIN_DATA;
+      assertEq(dataDirLib.dataDir(),
+        path.join(home, '.claude', 'plugins', 'data', 'claude-code-boss'));
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+  });
 });
 
 test('data-dir: REJECTS an unexpanded ${...} placeholder (no literal-dir split-brain)', () => {
   // TEETH: some hook contexts don't substitute ${CLAUDE_PLUGIN_DATA}; a naive
   // `env || fallback` would return the literal "${CLAUDE_PLUGIN_DATA}" as a dir,
   // splitting state away from the guarded scripts. dataDir() must fall back.
-  const saved = process.env.CLAUDE_PLUGIN_DATA;
-  try {
-    process.env.CLAUDE_PLUGIN_DATA = '${CLAUDE_PLUGIN_DATA}';
-    const d = dataDirLib.dataDir();
-    assert(!d.includes('${'), `must not resolve to a placeholder dir, got ${d}`);
-    assertEq(d, path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss'));
-  } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+  withTempHome((home) => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = '${CLAUDE_PLUGIN_DATA}';
+      const d = dataDirLib.dataDir();
+      assert(!d.includes('${'), `must not resolve to a placeholder dir, got ${d}`);
+      assertEq(d, path.join(home, '.claude', 'plugins', 'data', 'claude-code-boss'));
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+  });
 });
 
 test('data-dir: REJECTS an empty-string env (falls back)', () => {
-  const saved = process.env.CLAUDE_PLUGIN_DATA;
-  try {
-    process.env.CLAUDE_PLUGIN_DATA = '';
-    assertEq(dataDirLib.dataDir(),
-      path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss'));
-  } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+  withTempHome((home) => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = '';
+      assertEq(dataDirLib.dataDir(),
+        path.join(home, '.claude', 'plugins', 'data', 'claude-code-boss'));
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+  });
 });
 
 test('data-dir: validEnvDir mirrors the guard (unit)', () => {
@@ -5461,6 +5559,85 @@ test('data-dir: validEnvDir mirrors the guard (unit)', () => {
   assertEq(dataDirLib.validEnvDir('${X}'), null);
   assertEq(dataDirLib.validEnvDir(''), null);
   assertEq(dataDirLib.validEnvDir(undefined), null);
+});
+
+test('data-dir: pointer helpers round-trip; readActivePointer null for missing/corrupt/stale', () => {
+  withTempHome((home) => {
+    // globalDir() is the stable, cross-folder-invariant home; the pointer lives there.
+    assertEq(dataDirLib.globalDir(), path.join(home, '.claude', 'claude-code-boss'));
+    assertEq(path.dirname(dataDirLib.activePointerPath()), dataDirLib.globalDir());
+    // missing pointer file → null
+    assertEq(dataDirLib.readActivePointer(), null);
+    // round-trip a real, existing dir
+    const real = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ptr-'));
+    dataDirLib.writeActivePointer(real);
+    assertEq(dataDirLib.readActivePointer(), real);
+    // stale dir (recorded but since deleted) self-heals → null
+    const gone = path.join(os.tmpdir(), `ccb-ptr-gone-${Date.now()}`);
+    dataDirLib.writeActivePointer(gone);
+    assertEq(dataDirLib.readActivePointer(), null);
+    // corrupt JSON → null (tolerated, not thrown)
+    fs.writeFileSync(dataDirLib.activePointerPath(), '{not json');
+    assertEq(dataDirLib.readActivePointer(), null);
+  });
+});
+
+test('brain-config: reads the per-user override from the GLOBAL path (not per-data-dir)', () => {
+  // The backend choice must be visible to every writer regardless of which data
+  // dir it resolved — so the override lives at globalDir()/user-config.json.
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ucp-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      const gp = path.join(dataDirLib.globalDir(), 'user-config.json');
+      fs.mkdirSync(path.dirname(gp), { recursive: true });
+      fs.writeFileSync(gp, JSON.stringify({ backend: { type: 'mcp-memory' } }));
+      brainConfig._resetCache();
+      assertEq(brainConfig.getBackendType(), 'mcp-memory');
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; brainConfig._resetCache(); }
+  });
+});
+
+test('brain-config: backfills a legacy per-data-dir user-config up to the global path', () => {
+  // Migration: an existing user's choice under DATA_DIR/brain/user-config.json is
+  // copied up to globalDir() the first time load() runs with no global override.
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bf-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      const legacy = path.join(dir, 'brain', 'user-config.json');
+      fs.mkdirSync(path.dirname(legacy), { recursive: true });
+      fs.writeFileSync(legacy, JSON.stringify({ backend: { type: 'mcp-memory' } }));
+      const gp = path.join(dataDirLib.globalDir(), 'user-config.json');
+      assert(!fs.existsSync(gp), 'precondition: global override absent');
+      brainConfig._resetCache();
+      assertEq(brainConfig.getBackendType(), 'mcp-memory');       // honored via backfill
+      assert(fs.existsSync(gp), 'legacy override must be copied up to the global path');
+      assertEq(JSON.parse(fs.readFileSync(gp, 'utf-8')), { backend: { type: 'mcp-memory' } });
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; brainConfig._resetCache(); }
+  });
+});
+
+test('brain-config: backfill NEVER overwrites an existing global override', () => {
+  // An already-migrated global choice must win; a stale legacy file cannot clobber it.
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bf2-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      const gp = path.join(dataDirLib.globalDir(), 'user-config.json');
+      fs.mkdirSync(path.dirname(gp), { recursive: true });
+      fs.writeFileSync(gp, JSON.stringify({ backend: { type: 'local' } }));          // existing global
+      const legacy = path.join(dir, 'brain', 'user-config.json');
+      fs.mkdirSync(path.dirname(legacy), { recursive: true });
+      fs.writeFileSync(legacy, JSON.stringify({ backend: { type: 'mcp-memory' } })); // conflicting legacy
+      brainConfig._resetCache();
+      assertEq(brainConfig.getBackendType(), 'local');            // global wins
+      assertEq(JSON.parse(fs.readFileSync(gp, 'utf-8')), { backend: { type: 'local' } });
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; brainConfig._resetCache(); }
+  });
 });
 
 // ─── lib/atomic-write.js — temp+rename so readers never see a partial file ───
@@ -5572,6 +5749,10 @@ test('data-dir: migrated consumers import the shared resolver', () => {
     'lib/recall-health.js', 'lib/scope-search.js', 'conversation-ingest.js',
     'curation-session.js', 'curation-detect.js', 'decision-detect.js',
     'brain-index-native.js', 'brain-promote.js', 'dashboard.js',
+    // Phase-1 inliners repointed off the bare fallback onto the shared resolver.
+    'brain-embedder.js', 'doctor-advisory.js', 'project-identity-advisory.js',
+    'research-followup-detect.js', 'skill-promote-trigger.js', 'tuning-advisory.js',
+    'review-checklist-advisory.js',
   ];
   for (const rel of consumers) {
     const src = fs.readFileSync(path.join(SCRIPTS, rel), 'utf-8');
@@ -5640,17 +5821,19 @@ test('atomic-write: a NON-transient rename error is NOT retried (fails fast, des
 });
 
 test('data-dir: REJECTS a whitespace-only env value (falls back)', () => {
-  const saved = process.env.CLAUDE_PLUGIN_DATA;
-  try {
-    for (const ws of ['   ', '\t', '\n']) {
-      process.env.CLAUDE_PLUGIN_DATA = ws;
-      assertEq(dataDirLib.dataDir(),
-        path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss'),
-        `whitespace ${JSON.stringify(ws)} must fall back`);
-    }
-    assertEq(dataDirLib.validEnvDir('   '), null);
-    assertEq(dataDirLib.validEnvDir('\t'), null);
-  } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+  withTempHome((home) => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    try {
+      for (const ws of ['   ', '\t', '\n']) {
+        process.env.CLAUDE_PLUGIN_DATA = ws;
+        assertEq(dataDirLib.dataDir(),
+          path.join(home, '.claude', 'plugins', 'data', 'claude-code-boss'),
+          `whitespace ${JSON.stringify(ws)} must fall back`);
+      }
+      assertEq(dataDirLib.validEnvDir('   '), null);
+      assertEq(dataDirLib.validEnvDir('\t'), null);
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+  });
 });
 
 test('data-dir: dashboard.js resolvers are guarded (no bare `env || fallback` split-brain)', () => {

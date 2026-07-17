@@ -18,7 +18,7 @@ let _embedder = null;
 let _mcp = null;
 
 // Shipped config (config/brain-config.json) ⊕ per-user override
-// (DATA_DIR/brain/user-config.json). Delegating to lib/brain-config keeps the
+// (globalDir()/user-config.json). Delegating to lib/brain-config keeps the
 // merge in ONE place: this is what lets a user enable the mcp-memory backend +
 // ingestion for THEMSELVES without editing the shipped file (which would break
 // everyone who installs the plugin without the external daemon), and the
