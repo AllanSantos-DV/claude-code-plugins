@@ -383,6 +383,15 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
     return result;
   }
 
+  // ─── Session Graph Engine (native-java daemon) — pure REST client ────────────
+  // The graph_* tools give fast repo exploration (symbols / CALLS / PageRank) by
+  // consuming the local memory daemon's /api/v1/graph API. Client-pure: no Java is
+  // embedded; they fail open when the daemon is offline/old. They touch the EXTERNAL
+  // daemon, not the local KB singleton, so they bypass withLock AND the local/remote
+  // KB backend switch. Default root = the session CWD (stdio); HTTP callers pass `root`.
+  const { createGraphTools } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'graph', 'tools.js'));
+  const graphTools = createGraphTools({ cwd: () => process.cwd() });
+
   // ─── Tool list ──────────────────────────────────────────────────────────────
   const TOOLS = [
     {
@@ -508,6 +517,9 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
     },
   ];
 
+  // Advertise the Session Graph Engine tools alongside the KB/research tools.
+  TOOLS.push(...graphTools.definitions);
+
   // ─── Tool handlers (faithful move from the previous index.js switch) ───────
   async function handleTool(name, args) {
     // Remote brain (Native Java daemon): route write/search/related/count KB tools
@@ -516,6 +528,9 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
     // KB via _testHooks.getKB forces the LOCAL path (so it exercises the local case
     // without depending on / mutating the shared brain-backend singleton mode).
     const forceLocal = !!(_testHooks && _testHooks.getKB);
+    // Session Graph Engine tools: pure REST client of the memory daemon, independent of the
+    // KB backend (local/mcp-memory) and the KB mutex — dispatch directly, fail-open.
+    if (graphTools.names.has(name)) return graphTools.handle(name, args);
     if (!forceLocal && REMOTE_KB_TOOLS.has(name)) {
       const backend = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-backend.js'));
       if (backend.peekMode() === 'mcp-memory') {

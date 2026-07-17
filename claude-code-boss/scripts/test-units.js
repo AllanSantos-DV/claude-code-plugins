@@ -6830,6 +6830,151 @@ test('policy_self_update_report + apply: both tools are OUT of KB_TOOLS/REMOTE_K
   }
 });
 
+// ─── graph/* (Session Graph Engine client) — daemon-free, mock fetch/discover ─
+const graphDaemon = require('./lib/graph/daemon.js');
+const graphClient = require('./lib/graph/client.js');
+const { createGraphTools } = require('./lib/graph/tools.js');
+
+/** Mock fetch that records calls and serves canned /api/v1/graph responses. */
+function makeGraphFetch(routes) {
+  const calls = [];
+  const fetchImpl = async (url, opts) => {
+    const s = String(url);
+    const sub = s.includes('/api/v1/graph/') ? s.split('/api/v1/graph/')[1] : (s.endsWith('/health') ? 'health' : s);
+    calls.push({ sub, body: opts && opts.body ? JSON.parse(opts.body) : null });
+    const r = routes[sub];
+    const res = typeof r === 'function' ? r() : r;
+    if (!res) throw new Error('no mock route for ' + sub);
+    return { status: res.status, headers: { get: (k) => (res.headers || {})[k] }, json: async () => res.json };
+  };
+  return { calls, fetchImpl };
+}
+/** A /status route that advances through states on successive calls. */
+function seqStatus(states) {
+  let i = 0;
+  return () => {
+    const state = states[Math.min(i, states.length - 1)]; i++;
+    return { status: 200, json: { project_id: 'p', root: 'r', state, nodes: state === 'ready' ? 3 : 0, edges: 0 } };
+  };
+}
+
+test('graph/daemon: readRegistry missing → null', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-graph-'));
+  assertEq(graphDaemon.readRegistry(d), null);
+});
+test('graph/daemon: readRegistry valid → info.url', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-graph-'));
+  fs.writeFileSync(path.join(d, 'daemon.json'), JSON.stringify({ url: 'http://127.0.0.1:9', port: 9 }));
+  const info = graphDaemon.readRegistry(d);
+  assert(info && info.url === 'http://127.0.0.1:9', 'url parsed');
+});
+test('graph/daemon: readRegistry corrupt → null', () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-graph-'));
+  fs.writeFileSync(path.join(d, 'daemon.json'), '{not json');
+  assertEq(graphDaemon.readRegistry(d), null);
+});
+test('graph/daemon: health 200/503 alive, 404/err dead', async () => {
+  const ok = await graphDaemon.health('http://x', { fetchImpl: async () => ({ status: 200 }) });
+  const degraded = await graphDaemon.health('http://x', { fetchImpl: async () => ({ status: 503 }) });
+  const dead = await graphDaemon.health('http://x', { fetchImpl: async () => ({ status: 404 }) });
+  const err = await graphDaemon.health('http://x', { fetchImpl: async () => { throw new Error('net'); } });
+  assertEq([ok, degraded, dead, err], [true, true, false, false]);
+});
+
+test('graph/client: clampInt bounds', () => {
+  assertEq(graphClient.clampInt(999, 20, 100), 100);
+  assertEq(graphClient.clampInt(0, 20, 100), 1);
+  assertEq(graphClient.clampInt('x', 20, 100), 20);
+});
+test('graph/client: assertSafeRoot rejects disk-root/missing, accepts real dir', () => {
+  assert(graphClient.assertSafeRoot('C:') !== null, 'disk root rejected');
+  assert(graphClient.assertSafeRoot(path.join(ROOT, '__nope__')) !== null, 'missing rejected');
+  assertEq(graphClient.assertSafeRoot(ROOT), null);
+});
+test('graph/client: callsCaveatFor is Java-only', () => {
+  assertEq(graphClient.callsCaveatFor('a.java'), null);
+  assert(graphClient.callsCaveatFor('a.py'), 'py caveat');
+  assert(graphClient.callsCaveatFor('a.py::f'), 'py node-id caveat');
+  assertEq(graphClient.callsCaveatFor('a.java::f'), null);
+});
+test('graph/client: zeroNodesMessage variants', () => {
+  assert(graphClient.zeroNodesMessage({}).includes('refresh'), 'no report → refresh hint');
+  assert(graphClient.zeroNodesMessage({ report: { scanned: 5, files: 0 } }).includes('none of a language'), 'language msg');
+});
+
+test('graph/client: ensureCapable 404 → GRAPH_API_MISSING', async () => {
+  graphClient.__clearCapCache();
+  const m = makeGraphFetch({ status: { status: 404, json: { message: 'no api' } } });
+  let code = null;
+  try { await graphClient.ensureCapable('http://cap404', { root: 'r' }, { fetchImpl: m.fetchImpl }); }
+  catch (e) { code = e.code; }
+  assertEq(code, 'GRAPH_API_MISSING');
+});
+test('graph/client: ensureReady ready → status-first, no ingest', async () => {
+  const m = makeGraphFetch({ status: { status: 200, json: { state: 'ready', nodes: 3, edges: 2 } } });
+  const st = await graphClient.ensureReady('http://ready', { root: 'r' }, { fetchImpl: m.fetchImpl, sleepImpl: async () => {} });
+  assertEq(st.state, 'ready');
+  assertEq(m.calls.filter(c => c.sub === 'ingest').length, 0);
+});
+test('graph/client: ensureReady not_indexed → ingest → poll → ready', async () => {
+  const m = makeGraphFetch({ status: seqStatus(['not_indexed', 'indexing', 'ready']), ingest: { status: 202, json: {} } });
+  const st = await graphClient.ensureReady('http://ni', { root: 'r' }, { fetchImpl: m.fetchImpl, sleepImpl: async () => {} });
+  assertEq(st.state, 'ready');
+  assertEq(m.calls.filter(c => c.sub === 'ingest').length, 1);
+});
+test('graph/client: ensureReady 429 on ingest → queued + retryAfter', async () => {
+  const m = makeGraphFetch({ status: { status: 200, json: { state: 'not_indexed', nodes: 0 } }, ingest: { status: 429, headers: { 'retry-after': '12' }, json: { code: 'QUEUE_SATURATED' } } });
+  const st = await graphClient.ensureReady('http://q', { root: 'r' }, { fetchImpl: m.fetchImpl, sleepImpl: async () => {} });
+  assert(st.queued === true, 'queued');
+  assertEq(st.retryAfter, 12);
+});
+
+test('graph/tools: fail-open when daemon offline', async () => {
+  const t = createGraphTools({ cwd: () => ROOT, discover: async () => null });
+  const out = await t.handle('graph_status', {});
+  assert(!out.isError, 'not isError');
+  assert(out.content[0].text.startsWith('🕸️ Graph unavailable'), 'offline text');
+});
+test('graph/tools: capability 404 surfaces update guidance', async () => {
+  graphClient.__clearCapCache();
+  const m = makeGraphFetch({ status: { status: 404, json: { message: 'x' } } });
+  const t = createGraphTools({ cwd: () => ROOT, fetchImpl: m.fetchImpl, discover: async () => ({ url: 'http://tcap404' }) });
+  const out = await t.handle('graph_status', {});
+  assert(out.content[0].text.includes('does not expose the Graph API'), 'update guidance');
+});
+test('graph/tools: read tool never ingests when not ready', async () => {
+  graphClient.__clearCapCache();
+  const m = makeGraphFetch({ status: { status: 200, json: { state: 'not_indexed', nodes: 0, edges: 0 } } });
+  const t = createGraphTools({ cwd: () => ROOT, fetchImpl: m.fetchImpl, discover: async () => ({ url: 'http://tread' }) });
+  const out = await t.handle('graph_symbols', {});
+  assert(out.content[0].text.includes('not ready'), 'guidance text');
+  assertEq(m.calls.filter(c => c.sub === 'ingest').length, 0);
+  assertEq(m.calls.filter(c => c.sub === 'symbols').length, 0);
+});
+test('graph/tools: analyze returns hubs + daemon project_id, sends no expected_project_id', async () => {
+  graphClient.__clearCapCache();
+  const m = makeGraphFetch({
+    status: { status: 200, json: { project_id: 'github.com/acme/x', root: '/r', state: 'ready', nodes: 3, edges: 2 } },
+    symbols: { status: 200, json: { symbols: [{ id: 'a.java::A', name: 'A', type: 'CLASS', file: 'a.java', pagerank: 0.9 }] } },
+  });
+  const t = createGraphTools({ cwd: () => ROOT, fetchImpl: m.fetchImpl, discover: async () => ({ url: 'http://tanalyze' }) });
+  const out = await t.handle('graph_analyze', {});
+  assert(out.content[0].text.includes('Hubs'), 'hubs header');
+  assert(out.content[0].text.includes('A'), 'symbol A listed');
+  // path-authoritative: the scope line shows the DAEMON-derived project_id, not a client guess.
+  assert(out.content[0].text.includes('github.com/acme/x'), 'daemon project_id displayed');
+  // simplification invariant: the client never sends expected_project_id — only path (+ tool args).
+  assert(m.calls.every((c) => !c.body || !('expected_project_id' in c.body)), 'no expected_project_id in any request body');
+});
+test('graph/tools: ROOT_CONFLICT reports both roots', async () => {
+  graphClient.__clearCapCache();
+  const m = makeGraphFetch({ status: { status: 409, json: { code: 'ROOT_CONFLICT', mappedRoot: '/a', requestedRoot: '/b' } } });
+  const t = createGraphTools({ cwd: () => ROOT, fetchImpl: m.fetchImpl, discover: async () => ({ url: 'http://tconf' }) });
+  const out = await t.handle('graph_status', {});
+  const txt = out.content[0].text;
+  assert(txt.includes('/a') && txt.includes('/b') && txt.includes('Root conflict'), 'both roots + label');
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
