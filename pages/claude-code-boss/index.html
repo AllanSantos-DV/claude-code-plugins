@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss — memória semântica e execução curada para o Claude Code</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. A v2.12.0 conclui a Fase 3 do auto-aprendizado com um juiz LLM independente, sem humano recorrente: regras duras viram dinâmicas via agents/policy-auditor.md, invocado por /policy-adjudicate; evidência real de gatilho é capturada só por opt-in; policy_self_update_report recomenda, e policy_apply_candidate só demove para advisory com triple-gate e ledger. Honesto: é estimativa de juiz, não FP medido; surfaçar ≠ enforce; nunca auto-muta regra ativada pelo usuário. A versão também adiciona exploração por grafo semântico: 7 tools graph_* falam REST puro com o Session Graph Engine do daemon native-java (PageRank + CALLS/CONTAINS/IMPORTS), sem Java embarcado, fail-open offline, path-autoritativo e fora do mutex do Brain KB." />
+<title>claude-code-boss v2.13.0 — segurança endurecida e gate de release em duas camadas</title>
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. A v2.13.0 endurece segurança e robustez após auditoria adversarial da v2.12.0, com seis achados verificados na fonte: autenticação mútua no model-router, classificação NIM local por padrão, válvula anti-deadlock no capture, purga de bundles de adjudicação, policy-store com janela de corrida estreitada e confirmação completa no one-off. Também adiciona gate de release em duas camadas: mecânico determinístico que bloqueia drift/conflitos, e auditor adversarial read-only, consultivo, com decisão final do dono." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -704,6 +704,44 @@
 
 
 
+  /* v2.13.0 : seguranca e gate de release em duas camadas - endurece achados verificados sem prometer eliminar fronteiras impossiveis */
+  .fortress{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:860px; font-family:var(--mono); margin:0 0 36px }
+  .ft-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .ft-bar .k{ color:var(--accent) }
+  .ft-bar .m{ color:#8a877f }
+  .ft-stage{ padding:18px 22px 8px; display:grid; grid-template-columns:minmax(280px,1.08fr) minmax(250px,.92fr); gap:18px; align-items:stretch }
+  .ft-svg{ width:100%; min-height:320px; border:1px solid var(--panel-line); border-radius:12px;
+    background:radial-gradient(circle at 50% 28%, rgba(180,97,30,.22), transparent 36%), linear-gradient(180deg, rgba(255,255,255,.045), rgba(255,255,255,.012)) }
+  .ft-svg text{ font-family:var(--mono); fill:#d8d4cc; font-size:11px }
+  .ft-svg .mut{ fill:#8a877f }
+  .ft-svg .wire{ fill:none; stroke:#6d6257; stroke-width:1.4; opacity:.85 }
+  .ft-svg .hot{ fill:none; stroke:var(--accent); stroke-width:2.4 }
+  .ft-svg .fill{ fill:#151319; stroke:var(--accent); stroke-width:1.7 }
+  .ft-svg .dim{ fill:#121116; stroke:#7d746c; stroke-width:1.2 }
+  .ft-svg .seal{ fill:var(--accent); opacity:.94 }
+  .ft-ledger{ display:grid; gap:10px }
+  .ft-card{ border:1px solid var(--panel-line); border-radius:10px; padding:13px 14px; background:rgba(255,255,255,.03) }
+  .ft-card .ey{ display:block; font-size:9.5px; letter-spacing:.15em; text-transform:uppercase; color:var(--accent); margin:0 0 8px }
+  .ft-card p{ margin:0; font-size:11.5px; line-height:1.55; color:#a29f97 }
+  .ft-card b{ color:var(--panel-ink); font-weight:600 }
+  .ft-card code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .ft-findings{ display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:10px }
+  .ft-findings span{ border:1px solid rgba(255,255,255,.13); border-radius:7px; padding:7px 8px; font-size:10.5px; line-height:1.35; color:#a29f97; background:rgba(255,255,255,.02) }
+  .ft-findings b{ display:block; color:var(--accent); font-weight:700; margin-bottom:2px }
+  .ft-gates{ display:grid; grid-template-columns:1fr 1fr; gap:12px; padding:4px 22px 18px }
+  .ft-gate{ border:1px solid var(--panel-line); border-radius:10px; padding:13px 14px; background:rgba(255,255,255,.025) }
+  .ft-gate h4{ margin:0 0 8px; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent) }
+  .ft-gate ul{ margin:0; padding:0; list-style:none; display:grid; gap:7px }
+  .ft-gate li{ position:relative; padding-left:16px; font-size:11.5px; line-height:1.45; color:#a29f97 }
+  .ft-gate li::before{ content:"■"; position:absolute; left:0; top:1px; color:var(--accent); font-size:7px }
+  .ft-gate b{ color:var(--panel-ink); font-weight:600 }
+  .ft-foot{ padding:14px 22px; border-top:1px solid var(--panel-line); font-size:11px; line-height:1.6; color:#8a877f }
+  .ft-foot b{ color:#a29f97 }
+  .ft-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+
+
   /* v2.12.0 : juiz independente + grafo semantico - regras duras ficam dinamicas por adjudicacao nativa; graph_* explora repos via Session Graph Engine (REST puro, fail-open, path-autoritativo) */
   .graphship{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
     box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:820px; font-family:var(--mono); margin:0 0 36px }
@@ -745,7 +783,7 @@
   .frow{ display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between }
   .flinks a{ margin-right:16px }
 
-  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
+  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
   @media (prefers-reduced-motion:reduce){ .caret{ animation:none } .reveal{ opacity:1 !important; transform:none !important } }
   .reveal{ opacity:0; transform:translateY(14px); animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards }
   @keyframes rise{ to{ opacity:1; transform:none } }
@@ -756,7 +794,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.12.0</span>
+    <span class="ver">v2.13.0</span>
   </nav>
 
   <header class="hero">
@@ -823,6 +861,16 @@
         <h3>Inspeção sob demanda</h3>
         <p>Um painel em <code>localhost</code> para ver a KB, os hooks e os logs. Abre quando você chama, não no boot.</p>
       </div>
+      <div class="cell">
+        <p class="kick">Segurança</p>
+        <h3>Defesas estreitadas na fonte</h3>
+        <p>A v2.13.0 fecha 6 achados verificados: token no model-router antes de rotear credenciais, NIM local por padrão, anti-deadlock no capture, purga de bundles, RMW no policy-store e confirmação completa no one-off. Reduz superfície; não promete impossível.</p>
+      </div>
+      <div class="cell">
+        <p class="kick">Release gate</p>
+        <h3>Duas camadas antes do corte</h3>
+        <p>Uma camada mecânica bloqueia drift de docs, changelog e conflitos; a camada adversarial é um agente read-only que revisa o código atual e emite parecer consultivo. O dono decide o go/no-go.</p>
+      </div>
       <div class="cell" style="grid-column:1/-1">
         <p class="kick">Políticas</p>
         <h3>Constraints que você ativa</h3>
@@ -831,6 +879,111 @@
     </div>
   </section>
 
+
+  <section>
+    <p class="label">Novo na v2.13.0 · segurança + gate de release</p>
+    <p class="lede">A v2.13.0 é uma release de <b>endurecimento</b>. Ela nasce de uma auditoria adversarial da v2.12.0: <b>6 achados reais</b>, cada um verificado na fonte antes da correção (um 7º era falso-positivo e foi corrigido como tal). A história tem dois lados: reduzir superfícies de segurança e robustez — sem prometer eliminar fronteiras impossíveis — e institucionalizar um <b>gate de release em duas camadas</b>, uma mecânica e uma adversarial.</p>
+
+    <div class="callout">
+      <span class="tag">defesa honesta</span>
+      As novas travas <b>estreitam</b> riscos, não vendem mágica. A autenticação do model-router reduz a superfície para a fronteira de confiança do <b>mesmo usuário do SO</b>; sem lock cross-processo, o <code>policy-store</code> estreita a janela de corrida, não a elimina; e o auditor adversarial é <b>consultivo</b>: verifica o código atual, mas o dono decide.
+    </div>
+
+    <div class="fortress" aria-label="Artefato da versão 2.13.0: um escudo com cadeado protege o model-router e duas camadas de gate de release. No centro, a porta fixa do model-router só ativa roteamento depois de provar um token local; o token nunca é ecoado e o squatter fica do lado de fora. Ao redor, seis achados verificados na fonte: autenticação mútua do router, classificação NIM local por padrão, válvula anti-deadlock no capture, purga de bundles de adjudicação, policy-store com janela de corrida estreitada e confirmação completa no one-off. À direita, duas camadas de release gate: uma mecânica, determinística e bloqueante, checa docs-drift, changelog e conflito; outra adversarial, read-only e consultiva, revisa o diff desde a última tag no código atual e entrega parecer triado para o dono decidir. Honestidade: reduz e estreita riscos; não elimina a fronteira de mesmo usuário nem corrida sem lock cross-processo.">
+      <div class="ft-bar">
+        <span class="k">v2.13.0</span>
+        <span class="m">auditoria adversarial → defesas + release gate</span>
+      </div>
+
+      <div class="ft-stage">
+        <svg class="ft-svg" viewBox="0 0 540 340" role="img" aria-label="Escudo com cadeado e portão duplo de release">
+          <text x="24" y="31" class="mut">verify-before-activate · token local · fail-open</text>
+          <path class="wire" d="M55 86 H164"></path>
+          <path class="wire" d="M377 86 H486"></path>
+          <rect class="dim" x="52" y="62" width="118" height="48" rx="10"></rect>
+          <text x="77" y="91">squatter</text>
+          <path class="hot" d="M188 62 L270 34 L352 62 V142 C352 204 313 244 270 260 C227 244 188 204 188 142 Z"></path>
+          <rect class="fill" x="218" y="121" width="104" height="76" rx="14"></rect>
+          <path class="hot" d="M236 121 V103 C236 83 251 70 270 70 C289 70 304 83 304 103 V121"></path>
+          <circle class="seal" cx="270" cy="157" r="10"></circle>
+          <path class="dim" d="M270 167 v18"></path>
+          <text x="224" y="224">router 13456</text>
+          <text x="224" y="241" class="mut">authenticated:true</text>
+          <rect class="dim" x="372" y="62" width="118" height="48" rx="10"></rect>
+          <text x="400" y="91">Claude</text>
+          <path class="hot" d="M112 286 H250"></path>
+          <path class="hot" d="M290 286 H430"></path>
+          <rect class="fill" x="112" y="263" width="138" height="46" rx="8"></rect>
+          <rect class="fill" x="290" y="263" width="140" height="46" rx="8"></rect>
+          <text x="133" y="291">gate mecânico</text>
+          <text x="309" y="291">gate adversarial</text>
+          <text x="95" y="324" class="mut">bloqueia drift/conflito</text>
+          <text x="303" y="324" class="mut">read-only · consultivo</text>
+        </svg>
+
+        <div class="ft-ledger">
+          <div class="ft-card">
+            <span class="ey">Segurança & robustez</span>
+            <p><b>6 achados verificados na fonte</b> viraram correções: router com token e identidade antes de ativar, NIM local por padrão, escape anti-deadlock no capture, limpeza de bundles efêmeros, RMW no policy-store e resposta completa no one-off.</p>
+            <div class="ft-findings" aria-label="Seis achados corrigidos">
+              <span><b>router</b>token 0600; não ecoa; squatter não ativa rota</span>
+              <span><b>NIM</b>classificação local; remoto só opt-in</span>
+              <span><b>capture</b>cap de bloqueios; relenta sem descartar ciclo</span>
+              <span><b>bundles</b>record consome e apaga; purge varre órfãos</span>
+              <span><b>policy-store</b>RMW via <code>mutate()</code>; corrida estreitada</span>
+              <span><b>one-off</b>eco de todas as assinaturas marcadas</span>
+            </div>
+          </div>
+          <div class="ft-card">
+            <span class="ey">Frase operacional</span>
+            <p>O roteamento para o model-router só liga se o processo na porta fixa provar identidade. Se não provar, o plugin <b>não intercepta credenciais</b>: deixa o Claude Code ir direto. A classificação remota por NIM sai do caminho padrão de privacidade.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="ft-gates">
+        <div class="ft-gate">
+          <h4>Camada mecânica</h4>
+          <ul>
+            <li><b><code>release-audit.mjs</code></b>, sem cota e determinístico.</li>
+            <li>Bloqueia <b>docs-drift</b> de hooks, desalinhamento <b>CHANGELOG × versão</b> e marcadores de <b>conflito</b>.</li>
+            <li>Roda em CI em PR e em <code>main</code>; é gate, não conselho.</li>
+          </ul>
+        </div>
+        <div class="ft-gate">
+          <h4>Camada adversarial</h4>
+          <ul>
+            <li><b><code>release-auditor.agent.md</code></b>, read-only.</li>
+            <li>Revisa o diff desde a última tag por superfície de risco e <b>verifica no código atual</b> para evitar falso-positivo.</li>
+            <li>Emite parecer <b>triado e consultivo</b>; o dono decide go/no-go.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="ft-foot"><b>Escopo real:</b> a versão reduz vazamento para processo local indevido, torna privacidade o padrão na classificação NIM, evita deadlock de captura e limpa estado efêmero. Ela <b>estreita</b> corrida sem lock cross-processo e não elimina a fronteira de confiança do mesmo usuário. O processo de release passa a combinar bloqueio mecânico com revisão adversarial consultiva.</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>Credencial não vai para um desconhecido</h4>
+        <p>O <code>/health</code> do router continua servindo liveness, mas só devolve <code>authenticated:true</code> a quem prova o token. O hook verifica isso <b>antes</b> de apontar o Claude Code para a porta fixa; processo não reconhecido deixa o roteamento desligado.</p>
+      </div>
+      <div class="win">
+        <h4>Privacidade como padrão</h4>
+        <p>A classificação NIM não roda mais só porque há chave configurada. O padrão é <b>local</b> (MiniLM); remoto exige <code>nim.classifyRemote</code>. O fallback de geração no 429 é independente e fica inalterado.</p>
+      </div>
+      <div class="win">
+        <h4>Estado menos frágil</h4>
+        <p>O capture ganha válvula anti-deadlock por <code>kb.capture.maxBlockAttempts</code>; bundles de adjudicação passam a ser consumidos e apagados; <code>policy-store</code> relê antes de gravar; <code>curation_mark_oneoff</code> responde todas as assinaturas.</p>
+      </div>
+      <div class="win">
+        <h4>Release com dois filtros diferentes</h4>
+        <p>O filtro mecânico bloqueia o que é determinístico; o filtro adversarial procura risco no diff com um agente read-only e parecer consultivo. Um não substitui o outro: o gate barra drift, o auditor informa decisão humana.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Honesto sobre o alcance:</b> as defesas <b>reduzem</b> e <b>estreitam</b>. Um atacante que leia o <code>DATA_DIR</code> ainda pode ler token; sem lock cross-processo, corrida manual de baixa frequência só fica menor; e o auditor adversarial não publica sozinho. A garantia nova é processual: achado verificado na fonte, correção testada e release passando por camada mecânica + revisão consultiva.</p>
+  </section>
 
   <section>
     <p class="label">Novo na v2.12.0 · juiz independente + grafo semântico</p>
@@ -1886,7 +2039,7 @@
         <div class="step"><div class="n"></div><p>O agente age com a memória do projeto à mão, escopada por um id estável, sem puxar contexto de outro projeto.</p></div>
         <div class="step"><div class="n"></div><p>No <b>Stop</b>, o boss induz o <b>ACK</b> da captura: sobre uma fila <b>redigida</b> de ciclos limpos, o agente chama <code>capture_lesson</code> (lição curada) ou <code>capture_ack</code> (nada a capturar), sem reler o transcript à toa. No backend externo, manda o transcript acumulado pro servidor destilar. Nada infla a janela.</p></div>
         <div class="step"><div class="n"></div><p>Se você <b>ativou políticas</b>, elas aparecem onde importam: o <code>error-guard</code> <b>nega</b> no <code>PreToolUse</code> um Bash cuja falha reincide; as <b>always-apply</b> entram no contexto no início da sessão; as de <b>glob</b> avisam ao editar um arquivo que casa. <b>Surfacing ≠ enforcement</b>: só o error-guard bloqueia.</p></div>
-        <div class="step"><div class="n"></div><p>Ativou uma <b>política de medição em modo sombra</b> (Fase 3, opt-in)? Um hook <b>PreToolUse só para Edit</b> registra <b>em silêncio</b> se uma edição adiciona um literal proibido, medindo a <b>incidência de gatilho</b>, <b>nunca</b> bloqueando nem falando com o agente. Na v2.12.0, <code>/policy-adjudicate</code> aciona um <b>juiz LLM independente</b> para adjudicar bundles redigidos e casos reais opt-in; <code>policy_self_update_report</code> recomenda, mas <b>surfaçar ≠ enforce</b>.</p></div>
+        <div class="step"><div class="n"></div><p>Ativou uma <b>política de medição em modo sombra</b> (Fase 3, opt-in)? Um hook <b>PreToolUse só para Edit</b> registra <b>em silêncio</b> se uma edição adiciona um literal proibido, medindo a <b>incidência de gatilho</b>, <b>nunca</b> bloqueando nem falando com o agente. Na v2.12.0, <code>/policy-adjudicate</code> aciona um <b>juiz LLM independente</b> para adjudicar bundles redigidos e casos reais opt-in; na v2.13.0, bundles efêmeros são consumidos e purgados, e o release passa por gate mecânico + auditor adversarial consultivo.</p></div>
         <div class="step"><div class="n"></div><p>Para entender um repositório grande, use <code>graph_analyze</code>, <code>graph_search</code> ou <code>graph_symbols</code>. O plugin chama o Session Graph Engine por REST puro, recebe hubs por <b>PageRank</b> e vizinhança <b>CALLS/CONTAINS/IMPORTS</b>, e falha em modo <b>fail-open</b> se o daemon estiver offline.</p></div>
       </div>
     </div>
