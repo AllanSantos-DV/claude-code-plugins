@@ -48,6 +48,11 @@ const DATA_DIR = dataDir();
 
 const STATE_FILE    = path.join(DATA_DIR, 'model-router', 'state.json');
 const LOG_FILE      = path.join(DATA_DIR, 'model-router', 'router.log');
+// Token de identidade da porta fixa (verify-before-trust). Escrito pelo servidor
+// (servers/model-router/index.js) com mode 0o600; lido AQUI p/ provar que quem
+// ocupa a porta é o NOSSO roteador ANTES de apontar o Claude Code para lá (senão o
+// Claude mandaria a credencial real a um squatter). Ver healthCheck abaixo.
+const ROUTER_TOKEN_FILE = path.join(DATA_DIR, 'model-router', 'router.token');
 const SERVER_SCRIPT = path.join(PLUGIN_ROOT, 'servers', 'model-router', 'index.js');
 const CONFIG_FILE   = path.join(PLUGIN_ROOT, 'config', 'router-config.json');
 // Override do usuário (chave NVIDIA + toggles) + carimbo do nudge de primeira execução.
@@ -180,9 +185,57 @@ function firstRunNudge() {
   }
 }
 
-function healthCheck(port) {
+// Lê o token de identidade do roteador (verify-before-trust). Ausente/ilegível →
+// null: o healthCheck então falha fechado (um processo sem o token NÃO é tratado
+// como o nosso roteador).
+function readRouterToken() {
+  try {
+    const tok = fs.readFileSync(ROUTER_TOKEN_FILE, 'utf-8').trim();
+    return tok || null;
+  } catch (_) { void _; return null; } // arquivo ausente/ilegível → sem token
+}
+
+// Sonda /health COM PROVA DE IDENTIDADE. WHY (credential-leak defense): sem isto,
+// o hook apontaria o ANTHROPIC_BASE_URL do Claude Code para QUALQUER processo que
+// responda 200 em /health na porta fixa — e o Claude Code mandaria a credencial
+// REAL (Authorization/x-api-key) para ele. Um squatter local que tome a porta antes
+// colheria as credenciais. Então mandamos o segredo de <DATA_DIR>/model-router/
+// router.token no header x-router-token e só retornamos true se o servidor PROVAR
+// que conhece o token (statusCode 200 E body.authenticated === true). Um processo
+// que responda 200 mas sem autenticar (squatter que não consegue LER o arquivo) →
+// authenticated:false → healthCheck false → o chamador NÃO ativa o roteamento
+// (fail-open: Claude vai direto). CAVEAT honesto: isto derrota um squatter que NÃO
+// consegue ler router.token (outro usuário do SO / sandbox, ou corrida antes do
+// arquivo existir). Um atacante MESMO-USUÁRIO que leia o <DATA_DIR> lê o token e se
+// passa por nós — fronteira de confiança do mesmo usuário no SO, idêntica ao
+// brain-http.token, FORA de escopo. opts.{httpGet,token} são injeção p/ testes.
+function healthCheck(port, opts) {
+  const httpGet = (opts && opts.httpGet) || http.get;
+  const token   = (opts && 'token' in opts) ? opts.token : readRouterToken();
   return new Promise((resolve) => {
-    const req = http.get(`http://127.0.0.1:${port}/health`, { timeout: 1500 }, (res) => {
+    const headers = token ? { 'x-router-token': token } : {};
+    const req = httpGet(`http://127.0.0.1:${port}/health`, { timeout: 1500, headers }, (res) => {
+      let buf = '';
+      res.on('data', (d) => { buf += d; });
+      res.on('end', () => {
+        let ok = false;
+        try { ok = res.statusCode === 200 && JSON.parse(buf).authenticated === true; }
+        catch (e) { void e; ok = false; } // corpo não-JSON / sem authenticated → não confia
+        resolve(ok);
+      });
+    });
+    req.on('error', () => resolve(false));
+    req.on('timeout', () => { req.destroy(); resolve(false); });
+  });
+}
+
+// Liveness SEM prova de identidade: algo responde 200 em /health nesta porta? Usado
+// SÓ para o AVISO (distinguir "porta ocupada por processo não reconhecido" de "porta
+// livre") — NUNCA ativa roteamento por si. opts.httpGet é injeção p/ testes.
+function probeAlive(port, opts) {
+  const httpGet = (opts && opts.httpGet) || http.get;
+  return new Promise((resolve) => {
+    const req = httpGet(`http://127.0.0.1:${port}/health`, { timeout: 1000 }, (res) => {
       res.resume();
       resolve(res.statusCode === 200);
     });
@@ -443,11 +496,25 @@ async function main() {
     const st = readState();
     log(`Servidor OK na porta ${FIXED_PORT}${st && st.pid ? ` (PID ${st.pid})` : ''}.`);
   } else {
-    log(`Porta ${FIXED_PORT} sem resposta. Iniciando servidor...`);
+    // healthCheck false = ou a porta está livre, ou está ocupada por um processo que
+    // NÃO prova identidade (sem o token). Em ambos, tentamos (re)subir o NOSSO
+    // roteador. Se a porta estiver tomada por um processo alheio, o nosso server não
+    // consegue fazer bind (EADDRINUSE → sai por reuso sem escrever state fresco) e o
+    // startServer reporta falha → caímos no fail-open (sem roteamento, Claude direto).
+    log(`Porta ${FIXED_PORT} sem roteador reconhecido. Iniciando servidor...`);
     const started = await startServer(mode);
     if (started) isRunning = await healthCheck(FIXED_PORT);
     if (!isRunning) {
-      log('AVISO: roteamento indisponível nesta sessão. Removendo footprint; Claude Code usará Anthropic API diretamente.');
+      // Distingue um SQUATTER (algo responde /health, mas sem o token) de uma falha
+      // comum, só para dar um AVISO preciso. Em QUALQUER caso: fail-open (Claude
+      // direto) — NUNCA gravamos a URL / ativamos roteamento para um processo não
+      // reconhecido (seria vazar a credencial real para ele).
+      const occupied = await probeAlive(FIXED_PORT);
+      if (occupied) {
+        log(`AVISO: porta ${FIXED_PORT} ocupada por processo não reconhecido (sem o token do roteador) — roteamento desativado nesta sessão; Claude Code usará a Anthropic API diretamente.`);
+      } else {
+        log('AVISO: roteamento indisponível nesta sessão. Removendo footprint; Claude Code usará Anthropic API diretamente.');
+      }
       disableRoutingFootprint();
       process.exit(0);
     }
@@ -515,4 +582,5 @@ if (require.main === module) {
 
 // Export p/ testes herméticos da lógica de opt-in. O guard require.main===module
 // acima garante que um require() em teste NÃO dispara main() (nenhum efeito colateral).
-module.exports = { mergeRouterConfig, readConfig };
+// healthCheck/probeAlive/readRouterToken exportados p/ os testes de verify-before-trust.
+module.exports = { mergeRouterConfig, readConfig, healthCheck, probeAlive, readRouterToken };

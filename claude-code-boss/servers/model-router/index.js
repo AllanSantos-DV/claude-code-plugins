@@ -48,6 +48,59 @@ const CONFIG_FILE = path.join(PLUGIN_ROOT, 'config', 'router-config.json');
 // versionado. Sobrescreve os defaults shipados quando presente.
 const USER_CONFIG_FILE = path.join(STATE_DIR, 'user-config.json');
 
+// ── Identidade na porta fixa (verify-before-trust) ────────────────────────────
+// WHY: o hook (model-router-ensure.js) aponta o ANTHROPIC_BASE_URL do Claude Code
+// para QUALQUER processo que responda 200 em /health na porta fixa (13456) — e o
+// Claude Code passa a mandar a credencial REAL (Authorization/x-api-key) para lá.
+// Um processo LOCAL que tome a porta antes do nosso roteador (squatter) colheria
+// essas credenciais. Defesa: espelhamos o padrão de token do daemon do Brain
+// (servers/brain-server/lib/daemon-common.js) — um segredo por-instalação em
+// <DATA_DIR>/model-router/router.token que o CLIENTE precisa devolver no /health
+// antes de confiar na porta e ativar o roteamento (verify-before-activate). O
+// /health continua 200 p/ liveness, mas só ecoa authenticated:true a quem provar
+// conhecer o token; o token em si NUNCA é ecoado.
+//
+// ESCOPO HONESTO: isto derrota um squatter que NÃO consegue LER router.token (outro
+// usuário do SO / sandbox, ou uma corrida antes do arquivo existir — nesse caso o
+// cliente falha fechado e o Claude vai direto). Um atacante MESMO-USUÁRIO que leia o
+// <DATA_DIR> lê o token e se passa por nós — essa é a fronteira de confiança do
+// MESMO usuário no SO, idêntica ao brain-http.token, e está FORA de escopo. Ou seja:
+// não "impede roubo de credencial"; REDUZ a superfície de vazamento à fronteira
+// mesmo-usuário.
+function routerTokenFile(stateDir) { return path.join(stateDir, 'router.token'); }
+
+// Lê o token (trim). Ausente/ilegível → null.
+function readRouterToken(stateDir = STATE_DIR) {
+  try {
+    const tok = fs.readFileSync(routerTokenFile(stateDir), 'utf-8').trim();
+    return tok || null;
+  } catch (e) { void e; return null; } // arquivo ausente/ilegível → sem token
+}
+
+// Read-or-create idempotente (boot do server). Reusa entre reinícios: só cria se
+// ausente. 32 bytes hex de crypto.randomBytes. Escrito com mode 0o600 (só o dono lê)
+// via writeFileSync DIRETO — o helper atômico (temp+rename) não preserva o modo
+// restritivo no arquivo final, então aqui um write direto é o certo.
+function ensureRouterToken(stateDir = STATE_DIR) {
+  const existing = readRouterToken(stateDir);
+  if (existing) return existing;
+  const tok = crypto.randomBytes(32).toString('hex');
+  try {
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(routerTokenFile(stateDir), tok, { mode: 0o600 });
+  } catch (e) { void e; /* falha de fs → token ainda vale em memória nesta execução */ }
+  return tok;
+}
+
+// Compara em tempo constante, com guarda de tamanho. crypto.timingSafeEqual LANÇA
+// quando os buffers têm tamanhos diferentes, então o check de length evita o throw
+// E curto-circuita tokens obviamente errados. Segredo vazio NUNCA autentica.
+function routerTokenMatches(given, expected) {
+  const a = Buffer.from(String(given == null ? '' : given));
+  const b = Buffer.from(String(expected == null ? '' : expected));
+  return b.length > 0 && a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
 // ── Logger ────────────────────────────────────────────────────────────────────
 
 function ts() { return new Date().toISOString(); }
@@ -267,17 +320,30 @@ async function classifyNim(prompt, config) {
   });
 }
 
-async function classify(prompt, config) {
-  // Tenta NIM primeiro se configurado
-  const nimKey = config.nim?.apiKey || process.env.NVIDIA_NIM_KEY || '';
-  if (nimKey) {
-    const tier = await classifyNim(prompt, config);
+async function classify(prompt, config, deps) {
+  // Injeção p/ testes herméticos (produção usa os defaults abaixo).
+  const nimImpl = (deps && deps.classifyNim) || classifyNim;
+  // Local default: honra o embedder/anchors do módulo; injetável nos testes.
+  const localImpl = (deps && deps.classifyLocal)
+    || ((p, cfg) => (_anchors ? classifyLocal(p, _anchors, classifierPolicy(cfg)) : Promise.resolve(null)));
+
+  // OPT-IN de PRIVACIDADE (default LOCAL): só classificamos REMOTAMENTE — enviando
+  // até ~500 chars do prompt REAL à NVIDIA em CADA classificação — quando o usuário
+  // liga EXPLICITAMENTE nim.classifyRemote. Sem esse opt-in, a chave NIM serve APENAS
+  // ao plano-B de GERAÇÃO (429, em forwardRequest/streamNvidiaToAnthropic): a
+  // classificação fica 100% LOCAL (MiniLM) e NENHUM dado de prompt sai da máquina p/
+  // classificar. Antes, bastava a chave presente p/ mandar todo prompt à NVIDIA —
+  // um usuário que configurou a chave só p/ o plano-B vazava cada prompt sem saber.
+  const nim = config.nim || {};
+  const classifyRemote = nim.classifyRemote === true;
+  const nimKey = nim.apiKey || process.env.NVIDIA_NIM_KEY || '';
+  if (classifyRemote && nimKey) {
+    const tier = await nimImpl(prompt, config);
     if (tier) return tier;
     logger.warn('NIM falhou, fallback para MiniLM local');
   }
-  // Fallback: MiniLM local
-  if (_anchors) return await classifyLocal(prompt, _anchors, classifierPolicy(config));
-  return null;
+  // Default e fallback: MiniLM LOCAL — nenhum dado de prompt sai da máquina.
+  return await localImpl(prompt, config);
 }
 
 // ── Model selection ───────────────────────────────────────────────────────────
@@ -1406,12 +1472,18 @@ function isLoopbackHost(req) {
   return true;
 }
 
-async function createServer(config, mode) {
+async function createServer(config, mode, routerToken) {
   const server = http.createServer(async (req, res) => {
-    // Health check
+    // Health check — CONTINUA 200 p/ liveness (nunca quebra a sonda), mas agora
+    // PROVA IDENTIDADE: quem ecoar o x-router-token correto recebe
+    // authenticated:true; qualquer outro recebe false. É o que o cliente (ensure)
+    // usa p/ confiar na porta ANTES de ativar o roteamento (verify-before-activate).
+    // O token em si nunca é ecoado. routerToken ausente/'' → authenticated sempre
+    // false (segredo vazio não autentica ninguém).
     if (req.method === 'GET' && req.url === '/health') {
+      const authenticated = routerTokenMatches(req.headers['x-router-token'], routerToken);
       res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', pid: process.pid, mode }));
+      res.end(JSON.stringify({ status: 'ok', pid: process.pid, mode, authenticated }));
       return;
     }
 
@@ -1679,7 +1751,15 @@ async function main() {
     logger.info('fallback-only: classificador/anchors NÃO inicializados (passthrough cache-safe).');
   }
 
-  const server = await createServer(config, mode);
+  // Token de identidade da porta fixa (verify-before-trust). Criado 1x por
+  // instalação (reusado entre reinícios), lido pelo /health p/ provar que quem
+  // ocupa a porta é o NOSSO roteador — o ensure só ativa o roteamento (e deixa o
+  // Claude Code mandar a credencial real) se o /health provar identidade. Não
+  // logamos o token; só sinalizamos que a identidade está armada.
+  const routerToken = ensureRouterToken();
+  logger.info('Identidade da porta fixa armada (router.token)', { file: 'router.token' });
+
+  const server = await createServer(config, mode, routerToken);
 
   // PORTA FIXA: o settings.json env aponta para ela. NUNCA incrementa — se a porta
   // já tem um model-router NOSSO saudável, esta instância é redundante e sai limpa
@@ -1765,5 +1845,12 @@ if (require.main === module) {
     metricsSnapshot,
     resetMetrics,
     newMetrics,
+    // FIX 1 (identidade da porta fixa) + FIX 2 (classificação opt-in): exportados
+    // p/ os testes herméticos (server /health autenticado + dispatcher de classify).
+    createServer,
+    ensureRouterToken,
+    readRouterToken,
+    routerTokenMatches,
+    classify,
   };
 }

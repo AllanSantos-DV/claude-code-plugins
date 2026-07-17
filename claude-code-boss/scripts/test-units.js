@@ -4196,6 +4196,149 @@ test('mergeUserConfig (server): {sticky:{enabled:true}} preserva ttlMs (deep-mer
   assertEq(m.enabled, false); // não veio no override → shipped
 });
 
+// ═══ FIX 1 — identidade na porta fixa (verify-before-trust / anti credential-leak) ═══
+// Helpers herméticos: sobem um server real em porta efêmera (0) no loopback e sondam
+// /health. Sem rede externa, sem daemon — determinístico.
+function _listen0(server) {
+  return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve(server.address().port)));
+}
+function _getHealth(port, headers) {
+  return new Promise((resolve, reject) => {
+    const req = http.get(`http://127.0.0.1:${port}/health`, { headers: headers || {} }, (res) => {
+      let buf = '';
+      res.on('data', (d) => { buf += d; });
+      res.on('end', () => {
+        let body = null;
+        try { body = JSON.parse(buf); } catch (_) { void _; } // corpo não-JSON → body null
+        resolve({ status: res.statusCode, body });
+      });
+    });
+    req.on('error', reject);
+  });
+}
+
+test('FIX1 routerTokenMatches: true só na igualdade exata; guarda tamanho; vazio nunca autentica', () => {
+  assertEq(routerServer.routerTokenMatches('a'.repeat(64), 'a'.repeat(64)), true);
+  assertEq(routerServer.routerTokenMatches('a'.repeat(64), 'a'.repeat(63)), false); // tamanhos diferentes → sem throw, false
+  assertEq(routerServer.routerTokenMatches('', ''), false);                          // segredo vazio não autentica
+  assertEq(routerServer.routerTokenMatches(null, 'a'.repeat(64)), false);
+  assertEq(routerServer.routerTokenMatches('a'.repeat(64), null), false);
+});
+
+test('FIX1 ensureRouterToken: gera 64-hex e REUSA entre chamadas (idempotente, read-or-create)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-tok-'));
+  const t1 = routerServer.ensureRouterToken(dir);
+  assert(/^[0-9a-f]{64}$/.test(t1), 'token deve ser 32 bytes em hex'); // NÃO checamos mode (Windows mapeia só read-only)
+  const t2 = routerServer.ensureRouterToken(dir);
+  assertEq(t2, t1, 'segunda chamada REUSA o token existente (não regenera entre reinícios)');
+  assertEq(routerServer.readRouterToken(dir), t1, 'readRouterToken lê exatamente o valor gravado');
+});
+
+test('FIX1 server /health: authenticated:true só com x-router-token correto; 200 SEMPRE (liveness)', async () => {
+  const TOKEN = 'a'.repeat(64);
+  const server = await routerServer.createServer({}, 'fallback-only', TOKEN);
+  const port = await _listen0(server);
+  try {
+    const noTok = await _getHealth(port, {});
+    assertEq(noTok.status, 200, 'liveness: /health continua 200 mesmo sem token');
+    assertEq(noTok.body.authenticated, false, 'sem token → authenticated:false');
+    const wrong = await _getHealth(port, { 'x-router-token': 'b'.repeat(64) });
+    assertEq(wrong.status, 200);
+    assertEq(wrong.body.authenticated, false, 'token errado → authenticated:false');
+    const right = await _getHealth(port, { 'x-router-token': TOKEN });
+    assertEq(right.status, 200);
+    assertEq(right.body.authenticated, true, 'token certo → authenticated:true');
+  } finally {
+    server.close();
+  }
+});
+
+test('FIX1 healthCheck: contra o NOSSO server, true SÓ com o token certo (verify-before-trust)', async () => {
+  const TOKEN = 'c'.repeat(64);
+  const server = await routerServer.createServer({}, 'fallback-only', TOKEN);
+  const port = await _listen0(server);
+  try {
+    assertEq(await routerEnsure.healthCheck(port, { token: null }), false, 'sem token → false');
+    assertEq(await routerEnsure.healthCheck(port, { token: 'd'.repeat(64) }), false, 'token errado → false');
+    assertEq(await routerEnsure.healthCheck(port, { token: TOKEN }), true, 'token certo → true');
+  } finally {
+    server.close();
+  }
+});
+
+test('FIX1 healthCheck: SQUATTER (200 mas authenticated:false) → false → roteamento NÃO ativa', async () => {
+  // Um squatter: responde 200 no /health, mas não prova identidade (não conhece o token).
+  const squatter = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ status: 'ok', authenticated: false }));
+  });
+  const port = await _listen0(squatter);
+  try {
+    // Mesmo mandando um token, o squatter não ecoa authenticated:true → healthCheck false.
+    // É isto que impede o Claude Code de mandar a credencial real a um processo alheio.
+    assertEq(await routerEnsure.healthCheck(port, { token: 'a'.repeat(64) }), false);
+    // probeAlive só constata que ALGO responde 200 (usado p/ o AVISO), nunca ativa nada.
+    assertEq(await routerEnsure.probeAlive(port), true);
+  } finally {
+    squatter.close();
+  }
+});
+
+// ═══ FIX 2 — classificação NIM opt-in (privacidade: default LOCAL) ═══
+// classify() aceita deps injetáveis (classifyNim/classifyLocal) p/ contarmos chamadas
+// sem tocar no embedder/anchors do módulo nem bater na rede.
+// Determinismo: a chave também pode vir de NVIDIA_NIM_KEY; limpamos p/ os casos "sem chave".
+delete process.env.NVIDIA_NIM_KEY;
+
+test('FIX2 classify: chave NIM setada mas classifyRemote OFF → NÃO chama NIM (fica LOCAL)', async () => {
+  let nimCalls = 0, localCalls = 0;
+  const deps = {
+    classifyNim:   async () => { nimCalls++;   return 'opus'; },
+    classifyLocal: async () => { localCalls++; return 'sonnet'; },
+  };
+  const tier = await routerServer.classify('oi', { nim: { apiKey: 'nvapi-x' } }, deps);
+  assertEq(nimCalls, 0, 'sem opt-in, NENHUM prompt vai à NVIDIA para classificar');
+  assertEq(localCalls, 1, 'classificação fica local (MiniLM)');
+  assertEq(tier, 'sonnet');
+});
+
+test('FIX2 classify: classifyRemote:true + chave → TENTA NIM (opt-in explícito)', async () => {
+  let nimCalls = 0, localCalls = 0;
+  const deps = {
+    classifyNim:   async () => { nimCalls++;   return 'opus'; },
+    classifyLocal: async () => { localCalls++; return 'sonnet'; },
+  };
+  const tier = await routerServer.classify('oi', { nim: { apiKey: 'nvapi-x', classifyRemote: true } }, deps);
+  assertEq(nimCalls, 1, 'com opt-in + chave, o caminho remoto é tentado');
+  assertEq(localCalls, 0, 'remoto teve sucesso → local não é chamado (sem trabalho dobrado)');
+  assertEq(tier, 'opus');
+});
+
+test('FIX2 classify: classifyRemote:true SEM chave → fica LOCAL (nada sai da máquina)', async () => {
+  let nimCalls = 0, localCalls = 0;
+  const deps = {
+    classifyNim:   async () => { nimCalls++;   return 'opus'; },
+    classifyLocal: async () => { localCalls++; return 'haiku'; },
+  };
+  const tier = await routerServer.classify('oi', { nim: { classifyRemote: true } }, deps);
+  assertEq(nimCalls, 0, 'sem chave não há (nem deve haver) chamada à NVIDIA');
+  assertEq(localCalls, 1);
+  assertEq(tier, 'haiku');
+});
+
+test('FIX2 mergeUserConfig: {nim:{apiKey}} preserva classifyRemote:false; opt-in explícito vence', () => {
+  const shipped = { nim: { classifyRemote: false, apiKey: '', endpoint: 'e' } };
+  // Usuário setou só a chave (p/ o plano-B): o default LOCAL sobrevive ao merge raso.
+  const m = routerServer.mergeUserConfig(shipped, { nim: { apiKey: 'nvapi-x' } });
+  assertEq(m.nim.classifyRemote, false, 'default local preservado ao adicionar a chave');
+  assertEq(m.nim.apiKey, 'nvapi-x');
+  assertEq(m.nim.endpoint, 'e', 'chave shipada (endpoint) preservada no merge raso');
+  // E quando o usuário OPTA explicitamente, o flag flui:
+  const m2 = routerServer.mergeUserConfig(shipped, { nim: { classifyRemote: true } });
+  assertEq(m2.nim.classifyRemote, true);
+});
+
+
 // ─── model-router (server): sticky-tier — chave de sessão + decisor puro ──────
 
 test('computeSessionKey: mesmo system+1ª msg → MESMA chave (histórico cresce no fim)', () => {
