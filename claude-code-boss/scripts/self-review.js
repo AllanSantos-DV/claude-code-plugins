@@ -41,16 +41,55 @@ function dataDir() {
 /**
  * Build a retrieval query from the turn's edited paths: unique basenames + parent
  * dir segments (dropping generic ones). Returns { query, keywords }.
+ *
+ * When `cwd` is given, each path is relativized against it FIRST. Edited paths
+ * arrive as absolute (file-edit-detect.js journals tool_input.file_path as-is),
+ * so without this the directory-segment loop below walks the WHOLE absolute
+ * path — on every real invocation that's the OS/user/project-container chain
+ * (e.g. "Users", "allan", "Desktop", "Projetos", "<repo-name>"), which are
+ * never in GENERIC_DIR and become query noise on every turn, not just in a
+ * deeply-nested test fixture. Diluted keywords lower the keyword-index match
+ * score (a fraction of matched/total keywords) below the shared relevance
+ * gate — silently starving the embedder-free fallback path this detector is
+ * required to support (see the HARD CONSTRAINT in the file header). A path
+ * outside `cwd` (or no `cwd` given) falls back to the prior absolute-segments
+ * behavior, so this is additive, not a behavior change for that case.
+ *
+ * Comparison is CASE-INSENSITIVE on win32: `cwd` (the Stop event's reported
+ * process cwd) and an edited `file_path` (whatever string the tool call used)
+ * need not agree on case for the identical real file on a case-insensitive
+ * filesystem (e.g. a drive letter, or any segment) — a case-sensitive
+ * `startsWith` would silently fail the match and fall through to the exact
+ * noise-pollution bug this function exists to fix, with zero signal that
+ * relativization didn't happen. POSIX paths are compared case-sensitively
+ * (case genuinely distinguishes different files there).
+ *
+ * Known accepted gap: this assumes `cwd` is the same root the edited paths
+ * are relative to. A subagent editing from a DIFFERENT root (e.g. an
+ * `isolation:"worktree"` Agent run whose file-edit lands in the same
+ * session's verify-journal) won't share `cwd`'s prefix, so relativization
+ * silently no-ops for that entry — falling back to the pre-fix absolute-
+ * segments behavior for just that path, not worse than before this fix.
  * @param {string[]} paths
+ * @param {string} [cwd]
  * @returns {{query:string, keywords:string[]}}
  */
-function buildQuery(paths) {
+function buildQuery(paths, cwd) {
   const tokens = [];
   const seen = new Set();
   const GENERIC_DIR = new Set(['src', 'lib', 'scripts', 'test', 'tests', 'dist', 'build', 'node_modules', '.', '']);
+  const hasCwd = typeof cwd === 'string' && cwd.trim().length > 0;
+  const normCwd = hasCwd ? String(cwd).replace(/\\/g, '/').replace(/\/+$/, '') : '';
+  const caseInsensitive = process.platform === 'win32';
   for (const p of paths || []) {
-    const norm = String(p || '').replace(/\\/g, '/');
+    let norm = String(p || '').replace(/\\/g, '/');
     if (!norm) continue;
+    if (hasCwd) {
+      const prefix = `${normCwd}/`; // normCwd may be '' for a root cwd → prefix '/'
+      const head = norm.slice(0, prefix.length);
+      const matches = caseInsensitive ? head.toLowerCase() === prefix.toLowerCase() : head === prefix;
+      if (matches) norm = norm.slice(prefix.length);
+    }
     const base = norm.split('/').pop();
     if (base && !seen.has(base)) { seen.add(base); tokens.push(base); }
     const dirs = norm.split('/').slice(0, -1);
@@ -118,7 +157,7 @@ async function run(event, deps = {}) {
     .map(e => e.path);
   if (editPaths.length === 0) return {};
 
-  const { query, keywords } = buildQuery(editPaths);
+  const { query, keywords } = buildQuery(editPaths, ev.cwd);
   if (!query) return {};
 
   const retrieveFn = deps.retrieve || selfReviewRetrieve.retrieve;

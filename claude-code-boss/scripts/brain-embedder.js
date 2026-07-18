@@ -15,7 +15,6 @@
  */
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const { execFileSync } = require('child_process');
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
@@ -28,9 +27,7 @@ const CONFIG_PATH = path.join(PLUGIN_ROOT, 'config', 'brain-config.json');
  * re-download). Anchoring it under CLAUDE_PLUGIN_DATA keeps the model across reinstalls.
  */
 function embedderDataDir() {
-  const env = process.env.CLAUDE_PLUGIN_DATA;
-  if (env && !env.includes('${')) return env;
-  return path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+  return require('./lib/data-dir.js').dataDir();
 }
 function modelCacheDir() {
   return path.join(embedderDataDir(), 'models');

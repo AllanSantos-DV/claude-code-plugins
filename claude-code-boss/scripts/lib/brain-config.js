@@ -4,11 +4,15 @@
  * Avoids re-parsing on every hook invocation; exposes typed getters with sane
  * defaults so consumers never see undefined.
  *
- * The shipped config is merged with an optional per-user override living in
- * DATA_DIR/brain/user-config.json (never committed), mirroring the model-router
- * pattern (shipped ⊕ DATA_DIR/model-router/user-config.json). This lets a single
- * user tweak behavior (e.g. exclude a KB type from injection) without affecting
- * other contributors or surviving-across auto-update concerns.
+ * The shipped config is merged with an optional per-user override (never
+ * committed). That override lives at a STABLE GLOBAL path — globalDir()/
+ * user-config.json — rather than under the per-folder data dir, so the backend
+ * choice (local vs mcp-memory) is visible to EVERY writer regardless of which
+ * data dir it resolved. Otherwise a writer that resolved a different folder than
+ * where the dashboard saved the override would never see `mcp-memory` and would
+ * silently fall back to `local` (the split-brain KB bug). A one-time backfill in
+ * load() migrates a legacy DATA_DIR/brain/user-config.json up to the global path,
+ * so an existing user's backend choice is preserved across the move.
  */
 const fs = require('fs');
 const path = require('path');
@@ -18,12 +22,19 @@ const CONFIG_PATH = path.join(PLUGIN_ROOT, 'config', 'brain-config.json');
 
 let _cache = null;
 
-// Resolved at load() time (not frozen at module load) so tests can repoint
-// CLAUDE_PLUGIN_DATA + _resetCache(), and so it tracks the canonical DATA_DIR.
+// Resolved at load() time (not frozen at module load) so tests can repoint HOME/
+// CLAUDE_PLUGIN_DATA + _resetCache(). GLOBAL (not data-dir-scoped) so every writer
+// sees the same backend choice no matter which folder it resolved.
 function userConfigPath() {
+  const { globalDir } = require('./data-dir.js');
+  return path.join(globalDir(), 'user-config.json');
+}
+
+// Pre-Phase-1 location of the override (under the resolved active data dir).
+// Retained only so load() can backfill it up to the global path exactly once.
+function legacyUserConfigPath() {
   const { dataDir } = require('./data-dir.js');
-  const DATA_DIR = dataDir();
-  return path.join(DATA_DIR, 'brain', 'user-config.json');
+  return path.join(dataDir(), 'brain', 'user-config.json');
 }
 
 function isPlainObject(v) {
@@ -68,6 +79,23 @@ function load() {
     console.error(`[brain-config] load failed (${CONFIG_PATH}): ${err.message}`);
     shipped = {};
   }
+  // One-time backfill: if the global override doesn't exist yet but a legacy
+  // per-data-dir one does, copy it up so the user's backend choice survives the
+  // Phase-1 move to the global path. Guarded by !exists so an existing global is
+  // never overwritten; only the resolved active data dir is consulted (no sibling
+  // scan). Fail-open — a failed backfill just means load() uses shipped defaults.
+  try {
+    const globalPath = userConfigPath();
+    if (!fs.existsSync(globalPath)) {
+      const legacyPath = legacyUserConfigPath();
+      if (fs.existsSync(legacyPath)) {
+        const { writeFileAtomic } = require('./atomic-write.js');
+        writeFileAtomic(globalPath, fs.readFileSync(legacyPath));
+      }
+    }
+  } catch (err) {
+    console.error(`[brain-config] user-config backfill skipped: ${err.message}`);
+  }
   let override = null;
   try {
     const p = userConfigPath();
@@ -107,7 +135,7 @@ function getSubmission() {
 /**
  * Types (lesson/pattern/reference/memory) excluded from the [BRAIN] block
  * injected on UserPromptSubmit. Normalized to trimmed lowercase; non-array or
- * missing → [] (default: inject all types). Set via the DATA_DIR user-override.
+ * missing → [] (default: inject all types). Set via the global user-override.
  * @returns {string[]}
  */
 function getContextExcludeTypes() {

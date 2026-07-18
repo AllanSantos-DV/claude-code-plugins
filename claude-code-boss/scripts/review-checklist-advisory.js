@@ -14,7 +14,6 @@
 const fs = require('fs');
 const { writeJsonAtomic } = require('./lib/atomic-write.js');
 const path = require('path');
-const os = require('os');
 
 const { readStdin, parsePayload, emitEmpty, emitJson } = require('./lib/hook-io.js');
 const { CHECKLIST_RELPATH } = require('./lib/review-checklist.js');
@@ -22,9 +21,7 @@ const { CHECKLIST_RELPATH } = require('./lib/review-checklist.js');
 const COOLDOWN_MS = 6 * 60 * 60 * 1000; // at most once per 6h per project
 
 function dataDir() {
-  const env = process.env.CLAUDE_PLUGIN_DATA;
-  return (env && !env.includes('${'))
-    ? env : path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+  return require('./lib/data-dir.js').dataDir();
 }
 
 function stampPath(cwd) {

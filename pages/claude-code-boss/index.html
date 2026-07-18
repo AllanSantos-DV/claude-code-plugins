@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.13.0 — segurança endurecida e gate de release em duas camadas</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. A v2.13.0 endurece segurança e robustez após auditoria adversarial da v2.12.0, com seis achados verificados na fonte: autenticação mútua no model-router, classificação NIM local por padrão, válvula anti-deadlock no capture, purga de bundles de adjudicação, policy-store com janela de corrida estreitada e confirmação completa no one-off. Também adiciona gate de release em duas camadas: mecânico determinístico que bloqueia drift/conflitos, e auditor adversarial read-only, consultivo, com decisão final do dono." />
+<title>claude-code-boss v2.14.0 — fim do split-brain do KB: uma pasta, um backend</title>
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. A v2.14.0 encerra o split-brain do KB: todos os pontos de escrita (daemon HTTP, hooks, MCP stdio, dashboard, CLI) passam a concordar na MESMA pasta de dados e no MESMO backend. Um resolvedor canônico único (env → ponteiro global publicado pelo brain-server → bootstrap recente → fallback) faz hooks sem env seguirem a pasta que o app realmente usa; a escolha de backend, o profile de hooks e o model-router migram para um global estável (top-zero), matando o sintoma de lições no SQLite local com backend mcp-memory; e uma consolidação nativa, backup-first e dry-run por padrão, dobra pastas irmãs órfãs na pasta ativa." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -777,13 +777,55 @@
   .gs-foot b{ color:#a29f97 }
   .gs-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
 
+  /* v2.14.0 : fim do split-brain do KB - resolvedor canonico unico (env -> ponteiro global -> bootstrap -> fallback) faz 5 escritores concordarem numa pasta; config de backend/profile/router no global (top-zero); consolidacao nativa dobra irmas orfas na ativa, backup-first */
+  .unify{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:860px; font-family:var(--mono); margin:0 0 36px }
+  .un-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .un-bar .k{ color:var(--accent) }
+  .un-bar .m{ color:#8a877f }
+  .un-stage{ padding:18px 22px 8px; display:grid; grid-template-columns:minmax(280px,1.12fr) minmax(240px,.88fr); gap:18px; align-items:stretch }
+  .un-svg{ width:100%; min-height:330px; border:1px solid var(--panel-line); border-radius:12px;
+    background:radial-gradient(circle at 70% 42%, rgba(180,97,30,.2), transparent 40%), linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.012)) }
+  .un-svg text{ font-family:var(--mono); fill:#d8d4cc; font-size:11px }
+  .un-svg .mut{ fill:#8a877f }
+  .un-svg .wire{ fill:none; stroke:#6d6257; stroke-width:1.3; opacity:.55 }
+  .un-svg .hot{ fill:none; stroke:var(--accent); stroke-width:2.2 }
+  .un-svg .chip{ fill:#141117; stroke:#7d746c; stroke-width:1.2 }
+  .un-svg .rung{ fill:#121116; stroke:#7d746c; stroke-width:1.1 }
+  .un-svg .rung-hot{ fill:#20150e; stroke:var(--accent); stroke-width:2 }
+  .un-svg .fill{ fill:#151319; stroke:var(--accent); stroke-width:1.7 }
+  .un-svg .dim{ fill:#111015; stroke:#7d746c; stroke-width:1.1; stroke-dasharray:4 4 }
+  .un-svg .seal{ fill:var(--accent); opacity:.94 }
+  .un-ledger{ display:grid; gap:10px }
+  .un-card{ border:1px solid var(--panel-line); border-radius:10px; padding:13px 14px; background:rgba(255,255,255,.03) }
+  .un-card .ey{ display:block; font-size:9.5px; letter-spacing:.15em; text-transform:uppercase; color:var(--accent); margin:0 0 8px }
+  .un-card p{ margin:0; font-size:11.5px; line-height:1.55; color:#a29f97 }
+  .un-card b{ color:var(--panel-ink); font-weight:600 }
+  .un-card code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .un-chain{ display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-top:11px }
+  .un-chain span{ border:1px solid rgba(255,255,255,.14); border-radius:6px; padding:3px 8px; font-size:10px; color:#a29f97; background:rgba(255,255,255,.02) }
+  .un-chain span.on{ border-color:var(--accent); color:var(--accent); background:var(--accent-soft) }
+  .un-chain i{ color:#8a877f; font-style:normal; font-weight:700 }
+  .un-rails{ display:grid; grid-template-columns:1fr 1fr; gap:12px; padding:4px 22px 18px }
+  .un-rail{ border:1px solid var(--panel-line); border-radius:10px; padding:13px 14px; background:rgba(255,255,255,.025) }
+  .un-rail h4{ margin:0 0 8px; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent) }
+  .un-rail ul{ margin:0; padding:0; list-style:none; display:grid; gap:7px }
+  .un-rail li{ position:relative; padding-left:16px; font-size:11.5px; line-height:1.45; color:#a29f97 }
+  .un-rail li::before{ content:"\203a"; position:absolute; left:0; top:-1px; color:var(--accent); font-weight:700 }
+  .un-rail b{ color:var(--panel-ink); font-weight:600 }
+  .un-rail code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .un-foot{ padding:14px 22px; border-top:1px solid var(--panel-line); font-size:11px; line-height:1.6; color:#8a877f }
+  .un-foot b{ color:#a29f97 }
+  .un-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+
   footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
   footer a{ color:var(--muted); text-decoration:none }
   footer a:hover{ color:var(--accent) }
   .frow{ display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between }
   .flinks a{ margin-right:16px }
 
-  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
+  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
   @media (prefers-reduced-motion:reduce){ .caret{ animation:none } .reveal{ opacity:1 !important; transform:none !important } }
   .reveal{ opacity:0; transform:translateY(14px); animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards }
   @keyframes rise{ to{ opacity:1; transform:none } }
@@ -794,7 +836,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.13.0</span>
+    <span class="ver">v2.14.0</span>
   </nav>
 
   <header class="hero">
@@ -847,6 +889,11 @@
         <p>O escopo vem de um id estável: <code>CCB_PROJECT_ID</code>, o arquivo <code>.claude-boss-project</code>, senão o nome da pasta. Sem id no backend externo, um advisory <b>consent-first</b> te oferece fixá-lo. A memória segue o projeto, não o caminho, e não vaza pra outro projeto.</p>
       </div>
       <div class="cell">
+        <p class="kick">KB coeso</p>
+        <h3>Uma pasta, um backend</h3>
+        <p>Todos os pontos de escrita (daemon HTTP, hooks, MCP stdio, dashboard e CLI) concordam na <b>mesma</b> pasta de dados e no <b>mesmo</b> backend. Um resolvedor canônico segue o ponteiro que o app publica; a escolha de backend mora no <b>global</b>. Pastas irmãs órfãs são dobradas na ativa, <b>com backup</b>.</p>
+      </div>
+      <div class="cell">
         <p class="kick">Aprendizado no loop</p>
         <h3>Captura durável, com ACK</h3>
         <p>Uma fila <b>redigida</b> de ciclos limpos e um <b>ACK explícito</b> no fim do turno: o agente chama <code>capture_lesson</code> (lição curada) ou <code>capture_ack</code> (nada a capturar). Mescla duplicatas e promove padrões a skills. <b>Sem reler o transcript.</b></p>
@@ -877,6 +924,137 @@
         <p>Ative constraints explicitamente com <code>policy_activate</code>, nunca auto-promovidas de lições: o <code>error-guard</code> nega no <code>PreToolUse</code> um Bash cuja falha reincide, políticas <b>always-apply</b> entram no contexto no início da sessão, e políticas <b>por glob</b> avisam ao editar um arquivo que casa o padrão. <b>Surfacing ≠ enforcement</b>: ficam presentes no contexto, não bloqueiam (exceto o <code>error-guard</code>). A Fase 3 agora fecha o ciclo: modo sombra mede, e <code>/policy-adjudicate</code> chama um <b>juiz LLM independente</b> para estimar disposições — estimativa de juiz, <b>não FP medido</b>.</p>
       </div>
     </div>
+  </section>
+
+
+  <section>
+    <p class="label">Novo na v2.14.0 · fim do split-brain do KB</p>
+    <p class="lede">A v2.14.0 encerra o <b>split-brain do KB</b>. Antes, cada ponto de escrita (daemon HTTP, hooks, MCP stdio, dashboard, CLI) podia resolver uma <b>pasta diferente</b>, e a escolha de backend morava <b>dentro</b> da pasta volátil; resultado: uma lição podia cair no <b>SQLite local</b> mesmo com o backend <code>mcp-memory</code> configurado. Agora um <b>resolvedor canônico único</b> faz todos concordarem na <b>mesma pasta</b>, a config de backend mora no <b>global</b>, e uma <b>consolidação nativa</b> dobra pastas irmãs órfãs na ativa, com backup.</p>
+
+    <div class="callout">
+      <span class="tag">causa-raiz, não fallback silencioso</span>
+      Não havia mágica escondendo o erro: o <code>initMcp</code> lança se o backend remoto falha. Era <b>100% fragmentação de config</b>. O dashboard resolvia a pasta <b>mais populada</b> enquanto hooks e brain-backend usavam outro fallback, e os dois discordavam. Mover a escolha de backend para o global <b>mata o sintoma</b>; a consolidação é <b>backup-first</b> e só apaga a irmã com <b>zero falha</b>.
+    </div>
+
+    <div class="unify" aria-label="Artefato da versão 2.14.0: o fim do split-brain do KB. À esquerda, cinco escritores (daemon HTTP, hooks, MCP stdio, dashboard e CLI) que antes podiam resolver pastas diferentes agora convergem, por um funil, para um único resolvedor canônico dataDir(). O resolvedor decide a pasta numa ordem de precedência: variável de ambiente real, depois o ponteiro global active-data-dir.json publicado pelo brain-server, depois um bootstrap barato pela pasta claude-code-boss mais recente, e por fim o fallback home. A saída aponta para uma única pasta ativa, o destino de escrita de todos. Uma pasta irmã órfã, tracejada, é dobrada na pasta ativa por uma consolidação que faz backup primeiro. Abaixo do resolvedor, a config de backend mora num global estável, o top-zero, em til barra claude barra claude-code-boss, junto com o profile de hooks e o model-router. À direita, dois trilhos: a consolidação nativa é dry-run por padrão, com apply que faz backup antes de tocar em nada, reconcilia por id no modo local e empurra idempotente no modo mcp-memory, apagando só a irmã com zero falha e nunca a ativa; e o gatilho automático no SessionStart faz uma checagem barata e, havendo irmã, dispara o apply destacado, sem bloquear a sessão, sendo um no-op quando as pastas já estão unificadas. Honestidade: mover a config para o global elimina a fragmentação que causava o sintoma de lições no SQLite local com backend mcp-memory; o resolvedor prioriza o ponteiro publicado pelo app e o bootstrap por mtime é um fallback barato, não adivinhação; a consolidação é backup-first e genérica por-usuário.">
+      <div class="un-bar">
+        <span class="k">v2.14.0</span>
+        <span class="m">cinco escritores → uma pasta, um backend</span>
+      </div>
+
+      <div class="un-stage">
+        <svg class="un-svg" viewBox="0 0 540 324" role="img" aria-label="Diagrama de convergência: cinco escritores à esquerda (daemon HTTP, hooks, MCP stdio, dashboard, CLI) funilam para um resolvedor central dataDir() com quatro degraus de precedência, sendo env, o ponteiro global destacado, bootstrap e fallback; o resolvedor aponta para uma única pasta ativa à direita; uma pasta irmã órfã tracejada é dobrada na ativa com backup; abaixo, uma caixa de config de backend no global, o top-zero, alimenta o resolvedor.">
+          <defs>
+            <marker id="un-arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,6 L7,3 z" fill="#b4611e"></path>
+            </marker>
+          </defs>
+          <text x="20" y="24" class="mut">env → ponteiro global → bootstrap → fallback</text>
+
+          <line x1="138" y1="56"  x2="238" y2="150" class="hot"></line>
+          <line x1="138" y1="100" x2="238" y2="150" class="hot"></line>
+          <line x1="138" y1="144" x2="238" y2="150" class="hot"></line>
+          <line x1="138" y1="188" x2="238" y2="150" class="hot"></line>
+          <line x1="138" y1="232" x2="238" y2="150" class="hot"></line>
+
+          <rect class="chip" x="20" y="42"  width="118" height="28" rx="8"></rect>
+          <rect class="chip" x="20" y="86"  width="118" height="28" rx="8"></rect>
+          <rect class="chip" x="20" y="130" width="118" height="28" rx="8"></rect>
+          <rect class="chip" x="20" y="174" width="118" height="28" rx="8"></rect>
+          <rect class="chip" x="20" y="218" width="118" height="28" rx="8"></rect>
+          <text x="30" y="61">daemon HTTP</text>
+          <text x="30" y="105">hooks</text>
+          <text x="30" y="149">MCP stdio</text>
+          <text x="30" y="193">dashboard</text>
+          <text x="30" y="237">CLI</text>
+
+          <rect class="chip" x="238" y="60" width="96" height="180" rx="12"></rect>
+          <text x="250" y="82">dataDir()</text>
+          <rect class="rung"     x="250" y="92"  width="72" height="24" rx="6"></rect>
+          <rect class="rung-hot" x="250" y="124" width="72" height="24" rx="6"></rect>
+          <rect class="rung"     x="250" y="156" width="72" height="24" rx="6"></rect>
+          <rect class="rung"     x="250" y="188" width="72" height="24" rx="6"></rect>
+          <text x="286" y="109" text-anchor="middle">env</text>
+          <text x="286" y="141" text-anchor="middle">ponteiro</text>
+          <text x="286" y="173" text-anchor="middle">bootstrap</text>
+          <text x="286" y="205" text-anchor="middle">fallback</text>
+
+          <path class="hot" d="M334 138 H392" marker-end="url(#un-arrow)"></path>
+
+          <path class="fill" d="M392 122 a8 8 0 0 1 8 -8 h30 l8 8 h60 a8 8 0 0 1 8 8 v34 a8 8 0 0 1 -8 8 h-98 a8 8 0 0 1 -8 -8 z"></path>
+          <text x="406" y="140">pasta ativa</text>
+          <text x="406" y="157" class="mut">destino único</text>
+
+          <path class="dim" d="M392 222 a8 8 0 0 1 8 -8 h30 l8 8 h56 a8 8 0 0 1 8 8 v30 a8 8 0 0 1 -8 8 h-94 a8 8 0 0 1 -8 -8 z"></path>
+          <text x="406" y="246">irmã órfã</text>
+
+          <path class="hot" d="M470 210 V176" marker-end="url(#un-arrow)"></path>
+          <circle class="seal" cx="470" cy="192" r="5"></circle>
+          <text x="402" y="196" class="mut">backup</text>
+
+          <rect class="chip" x="222" y="270" width="132" height="34" rx="8"></rect>
+          <text x="234" y="286">backend no global</text>
+          <text x="234" y="299" class="mut">top-zero</text>
+          <path class="hot" d="M288 270 V242" marker-end="url(#un-arrow)"></path>
+        </svg>
+
+        <div class="un-ledger">
+          <div class="un-card">
+            <span class="ey">resolvedor canônico</span>
+            <p>Um único <code>lib/data-dir.js</code> resolve a pasta nesta ordem: <b>env real</b>, o <b>ponteiro global</b> <code>active-data-dir.json</code>, um <b>bootstrap</b> pela pasta <code>claude-code-boss*</code> mais recente, e por fim o <b>fallback</b> home. O ponteiro é publicado pelo <b>brain-server</b>, o único processo que recebe a pasta real, então hooks sem env <b>seguem</b> a pasta que o app usa.</p>
+            <div class="un-chain" aria-label="Ordem de precedência do resolvedor">
+              <span>env</span><i>›</i><span class="on">ponteiro global</span><i>›</i><span>bootstrap</span><i>›</i><span>fallback</span>
+            </div>
+          </div>
+          <div class="un-card">
+            <span class="ey">config no global · top-zero</span>
+            <p>A escolha de backend (com o <b>profile de hooks</b> e o <b>model-router</b>, a chave NVIDIA em <code>0600</code>) saiu da pasta volátil para <code>~/.claude/claude-code-boss/</code>. Trocar de pasta nunca mais órfã a config. Só o <code>user-config.json</code> migra; state, token e stamps seguem por-pasta. Backfill one-time <b>nunca sobrescreve</b> um global existente.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="un-rails">
+        <div class="un-rail">
+          <h4>Consolidação nativa</h4>
+          <ul>
+            <li><b>Dry-run</b> por padrão; <code>--apply</code> faz <b>backup primeiro</b> e aborta antes de tocar em nada se um backup falhar.</li>
+            <li>Modo <b>local</b> reconcilia por id (mais recente, soma <code>recurrence</code> nos near-dups); <b>mcp-memory</b> empurra tudo idempotente ao servidor.</li>
+            <li>Apaga só a irmã com <b>zero falha</b>, <b>nunca</b> a ativa. Single-writer: leitura readonly, <code>busy_timeout</code> e lock no apply.</li>
+          </ul>
+        </div>
+        <div class="un-rail">
+          <h4>Auto no SessionStart</h4>
+          <ul>
+            <li>Checagem <b>barata</b> (sem SQLite); havendo irmã, dispara o <code>--apply</code> <b>destacado</b>.</li>
+            <li><b>Não bloqueia</b> a sessão; auditoria em <code>.runtime/consolidate-datadirs.log</code>.</li>
+            <li><b>Idempotente</b>: no-op instantâneo quando as pastas já estão unificadas.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="un-foot"><b>Escopo real:</b> a unificação faz os cinco escritores concordarem na mesma pasta e no mesmo backend, matando o split-brain reportado. Só o <code>user-config.json</code> migra para o global; state, token e stamps seguem por-pasta. A consolidação toca dado apenas sob <code>--apply</code>, sempre depois do backup, e é um no-op quando as pastas já estão unificadas.</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>Uma pasta, um backend</h4>
+        <p>Todos os escritores passam pelo mesmo <code>dataDir()</code> e leem a escolha de backend do <b>global</b>. Fim do caso reportado: lição no <b>SQLite local</b> mesmo com o backend <code>mcp-memory</code> configurado.</p>
+      </div>
+      <div class="win">
+        <h4>Hooks sem env seguem o app</h4>
+        <p>O <b>brain-server</b> publica o ponteiro <code>active-data-dir.json</code> com a pasta real. Hooks disparados sem env <b>seguem</b> exatamente a pasta que o app usa, em vez de adivinhar por conta própria.</p>
+      </div>
+      <div class="win">
+        <h4>Config estável (top-zero)</h4>
+        <p>Backend, profile de hooks e model-router moram em <code>~/.claude/claude-code-boss/</code>. Trocar de pasta não órfã mais nada, e o backfill one-time <b>nunca sobrescreve</b> um global existente.</p>
+      </div>
+      <div class="win">
+        <h4>Consolidação com backup</h4>
+        <p><code>consolidate-datadirs.js</code> é dry-run por padrão; <code>--apply</code> faz backup, dobra cada irmã (reconcilia por id no local, empurra idempotente no mcp-memory) e apaga só a de zero falha. Roda sozinho, <b>destacado</b>, no SessionStart.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Honesto sobre o alcance:</b> a config no global <b>elimina</b> a fragmentação que causava o sintoma; o resolvedor prioriza o <b>ponteiro publicado pelo app</b>, e o bootstrap por mtime é um <b>fallback barato</b>, não adivinhação. A consolidação é <b>backup-first</b>, <b>genérica por-usuário</b> e só apaga irmã sem falha, nunca a ativa; idempotente quando tudo já está unificado. Rigor de sempre: causa-raiz verificada na fonte, cada incremento revisado, gate verde local (<b>658</b> unit + hooks).</p>
   </section>
 
 
@@ -2034,6 +2212,7 @@
     <div class="flow">
       <p class="label">Como funciona</p>
       <div class="steps">
+        <div class="step"><div class="n"></div><p>Antes de qualquer coisa, um <b>resolvedor canônico</b> faz todos os escritores (daemon HTTP, hooks, MCP stdio, dashboard, CLI) concordarem na <b>mesma pasta</b> e no <b>mesmo backend</b>, com a escolha de backend morando no global. No <b>SessionStart</b>, um checador silencioso dobra pastas irmãs órfãs na ativa, <b>destacado</b> e com backup primeiro, sem bloquear a sessão.</p></div>
         <div class="step"><div class="n"></div><p>No <b>SessionStart</b>, se o backend externo está sem id estável de projeto, o boss injeta um advisory <b>consent-first</b>: o agente te oferece fixar o id criando <code>.claude-boss-project</code>. Ele nunca escreve por você, e cala se o id já existe ou sob cooldown.</p></div>
         <div class="step"><div class="n"></div><p>Você escreve um prompt. O hook <b>UserPromptSubmit</b> chama o Brain e injeta o bloco <b>[BRAIN]</b>: no backend externo, os fatos vêm com o trecho casado e as capacidades como ponteiros. Em paralelo, um <b>search_memory</b> não-injetado aquece o pool home: sinal pro Dreaming, sem tocar no que você vê.</p></div>
         <div class="step"><div class="n"></div><p>O agente age com a memória do projeto à mão, escopada por um id estável, sem puxar contexto de outro projeto.</p></div>

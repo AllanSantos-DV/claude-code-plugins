@@ -1,5 +1,25 @@
 # Changelog
 
+## [2.14.0] - 2026-07-17
+
+Fim do **split-brain do KB**: unifica a resolução da pasta de dados e a configuração de backend por-usuário para que TODOS os pontos de escrita (daemon HTTP, hooks, MCP stdio, dashboard, CLI) concordem na MESMA pasta e no MESMO backend — mais uma consolidação nativa que dobra as pastas irmãs órfãs na pasta ativa, com backup. Rigor de sempre: causa-raiz verificada na FONTE, cada incremento revisado da fonte, gate verde rodado localmente (658 unit + hooks).
+
+### Causa-raiz (medida, verificada na fonte)
+
+- O dashboard resolvia a pasta de dados pela MAIS POPULADA (`resolveBestDataDir`) enquanto hooks/brain-backend/brain-server usavam um fallback BARE (`data-dir.js`) — **discordavam**. E a escolha do backend (mcp-memory×local) morava DENTRO da pasta volátil (`DATA_DIR/brain/user-config.json`), então o escritor que resolvia outra pasta nunca via `mcp-memory` e caía em `local` — lição indo pro SQLite local mesmo com o backend remoto configurado. Não há fallback silencioso (o `initMcp` lança): era 100% fragmentação de config.
+
+### Resolvedor canônico único + "seguir a pasta do app" (Fase 1)
+
+- `lib/data-dir.js#dataDir()` vira o ÚNICO resolvedor: **env real → ponteiro global `active-data-dir.json` → bootstrap barato (mtime mais recente entre `claude-code-boss*`, exclui outros plugins) → fallback bare**. O ponteiro é publicado pelo **brain-server** — o único processo que recebe a pasta REAL via `--plugin-data` — então os hooks sem env passam a SEGUIR exatamente a pasta que o app usa. Cheap e fail-open (é chamado em module-load por muitos hooks). Os 7 scripts que inlinavam o fallback bare passam a delegar ao resolvedor.
+
+### Config estável no global — "top-zero" (Fases 1 e 1.5)
+
+- A escolha do backend sai da pasta volátil para `~/.claude/claude-code-boss/user-config.json` (global), visível a QUALQUER escritor — **matando o sintoma** já aqui. O mesmo princípio se estende ao **profile de hooks** (`globalDir()/hooks/`) e ao **model-router** (`globalDir()/model-router/`, a chave NVIDIA com `chmod 0600`), cada um com backfill one-time que NUNCA sobrescreve um global existente. O `capture-dispatch` passa a ler o config do brain pelo global (fecha um furo remanescente). Só o `user-config.json` migra; state/token/stamps continuam por-pasta.
+
+### Consolidação nativa das pastas irmãs (Fases 2 e 3)
+
+- Novo `consolidate-datadirs.js`: **dry-run por padrão**; `--apply` faz **backup primeiro** (aborta ANTES de tocar em qualquer coisa se algum backup falhar), depois dobra cada irmã na ativa — modo **local** reconcilia por id (mantém o mais recente por `last_accessed`, `recurrence` = máx, união de tags/keywords, embedding válido) e colapsa near-dups (soma recurrence via `brain-consolidate`); modo **mcp-memory** empurra tudo pro servidor (`add_document` com `documentId` → upsert idempotente) — e só apaga a irmã com ZERO falha, **nunca** a ativa. Single-writer: leituras de irmã readonly + WAL `busy_timeout` + **lock de processo** no apply. Um hook **silencioso** no SessionStart faz uma checagem barata (sem SQLite) e, havendo irmã, dispara o `--apply` **destacado** (não bloqueia a sessão; auditoria em `.runtime/consolidate-datadirs.log`); sem irmã, é no-op instantâneo. Idempotente e **genérico por-usuário** — faz backup e nunca assume a topologia de uma máquina.
+
 ## [2.13.0] - 2026-07-17
 
 Endurecimento de **segurança e robustez** a partir de uma auditoria adversarial da v2.12.0 (6 achados reais, cada um verificado na FONTE antes de corrigir — um 7º achado da auditoria era falso-positivo, já corrigido) + um **gate de release em duas camadas** que institucionaliza essa auditoria. Rigor de sempre: verificação na fonte, testes failing-first, gate verde rodado localmente.

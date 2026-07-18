@@ -18,7 +18,6 @@
 
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const { spawn } = require('child_process');
 
 const { runStopDetectorCli } = require('./lib/hook-io.js');
@@ -31,9 +30,7 @@ function pluginRoot() {
 }
 
 function dataDir() {
-  const env = process.env.CLAUDE_PLUGIN_DATA;
-  if (env && !env.includes('${')) return env;
-  return path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+  return require('./lib/data-dir.js').dataDir();
 }
 
 function loadCfg(root) {

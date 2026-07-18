@@ -32,16 +32,13 @@
 const fs = require('fs');
 const { writeJsonAtomic } = require('./lib/atomic-write.js');
 const path = require('path');
-const os = require('os');
 
 const { runStopDetectorCli } = require('./lib/hook-io.js');
 const { USER_SENTINEL } = require('./lib/scope-sanitizer.js');
 const hooksCfg = require('./lib/hooks-config.js');
 
 function dataDir() {
-  const env = process.env.CLAUDE_PLUGIN_DATA;
-  if (env && !env.includes('${')) return env;
-  return path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+  return require('./lib/data-dir.js').dataDir();
 }
 
 function stampPath(data, sid) {
