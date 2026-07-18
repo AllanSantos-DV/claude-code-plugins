@@ -4834,6 +4834,47 @@ test('self-review.buildQuery: basenames + non-generic dirs, split keywords', () 
   assert(q.keywords.includes('hooks') && q.keywords.includes('config'), 'keywords split on punctuation');
 });
 
+test('self-review.buildQuery: relativizes against cwd, dropping OS/user/container noise (regression)', () => {
+  // Live bug: edited paths arrive ABSOLUTE (file-edit-detect.js journals
+  // tool_input.file_path as-is). Without relativizing against cwd first, every
+  // real invocation walks the WHOLE absolute path — "Users"/"<username>"/
+  // "Desktop"/"Projetos"/"<repo>" are never in GENERIC_DIR and become query
+  // noise on every turn, diluting the keyword-index match score (matched/total
+  // fraction) below the shared relevance gate and silently starving the
+  // embedder-free fallback path. Confirmed live: a 12-keyword noisy query
+  // scored 0.166 (2/12) and was gated out at minScore 0.2; the same edit
+  // relativized against cwd scored 1.0 (2/2) and passed.
+  const cwd = 'C:\\Users\\dev\\Desktop\\Projetos\\myrepo';
+  const q = selfReview.buildQuery([`${cwd}\\scripts\\oneoff-store.js`], cwd);
+  assertEq(q.query, 'oneoff-store.js', 'only the basename remains once cwd noise is stripped');
+  assert(!q.keywords.some(k => ['users', 'dev', 'desktop', 'projetos', 'myrepo'].includes(k)),
+    'no OS/user/container path segments leak into keywords');
+  assert(q.keywords.includes('oneoff') && q.keywords.includes('store'), 'the real keywords survive');
+});
+
+test('self-review.buildQuery: path outside cwd (or no cwd given) keeps the prior absolute-segments behavior', () => {
+  const cwd = 'C:\\Users\\dev\\Desktop\\Projetos\\myrepo';
+  const outside = selfReview.buildQuery(['C:\\other\\place\\oneoff-store.js'], cwd);
+  assert(outside.query.includes('other') && outside.query.includes('place'),
+    'a path outside cwd is NOT relativized — falls back to the old behavior, not worse than before');
+  const noCwd = selfReview.buildQuery(['scripts/lib/hooks-config.js']);
+  assert(noCwd.query.includes('hooks-config.js'), 'omitting cwd entirely still works (backward compatible)');
+});
+
+test('self-review.buildQuery: cwd/file_path case mismatch still relativizes on win32 (adversarial review finding)', () => {
+  // A case-sensitive startsWith would silently miss this and fall through to
+  // the exact noise-pollution bug the fix exists for — with zero signal.
+  if (process.platform !== 'win32') return; // POSIX case genuinely distinguishes files; not applicable
+  const cwd = 'c:\\Users\\dev\\Desktop\\Projetos\\myrepo';
+  const q = selfReview.buildQuery(['C:\\USERS\\DEV\\Desktop\\Projetos\\MyRepo\\scripts\\oneoff-store.js'], cwd);
+  assertEq(q.query, 'oneoff-store.js', 'relativizes despite differing case in drive letter and path segments');
+});
+
+test('self-review.buildQuery: root cwd ("/") still relativizes (empty-normCwd edge case)', () => {
+  const q = selfReview.buildQuery(['/scripts/oneoff-store.js'], '/');
+  assertEq(q.query, 'oneoff-store.js', 'a root cwd normalizes to a "/" prefix, not skipped as if cwd were absent');
+});
+
 test('self-review.buildAdvisory: [SELF-REVIEW] header + recurrence + type', () => {
   const a = selfReview.buildAdvisory([{ title: 'Broke the build', type: 'lesson', recurrence: 4 }, { title: 'Flaky test', type: 'failure' }]);
   assert(a.startsWith('[SELF-REVIEW]'), 'tag');
