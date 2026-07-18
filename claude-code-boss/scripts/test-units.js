@@ -7624,6 +7624,319 @@ test('graph/dispatch: mcp-memory + unreachable daemon fails open (offline guidan
   assert(discoverCalls >= 1, 'the gate PASSED (mcp-memory) and reached the daemon resolver');
 });
 
+// ─── consolidate-datadirs (split-brain KB, Phase 2) ──────────────────────────
+// The engine takes fully-injected deps, so these run hermetically: fake store /
+// backend / fs / enumerator — no real singletons, no real filesystem, no model.
+{
+  const CONS = require('./consolidate-datadirs.js');
+  const { consolidate } = CONS;
+  const clone = (x) => JSON.parse(JSON.stringify(x));
+
+  // Fake brain-store scoped by project. Mirrors the exact contract the engine
+  // relies on: getRaw (full entry, NO vector, NO access bump), listWithVectors
+  // ({id,vector}), save(entry,vector) where vector===undefined KEEPS the prior
+  // embedding (matches saveSqlite's `if (vector)` guard), init({project}).
+  function makeFakeStore(initial = {}) {
+    const data = {}; // project -> Map(id -> {entry, vector})
+    for (const [proj, entries] of Object.entries(initial)) {
+      const m = new Map();
+      for (const e of entries) {
+        const { vector = null, ...rest } = e;
+        m.set(e.id, { entry: clone(rest), vector: vector ? clone(vector) : null });
+      }
+      data[proj] = m;
+    }
+    let cur = null;
+    const saved = [];
+    return {
+      _data: data,
+      _saved: saved,
+      async init({ project }) { cur = project; if (!data[project]) data[project] = new Map(); },
+      getRaw(id) { const m = data[cur]; return m && m.has(id) ? clone(m.get(id).entry) : null; },
+      listWithVectors(project) {
+        const m = data[project || cur];
+        if (!m) return [];
+        return [...m.values()].map(({ entry, vector }) => ({ id: entry.id, vector: vector ? clone(vector) : null, recurrence: entry.recurrence || 1 }));
+      },
+      async save(entry, vector) {
+        const m = data[cur];
+        const prev = m.get(entry.id);
+        const vec = vector !== undefined ? (vector ? clone(vector) : null) : (prev ? prev.vector : null);
+        m.set(entry.id, { entry: clone(entry), vector: vec });
+        saved.push({ project: cur, id: entry.id, entry: clone(entry), passedVector: vector !== undefined });
+      },
+      getStorageType() { return 'sqlite'; },
+      async close() {},
+    };
+  }
+
+  function makeRecorder() {
+    return { calls: [], async init(o) { this.calls.push(['init', o && o.project]); }, async index(e) { this.calls.push(['index', e.id]); }, async registerNode(e) { this.calls.push(['node', e.id]); } };
+  }
+
+  // Fake fs: an ORDERED op log plus a live set of "existing" paths, so the
+  // injected enumerator can reflect deletions (true cross-run idempotency).
+  function makeFakeFs(present) {
+    const ops = [];
+    const paths = new Set(present || []);
+    return {
+      _ops: ops,
+      _paths: paths,
+      mkdirSync(p) { ops.push(['mkdir', p]); paths.add(p); },
+      cpSync(src, dst) { ops.push(['cp', src, dst]); paths.add(dst); },
+      existsSync(p) { return paths.has(p); },
+      rmSync(p) { ops.push(['rm', p]); paths.delete(p); },
+    };
+  }
+
+  function makeFakeBackend() {
+    let cur = null;
+    const calls = [];
+    return {
+      _calls: calls,
+      async init({ project }) { cur = project; calls.push(['init', project]); },
+      async save(entry) { calls.push(['save', cur, entry.id]); return entry.id; },
+      async close() {},
+    };
+  }
+
+  function makeDeps(cfg) {
+    const activeDir = cfg.activeDir || '/A/active';
+    const siblingPaths = cfg.siblingPaths || [];
+    const fsx = cfg.fs || makeFakeFs(new Set([activeDir, ...siblingPaths]));
+    const store = cfg.store || makeFakeStore(cfg.storeInitial || {});
+    const index = makeRecorder();
+    const graph = makeRecorder();
+    const consolidateCalls = [];
+    const consolidateFn = cfg.consolidate
+      || (async (o) => { consolidateCalls.push({ project: o.project, apply: o.apply, sameStore: o._store === store }); });
+    const shards = cfg.shards || {};
+    const readShard = cfg.readShard || ((dir, project) => (shards[dir] && shards[dir][project] ? shards[dir][project].map(clone) : []));
+    const listProjects = cfg.listProjects || ((dir) => (shards[dir] ? Object.keys(shards[dir]) : []));
+    const enumerate = cfg.enumerate || ((active) => {
+      const out = [{ path: active, populated: true }];
+      for (const p of siblingPaths) out.push({ path: p, populated: fsx._paths.has(p) });
+      for (const c of (cfg.extraCandidates || [])) out.push(c);
+      return out;
+    });
+    const _deps = {
+      activeDir,
+      mode: cfg.mode || 'local',
+      store, index, graph, backend: cfg.backend,
+      consolidate: consolidateFn,
+      enumerate, readShard, listProjects,
+      fsx, backupBase: cfg.backupBase || '/A/backups',
+      now: cfg.now || (() => 1710000000000),
+    };
+    return { _deps, activeDir, siblingPaths, store, index, graph, backend: cfg.backend, fsx, consolidateCalls };
+  }
+
+  test('consolidate-datadirs: no populated siblings → no-op (reason no-siblings, writes NOTHING)', async () => {
+    const h = makeDeps({ siblingPaths: [], extraCandidates: [{ path: '/A/plugins/data/claude-code-boss', populated: false }] });
+    const r = await consolidate({ apply: false, _deps: h._deps });
+    assertEq(r.reason, 'no-siblings');
+    assertEq(r.siblings.length, 0);
+    assertEq(r.ok, true);
+    assertEq(h.fsx._ops.length, 0);
+    assertEq(h.store._saved.length, 0);
+    assert(!r.backupDir, 'a no-op never backs up');
+  });
+
+  test('consolidate-datadirs: dry-run computes graft/reconcile plan and writes NOTHING', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const h = makeDeps({
+      activeDir: active, siblingPaths: [sib], mode: 'local',
+      shards: {
+        [active]: { proj: [{ id: 'dup1' }] },
+        [sib]: { proj: [{ id: 'dup1' }, { id: 'new1' }, { id: 'new2' }] },
+      },
+    });
+    const r = await consolidate({ apply: false, _deps: h._deps });
+    assertEq(r.apply, false);
+    assertEq(r.siblings.length, 1);
+    assertEq(r.siblings[0].grafted, 2);     // new1, new2 missing-in-active
+    assertEq(r.siblings[0].reconciled, 1);  // dup1 collides
+    assertEq(r.siblings[0].deleted, false);
+    assertEq(h.fsx._ops.length, 0);          // no mkdir / cp / rm
+    assertEq(h.store._saved.length, 0);      // no store writes
+    assert(!r.backupDir, 'dry-run never backs up');
+  });
+
+  test('consolidate-datadirs: --apply local reconcile-by-id (newer base, recurrence=max, union tags, valid-embedding fallback)', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const store = makeFakeStore({
+      proj: [
+        { id: 'dup1', title: 'A-old', recurrence: 5, tags: ['a'], last_accessed: '2024-01-01T00:00:00Z', created_at: '2023-01-01T00:00:00Z', vector: [1, 1] },
+        { id: 'dup2', title: 'A-new', recurrence: 3, tags: ['a2'], last_accessed: '2024-05-05T00:00:00Z', created_at: '2023-01-01T00:00:00Z', vector: [2, 2] },
+        { id: 'dup3', title: 'A-x', recurrence: 4, tags: ['a3'], last_accessed: '2024-01-01T00:00:00Z', created_at: '2023-01-01T00:00:00Z', vector: [3, 3] },
+      ],
+    });
+    const h = makeDeps({
+      activeDir: active, siblingPaths: [sib], mode: 'local', store,
+      shards: { [sib]: { proj: [
+        { id: 'dup1', title: 'S-new', recurrence: 2, tags: ['b'], last_accessed: '2024-02-02T00:00:00Z', created_at: '2023-06-01T00:00:00Z', vector: [9, 9] },
+        { id: 'dup2', title: 'S-old', recurrence: 9, tags: ['b2'], last_accessed: '2024-02-02T00:00:00Z', created_at: '2023-06-01T00:00:00Z', vector: [8, 8] },
+        { id: 'dup3', title: 'S-new', recurrence: 1, tags: ['b3'], last_accessed: '2024-09-09T00:00:00Z', created_at: '2023-06-01T00:00:00Z', vector: [] },
+      ] } },
+    });
+    const r = await consolidate({ apply: true, _deps: h._deps });
+    assertEq(r.ok, true);
+    const g = (id) => store._data.proj.get(id);
+    // dup1: incoming newer → base=incoming(title S-new); recurrence=max(5,2)=5; tags union ['a','b']; embedding=base [9,9]
+    assertEq(g('dup1').entry.title, 'S-new');
+    assertEq(g('dup1').entry.recurrence, 5);
+    assertEq(g('dup1').entry.tags, ['a', 'b']);
+    assertEq(g('dup1').vector, [9, 9]);
+    // dup2: existing newer → base=existing(title A-new); recurrence=max(3,9)=9; embedding=existing [2,2]
+    assertEq(g('dup2').entry.title, 'A-new');
+    assertEq(g('dup2').entry.recurrence, 9);
+    assertEq(g('dup2').entry.tags, ['a2', 'b2']);
+    assertEq(g('dup2').vector, [2, 2]);
+    // dup3: incoming newer BUT its embedding is [] (invalid) → keep the other side's valid [3,3]
+    assertEq(g('dup3').entry.title, 'S-new');
+    assertEq(g('dup3').vector, [3, 3]);
+    assertEq(r.siblings[0].reconciled, 3);
+    assertEq(r.siblings[0].grafted, 0);
+    assert(h.index.calls.some((c) => c[0] === 'index' && c[1] === 'dup1'), 'search index kept consistent');
+    assert(h.graph.calls.some((c) => c[0] === 'node' && c[1] === 'dup1'), 'graph kept consistent');
+  });
+
+  test('consolidate-datadirs: --apply local grafts missing ids, runs near-dup pass, backs up BEFORE delete, deletes on zero failures', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const store = makeFakeStore({ proj: [{ id: 'keep', tags: [], recurrence: 1 }] });
+    const h = makeDeps({
+      activeDir: active, siblingPaths: [sib], mode: 'local', store, backupBase: '/A/backups',
+      shards: { [sib]: { proj: [{ id: 'g1', tags: ['x'], recurrence: 1, vector: [5, 5] }, { id: 'g2', tags: ['y'], recurrence: 1 }] } },
+    });
+    const r = await consolidate({ apply: true, _deps: h._deps });
+    assertEq(r.ok, true);
+    assertEq(r.siblings[0].grafted, 2);
+    assertEq(r.siblings[0].failed, 0);
+    assertEq(r.siblings[0].deleted, true);
+    assert(store._data.proj.has('g1') && store._data.proj.has('g2'), 'both missing ids grafted');
+    assertEq(store._data.proj.get('g1').vector, [5, 5]);
+    assert(h.consolidateCalls.some((c) => c.project === 'proj' && c.apply === true && c.sameStore), 'near-dup pass called {project, apply:true, _store}');
+    const ops = h.fsx._ops;
+    const firstRm = ops.findIndex((o) => o[0] === 'rm');
+    const lastCp = ops.map((o) => o[0]).lastIndexOf('cp');
+    assert(ops.some((o) => o[0] === 'cp'), 'a backup copy happened');
+    assert(firstRm === -1 || lastCp < firstRm, 'every backup cp precedes any delete rm');
+    assert(ops.some((o) => o[0] === 'rm' && o[1] === sib), 'sibling deleted after a clean absorb');
+    assert(r.backupDir && r.backupDir.indexOf('_boss-backup-') !== -1, 'backup dir is named + reported');
+  });
+
+  test('consolidate-datadirs: --apply keeps (does NOT delete) a sibling when any entry fails, but still backs it up', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const store = makeFakeStore({});
+    const origSave = store.save.bind(store);
+    store.save = async (entry, vector) => { if (entry.id === 'boom') throw new Error('simulated write failure'); return origSave(entry, vector); };
+    const h = makeDeps({
+      activeDir: active, siblingPaths: [sib], mode: 'local', store,
+      shards: { [sib]: { proj: [{ id: 'ok1' }, { id: 'boom' }] } },
+    });
+    const r = await consolidate({ apply: true, _deps: h._deps });
+    assertEq(r.ok, true);                       // per-sibling fail-open; the run itself stays ok
+    assert(r.siblings[0].failed >= 1, 'the failing entry is counted');
+    assertEq(r.siblings[0].deleted, false);     // fail-loud: NOT deleted
+    const ops = h.fsx._ops;
+    assert(ops.some((o) => o[0] === 'cp' && o[2].indexOf('sib1') !== -1), 'sibling WAS backed up');
+    assert(!ops.some((o) => o[0] === 'rm' && o[1] === sib), 'sibling NOT deleted after a failure');
+  });
+
+  test('consolidate-datadirs: --apply mcp-memory pushes every entry idempotently (documentId=id) incl. active-local, deletes siblings, 2nd run no-op', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const backend = makeFakeBackend();
+    const fsx = makeFakeFs(new Set([active, sib]));
+    const h = makeDeps({
+      activeDir: active, siblingPaths: [sib], mode: 'mcp-memory', backend, fs: fsx,
+      shards: {
+        [active]: { proj: [{ id: 'local-a' }] },
+        [sib]: { proj: [{ id: 's1' }, { id: 's2' }], __user__: [{ id: 'u1' }] },
+      },
+    });
+    const r = await consolidate({ apply: true, _deps: h._deps });
+    assertEq(r.ok, true);
+    assertEq(r.activeLocal.pushed, 1);                                   // active-folder leftover local writes pushed too
+    assert(backend._calls.some((c) => c[0] === 'save' && c[2] === 'local-a'), 'active-local entry pushed');
+    assert(['s1', 's2', 'u1'].every((id) => backend._calls.some((c) => c[2] === id)), 'all sibling entries pushed (project + __user__)');
+    assertEq(r.siblings[0].pushed, 3);
+    assertEq(r.siblings[0].deleted, true);
+    // Idempotent: the sibling was rm-ed from the world → a second apply finds nothing.
+    const r2 = await consolidate({ apply: true, _deps: h._deps });
+    assertEq(r2.reason, 'no-siblings');
+    assertEq(r2.siblings.length, 0);
+  });
+
+  test('consolidate-datadirs: local mode keeps __user__ shard isolated from project shards', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const store = makeFakeStore({});
+    const h = makeDeps({
+      activeDir: active, siblingPaths: [sib], mode: 'local', store,
+      shards: { [sib]: { proj: [{ id: 'p1' }], __user__: [{ id: 'u1' }] } },
+    });
+    await consolidate({ apply: true, _deps: h._deps });
+    assert(store._data.proj && store._data.proj.has('p1'), 'project entry grafted under project shard');
+    assert(store._data.__user__ && store._data.__user__.has('u1'), 'user entry grafted under __user__ shard');
+    assert(!store._data.proj.has('u1'), 'user entry did NOT leak into project shard');
+    assert(!(store._data.__user__ && store._data.__user__.has('p1')), 'project entry did NOT leak into __user__ shard');
+  });
+
+  test('consolidate-datadirs: never deletes the ACTIVE dir', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const store = makeFakeStore({});
+    const h = makeDeps({ activeDir: active, siblingPaths: [sib], mode: 'local', store, shards: { [sib]: { proj: [{ id: 'x' }] } } });
+    const r = await consolidate({ apply: true, _deps: h._deps });
+    assert(!h.fsx._ops.some((o) => o[0] === 'rm' && o[1] === active), 'active dir is never rm-ed');
+    assert(h.fsx._paths.has(active), 'active dir still present after apply');
+    assertEq(r.activeDir, active);
+  });
+
+  test('consolidate-datadirs: a failed backup ABORTS the apply before any absorb/delete (fail-loud)', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const store = makeFakeStore({});
+    const fsx = makeFakeFs(new Set([active, sib]));
+    fsx.cpSync = () => { throw new Error('disk full during backup'); };
+    const h = makeDeps({ activeDir: active, siblingPaths: [sib], mode: 'local', store, fs: fsx, shards: { [sib]: { proj: [{ id: 'x' }] } } });
+    const r = await consolidate({ apply: true, _deps: h._deps });
+    assertEq(r.ok, false);
+    assertEq(r.reason, 'backup-failed');
+    assert(!fsx._ops.some((o) => o[0] === 'rm'), 'no delete after a failed backup');
+    assertEq(store._saved.length, 0, 'no absorb after a failed backup');
+  });
+
+  test('consolidate-datadirs helpers: unionArrays / recencyKey / toRecurrence / validVec / backupStamp', () => {
+    const t = CONS._test;
+    assertEq(t.unionArrays(['a', 'b'], ['b', 'c']), ['a', 'b', 'c']);
+    assertEq(t.unionArrays(null, ['x']), ['x']);
+    assert(t.recencyKey({ last_accessed: '2024-02' }) > t.recencyKey({ last_accessed: '2024-01' }), 'last_accessed drives recency');
+    assertEq(t.recencyKey({ created_at: '2020' }), '2020'); // falls back to created_at when no last_accessed
+    assertEq(t.toRecurrence('7'), 7);
+    assertEq(t.toRecurrence(0), 1);
+    assertEq(t.validVec([1]), true);
+    assertEq(t.validVec([]), false);
+    const stamp = t.backupStamp(1710000000000);
+    assert(/^\d{4}-\d{2}-\d{2}T/.test(stamp) && stamp.indexOf(':') === -1, 'backup stamp is ISO-ish and filename-safe (no colons)');
+  });
+}
+
+test('brain-backend mcp: saveMcp pins documentId = entry.id so re-pushes UPSERT (idempotency)', async () => {
+  const daemon = await startFakeDaemon();
+  delete require.cache[require.resolve('./brain-backend.js')];
+  const backend = require('./brain-backend.js');
+  backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
+  try {
+    await backend.init({ project: 'projDoc' });
+    const id = await backend.save({ id: 'fixed-42', title: 't', summary: 's', content: { detail: 'd' }, type: 'lesson' });
+    assertEq(daemon.seen.callArgs.name, 'add_document');
+    assertEq(daemon.seen.callArgs.arguments.documentId, 'fixed-42');
+    assertEq(id, 'fixed-42');
+    await backend.close();
+  } finally {
+    delete require.cache[require.resolve('./brain-backend.js')];
+    await daemon.close();
+  }
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
