@@ -15,6 +15,7 @@
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { createRequire } from 'module';
 import { createBrainServer } from './lib/mcp-server.js';
 import { resolvePort } from './lib/daemon-common.js';
 
@@ -43,6 +44,19 @@ const DATA_DIR = argValue('--plugin-data')
   || resolveEnv('CLAUDE_PLUGIN_DATA',
        path.join(process.env.HOME || process.env.USERPROFILE, '.claude', 'plugins', 'data', 'claude-code-boss'));
 process.env.CLAUDE_PLUGIN_DATA = DATA_DIR; // normalize so brain-store inherits the resolved dir
+
+// Publish the REAL active folder to the stable global pointer. The brain-server
+// is the ONE process that reliably receives it (via --plugin-data), so it is the
+// authoritative publisher; env-less SessionStart hooks then FOLLOW this pointer
+// and resolve the SAME data dir (no split-brain KB). Best-effort — a failure
+// here must never abort server startup.
+try {
+  const require = createRequire(import.meta.url);
+  const { writeActivePointer } = require('../../scripts/lib/data-dir.js');
+  writeActivePointer(DATA_DIR);
+} catch (err) {
+  console.error(`[brain-server] could not publish active-data-dir pointer: ${err.message}`);
+}
 
 // ─── Transport selection ─────────────────────────────────────────────────────
 if (process.argv.includes('--http')) {

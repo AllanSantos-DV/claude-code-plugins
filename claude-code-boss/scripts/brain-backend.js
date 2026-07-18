@@ -18,7 +18,7 @@ let _embedder = null;
 let _mcp = null;
 
 // Shipped config (config/brain-config.json) ⊕ per-user override
-// (DATA_DIR/brain/user-config.json). Delegating to lib/brain-config keeps the
+// (globalDir()/user-config.json). Delegating to lib/brain-config keeps the
 // merge in ONE place: this is what lets a user enable the mcp-memory backend +
 // ingestion for THEMSELVES without editing the shipped file (which would break
 // everyone who installs the plugin without the external daemon), and the
@@ -153,6 +153,10 @@ async function saveMcp(entry) {
   const result = await _mcp.callTool('add_document', {
     content: entryToContent(entry),
     metadata,
+    // Pin the server-side document id to our stable brain id so re-pushes UPSERT
+    // instead of minting duplicates — this is what makes the consolidation engine's
+    // mcp-mode re-runs idempotent (add_document treats documentId as optional).
+    ...(entry.id ? { documentId: entry.id } : {}),
   });
   // A tool-level failure is a SUCCESSFUL JSON-RPC response carrying isError:true —
   // callTool RESOLVES it (only protocol errors reject). Fail-closed: throw instead

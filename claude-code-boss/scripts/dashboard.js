@@ -18,10 +18,11 @@ const { loadSqlite } = require('./lib/sqlite-compat.js');
 const pluginUpdater = require('./lib/plugin-updater.js');
 const { resolveMode } = require('./lib/router-mode.js');
 const hooksConfig = require('./lib/hooks-config.js');
-const { validEnvDir } = require('./lib/data-dir.js');
+const { validEnvDir, dataDir, globalDir } = require('./lib/data-dir.js');
 const { isValidHost, tokenMatches } = require('./lib/dashboard-auth.js');
 const { resolveStaticPath } = require('./lib/dashboard-static.js');
 const { writeFileAtomic, writeJsonAtomic } = require('./lib/atomic-write.js');
+const { routerUserConfigPath, hardenRouterConfigPerms } = require('./lib/router-config-path.js');
 
 // Session token — generated at boot, injected into index.html, required on all /api/* requests.
 const SESSION_TOKEN = crypto.randomBytes(16).toString('hex');
@@ -33,19 +34,26 @@ let server = null;
 const ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
 const DASHBOARD_DIR = path.join(ROOT, 'dashboard');
 
-// Declared BEFORE DATA_DIR: resolveBestDataDir() (called on the next line when
-// CLAUDE_PLUGIN_DATA is unset) calls countEntriesInDb → _countCache. A `const`
-// is in the temporal dead zone until its line runs, so declaring it after DATA_DIR
-// made every boot-time count throw (caught → 0) and pick the wrong data dir.
+// Declared BEFORE MOST_POPULATED_DATA_DIR: resolveBestDataDir() (called below)
+// calls countEntriesInDb → _countCache. A `const` is in the temporal dead zone
+// until its line runs, so declaring it after made every boot-time count throw
+// (caught → 0) and pick the wrong data dir.
 const _countCache = new Map(); // dbPath -> { mtimeMs, count } — avoids a sync COUNT(*) per project on every /api/status poll
 
-const DATA_DIR = validEnvDir(process.env.CLAUDE_PLUGIN_DATA) || resolveBestDataDir();
+// The canonical resolver (env → published pointer → bootstrap → home fallback):
+// the dashboard now AGREES with every hook/writer instead of resolving its own
+// "most-populated" folder. The most-populated scan is kept as a boot-time
+// DIAGNOSTIC (surfaced in /api/status) so the UI can still flag fragmentation.
+const DATA_DIR = validEnvDir(process.env.CLAUDE_PLUGIN_DATA) || dataDir();
+const MOST_POPULATED_DATA_DIR = resolveBestDataDir();
 const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');
 
 // model-router (F3) — shipped defaults vs. user override (key + toggles).
-// The override lives only in DATA_DIR and is NEVER committed.
+// The override (NVIDIA key + per-user toggles) lives at a STABLE GLOBAL path
+// (globalDir()/model-router/user-config.json) so every process agrees on it and
+// switching the data folder can never orphan the saved key. It is NEVER committed.
 const ROUTER_SHIPPED_CONFIG = path.join(ROOT, 'config', 'router-config.json');
-const ROUTER_USER_CONFIG = path.join(DATA_DIR, 'model-router', 'user-config.json');
+const ROUTER_USER_CONFIG = routerUserConfigPath();
 const ROUTER_STATE_FILE = path.join(DATA_DIR, 'model-router', 'state.json');
 const ROUTER_METRICS_FILE = path.join(DATA_DIR, 'model-router', 'metrics.json');
 
@@ -304,6 +312,10 @@ async function getStatusAsync(req, res) {
     uptime: process.uptime().toFixed(0),
     brain: { projects: brainProjects, totalEntries: brainTotal, backend: backendMode, connected: backendConnected },
     hooks: { total: hooksTotal, active: hooksActive },
+    // Resolution diagnostics: the folder we actually use vs. the most-populated
+    // sibling. When they differ the UI can flag KB fragmentation for the user.
+    dataDir: DATA_DIR,
+    mostPopulatedDataDir: MOST_POPULATED_DATA_DIR,
   });
 }
 
@@ -323,14 +335,16 @@ function getBrainBackend(req, res) {
 
 // ─── API: Brain Backend Config (read/write brain-config.json) ────────
 
-// Per-user override lives here; the shipped config is the factory default.
-const BRAIN_USER_CONFIG = path.join(DATA_DIR, 'brain', 'user-config.json');
+// Per-user override lives at the STABLE GLOBAL path so the dashboard WRITE lands
+// exactly where brain-config.load() READS — otherwise a writer that resolved a
+// different data dir than the dashboard would never see the mcp-memory choice.
+const BRAIN_USER_CONFIG = path.join(globalDir(), 'user-config.json');
 
 function getBrainConfig(req, res) {
   try {
     const brainConfig = require('./lib/brain-config.js');
     brainConfig._resetCache(); // reflect any on-disk change since the last read
-    json(res, brainConfig.load()); // shipped ⊕ DATA_DIR/brain/user-config.json
+    json(res, brainConfig.load()); // shipped ⊕ globalDir()/user-config.json
   } catch (e) {
     fail(res, `brain-config load failed: ${e.message}`, 500);
   }
@@ -929,7 +943,7 @@ async function saveHooksConfig(req, res) {
   } catch (e) { fail(res, e.message); }
 }
 
-// Active profile — read/written UPDATE-SAFE (DATA_DIR/hooks/user-config.json),
+// Active profile — read/written UPDATE-SAFE (globalDir()/hooks/user-config.json),
 // never the shipped file, so a plugin auto-update can't revert the user's choice.
 function getHooksProfile(req, res) {
   hooksConfig._resetCache(); // long-running server: reflect any out-of-band edit
@@ -941,7 +955,7 @@ async function setHooksProfile(req, res) {
   try {
     const parsed = JSON.parse(body);
     const name = String((parsed && parsed.profile) || '').trim().toLowerCase();
-    hooksConfig.saveProfile(name); // validates + writes DATA_DIR + resets cache
+    hooksConfig.saveProfile(name); // validates + writes global user-config + resets cache
     json(res, { ok: true, profile: hooksConfig.getProfile() });
   } catch (e) { fail(res, e.message, 400); }
 }
@@ -1236,6 +1250,7 @@ function writeRouterOverride(body) {
     out.routing = { ...(existing.routing || {}), ...body.routing };
   }
   atomicWriteJSON(ROUTER_USER_CONFIG, out);
+  hardenRouterConfigPerms(ROUTER_USER_CONFIG); // owner-only 0600 (holds the NVIDIA key); no-op on Windows
   return out;
 }
 
@@ -1645,3 +1660,8 @@ server.listen(PORT, '127.0.0.1', () => {
 }
 
 if (require.main === module) startDashboardServer();
+
+// Exported for unit tests (require.main guard above keeps the server from
+// starting on require). writeRouterOverride is the single writer of the global
+// router user-config, so tests assert its path + key-preservation behavior.
+module.exports = { writeRouterOverride };

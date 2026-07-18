@@ -22,7 +22,6 @@
 
 const fs = require('fs');
 const path = require('path');
-const os = require('os');
 const crypto = require('crypto');
 
 const { readStdin, emitEmpty, emitJson } = require('./lib/hook-io.js');
@@ -64,9 +63,7 @@ function needsProjectIdentityNudge({ mode, cwd, env = {}, mcpProjectId, fs: fsIm
 }
 
 function dataDir() {
-  const env = process.env.CLAUDE_PLUGIN_DATA;
-  return (env && !env.includes('${'))
-    ? env : path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss');
+  return require('./lib/data-dir.js').dataDir();
 }
 
 function stampDir() {

@@ -27,6 +27,16 @@ process.env.CLAUDE_PLUGIN_ROOT = ROOT;
 // Isolate runtime artifacts.
 process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-units-'));
 
+// Isolate os.homedir()-derived state (the GLOBAL dir: active-data-dir pointer +
+// brain user-config) into a throwaway home for the WHOLE run. data-dir.js now
+// PUBLISHES a pointer on every valid-env dataDir() call and brain-config backfills
+// the user-config up to globalDir(); without this, the test run would scribble
+// into — and read back from — the developer's real ~/.claude/claude-code-boss,
+// hijacking a live session's backend choice. Set BOTH vars so os.homedir()
+// resolves here on every platform (Windows prefers USERPROFILE, POSIX HOME).
+process.env.USERPROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-units-home-'));
+process.env.HOME = process.env.USERPROFILE;
+
 // ─── Tiny test runner ────────────────────────────────────────────────────────
 const RESULTS = [];
 const PENDING = [];
@@ -57,6 +67,27 @@ function assertEq(actual, expected, msg) {
   const a = JSON.stringify(actual);
   const e = JSON.stringify(expected);
   if (a !== e) throw new Error(`${msg || 'expected =='}: got ${a}, want ${e}`);
+}
+
+// Run `fn` with os.homedir() pointed at a FRESH throwaway home (both HOME and
+// USERPROFILE, so it holds on every platform), restoring the prior values after.
+// Needed because data-dir.js publishes an active-data-dir pointer and reads it
+// back: a test asserting the bare HOME_FALLBACK must start from a home with no
+// pointer, and must not inherit one written by an earlier test in the shared
+// run-wide temp home. Returns whatever `fn` returns; `fn` receives the home path.
+function withTempHome(fn) {
+  const savedHome = process.env.HOME;
+  const savedProfile = process.env.USERPROFILE;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-home-'));
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
+  try {
+    return fn(home);
+  } finally {
+    if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+    if (savedProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = savedProfile;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
 }
 
 // ─── curation-classifier ─────────────────────────────────────────────────────
@@ -271,16 +302,21 @@ test('hooks-config.resolveProfileConfig: result never aliases PROFILE_PRESETS (p
 });
 
 // Getter-level resolution via a temp CLAUDE_PLUGIN_ROOT + fresh module instance.
-// CLAUDE_PLUGIN_DATA is repointed at the same temp dir so a stray real user
-// override (DATA_DIR/hooks/user-config.json) never leaks into these assertions.
+// CLAUDE_PLUGIN_DATA and HOME/USERPROFILE are repointed at the same temp dir so a
+// stray real user override (globalDir()/hooks/user-config.json — now home-based —
+// or a legacy DATA_DIR/hooks one) never leaks into these shipped-config assertions.
 function withHooksConfigFile(obj, fn) {
   const savedRoot = process.env.CLAUDE_PLUGIN_ROOT;
   const savedData = process.env.CLAUDE_PLUGIN_DATA;
+  const savedHome = process.env.HOME;
+  const savedProfile = process.env.USERPROFILE;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hcfg-'));
   fs.mkdirSync(path.join(dir, 'config'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'config', 'hooks-config.json'), JSON.stringify(obj));
   process.env.CLAUDE_PLUGIN_ROOT = dir;
   process.env.CLAUDE_PLUGIN_DATA = dir;
+  process.env.HOME = dir;          // isolate globalDir() so no real user override leaks in
+  process.env.USERPROFILE = dir;   // (Windows homedir source)
   delete require.cache[require.resolve('./lib/hooks-config.js')];
   const hc = require('./lib/hooks-config.js');
   try { return fn(hc); }
@@ -288,6 +324,8 @@ function withHooksConfigFile(obj, fn) {
     process.env.CLAUDE_PLUGIN_ROOT = savedRoot;
     if (savedData === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
     else process.env.CLAUDE_PLUGIN_DATA = savedData;
+    if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+    if (savedProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = savedProfile;
     delete require.cache[require.resolve('./lib/hooks-config.js')];
   }
 }
@@ -379,55 +417,63 @@ test('hooks-config: profileNames lists dev/standard/free', () => {
     `expected dev/standard/free, got ${names.join(',')}`);
 });
 
-test('hooks-config: DATA_DIR user-config overrides shipped profile (update-safe)', () => {
-  const savedRoot = process.env.CLAUDE_PLUGIN_ROOT;
-  const savedData = process.env.CLAUDE_PLUGIN_DATA;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hcfg-ovr-'));
-  fs.mkdirSync(path.join(dir, 'config'), { recursive: true });
-  // shipped says standard...
-  fs.writeFileSync(path.join(dir, 'config', 'hooks-config.json'), JSON.stringify({ profile: 'standard' }));
-  // ...DATA_DIR user-config says dev → user wins, survives shipped updates.
-  fs.mkdirSync(path.join(dir, 'hooks'), { recursive: true });
-  fs.writeFileSync(path.join(dir, 'hooks', 'user-config.json'), JSON.stringify({ profile: 'dev' }));
-  process.env.CLAUDE_PLUGIN_ROOT = dir;
-  process.env.CLAUDE_PLUGIN_DATA = dir;
-  delete require.cache[require.resolve('./lib/hooks-config.js')];
-  const hc = require('./lib/hooks-config.js');
-  try {
-    assertEq(hc.getProfile(), 'dev');
-    assertEq(hc.getRefineResearch().enabled, true); // dev turns the blockers back on
-  } finally {
-    process.env.CLAUDE_PLUGIN_ROOT = savedRoot;
-    if (savedData === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
-    else process.env.CLAUDE_PLUGIN_DATA = savedData;
+test('hooks-config: GLOBAL user-config overrides shipped profile (update-safe)', () => {
+  withTempHome((home) => {
+    const savedRoot = process.env.CLAUDE_PLUGIN_ROOT;
+    const savedData = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hcfg-ovr-'));
+    fs.mkdirSync(path.join(dir, 'config'), { recursive: true });
+    // shipped says standard...
+    fs.writeFileSync(path.join(dir, 'config', 'hooks-config.json'), JSON.stringify({ profile: 'standard' }));
+    // ...the GLOBAL user-config says dev → user wins, surviving BOTH shipped updates
+    // AND data-folder switches (it lives at globalDir()/hooks, not under DATA_DIR).
+    const gp = path.join(home, '.claude', 'claude-code-boss', 'hooks', 'user-config.json');
+    fs.mkdirSync(path.dirname(gp), { recursive: true });
+    fs.writeFileSync(gp, JSON.stringify({ profile: 'dev' }));
+    process.env.CLAUDE_PLUGIN_ROOT = dir;
+    process.env.CLAUDE_PLUGIN_DATA = dir;
     delete require.cache[require.resolve('./lib/hooks-config.js')];
-  }
+    const hc = require('./lib/hooks-config.js');
+    try {
+      assertEq(hc.getProfile(), 'dev');
+      assertEq(hc.getRefineResearch().enabled, true); // dev turns the blockers back on
+    } finally {
+      process.env.CLAUDE_PLUGIN_ROOT = savedRoot;
+      if (savedData === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
+      else process.env.CLAUDE_PLUGIN_DATA = savedData;
+      delete require.cache[require.resolve('./lib/hooks-config.js')];
+    }
+  });
 });
 
-test('hooks-config: saveProfile writes DATA_DIR override; invalid name throws', () => {
-  const savedRoot = process.env.CLAUDE_PLUGIN_ROOT;
-  const savedData = process.env.CLAUDE_PLUGIN_DATA;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hcfg-save-'));
-  fs.mkdirSync(path.join(dir, 'config'), { recursive: true });
-  fs.writeFileSync(path.join(dir, 'config', 'hooks-config.json'), JSON.stringify({ profile: 'dev' }));
-  process.env.CLAUDE_PLUGIN_ROOT = dir;
-  process.env.CLAUDE_PLUGIN_DATA = dir;
-  delete require.cache[require.resolve('./lib/hooks-config.js')];
-  const hc = require('./lib/hooks-config.js');
-  try {
-    const p = hc.saveProfile('free');
-    assert(fs.existsSync(p), 'user-config not written');
-    assertEq(JSON.parse(fs.readFileSync(p, 'utf-8')).profile, 'free');
-    assertEq(hc.getProfile(), 'free'); // cache reset inside saveProfile
-    let threw = false;
-    try { hc.saveProfile('nope'); } catch { threw = true; }
-    assert(threw, 'saveProfile should throw on invalid name');
-  } finally {
-    process.env.CLAUDE_PLUGIN_ROOT = savedRoot;
-    if (savedData === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
-    else process.env.CLAUDE_PLUGIN_DATA = savedData;
+test('hooks-config: saveProfile writes the GLOBAL override; invalid name throws', () => {
+  withTempHome((home) => {
+    const savedRoot = process.env.CLAUDE_PLUGIN_ROOT;
+    const savedData = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hcfg-save-'));
+    fs.mkdirSync(path.join(dir, 'config'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'config', 'hooks-config.json'), JSON.stringify({ profile: 'dev' }));
+    process.env.CLAUDE_PLUGIN_ROOT = dir;
+    process.env.CLAUDE_PLUGIN_DATA = dir;
     delete require.cache[require.resolve('./lib/hooks-config.js')];
-  }
+    const hc = require('./lib/hooks-config.js');
+    try {
+      const p = hc.saveProfile('free');
+      // saveProfile persists to the STABLE GLOBAL path, not the volatile data dir.
+      assertEq(p, path.join(home, '.claude', 'claude-code-boss', 'hooks', 'user-config.json'));
+      assert(fs.existsSync(p), 'user-config not written');
+      assertEq(JSON.parse(fs.readFileSync(p, 'utf-8')).profile, 'free');
+      assertEq(hc.getProfile(), 'free'); // cache reset inside saveProfile
+      let threw = false;
+      try { hc.saveProfile('nope'); } catch { threw = true; }
+      assert(threw, 'saveProfile should throw on invalid name');
+    } finally {
+      process.env.CLAUDE_PLUGIN_ROOT = savedRoot;
+      if (savedData === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
+      else process.env.CLAUDE_PLUGIN_DATA = savedData;
+      delete require.cache[require.resolve('./lib/hooks-config.js')];
+    }
+  });
 });
 
 test('hooks-config getters: shipped config is valid standard (regression)', () => {
@@ -1905,10 +1951,18 @@ test('research-followup.decideNudge: newer trigger after stamp → nudge again',
 test('research-followup.run: capture_lesson({type:research}) in __user__ scope suppresses the nudge', async () => {
   delete require.cache[require.resolve('./lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
+  const prevHome = process.env.HOME;
+  const prevProfile = process.env.USERPROFILE;
   process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rf-xscope-'));
-  // research-followup is dev-only now; force dev so run() actually exercises suppression.
-  fs.mkdirSync(path.join(process.env.CLAUDE_PLUGIN_DATA, 'hooks'), { recursive: true });
-  fs.writeFileSync(path.join(process.env.CLAUDE_PLUGIN_DATA, 'hooks', 'user-config.json'), JSON.stringify({ profile: 'dev' }));
+  // Isolate globalDir() so forcing the dev profile via the GLOBAL user-config can't
+  // pollute the run-wide home. research-followup is dev-only now; force dev so run()
+  // actually exercises suppression.
+  const rfHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rf-xscope-home-'));
+  process.env.HOME = rfHome;
+  process.env.USERPROFILE = rfHome;
+  const gp = path.join(rfHome, '.claude', 'claude-code-boss', 'hooks', 'user-config.json');
+  fs.mkdirSync(path.dirname(gp), { recursive: true });
+  fs.writeFileSync(gp, JSON.stringify({ profile: 'dev' }));
   hooksConfig._resetCache();
   const isolatedStore = require('./lib/metrics-store.js');
   delete require.cache[require.resolve('./research-followup-detect.js')];
@@ -1937,6 +1991,8 @@ test('research-followup.run: capture_lesson({type:research}) in __user__ scope s
     delete require.cache[require.resolve('./lib/metrics-store.js')];
     delete require.cache[require.resolve('./research-followup-detect.js')];
     process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
+    if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+    if (prevProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = prevProfile;
     hooksConfig._resetCache();
   }
 });
@@ -1944,10 +2000,17 @@ test('research-followup.run: capture_lesson({type:research}) in __user__ scope s
 test('research-followup.run: no capture at all still nudges (regression guard)', async () => {
   delete require.cache[require.resolve('./lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
+  const prevHome = process.env.HOME;
+  const prevProfile = process.env.USERPROFILE;
   process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rf-nocap-'));
-  // research-followup is dev-only now; force dev so run() emits the nudge.
-  fs.mkdirSync(path.join(process.env.CLAUDE_PLUGIN_DATA, 'hooks'), { recursive: true });
-  fs.writeFileSync(path.join(process.env.CLAUDE_PLUGIN_DATA, 'hooks', 'user-config.json'), JSON.stringify({ profile: 'dev' }));
+  // Isolate globalDir() as above; research-followup is dev-only now, so force dev
+  // (via the GLOBAL user-config) so run() emits the nudge.
+  const rfHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rf-nocap-home-'));
+  process.env.HOME = rfHome;
+  process.env.USERPROFILE = rfHome;
+  const gp = path.join(rfHome, '.claude', 'claude-code-boss', 'hooks', 'user-config.json');
+  fs.mkdirSync(path.dirname(gp), { recursive: true });
+  fs.writeFileSync(gp, JSON.stringify({ profile: 'dev' }));
   hooksConfig._resetCache();
   const isolatedStore = require('./lib/metrics-store.js');
   delete require.cache[require.resolve('./research-followup-detect.js')];
@@ -1965,6 +2028,8 @@ test('research-followup.run: no capture at all still nudges (regression guard)',
     delete require.cache[require.resolve('./lib/metrics-store.js')];
     delete require.cache[require.resolve('./research-followup-detect.js')];
     process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
+    if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+    if (prevProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = prevProfile;
     hooksConfig._resetCache();
   }
 });
@@ -2190,22 +2255,32 @@ test('retrieve-core: short prompt pre-filters (no embedder)', async () => {
 // ─── brain-config: contextExcludeTypes + DATA_DIR user-override deep-merge ────
 const brainConfig = require('./lib/brain-config.js');
 
-// Run `fn` with a temp DATA_DIR user-override (brain/user-config.json = `obj`).
-// `obj === undefined` writes no override (exercises the "absent" path). Restores
-// CLAUDE_PLUGIN_DATA + the brain-config cache afterwards no matter what.
+// Run `fn` with a temp per-user override at the GLOBAL path (globalDir()/
+// user-config.json — the new canonical location load() reads). Isolates a fresh
+// home AND data dir per call so each exercises a clean override with no bleed from
+// a prior call's global file. `obj === undefined` writes nothing (the "absent"
+// path). Restores HOME/USERPROFILE/CLAUDE_PLUGIN_DATA + the cache no matter what.
 function withUserConfig(obj, fn) {
-  const saved = process.env.CLAUDE_PLUGIN_DATA;
+  const savedData = process.env.CLAUDE_PLUGIN_DATA;
+  const savedHome = process.env.HOME;
+  const savedProfile = process.env.USERPROFILE;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-usercfg-home-'));
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-usercfg-'));
-  if (obj !== undefined) {
-    fs.mkdirSync(path.join(dir, 'brain'), { recursive: true });
-    fs.writeFileSync(path.join(dir, 'brain', 'user-config.json'), JSON.stringify(obj));
-  }
+  process.env.HOME = home;
+  process.env.USERPROFILE = home;
   process.env.CLAUDE_PLUGIN_DATA = dir;
+  if (obj !== undefined) {
+    const gp = path.join(home, '.claude', 'claude-code-boss', 'user-config.json');
+    fs.mkdirSync(path.dirname(gp), { recursive: true });
+    fs.writeFileSync(gp, JSON.stringify(obj));
+  }
   brainConfig._resetCache();
   try {
     return fn();
   } finally {
-    process.env.CLAUDE_PLUGIN_DATA = saved;
+    process.env.CLAUDE_PLUGIN_DATA = savedData;
+    if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+    if (savedProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = savedProfile;
     brainConfig._resetCache();
   }
 }
@@ -4759,6 +4834,47 @@ test('self-review.buildQuery: basenames + non-generic dirs, split keywords', () 
   assert(q.keywords.includes('hooks') && q.keywords.includes('config'), 'keywords split on punctuation');
 });
 
+test('self-review.buildQuery: relativizes against cwd, dropping OS/user/container noise (regression)', () => {
+  // Live bug: edited paths arrive ABSOLUTE (file-edit-detect.js journals
+  // tool_input.file_path as-is). Without relativizing against cwd first, every
+  // real invocation walks the WHOLE absolute path — "Users"/"<username>"/
+  // "Desktop"/"Projetos"/"<repo>" are never in GENERIC_DIR and become query
+  // noise on every turn, diluting the keyword-index match score (matched/total
+  // fraction) below the shared relevance gate and silently starving the
+  // embedder-free fallback path. Confirmed live: a 12-keyword noisy query
+  // scored 0.166 (2/12) and was gated out at minScore 0.2; the same edit
+  // relativized against cwd scored 1.0 (2/2) and passed.
+  const cwd = 'C:\\Users\\dev\\Desktop\\Projetos\\myrepo';
+  const q = selfReview.buildQuery([`${cwd}\\scripts\\oneoff-store.js`], cwd);
+  assertEq(q.query, 'oneoff-store.js', 'only the basename remains once cwd noise is stripped');
+  assert(!q.keywords.some(k => ['users', 'dev', 'desktop', 'projetos', 'myrepo'].includes(k)),
+    'no OS/user/container path segments leak into keywords');
+  assert(q.keywords.includes('oneoff') && q.keywords.includes('store'), 'the real keywords survive');
+});
+
+test('self-review.buildQuery: path outside cwd (or no cwd given) keeps the prior absolute-segments behavior', () => {
+  const cwd = 'C:\\Users\\dev\\Desktop\\Projetos\\myrepo';
+  const outside = selfReview.buildQuery(['C:\\other\\place\\oneoff-store.js'], cwd);
+  assert(outside.query.includes('other') && outside.query.includes('place'),
+    'a path outside cwd is NOT relativized — falls back to the old behavior, not worse than before');
+  const noCwd = selfReview.buildQuery(['scripts/lib/hooks-config.js']);
+  assert(noCwd.query.includes('hooks-config.js'), 'omitting cwd entirely still works (backward compatible)');
+});
+
+test('self-review.buildQuery: cwd/file_path case mismatch still relativizes on win32 (adversarial review finding)', () => {
+  // A case-sensitive startsWith would silently miss this and fall through to
+  // the exact noise-pollution bug the fix exists for — with zero signal.
+  if (process.platform !== 'win32') return; // POSIX case genuinely distinguishes files; not applicable
+  const cwd = 'c:\\Users\\dev\\Desktop\\Projetos\\myrepo';
+  const q = selfReview.buildQuery(['C:\\USERS\\DEV\\Desktop\\Projetos\\MyRepo\\scripts\\oneoff-store.js'], cwd);
+  assertEq(q.query, 'oneoff-store.js', 'relativizes despite differing case in drive letter and path segments');
+});
+
+test('self-review.buildQuery: root cwd ("/") still relativizes (empty-normCwd edge case)', () => {
+  const q = selfReview.buildQuery(['/scripts/oneoff-store.js'], '/');
+  assertEq(q.query, 'oneoff-store.js', 'a root cwd normalizes to a "/" prefix, not skipped as if cwd were absent');
+});
+
 test('self-review.buildAdvisory: [SELF-REVIEW] header + recurrence + type', () => {
   const a = selfReview.buildAdvisory([{ title: 'Broke the build', type: 'lesson', recurrence: 4 }, { title: 'Flaky test', type: 'failure' }]);
   assert(a.startsWith('[SELF-REVIEW]'), 'tag');
@@ -5417,43 +5533,100 @@ test('tuning-advisor: warn sorts before suggest', () => {
 // ─── lib/data-dir.js — one guarded resolver (kills the ${...} split-brain) ────
 const dataDirLib = require('./lib/data-dir.js');
 
-test('data-dir: honors a real CLAUDE_PLUGIN_DATA value', () => {
-  const saved = process.env.CLAUDE_PLUGIN_DATA;
-  try {
-    process.env.CLAUDE_PLUGIN_DATA = path.join(os.tmpdir(), 'ccb-dd-real');
-    assertEq(dataDirLib.dataDir(), path.join(os.tmpdir(), 'ccb-dd-real'));
-  } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+test('data-dir: honors a real CLAUDE_PLUGIN_DATA value AND publishes the active pointer', () => {
+  // (a) env wins — and dataDir() PUBLISHES it to the global pointer so env-less
+  // hooks (SessionStart etc.) can follow the SAME live folder instead of forking.
+  withTempHome((home) => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const real = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dd-real-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = real;
+      assertEq(dataDirLib.dataDir(), real);
+      assertEq(dataDirLib.readActivePointer(), real);
+      assert(fs.existsSync(path.join(home, '.claude', 'claude-code-boss', 'active-data-dir.json')),
+        'dataDir() with a real env must publish the active-data-dir pointer');
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+  });
 });
 
-test('data-dir: falls back to the stable home path when env is absent', () => {
-  const saved = process.env.CLAUDE_PLUGIN_DATA;
-  try {
-    delete process.env.CLAUDE_PLUGIN_DATA;
-    assertEq(dataDirLib.dataDir(),
-      path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss'));
-  } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+test('data-dir: FOLLOWS the published pointer when env is absent', () => {
+  // (b) no env → resolve the app's live folder from the global pointer that an
+  // env-aware process (brain-server / a guarded hook) previously published.
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const live = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dd-live-'));
+    try {
+      delete process.env.CLAUDE_PLUGIN_DATA;
+      dataDirLib.writeActivePointer(live);
+      assertEq(dataDirLib.dataDir(), live);
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+  });
+});
+
+test('data-dir: bootstraps the most-recently-written claude-code-boss* sibling (excludes other plugins)', () => {
+  // (c) no env, no pointer → pick the live install by brain/ mtime, and NEVER a
+  // non-claude-code-boss sibling (codex-inline, rf-reviewer-*) even if it is newer.
+  withTempHome((home) => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    try {
+      delete process.env.CLAUDE_PLUGIN_DATA;
+      const base = path.join(home, '.claude', 'plugins', 'data');
+      const mk = (name, mtimeSec) => {
+        const b = path.join(base, name, 'brain');
+        fs.mkdirSync(b, { recursive: true });
+        fs.utimesSync(b, mtimeSec, mtimeSec);
+      };
+      const now = Date.now() / 1000;
+      mk('claude-code-boss', now - 100);
+      mk('claude-code-boss-abcd1234', now - 10);   // most-recent claude-code-boss
+      mk('claude-code-boss-old', now - 500);
+      mk('codex-inline', now + 1000);              // newer, but a DIFFERENT plugin
+      mk('rf-reviewer-xyz', now + 2000);           // newer, but a DIFFERENT plugin
+      const want = path.join(base, 'claude-code-boss-abcd1234');
+      assertEq(dataDirLib.bootstrapMostRecent(), want);
+      assertEq(dataDirLib.dataDir(), want);
+      // and bootstrapping self-publishes the pick so the next env-less call is O(1)
+      assertEq(dataDirLib.readActivePointer(), want);
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+  });
+});
+
+test('data-dir: falls back to the stable home path when nothing exists', () => {
+  // (d) no env, no pointer, no siblings → the bare, stable home fallback.
+  withTempHome((home) => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    try {
+      delete process.env.CLAUDE_PLUGIN_DATA;
+      assertEq(dataDirLib.dataDir(),
+        path.join(home, '.claude', 'plugins', 'data', 'claude-code-boss'));
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+  });
 });
 
 test('data-dir: REJECTS an unexpanded ${...} placeholder (no literal-dir split-brain)', () => {
   // TEETH: some hook contexts don't substitute ${CLAUDE_PLUGIN_DATA}; a naive
   // `env || fallback` would return the literal "${CLAUDE_PLUGIN_DATA}" as a dir,
   // splitting state away from the guarded scripts. dataDir() must fall back.
-  const saved = process.env.CLAUDE_PLUGIN_DATA;
-  try {
-    process.env.CLAUDE_PLUGIN_DATA = '${CLAUDE_PLUGIN_DATA}';
-    const d = dataDirLib.dataDir();
-    assert(!d.includes('${'), `must not resolve to a placeholder dir, got ${d}`);
-    assertEq(d, path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss'));
-  } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+  withTempHome((home) => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = '${CLAUDE_PLUGIN_DATA}';
+      const d = dataDirLib.dataDir();
+      assert(!d.includes('${'), `must not resolve to a placeholder dir, got ${d}`);
+      assertEq(d, path.join(home, '.claude', 'plugins', 'data', 'claude-code-boss'));
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+  });
 });
 
 test('data-dir: REJECTS an empty-string env (falls back)', () => {
-  const saved = process.env.CLAUDE_PLUGIN_DATA;
-  try {
-    process.env.CLAUDE_PLUGIN_DATA = '';
-    assertEq(dataDirLib.dataDir(),
-      path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss'));
-  } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+  withTempHome((home) => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = '';
+      assertEq(dataDirLib.dataDir(),
+        path.join(home, '.claude', 'plugins', 'data', 'claude-code-boss'));
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+  });
 });
 
 test('data-dir: validEnvDir mirrors the guard (unit)', () => {
@@ -5461,6 +5634,225 @@ test('data-dir: validEnvDir mirrors the guard (unit)', () => {
   assertEq(dataDirLib.validEnvDir('${X}'), null);
   assertEq(dataDirLib.validEnvDir(''), null);
   assertEq(dataDirLib.validEnvDir(undefined), null);
+});
+
+test('data-dir: pointer helpers round-trip; readActivePointer null for missing/corrupt/stale', () => {
+  withTempHome((home) => {
+    // globalDir() is the stable, cross-folder-invariant home; the pointer lives there.
+    assertEq(dataDirLib.globalDir(), path.join(home, '.claude', 'claude-code-boss'));
+    assertEq(path.dirname(dataDirLib.activePointerPath()), dataDirLib.globalDir());
+    // missing pointer file → null
+    assertEq(dataDirLib.readActivePointer(), null);
+    // round-trip a real, existing dir
+    const real = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ptr-'));
+    dataDirLib.writeActivePointer(real);
+    assertEq(dataDirLib.readActivePointer(), real);
+    // stale dir (recorded but since deleted) self-heals → null
+    const gone = path.join(os.tmpdir(), `ccb-ptr-gone-${Date.now()}`);
+    dataDirLib.writeActivePointer(gone);
+    assertEq(dataDirLib.readActivePointer(), null);
+    // corrupt JSON → null (tolerated, not thrown)
+    fs.writeFileSync(dataDirLib.activePointerPath(), '{not json');
+    assertEq(dataDirLib.readActivePointer(), null);
+  });
+});
+
+test('brain-config: reads the per-user override from the GLOBAL path (not per-data-dir)', () => {
+  // The backend choice must be visible to every writer regardless of which data
+  // dir it resolved — so the override lives at globalDir()/user-config.json.
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ucp-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      const gp = path.join(dataDirLib.globalDir(), 'user-config.json');
+      fs.mkdirSync(path.dirname(gp), { recursive: true });
+      fs.writeFileSync(gp, JSON.stringify({ backend: { type: 'mcp-memory' } }));
+      brainConfig._resetCache();
+      assertEq(brainConfig.getBackendType(), 'mcp-memory');
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; brainConfig._resetCache(); }
+  });
+});
+
+test('brain-config: backfills a legacy per-data-dir user-config up to the global path', () => {
+  // Migration: an existing user's choice under DATA_DIR/brain/user-config.json is
+  // copied up to globalDir() the first time load() runs with no global override.
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bf-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      const legacy = path.join(dir, 'brain', 'user-config.json');
+      fs.mkdirSync(path.dirname(legacy), { recursive: true });
+      fs.writeFileSync(legacy, JSON.stringify({ backend: { type: 'mcp-memory' } }));
+      const gp = path.join(dataDirLib.globalDir(), 'user-config.json');
+      assert(!fs.existsSync(gp), 'precondition: global override absent');
+      brainConfig._resetCache();
+      assertEq(brainConfig.getBackendType(), 'mcp-memory');       // honored via backfill
+      assert(fs.existsSync(gp), 'legacy override must be copied up to the global path');
+      assertEq(JSON.parse(fs.readFileSync(gp, 'utf-8')), { backend: { type: 'mcp-memory' } });
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; brainConfig._resetCache(); }
+  });
+});
+
+test('brain-config: backfill NEVER overwrites an existing global override', () => {
+  // An already-migrated global choice must win; a stale legacy file cannot clobber it.
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bf2-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      const gp = path.join(dataDirLib.globalDir(), 'user-config.json');
+      fs.mkdirSync(path.dirname(gp), { recursive: true });
+      fs.writeFileSync(gp, JSON.stringify({ backend: { type: 'local' } }));          // existing global
+      const legacy = path.join(dir, 'brain', 'user-config.json');
+      fs.mkdirSync(path.dirname(legacy), { recursive: true });
+      fs.writeFileSync(legacy, JSON.stringify({ backend: { type: 'mcp-memory' } })); // conflicting legacy
+      brainConfig._resetCache();
+      assertEq(brainConfig.getBackendType(), 'local');            // global wins
+      assertEq(JSON.parse(fs.readFileSync(gp, 'utf-8')), { backend: { type: 'local' } });
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; brainConfig._resetCache(); }
+  });
+});
+
+// ─── Phase 1.5: hooks + router per-user configs moved to the stable GLOBAL path ───
+const routerCfgPath = require('./lib/router-config-path.js');
+
+test('hooks-config: userConfigPath is under globalDir()/hooks (stable, not the data dir)', () => {
+  withTempHome(() => {
+    assertEq(hooksConfig.userConfigPath(),
+      path.join(dataDirLib.globalDir(), 'hooks', 'user-config.json'));
+  });
+});
+
+test('hooks-config: backfills a legacy per-data-dir user-config up to the global path', () => {
+  // Migration: an existing user's profile under DATA_DIR/hooks/user-config.json is
+  // copied up to globalDir()/hooks the first time load() runs with no global override.
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hbf-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      const legacy = path.join(dir, 'hooks', 'user-config.json');
+      fs.mkdirSync(path.dirname(legacy), { recursive: true });
+      fs.writeFileSync(legacy, JSON.stringify({ profile: 'free' }));
+      const gp = path.join(dataDirLib.globalDir(), 'hooks', 'user-config.json');
+      assert(!fs.existsSync(gp), 'precondition: global override absent');
+      hooksConfig._resetCache();
+      assertEq(hooksConfig.getProfile(), 'free');                 // honored via backfill
+      assert(fs.existsSync(gp), 'legacy override must be copied up to the global path');
+      assertEq(JSON.parse(fs.readFileSync(gp, 'utf-8')), { profile: 'free' });
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; hooksConfig._resetCache(); }
+  });
+});
+
+test('hooks-config: backfill NEVER overwrites an existing global override', () => {
+  // An already-migrated global choice must win; a stale legacy file cannot clobber it.
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hbf2-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      const gp = path.join(dataDirLib.globalDir(), 'hooks', 'user-config.json');
+      fs.mkdirSync(path.dirname(gp), { recursive: true });
+      fs.writeFileSync(gp, JSON.stringify({ profile: 'standard' }));   // existing global
+      const legacy = path.join(dir, 'hooks', 'user-config.json');
+      fs.mkdirSync(path.dirname(legacy), { recursive: true });
+      fs.writeFileSync(legacy, JSON.stringify({ profile: 'free' }));   // conflicting legacy
+      hooksConfig._resetCache();
+      assertEq(hooksConfig.getProfile(), 'standard');            // global wins
+      assertEq(JSON.parse(fs.readFileSync(gp, 'utf-8')), { profile: 'standard' });
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; hooksConfig._resetCache(); }
+  });
+});
+
+test('router-config-path: routerUserConfigPath is under globalDir()/model-router (stable)', () => {
+  withTempHome(() => {
+    assertEq(routerCfgPath.routerUserConfigPath(),
+      path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json'));
+    // runtime state stays per-folder — legacy path is under the resolved data dir.
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rlegacy-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      assertEq(routerCfgPath.legacyRouterUserConfigPath(),
+        path.join(dir, 'model-router', 'user-config.json'));
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+  });
+});
+
+test('router-config-path: backfills a legacy user-config up to the global path once (+0600 on POSIX)', () => {
+  // The NVIDIA key + toggles under DATA_DIR/model-router/user-config.json migrate up
+  // to globalDir()/model-router exactly once, and the global key file is owner-only.
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rbf-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      const legacy = path.join(dir, 'model-router', 'user-config.json');
+      fs.mkdirSync(path.dirname(legacy), { recursive: true });
+      fs.writeFileSync(legacy, JSON.stringify({ nim: { apiKey: 'nvapi-secret' } }));
+      const gp = path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json');
+      assert(!fs.existsSync(gp), 'precondition: global router config absent');
+      routerCfgPath.backfillRouterUserConfig();
+      assert(fs.existsSync(gp), 'legacy router config must be copied up to the global path');
+      assertEq(JSON.parse(fs.readFileSync(gp, 'utf-8')), { nim: { apiKey: 'nvapi-secret' } });
+      if (process.platform !== 'win32') {
+        assertEq(fs.statSync(gp).mode & 0o777, 0o600);   // owner-only (holds the NVIDIA key)
+      }
+      // Idempotent: a second call with a DIFFERENT legacy must NOT overwrite the global.
+      fs.writeFileSync(legacy, JSON.stringify({ nim: { apiKey: 'nvapi-CHANGED' } }));
+      routerCfgPath.backfillRouterUserConfig();
+      assertEq(JSON.parse(fs.readFileSync(gp, 'utf-8')), { nim: { apiKey: 'nvapi-secret' } });
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+  });
+});
+
+test('dashboard.writeRouterOverride writes the GLOBAL router config and preserves an untouched key', () => {
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-rw-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      const gp = path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json');
+      delete require.cache[require.resolve('./dashboard.js')];
+      const dash = require('./dashboard.js'); // resolves ROUTER_USER_CONFIG at load → global path
+      // Seed a key, then toggle `enabled` WITHOUT resending the key → key must survive.
+      dash.writeRouterOverride({ nimApiKey: 'nvapi-keep-me' });
+      assert(fs.existsSync(gp), 'router override must be written to the global path');
+      assertEq(JSON.parse(fs.readFileSync(gp, 'utf-8')).nim.apiKey, 'nvapi-keep-me');
+      dash.writeRouterOverride({ enabled: true }); // no nimApiKey → existing key untouched
+      const out = JSON.parse(fs.readFileSync(gp, 'utf-8'));
+      assertEq(out.nim.apiKey, 'nvapi-keep-me');   // preserved
+      assertEq(out.enabled, true);
+      if (process.platform !== 'win32') {
+        assertEq(fs.statSync(gp).mode & 0o777, 0o600);   // hardened after each write
+      }
+    } finally {
+      process.env.CLAUDE_PLUGIN_DATA = saved;
+      delete require.cache[require.resolve('./dashboard.js')];
+    }
+  });
+});
+
+test('capture-dispatch: _captureConfig honors the GLOBAL brain kb.capture override', () => {
+  // Phase-1 gap closed: capture now reads brain-config.load() (shipped ⊕ global
+  // override), not a stale legacy DATA_DIR/brain/user-config.json.
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-capcfg-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      const gp = path.join(dataDirLib.globalDir(), 'user-config.json');
+      fs.mkdirSync(path.dirname(gp), { recursive: true });
+      fs.writeFileSync(gp, JSON.stringify({ kb: { capture: { enabled: false, maxBlockAttempts: 9 } } }));
+      brainConfig._resetCache();
+      const cd = require('./capture-dispatch.js');
+      const cfg = cd._captureConfig();
+      assertEq(cfg.enabled, false);
+      assertEq(cfg.maxBlockAttempts, 9);
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; brainConfig._resetCache(); }
+  });
 });
 
 // ─── lib/atomic-write.js — temp+rename so readers never see a partial file ───
@@ -5566,12 +5958,56 @@ test('data-dir: NO script keeps a bare unguarded `env || fallback` resolver (EXH
   assertEq(offenders, [], `unguarded CLAUDE_PLUGIN_DATA resolvers remain: ${offenders.join(', ')}`);
 });
 
+test('test/smoke harnesses that spawn a hook with a temp CLAUDE_PLUGIN_DATA must isolate HOME/USERPROFILE (EXHAUSTIVE)', () => {
+  // Root cause (found live, this repo, this machine): a hermetic test/smoke
+  // script spawns a hook CHILD process with its OWN temp CLAUDE_PLUGIN_DATA,
+  // but never overrides HOME/USERPROFILE for that child — so data-dir.js's
+  // dataDir() in the child resolves os.homedir() to the REAL developer home,
+  // and since the env value is valid, dataDir() PUBLISHES the throwaway temp
+  // path into the REAL, cross-project ~/.claude/claude-code-boss/
+  // active-data-dir.json (test-units.js already isolates HOME for its OWN
+  // in-process run — see the top of this file — but that only protects
+  // in-process require() calls, not a harness that spawns children). Confirmed
+  // live: running test-hooks.js's skill-metric test corrupted the real pointer
+  // on this machine before this was fixed.
+  //
+  // Fix pattern (either satisfies this guard): isolate HOME/USERPROFILE ONCE
+  // per file via `process.env.HOME = process.env.USERPROFILE = <temp dir>`
+  // before any `...process.env` spread (whole-run isolation), OR pass an
+  // explicit `HOME`/`USERPROFILE` key in the specific spawn call's env object
+  // (per-call isolation). A representative sample can't lock this invariant —
+  // walk every test/smoke harness that could spawn a hook.
+  const offenders = [];
+  const candidates = [path.join(SCRIPTS, 'test-hooks.js')];
+  const smokeDir = path.join(ROOT, 'smoke');
+  if (fs.existsSync(smokeDir)) {
+    for (const n of fs.readdirSync(smokeDir)) {
+      if (/\.(m?js)$/.test(n)) candidates.push(path.join(smokeDir, n));
+    }
+  }
+  const SPAWNS_CHILD = /\b(?:spawn|spawnSync|execFile|execFileSync)\s*\(/;
+  const SETS_DATA_ENV = /CLAUDE_PLUGIN_DATA\s*:/;
+  const ISOLATES_HOME = /process\.env\.(?:HOME|USERPROFILE)\s*=|\b(?:HOME|USERPROFILE)\s*:/;
+  for (const p of candidates) {
+    const src = fs.readFileSync(p, 'utf-8');
+    if (SPAWNS_CHILD.test(src) && SETS_DATA_ENV.test(src) && !ISOLATES_HOME.test(src)) {
+      offenders.push(path.relative(ROOT, p));
+    }
+  }
+  assertEq(offenders, [],
+    `test/smoke harnesses spawning hooks with a temp CLAUDE_PLUGIN_DATA but no HOME/USERPROFILE isolation: ${offenders.join(', ')}`);
+});
+
 test('data-dir: migrated consumers import the shared resolver', () => {
   const consumers = [
     'lib/cooldown-store.js', 'lib/verify-journal.js', 'lib/failure-journal.js',
     'lib/recall-health.js', 'lib/scope-search.js', 'conversation-ingest.js',
     'curation-session.js', 'curation-detect.js', 'decision-detect.js',
     'brain-index-native.js', 'brain-promote.js', 'dashboard.js',
+    // Phase-1 inliners repointed off the bare fallback onto the shared resolver.
+    'brain-embedder.js', 'doctor-advisory.js', 'project-identity-advisory.js',
+    'research-followup-detect.js', 'skill-promote-trigger.js', 'tuning-advisory.js',
+    'review-checklist-advisory.js',
   ];
   for (const rel of consumers) {
     const src = fs.readFileSync(path.join(SCRIPTS, rel), 'utf-8');
@@ -5640,17 +6076,19 @@ test('atomic-write: a NON-transient rename error is NOT retried (fails fast, des
 });
 
 test('data-dir: REJECTS a whitespace-only env value (falls back)', () => {
-  const saved = process.env.CLAUDE_PLUGIN_DATA;
-  try {
-    for (const ws of ['   ', '\t', '\n']) {
-      process.env.CLAUDE_PLUGIN_DATA = ws;
-      assertEq(dataDirLib.dataDir(),
-        path.join(os.homedir(), '.claude', 'plugins', 'data', 'claude-code-boss'),
-        `whitespace ${JSON.stringify(ws)} must fall back`);
-    }
-    assertEq(dataDirLib.validEnvDir('   '), null);
-    assertEq(dataDirLib.validEnvDir('\t'), null);
-  } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+  withTempHome((home) => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    try {
+      for (const ws of ['   ', '\t', '\n']) {
+        process.env.CLAUDE_PLUGIN_DATA = ws;
+        assertEq(dataDirLib.dataDir(),
+          path.join(home, '.claude', 'plugins', 'data', 'claude-code-boss'),
+          `whitespace ${JSON.stringify(ws)} must fall back`);
+      }
+      assertEq(dataDirLib.validEnvDir('   '), null);
+      assertEq(dataDirLib.validEnvDir('\t'), null);
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+  });
 });
 
 test('data-dir: dashboard.js resolvers are guarded (no bare `env || fallback` split-brain)', () => {
@@ -7439,6 +7877,531 @@ test('graph/dispatch: mcp-memory + unreachable daemon fails open (offline guidan
   assert(!out.isError, 'never throws to the host (fail-open)');
   assert(out.content[0].text.startsWith('🕸️ Graph unavailable'), 'normal offline guidance, not the gate message');
   assert(discoverCalls >= 1, 'the gate PASSED (mcp-memory) and reached the daemon resolver');
+});
+
+// ─── consolidate-datadirs (split-brain KB, Phase 2) ──────────────────────────
+// The engine takes fully-injected deps, so these run hermetically: fake store /
+// backend / fs / enumerator — no real singletons, no real filesystem, no model.
+{
+  const CONS = require('./consolidate-datadirs.js');
+  const { consolidate } = CONS;
+  const clone = (x) => JSON.parse(JSON.stringify(x));
+
+  // Fake brain-store scoped by project. Mirrors the exact contract the engine
+  // relies on: getRaw (full entry, NO vector, NO access bump), listWithVectors
+  // ({id,vector}), save(entry,vector) where vector===undefined KEEPS the prior
+  // embedding (matches saveSqlite's `if (vector)` guard), init({project}).
+  function makeFakeStore(initial = {}) {
+    const data = {}; // project -> Map(id -> {entry, vector})
+    for (const [proj, entries] of Object.entries(initial)) {
+      const m = new Map();
+      for (const e of entries) {
+        const { vector = null, ...rest } = e;
+        m.set(e.id, { entry: clone(rest), vector: vector ? clone(vector) : null });
+      }
+      data[proj] = m;
+    }
+    let cur = null;
+    const saved = [];
+    return {
+      _data: data,
+      _saved: saved,
+      async init({ project }) { cur = project; if (!data[project]) data[project] = new Map(); },
+      getRaw(id) { const m = data[cur]; return m && m.has(id) ? clone(m.get(id).entry) : null; },
+      listWithVectors(project) {
+        const m = data[project || cur];
+        if (!m) return [];
+        return [...m.values()].map(({ entry, vector }) => ({ id: entry.id, vector: vector ? clone(vector) : null, recurrence: entry.recurrence || 1 }));
+      },
+      async save(entry, vector) {
+        const m = data[cur];
+        const prev = m.get(entry.id);
+        const vec = vector !== undefined ? (vector ? clone(vector) : null) : (prev ? prev.vector : null);
+        m.set(entry.id, { entry: clone(entry), vector: vec });
+        saved.push({ project: cur, id: entry.id, entry: clone(entry), passedVector: vector !== undefined });
+      },
+      getStorageType() { return 'sqlite'; },
+      async close() {},
+    };
+  }
+
+  function makeRecorder() {
+    return { calls: [], async init(o) { this.calls.push(['init', o && o.project]); }, async index(e) { this.calls.push(['index', e.id]); }, async registerNode(e) { this.calls.push(['node', e.id]); } };
+  }
+
+  // Fake fs: an ORDERED op log plus a live set of "existing" paths, so the
+  // injected enumerator can reflect deletions (true cross-run idempotency).
+  // Also tracks file CONTENTS (a Map) so the process-apply-lock — which reads,
+  // atomically writes (tmp+rename via writeJsonAtomic), and deletes a small JSON
+  // file — works fully hermetically. readFileSync throws an ENOENT-coded error
+  // for an absent path (so acquireLock treats "no file" as "no lock").
+  function makeFakeFs(present) {
+    const ops = [];
+    const paths = new Set(present || []);
+    const contents = new Map(); // path -> string content (lock payload)
+    return {
+      _ops: ops,
+      _paths: paths,
+      _contents: contents,
+      mkdirSync(p) { ops.push(['mkdir', p]); paths.add(p); },
+      cpSync(src, dst) { ops.push(['cp', src, dst]); paths.add(dst); },
+      existsSync(p) { return paths.has(p); },
+      rmSync(p) { ops.push(['rm', p]); paths.delete(p); contents.delete(p); },
+      // Lock + atomic-write seam (readFileSync/writeFileSync/renameSync/unlinkSync):
+      readFileSync(p) {
+        if (!contents.has(p)) { const e = new Error(`ENOENT: no such file '${p}'`); e.code = 'ENOENT'; throw e; }
+        return contents.get(p);
+      },
+      writeFileSync(p, data) { ops.push(['write', p]); paths.add(p); contents.set(p, String(data)); },
+      renameSync(src, dst) {
+        ops.push(['rename', src, dst]);
+        paths.delete(src); paths.add(dst);
+        if (contents.has(src)) { contents.set(dst, contents.get(src)); contents.delete(src); }
+      },
+      unlinkSync(p) { ops.push(['unlink', p]); paths.delete(p); contents.delete(p); },
+    };
+  }
+
+  function makeFakeBackend() {
+    let cur = null;
+    const calls = [];
+    return {
+      _calls: calls,
+      async init({ project }) { cur = project; calls.push(['init', project]); },
+      async save(entry) { calls.push(['save', cur, entry.id]); return entry.id; },
+      async close() {},
+    };
+  }
+
+  function makeDeps(cfg) {
+    const activeDir = cfg.activeDir || '/A/active';
+    const siblingPaths = cfg.siblingPaths || [];
+    const fsx = cfg.fs || makeFakeFs(new Set([activeDir, ...siblingPaths]));
+    const store = cfg.store || makeFakeStore(cfg.storeInitial || {});
+    const index = makeRecorder();
+    const graph = makeRecorder();
+    const consolidateCalls = [];
+    const consolidateFn = cfg.consolidate
+      || (async (o) => { consolidateCalls.push({ project: o.project, apply: o.apply, sameStore: o._store === store }); });
+    const shards = cfg.shards || {};
+    const readShard = cfg.readShard || ((dir, project) => (shards[dir] && shards[dir][project] ? shards[dir][project].map(clone) : []));
+    const listProjects = cfg.listProjects || ((dir) => (shards[dir] ? Object.keys(shards[dir]) : []));
+    const enumerate = cfg.enumerate || ((active) => {
+      const out = [{ path: active, populated: true }];
+      for (const p of siblingPaths) out.push({ path: p, populated: fsx._paths.has(p) });
+      for (const c of (cfg.extraCandidates || [])) out.push(c);
+      return out;
+    });
+    const _deps = {
+      activeDir,
+      mode: cfg.mode || 'local',
+      store, index, graph, backend: cfg.backend,
+      consolidate: consolidateFn,
+      enumerate, readShard, listProjects,
+      fsx, backupBase: cfg.backupBase || '/A/backups',
+      now: cfg.now || (() => 1710000000000),
+      // Apply-lock seams (undefined → resolveDeps falls back to real defaults).
+      lockPath: cfg.lockPath,
+      lockTtlMs: cfg.lockTtlMs,
+      pidAlive: cfg.pidAlive,
+    };
+    return { _deps, activeDir, siblingPaths, store, index, graph, backend: cfg.backend, fsx, consolidateCalls };
+  }
+
+  test('consolidate-datadirs: no populated siblings → no-op (reason no-siblings, writes NOTHING)', async () => {
+    const h = makeDeps({ siblingPaths: [], extraCandidates: [{ path: '/A/plugins/data/claude-code-boss', populated: false }] });
+    const r = await consolidate({ apply: false, _deps: h._deps });
+    assertEq(r.reason, 'no-siblings');
+    assertEq(r.siblings.length, 0);
+    assertEq(r.ok, true);
+    assertEq(h.fsx._ops.length, 0);
+    assertEq(h.store._saved.length, 0);
+    assert(!r.backupDir, 'a no-op never backs up');
+  });
+
+  test('consolidate-datadirs: dry-run computes graft/reconcile plan and writes NOTHING', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const h = makeDeps({
+      activeDir: active, siblingPaths: [sib], mode: 'local',
+      shards: {
+        [active]: { proj: [{ id: 'dup1' }] },
+        [sib]: { proj: [{ id: 'dup1' }, { id: 'new1' }, { id: 'new2' }] },
+      },
+    });
+    const r = await consolidate({ apply: false, _deps: h._deps });
+    assertEq(r.apply, false);
+    assertEq(r.siblings.length, 1);
+    assertEq(r.siblings[0].grafted, 2);     // new1, new2 missing-in-active
+    assertEq(r.siblings[0].reconciled, 1);  // dup1 collides
+    assertEq(r.siblings[0].deleted, false);
+    assertEq(h.fsx._ops.length, 0);          // no mkdir / cp / rm
+    assertEq(h.store._saved.length, 0);      // no store writes
+    assert(!r.backupDir, 'dry-run never backs up');
+  });
+
+  test('consolidate-datadirs: --apply local reconcile-by-id (newer base, recurrence=max, union tags, valid-embedding fallback)', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const store = makeFakeStore({
+      proj: [
+        { id: 'dup1', title: 'A-old', recurrence: 5, tags: ['a'], last_accessed: '2024-01-01T00:00:00Z', created_at: '2023-01-01T00:00:00Z', vector: [1, 1] },
+        { id: 'dup2', title: 'A-new', recurrence: 3, tags: ['a2'], last_accessed: '2024-05-05T00:00:00Z', created_at: '2023-01-01T00:00:00Z', vector: [2, 2] },
+        { id: 'dup3', title: 'A-x', recurrence: 4, tags: ['a3'], last_accessed: '2024-01-01T00:00:00Z', created_at: '2023-01-01T00:00:00Z', vector: [3, 3] },
+      ],
+    });
+    const h = makeDeps({
+      activeDir: active, siblingPaths: [sib], mode: 'local', store,
+      shards: { [sib]: { proj: [
+        { id: 'dup1', title: 'S-new', recurrence: 2, tags: ['b'], last_accessed: '2024-02-02T00:00:00Z', created_at: '2023-06-01T00:00:00Z', vector: [9, 9] },
+        { id: 'dup2', title: 'S-old', recurrence: 9, tags: ['b2'], last_accessed: '2024-02-02T00:00:00Z', created_at: '2023-06-01T00:00:00Z', vector: [8, 8] },
+        { id: 'dup3', title: 'S-new', recurrence: 1, tags: ['b3'], last_accessed: '2024-09-09T00:00:00Z', created_at: '2023-06-01T00:00:00Z', vector: [] },
+      ] } },
+    });
+    const r = await consolidate({ apply: true, _deps: h._deps });
+    assertEq(r.ok, true);
+    const g = (id) => store._data.proj.get(id);
+    // dup1: incoming newer → base=incoming(title S-new); recurrence=max(5,2)=5; tags union ['a','b']; embedding=base [9,9]
+    assertEq(g('dup1').entry.title, 'S-new');
+    assertEq(g('dup1').entry.recurrence, 5);
+    assertEq(g('dup1').entry.tags, ['a', 'b']);
+    assertEq(g('dup1').vector, [9, 9]);
+    // dup2: existing newer → base=existing(title A-new); recurrence=max(3,9)=9; embedding=existing [2,2]
+    assertEq(g('dup2').entry.title, 'A-new');
+    assertEq(g('dup2').entry.recurrence, 9);
+    assertEq(g('dup2').entry.tags, ['a2', 'b2']);
+    assertEq(g('dup2').vector, [2, 2]);
+    // dup3: incoming newer BUT its embedding is [] (invalid) → keep the other side's valid [3,3]
+    assertEq(g('dup3').entry.title, 'S-new');
+    assertEq(g('dup3').vector, [3, 3]);
+    assertEq(r.siblings[0].reconciled, 3);
+    assertEq(r.siblings[0].grafted, 0);
+    assert(h.index.calls.some((c) => c[0] === 'index' && c[1] === 'dup1'), 'search index kept consistent');
+    assert(h.graph.calls.some((c) => c[0] === 'node' && c[1] === 'dup1'), 'graph kept consistent');
+  });
+
+  test('consolidate-datadirs: --apply local grafts missing ids, runs near-dup pass, backs up BEFORE delete, deletes on zero failures', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const store = makeFakeStore({ proj: [{ id: 'keep', tags: [], recurrence: 1 }] });
+    const h = makeDeps({
+      activeDir: active, siblingPaths: [sib], mode: 'local', store, backupBase: '/A/backups',
+      shards: { [sib]: { proj: [{ id: 'g1', tags: ['x'], recurrence: 1, vector: [5, 5] }, { id: 'g2', tags: ['y'], recurrence: 1 }] } },
+    });
+    const r = await consolidate({ apply: true, _deps: h._deps });
+    assertEq(r.ok, true);
+    assertEq(r.siblings[0].grafted, 2);
+    assertEq(r.siblings[0].failed, 0);
+    assertEq(r.siblings[0].deleted, true);
+    assert(store._data.proj.has('g1') && store._data.proj.has('g2'), 'both missing ids grafted');
+    assertEq(store._data.proj.get('g1').vector, [5, 5]);
+    assert(h.consolidateCalls.some((c) => c.project === 'proj' && c.apply === true && c.sameStore), 'near-dup pass called {project, apply:true, _store}');
+    const ops = h.fsx._ops;
+    const firstRm = ops.findIndex((o) => o[0] === 'rm');
+    const lastCp = ops.map((o) => o[0]).lastIndexOf('cp');
+    assert(ops.some((o) => o[0] === 'cp'), 'a backup copy happened');
+    assert(firstRm === -1 || lastCp < firstRm, 'every backup cp precedes any delete rm');
+    assert(ops.some((o) => o[0] === 'rm' && o[1] === sib), 'sibling deleted after a clean absorb');
+    assert(r.backupDir && r.backupDir.indexOf('_boss-backup-') !== -1, 'backup dir is named + reported');
+  });
+
+  test('consolidate-datadirs: --apply keeps (does NOT delete) a sibling when any entry fails, but still backs it up', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const store = makeFakeStore({});
+    const origSave = store.save.bind(store);
+    store.save = async (entry, vector) => { if (entry.id === 'boom') throw new Error('simulated write failure'); return origSave(entry, vector); };
+    const h = makeDeps({
+      activeDir: active, siblingPaths: [sib], mode: 'local', store,
+      shards: { [sib]: { proj: [{ id: 'ok1' }, { id: 'boom' }] } },
+    });
+    const r = await consolidate({ apply: true, _deps: h._deps });
+    assertEq(r.ok, true);                       // per-sibling fail-open; the run itself stays ok
+    assert(r.siblings[0].failed >= 1, 'the failing entry is counted');
+    assertEq(r.siblings[0].deleted, false);     // fail-loud: NOT deleted
+    const ops = h.fsx._ops;
+    assert(ops.some((o) => o[0] === 'cp' && o[2].indexOf('sib1') !== -1), 'sibling WAS backed up');
+    assert(!ops.some((o) => o[0] === 'rm' && o[1] === sib), 'sibling NOT deleted after a failure');
+  });
+
+  test('consolidate-datadirs: --apply mcp-memory pushes every entry idempotently (documentId=id) incl. active-local, deletes siblings, 2nd run no-op', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const backend = makeFakeBackend();
+    const fsx = makeFakeFs(new Set([active, sib]));
+    const h = makeDeps({
+      activeDir: active, siblingPaths: [sib], mode: 'mcp-memory', backend, fs: fsx,
+      shards: {
+        [active]: { proj: [{ id: 'local-a' }] },
+        [sib]: { proj: [{ id: 's1' }, { id: 's2' }], __user__: [{ id: 'u1' }] },
+      },
+    });
+    const r = await consolidate({ apply: true, _deps: h._deps });
+    assertEq(r.ok, true);
+    assertEq(r.activeLocal.pushed, 1);                                   // active-folder leftover local writes pushed too
+    assert(backend._calls.some((c) => c[0] === 'save' && c[2] === 'local-a'), 'active-local entry pushed');
+    assert(['s1', 's2', 'u1'].every((id) => backend._calls.some((c) => c[2] === id)), 'all sibling entries pushed (project + __user__)');
+    assertEq(r.siblings[0].pushed, 3);
+    assertEq(r.siblings[0].deleted, true);
+    // Idempotent: the sibling was rm-ed from the world → a second apply finds nothing.
+    const r2 = await consolidate({ apply: true, _deps: h._deps });
+    assertEq(r2.reason, 'no-siblings');
+    assertEq(r2.siblings.length, 0);
+  });
+
+  test('consolidate-datadirs: local mode keeps __user__ shard isolated from project shards', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const store = makeFakeStore({});
+    const h = makeDeps({
+      activeDir: active, siblingPaths: [sib], mode: 'local', store,
+      shards: { [sib]: { proj: [{ id: 'p1' }], __user__: [{ id: 'u1' }] } },
+    });
+    await consolidate({ apply: true, _deps: h._deps });
+    assert(store._data.proj && store._data.proj.has('p1'), 'project entry grafted under project shard');
+    assert(store._data.__user__ && store._data.__user__.has('u1'), 'user entry grafted under __user__ shard');
+    assert(!store._data.proj.has('u1'), 'user entry did NOT leak into project shard');
+    assert(!(store._data.__user__ && store._data.__user__.has('p1')), 'project entry did NOT leak into __user__ shard');
+  });
+
+  test('consolidate-datadirs: never deletes the ACTIVE dir', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const store = makeFakeStore({});
+    const h = makeDeps({ activeDir: active, siblingPaths: [sib], mode: 'local', store, shards: { [sib]: { proj: [{ id: 'x' }] } } });
+    const r = await consolidate({ apply: true, _deps: h._deps });
+    assert(!h.fsx._ops.some((o) => o[0] === 'rm' && o[1] === active), 'active dir is never rm-ed');
+    assert(h.fsx._paths.has(active), 'active dir still present after apply');
+    assertEq(r.activeDir, active);
+  });
+
+  test('consolidate-datadirs: a failed backup ABORTS the apply before any absorb/delete (fail-loud)', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const store = makeFakeStore({});
+    const fsx = makeFakeFs(new Set([active, sib]));
+    fsx.cpSync = () => { throw new Error('disk full during backup'); };
+    const h = makeDeps({ activeDir: active, siblingPaths: [sib], mode: 'local', store, fs: fsx, shards: { [sib]: { proj: [{ id: 'x' }] } } });
+    const r = await consolidate({ apply: true, _deps: h._deps });
+    assertEq(r.ok, false);
+    assertEq(r.reason, 'backup-failed');
+    assert(!fsx._ops.some((o) => o[0] === 'rm' && o[1] === sib), 'no SIBLING delete after a failed backup');
+    assertEq(store._saved.length, 0, 'no absorb after a failed backup');
+  });
+
+  // ── apply lock (single-writer) ──────────────────────────────────────────────
+
+  test('consolidate-datadirs: a FRESH live lock makes --apply a no-op (reason locked, writes NOTHING)', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const NOW = 1710000000000;
+    const lockPath = '/A/active/.runtime/consolidate.lock';
+    const store = makeFakeStore({});
+    const fsx = makeFakeFs(new Set([active, sib, lockPath]));
+    fsx._contents.set(lockPath, JSON.stringify({ pid: 4242, ts: NOW })); // held NOW by a live pid
+    const h = makeDeps({
+      activeDir: active, siblingPaths: [sib], mode: 'local', store, fs: fsx,
+      lockPath, now: () => NOW, pidAlive: () => true,
+      shards: { [sib]: { proj: [{ id: 'x' }] } },
+    });
+    const r = await consolidate({ apply: true, _deps: h._deps });
+    assertEq(r.reason, 'locked');
+    assertEq(r.apply, true);
+    assertEq(r.mode, 'local');
+    assertEq(r.activeDir, active);
+    assertEq(r.siblings.length, 0);
+    assertEq(r.ok, true);
+    assertEq(store._saved.length, 0, 'a locked run absorbs nothing');
+    assert(!fsx._ops.some((o) => o[0] === 'cp'), 'a locked run backs up nothing');
+    assert(!fsx._ops.some((o) => o[0] === 'rm'), 'a locked run deletes nothing (not even the lock it does not own)');
+    assert(fsx._paths.has(lockPath), 'the existing lock is left untouched');
+    assertEq(JSON.parse(fsx._contents.get(lockPath)).pid, 4242, 'the lock owner was not overwritten');
+    assert(fsx._paths.has(sib), 'the sibling is left intact while locked');
+  });
+
+  test('consolidate-datadirs: a STALE (old-ts) lock is STOLEN, the apply proceeds, and the lock is RELEASED', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const NOW = 1710000000000; const TTL = 30 * 60 * 1000;
+    const lockPath = '/A/active/.runtime/consolidate.lock';
+    const store = makeFakeStore({});
+    const fsx = makeFakeFs(new Set([active, sib, lockPath]));
+    fsx._contents.set(lockPath, JSON.stringify({ pid: 4242, ts: NOW - (TTL + 60000) }));
+    const h = makeDeps({
+      activeDir: active, siblingPaths: [sib], mode: 'local', store, fs: fsx,
+      lockPath, lockTtlMs: TTL, now: () => NOW, pidAlive: () => true, // alive, but ts is stale → still stolen
+      shards: { [sib]: { proj: [{ id: 'x' }] } },
+    });
+    const r = await consolidate({ apply: true, _deps: h._deps });
+    assertEq(r.ok, true);
+    assert(r.reason !== 'locked', 'a stale lock does not block the apply');
+    assertEq(r.siblings[0].deleted, true, 'apply proceeded past the stolen lock');
+    assert(!fsx._paths.has(lockPath), 'the lock is released (file gone) after a successful apply');
+  });
+
+  test('consolidate-datadirs: a fresh-ts lock whose PID is DEAD is stolen (apply proceeds)', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const NOW = 1710000000000;
+    const lockPath = '/A/active/.runtime/consolidate.lock';
+    const store = makeFakeStore({});
+    const fsx = makeFakeFs(new Set([active, sib, lockPath]));
+    fsx._contents.set(lockPath, JSON.stringify({ pid: 4242, ts: NOW })); // fresh ts…
+    const h = makeDeps({
+      activeDir: active, siblingPaths: [sib], mode: 'local', store, fs: fsx,
+      lockPath, now: () => NOW, pidAlive: () => false, // …but the owner is gone → stolen
+      shards: { [sib]: { proj: [{ id: 'x' }] } },
+    });
+    const r = await consolidate({ apply: true, _deps: h._deps });
+    assertEq(r.ok, true);
+    assertEq(r.siblings[0].deleted, true, 'apply proceeded past the dead-pid lock');
+    assert(!fsx._paths.has(lockPath), 'the lock is released afterward');
+  });
+
+  test('consolidate-datadirs: dry-run NEVER creates or checks the apply lock', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const lockPath = '/A/active/.runtime/consolidate.lock';
+    const fsx = makeFakeFs(new Set([active, sib]));
+    const h = makeDeps({
+      activeDir: active, siblingPaths: [sib], mode: 'local', fs: fsx, lockPath,
+      shards: { [active]: { proj: [{ id: 'dup1' }] }, [sib]: { proj: [{ id: 'dup1' }, { id: 'new1' }] } },
+    });
+    const r = await consolidate({ apply: false, _deps: h._deps });
+    assertEq(r.apply, false);
+    assertEq(fsx._ops.length, 0, 'dry-run performs zero fs ops (no lock write)');
+    assert(!fsx._paths.has(lockPath), 'dry-run never creates the lock file');
+  });
+
+  test('consolidate-datadirs: --apply with no prior lock acquires then RELEASES it (published tmp→lock, gone after)', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const lockPath = '/A/active/.runtime/consolidate.lock';
+    const store = makeFakeStore({});
+    const fsx = makeFakeFs(new Set([active, sib]));
+    const h = makeDeps({
+      activeDir: active, siblingPaths: [sib], mode: 'local', store, fs: fsx, lockPath,
+      shards: { [sib]: { proj: [{ id: 'x' }] } },
+    });
+    const r = await consolidate({ apply: true, _deps: h._deps });
+    assertEq(r.ok, true);
+    assertEq(r.siblings[0].deleted, true);
+    assert(fsx._ops.some((o) => o[0] === 'rename' && o[2] === lockPath), 'the lock payload was atomically published (tmp→lock) while held');
+    assert(!fsx._paths.has(lockPath), 'the lock file is gone after a successful apply');
+  });
+
+  test('consolidate-datadirs helpers: unionArrays / recencyKey / toRecurrence / validVec / backupStamp', () => {
+    const t = CONS._test;
+    assertEq(t.unionArrays(['a', 'b'], ['b', 'c']), ['a', 'b', 'c']);
+    assertEq(t.unionArrays(null, ['x']), ['x']);
+    assert(t.recencyKey({ last_accessed: '2024-02' }) > t.recencyKey({ last_accessed: '2024-01' }), 'last_accessed drives recency');
+    assertEq(t.recencyKey({ created_at: '2020' }), '2020'); // falls back to created_at when no last_accessed
+    assertEq(t.toRecurrence('7'), 7);
+    assertEq(t.toRecurrence(0), 1);
+    assertEq(t.validVec([1]), true);
+    assertEq(t.validVec([]), false);
+    const stamp = t.backupStamp(1710000000000);
+    assert(/^\d{4}-\d{2}-\d{2}T/.test(stamp) && stamp.indexOf(':') === -1, 'backup stamp is ISO-ish and filename-safe (no colons)');
+  });
+}
+
+// ─── consolidate-datadirs-hook (silent SessionStart auto-apply, Phase 3) ──────
+// The hook does a cheap fs-only sibling check and, when a populated sibling
+// exists, detach-spawns the engine's guarded `--apply`. All seams (dataDir,
+// enumerator, spawn, fs) are injected so these run hermetically — no real spawn,
+// no real data dir, no SessionStart side effects.
+{
+  const HOOK = require('./consolidate-datadirs-hook.js');
+
+  test('consolidate-datadirs-hook: no populated sibling → run() spawns NOTHING (steady-state no-op)', () => {
+    let spawnCalls = 0; let fsTouches = 0;
+    const res = HOOK.run({
+      dataDir: () => '/A/active',
+      enumerate: () => [
+        { path: '/A/active', populated: true },
+        { path: '/A/plugins/data/claude-code-boss', populated: false }, // a sibling, but EMPTY
+      ],
+      spawn: () => { spawnCalls++; return { unref() {} }; },
+      fsx: { mkdirSync() { fsTouches++; }, openSync() { fsTouches++; return 7; }, closeSync() {} },
+      enginePath: '/eng/consolidate-datadirs.js', execPath: '/bin/node',
+    });
+    assertEq(res.spawned, false);
+    assertEq(res.reason, 'no-siblings');
+    assertEq(spawnCalls, 0, 'no child spawned in steady state');
+    assertEq(fsTouches, 0, 'no log fd opened in steady state (never even touches the fs)');
+  });
+
+  test('consolidate-datadirs-hook: a populated sibling → run() detach-spawns engine --apply (unref) and returns spawned', () => {
+    let spawnArgs = null; let unrefed = false; let closedFd = null; const LOGFD = 7;
+    const res = HOOK.run({
+      dataDir: () => '/A/active',
+      enumerate: () => [
+        { path: '/A/active', populated: true },
+        { path: '/A/other/claude-code-boss', populated: true }, // a POPULATED sibling ≠ active
+      ],
+      spawn: (cmd, args, opts) => { spawnArgs = { cmd, args, opts }; return { unref() { unrefed = true; } }; },
+      fsx: { mkdirSync() {}, openSync() { return LOGFD; }, closeSync(fd) { closedFd = fd; } },
+      enginePath: '/eng/consolidate-datadirs.js', execPath: '/bin/node',
+    });
+    assertEq(res.spawned, true);
+    assertEq(res.reason, 'spawned');
+    assert(spawnArgs, 'spawn was invoked');
+    assertEq(spawnArgs.cmd, '/bin/node');
+    assertEq(spawnArgs.args, ['/eng/consolidate-datadirs.js', '--apply']);
+    assertEq(spawnArgs.opts.detached, true);
+    assertEq(spawnArgs.opts.windowsHide, true);
+    assertEq(spawnArgs.opts.stdio[0], 'ignore');
+    assertEq(spawnArgs.opts.stdio[1], LOGFD);
+    assertEq(spawnArgs.opts.stdio[2], LOGFD);
+    assert(unrefed, "the child was unref'd so it never blocks SessionStart");
+    assertEq(closedFd, LOGFD, 'the parent closed its own copy of the log fd');
+  });
+
+  test('consolidate-datadirs-hook: run() is fail-open — an enumerator throw never escapes (spawns nothing)', () => {
+    let spawnCalls = 0;
+    const res = HOOK.run({
+      dataDir: () => '/A/active',
+      enumerate: () => { throw new Error('scan blew up'); },
+      spawn: () => { spawnCalls++; return { unref() {} }; },
+    });
+    assertEq(res.spawned, false);
+    assertEq(res.reason, 'error');
+    assertEq(spawnCalls, 0, 'a crash never spawns');
+  });
+
+  test('consolidate-datadirs-hook: a log-open failure falls back to stdio ignore (still spawns detached)', () => {
+    let spawnArgs = null;
+    const res = HOOK.run({
+      dataDir: () => '/A/active',
+      enumerate: () => [{ path: '/A/active', populated: true }, { path: '/A/other/claude-code-boss', populated: true }],
+      spawn: (cmd, args, opts) => { spawnArgs = { cmd, args, opts }; return { unref() {} }; },
+      fsx: { mkdirSync() { throw new Error('read-only fs'); }, openSync() { throw new Error('nope'); }, closeSync() {} },
+      enginePath: '/eng/consolidate-datadirs.js', execPath: '/bin/node',
+    });
+    assertEq(res.spawned, true, 'a log-open failure never blocks the merge');
+    assertEq(spawnArgs.opts.stdio, 'ignore', 'falls back to stdio ignore when the log fd cannot be opened');
+  });
+
+  test('hooks.json: SessionStart registers the silent consolidate-datadirs-hook (command node, timeout 10)', () => {
+    const hooksPath = path.join(__dirname, '..', 'hooks', 'hooks.json');
+    const parsed = JSON.parse(fs.readFileSync(hooksPath, 'utf-8'));
+    const ss = parsed.hooks.SessionStart;
+    assert(Array.isArray(ss) && ss.length >= 1, 'SessionStart is a non-empty array');
+    const entries = ss[0].hooks;
+    assert(Array.isArray(entries), 'SessionStart[0].hooks is an array');
+    const entry = entries.find(
+      (e) => e && Array.isArray(e.args) && e.args.some((a) => typeof a === 'string' && a.indexOf('consolidate-datadirs-hook.js') !== -1),
+    );
+    assert(entry, 'the consolidate-datadirs-hook.js SessionStart entry is present');
+    assertEq(entry.type, 'command');
+    assertEq(entry.command, 'node');
+    assertEq(entry.timeout, 10);
+  });
+}
+
+test('brain-backend mcp: saveMcp pins documentId = entry.id so re-pushes UPSERT (idempotency)', async () => {
+  const daemon = await startFakeDaemon();
+  delete require.cache[require.resolve('./brain-backend.js')];
+  const backend = require('./brain-backend.js');
+  backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
+  try {
+    await backend.init({ project: 'projDoc' });
+    const id = await backend.save({ id: 'fixed-42', title: 't', summary: 's', content: { detail: 'd' }, type: 'lesson' });
+    assertEq(daemon.seen.callArgs.name, 'add_document');
+    assertEq(daemon.seen.callArgs.arguments.documentId, 'fixed-42');
+    assertEq(id, 'fixed-42');
+    await backend.close();
+  } finally {
+    delete require.cache[require.resolve('./brain-backend.js')];
+    await daemon.close();
+  }
 });
 
 // ─── Runner ──────────────────────────────────────────────────────────────────
