@@ -7850,16 +7850,34 @@ test('graph/dispatch: mcp-memory + unreachable daemon fails open (offline guidan
 
   // Fake fs: an ORDERED op log plus a live set of "existing" paths, so the
   // injected enumerator can reflect deletions (true cross-run idempotency).
+  // Also tracks file CONTENTS (a Map) so the process-apply-lock — which reads,
+  // atomically writes (tmp+rename via writeJsonAtomic), and deletes a small JSON
+  // file — works fully hermetically. readFileSync throws an ENOENT-coded error
+  // for an absent path (so acquireLock treats "no file" as "no lock").
   function makeFakeFs(present) {
     const ops = [];
     const paths = new Set(present || []);
+    const contents = new Map(); // path -> string content (lock payload)
     return {
       _ops: ops,
       _paths: paths,
+      _contents: contents,
       mkdirSync(p) { ops.push(['mkdir', p]); paths.add(p); },
       cpSync(src, dst) { ops.push(['cp', src, dst]); paths.add(dst); },
       existsSync(p) { return paths.has(p); },
-      rmSync(p) { ops.push(['rm', p]); paths.delete(p); },
+      rmSync(p) { ops.push(['rm', p]); paths.delete(p); contents.delete(p); },
+      // Lock + atomic-write seam (readFileSync/writeFileSync/renameSync/unlinkSync):
+      readFileSync(p) {
+        if (!contents.has(p)) { const e = new Error(`ENOENT: no such file '${p}'`); e.code = 'ENOENT'; throw e; }
+        return contents.get(p);
+      },
+      writeFileSync(p, data) { ops.push(['write', p]); paths.add(p); contents.set(p, String(data)); },
+      renameSync(src, dst) {
+        ops.push(['rename', src, dst]);
+        paths.delete(src); paths.add(dst);
+        if (contents.has(src)) { contents.set(dst, contents.get(src)); contents.delete(src); }
+      },
+      unlinkSync(p) { ops.push(['unlink', p]); paths.delete(p); contents.delete(p); },
     };
   }
 
@@ -7901,6 +7919,10 @@ test('graph/dispatch: mcp-memory + unreachable daemon fails open (offline guidan
       enumerate, readShard, listProjects,
       fsx, backupBase: cfg.backupBase || '/A/backups',
       now: cfg.now || (() => 1710000000000),
+      // Apply-lock seams (undefined → resolveDeps falls back to real defaults).
+      lockPath: cfg.lockPath,
+      lockTtlMs: cfg.lockTtlMs,
+      pidAlive: cfg.pidAlive,
     };
     return { _deps, activeDir, siblingPaths, store, index, graph, backend: cfg.backend, fsx, consolidateCalls };
   }
@@ -8074,8 +8096,104 @@ test('graph/dispatch: mcp-memory + unreachable daemon fails open (offline guidan
     const r = await consolidate({ apply: true, _deps: h._deps });
     assertEq(r.ok, false);
     assertEq(r.reason, 'backup-failed');
-    assert(!fsx._ops.some((o) => o[0] === 'rm'), 'no delete after a failed backup');
+    assert(!fsx._ops.some((o) => o[0] === 'rm' && o[1] === sib), 'no SIBLING delete after a failed backup');
     assertEq(store._saved.length, 0, 'no absorb after a failed backup');
+  });
+
+  // ── apply lock (single-writer) ──────────────────────────────────────────────
+
+  test('consolidate-datadirs: a FRESH live lock makes --apply a no-op (reason locked, writes NOTHING)', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const NOW = 1710000000000;
+    const lockPath = '/A/active/.runtime/consolidate.lock';
+    const store = makeFakeStore({});
+    const fsx = makeFakeFs(new Set([active, sib, lockPath]));
+    fsx._contents.set(lockPath, JSON.stringify({ pid: 4242, ts: NOW })); // held NOW by a live pid
+    const h = makeDeps({
+      activeDir: active, siblingPaths: [sib], mode: 'local', store, fs: fsx,
+      lockPath, now: () => NOW, pidAlive: () => true,
+      shards: { [sib]: { proj: [{ id: 'x' }] } },
+    });
+    const r = await consolidate({ apply: true, _deps: h._deps });
+    assertEq(r.reason, 'locked');
+    assertEq(r.apply, true);
+    assertEq(r.mode, 'local');
+    assertEq(r.activeDir, active);
+    assertEq(r.siblings.length, 0);
+    assertEq(r.ok, true);
+    assertEq(store._saved.length, 0, 'a locked run absorbs nothing');
+    assert(!fsx._ops.some((o) => o[0] === 'cp'), 'a locked run backs up nothing');
+    assert(!fsx._ops.some((o) => o[0] === 'rm'), 'a locked run deletes nothing (not even the lock it does not own)');
+    assert(fsx._paths.has(lockPath), 'the existing lock is left untouched');
+    assertEq(JSON.parse(fsx._contents.get(lockPath)).pid, 4242, 'the lock owner was not overwritten');
+    assert(fsx._paths.has(sib), 'the sibling is left intact while locked');
+  });
+
+  test('consolidate-datadirs: a STALE (old-ts) lock is STOLEN, the apply proceeds, and the lock is RELEASED', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const NOW = 1710000000000; const TTL = 30 * 60 * 1000;
+    const lockPath = '/A/active/.runtime/consolidate.lock';
+    const store = makeFakeStore({});
+    const fsx = makeFakeFs(new Set([active, sib, lockPath]));
+    fsx._contents.set(lockPath, JSON.stringify({ pid: 4242, ts: NOW - (TTL + 60000) }));
+    const h = makeDeps({
+      activeDir: active, siblingPaths: [sib], mode: 'local', store, fs: fsx,
+      lockPath, lockTtlMs: TTL, now: () => NOW, pidAlive: () => true, // alive, but ts is stale → still stolen
+      shards: { [sib]: { proj: [{ id: 'x' }] } },
+    });
+    const r = await consolidate({ apply: true, _deps: h._deps });
+    assertEq(r.ok, true);
+    assert(r.reason !== 'locked', 'a stale lock does not block the apply');
+    assertEq(r.siblings[0].deleted, true, 'apply proceeded past the stolen lock');
+    assert(!fsx._paths.has(lockPath), 'the lock is released (file gone) after a successful apply');
+  });
+
+  test('consolidate-datadirs: a fresh-ts lock whose PID is DEAD is stolen (apply proceeds)', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const NOW = 1710000000000;
+    const lockPath = '/A/active/.runtime/consolidate.lock';
+    const store = makeFakeStore({});
+    const fsx = makeFakeFs(new Set([active, sib, lockPath]));
+    fsx._contents.set(lockPath, JSON.stringify({ pid: 4242, ts: NOW })); // fresh ts…
+    const h = makeDeps({
+      activeDir: active, siblingPaths: [sib], mode: 'local', store, fs: fsx,
+      lockPath, now: () => NOW, pidAlive: () => false, // …but the owner is gone → stolen
+      shards: { [sib]: { proj: [{ id: 'x' }] } },
+    });
+    const r = await consolidate({ apply: true, _deps: h._deps });
+    assertEq(r.ok, true);
+    assertEq(r.siblings[0].deleted, true, 'apply proceeded past the dead-pid lock');
+    assert(!fsx._paths.has(lockPath), 'the lock is released afterward');
+  });
+
+  test('consolidate-datadirs: dry-run NEVER creates or checks the apply lock', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const lockPath = '/A/active/.runtime/consolidate.lock';
+    const fsx = makeFakeFs(new Set([active, sib]));
+    const h = makeDeps({
+      activeDir: active, siblingPaths: [sib], mode: 'local', fs: fsx, lockPath,
+      shards: { [active]: { proj: [{ id: 'dup1' }] }, [sib]: { proj: [{ id: 'dup1' }, { id: 'new1' }] } },
+    });
+    const r = await consolidate({ apply: false, _deps: h._deps });
+    assertEq(r.apply, false);
+    assertEq(fsx._ops.length, 0, 'dry-run performs zero fs ops (no lock write)');
+    assert(!fsx._paths.has(lockPath), 'dry-run never creates the lock file');
+  });
+
+  test('consolidate-datadirs: --apply with no prior lock acquires then RELEASES it (published tmp→lock, gone after)', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const lockPath = '/A/active/.runtime/consolidate.lock';
+    const store = makeFakeStore({});
+    const fsx = makeFakeFs(new Set([active, sib]));
+    const h = makeDeps({
+      activeDir: active, siblingPaths: [sib], mode: 'local', store, fs: fsx, lockPath,
+      shards: { [sib]: { proj: [{ id: 'x' }] } },
+    });
+    const r = await consolidate({ apply: true, _deps: h._deps });
+    assertEq(r.ok, true);
+    assertEq(r.siblings[0].deleted, true);
+    assert(fsx._ops.some((o) => o[0] === 'rename' && o[2] === lockPath), 'the lock payload was atomically published (tmp→lock) while held');
+    assert(!fsx._paths.has(lockPath), 'the lock file is gone after a successful apply');
   });
 
   test('consolidate-datadirs helpers: unionArrays / recencyKey / toRecurrence / validVec / backupStamp', () => {
@@ -8090,6 +8208,100 @@ test('graph/dispatch: mcp-memory + unreachable daemon fails open (offline guidan
     assertEq(t.validVec([]), false);
     const stamp = t.backupStamp(1710000000000);
     assert(/^\d{4}-\d{2}-\d{2}T/.test(stamp) && stamp.indexOf(':') === -1, 'backup stamp is ISO-ish and filename-safe (no colons)');
+  });
+}
+
+// ─── consolidate-datadirs-hook (silent SessionStart auto-apply, Phase 3) ──────
+// The hook does a cheap fs-only sibling check and, when a populated sibling
+// exists, detach-spawns the engine's guarded `--apply`. All seams (dataDir,
+// enumerator, spawn, fs) are injected so these run hermetically — no real spawn,
+// no real data dir, no SessionStart side effects.
+{
+  const HOOK = require('./consolidate-datadirs-hook.js');
+
+  test('consolidate-datadirs-hook: no populated sibling → run() spawns NOTHING (steady-state no-op)', () => {
+    let spawnCalls = 0; let fsTouches = 0;
+    const res = HOOK.run({
+      dataDir: () => '/A/active',
+      enumerate: () => [
+        { path: '/A/active', populated: true },
+        { path: '/A/plugins/data/claude-code-boss', populated: false }, // a sibling, but EMPTY
+      ],
+      spawn: () => { spawnCalls++; return { unref() {} }; },
+      fsx: { mkdirSync() { fsTouches++; }, openSync() { fsTouches++; return 7; }, closeSync() {} },
+      enginePath: '/eng/consolidate-datadirs.js', execPath: '/bin/node',
+    });
+    assertEq(res.spawned, false);
+    assertEq(res.reason, 'no-siblings');
+    assertEq(spawnCalls, 0, 'no child spawned in steady state');
+    assertEq(fsTouches, 0, 'no log fd opened in steady state (never even touches the fs)');
+  });
+
+  test('consolidate-datadirs-hook: a populated sibling → run() detach-spawns engine --apply (unref) and returns spawned', () => {
+    let spawnArgs = null; let unrefed = false; let closedFd = null; const LOGFD = 7;
+    const res = HOOK.run({
+      dataDir: () => '/A/active',
+      enumerate: () => [
+        { path: '/A/active', populated: true },
+        { path: '/A/other/claude-code-boss', populated: true }, // a POPULATED sibling ≠ active
+      ],
+      spawn: (cmd, args, opts) => { spawnArgs = { cmd, args, opts }; return { unref() { unrefed = true; } }; },
+      fsx: { mkdirSync() {}, openSync() { return LOGFD; }, closeSync(fd) { closedFd = fd; } },
+      enginePath: '/eng/consolidate-datadirs.js', execPath: '/bin/node',
+    });
+    assertEq(res.spawned, true);
+    assertEq(res.reason, 'spawned');
+    assert(spawnArgs, 'spawn was invoked');
+    assertEq(spawnArgs.cmd, '/bin/node');
+    assertEq(spawnArgs.args, ['/eng/consolidate-datadirs.js', '--apply']);
+    assertEq(spawnArgs.opts.detached, true);
+    assertEq(spawnArgs.opts.windowsHide, true);
+    assertEq(spawnArgs.opts.stdio[0], 'ignore');
+    assertEq(spawnArgs.opts.stdio[1], LOGFD);
+    assertEq(spawnArgs.opts.stdio[2], LOGFD);
+    assert(unrefed, "the child was unref'd so it never blocks SessionStart");
+    assertEq(closedFd, LOGFD, 'the parent closed its own copy of the log fd');
+  });
+
+  test('consolidate-datadirs-hook: run() is fail-open — an enumerator throw never escapes (spawns nothing)', () => {
+    let spawnCalls = 0;
+    const res = HOOK.run({
+      dataDir: () => '/A/active',
+      enumerate: () => { throw new Error('scan blew up'); },
+      spawn: () => { spawnCalls++; return { unref() {} }; },
+    });
+    assertEq(res.spawned, false);
+    assertEq(res.reason, 'error');
+    assertEq(spawnCalls, 0, 'a crash never spawns');
+  });
+
+  test('consolidate-datadirs-hook: a log-open failure falls back to stdio ignore (still spawns detached)', () => {
+    let spawnArgs = null;
+    const res = HOOK.run({
+      dataDir: () => '/A/active',
+      enumerate: () => [{ path: '/A/active', populated: true }, { path: '/A/other/claude-code-boss', populated: true }],
+      spawn: (cmd, args, opts) => { spawnArgs = { cmd, args, opts }; return { unref() {} }; },
+      fsx: { mkdirSync() { throw new Error('read-only fs'); }, openSync() { throw new Error('nope'); }, closeSync() {} },
+      enginePath: '/eng/consolidate-datadirs.js', execPath: '/bin/node',
+    });
+    assertEq(res.spawned, true, 'a log-open failure never blocks the merge');
+    assertEq(spawnArgs.opts.stdio, 'ignore', 'falls back to stdio ignore when the log fd cannot be opened');
+  });
+
+  test('hooks.json: SessionStart registers the silent consolidate-datadirs-hook (command node, timeout 10)', () => {
+    const hooksPath = path.join(__dirname, '..', 'hooks', 'hooks.json');
+    const parsed = JSON.parse(fs.readFileSync(hooksPath, 'utf-8'));
+    const ss = parsed.hooks.SessionStart;
+    assert(Array.isArray(ss) && ss.length >= 1, 'SessionStart is a non-empty array');
+    const entries = ss[0].hooks;
+    assert(Array.isArray(entries), 'SessionStart[0].hooks is an array');
+    const entry = entries.find(
+      (e) => e && Array.isArray(e.args) && e.args.some((a) => typeof a === 'string' && a.indexOf('consolidate-datadirs-hook.js') !== -1),
+    );
+    assert(entry, 'the consolidate-datadirs-hook.js SessionStart entry is present');
+    assertEq(entry.type, 'command');
+    assertEq(entry.command, 'node');
+    assertEq(entry.timeout, 10);
   });
 }
 
