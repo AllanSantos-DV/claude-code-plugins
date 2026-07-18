@@ -16,6 +16,19 @@ const SCRIPTS = path.resolve(__dirname);
 const VERBOSE = process.argv.includes('--verbose');
 const FILTER = process.argv.find(a => !a.startsWith('-') && a !== process.argv[0] && a !== process.argv[1]);
 
+// Isolate os.homedir()-derived state (the GLOBAL dir: active-data-dir pointer +
+// brain user-config) into a throwaway home for the WHOLE run. data-dir.js
+// PUBLISHES a pointer on every valid-env dataDir() call, and every spawned hook
+// below inherits process.env via `run()`'s `...process.env` spread — without
+// this, a hermetic test that passes its own temp CLAUDE_PLUGIN_DATA (e.g. the
+// skill-metric test) would still leak into the developer's REAL
+// ~/.claude/claude-code-boss, hijacking a live session's active-data-dir
+// pointer (mirrors the same isolation test-units.js already applies). Set BOTH
+// vars so os.homedir() resolves here on every platform (Windows prefers
+// USERPROFILE, POSIX HOME).
+process.env.USERPROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hooks-home-'));
+process.env.HOME = process.env.USERPROFILE;
+
 /**
  * Create a temp directory that mimics a minimal CLAUDE_PLUGIN_ROOT with
  * optional overrides to config/hooks-config.json. Returns the tmpDir path.
