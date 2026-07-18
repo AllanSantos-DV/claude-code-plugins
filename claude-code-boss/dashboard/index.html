@@ -278,7 +278,7 @@ code { color: var(--fg); font-family: var(--font-mono); }
     </div>
     <div class="card">
       <div class="flex mb-1" style="align-items:center;justify-content:space-between">
-        <h2 style="margin:0" data-i18n="home.value">Value at a glance <span class="text-muted" style="font-size:.8rem">(last 30 days)</span></h2>
+        <h2 style="margin:0"><span data-i18n="home.value">Value at a glance</span> <span class="text-muted" style="font-size:.8rem">(last 30 days)</span></h2>
       </div>
       <div class="grid" id="home-value"><div class="spinner" style="margin:1rem auto"></div></div>
     </div>
@@ -997,7 +997,7 @@ const I18N = {
     'action.refresh': 'Refresh',
     'action.close': 'Close',
     'brain.testInstall': 'Test / Install',
-    'home.title': 'System Overview', 'home.brain': 'Brain Knowledge Base',
+    'home.title': 'System Overview', 'home.brain': 'Brain Knowledge Base', 'home.value': 'Value at a glance',
     'brain.title': 'Knowledge Base', 'brain.backend': 'Backend Configuration',
     'brain.restartNeeded': 'Restart required', 'brain.restartHint': 'to apply the changes.',
     'brain.restartBtn': 'Restart Dashboard', 'brain.backendType': 'Backend Type',
@@ -1025,6 +1025,8 @@ const I18N = {
     'hooks.script': 'Script', 'hooks.status': 'Status', 'hooks.action': 'Action',
     'hooks.config': 'Hook Configuration', 'hooks.memoryRotate': 'Memory Rotate',
     'hooks.maxLines': 'Max Lines (MEMORY.md)', 'hooks.curationGuard': 'Curation Guard', 'hooks.curatedShells': 'Curated Shells',
+    'hooks.profile': 'Profile', 'hooks.profileSelect': 'Active profile',
+    'tip.profile': 'dev = everything on (maintainers; curation escalates 3x). standard = quiet: only curation informs once, extra Stop blockers off. free = passthrough (no blocking; prompt retrieval continues). Switching is update-safe (saved globally at ~/.claude/claude-code-boss, applies to any project on this machine).',
     'logs.title': 'Server & Hook Logs', 'logs.copy': 'Copy JSON', 'logs.clear': 'Clear', 'logs.autoRefresh': 'Auto-refresh',
     'insights.title': 'Insights', 'insights.range': 'Range', 'insights.project': 'Project', 'insights.refresh': 'Refresh',
     'insights.daily': 'Events per day', 'insights.eventLog': 'Recent events',
@@ -1128,7 +1130,7 @@ const I18N = {
     'action.refresh': 'Atualizar',
     'action.close': 'Fechar',
     'brain.testInstall': 'Testar / Instalar',
-    'home.title': 'Visão Geral', 'home.brain': 'Base de Conhecimento (Brain)',
+    'home.title': 'Visão Geral', 'home.brain': 'Base de Conhecimento (Brain)', 'home.value': 'Valor gerado',
     'brain.title': 'Base de Conhecimento', 'brain.backend': 'Configuração do Backend',
     'brain.restartNeeded': 'Restart necessário', 'brain.restartHint': 'para aplicar as mudanças.',
     'brain.restartBtn': 'Reiniciar Dashboard', 'brain.backendType': 'Tipo de Backend',
@@ -1156,6 +1158,8 @@ const I18N = {
     'hooks.script': 'Script', 'hooks.status': 'Status', 'hooks.action': 'Ação',
     'hooks.config': 'Configuração de Hooks', 'hooks.memoryRotate': 'Memory Rotate',
     'hooks.maxLines': 'Linhas Máx. (MEMORY.md)', 'hooks.curationGuard': 'Curation Guard', 'hooks.curatedShells': 'Shells Curados',
+    'hooks.profile': 'Perfil', 'hooks.profileSelect': 'Perfil ativo',
+    'tip.profile': 'dev = tudo ligado (mantenedores; curadoria escala 3×). standard = silencioso: só a curadoria informa 1×, blockers extras do Stop desligados. free = passa tudo (nenhum bloqueio; retrieval do prompt continua). Troca é update-safe (gravada global em ~/.claude/claude-code-boss, vale pra qualquer projeto na máquina).',
     'logs.title': 'Logs do Servidor e Hooks', 'logs.copy': 'Copiar JSON', 'logs.clear': 'Limpar', 'logs.autoRefresh': 'Auto-refresh',
     'insights.title': 'Insights', 'insights.range': 'Período', 'insights.project': 'Projeto', 'insights.refresh': 'Atualizar',
     'insights.daily': 'Eventos por dia', 'insights.eventLog': 'Eventos recentes',
