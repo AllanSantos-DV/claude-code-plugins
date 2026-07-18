@@ -302,16 +302,21 @@ test('hooks-config.resolveProfileConfig: result never aliases PROFILE_PRESETS (p
 });
 
 // Getter-level resolution via a temp CLAUDE_PLUGIN_ROOT + fresh module instance.
-// CLAUDE_PLUGIN_DATA is repointed at the same temp dir so a stray real user
-// override (DATA_DIR/hooks/user-config.json) never leaks into these assertions.
+// CLAUDE_PLUGIN_DATA and HOME/USERPROFILE are repointed at the same temp dir so a
+// stray real user override (globalDir()/hooks/user-config.json — now home-based —
+// or a legacy DATA_DIR/hooks one) never leaks into these shipped-config assertions.
 function withHooksConfigFile(obj, fn) {
   const savedRoot = process.env.CLAUDE_PLUGIN_ROOT;
   const savedData = process.env.CLAUDE_PLUGIN_DATA;
+  const savedHome = process.env.HOME;
+  const savedProfile = process.env.USERPROFILE;
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hcfg-'));
   fs.mkdirSync(path.join(dir, 'config'), { recursive: true });
   fs.writeFileSync(path.join(dir, 'config', 'hooks-config.json'), JSON.stringify(obj));
   process.env.CLAUDE_PLUGIN_ROOT = dir;
   process.env.CLAUDE_PLUGIN_DATA = dir;
+  process.env.HOME = dir;          // isolate globalDir() so no real user override leaks in
+  process.env.USERPROFILE = dir;   // (Windows homedir source)
   delete require.cache[require.resolve('./lib/hooks-config.js')];
   const hc = require('./lib/hooks-config.js');
   try { return fn(hc); }
@@ -319,6 +324,8 @@ function withHooksConfigFile(obj, fn) {
     process.env.CLAUDE_PLUGIN_ROOT = savedRoot;
     if (savedData === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
     else process.env.CLAUDE_PLUGIN_DATA = savedData;
+    if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+    if (savedProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = savedProfile;
     delete require.cache[require.resolve('./lib/hooks-config.js')];
   }
 }
@@ -410,55 +417,63 @@ test('hooks-config: profileNames lists dev/standard/free', () => {
     `expected dev/standard/free, got ${names.join(',')}`);
 });
 
-test('hooks-config: DATA_DIR user-config overrides shipped profile (update-safe)', () => {
-  const savedRoot = process.env.CLAUDE_PLUGIN_ROOT;
-  const savedData = process.env.CLAUDE_PLUGIN_DATA;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hcfg-ovr-'));
-  fs.mkdirSync(path.join(dir, 'config'), { recursive: true });
-  // shipped says standard...
-  fs.writeFileSync(path.join(dir, 'config', 'hooks-config.json'), JSON.stringify({ profile: 'standard' }));
-  // ...DATA_DIR user-config says dev → user wins, survives shipped updates.
-  fs.mkdirSync(path.join(dir, 'hooks'), { recursive: true });
-  fs.writeFileSync(path.join(dir, 'hooks', 'user-config.json'), JSON.stringify({ profile: 'dev' }));
-  process.env.CLAUDE_PLUGIN_ROOT = dir;
-  process.env.CLAUDE_PLUGIN_DATA = dir;
-  delete require.cache[require.resolve('./lib/hooks-config.js')];
-  const hc = require('./lib/hooks-config.js');
-  try {
-    assertEq(hc.getProfile(), 'dev');
-    assertEq(hc.getRefineResearch().enabled, true); // dev turns the blockers back on
-  } finally {
-    process.env.CLAUDE_PLUGIN_ROOT = savedRoot;
-    if (savedData === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
-    else process.env.CLAUDE_PLUGIN_DATA = savedData;
+test('hooks-config: GLOBAL user-config overrides shipped profile (update-safe)', () => {
+  withTempHome((home) => {
+    const savedRoot = process.env.CLAUDE_PLUGIN_ROOT;
+    const savedData = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hcfg-ovr-'));
+    fs.mkdirSync(path.join(dir, 'config'), { recursive: true });
+    // shipped says standard...
+    fs.writeFileSync(path.join(dir, 'config', 'hooks-config.json'), JSON.stringify({ profile: 'standard' }));
+    // ...the GLOBAL user-config says dev → user wins, surviving BOTH shipped updates
+    // AND data-folder switches (it lives at globalDir()/hooks, not under DATA_DIR).
+    const gp = path.join(home, '.claude', 'claude-code-boss', 'hooks', 'user-config.json');
+    fs.mkdirSync(path.dirname(gp), { recursive: true });
+    fs.writeFileSync(gp, JSON.stringify({ profile: 'dev' }));
+    process.env.CLAUDE_PLUGIN_ROOT = dir;
+    process.env.CLAUDE_PLUGIN_DATA = dir;
     delete require.cache[require.resolve('./lib/hooks-config.js')];
-  }
+    const hc = require('./lib/hooks-config.js');
+    try {
+      assertEq(hc.getProfile(), 'dev');
+      assertEq(hc.getRefineResearch().enabled, true); // dev turns the blockers back on
+    } finally {
+      process.env.CLAUDE_PLUGIN_ROOT = savedRoot;
+      if (savedData === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
+      else process.env.CLAUDE_PLUGIN_DATA = savedData;
+      delete require.cache[require.resolve('./lib/hooks-config.js')];
+    }
+  });
 });
 
-test('hooks-config: saveProfile writes DATA_DIR override; invalid name throws', () => {
-  const savedRoot = process.env.CLAUDE_PLUGIN_ROOT;
-  const savedData = process.env.CLAUDE_PLUGIN_DATA;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hcfg-save-'));
-  fs.mkdirSync(path.join(dir, 'config'), { recursive: true });
-  fs.writeFileSync(path.join(dir, 'config', 'hooks-config.json'), JSON.stringify({ profile: 'dev' }));
-  process.env.CLAUDE_PLUGIN_ROOT = dir;
-  process.env.CLAUDE_PLUGIN_DATA = dir;
-  delete require.cache[require.resolve('./lib/hooks-config.js')];
-  const hc = require('./lib/hooks-config.js');
-  try {
-    const p = hc.saveProfile('free');
-    assert(fs.existsSync(p), 'user-config not written');
-    assertEq(JSON.parse(fs.readFileSync(p, 'utf-8')).profile, 'free');
-    assertEq(hc.getProfile(), 'free'); // cache reset inside saveProfile
-    let threw = false;
-    try { hc.saveProfile('nope'); } catch { threw = true; }
-    assert(threw, 'saveProfile should throw on invalid name');
-  } finally {
-    process.env.CLAUDE_PLUGIN_ROOT = savedRoot;
-    if (savedData === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
-    else process.env.CLAUDE_PLUGIN_DATA = savedData;
+test('hooks-config: saveProfile writes the GLOBAL override; invalid name throws', () => {
+  withTempHome((home) => {
+    const savedRoot = process.env.CLAUDE_PLUGIN_ROOT;
+    const savedData = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hcfg-save-'));
+    fs.mkdirSync(path.join(dir, 'config'), { recursive: true });
+    fs.writeFileSync(path.join(dir, 'config', 'hooks-config.json'), JSON.stringify({ profile: 'dev' }));
+    process.env.CLAUDE_PLUGIN_ROOT = dir;
+    process.env.CLAUDE_PLUGIN_DATA = dir;
     delete require.cache[require.resolve('./lib/hooks-config.js')];
-  }
+    const hc = require('./lib/hooks-config.js');
+    try {
+      const p = hc.saveProfile('free');
+      // saveProfile persists to the STABLE GLOBAL path, not the volatile data dir.
+      assertEq(p, path.join(home, '.claude', 'claude-code-boss', 'hooks', 'user-config.json'));
+      assert(fs.existsSync(p), 'user-config not written');
+      assertEq(JSON.parse(fs.readFileSync(p, 'utf-8')).profile, 'free');
+      assertEq(hc.getProfile(), 'free'); // cache reset inside saveProfile
+      let threw = false;
+      try { hc.saveProfile('nope'); } catch { threw = true; }
+      assert(threw, 'saveProfile should throw on invalid name');
+    } finally {
+      process.env.CLAUDE_PLUGIN_ROOT = savedRoot;
+      if (savedData === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
+      else process.env.CLAUDE_PLUGIN_DATA = savedData;
+      delete require.cache[require.resolve('./lib/hooks-config.js')];
+    }
+  });
 });
 
 test('hooks-config getters: shipped config is valid standard (regression)', () => {
@@ -1936,10 +1951,18 @@ test('research-followup.decideNudge: newer trigger after stamp → nudge again',
 test('research-followup.run: capture_lesson({type:research}) in __user__ scope suppresses the nudge', async () => {
   delete require.cache[require.resolve('./lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
+  const prevHome = process.env.HOME;
+  const prevProfile = process.env.USERPROFILE;
   process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rf-xscope-'));
-  // research-followup is dev-only now; force dev so run() actually exercises suppression.
-  fs.mkdirSync(path.join(process.env.CLAUDE_PLUGIN_DATA, 'hooks'), { recursive: true });
-  fs.writeFileSync(path.join(process.env.CLAUDE_PLUGIN_DATA, 'hooks', 'user-config.json'), JSON.stringify({ profile: 'dev' }));
+  // Isolate globalDir() so forcing the dev profile via the GLOBAL user-config can't
+  // pollute the run-wide home. research-followup is dev-only now; force dev so run()
+  // actually exercises suppression.
+  const rfHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rf-xscope-home-'));
+  process.env.HOME = rfHome;
+  process.env.USERPROFILE = rfHome;
+  const gp = path.join(rfHome, '.claude', 'claude-code-boss', 'hooks', 'user-config.json');
+  fs.mkdirSync(path.dirname(gp), { recursive: true });
+  fs.writeFileSync(gp, JSON.stringify({ profile: 'dev' }));
   hooksConfig._resetCache();
   const isolatedStore = require('./lib/metrics-store.js');
   delete require.cache[require.resolve('./research-followup-detect.js')];
@@ -1968,6 +1991,8 @@ test('research-followup.run: capture_lesson({type:research}) in __user__ scope s
     delete require.cache[require.resolve('./lib/metrics-store.js')];
     delete require.cache[require.resolve('./research-followup-detect.js')];
     process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
+    if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+    if (prevProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = prevProfile;
     hooksConfig._resetCache();
   }
 });
@@ -1975,10 +2000,17 @@ test('research-followup.run: capture_lesson({type:research}) in __user__ scope s
 test('research-followup.run: no capture at all still nudges (regression guard)', async () => {
   delete require.cache[require.resolve('./lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
+  const prevHome = process.env.HOME;
+  const prevProfile = process.env.USERPROFILE;
   process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rf-nocap-'));
-  // research-followup is dev-only now; force dev so run() emits the nudge.
-  fs.mkdirSync(path.join(process.env.CLAUDE_PLUGIN_DATA, 'hooks'), { recursive: true });
-  fs.writeFileSync(path.join(process.env.CLAUDE_PLUGIN_DATA, 'hooks', 'user-config.json'), JSON.stringify({ profile: 'dev' }));
+  // Isolate globalDir() as above; research-followup is dev-only now, so force dev
+  // (via the GLOBAL user-config) so run() emits the nudge.
+  const rfHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rf-nocap-home-'));
+  process.env.HOME = rfHome;
+  process.env.USERPROFILE = rfHome;
+  const gp = path.join(rfHome, '.claude', 'claude-code-boss', 'hooks', 'user-config.json');
+  fs.mkdirSync(path.dirname(gp), { recursive: true });
+  fs.writeFileSync(gp, JSON.stringify({ profile: 'dev' }));
   hooksConfig._resetCache();
   const isolatedStore = require('./lib/metrics-store.js');
   delete require.cache[require.resolve('./research-followup-detect.js')];
@@ -1996,6 +2028,8 @@ test('research-followup.run: no capture at all still nudges (regression guard)',
     delete require.cache[require.resolve('./lib/metrics-store.js')];
     delete require.cache[require.resolve('./research-followup-detect.js')];
     process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
+    if (prevHome === undefined) delete process.env.HOME; else process.env.HOME = prevHome;
+    if (prevProfile === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = prevProfile;
     hooksConfig._resetCache();
   }
 });
@@ -5636,6 +5670,146 @@ test('brain-config: backfill NEVER overwrites an existing global override', () =
       brainConfig._resetCache();
       assertEq(brainConfig.getBackendType(), 'local');            // global wins
       assertEq(JSON.parse(fs.readFileSync(gp, 'utf-8')), { backend: { type: 'local' } });
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; brainConfig._resetCache(); }
+  });
+});
+
+// ─── Phase 1.5: hooks + router per-user configs moved to the stable GLOBAL path ───
+const routerCfgPath = require('./lib/router-config-path.js');
+
+test('hooks-config: userConfigPath is under globalDir()/hooks (stable, not the data dir)', () => {
+  withTempHome(() => {
+    assertEq(hooksConfig.userConfigPath(),
+      path.join(dataDirLib.globalDir(), 'hooks', 'user-config.json'));
+  });
+});
+
+test('hooks-config: backfills a legacy per-data-dir user-config up to the global path', () => {
+  // Migration: an existing user's profile under DATA_DIR/hooks/user-config.json is
+  // copied up to globalDir()/hooks the first time load() runs with no global override.
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hbf-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      const legacy = path.join(dir, 'hooks', 'user-config.json');
+      fs.mkdirSync(path.dirname(legacy), { recursive: true });
+      fs.writeFileSync(legacy, JSON.stringify({ profile: 'free' }));
+      const gp = path.join(dataDirLib.globalDir(), 'hooks', 'user-config.json');
+      assert(!fs.existsSync(gp), 'precondition: global override absent');
+      hooksConfig._resetCache();
+      assertEq(hooksConfig.getProfile(), 'free');                 // honored via backfill
+      assert(fs.existsSync(gp), 'legacy override must be copied up to the global path');
+      assertEq(JSON.parse(fs.readFileSync(gp, 'utf-8')), { profile: 'free' });
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; hooksConfig._resetCache(); }
+  });
+});
+
+test('hooks-config: backfill NEVER overwrites an existing global override', () => {
+  // An already-migrated global choice must win; a stale legacy file cannot clobber it.
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hbf2-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      const gp = path.join(dataDirLib.globalDir(), 'hooks', 'user-config.json');
+      fs.mkdirSync(path.dirname(gp), { recursive: true });
+      fs.writeFileSync(gp, JSON.stringify({ profile: 'standard' }));   // existing global
+      const legacy = path.join(dir, 'hooks', 'user-config.json');
+      fs.mkdirSync(path.dirname(legacy), { recursive: true });
+      fs.writeFileSync(legacy, JSON.stringify({ profile: 'free' }));   // conflicting legacy
+      hooksConfig._resetCache();
+      assertEq(hooksConfig.getProfile(), 'standard');            // global wins
+      assertEq(JSON.parse(fs.readFileSync(gp, 'utf-8')), { profile: 'standard' });
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; hooksConfig._resetCache(); }
+  });
+});
+
+test('router-config-path: routerUserConfigPath is under globalDir()/model-router (stable)', () => {
+  withTempHome(() => {
+    assertEq(routerCfgPath.routerUserConfigPath(),
+      path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json'));
+    // runtime state stays per-folder — legacy path is under the resolved data dir.
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rlegacy-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      assertEq(routerCfgPath.legacyRouterUserConfigPath(),
+        path.join(dir, 'model-router', 'user-config.json'));
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+  });
+});
+
+test('router-config-path: backfills a legacy user-config up to the global path once (+0600 on POSIX)', () => {
+  // The NVIDIA key + toggles under DATA_DIR/model-router/user-config.json migrate up
+  // to globalDir()/model-router exactly once, and the global key file is owner-only.
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rbf-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      const legacy = path.join(dir, 'model-router', 'user-config.json');
+      fs.mkdirSync(path.dirname(legacy), { recursive: true });
+      fs.writeFileSync(legacy, JSON.stringify({ nim: { apiKey: 'nvapi-secret' } }));
+      const gp = path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json');
+      assert(!fs.existsSync(gp), 'precondition: global router config absent');
+      routerCfgPath.backfillRouterUserConfig();
+      assert(fs.existsSync(gp), 'legacy router config must be copied up to the global path');
+      assertEq(JSON.parse(fs.readFileSync(gp, 'utf-8')), { nim: { apiKey: 'nvapi-secret' } });
+      if (process.platform !== 'win32') {
+        assertEq(fs.statSync(gp).mode & 0o777, 0o600);   // owner-only (holds the NVIDIA key)
+      }
+      // Idempotent: a second call with a DIFFERENT legacy must NOT overwrite the global.
+      fs.writeFileSync(legacy, JSON.stringify({ nim: { apiKey: 'nvapi-CHANGED' } }));
+      routerCfgPath.backfillRouterUserConfig();
+      assertEq(JSON.parse(fs.readFileSync(gp, 'utf-8')), { nim: { apiKey: 'nvapi-secret' } });
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+  });
+});
+
+test('dashboard.writeRouterOverride writes the GLOBAL router config and preserves an untouched key', () => {
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-rw-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      const gp = path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json');
+      delete require.cache[require.resolve('./dashboard.js')];
+      const dash = require('./dashboard.js'); // resolves ROUTER_USER_CONFIG at load → global path
+      // Seed a key, then toggle `enabled` WITHOUT resending the key → key must survive.
+      dash.writeRouterOverride({ nimApiKey: 'nvapi-keep-me' });
+      assert(fs.existsSync(gp), 'router override must be written to the global path');
+      assertEq(JSON.parse(fs.readFileSync(gp, 'utf-8')).nim.apiKey, 'nvapi-keep-me');
+      dash.writeRouterOverride({ enabled: true }); // no nimApiKey → existing key untouched
+      const out = JSON.parse(fs.readFileSync(gp, 'utf-8'));
+      assertEq(out.nim.apiKey, 'nvapi-keep-me');   // preserved
+      assertEq(out.enabled, true);
+      if (process.platform !== 'win32') {
+        assertEq(fs.statSync(gp).mode & 0o777, 0o600);   // hardened after each write
+      }
+    } finally {
+      process.env.CLAUDE_PLUGIN_DATA = saved;
+      delete require.cache[require.resolve('./dashboard.js')];
+    }
+  });
+});
+
+test('capture-dispatch: _captureConfig honors the GLOBAL brain kb.capture override', () => {
+  // Phase-1 gap closed: capture now reads brain-config.load() (shipped ⊕ global
+  // override), not a stale legacy DATA_DIR/brain/user-config.json.
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-capcfg-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      const gp = path.join(dataDirLib.globalDir(), 'user-config.json');
+      fs.mkdirSync(path.dirname(gp), { recursive: true });
+      fs.writeFileSync(gp, JSON.stringify({ kb: { capture: { enabled: false, maxBlockAttempts: 9 } } }));
+      brainConfig._resetCache();
+      const cd = require('./capture-dispatch.js');
+      const cfg = cd._captureConfig();
+      assertEq(cfg.enabled, false);
+      assertEq(cfg.maxBlockAttempts, 9);
     } finally { process.env.CLAUDE_PLUGIN_DATA = saved; brainConfig._resetCache(); }
   });
 });
