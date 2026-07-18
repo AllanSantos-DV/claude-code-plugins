@@ -14,11 +14,14 @@
  * (quiet/advisory) and `free` (passthrough) carry the deltas.
  *
  * UPDATE-SAFE SWITCH: the active profile (and any override) is read from
- * `config/hooks-config.json` (shipped) merged with an optional
- * `DATA_DIR/hooks/user-config.json` (never committed), mirroring brain-config
- * and model-router. This lets `/boss profile <name>` or the dashboard switch the
- * profile without editing a versioned file — so a plugin auto-update never
- * reverts the user's choice.
+ * `config/hooks-config.json` (shipped) merged with an optional user override
+ * (never committed) at a STABLE GLOBAL path — globalDir()/hooks/user-config.json
+ * — mirroring brain-config. It lives GLOBALLY (not under the volatile per-folder
+ * data dir) so switching the plugin's data folder can never orphan the user's
+ * profile choice. A one-time backfill in load() migrates a legacy
+ * DATA_DIR/hooks/user-config.json up to the global path. This lets `/boss profile
+ * <name>` or the dashboard switch the profile without editing a versioned file —
+ * so a plugin auto-update never reverts the user's choice.
  */
 const fs = require('fs');
 const { writeFileAtomic } = require('./atomic-write.js');
@@ -27,12 +30,19 @@ const path = require('path');
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..', '..');
 const CONFIG_PATH = path.join(PLUGIN_ROOT, 'config', 'hooks-config.json');
 
-// Resolved at call time (not frozen at module load) so tests can repoint
-// CLAUDE_PLUGIN_DATA + _resetCache(), and so it tracks the canonical DATA_DIR.
+// Resolved at call time (not frozen at module load) so tests can repoint HOME/
+// CLAUDE_PLUGIN_DATA + _resetCache(). GLOBAL (not data-dir-scoped) so switching
+// the data folder never orphans the user's profile choice.
 function userConfigPath() {
+  const { globalDir } = require('./data-dir.js');
+  return path.join(globalDir(), 'hooks', 'user-config.json');
+}
+
+// Pre-Phase-1.5 location of the override (under the resolved active data dir).
+// Retained only so load() can backfill it up to the global path exactly once.
+function legacyUserConfigPath() {
   const { dataDir } = require('./data-dir.js');
-  const DATA_DIR = dataDir();
-  return path.join(DATA_DIR, 'hooks', 'user-config.json');
+  return path.join(dataDir(), 'hooks', 'user-config.json');
 }
 
 const DEFAULT_PROFILE = 'dev';
@@ -110,6 +120,22 @@ function load() {
   } catch (err) {
     console.error(`[hooks-config] load failed (${CONFIG_PATH}): ${err.message}`);
     shipped = {};
+  }
+  // One-time backfill: if the global override doesn't exist yet but a legacy
+  // per-data-dir one does, copy it up so the user's profile choice survives the
+  // Phase-1.5 move to the global path. Guarded by !exists so an existing global
+  // is never overwritten; only the resolved active data dir is consulted (no
+  // sibling scan). Fail-open — a failed backfill just means load() uses shipped.
+  try {
+    const globalPath = userConfigPath();
+    if (!fs.existsSync(globalPath)) {
+      const legacyPath = legacyUserConfigPath();
+      if (fs.existsSync(legacyPath)) {
+        writeFileAtomic(globalPath, fs.readFileSync(legacyPath));
+      }
+    }
+  } catch (err) {
+    console.error(`[hooks-config] user-config backfill skipped: ${err.message}`);
   }
   let override = null;
   try {
@@ -289,9 +315,10 @@ function profileNames() {
 }
 
 /**
- * Persist the active profile to DATA_DIR/hooks/user-config.json (update-safe,
- * never committed). Merges with any existing user-config so unrelated overrides
- * survive. Returns the path written. Throws on invalid name or write failure.
+ * Persist the active profile to globalDir()/hooks/user-config.json (update-safe,
+ * never committed, stable across data-folder switches). Merges with any existing
+ * user-config so unrelated overrides survive. Returns the path written. Throws on
+ * invalid name or write failure.
  * @param {string} name  one of PROFILE_PRESETS
  * @returns {string} the user-config path written
  */

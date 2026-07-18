@@ -36,6 +36,7 @@ const shim   = require('./model-router-shim.js');
 const { resolveMode } = require('./lib/router-mode.js');
 const { writeJsonAtomic } = require('./lib/atomic-write.js');
 const { dataDir } = require('./lib/data-dir.js');
+const { routerUserConfigPath, backfillRouterUserConfig } = require('./lib/router-config-path.js');
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -55,8 +56,10 @@ const LOG_FILE      = path.join(DATA_DIR, 'model-router', 'router.log');
 const ROUTER_TOKEN_FILE = path.join(DATA_DIR, 'model-router', 'router.token');
 const SERVER_SCRIPT = path.join(PLUGIN_ROOT, 'servers', 'model-router', 'index.js');
 const CONFIG_FILE   = path.join(PLUGIN_ROOT, 'config', 'router-config.json');
-// Override do usuário (chave NVIDIA + toggles) + carimbo do nudge de primeira execução.
-const USER_CONFIG_FILE = path.join(DATA_DIR, 'model-router', 'user-config.json');
+// Override do usuário (chave NVIDIA + toggles) — vive num caminho GLOBAL estável
+// (globalDir()/model-router/user-config.json) para todo processo concordar e a
+// troca de pasta de dados nunca órfãos a chave salva. Carimbo do nudge fica no DATA_DIR.
+const USER_CONFIG_FILE = routerUserConfigPath();
 const NUDGE_STAMP      = path.join(DATA_DIR, 'model-router', '.nudge-stamp');
 // Carimbo de "aviso ATIVO já injetado nesta sessão" — evita repetir o mesmo texto
 // informativo em todo UserPromptSubmit (ruído de contexto). Mapa { chave: ts }.
@@ -467,6 +470,10 @@ function startServer(mode) {
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 async function main() {
+  // One-time Phase-1.5 migration: copy a legacy DATA_DIR/model-router/user-config.json
+  // up to the stable global path (never overwriting an existing global) so the saved
+  // NVIDIA key + toggles survive the move. Fail-open — never throws at SessionStart.
+  backfillRouterUserConfig();
   const config = readConfig();
   const hookInput = readHookInput();
   const sessionId = hookInput.session_id || hookInput.sessionId || null;

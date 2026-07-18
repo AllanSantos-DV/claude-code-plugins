@@ -22,6 +22,7 @@ const { validEnvDir, dataDir, globalDir } = require('./lib/data-dir.js');
 const { isValidHost, tokenMatches } = require('./lib/dashboard-auth.js');
 const { resolveStaticPath } = require('./lib/dashboard-static.js');
 const { writeFileAtomic, writeJsonAtomic } = require('./lib/atomic-write.js');
+const { routerUserConfigPath, hardenRouterConfigPerms } = require('./lib/router-config-path.js');
 
 // Session token — generated at boot, injected into index.html, required on all /api/* requests.
 const SESSION_TOKEN = crypto.randomBytes(16).toString('hex');
@@ -48,9 +49,11 @@ const MOST_POPULATED_DATA_DIR = resolveBestDataDir();
 const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');
 
 // model-router (F3) — shipped defaults vs. user override (key + toggles).
-// The override lives only in DATA_DIR and is NEVER committed.
+// The override (NVIDIA key + per-user toggles) lives at a STABLE GLOBAL path
+// (globalDir()/model-router/user-config.json) so every process agrees on it and
+// switching the data folder can never orphan the saved key. It is NEVER committed.
 const ROUTER_SHIPPED_CONFIG = path.join(ROOT, 'config', 'router-config.json');
-const ROUTER_USER_CONFIG = path.join(DATA_DIR, 'model-router', 'user-config.json');
+const ROUTER_USER_CONFIG = routerUserConfigPath();
 const ROUTER_STATE_FILE = path.join(DATA_DIR, 'model-router', 'state.json');
 const ROUTER_METRICS_FILE = path.join(DATA_DIR, 'model-router', 'metrics.json');
 
@@ -940,7 +943,7 @@ async function saveHooksConfig(req, res) {
   } catch (e) { fail(res, e.message); }
 }
 
-// Active profile — read/written UPDATE-SAFE (DATA_DIR/hooks/user-config.json),
+// Active profile — read/written UPDATE-SAFE (globalDir()/hooks/user-config.json),
 // never the shipped file, so a plugin auto-update can't revert the user's choice.
 function getHooksProfile(req, res) {
   hooksConfig._resetCache(); // long-running server: reflect any out-of-band edit
@@ -952,7 +955,7 @@ async function setHooksProfile(req, res) {
   try {
     const parsed = JSON.parse(body);
     const name = String((parsed && parsed.profile) || '').trim().toLowerCase();
-    hooksConfig.saveProfile(name); // validates + writes DATA_DIR + resets cache
+    hooksConfig.saveProfile(name); // validates + writes global user-config + resets cache
     json(res, { ok: true, profile: hooksConfig.getProfile() });
   } catch (e) { fail(res, e.message, 400); }
 }
@@ -1247,6 +1250,7 @@ function writeRouterOverride(body) {
     out.routing = { ...(existing.routing || {}), ...body.routing };
   }
   atomicWriteJSON(ROUTER_USER_CONFIG, out);
+  hardenRouterConfigPerms(ROUTER_USER_CONFIG); // owner-only 0600 (holds the NVIDIA key); no-op on Windows
   return out;
 }
 
@@ -1656,3 +1660,8 @@ server.listen(PORT, '127.0.0.1', () => {
 }
 
 if (require.main === module) startDashboardServer();
+
+// Exported for unit tests (require.main guard above keeps the server from
+// starting on require). writeRouterOverride is the single writer of the global
+// router user-config, so tests assert its path + key-preservation behavior.
+module.exports = { writeRouterOverride };

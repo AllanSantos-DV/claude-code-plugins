@@ -3,8 +3,9 @@
 /**
  * profile-set.js — switch the active hooks profile, update-safe.
  *
- * Writes the choice to DATA_DIR/hooks/user-config.json (never the shipped file),
- * so a plugin auto-update never reverts it. Backs the `/boss-profile` command.
+ * Writes the choice to globalDir()/hooks/user-config.json (never the shipped
+ * file), so a plugin auto-update never reverts it. Backs the `/boss-profile`
+ * command.
  *
  *   node scripts/profile-set.js            # print current profile + options
  *   node scripts/profile-set.js <name>     # set dev | standard | free

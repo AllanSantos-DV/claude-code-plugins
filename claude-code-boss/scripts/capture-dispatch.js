@@ -32,7 +32,7 @@ const queue = require('./lib/capture-queue.js');
 const { budgetForModel, shouldFire, DEFAULT_BOUNDS } = require('./lib/turn-budget.js');
 const { renderBlock } = require('./lib/transcript-block.js');
 const { redact } = require('./lib/redact.js');
-const { dataDir } = require('./lib/data-dir.js');
+const brainConfig = require('./lib/brain-config.js');
 const metrics = require('./lib/metrics.js');
 
 // Safety valve for the block-until-ack loop (step 3): after this many CONSECUTIVE
@@ -95,20 +95,13 @@ function _readTail(transcriptPath, bytes) {
 }
 
 function _captureConfig() {
-  const out = {};
-  try {
-    const root = process.env.CLAUDE_PLUGIN_ROOT;
-    if (root && !root.includes('${')) {
-      const cfg = JSON.parse(fs.readFileSync(path.join(root, 'config', 'brain-config.json'), 'utf-8'));
-      Object.assign(out, (cfg && cfg.kb && cfg.kb.capture) || {});
-    }
-  } catch (err) { void err; }
-  try {
-    // update-safe user override (the shipped config is replaced on plugin update)
-    const cfg = JSON.parse(fs.readFileSync(path.join(dataDir(), 'brain', 'user-config.json'), 'utf-8'));
-    Object.assign(out, (cfg && cfg.kb && cfg.kb.capture) || {});
-  } catch (err) { void err; }
-  return out;
+  // brain-config.load() already deep-merges the shipped config with the GLOBAL
+  // per-user override (Phase 1) and never throws. Reading it here — instead of
+  // hand-rolling the shipped read + a legacy DATA_DIR/brain/user-config.json read
+  // (stale after Phase 1) — makes capture honor the SAME backend/capture config
+  // every other writer sees, at the stable global path.
+  const cfg = brainConfig.load();
+  return (cfg && cfg.kb && cfg.kb.capture) || {};
 }
 
 /** The instruction handed to the session agent (its own context is the curator). */

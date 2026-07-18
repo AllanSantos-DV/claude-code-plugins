@@ -22,6 +22,7 @@ const crypto = require('crypto');
 const { URL } = require('url');
 const catalog = require('./catalog.js');
 const { resolveMode } = require('../../scripts/lib/router-mode.js');
+const { routerUserConfigPath } = require('../../scripts/lib/router-config-path.js');
 
 // ── Resolução de paths ────────────────────────────────────────────────────────
 
@@ -44,9 +45,10 @@ const STATE_DIR  = path.join(DATA_DIR, 'model-router');
 const STATE_FILE = path.join(STATE_DIR, 'state.json');
 const LOG_FILE   = path.join(STATE_DIR, 'router.log');
 const CONFIG_FILE = path.join(PLUGIN_ROOT, 'config', 'router-config.json');
-// Override do usuário (chave NVIDIA + toggles). Vive SÓ no DATA_DIR, nunca
-// versionado. Sobrescreve os defaults shipados quando presente.
-const USER_CONFIG_FILE = path.join(STATE_DIR, 'user-config.json');
+// Override do usuário (chave NVIDIA + toggles). Vive num caminho GLOBAL estável
+// (globalDir()/model-router/user-config.json), independente do --data-dir, para
+// que servidor, hook e dashboard concordem sempre na MESMA chave. Nunca versionado.
+const USER_CONFIG_FILE = routerUserConfigPath();
 
 // ── Identidade na porta fixa (verify-before-trust) ────────────────────────────
 // WHY: o hook (model-router-ensure.js) aponta o ANTHROPIC_BASE_URL do Claude Code
