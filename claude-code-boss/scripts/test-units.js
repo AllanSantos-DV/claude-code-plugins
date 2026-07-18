@@ -5917,6 +5917,46 @@ test('data-dir: NO script keeps a bare unguarded `env || fallback` resolver (EXH
   assertEq(offenders, [], `unguarded CLAUDE_PLUGIN_DATA resolvers remain: ${offenders.join(', ')}`);
 });
 
+test('test/smoke harnesses that spawn a hook with a temp CLAUDE_PLUGIN_DATA must isolate HOME/USERPROFILE (EXHAUSTIVE)', () => {
+  // Root cause (found live, this repo, this machine): a hermetic test/smoke
+  // script spawns a hook CHILD process with its OWN temp CLAUDE_PLUGIN_DATA,
+  // but never overrides HOME/USERPROFILE for that child — so data-dir.js's
+  // dataDir() in the child resolves os.homedir() to the REAL developer home,
+  // and since the env value is valid, dataDir() PUBLISHES the throwaway temp
+  // path into the REAL, cross-project ~/.claude/claude-code-boss/
+  // active-data-dir.json (test-units.js already isolates HOME for its OWN
+  // in-process run — see the top of this file — but that only protects
+  // in-process require() calls, not a harness that spawns children). Confirmed
+  // live: running test-hooks.js's skill-metric test corrupted the real pointer
+  // on this machine before this was fixed.
+  //
+  // Fix pattern (either satisfies this guard): isolate HOME/USERPROFILE ONCE
+  // per file via `process.env.HOME = process.env.USERPROFILE = <temp dir>`
+  // before any `...process.env` spread (whole-run isolation), OR pass an
+  // explicit `HOME`/`USERPROFILE` key in the specific spawn call's env object
+  // (per-call isolation). A representative sample can't lock this invariant —
+  // walk every test/smoke harness that could spawn a hook.
+  const offenders = [];
+  const candidates = [path.join(SCRIPTS, 'test-hooks.js')];
+  const smokeDir = path.join(ROOT, 'smoke');
+  if (fs.existsSync(smokeDir)) {
+    for (const n of fs.readdirSync(smokeDir)) {
+      if (/\.(m?js)$/.test(n)) candidates.push(path.join(smokeDir, n));
+    }
+  }
+  const SPAWNS_CHILD = /\b(?:spawn|spawnSync|execFile|execFileSync)\s*\(/;
+  const SETS_DATA_ENV = /CLAUDE_PLUGIN_DATA\s*:/;
+  const ISOLATES_HOME = /process\.env\.(?:HOME|USERPROFILE)\s*=|\b(?:HOME|USERPROFILE)\s*:/;
+  for (const p of candidates) {
+    const src = fs.readFileSync(p, 'utf-8');
+    if (SPAWNS_CHILD.test(src) && SETS_DATA_ENV.test(src) && !ISOLATES_HOME.test(src)) {
+      offenders.push(path.relative(ROOT, p));
+    }
+  }
+  assertEq(offenders, [],
+    `test/smoke harnesses spawning hooks with a temp CLAUDE_PLUGIN_DATA but no HOME/USERPROFILE isolation: ${offenders.join(', ')}`);
+});
+
 test('data-dir: migrated consumers import the shared resolver', () => {
   const consumers = [
     'lib/cooldown-store.js', 'lib/verify-journal.js', 'lib/failure-journal.js',
