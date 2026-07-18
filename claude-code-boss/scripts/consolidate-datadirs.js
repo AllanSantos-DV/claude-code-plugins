@@ -46,6 +46,12 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { loadSqlite } = require('./lib/sqlite-compat.js');
+const { writeJsonAtomic } = require('./lib/atomic-write.js');
+
+// A lock older than this — OR whose owning pid is gone — is STALE and stealable.
+// 30 min comfortably outlasts a real absorb (seconds), so a live apply is always
+// still-fresh, while a crashed one is reclaimed on the next run.
+const LOCK_TTL_MS = 30 * 60 * 1000;
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
 
@@ -180,8 +186,9 @@ function enumerateDefault(activeDir) {
 
 function resolveDeps(_deps) {
   const dd = _deps || {};
+  const activeDir = dd.activeDir || require('./lib/data-dir.js').dataDir();
   return {
-    activeDir: dd.activeDir || require('./lib/data-dir.js').dataDir(),
+    activeDir,
     mode: dd.mode || require('./lib/brain-config.js').getBackendType(),
     store: dd.store || require('./brain-store.js'),
     index: dd.index || require('./brain-index.js'),
@@ -194,7 +201,84 @@ function resolveDeps(_deps) {
     fsx: dd.fsx || fs,
     backupBase: dd.backupBase || path.join(os.homedir(), '.claude', 'plugins', 'data'),
     now: dd.now || (() => Date.now()),
+    // Single-writer apply lock (apply path only; all injectable so tests need not
+    // wait 30 real minutes nor kill real pids).
+    lockPath: dd.lockPath || path.join(activeDir, '.runtime', 'consolidate-datadirs.lock'),
+    lockTtlMs: typeof dd.lockTtlMs === 'number' ? dd.lockTtlMs : LOCK_TTL_MS,
+    pidAlive: dd.pidAlive || defaultPidAlive,
   };
+}
+
+// ── Single-writer apply lock ─────────────────────────────────────────────────
+
+/**
+ * Real process-liveness probe. `process.kill(pid, 0)` delivers NO signal but
+ * throws ESRCH when the pid is gone and EPERM when it exists but we may not
+ * signal it (still alive) — works on Windows and POSIX. Injected via
+ * `_deps.pidAlive` so tests can force liveness deterministically.
+ * @param {number} pid
+ * @returns {boolean}
+ */
+function defaultPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; }
+  catch (err) { return !!(err && err.code === 'EPERM'); }
+}
+
+/**
+ * Acquire the process-level apply lock so a manual `--apply` and the SessionStart
+ * auto-apply can never run the DESTRUCTIVE absorb/delete concurrently. This is a
+ * single-writer mutex at the PROCESS level, complementing brain-store's WAL
+ * `busy_timeout` (which only serializes individual SQLite writes, not the whole
+ * multi-step consolidation).
+ *
+ * A lock is honored — caller must bail — ONLY when it is BOTH fresh (ts within
+ * `lockTtlMs`) AND its pid is still alive. A stale (old ts) or dead-pid lock is
+ * STOLEN by publishing our own `{pid, ts}`. The payload is written tear-free
+ * (tmp + rename via writeJsonAtomic, which also `mkdir -p`s the `.runtime` dir),
+ * so a concurrent reader never sees a partial record. NEVER throws: on any error
+ * we fail OPEN (treat as acquired) so a lock glitch can't wedge consolidation.
+ *
+ * @param {object} d resolved deps (uses fsx, now, pidAlive, lockPath, lockTtlMs)
+ * @returns {{acquired:boolean}}
+ */
+function acquireLock(d) {
+  try {
+    const nowMs = d.now();
+    let existing = null;
+    try {
+      existing = JSON.parse(d.fsx.readFileSync(d.lockPath, 'utf-8'));
+    } catch (err) {
+      // ENOENT = no lock (the common case); any other read/parse failure means an
+      // unusable lock, which is stealable — either way, proceed to acquire.
+      if (err && err.code !== 'ENOENT') {
+        console.error(`[consolidate-datadirs] unreadable lock ${d.lockPath}: ${err.message}`);
+      }
+      existing = null;
+    }
+    const fresh = existing && typeof existing.ts === 'number' && (nowMs - existing.ts) < d.lockTtlMs;
+    if (fresh && d.pidAlive(existing.pid)) {
+      return { acquired: false }; // a FRESH, LIVE apply already owns the lock
+    }
+    // No lock, or a stale/dead-pid one → (steal and) publish ours atomically.
+    writeJsonAtomic(d.lockPath, { pid: process.pid, ts: nowMs }, d.fsx);
+    return { acquired: true };
+  } catch (err) {
+    // Fail-open: a lock-subsystem glitch must never block real consolidation.
+    console.error(`[consolidate-datadirs] lock acquire failed (${d && d.lockPath}): ${err.message}`);
+    return { acquired: true };
+  }
+}
+
+/**
+ * Release the apply lock (delete the file). Fail-open — a leftover lock is
+ * self-healing via the TTL/pid steal on the next run, so a failed unlink is
+ * logged, never thrown.
+ * @param {object} d resolved deps (uses fsx, lockPath)
+ */
+function releaseLock(d) {
+  try { d.fsx.rmSync(d.lockPath, { force: true }); }
+  catch (err) { console.error(`[consolidate-datadirs] lock release failed (${d && d.lockPath}): ${err.message}`); }
 }
 
 // ── Core reconcile primitives (local backend) ────────────────────────────────
@@ -373,7 +457,34 @@ async function consolidate({ apply = false, _deps = {} } = {}) {
     return report;
   }
 
-  // ── APPLY ──
+  // ── APPLY (single-writer) ──
+  // Serialize the DESTRUCTIVE absorb/delete so a manual `--apply` and the
+  // SessionStart auto-apply can't run it concurrently. If a fresh, live apply
+  // already holds the lock, bail without touching anything; otherwise hold it
+  // for the whole apply and always release it (fail-open) in `finally`.
+  if (!acquireLock(d).acquired) {
+    report.reason = 'locked';
+    return report;
+  }
+  try {
+    return await applyConsolidation(d, report, siblings);
+  } finally {
+    releaseLock(d);
+  }
+}
+
+/**
+ * The DESTRUCTIVE apply body: backup-first, then absorb siblings into the active
+ * dir, then delete only zero-failure siblings. Extracted from `consolidate()` so
+ * the whole step runs UNDER the process lock (acquire/finally-release at the call
+ * site). Mutates and returns the passed `report`.
+ * @param {object} d resolved deps
+ * @param {object} report the in-progress report ({ok, apply, mode, activeDir, siblings:[]})
+ * @param {Array} siblings populated sibling candidates to absorb
+ */
+async function applyConsolidation(d, report, siblings) {
+  const { activeDir, mode } = d;
+
   // (a) BACKUP FIRST — copy every sibling before ANY destructive write/delete.
   const backupDir = path.join(d.backupBase, `_boss-backup-${backupStamp(d.now())}`);
   report.backupDir = backupDir;
@@ -502,5 +613,5 @@ module.exports = {
   consolidate,
   formatReport,
   // Exposed for deterministic unit tests of the pure pieces.
-  _test: { validVec, blobToVec, safeJson, recencyKey, toRecurrence, unionArrays, backupStamp, rowToEntry, readShardDefault, listProjectsDefault },
+  _test: { validVec, blobToVec, safeJson, recencyKey, toRecurrence, unionArrays, backupStamp, rowToEntry, readShardDefault, listProjectsDefault, acquireLock, releaseLock, defaultPidAlive, resolveDeps },
 };
