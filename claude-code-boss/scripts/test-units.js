@@ -8804,23 +8804,25 @@ test('graph-guard: redirect reason teaches the graph→scoped-grep two-step + th
   assert(/deny-once|passes through/.test(reason), 'names the escape hatch');
 });
 
-test('graph-guard: readiness cache TTL round-trip; stale/corrupt → null', () => {
+test('graph-guard: readiness cache TTL round-trip (state+nodes); stale/corrupt → null', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggcache-'));
   const file = path.join(dir, 'graph-ready-x.json');
-  ggCore.writeReadyCache(file, 'ready', 1000);
-  assertEq(ggCore.readReadyCache(file, 5000, 2000).state, 'ready', 'fresh cache read back');
+  ggCore.writeReadyCache(file, 'ready', 1834, 1000);
+  const c = ggCore.readReadyCache(file, 5000, 2000);
+  assertEq(c.state, 'ready', 'fresh cache read back');
+  assertEq(c.nodes, 1834, 'node count round-trips (needed for the 0-node allow)');
   assertEq(ggCore.readReadyCache(file, 5000, 7000), null, 'expired → null');
   fs.writeFileSync(file, '{not json');
   assertEq(ggCore.readReadyCache(file, 5000, 2000), null, 'corrupt → null');
   assertEq(ggCore.readReadyCache(path.join(dir, 'absent.json'), 5000), null, 'absent → null');
 });
 
-test('graph-guard ladder: READY → deny once with reason, identical retry passes', async () => {
+test('graph-guard ladder: READY (with nodes) → deny once with reason, identical retry passes', async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggladder-'));
   const args = {
     kind: 'native-grep', raw: 'Grep resolveProjectId', pattern: 'resolveProjectId',
     projectRoot: 'C:/proj', sid: 'sid-1', dataDir,
-    cfg: { cacheTtlMs: 60000 }, probe: async () => 'ready',
+    cfg: { cacheTtlMs: 60000 }, probe: async () => ({ state: 'ready', nodes: 1834 }),
   };
   const first = await ggCore.decideBroadSearch(args);
   assertEq(first.action, 'deny');
@@ -8831,20 +8833,32 @@ test('graph-guard ladder: READY → deny once with reason, identical retry passe
   assertEq(other.action, 'deny', 'a DIFFERENT broad search is denied once too');
 });
 
-test('graph-guard ladder: not_indexed → allow + ONE advisory per project per session (never blocks/never ingests)', async () => {
+test('graph-guard ladder: not_indexed → DENY-once with the index-now redirect; retry passes (economics: one-time index vs per-query walk)', async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggni-'));
   let probes = 0;
   const args = {
     kind: 'bash', raw: 'rg foo', pattern: 'foo', projectRoot: 'C:/proj', sid: 's', dataDir,
-    cfg: { cacheTtlMs: 60000 }, probe: async () => { probes++; return 'not_indexed'; },
+    cfg: { cacheTtlMs: 60000 }, probe: async () => { probes++; return { state: 'not_indexed', nodes: 0 }; },
   };
   const first = await ggCore.decideBroadSearch(args);
-  assertEq(first.action, 'allow');
-  assert(/graph_analyze/.test(first.advisory || ''), 'first pass advises graph_analyze');
+  assertEq(first.action, 'deny', 'not_indexed now DENIES once (was allow+advisory)');
+  assert(/graph_analyze/.test(first.reason), 'reason pushes graph_analyze');
+  assert(/deny-once|passes through NOW/.test(first.reason), 'reason states the escape hatch');
   const second = await ggCore.decideBroadSearch(args);
-  assertEq(second.action, 'allow');
-  assertEq(second.advisory, undefined, 'advisory fires only once');
+  assertEq(second.action, 'allow', 'identical retry passes — never blocked waiting for the async index');
   assertEq(probes, 1, 'state cached — probe not repeated within TTL');
+});
+
+test('graph-guard ladder: READY but 0 nodes → allow (repo has no graph-supported code; redirect would be a lie)', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggzero-'));
+  let probes = 0;
+  const args = {
+    kind: 'native-grep', raw: 'Grep x', pattern: 'x', projectRoot: 'C:/mdonly', sid: 's', dataDir,
+    cfg: { cacheTtlMs: 60000 }, probe: async () => { probes++; return { state: 'ready', nodes: 0 }; },
+  };
+  assertEq((await ggCore.decideBroadSearch(args)).action, 'allow', 'empty graph → get out of the way');
+  assertEq((await ggCore.decideBroadSearch(args)).action, 'allow', 'still allow (cached)');
+  assertEq(probes, 1, '0-node ready state cached, no re-probe');
 });
 
 test('graph-guard ladder: offline/indexing/probe-throw → plain allow (fail-open), and failure state is CACHED', async () => {
@@ -8854,7 +8868,7 @@ test('graph-guard ladder: offline/indexing/probe-throw → plain allow (fail-ope
     const probe = async () => {
       probes++;
       if (behavior === 'throw') throw new Error('net down');
-      return behavior;
+      return { state: behavior, nodes: 0 };
     };
     const args = {
       kind: 'native-grep', raw: 'Grep x', pattern: 'x', projectRoot: 'C:/p', sid: 's', dataDir,
@@ -8864,6 +8878,15 @@ test('graph-guard ladder: offline/indexing/probe-throw → plain allow (fail-ope
     assertEq((await ggCore.decideBroadSearch(args)).action, 'allow');
     assertEq(probes, 1, `${behavior}: probe result cached, no per-search re-probe`);
   }
+});
+
+test('graph-guard ladder: a bare-string probe result still works (back-compat)', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggbc-'));
+  const args = {
+    kind: 'native-grep', raw: 'Grep y', pattern: 'y', projectRoot: 'C:/bc', sid: 's', dataDir,
+    cfg: { cacheTtlMs: 60000 }, probe: async () => 'not_indexed', // legacy shape → nodes defaults 0
+  };
+  assertEq((await ggCore.decideBroadSearch(args)).action, 'deny', 'string "not_indexed" still denies once');
 });
 
 // ─── Runner ──────────────────────────────────────────────────────────────────

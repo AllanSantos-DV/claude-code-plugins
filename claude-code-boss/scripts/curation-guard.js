@@ -143,10 +143,6 @@ function decision(permissionDecision, { additionalContext, permissionDecisionRea
               process.stdout.write(decision('deny', { additionalContext: res.reason, permissionDecisionReason: res.reason }));
               return;
             }
-            if (res.advisory) {
-              process.stdout.write(decision('allow', { additionalContext: res.advisory }));
-              return;
-            }
           }
         }
       }

@@ -170,10 +170,12 @@ const _gg = (() => {
   const rootLocal = mkRoot({}, 'local');
   const rootFree = mkRoot({ profile: 'free' }, 'mcp-memory');
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-gg-data-'));
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-gg-proj-'));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-gg-proj-'));       // READY graph WITH nodes → deny path
+  const cwdNotIndexed = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-gg-ni-')); // not_indexed → deny-once path
   const core = require('./lib/graph-guard-core.js');
-  core.writeReadyCache(core.cachePath(dataDir, path.resolve(cwd)), 'ready');
-  return { root, rootLocal, rootFree, dataDir, cwd };
+  core.writeReadyCache(core.cachePath(dataDir, path.resolve(cwd)), 'ready', 1834);
+  core.writeReadyCache(core.cachePath(dataDir, path.resolve(cwdNotIndexed)), 'not_indexed', 0);
+  return { root, rootLocal, rootFree, dataDir, cwd, cwdNotIndexed };
 })();
 
 // ─── policy-inject fixtures (deterministic always-apply POLICY injection) ────
@@ -717,6 +719,24 @@ const TESTS = [
     extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _gg.root, CLAUDE_PLUGIN_DATA: _gg.dataDir }),
     validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
       ? null : `scoped Grep must never be intercepted, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
+  },
+  {
+    name: 'graph-guard       [not_indexed + mcp-memory → deny-once, pushes graph_analyze]',
+    script: 'graph-guard.js',
+    payload: {
+      tool_name: 'Grep',
+      tool_input: { pattern: 'someBroadSymbol' },
+      session_id: SESSION,
+      cwd: _gg.cwdNotIndexed,
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _gg.root, CLAUDE_PLUGIN_DATA: _gg.dataDir }),
+    validate: r => {
+      const out = r.parsed?.hookSpecificOutput || {};
+      if (out.permissionDecision !== 'deny') return `not_indexed must DENY once (economics: index once vs per-query walk), got: ${out.permissionDecision}`;
+      if (!/graph_analyze/.test(out.additionalContext || '')) return `deny reason must push graph_analyze, got: ${out.additionalContext}`;
+      return null;
+    },
   },
   {
     name: 'graph-guard       [backend local → allow (no graph to redirect to)]',
