@@ -92,7 +92,18 @@ async function run(event) {
   if (!transcriptPath) return {};
   // Same client-side identity the recall path uses (resolveProject in the
   // brain-server), so the ingested docs and later recall agree on the project.
-  const project = require('./lib/project-id.js').resolveProjectId({ cwd: ev.cwd });
+  // HARD CONTRACT (native-java ADR-018): the STRICT resolver THROWS when there is no
+  // stable scope (no .memory/project.json, no legacy marker, no git remote up to the
+  // session root). BLOCK ingestion here — fail-LOUD (actionable SCOPE_HELP in the
+  // message) rather than stamping folder-path scope-junk on the shared memory — while
+  // the Stop hook stays fail-OPEN (returns {}, never crashes the session).
+  let project;
+  try {
+    project = require('./lib/project-id.js').resolveProjectId({ cwd: ev.cwd || process.env.CLAUDE_PROJECT_DIR });
+  } catch (err) {
+    console.error(`[conversation-ingest] ${err.message}`);
+    return {};
+  }
 
   let raw = '';
   try { raw = fs.readFileSync(transcriptPath, 'utf-8'); }

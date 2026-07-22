@@ -27,7 +27,6 @@
  * stays sane.
  */
 const fs = require('fs');
-const path = require('path');
 const queue = require('./lib/capture-queue.js');
 const { budgetForModel, shouldFire, DEFAULT_BOUNDS } = require('./lib/turn-budget.js');
 const { renderBlock } = require('./lib/transcript-block.js');
@@ -43,15 +42,11 @@ const metrics = require('./lib/metrics.js');
 // `kb.capture.maxBlockAttempts` (brain-config.json + the update-safe user override).
 const DEFAULT_MAX_BLOCK_ATTEMPTS = 5;
 
-let _resolveProjectId = null;
 function _project(event) {
-  try {
-    if (!_resolveProjectId) _resolveProjectId = require('./lib/project-id.js').resolveProjectId;
-    return _resolveProjectId({ cwd: event.cwd });
-  } catch (err) {
-    void err;
-    return event && event.cwd ? path.basename(event.cwd) : 'default';
-  }
+  // Fresh require (module-cache hit, cheap) so a test can swap the resolver export.
+  // STRICT contract: tryResolveProjectId returns null (never a basename) when scope is
+  // unresolved → run() blocks capture rather than staging lessons under scope-junk.
+  return require('./lib/project-id.js').tryResolveProjectId({ cwd: event && event.cwd });
 }
 
 function _safeSize(p) {
@@ -132,6 +127,12 @@ function run(event, deps) {
   const transcriptPath = ev.transcript_path || ev.transcriptPath;
   if (!sid || !transcriptPath || !fs.existsSync(transcriptPath)) return {};
   const project = _project(ev);
+  if (!project) {
+    // Ingestion boundary: no stable scope ⇒ do NOT stage/capture under scope-junk.
+    // Fail-LOUD (actionable) but fail-OPEN for the hook (return {} — never crash Stop).
+    console.error('[capture] ' + require('./lib/project-id.js').SCOPE_HELP);
+    return {};
+  }
   const redactText = s => redact(s).text;
 
   // 1. Scan new cycles into the durable, redacted-at-rest, compaction-safe queue.

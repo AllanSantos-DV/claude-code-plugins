@@ -14,10 +14,16 @@
  * this and pass the result as the metrics `project`, so they always agree on the
  * metrics db — regardless of marker/env/basename. Hashing (rather than passing the
  * raw id) also guarantees a safe `metricsDir` segment: a chosen id like `orgA/api`
- * (which `resolveProjectId` can return verbatim from a marker) never reaches a path.
+ * (which the resolver can return verbatim from a marker) never reaches a path.
+ *
+ * Scope note: this is a LOCAL, per-machine metrics store (not the shared memory
+ * contract), so it uses `resolveLocalScopeId` — the never-throwing resolver that
+ * degrades to basename(cwd)/'default' when there is no stable id — NOT the strict
+ * `resolveProjectId` (which blocks ingestion). A local basename key is acceptable
+ * here; contaminating the shared memory with one is not.
  */
 const crypto = require('crypto');
-const { resolveProjectId } = require('./project-id.js');
+const { resolveLocalScopeId } = require('./project-id.js');
 
 /**
  * Stable, path-safe metrics project key for `cwd`: sha256 of the resolved (stable)
@@ -26,7 +32,7 @@ const { resolveProjectId } = require('./project-id.js');
  * @returns {string} 16-char lowercase hex key
  */
 function metricsProjectKey(cwd) {
-  const pid = resolveProjectId({ cwd });
+  const pid = resolveLocalScopeId({ cwd });
   return crypto.createHash('sha256').update(String(pid)).digest('hex').slice(0, 16);
 }
 

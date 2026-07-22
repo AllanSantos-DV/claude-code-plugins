@@ -26,6 +26,16 @@ const ROOT = path.resolve(SCRIPTS, '..');
 process.env.CLAUDE_PLUGIN_ROOT = ROOT;
 // Isolate runtime artifacts.
 process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-units-'));
+// v2.15.0: the STRICT resolver throws (blocks) when a cwd has no declared/legacy/git
+// scope. Many tests root work at CLAUDE_PLUGIN_DATA (a bare temp dir) and exercise
+// queue/offer/metrics behavior — NOT scope resolution — so seed a real declared
+// .memory/project.json here. The resolver's declared rung reads the REAL fs, so both
+// the tests and capture-dispatch's _project() converge on the same clean id.
+fs.mkdirSync(path.join(process.env.CLAUDE_PLUGIN_DATA, '.memory'), { recursive: true });
+fs.writeFileSync(
+  path.join(process.env.CLAUDE_PLUGIN_DATA, '.memory', 'project.json'),
+  JSON.stringify({ metadata: { defaults: { project_id: 'ccb-tests/units' } } }),
+);
 
 // Isolate os.homedir()-derived state (the GLOBAL dir: active-data-dir pointer +
 // brain user-config) into a throwaway home for the WHOLE run. data-dir.js now
@@ -2402,7 +2412,7 @@ test('conversation-ingest.run: mcp-memory but ingestion OFF → no-op', async ()
   assertEq(Object.keys(r || {}).length, 0);
 });
 
-// ─── project-id: client-side identity resolver (env → marker → basename) ─────
+// ─── project-id: client-side identity resolver (STRICT: declared → legacy → git-remote → throw) ─
 const projectId = require('./lib/project-id.js');
 
 // Fake fs where `present` is a set of absolute marker paths → contents.
@@ -2428,7 +2438,7 @@ test('project-id: env CCB_PROJECT_ID wins over everything', () => {
   const cwd = path.join('C:', 'Users', 'x', 'Hpositiva');
   const fs = fakeFs({ [path.join(cwd, '.claude-boss-project')]: 'marker-name' });
   assertEq(
-    projectId.resolveProjectId({ cwd, env: { CCB_PROJECT_ID: ' forced ' }, fs }),
+    projectId.resolveProjectId({ cwd, env: { CCB_PROJECT_ID: ' forced ' }, fs, git: () => null }),
     'forced',
   );
 });
@@ -2436,24 +2446,134 @@ test('project-id: env CCB_PROJECT_ID wins over everything', () => {
 test('project-id: .claude-boss-project marker beats the folder name (the positiva case)', () => {
   const cwd = path.join('C:', 'Users', 'x', 'Hpositiva');
   const fs = fakeFs({ [path.join(cwd, '.claude-boss-project')]: 'positiva\n' });
-  assertEq(projectId.resolveProjectId({ cwd, env: {}, fs }), 'positiva');
+  assertEq(projectId.resolveProjectId({ cwd, env: {}, fs, git: () => null }), 'positiva');
 });
 
 test('project-id: marker found by walking up from a subdir', () => {
   const root = path.join('C:', 'proj');
   const sub = path.join(root, 'packages', 'api', 'src');
   const fs = fakeFs({ [path.join(root, '.claude-boss-project')]: 'monorepo-id' });
-  assertEq(projectId.resolveProjectId({ cwd: sub, env: {}, fs }), 'monorepo-id');
+  assertEq(projectId.resolveProjectId({ cwd: sub, env: {}, fs, git: () => null }), 'monorepo-id');
 });
 
-test('project-id: no override → basename(cwd) (unchanged legacy default)', () => {
+test('project-id: no marker/declared/git → THROWS (strict contract; the old basename fallback is gone)', () => {
   const cwd = path.join('C:', 'Users', 'x', 'my-repo');
   const fs = fakeFs({});
-  assertEq(projectId.resolveProjectId({ cwd, env: {}, fs }), 'my-repo');
+  let threw = false;
+  try { projectId.resolveProjectId({ cwd, env: {}, fs, git: () => null }); }
+  catch (e) { threw = /project_id/i.test(e.message); }
+  assert(threw, 'scope-less resolve throws fail-loud (no basename fallback)');
+  assertEq(projectId.tryResolveProjectId({ cwd, env: {}, fs, git: () => null }), null, 'tryResolve → null');
+  assertEq(projectId.projectIdStrength({ cwd, env: {}, fs, git: () => null }), 'none', 'strength none');
 });
 
-test('project-id: no cwd and no env → default', () => {
-  assertEq(projectId.resolveProjectId({ cwd: '', env: {}, fs: fakeFs({}) }), 'default');
+test('project-id: no cwd and no env → THROWS (strict: no default fallback)', () => {
+  let threw = false;
+  try { projectId.resolveProjectId({ cwd: '', env: {}, fs: fakeFs({}) }); }
+  catch (e) { threw = /project_id|empty workspace/i.test(e.message); }
+  assert(threw, 'empty scope throws fail-loud');
+  assertEq(projectId.tryResolveProjectId({ cwd: '', env: {}, fs: fakeFs({}) }), null, 'tryResolve → null');
+});
+
+// A real throwaway dir (the declared rung reads the REAL fs, so these can't use fakeFs).
+function pidTmpDir(pfx) { return fs.mkdtempSync(path.join(os.tmpdir(), pfx || 'ccb-pid-')); }
+
+test('project-id parity: 9 golden vectors (declared preserved + git-remote normalized)', () => {
+  const pc = require('./lib/project-config.js');
+  const GOLDEN = JSON.parse(fs.readFileSync(path.join(SCRIPTS, '__fixtures__', 'projectid-golden-vectors.json'), 'utf-8'));
+  assertEq(GOLDEN.declared_preserved.length + GOLDEN.remote_normalized.length, 9, 'fixture has all 9 vectors');
+  for (const v of GOLDEN.declared_preserved) {
+    // declared ids are trimmed but case-PRESERVED (mirrors the server's declared path).
+    assertEq(pc.declaredProjectId({ metadata: { defaults: { project_id: v.input } } }), v.expected, 'declared ' + JSON.stringify(v.input));
+  }
+  for (const v of GOLDEN.remote_normalized) {
+    // git remotes normalize to lowercase host/owner/repo (mirrors ProjectIdResolver.java).
+    assertEq(projectId.normalizeGitRemote(v.input), v.expected, 'remote ' + v.input);
+  }
+});
+
+test('project-id strict ladder: declared > legacy > git-remote > throw (+ strength + tryResolve)', () => {
+  const d = pidTmpDir();
+  try {
+    const noGit = () => null;
+    const gitRemote = (args) => (args.join(' ') === 'remote get-url origin' ? 'git@github.com:Acme/Widgets.git' : null);
+    // none → throw / null / 'none'
+    let threw = false;
+    try { projectId.resolveProjectId({ cwd: d, env: {}, git: noGit }); } catch (e) { threw = /project_id/i.test(e.message); }
+    assert(threw, 'scope-less → throws fail-loud');
+    assertEq(projectId.tryResolveProjectId({ cwd: d, env: {}, git: noGit }), null, 'tryResolve → null');
+    assertEq(projectId.projectIdStrength({ cwd: d, env: {}, git: noGit }), 'none', 'strength none');
+    // git-remote rung
+    assertEq(projectId.resolveProjectId({ cwd: d, env: {}, git: gitRemote }), 'github.com/acme/widgets', 'git-remote rung resolves normalized id');
+    assertEq(projectId.projectIdStrength({ cwd: d, env: {}, git: gitRemote }), 'git-remote', 'strength git-remote');
+    // legacy marker beats git-remote (explicit prior user choice)
+    fs.writeFileSync(path.join(d, '.claude-boss-project'), 'legacy-id\n');
+    assertEq(projectId.resolveProjectId({ cwd: d, env: {}, git: gitRemote }), 'legacy-id', 'legacy beats git-remote');
+    assertEq(projectId.projectIdStrength({ cwd: d, env: {}, git: gitRemote }), 'legacy', 'strength legacy');
+    // declared .memory/project.json beats legacy
+    fs.mkdirSync(path.join(d, '.memory'), { recursive: true });
+    fs.writeFileSync(path.join(d, '.memory', 'project.json'), JSON.stringify({ metadata: { defaults: { project_id: 'owner/canonical' } } }));
+    assertEq(projectId.resolveProjectId({ cwd: d, env: {}, git: gitRemote }), 'owner/canonical', 'declared beats legacy');
+    assertEq(projectId.projectIdStrength({ cwd: d, env: {}, git: gitRemote }), 'declared', 'strength declared');
+    // env beats everything
+    assertEq(projectId.resolveProjectId({ cwd: d, env: { CCB_PROJECT_ID: ' forced ' }, git: gitRemote }), 'forced', 'env beats declared');
+    assertEq(projectId.projectIdStrength({ cwd: d, env: { CCB_PROJECT_ID: 'forced' }, git: gitRemote }), 'env', 'strength env');
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+});
+
+test('project-id findProjectRoot: CLAUDE_PROJECT_DIR is the walk-up ceiling (boss session-root)', () => {
+  const root = pidTmpDir('ccb-sess-');
+  try {
+    fs.mkdirSync(path.join(root, '.memory'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.memory', 'project.json'), JSON.stringify({ metadata: { defaults: { project_id: 'sess/root' } } }));
+    const sub = path.join(root, 'packages', 'api', 'src');
+    fs.mkdirSync(sub, { recursive: true });
+    const noGit = () => null;
+    // With the session-root ceiling set, the marker at the root is found from a deep subdir.
+    const found = projectId.findProjectRoot({ cwd: sub, env: { CLAUDE_PROJECT_DIR: root }, git: noGit });
+    assert(found && path.resolve(found) === path.resolve(root), 'ceiling walk-up finds the session root');
+    assertEq(projectId.resolveProjectId({ cwd: sub, env: { CLAUDE_PROJECT_DIR: root }, git: noGit }), 'sess/root', 'resolves declared id via ceiling');
+    // Without the ceiling and with no git anchor, it does NOT climb the filesystem.
+    assertEq(projectId.findProjectRoot({ cwd: sub, env: {}, git: noGit }), null, 'no ceiling + no git → no fs climb');
+    assertEq(projectId.tryResolveProjectId({ cwd: sub, env: {}, git: noGit }), null, 'no ceiling → unresolved');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('project-id legacy marker: READ-ONLY back-compat + migration nudge (never auto-writes .memory)', () => {
+  const d = pidTmpDir('ccb-legacy-');
+  try {
+    const noGit = () => null;
+    const gitRemote = (args) => (args.join(' ') === 'remote get-url origin' ? 'git@github.com:Acme/Widgets.git' : null);
+    fs.writeFileSync(path.join(d, '.claude-boss-project'), 'legacy/app\n');
+    // still read as an id (backward compatibility)
+    assertEq(projectId.readMarker(d), 'legacy/app', 'readMarker reads the legacy id');
+    assertEq(projectId.resolveProjectId({ cwd: d, env: {}, git: noGit }), 'legacy/app', 'legacy marker resolves as the id');
+    const present = projectId.legacyMarkerPresent(d);
+    assert(present && present.id === 'legacy/app' && present.path === path.join(d, '.claude-boss-project'), 'legacyMarkerPresent exposes {id,path}');
+    // migration nudge exposed while there is no declared .memory yet
+    const hint = projectId.migrationHint({ cwd: d, env: {}, git: gitRemote });
+    assert(hint && hint.legacyId === 'legacy/app', 'migrationHint present with the legacy id');
+    assertEq(hint.marker, projectId.MARKER_FILE, 'hint names the legacy marker file');
+    assertEq(hint.fallbackStrength, 'git-remote', 'fallbackStrength = git-remote (one rung below the declaration)');
+    assert(/[\\/]\.memory[\\/]project\.json$/.test(hint.suggestedDeclaredPath), 'hint suggests the .memory/project.json path');
+    // CRITICAL (owner decision "c"): the resolver NEVER auto-creates .memory/project.json.
+    assert(!fs.existsSync(path.join(d, '.memory', 'project.json')), '.memory/project.json NOT auto-created from the legacy marker');
+    // once a declaration exists, migration is done → no more nudge
+    fs.mkdirSync(path.join(d, '.memory'), { recursive: true });
+    fs.writeFileSync(path.join(d, '.memory', 'project.json'), JSON.stringify({ metadata: { defaults: { project_id: 'owner/declared' } } }));
+    assertEq(projectId.migrationHint({ cwd: d, env: {}, git: noGit }), null, 'no nudge once declared');
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+});
+
+test('project-id assertSafeProjectId: rejects path-shaped ids; accepts owner/repo + host/owner/repo', () => {
+  for (const bad of ['C:\\Users\\x', 'C:/Users/x', '\\\\srv\\share', '/etc/passwd', 'a\\b', '']) {
+    let threw = false;
+    try { projectId.assertSafeProjectId(bad); } catch (e) { void e; threw = true; }
+    assert(threw, 'rejects ' + JSON.stringify(bad));
+  }
+  assertEq(projectId.assertSafeProjectId('owner/repo'), 'owner/repo', 'accepts owner/repo');
+  assertEq(projectId.assertSafeProjectId('github.com/acme/widgets'), 'github.com/acme/widgets', 'accepts host/owner/repo');
+  assertEq(projectId.assertSafeProjectId('  spaced/id  '), 'spaced/id', 'trims to the clean id');
 });
 
 // ─── project-identity-advisory: fragile-basename nudge (SessionStart) ─────────
@@ -6293,6 +6413,15 @@ test('redact: masks common secrets and PII, preserves auth scheme, spares prose'
 });
 
 // ─── capture-dispatch (Stop detector: offer clean block to agent — Phase 1 task 4) ─
+// v2.15.0 STRICT resolver: the tests below root work at CLAUDE_PLUGIN_DATA (an earlier
+// test reassigned it to a bare temp dir) and exercise queue/offer behavior — NOT scope
+// resolution. Seed a declared .memory/project.json there so BOTH the tests'
+// resolveProjectId({cwd}) and capture-dispatch's _project() converge on one clean id.
+{
+  const _capDir = process.env.CLAUDE_PLUGIN_DATA;
+  fs.mkdirSync(path.join(_capDir, '.memory'), { recursive: true });
+  fs.writeFileSync(path.join(_capDir, '.memory', 'project.json'), JSON.stringify({ metadata: { defaults: { project_id: 'ccb-tests/capture' } } }));
+}
 test('capture-dispatch: buildInstruction names capture_lesson, types, tags, windowId, delimits untrusted block', () => {
   const cd = require('./capture-dispatch.js');
   const r = cd.buildInstruction('SOME BLOCK TEXT', 'win-123');
@@ -6303,6 +6432,36 @@ test('capture-dispatch: buildInstruction names capture_lesson, types, tags, wind
   assert(/tags/i.test(r), 'mentions tags');
   assert(r.includes('SOME BLOCK TEXT'), 'includes the block');
   assert(/UNTRUSTED|do not follow/i.test(r), 'delimits block as untrusted');
+});
+
+test('capture-dispatch: BLOCKS ingestion when scope is UNRESOLVED (no stage, returns {}, fail-loud)', () => {
+  const cd = require('./capture-dispatch.js');
+  const queue = require('./lib/capture-queue.js');
+  const pid = require('./lib/project-id.js');
+  const sid = 'cap-blocked-' + Date.now();
+  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `capblk-${sid}.jsonl`);
+  fs.writeFileSync(tp, JSON.stringify({ type: 'user', message: { role: 'user', content: 'q' } }) + '\n');
+  // Force the strict resolver to report "unresolved" (capture-dispatch does a fresh
+  // require, so mutating the cached export is seen) and spy the write seam.
+  const origTry = pid.tryResolveProjectId;
+  const origIngest = queue.ingest;
+  const origErr = console.error;
+  const errs = [];
+  let ingestCalled = false;
+  pid.tryResolveProjectId = () => null;             // no stable scope
+  queue.ingest = () => { ingestCalled = true; };    // must NOT be called
+  console.error = (...a) => { errs.push(a.join(' ')); };
+  try {
+    const res = cd.run({ session_id: sid, cwd: process.env.CLAUDE_PLUGIN_DATA, transcript_path: tp });
+    assertEq(Object.keys(res || {}).length, 0, 'blocked write → returns {} (no offer, no crash)');
+    assert(!ingestCalled, 'queue.ingest NOT called when scope is unresolved (nothing persisted)');
+    assert(errs.some(m => /project\.json/i.test(m)), 'fail-loud: the actionable SCOPE_HELP is surfaced via console.error');
+  } finally {
+    pid.tryResolveProjectId = origTry;
+    queue.ingest = origIngest;
+    console.error = origErr;
+    fs.rmSync(tp, { force: true });
+  }
 });
 
 test('capture-dispatch: run offers from the queue, then acks when capture_lesson appears', () => {
