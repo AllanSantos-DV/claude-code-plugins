@@ -209,6 +209,14 @@ function getGraphGuard() {
     // (spawned per tool call) never pays a network round-trip on every search.
     cacheTtlMs: Number.isInteger(gg.cacheTtlMs) && gg.cacheTtlMs > 0 ? gg.cacheTtlMs : 5 * 60 * 1000,
     probeTimeoutMs: Number.isInteger(gg.probeTimeoutMs) && gg.probeTimeoutMs > 0 ? gg.probeTimeoutMs : 1200,
+    // Proactive warm: at SessionStart, fire an (incremental) graph ingest so the
+    // graph is ready-and-fresh before the first search — the server does the
+    // delta (SHA-256 per-file manifest → no-op ~5s if nothing changed, rebuild
+    // if it did), so the client just triggers it. Cooldown avoids re-hashing the
+    // repo on every session open. warm follows enabled (dev/standard on, free
+    // off) but can be turned off independently.
+    warm: gg.warm !== false,
+    warmCooldownMs: Number.isInteger(gg.warmCooldownMs) && gg.warmCooldownMs > 0 ? gg.warmCooldownMs : 4 * 60 * 60 * 1000,
   };
 }
 
