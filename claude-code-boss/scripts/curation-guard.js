@@ -110,6 +110,50 @@ function decision(permissionDecision, { additionalContext, permissionDecisionRea
       return;
     }
 
+    // 2.5 Graph-guard (Bash surface): a BROAD recursive search (grep -r/rg/find
+    // at the repo root) on the mcp-memory backend with a READY Session Graph is
+    // denied ONCE with the graph_search→scoped-grep two-step; the identical
+    // retry passes. Lives here (not a separate hook) so every Bash call keeps
+    // paying exactly ONE guard spawn. Fully fail-open: any error falls through
+    // to the normal cascade below.
+    try {
+      const ggCfg = require('./lib/hooks-config.js').getGraphGuard();
+      if (ggCfg.enabled) {
+        const core = require('./lib/graph-guard-core.js');
+        const broad = core.matchBroadBashSearch(command);
+        if (broad) {
+          const brainCfg = require('./lib/brain-config.js').load();
+          if (((brainCfg.backend && brainCfg.backend.type) || 'local') === 'mcp-memory') {
+            const cwd = event.cwd || process.cwd();
+            const sid = event.session_id || 'default';
+            const res = await core.decideBroadSearch({
+              kind: 'bash',
+              raw: command,
+              pattern: broad.pattern,
+              projectRoot: require('path').resolve(cwd),
+              sid,
+              dataDir: require('./lib/data-dir.js').dataDir(),
+              cfg: ggCfg,
+              probe: core.makeGraphStateProbe({ cwd, timeoutMs: ggCfg.probeTimeoutMs }),
+            });
+            if (res.action === 'deny') {
+              try {
+                require('./lib/metrics.js').fire('graph-guard.fired', { kind: 'bash', tool: broad.tool }, { sessionId: sid, cwd });
+              } catch (e) { void e; /* metrics are best-effort */ }
+              process.stdout.write(decision('deny', { additionalContext: res.reason, permissionDecisionReason: res.reason }));
+              return;
+            }
+            if (res.advisory) {
+              process.stdout.write(decision('allow', { additionalContext: res.advisory }));
+              return;
+            }
+          }
+        }
+      }
+    } catch (err) {
+      hookLog('error', 'curation-guard', `graph-guard branch failed (fail-open): ${err.message}`);
+    }
+
     // 3. Paranoid mode.
     if (_guardCfg.denyUnknown) {
       const cfg = loadCurationConfig();

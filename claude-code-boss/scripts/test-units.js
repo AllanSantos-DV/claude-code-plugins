@@ -8766,6 +8766,106 @@ test('brain-backend mcp: saveMcp pins documentId = entry.id so re-pushes UPSERT 
   }
 });
 
+// ─── lib/graph-guard-core.js — broad-search redirect to the Session Graph ────
+const ggCore = require('./lib/graph-guard-core.js');
+
+test('graph-guard: native Grep broad ⇔ no path/glob/type; any scoping field → not broad', () => {
+  assert(ggCore.isBroadNativeSearch('Grep', { pattern: 'resolveProjectId' }), 'bare pattern = broad');
+  assert(!ggCore.isBroadNativeSearch('Grep', { pattern: 'x', path: 'scripts/lib' }), 'path scopes');
+  assert(!ggCore.isBroadNativeSearch('Grep', { pattern: 'x', glob: '**/*.js' }), 'glob scopes');
+  assert(!ggCore.isBroadNativeSearch('Grep', { pattern: 'x', type: 'js' }), 'type scopes');
+  assert(!ggCore.isBroadNativeSearch('Grep', {}), 'no pattern = nothing to guard');
+});
+
+test('graph-guard: native Glob broad only for rootless ** patterns', () => {
+  assert(ggCore.isBroadNativeSearch('Glob', { pattern: '**/*.ts' }), 'rootless ** = broad');
+  assert(!ggCore.isBroadNativeSearch('Glob', { pattern: '**/*.ts', path: 'src' }), 'path scopes');
+  assert(!ggCore.isBroadNativeSearch('Glob', { pattern: 'src/**/*.ts' }), 'anchored pattern = scoped');
+  assert(!ggCore.isBroadNativeSearch('Read', { pattern: '**/*' }), 'other tools never match');
+});
+
+test('graph-guard: bash heuristics flag only the machine-hurting shapes', () => {
+  assert(ggCore.matchBroadBashSearch('grep -rn "resolveProjectId" .'), 'grep -r at . = broad');
+  assertEq(ggCore.matchBroadBashSearch('grep -rn "resolveProjectId" .').pattern, 'resolveProjectId');
+  assert(ggCore.matchBroadBashSearch('rg resolveProjectId'), 'bare rg = broad (recursive by default)');
+  assert(ggCore.matchBroadBashSearch('find . -name "*.js"'), 'find at . = broad');
+  assertEq(ggCore.matchBroadBashSearch('grep -rn "x" scripts/lib'), null, 'scoped grep -r passes');
+  assertEq(ggCore.matchBroadBashSearch('grep -n "x" file.js'), null, 'non-recursive grep passes');
+  assertEq(ggCore.matchBroadBashSearch('rg x scripts/lib/foo.js'), null, 'scoped rg passes');
+  assertEq(ggCore.matchBroadBashSearch('find scripts -name "*.js"'), null, 'find in a subdir passes');
+  assertEq(ggCore.matchBroadBashSearch('git log --oneline | grep fix'), null, 'pipe-fed grep never walks the fs');
+  assertEq(ggCore.matchBroadBashSearch('npm test'), null, 'non-search commands pass');
+});
+
+test('graph-guard: redirect reason teaches the graph→scoped-grep two-step + the escape hatch', () => {
+  const reason = ggCore.buildRedirectReason({ kind: 'native-grep', pattern: 'resolveProjectId', tokens: ggCore.extractQueryTokens('resolveProjectId') });
+  assert(/graph_search/.test(reason), 'names graph_search');
+  assert(/SCOPED/i.test(reason), 'instructs the scoped re-run');
+  assert(/deny-once|passes through/.test(reason), 'names the escape hatch');
+});
+
+test('graph-guard: readiness cache TTL round-trip; stale/corrupt → null', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggcache-'));
+  const file = path.join(dir, 'graph-ready-x.json');
+  ggCore.writeReadyCache(file, 'ready', 1000);
+  assertEq(ggCore.readReadyCache(file, 5000, 2000).state, 'ready', 'fresh cache read back');
+  assertEq(ggCore.readReadyCache(file, 5000, 7000), null, 'expired → null');
+  fs.writeFileSync(file, '{not json');
+  assertEq(ggCore.readReadyCache(file, 5000, 2000), null, 'corrupt → null');
+  assertEq(ggCore.readReadyCache(path.join(dir, 'absent.json'), 5000), null, 'absent → null');
+});
+
+test('graph-guard ladder: READY → deny once with reason, identical retry passes', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggladder-'));
+  const args = {
+    kind: 'native-grep', raw: 'Grep resolveProjectId', pattern: 'resolveProjectId',
+    projectRoot: 'C:/proj', sid: 'sid-1', dataDir,
+    cfg: { cacheTtlMs: 60000 }, probe: async () => 'ready',
+  };
+  const first = await ggCore.decideBroadSearch(args);
+  assertEq(first.action, 'deny');
+  assert(/graph_search/.test(first.reason), 'deny carries the redirect');
+  const second = await ggCore.decideBroadSearch(args);
+  assertEq(second.action, 'allow', 'identical retry passes (deny-once)');
+  const other = await ggCore.decideBroadSearch({ ...args, raw: 'Grep otherThing', pattern: 'otherThing' });
+  assertEq(other.action, 'deny', 'a DIFFERENT broad search is denied once too');
+});
+
+test('graph-guard ladder: not_indexed → allow + ONE advisory per project per session (never blocks/never ingests)', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggni-'));
+  let probes = 0;
+  const args = {
+    kind: 'bash', raw: 'rg foo', pattern: 'foo', projectRoot: 'C:/proj', sid: 's', dataDir,
+    cfg: { cacheTtlMs: 60000 }, probe: async () => { probes++; return 'not_indexed'; },
+  };
+  const first = await ggCore.decideBroadSearch(args);
+  assertEq(first.action, 'allow');
+  assert(/graph_analyze/.test(first.advisory || ''), 'first pass advises graph_analyze');
+  const second = await ggCore.decideBroadSearch(args);
+  assertEq(second.action, 'allow');
+  assertEq(second.advisory, undefined, 'advisory fires only once');
+  assertEq(probes, 1, 'state cached — probe not repeated within TTL');
+});
+
+test('graph-guard ladder: offline/indexing/probe-throw → plain allow (fail-open), and failure state is CACHED', async () => {
+  for (const behavior of ['offline', 'indexing', 'throw']) {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), `ccb-ggfo-${behavior}-`));
+    let probes = 0;
+    const probe = async () => {
+      probes++;
+      if (behavior === 'throw') throw new Error('net down');
+      return behavior;
+    };
+    const args = {
+      kind: 'native-grep', raw: 'Grep x', pattern: 'x', projectRoot: 'C:/p', sid: 's', dataDir,
+      cfg: { cacheTtlMs: 60000 }, probe,
+    };
+    assertEq((await ggCore.decideBroadSearch(args)).action, 'allow', `${behavior} → allow`);
+    assertEq((await ggCore.decideBroadSearch(args)).action, 'allow');
+    assertEq(probes, 1, `${behavior}: probe result cached, no per-search re-probe`);
+  }
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
