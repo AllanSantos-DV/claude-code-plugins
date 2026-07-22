@@ -249,6 +249,7 @@
             "input": {
               "prompt": "${prompt}",
               "cwd": "${cwd}",
+              "sessionRoot": "${CLAUDE_PROJECT_DIR}",
               "session_id": "${session_id}"
             },
             "timeout": 10

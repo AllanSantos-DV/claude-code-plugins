@@ -36,6 +36,7 @@ const { loadProjectConfig, declaredProjectId, projectConfigPath } = require('./p
 
 const MARKER_FILE = '.claude-boss-project'; // legacy boss marker (deprecated; read-only)
 const MAX_WALK_UP = 8; // cap parent traversal so a stray cwd can't scan the whole disk
+const MAX_CHAIN_WALK = 10; // F2 ancestor-spine: hard cap when there is no session-root/git ceiling
 const MAX_LEN = 120;
 
 // Single ACTIONABLE message, reused by the resolver throw + assertSafeProjectId + the
@@ -378,6 +379,88 @@ function resolveLocalScopeId({ cwd, env = process.env, fs = fsDefault, git = def
 }
 
 /**
+ * F2 — HIERARCHICAL "ancestor-spine" ceiling: the deepest dir the chain walk may
+ * climb to (INCLUSIVE), never above it. Precedence mirrors findProjectRoot:
+ *   1. `sessionRoot` (the hook's CLAUDE_PROJECT_DIR) when `start` is at/within it.
+ *   2. git toplevel (the per-worktree root).
+ *   3. git repo base (the shared common-dir parent).
+ *   4. null → no explicit ceiling; MAX_CHAIN_WALK caps the walk (never unbounded).
+ * Best-effort: every probe is guarded (never throws).
+ */
+function _chainCeiling({ start, sessionRoot, git }) {
+  const sr = _trim(sessionRoot);
+  if (sr) {
+    const abs = safeResolve(sr);
+    if (abs && (pathsEqual(start, abs) || isWithin(start, abs))) return abs;
+  }
+  const top = safeResolve(git(['rev-parse', '--show-toplevel'], start));
+  if (top) return top;
+  const base = gitRepoBase(start, git);
+  if (base) return safeResolve(base);
+  return null;
+}
+
+/**
+ * F2 — the ANCESTOR-SPINE chain of project_ids for HIERARCHICAL recall (mcp-memory
+ * ONLY). Walk from `cwd` UP to the ceiling collecting, per folder level, the DECLARED
+ * id of any nested `.memory/project.json`, plus the repo's normalized git-remote ONCE
+ * as the base scope shared by every level. The UNION lets recall federate the whole
+ * nesting spine; the CALLER weights `focusId` (the CWD's own id, where the agent
+ * navigated now) highest.
+ *
+ * @param {object} opts { cwd, sessionRoot?, env=process.env, fs=fs, git=defaultGit }
+ * @returns {{ focusId: string|null, chain: string[] }}
+ *   focusId — the CWD's strict id (the declared marker nearest the cwd, else the
+ *     git-remote); null for a fragile/orphan subfolder (no identifier) → the caller
+ *     recalls HOME-only ("no identifier → matches nothing but home").
+ *   chain — DEDUPED ids ordered DEEPEST→shallowest, focusId first when present; [] when
+ *     focusId is null.
+ *
+ * Ceiling (see _chainCeiling): sessionRoot → git toplevel/base → MAX_CHAIN_WALK cap.
+ * Never climbs above the ceiling; never scans the raw filesystem unbounded. Best-effort:
+ * every git/fs probe is guarded so it NEVER throws (safe on the per-turn recall path).
+ */
+function resolveProjectChain({ cwd, sessionRoot, env = process.env, fs = fsDefault, git = defaultGit } = {}) {
+  const start = _trim(cwd);
+  if (!start) return { focusId: null, chain: [] };
+
+  // The CWD's own scope. null → fragile/orphan subfolder → recall is home-only.
+  const focusId = tryResolveProjectId({ cwd: start, env, fs, git });
+  if (!focusId) return { focusId: null, chain: [] };
+
+  const ids = [];
+  const pushDistinct = (raw) => {
+    const s = raw == null ? '' : String(raw).trim();
+    if (s && !ids.includes(s)) ids.push(s);
+  };
+  pushDistinct(focusId); // deepest first — the CWD's own id leads the spine.
+
+  // Per-level DECLARED markers from `start` UP to the ceiling (inclusive), deepest→shallow.
+  const ceiling = _chainCeiling({ start, sessionRoot, git });
+  let d = start;
+  for (let i = 0; i < MAX_CHAIN_WALK; i++) {
+    if (hasMarker(d, fs)) {
+      const declared = declaredProjectId(loadProjectConfig(d));
+      if (declared) {
+        try { pushDistinct(assertSafeProjectId(declared)); }
+        catch (err) { void err; /* a path-like declared id is scope-junk → skip this level */ }
+      }
+    }
+    if (ceiling && pathsEqual(d, ceiling)) break; // reached the ceiling (inclusive) — stop
+    const parent = path.dirname(d);
+    if (parent === d) break;                       // filesystem root
+    d = parent;
+  }
+
+  // The git-remote is shared by EVERY level of one repo → include it ONCE as the base
+  // scope (deduped; appended last so it sits shallowest in the spine).
+  try { pushDistinct(normalizeGitRemote(gitRemoteOriginUrl(start, git))); }
+  catch (err) { void err; /* no remote / not a repo → the spine is marker-only */ }
+
+  return { focusId, chain: ids };
+}
+
+/**
  * Sanitize a CALLER-SUPPLIED project id into a single safe path segment. Unlike the
  * resolver, an explicit `project` arg can carry `..`/separators straight into
  * `path.join(brainDir, <id>)`; this REJECTS (returns '') ids with a path separator,
@@ -402,4 +485,6 @@ module.exports = {
   resolveLocalScopeId,
   normalizeGitRemote, findProjectRoot, gitRepoBase, assertSafeProjectId, SCOPE_HELP,
   legacyMarkerPresent, migrationHint,
+  // ── Hierarchical ancestor-spine (F2) ──
+  resolveProjectChain,
 };
