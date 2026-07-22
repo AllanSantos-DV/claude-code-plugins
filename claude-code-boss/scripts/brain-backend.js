@@ -204,11 +204,17 @@ function normalizeEntry(data) {
 async function searchMcp(query, opts = {}) {
   const topK = opts.topK || 5;
   const minScore = opts.minScore || 0;
+  // Build ONE metadata object so `type` (a scalar equality filter) and `project_id`
+  // (F2: a LIST → server-side IN(...) UNION, the ancestor-spine) coexist in a single
+  // payload. A scalar/absent project_id keeps the prior behavior untouched.
+  const metadata = {};
+  if (opts.type) metadata.type = opts.type;
+  if (Array.isArray(opts.projectIds) && opts.projectIds.length) metadata.project_id = opts.projectIds;
   const result = await _mcp.callTool('search_memory', {
     query: typeof query === 'string' ? query : '',
     topK,
     ...(minScore > 0 ? { minScore } : {}),
-    ...(opts.type ? { metadata: { type: opts.type } } : {}),
+    ...(Object.keys(metadata).length ? { metadata } : {}),
     ...(opts.includeHome ? { includeHome: true } : {}),
   });
   return parseSearchResults(result).slice(0, topK).map(item => normalizeSearchItem(item));

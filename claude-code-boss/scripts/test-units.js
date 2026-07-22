@@ -826,6 +826,40 @@ test('brain-backend mcp: init() re-handshakes on project change (BLOCKING-B leak
   }
 });
 
+test('brain-backend searchMcp (F2): opts.projectIds → metadata.project_id LIST; coexists with type; omitted otherwise', async () => {
+  const daemon = await startFakeDaemon({ toolResult: () => ({ content: [{ type: 'text', text: JSON.stringify({ results: [] }) }] }) });
+  delete require.cache[require.resolve('./brain-backend.js')];
+  const backend = require('./brain-backend.js');
+  backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
+  try {
+    await backend.init({ project: 'projA' });
+    // (1) projectIds + type coexist in ONE metadata object → server-side IN(...) UNION + equality.
+    await backend.search('q', { projectIds: ['sub/B', 'root/A'], type: 'knowledge', topK: 5 });
+    let p = daemon.seen.callArgs;
+    assertEq(p.name, 'search_memory', 'routes to search_memory');
+    assertEq(p.arguments.metadata.project_id, ['sub/B', 'root/A'], 'projectIds → metadata.project_id LIST');
+    assertEq(p.arguments.metadata.type, 'knowledge', 'type coexists in the same metadata object');
+    // (2) includeHome federates the home pool alongside the union.
+    await backend.search('q', { projectIds: ['x/y'], includeHome: true });
+    p = daemon.seen.callArgs;
+    assertEq(p.arguments.includeHome, true, 'includeHome preserved');
+    assertEq(p.arguments.metadata.project_id, ['x/y'], 'projectIds LIST preserved with includeHome');
+    // (3) no projectIds → NO metadata.project_id (scalar/prior behavior untouched).
+    await backend.search('q', { topK: 3 });
+    p = daemon.seen.callArgs;
+    assert(!p.arguments.metadata || p.arguments.metadata.project_id === undefined, 'no projectIds → no metadata.project_id');
+    // (4) empty projectIds array is treated as absent (no IN() over nothing).
+    await backend.search('q', { projectIds: [], type: 'lesson' });
+    p = daemon.seen.callArgs;
+    assert(!p.arguments.metadata || p.arguments.metadata.project_id === undefined, 'empty projectIds → omitted');
+    assertEq(p.arguments.metadata.type, 'lesson', 'type still carried when projectIds empty');
+    await backend.close();
+  } finally {
+    delete require.cache[require.resolve('./brain-backend.js')];
+    await daemon.close();
+  }
+});
+
 test('brain-backend compose: parseComposeEnvelope splits facts(text)/capabilities(pointers), excludes invalidated, derives title (DH4)', () => {
   const { parseComposeEnvelope } = require('./brain-backend.js').__testHooks;
   const envelope = { text: JSON.stringify({
@@ -2262,6 +2296,106 @@ test('retrieve-core: short prompt pre-filters (no embedder)', async () => {
   assertEq(r.entries.length, 0);
 });
 
+test('retrieve-core mergeFactsSpine (F2): compose FIRST, ancestors by score, dedup keeps compose', () => {
+  const { mergeFactsSpine } = retrieveCore.__testHooks;
+  const compose = [
+    { id: 'd1', title: 'C1', scope: 'projB', score: 0.9 },
+    { id: 'd2', title: 'C2', scope: 'projB', score: 0.5 },
+  ];
+  const ancestors = [
+    { id: 'd3', title: 'A-lo', scope: 'ancestor', score: 0.2 },
+    { id: 'd1', title: 'A-dup', scope: 'ancestor', score: 0.99 }, // same doc as a compose fact
+    { id: 'd4', title: 'A-hi', scope: 'ancestor', score: 0.8 },
+  ];
+  const merged = mergeFactsSpine(compose, ancestors);
+  assertEq(merged.map((f) => f.id), ['d1', 'd2', 'd4', 'd3'], 'compose first (d1,d2), then ancestors by score (d4>d3); d1 dup dropped');
+  assertEq(merged.find((f) => f.id === 'd1').title, 'C1', 'dedup keeps the COMPOSE occurrence of d1');
+  // empty/absent inputs are safe
+  assertEq(mergeFactsSpine(null, null), [], 'null inputs → []');
+  assertEq(mergeFactsSpine(compose, []).map((f) => f.id), ['d1', 'd2'], 'no ancestors → compose only');
+});
+
+// Fake mcp-memory backend for retrieveRemote (no warmPool → pool-warming branch skipped).
+function fakeComposeBackend({ facts, onSearch }) {
+  return {
+    init: async () => {},
+    hasCompose: () => true,
+    compose: async () => ({ facts, capabilities: [] }),
+    search: onSearch,
+  };
+}
+
+test('retrieve-core retrieveRemote (F2): NO ancestor search when ancestorIds ⊆ {focus} (single-call)', async () => {
+  let searchCalls = 0;
+  const fake = fakeComposeBackend({
+    facts: [{ id: 'd1', title: 'C1', type: 'knowledge', scope: 'projB', summary: 'focus', score: 0.9 }],
+    onSearch: async () => { searchCalls++; return []; },
+  });
+  const out = await retrieveCore.__testHooks.retrieveRemote(
+    'a real prompt here', { project: 'projB', ancestorIds: ['projB'], topK: 10, keywords: ['x'] },
+    { backend: fake, recallHealth: { record: () => {} } },
+  );
+  assertEq(searchCalls, 0, 'ancestorIds equal to focus → no ancestor search');
+  assertEq(out.entries.map((e) => e.id), ['d1'], 'compose facts injected (CWD focus)');
+});
+
+test('retrieve-core retrieveRemote (F2): ancestor search FIRES for distinct ids; merged compose-first', async () => {
+  let seenOpts = null;
+  const fake = fakeComposeBackend({
+    facts: [{ id: 'd1', title: 'C1', type: 'knowledge', scope: 'projB', summary: 'focus', score: 0.9 }],
+    onSearch: async (q, opts) => { seenOpts = opts; return [{ id: 'd2', title: 'A1', type: 'knowledge', summary: 'anc', score: 0.7 }]; },
+  });
+  const out = await retrieveCore.__testHooks.retrieveRemote(
+    'a real prompt here', { project: 'projB', ancestorIds: ['projB', 'root/A'], topK: 10, keywords: ['x'] },
+    { backend: fake, recallHealth: { record: () => {} } },
+  );
+  assertEq(seenOpts.projectIds, ['root/A'], 'ancestor search unions ONLY ids beyond focus (no double-count)');
+  assertEq(seenOpts.includeHome, true, 'ancestor search federates home');
+  assertEq(out.entries.map((e) => e.id), ['d1', 'd2'], 'merged: compose focus first, ancestor appended');
+});
+
+test('retrieve-core retrieveRemote (F2): ancestor-search timeout DEGRADES to compose-only (no throw) + ANCESTOR_TIMEOUT_MS env-tunable', async () => {
+  delete require.cache[require.resolve('./lib/retrieve-core.js')];
+  const prev = process.env.CCB_ANCESTOR_TIMEOUT_MS;
+  process.env.CCB_ANCESTOR_TIMEOUT_MS = '10';
+  const rc = require('./lib/retrieve-core.js');
+  try {
+    assertEq(rc.ANCESTOR_TIMEOUT_MS, 10, 'ANCESTOR_TIMEOUT_MS honors CCB_ANCESTOR_TIMEOUT_MS');
+    const reasons = [];
+    const fake = fakeComposeBackend({
+      facts: [{ id: 'd1', title: 'C1', type: 'knowledge', scope: 'projB', summary: 'focus', score: 0.9 }],
+      onSearch: () => new Promise((res) => setTimeout(() => res([{ id: 'd2', title: 'late', score: 0.7 }]), 60)),
+    });
+    const out = await rc.__testHooks.retrieveRemote(
+      'a real prompt here', { project: 'projB', ancestorIds: ['projB', 'root/A'], topK: 10, keywords: ['x'] },
+      { backend: fake, recallHealth: { record: (r) => reasons.push(r) } },
+    );
+    assertEq(out.entries.map((e) => e.id), ['d1'], 'compose-only survives the ancestor timeout (turn never fails)');
+    assert(reasons.includes('ancestor-timeout'), 'records the ancestor-timeout health reason');
+  } finally {
+    if (prev === undefined) delete process.env.CCB_ANCESTOR_TIMEOUT_MS; else process.env.CCB_ANCESTOR_TIMEOUT_MS = prev;
+    delete require.cache[require.resolve('./lib/retrieve-core.js')];
+    require('./lib/retrieve-core.js'); // restore a warm cache at the default timeout
+  }
+});
+
+test('hooks.json (F2): brain_retrieve_context UserPromptSubmit hook passes sessionRoot=${CLAUDE_PROJECT_DIR}', () => {
+  const hooksPath = path.join(__dirname, '..', 'hooks', 'hooks.json');
+  const parsed = JSON.parse(fs.readFileSync(hooksPath, 'utf-8')); // still valid JSON
+  const ups = parsed.hooks.UserPromptSubmit;
+  assert(Array.isArray(ups) && ups.length >= 1, 'UserPromptSubmit is a non-empty array');
+  let entry = null;
+  for (const grp of ups) {
+    for (const h of (grp.hooks || [])) {
+      if (h && h.type === 'mcp_tool' && h.tool === 'brain_retrieve_context') entry = h;
+    }
+  }
+  assert(entry, 'the brain_retrieve_context mcp_tool hook is present');
+  assertEq(entry.input.sessionRoot, '${CLAUDE_PROJECT_DIR}', 'sessionRoot wired to the session-root ceiling');
+  assertEq(entry.input.cwd, '${cwd}', 'cwd still passed (the real per-turn working dir)');
+  assertEq(entry.input.prompt, '${prompt}', 'prompt still passed');
+});
+
 // ─── brain-config: contextExcludeTypes + DATA_DIR user-override deep-merge ────
 const brainConfig = require('./lib/brain-config.js');
 
@@ -2574,6 +2708,75 @@ test('project-id assertSafeProjectId: rejects path-shaped ids; accepts owner/rep
   assertEq(projectId.assertSafeProjectId('owner/repo'), 'owner/repo', 'accepts owner/repo');
   assertEq(projectId.assertSafeProjectId('github.com/acme/widgets'), 'github.com/acme/widgets', 'accepts host/owner/repo');
   assertEq(projectId.assertSafeProjectId('  spaced/id  '), 'spaced/id', 'trims to the clean id');
+});
+
+test('project-id resolveProjectChain (F2): ancestor-spine union, deepest-first, deduped, ceiling-bounded', () => {
+  const noGit = () => null;
+  const writeMarker = (dir, id) => {
+    fs.mkdirSync(path.join(dir, '.memory'), { recursive: true });
+    fs.writeFileSync(path.join(dir, '.memory', 'project.json'), JSON.stringify({ metadata: { defaults: { project_id: id } } }));
+  };
+
+  // (A/B) nested markers: root=A, sub=B. cwd=sub → focus B, chain [B,A]; cwd=root → [A].
+  const rootA = pidTmpDir('ccb-chain-a-');
+  try {
+    const sub = path.join(rootA, 'packages', 'api');
+    fs.mkdirSync(sub, { recursive: true });
+    writeMarker(rootA, 'root/A');
+    writeMarker(sub, 'sub/B');
+    assertEq(
+      projectId.resolveProjectChain({ cwd: sub, sessionRoot: rootA, env: {}, git: noGit }),
+      { focusId: 'sub/B', chain: ['sub/B', 'root/A'] },
+      'nested markers → focus=deepest (CWD), chain deepest→shallow',
+    );
+    assertEq(
+      projectId.resolveProjectChain({ cwd: rootA, sessionRoot: rootA, env: {}, git: noGit }),
+      { focusId: 'root/A', chain: ['root/A'] },
+      'cwd=root → single-level chain',
+    );
+  } finally { fs.rmSync(rootA, { recursive: true, force: true }); }
+
+  // (C) orphan subfolder: no marker, no git, no sessionRoot → focus null, chain [] (home-only).
+  const orphanRoot = pidTmpDir('ccb-chain-orph-');
+  try {
+    const orphan = path.join(orphanRoot, 'x', 'y');
+    fs.mkdirSync(orphan, { recursive: true });
+    assertEq(
+      projectId.resolveProjectChain({ cwd: orphan, env: {}, git: noGit }),
+      { focusId: null, chain: [] },
+      'orphan (no identifier) → home-only recall',
+    );
+  } finally { fs.rmSync(orphanRoot, { recursive: true, force: true }); }
+
+  // (D) ceiling respected: gp=G, par=P, kid=K; sessionRoot=par → chain STOPS at par (no G).
+  const gp = pidTmpDir('ccb-chain-ceil-');
+  try {
+    const par = path.join(gp, 'par');
+    const kid = path.join(par, 'kid');
+    fs.mkdirSync(kid, { recursive: true });
+    writeMarker(gp, 'gp/G'); writeMarker(par, 'par/P'); writeMarker(kid, 'kid/K');
+    const out = projectId.resolveProjectChain({ cwd: kid, sessionRoot: par, env: {}, git: noGit });
+    assertEq(out, { focusId: 'kid/K', chain: ['kid/K', 'par/P'] }, 'ceiling=sessionRoot: stops at par (inclusive)');
+    assert(!out.chain.includes('gp/G'), 'grandparent above the ceiling is EXCLUDED');
+  } finally { fs.rmSync(gp, { recursive: true, force: true }); }
+
+  // (E) git-remote is the shared base scope → ONE deduped entry across levels (no markers).
+  const gitRoot = pidTmpDir('ccb-chain-git-');
+  try {
+    const gsub = path.join(gitRoot, 's');
+    fs.mkdirSync(gsub, { recursive: true });
+    const fakeGit = (args) => {
+      const k = args.join(' ');
+      if (k === 'remote get-url origin') return 'git@github.com:Acme/Repo.git';
+      if (k === 'rev-parse --show-toplevel') return gitRoot;
+      return null;
+    };
+    assertEq(
+      projectId.resolveProjectChain({ cwd: gsub, env: {}, git: fakeGit }),
+      { focusId: 'github.com/acme/repo', chain: ['github.com/acme/repo'] },
+      'git-remote shared across levels → single normalized entry (deduped with focus)',
+    );
+  } finally { fs.rmSync(gitRoot, { recursive: true, force: true }); }
 });
 
 // ─── project-identity-advisory: fragile-basename nudge (SessionStart) ─────────
