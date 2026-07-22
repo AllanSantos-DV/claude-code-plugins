@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.15.0] - 2026-07-21
+
+**Contrato-duro de `project_id` (fail-closed) + recall hierárquico "ancestor-spine".** Alinha o cliente à nova assinatura do servidor de memória `native-java` v2.29.0 (ADR-018): a memória passa a ter uma **etiqueta de projeto estável** (git-remote normalizado OU `.memory/project.json` na raiz) — sem etiqueta, a ingestão é **bloqueada** com aviso acionável, em vez de inventar escopo-lixo do nome da pasta. Rigor de sempre: contrato do servidor verificado na FONTE, reúso de código provado, cada fase revisada da fonte, gate verde rodado localmente (676 unit + 94 hooks).
+
+### Contrato-duro de project_id (F1)
+
+- **Resolvedor estrito, fail-closed** (`scripts/lib/project-id.js`): a escada agora é `.memory/project.json` (declarado, case preservado) → marcador legado `.claude-boss-project` → **git-remote normalizado** (`host/owner/repo`, colapsa esquema/credenciais/`.git`/caixa — SSH e HTTPS do mesmo repo dão o mesmo id) → **BLOQUEIA** (throw/`SCOPE_HELP`). Nunca mais cai em `basename(cwd)`/`'default'`. Espelha `ProjectIdResolver`/`ProjectIdValidator` do servidor; a normalização passa nos **9 golden vectors** compartilhados. Reúso: portados de `copilot-memory/lib/{projectId,projectConfig}.mjs` (ESM→CommonJS).
+- **Bloqueio de ingestão** nos pontos de escrita de memória (`conversation-ingest.js`, `capture-dispatch.js`): sem id estável, nada é gravado (fail-loud com mensagem; o hook em si fica fail-open e não quebra a sessão). Vale para os dois backends (local e mcp-memory). Stores **locais** por-máquina (políticas, métricas-sombra) seguem com fallback `basename` — não são a memória compartilhada.
+- **Marcador legado `.claude-boss-project`**: lido em modo **READ-ONLY** (retrocompat, deprecado) + um **nudge de migração assistida** (`migrationHint`) que sugere criar o `.memory/project.json` canônico — nunca cria o arquivo escondido. Teto do walk-up = `CLAUDE_PROJECT_DIR` (a raiz da sessão).
+
+### Recall hierárquico "ancestor-spine" (F2, apenas mcp-memory)
+
+- Trabalhando numa subpasta, o recall agora **une** os `project_id` da cadeia do CWD até a raiz da sessão (`resolveProjectChain`: `CLAUDE_PROJECT_DIR` → git toplevel/base → cap), dando **mais relevância ao id do CWD atual** (onde o agente navegou agora). O `compose_recall` foca no CWD; uma busca **lazy** (`search_memory` com `metadata.project_id` em lista → `IN(...)` no servidor, `includeHome`) une os ancestrais **só quando existem**, com timeout `CCB_ANCESTOR_TIMEOUT_MS` (padrão 500ms) que degrada para compose-only sem quebrar o turno. O merge põe o CWD em cima e deduplica por `documentId`. Subpasta órfã (sem id) → **home-only**. Peso 100% no cliente, **zero mudança no servidor** (contrato pinado em `AdditiveScopeRecallPinTest`). O backend local segue single-project.
+
+### Corrigido (dívida de teste, v2.14.0 F1.5)
+
+- **Flake de isolamento no `test-hooks`** achado ao rodar o gate: o suite compartilha um HOME temp, então o hooks-profile GLOBAL materializado por um teste vazava para os testes seguintes (dependente de ordem; passava no CI). Agora o `~/.claude/claude-code-boss` é limpo entre testes. Provado empiricamente (`getProfile()` global vencia o shipped) e via baseline (o diff da F1 é regression-free).
+
 ## [2.14.0] - 2026-07-17
 
 Fim do **split-brain do KB**: unifica a resolução da pasta de dados e a configuração de backend por-usuário para que TODOS os pontos de escrita (daemon HTTP, hooks, MCP stdio, dashboard, CLI) concordem na MESMA pasta e no MESMO backend — mais uma consolidação nativa que dobra as pastas irmãs órfãs na pasta ativa, com backup. Rigor de sempre: causa-raiz verificada na FONTE, cada incremento revisado da fonte, gate verde rodado localmente (658 unit + hooks).
