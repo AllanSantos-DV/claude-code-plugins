@@ -36,7 +36,7 @@
  */
 const { readStdin, emitEmpty } = require('./lib/hook-io.js');
 const { dataDir } = require('./lib/data-dir.js');
-const { resolveProjectId } = require('./lib/project-id.js');
+const { resolveLocalScopeId } = require('./lib/project-id.js');
 const policyStore = require('./lib/policy-store.js');
 const { getPolicyInject, getCaptureTriggerEvidence } = require('./lib/hooks-config.js');
 const metrics = require('./lib/metrics.js');
@@ -101,9 +101,10 @@ async function run(event) {
   const filePath = ti.file_path || '';
   if (!filePath) return emitEmpty();
 
-  // Fail-open project resolution (degrades to basename(cwd)/'default' internally).
+  // Fail-open LOCAL scope key (per-machine store, not the memory contract):
+  // resolveLocalScopeId degrades to basename(cwd)/'default' and never throws.
   let projectId = 'default';
-  try { projectId = resolveProjectId({ cwd: ev.cwd }) || 'default'; }
+  try { projectId = resolveLocalScopeId({ cwd: ev.cwd }) || 'default'; }
   catch (err) { void err; /* keep the 'default' fallback */ }
 
   // Normalize to a project-relative path; null → outside project / other drive.

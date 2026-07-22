@@ -379,8 +379,10 @@ function getProjectMarker(req, res, url) {
   let current = '';
   try { if (fs.existsSync(markerPath)) current = projectIdLib.sanitize(fs.readFileSync(markerPath, 'utf-8')); }
   catch (err) { console.error(`[DASHBOARD] read marker: ${err.message}`); }
-  // Also report what the resolver would pick for that folder right now.
-  const resolved = projectIdLib.resolveProjectId({ cwd: folder });
+  // Also report what the resolver would pick for that folder right now. Best-effort
+  // READ: tryResolveProjectId returns null (not a throw) when scope is unresolved, so
+  // this diagnostic endpoint reports resolved:null instead of failing.
+  const resolved = projectIdLib.tryResolveProjectId({ cwd: folder });
   json(res, { folder, projectId: current, exists: !!current, resolved });
 }
 

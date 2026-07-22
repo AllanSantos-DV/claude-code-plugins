@@ -464,7 +464,7 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
     {
       name: 'brain_retrieve_context',
       description: 'Internal — adaptive KB retrieval for the UserPromptSubmit hook (runs with the embedder warm in this server). Embeds the prompt, vector-searches the project KB behind a relevance gate, and returns a short formatted context block (or empty). Prefer brain_search for explicit lookups.',
-      inputSchema: { type: 'object', properties: { prompt: { type: 'string', description: 'The user prompt text' }, cwd: { type: 'string', description: 'Working directory (project = its basename)' }, session_id: { type: 'string', description: 'Session id (for the retrieval journal)' } }, required: ['prompt'] },
+      inputSchema: { type: 'object', properties: { prompt: { type: 'string', description: 'The user prompt text' }, cwd: { type: 'string', description: 'Working directory (project = its basename); also the base for F2 ancestor-spine chain resolution' }, sessionRoot: { type: 'string', description: 'Session root dir (CLAUDE_PROJECT_DIR) — the F2 chain-walk CEILING; recall unions project_ids from cwd up to here. Optional; falls back to git toplevel/cap.' }, session_id: { type: 'string', description: 'Session id (for the retrieval journal)' } }, required: ['prompt'] },
     },
     {
       name: 'curation_mark_oneoff',
@@ -788,8 +788,13 @@ export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {
         try {
           const { prompt, session_id } = args || {};
           const project = resolveProject(args);
+          // F2 — resolve the ancestor-spine against the REAL user cwd (the daemon lives
+          // elsewhere, but resolveProjectChain's git/fs probes are {cwd:args.cwd}-scoped).
+          // Non-throwing by contract → safe inside the outer fail-open try/catch. focusId
+          // is the CWD's strict id (declared marker/git-remote); null → home-only recall.
+          const { chain, focusId } = projectId.resolveProjectChain({ cwd: (args && args.cwd) || '', sessionRoot: args && args.sessionRoot });
           const retrieveCore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'retrieve-core.js'));
-          const { entries, capabilities } = await retrieveCore.retrieve(prompt || '', { project });
+          const { entries, capabilities } = await retrieveCore.retrieve(prompt || '', { project: focusId || project, ancestorIds: chain });
           if (entries.length) {
             try {
               const journal = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'retrieval-journal.js'));

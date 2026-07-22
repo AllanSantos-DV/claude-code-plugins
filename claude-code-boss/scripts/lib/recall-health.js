@@ -9,7 +9,10 @@
  * unavailable — recall has been empty for N turns").
  *
  * Degraded reasons: 'no-compose' (daemon < 2.18 / tool missing), 'remote-error',
- * 'timeout'. Everything else (a hit, or an honest 'no-match') counts as ok.
+ * 'timeout'. The F2 ancestor-spine arm adds 'ancestor-timeout' / 'ancestor-error'
+ * (a PARTIAL degradation: compose still returned, only the hierarchical union was
+ * skipped) so byReason surfaces it without failing the turn. Everything else (a hit,
+ * or an honest 'no-match') counts as ok.
  */
 'use strict';
 
@@ -22,7 +25,7 @@ const { writeJsonAtomic } = require('./atomic-write.js');
 const DATA_DIR = dataDir();
 const FILE = path.join(DATA_DIR, '.runtime', 'recall-health.json');
 
-const DEGRADED_REASONS = new Set(['no-compose', 'remote-error', 'timeout']);
+const DEGRADED_REASONS = new Set(['no-compose', 'remote-error', 'timeout', 'ancestor-timeout', 'ancestor-error']);
 
 /** Whether a retrieve `reason` represents a degraded recall (pure/testable). */
 function isDegraded(reason) {
