@@ -1,0 +1,16 @@
+{
+  "_comment": "Copied verbatim from native-java/src/test/resources/graph/graph-projectid-golden-vectors.json (v2.29.0, ADR-018). Self-contained so the boss test never references the server path at runtime. declared_preserved: metadata.defaults.project_id is trimmed but case-PRESERVED. remote_normalized: git remote origin normalized to lowercase host/owner/repo.",
+  "declared_preserved": [
+    { "input": "AllanSantos-DV/copilot-memory", "expected": "AllanSantos-DV/copilot-memory" },
+    { "input": "AllanSantos-DV/MyRepo", "expected": "AllanSantos-DV/MyRepo" },
+    { "input": "  MiXeD-Case/Repo  ", "expected": "MiXeD-Case/Repo" }
+  ],
+  "remote_normalized": [
+    { "input": "https://github.com/Acme/Widgets.git", "expected": "github.com/acme/widgets" },
+    { "input": "git@github.com:Acme/Widgets.git", "expected": "github.com/acme/widgets" },
+    { "input": "ssh://git@github.com/Acme/Widgets.git", "expected": "github.com/acme/widgets" },
+    { "input": "https://user:pass@gitlab.com/Group/Sub/Proj.git", "expected": "gitlab.com/group/sub/proj" },
+    { "input": "git@github.com:Acme/Widgets", "expected": "github.com/acme/widgets" },
+    { "input": "https://github.com/Acme/Widgets/", "expected": "github.com/acme/widgets" }
+  ]
+}

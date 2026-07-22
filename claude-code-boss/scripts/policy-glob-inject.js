@@ -23,7 +23,7 @@
  */
 const { readStdin, emitEmpty, emitJson } = require('./lib/hook-io.js');
 const { dataDir } = require('./lib/data-dir.js');
-const { resolveProjectId } = require('./lib/project-id.js');
+const { resolveLocalScopeId } = require('./lib/project-id.js');
 const policyStore = require('./lib/policy-store.js');
 const { firstGlobMatch } = require('./lib/glob-match.js');
 const { getPolicyInject } = require('./lib/hooks-config.js');
@@ -102,9 +102,10 @@ async function run(event) {
   const rawPath = editedPath(ev);
   if (!rawPath) return emitEmpty();
 
-  // Fail-open project resolution (degrades to basename(cwd)/'default' internally).
+  // Fail-open LOCAL scope key (per-machine store, not the memory contract):
+  // resolveLocalScopeId degrades to basename(cwd)/'default' and never throws.
   let projectId = 'default';
-  try { projectId = resolveProjectId({ cwd: ev.cwd }) || 'default'; }
+  try { projectId = resolveLocalScopeId({ cwd: ev.cwd }) || 'default'; }
   catch (err) { void err; /* keep the 'default' fallback */ }
 
   // Normalize to a project-relative path; null → outside project / other drive.

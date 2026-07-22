@@ -22,7 +22,7 @@
  */
 const { readStdin, emitEmpty, emitJson } = require('./lib/hook-io.js');
 const { dataDir } = require('./lib/data-dir.js');
-const { resolveProjectId } = require('./lib/project-id.js');
+const { resolveLocalScopeId } = require('./lib/project-id.js');
 const policyStore = require('./lib/policy-store.js');
 const { getPolicyInject } = require('./lib/hooks-config.js');
 
@@ -52,11 +52,11 @@ function renderBlock(active, corrupt) {
 
     const eventName = event.hook_event_name || 'SessionStart';
 
-    // Fail-open project resolution: resolveProjectId already degrades to
-    // basename(cwd) / 'default', but guard anyway so a resolver throw can't break
-    // the hook.
+    // Fail-open LOCAL scope key: policies are a per-machine store (not the memory
+    // contract), so resolveLocalScopeId degrades to basename(cwd)/'default' and never
+    // throws; guard anyway so nothing can break the hook.
     let projectId = 'default';
-    try { projectId = resolveProjectId({ cwd: event.cwd }) || 'default'; }
+    try { projectId = resolveLocalScopeId({ cwd: event.cwd }) || 'default'; }
     catch (err) { void err; /* keep the 'default' fallback */ }
 
     const DATA_DIR = dataDir();
