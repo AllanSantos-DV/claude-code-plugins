@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.14.0 — fim do split-brain do KB: uma pasta, um backend</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. A v2.14.0 encerra o split-brain do KB: todos os pontos de escrita (daemon HTTP, hooks, MCP stdio, dashboard, CLI) passam a concordar na MESMA pasta de dados e no MESMO backend. Um resolvedor canônico único (env → ponteiro global publicado pelo brain-server → bootstrap recente → fallback) faz hooks sem env seguirem a pasta que o app realmente usa; a escolha de backend, o profile de hooks e o model-router migram para um global estável (top-zero), matando o sintoma de lições no SQLite local com backend mcp-memory; e uma consolidação nativa, backup-first e dry-run por padrão, dobra pastas irmãs órfãs na pasta ativa." />
+<title>claude-code-boss v2.15.0 — identidade de projeto estável e recall hierárquico</title>
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. A v2.15.0 dá à memória uma identidade de projeto estável e um recall hierárquico. Toda memória passa a exigir uma etiqueta de projeto (um git-remote normalizado, host/owner/repo, ou um .memory/project.json na raiz); sem etiqueta, a ingestão é bloqueada com um aviso acionável, em vez de inventar escopo do nome da pasta (fail-closed, alinhado ao servidor native-java v2.29.0/ADR-018). Trabalhando numa subpasta, o recall une os project_ids do CWD até a raiz da sessão, dando mais peso ao id do CWD; a união de ancestrais é lazy, com timeout de 500ms que degrada para compose-only, 100% no cliente e sem mudança no servidor. O marcador legado .claude-boss-project vira read-only, com migração assistida; o backend local segue single-project." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -819,13 +819,79 @@
   .un-foot b{ color:#a29f97 }
   .un-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
 
+  /* v2.15.0 : contrato-duro de project_id (fail-closed) + recall hierarquico "ancestor-spine". memoria exige etiqueta estavel (git-remote normalizado OU .memory/project.json), senao BLOQUEIA (nao inventa escopo do basename). em subpasta o recall UNE os ids do cwd ate a raiz da sessao, cwd com mais peso; uniao lazy + timeout 500ms degrada p/ compose-only; zero mudanca no servidor; backend local single-project */
+  .spine{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:860px; font-family:var(--mono); margin:0 0 36px }
+  .sp-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .sp-bar .k{ color:var(--accent) }
+  .sp-bar .m{ color:#8a877f }
+  .sp-stage{ padding:18px 22px 8px; display:grid; grid-template-columns:minmax(280px,1.12fr) minmax(240px,.88fr); gap:18px; align-items:stretch }
+  .sp-svg{ width:100%; min-height:342px; border:1px solid var(--panel-line); border-radius:12px;
+    background:radial-gradient(circle at 26% 78%, rgba(180,97,30,.2), transparent 42%), linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.012)) }
+  .sp-svg text{ font-family:var(--mono); fill:#d8d4cc; font-size:11px }
+  .sp-svg .mut{ fill:#8a877f }
+  .sp-svg .sm{ font-size:9.5px }
+  .sp-svg .kk{ fill:var(--accent) }
+  .sp-svg .ey{ fill:var(--accent); font-size:9.5px; letter-spacing:.12em }
+  .sp-svg .uni{ fill:var(--accent); font-size:16px; font-weight:700 }
+  .sp-svg .spinal{ fill:none; stroke:var(--accent); stroke-width:2.4 }
+  .sp-svg .hot{ fill:none; stroke:var(--accent); stroke-width:2 }
+  .sp-svg .box{ fill:#141117; stroke:#7d746c; stroke-width:1.2 }
+  .sp-svg .foc{ fill:#20150e; stroke:var(--accent); stroke-width:2 }
+  .sp-svg .nd{ fill:#141117; stroke:var(--accent); stroke-width:1.6 }
+  .sp-svg .nd-hot{ fill:var(--accent) }
+  .sp-svg .pane{ fill:rgba(255,255,255,.03); stroke:var(--panel-line); stroke-width:1 }
+  .sp-svg .wbar{ fill:var(--accent) }
+  .sp-svg .wbar.dim{ fill:#6d6257 }
+  .sp-ledger{ display:grid; gap:10px }
+  .sp-card{ border:1px solid var(--panel-line); border-radius:10px; padding:13px 14px; background:rgba(255,255,255,.03) }
+  .sp-card .ey{ display:block; font-size:9.5px; letter-spacing:.15em; text-transform:uppercase; color:var(--accent); margin:0 0 8px }
+  .sp-card p{ margin:0; font-size:11.5px; line-height:1.55; color:#a29f97 }
+  .sp-card b{ color:var(--panel-ink); font-weight:600 }
+  .sp-card code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .sp-chain{ display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin-top:11px }
+  .sp-chain span{ border:1px solid rgba(255,255,255,.14); border-radius:6px; padding:3px 8px; font-size:10px; color:#a29f97; background:rgba(255,255,255,.02) }
+  .sp-chain span.on{ border-color:var(--accent); color:var(--accent); background:var(--accent-soft) }
+  .sp-chain span.dep{ border-style:dashed; color:#8a877f }
+  .sp-chain span.blk{ border-color:var(--accent); color:var(--accent); font-weight:700 }
+  .sp-chain i{ color:#8a877f; font-style:normal; font-weight:700 }
+  .sp-ladder{ margin:2px 22px 4px; border:1px solid var(--panel-line); border-radius:12px; padding:14px 16px; background:rgba(255,255,255,.02) }
+  .sp-lad-lead{ display:block; font-size:9.5px; letter-spacing:.16em; text-transform:uppercase; color:var(--accent); margin:0 0 11px }
+  .sp-steps{ display:flex; flex-wrap:wrap; align-items:stretch; gap:8px }
+  .sp-rung{ display:flex; flex-direction:column; gap:2px; border:1px solid #7d746c; border-radius:9px; padding:8px 11px; background:#141117 }
+  .sp-rung b{ color:var(--panel-ink); font-size:11.5px; font-weight:600 }
+  .sp-rung i{ color:#8a877f; font-style:normal; font-size:9.5px; letter-spacing:.02em }
+  .sp-rung.on{ border-color:var(--accent); background:#1a130d }
+  .sp-rung.on b{ color:var(--accent) }
+  .sp-rung.dep{ border-style:dashed }
+  .sp-sep{ align-self:center; color:#8a877f; font-weight:700 }
+  .sp-block{ display:flex; flex-direction:column; gap:2px; border:2px solid var(--accent); border-radius:9px; padding:8px 12px; background:var(--accent-soft) }
+  .sp-block b{ color:var(--accent); font-size:11.5px; font-weight:700; letter-spacing:.04em }
+  .sp-block i{ color:#c9a06e; font-style:normal; font-size:9.5px }
+  .sp-lad-note{ margin:11px 0 0; font-size:11px; line-height:1.55; color:#8a877f }
+  .sp-lad-note b{ color:#a29f97 }
+  .sp-lad-note code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10px; padding:1px 5px; border-radius:4px }
+  .sp-rails{ display:grid; grid-template-columns:1fr 1fr; gap:12px; padding:8px 22px 18px }
+  .sp-rail{ border:1px solid var(--panel-line); border-radius:10px; padding:13px 14px; background:rgba(255,255,255,.025) }
+  .sp-rail h4{ margin:0 0 8px; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent) }
+  .sp-rail h4 .only{ font-weight:400; letter-spacing:0; text-transform:none; color:#8a877f; font-size:9.5px; margin-left:6px }
+  .sp-rail ul{ margin:0; padding:0; list-style:none; display:grid; gap:7px }
+  .sp-rail li{ position:relative; padding-left:16px; font-size:11.5px; line-height:1.45; color:#a29f97 }
+  .sp-rail li::before{ content:"\203a"; position:absolute; left:0; top:-1px; color:var(--accent); font-weight:700 }
+  .sp-rail b{ color:var(--panel-ink); font-weight:600 }
+  .sp-rail code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .sp-foot{ padding:14px 22px; border-top:1px solid var(--panel-line); font-size:11px; line-height:1.6; color:#8a877f }
+  .sp-foot b{ color:#a29f97 }
+  .sp-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+
   footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
   footer a{ color:var(--muted); text-decoration:none }
   footer a:hover{ color:var(--accent) }
   .frow{ display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between }
   .flinks a{ margin-right:16px }
 
-  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
+  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
   @media (prefers-reduced-motion:reduce){ .caret{ animation:none } .reveal{ opacity:1 !important; transform:none !important } }
   .reveal{ opacity:0; transform:translateY(14px); animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards }
   @keyframes rise{ to{ opacity:1; transform:none } }
@@ -836,7 +902,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.14.0</span>
+    <span class="ver">v2.15.0</span>
   </nav>
 
   <header class="hero">
@@ -885,8 +951,8 @@
       </div>
       <div class="cell">
         <p class="kick">Identidade de projeto</p>
-        <h3>Recall que casa entre máquinas</h3>
-        <p>O escopo vem de um id estável: <code>CCB_PROJECT_ID</code>, o arquivo <code>.claude-boss-project</code>, senão o nome da pasta. Sem id no backend externo, um advisory <b>consent-first</b> te oferece fixá-lo. A memória segue o projeto, não o caminho, e não vaza pra outro projeto.</p>
+        <h3>Id estável, ou nada é gravado</h3>
+        <p>O escopo vem de uma <b>etiqueta estável</b>: um <b>git-remote normalizado</b> (<code>host/owner/repo</code>) ou um <code>.memory/project.json</code> na raiz. Sem etiqueta, a ingestão <b>bloqueia</b> com um aviso, sem inventar escopo do nome da pasta. Numa <b>subpasta</b>, o recall <b>une</b> os projetos até a raiz da sessão, dando <b>mais peso</b> ao id do CWD.</p>
       </div>
       <div class="cell">
         <p class="kick">KB coeso</p>
@@ -924,6 +990,139 @@
         <p>Ative constraints explicitamente com <code>policy_activate</code>, nunca auto-promovidas de lições: o <code>error-guard</code> nega no <code>PreToolUse</code> um Bash cuja falha reincide, políticas <b>always-apply</b> entram no contexto no início da sessão, e políticas <b>por glob</b> avisam ao editar um arquivo que casa o padrão. <b>Surfacing ≠ enforcement</b>: ficam presentes no contexto, não bloqueiam (exceto o <code>error-guard</code>). A Fase 3 agora fecha o ciclo: modo sombra mede, e <code>/policy-adjudicate</code> chama um <b>juiz LLM independente</b> para estimar disposições — estimativa de juiz, <b>não FP medido</b>.</p>
       </div>
     </div>
+  </section>
+
+
+  <section>
+    <p class="label">Novo na v2.15.0 · identidade de projeto + recall hierárquico</p>
+    <p class="lede">A v2.15.0 dá à memória uma <b>identidade de projeto estável</b> e ensina o recall a <b>subir a árvore</b>. Toda memória passa a exigir uma <b>etiqueta de projeto</b>: um <b>git-remote normalizado</b> (<code>host/owner/repo</code>) ou um <code>.memory/project.json</code> na raiz. Sem etiqueta, a ingestão é <b>bloqueada</b> com um aviso acionável, em vez de inventar escopo do nome da pasta. E, trabalhando numa <b>subpasta</b>, o recall <b>une</b> os projetos do CWD até a raiz da sessão, dando <b>mais peso</b> ao id de onde você está agora.</p>
+
+    <div class="callout">
+      <span class="tag">fail-closed é deliberado</span>
+      Antes, sem id o cliente escorregava pro <code>basename(cwd)</code>: um escopo frágil, que muda entre máquinas e clones e colide no daemon compartilhado. Agora, sem uma <b>etiqueta estável</b> (git-remote normalizado <b>ou</b> <code>.memory/project.json</code>), a ingestão <b>para e avisa</b>. Preferimos bloquear com uma mensagem acionável a gravar memória num escopo que não casa. Alinha o cliente ao servidor <code>native-java</code> <b>v2.29.0</b> (ADR-018).
+    </div>
+
+    <div class="spine" aria-label="Artefato da versão 2.15.0: identidade de projeto estável e recall hierárquico. À esquerda, uma espinha vertical de pastas, de cima para baixo: a raiz da sessão CLAUDE_PROJECT_DIR, uma pasta ancestral que tem id, e no rodapé a pasta atual, o cwd, destacada como foco do compose_recall e de maior peso. Um colchete e o símbolo de união abraçam as três, mostrando que o recall une os project_ids do cwd até a raiz da sessão. À direita, três painéis explicam o comportamento: a união é lazy, um search_memory com IN dos ids que só busca os ancestrais que existem; o peso é 100% no cliente, com o cwd numa barra mais longa que a do ancestral e a da raiz; e a degradação é honesta, com timeout de 500ms que cai para compose-only, subpasta órfã indo para home-only e o backend local seguindo single-project. Abaixo, a escada estrita e fail-closed de resolução do id: primeiro o arquivo declarado .memory/project.json, depois o marcador legado .claude-boss-project lido em read-only com migração assistida, depois o git-remote normalizado host barra owner barra repo, e por fim, se nada resolve, BLOQUEIA com um aviso acionável, sem inventar escopo do nome da pasta.">
+      <div class="sp-bar">
+        <span class="k">v2.15.0</span>
+        <span class="m">id estável ou bloqueia · recall que sobe a árvore</span>
+      </div>
+
+      <div class="sp-stage">
+        <svg class="sp-svg" viewBox="0 0 540 330" role="img" aria-label="Diagrama do recall ancestor-spine: uma espinha vertical com três pastas, a raiz da sessão CLAUDE_PROJECT_DIR no topo, uma pasta ancestral com id no meio, e o cwd no rodapé, destacado como foco e de maior peso; um colchete com o símbolo de união abraça as três. À direita, três painéis: união lazy via search_memory com IN dos ids que existem; peso no cliente com o cwd em barra mais longa que a do ancestral e a da raiz; e degradação honesta com timeout de 500ms para compose-only, subpasta órfã para home-only e backend local single-project.">
+          <text x="20" y="24" class="mut">recall: une o CWD → raiz da sessão · o CWD pesa mais</text>
+
+          <line x1="56" y1="72" x2="56" y2="254" class="spinal"></line>
+          <path class="hot" d="M44 76 H38 V250 H44"></path>
+          <text x="20" y="169" class="uni">∪</text>
+
+          <circle class="nd" cx="56" cy="72" r="5.5"></circle>
+          <rect class="box" x="72" y="54" width="200" height="38" rx="8"></rect>
+          <text x="84" y="72">$CLAUDE_PROJECT_DIR</text>
+          <text x="84" y="85" class="mut sm">raiz da sessão · cap</text>
+
+          <circle class="nd" cx="56" cy="163" r="5.5"></circle>
+          <rect class="box" x="72" y="145" width="200" height="38" rx="8"></rect>
+          <text x="84" y="162">…/pacote</text>
+          <text x="84" y="176" class="mut sm">ancestral · tem id</text>
+
+          <circle class="nd nd-hot" cx="56" cy="254" r="6.5"></circle>
+          <rect class="foc" x="72" y="232" width="200" height="46" rx="9"></rect>
+          <text x="84" y="253" class="kk">cwd</text>
+          <text x="84" y="268" class="mut sm">peso maior · foco do compose</text>
+
+          <rect class="pane" x="300" y="52" width="220" height="72" rx="10"></rect>
+          <text x="312" y="70" class="ey">UNIÃO LAZY</text>
+          <text x="312" y="90">search_memory · IN(ids)</text>
+          <text x="312" y="106" class="mut sm">só os ancestrais que existem</text>
+
+          <rect class="pane" x="300" y="140" width="220" height="80" rx="10"></rect>
+          <text x="312" y="158" class="ey">PESO NO CLIENTE</text>
+          <text x="312" y="177">cwd</text>
+          <rect class="wbar" x="352" y="169" width="156" height="9" rx="2"></rect>
+          <text x="312" y="195" class="mut">anc</text>
+          <rect class="wbar dim" x="352" y="187" width="104" height="9" rx="2"></rect>
+          <text x="312" y="213" class="mut">raiz</text>
+          <rect class="wbar dim" x="352" y="205" width="66" height="9" rx="2"></rect>
+
+          <rect class="pane" x="300" y="236" width="220" height="80" rx="10"></rect>
+          <text x="312" y="254" class="ey">DEGRADA HONESTO</text>
+          <text x="312" y="273">500ms → compose-only</text>
+          <text x="312" y="289" class="mut sm">subpasta órfã → home-only</text>
+          <text x="312" y="304" class="mut sm">backend local: single-project</text>
+        </svg>
+
+        <div class="sp-ledger">
+          <div class="sp-card">
+            <span class="ey">contrato-duro · project_id (F1)</span>
+            <p>Toda memória exige uma <b>etiqueta estável</b>. Sem ela, os pontos de escrita (<code>conversation-ingest</code>, <code>capture-dispatch</code>) <b>não gravam</b>: falam um aviso (<code>SCOPE_HELP</code>) e o hook em si fica <b>fail-open</b>, sem quebrar a sessão. Vale para os <b>dois</b> backends.</p>
+            <div class="sp-chain" aria-label="Escada de resolução do id">
+              <span class="on">.memory/project.json</span><i>›</i><span class="dep">legado · ro</span><i>›</i><span class="on">git-remote</span><i>›</i><span class="blk">bloqueia</span>
+            </div>
+          </div>
+          <div class="sp-card">
+            <span class="ey">alinhado ao servidor</span>
+            <p>O resolvedor espelha o <code>ProjectIdResolver</code>/<code>ProjectIdValidator</code> do servidor <b>native-java v2.29.0</b> (ADR-018); a normalização passa nos <b>9 golden vectors</b> compartilhados. Reúsa o JS provado do <code>copilot-memory</code> (ESM→CommonJS). O recall hierárquico é <b>zero mudança no servidor</b> (<code>AdditiveScopeRecallPinTest</code>).</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="sp-ladder" aria-label="Escada estrita e fail-closed de resolução do project_id: primeiro o arquivo declarado .memory/project.json, depois o marcador legado .claude-boss-project em read-only com migração assistida, depois o git-remote normalizado, e por fim BLOQUEIA se nada resolve.">
+        <span class="sp-lad-lead">escada estrita · fail-closed</span>
+        <div class="sp-steps">
+          <span class="sp-rung on"><b>.memory/project.json</b><i>declarado · canônico</i></span>
+          <span class="sp-sep">›</span>
+          <span class="sp-rung dep"><b>.claude-boss-project</b><i>legado · read-only · migração assistida</i></span>
+          <span class="sp-sep">›</span>
+          <span class="sp-rung on"><b>git-remote</b><i>host/owner/repo · normalizado</i></span>
+          <span class="sp-sep">›</span>
+          <span class="sp-block"><b>BLOQUEIA</b><i>aviso acionável</i></span>
+        </div>
+        <p class="sp-lad-note">Primeiro que existir vence. Nada resolve → a ingestão é <b>bloqueada</b> com um aviso acionável, em vez de inventar escopo do <code>basename(cwd)</code>. SSH e HTTPS do mesmo repo colapsam no <b>mesmo</b> <code>host/owner/repo</code>.</p>
+      </div>
+
+      <div class="sp-rails">
+        <div class="sp-rail">
+          <h4>Contrato-duro de project_id</h4>
+          <ul>
+            <li>O <code>git-remote</code> normalizado colapsa esquema, credenciais, <code>.git</code> e caixa: <b>SSH e HTTPS</b> do mesmo repo dão o <b>mesmo</b> id.</li>
+            <li>O marcador legado é lido <b>read-only</b> (deprecado), com um <b>nudge</b> pro <code>.memory/project.json</code>. O cliente <b>nunca</b> cria o arquivo por você.</li>
+            <li>Stores <b>locais</b> por-máquina (políticas, métricas-sombra) seguem com fallback <code>basename</code>: não são a memória compartilhada.</li>
+          </ul>
+        </div>
+        <div class="sp-rail">
+          <h4>Recall que sobe a árvore <span class="only">só mcp-memory</span></h4>
+          <ul>
+            <li>A cadeia é <code>CLAUDE_PROJECT_DIR</code> → git toplevel/base → <b>cap</b>; o merge põe o CWD <b>em cima</b> e deduplica por <code>documentId</code>.</li>
+            <li>A união é <b>lazy</b>: só dispara quando há ancestrais com id, com timeout <code>CCB_ANCESTOR_TIMEOUT_MS</code> (500ms) que degrada para <b>compose-only</b>.</li>
+            <li>Subpasta <b>órfã</b> (sem id) → <b>home-only</b>. Peso <b>100% no cliente</b>; o backend <b>local</b> segue single-project.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="sp-foot"><b>Escopo real:</b> o <b>fail-closed</b> vale para a <b>memória compartilhada</b>. Sem etiqueta estável, o cliente prefere <b>bloquear com aviso</b> a inventar escopo-lixo do nome da pasta. A migração do marcador legado é <b>assistida</b>, nunca silenciosa: o <code>.memory/project.json</code> é seu para criar. O recall hierárquico é <b>100% no cliente</b> e só no <code>mcp-memory</code>; o backend <b>local</b> segue single-project.</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>Id estável, ou para e avisa</h4>
+        <p>Sem uma <b>etiqueta de projeto estável</b>, a ingestão <b>bloqueia</b> com um aviso acionável. Fim do escopo-lixo tirado do <code>basename(cwd)</code>, que mudava entre máquinas e colidia no daemon compartilhado.</p>
+      </div>
+      <div class="win">
+        <h4>Um repo, um id</h4>
+        <p>O <b>git-remote normalizado</b> colapsa esquema, credenciais, <code>.git</code> e caixa: <b>SSH e HTTPS</b> do mesmo repo dão o <b>mesmo</b> <code>host/owner/repo</code>. A normalização passa nos <b>9 golden vectors</b> compartilhados com o servidor.</p>
+      </div>
+      <div class="win">
+        <h4>Recall que sobe a árvore</h4>
+        <p>Numa <b>subpasta</b>, o recall <b>une</b> os ids do CWD até a raiz da sessão e dá <b>mais peso</b> ao id do CWD. Um <code>search_memory</code> <b>lazy</b> só busca os ancestrais que existem; timeout de <b>500ms</b> degrada para compose-only.</p>
+      </div>
+      <div class="win">
+        <h4>Migração assistida, nunca escondida</h4>
+        <p>O marcador legado <code>.claude-boss-project</code> é lido <b>read-only</b> (deprecado), com um <b>nudge</b> pro <code>.memory/project.json</code> canônico. O cliente <b>nunca</b> cria o arquivo por você: a identidade é sua escolha.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Honesto sobre o alcance:</b> o <b>fail-closed</b> é deliberado e vale para a <b>memória compartilhada</b>; stores <b>locais</b> por-máquina (políticas, métricas-sombra) seguem com fallback <code>basename</code>. O recall hierárquico é <b>100% no cliente</b>, <b>zero mudança no servidor</b> (<code>AdditiveScopeRecallPinTest</code>) e só no <code>mcp-memory</code>; o backend <b>local</b> segue single-project. Alinha o cliente ao servidor <b>native-java v2.29.0</b> (ADR-018) e reúsa o JS provado do <code>copilot-memory</code> (passa nos 9 golden vectors). Rigor de sempre: contrato verificado na fonte, cada fase revisada, gate verde local (<b>676</b> unit + <b>94</b> hooks).</p>
   </section>
 
 
@@ -2213,8 +2412,8 @@
       <p class="label">Como funciona</p>
       <div class="steps">
         <div class="step"><div class="n"></div><p>Antes de qualquer coisa, um <b>resolvedor canônico</b> faz todos os escritores (daemon HTTP, hooks, MCP stdio, dashboard, CLI) concordarem na <b>mesma pasta</b> e no <b>mesmo backend</b>, com a escolha de backend morando no global. No <b>SessionStart</b>, um checador silencioso dobra pastas irmãs órfãs na ativa, <b>destacado</b> e com backup primeiro, sem bloquear a sessão.</p></div>
-        <div class="step"><div class="n"></div><p>No <b>SessionStart</b>, se o backend externo está sem id estável de projeto, o boss injeta um advisory <b>consent-first</b>: o agente te oferece fixar o id criando <code>.claude-boss-project</code>. Ele nunca escreve por você, e cala se o id já existe ou sob cooldown.</p></div>
-        <div class="step"><div class="n"></div><p>Você escreve um prompt. O hook <b>UserPromptSubmit</b> chama o Brain e injeta o bloco <b>[BRAIN]</b>: no backend externo, os fatos vêm com o trecho casado e as capacidades como ponteiros. Em paralelo, um <b>search_memory</b> não-injetado aquece o pool home: sinal pro Dreaming, sem tocar no que você vê.</p></div>
+        <div class="step"><div class="n"></div><p>Toda memória exige uma <b>identidade de projeto estável</b>: um <b>git-remote normalizado</b> (<code>host/owner/repo</code>) ou um <code>.memory/project.json</code> na raiz. Sem ela, a ingestão <b>bloqueia</b> com um aviso acionável, em vez de inventar escopo do nome da pasta. O marcador legado <code>.claude-boss-project</code> é lido <b>read-only</b>, com um <b>nudge</b> pra migrar: o plugin <b>nunca</b> cria o arquivo por você.</p></div>
+        <div class="step"><div class="n"></div><p>Você escreve um prompt. O hook <b>UserPromptSubmit</b> chama o Brain e injeta o bloco <b>[BRAIN]</b>: no backend externo, os fatos vêm com o trecho casado e as capacidades como ponteiros. Numa <b>subpasta</b>, o recall <b>une</b> os projetos do CWD até a raiz da sessão: o <code>compose_recall</code> foca no CWD e um <code>search_memory</code> <b>lazy</b> traz os ancestrais que existem (timeout de 500ms degrada para compose-only). Em paralelo, outro <b>search_memory</b> não-injetado aquece o pool home: sinal pro Dreaming, sem tocar no que você vê.</p></div>
         <div class="step"><div class="n"></div><p>O agente age com a memória do projeto à mão, escopada por um id estável, sem puxar contexto de outro projeto.</p></div>
         <div class="step"><div class="n"></div><p>No <b>Stop</b>, o boss induz o <b>ACK</b> da captura: sobre uma fila <b>redigida</b> de ciclos limpos, o agente chama <code>capture_lesson</code> (lição curada) ou <code>capture_ack</code> (nada a capturar), sem reler o transcript à toa. No backend externo, manda o transcript acumulado pro servidor destilar. Nada infla a janela.</p></div>
         <div class="step"><div class="n"></div><p>Se você <b>ativou políticas</b>, elas aparecem onde importam: o <code>error-guard</code> <b>nega</b> no <code>PreToolUse</code> um Bash cuja falha reincide; as <b>always-apply</b> entram no contexto no início da sessão; as de <b>glob</b> avisam ao editar um arquivo que casa. <b>Surfacing ≠ enforcement</b>: só o error-guard bloqueia.</p></div>

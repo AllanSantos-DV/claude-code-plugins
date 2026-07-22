@@ -1900,6 +1900,15 @@ console.log(BOLD(`\n🔬 Plugin Hook Test Suite — ${filtered.length} tests\n`)
 console.log(DIM('─'.repeat(70)));
 
 for (const test of filtered) {
+  // Isolate the per-user GLOBAL config dir (~/.claude/claude-code-boss: the active-data-dir
+  // pointer + the brain/hooks/model-router user-config) BETWEEN tests. The suite shares ONE
+  // temp HOME (top of file), so once any test materializes the global hooks profile (or the
+  // v2.14.0 F1.5 backfill does), the `!exists` guard freezes it and every LATER test reads
+  // that leaked profile instead of its own shipped one — a real order-dependent flake (e.g.
+  // curation-stop reading 'standard' maxAttempts=1 instead of its configured 'dev').
+  try {
+    fs.rmSync(path.join(process.env.USERPROFILE, '.claude', 'claude-code-boss'), { recursive: true, force: true });
+  } catch (err) { void err; /* nothing to clean yet → fine */ }
   const extraEnv = typeof test.extraEnv === 'function' ? test.extraEnv() : (test.extraEnv || {});
   const result = run(test.script, test.payload, test.args || [], extraEnv);
   const { ok, issues, parsed } = check(result, test.expect || {});
