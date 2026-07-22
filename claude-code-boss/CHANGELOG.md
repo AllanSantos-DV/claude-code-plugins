@@ -6,11 +6,19 @@
 
 - **`not_indexed` também redireciona** (economia do dono: indexar é custo ÚNICO, um grep amplo é custo POR consulta — re-varre a árvore toda a cada chamada): a 1ª busca ampla num repo não-indexado é **negada uma vez** empurrando `graph_analyze` (async), e o retry idêntico passa NA HORA — então **nunca** se espera pela indexação. `indexing`/daemon offline → passam em silêncio. Fail-open em qualquer erro.
 - **`ready` mas 0 nodes → passa**: um repo sem código que o grafo suporta (só `.md`/`.txt`/…) indexa pra grafo vazio; redirecionar pra `graph_search` seria mentira, então o guard sai do caminho. O probe passou a ler o `nodes` do status (cacheado junto do estado).
+
+### graph-warm — o grafo pronto-e-fresco antes da 1ª busca (SessionStart)
+
+Novo hook `graph-warm.js` (SessionStart): no backend `mcp-memory`, dispara um `ingest` **incremental** do Session Graph em fire-and-forget (retorna quando o daemon aceita, ~80ms — nunca espera a indexação async). Assim todo projeto aberto com o boss + MCP ganha o grafo automaticamente, sem o agente chamar `graph_analyze` na mão, e o caminho `not_indexed → deny` do guard vira raro.
+
+- **O servidor faz o delta** (verificado na fonte do native-java `ProjectGraphIngestor`): manifesto SHA-256 por arquivo → **no-op ~5s** num repo de 20k arquivos quando nada mudou (medido), reconstrói só na mudança, re-indexa sozinho quando a versão do extrator muda, e aborta preservando o grafo anterior num walk parcial. O cliente só cutuca o ingest — **zero lógica de staleness no cliente**.
+- **Cooldown por projeto** (default 4h): não re-hasheia o repo em toda abertura. Silencioso, fail-open (daemon offline / root inseguro → no-op, nunca bloqueia o SessionStart). Perfil: on em `dev`+`standard`, off em `free` (segue o graph-guard); opt-out fino via `graphGuard.warm=false`.
+- **Ponte, não a solução final**: o próprio memory-server já traz um `GraphIngestScheduler` desenhado pra fazer isso server-side (indexar quando o projeto abre) — hoje desconectado. Quando esse wiring server-side landar, este hook pode se aposentar (todo cliente do daemon ganharia o warm de graça).
 - **Prontidão cacheada por projeto** (`.runtime/graph-ready-*.json`, TTL 5min): um hook é um processo novo por chamada — sem o cache, cada busca pagaria um round-trip de rede. Probe curto (1,2s) só quando o cache expira, resolvendo o **MESMO daemon** do backend (serverUrl explícito vence; senão o registry) — nunca um daemon descoberto de forma independente.
 - **Duas superfícies, um spawn**: tools nativas via novo hook PreToolUse `Grep|Glob` (`graph-guard.js`); Bash amplo integrado ao `curation-guard.js` que já roda em toda chamada Bash (zero spawn extra). Heurísticas conservadoras: qualquer escopo explícito (`path`/`glob`/`type`, `grep -r <subdir>`, `find <subdir>`, grep alimentado por pipe) passa sem interceptação.
 - **Perfis**: ativo em `dev` e `standard` (proteção de recurso da máquina, não nag de aprendizado); `free` mantém o contrato passthrough (off). Telemetria `graph-guard.fired` desde o dia 1 para medir conversão.
 
-686 unit (10 novos) + 102 hooks (8 novos E2E) verdes; heurísticas, escada de decisão (ready-com-nodes→deny-once, not_indexed→deny-once index-now, ready-0-nodes→allow, offline/indexing/erro→allow com cache) e as duas superfícies cobertas por teste.
+688 unit (12 novos) + 104 hooks (10 novos E2E) verdes; heurísticas, escada de decisão (ready-com-nodes→deny-once, not_indexed→deny-once index-now, ready-0-nodes→allow, offline/indexing/erro→allow com cache), o warm (cooldown por projeto, gates de backend/perfil) e as duas superfícies cobertas por teste.
 
 ## [2.15.0] - 2026-07-21
 

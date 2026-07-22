@@ -308,10 +308,67 @@ function makeGraphStateProbe({ cwd, timeoutMs }) {
   };
 }
 
+// ── Proactive warm cooldown + dispatch ───────────────────────────────────────
+
+function warmStampPath(dataDir, projectRoot) {
+  return path.join(dataDir, '.runtime', `graph-warm-${rootKey(projectRoot)}.json`);
+}
+
+/** True when a warm ingest was dispatched for this root within the cooldown. Never throws. */
+function isWarmOnCooldown(file, cooldownMs, nowMs = Date.now()) {
+  try {
+    const s = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return Number.isFinite(s.ts) && (nowMs - s.ts) < cooldownMs;
+  } catch (e) { void e; /* absent/corrupt → not on cooldown */ return false; }
+}
+
+function stampWarm(file, nowMs = Date.now()) {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    writeJsonAtomic(file, { ts: nowMs });
+  } catch (e) { void e; /* best effort */ }
+}
+
+/**
+ * Factory for the warm dispatcher: fire an INCREMENTAL graph ingest for the cwd
+ * and return once the daemon ACCEPTS it (202, ~80ms measured) — never waits for
+ * the async index to finish. The server owns the delta (no-op ~5s if nothing
+ * changed on a 20k-file repo, rebuild only on change), so the client just pokes
+ * it. Resolves the SAME daemon the mcp-memory backend targets. Never throws.
+ * @param {{cwd:string, timeoutMs:number}} opts
+ * @returns {() => Promise<{dispatched:boolean, reason?:string}>}
+ */
+function makeGraphIngestDispatch({ cwd, timeoutMs }) {
+  return async () => {
+    try {
+      const brainCfg = require('./brain-config.js').load();
+      const mcp = (brainCfg.backend && brainCfg.backend.mcpMemory) || {};
+      const daemon = require('./graph/daemon.js');
+      const client = require('./graph/client.js');
+      const resolver = daemon.makeResolver({ serverUrl: mcp.serverUrl || '', runDir: mcp.runDir || '' });
+      const base = await client.graphBase({ discover: resolver });
+      if (!base) return { dispatched: false, reason: 'offline' };
+      const ctx = client.graphContextFor('', cwd);
+      const guardErr = client.assertSafeRoot(ctx.root);
+      if (guardErr) return { dispatched: false, reason: 'unsafe-root' };
+      // 202 = accepted (async). 200 can come back for a synchronous no-op. Either
+      // way the ingest was received; we don't poll.
+      await client.post(base, 'ingest', ctx, {}, { timeoutMs });
+      return { dispatched: true };
+    } catch (e) {
+      return { dispatched: false, reason: (e && e.code) || 'error' };
+    }
+  };
+}
+
 module.exports = {
   isBroadNativeSearch,
   matchBroadBashSearch,
   makeGraphStateProbe,
+  makeGraphIngestDispatch,
+  warmStampPath,
+  isWarmOnCooldown,
+  stampWarm,
   extractQueryTokens,
   buildRedirectReason,
   buildNotIndexedReason,

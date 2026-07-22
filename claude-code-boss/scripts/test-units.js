@@ -8889,6 +8889,27 @@ test('graph-guard ladder: a bare-string probe result still works (back-compat)',
   assertEq((await ggCore.decideBroadSearch(args)).action, 'deny', 'string "not_indexed" still denies once');
 });
 
+test('graph-warm: cooldown round-trip — within window blocks, expired/absent allows', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggwarm-'));
+  const file = ggCore.warmStampPath(dir, 'C:/proj');
+  assertEq(ggCore.isWarmOnCooldown(file, 60000, 1000), false, 'absent stamp → not on cooldown');
+  ggCore.stampWarm(file, 1000);
+  assertEq(ggCore.isWarmOnCooldown(file, 60000, 1000 + 30000), true, 'within window → on cooldown');
+  assertEq(ggCore.isWarmOnCooldown(file, 60000, 1000 + 70000), false, 'past window → allowed again');
+  fs.writeFileSync(file, '{corrupt');
+  assertEq(ggCore.isWarmOnCooldown(file, 60000, 1000), false, 'corrupt stamp → not on cooldown (fail-open)');
+});
+
+test('graph-warm: per-project stamp keys are distinct (one root on cooldown never gates another)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggwarm2-'));
+  const a = ggCore.warmStampPath(dir, 'C:/projA');
+  const b = ggCore.warmStampPath(dir, 'C:/projB');
+  assert(a !== b, 'different roots → different stamp files');
+  ggCore.stampWarm(a, 1000);
+  assertEq(ggCore.isWarmOnCooldown(a, 60000, 1000 + 10), true, 'projA on cooldown');
+  assertEq(ggCore.isWarmOnCooldown(b, 60000, 1000 + 10), false, 'projB unaffected');
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);

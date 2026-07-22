@@ -175,7 +175,11 @@ const _gg = (() => {
   const core = require('./lib/graph-guard-core.js');
   core.writeReadyCache(core.cachePath(dataDir, path.resolve(cwd)), 'ready', 1834);
   core.writeReadyCache(core.cachePath(dataDir, path.resolve(cwdNotIndexed)), 'not_indexed', 0);
-  return { root, rootLocal, rootFree, dataDir, cwd, cwdNotIndexed };
+  // graph-warm: a project whose warm stamp is FRESH → the hook must no-op on
+  // cooldown WITHOUT touching the daemon (hermetic — no live ingest side effect).
+  const cwdWarmCd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-gg-warmcd-'));
+  core.stampWarm(core.warmStampPath(dataDir, path.resolve(cwdWarmCd)));
+  return { root, rootLocal, rootFree, dataDir, cwd, cwdNotIndexed, cwdWarmCd };
 })();
 
 // ─── policy-inject fixtures (deterministic always-apply POLICY injection) ────
@@ -785,6 +789,29 @@ const TESTS = [
       if (!(out.additionalContext || '').includes('[graph-guard]')) return `reason must be tagged [graph-guard], got: ${out.additionalContext}`;
       return null;
     },
+  },
+  {
+    name: 'graph-warm        [SessionStart, mcp-memory, on cooldown → silent no-op {}]',
+    script: 'graph-warm.js',
+    payload: { hook_event_name: 'SessionStart', session_id: SESSION, cwd: _gg.cwdWarmCd },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _gg.root, CLAUDE_PLUGIN_DATA: _gg.dataDir }),
+    validate: r => {
+      // Cooldown short-circuits BEFORE any daemon call → empty output, no additionalContext.
+      if (r.parsed && r.parsed.hookSpecificOutput && r.parsed.hookSpecificOutput.additionalContext) {
+        return `warm on cooldown must be silent, got context: ${r.parsed.hookSpecificOutput.additionalContext}`;
+      }
+      return null;
+    },
+  },
+  {
+    name: 'graph-warm        [SessionStart, local backend → no-op (nothing to warm)]',
+    script: 'graph-warm.js',
+    payload: { hook_event_name: 'SessionStart', session_id: SESSION, cwd: _gg.cwd },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _gg.rootLocal, CLAUDE_PLUGIN_DATA: _gg.dataDir }),
+    validate: r => (r.parsed && r.parsed.hookSpecificOutput && r.parsed.hookSpecificOutput.additionalContext)
+      ? `local backend warm must be silent, got: ${r.parsed.hookSpecificOutput.additionalContext}` : null,
   },
   {
     name: 'graph-guard       [Bash scoped grep -r subdir via curation-guard → allow]',
