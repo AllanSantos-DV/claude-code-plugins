@@ -1,6 +1,6 @@
 # claude-code-boss
 
-Plugin para Claude Code Desktop — **v2.15.0**
+Plugin para Claude Code Desktop — **v2.16.0**
 
 Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizado leve para Claude Code. A orquestração fica a cargo das ferramentas nativas (Agent/Workflow) — o plugin foca no que o nativo não tem.
 
@@ -84,7 +84,8 @@ Todos os hooks estão declarados em `hooks/hooks.json`. Eventos e scripts ativos
 | SessionStart | `doctor-advisory.js` | Roda `doctor.js` com cooldown; advisory de 1 linha só se algo crítico falhar (Node/PATH, data-dir fragmentado, daemon, token) |
 | SessionStart | `review-checklist-advisory.js` | Se existir `.claude/brain-review-checklist.md` (lições recorrentes de código), lembra o `/code-review` nativo de consultá-lo |
 | SubagentStart | `policy-inject.js` | Injeta as políticas standing (always) no contexto próprio do subagente — mesma injeção do SessionStart |
-| PreToolUse (Bash) | `curation-guard.js` | Bloqueia/redireciona comandos curados |
+| PreToolUse (Bash) | `curation-guard.js` | Bloqueia/redireciona comandos curados; inclui o graph-guard p/ `grep -r`/`rg`/`find` amplos (mcp-memory + grafo ready → deny-once com redirect ao grafo) |
+| PreToolUse (Grep\|Glob) | `graph-guard.js` | Busca recursiva ampla com Session Graph READY → deny-once: `graph_search`/`graph_symbols` primeiro (estrutural, ~300ms), depois re-rodar escopado; retry idêntico passa |
 | PostToolUse (Bash) | `curation-detect.js` | Detecta outputs grandes para curação |
 | PostToolUse (Edit\|Write\|NotebookEdit) | `file-edit-detect.js` | Journala arquivos editados no turno (alimenta `verify-nudge` e `self-review`) |
 | UserPromptExpansion | `skill-metric.js` | Métrica de uso de skill (matcher `.*`) |

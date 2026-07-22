@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.16.0] - 2026-07-22
+
+**Graph-guard: busca recursiva ampla → grafo primeiro, grep escopado depois.** No backend `mcp-memory` com o Session Graph **READY**, uma busca ampla e recursiva (Grep/Glob nativos sem `path`/`glob`/`type`, ou `grep -r`/`rg`/`find` na raiz via Bash) é negada **uma única vez** com a instrução em dois passos: consultar `graph_search`/`graph_symbols` (estrutural, sem embeddings — **~300ms medidos num grafo de 135k nodes**) para obter os caminhos enxutos, e só então re-rodar a busca de texto **escopada** neles. Repetir a chamada idêntica passa direto (stamp por sessão) — nunca há deadlock, e busca de texto livre perde no máximo um round-trip.
+
+- **Nunca espera indexação** (medido: repo de 20k arquivos levou ~4,6min pra indexar, one-time/async): `not_indexed` **nunca bloqueia** — a busca passa com um advisory único por projeto sugerindo disparar `graph_analyze`; `indexing`/daemon offline → passam em silêncio. Fail-open em qualquer erro.
+- **Prontidão cacheada por projeto** (`.runtime/graph-ready-*.json`, TTL 5min): um hook é um processo novo por chamada — sem o cache, cada busca pagaria um round-trip de rede. Probe curto (1,2s) só quando o cache expira, resolvendo o **MESMO daemon** do backend (serverUrl explícito vence; senão o registry) — nunca um daemon descoberto de forma independente.
+- **Duas superfícies, um spawn**: tools nativas via novo hook PreToolUse `Grep|Glob` (`graph-guard.js`); Bash amplo integrado ao `curation-guard.js` que já roda em toda chamada Bash (zero spawn extra). Heurísticas conservadoras: qualquer escopo explícito (`path`/`glob`/`type`, `grep -r <subdir>`, `find <subdir>`, grep alimentado por pipe) passa sem interceptação.
+- **Perfis**: ativo em `dev` e `standard` (proteção de recurso da máquina, não nag de aprendizado); `free` mantém o contrato passthrough (off). Telemetria `graph-guard.fired` desde o dia 1 para medir conversão.
+
+692 unit (8 novos) + 101 hooks (7 novos E2E) verdes; heurísticas, escada de decisão (ready→deny-once, not_indexed→advisory-única, offline/indexing/erro→allow com cache) e as duas superfícies cobertas por teste.
+
 ## [2.15.0] - 2026-07-21
 
 **Contrato-duro de `project_id` (fail-closed) + recall hierárquico "ancestor-spine".** Alinha o cliente à nova assinatura do servidor de memória `native-java` v2.29.0 (ADR-018): a memória passa a ter uma **etiqueta de projeto estável** (git-remote normalizado OU `.memory/project.json` na raiz) — sem etiqueta, a ingestão é **bloqueada** com aviso acionável, em vez de inventar escopo-lixo do nome da pasta. Rigor de sempre: contrato do servidor verificado na FONTE, reúso de código provado, cada fase revisada da fonte, gate verde rodado localmente (676 unit + 94 hooks).
