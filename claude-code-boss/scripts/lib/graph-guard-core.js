@@ -132,8 +132,21 @@ function buildRedirectReason({ kind, pattern, tokens }) {
   ].join('\n');
 }
 
-function buildIndexAdvisory() {
-  return '[graph-guard] The memory daemon is up but this repo\'s Session Graph is NOT indexed. Broad searches walk the whole tree; consider dispatching `graph_analyze` (async — seconds on small repos, minutes on large ones) so future symbol searches get the cheap structural path.';
+/**
+ * not_indexed deny-once reason. The economics (owner's call): indexing is a
+ * ONE-TIME cost, a broad grep is a PER-QUERY cost (re-walks the fs every time),
+ * so the first broad search is denied to push the agent to index NOW — but
+ * deny-once means the retry passes, so nothing is ever blocked waiting for the
+ * (async) index to finish.
+ */
+function buildNotIndexedReason({ pattern, tokens }) {
+  const t = tokens && tokens.length ? tokens.join(' ') : (pattern || '<term>');
+  return [
+    '[graph-guard] Broad recursive search intercepted, and this repo\'s Session Graph is NOT indexed yet. Indexing is a ONE-TIME cost; a broad grep re-walks the whole tree on EVERY call — so index once, then every later symbol search is the cheap structural path.',
+    '1. Call `graph_analyze` to build the graph (async — seconds on small repos, minutes on large ones; it returns immediately).',
+    `2. Once ready, \`graph_search({ query: "${t}" })\` gives the NARROW paths — then re-run the text search SCOPED to them.`,
+    'Retrying this exact same call passes through NOW (deny-once) if you need the raw text search before the index is ready.',
+  ].join('\n');
 }
 
 // ── Readiness cache + deny-once stamps (DATA_DIR/.runtime) ───────────────────
@@ -146,19 +159,22 @@ function cachePath(dataDir, projectRoot) {
   return path.join(dataDir, '.runtime', `graph-ready-${rootKey(projectRoot)}.json`);
 }
 
-/** {state, ts} when fresh, else null. Never throws. */
+/** {state, nodes, ts} when fresh, else null. Never throws. */
 function readReadyCache(file, ttlMs, nowMs = Date.now()) {
   try {
     const c = JSON.parse(fs.readFileSync(file, 'utf8'));
-    if (c && typeof c.state === 'string' && Number.isFinite(c.ts) && nowMs - c.ts < ttlMs) return c;
+    if (c && typeof c.state === 'string' && Number.isFinite(c.ts) && nowMs - c.ts < ttlMs) {
+      return { state: c.state, nodes: Number.isFinite(c.nodes) ? c.nodes : 0 };
+    }
     return null;
   } catch (e) { void e; /* absent/corrupt → treat as stale */ return null; }
 }
 
-function writeReadyCache(file, state, nowMs = Date.now()) {
+/** state: string; nodes: number (needed to tell a USEFUL ready graph from a 0-node one). */
+function writeReadyCache(file, state, nodes = 0, nowMs = Date.now()) {
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    writeJsonAtomic(file, { state, ts: nowMs });
+    writeJsonAtomic(file, { state, nodes: Number.isFinite(nodes) ? nodes : 0, ts: nowMs });
   } catch (e) { void e; /* best effort — worst case we probe again */ }
 }
 
@@ -170,14 +186,14 @@ function stampPath(dataDir, sid) {
 function readStamp(file) {
   try {
     const s = JSON.parse(fs.readFileSync(file, 'utf8'));
-    return { sigs: Array.isArray(s.sigs) ? s.sigs : [], advised: Array.isArray(s.advised) ? s.advised : [] };
-  } catch (e) { void e; return { sigs: [], advised: [] }; }
+    return { sigs: Array.isArray(s.sigs) ? s.sigs : [] };
+  } catch (e) { void e; return { sigs: [] }; }
 }
 
 function writeStamp(file, stamp) {
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    writeJsonAtomic(file, { sigs: (stamp.sigs || []).slice(-100), advised: (stamp.advised || []).slice(-20) });
+    writeJsonAtomic(file, { sigs: (stamp.sigs || []).slice(-100) });
   } catch (e) { void e; /* best effort */ }
 }
 
@@ -199,38 +215,53 @@ function searchSig(kind, raw) {
  * @param {string} a.sid
  * @param {string} a.dataDir
  * @param {{cacheTtlMs:number}} a.cfg
- * @param {() => Promise<'ready'|'not_indexed'|'indexing'|'offline'>} a.probe
- *        resolves graph state (short timeout, caller-provided); ONLY called on
- *        a stale cache.
- * @returns {Promise<{action:'allow'|'deny', reason?:string, advisory?:string}>}
+ * @param {() => Promise<{state:'ready'|'not_indexed'|'indexing'|'offline', nodes:number}>} a.probe
+ *        resolves graph state + node count (short timeout, caller-provided);
+ *        ONLY called on a stale cache.
+ * @returns {Promise<{action:'allow'|'deny', reason?:string}>}
  */
 async function decideBroadSearch({ kind, raw, pattern, projectRoot, sid, dataDir, cfg, probe }) {
   try {
     const cFile = cachePath(dataDir, projectRoot);
     let cached = readReadyCache(cFile, cfg.cacheTtlMs);
     if (!cached) {
-      let state = 'offline';
-      try { state = await probe(); } catch (e) { void e; /* unreachable → offline */ }
-      writeReadyCache(cFile, state);
-      cached = { state };
+      let res = { state: 'offline', nodes: 0 };
+      try {
+        const r = await probe();
+        // Back-compat: a probe may still resolve a bare state string.
+        res = typeof r === 'string' ? { state: r, nodes: 0 } : { state: (r && r.state) || 'offline', nodes: (r && r.nodes) || 0 };
+      } catch (e) { void e; /* unreachable → offline */ }
+      writeReadyCache(cFile, res.state, res.nodes);
+      cached = res;
     }
 
-    if (cached.state !== 'ready') {
-      // NEVER wait for/trigger indexing (minutes on big repos, measured).
-      // not_indexed → one advisory per project per session, search passes.
-      if (cached.state === 'not_indexed') {
-        const sFile = stampPath(dataDir, sid);
-        const stamp = readStamp(sFile);
-        const key = rootKey(projectRoot);
-        if (!stamp.advised.includes(key)) {
-          writeStamp(sFile, { ...stamp, advised: [...stamp.advised, key] });
-          return { action: 'allow', advisory: buildIndexAdvisory() };
-        }
-      }
+    // READY but EMPTY (0 nodes): a repo with no graph-supported code. Redirecting
+    // to graph_search would return nothing — so get out of the way (allow).
+    if (cached.state === 'ready' && (cached.nodes || 0) === 0) {
       return { action: 'allow' };
     }
 
-    // Graph READY → deny-once per unique search per session.
+    // not_indexed → DENY-ONCE with the "index now" redirect (owner's economics:
+    // one-time index vs per-query fs walk). deny-once → the retry passes, so the
+    // agent is NEVER blocked waiting for the async index to finish. indexing /
+    // offline → silent pass (don't punish an already-triggered index / fail-open).
+    if (cached.state === 'not_indexed') {
+      const sFile = stampPath(dataDir, sid);
+      const stamp = readStamp(sFile);
+      const sig = searchSig(kind, raw);
+      if (stamp.sigs.includes(sig)) return { action: 'allow' };
+      writeStamp(sFile, { ...stamp, sigs: [...stamp.sigs, sig] });
+      return {
+        action: 'deny',
+        reason: buildNotIndexedReason({ pattern, tokens: extractQueryTokens(pattern) }),
+      };
+    }
+
+    if (cached.state !== 'ready') {
+      return { action: 'allow' }; // indexing / offline → pass
+    }
+
+    // Graph READY (with nodes) → deny-once per unique search per session.
     const sFile = stampPath(dataDir, sid);
     const stamp = readStamp(sFile);
     const sig = searchSig(kind, raw);
@@ -254,8 +285,10 @@ async function decideBroadSearch({ kind, raw, pattern, projectRoot, sid, dataDir
  * the registry) — never an independently-discovered one — then reads
  * /api/v1/graph/status for the project root. Lazy requires keep hook cold-start
  * cheap on the fast path (fresh cache → this is never constructed/called).
+ * Returns {state, nodes} — the node count lets the ladder tell a USEFUL ready
+ * graph from a 0-node one (repo with no graph-supported code → don't redirect).
  * @param {{cwd:string, timeoutMs:number}} opts
- * @returns {() => Promise<'ready'|'not_indexed'|'indexing'|'offline'>}
+ * @returns {() => Promise<{state:'ready'|'not_indexed'|'indexing'|'offline', nodes:number}>}
  */
 function makeGraphStateProbe({ cwd, timeoutMs }) {
   return async () => {
@@ -265,12 +298,13 @@ function makeGraphStateProbe({ cwd, timeoutMs }) {
     const client = require('./graph/client.js');
     const resolver = daemon.makeResolver({ serverUrl: mcp.serverUrl || '', runDir: mcp.runDir || '' });
     const base = await client.graphBase({ discover: resolver });
-    if (!base) return 'offline';
+    if (!base) return { state: 'offline', nodes: 0 };
     const ctx = client.graphContextFor('', cwd);
     const { json } = await client.post(base, 'status', ctx, {}, { timeoutMs });
     const state = json && json.state;
-    if (state === 'ready' || state === 'not_indexed' || state === 'indexing') return state;
-    return 'offline';
+    const nodes = json && Number.isFinite(json.nodes) ? json.nodes : 0;
+    if (state === 'ready' || state === 'not_indexed' || state === 'indexing') return { state, nodes };
+    return { state: 'offline', nodes: 0 };
   };
 }
 
@@ -280,7 +314,7 @@ module.exports = {
   makeGraphStateProbe,
   extractQueryTokens,
   buildRedirectReason,
-  buildIndexAdvisory,
+  buildNotIndexedReason,
   cachePath,
   readReadyCache,
   writeReadyCache,
