@@ -152,6 +152,36 @@ const _fdIntegration = (() => {
   return { cwd, command: 'cd /x && npm run typecheck -- --strict' };
 })();
 
+// ─── graph-guard fixtures (broad-search redirect to the Session Graph) ───────
+// Plugin roots with a CONTROLLED brain-config (mkTempPluginRoot only writes the
+// hooks config) + a data dir pre-seeded with a FRESH 'ready' readiness cache
+// for the fixture cwd — so the spawned hook takes the cache path and NEVER
+// probes the network (hermetic).
+const _gg = (() => {
+  const mkRoot = (hooksOverrides, backendType) => {
+    const root = mkTempPluginRoot(hooksOverrides);
+    fs.writeFileSync(
+      path.join(root, 'config', 'brain-config.json'),
+      JSON.stringify({ backend: { type: backendType, mcpMemory: {} } }),
+    );
+    return root;
+  };
+  const root = mkRoot({}, 'mcp-memory');            // shipped profile (standard) — graphGuard is ON in dev AND standard
+  const rootLocal = mkRoot({}, 'local');
+  const rootFree = mkRoot({ profile: 'free' }, 'mcp-memory');
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-gg-data-'));
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-gg-proj-'));       // READY graph WITH nodes → deny path
+  const cwdNotIndexed = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-gg-ni-')); // not_indexed → deny-once path
+  const core = require('./lib/graph-guard-core.js');
+  core.writeReadyCache(core.cachePath(dataDir, path.resolve(cwd)), 'ready', 1834);
+  core.writeReadyCache(core.cachePath(dataDir, path.resolve(cwdNotIndexed)), 'not_indexed', 0);
+  // graph-warm: a project whose warm stamp is FRESH → the hook must no-op on
+  // cooldown WITHOUT touching the daemon (hermetic — no live ingest side effect).
+  const cwdWarmCd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-gg-warmcd-'));
+  core.stampWarm(core.warmStampPath(dataDir, path.resolve(cwdWarmCd)));
+  return { root, rootLocal, rootFree, dataDir, cwd, cwdNotIndexed, cwdWarmCd };
+})();
+
 // ─── policy-inject fixtures (deterministic always-apply POLICY injection) ────
 // The policy-inject SessionStart/SubagentStart hook LISTS the active policies for
 // the current project and injects them as additionalContext. To make the spawned
@@ -641,6 +671,161 @@ const TESTS = [
     }),
     validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
       ? null : `errorGuard.enabled=false must allow even a recurring failure, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
+  },
+
+  // ── PreToolUse / Grep|Glob + Bash — graph-guard (broad-search → graph redirect) ─
+  {
+    name: 'graph-guard       [Grep broad + mcp-memory + graph READY → deny-once with redirect]',
+    script: 'graph-guard.js',
+    payload: {
+      tool_name: 'Grep',
+      tool_input: { pattern: 'resolveProjectId' },
+      session_id: SESSION,
+      cwd: _gg.cwd,
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _gg.root, CLAUDE_PLUGIN_DATA: _gg.dataDir }),
+    validate: r => {
+      const out = r.parsed?.hookSpecificOutput || {};
+      if (out.permissionDecision !== 'deny') return `broad Grep with READY graph must DENY once, got: ${out.permissionDecision}`;
+      const ctx = out.additionalContext || '';
+      if (!ctx.includes('[graph-guard]')) return `deny reason must be tagged [graph-guard], got: ${ctx}`;
+      if (!ctx.includes('graph_search')) return `deny reason must teach graph_search, got: ${ctx}`;
+      if (out.permissionDecisionReason !== ctx) return 'permissionDecisionReason must mirror the reason';
+      return null;
+    },
+  },
+  {
+    // SAME payload, SAME session/dataDir as above — the deny-once stamp must release it.
+    name: 'graph-guard       [identical retry → allow (deny-once stamp)]',
+    script: 'graph-guard.js',
+    payload: {
+      tool_name: 'Grep',
+      tool_input: { pattern: 'resolveProjectId' },
+      session_id: SESSION,
+      cwd: _gg.cwd,
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _gg.root, CLAUDE_PLUGIN_DATA: _gg.dataDir }),
+    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+      ? null : `identical retry must pass (deny-once), got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
+  },
+  {
+    name: 'graph-guard       [scoped Grep (path) → allow, no interception]',
+    script: 'graph-guard.js',
+    payload: {
+      tool_name: 'Grep',
+      tool_input: { pattern: 'anotherSymbol', path: 'scripts/lib' },
+      session_id: SESSION,
+      cwd: _gg.cwd,
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _gg.root, CLAUDE_PLUGIN_DATA: _gg.dataDir }),
+    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+      ? null : `scoped Grep must never be intercepted, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
+  },
+  {
+    name: 'graph-guard       [not_indexed + mcp-memory → deny-once, pushes graph_analyze]',
+    script: 'graph-guard.js',
+    payload: {
+      tool_name: 'Grep',
+      tool_input: { pattern: 'someBroadSymbol' },
+      session_id: SESSION,
+      cwd: _gg.cwdNotIndexed,
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _gg.root, CLAUDE_PLUGIN_DATA: _gg.dataDir }),
+    validate: r => {
+      const out = r.parsed?.hookSpecificOutput || {};
+      if (out.permissionDecision !== 'deny') return `not_indexed must DENY once (economics: index once vs per-query walk), got: ${out.permissionDecision}`;
+      if (!/graph_analyze/.test(out.additionalContext || '')) return `deny reason must push graph_analyze, got: ${out.additionalContext}`;
+      return null;
+    },
+  },
+  {
+    name: 'graph-guard       [backend local → allow (no graph to redirect to)]',
+    script: 'graph-guard.js',
+    payload: {
+      tool_name: 'Grep',
+      tool_input: { pattern: 'freshSymbolLocal' },
+      session_id: SESSION,
+      cwd: _gg.cwd,
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _gg.rootLocal, CLAUDE_PLUGIN_DATA: _gg.dataDir }),
+    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+      ? null : `local backend must always allow, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
+  },
+  {
+    name: 'graph-guard       [profile free → allow despite READY graph]',
+    script: 'graph-guard.js',
+    payload: {
+      tool_name: 'Grep',
+      tool_input: { pattern: 'freshSymbolFree' },
+      session_id: SESSION,
+      cwd: _gg.cwd,
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _gg.rootFree, CLAUDE_PLUGIN_DATA: _gg.dataDir }),
+    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+      ? null : `free profile is passthrough — must allow, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
+  },
+  {
+    // The Bash surface rides curation-guard (no extra spawn): broad grep -r at
+    // the repo root with READY graph → the SAME deny-once redirect.
+    name: 'graph-guard       [Bash grep -r broad via curation-guard → deny with redirect]',
+    script: 'curation-guard.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: 'grep -rn "freshBashSymbol" .' },
+      session_id: SESSION,
+      cwd: _gg.cwd,
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _gg.root, CLAUDE_PLUGIN_DATA: _gg.dataDir }),
+    validate: r => {
+      const out = r.parsed?.hookSpecificOutput || {};
+      if (out.permissionDecision !== 'deny') return `broad bash grep with READY graph must DENY once, got: ${out.permissionDecision} (ctx: ${out.additionalContext})`;
+      if (!(out.additionalContext || '').includes('[graph-guard]')) return `reason must be tagged [graph-guard], got: ${out.additionalContext}`;
+      return null;
+    },
+  },
+  {
+    name: 'graph-warm        [SessionStart, mcp-memory, on cooldown → silent no-op {}]',
+    script: 'graph-warm.js',
+    payload: { hook_event_name: 'SessionStart', session_id: SESSION, cwd: _gg.cwdWarmCd },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _gg.root, CLAUDE_PLUGIN_DATA: _gg.dataDir }),
+    validate: r => {
+      // Cooldown short-circuits BEFORE any daemon call → empty output, no additionalContext.
+      if (r.parsed && r.parsed.hookSpecificOutput && r.parsed.hookSpecificOutput.additionalContext) {
+        return `warm on cooldown must be silent, got context: ${r.parsed.hookSpecificOutput.additionalContext}`;
+      }
+      return null;
+    },
+  },
+  {
+    name: 'graph-warm        [SessionStart, local backend → no-op (nothing to warm)]',
+    script: 'graph-warm.js',
+    payload: { hook_event_name: 'SessionStart', session_id: SESSION, cwd: _gg.cwd },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _gg.rootLocal, CLAUDE_PLUGIN_DATA: _gg.dataDir }),
+    validate: r => (r.parsed && r.parsed.hookSpecificOutput && r.parsed.hookSpecificOutput.additionalContext)
+      ? `local backend warm must be silent, got: ${r.parsed.hookSpecificOutput.additionalContext}` : null,
+  },
+  {
+    name: 'graph-guard       [Bash scoped grep -r subdir via curation-guard → allow]',
+    script: 'curation-guard.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: 'grep -rn "freshBashSymbol2" scripts/lib' },
+      session_id: SESSION,
+      cwd: _gg.cwd,
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _gg.root, CLAUDE_PLUGIN_DATA: _gg.dataDir }),
+    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+      ? null : `scoped bash grep must pass, got: ${r.parsed?.hookSpecificOutput?.permissionDecision} (ctx: ${r.parsed?.hookSpecificOutput?.additionalContext})`,
   },
   {
     name: 'error-resolve     [PostToolUse/Bash-success→clears recorded failure]',
