@@ -82,6 +82,22 @@ if (process.argv.includes('--http')) {
       .then(({ ensureDaemon }) => ensureDaemon({ pluginRoot: PLUGIN_ROOT, dataDir: DATA_DIR }))
       .catch((e) => console.error(`[brain] daemon autostart skipped: ${e.message}`));
   }
+
+  // Consolidate the SESSION IN USE (the v1.14 promise, finally delivered). The
+  // stdio server is the ONE process that reliably receives THIS session's real
+  // --plugin-data (DATA_DIR), so it is the AUTHORITATIVE trigger to fold stray
+  // sibling data dirs INTO this folder — not the oscillating global pointer an
+  // env-less SessionStart hook would follow. The launcher does a cheap fs-only
+  // sibling check and, only on a populated sibling, detach-spawns the guarded
+  // engine `--apply --active-dir DATA_DIR`. Best-effort + fail-open: it never
+  // blocks or breaks the stdio path.
+  try {
+    createRequire(import.meta.url)('../../scripts/consolidate-datadirs-hook.js')
+      .run({ activeDir: DATA_DIR });
+  } catch (err) {
+    console.error(`[brain] session-in-use consolidation skipped: ${err.message}`);
+  }
+
   const server = createBrainServer({ pluginRoot: PLUGIN_ROOT, mode: 'stdio' });
   const transport = new StdioServerTransport();
   await server.connect(transport);

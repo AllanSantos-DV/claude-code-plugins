@@ -5980,6 +5980,29 @@ test('data-dir: pointer helpers round-trip; readActivePointer null for missing/c
   });
 });
 
+test('data-dir: writeActivePointer does NOT regress from a heavier live folder to a lighter stray (anti apparent-loss)', () => {
+  withTempHome(() => {
+    const A = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-wA-'));
+    const B = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-wB-'));
+    fs.mkdirSync(path.join(A, 'brain', 'proj'), { recursive: true });
+    fs.mkdirSync(path.join(B, 'brain', 'proj'), { recursive: true });
+    // A = the rich, live KB (big brain.db); B = a near-empty stray identity.
+    fs.writeFileSync(path.join(A, 'brain', 'proj', 'brain.db'), Buffer.alloc(50 * 1024, 1));
+    fs.writeFileSync(path.join(B, 'brain', 'proj', 'brain.db'), Buffer.alloc(1 * 1024, 1));
+    // A publishes first → pointer = A.
+    dataDirLib.writeActivePointer(A);
+    assertEq(dataDirLib.readActivePointer(), A);
+    // B (the lighter stray) tries to take the pointer → REFUSED (this is the fix:
+    // env-less brain_count/search never gets yanked onto the near-empty folder).
+    dataDirLib.writeActivePointer(B);
+    assertEq(dataDirLib.readActivePointer(), A, 'pointer must NOT regress to the lighter stray');
+    // But a genuinely HEAVIER folder still advances (a legit switch is not blocked).
+    fs.writeFileSync(path.join(B, 'brain', 'proj', 'brain.db'), Buffer.alloc(100 * 1024, 1));
+    dataDirLib.writeActivePointer(B);
+    assertEq(dataDirLib.readActivePointer(), B, 'a heavier folder legitimately advances the pointer');
+  });
+});
+
 test('brain-config: reads the per-user override from the GLOBAL path (not per-data-dir)', () => {
   // The backend choice must be visible to every writer regardless of which data
   // dir it resolved — so the override lives at globalDir()/user-config.json.
@@ -8482,6 +8505,44 @@ test('graph/dispatch: mcp-memory + unreachable daemon fails open (offline guidan
     assert(!ops.some((o) => o[0] === 'rm' && o[1] === sib), 'sibling NOT deleted after a failure');
   });
 
+  test('consolidate-datadirs: --active-dir param PINS the target dir (consolidate the SESSION IN USE, not the pointer)', async () => {
+    const explicit = '/SESSION/real'; const sib = '/SESSION/sib';
+    const store = makeFakeStore({});
+    const h = makeDeps({
+      activeDir: explicit, siblingPaths: [sib], mode: 'local', store,
+      shards: { [sib]: { proj: [{ id: 'e1' }] } },
+    });
+    // Simulate a caller that supplies NO _deps.activeDir — the top-level param
+    // must be what pins the target (this is the brain-server passing --active-dir).
+    delete h._deps.activeDir;
+    const r = await consolidate({ apply: true, activeDir: explicit, _deps: h._deps });
+    assertEq(r.ok, true);
+    assertEq(r.activeDir, explicit);                       // the EXPLICIT dir won, not dataDir()
+    assert(store._data.proj.has('e1'), 'absorbed into the EXPLICIT target dir');
+    assert(h.fsx._ops.some((o) => o[0] === 'rm' && o[1] === sib), 'sibling deleted after a clean, VERIFIED absorb');
+  });
+
+  test('consolidate-datadirs: verify-before-delete KEEPS a sibling when an absorbed id is not readable back (silent persist failure)', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const store = makeFakeStore({});
+    // save() SILENTLY no-ops for 'ghost' (no throw) → absorb "succeeds" (s.failed
+    // stays 0 through the graft loop) but the row is not readable back. This is the
+    // exact split-brain hazard: a mis-addressed/silent write. verify must catch it.
+    const origSave = store.save.bind(store);
+    store.save = async (entry, vector) => { if (entry.id === 'ghost') return; return origSave(entry, vector); };
+    const h = makeDeps({
+      activeDir: active, siblingPaths: [sib], mode: 'local', store,
+      shards: { [sib]: { proj: [{ id: 'real1' }, { id: 'ghost' }] } },
+    });
+    const r = await consolidate({ apply: true, _deps: h._deps });
+    assertEq(r.ok, true);                                  // per-sibling fail-open; run stays ok
+    assert(r.siblings[0].failed >= 1, 'verify counts the un-landed entry');
+    assertEq(r.siblings[0].deleted, false);                // NEVER delete data we cannot prove we absorbed
+    assert(!h.fsx._ops.some((o) => o[0] === 'rm' && o[1] === sib), 'sibling NOT deleted');
+    assert(h.fsx._ops.some((o) => o[0] === 'cp' && o[2].indexOf('sib1') !== -1), 'but the sibling WAS backed up first');
+    assert(store._data.proj.has('real1'), 'the entries that DID land are still absorbed');
+  });
+
   test('consolidate-datadirs: --apply mcp-memory pushes every entry idempotently (documentId=id) incl. active-local, deletes siblings, 2nd run no-op', async () => {
     const active = '/A/active'; const sib = '/A/sib1';
     const backend = makeFakeBackend();
@@ -8504,6 +8565,23 @@ test('graph/dispatch: mcp-memory + unreachable daemon fails open (offline guidan
     const r2 = await consolidate({ apply: true, _deps: h._deps });
     assertEq(r2.reason, 'no-siblings');
     assertEq(r2.siblings.length, 0);
+  });
+
+  test('consolidate-datadirs: mcp push preserves each entry\'s PROJECT scope (project_id coherence through consolidation)', async () => {
+    const active = '/A/active'; const sib = '/A/sib1';
+    const backend = makeFakeBackend();
+    const fsx = makeFakeFs(new Set([active, sib]));
+    const h = makeDeps({
+      activeDir: active, siblingPaths: [sib], mode: 'mcp-memory', backend, fs: fsx,
+      shards: { [sib]: { alpha: [{ id: 'a1' }], beta: [{ id: 'b1' }], __user__: [{ id: 'u1' }] } },
+    });
+    await consolidate({ apply: true, _deps: h._deps });
+    // Each entry is pushed under the daemon handshake scope of its OWN shard —
+    // consolidation never cross-contaminates projects, so the v2.15 project_id
+    // hard contract holds end-to-end when siblings are folded into the daemon.
+    assert(backend._calls.some((c) => c[0] === 'save' && c[1] === 'alpha' && c[2] === 'a1'), 'a1 pushed under alpha');
+    assert(backend._calls.some((c) => c[0] === 'save' && c[1] === 'beta' && c[2] === 'b1'), 'b1 pushed under beta');
+    assert(backend._calls.some((c) => c[0] === 'save' && c[1] === '__user__' && c[2] === 'u1'), 'u1 pushed under __user__');
   });
 
   test('consolidate-datadirs: local mode keeps __user__ shard isolated from project shards', async () => {
@@ -8706,6 +8784,22 @@ test('graph/dispatch: mcp-memory + unreachable daemon fails open (offline guidan
     assertEq(closedFd, LOGFD, 'the parent closed its own copy of the log fd');
   });
 
+  test('consolidate-datadirs-hook: run({activeDir}) forwards --active-dir so the engine targets the SESSION IN USE', () => {
+    let spawnArgs = null;
+    const res = HOOK.run({
+      activeDir: '/SESSION/real',
+      // Must NOT fall back to the pointer when an explicit activeDir is given —
+      // a throwing dataDir proves the `deps.activeDir || dataDir()` short-circuit.
+      dataDir: () => { throw new Error('pointer resolver must not be consulted'); },
+      enumerate: (active) => [{ path: active, populated: true }, { path: '/A/other/claude-code-boss', populated: true }],
+      spawn: (cmd, args, opts) => { spawnArgs = { cmd, args, opts }; return { unref() {} }; },
+      fsx: { mkdirSync() {}, openSync() { return 7; }, closeSync() {} },
+      enginePath: '/eng/consolidate-datadirs.js', execPath: '/bin/node',
+    });
+    assertEq(res.spawned, true);
+    assertEq(spawnArgs.args, ['/eng/consolidate-datadirs.js', '--apply', '--active-dir', '/SESSION/real']);
+  });
+
   test('consolidate-datadirs-hook: run() is fail-open — an enumerator throw never escapes (spawns nothing)', () => {
     let spawnCalls = 0;
     const res = HOOK.run({
@@ -8731,7 +8825,7 @@ test('graph/dispatch: mcp-memory + unreachable daemon fails open (offline guidan
     assertEq(spawnArgs.opts.stdio, 'ignore', 'falls back to stdio ignore when the log fd cannot be opened');
   });
 
-  test('hooks.json: SessionStart registers the silent consolidate-datadirs-hook (command node, timeout 10)', () => {
+  test('hooks.json: the consolidate-datadirs-hook is NOT wired to SessionStart (retired — the brain-server triggers it with the real --plugin-data)', () => {
     const hooksPath = path.join(__dirname, '..', 'hooks', 'hooks.json');
     const parsed = JSON.parse(fs.readFileSync(hooksPath, 'utf-8'));
     const ss = parsed.hooks.SessionStart;
@@ -8741,10 +8835,7 @@ test('graph/dispatch: mcp-memory + unreachable daemon fails open (offline guidan
     const entry = entries.find(
       (e) => e && Array.isArray(e.args) && e.args.some((a) => typeof a === 'string' && a.indexOf('consolidate-datadirs-hook.js') !== -1),
     );
-    assert(entry, 'the consolidate-datadirs-hook.js SessionStart entry is present');
-    assertEq(entry.type, 'command');
-    assertEq(entry.command, 'node');
-    assertEq(entry.timeout, 10);
+    assert(!entry, 'the env-less SessionStart trigger is retired (v2.16.0): consolidation is launched by the brain-server, which alone has the session\'s real --plugin-data');
   });
 }
 
