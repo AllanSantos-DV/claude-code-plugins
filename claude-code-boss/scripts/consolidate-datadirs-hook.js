@@ -1,11 +1,17 @@
 #!/usr/bin/env node
 /**
- * consolidate-datadirs-hook.js — SILENT SessionStart auto-consolidation trigger.
+ * consolidate-datadirs-hook.js — SILENT consolidation launcher.
  *
- * Phase 3 of the split-brain KB fix. The Phase-2 engine (consolidate-datadirs.js)
- * absorbs stray sibling data dirs into the ACTIVE one. This hook makes that run
- * AUTOMATICALLY at SessionStart — the user never types a command — while obeying
- * three hard constraints:
+ * The engine (consolidate-datadirs.js) absorbs stray sibling data dirs into the
+ * ACTIVE one. This module is the cheap, fail-open LAUNCHER for it.
+ *
+ * v2.16.0 — "consolidate the SESSION IN USE": the AUTHORITATIVE caller is the
+ * brain-server (servers/brain-server/index.js) — the ONE process that reliably
+ * receives THIS session's real --plugin-data — which invokes `run({ activeDir })`
+ * with that real dir, so the engine targets the session's OWN folder, not the
+ * oscillating global pointer an env-less SessionStart hook would follow (that
+ * env-less trigger is retired). A standalone `main()` remains for manual use,
+ * while obeying three hard constraints:
  *
  *   1. NEVER blocks session start. The cheap check (a filesystem scan, no SQLite)
  *      runs inline; the DESTRUCTIVE merge is handed to a DETACHED, unref'd child
@@ -79,7 +85,7 @@ function run(deps = {}) {
   const execPath = deps.execPath || process.execPath;
 
   try {
-    const activeDir = dataDir();
+    const activeDir = deps.activeDir || dataDir();
     const candidates = enumerate(activeDir) || [];
     const hasSibling = candidates.some(
       (c) => c && c.populated && path.resolve(c.path) !== path.resolve(activeDir),
@@ -94,7 +100,13 @@ function run(deps = {}) {
     const logFd = openLogFd(fsx, activeDir);
     const stdio = logFd != null ? ['ignore', logFd, logFd] : 'ignore';
     try {
-      const child = spawn(execPath, [enginePath, '--apply'], { detached: true, windowsHide: true, stdio });
+      // When an explicit target dir is provided (the brain-server passes THIS
+      // session's real --plugin-data), forward it so the engine consolidates the
+      // SESSION IN USE instead of resolving via the oscillating global pointer.
+      const engineArgs = deps.activeDir
+        ? [enginePath, '--apply', '--active-dir', deps.activeDir]
+        : [enginePath, '--apply'];
+      const child = spawn(execPath, engineArgs, { detached: true, windowsHide: true, stdio });
       child.unref();
     } finally {
       // Close the parent's copy of the fd (the child dup'd its own at spawn). A

@@ -39,6 +39,9 @@
  *   node scripts/consolidate-datadirs.js            # DRY-RUN: plan, write nothing
  *   node scripts/consolidate-datadirs.js --apply    # backup → absorb → delete
  *   node scripts/consolidate-datadirs.js --json      # machine-readable report
+ *   node scripts/consolidate-datadirs.js --apply --active-dir <dir>  # target an
+ *       EXPLICIT session folder (the brain-server passes its real --plugin-data
+ *       here) instead of resolving via the global pointer.
  */
 'use strict';
 
@@ -187,6 +190,16 @@ function enumerateDefault(activeDir) {
 function resolveDeps(_deps) {
   const dd = _deps || {};
   const activeDir = dd.activeDir || require('./lib/data-dir.js').dataDir();
+  // When an explicit target dir is given AND the REAL store is in use (not an
+  // injected test mock), freeze brain-store/index/graph/backend to that dir by
+  // normalizing CLAUDE_PLUGIN_DATA BEFORE their lazy require: brain-store snapshots
+  // STORE_DIR = dataDir() at load (brain-store.js:22), and dataDir() honors that env
+  // first. This is what makes `--active-dir` target the SESSION'S real folder
+  // instead of the oscillating global pointer. Guarded by `!dd.store` so unit tests
+  // that inject a mock store never mutate process.env (no cross-test leakage).
+  if (dd.activeDir && !dd.store && typeof dd.activeDir === 'string' && !dd.activeDir.includes('${')) {
+    process.env.CLAUDE_PLUGIN_DATA = dd.activeDir;
+  }
   return {
     activeDir,
     mode: dd.mode || require('./lib/brain-config.js').getBackendType(),
@@ -353,6 +366,28 @@ async function absorbSiblingLocal(d, sib, s) {
         }
       }
 
+      // VERIFY-BEFORE-DELETE (integrity gate): confirm every incoming id is now
+      // readable from the ACTIVE store — BEFORE the near-dup pass (which may
+      // collapse different-id near-dups) and long before the delete rail. A
+      // "success" that didn't actually persist (mis-scoped store, silent write)
+      // leaves s.failed>0 here, so the delete rail (which requires s.failed===0)
+      // KEEPS the sibling + its backup instead of destroying unabsorbed data. Uses
+      // the live write connection (getRaw), so there is no WAL-visibility race and
+      // no second file handle. This is the safety net the split-brain incident
+      // demanded: we never rmSync a sibling we can't prove we absorbed.
+      let notLanded = 0;
+      for (const inc of incoming) {
+        try { if (!d.store.getRaw(inc.id)) notLanded += 1; }
+        catch (err) {
+          console.error(`[consolidate-datadirs] verify ${inc && inc.id} (${sib.path} · ${project}): ${err.message}`);
+          notLanded += 1;
+        }
+      }
+      if (notLanded > 0) {
+        console.error(`[consolidate-datadirs] verify-before-delete FAILED (${sib.path} · ${project}): ${notLanded}/${incoming.length} entries not readable from the active store after absorb — sibling will be KEPT`);
+        s.failed += notLanded;
+      }
+
       // Independently-captured near-dups (DIFFERENT ids, similar text) collapse
       // and SUM recurrence — the intra-project pass, now over the merged shard.
       try {
@@ -431,12 +466,15 @@ function planSibling(d, activeDir, sib, mode) {
 // ── Public entry point ───────────────────────────────────────────────────────
 
 /**
- * @param {{apply?:boolean, _deps?:object}} [opts]
+ * @param {{apply?:boolean, activeDir?:string, _deps?:object}} [opts] `activeDir`
+ *   pins consolidation to an EXPLICIT target folder (the session's real
+ *   `--plugin-data`), bypassing the oscillating global pointer — this is how the
+ *   brain-server makes it "consolidate the SESSION IN USE".
  * @returns {Promise<{ok:boolean, apply:boolean, mode:string, activeDir:string,
  *   siblings:Array, activeLocal?:object, backupDir?:string, reason?:string}>}
  */
-async function consolidate({ apply = false, _deps = {} } = {}) {
-  const d = resolveDeps(_deps);
+async function consolidate({ apply = false, activeDir: targetDir, _deps = {} } = {}) {
+  const d = resolveDeps(targetDir ? { ..._deps, activeDir: targetDir } : _deps);
   const { activeDir, mode } = d;
   const report = { ok: true, apply, mode, activeDir, siblings: [] };
 
@@ -589,9 +627,15 @@ if (require.main === module) {
   (async () => {
     const apply = process.argv.includes('--apply');
     const asJson = process.argv.includes('--json');
+    // Explicit target dir (Phase B: the brain-server passes the session's REAL
+    // --plugin-data here so consolidation targets the SESSION IN USE, not the
+    // oscillating global pointer). Ignore an unexpanded "${...}" literal.
+    const adIdx = process.argv.indexOf('--active-dir');
+    const adRaw = adIdx >= 0 ? process.argv[adIdx + 1] : null;
+    const activeDir = (typeof adRaw === 'string' && adRaw.trim() && !adRaw.includes('${')) ? adRaw : undefined;
     let report;
     try {
-      report = await consolidate({ apply });
+      report = await consolidate({ apply, activeDir });
     } catch (err) {
       console.error(`[consolidate-datadirs] fatal: ${err.message}`);
       report = { ok: false, apply, mode: 'unknown', activeDir: '', siblings: [], reason: `fatal: ${err.message}` };
