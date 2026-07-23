@@ -9019,6 +9019,34 @@ test('graph-warm: per-project stamp keys are distinct (one root on cooldown neve
   assertEq(ggCore.isWarmOnCooldown(b, 60000, 1000 + 10), false, 'projB unaffected');
 });
 
+// ─── plugin-setup: postinstall root resolution (bug B regression) ─────────────
+// A postinstall runs INSIDE the package being installed, so the setup target must
+// come from __dirname — NOT process.env.CLAUDE_PLUGIN_ROOT (a runtime pointer that
+// can aim at a DIFFERENT checkout). When the env diverged (dev sets it per README,
+// or a stale value is inherited by the installer process), the setup checked the
+// brain-server node_modules in the WRONG tree, reported a false "deps present",
+// and left the freshly-installed MCP DOWN. setupRoot() must ignore the env.
+test('plugin-setup: setupRoot ignores a divergent CLAUDE_PLUGIN_ROOT (postinstall targets __dirname)', () => {
+  const savedRoot = process.env.CLAUDE_PLUGIN_ROOT;
+  const pluginSetupPath = require.resolve(path.join(SCRIPTS, 'plugin-setup.js'));
+  delete require.cache[pluginSetupPath];
+  const divergent = path.join(os.tmpdir(), 'ccb-divergent-root-does-not-match');
+  process.env.CLAUDE_PLUGIN_ROOT = divergent;
+  try {
+    const { setupRoot } = require(pluginSetupPath);
+    const resolved = setupRoot();
+    // The setup must operate on the package that CONTAINS plugin-setup.js
+    // (scripts/..), never on the divergent env pointer.
+    assertEq(resolved, path.resolve(SCRIPTS, '..'),
+      'setupRoot resolves to the package root of plugin-setup.js, not the env var');
+    assert(path.resolve(resolved) !== path.resolve(divergent),
+      'setupRoot must NOT follow a divergent CLAUDE_PLUGIN_ROOT');
+  } finally {
+    process.env.CLAUDE_PLUGIN_ROOT = savedRoot;
+    delete require.cache[pluginSetupPath];
+  }
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);
