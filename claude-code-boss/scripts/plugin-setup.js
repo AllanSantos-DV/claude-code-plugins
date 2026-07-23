@@ -22,7 +22,20 @@ const { execSync } = require('child_process');
 const path = require('path');
 const fs = require('fs');
 
-const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
+/**
+ * Resolve the package root this setup operates on. A postinstall ALWAYS runs
+ * INSIDE the package being installed, so the install/verify target is derived
+ * from THIS file's location (`__dirname/..`) — NOT process.env.CLAUDE_PLUGIN_ROOT,
+ * which is a RUNTIME pointer that can aim at a DIFFERENT checkout (dev machines
+ * set it per the README). Trusting the env here made the postinstall check/install
+ * the brain-server deps in the WRONG tree and report a false "deps present",
+ * leaving the Brain MCP DOWN in the freshly-installed copy.
+ * @returns {string} absolute path to the package root being set up
+ */
+function setupRoot() {
+  return path.resolve(__dirname, '..');
+}
+const PLUGIN_ROOT = setupRoot();
 const MIN_NODE = [22, 13, 0];
 
 function run(cmd, opts = {}) {
@@ -101,7 +114,7 @@ function installBrainServer() {
   }
 }
 
-(async () => {
+async function main() {
   warnNodeVersion();
 
   const nodeModules = path.join(PLUGIN_ROOT, 'node_modules');
@@ -125,4 +138,10 @@ function installBrainServer() {
   warmEmbedder();
 
   process.stdout.write('[plugin-setup] Done\n');
-})();
+}
+
+if (require.main === module) {
+  main();
+}
+
+module.exports = { setupRoot };

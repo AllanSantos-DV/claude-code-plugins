@@ -22,8 +22,9 @@
 
 - O push em modo **mcp-memory** preserva o `project` de cada entry (o handshake por shard), então o contrato-duro de `project_id` da v2.15 vale **de ponta a ponta** quando irmãos são dobrados no daemon. Travado com teste.
 
-### Corrigido (dívida de teste, pré-existente)
+### Corrigido (pré-existente, pego no smoke do dono)
 
+- **Postinstall instalava as deps do brain-server na árvore ERRADA** (`plugin-setup.js`): `PLUGIN_ROOT` era resolvido como `process.env.CLAUDE_PLUGIN_ROOT || __dirname/..`, mas um postinstall SEMPRE roda dentro do pacote que está sendo instalado (`__dirname`). Quando a env divergia do dir de instalação — dev que segue o README (`export CLAUDE_PLUGIN_ROOT=…`), ou um valor obsoleto herdado pelo processo instalador — o setup checava `servers/brain-server/node_modules` no checkout ERRADO, reportava um **falso "deps present"** e pulava a instalação, deixando o **Brain MCP DOWN** na cópia recém-instalada (`@modelcontextprotocol/sdk` irresolúvel → `ERR_MODULE_NOT_FOUND` no boot). Fix: `setupRoot()` deriva o alvo **só de `__dirname`** (a env `CLAUDE_PLUGIN_ROOT` segue valendo em runtime, onde é o ponteiro correto). Provado **RED→GREEN** com teste que fixa uma `CLAUDE_PLUGIN_ROOT` divergente e exige que o setup ignore-a.
 - **Flake do `curation-stop`** (`[Stop→retry+CREATE-now-curated-via-alias→release {}]`) que só falhava sob o gate LENTO: o `shells.json` era criado no module-load (T0) mas `firstBlockedAt = T1-10s` era computado no run-time; um suite >10s fazia `shells.json.mtime < firstBlockedAt`, então o `filterUnresolved` pulava a checagem do shell curado → `block` em vez de `release`. Fix: fixar o mtime do `shells.json` em `now` (simétrico ao teste negativo irmão que já fazia backdate). Provado **RED→GREEN**; gate completo 2× verde. (Quality-gate: suíte vermelha bloqueia, pré-existente incluído.)
 
 ## [2.16.0] - 2026-07-22
