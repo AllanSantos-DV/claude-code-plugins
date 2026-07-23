@@ -18,7 +18,11 @@ Novo hook `graph-warm.js` (SessionStart): no backend `mcp-memory`, dispara um `i
 - **Duas superfícies, um spawn**: tools nativas via novo hook PreToolUse `Grep|Glob` (`graph-guard.js`); Bash amplo integrado ao `curation-guard.js` que já roda em toda chamada Bash (zero spawn extra). Heurísticas conservadoras: qualquer escopo explícito (`path`/`glob`/`type`, `grep -r <subdir>`, `find <subdir>`, grep alimentado por pipe) passa sem interceptação.
 - **Perfis**: ativo em `dev` e `standard` (proteção de recurso da máquina, não nag de aprendizado); `free` mantém o contrato passthrough (off). Telemetria `graph-guard.fired` desde o dia 1 para medir conversão.
 
-688 unit (12 novos) + 104 hooks (10 novos E2E) verdes; heurísticas, escada de decisão (ready-com-nodes→deny-once, not_indexed→deny-once index-now, ready-0-nodes→allow, offline/indexing/erro→allow com cache), o warm (cooldown por projeto, gates de backend/perfil) e as duas superfícies cobertas por teste.
+### Corrigido — deny-once agora é POR-REPO (sem vazamento cross-repo)
+
+- O carimbo deny-once (`searchSig`) passou a incluir a **raiz do repo** no hash. Antes, a MESMA busca ampla (ex.: `grep -rn "X"`) rodada em dois repos diferentes na mesma sessão compartilhava um único carimbo — a 2ª (em outro repo) era **liberada** pelo carimbo da 1ª, pulando o deny-once que ela merecia (o guard checava o grafo do cwd certo, mas o carimbo era global). Agora cada repo é avaliado de forma independente. Provado RED→GREEN. De quebra, removido um **byte NULL** que existia como separador do hash (fonte frágil, sinalizada como binária pelo grep).
+
+689 unit (13 novos) + 104 hooks (10 novos E2E) verdes; heurísticas, escada de decisão (ready-com-nodes→deny-once, not_indexed→deny-once index-now, ready-0-nodes→allow, offline/indexing/erro→allow com cache), o warm (cooldown por projeto, gates de backend/perfil) e as duas superfícies cobertas por teste.
 
 ## [2.15.0] - 2026-07-21
 

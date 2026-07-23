@@ -8833,6 +8833,24 @@ test('graph-guard ladder: READY (with nodes) → deny once with reason, identica
   assertEq(other.action, 'deny', 'a DIFFERENT broad search is denied once too');
 });
 
+test('graph-guard ladder: deny-once is PER-REPO — the SAME broad search in a DIFFERENT repo denies again (no cross-repo stamp bleed)', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggxrepo-'));
+  const base = {
+    kind: 'native-grep', raw: 'Grep sharedSymbol', pattern: 'sharedSymbol',
+    sid: 'sid-xrepo', dataDir, cfg: { cacheTtlMs: 60000 },
+    probe: async () => ({ state: 'ready', nodes: 500 }),
+  };
+  // Repo A: first broad search denied once, identical retry passes.
+  assertEq((await ggCore.decideBroadSearch({ ...base, projectRoot: 'C:/repoA' })).action, 'deny', 'repoA first → deny');
+  assertEq((await ggCore.decideBroadSearch({ ...base, projectRoot: 'C:/repoA' })).action, 'allow', 'repoA retry → allow');
+  // Repo B — SAME session, SAME command, DIFFERENT repo root: must deny ONCE too.
+  // The per-session stamp must be keyed by repo root, or repoA's stamp would
+  // wrongly release repoB's very first broad search (the cross-repo bleed the
+  // guard checked cwd's graph for but stamped globally).
+  assertEq((await ggCore.decideBroadSearch({ ...base, projectRoot: 'C:/repoB' })).action, 'deny', 'repoB first → deny (per-repo deny-once, no bleed from repoA)');
+  assertEq((await ggCore.decideBroadSearch({ ...base, projectRoot: 'C:/repoB' })).action, 'allow', 'repoB retry → allow');
+});
+
 test('graph-guard ladder: not_indexed → DENY-once with the index-now redirect; retry passes (economics: one-time index vs per-query walk)', async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggni-'));
   let probes = 0;

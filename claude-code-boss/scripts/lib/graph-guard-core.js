@@ -197,8 +197,8 @@ function writeStamp(file, stamp) {
   } catch (e) { void e; /* best effort */ }
 }
 
-function searchSig(kind, raw) {
-  return crypto.createHash('sha1').update(`${kind} ${String(raw || '').trim()}`).digest('hex').slice(0, 16);
+function searchSig(kind, raw, root) {
+  return crypto.createHash('sha1').update(`${kind} ${String(root || '').toLowerCase()} ${String(raw || '').trim()}`).digest('hex').slice(0, 16);
 }
 
 // ── Decision ladder (DI: probe injected) ─────────────────────────────────────
@@ -248,7 +248,7 @@ async function decideBroadSearch({ kind, raw, pattern, projectRoot, sid, dataDir
     if (cached.state === 'not_indexed') {
       const sFile = stampPath(dataDir, sid);
       const stamp = readStamp(sFile);
-      const sig = searchSig(kind, raw);
+      const sig = searchSig(kind, raw, projectRoot);
       if (stamp.sigs.includes(sig)) return { action: 'allow' };
       writeStamp(sFile, { ...stamp, sigs: [...stamp.sigs, sig] });
       return {
@@ -264,7 +264,7 @@ async function decideBroadSearch({ kind, raw, pattern, projectRoot, sid, dataDir
     // Graph READY (with nodes) → deny-once per unique search per session.
     const sFile = stampPath(dataDir, sid);
     const stamp = readStamp(sFile);
-    const sig = searchSig(kind, raw);
+    const sig = searchSig(kind, raw, projectRoot);
     if (stamp.sigs.includes(sig)) return { action: 'allow' };
     writeStamp(sFile, { ...stamp, sigs: [...stamp.sigs, sig] });
     return {
