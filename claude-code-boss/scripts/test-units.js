@@ -8766,6 +8766,168 @@ test('brain-backend mcp: saveMcp pins documentId = entry.id so re-pushes UPSERT 
   }
 });
 
+// ─── lib/graph-guard-core.js — broad-search redirect to the Session Graph ────
+const ggCore = require('./lib/graph-guard-core.js');
+
+test('graph-guard: native Grep broad ⇔ no path/glob/type; any scoping field → not broad', () => {
+  assert(ggCore.isBroadNativeSearch('Grep', { pattern: 'resolveProjectId' }), 'bare pattern = broad');
+  assert(!ggCore.isBroadNativeSearch('Grep', { pattern: 'x', path: 'scripts/lib' }), 'path scopes');
+  assert(!ggCore.isBroadNativeSearch('Grep', { pattern: 'x', glob: '**/*.js' }), 'glob scopes');
+  assert(!ggCore.isBroadNativeSearch('Grep', { pattern: 'x', type: 'js' }), 'type scopes');
+  assert(!ggCore.isBroadNativeSearch('Grep', {}), 'no pattern = nothing to guard');
+});
+
+test('graph-guard: native Glob broad only for rootless ** patterns', () => {
+  assert(ggCore.isBroadNativeSearch('Glob', { pattern: '**/*.ts' }), 'rootless ** = broad');
+  assert(!ggCore.isBroadNativeSearch('Glob', { pattern: '**/*.ts', path: 'src' }), 'path scopes');
+  assert(!ggCore.isBroadNativeSearch('Glob', { pattern: 'src/**/*.ts' }), 'anchored pattern = scoped');
+  assert(!ggCore.isBroadNativeSearch('Read', { pattern: '**/*' }), 'other tools never match');
+});
+
+test('graph-guard: bash heuristics flag only the machine-hurting shapes', () => {
+  assert(ggCore.matchBroadBashSearch('grep -rn "resolveProjectId" .'), 'grep -r at . = broad');
+  assertEq(ggCore.matchBroadBashSearch('grep -rn "resolveProjectId" .').pattern, 'resolveProjectId');
+  assert(ggCore.matchBroadBashSearch('rg resolveProjectId'), 'bare rg = broad (recursive by default)');
+  assert(ggCore.matchBroadBashSearch('find . -name "*.js"'), 'find at . = broad');
+  assertEq(ggCore.matchBroadBashSearch('grep -rn "x" scripts/lib'), null, 'scoped grep -r passes');
+  assertEq(ggCore.matchBroadBashSearch('grep -n "x" file.js'), null, 'non-recursive grep passes');
+  assertEq(ggCore.matchBroadBashSearch('rg x scripts/lib/foo.js'), null, 'scoped rg passes');
+  assertEq(ggCore.matchBroadBashSearch('find scripts -name "*.js"'), null, 'find in a subdir passes');
+  assertEq(ggCore.matchBroadBashSearch('git log --oneline | grep fix'), null, 'pipe-fed grep never walks the fs');
+  assertEq(ggCore.matchBroadBashSearch('npm test'), null, 'non-search commands pass');
+});
+
+test('graph-guard: redirect reason teaches the graph→scoped-grep two-step + the escape hatch', () => {
+  const reason = ggCore.buildRedirectReason({ kind: 'native-grep', pattern: 'resolveProjectId', tokens: ggCore.extractQueryTokens('resolveProjectId') });
+  assert(/graph_search/.test(reason), 'names graph_search');
+  assert(/SCOPED/i.test(reason), 'instructs the scoped re-run');
+  assert(/deny-once|passes through/.test(reason), 'names the escape hatch');
+});
+
+test('graph-guard: readiness cache TTL round-trip (state+nodes); stale/corrupt → null', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggcache-'));
+  const file = path.join(dir, 'graph-ready-x.json');
+  ggCore.writeReadyCache(file, 'ready', 1834, 1000);
+  const c = ggCore.readReadyCache(file, 5000, 2000);
+  assertEq(c.state, 'ready', 'fresh cache read back');
+  assertEq(c.nodes, 1834, 'node count round-trips (needed for the 0-node allow)');
+  assertEq(ggCore.readReadyCache(file, 5000, 7000), null, 'expired → null');
+  fs.writeFileSync(file, '{not json');
+  assertEq(ggCore.readReadyCache(file, 5000, 2000), null, 'corrupt → null');
+  assertEq(ggCore.readReadyCache(path.join(dir, 'absent.json'), 5000), null, 'absent → null');
+});
+
+test('graph-guard ladder: READY (with nodes) → deny once with reason, identical retry passes', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggladder-'));
+  const args = {
+    kind: 'native-grep', raw: 'Grep resolveProjectId', pattern: 'resolveProjectId',
+    projectRoot: 'C:/proj', sid: 'sid-1', dataDir,
+    cfg: { cacheTtlMs: 60000 }, probe: async () => ({ state: 'ready', nodes: 1834 }),
+  };
+  const first = await ggCore.decideBroadSearch(args);
+  assertEq(first.action, 'deny');
+  assert(/graph_search/.test(first.reason), 'deny carries the redirect');
+  const second = await ggCore.decideBroadSearch(args);
+  assertEq(second.action, 'allow', 'identical retry passes (deny-once)');
+  const other = await ggCore.decideBroadSearch({ ...args, raw: 'Grep otherThing', pattern: 'otherThing' });
+  assertEq(other.action, 'deny', 'a DIFFERENT broad search is denied once too');
+});
+
+test('graph-guard ladder: deny-once is PER-REPO — the SAME broad search in a DIFFERENT repo denies again (no cross-repo stamp bleed)', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggxrepo-'));
+  const base = {
+    kind: 'native-grep', raw: 'Grep sharedSymbol', pattern: 'sharedSymbol',
+    sid: 'sid-xrepo', dataDir, cfg: { cacheTtlMs: 60000 },
+    probe: async () => ({ state: 'ready', nodes: 500 }),
+  };
+  // Repo A: first broad search denied once, identical retry passes.
+  assertEq((await ggCore.decideBroadSearch({ ...base, projectRoot: 'C:/repoA' })).action, 'deny', 'repoA first → deny');
+  assertEq((await ggCore.decideBroadSearch({ ...base, projectRoot: 'C:/repoA' })).action, 'allow', 'repoA retry → allow');
+  // Repo B — SAME session, SAME command, DIFFERENT repo root: must deny ONCE too.
+  // The per-session stamp must be keyed by repo root, or repoA's stamp would
+  // wrongly release repoB's very first broad search (the cross-repo bleed the
+  // guard checked cwd's graph for but stamped globally).
+  assertEq((await ggCore.decideBroadSearch({ ...base, projectRoot: 'C:/repoB' })).action, 'deny', 'repoB first → deny (per-repo deny-once, no bleed from repoA)');
+  assertEq((await ggCore.decideBroadSearch({ ...base, projectRoot: 'C:/repoB' })).action, 'allow', 'repoB retry → allow');
+});
+
+test('graph-guard ladder: not_indexed → DENY-once with the index-now redirect; retry passes (economics: one-time index vs per-query walk)', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggni-'));
+  let probes = 0;
+  const args = {
+    kind: 'bash', raw: 'rg foo', pattern: 'foo', projectRoot: 'C:/proj', sid: 's', dataDir,
+    cfg: { cacheTtlMs: 60000 }, probe: async () => { probes++; return { state: 'not_indexed', nodes: 0 }; },
+  };
+  const first = await ggCore.decideBroadSearch(args);
+  assertEq(first.action, 'deny', 'not_indexed now DENIES once (was allow+advisory)');
+  assert(/graph_analyze/.test(first.reason), 'reason pushes graph_analyze');
+  assert(/deny-once|passes through NOW/.test(first.reason), 'reason states the escape hatch');
+  const second = await ggCore.decideBroadSearch(args);
+  assertEq(second.action, 'allow', 'identical retry passes — never blocked waiting for the async index');
+  assertEq(probes, 1, 'state cached — probe not repeated within TTL');
+});
+
+test('graph-guard ladder: READY but 0 nodes → allow (repo has no graph-supported code; redirect would be a lie)', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggzero-'));
+  let probes = 0;
+  const args = {
+    kind: 'native-grep', raw: 'Grep x', pattern: 'x', projectRoot: 'C:/mdonly', sid: 's', dataDir,
+    cfg: { cacheTtlMs: 60000 }, probe: async () => { probes++; return { state: 'ready', nodes: 0 }; },
+  };
+  assertEq((await ggCore.decideBroadSearch(args)).action, 'allow', 'empty graph → get out of the way');
+  assertEq((await ggCore.decideBroadSearch(args)).action, 'allow', 'still allow (cached)');
+  assertEq(probes, 1, '0-node ready state cached, no re-probe');
+});
+
+test('graph-guard ladder: offline/indexing/probe-throw → plain allow (fail-open), and failure state is CACHED', async () => {
+  for (const behavior of ['offline', 'indexing', 'throw']) {
+    const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), `ccb-ggfo-${behavior}-`));
+    let probes = 0;
+    const probe = async () => {
+      probes++;
+      if (behavior === 'throw') throw new Error('net down');
+      return { state: behavior, nodes: 0 };
+    };
+    const args = {
+      kind: 'native-grep', raw: 'Grep x', pattern: 'x', projectRoot: 'C:/p', sid: 's', dataDir,
+      cfg: { cacheTtlMs: 60000 }, probe,
+    };
+    assertEq((await ggCore.decideBroadSearch(args)).action, 'allow', `${behavior} → allow`);
+    assertEq((await ggCore.decideBroadSearch(args)).action, 'allow');
+    assertEq(probes, 1, `${behavior}: probe result cached, no per-search re-probe`);
+  }
+});
+
+test('graph-guard ladder: a bare-string probe result still works (back-compat)', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggbc-'));
+  const args = {
+    kind: 'native-grep', raw: 'Grep y', pattern: 'y', projectRoot: 'C:/bc', sid: 's', dataDir,
+    cfg: { cacheTtlMs: 60000 }, probe: async () => 'not_indexed', // legacy shape → nodes defaults 0
+  };
+  assertEq((await ggCore.decideBroadSearch(args)).action, 'deny', 'string "not_indexed" still denies once');
+});
+
+test('graph-warm: cooldown round-trip — within window blocks, expired/absent allows', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggwarm-'));
+  const file = ggCore.warmStampPath(dir, 'C:/proj');
+  assertEq(ggCore.isWarmOnCooldown(file, 60000, 1000), false, 'absent stamp → not on cooldown');
+  ggCore.stampWarm(file, 1000);
+  assertEq(ggCore.isWarmOnCooldown(file, 60000, 1000 + 30000), true, 'within window → on cooldown');
+  assertEq(ggCore.isWarmOnCooldown(file, 60000, 1000 + 70000), false, 'past window → allowed again');
+  fs.writeFileSync(file, '{corrupt');
+  assertEq(ggCore.isWarmOnCooldown(file, 60000, 1000), false, 'corrupt stamp → not on cooldown (fail-open)');
+});
+
+test('graph-warm: per-project stamp keys are distinct (one root on cooldown never gates another)', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ggwarm2-'));
+  const a = ggCore.warmStampPath(dir, 'C:/projA');
+  const b = ggCore.warmStampPath(dir, 'C:/projB');
+  assert(a !== b, 'different roots → different stamp files');
+  ggCore.stampWarm(a, 1000);
+  assertEq(ggCore.isWarmOnCooldown(a, 60000, 1000 + 10), true, 'projA on cooldown');
+  assertEq(ggCore.isWarmOnCooldown(b, 60000, 1000 + 10), false, 'projB unaffected');
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   await Promise.all(PENDING);

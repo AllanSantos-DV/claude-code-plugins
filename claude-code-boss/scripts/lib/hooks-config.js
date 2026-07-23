@@ -90,6 +90,9 @@ const PROFILE_PRESETS = {
     researchFollowup: { enabled: false },
     sessionSummary:   { enabled: false },
     autoContinue:     { enabled: false },
+    // graph-guard stays in dev+standard (it protects MACHINE resources, not a
+    // learning nag) but free's contract is "no blocking, ever" — so off here.
+    graphGuard:       { enabled: false },
   },
 };
 
@@ -191,6 +194,30 @@ function getCurationStop() {
 function getCurationGuard() {
   const cfg = load();
   return cfg.curationGuard || {};
+}
+
+// Profile-resolved (free disables it). Backs the graph-guard: on the mcp-memory
+// backend with a READY Session Graph, a BROAD symbol-ish Grep/Glob/Bash-grep is
+// denied ONCE with a redirect to graph_search/graph_symbols (cheap, structural,
+// no embeddings) so the agent re-runs the text search SCOPED to the paths the
+// graph surfaced. Retrying the identical call always passes (deny-once).
+function getGraphGuard() {
+  const gg = _resolved().graphGuard || {};
+  return {
+    enabled: gg.enabled !== false,
+    // Readiness probes are cached per project root so a fresh hook process
+    // (spawned per tool call) never pays a network round-trip on every search.
+    cacheTtlMs: Number.isInteger(gg.cacheTtlMs) && gg.cacheTtlMs > 0 ? gg.cacheTtlMs : 5 * 60 * 1000,
+    probeTimeoutMs: Number.isInteger(gg.probeTimeoutMs) && gg.probeTimeoutMs > 0 ? gg.probeTimeoutMs : 1200,
+    // Proactive warm: at SessionStart, fire an (incremental) graph ingest so the
+    // graph is ready-and-fresh before the first search — the server does the
+    // delta (SHA-256 per-file manifest → no-op ~5s if nothing changed, rebuild
+    // if it did), so the client just triggers it. Cooldown avoids re-hashing the
+    // repo on every session open. warm follows enabled (dev/standard on, free
+    // off) but can be turned off independently.
+    warm: gg.warm !== false,
+    warmCooldownMs: Number.isInteger(gg.warmCooldownMs) && gg.warmCooldownMs > 0 ? gg.warmCooldownMs : 4 * 60 * 60 * 1000,
+  };
 }
 
 // Not profile-controlled — read straight from the raw file (like getCurationGuard).
@@ -350,6 +377,7 @@ module.exports = {
   resolveProfileConfig,
   getCurationStop,
   getCurationGuard,
+  getGraphGuard,
   getErrorGuard,
   getPolicyInject,
   getCaptureTriggerEvidence,

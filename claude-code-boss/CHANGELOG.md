@@ -1,5 +1,29 @@
 # Changelog
 
+## [2.16.0] - 2026-07-22
+
+**Graph-guard: busca recursiva ampla → grafo primeiro, grep escopado depois.** No backend `mcp-memory` com o Session Graph **READY**, uma busca ampla e recursiva (Grep/Glob nativos sem `path`/`glob`/`type`, ou `grep -r`/`rg`/`find` na raiz via Bash) é negada **uma única vez** com a instrução em dois passos: consultar `graph_search`/`graph_symbols` (estrutural, sem embeddings — **~300ms medidos num grafo de 135k nodes**) para obter os caminhos enxutos, e só então re-rodar a busca de texto **escopada** neles. Repetir a chamada idêntica passa direto (stamp por sessão) — nunca há deadlock, e busca de texto livre perde no máximo um round-trip.
+
+- **`not_indexed` também redireciona** (economia do dono: indexar é custo ÚNICO, um grep amplo é custo POR consulta — re-varre a árvore toda a cada chamada): a 1ª busca ampla num repo não-indexado é **negada uma vez** empurrando `graph_analyze` (async), e o retry idêntico passa NA HORA — então **nunca** se espera pela indexação. `indexing`/daemon offline → passam em silêncio. Fail-open em qualquer erro.
+- **`ready` mas 0 nodes → passa**: um repo sem código que o grafo suporta (só `.md`/`.txt`/…) indexa pra grafo vazio; redirecionar pra `graph_search` seria mentira, então o guard sai do caminho. O probe passou a ler o `nodes` do status (cacheado junto do estado).
+
+### graph-warm — o grafo pronto-e-fresco antes da 1ª busca (SessionStart)
+
+Novo hook `graph-warm.js` (SessionStart): no backend `mcp-memory`, dispara um `ingest` **incremental** do Session Graph em fire-and-forget (retorna quando o daemon aceita, ~80ms — nunca espera a indexação async). Assim todo projeto aberto com o boss + MCP ganha o grafo automaticamente, sem o agente chamar `graph_analyze` na mão, e o caminho `not_indexed → deny` do guard vira raro.
+
+- **O servidor faz o delta** (verificado na fonte do native-java `ProjectGraphIngestor`): manifesto SHA-256 por arquivo → **no-op ~5s** num repo de 20k arquivos quando nada mudou (medido), reconstrói só na mudança, re-indexa sozinho quando a versão do extrator muda, e aborta preservando o grafo anterior num walk parcial. O cliente só cutuca o ingest — **zero lógica de staleness no cliente**.
+- **Cooldown por projeto** (default 4h): não re-hasheia o repo em toda abertura. Silencioso, fail-open (daemon offline / root inseguro → no-op, nunca bloqueia o SessionStart). Perfil: on em `dev`+`standard`, off em `free` (segue o graph-guard); opt-out fino via `graphGuard.warm=false`.
+- **Ponte, não a solução final**: o próprio memory-server já traz um `GraphIngestScheduler` desenhado pra fazer isso server-side (indexar quando o projeto abre) — hoje desconectado. Quando esse wiring server-side landar, este hook pode se aposentar (todo cliente do daemon ganharia o warm de graça).
+- **Prontidão cacheada por projeto** (`.runtime/graph-ready-*.json`, TTL 5min): um hook é um processo novo por chamada — sem o cache, cada busca pagaria um round-trip de rede. Probe curto (1,2s) só quando o cache expira, resolvendo o **MESMO daemon** do backend (serverUrl explícito vence; senão o registry) — nunca um daemon descoberto de forma independente.
+- **Duas superfícies, um spawn**: tools nativas via novo hook PreToolUse `Grep|Glob` (`graph-guard.js`); Bash amplo integrado ao `curation-guard.js` que já roda em toda chamada Bash (zero spawn extra). Heurísticas conservadoras: qualquer escopo explícito (`path`/`glob`/`type`, `grep -r <subdir>`, `find <subdir>`, grep alimentado por pipe) passa sem interceptação.
+- **Perfis**: ativo em `dev` e `standard` (proteção de recurso da máquina, não nag de aprendizado); `free` mantém o contrato passthrough (off). Telemetria `graph-guard.fired` desde o dia 1 para medir conversão.
+
+### Corrigido — deny-once agora é POR-REPO (sem vazamento cross-repo)
+
+- O carimbo deny-once (`searchSig`) passou a incluir a **raiz do repo** no hash. Antes, a MESMA busca ampla (ex.: `grep -rn "X"`) rodada em dois repos diferentes na mesma sessão compartilhava um único carimbo — a 2ª (em outro repo) era **liberada** pelo carimbo da 1ª, pulando o deny-once que ela merecia (o guard checava o grafo do cwd certo, mas o carimbo era global). Agora cada repo é avaliado de forma independente. Provado RED→GREEN. De quebra, removido um **byte NULL** que existia como separador do hash (fonte frágil, sinalizada como binária pelo grep).
+
+689 unit (13 novos) + 104 hooks (10 novos E2E) verdes; heurísticas, escada de decisão (ready-com-nodes→deny-once, not_indexed→deny-once index-now, ready-0-nodes→allow, offline/indexing/erro→allow com cache), o warm (cooldown por projeto, gates de backend/perfil) e as duas superfícies cobertas por teste.
+
 ## [2.15.0] - 2026-07-21
 
 **Contrato-duro de `project_id` (fail-closed) + recall hierárquico "ancestor-spine".** Alinha o cliente à nova assinatura do servidor de memória `native-java` v2.29.0 (ADR-018): a memória passa a ter uma **etiqueta de projeto estável** (git-remote normalizado OU `.memory/project.json` na raiz) — sem etiqueta, a ingestão é **bloqueada** com aviso acionável, em vez de inventar escopo-lixo do nome da pasta. Rigor de sempre: contrato do servidor verificado na FONTE, reúso de código provado, cada fase revisada da fonte, gate verde rodado localmente (676 unit + 94 hooks).
