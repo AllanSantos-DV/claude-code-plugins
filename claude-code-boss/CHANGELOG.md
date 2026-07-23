@@ -1,5 +1,31 @@
 # Changelog
 
+## [2.17.0] - 2026-07-23
+
+**Consolidação da SESSÃO EM USO (a promessa da v1.14, enfim entregue) + ponteiro que não regride + verify-before-delete.** A consolidação das pastas-irmãs do KB deixou de seguir o **ponteiro global oscilante** e passou a mirar a pasta REAL da sessão — resolvendo a "perda aparente de memória" (recall lendo "1") quando duas identidades de instalação competiam pelo ponteiro. Rigor de sempre: causa-raiz verificada na FONTE, plano da mesa de ADR **descartado** quando adiou a promessa central sem base (o daemon já tem o `--plugin-data` real), cada fase revisada da fonte, gate verde rodado localmente **2× estável** (94 hooks + 681 unit), e integrado sobre a v2.16.0 (graph-guard) sem perder nada — gate combinado verde (693 unit + hooks).
+
+### A promessa: consolidar a sessão em uso (F-B)
+
+- **Autoridade movida para o brain-server** (`servers/brain-server/index.js`): o servidor stdio é o ÚNICO processo que recebe de forma confiável o `--plugin-data` REAL da sessão (Claude Code issue #9427: `${...}` expande em **args**, não no bloco `env`). Ele agora dispara a consolidação guardada com `--active-dir DATA_DIR` — best-effort, fail-open, nunca bloqueia o startup.
+- **Gatilho cego aposentado**: o hook de `SessionStart` (`consolidate-datadirs-hook.js`) resolvia a pasta via `dataDir()` (o ponteiro oscilante) — removido do `hooks.json`. O launcher (mantido para uso manual) agora aceita e repassa `--active-dir`.
+
+### Engine: alvo explícito + verify-before-delete (F-A)
+
+- **`--active-dir <dir>`** (`consolidate-datadirs.js`): fixa a consolidação numa pasta EXPLÍCITA — normaliza `CLAUDE_PLUGIN_DATA` **antes** do require lazy do `brain-store` (que congela `STORE_DIR = dataDir()` no load), então o engine grava na pasta real da sessão, não na do ponteiro.
+- **Verify-before-delete**: antes de `rmSync` do irmão, cada id absorvido precisa ser **lido de volta** do store ativo (`getRaw`). Uma escrita silenciosa/mal-endereçada mantém o irmão **e** o backup, em vez de destruir dado não-absorvido. É a rede de segurança que o incidente exigia — nunca apagar o que não se prova ter absorvido.
+
+### Ponteiro não-regride (F-C)
+
+- `writeActivePointer` (`lib/data-dir.js`) **nunca move o ponteiro de uma pasta mais pesada (viva) para uma mais leve (quase-vazia)**. Peso SQLite-free = soma dos bytes de `dir/brain/*/brain.db` (o módulo continua leve, só `path/os/fs`). Mata o flip que fazia o recall env-less resolver a pasta de 1 registro. Uma pasta genuinamente maior ainda avança o ponteiro (troca legítima não é bloqueada).
+
+### Coerência de project_id na consolidação (F-D)
+
+- O push em modo **mcp-memory** preserva o `project` de cada entry (o handshake por shard), então o contrato-duro de `project_id` da v2.15 vale **de ponta a ponta** quando irmãos são dobrados no daemon. Travado com teste.
+
+### Corrigido (dívida de teste, pré-existente)
+
+- **Flake do `curation-stop`** (`[Stop→retry+CREATE-now-curated-via-alias→release {}]`) que só falhava sob o gate LENTO: o `shells.json` era criado no module-load (T0) mas `firstBlockedAt = T1-10s` era computado no run-time; um suite >10s fazia `shells.json.mtime < firstBlockedAt`, então o `filterUnresolved` pulava a checagem do shell curado → `block` em vez de `release`. Fix: fixar o mtime do `shells.json` em `now` (simétrico ao teste negativo irmão que já fazia backdate). Provado **RED→GREEN**; gate completo 2× verde. (Quality-gate: suíte vermelha bloqueia, pré-existente incluído.)
+
 ## [2.16.0] - 2026-07-22
 
 **Graph-guard: busca recursiva ampla → grafo primeiro, grep escopado depois.** No backend `mcp-memory` com o Session Graph **READY**, uma busca ampla e recursiva (Grep/Glob nativos sem `path`/`glob`/`type`, ou `grep -r`/`rg`/`find` na raiz via Bash) é negada **uma única vez** com a instrução em dois passos: consultar `graph_search`/`graph_symbols` (estrutural, sem embeddings — **~300ms medidos num grafo de 135k nodes**) para obter os caminhos enxutos, e só então re-rodar a busca de texto **escopada** neles. Repetir a chamada idêntica passa direto (stamp por sessão) — nunca há deadlock, e busca de texto livre perde no máximo um round-trip.
