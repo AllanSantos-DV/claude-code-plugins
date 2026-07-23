@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.15.0 — identidade de projeto estável e recall hierárquico</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. A v2.15.0 dá à memória uma identidade de projeto estável e um recall hierárquico. Toda memória passa a exigir uma etiqueta de projeto (um git-remote normalizado, host/owner/repo, ou um .memory/project.json na raiz); sem etiqueta, a ingestão é bloqueada com um aviso acionável, em vez de inventar escopo do nome da pasta (fail-closed, alinhado ao servidor native-java v2.29.0/ADR-018). Trabalhando numa subpasta, o recall une os project_ids do CWD até a raiz da sessão, dando mais peso ao id do CWD; a união de ancestrais é lazy, com timeout de 500ms que degrada para compose-only, 100% no cliente e sem mudança no servidor. O marcador legado .claude-boss-project vira read-only, com migração assistida; o backend local segue single-project." />
+<title>claude-code-boss v2.17.0 — consolidação da sessão em uso, ponteiro que não regride</title>
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. A v2.17.0 consolida a SESSÃO EM USO: a autoridade da consolidação das pastas-irmãs do KB vive no brain-server (o único processo que recebe o --plugin-data real da sessão) que dispara com --active-dir mirando a pasta REAL da sessão, não mais um ponteiro global oscilante. O ponteiro ativo nunca regride de uma pasta viva (mais pesada) para uma quase-vazia (mais leve), matando a perda aparente de memória (recall lendo 1) quando duas identidades de instalação competiam. O engine nunca apaga uma pasta-irmã sem antes ler de volta e provar que cada registro foi absorvido (verify-before-delete, backup-first), e o project_id se mantém coerente de ponta a ponta. Empilha sobre a v2.16.0 (graph-guard): uma busca recursiva ampla é reroteada uma vez para o Session Graph (grafo primeiro, grep escopado depois) com o grafo pronto e fresco no SessionStart." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -885,13 +885,125 @@
   .sp-foot b{ color:#a29f97 }
   .sp-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
 
+  /* v2.16.0 : graph-guard - uma busca recursiva ampla e reroteada UMA vez pro Session Graph (grafo primeiro, grep escopado depois); stamp por sessao, fail-open; graph-warm pre-aquece o grafo no SessionStart (ingest incremental fire-and-forget, cooldown por projeto) */
+  .reroute{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:860px; font-family:var(--mono); margin:0 0 36px }
+  .rr-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .rr-bar .k{ color:var(--accent) }
+  .rr-bar .m{ color:#8a877f }
+  .rr-stage{ padding:18px 22px 8px; display:grid; grid-template-columns:minmax(280px,1.12fr) minmax(240px,.88fr); gap:18px; align-items:stretch }
+  .rr-svg{ width:100%; min-height:332px; border:1px solid var(--panel-line); border-radius:12px;
+    background:radial-gradient(circle at 30% 30%, rgba(180,97,30,.2), transparent 40%), linear-gradient(180deg, rgba(255,255,255,.04), rgba(255,255,255,.012)) }
+  .rr-svg text{ font-family:var(--mono); fill:#d8d4cc; font-size:11px }
+  .rr-svg .mut{ fill:#8a877f }
+  .rr-svg .sm{ font-size:9.5px }
+  .rr-svg .ey{ fill:var(--accent); font-size:9.5px; letter-spacing:.12em }
+  .rr-svg .kk{ fill:var(--accent) }
+  .rr-svg .hot{ fill:none; stroke:var(--accent); stroke-width:2.2 }
+  .rr-svg .wire{ fill:none; stroke:#6d6257; stroke-width:1.3; opacity:.85 }
+  .rr-svg .pass{ fill:none; stroke:#7d746c; stroke-width:1.3; stroke-dasharray:4 4 }
+  .rr-svg .broad{ fill:#141117; stroke:#7d746c; stroke-width:1.2 }
+  .rr-svg .gate{ fill:#20150e; stroke:var(--accent); stroke-width:2 }
+  .rr-svg .graph{ fill:#151319; stroke:var(--accent); stroke-width:1.7 }
+  .rr-svg .scoped{ fill:#141117; stroke:#7d746c; stroke-width:1.2 }
+  .rr-svg .warm{ fill:rgba(255,255,255,.03); stroke:var(--panel-line); stroke-width:1 }
+  .rr-svg .chip{ fill:#121116; stroke:#7d746c; stroke-width:1.1; stroke-dasharray:4 4 }
+  .rr-ledger{ display:grid; gap:10px }
+  .rr-card{ border:1px solid var(--panel-line); border-radius:10px; padding:13px 14px; background:rgba(255,255,255,.03) }
+  .rr-card .ey{ display:block; font-size:9.5px; letter-spacing:.15em; text-transform:uppercase; color:var(--accent); margin:0 0 8px }
+  .rr-card p{ margin:0; font-size:11.5px; line-height:1.55; color:#a29f97 }
+  .rr-card b{ color:var(--panel-ink); font-weight:600 }
+  .rr-card code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .rr-tools{ display:flex; flex-wrap:wrap; gap:7px; margin-top:10px }
+  .rr-tools span{ border:1px solid rgba(180,97,30,.65); color:var(--accent); border-radius:999px; padding:3px 8px; font-size:10.5px; line-height:1.2 }
+  .rr-ladder{ margin:2px 22px 4px; border:1px solid var(--panel-line); border-radius:12px; padding:14px 16px; background:rgba(255,255,255,.02) }
+  .rr-lad-lead{ display:block; font-size:9.5px; letter-spacing:.16em; text-transform:uppercase; color:var(--accent); margin:0 0 11px }
+  .rr-steps{ display:flex; flex-wrap:wrap; align-items:stretch; gap:8px }
+  .rr-rung{ display:flex; flex-direction:column; gap:2px; border:1px solid #7d746c; border-radius:9px; padding:8px 11px; background:#141117; flex:1 1 132px }
+  .rr-rung b{ color:var(--panel-ink); font-size:11.5px; font-weight:600 }
+  .rr-rung i{ color:#8a877f; font-style:normal; font-size:9.5px; letter-spacing:.02em }
+  .rr-rung.deny{ border-color:var(--accent); background:#1a130d }
+  .rr-rung.deny b{ color:var(--accent) }
+  .rr-rung.let{ border-style:dashed }
+  .rr-lad-note{ margin:11px 0 0; font-size:11px; line-height:1.55; color:#8a877f }
+  .rr-lad-note b{ color:#a29f97 }
+  .rr-lad-note code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10px; padding:1px 5px; border-radius:4px }
+  .rr-rails{ display:grid; grid-template-columns:1fr 1fr; gap:12px; padding:8px 22px 18px }
+  .rr-rail{ border:1px solid var(--panel-line); border-radius:10px; padding:13px 14px; background:rgba(255,255,255,.025) }
+  .rr-rail h4{ margin:0 0 8px; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent) }
+  .rr-rail h4 .only{ font-weight:400; letter-spacing:0; text-transform:none; color:#8a877f; font-size:9.5px; margin-left:6px }
+  .rr-rail ul{ margin:0; padding:0; list-style:none; display:grid; gap:7px }
+  .rr-rail li{ position:relative; padding-left:16px; font-size:11.5px; line-height:1.45; color:#a29f97 }
+  .rr-rail li::before{ content:"\203a"; position:absolute; left:0; top:-1px; color:var(--accent); font-weight:700 }
+  .rr-rail b{ color:var(--panel-ink); font-weight:600 }
+  .rr-rail code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .rr-foot{ padding:14px 22px; border-top:1px solid var(--panel-line); font-size:11px; line-height:1.6; color:#8a877f }
+  .rr-foot b{ color:#a29f97 }
+  .rr-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+
+  /* v2.17.0 : consolidacao da SESSAO EM USO - a autoridade vive no brain-server (unico com o --plugin-data REAL), que dispara com --active-dir mirando a pasta REAL da sessao; ponteiro nao-regride (pesada->leve bloqueado); verify-before-delete (le de volta antes do rm, backup-first); project_id coerente de ponta a ponta */
+  .anchor{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:880px; font-family:var(--mono); margin:0 0 36px }
+  .an-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .an-bar .k{ color:var(--accent) }
+  .an-bar .m{ color:#8a877f }
+  .an-stage{ padding:18px 22px 8px; display:grid; grid-template-columns:minmax(300px,1.16fr) minmax(240px,.84fr); gap:18px; align-items:stretch }
+  .an-svg{ width:100%; min-height:352px; border:1px solid var(--panel-line); border-radius:12px;
+    background:radial-gradient(circle at 24% 40%, rgba(180,97,30,.22), transparent 42%), linear-gradient(180deg, rgba(255,255,255,.045), rgba(255,255,255,.012)) }
+  .an-svg text{ font-family:var(--mono); fill:#d8d4cc; font-size:11px }
+  .an-svg .mut{ fill:#8a877f }
+  .an-svg .sm{ font-size:9.5px }
+  .an-svg .ey{ fill:var(--accent); font-size:9.5px; letter-spacing:.12em }
+  .an-svg .kk{ fill:var(--accent) }
+  .an-svg .blk{ fill:var(--accent); font-weight:700 }
+  .an-svg .hot{ fill:none; stroke:var(--accent); stroke-width:2.2 }
+  .an-svg .wire{ fill:none; stroke:#6d6257; stroke-width:1.3; opacity:.85 }
+  .an-svg .block{ fill:none; stroke:var(--accent); stroke-width:1.6; stroke-dasharray:5 4 }
+  .an-svg .xmark{ fill:none; stroke:var(--accent); stroke-width:2.4 }
+  .an-svg .server{ fill:#141117; stroke:var(--accent); stroke-width:1.7 }
+  .an-svg .live{ fill:#20150e; stroke:var(--accent); stroke-width:2 }
+  .an-svg .sib{ fill:#121116; stroke:#7d746c; stroke-width:1.2; stroke-dasharray:4 4 }
+  .an-svg .wbar{ fill:var(--accent) }
+  .an-svg .wbar.dim{ fill:#6d6257 }
+  .an-svg .verify{ fill:rgba(255,255,255,.03); stroke:var(--accent); stroke-width:1.5 }
+  .an-svg .retired{ fill:#111015; stroke:#7d746c; stroke-width:1.1; stroke-dasharray:4 4 }
+  .an-svg .strikeline{ stroke:#8a877f; stroke-width:1.2 }
+  .an-ledger{ display:grid; gap:10px }
+  .an-card{ border:1px solid var(--panel-line); border-radius:10px; padding:13px 14px; background:rgba(255,255,255,.03) }
+  .an-card .ey{ display:block; font-size:9.5px; letter-spacing:.15em; text-transform:uppercase; color:var(--accent); margin:0 0 8px }
+  .an-card p{ margin:0; font-size:11.5px; line-height:1.55; color:#a29f97 }
+  .an-card b{ color:var(--panel-ink); font-weight:600 }
+  .an-card code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .an-ladder{ margin:2px 22px 4px; border:1px solid var(--panel-line); border-radius:12px; padding:14px 16px; background:rgba(255,255,255,.02) }
+  .an-lad-lead{ display:block; font-size:9.5px; letter-spacing:.16em; text-transform:uppercase; color:var(--accent); margin:0 0 11px }
+  .an-steps{ display:flex; flex-wrap:wrap; align-items:stretch; gap:8px }
+  .an-rung{ display:flex; flex-direction:column; gap:2px; border:1px solid var(--accent); border-radius:9px; padding:8px 11px; background:#1a130d; flex:1 1 150px }
+  .an-rung b{ color:var(--accent); font-size:11.5px; font-weight:700 }
+  .an-rung i{ color:#8a877f; font-style:normal; font-size:9.5px; letter-spacing:.02em }
+  .an-lad-note{ margin:11px 0 0; font-size:11px; line-height:1.55; color:#8a877f }
+  .an-lad-note b{ color:#a29f97 }
+  .an-lad-note code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10px; padding:1px 5px; border-radius:4px }
+  .an-rails{ display:grid; grid-template-columns:1fr 1fr; gap:12px; padding:8px 22px 18px }
+  .an-rail{ border:1px solid var(--panel-line); border-radius:10px; padding:13px 14px; background:rgba(255,255,255,.025) }
+  .an-rail h4{ margin:0 0 8px; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent) }
+  .an-rail ul{ margin:0; padding:0; list-style:none; display:grid; gap:7px }
+  .an-rail li{ position:relative; padding-left:16px; font-size:11.5px; line-height:1.45; color:#a29f97 }
+  .an-rail li::before{ content:"\203a"; position:absolute; left:0; top:-1px; color:var(--accent); font-weight:700 }
+  .an-rail b{ color:var(--panel-ink); font-weight:600 }
+  .an-rail code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .an-foot{ padding:14px 22px; border-top:1px solid var(--panel-line); font-size:11px; line-height:1.6; color:#8a877f }
+  .an-foot b{ color:#a29f97 }
+  .an-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+
   footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
   footer a{ color:var(--muted); text-decoration:none }
   footer a:hover{ color:var(--accent) }
   .frow{ display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between }
   .flinks a{ margin-right:16px }
 
-  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
+  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .rr-stage{ grid-template-columns:1fr } .rr-rails{ grid-template-columns:1fr } .rr-steps{ flex-direction:column; align-items:stretch } .an-stage{ grid-template-columns:1fr } .an-rails{ grid-template-columns:1fr } .an-steps{ flex-direction:column; align-items:stretch } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
   @media (prefers-reduced-motion:reduce){ .caret{ animation:none } .reveal{ opacity:1 !important; transform:none !important } }
   .reveal{ opacity:0; transform:translateY(14px); animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards }
   @keyframes rise{ to{ opacity:1; transform:none } }
@@ -902,7 +1014,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.15.0</span>
+    <span class="ver">v2.17.0</span>
   </nav>
 
   <header class="hero">
@@ -942,7 +1054,7 @@
       <div class="cell">
         <p class="kick">Grafo semântico</p>
         <h3>Exploração por PageRank</h3>
-        <p>As 7 tools <code>graph_*</code> falam REST puro com o Session Graph Engine do daemon native-java: hubs por <b>PageRank</b>, vizinhança <b>CALLS/CONTAINS/IMPORTS</b> e referências para entender um repo grande sem garimpar arquivo por arquivo. Offline? <b>Fail-open</b>.</p>
+        <p>As 7 tools <code>graph_*</code> falam REST puro com o Session Graph Engine do daemon native-java: hubs por <b>PageRank</b>, vizinhança <b>CALLS/CONTAINS/IMPORTS</b> e referências para entender um repo grande sem garimpar arquivo por arquivo. Uma busca recursiva <b>ampla</b> é reroteada pro grafo (grafo primeiro, grep escopado depois), e o grafo chega <b>pronto</b> no SessionStart. Offline? <b>Fail-open</b>.</p>
       </div>
       <div class="cell">
         <p class="kick">Backend opcional</p>
@@ -957,7 +1069,7 @@
       <div class="cell">
         <p class="kick">KB coeso</p>
         <h3>Uma pasta, um backend</h3>
-        <p>Todos os pontos de escrita (daemon HTTP, hooks, MCP stdio, dashboard e CLI) concordam na <b>mesma</b> pasta de dados e no <b>mesmo</b> backend. Um resolvedor canônico segue o ponteiro que o app publica; a escolha de backend mora no <b>global</b>. Pastas irmãs órfãs são dobradas na ativa, <b>com backup</b>.</p>
+        <p>Todos os pontos de escrita (daemon HTTP, hooks, MCP stdio, dashboard e CLI) concordam na <b>mesma</b> pasta e no <b>mesmo</b> backend, com a escolha de backend no <b>global</b>. A consolidação das pastas irmãs mira a pasta <b>REAL</b> da sessão (o brain-server dispara com <code>--active-dir</code>), o ponteiro <b>nunca regride</b> de uma pasta viva para uma quase-vazia, e nada é apagado sem <b>ler de volta</b> pra provar que foi absorvido (backup primeiro).</p>
       </div>
       <div class="cell">
         <p class="kick">Aprendizado no loop</p>
@@ -990,6 +1102,272 @@
         <p>Ative constraints explicitamente com <code>policy_activate</code>, nunca auto-promovidas de lições: o <code>error-guard</code> nega no <code>PreToolUse</code> um Bash cuja falha reincide, políticas <b>always-apply</b> entram no contexto no início da sessão, e políticas <b>por glob</b> avisam ao editar um arquivo que casa o padrão. <b>Surfacing ≠ enforcement</b>: ficam presentes no contexto, não bloqueiam (exceto o <code>error-guard</code>). A Fase 3 agora fecha o ciclo: modo sombra mede, e <code>/policy-adjudicate</code> chama um <b>juiz LLM independente</b> para estimar disposições — estimativa de juiz, <b>não FP medido</b>.</p>
       </div>
     </div>
+  </section>
+
+
+  <section>
+    <p class="label">Novo na v2.17.0 · consolida a sessão em uso</p>
+    <p class="lede">A v2.17.0 consolida a <b>sessão em uso</b>. A consolidação das pastas-irmãs do KB mira a pasta <b>REAL</b> da sessão: a autoridade vive no <b>brain-server</b>, o único processo que recebe o <code>--plugin-data</code> real da sessão, que dispara a consolidação com <code>--active-dir</code> apontando pra pasta que a sessão de fato usa. O <b>ponteiro ativo nunca regride</b> de uma pasta viva (mais pesada) para uma quase-vazia (mais leve), e o engine <b>nunca apaga</b> uma pasta-irmã sem antes <b>ler de volta</b> e provar que cada registro foi absorvido (backup sempre primeiro).</p>
+
+    <div class="callout">
+      <span class="tag">a promessa da v1.14, enfim entregue</span>
+      A consolidação deixou de seguir o <b>ponteiro global oscilante</b> e passou a mirar a pasta <b>real</b> da sessão. Isso mata a <b>perda aparente de memória</b> (o recall lendo <b>"1"</b>) que aparecia quando <b>duas identidades de instalação</b> competiam pelo ponteiro: ele podia escorregar da pasta viva para uma quase-vazia, e o recall sem env resolvia a pasta de um único registro.
+    </div>
+
+    <div class="anchor" aria-label="Artefato da versão 2.17.0: a consolidação da sessão em uso. No topo, o brain-server, o único processo que recebe o --plugin-data real da sessão, dispara a consolidação guardada com --active-dir, mirando a pasta REAL da sessão. Abaixo, duas pastas-irmãs: à esquerda a sessão em uso, viva e mais pesada, com uma barra de peso longa, marcada como alvo da consolidação e dona do ponteiro ativo; à direita uma irmã quase-vazia, mais leve, com uma barra de peso curta e tracejada, que é dobrada na ativa com backup. Uma seta cheia leva a irmã para dentro da ativa (dobra); uma seta tracejada no sentido contrário, da pasta pesada para a leve, é riscada com um xis: o ponteiro não regride de pesada para leve. Embaixo à direita, um portão de verify-before-delete: antes do rm, cada id absorvido é lido de volta com getRaw e provado; backup primeiro, e se algo falha mantém a irmã e o backup. Embaixo à esquerda, o gatilho cego do SessionStart, riscado, aposentado do hooks.json; o launcher manual ainda repassa --active-dir.">
+      <div class="an-bar">
+        <span class="k">v2.17.0</span>
+        <span class="m">mira a pasta REAL da sessão · o ponteiro não regride</span>
+      </div>
+
+      <div class="an-stage">
+        <svg class="an-svg" viewBox="0 0 540 348" role="img" aria-label="Diagrama da consolidação da sessão em uso: o brain-server, único com o --plugin-data real, dispara com --active-dir mirando a pasta real da sessão; duas pastas-irmãs, a viva e pesada à esquerda com o ponteiro ativo e a quase-vazia e leve à direita; a irmã é dobrada na ativa com backup, mas o ponteiro nunca regride da pesada para a leve, o que aparece como uma seta tracejada riscada; um portão de verify-before-delete lê de volta cada id antes de apagar; o gatilho cego do SessionStart aparece riscado, aposentado.">
+          <defs>
+            <marker id="an-arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,6 L7,3 z" fill="#b4611e"></path>
+            </marker>
+          </defs>
+          <text x="20" y="24" class="mut">consolida a pasta REAL da sessão · o ponteiro não regride</text>
+
+          <rect class="server" x="160" y="40" width="220" height="48" rx="10"></rect>
+          <text x="270" y="62" text-anchor="middle" class="kk">brain-server</text>
+          <text x="270" y="78" text-anchor="middle" class="mut sm">único com o --plugin-data REAL</text>
+
+          <path class="hot" d="M270 88 V110 H150 V136" marker-end="url(#an-arrow)"></path>
+          <text x="176" y="106" class="ey">--active-dir</text>
+
+          <path class="live" d="M40 148 a10 10 0 0 1 10 -10 h44 l10 10 h126 a10 10 0 0 1 10 10 v60 a10 10 0 0 1 -10 10 H50 a10 10 0 0 1 -10 -10 Z"></path>
+          <text x="58" y="166" class="kk">sessão em uso</text>
+          <text x="58" y="182" class="mut sm">viva · mais pesada</text>
+          <rect class="wbar" x="58" y="192" width="166" height="9" rx="2"></rect>
+          <text x="58" y="218" class="mut sm">alvo · ponteiro ativo</text>
+
+          <path class="sib" d="M320 148 a10 10 0 0 1 10 -10 h40 l10 10 h120 a10 10 0 0 1 10 10 v60 a10 10 0 0 1 -10 10 H330 a10 10 0 0 1 -10 -10 Z"></path>
+          <text x="338" y="166">irmã</text>
+          <text x="338" y="182" class="mut sm">quase-vazia · mais leve</text>
+          <rect class="wbar dim" x="338" y="192" width="62" height="9" rx="2"></rect>
+          <text x="338" y="218" class="mut sm">dobrada na ativa · backup</text>
+
+          <path class="hot" d="M318 162 H244" marker-end="url(#an-arrow)"></path>
+          <text x="258" y="156" class="mut sm">dobra</text>
+
+          <path class="block" d="M246 184 H302"></path>
+          <path class="xmark" d="M268 178 L280 190 M280 178 L268 190"></path>
+          <text x="250" y="206" class="blk sm">não regride</text>
+          <text x="250" y="217" class="mut sm">pesada→leve</text>
+
+          <path class="wire" d="M415 230 V250" marker-end="url(#an-arrow)"></path>
+          <rect class="verify" x="290" y="250" width="232" height="84" rx="12"></rect>
+          <text x="306" y="272" class="ey">VERIFY-BEFORE-DELETE</text>
+          <text x="306" y="290" class="mut sm">lê de volta cada id (getRaw)</text>
+          <text x="306" y="304" class="mut sm">prova absorvido → só então rm</text>
+          <text x="306" y="320" class="kk sm">backup-first · falha mantém tudo</text>
+
+          <rect class="retired" x="20" y="258" width="250" height="64" rx="10"></rect>
+          <text x="34" y="282">gatilho cego · SessionStart</text>
+          <path class="strikeline" d="M30 278 H214"></path>
+          <text x="34" y="300" class="kk sm">aposentado do hooks.json</text>
+          <text x="34" y="315" class="mut sm">launcher manual: repassa --active-dir</text>
+        </svg>
+
+        <div class="an-ledger">
+          <div class="an-card">
+            <span class="ey">autoridade no brain-server</span>
+            <p>O servidor stdio é o <b>único</b> processo que recebe o <code>--plugin-data</code> <b>REAL</b> da sessão (issue #9427: <code>${...}</code> expande em <b>args</b>, não no <code>env</code>). Ele dispara a consolidação guardada com <code>--active-dir</code>: <b>best-effort</b>, <b>fail-open</b>, nunca bloqueia o startup.</p>
+          </div>
+          <div class="an-card">
+            <span class="ey">alvo explícito, não o ponteiro</span>
+            <p><code>--active-dir &lt;dir&gt;</code> fixa a consolidação numa pasta <b>explícita</b>: normaliza <code>CLAUDE_PLUGIN_DATA</code> <b>antes</b> do require lazy do <code>brain-store</code> (que congela <code>STORE_DIR</code> no load), então o engine grava na pasta <b>REAL</b> da sessão, não na do ponteiro oscilante.</p>
+          </div>
+        </div>
+      </div>
+
+      <div class="an-ladder" aria-label="As quatro garantias da consolidação da sessão em uso: alvo real via --active-dir, ponteiro não-regride, verify-before-delete e project_id coerente de ponta a ponta.">
+        <span class="an-lad-lead">quatro garantias · consolidação da sessão em uso</span>
+        <div class="an-steps">
+          <span class="an-rung"><b>alvo REAL</b><i>--active-dir mira a sessão</i></span>
+          <span class="an-rung"><b>ponteiro não-regride</b><i>nunca pesada → leve</i></span>
+          <span class="an-rung"><b>verify-before-delete</b><i>lê de volta antes do rm</i></span>
+          <span class="an-rung"><b>project_id coerente</b><i>de ponta a ponta</i></span>
+        </div>
+        <p class="an-lad-note">A consolidação é <b>best-effort</b> e <b>fail-open</b>: nunca bloqueia o startup. O ponteiro só deixa de regredir de <b>pesada→leve</b>: uma pasta genuinamente maior <b>ainda avança</b> (troca legítima não é bloqueada).</p>
+      </div>
+
+      <div class="an-rails">
+        <div class="an-rail">
+          <h4>A promessa: consolidar a sessão em uso</h4>
+          <ul>
+            <li><b>Autoridade no brain-server</b>: o único processo que recebe o <code>--plugin-data</code> real; dispara a consolidação guardada com <code>--active-dir</code>, <b>fail-open</b>, sem bloquear o startup.</li>
+            <li><code>--active-dir</code> normaliza <code>CLAUDE_PLUGIN_DATA</code> <b>antes</b> do require lazy do <code>brain-store</code> (que congela <code>STORE_DIR</code> no load): o engine grava na pasta <b>REAL</b> da sessão.</li>
+            <li><b>Gatilho cego aposentado</b>: o hook de <code>SessionStart</code> resolvia a pasta pelo ponteiro oscilante, removido do <code>hooks.json</code>. O launcher (uso manual) aceita e repassa <code>--active-dir</code>.</li>
+          </ul>
+        </div>
+        <div class="an-rail">
+          <h4>As redes de segurança</h4>
+          <ul>
+            <li><b>Ponteiro não-regride</b>: <code>writeActivePointer</code> nunca move o ponteiro de uma pasta mais <b>pesada</b> para uma mais <b>leve</b>. Peso <b>SQLite-free</b> = soma dos bytes de <code>dir/brain/*/brain.db</code>.</li>
+            <li><b>Verify-before-delete</b>: antes do <code>rmSync</code> do irmão, cada id absorvido é <b>lido de volta</b> (<code>getRaw</code>) do store ativo. Escrita mal-endereçada mantém o irmão <b>e</b> o backup.</li>
+            <li><b>project_id de ponta a ponta</b>: o push <code>mcp-memory</code> preserva o <code>project</code> de cada entry (handshake por shard); o contrato-duro da v2.15 vale na consolidação. Travado com teste.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="an-foot"><b>Escopo real:</b> isto mata a <b>perda aparente de memória</b> (o recall lendo "1") quando duas <b>identidades de instalação</b> competiam pelo ponteiro. A autoridade vive no <b>brain-server</b> porque é o único com o <code>--plugin-data</code> real; a consolidação é <b>best-effort</b>, <b>fail-open</b> e nunca bloqueia o startup. O engine <b>nunca</b> apaga o que não prova ter absorvido, e o <b>backup é sempre primeiro</b>.</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>Consolida a sessão em uso</h4>
+        <p>A consolidação das pastas-irmãs mira a pasta <b>REAL</b> da sessão, não mais um ponteiro global oscilante. A autoridade vive no <b>brain-server</b>, o único processo com o <code>--plugin-data</code> real; ele dispara com <code>--active-dir</code>.</p>
+      </div>
+      <div class="win">
+        <h4>O ponteiro não regride</h4>
+        <p>O ponteiro ativo <b>nunca</b> vai de uma pasta viva (mais pesada) para uma quase-vazia (mais leve). Fim da <b>perda aparente de memória</b> (recall lendo <b>"1"</b>) quando duas instalações competiam. Uma pasta genuinamente maior <b>ainda avança</b>.</p>
+      </div>
+      <div class="win">
+        <h4>Nunca apaga o que não prova</h4>
+        <p>Antes de remover uma irmã, cada registro absorvido é <b>lido de volta</b> (<code>getRaw</code>) do store ativo. Uma escrita mal-endereçada mantém a irmã <b>e</b> o backup. <b>Backup sempre primeiro.</b></p>
+      </div>
+      <div class="win">
+        <h4>project_id coerente de ponta a ponta</h4>
+        <p>O push em <code>mcp-memory</code> preserva o <code>project</code> de cada entry na consolidação, então o <b>contrato-duro</b> de <code>project_id</code> da v2.15 vale <b>de ponta a ponta</b>. Travado com teste.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Honesto sobre o alcance:</b> a consolidação é <b>best-effort</b>, <b>fail-open</b> e nunca bloqueia o startup; ela vive no <b>brain-server</b> porque é o único processo com o <code>--plugin-data</code> real da sessão (o gatilho cego do <code>SessionStart</code> foi aposentado). O ponteiro só deixa de regredir de <b>pesada→leve</b>: uma pasta genuinamente maior ainda avança, então uma troca legítima não é bloqueada. O <b>verify-before-delete</b> lê de volta cada id antes do <code>rm</code> e o <b>backup é sempre primeiro</b>: uma escrita mal-endereçada mantém a irmã e o backup, em vez de destruir dado não-absorvido. O peso é <b>SQLite-free</b> (soma dos bytes de <code>dir/brain/*/brain.db</code>), e o módulo segue leve. Também estabiliza um <b>flake pré-existente</b> do <code>curation-stop</code> (mtime do <code>shells.json</code> fixado em <code>now</code>, provado RED→GREEN). E o <b>smoke local do dono</b> pegou um segundo bug pré-existente: o <code>postinstall</code> resolvia a raiz de instalação pela env <code>CLAUDE_PLUGIN_ROOT</code> (um ponteiro de <i>runtime</i>) em vez do <code>__dirname</code> real — num checkout divergente isso instalava as deps do <b>brain-server</b> na árvore errada e deixava o Brain MCP <b>DOWN</b> (<code>@modelcontextprotocol/sdk</code> irresolúvel no boot); agora o setup deriva a raiz <b>só do <code>__dirname</code></b> (RED→GREEN). Rigor de sempre: causa-raiz na FONTE, plano de ADR <b>descartado</b> quando adiava a promessa sem base, cada fase revisada, gate verde local <b>2× estável</b> e integrado sobre a v2.16.0, com o combinado em <b>695</b> unit + <b>104</b> hooks.</p>
+  </section>
+
+
+  <section>
+    <p class="label">Novo na v2.16.0 · grafo primeiro, grep escopado depois</p>
+    <p class="lede">A v2.16.0 faz a <b>busca ampla começar pelo grafo</b>. No backend <code>mcp-memory</code> com o Session Graph pronto, uma busca recursiva ampla (<code>Grep</code>/<code>Glob</code> sem <code>path</code>/<code>glob</code>/<code>type</code>, ou <code>grep -r</code>/<code>rg</code>/<code>find</code> na raiz via Bash) é <b>negada uma vez</b> com uma instrução em <b>dois passos</b>: consultar <code>graph_search</code>/<code>graph_symbols</code> (estrutural, sem embeddings, <b>~300ms</b> num grafo de 135k nodes) pros <b>caminhos enxutos</b>, e então re-rodar a busca de texto <b>escopada</b> neles. Repetir a chamada <b>idêntica</b> passa direto, sem deadlock. E o grafo chega <b>pronto</b>: um hook no <b>SessionStart</b> pré-aquece o Session Graph, sem você chamar nada.</p>
+
+    <div class="callout">
+      <span class="tag">custo único vs. custo por consulta</span>
+      Indexar é custo <b>único</b>; um grep amplo é custo <b>por consulta</b>, porque re-varre a árvore toda a cada chamada. Por isso a 1ª busca ampla é <b>negada uma vez</b> pra empurrar o grafo, e o <b>retry idêntico passa na hora</b>: você nunca espera pela indexação. Num repo <b>não-indexado</b>, a negação empurra <code>graph_analyze</code> (async) e o retry idêntico passa na mesma.
+    </div>
+
+    <div class="reroute" aria-label="Artefato da versão 2.16.0: o graph-guard. À esquerda, uma busca ampla e recursiva (Grep ou Glob sem escopo, ou grep -r, rg e find na raiz) chega a um portão em losango que a nega uma vez. Do portão, o caminho vai para o passo um: graph_search e graph_symbols, estrutural e sem embeddings, ~300ms num grafo de 135 mil nós, que devolve os caminhos enxutos. Uma seta então desce para o passo dois: a MESMA busca de texto, agora escopada nesses caminhos. Uma seta tracejada volta para um cartão à esquerda: o retry idêntico passa, por um stamp de sessão. No topo, o graph-warm pré-aquece o Session Graph no SessionStart, um ingest incremental fire-and-forget de ~80ms. No rodapé, o guard é fail-open: offline, indexing, ready com zero nós ou erro passam.">
+      <div class="rr-bar">
+        <span class="k">v2.16.0</span>
+        <span class="m">busca ampla reroteada uma vez · o grafo pronto no SessionStart</span>
+      </div>
+
+      <div class="rr-stage">
+        <svg class="rr-svg" viewBox="0 0 540 332" role="img" aria-label="Diagrama do graph-guard: uma busca ampla e recursiva à esquerda chega a um portão que a nega uma vez e a reroteia em dois passos, primeiro graph_search e graph_symbols estrutural em cerca de 300 milissegundos num grafo de 135 mil nós devolvendo caminhos enxutos, depois a mesma busca de texto escopada neles; o retry idêntico passa por stamp de sessão; no topo o graph-warm pré-aquece o grafo no SessionStart; o guard é fail-open.">
+          <defs>
+            <marker id="rr-arrow" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto" markerUnits="strokeWidth">
+              <path d="M0,0 L0,6 L7,3 z" fill="#b4611e"></path>
+            </marker>
+          </defs>
+          <text x="20" y="24" class="mut">graph-guard · grafo primeiro, grep escopado depois</text>
+
+          <rect class="warm" x="300" y="38" width="222" height="40" rx="9"></rect>
+          <text x="314" y="55" class="ey">GRAPH-WARM</text>
+          <text x="392" y="55" class="mut sm">SessionStart · ~80ms</text>
+          <text x="314" y="70" class="mut sm">ingest incremental fire-and-forget</text>
+          <path class="pass" d="M411 78 V108" marker-end="url(#rr-arrow)"></path>
+
+          <rect class="broad" x="20" y="120" width="152" height="80" rx="10"></rect>
+          <text x="32" y="144">busca ampla</text>
+          <text x="32" y="161" class="mut sm">Grep/Glob sem escopo</text>
+          <text x="32" y="175" class="mut sm">grep -r · rg · find /</text>
+          <text x="32" y="189" class="mut sm">(recursiva, na raiz)</text>
+
+          <path class="hot" d="M172 160 H206" marker-end="url(#rr-arrow)"></path>
+          <path class="gate" d="M238 130 L268 160 L238 190 L208 160 Z"></path>
+          <text x="238" y="164" text-anchor="middle" class="kk">deny 1×</text>
+
+          <path class="hot" d="M268 156 H300" marker-end="url(#rr-arrow)"></path>
+          <rect class="graph" x="300" y="118" width="222" height="64" rx="10"></rect>
+          <text x="314" y="140">graph_search / graph_symbols</text>
+          <text x="314" y="157" class="mut sm">estrutural · sem embeddings</text>
+          <text x="314" y="172" class="ey">~300ms @ 135k nodes</text>
+
+          <path class="hot" d="M411 182 V212" marker-end="url(#rr-arrow)"></path>
+          <text x="419" y="202" class="mut sm">então</text>
+
+          <rect class="scoped" x="300" y="212" width="222" height="58" rx="10"></rect>
+          <text x="314" y="234">grep escopado nos caminhos</text>
+          <text x="314" y="251" class="mut sm">a MESMA busca de texto, enxuta</text>
+
+          <rect class="chip" x="20" y="214" width="152" height="56" rx="10"></rect>
+          <text x="32" y="236" class="mut sm">retry idêntico</text>
+          <text x="32" y="251" class="kk sm">→ passa (stamp/sessão)</text>
+          <path class="pass" d="M238 190 V240 H176" marker-end="url(#rr-arrow)"></path>
+
+          <text x="20" y="298" class="ey">FAIL-OPEN</text>
+          <text x="92" y="298" class="mut sm">offline · indexing · 0 nodes · erro → passa</text>
+        </svg>
+
+        <div class="rr-ledger">
+          <div class="rr-card">
+            <span class="ey">reroteia uma vez</span>
+            <p>A busca ampla é <b>negada uma vez</b> com uma instrução em <b>dois passos</b>: consultar <code>graph_search</code>/<code>graph_symbols</code> (estrutural, sem embeddings, <b>~300ms</b> num grafo de 135k nodes) pros <b>caminhos enxutos</b>, e então re-rodar a busca de texto <b>escopada</b> neles. Repetir a chamada <b>idêntica</b> passa direto: <b>stamp por sessão</b>, nunca deadlock.</p>
+          </div>
+          <div class="rr-card">
+            <span class="ey">duas superfícies, um spawn</span>
+            <p>Tools nativas via um hook <code>PreToolUse</code> <code>Grep|Glob</code> (<code>graph-guard.js</code>); o Bash amplo entra no <code>curation-guard.js</code> que já roda em toda chamada Bash, com <b>zero spawn extra</b>. Qualquer escopo explícito (<code>path</code>/<code>glob</code>/<code>type</code>, <code>grep -r &lt;subdir&gt;</code>, <code>find &lt;subdir&gt;</code>, grep por pipe) <b>passa</b>.</p>
+            <div class="rr-tools" aria-label="Onde o guard intercepta">
+              <span>PreToolUse · Grep|Glob</span><span>Bash · curation-guard</span><span>escopo explícito → passa</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="rr-ladder" aria-label="A escada de decisão do graph-guard, fail-open: ready com nodes nega uma vez e manda pro grafo; not_indexed nega uma vez empurrando a indexação; ready com zero nodes passa; offline, indexing ou erro passam.">
+        <span class="rr-lad-lead">a escada de decisão · fail-open</span>
+        <div class="rr-steps">
+          <span class="rr-rung deny"><b>ready · com nodes</b><i>deny 1× → grafo</i></span>
+          <span class="rr-rung deny"><b>not_indexed</b><i>deny 1× → index-now</i></span>
+          <span class="rr-rung let"><b>ready · 0 nodes</b><i>passa</i></span>
+          <span class="rr-rung let"><b>offline / indexing / erro</b><i>passa</i></span>
+        </div>
+        <p class="rr-lad-note">A negação é <b>uma única vez</b> por chamada ampla; o retry idêntico e qualquer busca já escopada <b>passam</b>. Em <b>0 nodes</b> (repo sem código), <code>indexing</code>, daemon <b>offline</b> ou erro, o guard sai do caminho: <b>fail-open</b>.</p>
+      </div>
+
+      <div class="rr-rails">
+        <div class="rr-rail">
+          <h4>graph-guard · reroteia uma vez <span class="only">mcp-memory</span></h4>
+          <ul>
+            <li><code>not_indexed</code> também redireciona: a 1ª busca ampla num repo não-indexado é <b>negada uma vez</b> empurrando <code>graph_analyze</code> (async), e o retry idêntico passa <b>na hora</b>. Você nunca espera a indexação.</li>
+            <li><code>ready</code> com <b>0 nodes</b> → <b>passa</b>: um repo só de <code>.md</code>/<code>.txt</code> indexa pra grafo vazio; redirecionar pro <code>graph_search</code> seria mentira, então o guard sai do caminho.</li>
+            <li>Perfis: <b>on</b> em <code>dev</code> e <code>standard</code> (proteção de recurso, não nag de aprendizado); <code>free</code> mantém o passthrough. Telemetria <code>graph-guard.fired</code> desde o dia 1.</li>
+          </ul>
+        </div>
+        <div class="rr-rail">
+          <h4>graph-warm · o grafo pronto no SessionStart <span class="only">mcp-memory</span></h4>
+          <ul>
+            <li>Dispara um <code>ingest</code> <b>incremental</b> em fire-and-forget: retorna quando o daemon aceita (<b>~80ms</b>), sem esperar a indexação async.</li>
+            <li>O <b>servidor faz o delta</b> por manifesto <b>SHA-256</b> por arquivo: <b>no-op ~5s</b> num repo de 20k arquivos quando nada mudou, e re-indexa sozinho quando o extrator muda.</li>
+            <li><b>Cooldown por projeto</b> (4h) e prontidão <b>cacheada</b> (<code>.runtime/graph-ready-*.json</code>, TTL 5min); resolve o <b>mesmo</b> daemon do backend.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="rr-foot"><b>Escopo real:</b> o guard e o warm só valem no backend <code>mcp-memory</code> com o Session Graph. <b>Fail-open</b> em tudo: offline, <code>indexing</code>, <code>ready</code> com 0 nodes ou erro <b>passam</b>, e uma busca de texto livre perde no máximo <b>um round-trip</b>. O warm é uma <b>ponte</b> até o wiring server-side (<code>GraphIngestScheduler</code>) landar. Medido: <b>~300ms</b> estrutural num grafo de 135k nodes, <b>~80ms</b> pro daemon aceitar o ingest, no-op <b>~5s</b> em 20k arquivos. Gate: <b>688</b> unit (12 novos) + <b>104</b> hooks (10 novos E2E) verdes.</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>Grafo primeiro, grep depois</h4>
+        <p>Uma busca recursiva ampla é reroteada <b>uma vez</b> pro Session Graph: <code>graph_search</code>/<code>graph_symbols</code> dá os <b>caminhos enxutos</b> (<b>~300ms</b> num grafo de 135k nodes), e só então a busca de texto re-roda <b>escopada</b> neles.</p>
+      </div>
+      <div class="win">
+        <h4>Reroteia uma vez, nunca trava</h4>
+        <p>A chamada <b>idêntica</b> seguinte passa direto (stamp por sessão). <b>Fail-open</b>: offline, <code>indexing</code>, 0 nodes ou erro passam em silêncio. No máximo <b>um round-trip</b> perdido.</p>
+      </div>
+      <div class="win">
+        <h4>O grafo já chega pronto</h4>
+        <p>Um hook no <b>SessionStart</b> pré-aquece o grafo (<code>ingest</code> incremental em fire-and-forget, <b>~80ms</b>). O servidor faz o delta por manifesto <b>SHA-256</b>: no-op <b>~5s</b> num repo de 20k arquivos.</p>
+      </div>
+      <div class="win">
+        <h4>Escopo explícito passa</h4>
+        <p>Qualquer busca já escopada (<code>path</code>/<code>glob</code>/<code>type</code>, <code>grep -r</code> numa subpasta, <code>find</code> numa subpasta, grep por pipe) passa sem interceptação. Heurísticas conservadoras.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Honesto sobre o alcance:</b> o guard e o warm só operam no backend <code>mcp-memory</code> com o Session Graph, e são <b>fail-open</b> em tudo: offline, <code>indexing</code>, <code>ready</code> com 0 nodes ou erro <b>passam</b>, e uma busca de texto livre perde no máximo <b>um round-trip</b>. O <code>not_indexed</code> nega uma vez pra empurrar a indexação async, mas o retry idêntico passa na hora, então você nunca espera. O warm é uma <b>ponte</b>: o próprio memory-server já traz um <code>GraphIngestScheduler</code> pra fazer isso server-side, e quando esse wiring landar o hook pode se aposentar. Perfis: ativo em <code>dev</code> e <code>standard</code>, off em <code>free</code>. Gate verde local: <b>688</b> unit (12 novos) + <b>104</b> hooks (10 novos E2E).</p>
   </section>
 
 
@@ -2411,14 +2789,14 @@
     <div class="flow">
       <p class="label">Como funciona</p>
       <div class="steps">
-        <div class="step"><div class="n"></div><p>Antes de qualquer coisa, um <b>resolvedor canônico</b> faz todos os escritores (daemon HTTP, hooks, MCP stdio, dashboard, CLI) concordarem na <b>mesma pasta</b> e no <b>mesmo backend</b>, com a escolha de backend morando no global. No <b>SessionStart</b>, um checador silencioso dobra pastas irmãs órfãs na ativa, <b>destacado</b> e com backup primeiro, sem bloquear a sessão.</p></div>
+        <div class="step"><div class="n"></div><p>Antes de qualquer coisa, um <b>resolvedor canônico</b> faz todos os escritores (daemon HTTP, hooks, MCP stdio, dashboard, CLI) concordarem na <b>mesma pasta</b> e no <b>mesmo backend</b>, com a escolha de backend morando no global. A consolidação das pastas irmãs órfãs agora é disparada pelo <b>brain-server</b> (o único processo que recebe o <code>--plugin-data</code> real), que a fixa na pasta <b>REAL</b> da sessão com <code>--active-dir</code>; o ponteiro ativo <b>nunca regride</b> de uma pasta viva para uma quase-vazia, e nenhuma irmã é apagada sem <b>ler de volta</b> e provar que foi absorvida (backup primeiro). É <b>best-effort</b> e não bloqueia o startup.</p></div>
         <div class="step"><div class="n"></div><p>Toda memória exige uma <b>identidade de projeto estável</b>: um <b>git-remote normalizado</b> (<code>host/owner/repo</code>) ou um <code>.memory/project.json</code> na raiz. Sem ela, a ingestão <b>bloqueia</b> com um aviso acionável, em vez de inventar escopo do nome da pasta. O marcador legado <code>.claude-boss-project</code> é lido <b>read-only</b>, com um <b>nudge</b> pra migrar: o plugin <b>nunca</b> cria o arquivo por você.</p></div>
         <div class="step"><div class="n"></div><p>Você escreve um prompt. O hook <b>UserPromptSubmit</b> chama o Brain e injeta o bloco <b>[BRAIN]</b>: no backend externo, os fatos vêm com o trecho casado e as capacidades como ponteiros. Numa <b>subpasta</b>, o recall <b>une</b> os projetos do CWD até a raiz da sessão: o <code>compose_recall</code> foca no CWD e um <code>search_memory</code> <b>lazy</b> traz os ancestrais que existem (timeout de 500ms degrada para compose-only). Em paralelo, outro <b>search_memory</b> não-injetado aquece o pool home: sinal pro Dreaming, sem tocar no que você vê.</p></div>
         <div class="step"><div class="n"></div><p>O agente age com a memória do projeto à mão, escopada por um id estável, sem puxar contexto de outro projeto.</p></div>
         <div class="step"><div class="n"></div><p>No <b>Stop</b>, o boss induz o <b>ACK</b> da captura: sobre uma fila <b>redigida</b> de ciclos limpos, o agente chama <code>capture_lesson</code> (lição curada) ou <code>capture_ack</code> (nada a capturar), sem reler o transcript à toa. No backend externo, manda o transcript acumulado pro servidor destilar. Nada infla a janela.</p></div>
         <div class="step"><div class="n"></div><p>Se você <b>ativou políticas</b>, elas aparecem onde importam: o <code>error-guard</code> <b>nega</b> no <code>PreToolUse</code> um Bash cuja falha reincide; as <b>always-apply</b> entram no contexto no início da sessão; as de <b>glob</b> avisam ao editar um arquivo que casa. <b>Surfacing ≠ enforcement</b>: só o error-guard bloqueia.</p></div>
         <div class="step"><div class="n"></div><p>Ativou uma <b>política de medição em modo sombra</b> (Fase 3, opt-in)? Um hook <b>PreToolUse só para Edit</b> registra <b>em silêncio</b> se uma edição adiciona um literal proibido, medindo a <b>incidência de gatilho</b>, <b>nunca</b> bloqueando nem falando com o agente. Na v2.12.0, <code>/policy-adjudicate</code> aciona um <b>juiz LLM independente</b> para adjudicar bundles redigidos e casos reais opt-in; na v2.13.0, bundles efêmeros são consumidos e purgados, e o release passa por gate mecânico + auditor adversarial consultivo.</p></div>
-        <div class="step"><div class="n"></div><p>Para entender um repositório grande, use <code>graph_analyze</code>, <code>graph_search</code> ou <code>graph_symbols</code>. O plugin chama o Session Graph Engine por REST puro, recebe hubs por <b>PageRank</b> e vizinhança <b>CALLS/CONTAINS/IMPORTS</b>, e falha em modo <b>fail-open</b> se o daemon estiver offline.</p></div>
+        <div class="step"><div class="n"></div><p>Para entender um repositório grande, use <code>graph_analyze</code>, <code>graph_search</code> ou <code>graph_symbols</code>. O plugin chama o Session Graph Engine por REST puro, recebe hubs por <b>PageRank</b> e vizinhança <b>CALLS/CONTAINS/IMPORTS</b>, e falha em modo <b>fail-open</b> se o daemon estiver offline. E você raramente começa do zero: uma busca recursiva <b>ampla</b> é reroteada <b>uma vez</b> pro grafo (grafo primeiro, grep escopado depois), e o grafo chega <b>pronto</b> no SessionStart, pré-aquecido por um <code>ingest</code> incremental.</p></div>
       </div>
     </div>
   </section>

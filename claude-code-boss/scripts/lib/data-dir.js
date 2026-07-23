@@ -88,15 +88,50 @@ function _writeJsonAtomic(file, obj) {
 }
 
 /**
+ * SQLite-free proxy for "how much KB data lives under `dir`": the total bytes of
+ * every `dir/brain/<*>/brain.db`. A richer store (more entries + their embeddings)
+ * is a materially bigger file, so this cheaply distinguishes the live folder from
+ * a near-empty stray WITHOUT opening SQLite (this module must stay dependency-light
+ * — path/os/fs only). Fail-open: any error → 0 (treated as "no data here").
+ * @param {string} dir
+ * @returns {number} total brain.db bytes under dir/brain
+ */
+function pointerWeight(dir) {
+  let total = 0;
+  try {
+    const brain = path.join(dir, 'brain');
+    for (const n of fs.readdirSync(brain)) {
+      try {
+        const st = fs.statSync(path.join(brain, n, 'brain.db'));
+        if (st.isFile()) total += st.size;
+      } catch (err) { void err; /* no brain.db in this shard */ }
+    }
+  } catch (err) { void err; /* no brain/ dir → weightless */ }
+  return total;
+}
+
+/**
  * Best-effort publish of the active data dir so env-less callers (SessionStart
  * hooks that don't receive CLAUDE_PLUGIN_DATA) can FOLLOW the SAME folder the
  * env-aware processes (brain-server / hooks that DO get it) resolved. Atomic and
  * fail-open — never throws, never blocks the caller.
+ *
+ * ANTI-REGRESSION GUARD (kills the "apparent memory loss"): never move the pointer
+ * from a HEAVIER live folder to a LIGHTER one. When two install identities race to
+ * publish (each brain-server republishes on startup), the one whose brain.db
+ * actually holds the data wins, so env-less callers (brain_count / brain_search)
+ * always resolve the rich KB instead of a near-empty stray — the exact split-brain
+ * symptom where the pointer flipped to a 1-entry folder and recall read "1".
  * @param {string} dir
  */
 function writeActivePointer(dir) {
   if (typeof dir !== 'string' || dir.trim().length === 0) return;
   try {
+    const existing = readActivePointer(); // resolved dir that STILL EXISTS, or null
+    if (existing && path.resolve(existing) !== path.resolve(dir)
+        && pointerWeight(existing) > pointerWeight(dir)) {
+      return; // don't regress the pointer onto a lighter (near-empty) folder
+    }
     _writeJsonAtomic(activePointerPath(), { dir, ts: Date.now() });
   } catch (err) {
     // Advisory pointer only: another concurrent writer publishing the SAME dir
