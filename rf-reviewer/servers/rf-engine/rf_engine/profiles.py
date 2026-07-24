@@ -9,15 +9,19 @@ Perfis embutidos:
   - "rf-end": modelo maduro/aprovado (8 validação + 5 consultivas).
 
 Perfis específicos de cliente NÃO vêm embutidos (o plugin é agnóstico): registre o
-seu em runtime com a tool rf_perfil_definir (persiste em profiles_custom.json).
+seu em runtime com a tool rf_perfil_definir. Ele PERSISTE em ~/.rf-engine/
+profiles_custom.json — no lar GLOBAL por-usuário (rf_engine.paths), FORA do plugin,
+para sobreviver a updates e ser compartilhado por todas as sessões (o daemon único).
 """
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from . import model
+from .paths import get_data_dir
 
 
 @dataclass
@@ -85,7 +89,26 @@ _CUSTOM: dict[str, ColumnProfile] = {}
 
 
 def _custom_store() -> Path:
+    """Store dos perfis custom — no diretório GLOBAL por-usuário (~/.rf-engine),
+    FORA do plugin: sobrevive a updates e é compartilhado pelo daemon único."""
+    return get_data_dir() / "profiles_custom.json"
+
+
+def _legacy_store() -> Path:
+    """Local ANTIGO (dentro da pasta do plugin) — só para a migração one-shot."""
     return Path(__file__).resolve().parent / "profiles_custom.json"
+
+
+def _migrate_legacy_if_needed() -> None:
+    """Move o store antigo (dentro do plugin, que se perdia a cada update) para o
+    lar global, UMA vez. Fail-loud: erro de I/O propaga — nunca mascara silencioso."""
+    new = _custom_store()
+    old = _legacy_store()
+    if new.exists() or not old.exists() or old.resolve() == new.resolve():
+        return
+    new.parent.mkdir(parents=True, exist_ok=True)
+    new.write_text(old.read_text(encoding="utf-8"), encoding="utf-8")
+    sys.stderr.write(f"[rf-engine] perfis migrados p/ lar global: {old} -> {new}\n")
 
 
 def _load_custom() -> None:
@@ -110,9 +133,12 @@ def _load_custom() -> None:
 
 def _save_custom() -> None:
     data = {pid: p.to_dict() for pid, p in _CUSTOM.items()}
-    _custom_store().write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    store = _custom_store()
+    store.parent.mkdir(parents=True, exist_ok=True)
+    store.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+_migrate_legacy_if_needed()
 _load_custom()
 
 
