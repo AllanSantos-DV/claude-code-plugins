@@ -42,7 +42,7 @@ def build_record(sheet: str, row: dict, keys: list[str]) -> dict:
         "proceso": _get(f, "proceso e2e", "proceso"),
         "actor": _get(f, "actor"),
         "tipo": _get(f, "tipo"),
-        "insuremo": _get(f, "insuremo"),
+        "plataforma": _get(f, "insuremo", "plataforma", "platform"),
         "componente": _get(f, "componente", "component"),
         "complejidad": _get(f, "complej", "complex"),
         "alcance": _get(f, "alcance"),
@@ -64,7 +64,7 @@ def build_record(sheet: str, row: dict, keys: list[str]) -> dict:
 INSTRUCTIONS = (
     "Preencha, para CADA registro não-N/A, as 13 chaves de análise (8 de validação + "
     "5 consultivas) usando SOMENTE a referência cruzada com a memória do projeto "
-    "(project_id=la-positiva). Regras duras: nenhum dado das colunas novas pode vir do "
+    "(o project_id da sua memória). Regras duras: nenhum dado das colunas novas pode vir do "
     "próprio arquivo base; 'referencia' nunca aponta para .md nem para o output; se o "
     "hint.forced_bloqueante=true, a tipificacion deve ser 'Bloqueante' e o comentario "
     "começar por 'BLOQUEANTE:'; texto em espanhol acentuado; sem markdown nas células. "
@@ -101,7 +101,7 @@ def run(extract_path: str, out_path: str, profile_id: str | None = None) -> dict
         "profile_columns": profile.headers,
         "instructions": INSTRUCTIONS if profile.id == "rf-end"
         else f"Preencha, para cada registro não-N/A, as chaves {keys} (perfil '{profile.id}'). "
-             "Todo conteúdo vem da referência cruzada com a memória (project_id=la-positiva), "
+             "Todo conteúdo vem da referência cruzada com a memória (o project_id da sua memória), "
              "nunca do arquivo base; 'fonte'/'referencia' nunca aponta para .md nem para o output; "
              "espanhol acentuado, sem markdown nas células. Registre gaps citados em 'gaps'.",
         "schema_keys": keys,

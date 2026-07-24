@@ -24,7 +24,7 @@ process.stdin.on('end', () => {
 
   // Sinais de tarefa de RF em planilha (tabular).
   const hasSpreadsheet = /\.xlsx\b|\.xlsm\b|\.csv\b|planilha|spreadsheet|hoja de c[aá]lculo/.test(p);
-  const rfWords = /requerimiento|requisito|\brf\b|rf-\d|listado|cuadro p[oó]liza|siniestro|colocacion|insuremo|la positiva/.test(p);
+  const rfWords = /requerimiento|requisito|\brf\b|rf-\d|listado|entregable|entregável|funcional/.test(p);
   const actionWords = /revis|anali|anota|validar|clasific|gap|entregable|entregável/.test(p);
 
   // dispara se: menciona planilha explicitamente E (contexto de RF OU ação de análise)
@@ -36,7 +36,7 @@ process.stdin.on('end', () => {
     'planilha. Use o fluxo DETERMINÍSTICO do RF Reviewer (MCP rf-engine), não faça na mão:\n' +
     '1) rf_perfis_listar -> escolher o perfil de colunas;\n' +
     '2) rf_prep {xlsx, out_dir, perfil} -> extrai e gera o esqueleto (analysis_json);\n' +
-    '3) (opcional) rf_brain_enriquecer -> evidências do cérebro (project la-positiva);\n' +
+    '3) (opcional) rf_brain_enriquecer -> evidências do cérebro (project <seu-projeto>);\n' +
     '4) preencher as schema_keys + gaps cruzando com a memória (nada vem do arquivo base);\n' +
     '5) rf_validar -> corrigir até aprovado;\n' +
     '6) rf_apply -> injeta a análise na MESMA planilha (não-destrutivo, versionado);\n' +

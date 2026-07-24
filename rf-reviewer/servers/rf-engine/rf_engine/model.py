@@ -1,7 +1,7 @@
 """
-rf_engine.model — esquema autoritativo do entregável de revisão La Positiva / InsureMO.
+rf_engine.model — esquema autoritativo do entregável de revisão de RF em Excel.
 
-Fonte da verdade: skill `lapositiva-rodar-revisao-excel-doc`
+Fonte da verdade: o padrão de colunas de revisão de RF
   - references/rf-end-format-standard.md  (8 colunas de validação)
   - references/proactive-consultant-columns.md (5 colunas consultivas)
 
@@ -31,7 +31,7 @@ VALIDATION_COLUMNS = [
     "Comentario de revisión / Acción esperada",
     "Acción a tomar",
     "Compatible con nuestra plataforma",
-    "Observación técnica InsureMO",
+    "Observación técnica de plataforma",
     "Referencia",
 ]
 VALIDATION_WIDTHS = [16, 20, 40, 55, 55, 16, 55, 60]
@@ -94,9 +94,9 @@ ENUM_TIPO_MEJORA = [
 ]
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Paleta (rf-end-format-standard). Header azul-escuro NTT + célula clara.
+# Paleta (rf-end-format-standard). Header azul-escuro + célula clara.
 # ─────────────────────────────────────────────────────────────────────────────
-COLOR_HEADER_BG = "0C447C"       # azul-escuro NTT (fundo do cabeçalho das nossas colunas)
+COLOR_HEADER_BG = "0C447C"       # azul-escuro (fundo do cabeçalho das nossas colunas)
 COLOR_HEADER_FG = "FFFFFF"       # texto branco
 COLOR_CELL_FILL = "EEF4FB"       # fundo claro das células das nossas colunas
 COLOR_TITLE_BG = "185FA5"        # faixas de seção (Resumo Executivo)
@@ -140,7 +140,7 @@ class RowRef:
     row_idx: int                      # linha real na planilha
     rf_id: str                        # id/sentinela do requisito
     fields: dict[str, Any] = field(default_factory=dict)  # {header: valor}
-    is_na: bool = False               # linha sem config InsureMO -> não anotar
+    is_na: bool = False               # linha sem config de plataforma -> não anotar
     forced_bloqueante: bool = False   # hint determinístico (escopo aberto + alta)
 
 
@@ -176,7 +176,7 @@ class GapRecord:
     codigo: str                       # G-XX-NN
     descripcion: str
     accion_esperada: str
-    responsable: str                  # La Positiva / NTT
+    responsable: str                  # cliente / fornecedor
     rf_relacionado: str               # IDs separados por vírgula
     criticidad: str = "Media"
 

@@ -24,7 +24,7 @@ Espanhol. **13 colunas** = 8 de validação + 5 consultivas. Gera também as aba
 | Comentario de revisión / Acción esperada | `comentario` |
 | Acción a tomar | `accion` |
 | Compatible con nuestra plataforma | `compatible` |
-| Observación técnica InsureMO | `obs_tecnica` |
+| Observación técnica plataforma | `obs_tecnica` |
 | Referencia | `referencia` |
 
 **Consultivas (5):**
@@ -41,19 +41,12 @@ Espanhol. **13 colunas** = 8 de validação + 5 consultivas. Gera também as aba
 > Confira os nomes exatos das chaves em `model.py` (`VALIDATION_KEYS`/`CONSULT_KEYS`)
 > antes de preencher o `analysis.json`.
 
-## `fernando-siniestros` — colunas autorais do RF de Sinistros
+## Perfis específicos de cliente
 
-Espanhol. **6 colunas** azuis (derivadas do V4 real aprovado pelo Fernando).
-**Não** gera abas Resumo/Leyenda — a entrega é só as colunas na aba do cliente.
-
-| Cabeçalho | Chave | Observação |
-| --- | --- | --- |
-| Clasificación Final (FERNANDO) | `clasificacion_final` | dropdown (Estándar/Custom/Implementación/N/A/Por validar) |
-| Estado IMO (FERNANDO) | `estado_imo` | |
-| Comentarios | `comentarios` | |
-| Fonte | `fonte` | documento-fonte legível (nunca `.md`) |
-| Capacidad de la Plataforma (FERNANDO) | `capacidad_plataforma` | |
-| Detalle técnico y fuentes (FERNANDO) | `detalle_tecnico` | |
+Perfis específicos de cliente **não são embutidos** no plugin público. Quem usa registra o
+seu perfil com **`rf_perfil_definir`** (uma vez), informando `id`, `name`, `lang` e a lista
+de `columns` com `header`/`key`/`width`/`enum?`/`colored?`. O perfil fica persistido em
+`profiles_custom.json` e passa a aparecer no `rf_perfis_listar`.
 
 ## Perfis custom (por assunto)
 

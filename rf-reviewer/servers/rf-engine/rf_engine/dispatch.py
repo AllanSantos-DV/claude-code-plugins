@@ -82,7 +82,7 @@ def tool_prep(args: dict) -> dict:
 
 def tool_brain_buscar(args: dict) -> dict:
     from . import brain_client as m_brain
-    c = m_brain.BrainClient(args["url"], args.get("project", "la-positiva"))
+    c = m_brain.BrainClient(args["url"], args.get("project") or "")
     try:
         c.connect()
         hits = c.search(args["query"], top_k=int(args.get("top_k", 5)))
@@ -94,7 +94,7 @@ def tool_brain_buscar(args: dict) -> dict:
 def tool_brain_enriquecer(args: dict) -> dict:
     from . import brain_client as m_brain
     res, err = _guard(m_brain.enrich, analysis_path=args["analysis_json"], url=args["url"],
-                      project=args.get("project", "la-positiva"), top_k=int(args.get("top_k", 5)),
+                      project=args.get("project") or "", top_k=int(args.get("top_k", 5)),
                       limit=args.get("limit"))
     if err:
         return {"ok": False, "error": err}
@@ -200,12 +200,12 @@ TOOLS = {
         "type": "object", "properties": {
             "xlsx": {"type": "string", "description": "caminho do entregável .xlsx do cliente"},
             "out_dir": {"type": "string", "description": "pasta de trabalho (default _work/caso)"},
-            "perfil": {"type": "string", "description": "id do perfil (default rf-end; ex.: fernando-siniestros)"}},
+            "perfil": {"type": "string", "description": "id do perfil (default rf-end)"}},
         "required": ["xlsx"]}),
     "rf_brain_buscar": (tool_brain_buscar, "Busca evidências no cérebro (servidor de memória) escopado por project_id. Retrieval mecânico.", {
         "type": "object", "properties": {
             "url": {"type": "string", "description": "serverUrl (ex.: http://192.168.18.13:38080)"},
-            "project": {"type": "string", "description": "project_id (default la-positiva)"},
+            "project": {"type": "string", "description": "project_id da sua memória (escopo do recall)"},
             "query": {"type": "string"}, "top_k": {"type": "integer"}},
         "required": ["url", "query"]}),
     "rf_brain_enriquecer": (tool_brain_enriquecer, "Enriquece o analysis.json com candidate_refs do cérebro (1 busca por RF).", {

@@ -4,6 +4,28 @@ Todas as mudanças relevantes do **rf-reviewer** são documentadas aqui. O forma
 segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); a versão vive
 em `servers/rf-engine/rf_engine/__init__.py` (`__version__`).
 
+## [0.2.1] - 2026-07-24
+
+### Changed — plugin 100% agnóstico de cliente
+
+- **Removidos todos os dados de cliente** do plugin (código, docs e página): o motor
+  e os exemplos ficam genéricos. A configuração específica de cada cliente (perfil de
+  colunas, cabeçalho do Resumo, `project_id` da memória) é registrada por quem usa
+  (via `rf_perfil_definir` e parâmetros), nunca embutida no plugin.
+- **Saída genérica:** o Resumo Executivo não injeta mais nome de cliente; o sufixo do
+  arquivo revisado passa a ser `_revisado_vN.xlsx`.
+- **Perfis embutidos:** só o `rf-end` (genérico) vem de fábrica; perfis específicos de
+  cliente são registrados em runtime (`rf_perfil_definir`).
+- **`project_id` sem default de cliente:** as tools de memória (`rf_brain_*`) usam o
+  `project_id` que você passar.
+
+### Fixed — página do plugin
+
+- **Versão determinística:** a versão exibida nas páginas vem do `plugin.json`
+  (`.github/scripts/version-stamp.mjs`) — não é mais hardcoded na mão.
+- **Layout:** corrigido texto que vazava das células/caixas (overflow) e o acento
+  lateral grosso de card.
+
 ## [0.2.0] - 2026-07-24
 
 ### Changed — transporte MCP: stdio → Streamable HTTP (daemon único)
@@ -54,7 +76,7 @@ em `servers/rf-engine/rf_engine/__init__.py` (`__version__`).
 ## [0.1.0] - 2026-07-10
 
 Release inicial — motor determinístico de revisão de Requisitos Funcionais (RF)
-em Excel do projeto La Positiva / InsureMO, distribuído como plugin irmão do
+em Excel para projetos com entregáveis tabulares, distribuído como plugin irmão do
 `claude-code-boss` no marketplace `allansantos-plugins`.
 
 ### Added — motor `rf-engine` (MCP, Python + openpyxl)
@@ -70,7 +92,7 @@ em Excel do projeto La Positiva / InsureMO, distribuído como plugin irmão do
 - **Perfis de coluna por assunto** (trocáveis): o mesmo motor serve qualquer
   assunto tabular; assunto novo = novo perfil via `rf_perfil_definir`.
 - **Referência cruzada com a memória** (`rf_brain_*`): consulta um servidor
-  MCP Memory (`project=la-positiva`) para embasar a análise.
+  MCP Memory (`project=<seu-projeto>`) para embasar a análise.
 - **Escopo explícito**: arquivos tabulares (`.xlsx` núcleo, `.csv`). Documentos
   (`.pdf`/`.docx`/`.pptx`) ficam fora — injetar coluna só faz sentido em tabela.
 

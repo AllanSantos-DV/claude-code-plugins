@@ -1,17 +1,17 @@
 # RF Reviewer — plugin Claude Code
 
 Motor determinístico para **revisar entregáveis de Requisitos Funcionais (RF) em Excel**
-do projeto La Positiva / InsureMO. Faz a **parte mecânica** (extrair a planilha, montar as
+de qualquer projeto. Faz a **parte mecânica** (extrair a planilha, montar as
 colunas de análise, **injetar de volta** na MESMA planilha do cliente, validar, versionar)
 como um **MCP**; deixa para o agente **só o julgamento** (preencher a análise cruzando com a
-memória do projeto — o servidor de conhecimento, `project_id=la-positiva`).
+memória do projeto — o servidor de conhecimento, com o project_id da sua memória).
 
 Plugin **irmão** do `claude-code-boss` no mesmo marketplace (`allansantos-plugins`), mas com
 **escopo segregado**: aqui é conversão/anotação de Excel; lá é conhecimento de sessão.
 
 ## O que entrega
 A **mesma planilha do cliente** + as colunas de análise anexadas (perfil escolhido),
-versionada (`_revisado_fernando_vN.xlsx`). O original fica **100% intacto** (prova por
+versionada (`_revisado_vN.xlsx`). O original fica **100% intacto** (prova por
 comparação célula a célula).
 
 ## Componentes
@@ -54,5 +54,5 @@ comparação célula a célula).
 
 ## Mais
 - **[INSTALL.md](./INSTALL.md)** — instalação, configuração do servidor de memória, uso e troubleshooting.
-- **[PROFILES.md](./PROFILES.md)** — perfis de coluna (`rf-end`, `fernando-siniestros`) e como criar um novo.
+- **[PROFILES.md](./PROFILES.md)** — perfil embutido (`rf-end`) e como registrar perfis custom.
 - **[CHANGELOG.md](./CHANGELOG.md)** — histórico de versões.
