@@ -4963,6 +4963,60 @@ test('FIX2 mergeUserConfig: {nim:{apiKey}} preserva classifyRemote:false; opt-in
 });
 
 
+// ═══ BOOT FIX — classificador DESACOPLADO do boot-ready (sharp/embedder) ═══
+// Sintoma real (smoke do dono): o embedder (@xenova/transformers) falha ao subir
+// (sharp win32-x64 ausente) e, como a carga era AWAITada ANTES do server.listen, o
+// router nunca escrevia o state file no timeout do ensure → "timeout aguardando
+// state file → roteamento desabilitado", e os 3 overrides de token nunca gravavam.
+// Fix: o servidor fica ready (porta + state file) PRIMEIRO; o classificador carrega
+// DEPOIS, fire-and-forget. Um embedder lento/quebrado nunca derruba o routing —
+// sem classificador, classifyLocal devolve null → passthrough.
+
+test('BOOTFIX initClassifier: resolve com {embedder, anchors} e faz o wiring (deps injetáveis)', async () => {
+  const fakeEmb = { embed: async () => [1, 0, 0] };
+  const fakeAnchors = { haiku: [1, 0, 0] };
+  let builtWith = null;
+  const r = await routerServer.initClassifier({ anchors: { haiku: ['x'] } }, {
+    loadEmbedder: async () => fakeEmb,
+    buildAnchors: async (emb, cfg) => { builtWith = { emb, cfg }; return fakeAnchors; },
+  });
+  // Asserção por IDENTIDADE (=== → boolean) — o harness roda os testes async em
+  // paralelo (compartilham _embedder), então NÃO lemos o estado do módulo aqui
+  // (seria corrida) e assertEq(objeto) colapsaria funções via JSON.stringify.
+  assertEq(r.embedder === fakeEmb, true, 'resolve com o embedder carregado');
+  assertEq(r.anchors === fakeAnchors, true, 'resolve com as âncoras construídas');
+  assertEq(builtWith && builtWith.emb === fakeEmb, true, 'buildAnchors recebe o embedder carregado (wiring)');
+  assertEq(!!(builtWith && builtWith.cfg && builtWith.cfg.haiku), true, 'buildAnchors recebe config.anchors');
+});
+
+test('BOOTFIX initClassifier: embedder QUEBRADO (throw) → REJEITA e não constrói âncoras (isola o boot)', async () => {
+  let buildCalled = false;
+  let threw = false;
+  try {
+    await routerServer.initClassifier({ anchors: { haiku: ['x'] } }, {
+      loadEmbedder: async () => { throw new Error('Cannot find module sharp-win32-x64.node'); },
+      buildAnchors: async () => { buildCalled = true; return {}; },
+    });
+  } catch (e) {
+    threw = true;
+    assert(/sharp/.test(e.message), 'o erro do embedder propaga p/ o .catch fire-and-forget do boot');
+  }
+  assertEq(threw, true, 'initClassifier REJEITA quando o embedder falha — o boot faz .catch e SEGUE vivo (passthrough)');
+  assertEq(buildCalled, false, 'embedder falhou ANTES → âncoras nem começam: publish atômico, sem estado meio-inicializado');
+});
+
+test('BOOTFIX source-order: o classificador carrega DEPOIS do server.listen (desacoplado do boot-ready)', () => {
+  const src = fs.readFileSync(path.join(__dirname, '..', 'servers', 'model-router', 'index.js'), 'utf-8');
+  const iListen = src.indexOf('server.listen(FIXED_PORT');
+  const iInit = src.indexOf('initClassifier(config)');
+  assert(iListen > 0, 'server.listen(FIXED_PORT presente');
+  assert(iInit > 0, 'initClassifier(config) chamado no boot');
+  assert(iInit > iListen, 'initClassifier DEVE ser chamado DEPOIS de server.listen — senão um embedder lento/quebrado bloqueia a prontidão (era o bug)');
+  const preListen = src.slice(0, iListen);
+  assert(!/await\s+loadEmbedder\s*\(/.test(preListen), 'NÃO pode haver "await loadEmbedder(" ANTES do server.listen (era exatamente o bug do boot que travava o state file)');
+});
+
+
 // ─── model-router (server): sticky-tier — chave de sessão + decisor puro ──────
 
 test('computeSessionKey: mesmo system+1ª msg → MESMA chave (histórico cresce no fim)', () => {

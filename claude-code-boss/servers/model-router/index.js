@@ -209,6 +209,25 @@ async function buildAnchors(embedder, anchorConfig) {
   return result;
 }
 
+// Carrega o classificador local (embedder + âncoras) e o PUBLICA nos módulo-vars
+// _embedder/_anchors — de forma ATÔMICA: só publica depois que AMBOS deram certo,
+// então um embedder quebrado nunca deixa estado meio-inicializado. Chamado
+// FIRE-AND-FORGET *depois* que o servidor já está pronto (porta ligada + state file
+// escrito), para que um embedder lento/quebrado (ex.: sharp win32-x64 ausente) NUNCA
+// atrase nem derrube a prontidão do router. Sem classificador, classifyLocal devolve
+// null → passthrough (o routing segue vivo). deps injetáveis (loadEmbedder/buildAnchors)
+// p/ testes herméticos, sem tocar em rede/modelo.
+async function initClassifier(config, deps = {}) {
+  const _loadEmbedder = deps.loadEmbedder || loadEmbedder;
+  const _buildAnchors = deps.buildAnchors || buildAnchors;
+  const embedder = await _loadEmbedder(config);
+  const anchors  = await _buildAnchors(embedder, (config && config.anchors) || {});
+  _embedder = embedder;
+  _anchors  = anchors;
+  logger.info('Classificador local pronto (async, pós-boot).', { tiers: Object.keys(anchors || {}) });
+  return { embedder, anchors };
+}
+
 // Política de decisão calibrada com tráfego real (router.log): o classificador
 // por cosseno tende a eleger OPUS como argmax justamente quando NADA casa bem
 // (opus teve o menor score médio ~0.22 e mínimo 0.07). Para "esticar a janela",
@@ -1737,21 +1756,11 @@ async function main() {
     logger.warn('Per-turn routing (enabled) é DEPRECADO: rotear por-request quebra o prompt cache da Anthropic. Prefira o roteador cache-safe {sticky:{enabled:true}} (/dashboard → Sticky Router).');
   }
 
-  // Inicializa classificador local (MiniLM) nos modos que CLASSIFICAM: 'routing'
-  // (a cada request) e 'sticky-tier' (uma vez por sessão). Em 'fallback-only' não
-  // classificamos nada (passthrough), então pular o embedder/anchors deixa o boot
-  // mais leve e rápido, sem carregar o modelo MiniLM.
-  if (mode === 'routing' || mode === 'sticky-tier') {
-    try {
-      _embedder = await loadEmbedder(config);
-      const anchorCfg = config.anchors || {};
-      _anchors = await buildAnchors(_embedder, anchorCfg);
-    } catch (e) {
-      logger.warn('Classificador local não inicializado — será usado NIM ou sem roteamento', { err: e.message });
-    }
-  } else {
-    logger.info('fallback-only: classificador/anchors NÃO inicializados (passthrough cache-safe).');
-  }
+  // O classificador local (MiniLM) é DESACOPLADO do boot: ele carrega DEPOIS que o
+  // servidor está pronto (ver o callback de server.listen abaixo), fire-and-forget.
+  // Assim um embedder lento/quebrado (ex.: sharp win32-x64 ausente) nunca atrasa a
+  // escrita do state file — era isso que fazia o ensure dar "timeout aguardando state
+  // file → roteamento desabilitado" e nunca gravar os overrides de token.
 
   // Token de identidade da porta fixa (verify-before-trust). Criado 1x por
   // instalação (reusado entre reinícios), lido pelo /health p/ provar que quem
@@ -1794,6 +1803,17 @@ async function main() {
     logger.info(`=== Servidor pronto em http://127.0.0.1:${FIXED_PORT} ===`, { port: FIXED_PORT });
     writeState(FIXED_PORT, mode);
     process.stdout.write(`ROUTER_PORT=${FIXED_PORT}\n`);
+    // DESACOPLADO: só AGORA (porta ligada + state file escrito → o ensure já enxerga o
+    // router pronto) carregamos o classificador, fire-and-forget. Nos modos que
+    // classificam; em 'fallback-only' é passthrough puro. Se o embedder falhar
+    // (sharp/onnx ausente), o .catch isola: classifyLocal devolve null → passthrough e
+    // o routing/os overrides seguem funcionando — o boot não trava mais no embedder.
+    if (mode === 'routing' || mode === 'sticky-tier') {
+      initClassifier(config).catch((e) =>
+        logger.warn('Classificador local não inicializado — NIM ou passthrough (routing segue vivo)', { err: e && e.message }));
+    } else {
+      logger.info('fallback-only: classificador/anchors NÃO inicializados (passthrough cache-safe).');
+    }
   });
 
   // Graceful shutdown
@@ -1850,6 +1870,7 @@ if (require.main === module) {
     // FIX 1 (identidade da porta fixa) + FIX 2 (classificação opt-in): exportados
     // p/ os testes herméticos (server /health autenticado + dispatcher de classify).
     createServer,
+    initClassifier,
     ensureRouterToken,
     readRouterToken,
     routerTokenMatches,
