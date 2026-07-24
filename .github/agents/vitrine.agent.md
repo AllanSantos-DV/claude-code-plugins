@@ -39,13 +39,37 @@ Você é acionado de duas formas:
 
 3. **Desenhe** `pages/<plugin>/index.html` seguindo a disciplina de design abaixo.
 
-4. **Sele o hash** (obrigatório — sem isso o merge continua bloqueado):
+4. **VALIDE VISUALMENTE — obrigatório, NÃO pule.** Uma página **não** se valida lendo o
+   HTML/CSS: você **renderiza e OLHA**. Bugs de layout (texto vazando da caixa, overflow
+   horizontal, quebra de 1 caractere por linha, elementos sobrepostos, tabela desalinhada)
+   **só aparecem no render** — jamais declare "pronto" sem ter visto o pixel.
+   1. Renderize em **desktop E mobile** com Chrome headless (fallback: `msedge.exe`):
+      ```powershell
+      $b="C:\Program Files\Google\Chrome\Application\chrome.exe"
+      $pg="file:///CAMINHO/ABSOLUTO/pages/<plugin>/index.html"
+      & $b --headless=new --disable-gpu --hide-scrollbars --window-size=1280,4600 --screenshot="rev_desktop.png" $pg
+      & $b --headless=new --disable-gpu --hide-scrollbars --window-size=430,4600  --screenshot="rev_mobile.png"  $pg
+      ```
+   2. **ABRA cada PNG com o tool `read`** (ele te mostra a imagem) e **inspecione de verdade**:
+      texto vazando da caixa/célula? quebra estranha (1 char por linha)? overflow horizontal
+      (cortado à direita), inclusive no mobile? elementos sobrepostos? grids/tabelas
+      desalinhados? contraste ilegível?
+   3. Achou defeito → **conserte o CSS/HTML e RE-RENDERIZE**. **Repita o ciclo até sair limpo
+      em desktop E mobile.** Ser factual = o render prova; "acho que ficou bom" não conta.
+   - **Armadilhas comuns** (evite de saída): `overflow-wrap:anywhere` colapsa o min-content e
+     quebra por caractere → use `break-word`; `display:flex/grid` num `<li>` transforma cada
+     `<b>`/`<code>` inline em item separado (fica embaralhado) → use bloco + `::before`
+     absoluto pro marcador; `position:absolute` sobrepondo conteúdo → prefira fluxo normal;
+     coluna `minmax(0,1fr)` colapsando ao lado de conteúdo grande → `min-width:0` + limite o
+     vizinho; sem `body{overflow-x:hidden}` o mobile vaza lateralmente.
+
+5. **Sele o hash** (obrigatório — sem isso o merge continua bloqueado):
    ```
    node .github/scripts/pages-guard.mjs stamp <plugin>
    ```
-   Repita 3–4 para cada plugin pendente.
+   Repita 3–5 para cada plugin pendente.
 
-5. **Confirme verde:**
+6. **Confirme verde:**
    ```
    node .github/scripts/pages-guard.mjs check
    ```
@@ -87,5 +111,6 @@ mínimos, inegociáveis:
 - [ ] `pages/<plugin>/index.html` existe e reflete README/CHANGELOG/manifest atuais
 - [ ] Instalação via marketplace correta no HTML
 - [ ] Responsivo + foco visível + reduced-motion
+- [ ] **RENDERIZADO e OLHADO (Chrome headless) em desktop E mobile — zero overflow/quebra/sobreposição, auto-corrigido até o render sair limpo**
 - [ ] `node .github/scripts/pages-guard.mjs stamp <plugin>` rodado para cada plugin
 - [ ] `node .github/scripts/pages-guard.mjs check` sai `OK`
