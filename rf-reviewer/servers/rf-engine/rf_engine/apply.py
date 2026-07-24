@@ -5,11 +5,11 @@ Consome o analysis.json (já preenchido pelo agente) + o extract.json (specs das
 abas) e produz o entregável:
   - copia o arquivo ORIGINAL intacto (integração invisível);
   - anexa as 13 colunas (8 validação + 5 consultivas) na(s) aba(s) de RF, com
-    formatação padrão NTT, dropdowns nos enums e altura de linha dinâmica;
+    formatação padrão, dropdowns nos enums e altura de linha dinâmica;
   - cria a aba "1. Resumo Executivo" (primeira) a partir das contagens reais;
   - cria a aba "Leyenda de Gaps" (última) a partir da lista de gaps;
   - faz scrub de termos proibidos no que escrevemos;
-  - versiona a saída como _revisado_fernando_vN (nunca sobrescreve).
+  - versiona a saída como _revisado_vN (nunca sobrescreve).
 
 Uso:
   python -m rf_engine.apply _work/base/extract.json _work/base/analysis.json [-o PASTA]
@@ -142,11 +142,10 @@ def _build_resumo(wb, source_name: str, counts: dict) -> None:
         if height:
             ws.row_dimensions[row].height = height
 
-    band(1, "PROYECTO ONE - LA POSITIVA SEGUROS", "0C447C", 12, 21.75)
-    band(2, f"Resumen Ejecutivo\n{source_name}", "185FA5", 11, 31.5)
+    band(1, "Resumen Ejecutivo — Revisión de Requisitos Funcionales", "0C447C", 12, 21.75)
+    band(2, f"{source_name}", "185FA5", 11, 31.5)
 
-    meta = [("Cliente:", "La Positiva Seguros"), ("Proyecto:", "Proyecto ONE - InsureMO"),
-            ("Version:", "1.0"), ("Preparado por:", "Fernando Soares - InsureMO")]
+    meta = [("Documento:", source_name), ("Versión:", "1.0")]
     r = 4
     for label, value in meta:
         cl = ws.cell(row=r, column=1, value=label)
@@ -249,12 +248,12 @@ def _build_leyenda(wb, gaps: list[dict]) -> None:
 def _version_out(source_file: str, out_dir: str | None) -> Path:
     src = Path(source_file)
     base = src.stem
-    # remove sufixo _CT/_V\d/ fernando etc. mantendo o núcleo do nome do cliente
+    # remove sufixo _CT/_V\d etc. mantendo o núcleo do nome do arquivo
     outp = Path(out_dir) if out_dir else src.parent
     outp.mkdir(parents=True, exist_ok=True)
     n = 1
     while True:
-        cand = outp / f"{base}_revisado_fernando_v{n}.xlsx"
+        cand = outp / f"{base}_revisado_v{n}.xlsx"
         if not cand.exists():
             return cand
         n += 1

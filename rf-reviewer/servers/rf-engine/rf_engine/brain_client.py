@@ -13,8 +13,8 @@ candidatos do banco escopado por project_id. O JULGAMENTO (o que usar, virar gap
 severidade) continua sendo do AGENTE.
 
 Uso:
-  python -m rf_engine.brain_client --url http://127.0.0.1:38080 --project la-positiva --query "autenticación"
-  python -m rf_engine.brain_client --enrich analysis.json --url ... --project la-positiva --top-k 5
+  python -m rf_engine.brain_client --url http://127.0.0.1:38080 --project <seu-projeto> --query "..."
+  python -m rf_engine.brain_client --enrich analysis.json --url ... --project <seu-projeto> --top-k 5
 """
 from __future__ import annotations
 
@@ -168,7 +168,7 @@ def enrich(analysis_path: str, url: str, project: str, top_k: int, limit: int | 
 def main() -> None:
     p = argparse.ArgumentParser(description="Ponte de memória (retrieval mecânico) — estágio opcional.")
     p.add_argument("--url", required=True, help="serverUrl do daemon (ex.: http://192.168.18.13:38080)")
-    p.add_argument("--project", default="la-positiva", help="project_id (escopo do recall)")
+    p.add_argument("--project", default=None, help="project_id da memória (escopo do recall)")
     p.add_argument("--query", default=None, help="teste: busca única e imprime hits")
     p.add_argument("--enrich", default=None, help="analysis.json a enriquecer com candidate_refs")
     p.add_argument("--top-k", type=int, default=5)

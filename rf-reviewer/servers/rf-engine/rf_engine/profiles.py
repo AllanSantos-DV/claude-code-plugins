@@ -6,11 +6,10 @@ chave canônica (no analysis.json), largura, cor do cabeçalho, dropdown (enum) 
 a célula é colorida por valor. Trocar de perfil = trocar o molde, sem tocar no motor.
 
 Perfis embutidos:
-  - "rf-end"             : modelo maduro/aprovado (8 validação + 5 consultivas).
-  - "fernando-siniestros": as colunas que o Fernando entrega hoje no RF de Sinistros
-                            (derivadas do V4 real aprovado por ele).
+  - "rf-end": modelo maduro/aprovado (8 validação + 5 consultivas).
 
-Novos perfis são só dados — dá pra registrar em runtime (a tool rf_perfil_definir).
+Perfis específicos de cliente NÃO vêm embutidos (o plugin é agnóstico): registre o
+seu em runtime com a tool rf_perfil_definir (persiste em profiles_custom.json).
 """
 from __future__ import annotations
 
@@ -76,29 +75,12 @@ def _rf_end() -> ColumnProfile:
     )
 
 
-# ── perfil 2: fernando-siniestros (as colunas reais do V4 dele) ──────────────
-def _fernando_siniestros() -> ColumnProfile:
-    B = model.COLOR_HEADER_BG  # azul-escuro 0C447C (as colunas autorais dele)
-    cols = [
-        ColumnDef("Clasificación Final (FERNANDO)", "clasificacion_final", 20.6, B,
-                  enum=["Estándar (Configuración)", "Estándar (Desarrollo)", "Custom (Desarrollo)",
-                        "Implementación", "N/A", "Por validar"]),
-        ColumnDef("Estado IMO (FERNANDO)", "estado_imo", 16.6, B),
-        ColumnDef("Comentarios", "comentarios", 97.0, B),
-        ColumnDef("Fonte", "fonte", 25.4, B),
-        ColumnDef("Capacidad de la Plataforma (FERNANDO)", "capacidad_plataforma", 22.6, B),
-        ColumnDef("Detalle técnico y fuentes (FERNANDO)", "detalle_tecnico", 100.6, B),
-    ]
-    return ColumnProfile(
-        id="fernando-siniestros", name="Fernando — RF Siniestros (colunas autorais)", lang="es",
-        columns=cols, build_resumo=False, build_leyenda=False,
-        notes="Derivado do V4 real aprovado (Draft-01_RF_Unificado_...Siniestros_CT_V4). "
-              "6 colunas azuis autorais; 'Fonte' = documento-fonte legível (nunca .md). "
-              "Não injeta abas Resumo/Leyenda: a entrega dele é só as colunas na aba do cliente.",
-    )
+# ── perfil 2 (exemplo cliente): registrado em runtime via rf_perfil_definir ──
+# Perfis específicos de cliente NÃO são embutidos (o plugin é agnóstico); quem
+# usa registra o seu com rf_perfil_definir (persiste em profiles_custom.json).
 
 
-_BUILTIN = {p.id: p for p in (_rf_end(), _fernando_siniestros())}
+_BUILTIN = {p.id: p for p in (_rf_end(),)}
 _CUSTOM: dict[str, ColumnProfile] = {}
 
 

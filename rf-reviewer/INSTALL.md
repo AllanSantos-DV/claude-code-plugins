@@ -1,7 +1,7 @@
 # RF Reviewer — Instalação e Integração
 
 Guia de **instalação, integração e uso** do plugin **rf-reviewer** (revisão de Requisitos
-Funcionais em Excel — La Positiva / InsureMO). Faz par com o `README.md` (visão geral) e a
+Funcionais em Excel). Faz par com o `README.md` (visão geral) e a
 skill `revisar-rf` (fluxo detalhado).
 
 ---
@@ -13,7 +13,7 @@ skill `revisar-rf` (fluxo detalhado).
 - **Python 3.11+** no PATH. A dependência **openpyxl** é **auto-instalada** pelo MCP na 1ª
   execução (não precisa instalar à mão). Se quiser adiantar: `python -m pip install openpyxl`.
 - **Servidor de memória** (MCP Memory) acessível para o passo de referência cruzada
-  (`project_id=la-positiva`). Ex.: `http://192.168.18.13:38080` na LAN.
+  (project_id da sua memória). Ex.: `http://192.168.18.13:38080` na LAN.
 
 ## 2. Instalar / atualizar (via marketplace)
 
@@ -58,12 +58,12 @@ As tools `rf_brain_*` recebem `url` e `project`. Use o servidor da equipe e o pr
 
 ```
 url = http://192.168.18.13:38080     (ajuste ao endereço acessível na sua rede)
-project = la-positiva
+project = <seu-projeto>
 ```
 
 ## 5. Uso (fluxo mínimo)
 
-1. `rf_perfis_listar` → escolha o perfil (ex.: `fernando-siniestros` ou `rf-end`).
+1. `rf_perfis_listar` → escolha o perfil (ex.: `rf-end` ou o perfil que você registrar).
 2. `rf_prep { xlsx, out_dir, perfil }` → gera o `analysis_json` (esqueleto).
 3. (opcional) `rf_brain_enriquecer { analysis_json, url, project }` → evidências do cérebro.
 4. **Preencher** as `schema_keys` + `gaps` cruzando com a memória (nada vem do arquivo base).
@@ -80,7 +80,7 @@ project = la-positiva
 
 `rf_perfis_listar` mostra os disponíveis. Assunto novo com colunas diferentes → crie com
 `rf_perfil_definir` (uma vez); a mecânica é a mesma, só muda o molde de colunas. Referência
-completa dos perfis embutidos e das colunas/chaves: **[PROFILES.md](./PROFILES.md)**.
+completa do perfil embutido e das colunas/chaves: **[PROFILES.md](./PROFILES.md)**.
 
 ## 8. Verificação rápida (opcional, fora do Claude Code)
 
@@ -98,5 +98,5 @@ Deve responder com `serverInfo` e listar as 9 tools.
 |---------|----------------|------|
 | “openpyxl não encontrado” | 1ª execução ainda instalando | Aguarde; ou `python -m pip install openpyxl` |
 | RF Reviewer não aparece no `/plugin` | catálogo em cache | Refresh do marketplace; confirme `git -C <mk> log -1` = último commit |
-| `rf_brain_*` sem resultado | url/projeto errados ou servidor fora | Verifique `url`/`project=la-positiva` e o health do servidor |
-| Recall vazio numa pasta | falta o marcador de projeto | Garanta `.claude-boss-project=la-positiva` na pasta de trabalho |
+| `rf_brain_*` sem resultado | url/projeto errados ou servidor fora | Verifique `url`/`project=<seu-projeto>` e o health do servidor |
+| Recall vazio numa pasta | falta o marcador de projeto | Garanta o marcador de projeto correto na pasta de trabalho |

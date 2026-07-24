@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>rf-reviewer v0.2.0 — revisão de RF em Excel com daemon HTTP único</title>
-<meta name="description" content="RF Reviewer v0.2.0: motor determinístico para revisar Requisitos Funcionais em Excel, preservar a planilha original e usar Streamable HTTP com daemon único em vez de um processo Python por sessão." />
+<title>rf-reviewer v0.2.1 — revisão de RF em Excel com daemon HTTP único</title>
+<meta name="description" content="RF Reviewer v0.2.1: motor determinístico para revisar Requisitos Funcionais em Excel, preservar a planilha original e usar Streamable HTTP com daemon único em vez de um processo Python por sessão." />
 <style>
   :root{
     --sheet:#fbfaf6;
@@ -36,6 +36,7 @@
     }
   }
   *{ box-sizing:border-box }
+  .cell, .step, .lane, .sheet-row > *, .facts li, .steps, .grid{ overflow-wrap:anywhere; min-width:0 }
   html{ -webkit-text-size-adjust:100%; scroll-behavior:smooth }
   body{
     margin:0; color:var(--ink); background:var(--sheet);
@@ -95,7 +96,7 @@
   .lane{ border:1px solid var(--panel-line); border-radius:14px; padding:18px }
   .lane small{ display:block; color:var(--panel-muted); text-transform:uppercase; letter-spacing:.18em; font-size:10px; margin-bottom:12px }
   .proc{ display:flex; flex-wrap:wrap; gap:7px; margin:0 0 12px }
-  .dotproc{ width:26px; height:26px; border-radius:7px; display:grid; place-items:center; font-size:11px; background:rgba(255,255,255,.08); color:var(--panel-muted); border:1px solid rgba(255,255,255,.08) }
+  .dotproc{ min-width:26px; height:26px; padding:0 8px; border-radius:7px; display:grid; place-items:center; font-size:11px; white-space:nowrap; background:rgba(255,255,255,.08); color:var(--panel-muted); border:1px solid rgba(255,255,255,.08) }
   .dotproc.hot{ background:rgba(225,161,95,.16); color:var(--review); border-color:rgba(225,161,95,.5) }
   .lane strong{ display:block; font-size:1.2rem; line-height:1.15 }
   .lane em{ color:var(--panel-muted); font-style:normal; font-size:12px }
@@ -126,7 +127,7 @@
   .linkbox a{ display:block; padding:12px 0; color:var(--blue); text-decoration:none; border-bottom:1px solid var(--grid); font-family:var(--mono); font-size:13px }
   .linkbox a:last-child{ border-bottom:0 }
   .linkbox a:hover{ color:var(--review) }
-  .honesty{ margin-top:22px; padding:16px 18px; border-left:4px solid var(--review); background:rgba(182,107,36,.10); color:var(--muted); font-size:14px }
+  .honesty{ margin-top:22px; padding:16px 18px; border:1px solid rgba(182,107,36,.28); border-radius:10px; background:rgba(182,107,36,.08); color:var(--muted); font-size:14px }
   footer{ padding:36px 0 58px; border-top:1px solid var(--grid); color:var(--muted); font-family:var(--mono); font-size:12.5px }
   .foot{ display:flex; justify-content:space-between; flex-wrap:wrap; gap:18px }
   .foot a{ text-decoration:none; color:var(--muted); margin-right:14px }
@@ -162,23 +163,23 @@
 <div class="wrap">
   <nav class="top" aria-label="Navegação principal">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="pill">rf-reviewer v0.2.0</span>
+    <span class="pill">rf-reviewer v0.2.1</span>
   </nav>
 
   <header class="hero">
     <div>
-      <p class="eyebrow reveal">La Positiva / InsureMO · RF em Excel</p>
+      <p class="eyebrow reveal">Revisão de RF · Excel</p>
       <h1 class="reveal" style="animation-delay:.04s">Planilha revisada, <span>original intacto.</span></h1>
       <p class="thesis reveal" style="animation-delay:.1s">O RF Reviewer faz a parte mecânica da revisão de Requisitos Funcionais: extrai a planilha, guia a análise com memória do projeto e injeta as colunas de volta na mesma pasta de trabalho, de forma versionada e não-destrutiva.</p>
       <div class="actions reveal" style="animation-delay:.16s">
         <a class="btn primary" href="#instalar">Instalar via marketplace</a>
-        <a class="btn" href="#transporte">Ver novidade 0.2.0</a>
+        <a class="btn" href="#transporte">Ver a novidade HTTP</a>
       </div>
     </div>
 
     <div class="sheet-card" aria-label="Representação visual de uma planilha de requisitos com colunas de análise anexadas">
       <div class="sheet-head" aria-hidden="true"><span></span><span>A RF</span><span>B Regra</span><span>C Memória</span><span>D Revisão</span></div>
-      <div class="sheet-row"><div class="rownum">12</div><div class="req">O sistema deve validar cobertura</div><div>origem cliente</div><div class="newcol"><span class="mark">cruzar</span><br/>la-positiva</div><div class="newcol"><span class="mark">análise</span><br/>pendência</div></div>
+      <div class="sheet-row"><div class="rownum">12</div><div class="req">O sistema deve validar cobertura</div><div>origem cliente</div><div class="newcol"><span class="mark">cruzar</span><br/>memória</div><div class="newcol"><span class="mark">análise</span><br/>pendência</div></div>
       <div class="sheet-row"><div class="rownum">13</div><div class="req">Registrar sinistro com status</div><div>original preservado</div><div class="newcol"><span class="mark">evidência</span><br/>memória</div><div class="newcol"><span class="mark">saída</span><br/>_revisado_vN</div></div>
       <div class="sheet-row"><div class="rownum">14</div><div class="req">Calcular regra por perfil</div><div>sem recriar células</div><div class="newcol"><span class="mark">perfil</span><br/>colunas</div><div class="newcol"><span class="mark">prova</span><br/>célula a célula</div></div>
       <span class="formula">rf_apply → rf_verificar_preservacao</span>
@@ -191,9 +192,9 @@
     <p class="lede">O contrato é claro: o agente julga; o motor executa. As 9 tools do <code>rf-engine</code> preparam, validam, aplicam e provam a preservação para arquivos <code>.xlsx</code> e <code>.csv</code>. Documentos como PDF, DOCX e PPTX ficam fora deste fluxo.</p>
     <div class="grid">
       <article class="cell"><span class="kicker">9 tools</span><h3>Mecânica determinística</h3><p><code>rf_prep</code>, <code>rf_apply</code>, <code>rf_validar</code>, <code>rf_status</code> e demais tools cuidam da transformação repetível; nada de editar workbook na mão.</p></article>
-      <article class="cell"><span class="kicker">Não-destrutivo</span><h3>A mesma planilha, versionada</h3><p>As colunas de análise são anexadas na planilha do cliente. O arquivo revisado recebe sufixo <code>_revisado_..._vN.xlsx</code>; os dados originais ficam 100% preservados.</p></article>
-      <article class="cell"><span class="kicker">Memória</span><h3>Requisito contra contexto</h3><p>As tools <code>rf_brain_*</code> cruzam cada RF com a memória do projeto <code>la-positiva</code> antes da conclusão da análise.</p></article>
-      <article class="cell"><span class="kicker">Perfis</span><h3>Colunas por assunto</h3><p>O mesmo motor troca o perfil de colunas conforme o tema, como <code>rf-end</code> e <code>fernando-siniestros</code>, ou novos perfis definidos para outro assunto tabular.</p></article>
+      <article class="cell"><span class="kicker">Não-destrutivo</span><h3>A mesma planilha, versionada</h3><p>As colunas de análise são anexadas na planilha do cliente. O arquivo revisado recebe sufixo <code>_revisado_vN.xlsx</code>; os dados originais ficam 100% preservados.</p></article>
+      <article class="cell"><span class="kicker">Memória</span><h3>Requisito contra contexto</h3><p>As tools <code>rf_brain_*</code> cruzam cada RF com a memória do projeto (o seu <code>project_id</code>) antes da conclusão da análise.</p></article>
+      <article class="cell"><span class="kicker">Perfis</span><h3>Colunas por assunto</h3><p>O mesmo motor troca o perfil de colunas conforme o tema (ex.: <code>rf-end</code>), ou perfis que você registra para outro assunto tabular.</p></article>
       <article class="cell"><span class="kicker">Hooks</span><h3>O fluxo é lembrado</h3><p><code>rf-remind</code> injeta a ordem correta quando a tarefa é RF em planilha; <code>rf-guard</code> redireciona tentativas de gravar XLSX manualmente para <code>rf_apply</code>.</p></article>
       <article class="cell"><span class="kicker">Escopo honesto</span><h3>XLSX/CSV apenas</h3><p>Injetar coluna só faz sentido em tabela. Para documentos, use outro fluxo de análise.</p></article>
     </div>
@@ -202,7 +203,7 @@
   <section id="transporte" aria-labelledby="transporte-title">
     <div class="transport">
       <div>
-        <p class="label">Novidade 0.2.0</p>
+        <p class="label">Novidade · transporte HTTP</p>
         <h2 id="transporte-title">O transporte mudou; as tools não.</h2>
         <p class="lede">O MCP migrou de <b>stdio</b> para <b>Streamable HTTP</b> com um daemon único em <code>127.0.0.1:19847</code>. As sessões do Claude Code agora conectam como clientes finos via <code>.mcp.json type:http</code>, sem abrir um processo Python por sessão.</p>
         <ul class="facts">
@@ -212,7 +213,7 @@
           <li>Rollback disponível: <code>/plugin install rf-reviewer@rf-v0.1.1</code>.</li>
         </ul>
       </div>
-      <aside class="saving" aria-label="Ganho de memória medido na versão 0.2.0">
+      <aside class="saving" aria-label="Ganho de memória medido">
         <span class="num">−403 MB</span>
         <p><b>Ganho medido:</b> 8 sessões saíram de ~489 MB em 8 processos stdio para ~87 MB em 1 daemon HTTP — cerca de <b>82%</b> a menos e <b>7 processos</b> eliminados.</p>
       </aside>
@@ -260,11 +261,11 @@
       </div>
       <aside class="linkbox" aria-label="Links do plugin">
         <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/rf-reviewer/README.md">README do rf-reviewer</a>
-        <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/rf-reviewer/CHANGELOG.md">CHANGELOG 0.2.0</a>
+        <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/rf-reviewer/CHANGELOG.md">CHANGELOG</a>
         <a href="https://github.com/AllanSantos-DV/claude-code-plugins">Repositório no GitHub</a>
       </aside>
     </div>
-    <p class="honesty"><b>Sem screenshot falso:</b> esta página mostra uma representação da planilha para explicar o fluxo. O número de memória (−403 MB, ~82%) é a medição real registrada no changelog da v0.2.0.</p>
+    <p class="honesty"><b>Sem screenshot falso:</b> esta página mostra uma representação da planilha para explicar o fluxo. O número de memória (−403 MB, ~82%) é a medição real registrada no changelog.</p>
   </section>
 
   <footer>

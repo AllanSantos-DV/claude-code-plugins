@@ -1,8 +1,8 @@
 """
 rf_engine.validate — ESTÁGIO 4 (gate): valida a análise ANTES/DEPOIS de materializar.
 
-Espelha o gate real do Fernando (v9-quality-gate.md + validate_review_workbook.py +
-anti-padrões da skill analisar-cruzado). Opera sobre o analysis.json (conteúdo) e,
+Espelha um gate de qualidade de revisão de RF (anti-padrões de análise cruzada).
+Opera sobre o analysis.json (conteúdo) e,
 opcionalmente, sobre o .xlsx de saída (erros de fórmula, termos proibidos, estrutura).
 
 ERROS bloqueiam a entrega; WARNINGS são avisos. Exit code 1 se houver ERROS.
@@ -24,7 +24,7 @@ from . import model
 FORMULA_ERRORS = ["#REF!", "#NAME?", "#VALUE!", "#DIV/0!", "#N/A"]
 FORBIDDEN_REF = [
     ".md", "anotado", "claude", "codex", "chatgpt", "openai", "analysis_",
-    "memoria:", "cache\\", "_revisado_fernando_v", "workbook",
+    "memoria:", "cache\\", "_revisado_v", "workbook",
     "documentacion funcional y tecnica", "documentación funcional y técnica",
 ]
 FORBIDDEN_ANY = [

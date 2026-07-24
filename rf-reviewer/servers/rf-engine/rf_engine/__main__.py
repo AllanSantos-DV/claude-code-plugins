@@ -3,7 +3,7 @@ rf_engine.__main__ — entrypoint único do motor.
 
   python -m rf_engine extract  ARQUIVO.xlsx -o _work/caso
   python -m rf_engine scaffold _work/caso/extract.json
-  python -m rf_engine brain    --enrich _work/caso/analysis.json --url http://192.168.18.13:38080 --project la-positiva
+  python -m rf_engine brain    --enrich _work/caso/analysis.json --url http://SEU-SERVIDOR:PORTA --project <seu-projeto>
   python -m rf_engine apply     _work/caso/extract.json _work/caso/analysis.json -o _work/caso/out
   python -m rf_engine validate  _work/caso/analysis.json --xlsx SAIDA.xlsx --extract _work/caso/extract.json
   python -m rf_engine prep      ARQUIVO.xlsx -o _work/caso   (= extract + scaffold, para o agente preencher)
@@ -72,7 +72,7 @@ def _cmd_prep(a):
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="rf_engine", description="Motor de revisão de RF (La Positiva/InsureMO): parte mecânica como tool.")
+    p = argparse.ArgumentParser(prog="rf_engine", description="Motor de revisão de RF em Excel: parte mecânica como tool.")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     pe = sub.add_parser("extract", help="estágio 1: lê o Excel -> extract.json + md")
@@ -91,7 +91,7 @@ def build_parser() -> argparse.ArgumentParser:
     pv.add_argument("--extract", default=None); pv.set_defaults(func=_cmd_validate)
 
     pb = sub.add_parser("brain", help="opcional: ponte de memória (retrieval mecânico)")
-    pb.add_argument("--url", required=True); pb.add_argument("--project", default="la-positiva")
+    pb.add_argument("--url", required=True); pb.add_argument("--project", default=None)
     pb.add_argument("--query", default=None); pb.add_argument("--enrich", default=None)
     pb.add_argument("--top-k", type=int, default=5); pb.add_argument("--limit", type=int, default=None)
     pb.set_defaults(func=_cmd_brain)

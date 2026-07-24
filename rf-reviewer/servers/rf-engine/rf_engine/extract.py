@@ -101,7 +101,7 @@ def build_sheet_spec(ws) -> model.SheetSpec:
 def extract_rows(ws, spec: model.SheetSpec) -> list[model.RowRef]:
     headers = {c: spec.columns[c - 1] for c in range(1, spec.last_col + 1)}
     col_tipo = _find_col(headers, "tipo")
-    col_imo = _find_col(headers, "insuremo", "insuremo")
+    col_imo = _find_col(headers, "insuremo", "plataforma", "platform")
     col_compl = _find_col(headers, "complej", "complex")
     col_alc = _find_col(headers, "alcance")
     col_desc = _find_col(headers, "descrip", "requerimiento")
