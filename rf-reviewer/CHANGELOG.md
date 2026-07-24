@@ -4,6 +4,15 @@ Todas as mudanças relevantes do **rf-reviewer** são documentadas aqui. O forma
 segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); a versão vive
 em `servers/rf-engine/rf_engine/__init__.py` (`__version__`).
 
+## [0.2.2] - 2026-07-24
+
+### Changed — remoção do último resíduo de plataforma de cliente
+
+- Removida a última referência a plataforma de cliente do motor: a detecção da coluna
+  de plataforma passa a ser genérica (`plataforma`/`platform`/`compatib`) e a variável
+  interna foi renomeada. O plugin agora é **100% agnóstico de cliente** — zero nome de
+  cliente/plataforma em código, docs ou página.
+
 ## [0.2.1] - 2026-07-24
 
 ### Changed — plugin 100% agnóstico de cliente

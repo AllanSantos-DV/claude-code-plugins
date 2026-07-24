@@ -42,7 +42,7 @@ def build_record(sheet: str, row: dict, keys: list[str]) -> dict:
         "proceso": _get(f, "proceso e2e", "proceso"),
         "actor": _get(f, "actor"),
         "tipo": _get(f, "tipo"),
-        "plataforma": _get(f, "insuremo", "plataforma", "platform"),
+        "plataforma": _get(f, "plataforma", "platform", "compatib"),
         "componente": _get(f, "componente", "component"),
         "complejidad": _get(f, "complej", "complex"),
         "alcance": _get(f, "alcance"),

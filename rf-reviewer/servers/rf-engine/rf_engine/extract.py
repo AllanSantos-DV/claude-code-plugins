@@ -101,7 +101,7 @@ def build_sheet_spec(ws) -> model.SheetSpec:
 def extract_rows(ws, spec: model.SheetSpec) -> list[model.RowRef]:
     headers = {c: spec.columns[c - 1] for c in range(1, spec.last_col + 1)}
     col_tipo = _find_col(headers, "tipo")
-    col_imo = _find_col(headers, "insuremo", "plataforma", "platform")
+    col_plat = _find_col(headers, "plataforma", "platform", "compatib")
     col_compl = _find_col(headers, "complej", "complex")
     col_alc = _find_col(headers, "alcance")
     col_desc = _find_col(headers, "descrip", "requerimiento")
@@ -114,7 +114,7 @@ def extract_rows(ws, spec: model.SheetSpec) -> list[model.RowRef]:
         rf_id = _norm(ws.cell(r, spec.id_col).value) or _norm(ws.cell(r, 1).value) or _norm(ws.cell(r, 2).value)
 
         tipo = cells.get(headers.get(col_tipo, ""), "") if col_tipo else ""
-        imo = cells.get(headers.get(col_imo, ""), "") if col_imo else ""
+        plat = cells.get(headers.get(col_plat, ""), "") if col_plat else ""
         compl = cells.get(headers.get(col_compl, ""), "") if col_compl else ""
         alc = cells.get(headers.get(col_alc, ""), "") if col_alc else ""
         desc = cells.get(headers.get(col_desc, ""), "") if col_desc else ""
@@ -123,7 +123,7 @@ def extract_rows(ws, spec: model.SheetSpec) -> list[model.RowRef]:
         is_na = (not desc) and (not rf_id)
         # hint determinístico de bloqueante: escopo aberto + alta complexidade
         forced = (
-            ("por confirmar" in (alc + imo).lower() or "por definir" in (alc + imo).lower())
+            ("por confirmar" in (alc + plat).lower() or "por definir" in (alc + plat).lower())
             and ("alta" in compl.lower() or "por definir" in compl.lower())
         )
 
