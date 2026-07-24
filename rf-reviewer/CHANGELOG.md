@@ -4,6 +4,18 @@ Todas as mudanças relevantes do **rf-reviewer** são documentadas aqui. O forma
 segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); a versão vive
 em `servers/rf-engine/rf_engine/__init__.py` (`__version__`).
 
+## [0.2.4] - 2026-07-24
+
+### Added — auto-reinício do daemon quando o plugin atualiza
+
+- `ensure_daemon` agora compara a versão do daemon vivo (via `/health`) com a do código
+  instalado: se estiver **obsoleta** (após um update do plugin), encerra o daemon antigo e
+  sobe o novo **automaticamente** — o update passa a valer sem reinício manual da máquina.
+  Antes, um daemon já em memória continuava servindo o código velho até o usuário reiniciar.
+- **Fail-loud:** se o daemon obsoleto não puder ser encerrado (sem pid, sem permissão ou
+  porta que não libera), o erro sobe explícito — nunca se segue servindo código velho como
+  se estivesse tudo certo. Rede de segurança contra `EADDRINUSE` transitório no religamento.
+
 ## [0.2.3] - 2026-07-24
 
 ### Changed — perfis custom num lar GLOBAL, fora do plugin (à prova de update)
