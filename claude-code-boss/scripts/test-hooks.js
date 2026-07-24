@@ -117,7 +117,9 @@ function check(result, expectations = {}) {
     }
   }
 
-  return { ok: issues.length === 0, issues, parsed };
+  // stdout is exposed so a test can assert ABSTENTION (empty stdout) — a real
+  // contract for hooks sharing a matcher with one that emits `updatedInput`.
+  return { ok: issues.length === 0, issues, parsed, stdout: result.stdout || '' };
 }
 
 // ─── Test Cases ─────────────────────────────────────────────────────────────
@@ -501,7 +503,7 @@ const TESTS = [
     },
   },
   {
-    name: 'error-guard       [never emits updatedInput/ask — sibling-hook invariant p/ auto-redirect]',
+    name: 'error-guard       [never emits updatedInput/ask/allow — sibling-hook invariant p/ auto-redirect]',
     script: 'error-guard.js',
     payload: {
       tool_name: 'Bash',
@@ -509,11 +511,14 @@ const TESTS = [
       session_id: SESSION,
       cwd: (() => mkTempProject({ shells: [], whitelist: [] }))(),
     },
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    expect: { noError: true, noOutput: true },
     validate: r => {
       const out = r.parsed?.hookSpecificOutput || {};
       if (out.permissionDecision === 'ask') return `error-guard must NEVER use 'ask' (descartaria o updatedInput do curation-guard — #75915)`;
       if (out.updatedInput) return `error-guard must NEVER emit updatedInput (corrida com curation-guard — #15897)`;
+      // Reproduzido E2E: um `allow` explícito aqui clobba o updatedInput do
+      // curation-guard e o comando ORIGINAL executa. Abstenção = stdout vazio.
+      if (out.permissionDecision === 'allow') return `error-guard must ABSTAIN (empty stdout) instead of 'allow' — an explicit allow clobbers curation-guard's updatedInput (repro E2E)`;
       return null;
     },
   },
@@ -687,7 +692,7 @@ const TESTS = [
     },
   },
   {
-    name: 'error-guard       [PreToolUse/clean-command→allow]',
+    name: 'error-guard       [PreToolUse/clean-command→abstain]',
     script: 'error-guard.js',
     payload: {
       tool_name: 'Bash',
@@ -695,21 +700,21 @@ const TESTS = [
       session_id: SESSION,
       cwd: _egHit.cwd,
     },
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    expect: { noError: true, noOutput: true },
     extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _egHit.dataDir }),
-    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
-      ? null : `a command with no recorded failure must allow, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
+    validate: r => (r.stdout || '').trim() === ''
+      ? null : `a command with no recorded failure must ABSTAIN (empty stdout), got: ${r.stdout}`,
   },
   {
-    name: 'error-guard       [PreToolUse/non-Bash→allow]',
+    name: 'error-guard       [PreToolUse/non-Bash→abstain]',
     script: 'error-guard.js',
     payload: { tool_name: 'Write', tool_input: { file_path: 'foo.js' }, session_id: SESSION },
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
-    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
-      ? null : `non-Bash tool must allow, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
+    expect: { noError: true, noOutput: true },
+    validate: r => (r.stdout || '').trim() === ''
+      ? null : `non-Bash tool must ABSTAIN (empty stdout), got: ${r.stdout}`,
   },
   {
-    name: 'error-guard       [PreToolUse/errorGuard.enabled=false→allow-despite-hit]',
+    name: 'error-guard       [PreToolUse/errorGuard.enabled=false→abstain-despite-hit]',
     script: 'error-guard.js',
     payload: {
       tool_name: 'Bash',
@@ -717,13 +722,13 @@ const TESTS = [
       session_id: SESSION,
       cwd: _egHit.cwd,
     },
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    expect: { noError: true, noOutput: true },
     extraEnv: () => ({
       CLAUDE_PLUGIN_ROOT: mkTempPluginRoot({ errorGuard: { enabled: false } }),
       CLAUDE_PLUGIN_DATA: _egHit.dataDir,
     }),
-    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
-      ? null : `errorGuard.enabled=false must allow even a recurring failure, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
+    validate: r => (r.stdout || '').trim() === ''
+      ? null : `errorGuard.enabled=false must ABSTAIN (empty stdout) even on a recurring failure, got: ${r.stdout}`,
   },
 
   // ── PreToolUse / Grep|Glob + Bash — graph-guard (broad-search → graph redirect) ─

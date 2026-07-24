@@ -13,12 +13,26 @@
  * command is no longer guarded.
  *
  * Cascade:
- *   1. not Bash / no command            → allow
- *   2. errorGuard.enabled === false     → allow
+ *   1. not Bash / no command            → abstain
+ *   2. errorGuard.enabled === false     → abstain
  *   3. sig recorded, count >= threshold → deny (inject cause)
- *   4. default                          → allow
+ *   4. default                          → abstain
  *
- * Fail-open: any error → allow. The guard must never break the tool flow.
+ * Fail-open: any error → abstain. The guard must never break the tool flow.
+ *
+ * WHY ABSTAIN (empty stdout) INSTEAD OF AN EXPLICIT `allow`:
+ * This hook shares the PreToolUse `Bash` matcher with curation-guard.js, which
+ * auto-redirects curated aliases via `allow` + `updatedInput`. Sibling hooks on
+ * the same matcher run in parallel and the client resolves `tool_input` across
+ * their outputs — an explicit `allow` here carries NO `updatedInput`, so it
+ * clobbers curation-guard's rewrite and the ORIGINAL command executes
+ * (reproduced E2E; matches upstream issues #75915 / #15897). Emitting nothing
+ * leaves no competing decision to resolve against, so the rewrite survives.
+ * Semantically identical: no output = no objection = the call proceeds.
+ *
+ * INVARIANT: only ONE hook on this matcher may emit a decision that carries
+ * `tool_input` (today: curation-guard.js). Do not add an `allow`/`ask` return
+ * path here without re-validating the auto-redirect E2E.
  */
 'use strict';
 
@@ -39,30 +53,36 @@ function decision(permissionDecision, { additionalContext, permissionDecisionRea
   return JSON.stringify({ hookSpecificOutput });
 }
 
+// Abstain: emit NOTHING. See the "WHY ABSTAIN" note in the header — an explicit
+// `allow` here would clobber curation-guard's `updatedInput` rewrite.
+function abstain() {
+  return '';
+}
+
 (async () => {
   try {
     const raw = await readStdin();
     if (!raw) {
-      process.stdout.write(decision('allow'));
+      process.stdout.write(abstain());
       return;
     }
 
     const event = JSON.parse(raw);
 
     if (event.tool_name !== 'Bash') {
-      process.stdout.write(decision('allow'));
+      process.stdout.write(abstain());
       return;
     }
 
     const command = event.tool_input?.command || '';
     if (!command) {
-      process.stdout.write(decision('allow'));
+      process.stdout.write(abstain());
       return;
     }
 
     const cfg = getErrorGuard();
     if (cfg.enabled === false) {
-      process.stdout.write(decision('allow'));
+      process.stdout.write(abstain());
       return;
     }
 
@@ -80,10 +100,10 @@ function decision(permissionDecision, { additionalContext, permissionDecisionRea
       return;
     }
 
-    process.stdout.write(decision('allow'));
+    process.stdout.write(abstain());
   } catch (err) {
     console.error(`[ERROR-GUARD] Error: ${err.message}`);
     hookLog('error', 'error-guard', `Unhandled error: ${err.message}`);
-    process.stdout.write(decision('allow'));
+    process.stdout.write(abstain());
   }
 })();
