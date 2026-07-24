@@ -47,6 +47,7 @@ from pathlib import Path
 
 from . import __version__
 from . import dispatch
+from .paths import get_data_dir
 
 HOST = "127.0.0.1"
 MAX_BODY = 8 * 1024 * 1024          # 8 MB (tools recebem CAMINHOS, não conteúdo — folga grande)
@@ -59,14 +60,9 @@ _LOCAL_ORIGIN = re.compile(r"^https?://(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Config compartilhada (data-dir, porta determinística, token) — reusada pelo
-# ensure_daemon. Fonte única, sem duplicação.
+# ensure_daemon. Fonte única, sem duplicação. `get_data_dir` vem de `paths` (o
+# LUGAR ÚNICO do estado por-usuário, importado acima).
 # ─────────────────────────────────────────────────────────────────────────────
-def get_data_dir() -> Path:
-    """Diretório persistente por-usuário (lock/token/log). Override: RF_ENGINE_DATA_DIR."""
-    env = os.environ.get("RF_ENGINE_DATA_DIR")
-    return Path(env) if env else (Path.home() / ".rf-engine")
-
-
 def resolve_port(data_dir: Path) -> int:
     """Porta determinística por data-dir (faixa 40000-49999). Override: RF_ENGINE_HTTP_PORT."""
     env = os.environ.get("RF_ENGINE_HTTP_PORT")

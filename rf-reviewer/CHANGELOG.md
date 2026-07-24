@@ -4,6 +4,19 @@ Todas as mudanças relevantes do **rf-reviewer** são documentadas aqui. O forma
 segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); a versão vive
 em `servers/rf-engine/rf_engine/__init__.py` (`__version__`).
 
+## [0.2.3] - 2026-07-24
+
+### Changed — perfis custom num lar GLOBAL, fora do plugin (à prova de update)
+
+- Os perfis registrados via `rf_perfil_definir` agora persistem em
+  `~/.rf-engine/profiles_custom.json` — no diretório **global por-usuário** (junto do
+  token/lock do daemon), **fora da pasta do plugin**. Antes ficavam dentro do código do
+  plugin e se perdiam a cada atualização. Novo módulo `rf_engine.paths` centraliza esse
+  "lar único"; `http_transport` reutiliza a mesma fonte (sem duplicação).
+- **Migração automática (one-shot):** no primeiro boot após o update, se existir um
+  `profiles_custom.json` antigo dentro do plugin, ele é movido para o lar global (com log
+  no stderr). Fail-loud: erro de I/O na migração propaga — nunca é mascarado.
+
 ## [0.2.2] - 2026-07-24
 
 ### Changed — remoção do último resíduo de plataforma de cliente
