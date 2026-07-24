@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.18.0] - 2026-07-24
+
+**Auto-redirect da curação (menos um turno) + bundle de env do roteador (economia de tokens).** Duas mudanças coordenadas do handoff `CURATION-AUTO-REDIRECT`. Rigor de sempre: handoff e plano da mesa **re-verificados na FONTE** (corrigidas imprecisões de path e a extração que furaria a cerca do `error-guard.js`), TDD RED→GREEN em cada parte, gate **2× estável (107 hooks + 717 unit, 0 falhas)**.
+
+### Auto-redirect de aliases curados (Parte A)
+
+- `curation-guard.js`: o caso **"raw alias"** deixava de sempre **negar** (`deny` + instruir o modelo a rechamar a tool). Agora **AUTO-REDIRECIONA** silenciosamente (`allow` + `updatedInput`) quando é seguro reconstruir — poupando o turno extra de deny→retry. `updatedInput` é substituição TOTAL de `tool_input`, então espalhamos o original (`{ ...tool_input, command }`) preservando `timeout`/etc.
+- **`buildCuratedInvocation`** (`shells-config.js`, novo): **Fase 1 conservadora** — só reescreve quando o comando é **exatamente um alias** (sem argumento posicional, segmento único) **e** o script é **`.ps1`** (→ `powershell -File "<script>"`). Args, extra-segmento (`cd x && …`), pipe ou script não-`.ps1` → **mantém o `deny` provado** (nunca dropa args nem inventa runner). **Invariante testada:** o comando reescrito passa no PRÓPRIO allow-path do guard (invoca o script, sem pipe), então a reescrita é auto-consistente.
+- **`error-guard.js` intacto** (fora de escopo do handoff), com **teste de invariante** garantindo que o hook-irmão do matcher `Bash` nunca emite `updatedInput`/`ask` — defende os riscos documentados de múltiplos hooks no mesmo matcher (GitHub #75915 e #15897).
+
+### Bundle de env do roteador (Parte B)
+
+- `model-router-ensure.js`: ao **ligar** o roteamento (proxy custom) passamos a gravar, junto do `ANTHROPIC_BASE_URL`, dois env que recuperam o que o proxy custom degrada — **`ENABLE_TOOL_SEARCH=true`** (religa o tool-search nativo que o proxy desliga; ~52k tokens deferidos/request) e **`CLAUDE_CODE_AUTO_COMPACT_WINDOW`** (capa o contexto ATIVO mantendo o 1M disponível). Medido na sessão real: `cache_read`/turno **447k → 74–127k** (~65–83% de corte).
+- 3 helpers **puros** (testados diretamente): `resolveAutoCompactWindow` (clamp `[50000, 1000000]` + aviso WARN quando ajusta), `planEnableEnv` (**não clobbera** um valor explícito do usuário — `== null` só preenche ausente; conserta o **no-op** que antes checava só a `base_url` e pulava a escrita dos 2 env), `planDisableEnv` (**anchor** por `isOurProxyUrl` + remove **só o nosso**, comparando com o valor do **config ATUAL** → um valor deliberado do usuário sobrevive e não fica env **órfão**).
+- **`autoCompactWindow: 200000`** shipado em `config/router-config.json`, override-ável via `readConfig()` (merge shipped⊕user). Fica no **router-config** — não no `userConfig` do `plugin.json`, que o código **não lê** em runtime (verificado na fonte).
+
 ## [2.17.0] - 2026-07-23
 
 **Consolidação da SESSÃO EM USO (a promessa da v1.14, enfim entregue) + ponteiro que não regride + verify-before-delete.** A consolidação das pastas-irmãs do KB deixou de seguir o **ponteiro global oscilante** e passou a mirar a pasta REAL da sessão — resolvendo a "perda aparente de memória" (recall lendo "1") quando duas identidades de instalação competiam pelo ponteiro. Rigor de sempre: causa-raiz verificada na FONTE, plano da mesa de ADR **descartado** quando adiou a promessa central sem base (o daemon já tem o `--plugin-data` real), cada fase revisada da fonte, gate verde rodado localmente **2× estável** (94 hooks + 681 unit), e integrado sobre a v2.16.0 (graph-guard) sem perder nada — gate combinado verde (693 unit + hooks).
