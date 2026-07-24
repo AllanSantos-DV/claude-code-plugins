@@ -1,5 +1,17 @@
 {
   "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/servers/rf-engine/plugin_daemon.py"],
+            "timeout": 25
+          }
+        ]
+      }
+    ],
     "UserPromptSubmit": [
       {
         "hooks": [

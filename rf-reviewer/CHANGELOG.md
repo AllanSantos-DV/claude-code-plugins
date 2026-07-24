@@ -4,6 +4,32 @@ Todas as mudanças relevantes do **rf-reviewer** são documentadas aqui. O forma
 segue [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/); a versão vive
 em `servers/rf-engine/rf_engine/__init__.py` (`__version__`).
 
+## [0.2.0] - 2026-07-24
+
+### Changed — transporte MCP: stdio → Streamable HTTP (daemon único)
+
+- **BREAKING (transporte):** o `rf-engine` deixa de rodar como servidor **stdio**
+  (1 processo Python por sessão) e passa a servir MCP por **Streamable HTTP** a
+  partir de um **daemon único compartilhado**. As sessões do Claude Code conectam
+  como clientes HTTP finos (`.mcp.json` `type:http`), **sem 1 processo por sessão**.
+  O contrato das **9 tools** (nomes/inputs/outputs) é **idêntico** — só o transporte
+  mudou; nenhuma mudança no fluxo de revisão.
+- **Ganho de memória medido:** 8 sessões saíam de ~489 MB (8 processos stdio) para
+  ~87 MB (1 daemon) — **−403 MB (~82%)**, 7 processos a menos.
+- **Ciclo de vida:** um hook **SessionStart** sobe/garante o daemon (idempotente,
+  porta fixa `127.0.0.1:19847`); o Claude reconecta sozinho (backoff) se o daemon cair.
+- **Segurança:** loopback (`127.0.0.1`) + validação de `Origin` (anti DNS-rebinding);
+  token é opt-in via `RF_ENGINE_HTTP_TOKEN`.
+- **Sem dependência nova:** o servidor HTTP é `http.server` da stdlib; segue só `openpyxl`.
+- **Rollback:** fixe a versão anterior com `/plugin install rf-reviewer@rf-v0.1.1`.
+
+### Added
+
+- `servers/rf-engine/rf_engine/http_transport.py` (daemon HTTP), `ensure_daemon.py`
+  (supervisor idempotente), `dispatch.py` (núcleo JSON-RPC agnóstico de transporte) e
+  `servers/rf-engine/plugin_daemon.py` (launcher chamado pelo hook SessionStart).
+  `mcp_server.py` vira entry-point fino que delega ao daemon HTTP.
+
 ## [0.1.1] - 2026-07-12
 
 ### Fixed
