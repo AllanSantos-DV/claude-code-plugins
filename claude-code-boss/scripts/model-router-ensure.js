@@ -127,6 +127,62 @@ function readConfig() {
   return mergeRouterConfig(shipped, readUserConfig());
 }
 
+// ── Token-override env bundle (Parte B) ──────────────────────────────────────
+// Ao LIGAR o roteamento (proxy custom) setamos, junto do ANTHROPIC_BASE_URL, dois
+// env que RECUPERAM o que o proxy custom desliga/infla: ENABLE_TOOL_SEARCH=true
+// (religa o tool-search nativo, ~52k deferidos/request) e CLAUDE_CODE_AUTO_COMPACT_
+// WINDOW (capa o contexto ativo mantendo o 1M disponível). Medido na sessão real:
+// cache_read/turno 447k → 74–127k. Ao DESLIGAR, removemos só os NOSSOS.
+const AUTO_COMPACT_DEFAULT = 200000;
+const AUTO_COMPACT_MIN = 50000;
+const AUTO_COMPACT_MAX = 1000000;
+
+// PURA: resolve o teto de auto-compact a partir do config (já mesclado), clampando
+// a uma faixa sã. autoCompactWindow ausente → default (sem aviso). Fora da faixa /
+// inválido → clampado com flag (o orquestrador loga um AVISO visível).
+function resolveAutoCompactWindow(config) {
+  const raw = config && config.autoCompactWindow;
+  if (raw == null) return { value: AUTO_COMPACT_DEFAULT, clamped: false };
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return { value: AUTO_COMPACT_DEFAULT, clamped: true, original: raw };
+  const v = Math.max(AUTO_COMPACT_MIN, Math.min(Math.trunc(n), AUTO_COMPACT_MAX));
+  return { value: v, clamped: v !== n, original: n };
+}
+
+// PURA: dado o env ATUAL do settings.json, a nossa base_url e o valor de auto-
+// compact, computa o env DESEJADO e se há mudança a gravar. NUNCA clobbera um
+// ENABLE_TOOL_SEARCH/AUTO_COMPACT que o usuário fixou (== null → só preenche
+// ausente). base_url custom de terceiro → { foreign:true } (preserva o do usuário).
+// `isOurs(url)` é injetado (o real é isOurProxyUrl) p/ testes herméticos.
+function planEnableEnv(currentEnv, url, autoCompactValue, isOurs) {
+  const env = { ...(currentEnv || {}) };
+  const cur = env.ANTHROPIC_BASE_URL;
+  if (cur && !isOurs(cur)) return { foreign: true };
+  const next = { ...env };
+  next.ANTHROPIC_BASE_URL = url;
+  if (next.ENABLE_TOOL_SEARCH == null) next.ENABLE_TOOL_SEARCH = 'true';
+  if (next.CLAUDE_CODE_AUTO_COMPACT_WINDOW == null) next.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(autoCompactValue);
+  const changed = next.ANTHROPIC_BASE_URL !== env.ANTHROPIC_BASE_URL
+    || next.ENABLE_TOOL_SEARCH !== env.ENABLE_TOOL_SEARCH
+    || next.CLAUDE_CODE_AUTO_COMPACT_WINDOW !== env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+  return { env: next, changed };
+}
+
+// PURA: computa o env após remover só o NOSSO bundle no disable. Anchor: só age
+// quando a base_url é NOSSA (isOurs). Remove a base_url (nossa); remove os 2 env
+// só quando batem o valor que TERÍAMOS gravado (auto-compact lido do config ATUAL,
+// não hardcoded) — assim um valor deliberado diferente do usuário SOBREVIVE e não
+// fica órfão. Retorna { env, changed }.
+function planDisableEnv(currentEnv, autoCompactValue, isOurs) {
+  const env = { ...(currentEnv || {}) };
+  if (!isOurs(env.ANTHROPIC_BASE_URL)) return { env, changed: false };
+  const next = { ...env };
+  delete next.ANTHROPIC_BASE_URL;
+  if (next.ENABLE_TOOL_SEARCH === 'true') delete next.ENABLE_TOOL_SEARCH;
+  if (next.CLAUDE_CODE_AUTO_COMPACT_WINDOW === String(autoCompactValue)) delete next.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+  return { env: next, changed: Object.keys(next).length !== Object.keys(env).length };
+}
+
 // Lê o payload do hook no stdin (session_id, hook_event_name…) sem travar quando
 // rodado manualmente num terminal interativo (isTTY) ou sem stdin.
 function readHookInput() {
@@ -346,17 +402,18 @@ function isOurProxyUrl(url) {
 function enableSettingsRouting(url) {
   const s = readSettings();
   if (s === null) return false;
-  const cur = s.env && s.env.ANTHROPIC_BASE_URL;
-  if (cur && !isOurProxyUrl(cur)) {
-    log(`AVISO: settings.json já tem ANTHROPIC_BASE_URL custom ("${cur}") — preservado, roteador NÃO sobrescreve.`);
+  const acw = resolveAutoCompactWindow(readConfig());
+  if (acw.clamped) log(`AVISO: autoCompactWindow ${acw.original} fora de [${AUTO_COMPACT_MIN}, ${AUTO_COMPACT_MAX}] — ajustado para ${acw.value}.`);
+  const plan = planEnableEnv(s.env, url, acw.value, isOurProxyUrl);
+  if (plan.foreign) {
+    log(`AVISO: settings.json já tem ANTHROPIC_BASE_URL custom ("${s.env.ANTHROPIC_BASE_URL}") — preservado, roteador NÃO sobrescreve.`);
     return false;
   }
-  if (cur === url) return true; // já correto → no-op (não reescreve o arquivo)
-  s.env = s.env || {};
-  s.env.ANTHROPIC_BASE_URL = url;
+  if (!plan.changed) return true; // os 3 já no estado desejado → no-op (não reescreve)
+  s.env = plan.env;
   try {
     writeSettings(s);
-    log(`settings.json: env.ANTHROPIC_BASE_URL → ${url}`);
+    log(`settings.json: ANTHROPIC_BASE_URL → ${url}; ENABLE_TOOL_SEARCH=${s.env.ENABLE_TOOL_SEARCH}; CLAUDE_CODE_AUTO_COMPACT_WINDOW=${s.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW}`);
     return true;
   } catch (e) {
     log(`AVISO: não foi possível escrever settings.json: ${e.message}`);
@@ -364,16 +421,18 @@ function enableSettingsRouting(url) {
   }
 }
 
-// Remove SÓ o nosso valor (localhost). Nunca apaga uma ANTHROPIC_BASE_URL custom.
+// Remove SÓ o nosso bundle (base_url localhost + os 2 env que gravamos). Nunca
+// apaga uma ANTHROPIC_BASE_URL custom nem um valor deliberado do usuário.
 function disableSettingsRouting() {
   const s = readSettings();
   if (s === null || !s.env) return;
-  if (!isOurProxyUrl(s.env.ANTHROPIC_BASE_URL)) return; // não é nosso → não mexe
-  delete s.env.ANTHROPIC_BASE_URL;
-  if (Object.keys(s.env).length === 0) delete s.env;
+  const acw = resolveAutoCompactWindow(readConfig());
+  const plan = planDisableEnv(s.env, acw.value, isOurProxyUrl);
+  if (!plan.changed) return; // base_url não é nossa (ou nada nosso p/ remover) → não mexe
+  if (Object.keys(plan.env).length === 0) delete s.env; else s.env = plan.env;
   try {
     writeSettings(s);
-    log('settings.json: env.ANTHROPIC_BASE_URL removido (roteador indisponível → Claude direto).');
+    log('settings.json: bundle do roteador removido (ANTHROPIC_BASE_URL + tool-search/auto-compact nossos → Claude direto).');
   } catch (e) {
     log(`AVISO: não foi possível limpar settings.json: ${e.message}`);
   }
@@ -590,4 +649,5 @@ if (require.main === module) {
 // Export p/ testes herméticos da lógica de opt-in. O guard require.main===module
 // acima garante que um require() em teste NÃO dispara main() (nenhum efeito colateral).
 // healthCheck/probeAlive/readRouterToken exportados p/ os testes de verify-before-trust.
-module.exports = { mergeRouterConfig, readConfig, healthCheck, probeAlive, readRouterToken };
+module.exports = { mergeRouterConfig, readConfig, healthCheck, probeAlive, readRouterToken,
+  resolveAutoCompactWindow, planEnableEnv, planDisableEnv, enableSettingsRouting, disableSettingsRouting };
