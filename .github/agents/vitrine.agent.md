@@ -62,6 +62,8 @@ Você é acionado de duas formas:
      absoluto pro marcador; `position:absolute` sobrepondo conteúdo → prefira fluxo normal;
      coluna `minmax(0,1fr)` colapsando ao lado de conteúdo grande → `min-width:0` + limite o
      vizinho; sem `body{overflow-x:hidden}` o mobile vaza lateralmente.
+   - **Limpeza:** renderize os PNGs num caminho temporário (ex.: `$env:TEMP`) ou **apague-os ao
+     final** — nunca commite screenshots de revisão no repositório.
 
 5. **Sele o hash** (obrigatório — sem isso o merge continua bloqueado):
    ```
