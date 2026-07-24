@@ -22,7 +22,7 @@
 const { hookLog } = require('./hook-logger.js');
 const { loadCurationConfig } = require('./curation-paths.js');
 const { readStdin } = require('./lib/hook-io.js');
-const { findProjectRoot, loadShellsConfig, matchCuratedShell, _pathMatches, _tokenize } = require('./shells-config.js');
+const { findProjectRoot, loadShellsConfig, matchCuratedShell, buildCuratedInvocation, _pathMatches, _tokenize } = require('./shells-config.js');
 
 const _guardCfg = require('./lib/hooks-config.js').getCurationGuard();
 
@@ -50,10 +50,11 @@ function hasPipe(command) {
 // Build a properly-formatted PreToolUse decision per Claude Code docs.
 // permissionDecision MUST be "allow" | "deny" | "ask" and live INSIDE hookSpecificOutput.
 // https://docs.claude.com/en/docs/claude-code/hooks
-function decision(permissionDecision, { additionalContext, permissionDecisionReason } = {}) {
+function decision(permissionDecision, { additionalContext, permissionDecisionReason, updatedInput } = {}) {
   const hookSpecificOutput = { hookEventName: 'PreToolUse', permissionDecision };
   if (additionalContext) hookSpecificOutput.additionalContext = additionalContext;
   if (permissionDecisionReason) hookSpecificOutput.permissionDecisionReason = permissionDecisionReason;
+  if (updatedInput) hookSpecificOutput.updatedInput = updatedInput;
   return JSON.stringify({ hookSpecificOutput });
 }
 
@@ -98,7 +99,21 @@ function decision(permissionDecision, { additionalContext, permissionDecisionRea
         return;
       }
 
-      // Raw alias matched — redirect to the curated script.
+      // Raw alias matched — AUTO-REDIRECT (Parte A, Fase 1) when safely
+      // rebuildable: rewrite the call to invoke the curated script (allow +
+      // updatedInput), sparing the extra deny→retry turn. buildCuratedInvocation
+      // returns null for anything we can't safely rebuild (args, non-.ps1) → we
+      // fall back to the proven deny+instruct path. updatedInput is a TOTAL
+      // replacement of tool_input, so we spread the original to keep timeout/etc.
+      const curatedCmd = buildCuratedInvocation(curatedShell, command);
+      if (curatedCmd) {
+        const ctx = `[curation-guard] Redirected \`${command}\` → \`${curatedCmd}\` automatically (curated script; output ${curatedShell.outputFilter || 'summary'}, limit ${curatedShell.outputLines || 200} lines).`;
+        process.stdout.write(decision('allow', {
+          updatedInput: { ...event.tool_input, command: curatedCmd },
+          additionalContext: ctx,
+        }));
+        return;
+      }
       const reason = `[curation-guard] Command \`${command}\` has a curated script. Run \`${scriptPath}\` instead — output filtered (${curatedShell.outputFilter || 'summary'}, limit ${curatedShell.outputLines || 200} lines).`;
       process.stdout.write(decision('deny', { additionalContext: reason, permissionDecisionReason: reason }));
       return;

@@ -166,4 +166,31 @@ function matchCuratedShell(command, shells) {
 /** Test-only cache reset. */
 function _resetCache() { _cache.clear(); }
 
-module.exports = { findProjectRoot, loadShellsConfig, matchCuratedShell, _resetCache, _pathMatches, _tokenize };
+/**
+ * Build the safe curated-script invocation for AUTO-REDIRECT (Parte A, Fase 1).
+ *
+ * Returns a command that (a) INVOKES the curated script — its path appears as a
+ * token, so the guard's own `isInvokingScript` recognizes it — and (b) has no
+ * pipe. I.e. the rewrite passes the guard's OWN allow-path, staying self-
+ * consistent. Fase 1 is deliberately CONSERVATIVE: it reconstructs ONLY when the
+ * whole command is EXACTLY one of the shell's aliases (no positional args, single
+ * segment) AND the script is a `.ps1` (run via `powershell -File`). Anything else
+ * (args, extra segments, non-`.ps1`) returns null so the caller keeps the proven
+ * deny+instruct path — we never drop args nor guess a runner.
+ *
+ * @param {object} curatedShell matched entry ({ script, aliases })
+ * @param {string} command the raw command that matched an alias
+ * @returns {string|null} the rewritten invocation, or null when not safely rebuildable
+ */
+function buildCuratedInvocation(curatedShell, command) {
+  const script = ((curatedShell && curatedShell.script) || '').trim();
+  if (!script) return null;
+  const cmd = (command || '').trim();
+  const aliases = Array.isArray(curatedShell.aliases) ? curatedShell.aliases : [];
+  const arglessExact = aliases.some(a => cmd === (a || '').trim());
+  if (!arglessExact) return null; // args / extra segments → keep deny (Fase 2 territory)
+  if (/\.ps1$/i.test(script)) return `powershell -File "${script}"`;
+  return null; // non-.ps1 not supported in Fase 1
+}
+
+module.exports = { findProjectRoot, loadShellsConfig, matchCuratedShell, buildCuratedInvocation, _resetCache, _pathMatches, _tokenize };

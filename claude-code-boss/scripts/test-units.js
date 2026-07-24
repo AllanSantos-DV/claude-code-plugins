@@ -4581,6 +4581,133 @@ test('router-config.json shipped: sticky.enabled === false + ttlMs shipado (opt-
   assertEq(cfg.sticky.ttlMs, 21600000); // 6h default
 });
 
+// ─── model-router-ensure: token-override env bundle (Parte B) ────────────────
+// Núcleo PURO (sem I/O): resolveAutoCompactWindow (clamp) + planEnableEnv /
+// planDisableEnv (o que gravar/remover). Filosofia do dono: NÃO clobbar valor
+// explícito do usuário no enable (== null); remover só o NOSSO no disable, com o
+// valor lido do config ATUAL (não hardcoded) p/ não deixar env órfão.
+{
+  const isOurs = (u) => typeof u === 'string' && u.includes('127.0.0.1');
+  const OUR = 'http://127.0.0.1:13456';
+
+  test('resolveAutoCompactWindow: sem config → default 200000, não clampado', () => {
+    assertEq(routerEnsure.resolveAutoCompactWindow({}).value, 200000);
+    assertEq(routerEnsure.resolveAutoCompactWindow({}).clamped, false);
+    assertEq(routerEnsure.resolveAutoCompactWindow(null).value, 200000);
+  });
+  test('resolveAutoCompactWindow: 200000 exato → sem clamp', () => {
+    const r = routerEnsure.resolveAutoCompactWindow({ autoCompactWindow: 200000 });
+    assertEq(r.value, 200000); assertEq(r.clamped, false);
+  });
+  test('resolveAutoCompactWindow: abaixo do mínimo → clamp 50000 + flag', () => {
+    const r = routerEnsure.resolveAutoCompactWindow({ autoCompactWindow: 30000 });
+    assertEq(r.value, 50000); assertEq(r.clamped, true); assertEq(r.original, 30000);
+  });
+  test('resolveAutoCompactWindow: acima do máximo → clamp 1000000 + flag', () => {
+    const r = routerEnsure.resolveAutoCompactWindow({ autoCompactWindow: 1500000 });
+    assertEq(r.value, 1000000); assertEq(r.clamped, true);
+  });
+  test('resolveAutoCompactWindow: valor inválido → default + flag', () => {
+    const r = routerEnsure.resolveAutoCompactWindow({ autoCompactWindow: 'abc' });
+    assertEq(r.value, 200000); assertEq(r.clamped, true);
+  });
+
+  test('planEnableEnv: env vazio → seta os 3, changed', () => {
+    const p = routerEnsure.planEnableEnv({}, OUR, 200000, isOurs);
+    assertEq(p.changed, true);
+    assertEq(p.env.ANTHROPIC_BASE_URL, OUR);
+    assertEq(p.env.ENABLE_TOOL_SEARCH, 'true');
+    assertEq(p.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '200000');
+  });
+  test('planEnableEnv: os 3 já corretos → no-op (changed=false)', () => {
+    const cur = { ANTHROPIC_BASE_URL: OUR, ENABLE_TOOL_SEARCH: 'true', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200000' };
+    assertEq(routerEnsure.planEnableEnv(cur, OUR, 200000, isOurs).changed, false);
+  });
+  test('planEnableEnv: base_url ok mas os env ausentes → preenche (changed) — conserta o no-op', () => {
+    const p = routerEnsure.planEnableEnv({ ANTHROPIC_BASE_URL: OUR }, OUR, 200000, isOurs);
+    assertEq(p.changed, true);
+    assertEq(p.env.ENABLE_TOOL_SEARCH, 'true');
+    assertEq(p.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '200000');
+  });
+  test('planEnableEnv: base_url custom de terceiro → foreign (não sobrescreve)', () => {
+    const p = routerEnsure.planEnableEnv({ ANTHROPIC_BASE_URL: 'https://api.anthropic.com' }, OUR, 200000, isOurs);
+    assertEq(p.foreign, true);
+  });
+  test('planEnableEnv: NÃO clobbera ENABLE_TOOL_SEARCH explícito do usuário', () => {
+    const p = routerEnsure.planEnableEnv({ ENABLE_TOOL_SEARCH: 'false' }, OUR, 200000, isOurs);
+    assertEq(p.env.ENABLE_TOOL_SEARCH, 'false'); // preservado
+    assertEq(p.env.ANTHROPIC_BASE_URL, OUR);
+  });
+
+  test('planDisableEnv: base_url nosso + nossos valores → remove os 3, preserva alheios', () => {
+    const cur = { ANTHROPIC_BASE_URL: OUR, ENABLE_TOOL_SEARCH: 'true', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200000', KEEP: '1' };
+    const p = routerEnsure.planDisableEnv(cur, 200000, isOurs);
+    assertEq(p.changed, true);
+    assertEq(p.env.ANTHROPIC_BASE_URL, undefined);
+    assertEq(p.env.ENABLE_TOOL_SEARCH, undefined);
+    assertEq(p.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, undefined);
+    assertEq(p.env.KEEP, '1');
+  });
+  test('planDisableEnv: base_url de terceiro → não toca em nada', () => {
+    const cur = { ANTHROPIC_BASE_URL: 'https://api.anthropic.com', ENABLE_TOOL_SEARCH: 'true' };
+    const p = routerEnsure.planDisableEnv(cur, 200000, isOurs);
+    assertEq(p.changed, false);
+    assertEq(p.env.ENABLE_TOOL_SEARCH, 'true');
+  });
+  test('planDisableEnv: preserva valor deliberado do usuário (não é o nosso)', () => {
+    const cur = { ANTHROPIC_BASE_URL: OUR, ENABLE_TOOL_SEARCH: 'false', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '900000' };
+    const p = routerEnsure.planDisableEnv(cur, 200000, isOurs);
+    assertEq(p.env.ANTHROPIC_BASE_URL, undefined);      // nosso base_url sai
+    assertEq(p.env.ENABLE_TOOL_SEARCH, 'false');         // 'false' não é nosso → preservado
+    assertEq(p.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '900000'); // != config → preservado
+  });
+  test('planDisableEnv: remove auto-compact que bate o config ATUAL (sem órfão)', () => {
+    const cur = { ANTHROPIC_BASE_URL: OUR, CLAUDE_CODE_AUTO_COMPACT_WINDOW: '300000' };
+    const p = routerEnsure.planDisableEnv(cur, 300000, isOurs); // config atual = 300000
+    assertEq(p.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, undefined);
+  });
+
+  test('router-config.json shipped: autoCompactWindow === 200000 (default override-ável)', () => {
+    const cfg = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'router-config.json'), 'utf-8'));
+    assertEq(cfg.autoCompactWindow, 200000);
+  });
+}
+
+// ─── shells-config: buildCuratedInvocation (auto-redirect Parte A, Fase 1) ────
+// Fase 1 CONSERVADORA: só reescreve quando o comando é EXATAMENTE um alias (sem
+// args, segmento único) E o script é .ps1. Qualquer outra coisa → null (o guard
+// mantém o deny provado). Nunca dropa args nem inventa runner.
+{
+  const sc = require('./shells-config.js');
+  const psShell = { id: 'gitlog', script: '.vscode/scripts/git-log.ps1', aliases: ['git log'] };
+
+  test('buildCuratedInvocation: alias arg-less exato + .ps1 → powershell -File "<script>"', () => {
+    assertEq(sc.buildCuratedInvocation(psShell, 'git log'), 'powershell -File ".vscode/scripts/git-log.ps1"');
+  });
+  test('buildCuratedInvocation: alias COM args → null (Fase 1 mantém deny)', () => {
+    assertEq(sc.buildCuratedInvocation(psShell, 'git log --oneline'), null);
+  });
+  test('buildCuratedInvocation: extra-segmento (cd x && alias) → null', () => {
+    assertEq(sc.buildCuratedInvocation(psShell, 'cd x && git log'), null);
+  });
+  test('buildCuratedInvocation: script não-.ps1 → null (Fase 1 só .ps1)', () => {
+    assertEq(sc.buildCuratedInvocation({ id: 'x', script: '.vscode/scripts/foo.sh', aliases: ['foo'] }, 'foo'), null);
+  });
+  test('buildCuratedInvocation: comando não bate alias → null', () => {
+    assertEq(sc.buildCuratedInvocation(psShell, 'npm test'), null);
+  });
+  test('buildCuratedInvocation: sem script → null', () => {
+    assertEq(sc.buildCuratedInvocation({ aliases: ['x'] }, 'x'), null);
+  });
+  test('buildCuratedInvocation: INVARIANTE — reescrito passa no próprio allow-path do guard (invoca o script, sem pipe)', () => {
+    const built = sc.buildCuratedInvocation(psShell, 'git log');
+    assert(sc.matchCuratedShell(built, [psShell]) === psShell, 'reescrito é reconhecido como invocando o script');
+    const tokens = sc._tokenize(built);
+    assert(tokens.some(t => sc._pathMatches(t, psShell.script)), 'script como token → isInvokingScript=true');
+    assert(!/(?<!\|)\|(?!\|)/.test(built), 'sem pipe → passa o allow-path');
+  });
+}
+
 // ─── router-mode: resolveMode (fonte única de modo) ──────────────────────────
 const { resolveMode, modeMeta, MODE_META } = require('./lib/router-mode.js');
 
