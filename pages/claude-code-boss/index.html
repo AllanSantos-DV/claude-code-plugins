@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.17.0 — consolidação da sessão em uso, ponteiro que não regride</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. A v2.17.0 consolida a SESSÃO EM USO: a autoridade da consolidação das pastas-irmãs do KB vive no brain-server (o único processo que recebe o --plugin-data real da sessão) que dispara com --active-dir mirando a pasta REAL da sessão, não mais um ponteiro global oscilante. O ponteiro ativo nunca regride de uma pasta viva (mais pesada) para uma quase-vazia (mais leve), matando a perda aparente de memória (recall lendo 1) quando duas identidades de instalação competiam. O engine nunca apaga uma pasta-irmã sem antes ler de volta e provar que cada registro foi absorvido (verify-before-delete, backup-first), e o project_id se mantém coerente de ponta a ponta. Empilha sobre a v2.16.0 (graph-guard): uma busca recursiva ampla é reroteada uma vez para o Session Graph (grafo primeiro, grep escopado depois) com o grafo pronto e fresco no SessionStart." />
+<title>claude-code-boss v2.18.0 — auto-redirect da curação, roteador que gasta menos tokens</title>
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. Na v2.18.0, quando um comando cru já tem um script curado e é seguro reescrever (um alias exato, sem argumento, com script .ps1), o guard de curação auto-redireciona pro script na hora (allow + updatedInput) em vez de negar e pedir a rechamada, poupando um turno. E ao ligar o roteamento por um proxy custom, o boss religa o tool-search nativo (ENABLE_TOOL_SEARCH) e capa o contexto ativo mantendo o 1M disponível: a leitura de cache por turno cai de cerca de 447 mil para 74 a 127 mil tokens, um corte de 65 a 83 por cento. Sobre a base durável: recall que fundamenta cada resposta com id de projeto estável, grafo semântico e captura de aprendizado com ACK." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -997,13 +997,78 @@
   .an-foot b{ color:#a29f97 }
   .an-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
 
+  /* v2.18.0 : economia coordenada - auto-redirect da curacao (o caso raw-alias vira allow+updatedInput p/ um alias exato .ps1 e poupa 1 turno; o resto mantem o deny provado) + bundle de env do roteador ao ligar (ENABLE_TOOL_SEARCH religa o tool-search nativo; CLAUDE_CODE_AUTO_COMPACT_WINDOW capa o contexto ativo mantendo o 1M): cache_read/turno ~447k -> ~74-127k (~65-83% de corte). error-guard intacto (invariante no matcher Bash). */
+  .eco{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:880px; font-family:var(--mono); margin:0 0 36px }
+  .eco-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .eco-bar .k{ color:var(--accent) }
+  .eco-bar .m{ color:#8a877f }
+
+  /* hero: o corte medido de leitura de cache por turno (a mais importante) */
+  .eco-hero{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:22px; align-items:center;
+    padding:22px 22px; border-bottom:1px solid rgba(255,255,255,.06) }
+  .eco-gauge{ min-width:0 }
+  .eco-glab{ display:block; font-size:9.5px; letter-spacing:.15em; text-transform:uppercase; color:var(--accent); margin:0 0 13px }
+  .eco-track{ display:flex; align-items:center; gap:12px; margin:0 0 11px }
+  .eco-track:last-child{ margin:0 }
+  .eco-bararea{ position:relative; flex:1 1 auto; min-width:0; height:16px; border-radius:5px; background:rgba(255,255,255,.05) }
+  .eco-fill{ position:absolute; top:0; left:0; bottom:0; border-radius:5px; max-width:100% }
+  .eco-fill--was{ background:repeating-linear-gradient(135deg,#5b5148 0 6px,#463f38 6px 12px) }
+  .eco-fill--now{ background:var(--accent) }
+  .eco-tval{ flex:0 0 138px; white-space:nowrap; font-size:11.5px; color:#8a877f }
+  .eco-tval s{ color:#6d6257; text-decoration-color:#6d6257 }
+  .eco-tval b{ color:var(--panel-ink); font-weight:600 }
+  .eco-cut{ text-align:center }
+  .eco-cut-lead{ display:block; font-size:9px; letter-spacing:.14em; text-transform:uppercase; color:#8a877f; margin:0 0 8px }
+  .eco-cut b{ display:block; font-size:clamp(30px,6vw,40px); line-height:.9; letter-spacing:-.02em; color:var(--accent); font-weight:700; white-space:nowrap }
+  .eco-cut-cap{ display:block; margin:9px auto 0; max-width:170px; font-size:9.5px; line-height:1.5; letter-spacing:.03em; color:#a29f97 }
+  .eco-hnote{ margin:0; padding:16px 22px; border-bottom:1px solid rgba(255,255,255,.06); font-size:11.5px; line-height:1.6; color:#8a877f }
+  .eco-hnote b{ color:#a29f97; font-weight:600 }
+  .eco-hnote code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+
+  /* mecanismo: o fork da curacao (o seguro reescreve; o resto mantem o deny) */
+  .eco-fork{ display:grid; grid-template-columns:1fr 1fr; gap:14px; padding:20px 22px 8px }
+  .eco-path{ display:flex; flex-direction:column; gap:10px; border-radius:10px; padding:15px 16px }
+  .eco-path--go{ border:1px solid var(--accent); background:rgba(255,255,255,.05) }
+  .eco-path--keep{ border:1px dashed rgba(255,255,255,.24); background:transparent }
+  .eco-ptag{ font-size:9.5px; letter-spacing:.14em; text-transform:uppercase }
+  .eco-path--go .eco-ptag{ color:var(--accent) }
+  .eco-path--keep .eco-ptag{ color:#8a877f }
+  .eco-cond{ font-size:12.5px; line-height:1.4; font-weight:600; color:var(--panel-ink); overflow-wrap:break-word }
+  .eco-path--keep .eco-cond{ color:#a29f97 }
+  .eco-op{ align-self:flex-start; font-size:11px; letter-spacing:.02em; padding:3px 10px; border-radius:6px; background:var(--accent); color:var(--panel); font-weight:700 }
+  .eco-op--deny{ background:transparent; border:1px solid #6d6257; color:#a29f97 }
+  .eco-pnote{ font-size:11px; line-height:1.5; color:#8a877f }
+  .eco-pnote b{ color:#a29f97; font-weight:600 }
+  .eco-path code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .eco-inv{ margin:2px 22px 4px; padding:13px 15px; border:1px solid var(--panel-line); border-radius:10px;
+    background:rgba(255,255,255,.02); font-size:11px; line-height:1.6; color:#8a877f }
+  .eco-inv-tag{ display:inline-block; font-size:9px; letter-spacing:.13em; text-transform:uppercase;
+    color:var(--accent); border:1px solid var(--accent); border-radius:5px; padding:1px 7px; margin-right:9px }
+  .eco-inv b{ color:#a29f97; font-weight:600 }
+  .eco-inv code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+
+  /* rails: as duas partes em detalhe */
+  .eco-rails{ display:grid; grid-template-columns:1fr 1fr; gap:12px; padding:12px 22px 18px }
+  .eco-rail{ border:1px solid var(--panel-line); border-radius:10px; padding:13px 14px; background:rgba(255,255,255,.025) }
+  .eco-rail h4{ margin:0 0 8px; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent) }
+  .eco-rail ul{ margin:0; padding:0; list-style:none; display:grid; gap:7px }
+  .eco-rail li{ position:relative; padding-left:16px; font-size:11.5px; line-height:1.45; color:#a29f97 }
+  .eco-rail li::before{ content:"\203a"; position:absolute; left:0; top:-1px; color:var(--accent); font-weight:700 }
+  .eco-rail b{ color:var(--panel-ink); font-weight:600 }
+  .eco-rail code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .eco-foot{ padding:14px 22px; border-top:1px solid var(--panel-line); font-size:11px; line-height:1.6; color:#8a877f }
+  .eco-foot b{ color:#a29f97 }
+  .eco-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+
   footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
   footer a{ color:var(--muted); text-decoration:none }
   footer a:hover{ color:var(--accent) }
   .frow{ display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between }
   .flinks a{ margin-right:16px }
 
-  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .rr-stage{ grid-template-columns:1fr } .rr-rails{ grid-template-columns:1fr } .rr-steps{ flex-direction:column; align-items:stretch } .an-stage{ grid-template-columns:1fr } .an-rails{ grid-template-columns:1fr } .an-steps{ flex-direction:column; align-items:stretch } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
+  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .rr-stage{ grid-template-columns:1fr } .rr-rails{ grid-template-columns:1fr } .rr-steps{ flex-direction:column; align-items:stretch } .an-stage{ grid-template-columns:1fr } .an-rails{ grid-template-columns:1fr } .an-steps{ flex-direction:column; align-items:stretch } .eco-hero{ grid-template-columns:1fr } .eco-fork{ grid-template-columns:1fr } .eco-rails{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
   @media (prefers-reduced-motion:reduce){ .caret{ animation:none } .reveal{ opacity:1 !important; transform:none !important } }
   .reveal{ opacity:0; transform:translateY(14px); animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards }
   @keyframes rise{ to{ opacity:1; transform:none } }
@@ -1014,7 +1079,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.17.0</span>
+    <span class="ver">v2.18.0</span>
   </nav>
 
   <header class="hero">
@@ -1079,7 +1144,7 @@
       <div class="cell">
         <p class="kick">Execução curada</p>
         <h3>Sinal acima de ruído</h3>
-        <p>Redireciona comandos ruidosos e injeta contexto de forma advisory, com backpressure para não inflar a janela.</p>
+        <p>Redireciona comandos ruidosos e injeta contexto advisory, sem inflar a janela. Quando um alias curado é <b>seguro de reescrever</b> (exato, sem argumento, com script <code>.ps1</code>), o guard <b>auto-redireciona</b> pro script na hora (<code>allow</code> + <code>updatedInput</code>) em vez de negar e pedir a rechamada, poupando um turno.</p>
       </div>
       <div class="cell">
         <p class="kick">Dashboard</p>
@@ -1102,6 +1167,102 @@
         <p>Ative constraints explicitamente com <code>policy_activate</code>, nunca auto-promovidas de lições: o <code>error-guard</code> nega no <code>PreToolUse</code> um Bash cuja falha reincide, políticas <b>always-apply</b> entram no contexto no início da sessão, e políticas <b>por glob</b> avisam ao editar um arquivo que casa o padrão. <b>Surfacing ≠ enforcement</b>: ficam presentes no contexto, não bloqueiam (exceto o <code>error-guard</code>). A Fase 3 agora fecha o ciclo: modo sombra mede, e <code>/policy-adjudicate</code> chama um <b>juiz LLM independente</b> para estimar disposições — estimativa de juiz, <b>não FP medido</b>.</p>
       </div>
     </div>
+  </section>
+
+
+  <section>
+    <p class="label">Novo na v2.18.0 · menos um turno, menos tokens</p>
+    <p class="lede">A v2.18.0 corta desperdício em dois pontos do loop. Quando um comando cru já tem um script curado e é <b>seguro reescrever</b> (um alias exato, sem argumento, com script <code>.ps1</code>), o guard de curação para de negar e pedir a rechamada: ele <b>auto-redireciona</b> pro script na hora (<code>allow</code> + <code>updatedInput</code>), poupando um turno inteiro. E ao ligar o <b>roteamento</b> por um proxy custom, o boss religa o tool-search nativo e capa o contexto ativo mantendo o <b>1M</b> disponível: a leitura de cache por turno cai de cerca de <b>447 mil</b> para <b>74 a 127 mil</b> tokens.</p>
+
+    <div class="callout">
+      <span class="tag">economia medida na sessão real</span>
+      Ligar o roteamento por um proxy custom degradava duas coisas que o boss agora recupera sozinho: o <b>tool-search nativo</b> (que o proxy desliga) volta com <code>ENABLE_TOOL_SEARCH</code>, e um teto no <b>contexto ativo</b> segura a janela sem abrir mão do <b>1M</b>. A leitura de cache por turno caiu de cerca de <b>447 mil</b> para <b>74 a 127 mil</b> tokens, um corte de <b>65 a 83 por cento</b>.
+    </div>
+
+    <div class="eco" aria-label="Artefato da versão 2.18.0: a economia coordenada em duas partes. No topo, o corte medido de leitura de cache por turno: uma barra longa e apagada marca as cerca de 447 mil de antes, e uma barra curta e âmbar marca as 74 a 127 mil de agora, ao lado do número do corte, de 65 a 83 por cento. Abaixo, uma nota diz que ao ligar o roteamento por um proxy custom o boss grava, junto do ANTHROPIC_BASE_URL, dois env que recuperam o que o proxy degrada: ENABLE_TOOL_SEARCH religa o tool-search nativo e CLAUDE_CODE_AUTO_COMPACT_WINDOW capa o contexto ativo mantendo o 1M disponível, e ao desligar remove só o que é do boss. No meio, o fork da curação: à esquerda, o caminho seguro, com borda âmbar cheia, quando o comando é um alias exato, sem argumento, segmento único e com script .ps1, o guard responde allow mais updatedInput e reescreve pro script curado, poupando o turno de deny e retry; à direita, o caminho tracejado, para argumento, extra-segmento, pipe ou script não-.ps1, mantém o deny provado, sem dropar argumento nem inventar runner. Uma faixa de invariante lembra que o comando reescrito passa no próprio allow-path do guard e que o error-guard, hook-irmão no matcher Bash, nunca emite updatedInput nem ask. Embaixo, dois trilhos detalham a Parte A, o auto-redirect da curação, e a Parte B, o bundle de env do roteador.">
+      <div class="eco-bar">
+        <span class="k">v2.18.0</span>
+        <span class="m">menos um turno · menos tokens</span>
+      </div>
+
+      <div class="eco-hero">
+        <div class="eco-gauge">
+          <span class="eco-glab">leitura de cache · por turno</span>
+          <div class="eco-track">
+            <div class="eco-bararea"><span class="eco-fill eco-fill--was" style="width:100%"></span></div>
+            <span class="eco-tval"><s>~447 mil</s> antes</span>
+          </div>
+          <div class="eco-track">
+            <div class="eco-bararea"><span class="eco-fill eco-fill--now" style="width:28%"></span></div>
+            <span class="eco-tval"><b>~74 a 127 mil</b> agora</span>
+          </div>
+        </div>
+        <div class="eco-cut">
+          <span class="eco-cut-lead">corte medido</span>
+          <b>65 a 83%</b>
+          <span class="eco-cut-cap">menos leitura de cache por turno · na sessão real</span>
+        </div>
+      </div>
+      <p class="eco-hnote">Ao ligar o roteamento por um proxy custom, o boss grava junto do <code>ANTHROPIC_BASE_URL</code> dois env que recuperam o que o proxy degrada: <code>ENABLE_TOOL_SEARCH=true</code> religa o <b>tool-search nativo</b> (cerca de <b>52 mil</b> tokens deferidos por request) e <code>CLAUDE_CODE_AUTO_COMPACT_WINDOW</code> capa o <b>contexto ativo</b> mantendo o <b>1M</b> disponível. Ao desligar, remove <b>só o que é do boss</b> e preserva o valor que você fixou.</p>
+
+      <div class="eco-fork">
+        <div class="eco-path eco-path--go">
+          <span class="eco-ptag">seguro de reescrever</span>
+          <span class="eco-cond">alias exato · sem argumento · segmento único · script <code>.ps1</code></span>
+          <span class="eco-op">allow + updatedInput</span>
+          <span class="eco-pnote">reescreve pro script curado (<code>powershell -File</code>) e <b>poupa o turno</b> de deny → retry. O <code>updatedInput</code> substitui o <code>tool_input</code> inteiro, então espalha o original (<code>{ ...tool_input, command }</code>) e mantém <code>timeout</code> e afins.</span>
+        </div>
+        <div class="eco-path eco-path--keep">
+          <span class="eco-ptag">qualquer outra coisa</span>
+          <span class="eco-cond">argumento · extra-segmento (<code>cd x &amp;&amp; …</code>) · pipe · script não-<code>.ps1</code></span>
+          <span class="eco-op eco-op--deny">deny provado</span>
+          <span class="eco-pnote">mantém o comportamento antigo, o <b>deny</b> já testado. Nunca <b>dropa um argumento</b> nem <b>inventa um runner</b>: a reescrita é Fase 1 conservadora.</span>
+        </div>
+      </div>
+      <p class="eco-inv"><span class="eco-inv-tag">invariante testada</span> o comando reescrito passa no <b>próprio allow-path</b> do guard (invoca o script, sem pipe), então a reescrita é auto-consistente. E o <code>error-guard</code>, o hook-irmão no matcher <code>Bash</code>, <b>nunca</b> emite <code>updatedInput</code> nem <code>ask</code>: defende os riscos de múltiplos hooks no mesmo matcher (GitHub #75915 e #15897).</p>
+
+      <div class="eco-rails">
+        <div class="eco-rail">
+          <h4>Parte A · auto-redirect da curação</h4>
+          <ul>
+            <li>O caso <b>raw alias</b> do <code>curation-guard.js</code> deixou de sempre <b>negar</b> e passou a <b>auto-redirecionar</b> (<code>allow</code> + <code>updatedInput</code>) quando é seguro reconstruir.</li>
+            <li><code>buildCuratedInvocation</code> (novo, em <code>shells-config.js</code>) só reescreve um <b>alias exato</b> com script <code>.ps1</code> (vira <code>powershell -File</code>); todo o resto mantém o <b>deny provado</b>.</li>
+            <li>O <code>error-guard.js</code> fica <b>intacto</b>, travado por um teste de invariante: o hook-irmão nunca emite <code>updatedInput</code> nem <code>ask</code>.</li>
+          </ul>
+        </div>
+        <div class="eco-rail">
+          <h4>Parte B · bundle de env do roteador</h4>
+          <ul>
+            <li>Ao ligar, o <code>model-router-ensure.js</code> grava, junto do <code>ANTHROPIC_BASE_URL</code>, o <code>ENABLE_TOOL_SEARCH=true</code> e o <code>CLAUDE_CODE_AUTO_COMPACT_WINDOW</code>.</li>
+            <li>Três helpers <b>puros</b> e testados: <code>resolveAutoCompactWindow</code> (clamp em <code>[50000, 1000000]</code>), <code>planEnableEnv</code> (não sobrescreve o que você fixou) e <code>planDisableEnv</code> (remove só o do boss, sem env órfão).</li>
+            <li>O teto é <b>configurável</b> (default <b>200 mil</b>) e vive no <code>router-config.json</code>, não no <code>userConfig</code> do <code>plugin.json</code>, que o runtime não lê.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="eco-foot"><b>Escopo real:</b> a reescrita da curação é <b>Fase 1 conservadora</b>: só um alias exato com script <code>.ps1</code>, e qualquer coisa fora disso mantém o <b>deny</b> já provado, sem dropar argumento nem inventar runner. O <code>updatedInput</code> é substituição <b>total</b> do <code>tool_input</code>, então o boss espalha o original pra preservar <code>timeout</code> e afins. No roteador, ligar e desligar é <b>simétrico</b>: ao desligar, só o valor do boss sai (comparado com o config atual), então o que você fixou <b>sobrevive</b> e nada fica órfão.</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>Menos um turno na curação</h4>
+        <p>Um alias curado e seguro de reescrever vira <code>allow</code> + <code>updatedInput</code> na hora, no lugar de um <code>deny</code> que mandava o modelo rechamar a tool. O turno extra de deny → retry <b>some</b>.</p>
+      </div>
+      <div class="win">
+        <h4>Fase 1 conservadora</h4>
+        <p>Só reescreve um <b>alias exato</b>, sem argumento, com script <code>.ps1</code>. Argumento, extra-segmento, pipe ou script não-<code>.ps1</code> mantêm o <b>deny provado</b>: nunca dropa argumento nem inventa runner.</p>
+      </div>
+      <div class="win">
+        <h4>65 a 83% menos leitura de cache</h4>
+        <p><code>ENABLE_TOOL_SEARCH</code> religa o tool-search nativo que o proxy desliga, e um teto capa o contexto ativo mantendo o <b>1M</b>. Na sessão real, <code>cache_read</code> por turno caiu de <b>~447 mil</b> para <b>~74 a 127 mil</b>.</p>
+      </div>
+      <div class="win">
+        <h4>Liga e desliga limpo</h4>
+        <p>Ao desligar, o boss remove <b>só</b> os env que ele mesmo gravou (comparados com o config atual) e preserva o que você fixou, sem deixar env órfão. O teto é configurável (default <b>200 mil</b>).</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Rigor de sempre:</b> o handoff e o plano da mesa foram <b>re-verificados na FONTE</b> (corrigidas imprecisões de path e uma extração que furaria a cerca do <code>error-guard</code>), com <b>TDD RED→GREEN</b> em cada parte e o gate rodado <b>2× estável</b> (<b>107</b> suítes de hooks + <b>717</b> unitários, <b>0</b> falhas). A reescrita da curação é auto-consistente: o comando reescrito passa no <b>próprio allow-path</b> do guard, e o <code>error-guard</code> segue intacto, provado por um teste de invariante que barra qualquer <code>updatedInput</code> ou <code>ask</code> do hook-irmão no matcher <code>Bash</code>. No roteador, os helpers são <b>puros</b>: <code>resolveAutoCompactWindow</code> faz clamp em <code>[50000, 1000000]</code> e avisa quando ajusta, <code>planEnableEnv</code> só preenche o que está ausente (não sobrescreve um valor seu) e <code>planDisableEnv</code> remove apenas o valor do boss, então nada fica órfão. O teto shipado é <b>200 mil</b>, no <code>router-config.json</code>, override-ável por <code>readConfig()</code>.</p>
   </section>
 
 
