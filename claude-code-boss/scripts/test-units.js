@@ -860,6 +860,96 @@ test('brain-backend searchMcp (F2): opts.projectIds → metadata.project_id LIST
   }
 });
 
+// ─── brain-migrate: KB local → mcp-memory (Pilar 1 — motor puro/testável) ─────
+// Migra PROJETO a PROJETO (o daemon escopa por projectId no handshake), lê as
+// entradas locais e grava idempotente no daemon (documentId=id → UPSERT). Fail-loud:
+// uma falha por entrada é COLETADA (nunca engolida) e derruba ok→false, sem abortar o resto.
+
+test('brain-migrate: happy path — migra todos os projetos/entradas, ok:true, writeEntry(entry, project)', async () => {
+  const mig = require('./brain-migrate.js');
+  const calls = [];
+  const r = await mig.migrateLocalToMcp({}, {
+    enumerateProjects: async () => ['projA', 'projB'],
+    readEntries: async (p) => p === 'projA' ? [{ id: 'a1' }, { id: 'a2' }] : [{ id: 'b1' }],
+    writeEntry: async (entry, project) => { calls.push([project, entry.id]); },
+  });
+  assertEq(r.ok, true);
+  assertEq(r.totalProjects, 2);
+  assertEq(r.totalEntries, 3);
+  assertEq(r.migrated, 3);
+  assertEq(r.failed.length, 0);
+  assertEq(calls, [['projA', 'a1'], ['projA', 'a2'], ['projB', 'b1']], 'writeEntry recebe (entry, project) por entrada, na ordem');
+  assertEq(r.perProject.find(x => x.project === 'projA').migrated, 2);
+});
+
+test('brain-migrate: fail-loud — writeEntry que joga NÃO aborta; coleta a falha e ok:false', async () => {
+  const mig = require('./brain-migrate.js');
+  const r = await mig.migrateLocalToMcp({}, {
+    enumerateProjects: async () => ['projA'],
+    readEntries: async () => [{ id: 'a1' }, { id: 'a2' }, { id: 'a3' }],
+    writeEntry: async (entry) => { if (entry.id === 'a2') throw new Error('add_document isError: boom'); },
+  });
+  assertEq(r.ok, false, 'qualquer falha → ok:false (nunca sucesso silencioso)');
+  assertEq(r.migrated, 2, 'as outras entradas seguem migrando');
+  assertEq(r.failed.length, 1);
+  assertEq(r.failed[0].id, 'a2');
+  assertEq(r.failed[0].project, 'projA');
+  assert(/boom/.test(r.failed[0].error), 'a causa real da falha é preservada (loud)');
+});
+
+test('brain-migrate: read que joga isola o projeto — reporta falha de leitura e continua os demais', async () => {
+  const mig = require('./brain-migrate.js');
+  const r = await mig.migrateLocalToMcp({}, {
+    enumerateProjects: async () => ['bad', 'good'],
+    readEntries: async (p) => { if (p === 'bad') throw new Error('db locked'); return [{ id: 'g1' }]; },
+    writeEntry: async () => {},
+  });
+  assertEq(r.ok, false);
+  assertEq(r.migrated, 1, 'o projeto bom migra mesmo com o ruim falhando na leitura');
+  const badFail = r.failed.find(f => f.project === 'bad');
+  assert(badFail && /db locked/.test(badFail.error), 'falha de leitura reportada com a causa');
+  assertEq(badFail.phase, 'read', 'a fase da falha é sinalizada');
+});
+
+test('brain-migrate: nada a migrar → ok:true, migrated:0 (ausência ≠ erro)', async () => {
+  const mig = require('./brain-migrate.js');
+  const r = await mig.migrateLocalToMcp({}, {
+    enumerateProjects: async () => [],
+    readEntries: async () => [],
+    writeEntry: async () => { throw new Error('should not be called'); },
+  });
+  assertEq(r.ok, true);
+  assertEq(r.migrated, 0);
+  assertEq(r.totalEntries, 0);
+});
+
+test('brain-migrate: passa a ENTRADA INTEIRA a writeEntry (p/ fixar documentId=id downstream)', async () => {
+  const mig = require('./brain-migrate.js');
+  let seen = null;
+  const full = { id: 'x1', title: 't', summary: 's', content: { detail: 'd' }, type: 'lesson', tags: ['k'], scope: 'project' };
+  await mig.migrateLocalToMcp({}, {
+    enumerateProjects: async () => ['p'],
+    readEntries: async () => [full],
+    writeEntry: async (entry) => { seen = entry; },
+  });
+  assertEq(seen, full, 'a entrada é repassada intacta (id preservado p/ UPSERT idempotente)');
+});
+
+test('brain-migrate: onProgress por entrada migrada com contagem cumulativa', async () => {
+  const mig = require('./brain-migrate.js');
+  const prog = [];
+  await mig.migrateLocalToMcp({}, {
+    enumerateProjects: async () => ['p'],
+    readEntries: async () => [{ id: '1' }, { id: '2' }],
+    writeEntry: async () => {},
+    onProgress: (ev) => prog.push(ev),
+  });
+  assertEq(prog.length, 2);
+  assertEq(prog[1].done, 2);
+  assertEq(prog[1].total, 2);
+  assertEq(prog[1].project, 'p');
+});
+
 test('brain-backend compose: parseComposeEnvelope splits facts(text)/capabilities(pointers), excludes invalidated, derives title (DH4)', () => {
   const { parseComposeEnvelope } = require('./brain-backend.js').__testHooks;
   const envelope = { text: JSON.stringify({
