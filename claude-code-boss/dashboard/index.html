@@ -399,6 +399,19 @@ code { color: var(--fg); font-family: var(--font-mono); }
           <span id="mcp-test-status" class="text-muted" style="font-size:.75rem"></span>
           <a href="https://github.com/AllanSantos-DV/mcp-memory-server-releases/releases/latest" target="_blank" rel="noopener" style="font-size:.75rem" data-i18n="brain.downloadServer">↓ Download memory server</a>
         </div>
+
+        <div id="mcp-migrate-block" style="margin-top:.75rem;border-top:1px dashed var(--border);padding-top:.75rem">
+          <label class="field-label" data-i18n="brain.migrateTitle">Migrate local KB → server</label>
+          <p class="text-muted" style="font-size:.75rem;margin:.25rem 0 .5rem" data-i18n="brain.migrateHint">
+            Sends every entry from your local SQLite KB to the memory server (per project, idempotent, safe to re-run).
+            The server re-embeds each entry. Note: on the server, lesson de-duplication is handled server-side and
+            the citation-graph relatedness becomes semantic search. Global (__user__) entries are not migrated yet.
+          </p>
+          <div style="display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
+            <button class="btn-sm" id="mcp-migrate-btn" onclick="startBrainMigration()" data-i18n="brain.migrateBtn">Migrate now</button>
+            <span id="mcp-migrate-status" class="text-muted" style="font-size:.75rem"></span>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -2086,6 +2099,54 @@ async function saveBrainBackendConfig() {
   } catch (e) {
     alert('Erro ao salvar: ' + e.message);
   }
+}
+
+let _migratePoll = null;
+async function startBrainMigration() {
+  const btn = document.getElementById('mcp-migrate-btn');
+  const st = document.getElementById('mcp-migrate-status');
+  if (!confirm('Migrar todo o KB local para o memory server? É idempotente (pode rodar de novo), mas o servidor vai reprocessar cada entrada.')) return;
+  btn.disabled = true;
+  st.textContent = 'Iniciando...';
+  try {
+    const r = await api('POST', '/api/brain/migrate');
+    if (r && r.started === false && r.job && r.job.status === 'error') {
+      st.textContent = 'Erro: ' + (r.job.error || 'não pôde iniciar');
+      btn.disabled = false;
+      return;
+    }
+    pollMigration();
+  } catch (e) {
+    st.textContent = 'Erro: ' + e.message;
+    btn.disabled = false;
+  }
+}
+
+function pollMigration() {
+  const btn = document.getElementById('mcp-migrate-btn');
+  const st = document.getElementById('mcp-migrate-status');
+  if (_migratePoll) clearInterval(_migratePoll);
+  _migratePoll = setInterval(async () => {
+    let s;
+    try { s = await api('GET', '/api/brain/migrate-status'); }
+    catch (e) { st.textContent = 'Erro ao consultar: ' + e.message; return; }
+    if (s.status === 'running') {
+      st.textContent = `Migrando... ${s.migrated || 0} entrada(s)` + (s.currentProject ? ` (${s.currentProject})` : '');
+    } else if (s.status === 'done') {
+      clearInterval(_migratePoll); _migratePoll = null;
+      st.textContent = `✓ Migradas ${s.migrated} de ${s.total} entrada(s) em ${s.totalProjects} projeto(s).`;
+      btn.disabled = false;
+    } else if (s.status === 'error') {
+      clearInterval(_migratePoll); _migratePoll = null;
+      const nFail = (s.failed && s.failed.length) || 0;
+      st.textContent = '✗ ' + (s.error || 'falha') + (nFail ? ` (${nFail} entrada(s) falharam)` : '');
+      btn.disabled = false;
+    } else {
+      clearInterval(_migratePoll); _migratePoll = null;
+      st.textContent = '';
+      btn.disabled = false;
+    }
+  }, 1000);
 }
 
 async function doRestartDashboard() {
