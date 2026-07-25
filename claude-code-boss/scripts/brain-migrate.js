@@ -77,7 +77,6 @@ async function migrateLocalToMcp(opts = {}, deps = {}) {
 }
 
 // ── Deps default (produção) — reusam as primitivas confirmadas ────────────────
-
 function activeBrainDir(opts) {
   if (opts && opts.brainDir) return opts.brainDir;
   const { dataDir } = require('./lib/data-dir.js');
@@ -121,9 +120,46 @@ async function defaultWriteEntry(entry, project) {
   await backend.save(entry);
 }
 
+/**
+ * Verify-after: confirma que o daemon TEM ao menos o que migramos, por projeto.
+ * `perProject` vem de migrateLocalToMcp. Compara `migrated` (o que subiu) com a
+ * contagem remota; `remote < migrated` = PERDA → ok:false (fail-loud). Um erro de
+ * verificação (daemon fora) é reportado com a causa, nunca engolido. deps injetáveis.
+ */
+async function verifyMigration(perProject, deps = {}) {
+  const remoteCount = deps.remoteCount || defaultRemoteCount;
+  const checks = [];
+  let ok = true;
+  for (const p of (perProject || [])) {
+    let remote;
+    try {
+      remote = await remoteCount(p.project);
+    } catch (e) {
+      ok = false;
+      checks.push({ project: p.project, ok: false, error: (e && e.message) || String(e) });
+      continue;
+    }
+    const pass = remote >= p.migrated;
+    if (!pass) ok = false;
+    checks.push({ project: p.project, migrated: p.migrated, remote, ok: pass });
+  }
+  return { ok, checks };
+}
+
+/** Contagem remota de docs de um projeto no daemon (brain-backend.count em mcp-memory). */
+async function defaultRemoteCount(project) {
+  const backend = require('./brain-backend.js');
+  if (backend.peekMode() !== 'mcp-memory') {
+    throw new Error(`verificação exige backend.type=mcp-memory (alvo do daemon); modo atual: ${backend.peekMode()}`);
+  }
+  await backend.init({ project });
+  return backend.count();
+}
+
 module.exports = {
   migrateLocalToMcp,
-  __testHooks: { defaultEnumerateProjects, defaultReadEntries, defaultWriteEntry, activeBrainDir },
+  verifyMigration,
+  __testHooks: { defaultEnumerateProjects, defaultReadEntries, defaultWriteEntry, defaultRemoteCount, activeBrainDir },
 };
 
 // ── CLI (execução manual) — fail-loud: saída não-zero se qualquer entrada falhou ──

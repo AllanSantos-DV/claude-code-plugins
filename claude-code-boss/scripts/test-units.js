@@ -950,6 +950,85 @@ test('brain-migrate: onProgress por entrada migrada com contagem cumulativa', as
   assertEq(prog[1].project, 'p');
 });
 
+test('brain-migrate defaultWriteEntry: handshake escopa no projeto + add_document documentId=id (idempotente)', async () => {
+  const daemon = await startFakeDaemon({ toolResult: (p) => ({ content: [{ type: 'text', text: 'Document added with ID: ' + ((p.arguments && p.arguments.documentId) || 'x') }] }) });
+  delete require.cache[require.resolve('./brain-backend.js')];
+  const backend = require('./brain-backend.js');
+  backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
+  delete require.cache[require.resolve('./brain-migrate.js')];
+  const mig = require('./brain-migrate.js');
+  try {
+    await mig.__testHooks.defaultWriteEntry({ id: 'e1', title: 't', summary: 's', content: { detail: 'd' }, type: 'lesson', tags: ['k'] }, 'projX');
+    assertEq(daemon.seen.initProjectId, 'projX', 'a escrita escopa no projeto pelo handshake');
+    assertEq(daemon.seen.callArgs.name, 'add_document', 'grava via add_document');
+    assertEq(daemon.seen.callArgs.arguments.documentId, 'e1', 'documentId=id → UPSERT idempotente (re-run seguro, sem duplicar)');
+    await backend.close();
+  } finally {
+    delete require.cache[require.resolve('./brain-backend.js')];
+    delete require.cache[require.resolve('./brain-migrate.js')];
+    await daemon.close();
+  }
+});
+
+test('brain-migrate defaultWriteEntry: backend NÃO mcp-memory → ERRO ALTO (nunca grava local escondido)', async () => {
+  delete require.cache[require.resolve('./brain-backend.js')];
+  const backend = require('./brain-backend.js');
+  backend.__testHooks._injectConfig({ backend: { type: 'local' } });
+  delete require.cache[require.resolve('./brain-migrate.js')];
+  const mig = require('./brain-migrate.js');
+  let threw = false;
+  try {
+    await mig.__testHooks.defaultWriteEntry({ id: 'x', title: 't', summary: 's' }, 'p');
+  } catch (e) {
+    threw = true;
+    assert(/mcp-memory/.test(e.message), 'o erro nomeia o requisito mcp-memory (alvo do daemon)');
+  }
+  delete require.cache[require.resolve('./brain-backend.js')];
+  delete require.cache[require.resolve('./brain-migrate.js')];
+  assertEq(threw, true, 'migração NUNCA grava no store local em silêncio — falha alto (fail-loud)');
+});
+
+test('brain-migrate defaultReadEntries: lê entradas locais full-fidelity de um projeto', () => {
+  runBrainScenario(`
+    await backend.init({project:'projR',skipEmbedder:true});
+    await backend.save({id:'r1',type:'lesson',title:'T1',summary:'S1',content:{detail:'D1'},tags:['a'],confidence:0.8});
+    await backend.save({id:'r2',type:'note',title:'T2',summary:'S2',content:{detail:'D2'}});
+    await backend.close();
+    const mig=require(process.env.CLAUDE_PLUGIN_ROOT+'/scripts/brain-migrate.js');
+    const entries=await mig.__testHooks.defaultReadEntries('projR');
+    assert(entries.length===2,'lê as 2 entradas do projeto');
+    const r1=entries.find(e=>e&&e.id==='r1');
+    assert(r1,'entrada r1 presente');
+    assert(r1.content,'full-fidelity: content presente (getRaw, nao a lista lossy)');
+    assert(r1.type==='lesson','type preservado');
+  `);
+});
+
+test('brain-migrate verifyMigration: remote >= migrado por projeto → ok:true', async () => {
+  const mig = require('./brain-migrate.js');
+  const r = await mig.verifyMigration([{ project: 'A', migrated: 2 }, { project: 'B', migrated: 1 }], {
+    remoteCount: async (p) => (p === 'A' ? 2 : 3),
+  });
+  assertEq(r.ok, true);
+  assertEq(r.checks.find((c) => c.project === 'A').ok, true);
+  assertEq(r.checks.find((c) => c.project === 'B').remote, 3);
+});
+
+test('brain-migrate verifyMigration: remote < migrado → ok:false (PERDA detectada, loud)', async () => {
+  const mig = require('./brain-migrate.js');
+  const r = await mig.verifyMigration([{ project: 'A', migrated: 5 }], { remoteCount: async () => 3 });
+  assertEq(r.ok, false, 'perda de entradas derruba a verificação');
+  assertEq(r.checks[0].ok, false);
+  assertEq(r.checks[0].remote, 3);
+});
+
+test('brain-migrate verifyMigration: remoteCount que joga → reportado com a causa, ok:false', async () => {
+  const mig = require('./brain-migrate.js');
+  const r = await mig.verifyMigration([{ project: 'A', migrated: 1 }], { remoteCount: async () => { throw new Error('daemon down'); } });
+  assertEq(r.ok, false);
+  assert(/daemon down/.test(r.checks[0].error), 'erro de verificação reportado (nunca engolido)');
+});
+
 test('brain-backend compose: parseComposeEnvelope splits facts(text)/capabilities(pointers), excludes invalidated, derives title (DH4)', () => {
   const { parseComposeEnvelope } = require('./brain-backend.js').__testHooks;
   const envelope = { text: JSON.stringify({
