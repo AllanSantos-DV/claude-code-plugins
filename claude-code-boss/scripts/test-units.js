@@ -1029,6 +1029,99 @@ test('brain-migrate verifyMigration: remoteCount que joga → reportado com a ca
   assert(/daemon down/.test(r.checks[0].error), 'erro de verificação reportado (nunca engolido)');
 });
 
+// ─── migration-job: state machine do botão "Migrar agora" (núcleo testável) ───
+// dashboard.js só faz o wiring HTTP; a lógica (start idempotente, gating fail-loud,
+// progresso, verify-after) vive aqui, hermética e injetável.
+
+test('migration-job: status inicial é idle (sem job)', () => {
+  delete require.cache[require.resolve('./lib/migration-job.js')];
+  const job = require('./lib/migration-job.js');
+  assertEq(job.status().status, 'idle');
+});
+
+test('migration-job: start com mcp-memory → running → done com contagens + verify', async () => {
+  delete require.cache[require.resolve('./lib/migration-job.js')];
+  const job = require('./lib/migration-job.js');
+  const r = job.start({
+    peekMode: () => 'mcp-memory',
+    migrateLocalToMcp: async (_o, deps) => {
+      deps.onProgress({ project: 'A', entryId: 'a1', done: 1, total: 2 });
+      deps.onProgress({ project: 'A', entryId: 'a2', done: 2, total: 2 });
+      return { ok: true, totalProjects: 1, totalEntries: 2, migrated: 2, failed: [], perProject: [{ project: 'A', migrated: 2 }] };
+    },
+    verifyMigration: async () => ({ ok: true, checks: [{ project: 'A', migrated: 2, remote: 2, ok: true }] }),
+  });
+  assertEq(r.started, true);
+  assertEq(job.status().status, 'running', 'fica running imediatamente (assíncrono, não bloqueia)');
+  await job.__testHooks.awaitCurrent();
+  const s = job.status();
+  assertEq(s.status, 'done');
+  assertEq(s.migrated, 2);
+  assertEq(s.ok, true);
+  assertEq(s.verify.checks[0].remote, 2);
+});
+
+test('migration-job: start é IDEMPOTENTE — 2ª chamada durante a corrida NÃO dispara outra', async () => {
+  delete require.cache[require.resolve('./lib/migration-job.js')];
+  const job = require('./lib/migration-job.js');
+  let runs = 0;
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const deps = {
+    peekMode: () => 'mcp-memory',
+    migrateLocalToMcp: async () => { runs++; await gate; return { ok: true, totalProjects: 0, totalEntries: 0, migrated: 0, failed: [], perProject: [] }; },
+    verifyMigration: async () => ({ ok: true, checks: [] }),
+  };
+  const a = job.start(deps);
+  const b = job.start(deps);
+  assertEq(a.started, true);
+  assertEq(b.started, false, '2ª chamada não inicia nova migração (job único)');
+  release();
+  await job.__testHooks.awaitCurrent();
+  assertEq(runs, 1, 'a migração rodou UMA vez só');
+});
+
+test('migration-job: backend NÃO mcp-memory → error, NÃO roda (fail-loud, sem gravar local)', () => {
+  delete require.cache[require.resolve('./lib/migration-job.js')];
+  const job = require('./lib/migration-job.js');
+  let ran = false;
+  const r = job.start({
+    peekMode: () => 'local',
+    migrateLocalToMcp: async () => { ran = true; return {}; },
+  });
+  assertEq(r.started, false);
+  assertEq(job.status().status, 'error');
+  assert(/mcp-memory/.test(job.status().error), 'erro nomeia o requisito mcp-memory');
+  assertEq(ran, false, 'a migração NUNCA roda fora do mcp-memory');
+});
+
+test('migration-job: falha na migração → status error com as falhas expostas (loud)', async () => {
+  delete require.cache[require.resolve('./lib/migration-job.js')];
+  const job = require('./lib/migration-job.js');
+  job.start({
+    peekMode: () => 'mcp-memory',
+    migrateLocalToMcp: async () => ({ ok: false, totalProjects: 1, totalEntries: 3, migrated: 2, failed: [{ project: 'A', id: 'a2', phase: 'write', error: 'boom' }], perProject: [{ project: 'A', migrated: 2 }] }),
+    verifyMigration: async () => ({ ok: true, checks: [] }),
+  });
+  await job.__testHooks.awaitCurrent();
+  const s = job.status();
+  assertEq(s.status, 'error', 'ok:false da migração → status error (não mascara)');
+  assertEq(s.failed.length, 1);
+  assert(/boom/.test(s.failed[0].error), 'a causa real da falha fica visível');
+});
+
+test('migration-job: migrate que joga → status error com a causa (nunca engole)', async () => {
+  delete require.cache[require.resolve('./lib/migration-job.js')];
+  const job = require('./lib/migration-job.js');
+  job.start({
+    peekMode: () => 'mcp-memory',
+    migrateLocalToMcp: async () => { throw new Error('kaboom'); },
+  });
+  await job.__testHooks.awaitCurrent();
+  assertEq(job.status().status, 'error');
+  assert(/kaboom/.test(job.status().error));
+});
+
 test('brain-backend compose: parseComposeEnvelope splits facts(text)/capabilities(pointers), excludes invalidated, derives title (DH4)', () => {
   const { parseComposeEnvelope } = require('./brain-backend.js').__testHooks;
   const envelope = { text: JSON.stringify({
