@@ -1,5 +1,28 @@
 # Changelog
 
+## [2.19.0] - 2026-07-25
+
+**Migração do KB local → memory server (`mcp-memory`), com botão no dashboard, idempotência e fail-loud.** Trocar o backend para `mcp-memory` deixava o acervo local **órfão**: não havia nenhum mecanismo de migração (o export/import do dashboard sempre foi local↔local). Agora existe. O trabalho começou por uma investigação que **descartou o plano anterior**: a hipótese de "um brain-server por sessão" levou a um desenho de daemon único + proxy que, verificado na fonte, seria **reinventar o que o memory server native-java já faz** — o modo `mcp-memory` já transforma o processo Node em cliente magro (`initLocal()` nem roda: zero modelo, zero SQLite in-process). O gap real era só a migração dos dados. Cada fase saiu com TDD RED→GREEN e gate verde 2× (Windows e Linux).
+
+### Motor de migração (`scripts/brain-migrate.js`)
+
+- **`migrateLocalToMcp(opts, deps)`** — enumera todo projeto com KB local (`DATA_DIR/brain/<projeto>/brain.db`), lê cada entrada **full-fidelity** (`brain-store.getRaw`, não a listagem lossy) e grava **projeto a projeto**: o daemon escopa por `project_id` no handshake do MCP, um por conexão, então a migração re-inicializa o backend por projeto em vez de tentar um lote único.
+- **Idempotente**: a escrita reusa `brain-backend.save` → `add_document` com `documentId` = o id local (UPSERT). Rodar de novo **atualiza** em vez de duplicar, o que torna seguro retomar uma migração interrompida.
+- **Fail-loud (sem fallback que cega)**: uma entrada que falha **não** aborta as demais, mas é coletada com a **causa real** e derruba `ok → false`; uma falha de leitura isola o projeto e segue os outros; ausência genuína (sem projeto/entrada) é sucesso com `migrated: 0`, distinto de erro. Fora do backend `mcp-memory` a migração **recusa rodar** — jamais grava no store local em silêncio.
+- **`verifyMigration`** — conferência pós-migração por projeto: contagem remota **menor** que a migrada (ou um erro ao consultar) vira `ok: false` com o detalhe. Nunca declara "migrado" mascarando perda.
+- CLI para uso manual (`node scripts/brain-migrate.js`), com saída não-zero se qualquer entrada falhar.
+
+### Botão "Migrar agora" no dashboard
+
+- **`scripts/lib/migration-job.js`** — a máquina de estado (start idempotente, gate do backend, progresso, verify-after) vive **fora** do HTTP; `dashboard.js` só liga os fios. Uma migração de cada vez: um segundo clique durante a corrida **não** dispara outra.
+- Rotas `POST /api/brain/migrate` (dispara em background, responde na hora) + `GET /api/brain/migrate-status` (polling), reusando o token/Host guard já existentes do dashboard.
+- UI no card **Brain → Backend Configuration** (só no modo `mcp-memory`): confirmação, barra de progresso ao vivo e resultado final com as falhas visíveis. A migração é **explícita** — um acervo grande é re-embedado pelo servidor e leva tempo, então migrar sozinho ao salvar seria hostil.
+- **Trade-offs declarados na própria tela** (e no README): ao migrar, a de-duplicação de lições passa a ser server-side e o `brain_related` vira busca semântica (o grafo de citação é local); em troca as tools `graph_*` passam a funcionar, pois o grafo vive no servidor.
+
+### Limitação conhecida (verificada na fonte do native-java)
+
+- Entradas de escopo **global** (`__user__`) **não** migram ainda. No servidor, "global" é o escopo *home* (documento **sem** `project_id`), e os únicos blocos globais são `skill_global` (`type:skill` sem projeto) e `procedural`. Escrever ali exige handshake **sem projeto ativo**, mas `resolveHandshakeProjectId` **ignora** um `projectId` em branco e cai na escada do workspace, que é fail-loud — ou seja, toda sessão de cliente é escopada num projeto **por design** (anti-contaminação, ADR-018). Habilitar isso exige uma mudança no próprio memory server; até lá a migração global fica fora, declarada em vez de silenciosamente pulada.
+
 ## [2.18.0] - 2026-07-24
 
 **Auto-redirect da curação (menos um turno) + bundle de env do roteador (economia de tokens).** Duas mudanças coordenadas do handoff `CURATION-AUTO-REDIRECT`. Rigor de sempre: handoff e plano da mesa **re-verificados na FONTE** (corrigidas imprecisões de path e a extração que furaria a cerca do `error-guard.js`), TDD RED→GREEN em cada parte, gate **2× estável (107 hooks + 717 unit, 0 falhas)**.
