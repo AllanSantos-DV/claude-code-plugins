@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.18.0 — auto-redirect da curação, roteador que gasta menos tokens</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. Na v2.18.0, quando um comando cru já tem um script curado e é seguro reescrever (um alias exato, sem argumento, com script .ps1), o guard de curação auto-redireciona pro script na hora (allow + updatedInput) em vez de negar e pedir a rechamada, poupando um turno. E ao ligar o roteamento por um proxy custom, o boss religa o tool-search nativo (ENABLE_TOOL_SEARCH) e capa o contexto ativo mantendo o 1M disponível: a leitura de cache por turno cai de cerca de 447 mil para 74 a 127 mil tokens, um corte de 65 a 83 por cento. Sobre a base durável: recall que fundamenta cada resposta com id de projeto estável, grafo semântico e captura de aprendizado com ACK." />
+<title>claude-code-boss v2.19.0 — o acervo de memória viaja junto pro servidor</title>
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. Na v2.19.0, trocar o backend para o memory server deixou de abandonar o que você já tinha: um botão Migrar agora no dashboard leva todo o KB local para o servidor, projeto a projeto, porque o daemon escopa a memória por project_id no handshake. Cada documento sobe com o id local, então rodar de novo atualiza em vez de duplicar e uma migração interrompida pode ser retomada. É fail-loud de ponta a ponta: fora do backend mcp-memory a migração recusa rodar, uma entrada que falha é reportada com a causa real em vez de sumir, e a contagem remota é conferida contra o que subiu. O escopo global fica declarado de fora, porque escrever ali exige mudança no próprio servidor. Sobre a base durável: recall que fundamenta cada resposta com id de projeto estável, grafo semântico e captura de aprendizado com ACK." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -1062,13 +1062,56 @@
   .eco-foot b{ color:#a29f97 }
   .eco-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
 
+  /* v2.19.0 : o acervo viaja junto - migracao do KB local -> memory server (botao no dashboard, projeto a projeto pq o daemon escopa por project_id no handshake; documentId = id local -> UPSERT idempotente; fail-loud: recusa fora do mcp-memory, coleta a causa real e confere a contagem remota; escopo global (__user__) ainda fora, declarado). */
+  .mig{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:880px; font-family:var(--mono); margin:0 0 36px }
+  .mig-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .mig-bar .k{ color:var(--accent) }
+  .mig-bar .m{ color:#8a877f }
+
+  /* fluxo: o acervo local atravessa, projeto a projeto, para o servidor */
+  .mig-flow{ display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); gap:16px; align-items:stretch;
+    padding:22px 22px 18px; border-bottom:1px solid rgba(255,255,255,.06) }
+  .mig-node{ display:flex; flex-direction:column; gap:8px; min-width:0; border-radius:10px; padding:15px 16px }
+  .mig-node--src{ border:1px dashed rgba(255,255,255,.24) }
+  .mig-node--dst{ border:1px solid var(--accent); background:rgba(255,255,255,.05) }
+  .mig-ntag{ font-size:9.5px; letter-spacing:.14em; text-transform:uppercase; color:#8a877f }
+  .mig-node--dst .mig-ntag{ color:var(--accent) }
+  .mig-nsub{ font-size:12px; line-height:1.45; font-weight:600; color:var(--panel-ink); overflow-wrap:break-word }
+  .mig-nnote{ font-size:11px; line-height:1.5; color:#8a877f }
+  .mig-nnote b{ color:#a29f97; font-weight:600 }
+  .mig-cross{ display:flex; flex-direction:column; align-items:center; justify-content:center; gap:7px; text-align:center; min-width:132px }
+  .mig-ctag{ font-size:9px; letter-spacing:.13em; text-transform:uppercase; color:var(--accent);
+    border:1px solid var(--accent); border-radius:5px; padding:2px 8px }
+  .mig-cline{ width:100%; height:1px; background:linear-gradient(90deg,rgba(255,255,255,.10),var(--accent)) }
+  .mig-cnote{ font-size:9.5px; line-height:1.5; color:#8a877f; max-width:150px }
+  .mig-node code, .mig-cnote code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+
+  /* guardas: o que impede uma migracao de mentir que deu certo */
+  .mig-guards{ display:grid; grid-template-columns:repeat(3,1fr); gap:12px; padding:18px 22px 8px }
+  .mig-guard{ border:1px solid var(--panel-line); border-radius:10px; padding:13px 14px; background:rgba(255,255,255,.025) }
+  .mig-guard h4{ margin:0 0 7px; font-size:10.5px; letter-spacing:.11em; text-transform:uppercase; color:var(--accent) }
+  .mig-guard p{ margin:0; font-size:11px; line-height:1.5; color:#8a877f }
+  .mig-guard b{ color:#a29f97; font-weight:600 }
+  .mig-guard code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .mig-scope{ margin:2px 22px 4px; padding:13px 15px; border:1px solid var(--panel-line); border-radius:10px;
+    background:rgba(255,255,255,.02); font-size:11px; line-height:1.6; color:#8a877f }
+  .mig-scope-tag{ display:inline-block; font-size:9px; letter-spacing:.13em; text-transform:uppercase;
+    color:var(--accent); border:1px solid var(--accent); border-radius:5px; padding:1px 7px; margin-right:9px }
+  .mig-scope b{ color:#a29f97; font-weight:600 }
+  .mig-scope code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .mig-foot{ padding:14px 22px; border-top:1px solid var(--panel-line); font-size:11px; line-height:1.6; color:#8a877f }
+  .mig-foot b{ color:#a29f97 }
+  .mig-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+
   footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
   footer a{ color:var(--muted); text-decoration:none }
   footer a:hover{ color:var(--accent) }
   .frow{ display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between }
   .flinks a{ margin-right:16px }
 
-  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .rr-stage{ grid-template-columns:1fr } .rr-rails{ grid-template-columns:1fr } .rr-steps{ flex-direction:column; align-items:stretch } .an-stage{ grid-template-columns:1fr } .an-rails{ grid-template-columns:1fr } .an-steps{ flex-direction:column; align-items:stretch } .eco-hero{ grid-template-columns:1fr } .eco-fork{ grid-template-columns:1fr } .eco-rails{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
+  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .rr-stage{ grid-template-columns:1fr } .rr-rails{ grid-template-columns:1fr } .rr-steps{ flex-direction:column; align-items:stretch } .an-stage{ grid-template-columns:1fr } .an-rails{ grid-template-columns:1fr } .an-steps{ flex-direction:column; align-items:stretch } .eco-hero{ grid-template-columns:1fr } .eco-fork{ grid-template-columns:1fr } .eco-rails{ grid-template-columns:1fr } .mig-flow{ grid-template-columns:1fr } .mig-cross{ min-width:0 } .mig-cline{ width:60% } .mig-guards{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
   @media (prefers-reduced-motion:reduce){ .caret{ animation:none } .reveal{ opacity:1 !important; transform:none !important } }
   .reveal{ opacity:0; transform:translateY(14px); animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards }
   @keyframes rise{ to{ opacity:1; transform:none } }
@@ -1079,7 +1122,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.18.0</span>
+    <span class="ver">v2.19.0</span>
   </nav>
 
   <header class="hero">
@@ -1167,6 +1210,82 @@
         <p>Ative constraints explicitamente com <code>policy_activate</code>, nunca auto-promovidas de lições: o <code>error-guard</code> nega no <code>PreToolUse</code> um Bash cuja falha reincide, políticas <b>always-apply</b> entram no contexto no início da sessão, e políticas <b>por glob</b> avisam ao editar um arquivo que casa o padrão. <b>Surfacing ≠ enforcement</b>: ficam presentes no contexto, não bloqueiam (exceto o <code>error-guard</code>). A Fase 3 agora fecha o ciclo: modo sombra mede, e <code>/policy-adjudicate</code> chama um <b>juiz LLM independente</b> para estimar disposições — estimativa de juiz, <b>não FP medido</b>.</p>
       </div>
     </div>
+  </section>
+
+
+  <section>
+    <p class="label">Novo na v2.19.0 · o acervo viaja junto</p>
+    <p class="lede">Trocar o backend do Brain para o <b>memory server</b> deixava para trás tudo o que você já tinha aprendido: o KB local ficava órfão, porque nunca existiu migração (o export/import do dashboard sempre foi local↔local). A v2.19.0 fecha esse buraco com um botão <b>Migrar agora</b> no dashboard: ele leva todo o acervo local para o servidor <b>projeto a projeto</b>, com o mesmo id de documento (então rodar de novo <b>atualiza</b> em vez de duplicar) e confere no fim se chegou tudo.</p>
+
+    <div class="callout">
+      <span class="tag">o plano anterior foi descartado na fonte</span>
+      A investigação começou por outra hipótese: matar o processo por sessão com um <b>daemon único</b> e um proxy. Verificado no código, isso seria <b>reinventar o que o memory server já faz</b> — no modo <code>mcp-memory</code> o processo Node já vira cliente magro (não carrega modelo nem SQLite). O buraco real era só a <b>migração dos dados</b>, e foi esse que a v2.19.0 tapa.
+    </div>
+
+    <div class="mig" aria-label="Artefato da versão 2.19.0: a migração do acervo local para o memory server. À esquerda, o KB local, com um banco SQLite por projeto dentro da pasta de dados. No meio, uma faixa marca que a travessia é feita projeto a projeto, porque o servidor fixa a memória num project_id no aperto de mão, um por conexão. À direita, o memory server recebe cada documento com o mesmo id local, então uma segunda execução atualiza em vez de duplicar e uma migração interrompida pode ser retomada. Abaixo, três guardas que impedem a migração de mentir que deu certo: fora do backend mcp-memory ela recusa rodar, para nunca gravar no banco local escondido; uma entrada que falha não aborta as outras, mas é reportada com a causa real e derruba o resultado; e no fim a contagem de documentos no servidor é conferida contra o que subiu, sendo menor vira erro. Em seguida, uma faixa de escopo declara o limite conhecido: entradas de escopo global ainda não migram, porque no servidor global significa documento sem project_id e o aperto de mão do cliente é sempre escopado num projeto por design, o que exigiria mudar o próprio servidor. No rodapé, o custo assumido: o servidor reprocessa os vetores de cada entrada, por isso a migração é um botão explícito com barra de progresso em vez de acontecer sozinha ao salvar.">
+      <div class="mig-bar">
+        <span class="k">v2.19.0</span>
+        <span class="m">o acervo viaja junto · idempotente · fail-loud</span>
+      </div>
+
+      <div class="mig-flow">
+        <div class="mig-node mig-node--src">
+          <span class="mig-ntag">KB local (o que você já tem)</span>
+          <span class="mig-nsub"><code>DATA_DIR/brain/&lt;projeto&gt;/brain.db</code></span>
+          <span class="mig-nnote">Um banco <b>por projeto</b>. Sem migração, ele simplesmente <b>ficava para trás</b> ao trocar de backend.</span>
+        </div>
+        <div class="mig-cross">
+          <span class="mig-ctag">projeto a projeto</span>
+          <span class="mig-cline"></span>
+          <span class="mig-cnote">o servidor fixa a memória num <code>project_id</code> no handshake, <b>um por conexão</b></span>
+        </div>
+        <div class="mig-node mig-node--dst">
+          <span class="mig-ntag">memory server</span>
+          <span class="mig-nsub"><code>add_document</code> · <code>documentId</code> = o id local</span>
+          <span class="mig-nnote">É <b>UPSERT</b>: rodar de novo <b>atualiza</b> em vez de duplicar, então dá para <b>retomar</b> uma migração interrompida.</span>
+        </div>
+      </div>
+
+      <div class="mig-guards">
+        <div class="mig-guard">
+          <h4>Recusa fora do alvo</h4>
+          <p>Se o backend não for <code>mcp-memory</code>, a migração <b>não roda</b>. Nunca cai calada para o banco local: o alvo é o servidor ou é erro.</p>
+        </div>
+        <div class="mig-guard">
+          <h4>Falha com a causa real</h4>
+          <p>Uma entrada que falha <b>não aborta</b> as outras, mas é coletada com a <b>causa real</b> e derruba o resultado. Nunca vira um "pronto" que esconde perda.</p>
+        </div>
+        <div class="mig-guard">
+          <h4>Confere depois de subir</h4>
+          <p>No fim, a <b>contagem remota</b> de cada projeto é comparada com o que subiu. Menos documentos no servidor do que enviamos também é <b>erro</b>.</p>
+        </div>
+      </div>
+
+      <p class="mig-scope"><span class="mig-scope-tag">limite declarado</span> Entradas de escopo <b>global</b> (<code>__user__</code>) <b>ainda não</b> migram. No servidor, "global" é o escopo <i>home</i>: um documento <b>sem</b> <code>project_id</code>. Escrever ali exigiria um handshake sem projeto ativo, mas o servidor <b>ignora</b> um <code>projectId</code> em branco e resolve o projeto pela escada do workspace, que falha alto — toda sessão de cliente é escopada num projeto <b>por design</b>, para um cliente não contaminar a memória do outro. Habilitar isso é mudança no próprio servidor, então o limite fica <b>declarado</b> em vez de silenciosamente pulado.</p>
+
+      <div class="mig-foot"><b>O custo assumido:</b> o servidor <b>reprocessa os vetores</b> de cada entrada (o que sobe é o conteúdo, não os vetores locais), então um acervo grande leva tempo. Por isso a migração é um <b>botão explícito</b>, com barra de progresso ao vivo, em vez de disparar sozinha ao salvar a configuração. <b>O que muda ao migrar:</b> a de-duplicação de lições passa a ser <b>server-side</b> e o <code>brain_related</code> vira <b>busca semântica</b> (o grafo de citação é local); em troca, as tools <code>graph_*</code> passam a funcionar, porque o grafo vive no servidor.</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>Sua memória não fica órfã</h4>
+        <p>Ao trocar para o <code>mcp-memory</code>, um botão leva todo o KB local para o servidor. Antes, o acervo antigo simplesmente <b>ficava para trás</b>, sem nenhum caminho de migração.</p>
+      </div>
+      <div class="win">
+        <h4>Pode rodar de novo</h4>
+        <p>Cada documento sobe com o <b>id local</b> como <code>documentId</code>, então a gravação é <b>UPSERT</b>: repetir <b>atualiza</b> em vez de duplicar, e uma migração interrompida pode ser <b>retomada</b>.</p>
+      </div>
+      <div class="win">
+        <h4>Erro aparece, não some</h4>
+        <p>Fora do backend certo ela <b>recusa rodar</b>; uma entrada que falha é reportada com a <b>causa real</b>; e a contagem no servidor é <b>conferida</b> contra o que subiu.</p>
+      </div>
+      <div class="win">
+        <h4>Limites na cara</h4>
+        <p>A própria tela avisa o que muda (dedup server-side, <code>brain_related</code> vira busca semântica) e o que <b>ainda não</b> migra (o escopo global), em vez de deixar você descobrir depois.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Rigor de sempre:</b> o plano inicial (daemon único + proxy) foi <b>descartado após verificação na fonte</b> — no modo <code>mcp-memory</code> o processo Node já é cliente magro, então aquilo seria reinventar o que o servidor já faz; o gap real era a migração. O motor é <b>puro e injetável</b> (<code>migrateLocalToMcp</code>), testado sem tocar em rede ou disco, e as dependências reais foram exercitadas contra um <b>daemon falso</b>: o handshake escopa no projeto certo e o <code>add_document</code> vai com <code>documentId</code> = id local. Tudo em <b>TDD RED→GREEN</b>, com o gate rodado <b>2× estável</b> em duas máquinas (Windows e Linux), <b>0 falhas</b>. O limite do escopo global não é chute: está verificado no código do servidor, onde <code>resolveHandshakeProjectId</code> ignora um <code>projectId</code> em branco e cai numa escada que falha alto — por isso ele é <b>declarado</b> aqui, e não silenciosamente pulado.</p>
   </section>
 
 
