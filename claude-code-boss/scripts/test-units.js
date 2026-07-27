@@ -4983,6 +4983,33 @@ test('contextTuningEnabled: o config SHIPADO vem com o tuning desligado', () => 
   const isOurs = (u) => typeof u === 'string' && u.includes('127.0.0.1');
   const OUR = 'http://127.0.0.1:13456';
 
+  test('planEnableEnv: ATTRIBUTION_HEADER=0 entra COM o proxy (ganho de cache atrás de gateway)', () => {
+    const r = routerEnsure.planEnableEnv({}, OUR, 200000, isOurs);
+    assertEq(r.env.CLAUDE_CODE_ATTRIBUTION_HEADER, '0',
+      'a doc: desligar a atribuição melhora o hit de cache QUANDO se roteia por um gateway — que é exatamente o nosso proxy');
+    assertEq(r.env.ANTHROPIC_BASE_URL, OUR);
+    assertEq(r.changed, true);
+  });
+
+  test('planEnableEnv: NÃO clobbera um ATTRIBUTION_HEADER que o usuário fixou', () => {
+    const r = routerEnsure.planEnableEnv({ CLAUDE_CODE_ATTRIBUTION_HEADER: '1' }, OUR, 200000, isOurs);
+    assertEq(r.env.CLAUDE_CODE_ATTRIBUTION_HEADER, '1', 'valor deliberado do usuário sobrevive (== null só preenche ausente)');
+  });
+
+  test('planDisableEnv: remove o ATTRIBUTION_HEADER só quando é o NOSSO valor', () => {
+    const ours = routerEnsure.planDisableEnv({ ANTHROPIC_BASE_URL: OUR, CLAUDE_CODE_ATTRIBUTION_HEADER: '0' }, 200000, isOurs);
+    assertEq('CLAUDE_CODE_ATTRIBUTION_HEADER' in ours.env, false, 'o que gravamos, removemos');
+    assertEq(ours.changed, true);
+    const theirs = routerEnsure.planDisableEnv({ ANTHROPIC_BASE_URL: OUR, CLAUDE_CODE_ATTRIBUTION_HEADER: '1' }, 200000, isOurs);
+    assertEq(theirs.env.CLAUDE_CODE_ATTRIBUTION_HEADER, '1', 'valor diferente = do usuário → NÃO é órfão nosso, fica');
+  });
+
+  test('planTuningEnv: SEM proxy o ATTRIBUTION_HEADER NÃO é gravado (lá não há ganho)', () => {
+    const r = routerEnsure.planTuningEnv({}, 200000);
+    assertEq('CLAUDE_CODE_ATTRIBUTION_HEADER' in r.env, false,
+      'a doc: numa conexão DIRETA o cache não é afetado de um jeito nem de outro — não mexemos à toa');
+  });
+
   test('resolveAutoCompactWindow: sem config → default 200000, não clampado', () => {
     assertEq(routerEnsure.resolveAutoCompactWindow({}).value, 200000);
     assertEq(routerEnsure.resolveAutoCompactWindow({}).clamped, false);
@@ -5012,8 +5039,8 @@ test('contextTuningEnabled: o config SHIPADO vem com o tuning desligado', () => 
     assertEq(p.env.ENABLE_TOOL_SEARCH, 'true');
     assertEq(p.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '200000');
   });
-  test('planEnableEnv: os 3 já corretos → no-op (changed=false)', () => {
-    const cur = { ANTHROPIC_BASE_URL: OUR, ENABLE_TOOL_SEARCH: 'true', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200000' };
+  test('planEnableEnv: os 4 já corretos → no-op (changed=false)', () => {
+    const cur = { ANTHROPIC_BASE_URL: OUR, ENABLE_TOOL_SEARCH: 'true', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200000', CLAUDE_CODE_ATTRIBUTION_HEADER: '0' };
     assertEq(routerEnsure.planEnableEnv(cur, OUR, 200000, isOurs).changed, false);
   });
   test('planEnableEnv: base_url ok mas os env ausentes → preenche (changed) — conserta o no-op', () => {
