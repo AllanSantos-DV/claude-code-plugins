@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.19.0 — o acervo de memória viaja junto pro servidor</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. Na v2.19.0, trocar o backend para o memory server deixou de abandonar o que você já tinha: um botão Migrar agora no dashboard leva todo o KB local para o servidor, projeto a projeto, porque o daemon escopa a memória por project_id no handshake. Cada documento sobe com o id local, então rodar de novo atualiza em vez de duplicar e uma migração interrompida pode ser retomada. É fail-loud de ponta a ponta: fora do backend mcp-memory a migração recusa rodar, uma entrada que falha é reportada com a causa real em vez de sumir, e a contagem remota é conferida contra o que subiu. O escopo global fica declarado de fora, porque escrever ali exige mudança no próprio servidor. Sobre a base durável: recall que fundamenta cada resposta com id de projeto estável, grafo semântico e captura de aprendizado com ACK." />
+<title>claude-code-boss v2.19.0 — o acervo viaja junto, e a janela de 1M fica no seu controle</title>
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. Na v2.19.0, trocar o backend para o memory server deixou de abandonar o que você já tinha: um botão Migrar agora no dashboard leva todo o KB local para o servidor, projeto a projeto, porque o daemon escopa a memória por project_id no handshake. Cada documento sobe com o id local, então rodar de novo atualiza em vez de duplicar e uma migração interrompida pode ser retomada. É fail-loud de ponta a ponta: fora do backend mcp-memory a migração recusa rodar, uma entrada que falha é reportada com a causa real e a contagem remota é conferida contra o que subiu. Na segunda frente, o model-router passou a dizer o preço que cobrava calado: ligado em qualquer modo diferente de off ele publica ANTHROPIC_BASE_URL, e o Claude Code, atrás de uma base_url que não é a oficial, orça a sessão em 200K mesmo nos modelos de 1M nativo. Medido na mesma máquina: 183k de 200k com o roteador ligado contra 68k de 1.0M com ele desligado. Agora o aviso aparece na sessão e no card Router, o contextTuning entrega a mesma economia de token com o roteador em off, sem publicar base_url e preservando a janela de 1M, e a telemetria de cache mostra cacheRead, cacheCreate e cacheHitPct para provar se o proxy compensa." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -1105,13 +1105,98 @@
   .mig-foot b{ color:#a29f97 }
   .mig-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
 
+  /* v2.19.0, 2a frente : model-router - a janela de 1M, medida. QUALQUER modo != off publica
+     ANTHROPIC_BASE_URL -> o Claude Code, atras de uma base_url que nao e a oficial, nao valida
+     suporte a 1M e orca a sessao em 200K (limitacao do CLIENTE, doc Anthropic; o anthropic-beta e
+     repassado intacto pelo proxy). A/B na mesma maquina: 183k/200k ligado x 68k/1.0M desligado.
+     Saidas: aviso na sessao e no card Router; contextTuning (opt-in, default false) da o ganho de
+     env com o roteador em off, sem publicar base_url; telemetria cacheRead/cacheCreate/cacheHitPct
+     como baseline. ASSINATURA: a REGUA - as duas sessoes desenhadas na MESMA escala (0 -> 1.0M),
+     entao o teto de 200K aparece como um quinto da barra e os 800K perdidos viram area tracejada. */
+  .subhead{ display:flex; align-items:center; gap:16px; margin:60px 0 26px; font-family:var(--mono);
+    font-size:12px; letter-spacing:.2em; text-transform:uppercase; color:var(--muted) }
+  .subhead::after{ content:""; flex:1 1 auto; height:1px; background:var(--line) }
+  .subhead b{ color:var(--accent); font-weight:400 }
+  .lede a, .callout a, .trust a{ color:var(--accent) }
+
+  .ctx{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:880px; font-family:var(--mono); margin:0 0 36px }
+  .ctx code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .ctx a, .eco-hnote a{ color:var(--accent); text-decoration:none; border-bottom:1px solid rgba(217,138,61,.45) }
+  .ctx a:hover, .eco-hnote a:hover{ border-bottom-color:var(--accent) }
+  .ctx-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .ctx-bar .k{ color:var(--accent) }
+  .ctx-bar .m{ color:#8a877f }
+
+  /* a regua: os dois orcamentos de sessao na MESMA escala */
+  .ctx-meter{ padding:22px 22px 20px; border-bottom:1px solid rgba(255,255,255,.06) }
+  .ctx-mlab{ display:block; font-size:9.5px; letter-spacing:.15em; text-transform:uppercase; color:var(--accent); margin:0 0 16px }
+  .ctx-row{ display:grid; grid-template-columns:140px minmax(0,1fr) 118px; gap:14px; align-items:center; margin:0 0 13px }
+  .ctx-sp{ display:block }
+  .ctx-rlab{ font-size:10.5px; line-height:1.45; color:#8a877f; min-width:0; overflow-wrap:break-word }
+  .ctx-rlab b{ display:block; font-size:11.5px; color:var(--panel-ink); font-weight:600; margin:0 0 2px }
+  .ctx-scale{ position:relative; height:22px; min-width:0 }
+  .ctx-cap{ position:absolute; left:0; top:0; bottom:0; border:1px solid rgba(255,255,255,.26);
+    border-radius:5px; background:rgba(255,255,255,.05); overflow:hidden }
+  .ctx-fill{ display:block; height:100%; background:var(--accent) }
+  .ctx-lost{ position:absolute; left:20%; right:0; top:0; bottom:0; display:flex; align-items:center; justify-content:center;
+    border:1px dashed rgba(255,255,255,.20); border-left:0; border-radius:0 5px 5px 0;
+    font-size:9.5px; letter-spacing:.08em; color:#8a877f; white-space:nowrap; overflow:hidden; padding:0 6px }
+  .ctx-rval{ font-size:10.5px; color:#8a877f; text-align:right; white-space:nowrap }
+  .ctx-rval b{ color:var(--panel-ink); font-weight:600; font-size:12px }
+  .ctx-ruler{ position:relative; height:11px; font-size:9px; letter-spacing:.1em; color:#8a877f }
+  .ctx-tick{ position:absolute; bottom:0; transform:translateX(-50%) }
+  .ctx-tick::after{ content:""; position:absolute; left:50%; bottom:-5px; width:1px; height:5px; background:rgba(255,255,255,.16) }
+  .ctx-tick--end{ left:auto; right:0; transform:none }
+  .ctx-tick--end::after{ left:auto; right:0 }
+  .ctx-mcap{ margin:16px 0 0; font-size:11px; line-height:1.6; color:#8a877f }
+  .ctx-mcap b{ color:#a29f97; font-weight:600 }
+
+  /* a causa, verificada na fonte */
+  .ctx-why{ display:grid; gap:10px; padding:20px 22px 6px }
+  .ctx-fact{ margin:0; border-left:2px solid var(--accent); background:rgba(255,255,255,.05);
+    border-radius:0 6px 6px 0; padding:11px 14px; font-size:11.5px; line-height:1.6; color:#a29f97 }
+  .ctx-fact b{ color:var(--panel-ink); font-weight:600 }
+  .ctx-fact--quiet{ border-left-color:rgba(255,255,255,.24); background:rgba(255,255,255,.02) }
+
+  /* a escolha: o que voce ganha e o que paga em cada posicao da chave */
+  .ctx-fork{ display:grid; grid-template-columns:1fr 1fr; gap:14px; padding:14px 22px 8px }
+  .ctx-lane{ display:flex; flex-direction:column; gap:9px; border-radius:10px; padding:15px 16px }
+  .ctx-lane--cost{ border:1px dashed rgba(255,255,255,.24) }
+  .ctx-lane--keep{ border:1px solid var(--accent); background:rgba(255,255,255,.05) }
+  .ctx-ltag{ font-size:9.5px; letter-spacing:.13em; text-transform:uppercase; color:#8a877f; overflow-wrap:break-word }
+  .ctx-lane--keep .ctx-ltag{ color:var(--accent) }
+  .ctx-lwhat{ font-size:12.5px; line-height:1.4; font-weight:600; color:var(--panel-ink); overflow-wrap:break-word }
+  .ctx-lane--cost .ctx-lwhat{ color:#a29f97 }
+  .ctx-pill{ align-self:flex-start; font-size:11px; padding:3px 10px; border-radius:6px;
+    background:var(--accent); color:var(--panel); font-weight:700 }
+  .ctx-pill--cost{ background:transparent; border:1px solid #6d6257; color:#a29f97; font-weight:400 }
+  .ctx-lnote{ font-size:11px; line-height:1.55; color:#8a877f }
+  .ctx-lnote b{ color:#a29f97; font-weight:600 }
+
+  /* o baseline: o que passou a ser medido */
+  .ctx-tel{ margin:6px 22px 4px; padding:15px 16px; border:1px solid var(--panel-line);
+    border-radius:10px; background:rgba(255,255,255,.02) }
+  .ctx-teltag{ display:inline-block; font-size:9px; letter-spacing:.13em; text-transform:uppercase;
+    color:var(--accent); border:1px solid var(--accent); border-radius:5px; padding:1px 7px; margin:0 0 13px }
+  .ctx-fields{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:0 0 12px }
+  .ctx-field{ border-left:1px solid rgba(255,255,255,.12); padding:1px 0 1px 12px; min-width:0 }
+  .ctx-field--hi{ border-left-color:var(--accent) }
+  .ctx-field b{ display:block; font-size:11.5px; color:var(--panel-ink); font-weight:600; overflow-wrap:break-word }
+  .ctx-field span{ display:block; margin-top:5px; font-size:10.5px; line-height:1.5; color:#8a877f }
+  .ctx-telnote{ margin:0; font-size:11px; line-height:1.6; color:#8a877f }
+  .ctx-telnote b{ color:#a29f97; font-weight:600 }
+  .ctx-foot{ padding:14px 22px; border-top:1px solid var(--panel-line); font-size:11px; line-height:1.6; color:#8a877f }
+  .ctx-foot b{ color:#a29f97 }
+
   footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
   footer a{ color:var(--muted); text-decoration:none }
   footer a:hover{ color:var(--accent) }
   .frow{ display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between }
   .flinks a{ margin-right:16px }
 
-  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .rr-stage{ grid-template-columns:1fr } .rr-rails{ grid-template-columns:1fr } .rr-steps{ flex-direction:column; align-items:stretch } .an-stage{ grid-template-columns:1fr } .an-rails{ grid-template-columns:1fr } .an-steps{ flex-direction:column; align-items:stretch } .eco-hero{ grid-template-columns:1fr } .eco-fork{ grid-template-columns:1fr } .eco-rails{ grid-template-columns:1fr } .mig-flow{ grid-template-columns:1fr } .mig-cross{ min-width:0 } .mig-cline{ width:60% } .mig-guards{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
+  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .rr-stage{ grid-template-columns:1fr } .rr-rails{ grid-template-columns:1fr } .rr-steps{ flex-direction:column; align-items:stretch } .an-stage{ grid-template-columns:1fr } .an-rails{ grid-template-columns:1fr } .an-steps{ flex-direction:column; align-items:stretch } .eco-hero{ grid-template-columns:1fr } .eco-fork{ grid-template-columns:1fr } .eco-rails{ grid-template-columns:1fr } .mig-flow{ grid-template-columns:1fr } .mig-cross{ min-width:0 } .mig-cline{ width:60% } .mig-guards{ grid-template-columns:1fr } .ctx-row{ grid-template-columns:1fr; gap:9px } .ctx-sp{ display:none } .ctx-rval{ text-align:left } .ctx-fork{ grid-template-columns:1fr } .ctx-fields{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
   @media (prefers-reduced-motion:reduce){ .caret{ animation:none } .reveal{ opacity:1 !important; transform:none !important } }
   .reveal{ opacity:0; transform:translateY(14px); animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards }
   @keyframes rise{ to{ opacity:1; transform:none } }
@@ -1205,6 +1290,11 @@
         <p>Uma camada mecânica bloqueia drift de docs, changelog e conflitos; a camada adversarial é um agente read-only que revisa o código atual e emite parecer consultivo. O dono decide o go/no-go.</p>
       </div>
       <div class="cell" style="grid-column:1/-1">
+        <p class="kick">Roteador de modelos</p>
+        <h3>Rede de segurança no limite, com o preço na mesa</h3>
+        <p>O <b>model-router</b> é opt-in e cobre o que o cliente não cobre: quando a janela de acesso esgota (<code>429</code>), o plano B mantém a sessão de pé; o modo <b>sticky</b> fixa o tier uma vez por sessão para não quebrar o prompt cache. O preço agora está medido e declarado: ligar o roteamento em <b>qualquer</b> modo diferente de <code>off</code> publica <code>ANTHROPIC_BASE_URL</code>, e o Claude Code, atrás de uma base_url que não é a oficial, orça a sessão em <b>200K</b> mesmo nos modelos de 1M. Quer a economia de token sem esse custo? <code>contextTuning</code> entrega o mesmo ganho de env com o roteador em <code>off</code>, preservando a janela de <b>1M</b>.</p>
+      </div>
+      <div class="cell" style="grid-column:1/-1">
         <p class="kick">Políticas</p>
         <h3>Constraints que você ativa</h3>
         <p>Ative constraints explicitamente com <code>policy_activate</code>, nunca auto-promovidas de lições: o <code>error-guard</code> nega no <code>PreToolUse</code> um Bash cuja falha reincide, políticas <b>always-apply</b> entram no contexto no início da sessão, e políticas <b>por glob</b> avisam ao editar um arquivo que casa o padrão. <b>Surfacing ≠ enforcement</b>: ficam presentes no contexto, não bloqueiam (exceto o <code>error-guard</code>). A Fase 3 agora fecha o ciclo: modo sombra mede, e <code>/policy-adjudicate</code> chama um <b>juiz LLM independente</b> para estimar disposições — estimativa de juiz, <b>não FP medido</b>.</p>
@@ -1286,19 +1376,124 @@
     </div>
 
     <p class="trust"><b>Rigor de sempre:</b> o plano inicial (daemon único + proxy) foi <b>descartado após verificação na fonte</b> — no modo <code>mcp-memory</code> o processo Node já é cliente magro, então aquilo seria reinventar o que o servidor já faz; o gap real era a migração. O motor é <b>puro e injetável</b> (<code>migrateLocalToMcp</code>), testado sem tocar em rede ou disco, e as dependências reais foram exercitadas contra um <b>daemon falso</b>: o handshake escopa no projeto certo e o <code>add_document</code> vai com <code>documentId</code> = id local. Tudo em <b>TDD RED→GREEN</b>, com o gate rodado <b>2× estável</b> em duas máquinas (Windows e Linux), <b>0 falhas</b>. O limite do escopo global não é chute: está verificado no código do servidor, onde <code>resolveHandshakeProjectId</code> ignora um <code>projectId</code> em branco e cai numa escada que falha alto — por isso ele é <b>declarado</b> aqui, e não silenciosamente pulado.</p>
+
+    <p class="subhead" id="janela-1m">ainda na v2.19.0 · <b>model-router: a janela de 1M</b></p>
+
+    <p class="lede">O mesmo release paga uma conta que ninguém tinha medido: <b>ligar o roteador encolhe a sua janela</b>. Em <b>qualquer</b> modo diferente de <code>off</code>, o boss publica um <code>ANTHROPIC_BASE_URL</code> apontando pro proxy local, e o Claude Code, atrás de uma base_url que não é a oficial, <b>não consegue validar</b> suporte a 1M: passa a orçar a sessão em <b>200K</b>, inclusive nos modelos de 1M nativo. Não aparecia erro nenhum; a janela só encolhia. Agora o boss <b>avisa onde dói</b>, entrega a economia de token <b>sem o proxy no caminho</b> (<code>contextTuning</code>) e <b>mede o cache</b>, pra decisão sair de número e não de fé.</p>
+
+    <div class="ctx" aria-label="Artefato da versão 2.19.0, segunda frente: a janela de contexto medida. No topo, uma régua única que vai de zero a 1 milhão de tokens, com marcas em 200 mil e em 1 milhão. Sobre ela, duas sessões reais medidas na mesma máquina, desenhadas na mesma escala. Na primeira, com o roteador ligado, o teto ocupa só um quinto da régua e está quase todo preenchido: 183 mil de 200 mil, 91 por cento do teto; o resto da régua é uma área tracejada marcada como 800 mil de janela que somem. Na segunda, com o roteador desligado, o teto ocupa a régua inteira e o uso é uma faixa curta no começo: 68 mil de 1 milhão, 7 por cento do teto. A legenda diz que foi a mesma máquina e o mesmo cliente, com o contexto lido dos dois lados, e que só o roteador mudou. Abaixo, dois fatos verificados na fonte: o primeiro explica que qualquer modo diferente de off publica a variável ANTHROPIC_BASE_URL para o proxy local e que o Claude Code, atrás de uma base_url que não é a oficial, não valida suporte a 1 milhão e orça a sessão em 200 mil, inclusive nos modelos de 1 milhão nativo, com link para a documentação da Anthropic; o segundo isenta o proxy, porque o cabeçalho anthropic-beta é repassado intacto nos três pontos de encaminhamento, então não havia erro para ver. Em seguida, a escolha em duas faixas: à esquerda, tracejada, o roteador ligado, que dá a rede de segurança do limite 429 e o roteamento por tarefa e cobra o teto de 200 mil, agora declarado na mensagem injetada na sessão e no card Router do dashboard; à direita, com borda cheia âmbar, o contextTuning com o roteador em off, que grava o mesmo ajuste de ambiente sem publicar a base_url e preserva a janela de 1 milhão. Depois, o painel de telemetria de cache com três campos que o dashboard passou a mostrar: cacheRead, cacheCreate e cacheHitPct, este último definido como a fatia da entrada que veio do cache. No rodapé, a razão de continuar opt-in: fixar o auto-compact em 200 mil capa o contexto ativo de quem usa 1 milhão sem ter pedido, e as funções que escrevem o ambiente só preenchem o que está ausente e removem só o que o próprio boss escreveu.">
+      <div class="ctx-bar">
+        <span class="k">v2.19.0</span>
+        <span class="m">a janela de 1M · medida, avisada, contornável</span>
+      </div>
+
+      <div class="ctx-meter">
+        <span class="ctx-mlab">orçamento da sessão · duas medições na mesma escala</span>
+
+        <div class="ctx-row">
+          <span class="ctx-sp" aria-hidden="true"></span>
+          <div class="ctx-ruler" aria-hidden="true">
+            <span class="ctx-tick" style="left:20%">200K</span>
+            <span class="ctx-tick ctx-tick--end">1.0M</span>
+          </div>
+          <span class="ctx-sp" aria-hidden="true"></span>
+        </div>
+
+        <div class="ctx-row">
+          <span class="ctx-rlab"><b>roteador ligado</b>qualquer modo ≠ <code>off</code></span>
+          <div class="ctx-scale">
+            <span class="ctx-cap" style="width:20%"><i class="ctx-fill" style="width:91.5%"></i></span>
+            <span class="ctx-lost">800K de janela somem</span>
+          </div>
+          <span class="ctx-rval"><b>183k</b> / 200k</span>
+        </div>
+
+        <div class="ctx-row">
+          <span class="ctx-rlab"><b>roteador em off</b>nada publicado</span>
+          <div class="ctx-scale">
+            <span class="ctx-cap" style="width:100%"><i class="ctx-fill" style="width:6.8%"></i></span>
+          </div>
+          <span class="ctx-rval"><b>68k</b> / 1.0M</span>
+        </div>
+
+        <p class="ctx-mcap"><b>Medição de campo:</b> mesma máquina, mesmo cliente, <code>/context</code> lido dos dois lados. A única variável foi o roteador.</p>
+      </div>
+
+      <div class="ctx-why">
+        <p class="ctx-fact"><b>É o cliente, não o proxy.</b> Ligar o roteamento publica <code>ANTHROPIC_BASE_URL</code> apontando pro proxy local, e o Claude Code, atrás de uma base_url que não é a oficial, não valida suporte a 1M: orça a sessão em <b>200K</b>, inclusive nos modelos de 1M nativo (Opus 5, Fable 5, Sonnet 5). Está <a href="https://code.claude.com/docs/en/model-config" rel="noreferrer">documentado pela Anthropic</a>.</p>
+        <p class="ctx-fact ctx-fact--quiet">A suspeita mais cômoda caiu na leitura do código: o <code>anthropic-beta</code> é <b>repassado intacto</b> nos três pontos de forward do proxy. Não havia erro pra ver, log pra ler nem aviso pra ignorar: a janela encolhia calada.</p>
+      </div>
+
+      <div class="ctx-fork">
+        <div class="ctx-lane ctx-lane--cost">
+          <span class="ctx-ltag">roteador ligado</span>
+          <span class="ctx-lwhat">rede de segurança no <code>429</code> e roteamento por tarefa</span>
+          <span class="ctx-pill ctx-pill--cost">teto de 200K</span>
+          <span class="ctx-lnote">Não existe meio-termo: <b>qualquer</b> modo diferente de <code>off</code> põe o proxy no caminho e publica a base_url. O que mudou é que agora você <b>sabe</b>: a mensagem <code>[model-router] … ATIVO</code> injetada na sessão e o card <b>Router</b> do dashboard declaram o teto e apontam a saída.</span>
+        </div>
+        <div class="ctx-lane ctx-lane--keep">
+          <span class="ctx-ltag">contextTuning · roteador em off</span>
+          <span class="ctx-lwhat">a mesma economia de token, sem proxy no caminho</span>
+          <span class="ctx-pill">1M preservado</span>
+          <span class="ctx-lnote">O ganho da v2.18.0 (<code>cache_read</code> por turno de <b>~447 mil</b> pra <b>~74 a 127 mil</b>) vinha do <b>env</b>, não do proxy: só estava amarrado a ele. Com <code>contextTuning.enabled: true</code>, o boss grava <code>ENABLE_TOOL_SEARCH</code> e <code>CLAUDE_CODE_AUTO_COMPACT_WINDOW</code> com o roteador em <code>off</code> e <b>sem publicar</b> <code>ANTHROPIC_BASE_URL</code>.</span>
+        </div>
+      </div>
+
+      <div class="ctx-tel">
+        <span class="ctx-teltag">telemetria de cache · no card Router</span>
+        <div class="ctx-fields">
+          <div class="ctx-field">
+            <b>cacheRead</b>
+            <span>tokens de entrada servidos do cache (<code>cache_read_input_tokens</code>)</span>
+          </div>
+          <div class="ctx-field">
+            <b>cacheCreate</b>
+            <span>tokens gravados no cache (<code>cache_creation_input_tokens</code>)</span>
+          </div>
+          <div class="ctx-field ctx-field--hi">
+            <b>cacheHitPct</b>
+            <span>a fatia da entrada que veio do cache: <code>cacheRead / (cacheRead + entrada)</code></span>
+          </div>
+        </div>
+        <p class="ctx-telnote">O medidor do stream só contava entrada e saída. Agora um parser <b>puro</b> (<code>accumulateUsage</code>) também lê o cache, e o dashboard mostra o hit junto dos tokens. É o <b>baseline</b> que faltava: sem ele, religar o proxy no futuro (por exemplo, pra reescrever o cache frio) seria fé; com ele, dá pra <b>provar ou desmentir</b> se compensa.</p>
+      </div>
+
+      <div class="ctx-foot"><b>Por que continua opt-in:</b> fixar o auto-compact em 200K <b>capa o contexto ativo</b> de quem usa 1M sem ter pedido, então <code>contextTuning.enabled</code> nasce <b>false</b> e quem liga é você, no <code>router-config.json</code>. As funções que escrevem esse env são <b>puras</b> e mantêm a regra de sempre: <code>planTuningEnv</code> só preenche o que está <b>ausente</b> (nunca sobrescreve um valor seu) e <code>planTuningRemoval</code> tira <b>só o que o boss</b> teria escrito, sem deixar env órfão.</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>A janela para de sumir calada</h4>
+        <p>O aviso aparece onde você olha: na mensagem <code>[model-router] … ATIVO</code> injetada na sessão e no card <b>Router</b> do dashboard. Ele diz o teto de <b>200K</b>, diz que é limitação do cliente e aponta a saída.</p>
+      </div>
+      <div class="win">
+        <h4>Economia sem abrir mão do 1M</h4>
+        <p><code>contextTuning.enabled: true</code> grava o env-tuning com o roteador em <code>off</code>, <b>sem publicar</b> <code>ANTHROPIC_BASE_URL</code>. É o ganho de token da v2.18.0 com a janela de <b>1M</b> intacta.</p>
+      </div>
+      <div class="win">
+        <h4>Cache medido, não intuído</h4>
+        <p>O router passou a contar <code>cache_read_input_tokens</code> e <code>cache_creation_input_tokens</code>, e o dashboard mostra o <b>hit de cache</b>. É o baseline para provar (ou desmentir) o ganho do proxy antes de religá-lo.</p>
+      </div>
+      <div class="win">
+        <h4>O que é seu continua seu</h4>
+        <p>Ligar preenche <b>só o que está ausente</b>; desligar remove <b>só o que o boss</b> escreveu. Um valor que você fixou à mão sobrevive aos dois, e nada fica órfão no <code>settings.json</code>.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Rigor de sempre:</b> o diagnóstico nasceu de um relato de campo com <b>A/B controlado na mesma máquina</b> e foi <b>confirmado na fonte</b>: no <code>model-router-ensure.js</code>, só <code>mode === 'off'</code> limpa o footprint, então todo o resto publica a base_url, <b>inclusive o passthrough puro</b> do fallback de limite. A hipótese mais cômoda ("o proxy filtra o <code>anthropic-beta</code>") foi <b>refutada lendo o código</b>: o header segue intacto nos três pontos de forward. A limitação é do <b>cliente</b> e está documentada pela Anthropic. O ganho de token da v2.18.0 foi <b>reatribuído</b> ao env em vez do proxy, e foi isso que permitiu desacoplar os dois. <code>planTuningEnv</code>, <code>planTuningRemoval</code> e <code>accumulateUsage</code> são funções <b>puras</b>, testadas em <b>TDD RED→GREEN</b>. Nada disso liga sozinho: <code>contextTuning</code> é <b>opt-in</b>, default <code>false</code>.</p>
   </section>
 
 
   <section>
     <p class="label">Novo na v2.18.0 · menos um turno, menos tokens</p>
-    <p class="lede">A v2.18.0 corta desperdício em dois pontos do loop. Quando um comando cru já tem um script curado e é <b>seguro reescrever</b> (um alias exato, sem argumento, com script <code>.ps1</code>), o guard de curação para de negar e pedir a rechamada: ele <b>auto-redireciona</b> pro script na hora (<code>allow</code> + <code>updatedInput</code>), poupando um turno inteiro. E ao ligar o <b>roteamento</b> por um proxy custom, o boss religa o tool-search nativo e capa o contexto ativo mantendo o <b>1M</b> disponível: a leitura de cache por turno cai de cerca de <b>447 mil</b> para <b>74 a 127 mil</b> tokens.</p>
+    <p class="lede">A v2.18.0 corta desperdício em dois pontos do loop. Quando um comando cru já tem um script curado e é <b>seguro reescrever</b> (um alias exato, sem argumento, com script <code>.ps1</code>), o guard de curação para de negar e pedir a rechamada: ele <b>auto-redireciona</b> pro script na hora (<code>allow</code> + <code>updatedInput</code>), poupando um turno inteiro. E ao ligar o <b>roteamento</b> por um proxy custom, o boss religa o tool-search nativo e capa o contexto ativo: a leitura de cache por turno cai de cerca de <b>447 mil</b> para <b>74 a 127 mil</b> tokens. <b>O que a v2.19.0 corrigiu:</b> esse ganho vem do env, não do proxy, e ter o proxy no caminho custa a janela de 1M (<a href="#janela-1m">a medição está acima</a>).</p>
 
     <div class="callout">
       <span class="tag">economia medida na sessão real</span>
-      Ligar o roteamento por um proxy custom degradava duas coisas que o boss agora recupera sozinho: o <b>tool-search nativo</b> (que o proxy desliga) volta com <code>ENABLE_TOOL_SEARCH</code>, e um teto no <b>contexto ativo</b> segura a janela sem abrir mão do <b>1M</b>. A leitura de cache por turno caiu de cerca de <b>447 mil</b> para <b>74 a 127 mil</b> tokens, um corte de <b>65 a 83 por cento</b>.
+      Ligar o roteamento por um proxy custom degradava duas coisas que o boss agora recupera sozinho: o <b>tool-search nativo</b> (que o proxy desliga) volta com <code>ENABLE_TOOL_SEARCH</code>, e um teto no <b>contexto ativo</b> segura o inchaço da janela. A leitura de cache por turno caiu de cerca de <b>447 mil</b> para <b>74 a 127 mil</b> tokens, um corte de <b>65 a 83 por cento</b>. A v2.19.0 mostrou que esse ganho é do env: dá pra ter <a href="#janela-1m">sem o proxy</a>.
     </div>
 
-    <div class="eco" aria-label="Artefato da versão 2.18.0: a economia coordenada em duas partes. No topo, o corte medido de leitura de cache por turno: uma barra longa e apagada marca as cerca de 447 mil de antes, e uma barra curta e âmbar marca as 74 a 127 mil de agora, ao lado do número do corte, de 65 a 83 por cento. Abaixo, uma nota diz que ao ligar o roteamento por um proxy custom o boss grava, junto do ANTHROPIC_BASE_URL, dois env que recuperam o que o proxy degrada: ENABLE_TOOL_SEARCH religa o tool-search nativo e CLAUDE_CODE_AUTO_COMPACT_WINDOW capa o contexto ativo mantendo o 1M disponível, e ao desligar remove só o que é do boss. No meio, o fork da curação: à esquerda, o caminho seguro, com borda âmbar cheia, quando o comando é um alias exato, sem argumento, segmento único e com script .ps1, o guard responde allow mais updatedInput e reescreve pro script curado, poupando o turno de deny e retry; à direita, o caminho tracejado, para argumento, extra-segmento, pipe ou script não-.ps1, mantém o deny provado, sem dropar argumento nem inventar runner. Uma faixa de invariante lembra que o comando reescrito passa no próprio allow-path do guard e que o error-guard, hook-irmão no matcher Bash, nunca emite updatedInput nem ask. Embaixo, dois trilhos detalham a Parte A, o auto-redirect da curação, e a Parte B, o bundle de env do roteador.">
+    <div class="eco" aria-label="Artefato da versão 2.18.0: a economia coordenada em duas partes. No topo, o corte medido de leitura de cache por turno: uma barra longa e apagada marca as cerca de 447 mil de antes, e uma barra curta e âmbar marca as 74 a 127 mil de agora, ao lado do número do corte, de 65 a 83 por cento. Abaixo, uma nota diz que ao ligar o roteamento por um proxy custom o boss grava, junto do ANTHROPIC_BASE_URL, dois env que recuperam o que o proxy degrada: ENABLE_TOOL_SEARCH religa o tool-search nativo e CLAUDE_CODE_AUTO_COMPACT_WINDOW capa o contexto ativo, e ao desligar remove só o que é do boss. No meio, o fork da curação: à esquerda, o caminho seguro, com borda âmbar cheia, quando o comando é um alias exato, sem argumento, segmento único e com script .ps1, o guard responde allow mais updatedInput e reescreve pro script curado, poupando o turno de deny e retry; à direita, o caminho tracejado, para argumento, extra-segmento, pipe ou script não-.ps1, mantém o deny provado, sem dropar argumento nem inventar runner. Uma faixa de invariante lembra que o comando reescrito passa no próprio allow-path do guard e que o error-guard, hook-irmão no matcher Bash, nunca emite updatedInput nem ask. Embaixo, dois trilhos detalham a Parte A, o auto-redirect da curação, e a Parte B, o bundle de env do roteador.">
       <div class="eco-bar">
         <span class="k">v2.18.0</span>
         <span class="m">menos um turno · menos tokens</span>
@@ -1322,7 +1517,7 @@
           <span class="eco-cut-cap">menos leitura de cache por turno · na sessão real</span>
         </div>
       </div>
-      <p class="eco-hnote">Ao ligar o roteamento por um proxy custom, o boss grava junto do <code>ANTHROPIC_BASE_URL</code> dois env que recuperam o que o proxy degrada: <code>ENABLE_TOOL_SEARCH=true</code> religa o <b>tool-search nativo</b> (cerca de <b>52 mil</b> tokens deferidos por request) e <code>CLAUDE_CODE_AUTO_COMPACT_WINDOW</code> capa o <b>contexto ativo</b> mantendo o <b>1M</b> disponível. Ao desligar, remove <b>só o que é do boss</b> e preserva o valor que você fixou.</p>
+      <p class="eco-hnote">Ao ligar o roteamento por um proxy custom, o boss grava junto do <code>ANTHROPIC_BASE_URL</code> dois env que recuperam o que o proxy degrada: <code>ENABLE_TOOL_SEARCH=true</code> religa o <b>tool-search nativo</b> (cerca de <b>52 mil</b> tokens deferidos por request) e <code>CLAUDE_CODE_AUTO_COMPACT_WINDOW</code> capa o <b>contexto ativo</b>. Ao desligar, remove <b>só o que é do boss</b> e preserva o valor que você fixou. <b>Atualizado na v2.19.0:</b> publicar o <code>ANTHROPIC_BASE_URL</code> faz o cliente orçar a sessão em 200K, então o env-tuning virou <a href="#janela-1m">opt-in independente do proxy</a>.</p>
 
       <div class="eco-fork">
         <div class="eco-path eco-path--go">
@@ -1373,7 +1568,7 @@
       </div>
       <div class="win">
         <h4>65 a 83% menos leitura de cache</h4>
-        <p><code>ENABLE_TOOL_SEARCH</code> religa o tool-search nativo que o proxy desliga, e um teto capa o contexto ativo mantendo o <b>1M</b>. Na sessão real, <code>cache_read</code> por turno caiu de <b>~447 mil</b> para <b>~74 a 127 mil</b>.</p>
+        <p><code>ENABLE_TOOL_SEARCH</code> religa o tool-search nativo que o proxy desliga, e um teto capa o contexto ativo. Na sessão real, <code>cache_read</code> por turno caiu de <b>~447 mil</b> para <b>~74 a 127 mil</b>. Na v2.19.0 esse ganho passou a existir <b>sem</b> o proxy.</p>
       </div>
       <div class="win">
         <h4>Liga e desliga limpo</h4>
