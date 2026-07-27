@@ -4843,6 +4843,57 @@ test('router-config.json shipped: sticky.enabled === false + ttlMs shipado (opt-
   assertEq(cfg.sticky.ttlMs, 21600000); // 6h default
 });
 
+// ─── model-router-ensure: env-tuning DESACOPLADO do proxy ───────────────────
+// O ganho de token medido (auto-compact + tool search) vem do settings.json, NÃO
+// do proxy — mas hoje só era gravado dentro do enable (mode != off), acoplado à
+// publicação do ANTHROPIC_BASE_URL, que é justamente o que faz o Claude Code
+// rebaixar modelos de 1M para 200K. Aqui o tuning existe SEM proxy: nunca escreve
+// base_url. Opt-in (default OFF) para não capar em 200K quem usa 1M sem pedir.
+
+test('planTuningEnv: grava os 2 env de tuning e NUNCA a base_url (sem proxy no caminho)', () => {
+  const r = routerEnsure.planTuningEnv({}, 200000);
+  assertEq(r.changed, true);
+  assertEq(r.env.ENABLE_TOOL_SEARCH, 'true');
+  assertEq(r.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '200000');
+  assertEq('ANTHROPIC_BASE_URL' in r.env, false, 'tuning JAMAIS publica base_url — é o que custa a janela de 1M');
+});
+
+test('planTuningEnv: NÃO clobbera valor explícito do usuário (só preenche ausente)', () => {
+  const r = routerEnsure.planTuningEnv({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: '900000', ENABLE_TOOL_SEARCH: 'false' }, 200000);
+  assertEq(r.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '900000', 'o 900k deliberado do usuário sobrevive');
+  assertEq(r.env.ENABLE_TOOL_SEARCH, 'false');
+  assertEq(r.changed, false, 'nada a gravar → no-op');
+});
+
+test('planTuningEnv: preserva a base_url de terceiro que já esteja lá (não é dono dela)', () => {
+  const r = routerEnsure.planTuningEnv({ ANTHROPIC_BASE_URL: 'https://gw.corp' }, 200000);
+  assertEq(r.env.ANTHROPIC_BASE_URL, 'https://gw.corp', 'não mexe no que não é nosso');
+  assertEq(r.changed, true);
+});
+
+test('planTuningRemoval: remove só os NOSSOS valores; um valor deliberado sobrevive', () => {
+  const ours = routerEnsure.planTuningRemoval({ ENABLE_TOOL_SEARCH: 'true', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200000', FOO: 'x' }, 200000);
+  assertEq('ENABLE_TOOL_SEARCH' in ours.env, false);
+  assertEq('CLAUDE_CODE_AUTO_COMPACT_WINDOW' in ours.env, false);
+  assertEq(ours.env.FOO, 'x', 'env alheio intacto');
+  assertEq(ours.changed, true);
+  const deliberate = routerEnsure.planTuningRemoval({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: '900000' }, 200000);
+  assertEq(deliberate.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '900000', 'valor diferente do nosso = do usuário → fica');
+  assertEq(deliberate.changed, false);
+});
+
+test('contextTuningEnabled: OPT-IN — default false (não capa 1M de quem não pediu)', () => {
+  assertEq(routerEnsure.contextTuningEnabled({}), false, 'ausente → desligado');
+  assertEq(routerEnsure.contextTuningEnabled({ contextTuning: {} }), false);
+  assertEq(routerEnsure.contextTuningEnabled({ contextTuning: { enabled: true } }), true);
+  assertEq(routerEnsure.contextTuningEnabled({ contextTuning: { enabled: 'yes' } }), false, 'só true literal liga');
+});
+
+test('contextTuningEnabled: o config SHIPADO vem com o tuning desligado', () => {
+  const shipped = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'router-config.json'), 'utf-8'));
+  assertEq(routerEnsure.contextTuningEnabled(shipped), false, 'de fábrica ninguém tem o env-tuning imposto');
+});
+
 // ─── model-router-ensure: token-override env bundle (Parte B) ────────────────
 // Núcleo PURO (sem I/O): resolveAutoCompactWindow (clamp) + planEnableEnv /
 // planDisableEnv (o que gravar/remover). Filosofia do dono: NÃO clobbar valor
@@ -5276,6 +5327,66 @@ test('BOOTFIX source-order: o classificador carrega DEPOIS do server.listen (des
   assert(iInit > iListen, 'initClassifier DEVE ser chamado DEPOIS de server.listen — senão um embedder lento/quebrado bloqueia a prontidão (era o bug)');
   const preListen = src.slice(0, iListen);
   assert(!/await\s+loadEmbedder\s*\(/.test(preListen), 'NÃO pode haver "await loadEmbedder(" ANTES do server.listen (era exatamente o bug do boot que travava o state file)');
+});
+
+
+// ─── model-router: telemetria de CACHE (baseline p/ provar o ganho) ──────────
+// Sem cache_read/cache_creation não há como medir o ganho de cache que justifica
+// (ou não) manter o proxy ligado. Parser PURO do usage do stream + acumulação.
+
+test('accumulateUsage: message_start captura input + cache_read + cache_creation', () => {
+  const acc = routerServer.accumulateUsage(null, JSON.stringify({
+    type: 'message_start',
+    message: { usage: { input_tokens: 120, cache_read_input_tokens: 74000, cache_creation_input_tokens: 5000, output_tokens: 1 } },
+  }));
+  assertEq(acc.in, 120);
+  assertEq(acc.cacheRead, 74000, 'cache_read_input_tokens é o token barato (0.1x) — o ganho a medir');
+  assertEq(acc.cacheCreate, 5000, 'cache_creation_input_tokens é o custo de escrever cache (1.25x/2x)');
+});
+
+test('accumulateUsage: output_tokens cresce nos deltas → fica o MAIOR', () => {
+  let acc = routerServer.accumulateUsage(null, '"output_tokens":10');
+  acc = routerServer.accumulateUsage(acc, '"output_tokens":250');
+  acc = routerServer.accumulateUsage(acc, '"output_tokens":80');
+  assertEq(acc.out, 250, 'o maior vence (o contador é cumulativo no stream)');
+});
+
+test('accumulateUsage: input/cache só contam a 1ª ocorrência (não somam duplicado)', () => {
+  let acc = routerServer.accumulateUsage(null, '"input_tokens":100,"cache_read_input_tokens":900');
+  acc = routerServer.accumulateUsage(acc, '"input_tokens":7,"cache_read_input_tokens":3');
+  assertEq(acc.in, 100, 'a 1ª ocorrência (message_start) vence');
+  assertEq(acc.cacheRead, 900);
+});
+
+test('accumulateUsage: chunk sem usage não corrompe o acumulador', () => {
+  const base = routerServer.accumulateUsage(null, '"input_tokens":42');
+  const same = routerServer.accumulateUsage(base, 'event: content_block_delta\ndata: {"text":"oi"}');
+  assertEq(same.in, 42);
+  assertEq(same.out, 0);
+  assertEq(same.cacheRead, 0);
+});
+
+test('newMetrics/metricsTokens: tokens carregam cacheRead + cacheCreate somados', () => {
+  routerServer.resetMetrics();
+  const m0 = routerServer.metricsSnapshot();
+  assertEq(m0.tokens.cacheRead, 0, 'o snapshot expõe cacheRead desde o início (baseline)');
+  assertEq(m0.tokens.cacheCreate, 0);
+  routerServer.metricsTokens({ in: 10, out: 5, cacheRead: 1000, cacheCreate: 200 });
+  routerServer.metricsTokens({ in: 3, out: 2, cacheRead: 500, cacheCreate: 0 });
+  const m = routerServer.metricsSnapshot();
+  assertEq(m.tokens.in, 13);
+  assertEq(m.tokens.out, 7);
+  assertEq(m.tokens.cacheRead, 1500, 'acumula entre requisições');
+  assertEq(m.tokens.cacheCreate, 200);
+  routerServer.resetMetrics();
+});
+
+test('metricsSnapshot: cacheHitPct = cacheRead / (cacheRead + in) — a métrica do ganho', () => {
+  routerServer.resetMetrics();
+  routerServer.metricsTokens({ in: 100, out: 0, cacheRead: 900, cacheCreate: 0 });
+  assertEq(routerServer.metricsSnapshot().cacheHitPct, 90, '900 de 1000 tokens de entrada vieram do cache → 90%');
+  routerServer.resetMetrics();
+  assertEq(routerServer.metricsSnapshot().cacheHitPct, 0, 'sem tráfego → 0 (não divide por zero)');
 });
 
 
