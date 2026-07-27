@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.17.0 — consolidação da sessão em uso, ponteiro que não regride</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. A v2.17.0 consolida a SESSÃO EM USO: a autoridade da consolidação das pastas-irmãs do KB vive no brain-server (o único processo que recebe o --plugin-data real da sessão) que dispara com --active-dir mirando a pasta REAL da sessão, não mais um ponteiro global oscilante. O ponteiro ativo nunca regride de uma pasta viva (mais pesada) para uma quase-vazia (mais leve), matando a perda aparente de memória (recall lendo 1) quando duas identidades de instalação competiam. O engine nunca apaga uma pasta-irmã sem antes ler de volta e provar que cada registro foi absorvido (verify-before-delete, backup-first), e o project_id se mantém coerente de ponta a ponta. Empilha sobre a v2.16.0 (graph-guard): uma busca recursiva ampla é reroteada uma vez para o Session Graph (grafo primeiro, grep escopado depois) com o grafo pronto e fresco no SessionStart." />
+<title>claude-code-boss v2.17.1 — converge a identidade do data-dir do daemon, elimina o 401</title>
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. A v2.17.1 converge a IDENTIDADE do data-dir do daemon (porta/token) e elimina o 401: normaliza o path do dataDir antes de derivar porta/token (evita que -inline e -<marketplace> ou separadores mistos derivem identidades diferentes pra mesma pasta lógica), e extrai um publishAndFollow(dir) compartilhado — tanto o dataDir() quanto o servers/brain-server/index.js agora publicam o ponteiro ativo e SEGUEM o próprio veredito (em vez de usar o candidato incondicionalmente quando o anti-regression guard recusa a publicação), fechando o split-brain que causava o 401. Empilha sobre a v2.17.0 (consolidação da sessão em uso): a autoridade da consolidação das pastas-irmãs do KB vive no brain-server, que dispara com --active-dir mirando a pasta REAL da sessão, e o ponteiro ativo nunca regride de uma pasta viva para uma quase-vazia." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -1014,7 +1014,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.17.0</span>
+    <span class="ver">v2.17.1</span>
   </nav>
 
   <header class="hero">
@@ -1104,6 +1104,57 @@
     </div>
   </section>
 
+
+  <section>
+    <p class="label">Novo na v2.17.1 · converge a identidade do data-dir, elimina o 401</p>
+    <p class="lede">Duas causas-raiz na <b>mesma</b> classe de bug (split-brain do data-dir entre processos), fechadas em duas metades. A <b>normalização de path</b> em <code>resolvePort</code>/<code>tokenFile</code> evita que strings de <code>dataDir</code> não-normalizadas (<code>-inline</code> vs <code>-&lt;marketplace&gt;</code>, separadores mistos) façam processos derivarem porta/token <b>diferentes</b> pra mesma pasta lógica. E o <code>servers/brain-server/index.js</code> passa a <b>seguir o próprio veredito</b> ao publicar o ponteiro ativo, em vez de usar o candidato incondicionalmente quando o anti-regression guard recusa a publicação.</p>
+
+    <div class="callout">
+      <span class="tag">o 401 era essa divergência</span>
+      Quando o guard recusava o candidato do <code>index.js</code> (mais leve/vazio que o ponteiro existente), o processo continuava derivando porta/token da pasta <b>vazia</b> — sem <code>brain-http.token</code> ali — enquanto todo hook sem env seguia o ponteiro pra <b>outra</b> pasta, a real. Dois processos, duas identidades, um 401.
+    </div>
+
+    <div class="verify" aria-label="Converge a identidade do data-dir do daemon. Duas causas-raiz na mesma classe de bug de split-brain: primeiro, resolvePort e tokenFile normalizam o path do dataDir antes de derivar porta e token, evitando que strings nao-normalizadas produzam identidades diferentes pra mesma pasta logica. Segundo, index.js do brain-server publica o ponteiro ativo e agora segue o proprio veredito atraves de um publishAndFollow compartilhado: se o guard recusa o candidato, o index.js relê o ponteiro publicado e usa esse valor, em vez de continuar com o candidato recusado. Resultado: index.js e dataDir passam pela mesma implementacao, eliminando a divergencia que causava o 401.">
+      <div class="verify-bar">
+        <span class="k">publish-then-follow</span>
+        <span class="m">dataDir() e index.js · mesma implementação</span>
+      </div>
+      <div class="verify-body">
+        <ol class="verify-pipe">
+          <li><span class="op">FIX 1</span><code>resolvePort/tokenFile</code><span class="note">normaliza o path do dataDir antes de derivar porta/token</span></li>
+          <li><span class="op">FIX 2</span><code>publishAndFollow(dir)</code><span class="note">extraído em scripts/lib/data-dir.js, compartilhado</span></li>
+          <li><span class="op">USO</span><code>dataDir() · index.js</code><span class="note">os dois pontos passam pela MESMA implementação</span></li>
+        </ol>
+        <p class="verify-cmp"><code>writeActivePointer(candidato)</code> <span class="eq">→</span> <code>relê o ponteiro publicado</code></p>
+        <div class="verify-fork">
+          <div class="vpath vpath--pass">
+            <span class="vpath-tag">guard aceita o candidato</span>
+            <b>segue o candidato</b>
+            <span class="vpath-note">é o valor mais pesado/vivo — publicação normal</span>
+          </div>
+          <div class="vpath vpath--abort">
+            <span class="vpath-tag">guard recusa (candidato mais leve/vazio)</span>
+            <b>segue o ponteiro, não o candidato</b>
+            <span class="vpath-note">porta/token derivam da pasta REAL, nunca mais da vazia</span>
+          </div>
+        </div>
+      </div>
+      <div class="verify-foot"><b>eliminando a divergência, não só o sintoma:</b> antes, só o <code>dataDir()</code> (branch de env) seguia o veredito do ponteiro; o <code>index.js</code> tinha sua própria cópia da lógica e ignorava a recusa. Extrair <code>publishAndFollow</code> como implementação única impede os dois caminhos de divergirem de novo no futuro.</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>Path normalizado, identidade única</h4>
+        <p><code>resolvePort</code>/<code>tokenFile</code> normalizam o <code>dataDir</code> (path canônico) <b>antes</b> de derivar porta e token. Duas strings equivalentes (<code>-inline</code>/<code>-&lt;marketplace&gt;</code>, separadores mistos) apontando pra <b>mesma</b> pasta lógica não derivam mais identidades diferentes.</p>
+      </div>
+      <div class="win">
+        <h4>index.js segue o próprio veredito</h4>
+        <p><code>publishAndFollow(dir)</code>: publica o ponteiro, relê, e retorna o valor do ponteiro quando o candidato <b>perde</b> pro anti-regression guard. Compartilhado entre <code>dataDir()</code> e <code>index.js</code> — uma implementação, não duas cópias que podem divergir.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Honesto sobre o alcance:</b> é uma correção de convergência de identidade, não uma mudança de comportamento visível — o daemon já deveria ter sido consistente consigo mesmo. Gate <b>699</b> unitários no verde local; <code>brain-health</code> confirma o probe ativo saudável (<code>{}</code>, sem defeitos) após a instalação local do build corrigido.</p>
+  </section>
 
   <section>
     <p class="label">Novo na v2.17.0 · consolida a sessão em uso</p>
