@@ -6,14 +6,43 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 /**
+ * Canonicalize a data dir so the SAME directory spelled differently (forward vs
+ * back slashes, relative vs absolute, mixed case on Windows) maps to ONE
+ * identity. Without this, `resolvePort`/`tokenFile` derive a DIFFERENT port and
+ * token file per spelling — the lockfile records `C:/Users/...` while callers
+ * pass `C:\Users\...`, so the daemon and its clients land on different ports and
+ * read different token files (→ 401s). `path.resolve` makes the path absolute
+ * and unifies separators to the platform's; on Windows (case-insensitive FS) we
+ * also case-fold. Fail loud on a missing/"undefined" dir: deriving a port from
+ * `String(undefined)` used to spawn a plausible-looking phantom daemon.
+ */
+export function canonicalDataDir(dataDir) {
+  const raw = dataDir == null ? '' : String(dataDir).trim();
+  if (!raw || raw === 'undefined' || raw === 'null') {
+    throw new Error(
+      `brain daemon: dataDir is required but got ${JSON.stringify(dataDir)} — refusing to `
+      + 'derive a port/token from an unset data dir (would spawn a phantom daemon).',
+    );
+  }
+  return path.resolve(raw);
+}
+
+/** Case-folded canonical form used ONLY as the hash/identity key (never as a real fs path). */
+function identityKey(dataDir) {
+  const canon = canonicalDataDir(dataDir);
+  return process.platform === 'win32' ? canon.toLowerCase() : canon;
+}
+
+/**
  * Deterministic per-data-dir port in the private range (49152-65535) so two
- * different installs on the same machine don't collide. Override with
- * BRAIN_HTTP_PORT.
+ * different installs on the same machine don't collide. Derived from the
+ * CANONICAL data dir so every spelling of the same dir maps to one port.
+ * Override with BRAIN_HTTP_PORT.
  */
 export function resolvePort(dataDir) {
   const env = process.env.BRAIN_HTTP_PORT && Number(process.env.BRAIN_HTTP_PORT);
   if (env && env > 0) return env;
-  const h = crypto.createHash('sha256').update(String(dataDir || 'default')).digest();
+  const h = crypto.createHash('sha256').update(identityKey(dataDir)).digest();
   return 49152 + (h.readUInt16BE(0) % (65535 - 49152));
 }
 
@@ -22,7 +51,7 @@ export function resolvePort(dataDir) {
  * the rotating/cleaned plugin cache — so any version's launcher can find it.
  */
 export function lockFile(dataDir) {
-  return path.join(dataDir, 'brain-http.lock.json');
+  return path.join(canonicalDataDir(dataDir), 'brain-http.lock.json');
 }
 
 export const HEALTH_PATH = '/health';
@@ -37,7 +66,7 @@ export const MCP_PATH = '/mcp';
 
 /** Token file path — DATA_DIR, persistent across plugin versions (like the lock). */
 export function tokenFile(dataDir) {
-  return path.join(dataDir, 'brain-http.token');
+  return path.join(canonicalDataDir(dataDir), 'brain-http.token');
 }
 
 /** Read the shared token (env override first); null when absent. */
@@ -84,7 +113,10 @@ export function requestAllowed(req, token, dataDir) {
   const bearer = String((req.headers && req.headers.authorization) || '').replace(/^Bearer\s+/i, '').trim();
   const given = (req.headers && req.headers['x-brain-token']) || bearer;
   if (!token || !timingSafeEq(given, token)) {
-    return { ok: false, code: 401, error: `missing/invalid token — read it from ${tokenFile(dataDir || '<DATA_DIR>')} and send Authorization: Bearer <token>` };
+    // Human-readable hint only — never let canonicalization throw while building an error.
+    let where = '<DATA_DIR>';
+    try { where = tokenFile(dataDir); } catch { /* dataDir absent → keep placeholder */ }
+    return { ok: false, code: 401, error: `missing/invalid token — read it from ${where} and send Authorization: Bearer <token>` };
   }
   return { ok: true };
 }

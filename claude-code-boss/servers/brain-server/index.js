@@ -40,23 +40,33 @@ function argValue(flag) {
 }
 
 const PLUGIN_ROOT = resolveEnv('CLAUDE_PLUGIN_ROOT', path.resolve(__dirname, '..', '..'));
-const DATA_DIR = argValue('--plugin-data')
+let DATA_DIR = argValue('--plugin-data')
   || resolveEnv('CLAUDE_PLUGIN_DATA',
        path.join(process.env.HOME || process.env.USERPROFILE, '.claude', 'plugins', 'data', 'claude-code-boss'));
-process.env.CLAUDE_PLUGIN_DATA = DATA_DIR; // normalize so brain-store inherits the resolved dir
 
 // Publish the REAL active folder to the stable global pointer. The brain-server
 // is the ONE process that reliably receives it (via --plugin-data), so it is the
 // authoritative publisher; env-less SessionStart hooks then FOLLOW this pointer
 // and resolve the SAME data dir (no split-brain KB). Best-effort — a failure
 // here must never abort server startup.
+//
+// BUT the publish can be REFUSED: writeActivePointer's anti-regression guard
+// won't move the pointer from a heavier (data-bearing) folder onto this lighter
+// one. If we ignored that and kept using DATA_DIR anyway, this process (the
+// daemon spawner / port-deriver / consolidator) would operate on the near-empty
+// sibling — no brain-http.token there, no data there — while every env-less
+// caller follows the pointer to the OTHER, real folder. That split IS the 401:
+// this file must not just publish the pointer, it must also FOLLOW the verdict
+// its own publish reached — so it shares data-dir.js's publishAndFollow, the
+// exact helper dataDir() itself uses on its env branch (one rule, one place).
 try {
   const require = createRequire(import.meta.url);
-  const { writeActivePointer } = require('../../scripts/lib/data-dir.js');
-  writeActivePointer(DATA_DIR);
+  const { publishAndFollow } = require('../../scripts/lib/data-dir.js');
+  DATA_DIR = publishAndFollow(DATA_DIR);
 } catch (err) {
   console.error(`[brain-server] could not publish active-data-dir pointer: ${err.message}`);
 }
+process.env.CLAUDE_PLUGIN_DATA = DATA_DIR; // normalize so brain-store inherits the resolved (possibly followed) dir
 
 // ─── Transport selection ─────────────────────────────────────────────────────
 if (process.argv.includes('--http')) {
