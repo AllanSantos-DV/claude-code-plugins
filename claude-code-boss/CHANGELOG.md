@@ -1,5 +1,52 @@
 # Changelog
 
+## [2.19.0] - 2026-07-25
+
+**Migração do KB local → memory server (`mcp-memory`), com botão no dashboard, idempotência e fail-loud.** Trocar o backend para `mcp-memory` deixava o acervo local **órfão**: não havia nenhum mecanismo de migração (o export/import do dashboard sempre foi local↔local). Agora existe. O trabalho começou por uma investigação que **descartou o plano anterior**: a hipótese de "um brain-server por sessão" levou a um desenho de daemon único + proxy que, verificado na fonte, seria **reinventar o que o memory server native-java já faz** — o modo `mcp-memory` já transforma o processo Node em cliente magro (`initLocal()` nem roda: zero modelo, zero SQLite in-process). O gap real era só a migração dos dados. Cada fase saiu com TDD RED→GREEN e gate verde 2× (Windows e Linux).
+
+### Motor de migração (`scripts/brain-migrate.js`)
+
+- **`migrateLocalToMcp(opts, deps)`** — enumera todo projeto com KB local (`DATA_DIR/brain/<projeto>/brain.db`), lê cada entrada **full-fidelity** (`brain-store.getRaw`, não a listagem lossy) e grava **projeto a projeto**: o daemon escopa por `project_id` no handshake do MCP, um por conexão, então a migração re-inicializa o backend por projeto em vez de tentar um lote único.
+- **Idempotente**: a escrita reusa `brain-backend.save` → `add_document` com `documentId` = o id local (UPSERT). Rodar de novo **atualiza** em vez de duplicar, o que torna seguro retomar uma migração interrompida.
+- **Fail-loud (sem fallback que cega)**: uma entrada que falha **não** aborta as demais, mas é coletada com a **causa real** e derruba `ok → false`; uma falha de leitura isola o projeto e segue os outros; ausência genuína (sem projeto/entrada) é sucesso com `migrated: 0`, distinto de erro. Fora do backend `mcp-memory` a migração **recusa rodar** — jamais grava no store local em silêncio.
+- **`verifyMigration`** — conferência pós-migração por projeto: contagem remota **menor** que a migrada (ou um erro ao consultar) vira `ok: false` com o detalhe. Nunca declara "migrado" mascarando perda.
+- CLI para uso manual (`node scripts/brain-migrate.js`), com saída não-zero se qualquer entrada falhar.
+
+### Botão "Migrar agora" no dashboard
+
+- **`scripts/lib/migration-job.js`** — a máquina de estado (start idempotente, gate do backend, progresso, verify-after) vive **fora** do HTTP; `dashboard.js` só liga os fios. Uma migração de cada vez: um segundo clique durante a corrida **não** dispara outra.
+- Rotas `POST /api/brain/migrate` (dispara em background, responde na hora) + `GET /api/brain/migrate-status` (polling), reusando o token/Host guard já existentes do dashboard.
+- UI no card **Brain → Backend Configuration** (só no modo `mcp-memory`): confirmação, barra de progresso ao vivo e resultado final com as falhas visíveis. A migração é **explícita** — um acervo grande é re-embedado pelo servidor e leva tempo, então migrar sozinho ao salvar seria hostil.
+- **Trade-offs declarados na própria tela** (e no README): ao migrar, a de-duplicação de lições passa a ser server-side e o `brain_related` vira busca semântica (o grafo de citação é local); em troca as tools `graph_*` passam a funcionar, pois o grafo vive no servidor.
+
+### Model-router: janela de 1M, env-tuning sem proxy e telemetria de cache
+
+Um relato de campo (duas máquinas, mesmo cliente, A/B só ligando/desligando o router) mediu `/context` em **183k/200k com o proxy ativo** e **68k/1.0M com ele desligado** — nada mais mudou. A causa foi verificada na fonte: **qualquer** modo diferente de `off` publica `ANTHROPIC_BASE_URL` apontando para o proxy local (`model-router-ensure.js`: só `mode === 'off'` limpa o footprint), e o Claude Code, atrás de um `ANTHROPIC_BASE_URL` que não é o oficial, **não valida suporte a 1M** e orça a sessão em 200K — inclusive nos modelos de 1M nativo (Opus 5 / Fable 5 / Sonnet 5). É limitação do **cliente**, [documentada pela Anthropic](https://code.claude.com/docs/en/model-config), **não** do proxy: o `anthropic-beta` é repassado intacto (conferido nos 3 pontos de forward). Não havia erro — a janela só encolhia em silêncio.
+
+- **Aviso honesto onde dói**: o `[model-router] ... ATIVO` injetado na sessão e o card **Router** do dashboard agora declaram o trade-off e apontam a saída, em vez de deixar o usuário perder 800K sem perceber.
+- **`contextTuning` — o ganho de token SEM o proxy (opt-in, default `false`).** O ganho medido na 2.18 (`cache_read`/turno 447k → 74–127k) vem do **env** (`ENABLE_TOOL_SEARCH` + `CLAUDE_CODE_AUTO_COMPACT_WINDOW`), não do proxy; ele só estava **acoplado** ao `enable` por acidente de implementação. Agora `contextTuning.enabled: true` grava esse env **com o roteador em `off`**, sem publicar `ANTHROPIC_BASE_URL` — economia de token **preservando a janela de 1M**. Continua opt-in porque fixar o auto-compact em 200K capa o contexto ativo de quem usa 1M sem ter pedido. Funções puras `planTuningEnv` / `planTuningRemoval` mantêm a regra de sempre: só preenchem o ausente (nunca clobbam um valor deliberado) e removem só o que **nós** teríamos escrito.
+- **Telemetria de cache (`cacheRead` / `cacheCreate` / `cacheHitPct`)**: o tee do stream media só `input`/`output`; agora um parser puro (`accumulateUsage`) captura também `cache_read_input_tokens` e `cache_creation_input_tokens`, e o dashboard mostra o **hit de cache**. Sem esse baseline, reativar o proxy no futuro (ex.: reescrever o cache frio) seria **fé, não engenharia** — agora dá para medir se compensa.
+
+### Limitação conhecida (verificada na fonte do native-java)
+
+- Entradas de escopo **global** (`__user__`) **não** migram ainda. No servidor, "global" é o escopo *home* (documento **sem** `project_id`), e os únicos blocos globais são `skill_global` (`type:skill` sem projeto) e `procedural`. Escrever ali exige handshake **sem projeto ativo**, mas `resolveHandshakeProjectId` **ignora** um `projectId` em branco e cai na escada do workspace, que é fail-loud — ou seja, toda sessão de cliente é escopada num projeto **por design** (anti-contaminação, ADR-018). Habilitar isso exige uma mudança no próprio memory server; até lá a migração global fica fora, declarada em vez de silenciosamente pulada.
+
+## [2.18.0] - 2026-07-24
+
+**Auto-redirect da curação (menos um turno) + bundle de env do roteador (economia de tokens).** Duas mudanças coordenadas do handoff `CURATION-AUTO-REDIRECT`. Rigor de sempre: handoff e plano da mesa **re-verificados na FONTE** (corrigidas imprecisões de path e a extração que furaria a cerca do `error-guard.js`), TDD RED→GREEN em cada parte, gate **2× estável (107 hooks + 717 unit, 0 falhas)**.
+
+### Auto-redirect de aliases curados (Parte A)
+
+- `curation-guard.js`: o caso **"raw alias"** deixava de sempre **negar** (`deny` + instruir o modelo a rechamar a tool). Agora **AUTO-REDIRECIONA** silenciosamente (`allow` + `updatedInput`) quando é seguro reconstruir — poupando o turno extra de deny→retry. `updatedInput` é substituição TOTAL de `tool_input`, então espalhamos o original (`{ ...tool_input, command }`) preservando `timeout`/etc.
+- **`buildCuratedInvocation`** (`shells-config.js`, novo): **Fase 1 conservadora** — só reescreve quando o comando é **exatamente um alias** (sem argumento posicional, segmento único) **e** o script é **`.ps1`** (→ `powershell -File "<script>"`). Args, extra-segmento (`cd x && …`), pipe ou script não-`.ps1` → **mantém o `deny` provado** (nunca dropa args nem inventa runner). **Invariante testada:** o comando reescrito passa no PRÓPRIO allow-path do guard (invoca o script, sem pipe), então a reescrita é auto-consistente.
+- **`error-guard.js` intacto** (fora de escopo do handoff), com **teste de invariante** garantindo que o hook-irmão do matcher `Bash` nunca emite `updatedInput`/`ask` — defende os riscos documentados de múltiplos hooks no mesmo matcher (GitHub #75915 e #15897).
+
+### Bundle de env do roteador (Parte B)
+
+- `model-router-ensure.js`: ao **ligar** o roteamento (proxy custom) passamos a gravar, junto do `ANTHROPIC_BASE_URL`, dois env que recuperam o que o proxy custom degrada — **`ENABLE_TOOL_SEARCH=true`** (religa o tool-search nativo que o proxy desliga; ~52k tokens deferidos/request) e **`CLAUDE_CODE_AUTO_COMPACT_WINDOW`** (capa o contexto ATIVO mantendo o 1M disponível). Medido na sessão real: `cache_read`/turno **447k → 74–127k** (~65–83% de corte).
+- 3 helpers **puros** (testados diretamente): `resolveAutoCompactWindow` (clamp `[50000, 1000000]` + aviso WARN quando ajusta), `planEnableEnv` (**não clobbera** um valor explícito do usuário — `== null` só preenche ausente; conserta o **no-op** que antes checava só a `base_url` e pulava a escrita dos 2 env), `planDisableEnv` (**anchor** por `isOurProxyUrl` + remove **só o nosso**, comparando com o valor do **config ATUAL** → um valor deliberado do usuário sobrevive e não fica env **órfão**).
+- **`autoCompactWindow: 200000`** shipado em `config/router-config.json`, override-ável via `readConfig()` (merge shipped⊕user). Fica no **router-config** — não no `userConfig` do `plugin.json`, que o código **não lê** em runtime (verificado na fonte).
+
 ## [2.17.1] - 2026-07-27
 
 **Converge a identidade do data-dir do daemon (porta/token) e elimina o 401 — publish-then-follow nos dois lados.** Duas causas-raiz na mesma classe de bug (split-brain do data-dir entre processos), corrigidas em duas metades:

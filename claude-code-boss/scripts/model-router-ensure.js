@@ -127,6 +127,105 @@ function readConfig() {
   return mergeRouterConfig(shipped, readUserConfig());
 }
 
+// ── Token-override env bundle (Parte B) ──────────────────────────────────────
+// Ao LIGAR o roteamento (proxy custom) setamos, junto do ANTHROPIC_BASE_URL, dois
+// env que RECUPERAM o que o proxy custom desliga/infla: ENABLE_TOOL_SEARCH=true
+// (religa o tool-search nativo, ~52k deferidos/request) e CLAUDE_CODE_AUTO_COMPACT_
+// WINDOW (capa o contexto ativo mantendo o 1M disponível). Medido na sessão real:
+// cache_read/turno 447k → 74–127k. Ao DESLIGAR, removemos só os NOSSOS.
+const AUTO_COMPACT_DEFAULT = 200000;
+const AUTO_COMPACT_MIN = 50000;
+const AUTO_COMPACT_MAX = 1000000;
+
+// PURA: resolve o teto de auto-compact a partir do config (já mesclado), clampando
+// a uma faixa sã. autoCompactWindow ausente → default (sem aviso). Fora da faixa /
+// inválido → clampado com flag (o orquestrador loga um AVISO visível).
+function resolveAutoCompactWindow(config) {
+  const raw = config && config.autoCompactWindow;
+  if (raw == null) return { value: AUTO_COMPACT_DEFAULT, clamped: false };
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return { value: AUTO_COMPACT_DEFAULT, clamped: true, original: raw };
+  const v = Math.max(AUTO_COMPACT_MIN, Math.min(Math.trunc(n), AUTO_COMPACT_MAX));
+  return { value: v, clamped: v !== n, original: n };
+}
+
+// PURA: dado o env ATUAL do settings.json, a nossa base_url e o valor de auto-
+// compact, computa o env DESEJADO e se há mudança a gravar. NUNCA clobbera um
+// ENABLE_TOOL_SEARCH/AUTO_COMPACT que o usuário fixou (== null → só preenche
+// ausente). base_url custom de terceiro → { foreign:true } (preserva o do usuário).
+// `isOurs(url)` é injetado (o real é isOurProxyUrl) p/ testes herméticos.
+function planEnableEnv(currentEnv, url, autoCompactValue, isOurs) {
+  const env = { ...(currentEnv || {}) };
+  const cur = env.ANTHROPIC_BASE_URL;
+  if (cur && !isOurs(cur)) return { foreign: true };
+  const next = { ...env };
+  next.ANTHROPIC_BASE_URL = url;
+  if (next.ENABLE_TOOL_SEARCH == null) next.ENABLE_TOOL_SEARCH = 'true';
+  if (next.CLAUDE_CODE_AUTO_COMPACT_WINDOW == null) next.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(autoCompactValue);
+  const changed = next.ANTHROPIC_BASE_URL !== env.ANTHROPIC_BASE_URL
+    || next.ENABLE_TOOL_SEARCH !== env.ENABLE_TOOL_SEARCH
+    || next.CLAUDE_CODE_AUTO_COMPACT_WINDOW !== env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+  return { env: next, changed };
+}
+
+// ── Env-tuning DESACOPLADO do proxy (opt-in) ─────────────────────────────────
+//
+// POR QUÊ: o ganho de token medido (auto-compact + tool search) vem do
+// settings.json, NÃO do proxy. Mas até aqui ele só era gravado dentro do enable,
+// junto do ANTHROPIC_BASE_URL — e é a base_url que faz o Claude Code, atrás de um
+// "gateway", deixar de validar suporte a 1M e orçar a sessão em 200K (doc oficial
+// do Claude Code). Resultado: quem só queria economizar token pagava com 800K de
+// janela. Estas funções entregam o tuning SEM proxy: jamais escrevem base_url.
+//
+// OPT-IN (default OFF): ligar por padrão fixaria auto-compact em 200K para todo
+// mundo — inclusive quem usa modelo de 1M e não pediu nada. Quem quer o ganho opta.
+
+/** true SÓ com `contextTuning.enabled === true` (literal). Ausente/inválido → false. */
+function contextTuningEnabled(config) {
+  const t = config && config.contextTuning;
+  return !!(t && typeof t === 'object' && t.enabled === true);
+}
+
+// PURA: env desejado com APENAS o tuning (sem proxy). Nunca toca ANTHROPIC_BASE_URL
+// (nem escreve, nem remove: uma base_url de terceiro que já esteja lá é preservada).
+// `== null` → só preenche o ausente, nunca clobbera o valor explícito do usuário.
+function planTuningEnv(currentEnv, autoCompactValue) {
+  const env = { ...(currentEnv || {}) };
+  const next = { ...env };
+  if (next.ENABLE_TOOL_SEARCH == null) next.ENABLE_TOOL_SEARCH = 'true';
+  if (next.CLAUDE_CODE_AUTO_COMPACT_WINDOW == null) next.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(autoCompactValue);
+  const changed = next.ENABLE_TOOL_SEARCH !== env.ENABLE_TOOL_SEARCH
+    || next.CLAUDE_CODE_AUTO_COMPACT_WINDOW !== env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+  return { env: next, changed };
+}
+
+// PURA: remove os 2 env de tuning SÓ quando batem o valor que TERÍAMOS gravado
+// (auto-compact lido do config ATUAL) — um valor deliberado do usuário sobrevive.
+// Não toca a base_url (quem cuida dela é o planDisableEnv, ancorado em isOurs).
+function planTuningRemoval(currentEnv, autoCompactValue) {
+  const env = { ...(currentEnv || {}) };
+  const next = { ...env };
+  if (next.ENABLE_TOOL_SEARCH === 'true') delete next.ENABLE_TOOL_SEARCH;
+  if (next.CLAUDE_CODE_AUTO_COMPACT_WINDOW === String(autoCompactValue)) delete next.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+  const changed = Object.keys(env).length !== Object.keys(next).length;
+  return { env: next, changed };
+}
+
+// PURA: computa o env após remover só o NOSSO bundle no disable. Anchor: só age
+// quando a base_url é NOSSA (isOurs). Remove a base_url (nossa); remove os 2 env
+// só quando batem o valor que TERÍAMOS gravado (auto-compact lido do config ATUAL,
+// não hardcoded) — assim um valor deliberado diferente do usuário SOBREVIVE e não
+// fica órfão. Retorna { env, changed }.
+function planDisableEnv(currentEnv, autoCompactValue, isOurs) {
+  const env = { ...(currentEnv || {}) };
+  if (!isOurs(env.ANTHROPIC_BASE_URL)) return { env, changed: false };
+  const next = { ...env };
+  delete next.ANTHROPIC_BASE_URL;
+  if (next.ENABLE_TOOL_SEARCH === 'true') delete next.ENABLE_TOOL_SEARCH;
+  if (next.CLAUDE_CODE_AUTO_COMPACT_WINDOW === String(autoCompactValue)) delete next.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+  return { env: next, changed: Object.keys(next).length !== Object.keys(env).length };
+}
+
 // Lê o payload do hook no stdin (session_id, hook_event_name…) sem travar quando
 // rodado manualmente num terminal interativo (isTTY) ou sem stdin.
 function readHookInput() {
@@ -346,17 +445,18 @@ function isOurProxyUrl(url) {
 function enableSettingsRouting(url) {
   const s = readSettings();
   if (s === null) return false;
-  const cur = s.env && s.env.ANTHROPIC_BASE_URL;
-  if (cur && !isOurProxyUrl(cur)) {
-    log(`AVISO: settings.json já tem ANTHROPIC_BASE_URL custom ("${cur}") — preservado, roteador NÃO sobrescreve.`);
+  const acw = resolveAutoCompactWindow(readConfig());
+  if (acw.clamped) log(`AVISO: autoCompactWindow ${acw.original} fora de [${AUTO_COMPACT_MIN}, ${AUTO_COMPACT_MAX}] — ajustado para ${acw.value}.`);
+  const plan = planEnableEnv(s.env, url, acw.value, isOurProxyUrl);
+  if (plan.foreign) {
+    log(`AVISO: settings.json já tem ANTHROPIC_BASE_URL custom ("${s.env.ANTHROPIC_BASE_URL}") — preservado, roteador NÃO sobrescreve.`);
     return false;
   }
-  if (cur === url) return true; // já correto → no-op (não reescreve o arquivo)
-  s.env = s.env || {};
-  s.env.ANTHROPIC_BASE_URL = url;
+  if (!plan.changed) return true; // os 3 já no estado desejado → no-op (não reescreve)
+  s.env = plan.env;
   try {
     writeSettings(s);
-    log(`settings.json: env.ANTHROPIC_BASE_URL → ${url}`);
+    log(`settings.json: ANTHROPIC_BASE_URL → ${url}; ENABLE_TOOL_SEARCH=${s.env.ENABLE_TOOL_SEARCH}; CLAUDE_CODE_AUTO_COMPACT_WINDOW=${s.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW}`);
     return true;
   } catch (e) {
     log(`AVISO: não foi possível escrever settings.json: ${e.message}`);
@@ -364,16 +464,41 @@ function enableSettingsRouting(url) {
   }
 }
 
-// Remove SÓ o nosso valor (localhost). Nunca apaga uma ANTHROPIC_BASE_URL custom.
+// Aplica APENAS o env-tuning (sem proxy): tool-search + auto-compact no
+// settings.json, sem ANTHROPIC_BASE_URL. É o ganho de token sem o custo da janela
+// de 1M. Idempotente. `on=false` remove só o que teríamos gravado.
+function applySettingsTuning(on) {
+  const s = readSettings();
+  if (s === null) return false;
+  const acw = resolveAutoCompactWindow(readConfig());
+  if (on && acw.clamped) log(`AVISO: autoCompactWindow ${acw.original} fora de [${AUTO_COMPACT_MIN}, ${AUTO_COMPACT_MAX}] — ajustado para ${acw.value}.`);
+  const plan = on ? planTuningEnv(s.env || {}, acw.value) : planTuningRemoval(s.env || {}, acw.value);
+  if (!plan.changed) return true;
+  if (Object.keys(plan.env).length === 0) delete s.env; else s.env = plan.env;
+  try {
+    writeSettings(s);
+    log(on
+      ? `settings.json: env-tuning SEM proxy — ENABLE_TOOL_SEARCH=${plan.env.ENABLE_TOOL_SEARCH}; CLAUDE_CODE_AUTO_COMPACT_WINDOW=${plan.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW} (ANTHROPIC_BASE_URL NÃO é publicada — a janela de 1M é preservada).`
+      : 'settings.json: env-tuning removido (só o que era nosso).');
+    return true;
+  } catch (e) {
+    log(`AVISO: não foi possível escrever settings.json (tuning): ${e.message}`);
+    return false;
+  }
+}
+
+// Remove SÓ o nosso bundle (base_url localhost + os 2 env que gravamos). Nunca
+// apaga uma ANTHROPIC_BASE_URL custom nem um valor deliberado do usuário.
 function disableSettingsRouting() {
   const s = readSettings();
   if (s === null || !s.env) return;
-  if (!isOurProxyUrl(s.env.ANTHROPIC_BASE_URL)) return; // não é nosso → não mexe
-  delete s.env.ANTHROPIC_BASE_URL;
-  if (Object.keys(s.env).length === 0) delete s.env;
+  const acw = resolveAutoCompactWindow(readConfig());
+  const plan = planDisableEnv(s.env, acw.value, isOurProxyUrl);
+  if (!plan.changed) return; // base_url não é nossa (ou nada nosso p/ remover) → não mexe
+  if (Object.keys(plan.env).length === 0) delete s.env; else s.env = plan.env;
   try {
     writeSettings(s);
-    log('settings.json: env.ANTHROPIC_BASE_URL removido (roteador indisponível → Claude direto).');
+    log('settings.json: bundle do roteador removido (ANTHROPIC_BASE_URL + tool-search/auto-compact nossos → Claude direto).');
   } catch (e) {
     log(`AVISO: não foi possível limpar settings.json: ${e.message}`);
   }
@@ -486,6 +611,15 @@ async function main() {
   if (mode === 'off') {
     log('Roteador e fallback desabilitados (mode: off). Limpando footprint e saindo.');
     disableRoutingFootprint();
+    // DESACOPLADO: com o proxy fora, o env-tuning (tool-search + auto-compact) ainda
+    // pode valer — é ele que dá o ganho de token, e não o proxy. Aplicado DEPOIS do
+    // disable (que remove o bundle inteiro) para o resultado líquido ser: sem
+    // base_url (janela de 1M preservada) + com o tuning. Opt-in: default OFF.
+    if (contextTuningEnabled(config)) {
+      applySettingsTuning(true);
+    } else {
+      applySettingsTuning(false);
+    }
     if (process.platform === 'win32') {
       try { shim.removeShimAll(log); } catch (e) { log(`AVISO: remoção do shim falhou: ${e.message}`); }
     }
@@ -543,15 +677,24 @@ async function main() {
   maintainShimSafe();            // instala/reaplica o shim do claude.exe (Windows)
 
   let contextMsg;
+  // Trade-off HONESTO e silencioso que o usuário precisa saber ao ligar o proxy:
+  // com um ANTHROPIC_BASE_URL que não é o oficial, o Claude Code NÃO consegue
+  // validar suporte a 1M e orça a sessão em 200K — inclusive nos modelos de 1M
+  // nativo (Opus 5 / Fable 5 / Sonnet 5). É limitação do CLIENTE (documentada em
+  // https://code.claude.com/docs/en/model-config), não do proxy: o router repassa
+  // o anthropic-beta intacto. Não há erro — a janela só encolhe em silêncio, então
+  // avisamos aqui. Quem precisa de 1M: mantenha o router em off (o env-tuning
+  // opt-in `contextTuning` entrega o ganho de token SEM publicar a base_url).
+  const ONE_M_NOTE = ' ⚠️ Janela: com o proxy no caminho o Claude Code orça a sessão em 200K mesmo em modelos de 1M (limitação do cliente atrás de gateway). Precisa de 1M? Deixe o router em off e use contextTuning.';
   if (wired) {
     if (mode === 'fallback-only') {
-      contextMsg = `[model-router] FALLBACK DE LIMITE ATIVO ✓ — porta ${FIXED_PORT} via settings.json env (escopo Claude Code). Passthrough cache-safe para o Claude (NÃO troca modelo/effort; o prompt cache é preservado). Só no 429 (janela esgotada) aciona o plano B: ${config.nim?.apiKey ? 'NVIDIA (não é mais o Claude)' : '/dashboard p/ configurar a chave NVIDIA'}. Isolado: outros apps não são afetados. Se acabou de ativar, reinicie o Claude Code uma vez.`;
+      contextMsg = `[model-router] FALLBACK DE LIMITE ATIVO ✓ — porta ${FIXED_PORT} via settings.json env (escopo Claude Code). Passthrough cache-safe para o Claude (NÃO troca modelo/effort; o prompt cache é preservado). Só no 429 (janela esgotada) aciona o plano B: ${config.nim?.apiKey ? 'NVIDIA (não é mais o Claude)' : '/dashboard p/ configurar a chave NVIDIA'}. Isolado: outros apps não são afetados. Se acabou de ativar, reinicie o Claude Code uma vez.${ONE_M_NOTE}`;
       log('Fallback de limite ATIVO (passthrough cache-safe, settings.json env).');
     } else if (mode === 'sticky-tier') {
-      contextMsg = `[model-router] STICKY ROUTER ATIVO ✓ (cache-safe) — porta ${FIXED_PORT} via settings.json env (escopo Claude Code). Classificador: ${config.nim?.apiKey ? 'NIM' : 'MiniLM local'}. O tier é escolhido UMA vez por sessão (turno 0) e o modelo é FIXADO pelo resto da sessão — modelo constante preserva o prompt cache quente. Isolado: outros apps não são afetados. Se acabou de ativar, reinicie o Claude Code uma vez para o roteamento engatar.`;
+      contextMsg = `[model-router] STICKY ROUTER ATIVO ✓ (cache-safe) — porta ${FIXED_PORT} via settings.json env (escopo Claude Code). Classificador: ${config.nim?.apiKey ? 'NIM' : 'MiniLM local'}. O tier é escolhido UMA vez por sessão (turno 0) e o modelo é FIXADO pelo resto da sessão — modelo constante preserva o prompt cache quente. Isolado: outros apps não são afetados. Se acabou de ativar, reinicie o Claude Code uma vez para o roteamento engatar.${ONE_M_NOTE}`;
       log('Sticky router ATIVO (cache-safe, settings.json env).');
     } else {
-      contextMsg = `[model-router] ATIVO ✓ — porta ${FIXED_PORT} via settings.json env (escopo Claude Code). Classificador: ${config.nim?.apiKey ? 'NIM' : 'MiniLM local'}. Prompts roteados (haiku/sonnet/opus). Isolado: outros apps não são afetados. Se acabou de instalar/ativar, reinicie o Claude Code uma vez para o roteamento engatar.`;
+      contextMsg = `[model-router] ATIVO ✓ — porta ${FIXED_PORT} via settings.json env (escopo Claude Code). Classificador: ${config.nim?.apiKey ? 'NIM' : 'MiniLM local'}. Prompts roteados (haiku/sonnet/opus). Isolado: outros apps não são afetados. Se acabou de instalar/ativar, reinicie o Claude Code uma vez para o roteamento engatar.${ONE_M_NOTE}`;
       log('Roteamento ATIVO (settings.json env).');
     }
   } else {
@@ -590,4 +733,6 @@ if (require.main === module) {
 // Export p/ testes herméticos da lógica de opt-in. O guard require.main===module
 // acima garante que um require() em teste NÃO dispara main() (nenhum efeito colateral).
 // healthCheck/probeAlive/readRouterToken exportados p/ os testes de verify-before-trust.
-module.exports = { mergeRouterConfig, readConfig, healthCheck, probeAlive, readRouterToken };
+module.exports = { mergeRouterConfig, readConfig, healthCheck, probeAlive, readRouterToken,
+  resolveAutoCompactWindow, planEnableEnv, planDisableEnv, enableSettingsRouting, disableSettingsRouting,
+  contextTuningEnabled, planTuningEnv, planTuningRemoval, applySettingsTuning };

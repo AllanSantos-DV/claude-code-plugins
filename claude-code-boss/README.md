@@ -1,6 +1,6 @@
 # claude-code-boss
 
-Plugin para Claude Code Desktop — **v2.17.1**
+Plugin para Claude Code Desktop — **v2.19.0**
 
 Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizado leve para Claude Code. A orquestração fica a cargo das ferramentas nativas (Agent/Workflow) — o plugin foca no que o nativo não tem.
 
@@ -163,6 +163,40 @@ opt-in e desligada por padrão. O ajuste é gravado só para você em
 `DATA_DIR/brain/user-config.json` (o config publicado continua `local`) e
 sobrevive ao auto-update. O modo **stdio** (o plugin sobe o `.jar`, requer
 Java 21+) fica disponível como opção avançada.
+
+**Migrar o KB local que você já tem (botão "Migrar agora")**: trocar o backend
+para `mcp-memory` **não leva junto** o que já estava no SQLite local — sem
+migração, o acervo antigo fica órfão. No mesmo card (**Brain → Backend
+Configuration**, visível só no modo `mcp-memory`) há **Migrar agora**: ele varre
+todo projeto com KB local (`DATA_DIR/brain/<projeto>/brain.db`), lê cada entrada
+inteira e a grava no servidor **projeto a projeto** (o daemon escopa por
+`project_id` no handshake, um por conexão). A tela mostra o progresso e, no fim,
+confere a contagem remota contra o que subiu.
+
+- **Idempotente**: cada documento é gravado com `documentId` = o id local
+  (`add_document` faz UPSERT), então rodar de novo **atualiza** em vez de
+  duplicar. Seguro para retomar uma migração interrompida.
+- **Fail-loud**: uma entrada que falha não aborta o resto, mas é coletada com a
+  causa real e o resultado vira erro — nunca "sucesso" mascarando perda. Fora do
+  backend `mcp-memory` a migração recusa rodar (jamais grava no store local em
+  silêncio). Se a conferência final achar menos documentos no servidor do que
+  subimos, isso também é reportado como erro.
+- **O servidor re-embeda** cada entrada (o `add_document` manda o conteúdo, não
+  os vetores), então um acervo grande leva tempo — daí o botão explícito com
+  progresso, em vez de migrar sozinho ao salvar.
+- **O que muda ao migrar** (trade-off honesto): a de-duplicação de lições passa a
+  ser server-side (some o merge local que somava `recurrence`) e o `brain_related`
+  deixa de usar o grafo de citação local, virando busca semântica. Em troca, as
+  tools `graph_*` passam a funcionar (o grafo vive no servidor).
+- **Limitação atual**: entradas de escopo **global** (`__user__`) ainda **não**
+  migram. O servidor só aceita escrita global (escopo *home*/`skill_global`) sem
+  um `project_id` ativo, e o handshake do cliente é sempre escopado num projeto
+  por design (anti-contaminação). Migre-as manualmente ou aguarde o suporte.
+
+Também dá para rodar pela linha de comando:
+```bash
+node claude-code-boss/scripts/brain-migrate.js
+```
 
 **Identidade do projeto (recall entre máquinas/pastas)**: o cliente escopa a
 memória por um `projectId`. Por padrão ele é o **nome da pasta** (`basename` do
