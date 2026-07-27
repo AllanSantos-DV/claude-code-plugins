@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>claude-code-boss v2.19.0 — o acervo viaja junto, e a janela de 1M fica no seu controle</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. Na v2.19.0, trocar o backend para o memory server deixou de abandonar o que você já tinha: um botão Migrar agora no dashboard leva todo o KB local para o servidor, projeto a projeto, porque o daemon escopa a memória por project_id no handshake. Cada documento sobe com o id local, então rodar de novo atualiza em vez de duplicar e uma migração interrompida pode ser retomada. É fail-loud de ponta a ponta: fora do backend mcp-memory a migração recusa rodar, uma entrada que falha é reportada com a causa real e a contagem remota é conferida contra o que subiu. Na segunda frente, o model-router passou a dizer o preço que cobrava calado: ligado em qualquer modo diferente de off ele publica ANTHROPIC_BASE_URL, e o Claude Code, atrás de uma base_url que não é a oficial, orça a sessão em 200K mesmo nos modelos de 1M nativo. Medido na mesma máquina: 183k de 200k com o roteador ligado contra 68k de 1.0M com ele desligado. Agora o aviso aparece na sessão e no card Router, o contextTuning entrega a mesma economia de token com o roteador em off, sem publicar base_url e preservando a janela de 1M, e a telemetria de cache mostra cacheRead, cacheCreate e cacheHitPct para provar se o proxy compensa." />
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. Na v2.19.0, trocar o backend para o memory server deixou de abandonar o que você já tinha: um botão Migrar agora no dashboard leva todo o KB local para o servidor, projeto a projeto, porque o daemon escopa a memória por project_id no handshake. Cada documento sobe com o id local, então rodar de novo atualiza em vez de duplicar e uma migração interrompida pode ser retomada. É fail-loud de ponta a ponta: fora do backend mcp-memory a migração recusa rodar, uma entrada que falha é reportada com a causa real e a contagem remota é conferida contra o que subiu. Na segunda frente, o model-router passou a dizer o preço que cobrava calado: ligado em qualquer modo diferente de off ele publica ANTHROPIC_BASE_URL, e o Claude Code, atrás de uma base_url que não é a oficial, orça a sessão em 200K mesmo nos modelos de 1M nativo. Medido na mesma máquina: 183k de 200k com o roteador ligado contra 68k de 1.0M com ele desligado. Agora o aviso aparece na sessão e no card Router, o contextTuning entrega a mesma economia de token com o roteador em off, sem publicar base_url e preservando a janela de 1M, e a telemetria de cache mostra cacheRead, cacheCreate e cacheHitPct para provar se o proxy compensa. O release também carrega a v2.17.1, que converge a identidade do data-dir do daemon: a porta e o token passam a ser derivados do path canônico da pasta, e o brain-server segue o próprio veredito ao publicar o ponteiro ativo, eliminando o 401 que nascia de dois processos endereçando a mesma pasta de jeitos diferentes." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -997,6 +997,91 @@
   .an-foot b{ color:#a29f97 }
   .an-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
 
+  /* v2.17.1 : converge a IDENTIDADE do data-dir do daemon e elimina o 401 - duas causas-raiz da MESMA
+     classe (split-brain do data-dir entre processos). (1) resolvePort/tokenFile derivam de
+     canonicalDataDir (path.resolve + case-fold no win32), entao a mesma pasta logica escrita de jeitos
+     diferentes (/ vs \, caixa, relativo vs absoluto, -inline vs -<marketplace>) deixa de virar porta/token
+     DIFERENTES. (2) o index.js do brain-server publicava o ponteiro ativo mas nao seguia o proprio
+     veredito: quando o anti-regression guard recusava o candidato, ele seguia usando a pasta vazia
+     enquanto os hooks sem env seguiam o ponteiro pra pasta real - essa divergencia ERA o 401; agora os
+     dois caminhos passam pelo publishAndFollow(dir) compartilhado em scripts/lib/data-dir.js.
+     ASSINATURA: o REGISTRO DE GRAFIAS - a mesma pasta escrita 3x, 3 identidades derivadas, afuniladas
+     numa so pelo gate canonico. Device TIPOGRAFICO (a diferenca e o glifo, marcado em ambar), nao mais
+     um diagrama de caixas: a pagina ja tem quatro desses e nenhum deles fala de identidade. */
+  .ident{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:880px; font-family:var(--mono); margin:0 0 36px }
+  .ident code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .id-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .id-bar .k{ color:var(--accent) }
+  .id-bar .m{ color:#8a877f }
+
+  /* assinatura: o registro de grafias */
+  .id-reg{ padding:22px 22px 20px; border-bottom:1px solid rgba(255,255,255,.06) }
+  .id-reg-lead{ display:flex; flex-wrap:wrap; justify-content:space-between; gap:6px 16px;
+    font-size:9.5px; letter-spacing:.15em; text-transform:uppercase; color:var(--accent); margin:0 0 14px }
+  .id-reg-lead em{ font-style:normal }
+  .id-reg-lead .out{ color:#8a877f }
+  .id-row{ display:grid; grid-template-columns:minmax(0,1fr) 46px auto; align-items:center; gap:14px;
+    padding:10px 13px; border:1px dashed rgba(255,255,255,.22); border-radius:9px; margin:0 0 8px;
+    background:rgba(255,255,255,.02) }
+  .id-row:last-child{ margin:0 }
+  .id-row .id-path{ background:transparent; padding:0; font-size:11.5px; line-height:1.5; color:#a29f97; overflow-wrap:anywhere }
+  .id-row .id-path .g{ font-style:normal; font-weight:700; color:var(--accent) }
+  .id-arrow{ position:relative; height:1px; background:#6d6257 }
+  .id-arrow::after{ content:""; position:absolute; right:0; top:-3.5px;
+    border-left:6px solid #6d6257; border-top:3.5px solid transparent; border-bottom:3.5px solid transparent }
+  .id-chip{ display:flex; flex-direction:column; gap:2px; min-width:152px; text-align:right }
+  .id-chip b{ font-size:12.5px; font-weight:700; color:#a29f97 }
+  .id-chip i{ font-style:normal; font-size:9.5px; color:#6d6257 }
+  .id-funnel{ display:block; width:100%; height:36px; margin:12px 0 14px }
+  .id-funnel path{ fill:none; stroke:#6d6257; stroke-width:1.2; vector-effect:non-scaling-stroke }
+  .id-gate{ display:flex; flex-wrap:wrap; align-items:baseline; justify-content:center; gap:5px 14px;
+    max-width:580px; margin:0 auto 16px; padding:9px 16px; border:1px solid var(--accent); border-radius:9px; background:#1a130d }
+  .id-gate .k{ font-size:12px; font-weight:700; color:var(--accent) }
+  .id-gate .n{ font-size:10px; color:#8a877f }
+  .id-row--now{ border:1px solid var(--accent); background:#1a130d; margin:0 }
+  .id-row--now .id-path{ color:var(--panel-ink) }
+  .id-row--now .id-arrow{ background:var(--accent) }
+  .id-row--now .id-arrow::after{ border-left-color:var(--accent) }
+  .id-row--now .id-chip b{ color:var(--accent) }
+  .id-row--now .id-chip i{ color:#8a877f }
+  .id-verdict{ margin:14px 0 0; font-size:11px; line-height:1.6; color:#8a877f }
+  .id-verdict b{ color:#a29f97; font-weight:600 }
+  .id-tag{ display:inline-block; font-size:9px; letter-spacing:.13em; text-transform:uppercase;
+    color:var(--accent); border:1px solid var(--accent); border-radius:5px; padding:1px 7px; margin-right:9px }
+  .id-reg-note{ margin:11px 0 0; font-size:10.5px; line-height:1.6; color:#6d6257 }
+  .id-reg-note code{ font-size:10px; background:rgba(255,255,255,.05) }
+
+  /* a segunda metade: publica, rele, obedece */
+  .id-follow{ padding:20px 22px 18px; border-bottom:1px solid rgba(255,255,255,.06) }
+  .id-follow-lead{ display:block; font-size:9.5px; letter-spacing:.15em; text-transform:uppercase; color:var(--accent); margin:0 0 13px }
+  .id-seq{ display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin:0 0 16px; font-size:11.5px; color:#8a877f }
+  .id-seq .sep{ color:var(--accent); font-weight:700 }
+  .id-fork{ display:grid; grid-template-columns:1fr 1fr; gap:14px }
+  .id-branch{ display:flex; flex-direction:column; gap:9px; border-radius:10px; padding:14px 15px }
+  .id-branch--go{ border:1px dashed rgba(255,255,255,.24); background:transparent }
+  .id-branch--hold{ border:1px solid var(--accent); background:rgba(255,255,255,.05) }
+  .id-btag{ font-size:9.5px; letter-spacing:.14em; text-transform:uppercase; color:#8a877f }
+  .id-branch--hold .id-btag{ color:var(--accent) }
+  .id-bcond{ font-size:12.5px; line-height:1.4; font-weight:600; color:#a29f97 }
+  .id-branch--hold .id-bcond{ color:var(--panel-ink) }
+  .id-bnote{ font-size:11px; line-height:1.5; color:#8a877f }
+  .id-before{ margin:16px 0 0; padding:12px 14px; border:1px dashed rgba(255,255,255,.2); border-radius:9px;
+    font-size:11px; line-height:1.6; color:#8a877f }
+  .id-before s{ color:#6d6257; text-decoration-color:#6d6257 }
+  .id-before b{ color:#a29f97; font-weight:600 }
+
+  .id-rails{ display:grid; grid-template-columns:1fr 1fr; gap:12px; padding:18px 22px }
+  .id-rail{ border:1px solid var(--panel-line); border-radius:10px; padding:13px 14px; background:rgba(255,255,255,.025) }
+  .id-rail h4{ margin:0 0 8px; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent) }
+  .id-rail ul{ margin:0; padding:0; list-style:none; display:grid; gap:7px }
+  .id-rail li{ position:relative; padding-left:16px; font-size:11.5px; line-height:1.45; color:#a29f97 }
+  .id-rail li::before{ content:"\203a"; position:absolute; left:0; top:-1px; color:var(--accent); font-weight:700 }
+  .id-rail b{ color:var(--panel-ink); font-weight:600 }
+  .id-foot{ padding:14px 22px; border-top:1px solid var(--panel-line); font-size:11px; line-height:1.6; color:#8a877f }
+  .id-foot b{ color:#a29f97 }
+
   /* v2.18.0 : economia coordenada - auto-redirect da curacao (o caso raw-alias vira allow+updatedInput p/ um alias exato .ps1 e poupa 1 turno; o resto mantem o deny provado) + bundle de env do roteador ao ligar (ENABLE_TOOL_SEARCH religa o tool-search nativo; CLAUDE_CODE_AUTO_COMPACT_WINDOW capa o contexto ativo mantendo o 1M): cache_read/turno ~447k -> ~74-127k (~65-83% de corte). error-guard intacto (invariante no matcher Bash). */
   .eco{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
     box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:880px; font-family:var(--mono); margin:0 0 36px }
@@ -1196,7 +1281,7 @@
   .frow{ display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between }
   .flinks a{ margin-right:16px }
 
-  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .rr-stage{ grid-template-columns:1fr } .rr-rails{ grid-template-columns:1fr } .rr-steps{ flex-direction:column; align-items:stretch } .an-stage{ grid-template-columns:1fr } .an-rails{ grid-template-columns:1fr } .an-steps{ flex-direction:column; align-items:stretch } .eco-hero{ grid-template-columns:1fr } .eco-fork{ grid-template-columns:1fr } .eco-rails{ grid-template-columns:1fr } .mig-flow{ grid-template-columns:1fr } .mig-cross{ min-width:0 } .mig-cline{ width:60% } .mig-guards{ grid-template-columns:1fr } .ctx-row{ grid-template-columns:1fr; gap:9px } .ctx-sp{ display:none } .ctx-rval{ text-align:left } .ctx-fork{ grid-template-columns:1fr } .ctx-fields{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
+  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .rr-stage{ grid-template-columns:1fr } .rr-rails{ grid-template-columns:1fr } .rr-steps{ flex-direction:column; align-items:stretch } .an-stage{ grid-template-columns:1fr } .an-rails{ grid-template-columns:1fr } .an-steps{ flex-direction:column; align-items:stretch } .id-row{ grid-template-columns:1fr; gap:9px } .id-arrow{ display:none } .id-chip{ text-align:left; min-width:0 } .id-fork{ grid-template-columns:1fr } .id-rails{ grid-template-columns:1fr } .eco-hero{ grid-template-columns:1fr } .eco-fork{ grid-template-columns:1fr } .eco-rails{ grid-template-columns:1fr } .mig-flow{ grid-template-columns:1fr } .mig-cross{ min-width:0 } .mig-cline{ width:60% } .mig-guards{ grid-template-columns:1fr } .ctx-row{ grid-template-columns:1fr; gap:9px } .ctx-sp{ display:none } .ctx-rval{ text-align:left } .ctx-fork{ grid-template-columns:1fr } .ctx-fields{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
   @media (prefers-reduced-motion:reduce){ .caret{ animation:none } .reveal{ opacity:1 !important; transform:none !important } }
   .reveal{ opacity:0; transform:translateY(14px); animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards }
   @keyframes rise{ to{ opacity:1; transform:none } }
@@ -1262,7 +1347,7 @@
       <div class="cell">
         <p class="kick">KB coeso</p>
         <h3>Uma pasta, um backend</h3>
-        <p>Todos os pontos de escrita (daemon HTTP, hooks, MCP stdio, dashboard e CLI) concordam na <b>mesma</b> pasta e no <b>mesmo</b> backend, com a escolha de backend no <b>global</b>. A consolidação das pastas irmãs mira a pasta <b>REAL</b> da sessão (o brain-server dispara com <code>--active-dir</code>), o ponteiro <b>nunca regride</b> de uma pasta viva para uma quase-vazia, e nada é apagado sem <b>ler de volta</b> pra provar que foi absorvido (backup primeiro).</p>
+        <p>Todos os pontos de escrita (daemon HTTP, hooks, MCP stdio, dashboard e CLI) concordam na <b>mesma</b> pasta e no <b>mesmo</b> backend, com a escolha de backend no <b>global</b>. Também concordam na <b>identidade</b>: a porta e o token do daemon saem do <b>path canônico</b> da pasta, então escrevê-la de outro jeito não cria um segundo endereço, e quem publica o ponteiro <b>relê e obedece</b> o que ficou gravado. A consolidação das pastas irmãs mira a pasta <b>REAL</b> da sessão (o brain-server dispara com <code>--active-dir</code>), o ponteiro <b>nunca regride</b> de uma pasta viva para uma quase-vazia, e nada é apagado sem <b>ler de volta</b> pra provar que foi absorvido (backup primeiro).</p>
       </div>
       <div class="cell">
         <p class="kick">Aprendizado no loop</p>
@@ -1577,6 +1662,127 @@
     </div>
 
     <p class="trust"><b>Rigor de sempre:</b> o handoff e o plano da mesa foram <b>re-verificados na FONTE</b> (corrigidas imprecisões de path e uma extração que furaria a cerca do <code>error-guard</code>), com <b>TDD RED→GREEN</b> em cada parte e o gate rodado <b>2× estável</b> (<b>107</b> suítes de hooks + <b>717</b> unitários, <b>0</b> falhas). A reescrita da curação é auto-consistente: o comando reescrito passa no <b>próprio allow-path</b> do guard, e o <code>error-guard</code> segue intacto, provado por um teste de invariante que barra qualquer <code>updatedInput</code> ou <code>ask</code> do hook-irmão no matcher <code>Bash</code>. No roteador, os helpers são <b>puros</b>: <code>resolveAutoCompactWindow</code> faz clamp em <code>[50000, 1000000]</code> e avisa quando ajusta, <code>planEnableEnv</code> só preenche o que está ausente (não sobrescreve um valor seu) e <code>planDisableEnv</code> remove apenas o valor do boss, então nada fica órfão. O teto shipado é <b>200 mil</b>, no <code>router-config.json</code>, override-ável por <code>readConfig()</code>.</p>
+  </section>
+
+
+  <section>
+    <p class="label">Novo na v2.17.1 · uma pasta, uma identidade só</p>
+    <p class="lede">O Brain podia deixar de falar consigo mesmo e devolver um <b>401</b> sem nenhuma credencial errada. A pasta de dados era a mesma, só que cada processo a escrevia de um jeito, e a <b>porta</b> e o <b>token</b> do daemon nasciam dessa string, letra por letra: grafia diferente, endereço diferente. O daemon subia numa porta, o hook batia em outra. A v2.17.1 deriva a identidade do <b>path canônico</b> e faz quem publica o ponteiro ativo <b>obedecer ao próprio veredito</b>.</p>
+
+    <div class="callout">
+      <span class="tag">o 401 não era senha, era endereço</span>
+      Quando o guard anti-regressão recusava o candidato do <code>index.js</code> (mais leve ou vazio que o ponteiro já publicado), o processo continuava derivando porta, token e consolidação da pasta <b>vazia</b>, onde não existia <code>brain-http.token</code>, enquanto todo hook sem env seguia o ponteiro para a <b>outra</b> pasta, a real. Dois processos, dois endereços, um 401.
+    </div>
+
+    <div class="ident" aria-label="Artefato da versão 2.17.1: o registro de grafias. No topo, três linhas mostram a MESMA pasta de dados escrita de três jeitos diferentes: com barras invertidas, com barras normais e em outra caixa de letras, com os caracteres que diferem destacados em âmbar. Cada linha aponta para uma identidade derivada diferente, cada uma com sua própria porta. Abaixo, as três linhas convergem num funil até um portão único chamado canonicalDataDir, que faz path.resolve, unifica os separadores do sistema e dobra a caixa no Windows. Depois do portão, uma única linha: qualquer grafia cai na mesma porta e no mesmo arquivo de token. Em seguida, a segunda metade da correção: publica, relê, obedece. A sequência mostra writeActivePointer com o candidato, depois a releitura do ponteiro, depois o uso do que voltou. Duas ramificações: quando o guard aceita o candidato, o processo segue o candidato, que é a publicação normal; quando o guard recusa um candidato mais leve ou vazio, o processo segue o ponteiro e não o candidato, então porta, token e consolidação saem da pasta real. Abaixo, riscado, o comportamento antigo: o index.js publicava e continuava usando o candidato recusado. No rodapé, duas colunas detalham as duas metades do mesmo bug e por que a divergência virava 401.">
+      <div class="id-bar">
+        <span class="k">v2.17.1</span>
+        <span class="m">uma pasta lógica · uma identidade</span>
+      </div>
+
+      <div class="id-reg">
+        <p class="id-reg-lead"><em>a mesma pasta, três grafias</em><em class="out">três identidades derivadas</em></p>
+
+        <div class="id-row">
+          <code class="id-path">C:<i class="g">\</i>Users<i class="g">\</i>allan<i class="g">\</i>.claude<i class="g">\</i>plugins<i class="g">\</i>data<i class="g">\</i>claude-code-boss</code>
+          <span class="id-arrow" aria-hidden="true"></span>
+          <span class="id-chip"><b>:51834</b><i>o que o chamador passa</i></span>
+        </div>
+        <div class="id-row">
+          <code class="id-path">C:<i class="g">/</i>Users<i class="g">/</i>allan<i class="g">/</i>.claude<i class="g">/</i>plugins<i class="g">/</i>data<i class="g">/</i>claude-code-boss</code>
+          <span class="id-arrow" aria-hidden="true"></span>
+          <span class="id-chip"><b>:57002</b><i>o que o lockfile gravou</i></span>
+        </div>
+        <div class="id-row">
+          <code class="id-path"><i class="g">c</i>:\<i class="g">u</i>sers\allan\.claude\plugins\data\<i class="g">C</i>laude-<i class="g">C</i>ode-<i class="g">B</i>oss</code>
+          <span class="id-arrow" aria-hidden="true"></span>
+          <span class="id-chip"><b>:49930</b><i>a mesma pasta, outra caixa</i></span>
+        </div>
+
+        <svg class="id-funnel" viewBox="0 0 400 36" preserveAspectRatio="none" role="img" aria-label="As três grafias convergem para um único ponto.">
+          <path d="M64 0 C64 17 200 23 200 36"></path>
+          <path d="M200 0 V36"></path>
+          <path d="M336 0 C336 17 200 23 200 36"></path>
+        </svg>
+
+        <p class="id-gate">
+          <span class="k">canonicalDataDir()</span>
+          <span class="n">path.resolve · separadores do sistema · caixa dobrada no Windows</span>
+        </p>
+
+        <p class="id-reg-lead"><em>qualquer grafia</em><em class="out">uma identidade só</em></p>
+        <div class="id-row id-row--now">
+          <code class="id-path">C:\Users\allan\.claude\plugins\data\claude-code-boss</code>
+          <span class="id-arrow" aria-hidden="true"></span>
+          <span class="id-chip"><b>:51834</b><i>uma porta, um brain-http.token</i></span>
+        </div>
+
+        <p class="id-verdict"><span class="id-tag">o que isso te dava</span> Três números para a mesma pasta significavam um daemon escutando num endereço e um cliente batendo noutro. Quando a máquina ainda tinha <b>duas identidades de instalação</b> convivendo (<code>-inline</code> e <code>-&lt;marketplace&gt;</code>), o token lido vinha de um arquivo que <b>aquele</b> servidor nunca tinha escrito.</p>
+        <p class="id-reg-note">Portas ilustrativas: a real sai de um <code>sha256</code> do path canônico, na faixa <code>49152-65535</code>. O que importa é que três strings davam <b>três</b> números para uma pasta só, e agora dão <b>um</b>.</p>
+      </div>
+
+      <div class="id-follow">
+        <p class="id-follow-lead">a segunda metade · publica, relê, obedece</p>
+        <p class="id-seq"><code>writeActivePointer(candidato)</code><span class="sep">&rsaquo;</span><code>relê o ponteiro</code><span class="sep">&rsaquo;</span><code>usa o que voltou</code></p>
+
+        <div class="id-fork">
+          <div class="id-branch id-branch--go">
+            <span class="id-btag">o guard aceita o candidato</span>
+            <span class="id-bcond">segue o candidato</span>
+            <span class="id-bnote">É a pasta mais viva, então a publicação vale. Caminho normal, sem surpresa.</span>
+          </div>
+          <div class="id-branch id-branch--hold">
+            <span class="id-btag">o guard recusa (candidato mais leve ou vazio)</span>
+            <span class="id-bcond">segue o ponteiro, não o candidato</span>
+            <span class="id-bnote">Porta, token e consolidação saem da pasta <b>real</b>, nunca mais da vazia.</span>
+          </div>
+        </div>
+
+        <p class="id-before"><s>Antes: o <code>index.js</code> publicava o ponteiro e seguia usando o candidato recusado.</s> Ele tinha a própria cópia da lógica e ignorava a recusa, enquanto o <code>dataDir()</code> obedecia. Agora os dois passam pelo <b>mesmo</b> <code>publishAndFollow(dir)</code>, em <code>scripts/lib/data-dir.js</code>.</p>
+      </div>
+
+      <div class="id-rails">
+        <div class="id-rail">
+          <h4>As duas metades do mesmo bug</h4>
+          <ul>
+            <li><b>Identidade normalizada</b>: <code>resolvePort</code> e <code>tokenFile</code> passam pelo <code>canonicalDataDir</code> antes de derivar porta e token. Uma <code>path.resolve</code>, mais a caixa dobrada no Windows, e a pasta vira <b>uma</b> chave.</li>
+            <li><b>Publica e segue</b>: <code>publishAndFollow(dir)</code> grava o ponteiro, relê o que ficou lá e devolve o valor do ponteiro quando o candidato perde para o guard.</li>
+            <li><b>Um caminho só</b>: o branch de env do <code>dataDir()</code> e o <code>index.js</code> do brain-server chamam a <b>mesma</b> função, então não sobrou uma segunda cópia para divergir.</li>
+          </ul>
+        </div>
+        <div class="id-rail">
+          <h4>Por que virava 401</h4>
+          <ul>
+            <li>O lockfile gravava <code>C:/Users/...</code> e o chamador passava <code>C:\Users\...</code>. Mesma pasta, <b>duas</b> portas: o daemon escutava numa, o cliente batia na outra.</li>
+            <li>Com duas instalações convivendo, o token vinha de um arquivo que <b>aquele</b> servidor nunca escreveu, e a resposta era <b>401</b> mesmo com tudo no lugar.</li>
+            <li>O <code>index.js</code> ficava na pasta recusada, sem <code>brain-http.token</code>, e os hooks sem env seguiam o ponteiro para a real. Essa divergência <b>era</b> o 401.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="id-foot"><b>Escopo real:</b> nada aqui muda o que você faz no dia a dia. É o daemon deixando de sustentar duas identidades para a mesma pasta, que era como um <b>401</b> aparecia sem nenhuma credencial errada. A derivação também <b>falha alto</b> quando o <code>dataDir</code> chega vazio ou <code>undefined</code>, em vez de gerar uma porta plausível de <code>String(undefined)</code> e subir um daemon fantasma que ninguém encontra. E a rede da v2.17.0 segue valendo: o ponteiro <b>não regride</b> de uma pasta viva para uma quase-vazia, e nenhuma irmã é apagada sem ser lida de volta.</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>Grafia diferente, mesma identidade</h4>
+        <p><code>resolvePort</code> e <code>tokenFile</code> derivam do <b>path canônico</b>. Escrever a mesma pasta com <code>/</code> ou <code>\</code>, em outra caixa ou por outro caminho não cria mais um segundo daemon com outro endereço.</p>
+      </div>
+      <div class="win">
+        <h4>Quem publica, obedece</h4>
+        <p><code>publishAndFollow(dir)</code> publica o ponteiro, <b>relê</b> e devolve o que ficou gravado quando o candidato perde para o guard. O <code>index.js</code> parou de usar uma pasta que ele mesmo recusou.</p>
+      </div>
+      <div class="win">
+        <h4>Uma implementação, não duas cópias</h4>
+        <p>O <code>dataDir()</code> e o <code>index.js</code> do brain-server passam pela <b>mesma</b> função em <code>scripts/lib/data-dir.js</code>. Não sobrou uma segunda cópia da lógica capaz de divergir de novo.</p>
+      </div>
+      <div class="win">
+        <h4>Sem daemon fantasma</h4>
+        <p>Com o <code>dataDir</code> vazio ou <code>undefined</code>, a derivação <b>falha alto</b>. Antes, dava para sair uma porta plausível de <code>String(undefined)</code> e subir um daemon que ninguém ia encontrar.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Honesto sobre o alcance:</b> isto é convergência de identidade, não comportamento novo. O daemon já deveria ter sido consistente consigo mesmo, e a v2.17.1 remove a possibilidade de ele não ser. As duas metades atacam a <b>mesma</b> classe de bug (split-brain do data-dir entre processos) e a segunda foi fechada extraindo uma implementação única, em vez de remendar o sintoma nos dois lados. Gate <b>699/0</b> local, <code>brain-health</code> confirmando o probe ativo saudável (<code>{}</code>, sem defeitos) e CI verde na branch. <a href="https://github.com/AllanSantos-DV/claude-code-plugins/pull/44">PR #44</a>.</p>
   </section>
 
 
@@ -3264,7 +3470,7 @@
     <div class="flow">
       <p class="label">Como funciona</p>
       <div class="steps">
-        <div class="step"><div class="n"></div><p>Antes de qualquer coisa, um <b>resolvedor canônico</b> faz todos os escritores (daemon HTTP, hooks, MCP stdio, dashboard, CLI) concordarem na <b>mesma pasta</b> e no <b>mesmo backend</b>, com a escolha de backend morando no global. A consolidação das pastas irmãs órfãs agora é disparada pelo <b>brain-server</b> (o único processo que recebe o <code>--plugin-data</code> real), que a fixa na pasta <b>REAL</b> da sessão com <code>--active-dir</code>; o ponteiro ativo <b>nunca regride</b> de uma pasta viva para uma quase-vazia, e nenhuma irmã é apagada sem <b>ler de volta</b> e provar que foi absorvida (backup primeiro). É <b>best-effort</b> e não bloqueia o startup.</p></div>
+        <div class="step"><div class="n"></div><p>Antes de qualquer coisa, um <b>resolvedor canônico</b> faz todos os escritores (daemon HTTP, hooks, MCP stdio, dashboard, CLI) concordarem na <b>mesma pasta</b> e no <b>mesmo backend</b>, com a escolha de backend morando no global. A <b>identidade</b> do daemon (porta e token) é derivada do <b>path canônico</b> dessa pasta, então duas grafias da mesma pasta não viram dois endereços, e quem publica o ponteiro ativo <b>relê e obedece</b> o que ficou publicado. A consolidação das pastas irmãs órfãs agora é disparada pelo <b>brain-server</b> (o único processo que recebe o <code>--plugin-data</code> real), que a fixa na pasta <b>REAL</b> da sessão com <code>--active-dir</code>; o ponteiro ativo <b>nunca regride</b> de uma pasta viva para uma quase-vazia, e nenhuma irmã é apagada sem <b>ler de volta</b> e provar que foi absorvida (backup primeiro). É <b>best-effort</b> e não bloqueia o startup.</p></div>
         <div class="step"><div class="n"></div><p>Toda memória exige uma <b>identidade de projeto estável</b>: um <b>git-remote normalizado</b> (<code>host/owner/repo</code>) ou um <code>.memory/project.json</code> na raiz. Sem ela, a ingestão <b>bloqueia</b> com um aviso acionável, em vez de inventar escopo do nome da pasta. O marcador legado <code>.claude-boss-project</code> é lido <b>read-only</b>, com um <b>nudge</b> pra migrar: o plugin <b>nunca</b> cria o arquivo por você.</p></div>
         <div class="step"><div class="n"></div><p>Você escreve um prompt. O hook <b>UserPromptSubmit</b> chama o Brain e injeta o bloco <b>[BRAIN]</b>: no backend externo, os fatos vêm com o trecho casado e as capacidades como ponteiros. Numa <b>subpasta</b>, o recall <b>une</b> os projetos do CWD até a raiz da sessão: o <code>compose_recall</code> foca no CWD e um <code>search_memory</code> <b>lazy</b> traz os ancestrais que existem (timeout de 500ms degrada para compose-only). Em paralelo, outro <b>search_memory</b> não-injetado aquece o pool home: sinal pro Dreaming, sem tocar no que você vê.</p></div>
         <div class="step"><div class="n"></div><p>O agente age com a memória do projeto à mão, escopada por um id estável, sem puxar contexto de outro projeto.</p></div>
