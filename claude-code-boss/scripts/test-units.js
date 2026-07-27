@@ -731,6 +731,53 @@ test('brain daemon path normalization: same dir, different spelling → SAME por
   assert(threw, 'tokenFile("undefined") must throw, not build a phantom token path');
 });
 
+test('brain-server/index.js: DATA_DIR follows the pointer verdict, not just publishes it', () => {
+  // Regression (the OTHER half of the 401 fix): index.js used to call
+  // writeActivePointer(DATA_DIR) and then keep using DATA_DIR regardless of
+  // whether that publish was ACCEPTED. When a marketplace launch hands index.js
+  // a valid-but-empty sibling env dir while the pointer already names a heavier
+  // live folder, writeActivePointer refuses to move the pointer — but index.js
+  // kept deriving its port/token/consolidation target from the empty dir anyway.
+  // That's the daemon spawner operating on a folder with no brain-http.token,
+  // while every env-less hook follows the pointer to the OTHER, real folder.
+  // Exercised here via the SAME publishAndFollow helper index.js now calls
+  // (spawning the real index.js as a child is unnecessary — this is a pure
+  // function of data-dir.js, and the daemon test below proves it wired in).
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-idx-ddir-'));
+  const dataBase = path.join(home, '.claude', 'plugins', 'data');
+  const live = path.join(dataBase, 'claude-code-boss-inline');
+  const stray = path.join(dataBase, 'claude-code-boss-mkt');
+  fs.mkdirSync(path.join(live, 'brain', 'proj'), { recursive: true });
+  fs.writeFileSync(path.join(live, 'brain', 'proj', 'brain.db'), 'x'.repeat(4096));
+  fs.mkdirSync(stray, { recursive: true }); // exists, but weightless
+
+  const homeVar = process.platform === 'win32' ? 'USERPROFILE' : 'HOME';
+  const prevHome = process.env[homeVar];
+  process.env[homeVar] = home;
+  try {
+    const dd = require('./lib/data-dir.js');
+    dd.writeActivePointer(live); // pointer already names the heavier live folder
+    assertEq(dd.readActivePointer(), live);
+
+    // The exact call index.js makes: publish the marketplace-launch env dir...
+    const resolved = dd.publishAndFollow(stray);
+    // ...must FOLLOW the pointer's verdict, not keep using the empty candidate.
+    assertEq(resolved, live, 'index.js DATA_DIR must follow the heavier pointer, not the empty env dir');
+    assertEq(dd.readActivePointer(), live, 'pointer must not regress to the lighter stray');
+  } finally {
+    if (prevHome === undefined) delete process.env[homeVar]; else process.env[homeVar] = prevHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('brain-server/index.js: source calls publishAndFollow (not a bare writeActivePointer-then-use)', () => {
+  // Structural guard so the two paths (dataDir()'s env branch and this file's
+  // publish) can never drift apart again — the drift itself was the bug.
+  const src = fs.readFileSync(path.join(ROOT, 'servers', 'brain-server', 'index.js'), 'utf-8');
+  assert(/publishAndFollow\(/.test(src),
+    'servers/brain-server/index.js must resolve DATA_DIR via data-dir.js publishAndFollow (not writeActivePointer alone)');
+});
+
 // ─── MCP HTTP (StreamableHTTP) transport + remote mappings ───────────────────
 const http = require('http');
 
