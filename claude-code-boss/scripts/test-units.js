@@ -698,6 +698,86 @@ test('SP6 brain daemon requestAllowed: origin guard (DNS-rebinding) + token auth
   assertEq(noOrigin.ok, true);
 });
 
+test('brain daemon path normalization: same dir, different spelling → SAME port + token file', async () => {
+  const fileUrl = require('url').pathToFileURL(
+    path.join(ROOT, 'servers', 'brain-server', 'lib', 'daemon-common.js'),
+  ).href;
+  const { resolvePort, tokenFile, lockFile, canonicalDataDir } = await import(fileUrl);
+  // NOTE: deliberately does NOT mutate process.env.BRAIN_HTTP_PORT — this runner runs
+  // async tests concurrently, so touching global env races the daemon tests. tokenFile/
+  // lockFile/canonicalDataDir ignore env, so they prove canonicalization in isolation;
+  // resolvePort equality holds under BOTH regimes (env set → both = env; unset → both =
+  // same hash), so it can't false-pass regardless of ambient BRAIN_HTTP_PORT.
+  // The exact bug is Windows-only: on POSIX "\" is not a separator, so back-slash
+  // spellings aren't the "same dir". The lockfile records forward slashes, other callers
+  // pass back slashes; both must map to one port/token/lock.
+  if (process.platform === 'win32') {
+    const back = 'C:\\Users\\me\\.claude\\plugins\\data\\ccb';
+    const fwd = 'C:/Users/me/.claude/plugins/data/ccb';
+    const mixedCase = 'C:\\users\\ME\\.claude\\plugins\\data\\CCB'; // Windows FS is case-insensitive
+    assertEq(resolvePort(back), resolvePort(fwd));            // one identity → one port
+    assertEq(resolvePort(back), resolvePort(mixedCase));     // case-fold → same port
+    assertEq(tokenFile(back), tokenFile(fwd));               // one identity → one secret
+    assertEq(lockFile(back), lockFile(fwd));                 // one identity → one lock
+    assertEq(canonicalDataDir(back), canonicalDataDir(fwd)); // canonical form agrees
+  }
+  // Relative vs absolute of the SAME dir converge everywhere (path.resolve anchors to cwd).
+  assertEq(tokenFile('sub/../ccb-x'), tokenFile(path.resolve('ccb-x')));
+  assertEq(resolvePort('sub/../ccb-x'), resolvePort(path.resolve('ccb-x')));
+  // A missing/undefined dataDir FAILS LOUD instead of hashing String(undefined).
+  let threw = false; try { resolvePort(undefined); } catch { threw = true; }
+  assert(threw, 'resolvePort(undefined) must throw, not derive a phantom port');
+  threw = false; try { tokenFile('undefined'); } catch { threw = true; }
+  assert(threw, 'tokenFile("undefined") must throw, not build a phantom token path');
+});
+
+test('brain-server/index.js: DATA_DIR follows the pointer verdict, not just publishes it', () => {
+  // Regression (the OTHER half of the 401 fix): index.js used to call
+  // writeActivePointer(DATA_DIR) and then keep using DATA_DIR regardless of
+  // whether that publish was ACCEPTED. When a marketplace launch hands index.js
+  // a valid-but-empty sibling env dir while the pointer already names a heavier
+  // live folder, writeActivePointer refuses to move the pointer — but index.js
+  // kept deriving its port/token/consolidation target from the empty dir anyway.
+  // That's the daemon spawner operating on a folder with no brain-http.token,
+  // while every env-less hook follows the pointer to the OTHER, real folder.
+  // Exercised here via the SAME publishAndFollow helper index.js now calls
+  // (spawning the real index.js as a child is unnecessary — this is a pure
+  // function of data-dir.js, and the daemon test below proves it wired in).
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-idx-ddir-'));
+  const dataBase = path.join(home, '.claude', 'plugins', 'data');
+  const live = path.join(dataBase, 'claude-code-boss-inline');
+  const stray = path.join(dataBase, 'claude-code-boss-mkt');
+  fs.mkdirSync(path.join(live, 'brain', 'proj'), { recursive: true });
+  fs.writeFileSync(path.join(live, 'brain', 'proj', 'brain.db'), 'x'.repeat(4096));
+  fs.mkdirSync(stray, { recursive: true }); // exists, but weightless
+
+  const homeVar = process.platform === 'win32' ? 'USERPROFILE' : 'HOME';
+  const prevHome = process.env[homeVar];
+  process.env[homeVar] = home;
+  try {
+    const dd = require('./lib/data-dir.js');
+    dd.writeActivePointer(live); // pointer already names the heavier live folder
+    assertEq(dd.readActivePointer(), live);
+
+    // The exact call index.js makes: publish the marketplace-launch env dir...
+    const resolved = dd.publishAndFollow(stray);
+    // ...must FOLLOW the pointer's verdict, not keep using the empty candidate.
+    assertEq(resolved, live, 'index.js DATA_DIR must follow the heavier pointer, not the empty env dir');
+    assertEq(dd.readActivePointer(), live, 'pointer must not regress to the lighter stray');
+  } finally {
+    if (prevHome === undefined) delete process.env[homeVar]; else process.env[homeVar] = prevHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('brain-server/index.js: source calls publishAndFollow (not a bare writeActivePointer-then-use)', () => {
+  // Structural guard so the two paths (dataDir()'s env branch and this file's
+  // publish) can never drift apart again — the drift itself was the bug.
+  const src = fs.readFileSync(path.join(ROOT, 'servers', 'brain-server', 'index.js'), 'utf-8');
+  assert(/publishAndFollow\(/.test(src),
+    'servers/brain-server/index.js must resolve DATA_DIR via data-dir.js publishAndFollow (not writeActivePointer alone)');
+});
+
 // ─── MCP HTTP (StreamableHTTP) transport + remote mappings ───────────────────
 const http = require('http');
 
@@ -858,6 +938,268 @@ test('brain-backend searchMcp (F2): opts.projectIds → metadata.project_id LIST
     delete require.cache[require.resolve('./brain-backend.js')];
     await daemon.close();
   }
+});
+
+// ─── brain-migrate: KB local → mcp-memory (Pilar 1 — motor puro/testável) ─────
+// Migra PROJETO a PROJETO (o daemon escopa por projectId no handshake), lê as
+// entradas locais e grava idempotente no daemon (documentId=id → UPSERT). Fail-loud:
+// uma falha por entrada é COLETADA (nunca engolida) e derruba ok→false, sem abortar o resto.
+
+test('brain-migrate: happy path — migra todos os projetos/entradas, ok:true, writeEntry(entry, project)', async () => {
+  const mig = require('./brain-migrate.js');
+  const calls = [];
+  const r = await mig.migrateLocalToMcp({}, {
+    enumerateProjects: async () => ['projA', 'projB'],
+    readEntries: async (p) => p === 'projA' ? [{ id: 'a1' }, { id: 'a2' }] : [{ id: 'b1' }],
+    writeEntry: async (entry, project) => { calls.push([project, entry.id]); },
+  });
+  assertEq(r.ok, true);
+  assertEq(r.totalProjects, 2);
+  assertEq(r.totalEntries, 3);
+  assertEq(r.migrated, 3);
+  assertEq(r.failed.length, 0);
+  assertEq(calls, [['projA', 'a1'], ['projA', 'a2'], ['projB', 'b1']], 'writeEntry recebe (entry, project) por entrada, na ordem');
+  assertEq(r.perProject.find(x => x.project === 'projA').migrated, 2);
+});
+
+test('brain-migrate: fail-loud — writeEntry que joga NÃO aborta; coleta a falha e ok:false', async () => {
+  const mig = require('./brain-migrate.js');
+  const r = await mig.migrateLocalToMcp({}, {
+    enumerateProjects: async () => ['projA'],
+    readEntries: async () => [{ id: 'a1' }, { id: 'a2' }, { id: 'a3' }],
+    writeEntry: async (entry) => { if (entry.id === 'a2') throw new Error('add_document isError: boom'); },
+  });
+  assertEq(r.ok, false, 'qualquer falha → ok:false (nunca sucesso silencioso)');
+  assertEq(r.migrated, 2, 'as outras entradas seguem migrando');
+  assertEq(r.failed.length, 1);
+  assertEq(r.failed[0].id, 'a2');
+  assertEq(r.failed[0].project, 'projA');
+  assert(/boom/.test(r.failed[0].error), 'a causa real da falha é preservada (loud)');
+});
+
+test('brain-migrate: read que joga isola o projeto — reporta falha de leitura e continua os demais', async () => {
+  const mig = require('./brain-migrate.js');
+  const r = await mig.migrateLocalToMcp({}, {
+    enumerateProjects: async () => ['bad', 'good'],
+    readEntries: async (p) => { if (p === 'bad') throw new Error('db locked'); return [{ id: 'g1' }]; },
+    writeEntry: async () => {},
+  });
+  assertEq(r.ok, false);
+  assertEq(r.migrated, 1, 'o projeto bom migra mesmo com o ruim falhando na leitura');
+  const badFail = r.failed.find(f => f.project === 'bad');
+  assert(badFail && /db locked/.test(badFail.error), 'falha de leitura reportada com a causa');
+  assertEq(badFail.phase, 'read', 'a fase da falha é sinalizada');
+});
+
+test('brain-migrate: nada a migrar → ok:true, migrated:0 (ausência ≠ erro)', async () => {
+  const mig = require('./brain-migrate.js');
+  const r = await mig.migrateLocalToMcp({}, {
+    enumerateProjects: async () => [],
+    readEntries: async () => [],
+    writeEntry: async () => { throw new Error('should not be called'); },
+  });
+  assertEq(r.ok, true);
+  assertEq(r.migrated, 0);
+  assertEq(r.totalEntries, 0);
+});
+
+test('brain-migrate: passa a ENTRADA INTEIRA a writeEntry (p/ fixar documentId=id downstream)', async () => {
+  const mig = require('./brain-migrate.js');
+  let seen = null;
+  const full = { id: 'x1', title: 't', summary: 's', content: { detail: 'd' }, type: 'lesson', tags: ['k'], scope: 'project' };
+  await mig.migrateLocalToMcp({}, {
+    enumerateProjects: async () => ['p'],
+    readEntries: async () => [full],
+    writeEntry: async (entry) => { seen = entry; },
+  });
+  assertEq(seen, full, 'a entrada é repassada intacta (id preservado p/ UPSERT idempotente)');
+});
+
+test('brain-migrate: onProgress por entrada migrada com contagem cumulativa', async () => {
+  const mig = require('./brain-migrate.js');
+  const prog = [];
+  await mig.migrateLocalToMcp({}, {
+    enumerateProjects: async () => ['p'],
+    readEntries: async () => [{ id: '1' }, { id: '2' }],
+    writeEntry: async () => {},
+    onProgress: (ev) => prog.push(ev),
+  });
+  assertEq(prog.length, 2);
+  assertEq(prog[1].done, 2);
+  assertEq(prog[1].total, 2);
+  assertEq(prog[1].project, 'p');
+});
+
+test('brain-migrate defaultWriteEntry: handshake escopa no projeto + add_document documentId=id (idempotente)', async () => {
+  const daemon = await startFakeDaemon({ toolResult: (p) => ({ content: [{ type: 'text', text: 'Document added with ID: ' + ((p.arguments && p.arguments.documentId) || 'x') }] }) });
+  delete require.cache[require.resolve('./brain-backend.js')];
+  const backend = require('./brain-backend.js');
+  backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
+  delete require.cache[require.resolve('./brain-migrate.js')];
+  const mig = require('./brain-migrate.js');
+  try {
+    await mig.__testHooks.defaultWriteEntry({ id: 'e1', title: 't', summary: 's', content: { detail: 'd' }, type: 'lesson', tags: ['k'] }, 'projX');
+    assertEq(daemon.seen.initProjectId, 'projX', 'a escrita escopa no projeto pelo handshake');
+    assertEq(daemon.seen.callArgs.name, 'add_document', 'grava via add_document');
+    assertEq(daemon.seen.callArgs.arguments.documentId, 'e1', 'documentId=id → UPSERT idempotente (re-run seguro, sem duplicar)');
+    await backend.close();
+  } finally {
+    delete require.cache[require.resolve('./brain-backend.js')];
+    delete require.cache[require.resolve('./brain-migrate.js')];
+    await daemon.close();
+  }
+});
+
+test('brain-migrate defaultWriteEntry: backend NÃO mcp-memory → ERRO ALTO (nunca grava local escondido)', async () => {
+  delete require.cache[require.resolve('./brain-backend.js')];
+  const backend = require('./brain-backend.js');
+  backend.__testHooks._injectConfig({ backend: { type: 'local' } });
+  delete require.cache[require.resolve('./brain-migrate.js')];
+  const mig = require('./brain-migrate.js');
+  let threw = false;
+  try {
+    await mig.__testHooks.defaultWriteEntry({ id: 'x', title: 't', summary: 's' }, 'p');
+  } catch (e) {
+    threw = true;
+    assert(/mcp-memory/.test(e.message), 'o erro nomeia o requisito mcp-memory (alvo do daemon)');
+  }
+  delete require.cache[require.resolve('./brain-backend.js')];
+  delete require.cache[require.resolve('./brain-migrate.js')];
+  assertEq(threw, true, 'migração NUNCA grava no store local em silêncio — falha alto (fail-loud)');
+});
+
+test('brain-migrate defaultReadEntries: lê entradas locais full-fidelity de um projeto', () => {
+  runBrainScenario(`
+    await backend.init({project:'projR',skipEmbedder:true});
+    await backend.save({id:'r1',type:'lesson',title:'T1',summary:'S1',content:{detail:'D1'},tags:['a'],confidence:0.8});
+    await backend.save({id:'r2',type:'note',title:'T2',summary:'S2',content:{detail:'D2'}});
+    await backend.close();
+    const mig=require(process.env.CLAUDE_PLUGIN_ROOT+'/scripts/brain-migrate.js');
+    const entries=await mig.__testHooks.defaultReadEntries('projR');
+    assert(entries.length===2,'lê as 2 entradas do projeto');
+    const r1=entries.find(e=>e&&e.id==='r1');
+    assert(r1,'entrada r1 presente');
+    assert(r1.content,'full-fidelity: content presente (getRaw, nao a lista lossy)');
+    assert(r1.type==='lesson','type preservado');
+  `);
+});
+
+test('brain-migrate verifyMigration: remote >= migrado por projeto → ok:true', async () => {
+  const mig = require('./brain-migrate.js');
+  const r = await mig.verifyMigration([{ project: 'A', migrated: 2 }, { project: 'B', migrated: 1 }], {
+    remoteCount: async (p) => (p === 'A' ? 2 : 3),
+  });
+  assertEq(r.ok, true);
+  assertEq(r.checks.find((c) => c.project === 'A').ok, true);
+  assertEq(r.checks.find((c) => c.project === 'B').remote, 3);
+});
+
+test('brain-migrate verifyMigration: remote < migrado → ok:false (PERDA detectada, loud)', async () => {
+  const mig = require('./brain-migrate.js');
+  const r = await mig.verifyMigration([{ project: 'A', migrated: 5 }], { remoteCount: async () => 3 });
+  assertEq(r.ok, false, 'perda de entradas derruba a verificação');
+  assertEq(r.checks[0].ok, false);
+  assertEq(r.checks[0].remote, 3);
+});
+
+test('brain-migrate verifyMigration: remoteCount que joga → reportado com a causa, ok:false', async () => {
+  const mig = require('./brain-migrate.js');
+  const r = await mig.verifyMigration([{ project: 'A', migrated: 1 }], { remoteCount: async () => { throw new Error('daemon down'); } });
+  assertEq(r.ok, false);
+  assert(/daemon down/.test(r.checks[0].error), 'erro de verificação reportado (nunca engolido)');
+});
+
+// ─── migration-job: state machine do botão "Migrar agora" (núcleo testável) ───
+// dashboard.js só faz o wiring HTTP; a lógica (start idempotente, gating fail-loud,
+// progresso, verify-after) vive aqui, hermética e injetável.
+
+test('migration-job: status inicial é idle (sem job)', () => {
+  delete require.cache[require.resolve('./lib/migration-job.js')];
+  const job = require('./lib/migration-job.js');
+  assertEq(job.status().status, 'idle');
+});
+
+test('migration-job: start com mcp-memory → running → done com contagens + verify', async () => {
+  delete require.cache[require.resolve('./lib/migration-job.js')];
+  const job = require('./lib/migration-job.js');
+  const r = job.start({
+    peekMode: () => 'mcp-memory',
+    migrateLocalToMcp: async (_o, deps) => {
+      deps.onProgress({ project: 'A', entryId: 'a1', done: 1, total: 2 });
+      deps.onProgress({ project: 'A', entryId: 'a2', done: 2, total: 2 });
+      return { ok: true, totalProjects: 1, totalEntries: 2, migrated: 2, failed: [], perProject: [{ project: 'A', migrated: 2 }] };
+    },
+    verifyMigration: async () => ({ ok: true, checks: [{ project: 'A', migrated: 2, remote: 2, ok: true }] }),
+  });
+  assertEq(r.started, true);
+  assertEq(job.status().status, 'running', 'fica running imediatamente (assíncrono, não bloqueia)');
+  await job.__testHooks.awaitCurrent();
+  const s = job.status();
+  assertEq(s.status, 'done');
+  assertEq(s.migrated, 2);
+  assertEq(s.ok, true);
+  assertEq(s.verify.checks[0].remote, 2);
+});
+
+test('migration-job: start é IDEMPOTENTE — 2ª chamada durante a corrida NÃO dispara outra', async () => {
+  delete require.cache[require.resolve('./lib/migration-job.js')];
+  const job = require('./lib/migration-job.js');
+  let runs = 0;
+  let release;
+  const gate = new Promise((r) => { release = r; });
+  const deps = {
+    peekMode: () => 'mcp-memory',
+    migrateLocalToMcp: async () => { runs++; await gate; return { ok: true, totalProjects: 0, totalEntries: 0, migrated: 0, failed: [], perProject: [] }; },
+    verifyMigration: async () => ({ ok: true, checks: [] }),
+  };
+  const a = job.start(deps);
+  const b = job.start(deps);
+  assertEq(a.started, true);
+  assertEq(b.started, false, '2ª chamada não inicia nova migração (job único)');
+  release();
+  await job.__testHooks.awaitCurrent();
+  assertEq(runs, 1, 'a migração rodou UMA vez só');
+});
+
+test('migration-job: backend NÃO mcp-memory → error, NÃO roda (fail-loud, sem gravar local)', () => {
+  delete require.cache[require.resolve('./lib/migration-job.js')];
+  const job = require('./lib/migration-job.js');
+  let ran = false;
+  const r = job.start({
+    peekMode: () => 'local',
+    migrateLocalToMcp: async () => { ran = true; return {}; },
+  });
+  assertEq(r.started, false);
+  assertEq(job.status().status, 'error');
+  assert(/mcp-memory/.test(job.status().error), 'erro nomeia o requisito mcp-memory');
+  assertEq(ran, false, 'a migração NUNCA roda fora do mcp-memory');
+});
+
+test('migration-job: falha na migração → status error com as falhas expostas (loud)', async () => {
+  delete require.cache[require.resolve('./lib/migration-job.js')];
+  const job = require('./lib/migration-job.js');
+  job.start({
+    peekMode: () => 'mcp-memory',
+    migrateLocalToMcp: async () => ({ ok: false, totalProjects: 1, totalEntries: 3, migrated: 2, failed: [{ project: 'A', id: 'a2', phase: 'write', error: 'boom' }], perProject: [{ project: 'A', migrated: 2 }] }),
+    verifyMigration: async () => ({ ok: true, checks: [] }),
+  });
+  await job.__testHooks.awaitCurrent();
+  const s = job.status();
+  assertEq(s.status, 'error', 'ok:false da migração → status error (não mascara)');
+  assertEq(s.failed.length, 1);
+  assert(/boom/.test(s.failed[0].error), 'a causa real da falha fica visível');
+});
+
+test('migration-job: migrate que joga → status error com a causa (nunca engole)', async () => {
+  delete require.cache[require.resolve('./lib/migration-job.js')];
+  const job = require('./lib/migration-job.js');
+  job.start({
+    peekMode: () => 'mcp-memory',
+    migrateLocalToMcp: async () => { throw new Error('kaboom'); },
+  });
+  await job.__testHooks.awaitCurrent();
+  assertEq(job.status().status, 'error');
+  assert(/kaboom/.test(job.status().error));
 });
 
 test('brain-backend compose: parseComposeEnvelope splits facts(text)/capabilities(pointers), excludes invalidated, derives title (DH4)', () => {
@@ -4581,6 +4923,57 @@ test('router-config.json shipped: sticky.enabled === false + ttlMs shipado (opt-
   assertEq(cfg.sticky.ttlMs, 21600000); // 6h default
 });
 
+// ─── model-router-ensure: env-tuning DESACOPLADO do proxy ───────────────────
+// O ganho de token medido (auto-compact + tool search) vem do settings.json, NÃO
+// do proxy — mas hoje só era gravado dentro do enable (mode != off), acoplado à
+// publicação do ANTHROPIC_BASE_URL, que é justamente o que faz o Claude Code
+// rebaixar modelos de 1M para 200K. Aqui o tuning existe SEM proxy: nunca escreve
+// base_url. Opt-in (default OFF) para não capar em 200K quem usa 1M sem pedir.
+
+test('planTuningEnv: grava os 2 env de tuning e NUNCA a base_url (sem proxy no caminho)', () => {
+  const r = routerEnsure.planTuningEnv({}, 200000);
+  assertEq(r.changed, true);
+  assertEq(r.env.ENABLE_TOOL_SEARCH, 'true');
+  assertEq(r.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '200000');
+  assertEq('ANTHROPIC_BASE_URL' in r.env, false, 'tuning JAMAIS publica base_url — é o que custa a janela de 1M');
+});
+
+test('planTuningEnv: NÃO clobbera valor explícito do usuário (só preenche ausente)', () => {
+  const r = routerEnsure.planTuningEnv({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: '900000', ENABLE_TOOL_SEARCH: 'false' }, 200000);
+  assertEq(r.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '900000', 'o 900k deliberado do usuário sobrevive');
+  assertEq(r.env.ENABLE_TOOL_SEARCH, 'false');
+  assertEq(r.changed, false, 'nada a gravar → no-op');
+});
+
+test('planTuningEnv: preserva a base_url de terceiro que já esteja lá (não é dono dela)', () => {
+  const r = routerEnsure.planTuningEnv({ ANTHROPIC_BASE_URL: 'https://gw.corp' }, 200000);
+  assertEq(r.env.ANTHROPIC_BASE_URL, 'https://gw.corp', 'não mexe no que não é nosso');
+  assertEq(r.changed, true);
+});
+
+test('planTuningRemoval: remove só os NOSSOS valores; um valor deliberado sobrevive', () => {
+  const ours = routerEnsure.planTuningRemoval({ ENABLE_TOOL_SEARCH: 'true', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200000', FOO: 'x' }, 200000);
+  assertEq('ENABLE_TOOL_SEARCH' in ours.env, false);
+  assertEq('CLAUDE_CODE_AUTO_COMPACT_WINDOW' in ours.env, false);
+  assertEq(ours.env.FOO, 'x', 'env alheio intacto');
+  assertEq(ours.changed, true);
+  const deliberate = routerEnsure.planTuningRemoval({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: '900000' }, 200000);
+  assertEq(deliberate.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '900000', 'valor diferente do nosso = do usuário → fica');
+  assertEq(deliberate.changed, false);
+});
+
+test('contextTuningEnabled: OPT-IN — default false (não capa 1M de quem não pediu)', () => {
+  assertEq(routerEnsure.contextTuningEnabled({}), false, 'ausente → desligado');
+  assertEq(routerEnsure.contextTuningEnabled({ contextTuning: {} }), false);
+  assertEq(routerEnsure.contextTuningEnabled({ contextTuning: { enabled: true } }), true);
+  assertEq(routerEnsure.contextTuningEnabled({ contextTuning: { enabled: 'yes' } }), false, 'só true literal liga');
+});
+
+test('contextTuningEnabled: o config SHIPADO vem com o tuning desligado', () => {
+  const shipped = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'config', 'router-config.json'), 'utf-8'));
+  assertEq(routerEnsure.contextTuningEnabled(shipped), false, 'de fábrica ninguém tem o env-tuning imposto');
+});
+
 // ─── model-router-ensure: token-override env bundle (Parte B) ────────────────
 // Núcleo PURO (sem I/O): resolveAutoCompactWindow (clamp) + planEnableEnv /
 // planDisableEnv (o que gravar/remover). Filosofia do dono: NÃO clobbar valor
@@ -5014,6 +5407,66 @@ test('BOOTFIX source-order: o classificador carrega DEPOIS do server.listen (des
   assert(iInit > iListen, 'initClassifier DEVE ser chamado DEPOIS de server.listen — senão um embedder lento/quebrado bloqueia a prontidão (era o bug)');
   const preListen = src.slice(0, iListen);
   assert(!/await\s+loadEmbedder\s*\(/.test(preListen), 'NÃO pode haver "await loadEmbedder(" ANTES do server.listen (era exatamente o bug do boot que travava o state file)');
+});
+
+
+// ─── model-router: telemetria de CACHE (baseline p/ provar o ganho) ──────────
+// Sem cache_read/cache_creation não há como medir o ganho de cache que justifica
+// (ou não) manter o proxy ligado. Parser PURO do usage do stream + acumulação.
+
+test('accumulateUsage: message_start captura input + cache_read + cache_creation', () => {
+  const acc = routerServer.accumulateUsage(null, JSON.stringify({
+    type: 'message_start',
+    message: { usage: { input_tokens: 120, cache_read_input_tokens: 74000, cache_creation_input_tokens: 5000, output_tokens: 1 } },
+  }));
+  assertEq(acc.in, 120);
+  assertEq(acc.cacheRead, 74000, 'cache_read_input_tokens é o token barato (0.1x) — o ganho a medir');
+  assertEq(acc.cacheCreate, 5000, 'cache_creation_input_tokens é o custo de escrever cache (1.25x/2x)');
+});
+
+test('accumulateUsage: output_tokens cresce nos deltas → fica o MAIOR', () => {
+  let acc = routerServer.accumulateUsage(null, '"output_tokens":10');
+  acc = routerServer.accumulateUsage(acc, '"output_tokens":250');
+  acc = routerServer.accumulateUsage(acc, '"output_tokens":80');
+  assertEq(acc.out, 250, 'o maior vence (o contador é cumulativo no stream)');
+});
+
+test('accumulateUsage: input/cache só contam a 1ª ocorrência (não somam duplicado)', () => {
+  let acc = routerServer.accumulateUsage(null, '"input_tokens":100,"cache_read_input_tokens":900');
+  acc = routerServer.accumulateUsage(acc, '"input_tokens":7,"cache_read_input_tokens":3');
+  assertEq(acc.in, 100, 'a 1ª ocorrência (message_start) vence');
+  assertEq(acc.cacheRead, 900);
+});
+
+test('accumulateUsage: chunk sem usage não corrompe o acumulador', () => {
+  const base = routerServer.accumulateUsage(null, '"input_tokens":42');
+  const same = routerServer.accumulateUsage(base, 'event: content_block_delta\ndata: {"text":"oi"}');
+  assertEq(same.in, 42);
+  assertEq(same.out, 0);
+  assertEq(same.cacheRead, 0);
+});
+
+test('newMetrics/metricsTokens: tokens carregam cacheRead + cacheCreate somados', () => {
+  routerServer.resetMetrics();
+  const m0 = routerServer.metricsSnapshot();
+  assertEq(m0.tokens.cacheRead, 0, 'o snapshot expõe cacheRead desde o início (baseline)');
+  assertEq(m0.tokens.cacheCreate, 0);
+  routerServer.metricsTokens({ in: 10, out: 5, cacheRead: 1000, cacheCreate: 200 });
+  routerServer.metricsTokens({ in: 3, out: 2, cacheRead: 500, cacheCreate: 0 });
+  const m = routerServer.metricsSnapshot();
+  assertEq(m.tokens.in, 13);
+  assertEq(m.tokens.out, 7);
+  assertEq(m.tokens.cacheRead, 1500, 'acumula entre requisições');
+  assertEq(m.tokens.cacheCreate, 200);
+  routerServer.resetMetrics();
+});
+
+test('metricsSnapshot: cacheHitPct = cacheRead / (cacheRead + in) — a métrica do ganho', () => {
+  routerServer.resetMetrics();
+  routerServer.metricsTokens({ in: 100, out: 0, cacheRead: 900, cacheCreate: 0 });
+  assertEq(routerServer.metricsSnapshot().cacheHitPct, 90, '900 de 1000 tokens de entrada vieram do cache → 90%');
+  routerServer.resetMetrics();
+  assertEq(routerServer.metricsSnapshot().cacheHitPct, 0, 'sem tráfego → 0 (não divide por zero)');
 });
 
 
@@ -5567,6 +6020,56 @@ test('doctor.findDataDirCandidates: real fragmentation shape (sibling dirs by pr
     for (const d of dirs) assert(populatedPaths.includes(path.join(dataBase, d)), `missing ${d}`);
   } finally {
     if (prevHome === undefined) delete process.env[homeVar]; else process.env[homeVar] = prevHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('data-dir: a VALID env dir yields to the heavier live folder named by the pointer', () => {
+  // Regression (the 401 loop): Claude Code gives each launch mode its own sibling
+  // identity, so two contexts BOTH get a valid-but-different CLAUDE_PLUGIN_DATA
+  // (-inline for dev/--plugin-dir, -<marketplace> for a marketplace install).
+  // writeActivePointer already refused to move the pointer onto the empty
+  // marketplace dir, but dataDir() returned that empty dir anyway — so consumers
+  // looked for brain-http.token where there was none and every daemon call 401'd.
+  // Consolidation can never repair this: it only absorbs POPULATED siblings.
+  // NOTE: kept SYNC on purpose — it mutates process.env, and this runner runs
+  // async tests concurrently (an async version would race sibling tests).
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ddir-split-'));
+  const dataBase = path.join(home, '.claude', 'plugins', 'data');
+  const live = path.join(dataBase, 'claude-code-boss-inline');
+  const stray = path.join(dataBase, 'claude-code-boss-allansantos-plugins');
+  // `live` holds the KB (heavier); `stray` exists but is empty (no brain/, no token).
+  fs.mkdirSync(path.join(live, 'brain', 'proj'), { recursive: true });
+  fs.writeFileSync(path.join(live, 'brain', 'proj', 'brain.db'), 'x'.repeat(4096));
+  fs.mkdirSync(stray, { recursive: true });
+
+  const homeVar = process.platform === 'win32' ? 'USERPROFILE' : 'HOME';
+  const prevHome = process.env[homeVar];
+  const prevData = process.env.CLAUDE_PLUGIN_DATA;
+  process.env[homeVar] = home;
+  try {
+    const dd = require('./lib/data-dir.js');
+    dd.writeActivePointer(live);                    // the live folder publishes itself
+    assertEq(dd.readActivePointer(), live);
+
+    // A marketplace-launched consumer arrives with a VALID env pointing at the
+    // empty sibling → must FOLLOW the live folder, not strand itself.
+    process.env.CLAUDE_PLUGIN_DATA = stray;
+    assertEq(dd.dataDir(), live);
+    assertEq(dd.readActivePointer(), live);         // pointer must NOT regress
+
+    // Symmetry: the heavier folder's own env still resolves to itself.
+    process.env.CLAUDE_PLUGIN_DATA = live;
+    assertEq(dd.dataDir(), live);
+
+    // No regression when there is nothing heavier: an env dir wins on a machine
+    // whose siblings are all weightless (fresh install must not be hijacked).
+    fs.rmSync(path.join(live, 'brain'), { recursive: true, force: true });
+    process.env.CLAUDE_PLUGIN_DATA = stray;
+    assertEq(dd.dataDir(), stray);
+  } finally {
+    if (prevHome === undefined) delete process.env[homeVar]; else process.env[homeVar] = prevHome;
+    if (prevData === undefined) delete process.env.CLAUDE_PLUGIN_DATA; else process.env.CLAUDE_PLUGIN_DATA = prevData;
     fs.rmSync(home, { recursive: true, force: true });
   }
 });

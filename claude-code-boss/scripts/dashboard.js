@@ -1121,6 +1121,30 @@ async function getDoctor(req, res) {
   }
 }
 
+// ─── API: Brain migration (KB local → mcp-memory) ────────────────────
+// Dispara a migração one-time em background e reporta progresso por polling. A lógica
+// (idempotência, gate fail-loud mcp-memory, verify-after) vive em lib/migration-job.js.
+function postBrainMigrate(req, res) {
+  try {
+    const migrationJob = require('./lib/migration-job.js');
+    const r = migrationJob.start();
+    json(res, r);
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/brain/migrate failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
+function getBrainMigrateStatus(req, res) {
+  try {
+    const migrationJob = require('./lib/migration-job.js');
+    json(res, migrationJob.status());
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/brain/migrate-status failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
 async function getValueSummary(req, res, url) {
   try {
     const range = Math.max(1, Math.min(365, parseInt(url.searchParams.get('days') || '30', 10)));
@@ -1519,6 +1543,8 @@ function handleAPI(req, res, url) {
   if (p === '/api/brain/project-marker' && m === 'GET') return getProjectMarker(req, res, url);
   if (p === '/api/brain/project-marker' && m === 'POST') return saveProjectMarker(req, res);
   if (p === '/api/brain/backend-restart' && m === 'POST') return restartDashboard(req, res);
+  if (p === '/api/brain/migrate' && m === 'POST') return postBrainMigrate(req, res);
+  if (p === '/api/brain/migrate-status' && m === 'GET') return getBrainMigrateStatus(req, res);
   if (p === '/api/brain/embedder/test' && m === 'POST') return testEmbedder(req, res);
   if (p === '/api/config/test' && m === 'POST') return testConfig(req, res);
   if (p === '/api/config/domains' && m === 'GET') return listConfigDomains(req, res);
