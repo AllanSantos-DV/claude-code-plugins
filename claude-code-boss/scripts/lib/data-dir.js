@@ -111,6 +111,25 @@ function pointerWeight(dir) {
 }
 
 /**
+ * The ONE rule both the publish path and the resolve path obey: a candidate dir
+ * LOSES to an existing pointer that names a DIFFERENT, data-bearing (heavier)
+ * folder. Extracted so the two paths can never drift apart again — they did, and
+ * the drift was the bug: `writeActivePointer` refused to publish an empty
+ * marketplace dir (keeping the pointer on the live `-inline` folder) while
+ * `dataDir()` returned that same empty dir anyway. The module thus declared a
+ * folder "not live" and then used it, so consumers looked for brain-http.token
+ * in an empty directory, found none, and every daemon call 401'd.
+ * @param {string} candidate
+ * @param {string|null} existingPtr an ALREADY-resolved, still-existing pointer dir
+ * @returns {boolean}
+ */
+function _losesToPointer(candidate, existingPtr) {
+  return !!existingPtr
+    && path.resolve(existingPtr) !== path.resolve(candidate)
+    && pointerWeight(existingPtr) > pointerWeight(candidate);
+}
+
+/**
  * Best-effort publish of the active data dir so env-less callers (SessionStart
  * hooks that don't receive CLAUDE_PLUGIN_DATA) can FOLLOW the SAME folder the
  * env-aware processes (brain-server / hooks that DO get it) resolved. Atomic and
@@ -128,8 +147,7 @@ function writeActivePointer(dir) {
   if (typeof dir !== 'string' || dir.trim().length === 0) return;
   try {
     const existing = readActivePointer(); // resolved dir that STILL EXISTS, or null
-    if (existing && path.resolve(existing) !== path.resolve(dir)
-        && pointerWeight(existing) > pointerWeight(dir)) {
+    if (_losesToPointer(dir, existing)) {
       return; // don't regress the pointer onto a lighter (near-empty) folder
     }
     _writeJsonAtomic(activePointerPath(), { dir, ts: Date.now() });
@@ -209,15 +227,30 @@ function bootstrapMostRecent() {
 /**
  * Resolve the plugin data directory so EVERY entry point agrees on ONE folder.
  * Order (all steps fail-open, never throw):
- *   1. a real CLAUDE_PLUGIN_DATA — also publish it so env-less callers follow;
+ *   1. a real CLAUDE_PLUGIN_DATA — published so env-less callers follow, BUT it
+ *      yields to a heavier live folder named by the pointer (see below);
  *   2. the published active-data-dir pointer (the app's live folder);
  *   3. a cheap most-recently-written `claude-code-boss*` bootstrap (then pin it);
  *   4. the stable bare home fallback.
+ *
+ * Step 1's yield closes the LAST fragmentation hole. Claude Code gives each
+ * launch mode its own sibling identity (`-inline` for dev/`--plugin-dir`,
+ * `-<marketplace>` for a marketplace install), so two contexts can BOTH receive a
+ * VALID-but-DIFFERENT CLAUDE_PLUGIN_DATA. A bare `return env` then fragments them
+ * by construction, and no consolidation ever repairs it: the consolidator only
+ * absorbs POPULATED siblings, and the stray dir here is empty by definition.
  * @returns {string}
  */
 function dataDir() {
   const env = validEnvDir(process.env.CLAUDE_PLUGIN_DATA);
-  if (env) { writeActivePointer(env); return env; }
+  if (env) {
+    writeActivePointer(env);
+    // Honor the SAME verdict the publish above just reached: when a heavier live
+    // folder owns the KB, FOLLOW it instead of stranding this caller in an empty
+    // sibling with no brain-http.token (the 401 loop).
+    const ptr = readActivePointer();
+    return _losesToPointer(env, ptr) ? ptr : env;
+  }
   const ptr = readActivePointer();
   if (ptr) return ptr;
   const boot = bootstrapMostRecent();

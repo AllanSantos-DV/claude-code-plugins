@@ -17,7 +17,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { createBrainServer } from './mcp-server.js';
 import fs from 'node:fs';
-import { HEALTH_PATH, MCP_PATH, lockFile, ensureToken, requestAllowed, tokenFile } from './daemon-common.js';
+import { HEALTH_PATH, MCP_PATH, lockFile, ensureToken, requestAllowed, tokenFile, canonicalDataDir } from './daemon-common.js';
 
 const SESSION_IDLE_MS = 30 * 60 * 1000; // reap sessions idle > 30 min
 
@@ -132,7 +132,9 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
     httpServer.listen(port, host, () => { httpServer.removeListener('error', onErr); resolve(); });
   });
   try {
-    fs.writeFileSync(lockFile(dataDir), JSON.stringify({ pid: process.pid, port, pluginRoot, dataDir, version, startedAt }, null, 2));
+    // Record the CANONICAL dataDir — a lockfile that stored a different spelling than
+    // callers pass is the very confusion this normalization fixes.
+    fs.writeFileSync(lockFile(dataDir), JSON.stringify({ pid: process.pid, port, pluginRoot, dataDir: canonicalDataDir(dataDir), version, startedAt }, null, 2));
   } catch (e) { void e; }
   console.error(`[brain-http] listening on http://${host}:${port}${MCP_PATH}  (pluginRoot=${pluginRoot}, token: ${tokenFile(dataDir)})`);
 

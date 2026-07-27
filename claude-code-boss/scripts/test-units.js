@@ -698,6 +698,39 @@ test('SP6 brain daemon requestAllowed: origin guard (DNS-rebinding) + token auth
   assertEq(noOrigin.ok, true);
 });
 
+test('brain daemon path normalization: same dir, different spelling → SAME port + token file', async () => {
+  const fileUrl = require('url').pathToFileURL(
+    path.join(ROOT, 'servers', 'brain-server', 'lib', 'daemon-common.js'),
+  ).href;
+  const { resolvePort, tokenFile, lockFile, canonicalDataDir } = await import(fileUrl);
+  // NOTE: deliberately does NOT mutate process.env.BRAIN_HTTP_PORT — this runner runs
+  // async tests concurrently, so touching global env races the daemon tests. tokenFile/
+  // lockFile/canonicalDataDir ignore env, so they prove canonicalization in isolation;
+  // resolvePort equality holds under BOTH regimes (env set → both = env; unset → both =
+  // same hash), so it can't false-pass regardless of ambient BRAIN_HTTP_PORT.
+  // The exact bug is Windows-only: on POSIX "\" is not a separator, so back-slash
+  // spellings aren't the "same dir". The lockfile records forward slashes, other callers
+  // pass back slashes; both must map to one port/token/lock.
+  if (process.platform === 'win32') {
+    const back = 'C:\\Users\\me\\.claude\\plugins\\data\\ccb';
+    const fwd = 'C:/Users/me/.claude/plugins/data/ccb';
+    const mixedCase = 'C:\\users\\ME\\.claude\\plugins\\data\\CCB'; // Windows FS is case-insensitive
+    assertEq(resolvePort(back), resolvePort(fwd));            // one identity → one port
+    assertEq(resolvePort(back), resolvePort(mixedCase));     // case-fold → same port
+    assertEq(tokenFile(back), tokenFile(fwd));               // one identity → one secret
+    assertEq(lockFile(back), lockFile(fwd));                 // one identity → one lock
+    assertEq(canonicalDataDir(back), canonicalDataDir(fwd)); // canonical form agrees
+  }
+  // Relative vs absolute of the SAME dir converge everywhere (path.resolve anchors to cwd).
+  assertEq(tokenFile('sub/../ccb-x'), tokenFile(path.resolve('ccb-x')));
+  assertEq(resolvePort('sub/../ccb-x'), resolvePort(path.resolve('ccb-x')));
+  // A missing/undefined dataDir FAILS LOUD instead of hashing String(undefined).
+  let threw = false; try { resolvePort(undefined); } catch { threw = true; }
+  assert(threw, 'resolvePort(undefined) must throw, not derive a phantom port');
+  threw = false; try { tokenFile('undefined'); } catch { threw = true; }
+  assert(threw, 'tokenFile("undefined") must throw, not build a phantom token path');
+});
+
 // ─── MCP HTTP (StreamableHTTP) transport + remote mappings ───────────────────
 const http = require('http');
 
@@ -5386,6 +5419,56 @@ test('doctor.findDataDirCandidates: real fragmentation shape (sibling dirs by pr
     for (const d of dirs) assert(populatedPaths.includes(path.join(dataBase, d)), `missing ${d}`);
   } finally {
     if (prevHome === undefined) delete process.env[homeVar]; else process.env[homeVar] = prevHome;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('data-dir: a VALID env dir yields to the heavier live folder named by the pointer', () => {
+  // Regression (the 401 loop): Claude Code gives each launch mode its own sibling
+  // identity, so two contexts BOTH get a valid-but-different CLAUDE_PLUGIN_DATA
+  // (-inline for dev/--plugin-dir, -<marketplace> for a marketplace install).
+  // writeActivePointer already refused to move the pointer onto the empty
+  // marketplace dir, but dataDir() returned that empty dir anyway — so consumers
+  // looked for brain-http.token where there was none and every daemon call 401'd.
+  // Consolidation can never repair this: it only absorbs POPULATED siblings.
+  // NOTE: kept SYNC on purpose — it mutates process.env, and this runner runs
+  // async tests concurrently (an async version would race sibling tests).
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ddir-split-'));
+  const dataBase = path.join(home, '.claude', 'plugins', 'data');
+  const live = path.join(dataBase, 'claude-code-boss-inline');
+  const stray = path.join(dataBase, 'claude-code-boss-allansantos-plugins');
+  // `live` holds the KB (heavier); `stray` exists but is empty (no brain/, no token).
+  fs.mkdirSync(path.join(live, 'brain', 'proj'), { recursive: true });
+  fs.writeFileSync(path.join(live, 'brain', 'proj', 'brain.db'), 'x'.repeat(4096));
+  fs.mkdirSync(stray, { recursive: true });
+
+  const homeVar = process.platform === 'win32' ? 'USERPROFILE' : 'HOME';
+  const prevHome = process.env[homeVar];
+  const prevData = process.env.CLAUDE_PLUGIN_DATA;
+  process.env[homeVar] = home;
+  try {
+    const dd = require('./lib/data-dir.js');
+    dd.writeActivePointer(live);                    // the live folder publishes itself
+    assertEq(dd.readActivePointer(), live);
+
+    // A marketplace-launched consumer arrives with a VALID env pointing at the
+    // empty sibling → must FOLLOW the live folder, not strand itself.
+    process.env.CLAUDE_PLUGIN_DATA = stray;
+    assertEq(dd.dataDir(), live);
+    assertEq(dd.readActivePointer(), live);         // pointer must NOT regress
+
+    // Symmetry: the heavier folder's own env still resolves to itself.
+    process.env.CLAUDE_PLUGIN_DATA = live;
+    assertEq(dd.dataDir(), live);
+
+    // No regression when there is nothing heavier: an env dir wins on a machine
+    // whose siblings are all weightless (fresh install must not be hijacked).
+    fs.rmSync(path.join(live, 'brain'), { recursive: true, force: true });
+    process.env.CLAUDE_PLUGIN_DATA = stray;
+    assertEq(dd.dataDir(), stray);
+  } finally {
+    if (prevHome === undefined) delete process.env[homeVar]; else process.env[homeVar] = prevHome;
+    if (prevData === undefined) delete process.env.CLAUDE_PLUGIN_DATA; else process.env.CLAUDE_PLUGIN_DATA = prevData;
     fs.rmSync(home, { recursive: true, force: true });
   }
 });
