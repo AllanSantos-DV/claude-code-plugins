@@ -1,5 +1,14 @@
 # Changelog
 
+## [Não lançado]
+
+### Model-router: `CLAUDE_CODE_ATTRIBUTION_HEADER=0` com o proxy ligado (hit de cache)
+
+O bloco de atribuição (versão do cliente + fingerprint do prompt) abre o system prompt e **muda entre versões e sessões**. Atrás de um gateway isso invalida o prefixo cacheado a cada request. A doc do Claude Code é explícita: desligá-lo *"improves prompt-cache hit rates when routing through an LLM gateway"*, e numa conexão direta o cache *"is unaffected either way"*.
+
+- `planEnableEnv` passa a gravar **`CLAUDE_CODE_ATTRIBUTION_HEADER=0`** junto do resto do bundle — ou seja, **só quando o proxy está no caminho**, que é onde o ganho existe. `planTuningEnv` (o tuning sem proxy) **não** grava: mexer ali seria ruído sem retorno.
+- Mesmas invariantes de sempre: `== null` só preenche o ausente (um `1` deliberado do usuário sobrevive) e o `disable` remove **só** o valor que nós teríamos escrito, nunca um do usuário.
+
 ## [2.19.0] - 2026-07-25
 
 **Migração do KB local → memory server (`mcp-memory`), com botão no dashboard, idempotência e fail-loud.** Trocar o backend para `mcp-memory` deixava o acervo local **órfão**: não havia nenhum mecanismo de migração (o export/import do dashboard sempre foi local↔local). Agora existe. O trabalho começou por uma investigação que **descartou o plano anterior**: a hipótese de "um brain-server por sessão" levou a um desenho de daemon único + proxy que, verificado na fonte, seria **reinventar o que o memory server native-java já faz** — o modo `mcp-memory` já transforma o processo Node em cliente magro (`initLocal()` nem roda: zero modelo, zero SQLite in-process). O gap real era só a migração dos dados. Cada fase saiu com TDD RED→GREEN e gate verde 2× (Windows e Linux).
