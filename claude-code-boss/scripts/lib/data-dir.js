@@ -159,6 +159,24 @@ function writeActivePointer(dir) {
 }
 
 /**
+ * Publish `dir` as the active data dir AND resolve what the caller should
+ * actually USE — the same verdict `writeActivePointer`'s anti-regression guard
+ * just reached. A caller that published a candidate and then blindly kept using
+ * it (ignoring a refusal) would operate on an empty/lighter folder while every
+ * env-less consumer follows the pointer to the OTHER, real folder — the split
+ * IS the 401. Both `dataDir()`'s env branch and servers/brain-server/index.js
+ * (the one caller outside this module that ALSO publishes) route through this
+ * so the publish-then-follow pattern can't drift apart again.
+ * @param {string} dir the candidate (e.g. a real CLAUDE_PLUGIN_DATA / --plugin-data)
+ * @returns {string} `dir`, or the heavier existing pointer dir if `dir` loses to it
+ */
+function publishAndFollow(dir) {
+  writeActivePointer(dir);
+  const ptr = readActivePointer();
+  return _losesToPointer(dir, ptr) ? ptr : dir;
+}
+
+/**
  * Read the active-data-dir pointer. Returns the recorded dir ONLY when it is a
  * usable non-empty string pointing at a directory that still exists; otherwise
  * null (missing file / corrupt JSON / stale dir). Never throws.
@@ -243,14 +261,10 @@ function bootstrapMostRecent() {
  */
 function dataDir() {
   const env = validEnvDir(process.env.CLAUDE_PLUGIN_DATA);
-  if (env) {
-    writeActivePointer(env);
-    // Honor the SAME verdict the publish above just reached: when a heavier live
-    // folder owns the KB, FOLLOW it instead of stranding this caller in an empty
-    // sibling with no brain-http.token (the 401 loop).
-    const ptr = readActivePointer();
-    return _losesToPointer(env, ptr) ? ptr : env;
-  }
+  // publishAndFollow honors the SAME verdict the publish reaches: when a heavier
+  // live folder owns the KB, FOLLOW it instead of stranding this caller in an
+  // empty sibling with no brain-http.token (the 401 loop).
+  if (env) return publishAndFollow(env);
   const ptr = readActivePointer();
   if (ptr) return ptr;
   const boot = bootstrapMostRecent();
@@ -266,4 +280,6 @@ module.exports = {
   readActivePointer,
   writeActivePointer,
   bootstrapMostRecent,
+  losesToPointer: _losesToPointer,
+  publishAndFollow,
 };
