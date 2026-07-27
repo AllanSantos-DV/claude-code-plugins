@@ -209,6 +209,25 @@ async function buildAnchors(embedder, anchorConfig) {
   return result;
 }
 
+// Carrega o classificador local (embedder + âncoras) e o PUBLICA nos módulo-vars
+// _embedder/_anchors — de forma ATÔMICA: só publica depois que AMBOS deram certo,
+// então um embedder quebrado nunca deixa estado meio-inicializado. Chamado
+// FIRE-AND-FORGET *depois* que o servidor já está pronto (porta ligada + state file
+// escrito), para que um embedder lento/quebrado (ex.: sharp win32-x64 ausente) NUNCA
+// atrase nem derrube a prontidão do router. Sem classificador, classifyLocal devolve
+// null → passthrough (o routing segue vivo). deps injetáveis (loadEmbedder/buildAnchors)
+// p/ testes herméticos, sem tocar em rede/modelo.
+async function initClassifier(config, deps = {}) {
+  const _loadEmbedder = deps.loadEmbedder || loadEmbedder;
+  const _buildAnchors = deps.buildAnchors || buildAnchors;
+  const embedder = await _loadEmbedder(config);
+  const anchors  = await _buildAnchors(embedder, (config && config.anchors) || {});
+  _embedder = embedder;
+  _anchors  = anchors;
+  logger.info('Classificador local pronto (async, pós-boot).', { tiers: Object.keys(anchors || {}) });
+  return { embedder, anchors };
+}
+
 // Política de decisão calibrada com tráfego real (router.log): o classificador
 // por cosseno tende a eleger OPUS como argmax justamente quando NADA casa bem
 // (opus teve o menor score médio ~0.22 e mínimo 0.07). Para "esticar a janela",
@@ -1166,7 +1185,7 @@ function newMetrics() {
     planBNoKey:      0,   // limite batido mas sem chave NVIDIA (só aviso)
     cooldownArms:    0,   // vezes que a janela esgotou e armou cooldown
     cost:            { baselineUnits: 0, actualUnits: 0 },
-    tokens:          { in: 0, out: 0 },
+    tokens:          { in: 0, out: 0, cacheRead: 0, cacheCreate: 0 },
   };
 }
 
@@ -1180,7 +1199,7 @@ function loadMetrics() {
         byOriginal: Object.assign(emptyTierMap(), saved.byOriginal || {}),
         byFinal:    Object.assign(emptyTierMap(), saved.byFinal || {}),
         cost:       Object.assign({ baselineUnits: 0, actualUnits: 0 }, saved.cost || {}),
-        tokens:     Object.assign({ in: 0, out: 0 }, saved.tokens || {}),
+        tokens:     Object.assign({ in: 0, out: 0, cacheRead: 0, cacheCreate: 0 }, saved.tokens || {}),
       });
     }
   } catch (e) {
@@ -1241,20 +1260,57 @@ function metricsOutcome(kind, route, config) {
 function metricsNoKey()       { metrics.planBNoKey += 1; _metricsDirty = true; }
 function metricsCooldownArm() { metrics.cooldownArms += 1; _metricsDirty = true; }
 
-function metricsTokens(inTok, outTok) {
-  if (inTok)  metrics.tokens.in  += inTok;
-  if (outTok) metrics.tokens.out += outTok;
+function metricsTokens(usage) {
+  const u = usage || {};
+  if (u.in)          metrics.tokens.in          += u.in;
+  if (u.out)         metrics.tokens.out         += u.out;
+  if (u.cacheRead)   metrics.tokens.cacheRead   += u.cacheRead;
+  if (u.cacheCreate) metrics.tokens.cacheCreate += u.cacheCreate;
   _metricsDirty = true;
 }
 
+// PURA: extrai os contadores de `usage` de um chunk do stream e MESCLA no
+// acumulador. `input_tokens` e os `cache_*` chegam UMA vez (message_start) → a 1ª
+// ocorrência vence; `output_tokens` é cumulativo nos deltas → o MAIOR vence. Um
+// chunk sem usage devolve o acumulador intacto e nada aqui lança (telemetria
+// jamais pode quebrar o pipe do proxy).
+//
+// POR QUÊ cache_read/cache_creation: são a ÚNICA forma de medir o ganho real de
+// cache (token lido do cache custa 0.1x; escrever custa 1.25x/2x). Sem esse
+// baseline não há como provar se manter o proxy ligado compensa.
+function accumulateUsage(acc, chunk) {
+  const a = acc || { in: 0, out: 0, cacheRead: 0, cacheCreate: 0 };
+  let s;
+  try { s = String(chunk); } catch (e) { void e; return a; }
+  const firstOnly = (re, cur) => {
+    if (cur) return cur;
+    const m = s.match(re);
+    return m ? Number(m[1]) : cur;
+  };
+  a.in          = firstOnly(/"input_tokens"\s*:\s*(\d+)/, a.in);
+  a.cacheRead   = firstOnly(/"cache_read_input_tokens"\s*:\s*(\d+)/, a.cacheRead);
+  a.cacheCreate = firstOnly(/"cache_creation_input_tokens"\s*:\s*(\d+)/, a.cacheCreate);
+  let mo;
+  const reOut = /"output_tokens"\s*:\s*(\d+)/g;
+  while ((mo = reOut.exec(s)) !== null) { const v = Number(mo[1]); if (v > a.out) a.out = v; }
+  return a;
+}
+
 // Snapshot + economia calculada (em %). economiaPct = 1 - actual/baseline.
+// cacheHitPct = fração dos tokens de ENTRADA que veio do cache (0.1x) em vez de
+// input cheio (1.0x) — é a métrica que prova (ou desmente) o ganho de cache do
+// proxy. Sem tráfego → 0 (nunca divide por zero, nunca inventa número).
 function metricsSnapshot() {
   const b = metrics.cost.baselineUnits;
   const a = metrics.cost.actualUnits;
   const economiaPct = b > 0 ? Math.round((1 - a / b) * 1000) / 10 : 0;
+  const t = metrics.tokens || {};
+  const inTotal = (t.cacheRead || 0) + (t.in || 0);
+  const cacheHitPct = inTotal > 0 ? Math.round(((t.cacheRead || 0) / inTotal) * 1000) / 10 : 0;
   return Object.assign({}, metrics, {
     economiaPct,
     savedUnits: Math.round((b - a) * 10) / 10,
+    cacheHitPct,
   });
 }
 
@@ -1384,7 +1440,7 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
       const wantRLScan = cd.enabled && !_cooldownUntil;
       let scanBuf = '';
       let armed = false;
-      let inTok = 0, outTok = 0;
+      let usage = null;
       upRes.on('data', (c) => {
         try {
           const s = c.toString('utf8');
@@ -1395,14 +1451,10 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
               if (armCooldownFromBody(scanBuf, config)) armed = true;
             }
           }
-          const mi = s.match(/"input_tokens"\s*:\s*(\d+)/);     // 1ª ocorrência (message_start)
-          if (mi && !inTok) inTok = Number(mi[1]);
-          let mo;                                                // output_tokens cresce nos deltas → pega o MAIOR
-          const reOut = /"output_tokens"\s*:\s*(\d+)/g;
-          while ((mo = reOut.exec(s)) !== null) { const v = Number(mo[1]); if (v > outTok) outTok = v; }
+          usage = accumulateUsage(usage, s);
         } catch (_) { void _; /* telemetria/scan nunca quebram o pipe */ }
       });
-      upRes.on('end', () => { if (inTok || outTok) metricsTokens(inTok, outTok); });
+      upRes.on('end', () => { if (usage && (usage.in || usage.out || usage.cacheRead)) metricsTokens(usage); });
     }
     upRes.pipe(res);
   });
@@ -1737,21 +1789,11 @@ async function main() {
     logger.warn('Per-turn routing (enabled) é DEPRECADO: rotear por-request quebra o prompt cache da Anthropic. Prefira o roteador cache-safe {sticky:{enabled:true}} (/dashboard → Sticky Router).');
   }
 
-  // Inicializa classificador local (MiniLM) nos modos que CLASSIFICAM: 'routing'
-  // (a cada request) e 'sticky-tier' (uma vez por sessão). Em 'fallback-only' não
-  // classificamos nada (passthrough), então pular o embedder/anchors deixa o boot
-  // mais leve e rápido, sem carregar o modelo MiniLM.
-  if (mode === 'routing' || mode === 'sticky-tier') {
-    try {
-      _embedder = await loadEmbedder(config);
-      const anchorCfg = config.anchors || {};
-      _anchors = await buildAnchors(_embedder, anchorCfg);
-    } catch (e) {
-      logger.warn('Classificador local não inicializado — será usado NIM ou sem roteamento', { err: e.message });
-    }
-  } else {
-    logger.info('fallback-only: classificador/anchors NÃO inicializados (passthrough cache-safe).');
-  }
+  // O classificador local (MiniLM) é DESACOPLADO do boot: ele carrega DEPOIS que o
+  // servidor está pronto (ver o callback de server.listen abaixo), fire-and-forget.
+  // Assim um embedder lento/quebrado (ex.: sharp win32-x64 ausente) nunca atrasa a
+  // escrita do state file — era isso que fazia o ensure dar "timeout aguardando state
+  // file → roteamento desabilitado" e nunca gravar os overrides de token.
 
   // Token de identidade da porta fixa (verify-before-trust). Criado 1x por
   // instalação (reusado entre reinícios), lido pelo /health p/ provar que quem
@@ -1794,6 +1836,17 @@ async function main() {
     logger.info(`=== Servidor pronto em http://127.0.0.1:${FIXED_PORT} ===`, { port: FIXED_PORT });
     writeState(FIXED_PORT, mode);
     process.stdout.write(`ROUTER_PORT=${FIXED_PORT}\n`);
+    // DESACOPLADO: só AGORA (porta ligada + state file escrito → o ensure já enxerga o
+    // router pronto) carregamos o classificador, fire-and-forget. Nos modos que
+    // classificam; em 'fallback-only' é passthrough puro. Se o embedder falhar
+    // (sharp/onnx ausente), o .catch isola: classifyLocal devolve null → passthrough e
+    // o routing/os overrides seguem funcionando — o boot não trava mais no embedder.
+    if (mode === 'routing' || mode === 'sticky-tier') {
+      initClassifier(config).catch((e) =>
+        logger.warn('Classificador local não inicializado — NIM ou passthrough (routing segue vivo)', { err: e && e.message }));
+    } else {
+      logger.info('fallback-only: classificador/anchors NÃO inicializados (passthrough cache-safe).');
+    }
   });
 
   // Graceful shutdown
@@ -1844,12 +1897,15 @@ if (require.main === module) {
     catalog,
     metricsRoute,
     metricsOutcome,
+    metricsTokens,
+    accumulateUsage,
     metricsSnapshot,
     resetMetrics,
     newMetrics,
     // FIX 1 (identidade da porta fixa) + FIX 2 (classificação opt-in): exportados
     // p/ os testes herméticos (server /health autenticado + dispatcher de classify).
     createServer,
+    initClassifier,
     ensureRouterToken,
     readRouterToken,
     routerTokenMatches,

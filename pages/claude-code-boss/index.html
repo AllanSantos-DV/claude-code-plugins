@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.17.1 — converge a identidade do data-dir do daemon, elimina o 401</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. A v2.17.1 converge a IDENTIDADE do data-dir do daemon (porta/token) e elimina o 401: normaliza o path do dataDir antes de derivar porta/token (evita que -inline e -<marketplace> ou separadores mistos derivem identidades diferentes pra mesma pasta lógica), e extrai um publishAndFollow(dir) compartilhado — tanto o dataDir() quanto o servers/brain-server/index.js agora publicam o ponteiro ativo e SEGUEM o próprio veredito (em vez de usar o candidato incondicionalmente quando o anti-regression guard recusa a publicação), fechando o split-brain que causava o 401. Empilha sobre a v2.17.0 (consolidação da sessão em uso): a autoridade da consolidação das pastas-irmãs do KB vive no brain-server, que dispara com --active-dir mirando a pasta REAL da sessão, e o ponteiro ativo nunca regride de uma pasta viva para uma quase-vazia." />
+<title>claude-code-boss v2.19.0 — o acervo viaja junto, e a janela de 1M fica no seu controle</title>
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. Na v2.19.0, trocar o backend para o memory server deixou de abandonar o que você já tinha: um botão Migrar agora no dashboard leva todo o KB local para o servidor, projeto a projeto, porque o daemon escopa a memória por project_id no handshake. Cada documento sobe com o id local, então rodar de novo atualiza em vez de duplicar e uma migração interrompida pode ser retomada. É fail-loud de ponta a ponta: fora do backend mcp-memory a migração recusa rodar, uma entrada que falha é reportada com a causa real e a contagem remota é conferida contra o que subiu. Na segunda frente, o model-router passou a dizer o preço que cobrava calado: ligado em qualquer modo diferente de off ele publica ANTHROPIC_BASE_URL, e o Claude Code, atrás de uma base_url que não é a oficial, orça a sessão em 200K mesmo nos modelos de 1M nativo. Medido na mesma máquina: 183k de 200k com o roteador ligado contra 68k de 1.0M com ele desligado. Agora o aviso aparece na sessão e no card Router, o contextTuning entrega a mesma economia de token com o roteador em off, sem publicar base_url e preservando a janela de 1M, e a telemetria de cache mostra cacheRead, cacheCreate e cacheHitPct para provar se o proxy compensa. O release também carrega a v2.17.1, que converge a identidade do data-dir do daemon: a porta e o token passam a ser derivados do path canônico da pasta, e o brain-server segue o próprio veredito ao publicar o ponteiro ativo, eliminando o 401 que nascia de dois processos endereçando a mesma pasta de jeitos diferentes." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -997,13 +997,291 @@
   .an-foot b{ color:#a29f97 }
   .an-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
 
+  /* v2.17.1 : converge a IDENTIDADE do data-dir do daemon e elimina o 401 - duas causas-raiz da MESMA
+     classe (split-brain do data-dir entre processos). (1) resolvePort/tokenFile derivam de
+     canonicalDataDir (path.resolve + case-fold no win32), entao a mesma pasta logica escrita de jeitos
+     diferentes (/ vs \, caixa, relativo vs absoluto, -inline vs -<marketplace>) deixa de virar porta/token
+     DIFERENTES. (2) o index.js do brain-server publicava o ponteiro ativo mas nao seguia o proprio
+     veredito: quando o anti-regression guard recusava o candidato, ele seguia usando a pasta vazia
+     enquanto os hooks sem env seguiam o ponteiro pra pasta real - essa divergencia ERA o 401; agora os
+     dois caminhos passam pelo publishAndFollow(dir) compartilhado em scripts/lib/data-dir.js.
+     ASSINATURA: o REGISTRO DE GRAFIAS - a mesma pasta escrita 3x, 3 identidades derivadas, afuniladas
+     numa so pelo gate canonico. Device TIPOGRAFICO (a diferenca e o glifo, marcado em ambar), nao mais
+     um diagrama de caixas: a pagina ja tem quatro desses e nenhum deles fala de identidade. */
+  .ident{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:880px; font-family:var(--mono); margin:0 0 36px }
+  .ident code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .id-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .id-bar .k{ color:var(--accent) }
+  .id-bar .m{ color:#8a877f }
+
+  /* assinatura: o registro de grafias */
+  .id-reg{ padding:22px 22px 20px; border-bottom:1px solid rgba(255,255,255,.06) }
+  .id-reg-lead{ display:flex; flex-wrap:wrap; justify-content:space-between; gap:6px 16px;
+    font-size:9.5px; letter-spacing:.15em; text-transform:uppercase; color:var(--accent); margin:0 0 14px }
+  .id-reg-lead em{ font-style:normal }
+  .id-reg-lead .out{ color:#8a877f }
+  .id-row{ display:grid; grid-template-columns:minmax(0,1fr) 46px auto; align-items:center; gap:14px;
+    padding:10px 13px; border:1px dashed rgba(255,255,255,.22); border-radius:9px; margin:0 0 8px;
+    background:rgba(255,255,255,.02) }
+  .id-row:last-child{ margin:0 }
+  .id-row .id-path{ background:transparent; padding:0; font-size:11.5px; line-height:1.5; color:#a29f97; overflow-wrap:anywhere }
+  .id-row .id-path .g{ font-style:normal; font-weight:700; color:var(--accent) }
+  .id-arrow{ position:relative; height:1px; background:#6d6257 }
+  .id-arrow::after{ content:""; position:absolute; right:0; top:-3.5px;
+    border-left:6px solid #6d6257; border-top:3.5px solid transparent; border-bottom:3.5px solid transparent }
+  .id-chip{ display:flex; flex-direction:column; gap:2px; min-width:152px; text-align:right }
+  .id-chip b{ font-size:12.5px; font-weight:700; color:#a29f97 }
+  .id-chip i{ font-style:normal; font-size:9.5px; color:#6d6257 }
+  .id-funnel{ display:block; width:100%; height:36px; margin:12px 0 14px }
+  .id-funnel path{ fill:none; stroke:#6d6257; stroke-width:1.2; vector-effect:non-scaling-stroke }
+  .id-gate{ display:flex; flex-wrap:wrap; align-items:baseline; justify-content:center; gap:5px 14px;
+    max-width:580px; margin:0 auto 16px; padding:9px 16px; border:1px solid var(--accent); border-radius:9px; background:#1a130d }
+  .id-gate .k{ font-size:12px; font-weight:700; color:var(--accent) }
+  .id-gate .n{ font-size:10px; color:#8a877f }
+  .id-row--now{ border:1px solid var(--accent); background:#1a130d; margin:0 }
+  .id-row--now .id-path{ color:var(--panel-ink) }
+  .id-row--now .id-arrow{ background:var(--accent) }
+  .id-row--now .id-arrow::after{ border-left-color:var(--accent) }
+  .id-row--now .id-chip b{ color:var(--accent) }
+  .id-row--now .id-chip i{ color:#8a877f }
+  .id-verdict{ margin:14px 0 0; font-size:11px; line-height:1.6; color:#8a877f }
+  .id-verdict b{ color:#a29f97; font-weight:600 }
+  .id-tag{ display:inline-block; font-size:9px; letter-spacing:.13em; text-transform:uppercase;
+    color:var(--accent); border:1px solid var(--accent); border-radius:5px; padding:1px 7px; margin-right:9px }
+  .id-reg-note{ margin:11px 0 0; font-size:10.5px; line-height:1.6; color:#6d6257 }
+  .id-reg-note code{ font-size:10px; background:rgba(255,255,255,.05) }
+
+  /* a segunda metade: publica, rele, obedece */
+  .id-follow{ padding:20px 22px 18px; border-bottom:1px solid rgba(255,255,255,.06) }
+  .id-follow-lead{ display:block; font-size:9.5px; letter-spacing:.15em; text-transform:uppercase; color:var(--accent); margin:0 0 13px }
+  .id-seq{ display:flex; flex-wrap:wrap; align-items:center; gap:10px; margin:0 0 16px; font-size:11.5px; color:#8a877f }
+  .id-seq .sep{ color:var(--accent); font-weight:700 }
+  .id-fork{ display:grid; grid-template-columns:1fr 1fr; gap:14px }
+  .id-branch{ display:flex; flex-direction:column; gap:9px; border-radius:10px; padding:14px 15px }
+  .id-branch--go{ border:1px dashed rgba(255,255,255,.24); background:transparent }
+  .id-branch--hold{ border:1px solid var(--accent); background:rgba(255,255,255,.05) }
+  .id-btag{ font-size:9.5px; letter-spacing:.14em; text-transform:uppercase; color:#8a877f }
+  .id-branch--hold .id-btag{ color:var(--accent) }
+  .id-bcond{ font-size:12.5px; line-height:1.4; font-weight:600; color:#a29f97 }
+  .id-branch--hold .id-bcond{ color:var(--panel-ink) }
+  .id-bnote{ font-size:11px; line-height:1.5; color:#8a877f }
+  .id-before{ margin:16px 0 0; padding:12px 14px; border:1px dashed rgba(255,255,255,.2); border-radius:9px;
+    font-size:11px; line-height:1.6; color:#8a877f }
+  .id-before s{ color:#6d6257; text-decoration-color:#6d6257 }
+  .id-before b{ color:#a29f97; font-weight:600 }
+
+  .id-rails{ display:grid; grid-template-columns:1fr 1fr; gap:12px; padding:18px 22px }
+  .id-rail{ border:1px solid var(--panel-line); border-radius:10px; padding:13px 14px; background:rgba(255,255,255,.025) }
+  .id-rail h4{ margin:0 0 8px; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent) }
+  .id-rail ul{ margin:0; padding:0; list-style:none; display:grid; gap:7px }
+  .id-rail li{ position:relative; padding-left:16px; font-size:11.5px; line-height:1.45; color:#a29f97 }
+  .id-rail li::before{ content:"\203a"; position:absolute; left:0; top:-1px; color:var(--accent); font-weight:700 }
+  .id-rail b{ color:var(--panel-ink); font-weight:600 }
+  .id-foot{ padding:14px 22px; border-top:1px solid var(--panel-line); font-size:11px; line-height:1.6; color:#8a877f }
+  .id-foot b{ color:#a29f97 }
+
+  /* v2.18.0 : economia coordenada - auto-redirect da curacao (o caso raw-alias vira allow+updatedInput p/ um alias exato .ps1 e poupa 1 turno; o resto mantem o deny provado) + bundle de env do roteador ao ligar (ENABLE_TOOL_SEARCH religa o tool-search nativo; CLAUDE_CODE_AUTO_COMPACT_WINDOW capa o contexto ativo mantendo o 1M): cache_read/turno ~447k -> ~74-127k (~65-83% de corte). error-guard intacto (invariante no matcher Bash). */
+  .eco{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:880px; font-family:var(--mono); margin:0 0 36px }
+  .eco-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .eco-bar .k{ color:var(--accent) }
+  .eco-bar .m{ color:#8a877f }
+
+  /* hero: o corte medido de leitura de cache por turno (a mais importante) */
+  .eco-hero{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:22px; align-items:center;
+    padding:22px 22px; border-bottom:1px solid rgba(255,255,255,.06) }
+  .eco-gauge{ min-width:0 }
+  .eco-glab{ display:block; font-size:9.5px; letter-spacing:.15em; text-transform:uppercase; color:var(--accent); margin:0 0 13px }
+  .eco-track{ display:flex; align-items:center; gap:12px; margin:0 0 11px }
+  .eco-track:last-child{ margin:0 }
+  .eco-bararea{ position:relative; flex:1 1 auto; min-width:0; height:16px; border-radius:5px; background:rgba(255,255,255,.05) }
+  .eco-fill{ position:absolute; top:0; left:0; bottom:0; border-radius:5px; max-width:100% }
+  .eco-fill--was{ background:repeating-linear-gradient(135deg,#5b5148 0 6px,#463f38 6px 12px) }
+  .eco-fill--now{ background:var(--accent) }
+  .eco-tval{ flex:0 0 138px; white-space:nowrap; font-size:11.5px; color:#8a877f }
+  .eco-tval s{ color:#6d6257; text-decoration-color:#6d6257 }
+  .eco-tval b{ color:var(--panel-ink); font-weight:600 }
+  .eco-cut{ text-align:center }
+  .eco-cut-lead{ display:block; font-size:9px; letter-spacing:.14em; text-transform:uppercase; color:#8a877f; margin:0 0 8px }
+  .eco-cut b{ display:block; font-size:clamp(30px,6vw,40px); line-height:.9; letter-spacing:-.02em; color:var(--accent); font-weight:700; white-space:nowrap }
+  .eco-cut-cap{ display:block; margin:9px auto 0; max-width:170px; font-size:9.5px; line-height:1.5; letter-spacing:.03em; color:#a29f97 }
+  .eco-hnote{ margin:0; padding:16px 22px; border-bottom:1px solid rgba(255,255,255,.06); font-size:11.5px; line-height:1.6; color:#8a877f }
+  .eco-hnote b{ color:#a29f97; font-weight:600 }
+  .eco-hnote code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+
+  /* mecanismo: o fork da curacao (o seguro reescreve; o resto mantem o deny) */
+  .eco-fork{ display:grid; grid-template-columns:1fr 1fr; gap:14px; padding:20px 22px 8px }
+  .eco-path{ display:flex; flex-direction:column; gap:10px; border-radius:10px; padding:15px 16px }
+  .eco-path--go{ border:1px solid var(--accent); background:rgba(255,255,255,.05) }
+  .eco-path--keep{ border:1px dashed rgba(255,255,255,.24); background:transparent }
+  .eco-ptag{ font-size:9.5px; letter-spacing:.14em; text-transform:uppercase }
+  .eco-path--go .eco-ptag{ color:var(--accent) }
+  .eco-path--keep .eco-ptag{ color:#8a877f }
+  .eco-cond{ font-size:12.5px; line-height:1.4; font-weight:600; color:var(--panel-ink); overflow-wrap:break-word }
+  .eco-path--keep .eco-cond{ color:#a29f97 }
+  .eco-op{ align-self:flex-start; font-size:11px; letter-spacing:.02em; padding:3px 10px; border-radius:6px; background:var(--accent); color:var(--panel); font-weight:700 }
+  .eco-op--deny{ background:transparent; border:1px solid #6d6257; color:#a29f97 }
+  .eco-pnote{ font-size:11px; line-height:1.5; color:#8a877f }
+  .eco-pnote b{ color:#a29f97; font-weight:600 }
+  .eco-path code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .eco-inv{ margin:2px 22px 4px; padding:13px 15px; border:1px solid var(--panel-line); border-radius:10px;
+    background:rgba(255,255,255,.02); font-size:11px; line-height:1.6; color:#8a877f }
+  .eco-inv-tag{ display:inline-block; font-size:9px; letter-spacing:.13em; text-transform:uppercase;
+    color:var(--accent); border:1px solid var(--accent); border-radius:5px; padding:1px 7px; margin-right:9px }
+  .eco-inv b{ color:#a29f97; font-weight:600 }
+  .eco-inv code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+
+  /* rails: as duas partes em detalhe */
+  .eco-rails{ display:grid; grid-template-columns:1fr 1fr; gap:12px; padding:12px 22px 18px }
+  .eco-rail{ border:1px solid var(--panel-line); border-radius:10px; padding:13px 14px; background:rgba(255,255,255,.025) }
+  .eco-rail h4{ margin:0 0 8px; font-size:11px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent) }
+  .eco-rail ul{ margin:0; padding:0; list-style:none; display:grid; gap:7px }
+  .eco-rail li{ position:relative; padding-left:16px; font-size:11.5px; line-height:1.45; color:#a29f97 }
+  .eco-rail li::before{ content:"\203a"; position:absolute; left:0; top:-1px; color:var(--accent); font-weight:700 }
+  .eco-rail b{ color:var(--panel-ink); font-weight:600 }
+  .eco-rail code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .eco-foot{ padding:14px 22px; border-top:1px solid var(--panel-line); font-size:11px; line-height:1.6; color:#8a877f }
+  .eco-foot b{ color:#a29f97 }
+  .eco-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+
+  /* v2.19.0 : o acervo viaja junto - migracao do KB local -> memory server (botao no dashboard, projeto a projeto pq o daemon escopa por project_id no handshake; documentId = id local -> UPSERT idempotente; fail-loud: recusa fora do mcp-memory, coleta a causa real e confere a contagem remota; escopo global (__user__) ainda fora, declarado). */
+  .mig{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:880px; font-family:var(--mono); margin:0 0 36px }
+  .mig-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .mig-bar .k{ color:var(--accent) }
+  .mig-bar .m{ color:#8a877f }
+
+  /* fluxo: o acervo local atravessa, projeto a projeto, para o servidor */
+  .mig-flow{ display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); gap:16px; align-items:stretch;
+    padding:22px 22px 18px; border-bottom:1px solid rgba(255,255,255,.06) }
+  .mig-node{ display:flex; flex-direction:column; gap:8px; min-width:0; border-radius:10px; padding:15px 16px }
+  .mig-node--src{ border:1px dashed rgba(255,255,255,.24) }
+  .mig-node--dst{ border:1px solid var(--accent); background:rgba(255,255,255,.05) }
+  .mig-ntag{ font-size:9.5px; letter-spacing:.14em; text-transform:uppercase; color:#8a877f }
+  .mig-node--dst .mig-ntag{ color:var(--accent) }
+  .mig-nsub{ font-size:12px; line-height:1.45; font-weight:600; color:var(--panel-ink); overflow-wrap:break-word }
+  .mig-nnote{ font-size:11px; line-height:1.5; color:#8a877f }
+  .mig-nnote b{ color:#a29f97; font-weight:600 }
+  .mig-cross{ display:flex; flex-direction:column; align-items:center; justify-content:center; gap:7px; text-align:center; min-width:132px }
+  .mig-ctag{ font-size:9px; letter-spacing:.13em; text-transform:uppercase; color:var(--accent);
+    border:1px solid var(--accent); border-radius:5px; padding:2px 8px }
+  .mig-cline{ width:100%; height:1px; background:linear-gradient(90deg,rgba(255,255,255,.10),var(--accent)) }
+  .mig-cnote{ font-size:9.5px; line-height:1.5; color:#8a877f; max-width:150px }
+  .mig-node code, .mig-cnote code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+
+  /* guardas: o que impede uma migracao de mentir que deu certo */
+  .mig-guards{ display:grid; grid-template-columns:repeat(3,1fr); gap:12px; padding:18px 22px 8px }
+  .mig-guard{ border:1px solid var(--panel-line); border-radius:10px; padding:13px 14px; background:rgba(255,255,255,.025) }
+  .mig-guard h4{ margin:0 0 7px; font-size:10.5px; letter-spacing:.11em; text-transform:uppercase; color:var(--accent) }
+  .mig-guard p{ margin:0; font-size:11px; line-height:1.5; color:#8a877f }
+  .mig-guard b{ color:#a29f97; font-weight:600 }
+  .mig-guard code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .mig-scope{ margin:2px 22px 4px; padding:13px 15px; border:1px solid var(--panel-line); border-radius:10px;
+    background:rgba(255,255,255,.02); font-size:11px; line-height:1.6; color:#8a877f }
+  .mig-scope-tag{ display:inline-block; font-size:9px; letter-spacing:.13em; text-transform:uppercase;
+    color:var(--accent); border:1px solid var(--accent); border-radius:5px; padding:1px 7px; margin-right:9px }
+  .mig-scope b{ color:#a29f97; font-weight:600 }
+  .mig-scope code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .mig-foot{ padding:14px 22px; border-top:1px solid var(--panel-line); font-size:11px; line-height:1.6; color:#8a877f }
+  .mig-foot b{ color:#a29f97 }
+  .mig-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+
+  /* v2.19.0, 2a frente : model-router - a janela de 1M, medida. QUALQUER modo != off publica
+     ANTHROPIC_BASE_URL -> o Claude Code, atras de uma base_url que nao e a oficial, nao valida
+     suporte a 1M e orca a sessao em 200K (limitacao do CLIENTE, doc Anthropic; o anthropic-beta e
+     repassado intacto pelo proxy). A/B na mesma maquina: 183k/200k ligado x 68k/1.0M desligado.
+     Saidas: aviso na sessao e no card Router; contextTuning (opt-in, default false) da o ganho de
+     env com o roteador em off, sem publicar base_url; telemetria cacheRead/cacheCreate/cacheHitPct
+     como baseline. ASSINATURA: a REGUA - as duas sessoes desenhadas na MESMA escala (0 -> 1.0M),
+     entao o teto de 200K aparece como um quinto da barra e os 800K perdidos viram area tracejada. */
+  .subhead{ display:flex; align-items:center; gap:16px; margin:60px 0 26px; font-family:var(--mono);
+    font-size:12px; letter-spacing:.2em; text-transform:uppercase; color:var(--muted) }
+  .subhead::after{ content:""; flex:1 1 auto; height:1px; background:var(--line) }
+  .subhead b{ color:var(--accent); font-weight:400 }
+  .lede a, .callout a, .trust a{ color:var(--accent) }
+
+  .ctx{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:880px; font-family:var(--mono); margin:0 0 36px }
+  .ctx code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .ctx a, .eco-hnote a{ color:var(--accent); text-decoration:none; border-bottom:1px solid rgba(217,138,61,.45) }
+  .ctx a:hover, .eco-hnote a:hover{ border-bottom-color:var(--accent) }
+  .ctx-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .ctx-bar .k{ color:var(--accent) }
+  .ctx-bar .m{ color:#8a877f }
+
+  /* a regua: os dois orcamentos de sessao na MESMA escala */
+  .ctx-meter{ padding:22px 22px 20px; border-bottom:1px solid rgba(255,255,255,.06) }
+  .ctx-mlab{ display:block; font-size:9.5px; letter-spacing:.15em; text-transform:uppercase; color:var(--accent); margin:0 0 16px }
+  .ctx-row{ display:grid; grid-template-columns:140px minmax(0,1fr) 118px; gap:14px; align-items:center; margin:0 0 13px }
+  .ctx-sp{ display:block }
+  .ctx-rlab{ font-size:10.5px; line-height:1.45; color:#8a877f; min-width:0; overflow-wrap:break-word }
+  .ctx-rlab b{ display:block; font-size:11.5px; color:var(--panel-ink); font-weight:600; margin:0 0 2px }
+  .ctx-scale{ position:relative; height:22px; min-width:0 }
+  .ctx-cap{ position:absolute; left:0; top:0; bottom:0; border:1px solid rgba(255,255,255,.26);
+    border-radius:5px; background:rgba(255,255,255,.05); overflow:hidden }
+  .ctx-fill{ display:block; height:100%; background:var(--accent) }
+  .ctx-lost{ position:absolute; left:20%; right:0; top:0; bottom:0; display:flex; align-items:center; justify-content:center;
+    border:1px dashed rgba(255,255,255,.20); border-left:0; border-radius:0 5px 5px 0;
+    font-size:9.5px; letter-spacing:.08em; color:#8a877f; white-space:nowrap; overflow:hidden; padding:0 6px }
+  .ctx-rval{ font-size:10.5px; color:#8a877f; text-align:right; white-space:nowrap }
+  .ctx-rval b{ color:var(--panel-ink); font-weight:600; font-size:12px }
+  .ctx-ruler{ position:relative; height:11px; font-size:9px; letter-spacing:.1em; color:#8a877f }
+  .ctx-tick{ position:absolute; bottom:0; transform:translateX(-50%) }
+  .ctx-tick::after{ content:""; position:absolute; left:50%; bottom:-5px; width:1px; height:5px; background:rgba(255,255,255,.16) }
+  .ctx-tick--end{ left:auto; right:0; transform:none }
+  .ctx-tick--end::after{ left:auto; right:0 }
+  .ctx-mcap{ margin:16px 0 0; font-size:11px; line-height:1.6; color:#8a877f }
+  .ctx-mcap b{ color:#a29f97; font-weight:600 }
+
+  /* a causa, verificada na fonte */
+  .ctx-why{ display:grid; gap:10px; padding:20px 22px 6px }
+  .ctx-fact{ margin:0; border-left:2px solid var(--accent); background:rgba(255,255,255,.05);
+    border-radius:0 6px 6px 0; padding:11px 14px; font-size:11.5px; line-height:1.6; color:#a29f97 }
+  .ctx-fact b{ color:var(--panel-ink); font-weight:600 }
+  .ctx-fact--quiet{ border-left-color:rgba(255,255,255,.24); background:rgba(255,255,255,.02) }
+
+  /* a escolha: o que voce ganha e o que paga em cada posicao da chave */
+  .ctx-fork{ display:grid; grid-template-columns:1fr 1fr; gap:14px; padding:14px 22px 8px }
+  .ctx-lane{ display:flex; flex-direction:column; gap:9px; border-radius:10px; padding:15px 16px }
+  .ctx-lane--cost{ border:1px dashed rgba(255,255,255,.24) }
+  .ctx-lane--keep{ border:1px solid var(--accent); background:rgba(255,255,255,.05) }
+  .ctx-ltag{ font-size:9.5px; letter-spacing:.13em; text-transform:uppercase; color:#8a877f; overflow-wrap:break-word }
+  .ctx-lane--keep .ctx-ltag{ color:var(--accent) }
+  .ctx-lwhat{ font-size:12.5px; line-height:1.4; font-weight:600; color:var(--panel-ink); overflow-wrap:break-word }
+  .ctx-lane--cost .ctx-lwhat{ color:#a29f97 }
+  .ctx-pill{ align-self:flex-start; font-size:11px; padding:3px 10px; border-radius:6px;
+    background:var(--accent); color:var(--panel); font-weight:700 }
+  .ctx-pill--cost{ background:transparent; border:1px solid #6d6257; color:#a29f97; font-weight:400 }
+  .ctx-lnote{ font-size:11px; line-height:1.55; color:#8a877f }
+  .ctx-lnote b{ color:#a29f97; font-weight:600 }
+
+  /* o baseline: o que passou a ser medido */
+  .ctx-tel{ margin:6px 22px 4px; padding:15px 16px; border:1px solid var(--panel-line);
+    border-radius:10px; background:rgba(255,255,255,.02) }
+  .ctx-teltag{ display:inline-block; font-size:9px; letter-spacing:.13em; text-transform:uppercase;
+    color:var(--accent); border:1px solid var(--accent); border-radius:5px; padding:1px 7px; margin:0 0 13px }
+  .ctx-fields{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:0 0 12px }
+  .ctx-field{ border-left:1px solid rgba(255,255,255,.12); padding:1px 0 1px 12px; min-width:0 }
+  .ctx-field--hi{ border-left-color:var(--accent) }
+  .ctx-field b{ display:block; font-size:11.5px; color:var(--panel-ink); font-weight:600; overflow-wrap:break-word }
+  .ctx-field span{ display:block; margin-top:5px; font-size:10.5px; line-height:1.5; color:#8a877f }
+  .ctx-telnote{ margin:0; font-size:11px; line-height:1.6; color:#8a877f }
+  .ctx-telnote b{ color:#a29f97; font-weight:600 }
+  .ctx-foot{ padding:14px 22px; border-top:1px solid var(--panel-line); font-size:11px; line-height:1.6; color:#8a877f }
+  .ctx-foot b{ color:#a29f97 }
+
   footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
   footer a{ color:var(--muted); text-decoration:none }
   footer a:hover{ color:var(--accent) }
   .frow{ display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between }
   .flinks a{ margin-right:16px }
 
-  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .rr-stage{ grid-template-columns:1fr } .rr-rails{ grid-template-columns:1fr } .rr-steps{ flex-direction:column; align-items:stretch } .an-stage{ grid-template-columns:1fr } .an-rails{ grid-template-columns:1fr } .an-steps{ flex-direction:column; align-items:stretch } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
+  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .rr-stage{ grid-template-columns:1fr } .rr-rails{ grid-template-columns:1fr } .rr-steps{ flex-direction:column; align-items:stretch } .an-stage{ grid-template-columns:1fr } .an-rails{ grid-template-columns:1fr } .an-steps{ flex-direction:column; align-items:stretch } .id-row{ grid-template-columns:1fr; gap:9px } .id-arrow{ display:none } .id-chip{ text-align:left; min-width:0 } .id-fork{ grid-template-columns:1fr } .id-rails{ grid-template-columns:1fr } .eco-hero{ grid-template-columns:1fr } .eco-fork{ grid-template-columns:1fr } .eco-rails{ grid-template-columns:1fr } .mig-flow{ grid-template-columns:1fr } .mig-cross{ min-width:0 } .mig-cline{ width:60% } .mig-guards{ grid-template-columns:1fr } .ctx-row{ grid-template-columns:1fr; gap:9px } .ctx-sp{ display:none } .ctx-rval{ text-align:left } .ctx-fork{ grid-template-columns:1fr } .ctx-fields{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
   @media (prefers-reduced-motion:reduce){ .caret{ animation:none } .reveal{ opacity:1 !important; transform:none !important } }
   .reveal{ opacity:0; transform:translateY(14px); animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards }
   @keyframes rise{ to{ opacity:1; transform:none } }
@@ -1014,7 +1292,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.17.1</span>
+    <span class="ver">v2.19.0</span>
   </nav>
 
   <header class="hero">
@@ -1069,7 +1347,7 @@
       <div class="cell">
         <p class="kick">KB coeso</p>
         <h3>Uma pasta, um backend</h3>
-        <p>Todos os pontos de escrita (daemon HTTP, hooks, MCP stdio, dashboard e CLI) concordam na <b>mesma</b> pasta e no <b>mesmo</b> backend, com a escolha de backend no <b>global</b>. A consolidação das pastas irmãs mira a pasta <b>REAL</b> da sessão (o brain-server dispara com <code>--active-dir</code>), o ponteiro <b>nunca regride</b> de uma pasta viva para uma quase-vazia, e nada é apagado sem <b>ler de volta</b> pra provar que foi absorvido (backup primeiro).</p>
+        <p>Todos os pontos de escrita (daemon HTTP, hooks, MCP stdio, dashboard e CLI) concordam na <b>mesma</b> pasta e no <b>mesmo</b> backend, com a escolha de backend no <b>global</b>. Também concordam na <b>identidade</b>: a porta e o token do daemon saem do <b>path canônico</b> da pasta, então escrevê-la de outro jeito não cria um segundo endereço, e quem publica o ponteiro <b>relê e obedece</b> o que ficou gravado. A consolidação das pastas irmãs mira a pasta <b>REAL</b> da sessão (o brain-server dispara com <code>--active-dir</code>), o ponteiro <b>nunca regride</b> de uma pasta viva para uma quase-vazia, e nada é apagado sem <b>ler de volta</b> pra provar que foi absorvido (backup primeiro).</p>
       </div>
       <div class="cell">
         <p class="kick">Aprendizado no loop</p>
@@ -1079,7 +1357,7 @@
       <div class="cell">
         <p class="kick">Execução curada</p>
         <h3>Sinal acima de ruído</h3>
-        <p>Redireciona comandos ruidosos e injeta contexto de forma advisory, com backpressure para não inflar a janela.</p>
+        <p>Redireciona comandos ruidosos e injeta contexto advisory, sem inflar a janela. Quando um alias curado é <b>seguro de reescrever</b> (exato, sem argumento, com script <code>.ps1</code>), o guard <b>auto-redireciona</b> pro script na hora (<code>allow</code> + <code>updatedInput</code>) em vez de negar e pedir a rechamada, poupando um turno.</p>
       </div>
       <div class="cell">
         <p class="kick">Dashboard</p>
@@ -1097,6 +1375,11 @@
         <p>Uma camada mecânica bloqueia drift de docs, changelog e conflitos; a camada adversarial é um agente read-only que revisa o código atual e emite parecer consultivo. O dono decide o go/no-go.</p>
       </div>
       <div class="cell" style="grid-column:1/-1">
+        <p class="kick">Roteador de modelos</p>
+        <h3>Rede de segurança no limite, com o preço na mesa</h3>
+        <p>O <b>model-router</b> é opt-in e cobre o que o cliente não cobre: quando a janela de acesso esgota (<code>429</code>), o plano B mantém a sessão de pé; o modo <b>sticky</b> fixa o tier uma vez por sessão para não quebrar o prompt cache. O preço agora está medido e declarado: ligar o roteamento em <b>qualquer</b> modo diferente de <code>off</code> publica <code>ANTHROPIC_BASE_URL</code>, e o Claude Code, atrás de uma base_url que não é a oficial, orça a sessão em <b>200K</b> mesmo nos modelos de 1M. Quer a economia de token sem esse custo? <code>contextTuning</code> entrega o mesmo ganho de env com o roteador em <code>off</code>, preservando a janela de <b>1M</b>.</p>
+      </div>
+      <div class="cell" style="grid-column:1/-1">
         <p class="kick">Políticas</p>
         <h3>Constraints que você ativa</h3>
         <p>Ative constraints explicitamente com <code>policy_activate</code>, nunca auto-promovidas de lições: o <code>error-guard</code> nega no <code>PreToolUse</code> um Bash cuja falha reincide, políticas <b>always-apply</b> entram no contexto no início da sessão, e políticas <b>por glob</b> avisam ao editar um arquivo que casa o padrão. <b>Surfacing ≠ enforcement</b>: ficam presentes no contexto, não bloqueiam (exceto o <code>error-guard</code>). A Fase 3 agora fecha o ciclo: modo sombra mede, e <code>/policy-adjudicate</code> chama um <b>juiz LLM independente</b> para estimar disposições — estimativa de juiz, <b>não FP medido</b>.</p>
@@ -1106,55 +1389,402 @@
 
 
   <section>
-    <p class="label">Novo na v2.17.1 · converge a identidade do data-dir, elimina o 401</p>
-    <p class="lede">Duas causas-raiz na <b>mesma</b> classe de bug (split-brain do data-dir entre processos), fechadas em duas metades. A <b>normalização de path</b> em <code>resolvePort</code>/<code>tokenFile</code> evita que strings de <code>dataDir</code> não-normalizadas (<code>-inline</code> vs <code>-&lt;marketplace&gt;</code>, separadores mistos) façam processos derivarem porta/token <b>diferentes</b> pra mesma pasta lógica. E o <code>servers/brain-server/index.js</code> passa a <b>seguir o próprio veredito</b> ao publicar o ponteiro ativo, em vez de usar o candidato incondicionalmente quando o anti-regression guard recusa a publicação.</p>
+    <p class="label">Novo na v2.19.0 · o acervo viaja junto</p>
+    <p class="lede">Trocar o backend do Brain para o <b>memory server</b> deixava para trás tudo o que você já tinha aprendido: o KB local ficava órfão, porque nunca existiu migração (o export/import do dashboard sempre foi local↔local). A v2.19.0 fecha esse buraco com um botão <b>Migrar agora</b> no dashboard: ele leva todo o acervo local para o servidor <b>projeto a projeto</b>, com o mesmo id de documento (então rodar de novo <b>atualiza</b> em vez de duplicar) e confere no fim se chegou tudo.</p>
 
     <div class="callout">
-      <span class="tag">o 401 era essa divergência</span>
-      Quando o guard recusava o candidato do <code>index.js</code> (mais leve/vazio que o ponteiro existente), o processo continuava derivando porta/token da pasta <b>vazia</b> — sem <code>brain-http.token</code> ali — enquanto todo hook sem env seguia o ponteiro pra <b>outra</b> pasta, a real. Dois processos, duas identidades, um 401.
+      <span class="tag">o plano anterior foi descartado na fonte</span>
+      A investigação começou por outra hipótese: matar o processo por sessão com um <b>daemon único</b> e um proxy. Verificado no código, isso seria <b>reinventar o que o memory server já faz</b> — no modo <code>mcp-memory</code> o processo Node já vira cliente magro (não carrega modelo nem SQLite). O buraco real era só a <b>migração dos dados</b>, e foi esse que a v2.19.0 tapa.
     </div>
 
-    <div class="verify" aria-label="Converge a identidade do data-dir do daemon. Duas causas-raiz na mesma classe de bug de split-brain: primeiro, resolvePort e tokenFile normalizam o path do dataDir antes de derivar porta e token, evitando que strings nao-normalizadas produzam identidades diferentes pra mesma pasta logica. Segundo, index.js do brain-server publica o ponteiro ativo e agora segue o proprio veredito atraves de um publishAndFollow compartilhado: se o guard recusa o candidato, o index.js relê o ponteiro publicado e usa esse valor, em vez de continuar com o candidato recusado. Resultado: index.js e dataDir passam pela mesma implementacao, eliminando a divergencia que causava o 401.">
-      <div class="verify-bar">
-        <span class="k">publish-then-follow</span>
-        <span class="m">dataDir() e index.js · mesma implementação</span>
+    <div class="mig" aria-label="Artefato da versão 2.19.0: a migração do acervo local para o memory server. À esquerda, o KB local, com um banco SQLite por projeto dentro da pasta de dados. No meio, uma faixa marca que a travessia é feita projeto a projeto, porque o servidor fixa a memória num project_id no aperto de mão, um por conexão. À direita, o memory server recebe cada documento com o mesmo id local, então uma segunda execução atualiza em vez de duplicar e uma migração interrompida pode ser retomada. Abaixo, três guardas que impedem a migração de mentir que deu certo: fora do backend mcp-memory ela recusa rodar, para nunca gravar no banco local escondido; uma entrada que falha não aborta as outras, mas é reportada com a causa real e derruba o resultado; e no fim a contagem de documentos no servidor é conferida contra o que subiu, sendo menor vira erro. Em seguida, uma faixa de escopo declara o limite conhecido: entradas de escopo global ainda não migram, porque no servidor global significa documento sem project_id e o aperto de mão do cliente é sempre escopado num projeto por design, o que exigiria mudar o próprio servidor. No rodapé, o custo assumido: o servidor reprocessa os vetores de cada entrada, por isso a migração é um botão explícito com barra de progresso em vez de acontecer sozinha ao salvar.">
+      <div class="mig-bar">
+        <span class="k">v2.19.0</span>
+        <span class="m">o acervo viaja junto · idempotente · fail-loud</span>
       </div>
-      <div class="verify-body">
-        <ol class="verify-pipe">
-          <li><span class="op">FIX 1</span><code>resolvePort/tokenFile</code><span class="note">normaliza o path do dataDir antes de derivar porta/token</span></li>
-          <li><span class="op">FIX 2</span><code>publishAndFollow(dir)</code><span class="note">extraído em scripts/lib/data-dir.js, compartilhado</span></li>
-          <li><span class="op">USO</span><code>dataDir() · index.js</code><span class="note">os dois pontos passam pela MESMA implementação</span></li>
-        </ol>
-        <p class="verify-cmp"><code>writeActivePointer(candidato)</code> <span class="eq">→</span> <code>relê o ponteiro publicado</code></p>
-        <div class="verify-fork">
-          <div class="vpath vpath--pass">
-            <span class="vpath-tag">guard aceita o candidato</span>
-            <b>segue o candidato</b>
-            <span class="vpath-note">é o valor mais pesado/vivo — publicação normal</span>
-          </div>
-          <div class="vpath vpath--abort">
-            <span class="vpath-tag">guard recusa (candidato mais leve/vazio)</span>
-            <b>segue o ponteiro, não o candidato</b>
-            <span class="vpath-note">porta/token derivam da pasta REAL, nunca mais da vazia</span>
-          </div>
+
+      <div class="mig-flow">
+        <div class="mig-node mig-node--src">
+          <span class="mig-ntag">KB local (o que você já tem)</span>
+          <span class="mig-nsub"><code>DATA_DIR/brain/&lt;projeto&gt;/brain.db</code></span>
+          <span class="mig-nnote">Um banco <b>por projeto</b>. Sem migração, ele simplesmente <b>ficava para trás</b> ao trocar de backend.</span>
+        </div>
+        <div class="mig-cross">
+          <span class="mig-ctag">projeto a projeto</span>
+          <span class="mig-cline"></span>
+          <span class="mig-cnote">o servidor fixa a memória num <code>project_id</code> no handshake, <b>um por conexão</b></span>
+        </div>
+        <div class="mig-node mig-node--dst">
+          <span class="mig-ntag">memory server</span>
+          <span class="mig-nsub"><code>add_document</code> · <code>documentId</code> = o id local</span>
+          <span class="mig-nnote">É <b>UPSERT</b>: rodar de novo <b>atualiza</b> em vez de duplicar, então dá para <b>retomar</b> uma migração interrompida.</span>
         </div>
       </div>
-      <div class="verify-foot"><b>eliminando a divergência, não só o sintoma:</b> antes, só o <code>dataDir()</code> (branch de env) seguia o veredito do ponteiro; o <code>index.js</code> tinha sua própria cópia da lógica e ignorava a recusa. Extrair <code>publishAndFollow</code> como implementação única impede os dois caminhos de divergirem de novo no futuro.</div>
+
+      <div class="mig-guards">
+        <div class="mig-guard">
+          <h4>Recusa fora do alvo</h4>
+          <p>Se o backend não for <code>mcp-memory</code>, a migração <b>não roda</b>. Nunca cai calada para o banco local: o alvo é o servidor ou é erro.</p>
+        </div>
+        <div class="mig-guard">
+          <h4>Falha com a causa real</h4>
+          <p>Uma entrada que falha <b>não aborta</b> as outras, mas é coletada com a <b>causa real</b> e derruba o resultado. Nunca vira um "pronto" que esconde perda.</p>
+        </div>
+        <div class="mig-guard">
+          <h4>Confere depois de subir</h4>
+          <p>No fim, a <b>contagem remota</b> de cada projeto é comparada com o que subiu. Menos documentos no servidor do que enviamos também é <b>erro</b>.</p>
+        </div>
+      </div>
+
+      <p class="mig-scope"><span class="mig-scope-tag">limite declarado</span> Entradas de escopo <b>global</b> (<code>__user__</code>) <b>ainda não</b> migram. No servidor, "global" é o escopo <i>home</i>: um documento <b>sem</b> <code>project_id</code>. Escrever ali exigiria um handshake sem projeto ativo, mas o servidor <b>ignora</b> um <code>projectId</code> em branco e resolve o projeto pela escada do workspace, que falha alto — toda sessão de cliente é escopada num projeto <b>por design</b>, para um cliente não contaminar a memória do outro. Habilitar isso é mudança no próprio servidor, então o limite fica <b>declarado</b> em vez de silenciosamente pulado.</p>
+
+      <div class="mig-foot"><b>O custo assumido:</b> o servidor <b>reprocessa os vetores</b> de cada entrada (o que sobe é o conteúdo, não os vetores locais), então um acervo grande leva tempo. Por isso a migração é um <b>botão explícito</b>, com barra de progresso ao vivo, em vez de disparar sozinha ao salvar a configuração. <b>O que muda ao migrar:</b> a de-duplicação de lições passa a ser <b>server-side</b> e o <code>brain_related</code> vira <b>busca semântica</b> (o grafo de citação é local); em troca, as tools <code>graph_*</code> passam a funcionar, porque o grafo vive no servidor.</div>
     </div>
 
     <div class="wins">
       <div class="win">
-        <h4>Path normalizado, identidade única</h4>
-        <p><code>resolvePort</code>/<code>tokenFile</code> normalizam o <code>dataDir</code> (path canônico) <b>antes</b> de derivar porta e token. Duas strings equivalentes (<code>-inline</code>/<code>-&lt;marketplace&gt;</code>, separadores mistos) apontando pra <b>mesma</b> pasta lógica não derivam mais identidades diferentes.</p>
+        <h4>Sua memória não fica órfã</h4>
+        <p>Ao trocar para o <code>mcp-memory</code>, um botão leva todo o KB local para o servidor. Antes, o acervo antigo simplesmente <b>ficava para trás</b>, sem nenhum caminho de migração.</p>
       </div>
       <div class="win">
-        <h4>index.js segue o próprio veredito</h4>
-        <p><code>publishAndFollow(dir)</code>: publica o ponteiro, relê, e retorna o valor do ponteiro quando o candidato <b>perde</b> pro anti-regression guard. Compartilhado entre <code>dataDir()</code> e <code>index.js</code> — uma implementação, não duas cópias que podem divergir.</p>
+        <h4>Pode rodar de novo</h4>
+        <p>Cada documento sobe com o <b>id local</b> como <code>documentId</code>, então a gravação é <b>UPSERT</b>: repetir <b>atualiza</b> em vez de duplicar, e uma migração interrompida pode ser <b>retomada</b>.</p>
+      </div>
+      <div class="win">
+        <h4>Erro aparece, não some</h4>
+        <p>Fora do backend certo ela <b>recusa rodar</b>; uma entrada que falha é reportada com a <b>causa real</b>; e a contagem no servidor é <b>conferida</b> contra o que subiu.</p>
+      </div>
+      <div class="win">
+        <h4>Limites na cara</h4>
+        <p>A própria tela avisa o que muda (dedup server-side, <code>brain_related</code> vira busca semântica) e o que <b>ainda não</b> migra (o escopo global), em vez de deixar você descobrir depois.</p>
       </div>
     </div>
 
-    <p class="trust"><b>Honesto sobre o alcance:</b> é uma correção de convergência de identidade, não uma mudança de comportamento visível — o daemon já deveria ter sido consistente consigo mesmo. Gate <b>699</b> unitários no verde local; <code>brain-health</code> confirma o probe ativo saudável (<code>{}</code>, sem defeitos) após a instalação local do build corrigido.</p>
+    <p class="trust"><b>Rigor de sempre:</b> o plano inicial (daemon único + proxy) foi <b>descartado após verificação na fonte</b> — no modo <code>mcp-memory</code> o processo Node já é cliente magro, então aquilo seria reinventar o que o servidor já faz; o gap real era a migração. O motor é <b>puro e injetável</b> (<code>migrateLocalToMcp</code>), testado sem tocar em rede ou disco, e as dependências reais foram exercitadas contra um <b>daemon falso</b>: o handshake escopa no projeto certo e o <code>add_document</code> vai com <code>documentId</code> = id local. Tudo em <b>TDD RED→GREEN</b>, com o gate rodado <b>2× estável</b> em duas máquinas (Windows e Linux), <b>0 falhas</b>. O limite do escopo global não é chute: está verificado no código do servidor, onde <code>resolveHandshakeProjectId</code> ignora um <code>projectId</code> em branco e cai numa escada que falha alto — por isso ele é <b>declarado</b> aqui, e não silenciosamente pulado.</p>
+
+    <p class="subhead" id="janela-1m">ainda na v2.19.0 · <b>model-router: a janela de 1M</b></p>
+
+    <p class="lede">O mesmo release paga uma conta que ninguém tinha medido: <b>ligar o roteador encolhe a sua janela</b>. Em <b>qualquer</b> modo diferente de <code>off</code>, o boss publica um <code>ANTHROPIC_BASE_URL</code> apontando pro proxy local, e o Claude Code, atrás de uma base_url que não é a oficial, <b>não consegue validar</b> suporte a 1M: passa a orçar a sessão em <b>200K</b>, inclusive nos modelos de 1M nativo. Não aparecia erro nenhum; a janela só encolhia. Agora o boss <b>avisa onde dói</b>, entrega a economia de token <b>sem o proxy no caminho</b> (<code>contextTuning</code>) e <b>mede o cache</b>, pra decisão sair de número e não de fé.</p>
+
+    <div class="ctx" aria-label="Artefato da versão 2.19.0, segunda frente: a janela de contexto medida. No topo, uma régua única que vai de zero a 1 milhão de tokens, com marcas em 200 mil e em 1 milhão. Sobre ela, duas sessões reais medidas na mesma máquina, desenhadas na mesma escala. Na primeira, com o roteador ligado, o teto ocupa só um quinto da régua e está quase todo preenchido: 183 mil de 200 mil, 91 por cento do teto; o resto da régua é uma área tracejada marcada como 800 mil de janela que somem. Na segunda, com o roteador desligado, o teto ocupa a régua inteira e o uso é uma faixa curta no começo: 68 mil de 1 milhão, 7 por cento do teto. A legenda diz que foi a mesma máquina e o mesmo cliente, com o contexto lido dos dois lados, e que só o roteador mudou. Abaixo, dois fatos verificados na fonte: o primeiro explica que qualquer modo diferente de off publica a variável ANTHROPIC_BASE_URL para o proxy local e que o Claude Code, atrás de uma base_url que não é a oficial, não valida suporte a 1 milhão e orça a sessão em 200 mil, inclusive nos modelos de 1 milhão nativo, com link para a documentação da Anthropic; o segundo isenta o proxy, porque o cabeçalho anthropic-beta é repassado intacto nos três pontos de encaminhamento, então não havia erro para ver. Em seguida, a escolha em duas faixas: à esquerda, tracejada, o roteador ligado, que dá a rede de segurança do limite 429 e o roteamento por tarefa e cobra o teto de 200 mil, agora declarado na mensagem injetada na sessão e no card Router do dashboard; à direita, com borda cheia âmbar, o contextTuning com o roteador em off, que grava o mesmo ajuste de ambiente sem publicar a base_url e preserva a janela de 1 milhão. Depois, o painel de telemetria de cache com três campos que o dashboard passou a mostrar: cacheRead, cacheCreate e cacheHitPct, este último definido como a fatia da entrada que veio do cache. No rodapé, a razão de continuar opt-in: fixar o auto-compact em 200 mil capa o contexto ativo de quem usa 1 milhão sem ter pedido, e as funções que escrevem o ambiente só preenchem o que está ausente e removem só o que o próprio boss escreveu.">
+      <div class="ctx-bar">
+        <span class="k">v2.19.0</span>
+        <span class="m">a janela de 1M · medida, avisada, contornável</span>
+      </div>
+
+      <div class="ctx-meter">
+        <span class="ctx-mlab">orçamento da sessão · duas medições na mesma escala</span>
+
+        <div class="ctx-row">
+          <span class="ctx-sp" aria-hidden="true"></span>
+          <div class="ctx-ruler" aria-hidden="true">
+            <span class="ctx-tick" style="left:20%">200K</span>
+            <span class="ctx-tick ctx-tick--end">1.0M</span>
+          </div>
+          <span class="ctx-sp" aria-hidden="true"></span>
+        </div>
+
+        <div class="ctx-row">
+          <span class="ctx-rlab"><b>roteador ligado</b>qualquer modo ≠ <code>off</code></span>
+          <div class="ctx-scale">
+            <span class="ctx-cap" style="width:20%"><i class="ctx-fill" style="width:91.5%"></i></span>
+            <span class="ctx-lost">800K de janela somem</span>
+          </div>
+          <span class="ctx-rval"><b>183k</b> / 200k</span>
+        </div>
+
+        <div class="ctx-row">
+          <span class="ctx-rlab"><b>roteador em off</b>nada publicado</span>
+          <div class="ctx-scale">
+            <span class="ctx-cap" style="width:100%"><i class="ctx-fill" style="width:6.8%"></i></span>
+          </div>
+          <span class="ctx-rval"><b>68k</b> / 1.0M</span>
+        </div>
+
+        <p class="ctx-mcap"><b>Medição de campo:</b> mesma máquina, mesmo cliente, <code>/context</code> lido dos dois lados. A única variável foi o roteador.</p>
+      </div>
+
+      <div class="ctx-why">
+        <p class="ctx-fact"><b>É o cliente, não o proxy.</b> Ligar o roteamento publica <code>ANTHROPIC_BASE_URL</code> apontando pro proxy local, e o Claude Code, atrás de uma base_url que não é a oficial, não valida suporte a 1M: orça a sessão em <b>200K</b>, inclusive nos modelos de 1M nativo (Opus 5, Fable 5, Sonnet 5). Está <a href="https://code.claude.com/docs/en/model-config" rel="noreferrer">documentado pela Anthropic</a>.</p>
+        <p class="ctx-fact ctx-fact--quiet">A suspeita mais cômoda caiu na leitura do código: o <code>anthropic-beta</code> é <b>repassado intacto</b> nos três pontos de forward do proxy. Não havia erro pra ver, log pra ler nem aviso pra ignorar: a janela encolhia calada.</p>
+      </div>
+
+      <div class="ctx-fork">
+        <div class="ctx-lane ctx-lane--cost">
+          <span class="ctx-ltag">roteador ligado</span>
+          <span class="ctx-lwhat">rede de segurança no <code>429</code> e roteamento por tarefa</span>
+          <span class="ctx-pill ctx-pill--cost">teto de 200K</span>
+          <span class="ctx-lnote">Não existe meio-termo: <b>qualquer</b> modo diferente de <code>off</code> põe o proxy no caminho e publica a base_url. O que mudou é que agora você <b>sabe</b>: a mensagem <code>[model-router] … ATIVO</code> injetada na sessão e o card <b>Router</b> do dashboard declaram o teto e apontam a saída.</span>
+        </div>
+        <div class="ctx-lane ctx-lane--keep">
+          <span class="ctx-ltag">contextTuning · roteador em off</span>
+          <span class="ctx-lwhat">a mesma economia de token, sem proxy no caminho</span>
+          <span class="ctx-pill">1M preservado</span>
+          <span class="ctx-lnote">O ganho da v2.18.0 (<code>cache_read</code> por turno de <b>~447 mil</b> pra <b>~74 a 127 mil</b>) vinha do <b>env</b>, não do proxy: só estava amarrado a ele. Com <code>contextTuning.enabled: true</code>, o boss grava <code>ENABLE_TOOL_SEARCH</code> e <code>CLAUDE_CODE_AUTO_COMPACT_WINDOW</code> com o roteador em <code>off</code> e <b>sem publicar</b> <code>ANTHROPIC_BASE_URL</code>.</span>
+        </div>
+      </div>
+
+      <div class="ctx-tel">
+        <span class="ctx-teltag">telemetria de cache · no card Router</span>
+        <div class="ctx-fields">
+          <div class="ctx-field">
+            <b>cacheRead</b>
+            <span>tokens de entrada servidos do cache (<code>cache_read_input_tokens</code>)</span>
+          </div>
+          <div class="ctx-field">
+            <b>cacheCreate</b>
+            <span>tokens gravados no cache (<code>cache_creation_input_tokens</code>)</span>
+          </div>
+          <div class="ctx-field ctx-field--hi">
+            <b>cacheHitPct</b>
+            <span>a fatia da entrada que veio do cache: <code>cacheRead / (cacheRead + entrada)</code></span>
+          </div>
+        </div>
+        <p class="ctx-telnote">O medidor do stream só contava entrada e saída. Agora um parser <b>puro</b> (<code>accumulateUsage</code>) também lê o cache, e o dashboard mostra o hit junto dos tokens. É o <b>baseline</b> que faltava: sem ele, religar o proxy no futuro (por exemplo, pra reescrever o cache frio) seria fé; com ele, dá pra <b>provar ou desmentir</b> se compensa.</p>
+      </div>
+
+      <div class="ctx-foot"><b>Por que continua opt-in:</b> fixar o auto-compact em 200K <b>capa o contexto ativo</b> de quem usa 1M sem ter pedido, então <code>contextTuning.enabled</code> nasce <b>false</b> e quem liga é você, no <code>router-config.json</code>. As funções que escrevem esse env são <b>puras</b> e mantêm a regra de sempre: <code>planTuningEnv</code> só preenche o que está <b>ausente</b> (nunca sobrescreve um valor seu) e <code>planTuningRemoval</code> tira <b>só o que o boss</b> teria escrito, sem deixar env órfão.</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>A janela para de sumir calada</h4>
+        <p>O aviso aparece onde você olha: na mensagem <code>[model-router] … ATIVO</code> injetada na sessão e no card <b>Router</b> do dashboard. Ele diz o teto de <b>200K</b>, diz que é limitação do cliente e aponta a saída.</p>
+      </div>
+      <div class="win">
+        <h4>Economia sem abrir mão do 1M</h4>
+        <p><code>contextTuning.enabled: true</code> grava o env-tuning com o roteador em <code>off</code>, <b>sem publicar</b> <code>ANTHROPIC_BASE_URL</code>. É o ganho de token da v2.18.0 com a janela de <b>1M</b> intacta.</p>
+      </div>
+      <div class="win">
+        <h4>Cache medido, não intuído</h4>
+        <p>O router passou a contar <code>cache_read_input_tokens</code> e <code>cache_creation_input_tokens</code>, e o dashboard mostra o <b>hit de cache</b>. É o baseline para provar (ou desmentir) o ganho do proxy antes de religá-lo.</p>
+      </div>
+      <div class="win">
+        <h4>O que é seu continua seu</h4>
+        <p>Ligar preenche <b>só o que está ausente</b>; desligar remove <b>só o que o boss</b> escreveu. Um valor que você fixou à mão sobrevive aos dois, e nada fica órfão no <code>settings.json</code>.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Rigor de sempre:</b> o diagnóstico nasceu de um relato de campo com <b>A/B controlado na mesma máquina</b> e foi <b>confirmado na fonte</b>: no <code>model-router-ensure.js</code>, só <code>mode === 'off'</code> limpa o footprint, então todo o resto publica a base_url, <b>inclusive o passthrough puro</b> do fallback de limite. A hipótese mais cômoda ("o proxy filtra o <code>anthropic-beta</code>") foi <b>refutada lendo o código</b>: o header segue intacto nos três pontos de forward. A limitação é do <b>cliente</b> e está documentada pela Anthropic. O ganho de token da v2.18.0 foi <b>reatribuído</b> ao env em vez do proxy, e foi isso que permitiu desacoplar os dois. <code>planTuningEnv</code>, <code>planTuningRemoval</code> e <code>accumulateUsage</code> são funções <b>puras</b>, testadas em <b>TDD RED→GREEN</b>. Nada disso liga sozinho: <code>contextTuning</code> é <b>opt-in</b>, default <code>false</code>.</p>
   </section>
+
+
+  <section>
+    <p class="label">Novo na v2.18.0 · menos um turno, menos tokens</p>
+    <p class="lede">A v2.18.0 corta desperdício em dois pontos do loop. Quando um comando cru já tem um script curado e é <b>seguro reescrever</b> (um alias exato, sem argumento, com script <code>.ps1</code>), o guard de curação para de negar e pedir a rechamada: ele <b>auto-redireciona</b> pro script na hora (<code>allow</code> + <code>updatedInput</code>), poupando um turno inteiro. E ao ligar o <b>roteamento</b> por um proxy custom, o boss religa o tool-search nativo e capa o contexto ativo: a leitura de cache por turno cai de cerca de <b>447 mil</b> para <b>74 a 127 mil</b> tokens. <b>O que a v2.19.0 corrigiu:</b> esse ganho vem do env, não do proxy, e ter o proxy no caminho custa a janela de 1M (<a href="#janela-1m">a medição está acima</a>).</p>
+
+    <div class="callout">
+      <span class="tag">economia medida na sessão real</span>
+      Ligar o roteamento por um proxy custom degradava duas coisas que o boss agora recupera sozinho: o <b>tool-search nativo</b> (que o proxy desliga) volta com <code>ENABLE_TOOL_SEARCH</code>, e um teto no <b>contexto ativo</b> segura o inchaço da janela. A leitura de cache por turno caiu de cerca de <b>447 mil</b> para <b>74 a 127 mil</b> tokens, um corte de <b>65 a 83 por cento</b>. A v2.19.0 mostrou que esse ganho é do env: dá pra ter <a href="#janela-1m">sem o proxy</a>.
+    </div>
+
+    <div class="eco" aria-label="Artefato da versão 2.18.0: a economia coordenada em duas partes. No topo, o corte medido de leitura de cache por turno: uma barra longa e apagada marca as cerca de 447 mil de antes, e uma barra curta e âmbar marca as 74 a 127 mil de agora, ao lado do número do corte, de 65 a 83 por cento. Abaixo, uma nota diz que ao ligar o roteamento por um proxy custom o boss grava, junto do ANTHROPIC_BASE_URL, dois env que recuperam o que o proxy degrada: ENABLE_TOOL_SEARCH religa o tool-search nativo e CLAUDE_CODE_AUTO_COMPACT_WINDOW capa o contexto ativo, e ao desligar remove só o que é do boss. No meio, o fork da curação: à esquerda, o caminho seguro, com borda âmbar cheia, quando o comando é um alias exato, sem argumento, segmento único e com script .ps1, o guard responde allow mais updatedInput e reescreve pro script curado, poupando o turno de deny e retry; à direita, o caminho tracejado, para argumento, extra-segmento, pipe ou script não-.ps1, mantém o deny provado, sem dropar argumento nem inventar runner. Uma faixa de invariante lembra que o comando reescrito passa no próprio allow-path do guard e que o error-guard, hook-irmão no matcher Bash, nunca emite updatedInput nem ask. Embaixo, dois trilhos detalham a Parte A, o auto-redirect da curação, e a Parte B, o bundle de env do roteador.">
+      <div class="eco-bar">
+        <span class="k">v2.18.0</span>
+        <span class="m">menos um turno · menos tokens</span>
+      </div>
+
+      <div class="eco-hero">
+        <div class="eco-gauge">
+          <span class="eco-glab">leitura de cache · por turno</span>
+          <div class="eco-track">
+            <div class="eco-bararea"><span class="eco-fill eco-fill--was" style="width:100%"></span></div>
+            <span class="eco-tval"><s>~447 mil</s> antes</span>
+          </div>
+          <div class="eco-track">
+            <div class="eco-bararea"><span class="eco-fill eco-fill--now" style="width:28%"></span></div>
+            <span class="eco-tval"><b>~74 a 127 mil</b> agora</span>
+          </div>
+        </div>
+        <div class="eco-cut">
+          <span class="eco-cut-lead">corte medido</span>
+          <b>65 a 83%</b>
+          <span class="eco-cut-cap">menos leitura de cache por turno · na sessão real</span>
+        </div>
+      </div>
+      <p class="eco-hnote">Ao ligar o roteamento por um proxy custom, o boss grava junto do <code>ANTHROPIC_BASE_URL</code> dois env que recuperam o que o proxy degrada: <code>ENABLE_TOOL_SEARCH=true</code> religa o <b>tool-search nativo</b> (cerca de <b>52 mil</b> tokens deferidos por request) e <code>CLAUDE_CODE_AUTO_COMPACT_WINDOW</code> capa o <b>contexto ativo</b>. Ao desligar, remove <b>só o que é do boss</b> e preserva o valor que você fixou. <b>Atualizado na v2.19.0:</b> publicar o <code>ANTHROPIC_BASE_URL</code> faz o cliente orçar a sessão em 200K, então o env-tuning virou <a href="#janela-1m">opt-in independente do proxy</a>.</p>
+
+      <div class="eco-fork">
+        <div class="eco-path eco-path--go">
+          <span class="eco-ptag">seguro de reescrever</span>
+          <span class="eco-cond">alias exato · sem argumento · segmento único · script <code>.ps1</code></span>
+          <span class="eco-op">allow + updatedInput</span>
+          <span class="eco-pnote">reescreve pro script curado (<code>powershell -File</code>) e <b>poupa o turno</b> de deny → retry. O <code>updatedInput</code> substitui o <code>tool_input</code> inteiro, então espalha o original (<code>{ ...tool_input, command }</code>) e mantém <code>timeout</code> e afins.</span>
+        </div>
+        <div class="eco-path eco-path--keep">
+          <span class="eco-ptag">qualquer outra coisa</span>
+          <span class="eco-cond">argumento · extra-segmento (<code>cd x &amp;&amp; …</code>) · pipe · script não-<code>.ps1</code></span>
+          <span class="eco-op eco-op--deny">deny provado</span>
+          <span class="eco-pnote">mantém o comportamento antigo, o <b>deny</b> já testado. Nunca <b>dropa um argumento</b> nem <b>inventa um runner</b>: a reescrita é Fase 1 conservadora.</span>
+        </div>
+      </div>
+      <p class="eco-inv"><span class="eco-inv-tag">invariante testada</span> o comando reescrito passa no <b>próprio allow-path</b> do guard (invoca o script, sem pipe), então a reescrita é auto-consistente. E o <code>error-guard</code>, o hook-irmão no matcher <code>Bash</code>, <b>nunca</b> emite <code>updatedInput</code> nem <code>ask</code>: defende os riscos de múltiplos hooks no mesmo matcher (GitHub #75915 e #15897).</p>
+
+      <div class="eco-rails">
+        <div class="eco-rail">
+          <h4>Parte A · auto-redirect da curação</h4>
+          <ul>
+            <li>O caso <b>raw alias</b> do <code>curation-guard.js</code> deixou de sempre <b>negar</b> e passou a <b>auto-redirecionar</b> (<code>allow</code> + <code>updatedInput</code>) quando é seguro reconstruir.</li>
+            <li><code>buildCuratedInvocation</code> (novo, em <code>shells-config.js</code>) só reescreve um <b>alias exato</b> com script <code>.ps1</code> (vira <code>powershell -File</code>); todo o resto mantém o <b>deny provado</b>.</li>
+            <li>O <code>error-guard.js</code> fica <b>intacto</b>, travado por um teste de invariante: o hook-irmão nunca emite <code>updatedInput</code> nem <code>ask</code>.</li>
+          </ul>
+        </div>
+        <div class="eco-rail">
+          <h4>Parte B · bundle de env do roteador</h4>
+          <ul>
+            <li>Ao ligar, o <code>model-router-ensure.js</code> grava, junto do <code>ANTHROPIC_BASE_URL</code>, o <code>ENABLE_TOOL_SEARCH=true</code> e o <code>CLAUDE_CODE_AUTO_COMPACT_WINDOW</code>.</li>
+            <li>Três helpers <b>puros</b> e testados: <code>resolveAutoCompactWindow</code> (clamp em <code>[50000, 1000000]</code>), <code>planEnableEnv</code> (não sobrescreve o que você fixou) e <code>planDisableEnv</code> (remove só o do boss, sem env órfão).</li>
+            <li>O teto é <b>configurável</b> (default <b>200 mil</b>) e vive no <code>router-config.json</code>, não no <code>userConfig</code> do <code>plugin.json</code>, que o runtime não lê.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="eco-foot"><b>Escopo real:</b> a reescrita da curação é <b>Fase 1 conservadora</b>: só um alias exato com script <code>.ps1</code>, e qualquer coisa fora disso mantém o <b>deny</b> já provado, sem dropar argumento nem inventar runner. O <code>updatedInput</code> é substituição <b>total</b> do <code>tool_input</code>, então o boss espalha o original pra preservar <code>timeout</code> e afins. No roteador, ligar e desligar é <b>simétrico</b>: ao desligar, só o valor do boss sai (comparado com o config atual), então o que você fixou <b>sobrevive</b> e nada fica órfão.</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>Menos um turno na curação</h4>
+        <p>Um alias curado e seguro de reescrever vira <code>allow</code> + <code>updatedInput</code> na hora, no lugar de um <code>deny</code> que mandava o modelo rechamar a tool. O turno extra de deny → retry <b>some</b>.</p>
+      </div>
+      <div class="win">
+        <h4>Fase 1 conservadora</h4>
+        <p>Só reescreve um <b>alias exato</b>, sem argumento, com script <code>.ps1</code>. Argumento, extra-segmento, pipe ou script não-<code>.ps1</code> mantêm o <b>deny provado</b>: nunca dropa argumento nem inventa runner.</p>
+      </div>
+      <div class="win">
+        <h4>65 a 83% menos leitura de cache</h4>
+        <p><code>ENABLE_TOOL_SEARCH</code> religa o tool-search nativo que o proxy desliga, e um teto capa o contexto ativo. Na sessão real, <code>cache_read</code> por turno caiu de <b>~447 mil</b> para <b>~74 a 127 mil</b>. Na v2.19.0 esse ganho passou a existir <b>sem</b> o proxy.</p>
+      </div>
+      <div class="win">
+        <h4>Liga e desliga limpo</h4>
+        <p>Ao desligar, o boss remove <b>só</b> os env que ele mesmo gravou (comparados com o config atual) e preserva o que você fixou, sem deixar env órfão. O teto é configurável (default <b>200 mil</b>).</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Rigor de sempre:</b> o handoff e o plano da mesa foram <b>re-verificados na FONTE</b> (corrigidas imprecisões de path e uma extração que furaria a cerca do <code>error-guard</code>), com <b>TDD RED→GREEN</b> em cada parte e o gate rodado <b>2× estável</b> (<b>107</b> suítes de hooks + <b>717</b> unitários, <b>0</b> falhas). A reescrita da curação é auto-consistente: o comando reescrito passa no <b>próprio allow-path</b> do guard, e o <code>error-guard</code> segue intacto, provado por um teste de invariante que barra qualquer <code>updatedInput</code> ou <code>ask</code> do hook-irmão no matcher <code>Bash</code>. No roteador, os helpers são <b>puros</b>: <code>resolveAutoCompactWindow</code> faz clamp em <code>[50000, 1000000]</code> e avisa quando ajusta, <code>planEnableEnv</code> só preenche o que está ausente (não sobrescreve um valor seu) e <code>planDisableEnv</code> remove apenas o valor do boss, então nada fica órfão. O teto shipado é <b>200 mil</b>, no <code>router-config.json</code>, override-ável por <code>readConfig()</code>.</p>
+  </section>
+
+
+  <section>
+    <p class="label">Novo na v2.17.1 · uma pasta, uma identidade só</p>
+    <p class="lede">O Brain podia deixar de falar consigo mesmo e devolver um <b>401</b> sem nenhuma credencial errada. A pasta de dados era a mesma, só que cada processo a escrevia de um jeito, e a <b>porta</b> e o <b>token</b> do daemon nasciam dessa string, letra por letra: grafia diferente, endereço diferente. O daemon subia numa porta, o hook batia em outra. A v2.17.1 deriva a identidade do <b>path canônico</b> e faz quem publica o ponteiro ativo <b>obedecer ao próprio veredito</b>.</p>
+
+    <div class="callout">
+      <span class="tag">o 401 não era senha, era endereço</span>
+      Quando o guard anti-regressão recusava o candidato do <code>index.js</code> (mais leve ou vazio que o ponteiro já publicado), o processo continuava derivando porta, token e consolidação da pasta <b>vazia</b>, onde não existia <code>brain-http.token</code>, enquanto todo hook sem env seguia o ponteiro para a <b>outra</b> pasta, a real. Dois processos, dois endereços, um 401.
+    </div>
+
+    <div class="ident" aria-label="Artefato da versão 2.17.1: o registro de grafias. No topo, três linhas mostram a MESMA pasta de dados escrita de três jeitos diferentes: com barras invertidas, com barras normais e em outra caixa de letras, com os caracteres que diferem destacados em âmbar. Cada linha aponta para uma identidade derivada diferente, cada uma com sua própria porta. Abaixo, as três linhas convergem num funil até um portão único chamado canonicalDataDir, que faz path.resolve, unifica os separadores do sistema e dobra a caixa no Windows. Depois do portão, uma única linha: qualquer grafia cai na mesma porta e no mesmo arquivo de token. Em seguida, a segunda metade da correção: publica, relê, obedece. A sequência mostra writeActivePointer com o candidato, depois a releitura do ponteiro, depois o uso do que voltou. Duas ramificações: quando o guard aceita o candidato, o processo segue o candidato, que é a publicação normal; quando o guard recusa um candidato mais leve ou vazio, o processo segue o ponteiro e não o candidato, então porta, token e consolidação saem da pasta real. Abaixo, riscado, o comportamento antigo: o index.js publicava e continuava usando o candidato recusado. No rodapé, duas colunas detalham as duas metades do mesmo bug e por que a divergência virava 401.">
+      <div class="id-bar">
+        <span class="k">v2.17.1</span>
+        <span class="m">uma pasta lógica · uma identidade</span>
+      </div>
+
+      <div class="id-reg">
+        <p class="id-reg-lead"><em>a mesma pasta, três grafias</em><em class="out">três identidades derivadas</em></p>
+
+        <div class="id-row">
+          <code class="id-path">C:<i class="g">\</i>Users<i class="g">\</i>allan<i class="g">\</i>.claude<i class="g">\</i>plugins<i class="g">\</i>data<i class="g">\</i>claude-code-boss</code>
+          <span class="id-arrow" aria-hidden="true"></span>
+          <span class="id-chip"><b>:51834</b><i>o que o chamador passa</i></span>
+        </div>
+        <div class="id-row">
+          <code class="id-path">C:<i class="g">/</i>Users<i class="g">/</i>allan<i class="g">/</i>.claude<i class="g">/</i>plugins<i class="g">/</i>data<i class="g">/</i>claude-code-boss</code>
+          <span class="id-arrow" aria-hidden="true"></span>
+          <span class="id-chip"><b>:57002</b><i>o que o lockfile gravou</i></span>
+        </div>
+        <div class="id-row">
+          <code class="id-path"><i class="g">c</i>:\<i class="g">u</i>sers\allan\.claude\plugins\data\<i class="g">C</i>laude-<i class="g">C</i>ode-<i class="g">B</i>oss</code>
+          <span class="id-arrow" aria-hidden="true"></span>
+          <span class="id-chip"><b>:49930</b><i>a mesma pasta, outra caixa</i></span>
+        </div>
+
+        <svg class="id-funnel" viewBox="0 0 400 36" preserveAspectRatio="none" role="img" aria-label="As três grafias convergem para um único ponto.">
+          <path d="M64 0 C64 17 200 23 200 36"></path>
+          <path d="M200 0 V36"></path>
+          <path d="M336 0 C336 17 200 23 200 36"></path>
+        </svg>
+
+        <p class="id-gate">
+          <span class="k">canonicalDataDir()</span>
+          <span class="n">path.resolve · separadores do sistema · caixa dobrada no Windows</span>
+        </p>
+
+        <p class="id-reg-lead"><em>qualquer grafia</em><em class="out">uma identidade só</em></p>
+        <div class="id-row id-row--now">
+          <code class="id-path">C:\Users\allan\.claude\plugins\data\claude-code-boss</code>
+          <span class="id-arrow" aria-hidden="true"></span>
+          <span class="id-chip"><b>:51834</b><i>uma porta, um brain-http.token</i></span>
+        </div>
+
+        <p class="id-verdict"><span class="id-tag">o que isso te dava</span> Três números para a mesma pasta significavam um daemon escutando num endereço e um cliente batendo noutro. Quando a máquina ainda tinha <b>duas identidades de instalação</b> convivendo (<code>-inline</code> e <code>-&lt;marketplace&gt;</code>), o token lido vinha de um arquivo que <b>aquele</b> servidor nunca tinha escrito.</p>
+        <p class="id-reg-note">Portas ilustrativas: a real sai de um <code>sha256</code> do path canônico, na faixa <code>49152-65535</code>. O que importa é que três strings davam <b>três</b> números para uma pasta só, e agora dão <b>um</b>.</p>
+      </div>
+
+      <div class="id-follow">
+        <p class="id-follow-lead">a segunda metade · publica, relê, obedece</p>
+        <p class="id-seq"><code>writeActivePointer(candidato)</code><span class="sep">&rsaquo;</span><code>relê o ponteiro</code><span class="sep">&rsaquo;</span><code>usa o que voltou</code></p>
+
+        <div class="id-fork">
+          <div class="id-branch id-branch--go">
+            <span class="id-btag">o guard aceita o candidato</span>
+            <span class="id-bcond">segue o candidato</span>
+            <span class="id-bnote">É a pasta mais viva, então a publicação vale. Caminho normal, sem surpresa.</span>
+          </div>
+          <div class="id-branch id-branch--hold">
+            <span class="id-btag">o guard recusa (candidato mais leve ou vazio)</span>
+            <span class="id-bcond">segue o ponteiro, não o candidato</span>
+            <span class="id-bnote">Porta, token e consolidação saem da pasta <b>real</b>, nunca mais da vazia.</span>
+          </div>
+        </div>
+
+        <p class="id-before"><s>Antes: o <code>index.js</code> publicava o ponteiro e seguia usando o candidato recusado.</s> Ele tinha a própria cópia da lógica e ignorava a recusa, enquanto o <code>dataDir()</code> obedecia. Agora os dois passam pelo <b>mesmo</b> <code>publishAndFollow(dir)</code>, em <code>scripts/lib/data-dir.js</code>.</p>
+      </div>
+
+      <div class="id-rails">
+        <div class="id-rail">
+          <h4>As duas metades do mesmo bug</h4>
+          <ul>
+            <li><b>Identidade normalizada</b>: <code>resolvePort</code> e <code>tokenFile</code> passam pelo <code>canonicalDataDir</code> antes de derivar porta e token. Uma <code>path.resolve</code>, mais a caixa dobrada no Windows, e a pasta vira <b>uma</b> chave.</li>
+            <li><b>Publica e segue</b>: <code>publishAndFollow(dir)</code> grava o ponteiro, relê o que ficou lá e devolve o valor do ponteiro quando o candidato perde para o guard.</li>
+            <li><b>Um caminho só</b>: o branch de env do <code>dataDir()</code> e o <code>index.js</code> do brain-server chamam a <b>mesma</b> função, então não sobrou uma segunda cópia para divergir.</li>
+          </ul>
+        </div>
+        <div class="id-rail">
+          <h4>Por que virava 401</h4>
+          <ul>
+            <li>O lockfile gravava <code>C:/Users/...</code> e o chamador passava <code>C:\Users\...</code>. Mesma pasta, <b>duas</b> portas: o daemon escutava numa, o cliente batia na outra.</li>
+            <li>Com duas instalações convivendo, o token vinha de um arquivo que <b>aquele</b> servidor nunca escreveu, e a resposta era <b>401</b> mesmo com tudo no lugar.</li>
+            <li>O <code>index.js</code> ficava na pasta recusada, sem <code>brain-http.token</code>, e os hooks sem env seguiam o ponteiro para a real. Essa divergência <b>era</b> o 401.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="id-foot"><b>Escopo real:</b> nada aqui muda o que você faz no dia a dia. É o daemon deixando de sustentar duas identidades para a mesma pasta, que era como um <b>401</b> aparecia sem nenhuma credencial errada. A derivação também <b>falha alto</b> quando o <code>dataDir</code> chega vazio ou <code>undefined</code>, em vez de gerar uma porta plausível de <code>String(undefined)</code> e subir um daemon fantasma que ninguém encontra. E a rede da v2.17.0 segue valendo: o ponteiro <b>não regride</b> de uma pasta viva para uma quase-vazia, e nenhuma irmã é apagada sem ser lida de volta.</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>Grafia diferente, mesma identidade</h4>
+        <p><code>resolvePort</code> e <code>tokenFile</code> derivam do <b>path canônico</b>. Escrever a mesma pasta com <code>/</code> ou <code>\</code>, em outra caixa ou por outro caminho não cria mais um segundo daemon com outro endereço.</p>
+      </div>
+      <div class="win">
+        <h4>Quem publica, obedece</h4>
+        <p><code>publishAndFollow(dir)</code> publica o ponteiro, <b>relê</b> e devolve o que ficou gravado quando o candidato perde para o guard. O <code>index.js</code> parou de usar uma pasta que ele mesmo recusou.</p>
+      </div>
+      <div class="win">
+        <h4>Uma implementação, não duas cópias</h4>
+        <p>O <code>dataDir()</code> e o <code>index.js</code> do brain-server passam pela <b>mesma</b> função em <code>scripts/lib/data-dir.js</code>. Não sobrou uma segunda cópia da lógica capaz de divergir de novo.</p>
+      </div>
+      <div class="win">
+        <h4>Sem daemon fantasma</h4>
+        <p>Com o <code>dataDir</code> vazio ou <code>undefined</code>, a derivação <b>falha alto</b>. Antes, dava para sair uma porta plausível de <code>String(undefined)</code> e subir um daemon que ninguém ia encontrar.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Honesto sobre o alcance:</b> isto é convergência de identidade, não comportamento novo. O daemon já deveria ter sido consistente consigo mesmo, e a v2.17.1 remove a possibilidade de ele não ser. As duas metades atacam a <b>mesma</b> classe de bug (split-brain do data-dir entre processos) e a segunda foi fechada extraindo uma implementação única, em vez de remendar o sintoma nos dois lados. Gate <b>699/0</b> local, <code>brain-health</code> confirmando o probe ativo saudável (<code>{}</code>, sem defeitos) e CI verde na branch. <a href="https://github.com/AllanSantos-DV/claude-code-plugins/pull/44">PR #44</a>.</p>
+  </section>
+
 
   <section>
     <p class="label">Novo na v2.17.0 · consolida a sessão em uso</p>
@@ -2840,7 +3470,7 @@
     <div class="flow">
       <p class="label">Como funciona</p>
       <div class="steps">
-        <div class="step"><div class="n"></div><p>Antes de qualquer coisa, um <b>resolvedor canônico</b> faz todos os escritores (daemon HTTP, hooks, MCP stdio, dashboard, CLI) concordarem na <b>mesma pasta</b> e no <b>mesmo backend</b>, com a escolha de backend morando no global. A consolidação das pastas irmãs órfãs agora é disparada pelo <b>brain-server</b> (o único processo que recebe o <code>--plugin-data</code> real), que a fixa na pasta <b>REAL</b> da sessão com <code>--active-dir</code>; o ponteiro ativo <b>nunca regride</b> de uma pasta viva para uma quase-vazia, e nenhuma irmã é apagada sem <b>ler de volta</b> e provar que foi absorvida (backup primeiro). É <b>best-effort</b> e não bloqueia o startup.</p></div>
+        <div class="step"><div class="n"></div><p>Antes de qualquer coisa, um <b>resolvedor canônico</b> faz todos os escritores (daemon HTTP, hooks, MCP stdio, dashboard, CLI) concordarem na <b>mesma pasta</b> e no <b>mesmo backend</b>, com a escolha de backend morando no global. A <b>identidade</b> do daemon (porta e token) é derivada do <b>path canônico</b> dessa pasta, então duas grafias da mesma pasta não viram dois endereços, e quem publica o ponteiro ativo <b>relê e obedece</b> o que ficou publicado. A consolidação das pastas irmãs órfãs agora é disparada pelo <b>brain-server</b> (o único processo que recebe o <code>--plugin-data</code> real), que a fixa na pasta <b>REAL</b> da sessão com <code>--active-dir</code>; o ponteiro ativo <b>nunca regride</b> de uma pasta viva para uma quase-vazia, e nenhuma irmã é apagada sem <b>ler de volta</b> e provar que foi absorvida (backup primeiro). É <b>best-effort</b> e não bloqueia o startup.</p></div>
         <div class="step"><div class="n"></div><p>Toda memória exige uma <b>identidade de projeto estável</b>: um <b>git-remote normalizado</b> (<code>host/owner/repo</code>) ou um <code>.memory/project.json</code> na raiz. Sem ela, a ingestão <b>bloqueia</b> com um aviso acionável, em vez de inventar escopo do nome da pasta. O marcador legado <code>.claude-boss-project</code> é lido <b>read-only</b>, com um <b>nudge</b> pra migrar: o plugin <b>nunca</b> cria o arquivo por você.</p></div>
         <div class="step"><div class="n"></div><p>Você escreve um prompt. O hook <b>UserPromptSubmit</b> chama o Brain e injeta o bloco <b>[BRAIN]</b>: no backend externo, os fatos vêm com o trecho casado e as capacidades como ponteiros. Numa <b>subpasta</b>, o recall <b>une</b> os projetos do CWD até a raiz da sessão: o <code>compose_recall</code> foca no CWD e um <code>search_memory</code> <b>lazy</b> traz os ancestrais que existem (timeout de 500ms degrada para compose-only). Em paralelo, outro <b>search_memory</b> não-injetado aquece o pool home: sinal pro Dreaming, sem tocar no que você vê.</p></div>
         <div class="step"><div class="n"></div><p>O agente age com a memória do projeto à mão, escopada por um id estável, sem puxar contexto de outro projeto.</p></div>

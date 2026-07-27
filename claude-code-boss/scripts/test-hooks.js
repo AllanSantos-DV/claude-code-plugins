@@ -117,7 +117,9 @@ function check(result, expectations = {}) {
     }
   }
 
-  return { ok: issues.length === 0, issues, parsed };
+  // stdout is exposed so a test can assert ABSTENTION (empty stdout) — a real
+  // contract for hooks sharing a matcher with one that emits `updatedInput`.
+  return { ok: issues.length === 0, issues, parsed, stdout: result.stdout || '' };
 }
 
 // ─── Test Cases ─────────────────────────────────────────────────────────────
@@ -447,20 +449,76 @@ const TESTS = [
       ? null : `wrapper invocation should be allowed silently (matcher.includes), got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
   },
   {
-    name: 'curation-guard    [PreToolUse/alias→deny+redirect-to-script]',
+    name: 'curation-guard    [PreToolUse/alias arg-less + .ps1 → AUTO-REDIRECT allow+updatedInput]',
     script: 'curation-guard.js',
     payload: {
       tool_name: 'Bash',
-      tool_input: { command: 'npm test' },
+      tool_input: { command: 'npm test', timeout: 12345 },
       session_id: SESSION,
       cwd: (() => mkTempProject({ shells: [{ id: 'vitest', script: '.vscode/scripts/vitest.ps1', aliases: ['npm test'] }], whitelist: [] }))(),
     },
     expect: { hasKey: 'hookSpecificOutput', noError: true },
     validate: r => {
-      const d = r.parsed?.hookSpecificOutput?.permissionDecision;
-      const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
-      if (d !== 'deny') return `alias should deny+redirect, got: ${d}`;
-      if (!ctx.includes('.vscode/scripts/vitest.ps1')) return `redirect should reference script path, got: ${ctx}`;
+      const out = r.parsed?.hookSpecificOutput || {};
+      if (out.permissionDecision !== 'allow') return `arg-less .ps1 alias must AUTO-REDIRECT (allow), got: ${out.permissionDecision}`;
+      if (!out.updatedInput) return `must carry updatedInput with the rewritten command`;
+      if (out.updatedInput.command !== 'powershell -File ".vscode/scripts/vitest.ps1"') return `rewritten command wrong: ${out.updatedInput.command}`;
+      if (out.updatedInput.timeout !== 12345) return `updatedInput must PRESERVE original tool_input fields (spread), got: ${JSON.stringify(out.updatedInput)}`;
+      return null;
+    },
+  },
+  {
+    name: 'curation-guard    [PreToolUse/alias WITH args → keeps deny (Fase 1 não reescreve)]',
+    script: 'curation-guard.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: 'npm test -- --watch' },
+      session_id: SESSION,
+      cwd: (() => mkTempProject({ shells: [{ id: 'vitest', script: '.vscode/scripts/vitest.ps1', aliases: ['npm test'] }], whitelist: [] }))(),
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    validate: r => {
+      const out = r.parsed?.hookSpecificOutput || {};
+      if (out.permissionDecision !== 'deny') return `alias with args must NOT auto-redirect (keep deny), got: ${out.permissionDecision}`;
+      if (out.updatedInput) return `deny path must not carry updatedInput`;
+      if (!(out.additionalContext || '').includes('.vscode/scripts/vitest.ps1')) return `deny must reference the script path`;
+      return null;
+    },
+  },
+  {
+    name: 'curation-guard    [PreToolUse/non-.ps1 arg-less alias → keeps deny (Fase 1 só .ps1)]',
+    script: 'curation-guard.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: 'git status' },
+      session_id: SESSION,
+      cwd: (() => mkTempProject({ shells: [{ id: 'gs', script: '.vscode/scripts/gitstatus.mjs', aliases: ['git status'] }], whitelist: [] }))(),
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    validate: r => {
+      const out = r.parsed?.hookSpecificOutput || {};
+      if (out.permissionDecision !== 'deny') return `non-.ps1 must NOT auto-redirect in Fase 1 (keep deny), got: ${out.permissionDecision}`;
+      if (out.updatedInput) return `deny path must not carry updatedInput`;
+      return null;
+    },
+  },
+  {
+    name: 'error-guard       [never emits updatedInput/ask/allow — sibling-hook invariant p/ auto-redirect]',
+    script: 'error-guard.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: 'echo fresh-unique-command-xyz' },
+      session_id: SESSION,
+      cwd: (() => mkTempProject({ shells: [], whitelist: [] }))(),
+    },
+    expect: { noError: true, noOutput: true },
+    validate: r => {
+      const out = r.parsed?.hookSpecificOutput || {};
+      if (out.permissionDecision === 'ask') return `error-guard must NEVER use 'ask' (descartaria o updatedInput do curation-guard — #75915)`;
+      if (out.updatedInput) return `error-guard must NEVER emit updatedInput (corrida com curation-guard — #15897)`;
+      // Reproduzido E2E: um `allow` explícito aqui clobba o updatedInput do
+      // curation-guard e o comando ORIGINAL executa. Abstenção = stdout vazio.
+      if (out.permissionDecision === 'allow') return `error-guard must ABSTAIN (empty stdout) instead of 'allow' — an explicit allow clobbers curation-guard's updatedInput (repro E2E)`;
       return null;
     },
   },
@@ -634,7 +692,7 @@ const TESTS = [
     },
   },
   {
-    name: 'error-guard       [PreToolUse/clean-command→allow]',
+    name: 'error-guard       [PreToolUse/clean-command→abstain]',
     script: 'error-guard.js',
     payload: {
       tool_name: 'Bash',
@@ -642,21 +700,21 @@ const TESTS = [
       session_id: SESSION,
       cwd: _egHit.cwd,
     },
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    expect: { noError: true, noOutput: true },
     extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _egHit.dataDir }),
-    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
-      ? null : `a command with no recorded failure must allow, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
+    validate: r => (r.stdout || '').trim() === ''
+      ? null : `a command with no recorded failure must ABSTAIN (empty stdout), got: ${r.stdout}`,
   },
   {
-    name: 'error-guard       [PreToolUse/non-Bash→allow]',
+    name: 'error-guard       [PreToolUse/non-Bash→abstain]',
     script: 'error-guard.js',
     payload: { tool_name: 'Write', tool_input: { file_path: 'foo.js' }, session_id: SESSION },
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
-    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
-      ? null : `non-Bash tool must allow, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
+    expect: { noError: true, noOutput: true },
+    validate: r => (r.stdout || '').trim() === ''
+      ? null : `non-Bash tool must ABSTAIN (empty stdout), got: ${r.stdout}`,
   },
   {
-    name: 'error-guard       [PreToolUse/errorGuard.enabled=false→allow-despite-hit]',
+    name: 'error-guard       [PreToolUse/errorGuard.enabled=false→abstain-despite-hit]',
     script: 'error-guard.js',
     payload: {
       tool_name: 'Bash',
@@ -664,13 +722,13 @@ const TESTS = [
       session_id: SESSION,
       cwd: _egHit.cwd,
     },
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    expect: { noError: true, noOutput: true },
     extraEnv: () => ({
       CLAUDE_PLUGIN_ROOT: mkTempPluginRoot({ errorGuard: { enabled: false } }),
       CLAUDE_PLUGIN_DATA: _egHit.dataDir,
     }),
-    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
-      ? null : `errorGuard.enabled=false must allow even a recurring failure, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
+    validate: r => (r.stdout || '').trim() === ''
+      ? null : `errorGuard.enabled=false must ABSTAIN (empty stdout) even on a recurring failure, got: ${r.stdout}`,
   },
 
   // ── PreToolUse / Grep|Glob + Bash — graph-guard (broad-search → graph redirect) ─
