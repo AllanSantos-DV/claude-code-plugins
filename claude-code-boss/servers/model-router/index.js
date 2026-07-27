@@ -1185,7 +1185,7 @@ function newMetrics() {
     planBNoKey:      0,   // limite batido mas sem chave NVIDIA (só aviso)
     cooldownArms:    0,   // vezes que a janela esgotou e armou cooldown
     cost:            { baselineUnits: 0, actualUnits: 0 },
-    tokens:          { in: 0, out: 0 },
+    tokens:          { in: 0, out: 0, cacheRead: 0, cacheCreate: 0 },
   };
 }
 
@@ -1199,7 +1199,7 @@ function loadMetrics() {
         byOriginal: Object.assign(emptyTierMap(), saved.byOriginal || {}),
         byFinal:    Object.assign(emptyTierMap(), saved.byFinal || {}),
         cost:       Object.assign({ baselineUnits: 0, actualUnits: 0 }, saved.cost || {}),
-        tokens:     Object.assign({ in: 0, out: 0 }, saved.tokens || {}),
+        tokens:     Object.assign({ in: 0, out: 0, cacheRead: 0, cacheCreate: 0 }, saved.tokens || {}),
       });
     }
   } catch (e) {
@@ -1260,20 +1260,57 @@ function metricsOutcome(kind, route, config) {
 function metricsNoKey()       { metrics.planBNoKey += 1; _metricsDirty = true; }
 function metricsCooldownArm() { metrics.cooldownArms += 1; _metricsDirty = true; }
 
-function metricsTokens(inTok, outTok) {
-  if (inTok)  metrics.tokens.in  += inTok;
-  if (outTok) metrics.tokens.out += outTok;
+function metricsTokens(usage) {
+  const u = usage || {};
+  if (u.in)          metrics.tokens.in          += u.in;
+  if (u.out)         metrics.tokens.out         += u.out;
+  if (u.cacheRead)   metrics.tokens.cacheRead   += u.cacheRead;
+  if (u.cacheCreate) metrics.tokens.cacheCreate += u.cacheCreate;
   _metricsDirty = true;
 }
 
+// PURA: extrai os contadores de `usage` de um chunk do stream e MESCLA no
+// acumulador. `input_tokens` e os `cache_*` chegam UMA vez (message_start) → a 1ª
+// ocorrência vence; `output_tokens` é cumulativo nos deltas → o MAIOR vence. Um
+// chunk sem usage devolve o acumulador intacto e nada aqui lança (telemetria
+// jamais pode quebrar o pipe do proxy).
+//
+// POR QUÊ cache_read/cache_creation: são a ÚNICA forma de medir o ganho real de
+// cache (token lido do cache custa 0.1x; escrever custa 1.25x/2x). Sem esse
+// baseline não há como provar se manter o proxy ligado compensa.
+function accumulateUsage(acc, chunk) {
+  const a = acc || { in: 0, out: 0, cacheRead: 0, cacheCreate: 0 };
+  let s;
+  try { s = String(chunk); } catch (e) { void e; return a; }
+  const firstOnly = (re, cur) => {
+    if (cur) return cur;
+    const m = s.match(re);
+    return m ? Number(m[1]) : cur;
+  };
+  a.in          = firstOnly(/"input_tokens"\s*:\s*(\d+)/, a.in);
+  a.cacheRead   = firstOnly(/"cache_read_input_tokens"\s*:\s*(\d+)/, a.cacheRead);
+  a.cacheCreate = firstOnly(/"cache_creation_input_tokens"\s*:\s*(\d+)/, a.cacheCreate);
+  let mo;
+  const reOut = /"output_tokens"\s*:\s*(\d+)/g;
+  while ((mo = reOut.exec(s)) !== null) { const v = Number(mo[1]); if (v > a.out) a.out = v; }
+  return a;
+}
+
 // Snapshot + economia calculada (em %). economiaPct = 1 - actual/baseline.
+// cacheHitPct = fração dos tokens de ENTRADA que veio do cache (0.1x) em vez de
+// input cheio (1.0x) — é a métrica que prova (ou desmente) o ganho de cache do
+// proxy. Sem tráfego → 0 (nunca divide por zero, nunca inventa número).
 function metricsSnapshot() {
   const b = metrics.cost.baselineUnits;
   const a = metrics.cost.actualUnits;
   const economiaPct = b > 0 ? Math.round((1 - a / b) * 1000) / 10 : 0;
+  const t = metrics.tokens || {};
+  const inTotal = (t.cacheRead || 0) + (t.in || 0);
+  const cacheHitPct = inTotal > 0 ? Math.round(((t.cacheRead || 0) / inTotal) * 1000) / 10 : 0;
   return Object.assign({}, metrics, {
     economiaPct,
     savedUnits: Math.round((b - a) * 10) / 10,
+    cacheHitPct,
   });
 }
 
@@ -1403,7 +1440,7 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
       const wantRLScan = cd.enabled && !_cooldownUntil;
       let scanBuf = '';
       let armed = false;
-      let inTok = 0, outTok = 0;
+      let usage = null;
       upRes.on('data', (c) => {
         try {
           const s = c.toString('utf8');
@@ -1414,14 +1451,10 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
               if (armCooldownFromBody(scanBuf, config)) armed = true;
             }
           }
-          const mi = s.match(/"input_tokens"\s*:\s*(\d+)/);     // 1ª ocorrência (message_start)
-          if (mi && !inTok) inTok = Number(mi[1]);
-          let mo;                                                // output_tokens cresce nos deltas → pega o MAIOR
-          const reOut = /"output_tokens"\s*:\s*(\d+)/g;
-          while ((mo = reOut.exec(s)) !== null) { const v = Number(mo[1]); if (v > outTok) outTok = v; }
+          usage = accumulateUsage(usage, s);
         } catch (_) { void _; /* telemetria/scan nunca quebram o pipe */ }
       });
-      upRes.on('end', () => { if (inTok || outTok) metricsTokens(inTok, outTok); });
+      upRes.on('end', () => { if (usage && (usage.in || usage.out || usage.cacheRead)) metricsTokens(usage); });
     }
     upRes.pipe(res);
   });
@@ -1864,6 +1897,8 @@ if (require.main === module) {
     catalog,
     metricsRoute,
     metricsOutcome,
+    metricsTokens,
+    accumulateUsage,
     metricsSnapshot,
     resetMetrics,
     newMetrics,

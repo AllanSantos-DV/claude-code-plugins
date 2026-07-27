@@ -864,6 +864,14 @@ code { color: var(--fg); font-family: var(--font-mono); }
     <div class="card">
       <h2 data-i18n="router.controlsTitle">Router controls</h2>
 
+      <p class="text-muted" style="font-size:.78rem;margin:.25rem 0 .75rem" data-i18n="router.oneMillionWarn">
+        ⚠️ Janela de contexto: com o router ligado (qualquer modo), o Claude Code passa a falar com um
+        ANTHROPIC_BASE_URL local e, atrás de um gateway, ele não consegue validar suporte a 1M, então orça a
+        sessão em 200K mesmo nos modelos de 1M nativo (Opus 5, Fable 5, Sonnet 5). É limitação do cliente, não
+        do proxy: o router repassa o cabeçalho anthropic-beta intacto. Precisa de 1M? Deixe o router em off e
+        ligue contextTuning.enabled no router-config para ter a economia de token sem publicar a base_url.
+      </p>
+
       <div class="router-switches">
         <label class="switch-row switch-recommended">
           <input type="checkbox" id="router-sticky-enable" onchange="updateRouterSaveState()">
@@ -1448,10 +1456,14 @@ function renderRouterMetrics(m, live) {
   ].join('');
   const tokIn = (m.tokens && m.tokens.in) || 0;
   const tokOut = (m.tokens && m.tokens.out) || 0;
+  const cacheRead = (m.tokens && m.tokens.cacheRead) || 0;
+  const cacheCreate = (m.tokens && m.tokens.cacheCreate) || 0;
+  const hit = (m.cacheHitPct != null ? m.cacheHitPct : 0);
   const sub = `${t('router.mClassified')}: ${m.classified || 0} · `
     + `${t('router.mServedClaude')}: ${m.servedClaude || 0} · `
     + `${t('router.mCooldowns')}: ${m.cooldownArms || 0} · `
     + `tokens ${tokIn.toLocaleString()}/${tokOut.toLocaleString()}`
+    + ` · cache ${hit}% (read ${cacheRead.toLocaleString()} / write ${cacheCreate.toLocaleString()})`
     + (live ? '' : ` · ${t('router.mStale')}`);
   return routerTrafficBanner(m, live)
     + `<div style="display:flex;flex-wrap:wrap;gap:.5rem">${tiles}</div>`
