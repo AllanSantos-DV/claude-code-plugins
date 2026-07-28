@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>claude-code-boss v2.19.0 — o acervo viaja junto, e a janela de 1M fica no seu controle</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. Na v2.19.0, trocar o backend para o memory server deixou de abandonar o que você já tinha: um botão Migrar agora no dashboard leva todo o KB local para o servidor, projeto a projeto, porque o daemon escopa a memória por project_id no handshake. Cada documento sobe com o id local, então rodar de novo atualiza em vez de duplicar e uma migração interrompida pode ser retomada. É fail-loud de ponta a ponta: fora do backend mcp-memory a migração recusa rodar, uma entrada que falha é reportada com a causa real e a contagem remota é conferida contra o que subiu. Na segunda frente, o model-router passou a dizer o preço que cobrava calado: ligado em qualquer modo diferente de off ele publica ANTHROPIC_BASE_URL, e o Claude Code, atrás de uma base_url que não é a oficial, orça a sessão em 200K mesmo nos modelos de 1M nativo. Medido na mesma máquina: 183k de 200k com o roteador ligado contra 68k de 1.0M com ele desligado. Agora o aviso aparece na sessão e no card Router, o contextTuning entrega a mesma economia de token com o roteador em off, sem publicar base_url e preservando a janela de 1M, e a telemetria de cache mostra cacheRead, cacheCreate e cacheHitPct para provar se o proxy compensa. O release também carrega a v2.17.1, que converge a identidade do data-dir do daemon: a porta e o token passam a ser derivados do path canônico da pasta, e o brain-server segue o próprio veredito ao publicar o ponteiro ativo, eliminando o 401 que nascia de dois processos endereçando a mesma pasta de jeitos diferentes." />
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. Em desenvolvimento (não lançado): o proxy do model-router passa a medir o ciclo de vida do prompt cache. A telemetria já dizia quanto token vinha do cache, mas não quando a sessão cruza uma fronteira fria, que é o instante em que o prefixo já vai ser reconstruído de qualquer jeito e por isso trocar de modelo ou limpar contexto sai de graça. Um núcleo puro lê o que o usage da resposta prova: cache_read acima de zero é prefixo quente, cache_creation sem read é rebuild, e nada legível permanece desconhecido, porque ausência de sinal não vira sinal. A fronteira dispara por duplo-sinal, pelo relógio ou por um miss observado na resposta anterior, já que o usage é lido de pedaços crus do stream e um campo JSON pode ser partido entre dois pedaços. O snapshot e o dashboard passam a mostrar hits, misses e fronteiras frias. É observação pura: nenhuma decisão de roteamento muda, e a régua existe para tornar mensurável a otimização seguinte. Na v2.19.0, trocar o backend para o memory server deixou de abandonar o que você já tinha: um botão Migrar agora no dashboard leva todo o KB local para o servidor, projeto a projeto, porque o daemon escopa a memória por project_id no handshake. Cada documento sobe com o id local, então rodar de novo atualiza em vez de duplicar e uma migração interrompida pode ser retomada. É fail-loud de ponta a ponta: fora do backend mcp-memory a migração recusa rodar, uma entrada que falha é reportada com a causa real e a contagem remota é conferida contra o que subiu. Na segunda frente, o model-router passou a dizer o preço que cobrava calado: ligado em qualquer modo diferente de off ele publica ANTHROPIC_BASE_URL, e o Claude Code, atrás de uma base_url que não é a oficial, orça a sessão em 200K mesmo nos modelos de 1M nativo. Medido na mesma máquina: 183k de 200k com o roteador ligado contra 68k de 1.0M com ele desligado. Agora o aviso aparece na sessão e no card Router, o contextTuning entrega a mesma economia de token com o roteador em off, sem publicar base_url e preservando a janela de 1M, e a telemetria de cache mostra cacheRead, cacheCreate e cacheHitPct para provar se o proxy compensa. O release também carrega a v2.17.1, que converge a identidade do data-dir do daemon: a porta e o token passam a ser derivados do path canônico da pasta, e o brain-server segue o próprio veredito ao publicar o ponteiro ativo, eliminando o 401 que nascia de dois processos endereçando a mesma pasta de jeitos diferentes." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -1275,13 +1275,104 @@
   .ctx-foot{ padding:14px 22px; border-top:1px solid var(--panel-line); font-size:11px; line-height:1.6; color:#8a877f }
   .ctx-foot b{ color:#a29f97 }
 
+  /* NAO LANCADO : o ciclo do prompt cache, MEDIDO. Ate aqui a telemetria dizia QUANTO token
+     veio do cache (cacheHitPct), nao QUANDO a sessao cruza uma FRONTEIRA FRIA - o instante em
+     que o prefixo ja sera reconstruido de qualquer jeito e, portanto, trocar de modelo/limpar
+     contexto sai de graca. Entrega de OBSERVACAO: nenhuma decisao de rota consulta isso.
+     Nucleo puro (cache-cycle.js): sem I/O, sem estado global, `now` sempre injetado.
+     ASSINATURA: a LINHA DE VIDA de uma sessao no tempo (quente -> silencio -> fronteira fria),
+     deliberadamente NAO uma regua - a v2.19.0 ja gastou a regua no orcamento de 1M, e o que
+     importa aqui e o EIXO DO TEMPO, nao a proporcao. */
+  .cyc{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:880px; font-family:var(--mono); margin:0 0 36px }
+  .cyc code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .cyc-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .cyc-bar .k{ color:var(--accent); border:1px solid var(--accent); border-radius:999px; padding:2px 10px; white-space:nowrap }
+  .cyc-bar .m{ color:#8a877f; text-align:right; overflow-wrap:break-word }
+
+  /* a cerca honesta: o que esta entrega NAO faz (fica no topo, impossivel de nao ler) */
+  .cyc-rule{ margin:0; padding:13px 22px; border-bottom:1px solid rgba(255,255,255,.06);
+    background:rgba(217,138,61,.10); font-size:11px; line-height:1.6; color:#a29f97 }
+  .cyc-rule b{ color:var(--panel-ink); font-weight:600 }
+  .cyc-ruletag{ display:inline-block; font-size:9px; letter-spacing:.13em; text-transform:uppercase;
+    color:var(--accent); border:1px solid var(--accent); border-radius:5px; padding:1px 7px; margin:0 8px 4px 0 }
+
+  /* ASSINATURA: a linha de vida da sessao. 3 segmentos no eixo do tempo; o 3o E a fronteira. */
+  .cyc-life{ padding:22px 22px 20px; border-bottom:1px solid rgba(255,255,255,.06) }
+  .cyc-lifelab{ display:block; font-size:9.5px; letter-spacing:.15em; text-transform:uppercase; color:var(--accent); margin:0 0 16px }
+  .cyc-track{ display:grid; grid-template-columns:1.3fr .9fr 1.3fr; align-items:stretch }
+  .cyc-seg{ display:flex; flex-direction:column; gap:9px; padding:14px 15px; min-width:0 }
+  .cyc-seg--warm{ border:1px solid rgba(255,255,255,.20); border-right:0; border-radius:8px 0 0 8px; background:rgba(255,255,255,.05) }
+  .cyc-seg--gap{ border:1px dashed rgba(255,255,255,.22); border-left:0; border-right:0 }
+  .cyc-seg--cold{ border:1px solid var(--accent); border-left-width:2px; border-radius:0 8px 8px 0; background:rgba(217,138,61,.12) }
+  .cyc-stag{ font-size:9.5px; letter-spacing:.13em; text-transform:uppercase; color:#8a877f; overflow-wrap:break-word }
+  .cyc-seg--cold .cyc-stag{ color:var(--accent) }
+  .cyc-seg--cold .cyc-stag::before{ content:""; display:inline-block; width:7px; height:7px; border-radius:50%;
+    background:var(--accent); margin-right:8px; vertical-align:1px }
+  .cyc-swhat{ font-size:12.5px; line-height:1.4; font-weight:600; color:var(--panel-ink); overflow-wrap:break-word }
+  .cyc-seg--gap .cyc-swhat{ color:#a29f97 }
+  .cyc-snote{ font-size:10.5px; line-height:1.55; color:#8a877f; overflow-wrap:break-word }
+  /* os turnos chegando: cada tick e uma resposta observada */
+  .cyc-turns{ display:flex; gap:4px; align-items:flex-end; height:16px }
+  .cyc-turns i{ display:block; width:6px; height:100%; border-radius:2px; background:var(--accent); opacity:.8 }
+  .cyc-turns i.o{ background:transparent; border:1px solid rgba(255,255,255,.28) }
+  .cyc-dots{ display:flex; align-items:center; height:16px }
+  .cyc-dots::before{ content:""; flex:1 1 auto; border-top:1px dashed rgba(255,255,255,.30) }
+  .cyc-pay{ margin:16px 0 0; border-left:2px solid var(--accent); background:rgba(255,255,255,.05);
+    border-radius:0 6px 6px 0; padding:12px 15px; font-size:11.5px; line-height:1.6; color:#8a877f }
+  .cyc-pay b{ color:var(--panel-ink); font-weight:600 }
+
+  /* duplo-sinal de proposito: relogio OU miss observado (se um falhar, o outro sustenta) */
+  .cyc-dual{ padding:20px 22px 4px }
+  .cyc-dtag{ display:inline-block; font-size:9px; letter-spacing:.13em; text-transform:uppercase;
+    color:var(--accent); border:1px solid var(--accent); border-radius:5px; padding:1px 7px; margin:0 0 14px }
+  .cyc-signals{ display:grid; grid-template-columns:minmax(0,1fr) auto minmax(0,1fr); gap:12px; align-items:center }
+  .cyc-sig{ border:1px solid var(--panel-line); border-radius:10px; padding:13px 14px; min-width:0; background:rgba(255,255,255,.02) }
+  .cyc-sig > b{ display:block; font-size:11.5px; color:var(--panel-ink); font-weight:600; margin:0 0 7px; overflow-wrap:break-word }
+  .cyc-sig span{ display:block; font-size:10.5px; line-height:1.55; color:#8a877f; overflow-wrap:break-word }
+  .cyc-sig span b{ color:#a29f97; font-weight:600 }
+  .cyc-or{ font-size:10px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); white-space:nowrap; text-align:center }
+  .cyc-dnote{ margin:14px 0 0; font-size:11px; line-height:1.6; color:#8a877f }
+  .cyc-dnote b{ color:#a29f97; font-weight:600 }
+
+  /* o que o usage PROVA: a tabela real do parseCacheUsage (read DOMINA creation) */
+  .cyc-truth{ margin:18px 22px 4px; border:1px solid var(--panel-line); border-radius:10px; overflow:hidden }
+  .cyc-trow{ display:grid; grid-template-columns:minmax(0,1.05fr) minmax(0,1.4fr) 92px; gap:12px;
+    padding:11px 14px; border-top:1px solid rgba(255,255,255,.07); align-items:center;
+    font-size:10.5px; line-height:1.5; color:#8a877f }
+  .cyc-trow:first-child{ border-top:0 }
+  .cyc-thead{ font-size:9px; letter-spacing:.13em; text-transform:uppercase; color:var(--accent); background:rgba(255,255,255,.03) }
+  .cyc-tk{ min-width:0; overflow-wrap:break-word }
+  .cyc-tv{ text-align:right; font-weight:600; white-space:nowrap }
+  .cyc-tv--hot{ color:var(--accent) }
+  .cyc-tv--cold{ color:var(--panel-ink) }
+  .cyc-tv--none{ color:#6d6257 }
+  .cyc-trow--hi{ background:rgba(217,138,61,.10) }
+
+  /* o baseline que passou a existir */
+  .cyc-tel{ margin:18px 22px 4px; padding:15px 16px; border:1px solid var(--panel-line);
+    border-radius:10px; background:rgba(255,255,255,.02) }
+  .cyc-teltag{ display:inline-block; font-size:9px; letter-spacing:.13em; text-transform:uppercase;
+    color:var(--accent); border:1px solid var(--accent); border-radius:5px; padding:1px 7px; margin:0 0 13px }
+  .cyc-fields{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:0 0 13px }
+  .cyc-field{ border-left:1px solid rgba(255,255,255,.12); padding:1px 0 1px 12px; min-width:0 }
+  .cyc-field--hi{ border-left-color:var(--accent) }
+  .cyc-field > b{ display:block; font-size:11.5px; color:var(--panel-ink); font-weight:600; overflow-wrap:break-word }
+  .cyc-field span{ display:block; margin-top:5px; font-size:10.5px; line-height:1.5; color:#8a877f }
+  .cyc-fmt{ margin:0; font-size:10.5px; line-height:1.7; color:#8a877f; overflow-wrap:break-word }
+  .cyc-fmt em{ color:var(--accent); font-style:normal }
+  .cyc-foot{ margin-top:18px; padding:14px 22px; border-top:1px solid var(--panel-line);
+    font-size:11px; line-height:1.6; color:#8a877f }
+  .cyc-foot b{ color:#a29f97 }
+
   footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
   footer a{ color:var(--muted); text-decoration:none }
   footer a:hover{ color:var(--accent) }
   .frow{ display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between }
   .flinks a{ margin-right:16px }
 
-  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .rr-stage{ grid-template-columns:1fr } .rr-rails{ grid-template-columns:1fr } .rr-steps{ flex-direction:column; align-items:stretch } .an-stage{ grid-template-columns:1fr } .an-rails{ grid-template-columns:1fr } .an-steps{ flex-direction:column; align-items:stretch } .id-row{ grid-template-columns:1fr; gap:9px } .id-arrow{ display:none } .id-chip{ text-align:left; min-width:0 } .id-fork{ grid-template-columns:1fr } .id-rails{ grid-template-columns:1fr } .eco-hero{ grid-template-columns:1fr } .eco-fork{ grid-template-columns:1fr } .eco-rails{ grid-template-columns:1fr } .mig-flow{ grid-template-columns:1fr } .mig-cross{ min-width:0 } .mig-cline{ width:60% } .mig-guards{ grid-template-columns:1fr } .ctx-row{ grid-template-columns:1fr; gap:9px } .ctx-sp{ display:none } .ctx-rval{ text-align:left } .ctx-fork{ grid-template-columns:1fr } .ctx-fields{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
+  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .rr-stage{ grid-template-columns:1fr } .rr-rails{ grid-template-columns:1fr } .rr-steps{ flex-direction:column; align-items:stretch } .an-stage{ grid-template-columns:1fr } .an-rails{ grid-template-columns:1fr } .an-steps{ flex-direction:column; align-items:stretch } .id-row{ grid-template-columns:1fr; gap:9px } .id-arrow{ display:none } .id-chip{ text-align:left; min-width:0 } .id-fork{ grid-template-columns:1fr } .id-rails{ grid-template-columns:1fr } .eco-hero{ grid-template-columns:1fr } .eco-fork{ grid-template-columns:1fr } .eco-rails{ grid-template-columns:1fr } .mig-flow{ grid-template-columns:1fr } .mig-cross{ min-width:0 } .mig-cline{ width:60% } .mig-guards{ grid-template-columns:1fr } .ctx-row{ grid-template-columns:1fr; gap:9px } .ctx-sp{ display:none } .ctx-rval{ text-align:left } .ctx-fork{ grid-template-columns:1fr } .ctx-fields{ grid-template-columns:1fr } .cyc-track{ grid-template-columns:1fr } .cyc-seg--warm{ border-right:1px solid rgba(255,255,255,.20); border-radius:8px 8px 0 0 } .cyc-seg--gap{ border-left:1px dashed rgba(255,255,255,.22); border-right:1px dashed rgba(255,255,255,.22) } .cyc-seg--cold{ border-radius:0 0 8px 8px; border-left-width:2px } .cyc-signals{ grid-template-columns:1fr } .cyc-or{ text-align:left } .cyc-trow{ grid-template-columns:1fr; gap:5px } .cyc-thead{ display:none } .cyc-tv{ text-align:left } .cyc-fields{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
   @media (prefers-reduced-motion:reduce){ .caret{ animation:none } .reveal{ opacity:1 !important; transform:none !important } }
   .reveal{ opacity:0; transform:translateY(14px); animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards }
   @keyframes rise{ to{ opacity:1; transform:none } }
@@ -1385,6 +1476,142 @@
         <p>Ative constraints explicitamente com <code>policy_activate</code>, nunca auto-promovidas de lições: o <code>error-guard</code> nega no <code>PreToolUse</code> um Bash cuja falha reincide, políticas <b>always-apply</b> entram no contexto no início da sessão, e políticas <b>por glob</b> avisam ao editar um arquivo que casa o padrão. <b>Surfacing ≠ enforcement</b>: ficam presentes no contexto, não bloqueiam (exceto o <code>error-guard</code>). A Fase 3 agora fecha o ciclo: modo sombra mede, e <code>/policy-adjudicate</code> chama um <b>juiz LLM independente</b> para estimar disposições — estimativa de juiz, <b>não FP medido</b>.</p>
       </div>
     </div>
+  </section>
+
+
+  <section>
+    <p class="label">Em desenvolvimento · não lançado · o ciclo do cache, medido</p>
+    <p class="lede">A telemetria já dizia <b>quanto</b> token vinha do cache (<code>cacheHitPct</code>). Não dizia <b>quando</b> a sessão cruza uma <b>fronteira fria</b>: o instante em que o prefixo do prompt já vai ser reconstruído de qualquer jeito e, por isso, trocar de modelo ou limpar contexto sai <b>de graça</b>. O proxy do model-router passa a medir esse ciclo. É <b>régua, não volante</b>: nenhuma decisão de roteamento muda.</p>
+
+    <div class="callout">
+      <span class="tag">por que a régua vem antes da ação</span>
+      Sem esse baseline, qualquer otimização em cima do cache (reescrever o prefixo frio, trocar de tier na hora certa) seria <b>fé, não engenharia</b>: não haveria como provar ganho nenhum. Esta entrega existe para tornar a próxima <b>mensurável</b>, e é por isso que ela deliberadamente <b>não age</b>.
+    </div>
+
+    <div class="cyc" aria-label="Artefato da entrega não lançada: o ciclo de vida do prompt cache, medido pelo proxy do model-router. No topo, uma faixa avisa que esta entrega é observação pura e que nenhuma rota consulta o estado medido; ligar a medição na decisão fica para outra entrega, depois que os números existirem. No centro, a assinatura: a linha de vida de uma sessão no eixo do tempo, em três segmentos. No primeiro, o prefixo está quente e cada resposta traz cache_read maior que zero, com os turnos chegando como marcas cheias; todo request desliza a janela, então um acerto adia a fronteira. No segundo, a sessão silencia e o intervalo ultrapassa o TTL, desenhado como uma faixa tracejada; sem TTL observado o palpite conservador é de cinco minutos. No terceiro, com borda âmbar cheia e um ponto marcando o instante, está a fronteira fria: a resposta traz cache_creation maior que zero e nenhum read, ou seja, o prefixo foi reconstruído. Abaixo da linha, a conclusão: é exatamente nesse instante que a troca sai de graça, porque o prefixo já está perdido e trocar de modelo, mudar de tier ou limpar contexto não destrói cache nenhum, enquanto fora da fronteira mexer no prefixo é jogar fora cache já pago. Em seguida, o duplo-sinal: de um lado o relógio, que compara o intervalo com o TTL observado da sessão; do outro, o fato medido, que é um miss na resposta anterior e vale mesmo dentro do TTL. Os dois existem porque a leitura do usage vem de expressão regular sobre pedaços crus do stream e um campo JSON pode ser partido entre dois pedaços, então se um sinal falhar o outro ainda erra para o lado conservador. Depois, a tabela do que o usage prova: read maior que zero significa prefixo quente; read e creation juntos continuam quentes porque read domina creation, já que um write parcial sobre um prefixo lido ainda é cache vivo; creation sem read significa frio; e nada legível permanece desconhecido, porque ausência de sinal nunca vira sinal. Por fim, o baseline que passou a existir, com os três contadores hits, misses e fronteiras frias no snapshot e no card Router do dashboard, e o custo de operação assumido: o mapa de sessões tem teto duro de cinco mil, descartando as menos recentes de fato por ordenação do último instante de request, porque a ordem de inserção de um Map não é recência.">
+      <div class="cyc-bar">
+        <span class="k">não lançado</span>
+        <span class="m">o ciclo do prompt cache · observação pura</span>
+      </div>
+
+      <p class="cyc-rule">
+        <span class="cyc-ruletag">o que isto não faz</span>
+        Nenhuma rota consulta esse estado. O módulo <b>observa</b> o <code>usage</code> que a própria resposta devolve e conta o que viu. Ligar a medição na decisão é trabalho de outra entrega, e só depois que os números existirem.
+      </p>
+
+      <div class="cyc-life">
+        <span class="cyc-lifelab">uma sessão no tempo · o que o proxy passou a enxergar</span>
+
+        <div class="cyc-track">
+          <div class="cyc-seg cyc-seg--warm">
+            <span class="cyc-stag">prefixo quente</span>
+            <span class="cyc-turns" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i></span>
+            <span class="cyc-swhat">cada resposta vem do cache</span>
+            <span class="cyc-snote"><code>cache_read &gt; 0</code>. Todo request desliza a janela, então um acerto <b>adia</b> a fronteira.</span>
+          </div>
+          <div class="cyc-seg cyc-seg--gap">
+            <span class="cyc-stag">silêncio</span>
+            <span class="cyc-dots" aria-hidden="true"></span>
+            <span class="cyc-swhat">a sessão para</span>
+            <span class="cyc-snote"><code>gap &gt; ttl</code>. Sem TTL observado, o palpite conservador é de <b>5 min</b>.</span>
+          </div>
+          <div class="cyc-seg cyc-seg--cold">
+            <span class="cyc-stag">fronteira fria</span>
+            <span class="cyc-turns" aria-hidden="true"><i class="o"></i><i></i></span>
+            <span class="cyc-swhat">o prefixo é reconstruído</span>
+            <span class="cyc-snote"><code>cache_creation &gt; 0</code>, sem read. O rebuild vai ser pago <b>de qualquer forma</b>.</span>
+          </div>
+        </div>
+
+        <p class="cyc-pay"><b>É exatamente aqui que a troca sai de graça.</b> Neste instante o prefixo já está perdido, então trocar de modelo, mudar de tier ou limpar contexto não destrói cache nenhum. Fora da fronteira, mexer no prefixo é <b>jogar fora cache já pago</b>.</p>
+      </div>
+
+      <div class="cyc-dual">
+        <span class="cyc-dtag">duplo-sinal, de propósito</span>
+        <div class="cyc-signals">
+          <div class="cyc-sig">
+            <b>o relógio</b>
+            <span><code>gap &gt; ttl</code>, usando o TTL observado da sessão (<code>ephemeral_1h</code> ou <code>ephemeral_5m</code>) ou os 5 min conservadores quando nada foi revelado.</span>
+          </div>
+          <span class="cyc-or" aria-hidden="true">ou</span>
+          <div class="cyc-sig">
+            <b>o fato medido</b>
+            <span>um <code>miss</code> na resposta anterior (<code>creation &gt; 0</code>, <code>read = 0</code>). Vale <b>mesmo dentro do TTL</b>: o relógio pode errar, um rebuild observado não.</span>
+          </div>
+        </div>
+        <p class="cyc-dnote"><b>Por que dois.</b> A leitura do <code>usage</code> vem de uma expressão regular sobre pedaços crus do stream, e um campo JSON pode ser partido entre dois pedaços. Se um sinal falhar, o outro ainda erra para o lado <b>conservador</b>. O primeiro turno de uma sessão também conta como fria, porque ali não há cache a preservar.</p>
+      </div>
+
+      <div class="cyc-truth">
+        <div class="cyc-trow cyc-thead">
+          <span class="cyc-tk">o que o <code>usage</code> traz</span>
+          <span class="cyc-tk">o que isso prova</span>
+          <span class="cyc-tv">estado</span>
+        </div>
+        <div class="cyc-trow">
+          <span class="cyc-tk"><code>cache_read &gt; 0</code></span>
+          <span class="cyc-tk">o prefixo veio do cache</span>
+          <span class="cyc-tv cyc-tv--hot">quente</span>
+        </div>
+        <div class="cyc-trow cyc-trow--hi">
+          <span class="cyc-tk">read <b>e</b> creation</span>
+          <span class="cyc-tk">write parcial sobre um prefixo lido, então <code>read</code> <b>domina</b></span>
+          <span class="cyc-tv cyc-tv--hot">quente</span>
+        </div>
+        <div class="cyc-trow">
+          <span class="cyc-tk"><code>cache_creation &gt; 0</code>, sem read</span>
+          <span class="cyc-tk">houve rebuild do prefixo</span>
+          <span class="cyc-tv cyc-tv--cold">frio</span>
+        </div>
+        <div class="cyc-trow">
+          <span class="cyc-tk">nada legível</span>
+          <span class="cyc-tk">nada. Ausência de sinal <b>não vira sinal</b></span>
+          <span class="cyc-tv cyc-tv--none">unknown</span>
+        </div>
+      </div>
+
+      <div class="cyc-tel">
+        <span class="cyc-teltag">o baseline · snapshot e card Router</span>
+        <div class="cyc-fields">
+          <div class="cyc-field">
+            <b>hits</b>
+            <span>respostas servidas de prefixo quente</span>
+          </div>
+          <div class="cyc-field">
+            <b>misses</b>
+            <span>respostas que pagaram o rebuild</span>
+          </div>
+          <div class="cyc-field cyc-field--hi">
+            <b>coldBoundaries</b>
+            <span>quantas vezes as sessões cruzaram a fronteira</span>
+          </div>
+        </div>
+        <p class="cyc-fmt">Formato da linha no dashboard: <em>ciclo</em> <code>&lt;hits&gt;q/&lt;misses&gt;f</code> · <em>fronteiras frias</em> <code>&lt;n&gt;</code>. O TTL <b>observado</b> vence o palpite de 5 min e só <b>sobe</b>, e um <code>unknown</code> nunca apaga o que já era conhecido.</p>
+      </div>
+
+      <div class="cyc-foot"><b>Custo de operação assumido:</b> o mapa de sessões tem <b>teto duro</b> de 5000. A poda por idade resolve o caso normal (sessões mortas há muito tempo), e o teto descarta as <b>menos recentes de fato</b>, ordenando por <code>lastRequestTs</code>, porque a ordem de inserção de um <code>Map</code> não é recência: reescrever uma chave existente mantém a posição original. A observação é <b>best-effort</b>, e se falhar a falha é <b>logada</b>, nunca engolida, com o proxy seguindo de pé.</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>Você passa a saber quando</h4>
+        <p>O snapshot conta quantas vezes suas sessões <b>cruzaram a fronteira fria</b>. O percentual de hit dizia o volume que veio do cache, nunca o <b>momento</b> em que ele se perde.</p>
+      </div>
+      <div class="win">
+        <h4>Um sinal que não depende de sorte</h4>
+        <p>Relógio <b>ou</b> <code>miss</code> observado. Como o <code>usage</code> é lido de pedaços crus do stream, um detector sozinho seria frágil; com dois, a falha de um ainda cai no lado conservador.</p>
+      </div>
+      <div class="win">
+        <h4>Não inventa o que não leu</h4>
+        <p>Um <code>unknown</code> <b>não apaga</b> o estado anterior e o TTL observado só <b>sobe</b>. Ausência de sinal nunca vira sinal, então uma leitura falha degrada para o palpite conservador em vez de mentir.</p>
+      </div>
+      <div class="win">
+        <h4>Nada muda de rota</h4>
+        <p>Esta fase <b>só mede</b>. Nenhuma decisão de roteamento consulta o ciclo, o <code>sticky</code> continua igual, e a telemetria é best-effort: se a observação falhar, ela <b>loga</b> e o proxy segue.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Rigor de sempre:</b> o núcleo (<code>cache-cycle.js</code>) é <b>puro</b>, sem I/O, sem estado global e com o <code>now</code> sempre injetado, então cada regra é testável no relógio que o teste escolher. <code>usageFromAccumulator</code> é a <b>única</b> tradução entre o shape achatado do stream e o shape da API, para não nascer um segundo parser de cache espalhado pelo servidor. A fiação cobre os <b>3 modos</b> (<code>routing</code>, <code>sticky-tier</code> e <code>fallback-only</code>) com a <code>sessionKey</code> propagada, e uma sessão nunca contamina o estado da outra. <b>22 testes</b> em <b>TDD RED→GREEN</b> cobrem a tabela do <code>usage</code>, o duplo-sinal, o TTL que só sobe, o teto do mapa e a sessão sem chave. O escopo fica <b>declarado</b>, não subentendido: esta fase <b>mede</b>, não decide.</p>
   </section>
 
 

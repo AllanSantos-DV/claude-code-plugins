@@ -64,3 +64,6 @@ claude-code-boss/.lcov*
 .env
 .env.local
 .env.*.local
+
+# Cache local do hook de design (impeccable) — artefato de ferramenta do dev
+.impeccable/

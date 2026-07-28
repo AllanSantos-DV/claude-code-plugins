@@ -1,5 +1,17 @@
 # Changelog
 
+## [Não lançado]
+
+**O proxy passa a MEDIR o ciclo de vida do prompt cache.** Até aqui a telemetria dizia *quanto* token veio do cache (`cacheHitPct`), mas não *quando* a sessão cruza uma **fronteira fria** — o instante em que o prefixo já será reconstruído de qualquer forma e, portanto, trocar de modelo ou limpar contexto sairia **de graça**. Sem esse baseline não há como provar ganho de nenhuma otimização em cima do cache; esta entrega é a régua, e **não muda nenhuma decisão de roteamento**.
+
+- **`servers/model-router/cache-cycle.js`** (novo, núcleo puro — sem I/O, sem estado global, `now` sempre injetado):
+  - **`parseCacheUsage(usage)`** — lê o que o `usage` da resposta *prova*: `read>0` → `hit`; `creation>0` sem read → `miss`; nada → `unknown`. `read` **domina** `creation` (um write parcial sobre um prefixo lido ainda é cache quente). Ausência de sinal nunca vira sinal.
+  - **`isColdBoundary(state, now, config)`** — **duplo-sinal** de propósito: o relógio (`gap > ttl`) **ou** um `miss` observado na resposta anterior. A leitura de `usage` vem de regex sobre chunks crus de stream e um campo JSON pode ser partido entre dois chunks; se um sinal falhar, o outro ainda é conservadoramente correto.
+  - **`observeUsage`** — TTL **observado** (`ephemeral_1h`/`ephemeral_5m`) vence o palpite conservador de 5min e só **sobe**; um `unknown` não apaga o que já era conhecido.
+- **`accumulateUsage`** passa a capturar `ephemeral_1h_input_tokens`/`ephemeral_5m_input_tokens` — sem eles o TTL real nunca chegaria ao núcleo. `usageFromAccumulator` é a **única** tradução entre o shape achatado do stream e o shape da API (nada de um segundo parser de cache espalhado pelo servidor).
+- **Fiação** no tee do stream (`upRes.on('end')`), com a `sessionKey` propagada nos **3 modos** (`routing`, `sticky-tier`, `fallback-only`). Best-effort: a falha é **logada**, não engolida — telemetria não derruba o proxy.
+- **Métricas** `cacheCycle: { hits, misses, coldBoundaries }` no snapshot e no dashboard (`ciclo Nq/Nf · fronteiras frias N`). O mapa de sessões tem **teto duro** de 5000 com descarte por recência real (a ordem de inserção do `Map` não é recência — reescrever uma chave mantém a posição).
+
 ## [2.19.0] - 2026-07-25
 
 **Migração do KB local → memory server (`mcp-memory`), com botão no dashboard, idempotência e fail-loud.** Trocar o backend para `mcp-memory` deixava o acervo local **órfão**: não havia nenhum mecanismo de migração (o export/import do dashboard sempre foi local↔local). Agora existe. O trabalho começou por uma investigação que **descartou o plano anterior**: a hipótese de "um brain-server por sessão" levou a um desenho de daemon único + proxy que, verificado na fonte, seria **reinventar o que o memory server native-java já faz** — o modo `mcp-memory` já transforma o processo Node em cliente magro (`initLocal()` nem roda: zero modelo, zero SQLite in-process). O gap real era só a migração dos dados. Cada fase saiu com TDD RED→GREEN e gate verde 2× (Windows e Linux).
