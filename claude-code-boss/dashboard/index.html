@@ -1459,11 +1459,18 @@ function renderRouterMetrics(m, live) {
   const cacheRead = (m.tokens && m.tokens.cacheRead) || 0;
   const cacheCreate = (m.tokens && m.tokens.cacheCreate) || 0;
   const hit = (m.cacheHitPct != null ? m.cacheHitPct : 0);
+  const cc = m.cacheCycle || {};
+  const ccHits = cc.hits || 0;
+  const ccMisses = cc.misses || 0;
+  // Fronteira fria = a janela em que o prefixo já seria reconstruído de qualquer
+  // forma. É a OPORTUNIDADE mensurável (trocar modelo / limpar contexto de graça).
+  const ccTotal = ccHits + ccMisses;
   const sub = `${t('router.mClassified')}: ${m.classified || 0} · `
     + `${t('router.mServedClaude')}: ${m.servedClaude || 0} · `
     + `${t('router.mCooldowns')}: ${m.cooldownArms || 0} · `
     + `tokens ${tokIn.toLocaleString()}/${tokOut.toLocaleString()}`
     + ` · cache ${hit}% (read ${cacheRead.toLocaleString()} / write ${cacheCreate.toLocaleString()})`
+    + (ccTotal > 0 ? ` · ciclo ${ccHits}q/${ccMisses}f · fronteiras frias ${cc.coldBoundaries || 0}` : '')
     + (live ? '' : ` · ${t('router.mStale')}`);
   return routerTrafficBanner(m, live)
     + `<div style="display:flex;flex-wrap:wrap;gap:.5rem">${tiles}</div>`
