@@ -4,7 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>claude-code-boss v2.19.0 — o acervo viaja junto, e a janela de 1M fica no seu controle</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. Na v2.19.0, trocar o backend para o memory server deixou de abandonar o que você já tinha: um botão Migrar agora no dashboard leva todo o KB local para o servidor, projeto a projeto, porque o daemon escopa a memória por project_id no handshake. Cada documento sobe com o id local, então rodar de novo atualiza em vez de duplicar e uma migração interrompida pode ser retomada. É fail-loud de ponta a ponta: fora do backend mcp-memory a migração recusa rodar, uma entrada que falha é reportada com a causa real e a contagem remota é conferida contra o que subiu. Na segunda frente, o model-router passou a dizer o preço que cobrava calado: ligado em qualquer modo diferente de off ele publica ANTHROPIC_BASE_URL, e o Claude Code, atrás de uma base_url que não é a oficial, orça a sessão em 200K mesmo nos modelos de 1M nativo. Medido na mesma máquina: 183k de 200k com o roteador ligado contra 68k de 1.0M com ele desligado. Agora o aviso aparece na sessão e no card Router, o contextTuning entrega a mesma economia de token com o roteador em off, sem publicar base_url e preservando a janela de 1M, e a telemetria de cache mostra cacheRead, cacheCreate e cacheHitPct para provar se o proxy compensa. O release também carrega a v2.17.1, que converge a identidade do data-dir do daemon: a porta e o token passam a ser derivados do path canônico da pasta, e o brain-server segue o próprio veredito ao publicar o ponteiro ativo, eliminando o 401 que nascia de dois processos endereçando a mesma pasta de jeitos diferentes." />
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. Na v2.19.0, trocar o backend para o memory server deixou de abandonar o que você já tinha: um botão Migrar agora no dashboard leva todo o KB local para o servidor, projeto a projeto, porque o daemon escopa a memória por project_id no handshake. Cada documento sobe com o id local, então rodar de novo atualiza em vez de duplicar e uma migração interrompida pode ser retomada. É fail-loud de ponta a ponta: fora do backend mcp-memory a migração recusa rodar, uma entrada que falha é reportada com a causa real e a contagem remota é conferida contra o que subiu. Na segunda frente, o model-router passou a dizer o preço que cobrava calado: ligado em qualquer modo diferente de off ele publica ANTHROPIC_BASE_URL, e o Claude Code, atrás de uma base_url que não é a oficial, orça a sessão em 200K mesmo nos modelos de 1M nativo. Medido na mesma máquina: 183k de 200k com o roteador ligado contra 68k de 1.0M com ele desligado. Agora o aviso aparece na sessão e no card Router, o contextTuning entrega a mesma economia de token com o roteador em off, sem publicar base_url e preservando a janela de 1M, e a telemetria de cache mostra cacheRead, cacheCreate e cacheHitPct para provar se o proxy compensa. O release também carrega a v2.17.1, que converge a identidade do data-dir do daemon: a porta e o token passam a ser derivados do path canônico da pasta, e o brain-server segue o próprio veredito ao publicar o ponteiro ativo, eliminando o 401 que nascia de dois processos endereçando a mesma pasta de jeitos diferentes. Em desenvolvimento, ainda sem número de versão: com o proxy do roteador no caminho, o boss passa a gravar CLAUDE_CODE_ATTRIBUTION_HEADER=0 e tira do topo do system prompt o bloco de atribuição, que muda entre versões e sessões e invalidava o prefixo cacheado a cada request atrás de um gateway. A doc do Claude Code é a fonte da decisão: desligar o bloco melhora o hit de prompt-cache quando você roteia por um gateway, e numa conexão direta o cache não muda de um jeito nem de outro, então a chave entra no bundle gravado com o proxy ligado e fica fora do contextTuning, que roda com o roteador em off. As invariantes seguem as mesmas: só o valor ausente é preenchido, então um valor que você fixou sobrevive, e desligar remove só o que o plugin escreveu. É o contrapeso do teto de 200K medido na v2.19.0, e o cacheHitPct do card Router é onde dá para conferir se o hit subiu." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -31,7 +31,7 @@
   a:focus-visible,button:focus-visible{ outline:2px solid var(--accent); outline-offset:3px; border-radius:3px }
   code{ font-family:var(--mono); font-size:.86em; background:var(--accent-soft); color:inherit; padding:1px 6px; border-radius:5px }
 
-  .top{ display:flex; align-items:center; justify-content:space-between;
+  .top{ display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px;
     padding:20px 0; border-bottom:1px solid var(--line); font-family:var(--mono); font-size:12.5px; letter-spacing:.02em }
   .top a{ text-decoration:none; color:var(--muted) }
   .top a:hover{ color:var(--ink) }
@@ -1275,13 +1275,122 @@
   .ctx-foot{ padding:14px 22px; border-top:1px solid var(--panel-line); font-size:11px; line-height:1.6; color:#8a877f }
   .ctx-foot b{ color:#a29f97 }
 
+  /* NAO LANCADO : model-router - CLAUDE_CODE_ATTRIBUTION_HEADER=0 com o proxy ligado.
+     O bloco de atribuicao (versao do cliente + fingerprint do prompt) abre o system prompt e
+     MUDA entre versoes/sessoes -> atras de um gateway invalida o prefixo cacheado a cada
+     request. Doc oficial (env-vars): desligar "improves prompt-cache hit rates when routing
+     through an LLM gateway"; na conexao direta o cache "is unaffected either way". Por isso o
+     env entra no planEnableEnv (proxy no caminho) e NAO no planTuningEnv (tuning sem proxy).
+     ASSINATURA: o PREFIXO - tres requests da mesma sessao desenhadas como fitas do inicio do
+     prompt. A esquerda, o primeiro segmento muda a cada request e a fita inteira vem hachurada
+     (recomputada); a direita, o prefixo estavel fica ambar (servido do cache). Codigo visual do
+     "ainda nao lancado": TRACEJADO - borda do artefato, barra do topo e pill de status.
+     Contrapeso da regua de 1M (#janela-1m): se o proxy cobra o teto de 200K, comeca a devolver. */
+  .pfx{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:880px; font-family:var(--mono);
+    margin:0 0 36px; border:1px dashed rgba(180,97,30,.55) }
+  .pfx code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px;
+    padding:1px 5px; border-radius:4px; overflow-wrap:break-word }
+  .pfx a{ color:var(--accent); text-decoration:none; border-bottom:1px solid rgba(217,138,61,.45) }
+  .pfx a:hover{ border-bottom-color:var(--accent) }
+  .pfx-bar{ display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:10px 14px;
+    padding:13px 20px; border-bottom:1px dashed rgba(255,255,255,.16); font-size:12px }
+  .pfx-bar .k{ color:var(--accent); border:1px dashed var(--accent); border-radius:999px;
+    padding:2px 10px; font-size:9.5px; letter-spacing:.16em; text-transform:uppercase }
+  .pfx-bar .m{ color:#8a877f }
+
+  /* a assinatura: o comeco do prompt em tres requests, com e sem o bloco */
+  .pfx-cache{ padding:22px 22px 18px; border-bottom:1px solid rgba(255,255,255,.06) }
+  .pfx-clab{ display:block; font-size:9.5px; letter-spacing:.15em; text-transform:uppercase;
+    color:var(--accent); margin:0 0 16px }
+  .pfx-cols{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px }
+  .pfx-col{ min-width:0; border-radius:10px; padding:15px 16px }
+  .pfx-col--now{ border:1px dashed rgba(255,255,255,.24) }
+  .pfx-col--next{ border:1px solid var(--accent); background:rgba(255,255,255,.05) }
+  .pfx-ctag{ display:block; font-size:9.5px; letter-spacing:.13em; text-transform:uppercase;
+    color:#8a877f; overflow-wrap:break-word }
+  .pfx-col--next .pfx-ctag{ color:var(--accent) }
+  .pfx-csub{ display:block; margin:6px 0 14px; font-size:11px; line-height:1.5; color:#a29f97;
+    overflow-wrap:break-word }
+  .pfx-csub code{ font-size:10px }
+
+  .pfx-req{ display:grid; grid-template-columns:30px minmax(0,1fr) 38px; gap:8px; align-items:center; margin:0 0 8px }
+  .pfx-rn{ font-size:9px; letter-spacing:.05em; color:#8a877f; white-space:nowrap }
+  .pfx-strip{ display:flex; min-width:0; height:23px; border-radius:5px; overflow:hidden;
+    border:1px solid rgba(255,255,255,.22) }
+  .pfx-seg{ display:block; padding:0 6px; line-height:21px; font-size:9px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; min-width:0 }
+  .pfx-seg--attr{ flex:0 0 44%; color:#cfc9be; border-right:1px dashed rgba(255,255,255,.34);
+    background:repeating-linear-gradient(135deg,rgba(255,255,255,.13) 0 3px,transparent 3px 7px) }
+  .pfx-seg--cold{ flex:1 1 auto; color:#8a877f;
+    background:repeating-linear-gradient(135deg,rgba(255,255,255,.06) 0 3px,transparent 3px 7px) }
+  .pfx-seg--warm{ flex:1 1 auto; background:var(--accent); color:#120e08; font-weight:700 }
+  .pfx-seg--write{ flex:1 1 auto; background:rgba(217,138,61,.22); color:#e3c39c }
+  .pfx-v{ font-size:9px; letter-spacing:.07em; text-transform:uppercase; text-align:right; white-space:nowrap }
+  .pfx-v--miss{ color:#8a877f }
+  .pfx-v--write{ color:#a29f97 }
+  .pfx-v--hit{ color:var(--accent); font-weight:700 }
+  .pfx-mark{ display:block; margin:11px 0 0; font-size:10px; line-height:1.55; color:#8a877f }
+  .pfx-mark b{ color:#a29f97; font-weight:600 }
+  .pfx-col--next .pfx-mark b{ color:var(--panel-ink) }
+  .pfx-ccap{ margin:16px 0 0; font-size:11px; line-height:1.6; color:#8a877f }
+  .pfx-ccap b{ color:#a29f97; font-weight:600 }
+
+  /* onde a chave entra - e onde ela nao entra, de proposito */
+  .pfx-where{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; padding:18px 22px 8px }
+  .pfx-lane{ min-width:0; border-radius:10px; padding:15px 16px;
+    border:1px solid var(--panel-line); background:rgba(255,255,255,.02) }
+  .pfx-lane--in{ border-color:var(--accent); background:rgba(255,255,255,.05) }
+  .pfx-ltag{ display:block; font-size:9.5px; letter-spacing:.13em; text-transform:uppercase;
+    color:#8a877f; overflow-wrap:break-word }
+  .pfx-ltag code{ text-transform:none; letter-spacing:0; font-size:10px }
+  .pfx-lane--in .pfx-ltag{ color:var(--accent) }
+  .pfx-lwhat{ display:block; margin:7px 0 13px; font-size:11.5px; line-height:1.5; color:#8a877f }
+  .pfx-lane--in .pfx-lwhat{ color:var(--panel-ink); font-weight:600 }
+  .pfx-env{ list-style:none; margin:0; padding:0 }
+  .pfx-env li{ position:relative; margin:0 0 7px; padding-left:15px; font-size:10.5px;
+    line-height:1.55; color:#8a877f; overflow-wrap:break-word }
+  .pfx-env li:last-child{ margin:0 }
+  .pfx-env li::before{ content:"·"; position:absolute; left:3px; top:0; color:#6d6257 }
+  .pfx-env li b{ color:#a29f97; font-weight:600 }
+  .pfx-env li i{ font-style:normal; color:#6d6a63 }
+  .pfx-env .is-new{ color:var(--panel-ink) }
+  .pfx-env .is-new::before{ content:"+"; color:var(--accent); font-weight:700 }
+  .pfx-env .is-new b{ color:var(--accent) }
+  .pfx-env .is-out::before{ content:"–"; color:#6d6257 }
+  .pfx-new{ display:inline-block; margin-left:6px; font-size:8.5px; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--accent); border:1px dashed var(--accent);
+    border-radius:999px; padding:1px 7px; white-space:nowrap }
+  .pfx-foot{ padding:14px 22px; border-top:1px dashed rgba(255,255,255,.16);
+    font-size:11px; line-height:1.6; color:#8a877f }
+  .pfx-foot b{ color:#a29f97 }
+  .pfx-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+  /* as fitas precisam de largura pra nao truncar: as duas colunas empilham antes do
+     breakpoint global, e no mobile o rotulo/veredito sobem pra uma linha propria. */
+  @media (max-width:880px){ .pfx-cols{ grid-template-columns:minmax(0,1fr) } }
+  @media (max-width:680px){
+    .pfx-req{ grid-template-columns:minmax(0,1fr) auto; gap:7px 10px }
+    .pfx-rn{ grid-column:1; grid-row:1 }
+    .pfx-v{ grid-column:2; grid-row:1 }
+    .pfx-strip{ grid-column:1/-1; grid-row:2 }
+  }
+
+  /* marcadores de "ainda nao lancado" fora do artefato */
+  .devtag{ display:inline-block; margin-left:12px; font-size:10px; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--accent); border:1px dashed var(--accent);
+    border-radius:999px; padding:2px 10px; white-space:nowrap }
+  .navr{ display:flex; align-items:center; gap:10px; margin-left:auto }
+  .top a.dev{ color:var(--accent); border:1px dashed var(--accent); border-radius:999px;
+    padding:3px 10px; font-size:11.5px }
+  .top a.dev:hover{ background:var(--accent-soft) }
+
   footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
   footer a{ color:var(--muted); text-decoration:none }
   footer a:hover{ color:var(--accent) }
   .frow{ display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between }
   .flinks a{ margin-right:16px }
 
-  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .rr-stage{ grid-template-columns:1fr } .rr-rails{ grid-template-columns:1fr } .rr-steps{ flex-direction:column; align-items:stretch } .an-stage{ grid-template-columns:1fr } .an-rails{ grid-template-columns:1fr } .an-steps{ flex-direction:column; align-items:stretch } .id-row{ grid-template-columns:1fr; gap:9px } .id-arrow{ display:none } .id-chip{ text-align:left; min-width:0 } .id-fork{ grid-template-columns:1fr } .id-rails{ grid-template-columns:1fr } .eco-hero{ grid-template-columns:1fr } .eco-fork{ grid-template-columns:1fr } .eco-rails{ grid-template-columns:1fr } .mig-flow{ grid-template-columns:1fr } .mig-cross{ min-width:0 } .mig-cline{ width:60% } .mig-guards{ grid-template-columns:1fr } .ctx-row{ grid-template-columns:1fr; gap:9px } .ctx-sp{ display:none } .ctx-rval{ text-align:left } .ctx-fork{ grid-template-columns:1fr } .ctx-fields{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
+  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .rr-stage{ grid-template-columns:1fr } .rr-rails{ grid-template-columns:1fr } .rr-steps{ flex-direction:column; align-items:stretch } .an-stage{ grid-template-columns:1fr } .an-rails{ grid-template-columns:1fr } .an-steps{ flex-direction:column; align-items:stretch } .id-row{ grid-template-columns:1fr; gap:9px } .id-arrow{ display:none } .id-chip{ text-align:left; min-width:0 } .id-fork{ grid-template-columns:1fr } .id-rails{ grid-template-columns:1fr } .eco-hero{ grid-template-columns:1fr } .eco-fork{ grid-template-columns:1fr } .eco-rails{ grid-template-columns:1fr } .mig-flow{ grid-template-columns:1fr } .mig-cross{ min-width:0 } .mig-cline{ width:60% } .mig-guards{ grid-template-columns:1fr } .ctx-row{ grid-template-columns:1fr; gap:9px } .ctx-sp{ display:none } .ctx-rval{ text-align:left } .ctx-fork{ grid-template-columns:1fr } .ctx-fields{ grid-template-columns:1fr } .pfx-cols{ grid-template-columns:minmax(0,1fr) } .pfx-where{ grid-template-columns:minmax(0,1fr) } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
   @media (prefers-reduced-motion:reduce){ .caret{ animation:none } .reveal{ opacity:1 !important; transform:none !important } }
   .reveal{ opacity:0; transform:translateY(14px); animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards }
   @keyframes rise{ to{ opacity:1; transform:none } }
@@ -1292,7 +1401,10 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.19.0</span>
+    <span class="navr">
+      <a class="dev" href="#nao-lancado">não lançado</a>
+      <span class="ver">v2.19.0</span>
+    </span>
   </nav>
 
   <header class="hero">
@@ -1385,6 +1497,124 @@
         <p>Ative constraints explicitamente com <code>policy_activate</code>, nunca auto-promovidas de lições: o <code>error-guard</code> nega no <code>PreToolUse</code> um Bash cuja falha reincide, políticas <b>always-apply</b> entram no contexto no início da sessão, e políticas <b>por glob</b> avisam ao editar um arquivo que casa o padrão. <b>Surfacing ≠ enforcement</b>: ficam presentes no contexto, não bloqueiam (exceto o <code>error-guard</code>). A Fase 3 agora fecha o ciclo: modo sombra mede, e <code>/policy-adjudicate</code> chama um <b>juiz LLM independente</b> para estimar disposições — estimativa de juiz, <b>não FP medido</b>.</p>
       </div>
     </div>
+  </section>
+
+
+  <section id="nao-lancado">
+    <p class="label">Em desenvolvimento · o proxy começa a se pagar <span class="devtag">não lançado</span></p>
+
+    <p class="lede">A v2.19.0 mediu o preço de ligar o roteador: com o proxy no caminho, a sua sessão é orçada em <b>200K</b>. Aqui começa a contrapartida. Com o roteamento ligado, o boss passa a gravar <code>CLAUDE_CODE_ATTRIBUTION_HEADER=0</code> e tira do topo do system prompt o bloco de atribuição (versão do cliente e fingerprint do prompt), que <b>muda entre versões e sessões</b>. Atrás de um gateway era ele que invalidava o prefixo cacheado a cada request, e você pagava cache-miss por um motivo que não tem nada a ver com o seu trabalho.</p>
+
+    <div class="callout">
+      <span class="tag">quem decide isso é a doc, não o palpite</span>
+      A documentação do Claude Code é explícita sobre essa variável: desligar o bloco <b>"improves prompt-cache hit rates when routing through an LLM gateway"</b>, e numa conexão direta o cache <b>"is unaffected either way"</b> (<a href="https://code.claude.com/docs/en/settings#environment-variables" rel="noreferrer">env vars</a>). É essa frase que define <b>onde</b> a chave entra: com o proxy no caminho, sim; no ajuste sem proxy, não.
+    </div>
+
+    <div class="pfx" aria-label="Artefato da mudança ainda não lançada: o começo do system prompt em três requests da mesma sessão, com o proxy do roteador no caminho. À esquerda, como está hoje: cada request é uma fita que começa por um bloco de atribuição hachurado, com a versão do cliente e um fingerprint que muda a cada request, e o restante da fita, o system prompt e as tools, também aparece hachurado porque foi recomputado. O veredito das três é miss. Uma nota explica que o match do cache para no primeiro byte diferente, e como o bloco vem antes de tudo, nada depois dele é reaproveitado. À direita, com a chave CLAUDE_CODE_ATTRIBUTION_HEADER igual a zero: a fita começa direto no conteúdo estável. A primeira request grava o prefixo e as duas seguintes aparecem preenchidas em âmbar, servidas do cache, com veredito hit. Uma legenda avisa que o desenho é o esquema do mecanismo e não uma medição, e que o número real é o cacheHitPct mostrado no card Router desde a versão 2.19.0. Abaixo, onde a chave entra e onde não entra: à esquerda, com borda âmbar, o bundle gravado quando o proxy entra no caminho, listando ANTHROPIC_BASE_URL apontando para o proxy local, ENABLE_TOOL_SEARCH igual a true, CLAUDE_CODE_AUTO_COMPACT_WINDOW igual a 200000 e, marcada com um sinal de mais, a entrada nova CLAUDE_CODE_ATTRIBUTION_HEADER igual a zero. À direita, o contextTuning, que roda com o roteador em off, lista só as duas primeiras chaves e marca com um sinal de menos que a chave de atribuição fica de fora de propósito, porque numa conexão direta o cache não muda de um jeito nem de outro. No rodapé, as invariantes: o boss só preenche o que está ausente, então um valor que você fixou sobrevive, e desligar remove só o valor que o boss teria escrito; e o tamanho honesto da mudança, que é uma parcela e não o acerto de contas, já que o teto de 200K continua sendo o preço de ter o proxy no caminho.">
+      <div class="pfx-bar">
+        <span class="k">não lançado</span>
+        <span class="m">model-router · o começo do prompt para de mudar</span>
+      </div>
+
+      <div class="pfx-cache">
+        <span class="pfx-clab">o começo do system prompt · três requests da mesma sessão, atrás do proxy</span>
+
+        <div class="pfx-cols">
+          <div class="pfx-col pfx-col--now">
+            <span class="pfx-ctag">como está hoje</span>
+            <span class="pfx-csub">o bloco de atribuição abre o prompt, e ele <b>muda</b> entre versões e sessões</span>
+
+            <div class="pfx-req">
+              <span class="pfx-rn">req 1</span>
+              <div class="pfx-strip"><span class="pfx-seg pfx-seg--attr">v2.19.0 · a3f1c8</span><span class="pfx-seg pfx-seg--cold">system prompt + tools</span></div>
+              <span class="pfx-v pfx-v--miss">miss</span>
+            </div>
+            <div class="pfx-req">
+              <span class="pfx-rn">req 2</span>
+              <div class="pfx-strip"><span class="pfx-seg pfx-seg--attr">v2.19.0 · 7d20b4</span><span class="pfx-seg pfx-seg--cold">system prompt + tools</span></div>
+              <span class="pfx-v pfx-v--miss">miss</span>
+            </div>
+            <div class="pfx-req">
+              <span class="pfx-rn">req 3</span>
+              <div class="pfx-strip"><span class="pfx-seg pfx-seg--attr">v2.19.1 · e0c9af</span><span class="pfx-seg pfx-seg--cold">system prompt + tools</span></div>
+              <span class="pfx-v pfx-v--miss">miss</span>
+            </div>
+
+            <span class="pfx-mark"><b>O match do cache para no primeiro byte diferente.</b> Como o bloco vem antes de tudo, nada depois dele é reaproveitado.</span>
+          </div>
+
+          <div class="pfx-col pfx-col--next">
+            <span class="pfx-ctag">com a chave ligada</span>
+            <span class="pfx-csub"><code>CLAUDE_CODE_ATTRIBUTION_HEADER=0</code>, então o prompt começa no que é <b>estável</b></span>
+
+            <div class="pfx-req">
+              <span class="pfx-rn">req 1</span>
+              <div class="pfx-strip"><span class="pfx-seg pfx-seg--write">system prompt + tools</span></div>
+              <span class="pfx-v pfx-v--write">grava</span>
+            </div>
+            <div class="pfx-req">
+              <span class="pfx-rn">req 2</span>
+              <div class="pfx-strip"><span class="pfx-seg pfx-seg--warm">prefixo servido do cache</span></div>
+              <span class="pfx-v pfx-v--hit">hit</span>
+            </div>
+            <div class="pfx-req">
+              <span class="pfx-rn">req 3</span>
+              <div class="pfx-strip"><span class="pfx-seg pfx-seg--warm">prefixo servido do cache</span></div>
+              <span class="pfx-v pfx-v--hit">hit</span>
+            </div>
+
+            <span class="pfx-mark"><b>A primeira request grava o prefixo, as seguintes leem dele.</b> É o ganho que a doc descreve para quem roteia por um gateway.</span>
+          </div>
+        </div>
+
+        <p class="pfx-ccap"><b>Esquema do mecanismo, não uma medição.</b> O número real é o <code>cacheHitPct</code> que o card <b>Router</b> mostra desde a v2.19.0. Aquele baseline veio antes justamente para esta hora: dá para <b>conferir</b> se o hit subiu, em vez de acreditar.</p>
+      </div>
+
+      <div class="pfx-where">
+        <div class="pfx-lane pfx-lane--in">
+          <span class="pfx-ltag">proxy no caminho · <code>planEnableEnv</code></span>
+          <span class="pfx-lwhat">é aqui que o ganho existe: o proxy é o gateway</span>
+          <ul class="pfx-env">
+            <li><b>ANTHROPIC_BASE_URL</b> <i>= o proxy local</i></li>
+            <li><b>ENABLE_TOOL_SEARCH</b> <i>= true</i></li>
+            <li><b>CLAUDE_CODE_AUTO_COMPACT_WINDOW</b> <i>= 200000</i></li>
+            <li class="is-new"><b>CLAUDE_CODE_ATTRIBUTION_HEADER</b> <i>= 0</i> <span class="pfx-new">entra agora</span></li>
+          </ul>
+        </div>
+        <div class="pfx-lane">
+          <span class="pfx-ltag"><code>contextTuning</code> · roteador em <code>off</code> · <code>planTuningEnv</code></span>
+          <span class="pfx-lwhat">conexão direta: o cache não muda de um jeito nem de outro</span>
+          <ul class="pfx-env">
+            <li><b>ENABLE_TOOL_SEARCH</b> <i>= true</i></li>
+            <li><b>CLAUDE_CODE_AUTO_COMPACT_WINDOW</b> <i>= 200000</i></li>
+            <li class="is-out"><b>CLAUDE_CODE_ATTRIBUTION_HEADER</b> <i>fica de fora, de propósito</i></li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="pfx-foot"><b>O que é seu continua seu:</b> o boss só preenche o que está <b>ausente</b> (<code>== null</code>), então um <code>1</code> que você fixou de propósito <b>sobrevive</b>; e desligar o roteamento remove <b>só o valor que o boss teria escrito</b>, nunca o seu. <b>O tamanho da coisa:</b> é uma parcela, não o acerto de contas. O teto de <b>200K</b> continua sendo o preço de ter o proxy no caminho (<a href="#janela-1m">a medição está logo abaixo</a>); o que muda é que agora ele devolve alguma coisa em troca.</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>Cache quente atrás do proxy</h4>
+        <p>Com o roteamento ligado, o começo do prompt para de mudar a cada request. É exatamente o cenário em que a doc diz que desligar o bloco <b>melhora o hit de cache</b>: quando você fala com o modelo por um gateway.</p>
+      </div>
+      <div class="win">
+        <h4>A chave entra só onde rende</h4>
+        <p>Com o roteador em <code>off</code>, o <code>contextTuning</code> continua gravando os mesmos dois env de antes e <b>não</b> escreve esta chave. Numa conexão direta o cache não muda, e mexer ali seria ruído no seu <code>settings.json</code>.</p>
+      </div>
+      <div class="win">
+        <h4>Um valor seu não é sobrescrito</h4>
+        <p>Se você fixou <code>CLAUDE_CODE_ATTRIBUTION_HEADER=1</code> de propósito, ele <b>fica</b>. Ligar preenche só o que está ausente, e desligar tira só o <code>0</code> que o boss teria escrito, sem deixar env órfão.</p>
+      </div>
+      <div class="win">
+        <h4>Dá para conferir no painel</h4>
+        <p>O <code>cacheHitPct</code> do card <b>Router</b> é onde você vê se o hit subiu. A telemetria de cache chegou na v2.19.0 para transformar esse tipo de aposta em <b>número</b>.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Rigor de sempre:</b> a decisão não saiu de intuição, saiu da <b>doc oficial</b>, que diz onde o ganho existe (atrás de um gateway) e onde não existe (conexão direta). Por isso a chave entra no bundle do proxy e <b>fica fora</b> do ajuste sem proxy. Foram <b>4 testes RED→GREEN</b> mais o teste de no-op atualizado (o bundle passou de 3 para 4 envs), com as invariantes de sempre travadas em teste: <code>== null</code> só preenche o ausente e o disable remove só o nosso valor. Gate de <b>758 testes, 0 falhas</b>, rodado <b>2× estável</b>. <b>Ainda não lançado:</b> a versão publicada continua sendo a <b>2.19.0</b>; isto entra no próximo corte.</p>
   </section>
 
 
@@ -1540,7 +1770,7 @@
             <span>a fatia da entrada que veio do cache: <code>cacheRead / (cacheRead + entrada)</code></span>
           </div>
         </div>
-        <p class="ctx-telnote">O medidor do stream só contava entrada e saída. Agora um parser <b>puro</b> (<code>accumulateUsage</code>) também lê o cache, e o dashboard mostra o hit junto dos tokens. É o <b>baseline</b> que faltava: sem ele, religar o proxy no futuro (por exemplo, pra reescrever o cache frio) seria fé; com ele, dá pra <b>provar ou desmentir</b> se compensa.</p>
+        <p class="ctx-telnote">O medidor do stream só contava entrada e saída. Agora um parser <b>puro</b> (<code>accumulateUsage</code>) também lê o cache, e o dashboard mostra o hit junto dos tokens. É o <b>baseline</b> que faltava: sem ele, religar o proxy no futuro (por exemplo, pra reescrever o cache frio) seria fé; com ele, dá pra <b>provar ou desmentir</b> se compensa. A primeira aposta em cima desse baseline já está no forno: tirar o bloco de atribuição do prompt com o proxy ligado (<a href="#nao-lancado">em desenvolvimento</a>).</p>
       </div>
 
       <div class="ctx-foot"><b>Por que continua opt-in:</b> fixar o auto-compact em 200K <b>capa o contexto ativo</b> de quem usa 1M sem ter pedido, então <code>contextTuning.enabled</code> nasce <b>false</b> e quem liga é você, no <code>router-config.json</code>. As funções que escrevem esse env são <b>puras</b> e mantêm a regra de sempre: <code>planTuningEnv</code> só preenche o que está <b>ausente</b> (nunca sobrescreve um valor seu) e <code>planTuningRemoval</code> tira <b>só o que o boss</b> teria escrito, sem deixar env órfão.</div>
