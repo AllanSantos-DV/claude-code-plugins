@@ -4,10 +4,20 @@ name: Release Guard
 # tag publicada, este check fica vermelho na main até a release ser cortada.
 # Mesmo guard determinístico usável localmente: node .github/scripts/release-guard.mjs check
 # Publicar continua sendo ação humana/agente (preserva o smoke gate do AGENTS.md).
+#
+# POR QUE TAMBÉM AGENDADO: drift de release é um ESTADO, não um evento. Disparado
+# só no push da main, o guard rodava exatamente entre o merge e a tag — o instante
+# em que a main legitimamente tem versão sem tag — e acendia vermelho em toda
+# release (v2.19.0, v2.19.1, v2.20.0: 3 de 3). O script ganhou uma janela de
+# acomodação para não mentir ali; o cron existe para que a janela não vire ponto
+# cego: sem ele, "mergeou e esqueceu de taggear" passaria no push e nunca mais
+# seria reavaliado.
 
 on:
   push:
     branches: [main]
+  schedule:
+    - cron: '17 */6 * * *'   # a cada 6h (minuto 17 p/ fugir do pico da hora cheia)
   workflow_dispatch:
 
 jobs:

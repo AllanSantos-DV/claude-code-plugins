@@ -21,7 +21,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..'); // .github/scripts -> repo root
@@ -71,17 +71,91 @@ function statusOf(p, tags) {
   return { ...p, state: tags.has(p.tag) ? 'ok' : 'untagged' };
 }
 
-function cmdCheck() {
+// Janela de acomodação entre o merge e a tag. O fluxo é merge → tag, então nesse
+// intervalo a main SEMPRE tem versão sem tag: acusar drift ali é um alarme que
+// acende sozinho toda release (aconteceu em v2.19.0, v2.19.1 e v2.20.0 — 3 de 3),
+// e alarme que sempre acende ensina a ignorar o alarme.
+const GRACE_MS = 45 * 60 * 1000;
+
+/**
+ * Classifica UM plugin (PURA — `ageMs` e `graceMs` injetados, sem relógio nem git).
+ *
+ *   ok       → a tag existe
+ *   pending  → sem tag, mas a versão entrou na main há menos que a janela
+ *              (release em andamento; o agendado reavalia depois)
+ *   untagged → sem tag e já passou da janela → DRIFT REAL, falha alto
+ *   unknown  → não foi possível ler a versão no repo
+ *
+ * Idade INDETERMINADA (`ageMs == null`) não vira desculpa: sem provar que é
+ * recente, assume drift — e diz que não conseguiu medir.
+ */
+function classify(p, tags, ageMs, graceMs) {
+  if (!p.version) return { ...p, state: 'unknown' };
+  if (tags.has(p.tag)) return { ...p, state: 'ok' };
+  if (!Number.isFinite(ageMs)) {
+    return { ...p, state: 'untagged', note: 'idade da versão indeterminada (histórico raso?) — assumindo drift' };
+  }
+  if (ageMs < graceMs) {
+    return { ...p, state: 'pending', note: `versão entrou há ${Math.round(ageMs / 60000)}min — release em andamento` };
+  }
+  return { ...p, state: 'untagged' };
+}
+
+/**
+ * Há quanto tempo o valor ATUAL da versão entrou no arquivo (ms), via pickaxe do
+ * git (`-S`): o commit em que a contagem daquela string mudou. Isso responde "há
+ * quanto tempo esta versão está na main", que é o que define drift — e não o
+ * timestamp do HEAD, que qualquer push desloca. `null` quando não dá para medir
+ * (histórico raso, arquivo novo): o chamador trata como drift, nunca como OK.
+ */
+function versionAgeMs(relFile, version, nowMs) {
+  if (!version) return null;
+  try {
+    const out = execFileSync(
+      'git',
+      ['log', '-1', '--format=%cI', `-S${version}`, '--', relFile],
+      { cwd: REPO_ROOT, encoding: 'utf8' },
+    ).trim();
+    if (!out) return null;
+    const t = Date.parse(out);
+    return Number.isFinite(t) ? nowMs - t : null;
+  } catch (err) {
+    process.stderr.write(`[release-guard] aviso: não deu p/ datar ${relFile} (${err.message})\n`);
+    return null;
+  }
+}
+
+const VERSION_FILES = {
+  'claude-code-boss': 'claude-code-boss/package.json',
+  'rf-reviewer': 'rf-reviewer/servers/rf-engine/rf_engine/__init__.py',
+};
+
+/** Resultado completo (impuro: lê git). */
+function evaluate(nowMs) {
   const tags = allTags();
-  const results = plugins().map((p) => statusOf(p, tags));
-  const bad = results.filter((r) => r.state !== 'ok');
+  return plugins().map((p) => {
+    const age = versionAgeMs(VERSION_FILES[p.name], p.version, nowMs);
+    return classify(p, tags, age, GRACE_MS);
+  });
+}
+
+function cmdCheck() {
+  const results = evaluate(Date.now());
+  for (const r of results.filter((x) => x.state === 'pending')) {
+    process.stdout.write(`[release-guard] ${r.name} ${r.version}: ${r.note} — aguardando a tag ${r.tag}.\n`);
+  }
+  const bad = results.filter((r) => r.state !== 'ok' && r.state !== 'pending');
   if (bad.length === 0) {
-    process.stdout.write(`[release-guard] OK - ${results.length} plugin(s) tagged.\n`);
+    const pend = results.filter((r) => r.state === 'pending').length;
+    process.stdout.write(
+      `[release-guard] OK - ${results.length} plugin(s) sem drift`
+      + (pend ? ` (${pend} em janela de release).\n` : '.\n'),
+    );
     process.exit(0);
   }
   const lines = bad.map((r) => r.state === 'unknown'
     ? `  - ${r.name}: versão não encontrada no repo`
-    : `  - ${r.name}: versão ${r.version} sem a tag ${r.tag}`);
+    : `  - ${r.name}: versão ${r.version} sem a tag ${r.tag}${r.note ? ` [${r.note}]` : ''}`);
   process.stderr.write(
     `\n[release-guard] RELEASE DRIFT - ${bad.length} plugin(s) na main sem tag publicada:\n` +
     lines.join('\n') +
@@ -94,13 +168,22 @@ function cmdCheck() {
 }
 
 function cmdList() {
-  const tags = allTags();
-  process.stdout.write(JSON.stringify(plugins().map((p) => statusOf(p, tags)), null, 2) + '\n');
+  process.stdout.write(JSON.stringify(evaluate(Date.now()), null, 2) + '\n');
 }
 
-const [cmd] = process.argv.slice(2);
-switch (cmd || 'check') {
-  case 'check': cmdCheck(); break;
-  case 'list': cmdList(); break;
-  default: fail(`comando desconhecido: ${cmd} (use check|list)`);
+export { classify, versionAgeMs, evaluate, statusOf, plugins, GRACE_MS, VERSION_FILES };
+
+// CLI só quando executado DIRETAMENTE. Sem esta guarda, um `import` do módulo
+// (por um teste, por exemplo) roda o check e chama process.exit, derrubando o
+// processo de quem importou.
+const invokedDirectly = process.argv[1]
+  && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (invokedDirectly) {
+  const [cmd] = process.argv.slice(2);
+  switch (cmd || 'check') {
+    case 'check': cmdCheck(); break;
+    case 'list': cmdList(); break;
+    default: fail(`comando desconhecido: ${cmd} (use check|list)`);
+  }
 }

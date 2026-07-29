@@ -5335,7 +5335,64 @@ test('resolveMode→modeMeta: cadeia config→modo→apresentação coerente', (
   assertEq(modeMeta(resolveMode({})).color, 'grey');
 });
 
-// ─── model-router (server): merge + resolveMode reexportado ──────────────────
+// ─── release-guard: alarme sistemicamente falso na janela de release ─────────
+// O guard responde uma pergunta de ESTADO ("a versão da main está taggeada?") mas
+// era disparado por um EVENTO (push na main), exatamente no instante em que a
+// resposta é legitimamente "não" — o fluxo é merge → tag, então entre os dois a
+// main SEMPRE tem versão sem tag. Ficou vermelho em v2.19.0, v2.19.1 e v2.20.0:
+// 3 de 3. Um alarme que sempre acende no mesmo ponto ensina a ignorar o alarme.
+const RG_PATH = path.resolve(ROOT, '..', '.github', 'scripts', 'release-guard.mjs');
+const loadReleaseGuard = () => import(require('url').pathToFileURL(RG_PATH).href);
+
+test('release-guard: importar o modulo NAO executa o CLI (senao mata o processo de teste)', async () => {
+  const rg = await loadReleaseGuard();
+  assertEq(typeof rg.classify, 'function', 'classify exportada');
+  assertEq(typeof rg.GRACE_MS, 'number', 'janela de acomodacao exportada');
+});
+
+test('release-guard.classify: versao COM tag e ok, independente da idade', async () => {
+  const { classify } = await loadReleaseGuard();
+  const p = { name: 'boss', version: '2.20.0', tag: 'v2.20.0' };
+  assertEq(classify(p, new Set(['v2.20.0']), 10, 45 * 60000).state, 'ok');
+  assertEq(classify(p, new Set(['v2.20.0']), 99999999, 45 * 60000).state, 'ok');
+});
+
+test('release-guard.classify: sem tag mas RECEM-mergeada = release em andamento, nao drift', async () => {
+  const { classify } = await loadReleaseGuard();
+  const p = { name: 'boss', version: '2.20.0', tag: 'v2.20.0' };
+  const r = classify(p, new Set(['v2.19.1']), 3 * 60000, 45 * 60000); // 3min de idade
+  assertEq(r.state, 'pending', 'entre o merge e a tag o drift e esperado, nao defeito');
+});
+
+test('release-guard.classify: sem tag e VELHA = drift REAL, continua falhando alto', async () => {
+  const { classify } = await loadReleaseGuard();
+  const p = { name: 'boss', version: '2.20.0', tag: 'v2.20.0' };
+  const r = classify(p, new Set(['v2.19.1']), 90 * 60000, 45 * 60000); // 1h30
+  assertEq(r.state, 'untagged', 'esquecer de taggear continua sendo erro visivel');
+});
+
+test('release-guard.classify: idade INDETERMINADA nao vira desculpa (fail-loud)', async () => {
+  const { classify } = await loadReleaseGuard();
+  const p = { name: 'boss', version: '2.20.0', tag: 'v2.20.0' };
+  const r = classify(p, new Set(), null, 45 * 60000);
+  assertEq(r.state, 'untagged', 'sem provar que e recente, assume drift');
+  assertEq(/indetermin/i.test(r.note || ''), true, 'e diz que nao conseguiu medir a idade');
+});
+
+test('release-guard.classify: versao ausente no repo continua unknown', async () => {
+  const { classify } = await loadReleaseGuard();
+  assertEq(classify({ name: 'x', version: null, tag: null }, new Set(), 10, 1000).state, 'unknown');
+});
+
+test('release-guard: o workflow tem trigger AGENDADO (drift e estado, nao evento)', () => {
+  // So a janela de acomodacao criaria um ponto cego: o run do push passaria e
+  // nada mais dispararia, entao "mergeou e esqueceu de taggear" nunca acenderia.
+  const wf = fs.readFileSync(path.resolve(ROOT, '..', '.github', 'workflows', 'release-guard.yml'), 'utf8');
+  assertEq(/^\s*schedule:/m.test(wf), true, 'precisa de schedule p/ reavaliar o ESTADO');
+  assertEq(/cron:/.test(wf), true, 'com cron declarado');
+});
+
+
 const routerServer = require('../servers/model-router/index.js');
 
 test('mergeUserConfig (server): {fallback:{enabled:true}} preserva cooldown/triggerStatuses', () => {
