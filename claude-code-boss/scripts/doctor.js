@@ -19,14 +19,26 @@ const http = require('http');
 
 const MIN_NODE = [22, 13, 0]; // node:sqlite requires >= 22.13
 
-// Claude Code's documented hook events. Anything outside this set is either a
-// typo (fail) or a runtime-dependent extension (warn).
+// Ciclo de vida de hooks do Claude Code, conforme a doc oficial
+// (https://code.claude.com/docs/en/hooks, tabela "Hook lifecycle").
+//
+// POR QUE a lista completa: uma lista PARCIAL fez o doctor emitir um `fail` crítico
+// contra `SubagentStart` — um evento OFICIAL que o próprio plugin usa para injetar
+// políticas no subagente — e instruir o usuário a "corrigir o nome em hooks.json",
+// ou seja, a APAGAR uma feature que funciona. Um alarme que mente é pior que alarme
+// nenhum: ensina a ignorar o alarme.
 const STANDARD_EVENTS = new Set([
-  'SessionStart', 'SessionEnd', 'PreToolUse', 'PostToolUse', 'UserPromptSubmit',
-  'Stop', 'SubagentStop', 'PreCompact', 'Notification',
+  'SessionStart', 'Setup', 'UserPromptSubmit', 'UserPromptExpansion',
+  'PreToolUse', 'PermissionRequest', 'PermissionDenied', 'PostToolUse',
+  'PostToolUseFailure', 'PostToolBatch', 'Notification', 'MessageDisplay',
+  'SubagentStart', 'SubagentStop', 'TaskCreated', 'TaskCompleted',
+  'Stop', 'StopFailure', 'TeammateIdle', 'InstructionsLoaded', 'ConfigChange',
+  'CwdChanged', 'FileChanged', 'WorktreeCreate', 'WorktreeRemove',
+  'PreCompact', 'PostCompact', 'Elicitation', 'ElicitationResult', 'SessionEnd',
 ]);
-// Used by this plugin but only honored by some runtimes (VS Code Copilot / newer
-// Claude Code). If unsupported in the user's runtime they silently no-op.
+// Eventos que só alguns runtimes honram (VS Code Copilot / Claude Code mais novo).
+// São oficiais, mas viram no-op silencioso onde não existem — por isso saem como
+// aviso informativo, não como defeito.
 const RUNTIME_DEPENDENT_EVENTS = new Set(['UserPromptExpansion', 'PostToolUseFailure']);
 
 // ── Pure checks ───────────────────────────────────────────────────────────────
@@ -124,10 +136,16 @@ function checkHooksEvents(ctx) {
   const unknown = events.filter(e => !STANDARD_EVENTS.has(e) && !RUNTIME_DEPENDENT_EVENTS.has(e));
   const runtimeDep = events.filter(e => RUNTIME_DEPENDENT_EVENTS.has(e));
   if (unknown.length) {
+    // NÃO dá para distinguir um typo de um evento MAIS NOVO que esta versão do
+    // plugin. Cravar `fail` + "corrija o nome" afirma uma certeza que não temos e
+    // já levou um usuário a considerar apagar um hook bom. `warn` mantém o achado
+    // VISÍVEL (fail-loud preservado) sem mentir sobre a causa.
     return {
       id: 'hooks-events', label: 'Hook events',
-      status: 'fail', detail: `unrecognized event(s): ${unknown.join(', ')}`,
-      fix: 'Fix the event name in hooks/hooks.json (typo or unsupported event).', critical: false,
+      status: 'warn', detail: `evento(s) fora da lista conhecida: ${unknown.join(', ')}`,
+      fix: 'Pode ser um typo OU um evento mais novo que esta versão do plugin — '
+        + 'confira na doc oficial (code.claude.com/docs/en/hooks) antes de mexer no hooks.json.',
+      critical: false,
     };
   }
   if (runtimeDep.length) {
