@@ -7,6 +7,13 @@ planning/
 claude-code-boss/PLANOS.md
 *-PLAN.md
 
+# Análise/medição local (relatórios e payloads de calibração gerados em sessão).
+# Mesma regra dos planos: são artefato do dev loop, não do produto — um `git add -A`
+# não pode arrastá-los para o repo público.
+*-REPORT.md
+*-HANDOFF.md
+test-payload-*.json
+
 # Smoke tests (local-only, never versioned)
 smoke/
 

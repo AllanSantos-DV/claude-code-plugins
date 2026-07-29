@@ -179,6 +179,46 @@ function estimateClearablePayload(body) {
   return { tokens: Math.round(chars / CHARS_PER_TOKEN), blocks, chars };
 }
 
+/**
+ * Chars do corpo INTEIRO (system + todas as mensagens) — o denominador da
+ * calibração. Diferente de `estimateClearablePayload`, que mede só o que a
+ * limpeza levaria, aqui entra tudo, porque o que a Anthropic cobra é o prompt
+ * inteiro. O `system` é incluído de propósito: costuma ser a maior parte do
+ * prefixo, e ignorá-lo viciaria o fator para baixo.
+ */
+function estimateTotalChars(body) {
+  const b = body || {};
+  let chars = contentChars(b.system);
+  const messages = Array.isArray(b.messages) ? b.messages : [];
+  for (const msg of messages) {
+    if (msg) chars += contentChars(msg.content);
+  }
+  return chars;
+}
+
+/**
+ * Uma amostra de calibração chars→token, SEM API key e SEM `/count_tokens`.
+ *
+ * O proxy já vê, no mesmo ponto, duas coisas: o corpo que ele mediu em chars e o
+ * `usage` que a Anthropic devolveu com a contagem REAL de input. A razão entre os
+ * dois é o chars-por-token de verdade, medido em tráfego real e de graça — não há
+ * motivo para manusear credencial ou pagar chamada só para descobrir isso.
+ *
+ * Devolve `null` quando não dá para calibrar (sem corpo ou sem usage): um fator
+ * inventado é pior que fator nenhum, porque contaminaria toda a série.
+ *
+ * @param {number} chars total do corpo
+ * @param {{in?:number, cacheRead?:number, cacheCreate?:number}} acc
+ * @returns {{chars:number, realTokens:number, ratio:number}|null}
+ */
+function calibrationSample(chars, acc) {
+  const a = acc || {};
+  const realTokens = num(a.in) + num(a.cacheRead) + num(a.cacheCreate);
+  const c = Number(chars);
+  if (!Number.isFinite(c) || c <= 0 || realTokens <= 0) return null;
+  return { chars: c, realTokens, ratio: c / realTokens };
+}
+
 module.exports = {
   DEFAULT_COLD_BOUNDARY_MS,
   CHARS_PER_TOKEN,
@@ -188,4 +228,6 @@ module.exports = {
   observeUsage,
   usageFromAccumulator,
   estimateClearablePayload,
+  estimateTotalChars,
+  calibrationSample,
 };
