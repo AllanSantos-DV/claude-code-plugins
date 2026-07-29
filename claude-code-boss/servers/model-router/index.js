@@ -20,6 +20,7 @@ const path  = require('path');
 const os    = require('os');
 const crypto = require('crypto');
 const { URL } = require('url');
+const cacheCycle = require('./cache-cycle.js');
 const catalog = require('./catalog.js');
 const { resolveMode } = require('../../scripts/lib/router-mode.js');
 const { routerUserConfigPath } = require('../../scripts/lib/router-config-path.js');
@@ -1186,6 +1187,9 @@ function newMetrics() {
     cooldownArms:    0,   // vezes que a janela esgotou e armou cooldown
     cost:            { baselineUnits: 0, actualUnits: 0 },
     tokens:          { in: 0, out: 0, cacheRead: 0, cacheCreate: 0 },
+    // Ciclo de cache observado: quantas respostas vieram de prefixo quente (hits)
+    // vs. rebuild (misses), e quantas fronteiras frias as sessões atravessaram.
+    cacheCycle:      { hits: 0, misses: 0, coldBoundaries: 0 },
   };
 }
 
@@ -1200,6 +1204,7 @@ function loadMetrics() {
         byFinal:    Object.assign(emptyTierMap(), saved.byFinal || {}),
         cost:       Object.assign({ baselineUnits: 0, actualUnits: 0 }, saved.cost || {}),
         tokens:     Object.assign({ in: 0, out: 0, cacheRead: 0, cacheCreate: 0 }, saved.tokens || {}),
+        cacheCycle: Object.assign({ hits: 0, misses: 0, coldBoundaries: 0 }, saved.cacheCycle || {}),
       });
     }
   } catch (e) {
@@ -1269,6 +1274,56 @@ function metricsTokens(usage) {
   _metricsDirty = true;
 }
 
+// ── Ciclo de cache: OBSERVAÇÃO ────────────────────────────────────────────────
+// Estado por sessão: sessionKey → { lastRequestTs, lastCacheState, ttlMs }. Só
+// mede — nesta fase NENHUMA decisão de rota consulta isso. O objetivo é ter o
+// baseline antes de agir: quantas respostas vêm de cache quente e quantas vezes
+// a sessão cruza uma fronteira fria (a janela em que trocar de modelo/limpar
+// contexto sairia de graça).
+const _cacheCycleStates = new Map();
+const MAX_CACHE_CYCLE_SESSIONS = 5000;
+
+// Observa o desfecho de UMA resposta. Devolve a fronteira que a request ACABOU
+// de atravessar (calculada contra o estado ANTERIOR) e o estado novo. `deps`
+// injetável ({ states }) p/ teste determinístico sem tocar o singleton.
+// Sem sessionKey não há sessão a observar → null (nunca inventa uma).
+function observeCacheCycle(sessionKey, acc, now, config, deps) {
+  if (!sessionKey) return null;
+  const states = (deps && deps.states) || _cacheCycleStates;
+  const prev = states.get(sessionKey) || null;
+
+  const boundary = cacheCycle.isColdBoundary(prev, now, config);
+  const state = cacheCycle.observeUsage(prev, cacheCycle.usageFromAccumulator(acc), now, config);
+  states.set(sessionKey, state);
+
+  if (states.size > MAX_CACHE_CYCLE_SESSIONS) {
+    // 1) poda por idade (o caso normal: sessões que morreram há muito tempo).
+    for (const [k, v] of states) {
+      if (!v || (now - v.lastRequestTs) > 86400000) states.delete(k);
+    }
+    // 2) TETO DURO. Se todas forem recentes a poda acima não remove nada, e um
+    //    proxy longevo cresceria sem limite. Descarta as MENOS recentes de fato
+    //    (a ordem de inserção do Map NÃO é recência: reescrever uma chave
+    //    existente mantém a posição original, então ordenamos por lastRequestTs).
+    const excess = states.size - MAX_CACHE_CYCLE_SESSIONS;
+    if (excess > 0) {
+      const oldest = [...states.entries()]
+        .sort((x, y) => (x[1].lastRequestTs || 0) - (y[1].lastRequestTs || 0))
+        .slice(0, excess);
+      for (const [k] of oldest) states.delete(k);
+    }
+  }
+  return { state, boundary };
+}
+
+function metricsCacheCycle(obs) {
+  if (!obs || !obs.state) return;
+  if (obs.state.lastCacheState === 'hit')  metrics.cacheCycle.hits   += 1;
+  if (obs.state.lastCacheState === 'miss') metrics.cacheCycle.misses += 1;
+  if (obs.boundary && obs.boundary.cold)   metrics.cacheCycle.coldBoundaries += 1;
+  _metricsDirty = true;
+}
+
 // PURA: extrai os contadores de `usage` de um chunk do stream e MESCLA no
 // acumulador. `input_tokens` e os `cache_*` chegam UMA vez (message_start) → a 1ª
 // ocorrência vence; `output_tokens` é cumulativo nos deltas → o MAIOR vence. Um
@@ -1279,7 +1334,7 @@ function metricsTokens(usage) {
 // cache (token lido do cache custa 0.1x; escrever custa 1.25x/2x). Sem esse
 // baseline não há como provar se manter o proxy ligado compensa.
 function accumulateUsage(acc, chunk) {
-  const a = acc || { in: 0, out: 0, cacheRead: 0, cacheCreate: 0 };
+  const a = acc || { in: 0, out: 0, cacheRead: 0, cacheCreate: 0, cacheTtl1h: 0, cacheTtl5m: 0 };
   let s;
   try { s = String(chunk); } catch (e) { void e; return a; }
   const firstOnly = (re, cur) => {
@@ -1290,6 +1345,10 @@ function accumulateUsage(acc, chunk) {
   a.in          = firstOnly(/"input_tokens"\s*:\s*(\d+)/, a.in);
   a.cacheRead   = firstOnly(/"cache_read_input_tokens"\s*:\s*(\d+)/, a.cacheRead);
   a.cacheCreate = firstOnly(/"cache_creation_input_tokens"\s*:\s*(\d+)/, a.cacheCreate);
+  // Janela CONTRATADA no write. Sem estes dois, o ciclo de cache só pode ser
+  // adivinhado por relógio; com eles, o TTL real da sessão é observado.
+  a.cacheTtl1h  = firstOnly(/"ephemeral_1h_input_tokens"\s*:\s*(\d+)/, a.cacheTtl1h);
+  a.cacheTtl5m  = firstOnly(/"ephemeral_5m_input_tokens"\s*:\s*(\d+)/, a.cacheTtl5m);
   let mo;
   const reOut = /"output_tokens"\s*:\s*(\d+)/g;
   while ((mo = reOut.exec(s)) !== null) { const v = Number(mo[1]); if (v > a.out) a.out = v; }
@@ -1454,7 +1513,17 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
           usage = accumulateUsage(usage, s);
         } catch (_) { void _; /* telemetria/scan nunca quebram o pipe */ }
       });
-      upRes.on('end', () => { if (usage && (usage.in || usage.out || usage.cacheRead)) metricsTokens(usage); });
+      upRes.on('end', () => {
+        if (usage && (usage.in || usage.out || usage.cacheRead)) metricsTokens(usage);
+        // Ciclo de cache: mede o desfecho real desta resposta (quente x rebuild)
+        // e a fronteira que ela atravessou. Best-effort — telemetria jamais pode
+        // derrubar o proxy, e por isso a falha é LOGADA, não engolida em silêncio.
+        try {
+          if (route && route.sessionKey) {
+            metricsCacheCycle(observeCacheCycle(route.sessionKey, usage, Date.now(), config));
+          }
+        } catch (e) { logger.debug('observeCacheCycle falhou (ignorado)', { err: e.message }); }
+      });
     }
     upRes.pipe(res);
   });
@@ -1619,7 +1688,7 @@ async function createServer(config, mode, routerToken) {
       if (mode === 'fallback-only') {
         const t = modelTier(body.model || 'unknown');
         logger.debug('fallback-only — passthrough sem classificar', { model: body.model || 'unknown', bytes: Buffer.byteLength(rawBody) });
-        forwardRequest(body, req.headers, res, config, { origTier: t, finalTier: t, path: req.url });
+        forwardRequest(body, req.headers, res, config, { origTier: t, finalTier: t, path: req.url, sessionKey: computeSessionKey(body) });
         return;
       }
 
@@ -1637,7 +1706,7 @@ async function createServer(config, mode, routerToken) {
         } catch (e) {
           // Falha inesperada da decisão → passthrough cache-safe (modelo do usuário).
           logger.warn('Sticky decide error — passthrough do modelo original', { err: e.message });
-          forwardRequest(body, req.headers, res, config, { origTier, finalTier: origTier, path: req.url });
+          forwardRequest(body, req.headers, res, config, { origTier, finalTier: origTier, path: req.url, sessionKey: computeSessionKey(body) });
           return;
         }
         body.model = dec.model;
@@ -1660,7 +1729,7 @@ async function createServer(config, mode, routerToken) {
         // blocked = teto barrou um upgrade do tier fixado sobre o modelo atual.
         try { metricsRoute(origTier, dec.tier, true, dec.blocked); }
         catch (e) { logger.debug('metricsRoute falhou (ignorado)', { err: e.message }); }
-        forwardRequest(body, req.headers, res, config, { origTier, finalTier: modelTier(body.model), path: req.url });
+        forwardRequest(body, req.headers, res, config, { origTier, finalTier: modelTier(body.model), path: req.url, sessionKey: dec.key });
         return;
       }
 
@@ -1716,7 +1785,7 @@ async function createServer(config, mode, routerToken) {
       try { metricsRoute(origTier, finalTier, !!tier, blocked); }
       catch (e) { logger.debug('metricsRoute falhou (ignorado)', { err: e.message }); }
 
-      forwardRequest(body, req.headers, res, config, { origTier, finalTier, path: req.url });
+      forwardRequest(body, req.headers, res, config, { origTier, finalTier, path: req.url, sessionKey: computeSessionKey(body) });
     });
   });
 
@@ -1899,6 +1968,10 @@ if (require.main === module) {
     metricsOutcome,
     metricsTokens,
     accumulateUsage,
+    // Ciclo de cache (observação): fiado no tee do stream; exportados p/ os
+    // testes provarem a medição sem tocar o Map singleton (deps.states).
+    observeCacheCycle,
+    metricsCacheCycle,
     metricsSnapshot,
     resetMetrics,
     newMetrics,
