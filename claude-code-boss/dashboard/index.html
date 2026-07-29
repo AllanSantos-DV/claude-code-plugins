@@ -1465,12 +1465,21 @@ function renderRouterMetrics(m, live) {
   // Fronteira fria = a janela em que o prefixo já seria reconstruído de qualquer
   // forma. É a OPORTUNIDADE mensurável (trocar modelo / limpar contexto de graça).
   const ccTotal = ccHits + ccMisses;
+  // O TAMANHO da oportunidade, que é o que decide se agir na fronteira compensa:
+  // frequência sozinha não diz se 7 fronteiras valem 5K ou 500K de contexto.
+  const ccBoundaries = cc.coldBoundaries || 0;
+  const ccIn = cc.coldBoundaryInputTokens || 0;
+  const ccClear = cc.coldBoundaryClearableTokens || 0;
+  const ccPct = ccIn > 0 ? Math.round((ccClear / ccIn) * 100) : 0;
+  const kt = (n) => (n >= 1000 ? `${Math.round(n / 1000)}K` : String(n));
   const sub = `${t('router.mClassified')}: ${m.classified || 0} · `
     + `${t('router.mServedClaude')}: ${m.servedClaude || 0} · `
     + `${t('router.mCooldowns')}: ${m.cooldownArms || 0} · `
     + `tokens ${tokIn.toLocaleString()}/${tokOut.toLocaleString()}`
     + ` · cache ${hit}% (read ${cacheRead.toLocaleString()} / write ${cacheCreate.toLocaleString()})`
-    + (ccTotal > 0 ? ` · ciclo ${ccHits}q/${ccMisses}f · fronteiras frias ${cc.coldBoundaries || 0}` : '')
+    + (ccTotal > 0 ? ` · ciclo ${ccHits}q/${ccMisses}f · fronteiras frias ${ccBoundaries}` : '')
+    // Estimativa declarada (chars/4), não medição exata — serve p/ dimensionar.
+    + (ccIn > 0 ? ` (${kt(ccIn)} reconstruídos, ~${kt(ccClear)} limpáveis = ${ccPct}%)` : '')
     + (live ? '' : ` · ${t('router.mStale')}`);
   return routerTrafficBanner(m, live)
     + `<div style="display:flex;flex-wrap:wrap;gap:.5rem">${tiles}</div>`

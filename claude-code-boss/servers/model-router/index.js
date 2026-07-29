@@ -1188,8 +1188,13 @@ function newMetrics() {
     cost:            { baselineUnits: 0, actualUnits: 0 },
     tokens:          { in: 0, out: 0, cacheRead: 0, cacheCreate: 0 },
     // Ciclo de cache observado: quantas respostas vieram de prefixo quente (hits)
-    // vs. rebuild (misses), e quantas fronteiras frias as sessões atravessaram.
-    cacheCycle:      { hits: 0, misses: 0, coldBoundaries: 0 },
+    // vs. rebuild (misses), quantas fronteiras frias as sessões atravessaram — e
+    // o TAMANHO dessas fronteiras (quanto contexto foi reconstruído ali e quanto
+    // uma limpeza teria liberado). Frequência sozinha não decide ROI.
+    cacheCycle:      {
+      hits: 0, misses: 0, coldBoundaries: 0,
+      coldBoundaryInputTokens: 0, coldBoundaryClearableTokens: 0,
+    },
   };
 }
 
@@ -1204,7 +1209,10 @@ function loadMetrics() {
         byFinal:    Object.assign(emptyTierMap(), saved.byFinal || {}),
         cost:       Object.assign({ baselineUnits: 0, actualUnits: 0 }, saved.cost || {}),
         tokens:     Object.assign({ in: 0, out: 0, cacheRead: 0, cacheCreate: 0 }, saved.tokens || {}),
-        cacheCycle: Object.assign({ hits: 0, misses: 0, coldBoundaries: 0 }, saved.cacheCycle || {}),
+        cacheCycle: Object.assign(
+          { hits: 0, misses: 0, coldBoundaries: 0, coldBoundaryInputTokens: 0, coldBoundaryClearableTokens: 0 },
+          saved.cacheCycle || {},
+        ),
       });
     }
   } catch (e) {
@@ -1284,17 +1292,34 @@ const _cacheCycleStates = new Map();
 const MAX_CACHE_CYCLE_SESSIONS = 5000;
 
 // Observa o desfecho de UMA resposta. Devolve a fronteira que a request ACABOU
-// de atravessar (calculada contra o estado ANTERIOR) e o estado novo. `deps`
-// injetável ({ states }) p/ teste determinístico sem tocar o singleton.
+// de atravessar (calculada contra o estado ANTERIOR), o estado novo e — só na
+// fronteira fria — o PRÊMIO: quanto contexto estava sendo carregado ali e quanto
+// uma limpeza teria liberado. `deps` injetável ({ states, body }) p/ teste
+// determinístico sem tocar o singleton.
 // Sem sessionKey não há sessão a observar → null (nunca inventa uma).
 function observeCacheCycle(sessionKey, acc, now, config, deps) {
   if (!sessionKey) return null;
   const states = (deps && deps.states) || _cacheCycleStates;
+  const body = deps && deps.body;
   const prev = states.get(sessionKey) || null;
 
   const boundary = cacheCycle.isColdBoundary(prev, now, config);
   const state = cacheCycle.observeUsage(prev, cacheCycle.usageFromAccumulator(acc), now, config);
   states.set(sessionKey, state);
+
+  // O prêmio só existe NA fronteira: fora dela limpar contexto CUSTA (invalida
+  // cache quente pago), então medir ali inflaria uma oportunidade que não existe.
+  let prize = null;
+  if (boundary.cold) {
+    const a = acc || {};
+    const clearable = cacheCycle.estimateClearablePayload(body);
+    prize = {
+      // Contexto que ESTA request (re)construiu do zero — o tamanho da fronteira.
+      inputTokens: (Number(a.in) || 0) + (Number(a.cacheCreate) || 0),
+      clearableTokens: clearable.tokens,
+      clearableBlocks: clearable.blocks,
+    };
+  }
 
   if (states.size > MAX_CACHE_CYCLE_SESSIONS) {
     // 1) poda por idade (o caso normal: sessões que morreram há muito tempo).
@@ -1313,7 +1338,7 @@ function observeCacheCycle(sessionKey, acc, now, config, deps) {
       for (const [k] of oldest) states.delete(k);
     }
   }
-  return { state, boundary };
+  return { state, boundary, prize };
 }
 
 function metricsCacheCycle(obs) {
@@ -1321,6 +1346,12 @@ function metricsCacheCycle(obs) {
   if (obs.state.lastCacheState === 'hit')  metrics.cacheCycle.hits   += 1;
   if (obs.state.lastCacheState === 'miss') metrics.cacheCycle.misses += 1;
   if (obs.boundary && obs.boundary.cold)   metrics.cacheCycle.coldBoundaries += 1;
+  // Tamanho da oportunidade. Só soma o que foi de fato MEDIDO — uma fronteira sem
+  // prêmio medido conta na frequência mas não inventa volume.
+  if (obs.prize) {
+    metrics.cacheCycle.coldBoundaryInputTokens     += Number(obs.prize.inputTokens) || 0;
+    metrics.cacheCycle.coldBoundaryClearableTokens += Number(obs.prize.clearableTokens) || 0;
+  }
   _metricsDirty = true;
 }
 
@@ -1520,7 +1551,9 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
         // derrubar o proxy, e por isso a falha é LOGADA, não engolida em silêncio.
         try {
           if (route && route.sessionKey) {
-            metricsCacheCycle(observeCacheCycle(route.sessionKey, usage, Date.now(), config));
+            metricsCacheCycle(observeCacheCycle(
+              route.sessionKey, usage, Date.now(), config, { body: reqBody },
+            ));
           }
         } catch (e) { logger.debug('observeCacheCycle falhou (ignorado)', { err: e.message }); }
       });

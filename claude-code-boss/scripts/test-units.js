@@ -5848,6 +5848,102 @@ test('metricsCacheCycle: snapshot conta hits, misses e fronteiras frias atravess
   routerServer.resetMetrics();
 });
 
+// ─── cache-cycle: TAMANHO da fronteira (o premio, nao so a contagem) ─────────
+// Contar fronteiras responde "com que frequencia a oportunidade aparece", mas nao
+// "quanto ela vale". Sem tamanho, decidir a proxima fase e chute: ver "7 fronteiras
+// frias" nao diz se 7 e muito ou pouco. O premio real de um clear_tool_uses +
+// clear_thinking e o payload de tool_use/tool_result/thinking que o request estava
+// CARREGANDO ao cruzar a fronteira — e isso da p/ medir hoje, sem implementar a
+// limpeza. E ESTIMATIVA declarada (chars/4), nunca vendida como contagem exata.
+
+test('estimateClearablePayload: body vazio/sem messages → zero (nao inventa premio)', () => {
+  assertEq(cacheCycle.estimateClearablePayload(null).tokens, 0);
+  assertEq(cacheCycle.estimateClearablePayload({}).tokens, 0);
+  assertEq(cacheCycle.estimateClearablePayload({ messages: [] }).tokens, 0);
+});
+
+test('estimateClearablePayload: conta tool_result, tool_use e thinking (o que a limpeza levaria)', () => {
+  const body = { messages: [
+    { role: 'assistant', content: [
+      { type: 'text', text: 'x'.repeat(400) },                              // NAO conta
+      { type: 'thinking', thinking: 't'.repeat(400), signature: 'sig' },    // conta
+      { type: 'tool_use', id: 'tu1', name: 'bash', input: { cmd: 'c'.repeat(400) } }, // conta
+    ] },
+    { role: 'user', content: [
+      { type: 'tool_result', tool_use_id: 'tu1', content: 'r'.repeat(400) }, // conta
+    ] },
+  ] };
+  const r = cacheCycle.estimateClearablePayload(body);
+  assertEq(r.blocks, 3, 'tres blocos limpaveis; o texto normal fica de fora');
+  assertEq(r.tokens > 250, true, 'tres cargas de 400 chars ≈ 300 tokens, got ' + r.tokens);
+  assertEq(r.tokens < 450, true, 'e o texto normal NAO entrou na conta, got ' + r.tokens);
+});
+
+test('estimateClearablePayload: tool_result com content em BLOCOS tambem e medido', () => {
+  const body = { messages: [{ role: 'user', content: [
+    { type: 'tool_result', tool_use_id: 'a', content: [{ type: 'text', text: 'z'.repeat(800) }] },
+  ] }] };
+  assertEq(cacheCycle.estimateClearablePayload(body).tokens > 150, true, 'shape de blocos nao pode virar zero silencioso');
+});
+
+test('estimateClearablePayload: content string (turno simples) → zero limpavel', () => {
+  const body = { messages: [{ role: 'user', content: 'so uma pergunta em texto puro' }] };
+  assertEq(cacheCycle.estimateClearablePayload(body).tokens, 0);
+});
+
+test('observeCacheCycle: na fronteira FRIA mede o premio (input carregado + limpavel)', () => {
+  const states = new Map();
+  const body = { messages: [{ role: 'user', content: [
+    { type: 'tool_result', tool_use_id: 'a', content: 'q'.repeat(4000) },
+  ] }] };
+  // turno 0 = fronteira fria; a resposta veio com 12000 de input reconstruido.
+  const r = routerServer.observeCacheCycle('k', { in: 2000, cacheCreate: 10000 }, 1000, {}, { states, body });
+  assertEq(r.boundary.cold, true);
+  assertEq(r.prize.inputTokens, 12000, 'input + cache_creation = o contexto que foi (re)construido');
+  assertEq(r.prize.clearableTokens > 900, true, '4000 chars de tool_result ≈ 1000 tokens, got ' + r.prize.clearableTokens);
+});
+
+test('observeCacheCycle: cache QUENTE nao acumula premio (nao ha oportunidade)', () => {
+  const states = new Map();
+  const body = { messages: [{ role: 'user', content: [
+    { type: 'tool_result', tool_use_id: 'a', content: 'q'.repeat(4000) },
+  ] }] };
+  routerServer.observeCacheCycle('k', { cacheRead: 9000 }, 1000, {}, { states, body });
+  const r2 = routerServer.observeCacheCycle('k', { cacheRead: 9500 }, 2000, {}, { states, body });
+  assertEq(r2.boundary.cold, false);
+  assertEq(r2.prize, null, 'fora da fronteira, limpar CUSTA — nao e premio');
+});
+
+test('metricsCacheCycle: acumula o premio p/ a decisao virar conta, nao chute', () => {
+  routerServer.resetMetrics();
+  const m0 = routerServer.metricsSnapshot();
+  assertEq(m0.cacheCycle.coldBoundaryInputTokens, 0, 'baseline existe desde o boot');
+  assertEq(m0.cacheCycle.coldBoundaryClearableTokens, 0);
+  routerServer.metricsCacheCycle({
+    state: { lastCacheState: 'miss' }, boundary: { cold: true },
+    prize: { inputTokens: 12000, clearableTokens: 5000 },
+  });
+  routerServer.metricsCacheCycle({
+    state: { lastCacheState: 'miss' }, boundary: { cold: true },
+    prize: { inputTokens: 8000, clearableTokens: 3000 },
+  });
+  const m = routerServer.metricsSnapshot();
+  assertEq(m.cacheCycle.coldBoundaries, 2);
+  assertEq(m.cacheCycle.coldBoundaryInputTokens, 20000);
+  assertEq(m.cacheCycle.coldBoundaryClearableTokens, 8000, 'ESTE e o numero que decide a fase seguinte');
+  routerServer.resetMetrics();
+});
+
+test('metricsCacheCycle: sem premio medido, os contadores de tamanho ficam INTACTOS', () => {
+  routerServer.resetMetrics();
+  routerServer.metricsCacheCycle({ state: { lastCacheState: 'miss' }, boundary: { cold: true } });
+  const m = routerServer.metricsSnapshot();
+  assertEq(m.cacheCycle.coldBoundaries, 1, 'a fronteira e contada');
+  assertEq(m.cacheCycle.coldBoundaryInputTokens, 0, 'mas nao se inventa tamanho que nao foi medido');
+  routerServer.resetMetrics();
+});
+
+
 test('observeCacheCycle: o mapa de sessões tem TETO DURO (proxy longevo não vaza)', () => {
   const states = new Map();
   // 5100 sessões distintas, TODAS recentes: a poda por idade sozinha não remove

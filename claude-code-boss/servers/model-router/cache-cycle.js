@@ -124,11 +124,68 @@ function usageFromAccumulator(acc) {
   };
 }
 
+// Chars por token. Aproximação grosseira e ASSUMIDA: o tokenizer real é da
+// Anthropic e contá-lo aqui exigiria uma chamada paga por request. Serve para
+// DIMENSIONAR uma oportunidade (é 5K ou 500K?), nunca para faturar.
+const CHARS_PER_TOKEN = 4;
+
+// Tamanho aproximado, em chars, de um valor de conteúdo que pode ser string,
+// array de blocos ou objeto (o `input` de um tool_use).
+function contentChars(v) {
+  if (v == null) return 0;
+  if (typeof v === 'string') return v.length;
+  if (Array.isArray(v)) return v.reduce((n, b) => n + contentChars(b), 0);
+  if (typeof v === 'object') {
+    // Bloco: soma os campos textuais conhecidos; senão serializa (tool_use.input).
+    if (typeof v.text === 'string') return v.text.length;
+    if (typeof v.thinking === 'string') return v.thinking.length;
+    if (v.content != null) return contentChars(v.content);
+    try { return JSON.stringify(v).length; } catch (err) { void err; return 0; }
+  }
+  return 0;
+}
+
+// Blocos que um `clear_tool_uses` + `clear_thinking` levaria embora.
+const CLEARABLE_TYPES = new Set(['tool_result', 'tool_use', 'thinking']);
+
+/**
+ * Quanto contexto uma limpeza LIBERARIA neste request (estimativa declarada).
+ *
+ * Por que existe: contar fronteiras frias diz com que FREQUÊNCIA a oportunidade
+ * aparece, não QUANTO ela vale — e sem isso decidir a fase seguinte é chute ("7
+ * fronteiras" é muito ou pouco?). Esta função mede o prêmio com o que já está em
+ * mãos, sem precisar implementar a limpeza: percorre as mensagens e soma o
+ * payload dos blocos que a limpeza removeria.
+ *
+ * É ESTIMATIVA e se declara como tal (chars/4). Texto normal do usuário e do
+ * assistente NÃO entra — a limpeza não o remove, e inflar aqui superestimaria o
+ * ganho, que é justamente o erro que se quer evitar ao decidir por dado.
+ *
+ * @returns {{tokens: number, blocks: number, chars: number}}
+ */
+function estimateClearablePayload(body) {
+  const messages = body && Array.isArray(body.messages) ? body.messages : [];
+  let chars = 0;
+  let blocks = 0;
+  for (const msg of messages) {
+    const content = msg && msg.content;
+    if (!Array.isArray(content)) continue; // content string = turno simples, nada limpável
+    for (const block of content) {
+      if (!block || !CLEARABLE_TYPES.has(block.type)) continue;
+      blocks += 1;
+      chars += block.type === 'tool_use' ? contentChars(block.input) : contentChars(block);
+    }
+  }
+  return { tokens: Math.round(chars / CHARS_PER_TOKEN), blocks, chars };
+}
+
 module.exports = {
   DEFAULT_COLD_BOUNDARY_MS,
+  CHARS_PER_TOKEN,
   coldBoundaryMs,
   parseCacheUsage,
   isColdBoundary,
   observeUsage,
   usageFromAccumulator,
+  estimateClearablePayload,
 };
