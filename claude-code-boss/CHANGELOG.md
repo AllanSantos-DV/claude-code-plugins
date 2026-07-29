@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.20.1] - 2026-07-29
+
+**A régua ganha escala: a fronteira fria passa a ter TAMANHO, não só contagem.** A v2.20.0 passou a contar quantas vezes a sessão cruza uma fronteira fria. Só que frequência não decide investimento: ver `fronteiras frias 7` não diz se 7 vale 5K ou 500K de contexto — e a próxima fase (agir na fronteira) seria aprovada ou descartada no chute. Esta versão fecha esse buraco **antes** de construir a fase seguinte, para que a decisão saia de dado colhido em uso real.
+
+- **`estimateClearablePayload(body)`** (novo, puro) — mede o que um `clear_tool_uses` + `clear_thinking` **liberaria neste request**: percorre as mensagens e soma o payload dos blocos `tool_use`, `tool_result` e `thinking`. Texto normal do usuário e do assistente **não entra** — a limpeza não o remove, e incluí-lo superestimaria o ganho, que é exatamente o erro a evitar quando se decide por número. É **estimativa declarada** (`CHARS_PER_TOKEN = 4`, exportado): serve para dimensionar uma oportunidade, nunca para faturar.
+- **O prêmio só é medido NA fronteira.** Fora dela, limpar contexto **custa** (invalida cache quente já pago), então medir ali inflaria uma oportunidade que não existe. `observeCacheCycle` devolve `prize: null` no cache quente.
+- **Métricas** `cacheCycle.coldBoundaryInputTokens` (contexto reconstruído nas fronteiras) e `cacheCycle.coldBoundaryClearableTokens` (quanto teria sido liberado). Uma fronteira sem prêmio medido conta na **frequência** mas não inventa **volume**.
+- **Dashboard**: `fronteiras frias 7 (312K reconstruídos, ~58K limpáveis = 19%)`. Com isso o "vale a pena?" vira aritmética.
+- O corpo real da request foi fiado no tee do stream — sem isso a medição sairia sempre zero em produção, um número honesto pelo motivo errado.
+
 ## [2.20.0] - 2026-07-29
 
 **O model-router para de custar e passa a render — e a ganhar uma régua.** Duas entregas que atacam o mesmo alvo pelos dois lados: uma **reduz** o custo do proxy (mais hit de cache), a outra **mede** o ciclo de cache, para que qualquer otimização futura tenha um baseline em vez de fé.
