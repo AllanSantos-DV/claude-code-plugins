@@ -162,9 +162,16 @@ function planEnableEnv(currentEnv, url, autoCompactValue, isOurs) {
   next.ANTHROPIC_BASE_URL = url;
   if (next.ENABLE_TOOL_SEARCH == null) next.ENABLE_TOOL_SEARCH = 'true';
   if (next.CLAUDE_CODE_AUTO_COMPACT_WINDOW == null) next.CLAUDE_CODE_AUTO_COMPACT_WINDOW = String(autoCompactValue);
+  // O bloco de atribuição (versão do cliente + fingerprint do prompt) abre o system
+  // prompt e MUDA entre versões/sessões — atrás de um gateway isso invalida o prefixo
+  // cacheado. A doc é explícita: desligá-lo "improves prompt-cache hit rates when
+  // routing through an LLM gateway", e numa conexão DIRETA o cache "is unaffected
+  // either way". Por isso ele entra AQUI (proxy no caminho), e não no tuning sem proxy.
+  if (next.CLAUDE_CODE_ATTRIBUTION_HEADER == null) next.CLAUDE_CODE_ATTRIBUTION_HEADER = '0';
   const changed = next.ANTHROPIC_BASE_URL !== env.ANTHROPIC_BASE_URL
     || next.ENABLE_TOOL_SEARCH !== env.ENABLE_TOOL_SEARCH
-    || next.CLAUDE_CODE_AUTO_COMPACT_WINDOW !== env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+    || next.CLAUDE_CODE_AUTO_COMPACT_WINDOW !== env.CLAUDE_CODE_AUTO_COMPACT_WINDOW
+    || next.CLAUDE_CODE_ATTRIBUTION_HEADER !== env.CLAUDE_CODE_ATTRIBUTION_HEADER;
   return { env: next, changed };
 }
 
@@ -223,6 +230,7 @@ function planDisableEnv(currentEnv, autoCompactValue, isOurs) {
   delete next.ANTHROPIC_BASE_URL;
   if (next.ENABLE_TOOL_SEARCH === 'true') delete next.ENABLE_TOOL_SEARCH;
   if (next.CLAUDE_CODE_AUTO_COMPACT_WINDOW === String(autoCompactValue)) delete next.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+  if (next.CLAUDE_CODE_ATTRIBUTION_HEADER === '0') delete next.CLAUDE_CODE_ATTRIBUTION_HEADER;
   return { env: next, changed: Object.keys(next).length !== Object.keys(env).length };
 }
 
@@ -456,7 +464,7 @@ function enableSettingsRouting(url) {
   s.env = plan.env;
   try {
     writeSettings(s);
-    log(`settings.json: ANTHROPIC_BASE_URL → ${url}; ENABLE_TOOL_SEARCH=${s.env.ENABLE_TOOL_SEARCH}; CLAUDE_CODE_AUTO_COMPACT_WINDOW=${s.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW}`);
+    log(`settings.json: ANTHROPIC_BASE_URL → ${url}; ENABLE_TOOL_SEARCH=${s.env.ENABLE_TOOL_SEARCH}; CLAUDE_CODE_AUTO_COMPACT_WINDOW=${s.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW}; CLAUDE_CODE_ATTRIBUTION_HEADER=${s.env.CLAUDE_CODE_ATTRIBUTION_HEADER}`);
     return true;
   } catch (e) {
     log(`AVISO: não foi possível escrever settings.json: ${e.message}`);
