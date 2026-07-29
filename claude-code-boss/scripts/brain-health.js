@@ -63,11 +63,66 @@ function checkWritable(dir) {
   }
 }
 
+/**
+ * As dependências do brain-server estão RESOLVÍVEIS?
+ *
+ * Antes isto era um `existsSync('servers/brain-server/node_modules')`, o que
+ * confunde LOCAL com RESOLVÍVEL. O brain-server declara uma dep só
+ * (`@modelcontextprotocol/sdk`) e a resolução de bare-specifier do Node — em CJS
+ * e em ESM — sobe a árvore de diretórios: com a dep declarada na RAIZ do plugin,
+ * `servers/brain-server/index.js` a encontra em `<root>/node_modules` sem precisar
+ * de um `node_modules` próprio. Checar a pasta acusaria DOWN um MCP saudável.
+ *
+ * Duas sondas, nesta ordem, porque nenhuma sozinha é honesta:
+ *   1. `require.resolve` (precisa: é o algoritmo do próprio Node), mas ela FALHA
+ *      em pacote ESM-only cujo `exports` não expõe a condição `require` — e o
+ *      brain-server é ESM, então o import funcionaria. Sozinha, mentiria.
+ *   2. Varredura de `node_modules` subindo a árvore — robusta a CJS/ESM, é a mesma
+ *      busca de pacote que o resolvedor ESM faz.
+ * Só reporta ausência quando AS DUAS falham. Ausência genuína continua falhando
+ * alto, dizendo QUAL dep faltou.
+ *
+ * @param {string} root plugin root
+ * @returns {{ok: boolean, detail: string}}
+ */
+function depResolvable(dep, fromDir) {
+  try {
+    require.resolve(`${dep}/package.json`, { paths: [fromDir] });
+    return true;
+  } catch (err) { void err; /* pode ser `exports` sem ./package.json */ }
+  try {
+    require.resolve(dep, { paths: [fromDir] });
+    return true;
+  } catch (err) { void err; /* pode ser ESM-only (sem condição require) */ }
+  // Fallback: a mesma varredura de pacote do resolvedor ESM (sobe a árvore).
+  let dir = fromDir;
+  for (;;) {
+    if (fs.existsSync(path.join(dir, 'node_modules', dep, 'package.json'))) return true;
+    const parent = path.dirname(dir);
+    if (parent === dir) return false;
+    dir = parent;
+  }
+}
+
+function brainServerDepsOk(root) {
+  const bsDir = path.join(root, 'servers', 'brain-server');
+  const pkgPath = path.join(bsDir, 'package.json');
+  let deps;
+  try {
+    deps = Object.keys(JSON.parse(fs.readFileSync(pkgPath, 'utf-8')).dependencies || {});
+  } catch (err) {
+    return { ok: false, detail: `brain-server package.json ilegível: ${err.message}` };
+  }
+  const missing = deps.filter((dep) => !depResolvable(dep, bsDir));
+  return missing.length
+    ? { ok: false, detail: `brain-server deps não resolvem: ${missing.join(', ')} (rode npm install na raiz do plugin)` }
+    : { ok: true, detail: `brain-server deps resolvidas (${deps.length})` };
+}
+
 function staticChecks(root, data) {
   const defects = [];
   const checks = [
     [path.join(root, 'servers', 'brain-server', 'index.js'), 'brain-server entry'],
-    [path.join(root, 'servers', 'brain-server', 'node_modules'), 'brain-server deps (run npm install in servers/brain-server)'],
     [path.join(root, 'node_modules'), 'plugin deps (run npm install in plugin root)'],
     [path.join(root, 'scripts', 'brain-store.js'), 'brain-store script'],
   ];
@@ -75,6 +130,8 @@ function staticChecks(root, data) {
     const err = checkExists(p, kind);
     if (err) defects.push(err);
   }
+  const bsDeps = brainServerDepsOk(root);
+  if (!bsDeps.ok) defects.push(bsDeps.detail);
   const writeErr = checkWritable(data);
   if (writeErr) defects.push(writeErr);
   return defects;
@@ -211,11 +268,13 @@ function emitDegradedSqliteNotice(eventName) {
 /** Emit a SessionStart notice when memory recall has been recently degraded. */
 function emitRecallDegradedNotice(eventName, status) {
   const reason = status.lastDegraded && status.lastDegraded.reason;
+  const pct = Math.round(status.degradedRate * 100);
   emitJson({
     hookSpecificOutput: {
       hookEventName: eventName,
       additionalContext:
-        `[BRAIN-HEALTH] Memory recall is DEGRADED — ${status.degraded} of ${status.total} recent recalls came back empty` +
+        `[BRAIN-HEALTH] Memory recall is DEGRADED — ${status.windowDegraded} of the last ` +
+        `${status.windowTotal} recalls came back empty (${pct}%)` +
         (reason ? ` (last reason: ${reason})` : '') + '. ' +
         'compose_recall is the required path on the mcp-memory backend: check the daemon is running and is version >= 2.18.',
     },
@@ -223,14 +282,20 @@ function emitRecallDegradedNotice(eventName, status) {
 }
 
 /**
- * Recall-health snapshot when it warrants a notice: >= 3 degraded recalls AND the
- * last one within the hour. Absent file (fresh/tests) → null (no notice).
+ * Recall-health snapshot when it warrants a notice.
+ *
+ * O veredito sai da JANELA recente, não dos totais vitalícios: >= 3 falhas DENTRO
+ * da janela, taxa >= 20% e a última dentro da hora. Antes o gate era
+ * `degraded >= 3` VITALÍCIO — permanentemente verdadeiro depois de algumas semanas
+ * de uso, o que transformava qualquer soluço isolado num alarme exibindo números
+ * históricos como se fossem recentes. Arquivo ausente (fresh/testes) → null.
  */
 function recallDegradedStatus() {
   try {
     const status = require('./lib/recall-health.js').getStatus();
     const recent = status.lastDegraded && (Date.now() - status.lastDegraded.ts) < 60 * 60 * 1000;
-    return (status.degraded >= 3 && recent) ? status : null;
+    const bad = status.windowDegraded >= 3 && status.degradedRate >= 0.2;
+    return (bad && recent) ? status : null;
   } catch (err) { void err; return null; }
 }
 
@@ -278,4 +343,4 @@ async function main() {
 
 if (require.main === module) main();
 
-module.exports = { countPendingDrafts, shouldRunOnPrompt };
+module.exports = { countPendingDrafts, shouldRunOnPrompt, brainServerDepsOk };

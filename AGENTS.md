@@ -59,7 +59,11 @@ hard-block a release on a *judged* opinion (which can be a false positive):
   like pages-guard). Exact, low-false-positive checks that **block**:
   `hooks-doc-drift` (every event in `hooks/hooks.json` must be documented in the
   plugin README), `changelog-current` (CHANGELOG has an entry for the
-  package.json version), `no-conflict-marks` (no unresolved `<<<<<<<`/`>>>>>>>`).
+  package.json version), `no-conflict-marks` (no unresolved `<<<<<<<`/`>>>>>>>`),
+  `index-version-current` (the version tile of every plugin in `pages/index.html`
+  matches its in-repo version — pages-guard only covers `pages/<plugin>/index.html`,
+  so the landing index drifted silently and publicly announced claude-code-boss
+  v1.28.0 while `main` was at 2.19.1).
   CI: `.github/workflows/release-audit.yml` (PR + push to `main`; mark **required**
   in branch protection to hard-block drift). Local:
   `node .github/scripts/release-audit.mjs check` (exit 1 on failure) · `... list`
