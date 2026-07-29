@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.20.0 — o cache para de ser queimado, e o ciclo passa a ser medido</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. A v2.20.0 ataca o custo do model-router pelos dois lados: uma entrega reduz o que o proxy gasta, a outra mede o ciclo do cache para que qualquer otimização futura tenha baseline em vez de fé. Do lado do custo, o bloco de atribuição — versão do cliente mais fingerprint do prompt — abre o system prompt e muda entre versões e sessões, então atrás de um gateway ele invalida o prefixo cacheado a cada request. Agora CLAUDE_CODE_ATTRIBUTION_HEADER=0 entra no bundle gravado quando o proxy está no caminho, que é exatamente onde a doc do Claude Code diz existir ganho, e fica de fora do tuning sem proxy, onde numa conexão direta o cache não é afetado de um jeito nem de outro e a escrita seria ruído sem retorno. As invariantes de sempre continuam: só o valor ausente é preenchido, então um 1 deliberado seu sobrevive, e desligar remove só o valor que o plugin teria escrito. Do lado da medida, o proxy passa a ler o ciclo de vida do prompt cache: um núcleo puro interpreta o que o usage prova, com read maior que zero virando hit, creation sem read virando miss e ausência de sinal virando unknown, e read domina creation porque um write parcial sobre um prefixo lido ainda é cache quente. A fronteira fria, o instante em que o prefixo já seria reconstruído de qualquer jeito, é detectada por duplo-sinal — o relógio ou um miss observado na resposta anterior — porque a leitura do usage vem de regex sobre chunks crus de stream e um campo JSON pode ser partido entre dois chunks. O TTL observado vence o palpite conservador de cinco minutos e só sobe, e um unknown nunca apaga o que já era conhecido. O dashboard passa a mostrar o ciclo e as fronteiras frias. Esta segunda entrega é observação e não muda nenhuma decisão de roteamento: agir sobre a fronteira vem depois, opt-in. A v2.19.1 segue na página como release anterior: um hotfix de três defeitos reportados em campo — e dois deles eram alarmes do próprio plugin emitindo um veredito falso. O Brain MCP voltava a cair depois de claude plugin update porque o conserto anterior delegava a instalação ao postinstall, um lifecycle hook que quem decide rodar é o host; agora a dependência única do brain-server é declarada também na raiz e a resolução de bare-specifier do Node, inclusive em ESM, sobe a árvore de diretórios até achá-la. Foi verificado ponta a ponta com controle negativo, e o brain-health passou a checar se o import resolve em vez de checar se uma pasta existe. O doctor reprovava SubagentStart, um evento oficial que o plugin usa para injetar políticas no subagente, e mandava corrigir o nome no hooks.json: a lista foi sincronizada com a doc oficial, de 9 para 30 eventos, e um evento fora da lista agora sai como aviso nomeado que admite typo ou evento mais novo, travado por um guard anti-regressão contra o próprio hooks.json. E o aviso de recall degradado exibia totais vitalícios chamando-os de recentes, então nunca se apagava: agora uma janela deslizante de 50 outcomes decide o veredito, o gatilho é por taxa e a mensagem diz quantas das últimas M falharam, com o percentual. A fragmentação de data-dir também relatada não é regressão — cada modo de instalação sempre teve seu diretório irmão, o doctor já detecta corretamente como aviso, e a consolidação automática ficou fora deste hotfix de propósito." />
+<title>claude-code-boss v2.20.1 — a régua ganha escala: a fronteira fria passa a ter tamanho</title>
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. A v2.20.1 dá escala à régua do model-router. A v2.20.0 passou a contar quantas vezes a sessão cruza uma fronteira fria, mas frequência não decide investimento: ver sete fronteiras não diz se aquilo vale 5K ou 500K de contexto, e a próxima fase — agir na fronteira, limpando contexto de graça — seria aprovada ou descartada no chute. Esta versão fecha o buraco antes de construir a fase que ele decide, para que a decisão saia de dado colhido em uso real. Agora, em cada fronteira, o proxy mede quanto contexto foi reconstruído e quanto uma limpeza teria liberado. A função estimateClearablePayload percorre as mensagens do request e soma o payload dos blocos tool_use, tool_result e thinking, que são exatamente os que um clear_tool_uses mais clear_thinking levaria embora. O texto normal do usuário e do assistente fica de fora, porque a limpeza não o remove e incluí-lo superestimaria o ganho, que é justamente o erro a evitar quando a decisão sai de um número. É estimativa declarada, chars divididos por quatro, com o fator exportado e auditável: serve para dimensionar uma oportunidade, nunca para faturar. O prêmio só é medido na fronteira, porque fora dela limpar contexto custa, invalidando cache quente já pago, então medir ali inflaria uma oportunidade que não existe — com cache quente o prêmio é nulo. Duas métricas novas entram no snapshot, o contexto reconstruído nas fronteiras e o quanto teria sido liberado, e uma fronteira sem prêmio medido conta na frequência sem inventar volume. O dashboard passa a mostrar a linha de fronteiras frias acompanhada dos tokens reconstruídos, dos limpáveis e do percentual entre eles. O corpo real da request precisou ser fiado até o tee do stream: sem ele a medição sairia sempre zero em produção, um número honesto pelo motivo errado. Nada é limpo nesta versão e nenhuma decisão de roteamento muda — é medir para decidir, não medir por medir. A v2.20.0 segue na página como release anterior, com duas entregas no mesmo alvo: uma reduz o que o proxy gasta, a outra instala a régua. Do lado do custo, o bloco de atribuição — versão do cliente mais fingerprint do prompt — abre o system prompt e muda entre versões e sessões, então atrás de um gateway ele invalida o prefixo cacheado a cada request; por isso CLAUDE_CODE_ATTRIBUTION_HEADER=0 entra no bundle gravado quando o proxy está no caminho, que é onde a doc do Claude Code diz existir ganho, e fica de fora do tuning sem proxy, onde numa conexão direta o cache não é afetado de um jeito nem de outro. As invariantes continuam: só o valor ausente é preenchido, então um 1 deliberado seu sobrevive, e desligar remove só o valor que o plugin teria escrito. Do lado da medida, um núcleo puro interpreta o que o usage prova, com read maior que zero virando hit, creation sem read virando miss e ausência de sinal virando unknown, e read domina creation porque um write parcial sobre um prefixo lido ainda é cache quente. A fronteira fria é detectada por duplo-sinal, o relógio ou um miss observado na resposta anterior, porque a leitura do usage vem de regex sobre chunks crus de stream e um campo JSON pode ser partido entre dois chunks. O TTL observado vence o palpite conservador de cinco minutos e só sobe, e um unknown nunca apaga o que já era conhecido." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -1528,13 +1528,114 @@
   .cyc-foot b{ color:#a29f97 }
   .cyc-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
 
+  /* v2.20.1 : a REGUA GANHA ESCALA. A v2.20.0 passou a CONTAR fronteiras frias, mas
+     frequencia nao decide investimento: "fronteiras frias 7" nao diz se aquilo vale 5K ou
+     500K de contexto, e a fase seguinte (AGIR na fronteira) seria aprovada ou descartada no
+     CHUTE. Esta versao fecha o buraco ANTES de construir a fase que ele decide.
+     estimateClearablePayload(body) soma o payload dos blocos que um clear_tool_uses +
+     clear_thinking levaria (tool_use, tool_result, thinking) e deixa o texto normal do
+     usuario/assistente de FORA - a limpeza nao o remove, e inclui-lo SUPERESTIMARIA o ganho,
+     que e exatamente o erro a evitar quando se decide por numero. E ESTIMATIVA declarada
+     (CHARS_PER_TOKEN = 4, exportado): dimensiona uma oportunidade, nao fatura. E o premio so
+     e medido NA fronteira - fora dela limpar CUSTA (invalida cache quente ja pago), entao
+     medir ali inflaria uma oportunidade inexistente (prize: null no cache quente).
+     ASSINATURA: a COLUNA DA FRONTEIRA. Na v2.20.0 a fronteira era uma emenda vertical na
+     fita da sessao - um evento SEM dimensao. Aqui ela e redesenhada como CORTE do payload:
+     a fita mediu no TEMPO, a coluna mede na PILHA. Faixa cheia = a limpeza leva; faixa
+     hachurada = fica, por definicao. Peso deliberadamente MENOR que o artefato da v2.20.0:
+     e um patch, e a entrega e uma so. */
+  .scl{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:880px; font-family:var(--mono); margin:0 0 36px }
+  .scl code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .scl-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .scl-bar .k{ color:var(--accent) }
+  .scl-bar .m{ color:#8a877f }
+
+  .scl-part{ padding:18px 22px 10px }
+  .scl-part + .scl-part{ border-top:1px solid rgba(255,255,255,.06) }
+  .scl-ptag{ display:block; font-size:9px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); margin:0 0 14px }
+  /* identificador nunca vira caixa-alta: `estimateClearablePayload` sai verbatim */
+  .scl-ptag code{ text-transform:none; letter-spacing:0 }
+  .scl-note{ margin:0; font-size:11px; line-height:1.6; color:#8a877f }
+  .scl-note + .scl-note{ margin-top:9px }
+  .scl-note b{ color:#a29f97; font-weight:600 }
+  .scl-note i{ color:#a29f97; font-style:italic }
+
+  /* a leitura: a MESMA linha da v2.20.0, agora com tamanho. FORMATO, com N no lugar do numero */
+  .scl-lines{ display:grid; gap:9px; margin:0 0 14px; max-width:600px }
+  .scl-line{ display:grid; grid-template-columns:minmax(0,60px) minmax(0,1fr); gap:4px 12px; align-items:baseline;
+    border-left:2px dashed #6d6257; background:rgba(255,255,255,.02); border-radius:0 6px 6px 0; padding:9px 13px }
+  .scl-line--now{ border-left:2px solid var(--accent); background:rgba(255,255,255,.05) }
+  .scl-lk{ font-size:9px; letter-spacing:.13em; text-transform:uppercase; color:#8a877f }
+  .scl-line--now .scl-lk{ color:var(--accent) }
+  .scl-lv{ font-size:12px; line-height:1.6; color:#8a877f; overflow-wrap:break-word }
+  .scl-line--now .scl-lv{ color:var(--panel-ink) }
+  .scl-lv i{ color:var(--accent); font-style:normal }
+
+  .scl-fields{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:0 0 12px }
+  .scl-field{ border-left:1px solid rgba(255,255,255,.12); padding:1px 0 1px 12px; min-width:0 }
+  .scl-field--hi{ border-left-color:var(--accent) }
+  .scl-field b{ display:block; font-size:11px; color:var(--panel-ink); font-weight:600; overflow-wrap:break-word }
+  .scl-field span{ display:block; margin-top:5px; font-size:10.5px; line-height:1.5; color:#8a877f }
+  .scl-field span b{ display:inline; font-size:inherit; color:#a29f97 }
+
+  /* ASSINATURA: a coluna da fronteira - o CORTE do payload de um request.
+     faixa CHEIA = a limpeza leva; faixa HACHURADA = fica, por definicao */
+  .scl-col{ border:1px solid var(--panel-line); border-radius:10px; overflow:hidden; margin:0 0 13px; max-width:640px }
+  .scl-crow{ display:flex; align-items:stretch; min-width:0 }
+  .scl-crow + .scl-crow{ border-top:1px solid rgba(255,255,255,.07) }
+  .scl-cbar{ flex:0 0 10px }
+  .scl-crow--in .scl-cbar{ background:var(--accent) }
+  .scl-crow--out .scl-cbar{ background:repeating-linear-gradient(135deg,rgba(255,255,255,.16) 0 4px,transparent 4px 8px) }
+  .scl-cbody{ flex:1 1 auto; min-width:0; display:grid; grid-template-columns:minmax(0,136px) minmax(0,1fr) auto;
+    gap:4px 12px; align-items:baseline; padding:10px 13px }
+  .scl-ctype{ font-size:11.5px; color:var(--panel-ink); overflow-wrap:break-word }
+  .scl-crow--out .scl-ctype{ color:#a29f97 }
+  .scl-cwhat{ font-size:10.5px; line-height:1.5; color:#8a877f; overflow-wrap:break-word }
+  .scl-cflag{ font-size:9px; letter-spacing:.12em; text-transform:uppercase; white-space:nowrap; color:var(--accent) }
+  .scl-crow--out .scl-cflag{ color:#6d6257 }
+  .scl-sum{ font-size:11.5px; line-height:1.6; color:var(--panel-ink); background:rgba(255,255,255,.05);
+    border-left:2px solid var(--accent); border-radius:0 6px 6px 0; padding:10px 13px; margin:0 0 13px;
+    max-width:640px; overflow-wrap:break-word }
+  .scl-sum i{ color:var(--accent); font-style:normal }
+  .scl-sum b{ font-weight:600 }
+
+  /* o portao: o premio so e medido NA fronteira - fora dela, limpar CUSTA */
+  .scl-gate{ display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:0 0 13px }
+  .scl-lane{ display:flex; flex-direction:column; gap:9px; border-radius:9px; padding:13px 14px; min-width:0 }
+  .scl-lane--measures{ border:1px solid var(--accent); background:rgba(255,255,255,.05) }
+  .scl-lane--skips{ border:1px dashed rgba(255,255,255,.24) }
+  .scl-lwhen{ font-size:11.5px; font-weight:600; color:var(--panel-ink); overflow-wrap:break-word }
+  .scl-lane--skips .scl-lwhen{ color:#a29f97 }
+  .scl-lact{ align-self:flex-start; font-size:10px; letter-spacing:.12em; text-transform:uppercase; padding:3px 10px; border-radius:6px }
+  .scl-lact code{ background:transparent; padding:0; font-size:inherit; text-transform:none; letter-spacing:0; color:inherit }
+  .scl-lane--measures .scl-lact{ background:var(--accent); color:var(--panel); font-weight:700 }
+  .scl-lane--skips .scl-lact{ background:transparent; border:1px solid #6d6257; color:#a29f97 }
+  .scl-lwhy{ font-size:11px; line-height:1.55; color:#8a877f }
+  .scl-lwhy b{ color:#a29f97; font-weight:600 }
+
+  /* o limite declarado: e ESTIMATIVA, e nada e limpo nesta versao */
+  .scl-not{ padding:13px 15px; border:1px dashed rgba(255,255,255,.24); border-radius:10px; background:rgba(255,255,255,.02) }
+  .scl-ntag{ display:inline-block; font-size:9px; letter-spacing:.13em; text-transform:uppercase; color:#a29f97;
+    border:1px solid #6d6257; border-radius:5px; padding:2px 8px; margin:0 0 11px }
+  .scl-nlist{ list-style:none; margin:0; padding:0 }
+  .scl-nlist li{ position:relative; padding-left:19px; font-size:11px; line-height:1.6; color:#8a877f }
+  .scl-nlist li + li{ margin-top:8px }
+  .scl-nlist li::before{ content:"\00D7"; position:absolute; left:2px; top:0; color:#6d6257; font-size:12px; line-height:1.5 }
+  .scl-nlist b{ color:#a29f97; font-weight:600 }
+
+  .scl-foot{ padding:14px 22px; border-top:1px solid var(--panel-line); font-size:11px; line-height:1.6; color:#8a877f }
+  .scl-foot b{ color:#a29f97 }
+  .scl-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+
   footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
   footer a{ color:var(--muted); text-decoration:none }
   footer a:hover{ color:var(--accent) }
   .frow{ display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between }
   .flinks a{ margin-right:16px }
 
-  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .rr-stage{ grid-template-columns:1fr } .rr-rails{ grid-template-columns:1fr } .rr-steps{ flex-direction:column; align-items:stretch } .an-stage{ grid-template-columns:1fr } .an-rails{ grid-template-columns:1fr } .an-steps{ flex-direction:column; align-items:stretch } .id-row{ grid-template-columns:1fr; gap:9px } .id-arrow{ display:none } .id-chip{ text-align:left; min-width:0 } .id-fork{ grid-template-columns:1fr } .id-rails{ grid-template-columns:1fr } .eco-hero{ grid-template-columns:1fr } .eco-fork{ grid-template-columns:1fr } .eco-rails{ grid-template-columns:1fr } .mig-flow{ grid-template-columns:1fr } .mig-cross{ min-width:0 } .mig-cline{ width:60% } .mig-guards{ grid-template-columns:1fr } .ctx-row{ grid-template-columns:1fr; gap:9px } .ctx-sp{ display:none } .ctx-rval{ text-align:left } .ctx-fork{ grid-template-columns:1fr } .ctx-fields{ grid-template-columns:1fr } .fld-cols{ grid-template-columns:1fr; gap:14px } .fld-arms{ grid-template-columns:1fr } .cyc-fronts{ grid-template-columns:1fr } .cyc-fork{ grid-template-columns:1fr } .cyc-or{ grid-template-columns:1fr; gap:10px } .cyc-orop{ text-align:left } .cyc-fields{ grid-template-columns:1fr } .cyc-trow{ grid-template-columns:1fr; gap:3px; padding:11px 0 } .cyc-tarr{ display:none } .cyc-track{ padding:0 22px } .cyc-marks{ height:36px } .cyc-marks .cyc-mark{ width:48px; margin-left:-24px; gap:4px } .cyc-marks .cyc-mev{ display:none } .cyc-marks .cyc-mst{ font-size:10.5px } .cyc-seam{ top:24px } .cyc-zone{ font-size:8px; letter-spacing:.04em; padding:0 2px } .cyc-seamlab{ font-size:8px; letter-spacing:.08em } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
+  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .rr-stage{ grid-template-columns:1fr } .rr-rails{ grid-template-columns:1fr } .rr-steps{ flex-direction:column; align-items:stretch } .an-stage{ grid-template-columns:1fr } .an-rails{ grid-template-columns:1fr } .an-steps{ flex-direction:column; align-items:stretch } .id-row{ grid-template-columns:1fr; gap:9px } .id-arrow{ display:none } .id-chip{ text-align:left; min-width:0 } .id-fork{ grid-template-columns:1fr } .id-rails{ grid-template-columns:1fr } .eco-hero{ grid-template-columns:1fr } .eco-fork{ grid-template-columns:1fr } .eco-rails{ grid-template-columns:1fr } .mig-flow{ grid-template-columns:1fr } .mig-cross{ min-width:0 } .mig-cline{ width:60% } .mig-guards{ grid-template-columns:1fr } .ctx-row{ grid-template-columns:1fr; gap:9px } .ctx-sp{ display:none } .ctx-rval{ text-align:left } .ctx-fork{ grid-template-columns:1fr } .ctx-fields{ grid-template-columns:1fr } .fld-cols{ grid-template-columns:1fr; gap:14px } .fld-arms{ grid-template-columns:1fr } .cyc-fronts{ grid-template-columns:1fr } .cyc-fork{ grid-template-columns:1fr } .cyc-or{ grid-template-columns:1fr; gap:10px } .cyc-orop{ text-align:left } .cyc-fields{ grid-template-columns:1fr } .cyc-trow{ grid-template-columns:1fr; gap:3px; padding:11px 0 } .cyc-tarr{ display:none } .cyc-track{ padding:0 22px } .cyc-marks{ height:36px } .cyc-marks .cyc-mark{ width:48px; margin-left:-24px; gap:4px } .cyc-marks .cyc-mev{ display:none } .cyc-marks .cyc-mst{ font-size:10.5px } .cyc-seam{ top:24px } .cyc-zone{ font-size:8px; letter-spacing:.04em; padding:0 2px } .cyc-seamlab{ font-size:8px; letter-spacing:.08em } .scl-lines{ max-width:none } .scl-line{ grid-template-columns:1fr; gap:3px } .scl-fields{ grid-template-columns:1fr } .scl-cbody{ grid-template-columns:1fr; gap:3px } .scl-gate{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
   @media (prefers-reduced-motion:reduce){ .caret{ animation:none } .reveal{ opacity:1 !important; transform:none !important } }
   .reveal{ opacity:0; transform:translateY(14px); animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards }
   @keyframes rise{ to{ opacity:1; transform:none } }
@@ -1545,7 +1646,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.20.0</span>
+    <span class="ver">v2.20.1</span>
   </nav>
 
   <header class="hero">
@@ -1620,7 +1721,7 @@
       <div class="cell">
         <p class="kick">Ciclo de cache</p>
         <h3>O proxy mede o que antes era palpite</h3>
-        <p>O router lê o que o <code>usage</code> de cada resposta <b>prova</b> — veio do cache, refez o prefixo, ou não deu sinal — e conta quantas vezes a sessão cruza uma <b>fronteira fria</b>: a janela em que o prefixo já seria reconstruído de qualquer jeito, e portanto trocar de modelo ou limpar contexto sairia <b>de graça</b>. O dashboard mostra o ciclo junto do hit de cache. É <b>régua</b>, não decisão: nenhuma rota muda por causa dela.</p>
+        <p>O router lê o que o <code>usage</code> de cada resposta <b>prova</b> — veio do cache, refez o prefixo, ou não deu sinal — e conta quantas vezes a sessão cruza uma <b>fronteira fria</b>: a janela em que o prefixo já seria reconstruído de qualquer jeito, e portanto trocar de modelo ou limpar contexto sairia <b>de graça</b>. Em cada fronteira ele também <b>dimensiona</b> a oportunidade: quanto contexto foi reconstruído e quanto uma limpeza teria liberado, somando <code>tool_use</code>, <code>tool_result</code> e <code>thinking</code> — o texto normal fica de fora, porque a limpeza não o remove. É <b>estimativa declarada</b> (o dashboard marca com <code>~</code>), e é <b>régua</b>, não decisão: nenhuma rota muda por causa dela.</p>
       </div>
       <div class="cell">
         <p class="kick">Execução curada</p>
@@ -1653,6 +1754,153 @@
         <p>Ative constraints explicitamente com <code>policy_activate</code>, nunca auto-promovidas de lições: o <code>error-guard</code> nega no <code>PreToolUse</code> um Bash cuja falha reincide, políticas <b>always-apply</b> entram no contexto no início da sessão, e políticas <b>por glob</b> avisam ao editar um arquivo que casa o padrão. <b>Surfacing ≠ enforcement</b>: ficam presentes no contexto, não bloqueiam (exceto o <code>error-guard</code>). A Fase 3 agora fecha o ciclo: modo sombra mede, e <code>/policy-adjudicate</code> chama um <b>juiz LLM independente</b> para estimar disposições — estimativa de juiz, <b>não FP medido</b>.</p>
       </div>
     </div>
+  </section>
+
+
+  <section>
+    <p class="label">Novo na v2.20.1 · a régua ganha escala</p>
+    <p class="lede">A v2.20.0 passou a <b>contar</b> quantas vezes a sessão cruza uma <b>fronteira fria</b>. Só que contagem não decide investimento: <code>fronteiras frias 7</code> não diz se aquilo vale <b>5K ou 500K</b> de contexto — e a fase seguinte, <b>agir</b> na fronteira, seria aprovada ou descartada no <b>chute</b>. A v2.20.1 dá <b>tamanho</b> ao que já era contado: em cada fronteira, quanto contexto foi reconstruído e quanto uma limpeza teria liberado. É <b>estimativa declarada</b> — dimensiona uma oportunidade, não fatura — e é ela que transforma o <i>“vale a pena?”</i> em aritmética.</p>
+
+    <div class="callout">
+      <span class="tag">por que a medida vem antes da fase que ela decide</span>
+      Medir <b>depois</b> de construir serve para justificar o que já foi feito. Medir <b>antes</b> deixa a próxima entrega ser aprovada <b>ou descartada</b> por dado colhido em uso real — e descartar é um desfecho legítimo. É o mesmo fio das releases anteriores desta página, virado do avesso: lá o cuidado era com um número que fazia o estado <b>parecer pior</b> do que era; aqui é não deixar um número <b>parecer maior</b> do que é.
+    </div>
+
+    <div class="scl" role="group" aria-label="Artefato da versão 2.20.1: a coluna da fronteira. No topo, a leitura, mostrada em formato e com a letra N no lugar dos números, porque nenhum número aqui é medição real. A primeira linha, tracejada, é como a versão 2.20.0 lia: fronteiras frias N, só a frequência. A segunda linha, marcada em âmbar como a versão vigente, é como a 2.20.1 lê: fronteiras frias N, e entre parênteses N mil reconstruídos, til N mil limpáveis, igual a N por cento. Três campos explicam cada parte: fronteiras frias é quantas vezes a sessão cruzou a janela, ou seja, a frequência que já existia; reconstruídos é o contexto que aquela request refez do zero, o tamanho da fronteira; e o campo destacado, til limpáveis, é o que uma limpeza teria liberado ali, sendo que o til não é enfeite e sim a declaração de que aquilo é estimativa. Uma nota registra que os três somam apenas o que foi de fato medido: uma fronteira sem prêmio medido conta na frequência e não inventa volume. Em seguida vem a assinatura da página nesta versão: a coluna. Na 2.20.0 a fronteira era uma emenda vertical na fita da sessão, ou seja, um evento sem dimensão; aqui a mesma fronteira é redesenhada como um corte do payload de um request, porque a fita mediu no tempo e a coluna mede na pilha. São cinco faixas empilhadas, e a faixa da esquerda de cada linha diz o destino do bloco. Três faixas cheias, em âmbar, marcam o que a limpeza levaria: tool_result, que é a saída da ferramenta e costuma ser o bloco mais pesado do histórico; tool_use, que é a chamada e o input dela; e thinking, que é o raciocínio serializado. Duas faixas hachuradas marcam o que fica, por definição: o texto normal do usuário e o texto normal do assistente. Abaixo da coluna, a fórmula do prêmio: soma do payload dos blocos que entram, dividida por CHARS_PER_TOKEN igual a quatro. Duas notas explicam o cuidado central. A primeira: somar o texto normal seria fácil e daria um número maior, e errado, porque a limpeza não o remove e incluí-lo superestimaria o ganho, que é exatamente o erro a evitar quando a decisão sai de um número. A segunda: é estimativa e ela se declara como tal, já que o tokenizer real é da Anthropic e chamá-lo custaria uma request por medida, então a constante fica exportada e auditável, servindo para responder se é 5K ou 500K, nunca para faturar. Depois vem o portão, que diz quando o prêmio é medido. À esquerda, com borda cheia, a fronteira fria: mede o prêmio, porque o prefixo já vai ser refeito de qualquer jeito e limpar ali não destrói nada que ainda esteja pago, ou seja, é o instante em que a oportunidade existe. À direita, com borda tracejada, o cache quente: prêmio nulo, porque limpar ali custa, invalidando um prefixo já pago, e medir um ganho nesse ponto seria inflar uma oportunidade que não existe. Uma nota registra que a fronteira é calculada contra o estado anterior da sessão, na mesma passagem que a versão 2.20.0 já fazia, então o prêmio pega carona nela sem uma segunda leitura do usage. Por fim, um bloco tracejado declara o que este número não é: não é contagem exata de token, sendo chars divididos por quatro sobre os blocos limpáveis, o que dimensiona a ordem de grandeza sem virar linha de fatura; não é economia realizada, porque nada é limpo nesta versão e o número diz o que uma limpeza teria liberado; e não muda nenhuma decisão de roteamento, continuando régua, com a diferença de que agora a fase seguinte tem por onde ser aprovada ou descartada. No rodapé, o detalhe que decidia entre medir e fingir que mediu: o corpo real da request precisou ser fiado até o tee do stream, porque sem ele a função receberia indefinido, devolveria zero e o dashboard mostraria til zero limpáveis em produção, um número honesto pelo motivo errado, e a fase seguinte seria descartada por um defeito de fiação. A fiação continua best-effort: se falhar, a falha é logada, não engolida, e o proxy não cai por causa de telemetria.">
+      <div class="scl-bar">
+        <span class="k">v2.20.1</span>
+        <span class="m">a contagem ganha tamanho · estimativa declarada, não contagem exata</span>
+      </div>
+
+      <div class="scl-part">
+        <span class="scl-ptag">a leitura · a mesma linha, agora com tamanho (formato, não medição)</span>
+
+        <div class="scl-lines">
+          <div class="scl-line">
+            <span class="scl-lk">v2.20.0</span>
+            <span class="scl-lv">fronteiras frias <i>N</i></span>
+          </div>
+          <div class="scl-line scl-line--now">
+            <span class="scl-lk">v2.20.1</span>
+            <span class="scl-lv">fronteiras frias <i>N</i> (<i>N</i>K reconstruídos, ~<i>N</i>K limpáveis = <i>N</i>%)</span>
+          </div>
+        </div>
+
+        <div class="scl-fields">
+          <div class="scl-field">
+            <b>fronteiras frias</b>
+            <span>quantas vezes a sessão cruzou a janela — a <b>frequência</b>, que já existia (<code>coldBoundaries</code>)</span>
+          </div>
+          <div class="scl-field">
+            <b>reconstruídos</b>
+            <span>o contexto que aquela request refez <b>do zero</b>: o tamanho da fronteira (<code>coldBoundaryInputTokens</code>)</span>
+          </div>
+          <div class="scl-field scl-field--hi">
+            <b>~ limpáveis</b>
+            <span>o que uma limpeza teria liberado ali. O <b>til</b> não é enfeite: é a declaração de que é estimativa (<code>coldBoundaryClearableTokens</code>)</span>
+          </div>
+        </div>
+
+        <p class="scl-note">Os três somam <b>só o que foi medido</b>. Uma fronteira sem prêmio medido conta na <b>frequência</b> e não inventa <b>volume</b> — o percentual não é preenchido com palpite.</p>
+      </div>
+
+      <div class="scl-part">
+        <span class="scl-ptag">a coluna · o que uma limpeza levaria — <code>estimateClearablePayload(body)</code></span>
+
+        <div class="scl-col">
+          <div class="scl-crow scl-crow--in">
+            <span class="scl-cbar" aria-hidden="true"></span>
+            <span class="scl-cbody">
+              <span class="scl-ctype"><code>tool_result</code></span>
+              <span class="scl-cwhat">a saída da ferramenta — em geral o bloco mais pesado do histórico</span>
+              <span class="scl-cflag">entra</span>
+            </span>
+          </div>
+          <div class="scl-crow scl-crow--in">
+            <span class="scl-cbar" aria-hidden="true"></span>
+            <span class="scl-cbody">
+              <span class="scl-ctype"><code>tool_use</code></span>
+              <span class="scl-cwhat">a chamada e o <code>input</code> dela</span>
+              <span class="scl-cflag">entra</span>
+            </span>
+          </div>
+          <div class="scl-crow scl-crow--in">
+            <span class="scl-cbar" aria-hidden="true"></span>
+            <span class="scl-cbody">
+              <span class="scl-ctype"><code>thinking</code></span>
+              <span class="scl-cwhat">o raciocínio serializado no histórico</span>
+              <span class="scl-cflag">entra</span>
+            </span>
+          </div>
+          <div class="scl-crow scl-crow--out">
+            <span class="scl-cbar" aria-hidden="true"></span>
+            <span class="scl-cbody">
+              <span class="scl-ctype">texto do usuário</span>
+              <span class="scl-cwhat">a limpeza não remove</span>
+              <span class="scl-cflag">fica</span>
+            </span>
+          </div>
+          <div class="scl-crow scl-crow--out">
+            <span class="scl-cbar" aria-hidden="true"></span>
+            <span class="scl-cbody">
+              <span class="scl-ctype">texto do assistente</span>
+              <span class="scl-cwhat">a limpeza não remove</span>
+              <span class="scl-cflag">fica</span>
+            </span>
+          </div>
+        </div>
+
+        <div class="scl-sum"><b>prêmio</b> = soma do payload dos blocos que <i>entram</i> ÷ <i>CHARS_PER_TOKEN = 4</i></div>
+
+        <p class="scl-note"><b>Somar o texto normal seria fácil — e daria um número maior, e errado.</b> A limpeza não o remove; incluí-lo <b>superestimaria</b> o ganho, que é justamente o erro a evitar quando a decisão sai de um número. A 2.20.0 desenhou a fronteira como uma <b>emenda</b> na fita da sessão: um evento sem dimensão. Aqui a mesma fronteira vira <b>corte</b> — a fita mediu no <b>tempo</b>, a coluna mede na <b>pilha</b>.</p>
+        <p class="scl-note"><b>É estimativa, e ela se declara:</b> o tokenizer real é da Anthropic e chamá-lo custaria uma request por medida. <code>CHARS_PER_TOKEN</code> é <b>exportado</b>, não escondido — o fator fica auditável. Serve para responder <i>“é 5K ou 500K?”</i>, nunca para faturar.</p>
+      </div>
+
+      <div class="scl-part">
+        <span class="scl-ptag">o portão · o prêmio só é medido na fronteira</span>
+
+        <div class="scl-gate">
+          <div class="scl-lane scl-lane--measures">
+            <span class="scl-lwhen">fronteira fria</span>
+            <span class="scl-lact">mede o prêmio</span>
+            <span class="scl-lwhy">O prefixo <b>já vai ser refeito</b> de qualquer jeito. Limpar aqui não destrói nada que ainda esteja pago — é o instante em que a oportunidade <b>existe</b>.</span>
+          </div>
+          <div class="scl-lane scl-lane--skips">
+            <span class="scl-lwhen">cache quente</span>
+            <span class="scl-lact"><code>prize: null</code></span>
+            <span class="scl-lwhy">Limpar aqui <b>custa</b>: invalida um prefixo já pago. Medir um "ganho" nesse ponto seria inflar uma oportunidade que <b>não existe</b>.</span>
+          </div>
+        </div>
+
+        <p class="scl-note">A fronteira é calculada contra o estado <b>anterior</b> da sessão, na mesma passagem que a v2.20.0 já fazia — o prêmio pega carona nela, sem uma segunda leitura do <code>usage</code>.</p>
+      </div>
+
+      <div class="scl-part">
+        <div class="scl-not">
+          <span class="scl-ntag">o que este número não é</span>
+          <ul class="scl-nlist">
+            <li><b>Não é contagem exata de token.</b> É <code>chars ÷ 4</code> sobre os blocos limpáveis. Dimensiona a ordem de grandeza; não vira linha de fatura.</li>
+            <li><b>Não é economia realizada.</b> Nada é limpo nesta versão — o número diz o que uma limpeza <b>teria</b> liberado, se existisse.</li>
+            <li><b>Não muda nenhuma decisão de roteamento.</b> Continua régua. A diferença é que agora a fase seguinte tem por onde ser <b>aprovada — ou descartada</b>.</li>
+          </ul>
+        </div>
+      </div>
+
+      <div class="scl-foot"><b>O detalhe que separava medir de fingir que mediu:</b> o <b>corpo real</b> da request precisou ser fiado até o tee do stream. Sem ele, <code>estimateClearablePayload</code> receberia <code>undefined</code>, devolveria zero e o dashboard mostraria <code>~0K limpáveis</code> em produção — um número <b>honesto pelo motivo errado</b>, e a fase seguinte seria descartada por um defeito de fiação, não por falta de oportunidade. A fiação segue <b>best-effort</b>: se falhar, a falha é <b>logada, não engolida</b>, e telemetria não derruba o proxy.</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>O "vale a pena?" vira aritmética</h4>
+        <p>A linha do dashboard deixa de dizer só com que <b>frequência</b> a oportunidade aparece e passa a dizer <b>quanto</b> ela vale: contexto reconstruído, contexto limpável e o percentual entre os dois. Sete fronteiras de 5K e sete de 500K param de parecer a mesma coisa.</p>
+      </div>
+      <div class="win">
+        <h4>A estimativa não se disfarça de medição</h4>
+        <p><code>CHARS_PER_TOKEN = 4</code> é <b>exportado</b>, o <b>til</b> aparece no número e o texto normal fica <b>fora</b> da conta. Superestimar seria o erro caro: aprovaria uma fase que não se paga — e o número teria sido o responsável.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Rigor de sempre:</b> <code>estimateClearablePayload</code> é <b>função pura</b> — entra o body, sai <code>{ tokens, blocks, chars }</code>, sem I/O e sem estado —, então cada regra de inclusão e exclusão é testada <b>sem subir proxy</b>: os três blocos limpáveis contados, o texto normal <b>fora</b> da soma, um <code>tool_result</code> com <code>content</code> em <b>blocos</b> medido (esse shape não pode virar zero silencioso) e um turno de <code>content</code> em string pura dando <b>zero limpável</b>. O portão é testado dos <b>dois</b> lados: na fronteira, prêmio medido; fora dela, <code>prize: null</code>. E o acumulador de métricas só soma <b>prêmio existente</b>, para que uma fronteira sem medida não vire volume inventado. Tudo em <b>TDD RED→GREEN</b>.</p>
   </section>
 
 
