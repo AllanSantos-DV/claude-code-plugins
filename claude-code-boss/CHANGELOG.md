@@ -11,6 +11,18 @@ O bloco de atribuição (versão do cliente + fingerprint do prompt) abre o syst
 - `planEnableEnv` passa a gravar **`CLAUDE_CODE_ATTRIBUTION_HEADER=0`** junto do resto do bundle — ou seja, **só quando o proxy está no caminho**, que é onde o ganho existe. `planTuningEnv` (o tuning sem proxy) **não** grava: mexer ali seria ruído sem retorno.
 - Mesmas invariantes de sempre: `== null` só preenche o ausente (um `1` deliberado do usuário sobrevive) e o `disable` remove **só** o valor que nós teríamos escrito, nunca um do usuário.
 
+### O proxy passa a MEDIR o ciclo de vida do prompt cache
+
+Até aqui a telemetria dizia *quanto* token veio do cache (`cacheHitPct`), mas não *quando* a sessão cruza uma **fronteira fria** — o instante em que o prefixo já será reconstruído de qualquer forma e, portanto, trocar de modelo ou limpar contexto sairia **de graça**. Sem esse baseline não há como provar ganho de nenhuma otimização em cima do cache. Esta entrega é a régua e **não muda nenhuma decisão de roteamento**.
+
+- **`servers/model-router/cache-cycle.js`** (novo, núcleo puro — sem I/O, sem estado global, `now` sempre injetado):
+  - **`parseCacheUsage(usage)`** — lê o que o `usage` da resposta *prova*: `read>0` → `hit`; `creation>0` sem read → `miss`; nada → `unknown`. `read` **domina** `creation` (um write parcial sobre um prefixo lido ainda é cache quente). Ausência de sinal nunca vira sinal.
+  - **`isColdBoundary(state, now, config)`** — **duplo-sinal** de propósito: o relógio (`gap > ttl`) **ou** um `miss` observado na resposta anterior. A leitura de `usage` vem de regex sobre chunks crus de stream e um campo JSON pode ser partido entre dois chunks; se um sinal falhar, o outro ainda é conservadoramente correto.
+  - **`observeUsage`** — TTL **observado** (`ephemeral_1h`/`ephemeral_5m`) vence o palpite conservador de 5min e só **sobe**; um `unknown` não apaga o que já era conhecido.
+- **`accumulateUsage`** passa a capturar `ephemeral_1h_input_tokens`/`ephemeral_5m_input_tokens` — sem eles o TTL real nunca chegaria ao núcleo. `usageFromAccumulator` é a **única** tradução entre o shape achatado do stream e o shape da API (nada de um segundo parser de cache espalhado pelo servidor).
+- **Fiação** no tee do stream (`upRes.on('end')`), com a `sessionKey` propagada nos **3 modos** (`routing`, `sticky-tier`, `fallback-only`). Best-effort: a falha é **logada**, não engolida — telemetria não derruba o proxy.
+- **Métricas** `cacheCycle: { hits, misses, coldBoundaries }` no snapshot e no dashboard (`ciclo Nq/Nf · fronteiras frias N`). O mapa de sessões tem **teto duro** de 5000 com descarte por recência real (a ordem de inserção do `Map` não é recência — reescrever uma chave mantém a posição).
+
 ## [2.19.1] - 2026-07-28
 
 **Hotfix de três defeitos reportados em campo na v2.19.0** — dois deles são alarmes do próprio plugin que *mentiam*. A causa-raiz de cada um foi verificada no código e no comportamento real, não deduzida do relato.

@@ -5620,6 +5620,189 @@ test('metricsSnapshot: cacheHitPct = cacheRead / (cacheRead + in) — a métrica
 });
 
 
+// ─── cache-cycle: fronteira fria (núcleo puro do sticky cache-cycle-aware) ────
+const cacheCycle = require('../servers/model-router/cache-cycle.js');
+
+// O sticky de hoje fixa o tier por um TTL FIXO (6h) e ignora o estado real do
+// cache. Este núcleo lê o `usage` da resposta e só considera reavaliar o modelo
+// numa FRONTEIRA FRIA — o instante em que a próxima request paga o rebuild do
+// prefixo de qualquer jeito, então trocar de modelo (ou limpar contexto) é grátis.
+// DUPLO-SINAL (mitiga chunk partido no regex do accumulateUsage): gap >= TTL OU
+// a resposta anterior foi um miss puro (creation>0, read=0).
+
+test('parseCacheUsage: read>0 → hit (o prefixo veio do cache, está QUENTE)', () => {
+  const r = cacheCycle.parseCacheUsage({ cache_read_input_tokens: 74000 });
+  assertEq(r.state, 'hit');
+  assertEq(r.ttlMs, null, 'um hit não refina o TTL (só o write revela a janela contratada)');
+});
+
+test('parseCacheUsage: creation>0 sem read → miss (houve rebuild do prefixo)', () => {
+  assertEq(cacheCycle.parseCacheUsage({ cache_creation_input_tokens: 5000 }).state, 'miss');
+});
+
+test('parseCacheUsage: read DOMINA creation (parcial ainda é cache quente)', () => {
+  assertEq(cacheCycle.parseCacheUsage({ cache_read_input_tokens: 10, cache_creation_input_tokens: 5 }).state, 'hit');
+});
+
+test('parseCacheUsage: ephemeral_1h → TTL 1h; ephemeral_5m → 5min', () => {
+  const h1 = cacheCycle.parseCacheUsage({ cache_creation_input_tokens: 200, cache_creation: { ephemeral_1h_input_tokens: 200 } });
+  assertEq(h1.ttlMs, 3600000);
+  const m5 = cacheCycle.parseCacheUsage({ cache_creation_input_tokens: 100, cache_creation: { ephemeral_5m_input_tokens: 100 } });
+  assertEq(m5.ttlMs, 300000);
+});
+
+test('parseCacheUsage: usage vazio/ausente → unknown, sem TTL (nunca inventa sinal)', () => {
+  assertEq(cacheCycle.parseCacheUsage({}).state, 'unknown');
+  assertEq(cacheCycle.parseCacheUsage(null).state, 'unknown');
+  assertEq(cacheCycle.parseCacheUsage({}).ttlMs, null);
+});
+
+test('coldBoundaryMs: default 300000 (5min, o conservador da Anthropic); config sobrepõe', () => {
+  assertEq(cacheCycle.coldBoundaryMs({}), 300000, 'sem observação, assume a janela curta');
+  assertEq(cacheCycle.coldBoundaryMs({ sticky: { coldBoundaryMs: 900000 } }), 900000);
+  assertEq(cacheCycle.coldBoundaryMs({ sticky: { coldBoundaryMs: 0 } }), 300000, 'inválido → default');
+});
+
+test('isColdBoundary: sem estado (turno 0) → FRIA (não há cache a preservar)', () => {
+  assertEq(cacheCycle.isColdBoundary(null, 1000, {}).cold, true);
+  assertEq(cacheCycle.isColdBoundary(null, 1000, {}).reason, 'no-state');
+});
+
+test('isColdBoundary: gap MAIOR que o TTL → FRIA (o cache expirou)', () => {
+  const st = { lastRequestTs: 0, ttlMs: 300000, lastCacheState: 'hit' };
+  const r = cacheCycle.isColdBoundary(st, 300001, {});
+  assertEq(r.cold, true);
+  assertEq(r.reason, 'gap-expired');
+});
+
+test('isColdBoundary: gap DENTRO do TTL + último hit → QUENTE (segura o modelo)', () => {
+  const st = { lastRequestTs: 0, ttlMs: 300000, lastCacheState: 'hit' };
+  const r = cacheCycle.isColdBoundary(st, 200000, {});
+  assertEq(r.cold, false);
+  assertEq(r.reason, 'warm');
+});
+
+test('isColdBoundary: DUPLO-SINAL — última resposta foi miss → FRIA mesmo dentro do TTL', () => {
+  const st = { lastRequestTs: 0, ttlMs: 300000, lastCacheState: 'miss' };
+  const r = cacheCycle.isColdBoundary(st, 1000, {});
+  assertEq(r.cold, true, 'o relógio pode mentir (chunk partido); um miss observado é verdade medida');
+  assertEq(r.reason, 'prior-miss');
+});
+
+test('observeUsage: hit refina o estado e DESLIZA a janela (todo hit adia a fronteira)', () => {
+  const st = cacheCycle.observeUsage(null, { cache_read_input_tokens: 900 }, 5000, {});
+  assertEq(st.lastCacheState, 'hit');
+  assertEq(st.lastRequestTs, 5000);
+  const st2 = cacheCycle.observeUsage(st, { cache_read_input_tokens: 900 }, 9000, {});
+  assertEq(st2.lastRequestTs, 9000, 'o relógio da fronteira reinicia a cada request');
+});
+
+test('observeUsage: TTL observado (1h) SOBE o da sessão; unknown não corrompe o estado', () => {
+  const st = cacheCycle.observeUsage(null, { cache_creation_input_tokens: 10, cache_creation: { ephemeral_1h_input_tokens: 10 } }, 1000, {});
+  assertEq(st.ttlMs, 3600000, 'o TTL real observado vence o palpite conservador');
+  const st2 = cacheCycle.observeUsage(st, {}, 2000, {});
+  assertEq(st2.lastCacheState, 'miss', 'usage sem sinal NÃO apaga o que já era conhecido');
+  assertEq(st2.ttlMs, 3600000, 'nem rebaixa o TTL observado');
+});
+
+
+// ─── cache-cycle: FIAÇÃO no proxy (observação real, sem mudar roteamento) ─────
+// O núcleo acima é inútil se ninguém o alimenta. Aqui o proxy passa a MEDIR o
+// ciclo de cache de cada sessão a partir do `usage` que já é lido no tee do
+// stream. Nenhuma decisão de rota muda nesta fase — só passamos a enxergar.
+
+test('accumulateUsage: captura a janela CONTRATADA (ephemeral_1h / ephemeral_5m)', () => {
+  const acc = routerServer.accumulateUsage(null, JSON.stringify({
+    usage: {
+      input_tokens: 12,
+      cache_creation_input_tokens: 4200,
+      cache_creation: { ephemeral_1h_input_tokens: 4200, ephemeral_5m_input_tokens: 0 },
+    },
+  }));
+  assertEq(acc.cacheCreate, 4200);
+  assertEq(acc.cacheTtl1h, 4200, 'sem este campo o TTL real nunca chega ao núcleo');
+  assertEq(acc.cacheTtl5m, 0);
+});
+
+test('usageFromAccumulator: traduz o acumulador do stream p/ o shape da API', () => {
+  const u = cacheCycle.usageFromAccumulator({ in: 5, out: 2, cacheRead: 900, cacheCreate: 100, cacheTtl5m: 100 });
+  assertEq(u.cache_read_input_tokens, 900);
+  assertEq(u.cache_creation_input_tokens, 100);
+  assertEq(u.cache_creation.ephemeral_5m_input_tokens, 100);
+  assertEq(cacheCycle.parseCacheUsage(u).state, 'hit', 'o adaptador tem que casar com o parser (um contrato só)');
+});
+
+test('usageFromAccumulator: acumulador nulo/vazio → usage vazio (unknown, sem inventar)', () => {
+  assertEq(cacheCycle.parseCacheUsage(cacheCycle.usageFromAccumulator(null)).state, 'unknown');
+});
+
+test('observeCacheCycle: 1ª resposta da sessão atravessa fronteira FRIA e grava o estado', () => {
+  const states = new Map();
+  const r = routerServer.observeCacheCycle('k1', { cacheRead: 900 }, 1000, {}, { states });
+  assertEq(r.boundary.cold, true, 'turno 0 não tinha cache a preservar');
+  assertEq(r.boundary.reason, 'no-state');
+  assertEq(r.state.lastCacheState, 'hit');
+  assertEq(states.get('k1').lastRequestTs, 1000, 'o estado fica retido p/ a próxima request');
+});
+
+test('observeCacheCycle: 2ª resposta logo em seguida NÃO é fronteira (cache quente)', () => {
+  const states = new Map();
+  routerServer.observeCacheCycle('k1', { cacheRead: 900 }, 1000, {}, { states });
+  const r2 = routerServer.observeCacheCycle('k1', { cacheRead: 950 }, 2000, {}, { states });
+  assertEq(r2.boundary.cold, false);
+  assertEq(r2.boundary.reason, 'warm');
+});
+
+test('observeCacheCycle: gap > TTL → a request atravessou uma fronteira FRIA', () => {
+  const states = new Map();
+  routerServer.observeCacheCycle('k1', { cacheRead: 900 }, 0, {}, { states });
+  const r2 = routerServer.observeCacheCycle('k1', { cacheRead: 900 }, 400000, {}, { states });
+  assertEq(r2.boundary.cold, true, '400s sem tráfego > a janela de 5min');
+  assertEq(r2.boundary.reason, 'gap-expired');
+});
+
+test('observeCacheCycle: sessões distintas não contaminam o estado uma da outra', () => {
+  const states = new Map();
+  routerServer.observeCacheCycle('a', { cacheRead: 900 }, 1000, {}, { states });
+  const rb = routerServer.observeCacheCycle('b', { cacheCreate: 500 }, 1100, {}, { states });
+  assertEq(rb.boundary.reason, 'no-state', 'a sessão b é nova, mesmo com a sessão a quente');
+  assertEq(states.get('a').lastCacheState, 'hit');
+  assertEq(states.get('b').lastCacheState, 'miss');
+});
+
+test('observeCacheCycle: sem sessionKey → não observa (não inventa uma sessão fantasma)', () => {
+  const states = new Map();
+  assertEq(routerServer.observeCacheCycle('', { cacheRead: 900 }, 1000, {}, { states }), null);
+  assertEq(states.size, 0);
+});
+
+test('metricsCacheCycle: snapshot conta hits, misses e fronteiras frias atravessadas', () => {
+  routerServer.resetMetrics();
+  const m0 = routerServer.metricsSnapshot();
+  assertEq(m0.cacheCycle.hits, 0, 'o baseline existe desde o boot');
+  assertEq(m0.cacheCycle.misses, 0);
+  assertEq(m0.cacheCycle.coldBoundaries, 0);
+  routerServer.metricsCacheCycle({ state: { lastCacheState: 'hit' }, boundary: { cold: false } });
+  routerServer.metricsCacheCycle({ state: { lastCacheState: 'miss' }, boundary: { cold: true } });
+  const m = routerServer.metricsSnapshot();
+  assertEq(m.cacheCycle.hits, 1);
+  assertEq(m.cacheCycle.misses, 1);
+  assertEq(m.cacheCycle.coldBoundaries, 1, 'a fronteira é a OPORTUNIDADE que a fase seguinte vai explorar');
+  routerServer.resetMetrics();
+});
+
+test('observeCacheCycle: o mapa de sessões tem TETO DURO (proxy longevo não vaza)', () => {
+  const states = new Map();
+  // 5100 sessões distintas, TODAS recentes: a poda por idade sozinha não remove
+  // nada, então sem um teto duro o mapa cresceria sem limite.
+  for (let i = 0; i < 5100; i++) {
+    routerServer.observeCacheCycle('s' + i, { cacheRead: 1 }, 1000 + i, {}, { states });
+  }
+  assertEq(states.size <= 5000, true, 'tamanho ficou em ' + states.size);
+  assertEq(states.has('s5099'), true, 'a sessão mais RECENTE nunca é a descartada');
+});
+
+
 // ─── model-router (server): sticky-tier — chave de sessão + decisor puro ──────
 
 test('computeSessionKey: mesmo system+1ª msg → MESMA chave (histórico cresce no fim)', () => {
