@@ -1,5 +1,24 @@
 # Changelog
 
+## [2.20.2] - 2026-07-29
+
+**A média estava escondendo o caso que decide.** A v2.20.1 passou a medir o tamanho da fronteira fria. O primeiro dado de campo (23 fronteiras, 165K reconstruídos, 70K limpáveis = 42%) trouxe um número desconfortável: **~7K de input por fronteira**. Pequeno demais para uma sessão acumulada — assinatura de que a maioria das fronteiras é `no-state`, o **turno 0 de uma sessão nova**, onde não há praticamente nada acumulado para limpar.
+
+O alvo da limpeza automática é a **outra** fronteira: a sessão longa que **esfriou** (`gap-expired`), com 100K+ de `tool_result` parado. Agregar as duas numa média única esconde exatamente o caso que justifica a feature — e decidir por essa média a descartaria **pelo motivo errado**. É a mesma família de defeito das versões anteriores: um sinal que induz à decisão errada.
+
+- **Métricas por motivo da fronteira** — `cacheCycle.byReason` com buckets fixos `no-state` / `gap-expired` / `prior-miss`, cada um com `count`, `inputTokens` e `clearableTokens`. Buckets **nunca** são criados a partir de entrada externa (um motivo desconhecido não vira chave nova). Prova em teste com os dois extremos: sessão nova → **0%** limpável; sessão que esfriou → **80%** de 125K.
+- **Dashboard** ganha a linha `por motivo: gap-expired 3× 380K→190K (50%) · no-state 12× 84K→2K (2%)`.
+
+### Calibração chars→token **sem API key**
+
+O `clearableTokens` é estimativa (`chars/4`). Descobrir o fator real parecia exigir uma chave da Anthropic e chamadas a `/count_tokens` — mas o proxy **já vê**, no mesmo ponto, o corpo que ele mede em chars **e** o `usage` com a contagem de input **real** que a API acabou de reportar. A razão entre os dois é o chars-por-token de verdade, medido **em tráfego real, de graça, sem manusear credencial**.
+
+- **`estimateTotalChars(body)`** — o corpo inteiro (`system` + mensagens). O `system` entra de propósito: costuma ser a maior parte do prefixo, e ignorá-lo viciaria o fator para baixo.
+- **`calibrationSample(chars, usage)`** — devolve `{chars, realTokens, ratio}` ou **`null`** quando não dá para calibrar. Fator inventado é pior que fator nenhum: contaminaria toda a série.
+- **`metrics.calibration`** agrega chars e tokens reais (não a média das razões — assim uma request grande pesa mais, que é o correto para um fator global) e expõe `charsPerToken`, que é **`null`** enquanto não houver amostra: nunca finge medição.
+
+Estado gravado por versões anteriores é migrado sem perder histórico — os buckets novos entram zerados em vez de virar `undefined` e explodir na primeira fronteira.
+
 ## [2.20.1] - 2026-07-29
 
 **A régua ganha escala: a fronteira fria passa a ter TAMANHO, não só contagem.** A v2.20.0 passou a contar quantas vezes a sessão cruza uma fronteira fria. Só que frequência não decide investimento: ver `fronteiras frias 7` não diz se 7 vale 5K ou 500K de contexto — e a próxima fase (agir na fronteira) seria aprovada ou descartada no chute. Esta versão fecha esse buraco **antes** de construir a fase seguinte, para que a decisão saia de dado colhido em uso real.

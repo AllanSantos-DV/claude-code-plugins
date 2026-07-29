@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.20.1 — a régua ganha escala: a fronteira fria passa a ter tamanho</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. A v2.20.1 dá escala à régua do model-router. A v2.20.0 passou a contar quantas vezes a sessão cruza uma fronteira fria, mas frequência não decide investimento: ver sete fronteiras não diz se aquilo vale 5K ou 500K de contexto, e a próxima fase — agir na fronteira, limpando contexto de graça — seria aprovada ou descartada no chute. Esta versão fecha o buraco antes de construir a fase que ele decide, para que a decisão saia de dado colhido em uso real. Agora, em cada fronteira, o proxy mede quanto contexto foi reconstruído e quanto uma limpeza teria liberado. A função estimateClearablePayload percorre as mensagens do request e soma o payload dos blocos tool_use, tool_result e thinking, que são exatamente os que um clear_tool_uses mais clear_thinking levaria embora. O texto normal do usuário e do assistente fica de fora, porque a limpeza não o remove e incluí-lo superestimaria o ganho, que é justamente o erro a evitar quando a decisão sai de um número. É estimativa declarada, chars divididos por quatro, com o fator exportado e auditável: serve para dimensionar uma oportunidade, nunca para faturar. O prêmio só é medido na fronteira, porque fora dela limpar contexto custa, invalidando cache quente já pago, então medir ali inflaria uma oportunidade que não existe — com cache quente o prêmio é nulo. Duas métricas novas entram no snapshot, o contexto reconstruído nas fronteiras e o quanto teria sido liberado, e uma fronteira sem prêmio medido conta na frequência sem inventar volume. O dashboard passa a mostrar a linha de fronteiras frias acompanhada dos tokens reconstruídos, dos limpáveis e do percentual entre eles. O corpo real da request precisou ser fiado até o tee do stream: sem ele a medição sairia sempre zero em produção, um número honesto pelo motivo errado. Nada é limpo nesta versão e nenhuma decisão de roteamento muda — é medir para decidir, não medir por medir. A v2.20.0 segue na página como release anterior, com duas entregas no mesmo alvo: uma reduz o que o proxy gasta, a outra instala a régua. Do lado do custo, o bloco de atribuição — versão do cliente mais fingerprint do prompt — abre o system prompt e muda entre versões e sessões, então atrás de um gateway ele invalida o prefixo cacheado a cada request; por isso CLAUDE_CODE_ATTRIBUTION_HEADER=0 entra no bundle gravado quando o proxy está no caminho, que é onde a doc do Claude Code diz existir ganho, e fica de fora do tuning sem proxy, onde numa conexão direta o cache não é afetado de um jeito nem de outro. As invariantes continuam: só o valor ausente é preenchido, então um 1 deliberado seu sobrevive, e desligar remove só o valor que o plugin teria escrito. Do lado da medida, um núcleo puro interpreta o que o usage prova, com read maior que zero virando hit, creation sem read virando miss e ausência de sinal virando unknown, e read domina creation porque um write parcial sobre um prefixo lido ainda é cache quente. A fronteira fria é detectada por duplo-sinal, o relógio ou um miss observado na resposta anterior, porque a leitura do usage vem de regex sobre chunks crus de stream e um campo JSON pode ser partido entre dois chunks. O TTL observado vence o palpite conservador de cinco minutos e só sobe, e um unknown nunca apaga o que já era conhecido." />
+<title>claude-code-boss v2.20.2 — a média se parte por motivo: o caso que decide para de sumir no agregado</title>
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. A v2.20.2 parte a medida da fronteira fria por motivo, porque a média estava escondendo o caso que decide. A v2.20.1 passou a medir o tamanho de cada fronteira, e o primeiro dado de campo veio com um número desconfortável: 23 fronteiras, 165 mil tokens reconstruídos, 70 mil limpáveis, 42 por cento — mas apenas cerca de 7 mil de input por fronteira, pequeno demais para uma sessão acumulada. Esse é o retrato de uma população dominada por no-state, o turno zero de uma sessão nova, onde não há praticamente nada acumulado para limpar. O alvo da limpeza automática, porém, é a outra fronteira: a sessão longa que esfriou, com mais de 100 mil tokens de tool_result parados. Agregar as duas numa média única esconde exatamente o caso que justifica a feature, e decidir por essa média a descartaria pelo motivo errado. Por isso as métricas passam a ser separadas por motivo da fronteira, em buckets fixos no código, no-state, gap-expired e prior-miss, cada um com contagem, input e limpável. Os buckets nunca são criados a partir de entrada externa: um motivo desconhecido não vira chave nova, então o mapa de métricas não cresce com o que chega de fora. A separação é provada em teste com os dois extremos: sessão nova entrega zero por cento limpável, sessão que esfriou entrega oitenta por cento de 125 mil. O dashboard ganha uma linha por motivo, mostrando quantas fronteiras, o input reconstruído, o limpável e o percentual de cada balde. A segunda entrega calibra a conversão de chars para token sem chave de API. O limpável é estimativa, chars divididos por quatro, e descobrir o fator real parecia exigir credencial da Anthropic e chamadas ao endpoint de contagem de tokens. Mas o proxy já vê, no mesmo ponto, o corpo que ele mede em chars e o usage com a contagem de input real que a API acabou de reportar; a razão entre os dois é o chars por token de verdade, medido em tráfego próprio, de graça, sem manusear credencial. A medida de chars inclui o system de propósito, porque ele costuma ser a maior parte do prefixo e ignorá-lo viciaria o fator para baixo. A amostra devolve nulo quando não dá para calibrar, já que um fator inventado é pior que fator nenhum e contaminaria toda a série. E o agregado soma chars e tokens reais em vez de tirar a média das razões, para que uma request grande pese mais, expondo charsPerToken como nulo enquanto não houver amostra: nunca finge medição. Estado gravado por versões anteriores é migrado sem perder histórico, com os buckets novos entrando zerados em vez de virar indefinido e explodir na primeira fronteira. As releases anteriores seguem na página: a v2.20.1 deu tamanho à fronteira fria, medindo em cada uma quanto contexto foi reconstruído e quanto uma limpeza teria liberado, sempre como estimativa declarada; e a v2.20.0 desligou o bloco de atribuição quando o proxy está no caminho, preservando o prefixo cacheado, e instalou a régua do ciclo de cache que conta quantas vezes a sessão cruza uma fronteira fria." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -1629,13 +1629,145 @@
   .scl-foot b{ color:#a29f97 }
   .scl-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
 
+  /* v2.20.2 : a MEDIA ESTAVA ESCONDENDO O CASO QUE DECIDE. A v2.20.1 passou a medir o
+     TAMANHO da fronteira fria. O 1o dado de campo real (23 fronteiras, 165K reconstruidos,
+     70K limpaveis = 42%) veio com ~7K de input por fronteira - pequeno DEMAIS para uma sessao
+     acumulada. Isso e assinatura de que a maioria das fronteiras e `no-state`: o TURNO 0 de
+     uma sessao NOVA, onde nao ha praticamente nada acumulado para limpar. Mas o alvo da
+     limpeza automatica e a OUTRA fronteira: a sessao longa que ESFRIOU (`gap-expired`), com
+     100K+ de tool_result parado. Agregar as duas numa media unica esconde exatamente o caso
+     que justifica a feature - e decidir por essa media a descartaria PELO MOTIVO ERRADO.
+     Mesma familia de defeito das releases anteriores desta pagina: um sinal que induz a
+     decisao errada. Aqui nao e um alarme que mente (v2.19.1) nem um numero que parece maior
+     do que e (v2.20.1): e uma MEDIA que dilui o caso raro e valioso no caso comum e vazio.
+     ASSINATURA: a REGUA DA DISPERSAO. A v2.20.0 mediu no TEMPO (a fita da sessao) e a v2.20.1
+     mediu na PILHA (a coluna da fronteira); a terceira dimensao e a DISTRIBUICAO - um eixo de
+     0% a 100% de limpavel onde as duas populacoes vivem nos EXTREMOS e a media de campo cai
+     num ponto VAZIO, descrevendo nenhuma das duas. Provenancia marcada no proprio artefato:
+     42% e CAMPO (medido), 0% e 80% sao TESTE (os dois extremos provados). Peso deliberadamente
+     MENOR que o artefato da v2.20.0: e patch, e a entrega e focada. */
+  .rsn{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:880px; font-family:var(--mono); margin:0 0 36px }
+  .rsn code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .rsn-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .rsn-bar .k{ color:var(--accent) }
+  .rsn-bar .m{ color:#8a877f }
+
+  .rsn-part{ padding:18px 22px 10px }
+  .rsn-part + .rsn-part{ border-top:1px solid rgba(255,255,255,.06) }
+  .rsn-ptag{ display:block; font-size:9px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); margin:0 0 14px }
+  /* identificador nunca vira caixa-alta: `estimateTotalChars` sai verbatim */
+  .rsn-ptag code{ text-transform:none; letter-spacing:0 }
+  .rsn-note{ margin:0; font-size:11px; line-height:1.6; color:#8a877f }
+  .rsn-note + .rsn-note{ margin-top:9px }
+  .rsn-note b{ color:#a29f97; font-weight:600 }
+  .rsn-note i{ color:#a29f97; font-style:italic }
+
+  /* o 1o dado de campo: a linha que disparou a release */
+  .rsn-obs{ border-left:2px solid var(--accent); background:rgba(255,255,255,.05); border-radius:0 6px 6px 0;
+    padding:11px 14px; margin:0 0 16px; max-width:640px }
+  .rsn-obk{ display:block; font-size:9px; letter-spacing:.13em; text-transform:uppercase; color:var(--accent); margin:0 0 7px }
+  .rsn-obv{ display:block; font-size:12px; line-height:1.65; color:var(--panel-ink); overflow-wrap:break-word }
+  .rsn-obv i{ color:var(--accent); font-style:normal; font-weight:700 }
+
+  /* ASSINATURA: a regua da dispersao - eixo de 0% a 100% de LIMPAVEL.
+     as duas populacoes vivem nos extremos; a media de campo cai no vazio entre elas */
+  .rsn-ruler{ margin:0 0 15px; max-width:640px; padding:0 8px }
+  .rsn-ends{ display:flex; align-items:baseline; justify-content:space-between; gap:12px;
+    font-size:9px; letter-spacing:.13em; text-transform:uppercase; color:#6d6257; margin:0 0 9px }
+  .rsn-rail{ position:relative; height:78px }
+  .rsn-line{ position:absolute; left:0; right:0; top:53px; height:1px; background:rgba(255,255,255,.18) }
+  .rsn-line::before,.rsn-line::after{ content:""; position:absolute; top:-4px; width:1px; height:9px; background:rgba(255,255,255,.18) }
+  .rsn-line::before{ left:0 }
+  .rsn-line::after{ right:0 }
+  .rsn-avg{ position:absolute; left:var(--x); top:26px; height:32px; border-left:1px dashed #8a877f }
+  .rsn-avglab{ position:absolute; left:0; top:-24px; transform:translateX(-50%); white-space:nowrap;
+    font-size:10px; line-height:1.35; color:#a29f97; background:var(--panel); padding:0 7px }
+  .rsn-avglab i{ color:var(--panel-ink); font-style:normal; font-weight:700 }
+  .rsn-dot{ position:absolute; top:48px; left:var(--x); width:11px; height:11px; margin-left:-5.5px;
+    border-radius:50%; background:var(--accent); box-shadow:0 0 0 4px rgba(255,255,255,.07) }
+  .rsn-gapl{ position:absolute; left:0; right:0; top:62px; text-align:center; font-size:9px;
+    letter-spacing:.11em; text-transform:uppercase; color:#6d6257 }
+
+  .rsn-pops{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:0 0 13px }
+  .rsn-pop{ display:flex; flex-direction:column; gap:8px; border:1px solid rgba(255,255,255,.14);
+    border-radius:9px; padding:13px 14px; min-width:0 }
+  .rsn-pop--target{ border-color:var(--accent); background:rgba(255,255,255,.05) }
+  .rsn-pk{ font-size:11.5px; font-weight:600; color:#a29f97; overflow-wrap:break-word }
+  .rsn-pop--target .rsn-pk{ color:var(--panel-ink) }
+  .rsn-pw{ font-size:10.5px; line-height:1.55; color:#8a877f; overflow-wrap:break-word }
+  .rsn-pw b{ color:#a29f97; font-weight:600 }
+  .rsn-pnum{ align-self:flex-start; font-size:10px; letter-spacing:.11em; text-transform:uppercase;
+    border:1px solid #6d6257; border-radius:6px; padding:3px 9px; color:#a29f97; white-space:nowrap }
+  .rsn-pop--target .rsn-pnum{ background:var(--accent); border-color:var(--accent); color:var(--panel); font-weight:700 }
+
+  /* os baldes sao FIXOS: motivo desconhecido nunca vira chave nova */
+  .rsn-buckets{ border:1px solid var(--panel-line); border-radius:10px; overflow:hidden; margin:0 0 13px; max-width:640px }
+  .rsn-brow{ display:grid; grid-template-columns:minmax(0,138px) minmax(0,1fr) auto; gap:4px 12px;
+    align-items:baseline; padding:10px 13px; min-width:0 }
+  .rsn-brow + .rsn-brow{ border-top:1px solid rgba(255,255,255,.07) }
+  .rsn-brow--rej{ background:repeating-linear-gradient(135deg,rgba(255,255,255,.045) 0 5px,transparent 5px 10px) }
+  .rsn-bk{ font-size:11.5px; color:var(--panel-ink); overflow-wrap:break-word }
+  .rsn-brow--rej .rsn-bk{ color:#a29f97 }
+  .rsn-bw{ font-size:10.5px; line-height:1.5; color:#8a877f; overflow-wrap:break-word }
+  .rsn-bf{ font-size:9px; letter-spacing:.12em; text-transform:uppercase; white-space:nowrap; color:#6d6257 }
+  .rsn-brow--target .rsn-bf{ color:var(--accent) }
+
+  /* a leitura do dashboard: FORMATO, os numeros sao exemplo */
+  .rsn-read{ display:grid; grid-template-columns:minmax(0,74px) minmax(0,1fr); gap:4px 12px; align-items:baseline;
+    border-left:2px solid var(--accent); background:rgba(255,255,255,.05); border-radius:0 6px 6px 0;
+    padding:9px 13px; margin:0 0 12px; max-width:640px }
+  .rsn-rk{ font-size:9px; letter-spacing:.13em; text-transform:uppercase; color:var(--accent) }
+  .rsn-rv{ font-size:12px; line-height:1.6; color:var(--panel-ink); overflow-wrap:break-word }
+  .rsn-rv i{ color:var(--accent); font-style:normal }
+
+  /* a calibracao: o caminho que PARECIA necessario x o que o proxy JA VE */
+  .rsn-fork{ display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:0 0 13px }
+  .rsn-lane{ display:flex; flex-direction:column; gap:9px; border-radius:9px; padding:13px 14px; min-width:0 }
+  .rsn-lane--seemed{ border:1px dashed rgba(255,255,255,.24) }
+  .rsn-lane--taken{ border:1px solid var(--accent); background:rgba(255,255,255,.05) }
+  .rsn-lwhat{ font-size:11.5px; font-weight:600; color:var(--panel-ink); overflow-wrap:break-word }
+  .rsn-lane--seemed .rsn-lwhat{ color:#a29f97 }
+  .rsn-ltag{ align-self:flex-start; font-size:10px; letter-spacing:.12em; text-transform:uppercase; padding:3px 10px; border-radius:6px }
+  .rsn-ltag code{ background:transparent; padding:0; font-size:inherit; text-transform:none; letter-spacing:0; color:inherit }
+  .rsn-lane--taken .rsn-ltag{ background:var(--accent); color:var(--panel); font-weight:700 }
+  .rsn-lane--seemed .rsn-ltag{ background:transparent; border:1px solid #6d6257; color:#a29f97 }
+  .rsn-lwhy{ font-size:11px; line-height:1.55; color:#8a877f }
+  .rsn-lwhy b{ color:#a29f97; font-weight:600 }
+
+  .rsn-sum{ font-size:11.5px; line-height:1.6; color:var(--panel-ink); background:rgba(255,255,255,.05);
+    border-left:2px solid var(--accent); border-radius:0 6px 6px 0; padding:10px 13px; margin:0 0 13px;
+    max-width:640px; overflow-wrap:break-word }
+  .rsn-sum i{ color:var(--accent); font-style:normal }
+  .rsn-sum b{ font-weight:600 }
+
+  /* o estado vazio DECLARADO: charsPerToken e `null` ate haver amostra */
+  .rsn-null{ display:flex; flex-wrap:wrap; align-items:center; gap:9px 15px; padding:12px 14px; margin:0 0 13px;
+    max-width:640px; border:1px dashed rgba(255,255,255,.24); border-radius:10px; background:rgba(255,255,255,.02) }
+  .rsn-nullk{ font-size:12px; color:var(--panel-ink); white-space:nowrap }
+  .rsn-nullk i{ color:var(--accent); font-style:normal; font-weight:700 }
+  .rsn-nullw{ flex:1 1 260px; min-width:0; font-size:10.5px; line-height:1.55; color:#8a877f }
+  .rsn-nullw b{ color:#a29f97; font-weight:600 }
+
+  .rsn-guards{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:0 0 12px }
+  .rsn-guard{ border-left:1px solid rgba(255,255,255,.12); padding:1px 0 1px 12px; min-width:0 }
+  .rsn-guard--hi{ border-left-color:var(--accent) }
+  .rsn-guard b{ display:block; font-size:11px; color:var(--panel-ink); font-weight:600; overflow-wrap:break-word }
+  .rsn-guard span{ display:block; margin-top:5px; font-size:10.5px; line-height:1.5; color:#8a877f }
+  .rsn-guard span b{ display:inline; font-size:inherit; color:#a29f97 }
+
+  .rsn-foot{ padding:14px 22px; border-top:1px solid var(--panel-line); font-size:11px; line-height:1.6; color:#8a877f }
+  .rsn-foot b{ color:#a29f97 }
+  .rsn-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+
   footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
   footer a{ color:var(--muted); text-decoration:none }
   footer a:hover{ color:var(--accent) }
   .frow{ display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between }
   .flinks a{ margin-right:16px }
 
-  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .rr-stage{ grid-template-columns:1fr } .rr-rails{ grid-template-columns:1fr } .rr-steps{ flex-direction:column; align-items:stretch } .an-stage{ grid-template-columns:1fr } .an-rails{ grid-template-columns:1fr } .an-steps{ flex-direction:column; align-items:stretch } .id-row{ grid-template-columns:1fr; gap:9px } .id-arrow{ display:none } .id-chip{ text-align:left; min-width:0 } .id-fork{ grid-template-columns:1fr } .id-rails{ grid-template-columns:1fr } .eco-hero{ grid-template-columns:1fr } .eco-fork{ grid-template-columns:1fr } .eco-rails{ grid-template-columns:1fr } .mig-flow{ grid-template-columns:1fr } .mig-cross{ min-width:0 } .mig-cline{ width:60% } .mig-guards{ grid-template-columns:1fr } .ctx-row{ grid-template-columns:1fr; gap:9px } .ctx-sp{ display:none } .ctx-rval{ text-align:left } .ctx-fork{ grid-template-columns:1fr } .ctx-fields{ grid-template-columns:1fr } .fld-cols{ grid-template-columns:1fr; gap:14px } .fld-arms{ grid-template-columns:1fr } .cyc-fronts{ grid-template-columns:1fr } .cyc-fork{ grid-template-columns:1fr } .cyc-or{ grid-template-columns:1fr; gap:10px } .cyc-orop{ text-align:left } .cyc-fields{ grid-template-columns:1fr } .cyc-trow{ grid-template-columns:1fr; gap:3px; padding:11px 0 } .cyc-tarr{ display:none } .cyc-track{ padding:0 22px } .cyc-marks{ height:36px } .cyc-marks .cyc-mark{ width:48px; margin-left:-24px; gap:4px } .cyc-marks .cyc-mev{ display:none } .cyc-marks .cyc-mst{ font-size:10.5px } .cyc-seam{ top:24px } .cyc-zone{ font-size:8px; letter-spacing:.04em; padding:0 2px } .cyc-seamlab{ font-size:8px; letter-spacing:.08em } .scl-lines{ max-width:none } .scl-line{ grid-template-columns:1fr; gap:3px } .scl-fields{ grid-template-columns:1fr } .scl-cbody{ grid-template-columns:1fr; gap:3px } .scl-gate{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
+  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .rr-stage{ grid-template-columns:1fr } .rr-rails{ grid-template-columns:1fr } .rr-steps{ flex-direction:column; align-items:stretch } .an-stage{ grid-template-columns:1fr } .an-rails{ grid-template-columns:1fr } .an-steps{ flex-direction:column; align-items:stretch } .id-row{ grid-template-columns:1fr; gap:9px } .id-arrow{ display:none } .id-chip{ text-align:left; min-width:0 } .id-fork{ grid-template-columns:1fr } .id-rails{ grid-template-columns:1fr } .eco-hero{ grid-template-columns:1fr } .eco-fork{ grid-template-columns:1fr } .eco-rails{ grid-template-columns:1fr } .mig-flow{ grid-template-columns:1fr } .mig-cross{ min-width:0 } .mig-cline{ width:60% } .mig-guards{ grid-template-columns:1fr } .ctx-row{ grid-template-columns:1fr; gap:9px } .ctx-sp{ display:none } .ctx-rval{ text-align:left } .ctx-fork{ grid-template-columns:1fr } .ctx-fields{ grid-template-columns:1fr } .fld-cols{ grid-template-columns:1fr; gap:14px } .fld-arms{ grid-template-columns:1fr } .cyc-fronts{ grid-template-columns:1fr } .cyc-fork{ grid-template-columns:1fr } .cyc-or{ grid-template-columns:1fr; gap:10px } .cyc-orop{ text-align:left } .cyc-fields{ grid-template-columns:1fr } .cyc-trow{ grid-template-columns:1fr; gap:3px; padding:11px 0 } .cyc-tarr{ display:none } .cyc-track{ padding:0 22px } .cyc-marks{ height:36px } .cyc-marks .cyc-mark{ width:48px; margin-left:-24px; gap:4px } .cyc-marks .cyc-mev{ display:none } .cyc-marks .cyc-mst{ font-size:10.5px } .cyc-seam{ top:24px } .cyc-zone{ font-size:8px; letter-spacing:.04em; padding:0 2px } .cyc-seamlab{ font-size:8px; letter-spacing:.08em } .scl-lines{ max-width:none } .scl-line{ grid-template-columns:1fr; gap:3px } .scl-fields{ grid-template-columns:1fr } .scl-cbody{ grid-template-columns:1fr; gap:3px } .scl-gate{ grid-template-columns:1fr } .rsn-ruler{ max-width:none } .rsn-bar{ align-items:flex-start } .rsn-rail{ height:92px } .rsn-avglab{ white-space:normal; width:104px; text-align:center; top:-32px } .rsn-pops{ grid-template-columns:1fr } .rsn-brow{ grid-template-columns:1fr; gap:3px } .rsn-read{ grid-template-columns:1fr; gap:3px } .rsn-fork{ grid-template-columns:1fr } .rsn-guards{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
   @media (prefers-reduced-motion:reduce){ .caret{ animation:none } .reveal{ opacity:1 !important; transform:none !important } }
   .reveal{ opacity:0; transform:translateY(14px); animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards }
   @keyframes rise{ to{ opacity:1; transform:none } }
@@ -1646,7 +1778,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.20.1</span>
+    <span class="ver">v2.20.2</span>
   </nav>
 
   <header class="hero">
@@ -1721,7 +1853,7 @@
       <div class="cell">
         <p class="kick">Ciclo de cache</p>
         <h3>O proxy mede o que antes era palpite</h3>
-        <p>O router lê o que o <code>usage</code> de cada resposta <b>prova</b> — veio do cache, refez o prefixo, ou não deu sinal — e conta quantas vezes a sessão cruza uma <b>fronteira fria</b>: a janela em que o prefixo já seria reconstruído de qualquer jeito, e portanto trocar de modelo ou limpar contexto sairia <b>de graça</b>. Em cada fronteira ele também <b>dimensiona</b> a oportunidade: quanto contexto foi reconstruído e quanto uma limpeza teria liberado, somando <code>tool_use</code>, <code>tool_result</code> e <code>thinking</code> — o texto normal fica de fora, porque a limpeza não o remove. É <b>estimativa declarada</b> (o dashboard marca com <code>~</code>), e é <b>régua</b>, não decisão: nenhuma rota muda por causa dela.</p>
+        <p>O router lê o que o <code>usage</code> de cada resposta <b>prova</b> — veio do cache, refez o prefixo, ou não deu sinal — e conta quantas vezes a sessão cruza uma <b>fronteira fria</b>: a janela em que o prefixo já seria reconstruído de qualquer jeito, e portanto trocar de modelo ou limpar contexto sairia <b>de graça</b>. Em cada fronteira ele também <b>dimensiona</b> a oportunidade: quanto contexto foi reconstruído e quanto uma limpeza teria liberado, somando <code>tool_use</code>, <code>tool_result</code> e <code>thinking</code> — o texto normal fica de fora, porque a limpeza não o remove. E a conta é <b>separada por motivo</b> (<code>no-state</code>, <code>gap-expired</code>, <code>prior-miss</code>), porque uma média única dilui a sessão que <b>esfriou cheia</b> na sessão que <b>nasceu vazia</b> — e é a primeira que a limpeza ataca. O fator <code>chars→token</code> também sai do palpite: o proxy compara os chars que mede com o <code>usage</code> <b>real</b> da mesma resposta e calibra em <b>tráfego próprio, sem chave de API</b>, exibindo <code>charsPerToken: null</code> enquanto não houver amostra. É <b>estimativa declarada</b> (o dashboard marca com <code>~</code>), e é <b>régua</b>, não decisão: nenhuma rota muda por causa dela.</p>
       </div>
       <div class="cell">
         <p class="kick">Execução curada</p>
@@ -1754,6 +1886,155 @@
         <p>Ative constraints explicitamente com <code>policy_activate</code>, nunca auto-promovidas de lições: o <code>error-guard</code> nega no <code>PreToolUse</code> um Bash cuja falha reincide, políticas <b>always-apply</b> entram no contexto no início da sessão, e políticas <b>por glob</b> avisam ao editar um arquivo que casa o padrão. <b>Surfacing ≠ enforcement</b>: ficam presentes no contexto, não bloqueiam (exceto o <code>error-guard</code>). A Fase 3 agora fecha o ciclo: modo sombra mede, e <code>/policy-adjudicate</code> chama um <b>juiz LLM independente</b> para estimar disposições — estimativa de juiz, <b>não FP medido</b>.</p>
       </div>
     </div>
+  </section>
+
+
+  <section>
+    <p class="label">Novo na v2.20.2 · a média se parte por motivo</p>
+    <p class="lede">A v2.20.1 passou a medir o <b>tamanho</b> da fronteira fria. O <b>primeiro dado de campo</b> veio com um número desconfortável: <b>~7K de input por fronteira</b> — pequeno demais para uma sessão acumulada. É a assinatura de que a maioria das fronteiras é <code>no-state</code>, o <b>turno 0 de uma sessão nova</b>, onde não há praticamente nada para limpar. Só que o alvo da limpeza é a <b>outra</b> fronteira: a sessão longa que <b>esfriou</b>, com 100K+ de <code>tool_result</code> parado. Uma média única junta as duas e apaga justamente o caso que justifica a feature. A v2.20.2 separa a medida <b>por motivo da fronteira</b> — e, no mesmo passo, descobre o fator <code>chars→token</code> real em <b>tráfego próprio, sem chave de API</b>.</p>
+
+    <div class="callout">
+      <span class="tag">a mesma família de defeito, num disfarce novo</span>
+      Esta página já registrou um <b>alarme que mentia</b> (v2.19.1) e o cuidado com um número que <b>parecia maior</b> do que era (v2.20.1). Aqui não é nenhum dos dois: o 42% está <b>certo</b>. O defeito é a <b>agregação</b> — uma média que dilui o caso <b>raro e valioso</b> no caso <b>comum e vazio</b> e devolve um sinal que induz à decisão errada. Média honesta e conclusão errada convivem sem contradição: por isso a separação entra <b>antes</b> de a próxima fase ser aprovada — ou descartada.
+    </div>
+
+    <div class="rsn" role="group" aria-label="Artefato da versão 2.20.2: a régua da dispersão. Começa pelo primeiro dado de campo real, colhido na máquina do dono com o router em sticky-tier: 23 fronteiras, 165 mil tokens reconstruídos, 70 mil limpáveis, igual a 42 por cento, dando cerca de 7 mil de input por fronteira. Esse último número é destacado porque é pequeno demais para uma sessão acumulada, e é a assinatura de que a maioria das fronteiras é no-state, o turno zero de uma sessão nova. Vem então a assinatura desta versão: um eixo horizontal que vai de zero por cento a cem por cento de limpável. A versão 2.20.0 mediu no tempo, com a fita da sessão; a 2.20.1 mediu na pilha, com a coluna da fronteira; aqui a dimensão é a distribuição. Sobre o eixo há dois pontos cheios em âmbar, um perto de zero e outro perto de oitenta por cento, e entre eles uma linha tracejada marcando a média de campo em 42 por cento, com a legenda de que a média cai num ponto onde nenhuma das duas populações está. Abaixo do eixo, duas fichas descrevem as populações e marcam a procedência de cada número. A da esquerda é no-state: o turno zero de uma sessão nova, onde não há praticamente nada acumulado, e é a fronteira mais comum, o que puxa a média para baixo; em teste, ela entrega zero por cento limpável. A da direita, destacada em âmbar como o alvo, é gap-expired: a sessão longa que esfriou, com mais de cem mil tokens de tool_result parado, rara mas cara, e é ela que a limpeza automática ataca; em teste, ela entrega oitenta por cento de cento e vinte e cinco mil. Uma nota registra que os 42 por cento são campo, medidos, enquanto o zero e o oitenta são teste, os dois extremos provados, e que decidir pela média descartaria a feature pelo motivo errado. A segunda parte mostra os baldes. cacheCycle.byReason tem chaves fixas no código, e cada balde guarda contagem, tokens de input e tokens limpáveis. São três: no-state, o turno zero de uma sessão nova, sem nada acumulado para limpar; gap-expired, marcado como o alvo, a sessão longa que esfriou com o tool_result parado; e prior-miss, o miss observado na resposta anterior, quando o relógio ainda não estourou. Uma quarta linha, hachurada, mostra o que é recusado: um motivo desconhecido não vira chave nova, então o mapa de métricas não cresce com entrada externa. Em seguida vem a linha do dashboard, apresentada como formato e com números de exemplo: por motivo, gap-expired três vezes, trezentos e oitenta mil indo para cento e noventa mil, cinquenta por cento; e no-state doze vezes, oitenta e quatro mil indo para dois mil, dois por cento. A terceira parte é a calibração de chars para token sem chave de API. Duas trilhas comparam caminhos. À esquerda, tracejada, o caminho que parecia necessário: pedir uma chave da Anthropic e chamar o endpoint de contagem de tokens, o que custaria uma request por medida e colocaria uma credencial no caminho só para calibrar telemetria. À direita, com borda cheia, o caminho que já estava ali: no mesmo ponto em que o proxy mede o corpo em chars, a resposta traz o usage com a contagem de input real que a API acabou de reportar, e a razão entre os dois é o chars por token de verdade, medido em tráfego próprio, de graça, sem manusear credencial. Abaixo, a fórmula: charsPerToken é a soma dos chars dividida pela soma dos tokens reais, agregando em vez de tirar a média das razões, para que uma request grande pese mais, que é o correto para um fator global. Um bloco tracejado exibe o estado vazio declarado: charsPerToken é null enquanto não houver amostra, porque a métrica nunca finge medição. Três guardas fecham a parte: estimateTotalChars mede o corpo inteiro e inclui o system de propósito, já que ele costuma ser a maior parte do prefixo e ignorá-lo viciaria o fator para baixo; calibrationSample devolve null quando não dá para calibrar, porque um fator inventado é pior que fator nenhum e contaminaria toda a série; e metrics.calibration agrega chars e tokens reais, mantendo charsPerToken em null até a primeira amostra. No rodapé, a migração: estado gravado por versões anteriores é lido sem perder histórico, e os baldes novos entram zerados em vez de virar undefined e explodir na primeira fronteira.">
+      <div class="rsn-bar">
+        <span class="k">v2.20.2</span>
+        <span class="m">a média se separa por motivo · o fator chars→token medido em tráfego próprio, sem chave</span>
+      </div>
+
+      <div class="rsn-part">
+        <span class="rsn-ptag">a dispersão · a média cai onde nenhuma das duas populações está</span>
+
+        <div class="rsn-obs">
+          <span class="rsn-obk">1º dado de campo · router em sticky-tier</span>
+          <span class="rsn-obv">23 fronteiras · 165K reconstruídos · 70K limpáveis = 42% · <i>~7K de input por fronteira</i></span>
+        </div>
+
+        <p class="rsn-note" style="margin-bottom:16px">7K é <b>pequeno demais</b> para uma sessão acumulada. Não é erro de medida: é o retrato de uma população dominada por fronteiras <b>vazias</b>.</p>
+
+        <div class="rsn-ruler">
+          <p class="rsn-ends"><span>0% limpável</span><span>100%</span></p>
+          <div class="rsn-rail">
+            <span class="rsn-line" aria-hidden="true"></span>
+            <span class="rsn-avg" style="--x:42%" aria-hidden="true">
+              <span class="rsn-avglab">a média de campo · <i>42%</i></span>
+            </span>
+            <span class="rsn-dot" style="--x:2%" aria-hidden="true"></span>
+            <span class="rsn-dot" style="--x:80%" aria-hidden="true"></span>
+            <span class="rsn-gapl" aria-hidden="true">nenhuma fronteira mora aqui</span>
+          </div>
+        </div>
+
+        <div class="rsn-pops">
+          <div class="rsn-pop">
+            <span class="rsn-pk"><code>no-state</code> · a comum</span>
+            <span class="rsn-pw">Turno <b>0</b> de uma sessão nova. Não há praticamente nada acumulado — é a fronteira que <b>mais aparece</b>, e é ela que puxa a média para baixo.</span>
+            <span class="rsn-pnum">teste · 0% limpável</span>
+          </div>
+          <div class="rsn-pop rsn-pop--target">
+            <span class="rsn-pk"><code>gap-expired</code> · a que decide</span>
+            <span class="rsn-pw">A sessão longa que <b>esfriou</b>, com 100K+ de <code>tool_result</code> parado. <b>Rara e cara</b> — e é exatamente ela que a limpeza automática ataca.</span>
+            <span class="rsn-pnum">teste · 80% de 125K</span>
+          </div>
+        </div>
+
+        <p class="rsn-note">Os <b>42%</b> são <b>campo</b> (medido); o <b>0%</b> e o <b>80%</b> são <b>teste</b> (os dois extremos provados). A média é aritmética honesta e conclusão errada: ela descreve <b>nenhuma</b> das duas, e decidir por ela descartaria a feature <b>pelo motivo errado</b>.</p>
+      </div>
+
+      <div class="rsn-part">
+        <span class="rsn-ptag">os baldes · <code>cacheCycle.byReason</code>, com chaves fixas no código</span>
+
+        <div class="rsn-buckets">
+          <div class="rsn-brow">
+            <span class="rsn-bk"><code>no-state</code></span>
+            <span class="rsn-bw">turno 0 de uma sessão nova — nada acumulado para limpar</span>
+            <span class="rsn-bf">fixo</span>
+          </div>
+          <div class="rsn-brow rsn-brow--target">
+            <span class="rsn-bk"><code>gap-expired</code></span>
+            <span class="rsn-bw">a sessão longa que esfriou — o <code>tool_result</code> parado</span>
+            <span class="rsn-bf">fixo · o alvo</span>
+          </div>
+          <div class="rsn-brow">
+            <span class="rsn-bk"><code>prior-miss</code></span>
+            <span class="rsn-bw">o <i>miss</i> observado na resposta anterior, com o relógio ainda dentro do TTL</span>
+            <span class="rsn-bf">fixo</span>
+          </div>
+          <div class="rsn-brow rsn-brow--rej">
+            <span class="rsn-bk">motivo desconhecido</span>
+            <span class="rsn-bw">não vira chave nova — o mapa de métricas não cresce com entrada externa</span>
+            <span class="rsn-bf">recusado</span>
+          </div>
+        </div>
+
+        <p class="rsn-note" style="margin-bottom:14px">Cada balde guarda <code>count</code>, <code>inputTokens</code> e <code>clearableTokens</code>. Três chaves, sempre as mesmas: um balde novo só nasce de uma <b>edição no código</b>, nunca de um campo que chegou de fora.</p>
+
+        <div class="rsn-read">
+          <span class="rsn-rk">dashboard</span>
+          <span class="rsn-rv">por motivo: <i>gap-expired</i> 3× 380K→190K (50%) · <i>no-state</i> 12× 84K→2K (2%)</span>
+        </div>
+
+        <p class="rsn-note">É o <b>formato</b> — os números acima são <b>exemplo</b>, não medição. A leitura agregada da v2.20.1 continua ali: esta linha não a substitui, apenas mostra <b>de quem</b> cada parte dela veio.</p>
+      </div>
+
+      <div class="rsn-part">
+        <span class="rsn-ptag">a calibração · o fator <code>chars→token</code> sem chave de API</span>
+
+        <div class="rsn-fork">
+          <div class="rsn-lane rsn-lane--seemed">
+            <span class="rsn-lwhat">o caminho que parecia necessário</span>
+            <span class="rsn-ltag">descartado</span>
+            <span class="rsn-lwhy">Pedir uma <b>chave da Anthropic</b> e chamar <code>/count_tokens</code>: uma request <b>por medida</b>, e uma <b>credencial no caminho</b> só para calibrar telemetria.</span>
+          </div>
+          <div class="rsn-lane rsn-lane--taken">
+            <span class="rsn-lwhat">o que o proxy já vê</span>
+            <span class="rsn-ltag">no mesmo ponto</span>
+            <span class="rsn-lwhy">O corpo que ele mede em <b>chars</b> — e o <code>usage</code> com a contagem de input <b>real</b> que a API acabou de reportar. A razão entre os dois <b>é</b> o chars-por-token de verdade.</span>
+          </div>
+        </div>
+
+        <div class="rsn-sum"><b>charsPerToken</b> = Σ <i>chars medidos</i> ÷ Σ <i>tokens reais reportados</i> — <b>agrega</b>, não tira a média das razões: uma request grande <b>pesa mais</b>, que é o correto para um fator global.</div>
+
+        <div class="rsn-null">
+          <span class="rsn-nullk">charsPerToken: <i>null</i></span>
+          <span class="rsn-nullw">o <b>null da métrica</b>: enquanto <b>nenhuma</b> amostra tiver sido aceita. O estado vazio é <b>declarado</b>, não preenchido — a métrica nunca <b>finge medição</b>.</span>
+        </div>
+
+        <div class="rsn-guards">
+          <div class="rsn-guard">
+            <b><code>estimateTotalChars</code></b>
+            <span>o corpo <b>inteiro</b> — o <code>system</code> entra <b>de propósito</b>: é a maior parte do prefixo, e ignorá-lo viciaria o fator <b>para baixo</b></span>
+          </div>
+          <div class="rsn-guard rsn-guard--hi">
+            <b><code>calibrationSample</code></b>
+            <span>o <b>null por amostra</b>: devolve <code>null</code> quando <b>aquela</b> request não dá para calibrar. Fator inventado é pior que fator nenhum — <b>contaminaria toda a série</b></span>
+          </div>
+          <div class="rsn-guard">
+            <b><code>metrics.calibration</code></b>
+            <span>o <b>agregado global</b>: soma os chars medidos e os tokens reais de <b>todas</b> as amostras aceitas — é dele que sai o fator exposto no snapshot</span>
+          </div>
+        </div>
+
+        <p class="rsn-note">Nenhuma credencial é lida, guardada ou enviada para isso: o dado já <b>passava</b> pelo proxy, medido de um lado e reportado do outro, na <b>mesma</b> request que o usuário já pagou. A calibração é <b>de graça</b> — e é a única coisa aqui que pode transformar a estimativa <code>chars ÷ 4</code> num fator <b>observado</b>.</p>
+      </div>
+
+      <div class="rsn-foot"><b>Estado antigo continua legível:</b> o que versões anteriores gravaram é migrado <b>sem perder histórico</b> — os baldes novos entram <b>zerados</b> em vez de virar <code>undefined</code> e explodir na primeira fronteira. Como sempre nesta página, telemetria <b>não derruba o proxy</b>: nada aqui muda uma decisão de roteamento, e nada aqui é limpo — é <b>régua</b>, agora com a escala certa para o caso que ela precisa julgar.</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>O caso que decide para de sumir no agregado</h4>
+        <p>A sessão que <b>esfriou cheia</b> deixa de ser diluída na sessão que <b>nasceu vazia</b>. A decisão sobre a próxima fase passa a olhar o balde que ela <b>ataca</b> — <code>gap-expired</code> —, não a média de tudo. Um <b>42%</b> que não descreve nenhuma das duas para de ser o número que decide.</p>
+      </div>
+      <div class="win">
+        <h4>O fator de conversão sai do palpite, sem credencial</h4>
+        <p>O <code>chars ÷ 4</code> pode virar um fator <b>observado</b>, medido no tráfego que já passa pelo proxy — <b>sem chave de API</b>, sem request extra, sem credencial no caminho. E enquanto não houver amostra, <code>charsPerToken</code> é <code>null</code>: um fator inventado seria pior que nenhum.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Rigor de sempre:</b> as chaves dos baldes são <b>fixas no código</b> — <code>no-state</code>, <code>gap-expired</code>, <code>prior-miss</code> — e um motivo desconhecido <b>não vira chave nova</b>, então o mapa de métricas não cresce com entrada externa. A separação é provada com os <b>dois extremos</b>: sessão nova → <b>0%</b> limpável; sessão que esfriou → <b>80%</b> de 125K — exatamente o par que uma média única transformaria num número intermediário que não descreve nenhum dos dois. <code>estimateTotalChars</code> e <code>calibrationSample</code> são <b>funções puras</b> — entram o corpo e o <code>usage</code>, sai <code>{ chars, realTokens, ratio }</code> ou <code>null</code> —, testáveis <b>sem subir proxy</b>, inclusive nos casos em que <b>não</b> dá para calibrar. E estado gravado por versões anteriores é <b>migrado</b>: balde novo entra <b>zerado</b>, nunca <code>undefined</code>. Tudo em <b>TDD RED→GREEN</b>.</p>
   </section>
 
 
