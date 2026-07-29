@@ -1,5 +1,16 @@
 # Changelog
 
+## [2.20.0] - 2026-07-29
+
+**O model-router para de custar e passa a render — e a ganhar uma régua.** Duas entregas que atacam o mesmo alvo pelos dois lados: uma **reduz** o custo do proxy (mais hit de cache), a outra **mede** o ciclo de cache, para que qualquer otimização futura tenha um baseline em vez de fé.
+
+### `CLAUDE_CODE_ATTRIBUTION_HEADER=0` com o proxy ligado (hit de cache)
+
+O bloco de atribuição (versão do cliente + fingerprint do prompt) abre o system prompt e **muda entre versões e sessões**. Atrás de um gateway isso invalida o prefixo cacheado a cada request. A doc do Claude Code é explícita: desligá-lo *"improves prompt-cache hit rates when routing through an LLM gateway"*, e numa conexão direta o cache *"is unaffected either way"*.
+
+- `planEnableEnv` passa a gravar **`CLAUDE_CODE_ATTRIBUTION_HEADER=0`** junto do resto do bundle — ou seja, **só quando o proxy está no caminho**, que é onde o ganho existe. `planTuningEnv` (o tuning sem proxy) **não** grava: mexer ali seria ruído sem retorno.
+- Mesmas invariantes de sempre: `== null` só preenche o ausente (um `1` deliberado do usuário sobrevive) e o `disable` remove **só** o valor que nós teríamos escrito, nunca um do usuário.
+
 ## [2.19.1] - 2026-07-28
 
 **Hotfix de três defeitos reportados em campo na v2.19.0** — dois deles são alarmes do próprio plugin que *mentiam*. A causa-raiz de cada um foi verificada no código e no comportamento real, não deduzida do relato.
