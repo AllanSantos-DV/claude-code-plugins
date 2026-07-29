@@ -5944,6 +5944,119 @@ test('metricsCacheCycle: sem premio medido, os contadores de tamanho ficam INTAC
 });
 
 
+// ─── fronteira POR MOTIVO + calibração in-band (dado de campo, 2026-07-29) ────
+// Medição real: 23 fronteiras, media de ~7K de input cada. Pequeno demais p/ uma
+// sessao acumulada — assinatura de que a maioria e `no-state` (turno 0 de sessao
+// NOVA, onde nao ha nada acumulado p/ limpar). O alvo da limpeza e a OUTRA
+// fronteira: a sessao LONGA que esfriou (`gap-expired`), com 100K+ de tool_result
+// parado. Somar as duas numa media unica esconde justamente o caso que decide, e
+// decidir pela media mataria a fase seguinte pelo motivo errado.
+
+test('metricsCacheCycle: separa fronteira de sessao NOVA da que ESFRIOU', () => {
+  routerServer.resetMetrics();
+  const m0 = routerServer.metricsSnapshot();
+  assertEq(typeof m0.cacheCycle.byReason, 'object', 'baseline por motivo existe desde o boot');
+  assertEq(m0.cacheCycle.byReason['no-state'].count, 0);
+  assertEq(m0.cacheCycle.byReason['gap-expired'].count, 0);
+  assertEq(m0.cacheCycle.byReason['prior-miss'].count, 0);
+
+  // turno 0 de sessao nova: quase nada acumulado
+  routerServer.metricsCacheCycle({
+    state: { lastCacheState: 'miss' }, boundary: { cold: true, reason: 'no-state' },
+    prize: { inputTokens: 3000, clearableTokens: 200 },
+  });
+  // sessao LONGA que esfriou: o caso que a limpeza existe p/ atacar
+  routerServer.metricsCacheCycle({
+    state: { lastCacheState: 'miss' }, boundary: { cold: true, reason: 'gap-expired' },
+    prize: { inputTokens: 140000, clearableTokens: 68000 },
+  });
+  const m = routerServer.metricsSnapshot();
+  assertEq(m.cacheCycle.byReason['no-state'].clearableTokens, 200);
+  assertEq(m.cacheCycle.byReason['gap-expired'].clearableTokens, 68000);
+  assertEq(m.cacheCycle.coldBoundaryClearableTokens, 68200, 'o total continua batendo com a soma');
+  routerServer.resetMetrics();
+});
+
+test('metricsCacheCycle: motivo desconhecido nao derruba nem inventa bucket', () => {
+  routerServer.resetMetrics();
+  routerServer.metricsCacheCycle({
+    state: { lastCacheState: 'miss' }, boundary: { cold: true, reason: 'motivo-que-nao-existe' },
+    prize: { inputTokens: 500, clearableTokens: 100 },
+  });
+  const m = routerServer.metricsSnapshot();
+  assertEq(m.cacheCycle.coldBoundaries, 1, 'a fronteira continua contada');
+  assertEq(Object.keys(m.cacheCycle.byReason).length, 3, 'nao cria bucket novo a partir de entrada externa');
+  routerServer.resetMetrics();
+});
+
+// CALIBRAÇÃO IN-BAND: o `clearableTokens` e estimativa (chars/4). O fator real
+// nao precisa de API key nem de /count_tokens: o proxy ja ve, no MESMO ponto, o
+// total de input REAL que a Anthropic reportou e o corpo que ele mediu em chars.
+// A razao entre os dois E o chars-por-token, medido em trafego real, de graca.
+
+test('estimateTotalChars: mede o corpo INTEIRO (denominador da calibracao)', () => {
+  const body = {
+    system: 's'.repeat(100),
+    messages: [
+      { role: 'user', content: 'u'.repeat(200) },
+      { role: 'assistant', content: [{ type: 'text', text: 't'.repeat(300) }] },
+    ],
+  };
+  const chars = cacheCycle.estimateTotalChars(body);
+  assertEq(chars >= 600, true, 'system + as duas mensagens entram, got ' + chars);
+  assertEq(cacheCycle.estimateTotalChars(null), 0, 'corpo ausente → zero, sem inventar');
+});
+
+test('estimateTotalChars: system em BLOCOS (shape real do Claude Code) tambem conta', () => {
+  const chars = cacheCycle.estimateTotalChars({
+    system: [{ type: 'text', text: 'x'.repeat(500) }], messages: [],
+  });
+  assertEq(chars >= 500, true, 'o system e a maior parte do prefixo; ignora-lo viciaria o fator, got ' + chars);
+});
+
+test('calibrationSample: razao chars/token a partir do usage REAL da resposta', () => {
+  // 40000 chars de corpo contra 10000 tokens reais → 4.0 chars/token
+  const s = cacheCycle.calibrationSample(40000, { in: 2000, cacheRead: 5000, cacheCreate: 3000 });
+  assertEq(s.realTokens, 10000, 'input real = in + cacheRead + cacheCreate');
+  assertEq(s.chars, 40000);
+  assertEq(s.ratio, 4);
+});
+
+test('calibrationSample: sem usage utilizavel → null (nao fabrica fator)', () => {
+  assertEq(cacheCycle.calibrationSample(40000, { in: 0, cacheRead: 0, cacheCreate: 0 }), null);
+  assertEq(cacheCycle.calibrationSample(0, { in: 100 }), null, 'corpo vazio nao calibra nada');
+  assertEq(cacheCycle.calibrationSample(40000, null), null);
+});
+
+test('metricsCalibration: acumula chars e tokens reais p/ o fator sair de MUITAS amostras', () => {
+  routerServer.resetMetrics();
+  const m0 = routerServer.metricsSnapshot();
+  assertEq(m0.calibration.chars, 0, 'baseline desde o boot');
+  assertEq(m0.calibration.realTokens, 0);
+  assertEq(m0.calibration.charsPerToken, null, 'sem amostra, NAO finge um fator');
+
+  routerServer.metricsCalibration({ chars: 40000, realTokens: 10000, ratio: 4 });
+  routerServer.metricsCalibration({ chars: 21000, realTokens: 6000, ratio: 3.5 });
+  const m = routerServer.metricsSnapshot();
+  assertEq(m.calibration.samples, 2);
+  assertEq(m.calibration.chars, 61000);
+  assertEq(m.calibration.realTokens, 16000);
+  // agregado (61000/16000 = 3.8125), NAO a media das razoes — amostra grande pesa mais
+  assertEq(m.calibration.charsPerToken, 3.81);
+  routerServer.resetMetrics();
+});
+
+test('metricsCalibration: amostra invalida (null) e ignorada sem sujar o agregado', () => {
+  routerServer.resetMetrics();
+  routerServer.metricsCalibration(null);
+  routerServer.metricsCalibration({ chars: 8000, realTokens: 2000, ratio: 4 });
+  const m = routerServer.metricsSnapshot();
+  assertEq(m.calibration.samples, 1);
+  assertEq(m.calibration.charsPerToken, 4);
+  routerServer.resetMetrics();
+});
+
+
 test('observeCacheCycle: o mapa de sessões tem TETO DURO (proxy longevo não vaza)', () => {
   const states = new Map();
   // 5100 sessões distintas, TODAS recentes: a poda por idade sozinha não remove
