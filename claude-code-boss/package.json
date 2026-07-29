@@ -1,6 +1,6 @@
 {
   "name": "claude-code-plugin-brain",
-  "version": "2.19.0",
+  "version": "2.19.1",
   "private": true,
   "description": "Claude Code plugin — Brain Research knowledge base",
   "type": "commonjs",
@@ -12,6 +12,7 @@
     "node": ">=22.13.0"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
     "@xenova/transformers": "^2.17.0"
   },
   "devDependencies": {

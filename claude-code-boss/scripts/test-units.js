@@ -2237,6 +2237,82 @@ test('skill-promote-trigger.loadCfg: reads kb.skillPromotion block', () => {
 // ─── brain-health (countPendingDrafts) ───────────────────────────────────────
 const brainHealth = require('./brain-health.js');
 
+// ─── deps do brain-server: resolucao, nao existencia de pasta (report de campo) ──
+// Report de campo (v2.19.0): apos `claude plugin update` o Brain MCP ficou DOWN —
+// `servers/brain-server/node_modules` ausente, embora o node_modules da RAIZ
+// estivesse OK. Causa: o fix de 1.8.1 delegou a instalacao ao `postinstall`, um
+// lifecycle hook que quem decide rodar e o HOST. Ja regrediu 2x. A rota que NAO
+// depende do host: declarar a dep na RAIZ — a resolucao de bare-specifier do Node
+// (inclusive ESM) sobe a arvore de diretorios ate achar.
+
+test('brain-server: a unica dep dele e declarada TAMBEM na raiz (independe do postinstall)', () => {
+  const bs = JSON.parse(fs.readFileSync(path.join(ROOT, 'servers', 'brain-server', 'package.json'), 'utf8'));
+  const root = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  const bsDeps = Object.keys(bs.dependencies || {});
+  assertEq(bsDeps.length > 0, true, 'o brain-server declara dependencia');
+  for (const dep of bsDeps) {
+    assertEq(
+      !!(root.dependencies || {})[dep], true,
+      `${dep} precisa estar nas deps da RAIZ, senao o MCP cai quando o postinstall nao roda`,
+    );
+  }
+});
+
+test('brain-health.brainServerDepsOk: aceita a dep resolvida pela RAIZ (sem pasta local)', () => {
+  // O check antigo exigia a PASTA servers/brain-server/node_modules. Com a dep
+  // hasteada p/ a raiz esse check vira falso negativo: acusa DOWN um MCP saudavel.
+  if (!brainHealth.brainServerDepsOk) throw new Error('brainServerDepsOk nao exportado');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bsdeps-'));
+  fs.mkdirSync(path.join(tmp, 'servers', 'brain-server'), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, 'servers', 'brain-server', 'package.json'),
+    JSON.stringify({ type: 'module', dependencies: { 'fake-mcp-sdk': '^1.0.0' } }),
+  );
+  // SEM node_modules local; a dep vive so na raiz — exatamente o cenario de campo.
+  fs.mkdirSync(path.join(tmp, 'node_modules', 'fake-mcp-sdk'), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, 'node_modules', 'fake-mcp-sdk', 'package.json'),
+    JSON.stringify({ name: 'fake-mcp-sdk', version: '1.0.0', main: 'i.js' }),
+  );
+  fs.writeFileSync(path.join(tmp, 'node_modules', 'fake-mcp-sdk', 'i.js'), 'module.exports={};');
+  assertEq(brainHealth.brainServerDepsOk(tmp).ok, true, 'resolveu pela raiz → MCP esta OK');
+});
+
+test('brain-health.brainServerDepsOk: dep ESM-only (sem condicao require) NAO vira falso alarme', () => {
+  // Armadilha do proprio check: `require.resolve` falha em pacote ESM-only cujo
+  // `exports` so tem a condicao "import" — embora o `import` do brain-server (que
+  // e ESM) funcione perfeitamente. Reportar DOWN af seria exatamente o defeito que
+  // este hotfix combate: um alarme que mente.
+  if (!brainHealth.brainServerDepsOk) throw new Error('brainServerDepsOk nao exportado');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bsesm-'));
+  fs.mkdirSync(path.join(tmp, 'servers', 'brain-server'), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, 'servers', 'brain-server', 'package.json'),
+    JSON.stringify({ type: 'module', dependencies: { 'esm-only-pkg': '^1.0.0' } }),
+  );
+  const dep = path.join(tmp, 'node_modules', 'esm-only-pkg');
+  fs.mkdirSync(dep, { recursive: true });
+  fs.writeFileSync(path.join(dep, 'package.json'), JSON.stringify({
+    name: 'esm-only-pkg', version: '1.0.0', type: 'module',
+    exports: { '.': { import: './i.mjs' } }, // sem "require" E sem "./package.json"
+  }));
+  fs.writeFileSync(path.join(dep, 'i.mjs'), 'export default 1;');
+  assertEq(brainHealth.brainServerDepsOk(tmp).ok, true, 'o pacote ESTA la — o import vai funcionar');
+});
+
+test('brain-health.brainServerDepsOk: dep REALMENTE ausente continua falhando alto', () => {
+  if (!brainHealth.brainServerDepsOk) throw new Error('brainServerDepsOk nao exportado');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bsdeps-'));
+  fs.mkdirSync(path.join(tmp, 'servers', 'brain-server'), { recursive: true });
+  fs.writeFileSync(
+    path.join(tmp, 'servers', 'brain-server', 'package.json'),
+    JSON.stringify({ type: 'module', dependencies: { 'nao-existe-em-lugar-nenhum-xyz': '^1.0.0' } }),
+  );
+  const r = brainHealth.brainServerDepsOk(tmp);
+  assertEq(r.ok, false, 'ausencia genuina NAO pode ser mascarada');
+  assertEq(/nao-existe-em-lugar-nenhum-xyz/.test(r.detail), true, 'diz QUAL dep faltou');
+});
+
 test('brain-health.countPendingDrafts: missing dir → 0', () => {
   if (!brainHealth.countPendingDrafts) return; // not exported yet
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pending-'));
@@ -2621,6 +2697,53 @@ test('recall-health.isDegraded: classifies degraded vs ok reasons', () => {
   const rh = require('./lib/recall-health.js');
   assert(rh.isDegraded('no-compose') && rh.isDegraded('remote-error') && rh.isDegraded('timeout'), 'degraded reasons');
   assert(!rh.isDegraded('no-match') && !rh.isDegraded(undefined) && !rh.isDegraded(''), 'ok reasons');
+});
+
+// ─── recall-health: JANELA DESLIZANTE (report de campo v2.19.0) ───────────────
+// O usuario CONSERTOU a causa (deps do brain-server faltando) e o alarme continuou
+// gritando "205 de 878 recalls RECENTES vazios": o contador era vitalicio, sem
+// janela nem decaimento, entao as falhas da epoca em que o MCP estava DOWN ficavam
+// cravadas p/ sempre. Um alarme que nunca apaga ensina a ignorar o alarme — e af
+// a proxima degradacao REAL passa batida. Corrigir o sinal, nunca silencia-lo.
+
+test('recall-health.summarize: mede a taxa DENTRO da janela, nao a vitalicia', () => {
+  const rh = require('./lib/recall-health.js');
+  // 200 falhas antigas + 50 sucessos recentes: a janela recente esta LIMPA.
+  const recent = [];
+  for (let i = 0; i < 50; i++) recent.push({ ok: true, ts: 1000 + i });
+  const s = rh.summarize({ ok: 673, degraded: 205, byReason: { 'remote-error': 205 }, recent });
+  assertEq(s.windowTotal, 50);
+  assertEq(s.windowDegraded, 0);
+  assertEq(s.degradedRate, 0, 'o passado ja consertado NAO conta como degradacao atual');
+  assertEq(s.lifetimeDegraded, 205, 'o historico continua auditavel, so nao decide o alarme');
+});
+
+test('recall-health.summarize: degradacao EM CURSO continua gritando alto', () => {
+  const rh = require('./lib/recall-health.js');
+  const recent = [];
+  for (let i = 0; i < 20; i++) recent.push({ ok: false, reason: 'remote-error', ts: 1000 + i });
+  const s = rh.summarize({ ok: 0, degraded: 20, byReason: {}, recent });
+  assertEq(s.windowDegraded, 20);
+  assertEq(s.degradedRate, 1, 'fail-loud preservado: quebrado agora = 100%');
+});
+
+test('recall-health.record: a janela tem TETO (nao cresce sem limite no disco)', () => {
+  const rh = require('./lib/recall-health.js');
+  let h = { ok: 0, degraded: 0, byReason: {}, recent: [] };
+  for (let i = 0; i < rh.WINDOW_SIZE + 40; i++) h = rh.applyOutcome(h, i % 2 ? 'remote-error' : undefined, 1000 + i);
+  assertEq(h.recent.length, rh.WINDOW_SIZE, 'a janela satura no teto');
+  assertEq(h.ok + h.degraded, rh.WINDOW_SIZE + 40, 'o total VITALICIO segue contando (auditoria)');
+  assertEq(h.recent[h.recent.length - 1].ts, 1000 + rh.WINDOW_SIZE + 39, 'guarda os MAIS RECENTES');
+});
+
+test('recall-health.applyOutcome: estado legado (sem `recent`) migra sem perder o historico', () => {
+  const rh = require('./lib/recall-health.js');
+  // Arquivo gravado por uma versao anterior: so tem os totais vitalicios.
+  const h = rh.applyOutcome({ ok: 673, degraded: 205, byReason: { 'remote-error': 205 } }, undefined, 5000);
+  assertEq(h.ok, 674, 'nao zera o que ja existia');
+  assertEq(Array.isArray(h.recent), true, 'a janela passa a existir a partir de agora');
+  assertEq(h.recent.length, 1);
+  assertEq(rh.summarize(h).degradedRate, 0, 'a janela nova comeca limpa — o alarme PODE se apagar');
 });
 
 test('brain-config.getRecallCompose: sane defaults', () => {
@@ -6086,10 +6209,55 @@ test('doctor.checkDaemon: no lock → ok, unhealthy lock → warn, healthy → o
   assertEq(doctor.checkDaemon({ daemon: { lockPresent: true, healthy: true, tokenReadable: false } }).status, 'warn');
 });
 
-test('doctor.checkHooksEvents: standard ok, runtime-dependent warn, unknown fail', () => {
+test('doctor.checkHooksEvents: evento OFICIAL nao pode virar falso positivo (report de campo)', () => {
+  // Report de campo (v2.19.0): o doctor gritou `[x] unrecognized event(s): SubagentStart`
+  // e mandou "corrigir o nome em hooks/hooks.json". SubagentStart e um evento OFICIAL
+  // e documentado ("When a subagent is spawned"), usado pelo plugin p/ injetar as
+  // politicas no subagente. O alarme MENTIU e instruiu o usuario a quebrar algo que
+  // funciona — o inverso de fail-loud.
   assertEq(doctor.checkHooksEvents({ hooksEvents: ['SessionStart', 'Stop', 'PreToolUse'] }).status, 'ok');
-  assertEq(doctor.checkHooksEvents({ hooksEvents: ['Stop', 'UserPromptExpansion', 'PostToolUseFailure'] }).status, 'warn');
-  assertEq(doctor.checkHooksEvents({ hooksEvents: ['Stop', 'BogusEvent'] }).status, 'fail');
+  assertEq(doctor.checkHooksEvents({ hooksEvents: ['SubagentStart', 'SubagentStop'] }).status, 'ok');
+  // A lista tem que cobrir o ciclo de vida documentado, nao um subconjunto de 9.
+  // (UserPromptExpansion/PostToolUseFailure sao oficiais MAS runtime-dependentes →
+  // saem como aviso informativo de proposito; o que nao pode e virar DESCONHECIDO.)
+  const oficiais = [
+    'Setup', 'PermissionRequest', 'PermissionDenied', 'PostToolBatch', 'MessageDisplay',
+    'TaskCreated', 'TaskCompleted', 'StopFailure', 'TeammateIdle', 'InstructionsLoaded',
+    'ConfigChange', 'CwdChanged', 'FileChanged', 'WorktreeCreate', 'WorktreeRemove',
+    'PostCompact', 'Elicitation', 'ElicitationResult', 'SessionEnd',
+  ];
+  for (const ev of oficiais) {
+    assertEq(doctor.checkHooksEvents({ hooksEvents: [ev] }).status, 'ok', `${ev} e oficial`);
+  }
+  for (const ev of ['UserPromptExpansion', 'PostToolUseFailure']) {
+    const r = doctor.checkHooksEvents({ hooksEvents: [ev] });
+    assertEq(r.status, 'warn', `${ev} e runtime-dependente`);
+    assertEq(/fora da lista conhecida/.test(r.detail), false, `${ev} NAO pode ser tratado como desconhecido`);
+  }
+});
+
+test('doctor.checkHooksEvents: evento DESCONHECIDO avisa (warn), nunca crava fail', () => {
+  // Nao da p/ distinguir um typo de um evento MAIS NOVO que este plugin. Cravar `fail`
+  // + "corrija o nome" afirma uma certeza que nao temos — e foi exatamente o que
+  // queimou o usuario. Warn continua VISIVEL (fail-loud preservado) sem mentir.
+  const r = doctor.checkHooksEvents({ hooksEvents: ['Stop', 'BogusEvent'] });
+  assertEq(r.status, 'warn');
+  assertEq(/BogusEvent/.test(r.detail), true, 'o evento desconhecido continua nomeado');
+  assertEq(/typo|mais nov|newer|doc/i.test(r.fix), true, 'o fix admite as DUAS hipoteses');
+});
+
+test('doctor: nenhum evento do NOSSO hooks.json cai como DESCONHECIDO', () => {
+  // Guard anti-regressao: o plugin nunca mais pode alarmar contra si mesmo. O
+  // veredito pode ser `warn` (temos eventos runtime-dependentes), mas NENHUM
+  // evento nosso pode ser reportado como "fora da lista conhecida".
+  const hooksJson = JSON.parse(
+    fs.readFileSync(path.join(__dirname, '..', 'hooks', 'hooks.json'), 'utf8'),
+  );
+  const eventos = Object.keys(hooksJson.hooks || hooksJson);
+  assertEq(eventos.length > 0, true, 'hooks.json declara eventos');
+  const r = doctor.checkHooksEvents({ hooksEvents: eventos });
+  assertEq(r.status !== 'fail', true, 'o proprio plugin nunca pode reprovar no doctor');
+  assertEq(/fora da lista conhecida/.test(r.detail || ''), false, 'eventos: ' + eventos.join(','));
 });
 
 test('doctor.runChecks + summarize: criticalFail flagged, counts add up', () => {
