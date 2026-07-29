@@ -89,10 +89,22 @@ deterministic guard — **no AI, no quota**, like pages-guard —
 - **Tag scheme**: `claude-code-boss` version `V` → tag `v<V>`; `rf-reviewer`
   version `V` → tag `rf-v<V>`.
 - **CI signal** (`.github/workflows/release-guard.yml`) runs on push to `main`
-  (not on PRs, so it never blocks development) and goes **red** while any plugin's
-  version has no tag — a loud, mechanical drift signal.
+  **and on a 6-hourly `schedule`** (not on PRs, so it never blocks development).
+- **Why also scheduled**: release drift is a **state**, not an event. Triggered only
+  by push, the guard ran exactly *between the merge and the tag* — the window in
+  which `main` legitimately has an untagged version — so it went red on **every**
+  release (v2.19.0, v2.19.1, v2.20.0: 3 for 3). An alarm that always fires teaches
+  you to ignore the alarm. Two coupled fixes: the script got a **settling window**
+  (`GRACE_MS`, 45min) so a version that *just* landed is reported `pending`
+  ("release in flight") instead of drift — dated by git pickaxe (`log -S`) on the
+  version file, i.e. *how long this version has been on main*, not the HEAD
+  timestamp which any push moves; and the **cron** exists so that window never
+  becomes a blind spot (without it, "merged and forgot to tag" would pass at push
+  time and never be re-evaluated). Indeterminate age is **not** an excuse: it is
+  reported as drift, saying it couldn't measure.
 - **Local**: `node .github/scripts/release-guard.mjs check` (exit 1 on drift) ·
-  `... list` (json).
+  `... list` (json). The module is importable (the CLI only runs when invoked
+  directly), so `classify` is unit-tested in `test-units.js`.
 - Pushing a tag (`v*` or `rf-v*`) triggers `.github/workflows/release.yml`, which
   packages that plugin and publishes the GitHub Release. The guard only *detects*;
   **publishing stays a human/agent action so the smoke gate above is preserved.**
