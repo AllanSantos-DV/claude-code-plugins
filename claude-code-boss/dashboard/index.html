@@ -1472,6 +1472,17 @@ function renderRouterMetrics(m, live) {
   const ccClear = cc.coldBoundaryClearableTokens || 0;
   const ccPct = ccIn > 0 ? Math.round((ccClear / ccIn) * 100) : 0;
   const kt = (n) => (n >= 1000 ? `${Math.round(n / 1000)}K` : String(n));
+  // Quebra por motivo: a média agregada mistura a fronteira de sessão NOVA
+  // (nada acumulado, ~0% limpável) com a da sessão que ESFRIOU (o alvo real).
+  // Ver só a média faria descartar a limpeza pelo motivo errado.
+  const br = cc.byReason || {};
+  const brLine = Object.entries(br)
+    .filter(([, v]) => v && v.count > 0)
+    .map(([k, v]) => `${k} ${v.count}× ${kt(v.inputTokens)}→${kt(v.clearableTokens)}`
+      + (v.inputTokens > 0 ? ` (${Math.round((v.clearableTokens / v.inputTokens) * 100)}%)` : ''))
+    .join(' · ');
+  // Fator chars→token medido no próprio tráfego; ausente até haver amostra.
+  const cal = m.calibration || {};
   const sub = `${t('router.mClassified')}: ${m.classified || 0} · `
     + `${t('router.mServedClaude')}: ${m.servedClaude || 0} · `
     + `${t('router.mCooldowns')}: ${m.cooldownArms || 0} · `
@@ -1480,6 +1491,8 @@ function renderRouterMetrics(m, live) {
     + (ccTotal > 0 ? ` · ciclo ${ccHits}q/${ccMisses}f · fronteiras frias ${ccBoundaries}` : '')
     // Estimativa declarada (chars/4), não medição exata — serve p/ dimensionar.
     + (ccIn > 0 ? ` (${kt(ccIn)} reconstruídos, ~${kt(ccClear)} limpáveis = ${ccPct}%)` : '')
+    + (brLine ? `<br>por motivo: ${brLine}` : '')
+    + (cal.charsPerToken ? ` · calibração ${cal.charsPerToken} chars/token (${cal.samples} amostras)` : '')
     + (live ? '' : ` · ${t('router.mStale')}`);
   return routerTrafficBanner(m, live)
     + `<div style="display:flex;flex-wrap:wrap;gap:.5rem">${tiles}</div>`

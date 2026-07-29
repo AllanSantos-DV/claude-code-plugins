@@ -1194,7 +1194,16 @@ function newMetrics() {
     cacheCycle:      {
       hits: 0, misses: 0, coldBoundaries: 0,
       coldBoundaryInputTokens: 0, coldBoundaryClearableTokens: 0,
+      // Quebra por MOTIVO da fronteira. Buckets fixos (nunca criados a partir de
+      // entrada externa): sessão nova × sessão que esfriou × miss observado.
+      byReason: {
+        'no-state':    { count: 0, inputTokens: 0, clearableTokens: 0 },
+        'gap-expired': { count: 0, inputTokens: 0, clearableTokens: 0 },
+        'prior-miss':  { count: 0, inputTokens: 0, clearableTokens: 0 },
+      },
     },
+    // Calibração chars→token medida no próprio tráfego (sem API key).
+    calibration:     { samples: 0, chars: 0, realTokens: 0 },
   };
 }
 
@@ -1212,7 +1221,18 @@ function loadMetrics() {
         cacheCycle: Object.assign(
           { hits: 0, misses: 0, coldBoundaries: 0, coldBoundaryInputTokens: 0, coldBoundaryClearableTokens: 0 },
           saved.cacheCycle || {},
+          // byReason precisa dos 3 buckets SEMPRE presentes: um metrics.json de
+          // versão anterior não os tem, e `bucket.count += 1` num undefined viraria
+          // crash silencioso na primeira fronteira.
+          {
+            byReason: {
+              'no-state':    Object.assign({ count: 0, inputTokens: 0, clearableTokens: 0 }, ((saved.cacheCycle || {}).byReason || {})['no-state']),
+              'gap-expired': Object.assign({ count: 0, inputTokens: 0, clearableTokens: 0 }, ((saved.cacheCycle || {}).byReason || {})['gap-expired']),
+              'prior-miss':  Object.assign({ count: 0, inputTokens: 0, clearableTokens: 0 }, ((saved.cacheCycle || {}).byReason || {})['prior-miss']),
+            },
+          },
         ),
+        calibration: Object.assign({ samples: 0, chars: 0, realTokens: 0 }, saved.calibration || {}),
       });
     }
   } catch (e) {
@@ -1351,7 +1371,33 @@ function metricsCacheCycle(obs) {
   if (obs.prize) {
     metrics.cacheCycle.coldBoundaryInputTokens     += Number(obs.prize.inputTokens) || 0;
     metrics.cacheCycle.coldBoundaryClearableTokens += Number(obs.prize.clearableTokens) || 0;
+    // POR MOTIVO. Sem esta quebra, a média mistura dois fenômenos opostos: a
+    // fronteira de sessão NOVA (`no-state`, quase nada acumulado para limpar) e a
+    // da sessão LONGA que esfriou (`gap-expired`, o alvo real da limpeza). Medição
+    // de campo: 23 fronteiras com média de ~7K — pequeno demais para sessão
+    // acumulada, ou seja, dominado por `no-state`. Decidir pela média agregada
+    // descartaria a limpeza pelo motivo errado.
+    const bucket = metrics.cacheCycle.byReason[obs.boundary && obs.boundary.reason];
+    if (bucket) {
+      bucket.count          += 1;
+      bucket.inputTokens    += Number(obs.prize.inputTokens) || 0;
+      bucket.clearableTokens += Number(obs.prize.clearableTokens) || 0;
+    }
   }
+  _metricsDirty = true;
+}
+
+// Calibração chars→token medida em tráfego real (ver cache-cycle.calibrationSample).
+// Agrega chars e tokens reais em vez de mediar as razões: assim uma request grande
+// pesa mais que uma pequena, que é o comportamento correto para um fator global.
+function metricsCalibration(sample) {
+  if (!sample) return;
+  const chars = Number(sample.chars) || 0;
+  const real = Number(sample.realTokens) || 0;
+  if (chars <= 0 || real <= 0) return;
+  metrics.calibration.samples    += 1;
+  metrics.calibration.chars      += chars;
+  metrics.calibration.realTokens += real;
   _metricsDirty = true;
 }
 
@@ -1397,10 +1443,17 @@ function metricsSnapshot() {
   const t = metrics.tokens || {};
   const inTotal = (t.cacheRead || 0) + (t.in || 0);
   const cacheHitPct = inTotal > 0 ? Math.round(((t.cacheRead || 0) / inTotal) * 1000) / 10 : 0;
+  const cal = metrics.calibration || {};
+  // Fator REAL chars→token medido no tráfego. `null` (não 4) quando ainda não há
+  // amostra: fingir um fator seria vender palpite como medição.
+  const charsPerToken = (cal.realTokens > 0 && cal.chars > 0)
+    ? Math.round((cal.chars / cal.realTokens) * 100) / 100
+    : null;
   return Object.assign({}, metrics, {
     economiaPct,
     savedUnits: Math.round((b - a) * 10) / 10,
     cacheHitPct,
+    calibration: Object.assign({}, cal, { charsPerToken }),
   });
 }
 
@@ -1555,6 +1608,12 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
               route.sessionKey, usage, Date.now(), config, { body: reqBody },
             ));
           }
+          // Calibração in-band: o corpo que medimos em chars contra o input REAL
+          // que a Anthropic acabou de reportar. De graça, em tráfego real, sem
+          // credencial e sem chamada extra — o fator chars→token sai do próprio uso.
+          metricsCalibration(cacheCycle.calibrationSample(
+            cacheCycle.estimateTotalChars(reqBody), usage,
+          ));
         } catch (e) { logger.debug('observeCacheCycle falhou (ignorado)', { err: e.message }); }
       });
     }
@@ -2005,6 +2064,7 @@ if (require.main === module) {
     // testes provarem a medição sem tocar o Map singleton (deps.states).
     observeCacheCycle,
     metricsCacheCycle,
+    metricsCalibration,
     metricsSnapshot,
     resetMetrics,
     newMetrics,
