@@ -1,5 +1,49 @@
 # Changelog
 
+## [2.19.1] - 2026-07-28
+
+**Hotfix de três defeitos reportados em campo na v2.19.0** — dois deles são alarmes do próprio plugin que *mentiam*. A causa-raiz de cada um foi verificada no código e no comportamento real, não deduzida do relato.
+
+### Brain MCP ficava DOWN depois de `claude plugin update`
+
+Após atualizar, o `servers/brain-server/node_modules` não existia e o Brain MCP não subia — embora o `node_modules` da **raiz** estivesse íntegro. Só voltava rodando `npm install` na mão dentro de `servers/brain-server`.
+
+Este é **o mesmo bug corrigido na 1.8.1**, e ele voltou porque aquele conserto era arquiteturalmente frágil: delegava a instalação ao `postinstall`, um lifecycle hook cuja execução quem decide é o **host** (Claude Code), não o plugin. Sempre que o host copia o pacote ou instala com `--ignore-scripts`, o conserto evapora. Já regrediu duas vezes.
+
+- **A dep única do brain-server (`@modelcontextprotocol/sdk`) passa a ser declarada também na RAIZ.** A resolução de bare-specifier do Node — **inclusive em ESM** — sobe a árvore de diretórios, então `servers/brain-server/index.js` a encontra em `<root>/node_modules` sem precisar de um `node_modules` próprio. O caminho deixa de depender de um hook que não controlamos. Verificado ponta a ponta: com o SDK na raiz e **sem** a pasta local, o servidor MCP real sobe limpo; escondendo o SDK, ele falha na hora com `ERR_MODULE_NOT_FOUND` (controle negativo).
+- **`brain-health` passa a checar RESOLUÇÃO, não existência de pasta** (`brainServerDepsOk`). São **duas sondas**, porque nenhuma sozinha é honesta: primeiro `require.resolve` ancorado no diretório do brain-server (preciso — é o algoritmo do próprio Node), e, se ela falhar, uma varredura de `node_modules` subindo a árvore. O motivo da segunda: `require.resolve` **falha em pacote ESM-only** cujo `exports` não expõe a condição `require`, e o brain-server é ESM — então a sonda precisa sozinha mentiria, acusando DOWN um import que funciona. Só reporta ausência quando as duas falham. O check antigo (`existsSync` do `node_modules` local) viraria **falso negativo** com a dep na raiz. Ausência genuína continua falhando alto, dizendo **qual** dep faltou.
+- O `plugin-setup.js` segue instalando as deps locais quando o postinstall roda: agora é cinto **e** suspensório, não a única corda.
+
+### `doctor` reprovava `SubagentStart` — um evento OFICIAL
+
+O doctor emitia `[x] unrecognized event(s): SubagentStart` e instruía: *"corrija o nome em hooks/hooks.json"*. Só que `SubagentStart` é um evento **documentado** do Claude Code (*"When a subagent is spawned"*), usado pelo plugin para injetar as políticas standing no contexto do subagente. Seguir o conselho do nosso próprio doctor **apagaria uma feature que funciona**.
+
+- **`STANDARD_EVENTS` sincronizado com a doc oficial** — de 9 para os 30 eventos do ciclo de vida documentado.
+- **Evento fora da lista agora é `warn`, não `fail`.** Não há como distinguir um typo de um evento *mais novo que esta versão do plugin*; cravar `fail` + "corrija o nome" afirma uma certeza que não temos. O achado continua **visível** e nomeado (fail-loud preservado), mas o texto passa a admitir as duas hipóteses e aponta a doc oficial.
+- **Guard anti-regressão**: um teste garante que nenhum evento do nosso próprio `hooks.json` volte a ser reportado como desconhecido — o plugin não pode alarmar contra si mesmo.
+
+### O alarme de "recall DEGRADED" nunca se apagava
+
+Depois de consertar a causa raiz acima, o aviso continuava: *"205 de 878 recalls **recentes** voltaram vazios"*. Os números eram **vitalícios**, não recentes — o contador somava para sempre, sem janela nem decaimento. As falhas geradas justamente na janela em que o MCP estava DOWN ficavam cravadas, e seriam necessários centenas de recalls bons só para diluir a taxa. Pior: o gatilho `degraded >= 3` também era vitalício, virando permanentemente verdadeiro, então qualquer soluço isolado reacendia um alarme exibindo estatísticas históricas.
+
+Um alarme que nunca apaga ensina o usuário a ignorar o alarme — e aí a próxima degradação **real** passa batida. A correção não silencia nada: torna o sinal **preciso**.
+
+- **Janela deslizante** de 50 outcomes (`applyOutcome`/`summarize`, puras e testáveis): o veredito passa a medir a taxa **dentro da janela**. Degradação em curso continua gritando 100%; problema resolvido para de gritar quando a janela drena.
+- **Gatilho por taxa**: ≥ 3 falhas *na janela* **e** ≥ 20% **e** a última dentro da hora.
+- **A mensagem parou de mentir**: mostra "N das últimas M (X%)" em vez de chamar totais vitalícios de "recentes".
+- Os totais vitalícios continuam disponíveis (`lifetimeOk`/`lifetimeDegraded`) para auditoria — apenas não decidem mais o alarme. Estado gravado por versões anteriores é **migrado sem perder o histórico**.
+
+### Nota — fragmentação de data-dir (não é regressão)
+
+O relato também trouxe `[!] 2 populated data dirs (claude-code-boss-inline, claude-code-boss-allansantos-plugins)`. Isso **não** é bug novo nem efeito da migração da v2.19.0: cada modo de instalação sempre teve seu diretório irmão (`-inline` para dev/`--plugin-dir`, `-<marketplace>` para instalação de marketplace), e o doctor **já detecta corretamente**, como aviso, com o caminho de consolidação (export/import do dashboard). Consolidação automática é mudança grande e arriscada — fica fora deste hotfix, de propósito.
+
+### Guard novo — a landing page pública não pode mentir a versão
+
+Achado no caminho, do mesmo tipo dos outros dois: um sinal público que estava errado em silêncio. O `pages-guard` cobre `pages/<plugin>/index.html`, mas **não** o índice `pages/index.html`, que carrega um tile de versão por plugin. Sem guard, ele derivou: o índice anunciava `claude-code-boss v1.28.0` e `rf-reviewer v0.2.2` enquanto o repo estava em **2.19.1** e **0.2.4** — visitantes liam versões que não existem mais.
+
+- Novo check mecânico **`index-version-current`** no `release-audit.mjs` (sem IA, sem cota, como o pages-guard): compara o tile de cada plugin com a versão **in-repo**, ancorado no `href` do tile para não casar o plugin errado. Falha alto e diz o que está errado em cada um.
+- Os dois tiles foram corrigidos.
+
 ## [2.19.0] - 2026-07-25
 
 **Migração do KB local → memory server (`mcp-memory`), com botão no dashboard, idempotência e fail-loud.** Trocar o backend para `mcp-memory` deixava o acervo local **órfão**: não havia nenhum mecanismo de migração (o export/import do dashboard sempre foi local↔local). Agora existe. O trabalho começou por uma investigação que **descartou o plano anterior**: a hipótese de "um brain-server por sessão" levou a um desenho de daemon único + proxy que, verificado na fonte, seria **reinventar o que o memory server native-java já faz** — o modo `mcp-memory` já transforma o processo Node em cliente magro (`initLocal()` nem roda: zero modelo, zero SQLite in-process). O gap real era só a migração dos dados. Cada fase saiu com TDD RED→GREEN e gate verde 2× (Windows e Linux).

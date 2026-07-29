@@ -126,10 +126,66 @@ function noConflictMarkers() {
   }
 }
 
+// ── Check 4: a landing page pública não pode mentir a versão ─────────────────
+// O pages-guard cobre `pages/<plugin>/index.html`, mas NÃO o índice
+// `pages/index.html` — que carrega um tile de versão por plugin. Sem guard, ele
+// derivou em silêncio: o índice anunciava claude-code-boss v1.28.0 e rf-reviewer
+// v0.2.2 enquanto o repo estava em 2.19.1 e 0.2.4. Um visitante lia uma versão
+// que não existe mais. Exato e de baixo falso-positivo: compara o tile com a
+// versão in-repo (a MESMA fonte que o release-guard usa).
+const INDEX_TILES = [
+  {
+    plugin: 'claude-code-boss',
+    version: () => JSON.parse(
+      fs.readFileSync(path.join(REPO_ROOT, 'claude-code-boss', 'package.json'), 'utf8'),
+    ).version,
+  },
+  {
+    plugin: 'rf-reviewer',
+    version: () => {
+      const src = fs.readFileSync(
+        path.join(REPO_ROOT, 'rf-reviewer', 'servers', 'rf-engine', 'rf_engine', '__init__.py'),
+        'utf8',
+      );
+      const m = src.match(/__version__\s*=\s*["']([^"']+)["']/);
+      return m ? m[1] : null;
+    },
+  },
+];
+
+function indexVersionCurrent() {
+  const indexPath = path.join(REPO_ROOT, 'pages', 'index.html');
+  let html;
+  try { html = fs.readFileSync(indexPath, 'utf8'); }
+  catch (err) { return { ok: false, details: [`cannot read pages/index.html: ${err.message}`] }; }
+
+  const problems = [];
+  for (const tile of INDEX_TILES) {
+    let want;
+    try { want = tile.version(); }
+    catch (err) { problems.push(`${tile.plugin}: cannot read in-repo version (${err.message})`); continue; }
+    if (!want) { problems.push(`${tile.plugin}: in-repo version not found`); continue; }
+
+    // O tile é `<a class="tile" href="./<plugin>/index.html" ...> ... <span class="v">vX.Y.Z</span>`.
+    // Ancoramos no href para não casar o tile do plugin errado.
+    const esc = tile.plugin.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`href="\\./${esc}/index\\.html"[\\s\\S]{0,600}?<span class="v">v?([^<]+)</span>`);
+    const m = html.match(re);
+    if (!m) { problems.push(`${tile.plugin}: version tile not found in pages/index.html`); continue; }
+    if (m[1].trim() !== want) {
+      problems.push(`${tile.plugin}: index shows v${m[1].trim()} but repo is at ${want}`);
+    }
+  }
+  return problems.length
+    ? { ok: false, details: ['pages/index.html está desatualizado:', ...problems.map((p) => `    ${p}`)] }
+    : { ok: true, details: [`pages/index.html matches ${INDEX_TILES.length} in-repo version(s)`] };
+}
+
 const CHECKS = [
   { name: 'hooks-doc-drift', run: hooksDocumented },
   { name: 'changelog-current', run: changelogCurrent },
   { name: 'no-conflict-marks', run: noConflictMarkers },
+  { name: 'index-version-current', run: indexVersionCurrent },
 ];
 
 function runAll() {
