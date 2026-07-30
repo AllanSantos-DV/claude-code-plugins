@@ -62,11 +62,22 @@ function parseCacheUsage(usage) {
 
 // Estamos numa fronteira fria? Não decide rota — só responde se o prefixo já
 // está perdido (e portanto mexer nele sai de graça).
-function isColdBoundary(state, now, config) {
+//
+// `globalTtlMs` é OPCIONAL: a janela agregada já observada em OUTRAS sessões
+// (ver `ttlWindowMs`). Cascata de confiança, do mais específico ao palpite:
+//   1. state.ttlMs   — esta MESMA sessão já viu o write, é o mais confiável;
+//   2. globalTtlMs   — nenhum write nesta sessão ainda, mas o proxy já mediu a
+//                      janela real em outro tráfego (ex.: sessão nova, `no-state`,
+//                      que sem isso cairia direto no hardcoded de 5min mesmo
+//                      sabendo, globalmente, que o contrato é de 1h);
+//   3. coldBoundaryMs(config) — nunca medimos nada: último recurso.
+function isColdBoundary(state, now, config, globalTtlMs) {
   if (!state || !Number.isFinite(state.lastRequestTs)) {
     return { cold: true, reason: 'no-state', gapMs: Infinity };
   }
-  const ttl = Number.isFinite(state.ttlMs) && state.ttlMs > 0 ? state.ttlMs : coldBoundaryMs(config);
+  const ttl = Number.isFinite(state.ttlMs) && state.ttlMs > 0
+    ? state.ttlMs
+    : (Number.isFinite(globalTtlMs) && globalTtlMs > 0 ? globalTtlMs : coldBoundaryMs(config));
   const gapMs = now - state.lastRequestTs;
 
   // Sinal 2 (fato medido): a resposta anterior reconstruiu o prefixo do zero.
@@ -87,7 +98,12 @@ function isColdBoundary(state, now, config) {
 //  - o TTL observado só SOBE, nunca é rebaixado por uma leitura vazia.
 // Todo request desliza a janela (lastRequestTs = now): um hit refresca o TTL do
 // lado da Anthropic sem custo, então adiar a fronteira é o comportamento real.
-function observeUsage(state, usage, now, config) {
+//
+// `globalTtlMs` (opcional, mesma cascata de `isColdBoundary`): usado só quando
+// nem o estado anterior nem esta leitura revelaram um TTL — evita gravar 5min
+// na PRIMEIRA observação de uma sessão nova quando já sabemos, globalmente, que
+// o contrato é 1h.
+function observeUsage(state, usage, now, config, globalTtlMs) {
   const prev = state || {};
   const parsed = parseCacheUsage(usage);
 
@@ -97,7 +113,8 @@ function observeUsage(state, usage, now, config) {
 
   const prevTtl = Number.isFinite(prev.ttlMs) && prev.ttlMs > 0 ? prev.ttlMs : 0;
   const seenTtl = Number.isFinite(parsed.ttlMs) && parsed.ttlMs > 0 ? parsed.ttlMs : 0;
-  const ttlMs = Math.max(prevTtl, seenTtl) || coldBoundaryMs(config);
+  const fallbackTtl = Number.isFinite(globalTtlMs) && globalTtlMs > 0 ? globalTtlMs : coldBoundaryMs(config);
+  const ttlMs = Math.max(prevTtl, seenTtl) || fallbackTtl;
 
   return {
     ...prev,
@@ -250,6 +267,34 @@ function ttlWindowMs(ttl, config) {
   return coldBoundaryMs(config);
 }
 
+/**
+ * Veredito da janela a partir dos contadores brutos de write (`{write5m, write1h}`).
+ * PURA — extraída para que `index.js` derive o mesmo veredito tanto para exibir
+ * na snapshot de métricas quanto para alimentar `ttlWindowMs` como o TTL global
+ * injetado em `isColdBoundary`/`observeUsage`. Sem isso as duas leituras podiam
+ * divergir por reimplementarem a mesma conta em dois lugares.
+ *
+ * `null`/`observedMs: null` sem prova — nunca assume 5m por omissão. `mixed`
+ * quando os dois aparecem (a API permite mistura); `observedMs` fica na janela
+ * MAIS LONGA (subestimar classificaria fronteira fria com o cache ainda vivo).
+ *
+ * @param {{write5m?:number, write1h?:number}|null} ttlAcc
+ * @returns {{observed:string|null, observedMs:number|null, pct1h:number|null}}
+ */
+function deriveTtlVerdict(ttlAcc) {
+  const t = ttlAcc || {};
+  const w5 = num(t.write5m);
+  const w1 = num(t.write1h);
+  const wTotal = w5 + w1;
+  if (wTotal <= 0) return { observed: null, observedMs: null, pct1h: null };
+  let observed;
+  let observedMs;
+  if (w1 > 0 && w5 > 0) { observed = 'mixed'; observedMs = TTL_1H; }
+  else if (w1 > 0)      { observed = '1h';    observedMs = TTL_1H; }
+  else                  { observed = '5m';    observedMs = TTL_5M; }
+  return { observed, observedMs, pct1h: Math.round((w1 / wTotal) * 100) };
+}
+
 module.exports = {
   DEFAULT_COLD_BOUNDARY_MS,
   CHARS_PER_TOKEN,
@@ -257,6 +302,7 @@ module.exports = {
   TTL_5M,
   coldBoundaryMs,
   ttlWindowMs,
+  deriveTtlVerdict,
   parseCacheUsage,
   isColdBoundary,
   observeUsage,
