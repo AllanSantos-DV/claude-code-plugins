@@ -5899,7 +5899,8 @@ test('observeCacheCycle: na fronteira FRIA mede o premio (input carregado + limp
   // turno 0 = fronteira fria; a resposta veio com 12000 de input reconstruido.
   const r = routerServer.observeCacheCycle('k', { in: 2000, cacheCreate: 10000 }, 1000, {}, { states, body });
   assertEq(r.boundary.cold, true);
-  assertEq(r.prize.inputTokens, 12000, 'input + cache_creation = o contexto que foi (re)construido');
+  assertEq(r.prize.rebuiltTokens, 12000, 'input + cache_creation = o contexto que foi (re)construido');
+  assertEq(r.prize.promptTokens, 12000, 'sem cacheRead, prompt == reconstruido');
   assertEq(r.prize.clearableTokens > 900, true, '4000 chars de tool_result ≈ 1000 tokens, got ' + r.prize.clearableTokens);
 });
 
@@ -5921,11 +5922,11 @@ test('metricsCacheCycle: acumula o premio p/ a decisao virar conta, nao chute', 
   assertEq(m0.cacheCycle.coldBoundaryClearableTokens, 0);
   routerServer.metricsCacheCycle({
     state: { lastCacheState: 'miss' }, boundary: { cold: true },
-    prize: { inputTokens: 12000, clearableTokens: 5000 },
+    prize: { rebuiltTokens: 12000, promptTokens: 12000, clearableTokens: 5000 },
   });
   routerServer.metricsCacheCycle({
     state: { lastCacheState: 'miss' }, boundary: { cold: true },
-    prize: { inputTokens: 8000, clearableTokens: 3000 },
+    prize: { rebuiltTokens: 8000, promptTokens: 8000, clearableTokens: 3000 },
   });
   const m = routerServer.metricsSnapshot();
   assertEq(m.cacheCycle.coldBoundaries, 2);
@@ -5944,7 +5945,92 @@ test('metricsCacheCycle: sem premio medido, os contadores de tamanho ficam INTAC
 });
 
 
-// ─── fronteira POR MOTIVO + calibração in-band (dado de campo, 2026-07-29) ────
+// ─── DOIS DEFEITOS achados no 1o dado de campo (2026-07-29) ──────────────────
+// (1) DENOMINADOR ERRADO: prize.inputTokens era `in + cacheCreate` (o que foi
+//     RECONSTRUIDO), mas clearableTokens mede o corpo INTEIRO. Numa fronteira que
+//     ainda leu cache, o denominador colapsa e a conta estoura: o campo real
+//     mostrou gap-expired com 41770 limpaveis / 7030 input = 594%, fisicamente
+//     impossivel (o limpavel e SUBCONJUNTO do prompt). Sao duas grandezas
+//     diferentes e precisam de dois campos.
+// (2) CALIBRACAO ENVIESADA: estimateTotalChars nao contava o array `tools` — e o
+//     Claude Code manda dezenas de schemas de ferramenta em toda request. O ratio
+//     medido veio 1.674 chars/token contra ~3.5-4 esperado: chars subcontado ~2.2x.
+
+test('estimateTotalChars: conta o array TOOLS (schemas sao parte do prompt cobrado)', () => {
+  const semTools = { system: 's'.repeat(1000), messages: [], tools: [] };
+  const comTools = {
+    system: 's'.repeat(1000),
+    messages: [],
+    tools: [
+      { name: 'bash', description: 'd'.repeat(3000), input_schema: { type: 'object', properties: { command: { type: 'string', description: 'x'.repeat(2000) } } } },
+      { name: 'read', description: 'd'.repeat(3000), input_schema: { type: 'object' } },
+    ],
+  };
+  const base = cacheCycle.estimateTotalChars(semTools);
+  const total = cacheCycle.estimateTotalChars(comTools);
+  assertEq(total > base + 7000, true, 'os schemas precisam entrar; sem eles o fator sai ~2x errado. got ' + total);
+});
+
+test('estimateTotalChars: body sem tools continua funcionando (nao regride)', () => {
+  assertEq(cacheCycle.estimateTotalChars({ system: 'abc', messages: [] }), 3);
+  assertEq(cacheCycle.estimateTotalChars({ messages: [], tools: null }), 0);
+});
+
+test('observeCacheCycle: separa RECONSTRUIDO de PROMPT INTEIRO (denominadores distintos)', () => {
+  const states = new Map();
+  const body = { messages: [{ role: 'user', content: [
+    { type: 'tool_result', tool_use_id: 'a', content: 'q'.repeat(40000) },
+  ] }] };
+  // fronteira que AINDA leu cache: in=2000, cacheRead=50000, cacheCreate=8000
+  const r = routerServer.observeCacheCycle('k', { in: 2000, cacheRead: 50000, cacheCreate: 8000 }, 1000, {}, { states, body });
+  assertEq(r.boundary.cold, true);
+  assertEq(r.prize.rebuiltTokens, 10000, 'reconstruido = in + cacheCreate (o CUSTO pago)');
+  assertEq(r.prize.promptTokens, 60000, 'prompt inteiro = in + cacheRead + cacheCreate (o DENOMINADOR)');
+  assertEq(r.prize.clearableTokens <= r.prize.promptTokens, true,
+    'o limpavel e SUBCONJUNTO do prompt — nunca pode passar de 100%');
+});
+
+test('metricsCacheCycle: acumula prompt e reconstruido em campos SEPARADOS', () => {
+  routerServer.resetMetrics();
+  const m0 = routerServer.metricsSnapshot();
+  assertEq(m0.cacheCycle.coldBoundaryPromptTokens, 0, 'baseline do denominador correto existe');
+  routerServer.metricsCacheCycle({
+    state: { lastCacheState: 'miss' }, boundary: { cold: true, reason: 'gap-expired' },
+    prize: { rebuiltTokens: 10000, promptTokens: 140000, clearableTokens: 68000 },
+  });
+  const m = routerServer.metricsSnapshot();
+  assertEq(m.cacheCycle.coldBoundaryInputTokens, 10000, 'reconstruido');
+  assertEq(m.cacheCycle.coldBoundaryPromptTokens, 140000, 'prompt inteiro');
+  assertEq(m.cacheCycle.byReason['gap-expired'].promptTokens, 140000);
+  assertEq(m.cacheCycle.byReason['gap-expired'].clearableTokens, 68000);
+  routerServer.resetMetrics();
+});
+
+test('metricsSnapshot: clearablePct sai do PROMPT e nunca passa de 100', () => {
+  routerServer.resetMetrics();
+  routerServer.metricsCacheCycle({
+    state: { lastCacheState: 'miss' }, boundary: { cold: true, reason: 'gap-expired' },
+    prize: { rebuiltTokens: 7030, promptTokens: 200000, clearableTokens: 41770 },
+  });
+  const m = routerServer.metricsSnapshot();
+  assertEq(m.cacheCycle.clearablePct, 20.9, '41770/200000 — a conta que ANTES dava 594%');
+  routerServer.resetMetrics();
+});
+
+test('metricsSnapshot: sem prompt medido, clearablePct e null (nao finge 0% nem 594%)', () => {
+  routerServer.resetMetrics();
+  assertEq(routerServer.metricsSnapshot().cacheCycle.clearablePct, null, 'sem dado, sem numero');
+  // estado LEGADO (v2.20.2: so tem inputTokens, sem promptTokens) nao pode gerar % errado
+  routerServer.metricsCacheCycle({
+    state: { lastCacheState: 'miss' }, boundary: { cold: true, reason: 'no-state' },
+    prize: { rebuiltTokens: 5000, clearableTokens: 3000 },
+  });
+  assertEq(routerServer.metricsSnapshot().cacheCycle.clearablePct, null,
+    'sem denominador confiavel, prefere NAO responder a responder errado');
+  routerServer.resetMetrics();
+});
+
+
 // Medição real: 23 fronteiras, media de ~7K de input cada. Pequeno demais p/ uma
 // sessao acumulada — assinatura de que a maioria e `no-state` (turno 0 de sessao
 // NOVA, onde nao ha nada acumulado p/ limpar). O alvo da limpeza e a OUTRA

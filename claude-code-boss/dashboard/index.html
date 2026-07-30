@@ -1469,8 +1469,11 @@ function renderRouterMetrics(m, live) {
   // frequência sozinha não diz se 7 fronteiras valem 5K ou 500K de contexto.
   const ccBoundaries = cc.coldBoundaries || 0;
   const ccIn = cc.coldBoundaryInputTokens || 0;
+  const ccPrompt = cc.coldBoundaryPromptTokens || 0;
   const ccClear = cc.coldBoundaryClearableTokens || 0;
-  const ccPct = ccIn > 0 ? Math.round((ccClear / ccIn) * 100) : 0;
+  // % vem do PROMPT INTEIRO, não do reconstruído — dividir pelo reconstruído fez a
+  // conta estourar (594%) numa fronteira que ainda lia cache. `null` = sem dado.
+  const ccPct = (cc.clearablePct != null) ? cc.clearablePct : null;
   const kt = (n) => (n >= 1000 ? `${Math.round(n / 1000)}K` : String(n));
   // Quebra por motivo: a média agregada mistura a fronteira de sessão NOVA
   // (nada acumulado, ~0% limpável) com a da sessão que ESFRIOU (o alvo real).
@@ -1478,8 +1481,8 @@ function renderRouterMetrics(m, live) {
   const br = cc.byReason || {};
   const brLine = Object.entries(br)
     .filter(([, v]) => v && v.count > 0)
-    .map(([k, v]) => `${k} ${v.count}× ${kt(v.inputTokens)}→${kt(v.clearableTokens)}`
-      + (v.inputTokens > 0 ? ` (${Math.round((v.clearableTokens / v.inputTokens) * 100)}%)` : ''))
+    .map(([k, v]) => `${k} ${v.count}× ${kt(v.promptTokens || 0)}→${kt(v.clearableTokens)}`
+      + (v.promptTokens > 0 ? ` (${Math.round((v.clearableTokens / v.promptTokens) * 100)}%)` : ''))
     .join(' · ');
   // Fator chars→token medido no próprio tráfego; ausente até haver amostra.
   const cal = m.calibration || {};
@@ -1490,7 +1493,7 @@ function renderRouterMetrics(m, live) {
     + ` · cache ${hit}% (read ${cacheRead.toLocaleString()} / write ${cacheCreate.toLocaleString()})`
     + (ccTotal > 0 ? ` · ciclo ${ccHits}q/${ccMisses}f · fronteiras frias ${ccBoundaries}` : '')
     // Estimativa declarada (chars/4), não medição exata — serve p/ dimensionar.
-    + (ccIn > 0 ? ` (${kt(ccIn)} reconstruídos, ~${kt(ccClear)} limpáveis = ${ccPct}%)` : '')
+    + (ccPrompt > 0 ? ` (${kt(ccIn)} reconstruídos de ${kt(ccPrompt)} de prompt, ~${kt(ccClear)} limpáveis = ${ccPct}%)` : '')
     + (brLine ? `<br>por motivo: ${brLine}` : '')
     + (cal.charsPerToken ? ` · calibração ${cal.charsPerToken} chars/token (${cal.samples} amostras)` : '')
     + (live ? '' : ` · ${t('router.mStale')}`);
