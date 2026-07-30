@@ -5945,7 +5945,80 @@ test('metricsCacheCycle: sem premio medido, os contadores de tamanho ficam INTAC
 });
 
 
-// ─── DOIS DEFEITOS achados no 1o dado de campo (2026-07-29) ──────────────────
+// ─── TTL OBSERVADO: parar de adivinhar a janela do cache ─────────────────────
+// O `accumulateUsage` ja LE `ephemeral_1h_input_tokens` e `ephemeral_5m_input_tokens`
+// (a propria resposta da API declara qual janela foi CONTRATADA no write), mas isso
+// so refinava o TTL interno e era jogado fora. Extraido do binario do Claude Code:
+//   let P = tFe(e.querySource) ? "1h" : void 0;
+//   function tFe(e){ if(env.FORCE_PROMPT_CACHING_5M) return false;
+//                    if(env.ENABLE_PROMPT_CACHING_1H) return true;
+//                    if(!ii() || Kie().isUsingOverage) return false;
+//                    let t=lvi(); if(t===null) t=Ke("tengu_prompt_cache_1h_config",{allowlist:...
+// Ou seja: a janela pode ser 1h por FEATURE-FLAG REMOTO da Anthropic (allowlist por
+// querySource) ou por overage — o usuario NAO controla e nao tem como saber por
+// inspecao. Persistir o que a resposta declara transforma isso de palpite em medida.
+
+test('metricsTtl: acumula o write por JANELA CONTRATADA (5m vs 1h)', () => {
+  routerServer.resetMetrics();
+  const m0 = routerServer.metricsSnapshot();
+  assertEq(m0.ttl.write5m, 0, 'baseline existe desde o boot');
+  assertEq(m0.ttl.write1h, 0);
+  assertEq(m0.ttl.observed, null, 'sem write observado, NAO afirma janela nenhuma');
+
+  routerServer.metricsTtl({ cacheTtl5m: 12000, cacheTtl1h: 0 });
+  routerServer.metricsTtl({ cacheTtl5m: 8000, cacheTtl1h: 0 });
+  const m = routerServer.metricsSnapshot();
+  assertEq(m.ttl.write5m, 20000);
+  assertEq(m.ttl.write1h, 0);
+  assertEq(m.ttl.observed, '5m', 'o dado MEDIDO responde qual janela o cliente contratou');
+});
+
+test('metricsTtl: janela de 1h e detectada (o flag remoto da Anthropic pode liga-la)', () => {
+  routerServer.resetMetrics();
+  routerServer.metricsTtl({ cacheTtl5m: 0, cacheTtl1h: 30000 });
+  const m = routerServer.metricsSnapshot();
+  assertEq(m.ttl.write1h, 30000);
+  assertEq(m.ttl.observed, '1h');
+  assertEq(m.ttl.observedMs, 3600000, 'a janela em ms, p/ o detector usar o valor REAL');
+});
+
+test('metricsTtl: MISTO (mixing TTLs e permitido pela API) → reporta os dois', () => {
+  routerServer.resetMetrics();
+  routerServer.metricsTtl({ cacheTtl5m: 4000, cacheTtl1h: 16000 });
+  const m = routerServer.metricsSnapshot();
+  assertEq(m.ttl.observed, 'mixed', 'nao escolhe um vencedor arbitrario quando ha os dois');
+  assertEq(m.ttl.observedMs, 3600000, 'p/ decisao conservadora, vale a janela MAIS LONGA');
+  assertEq(m.ttl.pct1h, 80, '16000 de 20000 dos writes sao 1h');
+});
+
+test('metricsTtl: write sem detalhe de janela conta em unknown (nao inventa 5m)', () => {
+  routerServer.resetMetrics();
+  routerServer.metricsTtl({ cacheCreate: 9000, cacheTtl5m: 0, cacheTtl1h: 0 });
+  const m = routerServer.metricsSnapshot();
+  assertEq(m.ttl.writeUnknown, 9000, 'houve write mas a janela nao veio no usage');
+  assertEq(m.ttl.observed, null, 'sem prova, sem afirmacao');
+});
+
+test('metricsTtl: chunk sem write nenhum e ignorado (nao suja a serie)', () => {
+  routerServer.resetMetrics();
+  routerServer.metricsTtl({ cacheRead: 90000 });
+  routerServer.metricsTtl(null);
+  const m = routerServer.metricsSnapshot();
+  assertEq(m.ttl.write5m + m.ttl.write1h + m.ttl.writeUnknown, 0);
+  assertEq(m.ttl.observed, null);
+});
+
+test('ttlWindowMs: a janela MEDIDA vence o palpite do config (fim da adivinhacao)', () => {
+  // Sem medicao → cai no default configuravel (comportamento atual, preservado).
+  assertEq(cacheCycle.ttlWindowMs(null, {}), 300000);
+  assertEq(cacheCycle.ttlWindowMs(null, { sticky: { coldBoundaryMs: 900000 } }), 900000);
+  // Com medicao → o dado real manda, mesmo contra o config.
+  assertEq(cacheCycle.ttlWindowMs({ observedMs: 3600000 }, { sticky: { coldBoundaryMs: 900000 } }), 3600000,
+    'se a API DISSE 1h, usar 5min do config classificaria fronteira fria em cache vivo');
+  assertEq(cacheCycle.ttlWindowMs({ observedMs: 300000 }, {}), 300000);
+});
+
+
 // (1) DENOMINADOR ERRADO: prize.inputTokens era `in + cacheCreate` (o que foi
 //     RECONSTRUIDO), mas clearableTokens mede o corpo INTEIRO. Numa fronteira que
 //     ainda leu cache, o denominador colapsa e a conta estoura: o campo real

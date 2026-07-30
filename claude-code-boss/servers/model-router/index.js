@@ -1206,6 +1206,9 @@ function newMetrics() {
     },
     // Calibração chars→token medida no próprio tráfego (sem API key).
     calibration:     { samples: 0, chars: 0, realTokens: 0 },
+    // Janela de cache CONTRATADA, medida no `usage` de cada write. Sem isso a
+    // janela real é palpite — e o Claude Code pode usar 1h por flag remoto.
+    ttl:             { write5m: 0, write1h: 0, writeUnknown: 0 },
   };
 }
 
@@ -1235,6 +1238,7 @@ function loadMetrics() {
           },
         ),
         calibration: Object.assign({ samples: 0, chars: 0, realTokens: 0 }, saved.calibration || {}),
+        ttl: Object.assign({ write5m: 0, write1h: 0, writeUnknown: 0 }, saved.ttl || {}),
       });
     }
   } catch (e) {
@@ -1414,6 +1418,26 @@ function metricsCalibration(sample) {
   _metricsDirty = true;
 }
 
+// TTL OBSERVADO: registra qual janela de cache foi CONTRATADA em cada write.
+// A resposta da API declara isso (`ephemeral_5m_input_tokens` /
+// `ephemeral_1h_input_tokens`); sem persistir, a janela real vira adivinhação —
+// e ela pode ser 1h por feature-flag remoto da Anthropic, sem nada mudar aqui.
+// Um write sem detalhe vai para `writeUnknown`: nunca se assume 5m por omissão.
+function metricsTtl(acc) {
+  if (!acc) return;
+  const t5 = Number(acc.cacheTtl5m) || 0;
+  const t1 = Number(acc.cacheTtl1h) || 0;
+  const create = Number(acc.cacheCreate) || 0;
+  if (t5 <= 0 && t1 <= 0 && create <= 0) return; // não houve write: nada a registrar
+  metrics.ttl.write5m += t5;
+  metrics.ttl.write1h += t1;
+  // O que foi escrito mas não veio discriminado por janela.
+  const detailed = t5 + t1;
+  if (create > detailed) metrics.ttl.writeUnknown += (create - detailed);
+  else if (detailed === 0 && create > 0) metrics.ttl.writeUnknown += create;
+  _metricsDirty = true;
+}
+
 // PURA: extrai os contadores de `usage` de um chunk do stream e MESCLA no
 // acumulador. `input_tokens` e os `cache_*` chegam UMA vez (message_start) → a 1ª
 // ocorrência vence; `output_tokens` é cumulativo nos deltas → o MAIOR vence. Um
@@ -1469,12 +1493,32 @@ function metricsSnapshot() {
   const clearablePct = (ccm.coldBoundaryPromptTokens > 0)
     ? Math.round((ccm.coldBoundaryClearableTokens / ccm.coldBoundaryPromptTokens) * 1000) / 10
     : null;
+  // Veredito da JANELA a partir dos writes observados. `null` sem prova — nunca
+  // assume 5m por omissão. `mixed` quando os dois aparecem (a API permite mistura);
+  // nesse caso `observedMs` fica na janela MAIS LONGA, que é a leitura conservadora:
+  // subestimar a janela classificaria fronteira fria com o cache ainda vivo.
+  const tt = metrics.ttl || {};
+  const w5 = tt.write5m || 0;
+  const w1 = tt.write1h || 0;
+  const wTotal = w5 + w1;
+  let observed = null;
+  let observedMs = null;
+  if (wTotal > 0) {
+    if (w1 > 0 && w5 > 0) { observed = 'mixed'; observedMs = 3600000; }
+    else if (w1 > 0)      { observed = '1h';    observedMs = 3600000; }
+    else                  { observed = '5m';    observedMs = 300000; }
+  }
   return Object.assign({}, metrics, {
     economiaPct,
     savedUnits: Math.round((b - a) * 10) / 10,
     cacheHitPct,
     calibration: Object.assign({}, cal, { charsPerToken }),
     cacheCycle: Object.assign({}, ccm, { clearablePct }),
+    ttl: Object.assign({}, tt, {
+      observed,
+      observedMs,
+      pct1h: wTotal > 0 ? Math.round((w1 / wTotal) * 100) : null,
+    }),
   });
 }
 
@@ -1635,6 +1679,9 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
           metricsCalibration(cacheCycle.calibrationSample(
             cacheCycle.estimateTotalChars(reqBody), usage,
           ));
+          // Janela contratada declarada pela própria resposta — para o detector
+          // parar de assumir 5min quando a Anthropic pode ter contratado 1h.
+          metricsTtl(usage);
         } catch (e) { logger.debug('observeCacheCycle falhou (ignorado)', { err: e.message }); }
       });
     }
@@ -2086,6 +2133,7 @@ if (require.main === module) {
     observeCacheCycle,
     metricsCacheCycle,
     metricsCalibration,
+    metricsTtl,
     metricsSnapshot,
     resetMetrics,
     newMetrics,
