@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.20.2 — a média se parte por motivo: o caso que decide para de sumir no agregado</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. A v2.20.2 parte a medida da fronteira fria por motivo, porque a média estava escondendo o caso que decide. A v2.20.1 passou a medir o tamanho de cada fronteira, e o primeiro dado de campo veio com um número desconfortável: 23 fronteiras, 165 mil tokens reconstruídos, 70 mil limpáveis, 42 por cento — mas apenas cerca de 7 mil de input por fronteira, pequeno demais para uma sessão acumulada. Esse é o retrato de uma população dominada por no-state, o turno zero de uma sessão nova, onde não há praticamente nada acumulado para limpar. O alvo da limpeza automática, porém, é a outra fronteira: a sessão longa que esfriou, com mais de 100 mil tokens de tool_result parados. Agregar as duas numa média única esconde exatamente o caso que justifica a feature, e decidir por essa média a descartaria pelo motivo errado. Por isso as métricas passam a ser separadas por motivo da fronteira, em buckets fixos no código, no-state, gap-expired e prior-miss, cada um com contagem, input e limpável. Os buckets nunca são criados a partir de entrada externa: um motivo desconhecido não vira chave nova, então o mapa de métricas não cresce com o que chega de fora. A separação é provada em teste com os dois extremos: sessão nova entrega zero por cento limpável, sessão que esfriou entrega oitenta por cento de 125 mil. O dashboard ganha uma linha por motivo, mostrando quantas fronteiras, o input reconstruído, o limpável e o percentual de cada balde. A segunda entrega calibra a conversão de chars para token sem chave de API. O limpável é estimativa, chars divididos por quatro, e descobrir o fator real parecia exigir credencial da Anthropic e chamadas ao endpoint de contagem de tokens. Mas o proxy já vê, no mesmo ponto, o corpo que ele mede em chars e o usage com a contagem de input real que a API acabou de reportar; a razão entre os dois é o chars por token de verdade, medido em tráfego próprio, de graça, sem manusear credencial. A medida de chars inclui o system de propósito, porque ele costuma ser a maior parte do prefixo e ignorá-lo viciaria o fator para baixo. A amostra devolve nulo quando não dá para calibrar, já que um fator inventado é pior que fator nenhum e contaminaria toda a série. E o agregado soma chars e tokens reais em vez de tirar a média das razões, para que uma request grande pese mais, expondo charsPerToken como nulo enquanto não houver amostra: nunca finge medição. Estado gravado por versões anteriores é migrado sem perder histórico, com os buckets novos entrando zerados em vez de virar indefinido e explodir na primeira fronteira. As releases anteriores seguem na página: a v2.20.1 deu tamanho à fronteira fria, medindo em cada uma quanto contexto foi reconstruído e quanto uma limpeza teria liberado, sempre como estimativa declarada; e a v2.20.0 desligou o bloco de atribuição quando o proxy está no caminho, preservando o prefixo cacheado, e instalou a régua do ciclo de cache que conta quantas vezes a sessão cruza uma fronteira fria." />
+<title>claude-code-boss v2.20.3 — o número impossível: 594% de limpável, e o denominador que não era o prompt</title>
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. A v2.20.3 conserta dois defeitos de medição que produziram, no primeiro dado de campo da v2.20.2, um número fisicamente impossível — e que passou. No bucket gap-expired, a telemetria reportou 41.770 tokens limpáveis sobre 7.030 de input, ou seja, 594 por cento. O limpável é um subconjunto do prompt: não existe passar de cem por cento. Esse número foi lido, tabulado numa planilha comparativa e usado para comparar amostras entre si sem que a impossibilidade fosse notada, que é exatamente o risco de decidir por dado sem checagem de sanidade dimensional: ele tinha casas decimais, convergia entre medições e parecia preciso. O primeiro defeito é o denominador. O campo inputTokens do prêmio era input mais cacheCreate, ou seja, o que foi reconstruído, enquanto clearableTokens mede o corpo inteiro. Numa fronteira gap-expired em que o cache ainda foi lido — o relógio expirou, mas a API serviu do cache mesmo assim — o cacheRead fica fora do denominador, ele colapsa e a razão estoura. São duas grandezas distintas e agora têm dois campos: rebuiltTokens, igual a input mais cacheCreate, é o custo pago naquela fronteira; e promptTokens, igual a input mais cacheRead mais cacheCreate, é o prompt inteiro, o denominador correto do percentual limpável. O clearablePct passa a sair do prompt e é nulo quando não há prompt medido, inclusive em estado gravado pela v2.20.2, que só tinha o reconstruído: sem denominador confiável, a métrica prefere não responder a responder errado. A prova é o cenário que devolvia quatrocentos por cento e passou a devolver vinte e cinco. O segundo defeito é a calibração, enviesada em cerca de duas vírgula duas vezes. A função estimateTotalChars contava system e messages, mas não o array tools; o Claude Code manda dezenas de schemas de ferramenta em toda request e a Anthropic os cobra como parte do prompt. O fator medido em campo veio um vírgula seiscentos e setenta e quatro chars por token, contra os três vírgula cinco a quatro esperados, e o agravante é que o erro convergia com aparência de estabilidade, de um vírgula sessenta e nove para um vírgula sessenta e oito, o que é pior que um valor errático porque parecia dado maduro. Agora os schemas são serializados e contados, e um schema circular é ignorado sem derrubar a medição. Uma nota fecha a release: o aviso de recall degradado em quarenta e cinco por cento que apareceu no mesmo snapshot não é falso positivo. Com a janela deslizante da v2.19.1, ele mede os últimos cinquenta recalls, e a leitura real foi dez de vinte e quatro falhando, nove por erro remoto e um por timeout, com a última falha minutos antes: é o alarme corrigido reportando degradação de agora. As releases anteriores seguem na página: a v2.20.2 partiu a média da fronteira fria por motivo e calibrou chars por token sem chave de API; a v2.20.1 deu tamanho à fronteira fria; e a v2.20.0 instalou a régua do ciclo de cache. A lição desta versão: medir não basta, o número precisa ser checável." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -1761,13 +1761,168 @@
   .rsn-foot b{ color:#a29f97 }
   .rsn-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
 
+  /* v2.20.3 : O NUMERO IMPOSSIVEL - e ninguem pegou. O 1o dado de campo da v2.20.2 trouxe,
+     no bucket `gap-expired`, 41.770 tokens limpaveis sobre 7.030 de input = 594%. O limpavel
+     e SUBCONJUNTO do prompt: passar de 100% e fisicamente impossivel. Esse numero foi lido,
+     tabulado numa planilha comparativa e usado para comparar amostras entre si SEM que a
+     impossibilidade fosse notada - ele tinha casas decimais, convergia entre medicoes e
+     parecia preciso. Duas causas, ambas de medicao:
+       (1) DENOMINADOR ERRADO. `prize.inputTokens` era `in + cacheCreate` (o RECONSTRUIDO),
+           enquanto `clearableTokens` mede o corpo INTEIRO. Numa fronteira `gap-expired` em
+           que o cache ainda foi LIDO, o `cacheRead` fica fora do denominador, ele colapsa e
+           a razao estoura. Agora sao dois campos: `rebuiltTokens` (custo pago) e
+           `promptTokens` (prompt inteiro, denominador correto); `clearablePct` e `null`
+           quando nao ha prompt medido - inclusive em estado gravado pela v2.20.2.
+       (2) CALIBRACAO ENVIESADA ~2,2x. `estimateTotalChars` nao contava o array `tools` -
+           dezenas de schemas que a Anthropic cobra como parte do prompt. Fator medido:
+           1,674 chars/token contra ~3,5-4 esperado, e o erro CONVERGIA (1,69 -> 1,68), o
+           que e pior que erratico: parecia dado maduro.
+     ASSINATURA: a BARRA QUE ESTOURA A PROPRIA ESCALA. As tres releases anteriores desenharam
+     REGUAS - a fita (tempo, v2.20.0), a coluna (pilha, v2.20.1), a regua da dispersao
+     (distribuicao, v2.20.2). Esta nao desenha uma quarta regua: desenha o TETO de todas elas,
+     a linha ambar dos 100% que uma razao subconjunto/total nao pode cruzar - e mostra a
+     leitura de campo atravessando-a para dentro da zona hachurada. A hachura mantem o
+     significado que a pagina ja usa (`.rsn-brow--rej`, `.scl` : o que NAO conta), e o ambar
+     mantem o dele: o numero em que se pode confiar. Por isso a barra impossivel e FANTASMA,
+     nunca ambar, e o desenho DECLARA que esta comprimido - 594% nao cabe na propria escala,
+     que e exatamente a informacao. Peso de PATCH: quatro partes curtas, sem segunda regua. */
+  .snt{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:880px; font-family:var(--mono); margin:0 0 36px }
+  .snt code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .snt-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .snt-bar .k{ color:var(--accent) }
+  .snt-bar .m{ color:#8a877f }
+
+  .snt-part{ padding:18px 22px 12px }
+  .snt-part + .snt-part{ border-top:1px solid rgba(255,255,255,.06) }
+  .snt-ptag{ display:block; font-size:9px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); margin:0 0 14px }
+  /* identificador nunca vira caixa-alta: `tools` sai verbatim */
+  .snt-ptag code{ text-transform:none; letter-spacing:0 }
+  .snt-note{ margin:0; font-size:11px; line-height:1.6; color:#8a877f }
+  .snt-note + .snt-note{ margin-top:9px }
+  .snt-note b{ color:#a29f97; font-weight:600 }
+
+  /* a leitura de campo que disparou a release */
+  .snt-obs{ border-left:2px solid var(--accent); background:rgba(255,255,255,.05); border-radius:0 6px 6px 0;
+    padding:11px 14px; margin:0 0 14px; max-width:640px }
+  .snt-obk{ display:block; font-size:9px; letter-spacing:.13em; text-transform:uppercase; color:var(--accent); margin:0 0 7px }
+  .snt-obv{ display:block; font-size:12.5px; line-height:1.9; color:var(--panel-ink); overflow-wrap:break-word }
+  /* o numero impossivel usa a hachura da pagina: o que NAO conta */
+  .snt-imposs{ display:inline-block; font-weight:700; color:var(--panel-ink); padding:1px 8px; border-radius:5px;
+    border:1px dashed rgba(255,255,255,.30);
+    background:repeating-linear-gradient(135deg,rgba(255,255,255,.12) 0 4px,transparent 4px 9px) }
+
+  /* ASSINATURA: a barra que estoura a propria escala */
+  .snt-scale{ margin:0 0 14px; max-width:640px }
+  .snt-row{ display:grid; grid-template-columns:minmax(0,176px) minmax(0,1fr); gap:6px 14px; align-items:center }
+  .snt-row + .snt-row{ margin-top:11px }
+  .snt-hk,.snt-zones{ font-size:8.5px; letter-spacing:.12em; text-transform:uppercase; color:#6d6257 }
+  .snt-zones{ display:grid; grid-template-columns:52% 1fr }
+  .snt-zno{ padding-left:9px }
+  .snt-rk{ display:block; font-size:10.5px; line-height:1.5; color:#a29f97; overflow-wrap:break-word }
+  .snt-rk b{ color:var(--panel-ink); font-weight:600 }
+  .snt-rp{ display:block; margin-top:4px; font-size:8.5px; letter-spacing:.12em; text-transform:uppercase; color:#6d6257 }
+  .snt-track{ display:block; position:relative; height:26px; border-radius:5px;
+    background:rgba(255,255,255,.04); overflow:hidden }
+  /* o territorio acima do teto: hachurado e desenhado ACIMA da barra, para que o trecho
+     impossivel da propria barra saia riscado - antes do teto ela e limpa, depois nao */
+  .snt-imp{ position:absolute; left:52%; right:0; top:0; bottom:0; z-index:2;
+    background:repeating-linear-gradient(135deg,rgba(255,255,255,.13) 0 4px,transparent 4px 9px) }
+  /* o teto fisico dos 100% desenhado ACIMA de tudo: a barra o atravessa a vista */
+  .snt-ceil{ position:absolute; left:52%; top:0; bottom:0; width:2px; margin-left:-1px; z-index:3;
+    background:var(--accent); box-shadow:-1px 0 0 rgba(0,0,0,.6),1px 0 0 rgba(0,0,0,.6) }
+  .snt-fill{ position:absolute; left:0; top:0; bottom:0; width:var(--w); z-index:1;
+    border-radius:4px 0 0 4px; background:var(--accent) }
+  .snt-fill--void{ border-radius:4px; background:rgba(255,255,255,.11) }
+  .snt-val{ position:absolute; z-index:4; top:50%; transform:translateY(-50%); left:calc(var(--w) + 10px);
+    font-size:11.5px; font-weight:700; color:var(--accent); white-space:nowrap }
+  .snt-val--void{ left:auto; right:8px; color:var(--panel-ink); background:var(--panel);
+    padding:2px 8px; border-radius:5px }
+  .snt-cap{ margin:9px 0 0; font-size:8.5px; letter-spacing:.11em; text-transform:uppercase; color:#6d6257; line-height:1.6 }
+
+  /* defeito 1: as duas razoes, lado a lado - o termo que faltava sai hachurado */
+  .snt-eq{ border:1px solid var(--panel-line); border-radius:10px; overflow:hidden; margin:0 0 13px; max-width:640px }
+  .snt-eqrow{ display:grid; grid-template-columns:minmax(0,52px) minmax(0,1fr); gap:5px 12px;
+    align-items:baseline; padding:12px 13px; min-width:0 }
+  .snt-eqrow + .snt-eqrow{ border-top:1px solid rgba(255,255,255,.07) }
+  .snt-eqrow--now{ background:rgba(255,255,255,.05) }
+  .snt-eqk{ font-size:9px; letter-spacing:.13em; text-transform:uppercase; color:#6d6257 }
+  .snt-eqrow--now .snt-eqk{ color:var(--accent) }
+  .snt-eqv{ display:block; font-size:11.5px; line-height:1.85; color:var(--panel-ink); overflow-wrap:break-word }
+  .snt-eqrow--was .snt-eqv{ color:#a29f97 }
+  .snt-eqv code.add{ color:var(--accent); background:var(--accent-soft) }
+  .snt-gone{ display:inline-block; font-size:10px; letter-spacing:.06em; padding:1px 7px; border-radius:5px; color:#a29f97;
+    border:1px dashed rgba(255,255,255,.26);
+    background:repeating-linear-gradient(135deg,rgba(255,255,255,.07) 0 4px,transparent 4px 9px) }
+  .snt-why{ display:block; margin-top:7px; font-size:10.5px; line-height:1.55; color:#8a877f }
+  .snt-why b{ color:#a29f97; font-weight:600 }
+
+  .snt-fields{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:0 0 13px; max-width:640px }
+  .snt-field{ border-left:1px solid rgba(255,255,255,.12); padding:1px 0 1px 12px; min-width:0 }
+  .snt-field--hi{ border-left-color:var(--accent) }
+  .snt-field b{ display:block; font-size:11px; color:var(--panel-ink); font-weight:600; overflow-wrap:break-word }
+  .snt-field span{ display:block; margin-top:5px; font-size:10.5px; line-height:1.5; color:#8a877f }
+  .snt-field span b{ display:inline; font-size:inherit; color:#a29f97 }
+
+  /* o mesmo `null` declarado que a v2.20.2 estabeleceu, agora no percentual */
+  .snt-null{ display:flex; flex-wrap:wrap; align-items:center; gap:9px 15px; padding:12px 14px; margin:0 0 12px;
+    max-width:640px; border:1px dashed rgba(255,255,255,.24); border-radius:10px; background:rgba(255,255,255,.02) }
+  .snt-nullk{ font-size:12px; color:var(--panel-ink); white-space:nowrap }
+  .snt-nullk i{ color:var(--accent); font-style:normal; font-weight:700 }
+  .snt-nullw{ flex:1 1 260px; min-width:0; font-size:10.5px; line-height:1.55; color:#8a877f }
+  .snt-nullw b{ color:#a29f97; font-weight:600 }
+
+  .snt-read{ display:grid; grid-template-columns:minmax(0,64px) minmax(0,1fr); gap:4px 12px; align-items:baseline;
+    border-left:2px solid var(--accent); background:rgba(255,255,255,.05); border-radius:0 6px 6px 0;
+    padding:9px 13px; margin:0 0 12px; max-width:640px }
+  .snt-rdk{ font-size:9px; letter-spacing:.13em; text-transform:uppercase; color:var(--accent) }
+  .snt-rdv{ font-size:12px; line-height:1.7; color:var(--panel-ink); overflow-wrap:break-word }
+  .snt-rdv i{ color:var(--accent); font-style:normal; font-weight:700 }
+  .snt-rdv b{ color:#a29f97; font-weight:700 }
+
+  /* defeito 2: as parcelas do chars - `tools` ficava de fora da conta */
+  .snt-terms{ border:1px solid var(--panel-line); border-radius:10px; overflow:hidden; margin:0 0 13px; max-width:640px }
+  .snt-trow{ display:grid; grid-template-columns:minmax(0,104px) minmax(0,1fr) auto; gap:4px 12px;
+    align-items:baseline; padding:10px 13px; min-width:0 }
+  .snt-trow + .snt-trow{ border-top:1px solid rgba(255,255,255,.07) }
+  .snt-trow--out{ background:repeating-linear-gradient(135deg,rgba(255,255,255,.045) 0 5px,transparent 5px 10px) }
+  .snt-tk{ font-size:11.5px; color:var(--panel-ink); overflow-wrap:break-word }
+  .snt-tw{ font-size:10.5px; line-height:1.5; color:#8a877f; overflow-wrap:break-word }
+  .snt-tw b{ color:#a29f97; font-weight:600 }
+  .snt-tf{ font-size:9px; letter-spacing:.12em; text-transform:uppercase; white-space:nowrap; color:#6d6257 }
+  .snt-trow--out .snt-tf{ color:var(--accent) }
+
+  /* a convergencia: duas leituras que se aproximam - e seguem erradas */
+  .snt-conv{ display:flex; flex-wrap:wrap; align-items:center; gap:8px 10px; margin:0 0 12px }
+  .snt-cv{ font-size:11.5px; color:#a29f97; border:1px solid rgba(255,255,255,.16); border-radius:6px;
+    padding:3px 11px; white-space:nowrap }
+  .snt-carr{ font-size:11px; color:#6d6257 }
+  .snt-cvx{ font-size:9px; letter-spacing:.12em; text-transform:uppercase; color:var(--accent) }
+
+  /* a nota: o alarme que, checado, estava certo. Fica no mesmo tratamento de barra
+     ambar a esquerda usado por `.snt-obs`/`.snt-read` - a assinatura e que grita, nao ela */
+  .snt-verd{ display:grid; grid-template-columns:auto minmax(0,1fr); gap:9px 14px; align-items:start;
+    border-left:2px solid var(--accent); background:rgba(255,255,255,.05); border-radius:0 8px 8px 0;
+    padding:13px 15px; margin:0 0 12px; max-width:640px }
+  .snt-vtag{ align-self:start; font-size:9px; letter-spacing:.12em; text-transform:uppercase;
+    background:var(--accent); color:var(--panel); font-weight:700; border-radius:6px; padding:4px 9px; white-space:nowrap }
+  .snt-vbody{ min-width:0; font-size:11.5px; line-height:1.65; color:var(--panel-ink); overflow-wrap:break-word }
+  .snt-vbody b{ font-weight:700 }
+  .snt-vsub{ display:block; margin-top:7px; font-size:10.5px; line-height:1.55; color:#8a877f }
+  .snt-vsub b{ color:#a29f97; font-weight:600 }
+
+  .snt-foot{ padding:14px 22px; border-top:1px solid var(--panel-line); font-size:11px; line-height:1.6; color:#8a877f }
+  .snt-foot b{ color:#a29f97 }
+  .snt-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+
   footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
   footer a{ color:var(--muted); text-decoration:none }
   footer a:hover{ color:var(--accent) }
   .frow{ display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between }
   .flinks a{ margin-right:16px }
 
-  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .rr-stage{ grid-template-columns:1fr } .rr-rails{ grid-template-columns:1fr } .rr-steps{ flex-direction:column; align-items:stretch } .an-stage{ grid-template-columns:1fr } .an-rails{ grid-template-columns:1fr } .an-steps{ flex-direction:column; align-items:stretch } .id-row{ grid-template-columns:1fr; gap:9px } .id-arrow{ display:none } .id-chip{ text-align:left; min-width:0 } .id-fork{ grid-template-columns:1fr } .id-rails{ grid-template-columns:1fr } .eco-hero{ grid-template-columns:1fr } .eco-fork{ grid-template-columns:1fr } .eco-rails{ grid-template-columns:1fr } .mig-flow{ grid-template-columns:1fr } .mig-cross{ min-width:0 } .mig-cline{ width:60% } .mig-guards{ grid-template-columns:1fr } .ctx-row{ grid-template-columns:1fr; gap:9px } .ctx-sp{ display:none } .ctx-rval{ text-align:left } .ctx-fork{ grid-template-columns:1fr } .ctx-fields{ grid-template-columns:1fr } .fld-cols{ grid-template-columns:1fr; gap:14px } .fld-arms{ grid-template-columns:1fr } .cyc-fronts{ grid-template-columns:1fr } .cyc-fork{ grid-template-columns:1fr } .cyc-or{ grid-template-columns:1fr; gap:10px } .cyc-orop{ text-align:left } .cyc-fields{ grid-template-columns:1fr } .cyc-trow{ grid-template-columns:1fr; gap:3px; padding:11px 0 } .cyc-tarr{ display:none } .cyc-track{ padding:0 22px } .cyc-marks{ height:36px } .cyc-marks .cyc-mark{ width:48px; margin-left:-24px; gap:4px } .cyc-marks .cyc-mev{ display:none } .cyc-marks .cyc-mst{ font-size:10.5px } .cyc-seam{ top:24px } .cyc-zone{ font-size:8px; letter-spacing:.04em; padding:0 2px } .cyc-seamlab{ font-size:8px; letter-spacing:.08em } .scl-lines{ max-width:none } .scl-line{ grid-template-columns:1fr; gap:3px } .scl-fields{ grid-template-columns:1fr } .scl-cbody{ grid-template-columns:1fr; gap:3px } .scl-gate{ grid-template-columns:1fr } .rsn-ruler{ max-width:none } .rsn-bar{ align-items:flex-start } .rsn-rail{ height:92px } .rsn-avglab{ white-space:normal; width:104px; text-align:center; top:-32px } .rsn-pops{ grid-template-columns:1fr } .rsn-brow{ grid-template-columns:1fr; gap:3px } .rsn-read{ grid-template-columns:1fr; gap:3px } .rsn-fork{ grid-template-columns:1fr } .rsn-guards{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
+  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .rr-stage{ grid-template-columns:1fr } .rr-rails{ grid-template-columns:1fr } .rr-steps{ flex-direction:column; align-items:stretch } .an-stage{ grid-template-columns:1fr } .an-rails{ grid-template-columns:1fr } .an-steps{ flex-direction:column; align-items:stretch } .id-row{ grid-template-columns:1fr; gap:9px } .id-arrow{ display:none } .id-chip{ text-align:left; min-width:0 } .id-fork{ grid-template-columns:1fr } .id-rails{ grid-template-columns:1fr } .eco-hero{ grid-template-columns:1fr } .eco-fork{ grid-template-columns:1fr } .eco-rails{ grid-template-columns:1fr } .mig-flow{ grid-template-columns:1fr } .mig-cross{ min-width:0 } .mig-cline{ width:60% } .mig-guards{ grid-template-columns:1fr } .ctx-row{ grid-template-columns:1fr; gap:9px } .ctx-sp{ display:none } .ctx-rval{ text-align:left } .ctx-fork{ grid-template-columns:1fr } .ctx-fields{ grid-template-columns:1fr } .fld-cols{ grid-template-columns:1fr; gap:14px } .fld-arms{ grid-template-columns:1fr } .cyc-fronts{ grid-template-columns:1fr } .cyc-fork{ grid-template-columns:1fr } .cyc-or{ grid-template-columns:1fr; gap:10px } .cyc-orop{ text-align:left } .cyc-fields{ grid-template-columns:1fr } .cyc-trow{ grid-template-columns:1fr; gap:3px; padding:11px 0 } .cyc-tarr{ display:none } .cyc-track{ padding:0 22px } .cyc-marks{ height:36px } .cyc-marks .cyc-mark{ width:48px; margin-left:-24px; gap:4px } .cyc-marks .cyc-mev{ display:none } .cyc-marks .cyc-mst{ font-size:10.5px } .cyc-seam{ top:24px } .cyc-zone{ font-size:8px; letter-spacing:.04em; padding:0 2px } .cyc-seamlab{ font-size:8px; letter-spacing:.08em } .scl-lines{ max-width:none } .scl-line{ grid-template-columns:1fr; gap:3px } .scl-fields{ grid-template-columns:1fr } .scl-cbody{ grid-template-columns:1fr; gap:3px } .scl-gate{ grid-template-columns:1fr } .rsn-ruler{ max-width:none } .rsn-bar{ align-items:flex-start } .rsn-rail{ height:92px } .rsn-avglab{ white-space:normal; width:104px; text-align:center; top:-32px } .rsn-pops{ grid-template-columns:1fr } .rsn-brow{ grid-template-columns:1fr; gap:3px } .rsn-read{ grid-template-columns:1fr; gap:3px } .rsn-fork{ grid-template-columns:1fr } .rsn-guards{ grid-template-columns:1fr } .snt-bar{ align-items:flex-start } .snt-scale{ max-width:none } .snt-row{ grid-template-columns:1fr; gap:5px } .snt-zones{ grid-template-columns:52% 1fr } .snt-eqrow{ grid-template-columns:1fr; gap:3px } .snt-fields{ grid-template-columns:1fr } .snt-trow{ grid-template-columns:1fr; gap:3px } .snt-verd{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
   @media (prefers-reduced-motion:reduce){ .caret{ animation:none } .reveal{ opacity:1 !important; transform:none !important } }
   .reveal{ opacity:0; transform:translateY(14px); animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards }
   @keyframes rise{ to{ opacity:1; transform:none } }
@@ -1778,7 +1933,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.20.2</span>
+    <span class="ver">v2.20.3</span>
   </nav>
 
   <header class="hero">
@@ -1853,7 +2008,7 @@
       <div class="cell">
         <p class="kick">Ciclo de cache</p>
         <h3>O proxy mede o que antes era palpite</h3>
-        <p>O router lê o que o <code>usage</code> de cada resposta <b>prova</b> — veio do cache, refez o prefixo, ou não deu sinal — e conta quantas vezes a sessão cruza uma <b>fronteira fria</b>: a janela em que o prefixo já seria reconstruído de qualquer jeito, e portanto trocar de modelo ou limpar contexto sairia <b>de graça</b>. Em cada fronteira ele também <b>dimensiona</b> a oportunidade: quanto contexto foi reconstruído e quanto uma limpeza teria liberado, somando <code>tool_use</code>, <code>tool_result</code> e <code>thinking</code> — o texto normal fica de fora, porque a limpeza não o remove. E a conta é <b>separada por motivo</b> (<code>no-state</code>, <code>gap-expired</code>, <code>prior-miss</code>), porque uma média única dilui a sessão que <b>esfriou cheia</b> na sessão que <b>nasceu vazia</b> — e é a primeira que a limpeza ataca. O fator <code>chars→token</code> também sai do palpite: o proxy compara os chars que mede com o <code>usage</code> <b>real</b> da mesma resposta e calibra em <b>tráfego próprio, sem chave de API</b>, exibindo <code>charsPerToken: null</code> enquanto não houver amostra. É <b>estimativa declarada</b> (o dashboard marca com <code>~</code>), e é <b>régua</b>, não decisão: nenhuma rota muda por causa dela.</p>
+        <p>O router lê o que o <code>usage</code> de cada resposta <b>prova</b> — veio do cache, refez o prefixo, ou não deu sinal — e conta quantas vezes a sessão cruza uma <b>fronteira fria</b>: a janela em que o prefixo já seria reconstruído de qualquer jeito, e portanto trocar de modelo ou limpar contexto sairia <b>de graça</b>. Em cada fronteira ele também <b>dimensiona</b> a oportunidade: quanto contexto foi reconstruído e quanto uma limpeza teria liberado, somando <code>tool_use</code>, <code>tool_result</code> e <code>thinking</code> — o texto normal fica de fora, porque a limpeza não o remove. E a conta é <b>separada por motivo</b> (<code>no-state</code>, <code>gap-expired</code>, <code>prior-miss</code>), porque uma média única dilui a sessão que <b>esfriou cheia</b> na sessão que <b>nasceu vazia</b> — e é a primeira que a limpeza ataca. <b>Custo e prompt são campos distintos</b>: <code>rebuiltTokens</code> é o que foi refeito, <code>promptTokens</code> é o prompt inteiro (<code>in + cacheRead + cacheCreate</code>), e o “% limpável” sai <b>do prompt</b> — nunca do reconstruído, que fazia a razão estourar de 100%. Sem prompt medido, <code>clearablePct</code> é <code>null</code>. O fator <code>chars→token</code> também sai do palpite: o proxy compara os chars que mede — <b>incluindo o array <code>tools</code></b>, que a Anthropic cobra como parte do prompt — com o <code>usage</code> <b>real</b> da mesma resposta e calibra em <b>tráfego próprio, sem chave de API</b>, exibindo <code>charsPerToken: null</code> enquanto não houver amostra. É <b>estimativa declarada</b> (o dashboard marca com <code>~</code>), e é <b>régua</b>, não decisão: nenhuma rota muda por causa dela.</p>
       </div>
       <div class="cell">
         <p class="kick">Execução curada</p>
@@ -1886,6 +2041,168 @@
         <p>Ative constraints explicitamente com <code>policy_activate</code>, nunca auto-promovidas de lições: o <code>error-guard</code> nega no <code>PreToolUse</code> um Bash cuja falha reincide, políticas <b>always-apply</b> entram no contexto no início da sessão, e políticas <b>por glob</b> avisam ao editar um arquivo que casa o padrão. <b>Surfacing ≠ enforcement</b>: ficam presentes no contexto, não bloqueiam (exceto o <code>error-guard</code>). A Fase 3 agora fecha o ciclo: modo sombra mede, e <code>/policy-adjudicate</code> chama um <b>juiz LLM independente</b> para estimar disposições — estimativa de juiz, <b>não FP medido</b>.</p>
       </div>
     </div>
+  </section>
+
+
+  <section>
+    <p class="label">Novo na v2.20.3 · o número impossível</p>
+    <p class="lede">O primeiro dado de campo da v2.20.2 trouxe um número <b>fisicamente impossível</b> — e ele passou. No bucket <code>gap-expired</code>: <b>41.770 tokens limpáveis sobre 7.030 de input = 594%</b>. O limpável é um <b>subconjunto</b> do prompt; não existe passar de 100%. Esse número foi <b>lido, tabulado numa planilha comparativa e usado para comparar amostras entre si</b> sem que a impossibilidade fosse notada. A v2.20.3 conserta as duas medições que o produziram: o <b>denominador que não era o prompt</b> e a <b>calibração que ignorava o array <code>tools</code></b>.</p>
+
+    <div class="callout">
+      <span class="tag">o defeito mais perigoso que esta página já registrou</span>
+      As releases anteriores trataram de sinais que <b>mentiam</b>: um alarme que nunca apagava (v2.19.1), um número que <b>pareceria maior</b> do que é (v2.20.1), uma média que <b>diluía</b> o caso que decide (v2.20.2). Este é pior — o número era <b>impossível</b> e ainda assim foi consumido como verdade. Ninguém pegou porque ele tinha a <b>aparência</b> de dado bom: casas decimais, convergência entre medições, precisão aparente. É o risco de decidir por dado sem <b>checagem de sanidade dimensional</b>. A lição não é medir mais: é que todo número precisa ser <b>checável</b> — ter um teto que ele não pode cruzar, e um estado vazio que ele possa assumir quando o teto não for conhecível.
+    </div>
+
+    <div class="snt" role="group" aria-label="Artefato da versão 2.20.3: a barra que estoura a própria escala. Começa pela leitura de campo que disparou a release, colhida pela telemetria da versão 2.20.2 no bucket gap-expired: 41.770 tokens limpáveis divididos por 7.030 de input, igual a 594 por cento, com esse percentual marcado numa etiqueta hachurada, porque hachura nesta página significa o que não conta. Uma nota registra que o limpável é subconjunto do prompt, que 594 por cento é impossível, e que mesmo assim o número foi lido, tabulado e comparado entre amostras: ninguém pegou, porque ele tinha casas decimais, convergia entre medições e parecia preciso. Vem então a assinatura desta versão. As três releases anteriores desenharam réguas: a fita da sessão mediu no tempo, a coluna da fronteira mediu na pilha, a régua da dispersão mediu na distribuição. Esta não desenha uma quarta régua: desenha o teto de todas elas. Há uma trilha horizontal em que a metade esquerda é o território possível, de zero a cem por cento, e a metade direita é hachurada e rotulada como acima do teto, impossível. Uma linha âmbar vertical marca os cem por cento e é desenhada acima das barras, de propósito, para que a barra a atravesse à vista. A primeira barra é o que a versão 2.20.2 reportou em campo, no bucket gap-expired: uma barra fantasma, hachurada e nunca âmbar, que preenche todo o território possível, cruza a linha dos cem por cento e continua até o fim da trilha, terminando numa etiqueta que diz 594 por cento. A segunda barra é o que a versão 2.20.3 reporta em teste, no mesmo cenário que antes devolvia 400 por cento: uma barra âmbar curta, que ocupa um quarto do território possível e para muito antes do teto, terminando na etiqueta 25 por cento. Uma legenda declara que o desenho está comprimido: 594 por cento não cabe na própria escala, e é essa exatamente a informação. A segunda parte trata do defeito 1, o denominador que não era o prompt. Duas razões aparecem empilhadas. A de cima, marcada como antes e escrita em cinza, é clearableTokens dividido por input mais cacheCreate, seguida de uma etiqueta tracejada dizendo cacheRead fora; a explicação registra que o numerador mede o corpo inteiro enquanto o denominador media só o que foi reconstruído, e que numa fronteira gap-expired em que o cache ainda foi lido, ou seja, o relógio expirou mas a Anthropic serviu do cache mesmo assim, o cacheRead fica fora da conta, o denominador colapsa e a razão estoura. A de baixo, marcada como agora e destacada, é clearableTokens dividido por input mais cacheRead mais cacheCreate, com o cacheRead em âmbar por ser o termo que voltou; a explicação diz que esse é o prompt inteiro, a mesma grandeza que o numerador mede, e a única razão que pode ser comparada com cem por cento. Em seguida, dois campos nomeados: rebuiltTokens, igual a input mais cacheCreate, é o custo pago naquela fronteira, o que a request teve de refazer do zero; e promptTokens, destacado em âmbar, igual a input mais cacheRead mais cacheCreate, é o prompt inteiro e o denominador do percentual limpável. Um bloco tracejado declara o estado vazio: clearablePct é null quando não há prompt medido, inclusive no estado gravado pela versão 2.20.2, que só tinha o reconstruído, porque sem denominador confiável a métrica prefere não responder a responder errado. Uma linha de prova fecha a parte: o mesmo cenário que devolvia 400 por cento passou a devolver 25 por cento. A terceira parte trata do defeito 2, a calibração que não contava o array tools. Uma tabela lista as parcelas do cálculo de chars: system, o prefixo, que contava; messages, o histórico do turno, que contava; e tools, hachurada, que ficava de fora, embora sejam dezenas de schemas de ferramenta em toda request e a Anthropic os cobre como parte do prompt. Uma linha de leitura mostra o fator: medido 1,674 chars por token, esperado cerca de 3,5 a 4, com os chars subcontados em cerca de 2,2 vezes. Logo abaixo, duas fichas em sequência, 1,69 e 1,68, com a etiqueta convergindo, e errado. Uma nota explica que o agravante não é o erro e sim a aparência de estabilidade: um valor errático levanta suspeita, um valor que converge parece dado maduro, e foi assim que ele entrou na planilha sem ser questionado. Outra nota registra que os schemas passam a ser serializados e contados, e que um schema circular é ignorado sem derrubar a medição. A quarta parte é a nota sobre o alarme de recall degradado. Um bloco com borda âmbar traz a etiqueta não é falso positivo e o texto: o aviso Memory recall DEGRADED, 45 por cento, apareceu no mesmo snapshot; com a janela deslizante da versão 2.19.1 ele mede os últimos 50 recalls, e a leitura real foi 10 de 24 falhando, sendo 9 remote-error e 1 timeout, com a última falha minutos antes. É o alarme corrigido fazendo o trabalho dele, reportando degradação de agora e não um total vitalício; o daemon mcp-memory merece investigação, o aviso não. Uma nota registra que isso fecha o arco aberto pela versão 2.19.1 nesta mesma página: lá o defeito era um alarme que não apagava, aqui ele acende e a checagem confirma que deveria. No rodapé, a lição: medir não basta, um número precisa ser checável, com um teto que ele não pode cruzar e um null honesto para quando o teto não for conhecível; as releases anteriores trataram de sinais que mentiam, esta trata de um sinal impossível consumido como verdade; e nada aqui muda decisão de roteamento, continua sendo régua, agora com um limite que ela mesma respeita.">
+      <div class="snt-bar">
+        <span class="k">v2.20.3</span>
+        <span class="m">o teto que ninguém checou · dois defeitos de medição</span>
+      </div>
+
+      <div class="snt-part">
+        <span class="snt-ptag">a leitura impossível · e ela foi usada assim mesmo</span>
+
+        <div class="snt-obs">
+          <span class="snt-obk">1º dado de campo · bucket <code>gap-expired</code> · v2.20.2</span>
+          <span class="snt-obv">41.770 limpáveis ÷ 7.030 de input = <span class="snt-imposs">594%</span></span>
+        </div>
+
+        <p class="snt-note" style="margin-bottom:18px">O limpável é um <b>subconjunto</b> do prompt: 594% não é um número alto, é um número <b>impossível</b>. E ainda assim foi lido, <b>tabulado numa planilha comparativa</b> e usado para comparar amostras entre si. Ninguém pegou — ele tinha casas decimais, <b>convergia</b> entre medições e parecia preciso.</p>
+
+        <div class="snt-scale">
+          <div class="snt-row">
+            <span class="snt-hk">% limpável do prompt</span>
+            <span class="snt-zones"><span>0% → 100% · o possível</span><span class="snt-zno">acima do teto · impossível</span></span>
+          </div>
+          <div class="snt-row">
+            <span class="snt-rk"><b>o que a v2.20.2 reportou</b><span class="snt-rp">campo · medido</span></span>
+            <span class="snt-track" style="--w:100%">
+              <span class="snt-imp" aria-hidden="true"></span>
+              <span class="snt-fill snt-fill--void" aria-hidden="true"></span>
+              <span class="snt-ceil" aria-hidden="true"></span>
+              <span class="snt-val snt-val--void">594%</span>
+            </span>
+          </div>
+          <div class="snt-row">
+            <span class="snt-rk"><b>o que a v2.20.3 reporta</b><span class="snt-rp">teste · antes dava 400%</span></span>
+            <span class="snt-track" style="--w:13%">
+              <span class="snt-imp" aria-hidden="true"></span>
+              <span class="snt-fill" aria-hidden="true"></span>
+              <span class="snt-ceil" aria-hidden="true"></span>
+              <span class="snt-val">25%</span>
+            </span>
+          </div>
+          <p class="snt-cap">a linha âmbar é o teto dos 100% · o desenho está comprimido de propósito: 594% não cabe na própria escala</p>
+        </div>
+      </div>
+
+      <div class="snt-part">
+        <span class="snt-ptag">defeito 1 · o denominador não era o prompt</span>
+
+        <div class="snt-eq">
+          <div class="snt-eqrow snt-eqrow--was">
+            <span class="snt-eqk">antes</span>
+            <span class="snt-eqv"><code>clearableTokens</code> ÷ ( <code>in</code> + <code>cacheCreate</code> ) <span class="snt-gone">cacheRead fora</span>
+              <span class="snt-why">O numerador mede o <b>corpo inteiro</b>; o denominador media só o que foi <b>reconstruído</b>. Numa fronteira <code>gap-expired</code> em que o cache <b>ainda foi lido</b> — o relógio expirou, mas a Anthropic serviu do cache mesmo assim —, o <code>cacheRead</code> fica fora da conta, o denominador <b>colapsa</b> e a razão estoura.</span>
+            </span>
+          </div>
+          <div class="snt-eqrow snt-eqrow--now">
+            <span class="snt-eqk">agora</span>
+            <span class="snt-eqv"><code>clearableTokens</code> ÷ ( <code>in</code> + <code class="add">cacheRead</code> + <code>cacheCreate</code> )
+              <span class="snt-why">O <b>prompt inteiro</b> — a mesma grandeza que o numerador mede. É a única razão que pode ser <b>comparada com 100%</b>.</span>
+            </span>
+          </div>
+        </div>
+
+        <div class="snt-fields">
+          <div class="snt-field">
+            <b><code>rebuiltTokens</code></b>
+            <span><code>in + cacheCreate</code> — o <b>custo pago</b> naquela fronteira: o que a request teve de refazer do zero.</span>
+          </div>
+          <div class="snt-field snt-field--hi">
+            <b><code>promptTokens</code></b>
+            <span><code>in + cacheRead + cacheCreate</code> — o <b>prompt inteiro</b>: o denominador do “% limpável”.</span>
+          </div>
+        </div>
+
+        <div class="snt-null">
+          <span class="snt-nullk">clearablePct: <i>null</i></span>
+          <span class="snt-nullw">quando <b>não há prompt medido</b> — inclusive no estado gravado pela <b>v2.20.2</b>, que só tinha o reconstruído. Sem denominador confiável, a métrica prefere <b>não responder</b> a responder errado.</span>
+        </div>
+
+        <div class="snt-read">
+          <span class="snt-rdk">prova</span>
+          <span class="snt-rdv">o mesmo cenário que devolvia <b>400%</b> passou a devolver <i>25%</i></span>
+        </div>
+
+        <p class="snt-note">Duas grandezas que nunca deveriam ter dividido o mesmo campo agora têm <b>dois nomes</b>. Nada do que a v2.20.1 e a v2.20.2 mediram foi perdido: o custo continua sendo lido, agora de <code>rebuiltTokens</code>. O que mudou é <b>de quem</b> a razão é tirada.</p>
+      </div>
+
+      <div class="snt-part">
+        <span class="snt-ptag">defeito 2 · a calibração não contava o array <code>tools</code></span>
+
+        <div class="snt-terms">
+          <div class="snt-trow">
+            <span class="snt-tk"><code>system</code></span>
+            <span class="snt-tw">o prefixo — costuma ser a maior parte do prompt</span>
+            <span class="snt-tf">contava</span>
+          </div>
+          <div class="snt-trow">
+            <span class="snt-tk"><code>messages</code></span>
+            <span class="snt-tw">o histórico do turno</span>
+            <span class="snt-tf">contava</span>
+          </div>
+          <div class="snt-trow snt-trow--out">
+            <span class="snt-tk"><code>tools</code></span>
+            <span class="snt-tw">dezenas de <b>schemas de ferramenta</b> em toda request — e a Anthropic os cobra como parte do prompt</span>
+            <span class="snt-tf">ficava de fora</span>
+          </div>
+        </div>
+
+        <div class="snt-read">
+          <span class="snt-rdk">fator</span>
+          <span class="snt-rdv">medido <b>1,674</b> chars/token · esperado <i>~3,5–4</i> · chars subcontado em <b>~2,2×</b></span>
+        </div>
+
+        <div class="snt-conv">
+          <span class="snt-cv">1,69</span>
+          <span class="snt-carr" aria-hidden="true">→</span>
+          <span class="snt-cv">1,68</span>
+          <span class="snt-cvx">convergindo · e errado</span>
+        </div>
+
+        <p class="snt-note" style="margin-bottom:9px">O agravante não é o erro: é a <b>aparência de estabilidade</b>. Um valor errático levanta suspeita; um valor que <b>converge</b> parece dado maduro — e foi assim que ele entrou na planilha sem ser questionado.</p>
+        <p class="snt-note">Agora os schemas são <b>serializados e contados</b>. Um schema <b>circular</b> é ignorado sem derrubar a medição: uma request esquisita não pode zerar a calibração inteira.</p>
+      </div>
+
+      <div class="snt-part">
+        <span class="snt-ptag">a nota · o alarme de recall degradado está certo</span>
+
+        <div class="snt-verd">
+          <span class="snt-vtag">não é falso positivo</span>
+          <span class="snt-vbody"><b>Memory recall DEGRADED — 45%</b> apareceu no mesmo snapshot. Com a <b>janela deslizante da v2.19.1</b>, ele mede os <b>últimos 50</b> recalls — e a leitura real foi <b>10 de 24 falhando</b> (<code>remote-error</code> 9 · <code>timeout</code> 1), com a última falha <b>minutos antes</b>.
+            <span class="snt-vsub">É o alarme corrigido fazendo o trabalho dele: reportando degradação <b>de agora</b>, não um total vitalício. O daemon <code>mcp-memory</code> merece investigação — o aviso, não.</span>
+          </span>
+        </div>
+
+        <p class="snt-note">Fecha o arco que a v2.19.1 abriu nesta mesma página: lá o defeito era um alarme que <b>não apagava</b>; aqui ele acende, a leitura é checada, e a checagem confirma que ele <b>deveria</b> estar aceso.</p>
+      </div>
+
+      <div class="snt-foot"><b>A lição, registrada para não se perder:</b> medir não basta. Um número precisa ser <b>checável</b> — ter um teto que ele não pode cruzar, e um <code>null</code> honesto para quando o teto não for conhecível. As releases anteriores desta página trataram de sinais que <b>mentiam</b>; esta trata do caso pior: um sinal <b>impossível</b>, consumido como verdade porque tinha a aparência de dado bom. Como sempre aqui, nada disso muda uma decisão de roteamento: continua sendo <b>régua</b> — agora com um limite que ela mesma respeita.</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>O “% limpável” volta a ser comparável — ou não responde</h4>
+        <p>A razão passa a sair do <b>prompt inteiro</b> (<code>promptTokens</code>), não do que foi reconstruído. Onde não há prompt medido — inclusive no estado gravado pela v2.20.2 —, <code>clearablePct</code> é <code>null</code>. Um número que não pode passar de 100% deixa de passar: o cenário que devolvia <b>400%</b> devolve <b>25%</b>.</p>
+      </div>
+      <div class="win">
+        <h4>O fator chars→token deixa de ser enviesado em ~2,2×</h4>
+        <p>Os <b>schemas de ferramenta</b> entram na conta de chars, como a Anthropic já os cobrava. O fator sai de <b>1,674</b> — baixo demais para ser texto real — em direção à faixa esperada. E o <b>custo</b> de cada fronteira ganha nome próprio, <code>rebuiltTokens</code>, separado do prompt que ele nunca foi.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Rigor de sempre:</b> as duas grandezas passam a ter <b>campos separados</b> — <code>rebuiltTokens</code> (o custo) e <code>promptTokens</code> (o denominador) —, e nenhuma leitura antiga foi descartada: o estado gravado pela v2.20.2 continua legível, só que sem <b>fingir</b> um percentual que ele não tem como sustentar (<code>clearablePct: null</code>). A correção do denominador é provada com o cenário que <b>reproduzia</b> o defeito: <b>400% → 25%</b>. A contagem do array <code>tools</code> é provada com um corpo que tem schemas e um que não tem, e um <b>schema circular</b> é ignorado sem derrubar a medição. Tudo em <b>TDD RED→GREEN</b>. E o registro honesto: este defeito <b>não</b> foi pego por teste — ele saiu do primeiro dado de campo, que passou por leitura, planilha e comparação entre amostras <b>antes</b> de alguém notar que 594% não pode existir.</p>
   </section>
 
 

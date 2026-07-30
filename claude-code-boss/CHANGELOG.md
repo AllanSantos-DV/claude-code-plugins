@@ -1,5 +1,30 @@
 # Changelog
 
+## [2.20.3] - 2026-07-29
+
+**O primeiro dado de campo continha um número fisicamente impossível — e ninguém pegou.** A telemetria da v2.20.2 reportou, para o bucket `gap-expired`, **41.770 tokens limpáveis sobre 7.030 de input = 594%**. O limpável é um **subconjunto** do prompt: não existe passar de 100%. O número foi lido, tabulado e comparado entre amostras sem que a impossibilidade fosse notada — exatamente o risco de decidir por dado sem sanidade dimensional.
+
+### Defeito 1 — denominador errado (o 594%)
+
+`prize.inputTokens` era `in + cacheCreate`, ou seja, **o que foi reconstruído**. Mas `clearableTokens` mede o **corpo inteiro**. Numa fronteira `gap-expired` em que o cache ainda foi lido (o relógio expirou, mas a Anthropic serviu do cache mesmo assim), o `cacheRead` fica de fora do denominador, ele colapsa, e a razão estoura.
+
+São **duas grandezas distintas** e agora têm dois campos:
+
+- **`rebuiltTokens`** = `in + cacheCreate` — o **custo pago** naquela fronteira.
+- **`promptTokens`** = `in + cacheRead + cacheCreate` — o **prompt inteiro**, denominador correto do "% limpável".
+
+`metricsSnapshot()` expõe `cacheCycle.clearablePct` calculado sobre o prompt. Quando não há prompt medido — inclusive em estado gravado pela v2.20.2, que só tinha o reconstruído — o valor é **`null`**: sem denominador confiável, prefere **não responder** a responder errado.
+
+### Defeito 2 — calibração enviesada ~2,2× (o array `tools`)
+
+`estimateTotalChars` contava `system` + `messages`, mas **não o array `tools`**. O Claude Code manda dezenas de schemas de ferramenta em toda request, e a Anthropic os cobra como parte do prompt. O fator medido em campo veio **1,674 chars/token** contra os ~3,5–4 esperados — chars subcontado em ~2,2×, com o erro convergindo com aparência de estabilidade (1,69 → 1,68), o que é pior: parecia dado maduro.
+
+Os schemas passam a ser serializados e contados. Um schema circular é ignorado sem derrubar a medição.
+
+### Nota — o alarme de recall degradado está CERTO
+
+O aviso `Memory recall DEGRADED — 45%` que apareceu no snapshot **não é** falso positivo: com a janela deslizante da v2.19.1, ele mede os últimos 50 recalls, e a leitura real foi 10 de 24 falhando (`remote-error` 9, `timeout` 1), com a última falha minutos antes. É o alarme corrigido fazendo o trabalho dele: reportando degradação **de agora**. O daemon `mcp-memory` merece investigação.
+
 ## [2.20.2] - 2026-07-29
 
 **A média estava escondendo o caso que decide.** A v2.20.1 passou a medir o tamanho da fronteira fria. O primeiro dado de campo (23 fronteiras, 165K reconstruídos, 70K limpáveis = 42%) trouxe um número desconfortável: **~7K de input por fronteira**. Pequeno demais para uma sessão acumulada — assinatura de que a maioria das fronteiras é `no-state`, o **turno 0 de uma sessão nova**, onde não há praticamente nada acumulado para limpar.

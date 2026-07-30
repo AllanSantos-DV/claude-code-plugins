@@ -1193,13 +1193,15 @@ function newMetrics() {
     // uma limpeza teria liberado). Frequência sozinha não decide ROI.
     cacheCycle:      {
       hits: 0, misses: 0, coldBoundaries: 0,
-      coldBoundaryInputTokens: 0, coldBoundaryClearableTokens: 0,
+      // inputTokens = RECONSTRUÍDO (custo pago); promptTokens = prompt inteiro
+      // (denominador do "% limpável"). Confundir os dois gerou 594% em campo.
+      coldBoundaryInputTokens: 0, coldBoundaryPromptTokens: 0, coldBoundaryClearableTokens: 0,
       // Quebra por MOTIVO da fronteira. Buckets fixos (nunca criados a partir de
       // entrada externa): sessão nova × sessão que esfriou × miss observado.
       byReason: {
-        'no-state':    { count: 0, inputTokens: 0, clearableTokens: 0 },
-        'gap-expired': { count: 0, inputTokens: 0, clearableTokens: 0 },
-        'prior-miss':  { count: 0, inputTokens: 0, clearableTokens: 0 },
+        'no-state':    { count: 0, inputTokens: 0, promptTokens: 0, clearableTokens: 0 },
+        'gap-expired': { count: 0, inputTokens: 0, promptTokens: 0, clearableTokens: 0 },
+        'prior-miss':  { count: 0, inputTokens: 0, promptTokens: 0, clearableTokens: 0 },
       },
     },
     // Calibração chars→token medida no próprio tráfego (sem API key).
@@ -1219,16 +1221,16 @@ function loadMetrics() {
         cost:       Object.assign({ baselineUnits: 0, actualUnits: 0 }, saved.cost || {}),
         tokens:     Object.assign({ in: 0, out: 0, cacheRead: 0, cacheCreate: 0 }, saved.tokens || {}),
         cacheCycle: Object.assign(
-          { hits: 0, misses: 0, coldBoundaries: 0, coldBoundaryInputTokens: 0, coldBoundaryClearableTokens: 0 },
+          { hits: 0, misses: 0, coldBoundaries: 0, coldBoundaryInputTokens: 0, coldBoundaryPromptTokens: 0, coldBoundaryClearableTokens: 0 },
           saved.cacheCycle || {},
           // byReason precisa dos 3 buckets SEMPRE presentes: um metrics.json de
           // versão anterior não os tem, e `bucket.count += 1` num undefined viraria
           // crash silencioso na primeira fronteira.
           {
             byReason: {
-              'no-state':    Object.assign({ count: 0, inputTokens: 0, clearableTokens: 0 }, ((saved.cacheCycle || {}).byReason || {})['no-state']),
-              'gap-expired': Object.assign({ count: 0, inputTokens: 0, clearableTokens: 0 }, ((saved.cacheCycle || {}).byReason || {})['gap-expired']),
-              'prior-miss':  Object.assign({ count: 0, inputTokens: 0, clearableTokens: 0 }, ((saved.cacheCycle || {}).byReason || {})['prior-miss']),
+              'no-state':    Object.assign({ count: 0, inputTokens: 0, promptTokens: 0, clearableTokens: 0 }, ((saved.cacheCycle || {}).byReason || {})['no-state']),
+              'gap-expired': Object.assign({ count: 0, inputTokens: 0, promptTokens: 0, clearableTokens: 0 }, ((saved.cacheCycle || {}).byReason || {})['gap-expired']),
+              'prior-miss':  Object.assign({ count: 0, inputTokens: 0, promptTokens: 0, clearableTokens: 0 }, ((saved.cacheCycle || {}).byReason || {})['prior-miss']),
             },
           },
         ),
@@ -1333,9 +1335,18 @@ function observeCacheCycle(sessionKey, acc, now, config, deps) {
   if (boundary.cold) {
     const a = acc || {};
     const clearable = cacheCycle.estimateClearablePayload(body);
+    const inTok = Number(a.in) || 0;
+    const readTok = Number(a.cacheRead) || 0;
+    const createTok = Number(a.cacheCreate) || 0;
     prize = {
-      // Contexto que ESTA request (re)construiu do zero — o tamanho da fronteira.
-      inputTokens: (Number(a.in) || 0) + (Number(a.cacheCreate) || 0),
+      // DUAS grandezas distintas, e confundi-las produziu um número impossível em
+      // campo (594% de "limpável"):
+      //  - rebuilt: o que ESTA request reconstruiu do zero = o CUSTO pago ali.
+      //  - prompt : o prompt inteiro que trafegou = o DENOMINADOR do "% limpável",
+      //    já que `clearableTokens` mede o corpo inteiro. Sem o cacheRead, uma
+      //    fronteira que ainda leu cache colapsa o denominador e a conta estoura.
+      rebuiltTokens: inTok + createTok,
+      promptTokens: inTok + readTok + createTok,
       clearableTokens: clearable.tokens,
       clearableBlocks: clearable.blocks,
     };
@@ -1369,7 +1380,8 @@ function metricsCacheCycle(obs) {
   // Tamanho da oportunidade. Só soma o que foi de fato MEDIDO — uma fronteira sem
   // prêmio medido conta na frequência mas não inventa volume.
   if (obs.prize) {
-    metrics.cacheCycle.coldBoundaryInputTokens     += Number(obs.prize.inputTokens) || 0;
+    metrics.cacheCycle.coldBoundaryInputTokens     += Number(obs.prize.rebuiltTokens) || 0;
+    metrics.cacheCycle.coldBoundaryPromptTokens    += Number(obs.prize.promptTokens) || 0;
     metrics.cacheCycle.coldBoundaryClearableTokens += Number(obs.prize.clearableTokens) || 0;
     // POR MOTIVO. Sem esta quebra, a média mistura dois fenômenos opostos: a
     // fronteira de sessão NOVA (`no-state`, quase nada acumulado para limpar) e a
@@ -1380,7 +1392,8 @@ function metricsCacheCycle(obs) {
     const bucket = metrics.cacheCycle.byReason[obs.boundary && obs.boundary.reason];
     if (bucket) {
       bucket.count          += 1;
-      bucket.inputTokens    += Number(obs.prize.inputTokens) || 0;
+      bucket.inputTokens    += Number(obs.prize.rebuiltTokens) || 0;
+      bucket.promptTokens   += Number(obs.prize.promptTokens) || 0;
       bucket.clearableTokens += Number(obs.prize.clearableTokens) || 0;
     }
   }
@@ -1449,11 +1462,19 @@ function metricsSnapshot() {
   const charsPerToken = (cal.realTokens > 0 && cal.chars > 0)
     ? Math.round((cal.chars / cal.realTokens) * 100) / 100
     : null;
+  // "% limpável" com o denominador CERTO (prompt inteiro). `null` quando não há
+  // prompt medido — inclusive em estado legado (v2.20.2 gravava só o reconstruído):
+  // sem denominador confiável, prefere NÃO responder a responder 594%.
+  const ccm = metrics.cacheCycle || {};
+  const clearablePct = (ccm.coldBoundaryPromptTokens > 0)
+    ? Math.round((ccm.coldBoundaryClearableTokens / ccm.coldBoundaryPromptTokens) * 1000) / 10
+    : null;
   return Object.assign({}, metrics, {
     economiaPct,
     savedUnits: Math.round((b - a) * 10) / 10,
     cacheHitPct,
     calibration: Object.assign({}, cal, { charsPerToken }),
+    cacheCycle: Object.assign({}, ccm, { clearablePct }),
   });
 }
 
