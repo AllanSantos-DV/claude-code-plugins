@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.20.3 — o número impossível: 594% de limpável, e o denominador que não era o prompt</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. A v2.20.3 conserta dois defeitos de medição que produziram, no primeiro dado de campo da v2.20.2, um número fisicamente impossível — e que passou. No bucket gap-expired, a telemetria reportou 41.770 tokens limpáveis sobre 7.030 de input, ou seja, 594 por cento. O limpável é um subconjunto do prompt: não existe passar de cem por cento. Esse número foi lido, tabulado numa planilha comparativa e usado para comparar amostras entre si sem que a impossibilidade fosse notada, que é exatamente o risco de decidir por dado sem checagem de sanidade dimensional: ele tinha casas decimais, convergia entre medições e parecia preciso. O primeiro defeito é o denominador. O campo inputTokens do prêmio era input mais cacheCreate, ou seja, o que foi reconstruído, enquanto clearableTokens mede o corpo inteiro. Numa fronteira gap-expired em que o cache ainda foi lido — o relógio expirou, mas a API serviu do cache mesmo assim — o cacheRead fica fora do denominador, ele colapsa e a razão estoura. São duas grandezas distintas e agora têm dois campos: rebuiltTokens, igual a input mais cacheCreate, é o custo pago naquela fronteira; e promptTokens, igual a input mais cacheRead mais cacheCreate, é o prompt inteiro, o denominador correto do percentual limpável. O clearablePct passa a sair do prompt e é nulo quando não há prompt medido, inclusive em estado gravado pela v2.20.2, que só tinha o reconstruído: sem denominador confiável, a métrica prefere não responder a responder errado. A prova é o cenário que devolvia quatrocentos por cento e passou a devolver vinte e cinco. O segundo defeito é a calibração, enviesada em cerca de duas vírgula duas vezes. A função estimateTotalChars contava system e messages, mas não o array tools; o Claude Code manda dezenas de schemas de ferramenta em toda request e a Anthropic os cobra como parte do prompt. O fator medido em campo veio um vírgula seiscentos e setenta e quatro chars por token, contra os três vírgula cinco a quatro esperados, e o agravante é que o erro convergia com aparência de estabilidade, de um vírgula sessenta e nove para um vírgula sessenta e oito, o que é pior que um valor errático porque parecia dado maduro. Agora os schemas são serializados e contados, e um schema circular é ignorado sem derrubar a medição. Uma nota fecha a release: o aviso de recall degradado em quarenta e cinco por cento que apareceu no mesmo snapshot não é falso positivo. Com a janela deslizante da v2.19.1, ele mede os últimos cinquenta recalls, e a leitura real foi dez de vinte e quatro falhando, nove por erro remoto e um por timeout, com a última falha minutos antes: é o alarme corrigido reportando degradação de agora. As releases anteriores seguem na página: a v2.20.2 partiu a média da fronteira fria por motivo e calibrou chars por token sem chave de API; a v2.20.1 deu tamanho à fronteira fria; e a v2.20.0 instalou a régua do ciclo de cache. A lição desta versão: medir não basta, o número precisa ser checável." />
+<title>claude-code-boss v2.20.4 — a janela do cache deixa de ser palpite: ela é declarada pela API, e agora é persistida</title>
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. A v2.20.4 tira a janela do prompt cache do palpite: ela é declarada pela própria API e passa a ser persistida. Até aqui o detector de fronteira fria assumia cinco minutos, um valor que vinha do config e nunca de uma medição. A extração do binário do Claude Code, feita nesta sessão e não deduzida, mostra que a janela pode ser de uma hora e que a decisão não é do usuário: a função que resolve o TTL liga uma hora por variável de ambiente, por estado de overage da conta, ou por um feature-flag remoto da Anthropic com allowlist por querySource. Ou seja, a janela pode mudar sem aviso e sem que nada mude na máquina do usuário, e nenhuma inspeção local revelaria a mudança. A ironia que dá o fio da narrativa é que a prova já passava pelo proxy: o accumulateUsage lia ephemeral_5m_input_tokens e ephemeral_1h_input_tokens, campos em que a resposta declara a janela contratada em cada write, mas o dado apenas refinava um TTL interno e era descartado. Agora ele é persistido. Entra metrics.ttl com os contadores write5m, write1h e writeUnknown; um write sem detalhe de janela vai para writeUnknown, porque nunca se assume cinco minutos por omissão. Entra o veredito no snapshot: ttl.observed, que vale cinco minutos, uma hora, mixed, ou nulo quando não há prova; ttl.observedMs; e ttl.pct1h. Em mixed, porque a API permite misturar TTLs, o observedMs fica na janela mais longa, que é a leitura conservadora, já que subestimar a janela é exatamente o que classifica fronteira fria sobre cache vivo. A função ttlWindowMs faz a janela medida vencer o palpite do config, e o dashboard passa a exibir janela uma hora medida. A prova é o coração da release: com a janela medida em uma hora, uma sessão com cache quente aos dez e aos trinta minutos é corretamente classificada como warm, enquanto o palpite de cinco minutos declarava gap-expired nas duas, ou seja, fronteira fria sobre cache vivo; aos setenta minutos as duas leituras concordam que está frio. E não é hipotético: em campo, uma amostra classificada gap-expired tinha noventa e nove vírgula oito por cento do prompt servido do cache, e limpar ali destruiria cerca de cento e trinta mil tokens de cache já pago. As releases anteriores seguem na página: a v2.20.3 corrigiu um número impossível de quinhentos e noventa e quatro por cento, a v2.20.2 partiu a média da fronteira fria por motivo, a v2.20.1 deu tamanho à fronteira fria e a v2.20.0 instalou a régua do ciclo de cache. A lição desta versão: as anteriores trataram de sinais que mentiam; esta trata de um palpite disfarçado de medição, com o detector afirmando saber a janela sem nunca tê-la medido, e a medida disponível o tempo todo do outro lado da mesma resposta." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -1916,14 +1916,186 @@
   .snt-foot b{ color:#a29f97 }
   .snt-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
 
+  /* v2.20.4 : A JANELA DO CACHE DEIXA DE SER PALPITE - ela e DECLARADA pela propria API,
+     e agora e PERSISTIDA. O detector assumia 5min vindos do `config`. A extracao do binario
+     do Claude Code mostra que a janela pode ser de 1h e que a decisao NAO e do usuario:
+     `tFe(querySource)` liga 1h por env (FORCE_PROMPT_CACHING_5M / ENABLE_PROMPT_CACHING_1H),
+     por estado de OVERAGE da conta, ou por um FEATURE-FLAG REMOTO da Anthropic
+     (`tengu_prompt_cache_1h_config`, com allowlist por `querySource`). Ou seja: a janela pode
+     mudar SEM AVISO e SEM NADA MUDAR na maquina do usuario, e nenhuma inspecao local
+     revelaria. A ironia que da o fio: `accumulateUsage` JA LIA `ephemeral_5m_input_tokens` e
+     `ephemeral_1h_input_tokens` - a resposta DECLARA a janela contratada em cada write - mas
+     o dado so refinava um TTL interno e era DESCARTADO. A prova passava pelo proxy o tempo
+     todo e era jogada fora; agora e persistida em `metrics.ttl` (write5m / write1h /
+     writeUnknown - write sem detalhe de janela vai para writeUnknown, NUNCA se assume 5m por
+     omissao) e vira veredito no snapshot (`ttl.observed` 5m|1h|mixed|null, `ttl.observedMs`,
+     `ttl.pct1h`). Em `mixed` o observedMs fica na janela MAIS LONGA - leitura conservadora,
+     porque SUBESTIMAR a janela e o que classifica fronteira fria sobre cache vivo. E
+     `ttlWindowMs(ttl, config)`: a medida vence o palpite.
+     ASSINATURA: AS DUAS JANELAS NO MESMO EIXO. As releases anteriores desenharam REGUAS - a
+     fita (tempo, v2.20.0), a coluna (pilha, v2.20.1), a regua da dispersao (distribuicao,
+     v2.20.2) - e depois o TETO de todas elas (v2.20.3). Esta nao desenha regua nem teto:
+     desenha o VAO, a EXTENSAO da janela, com as DUAS candidatas sobrepostas no MESMO eixo e
+     tres sondas (10min, 30min, 70min) cujo veredito VIRA conforme a janela em que se
+     acredita. Diferente da fita da v2.20.0, que marcava EVENTOS em sequencia: aqui o assunto
+     e o COMPRIMENTO do vao, nao a ordem. A janela medida e AMBAR (o numero em que se pode
+     confiar) e o palpite e FANTASMA e HACHURADO - a hachura mantem o significado que a pagina
+     ja usa (`.rsn-brow--rej`, `.scl`, `.snt-imposs`: o que NAO conta), e por isso os dois
+     vereditos falsos saem hachurados tambem. Ao contrario da v2.20.3, a escala aqui NAO esta
+     comprimida: e linear e honesta (0 -> 75min), e o palpite e mesmo um risco de 6,7% do
+     eixo - o desenho nao precisa de desculpa porque o numero e real, so pequeno.
+     Peso de PATCH: quatro partes curtas, uma unica assinatura. */
+  .ttl{ background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:880px; font-family:var(--mono); margin:0 0 36px }
+  .ttl code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .ttl-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .ttl-bar .k{ color:var(--accent) }
+  .ttl-bar .m{ color:#8a877f }
+
+  .ttl-part{ padding:18px 22px 12px }
+  .ttl-part + .ttl-part{ border-top:1px solid rgba(255,255,255,.06) }
+  .ttl-ptag{ display:block; font-size:9px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); margin:0 0 14px }
+  /* identificador nunca vira caixa-alta: `accumulateUsage` sai verbatim */
+  .ttl-ptag code{ text-transform:none; letter-spacing:0 }
+  .ttl-note{ margin:0; font-size:11px; line-height:1.6; color:#8a877f }
+  .ttl-note + .ttl-note{ margin-top:9px }
+  .ttl-note b{ color:#a29f97; font-weight:600 }
+
+  /* a evidencia crua: o trecho extraido do binario - o que decide a janela, verbatim */
+  .ttl-src{ border-left:2px solid var(--accent); background:rgba(255,255,255,.05); border-radius:0 6px 6px 0;
+    padding:11px 14px; margin:0 0 14px; max-width:640px }
+  .ttl-srck{ display:block; font-size:9px; letter-spacing:.13em; text-transform:uppercase; color:var(--accent); margin:0 0 9px }
+  .ttl-srcv{ margin:0; font-family:var(--mono); font-size:10.5px; line-height:1.75; color:#a29f97;
+    white-space:pre; overflow-x:auto }
+  .ttl-srcv:focus-visible{ outline:2px solid var(--accent); outline-offset:3px; border-radius:3px }
+  .ttl-srcv b{ color:var(--panel-ink); font-weight:600 }
+  .ttl-srcv i{ color:var(--accent); font-style:normal; font-weight:700 }
+
+  /* quem decide a janela: quatro degraus, e so os dois primeiros sao seus */
+  .ttl-rungs{ border:1px solid var(--panel-line); border-radius:10px; overflow:hidden; margin:0 0 13px; max-width:640px }
+  .ttl-rung{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px 12px; align-items:baseline;
+    padding:11px 13px; min-width:0 }
+  .ttl-rung + .ttl-rung{ border-top:1px solid rgba(255,255,255,.07) }
+  .ttl-rung--remote{ background:rgba(255,255,255,.05) }
+  .ttl-rk{ font-size:11.5px; line-height:1.55; color:var(--panel-ink); overflow-wrap:break-word; min-width:0 }
+  .ttl-rk i{ color:var(--accent); font-style:normal; font-weight:700 }
+  .ttl-rk span{ display:block; margin-top:5px; font-size:10.5px; line-height:1.5; color:#8a877f }
+  .ttl-rk span b{ color:#a29f97; font-weight:600 }
+  .ttl-rw{ justify-self:start; font-size:9px; letter-spacing:.12em; text-transform:uppercase;
+    white-space:nowrap; color:#6d6257 }
+  .ttl-rw--not{ color:var(--accent) }
+  .ttl-rw--remote{ color:var(--accent); border:1px dashed rgba(255,255,255,.30); border-radius:5px; padding:3px 8px }
+
+  /* ASSINATURA: as duas janelas no mesmo eixo - 0 -> 75min, escala linear, sem compressao */
+  .ttl-stage{ margin:0 0 15px; max-width:640px }
+  .ttl-axis{ display:flex; align-items:baseline; justify-content:space-between; gap:12px; padding:0 30px;
+    font-size:8.5px; letter-spacing:.13em; text-transform:uppercase; color:#6d6257; margin:0 0 6px }
+  .ttl-frame{ position:relative; padding:0 30px }
+  .ttl-probes{ position:relative; height:30px; margin:0 0 6px }
+  .ttl-pb{ position:absolute; bottom:0; left:var(--x); transform:translateX(-50%);
+    display:flex; flex-direction:column; align-items:center; gap:5px; white-space:nowrap }
+  .ttl-pbl{ font-size:10px; font-weight:700; color:var(--panel-ink) }
+  .ttl-pbd{ width:7px; height:7px; border-radius:50%; background:#8a877f }
+
+  .ttl-band{ min-width:0 }
+  .ttl-band + .ttl-band{ margin-top:18px }
+  .ttl-bk{ display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 10px; margin:0 0 7px; font-size:10.5px; color:#a29f97 }
+  .ttl-bk b{ color:var(--panel-ink); font-weight:600 }
+  .ttl-bk em{ font-style:normal; font-size:8.5px; letter-spacing:.12em; text-transform:uppercase; color:#6d6257 }
+  .ttl-track{ display:block; position:relative; height:24px; border-radius:5px; background:rgba(255,255,255,.04) }
+  .ttl-span{ position:absolute; left:0; top:0; bottom:0; width:var(--w); border-radius:5px; background:var(--accent) }
+  /* o palpite nunca e ambar: e fantasma e hachurado, como tudo que nao conta nesta pagina */
+  .ttl-span--guess{ background:rgba(255,255,255,.10);
+    background-image:repeating-linear-gradient(135deg,rgba(255,255,255,.17) 0 4px,transparent 4px 9px) }
+  /* a sonda desce como prumo: rotulo -> tique -> barra -> veredito, tudo no mesmo x */
+  .ttl-tick{ position:absolute; left:var(--x); top:-9px; bottom:-9px; width:0; z-index:2;
+    border-left:1px dashed rgba(255,255,255,.34) }
+  .ttl-edge{ position:absolute; z-index:3; top:50%; transform:translateY(-50%); left:calc(var(--w) + 5px);
+    font-size:10.5px; font-weight:700; color:var(--accent); white-space:nowrap;
+    background:var(--panel); padding:1px 5px; border-radius:4px }
+  .ttl-edge--guess{ color:#a29f97 }
+  .ttl-verds{ position:relative; height:25px; margin-top:9px }
+  .ttl-vd{ position:absolute; z-index:4; top:0; left:var(--x); transform:translateX(-50%); white-space:nowrap;
+    font-size:9px; letter-spacing:.11em; text-transform:uppercase; border-radius:5px; padding:4px 9px }
+  .ttl-vd--warm{ background:var(--accent); color:var(--panel); font-weight:700 }
+  .ttl-vd--cold{ background:var(--panel); border:1px solid rgba(255,255,255,.22); color:#a29f97 }
+  .ttl-vd--wrong{ color:#a29f97; border:1px dashed rgba(255,255,255,.30);
+    background:repeating-linear-gradient(135deg,rgba(255,255,255,.09) 0 4px,transparent 4px 9px),linear-gradient(var(--panel),var(--panel)) }
+  .ttl-cap{ margin:11px 0 0; padding:0 30px; font-size:8.5px; letter-spacing:.11em; text-transform:uppercase; color:#6d6257; line-height:1.7 }
+
+  /* o falso positivo em campo - nao e hipotese */
+  .ttl-real{ display:grid; grid-template-columns:auto minmax(0,1fr); gap:9px 14px; align-items:start;
+    border-left:2px solid var(--accent); background:rgba(255,255,255,.05); border-radius:0 8px 8px 0;
+    padding:13px 15px; margin:0 0 12px; max-width:640px }
+  .ttl-rtag{ align-self:start; font-size:9px; letter-spacing:.12em; text-transform:uppercase;
+    background:var(--accent); color:var(--panel); font-weight:700; border-radius:6px; padding:4px 9px; white-space:nowrap }
+  .ttl-rbody{ min-width:0; font-size:11.5px; line-height:1.65; color:var(--panel-ink); overflow-wrap:break-word }
+  .ttl-rbody b{ font-weight:700 }
+  .ttl-rbody i{ color:var(--accent); font-style:normal; font-weight:700 }
+  .ttl-rbody span{ display:block; margin-top:7px; font-size:10.5px; line-height:1.55; color:#8a877f }
+  .ttl-rbody span b{ color:#a29f97; font-weight:600 }
+
+  /* a prova que ja passava pelo proxy: lida, usada de raspao e DESCARTADA */
+  .ttl-path{ border:1px solid var(--panel-line); border-radius:10px; overflow:hidden; margin:0 0 13px; max-width:640px }
+  .ttl-prow{ display:grid; grid-template-columns:minmax(0,54px) minmax(0,1fr); gap:5px 12px;
+    align-items:baseline; padding:12px 13px; min-width:0 }
+  .ttl-prow + .ttl-prow{ border-top:1px solid rgba(255,255,255,.07) }
+  .ttl-prow--now{ background:rgba(255,255,255,.05) }
+  .ttl-pk{ font-size:9px; letter-spacing:.13em; text-transform:uppercase; color:#6d6257 }
+  .ttl-prow--now .ttl-pk{ color:var(--accent) }
+  .ttl-pv{ display:block; font-size:11.5px; line-height:1.85; color:#a29f97; overflow-wrap:break-word }
+  .ttl-prow--now .ttl-pv{ color:var(--panel-ink) }
+  .ttl-pwhy{ display:block; margin-top:7px; font-size:10.5px; line-height:1.55; color:#8a877f }
+  .ttl-pwhy b{ color:#a29f97; font-weight:600 }
+  .ttl-drop{ display:inline-block; font-size:10px; letter-spacing:.06em; padding:1px 7px; border-radius:5px; color:#a29f97;
+    border:1px dashed rgba(255,255,255,.26);
+    background:repeating-linear-gradient(135deg,rgba(255,255,255,.07) 0 4px,transparent 4px 9px) }
+
+  .ttl-buckets{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin:0 0 13px; max-width:640px }
+  .ttl-bucket{ border-left:1px solid rgba(255,255,255,.12); padding:1px 0 1px 12px; min-width:0 }
+  .ttl-bucket--hi{ border-left-color:var(--accent) }
+  /* sem prova de janela o contador existe, mas nao empurra veredito: borda tracejada */
+  .ttl-bucket--void{ border-left-style:dashed; border-left-color:rgba(255,255,255,.30) }
+  .ttl-bucket b{ display:block; font-size:11px; color:var(--panel-ink); font-weight:600; overflow-wrap:break-word }
+  .ttl-bucket span{ display:block; margin-top:5px; font-size:10.5px; line-height:1.5; color:#8a877f }
+  .ttl-bucket span b{ display:inline; font-size:inherit; color:#a29f97 }
+
+  /* os quatro estados do veredito - e o quarto e a AUSENCIA de prova */
+  .ttl-states{ display:flex; flex-wrap:wrap; gap:8px 9px; margin:0 0 13px; max-width:640px }
+  .ttl-st{ font-size:11px; color:#a29f97; border:1px solid rgba(255,255,255,.16); border-radius:6px;
+    padding:4px 11px; white-space:nowrap }
+  .ttl-st--hi{ border-color:var(--accent); color:var(--panel-ink) }
+  .ttl-st--void{ border-style:dashed; border-color:rgba(255,255,255,.30) }
+  .ttl-st i{ color:var(--accent); font-style:normal; font-weight:700 }
+
+  .ttl-read{ display:grid; grid-template-columns:minmax(0,72px) minmax(0,1fr); gap:4px 12px; align-items:baseline;
+    border-left:2px solid var(--accent); background:rgba(255,255,255,.05); border-radius:0 6px 6px 0;
+    padding:9px 13px; margin:0 0 12px; max-width:640px }
+  .ttl-rdk{ font-size:9px; letter-spacing:.13em; text-transform:uppercase; color:var(--accent) }
+  .ttl-rdv{ font-size:12px; line-height:1.7; color:var(--panel-ink); overflow-wrap:break-word }
+  .ttl-rdv i{ color:var(--accent); font-style:normal; font-weight:700 }
+  .ttl-rdv b{ color:#a29f97; font-weight:700 }
+
+  .ttl-dash{ display:flex; flex-wrap:wrap; align-items:baseline; gap:6px 12px; border:1px solid var(--panel-line);
+    border-radius:8px; padding:10px 13px; margin:0 0 12px; max-width:640px; font-size:11.5px; color:#a29f97 }
+  .ttl-dash i{ color:var(--accent); font-style:normal; font-weight:700 }
+  .ttl-dash em{ font-style:normal; font-size:8.5px; letter-spacing:.12em; text-transform:uppercase; color:#6d6257 }
+
+  .ttl-foot{ padding:14px 22px; border-top:1px solid var(--panel-line); font-size:11px; line-height:1.6; color:#8a877f }
+  .ttl-foot b{ color:#a29f97 }
+  .ttl-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+
   footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
   footer a{ color:var(--muted); text-decoration:none }
   footer a:hover{ color:var(--accent) }
   .frow{ display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between }
   .flinks a{ margin-right:16px }
 
-  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .rr-stage{ grid-template-columns:1fr } .rr-rails{ grid-template-columns:1fr } .rr-steps{ flex-direction:column; align-items:stretch } .an-stage{ grid-template-columns:1fr } .an-rails{ grid-template-columns:1fr } .an-steps{ flex-direction:column; align-items:stretch } .id-row{ grid-template-columns:1fr; gap:9px } .id-arrow{ display:none } .id-chip{ text-align:left; min-width:0 } .id-fork{ grid-template-columns:1fr } .id-rails{ grid-template-columns:1fr } .eco-hero{ grid-template-columns:1fr } .eco-fork{ grid-template-columns:1fr } .eco-rails{ grid-template-columns:1fr } .mig-flow{ grid-template-columns:1fr } .mig-cross{ min-width:0 } .mig-cline{ width:60% } .mig-guards{ grid-template-columns:1fr } .ctx-row{ grid-template-columns:1fr; gap:9px } .ctx-sp{ display:none } .ctx-rval{ text-align:left } .ctx-fork{ grid-template-columns:1fr } .ctx-fields{ grid-template-columns:1fr } .fld-cols{ grid-template-columns:1fr; gap:14px } .fld-arms{ grid-template-columns:1fr } .cyc-fronts{ grid-template-columns:1fr } .cyc-fork{ grid-template-columns:1fr } .cyc-or{ grid-template-columns:1fr; gap:10px } .cyc-orop{ text-align:left } .cyc-fields{ grid-template-columns:1fr } .cyc-trow{ grid-template-columns:1fr; gap:3px; padding:11px 0 } .cyc-tarr{ display:none } .cyc-track{ padding:0 22px } .cyc-marks{ height:36px } .cyc-marks .cyc-mark{ width:48px; margin-left:-24px; gap:4px } .cyc-marks .cyc-mev{ display:none } .cyc-marks .cyc-mst{ font-size:10.5px } .cyc-seam{ top:24px } .cyc-zone{ font-size:8px; letter-spacing:.04em; padding:0 2px } .cyc-seamlab{ font-size:8px; letter-spacing:.08em } .scl-lines{ max-width:none } .scl-line{ grid-template-columns:1fr; gap:3px } .scl-fields{ grid-template-columns:1fr } .scl-cbody{ grid-template-columns:1fr; gap:3px } .scl-gate{ grid-template-columns:1fr } .rsn-ruler{ max-width:none } .rsn-bar{ align-items:flex-start } .rsn-rail{ height:92px } .rsn-avglab{ white-space:normal; width:104px; text-align:center; top:-32px } .rsn-pops{ grid-template-columns:1fr } .rsn-brow{ grid-template-columns:1fr; gap:3px } .rsn-read{ grid-template-columns:1fr; gap:3px } .rsn-fork{ grid-template-columns:1fr } .rsn-guards{ grid-template-columns:1fr } .snt-bar{ align-items:flex-start } .snt-scale{ max-width:none } .snt-row{ grid-template-columns:1fr; gap:5px } .snt-zones{ grid-template-columns:52% 1fr } .snt-eqrow{ grid-template-columns:1fr; gap:3px } .snt-fields{ grid-template-columns:1fr } .snt-trow{ grid-template-columns:1fr; gap:3px } .snt-verd{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
+  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .rr-stage{ grid-template-columns:1fr } .rr-rails{ grid-template-columns:1fr } .rr-steps{ flex-direction:column; align-items:stretch } .an-stage{ grid-template-columns:1fr } .an-rails{ grid-template-columns:1fr } .an-steps{ flex-direction:column; align-items:stretch } .id-row{ grid-template-columns:1fr; gap:9px } .id-arrow{ display:none } .id-chip{ text-align:left; min-width:0 } .id-fork{ grid-template-columns:1fr } .id-rails{ grid-template-columns:1fr } .eco-hero{ grid-template-columns:1fr } .eco-fork{ grid-template-columns:1fr } .eco-rails{ grid-template-columns:1fr } .mig-flow{ grid-template-columns:1fr } .mig-cross{ min-width:0 } .mig-cline{ width:60% } .mig-guards{ grid-template-columns:1fr } .ctx-row{ grid-template-columns:1fr; gap:9px } .ctx-sp{ display:none } .ctx-rval{ text-align:left } .ctx-fork{ grid-template-columns:1fr } .ctx-fields{ grid-template-columns:1fr } .fld-cols{ grid-template-columns:1fr; gap:14px } .fld-arms{ grid-template-columns:1fr } .cyc-fronts{ grid-template-columns:1fr } .cyc-fork{ grid-template-columns:1fr } .cyc-or{ grid-template-columns:1fr; gap:10px } .cyc-orop{ text-align:left } .cyc-fields{ grid-template-columns:1fr } .cyc-trow{ grid-template-columns:1fr; gap:3px; padding:11px 0 } .cyc-tarr{ display:none } .cyc-track{ padding:0 22px } .cyc-marks{ height:36px } .cyc-marks .cyc-mark{ width:48px; margin-left:-24px; gap:4px } .cyc-marks .cyc-mev{ display:none } .cyc-marks .cyc-mst{ font-size:10.5px } .cyc-seam{ top:24px } .cyc-zone{ font-size:8px; letter-spacing:.04em; padding:0 2px } .cyc-seamlab{ font-size:8px; letter-spacing:.08em } .scl-lines{ max-width:none } .scl-line{ grid-template-columns:1fr; gap:3px } .scl-fields{ grid-template-columns:1fr } .scl-cbody{ grid-template-columns:1fr; gap:3px } .scl-gate{ grid-template-columns:1fr } .rsn-ruler{ max-width:none } .rsn-bar{ align-items:flex-start } .rsn-rail{ height:92px } .rsn-avglab{ white-space:normal; width:104px; text-align:center; top:-32px } .rsn-pops{ grid-template-columns:1fr } .rsn-brow{ grid-template-columns:1fr; gap:3px } .rsn-read{ grid-template-columns:1fr; gap:3px } .rsn-fork{ grid-template-columns:1fr } .rsn-guards{ grid-template-columns:1fr } .snt-bar{ align-items:flex-start } .snt-scale{ max-width:none } .snt-row{ grid-template-columns:1fr; gap:5px } .snt-zones{ grid-template-columns:52% 1fr } .snt-eqrow{ grid-template-columns:1fr; gap:3px } .snt-fields{ grid-template-columns:1fr } .snt-trow{ grid-template-columns:1fr; gap:3px } .snt-verd{ grid-template-columns:1fr } .ttl-bar{ align-items:flex-start } .ttl-rung{ grid-template-columns:1fr; gap:6px } .ttl-stage{ max-width:none } .ttl-axis{ padding:0 22px; letter-spacing:.08em } .ttl-frame{ padding:0 22px } .ttl-cap{ padding:0 22px } .ttl-edge{ font-size:9.5px } .ttl-vd{ font-size:8.5px; padding:4px 7px; letter-spacing:.06em } .ttl-real{ grid-template-columns:1fr } .ttl-prow{ grid-template-columns:1fr; gap:3px } .ttl-buckets{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
   @media (prefers-reduced-motion:reduce){ .caret{ animation:none } .reveal{ opacity:1 !important; transform:none !important } }
+  /* eixo estreito: os chips de veredito ficam a 26,7% de distancia um do outro - encolhe o chip, nao a informacao */
+  @media (max-width:430px){ .ttl-vd{ padding:3px 6px; letter-spacing:.03em } }
   .reveal{ opacity:0; transform:translateY(14px); animation:rise .7s cubic-bezier(.2,.7,.2,1) forwards }
   @keyframes rise{ to{ opacity:1; transform:none } }
 </style>
@@ -1933,7 +2105,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.20.3</span>
+    <span class="ver">v2.20.4</span>
   </nav>
 
   <header class="hero">
@@ -2008,7 +2180,7 @@
       <div class="cell">
         <p class="kick">Ciclo de cache</p>
         <h3>O proxy mede o que antes era palpite</h3>
-        <p>O router lê o que o <code>usage</code> de cada resposta <b>prova</b> — veio do cache, refez o prefixo, ou não deu sinal — e conta quantas vezes a sessão cruza uma <b>fronteira fria</b>: a janela em que o prefixo já seria reconstruído de qualquer jeito, e portanto trocar de modelo ou limpar contexto sairia <b>de graça</b>. Em cada fronteira ele também <b>dimensiona</b> a oportunidade: quanto contexto foi reconstruído e quanto uma limpeza teria liberado, somando <code>tool_use</code>, <code>tool_result</code> e <code>thinking</code> — o texto normal fica de fora, porque a limpeza não o remove. E a conta é <b>separada por motivo</b> (<code>no-state</code>, <code>gap-expired</code>, <code>prior-miss</code>), porque uma média única dilui a sessão que <b>esfriou cheia</b> na sessão que <b>nasceu vazia</b> — e é a primeira que a limpeza ataca. <b>Custo e prompt são campos distintos</b>: <code>rebuiltTokens</code> é o que foi refeito, <code>promptTokens</code> é o prompt inteiro (<code>in + cacheRead + cacheCreate</code>), e o “% limpável” sai <b>do prompt</b> — nunca do reconstruído, que fazia a razão estourar de 100%. Sem prompt medido, <code>clearablePct</code> é <code>null</code>. O fator <code>chars→token</code> também sai do palpite: o proxy compara os chars que mede — <b>incluindo o array <code>tools</code></b>, que a Anthropic cobra como parte do prompt — com o <code>usage</code> <b>real</b> da mesma resposta e calibra em <b>tráfego próprio, sem chave de API</b>, exibindo <code>charsPerToken: null</code> enquanto não houver amostra. É <b>estimativa declarada</b> (o dashboard marca com <code>~</code>), e é <b>régua</b>, não decisão: nenhuma rota muda por causa dela.</p>
+        <p>O router lê o que o <code>usage</code> de cada resposta <b>prova</b> — veio do cache, refez o prefixo, ou não deu sinal — e conta quantas vezes a sessão cruza uma <b>fronteira fria</b>: a janela em que o prefixo já seria reconstruído de qualquer jeito, e portanto trocar de modelo ou limpar contexto sairia <b>de graça</b>. Em cada fronteira ele também <b>dimensiona</b> a oportunidade: quanto contexto foi reconstruído e quanto uma limpeza teria liberado, somando <code>tool_use</code>, <code>tool_result</code> e <code>thinking</code> — o texto normal fica de fora, porque a limpeza não o remove. E a conta é <b>separada por motivo</b> (<code>no-state</code>, <code>gap-expired</code>, <code>prior-miss</code>), porque uma média única dilui a sessão que <b>esfriou cheia</b> na sessão que <b>nasceu vazia</b> — e é a primeira que a limpeza ataca. <b>Custo e prompt são campos distintos</b>: <code>rebuiltTokens</code> é o que foi refeito, <code>promptTokens</code> é o prompt inteiro (<code>in + cacheRead + cacheCreate</code>), e o “% limpável” sai <b>do prompt</b> — nunca do reconstruído, que fazia a razão estourar de 100%. Sem prompt medido, <code>clearablePct</code> é <code>null</code>. O fator <code>chars→token</code> também sai do palpite: o proxy compara os chars que mede — <b>incluindo o array <code>tools</code></b>, que a Anthropic cobra como parte do prompt — com o <code>usage</code> <b>real</b> da mesma resposta e calibra em <b>tráfego próprio, sem chave de API</b>, exibindo <code>charsPerToken: null</code> enquanto não houver amostra. É <b>estimativa declarada</b> (o dashboard marca com <code>~</code>), e é <b>régua</b>, não decisão: nenhuma rota muda por causa dela. E a <b>janela</b> do cache também sai do palpite: a resposta da API <b>declara</b> a janela contratada em cada write (<code>ephemeral_5m</code> · <code>ephemeral_1h</code>), o proxy <b>persiste</b> essa declaração em <code>metrics.ttl</code>, e a janela <b>medida vence</b> o valor do <code>config</code>. Um write que não declara a janela vira <code>writeUnknown</code>, e <code>ttl.observed</code> fica <code>null</code> enquanto não houver <b>uma única</b> prova — porque 1h pode ser ligada por um <b>flag remoto da Anthropic</b>, sem nada mudar na sua máquina, e <b>nunca se assume 5 minutos por omissão</b>.</p>
       </div>
       <div class="cell">
         <p class="kick">Execução curada</p>
@@ -2041,6 +2213,206 @@
         <p>Ative constraints explicitamente com <code>policy_activate</code>, nunca auto-promovidas de lições: o <code>error-guard</code> nega no <code>PreToolUse</code> um Bash cuja falha reincide, políticas <b>always-apply</b> entram no contexto no início da sessão, e políticas <b>por glob</b> avisam ao editar um arquivo que casa o padrão. <b>Surfacing ≠ enforcement</b>: ficam presentes no contexto, não bloqueiam (exceto o <code>error-guard</code>). A Fase 3 agora fecha o ciclo: modo sombra mede, e <code>/policy-adjudicate</code> chama um <b>juiz LLM independente</b> para estimar disposições — estimativa de juiz, <b>não FP medido</b>.</p>
       </div>
     </div>
+  </section>
+
+
+  <section>
+    <p class="label">Novo na v2.20.4 · a janela medida</p>
+    <p class="lede">O detector de fronteira fria assumia que o prompt cache dura <b>5 minutos</b> — um valor que vinha do <code>config</code>, <b>nunca de uma medição</b>. A extração do binário do Claude Code, feita nesta sessão, mostra que a janela <b>pode ser de 1 hora</b> — e que a decisão <b>não é do usuário</b>: ela é ligada por variável de ambiente, por estado de <b>overage</b> da conta, ou por um <b>feature-flag remoto da Anthropic</b> com allowlist por <code>querySource</code>. A janela pode mudar <b>sem aviso e sem nada mudar na sua máquina</b>. A v2.20.4 para de adivinhar: a resposta da API <b>declara</b> a janela contratada em cada write, e essa declaração passa a ser <b>persistida</b> — e a <b>vencer</b> o palpite do config.</p>
+
+    <div class="callout">
+      <span class="tag">um palpite disfarçado de medição</span>
+      As releases anteriores desta página trataram de sinais que <b>mentiam</b>: um alarme que não apagava (v2.19.1), um número que parecia maior do que era (v2.20.1), uma média que diluía o caso que decide (v2.20.2), um número <b>impossível</b> consumido como verdade (v2.20.3). Este é de outra espécie — e mais silencioso: o detector <b>afirmava saber</b> a janela sem nunca tê-la medido. Não havia número errado para pegar, porque não havia número: havia um <b>padrão de config</b> vestido de fato. E o pior: <b>nenhuma inspeção local o desmentiria</b>, porque quem decide a janela mora do outro lado da conexão. A medida real estava passando pelo proxy <b>o tempo todo</b>, sendo lida e jogada fora.
+    </div>
+
+    <div class="ttl" role="group" aria-label="Artefato da versão 2.20.4: as duas janelas no mesmo eixo. A primeira parte mostra por que a janela nunca foi medida e por que quem decide não é o usuário. Um trecho extraído do binário do Claude Code, verbatim e não deduzido, mostra a função que resolve o TTL: ela devolve uma hora conforme o querySource, e por dentro consulta, nesta ordem, a variável de ambiente FORCE_PROMPT_CACHING_5M, que força cinco minutos; a variável ENABLE_PROMPT_CACHING_1H, que força uma hora; o estado da conta, em que ausência de assinatura ou uso em overage devolve cinco minutos; e por último um feature-flag chamado tengu_prompt_cache_1h_config, servido remotamente pela Anthropic, com allowlist por querySource. Uma escada de quatro degraus repete essa ordem e marca o dono de cada decisão: os dois primeiros degraus são variáveis de ambiente na máquina do usuário; o terceiro é o estado de cobrança da conta, que não é uma preferência; e o quarto, destacado e com etiqueta tracejada, é remoto e está fora do controle do usuário. A nota registra que os dois degraus de baixo é que decidem na prática, que nenhum deles é observável localmente, e que o flag remoto pode virar sem aviso e sem que nada mude no ambiente do usuário: por isso ler o config local nunca foi medir a janela, era repetir um valor padrão. A segunda parte é a assinatura e a prova: as duas janelas desenhadas no mesmo eixo de tempo, de zero a setenta e cinco minutos, em escala linear e sem compressão. Três sondas marcam dez minutos, trinta minutos e setenta minutos desde o último write, e cortam as duas barras com linhas tracejadas verticais. A primeira barra é a janela de uma hora medida na resposta: âmbar, ela se estende de zero a sessenta minutos e cobre as sondas de dez e de trinta minutos. Os vereditos correspondentes são: quente aos dez minutos, quente aos trinta minutos, e frio aos setenta minutos. A segunda barra é o palpite de cinco minutos vindo do config: fantasma e hachurada, porque hachura nesta página significa o que não conta, ela é um risco curto que termina em cinco minutos, seis vírgula sete por cento do eixo. Os vereditos correspondentes são: frio aos dez minutos, frio aos trinta minutos, e frio aos setenta minutos. Os dois primeiros vereditos dessa segunda linha saem hachurados e marcados como falsos, porque declaram fronteira fria sobre cache vivo; só o de setenta minutos coincide com a janela medida. Uma legenda declara que a escala é honesta e não está comprimida: o palpite é mesmo um risco de seis vírgula sete por cento do eixo. Logo abaixo, um bloco de campo registra que isso não é hipotético: uma amostra classificada gap-expired tinha noventa e nove vírgula oito por cento do prompt servido do cache, e limpar ali destruiria cerca de cento e trinta mil tokens de cache já pago, em nome de uma fronteira que só existia no palpite. A terceira parte mostra a ironia: a prova já passava pelo proxy e era descartada. Duas linhas empilhadas. A de cima, marcada como antes e escrita em cinza, diz que o accumulateUsage já lia os campos ephemeral_5m_input_tokens e ephemeral_1h_input_tokens, e traz uma etiqueta hachurada com a palavra descartado; a explicação registra que a resposta declara a janela contratada em cada write, que o dado era lido, refinava um TTL interno e morria ali, sem ser persistido e sem chegar ao snapshot. A de baixo, marcada como agora e destacada, mostra metrics.ttl, e explica que a mesma leitura vira contador durável, sem nenhuma request nova, sem chave de API e sem custo, porque o número já estava passando pelo proxy. Em seguida, três contadores: write5m, para os writes em que a resposta declarou cinco minutos; write1h, destacado em âmbar, para os writes em que a resposta declarou uma hora; e writeUnknown, com borda tracejada, para o write que não trouxe detalhe de janela. A regra é explícita: nunca se assume cinco minutos por omissão, e um write sem detalhe não empurra o veredito para lado nenhum. A quarta parte é o veredito no snapshot. Quatro estados aparecem lado a lado: ttl.observed igual a cinco minutos; igual a uma hora, destacado; igual a mixed; e igual a nulo, com borda tracejada, que é o estado sem prova. Uma nota explica o caso mixed: a API permite misturar TTLs na mesma sessão, e nesse caso o observedMs fica na janela mais longa, que é a leitura conservadora de propósito, porque subestimar a janela é exatamente o erro que classifica fronteira fria sobre cache vivo. Outra nota explica o nulo: enquanto não houver um único write com janela declarada, o detector não afirma nada e volta ao valor do config, em vez de exibir um cinco minutos medido que ninguém mediu. Uma linha de regra fecha a parte: em ttlWindowMs, a janela medida vence o palpite do config. E o dashboard passa a mostrar janela uma hora medida, com a palavra medida dizendo de onde o número veio. No rodapé, a lição: a régua continua sendo régua e nada aqui muda uma decisão de roteamento; o que muda é onde fica a fronteira, e com a janela medida em uma hora a sessão quente aos trinta minutos deixa de ser declarada fria, e a limpeza automática perde a permissão de queimar cache vivo. As releases anteriores desta página consertaram sinais que mentiam; esta desmonta um palpite que se apresentava como medição, e a medida estava disponível o tempo todo, do outro lado da mesma resposta.">
+      <div class="ttl-bar">
+        <span class="k">v2.20.4</span>
+        <span class="m">a janela era palpite · a API sempre a declarou</span>
+      </div>
+
+      <div class="ttl-part">
+        <span class="ttl-ptag">a janela nunca foi medida · e quem decide não é você</span>
+
+        <div class="ttl-src">
+          <span class="ttl-srck">extraído do binário do Claude Code · verbatim, não deduzido</span>
+          <pre class="ttl-srcv" tabindex="0" role="region" aria-label="Trecho do binário do Claude Code que resolve a janela do prompt cache (rolagem horizontal)"><b>let P = tFe(e.querySource) ? "1h" : void 0;</b>
+
+function tFe(e){
+  if (env.<b>FORCE_PROMPT_CACHING_5M</b>) return false;
+  if (env.<b>ENABLE_PROMPT_CACHING_1H</b>) return true;
+  if (!ii() || Kie().<b>isUsingOverage</b>) return false;
+  let t = lvi(); if (t===null) t = Ke(<i>"tengu_prompt_cache_1h_config"</i>, {allowlist:[...</pre>
+        </div>
+
+        <div class="ttl-rungs">
+          <div class="ttl-rung">
+            <span class="ttl-rk"><code>FORCE_PROMPT_CACHING_5M</code> <i>→ 5m</i>
+              <span>Variável de ambiente. Força a janela curta.</span>
+            </span>
+            <span class="ttl-rw">env · sua máquina</span>
+          </div>
+          <div class="ttl-rung">
+            <span class="ttl-rk"><code>ENABLE_PROMPT_CACHING_1H</code> <i>→ 1h</i>
+              <span>Variável de ambiente. Força a janela longa.</span>
+            </span>
+            <span class="ttl-rw">env · sua máquina</span>
+          </div>
+          <div class="ttl-rung">
+            <span class="ttl-rk"><code>isUsingOverage</code> · sem assinatura ativa <i>→ 5m</i>
+              <span><b>Estado de cobrança da conta</b> — não é uma preferência sua, e muda quando o consumo muda.</span>
+            </span>
+            <span class="ttl-rw ttl-rw--not">conta · não é você</span>
+          </div>
+          <div class="ttl-rung ttl-rung--remote">
+            <span class="ttl-rk"><code>tengu_prompt_cache_1h_config</code> <i>→ 1h</i>
+              <span><b>Feature-flag servido pela Anthropic</b>, com <b>allowlist por <code>querySource</code></b>. Pode virar <b>sem aviso</b> — e nada muda na sua máquina quando vira.</span>
+            </span>
+            <span class="ttl-rw ttl-rw--remote">remoto · fora do seu controle</span>
+          </div>
+        </div>
+
+        <p class="ttl-note">Os dois degraus de cima são seus, e quase ninguém os define. Quem decide na prática são os <b>dois de baixo</b> — e <b>nenhum dos dois é observável na sua máquina</b>. Por isso ler o <code>config</code> local nunca foi <b>medir</b> a janela: era repetir um valor padrão e chamá-lo de fato.</p>
+      </div>
+
+      <div class="ttl-part">
+        <span class="ttl-ptag">a prova · o mesmo eixo, duas janelas, três sondas</span>
+
+        <div class="ttl-stage">
+          <div class="ttl-axis">
+            <span>sondas · tempo desde o último write</span>
+            <span>eixo 0 → 75min</span>
+          </div>
+          <div class="ttl-frame">
+            <div class="ttl-probes" aria-hidden="true">
+              <span class="ttl-pb" style="--x:13.3%"><span class="ttl-pbl">10min</span><span class="ttl-pbd"></span></span>
+              <span class="ttl-pb" style="--x:40%"><span class="ttl-pbl">30min</span><span class="ttl-pbd"></span></span>
+              <span class="ttl-pb" style="--x:93.3%"><span class="ttl-pbl">70min</span><span class="ttl-pbd"></span></span>
+            </div>
+
+            <div class="ttl-band">
+              <p class="ttl-bk"><b>janela 1h</b> <em>medida na resposta</em></p>
+              <span class="ttl-track" style="--w:80%">
+                <span class="ttl-span" aria-hidden="true"></span>
+                <span class="ttl-tick" style="--x:13.3%" aria-hidden="true"></span>
+                <span class="ttl-tick" style="--x:40%" aria-hidden="true"></span>
+                <span class="ttl-tick" style="--x:93.3%" aria-hidden="true"></span>
+                <span class="ttl-edge">60min</span>
+              </span>
+              <div class="ttl-verds">
+                <span class="ttl-vd ttl-vd--warm" style="--x:13.3%">quente</span>
+                <span class="ttl-vd ttl-vd--warm" style="--x:40%">quente</span>
+                <span class="ttl-vd ttl-vd--cold" style="--x:93.3%">frio</span>
+              </div>
+            </div>
+
+            <div class="ttl-band">
+              <p class="ttl-bk"><b>palpite 5min</b> <em>vindo do config</em></p>
+              <span class="ttl-track" style="--w:6.7%">
+                <span class="ttl-span ttl-span--guess" aria-hidden="true"></span>
+                <span class="ttl-tick" style="--x:13.3%" aria-hidden="true"></span>
+                <span class="ttl-tick" style="--x:40%" aria-hidden="true"></span>
+                <span class="ttl-tick" style="--x:93.3%" aria-hidden="true"></span>
+                <span class="ttl-edge ttl-edge--guess">5min</span>
+              </span>
+              <div class="ttl-verds">
+                <span class="ttl-vd ttl-vd--wrong" style="--x:13.3%">frio ✗</span>
+                <span class="ttl-vd ttl-vd--wrong" style="--x:40%">frio ✗</span>
+                <span class="ttl-vd ttl-vd--cold" style="--x:93.3%">frio</span>
+              </div>
+            </div>
+          </div>
+          <p class="ttl-cap">âmbar = a janela medida · hachurado = o palpite, e os dois vereditos que ele erra · a escala é linear e não está comprimida: 5min é mesmo 6,7% do eixo</p>
+        </div>
+
+        <div class="ttl-real">
+          <span class="ttl-rtag">em campo</span>
+          <span class="ttl-rbody">uma amostra classificada <code>gap-expired</code> tinha <i>99,8% do prompt servido do cache</i>.
+            <span>Limpar ali destruiria <b>~130K de cache já pago</b> — em nome de uma fronteira que só existia no palpite. O falso positivo não é hipótese de teste: é o dado que motivou olhar o binário.</span>
+          </span>
+        </div>
+
+        <p class="ttl-note">A tabela acima é <b>medida em teste</b>, com a janela observada em 1h e cache quente nas três sondas. Aos 10 e aos 30 minutos os dois vereditos <b>divergem</b>: a janela medida diz <b>warm</b>, o palpite diz <code>gap-expired</code>. Aos 70 minutos eles <b>concordam</b> — o que também importa, porque mostra que a correção não transformou tudo em quente: ela só parou de declarar frio <b>cedo demais</b>.</p>
+      </div>
+
+      <div class="ttl-part">
+        <span class="ttl-ptag">a prova já passava pelo proxy · e era descartada</span>
+
+        <div class="ttl-path">
+          <div class="ttl-prow">
+            <span class="ttl-pk">antes</span>
+            <span class="ttl-pv"><code>accumulateUsage</code> lia <code>ephemeral_5m_input_tokens</code> · <code>ephemeral_1h_input_tokens</code> <span class="ttl-drop">descartado</span>
+              <span class="ttl-pwhy">A resposta <b>declara a janela contratada em cada write</b>. O dado era lido, refinava um <b>TTL interno</b> e morria ali: nada persistido, nada no snapshot, nada visível para quem opera.</span>
+            </span>
+          </div>
+          <div class="ttl-prow ttl-prow--now">
+            <span class="ttl-pk">agora</span>
+            <span class="ttl-pv">persistido em <code>metrics.ttl</code>
+              <span class="ttl-pwhy">A <b>mesma</b> leitura vira contador durável. <b>Nenhuma request nova, nenhuma chave, nenhum custo</b>: o número já estava passando pelo proxy — só estava sendo jogado fora.</span>
+            </span>
+          </div>
+        </div>
+
+        <div class="ttl-buckets">
+          <div class="ttl-bucket">
+            <b><code>write5m</code></b>
+            <span>a resposta declarou a janela de <b>5 minutos</b> naquele write.</span>
+          </div>
+          <div class="ttl-bucket ttl-bucket--hi">
+            <b><code>write1h</code></b>
+            <span>a resposta declarou a janela de <b>1 hora</b> naquele write.</span>
+          </div>
+          <div class="ttl-bucket ttl-bucket--void">
+            <b><code>writeUnknown</code></b>
+            <span>write <b>sem detalhe de janela</b>. Conta, mas não decide.</span>
+          </div>
+        </div>
+
+        <p class="ttl-note">A regra é a mesma que esta página já estabeleceu: <b>ausência de sinal não vira sinal</b>. Um write que não declara a janela cai em <code>writeUnknown</code> e <b>nunca se assume 5m por omissão</b> — que é justamente o atalho que criou o defeito.</p>
+      </div>
+
+      <div class="ttl-part">
+        <span class="ttl-ptag">o veredito no snapshot · e o <code>null</code> quando não há prova</span>
+
+        <div class="ttl-states">
+          <span class="ttl-st">ttl.observed: '5m'</span>
+          <span class="ttl-st ttl-st--hi">ttl.observed: '1h'</span>
+          <span class="ttl-st">ttl.observed: 'mixed'</span>
+          <span class="ttl-st ttl-st--void">ttl.observed: <i>null</i></span>
+        </div>
+
+        <p class="ttl-note" style="margin-bottom:9px"><b><code>mixed</code></b> — a API permite <b>misturar TTLs</b> na mesma sessão. Nesse caso o <code>observedMs</code> fica na janela <b>mais longa</b>: leitura <b>conservadora</b> de propósito, porque <b>subestimar</b> a janela é exatamente o erro que classifica fronteira fria sobre cache vivo. <code>ttl.pct1h</code> mostra o quanto da sessão veio na janela longa.</p>
+        <p class="ttl-note" style="margin-bottom:14px"><b><code>null</code></b> — enquanto não houver <b>um único write</b> com janela declarada, o detector <b>não afirma nada</b>: volta ao valor do <code>config</code> em vez de exibir um “5m medido” que ninguém mediu. Sem prova, sem veredito.</p>
+
+        <div class="ttl-read">
+          <span class="ttl-rdk">regra</span>
+          <span class="ttl-rdv"><code>ttlWindowMs(ttl, config)</code> — a janela <i>medida</i> vence o <b>palpite do config</b></span>
+        </div>
+
+        <div class="ttl-dash">
+          <em>dashboard</em>
+          <span><i>janela 1h (medida)</i></span>
+          <em>a palavra “medida” diz de onde o número veio</em>
+        </div>
+
+        <p class="ttl-note">Nada disso exige configuração sua. Se o flag remoto ligar a janela de 1h na sua conta amanhã, o proxy vê a declaração no <b>primeiro write</b> e o veredito acompanha — sem você tocar em nada, e sem o detector continuar repetindo um número velho.</p>
+      </div>
+
+      <div class="ttl-foot"><b>A régua continua sendo régua:</b> nada aqui muda uma decisão de roteamento. O que muda é <b>onde fica a fronteira</b> — com a janela medida em 1h, a sessão quente aos 30 minutos deixa de ser declarada fria, e a limpeza automática perde a permissão de queimar <b>cache vivo</b>. As releases anteriores desta página consertaram sinais que <b>mentiam</b>; esta desmonta um <b>palpite que se apresentava como medição</b> — e a medida estava disponível o tempo todo, do outro lado da mesma resposta.</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>A fronteira fria para de ser declarada sobre cache vivo</h4>
+        <p>Com a janela <b>medida</b> em 1h, uma sessão com cache quente aos <b>10</b> e aos <b>30</b> minutos é corretamente <code>warm</code>; com o palpite de 5 minutos, as duas eram <code>gap-expired</code>. Aos <b>70</b> minutos as duas leituras concordam que esfriou — a correção move a fronteira, não a apaga.</p>
+      </div>
+      <div class="win">
+        <h4>A janela vem da API — ou não vem, e isso é dito</h4>
+        <p>Cada write que declara a janela alimenta <code>write5m</code> ou <code>write1h</code>; o que não declara vira <code>writeUnknown</code>. Sem <b>uma única</b> prova, <code>ttl.observed</code> é <code>null</code> e o <code>config</code> volta a valer — declarado como palpite, não exibido como medição.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Rigor de sempre:</b> o mecanismo veio da <b>extração do binário</b> do Claude Code, não de dedução — e o que ele mostra é justamente por que a janela precisa ser <b>medida a cada write</b> em vez de decidida uma vez: <code>ENABLE_PROMPT_CACHING_1H</code> e <code>FORCE_PROMPT_CACHING_5M</code> são seus, mas o <b>overage</b> da conta e o <b>feature-flag remoto</b> (<code>tengu_prompt_cache_1h_config</code>, allowlist por <code>querySource</code>) <b>não são</b>, e podem virar sem aviso e <b>sem sinal local</b>. Nada disso custou uma request a mais nem uma credencial: os campos <code>ephemeral_5m_input_tokens</code> e <code>ephemeral_1h_input_tokens</code> já chegavam no <code>usage</code> que o proxy lê. A leitura conservadora está registrada onde importa — em <code>mixed</code>, <code>observedMs</code> fica na janela <b>mais longa</b>, e <code>ttl.observed</code> é <code>null</code> enquanto não houver prova. A correção é provada com a tabela das três sondas em <b>TDD RED→GREEN</b>: <b>10min e 30min saem de <code>gap-expired</code> para <code>warm</code></b>, e <b>70min permanece <code>gap-expired</code></b> — o controle negativo, sem o qual o conserto só teria trocado um falso positivo por um falso negativo.</p>
   </section>
 
 

@@ -1486,6 +1486,13 @@ function renderRouterMetrics(m, live) {
     .join(' · ');
   // Fator chars→token medido no próprio tráfego; ausente até haver amostra.
   const cal = m.calibration || {};
+  // Janela de cache MEDIDA (a resposta da API declara qual foi contratada). Sem
+  // isso a janela é palpite: o Claude Code pode usar 1h por flag remoto da
+  // Anthropic, e tratar como 5min classifica fronteira fria com cache vivo.
+  const tt = m.ttl || {};
+  const ttlLine = tt.observed
+    ? ` · janela ${tt.observed}${tt.observed === 'mixed' ? ` (${tt.pct1h}% 1h)` : ''} (medida)`
+    : '';
   const sub = `${t('router.mClassified')}: ${m.classified || 0} · `
     + `${t('router.mServedClaude')}: ${m.servedClaude || 0} · `
     + `${t('router.mCooldowns')}: ${m.cooldownArms || 0} · `
@@ -1496,6 +1503,7 @@ function renderRouterMetrics(m, live) {
     + (ccPrompt > 0 ? ` (${kt(ccIn)} reconstruídos de ${kt(ccPrompt)} de prompt, ~${kt(ccClear)} limpáveis = ${ccPct}%)` : '')
     + (brLine ? `<br>por motivo: ${brLine}` : '')
     + (cal.charsPerToken ? ` · calibração ${cal.charsPerToken} chars/token (${cal.samples} amostras)` : '')
+    + ttlLine
     + (live ? '' : ` · ${t('router.mStale')}`);
   return routerTrafficBanner(m, live)
     + `<div style="display:flex;flex-wrap:wrap;gap:.5rem">${tiles}</div>`

@@ -1,5 +1,32 @@
 # Changelog
 
+## [2.20.4] - 2026-07-30
+
+**A janela do cache deixa de ser palpite: ela é declarada pela própria API e agora é persistida.** O detector assumia 5 minutos vindos do config. Mas a extração do binário do Claude Code mostra que a janela **pode ser de 1 hora**, e a decisão não é do usuário:
+
+```js
+let P = tFe(e.querySource) ? "1h" : void 0;
+
+function tFe(e){
+  if (env.FORCE_PROMPT_CACHING_5M) return false;
+  if (env.ENABLE_PROMPT_CACHING_1H) return true;
+  if (!ii() || Kie().isUsingOverage) return false;
+  let t = lvi(); if (t===null) t = Ke("tengu_prompt_cache_1h_config", {allowlist:[...
+```
+
+A janela de 1h é ligada por variável de ambiente, por estado de **overage**, ou por um **feature-flag remoto da Anthropic** com allowlist por `querySource`. Ou seja: ela pode mudar **sem aviso e sem nada mudar na máquina do usuário** — e nenhuma inspeção local revelaria isso.
+
+O `accumulateUsage` **já lia** `ephemeral_5m_input_tokens` e `ephemeral_1h_input_tokens` — a resposta declara a janela contratada em cada write — mas o dado só refinava o TTL interno e era descartado. Agora é persistido.
+
+- **`metrics.ttl`** com `write5m` / `write1h` / `writeUnknown`. Um write sem detalhe de janela vai para `writeUnknown`: **nunca se assume 5m por omissão**.
+- **Veredito no snapshot**: `ttl.observed` (`'5m'` · `'1h'` · `'mixed'` · **`null`** sem prova), `ttl.observedMs` e `ttl.pct1h`. Em `mixed` (a API permite misturar TTLs), `observedMs` fica na janela **mais longa** — a leitura conservadora, já que subestimar a janela é o que classifica fronteira fria com cache vivo.
+- **`ttlWindowMs(ttl, config)`** — a janela **medida vence o palpite do config**.
+- **Dashboard**: `janela 1h (medida)`.
+
+### Por que isso corrige um falso positivo real
+
+Com a janela medida em 1h, uma sessão com cache quente aos 10 e aos 30 minutos é corretamente `warm`; com o palpite de 5 minutos, as duas eram `gap-expired` — **fronteira fria declarada sobre cache vivo**. É exatamente o falso positivo observado em campo, onde uma amostra classificada `gap-expired` tinha **99,8% do prompt servido do cache**: limpar ali destruiria ~130K de cache pago.
+
 ## [2.20.3] - 2026-07-29
 
 **O primeiro dado de campo continha um número fisicamente impossível — e ninguém pegou.** A telemetria da v2.20.2 reportou, para o bucket `gap-expired`, **41.770 tokens limpáveis sobre 7.030 de input = 594%**. O limpável é um **subconjunto** do prompt: não existe passar de 100%. O número foi lido, tabulado e comparado entre amostras sem que a impossibilidade fosse notada — exatamente o risco de decidir por dado sem sanidade dimensional.
