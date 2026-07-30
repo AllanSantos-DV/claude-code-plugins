@@ -180,11 +180,13 @@ function estimateClearablePayload(body) {
 }
 
 /**
- * Chars do corpo INTEIRO (system + todas as mensagens) — o denominador da
- * calibração. Diferente de `estimateClearablePayload`, que mede só o que a
- * limpeza levaria, aqui entra tudo, porque o que a Anthropic cobra é o prompt
- * inteiro. O `system` é incluído de propósito: costuma ser a maior parte do
- * prefixo, e ignorá-lo viciaria o fator para baixo.
+ * Chars do prompt INTEIRO — o denominador da calibração.
+ *
+ * Inclui `system`, todas as `messages` **e o array `tools`**. Os schemas de
+ * ferramenta não são acessório: o Claude Code manda dezenas deles em toda
+ * request, e a Anthropic os cobra como parte do prompt. Deixá-los de fora
+ * enviesou o primeiro fator medido em campo — 1.674 chars/token contra os ~3.5-4
+ * esperados, ou seja, chars subcontado ~2.2×.
  */
 function estimateTotalChars(body) {
   const b = body || {};
@@ -192,6 +194,10 @@ function estimateTotalChars(body) {
   const messages = Array.isArray(b.messages) ? b.messages : [];
   for (const msg of messages) {
     if (msg) chars += contentChars(msg.content);
+  }
+  // Serializa os schemas: a forma exata (JSON) é o que trafega e é tokenizado.
+  if (Array.isArray(b.tools) && b.tools.length) {
+    try { chars += JSON.stringify(b.tools).length; } catch (err) { void err; /* schema circular: ignora, sem derrubar */ }
   }
   return chars;
 }
