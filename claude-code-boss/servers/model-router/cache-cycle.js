@@ -225,10 +225,38 @@ function calibrationSample(chars, acc) {
   return { chars: c, realTokens, ratio: c / realTokens };
 }
 
+/**
+ * Janela do cache a usar, em ms. A MEDIDA vence o palpite.
+ *
+ * Por que existe: o detector assumia 5min do config, mas o Claude Code pode
+ * contratar 1h — e a decisão não é dele nem sua. Extraído do binário:
+ * `tFe()` liga 1h por `ENABLE_PROMPT_CACHING_1H`, por estado de overage, ou por
+ * um **feature-flag remoto da Anthropic** (`tengu_prompt_cache_1h_config`, com
+ * allowlist por `querySource`). Ou seja, a janela real pode mudar sem aviso e
+ * sem nada mudar na máquina do usuário.
+ *
+ * Como a resposta da API **declara** a janela contratada em cada write
+ * (`ephemeral_5m_input_tokens` / `ephemeral_1h_input_tokens`), basta usá-la:
+ * tratar 1h como 5min classificaria fronteira fria com o cache ainda vivo — que
+ * é exatamente o falso positivo observado em campo.
+ *
+ * @param {{observedMs?:number}|null} ttl agregado de TTL observado
+ * @param {object} config
+ * @returns {number} ms
+ */
+function ttlWindowMs(ttl, config) {
+  const observed = ttl && Number(ttl.observedMs);
+  if (Number.isFinite(observed) && observed > 0) return observed;
+  return coldBoundaryMs(config);
+}
+
 module.exports = {
   DEFAULT_COLD_BOUNDARY_MS,
   CHARS_PER_TOKEN,
+  TTL_1H,
+  TTL_5M,
   coldBoundaryMs,
+  ttlWindowMs,
   parseCacheUsage,
   isColdBoundary,
   observeUsage,
