@@ -907,6 +907,34 @@ code { color: var(--fg); font-family: var(--font-mono); }
         <div class="text-muted" style="font-size:.78rem;margin-top:.25rem" data-i18n="router.nvidiaHint">Opcional. Chave grátis em build.nvidia.com. Fica só na sua máquina (DATA_DIR), nunca é commitada. Por padrão a classificação é LOCAL: nenhum prompt sai da máquina. A chave só envia dados em 2 casos: (1) plano-B de geração no 429; (2) classificação remota, se você ativar classifyRemote (opt-in), enviando ~500 chars de cada prompt à NVIDIA.</div>
       </div>
 
+      <div style="margin:1.25rem 0;max-width:560px;padding-top:1rem;border-top:1px solid var(--border)">
+        <label class="switch-row">
+          <input type="checkbox" id="router-byok-enable" onchange="updateRouterSaveState()">
+          <span>
+            <span class="switch-title"><span data-i18n="router.byokEnable">Usar meu próprio endpoint (BYOK)</span></span>
+            <span class="text-muted" style="display:block;font-size:.78rem;margin-top:.25rem" data-i18n="router.byokHint">Aponta o proxy para um endpoint Anthropic-compatible seu (POST /v1/messages, formato nativo). O plugin não conhece o provedor: você cola a URL e os headers. O nome do modelo vai VERBATIM — o endpoint normaliza sozinho.</span>
+          </span>
+        </label>
+
+        <div id="router-byok-fields" style="display:none;margin-top:.75rem">
+          <label class="field-label"><span data-i18n="router.byokMode">Quando usar</span></label>
+          <select id="router-byok-mode" onchange="updateRouterSaveState()" style="width:100%">
+            <option value="on-limit" data-i18n="router.byokModeOnLimit">Só quando o limite do Claude esgotar (429)</option>
+            <option value="always" data-i18n="router.byokModeAlways">Sempre — atende tudo, sem depender da assinatura</option>
+          </select>
+          <div class="text-muted" style="font-size:.78rem;margin:.25rem 0 .75rem" data-i18n="router.byokModeHint">No modo 429, o endpoint entra ANTES da NVIDIA; se ele também estiver no teto (429), a vez passa para a NVIDIA. Erro de configuração (401/404/5xx) NÃO cai em silêncio para a NVIDIA — aparece aqui, senão você nunca conserta a credencial.</div>
+
+          <label class="field-label"><span data-i18n="router.byokBaseUrl">Base URL</span></label>
+          <input type="text" id="router-byok-url" autocomplete="off" placeholder="https://exemplo.ts.net" style="width:100%" oninput="updateRouterSaveState()">
+          <div class="text-muted" style="font-size:.78rem;margin:.25rem 0 .75rem" data-i18n="router.byokUrlHint">Só o host (o path é sempre /v1/messages). Ex.: https://exemplo.ts.net ou http://10.0.0.5:4143</div>
+
+          <label class="field-label"><span data-i18n="router.byokHeaders">Headers (um por linha: Nome: valor)</span></label>
+          <textarea id="router-byok-headers" rows="3" autocomplete="off" placeholder="Authorization: Bearer ..." style="width:100%;font-family:var(--mono,monospace);font-size:.8rem"></textarea>
+          <div id="router-byok-headers-state" class="text-muted" style="font-size:.78rem;margin-top:.25rem"></div>
+          <div class="text-muted" style="font-size:.78rem;margin-top:.25rem" data-i18n="router.byokHeadersHint">Mapa livre — se o endpoint exigir outro header (chave de gateway, tenant id), é só acrescentar. Guardado só na sua máquina (DATA_DIR, permissão 0600), nunca commitado. O token da SUA ASSINATURA Claude NÃO é enviado ao endpoint.</div>
+        </div>
+      </div>
+
       <label style="display:flex;align-items:flex-start;gap:.5rem;margin:1rem 0;max-width:560px">
         <input type="checkbox" id="router-accept" onchange="updateRouterSaveState()" style="width:auto;margin-top:.2rem">
         <span data-i18n="router.acceptTerms">Li e aceito: a chave e a reescrita rodam localmente; uso por minha conta.</span>
@@ -950,6 +978,21 @@ const I18N = {
     'router.stickyHint': 'Recommended. Picks the tier ONCE per session (turn 0) and HOLDS the model for the rest of the session — a constant model keeps the prompt cache warm. Reuses the classifier + ceiling.',
     'router.fallbackEnable': 'Enable limit fallback (429)',
     'router.fallbackHint': 'Independent from the router. Passes straight through to Claude (no model switch, cache preserved) and only kicks in when the window is exhausted (429): uses NVIDIA if a key is set, otherwise warns here. Fills the gap in the native fallbackModel (which only covers 529).',
+    'router.byokEnable': 'Use my own endpoint (BYOK)',
+    'router.byokHint': 'Points the proxy at an Anthropic-compatible endpoint of yours (POST /v1/messages, native format). The plugin does not know the provider: you paste the URL and the headers. The model name goes VERBATIM — the endpoint normalizes it.',
+    'router.byokMode': 'When to use it',
+    'router.byokModeOnLimit': 'Only when the Claude limit is exhausted (429)',
+    'router.byokModeAlways': 'Always — serves everything, no subscription needed',
+    'router.byokModeHint': 'In 429 mode the endpoint comes BEFORE NVIDIA; if it is also at its cap (429), NVIDIA takes over. A configuration error (401/404/5xx) does NOT silently fall through to NVIDIA — it shows up here, otherwise you would never fix the credential.',
+    'router.byokBaseUrl': 'Base URL',
+    'router.byokUrlHint': 'Host only (the path is always /v1/messages). E.g. https://example.ts.net or http://10.0.0.5:4143',
+    'router.byokHeaders': 'Headers (one per line: Name: value)',
+    'router.byokHeadersHint': 'Free-form map — if the endpoint requires another header (gateway key, tenant id), just add it. Stored only on your machine (DATA_DIR, mode 0600), never committed. YOUR Claude subscription token is NOT sent to the endpoint.',
+    'router.byokHeadersStored': 'Stored',
+    'router.byokHeadersKeep': 'leave blank to keep',
+    'router.byokHeadersNone': 'No header configured yet.',
+    'router.byokHeadersInvalid': 'Invalid line (expected "Name: value")',
+    'mode.byokDirect': 'BYOK direct',
     'router.nvidiaKey': 'NVIDIA API key (optional)',
     'router.nvidiaHint': 'Optional. Free key at build.nvidia.com. Stays only on your machine (DATA_DIR), never committed. By default classification is LOCAL: no prompt leaves the machine. The key only sends data in 2 cases: (1) plan-B generation on 429; (2) remote classification, if you enable classifyRemote (opt-in), sending ~500 chars of each prompt to NVIDIA.',
     'router.heroKicker': 'Live router state',
@@ -1083,6 +1126,21 @@ const I18N = {
     'router.stickyHint': 'Recomendado. Escolhe o tier UMA vez por sessão (turno 0) e FIXA o modelo pelo resto da sessão — modelo constante preserva o prompt cache quente. Reusa o classificador + teto.',
     'router.fallbackEnable': 'Ativar fallback de limite (429)',
     'router.fallbackHint': 'Independente do roteador. Passa direto pro Claude (sem trocar modelo, preserva o cache) e só entra em ação quando a janela esgota (429): usa a NVIDIA se houver chave, senão avisa aqui. Preenche a lacuna do fallbackModel nativo (que só cobre 529).',
+    'router.byokEnable': 'Usar meu próprio endpoint (BYOK)',
+    'router.byokHint': 'Aponta o proxy para um endpoint Anthropic-compatible seu (POST /v1/messages, formato nativo). O plugin não conhece o provedor: você cola a URL e os headers. O nome do modelo vai VERBATIM — o endpoint normaliza sozinho.',
+    'router.byokMode': 'Quando usar',
+    'router.byokModeOnLimit': 'Só quando o limite do Claude esgotar (429)',
+    'router.byokModeAlways': 'Sempre — atende tudo, sem depender da assinatura',
+    'router.byokModeHint': 'No modo 429, o endpoint entra ANTES da NVIDIA; se ele também estiver no teto (429), a vez passa para a NVIDIA. Erro de configuração (401/404/5xx) NÃO cai em silêncio para a NVIDIA — aparece aqui, senão você nunca conserta a credencial.',
+    'router.byokBaseUrl': 'Base URL',
+    'router.byokUrlHint': 'Só o host (o path é sempre /v1/messages). Ex.: https://exemplo.ts.net ou http://10.0.0.5:4143',
+    'router.byokHeaders': 'Headers (um por linha: Nome: valor)',
+    'router.byokHeadersHint': 'Mapa livre — se o endpoint exigir outro header (chave de gateway, tenant id), é só acrescentar. Guardado só na sua máquina (DATA_DIR, permissão 0600), nunca commitado. O token da SUA ASSINATURA Claude NÃO é enviado ao endpoint.',
+    'router.byokHeadersStored': 'Guardado',
+    'router.byokHeadersKeep': 'deixe em branco para manter',
+    'router.byokHeadersNone': 'Nenhum header configurado ainda.',
+    'router.byokHeadersInvalid': 'Linha inválida (esperado "Nome: valor")',
+    'mode.byokDirect': 'BYOK direto',
     'router.nvidiaKey': 'Chave NVIDIA API (opcional)',
     'router.nvidiaHint': 'Opcional. Chave grátis em build.nvidia.com. Fica só na sua máquina (DATA_DIR), nunca é commitada. Por padrão a classificação é LOCAL: nenhum prompt sai da máquina. A chave só envia dados em 2 casos: (1) plano-B de geração no 429; (2) classificação remota, se você ativar classifyRemote (opt-in), enviando ~500 chars de cada prompt à NVIDIA.',
     'router.heroKicker': 'Estado do roteador',
@@ -1287,6 +1345,27 @@ async function loadRouterConfig() {
       : t('router.keyNone');
     document.getElementById('router-nvidia-key').value = '';
     document.getElementById('router-nvidia-key').placeholder = cfg.hasNvidiaKey ? '•••• ' + cfg.nimMasked : 'nvapi-...';
+    // BYOK — endpoint próprio do usuário.
+    const by = cfg.byok || {};
+    const byEl = document.getElementById('router-byok-enable');
+    if (byEl) byEl.checked = !!by.enabled;
+    const byMode = document.getElementById('router-byok-mode');
+    if (byMode) byMode.value = (by.mode === 'always') ? 'always' : 'on-limit';
+    const byUrl = document.getElementById('router-byok-url');
+    if (byUrl) byUrl.value = by.baseUrl || '';
+    // Os headers guardam credencial: a UI mostra os NOMES e mascara os valores.
+    // Deixar o campo vazio ao salvar PRESERVA o que já está gravado (mesma regra
+    // da chave NVIDIA) — reexibir o segredo em tela seria expô-lo sem necessidade.
+    const byHdr = document.getElementById('router-byok-headers');
+    const byHdrState = document.getElementById('router-byok-headers-state');
+    if (byHdr) byHdr.value = '';
+    const nomes = Object.keys(by.headers || {});
+    if (byHdrState) {
+      byHdrState.textContent = nomes.length
+        ? `${t('router.byokHeadersStored')}: ${nomes.join(', ')} — ${t('router.byokHeadersKeep')}`
+        : t('router.byokHeadersNone');
+    }
+    if (byHdr) byHdr.placeholder = nomes.length ? nomes.map((n) => `${n}: ••••`).join('\n') : 'Authorization: Bearer ...';
     updateRouterSaveState();
   } catch (e) {
     document.getElementById('router-key-state').textContent = 'Erro: ' + e.message;
@@ -1299,6 +1378,7 @@ const MODE_META = {
   'fallback-only': { i18n: 'mode.fallbackOnly', color: 'blue',  deprecated: false },
   'sticky-tier':   { i18n: 'mode.stickyTier',   color: 'green', deprecated: false },
   'routing':       { i18n: 'mode.routing',      color: 'amber', deprecated: true  },
+  'byok-direct':   { i18n: 'mode.byokDirect',   color: 'purple', deprecated: false },
 };
 function modeMeta(mode) { return MODE_META[mode] || MODE_META.off; }
 
@@ -1543,9 +1623,35 @@ function updateRouterSaveState() {
   const fallbackEnabled = fbEl ? fbEl.checked : false;
   const accepted = document.getElementById('router-accept').checked;
   const btn = document.getElementById('router-save-btn');
+  // BYOK: os campos só aparecem quando ligado, e ligá-lo também exige o aceite
+  // (é o proxy mandando os seus prompts para um endpoint que VOCÊ escolheu).
+  const byEl = document.getElementById('router-byok-enable');
+  const byokEnabled = byEl ? byEl.checked : false;
+  const byFields = document.getElementById('router-byok-fields');
+  if (byFields) byFields.style.display = byokEnabled ? 'block' : 'none';
   // Aceite dos termos é exigido para LIGAR qualquer um dos três (todos rodam o
   // proxy local / plano B por sua conta). Desligar nunca exige aceite.
-  btn.disabled = (enabled || stickyEnabled || fallbackEnabled) && !accepted;
+  btn.disabled = (enabled || stickyEnabled || fallbackEnabled || byokEnabled) && !accepted;
+}
+
+// Espelha byok.parseHeaderLines do servidor (o dashboard é HTML estático, não
+// consegue `require`). A regra é a mesma: só o PRIMEIRO ":" separa, linha vazia
+// é ignorada, e linha sem ":" volta em `invalid` para o save avisar em vez de
+// gravar um mapa pela metade.
+function parseHeaderLinesUI(text) {
+  const headers = {};
+  const invalid = [];
+  for (const linha of String(text || '').split(/\r?\n/)) {
+    const l = linha.trim();
+    if (!l) continue;
+    const i = l.indexOf(':');
+    if (i <= 0) { invalid.push(l); continue; }
+    const nome = l.slice(0, i).trim();
+    const valor = l.slice(i + 1).trim();
+    if (!nome || !valor) { invalid.push(l); continue; }
+    headers[nome] = valor;
+  }
+  return { headers, invalid };
 }
 
 async function applyRouter() {
@@ -1555,10 +1661,37 @@ async function applyRouter() {
   const fbEl = document.getElementById('router-fallback-enable');
   const fallbackEnabled = fbEl ? fbEl.checked : false;
   const accepted = document.getElementById('router-accept').checked;
-  if ((enabled || stickyEnabled || fallbackEnabled) && !accepted) return;
+  const byEnEl = document.getElementById('router-byok-enable');
+  if ((enabled || stickyEnabled || fallbackEnabled || (byEnEl && byEnEl.checked)) && !accepted) return;
   const typed = document.getElementById('router-nvidia-key').value.trim();
   const body = { enabled, stickyEnabled, fallbackEnabled, acceptedTerms: accepted };
   if (typed !== '') body.nimApiKey = typed; // only send a new key when typed
+
+  // BYOK. O campo de headers VAZIO preserva o que já está gravado (mesma regra da
+  // chave NVIDIA): a UI nunca reexibe o segredo, então salvar sem redigitar não
+  // pode apagá-lo. Uma linha inválida ABORTA o save com aviso, em vez de gravar
+  // um mapa pela metade e deixar o usuário depurando o endpoint errado.
+  const byEl = document.getElementById('router-byok-enable');
+  if (byEl) {
+    const byok = { enabled: byEl.checked };
+    const byMode = document.getElementById('router-byok-mode');
+    if (byMode) byok.mode = byMode.value;
+    const byUrl = document.getElementById('router-byok-url');
+    if (byUrl) byok.baseUrl = byUrl.value.trim();
+    const byHdr = document.getElementById('router-byok-headers');
+    const txt = byHdr ? byHdr.value.trim() : '';
+    if (txt !== '') {
+      const parsed = parseHeaderLinesUI(txt);
+      if (parsed.invalid.length) {
+        document.getElementById('router-saved').textContent =
+          `${t('router.byokHeadersInvalid')}: ${parsed.invalid[0]}`;
+        return;
+      }
+      byok.headers = parsed.headers;
+    }
+    body.byok = byok;
+  }
+
   const btn = document.getElementById('router-save-btn');
   const saved = document.getElementById('router-saved');
   btn.disabled = true;
