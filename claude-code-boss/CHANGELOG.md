@@ -1,5 +1,30 @@
 # Changelog
 
+## [2.21.1] - 2026-07-31
+
+**O `403` do endpoint BYOK passa a repassar a mensagem acionável — e o conselho deixa de contradizê-la.** Adendo ao contrato do endpoint: o `403` vem com `{ error: { message, code, type } }`, e o `message` é escrito para o **usuário final**, dizendo a ação exata (credencial expirada, revogada, limite de origem…). Antes ele caía no balde genérico `status >= 400` e virava *"endpoint recusou a request (403)"* — o comportamento estava certo (fail-loud, sem retry), mas a instrução se perdia.
+
+- **`classifyResponse`** ganhou o caso `403`, que extrai `error.message` do corpo. Corpo ausente, não-JSON ou `message` vazia caem num texto próprio que **ainda cita o status** — nunca uma razão vazia. `endpointMessage()` nunca lança: um corpo malformado não pode derrubar justamente o caminho em que já deu erro.
+- **`401` continua distinto de `403`**, de propósito: `401` é *credencial não reconhecida* (o diagnóstico certo é do nosso lado — revisar os headers), `403` é *credencial reconhecida mas não vale agora* (a ação é do outro lado). Um teste trava essa separação.
+- **`model is not supported`** continua vencendo, mesmo num `403`: o diagnóstico mais específico não pode ser engolido pelo mais genérico.
+
+### O conselho passou a seguir o diagnóstico
+
+Corrigir só a razão não bastaria: o texto que a envolvia dizia *"Revise a Base URL e os headers"* em **todos** os erros. Num `403` isso é exatamente o conselho errado — manda o usuário procurar em três lugares onde o problema não está, contradizendo a mensagem que o endpoint acabou de dar.
+
+`userAdvice(status, cls, hint)` faz diagnóstico e conselho apontarem para o mesmo lugar:
+
+| status | conselho |
+|---|---|
+| `403` | **nenhum** — a mensagem do endpoint já diz a ação |
+| `401` | revisar os **headers** |
+| `404` | revisar a **Base URL** |
+| `5xx` | a config está certa; o endpoint é que está fora |
+
+Nada disso é retentável — o único retentável continua sendo o `429`.
+
+Também travado em teste: um valor de header longo e opaco (token) passa **íntegro** pelo `parseHeaderLines`, sem corte nem normalização, para não regredir num refactor futuro.
+
 ## [2.21.0] - 2026-07-31
 
 **BYOK: o proxy passa a falar com um endpoint Anthropic-compatible seu.** Até aqui o único destino possível era `api.anthropic.com` — o override de upstream existia, mas era uma **constante global lida no boot**, documentada como *"só para testes"*. Escolher o destino **por request** (que é o que permite "direto no meu endpoint" × "só quando o Claude estourar") não era possível.
