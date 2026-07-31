@@ -31,7 +31,7 @@ const http   = require('http');
 const fs     = require('fs');
 const path   = require('path');
 const os     = require('os');
-const { spawn, execSync } = require('child_process');
+const { spawn, execSync, execFileSync } = require('child_process');
 const shim   = require('./model-router-shim.js');
 const { resolveMode } = require('./lib/router-mode.js');
 const { writeJsonAtomic } = require('./lib/atomic-write.js');
@@ -243,6 +243,70 @@ function readHookInput() {
     return raw ? JSON.parse(raw) : {};
   } catch (_) { /* stdin ausente/ilegível: segue sem payload */ }
   return {};
+}
+
+// ── Identidade de build do router vivo ───────────────────────────────────────
+// O state.json guarda pid/port/mode — NENHUMA identidade de build. Sem isso o
+// ensure reusava QUALQUER router saudável, inclusive um de um SHA anterior: o
+// processo é um daemon detached, sobrevive ao restart do Claude Code e segue
+// segurando a porta 13456 servindo o binário velho (visto 2026-07-30/31: PIDs
+// 2440, 56008, 69700 — um install "bem-sucedido" que nunca entrava em vigor).
+//
+// A única saída virava matar na mão, e aí mora o dano: o router É o proxy da
+// sessão (ANTHROPIC_BASE_URL). Um kill em pleno turno derruba a API da própria
+// sessão, e o self-heal só roda no PRÓXIMO prompt do usuário — na prática,
+// minutos de "Unable to connect to API (ConnectionRefused)".
+//
+// Aqui a troca acontece no SessionStart: antes do primeiro request da sessão,
+// que é a ÚNICA janela em que derrubar a porta não quebra ninguém.
+function processCommandLine(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    const out = process.platform === 'win32'
+      ? execFileSync('powershell.exe', ['-NoProfile', '-Command',
+        `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`],
+      { encoding: 'utf-8', timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'] })
+      : execFileSync('ps', ['-o', 'command=', '-p', String(pid)],
+        { encoding: 'utf-8', timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'] });
+    return out.trim() || null;
+  } catch (err) {
+    // Não dá para inspecionar o processo (sem permissão, PID morto, powershell/ps
+    // ausente). O chamador trata null como "não consegui provar divergência" e
+    // deixa o router em paz — nunca derrubamos com base em ignorância.
+    log(`AVISO: não foi possível ler a command line do PID ${pid}: ${err.message}`);
+    return null;
+  }
+}
+
+// Comparar path CRU não serve: o PLUGIN_ROOT pode chegar com '/' (env, config,
+// shell POSIX) enquanto a command line do Windows traz '\', e o Windows ainda é
+// case-insensitive. Sem normalizar, o includes() dá falso-negativo e o hook
+// derrubaria o router CORRETO a cada boot — um loop de restart, pior que o bug
+// original. Normaliza separador e caixa antes de comparar.
+function normPath(p) {
+  return String(p).replace(/\\/g, '/').replace(/\/+$/, '')
+    .toLowerCase();
+}
+
+// true  = é o nosso build, OU não deu para provar o contrário.
+// false = SÓ quando a command line foi lida e aponta para outro PLUGIN_ROOT.
+// Fail-safe deliberado: na dúvida NUNCA derrubamos um router que está servindo.
+function servesThisBuild(pid) {
+  const cmd = processCommandLine(pid);
+  if (!cmd) return true;                      // não conseguimos ler → não mexe
+  if (!/model-router/.test(cmd)) return true; // PID reciclado por outro processo
+  return normPath(cmd).includes(normPath(PLUGIN_ROOT));
+}
+
+// Espera a porta parar de responder após o kill, para o bind do novo servidor
+// não bater em EADDRINUSE (o startServer sairia por reuso e falharia).
+async function waitPortFree(port, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!(await probeAlive(port))) return true;
+    await new Promise(r => setTimeout(r, 250));
+  }
+  return false;
 }
 
 // Decide se o aviso "[model-router] ATIVO" deve ser injetado neste turno.
@@ -643,8 +707,24 @@ async function main() {
   let isRunning = await healthCheck(FIXED_PORT);
   if (isRunning) {
     const st = readState();
-    log(`Servidor OK na porta ${FIXED_PORT}${st && st.pid ? ` (PID ${st.pid})` : ''}.`);
-  } else {
+    // SessionStart É A ÚNICA JANELA SEGURA para trocar o build: roda antes do
+    // primeiro request da sessão. No UserPromptSubmit estamos no meio de um turno
+    // e derrubar a porta cortaria a API em uso — nunca trocamos ali (e evitamos o
+    // custo do spawn de inspeção a cada prompt).
+    const isSessionStart = (hookInput.hook_event_name || hookInput.hookEventName) === 'SessionStart';
+    if (isSessionStart && st && st.pid && !servesThisBuild(st.pid)) {
+      log(`Router PID ${st.pid} serve OUTRO build (esperado ${PLUGIN_ROOT}). Derrubando no boot para o binário instalado entrar em vigor.`);
+      try { process.kill(st.pid); } catch (e) { log(`AVISO: kill do PID ${st.pid} falhou: ${e.message}`); }
+      if (!(await waitPortFree(FIXED_PORT, 5000))) {
+        log(`AVISO: porta ${FIXED_PORT} continua ocupada após o kill — mantendo o router atual em vez de arriscar a sessão sem proxy.`);
+      } else {
+        isRunning = false; // cai no startServer abaixo, que sobe o build correto
+      }
+    } else {
+      log(`Servidor OK na porta ${FIXED_PORT}${st && st.pid ? ` (PID ${st.pid})` : ''}.`);
+    }
+  }
+  if (!isRunning) {
     // healthCheck false = ou a porta está livre, ou está ocupada por um processo que
     // NÃO prova identidade (sem o token). Em ambos, tentamos (re)subir o NOSSO
     // roteador. Se a porta estiver tomada por um processo alheio, o nosso server não
@@ -743,4 +823,6 @@ if (require.main === module) {
 // healthCheck/probeAlive/readRouterToken exportados p/ os testes de verify-before-trust.
 module.exports = { mergeRouterConfig, readConfig, healthCheck, probeAlive, readRouterToken,
   resolveAutoCompactWindow, planEnableEnv, planDisableEnv, enableSettingsRouting, disableSettingsRouting,
-  contextTuningEnabled, planTuningEnv, planTuningRemoval, applySettingsTuning };
+  contextTuningEnabled, planTuningEnv, planTuningRemoval, applySettingsTuning,
+  // servesThisBuild/processCommandLine/normPath exportados p/ os testes de troca-de-build no boot.
+  servesThisBuild, processCommandLine, normPath };
