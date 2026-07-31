@@ -21,6 +21,7 @@ const os    = require('os');
 const crypto = require('crypto');
 const { URL } = require('url');
 const cacheCycle = require('./cache-cycle.js');
+const byok = require('./byok.js');
 const catalog = require('./catalog.js');
 const { resolveMode } = require('../../scripts/lib/router-mode.js');
 const { routerUserConfigPath } = require('../../scripts/lib/router-config-path.js');
@@ -868,7 +869,87 @@ function nvidiaFallback(reqBody, config, res, nimKey, hint) {
   upstream.end();
 }
 
+// Plano B via ENDPOINT do usuário (BYOK). Baseado no `passthrough`: pipe limpo,
+// sem tee de telemetria, sem cooldown, sem classificar — o corpo vai como veio e
+// o `model` é repassado VERBATIM (o endpoint normaliza o nome sozinho).
+//
+// FAIL-LOUD por contrato: 401/404/5xx e "model is not supported" NÃO caem em
+// silêncio para a NVIDIA — um erro de configuração precisa aparecer, senão o
+// usuário nunca conserta a credencial. Só o 429 (teto por credencial) é tratado
+// como retentável e cede a vez ao próximo plano.
+// @param {Function} onRetryable chamado quando o endpoint respondeu 429
+function byokFallback(reqBody, config, res, hint, upstreamTarget, onRetryable) {
+  const bodyStr = JSON.stringify(reqBody);
+  const headers = byok.buildHeaders({}, upstreamTarget);
+  headers['content-length'] = Buffer.byteLength(bodyStr);
+
+  const lib = upstreamTarget.protocol === 'http:' ? http : https;
+  const req = lib.request({
+    hostname: upstreamTarget.host,
+    port:     upstreamTarget.port,
+    path:     '/v1/messages',
+    method:   'POST',
+    headers,
+  }, (upRes) => {
+    const cls = byok.classifyResponse(upRes.statusCode, '');
+    if (cls.ok) {
+      logger.info('BYOK — limite do Claude coberto pelo endpoint do usuário', {
+        host: upstreamTarget.host, status: upRes.statusCode,
+      });
+      res.writeHead(upRes.statusCode, upRes.headers);
+      upRes.pipe(res);
+      return;
+    }
+    // Lê um pedaço do corpo: o contrato manda gritar também por corpo
+    // ("model is not supported") mesmo quando o status parece aceitável.
+    let errBody = '';
+    upRes.on('data', (c) => { if (errBody.length < 8192) errBody += c; });
+    upRes.on('end', () => {
+      const finalCls = byok.classifyResponse(upRes.statusCode, errBody);
+      if (finalCls.retryable && typeof onRetryable === 'function') {
+        logger.warn('BYOK — endpoint no teto (429); cedendo ao próximo plano', { host: upstreamTarget.host });
+        onRetryable();
+        return;
+      }
+      logger.error('BYOK — endpoint recusou a request', {
+        host: upstreamTarget.host, status: upRes.statusCode, causa: finalCls.reason,
+      });
+      const extra = hint ? `\n\n⏳ ${hint}.` : '';
+      respondAnthropicText(reqBody, res,
+        `⚠️ O endpoint BYOK recusou a request: ${finalCls.reason} (HTTP ${upRes.statusCode}).\n\n`
+        + `Revise a Base URL e os headers em /dashboard → BYOK.${extra}`);
+    });
+  });
+  req.on('error', (e) => {
+    logger.error('BYOK — endpoint inacessível', { host: upstreamTarget.host, err: e.message });
+    respondAnthropicText(reqBody, res,
+      `⚠️ O endpoint BYOK (${upstreamTarget.host}) está inacessível: ${e.message}.\n\n`
+      + 'Revise a Base URL em /dashboard → BYOK.');
+  });
+  req.write(bodyStr);
+  req.end();
+}
+
 function handleLimitExceeded(reqBody, config, res, hint) {
+  // O plano B do ENDPOINT vem antes do da NVIDIA: ele serve os mesmos modelos
+  // Claude, então é a substituição mais fiel. Só entra se o usuário ligou.
+  const target = byok.resolveUpstream(config, { onLimit: true });
+  if (target.misconfigured) {
+    logger.error('BYOK ligado mas mal configurado — não é possível usá-lo como plano B', { causa: target.misconfigured });
+  }
+  if (target.isByok) {
+    try {
+      // No 429 do endpoint (teto por credencial) cede a vez à NVIDIA.
+      byokFallback(reqBody, config, res, hint, target, () => nvidiaOrMessage(reqBody, config, res, hint));
+      return;
+    } catch (e) {
+      logger.error('Falha ao iniciar o plano B BYOK', { err: e.message });
+    }
+  }
+  nvidiaOrMessage(reqBody, config, res, hint);
+}
+
+function nvidiaOrMessage(reqBody, config, res, hint) {
   const nimKey = (config && config.nim && config.nim.apiKey) || process.env.NVIDIA_NIM_KEY || '';
   if (nimKey) {
     try { nvidiaFallback(reqBody, config, res, nimKey, hint); return; }
@@ -1565,9 +1646,19 @@ function passthrough(rawBody, originalHeaders, res, pathOriginal) {
 }
 
 function forwardRequest(reqBody, originalHeaders, res, config, route) {
+  // DESTINO desta request. Resolvido ANTES do cooldown de propósito: o cooldown
+  // é sobre a janela da ANTHROPIC, e em `byok.mode=always` a Anthropic nem entra
+  // no caminho — aplicar o breaker ali desviaria para o plano B uma request que
+  // seria atendida normalmente pelo endpoint do usuário.
+  const upstreamTarget = byok.resolveUpstream(config, { onLimit: false });
+  if (upstreamTarget.misconfigured) {
+    // Fail-loud: ligado sem destino não pode virar "usa o Claude e ninguém vê".
+    logger.error('BYOK mal configurado — request NÃO roteada ao endpoint', { causa: upstreamTarget.misconfigured });
+  }
+
   const cd = cooldownCfg(config);
   // Circuit breaker: janela em cooldown? vai DIRETO ao plano B (sem martelar a Anthropic).
-  if (cd.enabled && _cooldownUntil) {
+  if (!upstreamTarget.isByok && cd.enabled && _cooldownUntil) {
     if (Date.now() < _cooldownUntil) {
       logger.info('Cooldown ativo — plano B direto (sem tocar na Anthropic)', {
         restamSeg: Math.round((_cooldownUntil - Date.now()) / 1000),
@@ -1581,28 +1672,28 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
     clearCooldown();
   }
   const bodyStr = JSON.stringify(reqBody);
-  const headers = {
-    'content-type':      'application/json',
-    'content-length':    Buffer.byteLength(bodyStr),
-    'anthropic-version': originalHeaders['anthropic-version'] || '2023-06-01',
-  };
-  if (originalHeaders['x-api-key'])      headers['x-api-key']      = originalHeaders['x-api-key'];
-  if (originalHeaders['authorization'])  headers['authorization']  = originalHeaders['authorization'];
-  if (originalHeaders['anthropic-beta']) headers['anthropic-beta'] = originalHeaders['anthropic-beta'];
+  const headers = byok.buildHeaders(originalHeaders, upstreamTarget);
+  headers['content-length'] = Buffer.byteLength(bodyStr);
 
   const options = {
-    hostname: UPSTREAM_HOST,
-    port:     UPSTREAM_PORT,
+    hostname: upstreamTarget.host,
+    port:     upstreamTarget.port,
     path:     (route && route.path) || '/v1/messages',
     method:   'POST',
     headers,
   };
+  const lib = upstreamTarget.protocol === 'http:' ? http : UPSTREAM_LIB;
+  if (upstreamTarget.isByok) {
+    logger.info('BYOK — request servida pelo endpoint do usuário', {
+      host: upstreamTarget.host, port: upstreamTarget.port, mode: upstreamTarget.mode,
+    });
+  }
 
   const triggers = (config && config.fallback && Array.isArray(config.fallback.triggerStatuses))
     ? config.fallback.triggerStatuses
     : [429];
 
-  const upstream = UPSTREAM_LIB.request(options, (upRes) => {
+  const upstream = lib.request(options, (upRes) => {
     // Janela esgotada / limite → plano B (NÃO repassa o erro ao cliente).
     if (triggers.includes(upRes.statusCode)) {
       let errBody = '';
@@ -2134,6 +2225,10 @@ if (require.main === module) {
     metricsCacheCycle,
     metricsCalibration,
     metricsTtl,
+    // BYOK: exportado p/ o teste ponta-a-ponta que prova que a credencial da
+    // ASSINATURA não chega ao endpoint de terceiro (o risco central do recurso).
+    forwardRequest,
+    handleLimitExceeded,
     metricsSnapshot,
     resetMetrics,
     newMetrics,

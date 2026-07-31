@@ -5945,6 +5945,206 @@ test('metricsCacheCycle: sem premio medido, os contadores de tamanho ficam INTAC
 });
 
 
+// ─── BYOK: endpoint Anthropic-compatible generico ────────────────────────────
+// O boss NAO conhece o provedor, nem de onde vem o token. Recebe do dashboard uma
+// Base URL e um MAPA de headers, e anexa em toda request ao endpoint. O contrato
+// e Anthropic nativo em /v1/messages: zero traducao, modelo repassado VERBATIM
+// (o endpoint normaliza os nomes sozinho e erra alto no inexistente).
+const byok = require('../servers/model-router/byok.js');
+
+test('byok.parseBaseUrl: https sem porta → 443; http com porta → a porta dada', () => {
+  const a = byok.parseBaseUrl('https://exemplo.ts.net');
+  assertEq(a.host, 'exemplo.ts.net'); assertEq(a.port, 443); assertEq(a.protocol, 'https:');
+  const b = byok.parseBaseUrl('http://10.0.0.5:4143');
+  assertEq(b.host, '10.0.0.5'); assertEq(b.port, 4143); assertEq(b.protocol, 'http:');
+});
+
+test('byok.parseBaseUrl: URL vazia/invalida → null (nao inventa destino)', () => {
+  assertEq(byok.parseBaseUrl(''), null);
+  assertEq(byok.parseBaseUrl(null), null);
+  assertEq(byok.parseBaseUrl('nao-e-url'), null);
+});
+
+test('byok.parseBaseUrl: path na base e IGNORADO (o path e sempre /v1/messages)', () => {
+  const r = byok.parseBaseUrl('https://exemplo.ts.net/qualquer/coisa');
+  assertEq(r.host, 'exemplo.ts.net');
+  assertEq(r.port, 443);
+});
+
+test('byok.resolveUpstream: desligado → Anthropic (comportamento atual preservado)', () => {
+  const u = byok.resolveUpstream({}, { onLimit: false });
+  assertEq(u.isByok, false);
+  assertEq(u.host, 'api.anthropic.com');
+});
+
+test('byok.resolveUpstream: mode always → TODA request vai ao endpoint', () => {
+  const cfg = { byok: { enabled: true, mode: 'always', baseUrl: 'https://ex.ts.net', headers: {} } };
+  assertEq(byok.resolveUpstream(cfg, { onLimit: false }).isByok, true, 'request normal ja vai');
+  assertEq(byok.resolveUpstream(cfg, { onLimit: true }).isByok, true, 'e no limite tambem');
+});
+
+test('byok.resolveUpstream: mode on-limit → SO no 429, nunca no fluxo normal', () => {
+  const cfg = { byok: { enabled: true, mode: 'on-limit', baseUrl: 'https://ex.ts.net', headers: {} } };
+  assertEq(byok.resolveUpstream(cfg, { onLimit: false }).isByok, false, 'fluxo normal segue no Claude');
+  assertEq(byok.resolveUpstream(cfg, { onLimit: true }).isByok, true, 'no 429 assume o endpoint');
+});
+
+test('byok.resolveUpstream: ligado SEM baseUrl → NAO roteia e diz o porque (fail-loud)', () => {
+  const cfg = { byok: { enabled: true, mode: 'always', baseUrl: '', headers: {} } };
+  const u = byok.resolveUpstream(cfg, { onLimit: false });
+  assertEq(u.isByok, false, 'sem destino nao ha para onde rotear');
+  assertEq(/baseUrl/i.test(u.misconfigured || ''), true, 'e a causa fica VISIVEL, nao silenciosa');
+});
+
+// ── SEGURANCA: o header do cliente carrega o token da ASSINATURA Claude ──────
+// Repassar isso a um endpoint de terceiro seria VAZAR a credencial do usuario.
+// O proxy so pode mandar ao endpoint os headers que o usuario configurou.
+
+test('byok.buildHeaders: ao endpoint, o token da ASSINATURA e REMOVIDO', () => {
+  const cliente = {
+    'authorization': 'Bearer sk-ant-oat-SEGREDO-DA-ASSINATURA',
+    'x-api-key': 'sk-ant-CHAVE-DA-ASSINATURA',
+    'anthropic-version': '2023-06-01',
+    'anthropic-beta': 'context-1m-2025-08-07',
+  };
+  const h = byok.buildHeaders(cliente, { isByok: true, headers: { Authorization: 'Bearer TOKEN-DO-USUARIO' } });
+  assertEq(h.authorization, undefined, 'o Bearer da assinatura NAO pode sair da maquina');
+  assertEq(h['x-api-key'], undefined, 'nem a x-api-key da assinatura');
+  assertEq(h.Authorization, 'Bearer TOKEN-DO-USUARIO', 'vale o header configurado pelo usuario');
+  assertEq(h['anthropic-version'], '2023-06-01', 'versao do protocolo continua');
+  assertEq(h['anthropic-beta'], 'context-1m-2025-08-07', 'e os betas do cliente tambem');
+});
+
+test('byok.buildHeaders: mapa GENERICO — qualquer header configurado e anexado', () => {
+  const h = byok.buildHeaders({}, { isByok: true, headers: { 'X-Gateway-Key': 'k', 'X-Tenant-Id': 't' } });
+  assertEq(h['X-Gateway-Key'], 'k');
+  assertEq(h['X-Tenant-Id'], 't');
+});
+
+test('byok.buildHeaders: rota ANTHROPIC mantem o repasse de credencial (nao regride)', () => {
+  const cliente = { 'authorization': 'Bearer oat', 'x-api-key': 'k', 'anthropic-version': '2023-06-01' };
+  const h = byok.buildHeaders(cliente, { isByok: false });
+  assertEq(h.authorization, 'Bearer oat', 'no caminho normal a credencial SEGUE (e o dono dela)');
+  assertEq(h['x-api-key'], 'k');
+});
+
+test('byok.buildHeaders: content-type e json em ambas as rotas', () => {
+  assertEq(byok.buildHeaders({}, { isByok: true, headers: {} })['content-type'], 'application/json');
+  assertEq(byok.buildHeaders({}, { isByok: false })['content-type'], 'application/json');
+});
+
+// ── Classificacao de resposta: o contrato diz o que e retentavel e o que grita ──
+
+test('byok.classifyResponse: 200 → ok', () => {
+  assertEq(byok.classifyResponse(200, '').ok, true);
+});
+
+test('byok.classifyResponse: 401/404/502 → FAIL LOUD (repetir nao resolve)', () => {
+  for (const s of [401, 404, 502]) {
+    const r = byok.classifyResponse(s, '');
+    assertEq(r.ok, false, 'status ' + s);
+    assertEq(r.failLoud, true, 'status ' + s + ' precisa gritar');
+    assertEq(r.retryable, false, 'status ' + s + ' nao adianta repetir');
+  }
+  assertEq(/credencial|dashboard/i.test(byok.classifyResponse(401, '').reason), true,
+    '401 diz que a credencial do dashboard esta errada');
+});
+
+test('byok.classifyResponse: 429 → RETENTAVEL (teto por credencial, nao erro de config)', () => {
+  const r = byok.classifyResponse(429, '');
+  assertEq(r.retryable, true);
+  assertEq(r.failLoud, false);
+});
+
+test('byok.classifyResponse: corpo com "model is not supported" → fail loud mesmo em 200', () => {
+  const r = byok.classifyResponse(200, '{"error":{"message":"model is not supported"}}');
+  assertEq(r.ok, false);
+  assertEq(r.failLoud, true);
+});
+
+test('byok: o modelo e repassado VERBATIM (o endpoint normaliza; mapear seria errar)', () => {
+  // Contrato verificado: claude-haiku-4-5 → servido como claude-haiku-4.5;
+  // inexistente → erro explicito. Normalizar aqui so criaria divergencia.
+  assertEq(typeof byok.mapModel, 'undefined', 'nao pode existir mapeamento de nome');
+});
+
+test('resolveMode: byok always liga o proxy quando nada mais esta ligado', () => {
+  const rm = require('./lib/router-mode.js');
+  assertEq(rm.resolveMode({ byok: { enabled: true, mode: 'always' } }), 'byok-direct');
+  assertEq(rm.resolveMode({ byok: { enabled: true, mode: 'on-limit' } }), 'fallback-only',
+    'on-limit precisa da mesma postura do fallback: passthrough + intervir no 429');
+  assertEq(rm.resolveMode({ byok: { enabled: false, mode: 'always' } }), 'off');
+});
+
+test('resolveMode: byok NAO rouba a precedencia de sticky (destino e ortogonal a rota)', () => {
+  const rm = require('./lib/router-mode.js');
+  assertEq(rm.resolveMode({ sticky: { enabled: true }, byok: { enabled: true, mode: 'always' } }), 'sticky-tier');
+});
+
+test('modeMeta: byok-direct tem rotulo e cor proprios (nao cai no fail-safe off)', () => {
+  const rm = require('./lib/router-mode.js');
+  const m = rm.modeMeta('byok-direct');
+  assertEq(m.i18n !== rm.modeMeta('off').i18n, true, 'precisa de rotulo proprio');
+});
+
+test('byok INTEGRACAO: o token da assinatura NAO chega ao endpoint (prova ponta a ponta)', () => {
+  // O teste mais importante deste modulo: sobe um endpoint FALSO, manda uma
+  // request pelo forwardRequest com o header da assinatura, e inspeciona o que
+  // o endpoint REALMENTE recebeu. Se o `authorization` da assinatura aparecer
+  // ali, a credencial do usuario vazou p/ um terceiro.
+  //
+  // Roda em SUBPROCESSO (como runBrainScenario): o harness executa os testes em
+  // concorrencia, e um servidor HTTP + espera aqui dentro disputava o event loop
+  // e fazia OUTROS testes de rede estourarem timeout. Isolado, e deterministico.
+  const script = `
+    const http = require('http');
+    const { PassThrough } = require('stream');
+    const rs = require(${JSON.stringify(path.join(ROOT, 'servers', 'model-router', 'index.js'))});
+    let got = null;
+    const fake = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        got = { headers: req.headers, path: req.url, body };
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"ok":true}');
+      });
+    });
+    fake.listen(0, '127.0.0.1', () => {
+      const porta = fake.address().port;
+      const cfg = { byok: { enabled: true, mode: 'always', baseUrl: 'http://127.0.0.1:' + porta,
+        headers: { 'Authorization': 'Bearer TOKEN-DO-ENDPOINT', 'X-Tenant-Id': 'acme' } } };
+      const cliente = { 'authorization': 'Bearer sk-ant-oat-SEGREDO', 'x-api-key': 'sk-ant-CHAVE',
+        'anthropic-version': '2023-06-01' };
+      const sink = new PassThrough(); sink.writeHead = () => {}; sink.headersSent = false;
+      rs.forwardRequest({ model: 'claude-haiku-4-5', messages: [{ role: 'user', content: 'oi' }] },
+        cliente, sink, cfg, { origTier: 'haiku', finalTier: 'haiku', path: '/v1/messages' });
+      setTimeout(() => {
+        fake.close();
+        const h = JSON.stringify(got && got.headers || {});
+        assert(got, 'o endpoint precisa ter recebido a request');
+        assert(got.headers.authorization === 'Bearer TOKEN-DO-ENDPOINT', 'header configurado deveria valer, veio: ' + h);
+        assert(!/sk-ant-oat/.test(h), 'VAZAMENTO: token da assinatura chegou ao endpoint');
+        assert(!/sk-ant-CHAVE/.test(h), 'VAZAMENTO: x-api-key da assinatura chegou ao endpoint');
+        assert(got.headers['x-tenant-id'] === 'acme', 'headers extras do mapa generico devem chegar');
+        assert(got.path === '/v1/messages', 'path deve ser /v1/messages, veio ' + got.path);
+        assert(/claude-haiku-4-5/.test(got.body), 'o model vai VERBATIM, sem mapeamento');
+        process.exit(0);
+      }, 900);
+    });
+  `;
+  const body = `const assert=(c,m)=>{if(!c){console.error('FAIL: '+m);process.exit(1)}};`
+    + `try{${script}}catch(e){console.error(e&&e.stack||e);process.exit(1)}`;
+  try {
+    require('child_process').execFileSync(process.execPath, ['-e', body], {
+      env: { ...process.env, CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-byok-')) },
+      stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000,
+    });
+  } catch (e) {
+    throw new Error((e.stderr && e.stderr.toString().trim()) || e.message);
+  }
+});
+
 // ─── TTL OBSERVADO: parar de adivinhar a janela do cache ─────────────────────
 // O `accumulateUsage` ja LE `ephemeral_1h_input_tokens` e `ephemeral_5m_input_tokens`
 // (a propria resposta da API declara qual janela foi CONTRATADA no write), mas isso
@@ -7661,6 +7861,107 @@ test('dashboard.writeRouterOverride writes the GLOBAL router config and preserve
       if (process.platform !== 'win32') {
         assertEq(fs.statSync(gp).mode & 0o777, 0o600);   // hardened after each write
       }
+    } finally {
+      process.env.CLAUDE_PLUGIN_DATA = saved;
+      delete require.cache[require.resolve('./dashboard.js')];
+    }
+  });
+});
+
+test('dashboard.writeRouterOverride: BYOK persiste url/modo/headers e PRESERVA os headers ao trocar so o modo', () => {
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-byok-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      const gp = path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json');
+      delete require.cache[require.resolve('./dashboard.js')];
+      const dash = require('./dashboard.js');
+
+      dash.writeRouterOverride({
+        byok: { enabled: true, mode: 'always', baseUrl: 'https://ex.ts.net', headers: { Authorization: 'Bearer T' } },
+      });
+      let out = JSON.parse(fs.readFileSync(gp, 'utf-8'));
+      assertEq(out.byok.enabled, true);
+      assertEq(out.byok.mode, 'always');
+      assertEq(out.byok.baseUrl, 'https://ex.ts.net');
+      assertEq(out.byok.headers.Authorization, 'Bearer T');
+
+      // Trocar SO o modo nao pode apagar a credencial ja gravada (mesma regra da
+      // chave NVIDIA: o dashboard nao reenvia segredo a cada toggle).
+      dash.writeRouterOverride({ byok: { mode: 'on-limit' } });
+      out = JSON.parse(fs.readFileSync(gp, 'utf-8'));
+      assertEq(out.byok.mode, 'on-limit');
+      assertEq(out.byok.headers.Authorization, 'Bearer T', 'os headers sobreviveram ao toggle');
+      assertEq(out.byok.baseUrl, 'https://ex.ts.net', 'e a baseUrl tambem');
+
+      // Limpeza EXPLICITA continua possivel (headers: null zera).
+      dash.writeRouterOverride({ byok: { headers: null } });
+      out = JSON.parse(fs.readFileSync(gp, 'utf-8'));
+      assertEq(Object.keys(out.byok.headers).length, 0, 'null zera de proposito');
+
+      if (process.platform !== 'win32') {
+        assertEq(fs.statSync(gp).mode & 0o777, 0o600, 'o arquivo guarda credencial: 0600');
+      }
+    } finally {
+      process.env.CLAUDE_PLUGIN_DATA = saved;
+      delete require.cache[require.resolve('./dashboard.js')];
+    }
+  });
+});
+
+test('byok.parseHeaderLines: "Nome: valor" por linha → mapa', () => {
+  const r = byok.parseHeaderLines('Authorization: Bearer abc123\nX-Tenant-Id: acme');
+  assertEq(r.headers.Authorization, 'Bearer abc123');
+  assertEq(r.headers['X-Tenant-Id'], 'acme');
+  assertEq(r.invalid.length, 0);
+});
+
+test('byok.parseHeaderLines: valor com ":" dentro (URL, Bearer) nao e cortado', () => {
+  const r = byok.parseHeaderLines('X-Origin: https://ex.net:8443/a');
+  assertEq(r.headers['X-Origin'], 'https://ex.net:8443/a', 'so o PRIMEIRO ":" separa');
+});
+
+test('byok.parseHeaderLines: linhas vazias e espacos sao tolerados', () => {
+  const r = byok.parseHeaderLines('\n  Authorization :  Bearer x  \n\n');
+  assertEq(r.headers.Authorization, 'Bearer x');
+  assertEq(r.invalid.length, 0);
+});
+
+test('byok.parseHeaderLines: linha SEM ":" e reportada (nao engolida em silencio)', () => {
+  const r = byok.parseHeaderLines('Authorization Bearer-sem-dois-pontos');
+  assertEq(Object.keys(r.headers).length, 0);
+  assertEq(r.invalid.length, 1, 'o usuario precisa saber que aquela linha nao virou header');
+});
+
+test('byok.parseHeaderLines: nome vazio ou valor vazio e invalido', () => {
+  assertEq(byok.parseHeaderLines(': valor').invalid.length, 1);
+  assertEq(byok.parseHeaderLines('Nome:').invalid.length, 1);
+});
+
+test('byok.formatHeaderLines: ida e volta preserva o mapa (round-trip)', () => {
+  const orig = { Authorization: 'Bearer abc', 'X-Tenant-Id': 'acme' };
+  const txt = byok.formatHeaderLines(orig);
+  assertEq(byok.parseHeaderLines(txt).headers.Authorization, 'Bearer abc');
+  assertEq(byok.parseHeaderLines(txt).headers['X-Tenant-Id'], 'acme');
+  assertEq(byok.formatHeaderLines(null), '', 'mapa ausente → texto vazio');
+});
+
+test('dashboard.resolveRouterFlags: expoe o byok EFETIVO (shipped + override)', () => {
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-byokflags-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      delete require.cache[require.resolve('./dashboard.js')];
+      const dash = require('./dashboard.js');
+      // Sem override: o shipped manda (enabled:false).
+      assertEq(dash.resolveRouterFlags().byok.enabled, false);
+      dash.writeRouterOverride({ byok: { enabled: true, mode: 'always', baseUrl: 'https://e.net' } });
+      const f = dash.resolveRouterFlags();
+      assertEq(f.byok.enabled, true);
+      assertEq(f.byok.mode, 'always');
+      assertEq(f.byok.baseUrl, 'https://e.net');
     } finally {
       process.env.CLAUDE_PLUGIN_DATA = saved;
       delete require.cache[require.resolve('./dashboard.js')];
