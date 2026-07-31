@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.20.4 — a janela do cache deixa de ser palpite: ela é declarada pela API, e agora é persistida</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. A v2.20.4 tira a janela do prompt cache do palpite: ela é declarada pela própria API e passa a ser persistida. Até aqui o detector de fronteira fria assumia cinco minutos, um valor que vinha do config e nunca de uma medição. A extração do binário do Claude Code, feita nesta sessão e não deduzida, mostra que a janela pode ser de uma hora e que a decisão não é do usuário: a função que resolve o TTL liga uma hora por variável de ambiente, por estado de overage da conta, ou por um feature-flag remoto da Anthropic com allowlist por querySource. Ou seja, a janela pode mudar sem aviso e sem que nada mude na máquina do usuário, e nenhuma inspeção local revelaria a mudança. A ironia que dá o fio da narrativa é que a prova já passava pelo proxy: o accumulateUsage lia ephemeral_5m_input_tokens e ephemeral_1h_input_tokens, campos em que a resposta declara a janela contratada em cada write, mas o dado apenas refinava um TTL interno e era descartado. Agora ele é persistido. Entra metrics.ttl com os contadores write5m, write1h e writeUnknown; um write sem detalhe de janela vai para writeUnknown, porque nunca se assume cinco minutos por omissão. Entra o veredito no snapshot: ttl.observed, que vale cinco minutos, uma hora, mixed, ou nulo quando não há prova; ttl.observedMs; e ttl.pct1h. Em mixed, porque a API permite misturar TTLs, o observedMs fica na janela mais longa, que é a leitura conservadora, já que subestimar a janela é exatamente o que classifica fronteira fria sobre cache vivo. A função ttlWindowMs faz a janela medida vencer o palpite do config, e o dashboard passa a exibir janela uma hora medida. A prova é o coração da release: com a janela medida em uma hora, uma sessão com cache quente aos dez e aos trinta minutos é corretamente classificada como warm, enquanto o palpite de cinco minutos declarava gap-expired nas duas, ou seja, fronteira fria sobre cache vivo; aos setenta minutos as duas leituras concordam que está frio. E não é hipotético: em campo, uma amostra classificada gap-expired tinha noventa e nove vírgula oito por cento do prompt servido do cache, e limpar ali destruiria cerca de cento e trinta mil tokens de cache já pago. As releases anteriores seguem na página: a v2.20.3 corrigiu um número impossível de quinhentos e noventa e quatro por cento, a v2.20.2 partiu a média da fronteira fria por motivo, a v2.20.1 deu tamanho à fronteira fria e a v2.20.0 instalou a régua do ciclo de cache. A lição desta versão: as anteriores trataram de sinais que mentiam; esta trata de um palpite disfarçado de medição, com o detector afirmando saber a janela sem nunca tê-la medido, e a medida disponível o tempo todo do outro lado da mesma resposta." />
+<title>claude-code-boss v2.21.0 — o proxy passa a falar com o seu endpoint, e a credencial da assinatura não vai junto</title>
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. A v2.21.0 abre o destino do proxy: ele passa a falar com um endpoint Anthropic-compatible seu, e não só com api.anthropic.com. Até aqui existia um override de upstream, mas era uma constante global lida no boot, com o próprio comentário do código declarando que ela existia só para testes; escolher o destino por request, que é o que separa &quot;direto no meu endpoint&quot; de &quot;só quando o Claude estourar&quot;, não era possível. Agora a decisão é por request, e o desenho central é que o plugin não conhece o provedor nem de onde veio o token: ele recebe uma Base URL e um mapa de headers pelo dashboard e anexa esses headers em toda request. Nada disso vive no código, então um endpoint que amanhã exija outro header — uma chave de gateway, um tenant id — é resolvido na configuração e não numa nova versão. A segurança é o coração da release. O authorization e o x-api-key que o Claude Code envia carregam o token da assinatura do usuário, e repassá-los a um endpoint de terceiro seria vazar a credencial. Na rota BYOK esses headers são removidos e valem apenas os configurados; na rota Anthropic a credencial segue, porque o destino é o dono dela. E isso não é promessa de comentário: há um teste ponta a ponta que sobe um endpoint falso, manda uma request com o token da assinatura no cabeçalho e falha se ele aparecer do outro lado. São dois modos, escolhidos no dashboard. Em on-limit, que é o padrão, o Claude atende normalmente e o endpoint entra no 429, antes do plano B da NVIDIA; se o endpoint também estiver no teto, a vez passa para a NVIDIA. Em always o endpoint atende tudo, sem depender da assinatura Claude. A NVIDIA continua disponível como terceira opção e nada foi removido: a cadeia é Claude, depois o endpoint, depois a NVIDIA, depois a mensagem. O contrato do endpoint impôs detalhes que estão registrados na página: o campo model vai verbatim, sem mapeamento, porque o endpoint normaliza os nomes sozinho (claude-haiku-4-5 vira claude-haiku-4.5) e erra alto no inexistente, e mapear aqui criaria uma segunda fonte de verdade para divergir — a ponto de existir um teste que proíbe a existência de um mapModel. Os status 401, 404 e 5xx, e um corpo com model is not supported, são fail-loud e não caem em silêncio para a NVIDIA, senão a credencial errada nunca é consertada; só o 429, que é teto por credencial, é tratado como retentável. E ligado sem Base URL não vira &quot;usa o Claude e ninguém vê&quot;: a request não é roteada e a causa é registrada. No caminho, um defeito foi corrigido: o cooldown do circuit breaker é sobre a janela da Anthropic, mas no modo always a Anthropic nem entra no caminho, e mesmo assim o breaker desviava a request para o plano B; quem encontrou foi o próprio teste de integração, que não recebia a request no endpoint falso. Na interface, um card BYOK no dashboard, em Model Router, com liga e desliga, seletor de modo, Base URL e headers, um por linha no formato Nome: valor. Uma linha inválida aborta o save com aviso em vez de gravar um mapa pela metade, a UI não reexibe os valores e mostra apenas os nomes mascarados, salvar com o campo em branco preserva o que já está gravado (mesma regra da chave NVIDIA), e o arquivo fica em modo 0600. As releases anteriores seguem na página: a v2.20.4 tirou a janela do prompt cache do palpite, a v2.20.3 corrigiu um número impossível de 594%, a v2.20.2 partiu a média da fronteira fria por motivo, a v2.20.1 deu tamanho à fronteira fria e a v2.20.0 instalou a régua do ciclo de cache. A diferença de espécie: aquelas mediram melhor o que já passava pelo proxy; esta decide o que não pode sair dele." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -2086,13 +2086,202 @@
   .ttl-foot b{ color:#a29f97 }
   .ttl-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
 
+  /* v2.21.0 : O PROXY DEIXA DE TER UM UNICO DESTINO POSSIVEL. Ate aqui o unico upstream era
+     `api.anthropic.com`: o override existia, mas era uma CONSTANTE GLOBAL lida no boot
+     (`process.env.ROUTER_UPSTREAM_HOST`), com o proprio comentario do codigo declarando que
+     existia "SO para testes". Escolher o destino POR REQUEST - que e o que separa "direto no
+     meu endpoint" de "so quando o Claude estourar" - nao era possivel. Agora `resolveUpstream`
+     decide a cada request, e o plugin NAO conhece o provedor: recebe do dashboard uma Base URL
+     e um MAPA de headers e anexa em toda request. Nada disso vive no codigo.
+     A SEGURANCA E O CORACAO DO ARTEFATO: o `authorization`/`x-api-key` que o Claude Code manda
+     carrega o token da ASSINATURA. Repassa-lo a um terceiro seria VAZAR a credencial. Na rota
+     BYOK esses headers sao REMOVIDOS e valem so os configurados - e ha um teste PONTA A PONTA
+     que sobe um endpoint falso e FALHA se o token aparecer do outro lado.
+     ASSINATURA: A MESMA REQUEST, DOIS DESTINOS. Todas as assinaturas anteriores desta pagina
+     foram REGUAS - a fita (tempo, v2.20.0), a coluna (pilha, v2.20.1), a regua da dispersao
+     (v2.20.2), o teto (v2.20.3), o vao das duas janelas (v2.20.4). Todas medem uma GRANDEZA.
+     Esta release nao e uma grandeza: e uma ROTA e o que viaja nela. Por isso o desenho nao e
+     uma regua - e o BLOCO DE HEADERS da request bifurcado em dois destinos, com o veredito
+     linha a linha. A credencial da assinatura sai RISCADA e HACHURADA na coluna do endpoint,
+     mantendo o significado que a pagina ja fixou para a hachura (`.snt-imposs`, `.ttl-span--guess`,
+     `.rsn-brow--rej`: o que NAO conta) - aqui, o que NAO sai da maquina.
+     RISCO ASSUMIDO - uma segunda cor: `--endp` (violeta) marca APENAS "destino que nao e a
+     Anthropic". Nao e arbitraria: `router-mode.js` ja atribui `color:'purple'` ao modo
+     `byok-direct` exatamente para nao confundir com os modos que falam com a Anthropic. Fica
+     ESCOPADA em `.byo` (nao vaza para o resto da pagina) e nao disputa com o ambar, que segue
+     sendo o unico portador de "o que a pagina afirma".
+     Peso de MINOR: cinco partes (as PATCH anteriores tinham quatro), assinatura em bloco cheio. */
+  .byo{ --endp:#9d8ae6; background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:880px; font-family:var(--mono); margin:0 0 36px }
+  .byo code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .byo-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .byo-bar .k{ color:var(--accent) }
+  .byo-bar .m{ color:#8a877f }
+
+  .byo-part{ padding:18px 22px 12px }
+  .byo-part + .byo-part{ border-top:1px solid rgba(255,255,255,.06) }
+  .byo-tag{ display:block; font-size:9px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); margin:0 0 14px }
+  /* identificador nunca vira caixa-alta: `resolveUpstream` sai verbatim */
+  .byo-tag code{ text-transform:none; letter-spacing:0 }
+  .byo-note{ margin:0; font-size:11px; line-height:1.6; color:#8a877f }
+  .byo-note + .byo-note{ margin-top:9px }
+  .byo-note b{ color:#a29f97; font-weight:600 }
+
+  /* o destino como ele era: uma constante de modulo, verbatim do proxy */
+  .byo-src{ border-left:2px solid var(--accent); background:rgba(255,255,255,.05); border-radius:0 6px 6px 0;
+    padding:11px 14px; margin:0 0 14px; max-width:660px }
+  .byo-srck{ display:block; font-size:9px; letter-spacing:.13em; text-transform:uppercase; color:var(--accent); margin:0 0 9px }
+  .byo-srcv{ margin:0; font-family:var(--mono); font-size:10.5px; line-height:1.75; color:#a29f97;
+    white-space:pre; overflow-x:auto }
+  .byo-srcv:focus-visible{ outline:2px solid var(--accent); outline-offset:3px; border-radius:3px }
+  .byo-srcv b{ color:var(--panel-ink); font-weight:600 }
+  .byo-srcv i{ color:var(--accent); font-style:normal; font-weight:700 }
+
+  /* a virada: constante global no boot -> decisao por request */
+  .byo-shift{ border:1px solid var(--panel-line); border-radius:10px; overflow:hidden; margin:0 0 13px; max-width:660px }
+  .byo-srow{ display:grid; grid-template-columns:minmax(0,54px) minmax(0,1fr); gap:5px 12px;
+    align-items:baseline; padding:12px 13px; min-width:0 }
+  .byo-srow + .byo-srow{ border-top:1px solid rgba(255,255,255,.07) }
+  .byo-srow--now{ background:rgba(255,255,255,.05) }
+  .byo-sk{ font-size:9px; letter-spacing:.13em; text-transform:uppercase; color:#6d6257 }
+  .byo-srow--now .byo-sk{ color:var(--accent) }
+  .byo-sv{ display:block; font-size:11.5px; line-height:1.85; color:#a29f97; overflow-wrap:break-word }
+  .byo-srow--now .byo-sv{ color:var(--panel-ink) }
+  .byo-swhy{ display:block; margin-top:7px; font-size:10.5px; line-height:1.55; color:#8a877f }
+  .byo-swhy b{ color:#a29f97; font-weight:600 }
+  .byo-only{ display:inline-block; font-size:10px; letter-spacing:.06em; padding:1px 7px; border-radius:5px; color:#a29f97;
+    border:1px dashed rgba(255,255,255,.26);
+    background:repeating-linear-gradient(135deg,rgba(255,255,255,.07) 0 4px,transparent 4px 9px) }
+
+  /* ASSINATURA: a request que entra - o bloco de headers como ele chega do Claude Code */
+  .byo-in{ border-left:2px solid var(--accent); background:rgba(255,255,255,.05); border-radius:0 8px 8px 0;
+    padding:12px 15px; margin:0 0 13px; max-width:660px }
+  .byo-ink{ display:block; font-size:9px; letter-spacing:.13em; text-transform:uppercase; color:var(--accent); margin:0 0 9px }
+  .byo-inl{ display:block; font-size:11px; line-height:1.9; color:#8a877f; overflow-wrap:anywhere }
+  .byo-inl b{ color:var(--panel-ink); font-weight:600 }
+  /* a credencial da assinatura marcada ja na entrada: e ela que o desenho persegue */
+  .byo-inl i{ color:var(--accent); font-style:normal; font-weight:700 }
+
+  .byo-split{ display:flex; align-items:center; gap:12px; margin:0 0 13px;
+    font-size:9px; letter-spacing:.12em; text-transform:uppercase; color:#6d6257 }
+  .byo-split::before,.byo-split::after{ content:""; flex:1; height:1px; background:rgba(255,255,255,.12) }
+  .byo-split code{ text-transform:none; letter-spacing:0; font-size:10px; white-space:nowrap }
+
+  /* as duas rotas NAO tem a mesma altura de proposito: a do endpoint PERDE as linhas da
+     assinatura e GANHA as suas. Deixar os cartoes crescerem so ate o proprio conteudo evita
+     um vao morto no cartao mais curto - a assimetria e a informacao, o buraco nao era */
+  .byo-routes{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; align-items:start; margin:0 0 11px }
+  .byo-route{ display:flex; flex-direction:column; border:1px solid var(--panel-line); border-radius:10px; overflow:hidden; min-width:0 }
+  /* violeta APENAS aqui: marca "destino que nao e a Anthropic", como o proprio router-mode faz */
+  .byo-route--endp{ border-color:rgba(157,138,230,.45) }
+  .byo-rhead{ padding:11px 12px; border-bottom:1px solid rgba(255,255,255,.09); background:rgba(255,255,255,.03) }
+  .byo-rdest{ display:block; font-size:8.5px; letter-spacing:.13em; text-transform:uppercase; color:#6d6257; margin:0 0 6px }
+  .byo-route--endp .byo-rdest{ color:var(--endp) }
+  .byo-rhost{ display:block; font-size:11.5px; color:var(--panel-ink); overflow-wrap:anywhere }
+  .byo-hrow{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:5px 10px; align-items:baseline; padding:8px 12px; min-width:0 }
+  .byo-hrow + .byo-hrow{ border-top:1px solid rgba(255,255,255,.06) }
+  /* o que NAO sai da maquina usa a hachura que esta pagina ja reservou para "o que nao conta" */
+  .byo-hrow--out{ background:repeating-linear-gradient(135deg,rgba(255,255,255,.07) 0 4px,transparent 4px 9px) }
+  .byo-hk{ font-size:11px; line-height:1.55; color:var(--panel-ink); overflow-wrap:anywhere; min-width:0 }
+  .byo-hk em{ font-style:normal; color:#6d6257 }
+  .byo-hrow--out .byo-hk{ color:#6d6257; text-decoration:line-through; text-decoration-thickness:1px }
+  .byo-hrow--add .byo-hk{ color:var(--panel-ink) }
+  .byo-hrow--add .byo-hk em{ color:#8a877f }
+  .byo-v{ justify-self:start; font-size:8.5px; letter-spacing:.11em; text-transform:uppercase;
+    white-space:nowrap; border-radius:5px; padding:3px 8px }
+  .byo-v--keep{ background:var(--accent); color:var(--panel); font-weight:700 }
+  .byo-v--proto{ color:#6d6257; border:1px solid rgba(255,255,255,.15) }
+  .byo-v--out{ color:#a29f97; font-weight:700; border:1px dashed rgba(255,255,255,.34) }
+  .byo-v--add{ color:var(--accent); font-weight:700; border:1px solid var(--accent) }
+  /* o "porque" ancora no rodape do cartao */
+  .byo-rwhy{ display:block; margin-top:auto; padding:10px 12px; border-top:1px solid rgba(255,255,255,.09);
+    font-size:10px; line-height:1.55; color:#8a877f }
+  .byo-rwhy b{ color:#a29f97; font-weight:600 }
+  .byo-cap{ margin:0 0 13px; font-size:8.5px; letter-spacing:.11em; text-transform:uppercase; color:#6d6257; line-height:1.7 }
+
+  /* a prova ponta a ponta: nao e comentario, e um teste que sabe falhar */
+  .byo-proof{ display:grid; grid-template-columns:auto minmax(0,1fr); gap:9px 14px; align-items:start;
+    border-left:2px solid var(--accent); background:rgba(255,255,255,.05); border-radius:0 8px 8px 0;
+    padding:13px 15px; margin:0 0 12px; max-width:660px }
+  .byo-ptag{ align-self:start; font-size:9px; letter-spacing:.12em; text-transform:uppercase;
+    background:var(--accent); color:var(--panel); font-weight:700; border-radius:6px; padding:4px 9px; white-space:nowrap }
+  .byo-pbody{ min-width:0; font-size:11.5px; line-height:1.65; color:var(--panel-ink); overflow-wrap:break-word }
+  .byo-pbody b{ font-weight:700 }
+  .byo-pbody i{ color:var(--accent); font-style:normal; font-weight:700 }
+  .byo-pbody span{ display:block; margin-top:7px; font-size:10.5px; line-height:1.55; color:#8a877f }
+  .byo-pbody span b{ color:#a29f97; font-weight:600 }
+
+  /* a cadeia: ordem CARREGA informacao aqui - quem tenta primeiro decide quem paga a conta */
+  .byo-chain{ display:flex; flex-wrap:wrap; align-items:center; gap:9px 5px; margin:0 0 13px }
+  .byo-node{ font-size:10.5px; border:1px solid rgba(255,255,255,.18); border-radius:7px;
+    padding:6px 11px; color:#a29f97; white-space:nowrap }
+  .byo-node--endp{ border-color:var(--endp); color:var(--panel-ink) }
+  .byo-node--last{ border-style:dashed; border-color:rgba(255,255,255,.22); color:#6d6257 }
+  .byo-arr{ font-size:8.5px; letter-spacing:.11em; text-transform:uppercase; color:#6d6257; white-space:nowrap; padding:0 3px }
+  .byo-arr b{ color:var(--accent); font-weight:700; letter-spacing:0; font-size:10px }
+  .byo-arr::after{ content:" →"; color:rgba(255,255,255,.3) }
+
+  .byo-modes{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; margin:0 0 13px }
+  .byo-mode{ border-left:1px solid rgba(255,255,255,.12); padding:1px 0 1px 12px; min-width:0 }
+  .byo-mode--endp{ border-left-color:var(--endp) }
+  .byo-mode b{ display:block; font-size:11px; color:var(--panel-ink); font-weight:600; overflow-wrap:break-word }
+  .byo-mode b em{ font-style:normal; font-size:8.5px; letter-spacing:.11em; text-transform:uppercase; color:#6d6257; margin-left:8px }
+  .byo-mode span{ display:block; margin-top:6px; font-size:10.5px; line-height:1.55; color:#8a877f }
+  .byo-mode span b{ display:inline; font-size:inherit; color:#a29f97 }
+
+  /* o contrato do endpoint: cada regra com o motivo do lado, e a etiqueta de quem a PROVA */
+  .byo-rules{ border:1px solid var(--panel-line); border-radius:10px; overflow:hidden; margin:0 0 13px; max-width:660px }
+  .byo-rule{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:6px 12px; align-items:baseline; padding:11px 13px; min-width:0 }
+  .byo-rule + .byo-rule{ border-top:1px solid rgba(255,255,255,.07) }
+  .byo-rk{ font-size:11.5px; line-height:1.55; color:var(--panel-ink); overflow-wrap:break-word; min-width:0 }
+  .byo-rk i{ color:var(--accent); font-style:normal; font-weight:700 }
+  .byo-rk span{ display:block; margin-top:5px; font-size:10.5px; line-height:1.5; color:#8a877f }
+  .byo-rk span b{ color:#a29f97; font-weight:600 }
+  .byo-rt{ justify-self:start; font-size:9px; letter-spacing:.12em; text-transform:uppercase; white-space:nowrap; color:#6d6257 }
+  /* identificador nunca vira caixa-alta: `mapModel` sai verbatim mesmo dentro da etiqueta */
+  .byo-rt code{ text-transform:none; letter-spacing:0 }
+  .byo-rt--test{ color:var(--accent); border:1px solid var(--accent); border-radius:5px; padding:3px 8px }
+
+  /* o portao das respostas: so o 429 e retentavel - o resto GRITA */
+  .byo-gate{ border:1px solid var(--panel-line); border-radius:10px; overflow:hidden; margin:0 0 13px; max-width:660px }
+  .byo-grow{ display:grid; grid-template-columns:minmax(0,90px) minmax(0,1fr); gap:6px 12px; align-items:baseline; padding:12px 13px; min-width:0 }
+  .byo-grow + .byo-grow{ border-top:1px solid rgba(255,255,255,.07) }
+  .byo-grow--retry{ background:rgba(255,255,255,.05) }
+  .byo-gk{ font-size:9px; letter-spacing:.12em; text-transform:uppercase; color:#6d6257 }
+  .byo-grow--retry .byo-gk{ color:var(--accent) }
+  .byo-gv{ min-width:0; font-size:11px; line-height:1.7; color:#a29f97; overflow-wrap:break-word }
+  .byo-gv b{ color:var(--panel-ink); font-weight:600 }
+  .byo-gv span{ display:block; margin-top:6px; font-size:10.5px; line-height:1.55; color:#8a877f }
+
+  /* o card do dashboard: os campos como eles aparecem para quem configura */
+  .byo-fields{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin:0 0 13px; max-width:660px }
+  .byo-field{ border:1px solid var(--panel-line); border-radius:8px; padding:11px 12px; min-width:0 }
+  .byo-fk{ display:block; font-size:8.5px; letter-spacing:.12em; text-transform:uppercase; color:#6d6257; margin:0 0 7px }
+  .byo-fv{ display:block; font-size:11px; line-height:1.65; color:var(--panel-ink); overflow-wrap:anywhere }
+  .byo-fv em{ font-style:normal; color:#8a877f }
+  .byo-fv i{ color:var(--accent); font-style:normal; font-weight:700 }
+
+  /* o defeito que o proprio teste de integracao achou */
+  .byo-bug{ border-left:2px solid var(--accent); background:rgba(255,255,255,.05); border-radius:0 8px 8px 0;
+    padding:13px 15px; margin:0 0 12px; max-width:660px }
+  .byo-bk{ display:block; font-size:9px; letter-spacing:.13em; text-transform:uppercase; color:var(--accent); margin:0 0 9px }
+  .byo-bv{ display:block; font-size:11.5px; line-height:1.65; color:var(--panel-ink); overflow-wrap:break-word }
+  .byo-bv b{ font-weight:700 }
+  .byo-bv span{ display:block; margin-top:7px; font-size:10.5px; line-height:1.55; color:#8a877f }
+  .byo-bv span b{ color:#a29f97; font-weight:600 }
+
+  .byo-foot{ padding:14px 22px; border-top:1px solid var(--panel-line); font-size:11px; line-height:1.6; color:#8a877f }
+  .byo-foot b{ color:#a29f97 }
+  .byo-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+
   footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
   footer a{ color:var(--muted); text-decoration:none }
   footer a:hover{ color:var(--accent) }
   .frow{ display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between }
   .flinks a{ margin-right:16px }
 
-  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .rr-stage{ grid-template-columns:1fr } .rr-rails{ grid-template-columns:1fr } .rr-steps{ flex-direction:column; align-items:stretch } .an-stage{ grid-template-columns:1fr } .an-rails{ grid-template-columns:1fr } .an-steps{ flex-direction:column; align-items:stretch } .id-row{ grid-template-columns:1fr; gap:9px } .id-arrow{ display:none } .id-chip{ text-align:left; min-width:0 } .id-fork{ grid-template-columns:1fr } .id-rails{ grid-template-columns:1fr } .eco-hero{ grid-template-columns:1fr } .eco-fork{ grid-template-columns:1fr } .eco-rails{ grid-template-columns:1fr } .mig-flow{ grid-template-columns:1fr } .mig-cross{ min-width:0 } .mig-cline{ width:60% } .mig-guards{ grid-template-columns:1fr } .ctx-row{ grid-template-columns:1fr; gap:9px } .ctx-sp{ display:none } .ctx-rval{ text-align:left } .ctx-fork{ grid-template-columns:1fr } .ctx-fields{ grid-template-columns:1fr } .fld-cols{ grid-template-columns:1fr; gap:14px } .fld-arms{ grid-template-columns:1fr } .cyc-fronts{ grid-template-columns:1fr } .cyc-fork{ grid-template-columns:1fr } .cyc-or{ grid-template-columns:1fr; gap:10px } .cyc-orop{ text-align:left } .cyc-fields{ grid-template-columns:1fr } .cyc-trow{ grid-template-columns:1fr; gap:3px; padding:11px 0 } .cyc-tarr{ display:none } .cyc-track{ padding:0 22px } .cyc-marks{ height:36px } .cyc-marks .cyc-mark{ width:48px; margin-left:-24px; gap:4px } .cyc-marks .cyc-mev{ display:none } .cyc-marks .cyc-mst{ font-size:10.5px } .cyc-seam{ top:24px } .cyc-zone{ font-size:8px; letter-spacing:.04em; padding:0 2px } .cyc-seamlab{ font-size:8px; letter-spacing:.08em } .scl-lines{ max-width:none } .scl-line{ grid-template-columns:1fr; gap:3px } .scl-fields{ grid-template-columns:1fr } .scl-cbody{ grid-template-columns:1fr; gap:3px } .scl-gate{ grid-template-columns:1fr } .rsn-ruler{ max-width:none } .rsn-bar{ align-items:flex-start } .rsn-rail{ height:92px } .rsn-avglab{ white-space:normal; width:104px; text-align:center; top:-32px } .rsn-pops{ grid-template-columns:1fr } .rsn-brow{ grid-template-columns:1fr; gap:3px } .rsn-read{ grid-template-columns:1fr; gap:3px } .rsn-fork{ grid-template-columns:1fr } .rsn-guards{ grid-template-columns:1fr } .snt-bar{ align-items:flex-start } .snt-scale{ max-width:none } .snt-row{ grid-template-columns:1fr; gap:5px } .snt-zones{ grid-template-columns:52% 1fr } .snt-eqrow{ grid-template-columns:1fr; gap:3px } .snt-fields{ grid-template-columns:1fr } .snt-trow{ grid-template-columns:1fr; gap:3px } .snt-verd{ grid-template-columns:1fr } .ttl-bar{ align-items:flex-start } .ttl-rung{ grid-template-columns:1fr; gap:6px } .ttl-stage{ max-width:none } .ttl-axis{ padding:0 22px; letter-spacing:.08em } .ttl-frame{ padding:0 22px } .ttl-cap{ padding:0 22px } .ttl-edge{ font-size:9.5px } .ttl-vd{ font-size:8.5px; padding:4px 7px; letter-spacing:.06em } .ttl-real{ grid-template-columns:1fr } .ttl-prow{ grid-template-columns:1fr; gap:3px } .ttl-buckets{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
+  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .rr-stage{ grid-template-columns:1fr } .rr-rails{ grid-template-columns:1fr } .rr-steps{ flex-direction:column; align-items:stretch } .an-stage{ grid-template-columns:1fr } .an-rails{ grid-template-columns:1fr } .an-steps{ flex-direction:column; align-items:stretch } .id-row{ grid-template-columns:1fr; gap:9px } .id-arrow{ display:none } .id-chip{ text-align:left; min-width:0 } .id-fork{ grid-template-columns:1fr } .id-rails{ grid-template-columns:1fr } .eco-hero{ grid-template-columns:1fr } .eco-fork{ grid-template-columns:1fr } .eco-rails{ grid-template-columns:1fr } .mig-flow{ grid-template-columns:1fr } .mig-cross{ min-width:0 } .mig-cline{ width:60% } .mig-guards{ grid-template-columns:1fr } .ctx-row{ grid-template-columns:1fr; gap:9px } .ctx-sp{ display:none } .ctx-rval{ text-align:left } .ctx-fork{ grid-template-columns:1fr } .ctx-fields{ grid-template-columns:1fr } .fld-cols{ grid-template-columns:1fr; gap:14px } .fld-arms{ grid-template-columns:1fr } .cyc-fronts{ grid-template-columns:1fr } .cyc-fork{ grid-template-columns:1fr } .cyc-or{ grid-template-columns:1fr; gap:10px } .cyc-orop{ text-align:left } .cyc-fields{ grid-template-columns:1fr } .cyc-trow{ grid-template-columns:1fr; gap:3px; padding:11px 0 } .cyc-tarr{ display:none } .cyc-track{ padding:0 22px } .cyc-marks{ height:36px } .cyc-marks .cyc-mark{ width:48px; margin-left:-24px; gap:4px } .cyc-marks .cyc-mev{ display:none } .cyc-marks .cyc-mst{ font-size:10.5px } .cyc-seam{ top:24px } .cyc-zone{ font-size:8px; letter-spacing:.04em; padding:0 2px } .cyc-seamlab{ font-size:8px; letter-spacing:.08em } .scl-lines{ max-width:none } .scl-line{ grid-template-columns:1fr; gap:3px } .scl-fields{ grid-template-columns:1fr } .scl-cbody{ grid-template-columns:1fr; gap:3px } .scl-gate{ grid-template-columns:1fr } .rsn-ruler{ max-width:none } .rsn-bar{ align-items:flex-start } .rsn-rail{ height:92px } .rsn-avglab{ white-space:normal; width:104px; text-align:center; top:-32px } .rsn-pops{ grid-template-columns:1fr } .rsn-brow{ grid-template-columns:1fr; gap:3px } .rsn-read{ grid-template-columns:1fr; gap:3px } .rsn-fork{ grid-template-columns:1fr } .rsn-guards{ grid-template-columns:1fr } .snt-bar{ align-items:flex-start } .snt-scale{ max-width:none } .snt-row{ grid-template-columns:1fr; gap:5px } .snt-zones{ grid-template-columns:52% 1fr } .snt-eqrow{ grid-template-columns:1fr; gap:3px } .snt-fields{ grid-template-columns:1fr } .snt-trow{ grid-template-columns:1fr; gap:3px } .snt-verd{ grid-template-columns:1fr } .ttl-bar{ align-items:flex-start } .ttl-rung{ grid-template-columns:1fr; gap:6px } .ttl-stage{ max-width:none } .ttl-axis{ padding:0 22px; letter-spacing:.08em } .ttl-frame{ padding:0 22px } .ttl-cap{ padding:0 22px } .ttl-edge{ font-size:9.5px } .ttl-vd{ font-size:8.5px; padding:4px 7px; letter-spacing:.06em } .ttl-real{ grid-template-columns:1fr } .ttl-prow{ grid-template-columns:1fr; gap:3px } .ttl-buckets{ grid-template-columns:1fr } .byo-bar{ align-items:flex-start } .byo-srow{ grid-template-columns:1fr; gap:3px } .byo-routes{ grid-template-columns:1fr } .byo-hrow{ grid-template-columns:1fr; gap:5px } .byo-proof{ grid-template-columns:1fr } .byo-modes{ grid-template-columns:1fr } .byo-rule{ grid-template-columns:1fr; gap:6px } .byo-grow{ grid-template-columns:1fr; gap:3px } .byo-fields{ grid-template-columns:1fr } .byo-split code{ white-space:normal } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
   @media (prefers-reduced-motion:reduce){ .caret{ animation:none } .reveal{ opacity:1 !important; transform:none !important } }
   /* eixo estreito: os chips de veredito ficam a 26,7% de distancia um do outro - encolhe o chip, nao a informacao */
   @media (max-width:430px){ .ttl-vd{ padding:3px 6px; letter-spacing:.03em } }
@@ -2105,7 +2294,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.20.4</span>
+    <span class="ver">v2.21.0</span>
   </nav>
 
   <header class="hero">
@@ -2208,11 +2397,237 @@
         <p>O <b>model-router</b> é opt-in e cobre o que o cliente não cobre: quando a janela de acesso esgota (<code>429</code>), o plano B mantém a sessão de pé; o modo <b>sticky</b> fixa o tier uma vez por sessão para não quebrar o prompt cache. O preço agora está medido e declarado: ligar o roteamento em <b>qualquer</b> modo diferente de <code>off</code> publica <code>ANTHROPIC_BASE_URL</code>, e o Claude Code, atrás de uma base_url que não é a oficial, orça a sessão em <b>200K</b> mesmo nos modelos de 1M. Quer a economia de token sem esse custo? <code>contextTuning</code> entrega o mesmo ganho de env com o roteador em <code>off</code>, preservando a janela de <b>1M</b>.</p>
       </div>
       <div class="cell" style="grid-column:1/-1">
+        <p class="kick">Seu endpoint (BYOK)</p>
+        <h3>Você escolhe o destino — a credencial da assinatura não vai junto</h3>
+        <p>O proxy fala com um <b>endpoint Anthropic-compatible seu</b>, e não só com <code>api.anthropic.com</code>. O plugin <b>não conhece o provedor</b> nem de onde veio o token: você cola a <b>Base URL</b> e um <b>mapa de headers</b> no dashboard, e ele anexa em toda request — se o endpoint amanhã exigir outro header (chave de gateway, tenant id), muda a <b>config</b>, não o código. Dois modos: <code>on-limit</code> (padrão) mantém o Claude atendendo e chama o endpoint no <code>429</code>, <b>antes</b> da NVIDIA; <code>always</code> serve tudo pelo endpoint, sem depender da assinatura. A NVIDIA <b>continua</b> como terceira opção. <b>O ponto que mais importa:</b> o <code>authorization</code>/<code>x-api-key</code> que o Claude Code envia carrega o token da <b>sua assinatura</b> — na rota BYOK ele é <b>removido</b>, e só vão os headers que você configurou. Um teste <b>ponta a ponta</b> sobe um endpoint falso e <b>falha</b> se o token aparecer do outro lado. Erro de configuração <b>grita</b> (<code>401</code>/<code>404</code>/<code>5xx</code> não caem em silêncio para a NVIDIA); só o <code>429</code> cede a vez.</p>
+      </div>
+      <div class="cell" style="grid-column:1/-1">
         <p class="kick">Políticas</p>
         <h3>Constraints que você ativa</h3>
         <p>Ative constraints explicitamente com <code>policy_activate</code>, nunca auto-promovidas de lições: o <code>error-guard</code> nega no <code>PreToolUse</code> um Bash cuja falha reincide, políticas <b>always-apply</b> entram no contexto no início da sessão, e políticas <b>por glob</b> avisam ao editar um arquivo que casa o padrão. <b>Surfacing ≠ enforcement</b>: ficam presentes no contexto, não bloqueiam (exceto o <code>error-guard</code>). A Fase 3 agora fecha o ciclo: modo sombra mede, e <code>/policy-adjudicate</code> chama um <b>juiz LLM independente</b> para estimar disposições — estimativa de juiz, <b>não FP medido</b>.</p>
       </div>
     </div>
+  </section>
+
+
+  <section>
+    <p class="label">Novo na v2.21.0 · o seu endpoint</p>
+    <p class="lede">Até aqui o proxy só sabia falar com <b>um</b> destino: <code>api.anthropic.com</code>. Existia um override de upstream, mas era uma <b>constante global lida no boot</b> — e o próprio comentário ao lado dela declarava o escopo: <i>só para testes</i>. Escolher o destino <b>por request</b> — que é exatamente o que separa “direto no meu endpoint” de “só quando o Claude estourar” — não era possível. A v2.21.0 abre o destino: o proxy passa a falar com um <b>endpoint Anthropic-compatible seu</b>, e o plugin <b>não conhece o provedor</b> nem de onde veio o token. Ele recebe uma <b>Base URL</b> e um <b>mapa de headers</b> pelo dashboard e anexa em toda request. Nada disso vive no código — se o endpoint amanhã exigir outro header, muda a <b>config</b>, não a versão do plugin.</p>
+
+    <div class="callout">
+      <span class="tag">a credencial da assinatura não atravessa</span>
+      O <code>authorization</code>/<code>x-api-key</code> que o Claude Code envia carrega o token da <b>sua assinatura</b>. Repassá-lo a um endpoint de terceiro seria <b>vazar a credencial</b> — e é o tipo de vazamento que ninguém percebe, porque a request <b>funciona</b>. Na rota BYOK esses headers são <b>removidos</b>: valem só os que você configurou. E isso não é uma promessa escrita num comentário — há um teste <b>ponta a ponta</b> que sobe um endpoint falso, manda a request com o token da assinatura no cabeçalho e <b>falha</b> se ele aparecer do outro lado. As releases anteriores desta página mediram melhor o que <b>já passava</b> pelo proxy; esta decide <b>o que não pode sair</b> dele.
+    </div>
+
+    <div class="byo" role="group" aria-label="Artefato da versão 2.21.0: a mesma request, dois destinos. A primeira parte mostra o destino como ele era. Um trecho verbatim do proxy traz o comentário e a constante: o upstream Anthropic, com override via variável de ambiente existindo só para testes, e a constante UPSTREAM_HOST resolvida a partir de ROUTER_UPSTREAM_HOST ou, na falta dela, api.anthropic.com. Duas linhas registram a virada. Antes: uma constante global avaliada uma única vez no carregamento do módulo, com uma etiqueta hachurada dizendo só para testes; todo request do processo herdava o mesmo destino, e não havia como uma request ir para um lugar e a seguinte para outro. Agora: resolveUpstream recebe a config e a informação de se estamos no caminho do 429, e decide o destino por request; é isso que permite que always e on-limit sejam modos de verdade em vez de duas builds diferentes. A segunda parte é a assinatura e o coração da release: a mesma request, dois destinos, e o que atravessa cada um. No topo, o bloco de headers como ele chega do Claude Code, com authorization e x-api-key carregando o token da assinatura do usuário, mais anthropic-version, anthropic-beta e o campo model no corpo. Uma linha divisória marca a bifurcação em resolveUpstream. Abaixo, dois cartões lado a lado. O da esquerda é a rota Anthropic, destino api.anthropic.com porta 443: authorization segue, x-api-key segue, ambos com etiqueta âmbar cheia de segue; os headers de protocolo e o content-type seguem; o model vai verbatim. A justificativa no rodapé do cartão: a credencial segue porque o destino é o dono dela, o comportamento anterior é preservado e há teste para garantir que não regride. O cartão da direita é a rota do seu endpoint, com borda violeta para marcar um destino que não é a Anthropic, e host de exemplo https://exemplo.ts.net. Nele, as duas primeiras linhas, authorization e x-api-key, aparecem riscadas e hachuradas, com etiqueta tracejada de removido: hachura, nesta página, é o que não conta, e aqui significa o que não sai da máquina. Os headers de protocolo e o content-type seguem, o model vai verbatim, e duas linhas novas aparecem em âmbar vazado, marcadas como suas: um header Authorization com valor Bearer reticências e um X-Tenant-Id, que são os headers configurados no dashboard. A justificativa no rodapé: a credencial da assinatura não sai da máquina, e valem só os headers configurados, um mapa genérico e não um campo token. Uma legenda declara o código de cores: riscado e hachurado é o que não sai da máquina, âmbar cheio é a credencial que segue porque o destino é o dono dela, âmbar vazado é header seu anexado, e violeta marca o destino que não é a Anthropic. Em seguida, o bloco de prova ponta a ponta: um endpoint falso sobe em 127.0.0.1, a request atravessa o proxy com o token da assinatura no cabeçalho, e o teste inspeciona o que o endpoint realmente recebeu; se o authorization ou o x-api-key da assinatura aparecerem do outro lado, o teste falha com a palavra vazamento. O mesmo teste também confere o que deve chegar: os headers do mapa genérico, o path barra v1 barra messages, e o model verbatim no corpo. A terceira parte desenha a cadeia de atendimento, onde a ordem carrega informação: Claude, com a sua assinatura; no 429, o seu endpoint; no 429 do endpoint, a NVIDIA NIM; e sem chave, a mensagem. Dois modos são descritos. O modo on-limit, que é o padrão: o Claude atende normalmente e o endpoint entra no 429, antes do plano B da NVIDIA, porque serve os mesmos modelos Claude e é a substituição mais fiel; se o endpoint também estiver no teto, a vez passa para a NVIDIA. O modo always: toda request vai ao seu endpoint, sem depender da assinatura Claude, e é nele que a Anthropic não entra no caminho. Uma nota registra que a NVIDIA continua disponível como terceira opção e que nada foi removido. A quarta parte é o contrato do endpoint, em três regras. Primeira: o campo model vai verbatim, sem mapeamento, porque o endpoint normaliza os nomes sozinho, transformando claude-haiku-4-5 em claude-haiku-4.5, e erra alto no inexistente; mapear aqui criaria uma segunda fonte de verdade para divergir, e a regra é guardada por um teste que proíbe a existência de um mapModel. Segunda: headers como mapa genérico e não um campo token, para que um endpoint que passe a exigir outro header seja resolvido na config e não no código. Terceira: ligado sem Base URL não vira usa o Claude e ninguém vê; a request não é roteada e a causa fica registrada. Logo abaixo, o portão das respostas em duas faixas. A faixa grita: 401, 404, 5xx e um corpo com model is not supported não caem em silêncio para a NVIDIA, porque erro de configuração precisa aparecer, senão a credencial errada nunca é consertada. A faixa cede a vez, destacada: só o 429, que é teto por credencial e não erro de config, é retentável, e aí sim a vez passa para a NVIDIA. A quinta parte mostra o card do dashboard e o defeito achado no caminho. Quatro campos: liga e desliga, opt-in e desligado por padrão; modo, com on-limit destacado como padrão e always como alternativa; Base URL, com o aviso de que o path é ignorado porque o proxy sempre chama barra v1 barra messages; e headers, um por linha, no formato Nome dois pontos valor. Duas garantias da interface: uma linha de header inválida aborta o save com aviso em vez de gravar um mapa pela metade, e só o primeiro dois-pontos separa, porque valores legitimamente contêm dois-pontos; e a UI não reexibe os valores, mostrando os nomes mascarados, com o save em branco preservando o que já está gravado, na mesma regra da chave NVIDIA, e o arquivo em modo 0600, nunca commitado. Por fim, o defeito corrigido no caminho: o cooldown do circuit breaker é sobre a janela da Anthropic, mas no modo always a Anthropic nem entra no caminho, e mesmo assim o breaker desviava a request para o plano B; quem encontrou foi o próprio teste de integração, que simplesmente não recebia a request no endpoint falso. O destino passou a ser resolvido antes do cooldown, e o breaker só se aplica quando o destino é a Anthropic. No rodapé, a lição: o plugin não passou a saber nada sobre o seu provedor, ele sabe para onde mandar e o que anexar, e as duas coisas vêm da config e não do código; o que ele passou a garantir é o inverso, que a credencial da sua assinatura não atravessa para um destino que não é o dono dela.">
+      <div class="byo-bar">
+        <span class="k">v2.21.0</span>
+        <span class="m">um destino a mais · e uma credencial a menos no fio</span>
+      </div>
+
+      <div class="byo-part">
+        <span class="byo-tag">o destino era uma constante · lida uma vez, no boot</span>
+
+        <div class="byo-src">
+          <span class="byo-srck">o upstream, antes · verbatim do proxy</span>
+          <pre class="byo-srcv" tabindex="0" role="region" aria-label="Trecho do proxy com a constante de upstream anterior (rolagem horizontal)">// Upstream Anthropic. Override via env existe <i>SÓ para testes</i>; produção usa
+// api.anthropic.com:443 (https) — comportamento idêntico ao anterior.
+const <b>UPSTREAM_HOST</b> = process.env.ROUTER_UPSTREAM_HOST || <b>'api.anthropic.com'</b>;</pre>
+        </div>
+
+        <div class="byo-shift">
+          <div class="byo-srow">
+            <span class="byo-sk">antes</span>
+            <span class="byo-sv">uma constante <b>global</b>, avaliada no carregamento do módulo <span class="byo-only">só para testes</span>
+              <span class="byo-swhy">Um <code>process.env</code> resolvido <b>uma única vez</b>. Todo request do processo herda o <b>mesmo</b> destino, e o comentário ao lado já declarava para que aquilo servia. Não havia como uma request ir para um lugar e a seguinte para outro.</span>
+            </span>
+          </div>
+          <div class="byo-srow byo-srow--now">
+            <span class="byo-sk">agora</span>
+            <span class="byo-sv"><code>resolveUpstream(config, { onLimit })</code> — <b>por request</b>
+              <span class="byo-swhy">O destino é decidido a cada request, a partir da sua config e de <b>onde a request está no caminho</b>. É isso que faz <code>always</code> e <code>on-limit</code> serem <b>modos</b> de verdade, e não duas builds diferentes do proxy.</span>
+            </span>
+          </div>
+        </div>
+
+        <p class="byo-note">A parte que o plugin <b>não</b> ganhou também importa: ele não ganhou um provedor. Não há nome de serviço, formato de token nem tradução de payload no código — o contrato é <b>Anthropic nativo</b> em <code>/v1/messages</code>, <b>zero tradução</b>, e o resto é configuração sua.</p>
+      </div>
+
+      <div class="byo-part">
+        <span class="byo-tag">a mesma request, dois destinos · e o que atravessa cada um</span>
+
+        <div class="byo-in">
+          <span class="byo-ink">a request como o Claude Code manda</span>
+          <span class="byo-inl"><b>authorization</b>: <i>‹token da sua assinatura›</i></span>
+          <span class="byo-inl"><b>x-api-key</b>: <i>‹token da sua assinatura›</i></span>
+          <span class="byo-inl"><b>anthropic-version</b>: 2023-06-01</span>
+          <span class="byo-inl"><b>anthropic-beta</b>: context-1m-…</span>
+          <span class="byo-inl"><b>model</b>: claude-haiku-4-5 · no corpo</span>
+        </div>
+
+        <p class="byo-split"><code>resolveUpstream(config, { onLimit })</code></p>
+
+        <div class="byo-routes">
+          <div class="byo-route">
+            <div class="byo-rhead">
+              <span class="byo-rdest">destino · rota anthropic</span>
+              <span class="byo-rhost">api.anthropic.com:443</span>
+            </div>
+            <div class="byo-hrow"><span class="byo-hk">authorization <em>‹token da assinatura›</em></span><span class="byo-v byo-v--keep">segue</span></div>
+            <div class="byo-hrow"><span class="byo-hk">x-api-key <em>‹token da assinatura›</em></span><span class="byo-v byo-v--keep">segue</span></div>
+            <div class="byo-hrow"><span class="byo-hk">anthropic-version · anthropic-beta</span><span class="byo-v byo-v--proto">protocolo</span></div>
+            <div class="byo-hrow"><span class="byo-hk">content-type <em>application/json</em></span><span class="byo-v byo-v--proto">protocolo</span></div>
+            <div class="byo-hrow"><span class="byo-hk">model <em>claude-haiku-4-5</em></span><span class="byo-v byo-v--proto">verbatim</span></div>
+            <span class="byo-rwhy">A credencial <b>segue</b> — o destino é o <b>dono</b> dela. O comportamento anterior é preservado, e existe teste só para garantir que ele <b>não regride</b>.</span>
+          </div>
+
+          <div class="byo-route byo-route--endp">
+            <div class="byo-rhead">
+              <span class="byo-rdest">destino · seu endpoint</span>
+              <span class="byo-rhost">https://exemplo.ts.net</span>
+            </div>
+            <div class="byo-hrow byo-hrow--out"><span class="byo-hk">authorization <em>‹token da assinatura›</em></span><span class="byo-v byo-v--out">removido</span></div>
+            <div class="byo-hrow byo-hrow--out"><span class="byo-hk">x-api-key <em>‹token da assinatura›</em></span><span class="byo-v byo-v--out">removido</span></div>
+            <div class="byo-hrow"><span class="byo-hk">anthropic-version · anthropic-beta</span><span class="byo-v byo-v--proto">protocolo</span></div>
+            <div class="byo-hrow"><span class="byo-hk">content-type <em>application/json</em></span><span class="byo-v byo-v--proto">protocolo</span></div>
+            <div class="byo-hrow byo-hrow--add"><span class="byo-hk">Authorization <em>Bearer …</em></span><span class="byo-v byo-v--add">seu</span></div>
+            <div class="byo-hrow byo-hrow--add"><span class="byo-hk">X-Tenant-Id <em>…</em></span><span class="byo-v byo-v--add">seu</span></div>
+            <div class="byo-hrow"><span class="byo-hk">model <em>claude-haiku-4-5</em></span><span class="byo-v byo-v--proto">verbatim</span></div>
+            <span class="byo-rwhy">A credencial da assinatura <b>não sai da máquina</b>. Valem só os headers que você configurou — um <b>mapa genérico</b>, não um campo <code>token</code>.</span>
+          </div>
+        </div>
+
+        <p class="byo-cap">riscado + hachurado = o que não sai da máquina · âmbar cheio = a credencial segue, porque o destino é o dono dela · âmbar vazado = header seu, anexado · violeta = destino que não é a anthropic</p>
+
+        <div class="byo-proof">
+          <span class="byo-ptag">prova ponta a ponta</span>
+          <span class="byo-pbody">um endpoint <b>falso</b> sobe em <code>127.0.0.1</code>, a request atravessa o proxy com o token da assinatura no cabeçalho, e o teste <i>inspeciona o que o endpoint realmente recebeu</i>.
+            <span>Se o <code>authorization</code> ou o <code>x-api-key</code> da assinatura aparecerem do outro lado, o teste <b>reprova</b> — a asserção se chama <b>VAZAMENTO</b>. O mesmo teste confere o que <b>deve</b> chegar: os headers do mapa genérico, o path <code>/v1/messages</code> e o <code>model</code> <b>verbatim</b> no corpo. A garantia não é um comentário: é uma asserção que sabe reprovar.</span>
+          </span>
+        </div>
+
+        <p class="byo-note">Os dois cartões têm <b>contagens diferentes</b> de linha de propósito: a rota do endpoint <b>perde</b> as linhas da assinatura e <b>ganha</b> as suas. É a única diferença que importa — o corpo, o path e o <code>model</code> são idênticos nos dois lados.</p>
+      </div>
+
+      <div class="byo-part">
+        <span class="byo-tag">a cadeia · e onde cada modo entra</span>
+
+        <div class="byo-chain" role="list" aria-label="Cadeia de atendimento: Claude, depois o seu endpoint no 429, depois a NVIDIA no 429 do endpoint, depois a mensagem">
+          <span class="byo-node" role="listitem">Claude · sua assinatura</span>
+          <span class="byo-arr" aria-hidden="true"><b>429</b></span>
+          <span class="byo-node byo-node--endp" role="listitem">seu endpoint</span>
+          <span class="byo-arr" aria-hidden="true"><b>429</b></span>
+          <span class="byo-node" role="listitem">NVIDIA NIM</span>
+          <span class="byo-arr" aria-hidden="true">sem chave</span>
+          <span class="byo-node byo-node--last" role="listitem">mensagem</span>
+        </div>
+
+        <div class="byo-modes">
+          <div class="byo-mode">
+            <b><code>on-limit</code><em>padrão</em></b>
+            <span>O Claude atende <b>normalmente</b>. O endpoint entra no <code>429</code> — e entra <b>antes</b> da NVIDIA, porque serve os <b>mesmos modelos Claude</b> e é a substituição mais fiel. Se o endpoint também estiver no teto (<code>429</code>), a vez passa para a NVIDIA.</span>
+          </div>
+          <div class="byo-mode byo-mode--endp">
+            <b><code>always</code><em>o endpoint atende tudo</em></b>
+            <span>Toda request vai ao seu endpoint, <b>sem depender da assinatura Claude</b>. É o modo em que a Anthropic <b>não entra no caminho</b> — e foi ele que expôs o defeito do cooldown, na última parte.</span>
+          </div>
+        </div>
+
+        <p class="byo-note">A NVIDIA <b>continua</b> disponível como terceira opção: <b>nada foi removido</b>. O que mudou é que agora existe um degrau <b>antes</b> dela — um que fala Anthropic nativo, então não troca o modelo por baixo de você.</p>
+      </div>
+
+      <div class="byo-part">
+        <span class="byo-tag">o contrato do endpoint · e o que ele impôs ao proxy</span>
+
+        <div class="byo-rules">
+          <div class="byo-rule">
+            <span class="byo-rk"><code>model</code> vai <i>verbatim</i> — sem mapeamento
+              <span>O endpoint <b>normaliza os nomes sozinho</b> (<code>claude-haiku-4-5</code> → <code>claude-haiku-4.5</code>) e <b>erra alto</b> no inexistente. Mapear aqui criaria uma <b>segunda fonte de verdade</b> — e duas fontes de verdade só existem para divergir.</span>
+            </span>
+            <span class="byo-rt byo-rt--test">teste proíbe <code>mapModel</code></span>
+          </div>
+          <div class="byo-rule">
+            <span class="byo-rk">headers como <i>mapa genérico</i> — não um campo <code>token</code>
+              <span>Se o endpoint passar a exigir <b>outro</b> header (chave de gateway, tenant id, dois de uma vez), muda a <b>config</b> — não o código, não a versão do plugin, não uma atualização sua.</span>
+            </span>
+            <span class="byo-rt">config · não código</span>
+          </div>
+          <div class="byo-rule">
+            <span class="byo-rk">ligado <i>sem</i> <code>baseUrl</code> não vira “usa o Claude e ninguém vê”
+              <span>A request <b>não é roteada</b> e a causa fica <b>registrada</b>. Um destino ausente não pode virar silêncio, senão você acha que está no seu endpoint e está na assinatura.</span>
+            </span>
+            <span class="byo-rt">fail-loud</span>
+          </div>
+        </div>
+
+        <div class="byo-gate">
+          <div class="byo-grow">
+            <span class="byo-gk">grita</span>
+            <span class="byo-gv"><b>401</b> · <b>404</b> · <b>5xx</b> · corpo com <code>model is not supported</code>
+              <span>Não caem em silêncio para a NVIDIA. Erro de <b>configuração</b> precisa aparecer — senão a credencial errada <b>nunca é consertada</b>, e você segue rodando no plano B achando que o endpoint está atendendo.</span>
+            </span>
+          </div>
+          <div class="byo-grow byo-grow--retry">
+            <span class="byo-gk">cede a vez</span>
+            <span class="byo-gv"><b>429</b> — teto por credencial
+              <span>O <b>único</b> retentável: não é erro de config, é a janela do <b>endpoint</b> esgotada. Aí sim a vez passa para a NVIDIA.</span>
+            </span>
+          </div>
+        </div>
+
+        <p class="byo-note">A separação é a mesma disciplina que esta página já usa para números: <b>o que não dá para consertar repetindo, não se repete em silêncio</b>. Um <code>401</code> repetido mil vezes continua sendo <code>401</code> — só que invisível.</p>
+      </div>
+
+      <div class="byo-part">
+        <span class="byo-tag">o card no dashboard · e o defeito achado no caminho</span>
+
+        <div class="byo-fields">
+          <div class="byo-field"><span class="byo-fk">liga / desliga</span><span class="byo-fv">BYOK <em>· opt-in, desligado por padrão</em></span></div>
+          <div class="byo-field"><span class="byo-fk">modo</span><span class="byo-fv"><i>on-limit</i> <em>·</em> always</span></div>
+          <div class="byo-field"><span class="byo-fk">base url</span><span class="byo-fv">https://exemplo.ts.net <em>· o path é ignorado: o proxy sempre chama <code>/v1/messages</code></em></span></div>
+          <div class="byo-field"><span class="byo-fk">headers · um por linha</span><span class="byo-fv">Authorization: Bearer …<br />X-Tenant-Id: …</span></div>
+        </div>
+
+        <div class="byo-rules">
+          <div class="byo-rule">
+            <span class="byo-rk">linha inválida <i>aborta o save</i> — não grava metade
+              <span>Uma linha sem <code>:</code> volta com aviso em vez de sumir. Header que você <b>achou</b> que configurou e não foi enviado é a falha silenciosa que faz perder horas depurando o endpoint errado. Só o <b>primeiro</b> <code>:</code> separa — valores legitimamente contêm <code>:</code>.</span>
+            </span>
+            <span class="byo-rt">nada some em silêncio</span>
+          </div>
+          <div class="byo-rule">
+            <span class="byo-rk">a UI <i>não reexibe</i> os valores
+              <span>Mostra os <b>nomes mascarados</b>, e salvar com o campo <b>em branco preserva</b> o que já está gravado — mesma regra da chave NVIDIA. Trocar só o modo <b>não apaga</b> a Base URL nem os headers.</span>
+            </span>
+            <span class="byo-rt">arquivo 0600</span>
+          </div>
+        </div>
+
+        <div class="byo-bug">
+          <span class="byo-bk">defeito corrigido no caminho · achado pelo próprio teste</span>
+          <span class="byo-bv">O <b>cooldown</b> do circuit breaker é sobre a janela da <b>Anthropic</b>. Mas em <code>mode: always</code> a Anthropic <b>nem entra no caminho</b> — e mesmo assim o breaker desviava a request para o plano B.
+            <span>Quem encontrou foi o <b>teste de integração</b>: ele simplesmente <b>não recebia a request</b> no endpoint falso. O destino passou a ser resolvido <b>antes</b> do cooldown, e o breaker só se aplica quando o destino <b>é</b> a Anthropic. Nenhuma unidade estava errada — só o teste que sobe a coisa inteira pegaria isso.</span>
+          </span>
+        </div>
+
+        <p class="byo-note"><code>resolveMode</code> ganhou <code>byok-direct</code>, com rótulo e cor próprios. BYOK é <b>ortogonal</b> à rota: ele escolhe o <b>destino</b>, não como a request é classificada — por isso entra <b>por último</b> na precedência e <b>não rouba a vez</b> de <code>sticky</code>, <code>routing</code> ou <code>fallback</code>.</p>
+      </div>
+
+      <div class="byo-foot"><b>O que o plugin passou a saber:</b> nada sobre o seu provedor. Ele sabe <b>para onde</b> mandar e <b>o que anexar</b>, e as duas coisas vêm da sua config — não do código. O que ele passou a <b>garantir</b> é o inverso: que a credencial da <b>sua</b> assinatura não atravessa para um destino que não é dono dela. As releases anteriores desta página mediram melhor o que <b>já passava</b> pelo proxy; esta decide <b>o que não pode sair</b> dele.</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>O destino passa a ser seu — e escolhido por request</h4>
+        <p>Cole a <b>Base URL</b> e os <b>headers</b> no dashboard e o proxy fala com o seu endpoint. Em <code>always</code> ele atende tudo, sem depender da assinatura Claude; em <code>on-limit</code> ele só entra no <code>429</code>, <b>antes</b> da NVIDIA. Nenhum provedor está no código: o que o endpoint exigir amanhã se resolve na <b>config</b>.</p>
+      </div>
+      <div class="win">
+        <h4>A credencial da assinatura não atravessa</h4>
+        <p>Na rota BYOK o <code>authorization</code> e o <code>x-api-key</code> do Claude Code são <b>removidos</b> — só vão os headers que você configurou. Na rota Anthropic a credencial <b>segue</b>, porque o destino é o dono dela. Um teste <b>ponta a ponta</b> sobe um endpoint falso e <b>reprova</b> se o token aparecer lá.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Rigor de sempre:</b> a garantia de segurança é <b>testada, não declarada</b> — o teste de integração sobe um endpoint real em <code>127.0.0.1</code>, manda a request pelo caminho de produção do proxy e falha se o token da assinatura aparecer do outro lado; e há um teste espelho garantindo que a rota <b>Anthropic</b> continua repassando a credencial, para que a correção não vire regressão. O <code>model</code> é repassado <b>verbatim</b> por decisão, não por esquecimento: existe um teste que <b>proíbe</b> a existência de um <code>mapModel</code>, porque uma segunda tabela de nomes só serviria para divergir da que o endpoint já mantém. O <b>fail-loud</b> é o mesmo princípio que esta página vem aplicando a números, agora aplicado a rotas: <code>401</code>/<code>404</code>/<code>5xx</code> e <code>model is not supported</code> não caem em silêncio para a NVIDIA, e ligado <b>sem</b> <code>baseUrl</code> não vira “usa o Claude e ninguém vê” — a request não é roteada e a causa fica registrada. O <b>defeito do cooldown</b> está declarado aqui em vez de escondido: o breaker desviava para o plano B mesmo com <code>mode: always</code>, em que a Anthropic nem participa; quem achou foi o teste de integração, que não recebia a request no endpoint. E o limite honesto: o plugin garante o que <b>sai</b> da sua máquina — o que o <b>seu</b> endpoint faz com a request depois disso é responsabilidade de quem o opera, que é você.</p>
   </section>
 
 

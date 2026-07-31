@@ -1,6 +1,6 @@
 # claude-code-boss
 
-Plugin para Claude Code Desktop — **v2.20.4**
+Plugin para Claude Code Desktop — **v2.21.0**
 
 Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizado leve para Claude Code. A orquestração fica a cargo das ferramentas nativas (Agent/Workflow) — o plugin foca no que o nativo não tem.
 
@@ -283,8 +283,35 @@ Iniciado **sob demanda** (não mais no SessionStart). Configura o **plugin**
   de retrieval citado) + card "learning loop" (capturadas vs. mescladas por
   semana) + botão de consolidação do KB (ver abaixo).
 
-## Diagnóstico e higiene do KB
+## BYOK — usar o seu próprio endpoint
 
+O proxy pode falar com um **endpoint Anthropic-compatible seu** em vez de (ou além
+de) `api.anthropic.com`. O plugin **não conhece o provedor** nem de onde veio o
+token: você cola a **Base URL** e um **mapa de headers** no dashboard, e ele anexa
+esses headers em toda request.
+
+- **Contrato**: `POST /v1/messages`, formato Anthropic **nativo** — zero tradução.
+  O campo `model` vai **verbatim**: o endpoint normaliza os nomes sozinho
+  (`claude-haiku-4-5` → `claude-haiku-4.5`) e erra alto no inexistente, então
+  mapear nome aqui só criaria uma segunda fonte de verdade para divergir.
+- **Dois modos** (`/dashboard` → Model Router → BYOK):
+  - **`on-limit`** (padrão) — o Claude atende normalmente e o endpoint entra
+    quando a janela esgota (429), **antes** do plano B da NVIDIA. Se o endpoint
+    também estiver no teto (429), a vez passa para a NVIDIA.
+  - **`always`** — o endpoint atende **tudo**; não depende da assinatura Claude.
+- **Fail-loud**: `401`/`404`/`5xx` e um corpo com `model is not supported` **não**
+  caem em silêncio para a NVIDIA. Erro de configuração precisa aparecer, senão a
+  credencial errada nunca é consertada.
+- **Segurança — o ponto que mais importa**: o `authorization`/`x-api-key` que o
+  Claude Code envia carrega o token da **sua assinatura**. Na rota BYOK esses
+  headers são **removidos**; só vão os que você configurou. Repassá-los seria
+  vazar a credencial da assinatura para um terceiro. Há um teste ponta a ponta
+  que sobe um endpoint falso e falha se o token aparecer lá.
+- Os headers ficam em `DATA_DIR/model-router/user-config.json` (permissão `0600`,
+  nunca commitado) e a UI **não reexibe** os valores — mostra os nomes mascarados
+  e mantém o que já está gravado quando você salva com o campo em branco.
+
+## Diagnóstico e higiene do KB
 - **`node scripts/doctor.js`** — checklist zero-config: Node no PATH + versão,
   `CLAUDE_PLUGIN_ROOT`/`CLAUDE_PLUGIN_DATA` resolvidos, **fragmentação de
   data-dir** (múltiplos `claude-code-boss*` populados sob
