@@ -6056,6 +6056,75 @@ test('byok.buildHeaders: content-type e json em ambas as rotas', () => {
 
 // ── Classificacao de resposta: o contrato diz o que e retentavel e o que grita ──
 
+test('byok.classifyResponse: 403 REPASSA a mensagem acionavel do corpo (adendo do contrato)', () => {
+  // O endpoint responde 403 com { error: { message, code, type } } e o `message`
+  // e escrito p/ o usuario final: diz a acao exata. Sem repassar, o usuario le
+  // "endpoint recusou a request (403)" e vai conferir Base URL, header e rede —
+  // nenhum dos tres e o problema.
+  const corpo = JSON.stringify({ error: { message: 'Sua credencial expirou. Gere uma nova em X e cole no dashboard.', code: 'expirada', type: 'permission_error' } });
+  const r = byok.classifyResponse(403, corpo);
+  assertEq(r.ok, false);
+  assertEq(r.failLoud, true, '403 nao e retentavel: e acao do usuario do outro lado');
+  assertEq(r.retryable, false);
+  assertEq(r.reason, 'Sua credencial expirou. Gere uma nova em X e cole no dashboard.',
+    'a mensagem do endpoint vale MAIS que qualquer texto nosso');
+});
+
+test('byok.classifyResponse: 403 sem corpo utilizavel cai num texto proprio (nunca vazio)', () => {
+  for (const corpo of ['', 'nao e json', '{"error":{}}', '{"error":{"message":""}}', null]) {
+    const r = byok.classifyResponse(403, corpo);
+    assertEq(r.failLoud, true, 'corpo: ' + JSON.stringify(corpo));
+    assertEq(r.retryable, false);
+    assertEq(r.reason.length > 0, true, 'sem mensagem do endpoint, ainda assim explica: ' + JSON.stringify(corpo));
+    assertEq(/403/.test(r.reason), true, 'e o status aparece p/ o usuario poder pesquisar');
+  }
+});
+
+test('byok.classifyResponse: 401 NAO vira 403 — sao diagnosticos diferentes', () => {
+  // 401 = credencial NAO reconhecida (revisar os headers, do nosso lado).
+  // 403 = credencial reconhecida mas nao vale AGORA (acao do outro lado).
+  const r401 = byok.classifyResponse(401, JSON.stringify({ error: { message: 'texto do endpoint' } }));
+  assertEq(/headers|dashboard/i.test(r401.reason), true, '401 continua mandando revisar os headers');
+  assertEq(r401.reason !== 'texto do endpoint', true, '401 mantem o NOSSO diagnostico, que e o certo p/ ele');
+});
+
+test('byok.classifyResponse: 403 nao rouba o caso de modelo nao suportado', () => {
+  const r = byok.classifyResponse(403, '{"error":{"message":"model is not supported"}}');
+  assertEq(/modelo/i.test(r.reason), true, 'o diagnostico mais especifico continua vencendo');
+});
+
+test('byok.parseHeaderLines: valor longo/opaco (token real) passa INTEGRO', () => {
+  // O endpoint confirmou que o valor entregue hoje passa sem mudanca; este teste
+  // trava isso p/ nao regredir num refactor do parser.
+  const valor = 'Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIiwiZXhwIjo5OTk5fQ.abc-_=+/DEF';
+  const r = byok.parseHeaderLines('Authorization: ' + valor);
+  assertEq(r.headers.Authorization, valor, 'nada de corte, escape ou normalizacao');
+  assertEq(r.invalid.length, 0);
+});
+
+test('byok.userAdvice: no 403 NAO manda revisar Base URL/headers (seria o conselho errado)', () => {
+  // O adendo do contrato e explicito: no 403 o usuario "vai olhar Base URL,
+  // header e rede — nenhum dos tres e o problema". A acao esta na mensagem do
+  // endpoint. Sugerir revisar config aqui manda o usuario cacar no lugar errado.
+  const cls403 = byok.classifyResponse(403, JSON.stringify({ error: { message: 'Credencial expirada: gere outra.' } }));
+  const txt = byok.userAdvice(403, cls403);
+  assertEq(/Credencial expirada: gere outra\./.test(txt), true, 'a mensagem do endpoint aparece');
+  assertEq(/Base URL/i.test(txt), false, 'NAO pode mandar revisar Base URL num 403');
+  assertEq(/403/.test(txt), true, 'o status aparece p/ diagnostico');
+});
+
+test('byok.userAdvice: no 401/404 CONTINUA mandando revisar a config (ali e o lugar certo)', () => {
+  const t401 = byok.userAdvice(401, byok.classifyResponse(401, ''));
+  assertEq(/dashboard/i.test(t401), true, '401 e credencial nao reconhecida: revisar headers');
+  const t404 = byok.userAdvice(404, byok.classifyResponse(404, ''));
+  assertEq(/Base URL/i.test(t404), true, '404 e caminho errado: revisar a Base URL');
+});
+
+test('byok.userAdvice: no 5xx nao culpa a config do usuario (o endpoint e que caiu)', () => {
+  const t = byok.userAdvice(503, byok.classifyResponse(503, ''));
+  assertEq(/Base URL|headers/i.test(t), false, 'a config esta certa; o outro lado e que esta fora');
+});
+
 test('byok.classifyResponse: 200 → ok', () => {
   assertEq(byok.classifyResponse(200, '').ok, true);
 });
