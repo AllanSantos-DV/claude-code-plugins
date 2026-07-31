@@ -123,9 +123,24 @@ function buildHeaders(clientHeaders, upstream) {
 }
 
 /**
+ * Mensagem acionável que o endpoint mandou no corpo (`{ error: { message } }`).
+ *
+ * Devolve `''` quando não há: corpo vazio, não-JSON, ou `message` ausente/vazia.
+ * Nunca lança — um corpo malformado não pode derrubar a classificação de erro,
+ * que é justamente o caminho em que já deu algo errado.
+ */
+function endpointMessage(body) {
+  if (typeof body !== 'string' || !body.trim()) return '';
+  let parsed;
+  try { parsed = JSON.parse(body); } catch (err) { void err; return ''; }
+  const msg = parsed && parsed.error && parsed.error.message;
+  return (typeof msg === 'string' && msg.trim()) ? msg.trim() : '';
+}
+
+/**
  * O que fazer com a resposta do endpoint, conforme o contrato:
  *   200                        → pipe normal
- *   401 / 404 / 502            → fail loud (repetir não resolve)
+ *   401 / 403 / 404 / 5xx      → fail loud (repetir não resolve)
  *   429                        → retentável (teto por credencial), respeitar retry-after
  *   corpo "model is not supported" → fail loud, mesmo num 200
  */
@@ -138,7 +153,21 @@ function classifyResponse(status, body) {
     return { ok: false, failLoud: false, retryable: true, reason: 'teto por credencial no endpoint (429)' };
   }
   if (status === 401) {
+    // 401 = credencial NÃO reconhecida. O diagnóstico certo é do NOSSO lado
+    // (headers no dashboard), então não repassamos a mensagem do endpoint aqui.
     return { ok: false, failLoud: true, retryable: false, reason: 'credencial recusada pelo endpoint — revise os headers no dashboard' };
+  }
+  if (status === 403) {
+    // 403 = credencial RECONHECIDA, mas não vale agora (expirada, revogada,
+    // limite de origem...). A ação é do outro lado, e o endpoint devolve no
+    // corpo um texto escrito para o usuário final dizendo exatamente o que
+    // fazer. Um genérico nosso mandaria ele conferir Base URL, header e rede —
+    // e nenhum dos três é o problema.
+    const msg = endpointMessage(body);
+    return {
+      ok: false, failLoud: true, retryable: false,
+      reason: msg || 'endpoint recusou a credencial (403) — sem detalhe no corpo',
+    };
   }
   if (status === 404) {
     return { ok: false, failLoud: true, retryable: false, reason: 'endpoint não expõe /v1/messages nesta Base URL' };
@@ -192,6 +221,32 @@ function formatHeaderLines(headers) {
     .join('\n');
 }
 
+/**
+ * Texto que o USUÁRIO vê quando o endpoint recusa — o diagnóstico e o conselho
+ * têm que apontar para o MESMO lugar.
+ *
+ * Isto existe porque um texto-envelope genérico anula o diagnóstico: dizer
+ * "revise a Base URL e os headers" num 403 manda o usuário caçar em três
+ * lugares onde o problema não está. Cada status ganha o conselho que
+ * corresponde a ele:
+ *   403 → a ação é do outro lado; a mensagem do endpoint JÁ diz qual. Sem
+ *         conselho nosso, que só atrapalharia.
+ *   401 → credencial não reconhecida: revisar os headers.
+ *   404 → caminho errado: revisar a Base URL.
+ *   5xx → a config está certa; o endpoint é que está fora.
+ */
+function userAdvice(status, cls, hint) {
+  const extra = hint ? `\n\n⏳ ${hint}.` : '';
+  const cabeca = `⚠️ O endpoint BYOK recusou a request: ${cls.reason} (HTTP ${status}).`;
+  let conselho;
+  if (status === 403) conselho = '';                       // a mensagem acima já diz a ação
+  else if (status === 401) conselho = 'Revise os headers em /dashboard → BYOK.';
+  else if (status === 404) conselho = 'Revise a Base URL em /dashboard → BYOK.';
+  else if (status >= 500) conselho = 'O endpoint está fora do ar — a sua configuração não é a causa.';
+  else conselho = 'Revise a Base URL e os headers em /dashboard → BYOK.';
+  return conselho ? `${cabeca}\n\n${conselho}${extra}` : `${cabeca}${extra}`;
+}
+
 module.exports = {
   DEFAULT_HOST,
   DEFAULT_PORT,
@@ -202,6 +257,8 @@ module.exports = {
   resolveUpstream,
   buildHeaders,
   classifyResponse,
+  endpointMessage,
+  userAdvice,
   parseHeaderLines,
   formatHeaderLines,
 };
