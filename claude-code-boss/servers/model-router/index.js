@@ -914,10 +914,7 @@ function byokFallback(reqBody, config, res, hint, upstreamTarget, onRetryable) {
       logger.error('BYOK — endpoint recusou a request', {
         host: upstreamTarget.host, status: upRes.statusCode, causa: finalCls.reason,
       });
-      const extra = hint ? `\n\n⏳ ${hint}.` : '';
-      respondAnthropicText(reqBody, res,
-        `⚠️ O endpoint BYOK recusou a request: ${finalCls.reason} (HTTP ${upRes.statusCode}).\n\n`
-        + `Revise a Base URL e os headers em /dashboard → BYOK.${extra}`);
+      respondAnthropicText(reqBody, res, byok.userAdvice(upRes.statusCode, finalCls, hint));
     });
   });
   req.on('error', (e) => {

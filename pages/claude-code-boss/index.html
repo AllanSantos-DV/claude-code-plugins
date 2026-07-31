@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.21.0 — o proxy passa a falar com o seu endpoint, e a credencial da assinatura não vai junto</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. A v2.21.0 abre o destino do proxy: ele passa a falar com um endpoint Anthropic-compatible seu, e não só com api.anthropic.com. Até aqui existia um override de upstream, mas era uma constante global lida no boot, com o próprio comentário do código declarando que ela existia só para testes; escolher o destino por request, que é o que separa &quot;direto no meu endpoint&quot; de &quot;só quando o Claude estourar&quot;, não era possível. Agora a decisão é por request, e o desenho central é que o plugin não conhece o provedor nem de onde veio o token: ele recebe uma Base URL e um mapa de headers pelo dashboard e anexa esses headers em toda request. Nada disso vive no código, então um endpoint que amanhã exija outro header — uma chave de gateway, um tenant id — é resolvido na configuração e não numa nova versão. A segurança é o coração da release. O authorization e o x-api-key que o Claude Code envia carregam o token da assinatura do usuário, e repassá-los a um endpoint de terceiro seria vazar a credencial. Na rota BYOK esses headers são removidos e valem apenas os configurados; na rota Anthropic a credencial segue, porque o destino é o dono dela. E isso não é promessa de comentário: há um teste ponta a ponta que sobe um endpoint falso, manda uma request com o token da assinatura no cabeçalho e falha se ele aparecer do outro lado. São dois modos, escolhidos no dashboard. Em on-limit, que é o padrão, o Claude atende normalmente e o endpoint entra no 429, antes do plano B da NVIDIA; se o endpoint também estiver no teto, a vez passa para a NVIDIA. Em always o endpoint atende tudo, sem depender da assinatura Claude. A NVIDIA continua disponível como terceira opção e nada foi removido: a cadeia é Claude, depois o endpoint, depois a NVIDIA, depois a mensagem. O contrato do endpoint impôs detalhes que estão registrados na página: o campo model vai verbatim, sem mapeamento, porque o endpoint normaliza os nomes sozinho (claude-haiku-4-5 vira claude-haiku-4.5) e erra alto no inexistente, e mapear aqui criaria uma segunda fonte de verdade para divergir — a ponto de existir um teste que proíbe a existência de um mapModel. Os status 401, 404 e 5xx, e um corpo com model is not supported, são fail-loud e não caem em silêncio para a NVIDIA, senão a credencial errada nunca é consertada; só o 429, que é teto por credencial, é tratado como retentável. E ligado sem Base URL não vira &quot;usa o Claude e ninguém vê&quot;: a request não é roteada e a causa é registrada. No caminho, um defeito foi corrigido: o cooldown do circuit breaker é sobre a janela da Anthropic, mas no modo always a Anthropic nem entra no caminho, e mesmo assim o breaker desviava a request para o plano B; quem encontrou foi o próprio teste de integração, que não recebia a request no endpoint falso. Na interface, um card BYOK no dashboard, em Model Router, com liga e desliga, seletor de modo, Base URL e headers, um por linha no formato Nome: valor. Uma linha inválida aborta o save com aviso em vez de gravar um mapa pela metade, a UI não reexibe os valores e mostra apenas os nomes mascarados, salvar com o campo em branco preserva o que já está gravado (mesma regra da chave NVIDIA), e o arquivo fica em modo 0600. As releases anteriores seguem na página: a v2.20.4 tirou a janela do prompt cache do palpite, a v2.20.3 corrigiu um número impossível de 594%, a v2.20.2 partiu a média da fronteira fria por motivo, a v2.20.1 deu tamanho à fronteira fria e a v2.20.0 instalou a régua do ciclo de cache. A diferença de espécie: aquelas mediram melhor o que já passava pelo proxy; esta decide o que não pode sair dele." />
+<title>claude-code-boss v2.21.1 — o 403 do endpoint diz o que fazer, e o conselho ao lado para de contradizê-lo</title>
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. A v2.21.1 é um adendo ao contrato do endpoint BYOK: o 403 vem com um corpo { error: { message, code, type } }, e o message é escrito para o usuário final — diz a ação exata, como credencial expirada, revogada ou limite de origem. Antes ele caía no balde genérico status &gt;= 400 e chegava até você como &quot;endpoint recusou a request (403)&quot;: o comportamento estava certo, fail-loud e sem retry, mas a instrução se perdia. Agora classifyResponse tem um caso 403 que extrai error.message do corpo e o repassa verbatim. Corpo ausente, não-JSON ou message vazia caem num texto próprio que ainda cita o status — nunca uma razão vazia — e o extrator endpointMessage nunca lança, porque um corpo malformado não pode derrubar justamente o caminho em que já deu erro. A segunda entrega é o defeito que só apareceu ao ler o texto final: corrigir só a razão não bastaria, porque o texto que a envolvia dizia &quot;Revise a Base URL e os headers&quot; em todos os erros. Num 403 isso é exatamente o conselho errado: manda o usuário procurar em três lugares onde o problema não está, contradizendo a mensagem que o endpoint acabou de dar — a mensagem certa chegava, e o texto ao lado a anulava. userAdvice(status, cls, hint) faz diagnóstico e conselho apontarem para o mesmo lugar: no 403, nenhum conselho nosso, porque a mensagem do endpoint já diz a ação; no 401, revisar os headers, porque credencial não reconhecida é problema do nosso lado; no 404, revisar a Base URL, porque o caminho está errado; e no 5xx, a config está certa e o endpoint é que está fora do ar. A distinção 401 ≠ 403 é de propósito e está travada em teste: 401 é credencial não reconhecida, 403 é credencial reconhecida mas que não vale agora, e são ações diferentes para quem lê. E model is not supported continua vencendo mesmo dentro de um 403, porque o diagnóstico mais específico não pode ser engolido pelo genérico. Nada disso é retentável: o único retentável continua sendo o 429. As releases anteriores seguem na página: a v2.21.0 abriu o destino do proxy para um endpoint Anthropic-compatible seu, a v2.20.4 tirou a janela do prompt cache do palpite, a v2.20.3 corrigiu um número impossível de 594%, a v2.20.2 partiu a média da fronteira fria por motivo, a v2.20.1 deu tamanho à fronteira fria e a v2.20.0 instalou a régua do ciclo de cache. Aquelas trataram de sinais que mentiam; esta trata de um caso mais sutil: a informação certa entregue junto de um conselho que a contradiz. O sinal estava certo; a moldura é que sabotava." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -2275,13 +2275,170 @@
   .byo-foot b{ color:#a29f97 }
   .byo-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
 
+  /* v2.21.1 : A MENSAGEM CERTA NAO ADIANTA SE O CONSELHO AO LADO CONTRADIZ ELA.
+     Adendo ao contrato do endpoint BYOK (v2.21.0): o `403` vem com
+     `{ error: { message, code, type } }`, e o `message` e escrito para o USUARIO
+     FINAL - diz a acao exata (credencial expirada, revogada, limite de origem).
+     Antes ele caia no balde generico `status >= 400` e virava "endpoint recusou a
+     request (403)": o COMPORTAMENTO estava certo (fail-loud, sem retry); a
+     INSTRUCAO e que se perdia.
+     O DEFEITO QUE SO APARECEU AO LER O TEXTO FINAL: corrigir so a razao nao
+     bastaria. O texto-envelope dizia "Revise a Base URL e os headers" em TODOS os
+     erros - num 403 esse e o conselho ERRADO, manda o usuario procurar em tres
+     lugares onde o problema nao esta, CONTRADIZENDO a mensagem que o endpoint
+     acabou de dar. `userAdvice(status, cls, hint)` faz diagnostico e conselho
+     apontarem para o MESMO lugar.
+     ASSINATURA: A MENSAGEM COMO O USUARIO LE. As assinaturas anteriores desta
+     pagina foram REGUAS (a fita v2.20.0, a coluna v2.20.1, a regua da dispersao
+     v2.20.2, o teto v2.20.3, o vao das duas janelas v2.20.4) e uma ROTA (v2.21.0).
+     Esta release nao e grandeza nem rota: e um TEXTO NA TELA. Entao o artefato e a
+     propria mensagem renderizada, partida em duas linhas julgadas SEPARADAMENTE -
+     a cabeca (diagnostico) e o rodape (conselho). No "antes" o conselho sai
+     HACHURADO e riscado (a hachura desta pagina significa "o que nao conta", como
+     em `.snt-imposs`, `.ttl-span--guess`, `.byo-hrow--out`) com uma seta apontando
+     de VOLTA para a linha que ele anula. No "agora" o lugar do conselho fica VAZIO
+     e assim declarado: a AUSENCIA e a correcao, e desenhar ausencia - em vez de so
+     omitir - e o problema interessante aqui. A MENSAGEM da direita perde uma linha
+     sem ganhar nenhuma; o CARTAO fica maior porque a ausencia precisou ser
+     DECLARADA (no terminal ela e invisivel). A distincao entre as duas coisas esta
+     escrita na nota, senao o desenho contradiria o proprio texto - que e
+     exatamente o defeito que esta release conserta.
+     COR: reusa `--endp` (violeta) da v2.21.0, ESCOPADO em `.adv`, com o mesmo
+     significado estendido com honestidade: la marcava "destino que NAO e a
+     Anthropic", aqui marca "PALAVRA que NAO e nossa - veio do endpoint". O ambar
+     segue sendo o unico portador de "o que o plugin afirma". E isso torna a
+     contradicao legivel de relance: no 403 de agora a razao e VIOLETA (fala do
+     endpoint) e nao ha linha ambar embaixo; no 401 as duas linhas sao nossas
+     mesmo, e ali o conselho continua.
+     Peso de PATCH e entrega focada: TRES partes (a v2.21.0, MINOR, tem cinco; a
+     v2.20.4, PATCH, tem quatro). E complemento direto do artefato de cima. */
+  .adv{ --endp:#9d8ae6; background:var(--panel); color:var(--panel-ink); border-radius:14px; overflow:hidden;
+    box-shadow:0 24px 60px -30px rgba(23,22,27,.6); max-width:880px; font-family:var(--mono); margin:0 0 36px }
+  .adv code{ background:rgba(255,255,255,.08); color:var(--panel-ink); font-size:10.5px; padding:1px 5px; border-radius:4px }
+  .adv-bar{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:13px 20px; border-bottom:1px solid var(--panel-line); font-size:12px }
+  .adv-bar .k{ color:var(--accent) }
+  .adv-bar .m{ color:#8a877f }
+
+  .adv-part{ padding:18px 22px 12px }
+  .adv-part + .adv-part{ border-top:1px solid rgba(255,255,255,.06) }
+  .adv-tag{ display:block; font-size:9px; letter-spacing:.14em; text-transform:uppercase; color:var(--accent); margin:0 0 14px }
+  /* identificador nunca vira caixa-alta: `userAdvice` sai verbatim */
+  .adv-tag code{ text-transform:none; letter-spacing:0 }
+  .adv-note{ margin:0; font-size:11px; line-height:1.6; color:#8a877f }
+  .adv-note + .adv-note{ margin-top:9px }
+  .adv-note b{ color:#a29f97; font-weight:600 }
+
+  /* o corpo que o endpoint manda: a borda e violeta porque nada ali e nosso */
+  .adv-body{ border-left:2px solid var(--endp); background:rgba(255,255,255,.05); border-radius:0 6px 6px 0;
+    padding:11px 14px; margin:0 0 14px; max-width:660px }
+  .adv-bodyk{ display:block; font-size:9px; letter-spacing:.13em; text-transform:uppercase; color:var(--endp); margin:0 0 9px }
+  .adv-bodyv{ margin:0; font-family:var(--mono); font-size:10.5px; line-height:1.75; color:#a29f97;
+    white-space:pre; overflow-x:auto }
+  .adv-bodyv:focus-visible{ outline:2px solid var(--accent); outline-offset:3px; border-radius:3px }
+  .adv-bodyv b{ color:var(--panel-ink); font-weight:600 }
+  .adv-bodyv i{ color:var(--endp); font-style:normal; font-weight:700 }
+
+  /* a razao: do balde generico para a frase que o endpoint escreveu */
+  .adv-shift{ border:1px solid var(--panel-line); border-radius:10px; overflow:hidden; margin:0 0 13px; max-width:660px }
+  .adv-srow{ display:grid; grid-template-columns:minmax(0,54px) minmax(0,1fr); gap:5px 12px;
+    align-items:baseline; padding:12px 13px; min-width:0 }
+  .adv-srow + .adv-srow{ border-top:1px solid rgba(255,255,255,.07) }
+  .adv-srow--now{ background:rgba(255,255,255,.05) }
+  .adv-sk{ font-size:9px; letter-spacing:.13em; text-transform:uppercase; color:#6d6257 }
+  .adv-srow--now .adv-sk{ color:var(--accent) }
+  .adv-sv{ display:block; font-size:11.5px; line-height:1.85; color:#a29f97; overflow-wrap:break-word }
+  .adv-srow--now .adv-sv{ color:var(--panel-ink) }
+  .adv-swhy{ display:block; margin-top:7px; font-size:10.5px; line-height:1.55; color:#8a877f }
+  .adv-swhy b{ color:#a29f97; font-weight:600 }
+
+  /* o extrator nunca devolve razao vazia - e nunca lanca */
+  .adv-falls{ border:1px solid var(--panel-line); border-radius:10px; overflow:hidden; margin:0 0 13px; max-width:660px }
+  .adv-frow{ display:grid; grid-template-columns:minmax(0,178px) minmax(0,1fr); gap:5px 12px;
+    align-items:baseline; padding:11px 13px; min-width:0 }
+  .adv-frow + .adv-frow{ border-top:1px solid rgba(255,255,255,.07) }
+  .adv-fk{ font-size:10.5px; line-height:1.55; color:#6d6257; overflow-wrap:anywhere }
+  .adv-fv{ min-width:0; font-size:11px; line-height:1.6; color:#a29f97; overflow-wrap:break-word }
+  .adv-fv b{ color:var(--panel-ink); font-weight:600 }
+  .adv-fv i{ color:var(--endp); font-style:normal; font-weight:700 }
+
+  /* ASSINATURA: a mensagem como o usuario le - duas linhas, julgadas separadamente.
+     E o UNICO bloco do artefato em largura cheia (os demais param em 660px) e com
+     corpo maior que o resto: e nele que a release inteira cabe. */
+  .adv-msgs{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px; align-items:start; margin:0 0 12px }
+  .adv-msg{ display:flex; flex-direction:column; border:1px solid var(--panel-line); border-radius:10px; overflow:hidden; min-width:0 }
+  .adv-msg--now{ border-color:rgba(157,138,230,.45) }
+  .adv-mhead{ display:flex; align-items:baseline; justify-content:space-between; gap:10px;
+    padding:11px 14px; border-bottom:1px solid rgba(255,255,255,.09); background:rgba(255,255,255,.03) }
+  .adv-mwhen{ font-size:8.5px; letter-spacing:.13em; text-transform:uppercase; color:#6d6257 }
+  .adv-msg--now .adv-mwhen{ color:var(--endp) }
+  .adv-mst{ font-size:9px; letter-spacing:.06em; color:#6d6257; white-space:nowrap }
+  /* texto de terminal: respeita a quebra que o usuario ve, mas precisa CABER -
+     por isso `pre-wrap` e nao `pre`, que forcaria rolagem numa mensagem em prosa */
+  .adv-mline{ display:block; padding:14px; font-size:12px; line-height:1.75; color:var(--panel-ink);
+    white-space:pre-wrap; overflow-wrap:break-word }
+  .adv-mline + .adv-mline{ border-top:1px dashed rgba(255,255,255,.10) }
+  .adv-mline i{ color:var(--endp); font-style:normal; font-weight:700 }   /* palavra do endpoint */
+  .adv-mline em{ font-style:normal; color:#6d6257 }                       /* generico que nao diz nada */
+  /* o conselho que CONTRADIZ a cabeca sai com a hachura de "o que nao conta" */
+  .adv-mline--bad{ color:#6d6257; text-decoration:line-through; text-decoration-thickness:1px;
+    text-decoration-color:rgba(255,255,255,.32);
+    background:repeating-linear-gradient(135deg,rgba(255,255,255,.07) 0 4px,transparent 4px 9px) }
+  .adv-x{ display:block; padding:11px 14px 3px; font-size:9px; letter-spacing:.11em; text-transform:uppercase;
+    color:#a29f97; line-height:1.7 }
+  .adv-x b{ color:var(--accent); font-weight:700 }
+  /* o lugar do conselho fica VAZIO - e a ausencia e declarada, nao apenas omitida */
+  .adv-mnone{ display:block; padding:14px; border-top:1px dashed rgba(255,255,255,.10);
+    font-size:9.5px; letter-spacing:.11em; text-transform:uppercase; color:var(--endp); line-height:1.7 }
+  .adv-mnone em{ display:block; margin-top:7px; font-style:normal; letter-spacing:0; text-transform:none;
+    font-size:10.5px; line-height:1.55; color:#8a877f }
+  .adv-mnone em b{ color:#a29f97; font-weight:600 }
+  /* o "porque" ancora no rodape do cartao */
+  .adv-mwhy{ display:block; margin-top:auto; padding:11px 14px; border-top:1px solid rgba(255,255,255,.09);
+    font-size:10px; line-height:1.55; color:#8a877f }
+  .adv-mwhy b{ color:#a29f97; font-weight:600 }
+  .adv-cap{ margin:0 0 13px; font-size:8.5px; letter-spacing:.11em; text-transform:uppercase; color:#6d6257; line-height:1.7 }
+
+  /* cada status com o conselho que corresponde a ele - e de quem e a acao */
+  .adv-map{ border:1px solid var(--panel-line); border-radius:10px; overflow:hidden; margin:0 0 13px; max-width:660px }
+  .adv-row{ display:grid; grid-template-columns:minmax(0,52px) minmax(0,1fr) auto; gap:6px 12px;
+    align-items:baseline; padding:11px 13px; min-width:0 }
+  .adv-row + .adv-row{ border-top:1px solid rgba(255,255,255,.07) }
+  .adv-row--none{ background:rgba(255,255,255,.05) }
+  .adv-st{ font-size:11px; letter-spacing:.04em; color:#6d6257 }
+  .adv-row--none .adv-st{ color:var(--endp); font-weight:700 }
+  .adv-ad{ min-width:0; font-size:11px; line-height:1.6; color:#a29f97; overflow-wrap:break-word }
+  .adv-ad b{ color:var(--panel-ink); font-weight:600 }
+  .adv-ad span{ display:block; margin-top:5px; font-size:10.5px; line-height:1.5; color:#8a877f }
+  .adv-ad span b{ color:#a29f97; font-weight:600 }
+  .adv-who{ justify-self:start; font-size:8.5px; letter-spacing:.11em; text-transform:uppercase; white-space:nowrap;
+    border:1px solid rgba(255,255,255,.15); border-radius:5px; padding:3px 8px; color:#6d6257 }
+  .adv-who--them{ color:var(--endp); border-color:rgba(157,138,230,.5); font-weight:700 }
+  .adv-who--us{ color:var(--accent); border-color:var(--accent); font-weight:700 }
+
+  /* a separacao 401 != 403, travada em teste contra o refactor que "simplifica" */
+  .adv-lock{ display:grid; grid-template-columns:auto minmax(0,1fr); gap:9px 14px; align-items:start;
+    border-left:2px solid var(--accent); background:rgba(255,255,255,.05); border-radius:0 8px 8px 0;
+    padding:13px 15px; margin:0 0 12px; max-width:660px }
+  .adv-ltag{ align-self:start; font-size:9px; letter-spacing:.12em; text-transform:uppercase;
+    background:var(--accent); color:var(--panel); font-weight:700; border-radius:6px; padding:4px 9px; white-space:nowrap }
+  .adv-lbody{ min-width:0; font-size:11.5px; line-height:1.65; color:var(--panel-ink); overflow-wrap:break-word }
+  .adv-lbody b{ font-weight:700 }
+  .adv-lbody i{ color:var(--endp); font-style:normal; font-weight:700 }
+  .adv-lbody span{ display:block; margin-top:7px; font-size:10.5px; line-height:1.55; color:#8a877f }
+  .adv-lbody span b{ color:#a29f97; font-weight:600 }
+
+  .adv-foot{ padding:14px 22px; border-top:1px solid var(--panel-line); font-size:11px; line-height:1.6; color:#8a877f }
+  .adv-foot b{ color:#a29f97 }
+  .adv-foot code{ background:rgba(255,255,255,.08); color:var(--panel-ink) }
+
   footer{ border-top:1px solid var(--line); padding:44px 0 64px; color:var(--muted); font-family:var(--mono); font-size:13px }
   footer a{ color:var(--muted); text-decoration:none }
   footer a:hover{ color:var(--accent) }
   .frow{ display:flex; flex-wrap:wrap; gap:18px; align-items:center; justify-content:space-between }
   .flinks a{ margin-right:16px }
 
-  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .rr-stage{ grid-template-columns:1fr } .rr-rails{ grid-template-columns:1fr } .rr-steps{ flex-direction:column; align-items:stretch } .an-stage{ grid-template-columns:1fr } .an-rails{ grid-template-columns:1fr } .an-steps{ flex-direction:column; align-items:stretch } .id-row{ grid-template-columns:1fr; gap:9px } .id-arrow{ display:none } .id-chip{ text-align:left; min-width:0 } .id-fork{ grid-template-columns:1fr } .id-rails{ grid-template-columns:1fr } .eco-hero{ grid-template-columns:1fr } .eco-fork{ grid-template-columns:1fr } .eco-rails{ grid-template-columns:1fr } .mig-flow{ grid-template-columns:1fr } .mig-cross{ min-width:0 } .mig-cline{ width:60% } .mig-guards{ grid-template-columns:1fr } .ctx-row{ grid-template-columns:1fr; gap:9px } .ctx-sp{ display:none } .ctx-rval{ text-align:left } .ctx-fork{ grid-template-columns:1fr } .ctx-fields{ grid-template-columns:1fr } .fld-cols{ grid-template-columns:1fr; gap:14px } .fld-arms{ grid-template-columns:1fr } .cyc-fronts{ grid-template-columns:1fr } .cyc-fork{ grid-template-columns:1fr } .cyc-or{ grid-template-columns:1fr; gap:10px } .cyc-orop{ text-align:left } .cyc-fields{ grid-template-columns:1fr } .cyc-trow{ grid-template-columns:1fr; gap:3px; padding:11px 0 } .cyc-tarr{ display:none } .cyc-track{ padding:0 22px } .cyc-marks{ height:36px } .cyc-marks .cyc-mark{ width:48px; margin-left:-24px; gap:4px } .cyc-marks .cyc-mev{ display:none } .cyc-marks .cyc-mst{ font-size:10.5px } .cyc-seam{ top:24px } .cyc-zone{ font-size:8px; letter-spacing:.04em; padding:0 2px } .cyc-seamlab{ font-size:8px; letter-spacing:.08em } .scl-lines{ max-width:none } .scl-line{ grid-template-columns:1fr; gap:3px } .scl-fields{ grid-template-columns:1fr } .scl-cbody{ grid-template-columns:1fr; gap:3px } .scl-gate{ grid-template-columns:1fr } .rsn-ruler{ max-width:none } .rsn-bar{ align-items:flex-start } .rsn-rail{ height:92px } .rsn-avglab{ white-space:normal; width:104px; text-align:center; top:-32px } .rsn-pops{ grid-template-columns:1fr } .rsn-brow{ grid-template-columns:1fr; gap:3px } .rsn-read{ grid-template-columns:1fr; gap:3px } .rsn-fork{ grid-template-columns:1fr } .rsn-guards{ grid-template-columns:1fr } .snt-bar{ align-items:flex-start } .snt-scale{ max-width:none } .snt-row{ grid-template-columns:1fr; gap:5px } .snt-zones{ grid-template-columns:52% 1fr } .snt-eqrow{ grid-template-columns:1fr; gap:3px } .snt-fields{ grid-template-columns:1fr } .snt-trow{ grid-template-columns:1fr; gap:3px } .snt-verd{ grid-template-columns:1fr } .ttl-bar{ align-items:flex-start } .ttl-rung{ grid-template-columns:1fr; gap:6px } .ttl-stage{ max-width:none } .ttl-axis{ padding:0 22px; letter-spacing:.08em } .ttl-frame{ padding:0 22px } .ttl-cap{ padding:0 22px } .ttl-edge{ font-size:9.5px } .ttl-vd{ font-size:8.5px; padding:4px 7px; letter-spacing:.06em } .ttl-real{ grid-template-columns:1fr } .ttl-prow{ grid-template-columns:1fr; gap:3px } .ttl-buckets{ grid-template-columns:1fr } .byo-bar{ align-items:flex-start } .byo-srow{ grid-template-columns:1fr; gap:3px } .byo-routes{ grid-template-columns:1fr } .byo-hrow{ grid-template-columns:1fr; gap:5px } .byo-proof{ grid-template-columns:1fr } .byo-modes{ grid-template-columns:1fr } .byo-rule{ grid-template-columns:1fr; gap:6px } .byo-grow{ grid-template-columns:1fr; gap:3px } .byo-fields{ grid-template-columns:1fr } .byo-split code{ white-space:normal } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
+  @media (max-width:680px){ .grid{ grid-template-columns:1fr } .loop-fork{ grid-template-columns:1fr } .verify-fork{ grid-template-columns:1fr } .hot-hero{ grid-template-columns:1fr } .proof{ grid-template-columns:1fr } .ex-seams{ grid-template-columns:1fr } .ex-proof{ grid-template-columns:1fr; text-align:center } .rl-split{ grid-template-columns:1fr } .al-ack{ grid-template-columns:1fr } .sh-fork{ grid-template-columns:1fr } .ft-stage{ grid-template-columns:1fr } .ft-findings{ grid-template-columns:1fr } .ft-gates{ grid-template-columns:1fr } .gs-map{ grid-template-columns:1fr } .gs-rails{ grid-template-columns:1fr } .un-stage{ grid-template-columns:1fr } .un-rails{ grid-template-columns:1fr } .sp-stage{ grid-template-columns:1fr } .sp-rails{ grid-template-columns:1fr } .sp-steps{ flex-direction:column; align-items:stretch } .sp-sep{ transform:rotate(90deg); align-self:flex-start } .rr-stage{ grid-template-columns:1fr } .rr-rails{ grid-template-columns:1fr } .rr-steps{ flex-direction:column; align-items:stretch } .an-stage{ grid-template-columns:1fr } .an-rails{ grid-template-columns:1fr } .an-steps{ flex-direction:column; align-items:stretch } .id-row{ grid-template-columns:1fr; gap:9px } .id-arrow{ display:none } .id-chip{ text-align:left; min-width:0 } .id-fork{ grid-template-columns:1fr } .id-rails{ grid-template-columns:1fr } .eco-hero{ grid-template-columns:1fr } .eco-fork{ grid-template-columns:1fr } .eco-rails{ grid-template-columns:1fr } .mig-flow{ grid-template-columns:1fr } .mig-cross{ min-width:0 } .mig-cline{ width:60% } .mig-guards{ grid-template-columns:1fr } .ctx-row{ grid-template-columns:1fr; gap:9px } .ctx-sp{ display:none } .ctx-rval{ text-align:left } .ctx-fork{ grid-template-columns:1fr } .ctx-fields{ grid-template-columns:1fr } .fld-cols{ grid-template-columns:1fr; gap:14px } .fld-arms{ grid-template-columns:1fr } .cyc-fronts{ grid-template-columns:1fr } .cyc-fork{ grid-template-columns:1fr } .cyc-or{ grid-template-columns:1fr; gap:10px } .cyc-orop{ text-align:left } .cyc-fields{ grid-template-columns:1fr } .cyc-trow{ grid-template-columns:1fr; gap:3px; padding:11px 0 } .cyc-tarr{ display:none } .cyc-track{ padding:0 22px } .cyc-marks{ height:36px } .cyc-marks .cyc-mark{ width:48px; margin-left:-24px; gap:4px } .cyc-marks .cyc-mev{ display:none } .cyc-marks .cyc-mst{ font-size:10.5px } .cyc-seam{ top:24px } .cyc-zone{ font-size:8px; letter-spacing:.04em; padding:0 2px } .cyc-seamlab{ font-size:8px; letter-spacing:.08em } .scl-lines{ max-width:none } .scl-line{ grid-template-columns:1fr; gap:3px } .scl-fields{ grid-template-columns:1fr } .scl-cbody{ grid-template-columns:1fr; gap:3px } .scl-gate{ grid-template-columns:1fr } .rsn-ruler{ max-width:none } .rsn-bar{ align-items:flex-start } .rsn-rail{ height:92px } .rsn-avglab{ white-space:normal; width:104px; text-align:center; top:-32px } .rsn-pops{ grid-template-columns:1fr } .rsn-brow{ grid-template-columns:1fr; gap:3px } .rsn-read{ grid-template-columns:1fr; gap:3px } .rsn-fork{ grid-template-columns:1fr } .rsn-guards{ grid-template-columns:1fr } .snt-bar{ align-items:flex-start } .snt-scale{ max-width:none } .snt-row{ grid-template-columns:1fr; gap:5px } .snt-zones{ grid-template-columns:52% 1fr } .snt-eqrow{ grid-template-columns:1fr; gap:3px } .snt-fields{ grid-template-columns:1fr } .snt-trow{ grid-template-columns:1fr; gap:3px } .snt-verd{ grid-template-columns:1fr } .ttl-bar{ align-items:flex-start } .ttl-rung{ grid-template-columns:1fr; gap:6px } .ttl-stage{ max-width:none } .ttl-axis{ padding:0 22px; letter-spacing:.08em } .ttl-frame{ padding:0 22px } .ttl-cap{ padding:0 22px } .ttl-edge{ font-size:9.5px } .ttl-vd{ font-size:8.5px; padding:4px 7px; letter-spacing:.06em } .ttl-real{ grid-template-columns:1fr } .ttl-prow{ grid-template-columns:1fr; gap:3px } .ttl-buckets{ grid-template-columns:1fr } .byo-bar{ align-items:flex-start } .byo-srow{ grid-template-columns:1fr; gap:3px } .byo-routes{ grid-template-columns:1fr } .byo-hrow{ grid-template-columns:1fr; gap:5px } .byo-proof{ grid-template-columns:1fr } .byo-modes{ grid-template-columns:1fr } .byo-rule{ grid-template-columns:1fr; gap:6px } .byo-grow{ grid-template-columns:1fr; gap:3px } .byo-fields{ grid-template-columns:1fr } .byo-split code{ white-space:normal } .adv-msgs{ grid-template-columns:1fr } .adv-srow{ grid-template-columns:1fr; gap:3px } .adv-frow{ grid-template-columns:1fr; gap:3px } .adv-row{ grid-template-columns:1fr; gap:6px } .adv-lock{ grid-template-columns:1fr } .wins{ grid-template-columns:1fr } body{ font-size:16px } }
   @media (prefers-reduced-motion:reduce){ .caret{ animation:none } .reveal{ opacity:1 !important; transform:none !important } }
   /* eixo estreito: os chips de veredito ficam a 26,7% de distancia um do outro - encolhe o chip, nao a informacao */
   @media (max-width:430px){ .ttl-vd{ padding:3px 6px; letter-spacing:.03em } }
@@ -2294,7 +2451,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.21.0</span>
+    <span class="ver">v2.21.1</span>
   </nav>
 
   <header class="hero">
@@ -2407,6 +2564,161 @@
         <p>Ative constraints explicitamente com <code>policy_activate</code>, nunca auto-promovidas de lições: o <code>error-guard</code> nega no <code>PreToolUse</code> um Bash cuja falha reincide, políticas <b>always-apply</b> entram no contexto no início da sessão, e políticas <b>por glob</b> avisam ao editar um arquivo que casa o padrão. <b>Surfacing ≠ enforcement</b>: ficam presentes no contexto, não bloqueiam (exceto o <code>error-guard</code>). A Fase 3 agora fecha o ciclo: modo sombra mede, e <code>/policy-adjudicate</code> chama um <b>juiz LLM independente</b> para estimar disposições — estimativa de juiz, <b>não FP medido</b>.</p>
       </div>
     </div>
+  </section>
+
+
+  <section>
+    <p class="label">Novo na v2.21.1 · o conselho segue o diagnóstico</p>
+    <p class="lede">O <code>403</code> do endpoint BYOK vem com um recado escrito para <b>você</b>, não para o log: o corpo traz <code>{ error: { message, code, type } }</code>, e o <code>message</code> diz a <b>ação exata</b> — credencial expirada, revogada, limite de origem. Antes ele caía no balde genérico <code>status &gt;= 400</code> e chegava até você como <i>“endpoint recusou a request (403)”</i>. O comportamento estava certo — <b>falha alto, sem retry</b> — mas a <b>instrução se perdia</b>. A v2.21.1 repassa a mensagem do endpoint. E corrige o defeito que só apareceu ao <b>ler o texto final</b>: o conselho ao lado dela dizia <i>“Revise a Base URL e os headers”</i> em <b>todos</b> os erros — e num <code>403</code> isso <b>contradiz</b> o que o endpoint acabou de dizer.</p>
+
+    <div class="callout">
+      <span class="tag">o sinal certo, na moldura errada</span>
+      As releases anteriores desta página trataram de sinais que <b>mentiam</b>: um alarme que não apagava (v2.19.1), um número que parecia maior do que era (v2.20.1), uma média que diluía o caso que decide (v2.20.2), um número <b>impossível</b> consumido como verdade (v2.20.3), um palpite disfarçado de medição (v2.20.4). Esta é mais sutil — porque nada estava quebrado. O <code>403</code> já falhava alto e já não era retentado; a mensagem certa <b>chegava</b>. O que sabotava era a <b>moldura</b>: um texto-envelope genérico mandando procurar em <b>três lugares</b> onde o problema não estava, logo abaixo da linha que dizia exatamente onde ele estava. Corrigir só a razão <b>não teria bastado</b> — o conselho ao lado a anularia de novo.
+    </div>
+
+    <div class="adv" role="group" aria-label="Artefato da versão 2.21.1: a mensagem como o usuário lê. A primeira parte mostra o adendo ao contrato do endpoint. Um bloco com borda violeta, porque nada ali é escrito por nós, traz a resposta 403 como o endpoint a manda: status 403 Forbidden, content-type application/json, e um corpo JSON com um objeto error contendo message, code e type, com o campo message destacado em violeta e o texto Sua credencial expirou, gere outra e cole no dashboard. Uma nota registra que esse message é escrito para o usuário final e diz a ação exata, e não é um código para o log. Em seguida, duas linhas registram a virada da razão. Antes: o 403 não tinha caso próprio e caía no balde genérico status maior ou igual a 400, virando o texto endpoint recusou a request, entre parênteses 403; a explicação diz que o comportamento estava certo, fail-loud e sem retry, mas que a única coisa que o endpoint tinha a dizer ficava no corpo, sem ninguém ler. Agora, destacado: classifyResponse ganhou o caso 403, que extrai error dot message do corpo pelo extrator endpointMessage e repassa a frase verbatim; a explicação diz que a ação é do outro lado e quem sabe qual é ela é o endpoint. Logo abaixo, uma tabela de duas linhas cobre o corpo que chega. Primeira linha: corpo com error dot message presente resulta na frase do endpoint, verbatim. Segunda linha: corpo ausente, corpo não-JSON ou message vazia caem num texto próprio, endpoint recusou a credencial, entre parênteses 403, sem detalhe no corpo, que ainda cita o status. Uma nota fecha a parte registrando duas garantias: nunca uma razão vazia, porque uma mensagem de erro sem razão é pior do que a genérica, e o extrator endpointMessage nunca lança, porque um corpo malformado não pode derrubar justamente o caminho em que já deu erro. A segunda parte é a assinatura: a mesma 403, antes e agora, desenhada como o texto que o usuário realmente lê, partido em duas linhas julgadas separadamente, a cabeça que diagnostica e o rodapé que aconselha. Dois cartões lado a lado. O da esquerda é o antes: cabeçalho HTTP 403, e a mensagem diz, com sinal de aviso, o endpoint BYOK recusou a request, dois pontos, endpoint recusou a request, entre parênteses 403, e de novo entre parênteses HTTP 403, com a razão em cinza apagado porque ela apenas repete o cabeçalho e não informa nada. Abaixo dela, a segunda linha, riscada e hachurada porque hachura nesta página é o que não conta: revise a Base URL e os headers em barra dashboard, seta, BYOK. Uma marca em âmbar aponta para cima com a palavra contradiz, dizendo que essa linha contradiz a mensagem que o endpoint acabou de dar. O rodapé do cartão explica: a razão só repete o cabeçalho, o recado do endpoint ficou no corpo sem ninguém ler, e o conselho manda procurar em três lugares, Base URL, headers e rede, onde o problema não está. O cartão da direita é o agora, com borda violeta: cabeçalho HTTP 403, e a mensagem diz, com sinal de aviso, o endpoint BYOK recusou a request, dois pontos, e então em violeta a frase do próprio endpoint, sua credencial expirou, gere outra e cole no dashboard, seguida de entre parênteses HTTP 403. No lugar onde antes ficava o conselho há um vão declarado, escrito em violeta: nenhum conselho nosso, com a explicação de que o lugar existe e fica vazio de propósito, porque a mensagem acima já diz a ação e qualquer linha nossa ali só mandaria procurar noutro lugar. O rodapé do cartão explica que a razão é a frase que o endpoint escreveu, extraída de error dot message e repassada verbatim, e que quem sabe o que fazer é quem recusou. Uma legenda declara o código de cores desta parte: violeta é palavra do endpoint e não é nossa, cinza apagado é o genérico que não diz nada, riscado e hachurado é o texto que saiu, e o vão declarado é ausência de conselho, de propósito. Uma nota registra que a mensagem da direita perde uma linha e não ganha nenhuma, porque onde havia conselho agora há vão, e que o cartão só fica maior porque a ausência precisou ser declarada: no terminal ela é invisível, e é por isso que uma correção assim não aparece num diff de features. A terceira parte mostra a função userAdvice, que recebe status, classificação e dica, com cada status recebendo o conselho que corresponde a ele. Quatro linhas. A linha do 403, destacada e com o status em violeta: nenhum conselho nosso, porque a mensagem do endpoint já diz a ação, e a etiqueta ao lado diz que a ação é do outro lado. A linha do 401: revise os headers em barra dashboard, seta, BYOK, porque credencial não reconhecida é problema do nosso lado, e a etiqueta ao lado, em âmbar, diz nosso lado. A linha do 404: revise a Base URL em barra dashboard, seta, BYOK, porque o caminho está errado e o endpoint não expõe barra v1 barra messages nessa Base URL, com a mesma etiqueta nosso lado. A linha do 5xx: o endpoint está fora do ar, a sua configuração não é a causa, porque não há o que revisar, com a etiqueta o endpoint caiu. Em seguida, um bloco travado em teste registra a distinção deliberada entre 401 e 403: o 401 é credencial não reconhecida, e o 403 é credencial reconhecida mas que não vale agora, seja por expiração, revogação ou limite de origem. São diagnósticos diferentes que levam a ações diferentes, então não podem colapsar num só, e um teste reprova se o 403 passar a devolver o texto do 401, porque é o tipo de distinção que alguém simplifica no refactor seguinte juntando os dois. O mesmo bloco registra que o corpo com model is not supported continua vencendo mesmo dentro de um 403, porque o diagnóstico mais específico não pode ser engolido pelo genérico. Uma nota final lembra que nada disso é retentável: o único retentável continua sendo o 429, que é teto por credencial e não erro de configuração, enquanto 401, 403, 404 e 5xx falham alto e não caem em silêncio para a NVIDIA. No rodapé, a lição: o que mudou não foi o comportamento, porque o 403 já falhava alto e já não era retentado antes e depois; o que mudou é o que chega até o usuário, a mensagem que o endpoint escreveu e o fim de um conselho que apontava para o lado oposto dela. As releases anteriores desta página consertaram sinais que mentiam; esta conserta a moldura, porque o sinal estava certo e o texto ao lado o anulava.">
+      <div class="adv-bar">
+        <span class="k">v2.21.1</span>
+        <span class="m">o 403 fala · e o conselho para de contradizê-lo</span>
+      </div>
+
+      <div class="adv-part">
+        <span class="adv-tag">o <code>403</code> traz um recado para você · e ele se perdia no balde genérico</span>
+
+        <div class="adv-body">
+          <span class="adv-bodyk">a resposta 403, como o endpoint a manda</span>
+          <pre class="adv-bodyv" tabindex="0" role="region" aria-label="Corpo da resposta 403 do endpoint BYOK, com o campo message destacado (rolagem horizontal)">HTTP/1.1 <b>403 Forbidden</b>
+content-type: application/json
+
+{ "error": {
+    <i>"message"</i>: <i>"Sua credencial expirou. Gere outra e cole no dashboard."</i>,
+    "code": …, "type": …
+} }</pre>
+        </div>
+
+        <p class="adv-note">Esse <code>message</code> não é código para o log: ele é <b>escrito para quem lê</b>, e diz a ação exata — credencial <b>expirada</b>, <b>revogada</b>, <b>limite de origem</b>.</p>
+
+        <div class="adv-shift">
+          <div class="adv-srow">
+            <span class="adv-sk">antes</span>
+            <span class="adv-sv">o <code>403</code> não tinha caso próprio: caía em <code>status &gt;= 400</code>
+              <span class="adv-swhy">Virava <b>“endpoint recusou a request (403)”</b>, junto com qualquer outro 4xx. O <b>comportamento</b> estava certo — falha alto, sem retry — mas a única coisa que o endpoint tinha a dizer ficava <b>no corpo</b>, e ninguém a lia.</span>
+            </span>
+          </div>
+          <div class="adv-srow adv-srow--now">
+            <span class="adv-sk">agora</span>
+            <span class="adv-sv"><code>classifyResponse(403, body)</code> — a frase do endpoint, <b>verbatim</b>
+              <span class="adv-swhy"><code>endpointMessage()</code> extrai <code>error.message</code> do corpo e ela <b>vira a razão</b>. A ação é do outro lado, e quem sabe qual é ela é <b>quem recusou</b>.</span>
+            </span>
+          </div>
+        </div>
+
+        <div class="adv-falls">
+          <div class="adv-frow">
+            <span class="adv-fk">corpo com <code>error.message</code></span>
+            <span class="adv-fv"><i>a frase do endpoint</i>, repassada sem edição</span>
+          </div>
+          <div class="adv-frow">
+            <span class="adv-fk">ausente · não-JSON · <code>message</code> vazia</span>
+            <span class="adv-fv"><b>endpoint recusou a credencial (403) — sem detalhe no corpo</b> — um texto próprio que <b>ainda cita o status</b></span>
+          </div>
+        </div>
+
+        <p class="adv-note">Duas garantias no caminho de erro: <b>nunca uma razão vazia</b> — uma mensagem sem razão é pior que a genérica que ela substituiu; e <code>endpointMessage()</code> <b>nunca lança</b>, porque um corpo malformado não pode derrubar justamente o caminho em que <b>já deu erro</b>.</p>
+      </div>
+
+      <div class="adv-part">
+        <span class="adv-tag">a mensagem como você lê · a mesma <code>403</code>, antes e agora</span>
+
+        <div class="adv-msgs">
+          <div class="adv-msg">
+            <div class="adv-mhead">
+              <span class="adv-mwhen">antes</span>
+              <span class="adv-mst">HTTP 403</span>
+            </div>
+            <span class="adv-mline">⚠️ O endpoint BYOK recusou a request: <em>endpoint recusou a request (403)</em> (HTTP 403).</span>
+            <span class="adv-mline adv-mline--bad">Revise a Base URL e os headers em /dashboard → BYOK.</span>
+            <span class="adv-x"><b>↑ contradiz</b> a mensagem que o endpoint acabou de dar</span>
+            <span class="adv-mwhy">A razão só <b>repete o cabeçalho</b> — o recado do endpoint ficou no corpo, sem ninguém ler. E o conselho manda procurar em <b>três lugares</b> (Base URL, headers, rede) onde o problema não está.</span>
+          </div>
+
+          <div class="adv-msg adv-msg--now">
+            <div class="adv-mhead">
+              <span class="adv-mwhen">agora</span>
+              <span class="adv-mst">HTTP 403</span>
+            </div>
+            <span class="adv-mline">⚠️ O endpoint BYOK recusou a request: <i>Sua credencial expirou. Gere outra e cole no dashboard.</i> (HTTP 403).</span>
+            <span class="adv-mnone">nenhum conselho nosso
+              <em>O lugar existe e fica <b>vazio</b>, de propósito: a mensagem acima <b>já diz a ação</b>, e qualquer linha nossa aqui só mandaria procurar noutro lugar.</em>
+            </span>
+            <span class="adv-mwhy">A razão é <b>a frase que o endpoint escreveu</b> — extraída de <code>error.message</code> e repassada verbatim. Quem sabe o que fazer é <b>quem recusou</b>.</span>
+          </div>
+        </div>
+
+        <p class="adv-cap">violeta = palavra do endpoint, não é nossa · cinza apagado = genérico que não diz nada · riscado + hachurado = o texto que saiu · o vão declarado = ausência de conselho, de propósito</p>
+
+        <p class="adv-note">A <b>mensagem</b> da direita perde uma linha e <b>não ganha</b> nenhuma: onde havia conselho, agora há vão. O <b>cartão</b> só fica maior porque a ausência precisou ser <b>declarada</b> — no terminal ela é invisível, e é exatamente por isso que uma correção assim <b>não aparece num diff de features</b>.</p>
+      </div>
+
+      <div class="adv-part">
+        <span class="adv-tag">cada status, o conselho que corresponde · <code>userAdvice(status, cls, hint)</code></span>
+
+        <div class="adv-map">
+          <div class="adv-row adv-row--none">
+            <span class="adv-st">403</span>
+            <span class="adv-ad"><b>nenhum conselho nosso</b>
+              <span>A mensagem do endpoint <b>já diz a ação</b> — credencial expirada, revogada, limite de origem.</span>
+            </span>
+            <span class="adv-who adv-who--them">a ação é do outro lado</span>
+          </div>
+          <div class="adv-row">
+            <span class="adv-st">401</span>
+            <span class="adv-ad">Revise os <b>headers</b> em <code>/dashboard → BYOK</code>.
+              <span>Credencial <b>não reconhecida</b>: o que está errado é o que <b>nós</b> anexamos.</span>
+            </span>
+            <span class="adv-who adv-who--us">nosso lado</span>
+          </div>
+          <div class="adv-row">
+            <span class="adv-st">404</span>
+            <span class="adv-ad">Revise a <b>Base URL</b> em <code>/dashboard → BYOK</code>.
+              <span>Caminho errado: o endpoint não expõe <code>/v1/messages</code> nessa Base URL.</span>
+            </span>
+            <span class="adv-who adv-who--us">nosso lado</span>
+          </div>
+          <div class="adv-row">
+            <span class="adv-st">5xx</span>
+            <span class="adv-ad">O endpoint está <b>fora do ar</b> — a sua configuração <b>não é a causa</b>.
+              <span>Não há o que revisar. Mandar conferir a config aqui só faria você duvidar do que está certo.</span>
+            </span>
+            <span class="adv-who">o endpoint caiu</span>
+          </div>
+        </div>
+
+        <div class="adv-lock">
+          <span class="adv-ltag">travado em teste</span>
+          <span class="adv-lbody"><b>401 ≠ 403</b>, de propósito: <code>401</code> é <i>credencial não reconhecida</i>; <code>403</code> é <i>credencial reconhecida, mas que não vale agora</i>.
+            <span>São diagnósticos diferentes e levam a <b>ações diferentes</b> — não podem colapsar num só. Um teste <b>reprova</b> se o <code>403</code> passar a devolver o texto do <code>401</code>, porque é exatamente o tipo de distinção que alguém “simplifica” no refactor seguinte juntando os dois. E <code>model is not supported</code> <b>continua vencendo</b> mesmo dentro de um <code>403</code>: o diagnóstico mais <b>específico</b> não pode ser engolido pelo genérico.</span>
+          </span>
+        </div>
+
+        <p class="adv-note">Nada disso é <b>retentável</b>. O único retentável continua sendo o <code>429</code> — teto por credencial, não erro de configuração. <code>401</code>, <code>403</code>, <code>404</code> e <code>5xx</code> <b>falham alto</b> e não caem em silêncio para a NVIDIA, porque erro de configuração precisa aparecer para ser consertado.</p>
+      </div>
+
+      <div class="adv-foot"><b>O que mudou não foi o comportamento:</b> o <code>403</code> já falhava alto e já não era retentado, antes e depois. O que mudou é <b>o que chega até você</b> — a frase que o endpoint escreveu, e o fim de um conselho que apontava para o lado oposto dela. As releases anteriores desta página consertaram sinais que <b>mentiam</b>; esta conserta a <b>moldura</b>: o sinal estava certo, e o texto ao lado o anulava.</div>
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>O 403 passa a dizer o que fazer</h4>
+        <p>A mensagem que o endpoint escreveu para <b>você</b> chega inteira: <code>classifyResponse</code> extrai <code>error.message</code> do corpo e a repassa <b>verbatim</b>. Corpo ausente, não-JSON ou <code>message</code> vazia caem num texto próprio que <b>ainda cita o status</b> — nunca uma razão vazia.</p>
+      </div>
+      <div class="win">
+        <h4>O conselho aponta para onde o diagnóstico aponta</h4>
+        <p><code>userAdvice</code> acabou com o envelope único. No <code>403</code>, <b>nenhum conselho nosso</b>; no <code>401</code>, os <b>headers</b>; no <code>404</code>, a <b>Base URL</b>; no <code>5xx</code>, a sua config <b>não é a causa</b>. Você para de procurar em lugar onde o problema não está.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Rigor de sempre:</b> a correção é <b>testada nos dois sentidos</b> — um teste confere que o <code>403</code> repassa a mensagem do corpo, outro que um corpo inútil ainda produz uma razão que <b>cita o status</b>, e um terceiro <b>reprova</b> se o <code>403</code> passar a devolver o texto do <code>401</code>, para que a distinção não seja “simplificada” num refactor futuro. O <code>endpointMessage()</code> <b>nunca lança</b> por decisão, não por sorte: derrubar o classificador com um corpo malformado seria falhar justamente onde já deu erro. A precedência também está travada: <code>model is not supported</code> vence mesmo dentro de um <code>403</code>, porque o diagnóstico mais específico não pode ser engolido pelo genérico. E o <b>fail-loud</b> não afrouxou: <code>401</code>, <code>403</code>, <code>404</code> e <code>5xx</code> continuam sem cair em silêncio para a NVIDIA, e só o <code>429</code> é retentável. No caminho, um segundo guarda foi travado em teste: um valor de header <b>longo e opaco</b> (um token) atravessa o <code>parseHeaderLines</code> <b>íntegro</b>, sem corte nem normalização, para não regredir num refactor futuro. O <b>limite honesto</b>: a qualidade da mensagem do <code>403</code> é do <b>seu endpoint</b> — se ele não mandar nada útil, o plugin diz isso e cita o status, mas <b>não inventa</b> uma razão que não recebeu.</p>
   </section>
 
 
