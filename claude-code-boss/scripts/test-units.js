@@ -5854,6 +5854,42 @@ test('observeCacheCycle: sem sessionKey → não observa (não inventa uma sess�
   assertEq(states.size, 0);
 });
 
+test('observeCacheCycle: TTL global JÁ MEDIDO (1h) evita falso gap-expired numa sessão nova sem ttlMs próprio', () => {
+  routerServer.resetMetrics();
+  // Outra sessão já revelou, em tráfego anterior, que o contrato real é 1h.
+  routerServer.metricsTtl({ cacheCreate: 100, cacheTtl1h: 100, cacheTtl5m: 0 });
+
+  const states = new Map();
+  // 1ª resposta desta sessão NOVA: hit puro, não revela ttlMs próprio — sem o
+  // wiring do TTL global, cairia no hardcoded de 5min (DEFAULT_COLD_BOUNDARY_MS).
+  routerServer.observeCacheCycle('nova-sessao', { cacheRead: 900 }, 0, {}, { states });
+  assertEq(states.get('nova-sessao').ttlMs, 3600000,
+    'sem ttl próprio, herda o TTL GLOBAL observado (1h), não o hardcoded de 5min');
+
+  // 400s de gap: > 5min (o antigo hardcoded classificaria fronteira fria aqui),
+  // mas < 1h (o contrato real, já medido). Deve continuar QUENTE.
+  const r2 = routerServer.observeCacheCycle('nova-sessao', { cacheRead: 900 }, 400000, {}, { states });
+  assertEq(r2.boundary.cold, false, 'o falso positivo do relógio de 5min some com o TTL medido plugado');
+  assertEq(r2.boundary.reason, 'warm');
+});
+
+test('observeCacheCycle: TTL PRÓPRIO da sessão sempre vence o TTL global (cascata de confiança)', () => {
+  routerServer.resetMetrics();
+  // Globalmente o proxy só viu writes de 5min...
+  routerServer.metricsTtl({ cacheCreate: 100, cacheTtl5m: 100, cacheTtl1h: 0 });
+
+  const states = new Map();
+  // ...mas ESTA sessão especificamente revelou 1h no próprio write (1ª request).
+  routerServer.observeCacheCycle('sessao-1h', { cacheCreate: 500, cacheTtl1h: 500 }, 0, {}, { states });
+  assertEq(states.get('sessao-1h').ttlMs, 3600000, 'o write da PRÓPRIA sessão é mais confiável que o global');
+
+  // 2ª request: hit (cache já quente), ainda dentro do TTL de 1h medido.
+  routerServer.observeCacheCycle('sessao-1h', { cacheRead: 500 }, 100000, {}, { states });
+  // 3ª request: 400s depois da 2ª — > 5min global, mas < 1h próprio.
+  const r3 = routerServer.observeCacheCycle('sessao-1h', { cacheRead: 500 }, 500000, {}, { states });
+  assertEq(r3.boundary.cold, false, '400s ainda dentro do TTL de 1h que esta sessão mediu');
+});
+
 test('metricsCacheCycle: snapshot conta hits, misses e fronteiras frias atravessadas', () => {
   routerServer.resetMetrics();
   const m0 = routerServer.metricsSnapshot();
@@ -6296,6 +6332,33 @@ test('metricsTtl: chunk sem write nenhum e ignorado (nao suja a serie)', () => {
   const m = routerServer.metricsSnapshot();
   assertEq(m.ttl.write5m + m.ttl.write1h + m.ttl.writeUnknown, 0);
   assertEq(m.ttl.observed, null);
+});
+
+test('deriveTtlVerdict: sem writes → tudo null (sem prova, sem afirmacao)', () => {
+  assertEq(cacheCycle.deriveTtlVerdict(null).observed, null);
+  assertEq(cacheCycle.deriveTtlVerdict({}).observedMs, null);
+  assertEq(cacheCycle.deriveTtlVerdict({ write5m: 0, write1h: 0 }).pct1h, null);
+});
+
+test('deriveTtlVerdict: só 1h → observed "1h", observedMs 3600000, pct1h 100', () => {
+  const v = cacheCycle.deriveTtlVerdict({ write5m: 0, write1h: 5000 });
+  assertEq(v.observed, '1h');
+  assertEq(v.observedMs, 3600000);
+  assertEq(v.pct1h, 100);
+});
+
+test('deriveTtlVerdict: só 5m → observed "5m", observedMs 300000, pct1h 0', () => {
+  const v = cacheCycle.deriveTtlVerdict({ write5m: 5000, write1h: 0 });
+  assertEq(v.observed, '5m');
+  assertEq(v.observedMs, 300000);
+  assertEq(v.pct1h, 0);
+});
+
+test('deriveTtlVerdict: mistura de 5m e 1h → "mixed", observedMs na janela MAIS LONGA (conservador)', () => {
+  const v = cacheCycle.deriveTtlVerdict({ write5m: 4000, write1h: 16000 });
+  assertEq(v.observed, 'mixed');
+  assertEq(v.observedMs, 3600000, 'subestimar classificaria fronteira fria com cache ainda vivo');
+  assertEq(v.pct1h, 80);
 });
 
 test('ttlWindowMs: a janela MEDIDA vence o palpite do config (fim da adivinhacao)', () => {

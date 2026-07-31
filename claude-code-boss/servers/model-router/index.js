@@ -1407,8 +1407,17 @@ function observeCacheCycle(sessionKey, acc, now, config, deps) {
   const body = deps && deps.body;
   const prev = states.get(sessionKey) || null;
 
-  const boundary = cacheCycle.isColdBoundary(prev, now, config);
-  const state = cacheCycle.observeUsage(prev, cacheCycle.usageFromAccumulator(acc), now, config);
+  // TTL agregado já observado em QUALQUER tráfego anterior (não só desta sessão).
+  // Uma sessão nova (`no-state`) não tem `state.ttlMs` próprio ainda — sem isso
+  // ela cairia direto no hardcoded de 5min mesmo quando o proxy já mediu, em
+  // outras sessões, que o contrato real é 1h (ver `ttlWindowMs`/`deriveTtlVerdict`).
+  // Lido ANTES de `metricsTtl(usage)` rodar para esta resposta (index.js chama
+  // observeCacheCycle antes): reflete o que já era conhecido até a resposta
+  // anterior, nunca o que esta própria resposta acabou de revelar.
+  const globalTtlMs = cacheCycle.ttlWindowMs(cacheCycle.deriveTtlVerdict(metrics.ttl), config);
+
+  const boundary = cacheCycle.isColdBoundary(prev, now, config, globalTtlMs);
+  const state = cacheCycle.observeUsage(prev, cacheCycle.usageFromAccumulator(acc), now, config, globalTtlMs);
   states.set(sessionKey, state);
 
   // O prêmio só existe NA fronteira: fora dela limpar contexto CUSTA (invalida
@@ -1571,32 +1580,18 @@ function metricsSnapshot() {
   const clearablePct = (ccm.coldBoundaryPromptTokens > 0)
     ? Math.round((ccm.coldBoundaryClearableTokens / ccm.coldBoundaryPromptTokens) * 1000) / 10
     : null;
-  // Veredito da JANELA a partir dos writes observados. `null` sem prova — nunca
-  // assume 5m por omissão. `mixed` quando os dois aparecem (a API permite mistura);
-  // nesse caso `observedMs` fica na janela MAIS LONGA, que é a leitura conservadora:
-  // subestimar a janela classificaria fronteira fria com o cache ainda vivo.
+  // Veredito da JANELA a partir dos writes observados — mesma derivação pura que
+  // alimenta `globalTtlMs` em observeCacheCycle, para as duas leituras nunca
+  // divergirem por reimplementar a conta em dois lugares.
   const tt = metrics.ttl || {};
-  const w5 = tt.write5m || 0;
-  const w1 = tt.write1h || 0;
-  const wTotal = w5 + w1;
-  let observed = null;
-  let observedMs = null;
-  if (wTotal > 0) {
-    if (w1 > 0 && w5 > 0) { observed = 'mixed'; observedMs = 3600000; }
-    else if (w1 > 0)      { observed = '1h';    observedMs = 3600000; }
-    else                  { observed = '5m';    observedMs = 300000; }
-  }
+  const verdict = cacheCycle.deriveTtlVerdict(tt);
   return Object.assign({}, metrics, {
     economiaPct,
     savedUnits: Math.round((b - a) * 10) / 10,
     cacheHitPct,
     calibration: Object.assign({}, cal, { charsPerToken }),
     cacheCycle: Object.assign({}, ccm, { clearablePct }),
-    ttl: Object.assign({}, tt, {
-      observed,
-      observedMs,
-      pct1h: wTotal > 0 ? Math.round((w1 / wTotal) * 100) : null,
-    }),
+    ttl: Object.assign({}, tt, verdict),
   });
 }
 
