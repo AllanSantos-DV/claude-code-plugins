@@ -49,24 +49,24 @@ process.env.HOME = process.env.USERPROFILE;
 
 // ─── Tiny test runner ────────────────────────────────────────────────────────
 const RESULTS = [];
-const PENDING = [];
+const TESTS = [];
 
 function test(name, fn) {
-  let p;
+  TESTS.push({ name, fn });
+}
+
+async function runTest({ name, fn }) {
   try {
     const maybe = fn();
     if (maybe && typeof maybe.then === 'function') {
-      p = maybe.then(
-        () => RESULTS.push({ name, ok: true }),
-        err => RESULTS.push({ name, ok: false, err: err && err.stack || String(err) }),
-      );
+      await maybe;
     } else {
-      RESULTS.push({ name, ok: true });
+      void maybe;
     }
+    RESULTS.push({ name, ok: true });
   } catch (err) {
     RESULTS.push({ name, ok: false, err: err && err.stack || String(err) });
   }
-  if (p) PENDING.push(p);
 }
 
 function assert(cond, msg) {
@@ -567,6 +567,7 @@ test('turn-journal: legacy single-file format readable', () => {
 test('brain-backend: keyword path applies minScore threshold', async () => {
   // Use a fresh project dir to avoid touching real KB.
   const projectKey = 'unit-test-' + Date.now();
+  const savedData = process.env.CLAUDE_PLUGIN_DATA;
 
   // brain-store reads CLAUDE_PLUGIN_DATA at module load — reset cache + env.
   delete require.cache[require.resolve('./brain-store.js')];
@@ -579,18 +580,14 @@ test('brain-backend: keyword path applies minScore threshold', async () => {
   const backend = require('./brain-backend.js');
   try {
     await backend.init({ mode: 'local', project: projectKey });
-  } catch (err) {
-    throw new Error(`backend.init failed: ${err.message}`);
-  }
 
-  const baseEntry = {
-    type: 'note',
-    tags: [],
-    confidence: 0.8,
-    source: { kind: 'test' },
-  };
+    const baseEntry = {
+      type: 'note',
+      tags: [],
+      confidence: 0.8,
+      source: { kind: 'test' },
+    };
 
-  try {
     await backend.save({
       ...baseEntry,
       id: 'high-score-entry',
@@ -605,24 +602,36 @@ test('brain-backend: keyword path applies minScore threshold', async () => {
       summary: 'mentions alpha exactly once amid many other words',
       content: { text: 'mentions alpha exactly once amid many other words zeta omega gamma' },
     });
+
+    // Query has 2 distinct keywords; high entry matches both (score 1.0),
+    // low entry matches only 'alpha' (score 0.5). minScore 0.6 excludes low.
+    const high = await backend.search('alpha xenoblastic', { topK: 10, minScore: 0.6 });
+    assert(Array.isArray(high), 'search must return array');
+    assert(
+      !high.some(r => r && r.id === 'low-score-entry'),
+      `low-score entry leaked past minScore filter (got: ${JSON.stringify(high.map(r => ({ id: r && r.id, score: r && r.score })))})`,
+    );
+
+    // Sanity: search with minScore 0 should return at least one.
+    const all = await backend.search('alpha xenoblastic', { topK: 10, minScore: 0 });
+    assert(all.length >= 1, `baseline search returned ${all.length} results`);
+
+    await backend.close();
   } catch (err) {
-    throw new Error(`backend.save failed: ${err.message}`);
+    throw new Error(`brain-backend minScore scenario failed: ${err.message}`);
+  } finally {
+    // O runner agora executa os testes em série; deixar CLAUDE_PLUGIN_DATA preso no
+    // diretório isolado deste cenário fazia os testes seguintes resolverem escopo
+    // pelo Temp em vez do fixture global com .memory/project.json.
+    try { await backend.close(); } catch (err) { void err; }
+    delete require.cache[require.resolve('./brain-store.js')];
+    delete require.cache[require.resolve('./brain-index.js')];
+    delete require.cache[require.resolve('./brain-graph.js')];
+    delete require.cache[require.resolve('./brain-embedder.js')];
+    delete require.cache[require.resolve('./brain-backend.js')];
+    if (savedData === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
+    else process.env.CLAUDE_PLUGIN_DATA = savedData;
   }
-
-  // Query has 2 distinct keywords; high entry matches both (score 1.0),
-  // low entry matches only 'alpha' (score 0.5). minScore 0.6 excludes low.
-  const high = await backend.search('alpha xenoblastic', { topK: 10, minScore: 0.6 });
-  assert(Array.isArray(high), 'search must return array');
-  assert(
-    !high.some(r => r && r.id === 'low-score-entry'),
-    `low-score entry leaked past minScore filter (got: ${JSON.stringify(high.map(r => ({ id: r && r.id, score: r && r.score })))})`,
-  );
-
-  // Sanity: search with minScore 0 should return at least one.
-  const all = await backend.search('alpha xenoblastic', { topK: 10, minScore: 0 });
-  assert(all.length >= 1, `baseline search returned ${all.length} results`);
-
-  await backend.close();
 });
 
 // Brain-backend is a module singleton and the runner awaits async tests
@@ -4427,7 +4436,10 @@ const CAT_RAW = [
 function startFakeModelsServer(handler) {
   return new Promise((resolve) => {
     const srv = http.createServer(handler);
-    srv.listen(0, '127.0.0.1', () => resolve({ port: srv.address().port, close: () => srv.close() }));
+    srv.listen(0, '127.0.0.1', () => resolve({
+      port: srv.address().port,
+      close: () => new Promise(r => srv.close(r)),
+    }));
   });
 }
 
@@ -4499,13 +4511,16 @@ test('catalog.fetchModels: paginates via has_more/last_id', async () => {
     if (!after) res.end(JSON.stringify({ data: [CAT_RAW[0], CAT_RAW[1]], has_more: true, last_id: CAT_RAW[1].id }));
     else res.end(JSON.stringify({ data: [CAT_RAW[2], CAT_RAW[3]], has_more: false, last_id: CAT_RAW[3].id }));
   });
-  const models = await new Promise((resolve, reject) => {
-    catalog.fetchModels({ host: '127.0.0.1', port: srv.port, protocol: 'http:', headers: {}, timeoutMs: 2000 },
-      (err, m) => (err ? reject(err) : resolve(m)));
-  });
-  srv.close();
-  assertEq(models.length, 4);
-  assertEq(models.map((m) => m.id).sort(), ['claude-haiku-4-5-20251001', 'claude-opus-5', 'claude-sonnet-4-6', 'claude-sonnet-5-20260101']);
+  try {
+    const models = await new Promise((resolve, reject) => {
+      catalog.fetchModels({ host: '127.0.0.1', port: srv.port, protocol: 'http:', headers: {}, timeoutMs: 2000 },
+        (err, m) => (err ? reject(err) : resolve(m)));
+    });
+    assertEq(models.length, 4);
+    assertEq(models.map((m) => m.id).sort(), ['claude-haiku-4-5-20251001', 'claude-opus-5', 'claude-sonnet-4-6', 'claude-sonnet-5-20260101']);
+  } finally {
+    await srv.close();
+  }
 });
 
 test('catalog.fetchModels: 403 → error so caller keeps static map', async () => {
@@ -4514,13 +4529,16 @@ test('catalog.fetchModels: 403 → error so caller keeps static map', async () =
     res.writeHead(403, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ type: 'error', error: { type: 'permission_error' } }));
   });
-  let errMsg = null;
-  await new Promise((resolve) => {
-    catalog.fetchModels({ host: '127.0.0.1', port: srv.port, protocol: 'http:', headers: {}, timeoutMs: 2000 },
-      (err) => { errMsg = err ? err.message : null; resolve(); });
-  });
-  srv.close();
-  assert(errMsg && errMsg.includes('403'), `expected 403 error, got ${errMsg}`);
+  try {
+    let errMsg = null;
+    await new Promise((resolve) => {
+      catalog.fetchModels({ host: '127.0.0.1', port: srv.port, protocol: 'http:', headers: {}, timeoutMs: 2000 },
+        (err) => { errMsg = err ? err.message : null; resolve(); });
+    });
+    assert(errMsg && errMsg.includes('403'), `expected 403 error, got ${errMsg}`);
+  } finally {
+    await srv.close();
+  }
 });
 
 test('catalog.maybeRefresh: warms snapshot then serves modelForFamily', async () => {
@@ -4529,15 +4547,18 @@ test('catalog.maybeRefresh: warms snapshot then serves modelForFamily', async ()
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ data: CAT_RAW, has_more: false, last_id: CAT_RAW[3].id }));
   });
-  await new Promise((resolve, reject) => {
-    catalog.maybeRefresh({ host: '127.0.0.1', port: srv.port, protocol: 'http:', headers: {}, ttlMs: 60000,
-      onRefresh: () => resolve(), onError: (e) => reject(e) });
-  });
-  srv.close();
-  assertEq(catalog.modelForFamily('sonnet'), 'claude-sonnet-5-20260101');
-  const snap = catalog.getSnapshot();
-  assert(snap && snap.count === 4, 'snapshot should be warmed with 4 models');
-  catalog._reset();
+  try {
+    await new Promise((resolve, reject) => {
+      catalog.maybeRefresh({ host: '127.0.0.1', port: srv.port, protocol: 'http:', headers: {}, ttlMs: 60000,
+        onRefresh: () => resolve(), onError: (e) => reject(e) });
+    });
+    assertEq(catalog.modelForFamily('sonnet'), 'claude-sonnet-5-20260101');
+    const snap = catalog.getSnapshot();
+    assert(snap && snap.count === 4, 'snapshot should be warmed with 4 models');
+  } finally {
+    catalog._reset();
+    await srv.close();
+  }
 });
 
 // ─── model-router-shim (instalador do shim do claude.exe, Windows) ────────────
@@ -10837,7 +10858,13 @@ test('plugin-setup: setupRoot ignores a divergent CLAUDE_PLUGIN_ROOT (postinstal
 
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
-  await Promise.all(PENDING);
+  // A suíte mexe em singletons de módulo, process.env e servidores HTTP locais.
+  // Promise.all deixava esses testes disputarem o mesmo estado/event loop; em
+  // Windows isso foi medido como timeouts falsos em /v1/models e handshake do
+  // daemon. Rodar em ordem preserva a cobertura sem transformar corrida em flake.
+  for (const t of TESTS) {
+    await runTest(t);
+  }
 
   const passed = RESULTS.filter(r => r.ok).length;
   const failed = RESULTS.filter(r => !r.ok);
