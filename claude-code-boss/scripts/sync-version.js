@@ -11,11 +11,21 @@
  *
  * Files managed:
  *   claude-code-boss/package.json
+ *   claude-code-boss/package-lock.json — BOTH version fields (root + packages[""])
  *   README.md (repo root)     — table row  | claude-code-boss | X.Y.Z |
  *   claude-code-boss/README.md — badge/table row and **vX.Y.Z** references
  *
+ * WHY THE LOCKFILE: npm mirrors package.json's version into package-lock.json in
+ * two places, but only rewrites them on the next `npm install` — so a bump that
+ * touches package.json alone leaves the lockfile behind. It drifted silently to
+ * 2.19.0 while the plugin shipped 2.21.1 (caught 2026-07-31). Cosmetic (npm
+ * resolves dependencies from the tree, not this field), but it makes the lockfile
+ * lie about which release it locks, and every `npm install` produces a spurious
+ * diff that pollutes unrelated PRs.
+ *
  * NOTE: servers/boss-server/package.json and servers/brain-server/package.json
  *       are independent MCP packages with their own version lifecycle — NOT synced.
+ *       Their lockfiles are likewise out of scope.
  *
  * Release flow (all local, no CI involvement):
  *   node scripts/sync-version.js 1.4.0
@@ -106,8 +116,14 @@ function markdownBoldVersionFile(filePath) {
   };
 }
 
+const lockPath = path.join(PLUGIN_ROOT, 'package-lock.json');
+
 const FILES = [
   jsonVersionFile(pkgPath, 'version'),
+  // Two entries, not one: npm keeps the version at the root AND inside the
+  // packages[""] self-entry. Syncing only one leaves the file self-contradictory.
+  jsonVersionFile(lockPath, 'version'),
+  jsonVersionFile(lockPath, 'packages', '', 'version'),
   markdownTableFile(path.join(REPO_ROOT, 'README.md'), 'claude-code-boss'),
   markdownBoldVersionFile(path.join(PLUGIN_ROOT, 'README.md')),
 ];
