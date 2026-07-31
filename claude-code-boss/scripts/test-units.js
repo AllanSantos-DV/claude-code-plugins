@@ -5498,6 +5498,40 @@ test('FIX1 server /health: authenticated:true só com x-router-token correto; 20
   }
 });
 
+// ═══ troca de build no boot: só no SessionStart, e nunca derruba na dúvida ═══
+// Contexto: o router é um daemon detached que sobrevive ao restart do Claude Code.
+// Como o state.json não carrega identidade de build, o ensure reusava um router de
+// SHA ANTERIOR indefinidamente e o install "bem-sucedido" nunca entrava em vigor.
+
+test('build-swap normPath: separador e caixa normalizados (senão o hook mata o router CERTO)', () => {
+  const n = routerEnsure.normPath;
+  assertEq(n('C:\\Users\\a\\plugins\\boss'), 'c:/users/a/plugins/boss', 'backslash → slash + lowercase');
+  assertEq(n('C:/Users/a/plugins/boss/'), 'c:/users/a/plugins/boss', 'barra final removida');
+  // O caso real que falhou: mesmo diretório escrito nos dois estilos precisa bater.
+  assertEq(n('C:/Users/a/plugins/boss') === n('C:\\Users\\a\\plugins\\boss'), true,
+    'mesmo path em estilos diferentes deve comparar igual');
+});
+
+test('build-swap servesThisBuild: FAIL-SAFE — na dúvida NUNCA derruba o router', () => {
+  const s = routerEnsure.servesThisBuild;
+  assertEq(s(999999), true, 'PID inexistente → não conseguimos ler → não derruba');
+  assertEq(s(0), true, 'PID inválido → não derruba');
+  assertEq(s(-1), true, 'PID negativo → não derruba');
+  // Este processo de teste existe e é lido com sucesso, mas NÃO é um model-router:
+  // um PID reciclado jamais pode ser lido como "build divergente".
+  assertEq(s(process.pid), true, 'PID vivo que não é router → não derruba');
+});
+
+test('build-swap: a troca só acontece no SessionStart (nunca no meio de um turno)', () => {
+  const src = fs.readFileSync(path.join(SCRIPTS, 'model-router-ensure.js'), 'utf-8');
+  assertEq(/isSessionStart\s*&&[^\n]*servesThisBuild/.test(src), true,
+    'o kill de build divergente deve estar guardado por isSessionStart');
+  // POR QUE ISSO IMPORTA: o router é o proxy da sessão (ANTHROPIC_BASE_URL). Derrubar
+  // fora do boot corta a API em uso e o self-heal só roda no próximo prompt do usuário.
+  assertEq(/waitPortFree/.test(src), true,
+    'após o kill é preciso esperar a porta liberar, senão o bind novo dá EADDRINUSE');
+});
+
 test('FIX1 healthCheck: contra o NOSSO server, true SÓ com o token certo (verify-before-trust)', async () => {
   const TOKEN = 'c'.repeat(64);
   const server = await routerServer.createServer({}, 'fallback-only', TOKEN);
