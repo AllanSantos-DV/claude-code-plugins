@@ -1,5 +1,42 @@
 # Changelog
 
+## [2.21.0] - 2026-07-31
+
+**BYOK: o proxy passa a falar com um endpoint Anthropic-compatible seu.** Até aqui o único destino possível era `api.anthropic.com` — o override de upstream existia, mas era uma **constante global lida no boot**, documentada como *"só para testes"*. Escolher o destino **por request** (que é o que permite "direto no meu endpoint" × "só quando o Claude estourar") não era possível.
+
+O plugin **não conhece o provedor** nem de onde veio o token: recebe uma **Base URL** e um **mapa de headers** pelo dashboard e os anexa em toda request. Nada disso vive no código.
+
+### Segurança — o ponto central
+
+O `authorization`/`x-api-key` que o Claude Code envia carrega o token da **assinatura do usuário**. Repassá-lo a um endpoint de terceiro seria **vazar a credencial**. Na rota BYOK esses headers são **removidos** e valem apenas os configurados.
+
+Isso não é promessa: há um teste **ponta a ponta** que sobe um endpoint falso, manda uma request com o token da assinatura no cabeçalho e **falha** se ele aparecer do outro lado.
+
+### Dois modos, escolhidos no dashboard
+
+- **`on-limit`** (padrão) — o Claude atende normalmente; o endpoint entra no 429, **antes** do plano B da NVIDIA. Se o endpoint também estiver no teto (429), a vez passa para a NVIDIA.
+- **`always`** — o endpoint atende tudo, sem depender da assinatura Claude.
+
+A NVIDIA **continua** disponível como terceira opção; nada foi removido.
+
+### Detalhes que o contrato do endpoint impôs
+
+- **`model` verbatim, sem mapeamento.** O endpoint normaliza os nomes sozinho (`claude-haiku-4-5` → `claude-haiku-4.5`) e erra alto no inexistente. Mapear aqui criaria uma segunda fonte de verdade para divergir — há um teste que **proíbe** a existência de um `mapModel`.
+- **Fail-loud** em `401`/`404`/`5xx` e no corpo `model is not supported`: não caem em silêncio para a NVIDIA, senão a credencial errada nunca é consertada. Só o `429` (teto por credencial) é tratado como retentável.
+- **Ligado sem `baseUrl`** não vira "usa o Claude e ninguém vê": a request não é roteada e a causa é registrada.
+- **Headers como mapa genérico**, não um campo `token`: se o endpoint passar a exigir outro header (chave de gateway, tenant id, dois headers), muda a config e não o código.
+
+### Defeito corrigido no caminho
+
+O **cooldown** do circuit breaker é sobre a janela da **Anthropic** — mas com `byok.mode=always` a Anthropic nem entra no caminho, e mesmo assim o breaker desviava a request para o plano B. Encontrado pelo próprio teste de integração, que não recebia a request no endpoint. O cooldown agora só se aplica quando o destino é a Anthropic.
+
+### UI e persistência
+
+- Card **BYOK** em `/dashboard` → Model Router: liga/desliga, seletor de modo, Base URL e headers (um por linha, `Nome: valor`).
+- Uma linha de header inválida **aborta o save com aviso** em vez de gravar um mapa pela metade.
+- A UI **não reexibe** os valores: mostra os nomes mascarados, e salvar com o campo em branco **preserva** o que já está gravado — mesma regra da chave NVIDIA. O arquivo é `0600`.
+- `resolveMode` ganhou `byok-direct`. BYOK é **ortogonal** à rota: escolhe o destino, não como se classifica — por isso entra por último na precedência e não rouba a vez de `sticky`/`routing`/`fallback`.
+
 ## [2.20.4] - 2026-07-30
 
 **A janela do cache deixa de ser palpite: ela é declarada pela própria API e agora é persistida.** O detector assumia 5 minutos vindos do config. Mas a extração do binário do Claude Code mostra que a janela **pode ser de 1 hora**, e a decisão não é do usuário:

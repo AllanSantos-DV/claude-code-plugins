@@ -36,6 +36,14 @@ function resolveMode(config) {
   if (c.enabled === true) return 'routing';
   const fb = (c.fallback && typeof c.fallback === 'object') ? c.fallback : {};
   if (fb.enabled === true) return 'fallback-only';
+  // BYOK é ORTOGONAL à rota: ele escolhe o DESTINO, não como se classifica. Por
+  // isso entra por último — não rouba a precedência de sticky/routing/fallback,
+  // que continuam mandando na lógica de roteamento. O que ele precisa é apenas
+  // GARANTIR que o proxy esteja no caminho quando nada mais o ligou:
+  //   always   → o endpoint atende tudo, então o proxy precisa interceptar.
+  //   on-limit → mesma postura do fallback (passthrough + intervir no 429).
+  const by = (c.byok && typeof c.byok === 'object') ? c.byok : {};
+  if (by.enabled === true) return by.mode === 'always' ? 'byok-direct' : 'fallback-only';
   return 'off';
 }
 
@@ -53,6 +61,10 @@ const MODE_META = {
   'fallback-only': { i18n: 'mode.fallbackOnly', color: 'blue',  deprecated: false },
   'sticky-tier':   { i18n: 'mode.stickyTier',   color: 'green', deprecated: false },
   'routing':       { i18n: 'mode.routing',      color: 'amber', deprecated: true  },
+  // BYOK direto: o proxy serve TUDO por um endpoint Anthropic-compatible do
+  // usuário — não depende da assinatura Claude. Roxo p/ não se confundir com os
+  // modos que falam com a Anthropic.
+  'byok-direct':   { i18n: 'mode.byokDirect',   color: 'purple', deprecated: false },
 };
 
 // Devolve os metadados de um modo; desconhecido/ausente → 'off' (fail-safe).

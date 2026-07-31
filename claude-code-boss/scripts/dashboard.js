@@ -1275,8 +1275,23 @@ function writeRouterOverride(body) {
   if (body.routing && typeof body.routing === 'object') {
     out.routing = { ...(existing.routing || {}), ...body.routing };
   }
+
+  // BYOK — endpoint Anthropic-compatible do usuário. Merge campo a campo pelo
+  // MESMO motivo da chave NVIDIA: o dashboard não reenvia segredo a cada toggle,
+  // então trocar só o modo não pode apagar os headers já gravados. `headers:null`
+  // é a limpeza EXPLÍCITA (distinta de "não mandei este campo").
+  if (body.byok && typeof body.byok === 'object') {
+    const b = { ...(existing.byok || {}) };
+    if (typeof body.byok.enabled === 'boolean') b.enabled = body.byok.enabled;
+    if (body.byok.mode === 'always' || body.byok.mode === 'on-limit') b.mode = body.byok.mode;
+    if (typeof body.byok.baseUrl === 'string') b.baseUrl = body.byok.baseUrl.trim();
+    if (body.byok.headers === null) b.headers = {};
+    else if (body.byok.headers && typeof body.byok.headers === 'object') b.headers = { ...body.byok.headers };
+    out.byok = b;
+  }
+
   atomicWriteJSON(ROUTER_USER_CONFIG, out);
-  hardenRouterConfigPerms(ROUTER_USER_CONFIG); // owner-only 0600 (holds the NVIDIA key); no-op on Windows
+  hardenRouterConfigPerms(ROUTER_USER_CONFIG); // owner-only 0600 (chave NVIDIA + headers BYOK); no-op no Windows
   return out;
 }
 
@@ -1295,29 +1310,52 @@ function resolveRouterFlags() {
   const fallbackEnabled = (override.fallback && override.fallback.enabled !== undefined)
     ? override.fallback.enabled === true
     : shippedFb;
-  return { shipped, override, enabled, stickyEnabled, fallbackEnabled };
+  // BYOK efetivo: mesmo merge shipped⊕override, campo a campo.
+  const sb = (shipped.byok && typeof shipped.byok === 'object') ? shipped.byok : {};
+  const ob = (override.byok && typeof override.byok === 'object') ? override.byok : {};
+  const byok = {
+    enabled: ob.enabled !== undefined ? ob.enabled === true : sb.enabled === true,
+    mode: (ob.mode === 'always' || ob.mode === 'on-limit') ? ob.mode
+      : ((sb.mode === 'always' || sb.mode === 'on-limit') ? sb.mode : 'on-limit'),
+    baseUrl: typeof ob.baseUrl === 'string' ? ob.baseUrl : (typeof sb.baseUrl === 'string' ? sb.baseUrl : ''),
+    headers: (ob.headers && typeof ob.headers === 'object') ? ob.headers
+      : ((sb.headers && typeof sb.headers === 'object') ? sb.headers : {}),
+  };
+  return { shipped, override, enabled, stickyEnabled, fallbackEnabled, byok };
 }
 
 // Modo CONFIGURADO (o que o proxy DEVERIA rodar após um reload) via a fonte única.
 function configuredRouterMode() {
-  const { enabled, stickyEnabled, fallbackEnabled } = resolveRouterFlags();
+  const { enabled, stickyEnabled, fallbackEnabled, byok } = resolveRouterFlags();
   return resolveMode({
     enabled,
     sticky:   { enabled: stickyEnabled },
     fallback: { enabled: fallbackEnabled },
+    byok:     { enabled: byok.enabled, mode: byok.mode },
   });
 }
 
 function getRouterConfig(req, res) {
   try {
-    const { shipped, override, enabled, stickyEnabled, fallbackEnabled } = resolveRouterFlags();
+    const { shipped, override, enabled, stickyEnabled, fallbackEnabled, byok } = resolveRouterFlags();
     const nim = { ...(shipped.nim || {}), ...(override.nim || {}) };
     const routing = { ...(shipped.routing || {}), ...(override.routing || {}) };
     const key = String(nim.apiKey || '').trim();
+    // Os headers do BYOK carregam credencial: a rota devolve só os NOMES, com o
+    // valor MASCARADO. Reexibir o segredo em tela não ajuda o usuário e amplia a
+    // superfície (o dashboard fica aberto no navegador).
+    const byokHeaderNames = Object.keys((byok && byok.headers) || {});
+    const byokSafe = {
+      enabled: !!(byok && byok.enabled),
+      mode: (byok && byok.mode) || 'on-limit',
+      baseUrl: (byok && byok.baseUrl) || '',
+      headers: byokHeaderNames.reduce((acc, n) => { acc[n] = '••••'; return acc; }, {}),
+    };
     json(res, {
       enabled,
       stickyEnabled,
       fallbackEnabled,
+      byok: byokSafe,
       acceptedTerms: override.acceptedTerms === true,
       hasNvidiaKey: key.length > 0,
       nimMasked: key.length >= 4 ? key.slice(-4) : '',
@@ -1692,4 +1730,4 @@ if (require.main === module) startDashboardServer();
 // Exported for unit tests (require.main guard above keeps the server from
 // starting on require). writeRouterOverride is the single writer of the global
 // router user-config, so tests assert its path + key-preservation behavior.
-module.exports = { writeRouterOverride };
+module.exports = { writeRouterOverride, resolveRouterFlags };

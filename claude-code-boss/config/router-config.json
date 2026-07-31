@@ -30,7 +30,9 @@
     "_comment": "Plano B quando a janela de acesso do Claude esgota. triggerStatuses: status HTTP do upstream que disparam o fallback (429 = limite). Se nim.apiKey estiver configurada, roteia para a NVIDIA (com aviso de que NÃO é mais o Claude); senão devolve uma mensagem orientando rodar /dashboard.",
     "enabled": false,
     "_comment_enabled": "OPT-IN e INDEPENDENTE do cost-routing (enabled acima): rede de seguranca de LIMITE, cache-neutra. Preenche um gap NATIVO: o fallbackModel da Anthropic NAO dispara em 429 (rate-limit), so em 529 (overload). Com fallback.enabled:true o proxy entra no caminho como PASSTHROUGH cache-safe para o Claude (NUNCA troca modelo/effort, NAO classifica: o prefixo do prompt cache fica byte-identico a uma chamada direta) e SO intervem no 429 do upstream -> se nim.apiKey estiver setada, roteia para a NVIDIA (com aviso de que NAO e mais o Claude); senao devolve uma mensagem orientando rodar /dashboard. Ha cooldown/circuit-breaker (abaixo). Funciona MESMO com cost-routing enabled:false. Para ativar: /dashboard -> Limit Fallback -> ligar (grava DATA_DIR/model-router/user-config.json {fallback:{enabled:true}}, sobrevive a updates). ensure e server fazem merge shipped(+)user-config, entao o opt-in vale para os dois.",
-    "triggerStatuses": [429],
+    "triggerStatuses": [
+      429
+    ],
     "cooldown": {
       "_comment": "Circuit breaker p/ o limite (429 + janela da assinatura). Reset DETERMINÍSTICO multi-fonte: (1) headers do 429 (retry-after / anthropic-ratelimit-unified-reset / buckets); (2) CORPO da resposta — caso da assinatura: evento rate_limit_event (rate_limit_info.status='rejected' + resetsAt em epoch) ou o marcador 'Claude AI usage limit reached|<unix>'. O proxy faz um 'tee' leve do stream 200 (repassa verbatim E escaneia), pois a assinatura sinaliza a janela esgotada DENTRO de um 200. Achando o reset (header OU corpo) espera EXATAMENTE até lá. Só sem NADA legível o 429 vira esporádico (janela deslizante): um 429 isolado cai no plano B só naquela request e a PRÓXIMA já testa o Claude; após `tripAfter` 429s seguidos arma um cooldown CURTO de `noHeaderMs` e re-sonda — qualquer resposta do Claude zera o contador e volta na hora. GUARD anti-falso-positivo: o Claude Code dispara várias requests em paralelo e a Anthropic devolve 429 de CONCORRÊNCIA (sem reset) intercalado com 200 — se um 200 limpo veio nos últimos `probeSuppressMs` ms, um 429 sem header é tratado como concorrência (não janela) e NÃO arma cooldown; e um 200 limpo derruba na hora um cooldown de palpite já armado. enabled: liga/desliga. noHeaderMs: cooldown curto sem nenhum reset (ms). tripAfter: 429s consecutivos p/ armar sem reset. probeSuppressMs: janela (ms) após um 200 em que 429 sem header é ignorado como concorrência. minMs/maxMs: piso/teto de segurança (ms).",
       "enabled": true,
@@ -45,20 +47,65 @@
     "_comment": "Modelos Claude usados por tier. nimModel opcional: se preenchido e nim.apiKey configurada, executa no NIM em vez do Claude (custo zero).",
     "ceiling": true,
     "_comment_ceiling": "TETO: o roteador NUNCA escala acima do modelo que o usuário escolheu no dropdown — só rebaixa p/ economizar (esticar a janela). true = teto ligado (recomendado). false = classificador livre (pode subir p/ opus mesmo se você escolheu sonnet).",
-    "costWeights": { "haiku": 1, "sonnet": 3, "opus": 15 },
+    "costWeights": {
+      "haiku": 1,
+      "sonnet": 3,
+      "opus": 15
+    },
     "_comment_costWeights": "Pesos de custo (proxy dos preços públicos: opus ~15x haiku) usados SÓ na estimativa de economia do dashboard. Não afetam o roteamento.",
-    "haikuTier":  { "model": "claude-haiku-4-5-20251001", "nimModel": "" },
-    "sonnetTier": { "model": "claude-sonnet-4-6",         "nimModel": "" },
-    "opusTier":   { "model": "claude-opus-4-8",           "nimModel": "" },
+    "haikuTier": {
+      "model": "claude-haiku-4-5-20251001",
+      "nimModel": ""
+    },
+    "sonnetTier": {
+      "model": "claude-sonnet-4-6",
+      "nimModel": ""
+    },
+    "opusTier": {
+      "model": "claude-opus-4-8",
+      "nimModel": ""
+    },
     "effort": {
       "_comment": "Reconciliação do parâmetro `effort` (Anthropic, em body.output_config.effort) ao REBAIXAR o modelo. A escala é POR MODELO (doc oficial): Opus 4.8/4.7 têm xhigh; Sonnet 4.6/Opus 4.6 têm max mas NÃO xhigh; Haiku NÃO suporta effort. Ao trocar o modelo: mantém se o destino aceita o valor, clampa p/ o maior suportado <= pedido (ex.: opus xhigh -> sonnet high), ou remove se o destino não tem effort (haiku). order = ranking de capacidade; support = valores válidos por modelo (match por prefixo; modelo ausente = sem effort). Modelo MANTIDO pelo teto preserva o effort intacto.",
-      "order": ["low", "medium", "high", "xhigh", "max"],
+      "order": [
+        "low",
+        "medium",
+        "high",
+        "xhigh",
+        "max"
+      ],
       "support": {
-        "claude-opus-4-8":   ["low", "medium", "high", "xhigh", "max"],
-        "claude-opus-4-7":   ["low", "medium", "high", "xhigh", "max"],
-        "claude-opus-4-6":   ["low", "medium", "high", "max"],
-        "claude-sonnet-4-6": ["low", "medium", "high", "max"],
-        "claude-opus-4-5":   ["low", "medium", "high"]
+        "claude-opus-4-8": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "claude-opus-4-7": [
+          "low",
+          "medium",
+          "high",
+          "xhigh",
+          "max"
+        ],
+        "claude-opus-4-6": [
+          "low",
+          "medium",
+          "high",
+          "max"
+        ],
+        "claude-sonnet-4-6": [
+          "low",
+          "medium",
+          "high",
+          "max"
+        ],
+        "claude-opus-4-5": [
+          "low",
+          "medium",
+          "high"
+        ]
       }
     },
     "catalog": {
@@ -70,9 +117,9 @@
   },
   "classifier": {
     "_comment": "Política do classificador local (MiniLM), calibrada com tráfego real para ESTICAR a janela: na dúvida vai pra sonnet, e opus só com sinal forte. Calibração: opus tinha o MENOR score médio (~0.22) — era eleito quando nada casava. minScore: confiança global mínima; abaixo disso usa defaultTier. opusMinScore: score absoluto mínimo p/ aceitar opus. opusMargin: vantagem mínima do opus sobre o 2º colocado.",
-    "minScore": 0.30,
+    "minScore": 0.3,
     "defaultTier": "sonnet",
-    "opusMinScore": 0.40,
+    "opusMinScore": 0.4,
     "opusMargin": 0.05
   },
   "anchors": {
@@ -102,5 +149,15 @@
       "design pattern selection, architectural trade-off analysis, system design",
       "migrate entire system, fundamental architecture change, platform switch"
     ]
+  },
+  "byok": {
+    "_comment": "BYOK: endpoint Anthropic-compatible GENERICO do usuario. O plugin NAO conhece o provedor nem de onde vem o token: recebe uma Base URL e um MAPA de headers pelo dashboard e os anexa em toda request ao endpoint. Contrato: POST /v1/messages em formato Anthropic NATIVO (zero traducao) e o campo model repassado VERBATIM (o endpoint normaliza os nomes sozinho e erra alto no inexistente). SEGURANCA: na rota BYOK o authorization/x-api-key que vem do Claude Code (token da ASSINATURA) e REMOVIDO — so vao os headers configurados aqui, senao a credencial da assinatura vazaria para um terceiro.",
+    "enabled": false,
+    "mode": "on-limit",
+    "_comment_mode": "always = o endpoint atende TODAS as requests (nao depende da assinatura Claude). on-limit = o Claude atende normalmente e o endpoint so entra quando a janela esgota (429), ANTES do plano B da NVIDIA; se o endpoint responder 429 (teto por credencial) a vez passa para a NVIDIA. Ja 401/404/5xx e o corpo \"model is not supported\" NAO caem em silencio para a NVIDIA: erro de configuracao precisa aparecer (fail-loud), senao o usuario nunca conserta a credencial.",
+    "baseUrl": "",
+    "_comment_baseUrl": "Ex.: https://exemplo.ts.net ou http://10.0.0.5:4143. O PATH e ignorado (o proxy sempre usa /v1/messages). Com enabled=true e baseUrl vazia o proxy NAO roteia e registra a causa — nunca finge que funcionou.",
+    "headers": {},
+    "_comment_headers": "Mapa GENERICO nome->valor, ex.: { \"Authorization\": \"Bearer ...\" }. E mapa (e nao um campo token) de proposito: se o endpoint exigir outro header (chave de gateway, tenant id, dois headers), muda a config e nao o codigo. NUNCA commitar valores reais — o usuario preenche pelo dashboard, que grava em DATA_DIR/model-router/user-config.json."
   }
 }
