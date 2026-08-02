@@ -25,6 +25,7 @@ const byok = require('./byok.js');
 const catalog = require('./catalog.js');
 const { resolveMode } = require('../../scripts/lib/router-mode.js');
 const { routerUserConfigPath } = require('../../scripts/lib/router-config-path.js');
+const { configFingerprint } = require('../../scripts/lib/router-fingerprint.js');
 
 // ── Resolução de paths ────────────────────────────────────────────────────────
 
@@ -2039,12 +2040,18 @@ async function createServer(config, mode, routerToken) {
 
 // O `mode` é o modo em que o server REALMENTE subiu (resolveMode no boot). Persisti-
 // lo aqui deixa o dashboard ler o modo rodando mesmo quando o /health estiver fora.
-function writeState(port, mode) {
+// O `configFingerprint` é o hash da config EFETIVA (shipped ⊕ user) que este daemon
+// carregou no boot — é ele que permite ao ensure saber que o daemon detached está
+// servindo uma config ANTIGA quando o user-config muda no disco (o bug do
+// "Salvar & aplicar" que nunca aplicava). Persistido junto do state para o ensure
+// comparar sem abrir um canal extra.
+function writeState(port, mode, fingerprint) {
   fs.mkdirSync(STATE_DIR, { recursive: true });
   fs.writeFileSync(STATE_FILE, JSON.stringify({
     pid:       process.pid,
     port,
     mode,
+    configFingerprint: fingerprint,
     startedAt: new Date().toISOString(),
   }, null, 2));
 }
@@ -2146,7 +2153,7 @@ async function main() {
     // Handler permanente para erros de runtime após o bind (não derruba o processo).
     server.on('error', (e) => logger.error('Server runtime error', { err: e.message }));
     logger.info(`=== Servidor pronto em http://127.0.0.1:${FIXED_PORT} ===`, { port: FIXED_PORT });
-    writeState(FIXED_PORT, mode);
+    writeState(FIXED_PORT, mode, configFingerprint(config));
     process.stdout.write(`ROUTER_PORT=${FIXED_PORT}\n`);
     // DESACOPLADO: só AGORA (porta ligada + state file escrito → o ensure já enxerga o
     // router pronto) carregamos o classificador, fire-and-forget. Nos modos que

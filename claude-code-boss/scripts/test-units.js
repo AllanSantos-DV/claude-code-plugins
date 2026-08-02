@@ -5522,14 +5522,76 @@ test('build-swap servesThisBuild: FAIL-SAFE — na dúvida NUNCA derruba o route
   assertEq(s(process.pid), true, 'PID vivo que não é router → não derruba');
 });
 
-test('build-swap: a troca só acontece no SessionStart (nunca no meio de um turno)', () => {
+test('build-swap: a troca só acontece em janela segura (SessionStart OU apply explícito do dashboard)', () => {
   const src = fs.readFileSync(path.join(SCRIPTS, 'model-router-ensure.js'), 'utf-8');
-  assertEq(/isSessionStart\s*&&[^\n]*servesThisBuild/.test(src), true,
-    'o kill de build divergente deve estar guardado por isSessionStart');
+  assertEq(/const buildChanged = st && st\.pid && !servesThisBuild/.test(src), true,
+    'a divergência de build é computada via servesThisBuild');
+  assertEq(/if \(safeWindow && st && st\.pid && \(buildChanged \|\| configChanged\)\)/.test(src), true,
+    'o kill de build/config divergente deve estar guardado pela janela segura');
+  assertEq(/isSessionStart\s*\|\|\s*forceRestart/.test(src), true,
+    'a janela segura = SessionStart OU BOSS_ROUTER_FORCE_RESTART (Salvar & aplicar)');
   // POR QUE ISSO IMPORTA: o router é o proxy da sessão (ANTHROPIC_BASE_URL). Derrubar
-  // fora do boot corta a API em uso e o self-heal só roda no próximo prompt do usuário.
+  // fora da janela segura corta a API em uso e o self-heal só roda no próximo prompt
+  // do usuário. O "Salvar & aplicar" do dashboard É uma janela segura (ação explícita).
   assertEq(/waitPortFree/.test(src), true,
     'após o kill é preciso esperar a porta liberar, senão o bind novo dá EADDRINUSE');
+});
+
+// ═══ troca por MUDANÇA DE CONFIG (o bug do "Salvar & aplicar" que nunca aplicava) ═══
+// Contexto: o daemon detached carrega a config UMA vez no boot. O dashboard gravava
+// o user-config, mas o ensure só trocava o daemon por BUILD diferente — nunca por
+// config diferente. Logo, o botão "Salvar & aplicar" (ex.: ligar BYOK) escrevia o
+// arquivo e nada mudava em runtime. O fingerprint da config efetiva é persistido no
+// state.json pelo server e comparado pelo ensure na janela segura.
+
+const { configFingerprint, sortKeys } = require('./lib/router-fingerprint.js');
+
+test('router-fingerprint sortKeys: chaves ordenadas recursivamente (ordem de escrita não muda o hash)', () => {
+  const a = sortKeys({ b: 1, a: { d: 2, c: 3 } });
+  const b = sortKeys({ a: { c: 3, d: 2 }, b: 1 });
+  assertEq(JSON.stringify(a), JSON.stringify(b), 'objetos com mesma semântica → mesma ordem');
+  assertEq(JSON.stringify(a), '{"a":{"c":3,"d":2},"b":1}', 'ordem alfabética recursiva');
+});
+
+test('router-fingerprint configFingerprint: determinístico e sensível a mudanças', () => {
+  const base = { sticky: { enabled: true }, byok: { enabled: false, baseUrl: 'http://x' } };
+  const fp1 = configFingerprint(base);
+  assertEq(fp1, configFingerprint({ byok: { baseUrl: 'http://x', enabled: false }, sticky: { enabled: true } }),
+    'mesma config em ordem diferente de chaves → mesmo fingerprint');
+  assertEq(fp1 === configFingerprint(base), true, 'chamadas repetidas → mesmo hash');
+  const fpChanged = configFingerprint({ sticky: { enabled: true }, byok: { enabled: true, baseUrl: 'http://x' } });
+  assertEq(fp1 === fpChanged, false, 'trocar byok.enabled muda o fingerprint');
+  const fpUrl = configFingerprint({ sticky: { enabled: true }, byok: { enabled: false, baseUrl: 'http://y' } });
+  assertEq(fp1 === fpUrl, false, 'trocar a baseUrl muda o fingerprint');
+});
+
+test('router-fingerprint configFingerprint: configs distintas não colidem (sanidade)', () => {
+  const seen = new Set();
+  for (let i = 0; i < 20; i++) {
+    seen.add(configFingerprint({ byok: { enabled: i % 2 === 0, baseUrl: `http://h${i}` }, sticky: { enabled: i % 3 === 0 } }));
+  }
+  assertEq(seen.size, 20, '20 configs distintas → 20 fingerprints distintos');
+});
+
+test('Salvar & aplicar: o server grava o fingerprint no state.json (server usa configFingerprint no writeState)', () => {
+  const serverSrc = fs.readFileSync(path.join(ROOT, 'servers', 'model-router', 'index.js'), 'utf-8');
+  assertEq(/configFingerprint/.test(serverSrc), true, 'server importa configFingerprint');
+  assertEq(/writeState\(FIXED_PORT,\s*mode,\s*configFingerprint\(config\)\)/.test(serverSrc), true,
+    'writeState recebe o fingerprint da config efetiva (grava no state.json)');
+});
+
+test('Salvar & aplicar: o dashboard passa BOSS_ROUTER_FORCE_RESTART=1 ao spawnar o ensure', () => {
+  const dashSrc = fs.readFileSync(path.join(SCRIPTS, 'dashboard.js'), 'utf-8');
+  assertEq(/BOSS_ROUTER_FORCE_RESTART\s*:\s*'1'/.test(dashSrc), true,
+    'o applyRouter pede a aplicação imediata ao ensure');
+});
+
+test('Salvar & aplicar: o ensure compara o fingerprint do state com a config atual', () => {
+  const src = fs.readFileSync(path.join(SCRIPTS, 'model-router-ensure.js'), 'utf-8');
+  assertEq(/configFingerprint\(config\)/.test(src), true, 'ensure computa o fingerprint da config ATUAL');
+  assertEq(/st\.configFingerprint/.test(src), true, 'ensure lê o fingerprint servido do state');
+  assertEq(/servedFp \|\| '\(ausente\)'/.test(src), true,
+    'state sem fingerprint (daemon de versão anterior) é tratado como desatualizado');
 });
 
 test('FIX1 healthCheck: contra o NOSSO server, true SÓ com o token certo (verify-before-trust)', async () => {
