@@ -37,6 +37,7 @@ const { resolveMode } = require('./lib/router-mode.js');
 const { writeJsonAtomic } = require('./lib/atomic-write.js');
 const { dataDir } = require('./lib/data-dir.js');
 const { routerUserConfigPath, backfillRouterUserConfig } = require('./lib/router-config-path.js');
+const { configFingerprint } = require('./lib/router-fingerprint.js');
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -683,6 +684,17 @@ async function main() {
   if (mode === 'off') {
     log('Roteador e fallback desabilitados (mode: off). Limpando footprint e saindo.');
     disableRoutingFootprint();
+    // O "Salvar & aplicar" do dashboard desligou o roteador: derruba o daemon órfão
+    // que ainda segura a porta fixa (senão ele fica vivo consumindo recursos mesmo
+    // com o footprint removido). Só quando a invocação pede aplicação explícita —
+    // no hook em modo off isso não é necessário (o daemon não está no caminho).
+    if (process.env.BOSS_ROUTER_FORCE_RESTART === '1') {
+      const st = readState();
+      if (st && st.pid) {
+        log(`Roteador desligado pelo dashboard — derrubando daemon órfão PID ${st.pid}.`);
+        try { process.kill(st.pid); } catch (e) { log(`AVISO: kill do PID ${st.pid} falhou: ${e.message}`); }
+      }
+    }
     // DESACOPLADO: com o proxy fora, o env-tuning (tool-search + auto-compact) ainda
     // pode valer — é ele que dá o ganho de token, e não o proxy. Aplicado DEPOIS do
     // disable (que remove o bundle inteiro) para o resultado líquido ser: sem
@@ -707,18 +719,35 @@ async function main() {
   let isRunning = await healthCheck(FIXED_PORT);
   if (isRunning) {
     const st = readState();
-    // SessionStart É A ÚNICA JANELA SEGURA para trocar o build: roda antes do
-    // primeiro request da sessão. No UserPromptSubmit estamos no meio de um turno
-    // e derrubar a porta cortaria a API em uso — nunca trocamos ali (e evitamos o
-    // custo do spawn de inspeção a cada prompt).
+    // Janela segura para trocar o build OU recarregar a config: o SessionStart roda
+    // antes do primeiro request da sessão; o "Salvar & aplicar" do dashboard
+    // (BOSS_ROUTER_FORCE_RESTART=1) é uma ação EXPLÍCITA do usuário pedindo a
+    // aplicação IMEDIATA. No UserPromptSubmit estamos no meio de um turno e derrubar
+    // a porta cortaria a API em uso — nunca trocamos ali (e evitamos o custo do
+    // spawn de inspeção a cada prompt).
     const isSessionStart = (hookInput.hook_event_name || hookInput.hookEventName) === 'SessionStart';
-    if (isSessionStart && st && st.pid && !servesThisBuild(st.pid)) {
-      log(`Router PID ${st.pid} serve OUTRO build (esperado ${PLUGIN_ROOT}). Derrubando no boot para o binário instalado entrar em vigor.`);
+    const forceRestart = process.env.BOSS_ROUTER_FORCE_RESTART === '1';
+    const safeWindow = isSessionStart || forceRestart;
+    // O daemon detached carrega a config UMA vez no boot e não a relê. Sem comparar
+    // o fingerprint da config efetiva ele serviria para sempre uma config ANTIGA
+    // (o bug do "Salvar & aplicar" que nunca aplicava: o dashboard gravava o
+    // user-config, mas o daemon seguia com o que carregou na subida). Estado sem
+    // fingerprint = daemon de versão anterior → tratamos como desatualizado também.
+    const currentFp = configFingerprint(config);
+    const servedFp = st && st.configFingerprint;
+    const configChanged = !servedFp || servedFp !== currentFp;
+    const buildChanged = st && st.pid && !servesThisBuild(st.pid);
+    if (safeWindow && st && st.pid && (buildChanged || configChanged)) {
+      if (buildChanged) {
+        log(`Router PID ${st.pid} serve OUTRO build (esperado ${PLUGIN_ROOT}). Derrubando no boot para o binário instalado entrar em vigor.`);
+      } else {
+        log(`Router PID ${st.pid} serve config DESATUALIZADA (fingerprint ${servedFp || '(ausente)'} != ${currentFp}). Derrubando para a config salva entrar em vigor.`);
+      }
       try { process.kill(st.pid); } catch (e) { log(`AVISO: kill do PID ${st.pid} falhou: ${e.message}`); }
       if (!(await waitPortFree(FIXED_PORT, 5000))) {
         log(`AVISO: porta ${FIXED_PORT} continua ocupada após o kill — mantendo o router atual em vez de arriscar a sessão sem proxy.`);
       } else {
-        isRunning = false; // cai no startServer abaixo, que sobe o build correto
+        isRunning = false; // cai no startServer abaixo, que sobe com a config atual
       }
     } else {
       log(`Servidor OK na porta ${FIXED_PORT}${st && st.pid ? ` (PID ${st.pid})` : ''}.`);

@@ -1409,7 +1409,11 @@ async function applyRouter(req, res) {
     const child = require('child_process').spawn(process.execPath, [ensureScript], {
       detached: true,
       stdio: 'ignore',
-      env: { ...process.env, CLAUDE_PLUGIN_ROOT: ROOT, CLAUDE_PLUGIN_DATA: DATA_DIR },
+      // BOSS_ROUTER_FORCE_RESTART: o "Salvar & aplicar" é uma ação EXPLÍCITA do
+      // usuário — o ensure precisa reiniciar o daemon na hora para a config nova
+      // entrar em vigor (sem isso, o daemon detached segue com o que carregou no
+      // boot e o botão nunca aplicava de verdade).
+      env: { ...process.env, CLAUDE_PLUGIN_ROOT: ROOT, CLAUDE_PLUGIN_DATA: DATA_DIR, BOSS_ROUTER_FORCE_RESTART: '1' },
     });
     child.unref();
     json(res, { ok: true, restartRequired: true });
