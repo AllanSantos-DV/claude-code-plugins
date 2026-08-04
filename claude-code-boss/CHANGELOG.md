@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.21.6] - 2026-08-04
+
+**`count_tokens` em rajada penduradas indefinidamente contra um endpoint BYOK instável — sem timeout em nenhum ponto de saída do proxy.**
+
+Um endpoint BYOK acessado por peer Tailscale P2P sem Funnel na frente (`http://100.x.x.x:porta`, em vez da
+URL HTTPS estável exposta por `tailscale funnel`) sofre timeouts de conexão sob rajada — `count_tokens` chega
+a 40+/s durante uma sessão ativa. Sem timeout configurado, cada request pendurada esperava o timeout default
+do SO (minutos), e o Claude Code via isso como travamento total + disparo constante de compactação (o
+indicador de contexto fica sem resposta de `count_tokens`).
+
+Adicionado `UPSTREAM_TIMEOUT_MS` (8s) em **todo** ponto de saída HTTP(S) do proxy — `byokFallback`,
+`passthrough`, `forwardRequest` e `nvidiaFallback` (este último não tinha proteção nenhuma antes). Em
+`passthrough` (rota `count_tokens`/catálogo, grátis e idempotente), timeout ou erro de conexão dispara 1
+retry automático antes de responder 502 — geração nunca retenta sozinha, só a contagem.
+
+Aproveitado para eliminar a duplicação do boilerplate de request (timeout + write + end + error + pipe) que
+já existia nos 4 pontos de proxy: extraído `sendUpstreamRequest`/`requestUpstream`/`pipeUpstreamResponse`.
+
 ## [2.21.5] - 2026-08-03
 
 **Streaming "pulando e voltando" a cada tool call — só com BYOK ativo. Bug de header hop-by-hop nos 3 pontos de proxy.**
