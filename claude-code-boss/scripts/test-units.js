@@ -6383,6 +6383,81 @@ test('byok: o CATALOGO de modelos tambem segue o destino (mesma classe do count_
   assertEq(h.Authorization, 'Bearer T');
 });
 
+test('cooldownActive: false por padrao, true durante a janela armada, false apos reset', () => {
+  const rs = require('../servers/model-router/index.js');
+  rs.__testHooks.reset();
+  try {
+    assertEq(rs.cooldownActive({}), false, 'sem cooldown armado, disjuntor tem que estar OFF');
+    rs.__testHooks.setCooldownUntil(Date.now() + 60000);
+    assertEq(rs.cooldownActive({}), true, 'janela armada no futuro, disjuntor tem que estar ON');
+    rs.__testHooks.setCooldownUntil(Date.now() - 1000);
+    assertEq(rs.cooldownActive({}), false, 'janela ja expirada, disjuntor tem que estar OFF');
+    // enabled:false desarma mesmo com _cooldownUntil no futuro (a config manda).
+    rs.__testHooks.setCooldownUntil(Date.now() + 60000);
+    assertEq(rs.cooldownActive({ fallback: { cooldown: { enabled: false } } }), false,
+      'cooldown.enabled=false tem que desarmar mesmo com janela no futuro');
+  } finally {
+    rs.__testHooks.reset();
+  }
+});
+
+test('byok on-limit BUG DE CAMPO 2: count_tokens/catalogo ficavam presos na Anthropic durante o cooldown', () => {
+  // Com byok.mode=on-limit, forwardRequest desvia a GERACAO pro endpoint do
+  // usuario assim que o disjuntor arma (cooldown ativo, ver armCooldown/
+  // handleLimitExceeded). Mas passthrough()/maybeWarmCatalog() resolviam com
+  // `onLimit: false` HARDCODED — ou seja, na MESMA janela em que a geracao ja
+  // esta indo pro BYOK, a contagem de tokens e o catalogo continuavam presos
+  // na Anthropic. Mesma classe de bug do v2.21.3 (destinos divergentes),
+  // reaberta so nessa janela de fallback ativo.
+  const script = `
+    const http = require('http');
+    const { PassThrough } = require('stream');
+    const rs = require(${JSON.stringify(path.join(ROOT, 'servers', 'model-router', 'index.js'))});
+    let got = null;
+    const fake = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        got = { headers: req.headers, path: req.url, body };
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"input_tokens":7}');
+      });
+    });
+    fake.listen(0, '127.0.0.1', () => {
+      const porta = fake.address().port;
+      const cfg = { byok: { enabled: true, mode: 'on-limit', baseUrl: 'http://127.0.0.1:' + porta,
+        headers: { 'x-fake-key': 'valor-fake-de-teste' } } };
+      const cliente = { 'x-fake-key': 'valor-nao-deveria-ir', 'anthropic-version': '2023-06-01' };
+      // Disjuntor ARMADO: e o que forwardRequest ja teria feito ao desviar a
+      // geracao pro plano B. Sem o fix, passthrough ignora isso (onLimit fixo
+      // em false) e a request cai na Anthropic real — 502/timeout no teste,
+      // nunca no fake local.
+      rs.__testHooks.setCooldownUntil(Date.now() + 60000);
+      const sink = new PassThrough(); sink.writeHead = () => {}; sink.headersSent = false;
+      rs.passthrough(JSON.stringify({ model: 'claude-haiku-4-5', messages: [] }),
+        cliente, sink, '/v1/messages/count_tokens', cfg);
+      setTimeout(() => {
+        fake.close();
+        assert(got, 'count_tokens NAO chegou ao endpoint do usuario durante o cooldown — ficou preso na Anthropic');
+        assertEq(got.path, '/v1/messages/count_tokens');
+        assertEq(got.headers['x-fake-key'], 'valor-fake-de-teste', 'header configurado deveria valer');
+        process.exit(0);
+      }, 900);
+    });
+    function assertEq(a, b, m) { if (a !== b) { console.error('FAIL: ' + (m || '') + ' esperado=' + b + ' obtido=' + a); process.exit(1); } }
+  `;
+  const bodyScript = `const assert=(c,m)=>{if(!c){console.error('FAIL: '+m);process.exit(1)}};`
+    + `try{${script}}catch(e){console.error(e&&e.stack||e);process.exit(1)}`;
+  try {
+    require('child_process').execFileSync(process.execPath, ['-e', bodyScript], {
+      env: { ...process.env, CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ct-cd-')) },
+      stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000,
+    });
+  } catch (e) {
+    throw new Error((e.stderr && e.stderr.toString().trim()) || e.message);
+  }
+});
+
 test('byok.classifyResponse: 200 → ok', () => {
   assertEq(byok.classifyResponse(200, '').ok, true);
 });

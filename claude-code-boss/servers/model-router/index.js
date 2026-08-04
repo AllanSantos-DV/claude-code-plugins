@@ -992,6 +992,18 @@ function cooldownCfg(config) {
   };
 }
 
+// true = o disjuntor está ARMADO agora (mesma janela em que forwardRequest desvia
+// a GERAÇÃO pro plano B, em byok.mode=on-limit). Usado por qualquer rota lateral
+// (count_tokens, catálogo) que precise saber, no MESMO instante, se a geração
+// está sendo servida pelo BYOK — senão a rota lateral fica presa na Anthropic
+// enquanto a geração já fugiu pro endpoint do usuário, reabrindo a MESMA classe
+// de bug do count_tokens divergente (v2.21.3), só que restrita à janela de
+// cooldown em vez de o tempo todo.
+function cooldownActive(config) {
+  const cd = cooldownCfg(config);
+  return !!(cd.enabled && _cooldownUntil && Date.now() < _cooldownUntil);
+}
+
 // Extrai o epoch ms do reset a partir dos headers de um 429 da Anthropic.
 // Preferência: retry-after (relativo, imune a relógio torto) → unified-reset
 // (timestamp absoluto) → buckets individuais (RFC3339/epoch). null = nada legível.
@@ -1615,7 +1627,11 @@ function passthrough(rawBody, originalHeaders, res, pathOriginal, config) {
   // divergem, o indicador de contexto oscila e a compactação dispara na hora
   // errada (bug de campo na v2.21.2). `buildHeaders` também garante que a
   // credencial da ASSINATURA não vá junto para um endpoint de terceiro.
-  const upstreamTarget = byok.resolveUpstream(config, { onLimit: false }, UPSTREAM_FALLBACK);
+  // `onLimit: cooldownActive(config)` fecha a MESMA lacuna em byok.mode=on-limit:
+  // se o disjuntor já desviou a GERAÇÃO pro plano B (cooldown ativo), a contagem
+  // tem que acompanhar — senão ela some do lugar certo justamente na janela em
+  // que a geração está sendo servida pelo endpoint do usuário.
+  const upstreamTarget = byok.resolveUpstream(config, { onLimit: cooldownActive(config) }, UPSTREAM_FALLBACK);
   const headers = byok.buildHeaders(originalHeaders, upstreamTarget);
   headers['content-length'] = Buffer.byteLength(rawBody);
 
@@ -1811,8 +1827,9 @@ function maybeWarmCatalog(originalHeaders, config) {
   // O catálogo tem que descrever o MESMO destino que atende a geração: com BYOK
   // ligado, listar os modelos da Anthropic enquanto o endpoint do usuário serve
   // outros é a mesma inconsistência do count_tokens. O contrato do endpoint
-  // expõe /v1/models com os mesmos headers.
-  const alvo = byok.resolveUpstream(config, { onLimit: false }, UPSTREAM_FALLBACK);
+  // expõe /v1/models com os mesmos headers. `onLimit: cooldownActive(config)`
+  // acompanha o disjuntor em byok.mode=on-limit pelo mesmo motivo do passthrough.
+  const alvo = byok.resolveUpstream(config, { onLimit: cooldownActive(config) }, UPSTREAM_FALLBACK);
   // Sem BYOK, o aquecimento depende da credencial do cliente (é ela que autoriza
   // a chamada). Com BYOK, quem autoriza são os headers configurados.
   if (!alvo.isByok && !h['x-api-key'] && !h['authorization']) return;
@@ -2213,6 +2230,10 @@ if (require.main === module) {
       reset() { _cooldownUntil = 0; _cooldownSource = ''; _consec429 = 0; _lastClaudeOkAt = 0; },
       getState() { return { until: _cooldownUntil, source: _cooldownSource, consec: _consec429, lastOkAt: _lastClaudeOkAt }; },
       setLastClaudeOkAt(ms) { _lastClaudeOkAt = ms; },
+      // Arma o disjuntor diretamente (sem precisar de um 429 real) — usado pelos
+      // testes que provam que rotas laterais (count_tokens, catálogo) acompanham
+      // o disjuntor da geração em byok.mode=on-limit.
+      setCooldownUntil(ms) { _cooldownUntil = ms; },
     },
     modelTier,
     tierWeight,
@@ -2241,6 +2262,8 @@ if (require.main === module) {
     forwardRequest,
     handleLimitExceeded,
     passthrough,
+    maybeWarmCatalog,
+    cooldownActive,
     metricsSnapshot,
     resetMetrics,
     newMetrics,
