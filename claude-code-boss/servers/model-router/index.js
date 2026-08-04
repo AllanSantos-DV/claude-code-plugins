@@ -852,7 +852,7 @@ function nvidiaFallback(reqBody, config, res, nimKey, hint) {
     },
   };
   logger.info('Acionando plano B NVIDIA', { model: fbModel, stream: openaiBody.stream });
-  const upstream = lib.request(options, (nvRes) => {
+  sendUpstreamRequest(lib, options, payload, (nvRes) => {
     if (nvRes.statusCode >= 400) {
       let eb = '';
       nvRes.on('data', c => eb += c);
@@ -864,13 +864,10 @@ function nvidiaFallback(reqBody, config, res, nimKey, hint) {
     }
     if (openaiBody.stream) streamNvidiaToAnthropic(nvRes, res, reqBody, warning);
     else                   jsonNvidiaToAnthropic(nvRes, res, reqBody, warning);
-  });
-  upstream.on('error', (e) => {
+  }, (e) => {
     logger.error('NVIDIA fallback inacessível', { err: e.message });
     respondAnthropicText(reqBody, res, `⚠️ Limite do Claude esgotado e o plano B (NVIDIA) está inacessível (${e.message}). Tente de novo ou revise /dashboard.`);
   });
-  upstream.write(payload);
-  upstream.end();
 }
 
 // Headers hop-by-hop que NUNCA podem ser repassados verbatim de uma conexão
@@ -880,7 +877,7 @@ function nvidiaFallback(reqBody, config, res, nimKey, hint) {
 // Repassar o header `transfer-encoding: chunked` do upstream para `res` faz o
 // CLIENTE (Claude Code) esperar bytes com aquele framing — que nunca chegam,
 // porque `res` vai re-enquadrar do zero (ou usar content-length, se sobrar um
-// valoridiscordante do upstream). Resultado: o parser do cliente perde a
+// valor discordante do upstream). Resultado: o parser do cliente perde a
 // sincronia do stream — visto como "pula e volta" a cada nova request (SSE
 // congela, depois solta tudo de uma vez). `content-length`/`connection` têm o
 // mesmo risco (o valor é da conexão ANTERIOR, não da nova). Deixamos o Node
@@ -890,12 +887,55 @@ function nvidiaFallback(reqBody, config, res, nimKey, hint) {
 // terceiro (gateway) compacta/enquadra diferente da Anthropic direta, e o
 // bug pré-existia nos 3 pontos de proxy (byokFallback/forwardRequest/passthrough).
 const UNSAFE_PROXY_HEADERS = ['transfer-encoding', 'content-length', 'connection', 'keep-alive'];
+
+// Teto de espera por uma conexão/resposta do upstream (Anthropic OU endpoint
+// BYOK). Sem isto, uma rede instável (ex.: peer Tailscale sem Funnel na
+// frente) deixa a request pendurada no timeout default do SO — minutos — e o
+// cliente (Claude Code) não distingue "lento" de "nunca vai responder".
+const UPSTREAM_TIMEOUT_MS = 8000;
+
 function sanitizeUpstreamHeaders(headers) {
   const out = {};
   for (const [k, v] of Object.entries(headers || {})) {
     if (!UNSAFE_PROXY_HEADERS.includes(k.toLowerCase())) out[k] = v;
   }
   return out;
+}
+
+/** Repassa a resposta do upstream ao cliente — o pipe "feliz" comum aos 3 pontos de proxy. */
+function pipeUpstreamResponse(upRes, res) {
+  res.writeHead(upRes.statusCode, sanitizeUpstreamHeaders(upRes.headers));
+  upRes.pipe(res);
+}
+
+// Camada MAIS genérica: a parte igual em QUALQUER destino de saída HTTP(S)
+// deste arquivo — Anthropic, endpoint BYOK ou NVIDIA NIM (protocolos e
+// formatos de header diferentes entre si, mas todos armam timeout, escrevem
+// o corpo e fecham do mesmo jeito). `lib`/`options` continuam por conta de
+// cada chamador porque SÃO diferentes (NIM usa Content-Type/Content-Length
+// capitalizados e uma URL arbitrária, não host/port resolvidos por
+// `byok.resolveUpstream`) — só o boilerplate de baixo nível é comum.
+function sendUpstreamRequest(lib, options, body, onResponse, onError) {
+  const req = lib.request(options, onResponse);
+  req.setTimeout(UPSTREAM_TIMEOUT_MS, () => {
+    req.destroy(new Error(`sem resposta em ${UPSTREAM_TIMEOUT_MS}ms`));
+  });
+  req.on('error', onError);
+  req.write(body);
+  req.end();
+  return req;
+}
+
+// Wrapper Anthropic-compatible (Anthropic direta OU endpoint BYOK) sobre
+// `sendUpstreamRequest` — monta `options` a partir do upstreamTarget resolvido
+// por `byok.resolveUpstream`, escolhendo a lib pelo protocolo do DESTINO
+// (nunca um default fixo, porque BYOK pode ser http ou https). O que DIVERGE
+// entre os 3 chamadores (pipe puro, classificar 429, tee de telemetria) fica
+// no `onResponse` de cada um; retry é decisão do chamador em `onError`.
+function requestUpstream(upstreamTarget, path, headers, bodyStr, onResponse, onError) {
+  const lib = upstreamTarget.protocol === 'http:' ? http : UPSTREAM_LIB;
+  const options = { hostname: upstreamTarget.host, port: upstreamTarget.port, path, method: 'POST', headers };
+  return sendUpstreamRequest(lib, options, bodyStr, onResponse, onError);
 }
 
 // Plano B via ENDPOINT do usuário (BYOK). Baseado no `passthrough`: pipe limpo,
@@ -912,21 +952,13 @@ function byokFallback(reqBody, config, res, hint, upstreamTarget, onRetryable) {
   const headers = byok.buildHeaders({}, upstreamTarget);
   headers['content-length'] = Buffer.byteLength(bodyStr);
 
-  const lib = upstreamTarget.protocol === 'http:' ? http : https;
-  const req = lib.request({
-    hostname: upstreamTarget.host,
-    port:     upstreamTarget.port,
-    path:     '/v1/messages',
-    method:   'POST',
-    headers,
-  }, (upRes) => {
+  requestUpstream(upstreamTarget, '/v1/messages', headers, bodyStr, (upRes) => {
     const cls = byok.classifyResponse(upRes.statusCode, '');
     if (cls.ok) {
       logger.info('BYOK — limite do Claude coberto pelo endpoint do usuário', {
         host: upstreamTarget.host, status: upRes.statusCode,
       });
-      res.writeHead(upRes.statusCode, sanitizeUpstreamHeaders(upRes.headers));
-      upRes.pipe(res);
+      pipeUpstreamResponse(upRes, res);
       return;
     }
     // Lê um pedaço do corpo: o contrato manda gritar também por corpo
@@ -945,15 +977,12 @@ function byokFallback(reqBody, config, res, hint, upstreamTarget, onRetryable) {
       });
       respondAnthropicText(reqBody, res, byok.userAdvice(upRes.statusCode, finalCls, hint));
     });
-  });
-  req.on('error', (e) => {
+  }, (e) => {
     logger.error('BYOK — endpoint inacessível', { host: upstreamTarget.host, err: e.message });
     respondAnthropicText(reqBody, res,
       `⚠️ O endpoint BYOK (${upstreamTarget.host}) está inacessível: ${e.message}.\n\n`
       + 'Revise a Base URL em /dashboard → BYOK.');
   });
-  req.write(bodyStr);
-  req.end();
 }
 
 function handleLimitExceeded(reqBody, config, res, hint) {
@@ -1645,7 +1674,7 @@ function metricsSnapshot() {
 // no boot, satura o rate limit (RPM) → 429 em massa. Aqui NÃO classificamos, NÃO
 // trocamos o modelo, NÃO acionamos plano B e NÃO fazemos tee de telemetria: só
 // repassamos a request e a resposta como se o proxy não existisse para ela.
-function passthrough(rawBody, originalHeaders, res, pathOriginal, config) {
+function passthrough(rawBody, originalHeaders, res, pathOriginal, config, _retried) {
   // DESTINO: a contagem tem que ir ao MESMO lugar que a geração. Apontar isto
   // fixo na Anthropic enquanto `/v1/messages` ia para o endpoint do usuário fez
   // o Claude Code CONTAR a janela num destino e GERAR no outro — as contagens
@@ -1660,28 +1689,25 @@ function passthrough(rawBody, originalHeaders, res, pathOriginal, config) {
   const headers = byok.buildHeaders(originalHeaders, upstreamTarget);
   headers['content-length'] = Buffer.byteLength(rawBody);
 
-  const options = {
-    hostname: upstreamTarget.host,
-    port:     upstreamTarget.port,
-    path:     pathOriginal || '/v1/messages/count_tokens',
-    method:   'POST',
-    headers,
-  };
-  const lib = upstreamTarget.protocol === 'http:' ? http : UPSTREAM_LIB;
-
-  const upstream = lib.request(options, (upRes) => {
-    res.writeHead(upRes.statusCode, sanitizeUpstreamHeaders(upRes.headers));
-    upRes.pipe(res);
-  });
-  upstream.on('error', (e) => {
-    logger.error('Passthrough upstream error', { err: e.message, path: pathOriginal });
-    if (!res.headersSent) {
-      res.writeHead(502);
-      res.end(JSON.stringify({ error: { type: 'proxy_error', message: e.message } }));
-    }
-  });
-  upstream.write(rawBody);
-  upstream.end();
+  requestUpstream(upstreamTarget, pathOriginal || '/v1/messages/count_tokens', headers, rawBody,
+    (upRes) => pipeUpstreamResponse(upRes, res),
+    (e) => {
+      // count_tokens é grátis e idempotente (não gera nada, só conta) — 1 retry
+      // aqui não duplica custo nem efeito colateral, diferente de re-tentar uma
+      // geração. Só entra se AINDA não mandamos nada ao cliente (senão viraria
+      // uma segunda resposta em cima da primeira) e só UMA vez (não martela um
+      // endpoint fora do ar).
+      if (!_retried && !res.headersSent) {
+        logger.warn('Passthrough upstream falhou — tentando 1x de novo', { err: e.message, path: pathOriginal });
+        passthrough(rawBody, originalHeaders, res, pathOriginal, config, true);
+        return;
+      }
+      logger.error('Passthrough upstream error', { err: e.message, path: pathOriginal, retried: !!_retried });
+      if (!res.headersSent) {
+        res.writeHead(502);
+        res.end(JSON.stringify({ error: { type: 'proxy_error', message: e.message } }));
+      }
+    });
 }
 
 function forwardRequest(reqBody, originalHeaders, res, config, route) {
@@ -1714,14 +1740,6 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
   const headers = byok.buildHeaders(originalHeaders, upstreamTarget);
   headers['content-length'] = Buffer.byteLength(bodyStr);
 
-  const options = {
-    hostname: upstreamTarget.host,
-    port:     upstreamTarget.port,
-    path:     (route && route.path) || '/v1/messages',
-    method:   'POST',
-    headers,
-  };
-  const lib = upstreamTarget.protocol === 'http:' ? http : UPSTREAM_LIB;
   if (upstreamTarget.isByok) {
     logger.info('BYOK — request servida pelo endpoint do usuário', {
       host: upstreamTarget.host, port: upstreamTarget.port, mode: upstreamTarget.mode,
@@ -1732,7 +1750,7 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
     ? config.fallback.triggerStatuses
     : [429];
 
-  const upstream = lib.request(options, (upRes) => {
+  requestUpstream(upstreamTarget, (route && route.path) || '/v1/messages', headers, bodyStr, (upRes) => {
     // Janela esgotada / limite → plano B (NÃO repassa o erro ao cliente).
     if (triggers.includes(upRes.statusCode)) {
       let errBody = '';
@@ -1816,18 +1834,13 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
       });
     }
     upRes.pipe(res);
-  });
-
-  upstream.on('error', (e) => {
+  }, (e) => {
     logger.error('Upstream request error', { err: e.message });
     if (!res.headersSent) {
       res.writeHead(502);
       res.end(JSON.stringify({ error: { type: 'proxy_error', message: e.message } }));
     }
   });
-
-  upstream.write(bodyStr);
-  upstream.end();
 }
 
 // ── Catálogo dinâmico: aquecimento (fire-and-forget) ──────────────────────────
