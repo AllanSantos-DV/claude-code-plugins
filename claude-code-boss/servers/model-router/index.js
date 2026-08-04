@@ -916,7 +916,16 @@ function pipeUpstreamResponse(upRes, res) {
 // capitalizados e uma URL arbitrária, não host/port resolvidos por
 // `byok.resolveUpstream`) — só o boilerplate de baixo nível é comum.
 function sendUpstreamRequest(lib, options, body, onResponse, onError) {
-  const req = lib.request(options, onResponse);
+  const req = lib.request(options, (upRes) => {
+    // O teto é só para o upstream NUNCA responder. Depois que a resposta
+    // começa, um SSE longo tem pausas naturais (thinking, entre tool calls)
+    // maiores que 8s sem violar nada — manter o timeout de INATIVIDADE do
+    // socket armado destruía a conexão NO MEIO do stream, fazendo o texto
+    // "sumir e reaparecer" no cliente a cada gap. Desarma assim que os
+    // headers chegam; a partir daí o pipe corre até o `end` do upstream.
+    req.setTimeout(0);
+    onResponse(upRes);
+  });
   req.setTimeout(UPSTREAM_TIMEOUT_MS, () => {
     req.destroy(new Error(`sem resposta em ${UPSTREAM_TIMEOUT_MS}ms`));
   });

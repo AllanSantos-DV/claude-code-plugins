@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.21.7] - 2026-08-04
+
+**Streaming "sumindo e reaparecendo" durante pausas normais (thinking longo, entre tool calls) — timeout de socket armado durante o stream inteiro, não só na espera da conexão.**
+
+`UPSTREAM_TIMEOUT_MS` (8s, adicionado na 2.21.6 para não pendurar em upstream sem resposta) usa
+`req.setTimeout`, que é timeout de **inatividade do socket** — continua armado durante todo o
+streaming da resposta, não só enquanto o upstream ainda não respondeu. Um SSE com pausas naturais
+maiores que 8s entre chunks (o agente pensando, um gap entre tool calls) tinha a conexão
+**destruída no meio do stream**, forçando o cliente a reabrir — visto como o texto sumindo e
+reaparecendo a cada pausa, mais frequente com BYOK (`mode=always`) por gaps maiores no endpoint de
+terceiro.
+
+Corrigido: o timeout é desarmado assim que os headers da resposta do upstream chegam. A partir
+daí o pipe corre até o upstream fechar, sem teto artificial — o teto de 8s continua protegendo só
+a fase "esperando o upstream nem começar a responder".
+
 ## [2.21.6] - 2026-08-04
 
 **`count_tokens` em rajada penduradas indefinidamente contra um endpoint BYOK instável — sem timeout em nenhum ponto de saída do proxy.**
