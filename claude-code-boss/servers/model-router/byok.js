@@ -60,14 +60,24 @@ function byokCfg(config) {
  * Ligado sem `baseUrl` NÃO cai em silêncio no Anthropic: devolve `misconfigured`
  * com a causa, para a camada de cima poder gritar em vez de fingir que funcionou.
  *
+ * `fallback` é o destino padrão quando o BYOK não assume — injetado pelo chamador
+ * para que o override de env do server (`ROUTER_UPSTREAM_HOST/PORT/PROTOCOL`, que
+ * existe para apontar o proxy a um servidor fake em teste) continue valendo em
+ * TODAS as rotas. Ausente → Anthropic.
+ *
  * @param {object} config
  * @param {{onLimit?: boolean}} opts onLimit = estamos no caminho do 429
+ * @param {{host?:string, port?:number, protocol?:string}} [fallback]
  */
-function resolveUpstream(config, opts) {
+function resolveUpstream(config, opts, fallback) {
   const b = byokCfg(config);
+  const fb = fallback || {};
   const anthropic = {
-    host: DEFAULT_HOST, port: DEFAULT_PORT, protocol: DEFAULT_PROTOCOL,
-    isByok: false, headers: null,
+    host: fb.host || DEFAULT_HOST,
+    port: Number.isFinite(fb.port) ? fb.port : DEFAULT_PORT,
+    protocol: fb.protocol || DEFAULT_PROTOCOL,
+    isByok: false,
+    headers: null,
   };
   if (b.enabled !== true) return anthropic;
 
