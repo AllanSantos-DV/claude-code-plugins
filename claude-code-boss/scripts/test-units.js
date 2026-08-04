@@ -6401,6 +6401,36 @@ test('cooldownActive: false por padrao, true durante a janela armada, false apos
   }
 });
 
+test('sanitizeUpstreamHeaders: remove transfer-encoding/content-length/connection do upstream (bug do streaming pulando com BYOK)', () => {
+  // O parser HTTP do Node ja DESENQUADRA o transfer-encoding:chunked do upRes
+  // antes de emitir 'data' (o corpo que chega em upRes.pipe(res) esta SEM o
+  // framing). Repassar o header transfer-encoding do upstream verbatim faz o
+  // CLIENTE esperar bytes com aquele framing, que nunca chegam — o parser dele
+  // perde sincronia (visto como "o streaming pula e volta" a cada request nova,
+  // so com o gateway BYOK, cujo chunking/compressao diverge da Anthropic direta).
+  // content-length/connection tem o mesmo risco: sao da conexao ANTERIOR.
+  const rs = require('../servers/model-router/index.js');
+  const sujo = {
+    'transfer-encoding': 'chunked',
+    'content-length': '123',
+    'connection': 'keep-alive',
+    'keep-alive': 'timeout=5',
+    'content-type': 'text/event-stream; charset=utf-8',
+    'x-request-id': 'abc123',
+  };
+  const limpo = rs.sanitizeUpstreamHeaders(sujo);
+  assertEq(limpo['transfer-encoding'], undefined, 'transfer-encoding tem que ser removido');
+  assertEq(limpo['content-length'], undefined, 'content-length tem que ser removido');
+  assertEq(limpo['connection'], undefined, 'connection tem que ser removido');
+  assertEq(limpo['keep-alive'], undefined, 'keep-alive tem que ser removido');
+  assertEq(limpo['content-type'], 'text/event-stream; charset=utf-8', 'content-type tem que sobreviver');
+  assertEq(limpo['x-request-id'], 'abc123', 'headers inofensivos tem que sobreviver');
+  // Case-insensitive e nao muta o objeto original.
+  assertEq(sujo['transfer-encoding'], 'chunked', 'input original nao pode ser mutado');
+  const vazio = rs.sanitizeUpstreamHeaders(null);
+  assertEq(Object.keys(vazio).length, 0, 'headers ausentes nao pode lancar, devolve objeto vazio');
+});
+
 test('byok on-limit BUG DE CAMPO 2: count_tokens/catalogo ficavam presos na Anthropic durante o cooldown', () => {
   // Com byok.mode=on-limit, forwardRequest desvia a GERACAO pro endpoint do
   // usuario assim que o disjuntor arma (cooldown ativo, ver armCooldown/

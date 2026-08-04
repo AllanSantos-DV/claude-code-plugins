@@ -1,5 +1,30 @@
 # Changelog
 
+## [2.21.5] - 2026-08-03
+
+**Streaming "pulando e voltando" a cada tool call — só com BYOK ativo. Bug de header hop-by-hop nos 3 pontos de proxy.**
+
+`byokFallback()`, `forwardRequest()` e `passthrough()` faziam `res.writeHead(upRes.statusCode, upRes.headers)`
+seguido de `upRes.pipe(res)` — repassando os headers do upstream **verbatim** para a conexão do cliente. O
+parser HTTP do Node já **desenquadra** o `transfer-encoding: chunked` do upstream antes de emitir os eventos
+`data` (o que chega em `upRes.pipe(res)` é o corpo já sem o framing). Repassar o header `transfer-encoding`
+original faz o **cliente** (Claude Code) esperar bytes com aquele framing — que nunca chegam, porque a nova
+conexão vai reenquadrar do zero. O parser do cliente perde a sincronia do stream: visto como o streaming
+"congelar e depois soltar tudo de uma vez" a cada nova request (cada tool call = uma request nova). `content-length`
+e `connection` têm o mesmo risco — são valores da conexão **anterior**, não da nova.
+
+O bug sempre existiu nos 3 pontos de proxy, mas só se manifestava com o endpoint BYOK porque o gateway de
+terceiro compacta/enquadra o SSE diferente da Anthropic direta (que não expôs o problema por coincidência de
+comportamento). Corrigido com `sanitizeUpstreamHeaders()`: remove `transfer-encoding`/`content-length`/
+`connection`/`keep-alive` dos headers antes do `writeHead`, deixando o Node decidir o framing da resposta de
+saída sozinho a partir do que é de fato escrito pelo pipe.
+
+Corrigida também uma configuração redundante/perigosa encontrada durante a investigação: `~/.claude/settings.json`
+tinha `env.ANTHROPIC_BASE_URL` apontando **diretamente** para o gateway BYOK — bypassando o router local por
+completo (para o entrypoint CLI, que respeita esse env; o Desktop é protegido pelo shim). Como o router já
+repassa 100% do tráfego ao BYOK em `mode: "always"`, isso só descartava as proteções do router (cooldown,
+fallback, métricas) sem nenhum ganho. Restaurado para apontar ao proxy local (`127.0.0.1:13456`).
+
 ## [2.21.4] - 2026-08-04
 
 **Mesma classe de bug do v2.21.3, reaberta só dentro da janela de cooldown do `byok.mode=on-limit`.**

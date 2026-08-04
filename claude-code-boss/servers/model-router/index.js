@@ -873,6 +873,31 @@ function nvidiaFallback(reqBody, config, res, nimKey, hint) {
   upstream.end();
 }
 
+// Headers hop-by-hop que NUNCA podem ser repassados verbatim de uma conexão
+// upstream para a conexão do cliente. `transfer-encoding` é o crítico: o
+// parser HTTP do Node já REMOVE o framing chunked de `upRes` antes de emitir
+// os eventos `data` (o que chega em `upRes.pipe(res)` é o corpo JÁ desenquadrado).
+// Repassar o header `transfer-encoding: chunked` do upstream para `res` faz o
+// CLIENTE (Claude Code) esperar bytes com aquele framing — que nunca chegam,
+// porque `res` vai re-enquadrar do zero (ou usar content-length, se sobrar um
+// valoridiscordante do upstream). Resultado: o parser do cliente perde a
+// sincronia do stream — visto como "pula e volta" a cada nova request (SSE
+// congela, depois solta tudo de uma vez). `content-length`/`connection` têm o
+// mesmo risco (o valor é da conexão ANTERIOR, não da nova). Deixamos o Node
+// decidir o framing da resposta OUTGOING sozinho (chunked automático) a partir
+// do que é de fato escrito via pipe — nunca "herdado" de outra conexão. Achado
+// investigando por que o streaming só quebra com BYOK ativo: o endpoint de
+// terceiro (gateway) compacta/enquadra diferente da Anthropic direta, e o
+// bug pré-existia nos 3 pontos de proxy (byokFallback/forwardRequest/passthrough).
+const UNSAFE_PROXY_HEADERS = ['transfer-encoding', 'content-length', 'connection', 'keep-alive'];
+function sanitizeUpstreamHeaders(headers) {
+  const out = {};
+  for (const [k, v] of Object.entries(headers || {})) {
+    if (!UNSAFE_PROXY_HEADERS.includes(k.toLowerCase())) out[k] = v;
+  }
+  return out;
+}
+
 // Plano B via ENDPOINT do usuário (BYOK). Baseado no `passthrough`: pipe limpo,
 // sem tee de telemetria, sem cooldown, sem classificar — o corpo vai como veio e
 // o `model` é repassado VERBATIM (o endpoint normaliza o nome sozinho).
@@ -900,7 +925,7 @@ function byokFallback(reqBody, config, res, hint, upstreamTarget, onRetryable) {
       logger.info('BYOK — limite do Claude coberto pelo endpoint do usuário', {
         host: upstreamTarget.host, status: upRes.statusCode,
       });
-      res.writeHead(upRes.statusCode, upRes.headers);
+      res.writeHead(upRes.statusCode, sanitizeUpstreamHeaders(upRes.headers));
       upRes.pipe(res);
       return;
     }
@@ -1645,7 +1670,7 @@ function passthrough(rawBody, originalHeaders, res, pathOriginal, config) {
   const lib = upstreamTarget.protocol === 'http:' ? http : UPSTREAM_LIB;
 
   const upstream = lib.request(options, (upRes) => {
-    res.writeHead(upRes.statusCode, upRes.headers);
+    res.writeHead(upRes.statusCode, sanitizeUpstreamHeaders(upRes.headers));
     upRes.pipe(res);
   });
   upstream.on('error', (e) => {
@@ -1743,7 +1768,7 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
     }
     noteClaudeOk();
     metricsOutcome('claude', route, config);
-    res.writeHead(upRes.statusCode, upRes.headers);
+    res.writeHead(upRes.statusCode, sanitizeUpstreamHeaders(upRes.headers));
     // "Tee" leve no 200: repassamos o stream verbatim ao cliente E o escaneamos
     // para (1) detectar a janela esgotada DENTRO de um 200 (evento stream-json
     // rate_limit_event status:rejected, ou o marcador string) e armar o cooldown
@@ -2226,6 +2251,7 @@ if (require.main === module) {
     clearCooldown,
     armCooldown,
     noteClaudeOk,
+    sanitizeUpstreamHeaders,
     __testHooks: {
       reset() { _cooldownUntil = 0; _cooldownSource = ''; _consec429 = 0; _lastClaudeOkAt = 0; },
       getState() { return { until: _cooldownUntil, source: _cooldownSource, consec: _consec429, lastOkAt: _lastClaudeOkAt }; },
