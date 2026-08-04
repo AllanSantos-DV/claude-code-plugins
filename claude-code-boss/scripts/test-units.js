@@ -6257,6 +6257,132 @@ test('byok.userAdvice: no 5xx nao culpa a config do usuario (o endpoint e que ca
   assertEq(/Base URL|headers/i.test(t), false, 'a config esta certa; o outro lado e que esta fora');
 });
 
+test('byok BUG DE CAMPO: count_tokens tem que ir ao MESMO destino que /v1/messages', () => {
+  // BUG REPORTADO EM CAMPO (v2.21.2, byok.mode=always): "o streaming da janela
+  // pula e volta a cada tool call". Causa: `passthrough()` — a rota do
+  // /v1/messages/count_tokens — apontava FIXO para api.anthropic.com, enquanto a
+  // geração ia para o endpoint do usuario. O Claude Code CONTA a janela num
+  // destino e GERA no outro: as contagens divergem, o indicador de contexto
+  // oscila e a compactacao dispara na hora errada (nas capturas do usuario,
+  // varias compactacoes seguidas com o agente refazendo a mesma analise).
+  //
+  // Havia um segundo defeito junto: o passthrough repassava a credencial da
+  // ASSINATURA. No modo `always` — que existe justamente p/ NAO depender da
+  // assinatura — ela continuava sendo usada por baixo.
+  //
+  // Subprocesso p/ nao disputar o event loop com os outros testes (o runner ja
+  // e sequencial, mas um servidor HTTP aqui ainda atrasaria a suite inteira).
+  const script = `
+    const http = require('http');
+    const { PassThrough } = require('stream');
+    const rs = require(${JSON.stringify(path.join(ROOT, 'servers', 'model-router', 'index.js'))});
+    let got = null;
+    const fake = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        got = { headers: req.headers, path: req.url, body };
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end('{"input_tokens":42}');
+      });
+    });
+    fake.listen(0, '127.0.0.1', () => {
+      const porta = fake.address().port;
+      const cfg = { byok: { enabled: true, mode: 'always', baseUrl: 'http://127.0.0.1:' + porta,
+        headers: { 'Authorization': 'Bearer TOKEN-DO-ENDPOINT' } } };
+      const cliente = { 'authorization': 'Bearer sk-ant-oat-SEGREDO', 'x-api-key': 'sk-ant-CHAVE',
+        'anthropic-version': '2023-06-01' };
+      const sink = new PassThrough(); sink.writeHead = () => {}; sink.headersSent = false;
+      rs.passthrough(JSON.stringify({ model: 'claude-haiku-4-5', messages: [] }),
+        cliente, sink, '/v1/messages/count_tokens', cfg);
+      setTimeout(() => {
+        fake.close();
+        assert(got, 'count_tokens NAO chegou ao endpoint do usuario — foi para a Anthropic');
+        const h = JSON.stringify(got.headers);
+        assert(got.path === '/v1/messages/count_tokens', 'path preservado, veio ' + got.path);
+        assert(got.headers.authorization === 'Bearer TOKEN-DO-ENDPOINT', 'header configurado deveria valer: ' + h);
+        assert(!/sk-ant-oat/.test(h), 'VAZAMENTO: token da assinatura no count_tokens');
+        assert(!/sk-ant-CHAVE/.test(h), 'VAZAMENTO: x-api-key da assinatura no count_tokens');
+        process.exit(0);
+      }, 900);
+    });
+  `;
+  const body = `const assert=(c,m)=>{if(!c){console.error('FAIL: '+m);process.exit(1)}};`
+    + `try{${script}}catch(e){console.error(e&&e.stack||e);process.exit(1)}`;
+  try {
+    require('child_process').execFileSync(process.execPath, ['-e', body], {
+      env: { ...process.env, CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ct-')) },
+      stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000,
+    });
+  } catch (e) {
+    throw new Error((e.stderr && e.stderr.toString().trim()) || e.message);
+  }
+});
+
+test('passthrough SEM byok: continua na Anthropic com a credencial (nao regride)', () => {
+  // O caminho normal nao pode mudar: sem BYOK, count_tokens vai para a Anthropic
+  // e a credencial SEGUE — o destino e o dono dela.
+  const up = byok.resolveUpstream({}, { onLimit: false });
+  assertEq(up.isByok, false);
+  assertEq(up.host, 'api.anthropic.com');
+  const h = byok.buildHeaders({ 'authorization': 'Bearer oat', 'x-api-key': 'k' }, up);
+  assertEq(h.authorization, 'Bearer oat');
+  assertEq(h['x-api-key'], 'k');
+});
+
+test('byok mode=on-limit: count_tokens NAO desvia (o Claude ainda e quem atende)', () => {
+  // Em on-limit o fluxo normal e do Claude — desviar a contagem criaria a MESMA
+  // divergencia, so que ao contrario.
+  const cfg = { byok: { enabled: true, mode: 'on-limit', baseUrl: 'https://ex.ts.net', headers: {} } };
+  assertEq(byok.resolveUpstream(cfg, { onLimit: false }).isByok, false,
+    'contagem e geracao precisam concordar: ambas no Claude enquanto ele atende');
+});
+
+
+test('byok.resolveUpstream: respeita o DEFAULT injetado (preserva o override de env dos testes)', () => {
+  // ROUTER_UPSTREAM_HOST/PORT/PROTOCOL existem p/ apontar o proxy a um servidor
+  // fake em teste. Se o destino padrao ficar hardcoded aqui, esse mecanismo
+  // morre silenciosamente — e as constantes do server viram codigo morto.
+  const fallback = { host: '127.0.0.1', port: 9999, protocol: 'http:' };
+  const u = byok.resolveUpstream({}, { onLimit: false }, fallback);
+  assertEq(u.isByok, false);
+  assertEq(u.host, '127.0.0.1');
+  assertEq(u.port, 9999);
+  assertEq(u.protocol, 'http:');
+});
+
+test('byok.resolveUpstream: sem fallback injetado, o default continua a Anthropic', () => {
+  const u = byok.resolveUpstream({}, { onLimit: false });
+  assertEq(u.host, 'api.anthropic.com');
+  assertEq(u.port, 443);
+  assertEq(u.protocol, 'https:');
+});
+
+test('byok.resolveUpstream: o BYOK VENCE o fallback injetado (destino do usuario manda)', () => {
+  const cfg = { byok: { enabled: true, mode: 'always', baseUrl: 'https://ex.ts.net', headers: {} } };
+  const u = byok.resolveUpstream(cfg, { onLimit: false }, { host: '127.0.0.1', port: 9999, protocol: 'http:' });
+  assertEq(u.host, 'ex.ts.net');
+  assertEq(u.isByok, true);
+});
+
+test('byok: o CATALOGO de modelos tambem segue o destino (mesma classe do count_tokens)', () => {
+  // Segundo furo da mesma familia: `maybeWarmCatalog` apontava fixo para a
+  // Anthropic e mandava a credencial da assinatura. Com BYOK ligado, o catalogo
+  // listaria os modelos de um provedor enquanto a geracao acontece em outro — e
+  // o contrato do endpoint diz que ele expoe /v1/models com os MESMOS headers.
+  // Menos grave que a janela (nao oscila nada), mas e a mesma inconsistencia.
+  const cfg = { byok: { enabled: true, mode: 'always', baseUrl: 'http://10.0.0.5:4143', headers: { Authorization: 'Bearer T' } } };
+  const alvo = byok.resolveUpstream(cfg, { onLimit: false });
+  assertEq(alvo.isByok, true);
+  assertEq(alvo.host, '10.0.0.5');
+  assertEq(alvo.port, 4143);
+  // E os headers do catalogo nao podem levar a credencial da assinatura.
+  const h = byok.buildHeaders({ 'x-api-key': 'sk-ant-CHAVE', 'authorization': 'Bearer sk-ant-oat' }, alvo);
+  assertEq(h['x-api-key'], undefined);
+  assertEq(h.authorization, undefined);
+  assertEq(h.Authorization, 'Bearer T');
+});
+
 test('byok.classifyResponse: 200 → ok', () => {
   assertEq(byok.classifyResponse(200, '').ok, true);
 });

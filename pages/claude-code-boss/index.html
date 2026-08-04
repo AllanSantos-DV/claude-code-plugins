@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.21.1 — o 403 do endpoint diz o que fazer, e o conselho ao lado para de contradizê-lo</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. A v2.21.1 é um adendo ao contrato do endpoint BYOK: o 403 vem com um corpo { error: { message, code, type } }, e o message é escrito para o usuário final — diz a ação exata, como credencial expirada, revogada ou limite de origem. Antes ele caía no balde genérico status &gt;= 400 e chegava até você como &quot;endpoint recusou a request (403)&quot;: o comportamento estava certo, fail-loud e sem retry, mas a instrução se perdia. Agora classifyResponse tem um caso 403 que extrai error.message do corpo e o repassa verbatim. Corpo ausente, não-JSON ou message vazia caem num texto próprio que ainda cita o status — nunca uma razão vazia — e o extrator endpointMessage nunca lança, porque um corpo malformado não pode derrubar justamente o caminho em que já deu erro. A segunda entrega é o defeito que só apareceu ao ler o texto final: corrigir só a razão não bastaria, porque o texto que a envolvia dizia &quot;Revise a Base URL e os headers&quot; em todos os erros. Num 403 isso é exatamente o conselho errado: manda o usuário procurar em três lugares onde o problema não está, contradizendo a mensagem que o endpoint acabou de dar — a mensagem certa chegava, e o texto ao lado a anulava. userAdvice(status, cls, hint) faz diagnóstico e conselho apontarem para o mesmo lugar: no 403, nenhum conselho nosso, porque a mensagem do endpoint já diz a ação; no 401, revisar os headers, porque credencial não reconhecida é problema do nosso lado; no 404, revisar a Base URL, porque o caminho está errado; e no 5xx, a config está certa e o endpoint é que está fora do ar. A distinção 401 ≠ 403 é de propósito e está travada em teste: 401 é credencial não reconhecida, 403 é credencial reconhecida mas que não vale agora, e são ações diferentes para quem lê. E model is not supported continua vencendo mesmo dentro de um 403, porque o diagnóstico mais específico não pode ser engolido pelo genérico. Nada disso é retentável: o único retentável continua sendo o 429. As releases anteriores seguem na página: a v2.21.0 abriu o destino do proxy para um endpoint Anthropic-compatible seu, a v2.20.4 tirou a janela do prompt cache do palpite, a v2.20.3 corrigiu um número impossível de 594%, a v2.20.2 partiu a média da fronteira fria por motivo, a v2.20.1 deu tamanho à fronteira fria e a v2.20.0 instalou a régua do ciclo de cache. Aquelas trataram de sinais que mentiam; esta trata de um caso mais sutil: a informação certa entregue junto de um conselho que a contradiz. O sinal estava certo; a moldura é que sabotava." />
+<title>claude-code-boss v2.21.3 — count_tokens e catálogo passam a ir para o mesmo destino do BYOK</title>
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. Com BYOK ativo, cada rota de saída — geração, contagem de janela (count_tokens) e catálogo de modelos — resolve o destino e os headers pelo mesmo caminho, e a credencial da assinatura nunca mais atravessa junto. A v2.21.3 fecha um bug de campo em que count_tokens continuava fixo na Anthropic enquanto a geração já ia para o endpoint próprio: as contagens divergiam, o indicador de contexto oscilava a cada turno e a compactação disparava na hora errada. A v2.21.2 fecha a outra ponta, no daemon do router: build e config agora viajam com um fingerprint, e uma divergência derruba o processo só na janela segura — nunca no meio de um turno — para que um install ou um &quot;salvar e aplicar&quot; realmente entrem em vigor. E a fronteira fria do ciclo de cache para de assumir 5 minutos por omissão quando a sessão já provou, em tráfego anterior, que o contrato real é de 1 hora." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -2451,7 +2451,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.21.1</span>
+    <span class="ver">v2.21.3</span>
   </nav>
 
   <header class="hero">
@@ -2556,7 +2556,7 @@
       <div class="cell" style="grid-column:1/-1">
         <p class="kick">Seu endpoint (BYOK)</p>
         <h3>Você escolhe o destino — a credencial da assinatura não vai junto</h3>
-        <p>O proxy fala com um <b>endpoint Anthropic-compatible seu</b>, e não só com <code>api.anthropic.com</code>. O plugin <b>não conhece o provedor</b> nem de onde veio o token: você cola a <b>Base URL</b> e um <b>mapa de headers</b> no dashboard, e ele anexa em toda request — se o endpoint amanhã exigir outro header (chave de gateway, tenant id), muda a <b>config</b>, não o código. Dois modos: <code>on-limit</code> (padrão) mantém o Claude atendendo e chama o endpoint no <code>429</code>, <b>antes</b> da NVIDIA; <code>always</code> serve tudo pelo endpoint, sem depender da assinatura. A NVIDIA <b>continua</b> como terceira opção. <b>O ponto que mais importa:</b> o <code>authorization</code>/<code>x-api-key</code> que o Claude Code envia carrega o token da <b>sua assinatura</b> — na rota BYOK ele é <b>removido</b>, e só vão os headers que você configurou. Um teste <b>ponta a ponta</b> sobe um endpoint falso e <b>falha</b> se o token aparecer do outro lado. Erro de configuração <b>grita</b> (<code>401</code>/<code>404</code>/<code>5xx</code> não caem em silêncio para a NVIDIA); só o <code>429</code> cede a vez.</p>
+        <p>O proxy fala com um <b>endpoint Anthropic-compatible seu</b>, e não só com <code>api.anthropic.com</code>. O plugin <b>não conhece o provedor</b> nem de onde veio o token: você cola a <b>Base URL</b> e um <b>mapa de headers</b> no dashboard, e ele anexa em toda request — se o endpoint amanhã exigir outro header (chave de gateway, tenant id), muda a <b>config</b>, não o código. Dois modos: <code>on-limit</code> (padrão) mantém o Claude atendendo e chama o endpoint no <code>429</code>, <b>antes</b> da NVIDIA; <code>always</code> serve tudo pelo endpoint, sem depender da assinatura. A NVIDIA <b>continua</b> como terceira opção. <b>O ponto que mais importa:</b> o <code>authorization</code>/<code>x-api-key</code> que o Claude Code envia carrega o token da <b>sua assinatura</b> — na rota BYOK ele é <b>removido</b>, e só vão os headers que você configurou. <b>Toda rota de saída concorda no destino:</b> geração, <code>count_tokens</code> e o catálogo de modelos resolvem o mesmo endpoint pelo mesmo <code>resolveUpstream</code> — nenhuma fica presa na Anthropic enquanto as outras já foram para o seu endpoint. Um teste <b>ponta a ponta</b> sobe um endpoint falso e <b>falha</b> se o token aparecer do outro lado, ou se alguma rota chegar num destino diferente das demais. Erro de configuração <b>grita</b> (<code>401</code>/<code>404</code>/<code>5xx</code> não caem em silêncio para a NVIDIA); só o <code>429</code> cede a vez.</p>
       </div>
       <div class="cell" style="grid-column:1/-1">
         <p class="kick">Políticas</p>
@@ -2564,6 +2564,66 @@
         <p>Ative constraints explicitamente com <code>policy_activate</code>, nunca auto-promovidas de lições: o <code>error-guard</code> nega no <code>PreToolUse</code> um Bash cuja falha reincide, políticas <b>always-apply</b> entram no contexto no início da sessão, e políticas <b>por glob</b> avisam ao editar um arquivo que casa o padrão. <b>Surfacing ≠ enforcement</b>: ficam presentes no contexto, não bloqueiam (exceto o <code>error-guard</code>). A Fase 3 agora fecha o ciclo: modo sombra mede, e <code>/policy-adjudicate</code> chama um <b>juiz LLM independente</b> para estimar disposições — estimativa de juiz, <b>não FP medido</b>.</p>
       </div>
     </div>
+  </section>
+
+
+  <section>
+    <p class="label">Novo na v2.21.3 · cada rota vai para o mesmo destino</p>
+    <p class="lede">Com <code>byok.mode=always</code> ligado, o indicador de contexto <b>oscilava a cada tool call</b>. A causa não estava no streaming — estava em <b>qual destino respondia cada rota</b>. A geração (<code>/v1/messages</code>) já ia para o seu endpoint; o <code>/v1/messages/count_tokens</code>, que alimenta o indicador de janela, continuava <b>fixo</b> em <code>api.anthropic.com</code>. O Claude Code passava a <b>contar a janela num destino e gerar no outro</b>: as contagens divergiam, o indicador <b>pulava e voltava</b> a cada turno, e a <b>compactação disparava na hora errada</b> — sessões refazendo a mesma análise depois de compactar sem necessidade.</p>
+
+    <div class="callout">
+      <span class="tag">o furo estava escondido atrás de uma rota que "só conta"</span>
+      <code>passthrough()</code> — a rota que serve o <code>count_tokens</code> — apontava fixo para a Anthropic e repassava a <b>credencial da assinatura</b>. No modo <code>always</code>, que existe justamente para <b>não</b> depender da assinatura, ela continuava sendo usada por baixo. O <code>maybeWarmCatalog</code> (catálogo de modelos) tinha o mesmo furo: listava os modelos de um provedor enquanto a geração acontecia em outro — menos grave (não oscila nada), mas a mesma inconsistência.
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4><code>count_tokens</code> vai para o mesmo lugar da geração</h4>
+        <p><code>passthrough</code> agora resolve o destino pelo mesmo <code>resolveUpstream</code> usado na geração, e monta os headers pelo mesmo <code>buildHeaders</code> — que remove a credencial da assinatura na rota BYOK. As duas contagens deixam de poder divergir por virem de destinos diferentes.</p>
+      </div>
+      <div class="win">
+        <h4>O catálogo de modelos segue a mesma regra</h4>
+        <p><code>maybeWarmCatalog</code> parou de ter destino fixo e de vazar a credencial da assinatura. O contrato do endpoint expõe <code>/v1/models</code> com os mesmos headers das demais rotas: <b>nenhuma rota de saída tem mais destino próprio</b>.</p>
+      </div>
+      <div class="win">
+        <h4>O override de env volta a valer em toda rota</h4>
+        <p>Tirar o destino fixo tornaria <code>UPSTREAM_HOST</code>/<code>UPSTREAM_PORT</code> código morto — e apagá-las mataria o <code>ROUTER_UPSTREAM_HOST/PORT/PROTOCOL</code>, usado para apontar o proxy a um servidor fake em teste. Em vez disso, <code>resolveUpstream(config, opts, fallback)</code> passa a aceitar o destino padrão do chamador, e o server injeta o seu: o override passa a valer em <b>todas</b> as rotas, não só na de geração.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Prova ponta a ponta:</b> um endpoint falso confirma que <code>/v1/messages</code> <b>e</b> <code>/v1/messages/count_tokens</code> chegam ao <b>mesmo destino</b>, ambos com o header configurado e <b>sem</b> o token da assinatura. O que mudou não foi o comportamento visível em condições normais — foi o caso em que BYOK e contagem de janela deixam de concordar, e o usuário via isso como um indicador que "pisca" sem motivo aparente.</p>
+  </section>
+
+
+  <section>
+    <p class="label">Novo na v2.21.2 · o daemon deixa de servir um build antigo</p>
+    <p class="lede">O router roda como <b>daemon detached</b>: sobrevive ao restart do Claude Code e segue segurando a porta fixa, servindo o que carregou no boot. Dois sintomas de campo vinham dessa mesma raiz — um install <b>"bem-sucedido"</b> que nunca entrava em vigor (o PID antigo continuava respondendo), e o <b>"Salvar &amp; aplicar"</b> do dashboard gravando a config no disco enquanto o daemon vivo seguia com a config antiga.</p>
+
+    <div class="callout">
+      <span class="tag">um fingerprint por cima de pid/port/mode</span>
+      <code>router-fingerprint.js</code> gera o hash da config <b>efetiva</b> (shipped ⊕ user) carregada no boot, persistido em <code>state.json</code> junto com pid/port/mode. <code>model-router-ensure.js</code> ganhou <code>servesThisBuild(pid)</code>, que compara o <code>PLUGIN_ROOT</code> da command line do processo vivo com o do install atual (normalizando separador de path e caixa) e o fingerprint salvo contra o da config atual.
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>Divergência derruba o daemon — só na janela segura</h4>
+        <p>No <code>SessionStart</code> (antes do primeiro request da sessão), ou quando o dashboard pede aplicação explícita (<code>BOSS_ROUTER_FORCE_RESTART=1</code>). <b>Nunca</b> no meio de um turno — derrubar a porta ali cortaria a API em uso.</p>
+      </div>
+      <div class="win">
+        <h4>Fail-safe: na dúvida, não mexe</h4>
+        <p>Sem conseguir ler a command line do PID (permissão, processo morto, <code>ps</code>/<code>powershell</code> ausentes), <code>servesThisBuild</code> assume que <b>é</b> o nosso build — na dúvida, não derruba um router que está servindo.</p>
+      </div>
+      <div class="win">
+        <h4>Modo <code>off</code> também limpa o órfão</h4>
+        <p>Com <code>BOSS_ROUTER_FORCE_RESTART=1</code>, o daemon órfão que ainda segura a porta é derrubado — antes ficava vivo consumindo recursos mesmo com o footprint de roteamento já removido.</p>
+      </div>
+      <div class="win">
+        <h4>A fronteira fria para de assumir 5 minutos por omissão</h4>
+        <p><code>isColdBoundary</code>/<code>observeUsage</code> comparavam o gap inter-request contra um TTL <b>hardcoded</b> de 5 minutos, mesmo já tendo observado, em tráfego anterior, que o contrato real da sessão era de <b>1 hora</b>. <code>ttlWindowMs</code>/<code>deriveTtlVerdict</code> viram funções puras compartilhadas pela decisão da fronteira e pelo veredito exposto no <code>metricsSnapshot()</code>, e passam a receber o TTL <b>global já observado</b> — lido antes desta resposta processar seus próprios writes.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>O que mudou não foi a lógica de roteamento</b> — foi o daemon parar de ficar preso no passado. Um install ou um "salvar e aplicar" agora <b>realmente</b> refletem no processo vivo, na única janela em que trocar de config não corta ninguém no meio de um turno.</p>
   </section>
 
 
