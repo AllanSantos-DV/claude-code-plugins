@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.21.4 — count_tokens e catálogo seguem o disjuntor dentro da janela de cooldown do BYOK</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. Com byok.mode=on-limit, toda rota de saída — geração, contagem de janela (count_tokens) e catálogo de modelos — concorda no mesmo destino durante o cooldown do disjuntor, não só quando ele dispara. A v2.21.4 fecha a mesma classe de bug da v2.21.3, reaberta só dentro da janela: count_tokens e o catálogo consultavam onLimit hardcoded em false, então ficavam presos na Anthropic enquanto a geração já tinha desviado para o endpoint BYOK — o indicador de contexto voltava a oscilar, restrito à duração do cooldown. Corrigido com cooldownActive(config): as duas rotas passam a consultar o estado real do disjuntor para decidir o destino. A v2.21.3 fechou a outra metade do mesmo furo, fora do cooldown; a v2.21.2 fecha o daemon do router, que passa a comparar um fingerprint da config antes de servir; e a fronteira fria do ciclo de cache para de assumir 5 minutos por omissão quando a sessão já provou, em tráfego anterior, que o contrato real é de 1 hora." />
+<title>claude-code-boss v2.21.5 — o proxy BYOK para de repassar headers hop-by-hop do upstream verbatim</title>
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. Com BYOK ativo, o streaming deixa de 'congelar e soltar tudo de uma vez' a cada tool call: os 3 pontos de proxy (byokFallback, forwardRequest, passthrough) paravam de repassar transfer-encoding/content-length/connection do upstream verbatim para o cliente — valores de uma conexão que o novo framing de saída não respeita, e que o parser HTTP do cliente lia como uma promessa quebrada. Corrigido com sanitizeUpstreamHeaders(): os headers de conexão são removidos antes do writeHead, e o Node decide o framing de saída sozinho a partir do que o pipe de fato escreve. A v2.21.5 também restaura ~/.claude/settings.json para apontar ao proxy local em vez de ir direto ao gateway BYOK, uma configuração redundante que descartava as proteções do router (cooldown, fallback, métricas) sem nenhum ganho." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -2451,7 +2451,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.21.4</span>
+    <span class="ver">v2.21.5</span>
   </nav>
 
   <header class="hero">
@@ -2564,6 +2564,34 @@
         <p>Ative constraints explicitamente com <code>policy_activate</code>, nunca auto-promovidas de lições: o <code>error-guard</code> nega no <code>PreToolUse</code> um Bash cuja falha reincide, políticas <b>always-apply</b> entram no contexto no início da sessão, e políticas <b>por glob</b> avisam ao editar um arquivo que casa o padrão. <b>Surfacing ≠ enforcement</b>: ficam presentes no contexto, não bloqueiam (exceto o <code>error-guard</code>). A Fase 3 agora fecha o ciclo: modo sombra mede, e <code>/policy-adjudicate</code> chama um <b>juiz LLM independente</b> para estimar disposições — estimativa de juiz, <b>não FP medido</b>.</p>
       </div>
     </div>
+  </section>
+
+
+  <section>
+    <p class="label">Novo na v2.21.5 · o framing da resposta é sempre novo</p>
+    <p class="lede">Com BYOK ativo, o streaming <b>"congelava e soltava tudo de uma vez"</b> a cada tool call — cada nova request perdia a sincronia do parser do lado do cliente. A causa não estava no corpo da resposta: estava em <b>3 headers de conexão</b> que <code>byokFallback()</code>, <code>forwardRequest()</code> e <code>passthrough()</code> repassavam <b>verbatim</b> do upstream, num <code>res.writeHead(upRes.statusCode, upRes.headers)</code> seguido de <code>upRes.pipe(res)</code>.</p>
+
+    <div class="callout">
+      <span class="tag">o Node já desenquadra o chunked antes do pipe — o header antigo mente sobre o novo</span>
+      O parser HTTP do Node desenquadra o <code>transfer-encoding: chunked</code> do upstream <b>antes</b> de emitir os eventos <code>data</code>: o que chega em <code>upRes.pipe(res)</code> é o corpo já sem o framing original. Repassar o header <code>transfer-encoding</code> da conexão anterior faz o <b>cliente</b> (Claude Code) esperar bytes com aquele framing — que nunca chegam, porque a nova conexão reenquadra do zero. <code>content-length</code> e <code>connection</code> têm o mesmo risco: são valores da conexão <b>de origem</b>, não da nova.
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4><code>sanitizeUpstreamHeaders()</code> nos 3 pontos de proxy</h4>
+        <p>Remove <code>transfer-encoding</code>, <code>content-length</code>, <code>connection</code> e <code>keep-alive</code> dos headers antes do <code>writeHead</code>, deixando o Node decidir o framing da resposta de saída sozinho, a partir do que é de fato escrito pelo pipe.</p>
+      </div>
+      <div class="win">
+        <h4>O bug sempre existiu — só o BYOK expunha</h4>
+        <p>Os 3 pontos de proxy tinham o mesmo defeito desde sempre, mas só se manifestava com o endpoint BYOK porque o gateway de terceiro compacta/enquadra o SSE diferente da Anthropic direta, que não expôs o problema por coincidência de comportamento.</p>
+      </div>
+      <div class="win">
+        <h4><code>settings.json</code> volta a passar pelo router local</h4>
+        <p><code>~/.claude/settings.json</code> tinha <code>env.ANTHROPIC_BASE_URL</code> apontando <b>direto</b> para o gateway BYOK, bypassando o router por completo no entrypoint CLI. Como o router já repassa 100% do tráfego ao BYOK em <code>mode: "always"</code>, isso só descartava cooldown, fallback e métricas sem ganho algum. Restaurado para <code>127.0.0.1:13456</code>.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Escopo do reparo:</b> afeta qualquer sessão com BYOK ativo (<code>on-limit</code> dentro do cooldown, ou <code>always</code>) — o sintoma de campo era o streaming pulando a cada tool call, não uma resposta corrompida ou perdida.</p>
   </section>
 
 
