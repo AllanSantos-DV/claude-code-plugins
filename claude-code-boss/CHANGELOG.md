@@ -1,5 +1,83 @@
 # Changelog
 
+## [2.21.3] - 2026-08-03
+
+**Bug de campo: com BYOK ligado, o indicador de janela oscilava a cada tool call.** Relatado com `byok.mode=always` apontando para um endpoint na LAN. A causa não estava no streaming — estava em **qual destino respondia cada rota**.
+
+### `/v1/messages/count_tokens` ia para a Anthropic enquanto a geração ia para o endpoint
+
+O `passthrough()` — a rota que serve o `count_tokens` — apontava **fixo** para `api.anthropic.com`. Com o BYOK ativo, o Claude Code passava a **contar a janela num destino e gerar no outro**.
+
+As contagens divergem, então:
+- o indicador de contexto **pula e volta** a cada turno;
+- a **compactação dispara na hora errada** — nas capturas do usuário aparecem várias compactações seguidas (140k, 248k) com o agente refazendo a mesma análise.
+
+Junto vinha um segundo defeito: o `passthrough` repassava a **credencial da assinatura**. No modo `always` — que existe justamente para **não** depender da assinatura — ela continuava sendo usada por baixo.
+
+Agora `passthrough` resolve o destino pelo mesmo `resolveUpstream` da geração e monta os headers pelo mesmo `buildHeaders` (que remove a credencial da assinatura na rota BYOK).
+
+### O catálogo de modelos tinha o mesmo furo
+
+`maybeWarmCatalog` também apontava fixo para a Anthropic e mandava a credencial da assinatura — listando os modelos de um provedor enquanto a geração acontece em outro. Menos grave (não oscila nada), mas é a mesma inconsistência, e o contrato do endpoint expõe `/v1/models` com os mesmos headers. Corrigido junto: **nenhuma rota de saída tem mais destino fixo**.
+
+### O default virou injetado, para o override de env não morrer
+
+Ao tirar o destino fixo, as constantes `UPSTREAM_HOST`/`UPSTREAM_PORT` viraram código morto — e apagá-las mataria o `ROUTER_UPSTREAM_HOST/PORT/PROTOCOL`, que existe para apontar o proxy a um servidor fake em teste. Em vez disso, `resolveUpstream(config, opts, fallback)` passou a aceitar o destino padrão do chamador, e o server injeta o seu. O override volta a valer em **todas** as rotas, não só na de geração.
+
+### Verificação
+
+Prova ponta a ponta com um endpoint falso: `/v1/messages` **e** `/v1/messages/count_tokens` chegam ao **mesmo destino**, ambos com o header configurado e **sem** o token da assinatura.
+
+## [2.21.2] - 2026-08-02
+
+### O daemon do router parava de refletir o build/config instalados
+
+O router roda como daemon detached, sobrevive ao restart do Claude Code e segue
+segurando a porta fixa servindo o que carregou no boot. Dois sintomas de campo
+vinham dessa mesma raiz: um install "bem-sucedido" que nunca entrava em vigor
+(o PID antigo continuava respondendo), e o "Salvar & aplicar" do dashboard que
+gravava a config no disco mas o daemon vivo seguia com a config antiga.
+
+- **`router-fingerprint.js`** — hash da config efetiva (shipped ⊕ user)
+  carregada no boot, persistido em `state.json` junto com pid/port/mode.
+- **`model-router-ensure.js`** ganhou `servesThisBuild(pid)` — compara o
+  `PLUGIN_ROOT` da command line do processo vivo com o do install atual
+  (normalizando separador de path e caixa) — e passou a comparar o
+  fingerprint salvo contra o da config atual. Divergência em qualquer um
+  derruba o daemon **só na janela segura**: `SessionStart` (antes do primeiro
+  request da sessão) ou quando o dashboard pede aplicação explícita
+  (`BOSS_ROUTER_FORCE_RESTART=1`). Nunca no meio de um turno — derrubar a
+  porta ali cortaria a API em uso.
+  Fail-safe deliberado: sem conseguir ler a command line do PID (permissão,
+  processo morto, `ps`/`powershell` ausentes), `servesThisBuild` assume que
+  **é** o nosso build — na dúvida, não mexe num router que está servindo.
+- **`writeState()`** agora persiste o `configFingerprint` junto do pid/port/mode.
+- Modo `off`: com `BOSS_ROUTER_FORCE_RESTART=1`, o daemon órfão que ainda
+  segura a porta também é derrubado (antes ficava vivo consumindo recursos
+  mesmo com o footprint de roteamento já removido).
+
+### Fronteira fria deixou de assumir 5 minutos por omissão
+
+`isColdBoundary`/`observeUsage` comparavam o gap inter-request contra um TTL
+**hardcoded** de 5 minutos, mesmo quando o proxy já tinha observado, em
+qualquer tráfego anterior, que o contrato real da sessão era de 1 hora
+(`ephemeral_1h_input_tokens`). Uma sessão sem estado próprio (`no-state`)
+caía sempre no hardcoded, mesmo com prova em contrário disponível.
+
+- **`cache-cycle.js`**: `ttlWindowMs(verdict, config)` e `deriveTtlVerdict(tt)`
+  extraídos como funções puras — a mesma derivação usada tanto para decidir
+  a fronteira fria quanto para o veredito de TTL exposto no `metricsSnapshot()`,
+  para as duas leituras nunca divergirem por reimplementar a conta em dois
+  lugares. `isColdBoundary`/`observeUsage` passam a receber o TTL **global**
+  (já observado em qualquer sessão) como terceiro/quarto argumento, lido
+  **antes** desta resposta processar seus próprios writes de TTL — reflete
+  só o que já era conhecido até a resposta anterior.
+
+### Outras
+
+- `package-lock.json` sincronizado com a versão do `package.json` (drift
+  2.19.0 → 2.21.1) — `sync-version.js` passou a atualizar o lockfile também.
+
 ## [2.21.1] - 2026-07-31
 
 **O `403` do endpoint BYOK passa a repassar a mensagem acionável — e o conselho deixa de contradizê-la.** Adendo ao contrato do endpoint: o `403` vem com `{ error: { message, code, type } }`, e o `message` é escrito para o **usuário final**, dizendo a ação exata (credencial expirada, revogada, limite de origem…). Antes ele caía no balde genérico `status >= 400` e virava *"endpoint recusou a request (403)"* — o comportamento estava certo (fail-loud, sem retry), mas a instrução se perdia.

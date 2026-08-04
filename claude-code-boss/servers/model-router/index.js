@@ -669,6 +669,9 @@ const UPSTREAM_HOST     = process.env.ROUTER_UPSTREAM_HOST || 'api.anthropic.com
 const UPSTREAM_PORT     = process.env.ROUTER_UPSTREAM_PORT ? Number(process.env.ROUTER_UPSTREAM_PORT) : 443;
 const UPSTREAM_PROTOCOL = process.env.ROUTER_UPSTREAM_PROTOCOL || 'https:';
 const UPSTREAM_LIB      = UPSTREAM_PROTOCOL === 'http:' ? http : https;
+// Destino padrão injetado no núcleo do BYOK, para que TODA rota de saída herde
+// o mesmo default — e o override de env acima continue valendo em todas elas.
+const UPSTREAM_FALLBACK = { host: UPSTREAM_HOST, port: UPSTREAM_PORT, protocol: UPSTREAM_PROTOCOL };
 
 // ── Fallback "limite excedido" (plano B) ──────────────────────────────────────
 
@@ -931,7 +934,7 @@ function byokFallback(reqBody, config, res, hint, upstreamTarget, onRetryable) {
 function handleLimitExceeded(reqBody, config, res, hint) {
   // O plano B do ENDPOINT vem antes do da NVIDIA: ele serve os mesmos modelos
   // Claude, então é a substituição mais fiel. Só entra se o usuário ligou.
-  const target = byok.resolveUpstream(config, { onLimit: true });
+  const target = byok.resolveUpstream(config, { onLimit: true }, UPSTREAM_FALLBACK);
   if (target.misconfigured) {
     logger.error('BYOK ligado mas mal configurado — não é possível usá-lo como plano B', { causa: target.misconfigured });
   }
@@ -1605,25 +1608,27 @@ function metricsSnapshot() {
 // no boot, satura o rate limit (RPM) → 429 em massa. Aqui NÃO classificamos, NÃO
 // trocamos o modelo, NÃO acionamos plano B e NÃO fazemos tee de telemetria: só
 // repassamos a request e a resposta como se o proxy não existisse para ela.
-function passthrough(rawBody, originalHeaders, res, pathOriginal) {
-  const headers = {
-    'content-type':      'application/json',
-    'content-length':    Buffer.byteLength(rawBody),
-    'anthropic-version': originalHeaders['anthropic-version'] || '2023-06-01',
-  };
-  if (originalHeaders['x-api-key'])      headers['x-api-key']      = originalHeaders['x-api-key'];
-  if (originalHeaders['authorization'])  headers['authorization']  = originalHeaders['authorization'];
-  if (originalHeaders['anthropic-beta']) headers['anthropic-beta'] = originalHeaders['anthropic-beta'];
+function passthrough(rawBody, originalHeaders, res, pathOriginal, config) {
+  // DESTINO: a contagem tem que ir ao MESMO lugar que a geração. Apontar isto
+  // fixo na Anthropic enquanto `/v1/messages` ia para o endpoint do usuário fez
+  // o Claude Code CONTAR a janela num destino e GERAR no outro — as contagens
+  // divergem, o indicador de contexto oscila e a compactação dispara na hora
+  // errada (bug de campo na v2.21.2). `buildHeaders` também garante que a
+  // credencial da ASSINATURA não vá junto para um endpoint de terceiro.
+  const upstreamTarget = byok.resolveUpstream(config, { onLimit: false }, UPSTREAM_FALLBACK);
+  const headers = byok.buildHeaders(originalHeaders, upstreamTarget);
+  headers['content-length'] = Buffer.byteLength(rawBody);
 
   const options = {
-    hostname: UPSTREAM_HOST,
-    port:     UPSTREAM_PORT,
+    hostname: upstreamTarget.host,
+    port:     upstreamTarget.port,
     path:     pathOriginal || '/v1/messages/count_tokens',
     method:   'POST',
     headers,
   };
+  const lib = upstreamTarget.protocol === 'http:' ? http : UPSTREAM_LIB;
 
-  const upstream = UPSTREAM_LIB.request(options, (upRes) => {
+  const upstream = lib.request(options, (upRes) => {
     res.writeHead(upRes.statusCode, upRes.headers);
     upRes.pipe(res);
   });
@@ -1643,7 +1648,7 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
   // é sobre a janela da ANTHROPIC, e em `byok.mode=always` a Anthropic nem entra
   // no caminho — aplicar o breaker ali desviaria para o plano B uma request que
   // seria atendida normalmente pelo endpoint do usuário.
-  const upstreamTarget = byok.resolveUpstream(config, { onLimit: false });
+  const upstreamTarget = byok.resolveUpstream(config, { onLimit: false }, UPSTREAM_FALLBACK);
   if (upstreamTarget.misconfigured) {
     // Fail-loud: ligado sem destino não pode virar "usa o Claude e ninguém vê".
     logger.error('BYOK mal configurado — request NÃO roteada ao endpoint', { causa: upstreamTarget.misconfigured });
@@ -1803,12 +1808,19 @@ function maybeWarmCatalog(originalHeaders, config) {
   const cc = catalogConfig(config);
   if (!cc.enabled) return;
   const h = originalHeaders || {};
-  if (!h['x-api-key'] && !h['authorization']) return;
+  // O catálogo tem que descrever o MESMO destino que atende a geração: com BYOK
+  // ligado, listar os modelos da Anthropic enquanto o endpoint do usuário serve
+  // outros é a mesma inconsistência do count_tokens. O contrato do endpoint
+  // expõe /v1/models com os mesmos headers.
+  const alvo = byok.resolveUpstream(config, { onLimit: false }, UPSTREAM_FALLBACK);
+  // Sem BYOK, o aquecimento depende da credencial do cliente (é ela que autoriza
+  // a chamada). Com BYOK, quem autoriza são os headers configurados.
+  if (!alvo.isByok && !h['x-api-key'] && !h['authorization']) return;
   catalog.maybeRefresh({
-    host:           UPSTREAM_HOST,
-    port:           UPSTREAM_PORT,
-    protocol:       UPSTREAM_PROTOCOL,
-    headers:        catalogAuthHeaders(h),
+    host:           alvo.host,
+    port:           alvo.port,
+    protocol:       alvo.protocol,
+    headers:        alvo.isByok ? byok.buildHeaders(h, alvo) : catalogAuthHeaders(h),
     ttlMs:          cc.ttlMs,
     errorBackoffMs: cc.errorBackoffMs,
     onRefresh: (snap) => logger.info('Catálogo de modelos atualizado via /v1/models', {
@@ -1910,7 +1922,7 @@ async function createServer(config, mode, routerToken) {
       // converteria contagem grátis em geração paga e saturaria o RPM no boot.
       if (req.url.includes('/count_tokens')) {
         logger.debug('count_tokens — passthrough verbatim (sem rota)', { path: req.url, bytes: Buffer.byteLength(rawBody) });
-        passthrough(rawBody, req.headers, res, req.url);
+        passthrough(rawBody, req.headers, res, req.url, config);
         return;
       }
       let body;
@@ -2228,6 +2240,7 @@ if (require.main === module) {
     // ASSINATURA não chega ao endpoint de terceiro (o risco central do recurso).
     forwardRequest,
     handleLimitExceeded,
+    passthrough,
     metricsSnapshot,
     resetMetrics,
     newMetrics,
