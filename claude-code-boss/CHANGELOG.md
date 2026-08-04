@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.21.4] - 2026-08-04
+
+**Mesma classe de bug do v2.21.3, reaberta só dentro da janela de cooldown do `byok.mode=on-limit`.**
+
+Em `on-limit`, quando o disjuntor detecta um 429 da Anthropic e arma o cooldown, a **geração** desvia
+na hora para o endpoint BYOK (via `handleLimitExceeded`). Mas `passthrough()` (rota `count_tokens`) e
+`maybeWarmCatalog()` (catálogo `/v1/models`) resolviam o destino com `onLimit: false` **hardcoded** —
+ou seja, na mesma janela em que a geração já está no endpoint do usuário, a contagem de tokens e o
+catálogo continuavam presos na Anthropic. Resultado: o indicador de contexto volta a oscilar, só que
+restrito à duração do cooldown em vez de sempre.
+
+Corrigido com `cooldownActive(config)`: as duas rotas agora consultam o estado real do disjuntor
+(`_cooldownUntil`) para decidir `onLimit` dinamicamente, em vez de assumir sempre `false`. Em modo
+`always` nada muda (já era consistente). Em modo `on-limit`, fora da janela de cooldown, `count_tokens`
+e catálogo continuam na Anthropic normalmente — só passam a acompanhar o desvio quando ele existe.
+
 ## [2.21.3] - 2026-08-03
 
 **Bug de campo: com BYOK ligado, o indicador de janela oscilava a cada tool call.** Relatado com `byok.mode=always` apontando para um endpoint na LAN. A causa não estava no streaming — estava em **qual destino respondia cada rota**.

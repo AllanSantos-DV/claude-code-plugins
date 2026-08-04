@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.21.3 — count_tokens e catálogo passam a ir para o mesmo destino do BYOK</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. Com BYOK ativo, cada rota de saída — geração, contagem de janela (count_tokens) e catálogo de modelos — resolve o destino e os headers pelo mesmo caminho, e a credencial da assinatura nunca mais atravessa junto. A v2.21.3 fecha um bug de campo em que count_tokens continuava fixo na Anthropic enquanto a geração já ia para o endpoint próprio: as contagens divergiam, o indicador de contexto oscilava a cada turno e a compactação disparava na hora errada. A v2.21.2 fecha a outra ponta, no daemon do router: build e config agora viajam com um fingerprint, e uma divergência derruba o processo só na janela segura — nunca no meio de um turno — para que um install ou um &quot;salvar e aplicar&quot; realmente entrem em vigor. E a fronteira fria do ciclo de cache para de assumir 5 minutos por omissão quando a sessão já provou, em tráfego anterior, que o contrato real é de 1 hora." />
+<title>claude-code-boss v2.21.4 — count_tokens e catálogo seguem o disjuntor dentro da janela de cooldown do BYOK</title>
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. Com byok.mode=on-limit, toda rota de saída — geração, contagem de janela (count_tokens) e catálogo de modelos — concorda no mesmo destino durante o cooldown do disjuntor, não só quando ele dispara. A v2.21.4 fecha a mesma classe de bug da v2.21.3, reaberta só dentro da janela: count_tokens e o catálogo consultavam onLimit hardcoded em false, então ficavam presos na Anthropic enquanto a geração já tinha desviado para o endpoint BYOK — o indicador de contexto voltava a oscilar, restrito à duração do cooldown. Corrigido com cooldownActive(config): as duas rotas passam a consultar o estado real do disjuntor para decidir o destino. A v2.21.3 fechou a outra metade do mesmo furo, fora do cooldown; a v2.21.2 fecha o daemon do router, que passa a comparar um fingerprint da config antes de servir; e a fronteira fria do ciclo de cache para de assumir 5 minutos por omissão quando a sessão já provou, em tráfego anterior, que o contrato real é de 1 hora." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -2451,7 +2451,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.21.3</span>
+    <span class="ver">v2.21.4</span>
   </nav>
 
   <header class="hero">
@@ -2564,6 +2564,30 @@
         <p>Ative constraints explicitamente com <code>policy_activate</code>, nunca auto-promovidas de lições: o <code>error-guard</code> nega no <code>PreToolUse</code> um Bash cuja falha reincide, políticas <b>always-apply</b> entram no contexto no início da sessão, e políticas <b>por glob</b> avisam ao editar um arquivo que casa o padrão. <b>Surfacing ≠ enforcement</b>: ficam presentes no contexto, não bloqueiam (exceto o <code>error-guard</code>). A Fase 3 agora fecha o ciclo: modo sombra mede, e <code>/policy-adjudicate</code> chama um <b>juiz LLM independente</b> para estimar disposições — estimativa de juiz, <b>não FP medido</b>.</p>
       </div>
     </div>
+  </section>
+
+
+  <section>
+    <p class="label">Novo na v2.21.4 · o cooldown também é um destino</p>
+    <p class="lede">Mesma classe de bug da v2.21.3, reaberta só <b>dentro da janela de cooldown</b> do <code>byok.mode=on-limit</code>. Quando o disjuntor detecta um <code>429</code> da Anthropic e arma o cooldown, a <b>geração</b> desvia na hora para o endpoint BYOK. Mas <code>count_tokens</code> e o catálogo de modelos resolviam o destino com <code>onLimit</code> travado em <code>false</code> — na mesma janela em que a geração já está no seu endpoint, a contagem de tokens e o catálogo continuavam presos na Anthropic. O indicador de contexto voltava a oscilar, só que restrito à duração do cooldown em vez de sempre.</p>
+
+    <div class="callout">
+      <span class="tag">o "sempre false" não via o disjuntor, só o modo</span>
+      <code>passthrough()</code> (rota <code>count_tokens</code>) e <code>maybeWarmCatalog()</code> (catálogo <code>/v1/models</code>) sabiam responder a <code>always</code> vs. <code>on-limit</code>, mas não sabiam que, dentro do <b>cooldown</b>, um <code>on-limit</code> se comporta como <code>always</code> por um tempo. A v2.21.3 alinhou o destino; faltava alinhar também o <b>estado do disjuntor</b>.
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4><code>cooldownActive(config)</code> substitui o <code>false</code> fixo</h4>
+        <p>As duas rotas agora consultam o estado real do disjuntor (<code>_cooldownUntil</code>) para decidir <code>onLimit</code> <b>dinamicamente</b>, em vez de assumir sempre <code>false</code>. Em modo <code>always</code> nada muda — já era consistente.</p>
+      </div>
+      <div class="win">
+        <h4>Fora do cooldown, nada muda para quem já estava certo</h4>
+        <p>Em modo <code>on-limit</code>, fora da janela de cooldown, <code>count_tokens</code> e catálogo continuam na Anthropic normalmente — só passam a acompanhar o desvio quando ele <b>existe de fato</b>.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Escopo do reparo:</b> a janela em que o bug aparecia era a mesma da v2.21.3 (destino divergente entre geração e as rotas de leitura), só que recortada ao <b>tempo de cooldown</b> em vez de valer sempre — por isso passou primeiro despercebido no teste ponta a ponta que cobria só o modo <code>always</code>.</p>
   </section>
 
 
