@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.21.5 — o proxy BYOK para de repassar headers hop-by-hop do upstream verbatim</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica, execução curada e aprendizado no loop. Com BYOK ativo, o streaming deixa de 'congelar e soltar tudo de uma vez' a cada tool call: os 3 pontos de proxy (byokFallback, forwardRequest, passthrough) paravam de repassar transfer-encoding/content-length/connection do upstream verbatim para o cliente — valores de uma conexão que o novo framing de saída não respeita, e que o parser HTTP do cliente lia como uma promessa quebrada. Corrigido com sanitizeUpstreamHeaders(): os headers de conexão são removidos antes do writeHead, e o Node decide o framing de saída sozinho a partir do que o pipe de fato escreve. A v2.21.5 também restaura ~/.claude/settings.json para apontar ao proxy local em vez de ir direto ao gateway BYOK, uma configuração redundante que descartava as proteções do router (cooldown, fallback, métricas) sem nenhum ganho." />
+<title>claude-code-boss v2.21.7 — memória semântica, execução curada e roteador de modelos com BYOK</title>
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica local, execução curada, aprendizado no loop e um roteador de modelos opt-in com plano B para 429 e BYOK (seu próprio endpoint Anthropic-compatible). O proxy só corta a conexão se o upstream nunca responder; uma vez que a resposta começa, o streaming corre até o fim sem teto de inatividade, então pausas normais (thinking longo, gaps entre tool calls) não derrubam o SSE no meio — inclusive em endpoints BYOK de terceiro." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -2451,7 +2451,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.21.5</span>
+    <span class="ver">v2.21.7</span>
   </nav>
 
   <header class="hero">
