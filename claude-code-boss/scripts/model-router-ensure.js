@@ -67,6 +67,17 @@ const NUDGE_STAMP      = path.join(DATA_DIR, 'model-router', '.nudge-stamp');
 const ANNOUNCE_FILE    = path.join(DATA_DIR, 'model-router', '.announced-sessions.json');
 const ANNOUNCE_TTL_MS  = 24 * 60 * 60 * 1000;  // GC de sessões com > 24h
 const ANON_COOLDOWN_MS = 10 * 60 * 1000;       // fallback quando não há session_id
+// Carimbo da ÚLTIMA troca de build (kill+respawn por buildChanged). Duas instalações
+// válidas do MESMO plugin rodando ao mesmo tempo (checkout dev vs cache do
+// marketplace) resolvem PLUGIN_ROOT DIFERENTE cada uma — cada SessionStart/"Salvar &
+// aplicar" acha que o processo vivo é "outro build" e o derruba pro SEU path, num
+// ping-pong: A mata B, B (na sessão seguinte) mata A de volta, cada kill deixando a
+// porta momentaneamente fora do ar (visto 2026-08-05: dois kills em ~10s, ECONNREFUSED
+// no meio de uma request → "Chat admission capacity" no cliente). O debounce abaixo
+// quebra o loop sem desligar o self-heal legítimo (1 troca de build por janela é o
+// caso normal de "acabei de instalar uma versão nova").
+const BUILD_SWITCH_STAMP     = path.join(DATA_DIR, 'model-router', '.build-switch-stamp');
+const BUILD_SWITCH_DEBOUNCE_MS = 60000;
 // Arquivo de URL que o WRAPPER (shim do claude.exe) lê para descobrir o proxy
 // vivo. PROVADO E2E: no Claude Desktop 2.1.197 o app força ANTHROPIC_BASE_URL=
 // api.anthropic.com no processo claude-code e este passa a IGNORAR o `env` do
@@ -96,6 +107,23 @@ function readState() {
     if (fs.existsSync(STATE_FILE)) return JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8'));
   } catch (_) { /* */ }
   return null;
+}
+
+// epoch ms da última troca de build, ou 0 se nunca (ou arquivo ilegível — trata
+// como "faz tempo", nunca bloqueia o self-heal por um carimbo corrompido).
+function readBuildSwitchStamp() {
+  try {
+    const raw = fs.readFileSync(BUILD_SWITCH_STAMP, 'utf-8').trim();
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : 0;
+  } catch (_) { return 0; }
+}
+
+function writeBuildSwitchStamp() {
+  try {
+    fs.mkdirSync(path.dirname(BUILD_SWITCH_STAMP), { recursive: true });
+    fs.writeFileSync(BUILD_SWITCH_STAMP, String(Date.now()));
+  } catch (e) { log(`AVISO: não foi possível gravar o carimbo de troca de build: ${e.message}`); }
 }
 
 // Merge do override do usuário POR CIMA dos defaults shipados (override vence).
@@ -741,10 +769,20 @@ async function main() {
     const currentFp = configFingerprint(config);
     const servedFp = st && st.configFingerprint;
     const configChanged = !servedFp || servedFp !== currentFp;
-    const buildChanged = st && st.pid && !servesThisBuild(st.pid);
+    const rawBuildChanged = st && st.pid && !servesThisBuild(st.pid);
+    // Debounce SÓ para buildChanged: configChanged é sempre uma ação deliberada do
+    // usuário (Salvar & aplicar) e não tem o modo de falha de ping-pong entre dois
+    // PLUGIN_ROOT — não faz sentido atrasá-la.
+    const sinceLastSwitchMs = rawBuildChanged ? (Date.now() - readBuildSwitchStamp()) : Infinity;
+    const switchDebounced = rawBuildChanged && sinceLastSwitchMs < BUILD_SWITCH_DEBOUNCE_MS;
+    const buildChanged = rawBuildChanged && !switchDebounced;
+    if (switchDebounced) {
+      log(`Router PID ${st.pid} serve outro build (esperado ${PLUGIN_ROOT}), mas a última troca de build foi há ${Math.round(sinceLastSwitchMs / 1000)}s — parece duas instalações do plugin (dev vs marketplace) disputando a porta ${FIXED_PORT}. Não derrubando de novo agora para não repetir o ping-pong; se isto persistir, feche a sessão que usa a outra instalação.`);
+    }
     if (safeWindow && st && st.pid && (buildChanged || configChanged)) {
       if (buildChanged) {
         log(`Router PID ${st.pid} serve OUTRO build (esperado ${PLUGIN_ROOT}). Derrubando no boot para o binário instalado entrar em vigor.`);
+        writeBuildSwitchStamp();
       } else {
         log(`Router PID ${st.pid} serve config DESATUALIZADA (fingerprint ${servedFp || '(ausente)'} != ${currentFp}). Derrubando para a config salva entrar em vigor.`);
       }
