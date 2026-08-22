@@ -3576,6 +3576,20 @@ test('command-signature: quoted separators do not split segments', () => {
 const oneoff = require(path.join(SCRIPTS, 'lib', 'oneoff-store.js'));
 const freshDataDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-oneoff-'));
 
+test('oneoff-store: load drops orphaned assignment-only keys', () => {
+  const dataDir = freshDataDir();
+  const f = path.join(dataDir, 'curation-oneoff', 'proj.json');
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  fs.writeFileSync(f, JSON.stringify({ entries: {
+    'D="/c/proj"': { seen: [Date.now(), Date.now()] },
+    'NODE_ENV=test': { seen: [Date.now()] },
+    'npm test': { seen: [Date.now()] },
+  } }));
+  const store = oneoff.load(dataDir, 'proj');
+  assert(!('D="/c/proj"' in store.entries), 'quoted assignment key must be dropped');
+  assert(!('NODE_ENV=test' in store.entries), 'bare assignment key must be dropped');
+  assert('npm test' in store.entries, 'real signature must survive');
+});
 test('oneoff-store: touch creates + counts masked recurrence (D1)', () => {
   const dd = freshDataDir(); const pk = 'p'; const t0 = 1_700_000_000_000;
   let r = oneoff.touch(dd, pk, 'git log', { sessionId: 's1', now: t0, create: true });
