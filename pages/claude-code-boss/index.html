@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.21.8 — memória semântica, execução curada e roteador de modelos com BYOK</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica local, execução curada, aprendizado no loop e um roteador de modelos opt-in com plano B para 429 e BYOK (seu próprio endpoint Anthropic-compatible). A assinatura que a curadoria usa para deduplicar comandos passou a cortar em toda a classe de separadores — newline, CRLF e &amp; solitário — dobrar continuações de linha e ignorar comentários e banners decorativos, então comandos sem relação nenhuma não fundem mais numa chave só. O store se auto-cura: uma chave que a assinatura atual não consegue reproduzir veio de um algoritmo antigo e é descartada no load." />
+<title>claude-code-boss v2.21.9 — memória semântica, execução curada e roteador de modelos com BYOK</title>
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica local, execução curada, aprendizado no loop e um roteador de modelos opt-in com plano B para 429 e BYOK (seu próprio endpoint Anthropic-compatible). Uma queda de conexão no meio do stream do upstream derrubava o processo inteiro do model-router, porque .pipe() não propaga o erro da origem; agora o handler encerra só a conexão afetada. O teto de TTFB do BYOK passou a ser separado do da Anthropic e foi a 100s, medido no log de produção em que o failover interno do endpoint levou 88 segundos — cortar antes só trocava &quot;o BYOK tentou&quot; por um falso &quot;BYOK inacessível&quot;. A troca de build do daemon ganhou debounce de 60s, encerrando o ping-pong de restart entre o checkout de dev e o cache do marketplace." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -2451,7 +2451,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.21.8</span>
+    <span class="ver">v2.21.9</span>
   </nav>
 
   <header class="hero">
