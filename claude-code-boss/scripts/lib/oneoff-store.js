@@ -47,12 +47,31 @@ function storePath(dataDir, projectKey) {
   return path.join(dataDir, 'curation-oneoff', `${projectKey}.json`);
 }
 
+// A key written before the signature fix can be a bare `VAR=value` segment:
+// canonicalSig used to treat an assignment-only segment as the command, so
+// `D="/proj"; sed ...` signed as the ASSIGNMENT. Such a key is unproducible now,
+// and it was never silenceable either -- isGenericAlias rejects a 1-token sig, so
+// curation_mark_oneoff refused it. All it could do was accumulate recurrence and
+// force a block the agent had no way to clear. Drop it on load; the next save()
+// persists the cleanup. Self-healing migration -- no version gate needed, because
+// the current signature algorithm can never mint one of these again.
+const ASSIGN_ONLY_KEY = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*[A-Za-z_][A-Za-z0-9_]*=\S*$/;
+
+/** Drop store keys the current canonicalSig can no longer produce. Mutates + returns. */
+function pruneOrphanKeys(store) {
+  if (!store || !store.entries) return store;
+  for (const k of Object.keys(store.entries)) {
+    if (ASSIGN_ONLY_KEY.test(k)) delete store.entries[k];
+  }
+  return store;
+}
+
 function load(dataDir, projectKey) {
   const p = storePath(dataDir, projectKey);
   try {
     if (!fs.existsSync(p)) return { entries: {} };
     const obj = JSON.parse(fs.readFileSync(p, 'utf-8'));
-    return obj && typeof obj === 'object' && obj.entries ? obj : { entries: {} };
+    return obj && typeof obj === 'object' && obj.entries ? pruneOrphanKeys(obj) : { entries: {} };
   } catch (err) {
     console.error(`[oneoff-store] load failed (${p}): ${err.message}`);
     return { entries: {} };
@@ -235,6 +254,7 @@ function summary(dataDir, projectKey) {
 }
 
 module.exports = {
+  pruneOrphanKeys,
   resolveProjectKey, storePath, load, save,
   touch, mark, prune, summary, matchEntry, countInWindow, entryMatchesSig,
   isOneHit, markedSince,
