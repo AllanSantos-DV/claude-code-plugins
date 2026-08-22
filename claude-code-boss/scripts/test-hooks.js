@@ -2299,6 +2299,54 @@ console.log(DIM('─'.repeat(70)));
     }
   }
 
+  // ─── contract: hookEventName must echo the REAL event ──────────────────────
+  // A script wired to MORE THAN ONE event cannot hardcode
+  // `hookSpecificOutput.hookEventName`: Claude Code rejects the whole hook with
+  // "expected 'SessionStart' but got 'UserPromptSubmit'" and drops its output.
+  // This shipped once in model-router-ensure.js (SessionStart + UserPromptSubmit)
+  // and the 107 spawn tests missed it because none drove that script. Static
+  // check — no spawning, so it stays cheap and covers the whole class.
+  const ctTestName = 'hooks.json        [multi-event scripts echo hookEventName]';
+  if (!FILTER || ctTestName.toLowerCase().includes(FILTER.toLowerCase())) {
+    const offenders = [];
+    try {
+      const wiring = JSON.parse(fs.readFileSync(path.join(SCRIPTS, '..', 'hooks', 'hooks.json'), 'utf8')).hooks || {};
+      const events = new Map(); // script basename -> Set(event)
+      for (const [event, groups] of Object.entries(wiring)) {
+        for (const g of groups || []) {
+          for (const h of g.hooks || []) {
+            for (const a of h.args || []) {
+              const m = /([\w.-]+\.js)$/.exec(String(a));
+              if (!m) continue;
+              if (!events.has(m[1])) events.set(m[1], new Set());
+              events.get(m[1]).add(event);
+            }
+          }
+        }
+      }
+      for (const [script, evs] of events) {
+        if (evs.size < 2) continue;
+        const file = path.join(SCRIPTS, script);
+        if (!fs.existsSync(file)) continue;
+        const src = fs.readFileSync(file, 'utf8');
+        for (const m of src.matchAll(/hookEventName:\s*['"]([A-Za-z]+)['"]/g)) {
+          offenders.push(`${script} hardcodes '${m[1]}' but is wired to ${[...evs].join(' + ')}`);
+        }
+      }
+    } catch (e) {
+      offenders.push(`could not run contract check: ${e.message}`);
+    }
+
+    if (offenders.length) {
+      failed++;
+      console.log(`  ${RED('✗')} ${ctTestName}`);
+      for (const o of offenders) console.log(`      ${YELLOW('→')} ${o}`);
+    } else {
+      passed++;
+      console.log(`  ${GREEN('✓')} ${ctTestName}`);
+    }
+  }
+
   finalize();
 })();
 

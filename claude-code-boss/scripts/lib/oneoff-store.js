@@ -47,12 +47,46 @@ function storePath(dataDir, projectKey) {
   return path.join(dataDir, 'curation-oneoff', `${projectKey}.json`);
 }
 
+// A key written before the signature fix can be a bare `VAR=value` segment:
+// canonicalSig used to treat an assignment-only segment as the command, so
+// `D="/proj"; sed ...` signed as the ASSIGNMENT. Such a key is unproducible now,
+// and it was never silenceable either -- isGenericAlias rejects a 1-token sig, so
+// curation_mark_oneoff refused it. All it could do was accumulate recurrence and
+// force a block the agent had no way to clear. Drop it on load; the next save()
+// persists the cleanup. Self-healing migration -- no version gate needed, because
+// the current signature algorithm can never mint one of these again.
+const ASSIGN_ONLY_KEY = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*[A-Za-z_][A-Za-z0-9_]*=\S*$/;
+
+/**
+ * Drop store keys the current canonicalSig can no longer produce. Mutates + returns.
+ *
+ * Two independent rules, because neither subsumes the other:
+ *
+ *  1. NON-IDEMPOTENT keys. Every key was minted BY canonicalSig, so re-signing a key
+ *     must return the key itself. When it doesn't, the key came from an older version
+ *     of the algorithm and no live command can ever produce it again -- it can only
+ *     sit there accumulating a count nothing will match. This rule is generic: it
+ *     self-heals across ANY future signature change, instead of needing a new regex
+ *     per fix (the `\|`-cut fix and the newline-fusion fix each left such keys).
+ *  2. ASSIGN_ONLY keys -- see above. These ARE fixed points (`D="/proj"` re-signs to
+ *     itself), so rule 1 does not catch them; the regex is still required.
+ *
+ * Cost is one canonicalSig per key per load (tens of keys) -- pure string work.
+ */
+function pruneOrphanKeys(store) {
+  if (!store || !store.entries) return store;
+  for (const k of Object.keys(store.entries)) {
+    if (ASSIGN_ONLY_KEY.test(k) || canonicalSig(k) !== k) delete store.entries[k];
+  }
+  return store;
+}
+
 function load(dataDir, projectKey) {
   const p = storePath(dataDir, projectKey);
   try {
     if (!fs.existsSync(p)) return { entries: {} };
     const obj = JSON.parse(fs.readFileSync(p, 'utf-8'));
-    return obj && typeof obj === 'object' && obj.entries ? obj : { entries: {} };
+    return obj && typeof obj === 'object' && obj.entries ? pruneOrphanKeys(obj) : { entries: {} };
   } catch (err) {
     console.error(`[oneoff-store] load failed (${p}): ${err.message}`);
     return { entries: {} };
@@ -235,6 +269,7 @@ function summary(dataDir, projectKey) {
 }
 
 module.exports = {
+  pruneOrphanKeys,
   resolveProjectKey, storePath, load, save,
   touch, mark, prune, summary, matchEntry, countInWindow, entryMatchesSig,
   isOneHit, markedSince,
