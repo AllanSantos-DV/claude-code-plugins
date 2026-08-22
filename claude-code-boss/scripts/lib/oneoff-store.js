@@ -57,11 +57,26 @@ function storePath(dataDir, projectKey) {
 // the current signature algorithm can never mint one of these again.
 const ASSIGN_ONLY_KEY = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*[A-Za-z_][A-Za-z0-9_]*=\S*$/;
 
-/** Drop store keys the current canonicalSig can no longer produce. Mutates + returns. */
+/**
+ * Drop store keys the current canonicalSig can no longer produce. Mutates + returns.
+ *
+ * Two independent rules, because neither subsumes the other:
+ *
+ *  1. NON-IDEMPOTENT keys. Every key was minted BY canonicalSig, so re-signing a key
+ *     must return the key itself. When it doesn't, the key came from an older version
+ *     of the algorithm and no live command can ever produce it again -- it can only
+ *     sit there accumulating a count nothing will match. This rule is generic: it
+ *     self-heals across ANY future signature change, instead of needing a new regex
+ *     per fix (the `\|`-cut fix and the newline-fusion fix each left such keys).
+ *  2. ASSIGN_ONLY keys -- see above. These ARE fixed points (`D="/proj"` re-signs to
+ *     itself), so rule 1 does not catch them; the regex is still required.
+ *
+ * Cost is one canonicalSig per key per load (tens of keys) -- pure string work.
+ */
 function pruneOrphanKeys(store) {
   if (!store || !store.entries) return store;
   for (const k of Object.keys(store.entries)) {
-    if (ASSIGN_ONLY_KEY.test(k)) delete store.entries[k];
+    if (ASSIGN_ONLY_KEY.test(k) || canonicalSig(k) !== k) delete store.entries[k];
   }
   return store;
 }

@@ -3568,13 +3568,58 @@ test('command-signature: distinct commands behind the same VAR= prefix differ', 
 test('command-signature: quoted separators do not split segments', () => {
   assertEq(cmdSig.canonicalSig(`P="/x"; sed -n '1,2p;5,6p' "$P/a.js"`), `sed '1,2p;5,6p' "$P/a.js"`);
   assertEq(cmdSig.canonicalSig('echo "a; b"'), 'echo "a; b"');
-  assertEq(cmdSig.canonicalSig('echo "a && b" && ls'), 'echo "a && b"');
+  // Uses grep, not echo: a decorative `echo` segment is now skipped as narration,
+  // so this must assert the QUOTING property with a segment that survives the skip.
+  assertEq(cmdSig.canonicalSig('grep "a && b" f && ls'), 'grep "a && b" f');
 });
 
+
+
+test('command-signature: newline separates segments (multi-line command)', () => {
+  assertEq(cmdSig.canonicalSig('echo hi\nnpm test'), 'npm test');
+  assertEq(cmdSig.canonicalSig('cd /x\r\nnpm test'), 'npm test');
+  // The defect was FUSION: every line ran together into one segment, so the sig
+  // carried tokens from unrelated invocations. The sig is the FIRST invocation
+  // (by design) -- what must not happen is the tail leaking into it.
+  assertEq(cmdSig.canonicalSig('cat a.js\nnode b.js'), 'cat a.js');
+});
+test('command-signature: lone & backgrounds (separator), && does not', () => {
+  assertEq(cmdSig.canonicalSig('npm run dev & npm test'), 'npm run dev');
+  assertEq(cmdSig.canonicalSig('cd /x && npm test'), 'npm test');
+});
+test('command-signature: line continuation joins, leaks no backslash token', () => {
+  const cont = 'npm test ' + String.fromCharCode(92) + '\n  --watch';
+  assertEq(cmdSig.canonicalSig(cont), 'npm test');
+});
+test('command-signature: comment and echo-banner segments are not the command', () => {
+  assertEq(cmdSig.canonicalSig('# proximo passo\nnpm test'), 'npm test');
+  // Observed live: a banner-bracketed inspection signed as the BANNER TEXT.
+  const real = 'cd /p\necho "=== a"; sed -n 1,30p f.yml\necho "=== b"; cat g.json';
+  assertEq(cmdSig.canonicalSig(real), 'sed 1,30p f.yml');
+  // Fallback: a command that is ONLY decoration still signs as itself.
+  assertEq(cmdSig.canonicalSig('echo hello world'), 'echo hello world');
+});
 
 // ─── oneoff-store ─────────────────────────────────────────────────────────────
 const oneoff = require(path.join(SCRIPTS, 'lib', 'oneoff-store.js'));
 const freshDataDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-oneoff-'));
+
+test('oneoff-store: load drops keys the current signature cannot re-produce', () => {
+  const dataDir = freshDataDir();
+  const f = path.join(dataDir, 'curation-oneoff', 'proj.json');
+  fs.mkdirSync(path.dirname(f), { recursive: true });
+  // Real key found live: minted before the metachar fix, when an unquoted `|`
+  // did not cut. The current sig cuts there, so this form is unproducible.
+  const fused = 'diff isByok|streamNvidiaToAnthropic|passthrough';
+  assert(cmdSig.canonicalSig(fused) !== fused, 'fixture must be non-idempotent');
+  fs.writeFileSync(f, JSON.stringify({ entries: {
+    [fused]: { sig: fused, seen: [Date.now()] },
+    'npm test': { sig: 'npm test', seen: [Date.now()] },
+  } }));
+  const store = oneoff.load(dataDir, 'proj');
+  assert(!(fused in store.entries), 'non-idempotent key must be dropped');
+  assert('npm test' in store.entries, 'real signature must survive');
+});
 
 test('oneoff-store: load drops orphaned assignment-only keys', () => {
   const dataDir = freshDataDir();
