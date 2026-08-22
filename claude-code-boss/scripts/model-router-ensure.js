@@ -116,7 +116,13 @@ function readBuildSwitchStamp() {
     const raw = fs.readFileSync(BUILD_SWITCH_STAMP, 'utf-8').trim();
     const n = Number(raw);
     return Number.isFinite(n) ? n : 0;
-  } catch (_) { return 0; }
+  } catch (err) {
+    // Ausente é o caso NORMAL (primeira execução) e ilegível é inofensivo: os dois
+    // significam "faz tempo", que é o lado seguro — libera o self-heal. Logar aqui
+    // seria ruído em toda sessão nova, então o erro é explicitamente descartado.
+    void err;
+    return 0;
+  }
 }
 
 function writeBuildSwitchStamp() {
