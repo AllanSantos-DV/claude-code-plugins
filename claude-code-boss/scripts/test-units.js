@@ -3542,6 +3542,36 @@ test('command-signature: unquoted pipe/redirect still cuts (sig identity preserv
   assertEq(cmdSig.canonicalSig('git log | head -5'), 'git log');
 });
 
+// A `VAR=value` segment DECLARES state for the segments that follow — it is not an
+// invocation and can never be the principal segment. Live fallout: every
+// `D="/long/path"; sed ...` read collapsed to the sig `D="/long/path"`, so four
+// unrelated commands counted as one recurrence (hit 4/3, past the curation
+// ceiling) AND curation_mark_oneoff refused them as "too broad" — the user could
+// neither curate nor silence them.
+test('command-signature: assignment-only segment is not the command', () => {
+  assertEq(cmdSig.canonicalSig('D="/c/proj/x"; node scripts/test-hooks.js'), 'node scripts/test-hooks.js');
+  assertEq(cmdSig.canonicalSig('A=1; B=2; npm test'), 'npm test');
+  // ...and the derived alias check must stop calling it "too broad".
+  assert(!cmdSig.isGenericAlias('D="/c/proj/x"; node scripts/test-hooks.js'), 'must not be generic');
+});
+test('command-signature: distinct commands behind the same VAR= prefix differ', () => {
+  const pre = 'D="/c/Users/x/proj"; ';
+  const a = cmdSig.canonicalSig(pre + 'wc -l "$D/a.js"');
+  const b = cmdSig.canonicalSig(pre + 'node "$D/run.js"');
+  assert(a !== b, `sigs must differ, both = ${a}`);
+  assert(!a.startsWith('D='), `sig must not be the assignment, got ${a}`);
+});
+
+// Separators inside quotes are DATA. This is the same class already fixed for `|`
+// in indexOfShellMeta, but SEGMENT_SPLIT was still a quote-blind regex: the `;` in
+// a sed script (`sed -n '1,2p;5,6p'`) split the command mid-argument.
+test('command-signature: quoted separators do not split segments', () => {
+  assertEq(cmdSig.canonicalSig(`P="/x"; sed -n '1,2p;5,6p' "$P/a.js"`), `sed '1,2p;5,6p' "$P/a.js"`);
+  assertEq(cmdSig.canonicalSig('echo "a; b"'), 'echo "a; b"');
+  assertEq(cmdSig.canonicalSig('echo "a && b" && ls'), 'echo "a && b"');
+});
+
+
 // ─── oneoff-store ─────────────────────────────────────────────────────────────
 const oneoff = require(path.join(SCRIPTS, 'lib', 'oneoff-store.js'));
 const freshDataDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-oneoff-'));

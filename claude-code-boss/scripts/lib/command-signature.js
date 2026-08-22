@@ -16,11 +16,17 @@
  * final net.
  */
 
-// && || ;  segment separators. Pipe (`|`) is NOT a separator — `cmd | filter` is a
-// single invocation of `cmd` (mirrors matchCuratedShell).
-const SEGMENT_SPLIT = /\s*(?:&&|\|\|)\s*|\s*;\s*/;
 // Navigation/setup segments that are dropped entirely.
 const NAV_SEGMENT = /^(?:cd|pushd|popd)\b/;
+// A segment made up ONLY of `VAR=value` assignment(s). It declares state for the
+// segments that FOLLOW (`D=/proj; sed -n 1,5p "$D/a.js"`) — it is not an
+// invocation, so it can never be the principal segment. Treating it as one made
+// every `VAR=path; cmd ...` read sign as the ASSIGNMENT: unrelated commands
+// collapsed onto one signature (false recurrence, past the curation ceiling) and
+// the alias check then rejected that same signature as too broad — leaving the
+// command both uncurable and unsilenceable. Distinct from ENV_ASSIGN, which
+// strips a PREFIX off a segment that also carries a command.
+const ASSIGN_ONLY_SEGMENT = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*[A-Za-z_][A-Za-z0-9_]*=\S*$/;
 // Leading `VAR=val ` env assignment(s) — stripped from the front of a segment.
 const ENV_ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/;
 // Simple command-prefixing wrappers that precede the real command.
@@ -38,15 +44,48 @@ function stripPrefixes(segment) {
 }
 
 /**
- * The principal segment of a compound command: the first non-navigation segment
- * (after stripping env/wrapper prefixes). Falls back to the last segment.
+ * Split a compound command on SHELL-ACTIVE `&&`, `||` and `;` — separators inside
+ * quotes are argument DATA, not structure. A quote-blind regex split the `;` in a
+ * sed script (`sed -n '1,2p;5,6p' f`) mid-argument and shredded the signature.
+ * Same class as indexOfShellMeta below, which already guards `|`/`<`/`>`.
+ * A single `|` is NOT a separator — `cmd | filter` is one invocation of `cmd`
+ * (mirrors matchCuratedShell); indexOfShellMeta trims it from the sig later.
+ * @param {string} command
+ * @returns {string[]} trimmed, non-empty segments
+ */
+function splitSegments(command) {
+  const s = String(command || '');
+  const out = [];
+  let start = 0, inSingle = false, inDouble = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '\\' && !inSingle) { i++; continue; } // escaped char is data
+    if (c === "'" && !inDouble) { inSingle = !inSingle; continue; }
+    if (c === '"' && !inSingle) { inDouble = !inDouble; continue; }
+    if (inSingle || inDouble) continue;
+    if (c === ';') { out.push(s.slice(start, i)); start = i + 1; continue; }
+    if ((c === '&' && s[i + 1] === '&') || (c === '|' && s[i + 1] === '|')) {
+      out.push(s.slice(start, i));
+      i++;
+      start = i + 1;
+    }
+  }
+  out.push(s.slice(start));
+  return out.map(x => x.trim()).filter(Boolean);
+}
+
+/**
+ * The principal segment of a compound command: the first segment that is an actual
+ * invocation — navigation (`cd`) and assignment-only (`D=/proj`) segments are
+ * skipped — after stripping env/wrapper prefixes. Falls back to the last segment.
  * @param {string} command
  * @returns {string}
  */
 function principalSegment(command) {
-  const segments = String(command || '').split(SEGMENT_SPLIT).map(s => s.trim()).filter(Boolean);
+  const segments = splitSegments(command);
   for (const seg of segments) {
     if (NAV_SEGMENT.test(seg)) continue;
+    if (ASSIGN_ONLY_SEGMENT.test(seg)) continue;
     const stripped = stripPrefixes(seg);
     if (stripped) return stripped;
   }
@@ -111,4 +150,4 @@ function isGenericAlias(alias) {
   return sig.split(' ').filter(Boolean).length < 2;
 }
 
-module.exports = { canonicalSig, isGenericAlias, principalSegment, significantTokens, indexOfShellMeta };
+module.exports = { canonicalSig, isGenericAlias, principalSegment, significantTokens, indexOfShellMeta, splitSegments };
