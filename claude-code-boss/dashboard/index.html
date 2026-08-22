@@ -526,9 +526,9 @@ code { color: var(--fg); font-family: var(--font-mono); }
         <div>
           <label class="field-label">
             <span data-i18n="brain.minScoreFast">Min Score Fast</span>
-            <span class="tip" data-i18n-tip="tip.minScoreFast" data-tip="Score mínimo (cosine) para incluir um hit em busca rápida. Default: 0.05 (calibrado para multilingual).">i</span>
+            <span class="tip" data-i18n-tip="tip.minScoreFast" data-tip="Score mínimo (cosine) para incluir um hit em busca rápida. Default: 0.50 (calibrado para multilingual MiniLM).">i</span>
           </label>
-          <input type="number" id="kb-minScoreFast" step="0.01" min="0" max="1" placeholder="0.05">
+          <input type="number" id="kb-minScoreFast" step="0.01" min="0" max="1" placeholder="0.50">
         </div>
         <div>
           <label class="field-label">
@@ -1111,7 +1111,7 @@ const I18N = {
     'tip.dimensions': 'Embedding vector size (must match the chosen model).',
     'tip.fastTopK': 'Number of results returned in fast searches (in-loop hints). Default: 5.',
     'tip.deepTopK': 'Number of results in deep searches (research). Default: 3.',
-    'tip.minScoreFast': 'Minimum cosine score for a hit to count in fast search. Default: 0.05 (calibrated for multilingual).',
+    'tip.minScoreFast': 'Minimum cosine score for a hit to count in fast search. Default: 0.50 (calibrated for multilingual MiniLM).',
     'tip.minScoreDeep': 'Minimum cosine score for deep search. Default: 0.08.',
     'tip.maxEntries': 'Total entry limit per project. Default: 10000.',
     'tip.archiveDays': 'Age (days) after which entries become archive candidates. Default: 90.',
@@ -1263,7 +1263,7 @@ const I18N = {
     'tip.dimensions': 'Tamanho do vetor de embedding (deve casar com o modelo escolhido).',
     'tip.fastTopK': 'Quantidade de resultados em buscas rápidas (hints in-loop). Padrão: 5.',
     'tip.deepTopK': 'Quantidade de resultados em buscas profundas (research). Padrão: 3.',
-    'tip.minScoreFast': 'Score mínimo (cosine) para incluir hit em busca rápida. Padrão: 0.05 (calibrado p/ multilingual).',
+    'tip.minScoreFast': 'Score mínimo (cosine) para incluir hit em busca rápida. Padrão: 0.50 (calibrado p/ multilingual).',
     'tip.minScoreDeep': 'Score mínimo (cosine) para busca profunda. Padrão: 0.08.',
     'tip.maxEntries': 'Limite total de entradas por projeto. Padrão: 10000.',
     'tip.archiveDays': 'Idade (dias) a partir da qual entradas viram candidatas a arquivo. Padrão: 90.',
