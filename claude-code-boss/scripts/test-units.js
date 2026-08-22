@@ -792,7 +792,7 @@ const http = require('http');
 
 /** Start a fake daemon mimicking the /mcp contract; returns {url, port, seen, close}. */
 function startFakeDaemon(opts = {}) {
-  const seen = { initProjectId: null, initHadSession: false, toolsListSession: null, callSession: null, callArgs: null };
+  const seen = { initProjectId: null, initHadSession: false, toolsListSession: null, callSession: null, callArgs: null, callCount: 0, reconnectInit: false };
   const server = http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/health') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -808,6 +808,7 @@ function startFakeDaemon(opts = {}) {
         if (msg.method === 'initialize') {
           seen.initProjectId = msg.params && msg.params.projectId;
           seen.initHadSession = !!sid;
+          if (opts.reconnectInit && seen.callCount >= (opts.expireAfterCalls || 1)) seen.reconnectInit = true;
           res.writeHead(200, { 'Content-Type': 'application/json', 'Mcp-Session-Id': 'sess-123', 'MCP-Protocol-Version': '2025-06-18' });
           return res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: '2025-06-18', serverInfo: { name: 'fake', version: '9.9.9' }, capabilities: {} } }));
         }
@@ -820,6 +821,14 @@ function startFakeDaemon(opts = {}) {
         if (msg.method === 'tools/call') {
           seen.callSession = sid;
           seen.callArgs = msg.params;
+          seen.callCount++;
+          // Simulate the daemon evicting our session (idle TTL): the first tools/call
+          // after the handshake arrives with a STALE session id and is rejected with
+          // HTTP 400 -32600. The client must reconnect and retry transparently.
+          if (opts.expireFirstCall && !seen.reconnectInit && seen.callCount === 1) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            return res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32600, message: 'Invalid or missing session ID', data: null }, id: msg.id }));
+          }
           res.writeHead(200, { 'Content-Type': 'application/json' });
           const result = (typeof opts.toolResult === 'function')
             ? opts.toolResult(msg.params)
@@ -855,6 +864,28 @@ test('mcp-client http: handshake captures session + stamps projectId + echoes se
     assertEq(r.text, 'OK:search_memory');
     assertEq(daemon.seen.callSession, 'sess-123');
     assertEq(daemon.seen.callArgs.arguments.query, 'x');
+    c.close();
+    await new Promise((r) => setTimeout(r, 60));
+  } finally {
+    await daemon.close();
+  }
+});
+
+test('mcp-client http: SESSION_EXPIRED (400 -32600) triggers reconnect + single retry', async () => {
+  const McpClient = require('./mcp-client.js');
+  const daemon = await startFakeDaemon({ expireFirstCall: true, reconnectInit: true });
+  try {
+    const c = new McpClient({ transport: 'http', serverUrl: daemon.url, projectId: 'P1', timeout: 4000 });
+    await c.connect();
+    assert(c.isConnected(), 'should be connected');
+    // First tools/call is rejected with -32600 → client reconnects (new initialize)
+    // and retries. The retry must succeed and must carry the (new) session id.
+    const r = await c.callTool('search_memory', { query: 'x' });
+    assertEq(r.text, 'OK:search_memory');
+    assert(daemon.seen.reconnectInit, 'client must re-run initialize after session expiry');
+    assertEq(daemon.seen.callCount, 2, 'exactly one retry after the expired call');
+    assertEq(daemon.seen.callSession, 'sess-123', 'retried call must carry the fresh session id');
+    assertEq(daemon.seen.callArgs.arguments.query, 'x', 'retried call must keep the original arguments');
     c.close();
     await new Promise((r) => setTimeout(r, 60));
   } finally {
@@ -3574,7 +3605,6 @@ test('command-signature: quoted separators do not split segments', () => {
 });
 
 
-
 test('command-signature: newline separates segments (multi-line command)', () => {
   assertEq(cmdSig.canonicalSig('echo hi\nnpm test'), 'npm test');
   assertEq(cmdSig.canonicalSig('cd /x\r\nnpm test'), 'npm test');
@@ -3583,14 +3613,17 @@ test('command-signature: newline separates segments (multi-line command)', () =>
   // (by design) -- what must not happen is the tail leaking into it.
   assertEq(cmdSig.canonicalSig('cat a.js\nnode b.js'), 'cat a.js');
 });
+
 test('command-signature: lone & backgrounds (separator), && does not', () => {
   assertEq(cmdSig.canonicalSig('npm run dev & npm test'), 'npm run dev');
   assertEq(cmdSig.canonicalSig('cd /x && npm test'), 'npm test');
 });
+
 test('command-signature: line continuation joins, leaks no backslash token', () => {
   const cont = 'npm test ' + String.fromCharCode(92) + '\n  --watch';
   assertEq(cmdSig.canonicalSig(cont), 'npm test');
 });
+
 test('command-signature: comment and echo-banner segments are not the command', () => {
   assertEq(cmdSig.canonicalSig('# proximo passo\nnpm test'), 'npm test');
   // Observed live: a banner-bracketed inspection signed as the BANNER TEXT.

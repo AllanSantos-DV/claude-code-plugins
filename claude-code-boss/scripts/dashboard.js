@@ -2,7 +2,7 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { execSync, execFileSync } = require('child_process');
+const { execSync, execFileSync, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
@@ -22,7 +22,7 @@ const { validEnvDir, dataDir, globalDir } = require('./lib/data-dir.js');
 const { isValidHost, tokenMatches } = require('./lib/dashboard-auth.js');
 const { resolveStaticPath } = require('./lib/dashboard-static.js');
 const { writeFileAtomic, writeJsonAtomic } = require('./lib/atomic-write.js');
-const { routerUserConfigPath, hardenRouterConfigPerms } = require('./lib/router-config-path.js');
+const { routerUserConfigPath } = require('./lib/router-config-path.js');
 
 // Session token — generated at boot, injected into index.html, required on all /api/* requests.
 const SESSION_TOKEN = crypto.randomBytes(16).toString('hex');
@@ -167,6 +167,26 @@ function json(res, data, status = 200) {
 
 function fail(res, msg, status = 500) {
   json(res, { error: msg }, status);
+}
+
+let applyRouterLock = false;
+
+function runEnsureSync(scriptPath) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [scriptPath], {
+      detached: false,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, CLAUDE_PLUGIN_ROOT: ROOT, CLAUDE_PLUGIN_DATA: DATA_DIR, BOSS_ROUTER_FORCE_RESTART: '1' },
+    });
+    let stderr = '', childExited = false;
+    child.stderr.on('data', d => stderr += d.toString());
+    const timeout = setTimeout(() => {
+      if (!childExited) { child.kill('SIGTERM'); setTimeout(() => { if (!childExited) child.kill('SIGKILL'); }, 2000); }
+      reject(new Error('ensure timeout after 30s — killed'));
+    }, 30000);
+    child.on('exit', (code) => { childExited = true; clearTimeout(timeout); code === 0 ? resolve() : reject(new Error(`ensure exited ${code}: ${stderr}`)); });
+    child.on('error', (err) => { childExited = true; clearTimeout(timeout); reject(err); });
+  });
 }
 
 function readJSON(file) {
@@ -1251,54 +1271,44 @@ async function getSkillRoi(req, res, url) {
  */
 function writeRouterOverride(body) {
   fs.mkdirSync(path.dirname(ROUTER_USER_CONFIG), { recursive: true });
+  // Lê user-config atual DIRETAMENTE
   const existing = fs.existsSync(ROUTER_USER_CONFIG) ? (readJSON(ROUTER_USER_CONFIG) || {}) : {};
-  const out = { ...existing };
-  if (typeof body.enabled === 'boolean') out.enabled = body.enabled;
-  if (typeof body.acceptedTerms === 'boolean') out.acceptedTerms = body.acceptedTerms;
-
-  if (typeof body.stickyEnabled === 'boolean') {
-    out.sticky = { ...(existing.sticky || {}), enabled: body.stickyEnabled };
-  }
-
-  if (typeof body.fallbackEnabled === 'boolean') {
-    out.fallback = { ...(existing.fallback || {}), enabled: body.fallbackEnabled };
-  }
-
-  const nim = { ...(existing.nim || {}) };
-  if (body.nimApiKey === null) {
-    nim.apiKey = '';
-  } else if (typeof body.nimApiKey === 'string' && body.nimApiKey.trim() !== '') {
-    nim.apiKey = body.nimApiKey.trim();
-  } // else: omitted/empty → keep existing nim.apiKey untouched
-  out.nim = nim;
-
-  if (body.routing && typeof body.routing === 'object') {
-    out.routing = { ...(existing.routing || {}), ...body.routing };
-  }
-
-  // BYOK — endpoint Anthropic-compatible do usuário. Merge campo a campo pelo
-  // MESMO motivo da chave NVIDIA: o dashboard não reenvia segredo a cada toggle,
-  // então trocar só o modo não pode apagar os headers já gravados. `headers:null`
-  // é a limpeza EXPLÍCITA (distinta de "não mandei este campo").
-  if (body.byok && typeof body.byok === 'object') {
-    const b = { ...(existing.byok || {}) };
-    if (typeof body.byok.enabled === 'boolean') b.enabled = body.byok.enabled;
-    if (body.byok.mode === 'always' || body.byok.mode === 'on-limit') b.mode = body.byok.mode;
-    if (typeof body.byok.baseUrl === 'string') b.baseUrl = body.byok.baseUrl.trim();
-    if (body.byok.headers === null) b.headers = {};
-    else if (body.byok.headers && typeof body.byok.headers === 'object') b.headers = { ...body.byok.headers };
-    out.byok = b;
-  }
-
-  atomicWriteJSON(ROUTER_USER_CONFIG, out);
-  hardenRouterConfigPerms(ROUTER_USER_CONFIG); // owner-only 0600 (chave NVIDIA + headers BYOK); no-op no Windows
-  return out;
-}
-
-// Deriva os 3 flags EFETIVOS (shipped ⊕ override) — fonte única p/ /config e /status.
-// Espelha exatamente a precedência do server: override.<flag> vence o shipped; ausência
-// no override cai no default do shipped. Usado para computar o modo CONFIGURADO.
-function resolveRouterFlags() {
+  // PRESERVA byok existente + atualiza campos enviados
+  // Suporta tanto formato flat (byokEnabled, byokMode, etc) quanto nested (body.byok)
+  const byokInput = body.byok || {};
+  const byokOut = {
+    ...(existing.byok || {}),
+    enabled: byokInput.enabled !== undefined ? byokInput.enabled === true : (body.byokEnabled === true),
+    mode: byokInput.mode || body.byokMode || 'on-limit',
+    baseUrl: (byokInput.baseUrl !== undefined && byokInput.baseUrl !== null) ? byokInput.baseUrl : (existing.byok?.baseUrl || ''),
+    headers: (byokInput.headers !== undefined) ? (byokInput.headers || {}) : (existing.byok?.headers || {})
+  };
+  
+  const out = {
+    enabled: body.enabled === true,
+    stickyEnabled: body.stickyEnabled === true,
+    fallbackEnabled: body.fallbackEnabled === true,
+    acceptedTerms: body.acceptedTerms === true,
+    nimApiKey: body.nimApiKey || '',
+    // PRESERVA nim existente (classifierModel, fallbackModel, endpoint)
+    nim: { 
+      ...(existing.nim || {}),
+      apiKey: typeof body.nimApiKey === 'string' && body.nimApiKey.trim() !== '' 
+        ? body.nimApiKey.trim() 
+        : (body.nimApiKey === null ? '' : (existing.nim?.apiKey || ''))
+    },
+    routing: { ...(existing.routing || {}), ...(body.routing || {}) },
+    // PRESERVA byok existente + atualiza campos enviados
+    byok: byokOut,
+    // NOVO: contextTuning
+    contextTuning: { enabled: body.contextTuningEnabled === true },
+  };
+  
+  // Remove chaves undefined
+  Object.keys(out).forEach(k => out[k] === undefined && delete out[k]);
+  
+  writeJsonAtomic(ROUTER_USER_CONFIG, out);
+}function resolveRouterFlags() {
   const shipped = readJSON(ROUTER_SHIPPED_CONFIG) || {};
   const override = fs.existsSync(ROUTER_USER_CONFIG) ? (readJSON(ROUTER_USER_CONFIG) || {}) : {};
   const enabled = override.enabled !== undefined ? override.enabled !== false : shipped.enabled !== false;
@@ -1321,7 +1331,7 @@ function resolveRouterFlags() {
     headers: (ob.headers && typeof ob.headers === 'object') ? ob.headers
       : ((sb.headers && typeof sb.headers === 'object') ? sb.headers : {}),
   };
-  return { shipped, override, enabled, stickyEnabled, fallbackEnabled, byok };
+  return { shipped, override, enabled, stickyEnabled, fallbackEnabled, byok, contextTuningEnabled: override?.contextTuning?.enabled === true || shipped?.contextTuning?.enabled === true };
 }
 
 // Modo CONFIGURADO (o que o proxy DEVERIA rodar após um reload) via a fonte única.
@@ -1402,24 +1412,22 @@ async function getRouterStatusAsync(req, res) {
 }
 
 async function applyRouter(req, res) {
+  if (applyRouterLock) return json(res, { ok: false, error: 'Operation in progress' }, 409);
+  applyRouterLock = true;
+
   try {
     const body = JSON.parse(await readBody(req));
     writeRouterOverride(body);
+    
     const ensureScript = path.join(ROOT, 'scripts', 'model-router-ensure.js');
-    const child = require('child_process').spawn(process.execPath, [ensureScript], {
-      detached: true,
-      stdio: 'ignore',
-      // BOSS_ROUTER_FORCE_RESTART: o "Salvar & aplicar" é uma ação EXPLÍCITA do
-      // usuário — o ensure precisa reiniciar o daemon na hora para a config nova
-      // entrar em vigor (sem isso, o daemon detached segue com o que carregou no
-      // boot e o botão nunca aplicava de verdade).
-      env: { ...process.env, CLAUDE_PLUGIN_ROOT: ROOT, CLAUDE_PLUGIN_DATA: DATA_DIR, BOSS_ROUTER_FORCE_RESTART: '1' },
-    });
-    child.unref();
+    await runEnsureSync(ensureScript);
+    
     json(res, { ok: true, restartRequired: true });
   } catch (err) {
     console.error(`[DASHBOARD] /api/router/apply failed: ${err.message}`);
     fail(res, err.message, 500);
+  } finally {
+    applyRouterLock = false;
   }
 }
 
