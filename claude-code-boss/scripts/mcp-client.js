@@ -13,6 +13,8 @@ const { dataDir } = require('./lib/data-dir.js');
 const DATA_DIR = dataDir();
 
 class McpClient extends EventEmitter {
+  #reconnecting = false;
+
   constructor(opts = {}) {
     super();
     this.jarPath = opts.jarPath || path.join(DATA_DIR, 'mcp-memory-server.jar');
@@ -195,7 +197,13 @@ class McpClient extends EventEmitter {
               return resolve(undefined);
             }
             if (res.statusCode < 200 || res.statusCode >= 300) {
-              return reject(new Error(`MCP "${method}" HTTP ${res.statusCode}: ${body.slice(0, 300)}`));
+              // A 400 with -32600 means the daemon evicted our HTTP session (idle
+              // TTL, ~30min). Tag the error so callTool() can transparently
+              // reconnect (new initialize → fresh session id) and retry ONCE
+              // instead of failing every call after the session silently died.
+              const err = new Error(`MCP "${method}" HTTP ${res.statusCode}: ${body.slice(0, 300)}`);
+              if (res.statusCode === 400 && body.includes('-32600')) err.code = 'SESSION_EXPIRED';
+              return reject(err);
             }
             let msg;
             try { msg = JSON.parse(body); }
@@ -360,9 +368,48 @@ class McpClient extends EventEmitter {
     this._availableTools = (tools?.tools || tools?.result?.tools || []).map(t => t.name);
   }
 
-  async callTool(name, args = {}) {
+  async callTool(name, args = {}, _retryCount = 0) {
     if (!this._initialized) await this.connect();
-    return this._sendRequest('tools/call', { name, arguments: args });
+    try {
+      return await this._sendRequest('tools/call', { name, arguments: args });
+    } catch (err) {
+      // The daemon dropped our HTTP session (idle TTL, ~30min). Reconnect (fresh
+      // initialize → new session id) and retry the SAME call exactly ONCE. This
+      // keeps long-lived stdio brain-servers (opencode/Claude Code sessions that
+      // sit idle) from going permanently deaf after the session silently expired.
+      if (err && err.code === 'SESSION_EXPIRED' && this.transport === 'http') {
+        if (_retryCount >= 1) throw err; // max 1 retry — no infinite loop
+        try {
+          await this._reconnect();
+        } catch (reconnectErr) {
+          // Wrap original error with reconnect failure context for debugging
+          const wrapped = new Error(`SESSION_EXPIRED: reconnect failed: ${reconnectErr.message}`);
+          wrapped.code = 'SESSION_EXPIRED';
+          wrapped.originalError = err;
+          wrapped.reconnectError = reconnectErr;
+          throw wrapped;
+        }
+        return this.callTool(name, args, _retryCount + 1);
+      }
+      throw err;
+    }
+  }
+
+  /** Re-run the HTTP handshake after a session expired server-side (TTL eviction). */
+  async _reconnect() {
+    if (this.#reconnecting) {
+      while (this.#reconnecting) await new Promise(r => setTimeout(r, 10));
+      return;
+    }
+    this.#reconnecting = true;
+    try {
+      this._sessionId = '';
+      this._initialized = false;
+      this._requestId = 0;
+      await this.connect();
+    } finally {
+      this.#reconnecting = false;
+    }
   }
 
   /**

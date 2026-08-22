@@ -145,7 +145,7 @@ function mergeRouterConfig(shipped, override) {
   const merged = { ...(shipped || {}) };
   if (!override || typeof override !== 'object') return merged;
   for (const key of Object.keys(override)) {
-    if ((key === 'nim' || key === 'routing' || key === 'fallback' || key === 'sticky') && override[key] && typeof override[key] === 'object') {
+    if ((key === 'nim' || key === 'routing' || key === 'fallback' || key === 'sticky' || key === 'byok' || key === 'contextTuning') && override[key] && typeof override[key] === 'object') {
       merged[key] = { ...(merged[key] || {}), ...override[key] };
     } else {
       merged[key] = override[key];
@@ -538,9 +538,7 @@ function readSettings() {
 }
 
 function writeSettings(obj) {
-  const tmp = SETTINGS_FILE + '.tmp-router';
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n');
-  fs.renameSync(tmp, SETTINGS_FILE);
+  writeJsonAtomic(SETTINGS_FILE, obj);
 }
 
 function isOurProxyUrl(url) {
@@ -651,6 +649,39 @@ function maintainShimSafe() {
 
 // Caminho de saída "sem roteamento": tira a URL do settings.json, limpa resíduo
 // global de versões antigas e o arquivo de URL legado. Claude Code usa Anthropic direto.
+function disableRoutingFootprintAtomic() {
+  // 1. settings.json ATÔMICO — tenta disableSettingsRouting (usa writeJsonAtomic via writeSettings)
+  // Mas disableSettingsRouting retorna cedo se settings corrupto; então tentamos limpar base_url manual se possível
+  let settingsCleaned = false;
+  try {
+    disableSettingsRouting();
+    settingsCleaned = true;
+  } catch (e) { /* ignore */ }
+  
+  // Se settings corrupto, tenta limpar base_url manual do settings.json (best-effort)
+  if (!settingsCleaned) {
+    try {
+      const raw = fs.readFileSync(SETTINGS_FILE, 'utf-8');
+      const parsed = JSON.parse(raw);
+      if (parsed.env && parsed.env.ANTHROPIC_BASE_URL && isOurProxyUrl(parsed.env.ANTHROPIC_BASE_URL)) {
+        delete parsed.env.ANTHROPIC_BASE_URL;
+        delete parsed.env.ENABLE_TOOL_SEARCH;
+        delete parsed.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
+        delete parsed.env.CLAUDE_CODE_ATTRIBUTION_HEADER;
+        writeJsonAtomic(SETTINGS_FILE, parsed);
+        log('settings.json: bundle do roteador removido (recuperação corrupto)');
+      }
+    } catch (_) { /* ignore corrupt file */ }
+  }
+  
+  // 2. url.txt best-effort
+  try { if (fs.existsSync(PROXY_URL_FILE)) { fs.unlinkSync(PROXY_URL_FILE); log('model-router-url.txt removido'); } } catch (e) { log(`AVISO: não remover ${PROXY_URL_FILE}: ${e.message}`); }
+  
+  // 3. global env cleanup
+  cleanupGlobalEnv();
+}
+
+// Manter disableRoutingFootprint() original para compatibilidade
 function disableRoutingFootprint() {
   disableSettingsRouting();
   cleanupGlobalEnv();
@@ -722,7 +753,7 @@ async function main() {
   const mode = resolveMode(config);
   if (mode === 'off') {
     log('Roteador e fallback desabilitados (mode: off). Limpando footprint e saindo.');
-    disableRoutingFootprint();
+    disableRoutingFootprintAtomic();
     // O "Salvar & aplicar" do dashboard desligou o roteador: derruba o daemon órfão
     // que ainda segura a porta fixa (senão ele fica vivo consumindo recursos mesmo
     // com o footprint removido). Só quando a invocação pede aplicação explícita —
@@ -744,7 +775,13 @@ async function main() {
       applySettingsTuning(false);
     }
     if (process.platform === 'win32') {
-      try { shim.removeShimAll(log); } catch (e) { log(`AVISO: remoção do shim falhou: ${e.message}`); }
+      try { 
+        const results = shim.removeShimAll(log);
+        const anySuccess = results.some(r => r.result === 'removed' || r.result === 'cleaned');
+        if (results.length === 0) log('Shim não instalado');
+        else if (anySuccess) log('Shim removido com sucesso');
+        else log('AVISO: falha na remoção do shim');
+      } catch (e) { log(`AVISO: remoção do shim falhou: ${e.message}`); }
     }
     process.exit(0);
   }

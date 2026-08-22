@@ -940,10 +940,14 @@ code { color: var(--fg); font-family: var(--font-mono); }
         <span data-i18n="router.acceptTerms">Li e aceito: a chave e a reescrita rodam localmente; uso por minha conta.</span>
       </label>
 
-      <div class="flex" style="gap:.5rem;align-items:center">
-        <button class="btn-primary" id="router-save-btn" onclick="applyRouter()" data-i18n="router.save">Salvar &amp; aplicar</button>
-        <span id="router-saved" class="text-muted"></span>
-      </div>
+<div class="flex" style="gap:.5rem;align-items:center;margin-top:.5rem">
+  <button class="btn-sm btn-warning" onclick="disableAllRouter()" data-i18n="router.disableAll">Desligar tudo</button>
+  <span id="router-disable-all-msg" class="text-muted" style="font-size:.78rem"></span>
+</div>
+<div class="flex" style="gap:.5rem;align-items:center">
+  <button class="btn-primary" id="router-save-btn" onclick="applyRouter()" data-i18n="router.save">Salvar & aplicar</button>
+  <span id="router-saved" class="text-muted"></span>
+</div>
     </div>
 
     <div class="card">
@@ -1048,8 +1052,12 @@ const I18N = {
     'mode.routing': 'per-turn routing',
     'mode.deprecated': '(deprecated)',
     'mode.reloadPending': '(reload pending — run /reload-plugins)',
-    'tip.routerMetrics': 'Estimate by cost weights (proxy for prices: opus ~15x haiku). Baseline = the model you picked. Plan B (NVIDIA) counts as zero Claude cost.',
-    'skills.title': 'Skill Promotion',
+'tip.routerMetrics': 'Estimate by cost weights (proxy for prices: opus ~15x haiku). Baseline = the model you picked. Plan B (NVIDIA) counts as zero Claude cost.',
+'router.disableAll': 'Disable all',
+'router.disableAllSuccess': 'All controls disabled — router in OFF mode',
+'router.applying': 'Applying...',
+'router.error': 'Error',
+'skills.title': 'Skill Promotion',
     'skills.threshold': 'Promotion Threshold',
     'skills.project': 'Project',
     'skills.scan': 'Scan',
@@ -1196,8 +1204,12 @@ const I18N = {
     'mode.routing': 'roteamento per-turn',
     'mode.deprecated': '(deprecado)',
     'mode.reloadPending': '(reload pendente — rode /reload-plugins)',
-    'tip.routerMetrics': 'Estimativa por pesos de custo (proxy dos preços: opus ~15x haiku). Baseline = o modelo que você escolheu. Plano B (NVIDIA) conta como custo-Claude zero.',
-    'skills.title': 'Promoção de Skills',
+'tip.routerMetrics': 'Estimativa por pesos de custo (proxy dos preços: opus ~15x haiku). Baseline = o modelo que você escolheu. Plano B (NVIDIA) conta como custo-Claude zero.',
+'router.disableAll': 'Desligar tudo',
+'router.disableAllSuccess': 'Todos os controles desligados — router em modo OFF',
+'router.applying': 'Aplicando...',
+'router.error': 'Erro',
+'skills.title': 'Promoção de Skills',
     'skills.threshold': 'Threshold de Promoção',
     'skills.project': 'Projeto',
     'skills.scan': 'Escanear',
@@ -1381,6 +1393,41 @@ const MODE_META = {
   'byok-direct':   { i18n: 'mode.byokDirect',   color: 'purple', deprecated: false },
 };
 function modeMeta(mode) { return MODE_META[mode] || MODE_META.off; }
+
+async function disableAllRouter() {
+  ['router-sticky-enable', 'router-fallback-enable', 'router-enable', 'router-byok-enable']
+    .forEach(id => { const el = document.getElementById(id); if (el) el.checked = false; });
+  // Desmarca checkbox BYOK
+  const byokEnable = document.getElementById('router-byok-enable');
+  if (byokEnable) byokEnable.checked = false;
+  document.getElementById('router-byok-fields').style.display = 'none';
+  
+  const body = {
+    enabled: false, stickyEnabled: false, fallbackEnabled: false, byokEnabled: false,
+    byokMode: 'on-limit', byokBaseUrl: '', byokHeaders: '', acceptedTerms: true,
+    contextTuningEnabled: false,
+  };
+  
+  const msgEl = document.getElementById('router-disable-all-msg');
+  msgEl.textContent = t('router.applying') || 'Aplicando...';
+  
+  try {
+    const resp = await fetch('/api/router/apply', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-dashboard-token': window.__DASHBOARD_TOKEN__ },
+      body: JSON.stringify(body)
+    });
+    const result = await resp.json();
+    if (!result.ok) throw new Error(result.error || 'Server error');
+    msgEl.textContent = t('router.disableAllSuccess');
+    updateRouterSaveState();
+    renderRouterMode();
+  } catch (err) {
+    msgEl.textContent = (t('router.error') || 'Erro') + ': ' + err.message;
+    console.error('[Disable all]', err);
+  }
+  setTimeout(() => msgEl.textContent = '', 4000);
+}
 
 function renderRouterMode(runningMode, configuredMode) {
   const label = document.getElementById('router-mode-label');

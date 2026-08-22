@@ -274,6 +274,7 @@ function removeShimAll(log) {
       }
     }
   }
+  results.anySuccess = results.some(r => r.result === 'removed' || r.result === 'cleaned');
   return results;
 }
 
