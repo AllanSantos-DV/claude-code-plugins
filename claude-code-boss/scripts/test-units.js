@@ -5613,7 +5613,7 @@ test('build-swap servesThisBuild: FAIL-SAFE — na dúvida NUNCA derruba o route
 
 test('build-swap: a troca só acontece em janela segura (SessionStart OU apply explícito do dashboard)', () => {
   const src = fs.readFileSync(path.join(SCRIPTS, 'model-router-ensure.js'), 'utf-8');
-  assertEq(/const buildChanged = st && st\.pid && !servesThisBuild/.test(src), true,
+  assertEq(/const rawBuildChanged = st && st\.pid && !servesThisBuild/.test(src), true,
     'a divergência de build é computada via servesThisBuild');
   assertEq(/if \(safeWindow && st && st\.pid && \(buildChanged \|\| configChanged\)\)/.test(src), true,
     'o kill de build/config divergente deve estar guardado pela janela segura');
@@ -5624,6 +5624,28 @@ test('build-swap: a troca só acontece em janela segura (SessionStart OU apply e
   // do usuário. O "Salvar & aplicar" do dashboard É uma janela segura (ação explícita).
   assertEq(/waitPortFree/.test(src), true,
     'após o kill é preciso esperar a porta liberar, senão o bind novo dá EADDRINUSE');
+});
+
+// ═══ debounce de troca de build (o ping-pong entre dev checkout e cache do marketplace) ═══
+// Contexto real (2026-08-05): rodar o Claude Code dentro do checkout git do próprio
+// plugin, com o dashboard (ou outra sessão) resolvendo PLUGIN_ROOT para o cache do
+// marketplace, faz CADA SessionStart achar que o outro processo é "outro build" e
+// derrubá-lo pro seu próprio path — dois kills em ~10s, porta 13456 momentaneamente
+// fora do ar, ECONNREFUSED no meio de uma request em andamento. O debounce quebra
+// esse loop sem desligar o self-heal legítimo (1ª troca de build sempre acontece).
+
+test('build-swap: buildChanged é debounced (não repete kill dentro da janela), configChanged não é', () => {
+  const src = fs.readFileSync(path.join(SCRIPTS, 'model-router-ensure.js'), 'utf-8');
+  assertEq(/const switchDebounced = rawBuildChanged && sinceLastSwitchMs < BUILD_SWITCH_DEBOUNCE_MS/.test(src), true,
+    'buildChanged só vira true fora da janela de debounce desde a última troca');
+  assertEq(/const buildChanged = rawBuildChanged && !switchDebounced/.test(src), true,
+    'switchDebounced suprime o buildChanged efetivo');
+  assertEq(/writeBuildSwitchStamp\(\)/.test(src), true,
+    'toda troca de build efetiva carimba o momento, para a PRÓXIMA divergência respeitar o debounce');
+  // configChanged (Salvar & aplicar) não usa o debounce: é uma ação deliberada do
+  // usuário, sem o modo de falha de ping-pong entre dois PLUGIN_ROOT.
+  assertEq(/configChanged = !servedFp \|\| servedFp !== currentFp/.test(src), true,
+    'configChanged permanece incondicional (sem debounce)');
 });
 
 // ═══ troca por MUDANÇA DE CONFIG (o bug do "Salvar & aplicar" que nunca aplicava) ═══

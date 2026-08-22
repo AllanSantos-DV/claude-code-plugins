@@ -888,11 +888,29 @@ function nvidiaFallback(reqBody, config, res, nimKey, hint) {
 // bug pré-existia nos 3 pontos de proxy (byokFallback/forwardRequest/passthrough).
 const UNSAFE_PROXY_HEADERS = ['transfer-encoding', 'content-length', 'connection', 'keep-alive'];
 
-// Teto de espera por uma conexão/resposta do upstream (Anthropic OU endpoint
-// BYOK). Sem isto, uma rede instável (ex.: peer Tailscale sem Funnel na
-// frente) deixa a request pendurada no timeout default do SO — minutos — e o
-// cliente (Claude Code) não distingue "lento" de "nunca vai responder".
+// Teto de espera pelo PRIMEIRO byte de resposta do upstream. Sem isto, uma
+// rede instável (ex.: peer Tailscale sem Funnel na frente) deixa a request
+// pendurada no timeout default do SO — minutos — e o cliente (Claude Code)
+// não distingue "lento" de "nunca vai responder".
+//
+// Anthropic é rápida (TTFB tipicamente <1s, ainda mais com prompt cache
+// quente): 8s já dá folga generosa. O endpoint BYOK do usuário NÃO tem essa
+// garantia — é um servidor de terceiro (ex.: self-hosted atrás de Tailscale),
+// sem o prompt cache da Anthropic, e o TTFB cresce com o tamanho do prompt
+// (visto no log real: turnos de 400-800KB, TTFB estourando os 8s bem antes do
+// primeiro token — o proxy mata a conexão, devolve 502, e o cliente refaz a
+// request → é o "pisca/volta" do texto durante streaming em BYOK mode=always
+// com contexto grande, próximo da compactação). Um teto único penalizava o
+// BYOK com a folga pensada para a Anthropic; agora cada destino tem o seu.
 const UPSTREAM_TIMEOUT_MS = 8000;
+// 30s não bastava: evidência de produção (logs do omnirouter via SSH, request
+// 2026-08-06T14-54-38) mostrou o combo "auto/best-free" do BYOK levando até
+// 88233ms pra devolver o 503 final de esgotamento de retry, quando o pool de
+// candidatos free-tier está degradado (vários providers quebrados/sem saldo
+// no meio do caminho). Com 30s o model-router abortava a conexão ANTES do
+// BYOK conseguir terminar de tentar o failover dele mesmo, trocando um "BYOK
+// tentou e não conseguiu" por um falso "endpoint BYOK inacessível".
+const BYOK_UPSTREAM_TIMEOUT_MS = 100000;
 
 function sanitizeUpstreamHeaders(headers) {
   const out = {};
@@ -902,9 +920,24 @@ function sanitizeUpstreamHeaders(headers) {
   return out;
 }
 
-/** Repassa a resposta do upstream ao cliente — o pipe "feliz" comum aos 3 pontos de proxy. */
+/**
+ * Repassa a resposta do upstream ao cliente — o pipe "feliz" comum aos 3 pontos de proxy.
+ *
+ * `.pipe()` NÃO propaga o evento `error` da origem para o destino (gotcha
+ * conhecido do Node — só `stream.pipeline` faz isso). Sem um listener aqui,
+ * um `upRes` que erra NO MEIO do stream (ECONNRESET, peer Tailscale caindo)
+ * sobe como exceção não tratada e DERRUBA O PROCESSO INTEIRO do model-router —
+ * toda request seguinte vira ECONNREFUSED até alguém reiniciar na mão. Ficou
+ * mais fácil de bater depois de desarmar o timeout de inatividade pós-headers
+ * (a conexão agora sobrevive bem mais tempo, mais chance de pegar um drop real
+ * de rede em vez de ser destruída antes por aquele teto).
+ */
 function pipeUpstreamResponse(upRes, res) {
   res.writeHead(upRes.statusCode, sanitizeUpstreamHeaders(upRes.headers));
+  upRes.on('error', (e) => {
+    logger.error('Upstream stream error no meio do pipe — conexão encerrada', { err: e.message });
+    res.destroy(e);
+  });
   upRes.pipe(res);
 }
 
@@ -915,19 +948,20 @@ function pipeUpstreamResponse(upRes, res) {
 // cada chamador porque SÃO diferentes (NIM usa Content-Type/Content-Length
 // capitalizados e uma URL arbitrária, não host/port resolvidos por
 // `byok.resolveUpstream`) — só o boilerplate de baixo nível é comum.
-function sendUpstreamRequest(lib, options, body, onResponse, onError) {
+function sendUpstreamRequest(lib, options, body, onResponse, onError, timeoutMs) {
+  const teto = Number.isFinite(timeoutMs) ? timeoutMs : UPSTREAM_TIMEOUT_MS;
   const req = lib.request(options, (upRes) => {
     // O teto é só para o upstream NUNCA responder. Depois que a resposta
     // começa, um SSE longo tem pausas naturais (thinking, entre tool calls)
-    // maiores que 8s sem violar nada — manter o timeout de INATIVIDADE do
+    // maiores que o teto sem violar nada — manter o timeout de INATIVIDADE do
     // socket armado destruía a conexão NO MEIO do stream, fazendo o texto
     // "sumir e reaparecer" no cliente a cada gap. Desarma assim que os
     // headers chegam; a partir daí o pipe corre até o `end` do upstream.
     req.setTimeout(0);
     onResponse(upRes);
   });
-  req.setTimeout(UPSTREAM_TIMEOUT_MS, () => {
-    req.destroy(new Error(`sem resposta em ${UPSTREAM_TIMEOUT_MS}ms`));
+  req.setTimeout(teto, () => {
+    req.destroy(new Error(`sem resposta em ${teto}ms`));
   });
   req.on('error', onError);
   req.write(body);
@@ -944,7 +978,11 @@ function sendUpstreamRequest(lib, options, body, onResponse, onError) {
 function requestUpstream(upstreamTarget, path, headers, bodyStr, onResponse, onError) {
   const lib = upstreamTarget.protocol === 'http:' ? http : UPSTREAM_LIB;
   const options = { hostname: upstreamTarget.host, port: upstreamTarget.port, path, method: 'POST', headers };
-  return sendUpstreamRequest(lib, options, bodyStr, onResponse, onError);
+  // BYOK ganha um teto de TTFB mais folgado que a Anthropic (ver comentário
+  // de BYOK_UPSTREAM_TIMEOUT_MS): endpoint de terceiro, sem prompt cache, TTFB
+  // cresce com o tamanho do prompt.
+  const timeoutMs = upstreamTarget.isByok ? BYOK_UPSTREAM_TIMEOUT_MS : UPSTREAM_TIMEOUT_MS;
+  return sendUpstreamRequest(lib, options, bodyStr, onResponse, onError, timeoutMs);
 }
 
 // Plano B via ENDPOINT do usuário (BYOK). Baseado no `passthrough`: pipe limpo,
@@ -1796,6 +1834,14 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
     noteClaudeOk();
     metricsOutcome('claude', route, config);
     res.writeHead(upRes.statusCode, sanitizeUpstreamHeaders(upRes.headers));
+    // Mesmo risco de `pipeUpstreamResponse`: `.pipe()` não propaga `error` da
+    // origem — sem isto, um drop de rede no meio do stream derruba o processo
+    // inteiro do model-router (visto como ConnectionRefused em toda request
+    // seguinte, até reiniciar na mão).
+    upRes.on('error', (e) => {
+      logger.error('Upstream stream error no meio do pipe (forwardRequest) — conexão encerrada', { err: e.message });
+      res.destroy(e);
+    });
     // "Tee" leve no 200: repassamos o stream verbatim ao cliente E o escaneamos
     // para (1) detectar a janela esgotada DENTRO de um 200 (evento stream-json
     // rate_limit_event status:rejected, ou o marcador string) e armar o cooldown

@@ -1,5 +1,37 @@
 # Changelog
 
+## [2.21.9] - 2026-08-22
+
+**Um ECONNRESET no meio do stream derrubava o processo inteiro do model-router, não só a request.**
+
+`.pipe()` não propaga o evento `error` da origem. Sem handler em `upRes`, qualquer queda de conexão
+com o upstream no meio do corpo da resposta virava `uncaughtException` — e o daemon inteiro morria,
+levando junto todas as outras sessões que estavam sendo servidas por ele. `pipeUpstreamResponse` e
+`forwardRequest` passaram a registrar o handler, que loga e encerra **só** a conexão afetada via
+`res.destroy(e)`.
+
+**Teto de TTFB próprio para o BYOK, medido em produção.** Um teto único de 8s era dimensionado para
+a Anthropic (TTFB tipicamente <1s, ainda menos com prompt cache quente). O endpoint BYOK do usuário
+não tem essa garantia: é servidor de terceiro, sem prompt cache, e o TTFB cresce com o tamanho do
+prompt — daí o "pisca/volta" do texto durante streaming em `mode=always` com contexto grande, perto
+da compactação: o proxy matava a conexão antes do primeiro token, devolvia 502, e o cliente refazia
+a request.
+
+O valor não é chute. O log do omnirouter (request `2026-08-06T14-54-38`) mostra o combo
+`auto/best-free` levando **88233ms** até devolver o 503 final de esgotamento de retry, com o pool
+de candidatos free-tier degradado. Cortar antes disso não economiza nada: só troca um "o BYOK
+tentou e não conseguiu" por um falso "endpoint BYOK inacessível" — o diagnóstico errado, que manda
+o usuário caçar problema de rede que não existe. `BYOK_UPSTREAM_TIMEOUT_MS` vai a **100s**; o teto
+da Anthropic segue em 8s.
+
+**Debounce na troca de build do model-router.** Um checkout de desenvolvimento e o cache do
+marketplace se revezavam derrubando o daemon um do outro: cada um via um PID servindo "o outro
+build" e reiniciava, em ping-pong indefinido. `model-router-ensure` passou a carimbar a troca em
+disco e a exigir `BUILD_SWITCH_DEBOUNCE_MS` (60s) entre duas — a segunda troca dentro da janela é
+ignorada, o que dá tempo do estado assentar. O leitor do carimbo devolve 0 quando o arquivo está
+ausente ou ilegível: os dois casos significam "faz tempo", que é o lado seguro, então uma falha de
+I/O nunca bloqueia o self-heal.
+
 ## [2.21.8] - 2026-08-22
 
 **Assinatura de comando da curadoria fundia comandos não relacionados numa chave só — toda a classe de separadores estava faltando, não só um caso.**
