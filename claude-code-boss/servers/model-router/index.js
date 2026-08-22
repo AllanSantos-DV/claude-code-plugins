@@ -903,7 +903,14 @@ const UNSAFE_PROXY_HEADERS = ['transfer-encoding', 'content-length', 'connection
 // com contexto grande, próximo da compactação). Um teto único penalizava o
 // BYOK com a folga pensada para a Anthropic; agora cada destino tem o seu.
 const UPSTREAM_TIMEOUT_MS = 8000;
-const BYOK_UPSTREAM_TIMEOUT_MS = 30000;
+// 30s não bastava: evidência de produção (logs do omnirouter via SSH, request
+// 2026-08-06T14-54-38) mostrou o combo "auto/best-free" do BYOK levando até
+// 88233ms pra devolver o 503 final de esgotamento de retry, quando o pool de
+// candidatos free-tier está degradado (vários providers quebrados/sem saldo
+// no meio do caminho). Com 30s o model-router abortava a conexão ANTES do
+// BYOK conseguir terminar de tentar o failover dele mesmo, trocando um "BYOK
+// tentou e não conseguiu" por um falso "endpoint BYOK inacessível".
+const BYOK_UPSTREAM_TIMEOUT_MS = 100000;
 
 function sanitizeUpstreamHeaders(headers) {
   const out = {};
