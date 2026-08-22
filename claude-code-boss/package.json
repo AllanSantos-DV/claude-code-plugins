@@ -1,6 +1,6 @@
 {
   "name": "claude-code-plugin-brain",
-  "version": "2.21.7",
+  "version": "2.21.8",
   "private": true,
   "description": "Claude Code plugin — Brain Research knowledge base",
   "type": "commonjs",

@@ -675,6 +675,11 @@ async function main() {
   const config = readConfig();
   const hookInput = readHookInput();
   const sessionId = hookInput.session_id || hookInput.sessionId || null;
+  // Este script roda em DOIS eventos (SessionStart e UserPromptSubmit). O
+  // hookSpecificOutput.hookEventName precisa ecoar o evento REAL: devolver um nome
+  // fixo faz o Claude Code rejeitar o hook inteiro com "expected 'SessionStart' but
+  // got 'UserPromptSubmit'" — e aí nem o additionalContext nem o hook entram.
+  const hookEventName = hookInput.hook_event_name || hookInput.hookEventName || 'UserPromptSubmit';
 
   // MODO (fonte única: lib/router-mode.js). 'off' = inerte → limpa o footprint e sai.
   // 'routing' (cost-routing) e 'fallback-only' (passthrough cache-safe + 429→plano B)
@@ -725,7 +730,7 @@ async function main() {
     // aplicação IMEDIATA. No UserPromptSubmit estamos no meio de um turno e derrubar
     // a porta cortaria a API em uso — nunca trocamos ali (e evitamos o custo do
     // spawn de inspeção a cada prompt).
-    const isSessionStart = (hookInput.hook_event_name || hookInput.hookEventName) === 'SessionStart';
+    const isSessionStart = hookEventName === 'SessionStart';
     const forceRestart = process.env.BOSS_ROUTER_FORCE_RESTART === '1';
     const safeWindow = isSessionStart || forceRestart;
     // O daemon detached carrega a config UMA vez no boot e não a relê. Sem comparar
@@ -834,7 +839,7 @@ async function main() {
 
   if (additionalContext) {
     process.stdout.write(JSON.stringify({
-      hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext },
+      hookSpecificOutput: { hookEventName, additionalContext },
     }) + '\n');
   }
   process.exit(0);

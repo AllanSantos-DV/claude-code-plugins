@@ -1,5 +1,37 @@
 # Changelog
 
+## [2.21.8] - 2026-08-22
+
+**Assinatura de comando da curadoria fundia comandos não relacionados numa chave só — toda a classe de separadores estava faltando, não só um caso.**
+
+`canonicalSig` reduz um comando shell a uma assinatura canônica para deduplicar a curadoria. O
+`splitSegments` só cortava em `;`, `&&` e `||`. Consequências, todas observadas ao vivo:
+
+- **Newline / CRLF não separavam.** Num comando multi-linha, *todas* as linhas fundiam num único
+  segmento — invocações sem relação nenhuma dividiam a mesma assinatura, e a chave persistida
+  carregava tokens de comandos diferentes.
+- **`&` sozinho (background) não separava**, embora `&&` separasse.
+- **Continuação de linha (`\` + newline) não era dobrada**, vazando um token `\` cru na assinatura.
+- **Segmentos de comentário (`# proximo passo`)** eram escolhidos como o comando principal quando
+  abriam um comando multi-linha.
+- **Banners decorativos (`echo "=== marketplace.json"`)** eram escolhidos como principal: um
+  `sed -n 1,30p release.yml` entre banners assinava como **o texto do banner**.
+
+Corrigido em uma passada: `splitSegments` agora dobra continuações de linha antes de varrer, corta
+em newline/CRLF e em `&` solitário, e a varredura respeita aspas e escapes. `principalSegment`
+pula segmentos de comentário e de decoração (`echo`/`printf`) além de navegação e atribuição, com
+o fallback de último segmento preservado — um comando que é *só* decoração continua assinando como
+ele mesmo.
+
+**Store se auto-cura de chaves de algoritmos antigos.** `pruneOrphanKeys` deixou de usar um regex
+por correção e passou a testar idempotência: uma chave mintada por `canonicalSig` tem de satisfazer
+`canonicalSig(k) === k`. Se não satisfaz, veio de um algoritmo anterior e é improduzível — nunca
+mais receberia um hit — então é descartada no load. A regra de atribuição órfã continua separada,
+porque aquelas chaves *são* pontos fixos e a idempotência não as cobre.
+
+**`model-router-ensure` ecoa o `hookEventName` real** em vez de um valor fixo, corrigindo o hook
+quando montado em mais de um evento.
+
 ## [2.21.7] - 2026-08-04
 
 **Streaming "sumindo e reaparecendo" durante pausas normais (thinking longo, entre tool calls) — timeout de socket armado durante o stream inteiro, não só na espera da conexão.**
