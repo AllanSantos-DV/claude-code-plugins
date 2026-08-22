@@ -24,7 +24,13 @@ claude-code-boss/.runtime/
 docs/maps/
 docs/plans/
 docs/research/
-claude-code-boss/docs/
+# claude-code-boss/docs/: planning/analysis local-only. Product docs
+# (GETTING-STARTED, CONFIGURATION, FUNCTIONAL-SPEC, features/) ARE versioned —
+# keep ignoring only internal plan/analysis artifacts:
+claude-code-boss/docs/*-PLAN.md
+claude-code-boss/docs/plans/
+claude-code-boss/docs/research/
+claude-code-boss/docs/maps/
 
 # Claude Code local config
 .claude/
