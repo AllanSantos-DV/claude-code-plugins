@@ -546,50 +546,113 @@ async function listSqlite(type, project) {
 
 async function initJson() {
   const dir = getProjectDir();
-  for (const sub of ['entries', 'vectors', 'keywords']) {
+  for (const sub of ['entries', 'vectors', 'keywords', 'locks']) {
     const p = path.join(dir, sub);
     if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
   }
   _useJson = true;
 }
 
-async function saveJson(entry, vector) {
-  const dir = getProjectDir();
-  const entryPath = path.join(dir, 'entries', `${entry.id}.json`);
-  fs.writeFileSync(entryPath, JSON.stringify(entry, null, 2));
+// ── CAS multi-writer (fallback JSON) ──────────────────────────────────────
+// O fallback JSON é 1 arquivo POR entrada; writers concorrentes são processos
+// distintos (dashboard + hooks + CLI). writeFileSync é atômico-suficiente p/ um
+// arquivo, mas o read-modify-write (getJson incrementa access_count; update do
+// dashboard lê→mescla→salva) perde atualizações se dois processos cruzarem.
+// Lock por entrada via mkdir exclusivo (atômico no POSIX e no Windows) com
+// retry+timeout — barato e fecha a janela RMW sem depender de SQLite.
+const LOCK_TIMEOUT_MS = 5000;
+const LOCK_RETRY_MS = 25;
 
-  if (vector) {
-    const vecPath = path.join(dir, 'vectors', `${entry.id}.json`);
-    fs.writeFileSync(vecPath, JSON.stringify({ vector, dimensions: vector.length }));
+async function withEntryLock(id, fn) {
+  const lockDir = path.join(getProjectDir(), 'locks', `${String(id).replace(/[^a-zA-Z0-9_-]/g, '_')}.lock`);
+  const deadline = Date.now() + LOCK_TIMEOUT_MS;
+  let locked = false;
+  while (Date.now() < deadline) {
+    try {
+      fs.mkdirSync(lockDir);
+      fs.writeFileSync(path.join(lockDir, 'owner'), String(Date.now()));
+      locked = true;
+      break;
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err; // erro real ≠ lock ocupado
+      // Stale lock: só arrebenta quando a IDADE excede o timeout — deletar no
+      // primeiro EEXIST quebraria o lock de um writer VIVO. Owner file é a
+      // fonte da idade; se ilegível (writer morreu entre mkdir e write), cai
+      // para o mtime do próprio dir (B1: sem isso o lock fica eterno).
+      let age = 0;
+      try { age = Date.now() - parseInt(fs.readFileSync(path.join(lockDir, 'owner'), 'utf-8'), 10); }
+      catch (_) {
+        try { age = Date.now() - fs.statSync(lockDir).mtimeMs; } catch (_) { age = 0; }
+      }
+      if (!(age >= 0)) age = 0;
+      if (age > LOCK_TIMEOUT_MS) { try { fs.rmdirSync(lockDir, { recursive: true }); } catch (_) { void _; } continue; }
+      await new Promise(r => setTimeout(r, LOCK_RETRY_MS));
+    }
   }
+  if (!locked) throw new Error(`entry lock timeout: ${id}`);
+  try { return await fn(); } finally { try { fs.rmdirSync(lockDir, { recursive: true }); } catch (_) { void _; } }
+}
+async function saveJson(entry, vector) {
+  return withEntryLock(entry.id, async () => {
+    const dir = getProjectDir();
+    const entryPath = path.join(dir, 'entries', `${entry.id}.json`);
+    // Merge-on-write: relê o estado ATUAL do disco e preserva campos que este
+    // writer não tocou (ex.: access_count incrementado por leitura concorrente
+    // entre o nosso get e o nosso save). Campos definidos vencem.
+    let disk = null;
+    try { disk = JSON.parse(fs.readFileSync(entryPath, 'utf-8')); } catch (_) { void _; }
+    if (disk && typeof disk === 'object') {
+      for (const k of Object.keys(disk)) if (entry[k] === undefined) entry[k] = disk[k];
+    }
+    fs.writeFileSync(entryPath, JSON.stringify(entry, null, 2));
 
-  if (entry.tags && entry.tags.length > 0) {
-    // Upsert de tags: remove os arquivos de keywords antigos da entry antes de
-    // gravar os atuais (tags removidas não podem continuar pesquisáveis).
-    const kwRoot = path.join(dir, 'keywords');
-    if (fs.existsSync(kwRoot)) {
-      for (const kwDir of fs.readdirSync(kwRoot)) {
-        const stale = path.join(kwRoot, kwDir, `${entry.id}.json`);
-        try { fs.unlinkSync(stale); } catch (err) { void err; }
+    if (vector) {
+      const vecPath = path.join(dir, 'vectors', `${entry.id}.json`);
+      fs.writeFileSync(vecPath, JSON.stringify({ vector, dimensions: vector.length }));
+    }
+
+    if (entry.tags && entry.tags.length > 0) {
+      // Upsert de tags: remove os arquivos de keywords antigos da entry antes de
+      // gravar os atuais (tags removidas não podem continuar pesquisáveis).
+      const kwRoot = path.join(dir, 'keywords');
+      if (fs.existsSync(kwRoot)) {
+        for (const kwDir of fs.readdirSync(kwRoot)) {
+          const stale = path.join(kwRoot, kwDir, `${entry.id}.json`);
+          try { fs.unlinkSync(stale); } catch (err) { void err; }
+        }
+      }
+      for (const tag of entry.tags) {
+        const kwDir = path.join(dir, 'keywords', tag.toLowerCase());
+        if (!fs.existsSync(kwDir)) fs.mkdirSync(kwDir, { recursive: true });
+        fs.writeFileSync(path.join(kwDir, `${entry.id}.json`), JSON.stringify({ id: entry.id, weight: 1.0 }));
       }
     }
-    for (const tag of entry.tags) {
-      const kwDir = path.join(dir, 'keywords', tag.toLowerCase());
-      if (!fs.existsSync(kwDir)) fs.mkdirSync(kwDir, { recursive: true });
-      fs.writeFileSync(path.join(kwDir, `${entry.id}.json`), JSON.stringify({ id: entry.id, weight: 1.0 }));
-    }
-  }
+  });
 }
-
 async function getJson(id) {
-  const dir = getProjectDir();
-  const entryPath = path.join(dir, 'entries', `${id}.json`);
-  if (!fs.existsSync(entryPath)) return null;
-  const entry = JSON.parse(fs.readFileSync(entryPath, 'utf-8'));
-  entry.access_count = (entry.access_count || 0) + 1;
-  entry.last_accessed = now();
-  fs.writeFileSync(entryPath, JSON.stringify(entry, null, 2));
-  return entry;
+  // Leitura NUNCA pode hard-falar por lock (antes do CAS ela nunca lançava):
+  // timeout → devolve a entrada SEM incrementar access_count (B2).
+  try {
+    return await withEntryLock(id, async () => {
+      const dir = getProjectDir();
+      const entryPath = path.join(dir, 'entries', `${id}.json`);
+      if (!fs.existsSync(entryPath)) return null;
+      const entry = JSON.parse(fs.readFileSync(entryPath, 'utf-8'));
+      entry.access_count = (entry.access_count || 0) + 1;
+      entry.last_accessed = now();
+      fs.writeFileSync(entryPath, JSON.stringify(entry, null, 2));
+      return entry;
+    });
+  } catch (err) {
+    if (err && String(err.message).startsWith('entry lock timeout')) {
+      const dir = getProjectDir();
+      const entryPath = path.join(dir, 'entries', `${id}.json`);
+      if (!fs.existsSync(entryPath)) return null;
+      try { return JSON.parse(fs.readFileSync(entryPath, 'utf-8')); }
+      catch (_) { void _; return null; }
+    }
+    throw err;
+  }
 }
 
 async function searchJson(queryVector, opts = {}) {

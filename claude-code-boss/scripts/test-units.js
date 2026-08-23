@@ -5711,6 +5711,12 @@ test('FASE-F dashboard.js: update com whitelist estrita + delete com backup obri
   const fSrc = uiSrc.slice(fIdx, uiSrc.indexOf('async function deleteBrainEntry', fIdx));
   assert(!/onclick="[^"]*BrainEntry\(/.test(fSrc), 'editor/lista NUNCA montam onclick string com args interpolados');
   assert(fSrc.includes('data-be-act') && fSrc.includes('addEventListener'), 'args via data-* + listener delegado');
+  // Auditoria arquivo INTEIRO (follow-up do revisor F1): nenhuma aspa no
+  // atributo onclick INTEIRO (não só dentro de ${}) — a forma clássica do bug é
+  // fn('${var}') com aspa FORA da interpolação; números puros são permitidos.
+  const onclickAttrs = uiSrc.match(/onclick="[^"]*[$][{][^"]*"/g) || [];
+  const withQuote = onclickAttrs.filter(m => m.includes("'") || m.includes('&quot;'));
+  assertEq(withQuote.length, 0, `onclick com aspa/arg-string: ${withQuote.join(' | ')}`);
   assert(delBody.includes('await store.getVector(id)'), 'backup usa decode seguro do store (byteOffset)');
   // F2 MED: re-embed falho invalida o vetor stale em vez de servir semântica velha.
   const updIdx = src.indexOf('async function updateBrainEntry');
