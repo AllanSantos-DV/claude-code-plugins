@@ -5538,6 +5538,28 @@ test('release-guard: o workflow tem trigger AGENDADO (drift e estado, nao evento
 
 const routerServer = require('../servers/model-router/index.js');
 
+// ═══ FASE D — série histórica diária (delta + cap + reset) ═══
+test('FASE-D history: deltaCounters nunca devolve negativo (reset entre snapshots)', () => {
+  const d = routerServer.deltaCounters({ total: 5 }, { total: 10 });
+  assertEq(d.total, 0, 'cumulativo < snapshot (pós-reset) → delta clamped a 0');
+});
+
+test('FASE-D history: historyCounters/deltaCounters — contrato puro (delta clamped, contadores corretos)', () => {
+  // Simulação com fs isolado via STATE_DIR? O engine usa STATE_DIR do módulo —
+  // aqui validamos o CONTRATO puro: counters e deltas determinísticos.
+  const m = { total: 10, downgrades: 3, servedPlanB: 2, cost: { baselineUnits: 30, actualUnits: 9 } };
+  const snap = routerServer.historyCounters(m);
+  assertEq(snap.total, 10);
+  assertEq(snap.planB, 2);
+  const d = routerServer.deltaCounters(
+    routerServer.historyCounters({ total: 14, downgrades: 4, servedPlanB: 3, cost: { baselineUnits: 42, actualUnits: 12 } }),
+    snap,
+  );
+  assertEq(d.total, 4);
+  assertEq(d.downgrades, 1);
+  assertEq(d.baselineUnits, 12);
+});
+
 test('mergeUserConfig (server): {fallback:{enabled:true}} preserva cooldown/triggerStatuses', () => {
   const shipped = { enabled: false, fallback: { enabled: false, triggerStatuses: [429], cooldown: { enabled: true, minMs: 1000, maxMs: 21600000 } } };
   const m = routerServer.mergeUserConfig(shipped, { fallback: { enabled: true } });

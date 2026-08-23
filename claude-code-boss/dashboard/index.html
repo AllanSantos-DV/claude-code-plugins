@@ -983,6 +983,8 @@ code { color: var(--fg); font-family: var(--font-mono); }
       </h2>
       <p class="text-muted" data-i18n="router.metricsIntro">Quantas requisições o roteador redirecionou e a economia estimada vs. rodar tudo no modelo que você escolheu.</p>
       <div id="router-metrics" class="text-muted">…</div>
+      <h2 style="font-size:.95rem;margin:1rem 0 .5rem" data-i18n="router.historyTitle">Últimos 30 dias</h2>
+      <div id="router-history" class="text-muted" style="font-size:.75rem">…</div>
       <div class="flex" style="gap:.5rem;margin-top:.75rem">
         <button class="btn-sm" onclick="refreshRouterMetrics()" data-i18n="router.metricsRefresh">Atualizar</button>
         <button class="btn-sm btn-warning" onclick="resetRouterMetrics()" data-i18n="router.metricsReset">Zerar</button>
@@ -1057,6 +1059,9 @@ const I18N = {
     'router.metricsIntro': 'How many requests the router redirected and the estimated savings vs. running everything on the model you picked.',
     'router.metricsRefresh': 'Refresh',
     'router.metricsReset': 'Reset',
+    'router.historyTitle': 'Last 30 days',
+    'router.historyRequests': 'requests/day',
+    'router.historySavings': 'savings/day',
     'router.metricsNone': 'No data yet — send a few prompts with the router on.',
     'router.metricsResetConfirm': 'Reset router metrics counters?',
     'router.mTotal': 'requests',
@@ -1218,6 +1223,9 @@ const I18N = {
     'router.metricsIntro': 'Quantas requisições o roteador redirecionou e a economia estimada vs. rodar tudo no modelo que você escolheu.',
     'router.metricsRefresh': 'Atualizar',
     'router.metricsReset': 'Zerar',
+    'router.historyTitle': 'Últimos 30 dias',
+    'router.historyRequests': 'requests/dia',
+    'router.historySavings': 'economia/dia',
     'router.metricsNone': 'Sem dados ainda — mande alguns prompts com o roteador ligado.',
     'router.metricsResetConfirm': 'Zerar os contadores de métricas do roteador?',
     'router.mTotal': 'requisições',
@@ -1707,6 +1715,38 @@ async function refreshRouterMetrics(silent) {
     box.innerHTML = renderRouterMetrics(r.metrics, r.live);
   } catch (e) {
     box.textContent = '— ' + e.message;
+  }
+  refreshRouterHistory();
+}
+
+// FASE D — sparkline SVG (zero deps): requests/dia + economia/dia, últimos 30 dias.
+async function refreshRouterHistory() {
+  const el = document.getElementById('router-history');
+  if (!el) return;
+  try {
+    const r = await api('GET', '/api/router/history');
+    const rows = (r && r.rows) || [];
+    if (!rows.length) { el.textContent = t('router.metricsNone'); return; }
+    const last30 = rows.slice(-30);
+    const w = 560, h = 90, pad = 4;
+    const maxReq = Math.max(1, ...last30.map(x => x.total || 0));
+    const maxEco = Math.max(1, ...last30.map(x => x.baselineUnits || 0));
+    const step = last30.length > 1 ? (w - pad * 2) / (last30.length - 1) : 0;
+    const pts = (key, max) => last30.map((x, i) =>
+      `${(pad + i * step).toFixed(1)},${(h - pad - ((x[key] || 0) / max) * (h - pad * 2)).toFixed(1)}`
+    ).join(' ');
+    const svg = `<svg viewBox="0 0 ${w} ${h}" style="width:100%;height:${h}px" preserveAspectRatio="none">
+      <polyline fill="none" stroke="var(--accent)" stroke-width="2" points="${pts('total', maxReq)}"/>
+      <polyline fill="none" stroke="var(--success)" stroke-width="2" points="${pts('baselineUnits', maxEco)}" stroke-dasharray="4 3"/>
+    </svg>
+    <div style="display:flex;gap:1rem;margin-top:.25rem">
+      <span><span class="mode-dot mode-amber"></span> <span data-i18n="router.historyRequests">requests/dia</span> (máx ${maxReq})</span>
+      <span style="color:var(--success)">— <span data-i18n="router.historySavings">economia/dia</span> (máx ${maxEco} units)</span>
+    </div>`;
+    el.innerHTML = svg;
+    applyI18n();
+  } catch (e) {
+    el.textContent = '— ' + e.message;
   }
 }
 

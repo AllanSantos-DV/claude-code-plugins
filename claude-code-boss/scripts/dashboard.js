@@ -1456,6 +1456,23 @@ function routerHttpGetJson(port, pathName) {
   });
 }
 
+// FASE D: série diária de custo/uso, lida direto do metrics-history.jsonl do daemon.
+function getRouterHistory(req, res) {
+  try {
+    const file = path.join(dataDir(), 'model-router', 'metrics-history.jsonl');
+    let rows = [];
+    if (fs.existsSync(file)) {
+      rows = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean)
+        .map((l) => { try { return JSON.parse(l); } catch (_) { void _; return null; } })
+        .filter(Boolean);
+    }
+    json(res, { rows });
+  } catch (err) {
+    console.error('[DASHBOARD] /api/router/history failed: ' + err.message);
+    fail(res, err.message, 500);
+  }
+}
+
 function routerHttpPost(port, pathName) {
   return new Promise((resolve) => {
     const r = http.request(`http://127.0.0.1:${port}${pathName}`, { method: 'POST', timeout: 800 }, (resp) => {
@@ -1644,6 +1661,7 @@ function handleAPI(req, res, url) {
   if (p === '/api/router/status' && m === 'GET') return getRouterStatus(req, res);
   if (p === '/api/router/apply' && m === 'POST') return applyRouter(req, res);
   if (p === '/api/router/metrics' && m === 'GET') return getRouterMetrics(req, res);
+  if (p === '/api/router/history' && m === 'GET') return getRouterHistory(req, res);
   if (p === '/api/router/metrics/reset' && m === 'POST') return resetRouterMetrics(req, res);
   if (p === '/api/metrics/capture-rate' && m === 'GET') return getCaptureRate(req, res, url);
   if (p === '/api/metrics/profile-impact' && m === 'GET') return getProfileImpact(req, res, url);
