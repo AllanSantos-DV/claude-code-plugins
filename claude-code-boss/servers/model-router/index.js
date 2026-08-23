@@ -1532,12 +1532,100 @@ function persistMetrics() {
     fs.mkdirSync(STATE_DIR, { recursive: true });
     fs.writeFileSync(METRICS_FILE, JSON.stringify(metrics, null, 2));
     _metricsDirty = false;
+    metricsHistoryRoll();
   } catch (e) {
     logger.debug('Falha ao persistir metrics.json (ignorado)', { err: e.message });
   }
 }
 
+// ── FASE D — série histórica diária (metrics-history.jsonl, ADR próprio do plano) ──
+// metrics.json é CUMULATIVO e sobrevive a restarts; a série diária nasce por DELTA:
+// historySnapshot guarda os contadores na última virada de dia e cada mudança de
+// dia appenda uma row com os deltas. Cross-restart seguro porque o snapshot persiste
+// dentro do próprio metrics.json. '/metrics/reset' FECHA a row aberta com stamp
+// reset:true antes de zerar (senão o delta pós-reset sairia negativo). Cap de 90 dias.
+const HISTORY_FILE = path.join(STATE_DIR, 'metrics-history.jsonl');
+const HISTORY_CAP_DAYS = 90;
+
+function historyDayKey(ts) {
+  return new Date(ts === undefined ? Date.now() : ts).toISOString().slice(0, 10);
+}
+function historyCounters(m) {
+  return {
+    total: m.total || 0,
+    downgrades: m.downgrades || 0,
+    planB: m.servedPlanB || 0,
+    baselineUnits: (m.cost && m.cost.baselineUnits) || 0,
+    actualUnits: (m.cost && m.cost.actualUnits) || 0,
+  };
+}
+function deltaCounters(cur, snap) {
+  const d = {};
+  for (const k of Object.keys(cur)) d[k] = Math.max(0, (cur[k] || 0) - (snap[k] || 0));
+  return d;
+}
+function metricsHistoryRoll(nowTs) {
+  const today = historyDayKey(nowTs);
+  const last = metrics.historyLastRolled || null;
+  if (!last) {
+    // Primeira execução: apenas ancora o snapshot — nada a fechar ainda.
+    metrics.historyLastRolled = today;
+    metrics.historySnapshot = historyCounters(metrics);
+    return;
+  }
+  if (last === today) return;
+  try {
+    fs.mkdirSync(STATE_DIR, { recursive: true });
+    const counters = deltaCounters(historyCounters(metrics), metrics.historySnapshot || {});
+    let rows = [];
+    if (fs.existsSync(HISTORY_FILE)) {
+      rows = fs.readFileSync(HISTORY_FILE, 'utf8').split('\n').filter(Boolean)
+        .map((l) => { try { return JSON.parse(l); } catch (_) { void _; return null; } })
+        .filter(Boolean);
+    }
+    rows.push(Object.assign({ day: last }, counters));
+    while (rows.length > HISTORY_CAP_DAYS) rows.shift();
+    fs.writeFileSync(HISTORY_FILE, rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
+    metrics.historyLastRolled = today;
+    metrics.historySnapshot = historyCounters(metrics);
+    // Snapshot persiste DENTRO do metrics.json: sem dirty-flag, um crash antes do
+    // próximo flush deixaria o snapshot stale no disco → row duplicada com delta
+    // duplo na próxima virada. Converge: mesmo dia early-returna.
+    _metricsDirty = true;
+  } catch (e) {
+    logger.warn('Falha ao gravar metrics-history.jsonl (ignorado)', { err: e.message });
+  }
+}
+function metricsHistoryCloseOnReset() {
+  const last = metrics.historyLastRolled || null;
+  if (!last) return;
+  try {
+    fs.mkdirSync(STATE_DIR, { recursive: true });
+    const counters = deltaCounters(historyCounters(metrics), metrics.historySnapshot || {});
+    let rows = [];
+    if (fs.existsSync(HISTORY_FILE)) {
+      rows = fs.readFileSync(HISTORY_FILE, 'utf8').split('\n').filter(Boolean)
+        .map((l) => { try { return JSON.parse(l); } catch (_) { void _; return null; } })
+        .filter(Boolean);
+    }
+    const lastRow = rows[rows.length - 1];
+    if (!lastRow || lastRow.day !== last || !lastRow.reset) {
+      rows.push(Object.assign({ day: last, reset: true }, counters));
+      while (rows.length > HISTORY_CAP_DAYS) rows.shift();
+      fs.writeFileSync(HISTORY_FILE, rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
+    }
+    metrics.historyLastRolled = historyDayKey();
+    metrics.historySnapshot = historyCounters(metrics);
+    _metricsDirty = true;
+  } catch (e) {
+    logger.warn('Falha ao fechar row de history no reset (ignorado)', { err: e.message });
+  }
+}
+
 function resetMetrics() {
+  // FASE D: fecha a row do dia aberta (stamp reset:true) ANTES de zerar — sem
+  // isso o próximo delta sairia negativo (cumulativo < snapshot).
+  metricsHistoryCloseOnReset();
   metrics = newMetrics();
   _metricsDirty = true;
   persistMetrics();
@@ -2394,6 +2482,7 @@ if (require.main === module) {
     resolveModel,
     extractPrompt,
     mergeUserConfig,
+    historyCounters, deltaCounters, metricsHistoryRoll, metricsHistoryCloseOnReset,
     resolveMode,
     isLoopbackHost,
     parseResetMs,
