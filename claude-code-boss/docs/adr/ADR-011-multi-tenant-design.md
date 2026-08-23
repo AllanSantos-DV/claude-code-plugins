@@ -1,6 +1,6 @@
 # ADR-011 — Multi-tenant router: design para implementação futura
 
-**Status:** Proposto (PLANNED — implementação agendada) | **Data:** 2026-08-23 | **Escopo:** Model Router
+**Status:** Aceito e IMPLEMENTADO (2026-08-23 — carrier: header `X-CCB-Tenant` via `ANTHROPIC_CUSTOM_HEADERS`; commit c3b4259) | **Data:** 2026-08-23 | **Escopo:** Model Router
 
 ## Contexto
 
@@ -16,4 +16,4 @@ Roadmap pedia isolamento por projeto/team. Hoje o proxy é single-tenant: uma co
 
 ## Por que PLANNED
 
-Toca resolução de config, sticky, métricas e dashboard de uma vez — merece sessão dedicada com gate próprio, não uma fatia de release mista.
+~~Toca resolução de config, sticky, métricas e dashboard de vez — merece sessão dedicada com gate próprio.~~ **Implementado em sessão dedicada (Fase E)** — ver `docs/backlog/PHASE-E-multi-tenant-router.md` para a decisão do carrier (spike E2E) e notas da implementação.
