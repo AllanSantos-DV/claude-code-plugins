@@ -1493,7 +1493,9 @@ function newMetrics() {
     byOriginal:      emptyTierMap(),  // tier do modelo escolhido no dropdown
     byFinal:         emptyTierMap(),  // tier que decidimos mandar pro Claude
     downgrades:      0,   // final mais barato que o escolhido
-    kept:            0,   // manteve o mesmo tier
+    // "Manteve o tier" — em fallback-only isso é SEMPRE true (passthrough não
+    // decide): não use como denominador de "% honrado o modelo do usuário".
+    kept:            0,  
     upgradesBlocked: 0,   // teto impediu subir acima do escolhido
     servedClaude:    0,   // respondido pelo Claude
     servedPlanB:     0,   // respondido pelo plano B (NVIDIA = custo-Claude zero)
@@ -2329,6 +2331,12 @@ async function createServer(config, mode, routerToken) {
       if (mode === 'fallback-only') {
         const t = modelTier(body.model || 'unknown');
         logger.debug('fallback-only — passthrough sem classificar', { model: body.model || 'unknown', bytes: Buffer.byteLength(rawBody) });
+        // Contabilidade MESMO sem roteamento: total/byOriginal/kept (e byTenant)
+        // existem para medir — deixá-los em 0 aqui era buraco de observabilidade
+        // (o sparkline requests/dia da Fase D desenhava zero com tráfego ativo).
+        // classified=false honesto: NÃO houve decisão de tier.
+        try { metricsRoute(t, t, false, false, tenant); }
+        catch (e) { logger.debug('metricsRoute falhou (ignorado)', { err: e.message }); }
         forwardRequest(body, req.headers, res, cfg, { origTier: t, finalTier: t, path: req.url, sessionKey: tenantSessionKey(body, tenant), tenant });
         return;
       }

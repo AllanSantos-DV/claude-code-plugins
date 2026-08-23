@@ -5661,6 +5661,23 @@ test('FASE-E e2e: POST /v1/messages/count_tokens responde (sem hang por TDZ)', a
       signal: AbortSignal.timeout(15000),
     });
     assert(typeof res.status === 'number' && res.status > 0, 'count_tokens respondeu com status ' + res.status);
+    // FIX observabilidade fallback-only: /v1/messages DEVE contar em total (global
+    // e por tenant) mesmo sem roteamento — antes ficava 0 com tráfego ativo.
+    const msg = (tenant) => fetch(`http://127.0.0.1:${port}/v1/messages`, {
+      method: 'POST',
+      headers: Object.assign(
+        { 'content-type': 'application/json', 'x-api-key': 'test-not-real' },
+        tenant ? { 'x-ccb-tenant': tenant } : {},
+      ),
+      body: JSON.stringify({ model: 'claude-sonnet-4-5', max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] }),
+      signal: AbortSignal.timeout(15000),
+    }).then((r) => r.status);
+    await msg('proj-fb');
+    await msg(null);
+    const snap = await (await fetch(`http://127.0.0.1:${port}/metrics`, { signal: AbortSignal.timeout(5000) })).json();
+    assertEq(snap.total, 2, 'fallback-only conta requests no total');
+    assertEq(snap.byTenant['proj-fb'].total, 1, 'e também por tenant');
+    // count_tokens NÃO é mensagem — não pode ter inflado contagem.
   } finally {
     child.kill();
     try { fsMod.rmSync(tmp, { recursive: true, force: true }); } catch (_) { void _; }
