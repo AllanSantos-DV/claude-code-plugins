@@ -5768,6 +5768,21 @@ test('FASE-F store round-trip: save→get→update fields→save→delete (opera
   }
 });
 
+test('FASE-E: capHistoryDays — cap por DIA distinto (tenants não encolhem a janela)', () => {
+  // 3 dias × 2 rows/dia (global + 1 tenant) + 1 dia extra → cap 3 dias mantém
+  // TODAS as rows dos 3 dias mais recentes (cap por row descartaria o dia inteiro).
+  const rows = [
+    { day: '2026-08-20', tenant: '_' }, { day: '2026-08-20', tenant: 'proj-a' },
+    { day: '2026-08-21', tenant: '_' }, { day: '2026-08-21', tenant: 'proj-a' },
+    { day: '2026-08-22', tenant: '_' }, { day: '2026-08-22', tenant: 'proj-a' },
+    { day: '2026-08-23', tenant: '_' }, { day: '2026-08-23', tenant: 'proj-a' },
+  ];
+  const capped = routerServer.capHistoryDays(rows, 3);
+  assertEq([...new Set(capped.map(r => r.day))].length, 3, 'janela = 90 DIAS, não 90 rows');
+  assertEq(capped.length, 6, 'rows do mesmo dia sobrevivem juntas');
+  assert(!capped.some(r => r.day === '2026-08-20'), 'dia mais antigo sai INTEIRO');
+});
+
 // ═══ FASE E — E2E integrado: pipeline por tenant com upstream MOCK (offline) ═══
 // Ambiente isolado completo: upstream local responde 429 → o router aciona o
 // plano B localmente (sem Anthropic, sem rede, sem quota). Requests de 3 "projetos"

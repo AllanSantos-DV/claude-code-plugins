@@ -1,5 +1,42 @@
 # Changelog
 
+## [2.22.0] - 2026-08-23
+
+**Multi-tenant por projeto e CRUD completo do Brain no dashboard.** Cada projeto agora
+pode declarar sua própria rota: `ANTHROPIC_CUSTOM_HEADERS="X-CCB-Tenant: <id>"` no
+`.claude/settings.local.json` isola sticky pins, métricas e o histórico diário por
+tenant, com overlay de config (`tenants.<id>`) shallow-merged sobre a global — sem
+header, o comportamento é byte-idêntico ao de sempre (ADR-011; carrier provado E2E).
+
+**Router — Fases A–E:**
+- Toggle `contextTuning` na aba Router (round-trip completo, preserve-on-absent nas
+  duas rotas POST) e kill de daemon órfão no SessionStart com prova positiva de
+  identidade (ADR-008/009).
+- **BYOK Classify** (ADR-010): classificação via SEU endpoint Anthropic-compatível,
+  opt-in duplo, gate on-limit só com cooldown ativo, fail-open para o MiniLM local.
+- **Série histórica diária**: `metrics-history.jsonl` com deltas cross-restart-safe,
+  cap 90 dias, reset-aware; sparkline SVG zero-deps (requests/dia + economia/dia) e
+  filtro por tenant no dashboard.
+- **Fix de observabilidade**: em `fallback-only` o `metricsRoute` nunca rodava —
+  `total` ficava 0 com tráfego ativo e o sparkline desenharia zero. Agora todos os
+  modos contam exatamente uma vez.
+
+**Brain KB — Fase F + hardening:**
+- Editor inline de entradas (whitelist estrita title/summary/type/tags/detail,
+  re-embed automático, verify-before-return), browse paginado e delete com **backup
+  JSON obrigatório antes da mutação** + verify duplo (ADR-012).
+- Corrigido bug pré-existente grave: o delete da UI chamava `store.delete(string)` e
+  **nunca apagou linha alguma do SQLite** (no-op silencioso por desestruturação).
+- Segurança: XSS via onclick-string eliminado em todo o dashboard (padrão data-* +
+  listener delegado, asserção permanente); vetores de backup/export agora decodificam
+  com segurança de byteOffset (`store.getVector/deleteVector`); upsert de tags remove
+  keywords antigas; CAS multi-writer no fallback JSON (lock por entrada com owner-file
+  e merge-on-write).
+
+**Qualidade:** gate com 912 testes verdes; cada fase passou por revisão adversarial
+em loop (achados críticos corrigidos: TDZ no count_tokens que travava a rajada de
+boot, TDZ-adjacentes, XSS, vetor stale). Dossiês completos em `docs/backlog/`.
+
 ## [2.21.10] - 2026-08-22
 
 **Botão "Desligar tudo" no dashboard: o master-off que faltava.** Desligar o router

@@ -60,6 +60,7 @@ config efetiva (lida por ensure/server/dashboard)
 | `byok.mode` | enum | `"on-limit"` | `on-limit` = só no 429; `always` = atende tudo |
 | `byok.baseUrl` | string | `""` | Host apenas (path é sempre `/v1/messages`) |
 | `byok.headers` | map | `{}` | Headers livres (ex.: `Authorization: Bearer ...`). **Nunca commitar valores reais** |
+| `byok.classifyRemote` | bool | `false` | **ADR-010**: classifica via SEU endpoint (~500 chars/sessão, modelo haiku). on-limit: só com cooldown ativo. Falha → MiniLM local |
 | `tenants` | map | `{}` | **ADR-011**: config por projeto (`{ "<projectId>": { sticky?, fallback?, byok?… } }`), shallow-merged sobre a global quando o request traz o header |
 
 ### Multi-tenant (`X-CCB-Tenant`, ADR-011)
@@ -74,11 +75,10 @@ Cada projeto pode declarar sua própria rota. No `.claude/settings.local.json` d
 - Sem header / header inválido → bucket global `_`, comportamento idêntico ao single-tenant (fail-open)
 - Um tenant NÃO pode declarar `tenants` (sem recursão)
 - Requer Claude Code ≥ 2.1.227; requerer CC Desktop reiniciado após editar o settings
-| `byok.classifyRemote` | bool | `false` | **ADR-010**: classifica via SEU endpoint (~500 chars/sessão, modelo haiku). on-limit: só com cooldown ativo. Falha → MiniLM local |
 
 ### Série histórica (FASE D)
 
-> Rows ganham campo 	enant (ADR-011); rows sem o campo = global. GET /api/router/history?tenant= filtra.
+> Rows ganham campo `tenant` (ADR-011); rows sem o campo = global. `GET /api/router/history?tenant=` filtra. Cap de 90 **dias distintos** — tenants não encolhem a janela.
 
 `DATA_DIR/model-router/metrics-history.jsonl`: uma row por dia com **deltas** dos contadores cumulativos (total/downgrades/planB/economia), cap de 90 dias. Exposta em `GET /api/router/history`; sparkline SVG na aba Router. `/metrics/reset` fecha a row aberta com stamp `reset:true`.
 
