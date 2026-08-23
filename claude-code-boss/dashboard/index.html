@@ -900,6 +900,14 @@ code { color: var(--fg); font-family: var(--font-mono); }
           </span>
         </label>
 
+        <label class="switch-row">
+          <input type="checkbox" id="router-context-tuning" onchange="updateRouterSaveState()">
+          <span>
+            <span class="switch-title"><span data-i18n="router.contextTuningEnable">Context tuning sem proxy (economia de token)</span></span>
+            <span class="text-muted" style="display:block;font-size:.78rem;margin-top:.25rem" data-i18n="router.contextTuningHint">Grava ENABLE_TOOL_SEARCH + teto de auto-compact no settings.json SEM publicar ANTHROPIC_BASE_URL — ganho de token mantendo a janela de 1M disponível. Funciona com o router em off.</span>
+          </span>
+        </label>
+
         <label class="switch-row switch-deprecated">
           <input type="checkbox" id="router-enable" onchange="updateRouterSaveState()">
           <span>
@@ -1068,6 +1076,8 @@ const I18N = {
 'router.disableAllSuccess': 'All controls disabled — router in OFF mode',
 'router.applying': 'Applying...',
 'router.error': 'Error',
+    'router.contextTuningEnable': 'Context tuning without proxy (token savings)',
+    'router.contextTuningHint': 'Writes ENABLE_TOOL_SEARCH + auto-compact ceiling to settings.json WITHOUT publishing ANTHROPIC_BASE_URL — token savings while keeping the 1M window available. Works with the router off.',
 'router.billingNoticeTitle': 'Billing',
 'router.billingNoticeBody': 'The router ships disabled; enabling it is opt-in at your own risk. Passthrough/sticky on the Anthropic route preserves your subscription, but BYOK, NVIDIA fallback and an ANTHROPIC_API_KEY in the environment become API billing. See the guide for how to audit it.',
 'router.billingNoticeLink': 'Billing guide →',
@@ -1225,6 +1235,8 @@ const I18N = {
 'router.disableAllSuccess': 'Todos os controles desligados — router em modo OFF',
 'router.applying': 'Aplicando...',
 'router.error': 'Erro',
+    'router.contextTuningEnable': 'Context tuning sem proxy (economia de token)',
+    'router.contextTuningHint': 'Grava ENABLE_TOOL_SEARCH + teto de auto-compact no settings.json SEM publicar ANTHROPIC_BASE_URL — ganho de token mantendo a janela de 1M disponível. Funciona com o router em off.',
 'router.billingNoticeTitle': 'Cobrança',
 'router.billingNoticeBody': 'O router vem desativado por padrão; ligá-lo é opt-in por conta e risco. Passthrough/sticky na rota Anthropic preserva sua assinatura, mas BYOK, fallback NVIDIA e uma ANTHROPIC_API_KEY no ambiente viram cobrança de API. Confira como auditar no guia.',
 'router.billingNoticeLink': 'Guia de cobrança →',
@@ -1371,6 +1383,8 @@ async function loadRouterConfig() {
     if (stEl) stEl.checked = !!cfg.stickyEnabled;
     const fbEl = document.getElementById('router-fallback-enable');
     if (fbEl) fbEl.checked = !!cfg.fallbackEnabled;
+    const ctEl = document.getElementById('router-context-tuning');
+    if (ctEl) ctEl.checked = cfg.contextTuningEnabled === true;
     document.getElementById('router-accept').checked = !!cfg.acceptedTerms;
     const keyState = document.getElementById('router-key-state');
     keyState.textContent = cfg.hasNvidiaKey
@@ -1425,7 +1439,7 @@ function dismissBillingNotice() {
 })();
 
 async function disableAllRouter() {
-  ['router-sticky-enable', 'router-fallback-enable', 'router-enable', 'router-byok-enable']
+  ['router-sticky-enable', 'router-fallback-enable', 'router-enable', 'router-byok-enable', 'router-context-tuning']
     .forEach(id => { const el = document.getElementById(id); if (el) el.checked = false; });
   // Desmarca checkbox BYOK
   const byokEnable = document.getElementById('router-byok-enable');
@@ -1745,6 +1759,10 @@ async function applyRouter() {
   if ((enabled || stickyEnabled || fallbackEnabled || (byEnEl && byEnEl.checked)) && !accepted) return;
   const typed = document.getElementById('router-nvidia-key').value.trim();
   const body = { enabled, stickyEnabled, fallbackEnabled, acceptedTerms: accepted };
+  // contextTuning: estado real do checkbox (preserve-on-absent no server cobre
+  // chamadores antigos que não mandam o campo).
+  const ctEl = document.getElementById('router-context-tuning');
+  if (ctEl) body.contextTuningEnabled = ctEl.checked;
   if (typed !== '') body.nimApiKey = typed; // only send a new key when typed
 
   // BYOK. O campo de headers VAZIO preserva o que já está gravado (mesma regra da

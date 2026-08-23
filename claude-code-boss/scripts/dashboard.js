@@ -1300,8 +1300,10 @@ function writeRouterOverride(body) {
     routing: { ...(existing.routing || {}), ...(body.routing || {}) },
     // PRESERVA byok existente + atualiza campos enviados
     byok: byokOut,
-    // NOVO: contextTuning
-    contextTuning: { enabled: body.contextTuningEnabled === true },
+    // Preserve-on-absent: só escreve contextTuning quando o body trouxe o campo.
+    // Sem isso, TODO save de rota que não conhece o toggle (ex.: POST /config)
+    // resetaria um contextTuning.enabled:true editado à mão — clobber silencioso.
+    ...(body.contextTuningEnabled === undefined ? {} : { contextTuning: { enabled: body.contextTuningEnabled === true } }),
   };
   
   // Remove chaves undefined
@@ -1347,7 +1349,7 @@ function configuredRouterMode() {
 
 function getRouterConfig(req, res) {
   try {
-    const { shipped, override, enabled, stickyEnabled, fallbackEnabled, byok } = resolveRouterFlags();
+    const { shipped, override, enabled, stickyEnabled, fallbackEnabled, byok, contextTuningEnabled } = resolveRouterFlags();
     const nim = { ...(shipped.nim || {}), ...(override.nim || {}) };
     const routing = { ...(shipped.routing || {}), ...(override.routing || {}) };
     const key = String(nim.apiKey || '').trim();
@@ -1366,6 +1368,7 @@ function getRouterConfig(req, res) {
       stickyEnabled,
       fallbackEnabled,
       byok: byokSafe,
+      contextTuningEnabled: contextTuningEnabled === true,
       acceptedTerms: override.acceptedTerms === true,
       hasNvidiaKey: key.length > 0,
       nimMasked: key.length >= 4 ? key.slice(-4) : '',

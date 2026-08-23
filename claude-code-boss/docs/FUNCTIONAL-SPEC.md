@@ -240,15 +240,19 @@ Stop Hook
   "enabled": false,
   "stickyEnabled": true,
   "fallbackEnabled": true,
-  "byokEnabled": false,
-  "byokMode": "on-limit",
-  "byokBaseUrl": "https://api.openrouter.ai",
-  "byokHeaders": { "Authorization": "Bearer sk-...", "HTTP-Referer": "..." },
-  "contextTuningEnabled": false,
-  "nimApiKey": "nvapi-...",
+  "byok": {
+    "enabled": false,
+    "mode": "on-limit",
+    "baseUrl": "https://api.openrouter.ai",
+    "headers": { "Authorization": "Bearer sk-...", "HTTP-Referer": "..." }
+  },
+  "contextTuning": { "enabled": false },
+  "nim": { "apiKey": "nvapi-..." },
   "acceptedTerms": true
 }
 ```
+
+> Formato de persistência real (aninhado). As chaves planas (`byokEnabled`, `byokMode`…) existem apenas no **body do POST** `/api/router/apply`; `byokEnabled`/`byokMode` são aceitas como fallback legado, `byokBaseUrl`/`byokHeaders` são ignoradas.
 
 #### Variáveis de Ambiente Injetadas
 
