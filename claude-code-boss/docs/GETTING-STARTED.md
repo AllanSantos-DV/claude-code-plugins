@@ -72,6 +72,8 @@ Funciona **automaticamente** após instalação:
 
 ### Model Router (economia de API)
 
+> 💡 Vem **desativado** por padrão (opt-in por conta e risco). Entenda o impacto na cobrança antes de ligar: [features/ROUTER-BILLING.md](./features/ROUTER-BILLING.md).
+
 **Desligado por padrão.** Para ativar:
 
 1. `/dashboard` → aba **Router**

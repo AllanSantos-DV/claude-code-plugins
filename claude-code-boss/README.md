@@ -285,6 +285,12 @@ Iniciado **sob demanda** (não mais no SessionStart). Configura o **plugin**
 
 ## BYOK — usar o seu próprio endpoint
 
+> **💰 Cobrança**: o Model Router nasce **desativado** e ligá-lo é opt-in por conta
+> e risco. Passthrough/sticky na rota Anthropic preserva a cobrança da assinatura;
+> a rota BYOK e o fallback NVIDIA cobram o endpoint; uma `ANTHROPIC_API_KEY` no
+> ambiente vira API pay-as-you-go. Guia completo:
+> [docs/features/ROUTER-BILLING.md](docs/features/ROUTER-BILLING.md).
+
 O proxy pode falar com um **endpoint Anthropic-compatible seu** em vez de (ou além
 de) `api.anthropic.com`. O plugin **não conhece o provedor** nem de onde veio o
 token: você cola a **Base URL** e um **mapa de headers** no dashboard, e ele anexa

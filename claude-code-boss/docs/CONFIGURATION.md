@@ -18,6 +18,8 @@ config efetiva (lida por ensure/server/dashboard)
 
 ## 1. Model Router
 
+> 💰 Impacto na cobrança (assinatura vs API) por cenário: [features/ROUTER-BILLING.md](./features/ROUTER-BILLING.md).
+
 ### Arquivos
 
 | Arquivo | Caminho | Papel |

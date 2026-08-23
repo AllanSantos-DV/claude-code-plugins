@@ -302,6 +302,8 @@ Stop Hook
 
 ## 7. Segurança e Privacidade
 
+> 💰 Cobrança assinatura-vs-API com o router: ver [features/ROUTER-BILLING.md](./features/ROUTER-BILLING.md).
+
 | Aspecto | Implementação |
 |---------|---------------|
 | **NVIDIA Key** | Armazenada em `user-config.json` (0600), nunca logada |
