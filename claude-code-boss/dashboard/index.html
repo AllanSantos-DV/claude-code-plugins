@@ -602,11 +602,13 @@ code { color: var(--fg); font-family: var(--font-mono); }
       </select>
       <input type="text" id="brain-query" data-i18n-placeholder="brain.searchPlaceholder" placeholder="Search query..." style="max-width:300px">
       <button class="btn-primary" onclick="searchBrain()" data-i18n="action.search">Search</button>
+      <button class="btn-sm" onclick="loadBrainList()" title="Browse entries without a query">Browse</button>
       <button class="btn-sm" onclick="exportBrainScope()" title="Download JSON bundle of the selected scope">Export</button>
       <button class="btn-sm" onclick="document.getElementById('brain-import-file').click()" title="Import a JSON bundle">Import</button>
       <input type="file" id="brain-import-file" accept="application/json,.json" style="display:none" onchange="importBrainBundle(event)">
     </div>
     <div id="brain-stats"></div>
+    <div id="brain-editor"></div>
     <div id="brain-results"></div>
   </section>
 
@@ -2593,18 +2595,131 @@ async function moveBrainEntryScope(srcProject, id, targetScope) {
   } catch (e) { alert('Move failed: ' + (e.message || e)); }
 }
 
+// Fase F: editor inline (substitui o alert de leitura). Conteúdo do KB é
+// influenciável por ingestão externa → TODOA interpolação via escapeHtml.
 async function viewBrainEntry(project, id) {
+  const el = document.getElementById('brain-editor');
+  if (!el) return;
+  el.innerHTML = '<div class="spinner" style="margin:1rem auto"></div>';
   try {
-    const entry = await api('GET', `/api/brain/entry/${id}?project=${encodeURIComponent(project)}`);
-    const related = await api('GET', `/api/brain/related/${id}?project=${encodeURIComponent(project)}`);
-    alert(`Title: ${entry.title}\nType: ${entry.type}\nConfidence: ${entry.confidence}\nSummary: ${entry.summary}\n\nDetail:\n${entry.detail || '(no detail)'}\n\nTags: ${(entry.tags||[]).join(', ')}\n\nRelated (${related.length}): ${related.map(r => r.title).join(', ') || 'none'}`);
-  } catch {}
+    const entry = await api('GET', `/api/brain/entry/${encodeURIComponent(id)}?project=${encodeURIComponent(project)}`);
+    let related = [];
+    try { related = await api('GET', `/api/brain/related/${encodeURIComponent(id)}?project=${encodeURIComponent(project)}`); } catch (_) { void _; }
+    const detail = (entry.content && entry.content.detail) || entry.detail || '';
+    el.innerHTML = `
+    <div class="card" style="margin:.75rem 0">
+      <div class="flex mb-1" style="align-items:center;justify-content:space-between">
+        <h2 style="margin:0" data-i18n="brain.editorTitle">Editar entrada</h2>
+        <span class="text-muted" style="font-size:.75rem">${escapeHtml(entry.id)}</span>
+      </div>
+      <label class="field-label">Title</label>
+      <input type="text" id="be-title" value="${escapeHtml(entry.title || '')}" style="width:100%">
+      <div style="display:grid;grid-template-columns:1fr 2fr;gap:.75rem;margin-top:.5rem">
+        <div>
+          <label class="field-label">Type</label>
+          <input type="text" id="be-type" value="${escapeHtml(entry.type || 'note')}" style="width:100%">
+        </div>
+        <div>
+          <label class="field-label">Tags (vírgula)</label>
+          <input type="text" id="be-tags" value="${escapeHtml((entry.tags || []).join(', '))}" style="width:100%">
+        </div>
+      </div>
+      <label class="field-label">Summary</label>
+      <textarea id="be-summary" rows="2" style="width:100%">${escapeHtml(entry.summary || '')}</textarea>
+      <label class="field-label">Detail</label>
+      <textarea id="be-detail" rows="6" style="width:100%">${escapeHtml(detail)}</textarea>
+      <p class="text-muted" style="font-size:.72rem;margin:.35rem 0 .5rem" data-i18n="brain.reembedHint">Salvar com title/summary alterados re-gera o embedding automaticamente.</p>
+      <div class="flex" style="gap:.5rem;flex-wrap:wrap;align-items:center">
+        <button class="btn-primary btn-sm" data-be-act="save" data-project="${escapeHtml(project)}" data-id="${escapeHtml(id)}">Save</button>
+        <button class="btn-sm" data-be-act="close">Close</button>
+        <button class="btn-sm btn-danger" data-be-act="delete" data-project="${escapeHtml(project)}" data-id="${escapeHtml(id)}">Delete</button>
+        <span id="be-status" class="text-muted" style="font-size:.78rem"></span>
+      </div>
+      ${related.length ? `<p class="text-muted" style="font-size:.75rem;margin-top:.5rem">Related: ${related.map(r => escapeHtml(r.title)).join(' · ')}</p>` : ''}
+    </div>`;
+    applyI18n();
+    // Padrão do arquivo (ver busca abaixo): args via data-* + listener DELEGADO —
+    // NUNCA onclick string com argumentos interpolados (o HTML decodifica as
+    // entities antes do parse do JS → escapeHtml em atributo onclick NÃO protege).
+    el.querySelectorAll('button[data-be-act]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const { beAct: act, project: p, id } = btn.dataset;
+        if (act === 'save') saveBrainEntry(p, id);
+        else if (act === 'delete') deleteBrainEntry(p, id);
+        else if (act === 'close') el.innerHTML = '';
+      });
+    });
+    el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  } catch (e) {
+    el.innerHTML = `<p class="text-muted">Load failed: ${escapeHtml(e.message || String(e))}</p>`;
+  }
+}
+
+async function saveBrainEntry(project, id) {
+  const st = document.getElementById('be-status');
+  const patch = {
+    title: document.getElementById('be-title').value,
+    summary: document.getElementById('be-summary').value,
+    detail: document.getElementById('be-detail').value,
+    tags: document.getElementById('be-tags').value.split(',').map(s => s.trim()).filter(Boolean),
+  };
+  const t = document.getElementById('be-type').value.trim();
+  if (t) patch.type = t;
+  if (!patch.title.trim()) { if (st) st.textContent = 'Title cannot be empty.'; return; }
+  try {
+    await api('PUT', `/api/brain/entry/${encodeURIComponent(id)}?project=${encodeURIComponent(project)}`, patch);
+    if (st) st.textContent = '✓ saved';
+    searchBrain();
+  } catch (e) {
+    if (st) st.textContent = '✗ ' + (e.message || e);
+  }
+}
+
+// Fase F: browse sem query — lista paginada do escopo selecionado.
+async function loadBrainList(offset) {
+  const project = document.getElementById('brain-project').value;
+  const el = document.getElementById('brain-results');
+  if (!project) { el.innerHTML = '<p class="text-muted">Select a project first.</p>'; return; }
+  const off = Math.max(0, offset || 0);
+  el.innerHTML = '<div class="spinner" style="margin:1rem auto"></div>';
+  try {
+    const r = await api('GET', `/api/brain/list?project=${encodeURIComponent(project)}&offset=${off}&limit=50`);
+    if (!r.entries.length) { el.innerHTML = '<p class="text-muted">No entries.</p>'; return; }
+    el.innerHTML = `<p class="text-muted" style="font-size:.78rem">${r.total} entries</p><table><thead><tr><th>Type</th><th>Title</th><th>Created</th><th>Actions</th></tr></thead><tbody>` +
+      r.entries.map(e => `<tr>
+        <td><span class="tag">${escapeHtml(e.type || 'note')}</span></td>
+        <td class="truncate" style="max-width:320px" title="${escapeHtml(e.summary || '')}">${escapeHtml(e.title)}</td>
+        <td class="text-muted" style="font-size:.75rem">${escapeHtml((e.created_at || '').slice(0, 10))}</td>
+        <td><button class="btn-sm btn-primary" data-list-act="edit" data-project="${escapeHtml(project)}" data-id="${escapeHtml(e.id)}">Edit</button></td>
+      </tr>`).join('') +
+      '</tbody></table>' +
+      `<div class="flex" style="gap:.5rem;margin-top:.5rem">
+        ${off > 0 ? `<button class="btn-sm" onclick="loadBrainList(${Math.max(0, off - 50)})">← Prev</button>` : ''}
+        ${off + r.entries.length < r.total ? `<button class="btn-sm" onclick="loadBrainList(${off + 50})">Next →</button>` : ''}
+      </div>`;
+    el.querySelectorAll('button[data-list-act]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const { listAct: act, project: p, id } = btn.dataset;
+        if (act === 'edit') viewBrainEntry(p, id);
+      });
+    });
+  } catch (e) { el.innerHTML = `<p class="text-muted">List failed: ${escapeHtml(e.message || String(e))}</p>`; }
 }
 
 async function deleteBrainEntry(project, id) {
-  if (!confirm('Delete this entry?')) return;
-  await api('DELETE', `/api/brain/entry/${id}?project=${encodeURIComponent(project)}`);
-  searchBrain();
+  // Confirm duplo + aviso explícito do backup automático (Fase F).
+  if (!confirm(`Delete entry ${id}?\nA JSON backup is written to brain-backups/ before deleting.`)) return;
+  if (!confirm('Second confirmation: this cannot be undone from the dashboard. Delete?')) return;
+  let backupPath = '';
+  try {
+    const r = await api('DELETE', `/api/brain/entry/${encodeURIComponent(id)}?project=${encodeURIComponent(project)}`);
+    backupPath = (r && r.backupPath) || '';
+    const ed = document.getElementById('brain-editor');
+    if (ed) ed.innerHTML = '';
+    searchBrain();
+    loadBrainStats();
+  } catch (e) { alert('Delete failed: ' + (e.message || e)); return; }
+  if (backupPath) alert('Deleted. Backup saved to:\n' + backupPath);
 }
 
 async function exportBrainScope() {

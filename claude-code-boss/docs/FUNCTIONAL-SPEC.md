@@ -344,7 +344,7 @@ Stop Hook
 | **BYOK Classify** | ✅ Done (ADR-010) | Classificação remota via endpoint BYOK (opt-in, gate on-limit) |
 | **Multi-tenant Router** | ✅ **Done (ADR-011, 2026-08-23)** — header `X-CCB-Tenant` via `ANTHROPIC_CUSTOM_HEADERS` por projeto; sticky pins/métricas/histórico isolados; [dossiê](./backlog/PHASE-E-multi-tenant-router.md) |
 | **Cost Dashboard** | 📋 Backlog | Gráficos de economia por projeto/modelo |
-| **Brain Web UI** | 🟢 [Backlog pronto](./backlog/PHASE-F-brain-web-ui.md) (design ADR-012) |
+| **Brain Web UI** | ✅ **Done (ADR-012, 2026-08-23)** — editor inline + browse paginado + delete com backup obrigatório e verify duplo; [dossiê](./backlog/PHASE-F-brain-web-ui.md) (desvio mcp-memory documentado em backlog) |
 
 ---
 

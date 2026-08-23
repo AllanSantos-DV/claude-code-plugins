@@ -12,8 +12,11 @@
 
 | Item | Dossiê | ADR | Status |
 |------|--------|-----|--------|
-| **Fase E** — Multi-tenant Router | [PHASE-E-multi-tenant-router.md](./PHASE-E-multi-tenant-router.md) | [ADR-011](../adr/ADR-011-multi-tenant-design.md) | ✅ DONE (2026-08-23 — carrier provado, gate 909 verde) |
-| **Fase F** — Brain Web UI | [PHASE-F-brain-web-ui.md](./PHASE-F-brain-web-ui.md) | [ADR-012](../adr/ADR-012-brain-web-ui-design.md) | 🟢 READY |
+| **Fase E** — Multi-tenant Router | [PHASE-E-multi-tenant-router.md](./PHASE-E-multi-tenant-router.md) | [ADR-011](../adr/ADR-011-multi-tenant-design.md) | ✅ DONE (2026-08-23 — carrier provado, gate 910 verde) |
+| **Fase F** — Brain Web UI | [PHASE-F-brain-web-ui.md](./PHASE-F-brain-web-ui.md) | [ADR-012](../adr/ADR-012-brain-web-ui-design.md) | ✅ DONE (2026-08-23 — desvio mcp-memory documentado no dossiê) |
+| **Brain dashboard CRUD via fachada mcp-memory** | desvio da Fase F — ver dossiê dela | ADR-012 | 🟡 BACKLOG NOVO — handlers do dashboard falam só com o store local; migrar p/ `brain-backend` em sessão dedicada |
+| **CAS multi-writer no fallback JSON do brain-store** | limitação pré-existente; SQLite/mcp-memory não afetados | — | 🟡 BACKLOG — writeFileAtomic é last-write-wins entre processos |
+| **Auditoria onclick-string-args no index.html** | achado do revisor da Fase F — mesma classe de XSS corrigida na F1, em outros pontos (`toggleHook` :2812, `deleteShell` :2882, `previewSkillDraft` :3288) | — | 🟡 BACKLOG — migrar todos p/ data-* + listener delegado |
 
 ## Regras de ouro (do dono)
 

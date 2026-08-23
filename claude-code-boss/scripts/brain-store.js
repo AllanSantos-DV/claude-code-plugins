@@ -319,6 +319,10 @@ async function saveSqlite(entry, vector) {
   }
 
   if (entry.tags && entry.tags.length > 0) {
+    // Upsert de tags: REMOVE as rows antigas antes de inserir as atuais — sem
+    // isto, tags removidas na edição continuavam "pesáveis" via searchByKeywords
+    // (o store nasceu imutável; a edição da Fase F tornou isso bug real).
+    _db.prepare('DELETE FROM keywords WHERE entry_id = ?').run(entry.id);
     const kwStmt = _db.prepare(`
       INSERT OR REPLACE INTO keywords (entry_id, keyword, weight)
       VALUES (?, ?, ?)
@@ -506,6 +510,28 @@ async function deleteSqlite(id) {
   _db.prepare('DELETE FROM entries WHERE id = ?').run(id);
 }
 
+// ── Vetor como API de primeira classe (Fase F) ────────────────────────────────
+// O dashboard precisa LER o vetor (backup/export) e INVALIDAR o vetor stale
+// (edição de title/summary cujo re-embed falhou). Antes isso era feito com SQL
+// cru via _getDbForTests() — incluindo um decode Float32 que ignorava byteOffset
+// (corrompia vetores em node:sqlite). API própria = decode seguro centralizado.
+async function getVector(id) {
+  if (_useJson) {
+    const p = path.join(getProjectDir(), 'vectors', `${id}.json`);
+    try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch (err) { void err; return null; }
+  }
+  const row = _db.prepare('SELECT vector, dimensions FROM embeddings WHERE entry_id = ?').get(id);
+  if (!row || !row.vector) return null;
+  return { vector: blobToVector(row.vector), dimensions: row.dimensions };
+}
+async function deleteVector(id) {
+  if (_useJson) {
+    try { fs.unlinkSync(path.join(getProjectDir(), 'vectors', `${id}.json`)); } catch (err) { void err; }
+    return;
+  }
+  _db.prepare('DELETE FROM embeddings WHERE entry_id = ?').run(id);
+}
+
 async function listSqlite(type, project) {
   const rows = _db.prepare(`
     SELECT id, title, type, summary, confidence, created_at, access_count
@@ -538,6 +564,15 @@ async function saveJson(entry, vector) {
   }
 
   if (entry.tags && entry.tags.length > 0) {
+    // Upsert de tags: remove os arquivos de keywords antigos da entry antes de
+    // gravar os atuais (tags removidas não podem continuar pesquisáveis).
+    const kwRoot = path.join(dir, 'keywords');
+    if (fs.existsSync(kwRoot)) {
+      for (const kwDir of fs.readdirSync(kwRoot)) {
+        const stale = path.join(kwRoot, kwDir, `${entry.id}.json`);
+        try { fs.unlinkSync(stale); } catch (err) { void err; }
+      }
+    }
     for (const tag of entry.tags) {
       const kwDir = path.join(dir, 'keywords', tag.toLowerCase());
       if (!fs.existsSync(kwDir)) fs.mkdirSync(kwDir, { recursive: true });
@@ -930,6 +965,7 @@ module.exports = {
   init, save, get, getRaw, merge, prune, search, searchByKeywords, searchIsolated,
   delete: delete_, list, count, close,
   listWithVectors, setRecurrence, applyConsolidation,
+  getVector, deleteVector,
   getStorageType, getStatus, cosineSimilarity,
   recordCitation, citationMultiplier,
   _getDbForTests: () => _db,
