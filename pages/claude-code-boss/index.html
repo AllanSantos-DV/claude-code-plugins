@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.21.9 — memória semântica, execução curada e roteador de modelos com BYOK</title>
+<title>claude-code-boss v2.21.10 — memória semântica, execução curada e roteador de modelos com BYOK</title>
 <meta name="description" content="Plugin para Claude Code Desktop: memória semântica local, execução curada, aprendizado no loop e um roteador de modelos opt-in com plano B para 429 e BYOK (seu próprio endpoint Anthropic-compatible). Uma queda de conexão no meio do stream do upstream derrubava o processo inteiro do model-router, porque .pipe() não propaga o erro da origem; agora o handler encerra só a conexão afetada. O teto de TTFB do BYOK passou a ser separado do da Anthropic e foi a 100s, medido no log de produção em que o failover interno do endpoint levou 88 segundos — cortar antes só trocava &quot;o BYOK tentou&quot; por um falso &quot;BYOK inacessível&quot;. A troca de build do daemon ganhou debounce de 60s, encerrando o ping-pong de restart entre o checkout de dev e o cache do marketplace." />
 <style>
   :root{
@@ -2451,7 +2451,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.21.9</span>
+    <span class="ver">v2.21.10</span>
   </nav>
 
   <header class="hero">
@@ -2572,6 +2572,38 @@
       <span class="tag">Model Router — opt-in por conta e risco</span>
       O router vem <b>desativado por padrão</b>. Passthrough/sticky na rota Anthropic preserva a cobrança da sua <b>assinatura Claude</b>; porém a rota <b>BYOK</b> e o fallback <b>NVIDIA</b> cobram o endpoint configurado, e uma <code>ANTHROPIC_API_KEY</code> no ambiente vira API pay-as-you-go. Antes de ligar, entenda os cenários de cobrança e como auditar no guia oficial. <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/docs/features/ROUTER-BILLING.md">Guia de cobrança →</a>
     </div>
+  </section>
+
+
+  <section>
+    <p class="label">Novo na v2.21.10 · desligar tudo, reconectar sozinho, cobrança na mesa</p>
+    <p class="lede">Quatro entregas que fecham o ciclo de operação: um botão que <b>desliga tudo de verdade</b>, um Brain MCP que <b>se reconecta sozinho</b> em vez de ficar surdo para sempre, o <b>custo real</b> da rota BYOK declarado antes de você ligar o router, e <b>21 docs novos</b> revisados fase a fase. O padrão é o de sempre da página: falhar visível em vez de falhar calado.</p>
+
+    <div class="callout">
+      <span class="tag">o "ok" que só volta depois de pronto</span>
+      As duas primeiras entregas atacam a mesma classe de defeito — uma resposta de sucesso que <b>não garantia</b> o estado por trás dela. O botão "Desligar tudo" só devolve "ok" com o daemon <b>morto</b>, a porta <b>livre</b>, o <code>settings.json</code> <b>limpo</b> e o shim <b>removido</b>. E uma sessão MCP evictada deixava de responder para sempre sem ninguém perceber: agora ela <b>reconecta e retenta</b> sozinha.
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>Botão "Desligar tudo" no dashboard · master-off síncrono</h4>
+        <p>Desligar o router exigia desmarcar 4 toggles e torcer para o cleanup pegar. O novo botão zera tudo (incluindo <code>contextTuning</code>), grava o user-config com <code>writeJsonAtomic</code> e executa o ensure <b>sincronamente</b>: mutex anti-clique-duplo (<code>409</code>), timeout de 30s com SIGTERM→SIGKILL e guard <code>childExited</code>. O cleanup em <code>off</code> virou atomic-first — <code>disableRoutingFootprintAtomic</code> recupera um <code>settings.json</code> corrupto, aguarda a porta liberar (<code>waitPortFree</code>) e confere o shim pelo resultado.</p>
+      </div>
+      <div class="win">
+        <h4>Sessão MCP evictada não derruba mais o Brain</h4>
+        <p>O daemon HTTP evicta sessões ociosas (~30min); a chamada seguinte tomava HTTP 400 <code>-32600</code> e o cliente <b>nunca mais reconectava</b> — todo <code>brain_search</code>/<code>brain_store</code> falhava até reiniciar o Claude Code. Agora o erro vira <code>SESSION_EXPIRED</code>, há handshake novo e a mesma chamada é retentada <b>exatamente uma vez</b>, com mutex de reconexão (3 chamadas concorrentes = 1 handshake) e erro embrulhado quando o reconnect falha. Validado por gate adversarial independente.</p>
+      </div>
+      <div class="win">
+        <h4>Aviso de cobrança assinatura-vs-API no dashboard</h4>
+        <p>Proxy na rota Anthropic preserva a assinatura; mas <b>BYOK/NVIDIA cobram o endpoint</b>, e uma <code>ANTHROPIC_API_KEY</code> no ambiente vira pay-as-you-go. A aba Router ganhou banner dismissible e badge condicional ("Router ATIVO — verifique sua cobrança") quando qualquer modo está on; a vitrine e o guia dedicado (<code>docs/features/ROUTER-BILLING.md</code>, com tabela de cenários e passos de auditoria) cruzam os links.</p>
+      </div>
+      <div class="win">
+        <h4>Documentação completa · 21 docs novos</h4>
+        <p>Getting started, referência de configuração, guias por feature (Brain KB, Model Router, Curadoria, Dashboard), referências CLI/API, troubleshooting, segurança, 7 ADRs, testing/debugging/hooks e best practices/examples/migration/performance/contributing. Tudo adversarial-reviewado fase a fase — a revisão corrigiu paths inexistentes, defaults documentados errados (<code>fastTopK</code>/<code>minScoreFast</code> 10x off) e drift real da UI.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>O que as quatro têm em comum:</b> nenhuma adiciona comportamento novo sem fechar um caminho em que o plugin <b>afirmava algo falso</b> — sucesso sem estado pronto, silêncio onde havia falha, ausência de aviso onde havia custo. O guia de cobrança já está linkado no callout abaixo.</p>
   </section>
 
 
