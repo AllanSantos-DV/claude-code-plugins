@@ -60,6 +60,11 @@ config efetiva (lida por ensure/server/dashboard)
 | `byok.mode` | enum | `"on-limit"` | `on-limit` = só no 429; `always` = atende tudo |
 | `byok.baseUrl` | string | `""` | Host apenas (path é sempre `/v1/messages`) |
 | `byok.headers` | map | `{}` | Headers livres (ex.: `Authorization: Bearer ...`). **Nunca commitar valores reais** |
+| `byok.classifyRemote` | bool | `false` | **ADR-010**: classifica via SEU endpoint (~500 chars/sessão, modelo haiku). on-limit: só com cooldown ativo. Falha → MiniLM local |
+
+### Série histórica (FASE D)
+
+`DATA_DIR/model-router/metrics-history.jsonl`: uma row por dia com **deltas** dos contadores cumulativos (total/downgrades/planB/economia), cap de 90 dias. Exposta em `GET /api/router/history`; sparkline SVG na aba Router. `/metrics/reset` fecha a row aberta com stamp `reset:true`.
 
 ### Precedência dos Modos (`resolveMode()`)
 
