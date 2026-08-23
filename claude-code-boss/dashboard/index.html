@@ -2809,9 +2809,13 @@ function renderHooks() {
       <td>${h.matcher}</td>
       <td class="text-muted">${h.scriptFile}</td>
       <td><span class="tag ${h.active ? 'tag-green' : 'tag-warn'}">${h.active ? 'Active' : 'Inactive'}</span></td>
-      <td><button class="btn-sm ${h.active ? 'btn-warning' : 'btn-success'}" onclick="toggleHook('${h.scriptFile}')">${h.active ? 'Disable' : 'Enable'}</button></td>
+      <td><button class="btn-sm ${h.active ? 'btn-warning' : 'btn-success'}" data-hook-file="${escapeHtml(h.scriptFile)}">${h.active ? 'Disable' : 'Enable'}</button></td>
     </tr>`
   ).join('');
+  // Padrão data-* + listener (args NUNCA em onclick string — ver busca Brain).
+  rows.querySelectorAll('button[data-hook-file]').forEach(btn => {
+    btn.addEventListener('click', () => toggleHook(btn.dataset.hookFile));
+  });
 }
 
 async function toggleHook(name) {
@@ -2878,11 +2882,18 @@ async function loadCuratedShells(cwd) {
         <td class="text-muted truncate" style="max-width:180px" title="${s.scriptPath || ''}">${s.scriptPath ? s.scriptPath.split(/[\\/]/).slice(-2).join('/') : '-'}</td>
         <td><span class="tag ${s.scriptExists ? 'tag-green' : 'badge-red'}">${s.scriptExists ? 'OK' : 'Script ausente'}</span></td>
         <td>
-          ${s.scriptContent ? `<button class="btn-sm btn-primary" onclick="viewShellScript(${i})">Ver</button> ` : ''}
-          <button class="btn-sm btn-danger" onclick="deleteShell(${i}, '${encodeURIComponent(cwd)}')">Remover</button>
+          ${s.scriptContent ? `<button class="btn-sm btn-primary" data-shell-act="view" data-idx="${i}">Ver</button> ` : ''}
+          <button class="btn-sm btn-danger" data-shell-act="delete" data-idx="${i}" data-cwd="${escapeHtml(cwd)}">Remover</button>
         </td>
       </tr>`).join('') +
       '</tbody></table>';
+    tableEl.querySelectorAll('button[data-shell-act]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const idx = parseInt(btn.dataset.idx, 10);
+        if (btn.dataset.shellAct === 'view') viewShellScript(idx);
+        else deleteShell(idx, btn.dataset.cwd);
+      });
+    });
 
     // Store scripts for viewing
     window._shellsData = data;
@@ -2895,8 +2906,9 @@ function viewShellScript(idx) {
   alert(`Script: ${s.scriptPath}\n\n${s.scriptContent || '(vazio)'}`);
 }
 
-async function deleteShell(idx, cwdEnc) {
+async function deleteShell(idx, cwdRaw) {
   if (!confirm('Remover este shell da lista?')) return;
+  const cwdEnc = encodeURIComponent(cwdRaw);
   await api('DELETE', `/api/curation/shells/${idx}?cwd=${cwdEnc}`);
   loadCuratedShells(decodeURIComponent(cwdEnc));
 }
@@ -3285,10 +3297,13 @@ async function loadSkillDrafts() {
           <td>${escapeHtml(d.title)}</td>
           <td class="text-muted">${escapeHtml((d.description || '').slice(0, 100))}</td>
           <td class="text-muted">${new Date(d.mtime).toLocaleString()}</td>
-          <td><button class="btn-sm" onclick="previewSkillDraft('${escapeHtml(d.slug)}')">Preview</button></td>
+          <td><button class="btn-sm" data-slug="${escapeHtml(d.slug)}">Preview</button></td>
         </tr>
       `).join('')}</tbody>
     </table>`;
+    el.querySelectorAll('button[data-slug]').forEach(btn => {
+      btn.addEventListener('click', () => previewSkillDraft(btn.dataset.slug));
+    });
   } catch (err) {
     el.innerHTML = `<p class="text-muted">Error: ${escapeHtml(err.message)}</p>`;
   }

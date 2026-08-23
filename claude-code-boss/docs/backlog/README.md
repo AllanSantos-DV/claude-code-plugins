@@ -14,9 +14,9 @@
 |------|--------|-----|--------|
 | **Fase E** — Multi-tenant Router | [PHASE-E-multi-tenant-router.md](./PHASE-E-multi-tenant-router.md) | [ADR-011](../adr/ADR-011-multi-tenant-design.md) | ✅ DONE (2026-08-23 — carrier provado, gate 910 verde) |
 | **Fase F** — Brain Web UI | [PHASE-F-brain-web-ui.md](./PHASE-F-brain-web-ui.md) | [ADR-012](../adr/ADR-012-brain-web-ui-design.md) | ✅ DONE (2026-08-23 — desvio mcp-memory documentado no dossiê) |
-| **Brain dashboard CRUD via fachada mcp-memory** | desvio da Fase F — ver dossiê dela | ADR-012 | 🟡 BACKLOG NOVO — handlers do dashboard falam só com o store local; migrar p/ `brain-backend` em sessão dedicada |
-| **CAS multi-writer no fallback JSON do brain-store** | limitação pré-existente; SQLite/mcp-memory não afetados | — | 🟡 BACKLOG — writeFileAtomic é last-write-wins entre processos |
-| **Auditoria onclick-string-args no index.html** | achado do revisor da Fase F — mesma classe de XSS corrigida na F1, em outros pontos (`toggleHook` :2812, `deleteShell` :2882, `previewSkillDraft` :3288) | — | 🟡 BACKLOG — migrar todos p/ data-* + listener delegado |
+| **CAS multi-writer no fallback JSON do brain-store** | ✅ DONE (2026-08-23) — lock por entrada via mkdir exclusivo + owner-file com idade (stale >5s arrebenta), merge-on-write preserva campos não tocados; leitura em timeout devolve sem bump (nunca hard-fail) | — | ✅ morto |
+| **Auditoria onclick-string-args no index.html** | ✅ DONE (2026-08-23) — `toggleHook`, `deleteShell`, `previewSkillDraft` migrados p/ data-* + listener delegado; asserção permanente proíbe aspa em atributo onclick | — | ✅ morto (restam só interpolações numéricas) |
+| **Brain dashboard CRUD via fachada mcp-memory** | desvio da Fase F — ver dossiê dela | ADR-012 | 🟡 ÚNICO backlog restante — exige E2E contra daemon Java real (sandbox próprio); não é bloqueador de release |
 
 ## Regras de ouro (do dono)
 
