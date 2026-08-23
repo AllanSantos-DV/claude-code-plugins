@@ -983,7 +983,10 @@ code { color: var(--fg); font-family: var(--font-mono); }
       </h2>
       <p class="text-muted" data-i18n="router.metricsIntro">Quantas requisições o roteador redirecionou e a economia estimada vs. rodar tudo no modelo que você escolheu.</p>
       <div id="router-metrics" class="text-muted">…</div>
-      <h2 style="font-size:.95rem;margin:1rem 0 .5rem" data-i18n="router.historyTitle">Últimos 30 dias</h2>
+      <h2 style="font-size:.95rem;margin:1rem 0 .5rem;display:flex;align-items:center;gap:.75rem">
+        <span data-i18n="router.historyTitle">Últimos 30 dias</span>
+        <select id="router-history-tenant" onchange="refreshRouterHistory()" style="font-size:.72rem;padding:.1rem .3rem" title="x-ccb-tenant"></select>
+      </h2>
       <div id="router-history" class="text-muted" style="font-size:.75rem">…</div>
       <div class="flex" style="gap:.5rem;margin-top:.75rem">
         <button class="btn-sm" onclick="refreshRouterMetrics()" data-i18n="router.metricsRefresh">Atualizar</button>
@@ -1060,6 +1063,8 @@ const I18N = {
     'router.metricsRefresh': 'Refresh',
     'router.metricsReset': 'Reset',
     'router.historyTitle': 'Last 30 days',
+    'router.historyAll': 'Total (all projects)',
+    'router.historyGlobal': 'Global (no project)',
     'router.historyRequests': 'requests/day',
     'router.historySavings': 'savings/day',
     'router.metricsNone': 'No data yet — send a few prompts with the router on.',
@@ -1224,6 +1229,8 @@ const I18N = {
     'router.metricsRefresh': 'Atualizar',
     'router.metricsReset': 'Zerar',
     'router.historyTitle': 'Últimos 30 dias',
+    'router.historyAll': 'Total (todos os projetos)',
+    'router.historyGlobal': 'Global (sem projeto)',
     'router.historyRequests': 'requests/dia',
     'router.historySavings': 'economia/dia',
     'router.metricsNone': 'Sem dados ainda — mande alguns prompts com o roteador ligado.',
@@ -1725,7 +1732,22 @@ async function refreshRouterHistory() {
   if (!el) return;
   try {
     const r = await api('GET', '/api/router/history');
-    const rows = (r && r.rows) || [];
+    const all = (r && r.rows) || [];
+    // FASE E: filtro por tenant (rows legadas sem campo = global '_').
+    const sel = document.getElementById('router-history-tenant');
+    const tenants = [...new Set(all.map(x => x.tenant || '_'))];
+    if (sel && sel.dataset.tenants !== tenants.join(',')) {
+      sel.dataset.tenants = tenants.join(',');
+      const cur = sel.value || 'all';
+      sel.innerHTML =
+        `<option value="all">${escapeHtml(t('router.historyAll'))}</option>` +
+        tenants.map(x => `<option value="${escapeHtml(x)}">${escapeHtml(x === '_' ? t('router.historyGlobal') : x)}</option>`).join('');
+      if (tenants.includes(cur) || cur === 'all') sel.value = cur;
+    }
+    const pick = sel ? sel.value : 'all';
+    // "Todos" = rows GLOBAIS apenas (o global já agrega o tráfego dos tenants —
+    // misturar rows por-tenant no mesmo eixo distorceria dias × pontos).
+    const rows = pick === 'all' ? all.filter(x => (x.tenant || '_') === '_') : all.filter(x => (x.tenant || '_') === pick);
     if (!rows.length) { el.textContent = t('router.metricsNone'); return; }
     const last30 = rows.slice(-30);
     const w = 560, h = 90, pad = 4;

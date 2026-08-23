@@ -1457,7 +1457,8 @@ function routerHttpGetJson(port, pathName) {
 }
 
 // FASE D: série diária de custo/uso, lida direto do metrics-history.jsonl do daemon.
-function getRouterHistory(req, res) {
+// FASE E: ?tenant= filtra (rows legadas sem campo = tenant global '_').
+function getRouterHistory(req, res, url) {
   try {
     const file = path.join(dataDir(), 'model-router', 'metrics-history.jsonl');
     let rows = [];
@@ -1466,6 +1467,8 @@ function getRouterHistory(req, res) {
         .map((l) => { try { return JSON.parse(l); } catch (_) { void _; return null; } })
         .filter(Boolean);
     }
+    const tenant = url && url.searchParams ? url.searchParams.get('tenant') : null;
+    if (tenant) rows = rows.filter((r) => (r.tenant || '_') === tenant);
     json(res, { rows });
   } catch (err) {
     console.error('[DASHBOARD] /api/router/history failed: ' + err.message);
@@ -1661,7 +1664,7 @@ function handleAPI(req, res, url) {
   if (p === '/api/router/status' && m === 'GET') return getRouterStatus(req, res);
   if (p === '/api/router/apply' && m === 'POST') return applyRouter(req, res);
   if (p === '/api/router/metrics' && m === 'GET') return getRouterMetrics(req, res);
-  if (p === '/api/router/history' && m === 'GET') return getRouterHistory(req, res);
+  if (p === '/api/router/history' && m === 'GET') return getRouterHistory(req, res, url);
   if (p === '/api/router/metrics/reset' && m === 'POST') return resetRouterMetrics(req, res);
   if (p === '/api/metrics/capture-rate' && m === 'GET') return getCaptureRate(req, res, url);
   if (p === '/api/metrics/profile-impact' && m === 'GET') return getProfileImpact(req, res, url);

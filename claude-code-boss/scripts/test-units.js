@@ -5538,6 +5538,135 @@ test('release-guard: o workflow tem trigger AGENDADO (drift e estado, nao evento
 
 const routerServer = require('../servers/model-router/index.js');
 
+// ═══ FASE E — multi-tenant (ADR-011) ═══
+test('FASE-E: resolveTenant — válido, case-insensitive, inválido/ausente → global "_"', () => {
+  assertEq(routerServer.resolveTenant({ 'x-ccb-tenant': 'meu-proj' }), 'meu-proj');
+  assertEq(routerServer.resolveTenant({ 'x-ccb-tenant': 'Meu-Proj' }), 'meu-proj');
+  assertEq(routerServer.resolveTenant({ 'x-ccb-tenant': '  proj-a  ' }), 'proj-a');
+  assertEq(routerServer.resolveTenant({}), '_', 'sem header → global');
+  assertEq(routerServer.resolveTenant(undefined), '_');
+  assertEq(routerServer.resolveTenant({ 'x-ccb-tenant': '' }), '_');
+  assertEq(routerServer.resolveTenant({ 'x-ccb-tenant': '   ' }), '_');
+  // Fail-open: malformado NUNCA bloqueia nem mistura — cai no global.
+  assertEq(routerServer.resolveTenant({ 'x-ccb-tenant': '../evil' }), '_');
+  assertEq(routerServer.resolveTenant({ 'x-ccb-tenant': 'a b c' }), '_');
+  assertEq(routerServer.resolveTenant({ 'x-ccb-tenant': '-abc' }), '_'); // precisa começar alfanum
+  assertEq(routerServer.resolveTenant({ 'x-ccb-tenant': 'A'.repeat(10).toLowerCase() + '-'.repeat(60) }), '_'); // >64
+});
+
+test('FASE-E: effectiveConfig — overlay por tenant (shallow), sem tenants → MESMA referência', () => {
+  const base = {
+    sticky: { enabled: true, ttlMs: 21600000 },
+    byok: { enabled: false, mode: 'on-limit', baseUrl: '', headers: {} },
+    tenants: { 'proj-a': { sticky: { enabled: false }, byok: { enabled: true, baseUrl: 'https://byok.example.com' } } },
+  };
+  const cfg = routerServer.effectiveConfig(base, 'proj-a');
+  assertEq(cfg.sticky.enabled, false, 'overlay desliga sticky SÓ para o tenant');
+  assertEq(cfg.sticky.ttlMs, 21600000, 'shallow-merge preserva o resto do sticky global');
+  assertEq(cfg.byok.enabled, true);
+  assertEq(cfg.byok.mode, 'on-limit', 'byok herda o modo global');
+  assertEq(cfg.byok.baseUrl, 'https://byok.example.com');
+  // Sem overlay → identidade (backward compat byte-idêntico).
+  assertEq(routerServer.effectiveConfig(base, '_'), base);
+  assertEq(routerServer.effectiveConfig(base, 'desconhecido'), base);
+  assertEq(routerServer.effectiveConfig(base, undefined), base);
+  // Tenant não pode declarar tenants no OVERLAY (sem recursão/escalonamento):
+  // a chave `tenants` do overlay é descartada — o mapa final continua sendo o do base.
+  const sneaky = { tenants: { evil: { tenants: { deeper: {} }, enabled: true } } };
+  const cfg2 = routerServer.effectiveConfig(sneaky, 'evil');
+  assertEq(cfg2.enabled, true, 'resto do overlay aplica normalmente');
+  assertEq(cfg2.tenants, sneaky.tenants, 'tenants do overlay descartado; mapa final = do base');
+});
+
+test('FASE-E: tenantSessionKey — tenants distintos NÃO colidem; "_" = chave pura', () => {
+  const body = { system: 'sys', messages: [{ role: 'user', content: 'hello' }] };
+  const pure = require('../servers/model-router/index.js').resolveTenant({});
+  assertEq(pure, '_');
+  const kGlobal = routerServer.tenantSessionKey(body, '_');
+  assertEq(kGlobal, routerServer.tenantSessionKey(body, undefined), '"_" e undefined = mesma chave global');
+  const kA = routerServer.tenantSessionKey(body, 'proj-a');
+  const kB = routerServer.tenantSessionKey(body, 'proj-b');
+  assert(kA !== kB, 'projetos diferentes com o MESMO prompt → pins separados');
+  assert(kA.includes('\u0000'), 'namespace usa separador \u0000');
+});
+
+test('FASE-E: hasNonZeroDelta + snapshotTenants — contrato puro do rollover por tenant', () => {
+  assertEq(routerServer.hasNonZeroDelta({ total: 0, planB: 0 }), false, 'dia sem movimento → sem row');
+  assertEq(routerServer.hasNonZeroDelta({ total: 3, planB: 0 }), true);
+  assertEq(routerServer.hasNonZeroDelta({}), false);
+  const m = { byTenant: { 'proj-a': { total: 5 }, 'proj-b': { total: 2 } } };
+  const snap = routerServer.snapshotTenants(m);
+  assertEq(snap['proj-a'].total, 5);
+  snap['proj-a'].total = 999;
+  assertEq(m.byTenant['proj-a'].total, 5, 'snapshot é CÓPIA (mutação não vaza pro metrics)');
+});
+
+// ═══ FASE E — E2E smoke: count_tokens não pode morrer em TDZ de tenant/cfg ═══
+// Regressão do CRITICAL achado pelo revisor adversarial: o branch count_tokens
+// referenciava `cfg` antes da declaração → ReferenceError + request pendurada
+// (toda rajada de boot do Claude Code travaria). Sobe o server REAL em porta
+// alta efêmera (hermético via patch de leitura do user-config) e exige que a
+// request RESPONDA (qualquer status) dentro do prazo.
+test('FASE-E e2e: POST /v1/messages/count_tokens responde (sem hang por TDZ)', async () => {
+  const net = require('net');
+  const { spawn } = require('child_process');
+  const osMod = require('os');
+  const fsMod = require('fs');
+  const pathMod = require('path');
+  const port = await new Promise((resolve) => {
+    const s = net.createServer();
+    s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); });
+  });
+  const tmp = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'ccb-faseE-'));
+  // Config hermética: o server lê o user-config GLOBAL (homedir) — o patch
+  // redireciona essa ÚNICA leitura para a config da porta efêmera.
+  fsMod.writeFileSync(pathMod.join(tmp, 'ucfg.json'),
+    JSON.stringify({ port, fallback: { enabled: true } }));
+  fsMod.writeFileSync(pathMod.join(tmp, 'patch.js'), [
+    "'use strict';",
+    "const fs=require('fs'),os=require('os'),path=require('path');",
+    "const REAL=path.join(os.homedir(),'.claude','claude-code-boss','model-router','user-config.json');",
+    "const MINE=path.join(__dirname,'ucfg.json');",
+    "const orig=fs.readFileSync;",
+    "fs.readFileSync=function(p,...r){return (p===REAL)?orig.call(fs,MINE,...r):orig.call(fs,p,...r);};",
+    // existsSync também: se REAL não existe, o server nem chama readFileSync
+    // (config ausente → mode 'off' → sai sem bind). Com o sandbox-home do harness
+    // isso SEMPRE acontece — sem este hook o teste é falso-negativo garantido.
+    "const origExists=fs.existsSync;",
+    "fs.existsSync=function(p,...r){return (p===REAL)?true:origExists.call(fs,p,...r);};",
+    '',
+  ].join('\n'));
+  const childErrs = [];
+  const child = spawn(process.execPath,
+    ['--require', pathMod.join(tmp, 'patch.js'), pathMod.join(__dirname, '..', 'servers', 'model-router', 'index.js')],
+    { env: Object.assign({}, process.env, { CLAUDE_PLUGIN_DATA: tmp }), stdio: ['ignore', 'pipe', 'pipe'] });
+  child.stdout.on('data', () => {});
+  child.stderr.on('data', (d) => childErrs.push(String(d)));
+  try {
+    // Boot saudável: /health 200 na porta efêmera (até ~10s).
+    let booted = false;
+    for (let i = 0; i < 40 && !booted; i++) {
+      await new Promise((r) => setTimeout(r, 250));
+      try {
+        const h = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(1000) });
+        if (h.ok) booted = true;
+      } catch (_) { void _; }
+    }
+    assert(booted, `server de teste subiu na porta ${port}. stderr do filho: ${childErrs.join('').slice(-600)}`);
+    // O probe: qualquer resposta (200/4xx/5xx) prova que NÃO há TDZ/hang.
+    const res = await fetch(`http://127.0.0.1:${port}/v1/messages/count_tokens`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-api-key': 'test-not-real' },
+      body: JSON.stringify({ model: 'claude-sonnet-4-5', messages: [{ role: 'user', content: 'hi' }] }),
+      signal: AbortSignal.timeout(15000),
+    });
+    assert(typeof res.status === 'number' && res.status > 0, 'count_tokens respondeu com status ' + res.status);
+  } finally {
+    child.kill();
+    try { fsMod.rmSync(tmp, { recursive: true, force: true }); } catch (_) { void _; }
+  }
+});
+
 // ═══ FASE D — série histórica diária (delta + cap + reset) ═══
 test('FASE-D history: deltaCounters nunca devolve negativo (reset entre snapshots)', () => {
   const d = routerServer.deltaCounters({ total: 5 }, { total: 10 });
