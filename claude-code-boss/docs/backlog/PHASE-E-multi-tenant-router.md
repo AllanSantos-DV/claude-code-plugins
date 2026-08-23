@@ -59,6 +59,7 @@ Auth entre usuários remotos (loopback-only permanece); quotas por tenant; rotea
 - **CRITICAL pego pelo revisor e corrigido**: TDZ (`cfg` usado no branch count_tokens antes da declaração matava toda rajada de boot). Fix: resolução de tenant movida ao topo do handler + **teste E2E novo** que sobe o server real e exige resposta do count_tokens (probe permanente contra essa classe de bug).
 - Visão "Todos" do dashboard mostra só rows globais (o global já agrega os tenants; misturar distorceria o eixo).
 - E2E depende parcialmente de rede (passthrough real); flake potencial em CI offline. Mitigação futura: upstream sink local via config.
+- **FIX pós-revisão (2026-08-23):** fallback-only agora roda `metricsRoute` — antes `total`/`byTenant.total` ficavam 0 com tráfego ativo e o sparkline da Fase D desenharía zero. E2E integrado novo: mock upstream 429 local → pipeline por tenant 100% offline (`proj-a:3, proj-b:2, global:1` isolados e agregados).
 
 ## Processo
 
