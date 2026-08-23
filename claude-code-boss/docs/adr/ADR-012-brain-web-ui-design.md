@@ -1,6 +1,6 @@
 # ADR-012 — Brain Web UI: design para implementação futura
 
-**Status:** Proposto (PLANNED — implementação agendada) | **Data:** 2026-08-23 | **Escopo:** Brain / Dashboard
+**Status:** Aceito e IMPLEMENTADO parcialmente (2026-08-23 — CRUD local completo com backup/verify; fachada mcp-memory ficou de backlog) | **Data:** 2026-08-23 | **Escopo:** Brain / Dashboard
 
 ## Contexto
 
@@ -14,6 +14,6 @@ Roadmap pedia UI web para gerenciar a KB. Decisão estrutural primeiro: **não**
 4. **API**: endpoints `/api/brain/*` no dashboard.js falando com brain-backend (local sqlite ou daemon). **Serialização:** `withLock` vive no daemon brain-server e não alcança o dashboard em backend local — local-mode precisa de serialização própria (file-lock no estilo curation-queue CAS) ou rotear operações de escrita pelo daemon
 5. **Não-goals v1**: editor de embeddings na mão; multi-usuário
 
-## Por que PLANNED
+## Por que PLANNED → implementado
 
-Superfície de UI + API nova grande; merece gate adversarial próprio (CRUD em KB é caminho de destruição de dados — verify-before-delete obrigatório).
+~~Superfície de UI + API nova grande; merece gate adversarial próprio.~~ **Implementado na Fase F** (2026-08-23): verify-before-delete OBRIGATÓRIO entregue (backup jsonl + dupla verificação). Descoberta: parte do CRUD já existia; o delta real foi menor que o planejado — detalhes em `docs/backlog/PHASE-F-brain-web-ui.md`.

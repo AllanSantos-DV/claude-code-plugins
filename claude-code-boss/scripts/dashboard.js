@@ -560,10 +560,133 @@ async function deleteBrainEntry(req, res, url) {
     const store = require('./brain-store.js');
     const index = require('./brain-index.js');
     await store.init({ project });
-    await index.init({ project });
-    await store.delete(id);
+    // Fase F: backup OBRIGATÓRIO ANTES de qualquer mutação. Bundle single-entry
+    // com o MESMO formato do /api/brain/export → round-trip com o import.
+    const raw = store.getRaw(id);
+    if (!raw) return fail(res, 'Not found', 404);
+    let vector = null;
+    let dimensions = null;
+    // Decode SEGURO via API do store (blobToVector lida com byteOffset de
+    // node:sqlite — decode Float32 cru aqui corrompia o vetor do backup).
+    const vec = await store.getVector(id);
+    if (vec) { vector = vec.vector; dimensions = vec.dimensions; }
+    const bundle = {
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      project,
+      scope: 'project',
+      count: 1,
+      entries: [vector ? { ...raw, vector, dimensions } : raw],
+    };
+    const backupDir = path.join(DATA_DIR, 'brain-backups');
+    fs.mkdirSync(backupDir, { recursive: true });
+    const safeId = String(id).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64) || 'entry';
+    const backupPath = path.join(backupDir, `${Date.now()}-${safeId}.json`);
+    fs.writeFileSync(backupPath, JSON.stringify(bundle, null, 2));
+    // Verify-before-delete: o backup TEM que conter a entrada íntegra; senão a
+    // fonte NÃO é tocada (fail-loud, nunca deleta sem rede de segurança).
+    const parsed = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
+    if (!parsed.entries || !parsed.entries[0] || parsed.entries[0].id !== id) {
+      return fail(res, 'backup verify failed — source untouched', 500);
+    }
+    await store.delete({ id });
     index.deindex(id);
-    json(res, { ok: true });
+    // Verify pós-delete: se ainda legível, NÃO mintir ok.
+    const gone = await store.get(id);
+    if (gone) return fail(res, 'delete verify failed — entry still readable', 500);
+    json(res, { ok: true, backupPath });
+  } catch (e) { fail(res, e.message); }
+}
+
+// Fase F: edição de conteúdo. Whitelist ESTRICTA de campos — id/created_at/
+// access_count/recurrence/confidence/scope NUNCA entram por aqui (integridade
+// da telemetria e do rerank). detail mapeia para content.detail (convenção do KB).
+async function updateBrainEntry(req, res, url) {
+  const parts = url.pathname.split('/');
+  const id = parts[parts.length - 1];
+  const project = sanitizeProjectId(url.searchParams.get('project') || '');
+  if (!id || !project) return fail(res, 'Missing id or project', 400);
+  let body = '';
+  for await (const chunk of req) body += chunk;
+  let patch;
+  try { patch = JSON.parse(body || '{}'); }
+  catch { /* malformed JSON body → 400 */ return fail(res, 'Invalid JSON body', 400); }
+  const ALLOWED = ['title', 'summary', 'type', 'tags', 'detail'];
+  const clean = {};
+  for (const k of ALLOWED) if (patch[k] !== undefined) clean[k] = patch[k];
+  if (Object.keys(clean).length === 0) return fail(res, 'No editable fields in patch (title|summary|type|tags|detail)', 400);
+  // Caps + sanitização: entrada do usuário NÃO pode virar lixo ilimitado no KB.
+  if (clean.tags !== undefined) {
+    if (!Array.isArray(clean.tags)) return fail(res, 'tags must be an array', 400);
+    if (clean.tags.length > 32) return fail(res, 'tags: max 32', 400);
+    clean.tags = clean.tags.map(t => String(t).trim().toLowerCase()).filter(Boolean).slice(0, 32);
+  }
+  const cap = (v, n) => String(v ?? '').slice(0, n);
+  if (clean.title !== undefined) { clean.title = cap(clean.title, 300); if (!clean.title.trim()) return fail(res, 'title cannot be empty', 400); }
+  if (clean.summary !== undefined) clean.summary = cap(clean.summary, 2000);
+  if (clean.detail !== undefined) clean.detail = cap(clean.detail, 100000);
+  if (clean.type !== undefined && !/^[a-z][a-z0-9-]{0,31}$/.test(String(clean.type))) return fail(res, 'invalid type', 400);
+  try {
+    const store = require('./brain-store.js');
+    await store.init({ project });
+    // getRaw (não get): read-modify-write não pode inflar access_count/telemetria.
+    const existing = store.getRaw(id);
+    if (!existing) return fail(res, 'Not found', 404);
+    const updated = Object.assign({}, existing, clean, {
+      id: existing.id,
+      created_at: existing.created_at,
+    });
+    if (clean.detail !== undefined) {
+      updated.content = Object.assign({}, existing.content || {}, { detail: String(clean.detail) });
+      // detail vive em content.detail — não persistir cópia redundante no topo.
+      delete updated.detail;
+    }
+    // Re-embed quando o texto de recuperação mudou (vetor = title+summary).
+    // Embed FALHO não pode deixar vetor STALE servindo semântica velha:
+    // invalida a row antiga (reembed backfill recria depois).
+    let vector;
+    let embedFailed = false;
+    if ('title' in clean || 'summary' in clean) {
+      try {
+        const embedder = require('./brain-embedder.js');
+        if (!embedder.getStatus().ready) await embedder.init();
+        if (embedder.getStatus().ready) {
+          const { buildEmbedText } = require('./lib/embed-text.js');
+          vector = await embedder.embed(buildEmbedText(updated));
+        } else embedFailed = true;
+      } catch (err) { void err; embedFailed = true; }
+      if (embedFailed) await store.deleteVector(id);
+    }
+    await store.save(updated, vector || undefined);
+    const index = require('./brain-index.js');
+    await index.init({ project });
+    await index.index(updated);
+    // Verify-before-return: relê do disco (getRaw — sem bump de telemetria)
+    // e compara os campos do patch.
+    const back = store.getRaw(id);
+    for (const k of Object.keys(clean)) {
+      const expect = k === 'detail' ? String(clean[k]) : clean[k];
+      const got = k === 'detail' ? ((back.content || {}).detail || '') : back[k];
+      if (JSON.stringify(got) !== JSON.stringify(expect)) {
+        return fail(res, `update verify failed on field "${k}"`, 500);
+      }
+    }
+    json(res, { ok: true, entry: back });
+  } catch (e) { fail(res, e.message); }
+}
+
+// Fase F: browse paginado (descoberta sem precisar de query de busca).
+async function listBrainEntries(req, res, url) {
+  const project = sanitizeProjectId(url.searchParams.get('project') || '');
+  if (!project) return fail(res, 'Missing project', 400);
+  const type = sanitizeProjectId(url.searchParams.get('type') || '') || null;
+  const offset = Math.max(0, parseInt(url.searchParams.get('offset') || '0', 10) || 0);
+  const limit = Math.min(200, Math.max(1, parseInt(url.searchParams.get('limit') || '50', 10) || 50));
+  try {
+    const store = require('./brain-store.js');
+    await store.init({ project });
+    const listed = await store.list(type);
+    json(res, { total: listed.length, offset, limit, entries: listed.slice(offset, offset + limit) });
   } catch (e) { fail(res, e.message); }
 }
 
@@ -653,13 +776,12 @@ async function exportBrain(req, res, url) {
     const store = require('./brain-store.js');
     await store.init({ project });
     const listed = await store.list();
-    const db = store._getDbForTests && store._getDbForTests();
+    // Decode SEGURO via API do store (o decode Float32 cru ignorava byteOffset
+    // de node:sqlite → export podia conter vetor corrompido).
     const vectors = new Map();
-    if (db) {
-      const rows = db.prepare('SELECT entry_id, vector, dimensions FROM embeddings').all();
-      for (const r of rows) {
-        if (r.vector) vectors.set(r.entry_id, { vector: Array.from(new Float32Array(r.vector.buffer || r.vector)), dimensions: r.dimensions });
-      }
+    for (const it of listed) {
+      const v = await store.getVector(it.id);
+      if (v) vectors.set(it.id, v);
     }
     // store.list() is a LOSSY projection (id/title/type/summary/confidence/
     // created_at/access_count) — it omits content/tags/scope/source/recurrence.
@@ -1638,6 +1760,8 @@ function handleAPI(req, res, url) {
   if (p === '/api/skill-promotion/draft' && m === 'DELETE') return discardSkillDraft(req, res, url);
   if (p === '/api/skill-promotion/approve' && m === 'POST') return approveSkillDraft(req, res);
   if (p.match(/^\/api\/brain\/entry\/[^/]+\/scope$/) && m === 'PATCH') return moveBrainEntryScope(req, res, url);
+  if (p.match(/^\/api\/brain\/entry\/[^/]+$/) && m === 'PUT') return updateBrainEntry(req, res, url);
+  if (p === '/api/brain/list' && m === 'GET') return listBrainEntries(req, res, url);
   if (p.match(/^\/api\/brain\/entry\//) && m === 'GET') return getBrainEntry(req, res, url);
   if (p.match(/^\/api\/brain\/entry\//) && m === 'DELETE') return deleteBrainEntry(req, res, url);
   if (p.match(/^\/api\/brain\/related\//) && m === 'GET') return getBrainRelated(req, res, url);

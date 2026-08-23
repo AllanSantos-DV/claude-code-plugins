@@ -1,7 +1,34 @@
 # Fase F — Brain Web UI (aba "Brain Manager" no dashboard)
 
-> **Status: READY TO START.** Design aprovado por revisão adversarial (2026-08-23).
-> Dossiê auto-suficiente — não depende de contexto de chat.
+> **Status: DONE (implementado 2026-08-23)** — com DESVIO HONESTO de escopo documentado abaixo.
+
+## ✅ Descoberta da implementação (reconhecimento antes de codar)
+
+Muito do dossiê original JÁ EXISTIA na aba Brain KB do dashboard:
+- search com scope project/user/both (`searchTwoPass`), get entry + related
+- move-scope user↔project com sanitização `prepareForUserScope`
+- export/import full-fidelity (getRaw + vetores, round-trip com import)
+
+**Delta realmente entregue:**
+1. **PUT /api/brain/entry/:id** — edição com whitelist ESTRITA (title/summary/type/tags/detail); detail mapeia p/ content.detail; re-embed automático quando title/summary mudam; verify-before-return relê do disco e compara
+2. **DELETE endurecido** — backup JSON obrigatório ANTES da mutação (mesmo formato do export → importável), verify do backup (fonte intacta se falhar), delete, verify pós-delete; confirm duplo na UI mostrando o caminho do backup
+3. **GET /api/brain/list** — browse paginado sem query (offset/limit cap 200)
+4. **UI**: editor inline substituindo o `alert()`, botão Browse, paginação Prev/Next
+
+## 🐛 Bug pré-existente pego em flagrante
+
+O delete antigo chamava `store.delete(id)` com STRING — mas `delete_({id}={})` desestrutura, logo `id=undefined` → **DELETE silenciosamente não apagava nada** no SQLite (só removia do índice de keywords). Corrigido para `store.delete({ id })` + asserção permanente no teste para a classe inteira do erro.
+
+## ⚠️ Desvio honesto de escopo (registrado em backlog)
+
+Critério original "CRUD funciona nos DOIS backends" NÃO foi atendido integralmente: os handlers do dashboard (novos E pré-existentes) falam com o brain-store LOCAL — em backend mcp-memory eles leem/escrevem o espelho local, não o servidor. Migrar tudo p/ fachada `brain-backend` tocaria código estável (two-pass search custom, sanitização do move-scope) — merece sessão dedicada.
+→ **Backlog novo**: ver README do backlog ("Brain dashboard CRUD via fachada mcp-memory").
+
+## Decisão de serialização (task 2 do dossiê)
+
+- local SQLite: WAL + busy_timeout 5000 já no store — escritas concorrentes seguras no nível do banco
+- mcp-memory: escritas via ferramentas do daemon = lock server-side ✓
+- fallback JSON: writeFileAtomic last-write-wins entre processos (limitação PRÉ-EXISTENTE de todos os writers) — CAS multi-writer ficou de backlog, não é introduzido pela Fase F
 
 ## Referências
 

@@ -5684,6 +5684,84 @@ test('FASE-E e2e: POST /v1/messages/count_tokens responde (sem hang por TDZ)', a
   }
 });
 
+// ═══ FASE F — Brain Manager: contrato dos handlers + round-trip de store ═══
+test('FASE-F dashboard.js: update com whitelist estrita + delete com backup obrigatório e verify duplo', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'dashboard.js'), 'utf8');
+  // Update: whitelist NUNCA aceita campos de telemetria/integridade.
+  assert(/const ALLOWED = \['title', 'summary', 'type', 'tags', 'detail'\]/.test(src),
+    'update whitelist = title|summary|type|tags|detail (id/created_at/access_count fora)');
+  assert(src.includes('update verify failed on field'), 'verify-before-return presente no update');
+  assert(src.includes('title cannot be empty'), 'title vazio rejeitado');
+  assert(src.includes('tags must be an array'), 'tags não-array rejeitado');
+  // Delete: backup ANTES do delete, verify do backup, verify pós-delete.
+  const delIdx = src.indexOf('async function deleteBrainEntry');
+  const delBody = src.slice(delIdx, src.indexOf('async function moveBrainEntryScope'));
+  const backupPos = delBody.indexOf('writeFileSync(backupPath');
+  const delPos = delBody.indexOf('await store.delete({ id })');
+  assert(backupPos > -1 && delPos > backupPos, 'backup é gravado ANTES do store.delete');
+  // delete_({id}={}) DESESTRUTURA: chamar com string → id undefined → no-op
+  // silencioso (bug pré-existente do delete antigo da UI — nunca apagou a row).
+  assert(delBody.includes('await store.delete({ id })'), 'delete recebe OBJETO {id} (string = no-op silencioso)');
+  assert(delBody.includes('backup verify failed — source untouched'), 'verify do backup falha → fonte intacta');
+  assert(delBody.includes('delete verify failed — entry still readable'), 'pós-delete verifica que sumiu (não mintir ok)');
+  // F1 HIGH (revisor): escapeHtml em atributo onclick NÃO protege (HTML decodifica
+  // entities antes do parse do JS). Padrão obrigatório: data-* + listener delegado.
+  const uiSrc = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'index.html'), 'utf8');
+  const fIdx = uiSrc.indexOf('async function viewBrainEntry');
+  const fSrc = uiSrc.slice(fIdx, uiSrc.indexOf('async function deleteBrainEntry', fIdx));
+  assert(!/onclick="[^"]*BrainEntry\(/.test(fSrc), 'editor/lista NUNCA montam onclick string com args interpolados');
+  assert(fSrc.includes('data-be-act') && fSrc.includes('addEventListener'), 'args via data-* + listener delegado');
+  assert(delBody.includes('await store.getVector(id)'), 'backup usa decode seguro do store (byteOffset)');
+  // F2 MED: re-embed falho invalida o vetor stale em vez de servir semântica velha.
+  const updIdx = src.indexOf('async function updateBrainEntry');
+  assert(src.slice(updIdx, updIdx + 4000).includes('deleteVector(id)'), 'embed falho → deleteVector (sem stale)');
+});
+
+test('FASE-F store round-trip: save→get→update fields→save→delete (operações exatas dos handlers)', async () => {
+  const savedEnv = process.env.CLAUDE_PLUGIN_DATA;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-faseF-'));
+  process.env.CLAUDE_PLUGIN_DATA = tmp;
+  try {
+    delete require.cache[require.resolve('./brain-store.js')];
+    const store = require('./brain-store.js');
+    await store.init({ project: 'fasef-proj' });
+    const entry = {
+      id: 'ff-0001', type: 'lesson', project: 'fasef-proj',
+      title: 'Original title', summary: 'Original summary',
+      content: { detail: 'Original detail' }, tags: ['alpha'],
+      confidence: 0.7, scope: 'project', created_at: new Date().toISOString(),
+    };
+    await store.save(entry);
+    // UPDATE (mesma sequência do handler): get → merge whitelisted → save
+    const existing = await store.get('ff-0001');
+    assert(existing && existing.title === 'Original title', 'get devolve a entrada');
+    const updated = Object.assign({}, existing, {
+      title: 'Edited title', summary: 'Edited summary',
+      content: Object.assign({}, existing.content || {}, { detail: 'Edited detail' }),
+      tags: ['alpha', 'beta'],
+      id: existing.id, created_at: existing.created_at,
+    });
+    await store.save(updated); // sem vetor (embedder ausente) → não pode perder a edição
+    const back = await store.get('ff-0001');
+    assertEq(back.title, 'Edited title');
+    assertEq(back.summary, 'Edited summary');
+    assertEq(back.content.detail, 'Edited detail');
+    assertEq(JSON.stringify(back.tags.sort()), JSON.stringify(['alpha', 'beta']));
+    assertEq(back.created_at, existing.created_at, 'created_at preservado no update');
+    // DELETE (handler): raw existe → backup → delete → get null
+    const raw = store.getRaw('ff-0001');
+    assert(raw && raw.title === 'Edited title', 'getRaw devolve entrada íntegra p/ o bundle de backup');
+    await store.delete({ id: 'ff-0001' });
+    const gone = await store.get('ff-0001');
+    assert(!gone, 'pós-delete get → null');
+  } finally {
+    if (savedEnv === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
+    else process.env.CLAUDE_PLUGIN_DATA = savedEnv;
+    delete require.cache[require.resolve('./brain-store.js')];
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) { void _; }
+  }
+});
+
 // ═══ FASE E — E2E integrado: pipeline por tenant com upstream MOCK (offline) ═══
 // Ambiente isolado completo: upstream local responde 429 → o router aciona o
 // plano B localmente (sem Anthropic, sem rede, sem quota). Requests de 3 "projetos"
