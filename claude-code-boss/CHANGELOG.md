@@ -1,5 +1,44 @@
 # Changelog
 
+## [2.21.10] - 2026-08-22
+
+**Botão "Desligar tudo" no dashboard: o master-off que faltava.** Desligar o router
+exigia desmarcar 4 toggles independentes e torcer para o cleanup pegar. O novo botão
+zera tudo (incluindo `contextTuning`), grava o user-config com `writeJsonAtomic` e
+executa o ensure **sincronamente** (mutex anti-clique-duplo → 409, timeout de 30s com
+SIGTERM→SIGKILL e guard `childExited`) — o "ok" só volta depois do daemon morto, da
+porta livre, do settings.json limpo e do shim removido. O cleanup no modo `off` virou
+atomic-first: `disableRoutingFootprintAtomic` recupera `settings.json` corrupto
+(backup + remoção manual da base_url), aguarda a porta liberar (`waitPortFree`) e
+verifica a remoção do shim pelo resultado (`anySuccess`), com log distinto para
+"não instalado" vs "falhou".
+
+**Sessão MCP evictada deixava o brain-server surdo para sempre.** O daemon HTTP
+evicta sessões ociosas (~30min TTL); a próxima chamada tomava HTTP 400 `-32600` e
+o cliente nunca mais se reconectava — todo `brain_search`/`brain_store` falhava até
+reiniciar o Claude Code. O `mcp-client` agora marca o erro como `SESSION_EXPIRED`,
+reconecta (handshake novo, session id novo) e retenta a mesma chamada **exatamente
+uma vez**, com mutex de reconexão (3 chamadas concorrentes geram 1 handshake, não 3)
+e erro embrulhado (`originalError` + `reconnectError`) quando o reconnect falha.
+Validado por gate adversarial independente (race, retry duplo, reconnect morto).
+
+**Aviso de cobrança assinatura-vs-API.** Relatos da comunidade + doc oficial: proxy
+com só `ANTHROPIC_BASE_URL` preserva a assinatura se `anthropic-beta`/credencial
+chegarem intactos (nosso router repassa); mas BYOK/NVIDIA cobram o endpoint e uma
+`ANTHROPIC_API_KEY` no ambiente vira pay-as-you-go. O dashboard ganhou banner
+dismissible na aba Router e badge condicional ("Router ATIVO — verifique sua
+cobrança") quando qualquer modo está on; a vitrine pública e um guia dedicado
+(`docs/features/ROUTER-BILLING.md`, com tabela de cenários e passos de auditoria)
+cruzam os links.
+
+**Documentação completa do plugin (21 docs novos).** Getting started, referência
+de configuração, guias por feature (Brain KB, Model Router, Curadoria, Dashboard),
+referências CLI/API, troubleshooting, segurança, 7 ADRs, testing/debugging/hooks
+guides e best practices/examples/migration/performance/contributing. Tudo
+adversarial-reviewado fase a fase — a revisão corrigiu paths inexistentes, defaults
+documentados errados (fastTopK/minScoreFast 10x off) e drift real da UI (tooltip do
+dashboard dizia 0.05; shipado é 0.50).
+
 ## [2.21.9] - 2026-08-22
 
 **Um ECONNRESET no meio do stream derrubava o processo inteiro do model-router, não só a request.**
