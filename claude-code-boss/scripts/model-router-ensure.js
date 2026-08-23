@@ -758,11 +758,38 @@ async function main() {
     // que ainda segura a porta fixa (senão ele fica vivo consumindo recursos mesmo
     // com o footprint removido). Só quando a invocação pede aplicação explícita —
     // no hook em modo off isso não é necessário (o daemon não está no caminho).
-    if (process.env.BOSS_ROUTER_FORCE_RESTART === '1') {
+    //
+    // ADR-009: edição MANUAL do user-config (sem dashboard) também deixava o órfão
+    // vivo para sempre. No SessionStart somos janela segura — antes do 1º request da
+    // sessão, derrubar a porta não corta API de ninguém — então matamos mesmo sem
+    // FORCE_RESTART, desde que `servesThisBuild` prove que é NOSSO build. Em
+    // UserPromptSubmit continuamos SEM kill: meio de turno = API da sessão em uso.
+    const isSessionStartOff = hookEventName === 'SessionStart';
+    if (process.env.BOSS_ROUTER_FORCE_RESTART === '1' || isSessionStartOff) {
       const st = readState();
       if (st && st.pid) {
-        log(`Roteador desligado pelo dashboard — derrubando daemon órfão PID ${st.pid}.`);
-        try { process.kill(st.pid); } catch (e) { log(`AVISO: kill do PID ${st.pid} falhou: ${e.message}`); }
+        // ADR-009 honesto: no caminho sem FORCE_RESTART, matamos SÓ com prova
+        // POSITIVA de identidade (command line aponta pro NOSSO PLUGIN_ROOT).
+        // servesThisBuild retorna true "na dúvida" (cmdline ilegível/PID reciclado)
+        // — semântica fail-safe certa para NÃO derrubar router em serviço, errada
+        // para derrubar um órfão: um state.json stale com PID reciclado seria morto
+        // a todo SessionStart. Aqui o lado seguro é o contrário: na dúvida, DEIXA.
+        let positiveProof = true; // caminho FORCE_RESTART mantém semântica original
+        if (process.env.BOSS_ROUTER_FORCE_RESTART !== '1') {
+          const cmd = processCommandLine(st.pid);
+          positiveProof = !!cmd && /model-router/.test(cmd)
+            && normPath(cmd).includes(normPath(PLUGIN_ROOT));
+          if (!positiveProof) {
+            log(`PID ${st.pid} sem prova positiva de identidade (${cmd ? 'outro processo/build' : 'cmdline ilegível'}) — órfão NÃO derrubado.`);
+          }
+        }
+        if (positiveProof) {
+          const motivo = process.env.BOSS_ROUTER_FORCE_RESTART === '1'
+            ? 'Roteador desligado pelo dashboard'
+            : 'Mode off pós-edição manual (SessionStart = janela segura)';
+          log(`${motivo} — derrubando daemon órfão PID ${st.pid}.`);
+          try { process.kill(st.pid); } catch (e) { log(`AVISO: kill do PID ${st.pid} falhou: ${e.message}`); }
+        }
       }
     }
     // DESACOPLADO: com o proxy fora, o env-tuning (tool-search + auto-compact) ainda
