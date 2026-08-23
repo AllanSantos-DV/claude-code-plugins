@@ -5667,6 +5667,107 @@ test('FASE-E e2e: POST /v1/messages/count_tokens responde (sem hang por TDZ)', a
   }
 });
 
+// ═══ FASE E — E2E integrado: pipeline por tenant com upstream MOCK (offline) ═══
+// Ambiente isolado completo: upstream local responde 429 → o router aciona o
+// plano B localmente (sem Anthropic, sem rede, sem quota). Requests de 3 "projetos"
+// provam que byTenant contabiliza ISOLADO enquanto o global agrega tudo.
+test('FASE-E e2e integrado: requests com X-CCB-Tenant isolam byTenant e agregam no global', async () => {
+  const net = require('net');
+  const httpMod = require('http');
+  const { spawn } = require('child_process');
+  const osMod = require('os');
+  const fsMod = require('fs');
+  const pathMod = require('path');
+
+  // Mock upstream: SEMPRE 429 → plano B local (respondAnthropicText), zero rede real.
+  const hits = [];
+  const mock = httpMod.createServer((req, res) => {
+    hits.push(req.url);
+    res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '0' });
+    res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error' } }));
+  });
+  const mockPort = await new Promise((resolve) => {
+    mock.listen(0, '127.0.0.1', () => resolve(mock.address().port));
+  });
+
+  const freePort = await new Promise((resolve) => {
+    const s = net.createServer();
+    s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); });
+  });
+  const tmp = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'ccb-faseE-int-'));
+  // sticky-tier: único modo que roda metricsRoute (contagem total/downgrades por
+  // tenant). Classificador falha fast offline → pin usa o tier do modelo escolhido.
+  fsMod.writeFileSync(pathMod.join(tmp, 'ucfg.json'),
+    JSON.stringify({ port: freePort, sticky: { enabled: true } }));
+  fsMod.writeFileSync(pathMod.join(tmp, 'patch.js'), [
+    "'use strict';",
+    "const fs=require('fs'),os=require('os'),path=require('path');",
+    "const REAL=path.join(os.homedir(),'.claude','claude-code-boss','model-router','user-config.json');",
+    "const MINE=path.join(__dirname,'ucfg.json');",
+    "const orig=fs.readFileSync;",
+    "fs.readFileSync=function(p,...r){return (p===REAL)?orig.call(fs,MINE,...r):orig.call(fs,p,...r);};",
+    "const origExists=fs.existsSync;",
+    "fs.existsSync=function(p,...r){return (p===REAL)?true:origExists.call(fs,p,...r);};",
+    '',
+  ].join('\n'));
+  const childErrs = [];
+  // Upstream apontado pro MOCK via env (lido no boot do módulo no filho).
+  const child = spawn(process.execPath,
+    ['--require', pathMod.join(tmp, 'patch.js'), pathMod.join(__dirname, '..', 'servers', 'model-router', 'index.js')],
+    {
+      env: Object.assign({}, process.env, {
+        CLAUDE_PLUGIN_DATA: tmp,
+        ROUTER_UPSTREAM_HOST: '127.0.0.1',
+        ROUTER_UPSTREAM_PORT: String(mockPort),
+        ROUTER_UPSTREAM_PROTOCOL: 'http:',
+      }),
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+  child.stdout.on('data', () => {});
+  child.stderr.on('data', (d) => childErrs.push(String(d)));
+  try {
+    let booted = false;
+    for (let i = 0; i < 40 && !booted; i++) {
+      await new Promise((r) => setTimeout(r, 250));
+      try {
+        const h = await fetch(`http://127.0.0.1:${freePort}/health`, { signal: AbortSignal.timeout(1000) });
+        if (h.ok) booted = true;
+      } catch (_) { void _; }
+    }
+    assert(booted, `server de teste subiu na porta ${freePort}. stderr: ${childErrs.join('').slice(-600)}`);
+
+    // 3 proj-a + 2 proj-b + 1 sem header → buckets separados, global agrega.
+    const send = (tenant) => fetch(`http://127.0.0.1:${freePort}/v1/messages`, {
+      method: 'POST',
+      headers: Object.assign(
+        { 'content-type': 'application/json', 'x-api-key': 'test-not-real' },
+        tenant ? { 'x-ccb-tenant': tenant } : {},
+      ),
+      body: JSON.stringify({ model: 'claude-sonnet-4-5', max_tokens: 1, messages: [{ role: 'user', content: 'hi' }] }),
+      signal: AbortSignal.timeout(15000),
+    }).then((r) => { assert(r.status === 200, `request ${tenant || '_'} → 200 (plano B), obtido ${r.status}`); });
+    for (let i = 0; i < 3; i++) await send('proj-a');
+    for (let i = 0; i < 2; i++) await send('proj-b');
+    await send(null);
+
+    // Telemetria: /metrics expõe byTenant (herdado do spread de metrics).
+    const snapRes = await fetch(`http://127.0.0.1:${freePort}/metrics`, { signal: AbortSignal.timeout(5000) });
+    const snap = await snapRes.json();
+    assertEq(snap.total, 6, 'global agrega TODOS os requests (metricsRoute)');
+    assert(snap.byTenant, 'byTenant presente no snapshot');
+    assertEq(snap.byTenant['proj-a'].total, 3, 'proj-a isolado');
+    assertEq(snap.byTenant['proj-b'].total, 2, 'proj-b isolado');
+    assert(!snap.byTenant['_'], 'global NÃO vira bucket próprio (fica nos campos planos)');
+    assertEq(snap.servedPlanB, 6, 'todos servidos pelo plano B (mock 429)');
+    assertEq(snap.byTenant['proj-a'].planB, 3, 'plano B contabilizado por tenant');
+    assert(hits.length >= 1, `upstream mock foi atingido (${hits.length} hits)`);
+  } finally {
+    child.kill();
+    mock.close();
+    try { fsMod.rmSync(tmp, { recursive: true, force: true }); } catch (_) { void _; }
+  }
+});
+
 // ═══ FASE D — série histórica diária (delta + cap + reset) ═══
 test('FASE-D history: deltaCounters nunca devolve negativo (reset entre snapshots)', () => {
   const d = routerServer.deltaCounters({ total: 5 }, { total: 10 });
