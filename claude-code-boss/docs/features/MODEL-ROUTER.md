@@ -61,6 +61,16 @@ O master-off na aba Router:
 - Metricas: requests, downgrades, ceiling hits, economia estimada
 - Log: `~/.claude/plugins/data/claude-code-boss/model-router/router.log` ou aba Logs (apos consolidacao de data-dirs, a pasta ativa pode ser um sibling `claude-code-boss*` — o dashboard Logs sempre mostra o certo)
 
+## Multi-tenant por projeto (ADR-011)
+
+Cada projeto pode ter rota propria. No `.claude/settings.local.json` do projeto:
+
+```json
+{ "env": { "ANTHROPIC_CUSTOM_HEADERS": "X-CCB-Tenant: meu-projeto" } }
+```
+
+Sticky pins, metricas e o historico diario ficam isolados por tenant, e `tenants["meu-projeto"]` no user-config sobrepoe a config global (shallow-merge). Sem header = comportamento de sempre (bucket global `_`). Detalhes: [CONFIGURATION.md](../CONFIGURATION.md) · [ADR-011](../adr/ADR-011-multi-tenant-design.md).
+
 ## Aviso importante (janela 1M)
 
 Com QUALQUER proxy no caminho (ANTHROPIC_BASE_URL custom), o cliente Claude Code orca a sessao em 200K mesmo em modelos 1M — limitacao do cliente atras de gateway, documentada pela Anthropic. Precisa de 1M? Deixe o router em OFF e use contextTuning (o ganho de token vem do env, nao do proxy).

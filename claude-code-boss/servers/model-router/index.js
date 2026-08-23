@@ -708,7 +708,7 @@ async function decideStickyModel(body, config, deps) {
   const now = Number.isFinite(d.now) ? d.now : Date.now();
   const classifyFn = d.classifyFn || ((p, c) => classify(p, c));
 
-  const key = computeSessionKey(body);
+  const key = ((d.tenant && d.tenant !== '_') ? d.tenant + '\u0000' : '') + computeSessionKey(body);
   const originalModel = (body && body.model) || 'unknown';
   const origTier = modelTier(originalModel);
 
@@ -744,6 +744,41 @@ async function decideStickyModel(body, config, deps) {
   }
   const dec = applyCeiling(pinnedTier, origTier, originalModel, config);
   return { key, model: dec.newModel, tier: dec.routedTier, pinned: true, created, blocked: dec.blocked };
+}
+
+// ── Multi-tenant (ADR-011) ────────────────────────────────────────────────────
+// Carrier: header `x-ccb-tenant` injetado pelo Claude Code via ANTHROPIC_CUSTOM_HEADERS
+// no settings do projeto (mecanismo OFICIAL, CC ≥ 2.1.227; spike provado E2E em
+// 2026-08-23 — header chega intacto no handler). Sem header → tenant global '_',
+// e o comportamento é IDÊNTICO ao single-tenant anterior (backward compat total).
+const TENANT_RE = /^[a-z0-9][a-z0-9-]{0,62}$/;
+
+function resolveTenant(headers) {
+  const raw = headers && headers['x-ccb-tenant'];
+  if (typeof raw !== 'string' || !raw.trim()) return '_';
+  const t = raw.trim().toLowerCase();
+  // Header inválido → global (fail-open): um tenant malformado NUNCA bloqueia a
+  // request nem mistura métricas — cai no bucket '_' como antes.
+  return TENANT_RE.test(t) ? t : '_';
+}
+
+// Overlay de config por tenant: mesmas invariantes do mergeUserConfig (shallow
+// nos objetos conhecidos nim/routing/fallback/sticky/byok/contextTuning). Um
+// tenant NUNCA pode declarar `tenants` (sem recursão/escalonamento de privilégio).
+function effectiveConfig(config, tenant) {
+  if (!tenant || tenant === '_') return config;
+  const ov = config && config.tenants && config.tenants[tenant];
+  if (!ov || typeof ov !== 'object') return config;
+  const { tenants: _ignored, ...rest } = ov;
+  void _ignored;
+  return mergeUserConfig(config, rest);
+}
+
+// Namespacing das chaves de sessão: tenants diferentes NÃO colidem nos sticky
+// pins mesmo com system+1ª msg idênticos (templates iguais entre projetos).
+function tenantSessionKey(body, tenant) {
+  const k = computeSessionKey(body);
+  return (tenant && tenant !== '_') ? tenant + '\u0000' + k : k;
 }
 
 // ── Proxy core ────────────────────────────────────────────────────────────────
@@ -1488,6 +1523,9 @@ function newMetrics() {
     // Janela de cache CONTRATADA, medida no `usage` de cada write. Sem isso a
     // janela real é palpite — e o Claude Code pode usar 1h por flag remoto.
     ttl:             { write5m: 0, write1h: 0, writeUnknown: 0 },
+    // Multi-tenant (ADR-011): contadores de HISTORY por tenant (só os 5 da série
+    // diária). Global segue nos campos planos; '_' nunca entra aqui (é o global).
+    byTenant:        {},
   };
 }
 
@@ -1518,6 +1556,7 @@ function loadMetrics() {
         ),
         calibration: Object.assign({ samples: 0, chars: 0, realTokens: 0 }, saved.calibration || {}),
         ttl: Object.assign({ write5m: 0, write1h: 0, writeUnknown: 0 }, saved.ttl || {}),
+        byTenant: Object.assign({}, saved.byTenant || {}),
       });
     }
   } catch (e) {
@@ -1564,6 +1603,29 @@ function deltaCounters(cur, snap) {
   for (const k of Object.keys(cur)) d[k] = Math.max(0, (cur[k] || 0) - (snap[k] || 0));
   return d;
 }
+// Cópia profunda rasa dos buckets por tenant (snapshot persistido em metrics.json).
+function snapshotTenants(m) {
+  const out = {};
+  const cur = (m && m.byTenant) || {};
+  for (const t of Object.keys(cur)) out[t] = Object.assign({}, cur[t]);
+  return out;
+}
+// Tenant só vira row se moveu no dia (deltas zerados virariam lixo ×90 dias).
+function hasNonZeroDelta(d) {
+  for (const k of Object.keys(d)) if ((d[k] || 0) > 0) return true;
+  return false;
+}
+// Appends as rows de UM dia para todos os tenants que moveram (delta vs snapshot).
+function appendTenantRows(rows, day, stampReset) {
+  const snapT = metrics.historySnapshotByTenant || {};
+  const curT = metrics.byTenant || {};
+  const keys = new Set([...Object.keys(snapT), ...Object.keys(curT)]);
+  for (const t of keys) {
+    const deltas = deltaCounters(curT[t] || {}, snapT[t] || {});
+    if (!hasNonZeroDelta(deltas)) continue;
+    rows.push(Object.assign(stampReset ? { day, tenant: t, reset: true } : { day, tenant: t }, deltas));
+  }
+}
 function metricsHistoryRoll(nowTs) {
   const today = historyDayKey(nowTs);
   const last = metrics.historyLastRolled || null;
@@ -1571,6 +1633,7 @@ function metricsHistoryRoll(nowTs) {
     // Primeira execução: apenas ancora o snapshot — nada a fechar ainda.
     metrics.historyLastRolled = today;
     metrics.historySnapshot = historyCounters(metrics);
+    metrics.historySnapshotByTenant = snapshotTenants(metrics);
     return;
   }
   if (last === today) return;
@@ -1583,11 +1646,13 @@ function metricsHistoryRoll(nowTs) {
         .map((l) => { try { return JSON.parse(l); } catch (_) { void _; return null; } })
         .filter(Boolean);
     }
-    rows.push(Object.assign({ day: last }, counters));
+    rows.push(Object.assign({ day: last, tenant: '_' }, counters));
+    appendTenantRows(rows, last, false);
     while (rows.length > HISTORY_CAP_DAYS) rows.shift();
     fs.writeFileSync(HISTORY_FILE, rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
     metrics.historyLastRolled = today;
     metrics.historySnapshot = historyCounters(metrics);
+    metrics.historySnapshotByTenant = snapshotTenants(metrics);
     // Snapshot persiste DENTRO do metrics.json: sem dirty-flag, um crash antes do
     // próximo flush deixaria o snapshot stale no disco → row duplicada com delta
     // duplo na próxima virada. Converge: mesmo dia early-returna.
@@ -1610,12 +1675,14 @@ function metricsHistoryCloseOnReset() {
     }
     const lastRow = rows[rows.length - 1];
     if (!lastRow || lastRow.day !== last || !lastRow.reset) {
-      rows.push(Object.assign({ day: last, reset: true }, counters));
+      rows.push(Object.assign({ day: last, tenant: '_', reset: true }, counters));
+      appendTenantRows(rows, last, true);
       while (rows.length > HISTORY_CAP_DAYS) rows.shift();
       fs.writeFileSync(HISTORY_FILE, rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
     }
     metrics.historyLastRolled = historyDayKey();
     metrics.historySnapshot = historyCounters(metrics);
+    metrics.historySnapshotByTenant = snapshotTenants(metrics);
     _metricsDirty = true;
   } catch (e) {
     logger.warn('Falha ao fechar row de history no reset (ignorado)', { err: e.message });
@@ -1631,9 +1698,37 @@ function resetMetrics() {
   persistMetrics();
 }
 
+// Bucket de HISTORY por tenant, normalizado (campos numéricos sempre presentes —
+// um metrics.json antigo sem byTenant não pode crashar o primeiro bump).
+const TENANT_HIST_KEYS = ['total', 'downgrades', 'planB', 'baselineUnits', 'actualUnits'];
+function tenantCounters(m, t) {
+  m.byTenant = m.byTenant || {};
+  const b = m.byTenant[t] || (m.byTenant[t] = {});
+  for (const k of TENANT_HIST_KEYS) if (typeof b[k] !== 'number') b[k] = 0;
+  return b;
+}
+function bumpTenantRoute(tenant, origTier, finalTier, blocked) {
+  if (!tenant || tenant === '_') return;
+  const b = tenantCounters(metrics, tenant);
+  b.total += 1;
+  if (!blocked && origTier && finalTier && TIER_RANK[finalTier] < TIER_RANK[origTier]) b.downgrades += 1;
+  _metricsDirty = true;
+}
+function bumpTenantOutcome(tenant, kind, route, config) {
+  if (!tenant || tenant === '_' || !route) return;
+  const b = tenantCounters(metrics, tenant);
+  b.baselineUnits += tierWeight(route.origTier, config);
+  if (kind === 'planB') {
+    b.planB += 1;
+  } else {
+    b.actualUnits += tierWeight(route.finalTier, config);
+  }
+  _metricsDirty = true;
+}
+
 // Registra a DECISÃO de rota. origTier = dropdown do usuário; finalTier = o que
 // vamos mandar pro Claude; blocked = teto impediu um upgrade.
-function metricsRoute(origTier, finalTier, classified, blocked) {
+function metricsRoute(origTier, finalTier, classified, blocked, tenant) {
   metrics.total += 1;
   metrics.lastReqAt = new Date().toISOString();
   metrics.byOriginal[origTier || 'unknown'] += 1;
@@ -1646,6 +1741,7 @@ function metricsRoute(origTier, finalTier, classified, blocked) {
   } else {
     metrics.kept += 1;
   }
+  bumpTenantRoute(tenant, origTier, finalTier, blocked);
   _metricsDirty = true;
 }
 
@@ -1660,6 +1756,7 @@ function metricsOutcome(kind, route, config) {
     metrics.servedClaude += 1;
     metrics.cost.actualUnits += tierWeight(route.finalTier, config);
   }
+  bumpTenantOutcome(route.tenant, kind, route, config);
   _metricsDirty = true;
 }
 
@@ -2196,6 +2293,12 @@ async function createServer(config, mode, routerToken) {
       res.end();
     });
     req.on('end', async () => {
+      // Multi-tenant (ADR-011): resolve o tenant do header UMA vez, NO TOPO do
+      // handler (o branch count_tokens abaixo já usa cfg — declarar depois seria
+      // TDZ e mataria toda rajada de boot do Claude Code com ReferenceError).
+      const tenant = resolveTenant(req.headers);
+      const cfg = effectiveConfig(config, tenant);
+      if (tenant !== '_') logger.info('Tenant resolvido', { tenant });
       // Aquece o catálogo dinâmico com a credencial desta request (fire-and-forget).
       // Roda ANTES do count_tokens p/ aproveitar a rajada de boot como gatilho.
       maybeWarmCatalog(req.headers, config);
@@ -2204,7 +2307,7 @@ async function createServer(config, mode, routerToken) {
       // converteria contagem grátis em geração paga e saturaria o RPM no boot.
       if (req.url.includes('/count_tokens')) {
         logger.debug('count_tokens — passthrough verbatim (sem rota)', { path: req.url, bytes: Buffer.byteLength(rawBody) });
-        passthrough(rawBody, req.headers, res, req.url, config);
+        passthrough(rawBody, req.headers, res, req.url, cfg);
         return;
       }
       let body;
@@ -2226,7 +2329,7 @@ async function createServer(config, mode, routerToken) {
       if (mode === 'fallback-only') {
         const t = modelTier(body.model || 'unknown');
         logger.debug('fallback-only — passthrough sem classificar', { model: body.model || 'unknown', bytes: Buffer.byteLength(rawBody) });
-        forwardRequest(body, req.headers, res, config, { origTier: t, finalTier: t, path: req.url, sessionKey: computeSessionKey(body) });
+        forwardRequest(body, req.headers, res, cfg, { origTier: t, finalTier: t, path: req.url, sessionKey: tenantSessionKey(body, tenant), tenant });
         return;
       }
 
@@ -2240,17 +2343,17 @@ async function createServer(config, mode, routerToken) {
         const origTier = modelTier(originalModel);
         let dec;
         try {
-          dec = await decideStickyModel(body, config, {});
+          dec = await decideStickyModel(body, cfg, { tenant });
         } catch (e) {
           // Falha inesperada da decisão → passthrough cache-safe (modelo do usuário).
           logger.warn('Sticky decide error — passthrough do modelo original', { err: e.message });
-          forwardRequest(body, req.headers, res, config, { origTier, finalTier: origTier, path: req.url, sessionKey: computeSessionKey(body) });
+          forwardRequest(body, req.headers, res, cfg, { origTier, finalTier: origTier, path: req.url, sessionKey: tenantSessionKey(body, tenant), tenant });
           return;
         }
         body.model = dec.model;
         // Reconcilia o `effort` só quando o modelo MUDA (mesma regra do per-turn).
         let effortAdj = { action: 'none' };
-        if (dec.model !== originalModel) effortAdj = reconcileEffort(body, dec.model, config);
+        if (dec.model !== originalModel) effortAdj = reconcileEffort(body, dec.model, cfg);
         logger.info(dec.created ? 'Sticky — tier FIXADO (turno 0)' : 'Sticky — pin REUSADO (cache-safe)', {
           tier:     dec.tier,
           original: originalModel,
@@ -2265,9 +2368,9 @@ async function createServer(config, mode, routerToken) {
         });
         // Telemetria honesta: classified=true (houve decisão de tier na sessão),
         // blocked = teto barrou um upgrade do tier fixado sobre o modelo atual.
-        try { metricsRoute(origTier, dec.tier, true, dec.blocked); }
+        try { metricsRoute(origTier, dec.tier, true, dec.blocked, tenant); }
         catch (e) { logger.debug('metricsRoute falhou (ignorado)', { err: e.message }); }
-        forwardRequest(body, req.headers, res, config, { origTier, finalTier: modelTier(body.model), path: req.url, sessionKey: dec.key });
+        forwardRequest(body, req.headers, res, cfg, { origTier, finalTier: modelTier(body.model), path: req.url, sessionKey: dec.key, tenant });
         return;
       }
 
@@ -2277,7 +2380,7 @@ async function createServer(config, mode, routerToken) {
 
       let tier = null;
       try {
-        tier = await classify(prompt.slice(0, 800), config);
+        tier = await classify(prompt.slice(0, 800), cfg);
       } catch (e) {
         logger.warn('Classify error — modelo original mantido', { err: e.message });
       }
@@ -2285,7 +2388,7 @@ async function createServer(config, mode, routerToken) {
       let finalTier = origTier;
       let blocked = false;
       if (tier) {
-        const dec = applyCeiling(tier, origTier, originalModel, config);
+        const dec = applyCeiling(tier, origTier, originalModel, cfg);
         blocked = dec.blocked;
         if (blocked) {
           logger.info('Teto — classificador acima do escolhido; mantido o modelo do usuário', {
@@ -2298,7 +2401,7 @@ async function createServer(config, mode, routerToken) {
         // escala própria (Opus 4.8 tem xhigh; Sonnet 4.6 não; Haiku não tem effort).
         // Só mexe quando o modelo MUDA — mantém / clampa / remove conforme o suporte.
         let effortAdj = { action: 'none' };
-        if (dec.newModel !== originalModel) effortAdj = reconcileEffort(body, dec.newModel, config);
+        if (dec.newModel !== originalModel) effortAdj = reconcileEffort(body, dec.newModel, cfg);
         logger.info('Roteado', {
           tier:        dec.routedTier,
           classificou: tier,
@@ -2320,10 +2423,10 @@ async function createServer(config, mode, routerToken) {
         logger.debug('Sem tier — modelo original mantido', { model: originalModel });
       }
 
-      try { metricsRoute(origTier, finalTier, !!tier, blocked); }
+      try { metricsRoute(origTier, finalTier, !!tier, blocked, tenant); }
       catch (e) { logger.debug('metricsRoute falhou (ignorado)', { err: e.message }); }
 
-      forwardRequest(body, req.headers, res, config, { origTier, finalTier, path: req.url, sessionKey: computeSessionKey(body) });
+      forwardRequest(body, req.headers, res, cfg, { origTier, finalTier, path: req.url, sessionKey: tenantSessionKey(body, tenant), tenant });
     });
   });
 
@@ -2483,6 +2586,7 @@ if (require.main === module) {
     extractPrompt,
     mergeUserConfig,
     historyCounters, deltaCounters, metricsHistoryRoll, metricsHistoryCloseOnReset,
+    resolveTenant, effectiveConfig, tenantSessionKey, tenantCounters, hasNonZeroDelta, snapshotTenants,
     resolveMode,
     isLoopbackHost,
     parseResetMs,

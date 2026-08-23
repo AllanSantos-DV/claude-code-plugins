@@ -12,7 +12,7 @@
 
 | Item | Dossiê | ADR | Status |
 |------|--------|-----|--------|
-| **Fase E** — Multi-tenant Router | [PHASE-E-multi-tenant-router.md](./PHASE-E-multi-tenant-router.md) | [ADR-011](../adr/ADR-011-multi-tenant-design.md) | 🟢 READY (1 decisão pendente dentro da fase: carrier) |
+| **Fase E** — Multi-tenant Router | [PHASE-E-multi-tenant-router.md](./PHASE-E-multi-tenant-router.md) | [ADR-011](../adr/ADR-011-multi-tenant-design.md) | ✅ DONE (2026-08-23 — carrier provado, gate 909 verde) |
 | **Fase F** — Brain Web UI | [PHASE-F-brain-web-ui.md](./PHASE-F-brain-web-ui.md) | [ADR-012](../adr/ADR-012-brain-web-ui-design.md) | 🟢 READY |
 
 ## Regras de ouro (do dono)
