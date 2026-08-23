@@ -340,11 +340,11 @@ Stop Hook
 |---------|--------|-----------|
 | **Brain MCP Server** | ✅ Done | MCP Memory Server para KB remoto |
 | **Router Catalog** | ✅ Done | Catálogo dinâmico via `/v1/models` Anthropic |
-| **Context Tuning UI** | 🔄 Planejado | Toggle no dashboard |
-| **BYOK Classify** | 🔄 Planejado | Classificação remota via endpoint BYOK |
-| **Multi-tenant Router** | 📋 Backlog | Isolamento por projeto/team |
+| **Context Tuning UI** | ✅ Done (ADR-008) | Toggle na aba Router + kill de órfão no SessionStart (ADR-009) + série histórica |
+| **BYOK Classify** | ✅ Done (ADR-010) | Classificação remota via endpoint BYOK (opt-in, gate on-limit) |
+| **Multi-tenant Router** | 🧭 Desenhado (ADR-011) — carrier de projectId a decidir |
 | **Cost Dashboard** | 📋 Backlog | Gráficos de economia por projeto/modelo |
-| **Brain Web UI** | 📋 Backlog | UI web para gerenciar KB |
+| **Brain Web UI** | 🧭 Desenhado (ADR-012) — aba no dashboard existente |
 
 ---
 
