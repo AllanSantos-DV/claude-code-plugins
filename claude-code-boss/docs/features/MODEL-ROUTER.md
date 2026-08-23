@@ -64,3 +64,7 @@ O master-off na aba Router:
 ## Aviso importante (janela 1M)
 
 Com QUALQUER proxy no caminho (ANTHROPIC_BASE_URL custom), o cliente Claude Code orca a sessao em 200K mesmo em modelos 1M — limitacao do cliente atras de gateway, documentada pela Anthropic. Precisa de 1M? Deixe o router em OFF e use contextTuning (o ganho de token vem do env, nao do proxy).
+
+## Cobranca: assinatura vs API
+
+O router nasce desativado por padrao; ligar e opt-in por conta e risco. Passthrough/sticky na rota Anthropic preserva a assinatura (repassamos `anthropic-beta` + credencial intactos); a rota BYOK e o fallback NVIDIA cobram o endpoint; `ANTHROPIC_API_KEY` no ambiente vira API pay-as-you-go. Tabela completa de cenarios, auditoria e fontes oficiais: [ROUTER-BILLING.md](./ROUTER-BILLING.md).

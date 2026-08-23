@@ -872,6 +872,17 @@ code { color: var(--fg); font-family: var(--font-mono); }
         ligue contextTuning.enabled no router-config para ter a economia de token sem publicar a base_url.
       </p>
 
+      <div id="router-billing-banner" class="text-muted" style="font-size:.78rem;margin:.25rem 0 .75rem;padding:.6rem .75rem;border:1px solid var(--warning);border-radius:var(--radius-sm);background:var(--tag-warn-bg)">
+        <span>💰 <strong data-i18n="router.billingNoticeTitle">Cobrança</strong></span>
+        <span style="display:block;margin-top:.25rem" data-i18n="router.billingNoticeBody">O router vem desativado por padrão; ligá-lo é opt-in por conta e risco. Passthrough/sticky na rota Anthropic preserva sua assinatura, mas BYOK, fallback NVIDIA e uma ANTHROPIC_API_KEY no ambiente viram cobrança de API. Confira como auditar no guia.</span>
+        <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/docs/features/ROUTER-BILLING.md" target="_blank" rel="noopener" style="display:inline-block;margin-top:.3rem;font-size:.75rem" data-i18n="router.billingNoticeLink">Guia de cobrança →</a>
+        <button class="btn-sm" style="float:right;padding:.1rem .5rem;font-size:.7rem" onclick="dismissBillingNotice()" data-i18n="router.billingDismiss">Dispensar</button>
+      </div>
+      <div id="router-billing-active" style="display:none;font-size:.78rem;margin:.25rem 0 .75rem;color:var(--warning)">
+        ⚠️ <span data-i18n="router.billingActive">Router ATIVO — verifique se sua cobrança permanece na assinatura.</span>
+        <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/docs/features/ROUTER-BILLING.md" target="_blank" rel="noopener" data-i18n="router.billingNoticeLink">Guia →</a>
+      </div>
+
       <div class="router-switches">
         <label class="switch-row switch-recommended">
           <input type="checkbox" id="router-sticky-enable" onchange="updateRouterSaveState()">
@@ -1057,6 +1068,11 @@ const I18N = {
 'router.disableAllSuccess': 'All controls disabled — router in OFF mode',
 'router.applying': 'Applying...',
 'router.error': 'Error',
+'router.billingNoticeTitle': 'Billing',
+'router.billingNoticeBody': 'The router ships disabled; enabling it is opt-in at your own risk. Passthrough/sticky on the Anthropic route preserves your subscription, but BYOK, NVIDIA fallback and an ANTHROPIC_API_KEY in the environment become API billing. See the guide for how to audit it.',
+'router.billingNoticeLink': 'Billing guide →',
+'router.billingDismiss': 'Dismiss',
+'router.billingActive': 'Router ACTIVE — verify your billing remains on subscription.',
 'skills.title': 'Skill Promotion',
     'skills.threshold': 'Promotion Threshold',
     'skills.project': 'Project',
@@ -1209,6 +1225,11 @@ const I18N = {
 'router.disableAllSuccess': 'Todos os controles desligados — router em modo OFF',
 'router.applying': 'Aplicando...',
 'router.error': 'Erro',
+'router.billingNoticeTitle': 'Cobrança',
+'router.billingNoticeBody': 'O router vem desativado por padrão; ligá-lo é opt-in por conta e risco. Passthrough/sticky na rota Anthropic preserva sua assinatura, mas BYOK, fallback NVIDIA e uma ANTHROPIC_API_KEY no ambiente viram cobrança de API. Confira como auditar no guia.',
+'router.billingNoticeLink': 'Guia de cobrança →',
+'router.billingDismiss': 'Dispensar',
+'router.billingActive': 'Router ATIVO — verifique se sua cobrança permanece na assinatura.',
 'skills.title': 'Promoção de Skills',
     'skills.threshold': 'Threshold de Promoção',
     'skills.project': 'Projeto',
@@ -1394,6 +1415,15 @@ const MODE_META = {
 };
 function modeMeta(mode) { return MODE_META[mode] || MODE_META.off; }
 
+function dismissBillingNotice() {
+  try { localStorage.setItem('dash.billingNoticeDismissed', '1'); } catch (_) {}
+  const b = document.getElementById('router-billing-banner');
+  if (b) b.style.display = 'none';
+}
+(function initBillingNotice() {
+  try { if (localStorage.getItem('dash.billingNoticeDismissed') === '1') { const b = document.getElementById('router-billing-banner'); if (b) b.style.display = 'none'; } } catch (_) {}
+})();
+
 async function disableAllRouter() {
   ['router-sticky-enable', 'router-fallback-enable', 'router-enable', 'router-byok-enable']
     .forEach(id => { const el = document.getElementById(id); if (el) el.checked = false; });
@@ -1442,6 +1472,9 @@ function renderRouterMode(runningMode, configuredMode) {
   dot.title = text;
   // Mismatch entre configurado e rodando → reload pendente (subtil).
   if (hint) hint.textContent = (configuredMode && configuredMode !== runningMode) ? t('mode.reloadPending') : '';
+  // Aviso condicional de cobrança: router ativo = conferir assinatura vs API.
+  const active = document.getElementById('router-billing-active');
+  if (active) active.style.display = (runningMode && runningMode !== 'off') ? '' : 'none';
 }
 
 async function refreshRouterStatus(silent) {
