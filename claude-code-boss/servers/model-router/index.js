@@ -1617,6 +1617,17 @@ function hasNonZeroDelta(d) {
   for (const k of Object.keys(d)) if ((d[k] || 0) > 0) return true;
   return false;
 }
+// Cap por DIA DISTINTO, não por row: k tenants ativos geram k+1 rows/dia —
+// cap por row encolheria a janela global documentada (90 dias) para ~90/(k+1).
+function capHistoryDays(rows, cap) {
+  const max = Number.isFinite(cap) ? cap : HISTORY_CAP_DAYS;
+  let days = [...new Set(rows.map((r) => r.day))];
+  while (days.length > max) {
+    const drop = days.shift();
+    rows = rows.filter((r) => r.day !== drop);
+  }
+  return rows;
+}
 // Appends as rows de UM dia para todos os tenants que moveram (delta vs snapshot).
 function appendTenantRows(rows, day, stampReset) {
   const snapT = metrics.historySnapshotByTenant || {};
@@ -1650,7 +1661,7 @@ function metricsHistoryRoll(nowTs) {
     }
     rows.push(Object.assign({ day: last, tenant: '_' }, counters));
     appendTenantRows(rows, last, false);
-    while (rows.length > HISTORY_CAP_DAYS) rows.shift();
+    rows = capHistoryDays(rows);
     fs.writeFileSync(HISTORY_FILE, rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
     metrics.historyLastRolled = today;
     metrics.historySnapshot = historyCounters(metrics);
@@ -1679,7 +1690,7 @@ function metricsHistoryCloseOnReset() {
     if (!lastRow || lastRow.day !== last || !lastRow.reset) {
       rows.push(Object.assign({ day: last, tenant: '_', reset: true }, counters));
       appendTenantRows(rows, last, true);
-      while (rows.length > HISTORY_CAP_DAYS) rows.shift();
+      rows = capHistoryDays(rows);
       fs.writeFileSync(HISTORY_FILE, rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
     }
     metrics.historyLastRolled = historyDayKey();
@@ -2594,7 +2605,7 @@ if (require.main === module) {
     extractPrompt,
     mergeUserConfig,
     historyCounters, deltaCounters, metricsHistoryRoll, metricsHistoryCloseOnReset,
-    resolveTenant, effectiveConfig, tenantSessionKey, tenantCounters, hasNonZeroDelta, snapshotTenants,
+    resolveTenant, effectiveConfig, tenantSessionKey, tenantCounters, hasNonZeroDelta, snapshotTenants, capHistoryDays,
     resolveMode,
     isLoopbackHost,
     parseResetMs,

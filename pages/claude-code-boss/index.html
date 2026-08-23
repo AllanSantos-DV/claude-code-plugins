@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.21.10 — memória semântica, execução curada e roteador de modelos com BYOK</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica local, execução curada, aprendizado no loop e um roteador de modelos opt-in com plano B para 429 e BYOK (seu próprio endpoint Anthropic-compatible). Uma queda de conexão no meio do stream do upstream derrubava o processo inteiro do model-router, porque .pipe() não propaga o erro da origem; agora o handler encerra só a conexão afetada. O teto de TTFB do BYOK passou a ser separado do da Anthropic e foi a 100s, medido no log de produção em que o failover interno do endpoint levou 88 segundos — cortar antes só trocava &quot;o BYOK tentou&quot; por um falso &quot;BYOK inacessível&quot;. A troca de build do daemon ganhou debounce de 60s, encerrando o ping-pong de restart entre o checkout de dev e o cache do marketplace." />
+<title>claude-code-boss v2.22.0 — memória semântica, execução curada e roteador de modelos com BYOK</title>
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica local, execução curada, aprendizado no loop e um roteador de modelos opt-in com plano B para 429 e BYOK (seu próprio endpoint Anthropic-compatible). Na v2.22.0 o router fica multi-tenant por projeto: ANTHROPIC_CUSTOM_HEADERS=&quot;X-CCB-Tenant: &lt;id&gt;&quot; no .claude/settings.local.json isola sticky pins, métricas e o histórico diário por tenant, com overlay de config shallow-merged sobre a global e comportamento byte-idêntico sem o header. A classificação do router passa a poder rodar no SEU endpoint Anthropic-compatible (BYOK Classify: opt-in duplo, gate on-limit só com cooldown ativo, fail-open para o MiniLM local). O dashboard ganhou série histórica diária (metrics-history.jsonl, deltas cross-restart-safe, cap de 90 dias) desenhada num sparkline SVG zero-deps de requests/dia e economia/dia, com filtro por tenant. E o Brain KB ganhou CRUD completo: editor inline com whitelist estrita e re-embed automático, browse paginado e delete com backup JSON obrigatório antes da mutação — o que expôs e consertou um bug pré-existente em que o delete da UI nunca apagou linha alguma do SQLite." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -2451,7 +2451,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.21.10</span>
+    <span class="ver">v2.22.0</span>
   </nav>
 
   <header class="hero">
@@ -2572,6 +2572,46 @@
       <span class="tag">Model Router — opt-in por conta e risco</span>
       O router vem <b>desativado por padrão</b>. Passthrough/sticky na rota Anthropic preserva a cobrança da sua <b>assinatura Claude</b>; porém a rota <b>BYOK</b> e o fallback <b>NVIDIA</b> cobram o endpoint configurado, e uma <code>ANTHROPIC_API_KEY</code> no ambiente vira API pay-as-you-go. Antes de ligar, entenda os cenários de cobrança e como auditar no guia oficial. <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/docs/features/ROUTER-BILLING.md">Guia de cobrança →</a>
     </div>
+  </section>
+
+
+  <section>
+    <p class="label">Novo na v2.22.0 · cada projeto com sua rota, o Brain sob controle no dashboard</p>
+    <p class="lede">Duas frentes que se encontram no mesmo lugar — <b>isolamento</b> e <b>controle</b>. O model-router fica <b>multi-tenant por projeto</b>: um header seu separa sticky pins, métricas e histórico diário sem tocar em quem não usa. E o dashboard ganha <b>CRUD completo do Brain</b>: editar entrada inline, navegar paginado e apagar com <b>backup obrigatório antes da mutação</b> — o que expôs e consertou um bug pré-existente grave em que o delete da UI <b>nunca apagou linha alguma</b> do SQLite.</p>
+
+    <div class="callout">
+      <span class="tag">sem header, byte-idêntico</span>
+      A rota multi-tenant é <b>opt-in por projeto</b>: <code>ANTHROPIC_CUSTOM_HEADERS="X-CCB-Tenant: &lt;id&gt;"</code> no <code>.claude/settings.local.json</code>. O id isola <b>sticky pins, métricas e o histórico diário</b> por tenant, com overlay de config (<code>tenants.&lt;id&gt;</code>) shallow-merged sobre a global. Sem o header, o comportamento é <b>byte-idêntico</b> ao de sempre (ADR-011; carrier provado E2E).
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>Router multi-tenant · <code>X-CCB-Tenant</code> por projeto</h4>
+        <p>O header chega pelo bundle de env do Claude Code e o proxy passa a escopar por tenant o que antes era compartilhado: <b>sticky pins</b>, as <b>métricas</b> e a <b>série histórica diária</b>. A config aceita overlay <code>tenants.&lt;id&gt;</code>, shallow-merged sobre a global. Quem não manda o header não muda nada.</p>
+      </div>
+      <div class="win">
+        <h4>BYOK Classify · a classificação no seu endpoint</h4>
+        <p>A classificação do router pode rodar no <b>seu endpoint Anthropic-compatible</b> em vez do MiniLM local: <b>opt-in duplo</b>, gate on-limit <b>só com cooldown ativo</b> e <b>fail-open</b> para o MiniLM quando o endpoint não responde (ADR-010).</p>
+      </div>
+      <div class="win">
+        <h4>Série histórica diária · sparkline SVG zero-deps</h4>
+        <p><code>metrics-history.jsonl</code> guarda a série diária com deltas <b>cross-restart-safe</b>, cap de <b>90 dias</b> e consciência de reset. O dashboard desenha <b>requests/dia</b> e <b>economia/dia</b> num sparkline SVG sem dependências, com filtro por tenant.</p>
+      </div>
+      <div class="win">
+        <h4>Brain KB · editor inline e delete com backup</h4>
+        <p>Editor inline de entradas com whitelist estrita (<code>title</code>/<code>summary</code>/<code>type</code>/<code>tags</code>/<code>detail</code>), <b>re-embed automático</b> e verify-before-return; browse paginado. O delete exige <b>backup JSON antes da mutação</b>, com verify duplo (ADR-012): nada some sem cópia e sem prova.</p>
+      </div>
+      <div class="win">
+        <h4>Delete que nunca apagou · bug pré-existente corrigido</h4>
+        <p>O delete da UI chamava <code>store.delete(string)</code> e <b>nunca apagou linha alguma</b> do SQLite — no-op silencioso por desestruturação. O caminho novo com backup + verify duplo torna o silêncio impossível: ou apaga de verdade, ou falha visível.</p>
+      </div>
+      <div class="win">
+        <h4>Segurança e qualidade · XSS eliminado, CAS multi-writer</h4>
+        <p>XSS via onclick-string eliminado em todo o dashboard (padrão <code>data-*</code> + listener delegado, asserção permanente); vetores de backup/export decodificam com segurança de <code>byteOffset</code>; upsert de tags remove keywords antigas; CAS multi-writer no fallback JSON (lock por entrada com owner-file e merge-on-write). Gate com <b>912 testes</b> verdes.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Observabilidade que parou de faltar:</b> em <code>fallback-only</code> o <code>metricsRoute</code> nunca rodava — o <code>total</code> ficava 0 com tráfego ativo e o sparkline desenharia zero. Agora todos os modos contam exatamente uma vez. Cada fase passou por revisão adversarial em loop (achados críticos corrigidos: TDZ no count_tokens que travava a rajada de boot, TDZ-adjacentes, XSS, vetor stale); dossiês completos em <code>docs/backlog/</code>.</p>
   </section>
 
 

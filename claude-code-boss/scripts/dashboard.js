@@ -583,6 +583,15 @@ async function deleteBrainEntry(req, res, url) {
     const safeId = String(id).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64) || 'entry';
     const backupPath = path.join(backupDir, `${Date.now()}-${safeId}.json`);
     fs.writeFileSync(backupPath, JSON.stringify(bundle, null, 2));
+    // Retenção: mantém os 50 backups mais recentes (deletes são raros e os
+    // arquivos pequenos — sem sweep o dir cresce sem teto).
+    try {
+      const olds = fs.readdirSync(backupDir)
+        .filter((f) => f.endsWith('.json'))
+        .map((f) => ({ f, m: fs.statSync(path.join(backupDir, f)).mtimeMs }))
+        .sort((a, b) => b.m - a.m);
+      for (const o of olds.slice(50)) fs.unlinkSync(path.join(backupDir, o.f));
+    } catch (_) { void _; }
     // Verify-before-delete: o backup TEM que conter a entrada íntegra; senão a
     // fonte NÃO é tocada (fail-loud, nunca deleta sem rede de segurança).
     const parsed = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
