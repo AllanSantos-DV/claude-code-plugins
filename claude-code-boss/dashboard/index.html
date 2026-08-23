@@ -936,6 +936,13 @@ code { color: var(--fg); font-family: var(--font-mono); }
         </label>
 
         <div id="router-byok-fields" style="display:none;margin-top:.75rem">
+          <label class="flex" style="align-items:center;gap:.5rem;margin:.25rem 0 .75rem;cursor:pointer">
+            <input type="checkbox" id="router-byok-classify-remote" onchange="updateRouterSaveState()" style="width:auto">
+            <span>
+              <span class="switch-title"><span data-i18n="router.byokClassifyEnable">Classificar prompts via meu endpoint (BYOK Classify)</span></span>
+              <span class="text-muted" style="display:block;font-size:.78rem;margin-top:.25rem" data-i18n="router.byokClassifyHint">Opt-in. Usa o SEU endpoint para escolher o tier (~500 chars do prompt por sessão, modelo haiku). on-limit: só com o cooldown ativo. Falha cai no MiniLM local.</span>
+            </span>
+          </label>
           <label class="field-label"><span data-i18n="router.byokMode">Quando usar</span></label>
           <select id="router-byok-mode" onchange="updateRouterSaveState()" style="width:100%">
             <option value="on-limit" data-i18n="router.byokModeOnLimit">Só quando o limite do Claude esgotar (429)</option>
@@ -1015,6 +1022,8 @@ const I18N = {
     'router.byokHeadersKeep': 'leave blank to keep',
     'router.byokHeadersNone': 'No header configured yet.',
     'router.byokHeadersInvalid': 'Invalid line (expected "Name: value")',
+    'router.byokClassifyEnable': 'Classify prompts via my endpoint (BYOK Classify)',
+    'router.byokClassifyHint': 'Opt-in. Uses YOUR endpoint to pick the tier (~500 chars of the prompt per session, haiku model). on-limit: only while cooldown is active. Failure falls back to local MiniLM.',
     'mode.byokDirect': 'BYOK direct',
     'router.nvidiaKey': 'NVIDIA API key (optional)',
     'router.nvidiaHint': 'Optional. Free key at build.nvidia.com. Stays only on your machine (DATA_DIR), never committed. By default classification is LOCAL: no prompt leaves the machine. The key only sends data in 2 cases: (1) plan-B generation on 429; (2) remote classification, if you enable classifyRemote (opt-in), sending ~500 chars of each prompt to NVIDIA.',
@@ -1174,6 +1183,8 @@ const I18N = {
     'router.byokHeadersKeep': 'deixe em branco para manter',
     'router.byokHeadersNone': 'Nenhum header configurado ainda.',
     'router.byokHeadersInvalid': 'Linha inválida (esperado "Nome: valor")',
+    'router.byokClassifyEnable': 'Classificar prompts via meu endpoint (BYOK Classify)',
+    'router.byokClassifyHint': 'Opt-in. Usa o SEU endpoint para escolher o tier (~500 chars do prompt por sessão, modelo haiku). on-limit: só com o cooldown ativo. Falha cai no MiniLM local.',
     'mode.byokDirect': 'BYOK direto',
     'router.nvidiaKey': 'Chave NVIDIA API (opcional)',
     'router.nvidiaHint': 'Opcional. Chave grátis em build.nvidia.com. Fica só na sua máquina (DATA_DIR), nunca é commitada. Por padrão a classificação é LOCAL: nenhum prompt sai da máquina. A chave só envia dados em 2 casos: (1) plano-B de geração no 429; (2) classificação remota, se você ativar classifyRemote (opt-in), enviando ~500 chars de cada prompt à NVIDIA.',
@@ -1406,6 +1417,8 @@ async function loadRouterConfig() {
     const byHdr = document.getElementById('router-byok-headers');
     const byHdrState = document.getElementById('router-byok-headers-state');
     if (byHdr) byHdr.value = '';
+    const byCls = document.getElementById('router-byok-classify-remote');
+    if (byCls) byCls.checked = by.classifyRemote === true;
     const nomes = Object.keys(by.headers || {});
     if (byHdrState) {
       byHdrState.textContent = nomes.length
@@ -1787,6 +1800,8 @@ async function applyRouter() {
       }
       byok.headers = parsed.headers;
     }
+    const byCls = document.getElementById('router-byok-classify-remote');
+    if (byCls) byok.classifyRemote = byCls.checked;
     body.byok = byok;
   }
 
