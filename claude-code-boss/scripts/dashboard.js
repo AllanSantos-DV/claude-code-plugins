@@ -22,7 +22,7 @@ const { validEnvDir, dataDir, globalDir } = require('./lib/data-dir.js');
 const { isValidHost, tokenMatches } = require('./lib/dashboard-auth.js');
 const { resolveStaticPath } = require('./lib/dashboard-static.js');
 const { writeFileAtomic, writeJsonAtomic } = require('./lib/atomic-write.js');
-const { routerUserConfigPath } = require('./lib/router-config-path.js');
+const { routerUserConfigPath, hardenRouterConfigPerms } = require('./lib/router-config-path.js');
 
 // Session token — generated at boot, injected into index.html, required on all /api/* requests.
 const SESSION_TOKEN = crypto.randomBytes(16).toString('hex');
@@ -1445,6 +1445,10 @@ function writeRouterOverride(body) {
   Object.keys(out).forEach(k => out[k] === undefined && delete out[k]);
   
   writeJsonAtomic(ROUTER_USER_CONFIG, out);
+  // writeFileAtomic renomeia um temp 0644 sobre o destino (troca o inode — o
+  // modo anterior NÃO sobrevive). O arquivo guarda a chave NVIDIA: harden 0600
+  // após CADA escrita, senão o POSIX fica com o override legível por todos.
+  hardenRouterConfigPerms(ROUTER_USER_CONFIG);
 }function resolveRouterFlags() {
   const shipped = readJSON(ROUTER_SHIPPED_CONFIG) || {};
   const override = fs.existsSync(ROUTER_USER_CONFIG) ? (readJSON(ROUTER_USER_CONFIG) || {}) : {};
