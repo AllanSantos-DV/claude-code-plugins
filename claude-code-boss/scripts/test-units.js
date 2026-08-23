@@ -5811,6 +5811,62 @@ test('FIX2 classify: classifyRemote:true SEM chave → fica LOCAL (nada sai da m
   assertEq(tier, 'haiku');
 });
 
+// ═══ ADR-010 — BYOK Classify (opt-in duplo + gate on-limit + fail-open) ═══
+
+test('ADR-010 byok-classify: opt-in OFF → NÃO chama endpoint (fica LOCAL)', async () => {
+  let byokCalls = 0, localCalls = 0;
+  const deps = {
+    classifyByok:  async () => { byokCalls++;  return 'opus'; },
+    classifyLocal: async () => { localCalls++; return 'sonnet'; },
+  };
+  const cfg = { byok: { enabled: true, mode: 'always', baseUrl: 'http://e', classifyRemote: false } };
+  const tier = await routerServer.classify('oi', cfg, deps);
+  assertEq(byokCalls, 0, 'sem opt-in explícito, nada vai ao endpoint para classificar');
+  assertEq(localCalls, 1);
+  assertEq(tier, 'sonnet');
+});
+
+test('ADR-010 byok-classify: opt-in ON + always → TENTA endpoint; sucesso → local não roda', async () => {
+  let byokCalls = 0, localCalls = 0;
+  const deps = {
+    classifyByok:  async () => { byokCalls++;  return 'opus'; },
+    classifyLocal: async () => { localCalls++; return 'sonnet'; },
+  };
+  const cfg = { byok: { enabled: true, mode: 'always', baseUrl: 'http://e', classifyRemote: true } };
+  const tier = await routerServer.classify('oi', cfg, deps);
+  assertEq(byokCalls, 1, 'opt-in duplo (byok.enabled + classifyRemote) dispara o caminho remoto');
+  assertEq(localCalls, 0);
+  assertEq(tier, 'opus');
+});
+
+test('ADR-010 byok-classify: on-limit SEM cooldown → NÃO classifica remotamente (gate de privacidade)', async () => {
+  let byokCalls = 0;
+  const deps = { classifyByok: async () => { byokCalls++; return 'opus'; }, classifyLocal: async () => 'sonnet' };
+  const cfg = { byok: { enabled: true, mode: 'on-limit', baseUrl: 'http://e', classifyRemote: true } };
+  await routerServer.classify('oi', cfg, deps);
+  assertEq(byokCalls, 0, 'on-limit sem cooldown: fluxo normal NÃO manda prompt ao endpoint');
+});
+
+test('ADR-010 byok-classify: falha do endpoint → fallback MiniLM local (fail-open)', async () => {
+  let localCalls = 0;
+  const deps = {
+    classifyByok:  async () => { return null; },
+    classifyLocal: async () => { localCalls++; return 'sonnet'; },
+  };
+  const cfg = { byok: { enabled: true, mode: 'always', baseUrl: 'http://e', classifyRemote: true } };
+  const tier = await routerServer.classify('oi', cfg, deps);
+  assertEq(localCalls, 1, 'falha remota cai no local, nunca quebra a classificação');
+  assertEq(tier, 'sonnet');
+});
+
+test('ADR-010 mergeUserConfig: byok entra no shallow-merge ({classifyRemote:true} preserva baseUrl/headers shipados)', () => {
+  const shipped = { byok: { enabled: false, mode: 'on-limit', baseUrl: '', headers: {}, classifyRemote: false } };
+  const m = routerServer.mergeUserConfig(shipped, { byok: { classifyRemote: true } });
+  assertEq(m.byok.classifyRemote, true, 'opt-in flui pelo merge');
+  assertEq(m.byok.enabled, false, 'chave shipada preservada (não é wholesale replace)');
+  assertEq(m.byok.mode, 'on-limit');
+});
+
 test('FIX2 mergeUserConfig: {nim:{apiKey}} preserva classifyRemote:false; opt-in explícito vence', () => {
   const shipped = { nim: { classifyRemote: false, apiKey: '', endpoint: 'e' } };
   // Usuário setou só a chave (p/ o plano-B): o default LOCAL sobrevive ao merge raso.

@@ -155,7 +155,10 @@ function loadConfig() {
 function mergeUserConfig(base, override) {
   const merged = { ...base };
   for (const key of Object.keys(override || {})) {
-    if ((key === 'nim' || key === 'routing' || key === 'fallback' || key === 'sticky') && override[key] && typeof override[key] === 'object') {
+    // 'byok' no shallow-merge: o dashboard grava o objeto byok COMPLETO, mas um
+    // user-config escrito à mão com só {classifyRemote:true} não pode apagar os
+    // headers/baseUrl shipados — mesma invariant de nim/sticky/fallback.
+    if ((key === 'nim' || key === 'routing' || key === 'fallback' || key === 'sticky' || key === 'byok' || key === 'contextTuning') && override[key] && typeof override[key] === 'object') {
       merged[key] = { ...(base[key] || {}), ...override[key] };
     } else {
       merged[key] = override[key];
@@ -344,9 +347,78 @@ async function classifyNim(prompt, config) {
   });
 }
 
+// ADR-010 — classificação remota pelo PRÓPRIO endpoint BYOK do usuário.
+// Opt-in duplo: `byok.enabled && byok.classifyRemote===true && baseUrl`. Gate de
+// privacidade do on-limit: só classifica remotamente quando o cooldown está ativo
+// (o endpoint já é o plano B nesse momento) — no fluxo normal on-limit NADA sai.
+// Modelo pedido = o tier haiku configurado (classificação deve ser o mais barato
+// possível; o endpoint normaliza nomes sozinho, mesmo contrato do passthrough).
+async function classifyByok(prompt, config) {
+  const by = config.byok || {};
+  if (by.enabled !== true || by.classifyRemote !== true || !by.baseUrl) return null;
+
+  let target;
+  try { target = byok.resolveUpstream(config, { onLimit: cooldownActive(config) }, UPSTREAM_FALLBACK); }
+  catch (e) { logger.warn('BYOK classify resolveUpstream error', { err: e.message }); return null; }
+  if (!target || !target.isByok) return null;
+
+  const lib = target.protocol === 'https:' ? require('https') : require('http');
+  const haikuModel = (config.routing && config.routing.haikuTier && config.routing.haikuTier.model)
+    || 'claude-haiku-4-5-20251001';
+  const body = JSON.stringify({
+    model: haikuModel,
+    messages: [{
+      role: 'user',
+      content: `Classify the following task into exactly one word — "haiku", "sonnet", or "opus" — based on complexity:\n- haiku: trivial edits, git ops, rename, format, simple lookup\n- sonnet: feature impl, debug, tests, refactor, code review\n- opus: architecture, security audit, complex multi-file analysis, design decisions\n\nTask: ${prompt.slice(0, 500)}\n\nRespond with ONLY the single word (haiku/sonnet/opus).`,
+    }],
+    max_tokens: 5,
+    temperature: 0,
+  });
+  // Headers do MAPA do usuário (mesma regra do passthrough BYOK): nada de Bearer
+  // fixo — o endpoint pode exigir outro esquema. Protocolo http/https por `.protocol`.
+  const headers = byok.buildHeaders({ 'anthropic-version': '2023-06-01' }, target);
+  headers['content-length'] = Buffer.byteLength(body);
+
+  return new Promise((resolve) => {
+    const req = lib.request({
+      hostname: target.host,
+      port: target.port,
+      path: '/v1/messages',
+      method: 'POST',
+      headers,
+    }, (res) => {
+      let data = '';
+      res.on('data', c => data += c);
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          const content = Array.isArray(parsed.content)
+            ? (parsed.content.find(c => c.type === 'text') || {}).text || ''
+            : '';
+          const raw = String(content).trim().toLowerCase();
+          const tier = ['haiku', 'sonnet', 'opus'].find(t => raw.includes(t)) || null;
+          logger.debug('Classificação BYOK', { raw, tier });
+          resolve(tier);
+        } catch (e) {
+          logger.warn('BYOK classify parse error', { err: e.message });
+          resolve(null);
+        }
+      });
+    });
+    req.on('error', (e) => {
+      logger.warn('BYOK classify request error', { err: e.message });
+      resolve(null);
+    });
+    req.setTimeout(3000, () => { req.destroy(); resolve(null); });
+    req.write(body);
+    req.end();
+  });
+}
+
 async function classify(prompt, config, deps) {
   // Injeção p/ testes herméticos (produção usa os defaults abaixo).
   const nimImpl = (deps && deps.classifyNim) || classifyNim;
+  const byokImpl = (deps && deps.classifyByok) || classifyByok;
   // Local default: honra o embedder/anchors do módulo; injetável nos testes.
   const localImpl = (deps && deps.classifyLocal)
     || ((p, cfg) => (_anchors ? classifyLocal(p, _anchors, classifierPolicy(cfg)) : Promise.resolve(null)));
@@ -365,6 +437,18 @@ async function classify(prompt, config, deps) {
     const tier = await nimImpl(prompt, config);
     if (tier) return tier;
     logger.warn('NIM falhou, fallback para MiniLM local');
+  }
+  // ADR-010 — BYOK Classify: opt-in duplo (`byok.enabled && byok.classifyRemote`).
+  // Gate de privacidade do on-limit mora AQUI (no chamador): só classifica
+  // remotamente quando o cooldown está ativo (o endpoint já é o plano B nesse
+  // momento) — no fluxo normal on-limit NADA sai, mesmo com deps injetadas.
+  // Falha do endpoint → MiniLM local (fail-open).
+  const by = config.byok || {};
+  const byokOnLimitOk = (by.mode || 'on-limit') !== 'on-limit' || cooldownActive(config);
+  if (by.enabled === true && by.classifyRemote === true && by.baseUrl && byokOnLimitOk) {
+    const tier = await byokImpl(prompt, config);
+    if (tier) return tier;
+    logger.warn('BYOK classify falhou, fallback para MiniLM local');
   }
   // Default e fallback: MiniLM LOCAL — nenhum dado de prompt sai da máquina.
   return await localImpl(prompt, config);

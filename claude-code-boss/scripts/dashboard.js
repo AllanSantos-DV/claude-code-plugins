@@ -1281,7 +1281,11 @@ function writeRouterOverride(body) {
     enabled: byokInput.enabled !== undefined ? byokInput.enabled === true : (body.byokEnabled === true),
     mode: byokInput.mode || body.byokMode || 'on-limit',
     baseUrl: (byokInput.baseUrl !== undefined && byokInput.baseUrl !== null) ? byokInput.baseUrl : (existing.byok?.baseUrl || ''),
-    headers: (byokInput.headers !== undefined) ? (byokInput.headers || {}) : (existing.byok?.headers || {})
+    headers: (byokInput.headers !== undefined) ? (byokInput.headers || {}) : (existing.byok?.headers || {}),
+    // ADR-010: preserve-on-absent — chamadores que não conhecem o flag não o apagam
+    classifyRemote: byokInput.classifyRemote !== undefined
+      ? byokInput.classifyRemote === true
+      : (existing.byok?.classifyRemote === true)
   };
   
   const out = {
@@ -1332,6 +1336,7 @@ function writeRouterOverride(body) {
     baseUrl: typeof ob.baseUrl === 'string' ? ob.baseUrl : (typeof sb.baseUrl === 'string' ? sb.baseUrl : ''),
     headers: (ob.headers && typeof ob.headers === 'object') ? ob.headers
       : ((sb.headers && typeof sb.headers === 'object') ? sb.headers : {}),
+    classifyRemote: ob.classifyRemote !== undefined ? ob.classifyRemote === true : sb.classifyRemote === true,
   };
   return { shipped, override, enabled, stickyEnabled, fallbackEnabled, byok, contextTuningEnabled: override?.contextTuning?.enabled === true || shipped?.contextTuning?.enabled === true };
 }
@@ -1362,6 +1367,7 @@ function getRouterConfig(req, res) {
       mode: (byok && byok.mode) || 'on-limit',
       baseUrl: (byok && byok.baseUrl) || '',
       headers: byokHeaderNames.reduce((acc, n) => { acc[n] = '••••'; return acc; }, {}),
+      classifyRemote: !!(byok && byok.classifyRemote),
     };
     json(res, {
       enabled,

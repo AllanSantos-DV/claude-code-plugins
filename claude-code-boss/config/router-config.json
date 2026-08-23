@@ -158,6 +158,8 @@
     "baseUrl": "",
     "_comment_baseUrl": "Ex.: https://exemplo.ts.net ou http://10.0.0.5:4143. O PATH e ignorado (o proxy sempre usa /v1/messages). Com enabled=true e baseUrl vazia o proxy NAO roteia e registra a causa — nunca finge que funcionou.",
     "headers": {},
-    "_comment_headers": "Mapa GENERICO nome->valor, ex.: { \"Authorization\": \"Bearer ...\" }. E mapa (e nao um campo token) de proposito: se o endpoint exigir outro header (chave de gateway, tenant id, dois headers), muda a config e nao o codigo. NUNCA commitar valores reais — o usuario preenche pelo dashboard, que grava em DATA_DIR/model-router/user-config.json."
+    "_comment_headers": "Mapa GENERICO nome->valor, ex.: { \"Authorization\": \"Bearer ...\" }. E mapa (e nao um campo token) de proposito: se o endpoint exigir outro header (chave de gateway, tenant id, dois headers), muda a config e nao o codigo. NUNCA commitar valores reais — o usuario preenche pelo dashboard, que grava em DATA_DIR/model-router/user-config.json.",
+    "classifyRemote": false,
+    "_comment_classifyRemote": "OPT-IN (ADR-010). Quando true E byok.enabled, a classificacao de tier usa o PROPRIO endpoint do usuario (prompt minimo ~500 chars, modelo haiku do routing config). on-limit: so classifica remotamente com o cooldown ativo (mesmo gate do plano B). Falha/timeout -> MiniLM local (fail-open). false = classificacao 100% local."
   }
 }
