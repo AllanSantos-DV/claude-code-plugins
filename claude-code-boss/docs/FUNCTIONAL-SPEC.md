@@ -342,9 +342,9 @@ Stop Hook
 | **Router Catalog** | ✅ Done | Catálogo dinâmico via `/v1/models` Anthropic |
 | **Context Tuning UI** | ✅ Done (ADR-008) | Toggle na aba Router + kill de órfão no SessionStart (ADR-009) + série histórica |
 | **BYOK Classify** | ✅ Done (ADR-010) | Classificação remota via endpoint BYOK (opt-in, gate on-limit) |
-| **Multi-tenant Router** | 🧭 Desenhado (ADR-011) — carrier de projectId a decidir |
+| **Multi-tenant Router** | 🟢 [Backlog pronto](./backlog/PHASE-E-multi-tenant-router.md) (design ADR-011) |
 | **Cost Dashboard** | 📋 Backlog | Gráficos de economia por projeto/modelo |
-| **Brain Web UI** | 🧭 Desenhado (ADR-012) — aba no dashboard existente |
+| **Brain Web UI** | 🟢 [Backlog pronto](./backlog/PHASE-F-brain-web-ui.md) (design ADR-012) |
 
 ---
 
