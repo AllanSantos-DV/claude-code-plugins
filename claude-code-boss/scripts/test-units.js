@@ -11186,10 +11186,13 @@ test('graph/dispatch: mcp-memory + unreachable daemon fails open (offline guidan
   function makeFakeBackend() {
     let cur = null;
     const calls = [];
+    const pushed = new Set();
     return {
       _calls: calls,
       async init({ project }) { cur = project; calls.push(['init', project]); },
-      async save(entry) { calls.push(['save', cur, entry.id]); return entry.id; },
+      async save(entry) { calls.push(['save', cur, entry.id]); pushed.add(entry.id); return entry.id; },
+      // R4: o engine agora exige read-back após o push (mesma prova do caminho local).
+      async get(id) { return pushed.has(id) ? { id } : null; },
       async close() {},
     };
   }
@@ -11420,8 +11423,24 @@ test('graph/dispatch: mcp-memory + unreachable daemon fails open (offline guidan
     assert(backend._calls.some((c) => c[0] === 'save' && c[1] === '__user__' && c[2] === 'u1'), 'u1 pushed under __user__');
   });
 
-  test('consolidate-datadirs: local mode keeps __user__ shard isolated from project shards', async () => {
+  test('consolidate-datadirs: mcp read-back FAILURE (R4) → failed>=1, sibling NOT deleted', async () => {
     const active = '/A/active'; const sib = '/A/sib1';
+    const backend = makeFakeBackend();
+    // get() sempre null = push "ok" mas leitura de volta falha (daemon mentindo).
+    backend.get = async () => null;
+    const fsx = makeFakeFs(new Set([active, sib]));
+    const h = makeDeps({
+      activeDir: active, siblingPaths: [sib], mode: 'mcp-memory', backend, fs: fsx,
+      shards: { [sib]: { proj: [{ id: 's1' }] } },
+    });
+    const r = await consolidate({ apply: true, _deps: h._deps });
+    assertEq(r.ok, true);
+    assertEq(r.siblings[0].failed, 1, 'read-back failure conta como failed');
+    assertEq(r.siblings[0].deleted, false, 'irmão NÃO é deletado sem prova de absorção');
+    assert(fsx._paths.has(sib), 'diretório do irmão preservado no fs');
+  });
+
+  test('consolidate-datadirs: local mode keeps __user__ shard isolated from project shards', async () => {    const active = '/A/active'; const sib = '/A/sib1';
     const store = makeFakeStore({});
     const h = makeDeps({
       activeDir: active, siblingPaths: [sib], mode: 'local', store,

@@ -19,16 +19,24 @@ const embedder = require('./brain-embedder.js');
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
 
-/** Copy a model from the legacy node_modules cache to the durable cache (once). */
+/** Copy a model from the legacy node_modules cache to the durable cache (once).
+ *  Legado @xenova/transformers (v2, WASM) E o atual @huggingface/transformers
+ *  (sucessor oficial) — qualquer um que exista na árvore é migrado. */
 function migrateLegacyCache(model, durableDir) {
   try {
     const dest = path.join(durableDir, model);
     if (fs.existsSync(dest)) return false;
-    const legacy = path.join(PLUGIN_ROOT, 'node_modules', '@xenova', 'transformers', '.cache', model);
-    if (!fs.existsSync(legacy)) return false;
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    fs.cpSync(legacy, dest, { recursive: true });
-    return true;
+    const roots = [
+      path.join(PLUGIN_ROOT, 'node_modules', '@huggingface', 'transformers', '.cache', model),
+      path.join(PLUGIN_ROOT, 'node_modules', '@xenova', 'transformers', '.cache', model), // legado
+    ];
+    for (const legacy of roots) {
+      if (!fs.existsSync(legacy)) continue;
+      fs.mkdirSync(path.dirname(dest), { recursive: true });
+      fs.cpSync(legacy, dest, { recursive: true });
+      return true;
+    }
+    return false;
   } catch (err) {
     console.error(`[brain-warm] cache migration skipped: ${err.message}`);
     return false;
@@ -62,7 +70,7 @@ function migrateLegacyCache(model, durableDir) {
     console.error(`[brain-warm] FAILED to initialize embedder: ${err}`);
     if (/sharp/i.test(err)) {
       console.error(
-        '[brain-warm] This is the native "sharp" dependency of @xenova/transformers. Try, in order:\n' +
+        '[brain-warm] This is the native "sharp" dependency of @huggingface/transformers (ex-@xenova). Try, in order:\n' +
         '  1. npm rebuild sharp                  (re-fetch the prebuilt binary)\n' +
         '  2. npm install --include=optional\n' +
         '  3. No sharp prebuilt for your platform? Set embedder.provider to "ollama" or\n' +

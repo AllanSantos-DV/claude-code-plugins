@@ -131,6 +131,23 @@ nenhum                       → off            (cinza)
 | `kb.submission.minOutputChars` | `1500` | Mínimo de chars p/ submissão |
 | `kb.capture.maxBlockAttempts` | `5` | Tentativas de re-block da oferta de captura antes de relentar |
 
+### Data dirs e identidade de instalação
+
+O Claude Code dá a cada modo de lançamento um **sufixo próprio** de data dir sob
+`~/.claude/plugins/data/`: `claude-code-boss` (legado/bare), `claude-code-boss-inline`
+(dev / `--plugin-dir`), `claude-code-boss-<marketplace>` (instalação via marketplace).
+Por isso uma máquina pode acumular irmãos povoados com lições invisíveis entre si.
+
+- O pointer global (`~/.claude/claude-code-boss/active-data-dir.json`) mantém ativo o
+  dir MAIS PESADO (guard anti-regressão) — mas os irmãos antigos não se fundem sozinhos.
+- `node scripts/doctor.js` reporta fragmentação com contagem de entradas por dir.
+- `node scripts/consolidate-datadirs.js` (dry-run) → `--apply`: funde tudo no dir
+  ativo — backup-first, graft por id, reconcile do corpo mais recente vence,
+  recurrence MAX no mesmo id (não infla o rerank; SUM só para near-dups de ids
+  diferentes), verify-before-delete, nunca apaga o dir ativo.
+- `-inline` ativo num install de marketplace = houve lançamento dev/inline nessa
+  máquina e ele venceu o guard por peso. Consolide para reabsorver.
+
 ### Identidade de Projeto
 
 O recall e escopado por `projectId`. Resolucao em ordem (fail-loud se nada resolver):

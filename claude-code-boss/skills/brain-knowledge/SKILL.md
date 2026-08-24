@@ -80,7 +80,7 @@ inspect databases directly under:
 
 | Provider | Config | Dependencies |
 |----------|--------|-------------|
-| **Transformers.js** (default) | `"provider": "transformers"` | `npm install @xenova/transformers` |
+| **Transformers.js** (default) | `"provider": "transformers"` | `npm install @huggingface/transformers` |
 | **Ollama** | `"provider": "ollama"` | Ollama installed + model pulled |
 | **Voyage AI** | `"provider": "voyage"` | `VOYAGE_API_KEY` in environment |
 

@@ -92,11 +92,16 @@ function checkDataDirs(ctx) {
     };
   }
   const active = ctx.env && ctx.env.data;
+  // Handoff ingestão v2.39.1 (pendência 17/07): apontar para o CONSOLIDADOR —
+  // export/import manual por projeto é inviável (relato: 24 projetos). Detail
+  // explica a identidade por modo de lançamento (a dúvida "-inline").
+  const counts = populated.map(d => d.entries != null ? `${d.path} (${d.entries})` : d.path).join(', ');
   return {
     id: 'data-dir', label: 'Data directory',
     status: 'warn',
-    detail: `${populated.length} populated data dirs (fragmentation): ${populated.map(d => d.path).join(', ')}`,
-    fix: `Consolidate into the active dir (${active}) via the dashboard export/import (smoke-export-import) so lessons aren't split.`,
+    detail: `${populated.length} populated data dirs (fragmentation): ${counts}. ` +
+      `Sufixos = modo de lançamento do Claude Code: "-inline" = dev/--plugin-dir, "-<marketplace>" = instalação de marketplace.`,
+    fix: `Run \`node scripts/consolidate-datadirs.js\` (dry-run) then \`--apply\` — folds every sibling into the heaviest/active dir (backup-first, verify-before-delete). Active dir: ${active}`,
     critical: false,
   };
 }
@@ -198,7 +203,7 @@ function dataDir() {
  * They are NOT nested under a marketplace folder. Mirrors dashboard.js's
  * `resolveBestDataDir()` scan so both surfaces agree on where the KB lives.
  */
-function findDataDirCandidates(active) {
+function findDataDirCandidates(active, opts) {
   const base = path.join(os.homedir(), '.claude', 'plugins', 'data');
   const candidates = new Set();
   if (active) candidates.add(active);
@@ -210,7 +215,37 @@ function findDataDirCandidates(active) {
       }
     }
   } catch (e) { void e; }
-  return [...candidates].map(p => ({ path: p, populated: _hasKb(p) }));
+  // Contagem de entradas é OPT-IN (abre SQLite por shard): o hook de
+  // SessionStart consome esta função no boot e PRECISA continuar fs-only.
+  const wantCounts = !!(opts && opts.counts);
+  return [...candidates].map((p) => {
+    const populated = _hasKb(p);
+    return { path: p, populated, entries: (wantCounts && populated) ? _countEntries(p) : null };
+  });
+}
+
+/** Best-effort total entry count across the dir's project shards (null = unknown).
+ *  Read-only throwaway connections, mirroring consolidate-datadirs.readShardDefault. */
+function _countEntries(dir) {
+  let Database;
+  try { Database = require('./lib/sqlite-compat.js').loadSqlite(); } catch (e) { void e; return null; }
+  if (!Database) return null;
+  const brain = path.join(dir, 'brain');
+  let total = 0;
+  try {
+    for (const proj of fs.readdirSync(brain)) {
+      const dbPath = path.join(brain, proj, 'brain.db');
+      if (!fs.existsSync(dbPath)) continue;
+      let db = null;
+      try {
+        db = new Database(dbPath, { readonly: true });
+        const row = db.prepare('SELECT COUNT(*) AS n FROM entries').get();
+        total += (row && row.n) || 0;
+      } catch (err) { void err; }
+      finally { try { if (db) db.close(); } catch (err2) { void err2; } }
+    }
+  } catch (err) { void err; return null; }
+  return total;
 }
 
 function _hasKb(dir) {
@@ -286,7 +321,7 @@ async function gatherContext() {
   return {
     nodeVersion: process.version,
     env: { root, data: activeDataResolved || data },
-    dataDirCandidates: findDataDirCandidates(data),
+    dataDirCandidates: findDataDirCandidates(data, { counts: true }),
     modelCacheDir, modelPresent,
     daemon,
     hooksEvents,

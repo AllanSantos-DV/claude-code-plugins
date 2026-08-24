@@ -13,7 +13,7 @@
  *
  * The plugin has NO required native module — it runs on any machine with a modern
  * Node, no C/C++ build toolchain: SQLite uses the built-in `node:sqlite`. The
- * embedder model (`@xenova/transformers`, pure JS/WASM) is REQUIRED for full value
+ * embedder model (`@huggingface/transformers`, sucessor do @xenova; ONNX nativo) is REQUIRED for full value
  * and is downloaded here — internet is assumed, since the plugin was just fetched
  * online. The warm is skipped in CI and is non-fatal: the model is also fetched
  * lazily on first use, and keyword search keeps working meanwhile.
