@@ -44,7 +44,7 @@ Nenhuma variável é gravada em escopo User/sistema do Windows — roteamento vi
 
 ## Supply chain
 
-- Dependências mínimas: `@modelcontextprotocol/sdk` + `@xenova/transformers`
+- Dependências mínimas: `@modelcontextprotocol/sdk` + `@huggingface/transformers`
 - SQLite = `node:sqlite` builtin (zero compile nativo)
 - Updater legado removido; downloads atuais verificados por digest (fail-closed sem digest)
 - CI gates mecânicos (release-audit, pages-guard, release-guard) sem AI/quota

@@ -3,7 +3,7 @@
  * Brain Embedder — Provider abstraction for text embeddings.
  *
  * Supports three providers, configured via config/brain-config.json:
- *   "transformers" (default) — @xenova/transformers, pure JS ONNX, offline
+ *   "transformers" (default) — @huggingface/transformers (ex-@xenova), ONNX, offline
  *   "ollama"       — Ollama subprocess, local GPU if available
  *   "voyage"       — Voyage AI API, cloud, needs API key
  *
@@ -22,7 +22,7 @@ const CONFIG_PATH = path.join(PLUGIN_ROOT, 'config', 'brain-config.json');
 
 /**
  * Durable model cache — user-level, NOT inside node_modules.
- * @xenova/transformers defaults its cache to `node_modules/@xenova/transformers/.cache`,
+ * @huggingface/transformers defaults its cache to `node_modules/@huggingface/transformers/.cache`,
  * which is wiped whenever node_modules is deleted/reinstalled (forcing a ~120 MB
  * re-download). Anchoring it under CLAUDE_PLUGIN_DATA keeps the model across reinstalls.
  */
@@ -56,12 +56,17 @@ function loadConfig() {
 
 async function initTransformers() {
   try {
-    const tf = await import('@xenova/transformers');
+    // @huggingface/transformers 3.x+ = sucessor oficial do @xenova/transformers
+    // (mesma API de pipeline). Migração apaga protobufjs crítico da cadeia e
+    // resolve sharp/onnxruntime em versões patched (handoff ingestão, G2).
+    const tf = await import('@huggingface/transformers');
     // Redirect the model cache to a durable, user-level location (see modelCacheDir).
     tf.env.cacheDir = modelCacheDir();
     const { pipeline } = tf;
+    // v3+: `quantized` virou `dtype` ('q8' = quantizado de 8 bits, o mesmo
+    // comportamento do quantized:true da v2).
     _extractor = await pipeline('feature-extraction', _model, {
-      quantized: true,
+      dtype: 'q8',
     });
     return true;
   } catch (err) {
@@ -78,8 +83,18 @@ async function embedTransformers(text) {
 
 async function embedBatchTransformers(texts) {
   if (!_extractor) return null;
-  const results = await _extractor(texts, { pooling: 'mean', normalize: true });
-  return results.map(r => Array.from(r.data));
+  const result = await _extractor(texts, { pooling: 'mean', normalize: true });
+  // v3 com array de entrada devolve Tensor 2-D [N, dim]: `.map` no objeto Tensor
+  // iterava os BYTES do buffer (matriz achatada) — usar a lista por-linha.
+  const list = typeof result.tolist === 'function' ? result.tolist() : null;
+  if (Array.isArray(list)) return list.map(row => Array.from(row));
+  // Fallback defensivo: fatia o buffer pela dimensionalidade conhecida.
+  const dim = result.dims && result.dims[1];
+  if (!dim) return [Array.from(result.data)];
+  const flat = Array.from(result.data);
+  const out = [];
+  for (let i = 0; i < flat.length; i += dim) out.push(flat.slice(i, i + dim));
+  return out;
 }
 
 function embedOllama(text) {

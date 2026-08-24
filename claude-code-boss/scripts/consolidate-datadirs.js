@@ -408,8 +408,14 @@ async function pushShardMcp(d, dir, project, counters) {
   await d.backend.init({ project });
   const entries = d.readShard(dir, project);
   for (const e of entries) {
-    try { await d.backend.save(e); counters.pushed += 1; }
-    catch (err) {
+    try {
+      await d.backend.save(e);
+      // R4 (revisão do handoff): save-sucesso NÃO é prova — o delete rail do
+      // modo daemon exige read-back real (o caminho local já verifica).
+      const back = await d.backend.get(e.id);
+      if (!back || back.id !== e.id) throw new Error(`read-back failed after push (id ${e && e.id})`);
+      counters.pushed += 1;
+    } catch (err) {
       console.error(`[consolidate-datadirs] mcp push ${e && e.id} (${dir} · ${project}): ${err.message}`);
       counters.failed += 1;
     }

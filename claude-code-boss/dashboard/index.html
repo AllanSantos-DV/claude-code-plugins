@@ -448,7 +448,7 @@ code { color: var(--fg); font-family: var(--font-mono); }
         <div>
           <label class="field-label">
             <span data-i18n="brain.provider">Provider</span>
-            <span class="tip" data-i18n-tip="tip.provider" data-tip="transformers = local via @xenova/transformers (offline). ollama/voyage = HTTP externo.">i</span>
+            <span class="tip" data-i18n-tip="tip.provider" data-tip="transformers = local via @huggingface/transformers (offline). ollama/voyage = HTTP externo.">i</span>
           </label>
           <select id="embedder-provider" onchange="onEmbedderProviderChange()">
             <option value="transformers">transformers (local)</option>
@@ -1153,7 +1153,7 @@ const I18N = {
     'tip.backendType': 'local = embedded SQLite (default). mcp-memory = external Java server via MCP.',
     'tip.jarPath': 'Path to mcp-memory-server .jar. Leave empty to auto-download from latest release.',
     'tip.javaArgs': 'Args passed to Java process. Default: -Xmx512m (512MB heap).',
-    'tip.provider': 'transformers = local via @xenova/transformers (offline). ollama/voyage = external HTTP.',
+    'tip.provider': 'transformers = local via @huggingface/transformers (offline). ollama/voyage = external HTTP.',
     'tip.model': 'Embedding model. Default: paraphrase-multilingual-MiniLM-L12-v2 (50 langs, 384 dim). Switching requires re-embed: node scripts/brain-reembed.js.',
     'tip.dimensions': 'Embedding vector size (must match the chosen model).',
     'tip.fastTopK': 'Number of results returned in fast searches (in-loop hints). Default: 5.',
@@ -1319,7 +1319,7 @@ const I18N = {
     'tip.backendType': 'local = SQLite embarcado (padrão). mcp-memory = servidor Java externo via MCP.',
     'tip.jarPath': 'Caminho para o .jar do mcp-memory-server. Deixe vazio para baixar automaticamente da última release.',
     'tip.javaArgs': 'Argumentos passados ao processo Java. Padrão: -Xmx512m (heap 512MB).',
-    'tip.provider': 'transformers = local via @xenova/transformers (offline). ollama/voyage = HTTP externo.',
+    'tip.provider': 'transformers = local via @huggingface/transformers (offline). ollama/voyage = HTTP externo.',
     'tip.model': 'Modelo de embedding. Padrão: paraphrase-multilingual-MiniLM-L12-v2 (50 idiomas, 384 dim). Trocar requer re-embed: node scripts/brain-reembed.js.',
     'tip.dimensions': 'Tamanho do vetor de embedding (deve casar com o modelo escolhido).',
     'tip.fastTopK': 'Quantidade de resultados em buscas rápidas (hints in-loop). Padrão: 5.',
@@ -2051,7 +2051,7 @@ const EMBEDDER_MODELS = {
 };
 
 const EMBEDDER_PROVIDER_HELP = {
-  transformers: '🌐 <b>Local, offline</b> via @xenova/transformers. Modelos baixam automaticamente do HuggingFace na primeira utilização (cache em <code>~/.cache/huggingface</code>). Clique em <b>Test / Install</b> para forçar o download agora.',
+  transformers: '🌐 <b>Local, offline</b> via @huggingface/transformers (ex-@xenova). Modelos baixam automaticamente do HuggingFace na primeira utilização (cache em <code>~/.cache/huggingface</code>). Clique em <b>Test / Install</b> para forçar o download agora.',
   ollama: '🦙 <b>Local via Ollama</b> (separado). Requer Ollama rodando (<code>ollama serve</code>). Clique em <b>Test / Install</b> para fazer <code>ollama pull &lt;modelo&gt;</code> automaticamente.',
   voyage: '☁️ <b>Cloud</b>. ✨ Free tier: 200M tokens/mês grátis nos modelos voyage-4* e voyage-code-3. Crie chave em <code>dashboard.voyageai.com</code> e exporte <code>VOYAGE_API_KEY=pa-xxxx</code> antes de iniciar o dashboard. Clique em <b>Test / Install</b> para validar.',
 };

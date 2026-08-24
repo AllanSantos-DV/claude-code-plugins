@@ -16,8 +16,10 @@ async function test(input) {
 
   try {
     if (provider === 'transformers') {
-      const { pipeline } = await import('@xenova/transformers');
-      const extractor = await pipeline('feature-extraction', model, { quantized: true });
+      // Mesmo pacote do brain-embedder (@huggingface/transformers, sucessor do
+      // @xenova — v3+: quantized virou dtype).
+      const { pipeline } = await import('@huggingface/transformers');
+      const extractor = await pipeline('feature-extraction', model, { dtype: 'q8' });
       const out = await extractor('test', { pooling: 'mean', normalize: true });
       const dim = out.data.length;
       return { ok: true, dim, details: { provider, model }, ms: Date.now() - t0 };
