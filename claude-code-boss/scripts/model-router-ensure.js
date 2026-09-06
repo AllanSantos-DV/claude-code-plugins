@@ -116,13 +116,7 @@ function readBuildSwitchStamp() {
     const raw = fs.readFileSync(BUILD_SWITCH_STAMP, 'utf-8').trim();
     const n = Number(raw);
     return Number.isFinite(n) ? n : 0;
-  } catch (err) {
-    // Ausente é o caso NORMAL (primeira execução) e ilegível é inofensivo: os dois
-    // significam "faz tempo", que é o lado seguro — libera o self-heal. Logar aqui
-    // seria ruído em toda sessão nova, então o erro é explicitamente descartado.
-    void err;
-    return 0;
-  }
+  } catch (_) { return 0; }
 }
 
 function writeBuildSwitchStamp() {
@@ -145,7 +139,7 @@ function mergeRouterConfig(shipped, override) {
   const merged = { ...(shipped || {}) };
   if (!override || typeof override !== 'object') return merged;
   for (const key of Object.keys(override)) {
-    if ((key === 'nim' || key === 'routing' || key === 'fallback' || key === 'sticky' || key === 'byok' || key === 'contextTuning') && override[key] && typeof override[key] === 'object') {
+    if ((key === 'nim' || key === 'routing' || key === 'fallback' || key === 'sticky') && override[key] && typeof override[key] === 'object') {
       merged[key] = { ...(merged[key] || {}), ...override[key] };
     } else {
       merged[key] = override[key];
@@ -538,7 +532,9 @@ function readSettings() {
 }
 
 function writeSettings(obj) {
-  writeJsonAtomic(SETTINGS_FILE, obj);
+  const tmp = SETTINGS_FILE + '.tmp-router';
+  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n');
+  fs.renameSync(tmp, SETTINGS_FILE);
 }
 
 function isOurProxyUrl(url) {
@@ -649,39 +645,6 @@ function maintainShimSafe() {
 
 // Caminho de saída "sem roteamento": tira a URL do settings.json, limpa resíduo
 // global de versões antigas e o arquivo de URL legado. Claude Code usa Anthropic direto.
-function disableRoutingFootprintAtomic() {
-  // 1. settings.json ATÔMICO — tenta disableSettingsRouting (usa writeJsonAtomic via writeSettings)
-  // Mas disableSettingsRouting retorna cedo se settings corrupto; então tentamos limpar base_url manual se possível
-  let settingsCleaned = false;
-  try {
-    disableSettingsRouting();
-    settingsCleaned = true;
-  } catch (e) { /* ignore */ }
-  
-  // Se settings corrupto, tenta limpar base_url manual do settings.json (best-effort)
-  if (!settingsCleaned) {
-    try {
-      const raw = fs.readFileSync(SETTINGS_FILE, 'utf-8');
-      const parsed = JSON.parse(raw);
-      if (parsed.env && parsed.env.ANTHROPIC_BASE_URL && isOurProxyUrl(parsed.env.ANTHROPIC_BASE_URL)) {
-        delete parsed.env.ANTHROPIC_BASE_URL;
-        delete parsed.env.ENABLE_TOOL_SEARCH;
-        delete parsed.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW;
-        delete parsed.env.CLAUDE_CODE_ATTRIBUTION_HEADER;
-        writeJsonAtomic(SETTINGS_FILE, parsed);
-        log('settings.json: bundle do roteador removido (recuperação corrupto)');
-      }
-    } catch (_) { /* ignore corrupt file */ }
-  }
-  
-  // 2. url.txt best-effort
-  try { if (fs.existsSync(PROXY_URL_FILE)) { fs.unlinkSync(PROXY_URL_FILE); log('model-router-url.txt removido'); } } catch (e) { log(`AVISO: não remover ${PROXY_URL_FILE}: ${e.message}`); }
-  
-  // 3. global env cleanup
-  cleanupGlobalEnv();
-}
-
-// Manter disableRoutingFootprint() original para compatibilidade
 function disableRoutingFootprint() {
   disableSettingsRouting();
   cleanupGlobalEnv();
@@ -753,43 +716,16 @@ async function main() {
   const mode = resolveMode(config);
   if (mode === 'off') {
     log('Roteador e fallback desabilitados (mode: off). Limpando footprint e saindo.');
-    disableRoutingFootprintAtomic();
+    disableRoutingFootprint();
     // O "Salvar & aplicar" do dashboard desligou o roteador: derruba o daemon órfão
     // que ainda segura a porta fixa (senão ele fica vivo consumindo recursos mesmo
     // com o footprint removido). Só quando a invocação pede aplicação explícita —
     // no hook em modo off isso não é necessário (o daemon não está no caminho).
-    //
-    // ADR-009: edição MANUAL do user-config (sem dashboard) também deixava o órfão
-    // vivo para sempre. No SessionStart somos janela segura — antes do 1º request da
-    // sessão, derrubar a porta não corta API de ninguém — então matamos mesmo sem
-    // FORCE_RESTART, desde que `servesThisBuild` prove que é NOSSO build. Em
-    // UserPromptSubmit continuamos SEM kill: meio de turno = API da sessão em uso.
-    const isSessionStartOff = hookEventName === 'SessionStart';
-    if (process.env.BOSS_ROUTER_FORCE_RESTART === '1' || isSessionStartOff) {
+    if (process.env.BOSS_ROUTER_FORCE_RESTART === '1') {
       const st = readState();
       if (st && st.pid) {
-        // ADR-009 honesto: no caminho sem FORCE_RESTART, matamos SÓ com prova
-        // POSITIVA de identidade (command line aponta pro NOSSO PLUGIN_ROOT).
-        // servesThisBuild retorna true "na dúvida" (cmdline ilegível/PID reciclado)
-        // — semântica fail-safe certa para NÃO derrubar router em serviço, errada
-        // para derrubar um órfão: um state.json stale com PID reciclado seria morto
-        // a todo SessionStart. Aqui o lado seguro é o contrário: na dúvida, DEIXA.
-        let positiveProof = true; // caminho FORCE_RESTART mantém semântica original
-        if (process.env.BOSS_ROUTER_FORCE_RESTART !== '1') {
-          const cmd = processCommandLine(st.pid);
-          positiveProof = !!cmd && /model-router/.test(cmd)
-            && normPath(cmd).includes(normPath(PLUGIN_ROOT));
-          if (!positiveProof) {
-            log(`PID ${st.pid} sem prova positiva de identidade (${cmd ? 'outro processo/build' : 'cmdline ilegível'}) — órfão NÃO derrubado.`);
-          }
-        }
-        if (positiveProof) {
-          const motivo = process.env.BOSS_ROUTER_FORCE_RESTART === '1'
-            ? 'Roteador desligado pelo dashboard'
-            : 'Mode off pós-edição manual (SessionStart = janela segura)';
-          log(`${motivo} — derrubando daemon órfão PID ${st.pid}.`);
-          try { process.kill(st.pid); } catch (e) { log(`AVISO: kill do PID ${st.pid} falhou: ${e.message}`); }
-        }
+        log(`Roteador desligado pelo dashboard — derrubando daemon órfão PID ${st.pid}.`);
+        try { process.kill(st.pid); } catch (e) { log(`AVISO: kill do PID ${st.pid} falhou: ${e.message}`); }
       }
     }
     // DESACOPLADO: com o proxy fora, o env-tuning (tool-search + auto-compact) ainda
@@ -802,13 +738,7 @@ async function main() {
       applySettingsTuning(false);
     }
     if (process.platform === 'win32') {
-      try { 
-        const results = shim.removeShimAll(log);
-        const anySuccess = results.some(r => r.result === 'removed' || r.result === 'cleaned');
-        if (results.length === 0) log('Shim não instalado');
-        else if (anySuccess) log('Shim removido com sucesso');
-        else log('AVISO: falha na remoção do shim');
-      } catch (e) { log(`AVISO: remoção do shim falhou: ${e.message}`); }
+      try { shim.removeShimAll(log); } catch (e) { log(`AVISO: remoção do shim falhou: ${e.message}`); }
     }
     process.exit(0);
   }
