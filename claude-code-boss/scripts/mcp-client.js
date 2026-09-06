@@ -391,11 +391,37 @@ class McpClient extends EventEmitter {
         }
         return this.callTool(name, args, _retryCount + 1);
       }
+
+      // Daemon restarted on a new port (daemon.json updated): connection refused,
+      // timeout, or other network error. Re-discover URL and retry ONCE.
+      if (this.transport === 'http' && _retryCount === 0) {
+        const isConnectionError = err.code === 'ECONNREFUSED'
+          || err.code === 'ETIMEDOUT'
+          || err.code === 'ENOTFOUND'
+          || err.message?.includes('ECONNREFUSED')
+          || err.message?.includes('timeout')
+          || err.message?.includes('connect');
+        if (isConnectionError) {
+          console.error(`[MCP] Connection error (${err.code || err.message}), re-discovering daemon URL and retrying once`);
+          try {
+            await this._reconnect();
+          } catch (reconnectErr) {
+            const wrapped = new Error(`DAEMON_RESTART: reconnect failed: ${reconnectErr.message}`);
+            wrapped.code = 'DAEMON_RESTART';
+            wrapped.originalError = err;
+            wrapped.reconnectError = reconnectErr;
+            throw wrapped;
+          }
+          return this.callTool(name, args, _retryCount + 1);
+        }
+      }
+
       throw err;
     }
   }
 
-  /** Re-run the HTTP handshake after a session expired server-side (TTL eviction). */
+  /** Re-run the HTTP handshake after a session expired server-side (TTL eviction)
+   *  or when the daemon restarts on a new port (daemon.json updated). */
   async _reconnect() {
     if (this.#reconnecting) {
       while (this.#reconnecting) await new Promise(r => setTimeout(r, 10));
@@ -406,6 +432,8 @@ class McpClient extends EventEmitter {
       this._sessionId = '';
       this._initialized = false;
       this._requestId = 0;
+      // Force re-discovery of daemon URL in case the port changed on restart.
+      this._resolvedUrl = '';
       await this.connect();
     } finally {
       this.#reconnecting = false;
