@@ -116,7 +116,7 @@ function readBuildSwitchStamp() {
     const raw = fs.readFileSync(BUILD_SWITCH_STAMP, 'utf-8').trim();
     const n = Number(raw);
     return Number.isFinite(n) ? n : 0;
-  } catch (_) { return 0; }
+  } catch (_) { void _; return 0; }
 }
 
 function writeBuildSwitchStamp() {
