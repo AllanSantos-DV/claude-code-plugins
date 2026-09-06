@@ -50,6 +50,11 @@ function byokCfg(config) {
   return (b && typeof b === 'object') ? b : {};
 }
 
+function upstreamCfg(config) {
+  const u = config && config.upstream;
+  return (u && typeof u === 'object') ? u : {};
+}
+
 /**
  * Para onde ESTA request deve ir.
  *
@@ -78,7 +83,26 @@ function resolveUpstream(config, opts, fallback) {
     protocol: fb.protocol || DEFAULT_PROTOCOL,
     isByok: false,
     headers: null,
+    forwardHeaders: [],
   };
+
+  // Upstream alternativo (ex.: gateway corporativo atrás de LiteLLM) — diferente
+  // do BYOK: a credencial real do Claude Code (authorization/x-api-key) CONTINUA
+  // fluindo (isByok fica false), só o destino e headers extras mudam. Existe para
+  // ambientes onde o Claude Code já está configurado para falar com um gateway
+  // (não api.anthropic.com direto) e o proxy precisa alcançar o MESMO gateway,
+  // levando os headers que ele exige (ex.: x-litellm-team-id).
+  const u = upstreamCfg(config);
+  if (u.enabled === true) {
+    const dest = parseBaseUrl(u.baseUrl);
+    if (dest) {
+      anthropic.host = dest.host;
+      anthropic.port = dest.port;
+      anthropic.protocol = dest.protocol;
+      anthropic.forwardHeaders = Array.isArray(u.forwardHeaders) ? u.forwardHeaders : [];
+    }
+  }
+
   if (b.enabled !== true) return anthropic;
 
   const mode = b.mode === 'always' ? 'always' : 'on-limit';
@@ -128,6 +152,14 @@ function buildHeaders(clientHeaders, upstream) {
 
   for (const h of CREDENTIAL_HEADERS) {
     if (src[h]) out[h] = src[h];
+  }
+
+  // Headers extras exigidos pelo upstream alternativo (ex.: x-litellm-team-id de
+  // um gateway corporativo) — repassados VERBATIM do cliente, nunca inventados.
+  const extra = (upstream && Array.isArray(upstream.forwardHeaders)) ? upstream.forwardHeaders : [];
+  for (const h of extra) {
+    const key = String(h || '').toLowerCase().trim();
+    if (key && src[key]) out[key] = src[key];
   }
   return out;
 }
