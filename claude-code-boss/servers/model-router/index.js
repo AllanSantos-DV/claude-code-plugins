@@ -21,6 +21,7 @@ const os    = require('os');
 const crypto = require('crypto');
 const { URL } = require('url');
 const cacheCycle = require('./cache-cycle.js');
+const contextRewrite = require('./context-rewrite.js');
 const byok = require('./byok.js');
 const catalog = require('./catalog.js');
 const { resolveMode } = require('../../scripts/lib/router-mode.js');
@@ -1520,6 +1521,11 @@ function newMetrics() {
         'prior-miss':  { count: 0, inputTokens: 0, promptTokens: 0, clearableTokens: 0 },
       },
     },
+    // Fase 3/4 (context-rewrite): quantas requests foram reescritas, quanto
+    // conteúdo (blocos/chars) saiu antes de ir pro upstream. `skipped*` existe
+    // pra distinguir "não reescreveu porque não valia a pena" de "reescreveu e
+    // não achou nada pra tirar" — sem isso um contador zerado é ambíguo.
+    contextRewrite:  { requests: 0, blocksRemoved: 0, charsRemoved: 0, skippedBelowThreshold: 0, skippedNotColdBoundary: 0 },
     // Calibração chars→token medida no próprio tráfego (sem API key).
     calibration:     { samples: 0, chars: 0, realTokens: 0 },
     // Janela de cache CONTRATADA, medida no `usage` de cada write. Sem isso a
@@ -1528,6 +1534,12 @@ function newMetrics() {
     // Multi-tenant (ADR-011): contadores de HISTORY por tenant (só os 5 da série
     // diária). Global segue nos campos planos; '_' nunca entra aqui (é o global).
     byTenant:        {},
+    // Segregação por SESSÃO (visualização apenas — nenhuma decisão de rota lê
+    // isto). Chave = sessionKey (hash sha1, sem texto legível). Existe pra
+    // separar, no dashboard, o tráfego concorrente de várias janelas do Claude
+    // Code que compartilham o mesmo processo/porta — sem isso os agregados
+    // globais escondem qual sessão gerou qual rewrite/fronteira fria.
+    bySession:       {},
   };
 }
 
@@ -1559,6 +1571,7 @@ function loadMetrics() {
         calibration: Object.assign({ samples: 0, chars: 0, realTokens: 0 }, saved.calibration || {}),
         ttl: Object.assign({ write5m: 0, write1h: 0, writeUnknown: 0 }, saved.ttl || {}),
         byTenant: Object.assign({}, saved.byTenant || {}),
+        bySession: Object.assign({}, saved.bySession || {}),
       });
     }
   } catch (e) {
@@ -1739,9 +1752,94 @@ function bumpTenantOutcome(tenant, kind, route, config) {
   _metricsDirty = true;
 }
 
+// ── Métricas por SESSÃO (visualização) ────────────────────────────────────────
+// Espelha o padrão de byTenant, mas chaveado por sessionKey em vez de tenant.
+// Cap + poda por idade igual a _cacheCycleStates (MAX_CACHE_CYCLE_SESSIONS):
+// sessionKey nunca expira por si só, então sem isso um proxy longevo acumularia
+// um bucket por conversa pra sempre.
+const MAX_SESSION_METRICS = 500;
+
+function newSessionBucket() {
+  return {
+    total: 0,
+    lastReqAt: null,
+    contextRewrite: { requests: 0, blocksRemoved: 0, charsRemoved: 0, skippedBelowThreshold: 0, skippedNotColdBoundary: 0 },
+    cacheCycle: { hits: 0, misses: 0, coldBoundaries: 0 },
+  };
+}
+
+// Normaliza formato legado (metrics.json de versão anterior sem os subcampos)
+// e devolve o bucket mutável da sessão — nunca inventa uma sessão sem key.
+function sessionBucket(sessionKey) {
+  if (!sessionKey) return null;
+  metrics.bySession = metrics.bySession || {};
+  const fresh = newSessionBucket();
+  const cur = metrics.bySession[sessionKey] || (metrics.bySession[sessionKey] = fresh);
+  cur.contextRewrite = Object.assign(fresh.contextRewrite, cur.contextRewrite);
+  cur.cacheCycle = Object.assign(fresh.cacheCycle, cur.cacheCycle);
+  return cur;
+}
+
+function pruneSessionMetrics(now) {
+  const m = metrics.bySession || {};
+  let keys = Object.keys(m);
+  if (keys.length <= MAX_SESSION_METRICS) return;
+  // 1) poda por idade (sessões mortas há mais de 24h).
+  for (const k of keys) {
+    const last = m[k] && m[k].lastReqAt ? new Date(m[k].lastReqAt).getTime() : 0;
+    if (!last || (now - last) > 86400000) delete m[k];
+  }
+  // 2) teto duro: descarta as menos recentes de fato, se a poda por idade não
+  //    bastou (todas as sessões ainda "vivas" segundo o critério acima).
+  keys = Object.keys(m);
+  const excess = keys.length - MAX_SESSION_METRICS;
+  if (excess > 0) {
+    const oldest = keys
+      .map((k) => [k, m[k] && m[k].lastReqAt ? new Date(m[k].lastReqAt).getTime() : 0])
+      .sort((a, b) => a[1] - b[1])
+      .slice(0, excess);
+    for (const [k] of oldest) delete m[k];
+  }
+}
+
+function bumpSessionRoute(sessionKey, now) {
+  const b = sessionBucket(sessionKey);
+  if (!b) return;
+  b.total += 1;
+  b.lastReqAt = new Date(now).toISOString();
+  pruneSessionMetrics(now);
+  _metricsDirty = true;
+}
+
+function bumpSessionContextRewrite(sessionKey, result) {
+  const b = sessionBucket(sessionKey);
+  if (!b || !result) return;
+  b.contextRewrite.requests += 1;
+  b.contextRewrite.blocksRemoved += Number(result.removed && result.removed.blocks) || 0;
+  b.contextRewrite.charsRemoved  += Number(result.removed && result.removed.chars) || 0;
+  _metricsDirty = true;
+}
+
+function bumpSessionContextRewriteSkip(sessionKey, reason) {
+  const b = sessionBucket(sessionKey);
+  if (!b) return;
+  if (reason === 'belowThreshold') b.contextRewrite.skippedBelowThreshold += 1;
+  else if (reason === 'notColdBoundary') b.contextRewrite.skippedNotColdBoundary += 1;
+  _metricsDirty = true;
+}
+
+function bumpSessionCacheCycle(sessionKey, obs) {
+  const b = sessionBucket(sessionKey);
+  if (!b || !obs || !obs.state) return;
+  if (obs.state.lastCacheState === 'hit')  b.cacheCycle.hits += 1;
+  if (obs.state.lastCacheState === 'miss') b.cacheCycle.misses += 1;
+  if (obs.boundary && obs.boundary.cold)   b.cacheCycle.coldBoundaries += 1;
+  _metricsDirty = true;
+}
+
 // Registra a DECISÃO de rota. origTier = dropdown do usuário; finalTier = o que
 // vamos mandar pro Claude; blocked = teto impediu um upgrade.
-function metricsRoute(origTier, finalTier, classified, blocked, tenant) {
+function metricsRoute(origTier, finalTier, classified, blocked, tenant, sessionKey) {
   metrics.total += 1;
   metrics.lastReqAt = new Date().toISOString();
   metrics.byOriginal[origTier || 'unknown'] += 1;
@@ -1755,6 +1853,7 @@ function metricsRoute(origTier, finalTier, classified, blocked, tenant) {
     metrics.kept += 1;
   }
   bumpTenantRoute(tenant, origTier, finalTier, blocked);
+  bumpSessionRoute(sessionKey, Date.now());
   _metricsDirty = true;
 }
 
@@ -1888,6 +1987,62 @@ function metricsCacheCycle(obs) {
     }
   }
   _metricsDirty = true;
+}
+
+function metricsContextRewrite(result) {
+  if (!result) return;
+  metrics.contextRewrite.requests += 1;
+  metrics.contextRewrite.blocksRemoved += Number(result.removed && result.removed.blocks) || 0;
+  metrics.contextRewrite.charsRemoved  += Number(result.removed && result.removed.chars) || 0;
+  _metricsDirty = true;
+}
+
+// Decide SE e COMO reescrever `body.messages` antes do upstream (Fase 3).
+// Só chamada nos modos que já classificam/roteiam (sticky-tier, per-turn) —
+// NUNCA em `fallback-only`, cujo contrato é passthrough byte-idêntico; chamar
+// isto ali contradiria a garantia documentada daquele modo.
+//
+// Gates, na ordem (primeiro que reprovar decide o motivo do skip):
+//   1) cfg.contextRewrite.enabled — opt-in explícito.
+//   2) minSizeThresholdChars — não vale pagar o custo de invalidar cache numa
+//      sessão pequena onde não há nada relevante pra cortar.
+//   3) onlyAtColdBoundary — quando true, só reescreve se o cache já estaria
+//      frio de qualquer jeito nesta chamada (custo de invalidação ~zero);
+//      olha o estado ANTERIOR da sessão (nunca observa/grava — isso é
+//      exclusividade de observeCacheCycle, chamado depois da resposta).
+//
+// Muta `body.messages` in-place (o chamador já tem `body` mutável nesta altura
+// do handler — mesmo padrão de `body.model = dec.model` acima) e devolve o
+// resultado da reescrita (ou null se nenhum gate passou) pra telemetria.
+function maybeRewriteContext(body, cfg, sessionKey) {
+  const rw = cfg && cfg.contextRewrite;
+  if (!rw || !rw.enabled) return null;
+  if (!body || !Array.isArray(body.messages) || body.messages.length === 0) return null;
+
+  const threshold = Number.isFinite(rw.minSizeThresholdChars) ? rw.minSizeThresholdChars : 50000;
+  const totalChars = contextRewrite.estimateMessagesChars(body.messages);
+  if (totalChars < threshold) {
+    metrics.contextRewrite.skippedBelowThreshold += 1;
+    bumpSessionContextRewriteSkip(sessionKey, 'belowThreshold');
+    return null;
+  }
+
+  if (rw.onlyAtColdBoundary) {
+    const prev = sessionKey ? _cacheCycleStates.get(sessionKey) : null;
+    const globalTtlMs = cacheCycle.ttlWindowMs(cacheCycle.deriveTtlVerdict(metrics.ttl), cfg);
+    const boundary = cacheCycle.isColdBoundary(prev, Date.now(), cfg, globalTtlMs);
+    if (!boundary.cold) {
+      metrics.contextRewrite.skippedNotColdBoundary += 1;
+      bumpSessionContextRewriteSkip(sessionKey, 'notColdBoundary');
+      return null;
+    }
+  }
+
+  const result = contextRewrite.rewriteMessages(body.messages, rw);
+  body.messages = result.messages;
+  metricsContextRewrite(result);
+  bumpSessionContextRewrite(sessionKey, result);
+  return result;
 }
 
 // Calibração chars→token medida em tráfego real (ver cache-cycle.calibrationSample).
@@ -2154,9 +2309,11 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
         // derrubar o proxy, e por isso a falha é LOGADA, não engolida em silêncio.
         try {
           if (route && route.sessionKey) {
-            metricsCacheCycle(observeCacheCycle(
+            const obs = observeCacheCycle(
               route.sessionKey, usage, Date.now(), config, { body: reqBody },
-            ));
+            );
+            metricsCacheCycle(obs);
+            bumpSessionCacheCycle(route.sessionKey, obs);
           }
           // Calibração in-band: o corpo que medimos em chars contra o input REAL
           // que a Anthropic acabou de reportar. De graça, em tráfego real, sem
@@ -2346,9 +2503,10 @@ async function createServer(config, mode, routerToken) {
         // existem para medir — deixá-los em 0 aqui era buraco de observabilidade
         // (o sparkline requests/dia da Fase D desenhava zero com tráfego ativo).
         // classified=false honesto: NÃO houve decisão de tier.
-        try { metricsRoute(t, t, false, false, tenant); }
+        const _fallbackSessionKey = tenantSessionKey(body, tenant);
+        try { metricsRoute(t, t, false, false, tenant, _fallbackSessionKey); }
         catch (e) { logger.debug('metricsRoute falhou (ignorado)', { err: e.message }); }
-        forwardRequest(body, req.headers, res, cfg, { origTier: t, finalTier: t, path: req.url, sessionKey: tenantSessionKey(body, tenant), tenant });
+        forwardRequest(body, req.headers, res, cfg, { origTier: t, finalTier: t, path: req.url, sessionKey: _fallbackSessionKey, tenant });
         return;
       }
 
@@ -2387,8 +2545,10 @@ async function createServer(config, mode, routerToken) {
         });
         // Telemetria honesta: classified=true (houve decisão de tier na sessão),
         // blocked = teto barrou um upgrade do tier fixado sobre o modelo atual.
-        try { metricsRoute(origTier, dec.tier, true, dec.blocked, tenant); }
+        try { metricsRoute(origTier, dec.tier, true, dec.blocked, tenant, dec.key); }
         catch (e) { logger.debug('metricsRoute falhou (ignorado)', { err: e.message }); }
+        try { maybeRewriteContext(body, cfg, dec.key); }
+        catch (e) { logger.debug('maybeRewriteContext falhou (ignorado)', { err: e.message }); }
         forwardRequest(body, req.headers, res, cfg, { origTier, finalTier: modelTier(body.model), path: req.url, sessionKey: dec.key, tenant });
         return;
       }
@@ -2442,10 +2602,13 @@ async function createServer(config, mode, routerToken) {
         logger.debug('Sem tier — modelo original mantido', { model: originalModel });
       }
 
-      try { metricsRoute(origTier, finalTier, !!tier, blocked, tenant); }
+      const _routingSessionKey = tenantSessionKey(body, tenant);
+      try { metricsRoute(origTier, finalTier, !!tier, blocked, tenant, _routingSessionKey); }
       catch (e) { logger.debug('metricsRoute falhou (ignorado)', { err: e.message }); }
 
-      forwardRequest(body, req.headers, res, cfg, { origTier, finalTier, path: req.url, sessionKey: tenantSessionKey(body, tenant), tenant });
+      try { maybeRewriteContext(body, cfg, _routingSessionKey); }
+      catch (e) { logger.debug('maybeRewriteContext falhou (ignorado)', { err: e.message }); }
+      forwardRequest(body, req.headers, res, cfg, { origTier, finalTier, path: req.url, sessionKey: _routingSessionKey, tenant });
     });
   });
 
@@ -2647,6 +2810,19 @@ if (require.main === module) {
     metricsCacheCycle,
     metricsCalibration,
     metricsTtl,
+    // Reescrita de contexto (Fase 3): exportados p/ os testes provarem os gates
+    // (threshold, cold boundary) sem depender de tráfego real via forwardRequest.
+    maybeRewriteContext,
+    metricsContextRewrite,
+    _cacheCycleStates,
+    // Segregação por sessão (visualização): exportados p/ os testes provarem os
+    // buckets/poda sem depender de tráfego real.
+    sessionBucket,
+    pruneSessionMetrics,
+    bumpSessionRoute,
+    bumpSessionContextRewrite,
+    bumpSessionContextRewriteSkip,
+    bumpSessionCacheCycle,
     // BYOK: exportado p/ o teste ponta-a-ponta que prova que a credencial da
     // ASSINATURA não chega ao endpoint de terceiro (o risco central do recurso).
     forwardRequest,
