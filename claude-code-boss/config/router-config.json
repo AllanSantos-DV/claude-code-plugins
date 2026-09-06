@@ -150,6 +150,12 @@
       "migrate entire system, fundamental architecture change, platform switch"
     ]
   },
+  "upstream": {
+    "enabled": false,
+    "baseUrl": "",
+    "forwardHeaders": [],
+    "_comment_upstream": "Alvo de upstream alternativo (ex.: gateway corporativo atras de LiteLLM/Bedrock) + headers extras repassados VERBATIM do cliente. Diferente de byok: aqui a credencial real (authorization/x-api-key) do Claude Code CONTINUA fluindo normalmente (buildHeaders nao muda) -- so o host/porta/protocolo e os headers listados em forwardHeaders mudam. Sem isso, ambientes atras de gateway corporativo (que exige um header proprio, ex.: x-litellm-team-id, e nao aceita api.anthropic.com direto) nao conseguem usar o proxy. baseUrl: ex. https://gateway.empresa.com (path ignorado, o proxy sempre usa /v1/messages). forwardHeaders: lista de nomes de header (case-insensitive) a copiar do request do Claude Code para o upstream, alem dos ja padrao (anthropic-version/anthropic-beta/authorization/x-api-key)."
+  },
   "byok": {
     "_comment": "BYOK: endpoint Anthropic-compatible GENERICO do usuario. O plugin NAO conhece o provedor nem de onde vem o token: recebe uma Base URL e um MAPA de headers pelo dashboard e os anexa em toda request ao endpoint. Contrato: POST /v1/messages em formato Anthropic NATIVO (zero traducao) e o campo model repassado VERBATIM (o endpoint normaliza os nomes sozinho e erra alto no inexistente). SEGURANCA: na rota BYOK o authorization/x-api-key que vem do Claude Code (token da ASSINATURA) e REMOVIDO — so vao os headers configurados aqui, senao a credencial da assinatura vazaria para um terceiro.",
     "enabled": false,
