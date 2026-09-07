@@ -1,5 +1,14 @@
 # Changelog
 
+## [2.23.0] - 2026-09-07
+
+**MCP auto-reconnect on daemon restart, BYOK SSE hardening, and curation fixes.**
+
+- **mcp-client**: auto re-discovers `~/.mcp-memory/run/daemon.json` on `ECONNREFUSED`/timeout (the Java daemon restarts on a new dynamic port — previously the client held a stale URL until restart). `callTool()` now retries once via `_reconnect()`; `DAEMON_RESTART` error code added for observability.
+- **Dashboard**: Server URL tooltip (EN+PT) now explicitly documents the dynamic-port behaviour — leave empty for auto-discovery; only pin a fixed URL if the daemon runs on another machine.
+- **model-router / BYOK**: TTFB ceiling for BYOK + socket-timeout hardening before SSE proxying + hourly build-switch debounce (fixes ping-pong kill loop between two valid installs in the same `~/.claude`).
+- **curation**: command-signature fixes (separator-class completeness, variable-assignment segment handling, orphan-key discard in store load).
+
 ## [2.22.0] - 2026-08-23
 
 **Multi-tenant por projeto e CRUD completo do Brain no dashboard.** Cada projeto agora
