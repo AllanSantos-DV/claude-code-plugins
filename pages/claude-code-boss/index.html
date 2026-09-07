@@ -2577,6 +2577,38 @@
 
   <section>
     <p class="label">Novo na v2.23.0 · cliente MCP auto-reconecta quando o daemon reinicia, e a URL do mcp-memory-server não quebra mais no dia seguinte</p>
+    <p class="lede">Quatro correções que dividem uma mesma promessa: <b>o plugin não fica mudo quando o estado por trás muda</b>. O <b>mcp-client</b> re-lê o <code>daemon.json</code> quando o daemon Java sobe em uma porta dinâmica nova; o <b>tooltip</b> do Server URL no dashboard documenta esse comportamento em EN+PT; o <b>router</b> endurece o caminho BYOK antes do proxy SSE e debounce a troca de build para acabar com o ping-pong de kill entre dois installs válidos; e a <b>curadoria</b> fecha três classes de assinaturas de comando que viravam <i>no-op</i> silencioso. O padrão é o de sempre da página: <b>silêncio a menos</b>, não feature nova.</p>
+
+    <div class="callout">
+      <span class="tag">deixe o campo vazio · auto-descoberta</span>
+      O caso mais visível: o <b>mcp-memory-server</b> roda em uma <b>porta dinâmica</b>, e o daemon Java grava a porta em <code>~/.mcp-memory/run/daemon.json</code> toda vez que sobe. Antes da v2.23.0 o cliente guardava a URL e o token em <code>_resolvedUrl</code> e só atualizava no restart do <b>plugin</b> — então a primeira chamada depois do restart do <b>daemon</b> (o cenário típico: você ligou a máquina hoje) batia em <code>ECONNREFUSED</code> e morria. Agora <code>_reconnect()</code> limpa o cache, <code>callTool()</code> <b>retenta uma vez</b> em <code>ECONNREFUSED</code>/<code>timeout</code>/<code>ENOTFOUND</code>, e a falha (se chegar) vem com o código <code>DAEMON_RESTART</code>. <b>Deixe o campo Server URL vazio</b> no dashboard — auto-descoberta. Só pin uma URL fixa se o daemon roda em outra máquina.
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>mcp-client · auto-reconexão no restart do daemon</h4>
+        <p>O cliente re-lê <code>~/.mcp-memory/run/daemon.json</code> na primeira falha de conexão: <code>_reconnect()</code> zera <code>_resolvedUrl</code> e <code>_resolvedToken</code>, e <code>callTool()</code> dispara um <b>retry único</b> em <code>ECONNREFUSED</code>/<code>timeout</code>/<code>ENOTFOUND</code>. A falha definitiva carrega o código <code>DAEMON_RESTART</code> — em vez de um erro de socket genérico que só aparecia quando o usuário notava que a sessão tinha parado. <b>O defeito que fecha:</b> a URL que sobrevivia ao daemon.</p>
+      </div>
+      <div class="win">
+        <h4>Dashboard · tooltip do Server URL documenta a porta dinâmica</h4>
+        <p>O campo <b>Server URL</b> do MCP Memory (EN e PT) agora declara explicitamente: <b>deixe vazio</b> (recomendado) para auto-descoberta via <code>daemon.json</code>; só preencha se o daemon roda em <b>outra máquina</b>. O texto também explica que o daemon grava a porta dinâmica lá toda vez que sobe, e que o plugin re-lê esse arquivo no restart. <b>O defeito que fecha:</b> usuário que cola uma URL fixa hoje e amanhã ela não bate — sem aviso na UI.</p>
+      </div>
+      <div class="win">
+        <h4>model-router / BYOK · teto de TTFB, desarme de socket e debounce de build</h4>
+        <p>Teto de TTFB próprio para a rota BYOK (a Anthropic-compatible não compartilha o contrato de tempo da Anthropic oficial), <b>desarme</b> do timeout de socket <b>antes</b> do proxy SSE começar a transmitir (evita que um endpoint lento mate o stream no meio), e <b>debounce de 60s</b> na troca de build — duas instalações válidas no mesmo <code>~/.claude</code> pararam de matar uma à outra a cada verificação. <b>O defeito que fecha:</b> ping-pong kill entre dois installs válidos.</p>
+      </div>
+      <div class="win">
+        <h4>Curadoria · três vazamentos na assinatura de comando</h4>
+        <p>Três classes de assinatura que viravam <i>no-op</i> silencioso agora são cobertas: <b>completude de classes de separador</b> (uma flag nova não era classificada como terminal), <b>segmentos que são só atribuição de variável</b> (uma linha <code>FOO=bar</code> sem comando escapava como lição vazia), e <b>chaves órfãs</b> no <code>store load</code> (entradas sem chave eram descartadas com aviso). <b>O defeito que fecha:</b> curadoria que não curava — e não dizia.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>O que mudou de verdade:</b> o mcp-client e a tooltip são <b>visíveis</b> — sem mexer em nada, a URL para de quebrar no dia seguinte. Os outros dois (TTFB BYOK e curadoria) só aparecem em falha: <i>sem teto de TTFB</i>, um BYOK lento travava a sessão silenciosamente; <i>sem curadoria</i>, a KB crescia com lições vazias que pareciam ter sido curadas. Não há feature nova exposta — há <b>silêncio a menos</b>.</p>
+  </section>
+
+
+  <section>
+    <p class="label">Novo na v2.22.0 · multi-tenant por projeto e CRUD completo do Brain no dashboard</p>
     <p class="lede">Duas frentes que se encontram no mesmo lugar — <b>isolamento</b> e <b>controle</b>. O model-router fica <b>multi-tenant por projeto</b>: um header seu separa sticky pins, métricas e histórico diário sem tocar em quem não usa. E o dashboard ganha <b>CRUD completo do Brain</b>: editar entrada inline, navegar paginado e apagar com <b>backup obrigatório antes da mutação</b> — o que expôs e consertou um bug pré-existente grave em que o delete da UI <b>nunca apagou linha alguma</b> do SQLite.</p>
 
     <div class="callout">
