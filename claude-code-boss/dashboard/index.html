@@ -364,7 +364,7 @@ code { color: var(--fg); font-family: var(--font-mono); }
           <div style="flex:1;min-width:240px" id="mcp-http-fields">
             <label class="field-label">
               <span data-i18n="brain.serverUrl">Server URL</span>
-              <span class="tip" data-i18n-tip="tip.serverUrl" data-tip="Deixe vazio para auto-descobrir via ~/.mcp-memory/run/daemon.json. Ex.: http://127.0.0.1:60707">i</span>
+              <span class="tip" data-i18n-tip="tip.serverUrl" data-tip="Deixe vazio (recomendado) → auto-descoberta via ~/.mcp-memory/run/daemon.json. O daemon escreve sua porta dinâmica lá ao iniciar; se reiniciar em porta nova, o plugin redescobre automaticamente. Só fixe uma URL (ex.: http://127.0.0.1:60707) se o daemon rodar em OUTRA máquina.">i</span>
             </label>
             <input type="text" id="mcp-server-url" placeholder="auto-descobrir (daemon.json)">
           </div>
@@ -1128,7 +1128,7 @@ const I18N = {
     'brain.projectFolder': 'Project folder', 'brain.projectChosenId': 'chosen projectId',
     'brain.projectRead': 'Read',
     'tip.transport': 'http = connect to a running mcp-memory-server (recommended). stdio = the plugin spawns the JAR locally.',
-    'tip.serverUrl': 'Leave empty to auto-discover via ~/.mcp-memory/run/daemon.json. e.g. http://127.0.0.1:60707',
+    'tip.serverUrl': 'Leave empty (recommended) → auto-discover via ~/.mcp-memory/run/daemon.json. The daemon writes its dynamic port there on startup. If the daemon restarts on a new port, the plugin re-discovers automatically. Only set a URL (e.g. http://127.0.0.1:60707) if the daemon runs on a DIFFERENT machine.',
     'tip.ingestion': 'Opt-in. When on, at the end of each turn the plugin sends the conversation (add_document) to your server for server-side curation. Off = only save + semantic recall.',
     'brain.embedder': 'Embedder', 'brain.provider': 'Provider', 'brain.model': 'Model', 'brain.dimensions': 'Dimensions',
     'brain.reembedWarn': 'Changing the model invalidates existing embeddings. After saving, run',
@@ -1294,7 +1294,7 @@ const I18N = {
     'brain.projectFolder': 'Pasta do projeto', 'brain.projectChosenId': 'projectId escolhido',
     'brain.projectRead': 'Ler',
     'tip.transport': 'http = conectar a um mcp-memory-server já rodando (recomendado). stdio = o plugin sobe o JAR localmente.',
-    'tip.serverUrl': 'Deixe vazio para auto-descobrir via ~/.mcp-memory/run/daemon.json. Ex.: http://127.0.0.1:60707',
+    'tip.serverUrl': 'Deixe vazio (recomendado) → auto-descoberta via ~/.mcp-memory/run/daemon.json. O daemon escreve sua porta dinâmica lá ao iniciar; se reiniciar em porta nova, o plugin redescobre automaticamente. Só fixe uma URL (ex.: http://127.0.0.1:60707) se o daemon rodar em OUTRA máquina.',
     'tip.ingestion': 'Opt-in. Quando ligado, ao fim de cada turno o plugin envia a conversa (add_document) ao seu servidor para curadoria server-side. Desligado = só save + recall semântico.',
     'brain.embedder': 'Embedder', 'brain.provider': 'Provider', 'brain.model': 'Modelo', 'brain.dimensions': 'Dimensões',
     'brain.reembedWarn': 'Trocar o modelo invalida embeddings existentes. Após salvar, rode',
