@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.22.0 — memória semântica, execução curada e roteador de modelos com BYOK</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica local, execução curada, aprendizado no loop e um roteador de modelos opt-in com plano B para 429 e BYOK (seu próprio endpoint Anthropic-compatible). Na v2.22.0 o router fica multi-tenant por projeto: ANTHROPIC_CUSTOM_HEADERS=&quot;X-CCB-Tenant: &lt;id&gt;&quot; no .claude/settings.local.json isola sticky pins, métricas e o histórico diário por tenant, com overlay de config shallow-merged sobre a global e comportamento byte-idêntico sem o header. A classificação do router passa a poder rodar no SEU endpoint Anthropic-compatible (BYOK Classify: opt-in duplo, gate on-limit só com cooldown ativo, fail-open para o MiniLM local). O dashboard ganhou série histórica diária (metrics-history.jsonl, deltas cross-restart-safe, cap de 90 dias) desenhada num sparkline SVG zero-deps de requests/dia e economia/dia, com filtro por tenant. E o Brain KB ganhou CRUD completo: editor inline com whitelist estrita e re-embed automático, browse paginado e delete com backup JSON obrigatório antes da mutação — o que expôs e consertou um bug pré-existente em que o delete da UI nunca apagou linha alguma do SQLite." />
+<title>claude-code-boss v2.23.0 — memória semântica, execução curada e roteador de modelos com BYOK</title>
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica local, execução curada, aprendizado no loop e um roteador de modelos opt-in com plano B para 429 e BYOK (seu próprio endpoint Anthropic-compatible). Na v2.23.0 o cliente MCP redescobre o daemon.json sozinho: a URL do mcp-memory-server não quebra mais no dia seguinte — a porta dinâmica é re-lida no restart do daemon (ECONNREFUSED/timeout disparam _reconnect() com retry único). O router ganha teto de TTFB próprio para o BYOK, desarme de timeout de socket antes do proxy SSE e debounce de 60s na troca de build (acaba o ping-pong kill entre dois installs válidos). A curadoria fecha 3 classes de separador na assinatura de comando, ignora segmentos que são só atribuição de variável e descarta chaves órfãs no load. E o tooltip de Server URL no dashboard (EN+PT) agora documenta explicitamente o comportamento da porta dinâmica." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -2451,7 +2451,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.22.0</span>
+    <span class="ver">v2.23.0</span>
   </nav>
 
   <header class="hero">
@@ -2576,7 +2576,7 @@
 
 
   <section>
-    <p class="label">Novo na v2.22.0 · cada projeto com sua rota, o Brain sob controle no dashboard</p>
+    <p class="label">Novo na v2.23.0 · cliente MCP auto-reconecta quando o daemon reinicia, e a URL do mcp-memory-server não quebra mais no dia seguinte</p>
     <p class="lede">Duas frentes que se encontram no mesmo lugar — <b>isolamento</b> e <b>controle</b>. O model-router fica <b>multi-tenant por projeto</b>: um header seu separa sticky pins, métricas e histórico diário sem tocar em quem não usa. E o dashboard ganha <b>CRUD completo do Brain</b>: editar entrada inline, navegar paginado e apagar com <b>backup obrigatório antes da mutação</b> — o que expôs e consertou um bug pré-existente grave em que o delete da UI <b>nunca apagou linha alguma</b> do SQLite.</p>
 
     <div class="callout">
