@@ -159,13 +159,112 @@ function mergeUserConfig(base, override) {
     // 'byok' no shallow-merge: o dashboard grava o objeto byok COMPLETO, mas um
     // user-config escrito à mão com só {classifyRemote:true} não pode apagar os
     // headers/baseUrl shipados — mesma invariant de nim/sticky/fallback.
-    if ((key === 'nim' || key === 'routing' || key === 'fallback' || key === 'sticky' || key === 'byok' || key === 'contextTuning') && override[key] && typeof override[key] === 'object') {
+    // 'routes' também é raso por chave de path: shipped define o default, user
+    // adiciona/remove/edita sem apagar o resto (DoD route-manager).
+    if ((key === 'nim' || key === 'routing' || key === 'fallback' || key === 'sticky' || key === 'byok' || key === 'contextTuning' || key === 'routes') && override[key] && typeof override[key] === 'object') {
       merged[key] = { ...(base[key] || {}), ...override[key] };
     } else {
       merged[key] = override[key];
     }
   }
   return merged;
+}
+
+// ── Route manager (DoD: declarativo, shipping=default, user=overlay) ───────────
+// Shipping vive em config/router-config.json#routes (versionado); user vive em
+// DATA_DIR/model-router/user-config.json#routes (nunca versionado). mergeUserConfig
+// garante que o user vença sem apagar defaults não tocados. null/false desabilita.
+const DEFAULT_ROUTES = {
+  '/health':                  { method: 'GET',  upstream: 'local:health',       auth: 'none' },
+  '/metrics':                 { method: 'GET',  upstream: 'local:metrics',      auth: 'none' },
+  '/catalog':                 { method: 'GET',  upstream: 'local:catalog',      auth: 'none' },
+  '/metrics/reset':           { method: 'POST', upstream: 'local:metricsReset', auth: 'loopback' },
+  '/v1/messages':             { method: 'POST', upstream: 'routed',             auth: 'signature' },
+  '/v1/messages/count_tokens':{ method: 'POST', upstream: 'passthrough',        auth: 'signature' },
+  '/v1/models':               { method: 'GET',  upstream: 'passthrough',        auth: 'signature' },
+};
+
+function hasSignature(headers) {
+  if (!headers || typeof headers !== 'object') return false;
+  for (const k of Object.keys(headers)) {
+    const lk = String(k).toLowerCase();
+    if (lk === 'x-api-key' || lk === 'authorization') {
+      const v = headers[k];
+      if (typeof v === 'string' && v.trim()) return true;
+      if (Array.isArray(v) && v.length) return true;
+    }
+  }
+  return false;
+}
+
+function validateRoute(pathKey, ov) {
+  if (typeof pathKey !== 'string' || !pathKey.startsWith('/')) return { ok: false, reason: 'path must start with /' };
+  let norm;
+  try { norm = new URL(pathKey, 'http://x').pathname; } catch (err) { void err; return { ok: false, reason: 'invalid path' }; }
+  if (norm !== pathKey) return { ok: false, reason: 'path not normalized' };
+  if (ov && typeof ov === 'object') {
+    if (ov.method !== undefined) {
+      const m = String(ov.method).toUpperCase();
+      const allowed = ['GET','POST','PUT','PATCH','DELETE','HEAD','OPTIONS'];
+      if (!allowed.includes(m)) return { ok: false, reason: 'invalid method ' + ov.method };
+    }
+    if (ov.upstream !== undefined) {
+      const u = String(ov.upstream);
+      const allowedUp = ['passthrough','routed','local:health','local:metrics','local:metricsReset','local:catalog'];
+      if (!allowedUp.includes(u)) return { ok: false, reason: 'invalid upstream ' + ov.upstream };
+    }
+    if (ov.auth !== undefined) {
+      const allowedAuth = ['none','signature','loopback'];
+      if (!allowedAuth.includes(String(ov.auth))) return { ok: false, reason: 'invalid auth ' + ov.auth };
+    }
+  }
+  if (ov && typeof ov === 'object' && ov.method && ov.upstream) {
+    return { ok: true };
+  }
+  if (DEFAULT_ROUTES[pathKey]) return { ok: true };
+  if (ov && typeof ov === 'object' && !ov.method) return { ok: false, reason: 'custom route requires method' };
+  if (ov && typeof ov === 'object' && !ov.upstream) return { ok: false, reason: 'custom route requires upstream' };
+  return { ok: true };
+}
+
+function resolveRoutes(cfg, opts) {
+  const warn = (opts && typeof opts.warn === 'function') ? opts.warn : (opts && typeof opts.logger === 'function' ? opts.logger : function(m,e){ logger.warn(m,e); });
+  const declared = (cfg && cfg.routes && typeof cfg.routes === 'object') ? cfg.routes : {};
+  const out = {};
+  for (const [p, def] of Object.entries(DEFAULT_ROUTES)) {
+    const ov = declared[p];
+    if (ov === null || ov === false) continue;
+    if (ov && typeof ov === 'object') {
+      const vr = validateRoute(p, ov);
+      if (!vr.ok) { try { warn('route overlay ignorada', { path: p, reason: vr.reason }); } catch (err2) { void err2; } continue; }
+      const norm = {};
+      for (const [k,v] of Object.entries(ov)) {
+        if (k.startsWith('_comment')) continue;
+        if (k === 'method' && typeof v === 'string') norm[k] = v.toUpperCase();
+        else norm[k] = v;
+      }
+      out[p] = { ...def, ...norm };
+    } else if (ov === undefined) out[p] = { ...def };
+  }
+  for (const [p, ov] of Object.entries(declared)) {
+    if (DEFAULT_ROUTES[p]) continue;
+    if (ov === null || ov === false) continue;
+    if (ov && typeof ov === 'object' && ov.method && ov.upstream) {
+      const vr = validateRoute(p, ov);
+      if (!vr.ok) { try { warn('route overlay ignorada', { path: p, reason: vr.reason }); } catch (err2) { void err2; } continue; }
+      const norm = {};
+      for (const [k,v] of Object.entries(ov)) {
+        if (k.startsWith('_comment')) continue;
+        if (k === 'method' && typeof v === 'string') norm[k] = v.toUpperCase();
+        else norm[k] = v;
+      }
+      out[p] = { ...norm };
+    } else if (ov && typeof ov === 'object') {
+      const vr = validateRoute(p, ov);
+      if (!vr.ok) { try { warn('route overlay ignorada', { path: p, reason: vr.reason }); } catch (err2) { void err2; } }
+    }
+  }
+  return out;
 }
 
 // ── Classifier ───────────────────────────────────────────────────────────────
@@ -2152,46 +2251,40 @@ function metricsSnapshot() {
 // ── Proxy core: forward ───────────────────────────────────────────────────────
 
 // Repasse VERBATIM ao upstream, preservando o path original. Usado para
-// `/v1/messages/count_tokens` (e qualquer endpoint não-geração): a contagem de
-// tokens é GRÁTIS na Anthropic e independe do modelo (tokenizer compartilhado).
-// Reescrever pra `/v1/messages` converteria a contagem grátis em geração paga e,
-// no boot, satura o rate limit (RPM) → 429 em massa. Aqui NÃO classificamos, NÃO
-// trocamos o modelo, NÃO acionamos plano B e NÃO fazemos tee de telemetria: só
-// repassamos a request e a resposta como se o proxy não existisse para ela.
+// `/v1/messages/count_tokens`, `/v1/models` e qualquer endpoint genérico: a
+// semântica passa verbatim (GENÉRICO), sem exceção. Não classifica, não troca
+// modelo e não faz tee — só repassa.
 function passthrough(rawBody, originalHeaders, res, pathOriginal, config, _retried) {
-  // DESTINO: a contagem tem que ir ao MESMO lugar que a geração. Apontar isto
-  // fixo na Anthropic enquanto `/v1/messages` ia para o endpoint do usuário fez
-  // o Claude Code CONTAR a janela num destino e GERAR no outro — as contagens
-  // divergem, o indicador de contexto oscila e a compactação dispara na hora
-  // errada (bug de campo na v2.21.2). `buildHeaders` também garante que a
-  // credencial da ASSINATURA não vá junto para um endpoint de terceiro.
-  // `onLimit: cooldownActive(config)` fecha a MESMA lacuna em byok.mode=on-limit:
-  // se o disjuntor já desviou a GERAÇÃO pro plano B (cooldown ativo), a contagem
-  // tem que acompanhar — senão ela some do lugar certo justamente na janela em
-  // que a geração está sendo servida pelo endpoint do usuário.
+  return passthroughGeneric('POST', rawBody, originalHeaders, res, pathOriginal, config, _retried);
+}
+
+function passthroughGeneric(method, rawBody, originalHeaders, res, pathOriginal, config, _retried) {
   const upstreamTarget = byok.resolveUpstream(config, { onLimit: cooldownActive(config) }, UPSTREAM_FALLBACK);
   const headers = byok.buildHeaders(originalHeaders, upstreamTarget);
-  headers['content-length'] = Buffer.byteLength(rawBody);
-
-  requestUpstream(upstreamTarget, pathOriginal || '/v1/messages/count_tokens', headers, rawBody,
-    (upRes) => pipeUpstreamResponse(upRes, res),
-    (e) => {
-      // count_tokens é grátis e idempotente (não gera nada, só conta) — 1 retry
-      // aqui não duplica custo nem efeito colateral, diferente de re-tentar uma
-      // geração. Só entra se AINDA não mandamos nada ao cliente (senão viraria
-      // uma segunda resposta em cima da primeira) e só UMA vez (não martela um
-      // endpoint fora do ar).
-      if (!_retried && !res.headersSent) {
-        logger.warn('Passthrough upstream falhou — tentando 1x de novo', { err: e.message, path: pathOriginal });
-        passthrough(rawBody, originalHeaders, res, pathOriginal, config, true);
-        return;
-      }
-      logger.error('Passthrough upstream error', { err: e.message, path: pathOriginal, retried: !!_retried });
-      if (!res.headersSent) {
-        res.writeHead(502);
-        res.end(JSON.stringify({ error: { type: 'proxy_error', message: e.message } }));
-      }
-    });
+  if (rawBody && rawBody.length) headers['content-length'] = Buffer.byteLength(rawBody);
+  const lib2 = upstreamTarget.protocol === 'http:' ? http : https;
+  const payload = rawBody || '';
+  const options = {
+    hostname: upstreamTarget.host,
+    port: upstreamTarget.port,
+    path: pathOriginal || '/',
+    method: method || 'GET',
+    headers,
+  };
+  // GET sem body: evita mandar content-length 0 que alguns upstreams rejeitam.
+  const hasBody = !!(payload && payload.length);
+  const doReq = () => sendUpstreamRequest(lib2, options, hasBody ? payload : '', (upRes) => pipeUpstreamResponse(upRes, res), (e) => {
+    if (!_retried && !res.headersSent && String(pathOriginal || '').includes('count_tokens')) {
+      logger.warn('Passthrough upstream falhou — tentando 1x de novo', { err: e.message, path: pathOriginal });
+      passthroughGeneric(method, rawBody, originalHeaders, res, pathOriginal, config, true);
+      return;
+    }
+    logger.error('Passthrough generic upstream error', { err: e.message, path: pathOriginal });
+    if (!res.headersSent) { res.writeHead(502); res.end(JSON.stringify({ error: { type: 'proxy_error', message: e.message } })); }
+  }, upstreamTarget.isByok ? BYOK_UPSTREAM_TIMEOUT_MS : UPSTREAM_TIMEOUT_MS);
+  if (hasBody) { options.headers['content-length'] = Buffer.byteLength(payload); }
+  else { delete options.headers['content-length']; }
+  return doReq();
 }
 
 function forwardRequest(reqBody, originalHeaders, res, config, route) {
@@ -2402,53 +2495,95 @@ function isLoopbackHost(req) {
 
 async function createServer(config, mode, routerToken) {
   const server = http.createServer(async (req, res) => {
-    // Health check — CONTINUA 200 p/ liveness (nunca quebra a sonda), mas agora
-    // PROVA IDENTIDADE: quem ecoar o x-router-token correto recebe
-    // authenticated:true; qualquer outro recebe false. É o que o cliente (ensure)
-    // usa p/ confiar na porta ANTES de ativar o roteamento (verify-before-activate).
-    // O token em si nunca é ecoado. routerToken ausente/'' → authenticated sempre
-    // false (segredo vazio não autentica ninguém).
-    if (req.method === 'GET' && req.url === '/health') {
-      const authenticated = routerTokenMatches(req.headers['x-router-token'], routerToken);
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', pid: process.pid, mode, authenticated }));
-      return;
-    }
-
-    // Telemetria: snapshot dos contadores + economia estimada (lido pelo dashboard).
-    if (req.method === 'GET' && req.url === '/metrics') {
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify(metricsSnapshot()));
-      return;
-    }
-    if (req.method === 'POST' && req.url === '/metrics/reset') {
-      if (!isLoopbackHost(req)) {
-        res.writeHead(403, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Forbidden: non-loopback Host' }));
+    const tenantEarly = resolveTenant(req.headers);
+    const cfgEarly = effectiveConfig(config, tenantEarly);
+    if (tenantEarly !== '_') logger.debug('Tenant (pre-route)', { tenant: tenantEarly });
+    const routesEarly = resolveRoutes(cfgEarly);
+    let pathnameEarly = '';
+    try { pathnameEarly = new URL(req.url, 'http://127.0.0.1').pathname; } catch (_) { pathnameEarly = (req.url || '').split('?')[0]; }
+    const routeEarly = routesEarly[pathnameEarly];
+    const methodOk = (r) => !r || !r.method || String(r.method).toUpperCase() === String(req.method).toUpperCase();
+    // Dispatch declarativo: health/metrics/catalog + genericos passthrough/routed
+    if (routeEarly && methodOk(routeEarly)) {
+      const up = routeEarly.upstream || '';
+      if (up === 'local:health') {
+        const authenticated = routerTokenMatches(req.headers['x-router-token'], routerToken);
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok', pid: process.pid, mode, authenticated }));
         return;
       }
-      resetMetrics();
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({ ok: true }));
+      if (up === 'local:metrics') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(metricsSnapshot()));
+        return;
+      }
+      if (up === 'local:metricsReset') {
+        if (!isLoopbackHost(req)) {
+          res.writeHead(403, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Forbidden: non-loopback Host' }));
+          return;
+        }
+        resetMetrics();
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+        return;
+      }
+      if (up === 'local:catalog') {
+        const snap = catalog.getSnapshot();
+        // /v1/models quando encurtado para local:catalog devolve snapshot em forma Anthropic
+        if (pathnameEarly === '/v1/models') {
+          const data = snap && Array.isArray(snap.models) ? snap.models : [];
+          res.writeHead(200, { 'content-type': 'application/json' });
+          res.end(JSON.stringify({ object: 'list', data }));
+          return;
+        }
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          enabled:  catalogEnabled(cfgEarly),
+          warmed:   !!snap,
+          ageMs:    snap ? snap.ageMs : null,
+          count:    snap ? snap.count : 0,
+          byFamily: snap ? snap.byFamily : {},
+        }));
+        return;
+      }
+      if (up === 'passthrough') {
+        let rawBodyEarly = '';
+        req.on('data', c => rawBodyEarly += c);
+        req.on('error', e => { logger.error('Request read error (passthrough)', { err: e.message }); if (!res.headersSent) { res.writeHead(400); res.end(); } });
+        req.on('end', () => { maybeWarmCatalog(req.headers, cfgEarly); passthroughGeneric(req.method, rawBodyEarly, req.headers, res, req.url, cfgEarly); });
+        return;
+      }
+      if (up === 'routed') {
+        // cai no fluxo de roteamento abaixo (mantem compat com /v1/messages)
+      } else if (up.startsWith('local:')) {
+        res.writeHead(404);
+        res.end(JSON.stringify({ error: 'not found' }));
+        return;
+      }
+      // routed continua — nao retorna, deixa o handler de /v1/messages abaixo assumir
+      if (up !== 'routed') {
+        // passthrough ja retornou; qualquer outro nao-routed desconhecido ja tratou
+      }
+    } else if (routeEarly && !methodOk(routeEarly)) {
+      res.writeHead(405, { 'content-type': 'application/json', 'Allow': String(routeEarly.method || '').toUpperCase() });
+      res.end(JSON.stringify({ error: 'method not allowed' }));
       return;
     }
-
-    // Catálogo dinâmico (observabilidade): snapshot atual + idade (lido pelo dashboard).
-    if (req.method === 'GET' && req.url === '/catalog') {
-      const snap = catalog.getSnapshot();
-      res.writeHead(200, { 'content-type': 'application/json' });
-      res.end(JSON.stringify({
-        enabled:  catalogEnabled(config),
-        warmed:   !!snap,
-        ageMs:    snap ? snap.ageMs : null,
-        count:    snap ? snap.count : 0,
-        byFamily: snap ? snap.byFamily : {},
-      }));
+    if (routeEarly && routeEarly.auth) {
+      const auth = routeEarly.auth ?? (pathnameEarly.startsWith('/v1/') ? 'signature' : 'none');
+      if (auth === 'loopback' && !isLoopbackHost(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'Forbidden: non-loopback Host' })); return; }
+      if (auth === 'signature' && !hasSignature(req.headers)) { res.writeHead(401, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: { type: 'auth_error', message: 'missing signature' } })); return; }
+    } else if (routeEarly) {
+      const authDefault = pathnameEarly.startsWith('/v1/') ? 'signature' : 'none';
+      if (authDefault === 'signature' && !hasSignature(req.headers)) { res.writeHead(401, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: { type: 'auth_error', message: 'missing signature' } })); return; }
+    }
+    if (!routeEarly) {
+      res.writeHead(404);
+      res.end(JSON.stringify({ error: 'not found' }));
       return;
     }
-
-    // Só intercepta POST /v1/messages
-    if (req.method !== 'POST' || !req.url.includes('/messages')) {
+    if (routeEarly.upstream !== 'routed' && routeEarly.upstream !== 'passthrough' && !String(routeEarly.upstream).startsWith('local:')) {
       res.writeHead(404);
       res.end(JSON.stringify({ error: 'not found' }));
       return;
@@ -2475,7 +2610,9 @@ async function createServer(config, mode, routerToken) {
       // count_tokens é o endpoint GRÁTIS de contagem (beta token-counting): repassa
       // verbatim preservando o path. Classificar/reescrever pra /v1/messages
       // converteria contagem grátis em geração paga e saturaria o RPM no boot.
-      if (req.url.includes('/count_tokens')) {
+      let pathnameLate = '';
+      try { pathnameLate = new URL(req.url, 'http://127.0.0.1').pathname; } catch (_) { pathnameLate = (req.url || '').split('?')[0]; }
+      if (pathnameLate.includes('/count_tokens')) {
         logger.debug('count_tokens — passthrough verbatim (sem rota)', { path: req.url, bytes: Buffer.byteLength(rawBody) });
         passthrough(rawBody, req.headers, res, req.url, cfg);
         return;
@@ -2833,6 +2970,12 @@ if (require.main === module) {
     metricsSnapshot,
     resetMetrics,
     newMetrics,
+    // Route manager (DoD): declarativo, shipping=default, user=overlay.
+    DEFAULT_ROUTES,
+    resolveRoutes,
+    validateRoute,
+    hasSignature,
+    passthroughGeneric,
     // FIX 1 (identidade da porta fixa) + FIX 2 (classificação opt-in): exportados
     // p/ os testes herméticos (server /health autenticado + dispatcher de classify).
     createServer,
