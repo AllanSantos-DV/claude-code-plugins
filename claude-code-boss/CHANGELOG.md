@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [2.24.0] - 2026-09-11
 
 - **model-router / route manager**: gerenciador declarativo de rotas. `config/router-config.json#routes` (shipping, versionado) define o DEFAULT e `user-config.json` faz overlay raso por rota — ausente = default, `null`/`false` = desabilita, objeto = substitui. `validateRoute(path, ov)` puro com allowlist fechada (`upstream ∈ {passthrough, routed, /^local:(health|metrics|metricsReset|catalog)$/}`, `auth ∈ {none, signature, loopback}`, `warn` injetável), `hasSignature(h)` case-insensitive, `resolveRoutes(cfg, {warn})` ignora overlays inválidas com warn (fail-open por rota). Auth declarativo: `401 missing signature` em rotas `signature`, `403 Forbidden: non-loopback Host` em `loopback`, `405 Allow: <method>` em mismatch de method, `404` quando nenhuma rota bateu. `passthrough` virou alias fino de `passthroughGeneric` (retry 1x condicional a `count_tokens`). Paridade `DEFAULT_ROUTES` ↔ shipping rotas (strip recursivo `_comment*`) automatizada em teste.
 
