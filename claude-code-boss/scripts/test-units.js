@@ -3463,8 +3463,19 @@ test('S5 model-router: isLoopbackHost blocks non-loopback Host AND cross-site Or
 
 test('S5 model-router: /metrics/reset calls isLoopbackHost before resetMetrics', () => {
   const src = fs.readFileSync(path.join(ROOT, 'servers', 'model-router', 'index.js'), 'utf-8');
-  const block = src.match(/req\.url === '\/metrics\/reset'[\s\S]*?resetMetrics\(\)/);
-  assert(block && /isLoopbackHost\(req\)/.test(block[0]), '/metrics/reset must check isLoopbackHost before resetMetrics');
+  const direct = src.match(/req\.url === '\/metrics\/reset'[\s\S]*?resetMetrics\(\)/);
+  if (direct) {
+    assert(/isLoopbackHost\(req\)/.test(direct[0]), '/metrics/reset must check isLoopbackHost before resetMetrics');
+    return;
+  }
+  const shipped = require(path.join(ROOT, 'config', 'router-config.json')).routes['/metrics/reset'];
+  assert(shipped && shipped.auth === 'loopback', '/metrics/reset shipped route must be auth:loopback');
+  const defs = require(path.join(ROOT, 'servers', 'model-router', 'index.js')).DEFAULT_ROUTES;
+  assert(defs['/metrics/reset'] && defs['/metrics/reset'].auth === 'loopback', 'DEFAULT_ROUTES /metrics/reset must be auth:loopback');
+  const metricsIdx = src.indexOf("up === 'local:metricsReset'");
+  const lmIdx = src.indexOf('isLoopbackHost(req)', metricsIdx);
+  const rmIdx = src.indexOf('resetMetrics()', metricsIdx);
+  assert(metricsIdx !== -1 && lmIdx !== -1 && rmIdx !== -1 && lmIdx < rmIdx, '/metrics/reset handler must check isLoopbackHost before resetMetrics');
 });
 
 test('S-minor dashboard serveStatic: traversal guard uses path.sep boundary', () => {
@@ -11900,6 +11911,122 @@ test('plugin-setup: setupRoot ignores a divergent CLAUDE_PLUGIN_ROOT (postinstal
     process.env.CLAUDE_PLUGIN_ROOT = savedRoot;
     delete require.cache[pluginSetupPath];
   }
+});
+
+// ─── Route manager (DoD D1-D10): declarativo, shipping=default, user=overlay ──
+const stripComments = (obj) => {
+  if (Array.isArray(obj)) return obj.map(stripComments);
+  if (obj && typeof obj === 'object') {
+    const out = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (k.startsWith('_comment')) continue;
+      out[k] = stripComments(v);
+    }
+    return out;
+  }
+  return obj;
+};
+
+const ROUTER_CONFIG_PATH = path.join(ROOT, 'config', 'router-config.json');
+const ROUTER_CONFIG = require(ROUTER_CONFIG_PATH);
+const mr = require('../servers/model-router/index.js');
+
+test('route-parity: DEFAULT_ROUTES deepEqual shipping routes after strip _comment*', () => {
+  const shipped = stripComments(ROUTER_CONFIG.routes);
+  assertEq(Object.keys(mr.DEFAULT_ROUTES).length, Object.keys(shipped).length, 'same number of routes');
+  for (const p of Object.keys(mr.DEFAULT_ROUTES)) {
+    assert(shipped[p], `shipping has route ${p}`);
+    assertEq(mr.DEFAULT_ROUTES[p], shipped[p], `route ${p} identical`);
+  }
+});
+
+test('route-parity: every shipped route has method/upstream/auth (D1)', () => {
+  const shipped = stripComments(ROUTER_CONFIG.routes);
+  for (const [p, def] of Object.entries(shipped)) {
+    assert(typeof def.method === 'string' && def.method, `${p} needs method`);
+    assert(typeof def.upstream === 'string' && def.upstream, `${p} needs upstream`);
+    assert(typeof def.auth === 'string' && def.auth, `${p} needs auth`);
+  }
+});
+
+test('resolveRoutes: default when undefined, omit when null/false, spread when object', () => {
+  const cfg = { routes: { '/health': null, '/v1/messages': false, '/v1/models': { method: 'GET', upstream: 'local:catalog', auth: 'none' } } };
+  const warns = [];
+  const out = mr.resolveRoutes(cfg, { warn: (m, e) => warns.push({ m, e }) });
+  assert(!out['/health'], '/health disabled by null');
+  assert(!out['/v1/messages'], '/v1/messages disabled by false');
+  assertEq(out['/v1/models'].upstream, 'local:catalog', '/v1/models overlay spread');
+  assertEq(out['/v1/models'].auth, 'none', '/v1/models auth from overlay');
+  assert(out['/metrics'], '/metrics default intact');
+  assertEq(warns.length, 0, 'no warnings for valid overlay');
+});
+
+test('resolveRoutes: custom route added with method+upstream', () => {
+  const cfg = { routes: { '/ping': { method: 'get', upstream: 'passthrough' } } };
+  const out = mr.resolveRoutes(cfg, { warn: () => {} });
+  assert(out['/ping'], '/ping custom added');
+  assertEq(out['/ping'].method, 'GET', 'method normalized to UPPER');
+  assertEq(out['/ping'].upstream, 'passthrough', 'custom upstream kept');
+});
+
+test('resolveRoutes: invalid overlay is ignored with warn (fail-open per route)', () => {
+  const cfg = { routes: { '/bad': { method: 'FOO', upstream: 'passthrough' }, '/bad2': { method: 'GET', upstream: 'local:custom' } } };
+  const warns = [];
+  const out = mr.resolveRoutes(cfg, { warn: (m, e) => warns.push(e) });
+  assert(!out['/bad'], '/bad (invalid method) ignored');
+  assert(!out['/bad2'], '/bad2 (invalid upstream) ignored');
+  assertEq(warns.length, 2, 'one warn per invalid route');
+  assert(out['/health'], 'defaults intact after invalid overlay');
+});
+
+test('resolveRoutes: _comment keys in overlay are stripped', () => {
+  const cfg = { routes: { '/v1/models': { method: 'GET', upstream: 'local:catalog', auth: 'none', _comment: 'doc' } } };
+  const out = mr.resolveRoutes(cfg, { warn: () => {} });
+  assertEq(Object.keys(out['/v1/models']).filter(k => k.startsWith('_comment')).length, 0, 'no _comment leaked into resolved route');
+});
+
+test('validateRoute: rejects malformed path, method, upstream, auth', () => {
+  assertEq(mr.validateRoute('v1/messages', { method: 'GET', upstream: 'passthrough' }).ok, false, 'path must start with /');
+  assertEq(mr.validateRoute('//v1//messages', { method: 'GET', upstream: 'passthrough' }).ok, false, 'path not normalized');
+  assertEq(mr.validateRoute('/x', { method: 'FOO', upstream: 'passthrough' }).ok, false, 'invalid method');
+  assertEq(mr.validateRoute('/x', { method: 'GET', upstream: 'local:custom' }).ok, false, 'invalid upstream');
+  assertEq(mr.validateRoute('/x', { method: 'GET', upstream: 'passthrough', auth: 'bogus' }).ok, false, 'invalid auth');
+  assertEq(mr.validateRoute('/x', { method: 'GET', upstream: 'passthrough' }).ok, true, 'valid custom route');
+  assertEq(mr.validateRoute('/health', null).ok, true, 'default route always valid');
+});
+
+test('hasSignature: case-insensitive x-api-key/authorization presence', () => {
+  assertEq(mr.hasSignature({ 'x-api-key': 'k' }), true);
+  assertEq(mr.hasSignature({ 'X-API-Key': 'k' }), true);
+  assertEq(mr.hasSignature({ authorization: 'Bearer x' }), true);
+  assertEq(mr.hasSignature({ 'Content-Type': 'json' }), false);
+  assertEq(mr.hasSignature(null), false);
+  assertEq(mr.hasSignature({ 'x-api-key': '' }), false, 'empty value not a signature');
+});
+
+test('passthrough is alias for passthroughGeneric (D7)', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'servers', 'model-router', 'index.js'), 'utf-8');
+  const def = src.match(/function passthrough\(rawBody[\s\S]*?^\}/m);
+  assert(def, 'passthrough defined');
+  assert(/return passthroughGeneric\('POST'/.test(def[0]), 'passthrough body is a single return to passthroughGeneric');
+});
+
+test('route manager: overlay path is outside the repo, only shipping routes versioned (D10)', () => {
+  // The user overlay lives at globalDir()/model-router/user-config.json (stable,
+  // home-based — never under DATA_DIR which is per-folder). Verify the resolved
+  // path is NOT inside this repo, so no route definition is ever committed
+  // outside config/router-config.json.
+  const { routerUserConfigPath } = require('./lib/router-config-path.js');
+  const overlay = routerUserConfigPath();
+  assert(!overlay.startsWith(ROOT), `user-config overlay is outside the repo (${overlay})`);
+  const shipped = stripComments(ROUTER_CONFIG.routes);
+  for (const p of Object.keys(shipped)) {
+    assert(p.startsWith('/'), `route ${p} is path-shaped`);
+  }
+  // config/router-config.json is the only tracked route file in the repo.
+  const { execSync } = require('child_process');
+  const tracked = execSync('git ls-files config/router-config.json', { cwd: ROOT }).toString().trim();
+  assertEq(tracked, 'config/router-config.json', 'shipping routes are the only tracked route file');
 });
 
 // ─── Runner ──────────────────────────────────────────────────────────────────
