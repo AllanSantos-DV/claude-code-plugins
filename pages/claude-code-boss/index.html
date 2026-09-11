@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.23.0 — memória semântica, execução curada e roteador de modelos com BYOK</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica local, execução curada, aprendizado no loop e um roteador de modelos opt-in com plano B para 429 e BYOK (seu próprio endpoint Anthropic-compatible). Na v2.23.0 o cliente MCP redescobre o daemon.json sozinho: a URL do mcp-memory-server não quebra mais no dia seguinte — a porta dinâmica é re-lida no restart do daemon (ECONNREFUSED/timeout disparam _reconnect() com retry único). O router ganha teto de TTFB próprio para o BYOK, desarme de timeout de socket antes do proxy SSE e debounce de 60s na troca de build (acaba o ping-pong kill entre dois installs válidos). A curadoria fecha 3 classes de separador na assinatura de comando, ignora segmentos que são só atribuição de variável e descarta chaves órfãs no load. E o tooltip de Server URL no dashboard (EN+PT) agora documenta explicitamente o comportamento da porta dinâmica." />
+<title>claude-code-boss v2.24.0 — memória semântica, execução curada e roteador de modelos com BYOK</title>
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica local, execução curada, aprendizado no loop e um roteador de modelos opt-in com plano B para 429 e BYOK (seu próprio endpoint Anthropic-compatible). Na v2.24.0 o roteador ganha gerenciador declarativo de rotas: `config/router-config.json#routes` (shipping, versionado) define o DEFAULT e `user-config.json` faz overlay raso por rota, `validateRoute(path, ov)` é puro com allowlist fechada de upstream/auth, `resolveRoutes(cfg, {warn})` ignora overlays inválidas com warn (fail-open por rota), e a autenticação vira declarativa — `401 missing signature` em rotas `signature`, `403 Forbidden: non-loopback Host` em `loopback`, `405 Allow: <method>` em mismatch de method, `404` quando nenhuma rota bateu. `passthrough` virou alias fino de `passthroughGeneric` e a paridade `DEFAULT_ROUTES` ↔ shipping rotas é automatizada em teste. Na v2.23.0 o cliente MCP redescobre o daemon.json sozinho: a URL do mcp-memory-server não quebra mais no dia seguinte — a porta dinâmica é re-lida no restart do daemon (ECONNREFUSED/timeout disparam _reconnect() com retry único). O router ganha teto de TTFB próprio para o BYOK, desarme de timeout de socket antes do proxy SSE e debounce de 60s na troca de build (acaba o ping-pong kill entre dois installs válidos). A curadoria fecha 3 classes de separador na assinatura de comando, ignora segmentos que são só atribuição de variável e descarta chaves órfãs no load. E o tooltip de Server URL no dashboard (EN+PT) agora documenta explicitamente o comportamento da porta dinâmica." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -2451,7 +2451,7 @@
 
   <nav class="top">
     <a href="../index.html">← allansantos-plugins</a>
-    <span class="ver">v2.23.0</span>
+    <span class="ver">v2.24.0</span>
   </nav>
 
   <header class="hero">
@@ -2576,7 +2576,47 @@
 
 
   <section>
-    <p class="label">Novo na v2.23.0 · cliente MCP auto-reconecta quando o daemon reinicia, e a URL do mcp-memory-server não quebra mais no dia seguinte</p>
+    <p class="label">Novo na v2.24.0 · gerenciador declarativo de rotas no roteador: rotas versionadas, overlay de config e autenticação declarativa</p>
+    <p class="lede">O model-router ganha um <b>gerenciador declarativo de rotas</b>: as rotas sairam de ser um bloco fixo no código e passam a ser <b>versionadas em <code>config/router-config.json#routes</code></b> (shipping), com <b>overlay raso</b> de <code>user-config.json</code> por rota — ausente = default, <code>null</code>/<code>false</code> = desabilita, objeto = substitui. A validação (<code>validateRoute</code>) é <b>pura</b>, com allowlist fechada de upstream e auth, e <code>resolveRoutes(cfg, {warn})</code> ignora overlays inválidas com warn (fail-open por rota). A autenticação vira <b>declarativa</b>: <code>401 missing signature</code> em rotas <code>signature</code>, <code>403 Forbidden: non-loopback Host</code> em <code>loopback</code>, <code>405 Allow: &lt;method&gt;</code> em mismatch de method, <code>404</code> quando nenhuma rota bateu. <code>passthrough</code> virou alias fino de <code>passthroughGeneric</code> (retry 1x condicional a <code>count_tokens</code>), e a paridade <code>DEFAULT_ROUTES</code> ↔ shipping rotas (strip recursivo <code>_comment*</code>) é automatizada em teste. O padrão é o de sempre da página: <b>o que era constante vira dado</b>, e o dado é validado antes de ser usado.</p>
+
+    <div class="callout">
+      <span class="tag">rotas versionadas · overlay raso · fail-open por rota</span>
+      A rota do router <b>não é mais um bloco no código</b>. <code>config/router-config.json#routes</code> é o <b>shipping</b> (versionado com o plugin) e define o DEFAULT; <code>user-config.json</code> faz <b>overlay raso por rota</b> — ausente = usa o default, <code>null</code>/<code>false</code> = desabilita a rota, objeto = substitui. <code>validateRoute(path, ov)</code> é <b>puro</b>: allowlist fechada de <code>upstream ∈ {passthrough, routed, /^local:(health|metrics|metricsReset|catalog)$/}</code> e <code>auth ∈ {none, signature, loopback}</code>, <code>warn</code> injetável, <code>hasSignature(h)</code> case-insensitive. <code>resolveRoutes(cfg, {warn})</code> <b>ignora overlays inválidas com warn</code> — uma rota ruim não derruba as outras (fail-open por rota). A autenticação é declarativa: <code>401 missing signature</code> em rotas <code>signature</code>, <code>403 Forbidden: non-loopback Host</code> em <code>loopback</code>, <code>405 Allow: &lt;method&gt;</code> em mismatch de method, <code>404</code> quando nenhuma rota bateu. <code>passthrough</code> virou <b>alias fino</code> de <code>passthroughGeneric</code> (retry 1x condicional a <code>count_tokens</code>), e a paridade <code>DEFAULT_ROUTES</code> ↔ shipping rotas (strip recursivo <code>_comment*</code>) é <b>automatizada em teste</b> — o shipping não pode diverger do default sem o teste falhar.
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4>Rotas declaradas em <code>router-config.json#routes</code> · shipping versionado</h4>
+        <p>O bloco de rotas saiu do código e foi para um <b>arquivo versionado</b> em <code>config/router-config.json#routes</code>, que define o DEFAULT. O <code>user-config.json</code> faz <b>overlay raso por rota</b>: ausente = default, <code>null</code>/<code>false</code> = desabilita, objeto = substitui. Editar uma rota já não exige tocar no proxy — e o overlay é shallow, então um campo que você não menciona não é apagado.</p>
+      </div>
+      <div class="win">
+        <h4><code>validateRoute</code> puro · allowlist fechada, <code>hasSignature</code> case-insensitive</h4>
+        <p>A validação é <b>pura</b> e com allowlist fechada: <code>upstream ∈ {passthrough, routed, /^local:(health|metrics|metricsReset|catalog)$/}</code>, <code>auth ∈ {none, signature, loopback}</code>, <code>warn</code> injetável. <code>hasSignature(h)</code> é case-insensitive — o header <code>Authorization</code> e o <code>authorization</code> são a mesma coisa. Uma rota com upstream desconhecido é <b>rejeitada</b>, não silenciosamente aceita.</p>
+      </div>
+      <div class="win">
+        <h4><code>resolveRoutes</code> · fail-open por rota, overlays inválidas ignoradas com warn</h4>
+        <p>Uma rota mal formada <b>não derruba as outras</code>: <code>resolveRoutes(cfg, {warn})</code> ignora overlays inválidas com warn, mantendo as válidas. É fail-open por rota, não fail-open total — um erro de configuração numa rota não pode tirar o proxy do ar.</p>
+      </div>
+      <div class="win">
+        <h4>Autenticação declarativa · <code>401</code>/<code>403</code>/<code>405</code>/<code>404</code> com mensagens fixas</h4>
+        <p>A auth saiu de ser um <code>if</code espalhado e virou <b>uma regra por rota</code>: <code>401 missing signature</code> em rotas <code>signature</code>, <code>403 Forbidden: non-loopback Host</code> em <code>loopback</code>, <code>405 Allow: &lt;method&gt;</code> em mismatch de method, <code>404</code> quando nenhuma rota bateu. O comportamento é o mesmo de sempre, mas agora é <b>configurável e testável</b> — e não uma convenção que só quem escreveu o proxy entende.</p>
+      </div>
+      <div class="win">
+        <h4><code>passthrough</code> virou alias fino de <code>passthroughGeneric</code></h4>
+        <p>Duas rotas que faziam a mesma coisa agora compartilham uma única implementação: <code>passthrough</code> é um alias de <code>passthroughGeneric</code>, com retry 1x condicional a <code>count_tokens</code>. O <b>defeito que fecha:</b> uma rota que podia ser renomeada sem mudar o comportamento, e não era.</p>
+      </div>
+      <div class="win">
+        <h4>Paridade <code>DEFAULT_ROUTES</code> ↔ shipping rotas · automatizada em teste</h4>
+        <p>O shipping (o que o plugin instala) e o default (o que o código espera) <b>não podem diverger</b>: o teste faz strip recursivo de <code>_comment*</code> e compara. Se alguém editar <code>router-config.json</code> sem atualizar o default, o gate cai. É a mesma disciplina que esta página aplica a números — <b>o que é dado é checado</b>.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>O que mudou de verdade:</b> as rotas <b>não eram o problema</b> — elas eram um bloco fixo no código, e o problema era que isso as tornava <b>inalteráveis sem tocar no proxy</b>. Agora mudar uma rota é mudar um arquivo de config; e o overlay raso + fail-open por rota significa que <b>config errada não derruba o plugin</b>. A autenticação declarativa não adiciona comportamento novo: os mesmos <code>401</code>/<code>403</code>/<code>405</code>/<code>404</code> que já existiam, mas agora com mensagens fixas e uma allowlist que impede uma rota de se passar por outra. E o limite honesto: <code>resolveRoutes</code> ignora overlays inválidas — então uma config que <b>não é validada pelo usuário</b> também não é aplicada, e o plugin roda com o default. É fail-open, não fail-silent: o warn é injetável, então quem opera pode ver.</p>
+  </section>
+
+
+  <section>
+    <p class="label">Novo na v2.22.0 · multi-tenant por projeto e CRUD completo do Brain no dashboard</p>
     <p class="lede">Duas frentes que se encontram no mesmo lugar — <b>isolamento</b> e <b>controle</b>. O model-router fica <b>multi-tenant por projeto</b>: um header seu separa sticky pins, métricas e histórico diário sem tocar em quem não usa. E o dashboard ganha <b>CRUD completo do Brain</b>: editar entrada inline, navegar paginado e apagar com <b>backup obrigatório antes da mutação</b> — o que expôs e consertou um bug pré-existente grave em que o delete da UI <b>nunca apagou linha alguma</b> do SQLite.</p>
 
     <div class="callout">
