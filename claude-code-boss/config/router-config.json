@@ -167,5 +167,15 @@
     "_comment_headers": "Mapa GENERICO nome->valor, ex.: { \"Authorization\": \"Bearer ...\" }. E mapa (e nao um campo token) de proposito: se o endpoint exigir outro header (chave de gateway, tenant id, dois headers), muda a config e nao o codigo. NUNCA commitar valores reais — o usuario preenche pelo dashboard, que grava em DATA_DIR/model-router/user-config.json.",
     "classifyRemote": false,
     "_comment_classifyRemote": "OPT-IN (ADR-010). Quando true E byok.enabled, a classificacao de tier usa o PROPRIO endpoint do usuario (prompt minimo ~500 chars, modelo haiku do routing config). on-limit: so classifica remotamente com o cooldown ativo (mesmo gate do plano B). Falha/timeout -> MiniLM local (fail-open). false = classificacao 100% local."
+  },
+  "routes": {
+    "_comment": "Gerenciador declarativo de rotas do proxy. Chave = path (ex.: /v1/models, /v1/messages, /v1/messages/count_tokens, /health, /metrics, /catalog). Valor = { method, upstream, auth, _comment_* }. upstream: passthrough (verbatim p/ Anthropic/BYOK), local:<handler> (ex.: local:catalog). auth: signature (x-api-key/authorization — default p/ /v1/*), none (health/metrics), loopback (/metrics/reset). Shipping (este arquivo) define o DEFAULT; user-config.json faz overlay raso por rota via mergeUserConfig — ausente = default; null/false = desabilita; objeto = substitui. A rota /v1/models default eh passthrough p/ Anthropic (GENÉRICA, sem exceção); edite em user-config.json p/ local:catalog se quiser servir do proxy.",
+    "/health": { "method": "GET", "upstream": "local:health", "auth": "none" },
+    "/metrics": { "method": "GET", "upstream": "local:metrics", "auth": "none" },
+    "/metrics/reset": { "method": "POST", "upstream": "local:metricsReset", "auth": "loopback" },
+    "/catalog": { "method": "GET", "upstream": "local:catalog", "auth": "none" },
+    "/v1/messages": { "method": "POST", "upstream": "routed", "auth": "signature", "_comment_upstream": "routed = via forwardRequest (classificador + teto/ceiling). Unico ponto roteado; demais /v1/* sao passthrough generico." },
+    "/v1/messages/count_tokens": { "method": "POST", "upstream": "passthrough", "auth": "signature" },
+    "/v1/models": { "method": "GET", "upstream": "passthrough", "auth": "signature", "_comment_upstream": "Default passthrough p/ Anthropic (GENÉRICO). Para servir local (snapshot do catálogo), grave em DATA_DIR/model-router/user-config.json: {\"routes\":{\"/v1/models\":{\"method\":\"GET\",\"upstream\":\"local:catalog\",\"auth\":\"none\"}}}" }
   }
 }
