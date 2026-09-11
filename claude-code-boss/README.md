@@ -1,6 +1,6 @@
 # claude-code-boss
 
-Plugin para Claude Code Desktop — **v2.23.0**
+Plugin para Claude Code Desktop — **v2.24.0**
 
 Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizado leve para Claude Code. A orquestração fica a cargo das ferramentas nativas (Agent/Workflow) — o plugin foca no que o nativo não tem.
 
@@ -66,7 +66,7 @@ claude-code-boss/
 │   ├── hook-logger.js         # Utilitário: append a .runtime/hook-errors.jsonl
 │   └── sync-version.js        # Propaga versão para todos os arquivos de versão
 ├── servers/
-│   └── brain-server/          # MCP server (stdio + HTTP daemon) — ver servers/brain-server/README.md
+│   └── brain-server/          # MCP server (daemon HTTP único, porta fixa) — ver servers/brain-server/README.md
 ├── skills/                    # skills do Claude Code (inclui plugin-install)
 ├── package.json               # scripts: test, version:sync
 └── TASK-MAP.md                # Histórico de entrega (parcialmente obsoleto pós slim-down)
@@ -230,37 +230,38 @@ O advisory é silencioso quando já há id estável, no backend `local` (onde o
 `basename` é o esperado), e sob cooldown por-pasta. Para desligar de vez:
 `onboarding.projectIdentity: false` na config.
 
-## Brain MCP: stdio (padrão) + HTTP (opt-in)
+## Brain MCP: daemon único, zero processo por sessão (ADR-001)
 
-O brain-server (`servers/brain-server/`) atende em **dois transportes**, com a mesma
-lógica e o mesmo SQLite/KB:
+O brain-server (`servers/brain-server/`) tem **um único modo**: um daemon HTTP de
+longa duração (StreamableHTTP, *stateful*) numa **porta fixa** (`58217`),
+compartilhado por toda sessão do Claude Code e qualquer outro consumidor na
+máquina — **um modelo, um SQLite**. O `.mcp.json` aponta direto pra URL
+(`"type":"http"`, sem `command`) — **Claude Code não spawna processo nenhum por
+sessão**; cada sessão é um cliente HTTP fino do daemon único.
 
-- **stdio (padrão, inalterado)** — cada host (Claude Code, via `.mcp.json`) spawna
-  seu próprio processo. Comportamento idêntico ao histórico; o `project` é inferido
-  do CWD. **Nada muda para quem já usa** — sem reinstalar, sem mexer no `.mcp.json`.
-- **HTTP (opt-in, aditivo)** — um **daemon único de longa duração** (StreamableHTTP,
-  *stateful*) que N workspaces/clientes compartilham (**um modelo, um SQLite**), em
-  vez de N processos stdio. Sobe com:
-  ```bash
-  node servers/brain-server/index.js --http [--port <N>] --plugin-data <DATA_DIR>
-  ```
-  A porta é determinística por data-dir (ou fixe com `BRAIN_HTTP_PORT`). Em HTTP o
-  `project` é **obrigatório** por chamada (não há CWD para inferir — sem `project`,
-  rejeita em vez de cair em `'default'`).
+O daemon em si é garantido (encontrado-ou-iniciado) por um hook
+`SessionStart`/`UserPromptSubmit` (`scripts/brain-daemon-ensure.js`) — efêmero
+(roda, garante, sai), então não fere o próprio princípio que existe pra servir.
 
-**Auto-start + auto-upgrade**: o launcher stdio sobe o daemon sozinho (detached) e, a
+- **Porta é FIXA** (`58217`, não derivada por data-dir), pra bater com a `url`
+  estática do `.mcp.json`. Override com `--port` ou `BRAIN_HTTP_PORT`.
+- `project` é **obrigatório** por chamada (não há CWD de sessão pra inferir — o
+  daemon serve todos os projetos da máquina); sem `project`, rejeita
+  (`PROJECT_REQUIRED`) em vez de cair em `'default'`.
+
+**Auto-start + auto-upgrade**: o hook de ensure sobe o daemon sozinho (detached) e, a
 cada atualização do plugin, **troca um daemon obsoleto pelo novo** (lock em
 `DATA_DIR` + checagem de versão via `/health`). Desligue com `BRAIN_HTTP_AUTOSTART=0`.
 
-**Migrar um consumidor externo (ex.: OpenCode)** do cache de SHA rotativo para uma
-URL estável: fixe `BRAIN_HTTP_PORT` e aponte para um MCP remoto
-`http://127.0.0.1:<port>/mcp` (passando `project` explícito **e** o header
-`Authorization: Bearer <token>` — token em `<DATA_DIR>/brain-http.token`, fixável
-via `BRAIN_HTTP_TOKEN`). O Claude Code segue em stdio pelo `.mcp.json` inalterado.
+**Consumir de fora do Claude Code** (ex.: OpenCode): aponte pra
+`http://127.0.0.1:58217/mcp` (ou a porta fixada via `BRAIN_HTTP_PORT`), passando
+`project` explícito. Nenhum header de auth é exigido em `/mcp` — o `.mcp.json`
+não consegue carregar um segredo gerado em runtime, então esse endpoint usa
+apenas guarda de `Origin` (defesa contra DNS rebinding).
 
-**Auth do daemon HTTP (v1.19.1+)**: `/mcp` e `/shutdown` exigem o token (mesmo
-padrão do dashboard: token local + guarda de `Origin` contra DNS rebinding);
-`/health` permanece aberto para o supervisor de versão.
+**Auth**: só `/shutdown` (ação destrutiva) exige token — token local em
+`<DATA_DIR>/brain-http.token`, fixável via `BRAIN_HTTP_TOKEN`. `/mcp` usa apenas
+guarda de `Origin`; `/health` permanece totalmente aberto.
 
 > **Referência técnica completa** (tools, endpoints, supervisor, config):
 > [`servers/brain-server/README.md`](servers/brain-server/README.md).
