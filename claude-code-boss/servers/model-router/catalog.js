@@ -83,11 +83,17 @@ function buildCatalog(rawModels) {
 // Busca o /v1/models (paginado via cursor after_id, seguindo has_more/last_id).
 // Usa a credencial de ENTRADA (headers) — o resultado já vem escopado pela
 // assinatura. Callback(err, models[]). Status != 200 (incl. 401/403) → err, e o
-// chamador faz fallback pro estático. Timeout curto pra não segurar nada.
+// chamador faz fallback pro estático. Timeout curto pra não segurar nada — mesmo
+// contra um gateway alternativo/BYOK (maybeWarmCatalog em index.js resolve pro
+// MESMO destino do passthrough): é fire-and-forget, a request em curso NUNCA
+// espera, e falha aqui só troca o catálogo dinâmico pelo mapa estático (sem
+// erro visível). 6s (vs. os 4s originais) só absorve o hop de rede extra de um
+// gateway antes do backoff — não é o teto de geração (BYOK_UPSTREAM_TIMEOUT_MS),
+// que não se aplica aqui por não haver reasoning nessa chamada (é só listagem).
 function fetchModels(opts, cb) {
   const {
     host, port, protocol = 'https:', headers = {},
-    limit = 1000, timeoutMs = 4000, maxPages = 20,
+    limit = 1000, timeoutMs = 6000, maxPages = 20,
   } = opts || {};
   const lib = protocol === 'http:' ? http : https;
   const all = [];
@@ -198,6 +204,48 @@ function effortForModel(modelId) {
   return key ? _snapshot.support[key] : null;
 }
 
+// ── Alias de id p/ o picker `/model` (só usado sob BYOK) ──────────────────────
+// O picker `/model` do Claude Code filtra fora qualquer entrada cujo `id` não
+// contenha "claude"/"anthropic" — um modelo BYOK custom (ex.: "gpt-4",
+// "llama-3") nunca aparece na lista. Disfarçamos o id com um prefixo
+// configurável (default "anthropic-") só pra passar no filtro; o nome real
+// vai no `display_name`, e o prefixo é removido de volta antes de rotear
+// (ver unaliasModelId) — o resto do pipeline nunca vê o id disfarçado.
+const DEFAULT_ALIAS_PREFIX = 'anthropic-';
+
+// Id que já contém "claude"/"anthropic" passa no filtro do picker sozinho —
+// prefixar de novo duplicaria (relevante num catálogo misto BYOK+Anthropic).
+function looksAnthropic(id) {
+  const s = (id || '').toLowerCase();
+  return s.includes('claude') || s.includes('anthropic');
+}
+
+function aliasModelId(id, prefix) {
+  if (typeof id !== 'string' || !id || looksAnthropic(id)) return id;
+  return `${prefix || DEFAULT_ALIAS_PREFIX}${id}`;
+}
+
+// Inverso de aliasModelId — usado ao ler `body.model` de uma request de volta
+// do cliente, para que classificação/roteamento/upstream vejam o id REAL.
+// Prefixo ausente ou não batendo → devolve o id inalterado (idempotente).
+function unaliasModelId(id, prefix) {
+  const p = prefix || DEFAULT_ALIAS_PREFIX;
+  if (typeof id === 'string' && p && id.startsWith(p)) return id.slice(p.length);
+  return id;
+}
+
+// Snapshot.models travestido pro picker: ids que passam no filtro, com o nome
+// real preservado em display_name. Entradas já "anthropic-like" saem intactas.
+function aliasedModelList(snapshot, prefix) {
+  if (!snapshot || !snapshot.models) return [];
+  return Object.values(snapshot.models).map((m) => {
+    const realId = m.id;
+    const id = aliasModelId(realId, prefix);
+    if (id === realId) return m;
+    return Object.assign({}, m, { id, display_name: m.display_name || realId });
+  });
+}
+
 // ── Hooks de teste (determinísticos, sem rede) ────────────────────────────────
 
 function _setSnapshot(rawModels) {
@@ -217,6 +265,7 @@ function _reset() {
 
 module.exports = {
   EFFORT_ORDER,
+  DEFAULT_ALIAS_PREFIX,
   familyOf,
   effortLevelsFrom,
   buildCatalog,
@@ -225,6 +274,9 @@ module.exports = {
   getSnapshot,
   modelForFamily,
   effortForModel,
+  aliasModelId,
+  unaliasModelId,
+  aliasedModelList,
   _setSnapshot,
   _reset,
 };

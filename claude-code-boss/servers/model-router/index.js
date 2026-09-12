@@ -509,7 +509,7 @@ async function classifyByok(prompt, config) {
       logger.warn('BYOK classify request error', { err: e.message });
       resolve(null);
     });
-    req.setTimeout(3000, () => { req.destroy(); resolve(null); });
+    req.setTimeout(BYOK_CLASSIFY_TIMEOUT_MS, () => { req.destroy(); resolve(null); });
     req.write(body);
     req.end();
   });
@@ -569,6 +569,28 @@ function catalogConfig(config) {
   };
 }
 function catalogEnabled(config) { return catalogConfig(config).enabled; }
+
+// Prefixo do alias de id BYOK p/ o picker `/model` (ver catalog.aliasModelId).
+// Configurável via `byok.modelAliasPrefix`; default "anthropic-" (catalog.js).
+function byokAliasPrefix(config) {
+  const b = (config && config.byok) || {};
+  return (typeof b.modelAliasPrefix === 'string' && b.modelAliasPrefix) || catalog.DEFAULT_ALIAS_PREFIX;
+}
+
+// Desfaz o alias em `body.model` (SE a request for BYOK) antes de qualquer
+// classificação/roteamento — o resto do pipeline só deve ver o id REAL. Não é
+// um no-op inofensivo pular isto: um id disfarçado forwardado ao BYOK cru
+// (ex.: "anthropic-gpt-4") o endpoint não reconhece e falha (model not
+// supported). Muta `body` in-place; devolve o id original (p/ log).
+function unaliasBodyModel(body, config) {
+  if (!body || typeof body.model !== 'string') return body && body.model;
+  const original = body.model;
+  const alvo = byok.resolveUpstream(config, { onLimit: cooldownActive(config) }, UPSTREAM_FALLBACK);
+  if (alvo.isByok) {
+    body.model = catalog.unaliasModelId(original, byokAliasPrefix(config));
+  }
+  return original;
+}
 
 function resolveModel(tier, config) {
   const routing = config.routing || {};
@@ -1130,6 +1152,14 @@ const UPSTREAM_TIMEOUT_MS = 8000;
 // BYOK conseguir terminar de tentar o failover dele mesmo, trocando um "BYOK
 // tentou e não conseguiu" por um falso "endpoint BYOK inacessível".
 const BYOK_UPSTREAM_TIMEOUT_MS = 100000;
+// Teto do classify-remoto do BYOK (classifyByok, abaixo) — DELIBERADAMENTE curto,
+// e NÃO o mesmo teto de BYOK_UPSTREAM_TIMEOUT_MS: essa chamada bloqueia a request
+// REAL do usuário (classify() é `await`ado antes de rotear) e usa um modelo
+// forçado barato (haiku, max_tokens:5) — sem risco de reasoning longo. Um teto de
+// 100s aqui prenderia toda request atrás de uma classificação que já tem
+// fallback local pronto (MiniLM). 5s (vs. os 3s originais) só dá uma folga extra
+// pro hop de rede de um gateway/BYOK antes de cair no fallback.
+const BYOK_CLASSIFY_TIMEOUT_MS = 5000;
 
 function sanitizeUpstreamHeaders(headers) {
   const out = {};
@@ -1197,10 +1227,12 @@ function sendUpstreamRequest(lib, options, body, onResponse, onError, timeoutMs)
 function requestUpstream(upstreamTarget, path, headers, bodyStr, onResponse, onError) {
   const lib = upstreamTarget.protocol === 'http:' ? http : UPSTREAM_LIB;
   const options = { hostname: upstreamTarget.host, port: upstreamTarget.port, path, method: 'POST', headers };
-  // BYOK ganha um teto de TTFB mais folgado que a Anthropic (ver comentário
-  // de BYOK_UPSTREAM_TIMEOUT_MS): endpoint de terceiro, sem prompt cache, TTFB
-  // cresce com o tamanho do prompt.
-  const timeoutMs = upstreamTarget.isByok ? BYOK_UPSTREAM_TIMEOUT_MS : UPSTREAM_TIMEOUT_MS;
+  // Qualquer destino que NÃO seja a Anthropic real (BYOK ou o gateway alternativo
+  // de `config.upstream`) ganha o teto de TTFB mais folgado (ver comentário de
+  // BYOK_UPSTREAM_TIMEOUT_MS): endpoint de terceiro, sem prompt cache da Anthropic,
+  // TTFB cresce com o tamanho do prompt. `isByok` sozinho não bastava aqui — o
+  // gateway alternativo também troca o destino mas mantém isByok=false.
+  const timeoutMs = upstreamTarget.isCustomEndpoint ? BYOK_UPSTREAM_TIMEOUT_MS : UPSTREAM_TIMEOUT_MS;
   return sendUpstreamRequest(lib, options, bodyStr, onResponse, onError, timeoutMs);
 }
 
@@ -2281,7 +2313,7 @@ function passthroughGeneric(method, rawBody, originalHeaders, res, pathOriginal,
     }
     logger.error('Passthrough generic upstream error', { err: e.message, path: pathOriginal });
     if (!res.headersSent) { res.writeHead(502); res.end(JSON.stringify({ error: { type: 'proxy_error', message: e.message } })); }
-  }, upstreamTarget.isByok ? BYOK_UPSTREAM_TIMEOUT_MS : UPSTREAM_TIMEOUT_MS);
+  }, upstreamTarget.isCustomEndpoint ? BYOK_UPSTREAM_TIMEOUT_MS : UPSTREAM_TIMEOUT_MS);
   if (hasBody) { options.headers['content-length'] = Buffer.byteLength(payload); }
   else { delete options.headers['content-length']; }
   return doReq();
@@ -2297,10 +2329,18 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
     // Fail-loud: ligado sem destino não pode virar "usa o Claude e ninguém vê".
     logger.error('BYOK mal configurado — request NÃO roteada ao endpoint', { causa: upstreamTarget.misconfigured });
   }
+  // Achado de auditoria (2026-09-11): `isByok` sozinho não bastava aqui — o
+  // gateway alternativo (config.upstream, `isByok:false, isCustomEndpoint:true`)
+  // também é um destino que NÃO é a Anthropic real. Um 429 dele não é a janela
+  // da assinatura esgotada; usar só `!isByok` armava/consultava o MESMO
+  // `_cooldownUntil` global para os dois destinos, desviando geração+catálogo
+  // inteiros por um rate-limit que pode ser só do gateway. `isCustomEndpoint`
+  // é a checagem correta: só é `false` na Anthropic real.
+  const isRealAnthropic = !upstreamTarget.isCustomEndpoint;
 
   const cd = cooldownCfg(config);
   // Circuit breaker: janela em cooldown? vai DIRETO ao plano B (sem martelar a Anthropic).
-  if (!upstreamTarget.isByok && cd.enabled && _cooldownUntil) {
+  if (isRealAnthropic && cd.enabled && _cooldownUntil) {
     if (Date.now() < _cooldownUntil) {
       logger.info('Cooldown ativo — plano B direto (sem tocar na Anthropic)', {
         restamSeg: Math.round((_cooldownUntil - Date.now()) / 1000),
@@ -2334,8 +2374,9 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
       upRes.on('data', (c) => { if (errBody.length < 16384) errBody += c; }); // limita memória
       upRes.on('end', () => {
         // Arma DEPOIS de ler o corpo: na assinatura o reset pode vir no CORPO
-        // (rate_limit_event/marcador), não só nos headers.
-        if (cd.enabled) armCooldown(upRes.headers, config, errBody);
+        // (rate_limit_event/marcador), não só nos headers. Só arma p/ Anthropic
+        // real — um 429 do gateway alternativo não é a janela da assinatura.
+        if (cd.enabled && isRealAnthropic) armCooldown(upRes.headers, config, errBody);
         const hint = resumeHint();
         logger.warn('Limite upstream detectado — acionando plano B', {
           status:     upRes.statusCode,
@@ -2348,7 +2389,7 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
         handleLimitExceeded(reqBody, config, res, hint);
       });
       upRes.on('error', (e) => {
-        if (cd.enabled) armCooldown(upRes.headers, config, '');
+        if (cd.enabled && isRealAnthropic) armCooldown(upRes.headers, config, '');
         logger.warn('Erro lendo corpo do limite — acionando plano B mesmo assim', { err: e.message });
         metricsOutcome('planB', route, config);
         handleLimitExceeded(reqBody, config, res, resumeHint());
@@ -2378,7 +2419,7 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
     // até o resetsAt real; (2) capturar `usage` (tokens reais) p/ telemetria.
     // Nunca altera/pausa o corpo; tudo best-effort (try/catch).
     {
-      const wantRLScan = cd.enabled && !_cooldownUntil;
+      const wantRLScan = cd.enabled && isRealAnthropic && !_cooldownUntil;
       let scanBuf = '';
       let armed = false;
       let usage = null;
@@ -2548,6 +2589,22 @@ async function createServer(config, mode, routerToken) {
         return;
       }
       if (up === 'passthrough') {
+        // /v1/models sob BYOK: em vez do passthrough cru (que devolveria os ids
+        // do endpoint custom intactos, filtrados pelo picker `/model` do Claude
+        // Code), serve o catálogo já aquecido com os ids disfarçados (ver
+        // catalog.aliasedModelList). Sem BYOK, ou catálogo ainda frio, cai no
+        // passthrough de sempre — zero mudança de comportamento pra quem usa
+        // Anthropic puro.
+        if (pathnameEarly === '/v1/models' && String(req.method).toUpperCase() === 'GET') {
+          const alvo = byok.resolveUpstream(cfgEarly, { onLimit: cooldownActive(cfgEarly) }, UPSTREAM_FALLBACK);
+          const snap = alvo.isByok ? catalog.getSnapshot() : null;
+          if (snap) {
+            const data = catalog.aliasedModelList(snap, byokAliasPrefix(cfgEarly));
+            res.writeHead(200, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ object: 'list', data }));
+            return;
+          }
+        }
         let rawBodyEarly = '';
         req.on('data', c => rawBodyEarly += c);
         req.on('error', e => { logger.error('Request read error (passthrough)', { err: e.message }); if (!res.headersSent) { res.writeHead(400); res.end(); } });
@@ -2613,8 +2670,22 @@ async function createServer(config, mode, routerToken) {
       let pathnameLate = '';
       try { pathnameLate = new URL(req.url, 'http://127.0.0.1').pathname; } catch (_) { pathnameLate = (req.url || '').split('?')[0]; }
       if (pathnameLate.includes('/count_tokens')) {
-        logger.debug('count_tokens — passthrough verbatim (sem rota)', { path: req.url, bytes: Buffer.byteLength(rawBody) });
-        passthrough(rawBody, req.headers, res, req.url, cfg);
+        // Igual ao /v1/models: se o cliente escolheu no picker um modelo BYOK
+        // disfarçado, o `model` no corpo vem com o alias — desfaz antes de
+        // repassar, senão o endpoint custom recusa (id que ele não conhece).
+        let ctBody = rawBody;
+        try {
+          const alvoCt = byok.resolveUpstream(cfg, { onLimit: cooldownActive(cfg) }, UPSTREAM_FALLBACK);
+          if (alvoCt.isByok) {
+            const parsed = JSON.parse(rawBody);
+            if (typeof parsed.model === 'string') {
+              const real = catalog.unaliasModelId(parsed.model, byokAliasPrefix(cfg));
+              if (real !== parsed.model) { parsed.model = real; ctBody = JSON.stringify(parsed); }
+            }
+          }
+        } catch (e) { logger.debug('count_tokens — unalias ignorado (corpo não-JSON ou sem model)', { err: e.message }); }
+        logger.debug('count_tokens — passthrough verbatim (sem rota)', { path: req.url, bytes: Buffer.byteLength(ctBody) });
+        passthrough(ctBody, req.headers, res, req.url, cfg);
         return;
       }
       let body;
@@ -2624,6 +2695,14 @@ async function createServer(config, mode, routerToken) {
         res.writeHead(400);
         res.end(JSON.stringify({ error: 'invalid json' }));
         return;
+      }
+
+      // Desfaz o alias de picker (ver byokAliasPrefix/catalog.aliasModelId) ANTES
+      // de classificar/rotear — feito uma vez aqui pra cobrir os 3 modos abaixo
+      // (fallback-only, sticky-tier, per-turn), que todos leem body.model.
+      const aliasedModel = unaliasBodyModel(body, cfg);
+      if (aliasedModel !== body.model) {
+        logger.debug('Alias de modelo BYOK desfeito', { recebido: aliasedModel, real: body.model });
       }
 
       // MODO 'fallback-only': PASSTHROUGH cache-safe. Encaminha o body INALTERADO ao
@@ -2984,5 +3063,16 @@ if (require.main === module) {
     readRouterToken,
     routerTokenMatches,
     classify,
+    // Alias de id BYOK p/ o picker `/model` (ver catalog.js): exportados p/ os
+    // testes provarem o gate isByok e a reversão de body.model sem HTTP real.
+    byokAliasPrefix,
+    unaliasBodyModel,
+    // Ponto de CONSUMO do teto de timeout por isCustomEndpoint (ver comentário
+    // em requestUpstream): docs/BACKLOG.md apontava que só a ORIGEM do dado
+    // (byok.resolveUpstream) tinha teste — exportados p/ o teste hermético
+    // provar a ESCOLHA do teto em requestUpstream sem esperar um timeout real.
+    requestUpstream,
+    UPSTREAM_TIMEOUT_MS,
+    BYOK_UPSTREAM_TIMEOUT_MS,
   };
 }

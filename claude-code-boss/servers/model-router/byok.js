@@ -82,6 +82,7 @@ function resolveUpstream(config, opts, fallback) {
     port: Number.isFinite(fb.port) ? fb.port : DEFAULT_PORT,
     protocol: fb.protocol || DEFAULT_PROTOCOL,
     isByok: false,
+    isCustomEndpoint: false,
     headers: null,
     forwardHeaders: [],
   };
@@ -92,6 +93,12 @@ function resolveUpstream(config, opts, fallback) {
   // ambientes onde o Claude Code já está configurado para falar com um gateway
   // (não api.anthropic.com direto) e o proxy precisa alcançar o MESMO gateway,
   // levando os headers que ele exige (ex.: x-litellm-team-id).
+  //
+  // `isCustomEndpoint` é ORTOGONAL a `isByok`: marca "o destino não é a Anthropic
+  // real" (sem a garantia de TTFB baixo dela) — é o que decide o teto de timeout
+  // em index.js. `isByok` decide só a remoção de credencial. Achado de campo: um
+  // gateway configurado aqui herdava o teto de 8s pensado pra Anthropic direta e
+  // estourava em modelos com reasoning longo antes do primeiro token.
   const u = upstreamCfg(config);
   if (u.enabled === true) {
     const dest = parseBaseUrl(u.baseUrl);
@@ -100,6 +107,7 @@ function resolveUpstream(config, opts, fallback) {
       anthropic.port = dest.port;
       anthropic.protocol = dest.protocol;
       anthropic.forwardHeaders = Array.isArray(u.forwardHeaders) ? u.forwardHeaders : [];
+      anthropic.isCustomEndpoint = true;
     }
   }
 
@@ -117,7 +125,7 @@ function resolveUpstream(config, opts, fallback) {
   }
   return {
     host: dest.host, port: dest.port, protocol: dest.protocol,
-    isByok: true, mode,
+    isByok: true, isCustomEndpoint: true, mode,
     headers: (b.headers && typeof b.headers === 'object') ? b.headers : {},
   };
 }

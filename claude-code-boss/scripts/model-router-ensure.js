@@ -800,11 +800,20 @@ async function main() {
     // healthCheck false = ou a porta está livre, ou está ocupada por um processo que
     // NÃO prova identidade (sem o token). Em ambos, tentamos (re)subir o NOSSO
     // roteador. Se a porta estiver tomada por um processo alheio, o nosso server não
-    // consegue fazer bind (EADDRINUSE → sai por reuso sem escrever state fresco) e o
-    // startServer reporta falha → caímos no fail-open (sem roteamento, Claude direto).
+    // consegue fazer bind (EADDRINUSE) e sai sem escrever state fresco.
     log(`Porta ${FIXED_PORT} sem roteador reconhecido. Iniciando servidor...`);
-    const started = await startServer(mode);
-    if (started) isRunning = await healthCheck(FIXED_PORT);
+    await startServer(mode);
+    // SEMPRE health-check aqui, mesmo se startServer() reportou timeout: um timeout
+    // esperando state file fresco NÃO prova que não há roteador vivo — acontece também
+    // quando o NOSSO filho recém-lançado bate em EADDRINUSE e cede a um model-router JÁ
+    // saudável (log: "instância redundante, saindo (reuso)"); esse filho nunca escreve
+    // state novo, então waitForFreshState estoura os 10s mesmo com o roteador de pé. Sem
+    // este re-check, a corrida acima desativava o roteamento (removia ANTHROPIC_BASE_URL)
+    // até a próxima invocação do hook, apesar do servidor real estar saudável o tempo
+    // todo — bug confirmado no router.log (2026-08-01, 08-02, 08-12, 08-17, 08-18: sempre
+    // com "instância redundante"/"Servidor iniciado" logo antes do "ERRO: timeout
+    // aguardando state file").
+    isRunning = await healthCheck(FIXED_PORT);
     if (!isRunning) {
       // Distingue um SQUATTER (algo responde /health, mas sem o token) de uma falha
       // comum, só para dar um AVISO preciso. Em QUALQUER caso: fail-open (Claude

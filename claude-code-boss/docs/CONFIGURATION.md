@@ -61,6 +61,7 @@ config efetiva (lida por ensure/server/dashboard)
 | `byok.baseUrl` | string | `""` | Host apenas (path é sempre `/v1/messages`) |
 | `byok.headers` | map | `{}` | Headers livres (ex.: `Authorization: Bearer ...`). **Nunca commitar valores reais** |
 | `byok.classifyRemote` | bool | `false` | **ADR-010**: classifica via SEU endpoint (~500 chars/sessão, modelo haiku). on-limit: só com cooldown ativo. Falha → MiniLM local |
+| `byok.modelAliasPrefix` | string | `"anthropic-"` | Prefixo aplicado ao `id` de modelos BYOK (sem "claude"/"anthropic" no nome) na resposta de `GET /v1/models`, só enquanto a request atual é BYOK — o picker `/model` do Claude Code filtra fora ids sem esse termo. Nome real fica em `display_name`; o prefixo é removido antes de rotear/classificar |
 | `tenants` | map | `{}` | **ADR-011**: config por projeto (`{ "<projectId>": { sticky?, fallback?, byok?… } }`), shallow-merged sobre a global quando o request traz o header |
 
 ### Multi-tenant (`X-CCB-Tenant`, ADR-011)
