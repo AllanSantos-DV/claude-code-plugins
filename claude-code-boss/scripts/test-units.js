@@ -789,6 +789,7 @@ test('brain-server/index.js: source calls publishAndFollow (not a bare writeActi
 
 // ─── MCP HTTP (StreamableHTTP) transport + remote mappings ───────────────────
 const http = require('http');
+const https = require('https');
 
 /** Start a fake daemon mimicking the /mcp contract; returns {url, port, seen, close}. */
 function startFakeDaemon(opts = {}) {
@@ -4694,6 +4695,78 @@ test('catalog.maybeRefresh: warms snapshot then serves modelForFamily', async ()
   }
 });
 
+// ─── catalog: alias de id BYOK p/ o picker `/model` ────────────────────────────
+
+test('catalog.aliasModelId: prefixa id não-Anthropic com o default; ids "claude"/"anthropic" passam intactos', () => {
+  assertEq(catalog.aliasModelId('gpt-4', undefined), 'anthropic-gpt-4');
+  assertEq(catalog.aliasModelId('llama-3', 'custom-'), 'custom-llama-3');
+  assertEq(catalog.aliasModelId('claude-sonnet-4-6', undefined), 'claude-sonnet-4-6'); // já passa no filtro
+  assertEq(catalog.aliasModelId('my-anthropic-model', undefined), 'my-anthropic-model'); // contém "anthropic"
+  assertEq(catalog.aliasModelId('', undefined), '');
+  assertEq(catalog.aliasModelId(null, undefined), null);
+});
+
+test('catalog.unaliasModelId: reverte o prefixo (default e custom); idempotente sem prefixo', () => {
+  assertEq(catalog.unaliasModelId('anthropic-gpt-4', undefined), 'gpt-4');
+  assertEq(catalog.unaliasModelId('custom-llama-3', 'custom-'), 'llama-3');
+  assertEq(catalog.unaliasModelId('gpt-4', undefined), 'gpt-4'); // sem prefixo → inalterado
+  assertEq(catalog.unaliasModelId('claude-sonnet-4-6', undefined), 'claude-sonnet-4-6');
+  // round-trip
+  const aliased = catalog.aliasModelId('gpt-4', undefined);
+  assertEq(catalog.unaliasModelId(aliased, undefined), 'gpt-4');
+});
+
+test('catalog.aliasedModelList: aliasa não-Anthropic com display_name real; entradas "claude" passam intactas', () => {
+  const raw = [
+    { id: 'gpt-4', display_name: undefined, created_at: '2025-01-01T00:00:00Z' },
+    CAT_RAW[0], // claude-sonnet-4-6 — já passa no filtro
+  ];
+  const snap = catalog.buildCatalog(raw);
+  const list = catalog.aliasedModelList(snap, undefined);
+  const gpt = list.find((m) => m.display_name === 'gpt-4' || m.id === 'anthropic-gpt-4');
+  assert(gpt && gpt.id === 'anthropic-gpt-4', 'gpt-4 deveria virar anthropic-gpt-4');
+  assertEq(gpt.display_name, 'gpt-4'); // nome real preservado
+  const claude = list.find((m) => m.id === 'claude-sonnet-4-6');
+  assert(claude, 'entrada claude-sonnet-4-6 deveria passar intacta');
+  assertEq(claude.display_name, 'Sonnet 4.6');
+});
+
+test('catalog.aliasedModelList: snapshot vazio/ausente → []', () => {
+  assertEq(catalog.aliasedModelList(null, undefined), []);
+  assertEq(catalog.aliasedModelList({ models: {} }, undefined), []);
+});
+
+test('router.byokAliasPrefix: default anthropic-, override via config.byok.modelAliasPrefix', () => {
+  assertEq(router.byokAliasPrefix({}), catalog.DEFAULT_ALIAS_PREFIX);
+  assertEq(router.byokAliasPrefix({ byok: {} }), catalog.DEFAULT_ALIAS_PREFIX);
+  assertEq(router.byokAliasPrefix({ byok: { modelAliasPrefix: 'custom-' } }), 'custom-');
+});
+
+test('router.unaliasBodyModel: só desfaz o alias quando isByok=true; não-BYOK e não-alias ficam intactos', () => {
+  const byokCfg = { byok: { enabled: true, mode: 'always', baseUrl: 'http://e' } };
+  const body1 = { model: 'anthropic-gpt-4' };
+  router.unaliasBodyModel(body1, byokCfg);
+  assertEq(body1.model, 'gpt-4'); // BYOK ativo → desfaz o alias
+
+  const nonByokCfg = {};
+  const body2 = { model: 'anthropic-gpt-4' };
+  router.unaliasBodyModel(body2, nonByokCfg);
+  assertEq(body2.model, 'anthropic-gpt-4'); // sem BYOK → não mexe (evita regressão no caso comum)
+
+  const body3 = { model: 'claude-sonnet-4-6' };
+  router.unaliasBodyModel(body3, byokCfg);
+  assertEq(body3.model, 'claude-sonnet-4-6'); // sem prefixo → inalterado
+
+  const customPrefixCfg = { byok: { enabled: true, mode: 'always', baseUrl: 'http://e', modelAliasPrefix: 'custom-' } };
+  const body4 = { model: 'custom-llama-3' };
+  router.unaliasBodyModel(body4, customPrefixCfg);
+  assertEq(body4.model, 'llama-3');
+
+  // corpo sem `model` (string) → retorna undefined/valor, não lança
+  assertEq(router.unaliasBodyModel({}, byokCfg), undefined);
+  assertEq(router.unaliasBodyModel(null, byokCfg), null);
+});
+
 // ─── model-router-shim (instalador do shim do claude.exe, Windows) ────────────
 // Testes herméticos: NUNCA tocam no claude.exe real — usam dirs temporários com
 // arquivos "grandes" (>1MB = original) e "pequenos" (<1MB = wrapper). A lógica de
@@ -6148,6 +6221,24 @@ test('FIX1 healthCheck: SQUATTER (200 mas authenticated:false) → false → rot
   }
 });
 
+// ═══ FIX: router "não resobe sozinho" — startServer()=false NÃO prova ausência ═══
+// Contexto real (router.log 2026-08-01, 08-02, 08-12, 08-17, 08-18): quando duas sessões
+// concorrem pelo bind da porta fixa, o filho perdedor cede a um model-router JÁ SAUDÁVEL
+// ("instância redundante, saindo (reuso)") sem escrever state fresco — startServer()
+// então estoura o timeout de waitForFreshState e reporta falha, MESMO com o roteador de
+// pé. Se o ensure só chamasse healthCheck() quando started===true, essa falsa falha
+// desativava o roteamento (removia ANTHROPIC_BASE_URL) até a PRÓXIMA invocação do hook
+// (minutos a horas depois). Regressão: o healthCheck pós-startServer tem que ser
+// incondicional.
+test('router self-heal: healthCheck pós-startServer roda mesmo se startServer() reportou falha', () => {
+  const src = fs.readFileSync(path.join(SCRIPTS, 'model-router-ensure.js'), 'utf-8');
+  assertEq(/if \(started\)\s*isRunning = await healthCheck/.test(src), false,
+    'REGRESSÃO: healthCheck não pode ficar condicionado a started===true — um filho que ' +
+    'cedeu a um router já saudável reporta started=false mesmo com o roteador vivo');
+  assertEq(/await startServer\(mode\);\s*\n(?:\s*\/\/[^\n]*\n)*\s*isRunning = await healthCheck\(FIXED_PORT\);/.test(src), true,
+    'healthCheck(FIXED_PORT) deve rodar sempre logo após startServer(mode), sem gate em started');
+});
+
 // ═══ FIX 2 — classificação NIM opt-in (privacidade: default LOCAL) ═══
 // classify() aceita deps injetáveis (classifyNim/classifyLocal) p/ contarmos chamadas
 // sem tocar no embedder/anchors do módulo nem bater na rede.
@@ -6728,6 +6819,94 @@ test('byok.resolveUpstream: ligado SEM baseUrl → NAO roteia e diz o porque (fa
   assertEq(/baseUrl/i.test(u.misconfigured || ''), true, 'e a causa fica VISIVEL, nao silenciosa');
 });
 
+// ── isCustomEndpoint: ORTOGONAL a isByok, decide o teto de timeout ───────────
+// Achado de campo: o gateway alternativo (config.upstream) troca o destino pra
+// um endpoint de terceiro mas mantem isByok=false (credencial da assinatura
+// continua fluindo) — sem isCustomEndpoint, essa request herdava o teto de 8s
+// pensado so pra Anthropic direta e estourava em modelos com reasoning longo.
+
+test('byok.resolveUpstream: Anthropic pura (nada configurado) → isCustomEndpoint false', () => {
+  const u = byok.resolveUpstream({}, { onLimit: false });
+  assertEq(u.isCustomEndpoint, false);
+});
+
+test('byok.resolveUpstream: BYOK assumindo a request → isCustomEndpoint true (junto com isByok)', () => {
+  const cfg = { byok: { enabled: true, mode: 'always', baseUrl: 'https://ex.ts.net', headers: {} } };
+  const u = byok.resolveUpstream(cfg, { onLimit: false });
+  assertEq(u.isByok, true);
+  assertEq(u.isCustomEndpoint, true);
+});
+
+test('byok.resolveUpstream: gateway alternativo (config.upstream) → isCustomEndpoint true MESMO com isByok false', () => {
+  const cfg = { upstream: { enabled: true, baseUrl: 'https://gateway.corp.example.com' } };
+  const u = byok.resolveUpstream(cfg, { onLimit: false });
+  assertEq(u.isByok, false, 'credencial da assinatura continua fluindo — nao e BYOK');
+  assertEq(u.isCustomEndpoint, true, 'mas o destino NAO e a Anthropic real — precisa do teto de timeout maior');
+  assertEq(u.host, 'gateway.corp.example.com');
+});
+
+test('byok.resolveUpstream: gateway alternativo DESLIGADO → Anthropic pura, isCustomEndpoint false', () => {
+  const cfg = { upstream: { enabled: false, baseUrl: 'https://gateway.corp.example.com' } };
+  const u = byok.resolveUpstream(cfg, { onLimit: false });
+  assertEq(u.host, 'api.anthropic.com');
+  assertEq(u.isCustomEndpoint, false);
+});
+
+// docs/BACKLOG.md apontava a lacuna: os testes acima só provam a ORIGEM
+// (byok.resolveUpstream), não o PONTO DE CONSUMO (requestUpstream escolhendo
+// o teto certo). Monkey-patch em http.request captura o `teto` passado a
+// req.setTimeout SEM esperar um timeout real (8s/100s seriam inviáveis num
+// teste unitário) — o fake req só precisa dos métodos que sendUpstreamRequest chama.
+function withFakeHttpRequest(lib, fn) {
+  const original = lib.request;
+  const calls = [];
+  lib.request = (options, cb) => {
+    const fakeReq = {
+      _timeouts: [],
+      setTimeout(ms, onTimeout) { this._timeouts.push(ms); if (onTimeout) this._onTimeout = onTimeout; return this; },
+      on() { return this; },
+      write() {},
+      end() {},
+      destroy() {},
+    };
+    calls.push({ options, req: fakeReq });
+    return fakeReq;
+  };
+  try {
+    fn(calls);
+  } finally {
+    lib.request = original;
+  }
+}
+
+test('router.requestUpstream: isCustomEndpoint=true usa BYOK_UPSTREAM_TIMEOUT_MS (não os 8s da Anthropic direta)', () => {
+  withFakeHttpRequest(https, (calls) => {
+    const target = { host: 'byok.example.com', port: 443, protocol: 'https:', isCustomEndpoint: true };
+    router.requestUpstream(target, '/v1/messages', {}, '{}', () => {}, () => {});
+    assertEq(calls.length, 1);
+    assertEq(calls[0].req._timeouts[0], router.BYOK_UPSTREAM_TIMEOUT_MS);
+  });
+});
+
+test('router.requestUpstream: isCustomEndpoint=false (Anthropic direta) usa UPSTREAM_TIMEOUT_MS', () => {
+  withFakeHttpRequest(https, (calls) => {
+    const target = { host: 'api.anthropic.com', port: 443, protocol: 'https:', isCustomEndpoint: false };
+    router.requestUpstream(target, '/v1/messages', {}, '{}', () => {}, () => {});
+    assertEq(calls.length, 1);
+    assertEq(calls[0].req._timeouts[0], router.UPSTREAM_TIMEOUT_MS);
+  });
+});
+
+test('router.requestUpstream: gateway alternativo (isCustomEndpoint=true, isByok=false) também herda o teto maior', () => {
+  withFakeHttpRequest(https, (calls) => {
+    const cfg = { upstream: { enabled: true, baseUrl: 'https://gateway.corp.example.com' } };
+    const target = byok.resolveUpstream(cfg, { onLimit: false });
+    assertEq(target.isByok, false);
+    router.requestUpstream(target, '/v1/messages', {}, '{}', () => {}, () => {});
+    assertEq(calls[0].req._timeouts[0], router.BYOK_UPSTREAM_TIMEOUT_MS, 'mesmo sem isByok, destino nao-Anthropic precisa do teto maior');
+  });
+});
+
 // ── SEGURANCA: o header do cliente carrega o token da ASSINATURA Claude ──────
 // Repassar isso a um endpoint de terceiro seria VAZAR a credencial do usuario.
 // O proxy so pode mandar ao endpoint os headers que o usuario configurou.
@@ -7060,6 +7239,56 @@ test('byok on-limit BUG DE CAMPO 2: count_tokens/catalogo ficavam presos na Anth
   try {
     require('child_process').execFileSync(process.execPath, ['-e', bodyScript], {
       env: { ...process.env, CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ct-cd-')) },
+      stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000,
+    });
+  } catch (e) {
+    throw new Error((e.stderr && e.stderr.toString().trim()) || e.message);
+  }
+});
+
+test('gateway alternativo NAO arma o disjuntor da Anthropic (achado da auditoria 2026-09-11)', () => {
+  // config.upstream (gateway corporativo tipo LiteLLM) resolve isByok:false,
+  // isCustomEndpoint:true — o MESMO destino "nao-Anthropic" que ja motivou o fix
+  // de timeout desta sessao. forwardRequest usava so `!isByok` pra decidir se
+  // arma/consulta o cooldown global: um 429 do GATEWAY (que pode ser so o
+  // rate-limit proprio dele) armava o mesmo `_cooldownUntil` que devia refletir
+  // so a janela da assinatura Anthropic real, desviando geracao+catalogo por um
+  // limite que nada tem a ver com a Anthropic. Prova: 429 com retry-after (arma
+  // na hora, ver armCooldown/computeCooldownUntil) atraves do gateway NAO pode
+  // deixar rastro em _cooldownUntil.
+  const script = `
+    const http = require('http');
+    const { PassThrough } = require('stream');
+    const rs = require(${JSON.stringify(path.join(ROOT, 'servers', 'model-router', 'index.js'))});
+    const fake = http.createServer((req, res) => {
+      req.on('data', () => {});
+      req.on('end', () => {
+        res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '60' });
+        res.end('{"error":{"message":"gateway rate limit"}}');
+      });
+    });
+    fake.listen(0, '127.0.0.1', () => {
+      const porta = fake.address().port;
+      const cfg = { upstream: { enabled: true, baseUrl: 'http://127.0.0.1:' + porta } };
+      const cliente = { 'x-api-key': 'sk-ant-CHAVE-cliente', 'anthropic-version': '2023-06-01' };
+      const sink = new PassThrough(); sink.writeHead = () => {}; sink.headersSent = false;
+      rs.__testHooks.reset();
+      rs.forwardRequest({ model: 'claude-haiku-4-5', messages: [] }, cliente, sink, cfg,
+        { origTier: 'haiku', finalTier: 'haiku', path: '/v1/messages' });
+      setTimeout(() => {
+        fake.close();
+        const estado = rs.__testHooks.getState();
+        assertEq(estado.until, 0, 'um 429 do GATEWAY nao pode armar o cooldown da Anthropic — armou ate ' + estado.until);
+        process.exit(0);
+      }, 900);
+    });
+    function assertEq(a, b, m) { if (a !== b) { console.error('FAIL: ' + (m || '') + ' esperado=' + b + ' obtido=' + a); process.exit(1); } }
+  `;
+  const bodyScript = `const assert=(c,m)=>{if(!c){console.error('FAIL: '+m);process.exit(1)}};`
+    + `try{${script}}catch(e){console.error(e&&e.stack||e);process.exit(1)}`;
+  try {
+    require('child_process').execFileSync(process.execPath, ['-e', bodyScript], {
+      env: { ...process.env, CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-gw-cd-')) },
       stdio: ['ignore', 'pipe', 'pipe'], timeout: 30000,
     });
   } catch (e) {
