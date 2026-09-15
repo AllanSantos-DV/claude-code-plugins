@@ -1,5 +1,9 @@
 # Changelog
 
+## [2.24.1] - 2026-09-15
+
+- **mcp-client**: auto-restart do mcp-memory-server quando o daemon cai — o cliente agora valida a saúde do servidor via `/health` antes de conectar; se estiver offline, dispara o spawn do JAR automaticamente, evitando tentativas de conexão em portas obsoletas do `daemon.json`.
+
 ## [2.24.0] - 2026-09-11
 
 - **brain-daemon-ensure**: auto-setup em background quando o `node_modules` está faltando — o hook roda `plugin-setup.js` em `child_process.spawn` detached antes de tentar o spawn do daemon, sem bloquear a sessão. O `additionalContext` agora é proativo: informa que o setup está rodando em background e instrui a LLM a rodar o setup manualmente como fallback. A LLM não precisa mais "adivinhar" que deve repassar um aviso genérico ao usuário.
