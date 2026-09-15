@@ -3,278 +3,328 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>rf-reviewer v0.2.4 — revisão de RF em Excel com daemon HTTP único</title>
-<meta name="description" content="RF Reviewer v0.2.4: motor determinístico para revisar Requisitos Funcionais em Excel, preservar a planilha original e usar Streamable HTTP com daemon único em vez de um processo Python por sessão." />
+<title>RF Reviewer — revisão de Requisitos Funcionais em Excel</title>
+<meta name="description" content="Plugin para Claude Code Desktop: revisa Requisitos Funcionais (RF) em Excel de forma determinística — extrai a planilha, o agente analisa cruzando com a memória do projeto, e injeta a análise de volta na MESMA planilha do cliente, sem nunca tocar no original. Perfis de coluna por assunto." />
 <style>
   :root{
-    --sheet:#fbfaf6;
-    --grid:#d8d2c3;
-    --ink:#17212b;
-    --muted:#66706d;
-    --blue:#245f8f;
-    --blue-soft:#e7f0f8;
-    --cell:#f0f7ef;
-    --cell-strong:#8dbb79;
-    --review:#b66b24;
-    --risk:#8f3b32;
-    --panel:#111820;
-    --panel-ink:#f7f1e7;
-    --panel-muted:#aab0aa;
-    --panel-line:rgba(255,255,255,.14);
-    --shadow:0 28px 72px -48px rgba(23,33,43,.62);
-    --maxw:1120px;
-    --sans:Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    --serif:Georgia, "Iowan Old Style", "Palatino Linotype", serif;
-    --mono:ui-monospace, "Cascadia Code", "JetBrains Mono", Consolas, "Liberation Mono", monospace;
+    --bg:#0d0c10; --bg-soft:#131218; --ink:#edeae1; --muted:#9a978d;
+    --line:rgba(255,255,255,.10); --green:#7bb06b; --green-soft:rgba(123,176,107,.13);
+    --green-lite:#b6d3aa; --maxw:1040px;
+    --mono:ui-monospace,"Cascadia Code","JetBrains Mono",Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
   }
-  @media (prefers-color-scheme:dark){
-    :root{
-      --sheet:#11161b; --grid:#2d3740; --ink:#f3efe6; --muted:#a4aaa7;
-      --blue:#7eb6df; --blue-soft:#172633; --cell:#17251e; --cell-strong:#8dbb79;
-      --review:#e1a15f; --risk:#df8b78; --panel:#080d12; --panel-ink:#f7f1e7;
-      --shadow:0 28px 72px -42px rgba(0,0,0,.78);
-    }
-  }
-  *{ box-sizing:border-box }
-  .cell, .step, .lane, .sheet-row > *, .facts li{ min-width:0; overflow-wrap:break-word }
-  code, h1, h2, .saving .num, .facts b{ overflow-wrap:break-word }
-  html{ -webkit-text-size-adjust:100%; scroll-behavior:smooth }
-  body{
-    margin:0; overflow-x:hidden; color:var(--ink); background:var(--sheet);
-    font-family:var(--sans); font-size:17px; line-height:1.58;
-    background-image:
-      linear-gradient(var(--grid) 1px, transparent 1px),
-      linear-gradient(90deg, var(--grid) 1px, transparent 1px);
-    background-size:42px 42px;
-    background-attachment:fixed;
-    -webkit-font-smoothing:antialiased;
-  }
-  body::before{ content:""; position:fixed; inset:0; pointer-events:none; z-index:-1;
-    background:linear-gradient(90deg, rgba(251,250,246,.96), rgba(251,250,246,.84) 58%, rgba(231,240,248,.76)); }
-  @media (prefers-color-scheme:dark){ body::before{ background:linear-gradient(90deg, rgba(17,22,27,.96), rgba(17,22,27,.90) 58%, rgba(23,38,51,.74)); } }
-  a{ color:inherit }
-  a:focus-visible, .btn:focus-visible, code:focus-visible{ outline:3px solid var(--review); outline-offset:4px; border-radius:8px }
-  code{ font-family:var(--mono); font-size:.86em; background:rgba(36,95,143,.12); padding:2px 6px; border-radius:6px }
-  .wrap{ max-width:var(--maxw); margin:0 auto; padding:0 clamp(18px,4vw,36px) }
-  .top{ display:flex; justify-content:space-between; align-items:center; gap:18px; padding:20px 0; font-family:var(--mono); font-size:12px; color:var(--muted) }
-  .top a{ text-decoration:none; border-bottom:1px solid transparent }
-  .top a:hover{ color:var(--ink); border-color:var(--grid) }
-  .pill{ border:1px solid var(--blue); color:var(--blue); border-radius:999px; padding:4px 11px; background:var(--blue-soft) }
-  .hero{ padding:clamp(46px,8vw,104px) 0 clamp(42px,7vw,80px); display:grid; grid-template-columns:minmax(0,1fr) minmax(330px,460px); gap:clamp(30px,6vw,70px); align-items:center }
-  .eyebrow{ margin:0 0 18px; font-family:var(--mono); font-size:12px; letter-spacing:.22em; text-transform:uppercase; color:var(--blue) }
-  h1{ margin:0; max-width:9ch; font-family:var(--serif); font-size:clamp(3.2rem,9vw,7.3rem); line-height:.86; letter-spacing:-.075em; font-weight:800 }
-  h1 span{ color:var(--review); font-style:italic }
-  .thesis{ max-width:44ch; margin:26px 0 0; font-size:clamp(1.12rem,2vw,1.42rem); line-height:1.42; color:var(--ink) }
-  .actions{ display:flex; flex-wrap:wrap; gap:12px; margin-top:28px }
-  .btn{ display:inline-flex; align-items:center; gap:8px; min-height:42px; padding:10px 15px; border:1px solid var(--ink); border-radius:999px; text-decoration:none; font-family:var(--mono); font-size:12.5px; background:var(--sheet) }
-  .btn.primary{ background:var(--ink); color:var(--sheet) }
-  .btn:hover{ transform:translateY(-1px); box-shadow:0 12px 28px -22px var(--ink) }
-  .sheet-card{ position:relative; background:var(--sheet); border:1px solid var(--grid); border-radius:18px; box-shadow:var(--shadow); overflow:hidden }
-  .sheet-card::before{ content:""; position:absolute; top:0; bottom:0; left:0; width:46px; background:linear-gradient(#e7edf1,#dce5ea); border-right:1px solid var(--grid) }
-  @media (prefers-color-scheme:dark){ .sheet-card::before{ background:linear-gradient(#1d2a34,#16212a) } }
-  .sheet-head{ position:relative; display:grid; grid-template-columns:46px repeat(4,1fr); border-bottom:1px solid var(--grid); font-family:var(--mono); font-size:11px; color:var(--muted) }
-  .sheet-head span{ padding:10px 12px; border-left:1px solid var(--grid) }
-  .sheet-row{ position:relative; display:grid; grid-template-columns:46px repeat(4,1fr); min-height:58px; border-bottom:1px solid var(--grid); font-size:13px }
-  .sheet-row:last-child{ border-bottom:0 }
-  .sheet-row > *{ padding:12px; border-left:1px solid var(--grid); min-width:0 }
-  .rownum{ font-family:var(--mono); color:var(--muted); text-align:center; background:transparent; border-left:0 !important }
-  .req{ font-weight:700 }
-  .newcol{ background:var(--cell); box-shadow:inset 3px 0 0 var(--cell-strong) }
-  .mark{ color:var(--review); font-family:var(--mono); font-size:11px; text-transform:uppercase; letter-spacing:.12em }
-  .formula{ display:block; padding:9px 14px; text-align:right; font-family:var(--mono); font-size:11px; color:var(--muted); border-top:1px solid var(--grid) }
-  section{ padding:clamp(48px,7vw,82px) 0; border-top:1px solid var(--grid) }
-  .label{ margin:0 0 18px; font-family:var(--mono); color:var(--blue); font-size:12px; letter-spacing:.2em; text-transform:uppercase }
-  h2{ margin:0 0 22px; max-width:18ch; font-family:var(--serif); font-size:clamp(2rem,4.5vw,4rem); line-height:.96; letter-spacing:-.045em }
-  .lede{ max-width:72ch; margin:0 0 30px; font-size:1.06rem; color:var(--muted) }
-  .grid{ display:grid; grid-template-columns:repeat(3,1fr); gap:1px; background:var(--grid); border:1px solid var(--grid) }
-  .cell{ background:rgba(251,250,246,.92); padding:26px 24px; min-height:190px }
-  @media (prefers-color-scheme:dark){ .cell{ background:rgba(17,22,27,.94) } }
-  .cell h3{ margin:0 0 10px; font-size:1.06rem; line-height:1.25 }
-  .cell p{ margin:0; color:var(--muted); font-size:14.5px; line-height:1.52 }
-  .kicker{ display:block; margin:0 0 11px; color:var(--review); font-family:var(--mono); font-size:11px; letter-spacing:.14em; text-transform:uppercase }
-  .transport{ display:grid; grid-template-columns:minmax(0,1fr) minmax(300px,420px); gap:clamp(26px,5vw,54px); align-items:stretch }
-  .compare{ background:var(--panel); color:var(--panel-ink); border-radius:18px; padding:24px; box-shadow:var(--shadow); display:grid; gap:18px; font-family:var(--mono) }
-  .lane{ border:1px solid var(--panel-line); border-radius:14px; padding:18px }
-  .lane small{ display:block; color:var(--panel-muted); text-transform:uppercase; letter-spacing:.18em; font-size:10px; margin-bottom:12px }
-  .proc{ display:flex; flex-wrap:wrap; gap:7px; margin:0 0 12px }
-  .dotproc{ min-width:26px; height:26px; padding:0 8px; border-radius:7px; display:grid; place-items:center; font-size:11px; white-space:nowrap; background:rgba(255,255,255,.08); color:var(--panel-muted); border:1px solid rgba(255,255,255,.08) }
-  .dotproc.hot{ background:rgba(225,161,95,.16); color:var(--review); border-color:rgba(225,161,95,.5) }
-  .lane strong{ display:block; font-size:1.2rem; line-height:1.15 }
-  .lane em{ color:var(--panel-muted); font-style:normal; font-size:12px }
-  .saving{ border-radius:18px; padding:26px; background:linear-gradient(135deg, var(--blue-soft), rgba(141,187,121,.20)); border:1px solid var(--grid) }
-  .saving .num{ display:block; color:var(--review); font-family:var(--serif); font-size:clamp(3.8rem,9vw,6.2rem); line-height:.82; letter-spacing:-.08em; font-weight:800 }
-  .saving p{ margin:14px 0 0; color:var(--muted) }
-  .facts{ list-style:none; margin:24px 0 0; padding:0; width:100%; display:flex; flex-direction:column; gap:10px; font-family:var(--mono); font-size:12.5px; color:var(--muted) }
-  .facts li{ position:relative; padding-left:24px }
-  .facts li::before{ content:"✓"; position:absolute; left:0; top:0; color:var(--blue) }
-  .flow{ background:var(--panel); color:var(--panel-ink); border-radius:18px; padding:clamp(24px,5vw,44px); box-shadow:var(--shadow) }
-  .flow .label{ color:var(--panel-muted) }
-  .steps{ display:grid; grid-template-columns:repeat(5,1fr); gap:1px; background:var(--panel-line); border:1px solid var(--panel-line); margin-top:24px }
-  .step{ background:var(--panel); padding:20px 16px; min-height:150px }
-  .step b{ display:block; color:var(--review); font-family:var(--mono); font-size:12px; margin-bottom:10px }
-  .step p{ margin:0; color:var(--panel-muted); font-size:13.5px; line-height:1.45 }
-  .install{ display:grid; grid-template-columns:minmax(0,1fr) minmax(260px,380px); gap:24px }
-  .terminal{ background:var(--panel); color:var(--panel-ink); border-radius:18px; overflow:hidden; box-shadow:var(--shadow); font-family:var(--mono) }
-  .termbar{ display:flex; gap:8px; align-items:center; padding:13px 16px; border-bottom:1px solid var(--panel-line) }
-  .termbar span{ width:11px; height:11px; border-radius:50% }
-  .termname{ margin-left:8px; color:var(--panel-muted); font-size:12px }
-  .termbody{ padding:18px; font-size:13px; line-height:1.9; overflow:auto }
-  .cmd{ white-space:nowrap }
-  .cmd::before{ content:"/"; color:var(--review) }
-  .note{ color:var(--panel-muted) }
-  .note::before{ content:"# " }
-  .linkbox{ border:1px solid var(--grid); border-radius:18px; padding:22px; background:rgba(251,250,246,.82) }
-  @media (prefers-color-scheme:dark){ .linkbox{ background:rgba(17,22,27,.86) } }
-  .linkbox a{ display:block; padding:12px 0; color:var(--blue); text-decoration:none; border-bottom:1px solid var(--grid); font-family:var(--mono); font-size:13px }
-  .linkbox a:last-child{ border-bottom:0 }
-  .linkbox a:hover{ color:var(--review) }
-  .honesty{ margin-top:22px; padding:16px 18px; border:1px solid rgba(182,107,36,.28); border-radius:10px; background:rgba(182,107,36,.08); color:var(--muted); font-size:14px }
-  footer{ padding:36px 0 58px; border-top:1px solid var(--grid); color:var(--muted); font-family:var(--mono); font-size:12.5px }
-  .foot{ display:flex; justify-content:space-between; flex-wrap:wrap; gap:18px }
-  .foot a{ text-decoration:none; color:var(--muted); margin-right:14px }
-  .foot a:hover{ color:var(--review) }
-  .reveal{ animation:rise .7s cubic-bezier(.2,.75,.2,1) both }
-  .sheet-card{ animation:floatin .8s cubic-bezier(.2,.75,.2,1) .08s both }
-  @keyframes rise{ from{ opacity:0; transform:translateY(14px) } to{ opacity:1; transform:none } }
-  @keyframes floatin{ from{ opacity:0; transform:translateY(18px) rotate(-1.5deg) } to{ opacity:1; transform:translateY(0) rotate(-.45deg) } }
-  @media (max-width:900px){
-    .hero, .transport, .install{ grid-template-columns:1fr }
-    h1{ max-width:12ch }
-    .grid{ grid-template-columns:repeat(2,1fr) }
-    .steps{ grid-template-columns:1fr 1fr }
-  }
-  @media (max-width:620px){
-    body{ font-size:16px; background-size:32px 32px }
-    .top{ align-items:flex-start; flex-direction:column }
-    .grid, .steps{ grid-template-columns:1fr }
-    .sheet-card{ border-radius:14px; transform:none !important }
-    .sheet-head, .sheet-row{ grid-template-columns:38px 1.2fr 1fr 1fr 1fr; font-size:11.5px }
-    .sheet-card::before{ width:38px }
-    .sheet-row > *, .sheet-head span{ padding:9px 8px }
-    .btn{ width:100%; justify-content:center }
+  @media (prefers-color-scheme:light){
+    :root{ --bg:#faf7f1; --bg-soft:#f2eee6; --ink:#1b1a1e; --muted:#6b6a62;
+           --line:rgba(20,20,25,.13); --green:#4b7d3c; --green-soft:rgba(75,125,60,.10); --green-lite:#3d6a30; }
   }
   @media (prefers-reduced-motion:reduce){
-    html{ scroll-behavior:auto }
-    *, *::before, *::after{ animation:none !important; transition:none !important }
-    .btn:hover{ transform:none }
+    *{ animation:none !important; transition:none !important; scroll-behavior:auto !important }
+  }
+  *{ box-sizing:border-box }
+  html{ -webkit-text-size-adjust:100%; scroll-behavior:smooth }
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:var(--sans); font-size:17px; line-height:1.6;
+    -webkit-font-smoothing:antialiased; overflow-x:hidden;
+  }
+  a{ color:inherit }
+  a:focus-visible,button:focus-visible{ outline:2px solid var(--green); outline-offset:3px; border-radius:4px }
+  code{ font-family:var(--mono); font-size:.85em; background:var(--green-soft); color:var(--green-lite);
+    padding:1px 6px; border-radius:5px; white-space:nowrap }
+  .wrap{ max-width:var(--maxw); margin:0 auto; padding:0 24px }
+  .mono{ font-family:var(--mono) }
+
+  header.nav{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:18px 0; border-bottom:1px solid var(--line) }
+  .brand{ display:flex; align-items:center; gap:10px; text-decoration:none }
+  .brand .logo{ width:30px; height:30px; border-radius:8px; display:grid; place-items:center;
+    background:var(--green-soft); border:1px solid var(--green); color:var(--green);
+    font-family:var(--mono); font-size:14px; font-weight:700 }
+  .brand .name{ font-family:var(--mono); font-size:14px; font-weight:600; letter-spacing:.01em }
+  .brand .name small{ color:var(--muted); font-weight:400; margin-left:6px }
+  .nav-links{ display:flex; align-items:center; gap:4px; flex-wrap:wrap }
+  .nav-links a{ font-family:var(--mono); font-size:12.5px; color:var(--muted); text-decoration:none;
+    padding:7px 12px; border-radius:8px }
+  .nav-links a:hover{ color:var(--ink); background:var(--bg-soft) }
+  .ver{ color:var(--green) !important; border:1px solid var(--green); border-radius:999px !important }
+
+  .hero{ padding:clamp(64px,10vw,128px) 0 clamp(40px,6vw,64px); position:relative }
+  .hero .kick{ font-family:var(--mono); font-size:12px; letter-spacing:.3em; text-transform:uppercase;
+    color:var(--green); margin:0 0 22px }
+  h1.disp{
+    font-family:var(--mono); font-weight:700; letter-spacing:-.035em; line-height:1.02;
+    font-size:clamp(2.1rem,6vw,4rem); margin:0; word-break:break-word;
+  }
+  h1.disp b{ color:var(--green); font-weight:700 }
+  .hero .sub{ font-size:clamp(1.05rem,2.2vw,1.32rem); line-height:1.5; margin:26px 0 0; color:var(--muted);
+    max-width:55ch }
+  .hero .sub b{ color:var(--ink); font-weight:600 }
+  .cta-row{ display:flex; flex-wrap:wrap; align-items:center; gap:16px; margin-top:34px }
+  .btn{ display:inline-flex; align-items:center; gap:9px; font-family:var(--mono); font-size:14px;
+    text-decoration:none; padding:13px 22px; border-radius:10px; font-weight:600; letter-spacing:.01em }
+  .btn--primary{ background:var(--green); color:#10130f; box-shadow:0 14px 36px -14px rgba(123,176,107,.55) }
+  .btn--primary:hover{ filter:brightness(1.07) }
+  .btn--ghost{ border:1px solid var(--line); color:var(--ink); background:transparent }
+  .btn--ghost:hover{ border-color:var(--green); color:var(--green) }
+  .btn .arr{ font-weight:700 }
+
+  .loop-diagram{ margin-top:clamp(44px,6vw,64px); border:1px solid var(--line); border-radius:16px;
+    background:var(--bg-soft); padding:clamp(20px,3vw,30px); overflow-x:auto }
+  .loop-diagram .cap{ display:flex; align-items:center; justify-content:space-between; gap:10px;
+    margin:0 0 20px; font-family:var(--mono); font-size:11px; letter-spacing:.18em; text-transform:uppercase;
+    color:var(--muted) }
+  .loop-diagram .cap b{ color:var(--green); font-weight:700 }
+  .loop-grid{ display:grid; grid-template-columns:1fr; gap:8px; min-width:620px }
+  .node{ display:grid; grid-template-columns:44px 1fr auto; align-items:center; gap:16px;
+    padding:16px 18px; border-radius:12px; background:var(--bg); border:1px solid var(--line) }
+  .node .ic{ width:44px; height:44px; border-radius:11px; display:grid; place-items:center;
+    font-size:20px; background:var(--green-soft); border:1px solid var(--green) }
+  .node .t{ display:block; font-family:var(--mono); font-size:13px; font-weight:600; letter-spacing:.02em }
+  .node .d{ display:block; font-size:12.5px; color:var(--muted); margin-top:3px; line-height:1.5 }
+  .node .tag2{ font-size:10px; letter-spacing:.1em; text-transform:uppercase; color:var(--green);
+    border:1px solid var(--green); padding:3px 10px; border-radius:999px; white-space:nowrap; font-family:var(--mono) }
+  .node--in .ic{ filter:grayscale(.35) }
+  .node--out{ border-color:var(--green) }
+  .down{ text-align:center; color:var(--green); font-size:18px; line-height:1; padding:4px 0; font-weight:700 }
+
+  section{ padding:clamp(56px,8vw,92px) 0 }
+  section + section{ border-top:1px solid var(--line) }
+  .sec-head{ display:flex; align-items:baseline; gap:18px; flex-wrap:wrap; margin:0 0 40px }
+  .sec-head h2{ font-family:var(--mono); font-size:clamp(1.35rem,3vw,1.75rem); letter-spacing:-.02em;
+    line-height:1.2; margin:0 }
+  .sec-head .num{ font-family:var(--mono); font-size:12px; color:var(--green); letter-spacing:.2em }
+  .sec-head p{ margin:0 0 0 auto; color:var(--muted); font-size:15px; max-width:44ch; line-height:1.5 }
+
+  .feats{ display:grid; grid-template-columns:repeat(3,1fr); gap:16px }
+  .feat{ border:1px solid var(--line); border-radius:14px; padding:26px 24px; background:var(--bg-soft);
+    transition:border-color .2s }
+  .feat:hover{ border-color:var(--green) }
+  .feat .ic{ width:46px; height:46px; border-radius:12px; display:grid; place-items:center; font-size:21px;
+    background:var(--green-soft); border:1px solid var(--green); margin-bottom:18px }
+  .feat h3{ font-family:var(--mono); font-size:15px; margin:0 0 10px; letter-spacing:-.01em }
+  .feat p{ margin:0; color:var(--muted); font-size:14px; line-height:1.55 }
+  .feat ul{ list-style:none; margin:16px 0 0; padding:16px 0 0; border-top:1px solid var(--line); display:grid; gap:8px }
+  .feat li{ font-size:12.5px; color:var(--muted); padding-left:18px; position:relative; line-height:1.5 }
+  .feat li::before{ content:"\2714"; position:absolute; left:0; top:0; color:var(--green); font-weight:700 }
+
+  .gains{ display:grid; grid-template-columns:repeat(3,1fr); gap:1px; background:var(--line);
+    border:1px solid var(--line); border-radius:14px; overflow:hidden }
+  .gain{ background:var(--bg-soft); padding:30px 26px }
+  .gain .label{ font-family:var(--mono); font-size:11px; letter-spacing:.14em; text-transform:uppercase;
+    color:var(--green); margin:0 0 14px }
+  .gain .big{ font-family:var(--mono); font-size:clamp(1.6rem,3.5vw,2.2rem); font-weight:700;
+    letter-spacing:-.02em; line-height:1.1 }
+  .gain p{ margin:10px 0 0; color:var(--muted); font-size:13.5px; line-height:1.55 }
+
+  .install{ display:grid; grid-template-columns:1.5fr 1fr; gap:40px; align-items:center }
+  .install h2{ font-family:var(--mono); font-size:clamp(1.35rem,3vw,1.75rem); margin:0 0 18px; letter-spacing:-.02em }
+  .install .lead{ color:var(--muted); font-size:15.5px; line-height:1.6; margin:0 0 26px; max-width:52ch }
+  .install .lead b{ color:var(--ink); font-weight:600 }
+  ol.steps{ list-style:none; margin:0; padding:0; counter-reset:st; display:grid; gap:14px }
+  ol.steps li{ counter-increment:st; display:grid; grid-template-columns:34px 1fr; gap:14px; align-items:center }
+  ol.steps li::before{ content:counter(st); width:34px; height:34px; border-radius:9px; display:grid;
+    place-items:center; font-family:var(--mono); font-size:12px; font-weight:700; color:var(--green);
+    border:1px solid var(--green); background:var(--green-soft) }
+  ol.steps b{ font-family:var(--mono); font-size:13px; font-weight:600 }
+  .install-card{ border:1px solid var(--line); border-radius:14px; background:var(--bg-soft);
+    padding:24px; font-family:var(--mono); font-size:12.5px }
+  .install-card .bar{ display:flex; align-items:center; gap:7px; margin-bottom:16px }
+  .install-card .bar i{ width:10px; height:10px; border-radius:50%; display:block }
+  .install-card .bar i:nth-child(1){ background:#d8574f }
+  .install-card .bar i:nth-child(2){ background:#d8a34f }
+  .install-card .bar i:nth-child(3){ background:#57c25f }
+  .install-card .bar span{ margin-left:8px; color:var(--muted) }
+  .install-card .cmd{ color:var(--ink); line-height:2.1; word-break:break-all }
+  .install-card .cmd .p{ color:var(--muted) }
+  .install-card .cmd .amp{ color:var(--green); font-weight:700 }
+  .install-card:hover .cmd .amp{ color:var(--green-lite) }
+
+  footer{ border-top:1px solid var(--line); padding:44px 0 64px }
+  footer .foot-grid{ display:flex; align-items:center; justify-content:space-between; gap:20px; flex-wrap:wrap }
+  footer .links{ display:flex; gap:6px; flex-wrap:wrap }
+  footer .links a{ font-family:var(--mono); font-size:12px; color:var(--muted); text-decoration:none;
+    padding:7px 12px; border-radius:8px }
+  footer .links a:hover{ color:var(--green); background:var(--green-soft) }
+  footer .legal{ font-family:var(--mono); font-size:11px; color:var(--muted); margin-top:14px }
+
+  @media (max-width:900px){
+    .feats{ grid-template-columns:1fr }
+    .gains{ grid-template-columns:1fr }
+    .install{ grid-template-columns:1fr; gap:32px }
+    .sec-head p{ margin-left:0; max-width:none }
+  }
+  @media (max-width:600px){
+    body{ font-size:16px }
+    .nav-links{ display:none }
+    .node{ grid-template-columns:36px 1fr; padding:13px 14px; gap:12px }
+    .node .ic{ width:36px; height:36px; font-size:16px }
+    .node .tag2{ display:none }
+    .btn{ width:100%; justify-content:center }
   }
 </style>
 </head>
 <body>
-<div class="wrap">
-  <nav class="top" aria-label="Navegação principal">
-    <a href="../index.html">← allansantos-plugins</a>
-    <span class="pill">rf-reviewer v0.2.4</span>
+
+<header class="nav wrap">
+  <a class="brand" href="#top">
+    <span class="logo">R</span>
+    <span class="name">rf-reviewer<small>v0.2.4</small></span>
+  </a>
+  <nav class="nav-links">
+    <a href="#como-funciona">Como funciona</a>
+    <a href="#features">Recursos</a>
+    <a href="#instalar">Instalar</a>
+    <a href="tech.html">Detalhes técnicos</a>
+    <a href="#top" class="ver">v0.2.4</a>
   </nav>
+</header>
 
-  <header class="hero">
-    <div>
-      <p class="eyebrow reveal">Revisão de RF · Excel</p>
-      <h1 class="reveal" style="animation-delay:.04s">Planilha revisada, <span>original intacto.</span></h1>
-      <p class="thesis reveal" style="animation-delay:.1s">O RF Reviewer faz a parte mecânica da revisão de Requisitos Funcionais: extrai a planilha, guia a análise com memória do projeto e injeta as colunas de volta na mesma pasta de trabalho, de forma versionada e não-destrutiva.</p>
-      <div class="actions reveal" style="animation-delay:.16s">
-        <a class="btn primary" href="#instalar">Instalar via marketplace</a>
-        <a class="btn" href="#transporte">Ver a novidade HTTP</a>
-      </div>
+<main id="top">
+
+  <section class="hero wrap">
+    <p class="kick">plugin para Claude Code Desktop</p>
+    <h1 class="disp">Revisão de RF em Excel<br /><b>sem tocar no original</b>.</h1>
+    <p class="sub">O rf-reviewer extrai a planilha de <b>Requisitos Funcionais</b>, deixa o agente <b>analisar cruzando com a memória do projeto</b> e injeta a revisão de volta na <b>mesma planilha do cliente</b> — de forma determinística, não-destrutiva e versionada.</p>
+    <div class="cta-row">
+      <a class="btn btn--primary" href="#instalar">Instalar no marketplace&nbsp;<span class="arr">→</span></a>
+      <a class="btn btn--ghost mono" href="tech.html">Detalhes técnicos</a>
     </div>
 
-    <div class="sheet-card" aria-label="Representação visual de uma planilha de requisitos com colunas de análise anexadas">
-      <div class="sheet-head" aria-hidden="true"><span></span><span>A RF</span><span>B Regra</span><span>C Memória</span><span>D Revisão</span></div>
-      <div class="sheet-row"><div class="rownum">12</div><div class="req">O sistema deve validar cobertura</div><div>origem cliente</div><div class="newcol"><span class="mark">cruzar</span><br/>memória</div><div class="newcol"><span class="mark">análise</span><br/>pendência</div></div>
-      <div class="sheet-row"><div class="rownum">13</div><div class="req">Registrar sinistro com status</div><div>original preservado</div><div class="newcol"><span class="mark">evidência</span><br/>memória</div><div class="newcol"><span class="mark">saída</span><br/>_revisado_vN</div></div>
-      <div class="sheet-row"><div class="rownum">14</div><div class="req">Calcular regra por perfil</div><div>sem recriar células</div><div class="newcol"><span class="mark">perfil</span><br/>colunas</div><div class="newcol"><span class="mark">prova</span><br/>célula a célula</div></div>
-      <span class="formula">rf_apply → rf_verificar_preservacao</span>
-    </div>
-  </header>
-
-  <section aria-labelledby="entrega-title">
-    <p class="label">O que o plugin faz</p>
-    <h2 id="entrega-title">Um motor tabular, não um editor manual.</h2>
-    <p class="lede">O contrato é claro: o agente julga; o motor executa. As 9 tools do <code>rf-engine</code> preparam, validam, aplicam e provam a preservação para arquivos <code>.xlsx</code> e <code>.csv</code>. Documentos como PDF, DOCX e PPTX ficam fora deste fluxo.</p>
-    <div class="grid">
-      <article class="cell"><span class="kicker">9 tools</span><h3>Mecânica determinística</h3><p><code>rf_prep</code>, <code>rf_apply</code>, <code>rf_validar</code>, <code>rf_status</code> e demais tools cuidam da transformação repetível; nada de editar workbook na mão.</p></article>
-      <article class="cell"><span class="kicker">Não-destrutivo</span><h3>A mesma planilha, versionada</h3><p>As colunas de análise são anexadas na planilha do cliente. O arquivo revisado recebe sufixo <code>_revisado_vN.xlsx</code>; os dados originais ficam 100% preservados.</p></article>
-      <article class="cell"><span class="kicker">Memória</span><h3>Requisito contra contexto</h3><p>As tools <code>rf_brain_*</code> cruzam cada RF com a memória do projeto (o seu <code>project_id</code>) antes da conclusão da análise.</p></article>
-      <article class="cell"><span class="kicker">Perfis</span><h3>Colunas por assunto</h3><p>O mesmo motor troca o perfil de colunas conforme o tema (ex.: <code>rf-end</code>), ou perfis que você registra para outro assunto tabular.</p></article>
-      <article class="cell"><span class="kicker">Hooks</span><h3>O fluxo é lembrado</h3><p><code>rf-remind</code> injeta a ordem correta quando a tarefa é RF em planilha; <code>rf-guard</code> redireciona tentativas de gravar XLSX manualmente para <code>rf_apply</code>.</p></article>
-      <article class="cell"><span class="kicker">Escopo honesto</span><h3>XLSX/CSV apenas</h3><p>Injetar coluna só faz sentido em tabela. Para documentos, use outro fluxo de análise.</p></article>
-    </div>
-  </section>
-
-  <section id="transporte" aria-labelledby="transporte-title">
-    <div class="transport">
-      <div>
-        <p class="label">Novidade · transporte HTTP</p>
-        <h2 id="transporte-title">O transporte mudou; as tools não.</h2>
-        <p class="lede">O MCP migrou de <b>stdio</b> para <b>Streamable HTTP</b> com um daemon único em <code>127.0.0.1:19847</code>. As sessões do Claude Code agora conectam como clientes finos via <code>.mcp.json type:http</code>, sem abrir um processo Python por sessão.</p>
-        <ul class="facts">
-          <li>Um hook <b>SessionStart</b> sobe ou garante o daemon HTTP de forma idempotente.</li>
-          <li>O contrato das <b>9 tools</b> continua idêntico ao da 0.1.1; só o transporte mudou.</li>
-          <li>Loopback <code>127.0.0.1</code>, validação de <code>Origin</code> e token opt-in por <code>RF_ENGINE_HTTP_TOKEN</code>.</li>
-          <li>Rollback disponível: <code>/plugin install rf-reviewer@rf-v0.1.1</code>.</li>
-        </ul>
-      </div>
-      <aside class="saving" aria-label="Ganho de memória medido">
-        <span class="num">−403 MB</span>
-        <p><b>Ganho medido:</b> 8 sessões saíram de ~489 MB em 8 processos stdio para ~87 MB em 1 daemon HTTP — cerca de <b>82%</b> a menos e <b>7 processos</b> eliminados.</p>
-      </aside>
-    </div>
-    <div class="compare" aria-label="Comparação entre o transporte antigo e o novo">
-      <div class="lane">
-        <small>Antes · stdio</small>
-        <div class="proc" aria-hidden="true"><span class="dotproc hot">py</span><span class="dotproc hot">py</span><span class="dotproc hot">py</span><span class="dotproc hot">py</span><span class="dotproc hot">py</span><span class="dotproc hot">py</span><span class="dotproc hot">py</span><span class="dotproc hot">py</span></div>
-        <strong>1 processo Python por sessão</strong><em>~489 MB em 8 sessões</em>
-      </div>
-      <div class="lane">
-        <small>Agora · Streamable HTTP</small>
-        <div class="proc" aria-hidden="true"><span class="dotproc hot">daemon</span><span class="dotproc">http</span><span class="dotproc">http</span><span class="dotproc">http</span><span class="dotproc">http</span><span class="dotproc">http</span><span class="dotproc">http</span><span class="dotproc">http</span></div>
-        <strong>1 daemon compartilhado, clientes finos</strong><em>~87 MB em 8 sessões</em>
-      </div>
-    </div>
-  </section>
-
-  <section aria-labelledby="fluxo-title">
-    <div class="flow">
-      <p class="label">Fluxo de revisão</p>
-      <h2 id="fluxo-title">Ordem explícita, saída verificável.</h2>
-      <div class="steps">
-        <div class="step"><b>rf_perfis_listar</b><p>Escolha ou confirme o perfil de colunas para o assunto da planilha.</p></div>
-        <div class="step"><b>rf_prep</b><p>Extraia a tabela e gere o esqueleto de análise.</p></div>
-        <div class="step"><b>agente + memória</b><p>Preencha a análise cruzando cada requisito com o conhecimento do projeto.</p></div>
-        <div class="step"><b>rf_validar → rf_apply</b><p>Valide e injete as colunas anexadas na mesma planilha.</p></div>
-        <div class="step"><b>rf_verificar_preservacao</b><p>Prove célula a célula que o original foi preservado.</p></div>
-      </div>
-    </div>
-  </section>
-
-  <section id="instalar" aria-labelledby="instalar-title">
-    <p class="label">Instalação</p>
-    <h2 id="instalar-title">Instale pelo marketplace.</h2>
-    <div class="install">
-      <div class="terminal" aria-label="Comandos de instalação">
-        <div class="termbar"><span style="background:#ff5f57"></span><span style="background:#febc2e"></span><span style="background:#28c840"></span><span class="termname">Claude Code</span></div>
-        <div class="termbody">
-          <div class="cmd">plugin marketplace add AllanSantos-DV/claude-code-plugins</div>
-          <div class="cmd">plugin install rf-reviewer@allansantos-plugins</div>
-          <div class="note">requer Python 3.11+ no PATH e openpyxl</div>
-          <div class="note">rollback: /plugin install rf-reviewer@rf-v0.1.1</div>
+    <div class="loop-diagram" aria-label="Diagrama do fluxo de revisão">
+      <p class="cap"><b>o fluxo</b>&nbsp;·&nbsp;da planilha original à planilha revisada</p>
+      <div class="loop-grid">
+        <div class="node node--in">
+          <span class="ic">📄</span>
+          <div><span class="t">Sua planilha de RF</span>
+            <span class="d">Um arquivo <code>.xlsx</code> ou <code>.csv</code> com os requisitos do cliente — do jeito que entregou.</span></div>
+          <span class="tag2">entrada</span>
+        </div>
+        <div class="down">▼</div>
+        <div class="node">
+          <span class="ic">⚙️</span>
+          <div><span class="t">O motor extrai (parte mecânica)</span>
+            <span class="d">9 tools MCP leem a planilha e montam as colunas de análise do perfil escolhido.</span></div>
+        </div>
+        <div class="down">▼</div>
+        <div class="node">
+          <span class="ic">🧠</span>
+          <div><span class="t">O agente analisa (o julgamento)</span>
+            <span class="d">Cada requisito é revisado cruzando com a memória do projeto — semântica, contexto, regras.</span></div>
+        </div>
+        <div class="down">▼</div>
+        <div class="node node--out">
+          <span class="ic">✅</span>
+          <div><span class="t">Injeta de volta na MESMA planilha</span>
+            <span class="d">Colunas de análise anexadas, versão <code>_revisado_vN.xlsx</code>. Original 100% intacto — prova célula a célula.</span></div>
+          <span class="tag2">saída</span>
         </div>
       </div>
-      <aside class="linkbox" aria-label="Links do plugin">
-        <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/rf-reviewer/README.md">README do rf-reviewer</a>
-        <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/rf-reviewer/CHANGELOG.md">CHANGELOG</a>
-        <a href="https://github.com/AllanSantos-DV/claude-code-plugins">Repositório no GitHub</a>
-      </aside>
     </div>
-    <p class="honesty"><b>Sem screenshot falso:</b> esta página mostra uma representação da planilha para explicar o fluxo. O número de memória (−403 MB, ~82%) é a medição real registrada no changelog.</p>
   </section>
 
-  <footer>
-    <div class="foot">
-      <span><a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/rf-reviewer/README.md">README</a><a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/rf-reviewer/CHANGELOG.md">CHANGELOG</a><a href="https://github.com/AllanSantos-DV/claude-code-plugins">GitHub</a></span>
-      <span>MIT · parte do marketplace allansantos-plugins</span>
+  <section id="features" class="wrap">
+    <div class="sec-head">
+      <span class="num">01</span>
+      <h2>O que ele faz por você</h2>
+      <p>Motor determinístico + julgamento do agente, sem perder o original.</p>
     </div>
-  </footer>
-</div>
+    <div class="feats">
+      <div class="feat">
+        <div class="ic">⚙️</div>
+        <h3>Motor determinístico</h3>
+        <p>A parte mecânica é sempre igual: extrai, prepara, injeta e valida. O agente fica só com o julgamento.</p>
+        <ul>
+          <li>9 tools MCP via daemon HTTP único</li>
+          <li>Fluxo guiado pela skill <code>revisar-rf</code></li>
+          <li>Sem dependência de "modelo lembrar"</li>
+        </ul>
+      </div>
+      <div class="feat">
+        <div class="ic">🛡️</div>
+        <h3>Nunca toca no original</h3>
+        <p>A revisão é injetada em colunas <b>anexadas</b>. O arquivo do cliente fica intacto, provado célula a célula.</p>
+        <ul>
+          <li>Original 100% preservado</li>
+          <li>Saída versionada <code>_revisado_vN.xlsx</code></li>
+          <li>Verificação de preservação automática</li>
+        </ul>
+      </div>
+      <div class="feat">
+        <div class="ic">🧩</div>
+        <h3>Perfis por assunto</h3>
+        <p>Cada tipo de entrega tem suas colunas de análise. Troque o perfil e o motor se adapta.</p>
+        <ul>
+          <li>Perfil embutido <code>rf-end</code></li>
+          <li>Perfis custom registráveis</li>
+          <li>Escopo: <code>.xlsx</code> e <code>.csv</code></li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section class="wrap">
+    <div class="sec-head">
+      <span class="num">02</span>
+      <h2>O que você ganha</h2>
+      <p>Revisão consistente, auditável e à prova de erro manual.</p>
+    </div>
+    <div class="gains">
+      <div class="gain">
+        <p class="label">consistência</p>
+        <div class="big">Mesma revisão, toda vez.</div>
+        <p>Porque a parte mecânica é determinística — o que varia é só o julgamento, com o contexto certo.</p>
+      </div>
+      <div class="gain">
+        <p class="label">segurança</p>
+        <div class="big">O original nunca é perdido.</div>
+        <p>Célula a célula comparado e versionado. Sem edição manual acidental no arquivo do cliente.</p>
+      </div>
+      <div class="gain">
+        <p class="label">reuso</p>
+        <div class="big">Memória do projeto vira revisão.</div>
+        <p>O agente cruza cada requisito com o que o projeto já sabe — regras, decisões e riscos acumulados.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="instalar" class="wrap">
+    <div class="install">
+      <div>
+        <h2>Instale em 2 minutos</h2>
+        <p class="lead">Requer <b>Python 3.11+</b> com <b>openpyxl</b> e um Claude Code que consuma MCP <b>HTTP</b>. O daemon único sobe sozinho no início da sessão — <b>sem um processo Python por sessão</b>.</p>
+        <ol class="steps">
+          <li><span><b>Adicione o marketplace</b> &nbsp;<code>AllanSantos-DV/claude-code-plugins</code></span></li>
+          <li><span><b>Instale o plugin</b> &nbsp;um comando, pronto</span></li>
+          <li><span><b>Peça a revisão de um RF</b> — o fluxo guia o resto</span></li>
+        </ol>
+      </div>
+      <div class="install-card">
+        <div class="bar"><i></i><i></i><i></i><span>terminal — Claude Code</span></div>
+        <div class="cmd">
+          <span class="p">/plugin marketplace add</span> <span class="amp">›</span><br />
+          <span class="p">&nbsp;&nbsp;AllanSantos-DV/claude-code-plugins</span><br /><br />
+          <span class="p">/plugin install</span> <span class="amp">›</span><br />
+          <span class="p">&nbsp;&nbsp;rf-reviewer@allansantos-plugins</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="foot-grid">
+      <div class="links">
+        <a href="tech.html">Detalhes técnicos</a>
+        <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/rf-reviewer/README.md">README</a>
+        <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/rf-reviewer/CHANGELOG.md">Changelog</a>
+        <a href="https://github.com/AllanSantos-DV/claude-code-plugins">GitHub</a>
+      </div>
+      <div class="legal">MIT · Allan Santos · v0.2.4</div>
+    </div>
+  </div>
+</footer>
+
 </body>
 </html>

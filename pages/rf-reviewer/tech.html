@@ -1,0 +1,269 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>rf-reviewer v0.2.4 — detalhes técnicos</title>
+<meta name="description" content="Detalhes técnicos do plugin rf-reviewer: motor determinístico de revisão de RF em Excel, MCP rf-engine com 9 tools via daemon HTTP único, hooks de enforcement, perfis de coluna e fluxo de revisão." />
+<style>
+  :root{
+    --bg:#0d0c10; --bg-soft:#131218; --ink:#edeae1; --muted:#9a978d;
+    --line:rgba(255,255,255,.10); --green:#7bb06b; --green-soft:rgba(123,176,107,.13);
+    --green-lite:#b6d3aa; --maxw:1040px;
+    --mono:ui-monospace,"Cascadia Code","JetBrains Mono",Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme:light){
+    :root{ --bg:#faf7f1; --bg-soft:#f2eee6; --ink:#1b1a1e; --muted:#6b6a62;
+           --line:rgba(20,20,25,.13); --green:#4b7d3c; --green-soft:rgba(75,125,60,.10); --green-lite:#3d6a30; }
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{ animation:none !important; transition:none !important; scroll-behavior:auto !important }
+  }
+  *{ box-sizing:border-box }
+  html{ -webkit-text-size-adjust:100%; scroll-behavior:smooth }
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:var(--sans); font-size:16px; line-height:1.6;
+    -webkit-font-smoothing:antialiased; overflow-x:hidden;
+  }
+  a{ color:var(--green-lite) }
+  a:hover{ text-decoration:underline }
+  a:focus-visible,button:focus-visible{ outline:2px solid var(--green); outline-offset:3px; border-radius:4px }
+  code{ font-family:var(--mono); font-size:.85em; background:var(--green-soft); color:var(--green-lite);
+    padding:1px 6px; border-radius:5px; white-space:nowrap; word-break:break-all }
+  .wrap{ max-width:var(--maxw); margin:0 auto; padding:0 24px }
+  .mono{ font-family:var(--mono) }
+
+  header.nav{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:18px 0; border-bottom:1px solid var(--line) }
+  .brand{ display:flex; align-items:center; gap:10px; text-decoration:none; color:var(--ink) }
+  .brand .logo{ width:30px; height:30px; border-radius:8px; display:grid; place-items:center;
+    background:var(--green-soft); border:1px solid var(--green); color:var(--green);
+    font-family:var(--mono); font-size:14px; font-weight:700 }
+  .brand .name{ font-family:var(--mono); font-size:14px; font-weight:600 }
+  .brand .name small{ color:var(--muted); font-weight:400; margin-left:6px }
+  .nav-links{ display:flex; align-items:center; gap:4px; flex-wrap:wrap }
+  .nav-links a{ font-family:var(--mono); font-size:12.5px; color:var(--muted); text-decoration:none;
+    padding:7px 12px; border-radius:8px }
+  .nav-links a:hover{ color:var(--ink); background:var(--bg-soft) }
+  .ver{ color:var(--green) !important; border:1px solid var(--green); border-radius:999px !important }
+
+  main{ padding:clamp(44px,6vw,72px) 0 }
+  .page-head{ margin-bottom:44px }
+  .kick{ font-family:var(--mono); font-size:11.5px; letter-spacing:.28em; text-transform:uppercase;
+    color:var(--green); margin:0 0 16px }
+  h1{ font-family:var(--mono); font-size:clamp(1.7rem,4vw,2.3rem); letter-spacing:-.03em; line-height:1.1; margin:0 }
+  .intro{ color:var(--muted); font-size:16px; max-width:66ch; margin:18px 0 0; line-height:1.6 }
+  .intro b{ color:var(--ink); font-weight:600 }
+
+  .toc{ display:flex; flex-wrap:wrap; gap:8px; margin:26px 0 0; padding:16px 0 0; border-top:1px solid var(--line) }
+  .toc a{ font-family:var(--mono); font-size:12px; color:var(--muted); text-decoration:none;
+    border:1px solid var(--line); border-radius:999px; padding:5px 13px }
+  .toc a:hover{ color:var(--green); border-color:var(--green) }
+
+  section{ margin-bottom:56px }
+  section h2{ font-family:var(--mono); font-size:1.25rem; letter-spacing:-.02em; margin:0 0 18px;
+    display:flex; align-items:baseline; gap:12px }
+  section h2 .tag{ font-size:10.5px; color:var(--green); border:1px solid var(--green);
+    padding:2px 9px; border-radius:999px; letter-spacing:.08em; white-space:nowrap }
+  section h3{ font-size:1.02rem; margin:26px 0 10px }
+  p.lead{ color:var(--muted); margin:0 0 18px; max-width:72ch }
+
+  .panel{ border:1px solid var(--line); border-radius:14px; background:var(--bg-soft); padding:26px }
+  .panel + .panel{ margin-top:16px }
+
+  ul.tight{ margin:8px 0 0; padding-left:20px; color:var(--muted); display:grid; gap:7px }
+  ul.tight b{ color:var(--ink); font-weight:600 }
+
+  table{ border-collapse:collapse; width:100%; font-size:13px; margin-top:14px }
+  th{ font-family:var(--mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--muted); text-align:left; padding:10px 14px; border-bottom:2px solid var(--green) }
+  td{ padding:10px 14px; border-bottom:1px solid var(--line); vertical-align:top }
+  td b{ font-family:var(--mono); font-size:12px; font-weight:600 }
+  tr:hover td{ background:var(--green-soft) }
+  .table-scroll{ overflow-x:auto }
+
+  .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:14px }
+  .grid3{ display:grid; grid-template-columns:repeat(3,1fr); gap:14px }
+  .mini{ border:1px solid var(--line); border-radius:12px; padding:18px }
+  .mini .k{ font-family:var(--mono); font-size:10.5px; letter-spacing:.12em; text-transform:uppercase;
+    color:var(--green); margin:0 0 9px }
+  .mini b{ display:block; font-family:var(--mono); font-size:13px; margin:0 0 7px }
+  .mini p{ margin:0; color:var(--muted); font-size:12.5px; line-height:1.55 }
+
+  .flow-bar{ font-family:var(--mono); font-size:12px; display:flex; flex-wrap:wrap; align-items:center;
+    gap:8px; margin:8px 0 16px }
+  .flow-bar .f{ background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:6px 12px; color:var(--ink) }
+  .flow-bar .ar{ color:var(--green); font-weight:700 }
+
+  .callout{ border-left:3px solid var(--green); background:var(--green-soft); border-radius:0 10px 10px 0;
+    padding:14px 18px; margin:18px 0; font-size:13.5px; color:var(--muted) }
+  .callout b{ color:var(--ink); font-weight:600 }
+
+  footer{ border-top:1px solid var(--line); padding:40px 0 60px }
+  footer .links{ display:flex; gap:6px; flex-wrap:wrap }
+  footer .links a{ font-family:var(--mono); font-size:12px; color:var(--muted); text-decoration:none; padding:6px 12px; border-radius:8px }
+  footer .links a:hover{ color:var(--green); background:var(--green-soft) }
+  footer .legal{ font-family:var(--mono); font-size:11px; color:var(--muted); margin-top:14px }
+
+  @media (max-width:860px){
+    .grid2,.grid3{ grid-template-columns:1fr }
+    .table-scroll{ max-width:100% }
+  }
+  @media (max-width:600px){
+    .nav-links{ display:none }
+    body{ font-size:15px }
+  }
+</style>
+</head>
+<body>
+
+<header class="nav wrap">
+  <a class="brand" href="index.html">
+    <span class="logo">R</span>
+    <span class="name">rf-reviewer<small>detalhes técnicos</small></span>
+  </a>
+  <nav class="nav-links">
+    <a href="index.html">← Apresentação</a>
+    <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/rf-reviewer/README.md">README</a>
+    <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/rf-reviewer/CHANGELOG.md">Changelog</a>
+    <a href="#top" class="ver">v0.2.4</a>
+  </nav>
+</header>
+
+<main class="wrap" id="top">
+  <div class="page-head">
+    <p class="kick">documentação técnica · v0.2.4</p>
+    <h1>O motor determinístico por baixo</h1>
+    <p class="intro">Para quem quer saber <b>como funciona por baixo</b>: o MCP <code>rf-engine</code> com 9 tools, o daemon HTTP único, os hooks de enforcement e o fluxo completo de revisão. Plugin <b>irmão</b> do <code>claude-code-boss</code> no mesmo marketplace — com escopo segregado (conversão/anotação de Excel vs. conhecimento de sessão).</p>
+    <div class="toc">
+      <a href="#arquitetura">Arquitetura</a>
+      <a href="#tools">9 tools</a>
+      <a href="#hooks">Hooks</a>
+      <a href="#fluxo">Fluxo</a>
+      <a href="#escopo">Escopo</a>
+    </div>
+  </div>
+
+  <section id="arquitetura">
+    <h2>Arquitetura <span class="tag">daemon HTTP único</span></h2>
+    <p class="lead">O <code>rf-engine</code> (Python + openpyxl) é servido por <b>Streamable HTTP</b> a partir de um <b>daemon único</b> na porta <code>127.0.0.1:19847</code> — as sessões conectam como <b>clientes finos</b>, sem 1 processo por sessão. O <code>.mcp.json</code> usa <code>type:http</code> e só aponta a URL do daemon.</p>
+
+    <div class="flow-bar">
+      <span class="f">sessão 1</span><span class="ar">▸</span>
+      <span class="f">sessão 2</span><span class="ar">▸</span>
+      <span class="f">sessão N</span><span class="ar">▸</span>
+      <span class="f" style="border-color:var(--green)">daemon rf-engine :19847</span><span class="ar">▸</span>
+      <span class="f">1 Python · openpyxl</span>
+    </div>
+
+    <div class="panel">
+      <h3>Garantia do daemon</h3>
+      <ul class="tight">
+        <li><b>SessionStart</b> (<code>servers/rf-engine/plugin_daemon.py</code>): sobe/garante o daemon HTTP único no início da sessão (idempotente, porta <code>127.0.0.1:19847</code>).</li>
+        <li><b>Servidor HTTP é stdlib</b> — a única dependência Python é <code>openpyxl</code>.</li>
+        <li><b>Requisitos:</b> Python 3.11+ no PATH + <code>openpyxl</code>; MCP HTTP (rollback para a versão stdio anterior: <code>/plugin install rf-reviewer@rf-v0.1.1</code>).</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="tools">
+    <h2>MCP rf-engine <span class="tag">9 tools</span></h2>
+    <p class="lead">O motor é determinístico: os 9 tools cobrem o ciclo completo, do perfil à prova de preservação.</p>
+    <div class="panel">
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Tool</th><th>O que faz</th></tr></thead>
+          <tbody>
+            <tr><td><b>rf_perfis_listar</b></td><td>Lista os perfis de colunas disponíveis</td></tr>
+            <tr><td><b>rf_perfil_definir</b></td><td>Escolhe/define o perfil para a revisão</td></tr>
+            <tr><td><b>rf_prep</b></td><td>Extrai a planilha e prepara as colunas de análise</td></tr>
+            <tr><td><b>rf_brain_buscar</b></td><td>Busca na memória do projeto o contexto relevante</td></tr>
+            <tr><td><b>rf_brain_enriquecer</b></td><td>Enriquece a análise com o que a memória sabe</td></tr>
+            <tr><td><b>rf_apply</b></td><td>Injeta a análise de volta na MESMA planilha (colunas anexadas)</td></tr>
+            <tr><td><b>rf_validar</b></td><td>Valida a revisão antes de gravar</td></tr>
+            <tr><td><b>rf_verificar_preservacao</b></td><td>Prova que o original ficou intacto (comparação célula a célula)</td></tr>
+            <tr><td><b>rf_status</b></td><td>Estado atual da revisão em andamento</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout"><b>Divisão de trabalho:</b> o motor faz a <b>mecânica</b> (extrair, preparar, injetar, validar, versionar); o <b>agente</b> faz só o <b>julgamento</b> (preencher a análise cruzando com a memória do projeto, via <code>rf_brain_buscar</code>/<code>rf_brain_enriquecer</code>).</div>
+    </div>
+  </section>
+
+  <section id="hooks">
+    <h2>Hooks de enforcement <span class="tag">determinísticos</span></h2>
+    <p class="lead">Três camadas garantem que o trabalho acontece pelo motor e não "na mão".</p>
+    <div class="grid3">
+      <div class="mini">
+        <p class="k">SessionStart</p>
+        <b>plugin_daemon.py</b>
+        <p>Sobe/garante o daemon HTTP único do rf-engine (idempotente). É o que permite o transporte HTTP com daemon compartilhado.</p>
+      </div>
+      <div class="mini">
+        <p class="k">UserPromptSubmit</p>
+        <b>rf-remind.js</b>
+        <p>Quando o pedido é de RF em planilha, injeta no contexto o fluxo do RF Reviewer (<code>rf_prep</code> → … → <code>rf_apply</code>) — lembra sempre, sem depender do modelo "lembrar".</p>
+      </div>
+      <div class="mini">
+        <p class="k">PreToolUse/Bash</p>
+        <b>rf-guard.js</b>
+        <p>Se o agente tentar mexer no <code>.xlsx</code> na mão (openpyxl/pandas gravando workbook), pede confirmação e redireciona para <code>rf_apply</code>. Não bloqueia leitura nem a CLI legítima do motor.</p>
+      </div>
+    </div>
+  </section>
+
+  <section id="fluxo">
+    <h2>Fluxo de revisão <span class="tag">guiado pela skill revisar-rf</span></h2>
+    <div class="flow-bar">
+      <span class="f">rf_perfis_listar</span><span class="ar">▸</span>
+      <span class="f">rf_prep</span><span class="ar">▸</span>
+      <span class="f" style="border-color:var(--green)">agente preenche</span><span class="ar">▸</span>
+      <span class="f">rf_validar</span><span class="ar">▸</span>
+      <span class="f">rf_apply</span><span class="ar">▸</span>
+      <span class="f">rf_verificar_preservacao</span>
+    </div>
+    <div class="panel">
+      <h3>O que entrega</h3>
+      <ul class="tight">
+        <li><b>A mesma planilha do cliente</b> + as colunas de análise anexadas (perfil escolhido).</li>
+        <li><b>Versionada:</b> <code>_revisado_vN.xlsx</code> — o original fica <b>100% intacto</b> (prova por comparação célula a célula).</li>
+        <li><b>Agente + memória:</b> a revisão cruza cada requisito com o servidor de conhecimento do projeto (<code>project_id</code> da sua memória).</li>
+      </ul>
+    </div>
+  </section>
+
+  <section id="escopo">
+    <h2>Escopo <span class="tag">importante</span></h2>
+    <div class="grid2">
+      <div class="mini">
+        <p class="k">serve</p>
+        <b>Arquivos tabulares</b>
+        <p><code>.xlsx</code> (núcleo) e <code>.csv</code>. <b>Qualquer assunto</b> via perfil de colunas trocável.</p>
+      </div>
+      <div class="mini">
+        <p class="k">não serve</p>
+        <b>Documentos</b>
+        <p><code>.pdf</code> / <code>.docx</code> / <code>.pptx</code> seguem outro fluxo (análise de documento) — injetar coluna só faz sentido em tabela.</p>
+      </div>
+    </div>
+    <div class="callout"><b>Referência:</b> <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/rf-reviewer/INSTALL.md">INSTALL.md</a> (configuração), <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/rf-reviewer/PROFILES.md">PROFILES.md</a> (perfis custom) e <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/rf-reviewer/CHANGELOG.md">CHANGELOG.md</a>.</div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="links">
+      <a href="index.html">← Voltar à apresentação</a>
+      <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/rf-reviewer/README.md">README</a>
+      <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/rf-reviewer/CHANGELOG.md">Changelog</a>
+      <a href="https://github.com/AllanSantos-DV/claude-code-plugins">GitHub</a>
+    </div>
+    <div class="legal">MIT · Allan Santos · rf-reviewer v0.2.4</div>
+  </div>
+</footer>
+
+</body>
+</html>
