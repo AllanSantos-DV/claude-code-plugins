@@ -711,31 +711,35 @@ test('brain daemon path normalization: same dir, different spelling → SAME por
   const fileUrl = require('url').pathToFileURL(
     path.join(ROOT, 'servers', 'brain-server', 'lib', 'daemon-common.js'),
   ).href;
-  const { resolvePort, tokenFile, lockFile, canonicalDataDir } = await import(fileUrl);
+  const { resolvePort, tokenFile, lockFile, canonicalDataDir, DEFAULT_PORT } = await import(fileUrl);
   // NOTE: deliberately does NOT mutate process.env.BRAIN_HTTP_PORT — this runner runs
-  // async tests concurrently, so touching global env races the daemon tests. tokenFile/
-  // lockFile/canonicalDataDir ignore env, so they prove canonicalization in isolation;
-  // resolvePort equality holds under BOTH regimes (env set → both = env; unset → both =
-  // same hash), so it can't false-pass regardless of ambient BRAIN_HTTP_PORT.
-  // The exact bug is Windows-only: on POSIX "\" is not a separator, so back-slash
-  // spellings aren't the "same dir". The lockfile records forward slashes, other callers
-  // pass back slashes; both must map to one port/token/lock.
+  // async tests in sequence but multiple of them exercise the daemon modules, so
+  // touching global env is still fragile. DELTA vs the pre-fixed-port era: the
+  // per-spelling equality below is now TRIVIAL for resolvePort (every valid dir
+  // maps to DEFAULT_PORT), but it still serves as a locked regression that the
+  // port never regresses to a per-dir hash. tokenFile/lockFile/canonicalDataDir
+  // ignore env, so they prove canonicalization in isolation; the exact bug is
+  // Windows-only: on POSIX "\" is not a separator, so back-slash spellings aren't
+  // the "same dir". The lockfile records forward slashes, other callers pass back
+  // slashes; both must map to one token/lock file.
   if (process.platform === 'win32') {
     const back = 'C:\\Users\\me\\.claude\\plugins\\data\\ccb';
     const fwd = 'C:/Users/me/.claude/plugins/data/ccb';
     const mixedCase = 'C:\\users\\ME\\.claude\\plugins\\data\\CCB'; // Windows FS is case-insensitive
-    assertEq(resolvePort(back), resolvePort(fwd));            // one identity → one port
-    assertEq(resolvePort(back), resolvePort(mixedCase));     // case-fold → same port
-    assertEq(tokenFile(back), tokenFile(fwd));               // one identity → one secret
-    assertEq(lockFile(back), lockFile(fwd));                 // one identity → one lock
-    assertEq(canonicalDataDir(back), canonicalDataDir(fwd)); // canonical form agrees
+    assertEq(resolvePort(back), DEFAULT_PORT, 'all spellings → the fixed default');
+    assertEq(resolvePort(fwd), DEFAULT_PORT, 'all spellings → the fixed default');
+    assertEq(resolvePort(mixedCase), DEFAULT_PORT, 'all spellings → the fixed default');
+    assertEq(tokenFile(back), tokenFile(fwd), 'one identity → one secret');
+    assertEq(lockFile(back), lockFile(fwd), 'one identity → one lock');
+    assertEq(canonicalDataDir(back), canonicalDataDir(fwd), 'canonical form agrees');
   }
   // Relative vs absolute of the SAME dir converge everywhere (path.resolve anchors to cwd).
   assertEq(tokenFile('sub/../ccb-x'), tokenFile(path.resolve('ccb-x')));
   assertEq(resolvePort('sub/../ccb-x'), resolvePort(path.resolve('ccb-x')));
+  assertEq(resolvePort('sub/../ccb-x'), DEFAULT_PORT, 'fixed default even for tricky spellings');
   // A missing/undefined dataDir FAILS LOUD instead of hashing String(undefined).
   let threw = false; try { resolvePort(undefined); } catch { threw = true; }
-  assert(threw, 'resolvePort(undefined) must throw, not derive a phantom port');
+  assert(threw, 'resolvePort(undefined) must throw, not boot on a phantom dir');
   threw = false; try { tokenFile('undefined'); } catch { threw = true; }
   assert(threw, 'tokenFile("undefined") must throw, not build a phantom token path');
 });
@@ -6860,7 +6864,7 @@ test('byok.resolveUpstream: gateway alternativo DESLIGADO → Anthropic pura, is
 function withFakeHttpRequest(lib, fn) {
   const original = lib.request;
   const calls = [];
-  lib.request = (options, cb) => {
+  lib.request = (options, _cb) => {
     const fakeReq = {
       _timeouts: [],
       setTimeout(ms, onTimeout) { this._timeouts.push(ms); if (onTimeout) this._onTimeout = onTimeout; return this; },
@@ -12256,6 +12260,369 @@ test('route manager: overlay path is outside the repo, only shipping routes vers
   const { execSync } = require('child_process');
   const tracked = execSync('git ls-files config/router-config.json', { cwd: ROOT }).toString().trim();
   assertEq(tracked, 'config/router-config.json', 'shipping routes are the only tracked route file');
+});
+
+// ─── brain daemon supervisor (ADR-001 daemon-únio) ──────────────────
+// Regressão para as 3 falhas do tester final: Stale Swap, Legacy
+// Migration e Port Squat proativo.  Os cenários usam servidores HTTP
+// fake que imitam /health + /shutdown do daemon real.
+const { pathToFileURL } = require('url');
+const SUPERVISOR_URL = pathToFileURL(
+  path.join(ROOT, 'servers', 'brain-server', 'lib', 'daemon-supervisor.js'),
+).href;
+const COMMON_URL = pathToFileURL(
+  path.join(ROOT, 'servers', 'brain-server', 'lib', 'daemon-common.js'),
+).href;
+
+/** Fake brain daemon que responde /health com o pluginRoot dado. Resolve a `ready`
+ *  no evento real de 'listening' — os testes não podem depender de um sleep
+ *  arbitrário, senão em máquina lenta o probe encontra 'absent' e o cenário
+ *  testa a coisa errada (falso 'started' por spawn, não por swap). */
+function makeFakeDaemon({ pluginRoot, port, pid = process.pid, dataDir, onHealth, onShutdown, closeOnShutdown = true }) {
+  const sockets = new Set();
+  const server = http.createServer((req, res) => {
+    const u = (req.url || '').split('?')[0];
+    if (req.method === 'GET' && u === '/health') {
+      const resolvedPid = typeof pid === 'function' ? pid() : pid;
+      const health = onHealth ? (onHealth() || { ok: true, pluginRoot, dataDir, version: '1.0.0', pid: resolvedPid, port, sessions: 0, startedAt: Date.now(), uptimeMs: 0 }) : { ok: true, pluginRoot, dataDir, version: '1.0.0', pid: resolvedPid, port, sessions: 0, startedAt: Date.now(), uptimeMs: 0 };
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify(health));
+    }
+    if (req.method === 'POST' && u === '/shutdown') {
+      if (onShutdown) onShutdown();
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true }));
+      for (const s of sockets) s.destroy();
+      if (closeOnShutdown) server.close();
+      return;
+    }
+    res.writeHead(404); res.end();
+  });
+  server.on('connection', (s) => { sockets.add(s); s.on('close', () => sockets.delete(s)); });
+  server.once('error', () => {}); // TIME_WAIT may reject rebinds on Windows
+  const ready = new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(port, '127.0.0.1', () => {
+      server.off('error', reject);
+      resolve();
+    });
+  });
+  return { server, port, ready };
+}
+
+/** Aguarda uma porta efêmera livre (para o fake e o squat). */
+function waitFreePort() {
+  return new Promise((resolve, reject) => {
+    const s = http.createServer();
+    s.once('error', reject);
+    s.listen(0, '127.0.0.1', () => {
+      const port = s.address().port;
+      s.close(() => resolve(port));
+    });
+  });
+}
+
+test('brain daemon supervisor: stale owner (root removed) → swapDaemon → started', async () => {
+  const { ensureDaemon } = await import(SUPERVISOR_URL);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-stale-'));
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-stale-home-'));
+  const oldRoot = path.join(tmp, 'install-A');
+  fs.mkdirSync(path.join(oldRoot, 'servers', 'brain-server'), { recursive: true });
+  fs.writeFileSync(path.join(oldRoot, 'servers', 'brain-server', 'index.js'), '// old');
+  const dataDir = path.join(tmp, 'data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  const p = await waitFreePort();
+  const fake = makeFakeDaemon({ pluginRoot: oldRoot, port: p, dataDir });
+  await fake.ready;
+  fs.rmSync(oldRoot, { recursive: true, force: true });
+  const res = await ensureDaemon({
+    pluginRoot: path.join(tmp, 'install-B'),
+    dataDir,
+    env: { BRAIN_HTTP_PORT: String(p), HOME: tmpHome, USERPROFILE: tmpHome },
+  });
+  assertEq(res.status, 'started', `stale owner must swap to started, got ${res.status}: ${res.error || ''}`);
+  assert(Number.isInteger(res.pid), 'started must carry pid');
+  assertEq(res.port, p);
+  try { if (res.pid) process.kill(res.pid, 'SIGTERM'); } catch { void 0; }
+  fake.server.close();
+  fs.rmSync(tmpHome, { recursive: true, force: true });
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('brain daemon supervisor: legacy daemon on old port → exileLegacyDaemon → started', async () => {
+  const { ensureDaemon } = await import(SUPERVISOR_URL);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-legacy-'));
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-legacy-home-'));
+  const newRoot = path.join(tmp, 'install-B');
+  fs.mkdirSync(path.join(newRoot, 'servers', 'brain-server'), { recursive: true });
+  fs.writeFileSync(path.join(newRoot, 'servers', 'brain-server', 'index.js'), '// new');
+  const dataDir = path.join(tmp, 'data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  const legacyPort = await waitFreePort();
+  const fixedPort = await waitFreePort();
+  fs.writeFileSync(path.join(dataDir, 'brain-http.lock.json'), JSON.stringify({ port: legacyPort, pid: 99999 }));
+  const fake = makeFakeDaemon({ pluginRoot: path.join(tmp, 'install-A'), port: legacyPort, pid: 99999, dataDir });
+  await fake.ready;
+  const res = await ensureDaemon({
+    pluginRoot: newRoot,
+    dataDir,
+    env: { BRAIN_HTTP_PORT: String(fixedPort), HOME: tmpHome, USERPROFILE: tmpHome },
+  });
+  assertEq(res.status, 'started', `legacy daemon must be exiled then started, got ${res.status}: ${res.error || ''}`);
+  assert(Number.isInteger(res.pid), 'started must carry pid');
+  assertEq(res.port, fixedPort, 'new daemon must run on the pinned port after exile');
+  try { if (res.pid) process.kill(res.pid, 'SIGTERM'); } catch { void 0; }
+  fake.server.close();
+  fs.rmSync(tmpHome, { recursive: true, force: true });
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('brain daemon supervisor: port squat (non-brain HTTP) → error, squat untouched', async () => {
+  const { ensureDaemon } = await import(SUPERVISOR_URL);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-squat-'));
+  const dataDir = path.join(tmp, 'data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  const squat = http.createServer((req, res) => {
+    if (req.method === 'GET' && (req.url || '').split('?')[0] === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ status: 'ok' }));
+    }
+    res.writeHead(404); res.end();
+  });
+  const p = await waitFreePort();
+  squat.listen(p, '127.0.0.1');
+  await new Promise((resolve) => squat.once('listening', resolve));
+  const res = await ensureDaemon({ pluginRoot: path.join(tmp, 'install-B'), dataDir, env: { BRAIN_HTTP_PORT: String(p) } });
+  assertEq(res.status, 'error', 'squat must return error, not spawned');
+  assert(res.error && res.error.includes(String(p)), 'error must mention the squat port');
+  assert(res.error && res.error.includes('HTTP 200'), 'error must surface the HTTP status');
+  const still = await fetch(`http://127.0.0.1:${p}/health`).then((r) => r.json());
+  assertEq(still.status, 'ok', 'squatting process must NOT be signaled');
+  squat.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('brain daemon supervisor: env null/non-object → no TypeError, still probes', async () => {
+  const { ensureDaemon } = await import(SUPERVISOR_URL);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-envnull-'));
+  const dataDir = path.join(tmp, 'data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  const p = await waitFreePort();
+  const squat = http.createServer((req, res) => {
+    if (req.method === 'GET' && (req.url || '').split('?')[0] === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ status: 'ok' }));
+    }
+    res.writeHead(404); res.end();
+  });
+  squat.listen(p, '127.0.0.1');
+  await new Promise((resolve) => squat.once('listening', resolve));
+  const saved = process.env.BRAIN_HTTP_PORT;
+  try {
+    process.env.BRAIN_HTTP_PORT = String(p);
+    const res = await ensureDaemon({ pluginRoot: path.join(tmp, 'install-B'), dataDir, env: null });
+    assertEq(res.status, 'error', 'null env must not throw and must still probe');
+    assert(res.error && res.error.includes('HTTP 200'), 'null env must surface HTTP status');
+  } finally {
+    if (saved === undefined) delete process.env.BRAIN_HTTP_PORT; else process.env.BRAIN_HTTP_PORT = saved;
+    squat.close();
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test('brain daemon supervisor: numeric BRAIN_HTTP_PORT → no TypeError', async () => {
+  const { ensureDaemon } = await import(SUPERVISOR_URL);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-numport-'));
+  const dataDir = path.join(tmp, 'data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  const p = await waitFreePort();
+  const squat = http.createServer((req, res) => {
+    if (req.method === 'GET' && (req.url || '').split('?')[0] === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ status: 'ok' }));
+    }
+    res.writeHead(404); res.end();
+  });
+  squat.listen(p, '127.0.0.1');
+  await new Promise((resolve) => squat.once('listening', resolve));
+  const res = await ensureDaemon({ pluginRoot: path.join(tmp, 'install-B'), dataDir, env: { BRAIN_HTTP_PORT: p } });
+  assertEq(res.status, 'error', 'numeric port env must not throw');
+  assert(res.error && res.error.includes(String(p)), 'numeric port must be resolved and reported');
+  squat.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('brain daemon supervisor: BRAIN_HTTP_AUTOSTART 0 → disabled', async () => {
+  const { ensureDaemon } = await import(SUPERVISOR_URL);
+  const res = await ensureDaemon({ pluginRoot: 'x', dataDir: 'x', env: { BRAIN_HTTP_AUTOSTART: 0 } });
+  assertEq(res.status, 'disabled');
+});
+
+test('brain daemon supervisor: HOME/USERPROFILE inherited by spawnDaemon', async () => {
+  const { ensureDaemon } = await import(SUPERVISOR_URL);
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-home-env-'));
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-data-env-'));
+  const p = await waitFreePort();
+  const res = await ensureDaemon({ pluginRoot: ROOT, dataDir, env: { BRAIN_HTTP_PORT: String(p), HOME: tmpHome, USERPROFILE: tmpHome } });
+  assertEq(res.status, 'started', `expected started, got ${res.status} (${res.error || ''})`);
+  if (res.pid) {
+    try { process.kill(res.pid, 'SIGTERM'); } catch { void 0; }
+  }
+  fs.rmSync(tmpHome, { recursive: true, force: true });
+  fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test('brain daemon supervisor: same pluginRoot but different dataDir → error, not current', async () => {
+  const { ensureDaemon } = await import(SUPERVISOR_URL);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-samedir-'));
+  const otherDataDir = path.join(tmp, 'other-data');
+  fs.mkdirSync(otherDataDir, { recursive: true });
+  const p = await waitFreePort();
+  const fake = makeFakeDaemon({ pluginRoot: ROOT, port: p, dataDir: otherDataDir });
+  await fake.ready;
+  const res = await ensureDaemon({ pluginRoot: ROOT, dataDir: path.join(tmp, 'data'), env: { BRAIN_HTTP_PORT: String(p) } });
+  assert(res.status !== 'current', 'same pluginRoot but different dataDir must not be treated as current');
+  assert(res.status === 'started' || res.status === 'error', 'must swap or error, not claim current');
+  fake.server.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('brain daemon supervisor: foreign daemon with same pid but different identity → no kill', async () => {
+  const { ensureDaemon } = await import(SUPERVISOR_URL);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-foreignpid-'));
+  const oldRoot = path.join(tmp, 'install-A');
+  fs.mkdirSync(path.join(oldRoot, 'servers', 'brain-server'), { recursive: true });
+  fs.writeFileSync(path.join(oldRoot, 'servers', 'brain-server', 'index.js'), '// old');
+  const dataDir = path.join(tmp, 'data');
+  const otherDataDir = path.join(tmp, 'other-data');
+  fs.mkdirSync(otherDataDir, { recursive: true });
+  const p = await waitFreePort();
+  let calls = 0;
+  const fake = makeFakeDaemon({
+    pluginRoot: oldRoot,
+    port: p,
+    pid: 99999,
+    dataDir,
+    onHealth: () => {
+      calls += 1;
+      return calls === 1
+        ? { ok: true, pluginRoot: oldRoot, dataDir, version: '1.0.0', pid: 99999, port: p, sessions: 0, startedAt: Date.now(), uptimeMs: 0 }
+        : { ok: true, pluginRoot: path.join(tmp, 'foreign'), dataDir: otherDataDir, version: '9.9.9', pid: 99999, port: p, sessions: 0, startedAt: Date.now(), uptimeMs: 0 };
+    },
+  });
+  await fake.ready;
+  fs.rmSync(oldRoot, { recursive: true, force: true });
+  const res = await ensureDaemon({ pluginRoot: path.join(tmp, 'install-B'), dataDir, env: { BRAIN_HTTP_PORT: String(p) } });
+  assertEq(res.status, 'error', 'foreign daemon with same pid must not be killed');
+  assert(res.error && res.error.includes('still occupied'), 'must report the port is still occupied after swap');
+  fake.server.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('brain daemon supervisor: lock with mismatched dataDir → no exile', async () => {
+  const { ensureDaemon } = await import(SUPERVISOR_URL);
+  const { lockFile } = await import(COMMON_URL);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-lock-'));
+  const dataDir = path.join(tmp, 'data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  const oldRoot = path.join(tmp, 'install-A');
+  fs.mkdirSync(path.join(oldRoot, 'servers', 'brain-server'), { recursive: true });
+  fs.writeFileSync(path.join(oldRoot, 'servers', 'brain-server', 'index.js'), '// old');
+  const legacyPort = await waitFreePort();
+  const fixedPort = await waitFreePort();
+  fs.writeFileSync(
+    lockFile(dataDir),
+    JSON.stringify({ port: legacyPort, pid: 99999, pluginRoot: oldRoot, dataDir: path.join(tmp, 'not-the-fake-dir') }),
+  );
+  const legacyFake = makeFakeDaemon({ pluginRoot: oldRoot, port: legacyPort, pid: 99999, dataDir: path.join(tmp, 'other-data') });
+  const currentFake = makeFakeDaemon({ pluginRoot: ROOT, port: fixedPort, dataDir: dataDir });
+  await legacyFake.ready;
+  await currentFake.ready;
+  const res = await ensureDaemon({ pluginRoot: ROOT, dataDir, env: { BRAIN_HTTP_PORT: String(fixedPort) } });
+  assertEq(res.status, 'current', 'lock with mismatched dataDir must not exile the current daemon');
+  assertEq(res.port, fixedPort);
+  legacyFake.server.close();
+  currentFake.server.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('brain daemon supervisor: samePluginData canonicalizes BOTH sides (C1)', async () => {
+  const { samePluginData } = await import(SUPERVISOR_URL);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-canon-'));
+  const dataDir = path.join(tmp, 'data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  const slashSpelled = process.platform === 'win32' ? dataDir.split(path.sep).join('/') : dataDir.replace(/\//g, path.sep);
+  assert(samePluginData({ pluginRoot: ROOT, dataDir }, { pluginRoot: ROOT, dataDir: slashSpelled }), 'spelling-different dataDir must resolve to the SAME identity');
+  assert(!samePluginData({ pluginRoot: ROOT, dataDir }, { pluginRoot: ROOT, dataDir: path.join(tmp, 'other') }), 'different dataDir must NOT match');
+  assert(!samePluginData({ pluginRoot: ROOT, dataDir }, { pluginRoot: path.join(tmp, 'other-install'), dataDir }), 'different pluginRoot must NOT match');
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('brain daemon supervisor: sameIdentity requires identical port + pid (L1)', async () => {
+  const { sameIdentity } = await import(SUPERVISOR_URL);
+  const base = { pid: 123, port: 1111, pluginRoot: ROOT, dataDir: ROOT };
+  assert(sameIdentity(base, { ...base }), 'identical identity must match');
+  assert(!sameIdentity(base, { ...base, port: 2222 }), 'same pid/root/dir but different port must NOT match');
+  assert(!sameIdentity(base, { ...base, pid: 999 }), 'same info but different pid must NOT match');
+  assert(!sameIdentity(base, { ...base, pluginRoot: path.join(ROOT, 'other') }), 'different pluginRoot must NOT match');
+});
+
+test('brain daemon supervisor: lockMatchesHealth canonicalizes the HEALTH dataDir too (C1)', async () => {
+  const { lockMatchesHealth } = await import(SUPERVISOR_URL);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-lockmatch-'));
+  const dataDir = path.join(tmp, 'data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  const slashSpelled = process.platform === 'win32' ? dataDir.split(path.sep).join('/') : dataDir.replace(/\//g, path.sep);
+  const lock = { port: 1111, pid: 123, pluginRoot: ROOT, dataDir };
+  assert(lockMatchesHealth(lock, { port: 1111, pid: 123, pluginRoot: ROOT, dataDir: slashSpelled }), 'health dataDir spelled differently must still match the lock');
+  assert(!lockMatchesHealth(lock, { port: 1111, pid: 123, pluginRoot: ROOT, dataDir: path.join(tmp, 'other') }), 'different dataDir must not match');
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('brain daemon supervisor: spawn mutex — live lock blocks, release frees, stale lock stolen (H1)', async () => {
+  const { acquireSpawnLock, releaseSpawnLock, spawnLockDir } = await import(SUPERVISOR_URL);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mutex-'));
+  const dataDir = path.join(tmp, 'data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  assert(acquireSpawnLock(dataDir), 'first acquire wins');
+  assert(!acquireSpawnLock(dataDir), 'second acquire while held must be refused');
+  releaseSpawnLock(dataDir);
+  assert(acquireSpawnLock(dataDir), 'acquire after release succeeds');
+  releaseSpawnLock(dataDir);
+  fs.mkdirSync(spawnLockDir(dataDir));
+  fs.writeFileSync(path.join(spawnLockDir(dataDir), 'owner.json'), JSON.stringify({ pid: 99999, ts: Date.now() - 60000 }));
+  assert(acquireSpawnLock(dataDir), 'abandoned (stale) lock must be stolen');
+  releaseSpawnLock(dataDir);
+  assert(!fs.existsSync(spawnLockDir(dataDir)), 'release removes the lock dir');
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('brain daemon supervisor: health WITHOUT a numeric port is a squat, not a daemon (L2)', async () => {
+  const { ensureDaemon } = await import(SUPERVISOR_URL);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-noport-'));
+  const dataDir = path.join(tmp, 'data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  const squat = http.createServer((req, res) => {
+    if (req.method === 'GET' && (req.url || '').split('?')[0] === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: true, pluginRoot: ROOT, pid: process.pid, dataDir, version: '1.0.0' }));
+    }
+    res.writeHead(404); res.end();
+  });
+  const p = await waitFreePort();
+  squat.listen(p, '127.0.0.1');
+  await new Promise((resolve) => squat.once('listening', resolve));
+  const res = await ensureDaemon({ pluginRoot: ROOT, dataDir, env: { BRAIN_HTTP_PORT: String(p) } });
+  assertEq(res.status, 'error', 'health-shaped response WITHOUT a port must be refuse-to-touch squat');
+  squat.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('brain daemon supervisor: the "spawned" status was removed — source-level guard (L4)', async () => {
+  const src = fs.readFileSync(path.join(ROOT, 'servers', 'brain-server', 'lib', 'daemon-supervisor.js'), 'utf8');
+  assert(!src.includes("'spawned'"), 'daemon-supervisor must never return a status named spawned');
+  assert(src.includes("status: 'started'"), 'started remains the success status');
+  assert(src.includes("status: 'error'"), 'error remains the failure status');
 });
 
 // ─── Runner ──────────────────────────────────────────────────────────────────

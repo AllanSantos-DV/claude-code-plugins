@@ -17,7 +17,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { createBrainServer } from './mcp-server.js';
 import fs from 'node:fs';
-import { HEALTH_PATH, MCP_PATH, lockFile, ensureToken, requestAllowed, tokenFile, canonicalDataDir } from './daemon-common.js';
+import { HEALTH_PATH, MCP_PATH, lockFile, ensureToken, requestAllowed, originAllowed, tokenFile, canonicalDataDir } from './daemon-common.js';
 
 const SESSION_IDLE_MS = 30 * 60 * 1000; // reap sessions idle > 30 min
 
@@ -36,7 +36,9 @@ async function readJsonBody(req) {
 export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0.0.1', version = '2.0.0' }) {
   const sessions = new Map(); // sessionId -> { server, transport, lastSeen }
   const startedAt = Date.now();
-  // Shared local token (dashboard pattern): /mcp and /shutdown require it;
+  // Shared local token (dashboard pattern) — but ONLY /shutdown requires it now:
+  // /mcp is a static .mcp.json "type":"http" url with no room for a runtime
+  // secret, so it's gated by originAllowed() alone (see daemon-common.js).
   // /health stays open so any version's supervisor can probe stale-vs-current.
   const token = ensureToken(dataDir);
 
@@ -54,16 +56,15 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
         return;
       }
 
-      // Everything else (KB access, shutdown) is token-gated.
-      const gate = requestAllowed(req, token, dataDir);
-      if (!gate.ok) {
-        res.writeHead(gate.code, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: gate.error }));
-        return;
-      }
-
-      // Graceful swap hook (localhost only) — the supervisor POSTs here on upgrade.
+      // /shutdown is destructive (kills the singleton daemon) and is never called by
+      // Claude Code's MCP client — full token gate, same as before.
       if (req.method === 'POST' && url === '/shutdown') {
+        const gate = requestAllowed(req, token, dataDir);
+        if (!gate.ok) {
+          res.writeHead(gate.code, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: gate.error }));
+          return;
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, shuttingDown: true }));
         // Let the response flush before we force connections shut.
@@ -74,6 +75,16 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
       if (url !== MCP_PATH) {
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'not found' }));
+        return;
+      }
+
+      // /mcp: .mcp.json declares this as a static "type":"http" URL with no
+      // command spawn and no per-session secret to inject — origin guard only
+      // (see originAllowed() in daemon-common.js for the rationale).
+      const gate = originAllowed(req);
+      if (!gate.ok) {
+        res.writeHead(gate.code, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: gate.error }));
         return;
       }
 

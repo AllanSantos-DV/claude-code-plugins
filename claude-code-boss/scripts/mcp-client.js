@@ -176,7 +176,7 @@ class McpClient extends EventEmitter {
       if (params !== undefined) payload.params = params;
       const data = Buffer.from(JSON.stringify(payload), 'utf8');
 
-      const headers = { 'Content-Type': 'application/json', 'Content-Length': data.length };
+      const headers = { 'Content-Type': 'application/json', 'Content-Length': data.length, 'Accept': 'application/json, text/event-stream' };
       // NOTE: deliberately NO `Origin` header — the daemon 403s a non-loopback Origin; absent = allowed.
       if (this._sessionId) headers['Mcp-Session-Id'] = this._sessionId;
 
