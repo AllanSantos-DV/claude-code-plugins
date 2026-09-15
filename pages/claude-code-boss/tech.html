@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>claude-code-boss v2.24.0 — detalhes técnicos</title>
+<meta name="description" content="Detalhes técnicos do plugin claude-code-boss: arquitetura do daemon HTTP único, pipeline de hooks, Brain KB (storage/index/graph), providers de embedding, perfis de enforcement, graph tools e dashboard." />
+<style>
+  :root{
+    --bg:#0d0c10; --bg-soft:#131218; --ink:#edeae1; --muted:#9a978d;
+    --line:rgba(255,255,255,.10); --amber:#e08c3a; --amber-soft:rgba(224,140,58,.13);
+    --amber-lite:#f6c694; --maxw:1040px;
+    --mono:ui-monospace,"Cascadia Code","JetBrains Mono",Consolas,monospace;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  @media (prefers-color-scheme:light){
+    :root{ --bg:#faf7f1; --bg-soft:#f2eee6; --ink:#1b1a1e; --muted:#6b6a62;
+           --line:rgba(20,20,25,.13); --amber:#a8571c; --amber-soft:rgba(168,87,28,.10); --amber-lite:#8a4a1a; }
+  }
+  @media (prefers-reduced-motion:reduce){
+    *{ animation:none !important; transition:none !important; scroll-behavior:auto !important }
+  }
+  *{ box-sizing:border-box }
+  html{ -webkit-text-size-adjust:100%; scroll-behavior:smooth }
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font-family:var(--sans); font-size:16px; line-height:1.6;
+    -webkit-font-smoothing:antialiased; overflow-x:hidden;
+  }
+  a{ color:var(--amber-lite) }
+  a:hover{ text-decoration:underline }
+  a:focus-visible,button:focus-visible{ outline:2px solid var(--amber); outline-offset:3px; border-radius:4px }
+  code{ font-family:var(--mono); font-size:.85em; background:var(--amber-soft); color:var(--amber-lite);
+    padding:1px 6px; border-radius:5px; white-space:nowrap; word-break:break-all }
+  .wrap{ max-width:var(--maxw); margin:0 auto; padding:0 24px }
+  .mono{ font-family:var(--mono) }
+
+  header.nav{ display:flex; align-items:center; justify-content:space-between; gap:14px;
+    padding:18px 0; border-bottom:1px solid var(--line) }
+  .brand{ display:flex; align-items:center; gap:10px; text-decoration:none; color:var(--ink) }
+  .brand .logo{ width:30px; height:30px; border-radius:8px; display:grid; place-items:center;
+    background:var(--amber-soft); border:1px solid var(--amber); color:var(--amber);
+    font-family:var(--mono); font-size:14px; font-weight:700 }
+  .brand .name{ font-family:var(--mono); font-size:14px; font-weight:600 }
+  .brand .name small{ color:var(--muted); font-weight:400; margin-left:6px }
+  .nav-links{ display:flex; align-items:center; gap:4px; flex-wrap:wrap }
+  .nav-links a{ font-family:var(--mono); font-size:12.5px; color:var(--muted); text-decoration:none;
+    padding:7px 12px; border-radius:8px }
+  .nav-links a:hover{ color:var(--ink); background:var(--bg-soft) }
+  .ver{ color:var(--amber) !important; border:1px solid var(--amber); border-radius:999px !important }
+
+  main{ padding:clamp(44px,6vw,72px) 0 }
+  .page-head{ margin-bottom:44px }
+  .kick{ font-family:var(--mono); font-size:11.5px; letter-spacing:.28em; text-transform:uppercase;
+    color:var(--amber); margin:0 0 16px }
+  h1{ font-family:var(--mono); font-size:clamp(1.7rem,4vw,2.3rem); letter-spacing:-.03em; line-height:1.1; margin:0 }
+  .intro{ color:var(--muted); font-size:16px; max-width:66ch; margin:18px 0 0; line-height:1.6 }
+  .intro b{ color:var(--ink); font-weight:600 }
+
+  .toc{ display:flex; flex-wrap:wrap; gap:8px; margin:26px 0 0; padding:16px 0 0; border-top:1px solid var(--line) }
+  .toc a{ font-family:var(--mono); font-size:12px; color:var(--muted); text-decoration:none;
+    border:1px solid var(--line); border-radius:999px; padding:5px 13px }
+  .toc a:hover{ color:var(--amber); border-color:var(--amber) }
+
+  section{ margin-bottom:56px }
+  section h2{ font-family:var(--mono); font-size:1.25rem; letter-spacing:-.02em; margin:0 0 18px;
+    display:flex; align-items:baseline; gap:12px }
+  section h2 .tag{ font-size:10.5px; color:var(--amber); border:1px solid var(--amber);
+    padding:2px 9px; border-radius:999px; letter-spacing:.08em; white-space:nowrap }
+  section h3{ font-size:1.02rem; margin:26px 0 10px }
+  p.lead{ color:var(--muted); margin:0 0 18px; max-width:72ch }
+
+  .panel{ border:1px solid var(--line); border-radius:14px; background:var(--bg-soft); padding:26px }
+  .panel + .panel{ margin-top:16px }
+
+  ul.tight{ margin:8px 0 0; padding-left:20px; color:var(--muted); display:grid; gap:7px }
+  ul.tight b{ color:var(--ink); font-weight:600 }
+
+  table{ border-collapse:collapse; width:100%; font-size:13px; margin-top:14px }
+  th{ font-family:var(--mono); font-size:10.5px; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--muted); text-align:left; padding:10px 14px; border-bottom:2px solid var(--amber) }
+  td{ padding:10px 14px; border-bottom:1px solid var(--line); vertical-align:top }
+  td b{ font-family:var(--mono); font-size:12px; font-weight:600 }
+  tr:hover td{ background:var(--amber-soft) }
+  .table-scroll{ overflow-x:auto }
+
+  .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:14px }
+  .grid3{ display:grid; grid-template-columns:repeat(3,1fr); gap:14px }
+  .mini{ border:1px solid var(--line); border-radius:12px; padding:18px }
+  .mini .k{ font-family:var(--mono); font-size:10.5px; letter-spacing:.12em; text-transform:uppercase;
+    color:var(--amber); margin:0 0 9px }
+  .mini b{ display:block; font-family:var(--mono); font-size:13px; margin:0 0 7px }
+  .mini p{ margin:0; color:var(--muted); font-size:12.5px; line-height:1.55 }
+
+  .flow-bar{ font-family:var(--mono); font-size:12px; display:flex; flex-wrap:wrap; align-items:center;
+    gap:8px; margin:8px 0 16px }
+  .flow-bar .f{ background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:6px 12px; color:var(--ink) }
+  .flow-bar .ar{ color:var(--amber); font-weight:700 }
+
+  .callout{ border-left:3px solid var(--amber); background:var(--amber-soft); border-radius:0 10px 10px 0;
+    padding:14px 18px; margin:18px 0; font-size:13.5px; color:var(--muted) }
+  .callout b{ color:var(--ink); font-weight:600 }
+
+  footer{ border-top:1px solid var(--line); padding:40px 0 60px }
+  footer .links{ display:flex; gap:6px; flex-wrap:wrap }
+  footer .links a{ font-family:var(--mono); font-size:12px; color:var(--muted); text-decoration:none; padding:6px 12px; border-radius:8px }
+  footer .links a:hover{ color:var(--amber); background:var(--amber-soft) }
+  footer .legal{ font-family:var(--mono); font-size:11px; color:var(--muted); margin-top:14px }
+
+  @media (max-width:860px){
+    .grid2,.grid3{ grid-template-columns:1fr }
+    .table-scroll{ max-width:100% }
+  }
+  @media (max-width:600px){
+    .nav-links{ display:none }
+    body{ font-size:15px }
+  }
+</style>
+</head>
+<body>
+
+<header class="nav wrap">
+  <a class="brand" href="index.html">
+    <span class="logo">B</span>
+    <span class="name">claude-code-boss<small>detalhes técnicos</small></span>
+  </a>
+  <nav class="nav-links">
+    <a href="index.html">← Apresentação</a>
+    <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a>
+    <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">Changelog</a>
+    <a href="#top" class="ver">v2.24.0</a>
+  </nav>
+</header>
+
+<main class="wrap" id="top">
+  <div class="page-head">
+    <p class="kick">documentação técnica · v2.24.0</p>
+    <h1>Arquitetura e funcionamento interno</h1>
+    <p class="intro">Para quem quer saber <b>como funciona por baixo</b>: daemon HTTP único, pipeline de hooks, Brain KB em 3 camadas, providers de embedding, perfis de enforcement, exploração de repositório por grafo e o dashboard. Fontes: <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a> e <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG</a>.</p>
+    <div class="toc">
+      <a href="#daemon">Daemon HTTP único</a>
+      <a href="#hooks">Hooks pipeline</a>
+      <a href="#brain">Brain KB</a>
+      <a href="#config">Config &amp; perfis</a>
+      <a href="#graph">Graph tools</a>
+      <a href="#dashboard">Dashboard</a>
+      <a href="#versoes">Versões</a>
+    </div>
+  </div>
+
+  <section id="daemon">
+    <h2>Daemon HTTP único <span class="tag">ADR-001</span></h2>
+    <p class="lead">O brain-server roda como <b>um único daemon HTTP</b> de longa duração (StreamableHTTP, stateful) numa <b>porta fixa (<code>58217</code>)</b>, compartilhado por toda sessão do Claude Code e qualquer outro consumidor na máquina — <b>um modelo, um SQLite</b>. O <code>.mcp.json</code> usa <code>"type":"http"</code> direto (sem spawn por sessão).</p>
+
+    <div class="flow-bar">
+      <span class="f">sessão 1</span><span class="ar">▸</span>
+      <span class="f">sessão 2</span><span class="ar">▸</span>
+      <span class="f">sessão N</span><span class="ar">▸</span>
+      <span class="f" style="border-color:var(--amber)">daemon único :58217</span><span class="ar">▸</span>
+      <span class="f">1 modelo · 1 SQLite</span>
+    </div>
+
+    <div class="panel">
+      <h3>Garantia + lifecycle</h3>
+      <ul class="tight">
+        <li><b>Auto-start + auto-upgrade:</b> o hook <code>brain-daemon-ensure.js</code> (SessionStart/UserPromptSubmit) encontra-ou-inicia o daemon; a cada atualização do plugin, troca um daemon obsoleto pelo novo (lock em <code>DATA_DIR</code> + checagem de versão via <code>/health</code>). Desligue com <code>BRAIN_HTTP_AUTOSTART=0</code>.</li>
+        <li><b>Auto-setup em background:</b> se o <code>node_modules</code> está faltando, o hook roda <code>plugin-setup.js</code> em background (detached, non-blocking) antes de tentar o spawn — sem bloquear a sessão e sem exigir intervenção.</li>
+        <li><b>Fail-open:</b> qualquer erro só adia a disponibilidade da KB; o próximo SessionStart/UserPromptSubmit re-emite o ensure. Nunca bloqueia o início de sessão.</li>
+        <li><b>Endpoints:</b> <code>/health</code> (aberto), <code>/mcp</code> (guarda de Origin), <code>/shutdown</code> (exige token local em <code>&lt;DATA_DIR&gt;/brain-http.token</code> ou <code>BRAIN_HTTP_TOKEN</code>).</li>
+        <li><b>Limites:</b> <code>MAX_BODY_BYTES = 1MB</code> (proteção contra OOM), <code>MAX_SESSIONS = 50</code> (prevenção de exaustão de FDs); graceful shutdown sem <code>process.exit()</code> hard kill.</li>
+      </ul>
+      <div class="callout"><b>Consumo externo:</b> qualquer ferramenta (ex.: OpenCode) aponte para <code>http://127.0.0.1:58217/mcp</code> com <code>project</code> explícito. O parâmetro <code>project</code> é obrigatório por chamada — sem ele, o daemon rejeita (<code>PROJECT_REQUIRED</code>).</div>
+    </div>
+  </section>
+
+  <section id="hooks">
+    <h2>Hooks pipeline <span class="tag">~15 scripts + 1 mcp_tool</span></h2>
+    <p class="lead">Todos os hooks vivem em <code>hooks/hooks.json</code>. O <b>Stop é um entry único</b> (<code>stop-dispatcher.js</code>) que roda todos os detectores in-process e funde os blocks num só <code>{decision:'block', reason}</code> — 1 spawn de Node, não 11+.</p>
+
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Evento</th><th>Script</th><th>O que faz</th></tr></thead>
+        <tbody>
+          <tr><td>SessionStart</td><td><b>memory-rotate.js</b></td><td>Rotaciona MEMORY.md quando &gt;150 linhas</td></tr>
+          <tr><td>SessionStart</td><td><b>session-whitelist.js</b></td><td>Detecta ecossistema do projeto, popula whitelist</td></tr>
+          <tr><td>SessionStart</td><td><b>brain-health.js</b></td><td>Liveness probe (static + active); advisory acionável se MCP caído, senão silencioso</td></tr>
+          <tr><td>SessionStart</td><td><b>doctor-advisory.js</b></td><td>Roda <code>doctor.js</code> com cooldown; advisory de 1 linha só se algo crítico falhar</td></tr>
+          <tr><td>SessionStart</td><td><b>review-checklist-advisory.js</b></td><td>Lembra o <code>/code-review</code> nativo de consultar <code>.claude/brain-review-checklist.md</code></td></tr>
+          <tr><td>SessionStart</td><td><b>graph-warm.js</b></td><td>Dispara ingest incremental do Session Graph (fire-and-forget, cooldown)</td></tr>
+          <tr><td>SubagentStart</td><td><b>policy-inject.js</b></td><td>Injeta políticas standing no contexto do subagente</td></tr>
+          <tr><td>PreToolUse (Bash)</td><td><b>curation-guard.js</b></td><td>Bloqueia/redireciona comandos curados; inclui graph-guard contra <code>grep -r</code>/<code>rg</code>/<code>find</code> amplos</td></tr>
+          <tr><td>PreToolUse (Grep|Glob)</td><td><b>graph-guard.js</b></td><td>Busca ampla com Session Graph READY → deny-once: <code>graph_search</code>/<code>graph_symbols</code> primeiro</td></tr>
+          <tr><td>PostToolUse (Bash)</td><td><b>curation-detect.js</b></td><td>Detecta outputs grandes para curação</td></tr>
+          <tr><td>PostToolUse (Edit|Write|NotebookEdit)</td><td><b>file-edit-detect.js</b></td><td>Journala arquivos editados no turno</td></tr>
+          <tr><td>UserPromptExpansion</td><td><b>skill-metric.js</b></td><td>Métrica de uso de skill (matcher <code>.*</code>)</td></tr>
+          <tr><td>PostToolUseFailure</td><td><b>curation-detect.js / failure-detect.js</b></td><td>Detecta output p/ curação; captura assinatura da falha (alimenta error-guard)</td></tr>
+          <tr><td><b>Stop</b> (via dispatcher)</td><td><b>stop-dispatcher.js</b></td><td>Entry único — roda todos os detectores in-process, funde blocks</td></tr>
+          <tr><td>Stop (via dispatcher)</td><td><b>pattern-detect, self-review, verify-nudge, refine-research, curation-stop, session-summary</b></td><td>Nudges advisory throttled (aprendizado, self-review, verificação, pesquisa, curadoria, resumo)</td></tr>
+          <tr><td>Stop (via dispatcher)</td><td><b>+ 7 outros</b></td><td>skill-promote-trigger, decision-scan-response, decision-promote, research-followup-detect, failure-retro, skill-success-detect, retrieval-feedback, auto-continue-stop</td></tr>
+          <tr><td>UserPromptSubmit</td><td><b>brain-health.js</b></td><td>Mesma probe do SessionStart, cooldown 60s</td></tr>
+          <tr><td>UserPromptSubmit</td><td><b>correction-detect.js</b></td><td>Detecta sinal de correção → nudge p/ <code>capture_lesson</code></td></tr>
+          <tr><td>UserPromptSubmit</td><td><b>mcp_tool → brain_retrieve_context</b></td><td>Retrieval QUENTE por-turno: embedia o prompt no brain-server (~12–26ms), gate 0.20, injeta bloco <code>[BRAIN]</code></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="callout"><b>Captura de lição in-loop:</b> quando o usuário corrige, o agente chama a tool MCP <code>capture_lesson</code> com a lição curada — admission control inline (dedup/merge → recurrence), sem reler transcript, sem subagente caro. <b>Tom advisory:</b> os hooks informam, não coagem.</div>
+  </section>
+
+  <section id="brain">
+    <h2>Brain KB <span class="tag">3 camadas</span></h2>
+    <p class="lead">Base de conhecimento local com 3 layers:</p>
+
+    <div class="grid3">
+      <div class="mini">
+        <p class="k">tier 1</p>
+        <b>Storage</b>
+        <p><code>brain-store.js</code> — SQLite via <code>node:sqlite</code> (built-in, zero deps nativas) com fallback para <code>better-sqlite3</code> e, por fim, JSON. Busca vetorial (cosine similarity JS, &lt;10K entradas) + FTS keyword.</p>
+      </div>
+      <div class="mini">
+        <p class="k">tier 2</p>
+        <b>Index</b>
+        <p><code>brain-index.js</code> — Índice invertido de palavras-chave com TF scoring.</p>
+      </div>
+      <div class="mini">
+        <p class="k">tier 3</p>
+        <b>Graph</b>
+        <p><code>brain-graph.js</code> — Grafo de citação com 6 tipos de aresta.</p>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <h3>Providers de embedding</h3>
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Provider</th><th>Config</th><th>Requisito</th><th>Custo</th></tr></thead>
+          <tbody>
+            <tr><td><b>transformers</b> (padrão)</td><td><code>embedder.provider: "transformers"</code></td><td>Zero build; baixa o modelo (~100–200 MB) no install</td><td>Zero</td></tr>
+            <tr><td><b>ollama</b></td><td><code>embedder.provider: "ollama"</code></td><td>Ollama rodando localmente</td><td>Zero</td></tr>
+            <tr><td><b>voyage</b></td><td><code>embedder.provider: "voyage"</code></td><td>Chave API Voyage AI</td><td>~$0.10/1M tokens</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <p style="margin:14px 0 0; font-size:13px; color:var(--muted)">Modelo padrão: <code>Xenova/paraphrase-multilingual-MiniLM-L12-v2</code> (384-dim, 50 idiomas) — recupera lessons EN a partir de prompts em qualquer idioma suportado. Cache durável em <code>&lt;CLAUDE_PLUGIN_DATA&gt;/models/</code>, sobrevive a reinstalls. Trocar de modelo exige <code>node scripts/brain-reembed.js</code> (wipa a tabela <code>embeddings</code> e re-embeda com o modelo atual).</p>
+    </div>
+  </section>
+
+  <section id="config">
+    <h2>Config &amp; perfis</h2>
+    <p class="lead">Um único eixo de enforcement, três modos — lido do config <b>shipped mesclado</b> com <code>DATA_DIR/hooks/user-config.json</code> (update-safe, sobrevive ao auto-update).</p>
+
+    <div class="grid3">
+      <div class="mini">
+        <p class="k">default</p>
+        <b>standard</b>
+        <p>Silencioso, mas <b>aprende</b>: só a curadoria dá 1 aviso soft e relenta. <code>correction-detect</code> fica LIGADO (nudge silencioso). Ficam desligados os nudges interruptivos e ferramentas de dev. <code>session-summary</code> (1×/sessão) e o retrieval continuam.</p>
+      </div>
+      <div class="mini">
+        <p class="k">para quem estende o plugin</p>
+        <b>dev</b>
+        <p>Tudo ligado — curadoria escala até 3×; nudges, decisões, self-review, pesquisa, retros, auto-continue.</p>
+      </div>
+      <div class="mini">
+        <p class="k">sem enforcement</p>
+        <b>free</b>
+        <p>Passa tudo: o Stop-dispatcher faz short-circuit e <b>nada bloqueia</b>; só o retrieval de contexto no prompt (read-only) segue ativo.</p>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <h3>Backends do Brain</h3>
+      <ul class="tight">
+        <li><b>local (padrão):</b> SQLite no <code>DATA_DIR/brain/&lt;projeto&gt;/brain.db</code> — zero servidor externo.</li>
+        <li><b>mcp-memory (server-side):</b> conecta a um mcp-memory-server (HTTP auto-discovery via <code>~/.mcp-memory/run/daemon.json</code> ou stdio com Java 21+). Ingestão opt-in, desligada por padrão. Botão <b>Migrar agora</b> leva o acervo local para o servidor projeto a projeto (idempotente, fail-loud).</li>
+      </ul>
+      <h3>Identidade do projeto (recall entre máquinas/pastas)</h3>
+      <p style="color:var(--muted); font-size:13.5px">Precedência: <code>CCB_PROJECT_ID</code> (env) → <code>.claude-boss-project</code> (arquivo na raiz do projeto, viaja com a pasta) → <code>basename(cwd)</code> (default legado). Escopo anti-contaminação: o daemon filtra por <code>project_id</code> no handshake.</p>
+    </div>
+  </section>
+
+  <section id="graph">
+    <h2>Graph tools <span class="tag">7 tools</span></h2>
+    <p class="lead">Exploração rápida de repositório via Session Graph Engine (<b>cliente REST puro</b>, nenhum Java embarcado). Hubs por PageRank, busca semântica com vizinhança (CALLS/CONTAINS/IMPORTS), quem-chama-um-símbolo — para entender um repo grande sem garimpar arquivo por arquivo.</p>
+    <div class="panel">
+      <div class="table-scroll">
+        <table>
+          <thead><tr><th>Tool</th><th>O que faz</th></tr></thead>
+          <tbody>
+            <tr><td><b>graph_analyze</b></td><td>Porta de entrada: ensureReady + hubs + busca opcional</td></tr>
+            <tr><td><b>graph_search</b></td><td>Busca semântica com expansão de vizinhança (N-hops)</td></tr>
+            <tr><td><b>graph_symbols</b></td><td>Lista hubs por PageRank ou busca por nome</td></tr>
+            <tr><td><b>graph_status</b></td><td>Nodes, edges, hubs — read-only, não indexa</td></tr>
+            <tr><td><b>graph_ingest / graph_reindex</b></td><td>Indexa o projeto (async, poll até ready)</td></tr>
+            <tr><td><b>graph_callers</b></td><td>Quem chama um nó (inbound CALLS edges)</td></tr>
+            <tr><td><b>graph_references</b></td><td>Todas as referências a um nó (CALLS + CONTAINS + IMPORTS)</td></tr>
+            <tr><td><b>graph_tag_node</b></td><td>Marca um nó com termos extraídos</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="callout"><b>Fail-open:</b> se o daemon de memória estiver offline, as tools <code>graph_*</code> falham graciosamente — nunca derrubam a sessão. Independentes do KB local/mutex.</div>
+    </div>
+  </section>
+
+  <section id="dashboard">
+    <h2>Dashboard</h2>
+    <p class="lead">SPA iniciado <b>sob demanda</b> (<code>node scripts/dashboard.js</code> ou skill <code>config-dashboard</code>). Configura o plugin (brain-config, hooks) com 4 abas.</p>
+    <div class="grid2">
+      <div class="mini"><p class="k">aba</p><b>Home</b><p>Visão geral e estado do plugin.</p></div>
+      <div class="mini"><p class="k">aba</p><b>Brain KB</b><p>Browser paginado, editor inline de entradas (whitelist estrita, re-embed), delete com backup JSON obrigatório, backend configuration e migração.</p></div>
+      <div class="mini"><p class="k">aba</p><b>Hooks</b><p>Perfis (<code>standard|dev|free</code>) e seletor.</p></div>
+      <div class="mini"><p class="k">aba</p><b>Logs</b><p>Ring buffer de logs do plugin.</p></div>
+    </div>
+  </section>
+
+  <section id="versoes">
+    <h2>Versões <span class="tag">48 releases</span></h2>
+    <p class="lead">O changelog completo (v1.0.0 → v2.24.0) vive no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>. Destaques recentes:</p>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>Versão</th><th>Destaque</th></tr></thead>
+        <tbody>
+          <tr><td><b>v2.24.0</b></td><td>Auto-setup do daemon em background; graceful shutdown (sem <code>process.exit</code>), body/session limits; model-router declarativo por rota com auth declarativa (401/403/405/404).</td></tr>
+          <tr><td><b>v2.23.0</b></td><td>MCP auto-reconnect no restart do daemon; BYOK SSE hardening (TTFB ceiling + debounce de swap); curation fixes.</td></tr>
+          <tr><td><b>v2.22.0</b></td><td>Multi-tenant por projeto (CSS headers); Router Fases A–E; BYOK Classify; série histórica diária com sparkline; editor inline + delete com backup no Dashboard.</td></tr>
+          <tr><td><b>v2.21.0</b></td><td>BYOK (bring-your-own-key) e plano B para 429 via router; mode sombra para policies.</td></tr>
+          <tr><td><b>v2.20.0</b></td><td>Reliability suite: atomic-write, diagnostics dos 6 sinais que degradavam em silêncio, hot-paths 21ms vs ~253ms (medição real).</td></tr>
+          <tr><td><b>v2.10.0</b></td><td>Auto-aprendizado: captura durável com ACK explícito (Fase 1) + políticas que você ativa, injetadas (Fase 2) — surfacing ≠ enforcement.</td></tr>
+          <tr><td><b>v2.0.0</b></td><td>Anti context-bloat: curadoria de comandos e outputs; release story de v2.0.0.</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="callout" style="margin-top:20px"><b>Sharding/observabilidade:</b> release-guard (drift de versão) e pages-guard (frescura das páginas) correm deterministicamente no CI — sem cota de modelo. Releases publicam apenas após CI green + smoke local.</div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <div class="links">
+      <a href="index.html">← Voltar à apresentação</a>
+      <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a>
+      <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">Changelog</a>
+      <a href="https://github.com/AllanSantos-DV/claude-code-plugins">GitHub</a>
+    </div>
+    <div class="legal">MIT · Allan Santos · claude-code-boss v2.24.0</div>
+  </div>
+</footer>
+
+</body>
+</html>
