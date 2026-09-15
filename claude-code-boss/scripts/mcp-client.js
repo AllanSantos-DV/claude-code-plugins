@@ -53,6 +53,7 @@ class McpClient extends EventEmitter {
     if (this._initialized) return;
 
     if (this.transport === 'http') {
+      await this._ensureDaemon();
       await this._connectHttp();
       this._initialized = true;
       return;
@@ -113,6 +114,63 @@ class McpClient extends EventEmitter {
     this._startTime = Date.now();
     await this._handshake();
     this._initialized = true;
+  }
+
+  /** Ensure the Java daemon is actually running before attempting connection. */
+  async _ensureDaemon() {
+    const url = this.serverUrl || this._discoverDaemonUrl();
+    if (!url) return; // No URL to check, _connectHttp will handle the error
+
+    const alive = await this._httpHealth(url);
+    if (alive) return;
+
+    console.error(`[MCP] Daemon at ${url} is offline. Attempting auto-restart...`);
+    try {
+      // Use the stdio spawn logic to bring it back up
+      await this._spawnJar();
+      // Wait a bit for the server to boot and write the new daemon.json
+      await new Promise(r => setTimeout(r, 3000));
+    } catch (err) {
+      console.error(`[MCP] Auto-restart failed: ${err.message}`);
+      // We don't throw here; _connectHttp will perform the final health check
+    }
+  }
+
+  /** Logic to spawn the JAR (extracted from original connect() for reuse). */
+  async _spawnJar() {
+    const jarExists = fs.existsSync(this.jarPath);
+    if (!jarExists && this.downloadUrl) {
+      await this._downloadJar();
+    }
+    if (!fs.existsSync(this.jarPath)) {
+      throw new Error(`MCP Memory Server JAR not found at ${this.jarPath}`);
+    }
+
+    const javaCmd = this._findJava();
+    if (!javaCmd) throw new Error('Java 21+ not found.');
+
+    const args = this.javaArgs.concat([
+      '-jar', this.jarPath,
+      '--workspace', this.workspacePath,
+      '--transport', 'stdio', // JAR handles its own HTTP daemon transition
+    ]);
+
+    this._process = spawn(javaCmd, args, {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    // Handle basic output to avoid hanging
+    this._process.stdout.on('data', () => {});
+    this._process.stderr.on('data', () => {});
+
+    // Wait for the daemon to actually start and serve /health
+    const deadline = Date.now() + 15000;
+    while (Date.now() < deadline) {
+      const url = this._discoverDaemonUrl();
+      if (url && await this._httpHealth(url)) return;
+      await new Promise(r => setTimeout(r, 500));
+    }
+    throw new Error('Daemon failed to become healthy after spawn');
   }
 
   // ─── HTTP (StreamableHTTP /mcp) transport ──────────────────────────────────
