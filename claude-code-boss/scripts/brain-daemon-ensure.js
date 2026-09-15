@@ -1,32 +1,65 @@
 #!/usr/bin/env node
 /**
- * brain-daemon-ensure.js — SessionStart hook.
+ * brain-daemon-ensure.js — SessionStart / UserPromptSubmit hook.
  *
  * .mcp.json declares `brain-server` as a direct "type":"http" URL (no
- * `command`, no per-session process — ADR-001 "daemon único"). Something
- * still has to make sure the ONE shared daemon is actually listening on that
- * fixed port BEFORE Claude Code's MCP client tries to connect at session
- * start — that something is this hook. It is itself EPHEMERAL (runs, ensures,
- * exits — it is not a resident runtime, so it does not itself violate the
- * daemon-único principle it exists to serve).
+ * `command`, no per-session process — ADR-001 "daemon único"). Algo
+ * ainda precisa garantir que o daemon único está escutando na porta
+ * fixa ANTES do cliente MCP do Claude Code tentar conectar no início
+ * da sessão — e esse algo é este hook. Ele é efêmero (roda, garante,
+ * sai — não é um runtime residente, então não viola o princípio
+ * daemon-único que serve).
  *
- * Delegates entirely to lib/daemon-supervisor.js's ensureDaemon() — the same
- * version-aware find-or-start/swap logic already used elsewhere; no new
- * daemon-lifecycle code here.
+ * Delega inteiramente ao lib/daemon-supervisor.js's ensureDaemon() —
+ * a mesma lógica de find-or-start/swap já usada elsewhere; sem novo
+ * código de ciclo de vida de daemon aqui.
  *
- * Fail-open: any error just means the session's first KB tool call can fail and
- * retry on a later prompt (the next SessionStart/UserPromptSubmit re-emits this
- * hook); this hook must never block a session start.
+ * Auto-setup: se o daemon está ABSENT e o node_modules do plugin está
+ * faltando, roda plugin-setup.js em background (detached, non-blocking)
+ * ANTES de tentar o spawn do daemon. Isso garante que as dependências
+ * estão presentes na próxima tentativa, sem precisar que a LLM repasse
+ * um aviso ao usuário.
+ *
+ * Fail-open: qualquer erro significa apenas que a primeira ferramenta de
+ * KB da sessão pode falhar e retentar num prompt posterior (o próximo
+ * SessionStart/UserPromptSubmit re-emite este hook); este hook NUNCA
+ * bloqueia o início de uma sessão.
  */
 'use strict';
 
 const path = require('path');
+const fs = require('fs');
+const { spawn } = require('child_process');
 const { readStdin, emitEmpty, emitJson, parsePayload } = require('./lib/hook-io.js');
 const { dataDir } = require('./lib/data-dir.js');
 
 function pluginRoot() {
   const env = process.env.CLAUDE_PLUGIN_ROOT;
   return env && !env.includes('${') ? env : path.resolve(__dirname, '..');
+}
+
+/**
+ * Roda plugin-setup.js em background (detached, não bloqueia o hook).
+ * Retorna true se o spawn foi iniciado, false se o setup não era necessário
+ * ou se o spawn falhou.
+ */
+function runSetupInBackground(root, dataDir) {
+  const nodeModules = path.join(root, 'node_modules');
+  const setupScript = path.join(root, 'scripts', 'plugin-setup.js');
+  if (fs.existsSync(nodeModules)) return false; // deps presentes, sem necessidade
+  if (!fs.existsSync(setupScript)) return false;
+  try {
+    const child = spawn(process.execPath, [setupScript], {
+      detached: true,
+      stdio: 'ignore',
+      env: { ...process.env, CLAUDE_PLUGIN_ROOT: root, CLAUDE_PLUGIN_DATA: dataDir },
+    });
+    child.unref();
+    return true;
+  } catch (err) {
+    console.error(`[brain-daemon-ensure] não pôde spawn plugin-setup: ${err.message}`);
+    return false;
+  }
 }
 
 async function main() {
@@ -38,6 +71,13 @@ async function main() {
 
     const root = pluginRoot();
     const data = dataDir();
+
+    // Auto-setup: se node_modules está faltando, roda plugin-setup.js em
+    // background ANTES de chamar ensureDaemon. O daemon precisa das
+    // dependências para subir saudável; se o setup está rodando, a próxima
+    // tentativa de spawn vai encontrar tudo pronto.
+    const setupStarted = runSetupInBackground(root, data);
+
     const fileUrl = require('url').pathToFileURL(
       path.join(root, 'servers', 'brain-server', 'lib', 'daemon-supervisor.js'),
     ).href;
@@ -46,13 +86,16 @@ async function main() {
     const result = await ensureDaemon({ pluginRoot: root, dataDir: data });
 
     if (result.status === 'error') {
+      const setupNote = setupStarted
+        ? ' [setup em background — tente novamente se o daemon não subir]'
+        : '';
       emitJson({
         hookSpecificOutput: {
           hookEventName: eventName,
           additionalContext:
-            `[BRAIN] daemon único não pôde ser garantido (${result.error}) — a sessão tentará ` +
-            'conectar ao brain-server mesmo assim; se falhar, rode `node servers/brain-server/index.js` ' +
-            'manualmente e veja o erro.',
+            `[BRAIN] daemon único não pôde ser garantido (${result.error})${setupNote}. ` +
+            'O brain-server tentará reiniciar automaticamente no próximo prompt; se falhar, ' +
+            'rode `node scripts/plugin-setup.js && node servers/brain-server/index.js` manualmente.',
         },
       });
       return;
@@ -60,10 +103,10 @@ async function main() {
     emitEmpty();
   } catch (err) {
     console.error(`[brain-daemon-ensure] ${err.message}`);
-    emitEmpty(); // never block session start
+    emitEmpty(); // nunca bloqueia o início da sessão
   }
 }
 
 if (require.main === module) main();
 
-module.exports = { pluginRoot };
+module.exports = { pluginRoot, runSetupInBackground };
