@@ -212,6 +212,7 @@ function effortForModel(modelId) {
 // vai no `display_name`, e o prefixo é removido de volta antes de rotear
 // (ver unaliasModelId) — o resto do pipeline nunca vê o id disfarçado.
 const DEFAULT_ALIAS_PREFIX = 'anthropic-';
+const INTERNAL_ALIAS_ID = 'ccb-alias-';
 
 // Id que já contém "claude"/"anthropic" passa no filtro do picker sozinho —
 // prefixar de novo duplicaria (relevante num catálogo misto BYOK+Anthropic).
@@ -222,15 +223,18 @@ function looksAnthropic(id) {
 
 function aliasModelId(id, prefix) {
   if (typeof id !== 'string' || !id || looksAnthropic(id)) return id;
-  return `${prefix || DEFAULT_ALIAS_PREFIX}${id}`;
+  const p = prefix || DEFAULT_ALIAS_PREFIX;
+  return `${p}${INTERNAL_ALIAS_ID}${id}`;
 }
 
 // Inverso de aliasModelId — usado ao ler `body.model` de uma request de volta
 // do cliente, para que classificação/roteamento/upstream vejam o id REAL.
-// Prefixo ausente ou não batendo → devolve o id inalterado (idempotente).
+// O sistema remove o prefixo do usuário + o identificador interno.
 function unaliasModelId(id, prefix) {
+  if (typeof id !== 'string' || !id) return id;
   const p = prefix || DEFAULT_ALIAS_PREFIX;
-  if (typeof id === 'string' && p && id.startsWith(p)) return id.slice(p.length);
+  const fullPrefix = `${p}${INTERNAL_ALIAS_ID}`;
+  if (id.startsWith(fullPrefix)) return id.slice(fullPrefix.length);
   return id;
 }
 
