@@ -4702,8 +4702,8 @@ test('catalog.maybeRefresh: warms snapshot then serves modelForFamily', async ()
 // ─── catalog: alias de id BYOK p/ o picker `/model` ────────────────────────────
 
 test('catalog.aliasModelId: prefixa id não-Anthropic com o default; ids "claude"/"anthropic" passam intactos', () => {
-  assertEq(catalog.aliasModelId('gpt-4', undefined), 'anthropic-gpt-4');
-  assertEq(catalog.aliasModelId('llama-3', 'custom-'), 'custom-llama-3');
+  assertEq(catalog.aliasModelId('gpt-4', undefined), 'anthropic-ccb-alias-gpt-4');
+  assertEq(catalog.aliasModelId('llama-3', 'custom-'), 'custom-ccb-alias-llama-3');
   assertEq(catalog.aliasModelId('claude-sonnet-4-6', undefined), 'claude-sonnet-4-6'); // já passa no filtro
   assertEq(catalog.aliasModelId('my-anthropic-model', undefined), 'my-anthropic-model'); // contém "anthropic"
   assertEq(catalog.aliasModelId('', undefined), '');
@@ -4711,8 +4711,8 @@ test('catalog.aliasModelId: prefixa id não-Anthropic com o default; ids "claude
 });
 
 test('catalog.unaliasModelId: reverte o prefixo (default e custom); idempotente sem prefixo', () => {
-  assertEq(catalog.unaliasModelId('anthropic-gpt-4', undefined), 'gpt-4');
-  assertEq(catalog.unaliasModelId('custom-llama-3', 'custom-'), 'llama-3');
+  assertEq(catalog.unaliasModelId('anthropic-ccb-alias-gpt-4', undefined), 'gpt-4');
+  assertEq(catalog.unaliasModelId('custom-ccb-alias-llama-3', 'custom-'), 'llama-3');
   assertEq(catalog.unaliasModelId('gpt-4', undefined), 'gpt-4'); // sem prefixo → inalterado
   assertEq(catalog.unaliasModelId('claude-sonnet-4-6', undefined), 'claude-sonnet-4-6');
   // round-trip
@@ -4727,8 +4727,8 @@ test('catalog.aliasedModelList: aliasa não-Anthropic com display_name real; ent
   ];
   const snap = catalog.buildCatalog(raw);
   const list = catalog.aliasedModelList(snap, undefined);
-  const gpt = list.find((m) => m.display_name === 'gpt-4' || m.id === 'anthropic-gpt-4');
-  assert(gpt && gpt.id === 'anthropic-gpt-4', 'gpt-4 deveria virar anthropic-gpt-4');
+  const gpt = list.find((m) => m.display_name === 'gpt-4' || m.id === 'anthropic-ccb-alias-gpt-4');
+  assert(gpt && gpt.id === 'anthropic-ccb-alias-gpt-4', 'gpt-4 deveria virar anthropic-ccb-alias-gpt-4');
   assertEq(gpt.display_name, 'gpt-4'); // nome real preservado
   const claude = list.find((m) => m.id === 'claude-sonnet-4-6');
   assert(claude, 'entrada claude-sonnet-4-6 deveria passar intacta');
@@ -4748,21 +4748,21 @@ test('router.byokAliasPrefix: default anthropic-, override via config.byok.model
 
 test('router.unaliasBodyModel: só desfaz o alias quando isByok=true; não-BYOK e não-alias ficam intactos', () => {
   const byokCfg = { byok: { enabled: true, mode: 'always', baseUrl: 'http://e' } };
-  const body1 = { model: 'anthropic-gpt-4' };
+  const body1 = { model: 'anthropic-ccb-alias-gpt-4' };
   router.unaliasBodyModel(body1, byokCfg);
   assertEq(body1.model, 'gpt-4'); // BYOK ativo → desfaz o alias
 
   const nonByokCfg = {};
-  const body2 = { model: 'anthropic-gpt-4' };
+  const body2 = { model: 'anthropic-ccb-alias-gpt-4' };
   router.unaliasBodyModel(body2, nonByokCfg);
-  assertEq(body2.model, 'anthropic-gpt-4'); // sem BYOK → não mexe (evita regressão no caso comum)
+  assertEq(body2.model, 'anthropic-ccb-alias-gpt-4'); // sem BYOK → não mexe (evita regressão no caso comum)
 
   const body3 = { model: 'claude-sonnet-4-6' };
   router.unaliasBodyModel(body3, byokCfg);
   assertEq(body3.model, 'claude-sonnet-4-6'); // sem prefixo → inalterado
 
   const customPrefixCfg = { byok: { enabled: true, mode: 'always', baseUrl: 'http://e', modelAliasPrefix: 'custom-' } };
-  const body4 = { model: 'custom-llama-3' };
+  const body4 = { model: 'custom-ccb-alias-llama-3' };
   router.unaliasBodyModel(body4, customPrefixCfg);
   assertEq(body4.model, 'llama-3');
 

@@ -21,9 +21,17 @@ import { HEALTH_PATH, MCP_PATH, lockFile, ensureToken, requestAllowed, originAll
 
 const SESSION_IDLE_MS = 30 * 60 * 1000; // reap sessions idle > 30 min
 
+const MAX_BODY_BYTES = 1024 * 1024; // 1MB
+const MAX_SESSIONS = 50; // limite de sessões simultâneas para evitar exaustão de FDs
+
 async function readJsonBody(req) {
   const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
+  let total = 0;
+  for await (const chunk of req) {
+    total += chunk.length;
+    if (total > MAX_BODY_BYTES) throw new Error('request body too large');
+    chunks.push(chunk);
+  }
   if (chunks.length === 0) return undefined;
   try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch (e) { void e; return undefined; }
 }
@@ -68,7 +76,7 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, shuttingDown: true }));
         // Let the response flush before we force connections shut.
-        setTimeout(() => { shutdown().finally(() => process.exit(0)); }, 100);
+        setTimeout(() => { shutdown(); }, 100);
         return;
       }
 
@@ -100,6 +108,11 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
 
       // No session yet: only an initialize POST may create one.
       if (req.method === 'POST' && isInitializeRequest(body)) {
+        if (sessions.size >= MAX_SESSIONS) {
+          res.writeHead(429, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'Too many sessions' }, id: (body && body.id) ?? null }));
+          return;
+        }
         const server = createBrainServer({ pluginRoot, mode: 'http' });
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
@@ -138,7 +151,7 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
 
   // Bind — the port is the singleton lock. EADDRINUSE bubbles to the caller.
   await new Promise((resolve, reject) => {
-    const onErr = (err) => reject(err);
+    const onErr = (err) => { httpServer.removeListener('error', onErr); reject(err); };
     httpServer.once('error', onErr);
     httpServer.listen(port, host, () => { httpServer.removeListener('error', onErr); resolve(); });
   });
@@ -153,7 +166,7 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
   async function shutdown() {
     if (_shuttingDown) return;
     _shuttingDown = true;
-    setTimeout(() => process.exit(0), 2500).unref(); // hard fallback if close() hangs on keep-alive
+    setTimeout(() => {}, 2500).unref(); // fallback de tempo — o supervisor gerencia o ciclo de vida
     clearInterval(reaper);
     for (const [, s] of sessions) { try { await s.transport.close(); } catch (e) { void e; } }
     sessions.clear();
@@ -161,8 +174,8 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
     try { httpServer.closeAllConnections?.(); } catch (e) { void e; } // drop keep-alive so close() resolves
     await new Promise((r) => httpServer.close(r));
   }
-  process.once('SIGTERM', () => { shutdown().finally(() => process.exit(0)); });
-  process.once('SIGINT', () => { shutdown().finally(() => process.exit(0)); });
+  process.once('SIGTERM', () => { shutdown().finally(() => {}); });
+  process.once('SIGINT', () => { shutdown().finally(() => {}); });
 
   return { httpServer, sessions, shutdown, port };
 }
