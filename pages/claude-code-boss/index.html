@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.24.0 — memória semântica, execução curada e roteador de modelos com BYOK</title>
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica local, execução curada, aprendizado no loop e um roteador de modelos opt-in com plano B para 429 e BYOK (seu próprio endpoint Anthropic-compatible). Na v2.24.0 o roteador ganha gerenciador declarativo de rotas: `config/router-config.json#routes` (shipping, versionado) define o DEFAULT e `user-config.json` faz overlay raso por rota, `validateRoute(path, ov)` é puro com allowlist fechada de upstream/auth, `resolveRoutes(cfg, {warn})` ignora overlays inválidas com warn (fail-open por rota), e a autenticação vira declarativa — `401 missing signature` em rotas `signature`, `403 Forbidden: non-loopback Host` em `loopback`, `405 Allow: <method>` em mismatch de method, `404` quando nenhuma rota bateu. `passthrough` virou alias fino de `passthroughGeneric` e a paridade `DEFAULT_ROUTES` ↔ shipping rotas é automatizada em teste. Na v2.23.0 o cliente MCP redescobre o daemon.json sozinho: a URL do mcp-memory-server não quebra mais no dia seguinte — a porta dinâmica é re-lida no restart do daemon (ECONNREFUSED/timeout disparam _reconnect() com retry único). O router ganha teto de TTFB próprio para o BYOK, desarme de timeout de socket antes do proxy SSE e debounce de 60s na troca de build (acaba o ping-pong kill entre dois installs válidos). A curadoria fecha 3 classes de separador na assinatura de comando, ignora segmentos que são só atribuição de variável e descarta chaves órfãs no load. E o tooltip de Server URL no dashboard (EN+PT) agora documenta explicitamente o comportamento da porta dinâmica." />
+<title>claude-code-boss v2.24.0 — daemon HTTP único, roteador declarativo e BYOK</title>
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica local, execução curada, aprendizado no loop e um roteador de modelos opt-in com plano B para 429 e BYOK (seu próprio endpoint Anthropic-compatible). Na v2.24.0 o roteador ganha gerenciador declarativo de rotas: `config/router-config.json#routes` (shipping, versionado) define o DEFAULT e `user-config.json` faz overlay raso por rota, `validateRoute(path, ov)` é puro com allowlist fechada de upstream/auth, `resolveRoutes(cfg, {warn})` ignora overlays inválidas com warn (fail-open por rota), e a autenticação vira declarativa — `401 missing signature` em rotas `signature`, `403 Forbidden: non-loopback Host` em `loopback`, `405 Allow: <method>` em mismatch de method, `404` quando nenhuma rota bateu. `passthrough` virou alias fino de `passthroughGeneric` e a paridade `DEFAULT_ROUTES` ↔ shipping rotas é automatizada em teste. Na v2.23.0 o cliente MCP redescobre o daemon.json sozinho: a URL do mcp-memory-server não quebra mais no dia seguinte — a porta dinâmica é re-lida no restart do daemon (ECONNREFUSED/timeout disparam _reconnect() com retry único). O router ganha teto de TTFB próprio para o BYOK, desarme de timeout de socket antes do proxy SSE e debounce de 60s na troca de build (acaba o ping-pong kill entre dois installs válidos). A curadoria fecha 3 classes de separador na assinatura de comando, ignora segmentos que são só atribuição de variável e descarta chaves órfãs no load. E o tooltip de Server URL no dashboard (EN+PT) agora documenta explicitamente o comportamento da porta dinâmica. O brain-server vira daemon HTTP único na porta fixa 58217: `/health`, `/shutdown` e `/mcp` com auth por token/origin, `.mcp.json` com `type:"http"`, hook `brain-daemon-ensure` fail-open no SessionStart, e smoke `brain-http-auth.mjs` 6/6 passando." />
 <style>
   :root{
     --paper:#f6f4ef; --ink:#17161b; --muted:#6a6862; --line:rgba(23,22,27,.12);
@@ -2614,6 +2614,44 @@
     <p class="trust"><b>O que mudou de verdade:</b> as rotas <b>não eram o problema</b> — elas eram um bloco fixo no código, e o problema era que isso as tornava <b>inalteráveis sem tocar no proxy</b>. Agora mudar uma rota é mudar um arquivo de config; e o overlay raso + fail-open por rota significa que <b>config errada não derruba o plugin</b>. A autenticação declarativa não adiciona comportamento novo: os mesmos <code>401</code>/<code>403</code>/<code>405</code>/<code>404</code> que já existiam, mas agora com mensagens fixas e uma allowlist que impede uma rota de se passar por outra. E o limite honesto: <code>resolveRoutes</code> ignora overlays inválidas — então uma config que <b>não é validada pelo usuário</b> também não é aplicada, e o plugin roda com o default. É fail-open, não fail-silent: o warn é injetável, então quem opera pode ver.</p>
   </section>
 
+  <section>
+    <p class="label">Novo na v2.24.0 · brain-server como daemon HTTP único: porta fixa, auth declarativa e smoke 6/6</p>
+    <p class="lede">O <b>brain-server</b> deixa de ser um daemon dinâmico e vira um <b>servidor HTTP único</b> na porta fixa <b>58217</b>. O ponteiro do MCP agora usa <code>.mcp.json</code> com <code>type:"http"</code> e <code>url: "http://127.0.0.1:58217/mcp"</code>. A superfície de rede é enxuta e declarada: <code>/health</code> (liveness aberta), <code>/shutdown</code> (graceful, protegida por token), e <code>/mcp</code> (protocolo MCP com handshake de projeto). A autenticação é <b>declarativa por origem</b>: <code>403 Forbidden: non-loopback Host</code> em origens estrangeiras, <code>401</code> sem token no <code>/shutdown</code>. O hook <code>brain-daemon-ensure</code> no <code>SessionStart</code> é <b>fail-open</b> — não bloqueia o startup se o daemon estiver fora do ar, e o <code>brain-health</code> avisa depois. Tudo testado: o smoke <code>brain-http-auth.mjs</code> valida <b>6/6</b> cenários, e o gate SDD fecha com <b>zero findings</b>.</p>
+
+    <div class="callout">
+      <span class="tag">daemon único · porta fixa · fail-open</span>
+      Uma única instância do brain-server por máquina, na porta <b>58217</b>. A identidade (porta + token) é derivada do <b>path canônico</b> do DATA_DIR — duas grafias da mesma pasta não criam dois endereços. Se o daemon não estiver rodando no startup, o plugin <b>não trava</b>: o hook <code>brain-daemon-ensure</code> deixa o IDE funcionar e o <code>brain-health</code> reporta degradado. O daemon sobe por <code>BRAIN_HTTP_AUTOSTART</code> (padrão ligado) ou manualmente. O <code>.mcp.json</code> declara <code>type:"http"</code> — não há mais porta dinâmica para re-descobrir.
+    </div>
+
+    <div class="wins">
+      <div class="win">
+        <h4><code>.mcp.json</code> com <code>type:"http"</code> · porta fixa 58217</h4>
+        <p>O ponteiro do MCP não depende mais de um arquivo <code>daemon.json</code> volátil: <code>.mcp.json</code> do plugin declara <code>{ "type": "http", "url": "http://127.0.0.1:58217/mcp" }</code>. A porta é fixa por projeto, derivada do path canônico do DATA_DIR. Não quebra no dia seguinte, não precisa de re-descoberta, não há ECONNREFUSED surpresa.</p>
+      </div>
+      <div class="win">
+        <h4>Endpoints declarados: <code>/health</code>, <code>/shutdown</code>, <code>/mcp</code></h4>
+        <p><code>/health</code> serve liveness <b>sem token</b> (qualquer processo pode chegar se o daemon está vivo). <code>/shutdown</code> exige token — <code>401</code> sem ele, <code>200</code> com ele e o daemon encerra gracefully. <code>/mcp</code> é o protocolo MCP propriamente dito, com handshake de projeto e sessão. A superfície é mínima e testada.</p>
+      </div>
+      <div class="win">
+        <h4>Auth por origem: <code>403</code> estrangeiro, <code>401</code> sem token</h4>
+        <p>Origem estrangeira (não loopback) recebe <code>403 Forbidden: non-loopback Host</code> — o token é irrelevante, o guarda é a origem. <code>/shutdown</code> sem token retorna <code>401</code> e o daemon <b>continua vivo</b>. Só o <code>/mcp</code> aceita handshake de projeto. O padrão é <b>deny por origem</b>, não fail-silent.</p>
+      </div>
+      <div class="win">
+        <h4>Hook <code>brain-daemon-ensure</code> · fail-open no SessionStart</h4>
+        <p>O hook do <code>SessionStart</code> tenta garantir o daemon, mas <b>nunca bloqueia o startup</b>. Se o brain-server estiver fora do ar, o IDE funciona normalmente e o <code>brain-health</code> reporta degradado. A memória fica indisponível, mas o trabalho não para. O timeout é <b>30s</b> configurado em <code>hooks.json</code> — não um valor mágico.</p>
+      </div>
+      <div class="win">
+        <h4>Smoke <code>brain-http-auth.mjs</code> · 6/6 passando</h4>
+        <p>O smoke test valida: <code>/health</code> aberto sem token, criação de arquivo de token, handshake <code>/mcp</code> sem Origin e sem token, <code>/mcp</code> com Origin estrangeiro → <code>403</code>, <code>/shutdown</code> sem token → <code>401</code> com daemon vivo, e <code>/shutdown</code> com token → daemon encerra. Tudo <b>TDD</b>, contra o daemon real, porta fixa.</p>
+      </div>
+      <div class="win">
+        <h4>Gate SDD zero findings</h4>
+        <p>A frente do daemon HTTP fechou com <b>zero findings</b> na revisão adversarial e todos os testes passando (<code>955</code> unitários + <code>108</code> hooks). O <code>scripts/gate.mjs</code> cobre eslint, sync de versão e testes. Os <code>5</code> catch blocks sem logging em <code>daemon-supervisor.js</code> foram corrigidos para <code>void err</code>, e o <code>mcp-client.js</code> ganhou o header <code>Accept</code> para evitar <code>406</code>.</p>
+      </div>
+    </div>
+
+    <p class="trust"><b>Honesto sobre o alcance:</b> o daemon HTTP único <b>elimina</b> a classe de bug da porta dinâmica (ECONNREFUSED, re-descoberta, dois endereços para a mesma pasta), mas <b>não elimina</b> toda a superfície de rede — o <code>/mcp</code> ainda aceita conexões, o <code>/shutdown</code> ainda existe, e o fail-open significa que um daemon fora do ar não mata o IDE. A garantia nova é <b>simplicidade</b>: uma porta, um endpoint, um smoke que prova. E o limite honesto: se alguém subir o daemon em uma interface diferente de <code>127.0.0.1</code>, o guarda de origem loopback ainda protege — mas a configuração é do operador, não do plugin.</p>
+  </section>
 
   <section>
     <p class="label">Novo na v2.22.0 · multi-tenant por projeto e CRUD completo do Brain no dashboard</p>

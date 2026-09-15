@@ -3,22 +3,25 @@
  * lib/mcp-server.js — transport-agnostic assembly of the Brain MCP Server.
  *
  * `createBrainServer({ pluginRoot, mode })` returns a configured @modelcontextprotocol
- * `Server` (tools + handlers) with NO transport attached, so the same assembly is
- * reused by both transports (index.js):
- *   - stdio  (default, unchanged): one server per host connection.
- *   - http   (--http daemon): one long-lived server per HTTP session.
+ * `Server` (tools + handlers) with NO transport attached. In production `index.js`
+ * has exactly ONE mode — the HTTP daemon (ADR-001 "daemon único") — and always
+ * calls this with `mode: 'http'` (see lib/http-daemon.js, one server per HTTP
+ * session). `mode: 'stdio'` (the default here) has no production caller anymore;
+ * it survives only because scripts/test-units.js exercises this assembly directly
+ * as a library function without a live daemon — a testing convenience, not a
+ * second transport.
  *
- * Two cross-cutting concerns live here so both transports inherit them:
- *   1. resolveProject(args): stdio infers project from CWD (as before); HTTP has
- *      no per-client CWD, so it REQUIRES an explicit project/cwd and rejects
- *      otherwise (never dumps into 'default').
+ * Two cross-cutting concerns live here:
+ *   1. resolveProject(args): HTTP has no per-client CWD (a long-lived daemon
+ *      serves every project on the machine), so it REQUIRES an explicit
+ *      project/cwd and rejects otherwise (never dumps into 'default'). The
+ *      'stdio' mode default instead infers project from process CWD — used
+ *      only by the direct-library-call tests mentioned above.
  *   2. withLock(): an async mutex serializing the KB tools. The KB modules are
  *      process-singletons (_db/_project swapped on init); serializing keeps each
- *      getKB(project)→ops atomic across concurrent HTTP sessions. Transparent
- *      under stdio (already sequential).
+ *      getKB(project)→ops atomic across concurrent HTTP sessions.
  *
- * The tool LOGIC below is a faithful move of the previous index.js handlers — no
- * behavioral change for stdio.
+ * The tool LOGIC below is unchanged by the transport the assembly is used from.
  */
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
@@ -204,7 +207,7 @@ const REMOTE_KB_TOOLS = new Set([
   'brain_search', 'brain_store', 'capture_lesson', 'brain_related', 'brain_count',
 ]);
 
-export function createBrainServer({ pluginRoot, mode = 'stdio', _testHooks } = {}) {
+export function createBrainServer({ pluginRoot, mode = 'http', _testHooks } = {}) {
   const PLUGIN_ROOT = pluginRoot;
 
   // ─── KB modules (lazy-loaded) ──────────────────────────────────────────────

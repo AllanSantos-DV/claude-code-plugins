@@ -8,13 +8,17 @@ import path from 'node:path';
 /**
  * Canonicalize a data dir so the SAME directory spelled differently (forward vs
  * back slashes, relative vs absolute, mixed case on Windows) maps to ONE
- * identity. Without this, `resolvePort`/`tokenFile` derive a DIFFERENT port and
- * token file per spelling — the lockfile records `C:/Users/...` while callers
- * pass `C:\Users\...`, so the daemon and its clients land on different ports and
- * read different token files (→ 401s). `path.resolve` makes the path absolute
- * and unifies separators to the platform's; on Windows (case-insensitive FS) we
- * also case-fold. Fail loud on a missing/"undefined" dir: deriving a port from
+ * identity. Without this, `tokenFile`/`identityKey` derive a DIFFERENT token
+ * file and identity per spelling — the lockfile records `C:/Users/...` while
+ * callers pass `C:\Users\...`, so the daemon and its clients read different
+ * token/lock files (→ 401s). `path.resolve` makes the path absolute and unifies
+ * separators to the platform's; on Windows (case-insensitive FS) we also
+ * case-fold. Fail loud on a missing/"undefined" dir: deriving anything from
  * `String(undefined)` used to spawn a plausible-looking phantom daemon.
+ *
+ * `resolvePort` is now a FIXED constant (see below) and does not depend on the
+ * spelling — but it STILL validates the dir through `identityKey` so an unset
+ * data dir fails loud instead of silently booting on the default port.
  */
 export function canonicalDataDir(dataDir) {
   const raw = dataDir == null ? '' : String(dataDir).trim();
@@ -34,16 +38,29 @@ function identityKey(dataDir) {
 }
 
 /**
- * Deterministic per-data-dir port in the private range (49152-65535) so two
- * different installs on the same machine don't collide. Derived from the
- * CANONICAL data dir so every spelling of the same dir maps to one port.
- * Override with BRAIN_HTTP_PORT.
+ * FIXED port for the brain-http daemon (same pattern as model-router's
+ * FIXED_PORT: a single, well-known port a static .mcp.json entry can point
+ * "type":"http" at directly, with zero per-session process spawn). DATA_DIR
+ * itself is already ONE global path per machine (not per-project — see
+ * index.js's default), so the daemon is genuinely a machine-wide singleton;
+ * a fixed port matches that reality instead of hiding it behind a hash only
+ * this process could recompute. Override with BRAIN_HTTP_PORT (e.g. a second
+ * install on the same machine, or tests).
+ *
+ * `dataDir` is still validated (via identityKey/canonicalDataDir) so a
+ * missing/undefined data dir fails loud here too, same as before — only the
+ * PORT computation stopped depending on it.
+ *
+ * env is injectable (second arg) so tests/helpers can pin a port without
+ * mutating process.env — the runner executes tests sequentially but still
+ * guards against env races.
  */
-export function resolvePort(dataDir) {
-  const env = process.env.BRAIN_HTTP_PORT && Number(process.env.BRAIN_HTTP_PORT);
-  if (env && env > 0) return env;
-  const h = crypto.createHash('sha256').update(identityKey(dataDir)).digest();
-  return 49152 + (h.readUInt16BE(0) % (65535 - 49152));
+export const DEFAULT_PORT = 58217;
+export function resolvePort(dataDir, env = process.env) {
+  identityKey(dataDir); // throws on missing/invalid dataDir — see canonicalDataDir
+  const e = env.BRAIN_HTTP_PORT && Number(env.BRAIN_HTTP_PORT);
+  if (e && e > 0 && e <= 65535) return e;
+  return DEFAULT_PORT;
 }
 
 /**
@@ -59,10 +76,20 @@ export const MCP_PATH = '/mcp';
 
 // ─── Auth (same pattern as the dashboard: local token + host/origin guard) ───
 // The daemon binds 127.0.0.1, but "localhost-only" is not authorization: any
-// local process — or a browser page via DNS rebinding — could otherwise call
-// /mcp (read/poison the KB) or /shutdown. Token lives in DATA_DIR next to the
-// lock file; every same-user consumer (supervisor, OpenCode, curl) reads it
-// from disk. Override/fix with BRAIN_HTTP_TOKEN (e.g. containerized clients).
+// local process could otherwise call /mcp (read/poison the KB) or /shutdown.
+//
+// Trust model (accept-the-limit): /mcp is gated by originAllowed() alone —
+// a static .mcp.json "type":"http" URL cannot carry a runtime secret, so the
+// endpoint deliberately trades the token for (127.0.0.1 bind + origin guard).
+// The remaining exposure is ANY process that can reach loopback (including a
+// different OS user) and any content served from a localhost origin (e.g. an
+// untrusted page previewed through a local dev server). That is the documented
+// MACHINE-TRUST boundary — see README §Auth. Browser cross-origin reads stay
+// closed: the daemon emits no Access-Control-Allow-Origin and non-simple MCP
+// POSTs trigger CORS preflight, which fails without it. /shutdown (destructive,
+// never called by Claude Code's MCP client) keeps the full token gate.
+// Token lives in DATA_DIR next to the lock file; every same-user consumer
+// (supervisor, curl) reads it from disk. Override/fix with BRAIN_HTTP_TOKEN.
 
 /** Token file path — DATA_DIR, persistent across plugin versions (like the lock). */
 export function tokenFile(dataDir) {
@@ -70,9 +97,10 @@ export function tokenFile(dataDir) {
 }
 
 /** Read the shared token (env override first); null when absent. */
-export function readToken(dataDir) {
-  const env = (process.env.BRAIN_HTTP_TOKEN || '').trim();
-  if (env) return env;
+export function readToken(dataDir, env = process.env) {
+  const token = (env && typeof env === 'object' && !Array.isArray(env)) ? (env.BRAIN_HTTP_TOKEN ?? '') : '';
+  const normalizedToken = String(token).trim();
+  if (normalizedToken) return normalizedToken;
   try {
     const tok = fs.readFileSync(tokenFile(dataDir), 'utf8').trim();
     return tok || null;
@@ -100,16 +128,35 @@ function timingSafeEq(a, b) {
 const LOCAL_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
 
 /**
- * Gate a request: local Origin (when present — browsers send it, native
- * clients don't; a foreign Origin means DNS rebinding) + constant-time token
- * match from `Authorization: Bearer <t>` or `X-Brain-Token`.
+ * Origin-only guard (DNS-rebinding): a foreign browser Origin is refused; a
+ * missing Origin (every native client — including Claude Code's MCP http
+ * transport) passes. Used alone for /mcp: that endpoint is declared straight
+ * in .mcp.json as a static "type":"http" URL with no per-session process and
+ * no room for a runtime-generated secret in a static header, so /mcp trades
+ * the token for this origin check + the 127.0.0.1 bind (both were already
+ * true before; the token was the second, now-dropped, layer). /shutdown (a
+ * destructive local action, not something Claude Code's MCP client ever
+ * calls) keeps the full token gate below.
  * @returns {{ ok:true } | { ok:false, code:number, error:string }}
  */
-export function requestAllowed(req, token, dataDir) {
+export function originAllowed(req) {
   const origin = req.headers && req.headers.origin;
   if (origin && !LOCAL_ORIGIN.test(String(origin))) {
     return { ok: false, code: 403, error: 'forbidden origin (DNS-rebinding guard)' };
   }
+  return { ok: true };
+}
+
+/**
+ * Gate a request: local Origin (when present — browsers send it, native
+ * clients don't; a foreign Origin means DNS rebinding) + constant-time token
+ * match from `Authorization: Bearer <t>` or `X-Brain-Token`. Used for
+ * /shutdown only — see originAllowed() above for why /mcp no longer needs it.
+ * @returns {{ ok:true } | { ok:false, code:number, error:string }}
+ */
+export function requestAllowed(req, token, dataDir) {
+  const originGate = originAllowed(req);
+  if (!originGate.ok) return originGate;
   const bearer = String((req.headers && req.headers.authorization) || '').replace(/^Bearer\s+/i, '').trim();
   const given = (req.headers && req.headers['x-brain-token']) || bearer;
   if (!token || !timingSafeEq(given, token)) {
