@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.24.0 — detalhes técnicos</title>
+<title>claude-code-boss v2.25.0 — detalhes técnicos</title>
 <meta name="description" content="Detalhes técnicos do plugin claude-code-boss: arquitetura do daemon HTTP único, pipeline de hooks, Brain KB (storage/index/graph), providers de embedding, perfis de enforcement, graph tools e dashboard." />
 <style>
   :root{
@@ -128,13 +128,13 @@
     <a href="index.html">← Apresentação</a>
     <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a>
     <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">Changelog</a>
-    <a href="#top" class="ver">v2.24.0</a>
+    <a href="#top" class="ver">v2.25.0</a>
   </nav>
 </header>
 
 <main class="wrap" id="top">
   <div class="page-head">
-    <p class="kick">documentação técnica · v2.24.0</p>
+    <p class="kick">documentação técnica · v2.25.0</p>
     <h1>Arquitetura e funcionamento interno</h1>
     <p class="intro">Para quem quer saber <b>como funciona por baixo</b>: daemon HTTP único, pipeline de hooks, Brain KB em 3 camadas, providers de embedding, perfis de enforcement, exploração de repositório por grafo e o dashboard. Fontes: <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a> e <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG</a>.</p>
     <div class="toc">
@@ -272,6 +272,8 @@
       <ul class="tight">
         <li><b>local (padrão):</b> SQLite no <code>DATA_DIR/brain/&lt;projeto&gt;/brain.db</code> — zero servidor externo.</li>
         <li><b>mcp-memory (server-side):</b> conecta a um mcp-memory-server (HTTP auto-discovery via <code>~/.mcp-memory/run/daemon.json</code> ou stdio com Java 21+). Ingestão opt-in, desligada por padrão. Botão <b>Migrar agora</b> leva o acervo local para o servidor projeto a projeto (idempotente, fail-loud).</li>
+        <li><b>MCP Activation Wizard</b> (<code>scripts/lib/mcp-wizard.js</code>): ativa o backend <code>mcp-memory</code> em 5 passos com estado persistido — Java ≥ 21, JAR presente/download, spawn do daemon, handshake MCP (<code>initialize</code> + <code>tools/list</code>), validação do <code>projectId</code>. Fire-and-forget com polling (<code>POST /api/brain/mcp-wizard</code>, <code>GET .../status</code>); no Dashboard vira o botão <b>Activate Server</b> com progresso passo-a-passo.</li>
+        <li><b>Status em tempo real</b> (<code>scripts/brain-status.js</code>, hook no <code>UserPromptSubmit</code> e comando <code>/brain-status</code>): reporta <code>mode</code>, <code>connected</code>, <code>project</code>, <code>backend</code>, <code>details</code> (URL/transporte/JAR) e <code>latency</code> — mesmo contrato exposto em <code>GET /api/brain/health</code> e refletido no badge online/offline do Dashboard.</li>
       </ul>
       <h3>Identidade do projeto (recall entre máquinas/pastas)</h3>
       <p style="color:var(--muted); font-size:13.5px">Precedência: <code>CCB_PROJECT_ID</code> (env) → <code>.claude-boss-project</code> (arquivo na raiz do projeto, viaja com a pasta) → <code>basename(cwd)</code> (default legado). Escopo anti-contaminação: o daemon filtra por <code>project_id</code> no handshake.</p>
@@ -313,12 +315,13 @@
   </section>
 
   <section id="versoes">
-    <h2>Versões <span class="tag">48 releases</span></h2>
-    <p class="lead">O changelog completo (v1.0.0 → v2.24.0) vive no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>. Destaques recentes:</p>
+    <h2>Versões <span class="tag">49 releases</span></h2>
+    <p class="lead">O changelog completo (v1.0.0 → v2.25.0) vive no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>. Destaques recentes:</p>
     <div class="table-scroll">
       <table>
         <thead><tr><th>Versão</th><th>Destaque</th></tr></thead>
         <tbody>
+          <tr><td><b>v2.25.0</b></td><td>MCP Activation Wizard + <code>/brain-status</code> (visibilidade total do backend); CRUD do Dashboard roteado pela fachada real; BYOK com timeout por tipo de endpoint (fixo/rotativo, <code>0</code> = sem limite) e log de latência opcional.</td></tr>
           <tr><td><b>v2.24.0</b></td><td>Auto-setup do daemon em background; graceful shutdown (sem <code>process.exit</code>), body/session limits; model-router declarativo por rota com auth declarativa (401/403/405/404).</td></tr>
           <tr><td><b>v2.23.0</b></td><td>MCP auto-reconnect no restart do daemon; BYOK SSE hardening (TTFB ceiling + debounce de swap); curation fixes.</td></tr>
           <tr><td><b>v2.22.0</b></td><td>Multi-tenant por projeto (CSS headers); Router Fases A–E; BYOK Classify; série histórica diária com sparkline; editor inline + delete com backup no Dashboard.</td></tr>
@@ -342,7 +345,7 @@
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">Changelog</a>
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins">GitHub</a>
     </div>
-    <div class="legal">MIT · Allan Santos · claude-code-boss v2.24.0</div>
+    <div class="legal">MIT · Allan Santos · claude-code-boss v2.25.0</div>
   </div>
 </footer>
 
