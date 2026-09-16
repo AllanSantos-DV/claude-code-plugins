@@ -62,6 +62,10 @@ config efetiva (lida por ensure/server/dashboard)
 | `byok.headers` | map | `{}` | Headers livres (ex.: `Authorization: Bearer ...`). **Nunca commitar valores reais** |
 | `byok.classifyRemote` | bool | `false` | **ADR-010**: classifica via SEU endpoint (~500 chars/sessão, modelo haiku). on-limit: só com cooldown ativo. Falha → MiniLM local |
 | `byok.modelAliasPrefix` | string | `"anthropic-"` | Prefixo aplicado ao `id` de modelos BYOK (sem "claude"/"anthropic" no nome) na resposta de `GET /v1/models`, só enquanto a request atual é BYOK — o picker `/model` do Claude Code filtra fora ids sem esse termo. Nome real fica em `display_name`; o prefixo é removido antes de rotear/classificar |
+| `byok.fixedEndpoint` | bool | `false` | OPT-IN. `false` = endpoint ROTATIVO (ex.: "auto/best-free" entre vários modelos gratuitos) — usa o teto de timeout longo (`ROUTER_BYOK_UPSTREAM_TIMEOUT_MS`, default 100000ms), pensado pro próprio failover interno dele. `true` = endpoint FIXO e único do usuário (ex.: gateway corporativo específico, sem rotação) — usa um teto bem mais curto (`ROUTER_BYOK_FIXED_UPSTREAM_TIMEOUT_MS`, default 20000ms), já que aí uma demora grande só significa rede/serviço degradado, não failover em andamento |
+| `byok.fixedTimeoutMs` | number\|null | `null` | Override OPCIONAL (ms) do teto de TTFB quando `byok.fixedEndpoint=true`, substituindo `ROUTER_BYOK_FIXED_UPSTREAM_TIMEOUT_MS` só para este endpoint. `0` é um valor válido e explícito: **sem limite** — quem corta a chamada nesse caso é o teto de ~300s do próprio Claude Code CLI, não o router. `null`/ausente = usa o padrão do env var |
+| `byok.rotatingTimeoutMs` | number\|null | `null` | Mesma semântica de `byok.fixedTimeoutMs`, só que para `byok.fixedEndpoint=false` (substitui `ROUTER_BYOK_UPSTREAM_TIMEOUT_MS`). `0` = sem limite (teto do Claude Code CLI vira o backstop) |
+| `byok.logLatency` | bool | `false` | OPT-IN. Quando `true`, loga (INFO) o TTFB (tempo até o primeiro byte da resposta) de cada chamada a este endpoint BYOK — útil para calibrar `fixedTimeoutMs`/`rotatingTimeoutMs` observando o comportamento real sob carga, ou com modelos que não fazem streaming de *thinking* (ex.: AWS Bedrock, que retorna só o bloco final) |
 | `tenants` | map | `{}` | **ADR-011**: config por projeto (`{ "<projectId>": { sticky?, fallback?, byok?… } }`), shallow-merged sobre a global quando o request traz o header |
 
 ### Multi-tenant (`X-CCB-Tenant`, ADR-011)
@@ -204,6 +208,10 @@ Trocar perfil: `/dashboard` → aba Hooks, ou `/boss-profile <standard|dev|free>
 | `BOSS_ROUTER_FORCE_RESTART=1` | Ensure derruba daemon órfão no modo off (setado pelo dashboard) |
 | `BOSS_ROUTER_MODE` | Diagnóstico apenas (server recomputa da config) |
 | `CLAUDE_SKIP_EMBED_WARM` | Pula download/warm do modelo no postinstall |
+| `ROUTER_UPSTREAM_TIMEOUT_MS` | Teto de TTFB p/ Anthropic direta (default `8000`) |
+| `ROUTER_BYOK_UPSTREAM_TIMEOUT_MS` | Teto de TTFB p/ BYOK rotativo (`byok.fixedEndpoint=false`) e p/ o gateway alternativo (`upstream.*`) (default `100000`) |
+| `ROUTER_BYOK_FIXED_UPSTREAM_TIMEOUT_MS` | Teto de TTFB p/ BYOK fixo (`byok.fixedEndpoint=true`) (default `20000` — ponto de partida, não medido em produção como o valor acima; ajuste conforme a latência real do seu endpoint) |
+| `ROUTER_BYOK_CLASSIFY_TIMEOUT_MS` | Teto p/ a chamada de pré-classificação remota via BYOK (`byok.classifyRemote`) (default `5000`) |
 
 ---
 

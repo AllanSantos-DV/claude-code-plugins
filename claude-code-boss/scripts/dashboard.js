@@ -10,15 +10,13 @@ const { getShellsConfigPath } = require('./curation-paths.js');
 const configTesters = require('./config-testers');
 const { USER_SENTINEL, prepareForUserScope } = require('./lib/scope-sanitizer.js');
 const { sanitizeProjectId } = require('./lib/project-id.js');
-const { searchTwoPass } = require('./lib/scope-search.js');
-const { extractKeywords } = require('./lib/text-utils.js');
 const { aggregateSkillRoi } = require('./lib/skill-roi.js');
 const { aggregateCaptureRate } = require('./lib/capture-rate.js');
 const { loadSqlite } = require('./lib/sqlite-compat.js');
 const pluginUpdater = require('./lib/plugin-updater.js');
 const { resolveMode } = require('./lib/router-mode.js');
 const hooksConfig = require('./lib/hooks-config.js');
-const { validEnvDir, dataDir, globalDir } = require('./lib/data-dir.js');
+const { validEnvDir, dataDir } = require('./lib/data-dir.js');
 const { isValidHost, tokenMatches } = require('./lib/dashboard-auth.js');
 const { resolveStaticPath } = require('./lib/dashboard-static.js');
 const { writeFileAtomic, writeJsonAtomic } = require('./lib/atomic-write.js');
@@ -353,12 +351,23 @@ function getBrainBackend(req, res) {
   }
 }
 
-// ─── API: Brain Backend Config (read/write brain-config.json) ────────
+// ─── API: Brain Health (real-time integration status) ──────
 
-// Per-user override lives at the STABLE GLOBAL path so the dashboard WRITE lands
-// exactly where brain-config.load() READS — otherwise a writer that resolved a
-// different data dir than the dashboard would never see the mcp-memory choice.
-const BRAIN_USER_CONFIG = path.join(globalDir(), 'user-config.json');
+function getBrainHealth(req, res) {
+  try {
+    const { probeHealth } = require('./lib/mcp-health.js');
+    const config = require('./lib/brain-config.js').load();
+    probeHealth(config).then((status) => json(res, status)).catch((err) => {
+      console.error(`[DASHBOARD] Brain health probe failed: ${err.message}`);
+      json(res, { mode: 'unknown', connected: false, project: 'default', backend: 'unknown', details: { error: err.message }, latency: 0 });
+    });
+  } catch (err) {
+    console.error(`[DASHBOARD] Brain health check failed: ${err.message}`);
+    json(res, { mode: 'unknown', connected: false, project: 'default', backend: 'unknown', details: { error: err.message }, latency: 0 });
+  }
+}
+
+// ─── API: Brain Backend Config (read/write brain-config.json) ────────
 
 function getBrainConfig(req, res) {
   try {
@@ -376,16 +385,14 @@ async function saveBrainConfig(req, res) {
     const parsed = JSON.parse(body);
     const err = validateBrainConfig(parsed);
     if (err) return fail(res, `Invalid brain-config.json: ${err}`, 400);
-    // Persist ONLY to the per-user override, and only the delta vs the shipped
-    // defaults. The shipped config stays untouched so users who never open the
-    // dashboard (and don't run the external daemon) keep working on the local
-    // backend, and the override survives plugin auto-update.
+    // Routed through brainConfig.save() (not a local diff+write) so this route
+    // and mcp-wizard.js's start() share ONE write implementation for
+    // globalDir()/user-config.json instead of two that could drift (this one
+    // used to duplicate the same deepDiff(shipped, parsed) logic inline).
+    // This does NOT close the lost-update race between concurrent savers —
+    // see brain-config.js's save() for why that's still open.
     const brainConfig = require('./lib/brain-config.js');
-    const shipped = readJSON(path.join(ROOT, 'config', 'brain-config.json')) || {};
-    const delta = brainConfig.deepDiff(shipped, parsed);
-    fs.mkdirSync(path.dirname(BRAIN_USER_CONFIG), { recursive: true });
-    atomicWriteJSON(BRAIN_USER_CONFIG, delta);
-    brainConfig._resetCache();
+    brainConfig.save(parsed);
     json(res, { ok: true, requiresRestart: true });
   } catch (e) { fail(res, e.message); }
 }
@@ -497,21 +504,28 @@ async function searchBrain(req, res, url) {
   const q = url.searchParams.get('q') || '';
   const project = sanitizeProjectId(url.searchParams.get('project') || '');
   const k = parseInt(url.searchParams.get('k') || '10', 10);
-  const scope = url.searchParams.get('scope') || 'project'; // 'project' | 'user' | 'both'
+  const scope = url.searchParams.get('scope') || 'project';
   if (!q || !project) return json(res, []);
   try {
+    const brainBackend = require('./brain-backend.js');
+    // Route through brain-backend facade for mcp-memory mode
+    const mode = brainBackend.peekMode();
+    if (mode === 'mcp-memory') {
+      const results = await brainBackend.search(q, { topK: k, metadata: scope === 'user' ? { scope: 'user' } : undefined });
+      return json(res, results);
+    }
+    // Local mode — existing two-pass search logic
     const embedder = require('./brain-embedder.js');
     await embedder.init();
     const store = require('./brain-store.js');
-
+    const USER_SENTINEL = require('./lib/scope-sanitizer.js').USER_SENTINEL;
     const startProject = scope === 'user' ? USER_SENTINEL : project;
     await store.init({ project: startProject });
-
     let vec = null;
     if (embedder.getStatus().ready) vec = await embedder.embed(q);
-
     let results = [];
     if (vec) {
+      const { searchTwoPass } = require('./lib/scope-search.js');
       if (scope === 'both') {
         results = await searchTwoPass(store, project, vec, { topK: k, minScore: 0.05 });
       } else {
@@ -521,6 +535,7 @@ async function searchBrain(req, res, url) {
     if (results.length < 2 && scope !== 'both') {
       const index = require('./brain-index.js');
       await index.init({ project: startProject });
+      const { extractKeywords } = require('./lib/text-utils.js');
       const kw = extractKeywords(q);
       if (kw.length > 0) {
         const kwResults = await index.lookup(kw, { topK: k });
@@ -532,8 +547,8 @@ async function searchBrain(req, res, url) {
         }
       }
     }
-    if (startProject !== project) await store.init({ project });
-    json(res, results.slice(0, k));
+     if (startProject !== project) await store.init({ project });
+    json(res, results);
   } catch (e) { fail(res, e.message); }
 }
 
@@ -543,9 +558,8 @@ async function getBrainEntry(req, res, url) {
   const project = sanitizeProjectId(url.searchParams.get('project') || '');
   if (!id || !project) return fail(res, 'Missing id or project', 400);
   try {
-    const store = require('./brain-store.js');
-    await store.init({ project });
-    const entry = await store.get(id);
+    const brainBackend = require('./brain-backend.js');
+    const entry = await brainBackend.get(id);
     if (!entry) return fail(res, 'Not found', 404);
     json(res, entry);
   } catch (e) { fail(res, e.message); }
@@ -557,6 +571,34 @@ async function deleteBrainEntry(req, res, url) {
   const project = sanitizeProjectId(url.searchParams.get('project') || '');
   if (!id || !project) return fail(res, 'Missing id or project', 400);
   try {
+    const brainBackend = require('./brain-backend.js');
+    const mode = brainBackend.peekMode();
+    // mcp-memory mode: no raw/vector local APIs — route delete via the facade.
+    if (mode === 'mcp-memory') {
+      const entry = await brainBackend.get(id);
+      if (!entry) return fail(res, 'Not found', 404);
+      const bundle = {
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        project,
+        scope: 'project',
+        count: 1,
+        entries: [entry],
+      };
+      const backupDir = path.join(DATA_DIR, 'brain-backups');
+      fs.mkdirSync(backupDir, { recursive: true });
+      const safeId = String(id).replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 64) || 'entry';
+      const backupPath = path.join(backupDir, `${Date.now()}-${safeId}.json`);
+      fs.writeFileSync(backupPath, JSON.stringify(bundle, null, 2));
+      const parsed = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
+      if (!parsed.entries || !parsed.entries[0] || parsed.entries[0].id !== id) {
+        return fail(res, 'backup verify failed — source untouched', 500);
+      }
+      await brainBackend.delete(id);
+      const gone = await brainBackend.get(id);
+      if (gone) return fail(res, 'delete verify failed — entry still readable', 500);
+      return json(res, { ok: true, backupPath });
+    }
     const store = require('./brain-store.js');
     const index = require('./brain-index.js');
     await store.init({ project });
@@ -636,11 +678,19 @@ async function updateBrainEntry(req, res, url) {
   if (clean.detail !== undefined) clean.detail = cap(clean.detail, 100000);
   if (clean.type !== undefined && !/^[a-z][a-z0-9-]{0,31}$/.test(String(clean.type))) return fail(res, 'invalid type', 400);
   try {
-    const store = require('./brain-store.js');
-    await store.init({ project });
-    // getRaw (não get): read-modify-write não pode inflar access_count/telemetria.
-    const existing = store.getRaw(id);
-    if (!existing) return fail(res, 'Not found', 404);
+    const brainBackend = require('./brain-backend.js');
+    const mode = brainBackend.peekMode();
+    let store = null;
+    let existing;
+    if (mode === 'mcp-memory') {
+      existing = await brainBackend.get(id);
+      if (!existing) return fail(res, 'Not found', 404);
+    } else {
+      store = require('./brain-store.js');
+      await store.init({ project });
+      existing = store.getRaw(id); // getRaw (não get): não infla access_count/telemetria
+      if (!existing) return fail(res, 'Not found', 404);
+    }
     const updated = Object.assign({}, existing, clean, {
       id: existing.id,
       created_at: existing.created_at,
@@ -650,7 +700,20 @@ async function updateBrainEntry(req, res, url) {
       // detail vive em content.detail — não persistir cópia redundante no topo.
       delete updated.detail;
     }
-    // Re-embed quando o texto de recuperação mudou (vetor = title+summary).
+    if (mode === 'mcp-memory') {
+      // Facade already handles embedding/upsert server-side.
+      await brainBackend.save(updated);
+      const back = await brainBackend.get(id);
+      for (const k of Object.keys(clean)) {
+        const expect = k === 'detail' ? String(clean[k]) : clean[k];
+        const got = k === 'detail' ? ((back.content || {}).detail || '') : back[k];
+        if (JSON.stringify(got) !== JSON.stringify(expect)) {
+          return fail(res, `update verify failed on field "${k}"`, 500);
+        }
+      }
+      return json(res, { ok: true, entry: back });
+    }
+    // Local mode — re-embed when retrieval text changed (vector = title+summary).
     // Embed FALHO não pode deixar vetor STALE servindo semântica velha:
     // invalida a row antiga (reembed backfill recria depois).
     let vector;
@@ -692,9 +755,8 @@ async function listBrainEntries(req, res, url) {
   const offset = Math.max(0, parseInt(url.searchParams.get('offset') || '0', 10) || 0);
   const limit = Math.min(200, Math.max(1, parseInt(url.searchParams.get('limit') || '50', 10) || 50));
   try {
-    const store = require('./brain-store.js');
-    await store.init({ project });
-    const listed = await store.list(type);
+    const brainBackend = require('./brain-backend.js');
+    const listed = await brainBackend.list(type, project);
     json(res, { total: listed.length, offset, limit, entries: listed.slice(offset, offset + limit) });
   } catch (e) { fail(res, e.message); }
 }
@@ -894,16 +956,9 @@ async function getBrainRelated(req, res, url) {
   const project = sanitizeProjectId(url.searchParams.get('project') || '');
   if (!id || !project) return fail(res, 'Missing id or project', 400);
   try {
-    const graph = require('./brain-graph.js');
-    const store = require('./brain-store.js');
-    await store.init({ project });
-    await graph.init({ project });
-    const related = graph.getRelated(id);
-    const full = await Promise.all(related.map(async r => {
-      const entry = await store.get(r.id);
-      return entry ? { ...entry, edgeType: r.edgeType } : null;
-    }));
-    json(res, full.filter(Boolean));
+    const brainBackend = require('./brain-backend.js');
+    const related = await brainBackend.getRelated(id);
+    json(res, related || []);
   } catch (e) { fail(res, e.message); }
 }
 
@@ -1296,6 +1351,42 @@ function getBrainMigrateStatus(req, res) {
   }
 }
 
+// ─── API: MCP Wizard ──────────────────────────────────────────
+
+async function postMcpWizard(req, res) {
+  try {
+    const body = await readBody(req);
+    const projectId = (body && body.projectId) || 'default';
+    const wizard = require('./lib/mcp-wizard.js');
+    const state = await wizard.start(projectId);
+    json(res, { ok: true, state });
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/brain/mcp-wizard failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
+function getMcpWizardStatus(req, res) {
+  try {
+    const wizard = require('./lib/mcp-wizard.js');
+    json(res, wizard.getState());
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/brain/mcp-wizard/status failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
+function resetMcpWizard(req, res) {
+  try {
+    const wizard = require('./lib/mcp-wizard.js');
+    const state = wizard.reset();
+    json(res, { ok: true, state });
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/brain/mcp-wizard/reset failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
 async function getValueSummary(req, res, url) {
   try {
     const range = Math.max(1, Math.min(365, parseInt(url.searchParams.get('days') || '30', 10)));
@@ -1400,6 +1491,18 @@ async function getSkillRoi(req, res, url) {
  * safety-net switch (opt-in), persisted as {fallback:{enabled}} so the shipped
  * fallback.triggerStatuses/cooldown survive the deep-merge.
  */
+// Normaliza um override de teto (ms) vindo do body do dashboard: número finito
+// >= 0 passa — `0` é um valor VÁLIDO e INTENCIONAL ("sem timeout de TTFB", ver
+// model-router/byok.js `normalizeTimeoutOverride`) — qualquer outra coisa
+// (ausente, null, string, negativo, NaN) vira `undefined` ("sem override,
+// usa a constante padrão do módulo"). Espelha a mesma regra de byok.js; não
+// importa o módulo porque dashboard.js não depende hoje de servers/model-router
+// (cada camada valida a própria entrada, mesmo padrão já usado no resto do arquivo).
+function normalizeTimeoutMs(v) {
+  if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return undefined;
+  return v;
+}
+
 function writeRouterOverride(body) {
   fs.mkdirSync(path.dirname(ROUTER_USER_CONFIG), { recursive: true });
   // Lê user-config atual DIRETAMENTE
@@ -1416,7 +1519,27 @@ function writeRouterOverride(body) {
     // ADR-010: preserve-on-absent — chamadores que não conhecem o flag não o apagam
     classifyRemote: byokInput.classifyRemote !== undefined
       ? byokInput.classifyRemote === true
-      : (existing.byok?.classifyRemote === true)
+      : (existing.byok?.classifyRemote === true),
+    // Mesmo padrão preserve-on-absent (ADR-010): endpoint fixo vs. rotativo —
+    // ver byok.js/resolveUpstream e o comentário de BYOK_FIXED_UPSTREAM_TIMEOUT_MS
+    // em model-router/index.js.
+    fixedEndpoint: byokInput.fixedEndpoint !== undefined
+      ? byokInput.fixedEndpoint === true
+      : (existing.byok?.fixedEndpoint === true),
+    // Mesmo padrão preserve-on-absent: override opcional do teto (ms) por tipo
+    // de endpoint. `undefined` (não normalizável — inclui null/ausente/negativo)
+    // vira ausente no JSON persistido (JSON.stringify some com a chave), o que
+    // resolveRouterFlags já trata como "sem override, cai no shipped/constante".
+    fixedTimeoutMs: byokInput.fixedTimeoutMs !== undefined
+      ? normalizeTimeoutMs(byokInput.fixedTimeoutMs)
+      : existing.byok?.fixedTimeoutMs,
+    rotatingTimeoutMs: byokInput.rotatingTimeoutMs !== undefined
+      ? normalizeTimeoutMs(byokInput.rotatingTimeoutMs)
+      : existing.byok?.rotatingTimeoutMs,
+    // Log de TTFB opt-in (default false) — mesmo padrão preserve-on-absent.
+    logLatency: byokInput.logLatency !== undefined
+      ? byokInput.logLatency === true
+      : (existing.byok?.logLatency === true)
   };
   
   const out = {
@@ -1472,6 +1595,19 @@ function writeRouterOverride(body) {
     headers: (ob.headers && typeof ob.headers === 'object') ? ob.headers
       : ((sb.headers && typeof sb.headers === 'object') ? sb.headers : {}),
     classifyRemote: ob.classifyRemote !== undefined ? ob.classifyRemote === true : sb.classifyRemote === true,
+    fixedEndpoint: ob.fixedEndpoint !== undefined ? ob.fixedEndpoint === true : sb.fixedEndpoint === true,
+    // Override do teto (ms) por tipo de endpoint — override vence quando é um
+    // número válido (0 incluso); senão cai no shipped (que hoje default é
+    // `null`, ou seja, também normaliza pra `undefined` = sem override real).
+    fixedTimeoutMs: (() => {
+      const o = normalizeTimeoutMs(ob.fixedTimeoutMs);
+      return o !== undefined ? o : normalizeTimeoutMs(sb.fixedTimeoutMs);
+    })(),
+    rotatingTimeoutMs: (() => {
+      const o = normalizeTimeoutMs(ob.rotatingTimeoutMs);
+      return o !== undefined ? o : normalizeTimeoutMs(sb.rotatingTimeoutMs);
+    })(),
+    logLatency: ob.logLatency !== undefined ? ob.logLatency === true : sb.logLatency === true,
   };
   return { shipped, override, enabled, stickyEnabled, fallbackEnabled, byok, contextTuningEnabled: override?.contextTuning?.enabled === true || shipped?.contextTuning?.enabled === true };
 }
@@ -1503,6 +1639,12 @@ function getRouterConfig(req, res) {
       baseUrl: (byok && byok.baseUrl) || '',
       headers: byokHeaderNames.reduce((acc, n) => { acc[n] = '••••'; return acc; }, {}),
       classifyRemote: !!(byok && byok.classifyRemote),
+      fixedEndpoint: !!(byok && byok.fixedEndpoint),
+      // `null` (não `undefined`) pra serializar em JSON — "sem override" pro
+      // dashboard mostrar o campo vazio em vez de um `0` que pareceria um valor real.
+      fixedTimeoutMs: (byok && byok.fixedTimeoutMs !== undefined) ? byok.fixedTimeoutMs : null,
+      rotatingTimeoutMs: (byok && byok.rotatingTimeoutMs !== undefined) ? byok.rotatingTimeoutMs : null,
+      logLatency: !!(byok && byok.logLatency),
     };
     json(res, {
       enabled,
@@ -1758,8 +1900,12 @@ function handleAPI(req, res, url) {
   if (p === '/api/brain/project-marker' && m === 'POST') return saveProjectMarker(req, res);
   if (p === '/api/brain/backend-restart' && m === 'POST') return restartDashboard(req, res);
   if (p === '/api/brain/migrate' && m === 'POST') return postBrainMigrate(req, res);
-  if (p === '/api/brain/migrate-status' && m === 'GET') return getBrainMigrateStatus(req, res);
-  if (p === '/api/brain/embedder/test' && m === 'POST') return testEmbedder(req, res);
+   if (p === '/api/brain/migrate-status' && m === 'GET') return getBrainMigrateStatus(req, res);
+   if (p === '/api/brain/mcp-wizard' && m === 'POST') return postMcpWizard(req, res);
+   if (p === '/api/brain/mcp-wizard/status' && m === 'GET') return getMcpWizardStatus(req, res);
+   if (p === '/api/brain/mcp-wizard/reset' && m === 'POST') return resetMcpWizard(req, res);
+   if (p === '/api/brain/health' && m === 'GET') return getBrainHealth(req, res);
+   if (p === '/api/brain/embedder/test' && m === 'POST') return testEmbedder(req, res);
   if (p === '/api/config/test' && m === 'POST') return testConfig(req, res);
   if (p === '/api/config/domains' && m === 'GET') return listConfigDomains(req, res);
   if (p === '/api/brain/projects' && m === 'GET') return getBrainProjects(req, res);
@@ -1909,4 +2055,8 @@ if (require.main === module) startDashboardServer();
 // Exported for unit tests (require.main guard above keeps the server from
 // starting on require). writeRouterOverride is the single writer of the global
 // router user-config, so tests assert its path + key-preservation behavior.
-module.exports = { writeRouterOverride, resolveRouterFlags };
+// getRouterConfig is the (req,res) HTTP handler behind GET /api/router/config;
+// exported so a test can call it with a fake res ({writeHead,end}) and assert
+// on the exact JSON it serializes — otherwise a bug in byokSafe (e.g. `x || null`
+// silently turning a valid `0` into `null`) would never be caught by any test.
+module.exports = { writeRouterOverride, resolveRouterFlags, getRouterConfig };
