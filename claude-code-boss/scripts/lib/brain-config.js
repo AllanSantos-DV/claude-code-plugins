@@ -232,8 +232,42 @@ function getOnboarding() {
 
 function _resetCache() { _cache = null; }
 
+// `config` recebido aqui é sempre um snapshot COMPLETO do caller (não um
+// delta) — tanto mcp-wizard.js's start() quanto dashboard.js's PUT
+// /api/brain/backend-config montam o objeto inteiro antes de chamar save().
+// Isso impede qualquer merge honesto contra o override atual em disco: uma
+// tentativa anterior fazia `deepMerge(deepMerge(shipped, currentOverride),
+// config)` para tentar preservar mudanças concorrentes de outro caller, mas
+// como TODO campo do config do caller está presente (inclusive os que ele
+// nunca tocou, com valores só desatualizados de quando carregou), o merge
+// não consegue distinguir "o caller mudou isto de propósito" de "a visão do
+// caller disto está apenas stale" — e acaba sobrescrevendo de volta campos
+// que outro caller alterou depois. Provado quebrado por teste + reprodução
+// isolada (2026-09-16): o merge perdeu silenciosamente `curation.
+// maxOutputChars` de um caller B ao salvar uma mudança não relacionada de um
+// caller A. Revertido para diff simples contra os defaults — não fecha a
+// race de "lost update" entre saves concorrentes (ver docs/BACKLOG.md
+// "Arquitetura"), mas pelo menos não finge fechar. Fechar de verdade exige
+// CAS/versionamento otimista OU um formato de delta — ambos precisariam
+// tocar dashboard/index.html (o cliente também só rastreia um snapshot
+// completo, `_brainConfig`, nunca um delta), fora do escopo atual.
+function save(config) {
+  const p = userConfigPath();
+  try {
+    const { writeJsonAtomic } = require('./atomic-write.js');
+    const shipped = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+    const diff = deepDiff(shipped, config);
+    writeJsonAtomic(p, diff);
+    _cache = null;
+  } catch (err) {
+    console.error(`[brain-config] save failed: ${err.message}`);
+    throw err;
+  }
+}
+
 module.exports = {
   load,
+  save,
   deepDiff,
   getRetrievalFast,
   getRetrievalDeep,

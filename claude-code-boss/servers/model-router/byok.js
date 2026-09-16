@@ -56,6 +56,20 @@ function upstreamCfg(config) {
 }
 
 /**
+ * Normaliza um override de teto (ms) vindo de config: número finito >= 0 passa,
+ * qualquer outra coisa (ausente, string, negativo, NaN) devolve `undefined` —
+ * "sem override, use a constante padrão do módulo". `0` é um valor DIFERENTE de
+ * ausente: é o sentinel explícito de "sem timeout de TTFB" (ver index.js —
+ * `req.setTimeout(0, ...)` já é como o Node desarma um timeout, então 0 aqui
+ * propaga naturalmente até virar "sem limite" de verdade).
+ * @returns {number|undefined}
+ */
+function normalizeTimeoutOverride(v) {
+  if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return undefined;
+  return v;
+}
+
+/**
  * Para onde ESTA request deve ir.
  *
  * `mode`:
@@ -99,6 +113,17 @@ function resolveUpstream(config, opts, fallback) {
   // em index.js. `isByok` decide só a remoção de credencial. Achado de campo: um
   // gateway configurado aqui herdava o teto de 8s pensado pra Anthropic direta e
   // estourava em modelos com reasoning longo antes do primeiro token.
+  //
+  // `fixedEndpoint` (só no ramo BYOK, ver abaixo) refina ISSO DENTRO de
+  // isCustomEndpoint=true: nem todo endpoint de terceiro tem o mesmo perfil de
+  // demora. Um BYOK "auto/best-free" que rotaciona internamente entre vários
+  // modelos gratuitos precisa de um teto folgado pro PRÓPRIO failover dele antes
+  // de devolver algo (visto em produção: até 88s). Um BYOK que é um serviço
+  // FIXO do usuário (ex.: gateway corporativo único, sem rotação) não tem esse
+  // motivo pra demorar — nele, ficar preso ~100s numa rede que já sabe que não
+  // vai responder é pior que falhar rápido e deixar o cliente tentar de novo.
+  // Sem esta distinção, os dois cenários competiam pelo MESMO teto (fixo tinha
+  // que esperar o tempo pensado pro rotativo).
   const u = upstreamCfg(config);
   if (u.enabled === true) {
     const dest = parseBaseUrl(u.baseUrl);
@@ -123,9 +148,27 @@ function resolveUpstream(config, opts, fallback) {
       misconfigured: 'byok.enabled=true mas baseUrl ausente ou inválida — configure a Base URL no dashboard',
     });
   }
+  const fixedEndpoint = b.fixedEndpoint === true;
   return {
     host: dest.host, port: dest.port, protocol: dest.protocol,
     isByok: true, isCustomEndpoint: true, mode,
+    // OPT-IN, default false → preserva o teto atual (rotativo/100s) pra quem já
+    // usa BYOK e nunca ouviu falar deste campo. true = endpoint fixo do usuário
+    // (não rotaciona modelos internamente) — index.js usa um teto mais curto.
+    fixedEndpoint,
+    // Override opcional do teto (ms), POR TIPO de endpoint — `fixedTimeoutMs`
+    // quando `fixedEndpoint:true`, `rotatingTimeoutMs` quando false. `undefined`
+    // (ausente ou inválido) = sem override, index.js usa a constante do módulo
+    // (BYOK_FIXED_UPSTREAM_TIMEOUT_MS / BYOK_UPSTREAM_TIMEOUT_MS, cada uma com
+    // seu próprio env var). `0` é válido e significa "sem timeout de TTFB": o
+    // usuário decidiu confiar no teto de ~300s do próprio Claude Code CLI como
+    // backstop (relevante p/ modelos que não fazem streaming de thinking, ex.
+    // Bedrock, e só devolvem o bloco final — TTFB aparente muito maior).
+    timeoutMsOverride: normalizeTimeoutOverride(fixedEndpoint ? b.fixedTimeoutMs : b.rotatingTimeoutMs),
+    // OPT-IN, default false: loga o TTFB de cada resposta deste endpoint custom.
+    // Existe pra calibrar o teto acima com dado real — não pra todo mundo deixar
+    // ligado (achado de campo: resposta pro MESMO prompt varia muito sob carga).
+    logLatency: b.logLatency === true,
     headers: (b.headers && typeof b.headers === 'object') ? b.headers : {},
   };
 }
@@ -304,6 +347,7 @@ module.exports = {
   CREDENTIAL_HEADERS,
   PROTOCOL_HEADERS,
   parseBaseUrl,
+  normalizeTimeoutOverride,
   resolveUpstream,
   buildHeaders,
   classifyResponse,

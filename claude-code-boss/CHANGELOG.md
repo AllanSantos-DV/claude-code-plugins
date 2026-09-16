@@ -1,5 +1,32 @@
 # Changelog
 
+## [2.25.0] - 2026-09-15
+
+**Integração MCP com visibilidade total.** Reforça o fluxo de ativação do backend `mcp-memory` com um wizard passo-a-passo, um comando `/brain-status` para o agente, e roteia o CRUD do Dashboard pela fachada real (`brain-backend.js`) — eliminando o espelho local invisível.
+
+### Added — MCP Activation Wizard
+- **`scripts/lib/mcp-wizard.js`** — orquestra a ativação do memory server em 5 passos com estado persistido: (1) Java ≥ 21, (2) JAR presente/download, (3) spawn do daemon, (4) handshake MCP (`initialize` + `tools/list`), (5) validação do `projectId`. Fire-and-forget com polling de status.
+- **API** — `POST /api/brain/mcp-wizard`, `GET /api/brain/mcp-wizard/status`, `POST /api/brain/mcp-wizard/reset`.
+- **Dashboard** — novo botão "Activate Server" que abre um modal com progresso visual passo-a-passo (barra, ícones ✓/⟳/○, detalhe de cada fase e mensagem de erro adversa). Auto-poll quando o wizard já está rodando.
+
+### Added — Backend Status Visibility
+- **`scripts/brain-status.js`** — relatório em tempo real da integração: `mode` (`local`|`mcp-memory`), `connected`, `project`, `backend`, `details` (URL/transporte/JAR) e `latency` (ms). Roda como hook no `UserPromptSubmit` e dá suporte ao comando `/brain-status`.
+- **API** — `GET /api/brain/health` com o mesmo contrato (liveness + detalhes do daemon).
+- **Dashboard** — status do backend na home agora mostra o modo real (`mcp-memory` → URL + latência, `local` → `sqlite`) com badge online/offline em tempo real.
+
+### Changed — Dashboard CRUD roteado pela fachada `brain-backend.js`
+- `getBrainEntry`, `updateBrainEntry`, `deleteBrainEntry`, `listBrainEntries`, `getBrainRelated` e `searchBrain` agora consultam a fachada (`peekMode()` + roteamento) — no backend `mcp-memory`, leitura/edição/exclusão vão ao servidor Java, não ao espelho local SQLite. No backend `local`, a lógica permanece byte-idêntica (two-pass search, `getRaw` sem bump de telemetria, backup-verify antes de delete, re-embed de vetor).
+
+### Skills
+- **`skills/brain-status/SKILL.md`** — documento de referência para o agente interpretar o status do backend (diagnósticos comuns, interpretação de campos).
+
+### Added — BYOK: timeout por tipo de endpoint, sem limite opcional, e log de latência
+- **`config.byok.fixedEndpoint`** (opt-in, default `false`) — distingue um endpoint BYOK FIXO/corporativo (`true`, teto de TTFB curto, `ROUTER_BYOK_FIXED_UPSTREAM_TIMEOUT_MS`, default 20000ms) de um endpoint ROTATIVO (`false`, ex. "auto/best-free" entre modelos gratuitos, teto longo `ROUTER_BYOK_UPSTREAM_TIMEOUT_MS`, default 100000ms) — cada um pensado pro próprio padrão de failover.
+- **`config.byok.fixedTimeoutMs` / `config.byok.rotatingTimeoutMs`** (opcional, `null` por padrão) — override numérico (ms) do teto acima, por tipo de endpoint, editável direto pelo dashboard sem mexer em env var. **`0` é um valor válido e intencional: "sem limite de TTFB"** — quem corta a chamada nesse caso passa a ser o teto de ~300s do próprio Claude Code CLI, não o router. Pensado pra endpoints/modelos com tempo de resposta muito inconsistente sob carga.
+- **`config.byok.logLatency`** (opt-in, default `false`) — loga (INFO) o TTFB de cada resposta do endpoint BYOK, pra calibrar os tetos acima com dado real. Útil especialmente com modelos que não fazem streaming de *thinking* (ex.: alguns na AWS Bedrock) e só devolvem o bloco final, o que infla o TTFB aparente.
+- **Novos env vars**: `ROUTER_UPSTREAM_TIMEOUT_MS`, `ROUTER_BYOK_UPSTREAM_TIMEOUT_MS`, `ROUTER_BYOK_FIXED_UPSTREAM_TIMEOUT_MS`, `ROUTER_BYOK_CLASSIFY_TIMEOUT_MS` — todos os tetos de TTFB do router agora são overrideáveis sem editar `config/router-config.json` nem o core.
+- **Dashboard** — nova seção na aba Router mostrando o timeout por tipo de endpoint (Fixed/Rotating) e o toggle de log de latência.
+
 ## [2.24.1] - 2026-09-15
 
 - **mcp-client**: auto-restart do mcp-memory-server quando o daemon cai — o cliente agora valida a saúde do servidor via `/health` antes de conectar; se estiver offline, dispara o spawn do JAR automaticamente, evitando tentativas de conexão em portas obsoletas do `daemon.json`.

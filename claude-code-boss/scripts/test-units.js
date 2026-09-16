@@ -821,7 +821,8 @@ function startFakeDaemon(opts = {}) {
         if (msg.method === 'tools/list') {
           seen.toolsListSession = sid;
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          return res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { tools: [{ name: 'add_document' }, { name: 'search_memory' }] } }));
+          const toolNames = opts.tools || ['add_document', 'search_memory'];
+          return res.end(JSON.stringify({ jsonrpc: '2.0', id: msg.id, result: { tools: toolNames.map((name) => ({ name })) } }));
         }
         if (msg.method === 'tools/call') {
           seen.callSession = sid;
@@ -5856,6 +5857,76 @@ test('FASE-F store round-trip: save→get→update fields→save→delete (opera
   }
 });
 
+// ═══ FASE G — integração MCP visível (wizard + status) ════════════════════════
+test('FASE-G dashboard.js: rotas do wizard + brain/health wireadas (API + UI + hook)', () => {
+  const src = fs.readFileSync(path.join(SCRIPTS, 'dashboard.js'), 'utf-8');
+  for (const route of ['/api/brain/mcp-wizard', '/api/brain/mcp-wizard/status', '/api/brain/mcp-wizard/reset', '/api/brain/health']) {
+    assert(src.includes(`'${route}'`), `route ${route} must be wired in handleRequest`);
+  }
+  assert(/\.\/lib\/mcp-wizard\.js/.test(src), 'handlers do wizard devem consultar lib/mcp-wizard.js');
+  assert(/getBrainHealth/.test(src), 'handler getBrainHealth presente');
+  const uiSrc = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf8');
+  assert(uiSrc.includes('mcp-wizard-btn'), 'botão do wizard presente na UI');
+  assert(uiSrc.includes('wizard-overlay'), 'modal do wizard presente na UI');
+  const hooksSrc = fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8');
+  assert(/brain-status\.js/.test(hooksSrc), 'hooks.json deve registrar o brain-status no UserPromptSubmit');
+  assert(fs.existsSync(path.join(SCRIPTS, 'brain-status.js')), 'scripts/brain-status.js existe');
+});
+
+test('FASE-G mcp-wizard: reset limpa estado persistido; getState devolve idle (round-trip no arquivo)', () => {
+  const saved = process.env.CLAUDE_PLUGIN_DATA;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-wiz-'));
+  try {
+    process.env.CLAUDE_PLUGIN_DATA = tmp;
+    delete require.cache[require.resolve('./lib/mcp-wizard.js')];
+    const wizard = require('./lib/mcp-wizard.js');
+    const stPath = wizard.wizardStateFile();
+    assert(stPath.startsWith(path.dirname(require('./lib/data-dir.js').globalDir())), 'estado do wizard vive no global dir (não no repo)');
+    const first = wizard.reset();
+    assertEq(first.status, 'idle', 'reset → status idle');
+    assertEq(first.step, 0, 'reset → step 0');
+    // Simula um run em andamento: arquivo no disco → getState devolve o que está persistido.
+    fs.mkdirSync(path.dirname(stPath), { recursive: true });
+    fs.writeFileSync(stPath, JSON.stringify({ step: 3, total: 5, status: 'running', progress: 60, details: [], startedAt: new Date().toISOString(), finishedAt: null, error: null }));
+    delete require.cache[require.resolve('./lib/mcp-wizard.js')];
+    const wizard2 = require('./lib/mcp-wizard.js');
+    const state = wizard2.getState();
+    assertEq(state.status, 'running', 'getState devolve o run persistido');
+    assertEq(state.step, 3, 'step persistido mantido');
+    assertEq(wizard2.reset().status, 'idle', 'reset posterior volta a idle');
+    assert(!fs.existsSync(stPath), 'reset remove o arquivo de estado');
+  } finally {
+    if (saved === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
+    else process.env.CLAUDE_PLUGIN_DATA = saved;
+    delete require.cache[require.resolve('./lib/mcp-wizard.js')];
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) { void _; }
+  }
+});
+
+test('FASE-G brain-status: relatório segue o contrato {mode, connected, project, backend, details, latency}', async () => {
+  const saved = process.env.CLAUDE_PLUGIN_DATA;
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bstatus-'));
+  const { execFileSync } = require('child_process');
+  try {
+    const out = execFileSync(process.execPath, [path.join(SCRIPTS, 'brain-status.js')], {
+      encoding: 'utf-8',
+      env: { ...process.env, CLAUDE_PLUGIN_DATA: tmp },
+    });
+    const last = out.trim().split('\n').filter(Boolean).pop();
+    const parsed = JSON.parse(last);
+    assert(['local', 'mcp-memory', 'unknown'].includes(parsed.mode), `mode válido (${parsed.mode})`);
+    assert(typeof parsed.connected === 'boolean', `connected é boolean`);
+    assert(typeof parsed.project === 'string' && parsed.project.length > 0, 'project é string não vazia');
+    assert(typeof parsed.backend === 'string' && parsed.backend.length > 0, 'backend é string não vazia');
+    assert(parsed.details && typeof parsed.details === 'object' && !Array.isArray(parsed.details), 'details é objeto');
+    assert(typeof parsed.latency === 'number', `latency é número`);
+  } finally {
+    if (saved === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
+    else process.env.CLAUDE_PLUGIN_DATA = saved;
+    try { fs.rmSync(tmp, { recursive: true, force: true }); } catch (_) { void _; }
+  }
+});
+
 test('FASE-E: capHistoryDays — cap por DIA distinto (tenants não encolhem a janela)', () => {
   // 3 dias × 2 rows/dia (global + 1 tenant) + 1 dia extra → cap 3 dias mantém
   // TODAS as rows dos 3 dias mais recentes (cap por row descartaria o dia inteiro).
@@ -6856,6 +6927,88 @@ test('byok.resolveUpstream: gateway alternativo DESLIGADO → Anthropic pura, is
   assertEq(u.isCustomEndpoint, false);
 });
 
+test('byok.resolveUpstream: sem fixedEndpoint configurado → default false (preserva comportamento rotativo)', () => {
+  const cfg = { byok: { enabled: true, mode: 'always', baseUrl: 'https://ex.ts.net', headers: {} } };
+  const u = byok.resolveUpstream(cfg, { onLimit: false });
+  assertEq(u.fixedEndpoint, false);
+});
+
+test('byok.resolveUpstream: fixedEndpoint:true no config → propaga true no alvo resolvido', () => {
+  const cfg = { byok: { enabled: true, mode: 'always', baseUrl: 'https://ex.ts.net', headers: {}, fixedEndpoint: true } };
+  const u = byok.resolveUpstream(cfg, { onLimit: false });
+  assertEq(u.fixedEndpoint, true);
+});
+
+test('byok.resolveUpstream: fixedEndpoint com valor não-boolean → normaliza pra false (fail-safe)', () => {
+  const cfg = { byok: { enabled: true, mode: 'always', baseUrl: 'https://ex.ts.net', headers: {}, fixedEndpoint: 'yes' } };
+  const u = byok.resolveUpstream(cfg, { onLimit: false });
+  assertEq(u.fixedEndpoint, false);
+});
+
+test('byok.normalizeTimeoutOverride: número finito >= 0 passa direto', () => {
+  assertEq(byok.normalizeTimeoutOverride(45000), 45000);
+  assertEq(byok.normalizeTimeoutOverride(0), 0, '0 é o sentinel de "sem limite" — DIFERENTE de ausente');
+});
+
+test('byok.normalizeTimeoutOverride: negativo/NaN/string/ausente/null → undefined (sem override)', () => {
+  assertEq(byok.normalizeTimeoutOverride(-1), undefined);
+  assertEq(byok.normalizeTimeoutOverride(NaN), undefined);
+  assertEq(byok.normalizeTimeoutOverride('100'), undefined);
+  assertEq(byok.normalizeTimeoutOverride(undefined), undefined);
+  assertEq(byok.normalizeTimeoutOverride(null), undefined);
+});
+
+test('byok.resolveUpstream: fixedEndpoint:true usa fixedTimeoutMs (rotatingTimeoutMs é ignorado)', () => {
+  const cfg = { byok: { enabled: true, mode: 'always', baseUrl: 'https://ex.ts.net', headers: {}, fixedEndpoint: true, fixedTimeoutMs: 45000, rotatingTimeoutMs: 99999 } };
+  const u = byok.resolveUpstream(cfg, { onLimit: false });
+  assertEq(u.timeoutMsOverride, 45000);
+});
+
+test('byok.resolveUpstream: fixedEndpoint:false usa rotatingTimeoutMs (fixedTimeoutMs é ignorado)', () => {
+  const cfg = { byok: { enabled: true, mode: 'always', baseUrl: 'https://ex.ts.net', headers: {}, fixedEndpoint: false, fixedTimeoutMs: 45000, rotatingTimeoutMs: 12345 } };
+  const u = byok.resolveUpstream(cfg, { onLimit: false });
+  assertEq(u.timeoutMsOverride, 12345);
+});
+
+test('byok.resolveUpstream: fixedTimeoutMs:0 com fixedEndpoint:true → timeoutMsOverride é 0 (sem limite), não undefined', () => {
+  const cfg = { byok: { enabled: true, mode: 'always', baseUrl: 'https://ex.ts.net', headers: {}, fixedEndpoint: true, fixedTimeoutMs: 0 } };
+  const u = byok.resolveUpstream(cfg, { onLimit: false });
+  assertEq(u.timeoutMsOverride, 0);
+});
+
+test('byok.resolveUpstream: rotatingTimeoutMs:0 com fixedEndpoint:false → timeoutMsOverride é 0 (sem limite), não undefined', () => {
+  // Achado de revisão adversarial (2026-09-16, TESTER): só o ramo fixedEndpoint:true
+  // tinha cobertura do sentinel 0 (teste acima, fixedTimeoutMs:0); o ramo
+  // rotativo nunca foi exercitado com 0.
+  const cfg = { byok: { enabled: true, mode: 'always', baseUrl: 'https://ex.ts.net', headers: {}, fixedEndpoint: false, rotatingTimeoutMs: 0 } };
+  const u = byok.resolveUpstream(cfg, { onLimit: false });
+  assertEq(u.timeoutMsOverride, 0);
+});
+
+test('byok.resolveUpstream: sem fixedTimeoutMs/rotatingTimeoutMs configurados → timeoutMsOverride undefined (preserva a constante padrão)', () => {
+  const cfg = { byok: { enabled: true, mode: 'always', baseUrl: 'https://ex.ts.net', headers: {} } };
+  const u = byok.resolveUpstream(cfg, { onLimit: false });
+  assertEq(u.timeoutMsOverride, undefined);
+});
+
+test('byok.resolveUpstream: sem logLatency configurado → default false (opt-in)', () => {
+  const cfg = { byok: { enabled: true, mode: 'always', baseUrl: 'https://ex.ts.net', headers: {} } };
+  const u = byok.resolveUpstream(cfg, { onLimit: false });
+  assertEq(u.logLatency, false);
+});
+
+test('byok.resolveUpstream: logLatency:true → propaga true no alvo resolvido', () => {
+  const cfg = { byok: { enabled: true, mode: 'always', baseUrl: 'https://ex.ts.net', headers: {}, logLatency: true } };
+  const u = byok.resolveUpstream(cfg, { onLimit: false });
+  assertEq(u.logLatency, true);
+});
+
+test('byok.resolveUpstream: logLatency com valor não-boolean → normaliza pra false (fail-safe)', () => {
+  const cfg = { byok: { enabled: true, mode: 'always', baseUrl: 'https://ex.ts.net', headers: {}, logLatency: 'yes' } };
+  const u = byok.resolveUpstream(cfg, { onLimit: false });
+  assertEq(u.logLatency, false);
+});
+
 // docs/BACKLOG.md apontava a lacuna: os testes acima só provam a ORIGEM
 // (byok.resolveUpstream), não o PONTO DE CONSUMO (requestUpstream escolhendo
 // o teto certo). Monkey-patch em http.request captura o `teto` passado a
@@ -6909,6 +7062,161 @@ test('router.requestUpstream: gateway alternativo (isCustomEndpoint=true, isByok
     router.requestUpstream(target, '/v1/messages', {}, '{}', () => {}, () => {});
     assertEq(calls[0].req._timeouts[0], router.BYOK_UPSTREAM_TIMEOUT_MS, 'mesmo sem isByok, destino nao-Anthropic precisa do teto maior');
   });
+});
+
+test('router.resolveUpstreamTimeoutMs: BYOK sem fixedEndpoint → teto rotativo (BYOK_UPSTREAM_TIMEOUT_MS)', () => {
+  const target = { isCustomEndpoint: true, fixedEndpoint: false };
+  assertEq(router.resolveUpstreamTimeoutMs(target), router.BYOK_UPSTREAM_TIMEOUT_MS);
+});
+
+test('router.resolveUpstreamTimeoutMs: BYOK com fixedEndpoint:true → teto curto (BYOK_FIXED_UPSTREAM_TIMEOUT_MS)', () => {
+  const target = { isCustomEndpoint: true, fixedEndpoint: true };
+  assertEq(router.resolveUpstreamTimeoutMs(target), router.BYOK_FIXED_UPSTREAM_TIMEOUT_MS);
+});
+
+test('router.resolveUpstreamTimeoutMs: Anthropic direta ignora fixedEndpoint, usa UPSTREAM_TIMEOUT_MS', () => {
+  const target = { isCustomEndpoint: false, fixedEndpoint: true };
+  assertEq(router.resolveUpstreamTimeoutMs(target), router.UPSTREAM_TIMEOUT_MS);
+});
+
+test('router.requestUpstream: BYOK fixedEndpoint:true usa BYOK_FIXED_UPSTREAM_TIMEOUT_MS (não os 100s do rotativo)', () => {
+  withFakeHttpRequest(https, (calls) => {
+    const target = { host: 'byok.example.com', port: 443, protocol: 'https:', isCustomEndpoint: true, fixedEndpoint: true };
+    router.requestUpstream(target, '/v1/messages', {}, '{}', () => {}, () => {});
+    assertEq(calls[0].req._timeouts[0], router.BYOK_FIXED_UPSTREAM_TIMEOUT_MS);
+  });
+});
+
+test('router.passthroughGeneric: segundo call site também respeita fixedEndpoint (BYOK_FIXED_UPSTREAM_TIMEOUT_MS)', () => {
+  withFakeHttpRequest(https, (calls) => {
+    const cfg = { byok: { enabled: true, mode: 'always', baseUrl: 'https://ex.ts.net', headers: {}, fixedEndpoint: true } };
+    router.passthroughGeneric('POST', '{}', {}, {}, '/v1/messages', cfg);
+    assertEq(calls.length, 1);
+    assertEq(calls[0].req._timeouts[0], router.BYOK_FIXED_UPSTREAM_TIMEOUT_MS);
+  });
+});
+
+test('router.passthroughGeneric: BYOK rotativo (fixedEndpoint ausente) usa BYOK_UPSTREAM_TIMEOUT_MS', () => {
+  withFakeHttpRequest(https, (calls) => {
+    const cfg = { byok: { enabled: true, mode: 'always', baseUrl: 'https://ex.ts.net', headers: {} } };
+    router.passthroughGeneric('POST', '{}', {}, {}, '/v1/messages', cfg);
+    assertEq(calls.length, 1);
+    assertEq(calls[0].req._timeouts[0], router.BYOK_UPSTREAM_TIMEOUT_MS);
+  });
+});
+
+// timeoutMsOverride (config.byok.fixedTimeoutMs/rotatingTimeoutMs, opt-in via
+// dashboard) — tem que VENCER a constante fixa/rotativa, inclusive quando o
+// valor é exatamente 0 ("sem timeout de TTFB", ver sendUpstreamRequest).
+test('router.resolveUpstreamTimeoutMs: timeoutMsOverride vence tanto o teto fixo quanto o rotativo', () => {
+  assertEq(router.resolveUpstreamTimeoutMs({ isCustomEndpoint: true, fixedEndpoint: true, timeoutMsOverride: 45000 }), 45000);
+  assertEq(router.resolveUpstreamTimeoutMs({ isCustomEndpoint: true, fixedEndpoint: false, timeoutMsOverride: 12345 }), 12345);
+});
+
+test('router.resolveUpstreamTimeoutMs: timeoutMsOverride:0 → retorna 0 (sem limite), não cai no default', () => {
+  assertEq(router.resolveUpstreamTimeoutMs({ isCustomEndpoint: true, fixedEndpoint: true, timeoutMsOverride: 0 }), 0);
+  // Achado de revisão adversarial (2026-09-16, TESTER): mesma cobertura, agora
+  // no ramo fixedEndpoint:false — nunca tinha sido combinado com o sentinel 0.
+  assertEq(router.resolveUpstreamTimeoutMs({ isCustomEndpoint: true, fixedEndpoint: false, timeoutMsOverride: 0 }), 0);
+});
+
+test('router.resolveUpstreamTimeoutMs: timeoutMsOverride ausente → cai no fixo/rotativo de sempre (regressão)', () => {
+  assertEq(router.resolveUpstreamTimeoutMs({ isCustomEndpoint: true, fixedEndpoint: true }), router.BYOK_FIXED_UPSTREAM_TIMEOUT_MS);
+  assertEq(router.resolveUpstreamTimeoutMs({ isCustomEndpoint: true, fixedEndpoint: false }), router.BYOK_UPSTREAM_TIMEOUT_MS);
+});
+
+test('router.requestUpstream: teto resolvido 0 → NÃO arma nenhum timeout de "sem resposta"', () => {
+  withFakeHttpRequest(https, (calls) => {
+    const target = { host: 'byok.example.com', port: 443, protocol: 'https:', isCustomEndpoint: true, fixedEndpoint: true, timeoutMsOverride: 0 };
+    router.requestUpstream(target, '/v1/messages', {}, '{}', () => {}, () => {});
+    assertEq(calls.length, 1);
+    assertEq(calls[0].req._timeouts.length, 0, 'sem override o teste acima prova 20s/100s; aqui prova que 0 não arma NADA');
+  });
+});
+
+test('router.requestUpstream: timeoutMsOverride customizado (ex.: 45000ms) chega intacto ao req.setTimeout', () => {
+  withFakeHttpRequest(https, (calls) => {
+    const target = { host: 'byok.example.com', port: 443, protocol: 'https:', isCustomEndpoint: true, fixedEndpoint: false, timeoutMsOverride: 45000 };
+    router.requestUpstream(target, '/v1/messages', {}, '{}', () => {}, () => {});
+    assertEq(calls[0].req._timeouts[0], 45000);
+  });
+});
+
+test('router.withLatencyLog: sem logLatency (ausente ou false) → retorna o MESMO callback (no-op, sem wrapping)', () => {
+  // `assertEq` compara via JSON.stringify, que é `undefined` pra QUALQUER
+  // função — não serve pra provar identidade de referência aqui. Precisa de
+  // `assert(a === b)` estrito, senão o teste passa mesmo se withLatencyLog
+  // passar a sempre envolver o callback numa função nova (quebrando o
+  // contrato de passthrough puro quando logLatency é falsy).
+  const onResponse = () => {};
+  assert(router.withLatencyLog({ logLatency: false }, onResponse) === onResponse, 'logLatency:false precisa retornar a MESMA referência de callback');
+  assert(router.withLatencyLog(undefined, onResponse) === onResponse, 'upstreamTarget ausente também é no-op (mesma referência)');
+});
+
+test('router.withLatencyLog: logLatency:true → envolve o callback, mas ainda repassa a MESMA response pra ele', () => {
+  let received = null;
+  const onResponse = (upRes) => { received = upRes; };
+  const wrapped = router.withLatencyLog({ logLatency: true, host: 'byok.example.com' }, onResponse);
+  assert(wrapped !== onResponse, 'com logLatency:true precisa envolver, não reusar a referência original');
+  const fakeRes = { statusCode: 200 };
+  wrapped(fakeRes);
+  assertEq(received, fakeRes, 'o wrapper não pode alterar nem engolir o argumento repassado ao callback original');
+});
+
+test('router.parseTimeoutEnv: env ausente → default silencioso', () => {
+  delete process.env.ROUTER_TEST_TIMEOUT_XYZ;
+  assertEq(router.parseTimeoutEnv('ROUTER_TEST_TIMEOUT_XYZ', 1234), 1234);
+});
+
+test('router.parseTimeoutEnv: env válido → usa o override', () => {
+  process.env.ROUTER_TEST_TIMEOUT_XYZ = '5000';
+  try {
+    assertEq(router.parseTimeoutEnv('ROUTER_TEST_TIMEOUT_XYZ', 1234), 5000);
+  } finally {
+    delete process.env.ROUTER_TEST_TIMEOUT_XYZ;
+  }
+});
+
+test('router.parseTimeoutEnv: env inválida (não-numérica) → fail-loud com fallback pro default, não NaN silencioso', () => {
+  process.env.ROUTER_TEST_TIMEOUT_XYZ = 'abc';
+  try {
+    const v = router.parseTimeoutEnv('ROUTER_TEST_TIMEOUT_XYZ', 1234);
+    assertEq(v, 1234);
+    assertEq(Number.isNaN(v), false);
+  } finally {
+    delete process.env.ROUTER_TEST_TIMEOUT_XYZ;
+  }
+});
+
+test('router.parseTimeoutEnv: env <= 0 → invalida, cai pro default', () => {
+  process.env.ROUTER_TEST_TIMEOUT_XYZ = '0';
+  try {
+    assertEq(router.parseTimeoutEnv('ROUTER_TEST_TIMEOUT_XYZ', 1234), 1234);
+  } finally {
+    delete process.env.ROUTER_TEST_TIMEOUT_XYZ;
+  }
+});
+
+test('router: ROUTER_BYOK_FIXED_UPSTREAM_TIMEOUT_MS setada ANTES do load sobrescreve a constante real do módulo', () => {
+  const modPath = require.resolve('../servers/model-router/index.js');
+  const prevEntry = require.cache[modPath];
+  const prev = process.env.ROUTER_BYOK_FIXED_UPSTREAM_TIMEOUT_MS;
+  process.env.ROUTER_BYOK_FIXED_UPSTREAM_TIMEOUT_MS = '12345';
+  delete require.cache[modPath];
+  try {
+    const freshRouter = require(modPath);
+    assertEq(freshRouter.BYOK_FIXED_UPSTREAM_TIMEOUT_MS, 12345);
+  } finally {
+    if (prev === undefined) delete process.env.ROUTER_BYOK_FIXED_UPSTREAM_TIMEOUT_MS;
+    else process.env.ROUTER_BYOK_FIXED_UPSTREAM_TIMEOUT_MS = prev;
+    // Repor a entrada ORIGINAL do cache (não só apagar) — apagar deixa o
+    // singleton do módulo "fantasma" pro resto do processo: qualquer require()
+    // feito depois deste teste recriaria uma instância nova, com seu próprio
+    // estado privado (_cooldownUntil etc.), desalinhada da instância que
+    // `router`/`routerServer`/`mr` (vinculados no topo do arquivo) apontam.
+    if (prevEntry) require.cache[modPath] = prevEntry;
+    else delete require.cache[modPath];
+  }
 });
 
 // ── SEGURANCA: o header do cliente carrega o token da ASSINATURA Claude ──────
@@ -9254,6 +9562,263 @@ test('dashboard.resolveRouterFlags: expoe o byok EFETIVO (shipped + override)', 
       assertEq(f.byok.enabled, true);
       assertEq(f.byok.mode, 'always');
       assertEq(f.byok.baseUrl, 'https://e.net');
+    } finally {
+      process.env.CLAUDE_PLUGIN_DATA = saved;
+      delete require.cache[require.resolve('./dashboard.js')];
+    }
+  });
+});
+
+test('dashboard.writeRouterOverride: fixedEndpoint é PRESERVADO ao trocar só outro campo do BYOK (preserve-on-absent)', () => {
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-byokfixed-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      const gp = path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json');
+      delete require.cache[require.resolve('./dashboard.js')];
+      const dash = require('./dashboard.js');
+
+      dash.writeRouterOverride({
+        byok: { enabled: true, mode: 'always', baseUrl: 'https://ex.ts.net', headers: {}, fixedEndpoint: true },
+      });
+      let out = JSON.parse(fs.readFileSync(gp, 'utf-8'));
+      assertEq(out.byok.enabled, true);
+      assertEq(out.byok.fixedEndpoint, true);
+
+      // Trocar SO o modo nao pode apagar fixedEndpoint ja gravado (preserve-on-absent,
+      // ADR-010) — mas `enabled` NAO tem essa protecao (comportamento pre-existente,
+      // ver docs/BACKLOG.md): checar os dois aqui pega um copy-paste que trocasse as
+      // duas logicas entre si.
+      dash.writeRouterOverride({ byok: { mode: 'on-limit' } });
+      out = JSON.parse(fs.readFileSync(gp, 'utf-8'));
+      assertEq(out.byok.mode, 'on-limit');
+      assertEq(out.byok.fixedEndpoint, true, 'fixedEndpoint sobreviveu ao toggle de outro campo');
+      assertEq(out.byok.enabled, false, 'enabled NAO sobrevive (pre-existente) — distingue das duas logicas');
+    } finally {
+      process.env.CLAUDE_PLUGIN_DATA = saved;
+      delete require.cache[require.resolve('./dashboard.js')];
+    }
+  });
+});
+
+test('dashboard.resolveRouterFlags: fixedEndpoint flui do override, shipped=false não vaza por cima', () => {
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-byokfixedflags-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      delete require.cache[require.resolve('./dashboard.js')];
+      const dash = require('./dashboard.js');
+      assertEq(dash.resolveRouterFlags().byok.fixedEndpoint, false, 'sem override, shipped=false manda');
+      dash.writeRouterOverride({ byok: { enabled: true, mode: 'always', baseUrl: 'https://e.net', fixedEndpoint: true } });
+      const f = dash.resolveRouterFlags();
+      assertEq(f.byok.fixedEndpoint, true, 'override vence o shipped=false');
+    } finally {
+      process.env.CLAUDE_PLUGIN_DATA = saved;
+      delete require.cache[require.resolve('./dashboard.js')];
+    }
+  });
+});
+
+// Timeout por tipo de endpoint (fixedTimeoutMs/rotatingTimeoutMs) + log de TTFB
+// (logLatency) — mesmo trio de garantias já provado para fixedEndpoint acima:
+// grava, preserva-on-absent, e o efetivo (shipped ⊕ override) chega correto ao
+// dashboard/index.html.
+test('dashboard.writeRouterOverride: fixedTimeoutMs/rotatingTimeoutMs/logLatency são gravados e PRESERVADOS ao trocar outro campo (preserve-on-absent)', () => {
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-byoktimeouts-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      const gp = path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json');
+      delete require.cache[require.resolve('./dashboard.js')];
+      const dash = require('./dashboard.js');
+
+      dash.writeRouterOverride({
+        byok: {
+          enabled: true, mode: 'always', baseUrl: 'https://ex.ts.net', headers: {},
+          fixedTimeoutMs: 45000, rotatingTimeoutMs: 0, logLatency: true,
+        },
+      });
+      let out = JSON.parse(fs.readFileSync(gp, 'utf-8'));
+      assertEq(out.byok.fixedTimeoutMs, 45000);
+      assertEq(out.byok.rotatingTimeoutMs, 0, '0 é um valor VÁLIDO (sem limite), não pode virar ausente/null');
+      assertEq(out.byok.logLatency, true);
+
+      // Trocar SO o modo nao pode apagar os tres campos ja gravados.
+      dash.writeRouterOverride({ byok: { mode: 'on-limit' } });
+      out = JSON.parse(fs.readFileSync(gp, 'utf-8'));
+      assertEq(out.byok.mode, 'on-limit');
+      assertEq(out.byok.fixedTimeoutMs, 45000, 'fixedTimeoutMs sobreviveu ao toggle de outro campo');
+      assertEq(out.byok.rotatingTimeoutMs, 0, 'rotatingTimeoutMs (0) sobreviveu ao toggle de outro campo');
+      assertEq(out.byok.logLatency, true, 'logLatency sobreviveu ao toggle de outro campo');
+    } finally {
+      process.env.CLAUDE_PLUGIN_DATA = saved;
+      delete require.cache[require.resolve('./dashboard.js')];
+    }
+  });
+});
+
+test('dashboard.writeRouterOverride: valor inválido de timeout (negativo/string) normaliza pra undefined, não grava lixo', () => {
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-byoktimeoutsbad-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      const gp = path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json');
+      delete require.cache[require.resolve('./dashboard.js')];
+      const dash = require('./dashboard.js');
+      dash.writeRouterOverride({
+        byok: { enabled: true, mode: 'always', baseUrl: 'https://ex.ts.net', fixedTimeoutMs: -5, rotatingTimeoutMs: 'abc' },
+      });
+      const out = JSON.parse(fs.readFileSync(gp, 'utf-8'));
+      assertEq(out.byok.fixedTimeoutMs, undefined);
+      assertEq(out.byok.rotatingTimeoutMs, undefined);
+    } finally {
+      process.env.CLAUDE_PLUGIN_DATA = saved;
+      delete require.cache[require.resolve('./dashboard.js')];
+    }
+  });
+});
+
+test('dashboard.writeRouterOverride: null explícito LIMPA fixedTimeoutMs/rotatingTimeoutMs já persistidos (não é só "ausente preserva")', () => {
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-byoktimeoutsclear-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      const gp = path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json');
+      delete require.cache[require.resolve('./dashboard.js')];
+      const dash = require('./dashboard.js');
+
+      dash.writeRouterOverride({
+        byok: { enabled: true, mode: 'always', baseUrl: 'https://ex.ts.net', fixedTimeoutMs: 45000, rotatingTimeoutMs: 90000 },
+      });
+      let out = JSON.parse(fs.readFileSync(gp, 'utf-8'));
+      assertEq(out.byok.fixedTimeoutMs, 45000);
+      assertEq(out.byok.rotatingTimeoutMs, 90000);
+
+      // null EXPLICITO (diferente de AUSENTE) deve limpar o override já
+      // persistido — mesma convenção já usada por nimApiKey (dashboard.js).
+      // Um refactor pra checagem de falsy (`if (byokInput.fixedTimeoutMs)`)
+      // quebraria isto silenciosamente sem derrubar nenhum outro teste.
+      dash.writeRouterOverride({ byok: { fixedTimeoutMs: null, rotatingTimeoutMs: null } });
+      out = JSON.parse(fs.readFileSync(gp, 'utf-8'));
+      assertEq(out.byok.fixedTimeoutMs, undefined, 'null explícito limpou o valor já gravado, não preservou');
+      assertEq(out.byok.rotatingTimeoutMs, undefined, 'null explícito limpou o valor já gravado, não preservou');
+    } finally {
+      process.env.CLAUDE_PLUGIN_DATA = saved;
+      delete require.cache[require.resolve('./dashboard.js')];
+    }
+  });
+});
+
+test('dashboard.resolveRouterFlags: fixedTimeoutMs/rotatingTimeoutMs/logLatency fluem do override, shipped=null/false não vaza por cima', () => {
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-byoktimeoutsflags-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      delete require.cache[require.resolve('./dashboard.js')];
+      const dash = require('./dashboard.js');
+      const antes = dash.resolveRouterFlags().byok;
+      assertEq(antes.fixedTimeoutMs, undefined, 'sem override, shipped=null vira undefined (sem override efetivo)');
+      assertEq(antes.rotatingTimeoutMs, undefined);
+      assertEq(antes.logLatency, false, 'sem override, shipped=false manda');
+
+      dash.writeRouterOverride({
+        byok: { enabled: true, mode: 'always', baseUrl: 'https://e.net', fixedTimeoutMs: 0, rotatingTimeoutMs: 12345, logLatency: true },
+      });
+      const f = dash.resolveRouterFlags().byok;
+      assertEq(f.fixedTimeoutMs, 0, 'override vence o shipped=null, inclusive quando o override e 0');
+      assertEq(f.rotatingTimeoutMs, 12345);
+      assertEq(f.logLatency, true, 'override vence o shipped=false');
+    } finally {
+      process.env.CLAUDE_PLUGIN_DATA = saved;
+      delete require.cache[require.resolve('./dashboard.js')];
+    }
+  });
+});
+
+// Achado de revisão adversarial (2026-09-16, TESTER): getRouterConfig/byokSafe
+// (a rota HTTP GET /api/router/config) nunca era exercitada por teste algum —
+// o código já evita corretamente o bug clássico `byok.fixedTimeoutMs || null`
+// (que trocaria um `0` legítimo por `null`), mas nada provava isso. Um
+// refactor "inocente" pra essa forma mais curta romperia o contrato bem na
+// borda que o dashboard/index.html de fato lê, sem a suíte acusar nada.
+test('dashboard.getRouterConfig: byokSafe serializa 0 como 0 (não null) e ausente como null', () => {
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-getrouterconfig-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      delete require.cache[require.resolve('./dashboard.js')];
+      const dash = require('./dashboard.js');
+
+      const captureJson = () => {
+        let body = null;
+        const res = { writeHead: () => {}, end: (s) => { body = JSON.parse(s); } };
+        dash.getRouterConfig({}, res);
+        return body;
+      };
+
+      let payload = captureJson();
+      assertEq(payload.byok.fixedTimeoutMs, null, 'sem override, byokSafe expõe null (não undefined/0)');
+      assertEq(payload.byok.rotatingTimeoutMs, null);
+
+      dash.writeRouterOverride({
+        byok: { enabled: true, mode: 'always', baseUrl: 'https://e.net', fixedTimeoutMs: 0, rotatingTimeoutMs: 30000, logLatency: true },
+      });
+      payload = captureJson();
+      assertEq(payload.byok.fixedTimeoutMs, 0, 'HTTP response precisa expor 0 de verdade, não null nem cair por ser falsy');
+      assertEq(payload.byok.rotatingTimeoutMs, 30000);
+      assertEq(payload.byok.logLatency, true);
+    } finally {
+      process.env.CLAUDE_PLUGIN_DATA = saved;
+      delete require.cache[require.resolve('./dashboard.js')];
+    }
+  });
+});
+
+// Achado de revisão adversarial (2026-09-16, TESTER): só o ramo fixedEndpoint:true
+// tinha cobertura de rotatingTimeoutMs/fixedTimeoutMs:0 combinado — o ramo
+// fixedEndpoint:false nunca foi exercitado com o sentinel 0 em nenhuma camada.
+test('dashboard.resolveRouterFlags: rotatingTimeoutMs:0 (sem limite) sobrevive com fixedEndpoint:false', () => {
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-byokrotzero-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      delete require.cache[require.resolve('./dashboard.js')];
+      const dash = require('./dashboard.js');
+      dash.writeRouterOverride({
+        byok: { enabled: true, mode: 'always', baseUrl: 'https://e.net', fixedEndpoint: false, rotatingTimeoutMs: 0 },
+      });
+      const f = dash.resolveRouterFlags().byok;
+      assertEq(f.fixedEndpoint, false);
+      assertEq(f.rotatingTimeoutMs, 0, '0 sobrevive tambem no ramo rotativo (fixedEndpoint:false)');
+    } finally {
+      process.env.CLAUDE_PLUGIN_DATA = saved;
+      delete require.cache[require.resolve('./dashboard.js')];
+    }
+  });
+});
+
+test('dashboard.writeRouterOverride: logLatency com valor não-booleano vira false, não grava lixo', () => {
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-byokloglatencybad-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      const gp = path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json');
+      delete require.cache[require.resolve('./dashboard.js')];
+      const dash = require('./dashboard.js');
+      dash.writeRouterOverride({
+        byok: { enabled: true, mode: 'always', baseUrl: 'https://ex.ts.net', logLatency: 'yes' },
+      });
+      const out = JSON.parse(fs.readFileSync(gp, 'utf-8'));
+      assertEq(out.byok.logLatency, false, 'valor não-booleano precisa cair em false, não vazar a string');
     } finally {
       process.env.CLAUDE_PLUGIN_DATA = saved;
       delete require.cache[require.resolve('./dashboard.js')];

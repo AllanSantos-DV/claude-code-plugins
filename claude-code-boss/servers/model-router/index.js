@@ -1129,6 +1129,21 @@ function nvidiaFallback(reqBody, config, res, nimKey, hint) {
 // bug pré-existia nos 3 pontos de proxy (byokFallback/forwardRequest/passthrough).
 const UNSAFE_PROXY_HEADERS = ['transfer-encoding', 'content-length', 'connection', 'keep-alive'];
 
+// Lê um teto de timeout (ms) de env var, com fallback FAIL-LOUD-friendly: valor
+// ausente usa o default em silêncio (comportamento normal), valor PRESENTE mas
+// inválido (não-numérico, zero, negativo) loga um warning e cai no default —
+// nunca vira NaN sorrateiro (NaN em req.setTimeout quebra o timeout inteiro).
+function parseTimeoutEnv(envVar, defaultMs) {
+  const raw = process.env[envVar];
+  if (raw === undefined || raw === '') return defaultMs;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) {
+    logger.warn('Env de timeout invalida — usando default', { env: envVar, valor: raw, default: defaultMs });
+    return defaultMs;
+  }
+  return n;
+}
+
 // Teto de espera pelo PRIMEIRO byte de resposta do upstream. Sem isto, uma
 // rede instável (ex.: peer Tailscale sem Funnel na frente) deixa a request
 // pendurada no timeout default do SO — minutos — e o cliente (Claude Code)
@@ -1143,7 +1158,8 @@ const UNSAFE_PROXY_HEADERS = ['transfer-encoding', 'content-length', 'connection
 // request → é o "pisca/volta" do texto durante streaming em BYOK mode=always
 // com contexto grande, próximo da compactação). Um teto único penalizava o
 // BYOK com a folga pensada para a Anthropic; agora cada destino tem o seu.
-const UPSTREAM_TIMEOUT_MS = 8000;
+// Override: ROUTER_UPSTREAM_TIMEOUT_MS (sem editar o core).
+const UPSTREAM_TIMEOUT_MS = parseTimeoutEnv('ROUTER_UPSTREAM_TIMEOUT_MS', 8000);
 // 30s não bastava: evidência de produção (logs do omnirouter via SSH, request
 // 2026-08-06T14-54-38) mostrou o combo "auto/best-free" do BYOK levando até
 // 88233ms pra devolver o 503 final de esgotamento de retry, quando o pool de
@@ -1151,7 +1167,23 @@ const UPSTREAM_TIMEOUT_MS = 8000;
 // no meio do caminho). Com 30s o model-router abortava a conexão ANTES do
 // BYOK conseguir terminar de tentar o failover dele mesmo, trocando um "BYOK
 // tentou e não conseguiu" por um falso "endpoint BYOK inacessível".
-const BYOK_UPSTREAM_TIMEOUT_MS = 100000;
+//
+// Este teto vale para QUALQUER destino isCustomEndpoint=true SEM fixedEndpoint
+// (BYOK "auto/best-free" e o gateway alternativo de config.upstream, que nunca
+// ganhou o campo fixedEndpoint — ver BYOK_FIXED_UPSTREAM_TIMEOUT_MS abaixo pro
+// caso oposto). Override: ROUTER_BYOK_UPSTREAM_TIMEOUT_MS.
+const BYOK_UPSTREAM_TIMEOUT_MS = parseTimeoutEnv('ROUTER_BYOK_UPSTREAM_TIMEOUT_MS', 100000);
+// Contraparte de BYOK_UPSTREAM_TIMEOUT_MS pra quando `byok.fixedEndpoint=true`
+// (opt-in): um endpoint FIXO e único do usuário (ex.: um gateway corporativo
+// específico) não tem o motivo de demora do BYOK rotativo (não faz failover
+// interno entre múltiplos providers) — nele, esperar quase 1min40 por uma
+// resposta que ou já teria chegado ou nunca vai chegar significa segurar o
+// cliente numa chamada morta em vez de deixá-lo cancelar/retentar cedo. Default
+// de 20s é um PONTO DE PARTIDA (relato de campo: "cancelar e refazer de novo já
+// responde na hora" — o endpoint costuma ter TTFB baixo quando está saudável),
+// não uma medição de produção como os 100s acima — por isso é facilmente
+// ajustável sem tocar o core: ROUTER_BYOK_FIXED_UPSTREAM_TIMEOUT_MS.
+const BYOK_FIXED_UPSTREAM_TIMEOUT_MS = parseTimeoutEnv('ROUTER_BYOK_FIXED_UPSTREAM_TIMEOUT_MS', 20000);
 // Teto do classify-remoto do BYOK (classifyByok, abaixo) — DELIBERADAMENTE curto,
 // e NÃO o mesmo teto de BYOK_UPSTREAM_TIMEOUT_MS: essa chamada bloqueia a request
 // REAL do usuário (classify() é `await`ado antes de rotear) e usa um modelo
@@ -1159,7 +1191,40 @@ const BYOK_UPSTREAM_TIMEOUT_MS = 100000;
 // 100s aqui prenderia toda request atrás de uma classificação que já tem
 // fallback local pronto (MiniLM). 5s (vs. os 3s originais) só dá uma folga extra
 // pro hop de rede de um gateway/BYOK antes de cair no fallback.
-const BYOK_CLASSIFY_TIMEOUT_MS = 5000;
+// Override: ROUTER_BYOK_CLASSIFY_TIMEOUT_MS.
+const BYOK_CLASSIFY_TIMEOUT_MS = parseTimeoutEnv('ROUTER_BYOK_CLASSIFY_TIMEOUT_MS', 5000);
+
+// Ponto ÚNICO de escolha do teto por destino — usado pelos dois call-sites que
+// antes duplicavam o mesmo ternário (requestUpstream e passthroughGeneric).
+// fixedEndpoint só existe no ramo BYOK (byok.js); o gateway alternativo
+// (config.upstream) nunca o seta, então cai no ramo rotativo — comportamento
+// idêntico ao de antes da divisão, não-destrutivo por default.
+//
+// `timeoutMsOverride` (byok.js, opt-in via dashboard) VENCE a constante do
+// módulo quando presente — inclusive `0`, que é o sentinel explícito de "sem
+// timeout de TTFB" (ver sendUpstreamRequest). `undefined` (ausente ou
+// inválido) preserva o comportamento anterior: cai na constante fixa/rotativa.
+function resolveUpstreamTimeoutMs(upstreamTarget) {
+  if (!upstreamTarget || !upstreamTarget.isCustomEndpoint) return UPSTREAM_TIMEOUT_MS;
+  if (upstreamTarget.timeoutMsOverride !== undefined) return upstreamTarget.timeoutMsOverride;
+  return upstreamTarget.fixedEndpoint === true ? BYOK_FIXED_UPSTREAM_TIMEOUT_MS : BYOK_UPSTREAM_TIMEOUT_MS;
+}
+
+// Loga o TTFB (tempo até o primeiro byte de resposta) de um destino custom —
+// só quando `upstreamTarget.logLatency` está ligado (opt-in, default false,
+// ver byok.js). Existe pra calibrar o teto acima com dado real: um endpoint de
+// terceiro sob carga responde tempos bem diferentes pro MESMO prompt, e alguns
+// modelos (ex. Bedrock sem streaming de thinking) só devolvem o bloco final —
+// inflando bastante o TTFB aparente. Sem instrumentação, "que teto eu preciso"
+// vira chute.
+function withLatencyLog(upstreamTarget, onResponse) {
+  if (!upstreamTarget || !upstreamTarget.logLatency) return onResponse;
+  const startedAt = Date.now();
+  return (upRes) => {
+    logger.info('Upstream TTFB', { host: upstreamTarget.host, ms: Date.now() - startedAt, status: upRes.statusCode });
+    onResponse(upRes);
+  };
+}
 
 function sanitizeUpstreamHeaders(headers) {
   const out = {};
@@ -1209,9 +1274,19 @@ function sendUpstreamRequest(lib, options, body, onResponse, onError, timeoutMs)
     req.setTimeout(0);
     onResponse(upRes);
   });
-  req.setTimeout(teto, () => {
-    req.destroy(new Error(`sem resposta em ${teto}ms`));
-  });
+  // `teto === 0` é o sentinel explícito de "sem timeout de TTFB" (opt-in via
+  // config.byok.fixedTimeoutMs/rotatingTimeoutMs — ver byok.js). Não arma
+  // NENHUM timeout de "sem resposta": o backstop vira o teto de ~300s do
+  // próprio Claude Code CLI para um turno sem resposta. Decisão explícita do
+  // usuário, não um bug — por isso o `if` em vez de deixar `req.setTimeout(0,
+  // cb)` fazer isso implicitamente (o desarme por 0 do Node não garante que o
+  // `cb` de destroy nunca dispare em toda versão/plataforma; aqui fica claro
+  // pra quem ler o código e pro teste).
+  if (teto > 0) {
+    req.setTimeout(teto, () => {
+      req.destroy(new Error(`sem resposta em ${teto}ms`));
+    });
+  }
   req.on('error', onError);
   req.write(body);
   req.end();
@@ -1228,12 +1303,12 @@ function requestUpstream(upstreamTarget, path, headers, bodyStr, onResponse, onE
   const lib = upstreamTarget.protocol === 'http:' ? http : UPSTREAM_LIB;
   const options = { hostname: upstreamTarget.host, port: upstreamTarget.port, path, method: 'POST', headers };
   // Qualquer destino que NÃO seja a Anthropic real (BYOK ou o gateway alternativo
-  // de `config.upstream`) ganha o teto de TTFB mais folgado (ver comentário de
-  // BYOK_UPSTREAM_TIMEOUT_MS): endpoint de terceiro, sem prompt cache da Anthropic,
-  // TTFB cresce com o tamanho do prompt. `isByok` sozinho não bastava aqui — o
-  // gateway alternativo também troca o destino mas mantém isByok=false.
-  const timeoutMs = upstreamTarget.isCustomEndpoint ? BYOK_UPSTREAM_TIMEOUT_MS : UPSTREAM_TIMEOUT_MS;
-  return sendUpstreamRequest(lib, options, bodyStr, onResponse, onError, timeoutMs);
+  // de `config.upstream`) ganha um teto de TTFB mais folgado que o da Anthropic
+  // direta — `isByok` sozinho não bastava aqui, o gateway alternativo também
+  // troca o destino mas mantém isByok=false. Qual dos dois tetos exatamente
+  // (rotativo/100s ou fixo/20s) depende de `fixedEndpoint` — ver resolveUpstreamTimeoutMs.
+  const timeoutMs = resolveUpstreamTimeoutMs(upstreamTarget);
+  return sendUpstreamRequest(lib, options, bodyStr, withLatencyLog(upstreamTarget, onResponse), onError, timeoutMs);
 }
 
 // Plano B via ENDPOINT do usuário (BYOK). Baseado no `passthrough`: pipe limpo,
@@ -2305,7 +2380,7 @@ function passthroughGeneric(method, rawBody, originalHeaders, res, pathOriginal,
   };
   // GET sem body: evita mandar content-length 0 que alguns upstreams rejeitam.
   const hasBody = !!(payload && payload.length);
-  const doReq = () => sendUpstreamRequest(lib2, options, hasBody ? payload : '', (upRes) => pipeUpstreamResponse(upRes, res), (e) => {
+  const doReq = () => sendUpstreamRequest(lib2, options, hasBody ? payload : '', withLatencyLog(upstreamTarget, (upRes) => pipeUpstreamResponse(upRes, res)), (e) => {
     if (!_retried && !res.headersSent && String(pathOriginal || '').includes('count_tokens')) {
       logger.warn('Passthrough upstream falhou — tentando 1x de novo', { err: e.message, path: pathOriginal });
       passthroughGeneric(method, rawBody, originalHeaders, res, pathOriginal, config, true);
@@ -2313,7 +2388,7 @@ function passthroughGeneric(method, rawBody, originalHeaders, res, pathOriginal,
     }
     logger.error('Passthrough generic upstream error', { err: e.message, path: pathOriginal });
     if (!res.headersSent) { res.writeHead(502); res.end(JSON.stringify({ error: { type: 'proxy_error', message: e.message } })); }
-  }, upstreamTarget.isCustomEndpoint ? BYOK_UPSTREAM_TIMEOUT_MS : UPSTREAM_TIMEOUT_MS);
+  }, resolveUpstreamTimeoutMs(upstreamTarget));
   if (hasBody) { options.headers['content-length'] = Buffer.byteLength(payload); }
   else { delete options.headers['content-length']; }
   return doReq();
@@ -3074,5 +3149,16 @@ if (require.main === module) {
     requestUpstream,
     UPSTREAM_TIMEOUT_MS,
     BYOK_UPSTREAM_TIMEOUT_MS,
+    // Split fixo/rotativo (ver resolveUpstreamTimeoutMs) + o parser de env que os
+    // alimenta — exportados pelo mesmo motivo dos dois acima: teste hermético.
+    BYOK_FIXED_UPSTREAM_TIMEOUT_MS,
+    BYOK_CLASSIFY_TIMEOUT_MS,
+    resolveUpstreamTimeoutMs,
+    parseTimeoutEnv,
+    // TTFB opt-in (config.byok.logLatency): exportado p/ o teste hermético provar
+    // o passthrough (sem logLatency) e o wrapping do callback (com logLatency)
+    // sem depender de um logger espionável (ver docs/BACKLOG.md #10 — mesma
+    // limitação de infraestrutura de spy já mapeada pra parseTimeoutEnv).
+    withLatencyLog,
   };
 }

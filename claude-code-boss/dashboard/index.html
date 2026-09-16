@@ -396,6 +396,7 @@ code { color: var(--fg); font-family: var(--font-mono); }
         <p id="java-check-msg" class="text-muted" style="margin-top:.5rem;font-size:.75rem"></p>
         <div style="margin-top:.5rem;display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
           <button class="btn-primary btn-sm" id="mcp-test-btn" onclick="testMcpMemory()" data-i18n="brain.testConn">Test connection</button>
+          <button class="btn-sm" id="mcp-wizard-btn" onclick="startMcpWizard()" style="display:none" data-i18n="brain.activateBtn">Activate Server</button>
           <span id="mcp-test-status" class="text-muted" style="font-size:.75rem"></span>
           <a href="https://github.com/AllanSantos-DV/mcp-memory-server-releases/releases/latest" target="_blank" rel="noopener" style="font-size:.75rem" data-i18n="brain.downloadServer">↓ Download memory server</a>
         </div>
@@ -952,6 +953,35 @@ code { color: var(--fg); font-family: var(--font-mono); }
           </select>
           <div class="text-muted" style="font-size:.78rem;margin:.25rem 0 .75rem" data-i18n="router.byokModeHint">No modo 429, o endpoint entra ANTES da NVIDIA; se ele também estiver no teto (429), a vez passa para a NVIDIA. Erro de configuração (401/404/5xx) NÃO cai em silêncio para a NVIDIA — aparece aqui, senão você nunca conserta a credencial.</div>
 
+          <label class="flex" style="align-items:center;gap:.5rem;margin:.25rem 0 .75rem;cursor:pointer">
+            <input type="checkbox" id="router-byok-fixed-endpoint" onchange="updateRouterSaveState()" style="width:auto">
+            <span>
+              <span class="switch-title"><span data-i18n="router.byokFixedEndpoint">Meu endpoint é FIXO (não rotaciona entre modelos)</span></span>
+              <span class="text-muted" style="display:block;font-size:.78rem;margin-top:.25rem" data-i18n="router.byokFixedEndpointHint">Desligado (padrão): endpoint ROTATIVO (ex.: "auto/best-free" entre vários modelos gratuitos) — timeout de até 100s p/ o próprio failover interno dele. Ligado: endpoint FIXO e único (ex.: gateway corporativo específico) — timeout bem mais curto (20s): se não respondeu rápido, é melhor falhar e você cancelar/tentar de novo do que ficar preso quase 2min numa chamada morta.</span>
+            </span>
+          </label>
+
+          <label class="field-label"><span data-i18n="router.byokTimeoutOverrides">Timeout de TTFB por tipo de endpoint (opcional)</span></label>
+          <div style="display:flex;gap:1rem;flex-wrap:wrap;margin:.25rem 0 .5rem">
+            <div style="flex:1;min-width:180px">
+              <label class="text-muted" style="font-size:.78rem;display:block;margin-bottom:.15rem" data-i18n="router.byokFixedTimeoutLabel">Fixo (s)</label>
+              <input type="number" id="router-byok-fixed-timeout" min="0" step="1" placeholder="20" style="width:100%" oninput="updateRouterSaveState()">
+            </div>
+            <div style="flex:1;min-width:180px">
+              <label class="text-muted" style="font-size:.78rem;display:block;margin-bottom:.15rem" data-i18n="router.byokRotatingTimeoutLabel">Rotativo (s)</label>
+              <input type="number" id="router-byok-rotating-timeout" min="0" step="1" placeholder="100" style="width:100%" oninput="updateRouterSaveState()">
+            </div>
+          </div>
+          <div class="text-muted" style="font-size:.78rem;margin:.25rem 0 .75rem" data-i18n="router.byokTimeoutOverridesHint">Deixe em branco para usar o padrão (20s fixo / 100s rotativo). Use 0 para SEM LIMITE — nesse caso quem corta a chamada é o teto de ~300s do próprio Claude Code CLI, não o router. Útil p/ endpoints que "pensam" em silêncio (ex.: Bedrock, sem streaming de thinking) e podem parecer lentos sem realmente estar travados.</div>
+
+          <label class="flex" style="align-items:center;gap:.5rem;margin:.25rem 0 .75rem;cursor:pointer">
+            <input type="checkbox" id="router-byok-log-latency" onchange="updateRouterSaveState()" style="width:auto">
+            <span>
+              <span class="switch-title"><span data-i18n="router.byokLogLatency">Logar tempo de resposta (TTFB) deste endpoint</span></span>
+              <span class="text-muted" style="display:block;font-size:.78rem;margin-top:.25rem" data-i18n="router.byokLogLatencyHint">Opt-in, desligado por padrão. Quando ligado, registra no log (INFO) quanto tempo cada resposta deste endpoint BYOK levou até o primeiro byte — útil para calibrar o timeout acima observando o comportamento real sob carga.</span>
+            </span>
+          </label>
+
           <label class="field-label"><span data-i18n="router.byokBaseUrl">Base URL</span></label>
           <input type="text" id="router-byok-url" autocomplete="off" placeholder="https://exemplo.ts.net" style="width:100%" oninput="updateRouterSaveState()">
           <div class="text-muted" style="font-size:.78rem;margin:.25rem 0 .75rem" data-i18n="router.byokUrlHint">Só o host (o path é sempre /v1/messages). Ex.: https://exemplo.ts.net ou http://10.0.0.5:4143</div>
@@ -1021,6 +1051,14 @@ const I18N = {
     'router.byokModeOnLimit': 'Only when the Claude limit is exhausted (429)',
     'router.byokModeAlways': 'Always — serves everything, no subscription needed',
     'router.byokModeHint': 'In 429 mode the endpoint comes BEFORE NVIDIA; if it is also at its cap (429), NVIDIA takes over. A configuration error (401/404/5xx) does NOT silently fall through to NVIDIA — it shows up here, otherwise you would never fix the credential.',
+    'router.byokFixedEndpoint': 'My endpoint is FIXED (does not rotate between models)',
+    'router.byokFixedEndpointHint': 'Off (default): ROTATING endpoint (e.g. "auto/best-free" cycling across several free models) — timeout up to 100s for its own internal failover. On: FIXED, single endpoint (e.g. a specific corporate gateway) — much shorter timeout (20s): if it did not respond fast, it is better to fail and let you cancel/retry than to sit stuck in a dead call for almost 2 minutes.',
+    'router.byokTimeoutOverrides': 'TTFB timeout per endpoint type (optional)',
+    'router.byokFixedTimeoutLabel': 'Fixed (s)',
+    'router.byokRotatingTimeoutLabel': 'Rotating (s)',
+    'router.byokTimeoutOverridesHint': 'Leave blank to use the default (20s fixed / 100s rotating). Use 0 for NO LIMIT — in that case the call is only cut by Claude Code CLI\'s own ~300s ceiling, not by the router. Useful for endpoints that "think" silently (e.g. Bedrock, no thinking stream) and can look slow without actually being stuck.',
+    'router.byokLogLatency': 'Log response time (TTFB) for this endpoint',
+    'router.byokLogLatencyHint': 'Opt-in, off by default. When on, logs (INFO) how long each response from this BYOK endpoint took to the first byte — useful to calibrate the timeout above by observing real behavior under load.',
     'router.byokBaseUrl': 'Base URL',
     'router.byokUrlHint': 'Host only (the path is always /v1/messages). E.g. https://example.ts.net or http://10.0.0.5:4143',
     'router.byokHeaders': 'Headers (one per line: Name: value)',
@@ -1124,6 +1162,10 @@ const I18N = {
     'brain.transport': 'Connection mode', 'brain.serverUrl': 'Server URL',
     'brain.ingestion': 'Send the conversation to the server (ingest for curation)',
     'brain.downloadServer': '↓ Download memory server', 'brain.testConn': 'Test connection',
+    'brain.activateBtn': 'Activate Server', 'brain.wizardTitle': 'Activate Memory Server',
+    'brain.wizardJava': 'Checking Java', 'brain.wizardJar': 'Validating JAR',
+    'brain.wizardDaemon': 'Starting Daemon', 'brain.wizardHandshake': 'MCP Handshake',
+    'brain.wizardProject': 'Project Validation',
     'brain.identity': 'Project identity', 'brain.identityHelp': 'Recall is scoped by a projectId. It defaults to the folder name, which changes across machines. Write a <code>.claude-boss-project</code> file in the project folder to pin a chosen name (e.g. folder <code>Hpositiva</code> → id <code>positiva</code>). The env <code>CCB_PROJECT_ID</code> also works.',
     'brain.projectFolder': 'Project folder', 'brain.projectChosenId': 'chosen projectId',
     'brain.projectRead': 'Read',
@@ -1187,6 +1229,14 @@ const I18N = {
     'router.byokModeOnLimit': 'Só quando o limite do Claude esgotar (429)',
     'router.byokModeAlways': 'Sempre — atende tudo, sem depender da assinatura',
     'router.byokModeHint': 'No modo 429, o endpoint entra ANTES da NVIDIA; se ele também estiver no teto (429), a vez passa para a NVIDIA. Erro de configuração (401/404/5xx) NÃO cai em silêncio para a NVIDIA — aparece aqui, senão você nunca conserta a credencial.',
+    'router.byokFixedEndpoint': 'Meu endpoint é FIXO (não rotaciona entre modelos)',
+    'router.byokFixedEndpointHint': 'Desligado (padrão): endpoint ROTATIVO (ex.: "auto/best-free" entre vários modelos gratuitos) — timeout de até 100s p/ o próprio failover interno dele. Ligado: endpoint FIXO e único (ex.: gateway corporativo específico) — timeout bem mais curto (20s): se não respondeu rápido, é melhor falhar e você cancelar/tentar de novo do que ficar preso quase 2min numa chamada morta.',
+    'router.byokTimeoutOverrides': 'Timeout de TTFB por tipo de endpoint (opcional)',
+    'router.byokFixedTimeoutLabel': 'Fixo (s)',
+    'router.byokRotatingTimeoutLabel': 'Rotativo (s)',
+    'router.byokTimeoutOverridesHint': 'Deixe em branco para usar o padrão (20s fixo / 100s rotativo). Use 0 para SEM LIMITE — nesse caso quem corta a chamada é o teto de ~300s do próprio Claude Code CLI, não o router. Útil p/ endpoints que "pensam" em silêncio (ex.: Bedrock, sem streaming de thinking) e podem parecer lentos sem realmente estar travados.',
+    'router.byokLogLatency': 'Logar tempo de resposta (TTFB) deste endpoint',
+    'router.byokLogLatencyHint': 'Opt-in, desligado por padrão. Quando ligado, registra no log (INFO) quanto tempo cada resposta deste endpoint BYOK levou até o primeiro byte — útil para calibrar o timeout acima observando o comportamento real sob carga.',
     'router.byokBaseUrl': 'Base URL',
     'router.byokUrlHint': 'Só o host (o path é sempre /v1/messages). Ex.: https://exemplo.ts.net ou http://10.0.0.5:4143',
     'router.byokHeaders': 'Headers (um por linha: Nome: valor)',
@@ -1290,6 +1340,10 @@ const I18N = {
     'brain.transport': 'Modo de conexão', 'brain.serverUrl': 'URL do servidor',
     'brain.ingestion': 'Enviar a conversa ao servidor (ingestão para curadoria)',
     'brain.downloadServer': '↓ Baixar memory server', 'brain.testConn': 'Testar conexão',
+    'brain.activateBtn': 'Ativar Servidor', 'brain.wizardTitle': 'Ativar Memory Server',
+    'brain.wizardJava': 'Verificando Java', 'brain.wizardJar': 'Validando JAR',
+    'brain.wizardDaemon': 'Iniciando Daemon', 'brain.wizardHandshake': 'Handshake MCP',
+    'brain.wizardProject': 'Validação do Projeto',
     'brain.identity': 'Identidade do projeto', 'brain.identityHelp': 'O recall é escopado por um projectId. Por padrão é o nome da pasta, que muda entre máquinas. Escreva um <code>.claude-boss-project</code> na pasta do projeto para fixar um nome escolhido (ex.: pasta <code>Hpositiva</code> → id <code>positiva</code>). Também vale a env <code>CCB_PROJECT_ID</code>.',
     'brain.projectFolder': 'Pasta do projeto', 'brain.projectChosenId': 'projectId escolhido',
     'brain.projectRead': 'Ler',
@@ -1436,6 +1490,14 @@ async function loadRouterConfig() {
     if (byHdr) byHdr.value = '';
     const byCls = document.getElementById('router-byok-classify-remote');
     if (byCls) byCls.checked = by.classifyRemote === true;
+    const byFixed = document.getElementById('router-byok-fixed-endpoint');
+    if (byFixed) byFixed.checked = by.fixedEndpoint === true;
+    const byFixedTimeout = document.getElementById('router-byok-fixed-timeout');
+    if (byFixedTimeout) byFixedTimeout.value = (typeof by.fixedTimeoutMs === 'number') ? String(by.fixedTimeoutMs / 1000) : '';
+    const byRotatingTimeout = document.getElementById('router-byok-rotating-timeout');
+    if (byRotatingTimeout) byRotatingTimeout.value = (typeof by.rotatingTimeoutMs === 'number') ? String(by.rotatingTimeoutMs / 1000) : '';
+    const byLogLatency = document.getElementById('router-byok-log-latency');
+    if (byLogLatency) byLogLatency.checked = by.logLatency === true;
     const nomes = Object.keys(by.headers || {});
     if (byHdrState) {
       byHdrState.textContent = nomes.length
@@ -1866,6 +1928,32 @@ async function applyRouter() {
     }
     const byCls = document.getElementById('router-byok-classify-remote');
     if (byCls) byok.classifyRemote = byCls.checked;
+    const byFixed = document.getElementById('router-byok-fixed-endpoint');
+    if (byFixed) byok.fixedEndpoint = byFixed.checked;
+    const byFixedTimeout = document.getElementById('router-byok-fixed-timeout');
+    if (byFixedTimeout) {
+      if (byFixedTimeout.value.trim() === '') {
+        // Campo em branco = limpar o override e voltar ao padrão (mesma
+        // convenção de `null` já usada por nimApiKey em writeRouterOverride):
+        // sem isto, deixar o campo em branco e salvar nunca reverte um valor
+        // já persistido, contradizendo o hint exibido na tela.
+        byok.fixedTimeoutMs = null;
+      } else {
+        const v = Number(byFixedTimeout.value);
+        if (Number.isFinite(v) && v >= 0) byok.fixedTimeoutMs = v * 1000;
+      }
+    }
+    const byRotatingTimeout = document.getElementById('router-byok-rotating-timeout');
+    if (byRotatingTimeout) {
+      if (byRotatingTimeout.value.trim() === '') {
+        byok.rotatingTimeoutMs = null;
+      } else {
+        const v = Number(byRotatingTimeout.value);
+        if (Number.isFinite(v) && v >= 0) byok.rotatingTimeoutMs = v * 1000;
+      }
+    }
+    const byLogLatency = document.getElementById('router-byok-log-latency');
+    if (byLogLatency) byok.logLatency = byLogLatency.checked;
     body.byok = byok;
   }
 
@@ -1894,10 +1982,21 @@ async function loadHome() {
   el.innerHTML = '<div class="spinner" style="margin:1rem auto"></div>';
   try {
     const s = await api('GET', '/api/status');
+    // Fetch real-time brain integration health (backend, connection, latency)
+    let brainH = null;
+    try { brainH = await api('GET', '/api/brain/health'); } catch {}
+    const backendLabel = s.brain.backend || 'local';
+    const backendConnected = s.brain.connected;
+    const detailText = brainH && brainH.mode === 'mcp-memory'
+      ? (brainH.connected ? (brainH.details && brainH.details.serverUrl ? brainH.details.serverUrl : 'connected') : 'disconnected')
+      : (brainH && brainH.details && brainH.details.dbPath ? 'sqlite' : backendLabel);
+    const latencyText = brainH && brainH.mode === 'mcp-memory' && brainH.connected
+      ? ` · ${brainH.details.latency || 0}ms`
+      : '';
     el.innerHTML = `
       <div class="stat"><div class="value">${s.hooks.active}/${s.hooks.total}</div><div class="label">Hooks Active</div><span class="badge ${s.hooks.active === s.hooks.total ? 'badge-green' : 'badge-yellow'}">${s.hooks.active === s.hooks.total ? 'All active' : s.hooks.active + ' active'}</span></div>
-      <div class="stat"><div class="value">${s.brain.totalEntries}</div><div class="label">KB Entries</div><span class="badge ${s.brain.connected ? 'badge-green' : 'badge-red'}">${s.brain.backend || 'local'}</span></div>
-      <div class="stat"><div class="value">${Math.floor(s.uptime / 60)}m</div><div class="label">Dashboard Uptime</div></div>
+      <div class="stat"><div class="value">${s.brain.totalEntries}</div><div class="label">KB Entries</div><span class="badge ${backendConnected ? 'badge-green' : 'badge-red'}">${escapeHtml(detailText)}</span></div>
+      <div class="stat"><div class="value">${Math.floor(s.uptime / 60)}m</div><div class="label">Dashboard Uptime</div><span class="badge badge-green">${brainH && brainH.mode === 'mcp-memory' ? (brainH.connected ? '● online' + latencyText : '● offline') : 'local'}</span></div>
     `;
     const brainEl = document.getElementById('home-brain');
     if (s.brain.projects.length === 0) {
@@ -2229,13 +2328,19 @@ async function testMcpMemory() {
       else if (d.downloadSize) parts.push(`download ${Math.round(d.downloadSize/1024/1024)}MB`);
       if (d.javaVersion) parts.push(`java ${d.javaVersion}`);
       status.textContent = `✓ ${parts.join(' · ')} (${r.ms}ms)`;
+      const wizardBtn = document.getElementById('mcp-wizard-btn');
+      if (wizardBtn) wizardBtn.style.display = 'none';
     } else {
       status.style.color = 'var(--danger)';
       status.textContent = `✗ ${r?.error || 'Failed'}`;
+      const wizardBtn = document.getElementById('mcp-wizard-btn');
+      if (wizardBtn && transport === 'stdio') wizardBtn.style.display = '';
     }
   } catch (err) {
     status.style.color = 'var(--danger)';
     status.textContent = `✗ ${err.message}`;
+    const wizardBtn = document.getElementById('mcp-wizard-btn');
+    if (wizardBtn) wizardBtn.style.display = '';
   } finally {
     btn.disabled = false;
   }
@@ -2343,10 +2448,14 @@ async function loadBrain() {
       statusEl.textContent = ok ? '● Connected' : '● Disconnected';
       statusEl.style.color = ok ? 'var(--success)' : 'var(--danger)';
       labelEl.textContent = 'mcp-memory';
+      const wizardBtn = document.getElementById('mcp-wizard-btn');
+      if (wizardBtn) wizardBtn.style.display = ok ? 'none' : '';
     } else {
       statusEl.textContent = '● Active';
       statusEl.style.color = 'var(--success)';
       labelEl.textContent = 'local';
+      const wizardBtn = document.getElementById('mcp-wizard-btn');
+      if (wizardBtn) wizardBtn.style.display = 'none';
     }
   } catch {}
 
@@ -3387,6 +3496,77 @@ async function loadLogs() {
     });
   }
 }
+
+// ─── MCP Wizard ────────────────────────────────────────────
+
+async function startMcpWizard() {
+  const btn = document.getElementById('mcp-wizard-btn');
+  if (!btn) return;
+  btn.disabled = true;
+  btn.textContent = 'Starting...';
+  const overlay = document.getElementById('wizard-overlay');
+  if (overlay) overlay.style.display = 'flex';
+  const errEl = document.getElementById('wizard-error');
+  if (errEl) errEl.style.display = 'none';
+  try {
+    const r = await api('POST', '/api/brain/mcp-wizard', { projectId: 'default' });
+    if (r.ok) pollWizard();
+    else { const d = document.getElementById('wizard-detail'); if (d) d.textContent = 'Failed to start'; btn.disabled = false; }
+  } catch (e) { const d = document.getElementById('wizard-detail'); if (d) d.textContent = e.message; btn.disabled = false; }
+}
+
+function pollWizard() {
+  api('GET', '/api/brain/mcp-wizard/status').then(r => {
+    if (!r.ok) return;
+    renderWizard(r);
+    if (r.status === 'running') { setTimeout(pollWizard, 800); return; }
+    const btn = document.getElementById('mcp-wizard-btn');
+    if (btn) { btn.disabled = false; btn.textContent = r.status === 'completed' ? '✓ Activated' : 'Retry'; }
+    if (r.error) { const errEl = document.getElementById('wizard-error'); if (errEl) { errEl.style.display = ''; errEl.textContent = r.error; } }
+  }).catch(() => setTimeout(pollWizard, 2000));
+}
+
+function renderWizard(state) {
+  const bar = document.getElementById('wizard-progress-bar');
+  if (bar) bar.style.width = (state.progress || 0) + '%';
+  const stepsEl = document.getElementById('wizard-steps');
+  if (!stepsEl || !state.details) return;
+  const labels = ['Checking Java', 'Validating JAR', 'Starting Daemon', 'MCP Handshake', 'Project Validation'];
+  stepsEl.innerHTML = labels.map((label, i) => {
+    const s = state.details[i];
+    const stepNum = i + 1;
+    const icon = stepNum < state.step ? '✓' : stepNum === state.step ? '⟳' : '○';
+    const color = s && s.status === 'ok' ? 'var(--success)' : s && s.status === 'running' ? 'var(--accent)' : 'var(--fg-dim)';
+    return '<div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.35rem;font-size:.82rem"><span style="color:' + color + ';width:1.2rem">' + icon + '</span><span style="color:' + (s && s.status === 'ok' ? 'var(--fg)' : 'var(--fg-muted)') + '">' + label + '</span>' + (s && s.detail ? '<span class="text-muted" style="font-size:.75rem">— ' + s.detail + '</span>' : '') + '</div>';
+  }).join('');
+  const d = document.getElementById('wizard-detail');
+  if (d) d.textContent = state.status === 'completed' ? '✓ Activation complete!' : state.status === 'failed' ? 'Activation failed' : 'Step ' + state.step + ' of ' + state.total + '...';
+}
+
+function closeWizard() {
+  const overlay = document.getElementById('wizard-overlay');
+  if (overlay) overlay.style.display = 'none';
+}
+
+window.addEventListener('DOMContentLoaded', () => {
+  api('GET', '/api/brain/mcp-wizard/status').then(r => {
+    if (r.ok && r.status === 'running') pollWizard();
+  }).catch(() => {});
+});
 </script>
+  <div id="wizard-overlay" style="display:none;position:fixed;inset:0;z-index:1000;background:rgba(0,0,0,.6);align-items:center;justify-content:center">
+    <div style="background:var(--bg-card);border:1px solid var(--border);border-radius:16px;padding:2rem;max-width:520px;width:90%">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:1.25rem">
+        <h2 style="margin:0;font-size:1.2rem" data-i18n="brain.wizardTitle">Activate Memory Server</h2>
+        <button onclick="closeWizard()" style="background:none;border:none;color:var(--fg-muted);font-size:1.5rem;cursor:pointer">×</button>
+      </div>
+      <div id="wizard-steps" style="margin-bottom:1.25rem"></div>
+      <div id="wizard-progress" style="height:6px;background:var(--border);border-radius:3px;overflow:hidden;margin-bottom:.75rem">
+        <div id="wizard-progress-bar" style="height:100%;background:var(--accent);border-radius:3px;width:0%;transition:width .4s"></div>
+      </div>
+      <div id="wizard-detail" class="text-muted" style="font-size:.8rem;text-align:center"></div>
+      <div id="wizard-error" style="display:none;background:var(--tag-warn-bg);border:1px solid var(--danger);border-radius:8px;padding:.75rem;margin-top:.75rem;font-size:.82rem;color:var(--danger)"></div>
+    </div>
+  </div>
 </body>
 </html>
