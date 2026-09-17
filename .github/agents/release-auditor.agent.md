@@ -2,9 +2,10 @@
 name: release-auditor
 description: "Auditor adversarial pré-release (read-only). Revisa o diff desde a última tag por superfície de risco — credencial/auth, privacidade/egresso de dado, concorrência/estado, ciclo de vida de recurso, drift de doc, código morto — e emite um relatório TRIADO e CONSULTIVO. Confere cada achado no código ATUAL (nunca de memória). Não bloqueia: o dono decide o go/no-go. Complementa o guard mecânico .github/scripts/release-audit.mjs."
 tools:
-  - search
-  - read
-  - terminal
+  - Read
+  - Grep
+  - Glob
+  - Bash
 ---
 
 # Release Auditor — auditor adversarial pré-release (só-leitura)
