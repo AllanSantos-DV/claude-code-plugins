@@ -207,13 +207,38 @@ const REMOTE_KB_TOOLS = new Set([
   'brain_search', 'brain_store', 'capture_lesson', 'brain_related', 'brain_count',
 ]);
 
-export function createBrainServer({ pluginRoot, mode = 'http', _testHooks } = {}) {
+/**
+ * Async mutex factory for serializing KB tool calls across ALL sessions that
+ * share a daemon process. Must be created ONCE per daemon (see http-daemon.js)
+ * and passed into every createBrainServer() call as `kbLock` — a mutex scoped
+ * to a single session (the old behavior: a fresh `_chain` per createBrainServer
+ * call) never serializes concurrent sessions against each other, which is the
+ * exact scenario ADR-001's shared daemon exists to support. See getKB()'s doc
+ * comment for why cross-session atomicity of getKB(project)→ops matters.
+ */
+export function createKbLock() {
+  let _chain = Promise.resolve();
+  return {
+    withLock(fn) {
+      const result = _chain.then(fn, fn);
+      _chain = result.then(() => undefined, () => undefined);
+      return result;
+    },
+  };
+}
+
+export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock, _testHooks } = {}) {
   const PLUGIN_ROOT = pluginRoot;
 
   // ─── KB modules (lazy-loaded) ──────────────────────────────────────────────
+  // kbWorker (set by http-daemon.js, one per daemon process) routes store's
+  // synchronous SQLite calls into a worker_thread so they never block this
+  // process's main thread — see lib/kb-worker.js for why. 'stdio' mode (test-
+  // units.js direct-library calls only, no shared daemon) has no kbWorker and
+  // falls back to the direct require, matching its pre-worker behavior exactly.
   async function getKB(project) {
     if (_testHooks && typeof _testHooks.getKB === 'function') return _testHooks.getKB(project);
-    const store = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-store.js'));
+    const store = kbWorker ? kbWorker.storeClient : require(path.join(PLUGIN_ROOT, 'scripts', 'brain-store.js'));
     const index = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-index.js'));
     const graph = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-graph.js'));
     await store.init({ project });
@@ -228,10 +253,14 @@ export function createBrainServer({ pluginRoot, mode = 'http', _testHooks } = {}
   // capture_lesson paths below, so telemetry doesn't silently disappear for
   // mcp-memory users (it previously did: the remote path never recorded
   // lesson.captured at all).
-  function recordLessonMetric(project, payload) {
+  // async (was sync): metricsStore now goes through kbWorker in 'http' mode, whose
+  // methods return Promises — callers already fire-and-forget this, so awaiting
+  // inside is enough to keep `if (init(...)) recordMetric(...)` correct instead of
+  // treating a pending Promise as always-truthy.
+  async function recordLessonMetric(project, payload) {
     try {
-      const metricsStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'metrics-store.js'));
-      if (metricsStore.init({ project })) metricsStore.recordMetric('lesson.captured', payload, null);
+      const metricsStore = kbWorker ? kbWorker.metricsClient : require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'metrics-store.js'));
+      if (await metricsStore.init({ project })) await metricsStore.recordMetric('lesson.captured', payload, null);
     } catch (err) {
       console.error(`[BRAIN-SERVER] recordLessonMetric failed: ${err.message}`);
     }
@@ -379,12 +408,12 @@ export function createBrainServer({ pluginRoot, mode = 'http', _testHooks } = {}
   }
 
   // ─── Async mutex (serialize KB ops over the process-singleton DB) ──────────
-  let _chain = Promise.resolve();
-  function withLock(fn) {
-    const result = _chain.then(fn, fn);
-    _chain = result.then(() => undefined, () => undefined);
-    return result;
-  }
+  // kbLock is shared across ALL sessions in http mode (one per daemon process,
+  // created by http-daemon.js) so this actually serializes concurrent sessions,
+  // not just one session's own sequential calls. 'stdio' mode (test-only, one
+  // session per process) falls back to a private lock — equivalent there since
+  // there's never more than one session to serialize against.
+  const { withLock } = kbLock || createKbLock();
 
   // ─── Session Graph Engine (native-java daemon) — pure REST client ────────────
   // The graph_* tools give fast repo exploration (symbols / CALLS / PageRank) by
@@ -797,7 +826,11 @@ export function createBrainServer({ pluginRoot, mode = 'http', _testHooks } = {}
           // is the CWD's strict id (declared marker/git-remote); null → home-only recall.
           const { chain, focusId } = projectId.resolveProjectChain({ cwd: (args && args.cwd) || '', sessionRoot: args && args.sessionRoot });
           const retrieveCore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'retrieve-core.js'));
-          const { entries, capabilities } = await retrieveCore.retrieve(prompt || '', { project: focusId || project, ancestorIds: chain });
+          // Same rationale as getKB()/recordLessonMetric() above: the LOCAL (non
+          // mcp-memory) search path inside retrieve() runs synchronous better-sqlite3
+          // work — route it through kbWorker in 'http' mode so brain_retrieve_context
+          // (fires on every UserPromptSubmit) can't block /health for other sessions.
+          const { entries, capabilities } = await retrieveCore.retrieve(prompt || '', { project: focusId || project, ancestorIds: chain }, kbWorker ? { store: kbWorker.storeClient } : {});
           if (entries.length) {
             try {
               const journal = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'retrieval-journal.js'));
@@ -990,13 +1023,16 @@ export function createBrainServer({ pluginRoot, mode = 'http', _testHooks } = {}
           const pid = resolveProject(a);
           const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
           const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
-          const metricsStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'metrics-store.js'));
+          // Same rationale as recordLessonMetric above: getEvaluationCountsIsolated is
+          // synchronous SQLite (better-sqlite3) — routed through kbWorker in 'http' mode
+          // so this report can't freeze /health for other sessions on the daemon.
+          const metricsStore = kbWorker ? kbWorker.metricsClient : require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'metrics-store.js'));
           const { metricsProjectKey } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'metrics-project.js'));
 
           const rangeDays = (typeof a.rangeDays === 'number' && a.rangeDays > 0) ? a.rangeDays : 7;
           const sinceTs = Date.now() - rangeDays * 86400000;
           const projKey = metricsProjectKey(cwd);
-          const rows = metricsStore.getEvaluationCountsIsolated(projKey, { eventName: 'policy.shadow.evaluated', sinceTs });
+          const rows = await metricsStore.getEvaluationCountsIsolated(projKey, { eventName: 'policy.shadow.evaluated', sinceTs });
 
           // Tally per activationId (the immutable-per-definition telemetry key).
           const byAct = new Map();
@@ -1596,5 +1632,10 @@ export function createBrainServer({ pluginRoot, mode = 'http', _testHooks } = {}
   // (capture_ack / capture_lesson → recordCaptureAck → capture-queue) can be driven
   // end-to-end without a live MCP transport. The SDK ignores extra instance props.
   server.handleTool = handleTool;
+  // Test/automation seam: expose the SAME gated path CallToolRequestSchema uses
+  // (KB_TOOLS → withLock(...), everything else → direct), so a test can prove
+  // kbLock actually serializes KB tool calls across two createBrainServer()
+  // instances that share one kbLock — without standing up a live MCP transport.
+  server.dispatch = (name, args) => (KB_TOOLS.has(name) ? withLock(() => handleTool(name, args)) : handleTool(name, args));
   return server;
 }

@@ -10859,6 +10859,112 @@ test('capture-queue: _save CAS refuses a stale write (cross-Stop concurrency saf
   q.reset(project, sid);
 });
 
+// ─── kbLock cross-session serialization (concurrency fix regression) ─────────
+// Before this fix, createBrainServer() built its OWN private _chain/withLock per
+// call — http-daemon.js calls createBrainServer() once per NEW HTTP session, so
+// withLock never actually serialized KB tool calls ACROSS sessions, only within
+// one session's own sequential calls. brain-store.js/brain-index.js/brain-graph.js
+// hold PROCESS-WIDE singleton state that getKB(project) swaps on every call, so two
+// concurrent sessions on two different projects could interleave and corrupt that
+// singleton state. createKbLock() fixes this by being instantiated ONCE per daemon
+// (see http-daemon.js) and shared across every session's createBrainServer() call.
+test('kbLock: a SHARED kbLock serializes KB_TOOLS calls across two createBrainServer() instances (cross-session fix)', async () => {
+  const url = require('url');
+  const R = process.env.CLAUDE_PLUGIN_ROOT;
+  const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+
+  const log = [];
+  function slowStore(label) {
+    return { count: async () => { log.push(`enter:${label}`); await new Promise((r) => setTimeout(r, 30)); log.push(`exit:${label}`); return 0; } };
+  }
+  const sharedLock = mod.createKbLock();
+  const kb = (label) => ({ getKB: async () => ({ store: slowStore(label), index: { index: async () => {} }, graph: { registerNode: async () => {} } }) });
+  const serverA = mod.createBrainServer({ pluginRoot: R, mode: 'http', kbLock: sharedLock, _testHooks: kb('A') });
+  const serverB = mod.createBrainServer({ pluginRoot: R, mode: 'http', kbLock: sharedLock, _testHooks: kb('B') });
+  assert(typeof serverA.dispatch === 'function' && typeof serverB.dispatch === 'function', 'server exposes the withLock-gated dispatch seam');
+
+  await Promise.all([
+    serverA.dispatch('brain_count', { project: 'kbLockTestA' }),
+    serverB.dispatch('brain_count', { project: 'kbLockTestB' }),
+  ]);
+  const aStart = log.indexOf('enter:A'); const aEnd = log.indexOf('exit:A');
+  const bStart = log.indexOf('enter:B'); const bEnd = log.indexOf('exit:B');
+  const interleaved = (aStart < bStart && aEnd > bStart) || (bStart < aStart && bEnd > aStart);
+  assert(!interleaved, `sessions interleaved despite a shared kbLock: ${JSON.stringify(log)}`);
+});
+
+test('kbLock: control — two createBrainServer() instances WITHOUT a shared kbLock (no kbLock arg) DO interleave', async () => {
+  // Sanity check for the test above: proves this test methodology can actually
+  // detect the pre-fix bug (private per-call locks), so a green result above is
+  // not a false negative from a test that could never fail.
+  const url = require('url');
+  const R = process.env.CLAUDE_PLUGIN_ROOT;
+  const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+
+  const log = [];
+  function slowStore(label) {
+    return { count: async () => { log.push(`enter:${label}`); await new Promise((r) => setTimeout(r, 30)); log.push(`exit:${label}`); return 0; } };
+  }
+  const kb = (label) => ({ getKB: async () => ({ store: slowStore(label), index: { index: async () => {} }, graph: { registerNode: async () => {} } }) });
+  const serverC = mod.createBrainServer({ pluginRoot: R, mode: 'http', _testHooks: kb('C') });
+  const serverD = mod.createBrainServer({ pluginRoot: R, mode: 'http', _testHooks: kb('D') });
+
+  await Promise.all([
+    serverC.dispatch('brain_count', { project: 'kbLockTestC' }),
+    serverD.dispatch('brain_count', { project: 'kbLockTestD' }),
+  ]);
+  const cStart = log.indexOf('enter:C'); const cEnd = log.indexOf('exit:C');
+  const dStart = log.indexOf('enter:D'); const dEnd = log.indexOf('exit:D');
+  const interleaved = (cStart < dStart && cEnd > dStart) || (dStart < cStart && dEnd > cStart);
+  assert(interleaved, 'expected two unshared private locks to interleave — if they did not, this test methodology has no detection power');
+});
+
+// ─── policy_shadow_report routes synchronous SQLite through kbWorker (no /health freeze) ───
+test('policy_shadow_report: routes metrics reads through kbWorker.metricsClient when present (never blocks the daemon main thread)', async () => {
+  const url = require('url');
+  const R = process.env.CLAUDE_PLUGIN_ROOT;
+  const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+
+  let calledViaWorker = false;
+  const fakeKbWorker = {
+    storeClient: {},
+    metricsClient: {
+      getEvaluationCountsIsolated: async () => { calledViaWorker = true; return []; },
+    },
+  };
+  const server = mod.createBrainServer({ pluginRoot: R, mode: 'http', kbWorker: fakeKbWorker });
+  const res = await server.handleTool('policy_shadow_report', { cwd: R, rangeDays: 7 });
+  assert(!res.isError, `policy_shadow_report should succeed via the worker client, got: ${res.content && res.content[0] && res.content[0].text}`);
+  assert(calledViaWorker, 'policy_shadow_report must read metrics via kbWorker.metricsClient in http mode, not a direct synchronous require()');
+});
+
+// ─── brain_retrieve_context routes local search through kbWorker (no /health freeze) ───
+// Found by a fresh independent review round on the kbLock/policy_shadow_report fixes
+// above: brain_retrieve_context (fires on every UserPromptSubmit — the hottest KB_TOOLS
+// entry) called retrieve-core.js's retrieve(), which required brain-store.js directly and
+// ran its synchronous better-sqlite3 search on the daemon main thread — the exact bug
+// class the kb-worker.js patch exists to eliminate, left un-migrated for this one tool.
+test('brain_retrieve_context: routes retrieve-core\'s local search through kbWorker.storeClient when kbWorker is present', async () => {
+  const url = require('url');
+  const R = process.env.CLAUDE_PLUGIN_ROOT;
+  const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+  // Same require path the handler uses — Node's CJS cache guarantees this is the SAME
+  // module object, so patching its `retrieve` export here is observed by the handler.
+  const rc = require(path.join(R, 'scripts', 'lib', 'retrieve-core.js'));
+
+  const originalRetrieve = rc.retrieve;
+  let seenDeps = null;
+  rc.retrieve = async (_prompt, _opts, deps) => { seenDeps = deps; return { entries: [], capabilities: [] }; };
+  try {
+    const fakeKbWorker = { storeClient: { marker: 'STORE_CLIENT' }, metricsClient: {} };
+    const server = mod.createBrainServer({ pluginRoot: R, mode: 'http', kbWorker: fakeKbWorker });
+    await server.handleTool('brain_retrieve_context', { prompt: 'does this route through the worker client', cwd: R });
+    assert(seenDeps && seenDeps.store === fakeKbWorker.storeClient, "brain_retrieve_context must pass kbWorker.storeClient as retrieve()'s deps.store in http mode, not fall back to a direct require of brain-store.js");
+  } finally {
+    rc.retrieve = originalRetrieve;
+  }
+});
+
 // ─── Policy adjudication (Fase 3 micro-B0) — the JUDGE loop ───────────────────
 // Shared helpers: unique project ids + isolated temp workspaces let these tests run
 // against the ONE global CLAUDE_PLUGIN_DATA (set at file top) without swapping env —
@@ -12843,15 +12949,16 @@ const COMMON_URL = pathToFileURL(
  *  no evento real de 'listening' — os testes não podem depender de um sleep
  *  arbitrário, senão em máquina lenta o probe encontra 'absent' e o cenário
  *  testa a coisa errada (falso 'started' por spawn, não por swap). */
-function makeFakeDaemon({ pluginRoot, port, pid = process.pid, dataDir, onHealth, onShutdown, closeOnShutdown = true }) {
+function makeFakeDaemon({ pluginRoot, port, pid = process.pid, dataDir, onHealth, onShutdown, closeOnShutdown = true, healthDelayMs = 0 }) {
   const sockets = new Set();
   const server = http.createServer((req, res) => {
     const u = (req.url || '').split('?')[0];
     if (req.method === 'GET' && u === '/health') {
       const resolvedPid = typeof pid === 'function' ? pid() : pid;
       const health = onHealth ? (onHealth() || { ok: true, pluginRoot, dataDir, version: '1.0.0', pid: resolvedPid, port, sessions: 0, startedAt: Date.now(), uptimeMs: 0 }) : { ok: true, pluginRoot, dataDir, version: '1.0.0', pid: resolvedPid, port, sessions: 0, startedAt: Date.now(), uptimeMs: 0 };
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      return res.end(JSON.stringify(health));
+      const send = () => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(health)); };
+      if (healthDelayMs > 0) { setTimeout(send, healthDelayMs); return; }
+      return send();
     }
     if (req.method === 'POST' && u === '/shutdown') {
       if (onShutdown) onShutdown();
@@ -12993,6 +13100,26 @@ test('brain daemon supervisor: env null/non-object → no TypeError, still probe
     squat.close();
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+});
+
+test('brain daemon supervisor: our daemon slow past 600ms under load → current, NOT squat-error', async () => {
+  // Regressão: sessão real reportou o daemon único levando 220 erros falsos de
+  // "porta ocupada por processo estranho" em 20 projetos concorrentes no mesmo
+  // dia — o daemon estava VIVO, só respondendo /health depois do timeout fixo
+  // de 600ms (mutex de KB do servidor ocupado com outras sessões). probeHot()
+  // deve dar uma segunda chance antes de declarar squat.
+  const { ensureDaemon } = await import(SUPERVISOR_URL);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-slowhealth-'));
+  const dataDir = path.join(tmp, 'data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  const p = await waitFreePort();
+  const fake = makeFakeDaemon({ pluginRoot: ROOT, port: p, dataDir, healthDelayMs: 900 });
+  await fake.ready;
+  const res = await ensureDaemon({ pluginRoot: ROOT, dataDir, env: { BRAIN_HTTP_PORT: String(p) } });
+  assertEq(res.status, 'current', `slow-but-alive daemon must be 'current', got ${res.status}: ${res.error || ''}`);
+  assertEq(res.pid, process.pid);
+  fake.server.close();
+  fs.rmSync(tmp, { recursive: true, force: true });
 });
 
 test('brain daemon supervisor: numeric BRAIN_HTTP_PORT → no TypeError', async () => {
@@ -13188,6 +13315,129 @@ test('brain daemon supervisor: the "spawned" status was removed — source-level
   assert(!src.includes("'spawned'"), 'daemon-supervisor must never return a status named spawned');
   assert(src.includes("status: 'started'"), 'started remains the success status');
   assert(src.includes("status: 'error'"), 'error remains the failure status');
+});
+
+// ─── kb-worker / kb-worker-client (moves brain-store.js's/metrics-store.js's
+// synchronous SQLite work off the daemon's main thread — see lib/kb-worker.js) ──
+// Every OTHER test in this file that exercises createBrainServer's KB path does so
+// via mode:'stdio' (kbWorker undefined → falls back to a direct require) or via
+// _testHooks.getKB (a full stub), so NONE of them ever construct a real
+// worker_thread. These tests are the only automated coverage of kb-worker.js /
+// kb-worker-client.js themselves.
+//
+// IMPORTANT for anyone extending this section: kb-worker-client.js calls
+// `worker.unref()` on purpose (so the worker never keeps the real daemon process
+// alive by itself). That means a bare `await client.storeClient.X()` with nothing
+// else scheduled on the event loop can let Node decide there is no more pending
+// work and exit the WHOLE process (code 0, no error, no assertion ever runs) before
+// the worker's reply arrives — verified empirically while writing this test. Every
+// test below holds an explicit `setInterval` keepalive for its duration to avoid
+// silently vanishing instead of passing or failing.
+const KB_WORKER_CLIENT_URL = pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'kb-worker-client.js')).href;
+const KB_WORKER_PATH = path.join(ROOT, 'servers', 'brain-server', 'lib', 'kb-worker.js');
+
+test('kb-worker-client: real worker round-trip — init/save/get/delete via the actual worker_thread + RPC framing', async () => {
+  const { createKbWorkerClient } = await import(KB_WORKER_CLIENT_URL);
+  const keepAlive = setInterval(() => {}, 50);
+  const client = createKbWorkerClient({ pluginRoot: ROOT });
+  try {
+    const project = 'kbw-roundtrip-' + Date.now();
+    await client.storeClient.init({ project });
+    await client.storeClient.save({ id: 'kbw-e1', title: 'T', summary: 'S', content: { detail: 'd' }, type: 'lesson', tags: [], project });
+    const got = await client.storeClient.get('kbw-e1');
+    assert(got && got.id === 'kbw-e1', 'a real worker_thread round-trip returns the saved entry (catches method-name typos and RPC id-correlation bugs)');
+    assertEq(got.project, project, 'the entry was written under the requested project (worker sees the right module state)');
+    const count = await client.storeClient.count(undefined, project);
+    assert(count >= 1, 'count() reflects the just-saved entry through the same worker');
+    // metricsClient exercises the SECOND module the same worker hosts, under the
+    // SAME kb-worker.js message dispatcher — catches a mod:'metrics' regression
+    // that a store-only smoke test would miss.
+    const ready = await client.metricsClient.init({ project });
+    assert(ready === true || ready === false, 'metricsClient.init round-trips through the worker and returns a boolean readiness flag');
+  } finally {
+    clearInterval(keepAlive);
+    await client.shutdown();
+  }
+});
+
+test('kb-worker.js: an unknown mod.method is reported as a structured error, not a hang or a thrown exception', async () => {
+  const { Worker } = require('worker_threads');
+  const worker = new Worker(KB_WORKER_PATH, { workerData: { pluginRoot: ROOT } });
+  const keepAlive = setInterval(() => {}, 50);
+  try {
+    const reply = await new Promise((resolve, reject) => {
+      worker.once('message', resolve);
+      worker.once('error', reject);
+      worker.postMessage({ id: 1, mod: 'store', method: 'thisMethodDoesNotExist', args: [] });
+    });
+    assertEq(reply.id, 1, 'the reply correlates to the request id even for an unknown method');
+    assertEq(reply.ok, false, 'an unknown method is a reported failure, never silently swallowed');
+    assert(/unknown store\.thisMethodDoesNotExist/.test(reply.error || ''), `error names the offending mod.method, got: ${reply.error}`);
+  } finally {
+    clearInterval(keepAlive);
+    await worker.terminate();
+  }
+});
+
+test('kb-worker.js: an unknown mod (not just an unknown method) is also a structured error', async () => {
+  const { Worker } = require('worker_threads');
+  const worker = new Worker(KB_WORKER_PATH, { workerData: { pluginRoot: ROOT } });
+  const keepAlive = setInterval(() => {}, 50);
+  try {
+    const reply = await new Promise((resolve, reject) => {
+      worker.once('message', resolve);
+      worker.once('error', reject);
+      worker.postMessage({ id: 2, mod: 'notARealModule', method: 'init', args: [] });
+    });
+    assertEq(reply.ok, false, 'an unknown mod key is a reported failure, never silently swallowed');
+  } finally {
+    clearInterval(keepAlive);
+    await worker.terminate();
+  }
+});
+
+test('kb-worker-client: a worker that fails to load (bad pluginRoot) rejects a pending call AND every future call — never hangs', async () => {
+  const { createKbWorkerClient } = await import(KB_WORKER_CLIENT_URL);
+  const keepAlive = setInterval(() => {}, 50);
+  // kb-worker.js's top-level `require(path.join(pluginRoot, 'scripts', 'brain-store.js'))`
+  // throws synchronously during the worker's module evaluation when pluginRoot is bogus —
+  // this is the realistic shape of "a typo/module-resolution break in kb-worker.js itself"
+  // the review flagged as untested. It must surface as worker.on('error'), not a hang.
+  const client = createKbWorkerClient({ pluginRoot: path.join(ROOT, 'does-not-exist-' + Date.now()) });
+  try {
+    let beforeErr = null;
+    try { await client.storeClient.init({ project: 'p' }); } catch (e) { beforeErr = e; }
+    assert(beforeErr instanceof Error, 'a call already in flight when the worker dies must reject (fail loud), not hang forever');
+    // Let the 'error' handler finish flipping the client's dead-state, then confirm
+    // a call issued AFTER the crash also fails immediately instead of hanging.
+    await new Promise((r) => setTimeout(r, 100));
+    let afterErr = null;
+    try { await client.storeClient.get('x'); } catch (e) { afterErr = e; }
+    assert(afterErr instanceof Error, 'a call issued AFTER the worker died must also reject immediately (no silent hang waiting on a dead worker)');
+  } finally {
+    clearInterval(keepAlive);
+    await client.shutdown().catch(() => {});
+  }
+});
+
+test('kb-worker-client: STORE_METHODS/METRICS_METHODS stay in sync with brain-store.js/metrics-store.js\'s real exports (no silent drift)', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'servers', 'brain-server', 'lib', 'kb-worker-client.js'), 'utf8');
+  function extractArray(name) {
+    const m = src.match(new RegExp(`${name}\\s*=\\s*\\[([\\s\\S]*?)\\];`));
+    assert(m, `${name} array literal must be findable in kb-worker-client.js (source shape changed?)`);
+    return m[1].split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean).sort();
+  }
+  // Underscore-prefixed exports (e.g. _getDbForTests) are test-only seams, never
+  // routed through the worker — excluded from the parity check on purpose.
+  function publicExportNames(mod) {
+    return Object.keys(mod).filter((k) => typeof mod[k] === 'function' && !k.startsWith('_')).sort();
+  }
+  const storeMethods = extractArray('STORE_METHODS');
+  const metricsMethods = extractArray('METRICS_METHODS');
+  const storeExports = publicExportNames(require('./brain-store.js'));
+  const metricsExports = publicExportNames(require('./lib/metrics-store.js'));
+  assertEq(storeMethods, storeExports, 'kb-worker-client.js\'s STORE_METHODS must list EXACTLY brain-store.js\'s public methods — a method added to brain-store.js without a matching STORE_METHODS entry is silently unreachable in http mode (getKB never exposes it), and a stale entry left after a rename/removal breaks with "unknown store.X" only the first time it is called from production');
+  assertEq(metricsMethods, metricsExports, 'kb-worker-client.js\'s METRICS_METHODS must list EXACTLY metrics-store.js\'s public methods, for the same reason');
 });
 
 // ─── Runner ──────────────────────────────────────────────────────────────────

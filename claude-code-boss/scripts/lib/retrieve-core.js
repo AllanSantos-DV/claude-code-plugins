@@ -187,10 +187,16 @@ async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords }, 
  * @param {{project?:string, ancestorIds?:string[]}} opts
  *   ancestorIds (F2, mcp-memory only) — the ancestor-spine project_ids (DEEPEST→shallow,
  *   focus first). When it carries ids beyond `project`, retrieveRemote unions them.
+ * @param {{store?:object, backend?:object, recallHealth?:object}} deps
+ *   deps.store — same seam as getKB()/recordLessonMetric() in mcp-server.js: the http
+ *   daemon passes kbWorker.storeClient here so the local (non mcp-memory) search below
+ *   runs its synchronous better-sqlite3 work in the kb-worker thread instead of blocking
+ *   this process's main thread (the same class of /health-freeze bug that kb-worker.js
+ *   exists to fix). Defaults to the direct require (stdio mode / tests, no shared daemon).
  * @returns {Promise<{entries:object[], keywords:string[], project:string, reason?:string}>}
  *   reason (when entries is empty): 'short' | 'no-embedder' | 'no-match' | 'remote-error'.
  */
-async function retrieve(prompt, opts = {}) {
+async function retrieve(prompt, opts = {}, deps = {}) {
   const project = opts.project || 'default';
   const ancestorIds = Array.isArray(opts.ancestorIds) ? opts.ancestorIds : [];
   const keywords = extractKeywords(prompt || '', { minLen: 4, maxTokens: 15 });
@@ -201,10 +207,11 @@ async function retrieve(prompt, opts = {}) {
 
   // Remote backend → the external daemon owns embeddings + search.
   if (backend.peekMode() === 'mcp-memory') {
-    return retrieveRemote(prompt, { project, ancestorIds, topK, keywords });
+    return retrieveRemote(prompt, { project, ancestorIds, topK, keywords }, deps);
   }
 
-  await store.init({ project });
+  const storeRef = deps.store || store;
+  await storeRef.init({ project });
   if (!embedder.getStatus().ready) await embedder.init();
   const vector = await embedder.embed(prompt);
   if (!vector) return { entries: [], keywords, project, reason: 'no-embedder' };
@@ -214,7 +221,7 @@ async function retrieve(prompt, opts = {}) {
   // would otherwise waste topK slots.
   // Federate project + __user__ scopes (parity with brain_search) so global
   // lessons (workflow/preferences) are retrievable, not just project-local ones.
-  const raw = await searchTwoPass(store, project, vector, { topK: topK + 4, minScore });
+  const raw = await searchTwoPass(storeRef, project, vector, { topK: topK + 4, minScore });
   const seenTitles = new Set();
   const entries = [];
   for (const e of raw) {

@@ -72,6 +72,28 @@ async function fetchHealth(port, timeoutMs = 600) {
   return p.kind === 'daemon' ? p.health : null;
 }
 
+/**
+ * Hot-path probe for ensureDaemon()'s main decision point — the ONE call every
+ * SessionStart/UserPromptSubmit hook makes (ADR-001: a single daemon now answers
+ * every open session across every project on the machine, not one-per-session).
+ * A bare 600ms `probePort` timeout was calibrated for a lightly-loaded daemon;
+ * under real multi-session concurrency, the daemon's single Node event loop can
+ * be busy with OTHER sessions' KB mutex work (mcp-server.js withLock) long enough
+ * that even the trivial /health handler answers past 600ms — indistinguishable,
+ * to a bare probePort call, from `squat` (`httpStatus` stays undefined either
+ * way). Treating that as fatal produced the false "port owned by a non-brain
+ * process" error reported with a live daemon and heavy concurrent load (20
+ * projects open at once): a busy-but-healthy daemon got diagnosed as squatted.
+ * A genuinely squatted port fails the SAME on both attempts (no protocol
+ * partner to eventually answer), so the retry costs nothing there; it only
+ * rescues the ambiguous "connected but no HTTP reply yet" case.
+ */
+async function probeHot(port) {
+  const first = await probePort(port, 600);
+  if (first.kind !== 'squat' || first.httpStatus != null) return first;
+  return probePort(port, 2500);
+}
+
 async function postShutdown(port, dataDir, env = process.env, timeoutMs = 800) {
   try {
     const ctrl = new AbortController();
@@ -306,7 +328,7 @@ export async function ensureDaemon({ pluginRoot, dataDir, env = process.env } = 
     // Migration: reclaim the port a pre-fixed-port daemon still owns.
     await exileLegacyDaemon({ dataDir, port, env: normalizedEnv });
 
-    const probe = await probePort(port);
+    const probe = await probeHot(port);
 
     if (probe.kind === 'daemon') {
       const h = probe.health;

@@ -15,7 +15,8 @@ import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
-import { createBrainServer } from './mcp-server.js';
+import { createBrainServer, createKbLock } from './mcp-server.js';
+import { createKbWorkerClient } from './kb-worker-client.js';
 import fs from 'node:fs';
 import { HEALTH_PATH, MCP_PATH, lockFile, ensureToken, requestAllowed, originAllowed, tokenFile, canonicalDataDir } from './daemon-common.js';
 
@@ -44,6 +45,15 @@ async function readJsonBody(req) {
 export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0.0.1', version = '2.0.0' }) {
   const sessions = new Map(); // sessionId -> { server, transport, lastSeen }
   const startedAt = Date.now();
+  // ONE worker for the whole daemon process (not per session): moves brain-store.js's
+  // synchronous SQLite calls off this main thread, so GET /health and every other
+  // session's HTTP traffic keep responding while a KB call is in flight elsewhere.
+  // See lib/kb-worker.js for the root cause this fixes.
+  const kbWorker = createKbWorkerClient({ pluginRoot });
+  // ONE lock for the whole daemon process (not per session): withLock only
+  // serializes KB tool calls across sessions if every session's createBrainServer
+  // shares this same mutex — see createKbLock()'s doc comment in mcp-server.js.
+  const kbLock = createKbLock();
   // Shared local token (dashboard pattern) — but ONLY /shutdown requires it now:
   // /mcp is a static .mcp.json "type":"http" url with no room for a runtime
   // secret, so it's gated by originAllowed() alone (see daemon-common.js).
@@ -113,7 +123,7 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
           res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'Too many sessions' }, id: (body && body.id) ?? null }));
           return;
         }
-        const server = createBrainServer({ pluginRoot, mode: 'http' });
+        const server = createBrainServer({ pluginRoot, mode: 'http', kbWorker, kbLock });
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           enableJsonResponse: true,
@@ -173,6 +183,7 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
     try { const cur = JSON.parse(fs.readFileSync(lockFile(dataDir), 'utf8')); if (cur.pid === process.pid) fs.unlinkSync(lockFile(dataDir)); } catch (e) { void e; }
     try { httpServer.closeAllConnections?.(); } catch (e) { void e; } // drop keep-alive so close() resolves
     await new Promise((r) => httpServer.close(r));
+    try { await kbWorker.shutdown(); } catch (e) { void e; }
   }
   process.once('SIGTERM', () => { shutdown().finally(() => {}); });
   process.once('SIGINT', () => { shutdown().finally(() => {}); });
