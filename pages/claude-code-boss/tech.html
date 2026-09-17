@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.25.0 — detalhes técnicos</title>
+<title>claude-code-boss v2.25.1 — detalhes técnicos</title>
 <meta name="description" content="Detalhes técnicos do plugin claude-code-boss: arquitetura do daemon HTTP único, pipeline de hooks, Brain KB (storage/index/graph), providers de embedding, perfis de enforcement, graph tools e dashboard." />
 <style>
   :root{
@@ -128,13 +128,13 @@
     <a href="index.html">← Apresentação</a>
     <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a>
     <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">Changelog</a>
-    <a href="#top" class="ver">v2.25.0</a>
+    <a href="#top" class="ver">v2.25.1</a>
   </nav>
 </header>
 
 <main class="wrap" id="top">
   <div class="page-head">
-    <p class="kick">documentação técnica · v2.25.0</p>
+    <p class="kick">documentação técnica · v2.25.1</p>
     <h1>Arquitetura e funcionamento interno</h1>
     <p class="intro">Para quem quer saber <b>como funciona por baixo</b>: daemon HTTP único, pipeline de hooks, Brain KB em 3 camadas, providers de embedding, perfis de enforcement, exploração de repositório por grafo e o dashboard. Fontes: <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a> e <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG</a>.</p>
     <div class="toc">
@@ -316,11 +316,12 @@
 
   <section id="versoes">
     <h2>Versões <span class="tag">49 releases</span></h2>
-    <p class="lead">O changelog completo (v1.0.0 → v2.25.0) vive no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>. Destaques recentes:</p>
+    <p class="lead">O changelog completo (v1.0.0 → v2.25.1) vive no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>. Destaques recentes:</p>
     <div class="table-scroll">
       <table>
         <thead><tr><th>Versão</th><th>Destaque</th></tr></thead>
         <tbody>
+          <tr><td><b>v2.25.1</b></td><td>Correções de robustez: <code>kb-worker.js</code>/<code>kb-worker-client.js</code> (nunca versionados) faziam o daemon crashar no import em clone novo; CAS (<code>_v</code> de versão) elimina lost-update na config de override do brain; dashboard passa a validar timeout BYOK antes de salvar.</td></tr>
           <tr><td><b>v2.25.0</b></td><td>MCP Activation Wizard + <code>/brain-status</code> (visibilidade total do backend); CRUD do Dashboard roteado pela fachada real; BYOK com timeout por tipo de endpoint (fixo/rotativo, <code>0</code> = sem limite) e log de latência opcional.</td></tr>
           <tr><td><b>v2.24.0</b></td><td>Auto-setup do daemon em background; graceful shutdown (sem <code>process.exit</code>), body/session limits; model-router declarativo por rota com auth declarativa (401/403/405/404).</td></tr>
           <tr><td><b>v2.23.0</b></td><td>MCP auto-reconnect no restart do daemon; BYOK SSE hardening (TTFB ceiling + debounce de swap); curation fixes.</td></tr>
@@ -345,7 +346,7 @@
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">Changelog</a>
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins">GitHub</a>
     </div>
-    <div class="legal">MIT · Allan Santos · claude-code-boss v2.25.0</div>
+    <div class="legal">MIT · Allan Santos · claude-code-boss v2.25.1</div>
   </div>
 </footer>
 
