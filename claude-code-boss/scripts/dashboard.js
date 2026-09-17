@@ -373,7 +373,11 @@ function getBrainConfig(req, res) {
   try {
     const brainConfig = require('./lib/brain-config.js');
     brainConfig._resetCache(); // reflect any on-disk change since the last read
-    json(res, brainConfig.load()); // shipped ⊕ globalDir()/user-config.json
+    // shipped ⊕ globalDir()/user-config.json, plus the on-disk override version
+    // as `_version` — the dashboard client round-trips this back on PUT so
+    // save() can reject a save whose baseline is stale (CAS, see brain-config.js).
+    const { config, version } = brainConfig.loadWithVersion();
+    json(res, { ...config, _version: version });
   } catch (e) {
     fail(res, `brain-config load failed: ${e.message}`, 500);
   }
@@ -383,17 +387,28 @@ async function saveBrainConfig(req, res) {
   const body = await readBody(req);
   try {
     const parsed = JSON.parse(body);
+    // `_version` is wire-protocol only (the baseline the client loaded) — never
+    // part of the persisted config, so pull it out before validating/diffing.
+    const expectedVersion = Number.isInteger(parsed._version) ? parsed._version : undefined;
+    delete parsed._version;
     const err = validateBrainConfig(parsed);
     if (err) return fail(res, `Invalid brain-config.json: ${err}`, 400);
     // Routed through brainConfig.save() (not a local diff+write) so this route
     // and mcp-wizard.js's start() share ONE write implementation for
     // globalDir()/user-config.json instead of two that could drift (this one
     // used to duplicate the same deepDiff(shipped, parsed) logic inline).
-    // This does NOT close the lost-update race between concurrent savers —
-    // see brain-config.js's save() for why that's still open.
+    // save() enforces CAS via expectedVersion — a concurrent saver (the wizard,
+    // or another dashboard tab) that wrote in between gets this save REJECTED
+    // (409) instead of silently discarding their change.
     const brainConfig = require('./lib/brain-config.js');
-    brainConfig.save(parsed);
-    json(res, { ok: true, requiresRestart: true });
+    let newVersion;
+    try {
+      newVersion = brainConfig.save(parsed, { expectedVersion });
+    } catch (e) {
+      if (e.code === 'BRAIN_CONFIG_CONFLICT') return fail(res, e.message, 409);
+      throw e;
+    }
+    json(res, { ok: true, requiresRestart: true, version: newVersion });
   } catch (e) { fail(res, e.message); }
 }
 

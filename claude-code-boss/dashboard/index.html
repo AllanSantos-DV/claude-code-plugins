@@ -1067,6 +1067,7 @@ const I18N = {
     'router.byokHeadersKeep': 'leave blank to keep',
     'router.byokHeadersNone': 'No header configured yet.',
     'router.byokHeadersInvalid': 'Invalid line (expected "Name: value")',
+    'router.byokTimeoutInvalid': 'Invalid timeout (use a number of seconds, 0 or greater)',
     'router.byokClassifyEnable': 'Classify prompts via my endpoint (BYOK Classify)',
     'router.byokClassifyHint': 'Opt-in. Uses YOUR endpoint to pick the tier (~500 chars of the prompt per session, haiku model). on-limit: only while cooldown is active. Failure falls back to local MiniLM.',
     'mode.byokDirect': 'BYOK direct',
@@ -1245,6 +1246,7 @@ const I18N = {
     'router.byokHeadersKeep': 'deixe em branco para manter',
     'router.byokHeadersNone': 'Nenhum header configurado ainda.',
     'router.byokHeadersInvalid': 'Linha inválida (esperado "Nome: valor")',
+    'router.byokTimeoutInvalid': 'Timeout inválido (use um número de segundos, 0 ou maior)',
     'router.byokClassifyEnable': 'Classificar prompts via meu endpoint (BYOK Classify)',
     'router.byokClassifyHint': 'Opt-in. Usa o SEU endpoint para escolher o tier (~500 chars do prompt por sessão, modelo haiku). on-limit: só com o cooldown ativo. Falha cai no MiniLM local.',
     'mode.byokDirect': 'BYOK direto',
@@ -1940,7 +1942,15 @@ async function applyRouter() {
         byok.fixedTimeoutMs = null;
       } else {
         const v = Number(byFixedTimeout.value);
-        if (Number.isFinite(v) && v >= 0) byok.fixedTimeoutMs = v * 1000;
+        // Um valor não-numérico ou negativo (ex.: "abc", "-5", escapando o
+        // type="number" nativo via paste) era antes silenciosamente ignorado —
+        // nem salvo nem rejeitado, sem feedback nenhum. Mesma regra de aborto
+        // visível já usada acima para header inválido.
+        if (!Number.isFinite(v) || v < 0) {
+          document.getElementById('router-saved').textContent = t('router.byokTimeoutInvalid');
+          return;
+        }
+        byok.fixedTimeoutMs = v * 1000;
       }
     }
     const byRotatingTimeout = document.getElementById('router-byok-rotating-timeout');
@@ -1949,7 +1959,11 @@ async function applyRouter() {
         byok.rotatingTimeoutMs = null;
       } else {
         const v = Number(byRotatingTimeout.value);
-        if (Number.isFinite(v) && v >= 0) byok.rotatingTimeoutMs = v * 1000;
+        if (!Number.isFinite(v) || v < 0) {
+          document.getElementById('router-saved').textContent = t('router.byokTimeoutInvalid');
+          return;
+        }
+        byok.rotatingTimeoutMs = v * 1000;
       }
     }
     const byLogLatency = document.getElementById('router-byok-log-latency');
@@ -2558,6 +2572,16 @@ async function saveBrainBackendConfig() {
 
   try {
     const result = await api('PUT', '/api/brain/backend-config', cfg);
+    // api() never throws on a non-2xx response (it just resolves the parsed
+    // JSON body), so a validation error OR a 409 CAS conflict (someone else
+    // saved this config since it was loaded) both come back as `{error}` here
+    // — check for it explicitly, otherwise this used to render "Salvo!" and
+    // adopt `cfg` as the new baseline even on a REJECTED save.
+    if (result.error) {
+      alert('Erro ao salvar: ' + result.error);
+      return;
+    }
+    cfg._version = result.version; // new baseline — a same-page resave must use it, not the stale one
     _brainConfig = cfg;
     const savedEl = document.getElementById('brain-config-saved');
     savedEl.textContent = 'Salvo!';

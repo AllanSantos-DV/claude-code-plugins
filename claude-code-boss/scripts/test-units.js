@@ -3000,6 +3000,78 @@ test('brain-config.deepDiff: arrays replace wholesale (never merged)', () => {
   assertEq(brainConfig.deepDiff({ a: [1, 2] }, { a: [1, 2] }), {});
 });
 
+// ─── item 5: brain-config CAS (compare-and-swap) — closes the lost-update race
+// between concurrent writers (e.g. mcp-wizard.js's start() vs dashboard.js's
+// PUT /api/brain/backend-config). See docs/BACKLOG.md "Arquitetura" section.
+test('brain-config.loadWithVersion: absent override → version 0', () => {
+  withUserConfig(undefined, () => {
+    const { config, version } = brainConfig.loadWithVersion();
+    assertEq(version, 0);
+    assert(config && typeof config === 'object');
+  });
+});
+
+test('brain-config.save: matching expectedVersion succeeds and increments _v', () => {
+  withUserConfig({ backend: { type: 'local' } }, () => {
+    const { config, version } = brainConfig.loadWithVersion();
+    assertEq(version, 0);
+    const newVersion = brainConfig.save({ ...config, backend: { type: 'mcp-memory' } }, { expectedVersion: version });
+    assertEq(newVersion, 1);
+    const after = brainConfig.loadWithVersion();
+    assertEq(after.version, 1);
+    assertEq(after.config.backend.type, 'mcp-memory');
+  });
+});
+
+test("brain-config.save: stale expectedVersion is rejected and does NOT clobber a concurrent writer's change", () => {
+  withUserConfig({ backend: { type: 'local' } }, () => {
+    // Caller A and caller B both load at version 0 — the exact lost-update setup.
+    const a = brainConfig.loadWithVersion();
+    const b = brainConfig.loadWithVersion();
+    assertEq(a.version, 0);
+    assertEq(b.version, 0);
+
+    // B saves first — bumps the on-disk version to 1.
+    const bVersion = brainConfig.save({ ...b.config, backend: { type: 'mcp-memory' } }, { expectedVersion: b.version });
+    assertEq(bVersion, 1);
+
+    // A now attempts to save using its stale v0 baseline — must be rejected outright.
+    let threw = null;
+    try {
+      brainConfig.save({ ...a.config, backend: { type: 'local', ingestion: { enabled: true } } }, { expectedVersion: a.version });
+    } catch (e) { threw = e; }
+    assert(threw, 'stale save must throw');
+    assertEq(threw.code, 'BRAIN_CONFIG_CONFLICT');
+
+    // B's change must still be intact on disk — A's rejected write was never merged in.
+    const after = brainConfig.loadWithVersion();
+    assertEq(after.version, 1);
+    assertEq(after.config.backend.type, 'mcp-memory');
+    assert(!after.config.backend.ingestion || after.config.backend.ingestion.enabled !== true,
+      "A's rejected ingestion.enabled=true must not leak into the config");
+  });
+});
+
+test('brain-config.save: without expectedVersion preserves old last-write-wins behavior', () => {
+  withUserConfig({ backend: { type: 'local' } }, () => {
+    const { config } = brainConfig.loadWithVersion();
+    brainConfig.save({ ...config, backend: { type: 'mcp-memory' } });
+    const after = brainConfig.loadWithVersion();
+    assertEq(after.config.backend.type, 'mcp-memory');
+    assert(after.version >= 1, 'still versioned on disk even though this caller opted out of the CAS check');
+  });
+});
+
+test("brain-config: _v never leaks into load()'s merged config", () => {
+  withUserConfig({ backend: { type: 'local' } }, () => {
+    const { config, version } = brainConfig.loadWithVersion();
+    brainConfig.save({ ...config, backend: { type: 'mcp-memory' } }, { expectedVersion: version });
+    const reloaded = brainConfig.load();
+    assertEq(reloaded._v, undefined);
+    assert(!('_v' in reloaded));
+  });
+});
+
 // ─── GAP2: brain-backend activates the backend from shipped ⊕ per-user override
 const brainBackend = require('./brain-backend.js');
 
@@ -6927,6 +6999,18 @@ test('byok.resolveUpstream: gateway alternativo DESLIGADO → Anthropic pura, is
   assertEq(u.isCustomEndpoint, false);
 });
 
+test('byok.resolveUpstream: BYOK e upstream ligados juntos → BYOK vence (upstream é totalmente descartado, não mesclado)', () => {
+  const cfg = {
+    upstream: { enabled: true, baseUrl: 'https://gateway.corp.example.com' },
+    byok: { enabled: true, mode: 'always', baseUrl: 'https://byok.ex.ts.net', headers: {} },
+  };
+  const u = byok.resolveUpstream(cfg, { onLimit: false });
+  assertEq(u.isByok, true, 'BYOK deve vencer quando ambos estao enabled=true');
+  assertEq(u.isCustomEndpoint, true);
+  assertEq(u.host, 'byok.ex.ts.net', 'destino deve ser o do BYOK, nao o do upstream corporativo');
+  assert(u.host !== 'gateway.corp.example.com', 'o upstream nao pode vazar no destino final quando BYOK vence');
+});
+
 test('byok.resolveUpstream: sem fixedEndpoint configurado → default false (preserva comportamento rotativo)', () => {
   const cfg = { byok: { enabled: true, mode: 'always', baseUrl: 'https://ex.ts.net', headers: {} } };
   const u = byok.resolveUpstream(cfg, { onLimit: false });
@@ -9779,6 +9863,30 @@ test('dashboard.getRouterConfig: byokSafe serializa 0 como 0 (não null) e ausen
       delete require.cache[require.resolve('./dashboard.js')];
     }
   });
+});
+
+// dashboard.js normaliza timeout inválido pra undefined no SERVIDOR (teste acima),
+// mas o CLIENTE (dashboard/index.html's applyRouter()) fazia `if (Number.isFinite(v)
+// && v >= 0) byok.fixedTimeoutMs = v * 1000;` sem `else` — um valor inválido digitado
+// (ex.: "abc" colado, escapando o type="number" nativo) não setava o campo E não
+// avisava nada: o usuário via "salvo" sem saber que o timeout que digitou foi
+// descartado em silêncio. Mesma classe de bug que headers inválidos já evitavam
+// (aborta com `router.byokHeadersInvalid`) — este teste tranca o fix simétrico.
+test('dashboard/index.html applyRouter(): timeout BYOK inválido (não-finito ou negativo) ABORTA o save com aviso visível, não ignora em silêncio', () => {
+  const src = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf-8');
+  const fn = src.match(/async function applyRouter\(\)[\s\S]*?\n\}/);
+  assert(fn, 'applyRouter() not found in dashboard/index.html');
+  const body = fn[0];
+  // Precisa existir a chave de i18n dedicada e o padrão "detecta inválido → aborta"
+  // para CADA um dos dois campos (fixed e rotating), não só um.
+  assert(/'router\.byokTimeoutInvalid':/.test(src), 'router.byokTimeoutInvalid i18n key must exist');
+  const fixedBlock = body.match(/byFixedTimeout[\s\S]*?byRotatingTimeout/)[0];
+  const rotatingBlock = body.match(/byRotatingTimeout[\s\S]*?byLogLatency/)[0];
+  for (const [label, block] of [['fixedTimeoutMs', fixedBlock], ['rotatingTimeoutMs', rotatingBlock]]) {
+    assert(/!Number\.isFinite\(v\)\s*\|\|\s*v\s*<\s*0/.test(block), `${label} block must detect non-finite/negative input`);
+    assert(/t\('router\.byokTimeoutInvalid'\)/.test(block), `${label} block must surface the invalid-timeout warning`);
+    assert(/return;/.test(block), `${label} block must abort the save (return), not just skip setting the field`);
+  }
 });
 
 // Achado de revisão adversarial (2026-09-16, TESTER): só o ramo fixedEndpoint:true
@@ -13414,6 +13522,57 @@ test('kb-worker-client: a worker that fails to load (bad pluginRoot) rejects a p
     let afterErr = null;
     try { await client.storeClient.get('x'); } catch (e) { afterErr = e; }
     assert(afterErr instanceof Error, 'a call issued AFTER the worker died must also reject immediately (no silent hang waiting on a dead worker)');
+  } finally {
+    clearInterval(keepAlive);
+    await client.shutdown().catch(() => {});
+  }
+});
+
+test('kb-worker-client: a call that never gets a matching reply times out and fails loud instead of hanging forever', async () => {
+  const { createKbWorkerClient } = await import(KB_WORKER_CLIENT_URL);
+  const keepAlive = setInterval(() => {}, 50);
+  // A framing bug in kb-worker.js (wrong/missing response id) would leave this
+  // exact scenario indistinguishable from a call that legitimately never replies —
+  // an aggressively short callTimeoutMs against the real worker is the deterministic
+  // stand-in: spinning up the worker_thread and requiring brain-store.js inside it
+  // always takes far longer than 1ms, so the timeout path fires reliably without
+  // depending on the worker actually misbehaving.
+  const client = createKbWorkerClient({ pluginRoot: ROOT, callTimeoutMs: 1 });
+  try {
+    let err = null;
+    try { await client.storeClient.init({ project: 'kbw-timeout-' + Date.now() }); } catch (e) { err = e; }
+    assert(err instanceof Error, 'a call with no reply within callTimeoutMs must reject, never hang');
+    assert(/timed out/i.test(err.message), `rejection must fail loud with a clear timeout message, got: ${err.message}`);
+    assert(/store\.init/.test(err.message), `rejection should name the offending mod.method for debuggability, got: ${err.message}`);
+  } finally {
+    clearInterval(keepAlive);
+    await client.shutdown().catch(() => {});
+  }
+});
+
+test('kb-worker-client: a late reply arriving after its call already timed out is a silent no-op (never resurrects or double-settles)', async () => {
+  const { createKbWorkerClient } = await import(KB_WORKER_CLIENT_URL);
+  const keepAlive = setInterval(() => {}, 50);
+  const client = createKbWorkerClient({ pluginRoot: ROOT, callTimeoutMs: 1 });
+  try {
+    let err = null;
+    try { await client.storeClient.init({ project: 'kbw-late-reply-' + Date.now() }); } catch (e) { err = e; }
+    assert(err instanceof Error, 'sanity: the short timeout still rejects as expected');
+    // The real worker's reply for that same call is still in flight and will land on
+    // this same client sometime after the timeout already fired. Give it a generous
+    // window to arrive; the client must not throw an unhandled rejection or crash.
+    await new Promise((r) => setTimeout(r, 500));
+    // The client must still be usable afterward — a late reply must not have left
+    // stale bookkeeping (e.g. an id collision) that corrupts a subsequent call.
+    const client2 = createKbWorkerClient({ pluginRoot: ROOT });
+    try {
+      const project = 'kbw-late-reply-sanity-' + Date.now();
+      await client2.storeClient.init({ project });
+      const got = await client2.storeClient.count(undefined, project);
+      assert(typeof got === 'number', 'a fresh call after a late-arriving timed-out reply still gets a real, correct response');
+    } finally {
+      await client2.shutdown();
+    }
   } finally {
     clearInterval(keepAlive);
     await client.shutdown().catch(() => {});
