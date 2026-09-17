@@ -1,5 +1,23 @@
 # Changelog
 
+## [2.25.1] - 2026-09-17
+
+**Correções de robustez: daemon quebrado por arquivo faltante, race de escrita concorrente na config, e validação silenciosa no dashboard.**
+
+### Fixed — daemon crashava no import (`/health` fix de 2.25.0 incompleto)
+- **`servers/brain-server/lib/kb-worker.js` / `kb-worker-client.js`** — os dois arquivos que implementam o `worker_thread` usado pelo fix de bloqueio síncrono do SQLite no `/health` (introduzido em commit anterior) nunca tinham sido versionados no git, apesar de já serem importados por `http-daemon.js`. HEAD ficava quebrado: um clone novo crashava no `import` ao iniciar o daemon. `kb-worker-client.js` agora expõe timeout configurável por chamada (`callTimeoutMs`, default 30000ms) com rejeição nomeando o método travado, e nunca "ressuscita" uma resposta tardia que chega após o timeout já ter disparado.
+
+### Fixed — `brain-config.js`: lost-update na config de override (CAS)
+- `load()`/`save()` agora usam um stamp de versão (`_v`) gravado dentro do próprio `user-config.json`. `save(config, { expectedVersion })` rejeita com `BRAIN_CONFIG_CONFLICT` (fail-loud) se o arquivo mudou em disco desde que foi lido — elimina o cenário de duas escritas concorrentes onde a última sobrescreve a primeira silenciosamente. Callers sem `expectedVersion` mantêm o comportamento antigo (last-write-wins).
+- **API** — `GET`/`PUT /api/brain/backend-config` agora carregam e devolvem `_version`; um conflito de escrita responde `409`.
+- **Dashboard** — `saveBrainBackendConfig()` agora checa `result.error` explicitamente antes de mostrar "Salvo!" (antes, um 409 de conflito era tratado como sucesso silenciosamente) e adota a nova versão retornada como baseline para a próxima gravação.
+
+### Fixed — dashboard: timeout BYOK inválido era aceito silenciosamente
+- `applyRouter()` agora valida que o timeout (fixo/rotativo) digitado é um número ≥ 0 antes de salvar; valor inválido mostra mensagem de erro em vez de persistir `NaN`/negativo sem avisar.
+
+### Docs
+- **`servers/model-router/byok.js`** — comentário explicando a precedência BYOK-sempre-vence quando `upstream.enabled` e `byok.enabled` estão ligados juntos (comportamento já existente, agora documentado + coberto por teste dedicado).
+
 ## [2.25.0] - 2026-09-15
 
 **Integração MCP com visibilidade total.** Reforça o fluxo de ativação do backend `mcp-memory` com um wizard passo-a-passo, um comando `/brain-status` para o agente, e roteia o CRUD do Dashboard pela fachada real (`brain-backend.js`) — eliminando o espelho local invisível.
