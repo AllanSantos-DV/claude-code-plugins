@@ -34,7 +34,10 @@ function _onDiskVersion(p) {
     if (!fs.existsSync(p)) return 0;
     const raw = JSON.parse(fs.readFileSync(p, 'utf-8'));
     return isPlainObject(raw) && Number.isInteger(raw._v) ? raw._v : 0;
-  } catch { return 0; }
+  } catch (err) {
+    console.error(`[brain-config] failed to read version from ${p}: ${err.message}`);
+    return 0;
+  }
 }
 
 // Resolved at load() time (not frozen at module load) so tests can repoint HOME/
