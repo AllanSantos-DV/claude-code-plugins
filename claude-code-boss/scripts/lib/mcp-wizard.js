@@ -19,7 +19,8 @@ const https = require('https');
 const http = require('http');
 const { URL } = require('url');
 const { globalDir } = require('./data-dir.js');
-const { load: loadBrainConfig, save: saveBrainConfig } = require('./brain-config.js');
+const { loadWithVersion: loadBrainConfigWithVersion, save: saveBrainConfig } = require('./brain-config.js');
+const loadBrainConfig = () => loadBrainConfigWithVersion().config;
 
 const MIN_JAVA_MAJOR = 21;
 // Resolved per-call (not frozen at module load), same convention as
@@ -357,9 +358,16 @@ async function start(projectId) {
       _state.error = null;
       saveState();
 
-      const brainCfg = loadBrainConfig();
+      const { config: brainCfg, version: brainCfgVersion } = loadBrainConfigWithVersion();
       if (!brainCfg.backend || brainCfg.backend.type !== 'mcp-memory') {
-        saveBrainConfig({ ...brainCfg, backend: { type: 'mcp-memory', mcpMemory: mcpCfg2 } });
+        // expectedVersion pinned to the load right above: if the dashboard (or
+        // another wizard run) saved a change to this same override in the
+        // seconds it took Java/daemon/handshake checks to run, this save is
+        // rejected instead of silently discarding that concurrent change.
+        saveBrainConfig(
+          { ...brainCfg, backend: { type: 'mcp-memory', mcpMemory: mcpCfg2 } },
+          { expectedVersion: brainCfgVersion }
+        );
       }
     } catch (err) {
       _state.status = 'failed';

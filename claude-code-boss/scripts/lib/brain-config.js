@@ -21,6 +21,21 @@ const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '.
 const CONFIG_PATH = path.join(PLUGIN_ROOT, 'config', 'brain-config.json');
 
 let _cache = null;
+let _cacheVersion = 0;
+
+// On-disk version stamp for the user-override file (globalDir()/user-config.json).
+// Stored as `_v` alongside the diffed config fields inside the SAME JSON file (no
+// extra file to keep in sync). Absent/non-integer `_v` (legacy file written before
+// this existed, or a test writing the override directly with fs) reads as 0, which
+// only matters for CAS purposes if a caller compares against a stale baseline of
+// 0 too — see save()'s expectedVersion.
+function _onDiskVersion(p) {
+  try {
+    if (!fs.existsSync(p)) return 0;
+    const raw = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    return isPlainObject(raw) && Number.isInteger(raw._v) ? raw._v : 0;
+  } catch { return 0; }
+}
 
 // Resolved at load() time (not frozen at module load) so tests can repoint HOME/
 // CLAUDE_PLUGIN_DATA + _resetCache(). GLOBAL (not data-dir-scoped) so every writer
@@ -97,12 +112,37 @@ function load() {
     console.error(`[brain-config] user-config backfill skipped: ${err.message}`);
   }
   let override = null;
+  let overrideVersion = 0;
   try {
     const p = userConfigPath();
-    if (fs.existsSync(p)) override = JSON.parse(fs.readFileSync(p, 'utf-8'));
+    if (fs.existsSync(p)) {
+      const raw = JSON.parse(fs.readFileSync(p, 'utf-8'));
+      if (isPlainObject(raw)) {
+        overrideVersion = Number.isInteger(raw._v) ? raw._v : 0;
+        // Strip `_v` before merging — it's a wire/persistence-only version stamp,
+        // never a real config field. Leaking it into the merged config would let
+        // it round-trip back out through getters/dashboard responses as if it
+        // were user data.
+        const { _v, ...rest } = raw;
+        override = rest;
+      }
+    }
   } catch (err) { void err; /* override ausente/ilegível → ignora, usa só o shipped */ }
   _cache = isPlainObject(override) ? deepMerge(shipped, override) : shipped;
+  _cacheVersion = overrideVersion;
   return _cache;
+}
+
+/**
+ * Same as load(), plus the on-disk version of the user-override at the moment
+ * it was read. Callers that intend to save() back MUST capture this version as
+ * their baseline (`save(config, { expectedVersion: version })`) — otherwise a
+ * concurrent saver's change is silently lost (see save()'s CAS check below).
+ * @returns {{config: object, version: number}}
+ */
+function loadWithVersion() {
+  const config = load();
+  return { config, version: _cacheVersion };
 }
 
 function getRetrievalFast() {
@@ -230,7 +270,7 @@ function getOnboarding() {
   return { projectIdentity: o.projectIdentity !== false };
 }
 
-function _resetCache() { _cache = null; }
+function _resetCache() { _cache = null; _cacheVersion = 0; }
 
 // `config` recebido aqui é sempre um snapshot COMPLETO do caller (não um
 // delta) — tanto mcp-wizard.js's start() quanto dashboard.js's PUT
@@ -245,28 +285,49 @@ function _resetCache() { _cache = null; }
 // que outro caller alterou depois. Provado quebrado por teste + reprodução
 // isolada (2026-09-16): o merge perdeu silenciosamente `curation.
 // maxOutputChars` de um caller B ao salvar uma mudança não relacionada de um
-// caller A. Revertido para diff simples contra os defaults — não fecha a
-// race de "lost update" entre saves concorrentes (ver docs/BACKLOG.md
-// "Arquitetura"), mas pelo menos não finge fechar. Fechar de verdade exige
-// CAS/versionamento otimista OU um formato de delta — ambos precisariam
-// tocar dashboard/index.html (o cliente também só rastreia um snapshot
-// completo, `_brainConfig`, nunca um delta), fora do escopo atual.
-function save(config) {
+// caller A.
+//
+// Fechado de verdade em 2026-09-17 via CAS/versionamento otimista: um `_v`
+// inteiro é gravado junto do diff dentro do PRÓPRIO user-config.json (ver
+// _onDiskVersion). Um caller que passa `opts.expectedVersion` (capturado via
+// loadWithVersion() no momento em que leu o config que está prestes a
+// editar) só tem o save aceito se o `_v` em disco AINDA for esse mesmo
+// número — se outro caller salvou no meio, o `_v` já avançou e este save é
+// REJEITADO (throw, fail-loud) em vez de sobrescrever a mudança alheia às
+// cegas. Callers que não passam expectedVersion mantêm o comportamento
+// antigo (last-write-wins, sem checagem) — é o caso de testes que escrevem
+// o override diretamente. Os dois call-sites de produção (mcp-wizard.js's
+// start(), dashboard.js's PUT /api/brain/backend-config) foram atualizados
+// pra sempre passar expectedVersion.
+function save(config, opts) {
+  const expectedVersion = (opts && Number.isInteger(opts.expectedVersion)) ? opts.expectedVersion : undefined;
   const p = userConfigPath();
   try {
     const { writeJsonAtomic } = require('./atomic-write.js');
     const shipped = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
+    const currentVersion = _onDiskVersion(p);
+    if (expectedVersion !== undefined && currentVersion !== expectedVersion) {
+      const err = new Error(
+        `brain-config save rejected: override on disk changed since it was loaded ` +
+        `(expected version ${expectedVersion}, found ${currentVersion}) — reload and retry`
+      );
+      err.code = 'BRAIN_CONFIG_CONFLICT';
+      throw err;
+    }
     const diff = deepDiff(shipped, config);
-    writeJsonAtomic(p, diff);
+    const nextVersion = currentVersion + 1;
+    writeJsonAtomic(p, { _v: nextVersion, ...diff });
     _cache = null;
+    return nextVersion;
   } catch (err) {
-    console.error(`[brain-config] save failed: ${err.message}`);
+    if (err.code !== 'BRAIN_CONFIG_CONFLICT') console.error(`[brain-config] save failed: ${err.message}`);
     throw err;
   }
 }
 
 module.exports = {
   load,
+  loadWithVersion,
   save,
   deepDiff,
   getRetrievalFast,

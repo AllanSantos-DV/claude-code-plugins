@@ -142,6 +142,19 @@ function resolveUpstream(config, opts, fallback) {
   const wants = mode === 'always' || !!(opts && opts.onLimit);
   if (!wants) return anthropic;
 
+  // PRECEDÊNCIA quando upstream E byok estão AMBOS enabled=true: BYOK sempre
+  // vence — decisão intencional, não bug. O objeto `anthropic` montado acima já
+  // carrega o destino/headers do upstream alternativo, mas a partir daqui ele é
+  // DESCARTADO por completo: o `return` abaixo constrói um objeto novo só a
+  // partir de `b` (config.byok), sem herdar host/port/protocol/forwardHeaders de
+  // `anthropic`. Depois deste ponto, se `misconfigured` disparar (baseUrl do
+  // BYOK ausente/inválida), a request NÃO cai de volta no upstream custom —
+  // cai numa mistura (destino/headers do upstream + `misconfigured` do BYOK),
+  // porque o `Object.assign({}, anthropic, {...})` logo abaixo mescla os dois.
+  // Confirmado com o usuário em 2026-09-17: manter como está, sem mudar
+  // comportamento — só formalizar com este comentário + teste dedicado
+  // (ver 'byok.resolveUpstream: BYOK e upstream ligados juntos' em
+  // scripts/test-units.js).
   const dest = parseBaseUrl(b.baseUrl);
   if (!dest) {
     return Object.assign({}, anthropic, {
