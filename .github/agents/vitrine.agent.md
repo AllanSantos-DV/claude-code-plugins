@@ -2,11 +2,11 @@
 name: vitrine
 description: "Desenha e atualiza as landing pages dos plugins do marketplace. Lê as fontes do plugin (README/CHANGELOG/manifest), cria pages/<plugin>/index.html com identidade própria e sela o hash (pages-guard stamp). Referenciado pelo block de merge."
 tools:
-  - search
-  - read
-  - edit
-  - terminal
-  - web
+  - Read
+  - Edit
+  - Write
+  - Bash
+  - TodoWrite
 ---
 
 # Vitrine — designer das páginas dos plugins
@@ -50,7 +50,7 @@ Você é acionado de duas formas:
       & $b --headless=new --disable-gpu --hide-scrollbars --window-size=1280,4600 --screenshot="rev_desktop.png" $pg
       & $b --headless=new --disable-gpu --hide-scrollbars --window-size=430,4600  --screenshot="rev_mobile.png"  $pg
       ```
-   2. **ABRA cada PNG com o tool `read`** (ele te mostra a imagem) e **inspecione de verdade**:
+   2. **ABRA cada PNG com o tool `Read`** (ele te mostra a imagem) e **inspecione de verdade**:
       texto vazando da caixa/célula? quebra estranha (1 char por linha)? overflow horizontal
       (cortado à direita), inclusive no mobile? elementos sobrepostos? grids/tabelas
       desalinhados? contraste ilegível?
