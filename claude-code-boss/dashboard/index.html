@@ -396,9 +396,8 @@ code { color: var(--fg); font-family: var(--font-mono); }
         <p id="java-check-msg" class="text-muted" style="margin-top:.5rem;font-size:.75rem"></p>
         <div style="margin-top:.5rem;display:flex;align-items:center;gap:.75rem;flex-wrap:wrap">
           <button class="btn-primary btn-sm" id="mcp-test-btn" onclick="testMcpMemory()" data-i18n="brain.testConn">Test connection</button>
-          <button class="btn-sm" id="mcp-wizard-btn" onclick="startMcpWizard()" style="display:none" data-i18n="brain.activateBtn">Activate Server</button>
+          <button class="btn-sm" id="mcp-wizard-btn" onclick="startMcpWizard()" style="display:none" data-i18n="brain.downloadServer">↓ Download &amp; activate server</button>
           <span id="mcp-test-status" class="text-muted" style="font-size:.75rem"></span>
-          <a href="https://github.com/AllanSantos-DV/mcp-memory-server-releases/releases/latest" target="_blank" rel="noopener" style="font-size:.75rem" data-i18n="brain.downloadServer">↓ Download memory server</a>
         </div>
 
         <div id="mcp-migrate-block" style="margin-top:.75rem;border-top:1px dashed var(--border);padding-top:.75rem">
@@ -1162,8 +1161,8 @@ const I18N = {
     'brain.currentStatus': 'Current status', 'brain.jarPath': 'JAR Path', 'brain.javaArgs': 'Java Args',
     'brain.transport': 'Connection mode', 'brain.serverUrl': 'Server URL',
     'brain.ingestion': 'Send the conversation to the server (ingest for curation)',
-    'brain.downloadServer': '↓ Download memory server', 'brain.testConn': 'Test connection',
-    'brain.activateBtn': 'Activate Server', 'brain.wizardTitle': 'Activate Memory Server',
+    'brain.downloadServer': '↓ Download & activate server', 'brain.testConn': 'Test connection',
+    'brain.wizardTitle': 'Activate Memory Server',
     'brain.wizardJava': 'Checking Java', 'brain.wizardJar': 'Validating JAR',
     'brain.wizardDaemon': 'Starting Daemon', 'brain.wizardHandshake': 'MCP Handshake',
     'brain.wizardProject': 'Project Validation',
@@ -1341,8 +1340,8 @@ const I18N = {
     'brain.currentStatus': 'Status atual', 'brain.jarPath': 'Caminho do JAR', 'brain.javaArgs': 'Args Java',
     'brain.transport': 'Modo de conexão', 'brain.serverUrl': 'URL do servidor',
     'brain.ingestion': 'Enviar a conversa ao servidor (ingestão para curadoria)',
-    'brain.downloadServer': '↓ Baixar memory server', 'brain.testConn': 'Testar conexão',
-    'brain.activateBtn': 'Ativar Servidor', 'brain.wizardTitle': 'Ativar Memory Server',
+    'brain.downloadServer': '↓ Baixar e ativar servidor', 'brain.testConn': 'Testar conexão',
+    'brain.wizardTitle': 'Ativar Memory Server',
     'brain.wizardJava': 'Verificando Java', 'brain.wizardJar': 'Validando JAR',
     'brain.wizardDaemon': 'Iniciando Daemon', 'brain.wizardHandshake': 'Handshake MCP',
     'brain.wizardProject': 'Validação do Projeto',
@@ -2343,7 +2342,7 @@ async function testMcpMemory() {
       if (d.javaVersion) parts.push(`java ${d.javaVersion}`);
       status.textContent = `✓ ${parts.join(' · ')} (${r.ms}ms)`;
       const wizardBtn = document.getElementById('mcp-wizard-btn');
-      if (wizardBtn) wizardBtn.style.display = 'none';
+      if (wizardBtn) wizardBtn.style.display = (d.action === 'will-download' || d.action === 'will-auto-download') ? '' : 'none';
     } else {
       status.style.color = 'var(--danger)';
       status.textContent = `✗ ${r?.error || 'Failed'}`;
@@ -3561,7 +3560,7 @@ function renderWizard(state) {
     const stepNum = i + 1;
     const icon = stepNum < state.step ? '✓' : stepNum === state.step ? '⟳' : '○';
     const color = s && s.status === 'ok' ? 'var(--success)' : s && s.status === 'running' ? 'var(--accent)' : 'var(--fg-dim)';
-    return '<div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.35rem;font-size:.82rem"><span style="color:' + color + ';width:1.2rem">' + icon + '</span><span style="color:' + (s && s.status === 'ok' ? 'var(--fg)' : 'var(--fg-muted)') + '">' + label + '</span>' + (s && s.detail ? '<span class="text-muted" style="font-size:.75rem">— ' + s.detail + '</span>' : '') + '</div>';
+    return '<div style="display:flex;align-items:center;gap:.5rem;margin-bottom:.35rem;font-size:.82rem"><span style="color:' + color + ';width:1.2rem">' + icon + '</span><span style="color:' + (s && s.status === 'ok' ? 'var(--fg)' : 'var(--fg-muted)') + '">' + label + '</span>' + (s && s.detail ? '<span class="text-muted" style="font-size:.75rem">— ' + escapeHtml(s.detail) + '</span>' : '') + '</div>';
   }).join('');
   const d = document.getElementById('wizard-detail');
   if (d) d.textContent = state.status === 'completed' ? '✓ Activation complete!' : state.status === 'failed' ? 'Activation failed' : 'Step ' + state.step + ' of ' + state.total + '...';

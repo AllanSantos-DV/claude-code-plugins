@@ -3156,9 +3156,13 @@ if (require.main === module) {
     resolveUpstreamTimeoutMs,
     parseTimeoutEnv,
     // TTFB opt-in (config.byok.logLatency): exportado p/ o teste hermético provar
-    // o passthrough (sem logLatency) e o wrapping do callback (com logLatency)
-    // sem depender de um logger espionável (ver docs/BACKLOG.md #10 — mesma
-    // limitação de infraestrutura de spy já mapeada pra parseTimeoutEnv).
+    // o passthrough (sem logLatency) e o wrapping do callback (com logLatency).
     withLatencyLog,
+    // `logger` exportado (docs/BACKLOG.md #10/#11): parseTimeoutEnv/withLatencyLog
+    // chamam `logger.warn`/`logger.info` fazendo lookup da propriedade NO MOMENTO
+    // da chamada — um teste pode substituir `logger.warn`/`logger.info` por um spy
+    // (e restaurar depois) neste MESMO objeto exportado, sem precisar de outro
+    // mecanismo de injeção.
+    logger,
   };
 }

@@ -1387,6 +1387,64 @@ test('config-testers: mcp-memory http mode probes the daemon /health', async () 
   }
 });
 
+// ─── lib/mcp-health.js — backend mcp-memory probeHealth ─────────────────────
+// BACKLOG.md registrava uma falha crônica pré-existente e não-relacionada aqui
+// ("mcp-health probeHealth: backend mcp-memory conectado via daemon real (fake)
+// e desconectado quando porta fechada"), a investigar quando alguém mexesse em
+// mcp-health.js de novo. Investigação (2026-09-18): esse teste não existe em
+// lugar NENHUM do código-fonte atual (grep no repo inteiro só acha o nome em
+// BACKLOG.md e em logs históricos do curation-guard) — ou seja, `probeHealth`
+// (usado por dashboard.js's GET /api/brain/health E por brain-status.js) está
+// SEM cobertura de teste alguma há quem sabe quanto tempo, não com um teste
+// flakiness. A "falha crônica" registrada no backlog já não reproduz (3
+// rodadas consecutivas de test-units.js: 0 failed) porque o teste que falhava
+// simplesmente não roda mais — não porque o bug foi corrigido. Fechando o gap
+// de vez: teste novo, real (servidor HTTP de verdade + porta TCP de verdade
+// fechando), sem simular nada por regex/mock de rede.
+const mcpHealth = require('./lib/mcp-health.js');
+
+test('mcp-health.probeHealth: backend mcp-memory conectado via daemon real (fake) e desconectado quando porta fechada', async () => {
+  const http2 = require('http');
+  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mcphealth-rundir-'));
+  const server = http2.createServer((req, res) => {
+    if (req.method === 'GET' && req.url === '/health') {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ ok: true }));
+    }
+    res.writeHead(404); res.end();
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  const daemonUrl = `http://127.0.0.1:${port}`;
+  fs.writeFileSync(path.join(runDir, 'daemon.json'), JSON.stringify({ url: daemonUrl }));
+
+  const config = { backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', runDir } } };
+
+  // probeTcpPort/httpGetJson race the real clock (HEALTH_TIMEOUT_MS=2000,
+  // HTTP_TIMEOUT_MS=3000) against a live TCP connect. Under the full suite's
+  // event-loop load (900+ tests running back to back) a single attempt can miss
+  // that window by pure scheduling jitter even though the daemon is genuinely up
+  // — retry absorbs that jitter without weakening what's asserted (the daemon
+  // stays up the whole time, so a false negative is scheduling noise, not signal).
+  let up;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    up = await mcpHealth.probeHealth(config);
+    if (up.connected) break;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  assertEq(up.backend, 'mcp-memory');
+  assertEq(up.connected, true, 'daemon real respondendo /health com {ok:true} e porta TCP aberta deve reportar connected:true');
+  assertEq(up.details.serverUrl, daemonUrl);
+
+  await new Promise((resolve) => server.close(resolve));
+  // server.close() libera a porta (nada mais escutando nela); daemon.json continua
+  // apontando pra ela — reproduz exatamente o cenário "daemon caiu, config ficou
+  // stale" que dashboard.js/brain-status.js precisam detectar.
+  const down = await mcpHealth.probeHealth(config);
+  assertEq(down.backend, 'mcp-memory');
+  assertEq(down.connected, false, 'porta TCP fechada (nada escutando) deve reportar connected:false, não travar nem lançar');
+});
+
 // ─── decision-detect (regex extractors + heuristic) ─────────────────────────
 const dd = require('./decision-detect.js');
 
@@ -1484,10 +1542,52 @@ test('config-testers: mcp-memory rejects nonexistent jar', async () => {
   assert(/JAR file not found/.test(out.error), `expected "JAR file not found" got: ${out.error}`);
 });
 
-test('config-testers: mcp-memory rejects empty jar and empty url', async () => {
-  const out = await testers.run('mcp-memory', { jarPath: '', downloadUrl: '' });
-  assert(out.ok === false, 'should be false');
-  assert(/downloadUrl is empty|empty/.test(out.error), `expected empty-url err got: ${out.error}`);
+test('config-testers: mcp-memory with empty jar and empty url auto-resolves hardware asset', async () => {
+  // Empty jarPath + empty downloadUrl now means "auto-detect hardware and pick the
+  // matching release asset" (mcp-release-resolver.js), not "nothing to test" — mock
+  // global.fetch so this stays deterministic/offline instead of hitting the real
+  // GitHub API.
+  const realFetch = global.fetch;
+  global.fetch = async (url) => {
+    if (String(url).includes('/releases/latest')) {
+      return {
+        ok: true,
+        json: async () => ({
+          tag_name: 'v9.9.9',
+          assets: [
+            { name: 'mcp-memory-server-9.9.9.jar', browser_download_url: 'https://example.com/cpu.jar', size: 123 },
+            { name: 'mcp-memory-server-9.9.9.jar.sha256', browser_download_url: 'https://example.com/cpu.jar.sha256' },
+            { name: 'mcp-memory-server-9.9.9-gpu.jar', browser_download_url: 'https://example.com/gpu.jar', size: 456 },
+          ],
+        }),
+      };
+    }
+    return { ok: true, text: async () => 'deadbeef'.repeat(8) + '  mcp-memory-server-9.9.9.jar' };
+  };
+  try {
+    const out = await testers.run('mcp-memory', { jarPath: '', downloadUrl: '' });
+    assert(out.details && out.details.action === 'will-auto-download', `expected will-auto-download, got: ${JSON.stringify(out)}`);
+    assertEq(out.details.resolvedVersion, 'v9.9.9');
+    // Real hardware detection runs (nvidia-smi) — the CI/dev box may or may not
+    // have an NVIDIA GPU, so assert the asset MATCHES whatever gpuDetected says,
+    // rather than hardcoding one variant.
+    const expectedAsset = out.details.gpuDetected ? 'mcp-memory-server-9.9.9-gpu.jar' : 'mcp-memory-server-9.9.9.jar';
+    assertEq(out.details.resolvedAsset, expectedAsset);
+  } finally {
+    global.fetch = realFetch;
+  }
+});
+
+test('config-testers: mcp-memory auto-resolve surfaces GitHub API failure', async () => {
+  const realFetch = global.fetch;
+  global.fetch = async () => ({ ok: false, status: 503 });
+  try {
+    const out = await testers.run('mcp-memory', { jarPath: '', downloadUrl: '' });
+    assert(out.ok === false, 'should be false');
+    assert(/auto-download resolution failed/.test(out.error), `expected resolution-failed err got: ${out.error}`);
+  } finally {
+    global.fetch = realFetch;
+  }
 });
 
 test('config-testers: mcp-memory rejects non-JAR file (no PK magic)', async () => {
@@ -5975,6 +6075,80 @@ test('FASE-G mcp-wizard: reset limpa estado persistido; getState devolve idle (r
   }
 });
 
+test('mcp-wizard.ensureJar: hash bate → verified; hash não bate → mismatch (remove arquivo); sem hash publicado → unverified (não finge verificação)', async () => {
+  const mcpWizard = require('./lib/mcp-wizard.js');
+  const { PassThrough } = require('stream');
+  const https = require('https');
+  const crypto = require('crypto');
+  const realGet = https.get;
+
+  const content = Buffer.from('fake-jar-bytes-' + Date.now());
+  const correctHash = crypto.createHash('sha256').update(content).digest('hex');
+
+  // downloadJar() calls the `https.get` property at call time (not a destructured
+  // reference captured at require-time), so — same trick as global.fetch elsewhere
+  // in this suite — swapping the property on the real `https` module object is
+  // enough to intercept it without any dependency-injection plumbing in mcp-wizard.js.
+  const mockNextDownload = () => {
+    https.get = (_url, cb) => {
+      const res = new PassThrough();
+      res.statusCode = 200;
+      cb(res);
+      process.nextTick(() => res.end(content));
+      return { on: () => {} };
+    };
+  };
+  const emit = (status, detail) => { emit.calls.push({ status, detail }); };
+
+  try {
+    // Case 1: manual downloadUrl override + matching expectedSha256 → real byte-for-byte
+    // check ran and passed → status message may honestly say "verified".
+    {
+      mockNextDownload();
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ensurejar-'));
+      const jarPath = path.join(tmpDir, 'x.jar');
+      emit.calls = [];
+      await mcpWizard.ensureJar(jarPath, { downloadUrl: 'https://example.test/x.jar', expectedSha256: correctHash }, emit);
+      assert(fs.existsSync(jarPath), 'jar deve existir após download com hash batendo');
+      const last = emit.calls[emit.calls.length - 1];
+      assertEq(last.status, 'ok');
+      assert(/verified$/.test(last.detail), `esperado detail terminando em "verified", veio: ${last.detail}`);
+    }
+
+    // Case 2: expectedSha256 configurado mas não bate com o conteúdo baixado →
+    // deve jogar erro E remover o arquivo (nunca deixar um JAR não-confiável no disco).
+    {
+      mockNextDownload();
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ensurejar-'));
+      const jarPath = path.join(tmpDir, 'x.jar');
+      let threw = null;
+      try {
+        await mcpWizard.ensureJar(jarPath, { downloadUrl: 'https://example.test/x.jar', expectedSha256: 'deadbeef'.repeat(8) }, emit);
+      } catch (e) { threw = e; }
+      assert(threw && /sha256 mismatch/.test(threw.message), `esperado erro de mismatch, veio: ${threw && threw.message}`);
+      assert(!fs.existsSync(jarPath), 'JAR com hash divergente deve ser removido, nunca ficar disponível pro daemon');
+    }
+
+    // Case 3: sem expectedSha256 nenhum (nem publicado pelo release, nem configurado
+    // manualmente) → nada foi checado, então o status TEM que dizer "unverified"
+    // explicitamente — este é exatamente o gap fail-loud fechado nesta rodada.
+    {
+      mockNextDownload();
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ensurejar-'));
+      const jarPath = path.join(tmpDir, 'x.jar');
+      emit.calls = [];
+      await mcpWizard.ensureJar(jarPath, { downloadUrl: 'https://example.test/x.jar', expectedSha256: '' }, emit);
+      assert(fs.existsSync(jarPath), 'jar deve existir (baixado, mesmo sem verificação)');
+      const last = emit.calls[emit.calls.length - 1];
+      assertEq(last.status, 'ok');
+      assert(/unverified/.test(last.detail), `esperado detail mencionando "unverified", veio: ${last.detail}`);
+      assert(!/verified$/.test(last.detail) || /unverified/.test(last.detail), 'nunca pode terminar em "verified" puro sem ter checado nada');
+    }
+  } finally {
+    https.get = realGet;
+  }
+});
+
 test('FASE-G brain-status: relatório segue o contrato {mode, connected, project, backend, details, latency}', async () => {
   const saved = process.env.CLAUDE_PLUGIN_DATA;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bstatus-'));
@@ -7278,6 +7452,73 @@ test('router.parseTimeoutEnv: env <= 0 → invalida, cai pro default', () => {
     assertEq(router.parseTimeoutEnv('ROUTER_TEST_TIMEOUT_XYZ', 1234), 1234);
   } finally {
     delete process.env.ROUTER_TEST_TIMEOUT_XYZ;
+  }
+});
+
+// Fecha os gaps #10 e #11 do BACKLOG.md: os testes acima só provavam o valor
+// de retorno de parseTimeoutEnv/withLatencyLog, nunca que `logger.warn`/
+// `logger.info` são de fato chamados — uma regressão que removesse só a
+// chamada de log (mantendo o fallback/wrapping corretos) passaria despercebida.
+// index.js agora exporta o objeto `logger` (mesma referência usada
+// internamente); como `logger.warn(...)`/`logger.info(...)` fazem lookup da
+// propriedade NO MOMENTO da chamada, substituir o método aqui é visível pro
+// código de produção sem precisar de outro mecanismo de injeção.
+test('router.parseTimeoutEnv: env inválida chama logger.warn com o env/valor/default', () => {
+  const original = router.logger.warn;
+  let call = null;
+  router.logger.warn = (msg, extra) => { call = { msg, extra }; };
+  process.env.ROUTER_TEST_TIMEOUT_XYZ = 'abc';
+  try {
+    router.parseTimeoutEnv('ROUTER_TEST_TIMEOUT_XYZ', 1234);
+    assert(call !== null, 'logger.warn precisa ser chamado quando a env é inválida');
+    assertEq(call.extra.env, 'ROUTER_TEST_TIMEOUT_XYZ');
+    assertEq(call.extra.valor, 'abc');
+    assertEq(call.extra.default, 1234);
+  } finally {
+    delete process.env.ROUTER_TEST_TIMEOUT_XYZ;
+    router.logger.warn = original;
+  }
+});
+
+test('router.parseTimeoutEnv: env ausente NÃO chama logger.warn (fallback silencioso é o contrato)', () => {
+  const original = router.logger.warn;
+  let called = false;
+  router.logger.warn = () => { called = true; };
+  delete process.env.ROUTER_TEST_TIMEOUT_XYZ;
+  try {
+    router.parseTimeoutEnv('ROUTER_TEST_TIMEOUT_XYZ', 1234);
+    assertEq(called, false, 'env ausente é o caminho normal (default silencioso) — não deve logar warning');
+  } finally {
+    router.logger.warn = original;
+  }
+});
+
+test('router.withLatencyLog: logLatency:true chama logger.info com host/ms/status no formato documentado', () => {
+  const original = router.logger.info;
+  let call = null;
+  router.logger.info = (msg, extra) => { call = { msg, extra }; };
+  try {
+    const wrapped = router.withLatencyLog({ logLatency: true, host: 'byok.example.com' }, () => {});
+    wrapped({ statusCode: 200 });
+    assert(call !== null, 'logger.info precisa ser chamado quando logLatency:true');
+    assertEq(call.msg, 'Upstream TTFB');
+    assertEq(call.extra.host, 'byok.example.com');
+    assertEq(call.extra.status, 200);
+    assertEq(typeof call.extra.ms, 'number');
+  } finally {
+    router.logger.info = original;
+  }
+});
+
+test('router.withLatencyLog: sem logLatency NÃO chama logger.info (passthrough puro é o contrato)', () => {
+  const original = router.logger.info;
+  let called = false;
+  router.logger.info = () => { called = true; };
+  try {
+    router.withLatencyLog({ logLatency: false, host: 'byok.example.com' }, () => {})({ statusCode: 200 });
+    assertEq(called, false, 'sem logLatency é passthrough puro — não deve logar TTFB');
+  } finally {
+    router.logger.info = original;
   }
 });
 
@@ -9865,6 +10106,60 @@ test('dashboard.getRouterConfig: byokSafe serializa 0 como 0 (não null) e ausen
   });
 });
 
+// Fecha o gap "RESOLVIDO PARCIALMENTE" do BACKLOG.md (item Testes: getRouterConfig):
+// o teste acima só cobria fixedTimeoutMs/rotatingTimeoutMs/logLatency (campos novos
+// na época). Os campos mais antigos do mesmo byokSafe (classifyRemote, byok.enabled,
+// byok.mode, fixedEndpoint) e os top-level enabled/mode nunca tinham um teste que
+// provasse que a rota HTTP de fato reflete o override — mesmo padrão de risco: um
+// refactor que trocasse `!!(byok && byok.enabled)` por algo mais "esperto" quebraria
+// silenciosamente sem a suíte acusar.
+test('dashboard.getRouterConfig: byok.classifyRemote/byok.enabled/byok.mode/byok.fixedEndpoint e enabled top-level refletem o override', () => {
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-getrouterconfig-oldfields-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      delete require.cache[require.resolve('./dashboard.js')];
+      const dash = require('./dashboard.js');
+
+      const captureJson = () => {
+        let body = null;
+        const res = { writeHead: () => {}, end: (s) => { body = JSON.parse(s); } };
+        dash.getRouterConfig({}, res);
+        return body;
+      };
+
+      // O baseline (sem override) depende do config/router-config.json REAL do
+      // repo (shipped), não de um fixture isolado — mesma limitação já presente
+      // no resto deste handler. Por isso o teste não fixa o valor do baseline;
+      // ele prova que o override FORÇA cada campo pro valor oposto, nas duas
+      // direções, o que é robusto a qualquer shipped.enabled atual.
+      let payload = captureJson();
+      assertEq(payload.byok.enabled, false, 'sem override, byok.enabled é false (shipped/config não liga BYOK por padrão)');
+      assertEq(payload.byok.classifyRemote, false, 'sem override, classifyRemote é false');
+      assertEq(payload.byok.fixedEndpoint, false, 'sem override, fixedEndpoint é false');
+      assertEq(payload.byok.mode, 'on-limit', 'sem override, byok.mode cai no default on-limit');
+
+      dash.writeRouterOverride({ enabled: true });
+      assertEq(captureJson().enabled, true, 'override.enabled=true precisa ligar enabled na resposta HTTP');
+      dash.writeRouterOverride({ enabled: false });
+      assertEq(captureJson().enabled, false, 'override.enabled=false precisa desligar enabled na resposta HTTP');
+
+      dash.writeRouterOverride({
+        byok: { enabled: true, mode: 'always', baseUrl: 'https://e.net', classifyRemote: true, fixedEndpoint: true },
+      });
+      payload = captureJson();
+      assertEq(payload.byok.enabled, true, 'override precisa ligar byok.enabled na resposta HTTP');
+      assertEq(payload.byok.classifyRemote, true, 'override precisa ligar classifyRemote na resposta HTTP');
+      assertEq(payload.byok.fixedEndpoint, true, 'override precisa ligar fixedEndpoint na resposta HTTP');
+      assertEq(payload.byok.mode, 'always', 'override precisa mudar byok.mode na resposta HTTP');
+    } finally {
+      process.env.CLAUDE_PLUGIN_DATA = saved;
+      delete require.cache[require.resolve('./dashboard.js')];
+    }
+  });
+});
+
 // dashboard.js normaliza timeout inválido pra undefined no SERVIDOR (teste acima),
 // mas o CLIENTE (dashboard/index.html's applyRouter()) fazia `if (Number.isFinite(v)
 // && v >= 0) byok.fixedTimeoutMs = v * 1000;` sem `else` — um valor inválido digitado
@@ -11071,6 +11366,34 @@ test('brain_retrieve_context: routes retrieve-core\'s local search through kbWor
   } finally {
     rc.retrieve = originalRetrieve;
   }
+});
+
+test('capture_lesson: getKB() routes index/graph through kbWorker.indexClient/graphClient when kbWorker is present (not a direct require of brain-index.js/brain-graph.js)', async () => {
+  const url = require('url');
+  const R = process.env.CLAUDE_PLUGIN_ROOT;
+  const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+  const calls = [];
+  const fakeKbWorker = {
+    storeClient: {
+      init: async () => { calls.push('store.init'); },
+      search: async () => [],
+      save: async () => { calls.push('store.save'); },
+    },
+    indexClient: {
+      init: async () => { calls.push('index.init'); },
+      index: async () => { calls.push('index.index'); },
+    },
+    graphClient: {
+      init: async () => { calls.push('graph.init'); },
+      registerNode: async () => { calls.push('graph.registerNode'); },
+    },
+    metricsClient: { init: async () => false },
+  };
+  const server = mod.createBrainServer({ pluginRoot: R, mode: 'http', kbWorker: fakeKbWorker });
+  const res = await server.handleTool('capture_lesson', { title: 'kbWorker index/graph routing', summary: 'proves getKB() does not fall back to a direct require when kbWorker is present', cwd: R });
+  assert(!res.isError, `capture_lesson must succeed against the fake kbWorker: ${res.isError ? res.content[0].text : ''}`);
+  assert(calls.includes('index.init') && calls.includes('index.index'), 'getKB() must route index through kbWorker.indexClient, not a direct require of brain-index.js — a direct require would mutate the real singleton and never touch this fake, leaving these calls unrecorded');
+  assert(calls.includes('graph.init') && calls.includes('graph.registerNode'), 'getKB() must route graph through kbWorker.graphClient, not a direct require of brain-graph.js, for the same reason');
 });
 
 // ─── Policy adjudication (Fase 3 micro-B0) — the JUDGE loop ───────────────────
@@ -13435,14 +13758,47 @@ test('brain daemon supervisor: the "spawned" status was removed — source-level
 //
 // IMPORTANT for anyone extending this section: kb-worker-client.js calls
 // `worker.unref()` on purpose (so the worker never keeps the real daemon process
-// alive by itself). That means a bare `await client.storeClient.X()` with nothing
-// else scheduled on the event loop can let Node decide there is no more pending
-// work and exit the WHOLE process (code 0, no error, no assertion ever runs) before
-// the worker's reply arrives — verified empirically while writing this test. Every
-// test below holds an explicit `setInterval` keepalive for its duration to avoid
-// silently vanishing instead of passing or failing.
+// alive by itself). BACKLOG.md #14 documented a real testability trap this caused:
+// a bare `await client.storeClient.X()` with nothing else scheduled on the event
+// loop could let Node decide there is no more pending work and exit the WHOLE
+// process (code 0, no error, no assertion ever runs) before the worker's reply
+// arrived — verified empirically while writing this test. FIXED in kb-worker-client.js:
+// call() now does `worker.ref()` when a call goes in flight and settle() does
+// `worker.unref()` once `pending` drains back to empty — the worker only holds the
+// process alive for the duration of an in-flight round-trip, never at rest (so the
+// real daemon call-site, http-daemon.js, is unaffected: its httpServer already held
+// the process regardless). The tests below still hold an explicit `setInterval`
+// keepalive anyway — that is about isolating THIS test's timing from the rest of the
+// shared test-runner process, not a workaround for the now-fixed trap. The dedicated
+// regression test right after this comment proves the fix directly: a real child
+// process with ZERO keepalive of its own.
 const KB_WORKER_CLIENT_URL = pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'kb-worker-client.js')).href;
 const KB_WORKER_PATH = path.join(ROOT, 'servers', 'brain-server', 'lib', 'kb-worker.js');
+
+test('kb-worker-client: a bare await with ZERO keepalive of its own does not exit the process early (BACKLOG.md #14 regression)', () => {
+  // Roda num processo Node FILHO real, de propósito — o bug só se manifesta na
+  // ausência de QUALQUER outro handle ref'd no event loop, o que este próprio
+  // arquivo de testes nunca reproduz sozinho (o test-runner sempre tem outros
+  // handles vivos). Sem o fix (worker.ref() em call() / worker.unref() em
+  // settle()), este script filho terminaria (exit 0, sem "OK" no stdout) ANTES
+  // da resposta do worker chegar — reproduzindo exatamente a armadilha descrita
+  // no BACKLOG.md.
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-kbw-noleak-'));
+  const scriptPath = path.join(tmp, 'probe.mjs');
+  const project = 'kbw-noleak-' + Date.now();
+  fs.writeFileSync(scriptPath, `
+    import { createKbWorkerClient } from ${JSON.stringify(KB_WORKER_CLIENT_URL)};
+    const client = createKbWorkerClient({ pluginRoot: ${JSON.stringify(ROOT)} });
+    await client.storeClient.init({ project: ${JSON.stringify(project)} });
+    await client.storeClient.save({ id: 'kbw-noleak-e1', title: 'T', summary: 'S', content: {}, type: 'lesson', tags: [], project: ${JSON.stringify(project)} });
+    const got = await client.storeClient.get('kbw-noleak-e1');
+    if (got && got.id === 'kbw-noleak-e1') { console.log('OK'); process.exit(0); }
+    console.error('FAIL: entry not retrievable — process likely exited before the worker replied'); process.exit(1);
+  `);
+  const { execFileSync } = require('child_process');
+  const out = execFileSync(process.execPath, [scriptPath], { encoding: 'utf8', timeout: 30000 });
+  assert(out.includes('OK'), `child process with no keepalive must survive to receive the worker reply, got: ${JSON.stringify(out)}`);
+});
 
 test('kb-worker-client: real worker round-trip — init/save/get/delete via the actual worker_thread + RPC framing', async () => {
   const { createKbWorkerClient } = await import(KB_WORKER_CLIENT_URL);
@@ -13579,7 +13935,7 @@ test('kb-worker-client: a late reply arriving after its call already timed out i
   }
 });
 
-test('kb-worker-client: STORE_METHODS/METRICS_METHODS stay in sync with brain-store.js/metrics-store.js\'s real exports (no silent drift)', () => {
+test('kb-worker-client: STORE_METHODS/METRICS_METHODS/INDEX_METHODS/GRAPH_METHODS stay in sync with their modules\' real exports (no silent drift)', () => {
   const src = fs.readFileSync(path.join(ROOT, 'servers', 'brain-server', 'lib', 'kb-worker-client.js'), 'utf8');
   function extractArray(name) {
     const m = src.match(new RegExp(`${name}\\s*=\\s*\\[([\\s\\S]*?)\\];`));
@@ -13593,10 +13949,16 @@ test('kb-worker-client: STORE_METHODS/METRICS_METHODS stay in sync with brain-st
   }
   const storeMethods = extractArray('STORE_METHODS');
   const metricsMethods = extractArray('METRICS_METHODS');
+  const indexMethods = extractArray('INDEX_METHODS');
+  const graphMethods = extractArray('GRAPH_METHODS');
   const storeExports = publicExportNames(require('./brain-store.js'));
   const metricsExports = publicExportNames(require('./lib/metrics-store.js'));
+  const indexExports = publicExportNames(require('./brain-index.js'));
+  const graphExports = publicExportNames(require('./brain-graph.js'));
   assertEq(storeMethods, storeExports, 'kb-worker-client.js\'s STORE_METHODS must list EXACTLY brain-store.js\'s public methods — a method added to brain-store.js without a matching STORE_METHODS entry is silently unreachable in http mode (getKB never exposes it), and a stale entry left after a rename/removal breaks with "unknown store.X" only the first time it is called from production');
   assertEq(metricsMethods, metricsExports, 'kb-worker-client.js\'s METRICS_METHODS must list EXACTLY metrics-store.js\'s public methods, for the same reason');
+  assertEq(indexMethods, indexExports, 'kb-worker-client.js\'s INDEX_METHODS must list EXACTLY brain-index.js\'s public methods, for the same reason');
+  assertEq(graphMethods, graphExports, 'kb-worker-client.js\'s GRAPH_METHODS must list EXACTLY brain-graph.js\'s public methods, for the same reason');
 });
 
 // ─── Runner ──────────────────────────────────────────────────────────────────

@@ -231,16 +231,19 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
   const PLUGIN_ROOT = pluginRoot;
 
   // ─── KB modules (lazy-loaded) ──────────────────────────────────────────────
-  // kbWorker (set by http-daemon.js, one per daemon process) routes store's
-  // synchronous SQLite calls into a worker_thread so they never block this
-  // process's main thread — see lib/kb-worker.js for why. 'stdio' mode (test-
-  // units.js direct-library calls only, no shared daemon) has no kbWorker and
-  // falls back to the direct require, matching its pre-worker behavior exactly.
+  // kbWorker (set by http-daemon.js, one per daemon process) routes store's,
+  // index's and graph's synchronous I/O (better-sqlite3 for store; fs.readFileSync/
+  // writeFileAtomic for index/graph) into a worker_thread so none of it blocks
+  // this process's main thread — see lib/kb-worker.js for why. All three modules
+  // hold process-wide singleton state (_db/_project/_index/_graph), so all three
+  // need the same routing, not just store. 'stdio' mode (test-units.js direct-
+  // library calls only, no shared daemon) has no kbWorker and falls back to the
+  // direct require, matching its pre-worker behavior exactly.
   async function getKB(project) {
     if (_testHooks && typeof _testHooks.getKB === 'function') return _testHooks.getKB(project);
     const store = kbWorker ? kbWorker.storeClient : require(path.join(PLUGIN_ROOT, 'scripts', 'brain-store.js'));
-    const index = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-index.js'));
-    const graph = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-graph.js'));
+    const index = kbWorker ? kbWorker.indexClient : require(path.join(PLUGIN_ROOT, 'scripts', 'brain-index.js'));
+    const graph = kbWorker ? kbWorker.graphClient : require(path.join(PLUGIN_ROOT, 'scripts', 'brain-graph.js'));
     await store.init({ project });
     await index.init({ project });
     await graph.init({ project });
