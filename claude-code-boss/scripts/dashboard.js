@@ -21,6 +21,7 @@ const { isValidHost, tokenMatches } = require('./lib/dashboard-auth.js');
 const { resolveStaticPath } = require('./lib/dashboard-static.js');
 const { writeFileAtomic, writeJsonAtomic } = require('./lib/atomic-write.js');
 const { routerUserConfigPath, hardenRouterConfigPerms } = require('./lib/router-config-path.js');
+const { normalizeTimeoutMs } = require('./lib/normalize-timeout.js');
 
 // Session token — generated at boot, injected into index.html, required on all /api/* requests.
 const SESSION_TOKEN = crypto.randomBytes(16).toString('hex');
@@ -1506,18 +1507,6 @@ async function getSkillRoi(req, res, url) {
  * safety-net switch (opt-in), persisted as {fallback:{enabled}} so the shipped
  * fallback.triggerStatuses/cooldown survive the deep-merge.
  */
-// Normaliza um override de teto (ms) vindo do body do dashboard: número finito
-// >= 0 passa — `0` é um valor VÁLIDO e INTENCIONAL ("sem timeout de TTFB", ver
-// model-router/byok.js `normalizeTimeoutOverride`) — qualquer outra coisa
-// (ausente, null, string, negativo, NaN) vira `undefined` ("sem override,
-// usa a constante padrão do módulo"). Espelha a mesma regra de byok.js; não
-// importa o módulo porque dashboard.js não depende hoje de servers/model-router
-// (cada camada valida a própria entrada, mesmo padrão já usado no resto do arquivo).
-function normalizeTimeoutMs(v) {
-  if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return undefined;
-  return v;
-}
-
 function writeRouterOverride(body) {
   fs.mkdirSync(path.dirname(ROUTER_USER_CONFIG), { recursive: true });
   // Lê user-config atual DIRETAMENTE

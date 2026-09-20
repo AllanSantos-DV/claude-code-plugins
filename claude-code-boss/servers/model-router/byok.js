@@ -18,6 +18,8 @@
 //
 // Sem I/O, sem estado global: tudo entra por parâmetro.
 
+const { normalizeTimeoutMs } = require('../../scripts/lib/normalize-timeout.js');
+
 const DEFAULT_HOST = 'api.anthropic.com';
 const DEFAULT_PORT = 443;
 const DEFAULT_PROTOCOL = 'https:';
@@ -55,19 +57,9 @@ function upstreamCfg(config) {
   return (u && typeof u === 'object') ? u : {};
 }
 
-/**
- * Normaliza um override de teto (ms) vindo de config: número finito >= 0 passa,
- * qualquer outra coisa (ausente, string, negativo, NaN) devolve `undefined` —
- * "sem override, use a constante padrão do módulo". `0` é um valor DIFERENTE de
- * ausente: é o sentinel explícito de "sem timeout de TTFB" (ver index.js —
- * `req.setTimeout(0, ...)` já é como o Node desarma um timeout, então 0 aqui
- * propaga naturalmente até virar "sem limite" de verdade).
- * @returns {number|undefined}
- */
-function normalizeTimeoutOverride(v) {
-  if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return undefined;
-  return v;
-}
+// Override de teto (ms) vindo de config — contrato compartilhado com
+// scripts/dashboard.js, ver scripts/lib/normalize-timeout.js.
+const normalizeTimeoutOverride = normalizeTimeoutMs;
 
 /**
  * Para onde ESTA request deve ir.

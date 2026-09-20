@@ -16,9 +16,15 @@
  * processed one at a time (a worker has a single event loop too), which keeps
  * kb-worker-client.js's call ordering intact.
  *
+ * brain-index.js/brain-graph.js live here too: same failure mode, different
+ * I/O (synchronous fs.readFileSync/writeFileAtomic instead of better-sqlite3),
+ * same process-wide singleton state (_index/_graph) that must not be mutated
+ * from two threads at once.
+ *
  * This file lives under servers/brain-server/ (package.json "type":"module"),
- * so it's loaded as ESM — but brain-store.js/metrics-store.js (under
- * claude-code-boss/scripts/) are CommonJS. createRequire() bridges the two.
+ * so it's loaded as ESM — but brain-store.js/metrics-store.js/brain-index.js/
+ * brain-graph.js (under claude-code-boss/scripts/) are CommonJS. createRequire()
+ * bridges the two.
  */
 import { parentPort, workerData } from 'node:worker_threads';
 import path from 'node:path';
@@ -30,6 +36,8 @@ const { pluginRoot } = workerData;
 const modules = {
   store: require(path.join(pluginRoot, 'scripts', 'brain-store.js')),
   metrics: require(path.join(pluginRoot, 'scripts', 'lib', 'metrics-store.js')),
+  index: require(path.join(pluginRoot, 'scripts', 'brain-index.js')),
+  graph: require(path.join(pluginRoot, 'scripts', 'brain-graph.js')),
 };
 
 parentPort.on('message', async (msg) => {

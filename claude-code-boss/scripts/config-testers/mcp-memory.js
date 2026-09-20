@@ -15,6 +15,7 @@ const https = require('https');
 const { URL } = require('url');
 const crypto = require('crypto');
 const { spawnSync } = require('child_process');
+const { detectGpu, resolveLatestAsset } = require('../lib/mcp-release-resolver.js');
 
 const MIN_JAVA_MAJOR = 21;
 
@@ -122,15 +123,40 @@ async function test(input) {
   const downloadUrl = (input && input.downloadUrl || '').trim();
   const expectedSha256 = (input && input.expectedSha256 || '').trim().toLowerCase();
 
-  // Path A — no jar yet; verify downloadUrl reachable.
+  // Path A — no jar yet; verify downloadUrl reachable (explicit override) or resolve the
+  // hardware-appropriate release asset automatically (empty downloadUrl = auto-detect).
   if (!jarPath) {
-    const url = await checkDownloadUrl(downloadUrl);
-    if (!url.ok) return { ok: false, error: url.error, ms: Date.now() - t0 };
+    if (downloadUrl) {
+      const url = await checkDownloadUrl(downloadUrl);
+      if (!url.ok) return { ok: false, error: url.error, ms: Date.now() - t0 };
+      const java = detectJava();
+      return {
+        ok: java.ok,
+        error: java.ok ? undefined : java.error,
+        details: { action: 'will-download', downloadSize: url.size, javaVersion: java.version },
+        ms: Date.now() - t0,
+      };
+    }
+    const gpu = detectGpu();
+    let asset;
+    try {
+      asset = await resolveLatestAsset({ gpu: gpu.present });
+    } catch (err) {
+      return { ok: false, error: `auto-download resolution failed: ${err.message}`, ms: Date.now() - t0 };
+    }
     const java = detectJava();
     return {
       ok: java.ok,
       error: java.ok ? undefined : java.error,
-      details: { action: 'will-download', downloadSize: url.size, javaVersion: java.version },
+      details: {
+        action: 'will-auto-download',
+        gpuDetected: gpu.present,
+        gpuName: gpu.name || '',
+        resolvedAsset: asset.name,
+        resolvedVersion: asset.version,
+        downloadSize: asset.size,
+        javaVersion: java.version,
+      },
       ms: Date.now() - t0,
     };
   }

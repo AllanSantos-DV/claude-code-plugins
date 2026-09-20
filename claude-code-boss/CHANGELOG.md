@@ -1,5 +1,21 @@
 # Changelog
 
+## [2.26.0] - 2026-09-20
+
+### Added — download automático do memory server (hardware-aware)
+- **`scripts/lib/mcp-release-resolver.js`** (novo) — detecta GPU NVIDIA local (`nvidia-smi`) e resolve, via GitHub Releases API, o asset correto do `mcp-memory-server` (`-gpu.jar` com GPU, `.jar` CPU-only sem) junto do seu `.sha256`.
+- **`scripts/lib/mcp-wizard.js`** — `ensureJar()` agora baixa automaticamente o JAR ausente (sem exigir `downloadUrl` configurado) e verifica o sha256 do arquivo baixado antes de liberar o uso, apagando e falhando alto em caso de divergência de hash. Quando não há hash publicado pra conferir (asset sem `.sha256`, ou override manual sem `expectedSha256`), o status reporta explicitamente "downloaded (unverified)" em vez de alegar "verified" sem ter checado nada (achado do review adversarial, corrigido nesta mesma entrega).
+- **Dashboard** — botão único "Baixar e ativar servidor" (antes eram dois controles: um link manual pro GitHub Releases e um botão de ativação escondido) dispara o fluxo completo automaticamente.
+- `backend.mcpMemory.downloadUrl` vazio (novo default) agora significa "auto-detectar hardware"; uma URL explícita continua funcionando como override manual, com verificação de hash se `expectedSha256` estiver setado.
+- **`dashboard/index.html`** (`renderWizard`) — o `detail` de cada etapa do wizard (agora inclui nome de GPU via `nvidia-smi` e versão/nome de asset vindos da API do GitHub Releases) passa por `escapeHtml()` antes de entrar no `innerHTML`, fechando uma superfície de XSS de baixa severidade que essas novas fontes (hardware local, release remoto) abriram (achado do review adversarial).
+- **`scripts/test-units.js`** — cobertura direta de `mcp-wizard.js`'s `ensureJar()` (hash batendo → "verified", hash divergente → erro + arquivo removido, sem hash publicado → "unverified" explícito), fechando o gap de teste apontado pelo review (antes só o preview de `config-testers/mcp-memory.js` era testado, não o fluxo real de download/verificação).
+
+### Fixed — dashboard esconde botão de download quando ele é o próximo passo (UX)
+- **`dashboard/index.html` `testMcpMemory()`** — em `r.ok === true` o botão `mcp-wizard-btn` era escondido incondicionalmente, inclusive quando `details.action` era `will-download`/`will-auto-download` (exatamente o caso em que o botão é o único controle de ação). Agora permanece visível nesses dois casos; nos demais (`use-existing`, `remote-daemon`) continua escondido.
+
+### Chore — CI `setup-node` deprecation (Node 20 → 24 forçado)
+- **`.github/workflows/ci.yml`, `release-audit.yml`, `release-guard.yml`, `pages-guard.yml`** — `actions/setup-node@v4` → `@v6` (runtime Node 24). Elimina o warning `Node.js 20 is deprecated... forced to run on Node.js 24` em toda run.
+
 ## [2.25.1] - 2026-09-17
 
 **Correções de robustez: daemon quebrado por arquivo faltante, race de escrita concorrente na config, e validação silenciosa no dashboard.**

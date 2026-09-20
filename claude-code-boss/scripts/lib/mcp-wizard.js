@@ -14,12 +14,14 @@
  */
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { spawnSync, spawn } = require('child_process');
 const https = require('https');
 const http = require('http');
 const { URL } = require('url');
 const { globalDir } = require('./data-dir.js');
 const { loadWithVersion: loadBrainConfigWithVersion, save: saveBrainConfig } = require('./brain-config.js');
+const { detectGpu, resolveLatestAsset } = require('./mcp-release-resolver.js');
 const loadBrainConfig = () => loadBrainConfigWithVersion().config;
 
 const MIN_JAVA_MAJOR = 21;
@@ -164,6 +166,56 @@ async function checkJar(jarPath, downloadUrl) {
   });
 }
 
+function sha256File(filePath) {
+  return new Promise((resolve, reject) => {
+    const hash = crypto.createHash('sha256');
+    const stream = fs.createReadStream(filePath);
+    stream.on('data', (d) => hash.update(d));
+    stream.on('end', () => resolve(hash.digest('hex')));
+    stream.on('error', reject);
+  });
+}
+
+/**
+ * Resolve where to download the JAR from: an explicit mcpCfg.downloadUrl is a manual
+ * override and wins as-is; otherwise auto-detect the local GPU and pick the matching
+ * release asset (see mcp-release-resolver.js) — this is the "sem GPU baixa CPU only"
+ * contract the download button now fulfills automatically.
+ */
+async function resolveDownload(mcpCfg) {
+  if (mcpCfg.downloadUrl) return { url: mcpCfg.downloadUrl, sha256: (mcpCfg.expectedSha256 || '').toLowerCase() };
+  const gpu = detectGpu();
+  const asset = await resolveLatestAsset({ gpu: gpu.present });
+  return { url: asset.url, sha256: asset.sha256, gpu, version: asset.version, name: asset.name };
+}
+
+/** Ensure jarPath exists and is a valid JAR, auto-downloading (hardware-aware) if missing. */
+async function ensureJar(jarPath, mcpCfg, emit) {
+  if (fs.existsSync(jarPath)) {
+    const jarCheck = await checkJar(jarPath, '');
+    if (!jarCheck.ok) throw new Error(`JAR error: ${jarCheck.error}`);
+    emit('ok', `JAR valid (${Math.round(jarCheck.size / 1024 / 1024)}MB)`);
+    return;
+  }
+  emit('running', 'Detecting hardware...');
+  const resolved = await resolveDownload(mcpCfg);
+  const label = resolved.gpu
+    ? (resolved.gpu.present ? `GPU detected (${resolved.gpu.name}) — downloading GPU build ${resolved.version}` : `No GPU detected — downloading CPU-only build ${resolved.version}`)
+    : 'Downloading configured JAR...';
+  emit('running', label);
+  await downloadJar(resolved.url, jarPath);
+  if (resolved.sha256) {
+    const actual = await sha256File(jarPath);
+    if (actual !== resolved.sha256) {
+      fs.unlinkSync(jarPath);
+      throw new Error(`Downloaded JAR sha256 mismatch (expected ${resolved.sha256.slice(0, 16)}…, got ${actual.slice(0, 16)}…) — file removed`);
+    }
+    emit('ok', 'JAR downloaded and verified');
+  } else {
+    emit('ok', 'JAR downloaded (unverified — no checksum published for this asset)');
+  }
+}
+
 async function downloadJar(downloadUrl, jarPath) {
   return new Promise((resolve, reject) => {
     const dir = path.dirname(jarPath);
@@ -293,7 +345,6 @@ async function start(projectId) {
       const mcpCfg = (config.backend && config.backend.mcpMemory) || {};
       const transport = mcpCfg.transport === 'http' ? 'http' : 'stdio';
       const jarPath = mcpCfg.jarPath || path.join(require('./data-dir.js').dataDir(), 'mcp', 'mcp-memory-server.jar');
-      const downloadUrl = mcpCfg.downloadUrl || '';
       const javaArgs = mcpCfg.javaArgs || ['-Xmx512m'];
       const workspacePath = path.join(require('./data-dir.js').dataDir(), 'brain', _state.projectId);
 
@@ -304,13 +355,7 @@ async function start(projectId) {
           _emit(2, 'ok', `Daemon reachable at ${daemon.url}`);
         } else {
           _emit(2, 'running', 'Daemon down — ensuring JAR...');
-          const jarCheck = await checkJar(jarPath, downloadUrl);
-          if (jarCheck.needsDownload) {
-            _emit(2, 'running', 'Downloading JAR...');
-            await downloadJar(jarCheck.downloadUrl, jarPath);
-          } else if (!jarCheck.ok) {
-            throw new Error(`JAR error: ${jarCheck.error}`);
-          }
+          await ensureJar(jarPath, mcpCfg, (status, detail) => _emit(2, status, detail));
           _emit(2, 'running', 'Starting daemon...');
           await spawnDaemon(jarPath, workspacePath, javaArgs);
           _emit(2, 'ok', 'Daemon restarted');
@@ -322,16 +367,7 @@ async function start(projectId) {
         _emit(3, 'ok', `Handshake OK (${hs.tools.length} tools)`);
       } else {
         _emit(2, 'running', 'Checking JAR...');
-        const jarCheck = await checkJar(jarPath, downloadUrl);
-        if (jarCheck.needsDownload) {
-          _emit(2, 'running', 'Downloading JAR...');
-          await downloadJar(jarCheck.downloadUrl, jarPath);
-          _emit(2, 'ok', 'JAR downloaded');
-        } else if (!jarCheck.ok) {
-          throw new Error(`JAR error: ${jarCheck.error}`);
-        } else {
-          _emit(2, 'ok', `JAR valid (${Math.round(jarCheck.size / 1024 / 1024)}MB)`);
-        }
+        await ensureJar(jarPath, mcpCfg, (status, detail) => _emit(2, status, detail));
 
         _emit(3, 'running', 'Starting daemon...');
         const spawnResult = await spawnDaemon(jarPath, workspacePath, javaArgs);
@@ -405,6 +441,9 @@ function reset() {
 
 module.exports = {
   start, getState, reset, wizardStateFile, checkJava, checkJar, validateDaemon, handshake, REQUIRED_TOOLS,
+  // Exported for isolated unit testing of the hardware-aware auto-download path
+  // (mocking mcp-release-resolver.js / downloadJar) without a real spawn/network flow.
+  resolveDownload, ensureJar, sha256File,
   // Exported for isolated unit testing only (same convention as brain-config.js's
   // _resetCache) — lets lock semantics be verified without driving the full
   // start() orchestration (which spawns real `java` subprocesses).
