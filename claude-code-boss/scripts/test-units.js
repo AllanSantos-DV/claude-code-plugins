@@ -14027,10 +14027,10 @@ test('dispatchKbTool: calls to two projects landing on DIFFERENT worker slots ru
   const R = process.env.CLAUDE_PLUGIN_ROOT;
   const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
   const T = 200;
-  function slowStore(label) {
+  function slowStore() {
     return { count: async () => { await new Promise((r) => setTimeout(r, T)); return 0; } };
   }
-  const kb = (label) => ({ getKB: async () => ({ store: slowStore(label), index: { index: async () => {} }, graph: { registerNode: async () => {} } }) });
+  const kb = () => ({ getKB: async () => ({ store: slowStore(), index: { index: async () => {} }, graph: { registerNode: async () => {} } }) });
   // Deterministic mock, on purpose (per the Plan): 'parallelA' -> slot 0, 'parallelB' -> slot 1.
   // A real hash could collide by chance and make this test flaky without ever failing loudly.
   const fakeKbWorker = { poolSize: 2, workerIndexFor: (project) => (project === 'parallelA' ? 0 : 1) };
