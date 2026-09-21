@@ -3462,6 +3462,36 @@ test('project-id resolveProjectChain (F2): ancestor-spine union, deepest-first, 
   } finally { fs.rmSync(gitRoot, { recursive: true, force: true }); }
 });
 
+test('project-id resolveProjectChain: env CCB_PROJECT_ID wins as focusId over the cwd\'s own git-remote/marker identity, not just resolveProjectId', () => {
+  // Regression for a BACKLOG.md claim (2026-09-20, ADR-014 Fase-0 audit) that
+  // brain_retrieve_context's focusId (fed by resolveProjectChain -> tryResolveProjectId)
+  // silently ignores CCB_PROJECT_ID when the cwd resolves to SOME identity of its own
+  // (e.g. a real git repo) -- because focusId||project would then always pick focusId,
+  // discarding the env override entirely. Re-verified 2026-09-21: _resolveWithStrength's
+  // rung 1 (env) is checked BEFORE rung 4 (git-remote), so tryResolveProjectId already
+  // returns the forced id regardless of what the cwd would otherwise resolve to -- the
+  // claim was a misread of the code, not a live bug. This test locks that in.
+  const cwdWithOwnIdentity = pidTmpDir('ccb-chain-env-override-');
+  try {
+    const fakeGitWithRemote = (args) => {
+      const k = args.join(' ');
+      if (k === 'remote get-url origin') return 'git@github.com:Acme/OwnRepo.git';
+      if (k === 'rev-parse --show-toplevel') return cwdWithOwnIdentity;
+      return null;
+    };
+    const out = projectId.resolveProjectChain({
+      cwd: cwdWithOwnIdentity,
+      env: { CCB_PROJECT_ID: 'forced-override' },
+      git: fakeGitWithRemote,
+    });
+    // `chain` is the ancestor-spine for recall (deliberately still walks the cwd's real
+    // markers/git-remote regardless of env) -- only `focusId` (the active dispatch/lock
+    // key used as `focusId || project`) must honor the override.
+    assertEq(out.focusId, 'forced-override', 'env override wins as focusId, not the cwd\'s own git-remote identity');
+    assertEq(out.chain[0], 'forced-override', 'the forced id still leads the spine (pushed first, deepest)');
+  } finally { fs.rmSync(cwdWithOwnIdentity, { recursive: true, force: true }); }
+});
+
 // ─── project-identity-advisory: fragile-basename nudge (SessionStart) ─────────
 const pia = require('./project-identity-advisory.js');
 
