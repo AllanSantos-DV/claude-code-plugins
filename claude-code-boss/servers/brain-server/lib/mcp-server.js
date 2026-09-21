@@ -501,7 +501,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
   /** Dispatch entry point for KB_TOOLS: resolve project(s) → lock the right slot(s) → run. */
   function dispatchKbTool(name, args, run) {
     let projects;
-    try { projects = resolveDispatchProjects(name, args); } catch { return run(); }
+    try { projects = resolveDispatchProjects(name, args); } catch (err) { void err; return run(); }
     return withLocks(projects.map(workerIndexFor), run);
   }
 
