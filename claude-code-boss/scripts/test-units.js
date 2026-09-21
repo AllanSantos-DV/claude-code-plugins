@@ -11280,7 +11280,7 @@ test('kbLock: a SHARED kbLock serializes KB_TOOLS calls across two createBrainSe
   function slowStore(label) {
     return { count: async () => { log.push(`enter:${label}`); await new Promise((r) => setTimeout(r, 30)); log.push(`exit:${label}`); return 0; } };
   }
-  const sharedLock = mod.createKbLock();
+  const sharedLock = mod.createKbLockPool(1);
   const kb = (label) => ({ getKB: async () => ({ store: slowStore(label), index: { index: async () => {} }, graph: { registerNode: async () => {} } }) });
   const serverA = mod.createBrainServer({ pluginRoot: R, mode: 'http', kbLock: sharedLock, _testHooks: kb('A') });
   const serverB = mod.createBrainServer({ pluginRoot: R, mode: 'http', kbLock: sharedLock, _testHooks: kb('B') });
@@ -11330,15 +11330,19 @@ test('policy_shadow_report: routes metrics reads through kbWorker.metricsClient 
 
   let calledViaWorker = false;
   const fakeKbWorker = {
-    storeClient: {},
-    metricsClient: {
-      getEvaluationCountsIsolated: async () => { calledViaWorker = true; return []; },
-    },
+    poolSize: 1,
+    workerIndexFor: () => 0,
+    clientsFor: () => ({
+      storeClient: {},
+      metricsClient: {
+        getEvaluationCountsIsolated: async () => { calledViaWorker = true; return []; },
+      },
+    }),
   };
   const server = mod.createBrainServer({ pluginRoot: R, mode: 'http', kbWorker: fakeKbWorker });
   const res = await server.handleTool('policy_shadow_report', { cwd: R, rangeDays: 7 });
   assert(!res.isError, `policy_shadow_report should succeed via the worker client, got: ${res.content && res.content[0] && res.content[0].text}`);
-  assert(calledViaWorker, 'policy_shadow_report must read metrics via kbWorker.metricsClient in http mode, not a direct synchronous require()');
+  assert(calledViaWorker, 'policy_shadow_report must read metrics via kbWorker.clientsFor(project).metricsClient in http mode, not a direct synchronous require()');
 });
 
 // ─── brain_retrieve_context routes local search through kbWorker (no /health freeze) ───
@@ -11359,10 +11363,15 @@ test('brain_retrieve_context: routes retrieve-core\'s local search through kbWor
   let seenDeps = null;
   rc.retrieve = async (_prompt, _opts, deps) => { seenDeps = deps; return { entries: [], capabilities: [] }; };
   try {
-    const fakeKbWorker = { storeClient: { marker: 'STORE_CLIENT' }, metricsClient: {} };
+    const storeClientMarker = { marker: 'STORE_CLIENT' };
+    const fakeKbWorker = {
+      poolSize: 1,
+      workerIndexFor: () => 0,
+      clientsFor: () => ({ storeClient: storeClientMarker, metricsClient: {} }),
+    };
     const server = mod.createBrainServer({ pluginRoot: R, mode: 'http', kbWorker: fakeKbWorker });
     await server.handleTool('brain_retrieve_context', { prompt: 'does this route through the worker client', cwd: R });
-    assert(seenDeps && seenDeps.store === fakeKbWorker.storeClient, "brain_retrieve_context must pass kbWorker.storeClient as retrieve()'s deps.store in http mode, not fall back to a direct require of brain-store.js");
+    assert(seenDeps && seenDeps.store === storeClientMarker, "brain_retrieve_context must pass kbWorker.clientsFor(project).storeClient as retrieve()'s deps.store in http mode, not fall back to a direct require of brain-store.js");
   } finally {
     rc.retrieve = originalRetrieve;
   }
@@ -11374,26 +11383,30 @@ test('capture_lesson: getKB() routes index/graph through kbWorker.indexClient/gr
   const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
   const calls = [];
   const fakeKbWorker = {
-    storeClient: {
-      init: async () => { calls.push('store.init'); },
-      search: async () => [],
-      save: async () => { calls.push('store.save'); },
-    },
-    indexClient: {
-      init: async () => { calls.push('index.init'); },
-      index: async () => { calls.push('index.index'); },
-    },
-    graphClient: {
-      init: async () => { calls.push('graph.init'); },
-      registerNode: async () => { calls.push('graph.registerNode'); },
-    },
-    metricsClient: { init: async () => false },
+    poolSize: 1,
+    workerIndexFor: () => 0,
+    clientsFor: () => ({
+      storeClient: {
+        init: async () => { calls.push('store.init'); },
+        search: async () => [],
+        save: async () => { calls.push('store.save'); },
+      },
+      indexClient: {
+        init: async () => { calls.push('index.init'); },
+        index: async () => { calls.push('index.index'); },
+      },
+      graphClient: {
+        init: async () => { calls.push('graph.init'); },
+        registerNode: async () => { calls.push('graph.registerNode'); },
+      },
+      metricsClient: { init: async () => false },
+    }),
   };
   const server = mod.createBrainServer({ pluginRoot: R, mode: 'http', kbWorker: fakeKbWorker });
   const res = await server.handleTool('capture_lesson', { title: 'kbWorker index/graph routing', summary: 'proves getKB() does not fall back to a direct require when kbWorker is present', cwd: R });
   assert(!res.isError, `capture_lesson must succeed against the fake kbWorker: ${res.isError ? res.content[0].text : ''}`);
-  assert(calls.includes('index.init') && calls.includes('index.index'), 'getKB() must route index through kbWorker.indexClient, not a direct require of brain-index.js — a direct require would mutate the real singleton and never touch this fake, leaving these calls unrecorded');
-  assert(calls.includes('graph.init') && calls.includes('graph.registerNode'), 'getKB() must route graph through kbWorker.graphClient, not a direct require of brain-graph.js, for the same reason');
+  assert(calls.includes('index.init') && calls.includes('index.index'), 'getKB() must route index through kbWorker.clientsFor(project).indexClient, not a direct require of brain-index.js — a direct require would mutate the real singleton and never touch this fake, leaving these calls unrecorded');
+  assert(calls.includes('graph.init') && calls.includes('graph.registerNode'), 'getKB() must route graph through kbWorker.clientsFor(project).graphClient, not a direct require of brain-graph.js, for the same reason');
 });
 
 // ─── Policy adjudication (Fase 3 micro-B0) — the JUDGE loop ───────────────────
@@ -13787,11 +13800,12 @@ test('kb-worker-client: a bare await with ZERO keepalive of its own does not exi
   const scriptPath = path.join(tmp, 'probe.mjs');
   const project = 'kbw-noleak-' + Date.now();
   fs.writeFileSync(scriptPath, `
-    import { createKbWorkerClient } from ${JSON.stringify(KB_WORKER_CLIENT_URL)};
-    const client = createKbWorkerClient({ pluginRoot: ${JSON.stringify(ROOT)} });
-    await client.storeClient.init({ project: ${JSON.stringify(project)} });
-    await client.storeClient.save({ id: 'kbw-noleak-e1', title: 'T', summary: 'S', content: {}, type: 'lesson', tags: [], project: ${JSON.stringify(project)} });
-    const got = await client.storeClient.get('kbw-noleak-e1');
+    import { createKbWorkerPool } from ${JSON.stringify(KB_WORKER_CLIENT_URL)};
+    const pool = createKbWorkerPool({ pluginRoot: ${JSON.stringify(ROOT)} });
+    const { storeClient } = pool.clientsFor(${JSON.stringify(project)});
+    await storeClient.init({ project: ${JSON.stringify(project)} });
+    await storeClient.save({ id: 'kbw-noleak-e1', title: 'T', summary: 'S', content: {}, type: 'lesson', tags: [], project: ${JSON.stringify(project)} });
+    const got = await storeClient.get('kbw-noleak-e1');
     if (got && got.id === 'kbw-noleak-e1') { console.log('OK'); process.exit(0); }
     console.error('FAIL: entry not retrievable — process likely exited before the worker replied'); process.exit(1);
   `);
@@ -13801,26 +13815,27 @@ test('kb-worker-client: a bare await with ZERO keepalive of its own does not exi
 });
 
 test('kb-worker-client: real worker round-trip — init/save/get/delete via the actual worker_thread + RPC framing', async () => {
-  const { createKbWorkerClient } = await import(KB_WORKER_CLIENT_URL);
+  const { createKbWorkerPool } = await import(KB_WORKER_CLIENT_URL);
   const keepAlive = setInterval(() => {}, 50);
-  const client = createKbWorkerClient({ pluginRoot: ROOT });
+  const pool = createKbWorkerPool({ pluginRoot: ROOT });
   try {
     const project = 'kbw-roundtrip-' + Date.now();
-    await client.storeClient.init({ project });
-    await client.storeClient.save({ id: 'kbw-e1', title: 'T', summary: 'S', content: { detail: 'd' }, type: 'lesson', tags: [], project });
-    const got = await client.storeClient.get('kbw-e1');
+    const { storeClient, metricsClient } = pool.clientsFor(project);
+    await storeClient.init({ project });
+    await storeClient.save({ id: 'kbw-e1', title: 'T', summary: 'S', content: { detail: 'd' }, type: 'lesson', tags: [], project });
+    const got = await storeClient.get('kbw-e1');
     assert(got && got.id === 'kbw-e1', 'a real worker_thread round-trip returns the saved entry (catches method-name typos and RPC id-correlation bugs)');
     assertEq(got.project, project, 'the entry was written under the requested project (worker sees the right module state)');
-    const count = await client.storeClient.count(undefined, project);
+    const count = await storeClient.count(undefined, project);
     assert(count >= 1, 'count() reflects the just-saved entry through the same worker');
     // metricsClient exercises the SECOND module the same worker hosts, under the
     // SAME kb-worker.js message dispatcher — catches a mod:'metrics' regression
     // that a store-only smoke test would miss.
-    const ready = await client.metricsClient.init({ project });
+    const ready = await metricsClient.init({ project });
     assert(ready === true || ready === false, 'metricsClient.init round-trips through the worker and returns a boolean readiness flag');
   } finally {
     clearInterval(keepAlive);
-    await client.shutdown();
+    await pool.shutdown();
   }
 });
 
@@ -13861,31 +13876,34 @@ test('kb-worker.js: an unknown mod (not just an unknown method) is also a struct
 });
 
 test('kb-worker-client: a worker that fails to load (bad pluginRoot) rejects a pending call AND every future call — never hangs', async () => {
-  const { createKbWorkerClient } = await import(KB_WORKER_CLIENT_URL);
+  const { createKbWorkerPool } = await import(KB_WORKER_CLIENT_URL);
   const keepAlive = setInterval(() => {}, 50);
   // kb-worker.js's top-level `require(path.join(pluginRoot, 'scripts', 'brain-store.js'))`
   // throws synchronously during the worker's module evaluation when pluginRoot is bogus —
   // this is the realistic shape of "a typo/module-resolution break in kb-worker.js itself"
   // the review flagged as untested. It must surface as worker.on('error'), not a hang.
-  const client = createKbWorkerClient({ pluginRoot: path.join(ROOT, 'does-not-exist-' + Date.now()) });
+  // poolSize:1 pins every project to the SAME (only) slot, so both calls below exercise
+  // the one broken worker deterministically regardless of the machine's core count.
+  const pool = createKbWorkerPool({ pluginRoot: path.join(ROOT, 'does-not-exist-' + Date.now()), poolSize: 1 });
+  const { storeClient } = pool.clientsFor('p');
   try {
     let beforeErr = null;
-    try { await client.storeClient.init({ project: 'p' }); } catch (e) { beforeErr = e; }
+    try { await storeClient.init({ project: 'p' }); } catch (e) { beforeErr = e; }
     assert(beforeErr instanceof Error, 'a call already in flight when the worker dies must reject (fail loud), not hang forever');
     // Let the 'error' handler finish flipping the client's dead-state, then confirm
     // a call issued AFTER the crash also fails immediately instead of hanging.
     await new Promise((r) => setTimeout(r, 100));
     let afterErr = null;
-    try { await client.storeClient.get('x'); } catch (e) { afterErr = e; }
+    try { await storeClient.get('x'); } catch (e) { afterErr = e; }
     assert(afterErr instanceof Error, 'a call issued AFTER the worker died must also reject immediately (no silent hang waiting on a dead worker)');
   } finally {
     clearInterval(keepAlive);
-    await client.shutdown().catch(() => {});
+    await pool.shutdown().catch(() => {});
   }
 });
 
 test('kb-worker-client: a call that never gets a matching reply times out and fails loud instead of hanging forever', async () => {
-  const { createKbWorkerClient } = await import(KB_WORKER_CLIENT_URL);
+  const { createKbWorkerPool } = await import(KB_WORKER_CLIENT_URL);
   const keepAlive = setInterval(() => {}, 50);
   // A framing bug in kb-worker.js (wrong/missing response id) would leave this
   // exact scenario indistinguishable from a call that legitimately never replies —
@@ -13893,26 +13911,28 @@ test('kb-worker-client: a call that never gets a matching reply times out and fa
   // stand-in: spinning up the worker_thread and requiring brain-store.js inside it
   // always takes far longer than 1ms, so the timeout path fires reliably without
   // depending on the worker actually misbehaving.
-  const client = createKbWorkerClient({ pluginRoot: ROOT, callTimeoutMs: 1 });
+  const pool = createKbWorkerPool({ pluginRoot: ROOT, callTimeoutMs: 1 });
+  const { storeClient } = pool.clientsFor('kbw-timeout-project');
   try {
     let err = null;
-    try { await client.storeClient.init({ project: 'kbw-timeout-' + Date.now() }); } catch (e) { err = e; }
+    try { await storeClient.init({ project: 'kbw-timeout-' + Date.now() }); } catch (e) { err = e; }
     assert(err instanceof Error, 'a call with no reply within callTimeoutMs must reject, never hang');
     assert(/timed out/i.test(err.message), `rejection must fail loud with a clear timeout message, got: ${err.message}`);
     assert(/store\.init/.test(err.message), `rejection should name the offending mod.method for debuggability, got: ${err.message}`);
   } finally {
     clearInterval(keepAlive);
-    await client.shutdown().catch(() => {});
+    await pool.shutdown().catch(() => {});
   }
 });
 
 test('kb-worker-client: a late reply arriving after its call already timed out is a silent no-op (never resurrects or double-settles)', async () => {
-  const { createKbWorkerClient } = await import(KB_WORKER_CLIENT_URL);
+  const { createKbWorkerPool } = await import(KB_WORKER_CLIENT_URL);
   const keepAlive = setInterval(() => {}, 50);
-  const client = createKbWorkerClient({ pluginRoot: ROOT, callTimeoutMs: 1 });
+  const pool = createKbWorkerPool({ pluginRoot: ROOT, callTimeoutMs: 1 });
+  const { storeClient } = pool.clientsFor('kbw-late-reply-project');
   try {
     let err = null;
-    try { await client.storeClient.init({ project: 'kbw-late-reply-' + Date.now() }); } catch (e) { err = e; }
+    try { await storeClient.init({ project: 'kbw-late-reply-' + Date.now() }); } catch (e) { err = e; }
     assert(err instanceof Error, 'sanity: the short timeout still rejects as expected');
     // The real worker's reply for that same call is still in flight and will land on
     // this same client sometime after the timeout already fired. Give it a generous
@@ -13920,18 +13940,19 @@ test('kb-worker-client: a late reply arriving after its call already timed out i
     await new Promise((r) => setTimeout(r, 500));
     // The client must still be usable afterward — a late reply must not have left
     // stale bookkeeping (e.g. an id collision) that corrupts a subsequent call.
-    const client2 = createKbWorkerClient({ pluginRoot: ROOT });
+    const pool2 = createKbWorkerPool({ pluginRoot: ROOT });
     try {
       const project = 'kbw-late-reply-sanity-' + Date.now();
-      await client2.storeClient.init({ project });
-      const got = await client2.storeClient.count(undefined, project);
+      const { storeClient: storeClient2 } = pool2.clientsFor(project);
+      await storeClient2.init({ project });
+      const got = await storeClient2.count(undefined, project);
       assert(typeof got === 'number', 'a fresh call after a late-arriving timed-out reply still gets a real, correct response');
     } finally {
-      await client2.shutdown();
+      await pool2.shutdown();
     }
   } finally {
     clearInterval(keepAlive);
-    await client.shutdown().catch(() => {});
+    await pool.shutdown().catch(() => {});
   }
 });
 
@@ -13959,6 +13980,148 @@ test('kb-worker-client: STORE_METHODS/METRICS_METHODS/INDEX_METHODS/GRAPH_METHOD
   assertEq(metricsMethods, metricsExports, 'kb-worker-client.js\'s METRICS_METHODS must list EXACTLY metrics-store.js\'s public methods, for the same reason');
   assertEq(indexMethods, indexExports, 'kb-worker-client.js\'s INDEX_METHODS must list EXACTLY brain-index.js\'s public methods, for the same reason');
   assertEq(graphMethods, graphExports, 'kb-worker-client.js\'s GRAPH_METHODS must list EXACTLY brain-graph.js\'s public methods, for the same reason');
+});
+
+// ─── ADR-014 kb-worker POOL — sticky routing, per-slot locking (Fase 3) ───────
+test('canonicalProject: normalizes case and incidental whitespace so two string spellings of the same logical project hash to the same worker', async () => {
+  const { canonicalProject } = await import(KB_WORKER_CLIENT_URL);
+  assertEq(canonicalProject('MyProject'), canonicalProject('myproject'), 'case must not change the routing key');
+  assertEq(canonicalProject('  myproject  '), canonicalProject('myproject'), 'incidental leading/trailing whitespace must not change the routing key');
+  assertEq(canonicalProject(undefined), '', 'undefined normalizes to the empty string, never throws');
+  assertEq(canonicalProject(null), '', 'null normalizes to the empty string, never throws');
+  assertEq(canonicalProject(''), '', 'empty string stays empty');
+});
+
+test('dispatchKbTool: calls to two projects landing on DIFFERENT worker slots run concurrently, not serialized behind one shared lock pool (ADR-014 paralelismo real)', async () => {
+  const url = require('url');
+  const R = process.env.CLAUDE_PLUGIN_ROOT;
+  const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+  const T = 200;
+  function slowStore(label) {
+    return { count: async () => { await new Promise((r) => setTimeout(r, T)); return 0; } };
+  }
+  const kb = (label) => ({ getKB: async () => ({ store: slowStore(label), index: { index: async () => {} }, graph: { registerNode: async () => {} } }) });
+  // Deterministic mock, on purpose (per the Plan): 'parallelA' -> slot 0, 'parallelB' -> slot 1.
+  // A real hash could collide by chance and make this test flaky without ever failing loudly.
+  const fakeKbWorker = { poolSize: 2, workerIndexFor: (project) => (project === 'parallelA' ? 0 : 1) };
+  const sharedLock = mod.createKbLockPool(2);
+  const serverA = mod.createBrainServer({ pluginRoot: R, mode: 'http', kbWorker: fakeKbWorker, kbLock: sharedLock, _testHooks: kb('A') });
+  const serverB = mod.createBrainServer({ pluginRoot: R, mode: 'http', kbWorker: fakeKbWorker, kbLock: sharedLock, _testHooks: kb('B') });
+  const start = Date.now();
+  await Promise.all([
+    serverA.dispatch('brain_count', { project: 'parallelA' }),
+    serverB.dispatch('brain_count', { project: 'parallelB' }),
+  ]);
+  const elapsed = Date.now() - start;
+  assert(elapsed < 1.5 * T, `two calls landing on DIFFERENT pool slots (sharing the same lock pool) must run concurrently (~${T}ms real time), took ${elapsed}ms — looks serialized, defeating the point of a per-slot lock instead of one global lock`);
+});
+
+test('dispatchKbTool: calls to two projects landing on the SAME worker slot still serialize in call order, never interleaved (ADR-014 correctness — the exact bug the old global lock prevented)', async () => {
+  const url = require('url');
+  const R = process.env.CLAUDE_PLUGIN_ROOT;
+  const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+  const log = [];
+  function slowStore(label) {
+    return { count: async () => { log.push(`enter:${label}`); await new Promise((r) => setTimeout(r, 30)); log.push(`exit:${label}`); return 0; } };
+  }
+  const kb = (label) => ({ getKB: async () => ({ store: slowStore(label), index: { index: async () => {} }, graph: { registerNode: async () => {} } }) });
+  // Both projects hash to slot 0 on purpose — this is the collision case, not the happy path.
+  const fakeKbWorker = { poolSize: 2, workerIndexFor: () => 0 };
+  const sharedLock = mod.createKbLockPool(2);
+  const serverA = mod.createBrainServer({ pluginRoot: R, mode: 'http', kbWorker: fakeKbWorker, kbLock: sharedLock, _testHooks: kb('A') });
+  const serverB = mod.createBrainServer({ pluginRoot: R, mode: 'http', kbWorker: fakeKbWorker, kbLock: sharedLock, _testHooks: kb('B') });
+  await Promise.all([
+    serverA.dispatch('brain_count', { project: 'collideA' }),
+    serverB.dispatch('brain_count', { project: 'collideB' }),
+  ]);
+  assertEq(log.length, 4, `expected exactly 4 log entries (enter/exit x2), got: ${JSON.stringify(log)}`);
+  const aStart = log.indexOf('enter:A'); const aEnd = log.indexOf('exit:A');
+  const bStart = log.indexOf('enter:B'); const bEnd = log.indexOf('exit:B');
+  const interleaved = (aStart < bStart && aEnd > bStart) || (bStart < aStart && bEnd > aStart);
+  assert(!interleaved, `two projects colliding on the SAME worker slot must never interleave their KB module singleton state — full sequence: ${JSON.stringify(log)}`);
+  // The full sequence must be a strict "one call finishes fully before the next starts",
+  // not just "non-overlapping" — the plan calls for asserting the exact ordering.
+  const oneFullyBeforeOther = (aEnd < bStart) || (bEnd < aStart);
+  assert(oneFullyBeforeOther, `same-slot calls must run start-to-finish before the next begins, got: ${JSON.stringify(log)}`);
+});
+
+test("dispatchKbTool: a two-project call (capture_lesson scope='user', the real brain_search/brain_store/capture_lesson shape) holds BOTH worker-slot locks for its FULL duration, blocking single-project calls queued on EITHER slot (ADR-014 — resolveDispatchProjects's [project, USER_SENTINEL] case, not just the single-project brain_count case the neighboring tests use)", async () => {
+  const url = require('url');
+  const R = process.env.CLAUDE_PLUGIN_ROOT;
+  const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+  const { USER_SENTINEL } = require(path.join(R, 'scripts', 'lib', 'scope-sanitizer.js'));
+  const T = 60;
+  const log = [];
+  // capture_lesson's own embedder call is bypassed (a real/unready embedder's timing
+  // is irrelevant to this test and would make it flaky) — the slow step is store.save,
+  // which runs on the storageProject=USER_SENTINEL kb object while BOTH locks must
+  // still be held (resolveDispatchProjects returns [callerProject, USER_SENTINEL]
+  // regardless of scope, mirroring the doc comment above resolveDispatchProjects).
+  const noEmbedder = { init: async () => {}, getStatus: () => ({ ready: false }) };
+  const slowGetKB = async () => ({
+    store: {
+      save: async () => { log.push('enter:main'); await new Promise((r) => setTimeout(r, T)); log.push('exit:main'); },
+      search: async () => [],
+    },
+    index: { index: async () => {} },
+    graph: { registerNode: async () => {} },
+  });
+  const fastGetKB = (label) => async () => ({
+    store: { count: async () => { log.push(`enter:${label}`); await new Promise((r) => setTimeout(r, 5)); log.push(`exit:${label}`); return 0; } },
+    index: {},
+    graph: {},
+  });
+  // 'multiProj' (the caller's project) -> slot 0; USER_SENTINEL -> slot 1 — same shape
+  // as the real two-project tools. probeSlot0 shares multiProj's slot; the probe on
+  // USER_SENTINEL directly reuses that sentinel id so it collides with the same lock.
+  const fakeKbWorker = { poolSize: 2, workerIndexFor: (project) => (project === 'multiProj' || project === 'probeSlot0' ? 0 : 1) };
+  const sharedLock = mod.createKbLockPool(2);
+  const mainServer = mod.createBrainServer({ pluginRoot: R, mode: 'http', kbWorker: fakeKbWorker, kbLock: sharedLock, _testHooks: { embedder: noEmbedder, getKB: slowGetKB } });
+  const probe0Server = mod.createBrainServer({ pluginRoot: R, mode: 'http', kbWorker: fakeKbWorker, kbLock: sharedLock, _testHooks: { getKB: fastGetKB('probe0') } });
+  const probe1Server = mod.createBrainServer({ pluginRoot: R, mode: 'http', kbWorker: fakeKbWorker, kbLock: sharedLock, _testHooks: { getKB: fastGetKB('probe1') } });
+
+  await Promise.all([
+    mainServer.dispatch('capture_lesson', { title: 'two-project lock', summary: 'must hold both slots', scope: 'user', project: 'multiProj' }),
+    probe0Server.dispatch('brain_count', { project: 'probeSlot0' }),
+    probe1Server.dispatch('brain_count', { project: USER_SENTINEL }),
+  ]);
+
+  const mainEnter = log.indexOf('enter:main'); const mainExit = log.indexOf('exit:main');
+  const probe0Enter = log.indexOf('enter:probe0'); const probe0Exit = log.indexOf('exit:probe0');
+  const probe1Enter = log.indexOf('enter:probe1'); const probe1Exit = log.indexOf('exit:probe1');
+  assert([mainEnter, mainExit, probe0Enter, probe0Exit, probe1Enter, probe1Exit].every((i) => i !== -1), `expected all three calls to have logged, got: ${JSON.stringify(log)}`);
+  // NOT a fixed-order assertion (main-first) on purpose. withLocks(0,1) acquires the
+  // slots via NESTED continuations, not atomically: it grabs slot 0 synchronously, but
+  // only requests slot 1 from inside slot 0's continuation, one microtask later. Since
+  // this test fires all three dispatches in the same tick, probe1 (which only ever
+  // wants slot 1) can win the race for slot 1's chain before the two-project call's
+  // continuation gets there — and does, deterministically, under Node's microtask
+  // ordering. That's harmless (no interleave, no corruption: main's real slot-1 work
+  // hasn't started yet, so it simply queues behind probe1 for slot 1 same as any other
+  // contender). What actually must NEVER happen — on EITHER slot, regardless of who
+  // wins a same-tick race to request the lock — is two critical sections OVERLAPPING.
+  const overlaps = (aStart, aEnd, bStart, bEnd) => aStart < bEnd && bStart < aEnd;
+  assert(!overlaps(mainEnter, mainExit, probe0Enter, probe0Exit), `the two-project call and a probe sharing its CALLER-project slot must never run their critical sections concurrently: ${JSON.stringify(log)}`);
+  assert(!overlaps(mainEnter, mainExit, probe1Enter, probe1Exit), `the two-project call and a probe sharing its USER_SENTINEL slot must never run their critical sections concurrently: ${JSON.stringify(log)}`);
+  // The caller-project slot (0) IS acquired synchronously up front by the two-project
+  // call, ahead of probe0's dispatch (called right after, in Promise.all's argument
+  // order) — for THAT slot the ordering is deterministic, so assert it directly: probe0
+  // must wait for the ENTIRE two-project critical section (both slots) to finish, not
+  // just the caller-project slot's own portion of it.
+  assert(probe0Enter > mainExit, `a probe on the caller-project slot must wait for the two-project call's FULL critical section (both slots), not just its own slot's portion — probe0 entered before the two-project call finished: ${JSON.stringify(log)}`);
+});
+
+test('workerIndexFor: poolSize=1 pins every project to slot 0, reproducing exactly the current single-worker behavior (os.availableParallelism()===1 in CI/containers)', async () => {
+  const { createKbWorkerPool } = await import(KB_WORKER_CLIENT_URL);
+  const pool = createKbWorkerPool({ pluginRoot: ROOT, poolSize: 1 });
+  try {
+    assertEq(pool.poolSize, 1, 'poolSize:1 is honored exactly, not silently bumped up');
+    assertEq(pool.workerIndexFor('projectA'), 0, 'poolSize=1 means hash % 1 = 0 always, regardless of the project string');
+    assertEq(pool.workerIndexFor('an-entirely-different-project'), 0, 'every project collapses to the single slot');
+    assertEq(pool.workerIndexFor(''), 0, 'even an empty/unresolved project stays on the single slot, never throws');
+  } finally {
+    await pool.shutdown();
+  }
 });
 
 // ─── Runner ──────────────────────────────────────────────────────────────────

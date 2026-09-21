@@ -17,9 +17,11 @@
  *      project/cwd and rejects otherwise (never dumps into 'default'). The
  *      'stdio' mode default instead infers project from process CWD — used
  *      only by the direct-library-call tests mentioned above.
- *   2. withLock(): an async mutex serializing the KB tools. The KB modules are
- *      process-singletons (_db/_project swapped on init); serializing keeps each
- *      getKB(project)→ops atomic across concurrent HTTP sessions.
+ *   2. dispatchKbTool()/kbLockPool: a POOL of async mutexes (ADR-014), one per
+ *      kb-worker pool slot, serializing KB tool calls that land on the SAME slot.
+ *      The KB modules are process-singletons PER WORKER (_db/_project swapped on
+ *      init); serializing per slot keeps each getKB(project)→ops atomic across
+ *      concurrent HTTP sessions, while calls on DIFFERENT slots run in parallel.
  *
  * The tool LOGIC below is unchanged by the transport the assembly is used from.
  */
@@ -227,23 +229,40 @@ export function createKbLock() {
   };
 }
 
+/**
+ * Pool of `poolSize` independent kbLock mutexes (ADR-014 §Decisão item 2) — one per
+ * kb-worker pool slot, so two KB_TOOLS calls that land on DIFFERENT workers (different
+ * projects, different hash bucket) run concurrently instead of queueing behind a single
+ * process-wide mutex, while two calls that land on the SAME worker still serialize
+ * (required: a worker's brain-store.js/brain-index.js/brain-graph.js/metrics-store.js
+ * singleton _db/_project must not be swapped out from under an in-flight call).
+ */
+export function createKbLockPool(poolSize) {
+  const locks = [];
+  for (let i = 0; i < Math.max(1, poolSize); i++) locks.push(createKbLock());
+  return locks;
+}
+
 export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock, _testHooks } = {}) {
   const PLUGIN_ROOT = pluginRoot;
 
   // ─── KB modules (lazy-loaded) ──────────────────────────────────────────────
-  // kbWorker (set by http-daemon.js, one per daemon process) routes store's,
-  // index's and graph's synchronous I/O (better-sqlite3 for store; fs.readFileSync/
-  // writeFileAtomic for index/graph) into a worker_thread so none of it blocks
-  // this process's main thread — see lib/kb-worker.js for why. All three modules
-  // hold process-wide singleton state (_db/_project/_index/_graph), so all three
-  // need the same routing, not just store. 'stdio' mode (test-units.js direct-
-  // library calls only, no shared daemon) has no kbWorker and falls back to the
-  // direct require, matching its pre-worker behavior exactly.
+  // kbWorker (set by http-daemon.js, one per daemon process) is a POOL of N
+  // worker_threads (ADR-014) that routes store's, index's and graph's synchronous
+  // I/O (better-sqlite3 for store; fs.readFileSync/writeFileAtomic for index/graph)
+  // off this process's main thread — see lib/kb-worker.js for why. All three modules
+  // hold process-wide singleton state (_db/_project/_index/_graph) PER WORKER, so
+  // every call for a given `project` must land on the SAME worker for as long as
+  // that project's state is live there — kbWorker.clientsFor(project) resolves the
+  // sticky slot ONCE and returns a bundle whose every method talks to that slot.
+  // 'stdio' mode (test-units.js direct-library calls only, no shared daemon) has no
+  // kbWorker and falls back to the direct require, matching its pre-worker behavior.
   async function getKB(project) {
     if (_testHooks && typeof _testHooks.getKB === 'function') return _testHooks.getKB(project);
-    const store = kbWorker ? kbWorker.storeClient : require(path.join(PLUGIN_ROOT, 'scripts', 'brain-store.js'));
-    const index = kbWorker ? kbWorker.indexClient : require(path.join(PLUGIN_ROOT, 'scripts', 'brain-index.js'));
-    const graph = kbWorker ? kbWorker.graphClient : require(path.join(PLUGIN_ROOT, 'scripts', 'brain-graph.js'));
+    const clients = kbWorker ? kbWorker.clientsFor(project) : null;
+    const store = clients ? clients.storeClient : require(path.join(PLUGIN_ROOT, 'scripts', 'brain-store.js'));
+    const index = clients ? clients.indexClient : require(path.join(PLUGIN_ROOT, 'scripts', 'brain-index.js'));
+    const graph = clients ? clients.graphClient : require(path.join(PLUGIN_ROOT, 'scripts', 'brain-graph.js'));
     await store.init({ project });
     await index.init({ project });
     await graph.init({ project });
@@ -262,7 +281,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
   // treating a pending Promise as always-truthy.
   async function recordLessonMetric(project, payload) {
     try {
-      const metricsStore = kbWorker ? kbWorker.metricsClient : require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'metrics-store.js'));
+      const metricsStore = kbWorker ? kbWorker.clientsFor(project).metricsClient : require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'metrics-store.js'));
       if (await metricsStore.init({ project })) await metricsStore.recordMetric('lesson.captured', payload, null);
     } catch (err) {
       console.error(`[BRAIN-SERVER] recordLessonMetric failed: ${err.message}`);
@@ -314,7 +333,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           // No dedup/merge tool on the mcp-memory daemon's contract (unlike the
           // local path below) — every capture here is an 'admit'. Recorded
           // locally regardless: metrics are per-machine, not part of the KB.
-          recordLessonMetric(project, { type: a.type || 'lesson', decision: 'admit', scope: a.scope || 'auto' });
+          await recordLessonMetric(project, { type: a.type || 'lesson', decision: 'admit', scope: a.scope || 'auto' });
           recordCaptureAck(a.windowId, 'captured');
           return asText({ decision: 'admit', id, type: a.type || 'lesson', project, scope: a.scope || 'auto', backend: 'mcp-memory' });
         }
@@ -410,13 +429,81 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
     return projectId.resolveProjectId({ cwd: process.cwd() });
   }
 
-  // ─── Async mutex (serialize KB ops over the process-singleton DB) ──────────
-  // kbLock is shared across ALL sessions in http mode (one per daemon process,
-  // created by http-daemon.js) so this actually serializes concurrent sessions,
-  // not just one session's own sequential calls. 'stdio' mode (test-only, one
-  // session per process) falls back to a private lock — equivalent there since
-  // there's never more than one session to serialize against.
-  const { withLock } = kbLock || createKbLock();
+  // ─── Async mutex pool (serialize KB ops per kb-worker slot) ────────────────
+  // kbLock is a POOL of N mutexes shared across ALL sessions in http mode (one per
+  // daemon process, created by http-daemon.js) — one lock per kb-worker pool slot
+  // (ADR-014), so two KB_TOOLS calls that land on different workers run concurrently
+  // instead of queueing behind one process-wide mutex. 'stdio' mode (test-only, one
+  // session per process, no kbWorker) falls back to a private single-lock pool —
+  // equivalent there since there's never more than one worker to serialize against.
+  const kbLockPool = kbLock || createKbLockPool(kbWorker ? kbWorker.poolSize : 1);
+
+  /** Resolve the sticky worker slot for `project` — 0 when there's no real pool. */
+  function workerIndexFor(project) {
+    return kbWorker ? kbWorker.workerIndexFor(project) : 0;
+  }
+
+  /**
+   * The set of projects a given KB_TOOLS call may touch INTERNALLY, resolved BEFORE
+   * withLock so the right slot(s) can be locked before any store/index/graph/metrics
+   * call runs. Mirrors each tool's own internal resolution (see the case bodies below)
+   * — this does not change or override what project a tool operates on, it just names
+   * it early enough to pick a lock:
+   *   - brain_search touches USER_SENTINEL's real singleton ONLY when scope==='user'
+   *     (getKB(USER_SENTINEL) at that call site) — scope 'both'/'project' read the user
+   *     tier through searchTwoPass()'s searchIsolated(), a throwaway connection that
+   *     deliberately never touches the singleton, so no lock is needed there.
+   *   - brain_store / capture_lesson touch USER_SENTINEL's real singleton only when
+   *     their effectiveScope (mirroring inferDefaultScope(type, tags) exactly) resolves
+   *     to 'user' — otherwise storageProject === the caller's own project.
+   *     When USER_SENTINEL IS touched, both its slot and the caller's project's slot
+   *     must be held for the call's duration (order: ascending index, to avoid deadlock
+   *     against another call that touches the same two projects). Over-locking
+   *     USER_SENTINEL when it isn't actually touched would serialize unrelated
+   *     projects' calls through that one shared slot, defeating the pool's per-project
+   *     parallelism — hence gating it on the same scope logic each handler uses.
+   *   - brain_retrieve_context's internal query key is `focusId || project` (see its
+   *     handler) — the ONLY of the two that resolveProject(args) alone would miss.
+   *   - brain_related / brain_count touch exactly resolveProject(args).
+   * If resolution itself throws (e.g. HTTP mode with no project/cwd), swallow it here
+   * and dispatch unlocked — handleTool's own resolveProject(args) call inside its
+   * try/catch will throw the SAME error and produce the normal isError response; no
+   * KB access happens without a resolved project, so skipping the lock is harmless.
+   */
+  function resolveDispatchProjects(name, args) {
+    if (name === 'brain_retrieve_context') {
+      const project = resolveProject(args);
+      const { focusId } = projectId.resolveProjectChain({ cwd: (args && args.cwd) || '', sessionRoot: args && args.sessionRoot });
+      return [focusId || project];
+    }
+    const project = resolveProject(args);
+    if (name === 'brain_search') {
+      const scope = (args && args.scope) || 'both';
+      return scope === 'user' ? [project, USER_SENTINEL] : [project];
+    }
+    if (name === 'brain_store' || name === 'capture_lesson') {
+      const scope = (args && args.scope) || 'auto';
+      const type = (args && args.type) || (name === 'capture_lesson' ? 'lesson' : 'note');
+      const tags = (args && args.tags) || [];
+      const effectiveScope = (scope === 'project' || scope === 'user') ? scope : inferDefaultScope(type, tags);
+      return effectiveScope === 'user' ? [project, USER_SENTINEL] : [project];
+    }
+    return [project];
+  }
+
+  /** Acquire the locks for `indices` (deduped, ascending) in order, then run `fn`. */
+  function withLocks(indices, fn) {
+    const ordered = [...new Set(indices)].sort((a, b) => a - b);
+    const step = (i) => (i >= ordered.length ? fn() : kbLockPool[ordered[i]].withLock(() => step(i + 1)));
+    return step(0);
+  }
+
+  /** Dispatch entry point for KB_TOOLS: resolve project(s) → lock the right slot(s) → run. */
+  function dispatchKbTool(name, args, run) {
+    let projects;
+    try { projects = resolveDispatchProjects(name, args); } catch { return run(); }
+    return withLocks(projects.map(workerIndexFor), run);
+  }
 
   // ─── Session Graph Engine (native-java daemon) — pure REST client ────────────
   // The graph_* tools give fast repo exploration (symbols / CALLS / PageRank) by
@@ -756,7 +843,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
             if (hits.length > 0) {
               const merged = await kbStore.merge(hits[0].id, { summary: safeSummary, content: { detail: safeDetail || safeSummary }, confidence });
               if (merged) {
-                recordLessonMetric(storageProject, { type, decision: 'merge', scope: effectiveScope, recurrence: merged.recurrence });
+                await recordLessonMetric(storageProject, { type, decision: 'merge', scope: effectiveScope, recurrence: merged.recurrence });
                 recordCaptureAck(args.windowId, 'captured');
                 if (storageProject !== currentProject) await getKB(currentProject);
                 return { content: [{ type: 'text', text: JSON.stringify({ decision: 'merge', id: hits[0].id, recurrence: merged.recurrence, title: hits[0].title, project: storageProject, scope: effectiveScope }, null, 2) }] };
@@ -771,7 +858,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           await kbStore.save(entry, vector);
           await kbIndex.index(entry);
           await kbGraph.registerNode(entry);
-          recordLessonMetric(storageProject, { type, decision: 'admit', scope: effectiveScope });
+          await recordLessonMetric(storageProject, { type, decision: 'admit', scope: effectiveScope });
           recordCaptureAck(args.windowId, 'captured');
           if (storageProject !== currentProject) await getKB(currentProject);
           return { content: [{ type: 'text', text: JSON.stringify({ decision: 'admit', id: entry.id, type, project: storageProject, scope: effectiveScope }, null, 2) }] };
@@ -833,7 +920,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           // mcp-memory) search path inside retrieve() runs synchronous better-sqlite3
           // work — route it through kbWorker in 'http' mode so brain_retrieve_context
           // (fires on every UserPromptSubmit) can't block /health for other sessions.
-          const { entries, capabilities } = await retrieveCore.retrieve(prompt || '', { project: focusId || project, ancestorIds: chain }, kbWorker ? { store: kbWorker.storeClient } : {});
+          const { entries, capabilities } = await retrieveCore.retrieve(prompt || '', { project: focusId || project, ancestorIds: chain }, kbWorker ? { store: kbWorker.clientsFor(focusId || project).storeClient } : {});
           if (entries.length) {
             try {
               const journal = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'retrieval-journal.js'));
@@ -1029,7 +1116,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           // Same rationale as recordLessonMetric above: getEvaluationCountsIsolated is
           // synchronous SQLite (better-sqlite3) — routed through kbWorker in 'http' mode
           // so this report can't freeze /health for other sessions on the daemon.
-          const metricsStore = kbWorker ? kbWorker.metricsClient : require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'metrics-store.js'));
+          const metricsStore = kbWorker ? kbWorker.clientsFor(pid).metricsClient : require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'metrics-store.js'));
           const { metricsProjectKey } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'metrics-project.js'));
 
           const rangeDays = (typeof a.rangeDays === 'number' && a.rangeDays > 0) ? a.rangeDays : 7;
@@ -1628,7 +1715,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
   server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
-    return KB_TOOLS.has(name) ? withLock(() => handleTool(name, args)) : handleTool(name, args);
+    return KB_TOOLS.has(name) ? dispatchKbTool(name, args, () => handleTool(name, args)) : handleTool(name, args);
   });
 
   // Test/automation seam: expose the raw tool dispatcher so the capture ACK bridge
@@ -1636,9 +1723,10 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
   // end-to-end without a live MCP transport. The SDK ignores extra instance props.
   server.handleTool = handleTool;
   // Test/automation seam: expose the SAME gated path CallToolRequestSchema uses
-  // (KB_TOOLS → withLock(...), everything else → direct), so a test can prove
-  // kbLock actually serializes KB tool calls across two createBrainServer()
-  // instances that share one kbLock — without standing up a live MCP transport.
-  server.dispatch = (name, args) => (KB_TOOLS.has(name) ? withLock(() => handleTool(name, args)) : handleTool(name, args));
+  // (KB_TOOLS → dispatchKbTool(...)'s resolve-then-lock, everything else → direct),
+  // so a test can prove kbLock (now a per-worker-slot pool) actually serializes KB
+  // tool calls that land on the SAME slot across two createBrainServer() instances
+  // that share one kbLock pool — without standing up a live MCP transport.
+  server.dispatch = (name, args) => (KB_TOOLS.has(name) ? dispatchKbTool(name, args, () => handleTool(name, args)) : handleTool(name, args));
   return server;
 }
