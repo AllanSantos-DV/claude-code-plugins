@@ -1,5 +1,15 @@
 # Changelog
 
+## [2.27.0] - 2026-09-21
+
+### Added — pool de kb-workers com roteamento sticky por projeto (ADR-014)
+- **`servers/brain-server/lib/kb-worker-client.js`** — elimina a serialização artificial entre projetos DIFERENTES nas chamadas KB do backend `local`: em vez de um único `worker_thread` compartilhado por TODOS os projetos, agora é um pool de N `worker_threads` (mesmo `kb-worker.js`, sem alteração de conteúdo), com roteamento sticky por `workerIndex = hash(canonicalProject(project)) % N` (`canonicalProject`/`workerIndexFor`, hash djb2) e lock POR WORKER (não mais global) — chamadas em workers diferentes agora rodam de fato concorrentes; chamadas no mesmo worker continuam serializadas em ordem, preservando a correção original. Cobre os 4 módulos singleton (`brain-store`/`brain-index`/`brain-graph`/`metrics-store`).
+- Decisão documentada em **`docs/adr/ADR-014-kb-worker-pool.md`**, reabrindo uma decisão anterior (YAGNI, 2026-09-17) após pesquisa confirmar que a documentação oficial do `better-sqlite3` recomenda exatamente esse padrão (pool de `os.availableParallelism()` workers). Passou por 5 rodadas de revisão adversarial+testabilidade independentes (zero achados) antes da implementação.
+- Validado com smoke manual: dois projetos concorrentes caem em workers diferentes, suas janelas de execução se sobrepõem de fato, e `/health` responde em `max=5ms` sob carga concorrente. Ressalva: a config `backend.type: 'mcp-memory'` (remoto) não exercita o pool local — só relevante para instalações com `backend.type: 'local'`.
+
+### Fixed — cobertura de teste ausente para `CCB_PROJECT_ID` em `resolveProjectChain`
+- Um item de backlog alegava que `CCB_PROJECT_ID` era ignorado pelo `focusId` usado em `brain_retrieve_context`. Investigação (2026-09-21) confirmou que o achado original era falso-positivo — o override já vencia corretamente no código atual. Fechado com teste de regressão dedicado em `scripts/test-units.js`, provando que o comportamento correto está travado por teste automatizado (não muda comportamento de produção).
+
 ## [2.26.0] - 2026-09-20
 
 ### Added — download automático do memory server (hardware-aware)
