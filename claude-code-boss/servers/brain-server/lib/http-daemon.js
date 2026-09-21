@@ -3,9 +3,10 @@
  *
  * StreamableHTTP in STATEFUL mode: each MCP client `initialize` mints a session
  * (mcp-session-id) backed by its own createBrainServer()+transport, kept in a Map.
- * All sessions share the process-singleton KB; createBrainServer's mutex serializes
- * the KB ops across them. A single daemon serves N workspaces/clients (one model,
- * one SQLite) instead of N stdio processes.
+ * All sessions share the process-wide kb-worker POOL (ADR-014); createBrainServer's
+ * per-slot mutex pool serializes KB ops that land on the same sticky worker, while
+ * different projects on different workers run in parallel. A single daemon serves
+ * N workspaces/clients instead of N stdio processes.
  *
  * Singleton-of-process: the caller binds a fixed port; EADDRINUSE means another
  * daemon already owns it (port IS the lock). `/health` exposes pluginRoot+pid so a
@@ -15,8 +16,8 @@ import http from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
-import { createBrainServer, createKbLock } from './mcp-server.js';
-import { createKbWorkerClient } from './kb-worker-client.js';
+import { createBrainServer, createKbLockPool } from './mcp-server.js';
+import { createKbWorkerPool } from './kb-worker-client.js';
 import fs from 'node:fs';
 import { HEALTH_PATH, MCP_PATH, lockFile, ensureToken, requestAllowed, originAllowed, tokenFile, canonicalDataDir } from './daemon-common.js';
 
@@ -45,15 +46,16 @@ async function readJsonBody(req) {
 export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0.0.1', version = '2.0.0' }) {
   const sessions = new Map(); // sessionId -> { server, transport, lastSeen }
   const startedAt = Date.now();
-  // ONE worker for the whole daemon process (not per session): moves brain-store.js's
-  // synchronous SQLite calls off this main thread, so GET /health and every other
-  // session's HTTP traffic keep responding while a KB call is in flight elsewhere.
-  // See lib/kb-worker.js for the root cause this fixes.
-  const kbWorker = createKbWorkerClient({ pluginRoot });
-  // ONE lock for the whole daemon process (not per session): withLock only
-  // serializes KB tool calls across sessions if every session's createBrainServer
-  // shares this same mutex — see createKbLock()'s doc comment in mcp-server.js.
-  const kbLock = createKbLock();
+  // ONE pool of N workers for the whole daemon process (not per session): moves
+  // brain-store.js's synchronous SQLite calls off this main thread, so GET /health
+  // and every other session's HTTP traffic keep responding while a KB call is in
+  // flight elsewhere. Sticky per-project routing (ADR-014) — see lib/kb-worker-client.js.
+  const kbWorker = createKbWorkerPool({ pluginRoot });
+  // ONE lock pool (one mutex per kb-worker slot) for the whole daemon process (not
+  // per session): dispatchKbTool only serializes KB tool calls that land on the SAME
+  // slot across sessions if every session's createBrainServer shares this same pool
+  // — see createKbLockPool()'s doc comment in mcp-server.js.
+  const kbLock = createKbLockPool(kbWorker.poolSize);
   // Shared local token (dashboard pattern) — but ONLY /shutdown requires it now:
   // /mcp is a static .mcp.json "type":"http" url with no room for a runtime
   // secret, so it's gated by originAllowed() alone (see daemon-common.js).

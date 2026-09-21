@@ -1,0 +1,34 @@
+# ADR-014 — Pool de kb-workers com lock por worker (fim da serialização cross-projeto)
+
+**Status:** PROPOSTO (aguardando gate reviewer+tester) | **Data:** 2026-09-20 | **Escopo:** Brain KB daemon (backend `local`)
+
+## Contexto
+
+`kb-worker.js` existe desde ADR-001/fix do `/health` travando: `node:sqlite`/`better-sqlite3` são 100% síncronos (confirmado em `nodejs.org/api/sqlite.html` — "All APIs exposed by this class execute synchronously"), então rodá-los na main thread do daemon bloqueava `/health` de TODAS as sessões quando qualquer projeto fazia uma query lenta.
+
+A correção moveu o SQLite síncrono pra dentro de **um único** `worker_thread`, com `kbLock` (`mcp-server.js:219-228`) serializando GLOBALMENTE toda chamada KB de QUALQUER sessão/projeto através dele. Isso resolveu o travamento de `/health`, mas introduziu um novo gargalo: uma query lenta do projeto A atrasa uma query do projeto B mesmo sendo bancos `.db` completamente independentes (SQLite em WAL já suporta acesso concorrente entre arquivos distintos — não há conflito de dado, só fila artificial de aplicação).
+
+**Correção pós-gate (rodada 1)**: a análise original citava `brain-store.js`/`brain-index.js`/`brain-graph.js` como os módulos com estado singleton por-processo (`_db`/`_project`) que justificam o roteamento sticky. Isso estava **incompleto**: `kb-worker.js` também carrega `metrics-store.js` (comentário do próprio arquivo: "This worker requires brain-store.js and metrics-store.js in ITS OWN thread"), que tem exatamente o mesmo padrão (`let _db = null; let _project = null;`, `init({project})` reabre a conexão se o projeto mudou). Qualquer tool KB que grava telemetria durante a chamada está sujeita à mesma classe de bug (projeto A gravando métrica no banco que acabou de virar B) se `metrics-store` não seguir o mesmo roteamento sticky que os outros 3 módulos. Corrigido na Decisão abaixo: são **4 módulos**, não 3.
+
+Isso foi originalmente marcado YAGNI num fix pontual, sem pesquisa. Pesquisa feita nesta sessão (fontes: docs oficiais Node, docs oficiais `better-sqlite3`, issue público `openclaw/openclaw#138474`) mostrou:
+
+- `better-sqlite3` **recomenda oficialmente** (`docs/threads.md`) um **pool de N workers** (`os.availableParallelism()`), não uma thread única, exatamente para este caso.
+- A diferença de comportamento vs. um servidor Java (ex.: backend alternativo `mcp-memory`) é o modelo de concorrência do runtime (JVM = threads OS nativas 1:1; Node = 1 event loop + workers explícitos), documentada oficialmente por ambos os lados — não é limitação do SQLite.
+- Driver assíncrono alternativo (`node-sqlite3`) foi descartado: arquivado/depreciado, e ainda serializa por mutex interno na mesma conexão.
+
+## Decisão
+
+Pool de `N` `worker_threads` (mesmo `kb-worker.js`, sem alteração de conteúdo), com:
+
+1. **Roteamento sticky por projeto**: `workerIndex = hash(canonicalProject) % N` (hash determinístico, sem estado persistido) — o mesmo projeto sempre cai no mesmo worker, preservando a correção do singleton `_db`/`_project` interno de `brain-store.js`/`brain-index.js`/`brain-graph.js`/**`metrics-store.js`** (**nenhum dos 4 é alterado**). `canonicalProject` é o resultado de UMA função de normalização única (mesma usada hoje internamente por `init({project})` desses módulos, se existir, ou introduzida como parte deste patch) — todo call-site que hoje resolve "o projeto" (incluindo o caminho alternativo `resolveProjectChain`, usado só por `brain_retrieve_context`) precisa passar pela MESMA função antes de calcular o hash. Sem essa normalização única, duas representações de string do mesmo projeto lógico (path relativo vs absoluto, case no Windows, etc.) poderiam hashear para workers diferentes e quebrar a garantia de ordenação por projeto — ver Plano, Fase 0/2.
+2. **Lock por worker, não global**: `kbLock` deixa de ser 1 mutex único e vira `N` mutexes independentes, um por worker do pool. `getKB(project)` já resolve o projeto antes de despachar — passa a resolver também o `workerIndex` (via `canonicalProject`) e usar o lock correspondente. Duas chamadas que caem no MESMO worker continuam serializadas (necessário: evita a query de A ler o banco que acabou de virar B pelo `init()`); chamadas que caem em workers DIFERENTES rodam em paralelo de verdade (threads OS distintas).
+3. `N` default = `os.availableParallelism()`, com teto e override por env (`CCB_KB_WORKER_POOL_SIZE`) — cada worker adicional carrega conexões SQLite + índice em memória MAIS o overhead de baseline de um `worker_thread` do Node (isolate V8 + heap próprios), que não foi medido ainda. Custo por worker é **estimado** como baixo, não confirmado — medição real de RSS por worker é pré-requisito antes de fixar o valor de `CAP` (ver Plano, Q1).
+4. **Caso `N ≤ 1`** (ex.: `os.availableParallelism()` retorna 1 em container/CI com CPU limitada): `hash % 1 = 0` sempre — todo projeto cai no worker único, reproduzindo exatamente o comportamento atual (1 worker, 1 lock, serialização total). Isso é um caso válido e esperado, não um bug, e deve ter cobertura de teste explícita (ver Plano, Fase 3).
+
+## Consequências
+
+- Sem mudança de driver, sem `cluster`/multi-processo, sem reescrever o estado em memória dos 4 módulos — blast radius confinado a `kb-worker-client.js` (pool + hash) e `mcp-server.js` (lock por worker, `getKB` calcula o índice).
+- Os 21 call-sites que usam `brain-store.js`/`brain-index.js`/`brain-graph.js` diretamente, MAIS os call-sites que usam `metrics-store.js` diretamente (`scripts/dashboard.js`, `scripts/tuning-advisory.js`, `scripts/skill-success-detect.js`, `scripts/session-summary.js`, `scripts/research-followup-detect.js`, `scripts/lib/metrics.js` — identificados no gate, rodada 2), fora do daemon HTTP, são **inalterados** — nunca passam pelo pool.
+- Limitação aceita e documentada: dois projetos DIFERENTES que colidem no mesmo `workerIndex` (hash colidiu) continuam serializados entre si — não eliminado, só reduzido pela probabilidade `1/N`. Resize dinâmico do pool fica fora do escopo v1 (tamanho fixo no boot do daemon).
+- Nenhum crescimento de recurso "por projeto" sem teto — cada worker mantém no máximo 1 `_db` ativo por vez POR MÓDULO (store/index/graph/metrics, trocado via `init()` quando processa o próximo projeto que caiu nele), igual ao comportamento atual, só particionado.
+- **Observabilidade adicionada** (não existe hoje): cada chamada do pool emite 2 eventos de log correlacionados por `callId` — início do dispatch (`{callId, project: canonicalProject, workerIndex, mod, method, startedAt}`) e conclusão, sucesso ou erro (`{callId, finishedAt}`). Permite auditoria post-hoc se um usuário reportar dado de um projeto aparecendo em outro, reconstruir a janela `[startedAt, finishedAt]` de cada chamada (necessário pra provar sobreposição/paralelismo real, ver Plano Fase 4), e dá visibilidade da distribuição de carga entre workers (insumo pra validar o `CAP` da pergunta aberta Q1).
