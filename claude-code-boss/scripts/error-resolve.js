@@ -14,35 +14,34 @@
  */
 'use strict';
 
-const { readStdin, parsePayload, emitEmpty } = require('./lib/hook-io.js');
+const { runSideEffectCli } = require('./lib/hook-io.js');
 const { dataDir } = require('./lib/data-dir.js');
 const errorStore = require('./lib/error-store.js');
 const { getErrorGuard } = require('./lib/hooks-config.js');
 
-async function main() {
-  const raw = await readStdin();
-  const ev = parsePayload(raw);
-  if (!ev) return emitEmpty();
-  if (ev.tool_name !== 'Bash') return emitEmpty();
+/**
+ * Pure detector entry point — side effect only (clears a recorded failure's
+ * signature on success). Reply is always `{}`.
+ * @param {object} ev
+ */
+async function run(ev) {
+  if (!ev) return;
+  if (ev.tool_name !== 'Bash') return;
   // A failure means the command did NOT succeed — never clear its record here.
-  if (typeof ev.error === 'string' && ev.error.trim()) return emitEmpty();
+  if (typeof ev.error === 'string' && ev.error.trim()) return;
   const command = (ev.tool_input && ev.tool_input.command) || '';
-  if (!command) return emitEmpty();
+  if (!command) return;
   try {
-    if (getErrorGuard().enabled === false) return emitEmpty();
+    if (getErrorGuard().enabled === false) return;
     const projectKey = errorStore.resolveProjectKey(ev.cwd || process.cwd());
     errorStore.resolve(dataDir(), projectKey, command);
   } catch (err) {
     console.error(`[error-resolve] ${err.message}`);
   }
-  emitEmpty();
 }
 
 if (require.main === module) {
-  main().catch((err) => {
-    console.error(`[error-resolve] crashed: ${err.message}`);
-    emitEmpty();
-  });
+  runSideEffectCli(run, 'error-resolve');
 }
 
-module.exports = { main };
+module.exports = { run };

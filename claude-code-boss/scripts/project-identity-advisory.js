@@ -115,33 +115,36 @@ function buildAdvisory(basename) {
     + `(processo em "Identidade do projeto" no README do plugin). Se ele preferir manter o padrão, siga sem alterar.`;
 }
 
-async function main() {
-  const raw = await readStdin();
-  let event = {};
-  try { event = JSON.parse(raw || '{}'); } catch { /* defaults */ }
-  const eventName = event.hook_event_name || 'SessionStart';
+async function run(event) {
+  if (!getOnboarding().projectIdentity) return null;     // opted out
 
-  if (!getOnboarding().projectIdentity) return emitEmpty();     // opted out
-
-  const cwd = (typeof event.cwd === 'string' && event.cwd) ? event.cwd : process.cwd();
+  const cwd = (event && typeof event.cwd === 'string' && event.cwd) ? event.cwd : process.cwd();
   const nudge = needsProjectIdentityNudge({
     mode: getBackendType(),
     cwd,
     env: process.env,
     mcpProjectId: getMcpProjectId(),
   });
-  if (!nudge) return emitEmpty();
+  if (!nudge) return null;
 
   const file = stampFileFor(cwd);
-  if (onCooldown(file)) return emitEmpty();
+  if (onCooldown(file)) return null;
   stamp(file);
 
-  emitJson({
-    hookSpecificOutput: {
-      hookEventName: eventName,
-      additionalContext: buildAdvisory(path.basename(cwd)),
-    },
-  });
+  return buildAdvisory(path.basename(cwd));
+}
+
+async function main() {
+  const raw = await readStdin();
+  let event = {};
+  try { event = JSON.parse(raw || '{}'); } catch { /* defaults */ }
+  const eventName = event.hook_event_name || 'SessionStart';
+  const text = await run(event);
+  if (text) {
+    emitJson({ hookSpecificOutput: { hookEventName: eventName, additionalContext: text } });
+    return;
+  }
+  emitEmpty();
 }
 
 if (require.main === module) {
@@ -155,6 +158,7 @@ module.exports = {
   readTs,
   stampFileFor,
   stampDir,
+  run,
   buildAdvisory,
   COOLDOWN_MS,
 };

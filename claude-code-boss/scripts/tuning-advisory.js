@@ -59,36 +59,39 @@ async function gather(project) {
   };
 }
 
+async function run(event) {
+  const sp = stampPath();
+  if (onCooldown(sp)) return null;
+
+  const project = (event && event.cwd) ? path.basename(event.cwd) : 'default';
+  let input = null;
+  try { input = await gather(project); }
+  catch (err) { console.error(`[tuning-advisory] ${err && err.message ? err.message : err}`); return null; }
+  if (!input) return null;
+
+  const { recommendations } = analyze(input);
+  const top = recommendations.find(r => r.level === 'warn' || r.level === 'suggest');
+  if (!top) return null;
+
+  stamp(sp);
+  return `[TUNING] ${top.title} — ${top.detail} (${top.evidence}). Detalhes no card "Recomendações de tuning" do /dashboard.`;
+}
+
 async function main() {
   const raw = await readStdin();
   let event = {};
   try { event = JSON.parse(raw || '{}'); } catch { /* defaults */ }
   const eventName = event.hook_event_name || 'SessionStart';
-
-  const sp = stampPath();
-  if (onCooldown(sp)) return emitEmpty();
-
-  const project = event.cwd ? path.basename(event.cwd) : 'default';
-  let input = null;
-  try { input = await gather(project); }
-  catch (err) { console.error(`[tuning-advisory] ${err && err.message ? err.message : err}`); return emitEmpty(); }
-  if (!input) return emitEmpty();
-
-  const { recommendations } = analyze(input);
-  const top = recommendations.find(r => r.level === 'warn' || r.level === 'suggest');
-  if (!top) return emitEmpty();
-
-  stamp(sp);
-  emitJson({
-    hookSpecificOutput: {
-      hookEventName: eventName,
-      additionalContext: `[TUNING] ${top.title} — ${top.detail} (${top.evidence}). Detalhes no card "Recomendações de tuning" do /dashboard.`,
-    },
-  });
+  const text = await run(event);
+  if (text) {
+    emitJson({ hookSpecificOutput: { hookEventName: eventName, additionalContext: text } });
+    return;
+  }
+  emitEmpty();
 }
 
 if (require.main === module) {
   main().catch((err) => { console.error(`[tuning-advisory] ${err && err.message ? err.message : err}`); emitEmpty(); });
 }
 
-module.exports = { onCooldown, stampPath, gather, COOLDOWN_MS };
+module.exports = { onCooldown, stampPath, gather, COOLDOWN_MS, run };

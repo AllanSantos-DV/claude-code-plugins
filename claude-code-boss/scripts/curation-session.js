@@ -21,20 +21,22 @@ const { getCuration } = require('./lib/brain-config.js');
 const { dataDir } = require('./lib/data-dir.js');
 const DATA_DIR = dataDir();
 
-(async () => {
+/**
+ * Pure detector entry point. Returns the panorama advisory text (string) or
+ * `null` when nothing to report. Never throws.
+ * @param {object} event
+ * @returns {Promise<string|null>}
+ */
+async function run(event) {
   try {
-    const raw = await readStdin();
-    let event = {};
-    try { event = JSON.parse(raw || '{}'); } catch { /* non-JSON stdin → defaults */ }
-    const cwd = event.cwd || process.env.CLAUDE_PROJECT_DIR || process.cwd();
-    const eventName = event.hook_event_name || 'SessionStart';
+    const cwd = (event && event.cwd) || process.env.CLAUDE_PROJECT_DIR || process.cwd();
     const { oneHitWindowDays } = getCuration();
     const projectKey = oneoff.resolveProjectKey(cwd);
 
     // Session-start stamp (U2 session summary): record the earliest ts for this
     // session so the Stop summary can count lessons captured during it. Best-effort.
     try {
-      const sid = event.session_id || event.sessionId;
+      const sid = event && (event.session_id || event.sessionId);
       if (sid) {
         const safe = String(sid).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
         const stamp = path.join(DATA_DIR, '.runtime', `session-start-${safe}.json`);
@@ -77,15 +79,29 @@ const DATA_DIR = dataDir();
       curated = (loadShellsConfig(findProjectRoot(cwd)).shells || []).length;
     } catch (e) { void e; }
 
-    if (oneHits === 0 && curated === 0) return emitEmpty();
-    emitJson({
-      hookSpecificOutput: {
-        hookEventName: eventName,
-        additionalContext: `[CURATION] This project tracks ${curated} curated script(s) and ${oneHits} one-hit command(s). Prefer existing curated scripts; mark genuine single-use commands with curation_mark_oneoff instead of re-curating.`,
-      },
-    });
+    if (oneHits === 0 && curated === 0) return null;
+    return `[CURATION] This project tracks ${curated} curated script(s) and ${oneHits} one-hit command(s). Prefer existing curated scripts; mark genuine single-use commands with curation_mark_oneoff instead of re-curating.`;
   } catch (err) {
     console.error(`[CURATION-SESSION] ${err.message}`);
-    emitEmpty();
+    return null;
   }
-})();
+}
+
+async function main() {
+  const raw = await readStdin();
+  let event = {};
+  try { event = JSON.parse(raw || '{}'); } catch { /* non-JSON stdin → defaults */ }
+  const eventName = event.hook_event_name || 'SessionStart';
+  const text = await run(event);
+  if (text) {
+    emitJson({ hookSpecificOutput: { hookEventName: eventName, additionalContext: text } });
+    return;
+  }
+  emitEmpty();
+}
+
+if (require.main === module) {
+  main();
+}
+
+module.exports = { run };

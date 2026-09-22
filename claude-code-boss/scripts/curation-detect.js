@@ -19,7 +19,7 @@
  *   curated-failure-noisy — curated script failed, output exceeded raw thresholds
  *   (null)                — no condition matched; no entry recorded
  */
-const { readStdin } = require('./lib/hook-io.js');
+const { runSideEffectCli } = require('./lib/hook-io.js');
 const turnJournal = require('./lib/turn-journal.js');
 const verifyJournal = require('./lib/verify-journal.js');
 const metrics = require('./lib/metrics.js');
@@ -44,21 +44,21 @@ function appendTurnEntry(sessionId, entry) {
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
-(async () => {
+/**
+ * Pure detector entry point — side-effect only (turn-journal append, verify-
+ * journal record, one-hit accounting), never returns anything meaningful; the
+ * reply is always `{}` regardless (see `runSideEffectCli`). A crash is caught
+ * and logged here (keeping the `[CURATION-DETECT]` tag), never rethrown — so
+ * both the standalone CLI and `posttoolusebash-dispatcher.js` /
+ * `posttoolusefailure-dispatcher.js` land on the same silent `{}` on error
+ * (previously the standalone path alone leaked `{error: msg}` to stdout, a
+ * shape `PostToolUse`/`PostToolUseFailure` don't recognize anyway).
+ * @param {object} event
+ */
+async function run(event) {
   try {
-    const raw = await readStdin();
-    if (!raw) {
-      process.stdout.write(JSON.stringify({}));
-      return;
-    }
-
-    const event = JSON.parse(raw);
-
     // Only handle Bash tool PostToolUse
-    if (event.tool_name !== 'Bash') {
-      process.stdout.write(JSON.stringify({}));
-      return;
-    }
+    if (!event || event.tool_name !== 'Bash') return;
 
     // Two different event shapes:
     //   PostToolUse (success):
@@ -129,16 +129,12 @@ function appendTurnEntry(sessionId, entry) {
       sessionId, windowDays: _curationCfg.oneHitWindowDays, create: !!reason,
     });
 
-    if (!reason) {
-      process.stdout.write(JSON.stringify({}));
-      return;
-    }
+    if (!reason) return;
 
     // A valid one-hit marking (still under the ceiling) suppresses the block, so
     // the Stop hook never re-asks to curate a genuine single-use command.
     if (seen.matched && seen.oneHit && seen.count < _curationCfg.oneHitMaxRecurrence) {
       console.error(`[CURATION-DETECT] suppressed one-hit (${seen.sig} ${seen.count}/${_curationCfg.oneHitMaxRecurrence})`);
-      process.stdout.write(JSON.stringify({}));
       return;
     }
 
@@ -166,9 +162,13 @@ function appendTurnEntry(sessionId, entry) {
     // dashboard sums these chars as "context saved". Fire-and-forget; never blocks.
     metrics.fire('curation.flagged', { chars: charCount, lines: lineCount, reason, isCurated },
       { sessionId, cwd });
-    process.stdout.write(JSON.stringify({}));
   } catch (err) {
     console.error(`[CURATION-DETECT] Error: ${err.message}`);
-    process.stdout.write(JSON.stringify({ error: err.message }));
   }
-})();
+}
+
+if (require.main === module) {
+  runSideEffectCli(run, 'curation-detect');
+}
+
+module.exports = { run };

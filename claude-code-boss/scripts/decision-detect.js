@@ -20,7 +20,7 @@ const { writeJsonAtomic } = require('./lib/atomic-write.js');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const { readStdin } = require('./lib/hook-io.js');
+const { runSideEffectCli } = require('./lib/hook-io.js');
 
 const { dataDir } = require('./lib/data-dir.js');
 const DATA_DIR = dataDir();
@@ -128,64 +128,59 @@ function getHeadSha() {
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
-(async () => {
-  try {
-    const raw = await readStdin();
-    if (!raw) { process.stdout.write('{}'); return; }
-    let event;
-    try { event = JSON.parse(raw); } catch { /* malformed stdin → no-op */ process.stdout.write('{}'); return; }
+/**
+ * Pure detector entry point — side-effect only (stashes a pending-promotion
+ * record for `decision-promote.js`/Stop to pick up). Reply is always `{}`.
+ * @param {object} event
+ */
+async function run(event) {
+  if (!event || event.tool_name !== 'Bash') return;
+  const cmd = event.tool_input?.command || '';
+  if (!cmd) return;
 
-    if (event.tool_name !== 'Bash') { process.stdout.write('{}'); return; }
-    const cmd = event.tool_input?.command || '';
-    if (!cmd) { process.stdout.write('{}'); return; }
-
-    let kind = null;
-    let msg = extractCommitMsg(cmd);
-    if (msg) kind = 'commit';
-    if (!msg) {
-      msg = extractPrBody(cmd);
-      if (msg) kind = /\bgh\s+pr\s+create\b/i.test(cmd) ? 'pr-create' : 'pr-edit';
-    }
-    if (!msg || !looksLikeDecision(msg)) { process.stdout.write('{}'); return; }
-
-    // Build a stable key:
-    //   commit  → HEAD sha (after the commit ran successfully)
-    //   pr-*    → first url-looking token in the command, else hash of msg
-    let key = null;
-    if (kind === 'commit') {
-      key = getHeadSha() || ('msg:' + msg.slice(0, 60));
-    } else {
-      const urlM = cmd.match(/https?:\/\/[^\s"']+/);
-      key = urlM ? urlM[0] : ('msg:' + msg.slice(0, 60));
-    }
-    if (alreadyPromoted(key)) { process.stdout.write('{}'); return; }
-
-    const pending = readJsonSafe(PENDING, { pending: [] });
-    if (!Array.isArray(pending.pending)) pending.pending = [];
-
-    // Deduplicate inside pending too.
-    if (pending.pending.some(p => p.key === key)) {
-      process.stdout.write('{}');
-      return;
-    }
-
-    pending.pending.push({
-      kind,
-      key,
-      snippet: msg.slice(0, 240),
-      fullLen: msg.length,
-      repoUrl: getRepoUrl(),
-      ts: Date.now(),
-    });
-    // Cap pending to last 10 (defensive).
-    if (pending.pending.length > 10) pending.pending = pending.pending.slice(-10);
-    writeJsonSafe(PENDING, pending);
-
-    process.stdout.write('{}');
-  } catch {
-    process.stdout.write('{}');
+  let kind = null;
+  let msg = extractCommitMsg(cmd);
+  if (msg) kind = 'commit';
+  if (!msg) {
+    msg = extractPrBody(cmd);
+    if (msg) kind = /\bgh\s+pr\s+create\b/i.test(cmd) ? 'pr-create' : 'pr-edit';
   }
-})();
+  if (!msg || !looksLikeDecision(msg)) return;
+
+  // Build a stable key:
+  //   commit  → HEAD sha (after the commit ran successfully)
+  //   pr-*    → first url-looking token in the command, else hash of msg
+  let key = null;
+  if (kind === 'commit') {
+    key = getHeadSha() || ('msg:' + msg.slice(0, 60));
+  } else {
+    const urlM = cmd.match(/https?:\/\/[^\s"']+/);
+    key = urlM ? urlM[0] : ('msg:' + msg.slice(0, 60));
+  }
+  if (alreadyPromoted(key)) return;
+
+  const pending = readJsonSafe(PENDING, { pending: [] });
+  if (!Array.isArray(pending.pending)) pending.pending = [];
+
+  // Deduplicate inside pending too.
+  if (pending.pending.some(p => p.key === key)) return;
+
+  pending.pending.push({
+    kind,
+    key,
+    snippet: msg.slice(0, 240),
+    fullLen: msg.length,
+    repoUrl: getRepoUrl(),
+    ts: Date.now(),
+  });
+  // Cap pending to last 10 (defensive).
+  if (pending.pending.length > 10) pending.pending = pending.pending.slice(-10);
+  writeJsonSafe(PENDING, pending);
+}
+
+if (require.main === module) {
+  runSideEffectCli(run, 'decision-detect');
+}
 
 // Expose for unit testing.
-module.exports = { extractCommitMsg, extractPrBody, looksLikeDecision };
+module.exports = { extractCommitMsg, extractPrBody, looksLikeDecision, run };

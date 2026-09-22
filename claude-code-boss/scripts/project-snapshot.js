@@ -232,21 +232,25 @@ function emitContext(md, eventName) {
 
 // ─── Main ──────────────────────────────────────────────────────────────────
 
-async function main() {
+/**
+ * Pure detector entry point. Returns the snapshot markdown (string) or
+ * `null` when nothing to report. Shared by the standalone CLI (below) and
+ * the `SessionStart` dispatcher.
+ * @param {object} event
+ * @returns {Promise<string|null>}
+ */
+async function run(event) {
   const cfg = loadConfig();
-  if (!cfg.enabled) return emitEmpty();
+  if (!cfg.enabled) return null;
 
-  const raw = await readStdin();
-  const event = parsePayload(raw) || {};
-  const eventName = event.hook_event_name || 'SessionStart';
-  const cwd = event.cwd || process.cwd();
+  const cwd = (event && event.cwd) || process.cwd();
 
   // Only act when we're in a git repo — else native block isn't there anyway.
   const inRepo = await runCmd('git', ['rev-parse', '--is-inside-work-tree'], cwd, 800);
-  if (inRepo.code !== 0 || (inRepo.stdout || '').trim() !== 'true') return emitEmpty();
+  if (inRepo.code !== 0 || (inRepo.stdout || '').trim() !== 'true') return null;
 
   const cached = readCache(cwd, cfg.cacheTtlSeconds);
-  if (cached) return emitContext(cached, eventName);
+  if (cached) return cached;
 
   const deadline = Date.now() + TOTAL_TIMEOUT_MS;
   const deadlineFn = () => Date.now() > deadline;
@@ -261,6 +265,14 @@ async function main() {
 
   const md = formatSnapshot({ local, gh, max: cfg.maxItemsPerSection });
   if (md) writeCache(cwd, md);
+  return md || null;
+}
+
+async function main() {
+  const raw = await readStdin();
+  const event = parsePayload(raw) || {};
+  const eventName = event.hook_event_name || 'SessionStart';
+  const md = await run(event);
   emitContext(md, eventName);
 }
 
@@ -272,4 +284,4 @@ if (require.main === module) {
 }
 
 // Exports for unit tests.
-module.exports = { formatSnapshot, parseGhJson, relTime, loadConfig };
+module.exports = { formatSnapshot, parseGhJson, relTime, loadConfig, run };

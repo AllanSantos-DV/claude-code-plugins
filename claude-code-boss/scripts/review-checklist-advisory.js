@@ -47,34 +47,38 @@ function countItems(md) {
   return m ? m.length : 0;
 }
 
-async function main() {
-  const raw = await readStdin();
-  const event = parsePayload(raw) || {};
-  const eventName = event.hook_event_name || 'SessionStart';
-  const cwd = event.cwd || process.cwd();
+async function run(event) {
+  const cwd = (event && event.cwd) || process.cwd();
 
   const checklist = path.join(cwd, ...CHECKLIST_RELPATH);
   let md;
   try { md = fs.readFileSync(checklist, 'utf8'); }
-  catch { /* no checklist → nothing to advise */ return emitEmpty(); }
+  catch { /* no checklist → nothing to advise */ return null; }
 
   const sp = stampPath(cwd);
-  if (onCooldown(sp)) return emitEmpty();
+  if (onCooldown(sp)) return null;
   stamp(sp);
 
   const n = countItems(md);
   const rel = CHECKLIST_RELPATH.join('/');
-  emitJson({
-    hookSpecificOutput: {
-      hookEventName: eventName,
-      additionalContext: `[REVIEW] This project has a Brain review checklist (${rel}, ${n} recurring lesson${n === 1 ? '' : 's'}). `
-        + `Read it before code review — check changes against these recurring mistakes; \`/code-review\` should use it as context.`,
-    },
-  });
+  return `[REVIEW] This project has a Brain review checklist (${rel}, ${n} recurring lesson${n === 1 ? '' : 's'}). `
+    + `Read it before code review — check changes against these recurring mistakes; \`/code-review\` should use it as context.`;
+}
+
+async function main() {
+  const raw = await readStdin();
+  const event = parsePayload(raw) || {};
+  const eventName = event.hook_event_name || 'SessionStart';
+  const text = await run(event);
+  if (text) {
+    emitJson({ hookSpecificOutput: { hookEventName: eventName, additionalContext: text } });
+    return;
+  }
+  emitEmpty();
 }
 
 if (require.main === module) {
   main().catch((err) => { console.error(`[review-checklist-advisory] ${err.message}`); emitEmpty(); });
 }
 
-module.exports = { onCooldown, stampPath, countItems, COOLDOWN_MS };
+module.exports = { onCooldown, stampPath, countItems, COOLDOWN_MS, run };

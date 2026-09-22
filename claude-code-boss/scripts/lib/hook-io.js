@@ -100,6 +100,93 @@ async function runStopDetectorCli(run, name) {
   else emitEmpty();
 }
 
+/**
+ * Thin CLI wrapper for a PreToolUse-hook detector module, mirroring
+ * `runStopDetectorCli` for the PreToolUse decision shape.
+ *
+ * `run(event)` returns either a full decision object
+ * (`{hookSpecificOutput:{hookEventName:'PreToolUse', permissionDecision, ...}}`)
+ * or `null`/`undefined` to ABSTAIN. Abstain means EMPTY stdout, never an
+ * explicit `allow` — a sibling hook on the same matcher may rely on
+ * abstention so its own `updatedInput` isn't clobbered by a competing `allow`
+ * (see error-guard.js's "WHY ABSTAIN" note; reproduces upstream
+ * anthropics/claude-code#75915 / #15897 otherwise).
+ *
+ * `defaultDecision`, when provided, is what gets emitted if `run` itself
+ * throws — for a detector that always opines (e.g. curation-guard, which
+ * never abstains) this should be an explicit `allow` decision so a crash
+ * degrades to permissive, never to a silent deny. Detectors that abstain by
+ * design (e.g. error-guard) omit it, so a crash abstains too (matches their
+ * existing catch-block behavior).
+ *
+ * @param {(event:object)=>Promise<object|null>|object|null} run
+ * @param {string} name  short label for error logs
+ * @param {{defaultDecision?: object|null}} [opts]
+ */
+async function runPreToolUseCli(run, name, { defaultDecision = null } = {}) {
+  let out = null;
+  try {
+    const raw = await readStdin();
+    const event = parsePayload(raw) || {};
+    out = await run(event);
+  } catch (err) {
+    console.error(`[${name}] ${err && err.message ? err.message : err}`);
+    out = defaultDecision;
+  }
+  if (out) emitJson(out);
+  // else: abstain — emit nothing.
+}
+
+/**
+ * Thin CLI wrapper for a side-effect-only PostToolUse(-Failure) detector —
+ * one that never blocks or injects context, only performs a durable side
+ * effect (journal entry, error-store update, pending-promotion stash) and
+ * always answers `{}`. `run(event)`'s return value is ignored — the contract
+ * is the side effect, not the reply — so a crash inside `run` degrades to the
+ * exact same `{}` a healthy run would emit, just logged first. Mirrors
+ * `runStopDetectorCli`/`runPreToolUseCli` for this third hook shape.
+ *
+ * @param {(event:object)=>Promise<void>|void} run
+ * @param {string} name  short label for error logs
+ */
+async function runSideEffectCli(run, name) {
+  try {
+    const raw = await readStdin();
+    const event = parsePayload(raw) || {};
+    await run(event);
+  } catch (err) {
+    console.error(`[${name}] ${err && err.message ? err.message : err}`);
+  }
+  emitEmpty();
+}
+
+/**
+ * Thin CLI wrapper for a hook whose pure `run(event)` returns advisory text
+ * (`string`) or `null` — the `additionalContext`-only shape shared by several
+ * `UserPromptSubmit`-only detectors (correction-detect, active-research-detect).
+ * Unlike `runPreToolUseCli`/`runSideEffectCli`, the emitted `hookEventName` is
+ * a FIXED value (not echoed from the event) because these hooks only ever
+ * fire on one event — see `runTextCli` below for the multi-event variant that
+ * echoes `event.hook_event_name` instead.
+ *
+ * @param {(event:object)=>Promise<string|null>|string|null} run
+ * @param {string} name  short label for error logs
+ * @param {string} hookEventName  fixed event name to echo (e.g. 'UserPromptSubmit')
+ */
+async function runSideEffectTextCli(run, name, hookEventName) {
+  let text = null;
+  try {
+    const raw = await readStdin();
+    const event = parsePayload(raw) || {};
+    text = await run(event);
+  } catch (err) {
+    console.error(`[${name}] ${err && err.message ? err.message : err}`);
+    text = null;
+  }
+  if (text) emitJson({ hookSpecificOutput: { hookEventName, additionalContext: text } });
+  else emitEmpty();
+}
+
 module.exports = {
   readStdin,
   emitEmpty,
@@ -108,4 +195,7 @@ module.exports = {
   parsePayload,
   normalizeStopResult,
   runStopDetectorCli,
+  runPreToolUseCli,
+  runSideEffectCli,
+  runSideEffectTextCli,
 };

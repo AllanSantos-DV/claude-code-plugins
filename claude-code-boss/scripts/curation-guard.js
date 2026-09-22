@@ -21,7 +21,7 @@
  */
 const { hookLog } = require('./hook-logger.js');
 const { loadCurationConfig } = require('./curation-paths.js');
-const { readStdin } = require('./lib/hook-io.js');
+const { runPreToolUseCli } = require('./lib/hook-io.js');
 const { findProjectRoot, loadShellsConfig, matchCuratedShell, buildCuratedInvocation, _pathMatches, _tokenize } = require('./shells-config.js');
 
 const _guardCfg = require('./lib/hooks-config.js').getCurationGuard();
@@ -47,7 +47,7 @@ function hasPipe(command) {
   return /(?<!\|)\|(?!\|)/.test(command);
 }
 
-// Build a properly-formatted PreToolUse decision per Claude Code docs.
+// Build a properly-formatted PreToolUse decision object per Claude Code docs.
 // permissionDecision MUST be "allow" | "deny" | "ask" and live INSIDE hookSpecificOutput.
 // https://docs.claude.com/en/docs/claude-code/hooks
 function decision(permissionDecision, { additionalContext, permissionDecisionReason, updatedInput } = {}) {
@@ -55,28 +55,25 @@ function decision(permissionDecision, { additionalContext, permissionDecisionRea
   if (additionalContext) hookSpecificOutput.additionalContext = additionalContext;
   if (permissionDecisionReason) hookSpecificOutput.permissionDecisionReason = permissionDecisionReason;
   if (updatedInput) hookSpecificOutput.updatedInput = updatedInput;
-  return JSON.stringify({ hookSpecificOutput });
+  return { hookSpecificOutput };
 }
 
-(async () => {
+/**
+ * Pure detector entry point — never abstains, always returns a decision
+ * object. Shared by the standalone CLI (below) and
+ * `pretooluse-bash-dispatcher.js`.
+ * @param {object} event  PreToolUse payload
+ * @returns {Promise<object>}
+ */
+async function run(event) {
   try {
-    const raw = await readStdin();
-    if (!raw) {
-      process.stdout.write(decision('allow'));
-      return;
-    }
-
-    const event = JSON.parse(raw);
-
-    if (event.tool_name !== 'Bash') {
-      process.stdout.write(decision('allow'));
-      return;
+    if (!event || event.tool_name !== 'Bash') {
+      return decision('allow');
     }
 
     const command = event.tool_input?.command || '';
     if (!command) {
-      process.stdout.write(decision('allow'));
-      return;
+      return decision('allow');
     }
 
     const projectRoot = findProjectRoot(event.cwd || process.cwd());
@@ -92,11 +89,9 @@ function decision(permissionDecision, { additionalContext, permissionDecisionRea
       if (isInvokingScript) {
         if (hasPipe(command)) {
           const reason = `[curation-guard] Curated script \`${scriptPath}\` invoked with a pipe. Its output is already shaped (filter: ${curatedShell.outputFilter || 'summary'}, lines: ${curatedShell.outputLines || 200}) and is meant to be consumed as-is. If the output is not adequate, edit the script. See skill \`curation-script-pattern\`.`;
-          process.stdout.write(decision('deny', { additionalContext: reason, permissionDecisionReason: reason }));
-          return;
+          return decision('deny', { additionalContext: reason, permissionDecisionReason: reason });
         }
-        process.stdout.write(decision('allow'));
-        return;
+        return decision('allow');
       }
 
       // Raw alias matched — AUTO-REDIRECT (Parte A, Fase 1) when safely
@@ -108,21 +103,18 @@ function decision(permissionDecision, { additionalContext, permissionDecisionRea
       const curatedCmd = buildCuratedInvocation(curatedShell, command);
       if (curatedCmd) {
         const ctx = `[curation-guard] Redirected \`${command}\` → \`${curatedCmd}\` automatically (curated script; output ${curatedShell.outputFilter || 'summary'}, limit ${curatedShell.outputLines || 200} lines).`;
-        process.stdout.write(decision('allow', {
+        return decision('allow', {
           updatedInput: { ...event.tool_input, command: curatedCmd },
           additionalContext: ctx,
-        }));
-        return;
+        });
       }
       const reason = `[curation-guard] Command \`${command}\` has a curated script. Run \`${scriptPath}\` instead — output filtered (${curatedShell.outputFilter || 'summary'}, limit ${curatedShell.outputLines || 200} lines).`;
-      process.stdout.write(decision('deny', { additionalContext: reason, permissionDecisionReason: reason }));
-      return;
+      return decision('deny', { additionalContext: reason, permissionDecisionReason: reason });
     }
 
     // 2. Project whitelist.
     if (isWhitelisted(command, whitelist)) {
-      process.stdout.write(decision('allow'));
-      return;
+      return decision('allow');
     }
 
     // 2.5 Graph-guard (Bash surface): a BROAD recursive search (grep -r/rg/find
@@ -155,8 +147,7 @@ function decision(permissionDecision, { additionalContext, permissionDecisionRea
               try {
                 require('./lib/metrics.js').fire('graph-guard.fired', { kind: 'bash', tool: broad.tool }, { sessionId: sid, cwd });
               } catch (e) { void e; /* metrics are best-effort */ }
-              process.stdout.write(decision('deny', { additionalContext: res.reason, permissionDecisionReason: res.reason }));
-              return;
+              return decision('deny', { additionalContext: res.reason, permissionDecisionReason: res.reason });
             }
           }
         }
@@ -169,16 +160,21 @@ function decision(permissionDecision, { additionalContext, permissionDecisionRea
     if (_guardCfg.denyUnknown) {
       const cfg = loadCurationConfig();
       const reason = `[curation-guard] Command \`${command}\` is unknown (denyUnknown mode active). Add it to the whitelist in \`${cfg.shellsConfigPath}\` or create a curated script in \`${cfg.scriptsDir}/\`.`;
-      process.stdout.write(decision('deny', { additionalContext: reason, permissionDecisionReason: reason }));
-      return;
+      return decision('deny', { additionalContext: reason, permissionDecisionReason: reason });
     }
 
     // 4. Default: allow. If output is bulky, PostToolUse → Stop discovery
     //    loop will demand a curated script at end of turn.
-    process.stdout.write(decision('allow'));
+    return decision('allow');
   } catch (err) {
     console.error(`[CURATION-GUARD] Error: ${err.message}`);
     hookLog('error', 'curation-guard', `Unhandled error: ${err.message}`);
-    process.stdout.write(decision('allow'));
+    return decision('allow');
   }
-})();
+}
+
+if (require.main === module) {
+  runPreToolUseCli(run, 'curation-guard', { defaultDecision: decision('allow') });
+}
+
+module.exports = { run, decision, isWhitelisted, hasPipe };

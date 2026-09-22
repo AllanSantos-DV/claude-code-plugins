@@ -29,6 +29,9 @@
  * (reproduced E2E; matches upstream issues #75915 / #15897). Emitting nothing
  * leaves no competing decision to resolve against, so the rewrite survives.
  * Semantically identical: no output = no objection = the call proceeds.
+ * `pretooluse-bash-dispatcher.js` enforces the same rule in-process (its own
+ * merge gives `error-guard`'s `deny` precedence but never lets an abstention
+ * override `curation-guard`'s `updatedInput`).
  *
  * INVARIANT: only ONE hook on this matcher may emit a decision that carries
  * `tool_input` (today: curation-guard.js). Do not add an `allow`/`ask` return
@@ -37,12 +40,12 @@
 'use strict';
 
 const { hookLog } = require('./hook-logger.js');
-const { readStdin } = require('./lib/hook-io.js');
+const { runPreToolUseCli } = require('./lib/hook-io.js');
 const { dataDir } = require('./lib/data-dir.js');
 const errorStore = require('./lib/error-store.js');
 const { getErrorGuard } = require('./lib/hooks-config.js');
 
-// Build a properly-formatted PreToolUse decision per Claude Code docs.
+// Build a properly-formatted PreToolUse decision object per Claude Code docs.
 // permissionDecision MUST be "allow" | "deny" | "ask" and live INSIDE
 // hookSpecificOutput. Copied verbatim from curation-guard.js (proven shape).
 // https://docs.claude.com/en/docs/claude-code/hooks
@@ -50,41 +53,28 @@ function decision(permissionDecision, { additionalContext, permissionDecisionRea
   const hookSpecificOutput = { hookEventName: 'PreToolUse', permissionDecision };
   if (additionalContext) hookSpecificOutput.additionalContext = additionalContext;
   if (permissionDecisionReason) hookSpecificOutput.permissionDecisionReason = permissionDecisionReason;
-  return JSON.stringify({ hookSpecificOutput });
+  return { hookSpecificOutput };
 }
 
-// Abstain: emit NOTHING. See the "WHY ABSTAIN" note in the header — an explicit
-// `allow` here would clobber curation-guard's `updatedInput` rewrite.
-function abstain() {
-  return '';
-}
-
-(async () => {
+/**
+ * Pure detector entry point. Returns a `deny` decision object on a hit, or
+ * `null` to ABSTAIN — see the "WHY ABSTAIN" note in the header: an explicit
+ * `allow` here would clobber curation-guard's `updatedInput` rewrite when both
+ * ran as siblings on the same matcher. Shared by the standalone CLI (below)
+ * and `pretooluse-bash-dispatcher.js`, which preserves the same
+ * deny-wins-over-allow precedence in-process.
+ * @param {object} event  PreToolUse payload
+ * @returns {Promise<object|null>}
+ */
+async function run(event) {
   try {
-    const raw = await readStdin();
-    if (!raw) {
-      process.stdout.write(abstain());
-      return;
-    }
-
-    const event = JSON.parse(raw);
-
-    if (event.tool_name !== 'Bash') {
-      process.stdout.write(abstain());
-      return;
-    }
+    if (!event || event.tool_name !== 'Bash') return null;
 
     const command = event.tool_input?.command || '';
-    if (!command) {
-      process.stdout.write(abstain());
-      return;
-    }
+    if (!command) return null;
 
     const cfg = getErrorGuard();
-    if (cfg.enabled === false) {
-      process.stdout.write(abstain());
-      return;
-    }
+    if (cfg.enabled === false) return null;
 
     const projectKey = errorStore.resolveProjectKey(event.cwd || process.cwd());
     const res = errorStore.lookup(dataDir(), projectKey, command, {
@@ -96,14 +86,19 @@ function abstain() {
       const exit = res.exitCode === null || res.exitCode === undefined ? '?' : res.exitCode;
       const cause = res.cause ? `Causa registrada: ${res.cause}. ` : '';
       const reason = `[error-guard] \`${res.sig}\` já falhou ${res.count}× (exit ${exit}) neste projeto. ${cause}NÃO repita o mesmo comando — corrija a causa (ou rode uma variação que resolva) antes de tentar de novo.`;
-      process.stdout.write(decision('deny', { additionalContext: reason, permissionDecisionReason: reason }));
-      return;
+      return decision('deny', { additionalContext: reason, permissionDecisionReason: reason });
     }
 
-    process.stdout.write(abstain());
+    return null;
   } catch (err) {
     console.error(`[ERROR-GUARD] Error: ${err.message}`);
     hookLog('error', 'error-guard', `Unhandled error: ${err.message}`);
-    process.stdout.write(abstain());
+    return null;
   }
-})();
+}
+
+if (require.main === module) {
+  runPreToolUseCli(run, 'error-guard');
+}
+
+module.exports = { run, decision };

@@ -1,6 +1,6 @@
 # claude-code-boss
 
-Plugin para Claude Code Desktop — **v2.27.0**
+Plugin para Claude Code Desktop — **v2.28.0**
 
 Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizado leve para Claude Code. A orquestração fica a cargo das ferramentas nativas (Agent/Workflow) — o plugin foca no que o nativo não tem.
 
@@ -56,7 +56,7 @@ claude-code-boss/
 ├── dashboard/
 │   └── index.html             # SPA — 4 abas: Home / Brain KB / Hooks / Logs
 ├── hooks/
-│   └── hooks.json             # 7 eventos; Stop consolidado em 1 script (stop-dispatcher.js), os demais somam ~15 scripts + 1 mcp_tool (brain_retrieve_context)
+│   └── hooks.json             # 8 eventos; 6 dispatchers in-process (Stop, PreToolUse/Bash, PostToolUse/Bash, PostToolUseFailure, UserPromptSubmit, SessionStart) consolidam 16+2+3+2+5+12 scripts; sobram só model-router-ensure.js (SessionStart+UserPromptSubmit, spawn próprio) + 6 hooks de matcher único + 1 mcp_tool (brain_retrieve_context)
 ├── scripts/                   # Scripts Node.js (zero deps extras para hooks)
 │   ├── dashboard.js           # Servidor HTTP local com ring buffer de logs
 │   ├── brain-*.js             # Brain KB: store, index, graph, embedder, backend, CLI, consolidate (higiene)
@@ -74,23 +74,46 @@ claude-code-boss/
 
 ## Hooks Pipeline
 
-Todos os hooks estão declarados em `hooks/hooks.json`. Eventos e scripts ativos:
+Todos os hooks estão declarados em `hooks/hooks.json`. Por evento, cada script
+roda **num único processo Node por hook** — os detectores de cada evento são
+consolidados num *dispatcher* in-process (mesmo padrão do `stop-dispatcher.js`
+original): lê o payload uma vez, roda cada `run(event)` puro, funde o
+resultado. Só `model-router-ensure.js` fica de fora dos dispatchers de
+`SessionStart`/`UserPromptSubmit` — ele chama `process.exit()` no fluxo normal
+e faz esperas reais de vários segundos (spawn/troca de daemon), incompatível
+com um processo compartilhado.
 
 | Evento | Script | O que faz |
 | --- | --- | --- |
-| SessionStart | `memory-rotate.js` | Rotaciona MEMORY.md quando >150 linhas |
-| SessionStart | `session-whitelist.js` | Detecta ecossistema do projeto, popula whitelist |
-| SessionStart | `brain-health.js` | Liveness probe (static + active backend.init/count): se MCP estiver caído, injeta advisory acionável; senão, silencioso |
-| SessionStart | `doctor-advisory.js` | Roda `doctor.js` com cooldown; advisory de 1 linha só se algo crítico falhar (Node/PATH, data-dir fragmentado, daemon, token) |
-| SessionStart | `review-checklist-advisory.js` | Se existir `.claude/brain-review-checklist.md` (lições recorrentes de código), lembra o `/code-review` nativo de consultá-lo |
-| SessionStart | `graph-warm.js` | mcp-memory: dispara um `ingest` incremental do Session Graph (fire-and-forget, cooldown por projeto) pra o grafo ficar pronto-e-fresco antes da 1ª busca — o servidor faz o delta (no-op ~5s se nada mudou). Silencioso, fail-open |
-| SubagentStart | `policy-inject.js` | Injeta as políticas standing (always) no contexto próprio do subagente — mesma injeção do SessionStart |
-| PreToolUse (Bash) | `curation-guard.js` | Bloqueia/redireciona comandos curados; inclui o graph-guard p/ `grep -r`/`rg`/`find` amplos (mcp-memory + grafo ready → deny-once com redirect ao grafo) |
+| SessionStart | `model-router-ensure.js` | Garante o daemon do model-router na porta fixa e publica `ANTHROPIC_BASE_URL`/shim (roteamento de custo opcional) — spawn próprio, fora do dispatcher |
+| **SessionStart** | **`session-start-dispatcher.js`** | **Entry único** — roda in-process os 12 detectores abaixo (`brain-daemon-ensure` + os 11 seguintes), concorrente com timeout próprio por detector (mirror dos timeouts antigos), funde os textos de advisory num só `additionalContext` |
+| SessionStart (via dispatcher) | `brain-daemon-ensure.js` | Garante que o daemon único do `brain-server` está escutando na porta fixa antes do cliente MCP conectar |
+| SessionStart (via dispatcher) | `memory-rotate.js` | Rotaciona MEMORY.md quando >150 linhas (side-effect only) |
+| SessionStart (via dispatcher) | `session-whitelist.js` | Detecta ecossistema do projeto, popula whitelist (side-effect only) |
+| SessionStart (via dispatcher) | `brain-health.js` | Liveness probe (static + active backend.init/count): se MCP estiver caído, injeta advisory acionável; senão, silencioso |
+| SessionStart (via dispatcher) | `project-snapshot.js` | Snapshot do estado do repo (branch/PRs/CI) via `git`/`gh`, cacheado 5min |
+| SessionStart (via dispatcher) | `curation-session.js` | Poda one-hits antigos e injeta panorama de scripts curados; dispara higiene semanal do KB (fire-and-forget) |
+| SessionStart (via dispatcher) | `doctor-advisory.js` | Roda `doctor.js` com cooldown; advisory de 1 linha só se algo crítico falhar (Node/PATH, data-dir fragmentado, daemon, token) |
+| SessionStart (via dispatcher) | `review-checklist-advisory.js` | Se existir `.claude/brain-review-checklist.md` (lições recorrentes de código), lembra o `/code-review` nativo de consultá-lo |
+| SessionStart (via dispatcher) | `tuning-advisory.js` | Recomendação determinística de tuning (perfil/curadoria) com cooldown de 6h |
+| SessionStart (via dispatcher) | `project-identity-advisory.js` | Detecta identidade de projeto frágil (`basename(cwd)`) no backend `mcp-memory` e oferece fixar `.claude-boss-project` |
+| SessionStart (via dispatcher) | `graph-warm.js` | mcp-memory: dispara um `ingest` incremental do Session Graph (fire-and-forget, cooldown por projeto) pra o grafo ficar pronto-e-fresco antes da 1ª busca — o servidor faz o delta (no-op ~5s se nada mudou). Silencioso, fail-open |
+| SessionStart (via dispatcher) | `policy-inject.js` | Injeta as políticas standing (always) no contexto da sessão |
+| SubagentStart | `policy-inject.js` | Injeta as políticas standing (always) no contexto próprio do subagente — mesma injeção do SessionStart (spawn próprio; matcher com um único hook, não consolidado) |
+| **PreToolUse (Bash)** | **`pretooluse-bash-dispatcher.js`** | **Entry único** — roda `curation-guard.js` + `error-guard.js` in-process; `deny` do error-guard vence, senão propaga a decisão do curation-guard (preserva o `updatedInput` de auto-redirect) |
+| PreToolUse (Bash, via dispatcher) | `curation-guard.js` | Bloqueia/redireciona comandos curados; inclui o graph-guard p/ `grep -r`/`rg`/`find` amplos (mcp-memory + grafo ready → deny-once com redirect ao grafo) |
+| PreToolUse (Bash, via dispatcher) | `error-guard.js` | Nega um comando cuja assinatura já falhou ≥N vezes recentemente, injetando a causa registrada |
+| PreToolUse (Edit) | `policy-enforce-shadow.js` | Shadow-mode: detecta se uma edição viola uma política de código ativa (sem bloquear ainda) |
 | PreToolUse (Grep\|Glob) | `graph-guard.js` | Busca recursiva ampla com Session Graph READY → deny-once: `graph_search`/`graph_symbols` primeiro (estrutural, ~300ms), depois re-rodar escopado; retry idêntico passa |
-| PostToolUse (Bash) | `curation-detect.js` | Detecta outputs grandes para curação |
+| **PostToolUse (Bash)** | **`posttoolusebash-dispatcher.js`** | **Entry único** — roda `curation-detect.js` + `decision-detect.js` + `error-resolve.js` in-process (todos side-effect only, sempre `{}`) |
+| PostToolUse (Bash, via dispatcher) | `curation-detect.js` | Detecta outputs grandes para curação |
+| PostToolUse (Bash, via dispatcher) | `decision-detect.js` | Detecta commit/PR com cara de decisão arquitetural e stash pending para o Stop promover |
+| PostToolUse (Bash, via dispatcher) | `error-resolve.js` | Limpa o registro de falha de uma assinatura quando o comando volta a ter sucesso |
 | PostToolUse (Edit\|Write\|NotebookEdit) | `file-edit-detect.js` | Journala arquivos editados no turno (alimenta `verify-nudge` e `self-review`) |
+| PostToolUse (Edit\|Write\|MultiEdit\|NotebookEdit) | `policy-glob-inject.js` | Injeta advisory de política glob (per-file) quando o arquivo editado casa um padrão de política ativa |
 | UserPromptExpansion | `skill-metric.js` | Métrica de uso de skill (matcher `.*`) |
-| PostToolUseFailure | `curation-detect.js` / `failure-detect.js` | Em falha de Bash, detecta output p/ curação; e captura a assinatura da falha (alimenta o `error-guard`) |
+| **PostToolUseFailure** | **`posttoolusefailure-dispatcher.js`** | **Entry único** — roda `curation-detect.js` (já filtra `tool_name==='Bash'` internamente) + `failure-detect.js` in-process |
+| PostToolUseFailure (via dispatcher) | `failure-detect.js` | Journala a falha (alimenta `failure-retro`) e registra a assinatura no error-store (alimenta o `error-guard`) |
 | **Stop** | **`stop-dispatcher.js`** | **Entry único** — roda in-process, em ordem, todos os detectores abaixo e funde os blocks num só `{decision:'block', reason}` (1 spawn de Node, não 11+) |
 | Stop (via dispatcher) | `pattern-detect.js` | Nudge advisory (throttled): capturar padrão reusável via `capture_lesson` |
 | Stop (via dispatcher) | `self-review.js` | Se o turno editou arquivos, recupera lições/failures relevantes do Brain (daemon HTTP autenticado, fallback keyword) e injeta advisory — "você já errou X nisso antes" |
@@ -99,8 +122,13 @@ Todos os hooks estão declarados em `hooks/hooks.json`. Eventos e scripts ativos
 | Stop (via dispatcher) | `curation-stop.js` | Bloqueia stop se há comandos noisy detectados no turno (escalating, anti-loop) |
 | Stop (via dispatcher) | `session-summary.js` | Cap 1/sessão: resumo positivo ("N lições capturadas") quando a sessão gerou aprendizado |
 | Stop (via dispatcher) | + 7 outros | `skill-promote-trigger`, `decision-scan-response`, `decision-promote`, `research-followup-detect`, `failure-retro`, `skill-success-detect`, `retrieval-feedback`, `auto-continue-stop` — mesmo comportamento de antes, agora in-process |
-| UserPromptSubmit | `brain-health.js` | Mesma probe do SessionStart, com cooldown de 60s — captura MCP caído em sessões resumidas |
-| UserPromptSubmit | `correction-detect.js` | Detecta sinal de correção → nudge p/ `capture_lesson` (sem ler transcript) |
+| UserPromptSubmit | `model-router-ensure.js` | Mesma garantia de daemon do model-router, agora por-turno (settings/env já publicados no SessionStart) — spawn próprio, fora do dispatcher |
+| **UserPromptSubmit** | **`user-prompt-submit-dispatcher.js`** | **Entry único** — roda in-process os 5 detectores abaixo, concorrente com timeout próprio por detector, funde os textos de advisory num só `additionalContext` |
+| UserPromptSubmit (via dispatcher) | `brain-daemon-ensure.js` | Mesma garantia de daemon do SessionStart — captura o daemon caído em sessões resumidas |
+| UserPromptSubmit (via dispatcher) | `brain-health.js` | Mesma probe do SessionStart, com cooldown de 60s — captura MCP caído em sessões resumidas |
+| UserPromptSubmit (via dispatcher) | `brain-status.js` | Advisory só quando o backend `mcp-memory` está desconectado (silencioso no backend `local`, sempre conectado por design) |
+| UserPromptSubmit (via dispatcher) | `correction-detect.js` | Detecta sinal de correção → nudge p/ `capture_lesson` (sem ler transcript) |
+| UserPromptSubmit (via dispatcher) | `active-research-detect.js` | Detecta prompt com sinais de pesquisa externa (lib/versão/best-practice) → nudge p/ `research_query` |
 | UserPromptSubmit | `mcp_tool` → `brain_retrieve_context` | Retrieval QUENTE por-turno: embeda o prompt no brain-server (warm ~12–26ms), gate 0.20, federa `__user__`, injeta bloco `[BRAIN]` (substitui o antigo `brain-retrieve-prompt.js`) |
 
 > **Captura de lição in-loop:** quando o usuário corrige, o agente (no loop, com

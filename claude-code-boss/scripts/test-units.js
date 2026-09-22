@@ -6071,8 +6071,10 @@ test('FASE-G dashboard.js: rotas do wizard + brain/health wireadas (API + UI + h
   assert(uiSrc.includes('mcp-wizard-btn'), 'botão do wizard presente na UI');
   assert(uiSrc.includes('wizard-overlay'), 'modal do wizard presente na UI');
   const hooksSrc = fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8');
-  assert(/brain-status\.js/.test(hooksSrc), 'hooks.json deve registrar o brain-status no UserPromptSubmit');
+  assert(/user-prompt-submit-dispatcher\.js/.test(hooksSrc), 'hooks.json deve registrar o user-prompt-submit-dispatcher no UserPromptSubmit');
   assert(fs.existsSync(path.join(SCRIPTS, 'brain-status.js')), 'scripts/brain-status.js existe');
+  const upsDispatcher = require('./user-prompt-submit-dispatcher.js');
+  assert(upsDispatcher.DETECTORS.some(d => d.name === 'brain-status'), 'user-prompt-submit-dispatcher deve rodar brain-status.run() in-process');
 });
 
 test('FASE-G mcp-wizard: reset limpa estado persistido; getState devolve idle (round-trip no arquivo)', () => {
@@ -9305,6 +9307,151 @@ test('stop-dispatcher.DETECTORS: 16 detectors, ordering invariants hold', () => 
     'decision-scan-response must stage before decision-promote reads');
   assert(dispatcher.DETECTORS.every(d => typeof d.mod.run === 'function'),
     'every detector exposes run()');
+});
+
+test('pretooluse-bash-dispatcher: exposes dispatch() and DEFAULT_ALLOW shape', () => {
+  const d = require('./pretooluse-bash-dispatcher.js');
+  assertEq(typeof d.dispatch, 'function');
+  assertEq(d.DEFAULT_ALLOW.hookSpecificOutput.hookEventName, 'PreToolUse');
+  assertEq(d.DEFAULT_ALLOW.hookSpecificOutput.permissionDecision, 'allow');
+});
+
+test('posttoolusebash-dispatcher.DETECTORS: 3 detectors, correct order + shape', () => {
+  const d = require('./posttoolusebash-dispatcher.js');
+  const names = d.DETECTORS.map(x => x.name);
+  assertEq(names, ['curation-detect', 'decision-detect', 'error-resolve']);
+  assert(d.DETECTORS.every(x => typeof x.mod.run === 'function'), 'every detector exposes run()');
+});
+
+test('posttoolusefailure-dispatcher.DETECTORS: 2 detectors, correct order + shape', () => {
+  const d = require('./posttoolusefailure-dispatcher.js');
+  const names = d.DETECTORS.map(x => x.name);
+  assertEq(names, ['curation-detect', 'failure-detect']);
+  assert(d.DETECTORS.every(x => typeof x.mod.run === 'function'), 'every detector exposes run()');
+});
+
+test('user-prompt-submit-dispatcher.DETECTORS: 5 detectors, correct order + shape (model-router-ensure excluded)', () => {
+  const d = require('./user-prompt-submit-dispatcher.js');
+  const names = d.DETECTORS.map(x => x.name);
+  assertEq(names, ['brain-daemon-ensure', 'brain-health', 'brain-status', 'correction-detect', 'active-research-detect']);
+  assert(d.DETECTORS.every(x => typeof x.mod.run === 'function'), 'every detector exposes run()');
+  assert(!names.includes('model-router-ensure'), 'model-router-ensure must stay OUT (process.exit() in its main flow)');
+});
+
+test('user-prompt-submit-dispatcher.dispatch: no signals → null', async () => {
+  const d = require('./user-prompt-submit-dispatcher.js');
+  const fakes = [
+    { name: 'a', mod: { run: async () => null } },
+    { name: 'b', mod: { run: async () => null } },
+  ];
+  const out = await d.dispatch({}, { detectors: fakes });
+  assertEq(out, null);
+});
+
+test('user-prompt-submit-dispatcher.dispatch: concatenates multiple advisories in order with SEP', async () => {
+  const d = require('./user-prompt-submit-dispatcher.js');
+  const fakes = [
+    { name: 'a', mod: { run: async () => 'FIRST' } },
+    { name: 'b', mod: { run: async () => null } },
+    { name: 'c', mod: { run: async () => 'THIRD' } },
+  ];
+  const out = await d.dispatch({}, { detectors: fakes });
+  assertEq(out, ['FIRST', 'THIRD'].join(d.SEP));
+});
+
+test('user-prompt-submit-dispatcher.dispatch: a throwing detector never blocks the others (fail-open)', async () => {
+  const d = require('./user-prompt-submit-dispatcher.js');
+  const fakes = [
+    { name: 'a', mod: { run: async () => 'OK-BEFORE' } },
+    { name: 'boom', mod: { run: async () => { throw new Error('boom'); } } },
+    { name: 'c', mod: { run: async () => 'OK-AFTER' } },
+  ];
+  const out = await d.dispatch({}, { detectors: fakes });
+  assertEq(out, ['OK-BEFORE', 'OK-AFTER'].join(d.SEP));
+});
+
+test('user-prompt-submit-dispatcher.withTimeout: distinguishes a genuine error from a timeout (does not mislabel a crash)', async () => {
+  const d = require('./user-prompt-submit-dispatcher.js');
+  const err = new Error('real crash message');
+  const errOutcome = await d.withTimeout(Promise.reject(err), 1000);
+  assertEq(errOutcome.status, 'error');
+  assertEq(errOutcome.err, err);
+  const timeoutOutcome = await d.withTimeout(new Promise(() => {}), 20);
+  assertEq(timeoutOutcome.status, 'timeout');
+  const okOutcome = await d.withTimeout(Promise.resolve('VALUE'), 1000);
+  assertEq(okOutcome.status, 'ok');
+  assertEq(okOutcome.value, 'VALUE');
+});
+
+test('session-start-dispatcher.DETECTORS: 12 detectors, correct order + shape (model-router-ensure excluded)', () => {
+  const d = require('./session-start-dispatcher.js');
+  const names = d.DETECTORS.map(x => x.name);
+  assertEq(names, [
+    'brain-daemon-ensure', 'memory-rotate', 'session-whitelist', 'brain-health',
+    'project-snapshot', 'curation-session', 'doctor-advisory',
+    'review-checklist-advisory', 'tuning-advisory', 'project-identity-advisory',
+    'graph-warm', 'policy-inject',
+  ]);
+  assert(d.DETECTORS.every(x => typeof x.mod.run === 'function'), 'every detector exposes run()');
+  assert(!names.includes('model-router-ensure'), 'model-router-ensure must stay OUT (process.exit() in its main flow)');
+});
+
+test('session-start-dispatcher.dispatch: side-effect-only detectors (non-string return) are excluded from the merged text', async () => {
+  const d = require('./session-start-dispatcher.js');
+  const fakes = [
+    { name: 'text-a', mod: { run: async () => 'TEXT-A' } },
+    { name: 'side-effect-only', mod: { run: async () => ({ ok: true, rotated: ['x'] }) } },
+    { name: 'text-b', mod: { run: async () => 'TEXT-B' } },
+    { name: 'silent', mod: { run: async () => null } },
+  ];
+  const out = await d.dispatch({}, { detectors: fakes });
+  assertEq(out, ['TEXT-A', 'TEXT-B'].join(d.SEP));
+});
+
+test('session-start-dispatcher.dispatch: detectors run CONCURRENTLY with per-detector timeout (mirrors user-prompt-submit-dispatcher)', async () => {
+  const d = require('./session-start-dispatcher.js');
+  const delay = (ms, text) => new Promise(res => setTimeout(() => res(text), ms));
+  const fakes = [
+    { name: 'slow-a', mod: { run: () => delay(80, 'SLOW-A') }, timeoutMs: 1000 },
+    { name: 'slow-b', mod: { run: () => delay(80, 'SLOW-B') }, timeoutMs: 1000 },
+    { name: 'hung', mod: { run: () => new Promise(() => {}) }, timeoutMs: 50 },
+  ];
+  const t0 = Date.now();
+  const out = await d.dispatch({}, { detectors: fakes });
+  const elapsed = Date.now() - t0;
+  assertEq(out, ['SLOW-A', 'SLOW-B'].join(d.SEP));
+  assert(elapsed < 200, `expected concurrent execution + hung cutoff (~80ms), took ${elapsed}ms`);
+});
+
+test('user-prompt-submit-dispatcher.dispatch: detectors run CONCURRENTLY, not sequentially (total time ~= max, not sum)', async () => {
+  const d = require('./user-prompt-submit-dispatcher.js');
+  const delay = (ms, text) => new Promise(res => setTimeout(() => res(text), ms));
+  const fakes = [
+    { name: 'slow-a', mod: { run: () => delay(80, 'SLOW-A') }, timeoutMs: 1000 },
+    { name: 'slow-b', mod: { run: () => delay(80, 'SLOW-B') }, timeoutMs: 1000 },
+    { name: 'slow-c', mod: { run: () => delay(80, 'SLOW-C') }, timeoutMs: 1000 },
+  ];
+  const t0 = Date.now();
+  const out = await d.dispatch({}, { detectors: fakes });
+  const elapsed = Date.now() - t0;
+  assertEq(out, ['SLOW-A', 'SLOW-B', 'SLOW-C'].join(d.SEP));
+  // Sequential would take >= 240ms; concurrent should stay well under that
+  // (generous slack for CI/load — this only needs to rule out summation).
+  assert(elapsed < 200, `expected concurrent execution (~80ms), took ${elapsed}ms — looks sequential`);
+});
+
+test('user-prompt-submit-dispatcher.dispatch: a hung detector is cut off at its OWN timeout, never blocks the others or the caller past its ceiling', async () => {
+  const d = require('./user-prompt-submit-dispatcher.js');
+  const neverResolves = new Promise(() => {}); // simulates a hung ensureDaemon() wait
+  const fakes = [
+    { name: 'hung', mod: { run: () => neverResolves }, timeoutMs: 50 },
+    { name: 'fast', mod: { run: async () => 'FAST' }, timeoutMs: 1000 },
+  ];
+  const t0 = Date.now();
+  const out = await d.dispatch({}, { detectors: fakes });
+  const elapsed = Date.now() - t0;
+  assertEq(out, 'FAST'); // hung detector contributes nothing, never blocks fast's text
+  assert(elapsed < 500, `dispatch must return promptly at the hung detector's own ceiling (50ms), took ${elapsed}ms`);
 });
 
 // ─── stop-telemetry + dispatcher gate model (Phase 1 observability) ──────────

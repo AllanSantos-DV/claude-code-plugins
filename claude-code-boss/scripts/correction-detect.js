@@ -24,34 +24,33 @@ function looksLikeCorrection(msg) {
   return SIGNALS.some(re => re.test(msg));
 }
 
-const { readStdin } = require('./lib/hook-io.js');
+const { runSideEffectTextCli } = require('./lib/hook-io.js');
 const metrics = require('./lib/metrics.js');
 const hooksCfg = require('./lib/hooks-config.js');
 
-(async () => {
-  try {
-    const raw = await readStdin();
-    if (!raw) { process.stdout.write('{}'); return; }
-    if (!hooksCfg.getCorrectionDetect().enabled) { process.stdout.write('{}'); return; }
-    let event;
-    try { event = JSON.parse(raw); } catch { /* malformed stdin → no-op */ process.stdout.write('{}'); return; }
-    const msg = event.prompt || event.userMessage || event.text || '';
+const NUDGE_TEXT =
+  'The user may be correcting you. If so — and only if a generalizable lesson ' +
+  'exists — call the `capture_lesson` MCP tool with a curated {title, summary, ' +
+  'detail} (what you did, what was wrong, the rule to follow next time). You have ' +
+  'the full context; do not over-capture trivial back-and-forth.';
 
-    if (!looksLikeCorrection(msg)) { process.stdout.write('{}'); return; }
+/**
+ * Pure detector entry point. Returns the nudge text (string) when the prompt
+ * looks like a correction, or `null` otherwise. Shared by the standalone CLI
+ * (below) and `user-prompt-submit-dispatcher.js`.
+ * @param {object} event
+ * @returns {string|null}
+ */
+function run(event) {
+  if (!hooksCfg.getCorrectionDetect().enabled) return null;
+  const msg = (event && (event.prompt || event.userMessage || event.text)) || '';
+  if (!looksLikeCorrection(msg)) return null;
+  metrics.fire('nudge.emitted', { kind: 'correction' }, { sessionId: event.session_id || event.sessionId, cwd: event.cwd });
+  return NUDGE_TEXT;
+}
 
-    metrics.fire('nudge.emitted', { kind: 'correction' }, { sessionId: event.session_id || event.sessionId, cwd: event.cwd });
-    process.stdout.write(JSON.stringify({
-      hookSpecificOutput: {
-        hookEventName: 'UserPromptSubmit',
-        additionalContext:
-          'The user may be correcting you. If so — and only if a generalizable lesson ' +
-          'exists — call the `capture_lesson` MCP tool with a curated {title, summary, ' +
-          'detail} (what you did, what was wrong, the rule to follow next time). You have ' +
-          'the full context; do not over-capture trivial back-and-forth.',
-      },
-    }));
-  } catch {
-    // best-effort hook — never block the prompt
-    process.stdout.write('{}');
-  }
-})();
+if (require.main === module) {
+  runSideEffectTextCli(run, 'correction-detect', 'UserPromptSubmit');
+}
+
+module.exports = { looksLikeCorrection, run };

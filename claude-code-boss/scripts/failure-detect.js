@@ -9,7 +9,7 @@
  */
 'use strict';
 
-const { readStdin, parsePayload, emitEmpty } = require('./lib/hook-io.js');
+const { runSideEffectCli } = require('./lib/hook-io.js');
 const failureJournal = require('./lib/failure-journal.js');
 const { dataDir } = require('./lib/data-dir.js');
 const errorStore = require('./lib/error-store.js');
@@ -79,12 +79,15 @@ function recordErrorGuard(ev, entry, sid) {
   }
 }
 
-async function main() {
-  const raw = await readStdin();
-  const ev = parsePayload(raw);
-  if (!ev) return emitEmpty();
-  if (ev.hook_event_name !== 'PostToolUseFailure') return emitEmpty();
-  if (ev.is_interrupt === true) return emitEmpty();
+/**
+ * Pure detector entry point — side effect only (appends to the failure
+ * journal + records the error-guard signature). Reply is always `{}`.
+ * @param {object} ev
+ */
+async function run(ev) {
+  if (!ev) return;
+  if (ev.hook_event_name !== 'PostToolUseFailure') return;
+  if (ev.is_interrupt === true) return;
   const sid = ev.session_id || ev.sessionId || 'default';
   const entry = buildEntry(ev);
   try {
@@ -93,14 +96,10 @@ async function main() {
     console.error(`[failure-detect] ${err.message}`);
   }
   recordErrorGuard(ev, entry, sid);
-  emitEmpty();
 }
 
 if (require.main === module) {
-  main().catch((err) => {
-    console.error(`[failure-detect] crashed: ${err.message}`);
-    emitEmpty();
-  });
+  runSideEffectCli(run, 'failure-detect');
 }
 
-module.exports = { normalizeCmd, extractTarget, parseExitCode, buildEntry };
+module.exports = { normalizeCmd, extractTarget, parseExitCode, buildEntry, run };
