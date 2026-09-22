@@ -52,10 +52,33 @@ function slugify(s) {
   return s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 48) || 'lesson';
 }
 
+/**
+ * Truncate a description to `maxLen` chars WITHOUT cutting mid-word/mid-sentence.
+ * A naive `.slice(0, maxLen)` (the old behavior) produces a frontmatter
+ * `description` that ends abruptly ("...makes the test green while") — every
+ * staged draft on disk had this. Cuts at the last space before `maxLen` (falls
+ * back to a hard cut only for a single word longer than the whole budget) and
+ * marks the cut with an ellipsis so a truncated description reads as truncated,
+ * not as the whole thought.
+ * @param {string} s
+ * @param {number} maxLen
+ * @returns {string}
+ */
+function truncateDescription(s, maxLen) {
+  const clean = String(s || '').replace(/\s+/g, ' ').trim();
+  if (clean.length <= maxLen) return clean;
+  const cut = clean.slice(0, maxLen);
+  const lastSpace = cut.lastIndexOf(' ');
+  // Only back off to the last space if that doesn't throw away most of the
+  // budget (a pathological single long word) — else keep the hard cut.
+  const safe = lastSpace > maxLen * 0.6 ? cut.slice(0, lastSpace) : cut;
+  return `${safe.trimEnd()}…`;
+}
+
 function draftSkillMd(entry) {
   const detail = (entry.content && entry.content.detail) || entry.summary || '';
   const files = (entry.content && entry.content.files) || [];
-  const desc = (entry.summary || entry.title).replace(/\n/g, ' ').slice(0, 280);
+  const desc = truncateDescription(entry.summary || entry.title, 280);
   return `---
 description: "${desc.replace(/"/g, "'")}"
 ---
@@ -167,8 +190,10 @@ function approve(slug) {
   console.log(JSON.stringify({ ok: true, approved: slug, installedAt: dest }));
 }
 
+module.exports = { truncateDescription, draftSkillMd, slugify };
+
 const cmd = process.argv[2];
-(async () => {
+if (require.main === module) (async () => {
   if (cmd === 'scan' || !cmd) await scan();
   else if (cmd === 'list') list();
   else if (cmd === 'approve') approve(process.argv[3]);

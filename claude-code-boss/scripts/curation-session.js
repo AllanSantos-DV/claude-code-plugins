@@ -7,7 +7,10 @@
  *     unbounded and stale counts don't distort recurrence;
  *   - inject a short PANORAMA (O3): how many curated scripts + one-hit commands
  *     this project tracks, so the agent reuses existing curation instead of
- *     re-deriving it from scratch.
+ *     re-deriving it from scratch;
+ *   - inject a skill-promotion backlog notice (drafts staged by
+ *     `brain-promote.js scan` sit in `skills-pending/` forever if nothing
+ *     surfaces them — this is the only nudge that does).
  *
  * Best-effort and silent when there's nothing to report.
  */
@@ -20,6 +23,27 @@ const { getCuration } = require('./lib/brain-config.js');
 
 const { dataDir } = require('./lib/data-dir.js');
 const DATA_DIR = dataDir();
+
+/**
+ * Cheap, no-LLM observability for the skill-promotion staging backlog
+ * (`brain-promote.js scan` writes drafts here; nothing else ever surfaced them,
+ * so they piled up unreviewed — one draft on this machine sat 51 days). Pure
+ * `fs`/`path`, no store/network, so it's safe to run on every SessionStart.
+ * @param {string} dataDir
+ * @returns {{count: number, oldestDays: number} | null} null when nothing pending
+ */
+function pendingSkillsSummary(dataDir) {
+  const stagingDir = path.join(dataDir, 'skills-pending');
+  let dirs;
+  try {
+    dirs = fs.readdirSync(stagingDir, { withFileTypes: true })
+      .filter(d => d.isDirectory() && fs.existsSync(path.join(stagingDir, d.name, 'SKILL.md')));
+  } catch (e) { void e; return null; } // no staging dir yet
+  if (dirs.length === 0) return null;
+  const oldestMs = Math.min(...dirs.map(d => fs.statSync(path.join(stagingDir, d.name, 'SKILL.md')).birthtimeMs));
+  const oldestDays = Math.max(0, Math.floor((Date.now() - oldestMs) / 86400000));
+  return { count: dirs.length, oldestDays };
+}
 
 /**
  * Pure detector entry point. Returns the panorama advisory text (string) or
@@ -79,8 +103,17 @@ async function run(event) {
       curated = (loadShellsConfig(findProjectRoot(cwd)).shells || []).length;
     } catch (e) { void e; }
 
-    if (oneHits === 0 && curated === 0) return null;
-    return `[CURATION] This project tracks ${curated} curated script(s) and ${oneHits} one-hit command(s). Prefer existing curated scripts; mark genuine single-use commands with curation_mark_oneoff instead of re-curating.`;
+    const pending = pendingSkillsSummary(DATA_DIR);
+
+    const lines = [];
+    if (oneHits > 0 || curated > 0) {
+      lines.push(`[CURATION] This project tracks ${curated} curated script(s) and ${oneHits} one-hit command(s). Prefer existing curated scripts; mark genuine single-use commands with curation_mark_oneoff instead of re-curating.`);
+    }
+    if (pending) {
+      lines.push(`[SKILLS] ${pending.count} promoted-skill draft(s) awaiting review (oldest: ${pending.oldestDays}d). Run \`node scripts/brain-promote.js list\` or open /dashboard -> Skills to approve/discard.`);
+    }
+    if (lines.length === 0) return null;
+    return lines.join('\n');
   } catch (err) {
     console.error(`[CURATION-SESSION] ${err.message}`);
     return null;
@@ -104,4 +137,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { run };
+module.exports = { run, pendingSkillsSummary };
