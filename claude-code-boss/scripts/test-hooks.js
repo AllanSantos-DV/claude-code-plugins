@@ -2342,7 +2342,22 @@ const TESTS = [
       cwd: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ups-proj-')),
     },
     expect: { hasKey: 'hookSpecificOutput', noError: true, hookEvent: 'UserPromptSubmit' },
-    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ups-data-')) }),
+    extraEnv: () => {
+      // Isolated CLAUDE_PLUGIN_ROOT (same pattern as session-start-dispatcher's
+      // test below) so brain-daemon-ensure/brain-health/brain-status fail FAST
+      // (missing daemon-supervisor.js → caught, fail-open) instead of exercising
+      // this dev machine's REAL daemon-spawn path. Without this, brain-daemon-
+      // ensure.run() genuinely SPAWNS a real, detached, long-lived brain-server
+      // daemon process (confirmed live: `node servers/brain-server/index.js
+      // --plugin-data <this test's own temp dir>`) that outlives the test and
+      // keeps publishing ITS OWN dataDir to the shared active-data-dir pointer
+      // (lib/data-dir.js) at any later time — corrupting OTHER tests (reproduced:
+      // it made the unrelated curation-detect concurrent-appends race test fail
+      // deterministically by re-publishing the pointer mid-race).
+      const root = mkTempPluginRoot({});
+      fs.writeFileSync(path.join(root, 'config', 'brain-config.json'), JSON.stringify({ backend: { type: 'local' } }));
+      return { CLAUDE_PLUGIN_ROOT: root, CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ups-data-')) };
+    },
     validate: r => {
       const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
       if (!ctx.includes('capture_lesson')) return `correction-detect's nudge must be present, got: ${ctx}`;
@@ -2418,6 +2433,23 @@ console.log(DIM('─'.repeat(70)));
   // ─── curation-detect [concurrent appends → no lost entries] ────────────────
   const raceTestName = 'curation-detect   [concurrent appends→no lost entries]';
   if (!FILTER || raceTestName.toLowerCase().includes(FILTER.toLowerCase())) {
+    // Same isolation the main sequential loop applies before EVERY test (see
+    // its comment above): this async block runs OUTSIDE that loop, so without
+    // this it's exposed to the exact leak the loop's own comment documents —
+    // dataDir()'s pointer-following (lib/data-dir.js, deliberate for
+    // production) makes THIS test's fresh, empty (zero-weight) dataDir lose
+    // to whatever EARLIER test's dataDir already got published as the
+    // GLOBAL active-data-dir pointer under the ONE shared throwaway HOME (top
+    // of file) — silently redirecting curation-detect's spawned children to
+    // write their journal into that OTHER test's directory instead of this
+    // one's, so the readback below finds 0 files. Reproduced live: seeding a
+    // brain-health.js run first (which creates a real brain.db, weight>0)
+    // before this exact race test made it fail with files.length===0 every
+    // time; clearing the pointer here removes the false shared state.
+    try {
+      fs.rmSync(path.join(process.env.USERPROFILE, '.claude', 'claude-code-boss'), { recursive: true, force: true });
+    } catch (err) { void err; /* nothing to clean yet → fine */ }
+
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-race-'));
     const N = 5;
     const fixture = require('./__fixtures__/post-tool-use-success-noisy.json');
@@ -2465,6 +2497,14 @@ console.log(DIM('─'.repeat(70)));
   // inspect the DB.
   const smTestName = 'skill-metric      [UserPromptExpansion→metrics_event row]';
   if (!FILTER || smTestName.toLowerCase().includes(FILTER.toLowerCase())) {
+    // Same isolation as the race test above — this async block runs outside
+    // the main sequential loop's per-test pointer cleanup, so it's exposed to
+    // the same dataDir()-pointer-following leak (see the race test's comment
+    // for the full mechanism).
+    try {
+      fs.rmSync(path.join(process.env.USERPROFILE, '.claude', 'claude-code-boss'), { recursive: true, force: true });
+    } catch (err) { void err; /* nothing to clean yet → fine */ }
+
     const smDataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-skm-'));
     const projectName = `skm-proj-${Date.now()}`;
     const projectCwd = path.join(smDataDir, projectName);
