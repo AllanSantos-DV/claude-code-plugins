@@ -3633,6 +3633,47 @@ test('S5 sink: brain-promote scan() sanitizes --project (sibling traversal sink 
   assert(/sanitizeProjectId\(arg\('project'/.test(src), 'scan() must run --project through sanitizeProjectId before store.init');
 });
 
+test('brain-promote truncateDescription: cuts at word boundary, never mid-word', () => {
+  const { truncateDescription } = require(path.join(SCRIPTS, 'brain-promote.js'));
+  const short = 'A short description under the limit.';
+  assert(truncateDescription(short, 280) === short, 'must not touch a description under maxLen');
+
+  const long = 'A batch curator that truncates each pair but never limits the NUMBER of '
+    + 'pairs per batch can still overflow the model context window on a large drain '
+    + 'a latent bug not a hypothetical Add a BatchSizer that dimensions the batch';
+  const out = truncateDescription(long, 60);
+  assert(out.length <= 61, `expected <= 61 chars (60 + ellipsis), got ${out.length}`);
+  assert(out.endsWith('…'), 'truncated output must end with an ellipsis marker');
+  assert(!/\S…$/.test(out) || out.slice(0, -1).trimEnd() === out.slice(0, -1),
+    'must not cut in the middle of a word');
+  assert(long.startsWith(out.slice(0, -1).trimEnd()), 'kept prefix must be a real word-aligned prefix of the source');
+
+  // Pathological single word longer than the whole budget: hard-cut fallback,
+  // still bounded and still marked with the ellipsis.
+  const oneWord = 'a'.repeat(300);
+  const hardCut = truncateDescription(oneWord, 280);
+  assert(hardCut.length === 281, `expected hard cut at 280 + ellipsis, got ${hardCut.length}`);
+});
+
+test('curation-session pendingSkillsSummary: counts staged drafts, null when empty', () => {
+  const { pendingSkillsSummary } = require(path.join(SCRIPTS, 'curation-session.js'));
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pending-skills-'));
+  assert(pendingSkillsSummary(tmp) === null, 'no skills-pending dir yet -> null');
+
+  const d1 = path.join(tmp, 'skills-pending', 'lesson-a');
+  fs.mkdirSync(d1, { recursive: true });
+  fs.writeFileSync(path.join(d1, 'SKILL.md'), 'draft a');
+  const d2 = path.join(tmp, 'skills-pending', 'lesson-b');
+  fs.mkdirSync(d2, { recursive: true });
+  fs.writeFileSync(path.join(d2, 'SKILL.md'), 'draft b');
+  // A staging dir with no SKILL.md inside must not count (half-written/garbage entry).
+  fs.mkdirSync(path.join(tmp, 'skills-pending', 'not-a-draft'), { recursive: true });
+
+  const summary = pendingSkillsSummary(tmp);
+  assert(summary && summary.count === 2, `expected count 2, got ${summary && summary.count}`);
+  assert(Number.isFinite(summary.oldestDays) && summary.oldestDays >= 0, 'oldestDays must be a non-negative number');
+});
+
 test('S4 brain-embedder: embedOllama uses execFileSync (no shell)', () => {
   const src = fs.readFileSync(path.join(SCRIPTS, 'brain-embedder.js'), 'utf-8');
   const fn = src.match(/function embedOllama[\s\S]*?\n\}/);
