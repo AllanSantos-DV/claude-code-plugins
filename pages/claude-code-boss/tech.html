@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.26.0 — detalhes técnicos</title>
+<title>claude-code-boss v2.28.0 — detalhes técnicos</title>
 <meta name="description" content="Detalhes técnicos do plugin claude-code-boss: arquitetura do daemon HTTP único, pipeline de hooks, Brain KB (storage/index/graph), providers de embedding, perfis de enforcement, graph tools e dashboard." />
 <style>
   :root{
@@ -128,13 +128,13 @@
     <a href="index.html">← Apresentação</a>
     <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a>
     <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">Changelog</a>
-    <a href="#top" class="ver">v2.26.0</a>
+    <a href="#top" class="ver">v2.28.0</a>
   </nav>
 </header>
 
 <main class="wrap" id="top">
   <div class="page-head">
-    <p class="kick">documentação técnica · v2.26.0</p>
+    <p class="kick">documentação técnica · v2.28.0</p>
     <h1>Arquitetura e funcionamento interno</h1>
     <p class="intro">Para quem quer saber <b>como funciona por baixo</b>: daemon HTTP único, pipeline de hooks, Brain KB em 3 camadas, providers de embedding, perfis de enforcement, exploração de repositório por grafo e o dashboard. Fontes: <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a> e <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG</a>.</p>
     <div class="toc">
@@ -174,32 +174,30 @@
   </section>
 
   <section id="hooks">
-    <h2>Hooks pipeline <span class="tag">~15 scripts + 1 mcp_tool</span></h2>
-    <p class="lead">Todos os hooks vivem em <code>hooks/hooks.json</code>. O <b>Stop é um entry único</b> (<code>stop-dispatcher.js</code>) que roda todos os detectores in-process e funde os blocks num só <code>{decision:'block', reason}</code> — 1 spawn de Node, não 11+.</p>
+    <h2>Hooks pipeline <span class="tag">6 dispatchers in-process</span></h2>
+    <p class="lead">Todos os hooks vivem em <code>hooks/hooks.json</code>. Desde a <b>v2.28.0</b>, cada evento tem um <b>dispatcher in-process</b>: lê o payload uma vez, roda cada <code>run(event)</code> puro (concorrente, com o timeout individual que cada hook já tinha) e funde o resultado — <b>~34 spawns de Node a menos</b> por sessão/prompt/comando. Só <code>model-router-ensure.js</code> fica de fora (chama <code>process.exit()</code> e faz esperas de vários segundos).</p>
 
     <div class="table-scroll">
       <table>
         <thead><tr><th>Evento</th><th>Script</th><th>O que faz</th></tr></thead>
         <tbody>
-          <tr><td>SessionStart</td><td><b>memory-rotate.js</b></td><td>Rotaciona MEMORY.md quando &gt;150 linhas</td></tr>
-          <tr><td>SessionStart</td><td><b>session-whitelist.js</b></td><td>Detecta ecossistema do projeto, popula whitelist</td></tr>
-          <tr><td>SessionStart</td><td><b>brain-health.js</b></td><td>Liveness probe (static + active); advisory acionável se MCP caído, senão silencioso</td></tr>
-          <tr><td>SessionStart</td><td><b>doctor-advisory.js</b></td><td>Roda <code>doctor.js</code> com cooldown; advisory de 1 linha só se algo crítico falhar</td></tr>
-          <tr><td>SessionStart</td><td><b>review-checklist-advisory.js</b></td><td>Lembra o <code>/code-review</code> nativo de consultar <code>.claude/brain-review-checklist.md</code></td></tr>
-          <tr><td>SessionStart</td><td><b>graph-warm.js</b></td><td>Dispara ingest incremental do Session Graph (fire-and-forget, cooldown)</td></tr>
-          <tr><td>SubagentStart</td><td><b>policy-inject.js</b></td><td>Injeta políticas standing no contexto do subagente</td></tr>
-          <tr><td>PreToolUse (Bash)</td><td><b>curation-guard.js</b></td><td>Bloqueia/redireciona comandos curados; inclui graph-guard contra <code>grep -r</code>/<code>rg</code>/<code>find</code> amplos</td></tr>
-          <tr><td>PreToolUse (Grep|Glob)</td><td><b>graph-guard.js</b></td><td>Busca ampla com Session Graph READY → deny-once: <code>graph_search</code>/<code>graph_symbols</code> primeiro</td></tr>
-          <tr><td>PostToolUse (Bash)</td><td><b>curation-detect.js</b></td><td>Detecta outputs grandes para curação</td></tr>
-          <tr><td>PostToolUse (Edit|Write|NotebookEdit)</td><td><b>file-edit-detect.js</b></td><td>Journala arquivos editados no turno</td></tr>
+          <tr><td><b>SessionStart</b></td><td><b>session-start-dispatcher.js</b> <span class="tag">12 → 1</span></td><td>Entry único: roda in-process os 12 detectores de sessão (daemon-ensure, memory-rotate, whitelist, brain-health, project-snapshot, curation-session, doctor, review-checklist, tuning, project-identity, graph-warm, policy-inject), concorrentes, advisories fundidos num só <code>additionalContext</code></td></tr>
+          <tr><td>SessionStart</td><td><b>model-router-ensure.js</b></td><td>Garante o daemon do model-router e publica <code>ANTHROPIC_BASE_URL</code>/shim — spawn próprio, fora do dispatcher</td></tr>
+          <tr><td>SubagentStart</td><td><b>policy-inject.js</b></td><td>Injeta políticas standing no contexto próprio do subagente</td></tr>
+          <tr><td><b>PreToolUse (Bash)</b></td><td><b>pretooluse-bash-dispatcher.js</b> <span class="tag">2 → 1</span></td><td>Roda <code>curation-guard</code> + <code>error-guard</code>; o <code>deny</code> do error-guard vence, senão propaga a decisão do curation-guard (preservando o <code>updatedInput</code> do auto-redirect)</td></tr>
+          <tr><td>PreToolUse (Edit)</td><td><b>policy-enforce-shadow.js</b></td><td>Shadow-mode: detecta violação de política de código ativa (sem bloquear ainda)</td></tr>
+          <tr><td>PreToolUse (Grep|Glob)</td><td><b>graph-guard.js</b></td><td>Busca ampla com Session Graph READY → deny-once: <code>graph_search</code>/<code>graph_symbols</code> primeiro; retry idêntico passa</td></tr>
+          <tr><td><b>PostToolUse (Bash)</b></td><td><b>posttoolusebash-dispatcher.js</b> <span class="tag">3 → 1</span></td><td>Roda <code>curation-detect</code> + <code>decision-detect</code> + <code>error-resolve</code> (side-effect only, sempre <code>{}</code>)</td></tr>
+          <tr><td>PostToolUse (Edit|Write|NotebookEdit)</td><td><b>file-edit-detect.js</b></td><td>Journala arquivos editados no turno (alimenta verify-nudge e self-review)</td></tr>
+          <tr><td>PostToolUse (Edit|Write|MultiEdit|NotebookEdit)</td><td><b>policy-glob-inject.js</b></td><td>Advisory de política glob quando o arquivo editado casa um padrão ativo</td></tr>
           <tr><td>UserPromptExpansion</td><td><b>skill-metric.js</b></td><td>Métrica de uso de skill (matcher <code>.*</code>)</td></tr>
-          <tr><td>PostToolUseFailure</td><td><b>curation-detect.js / failure-detect.js</b></td><td>Detecta output p/ curação; captura assinatura da falha (alimenta error-guard)</td></tr>
-          <tr><td><b>Stop</b> (via dispatcher)</td><td><b>stop-dispatcher.js</b></td><td>Entry único — roda todos os detectores in-process, funde blocks</td></tr>
+          <tr><td><b>PostToolUseFailure</b></td><td><b>posttoolusefailure-dispatcher.js</b> <span class="tag">2 → 1</span></td><td>Roda <code>curation-detect</code> + <code>failure-detect</code> (journal da falha + assinatura no error-store, que alimenta o error-guard)</td></tr>
+          <tr><td><b>Stop</b></td><td><b>stop-dispatcher.js</b> <span class="tag">11+ → 1</span></td><td>Entry único desde a v1.19.0 — roda todos os detectores in-process e funde os blocks num só <code>{decision:'block', reason}</code></td></tr>
           <tr><td>Stop (via dispatcher)</td><td><b>pattern-detect, self-review, verify-nudge, refine-research, curation-stop, session-summary</b></td><td>Nudges advisory throttled (aprendizado, self-review, verificação, pesquisa, curadoria, resumo)</td></tr>
           <tr><td>Stop (via dispatcher)</td><td><b>+ 7 outros</b></td><td>skill-promote-trigger, decision-scan-response, decision-promote, research-followup-detect, failure-retro, skill-success-detect, retrieval-feedback, auto-continue-stop</td></tr>
-          <tr><td>UserPromptSubmit</td><td><b>brain-health.js</b></td><td>Mesma probe do SessionStart, cooldown 60s</td></tr>
-          <tr><td>UserPromptSubmit</td><td><b>correction-detect.js</b></td><td>Detecta sinal de correção → nudge p/ <code>capture_lesson</code></td></tr>
-          <tr><td>UserPromptSubmit</td><td><b>mcp_tool → brain_retrieve_context</b></td><td>Retrieval QUENTE por-turno: embedia o prompt no brain-server (~12–26ms), gate 0.20, injeta bloco <code>[BRAIN]</code></td></tr>
+          <tr><td><b>UserPromptSubmit</b></td><td><b>user-prompt-submit-dispatcher.js</b> <span class="tag">5 → 1</span></td><td>Roda <code>brain-daemon-ensure</code>, <code>brain-health</code>, <code>brain-status</code>, <code>correction-detect</code> e <code>active-research-detect</code> concorrentes, cada um com timeout próprio (<code>ok</code>/<code>timeout</code>/<code>error</code> nunca se misturam)</td></tr>
+          <tr><td>UserPromptSubmit</td><td><b>model-router-ensure.js</b></td><td>Mesma garantia de daemon por-turno — spawn próprio, fora do dispatcher</td></tr>
+          <tr><td>UserPromptSubmit</td><td><b>mcp_tool → brain_retrieve_context</b></td><td>Retrieval QUENTE por-turno: embeda o prompt no brain-server (~12–26ms), gate 0.20, federa <code>__user__</code>, injeta bloco <code>[BRAIN]</code></td></tr>
         </tbody>
       </table>
     </div>
@@ -315,12 +313,14 @@
   </section>
 
   <section id="versoes">
-    <h2>Versões <span class="tag">49 releases</span></h2>
-    <p class="lead">O changelog completo (v1.0.0 → v2.26.0) vive no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>. Destaques recentes:</p>
+    <h2>Versões <span class="tag">82 releases</span></h2>
+    <p class="lead">O changelog completo (v1.0.0 → v2.28.0) vive no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>. Destaques recentes:</p>
     <div class="table-scroll">
       <table>
         <thead><tr><th>Versão</th><th>Destaque</th></tr></thead>
         <tbody>
+          <tr><td><b>v2.28.0</b></td><td>Seis dispatchers in-process (<code>SessionStart</code>, <code>UserPromptSubmit</code>, <code>PreToolUse/Bash</code>, <code>PostToolUse/Bash</code>, <code>PostToolUseFailure</code> e o <code>Stop</code> já existente) eliminam ~34 spawns de Node por sessão/prompt/comando; detectores concorrentes com timeout próprio e distinção <code>ok</code>/<code>timeout</code>/<code>error</code>; <code>brain-status.js</code> ganha <code>run(event)</code> advisory-only sem mexer na CLI; +21 testes unitários e +9 de integração real.</td></tr>
+          <tr><td><b>v2.27.0</b></td><td>Pool de <code>kb-worker</code>s com roteamento sticky por projeto (ADR-014): lock por worker em vez de global, projetos diferentes rodam de fato concorrentes (<code>/health</code> em <code>max=5ms</code> sob carga); teste de regressão fecha o gap de cobertura de <code>CCB_PROJECT_ID</code> em <code>resolveProjectChain</code>.</td></tr>
           <tr><td><b>v2.26.0</b></td><td>Download automático hardware-aware do memory server (<code>mcp-release-resolver.js</code> + <code>nvidia-smi</code> → <code>-gpu.jar</code> vs CPU, <code>sha256</code> verificado); dashboard unifica o botão &ldquo;Baixar e ativar&rdquo; + <code>escapeHtml</code> anti-XSS; corrige botão de download escondido quando ele é o próximo passo; CI <code>setup-node@v4→@v6</code>.</td></tr>
           <tr><td><b>v2.25.1</b></td><td>Correções de robustez: <code>kb-worker.js</code>/<code>kb-worker-client.js</code> (nunca versionados) faziam o daemon crashar no import em clone novo; CAS (<code>_v</code> de versão) elimina lost-update na config de override do brain; dashboard passa a validar timeout BYOK antes de salvar.</td></tr>
           <tr><td><b>v2.25.0</b></td><td>MCP Activation Wizard + <code>/brain-status</code> (visibilidade total do backend); CRUD do Dashboard roteado pela fachada real; BYOK com timeout por tipo de endpoint (fixo/rotativo, <code>0</code> = sem limite) e log de latência opcional.</td></tr>
@@ -347,7 +347,7 @@
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">Changelog</a>
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins">GitHub</a>
     </div>
-    <div class="legal">MIT · Allan Santos · claude-code-boss v2.26.0</div>
+    <div class="legal">MIT · Allan Santos · claude-code-boss v2.28.0</div>
   </div>
 </footer>
 

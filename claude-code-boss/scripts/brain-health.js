@@ -172,20 +172,14 @@ function recordRun(data) {
   } catch { /* nothing actionable */ }
 }
 
-function emitAdvisory(eventName, defects) {
+function buildAdvisoryText(defects) {
   const lines = defects.map((d, i) => `  ${i + 1}. ${d}`).join('\n');
-  emitJson({
-    hookSpecificOutput: {
-      hookEventName: eventName,
-      additionalContext:
-        '[BRAIN-HEALTH] Brain MCP path is DOWN — defects detected:\n' +
-        lines +
-        '\n\nAction: re-run `.vscode/scripts/install-local.mjs` — the new build takes effect ' +
-        'on the next turn (no Claude Code restart needed). If the live probe failed, the agent ' +
-        'must fix the listed cause before relying on `brain_search` / `brain_store` / ' +
-        '`capture_lesson` — those calls will fail until resolved.',
-    },
-  });
+  return '[BRAIN-HEALTH] Brain MCP path is DOWN — defects detected:\n' +
+    lines +
+    '\n\nAction: re-run `.vscode/scripts/install-local.mjs` — the new build takes effect ' +
+    'on the next turn (no Claude Code restart needed). If the live probe failed, the agent ' +
+    'must fix the listed cause before relying on `brain_search` / `brain_store` / ' +
+    '`capture_lesson` — those calls will fail until resolved.';
 }
 
 function countPendingDrafts(data) {
@@ -202,15 +196,9 @@ function countPendingDrafts(data) {
   } catch { /* unreadable dir: report zero */ return { count: 0, dir }; }
 }
 
-function emitPendingDraftsNotice(eventName, count, dir) {
-  emitJson({
-    hookSpecificOutput: {
-      hookEventName: eventName,
-      additionalContext:
-        `[BRAIN-HEALTH] ${count} pending skill draft${count === 1 ? '' : 's'} at ${dir} — ` +
-        'review via dashboard #skills tab or `node scripts/brain-promote.js list`.',
-    },
-  });
+function buildPendingDraftsText(count, dir) {
+  return `[BRAIN-HEALTH] ${count} pending skill draft${count === 1 ? '' : 's'} at ${dir} — ` +
+    'review via dashboard #skills tab or `node scripts/brain-promote.js list`.';
 }
 
 /**
@@ -230,16 +218,10 @@ function embedderModelMissing() {
   }
 }
 
-function emitEmbedderNotice(eventName) {
-  emitJson({
-    hookSpecificOutput: {
-      hookEventName: eventName,
-      additionalContext:
-        '[BRAIN-HEALTH] Embedding model not downloaded — the Brain is in keyword-only mode ' +
-        '(no semantic search, and the pattern→skill loop cannot advance recurrence). ' +
-        'Run `npm run setup:brain` to fetch it (or it downloads on first capture).',
-    },
-  });
+function buildEmbedderText() {
+  return '[BRAIN-HEALTH] Embedding model not downloaded — the Brain is in keyword-only mode ' +
+    '(no semantic search, and the pattern→skill loop cannot advance recurrence). ' +
+    'Run `npm run setup:brain` to fetch it (or it downloads on first capture).';
 }
 
 /**
@@ -252,33 +234,21 @@ function emitEmbedderNotice(eventName) {
  * Note: a *missing* Node can't be detected here — if `node` is not on PATH the
  * hook never spawns (anthropics/claude-code#66183); that path is covered by docs.
  */
-function emitDegradedSqliteNotice(eventName) {
-  emitJson({
-    hookSpecificOutput: {
-      hookEventName: eventName,
-      additionalContext:
-        '[BRAIN-HEALTH] SQLite backend unavailable — the Brain is using the JSON fallback ' +
-        '(no metrics, dashboard count = 0, slower search). You are on Node ' +
-        `${process.versions.node}; the built-in node:sqlite needs Node >= 22.13. ` +
-        'Upgrade Node (on the system PATH) and restart Claude Code to restore it.',
-    },
-  });
+function buildDegradedSqliteText() {
+  return '[BRAIN-HEALTH] SQLite backend unavailable — the Brain is using the JSON fallback ' +
+    '(no metrics, dashboard count = 0, slower search). You are on Node ' +
+    `${process.versions.node}; the built-in node:sqlite needs Node >= 22.13. ` +
+    'Upgrade Node (on the system PATH) and restart Claude Code to restore it.';
 }
 
-/** Emit a SessionStart notice when memory recall has been recently degraded. */
-function emitRecallDegradedNotice(eventName, status) {
+/** Text for a SessionStart notice when memory recall has been recently degraded. */
+function buildRecallDegradedText(status) {
   const reason = status.lastDegraded && status.lastDegraded.reason;
   const pct = Math.round(status.degradedRate * 100);
-  emitJson({
-    hookSpecificOutput: {
-      hookEventName: eventName,
-      additionalContext:
-        `[BRAIN-HEALTH] Memory recall is DEGRADED — ${status.windowDegraded} of the last ` +
-        `${status.windowTotal} recalls came back empty (${pct}%)` +
-        (reason ? ` (last reason: ${reason})` : '') + '. ' +
-        'compose_recall is the required path on the mcp-memory backend: check the daemon is running and is version >= 2.18.',
-    },
-  });
+  return `[BRAIN-HEALTH] Memory recall is DEGRADED — ${status.windowDegraded} of the last ` +
+    `${status.windowTotal} recalls came back empty (${pct}%)` +
+    (reason ? ` (last reason: ${reason})` : '') + '. ' +
+    'compose_recall is the required path on the mcp-memory backend: check the daemon is running and is version >= 2.18.';
 }
 
 /**
@@ -299,10 +269,16 @@ function recallDegradedStatus() {
   } catch (err) { void err; return null; }
 }
 
-async function main() {
+/**
+ * Pure detector entry point — returns the advisory text (string) when
+ * something is actionable, or `null` when healthy/silent/throttled. Never
+ * throws. Shared by the standalone CLI (below) and
+ * `user-prompt-submit-dispatcher.js`.
+ * @param {object} event
+ * @returns {Promise<string|null>}
+ */
+async function run(event) {
   try {
-    const raw = await readStdin();
-    const event = parsePayload(raw) || {};
     const eventName = event.hook_event_name || 'SessionStart';
     const project = event.cwd ? path.basename(event.cwd) : 'default';
 
@@ -310,8 +286,7 @@ async function main() {
     const data = dataDir();
 
     if (eventName === 'UserPromptSubmit' && !shouldRunOnPrompt(data)) {
-      emitEmpty();
-      return;
+      return null;
     }
 
     const defects = staticChecks(root, data);
@@ -323,24 +298,36 @@ async function main() {
 
     recordRun(data);
 
-    if (defects.length > 0) { emitAdvisory(eventName, defects); return; }
+    if (defects.length > 0) return buildAdvisoryText(defects);
 
     if (eventName === 'SessionStart') {
       const rstat = recallDegradedStatus();
-      if (rstat) { emitRecallDegradedNotice(eventName, rstat); return; }
-      if (getSqliteBackend() === 'none') { emitDegradedSqliteNotice(eventName); return; }
-      if (embedderModelMissing()) { emitEmbedderNotice(eventName); return; }
+      if (rstat) return buildRecallDegradedText(rstat);
+      if (getSqliteBackend() === 'none') return buildDegradedSqliteText();
+      if (embedderModelMissing()) return buildEmbedderText();
       const { count, dir } = countPendingDrafts(data);
-      if (count > 0) { emitPendingDraftsNotice(eventName, count, dir); return; }
+      if (count > 0) return buildPendingDraftsText(count, dir);
     }
 
-    emitEmpty();
+    return null;
   } catch (err) {
     console.error(`[BRAIN-HEALTH] probe crashed: ${err.message}`);
-    emitEmpty();
+    return null;
   }
+}
+
+async function main() {
+  const raw = await readStdin();
+  const event = parsePayload(raw) || {};
+  const eventName = event.hook_event_name || 'SessionStart';
+  const text = await run(event);
+  if (text) {
+    emitJson({ hookSpecificOutput: { hookEventName: eventName, additionalContext: text } });
+    return;
+  }
+  emitEmpty();
 }
 
 if (require.main === module) main();
 
-module.exports = { countPendingDrafts, shouldRunOnPrompt, brainServerDepsOk };
+module.exports = { countPendingDrafts, shouldRunOnPrompt, brainServerDepsOk, run };

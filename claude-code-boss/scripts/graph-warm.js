@@ -25,37 +25,53 @@
 const path = require('path');
 const { readStdin, emitEmpty } = require('./lib/hook-io.js');
 
+/**
+ * Pure detector entry point — side effect only (pokes the graph-ingest
+ * warm-up on the mcp-memory daemon; never injects context). Returns `null`
+ * always; never throws.
+ * @param {object} event
+ * @returns {Promise<null>}
+ */
+async function run(event) {
+  try {
+    const cfg = require('./lib/hooks-config.js').getGraphGuard();
+    if (!cfg.enabled || !cfg.warm) return null;
+
+    // The graph lives on the mcp-memory daemon — nothing to warm on the local backend.
+    const brainCfg = require('./lib/brain-config.js').load();
+    if (((brainCfg.backend && brainCfg.backend.type) || 'local') !== 'mcp-memory') return null;
+
+    const cwd = (event && typeof event.cwd === 'string' && event.cwd) ? event.cwd : process.cwd();
+    const projectRoot = path.resolve(cwd);
+    const dataDir = require('./lib/data-dir.js').dataDir();
+    const core = require('./lib/graph-guard-core.js');
+
+    // Per-project cooldown: don't re-hash the repo on every open within the window.
+    const stampFile = core.warmStampPath(dataDir, projectRoot);
+    if (core.isWarmOnCooldown(stampFile, cfg.warmCooldownMs)) return null;
+
+    const dispatch = core.makeGraphIngestDispatch({ cwd, timeoutMs: cfg.probeTimeoutMs });
+    const res = await dispatch();
+    if (res && res.dispatched) {
+      core.stampWarm(stampFile); // only stamp when the daemon actually accepted the ingest
+    }
+    return null; // never inject/block — pure background warm
+  } catch (err) {
+    console.error(`[graph-warm] ${err && err.message ? err.message : err}`);
+    return null;
+  }
+}
+
 async function main() {
   const raw = await readStdin();
   let event = {};
   try { event = JSON.parse(raw || '{}'); } catch { /* defaults */ }
-
-  const cfg = require('./lib/hooks-config.js').getGraphGuard();
-  if (!cfg.enabled || !cfg.warm) return emitEmpty();
-
-  // The graph lives on the mcp-memory daemon — nothing to warm on the local backend.
-  const brainCfg = require('./lib/brain-config.js').load();
-  if (((brainCfg.backend && brainCfg.backend.type) || 'local') !== 'mcp-memory') return emitEmpty();
-
-  const cwd = (typeof event.cwd === 'string' && event.cwd) ? event.cwd : process.cwd();
-  const projectRoot = path.resolve(cwd);
-  const dataDir = require('./lib/data-dir.js').dataDir();
-  const core = require('./lib/graph-guard-core.js');
-
-  // Per-project cooldown: don't re-hash the repo on every open within the window.
-  const stampFile = core.warmStampPath(dataDir, projectRoot);
-  if (core.isWarmOnCooldown(stampFile, cfg.warmCooldownMs)) return emitEmpty();
-
-  const dispatch = core.makeGraphIngestDispatch({ cwd, timeoutMs: cfg.probeTimeoutMs });
-  const res = await dispatch();
-  if (res && res.dispatched) {
-    core.stampWarm(stampFile); // only stamp when the daemon actually accepted the ingest
-  }
-  return emitEmpty(); // never inject/block — pure background warm
+  await run(event);
+  emitEmpty();
 }
 
 if (require.main === module) {
   main().catch((err) => { console.error(`[graph-warm] ${err && err.message ? err.message : err}`); emitEmpty(); });
 }
 
-module.exports = { main };
+module.exports = { main, run };

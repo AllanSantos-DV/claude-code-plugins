@@ -12,74 +12,8 @@
           {
             "type": "command",
             "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/brain-daemon-ensure.js"],
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/session-start-dispatcher.js"],
             "timeout": 30
-          },
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/memory-rotate.js"],
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/session-whitelist.js"],
-            "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/brain-health.js"],
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/project-snapshot.js"],
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/curation-session.js"],
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/doctor-advisory.js"],
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/review-checklist-advisory.js"],
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/tuning-advisory.js"],
-            "timeout": 8
-          },
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/project-identity-advisory.js"],
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/graph-warm.js"],
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/policy-inject.js"],
-            "timeout": 10
           }
         ]
       }
@@ -103,14 +37,8 @@
           {
             "type": "command",
             "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/curation-guard.js"],
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/error-guard.js"],
-            "timeout": 5
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/pretooluse-bash-dispatcher.js"],
+            "timeout": 8
           }
         ]
       },
@@ -144,20 +72,8 @@
           {
             "type": "command",
             "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/curation-detect.js"],
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/posttoolusebash-dispatcher.js"],
             "timeout": 10
-          },
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/decision-detect.js"],
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/error-resolve.js"],
-            "timeout": 5
           }
         ]
       },
@@ -199,23 +115,12 @@
     ],
     "PostToolUseFailure": [
       {
-        "matcher": "Bash",
         "hooks": [
           {
             "type": "command",
             "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/curation-detect.js"],
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/posttoolusefailure-dispatcher.js"],
             "timeout": 10
-          }
-        ]
-      },
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/failure-detect.js"],
-            "timeout": 5
           }
         ]
       }
@@ -244,32 +149,8 @@
           {
             "type": "command",
             "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/brain-daemon-ensure.js"],
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/user-prompt-submit-dispatcher.js"],
             "timeout": 30
-          },
-           {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/brain-health.js"],
-            "timeout": 5
-           },
-           {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/brain-status.js"],
-            "timeout": 5
-           },
-           {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/correction-detect.js"],
-            "timeout": 5
-          },
-          {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/active-research-detect.js"],
-            "timeout": 5
           },
           {
             "type": "mcp_tool",

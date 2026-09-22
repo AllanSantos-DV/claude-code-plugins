@@ -41,22 +41,24 @@ function renderBlock(active, corrupt) {
   return lines.join('\n');
 }
 
-(async () => {
+/**
+ * Pure detector entry point. Returns the policy block text (string) or
+ * `null` when nothing to surface. Shared by the standalone CLI (below, used
+ * by the `SubagentStart` hook — a separate matcher with a single hook, not
+ * consolidated) and the `SessionStart` dispatcher.
+ * @param {object} event
+ * @returns {Promise<string|null>}
+ */
+async function run(event) {
   try {
-    const raw = await readStdin();
-    let event = {};
-    try { event = JSON.parse(raw || '{}'); } catch { /* non-JSON stdin → defaults */ }
-
     const cfg = getPolicyInject();
-    if (cfg.enabled === false) return emitEmpty();
-
-    const eventName = event.hook_event_name || 'SessionStart';
+    if (cfg.enabled === false) return null;
 
     // Fail-open LOCAL scope key: policies are a per-machine store (not the memory
     // contract), so resolveLocalScopeId degrades to basename(cwd)/'default' and never
     // throws; guard anyway so nothing can break the hook.
     let projectId = 'default';
-    try { projectId = resolveLocalScopeId({ cwd: event.cwd }) || 'default'; }
+    try { projectId = resolveLocalScopeId({ cwd: event && event.cwd }) || 'default'; }
     catch (err) { void err; /* keep the 'default' fallback */ }
 
     const DATA_DIR = dataDir();
@@ -69,7 +71,7 @@ function renderBlock(active, corrupt) {
     const active = policyStore.listAlways(DATA_DIR, { projectId });
 
     // Nothing to surface AND nothing to warn about → stay silent.
-    if (active.length === 0 && !corrupt) return emitEmpty();
+    if (active.length === 0 && !corrupt) return null;
 
     let block = renderBlock(active, corrupt);
     // Hard guarantee: never inject more than the configured budget of characters,
@@ -77,10 +79,28 @@ function renderBlock(active, corrupt) {
     if (typeof cfg.maxChars === 'number' && cfg.maxChars > 0 && block.length > cfg.maxChars) {
       block = block.slice(0, cfg.maxChars);
     }
-
-    emitJson({ hookSpecificOutput: { hookEventName: eventName, additionalContext: block } });
+    return block;
   } catch (err) {
     console.error(`[POLICY-INJECT] ${err.message}`);
-    emitEmpty();
+    return null;
   }
-})();
+}
+
+async function main() {
+  const raw = await readStdin();
+  let event = {};
+  try { event = JSON.parse(raw || '{}'); } catch { /* non-JSON stdin → defaults */ }
+  const eventName = event.hook_event_name || 'SessionStart';
+  const text = await run(event);
+  if (text) {
+    emitJson({ hookSpecificOutput: { hookEventName: eventName, additionalContext: text } });
+    return;
+  }
+  emitEmpty();
+}
+
+if (require.main === module) {
+  main();
+}
+
+module.exports = { run, renderBlock };

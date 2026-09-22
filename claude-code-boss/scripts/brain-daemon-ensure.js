@@ -62,13 +62,15 @@ function runSetupInBackground(root, dataDir) {
   }
 }
 
-async function main() {
-  let eventName = 'SessionStart';
+/**
+ * Pure detector entry point — ensures the daemon, side effect only. Returns
+ * the advisory text (string) when the daemon couldn't be ensured, or `null`
+ * when healthy (silent). Never throws — fail-open, same guarantee as before.
+ * @param {object} event
+ * @returns {Promise<string|null>}
+ */
+async function run(_event) {
   try {
-    const raw = await readStdin();
-    const event = parsePayload(raw) || {};
-    eventName = event.hook_event_name || eventName;
-
     const root = pluginRoot();
     const data = dataDir();
 
@@ -89,15 +91,26 @@ async function main() {
       const setupNote = setupStarted
         ? ' [setup em background — tente novamente se o daemon não subir]'
         : '';
-      emitJson({
-        hookSpecificOutput: {
-          hookEventName: eventName,
-          additionalContext:
-            `[BRAIN] daemon único não pôde ser garantido (${result.error})${setupNote}. ` +
-            'O brain-server tentará reiniciar automaticamente no próximo prompt; se falhar, ' +
-            'rode `node scripts/plugin-setup.js && node servers/brain-server/index.js` manualmente.',
-        },
-      });
+      return `[BRAIN] daemon único não pôde ser garantido (${result.error})${setupNote}. ` +
+        'O brain-server tentará reiniciar automaticamente no próximo prompt; se falhar, ' +
+        'rode `node scripts/plugin-setup.js && node servers/brain-server/index.js` manualmente.';
+    }
+    return null;
+  } catch (err) {
+    console.error(`[brain-daemon-ensure] ${err.message}`);
+    return null; // nunca bloqueia o início da sessão
+  }
+}
+
+async function main() {
+  let eventName = 'SessionStart';
+  try {
+    const raw = await readStdin();
+    const event = parsePayload(raw) || {};
+    eventName = event.hook_event_name || eventName;
+    const text = await run(event);
+    if (text) {
+      emitJson({ hookSpecificOutput: { hookEventName: eventName, additionalContext: text } });
       return;
     }
     emitEmpty();
@@ -109,4 +122,4 @@ async function main() {
 
 if (require.main === module) main();
 
-module.exports = { pluginRoot, runSetupInBackground };
+module.exports = { pluginRoot, runSetupInBackground, run };

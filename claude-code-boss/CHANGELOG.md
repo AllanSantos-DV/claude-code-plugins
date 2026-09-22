@@ -1,5 +1,66 @@
 # Changelog
 
+## [2.28.0] - 2026-09-22
+
+### Changed — 6 dispatchers in-process eliminam ~34 spawns de Node por sessão/prompt/comando
+- **Problema:** `hooks/hooks.json` fazia um `spawn` de processo Node **por script, por
+  evento** — `SessionStart` sozinho somava 13 spawns (todos disparados a cada nova
+  sessão/resume), e `UserPromptSubmit` somava 6 spawns **a cada prompt**. Comandos
+  Bash pagavam 2 spawns em `PreToolUse` e mais 3 em `PostToolUse`. O padrão já
+  existia no `stop-dispatcher.js` (v1.19.0, 11 spawns → 1) mas nunca tinha sido
+  estendido aos outros eventos — o próprio CHANGELOG dessa release já registrava
+  isso como o follow-up de maior ROI, nunca feito.
+- **`pretooluse-bash-dispatcher.js`** (`PreToolUse`/`Bash`, 2→1): consolida
+  `curation-guard.js` + `error-guard.js`. Precedência replicada explicitamente no
+  merge (antes resolvida pela ordem de hooks irmãos do próprio Claude Code): `deny`
+  do `error-guard` vence — mesmo sobre o `allow`+`updatedInput` de auto-redirect do
+  `curation-guard` — porque a chamada nunca roda de qualquer forma.
+- **`posttoolusebash-dispatcher.js`** (`PostToolUse`/`Bash`, 3→1) e
+  **`posttoolusefailure-dispatcher.js`** (`PostToolUseFailure`, até 2→1): consolidam
+  `curation-detect.js` + `decision-detect.js` + `error-resolve.js` /
+  `curation-detect.js` + `failure-detect.js`. Todos side-effect-only (journals,
+  error-store) — cada `run()` isolado em `try/catch` própria no dispatcher.
+- **`user-prompt-submit-dispatcher.js`** (`UserPromptSubmit`, 5→1, maior ROI por
+  frequência) e **`session-start-dispatcher.js`** (`SessionStart`, 12→1): consolidam
+  `brain-daemon-ensure.js`/`brain-health.js`/`brain-status.js`/`correction-detect.js`/
+  `active-research-detect.js` e os 12 detectores de sessão respectivamente. Ambos
+  rodam os detectores **concorrentemente** (`Promise.all`, não um loop sequencial —
+  um loop sequencial trocaria o `max()` de latência que existia entre processos
+  paralelos por um `sum()`), cada um com **timeout próprio** (mirror do timeout
+  individual antigo de cada hook em `hooks.json`) via um helper `withTimeout` que
+  distingue timeout genuíno de erro real (outcome tagueado `ok`/`timeout`/`error` —
+  nunca mistura os dois, o que mascararia um crash real como "hang").
+  `model-router-ensure.js` fica de fora dos dois — ele chama `process.exit()` no
+  fluxo normal e faz esperas reais de vários segundos (spawn/troca de daemon),
+  incompatível com um processo compartilhado; continua como spawn próprio.
+- **`brain-status.js`** ganhou um `run(event)` novo para o dispatcher: vira
+  advisory-only (só emite texto quando o backend `mcp-memory` está desconectado —
+  `local` é sempre `connected:true` por design). O `main()`/CLI cru (usado pela
+  skill `brain-status` e uso manual/dashboard) continua emitindo o relatório
+  `{mode,connected,project,backend,details,latency}` sem mudança.
+- Todos os ~14 scripts consolidados mantêm seu `main()`/CLI standalone
+  (`if (require.main === module)`) intacto — só `hooks/hooks.json` passou a apontar
+  para o dispatcher; nenhum script foi removido, nenhum teste que os spawna
+  individualmente foi quebrado.
+- Cada fase (5 dispatchers + docs) passou por revisão adversarial dedicada antes de
+  avançar para a próxima (processo SDD com Portão de Plano + Portão de Fase);
+  achados reais corrigidos ao longo do processo: precedência deny/allow explícita no
+  merge do `PreToolUse`, contrato de `brain-status.js` esclarecido com o usuário,
+  e — o mais significativo — a primeira versão do `user-prompt-submit-dispatcher.js`
+  rodava os 5 detectores **sequencialmente**, o que teria introduzido uma regressão
+  de latência real (`brain-daemon-ensure` pode legitimamente esperar ~9s); corrigido
+  para concorrência com timeout próprio antes de qualquer release.
+- Testes: +21 unitários (forma/ordem dos `DETECTORS` de cada dispatcher, merge de
+  precedência, concorrência por timing, distinção erro-vs-timeout, exclusão de
+  detectores side-effect-only do texto mesclado) e +9 de integração real (spawn)
+  provando dois ou mais detectores reais disparando juntos por dispatcher. Gate
+  verde (1046 unit + suíte de hooks; nenhuma regressão nos testes standalone
+  existentes de cada script).
+- README: tabela "Hooks Pipeline" reescrita cobrindo os ~14 scripts que já
+  existiam em `hooks.json` mas nunca tinham sido documentados (drift que o check
+  mecânico `hooks-doc-drift` não pegava, pois só valida o nome do *evento*, não
+  cada script).
+
 ## [2.27.0] - 2026-09-21
 
 ### Added — pool de kb-workers com roteamento sticky por projeto (ADR-014)

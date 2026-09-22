@@ -64,12 +64,16 @@ function loadExistingConfig(shellsPath) {
   }
 }
 
-(async () => {
+/**
+ * Pure detector entry point — side effect only (populates the project's
+ * curated-shells whitelist). Returns `{ecosystem, whitelist, changed}` or
+ * `{error}` (informational only — the SessionStart dispatcher discards it,
+ * same as memory-rotate/graph-warm). Never throws.
+ * @param {object} event
+ */
+async function run(event) {
   try {
-    const raw = await readStdin();
-    const event = raw ? JSON.parse(raw) : {};
-
-    const startCwd = event.cwd || process.cwd();
+    const startCwd = (event && event.cwd) || process.cwd();
     const projectRoot = findProjectRoot(startCwd) || startCwd;
     const shellsPath = getShellsConfigPath(projectRoot)
       || path.join(projectRoot, loadCurationConfig().shellsConfigPath);
@@ -77,8 +81,7 @@ function loadExistingConfig(shellsPath) {
     // If the parent dir doesn't exist yet (e.g. .vscode/), bail — we won't
     // silently provision workspace structure. Attach on next SessionStart.
     if (!fs.existsSync(path.dirname(shellsPath))) {
-      process.stdout.write(JSON.stringify({}));
-      return;
+      return {};
     }
 
     const existingConfig = loadExistingConfig(shellsPath);
@@ -89,8 +92,7 @@ function loadExistingConfig(shellsPath) {
     const merged = [...new Set([...existingWhitelist, ...BASE_WHITELIST])].sort();
 
     if (JSON.stringify(existingWhitelist) === JSON.stringify(merged)) {
-      process.stdout.write(JSON.stringify({ ecosystem, whitelist: merged, changed: false }));
-      return;
+      return { ecosystem, whitelist: merged, changed: false };
     }
 
     const config = existingConfig || { version: 1, shells: [] };
@@ -99,9 +101,23 @@ function loadExistingConfig(shellsPath) {
 
     console.error(`[SESSION-WHITELIST] Detected ${ecosystem} ecosystem — whitelist: ${merged.join(', ')}`);
 
-    process.stdout.write(JSON.stringify({ ecosystem, whitelist: merged, changed: true }));
+    return { ecosystem, whitelist: merged, changed: true };
   } catch (err) {
     console.error(`[SESSION-WHITELIST] Error: ${err.message}`);
-    process.stdout.write(JSON.stringify({ error: err.message }));
+    return { error: err.message };
   }
-})();
+}
+
+async function main() {
+  const raw = await readStdin();
+  let event = {};
+  try { event = raw ? JSON.parse(raw) : {}; } catch { /* malformed stdin → defaults */ }
+  const result = await run(event);
+  process.stdout.write(JSON.stringify(result));
+}
+
+if (require.main === module) {
+  main();
+}
+
+module.exports = { run, detectEcosystem, loadExistingConfig };

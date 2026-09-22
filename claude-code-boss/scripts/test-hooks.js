@@ -148,10 +148,49 @@ const _egHit = seedErrorGuard('npm run build');
 // Dedicated fixture the error-resolve test MUTATES (cleared on success).
 const _egResolve = seedErrorGuard('npm run build');
 // Fresh project (no seed) — failure-detect must POPULATE its error-store.
+// Combined fixture for posttoolusebash-dispatcher.js's 3-detector integration
+// test: a `git commit` command that (a) is large output (curation-detect),
+// (b) reads as an architectural decision (decision-detect), and (c) has a
+// PRE-RECORDED failure for its own signature that a successful run must
+// clear (error-resolve) — proves all three detectors actually ran, not just
+// the first one in the array.
+const _pubMerge = (() => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pub-proj-'));
+  fs.mkdirSync(path.join(cwd, '.git'), { recursive: true });
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pub-data-'));
+  const command = 'git commit -m "Switch to esbuild because webpack is too slow"';
+  const pk = _errorStore.resolveProjectKey(cwd);
+  _errorStore.record(dataDir, pk, { command, cause: 'flaky, unrelated to this run', exitCode: 1 });
+  return { cwd, dataDir, command };
+})();
+
 const _fdIntegration = (() => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-fd-proj-'));
   fs.mkdirSync(path.join(cwd, '.git'), { recursive: true });
   return { cwd, command: 'cd /x && npm run typecheck -- --strict' };
+})();
+
+// Combined fixture for pretooluse-bash-dispatcher.js's merge rule: a project
+// where the SAME command both (a) matches a curated alias (curation-guard
+// wants allow+updatedInput) AND (b) has a recorded recurring failure
+// (error-guard wants deny) — proves deny wins over the redirect.
+const _pdMerge = (() => {
+  const cwd = mkTempProject({ shells: [{ id: 'vitest', script: '.vscode/scripts/vitest.ps1', aliases: ['npm test'] }], whitelist: [] });
+  fs.mkdirSync(path.join(cwd, '.git'), { recursive: true }); // stable projectKey for error-store too
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pd-data-'));
+  const command = 'npm test';
+  const pk = _errorStore.resolveProjectKey(cwd);
+  for (let i = 0; i < 2; i++) {
+    _errorStore.record(dataDir, pk, { command, cause: 'flaky assertion', exitCode: 1 });
+  }
+  return { cwd, dataDir, command };
+})();
+// Sibling fixture — SAME curated alias, but a FRESH dataDir with no recorded
+// failure, so error-guard abstains and curation-guard's redirect must survive.
+const _pdRedirectOnly = (() => {
+  const cwd = mkTempProject({ shells: [{ id: 'vitest', script: '.vscode/scripts/vitest.ps1', aliases: ['npm test'] }], whitelist: [] });
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pd-data-'));
+  return { cwd, dataDir };
 })();
 
 // ─── graph-guard fixtures (broad-search redirect to the Session Graph) ───────
@@ -314,6 +353,10 @@ function readTriggerEvidence(dataDir, cwd) {
 // Reusable opted-in capture config (privacy default is OFF; these tests turn it ON).
 const _capOnRoot = () => mkTempPluginRoot({ captureTriggerEvidence: { enabled: true, ttlDays: 7, maxPerProject: 500, maxSnippetChars: 2000 } });
 
+// Set by the session-start-dispatcher integration test's payload builder,
+// read by its own validate() — see the test below.
+let _ssdProj = null;
+
 const TESTS = [
   // ── SessionStart ──────────────────────────────────────────────────────────
   {
@@ -327,6 +370,40 @@ const TESTS = [
     script: 'session-whitelist.js',
     payload: { session_id: SESSION },
     expect: { noError: true },
+  },
+  {
+    name: 'session-start-dispatcher [review-checklist text + session-whitelist side-effect, both run in one process]',
+    script: 'session-start-dispatcher.js',
+    payload: (() => {
+      const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ssd-proj-'));
+      fs.mkdirSync(path.join(proj, '.claude'), { recursive: true });
+      fs.writeFileSync(path.join(proj, '.claude', 'brain-review-checklist.md'), '# Brain review checklist\n\n- [ ] **Empty catch** (recurred 5×)\n');
+      fs.mkdirSync(path.join(proj, '.vscode'), { recursive: true });
+      fs.writeFileSync(path.join(proj, 'package.json'), '{}'); // node ecosystem marker
+      _ssdProj = proj;
+      return { hook_event_name: 'SessionStart', session_id: SESSION, cwd: proj };
+    })(),
+    expect: { hasKey: 'hookSpecificOutput', noError: true, hookEvent: 'SessionStart' },
+    extraEnv: () => {
+      // Isolated CLAUDE_PLUGIN_ROOT (no servers/brain-server, no node_modules) so
+      // brain-daemon-ensure/brain-health/graph-warm/project-identity-advisory all
+      // fail FAST (missing daemon-supervisor.js → caught, fail-open) instead of
+      // exercising this dev machine's REAL daemon spawn/probe path — that path is
+      // unbounded real wall-clock (spawn + wait up to ~9s), unrelated to what this
+      // test is verifying (that the dispatcher merges/side-effects correctly).
+      const root = mkTempPluginRoot({});
+      fs.writeFileSync(path.join(root, 'config', 'brain-config.json'), JSON.stringify({ backend: { type: 'local' } }));
+      return { CLAUDE_PLUGIN_ROOT: root, CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ssd-data-')) };
+    },
+    validate: r => {
+      const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+      if (!ctx.includes('[REVIEW]')) return `review-checklist-advisory's text must be present, got: ${ctx}`;
+      const shellsPath = path.join(_ssdProj, '.vscode', 'shells.json');
+      if (!fs.existsSync(shellsPath)) return `session-whitelist must have written ${shellsPath}`;
+      const config = JSON.parse(fs.readFileSync(shellsPath, 'utf-8'));
+      if (!Array.isArray(config.whitelist) || config.whitelist.length === 0) return `session-whitelist must have populated a whitelist, got: ${JSON.stringify(config)}`;
+      return null;
+    },
   },
   {
     name: 'brain-health      [SessionStart/healthy]',
@@ -885,6 +962,59 @@ const TESTS = [
     validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
       ? null : `scoped bash grep must pass, got: ${r.parsed?.hookSpecificOutput?.permissionDecision} (ctx: ${r.parsed?.hookSpecificOutput?.additionalContext})`,
   },
+  // ── PreToolUse / Bash — pretooluse-bash-dispatcher (curation-guard + error-guard, 1 process) ─
+  {
+    name: 'pretooluse-bash-dispatcher [no-curated,no-error→allow-default]',
+    script: 'pretooluse-bash-dispatcher.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: 'echo hi' },
+      session_id: SESSION,
+      cwd: (() => mkTempProject({ shells: [], whitelist: [] }))(),
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+      ? null : `no curated/error signal must allow, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
+  },
+  {
+    name: 'pretooluse-bash-dispatcher [error-guard abstains→curation-guard redirect survives]',
+    script: 'pretooluse-bash-dispatcher.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: 'npm test', timeout: 12345 },
+      session_id: SESSION,
+      cwd: _pdRedirectOnly.cwd,
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _pdRedirectOnly.dataDir }),
+    validate: r => {
+      const out = r.parsed?.hookSpecificOutput || {};
+      if (out.permissionDecision !== 'allow') return `must allow (redirect), got: ${out.permissionDecision}`;
+      if (!out.updatedInput || out.updatedInput.command !== 'powershell -File ".vscode/scripts/vitest.ps1"') {
+        return `curation-guard's updatedInput must survive when error-guard abstains, got: ${JSON.stringify(out.updatedInput)}`;
+      }
+      return null;
+    },
+  },
+  {
+    name: 'pretooluse-bash-dispatcher [error-guard deny WINS over curation-guard allow+updatedInput]',
+    script: 'pretooluse-bash-dispatcher.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: _pdMerge.command, timeout: 12345 },
+      session_id: SESSION,
+      cwd: _pdMerge.cwd,
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _pdMerge.dataDir }),
+    validate: r => {
+      const out = r.parsed?.hookSpecificOutput || {};
+      if (out.permissionDecision !== 'deny') return `error-guard's deny must win over curation-guard's redirect, got: ${out.permissionDecision}`;
+      if (out.updatedInput) return `a winning deny must NOT carry curation-guard's updatedInput, got: ${JSON.stringify(out.updatedInput)}`;
+      if (!(out.additionalContext || '').includes('[error-guard]')) return `merged deny reason must come from error-guard, got: ${out.additionalContext}`;
+      return null;
+    },
+  },
   {
     name: 'error-resolve     [PostToolUse/Bash-success→clears recorded failure]',
     script: 'error-resolve.js',
@@ -927,6 +1057,26 @@ const TESTS = [
       if (l.sig !== 'npm run typecheck') return `expected sig 'npm run typecheck', got '${l.sig}'`;
       if (l.exitCode !== 2) return `expected exitCode 2 (parsed from the failure), got ${l.exitCode}`;
       if (!/TS2345/.test(l.cause || '')) return `expected recorded cause to include the error snippet, got: ${l.cause}`;
+      return null;
+    },
+  },
+
+  {
+    name: 'posttoolusefailure-dispatcher [Bash failure→both curation-detect AND failure-detect run, reply {}]',
+    script: 'posttoolusefailure-dispatcher.js',
+    payload: { ...require('./__fixtures__/post-tool-use-failure.json'), session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ptuf-data-')) }),
+    validateWithEnv: (r, env) => {
+      if (!r.parsed || Object.keys(r.parsed).length !== 0) return `dispatcher must always reply {}, got: ${JSON.stringify(r.parsed)}`;
+      const runtimeDir = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime');
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      if (!fs.existsSync(runtimeDir)) return `runtime dir missing: ${runtimeDir}`;
+      const files = fs.readdirSync(runtimeDir);
+      const curationFiles = files.filter(f => f.startsWith(`curation-turn-${safe}--`));
+      const failureFiles = files.filter(f => f.startsWith(`failure-turn-${safe}--`));
+      if (curationFiles.length === 0) return `curation-detect must have appended a turn-journal entry, files: ${files.join(', ')}`;
+      if (failureFiles.length === 0) return `failure-detect must have appended a failure-journal entry, files: ${files.join(', ')}`;
       return null;
     },
   },
@@ -1372,6 +1522,49 @@ const TESTS = [
       if (!fs.existsSync(runtimeDir)) return null;
       const files = fs.readdirSync(runtimeDir).filter(f => f.startsWith(prefix) && f.endsWith('.json'));
       if (files.length > 0) return `output within declared outputLines budget must not be flagged, got journal entry: ${files[0]}`;
+      return null;
+    },
+  },
+
+  {
+    name: 'posttoolusebash-dispatcher [large uncurated output→curation-detect journals + reply {}]',
+    script: 'posttoolusebash-dispatcher.js',
+    payload: { ...require('./__fixtures__/post-tool-use-success-noisy.json'), session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ptub-data-')) }),
+    validateWithEnv: (r, env) => {
+      if (!r.parsed || Object.keys(r.parsed).length !== 0) return `dispatcher must always reply {}, got: ${JSON.stringify(r.parsed)}`;
+      const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+      const runtimeDir = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime');
+      const prefix = `curation-turn-${safe}--`;
+      if (!fs.existsSync(runtimeDir)) return `runtime dir missing: ${runtimeDir}`;
+      const files = fs.readdirSync(runtimeDir).filter(f => f.startsWith(prefix) && f.endsWith('.json'));
+      if (files.length === 0) return `curation-detect must have appended a turn-journal entry, got none in ${runtimeDir}`;
+      return null;
+    },
+  },
+  {
+    name: 'posttoolusebash-dispatcher [decision-detect AND error-resolve also ran (not just curation-detect)]',
+    script: 'posttoolusebash-dispatcher.js',
+    payload: {
+      ...require('./__fixtures__/post-tool-use-success-noisy.json'),
+      tool_input: { command: _pubMerge.command },
+      session_id: SESSION,
+      cwd: _pubMerge.cwd,
+    },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _pubMerge.dataDir }),
+    validateWithEnv: (r, env) => {
+      if (!r.parsed || Object.keys(r.parsed).length !== 0) return `dispatcher must always reply {}, got: ${JSON.stringify(r.parsed)}`;
+      // decision-detect: the commit message must have been stashed as pending.
+      const pendingPath = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime', 'decision-pending.json');
+      if (!fs.existsSync(pendingPath)) return `decision-detect must have stashed a pending decision at ${pendingPath}`;
+      const pending = JSON.parse(fs.readFileSync(pendingPath, 'utf-8'));
+      if (!Array.isArray(pending.pending) || pending.pending.length === 0) return `decision-pending.json has no entries: ${JSON.stringify(pending)}`;
+      // error-resolve: the pre-recorded failure for this exact command must be cleared.
+      const pk = _errorStore.resolveProjectKey(_pubMerge.cwd);
+      const hit = _errorStore.lookup(env.CLAUDE_PLUGIN_DATA, pk, _pubMerge.command, { threshold: 1 }).hit;
+      if (hit) return `error-resolve must have cleared the pre-recorded failure for ${_pubMerge.command}`;
       return null;
     },
   },
@@ -2138,6 +2331,24 @@ const TESTS = [
       transcript_path: '',
     },
     expect: { noError: true },
+  },
+  {
+    name: 'user-prompt-submit-dispatcher [correction + active-research both fire, concatenated]',
+    script: 'user-prompt-submit-dispatcher.js',
+    payload: {
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'isso esta errado, qual a melhor forma de integrar com a api?',
+      session_id: SESSION,
+      cwd: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ups-proj-')),
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true, hookEvent: 'UserPromptSubmit' },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ups-data-')) }),
+    validate: r => {
+      const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
+      if (!ctx.includes('capture_lesson')) return `correction-detect's nudge must be present, got: ${ctx}`;
+      if (!ctx.includes('research_query')) return `active-research-detect's nudge must be present, got: ${ctx}`;
+      return null;
+    },
   },
 ];
 

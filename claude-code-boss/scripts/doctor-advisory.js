@@ -38,34 +38,37 @@ function stamp(p) {
   catch (e) { void e; }
 }
 
-async function main() {
-  const raw = await readStdin();
-  let event = {};
-  try { event = JSON.parse(raw || '{}'); } catch { /* defaults */ }
-  const eventName = event.hook_event_name || 'SessionStart';
-
+async function run(_event) {
   const ctx = {
     nodeVersion: process.version,
     env: { root: process.env.CLAUDE_PLUGIN_ROOT || '', data: process.env.CLAUDE_PLUGIN_DATA || '' },
   };
   const criticalFails = [checkNode(ctx), checkEnv(ctx)].filter(r => r.status === 'fail');
-  if (criticalFails.length === 0) return emitEmpty();
+  if (criticalFails.length === 0) return null;
 
   const sp = stampPath();
-  if (onCooldown(sp)) return emitEmpty();
+  if (onCooldown(sp)) return null;
   stamp(sp);
 
   const items = criticalFails.map(r => `${r.label}: ${r.detail}`).join('; ');
-  emitJson({
-    hookSpecificOutput: {
-      hookEventName: eventName,
-      additionalContext: `[DOCTOR] Critical setup issue — ${items}. Run \`npm run doctor\` (or the dashboard Doctor button) for the fix.`,
-    },
-  });
+  return `[DOCTOR] Critical setup issue — ${items}. Run \`npm run doctor\` (or the dashboard Doctor button) for the fix.`;
+}
+
+async function main() {
+  const raw = await readStdin();
+  let event = {};
+  try { event = JSON.parse(raw || '{}'); } catch { /* defaults */ }
+  const eventName = event.hook_event_name || 'SessionStart';
+  const text = await run(event);
+  if (text) {
+    emitJson({ hookSpecificOutput: { hookEventName: eventName, additionalContext: text } });
+    return;
+  }
+  emitEmpty();
 }
 
 if (require.main === module) {
   main().catch((err) => { console.error(`[doctor-advisory] ${err.message}`); emitEmpty(); });
 }
 
-module.exports = { onCooldown, stampPath, COOLDOWN_MS };
+module.exports = { onCooldown, stampPath, COOLDOWN_MS, run };

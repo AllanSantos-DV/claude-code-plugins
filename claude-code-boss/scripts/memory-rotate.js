@@ -17,14 +17,18 @@ const AGENT_MEMORY_DIR = path.join(os.homedir(), '.claude', 'agent-memory');
 
 const MAX_LINES = require('./lib/hooks-config.js').load().memoryRotate?.maxLines ?? 150;
 
-function main() {
+/**
+ * Pure detector entry point — side effect only (rotates oversized MEMORY.md
+ * files). Returns the list of rotated agent names (informational only — the
+ * SessionStart dispatcher discards it, same as it discards session-whitelist/
+ * graph-warm's side-effect-only results). Never throws.
+ * @returns {Promise<string[]>}
+ */
+async function run() {
   const rotated = [];
 
   try {
-    if (!fs.existsSync(AGENT_MEMORY_DIR)) {
-      process.stdout.write(JSON.stringify({ ok: true, rotated: [] }));
-      return;
-    }
+    if (!fs.existsSync(AGENT_MEMORY_DIR)) return rotated;
 
     const dirs = fs.readdirSync(AGENT_MEMORY_DIR, { withFileTypes: true })
       .filter(d => d.isDirectory());
@@ -71,7 +75,15 @@ function main() {
     console.error(`[MEMORY-ROTATE] Error: ${err.message}`);
   }
 
-  process.stdout.write(JSON.stringify({ ok: true, rotated }));
+  return rotated;
 }
 
-main();
+function main() {
+  run().then((rotated) => {
+    process.stdout.write(JSON.stringify({ ok: true, rotated }));
+  });
+}
+
+if (require.main === module) main();
+
+module.exports = { run };

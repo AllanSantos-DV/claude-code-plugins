@@ -160,30 +160,34 @@ function formatNudge(query, signals, depth) {
 
 // ── Main (hook entry) ─────────────────────────────────────────────────────
 
-async function main() {
-  const raw = await readStdin();
-  if (!raw) return emitEmpty();
-  const ev = parsePayload(raw);
-  if (!ev) return emitEmpty();
+/**
+ * Pure detector entry point. Returns the research-nudge text (string) when
+ * warranted, or `null` otherwise. Shared by the standalone CLI (below) and
+ * `user-prompt-submit-dispatcher.js`.
+ * @param {object} ev
+ * @returns {string|null}
+ */
+function run(ev) {
+  if (!ev) return null;
 
   const cfg = loadConfig();
-  if (!cfg.enabled) return emitEmpty();
+  if (!cfg.enabled) return null;
 
   const prompt = ev.prompt || ev.userMessage || ev.text || '';
-  if (!prompt) return emitEmpty();
+  if (!prompt) return null;
 
   const sid = ev.session_id || ev.sessionId || 'default';
 
-  if (state.getSessionCount(sid) >= cfg.maxPerSession) return emitEmpty();
+  if (state.getSessionCount(sid) >= cfg.maxPerSession) return null;
 
   const signals = detectSignals(prompt, cfg.triggers);
-  if (!shouldFire(signals, cfg.fireThreshold)) return emitEmpty();
+  if (!shouldFire(signals, cfg.fireThreshold)) return null;
 
   const query = normalizeQuery(prompt);
-  if (!query) return emitEmpty();
+  if (!query) return null;
 
   const cooldownMs = cfg.cooldownMinutes * 60 * 1000;
-  if (state.isCoolingDown(query, cooldownMs)) return emitEmpty();
+  if (state.isCoolingDown(query, cooldownMs)) return null;
 
   state.recordFire(sid, query);
 
@@ -193,12 +197,17 @@ async function main() {
     queryLen: query.length,
   }, { sessionId: sid, cwd: ev.cwd });
 
-  return emitJson({
-    hookSpecificOutput: {
-      hookEventName: 'UserPromptSubmit',
-      additionalContext: formatNudge(query, signals, cfg.depth),
-    },
-  });
+  return formatNudge(query, signals, cfg.depth);
+}
+
+async function main() {
+  const raw = await readStdin();
+  const ev = parsePayload(raw);
+  const text = ev ? run(ev) : null;
+  if (text) {
+    return emitJson({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: text } });
+  }
+  return emitEmpty();
 }
 
 if (require.main === module) {
@@ -216,4 +225,5 @@ module.exports = {
   loadLibs,
   buildLibRegex,
   DEFAULTS,
+  run,
 };
