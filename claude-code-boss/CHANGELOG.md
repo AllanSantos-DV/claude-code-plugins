@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [2.29.0] - 2026-09-23
 
 ### Added — custom upstream configurável por operação e protocolo
 - Custom upstream e BYOK agora aceitam wire protocol Anthropic ou OpenAI Chat
