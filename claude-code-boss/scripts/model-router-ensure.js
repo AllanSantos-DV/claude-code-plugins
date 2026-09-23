@@ -38,6 +38,7 @@ const { writeJsonAtomic } = require('./lib/atomic-write.js');
 const { dataDir } = require('./lib/data-dir.js');
 const { routerUserConfigPath, backfillRouterUserConfig } = require('./lib/router-config-path.js');
 const { configFingerprint } = require('./lib/router-fingerprint.js');
+const upstreamProfile = require('../servers/model-router/upstream-profile.js');
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
 
@@ -139,8 +140,10 @@ function mergeRouterConfig(shipped, override) {
   const merged = { ...(shipped || {}) };
   if (!override || typeof override !== 'object') return merged;
   for (const key of Object.keys(override)) {
-    if ((key === 'nim' || key === 'routing' || key === 'fallback' || key === 'sticky') && override[key] && typeof override[key] === 'object') {
-      merged[key] = { ...(merged[key] || {}), ...override[key] };
+    if ((key === 'nim' || key === 'routing' || key === 'fallback' || key === 'sticky' || key === 'byok' || key === 'upstream') && override[key] && typeof override[key] === 'object') {
+      merged[key] = (key === 'byok' || key === 'upstream')
+        ? upstreamProfile.mergeRouterSection(merged[key], override[key])
+        : { ...(merged[key] || {}), ...override[key] };
     } else {
       merged[key] = override[key];
     }
@@ -153,7 +156,7 @@ function readConfig() {
   try {
     if (fs.existsSync(CONFIG_FILE)) shipped = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8'));
   } catch (_) { void _; /* shipped ilegível → defaults vazios */ }
-  return mergeRouterConfig(shipped, readUserConfig());
+  return mergeRouterConfig(upstreamProfile.applyRouterEnvironment(shipped, process.env), readUserConfig());
 }
 
 // ── Token-override env bundle (Parte B) ──────────────────────────────────────

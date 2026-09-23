@@ -118,7 +118,9 @@ function resolveUpstream(config, opts, fallback) {
   // que esperar o tempo pensado pro rotativo).
   const u = upstreamCfg(config);
   if (u.enabled === true) {
-    const dest = parseBaseUrl(u.baseUrl);
+    const operationalUrl = u.baseUrl
+      || (u.endpoints && (u.endpoints.generate || u.endpoints.models || u.endpoints.countTokens));
+    const dest = parseBaseUrl(operationalUrl);
     if (dest) {
       anthropic.host = dest.host;
       anthropic.port = dest.port;
@@ -147,7 +149,9 @@ function resolveUpstream(config, opts, fallback) {
   // comportamento — só formalizar com este comentário + teste dedicado
   // (ver 'byok.resolveUpstream: BYOK e upstream ligados juntos' em
   // scripts/test-units.js).
-  const dest = parseBaseUrl(b.baseUrl);
+  const operationalUrl = b.baseUrl
+    || (b.endpoints && (b.endpoints.generate || b.endpoints.models || b.endpoints.countTokens));
+  const dest = parseBaseUrl(operationalUrl);
   if (!dest) {
     return Object.assign({}, anthropic, {
       misconfigured: 'byok.enabled=true mas baseUrl ausente ou inválida — configure a Base URL no dashboard',

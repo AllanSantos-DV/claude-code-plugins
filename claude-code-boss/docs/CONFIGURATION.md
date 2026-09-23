@@ -56,12 +56,23 @@ config efetiva (lida por ensure/server/dashboard)
 | `nim.classifierModel` | string | `qwen/qwen2.5-1.5b-instruct` | Modelo NIM de classificação (se classifyRemote) |
 | `nim.fallbackModel` | string | `meta/llama-3.3-70b-instruct` | Modelo NIM de geração no plano B |
 | `nim.endpoint` | string | `https://integrate.api.nvidia.com/v1/chat/completions` | Endpoint NIM |
-| `byok.enabled` | bool | `false` | Endpoint Anthropic-compatível próprio |
+| `upstream.enabled` | bool | `false` | Gateway custom que preserva as credenciais recebidas do Claude Code |
+| `upstream.baseUrl` | string | `""` | Fallback legado para derivar URLs operacionais |
+| `upstream.wireProtocol` | enum | `"anthropic"` | `anthropic` ou `openai` |
+| `upstream.endpoints.models` | URL | `""` | URL completa de listagem de modelos |
+| `upstream.endpoints.generate` | URL | `""` | URL completa de geração (`/v1/messages`, `/v1/chat/completions` ou path próprio) |
+| `upstream.endpoints.countTokens` | URL | `""` | URL completa de contagem; em OpenAI deve ser explícita, pois não há padrão |
+| `upstream.endpoints.classify` | URL | `""` | URL de classificação; vazia herda `generate` |
+| `upstream.modelAliasPrefix` | string | `"anthropic-"` | Prefixo externo usado para modelos não Anthropic aparecerem no picker |
+| `upstream.forwardHeaders` | string[] | `[]` | Headers recebidos do Claude Code que também seguem ao gateway |
+| `byok.enabled` | bool | `false` | Endpoint próprio com headers próprios; nunca recebe a credencial da assinatura |
 | `byok.mode` | enum | `"on-limit"` | `on-limit` = só no 429; `always` = atende tudo |
-| `byok.baseUrl` | string | `""` | Host apenas (path é sempre `/v1/messages`) |
+| `byok.baseUrl` | string | `""` | Fallback legado para derivar URLs operacionais |
+| `byok.wireProtocol` | enum | `"anthropic"` | `anthropic` ou `openai` |
+| `byok.endpoints.*` | URL | `""` | Mesmas quatro URLs por operação de `upstream.endpoints` |
 | `byok.headers` | map | `{}` | Headers livres (ex.: `Authorization: Bearer ...`). **Nunca commitar valores reais** |
 | `byok.classifyRemote` | bool | `false` | **ADR-010**: classifica via SEU endpoint (~500 chars/sessão, modelo haiku). on-limit: só com cooldown ativo. Falha → MiniLM local |
-| `byok.modelAliasPrefix` | string | `"anthropic-"` | Prefixo aplicado ao `id` de modelos BYOK (sem "claude"/"anthropic" no nome) na resposta de `GET /v1/models`, só enquanto a request atual é BYOK — o picker `/model` do Claude Code filtra fora ids sem esse termo. Nome real fica em `display_name`; o prefixo é removido antes de rotear/classificar |
+| `byok.modelAliasPrefix` | string | `"anthropic-"` | Prefixo externo usado para modelos não Anthropic aparecerem no picker |
 | `byok.fixedEndpoint` | bool | `false` | OPT-IN. `false` = endpoint ROTATIVO (ex.: "auto/best-free" entre vários modelos gratuitos) — usa o teto de timeout longo (`ROUTER_BYOK_UPSTREAM_TIMEOUT_MS`, default 100000ms), pensado pro próprio failover interno dele. `true` = endpoint FIXO e único do usuário (ex.: gateway corporativo específico, sem rotação) — usa um teto bem mais curto (`ROUTER_BYOK_FIXED_UPSTREAM_TIMEOUT_MS`, default 20000ms), já que aí uma demora grande só significa rede/serviço degradado, não failover em andamento |
 | `byok.fixedTimeoutMs` | number\|null | `null` | Override OPCIONAL (ms) do teto de TTFB quando `byok.fixedEndpoint=true`, substituindo `ROUTER_BYOK_FIXED_UPSTREAM_TIMEOUT_MS` só para este endpoint. `0` é um valor válido e explícito: **sem limite** — quem corta a chamada nesse caso é o teto de ~300s do próprio Claude Code CLI, não o router. `null`/ausente = usa o padrão do env var |
 | `byok.rotatingTimeoutMs` | number\|null | `null` | Mesma semântica de `byok.fixedTimeoutMs`, só que para `byok.fixedEndpoint=false` (substitui `ROUTER_BYOK_UPSTREAM_TIMEOUT_MS`). `0` = sem limite (teto do Claude Code CLI vira o backstop) |
@@ -212,6 +223,14 @@ Trocar perfil: `/dashboard` → aba Hooks, ou `/boss-profile <standard|dev|free>
 | `ROUTER_BYOK_UPSTREAM_TIMEOUT_MS` | Teto de TTFB p/ BYOK rotativo (`byok.fixedEndpoint=false`) e p/ o gateway alternativo (`upstream.*`) (default `100000`) |
 | `ROUTER_BYOK_FIXED_UPSTREAM_TIMEOUT_MS` | Teto de TTFB p/ BYOK fixo (`byok.fixedEndpoint=true`) (default `20000` — ponto de partida, não medido em produção como o valor acima; ajuste conforme a latência real do seu endpoint) |
 | `ROUTER_BYOK_CLASSIFY_TIMEOUT_MS` | Teto p/ a chamada de pré-classificação remota via BYOK (`byok.classifyRemote`) (default `5000`) |
+| `ROUTER_UPSTREAM_ENABLED` / `ROUTER_BYOK_ENABLED` | Liga o perfil (`true/false`, `1/0`, `yes/no`, `on/off`) |
+| `ROUTER_UPSTREAM_WIRE_PROTOCOL` / `ROUTER_BYOK_WIRE_PROTOCOL` | `anthropic` ou `openai` |
+| `ROUTER_UPSTREAM_BASE_URL` / `ROUTER_BYOK_BASE_URL` | Base URL legada usada quando a URL operacional está vazia |
+| `ROUTER_UPSTREAM_MODELS_URL` / `ROUTER_BYOK_MODELS_URL` | URL completa de modelos |
+| `ROUTER_UPSTREAM_GENERATE_URL` / `ROUTER_BYOK_GENERATE_URL` | URL completa de geração |
+| `ROUTER_UPSTREAM_COUNT_TOKENS_URL` / `ROUTER_BYOK_COUNT_TOKENS_URL` | URL completa de contagem |
+| `ROUTER_UPSTREAM_CLASSIFY_URL` / `ROUTER_BYOK_CLASSIFY_URL` | URL completa de classificação |
+| `ROUTER_UPSTREAM_MODEL_ALIAS_PREFIX` / `ROUTER_BYOK_MODEL_ALIAS_PREFIX` | Prefixo externo do alias no picker |
 
 ---
 
@@ -222,6 +241,14 @@ Iniciar: `/dashboard` (slash command) ou `node scripts/dashboard-start.js`.
 - Bind: `127.0.0.1`, porta efêmera
 - Auth: token de sessão (injetado no HTML) + allowlist de **Host header** (`localhost:<port>` / `127.0.0.1:<port>`, anti DNS-rebinding)
 - Abas: Home · Brain KB · Skills · Hooks · Insights · Logs · Router
+- O painel Router configura custom upstream e BYOK por operação. A precedência é
+  `dashboard/user-config.json` > variáveis de ambiente > defaults versionados.
+- As rotas locais consumidas pelo Claude Code permanecem Anthropic. Quando
+  `wireProtocol=openai`, a geração pode apontar para `/v1/chat/completions`; o
+  router traduz requests, respostas JSON, SSE e tool calls nos dois sentidos.
+- Um ID como `gpt-4.1` é publicado no picker como
+  `anthropic-ccb-alias-gpt-4.1` e restaurado antes de chegar ao endpoint. IDs que
+  já contêm `claude` ou `anthropic` não são alterados.
 
 Escrever config pelo dashboard = gravar `user-config.json` + spawn síncrono do ensure (`BOSS_ROUTER_FORCE_RESTART=1`) → mudanças aplicam sem restart (exceto quando o banner avisa).
 

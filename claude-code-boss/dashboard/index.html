@@ -930,10 +930,41 @@ code { color: var(--fg); font-family: var(--font-mono); }
 
       <div style="margin:1.25rem 0;max-width:560px;padding-top:1rem;border-top:1px solid var(--border)">
         <label class="switch-row">
+          <input type="checkbox" id="router-upstream-enable" onchange="updateRouterSaveState()">
+          <span>
+            <span class="switch-title"><span data-i18n="router.upstreamEnable">Usar upstream custom da assinatura</span></span>
+            <span class="text-muted" style="display:block;font-size:.78rem;margin-top:.25rem" data-i18n="router.upstreamHint">Gateway corporativo que recebe as credenciais do Claude Code e headers encaminhados. URLs e protocolo são configuráveis por operação.</span>
+          </span>
+        </label>
+        <div id="router-upstream-fields" style="display:none;margin-top:.75rem">
+          <label class="field-label" data-i18n="router.wireProtocol">Protocolo do upstream</label>
+          <select id="router-upstream-wire-protocol" style="width:100%" onchange="updateRouterSaveState()">
+            <option value="anthropic">Anthropic Messages</option>
+            <option value="openai">OpenAI Chat Completions</option>
+          </select>
+          <label class="field-label" data-i18n="router.aliasPrefix">Prefixo de alias do picker</label>
+          <input type="text" id="router-upstream-alias-prefix" placeholder="anthropic-" style="width:100%" oninput="updateRouterSaveState()">
+          <label class="field-label" data-i18n="router.legacyBaseUrl">Base URL legada (fallback)</label>
+          <input type="text" id="router-upstream-base-url" placeholder="https://gateway.empresa.com" style="width:100%" oninput="updateRouterSaveState()">
+          <label class="field-label" data-i18n="router.modelsUrl">URL de modelos</label>
+          <input type="text" id="router-upstream-models-url" placeholder="https://gateway.empresa.com/v1/models" style="width:100%" oninput="updateRouterSaveState()">
+          <label class="field-label" data-i18n="router.generateUrl">URL de geração</label>
+          <input type="text" id="router-upstream-generate-url" placeholder="https://gateway.empresa.com/v1/messages" style="width:100%" oninput="updateRouterSaveState()">
+          <label class="field-label" data-i18n="router.countTokensUrl">URL de count tokens</label>
+          <input type="text" id="router-upstream-count-tokens-url" placeholder="https://gateway.empresa.com/v1/messages/count_tokens" style="width:100%" oninput="updateRouterSaveState()">
+          <label class="field-label" data-i18n="router.classifyUrl">URL de classificação (vazio = geração)</label>
+          <input type="text" id="router-upstream-classify-url" placeholder="https://gateway.empresa.com/v1/messages" style="width:100%" oninput="updateRouterSaveState()">
+          <label class="field-label" data-i18n="router.forwardHeaders">Headers do cliente a encaminhar (um por linha)</label>
+          <textarea id="router-upstream-forward-headers" rows="3" placeholder="x-litellm-team-id" style="width:100%;font-family:var(--mono,monospace);font-size:.8rem" oninput="updateRouterSaveState()"></textarea>
+        </div>
+      </div>
+
+      <div style="margin:1.25rem 0;max-width:560px;padding-top:1rem;border-top:1px solid var(--border)">
+        <label class="switch-row">
           <input type="checkbox" id="router-byok-enable" onchange="updateRouterSaveState()">
           <span>
             <span class="switch-title"><span data-i18n="router.byokEnable">Usar meu próprio endpoint (BYOK)</span></span>
-            <span class="text-muted" style="display:block;font-size:.78rem;margin-top:.25rem" data-i18n="router.byokHint">Aponta o proxy para um endpoint Anthropic-compatible seu (POST /v1/messages, formato nativo). O plugin não conhece o provedor: você cola a URL e os headers. O nome do modelo vai VERBATIM — o endpoint normaliza sozinho.</span>
+            <span class="text-muted" style="display:block;font-size:.78rem;margin-top:.25rem" data-i18n="router.byokHint">Endpoint próprio Anthropic ou OpenAI-compatible. As credenciais da assinatura são removidas; só seguem os headers configurados abaixo.</span>
           </span>
         </label>
 
@@ -983,7 +1014,23 @@ code { color: var(--fg); font-family: var(--font-mono); }
 
           <label class="field-label"><span data-i18n="router.byokBaseUrl">Base URL</span></label>
           <input type="text" id="router-byok-url" autocomplete="off" placeholder="https://exemplo.ts.net" style="width:100%" oninput="updateRouterSaveState()">
-          <div class="text-muted" style="font-size:.78rem;margin:.25rem 0 .75rem" data-i18n="router.byokUrlHint">Só o host (o path é sempre /v1/messages). Ex.: https://exemplo.ts.net ou http://10.0.0.5:4143</div>
+          <div class="text-muted" style="font-size:.78rem;margin:.25rem 0 .75rem" data-i18n="router.byokUrlHint">Fallback legado. URLs específicas por operação, quando preenchidas, têm precedência.</div>
+
+          <label class="field-label" data-i18n="router.wireProtocol">Protocolo do upstream</label>
+          <select id="router-byok-wire-protocol" style="width:100%" onchange="updateRouterSaveState()">
+            <option value="anthropic">Anthropic Messages</option>
+            <option value="openai">OpenAI Chat Completions</option>
+          </select>
+          <label class="field-label" data-i18n="router.aliasPrefix">Prefixo de alias do picker</label>
+          <input type="text" id="router-byok-alias-prefix" placeholder="anthropic-" style="width:100%" oninput="updateRouterSaveState()">
+          <label class="field-label" data-i18n="router.modelsUrl">URL de modelos</label>
+          <input type="text" id="router-byok-models-url" style="width:100%" oninput="updateRouterSaveState()">
+          <label class="field-label" data-i18n="router.generateUrl">URL de geração</label>
+          <input type="text" id="router-byok-generate-url" style="width:100%" oninput="updateRouterSaveState()">
+          <label class="field-label" data-i18n="router.countTokensUrl">URL de count tokens</label>
+          <input type="text" id="router-byok-count-tokens-url" style="width:100%" oninput="updateRouterSaveState()">
+          <label class="field-label" data-i18n="router.classifyUrl">URL de classificação (vazio = geração)</label>
+          <input type="text" id="router-byok-classify-url" style="width:100%" oninput="updateRouterSaveState()">
 
           <label class="field-label"><span data-i18n="router.byokHeaders">Headers (um por linha: Nome: valor)</span></label>
           <textarea id="router-byok-headers" rows="3" autocomplete="off" placeholder="Authorization: Bearer ..." style="width:100%;font-family:var(--mono,monospace);font-size:.8rem"></textarea>
@@ -1044,8 +1091,18 @@ const I18N = {
     'router.stickyHint': 'Recommended. Picks the tier ONCE per session (turn 0) and HOLDS the model for the rest of the session — a constant model keeps the prompt cache warm. Reuses the classifier + ceiling.',
     'router.fallbackEnable': 'Enable limit fallback (429)',
     'router.fallbackHint': 'Independent from the router. Passes straight through to Claude (no model switch, cache preserved) and only kicks in when the window is exhausted (429): uses NVIDIA if a key is set, otherwise warns here. Fills the gap in the native fallbackModel (which only covers 529).',
+    'router.upstreamEnable': 'Use custom subscription upstream',
+    'router.upstreamHint': 'Corporate gateway that receives Claude Code credentials and forwarded headers. URLs and wire protocol are configurable per operation.',
+    'router.wireProtocol': 'Upstream wire protocol',
+    'router.aliasPrefix': 'Model picker alias prefix',
+    'router.legacyBaseUrl': 'Legacy base URL (fallback)',
+    'router.modelsUrl': 'Models URL',
+    'router.generateUrl': 'Generation URL',
+    'router.countTokensUrl': 'Count tokens URL',
+    'router.classifyUrl': 'Classification URL (blank = generation)',
+    'router.forwardHeaders': 'Client headers to forward (one per line)',
     'router.byokEnable': 'Use my own endpoint (BYOK)',
-    'router.byokHint': 'Points the proxy at an Anthropic-compatible endpoint of yours (POST /v1/messages, native format). The plugin does not know the provider: you paste the URL and the headers. The model name goes VERBATIM — the endpoint normalizes it.',
+    'router.byokHint': 'Your own Anthropic or OpenAI-compatible endpoint. Subscription credentials are removed; only the headers configured below are sent.',
     'router.byokMode': 'When to use it',
     'router.byokModeOnLimit': 'Only when the Claude limit is exhausted (429)',
     'router.byokModeAlways': 'Always — serves everything, no subscription needed',
@@ -1059,7 +1116,7 @@ const I18N = {
     'router.byokLogLatency': 'Log response time (TTFB) for this endpoint',
     'router.byokLogLatencyHint': 'Opt-in, off by default. When on, logs (INFO) how long each response from this BYOK endpoint took to the first byte — useful to calibrate the timeout above by observing real behavior under load.',
     'router.byokBaseUrl': 'Base URL',
-    'router.byokUrlHint': 'Host only (the path is always /v1/messages). E.g. https://example.ts.net or http://10.0.0.5:4143',
+    'router.byokUrlHint': 'Legacy fallback. Per-operation URLs take precedence when filled.',
     'router.byokHeaders': 'Headers (one per line: Name: value)',
     'router.byokHeadersHint': 'Free-form map — if the endpoint requires another header (gateway key, tenant id), just add it. Stored only on your machine (DATA_DIR, mode 0600), never committed. YOUR Claude subscription token is NOT sent to the endpoint.',
     'router.byokHeadersStored': 'Stored',
@@ -1223,8 +1280,18 @@ const I18N = {
     'router.stickyHint': 'Recomendado. Escolhe o tier UMA vez por sessão (turno 0) e FIXA o modelo pelo resto da sessão — modelo constante preserva o prompt cache quente. Reusa o classificador + teto.',
     'router.fallbackEnable': 'Ativar fallback de limite (429)',
     'router.fallbackHint': 'Independente do roteador. Passa direto pro Claude (sem trocar modelo, preserva o cache) e só entra em ação quando a janela esgota (429): usa a NVIDIA se houver chave, senão avisa aqui. Preenche a lacuna do fallbackModel nativo (que só cobre 529).',
+    'router.upstreamEnable': 'Usar upstream custom da assinatura',
+    'router.upstreamHint': 'Gateway corporativo que recebe as credenciais do Claude Code e headers encaminhados. URLs e protocolo são configuráveis por operação.',
+    'router.wireProtocol': 'Protocolo do upstream',
+    'router.aliasPrefix': 'Prefixo de alias do picker',
+    'router.legacyBaseUrl': 'Base URL legada (fallback)',
+    'router.modelsUrl': 'URL de modelos',
+    'router.generateUrl': 'URL de geração',
+    'router.countTokensUrl': 'URL de count tokens',
+    'router.classifyUrl': 'URL de classificação (vazio = geração)',
+    'router.forwardHeaders': 'Headers do cliente a encaminhar (um por linha)',
     'router.byokEnable': 'Usar meu próprio endpoint (BYOK)',
-    'router.byokHint': 'Aponta o proxy para um endpoint Anthropic-compatible seu (POST /v1/messages, formato nativo). O plugin não conhece o provedor: você cola a URL e os headers. O nome do modelo vai VERBATIM — o endpoint normaliza sozinho.',
+    'router.byokHint': 'Endpoint próprio Anthropic ou OpenAI-compatible. As credenciais da assinatura são removidas; só seguem os headers configurados abaixo.',
     'router.byokMode': 'Quando usar',
     'router.byokModeOnLimit': 'Só quando o limite do Claude esgotar (429)',
     'router.byokModeAlways': 'Sempre — atende tudo, sem depender da assinatura',
@@ -1238,7 +1305,7 @@ const I18N = {
     'router.byokLogLatency': 'Logar tempo de resposta (TTFB) deste endpoint',
     'router.byokLogLatencyHint': 'Opt-in, desligado por padrão. Quando ligado, registra no log (INFO) quanto tempo cada resposta deste endpoint BYOK levou até o primeiro byte — útil para calibrar o timeout acima observando o comportamento real sob carga.',
     'router.byokBaseUrl': 'Base URL',
-    'router.byokUrlHint': 'Só o host (o path é sempre /v1/messages). Ex.: https://exemplo.ts.net ou http://10.0.0.5:4143',
+    'router.byokUrlHint': 'Fallback legado. URLs específicas por operação têm precedência quando preenchidas.',
     'router.byokHeaders': 'Headers (um por linha: Nome: valor)',
     'router.byokHeadersHint': 'Mapa livre — se o endpoint exigir outro header (chave de gateway, tenant id), é só acrescentar. Guardado só na sua máquina (DATA_DIR, permissão 0600), nunca commitado. O token da SUA ASSINATURA Claude NÃO é enviado ao endpoint.',
     'router.byokHeadersStored': 'Guardado',
@@ -1475,6 +1542,27 @@ async function loadRouterConfig() {
       : t('router.keyNone');
     document.getElementById('router-nvidia-key').value = '';
     document.getElementById('router-nvidia-key').placeholder = cfg.hasNvidiaKey ? '•••• ' + cfg.nimMasked : 'nvapi-...';
+    const up = cfg.upstream || {};
+    const upEl = document.getElementById('router-upstream-enable');
+    if (upEl) upEl.checked = !!up.enabled;
+    const upProtocol = document.getElementById('router-upstream-wire-protocol');
+    if (upProtocol) upProtocol.value = up.wireProtocol === 'openai' ? 'openai' : 'anthropic';
+    const upAlias = document.getElementById('router-upstream-alias-prefix');
+    if (upAlias) upAlias.value = up.modelAliasPrefix || 'anthropic-';
+    const upBase = document.getElementById('router-upstream-base-url');
+    if (upBase) upBase.value = up.baseUrl || '';
+    const upEndpoints = up.endpoints || {};
+    for (const [operation, id] of Object.entries({
+      models: 'router-upstream-models-url',
+      generate: 'router-upstream-generate-url',
+      countTokens: 'router-upstream-count-tokens-url',
+      classify: 'router-upstream-classify-url',
+    })) {
+      const el = document.getElementById(id);
+      if (el) el.value = upEndpoints[operation] || '';
+    }
+    const upForward = document.getElementById('router-upstream-forward-headers');
+    if (upForward) upForward.value = Array.isArray(up.forwardHeaders) ? up.forwardHeaders.join('\n') : '';
     // BYOK — endpoint próprio do usuário.
     const by = cfg.byok || {};
     const byEl = document.getElementById('router-byok-enable');
@@ -1483,6 +1571,20 @@ async function loadRouterConfig() {
     if (byMode) byMode.value = (by.mode === 'always') ? 'always' : 'on-limit';
     const byUrl = document.getElementById('router-byok-url');
     if (byUrl) byUrl.value = by.baseUrl || '';
+    const byProtocol = document.getElementById('router-byok-wire-protocol');
+    if (byProtocol) byProtocol.value = by.wireProtocol === 'openai' ? 'openai' : 'anthropic';
+    const byAlias = document.getElementById('router-byok-alias-prefix');
+    if (byAlias) byAlias.value = by.modelAliasPrefix || 'anthropic-';
+    const byEndpoints = by.endpoints || {};
+    for (const [operation, id] of Object.entries({
+      models: 'router-byok-models-url',
+      generate: 'router-byok-generate-url',
+      countTokens: 'router-byok-count-tokens-url',
+      classify: 'router-byok-classify-url',
+    })) {
+      const el = document.getElementById(id);
+      if (el) el.value = byEndpoints[operation] || '';
+    }
     // Os headers guardam credencial: a UI mostra os NOMES e mascara os valores.
     // Deixar o campo vazio ao salvar PRESERVA o que já está gravado (mesma regra
     // da chave NVIDIA) — reexibir o segredo em tela seria expô-lo sem necessidade.
@@ -1532,7 +1634,7 @@ function dismissBillingNotice() {
 })();
 
 async function disableAllRouter() {
-  ['router-sticky-enable', 'router-fallback-enable', 'router-enable', 'router-byok-enable', 'router-context-tuning']
+  ['router-sticky-enable', 'router-fallback-enable', 'router-enable', 'router-upstream-enable', 'router-byok-enable', 'router-context-tuning']
     .forEach(id => { const el = document.getElementById(id); if (el) el.checked = false; });
   // Desmarca checkbox BYOK
   const byokEnable = document.getElementById('router-byok-enable');
@@ -1863,9 +1965,13 @@ function updateRouterSaveState() {
   const byokEnabled = byEl ? byEl.checked : false;
   const byFields = document.getElementById('router-byok-fields');
   if (byFields) byFields.style.display = byokEnabled ? 'block' : 'none';
+  const upEl = document.getElementById('router-upstream-enable');
+  const upstreamEnabled = upEl ? upEl.checked : false;
+  const upFields = document.getElementById('router-upstream-fields');
+  if (upFields) upFields.style.display = upstreamEnabled ? 'block' : 'none';
   // Aceite dos termos é exigido para LIGAR qualquer um dos três (todos rodam o
   // proxy local / plano B por sua conta). Desligar nunca exige aceite.
-  btn.disabled = (enabled || stickyEnabled || fallbackEnabled || byokEnabled) && !accepted;
+  btn.disabled = (enabled || stickyEnabled || fallbackEnabled || upstreamEnabled || byokEnabled) && !accepted;
 }
 
 // Espelha byok.parseHeaderLines do servidor (o dashboard é HTML estático, não
@@ -1888,6 +1994,17 @@ function parseHeaderLinesUI(text) {
   return { headers, invalid };
 }
 
+function optionalHttpUrl(value, label) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  let parsed;
+  try { parsed = new URL(raw); } catch (_) { throw new Error(`${label}: URL inválida`); }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`${label}: use http:// ou https://`);
+  }
+  return raw;
+}
+
 async function applyRouter() {
   const enabled = document.getElementById('router-enable').checked;
   const stEl = document.getElementById('router-sticky-enable');
@@ -1896,7 +2013,8 @@ async function applyRouter() {
   const fallbackEnabled = fbEl ? fbEl.checked : false;
   const accepted = document.getElementById('router-accept').checked;
   const byEnEl = document.getElementById('router-byok-enable');
-  if ((enabled || stickyEnabled || fallbackEnabled || (byEnEl && byEnEl.checked)) && !accepted) return;
+  const upEnEl = document.getElementById('router-upstream-enable');
+  if ((enabled || stickyEnabled || fallbackEnabled || (upEnEl && upEnEl.checked) || (byEnEl && byEnEl.checked)) && !accepted) return;
   const typed = document.getElementById('router-nvidia-key').value.trim();
   const body = { enabled, stickyEnabled, fallbackEnabled, acceptedTerms: accepted };
   // contextTuning: estado real do checkbox (preserve-on-absent no server cobre
@@ -1904,6 +2022,32 @@ async function applyRouter() {
   const ctEl = document.getElementById('router-context-tuning');
   if (ctEl) body.contextTuningEnabled = ctEl.checked;
   if (typed !== '') body.nimApiKey = typed; // only send a new key when typed
+
+  if (upEnEl) {
+    try {
+      const value = (id) => document.getElementById(id)?.value || '';
+      const upstream = {
+        enabled: upEnEl.checked,
+        wireProtocol: value('router-upstream-wire-protocol') || 'anthropic',
+        modelAliasPrefix: value('router-upstream-alias-prefix').trim() || 'anthropic-',
+        baseUrl: optionalHttpUrl(value('router-upstream-base-url'), 'Base URL'),
+        endpoints: {
+          models: optionalHttpUrl(value('router-upstream-models-url'), 'Models URL'),
+          generate: optionalHttpUrl(value('router-upstream-generate-url'), 'Generate URL'),
+          countTokens: optionalHttpUrl(value('router-upstream-count-tokens-url'), 'Count tokens URL'),
+          classify: optionalHttpUrl(value('router-upstream-classify-url'), 'Classify URL'),
+        },
+        forwardHeaders: value('router-upstream-forward-headers')
+          .split(/\r?\n|,/)
+          .map(v => v.trim().toLowerCase())
+          .filter(Boolean),
+      };
+      body.upstream = upstream;
+    } catch (e) {
+      document.getElementById('router-saved').textContent = e.message;
+      return;
+    }
+  }
 
   // BYOK. O campo de headers VAZIO preserva o que já está gravado (mesma regra da
   // chave NVIDIA): a UI nunca reexibe o segredo, então salvar sem redigitar não
@@ -1915,7 +2059,21 @@ async function applyRouter() {
     const byMode = document.getElementById('router-byok-mode');
     if (byMode) byok.mode = byMode.value;
     const byUrl = document.getElementById('router-byok-url');
-    if (byUrl) byok.baseUrl = byUrl.value.trim();
+    try {
+      if (byUrl) byok.baseUrl = optionalHttpUrl(byUrl.value, 'BYOK Base URL');
+      const value = (id) => document.getElementById(id)?.value || '';
+      byok.wireProtocol = value('router-byok-wire-protocol') || 'anthropic';
+      byok.modelAliasPrefix = value('router-byok-alias-prefix').trim() || 'anthropic-';
+      byok.endpoints = {
+        models: optionalHttpUrl(value('router-byok-models-url'), 'BYOK Models URL'),
+        generate: optionalHttpUrl(value('router-byok-generate-url'), 'BYOK Generate URL'),
+        countTokens: optionalHttpUrl(value('router-byok-count-tokens-url'), 'BYOK Count tokens URL'),
+        classify: optionalHttpUrl(value('router-byok-classify-url'), 'BYOK Classify URL'),
+      };
+    } catch (e) {
+      document.getElementById('router-saved').textContent = e.message;
+      return;
+    }
     const byHdr = document.getElementById('router-byok-headers');
     const txt = byHdr ? byHdr.value.trim() : '';
     if (txt !== '') {

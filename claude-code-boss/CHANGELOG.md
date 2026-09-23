@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Added — custom upstream configurável por operação e protocolo
+- Custom upstream e BYOK agora aceitam wire protocol Anthropic ou OpenAI Chat
+  Completions, com URLs completas independentes para modelos, geração, contagem
+  e classificação via dashboard, `user-config.json` ou variáveis de ambiente.
+- Modelos não Anthropic dos dois tipos de endpoint recebem alias
+  `anthropic-ccb-alias-` no picker e voltam ao ID real antes do encaminhamento.
+- O adapter OpenAI preserva mensagens, imagens base64 suportadas, ferramentas,
+  tool results, respostas JSON, streaming SSE, usage e stop reasons.
+- O catálogo dinâmico passou a ser isolado por tenant, destino, protocolo e
+  fingerprint de credenciais, evitando modelos de um gateway aparecerem em outro.
+
 ## [2.28.0] - 2026-09-22
 
 ### Changed — 6 dispatchers in-process eliminam ~34 spawns de Node por sessão/prompt/comando

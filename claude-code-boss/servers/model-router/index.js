@@ -24,6 +24,8 @@ const cacheCycle = require('./cache-cycle.js');
 const contextRewrite = require('./context-rewrite.js');
 const byok = require('./byok.js');
 const catalog = require('./catalog.js');
+const upstreamProfile = require('./upstream-profile.js');
+const protocolAdapters = require('./protocols/index.js');
 const { resolveMode } = require('../../scripts/lib/router-mode.js');
 const { routerUserConfigPath } = require('../../scripts/lib/router-config-path.js');
 const { configFingerprint } = require('../../scripts/lib/router-fingerprint.js');
@@ -137,6 +139,7 @@ function loadConfig() {
   } catch (e) {
     logger.warn('Config load failed, using defaults', { err: e.message });
   }
+  config = upstreamProfile.applyRouterEnvironment(config, process.env);
   // Deep-merge do override do usuário POR CIMA dos defaults (override vence).
   // `nim`, `routing`, `fallback` e `sticky` são mesclados raso (preserva chaves
   // shipadas — ex.: {sticky:{enabled:true}} liga o sticky SEM apagar ttlMs;
@@ -161,8 +164,10 @@ function mergeUserConfig(base, override) {
     // headers/baseUrl shipados — mesma invariant de nim/sticky/fallback.
     // 'routes' também é raso por chave de path: shipped define o default, user
     // adiciona/remove/edita sem apagar o resto (DoD route-manager).
-    if ((key === 'nim' || key === 'routing' || key === 'fallback' || key === 'sticky' || key === 'byok' || key === 'contextTuning' || key === 'routes') && override[key] && typeof override[key] === 'object') {
-      merged[key] = { ...(base[key] || {}), ...override[key] };
+    if ((key === 'nim' || key === 'routing' || key === 'fallback' || key === 'sticky' || key === 'byok' || key === 'upstream' || key === 'contextTuning' || key === 'routes') && override[key] && typeof override[key] === 'object') {
+      merged[key] = (key === 'byok' || key === 'upstream')
+        ? upstreamProfile.mergeRouterSection(base[key], override[key])
+        : { ...(base[key] || {}), ...override[key] };
     } else {
       merged[key] = override[key];
     }
@@ -455,17 +460,16 @@ async function classifyNim(prompt, config) {
 // possível; o endpoint normaliza nomes sozinho, mesmo contrato do passthrough).
 async function classifyByok(prompt, config) {
   const by = config.byok || {};
-  if (by.enabled !== true || by.classifyRemote !== true || !by.baseUrl) return null;
+  if (by.enabled !== true || by.classifyRemote !== true) return null;
 
   let target;
   try { target = byok.resolveUpstream(config, { onLimit: cooldownActive(config) }, UPSTREAM_FALLBACK); }
   catch (e) { logger.warn('BYOK classify resolveUpstream error', { err: e.message }); return null; }
   if (!target || !target.isByok) return null;
 
-  const lib = target.protocol === 'https:' ? require('https') : require('http');
   const haikuModel = (config.routing && config.routing.haikuTier && config.routing.haikuTier.model)
     || 'claude-haiku-4-5-20251001';
-  const body = JSON.stringify({
+  const requestBody = {
     model: haikuModel,
     messages: [{
       role: 'user',
@@ -473,17 +477,32 @@ async function classifyByok(prompt, config) {
     }],
     max_tokens: 5,
     temperature: 0,
-  });
+    stream: false,
+  };
+  let profile;
+  let adapter;
+  let operationTarget;
+  let body;
+  try {
+    profile = requiredOperationProfile(config, target, 'classify');
+    adapter = protocolAdapters.getAdapter(profile.wireProtocol);
+    operationTarget = targetForProfile(target, profile);
+    body = JSON.stringify(adapter.toUpstreamRequest(requestBody));
+  } catch (e) {
+    logger.warn('BYOK classify config error', { err: e.message });
+    return null;
+  }
+  const lib = operationTarget.protocol === 'https:' ? require('https') : require('http');
   // Headers do MAPA do usuário (mesma regra do passthrough BYOK): nada de Bearer
   // fixo — o endpoint pode exigir outro esquema. Protocolo http/https por `.protocol`.
-  const headers = byok.buildHeaders({ 'anthropic-version': '2023-06-01' }, target);
+  const headers = protocolHeaders({ 'anthropic-version': '2023-06-01' }, operationTarget, profile.wireProtocol, false);
   headers['content-length'] = Buffer.byteLength(body);
 
   return new Promise((resolve) => {
     const req = lib.request({
-      hostname: target.host,
-      port: target.port,
-      path: '/v1/messages',
+      hostname: operationTarget.host,
+      port: operationTarget.port,
+      path: pathForProfile(profile),
       method: 'POST',
       headers,
     }, (res) => {
@@ -491,7 +510,13 @@ async function classifyByok(prompt, config) {
       res.on('data', c => data += c);
       res.on('end', () => {
         try {
-          const parsed = JSON.parse(data);
+          if (res.statusCode < 200 || res.statusCode >= 300) {
+            throw new Error(`HTTP ${res.statusCode}: ${data.slice(0, 300)}`);
+          }
+          const upstreamBody = JSON.parse(data);
+          const parsed = profile.wireProtocol === 'openai'
+            ? adapter.fromUpstreamJson(upstreamBody, requestBody)
+            : upstreamBody;
           const content = Array.isArray(parsed.content)
             ? (parsed.content.find(c => c.type === 'text') || {}).text || ''
             : '';
@@ -545,7 +570,7 @@ async function classify(prompt, config, deps) {
   // Falha do endpoint → MiniLM local (fail-open).
   const by = config.byok || {};
   const byokOnLimitOk = (by.mode || 'on-limit') !== 'on-limit' || cooldownActive(config);
-  if (by.enabled === true && by.classifyRemote === true && by.baseUrl && byokOnLimitOk) {
+  if (by.enabled === true && by.classifyRemote === true && byokOnLimitOk) {
     const tier = await byokImpl(prompt, config);
     if (tier) return tier;
     logger.warn('BYOK classify falhou, fallback para MiniLM local');
@@ -572,9 +597,12 @@ function catalogEnabled(config) { return catalogConfig(config).enabled; }
 
 // Prefixo do alias de id BYOK p/ o picker `/model` (ver catalog.aliasModelId).
 // Configurável via `byok.modelAliasPrefix`; default "anthropic-" (catalog.js).
+function modelAliasPolicy(config, target) {
+  return upstreamProfile.resolveAliasPolicy(config, target);
+}
+
 function byokAliasPrefix(config) {
-  const b = (config && config.byok) || {};
-  return (typeof b.modelAliasPrefix === 'string' && b.modelAliasPrefix) || catalog.DEFAULT_ALIAS_PREFIX;
+  return modelAliasPolicy(config, { isByok: true, isCustomEndpoint: true }).prefix;
 }
 
 // Desfaz o alias em `body.model` (SE a request for BYOK) antes de qualquer
@@ -582,23 +610,25 @@ function byokAliasPrefix(config) {
 // um no-op inofensivo pular isto: um id disfarçado forwardado ao BYOK cru
 // (ex.: "anthropic-gpt-4") o endpoint não reconhece e falha (model not
 // supported). Muta `body` in-place; devolve o id original (p/ log).
-function unaliasBodyModel(body, config) {
+function unaliasBodyModel(body, config, resolvedTarget) {
   if (!body || typeof body.model !== 'string') return body && body.model;
   const original = body.model;
-  const alvo = byok.resolveUpstream(config, { onLimit: cooldownActive(config) }, UPSTREAM_FALLBACK);
-  if (alvo.isByok) {
-    body.model = catalog.unaliasModelId(original, byokAliasPrefix(config));
+  const target = resolvedTarget
+    || byok.resolveUpstream(config, { onLimit: cooldownActive(config) }, UPSTREAM_FALLBACK);
+  const alias = modelAliasPolicy(config, target);
+  if (alias.enabled) {
+    body.model = catalog.unaliasModelId(original, alias.prefix);
   }
   return original;
 }
 
-function resolveModel(tier, config) {
+function resolveModel(tier, config, catalogScope) {
   const routing = config.routing || {};
   // Catálogo DINÂMICO (se habilitado e aquecido): elege o modelo MAIS NOVO da
   // família — pega lançamentos (ex.: Sonnet 5) sem editar config. Sem catálogo
   // cai no mapa estático abaixo.
   if (catalogEnabled(config)) {
-    const dyn = catalog.modelForFamily(tier);
+    const dyn = catalog.modelForFamily(tier, catalogScope);
     if (dyn) return dyn;
   }
   const map = {
@@ -640,9 +670,9 @@ function tierWeight(tier, config) {
 // do escolhido — só rebaixa p/ economizar. Ligado por padrão (routing.ceiling !==
 // false). origTier null (modelo desconhecido) → sem teto. Extraído do handler p/
 // ser testável sem depender do classificador.
-function applyCeiling(classifiedTier, origTier, originalModel, config) {
+function applyCeiling(classifiedTier, origTier, originalModel, config, catalogScope) {
   let routedTier = classifiedTier;
-  let newModel   = resolveModel(classifiedTier, config);
+  let newModel   = resolveModel(classifiedTier, config, catalogScope);
   let blocked    = false;
   const ceilingOn = !(config && config.routing && config.routing.ceiling === false);
   if (ceilingOn && origTier && TIER_RANK[classifiedTier] > TIER_RANK[origTier]) {
@@ -703,7 +733,7 @@ function findEffort(body) {
 //   - suporta effort mas NÃO o valor    → clamp p/ o maior suportado com rank<=pedido
 //   - destino não suporta effort        → strip (e remove output_config se ficar vazio)
 //   - valor desconhecido (fora do order)→ strip (não dá p/ clampar com segurança)
-function reconcileEffort(body, newModel, config) {
+function reconcileEffort(body, newModel, config, catalogScope) {
   const loc = findEffort(body);
   if (!loc) return { action: 'none' };
   const cur = loc.container.effort;
@@ -713,7 +743,7 @@ function reconcileEffort(body, newModel, config) {
   // /v1/models. Se o catálogo conhece o destino, usa os níveis REAIS dele
   // (null = não conhece → mantém o estático; [] = conhece e NÃO tem effort → strip).
   if (catalogEnabled(config)) {
-    const dyn = catalog.effortForModel(newModel);
+    const dyn = catalog.effortForModel(newModel, catalogScope);
     if (dyn !== null) sup = dyn;
   }
 
@@ -852,7 +882,7 @@ async function decideStickyModel(body, config, deps) {
     }
     // Aplica o teto sobre o classificado p/ derivar o tier a FIXAR (null → origTier).
     pinnedTier = classified
-      ? applyCeiling(classified, origTier, originalModel, config).routedTier
+      ? applyCeiling(classified, origTier, originalModel, config, d.catalogScope).routedTier
       : (origTier || null);
     pins.set(key, { tier: pinnedTier, expiresAt: now + stickyTtlMs(config) });
     created = true;
@@ -864,7 +894,7 @@ async function decideStickyModel(body, config, deps) {
   if (!pinnedTier) {
     return { key, model: originalModel, tier: origTier, pinned: false, created, blocked: false };
   }
-  const dec = applyCeiling(pinnedTier, origTier, originalModel, config);
+  const dec = applyCeiling(pinnedTier, origTier, originalModel, config, d.catalogScope);
   return { key, model: dec.newModel, tier: dec.routedTier, pinned: true, created, blocked: dec.blocked };
 }
 
@@ -1299,6 +1329,145 @@ function sendUpstreamRequest(lib, options, body, onResponse, onError, timeoutMs)
 // (nunca um default fixo, porque BYOK pode ser http ou https). O que DIVERGE
 // entre os 3 chamadores (pipe puro, classificar 429, tee de telemetria) fica
 // no `onResponse` de cada um; retry é decisão do chamador em `onError`.
+function requiredOperationProfile(config, upstreamTarget, operation) {
+  const profile = upstreamProfile.resolveOperationProfile(config, upstreamTarget, operation);
+  if (!profile.ok) throw new Error(`Configuração do upstream inválida para ${operation}: ${profile.error}`);
+  return profile;
+}
+
+function targetForProfile(upstreamTarget, profile) {
+  return {
+    ...upstreamTarget,
+    host: profile.parsed.hostname,
+    port: Number(profile.parsed.port) || (profile.parsed.protocol === 'https:' ? 443 : 80),
+    protocol: profile.parsed.protocol,
+  };
+}
+
+function pathForProfile(profile) {
+  return `${profile.parsed.pathname}${profile.parsed.search}`;
+}
+
+function protocolHeaders(originalHeaders, upstreamTarget, wireProtocol, stream) {
+  const headers = byok.buildHeaders(originalHeaders, upstreamTarget);
+  if (wireProtocol === 'openai') {
+    delete headers['anthropic-version'];
+    delete headers['anthropic-beta'];
+    headers.accept = stream ? 'text/event-stream' : 'application/json';
+  }
+  return headers;
+}
+
+function emitAdapterEvents(res, events) {
+  for (const item of events) sseEvent(res, item.event, item.data);
+}
+
+function proxyOpenAIResponse(upRes, res, reqBody, adapter) {
+  if (upRes.statusCode >= 400) {
+    let errorBody = '';
+    upRes.on('data', chunk => {
+      if (errorBody.length < 65536) errorBody += chunk;
+    });
+    upRes.on('end', () => {
+      let message = `OpenAI upstream recusou a request (HTTP ${upRes.statusCode})`;
+      try {
+        const parsed = JSON.parse(errorBody);
+        const upstreamMessage = parsed && parsed.error && parsed.error.message;
+        if (typeof upstreamMessage === 'string' && upstreamMessage.trim()) message = upstreamMessage.trim();
+      } catch (err) {
+        logger.warn('OpenAI upstream devolveu erro não-JSON', { status: upRes.statusCode, err: err.message });
+      }
+      res.writeHead(upRes.statusCode, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message } }));
+    });
+    upRes.on('error', err => {
+      logger.error('Erro ao ler resposta OpenAI', { err: err.message });
+      res.destroy(err);
+    });
+    return;
+  }
+
+  if (reqBody.stream) {
+    const translator = adapter.createStreamTranslator(reqBody);
+    sseHeaders(res);
+    emitAdapterEvents(res, translator.start());
+    let buffer = '';
+    upRes.setEncoding('utf8');
+    upRes.on('data', chunk => {
+      buffer += chunk;
+      let newline;
+      while ((newline = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, newline).trim();
+        buffer = buffer.slice(newline + 1);
+        if (!line.startsWith('data:')) continue;
+        const data = line.slice(5).trim();
+        if (!data) continue;
+        if (data === '[DONE]') {
+          emitAdapterEvents(res, translator.finish());
+          continue;
+        }
+        try {
+          emitAdapterEvents(res, translator.consume(JSON.parse(data)));
+        } catch (err) {
+          logger.error('Falha ao traduzir stream OpenAI', { err: err.message });
+          res.destroy(err);
+          upRes.destroy(err);
+          return;
+        }
+      }
+    });
+    upRes.on('end', () => {
+      if (!res.destroyed) {
+        if (buffer.trim()) {
+          logger.error('Stream OpenAI terminou com frame incompleto', { bytes: Buffer.byteLength(buffer) });
+          res.destroy(new Error('Stream OpenAI terminou com frame SSE incompleto'));
+          return;
+        }
+        emitAdapterEvents(res, translator.finish());
+        res.end();
+      }
+    });
+    upRes.on('error', err => {
+      logger.error('Erro no stream OpenAI', { err: err.message });
+      res.destroy(err);
+    });
+    return;
+  }
+
+  let raw = '';
+  upRes.setEncoding('utf8');
+  upRes.on('data', chunk => {
+    raw += chunk;
+    if (raw.length > 32 * 1024 * 1024) {
+      upRes.destroy(new Error('Resposta OpenAI excedeu 32 MiB'));
+    }
+  });
+  upRes.on('end', () => {
+    try {
+      const translated = adapter.fromUpstreamJson(JSON.parse(raw), reqBody);
+      res.writeHead(upRes.statusCode, { 'content-type': 'application/json' });
+      res.end(JSON.stringify(translated));
+    } catch (err) {
+      logger.error('Falha ao traduzir resposta OpenAI', { err: err.message });
+      if (!res.headersSent) {
+        res.writeHead(502, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ type: 'error', error: { type: 'proxy_error', message: err.message } }));
+      } else {
+        res.destroy(err);
+      }
+    }
+  });
+  upRes.on('error', err => {
+    logger.error('Erro ao ler resposta OpenAI', { err: err.message });
+    if (!res.headersSent) {
+      res.writeHead(502, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'proxy_error', message: err.message } }));
+    } else {
+      res.destroy(err);
+    }
+  });
+}
+
 function requestUpstream(upstreamTarget, path, headers, bodyStr, onResponse, onError) {
   const lib = upstreamTarget.protocol === 'http:' ? http : UPSTREAM_LIB;
   const options = { hostname: upstreamTarget.host, port: upstreamTarget.port, path, method: 'POST', headers };
@@ -1321,17 +1490,21 @@ function requestUpstream(upstreamTarget, path, headers, bodyStr, onResponse, onE
 // como retentável e cede a vez ao próximo plano.
 // @param {Function} onRetryable chamado quando o endpoint respondeu 429
 function byokFallback(reqBody, config, res, hint, upstreamTarget, onRetryable) {
-  const bodyStr = JSON.stringify(reqBody);
-  const headers = byok.buildHeaders({}, upstreamTarget);
+  const profile = requiredOperationProfile(config, upstreamTarget, 'generate');
+  const adapter = protocolAdapters.getAdapter(profile.wireProtocol);
+  const operationTarget = targetForProfile(upstreamTarget, profile);
+  const bodyStr = JSON.stringify(adapter.toUpstreamRequest(reqBody));
+  const headers = protocolHeaders({}, operationTarget, profile.wireProtocol, !!reqBody.stream);
   headers['content-length'] = Buffer.byteLength(bodyStr);
 
-  requestUpstream(upstreamTarget, '/v1/messages', headers, bodyStr, (upRes) => {
+  requestUpstream(operationTarget, pathForProfile(profile), headers, bodyStr, (upRes) => {
     const cls = byok.classifyResponse(upRes.statusCode, '');
     if (cls.ok) {
       logger.info('BYOK — limite do Claude coberto pelo endpoint do usuário', {
-        host: upstreamTarget.host, status: upRes.statusCode,
+        host: operationTarget.host, status: upRes.statusCode,
       });
-      pipeUpstreamResponse(upRes, res);
+      if (profile.wireProtocol === 'openai') proxyOpenAIResponse(upRes, res, reqBody, adapter);
+      else pipeUpstreamResponse(upRes, res);
       return;
     }
     // Lê um pedaço do corpo: o contrato manda gritar também por corpo
@@ -2365,16 +2538,49 @@ function passthrough(rawBody, originalHeaders, res, pathOriginal, config, _retri
   return passthroughGeneric('POST', rawBody, originalHeaders, res, pathOriginal, config, _retried);
 }
 
+function operationForPassthrough(method, pathOriginal) {
+  const pathname = (() => {
+    try { return new URL(pathOriginal || '/', 'http://127.0.0.1').pathname; }
+    catch (err) { void err; return String(pathOriginal || '').split('?')[0]; }
+  })();
+  if (String(method).toUpperCase() === 'GET' && pathname.endsWith('/models')) return 'models';
+  if (pathname.includes('count_tokens')) return 'countTokens';
+  return null;
+}
+
 function passthroughGeneric(method, rawBody, originalHeaders, res, pathOriginal, config, _retried) {
-  const upstreamTarget = byok.resolveUpstream(config, { onLimit: cooldownActive(config) }, UPSTREAM_FALLBACK);
-  const headers = byok.buildHeaders(originalHeaders, upstreamTarget);
-  if (rawBody && rawBody.length) headers['content-length'] = Buffer.byteLength(rawBody);
+  const baseTarget = byok.resolveUpstream(config, { onLimit: cooldownActive(config) }, UPSTREAM_FALLBACK);
+  const operation = operationForPassthrough(method, pathOriginal);
+  let upstreamTarget = baseTarget;
+  let outboundPath = pathOriginal || '/';
+  let wireProtocol = 'anthropic';
+  let payload = rawBody || '';
+  if (operation) {
+    let profile;
+    try {
+      profile = requiredOperationProfile(config, baseTarget, operation);
+      upstreamTarget = targetForProfile(baseTarget, profile);
+      outboundPath = pathForProfile(profile);
+      wireProtocol = profile.wireProtocol;
+      if (operation === 'countTokens' && payload) {
+        const parsed = JSON.parse(payload);
+        unaliasBodyModel(parsed, config, baseTarget);
+        payload = JSON.stringify(parsed);
+      }
+    } catch (err) {
+      logger.error('Configuração inválida no passthrough', { operation, err: err.message });
+      res.writeHead(502, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'proxy_error', message: err.message } }));
+      return null;
+    }
+  }
+  const headers = protocolHeaders(originalHeaders, upstreamTarget, wireProtocol, false);
+  if (payload.length) headers['content-length'] = Buffer.byteLength(payload);
   const lib2 = upstreamTarget.protocol === 'http:' ? http : https;
-  const payload = rawBody || '';
   const options = {
     hostname: upstreamTarget.host,
     port: upstreamTarget.port,
-    path: pathOriginal || '/',
+    path: outboundPath,
     method: method || 'GET',
     headers,
   };
@@ -2382,11 +2588,11 @@ function passthroughGeneric(method, rawBody, originalHeaders, res, pathOriginal,
   const hasBody = !!(payload && payload.length);
   const doReq = () => sendUpstreamRequest(lib2, options, hasBody ? payload : '', withLatencyLog(upstreamTarget, (upRes) => pipeUpstreamResponse(upRes, res)), (e) => {
     if (!_retried && !res.headersSent && String(pathOriginal || '').includes('count_tokens')) {
-      logger.warn('Passthrough upstream falhou — tentando 1x de novo', { err: e.message, path: pathOriginal });
+      logger.warn('Passthrough upstream falhou — tentando 1x de novo', { err: e.message, path: outboundPath });
       passthroughGeneric(method, rawBody, originalHeaders, res, pathOriginal, config, true);
       return;
     }
-    logger.error('Passthrough generic upstream error', { err: e.message, path: pathOriginal });
+    logger.error('Passthrough generic upstream error', { err: e.message, path: outboundPath });
     if (!res.headersSent) { res.writeHead(502); res.end(JSON.stringify({ error: { type: 'proxy_error', message: e.message } })); }
   }, resolveUpstreamTimeoutMs(upstreamTarget));
   if (hasBody) { options.headers['content-length'] = Buffer.byteLength(payload); }
@@ -2428,8 +2634,22 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
     logger.info('Cooldown expirou — testando o Claude novamente', { eraAte: new Date(_cooldownUntil).toISOString() });
     clearCooldown();
   }
-  const bodyStr = JSON.stringify(reqBody);
-  const headers = byok.buildHeaders(originalHeaders, upstreamTarget);
+  let generationProfile;
+  let adapter;
+  let outboundBody;
+  try {
+    generationProfile = requiredOperationProfile(config, upstreamTarget, 'generate');
+    adapter = protocolAdapters.getAdapter(generationProfile.wireProtocol);
+    outboundBody = adapter.toUpstreamRequest(reqBody);
+  } catch (err) {
+    logger.error('Não foi possível preparar a request para o upstream', { err: err.message });
+    res.writeHead(502, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ type: 'error', error: { type: 'proxy_error', message: err.message } }));
+    return;
+  }
+  const operationTarget = targetForProfile(upstreamTarget, generationProfile);
+  const bodyStr = JSON.stringify(outboundBody);
+  const headers = protocolHeaders(originalHeaders, operationTarget, generationProfile.wireProtocol, !!reqBody.stream);
   headers['content-length'] = Buffer.byteLength(bodyStr);
 
   if (upstreamTarget.isByok) {
@@ -2442,7 +2662,7 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
     ? config.fallback.triggerStatuses
     : [429];
 
-  requestUpstream(upstreamTarget, (route && route.path) || '/v1/messages', headers, bodyStr, (upRes) => {
+  requestUpstream(operationTarget, pathForProfile(generationProfile), headers, bodyStr, (upRes) => {
     // Janela esgotada / limite → plano B (NÃO repassa o erro ao cliente).
     if (triggers.includes(upRes.statusCode)) {
       let errBody = '';
@@ -2469,6 +2689,13 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
         metricsOutcome('planB', route, config);
         handleLimitExceeded(reqBody, config, res, resumeHint());
       });
+      return;
+    }
+    if (generationProfile.wireProtocol === 'openai') {
+      if (_consec429 !== 0) _consec429 = 0;
+      noteClaudeOk();
+      metricsOutcome('claude', route, config);
+      proxyOpenAIResponse(upRes, res, reqBody, adapter);
       return;
     }
     // Claude respondeu (não é trigger) → não estamos em outage: zera o contador
@@ -2548,37 +2775,71 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
 
 // ── Catálogo dinâmico: aquecimento (fire-and-forget) ──────────────────────────
 
-// Monta os headers de auth p/ chamar /v1/models com a credencial de ENTRADA
-// (escopo da assinatura). Sem x-api-key NEM authorization → não dá p/ escopar.
-function catalogAuthHeaders(h) {
-  const out = { 'anthropic-version': h['anthropic-version'] || '2023-06-01' };
-  if (h['x-api-key'])      out['x-api-key']      = h['x-api-key'];
-  if (h['authorization'])  out['authorization']  = h['authorization'];
-  if (h['anthropic-beta']) out['anthropic-beta'] = h['anthropic-beta'];
-  return out;
-}
-
 // Aquece/atualiza o catálogo com a credencial desta request. Fire-and-forget: a
 // request atual NÃO espera — usa o snapshot já aquecido (ou o estático); as
 // próximas pegam o catálogo fresco. Guard de TTL/inflight/backoff vive no catalog.
-function maybeWarmCatalog(originalHeaders, config) {
+function catalogScopeKey(tenant, profile, headers) {
+  const normalizedHeaders = Object.entries(headers || {})
+    .map(([key, value]) => [String(key).toLowerCase(), String(value)])
+    .sort(([a], [b]) => a.localeCompare(b));
+  const fingerprint = crypto.createHash('sha256')
+    .update(JSON.stringify(normalizedHeaders))
+    .digest('hex')
+    .slice(0, 24);
+  return `${tenant || '_'}:${profile.kind}:${profile.wireProtocol}:${profile.url}:${fingerprint}`;
+}
+
+function catalogRequestContext(originalHeaders, config, tenant) {
+  const h = originalHeaders || {};
+  const target = byok.resolveUpstream(config, { onLimit: cooldownActive(config) }, UPSTREAM_FALLBACK);
+  const profile = upstreamProfile.resolveOperationProfile(config, target, 'models');
+  if (!profile.ok) return { ok: false, error: profile.error, target };
+  if (!target.isByok && !h['x-api-key'] && !h.authorization) {
+    return { ok: false, optional: true, error: 'credencial ausente para consultar catálogo', target, profile };
+  }
+  const headers = protocolHeaders(h, targetForProfile(target, profile), profile.wireProtocol, false);
+  return {
+    ok: true,
+    target,
+    profile,
+    headers,
+    alias: modelAliasPolicy(config, target),
+    scope: catalogScopeKey(tenant, profile, headers),
+  };
+}
+
+function serveCustomModels(ctx, res) {
+  catalog.fetchModels({
+    url: ctx.profile.url,
+    headers: ctx.headers,
+  }, (err, models) => {
+    if (err) {
+      logger.error('Catálogo custom indisponível', { err: err.message, url: ctx.profile.url });
+      res.writeHead(502, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'proxy_error', message: err.message } }));
+      return;
+    }
+    const snap = catalog.setSnapshot(models, ctx.scope);
+    const data = ctx.alias.enabled
+      ? catalog.aliasedModelList(snap, ctx.alias.prefix)
+      : Object.values(snap.models || {});
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ object: 'list', data }));
+  });
+}
+
+function maybeWarmCatalog(originalHeaders, config, tenant) {
   const cc = catalogConfig(config);
   if (!cc.enabled) return;
-  const h = originalHeaders || {};
-  // O catálogo tem que descrever o MESMO destino que atende a geração: com BYOK
-  // ligado, listar os modelos da Anthropic enquanto o endpoint do usuário serve
-  // outros é a mesma inconsistência do count_tokens. O contrato do endpoint
-  // expõe /v1/models com os mesmos headers. `onLimit: cooldownActive(config)`
-  // acompanha o disjuntor em byok.mode=on-limit pelo mesmo motivo do passthrough.
-  const alvo = byok.resolveUpstream(config, { onLimit: cooldownActive(config) }, UPSTREAM_FALLBACK);
-  // Sem BYOK, o aquecimento depende da credencial do cliente (é ela que autoriza
-  // a chamada). Com BYOK, quem autoriza são os headers configurados.
-  if (!alvo.isByok && !h['x-api-key'] && !h['authorization']) return;
+  const ctx = catalogRequestContext(originalHeaders, config, tenant);
+  if (!ctx.ok) {
+    if (!ctx.optional) logger.warn('Catálogo: configuração de models inválida', { err: ctx.error });
+    return;
+  }
   catalog.maybeRefresh({
-    host:           alvo.host,
-    port:           alvo.port,
-    protocol:       alvo.protocol,
-    headers:        alvo.isByok ? byok.buildHeaders(h, alvo) : catalogAuthHeaders(h),
+    url:            ctx.profile.url,
+    headers:        ctx.headers,
+    scope:          ctx.scope,
     ttlMs:          cc.ttlMs,
     errorBackoffMs: cc.errorBackoffMs,
     onRefresh: (snap) => logger.info('Catálogo de modelos atualizado via /v1/models', {
@@ -2645,10 +2906,15 @@ async function createServer(config, mode, routerToken) {
         return;
       }
       if (up === 'local:catalog') {
-        const snap = catalog.getSnapshot();
+        const ctx = catalogRequestContext(req.headers, cfgEarly, tenantEarly);
+        const snap = ctx.ok ? catalog.getSnapshot(ctx.scope) : null;
         // /v1/models quando encurtado para local:catalog devolve snapshot em forma Anthropic
         if (pathnameEarly === '/v1/models') {
-          const data = snap && Array.isArray(snap.models) ? snap.models : [];
+          const data = snap
+            ? (ctx.alias.enabled
+              ? catalog.aliasedModelList(snap, ctx.alias.prefix)
+              : Object.values(snap.models || {}))
+            : [];
           res.writeHead(200, { 'content-type': 'application/json' });
           res.end(JSON.stringify({ object: 'list', data }));
           return;
@@ -2671,19 +2937,23 @@ async function createServer(config, mode, routerToken) {
         // passthrough de sempre — zero mudança de comportamento pra quem usa
         // Anthropic puro.
         if (pathnameEarly === '/v1/models' && String(req.method).toUpperCase() === 'GET') {
-          const alvo = byok.resolveUpstream(cfgEarly, { onLimit: cooldownActive(cfgEarly) }, UPSTREAM_FALLBACK);
-          const snap = alvo.isByok ? catalog.getSnapshot() : null;
-          if (snap) {
-            const data = catalog.aliasedModelList(snap, byokAliasPrefix(cfgEarly));
+          const ctx = catalogRequestContext(req.headers, cfgEarly, tenantEarly);
+          const snap = ctx.ok && ctx.alias.enabled ? catalog.getSnapshot(ctx.scope) : null;
+          if (snap && ctx.ok) {
+            const data = catalog.aliasedModelList(snap, ctx.alias.prefix);
             res.writeHead(200, { 'content-type': 'application/json' });
             res.end(JSON.stringify({ object: 'list', data }));
+            return;
+          }
+          if (ctx.ok && ctx.alias.enabled) {
+            serveCustomModels(ctx, res);
             return;
           }
         }
         let rawBodyEarly = '';
         req.on('data', c => rawBodyEarly += c);
         req.on('error', e => { logger.error('Request read error (passthrough)', { err: e.message }); if (!res.headersSent) { res.writeHead(400); res.end(); } });
-        req.on('end', () => { maybeWarmCatalog(req.headers, cfgEarly); passthroughGeneric(req.method, rawBodyEarly, req.headers, res, req.url, cfgEarly); });
+        req.on('end', () => { maybeWarmCatalog(req.headers, cfgEarly, tenantEarly); passthroughGeneric(req.method, rawBodyEarly, req.headers, res, req.url, cfgEarly); });
         return;
       }
       if (up === 'routed') {
@@ -2738,7 +3008,9 @@ async function createServer(config, mode, routerToken) {
       if (tenant !== '_') logger.info('Tenant resolvido', { tenant });
       // Aquece o catálogo dinâmico com a credencial desta request (fire-and-forget).
       // Roda ANTES do count_tokens p/ aproveitar a rajada de boot como gatilho.
-      maybeWarmCatalog(req.headers, config);
+      maybeWarmCatalog(req.headers, cfg, tenant);
+      const requestCatalog = catalogRequestContext(req.headers, cfg, tenant);
+      const requestCatalogScope = requestCatalog.ok ? requestCatalog.scope : undefined;
       // count_tokens é o endpoint GRÁTIS de contagem (beta token-counting): repassa
       // verbatim preservando o path. Classificar/reescrever pra /v1/messages
       // converteria contagem grátis em geração paga e saturaria o RPM no boot.
@@ -2811,7 +3083,7 @@ async function createServer(config, mode, routerToken) {
         const origTier = modelTier(originalModel);
         let dec;
         try {
-          dec = await decideStickyModel(body, cfg, { tenant });
+          dec = await decideStickyModel(body, cfg, { tenant, catalogScope: requestCatalogScope });
         } catch (e) {
           // Falha inesperada da decisão → passthrough cache-safe (modelo do usuário).
           logger.warn('Sticky decide error — passthrough do modelo original', { err: e.message });
@@ -2821,7 +3093,7 @@ async function createServer(config, mode, routerToken) {
         body.model = dec.model;
         // Reconcilia o `effort` só quando o modelo MUDA (mesma regra do per-turn).
         let effortAdj = { action: 'none' };
-        if (dec.model !== originalModel) effortAdj = reconcileEffort(body, dec.model, cfg);
+        if (dec.model !== originalModel) effortAdj = reconcileEffort(body, dec.model, cfg, requestCatalogScope);
         logger.info(dec.created ? 'Sticky — tier FIXADO (turno 0)' : 'Sticky — pin REUSADO (cache-safe)', {
           tier:     dec.tier,
           original: originalModel,
@@ -2858,7 +3130,7 @@ async function createServer(config, mode, routerToken) {
       let finalTier = origTier;
       let blocked = false;
       if (tier) {
-        const dec = applyCeiling(tier, origTier, originalModel, cfg);
+        const dec = applyCeiling(tier, origTier, originalModel, cfg, requestCatalogScope);
         blocked = dec.blocked;
         if (blocked) {
           logger.info('Teto — classificador acima do escolhido; mantido o modelo do usuário', {
@@ -2871,7 +3143,7 @@ async function createServer(config, mode, routerToken) {
         // escala própria (Opus 4.8 tem xhigh; Sonnet 4.6 não; Haiku não tem effort).
         // Só mexe quando o modelo MUDA — mantém / clampa / remove conforme o suporte.
         let effortAdj = { action: 'none' };
-        if (dec.newModel !== originalModel) effortAdj = reconcileEffort(body, dec.newModel, cfg);
+        if (dec.newModel !== originalModel) effortAdj = reconcileEffort(body, dec.newModel, cfg, requestCatalogScope);
         logger.info('Roteado', {
           tier:        dec.routedTier,
           classificou: tier,
@@ -3138,10 +3410,13 @@ if (require.main === module) {
     readRouterToken,
     routerTokenMatches,
     classify,
+    classifyByok,
     // Alias de id BYOK p/ o picker `/model` (ver catalog.js): exportados p/ os
     // testes provarem o gate isByok e a reversão de body.model sem HTTP real.
     byokAliasPrefix,
+    modelAliasPolicy,
     unaliasBodyModel,
+    catalogScopeKey,
     // Ponto de CONSUMO do teto de timeout por isCustomEndpoint (ver comentário
     // em requestUpstream): docs/BACKLOG.md apontava que só a ORIGEM do dado
     // (byok.resolveUpstream) tinha teste — exportados p/ o teste hermético

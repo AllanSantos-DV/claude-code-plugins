@@ -312,7 +312,7 @@ Iniciado **sob demanda** (não mais no SessionStart). Configura o **plugin**
   de retrieval citado) + card "learning loop" (capturadas vs. mescladas por
   semana) + botão de consolidação do KB (ver abaixo).
 
-## BYOK — usar o seu próprio endpoint
+## Endpoints custom — upstream e BYOK
 
 > **💰 Cobrança**: o Model Router nasce **desativado** e ligá-lo é opt-in por conta
 > e risco. Passthrough/sticky na rota Anthropic preserva a cobrança da assinatura;
@@ -320,15 +320,22 @@ Iniciado **sob demanda** (não mais no SessionStart). Configura o **plugin**
 > ambiente vira API pay-as-you-go. Guia completo:
 > [docs/features/ROUTER-BILLING.md](docs/features/ROUTER-BILLING.md).
 
-O proxy pode falar com um **endpoint Anthropic-compatible seu** em vez de (ou além
-de) `api.anthropic.com`. O plugin **não conhece o provedor** nem de onde veio o
-token: você cola a **Base URL** e um **mapa de headers** no dashboard, e ele anexa
-esses headers em toda request.
+O proxy aceita gateways **Anthropic Messages** e **OpenAI Chat Completions**.
+No dashboard você escolhe o protocolo e configura URLs completas, separadas para
+modelos, geração, contagem de tokens e classificação. A mesma configuração pode
+vir de variáveis de ambiente; a precedência é
+`dashboard/user-config > ambiente > defaults`.
 
-- **Contrato**: `POST /v1/messages`, formato Anthropic **nativo** — zero tradução.
-  O campo `model` vai **verbatim**: o endpoint normaliza os nomes sozinho
-  (`claude-haiku-4-5` → `claude-haiku-4.5`) e erra alto no inexistente, então
-  mapear nome aqui só criaria uma segunda fonte de verdade para divergir.
+- **Anthropic**: encaminhamento nativo para a URL de geração configurada.
+- **OpenAI**: a geração pode apontar para `/v1/chat/completions` ou qualquer path;
+  o router traduz mensagens, ferramentas, imagens suportadas, respostas JSON e
+  SSE. Campos incompatíveis falham explicitamente — nunca são omitidos em silêncio.
+- **Picker `/model`**: IDs sem `claude`/`anthropic` recebem o alias
+  `anthropic-ccb-alias-` apenas na listagem. O marcador é removido antes de enviar
+  geração ou contagem ao endpoint; o `display_name` continua real.
+- **Custom upstream** preserva a credencial do Claude Code e os
+  `forwardHeaders`; **BYOK** remove essa credencial e envia somente os headers
+  configurados pelo usuário.
 - **Dois modos** (`/dashboard` → Model Router → BYOK):
   - **`on-limit`** (padrão) — o Claude atende normalmente e o endpoint entra
     quando a janela esgota (429), **antes** do plano B da NVIDIA. Se o endpoint
