@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.28.0 — detalhes técnicos</title>
-<meta name="description" content="Detalhes técnicos do plugin claude-code-boss: arquitetura do daemon HTTP único, pipeline de hooks, Brain KB (storage/index/graph), providers de embedding, perfis de enforcement, graph tools e dashboard." />
+<title>claude-code-boss v2.29.0 — detalhes técnicos</title>
+<meta name="description" content="Detalhes técnicos do claude-code-boss v2.29.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard." />
 <style>
   :root{
     --bg:#0d0c10; --bg-soft:#131218; --ink:#edeae1; --muted:#9a978d;
@@ -128,20 +128,21 @@
     <a href="index.html">← Apresentação</a>
     <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a>
     <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">Changelog</a>
-    <a href="#top" class="ver">v2.28.0</a>
+    <a href="#top" class="ver">v2.29.0</a>
   </nav>
 </header>
 
 <main class="wrap" id="top">
   <div class="page-head">
-    <p class="kick">documentação técnica · v2.28.0</p>
+    <p class="kick">documentação técnica · v2.29.0</p>
     <h1>Arquitetura e funcionamento interno</h1>
-    <p class="intro">Para quem quer saber <b>como funciona por baixo</b>: daemon HTTP único, pipeline de hooks, Brain KB em 3 camadas, providers de embedding, perfis de enforcement, exploração de repositório por grafo e o dashboard. Fontes: <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a> e <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG</a>.</p>
+    <p class="intro">Para quem quer saber <b>como funciona por baixo</b>: daemon HTTP único, pipeline de hooks, Brain KB em 3 camadas, Model Router Anthropic/OpenAI, backend MCP Memory, exploração de repositório por grafo e dashboard. Fontes: <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a> e <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG</a>.</p>
     <div class="toc">
       <a href="#daemon">Daemon HTTP único</a>
       <a href="#hooks">Hooks pipeline</a>
       <a href="#brain">Brain KB</a>
       <a href="#config">Config &amp; perfis</a>
+      <a href="#router">Model Router</a>
       <a href="#graph">Graph tools</a>
       <a href="#dashboard">Dashboard</a>
       <a href="#versoes">Versões</a>
@@ -278,6 +279,34 @@
     </div>
   </section>
 
+  <section id="router">
+    <h2>Model Router <span class="tag">Anthropic + OpenAI</span></h2>
+    <p class="lead">Custom upstream e BYOK aceitam <b>Anthropic Messages</b> ou <b>OpenAI Chat Completions</b>. Você escolhe URLs completas e independentes para catálogo de modelos, geração, contagem de tokens e classificação pelo dashboard, por <code>user-config.json</code> ou por variáveis de ambiente.</p>
+
+    <div class="grid2">
+      <div class="mini">
+        <p class="k">custom upstream</p>
+        <b>Credencial da assinatura preservada</b>
+        <p>O router leva a rota do Claude Code ao gateway escolhido e encaminha somente os headers extras autorizados.</p>
+      </div>
+      <div class="mini">
+        <p class="k">BYOK</p>
+        <b>Só a sua chave segue para o endpoint</b>
+        <p>O token da assinatura é removido. O destino recebe apenas os headers configurados por você.</p>
+      </div>
+    </div>
+
+    <div class="panel" style="margin-top:16px">
+      <h3>Adaptação OpenAI e catálogo isolado</h3>
+      <ul class="tight">
+        <li><b>Picker:</b> modelos não Anthropic recebem o alias <code>anthropic-ccb-alias-</code> na listagem e voltam ao ID real antes da geração ou contagem.</li>
+        <li><b>Conversão:</b> mensagens, imagens base64 suportadas, ferramentas, tool results, respostas JSON, streaming SSE, usage e stop reasons atravessam o adapter nos dois sentidos.</li>
+        <li><b>Isolamento:</b> o catálogo dinâmico é separado por tenant, destino, protocolo e fingerprint de credenciais; modelos de um gateway não aparecem em outro.</li>
+        <li><b>Precedência:</b> dashboard/<code>user-config.json</code> → ambiente → defaults. Campos incompatíveis falham explicitamente, sem omissão silenciosa.</li>
+      </ul>
+    </div>
+  </section>
+
   <section id="graph">
     <h2>Graph tools <span class="tag">7 tools</span></h2>
     <p class="lead">Exploração rápida de repositório via Session Graph Engine (<b>cliente REST puro</b>, nenhum Java embarcado). Hubs por PageRank, busca semântica com vizinhança (CALLS/CONTAINS/IMPORTS), quem-chama-um-símbolo — para entender um repo grande sem garimpar arquivo por arquivo.</p>
@@ -313,12 +342,13 @@
   </section>
 
   <section id="versoes">
-    <h2>Versões <span class="tag">82 releases</span></h2>
-    <p class="lead">O changelog completo (v1.0.0 → v2.28.0) vive no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>. Destaques recentes:</p>
+    <h2>Versões <span class="tag">83 releases</span></h2>
+    <p class="lead">O changelog completo (v1.0.0 → v2.29.0) vive no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>. Destaques recentes:</p>
     <div class="table-scroll">
       <table>
         <thead><tr><th>Versão</th><th>Destaque</th></tr></thead>
         <tbody>
+          <tr><td><b>v2.29.0</b></td><td>Custom upstream e BYOK configuráveis por operação nos protocolos Anthropic Messages e OpenAI Chat Completions, com alias reversível no picker e catálogo isolado por destino e credencial. O backend MCP Memory HTTP verifica e aplica updates no <code>SessionStart</code>, sob lock, e só confirma após validar a versão reiniciada em <code>/health.version</code>; falhas são advisory e o Windows preserva o JAR anterior para rollback.</td></tr>
           <tr><td><b>v2.28.0</b></td><td>Seis dispatchers in-process (<code>SessionStart</code>, <code>UserPromptSubmit</code>, <code>PreToolUse/Bash</code>, <code>PostToolUse/Bash</code>, <code>PostToolUseFailure</code> e o <code>Stop</code> já existente) eliminam ~34 spawns de Node por sessão/prompt/comando; detectores concorrentes com timeout próprio e distinção <code>ok</code>/<code>timeout</code>/<code>error</code>; <code>brain-status.js</code> ganha <code>run(event)</code> advisory-only sem mexer na CLI; +21 testes unitários e +9 de integração real.</td></tr>
           <tr><td><b>v2.27.0</b></td><td>Pool de <code>kb-worker</code>s com roteamento sticky por projeto (ADR-014): lock por worker em vez de global, projetos diferentes rodam de fato concorrentes (<code>/health</code> em <code>max=5ms</code> sob carga); teste de regressão fecha o gap de cobertura de <code>CCB_PROJECT_ID</code> em <code>resolveProjectChain</code>.</td></tr>
           <tr><td><b>v2.26.0</b></td><td>Download automático hardware-aware do memory server (<code>mcp-release-resolver.js</code> + <code>nvidia-smi</code> → <code>-gpu.jar</code> vs CPU, <code>sha256</code> verificado); dashboard unifica o botão &ldquo;Baixar e ativar&rdquo; + <code>escapeHtml</code> anti-XSS; corrige botão de download escondido quando ele é o próximo passo; CI <code>setup-node@v4→@v6</code>.</td></tr>
@@ -347,7 +377,7 @@
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">Changelog</a>
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins">GitHub</a>
     </div>
-    <div class="legal">MIT · Allan Santos · claude-code-boss v2.28.0</div>
+    <div class="legal">MIT · Allan Santos · claude-code-boss v2.29.0</div>
   </div>
 </footer>
 
