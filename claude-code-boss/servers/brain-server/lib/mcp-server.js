@@ -576,7 +576,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
     {
       name: 'capture_lesson',
       description: 'Capture a CURATED lesson in-loop (the agent post-mortem pattern). Call this when the user corrects you, or when a reusable pattern emerges — YOU write the clean summary + correction + generalized lesson (you have full context; do not make the KB re-read transcripts). WRITE IN ENGLISH — the KB is English-canonical so entries stay retrievable regardless of the user\'s prompt language. Runs admission control inline: a near-duplicate is MERGED (bumping recurrence, which drives skill promotion) instead of duplicated.',
-      inputSchema: { type: 'object', properties: { title: { type: 'string', description: 'Short lesson title in English (max 80 chars)' }, summary: { type: 'string', description: 'One-line in English: what went wrong / the pattern, and what to do instead' }, detail: { type: 'string', description: 'Full lesson in English: what happened + the correction + the generalized rule. Keep the valuable specifics.' }, type: { type: 'string', enum: ['lesson', 'pattern', 'decision', 'research'], description: 'lesson (correction), pattern (reusable workflow), decision (architectural choice + rationale — plugin Stop hooks nudge this type), or research (external findings worth reusing — plugin Stop hooks nudge this type too). Default: lesson' }, tags: { type: 'array', items: { type: 'string' }, description: '3-8 CANONICAL English concept tags, lowercase, hyphenated (e.g. "error-handling", "token-efficiency", "cross-lingual"). These are the language-neutral retrieval anchor — choose the terms a future query (in any language) would map to.' }, confidence: { type: 'number', description: '0.0-1.0 (default 0.85)' }, windowId: { type: 'string', description: 'When the plugin offered a review block, pass its windowId to close (ack) that capture window as captured.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode)' }, scope: { type: 'string', enum: ['auto', 'project', 'user'], description: 'Where to store. "auto" (default) infers from type+tags (decision/code → project; reference/research/user-tag hints like workflow/preferences/agent-behavior → user). "user" routes to global __user__ DB and sanitizes user paths/emails/project name. Entries with detected secrets are rejected if scope=user.' } }, required: ['title', 'summary'] },
+      inputSchema: { type: 'object', properties: { title: { type: 'string', description: 'Short lesson title in English (max 80 chars)' }, summary: { type: 'string', description: 'One-line in English: what went wrong / the pattern, and what to do instead' }, detail: { type: 'string', description: 'Full lesson in English: what happened + the correction + the generalized rule. Keep the valuable specifics.' }, type: { type: 'string', enum: ['lesson', 'pattern', 'decision', 'research', 'skill'], description: 'lesson (correction), pattern (reusable workflow), decision (architectural choice + rationale — plugin Stop hooks nudge this type), research (external findings worth reusing — plugin Stop hooks nudge this type too), or skill (this is ALREADY a generalizable, reusable instruction worth a global Agent Skill — requires description/useFor/doNotUseFor; validated and staged directly for review, no separate promotion step). Default: lesson' }, description: { type: 'string', description: 'ONLY for type:"skill". The Skill frontmatter description — what Claude reads to decide whether to load this skill. 40-280 chars. Phrase it as a trigger condition (when this applies), not a summary of what happened. Rejected (nothing stored) if out of range — not truncated for you.' }, useFor: { type: 'string', description: 'ONLY for type:"skill". Non-empty, max 400 chars: concrete situations where this skill SHOULD be used.' }, doNotUseFor: { type: 'string', description: 'ONLY for type:"skill". Non-empty, max 400 chars: situations where this skill should NOT be used (the boundary that keeps it from firing on the wrong task).' }, tags: { type: 'array', items: { type: 'string' }, description: '3-8 CANONICAL English concept tags, lowercase, hyphenated (e.g. "error-handling", "token-efficiency", "cross-lingual"). These are the language-neutral retrieval anchor — choose the terms a future query (in any language) would map to.' }, confidence: { type: 'number', description: '0.0-1.0 (default 0.85)' }, windowId: { type: 'string', description: 'When the plugin offered a review block, pass its windowId to close (ack) that capture window as captured.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode)' }, scope: { type: 'string', enum: ['auto', 'project', 'user'], description: 'Where to store. "auto" (default) infers from type+tags (decision/code → project; reference/research/user-tag hints like workflow/preferences/agent-behavior → user). "user" routes to global __user__ DB and sanitizes user paths/emails/project name. Entries with detected secrets are rejected if scope=user.' } }, required: ['title', 'summary'] },
     },
     {
       name: 'capture_ack',
@@ -819,6 +819,18 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
       case 'capture_lesson': {
         try {
           const { title, summary, detail, type = 'lesson', tags = [], confidence = 0.85, scope = 'auto' } = args;
+          let skillFields = null;
+          if (type === 'skill') {
+            const brainConfig = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'brain-config.js'));
+            const { validateSkillFields } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'skill-capture.js'));
+            const check = validateSkillFields(args, brainConfig.getSkillCapture());
+            if (!check.ok) return { isError: true, content: [{ type: 'text', text: check.message }] };
+            // Fase 1 (schema + validação mecânica): os campos validados vão junto
+            // em content.skill (merge E admit, abaixo) para as fases seguintes
+            // (overlap + escrita direta do SKILL.md) consumirem — nada é perdido,
+            // mas o fluxo de armazenamento continua o mesmo dos outros 4 tipos.
+            skillFields = { description: check.description, useFor: check.useFor, doNotUseFor: check.doNotUseFor };
+          }
           const currentProject = resolveProject(args);
           const effectiveScope = (scope === 'project' || scope === 'user') ? scope : inferDefaultScope(type, tags);
           let safeTitle = title, safeSummary = summary, safeDetail = detail;
@@ -841,7 +853,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           if (vector) {
             const hits = await kbStore.search(vector, { topK: 1, minScore: DEDUP, rerank: false });
             if (hits.length > 0) {
-              const merged = await kbStore.merge(hits[0].id, { summary: safeSummary, content: { detail: safeDetail || safeSummary }, confidence });
+              const merged = await kbStore.merge(hits[0].id, { summary: safeSummary, content: { detail: safeDetail || safeSummary, ...(skillFields ? { skill: skillFields } : {}) }, confidence });
               if (merged) {
                 await recordLessonMetric(storageProject, { type, decision: 'merge', scope: effectiveScope, recurrence: merged.recurrence });
                 recordCaptureAck(args.windowId, 'captured');
@@ -854,7 +866,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
               // path so the lesson is actually stored before we ack.
             }
           }
-          const entry = { type, project: storageProject, scope: effectiveScope, session_id: '', title: String(safeTitle).slice(0, 80), summary: String(safeSummary).slice(0, 500), content: { detail: safeDetail || safeSummary, files: [] }, tags: [...new Set((Array.isArray(tags) ? tags : []).map(t => String(t).toLowerCase().trim().replace(/\s+/g, '-')).filter(Boolean))].slice(0, 8), confidence };
+          const entry = { type, project: storageProject, scope: effectiveScope, session_id: '', title: String(safeTitle).slice(0, 80), summary: String(safeSummary).slice(0, 500), content: { detail: safeDetail || safeSummary, files: [], ...(skillFields ? { skill: skillFields } : {}) }, tags: [...new Set((Array.isArray(tags) ? tags : []).map(t => String(t).toLowerCase().trim().replace(/\s+/g, '-')).filter(Boolean))].slice(0, 8), confidence };
           await kbStore.save(entry, vector);
           await kbIndex.index(entry);
           await kbGraph.registerNode(entry);
