@@ -13,7 +13,7 @@
             "type": "command",
             "command": "node",
             "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/session-start-dispatcher.js"],
-            "timeout": 30
+            "timeout": 90
           }
         ]
       }

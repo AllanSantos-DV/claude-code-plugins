@@ -22,6 +22,7 @@ const { URL } = require('url');
 const { globalDir } = require('./data-dir.js');
 const { loadWithVersion: loadBrainConfigWithVersion, save: saveBrainConfig } = require('./brain-config.js');
 const { detectGpu, resolveLatestAsset } = require('./mcp-release-resolver.js');
+const { acquireFileLock, releaseFileLock, parseOwner, pidAlive, clearStaleReclaim } = require('./process-lock.js');
 const loadBrainConfig = () => loadBrainConfigWithVersion().config;
 
 const MIN_JAVA_MAJOR = 21;
@@ -49,14 +50,8 @@ let _state = null;
 // PID is an accepted, narrow residual risk — the alternative (never
 // expiring) is safer than the alternative (stealing an active lock).
 function _staleFromRaw(raw) {
-  const pid = parseInt(raw, 10);
-  if (!Number.isInteger(pid)) return true; // unreadable/corrupt content → can't belong to anyone
-  try {
-    process.kill(pid, 0);
-    return false; // holder is alive → never stale, no matter its age
-  } catch (err) {
-    return err.code === 'ESRCH'; // no such process → holder is gone; ambiguous errors (e.g. EPERM) → be conservative, not stale
-  }
+  const owner = parseOwner(raw);
+  return !owner || !pidAlive(owner.pid);
 }
 
 function _isLockStale(lp) {
@@ -65,40 +60,18 @@ function _isLockStale(lp) {
   return _staleFromRaw(raw);
 }
 
+let _manualLockOwner = null;
+let _activeRun = null;
+
 function _acquireLock() {
-  const lp = lockFile();
-  const tryOpen = () => {
-    const fd = fs.openSync(lp, 'wx');
-    fs.writeSync(fd, String(process.pid));
-    fs.closeSync(fd);
-  };
-  try {
-    fs.mkdirSync(path.dirname(lp), { recursive: true });
-    tryOpen();
-    return true;
-  } catch (err) {
-    if (err.code !== 'EEXIST') return false;
-    let raw;
-    try { raw = fs.readFileSync(lp, 'utf8'); } catch (err2) { console.error(`[mcp-wizard] read lock (${lp}): ${err2.message}`); return false; }
-    if (!_staleFromRaw(raw)) return false;
-    // TOCTOU: without an OS advisory lock this window can't be fully closed,
-    // only narrowed. Re-read immediately before deleting and bail if the
-    // content changed since we judged it stale — another process may have
-    // already reclaimed or refreshed it.
-    try {
-      if (fs.readFileSync(lp, 'utf8') !== raw) return false;
-      fs.unlinkSync(lp);
-    } catch (err2) { console.error(`[mcp-wizard] reclaim stale lock (${lp}): ${err2.message}`); return false; }
-    try { tryOpen(); return true; } catch (err2) { console.error(`[mcp-wizard] acquire lock after reclaim (${lp}): ${err2.message}`); return false; }
-  }
+  const result = acquireFileLock(lockFile());
+  _manualLockOwner = result.acquired ? result.owner : null;
+  return result.acquired;
 }
 
 function _releaseLock() {
-  const lp = lockFile();
-  try {
-    if (fs.readFileSync(lp, 'utf8') !== String(process.pid)) return; // not (or no longer) our lock — never delete another owner's
-    fs.unlinkSync(lp);
-  } catch { /* already gone or unreadable — best-effort */ }
+  if (_manualLockOwner) releaseFileLock(lockFile(), _manualLockOwner);
+  _manualLockOwner = null;
 }
 
 function loadState() {
@@ -323,13 +296,16 @@ async function handshake(projectId) {
 
 async function start(projectId) {
   _state = loadState();
-  if (_state.status === 'running') return _state;
+  if (_state.status === 'running' || _activeRun) return _state;
 
-  if (!_acquireLock()) {
+  const acquired = acquireFileLock(lockFile());
+  if (!acquired.acquired) {
     _state = { step: 0, total: 5, status: 'failed', progress: 0, details: [], startedAt: new Date().toISOString(), finishedAt: new Date().toISOString(), error: 'Another wizard instance is running (lock file)', projectId: projectId || 'default' };
     saveState();
     return _state;
   }
+  const run = { owner: acquired.owner };
+  _activeRun = run;
 
   _state = { step: 0, total: 5, status: 'running', progress: 0, details: [], startedAt: new Date().toISOString(), finishedAt: null, error: null, projectId: projectId || 'default' };
   saveState();
@@ -411,7 +387,8 @@ async function start(projectId) {
       _state.finishedAt = new Date().toISOString();
       saveState();
     } finally {
-      _releaseLock();
+      releaseFileLock(lockFile(), run.owner);
+      if (_activeRun === run) _activeRun = null;
     }
   })();
 
@@ -430,10 +407,18 @@ function getState() { return loadState(); }
 // actual bug, not a fix).
 function reset() {
   const lp = lockFile();
+  if (_activeRun) {
+    return { ..._state, error: 'Cannot reset while the wizard is running' };
+  }
+  if (_manualLockOwner) {
+    releaseFileLock(lp, _manualLockOwner);
+    _manualLockOwner = null;
+  }
   try {
     const raw = fs.readFileSync(lp, 'utf8');
-    if (raw === String(process.pid) || _staleFromRaw(raw)) fs.unlinkSync(lp);
+    if (_staleFromRaw(raw)) fs.unlinkSync(lp);
   } catch { /* no lock file, or vanished mid-check — nothing to release */ }
+  clearStaleReclaim(lp);
   _state = { step: 0, total: 5, status: 'idle', progress: 0, details: [], startedAt: null, finishedAt: null, error: null };
   try { fs.unlinkSync(wizardStateFile()); } catch { /* best-effort */ }
   return _state;

@@ -87,7 +87,7 @@ com um processo compartilhado.
 | --- | --- | --- |
 | SessionStart | `model-router-ensure.js` | Garante o daemon do model-router na porta fixa e publica `ANTHROPIC_BASE_URL`/shim (roteamento de custo opcional) — spawn próprio, fora do dispatcher |
 | **SessionStart** | **`session-start-dispatcher.js`** | **Entry único** — roda in-process os 12 detectores abaixo (`brain-daemon-ensure` + os 11 seguintes), concorrente com timeout próprio por detector (mirror dos timeouts antigos), funde os textos de advisory num só `additionalContext` |
-| SessionStart (via dispatcher) | `brain-daemon-ensure.js` | Garante que o daemon único do `brain-server` está escutando na porta fixa antes do cliente MCP conectar |
+| SessionStart (via dispatcher) | `brain-daemon-ensure.js` | Garante o daemon único e, no backend `mcp-memory` HTTP, verifica update no máximo 1x/24h; aplica/reinicia/valida versão automaticamente sem criar outro hook |
 | SessionStart (via dispatcher) | `memory-rotate.js` | Rotaciona MEMORY.md quando >150 linhas (side-effect only) |
 | SessionStart (via dispatcher) | `session-whitelist.js` | Detecta ecossistema do projeto, popula whitelist (side-effect only) |
 | SessionStart (via dispatcher) | `brain-health.js` | Liveness probe (static + active backend.init/count): se MCP estiver caído, injeta advisory acionável; senão, silencioso |
@@ -191,6 +191,18 @@ opt-in e desligada por padrão. O ajuste é gravado só para você em
 `DATA_DIR/brain/user-config.json` (o config publicado continua `local`) e
 sobrevive ao auto-update. O modo **stdio** (o plugin sobe o `.jar`, requer
 Java 21+) fica disponível como opção avançada.
+
+No modo HTTP, o `SessionStart` também consulta as tools `check_update` e `update`
+anunciadas pelo próprio servidor, no máximo uma vez a cada 24 horas. Quando há
+release nova, a operação é chamada **uma única vez** (sem retry automático), o
+Boss acompanha o restart pelo `daemon.json` e só registra sucesso quando
+`/health.version` corresponde exatamente à versão esperada. SessionStarts
+concorrentes são serializados por lock. Falha gera advisory, mas não bloqueia o
+backend. O fluxo permanece dentro de `session-start-dispatcher.js`; nenhum hook
+ou processo updater adicional é criado. No Windows, se a tool não conseguir
+substituir o JAR em uso, o Boss valida o PID/comando Java, encerra o daemon,
+promove o JAR já baixado e verificado e relança a versão nova; o JAR anterior é
+mantido para rollback.
 
 **Migrar o KB local que você já tem (botão "Migrar agora")**: trocar o backend
 para `mcp-memory` **não leva junto** o que já estava no SQLite local — sem

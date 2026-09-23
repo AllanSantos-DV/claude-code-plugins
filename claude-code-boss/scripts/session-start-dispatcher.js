@@ -10,7 +10,9 @@
  * project-snapshot.js, curation-session.js, doctor-advisory.js,
  * review-checklist-advisory.js, tuning-advisory.js,
  * project-identity-advisory.js, graph-warm.js, policy-inject.js) into ONE
- * in-process pass — same pattern as the other dispatchers here.
+ * in-process pass — same pattern as the other dispatchers here. The mcp-memory
+ * auto-update runs inside brain-daemon-ensure after its daemon check; it does
+ * not add another hook or detector process.
  * `policy-inject.js` ALSO stays wired standalone on `SubagentStart` (a
  * separate matcher with a single hook, not consolidated) — its `run(event)`
  * is shared, not duplicated logic.
@@ -18,10 +20,10 @@
  * CONCURRENT with per-detector timeouts, exactly like
  * `user-prompt-submit-dispatcher.js` — see that file's header for the full
  * rationale (a plain sequential loop turns the old parallel processes'
- * `max()` latency into a `sum()`, and `brain-daemon-ensure` alone can
- * legitimately take several seconds). Ceilings mirror each detector's OLD
- * standalone `hooks.json` timeout; `brain-daemon-ensure` gets 25000 (not the
- * dispatcher's own 30000 external timeout) for the same margin reason.
+ * `max()` latency into a `sum()`). Ceilings mirror the old standalone hooks,
+ * except brain-daemon-ensure gets 85000 because its once-per-24h mcp-memory
+ * update may download and restart the Java daemon. The outer hook keeps a 5s
+ * margin.
  *
  * Two detector shapes coexist here (unlike the other dispatchers, which are
  * uniform):
@@ -61,7 +63,7 @@ const SEP = '\n\n';
 
 // Ceilings mirror each detector's OLD standalone `hooks.json` timeout (ms).
 const DETECTORS = [
-  { name: 'brain-daemon-ensure', mod: brainDaemonEnsure, timeoutMs: 25000 },
+  { name: 'brain-daemon-ensure', mod: brainDaemonEnsure, timeoutMs: 85000 },
   { name: 'memory-rotate', mod: memoryRotate, timeoutMs: 10000 },
   { name: 'session-whitelist', mod: sessionWhitelist, timeoutMs: 10000 },
   { name: 'brain-health', mod: brainHealth, timeoutMs: 5000 },

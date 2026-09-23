@@ -12,7 +12,13 @@
       "javaArgs": ["-Xmx512m"],
       "downloadUrl": "",
       "expectedSha256": "",
-      "timeout": 60000
+      "timeout": 60000,
+      "autoUpdate": {
+        "enabled": true,
+        "intervalMs": 86400000,
+        "updateTimeoutMs": 30000,
+        "restartTimeoutMs": 25000
+      }
     },
     "ingestion": {
       "enabled": false,

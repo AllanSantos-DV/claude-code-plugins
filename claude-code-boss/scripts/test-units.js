@@ -899,6 +899,24 @@ test('mcp-client http: SESSION_EXPIRED (400 -32600) triggers reconnect + single 
   }
 });
 
+test('mcp-client health: HTTP 200 continua vivo mesmo com body não-JSON', async () => {
+  const McpClient = require('./mcp-client.js');
+  const server = http.createServer((req, res) => {
+    res.writeHead(200, { 'content-type': 'text/plain' });
+    res.end('alive');
+  });
+  const port = await _listen0(server);
+  try {
+    const c = new McpClient({ transport: 'http', serverUrl: `http://127.0.0.1:${port}` });
+    const structured = await c.readHealth();
+    assertEq(structured.alive, true);
+    assert(structured.parseError, 'parse failure remains observable');
+    assertEq(await c._httpHealth(`http://127.0.0.1:${port}`), true);
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test('mcp-client: hasToolAvailable() reflects tools/list (fail-loud guard for compose_recall)', () => {
   const McpClient = require('./mcp-client.js');
   const c = new McpClient({ transport: 'http', serverUrl: 'http://127.0.0.1:1', projectId: 'P' });
@@ -912,6 +930,464 @@ test('mcp-client: hasToolAvailable() reflects tools/list (fail-loud guard for co
   assertEq(c.hasToolAvailable('nope'), false);
   assertEq(c.hasToolAvailable(''), false);
   assertEq(c.hasToolAvailable(), false);
+});
+
+test('mcp-client: callToolOnce nunca reconecta/reexecuta uma operação mutável', async () => {
+  const McpClient = require('./mcp-client.js');
+  const c = new McpClient({ transport: 'http', serverUrl: 'http://127.0.0.1:1' });
+  c._initialized = true;
+  let sends = 0, reconnects = 0;
+  c._sendRequest = async () => {
+    sends += 1;
+    const err = new Error('connection reset during update');
+    err.code = 'ECONNRESET';
+    throw err;
+  };
+  c._reconnect = async () => { reconnects += 1; };
+  let error = null;
+  try { await c.callToolOnce('update', { force: false }); } catch (err) { error = err; }
+  assert(error && error.code === 'ECONNRESET');
+  assertEq(sends, 1);
+  assertEq(reconnects, 0);
+});
+
+test('mcp-auto-update: parseia check_update textual e rejeita shape inválido', () => {
+  const updater = require('./lib/mcp-memory-auto-update.js');
+  assertEq(updater.parseCheckUpdate({
+    text: JSON.stringify({ currentVersion: '2.44.2', latestVersion: '2.44.3', updateAvailable: true }),
+  }), {
+    currentVersion: '2.44.2',
+    latestVersion: '2.44.3',
+    updateAvailable: true,
+    releaseNotes: '',
+    publishedAt: '',
+  });
+  let error = null;
+  try {
+    updater.parseCheckUpdate({
+      text: '{"currentVersion":"2.44.2","latestVersion":"2.44.3","updateAvailable":"yes"}',
+    });
+  } catch (err) { error = err; }
+  assert(error && /updateAvailable/.test(error.message));
+});
+
+test('mcp-auto-update: reconhece erro de JAR bloqueado como restart requerido', () => {
+  const updater = require('./lib/mcp-memory-auto-update.js');
+  assertEq(updater.parseUpdateResult({
+    text: JSON.stringify({ error: true, message: 'Failed to replace JAR: O arquivo já está sendo usado por outro processo' }),
+  }), {
+    ok: false,
+    restartRequired: true,
+    error: 'Failed to replace JAR: O arquivo já está sendo usado por outro processo',
+  });
+  assertEq(updater.parseUpdateResult({ text: '{"error":false,"status":"restarting"}' }).ok, true);
+});
+
+test('mcp-auto-update: TTL usa lastAttemptAt e limita check a uma vez por 24h', () => {
+  const updater = require('./lib/mcp-memory-auto-update.js');
+  const now = Date.now();
+  assertEq(updater.isCheckDue(null, now), true);
+  assertEq(updater.isCheckDue({ lastAttemptAt: now - updater.DEFAULT_TTL_MS + 1 }, now), false);
+  assertEq(updater.isCheckDue({ lastAttemptAt: now - updater.DEFAULT_TTL_MS }, now), true);
+});
+
+test('mcp-auto-update: fora de SessionStart/backend HTTP é no-op sem conectar', async () => {
+  const updater = require('./lib/mcp-memory-auto-update.js');
+  let clients = 0;
+  const clientFactory = () => { clients += 1; throw new Error('não deveria conectar'); };
+  const config = { backend: { type: 'mcp-memory', mcpMemory: { transport: 'http' } } };
+  assertEq((await updater.runAutoUpdate({ event: { hook_event_name: 'UserPromptSubmit' }, config, clientFactory })).status, 'skipped');
+  assertEq((await updater.runAutoUpdate({ event: { hook_event_name: 'SessionStart' }, config: { backend: { type: 'local' } }, clientFactory })).status, 'skipped');
+  assertEq((await updater.runAutoUpdate({ event: { hook_event_name: 'SessionStart' }, config: { backend: { type: 'mcp-memory', mcpMemory: { transport: 'stdio' } } }, clientFactory })).status, 'skipped');
+  assertEq((await updater.runAutoUpdate({
+    event: { hook_event_name: 'SessionStart' },
+    config: { backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', autoUpdate: { enabled: false } } } },
+    clientFactory,
+  })).status, 'skipped');
+  assertEq(clients, 0);
+});
+
+test('mcp-auto-update: update é chamado uma vez e sucesso exige health.version esperada', async () => {
+  const updater = require('./lib/mcp-memory-auto-update.js');
+  const calls = [];
+  let saved = null;
+  const client = {
+    async connect() {},
+    hasToolAvailable(name) { return name === 'check_update' || name === 'update'; },
+    async callTool(name) {
+      calls.push(name);
+      return { text: JSON.stringify({ currentVersion: '2.44.2', latestVersion: '2.44.3', updateAvailable: true }) };
+    },
+    async callToolOnce(name, args) {
+      calls.push(`${name}:${JSON.stringify(args)}`);
+      const err = new Error('expected restart disconnect');
+      err.code = 'ECONNRESET';
+      throw err;
+    },
+    close() {},
+  };
+  const result = await updater.runAutoUpdate({
+    event: { hook_event_name: 'SessionStart' },
+    config: { backend: { type: 'mcp-memory', mcpMemory: { transport: 'http' } } },
+    now: () => 100000,
+    readState: () => null,
+    writeState: (state) => { saved = state; },
+    acquireLock: () => ({ acquired: true, owner: { token: 'x' } }),
+    releaseLock: () => {},
+    clientFactory: () => client,
+    platform: 'win32',
+    restartDaemon: async () => {},
+    waitForExpectedVersion: async (version) => ({ ok: true, version }),
+  });
+  assertEq(result.status, 'updated');
+  assertEq(calls, ['check_update', 'update:{"force":false}']);
+  assertEq(saved.lastSuccessfulCheckAt, 100000);
+  assertEq(saved.latestVersion, '2.44.3');
+});
+
+test('mcp-auto-update: versão errada após restart gera advisory e não grava falso sucesso', async () => {
+  const updater = require('./lib/mcp-memory-auto-update.js');
+  let saved = null;
+  const client = {
+    async connect() {},
+    hasToolAvailable() { return true; },
+    async callTool() {
+      return { text: JSON.stringify({ currentVersion: '2.44.2', latestVersion: '2.44.3', updateAvailable: true }) };
+    },
+    async callToolOnce() {},
+    close() {},
+  };
+  const result = await updater.runAutoUpdate({
+    event: { hook_event_name: 'SessionStart' },
+    config: { backend: { type: 'mcp-memory', mcpMemory: { transport: 'http' } } },
+    now: () => 200000,
+    readState: () => null,
+    writeState: (state) => { saved = state; },
+    acquireLock: () => ({ acquired: true, owner: { token: 'x' } }),
+    releaseLock: () => {},
+    clientFactory: () => client,
+    waitForExpectedVersion: async () => ({ ok: false, version: '2.44.2' }),
+  });
+  assertEq(result.status, 'error');
+  assert(/2\.44\.3/.test(result.advisory));
+  assertEq(saved.lastSuccessfulCheckAt, undefined);
+  assertEq(saved.lastAttemptAt, 200000);
+  assert(saved.lastError, 'falha precisa ficar registrada explicitamente');
+});
+
+test('mcp-auto-update: erro Windows de JAR bloqueado relança daemon uma vez antes de validar versão', async () => {
+  const updater = require('./lib/mcp-memory-auto-update.js');
+  let restarts = 0;
+  const client = {
+    async connect() {},
+    hasToolAvailable() { return true; },
+    async callTool() {
+      return { text: JSON.stringify({ currentVersion: '2.44.2', latestVersion: '2.44.3', updateAvailable: true }) };
+    },
+    async callToolOnce() {
+      return { text: JSON.stringify({ error: true, message: 'Failed to replace JAR: O arquivo já está sendo usado por outro processo' }) };
+    },
+    close() {},
+  };
+  const result = await updater.runAutoUpdate({
+    event: { hook_event_name: 'SessionStart' },
+    config: { backend: { type: 'mcp-memory', mcpMemory: { transport: 'http' } } },
+    readState: () => null,
+    writeState: () => {},
+    acquireLock: () => ({ acquired: true, owner: { token: 'x' } }),
+    releaseLock: () => {},
+    clientFactory: () => client,
+    platform: 'win32',
+    restartDaemon: async () => { restarts += 1; },
+    waitForExpectedVersion: async () => ({ ok: true, version: '2.44.3' }),
+  });
+  assertEq(result.status, 'updated');
+  assertEq(restarts, 1);
+});
+
+test('mcp-auto-update: erro funcional comum da tool não reinicia nem mata daemon', async () => {
+  const updater = require('./lib/mcp-memory-auto-update.js');
+  let restarts = 0, healthChecks = 0;
+  const client = {
+    async connect() {},
+    hasToolAvailable() { return true; },
+    async callTool() {
+      return { text: JSON.stringify({ currentVersion: '2.44.2', latestVersion: '2.44.3', updateAvailable: true }) };
+    },
+    async callToolOnce() {
+      return { text: JSON.stringify({ error: true, message: 'rate limit' }) };
+    },
+    close() {},
+  };
+  const result = await updater.runAutoUpdate({
+    event: { hook_event_name: 'SessionStart' },
+    config: { backend: { type: 'mcp-memory', mcpMemory: { transport: 'http' } } },
+    readState: () => null,
+    writeState: () => {},
+    acquireLock: () => ({ acquired: true, owner: { token: 'x' } }),
+    releaseLock: () => {},
+    clientFactory: () => client,
+    platform: 'win32',
+    restartDaemon: async () => { restarts += 1; },
+    waitForExpectedVersion: async () => { healthChecks += 1; return { ok: false }; },
+  });
+  assertEq(result.status, 'error');
+  assertEq(restarts, 0);
+  assertEq(healthChecks, 0);
+  assert(/rate limit/.test(result.advisory));
+});
+
+test('mcp-daemon-restart: extrai JAR e relança somente processo Java validado na versão promovida', async () => {
+  const restart = require('./lib/mcp-daemon-restart.js');
+  assertEq(
+    restart.extractJarPath('"C:\\Program Files\\Java\\java.exe" -Xmx1g -jar "C:\\MCP Server\\mcp-memory-server-2.44.2.jar" --daemon'),
+    'C:\\MCP Server\\mcp-memory-server-2.44.2.jar',
+  );
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-update-restart-'));
+  let killed = null, spawned = null, unref = 0;
+  try {
+    fs.writeFileSync(path.join(dir, 'daemon.json'), JSON.stringify({ pid: 1234, port: 9, url: 'http://127.0.0.1:9' }));
+    const out = await restart.restartForBootUpdate({ runDir: dir }, {
+      platform: 'win32',
+      latestVersion: '2.44.3',
+      inspectProcess: () => ({
+        executable: 'C:\\Java\\java.exe',
+        jarPath: 'C:\\MCP\\mcp-memory-server-2.44.2.jar',
+        args: ['-Xmx1g', '-jar', 'C:\\MCP\\mcp-memory-server-2.44.2.jar', '--workspace', 'C:\\Data', '--daemon'],
+        jarIndex: 1,
+      }),
+      kill: pid => { killed = pid; },
+      pidAlive: () => false,
+      prepareUpdate: () => 'C:\\MCP\\mcp-memory-server-2.44.3.jar',
+      spawn: (exe, args, options) => {
+        spawned = { exe, args, options };
+        return { unref: () => { unref += 1; } };
+      },
+    });
+    assertEq(out.pid, 1234);
+    assertEq(killed, 1234);
+    assertEq(spawned.exe, 'C:\\Java\\java.exe');
+    assertEq(spawned.args, ['-Xmx1g', '-jar', 'C:\\MCP\\mcp-memory-server-2.44.3.jar', '--workspace', 'C:\\Data', '--daemon']);
+    assertEq(spawned.options.detached, true);
+    assertEq(unref, 1);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('mcp-daemon-restart: promove somente JAR com SHA/version da release para o nome publicado', async () => {
+  const restart = require('./lib/mcp-daemon-restart.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-update-promote-'));
+  try {
+    const current = path.join(dir, 'mcp-memory-server-2.44.2.jar');
+    const temp = path.join(dir, 'mcp-memory-server-update.jar.tmp');
+    fs.writeFileSync(current, Buffer.concat([Buffer.from('PK'), Buffer.alloc(1024 * 1024)]));
+    const tempBytes = Buffer.concat([Buffer.from('PK'), Buffer.alloc(1024 * 1024, 1)]);
+    fs.writeFileSync(temp, tempBytes);
+    const sha = require('crypto').createHash('sha256').update(tempBytes).digest('hex');
+    const target = await restart.prepareVerifiedUpdate(current, '2.44.3', {
+      resolveLatestAsset: async () => ({
+        version: 'v2.44.3',
+        name: 'mcp-memory-server-2.44.3.jar',
+        sha256: sha,
+      }),
+    });
+    assertEq(target, path.join(dir, 'mcp-memory-server-2.44.3.jar'));
+    assert(fs.existsSync(target));
+    assert(fs.existsSync(current), 'JAR anterior permanece para rollback');
+    assertEq(fs.existsSync(temp), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('mcp-daemon-restart: falha de preparação ocorre antes de encerrar o daemon', async () => {
+  const restart = require('./lib/mcp-daemon-restart.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-update-prekill-'));
+  let killed = false;
+  try {
+    fs.writeFileSync(path.join(dir, 'daemon.json'), JSON.stringify({ pid: 1234, port: 9, url: 'http://127.0.0.1:9' }));
+    let error = null;
+    try {
+      await restart.restartForBootUpdate({ runDir: dir }, {
+        platform: 'win32',
+        latestVersion: '2.44.3',
+        inspectProcess: () => ({
+          executable: 'C:\\Java\\java.exe',
+          jarPath: 'C:\\MCP\\mcp-memory-server.jar',
+          args: ['-jar', 'C:\\MCP\\mcp-memory-server.jar', '--daemon'],
+          jarIndex: 0,
+        }),
+        prepareUpdate: async () => { throw new Error('sha mismatch'); },
+        kill: () => { killed = true; },
+      });
+    } catch (err) { error = err; }
+    assert(error && /sha mismatch/.test(error.message));
+    assertEq(killed, false, 'daemon saudável não pode morrer antes da validação do update');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('mcp-auto-update: health 503 ou versão com prefixo v não geram falso resultado', async () => {
+  const updater = require('./lib/mcp-memory-auto-update.js');
+  let now = 0;
+  const healths = [
+    { alive: true, statusCode: 503, health: { version: '2.44.3' } },
+    { alive: true, statusCode: 200, health: { version: '2.44.3' } },
+  ];
+  const result = await updater.waitForExpectedVersion({
+    readHealth: async () => healths.shift(),
+  }, 'v2.44.3', {
+    now: () => now,
+    sleep: async ms => { now += ms; },
+    timeoutMs: 2000,
+    pollMs: 500,
+  });
+  assertEq(result.ok, true);
+  assertEq(result.version, '2.44.3');
+});
+
+test('process-lock: ownership impede concorrência e release alheio', () => {
+  const lock = require('./lib/process-lock.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-update-lock-'));
+  const file = path.join(dir, 'update.lock');
+  try {
+    const first = lock.acquireFileLock(file);
+    assertEq(first.acquired, true);
+    assertEq(lock.acquireFileLock(file).acquired, false);
+    assertEq(lock.releaseFileLock(file, { pid: process.pid, token: 'wrong' }), false);
+    assert(fs.existsSync(file), 'release alheio não pode remover o lock');
+    assertEq(lock.releaseFileLock(file, first.owner), true);
+    assertEq(fs.existsSync(file), false);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('process-lock: reclaim sidecar serializa a recuperação de lock stale', () => {
+  const lock = require('./lib/process-lock.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-update-reclaim-'));
+  const file = path.join(dir, 'update.lock');
+  try {
+    fs.writeFileSync(file, JSON.stringify({ pid: 99999999, token: 'dead', createdAt: 1 }));
+    fs.writeFileSync(`${file}.reclaim`, JSON.stringify({ pid: process.pid, token: 'winner', createdAt: Date.now() }));
+    const blocked = lock.acquireFileLock(file, { pidAlive: pid => pid === process.pid });
+    assertEq(blocked.acquired, false);
+    assertEq(blocked.reason, 'reclaiming');
+    assert(fs.existsSync(file), 'reclaimer concorrente não pode remover o lock principal');
+
+    fs.unlinkSync(`${file}.reclaim`);
+    const reclaimed = lock.acquireFileLock(file, { pidAlive: () => false });
+    assertEq(reclaimed.acquired, true);
+    assertEq(reclaimed.reclaimed, true);
+    assertEq(lock.releaseFileLock(file, reclaimed.owner), true);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('mcp-auto-update: erro de I/O no lock é advisory, não contenção silenciosa', async () => {
+  const updater = require('./lib/mcp-memory-auto-update.js');
+  const result = await updater.runAutoUpdate({
+    event: { hook_event_name: 'SessionStart' },
+    config: { backend: { type: 'mcp-memory', mcpMemory: { transport: 'http' } } },
+    readState: () => null,
+    acquireLock: () => ({ acquired: false, reason: 'lock create failed: access denied' }),
+  });
+  assertEq(result.status, 'error');
+  assert(/access denied/.test(result.advisory));
+});
+
+test('mcp-auto-update E2E: registry troca porta/versão e SessionStarts concorrentes chamam update uma vez', async () => {
+  const updater = require('./lib/mcp-memory-auto-update.js');
+  const locks = require('./lib/process-lock.js');
+  const McpClient = require('./mcp-client.js');
+  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-update-run-'));
+  const statePath = path.join(runDir, 'state.json');
+  const lockPath = path.join(runDir, 'update.lock');
+  const next = await startFakeDaemon({ version: '2.44.3' });
+  const current = await startFakeDaemon({
+    version: '2.44.2',
+    tools: ['check_update', 'update'],
+    toolResult: (params) => {
+      if (params.name === 'check_update') {
+        return { content: [{ type: 'text', text: JSON.stringify({
+          currentVersion: '2.44.2',
+          latestVersion: '2.44.3',
+          updateAvailable: true,
+        }) }] };
+      }
+      if (params.name === 'update') {
+        fs.writeFileSync(path.join(runDir, 'daemon.json'), JSON.stringify({ url: next.url, port: next.port }));
+        return { content: [{ type: 'text', text: '{"status":"restarting"}' }] };
+      }
+      return { isError: true, content: [{ type: 'text', text: 'unexpected tool' }] };
+    },
+  });
+  fs.writeFileSync(path.join(runDir, 'daemon.json'), JSON.stringify({ url: current.url, port: current.port }));
+  const config = {
+    backend: {
+      type: 'mcp-memory',
+      mcpMemory: { transport: 'http', runDir, timeout: 4000 },
+    },
+  };
+  const deps = {
+    event: { hook_event_name: 'SessionStart' },
+    config,
+    readState: () => {
+      try { return JSON.parse(fs.readFileSync(statePath, 'utf8')); } catch (err) { if (err.code === 'ENOENT') return null; throw err; }
+    },
+    writeState: state => fs.writeFileSync(statePath, JSON.stringify(state)),
+    acquireLock: () => locks.acquireFileLock(lockPath),
+    releaseLock: owner => locks.releaseFileLock(lockPath, owner),
+    clientFactory: () => new McpClient({ transport: 'http', runDir, projectId: 'update-smoke', timeout: 4000 }),
+  };
+  try {
+    const [a, b] = await Promise.all([updater.runAutoUpdate(deps), updater.runAutoUpdate(deps)]);
+    assert([a.status, b.status].includes('updated'));
+    assert([a.status, b.status].includes('locked'));
+    assertEq(current.seen.callCount, 2, 'uma check_update + uma update; nunca update duplicado');
+    const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
+    assertEq(state.currentVersion, '2.44.3');
+    assertEq(state.lastError, null);
+  } finally {
+    await current.close();
+    await next.close();
+    fs.rmSync(runDir, { recursive: true, force: true });
+  }
+});
+
+test('brain-daemon-ensure: auto-update roda sequencialmente só no SessionStart', async () => {
+  const ensure = require('./brain-daemon-ensure.js');
+  const order = [];
+  const deps = {
+    root: ROOT,
+    data: process.env.CLAUDE_PLUGIN_DATA,
+    runSetupInBackground: () => false,
+    ensureDaemon: async () => { order.push('ensure'); return { status: 'current' }; },
+    loadConfig: () => ({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http' } } }),
+    runAutoUpdate: async () => { order.push('update'); return { status: 'current' }; },
+  };
+  assertEq(await ensure.run({ hook_event_name: 'SessionStart' }, deps), null);
+  assertEq(order, ['ensure', 'update']);
+
+  order.length = 0;
+  assertEq(await ensure.run({ hook_event_name: 'UserPromptSubmit' }, deps), null);
+  assertEq(order, ['ensure']);
+});
+
+test('brain-daemon-ensure: falha de auto-update vira advisory sem desfazer daemon saudável', async () => {
+  const ensure = require('./brain-daemon-ensure.js');
+  const text = await ensure.run({ hook_event_name: 'SessionStart' }, {
+    root: ROOT,
+    data: process.env.CLAUDE_PLUGIN_DATA,
+    runSetupInBackground: () => false,
+    ensureDaemon: async () => ({ status: 'current' }),
+    loadConfig: () => ({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http' } } }),
+    runAutoUpdate: async () => ({ status: 'error', advisory: '[BRAIN] update falhou' }),
+  });
+  assertEq(text, '[BRAIN] update falhou');
 });
 
 test('brain-backend: needsReinit() re-scopes on explicit project change (cross-project leak guard)', () => {
@@ -10258,6 +10734,11 @@ test('session-start-dispatcher.DETECTORS: 12 detectors, correct order + shape (m
   ]);
   assert(d.DETECTORS.every(x => typeof x.mod.run === 'function'), 'every detector exposes run()');
   assert(!names.includes('model-router-ensure'), 'model-router-ensure must stay OUT (process.exit() in its main flow)');
+  assertEq(d.DETECTORS.find(x => x.name === 'brain-daemon-ensure').timeoutMs, 85000);
+  const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8'));
+  const sessionCommands = hooks.hooks.SessionStart.flatMap(group => group.hooks || []).map(h => (h.args || []).join(' '));
+  assertEq(sessionCommands.filter(cmd => /mcp-memory-auto-update/.test(cmd)).length, 0,
+    'auto-update deve permanecer dentro do dispatcher, nunca como hook separado');
 });
 
 test('session-start-dispatcher.dispatch: side-effect-only detectors (non-string return) are excluded from the merged text', async () => {

@@ -464,7 +464,7 @@
           <li>Embedding padrão <b>multilíngue</b> (384 dim, 50 idiomas): prompt em PT recupera lição em EN</li>
           <li>Providers alternativos: <b>Ollama</b> local ou <b>Voyage AI</b>, trocáveis na config</li>
           <li>Escopo estável por projeto via <code>.claude-boss-project</code> ou <code>CCB_PROJECT_ID</code></li>
-          <li>Backend opcional <b>MCP Memory</b> (servidor externo), com wizard e migração no dashboard</li>
+          <li>Backend opcional <b>MCP Memory HTTP</b>, com wizard, migração e auto-update seguro no início da sessão</li>
         </ul>
       </article>
 
@@ -553,8 +553,8 @@
           <p>Cada resultado é marcado como <code>ok</code>, <code>timeout</code> ou <code>error</code>. Misturar os dois mascararia uma falha real como se fosse lentidão.</p>
         </li>
         <li>
-          <b>Um daemon, não um processo por sessão</b>
-          <p>O Brain MCP é um daemon HTTP único em porta fixa, compartilhado por todas as sessões da máquina, e o <code>.mcp.json</code> aponta direto para a URL, então o Claude Code não spawna servidor nenhum por sessão.</p>
+          <b>Auto-update sem interromper seu trabalho</b>
+          <p>No <code>SessionStart</code>, o dispatcher existente consulta atualizações no máximo uma vez a cada 24 horas, sem hook novo. Havendo versão, executa <code>check_update</code> → <code>update</code> uma única vez, sem retry e sob lock cross-process, e só conclui quando o restart/reconnect confirma a nova versão em <code>/health.version</code>. Se algo falha, avisa sem bloquear; no fallback do Windows, valida que o PID é Java, promove apenas o JAR baixado e verificado e preserva o anterior para rollback.</p>
         </li>
         <li>
           <b>Nada de regressão silenciosa</b>
