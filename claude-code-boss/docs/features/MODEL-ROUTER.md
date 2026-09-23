@@ -31,7 +31,9 @@ Nada acima?                                        -> Router OFF (default)
 
 | Campo | O que colocar |
 |-------|---------------|
-| Base URL | So o host. Path sempre `/v1/messages`, formato Anthropic nativo |
+| Protocolo | `anthropic` (Messages nativo) ou `openai` (Chat Completions com tradução) |
+| Base URL | Fallback legado para derivar paths padrão |
+| URLs por operação | URLs completas de `models`, `generate`, `countTokens` e `classify`; quando preenchidas vencem a Base URL |
 | Headers | Um por linha (`Nome: valor`). Ex.: `Authorization: Bearer sk-...` |
 | Quando usar | `on-limit` = so no 429 (Claude primeiro); `always` = endpoint atende tudo |
 

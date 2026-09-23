@@ -28,13 +28,13 @@ function detectGpu() {
 }
 
 async function fetchJson(url) {
-  const r = await fetch(url, { headers: { 'User-Agent': 'claude-code-boss', Accept: 'application/vnd.github+json' } });
+  const r = await fetch(url, { signal: AbortSignal.timeout(10000), headers: { 'User-Agent': 'claude-code-boss', Accept: 'application/vnd.github+json' } });
   if (!r.ok) throw new Error(`GitHub API ${url} → HTTP ${r.status}`);
   return r.json();
 }
 
 async function fetchText(url) {
-  const r = await fetch(url);
+  const r = await fetch(url, { signal: AbortSignal.timeout(10000) });
   if (!r.ok) throw new Error(`fetch ${url} → HTTP ${r.status}`);
   return r.text();
 }

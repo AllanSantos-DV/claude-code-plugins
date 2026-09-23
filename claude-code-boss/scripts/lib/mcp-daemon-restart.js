@@ -41,7 +41,7 @@ function inspectWindowsProcess(pid, deps = {}) {
   const argv = splitWindowsCommandLine(info.CommandLine);
   if (argv.length && path.resolve(argv[0]).toLowerCase() === path.resolve(executable).toLowerCase()) argv.shift();
   const jarIndex = argv.findIndex(arg => String(arg).toLowerCase() === '-jar');
-  const jarPath = jarIndex >= 0 ? String(argv[jarIndex + 1] || '') : '';
+  const jarPath = extractJarPath(info.CommandLine);
   if (!/^mcp-memory-server(?:-.+)?\.jar$/i.test(path.basename(jarPath))) {
     throw new Error(`PID ${pid} não executa um JAR do mcp-memory-server`);
   }
@@ -128,7 +128,17 @@ function spawnDetached(executable, args, deps = {}) {
     windowsHide: true,
   });
   if (!child || typeof child.unref !== 'function') throw new Error('falha ao relançar daemon Java');
-  child.unref();
+  if (typeof child.once !== 'function') {
+    child.unref();
+    return Promise.resolve(child.pid || null);
+  }
+  return new Promise((resolve, reject) => {
+    child.once('error', reject);
+    child.once('spawn', () => {
+      child.unref();
+      resolve(child.pid || null);
+    });
+  });
 }
 
 async function restartForBootUpdate(mcpConfig = {}, deps = {}) {
@@ -154,15 +164,34 @@ async function restartForBootUpdate(mcpConfig = {}, deps = {}) {
   kill(pid);
   if (!await waitPidGone(pid, deps)) throw new Error(`daemon PID ${pid} não encerrou`);
   try {
-    spawnDetached(launch.executable, args, deps);
+    const newPid = await spawnDetached(launch.executable, args, deps);
+    return { pid, newPid, executable: launch.executable, jarPath: launchJar, previousJarPath: launch.jarPath, previousArgs: launch.args };
   } catch (err) {
-    try { spawnDetached(launch.executable, launch.args, deps); }
+    try { await spawnDetached(launch.executable, launch.args, deps); }
     catch (rollbackErr) {
       throw new Error(`relaunch da versão nova falhou (${err.message}); rollback também falhou (${rollbackErr.message})`);
     }
     throw new Error(`relaunch da versão nova falhou; versão anterior relançada: ${err.message}`);
   }
-  return { pid, executable: launch.executable, jarPath: launchJar, previousJarPath: launch.jarPath };
+}
+
+async function rollbackAfterFailedUpdate(restartInfo, deps = {}) {
+  if (!restartInfo || !restartInfo.executable || !Array.isArray(restartInfo.previousArgs)) {
+    throw new Error('dados insuficientes para rollback do daemon');
+  }
+  const alive = deps.pidAlive || (pid => {
+    try { process.kill(pid, 0); return true; }
+    catch (err) { return !!(err && err.code === 'EPERM'); }
+  });
+  const kill = deps.kill || (pid => process.kill(pid, 'SIGTERM'));
+  if (Number.isInteger(restartInfo.newPid) && alive(restartInfo.newPid)) {
+    kill(restartInfo.newPid);
+    if (!await waitPidGone(restartInfo.newPid, deps)) {
+      throw new Error(`daemon novo PID ${restartInfo.newPid} não encerrou para rollback`);
+    }
+  }
+  const rollbackPid = await spawnDetached(restartInfo.executable, restartInfo.previousArgs, deps);
+  return { rollbackPid, versionJar: restartInfo.previousJarPath };
 }
 
 module.exports = {
@@ -174,5 +203,7 @@ module.exports = {
   assertJar,
   sha256File,
   prepareVerifiedUpdate,
+  spawnDetached,
   restartForBootUpdate,
+  rollbackAfterFailedUpdate,
 };

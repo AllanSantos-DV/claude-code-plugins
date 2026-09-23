@@ -21,7 +21,7 @@
  * `user-prompt-submit-dispatcher.js` — see that file's header for the full
  * rationale (a plain sequential loop turns the old parallel processes'
  * `max()` latency into a `sum()`). Ceilings mirror the old standalone hooks,
- * except brain-daemon-ensure gets 85000 because its once-per-24h mcp-memory
+ * except brain-daemon-ensure gets 120000 because its once-per-24h mcp-memory
  * update may download and restart the Java daemon. The outer hook keeps a 5s
  * margin.
  *
@@ -63,7 +63,7 @@ const SEP = '\n\n';
 
 // Ceilings mirror each detector's OLD standalone `hooks.json` timeout (ms).
 const DETECTORS = [
-  { name: 'brain-daemon-ensure', mod: brainDaemonEnsure, timeoutMs: 85000 },
+  { name: 'brain-daemon-ensure', mod: brainDaemonEnsure, timeoutMs: 120000 },
   { name: 'memory-rotate', mod: memoryRotate, timeoutMs: 10000 },
   { name: 'session-whitelist', mod: sessionWhitelist, timeoutMs: 10000 },
   { name: 'brain-health', mod: brainHealth, timeoutMs: 5000 },

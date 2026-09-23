@@ -6,7 +6,7 @@ const McpClient = require('../mcp-client.js');
 const { globalDir, dataDir } = require('./data-dir.js');
 const { writeJsonAtomic } = require('./atomic-write.js');
 const { acquireFileLock, releaseFileLock } = require('./process-lock.js');
-const { restartForBootUpdate } = require('./mcp-daemon-restart.js');
+const { restartForBootUpdate, rollbackAfterFailedUpdate } = require('./mcp-daemon-restart.js');
 
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_RESTART_TIMEOUT_MS = 25000;
@@ -86,6 +86,30 @@ function isCheckDue(state, now = Date.now(), ttlMs = DEFAULT_TTL_MS) {
   return !Number.isFinite(last) || last <= 0 || (now - last) >= ttlMs;
 }
 
+function isLoopbackUrl(raw) {
+  if (!raw) return true;
+  try {
+    const host = new URL(raw).hostname.toLowerCase();
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]';
+  } catch (err) {
+    void err;
+    return false;
+  }
+}
+
+function resolveTargetUrl(mcpConfig) {
+  const explicit = typeof mcpConfig.serverUrl === 'string' ? mcpConfig.serverUrl.trim() : '';
+  if (explicit) return explicit;
+  const runDir = mcpConfig.runDir || process.env.MCP_RUN_DIR || path.join(require('os').homedir(), '.mcp-memory', 'run');
+  try {
+    const registry = JSON.parse(fs.readFileSync(path.join(runDir, 'daemon.json'), 'utf8'));
+    return typeof registry.url === 'string' ? registry.url.trim() : '';
+  } catch (err) {
+    if (err && err.code !== 'ENOENT') console.error(`[mcp-memory-auto-update] registry unreadable: ${err.message}`);
+    return '';
+  }
+}
+
 function defaultClientFactory(mcpConfig) {
   const activeDataDir = dataDir();
   return new McpClient({
@@ -113,7 +137,7 @@ async function waitForExpectedVersion(client, expectedVersion, opts = {}) {
   const deadline = now() + timeoutMs;
   let last = null;
   while (now() < deadline) {
-    last = await client.readHealth({ rediscover: true });
+    last = await client.readHealth({ rediscover: opts.rediscover !== false });
     const version = last && last.health && last.health.version;
     const normalizedActual = String(version || '').replace(/^v/, '');
     const normalizedExpected = String(expectedVersion || '').replace(/^v/, '');
@@ -151,6 +175,10 @@ async function runAutoUpdate(opts = {}) {
       || autoUpdate.enabled === false) {
     return { status: 'skipped' };
   }
+  const explicitServerUrl = typeof mcpConfig.serverUrl === 'string' ? mcpConfig.serverUrl.trim() : '';
+  const targetUrl = resolveTargetUrl(mcpConfig);
+  const remoteTarget = !!targetUrl && !isLoopbackUrl(targetUrl);
+  if (remoteTarget && autoUpdate.allowRemote !== true) return { status: 'skipped-remote' };
 
   const now = typeof opts.now === 'function' ? opts.now : Date.now;
   const readState = opts.readState || (() => readStateFile());
@@ -159,6 +187,7 @@ async function runAutoUpdate(opts = {}) {
   const releaseLock = opts.releaseLock || ((owner) => releaseFileLock(lockFile(), owner));
   const clientFactory = opts.clientFactory || defaultClientFactory;
   const restartDaemon = opts.restartDaemon || ((cfg, restartOpts) => restartForBootUpdate(cfg, restartOpts));
+  const rollbackDaemon = opts.rollbackDaemon || ((restartInfo) => rollbackAfterFailedUpdate(restartInfo));
   const platform = opts.platform || process.platform;
   const restartTimeoutMs = Number.isFinite(autoUpdate.restartTimeoutMs) && autoUpdate.restartTimeoutMs > 0
     ? Math.min(autoUpdate.restartTimeoutMs, DEFAULT_RESTART_TIMEOUT_MS)
@@ -167,7 +196,10 @@ async function runAutoUpdate(opts = {}) {
     ? Math.min(autoUpdate.updateTimeoutMs, DEFAULT_UPDATE_TIMEOUT_MS)
     : DEFAULT_UPDATE_TIMEOUT_MS;
   const waitForVersion = opts.waitForExpectedVersion
-    || ((version, client) => waitForExpectedVersion(client, version, { timeoutMs: restartTimeoutMs }));
+    || ((version, client, waitOpts = {}) => waitForExpectedVersion(client, version, {
+      timeoutMs: waitOpts.timeoutMs || restartTimeoutMs,
+      rediscover: !explicitServerUrl,
+    }));
   const ttlMs = Number.isFinite(opts.ttlMs)
     ? opts.ttlMs
     : (Number.isFinite(autoUpdate.intervalMs) && autoUpdate.intervalMs > 0 ? autoUpdate.intervalMs : DEFAULT_TTL_MS);
@@ -195,6 +227,11 @@ async function runAutoUpdate(opts = {}) {
     if (!isCheckDue(latestState, now(), ttlMs)) return { status: 'not-due' };
     client = clientFactory(mcpConfig);
     await client.connect();
+    const validateIdentity = client instanceof McpClient || typeof client.getServerInfo === 'function';
+    const serverInfo = typeof client.getServerInfo === 'function' ? client.getServerInfo() : null;
+    if (validateIdentity && (!serverInfo || serverInfo.name !== 'mcp-memory-server')) {
+      throw new Error(`servidor MCP inesperado: ${serverInfo && serverInfo.name || '(sem nome)'}`);
+    }
     if (!client.hasToolAvailable('check_update')) {
       throw new Error('o daemon não anuncia a tool check_update');
     }
@@ -217,6 +254,7 @@ async function runAutoUpdate(opts = {}) {
     let updateCallError = null;
     let restartRequired = false;
     let fatalUpdateError = null;
+    let restartInfo = null;
     updateAttempted = true;
     try {
       const updateResult = await client.callToolOnce('update', { force: false }, { timeoutMs: updateTimeoutMs });
@@ -232,20 +270,31 @@ async function runAutoUpdate(opts = {}) {
     } catch (err) {
       updateCallError = err;
       console.error(`[mcp-memory-auto-update] update desconectou/errou; confirmando versão no health: ${err.message}`);
-      if (platform === 'win32') restartRequired = true;
+      if (platform === 'win32' && !explicitServerUrl) restartRequired = true;
     }
     if (fatalUpdateError) throw fatalUpdateError;
     if (restartRequired) {
-      await restartDaemon(mcpConfig, { latestVersion: check.latestVersion });
+      if (explicitServerUrl) throw updateCallError || new Error('fallback local proibido para serverUrl explícito');
+      restartInfo = await restartDaemon(mcpConfig, { latestVersion: check.latestVersion });
     }
     const verified = await waitForVersion(check.latestVersion, client);
     if (!verified || !verified.ok) {
       const detail = verified && (verified.error || verified.version)
         ? `; health: ${verified.error || `versão ${verified.version}`}`
         : '';
-      throw new Error(
-        `update para ${check.latestVersion} não foi confirmado${updateCallError ? ` (${updateCallError.message})` : ''}${detail}`,
-      );
+      let rollback = '';
+      if (restartInfo) {
+        try {
+          await rollbackDaemon(restartInfo);
+          const restored = await waitForVersion(check.currentVersion, client, { timeoutMs: 10000 });
+          rollback = restored && restored.ok
+            ? `; versão anterior ${check.currentVersion} restaurada`
+            : `; rollback não confirmou ${check.currentVersion}`;
+        } catch (rollbackErr) {
+          rollback = `; rollback falhou: ${rollbackErr.message}`;
+        }
+      }
+      throw new Error(`update para ${check.latestVersion} não foi confirmado${updateCallError ? ` (${updateCallError.message})` : ''}${detail}${rollback}`);
     }
     const at = now();
     writeState({
@@ -289,6 +338,8 @@ module.exports = {
   parseCheckUpdate,
   parseUpdateResult,
   isCheckDue,
+  isLoopbackUrl,
+  resolveTargetUrl,
   waitForExpectedVersion,
   runAutoUpdate,
 };
