@@ -201,6 +201,25 @@ function getCuration() {
 }
 
 /**
+ * Limits for `capture_lesson` `type:"skill"` (mechanical validation in
+ * scripts/lib/skill-capture.js). Config: kb.skillCapture. Same shape as the
+ * module's own defaults — this getter exists so an operator can tune the
+ * budget without a code change; validateSkillFields() stays pure (limits
+ * passed in, never reads config itself).
+ * @returns {{descriptionMin:number, descriptionMax:number, useForMax:number, doNotUseForMax:number}}
+ */
+function getSkillCapture() {
+  const cfg = load();
+  const s = (cfg.kb && cfg.kb.skillCapture) || {};
+  return {
+    descriptionMin: Number.isInteger(s.descriptionMin) && s.descriptionMin > 0 ? s.descriptionMin : 40,
+    descriptionMax: Number.isInteger(s.descriptionMax) && s.descriptionMax > 0 ? s.descriptionMax : 280,
+    useForMax: Number.isInteger(s.useForMax) && s.useForMax > 0 ? s.useForMax : 400,
+    doNotUseForMax: Number.isInteger(s.doNotUseForMax) && s.doNotUseForMax > 0 ? s.doNotUseForMax : 400,
+  };
+}
+
+/**
  * Conversation ingestion setting (backend.ingestion). Opt-in: when enabled AND
  * the backend is the external mcp-memory server, the Stop hook ships each turn's
  * conversation to the daemon for server-side curation. Default OFF (privacy).
@@ -338,6 +357,7 @@ module.exports = {
   getSubmission,
   getContextExcludeTypes,
   getCuration,
+  getSkillCapture,
   getIngestion,
   getRecallCompose,
   getBackendType,
