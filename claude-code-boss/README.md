@@ -204,6 +204,11 @@ substituir o JAR em uso, o Boss valida o PID/comando Java, encerra o daemon,
 promove o JAR já baixado e verificado e relança a versão nova; o JAR anterior é
 mantido para rollback.
 
+Por segurança, `serverUrl` remoto/de equipe **não** é atualizado automaticamente
+por padrão. Esse caso exige `backend.mcpMemory.autoUpdate.allowRemote=true`; mesmo
+com opt-in, o fallback Windows nunca usa o `daemon.json` local para um destino
+explícito/remoto.
+
 **Migrar o KB local que você já tem (botão "Migrar agora")**: trocar o backend
 para `mcp-memory` **não leva junto** o que já estava no SQLite local — sem
 migração, o acervo antigo fica órfão. No mesmo card (**Brain → Backend

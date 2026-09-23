@@ -47,6 +47,7 @@ class McpClient extends EventEmitter {
     // Tool names advertised by the daemon's tools/list at handshake. Populated in
     // _handshake; initialized here so hasToolAvailable() is safe before connect().
     this._availableTools = [];
+    this._serverInfo = null;
     this.autoRestart = opts.autoRestart !== false;
   }
 
@@ -450,13 +451,14 @@ class McpClient extends EventEmitter {
   }
 
   async _handshake() {
-    await this._sendRequest('initialize', {
+    const initialized = await this._sendRequest('initialize', {
       protocolVersion: this._protocolVersion,
       capabilities: {},
       clientInfo: { name: 'claude-code-brain', version: '1.0.0' },
       // Frozen contract: stamps the unified-DB scope for this whole session.
       ...(this.projectId ? { projectId: this.projectId } : {}),
     });
+    this._serverInfo = initialized && initialized.serverInfo || null;
 
     this._sendNotification('notifications/initialized');
 
@@ -544,6 +546,10 @@ class McpClient extends EventEmitter {
    */
   hasToolAvailable(name) {
     return Array.isArray(this._availableTools) && this._availableTools.includes(name);
+  }
+
+  getServerInfo() {
+    return this._serverInfo;
   }
 
   _sendRequest(method, params, opts = {}) {

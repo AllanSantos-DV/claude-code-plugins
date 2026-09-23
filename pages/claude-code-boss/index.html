@@ -435,7 +435,7 @@
       <article class="router-detail">
         <p class="k">03 · trabalhe</p>
         <b>Tradução completa na rota OpenAI</b>
-        <p>Mensagens, imagens base64 suportadas, tools, tool results, JSON, streaming SSE, usage e stop reasons atravessam a ponte nos dois sentidos. Campo incompatível falha alto; nada some em silêncio.</p>
+        <p>Mensagens, imagens base64 suportadas, tools, tool results, JSON e stop reasons atravessam a ponte nos dois sentidos. No stream SSE, nomes de tool calls fragmentados são recompostos e o usage do chunk final separado chega no fechamento. Campo incompatível falha alto; nada some em silêncio.</p>
       </article>
     </div>
 
@@ -464,7 +464,7 @@
           <li>Embedding padrão <b>multilíngue</b> (384 dim, 50 idiomas): prompt em PT recupera lição em EN</li>
           <li>Providers alternativos: <b>Ollama</b> local ou <b>Voyage AI</b>, trocáveis na config</li>
           <li>Escopo estável por projeto via <code>.claude-boss-project</code> ou <code>CCB_PROJECT_ID</code></li>
-          <li>Backend opcional <b>MCP Memory HTTP</b>, com wizard, migração e auto-update seguro no início da sessão</li>
+          <li>Backend opcional <b>MCP Memory HTTP</b>, com wizard, migração e auto-update local; destino remoto exige opt-in e nunca cai no fallback local</li>
         </ul>
       </article>
 
@@ -553,8 +553,8 @@
           <p>Cada resultado é marcado como <code>ok</code>, <code>timeout</code> ou <code>error</code>. Misturar os dois mascararia uma falha real como se fosse lentidão.</p>
         </li>
         <li>
-          <b>Auto-update sem interromper seu trabalho</b>
-          <p>No <code>SessionStart</code>, o dispatcher existente consulta atualizações no máximo uma vez a cada 24 horas, sem hook novo. Havendo versão, executa <code>check_update</code> → <code>update</code> uma única vez, sem retry e sob lock cross-process, e só conclui quando o restart/reconnect confirma a nova versão em <code>/health.version</code>. Se algo falha, avisa sem bloquear; no fallback do Windows, valida que o PID é Java, promove apenas o JAR baixado e verificado e preserva o anterior para rollback.</p>
+          <b>Auto-update com fronteira explícita</b>
+          <p>No <code>SessionStart</code>, o dispatcher existente consulta atualizações no máximo uma vez a cada 24 horas, sem hook novo. Um <code>serverUrl</code> remoto só participa com opt-in explícito e, mesmo assim, nunca aciona o fallback local. No caminho local do Windows, o Boss valida o processo Java, promove apenas o JAR verificado e preserva o anterior. Se a versão nova não sobe, restaura a anterior e só confirma o rollback depois que <code>/health.version</code> devolve exatamente essa versão; qualquer falha vira advisory sem bloquear o backend.</p>
         </li>
         <li>
           <b>Nada de regressão silenciosa</b>

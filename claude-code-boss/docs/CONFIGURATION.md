@@ -138,6 +138,7 @@ nenhum                       → off            (cinza)
 |-------|---------|-----------|
 | `backend` | `"local"` | `local` (SQLite) ou `mcp-memory` (Java daemon) |
 | `backend.mcpMemory.autoUpdate.enabled` | `true` | No HTTP, verifica/aplica updates no `SessionStart` |
+| `backend.mcpMemory.autoUpdate.allowRemote` | `false` | Permite chamar `update` em `serverUrl` não-loopback; fallback de restart local continua proibido |
 | `backend.mcpMemory.autoUpdate.intervalMs` | `86400000` | Intervalo mínimo entre tentativas (24h) |
 | `backend.mcpMemory.autoUpdate.updateTimeoutMs` | `30000` | Teto da chamada mutável `update` sem retry |
 | `backend.mcpMemory.autoUpdate.restartTimeoutMs` | `25000` | Teto para `/health.version` confirmar a versão nova |

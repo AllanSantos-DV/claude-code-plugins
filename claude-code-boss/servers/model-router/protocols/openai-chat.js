@@ -150,6 +150,7 @@ function toUpstreamRequest(body) {
     max_tokens: source.max_tokens,
     stream: !!source.stream,
   };
+  if (source.stream) out.stream_options = { include_usage: true };
   if (typeof source.temperature === 'number') out.temperature = source.temperature;
   if (typeof source.top_p === 'number') out.top_p = source.top_p;
   if (Array.isArray(source.stop_sequences) && source.stop_sequences.length) out.stop = source.stop_sequences;
@@ -228,6 +229,39 @@ function createStreamTranslator(request) {
   let usage = { input_tokens: 0, output_tokens: 0 };
   const tools = new Map();
 
+  const startTool = (tool, events) => {
+    if (tool.started) return;
+    if (!tool.name) throw new Error('Stream OpenAI inválido: tool call sem function.name');
+    tool.started = true;
+    events.push({
+      event: 'content_block_start',
+      data: {
+        type: 'content_block_start',
+        index: tool.blockIndex,
+        content_block: { type: 'tool_use', id: tool.id, name: tool.name, input: {} },
+      },
+    });
+  };
+
+  const flushPendingTools = () => {
+    const events = [];
+    for (const tool of tools.values()) {
+      if (tool.started) continue;
+      startTool(tool, events);
+      for (const partial of tool.argFragments) {
+        events.push({
+          event: 'content_block_delta',
+          data: {
+            type: 'content_block_delta',
+            index: tool.blockIndex,
+            delta: { type: 'input_json_delta', partial_json: partial },
+          },
+        });
+      }
+    }
+    return events;
+  };
+
   const closeBlocks = () => {
     const events = [];
     if (textIndex !== null) {
@@ -247,6 +281,7 @@ function createStreamTranslator(request) {
     if (finished) return [];
     finished = true;
     return [
+      ...flushPendingTools(),
       ...closeBlocks(),
       {
         event: 'message_delta',
@@ -310,38 +345,17 @@ function createStreamTranslator(request) {
         const key = Number.isInteger(part.index) ? part.index : 0;
         let tool = tools.get(key);
         if (!tool) {
-          tool = { id: part.id || '', name: '', blockIndex: nextBlockIndex++, started: false, closed: false };
+          tool = { id: part.id || '', name: '', argFragments: [], blockIndex: nextBlockIndex++, started: false, closed: false };
           tools.set(key, tool);
         }
         if (part.id) tool.id = part.id;
         if (part.function && part.function.name) tool.name += part.function.name;
-        if (!tool.started && tool.name) {
-          tool.started = true;
-          events.push({
-            event: 'content_block_start',
-            data: {
-              type: 'content_block_start',
-              index: tool.blockIndex,
-              content_block: { type: 'tool_use', id: tool.id, name: tool.name, input: {} },
-            },
-          });
-        }
         const args = part.function && part.function.arguments;
-        if (typeof args === 'string' && args) {
-          if (!tool.started) throw new Error('Stream OpenAI inválido: argumentos de tool call antes do nome');
-          events.push({
-            event: 'content_block_delta',
-            data: {
-              type: 'content_block_delta',
-              index: tool.blockIndex,
-              delta: { type: 'input_json_delta', partial_json: args },
-            },
-          });
-        }
+        if (typeof args === 'string' && args) tool.argFragments.push(args);
       }
       if (choice.finish_reason) {
         finishReason = choice.finish_reason;
-        events.push(...complete());
+        events.push(...flushPendingTools());
       }
       return events;
     },
