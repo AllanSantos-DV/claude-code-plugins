@@ -20,6 +20,9 @@
   `session-start-dispatcher` existente, sem adicionar hook/processo paralelo. No
   Windows, o fallback valida PID/comando, promove o JAR já baixado e relança a
   versão nova, mantendo o JAR anterior para rollback.
+- Dependências transitivas foram atualizadas pelo `npm audit fix` sem breaking
+  changes (`transformers`, `onnxruntime`, `sharp`, `adm-zip`, `hono`, `js-yaml`
+  e `qs`), zerando as 7 vulnerabilidades detectadas antes da release.
 
 ## [2.28.0] - 2026-09-22
 
