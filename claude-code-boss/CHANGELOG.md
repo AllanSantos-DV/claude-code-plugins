@@ -12,6 +12,14 @@
   tool results, respostas JSON, streaming SSE, usage e stop reasons.
 - O catálogo dinâmico passou a ser isolado por tenant, destino, protocolo e
   fingerprint de credenciais, evitando modelos de um gateway aparecerem em outro.
+- O backend `mcp-memory` HTTP agora verifica updates no `SessionStart` no máximo
+  uma vez por 24h, chama `update` sem retry, acompanha o restart pelo registry e
+  só confirma sucesso quando `/health.version` é exatamente a versão anunciada
+  por `check_update`. Lock cross-process impede updates duplicados; falhas viram
+  advisory sem bloquear o backend. O fluxo roda dentro do
+  `session-start-dispatcher` existente, sem adicionar hook/processo paralelo. No
+  Windows, o fallback valida PID/comando, promove o JAR já baixado e relança a
+  versão nova, mantendo o JAR anterior para rollback.
 
 ## [2.28.0] - 2026-09-22
 

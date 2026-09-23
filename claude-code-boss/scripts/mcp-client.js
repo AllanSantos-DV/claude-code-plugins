@@ -47,6 +47,7 @@ class McpClient extends EventEmitter {
     // Tool names advertised by the daemon's tools/list at handshake. Populated in
     // _handshake; initialized here so hasToolAvailable() is safe before connect().
     this._availableTools = [];
+    this.autoRestart = opts.autoRestart !== false;
   }
 
   async connect() {
@@ -123,6 +124,7 @@ class McpClient extends EventEmitter {
 
     const alive = await this._httpHealth(url);
     if (alive) return;
+    if (!this.autoRestart) return;
 
     console.error(`[MCP] Daemon at ${url} is offline. Attempting auto-restart...`);
     try {
@@ -134,6 +136,16 @@ class McpClient extends EventEmitter {
       console.error(`[MCP] Auto-restart failed: ${err.message}`);
       // We don't throw here; _connectHttp will perform the final health check
     }
+  }
+
+  /**
+   * Execute a tool exactly once. Intended for non-idempotent operations such as
+   * the server's self-update: a connection reset may mean the operation already
+   * succeeded and restarted the daemon, so retrying could apply it twice.
+   */
+  async callToolOnce(name, args = {}, opts = {}) {
+    if (!this._initialized) await this.connect();
+    return this._sendRequest('tools/call', { name, arguments: args }, opts);
   }
 
   /** Logic to spawn the JAR (extracted from original connect() for reuse). */
@@ -209,22 +221,48 @@ class McpClient extends EventEmitter {
 
   /** GET <url>/health — 200 or 503 both mean "process alive". Returns boolean. */
   _httpHealth(baseUrl) {
+    return this.readHealth({ baseUrl }).then((result) => result.alive);
+  }
+
+  /**
+   * Read structured daemon health without connecting an MCP session.
+   * `rediscover` re-reads daemon.json on every call so a restart that changed
+   * ports can be observed by lifecycle code.
+   */
+  readHealth({ baseUrl, rediscover = false } = {}) {
     return new Promise((resolve) => {
+      const resolved = baseUrl
+        || (rediscover ? this._discoverDaemonUrl() : '')
+        || this.serverUrl
+        || this._resolvedUrl;
       let u;
-      try { u = new URL(baseUrl + '/health'); }
-      catch (err) { console.error(`[MCP] bad server URL "${baseUrl}": ${err.message}`); return resolve(false); }
+      try { u = new URL(String(resolved || '').replace(/\/+$/, '') + '/health'); }
+      catch (err) {
+        console.error(`[MCP] bad server URL "${resolved}": ${err.message}`);
+        return resolve({ alive: false, url: resolved || '', error: err.message });
+      }
       const lib = u.protocol === 'https:' ? https : http;
       const req = lib.get({ hostname: u.hostname, port: u.port, path: u.pathname, timeout: 5000 }, (res) => {
-        res.resume();
-        resolve(res.statusCode === 200 || res.statusCode === 503);
+        let body = '';
+        res.on('data', chunk => { if (body.length < 65536) body += chunk; });
+        res.on('end', () => {
+          const alive = res.statusCode === 200 || res.statusCode === 503;
+          if (!alive) return resolve({ alive: false, url: resolved, statusCode: res.statusCode });
+          try {
+            const health = JSON.parse(body);
+            resolve({ alive: true, url: resolved, statusCode: res.statusCode, health });
+          } catch (err) {
+            resolve({ alive: true, url: resolved, statusCode: res.statusCode, health: null, parseError: err.message });
+          }
+        });
       });
-      req.on('timeout', () => { req.destroy(); resolve(false); });
-      req.on('error', () => resolve(false));
+      req.on('timeout', () => { req.destroy(); resolve({ alive: false, url: resolved, error: 'health timeout' }); });
+      req.on('error', err => resolve({ alive: false, url: resolved, error: err.message }));
     });
   }
 
   /** POST one JSON-RPC message to <url>/mcp. Resolves the unwrapped result (or void for notifications). */
-  _httpSend(method, params, isNotification) {
+  _httpSend(method, params, isNotification, timeoutMs = this.requestTimeout) {
     return new Promise((resolve, reject) => {
       let u;
       try { u = new URL(this._resolvedUrl + '/mcp'); }
@@ -240,7 +278,7 @@ class McpClient extends EventEmitter {
 
       const lib = u.protocol === 'https:' ? https : http;
       const req = lib.request(
-        { hostname: u.hostname, port: u.port, path: u.pathname, method: 'POST', headers, timeout: this.requestTimeout },
+        { hostname: u.hostname, port: u.port, path: u.pathname, method: 'POST', headers, timeout: timeoutMs },
         (res) => {
           // The initialize response carries the session id every later call must echo.
           const sid = res.headers['mcp-session-id'];
@@ -271,7 +309,7 @@ class McpClient extends EventEmitter {
           });
         },
       );
-      req.on('timeout', () => { req.destroy(new Error(`MCP request "${method}" timed out after ${this.requestTimeout}ms`)); });
+      req.on('timeout', () => { req.destroy(new Error(`MCP request "${method}" timed out after ${timeoutMs}ms`)); });
       req.on('error', reject);
       req.write(data);
       req.end();
@@ -508,8 +546,9 @@ class McpClient extends EventEmitter {
     return Array.isArray(this._availableTools) && this._availableTools.includes(name);
   }
 
-  _sendRequest(method, params) {
-    if (this.transport === 'http') return this._httpSend(method, params, false);
+  _sendRequest(method, params, opts = {}) {
+    const timeoutMs = Number.isFinite(opts.timeoutMs) && opts.timeoutMs > 0 ? opts.timeoutMs : this.requestTimeout;
+    if (this.transport === 'http') return this._httpSend(method, params, false, timeoutMs);
     return new Promise((resolve, reject) => {
       const id = ++this._requestId;
       const msg = JSON.stringify({
@@ -522,7 +561,7 @@ class McpClient extends EventEmitter {
       const timer = setTimeout(() => {
         this._pending.delete(id);
         reject(new Error(`MCP request "${method}" timed out after ${this.requestTimeout}ms`));
-      }, this.requestTimeout);
+      }, timeoutMs);
 
       this._pending.set(id, { resolve, reject, timer, method });
       this._process.stdin.write(msg);
@@ -582,10 +621,10 @@ class McpClient extends EventEmitter {
     return this._initialized && this._process !== null && !this._process.killed;
   }
 
-  close() {
+  close({ skipRemote = false } = {}) {
     if (this.transport === 'http') {
       // Best-effort DELETE /mcp to end the daemon session; never throw on close.
-      if (this._sessionId && this._resolvedUrl) {
+      if (!skipRemote && this._sessionId && this._resolvedUrl) {
         try {
           const u = new URL(this._resolvedUrl + '/mcp');
           const lib = u.protocol === 'https:' ? https : http;

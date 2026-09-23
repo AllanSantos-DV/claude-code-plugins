@@ -32,6 +32,8 @@ const fs = require('fs');
 const { spawn } = require('child_process');
 const { readStdin, emitEmpty, emitJson, parsePayload } = require('./lib/hook-io.js');
 const { dataDir } = require('./lib/data-dir.js');
+const brainConfig = require('./lib/brain-config.js');
+const mcpAutoUpdate = require('./lib/mcp-memory-auto-update.js');
 
 function pluginRoot() {
   const env = process.env.CLAUDE_PLUGIN_ROOT;
@@ -69,21 +71,25 @@ function runSetupInBackground(root, dataDir) {
  * @param {object} event
  * @returns {Promise<string|null>}
  */
-async function run(_event) {
+async function run(event, deps = {}) {
   try {
-    const root = pluginRoot();
-    const data = dataDir();
+    const root = deps.root || pluginRoot();
+    const data = deps.data || dataDir();
+    const setup = deps.runSetupInBackground || runSetupInBackground;
 
     // Auto-setup: se node_modules está faltando, roda plugin-setup.js em
     // background ANTES de chamar ensureDaemon. O daemon precisa das
     // dependências para subir saudável; se o setup está rodando, a próxima
     // tentativa de spawn vai encontrar tudo pronto.
-    const setupStarted = runSetupInBackground(root, data);
+    const setupStarted = setup(root, data);
 
-    const fileUrl = require('url').pathToFileURL(
-      path.join(root, 'servers', 'brain-server', 'lib', 'daemon-supervisor.js'),
-    ).href;
-    const { ensureDaemon } = await import(fileUrl);
+    let ensureDaemon = deps.ensureDaemon;
+    if (!ensureDaemon) {
+      const fileUrl = require('url').pathToFileURL(
+        path.join(root, 'servers', 'brain-server', 'lib', 'daemon-supervisor.js'),
+      ).href;
+      ({ ensureDaemon } = await import(fileUrl));
+    }
 
     const result = await ensureDaemon({ pluginRoot: root, dataDir: data });
 
@@ -94,6 +100,12 @@ async function run(_event) {
       return `[BRAIN] daemon único não pôde ser garantido (${result.error})${setupNote}. ` +
         'O brain-server tentará reiniciar automaticamente no próximo prompt; se falhar, ' +
         'rode `node scripts/plugin-setup.js && node servers/brain-server/index.js` manualmente.';
+    }
+    if (event && event.hook_event_name === 'SessionStart') {
+      const loadConfig = deps.loadConfig || brainConfig.load;
+      const runAutoUpdate = deps.runAutoUpdate || mcpAutoUpdate.runAutoUpdate;
+      const updateResult = await runAutoUpdate({ event, config: loadConfig() });
+      if (updateResult && updateResult.status === 'error') return updateResult.advisory;
     }
     return null;
   } catch (err) {

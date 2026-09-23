@@ -137,6 +137,10 @@ nenhum                       → off            (cinza)
 | Chave | Default | Descrição |
 |-------|---------|-----------|
 | `backend` | `"local"` | `local` (SQLite) ou `mcp-memory` (Java daemon) |
+| `backend.mcpMemory.autoUpdate.enabled` | `true` | No HTTP, verifica/aplica updates no `SessionStart` |
+| `backend.mcpMemory.autoUpdate.intervalMs` | `86400000` | Intervalo mínimo entre tentativas (24h) |
+| `backend.mcpMemory.autoUpdate.updateTimeoutMs` | `30000` | Teto da chamada mutável `update` sem retry |
+| `backend.mcpMemory.autoUpdate.restartTimeoutMs` | `25000` | Teto para `/health.version` confirmar a versão nova |
 | `embedder.provider` | `"transformers"` | `transformers` (local, offline), `ollama`, `voyage` |
 | `embedder.model` | `Xenova/paraphrase-multilingual-MiniLM-L12-v2` | 50 idiomas, 384 dim |
 | `retrieval.fastTopK` | `1` | Resultados na busca rápida (in-loop) |
@@ -259,6 +263,11 @@ Escrever config pelo dashboard = gravar `user-config.json` + spawn síncrono do 
 1. **Nunca edite o shipped** — updates sobrescrevem
 2. **Credenciais** só em `user-config.json` (permissão 0600, fora do git)
 3. **Sticky > Routing** — per-turn está deprecado (quebra cache)
-4. **contextTuning** se você usa modelos 1M — evita o teto de 200K atrás de gateway
-5. **`.memory/project.json` commitado** no repo — projectId estável entre máquinas (o marker legacy `.claude-boss-project` ainda funciona mas está deprecado)
-6. Depois de trocar embedder model: `node scripts/brain-reembed.js` (obrigatório)
+4. **Auto-update MCP Memory** — `check_update` → `update` sem retry → confirmação
+   exata por `/health.version`. Desative com
+   `backend.mcpMemory.autoUpdate.enabled=false` no user-config do Brain. No
+   Windows, o fallback para JAR bloqueado só relança um PID validado como
+   `java.exe -jar mcp-memory-server-*.jar --daemon`
+5. **contextTuning** se você usa modelos 1M — evita o teto de 200K atrás de gateway
+6. **`.memory/project.json` commitado** no repo — projectId estável entre máquinas (o marker legacy `.claude-boss-project` ainda funciona mas está deprecado)
+7. Depois de trocar embedder model: `node scripts/brain-reembed.js` (obrigatório)
