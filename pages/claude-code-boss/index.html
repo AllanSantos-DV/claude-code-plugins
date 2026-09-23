@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Claude Code Boss — a memória local do seu Claude Code</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%230c0b0f'/%3E%3Cg fill='none' stroke='%23e59247' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M6 8h12M6 12h8M6 16h10'/%3E%3C/g%3E%3C/svg%3E" />
-<meta name="description" content="Plugin para Claude Code Desktop: base de conhecimento semântica local (Brain KB), execução curada anti context-bloat e captura de lições a cada correção. Daemon HTTP único, zero processo por sessão. v2.28.0, MIT." />
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica local, curadoria anti context-bloat e Model Router com custom upstream ou BYOK em protocolos Anthropic e OpenAI. v2.28.0, MIT." />
 <style>
   :root{
     --bg:#0c0b0f; --surface:#131118; --surface-2:#191620; --ink:#edeae1; --muted:#a09d93;
@@ -132,6 +132,61 @@
   .extras .head span{ color:var(--amber); flex-shrink:0 }
   .extras p{ margin:0; color:var(--muted); font-size:14px; line-height:1.55 }
 
+  /* patchbay de endpoints */
+  .router-intro{ display:grid; grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr); gap:34px;
+    align-items:start; margin-bottom:28px }
+  .router-copy h2{ font-size:clamp(1.55rem,3.4vw,2.35rem); letter-spacing:-.032em;
+    line-height:1.08; margin:0 0 16px; max-width:15ch }
+  .router-copy h2 em{ color:var(--amber); font-style:normal }
+  .router-copy > p{ color:var(--muted); font-size:15px; margin:0; max-width:45ch }
+  .router-choice{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px }
+  .route-mode{ border:1px solid var(--line); background:var(--surface); border-radius:14px;
+    padding:18px; min-height:100% }
+  .route-mode .label{ display:flex; align-items:center; justify-content:space-between; gap:10px;
+    margin-bottom:10px; font-family:var(--mono); font-size:11px; letter-spacing:.12em;
+    text-transform:uppercase; color:var(--amber) }
+  .route-mode .label span{ border:1px solid var(--amber); border-radius:999px; padding:2px 8px }
+  .route-mode b{ display:block; font-size:15px; margin-bottom:7px }
+  .route-mode p{ margin:0; color:var(--muted); font-size:13px; line-height:1.52 }
+  .patchbay{ border:1px solid var(--line); border-radius:18px; background:var(--surface);
+    box-shadow:var(--shadow); overflow:hidden }
+  .patch-head{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:18px; align-items:center;
+    padding:15px 18px; border-bottom:1px solid var(--line); background:var(--surface-2) }
+  .patch-head .title{ display:flex; align-items:center; gap:10px; font-family:var(--mono);
+    font-size:12px; color:var(--ink) }
+  .patch-head .light{ width:8px; height:8px; border-radius:50%; background:var(--amber);
+    box-shadow:0 0 0 4px var(--amber-soft) }
+  .protocols{ display:flex; align-items:center; gap:7px; font-family:var(--mono); font-size:10.5px;
+    color:var(--muted) }
+  .protocols b{ color:var(--amber-ink); border:1px solid var(--amber); border-radius:999px;
+    padding:3px 9px; font-weight:600 }
+  .patch-body{ padding:clamp(18px,3vw,28px) }
+  .route-line{ display:grid; grid-template-columns:112px minmax(0,1fr) auto; gap:12px;
+    align-items:center; padding:11px 0; border-top:1px solid var(--line) }
+  .route-line:first-child{ border-top:0; padding-top:0 }
+  .route-line:last-child{ padding-bottom:0 }
+  .route-op{ font-family:var(--mono); font-size:11px; color:var(--amber); letter-spacing:.04em }
+  .route-url{ border:1px solid var(--line); border-radius:8px; background:var(--bg);
+    padding:8px 11px; font-family:var(--mono); font-size:11.5px; color:var(--muted);
+    overflow-wrap:break-word }
+  .route-state{ font-family:var(--mono); font-size:9.5px; letter-spacing:.1em; text-transform:uppercase;
+    color:var(--muted); white-space:nowrap }
+  .router-details{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-top:14px }
+  .router-detail{ border:1px solid var(--line); border-radius:13px; padding:17px; background:var(--surface) }
+  .router-detail .k{ font-family:var(--mono); font-size:10px; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--amber); margin:0 0 9px }
+  .router-detail b{ display:block; font-size:14px; margin-bottom:6px }
+  .router-detail p{ margin:0; color:var(--muted); font-size:12.8px; line-height:1.52 }
+  .alias-flow{ display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin:10px 0 0;
+    font-family:var(--mono); font-size:10.5px; color:var(--muted) }
+  .alias-flow span{ border:1px solid var(--line); background:var(--bg); border-radius:6px; padding:4px 7px }
+  .alias-flow i{ color:var(--amber); font-style:normal }
+  .router-note{ display:flex; gap:12px; align-items:flex-start; margin-top:14px; padding:14px 16px;
+    border-left:3px solid var(--amber); background:var(--amber-soft); border-radius:0 10px 10px 0 }
+  .router-note svg{ flex:0 0 auto; color:var(--amber); margin-top:3px }
+  .router-note p{ margin:0; color:var(--muted); font-size:13px; line-height:1.55 }
+  .router-note b{ color:var(--ink) }
+
   /* tabela de spawns */
   .perf{ display:grid; grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr); gap:34px; align-items:start }
   .table{ border:1px solid var(--line); border-radius:15px; overflow:hidden; background:var(--surface) }
@@ -195,6 +250,9 @@
     .pillar .ic{ width:44px; height:44px }
     .pillar ul{ grid-template-columns:minmax(0,1fr) }
     .extras{ grid-template-columns:minmax(0,1fr) }
+    .router-intro{ grid-template-columns:minmax(0,1fr) }
+    .router-copy h2{ max-width:20ch }
+    .router-details{ grid-template-columns:minmax(0,1fr) }
     .perf{ grid-template-columns:minmax(0,1fr); gap:30px }
     .install{ grid-template-columns:minmax(0,1fr); gap:32px }
   }
@@ -207,6 +265,11 @@
     .step .tag{ display:none }
     .pillar{ grid-template-columns:minmax(0,1fr); gap:14px }
     .pillar ul{ grid-column:1 }
+    .router-choice{ grid-template-columns:minmax(0,1fr) }
+    .patch-head{ grid-template-columns:minmax(0,1fr) }
+    .protocols{ flex-wrap:wrap }
+    .route-line{ grid-template-columns:minmax(0,1fr); gap:6px }
+    .route-state{ white-space:normal }
     .btn{ width:100%; justify-content:center }
     .row{ grid-template-columns:minmax(0,1fr); gap:6px }
     .row .n{ justify-self:start }
@@ -225,6 +288,7 @@
   </a>
   <nav class="nav-links" aria-label="Seções">
     <a href="#memoria">Como funciona</a>
+    <a href="#rotear">Conectar modelos</a>
     <a href="#recursos">Recursos</a>
     <a href="#leve">Custo por sessão</a>
     <a href="#instalar">Instalar</a>
@@ -237,7 +301,7 @@
 
   <section class="hero wrap">
     <h1>O Claude Code que <em>não esquece</em> — e aprende com as suas correções.</h1>
-    <p class="sub">Base de conhecimento <b>semântica e local</b> (Brain KB), execução <b>curada</b> contra context-bloat e captura de lições a cada vez que você corrige o agente. A orquestração fica com as ferramentas nativas do Claude Code. O plugin cuida do que o nativo não tem.</p>
+    <p class="sub">Base de conhecimento <b>semântica e local</b> (Brain KB), execução <b>curada</b> contra context-bloat e captura de lições a cada vez que você corrige o agente. Quando você precisa sair da rota padrão, conecta seu gateway ou sua chave a endpoints Anthropic ou OpenAI sem perder o picker do Claude Code.</p>
     <div class="cta-row">
       <a class="btn btn--primary" href="#instalar">Instalar pelo marketplace
         <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
@@ -302,6 +366,82 @@
           <span class="tag">saída</span>
         </div>
       </div>
+    </div>
+  </section>
+
+  <section id="rotear" class="wrap">
+    <div class="router-intro">
+      <div class="router-copy">
+        <h2>Seu endpoint, no protocolo que ele <em>fala.</em></h2>
+        <p>Você escolhe quem recebe cada operação. O Model Router mantém a interface local do Claude Code e adapta o outro lado para Anthropic Messages ou OpenAI Chat Completions.</p>
+      </div>
+      <div class="router-choice">
+        <article class="route-mode">
+          <div class="label">custom upstream <span>assinatura</span></div>
+          <b>Leve a rota da assinatura ao seu gateway</b>
+          <p>Preserva a credencial que o Claude Code já envia e repassa somente os headers extras que você autorizou.</p>
+        </article>
+        <article class="route-mode">
+          <div class="label">BYOK <span>sua chave</span></div>
+          <b>Use suas próprias credenciais</b>
+          <p>Remove o token da assinatura Claude e envia apenas os headers que você configurou para o endpoint.</p>
+        </article>
+      </div>
+    </div>
+
+    <div class="patchbay" aria-label="Mapa configurável de operações do Model Router">
+      <div class="patch-head">
+        <div class="title"><span class="light" aria-hidden="true"></span>model-router / mapa de saída</div>
+        <div class="protocols"><span>wire protocol</span><b>Anthropic Messages</b><span>ou</span><b>OpenAI Chat Completions</b></div>
+      </div>
+      <div class="patch-body">
+        <div class="route-line">
+          <span class="route-op">models</span>
+          <span class="route-url">https://seu-gateway.example/v1/models</span>
+          <span class="route-state">picker</span>
+        </div>
+        <div class="route-line">
+          <span class="route-op">generate</span>
+          <span class="route-url">https://seu-gateway.example/v1/chat/completions</span>
+          <span class="route-state">resposta + SSE</span>
+        </div>
+        <div class="route-line">
+          <span class="route-op">countTokens</span>
+          <span class="route-url">https://seu-gateway.example/tokenize</span>
+          <span class="route-state">URL independente</span>
+        </div>
+        <div class="route-line">
+          <span class="route-op">classify</span>
+          <span class="route-url">https://seu-gateway.example/classify</span>
+          <span class="route-state">ou herda generate</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="router-details">
+      <article class="router-detail">
+        <p class="k">01 · configure</p>
+        <b>Dashboard ou ambiente</b>
+        <p>Abra <code>/dashboard</code> → Router para escolher protocolo, URLs e headers. Em automação, use <code>ROUTER_UPSTREAM_*</code> ou <code>ROUTER_BYOK_*</code>. Precedência: dashboard/<code>user-config.json</code> → ambiente → defaults.</p>
+      </article>
+      <article class="router-detail">
+        <p class="k">02 · escolha</p>
+        <b>Modelos reais no picker</b>
+        <p>IDs que não parecem Anthropic ganham um alias só para passar pelo filtro de <code>/model</code>. Antes da chamada, o router restaura o ID original.</p>
+        <div class="alias-flow" aria-label="Exemplo de alias temporário de modelo">
+          <span>gpt-4.1</span><i>→</i><span>anthropic-ccb-alias-gpt-4.1</span><i>→</i><span>gpt-4.1</span>
+        </div>
+      </article>
+      <article class="router-detail">
+        <p class="k">03 · trabalhe</p>
+        <b>Tradução completa na rota OpenAI</b>
+        <p>Mensagens, imagens base64 suportadas, tools, tool results, JSON, streaming SSE, usage e stop reasons atravessam a ponte nos dois sentidos. Campo incompatível falha alto; nada some em silêncio.</p>
+      </article>
+    </div>
+
+    <div class="router-note">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2.8 20h18.4z"/><path d="M12 9v5M12 17.5v.1"/></svg>
+      <p><b>O router nasce desligado.</b> Ativar BYOK ou um fallback pode gerar cobrança no endpoint escolhido. Para OpenAI, informe uma URL de contagem se o seu provedor oferecer essa operação; o protocolo não define um caminho padrão. Credenciais ficam fora do repositório.</p>
     </div>
   </section>
 
@@ -374,7 +514,7 @@
       </li>
       <li>
         <p class="head"><span aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18M8 13h8M8 16.5h5"/></svg></span><b>Dashboard local sob demanda</b></p>
-        <p>Quatro abas (Home, Brain KB, Hooks e Logs) servidas em <code>127.0.0.1</code> com porta dinâmica e token gerado no boot. Cards de valor, seletor de perfil, ring buffer de 500 logs e botão de consolidação do KB.</p>
+        <p>Servido em <code>127.0.0.1</code>, com porta dinâmica e token gerado no boot. A aba Router configura upstream, BYOK, protocolos, URLs e headers; Brain KB, Hooks, Insights e Logs ficam no mesmo painel local.</p>
       </li>
       <li>
         <p class="head"><span aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21a9 9 0 1 0-9-9"/><path d="M3 12H7l2.2 5 3-11 2.3 6h3.3"/></svg></span><b>Doctor: diagnóstico zero-config</b></p>
@@ -382,7 +522,7 @@
       </li>
       <li>
         <p class="head"><span aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 6.5a4 4 0 1 1 3.2 6.9L11 20.1 7.9 17l6.7-6.7a4 4 0 0 1-.1-3.8z"/><path d="m7.2 15.8-3 3.1L6 20.7"/></svg></span><b>BYOK e Model Router (opt-in)</b></p>
-        <p>Nasce <b>desativado</b>. Se você ligar, o proxy fala com um endpoint Anthropic-compatible seu, e os headers da sua assinatura são removidos na rota BYOK, porque repassá-los vazaria a credencial. Ligar é opt-in por conta e risco: veja o guia de cobrança antes.</p>
+        <p>Nasce <b>desativado</b>. Você conecta custom upstream ou BYOK em Anthropic Messages ou OpenAI Chat Completions, separa as URLs por operação e escolhe modelos não Anthropic no picker por um alias reversível.</p>
       </li>
     </ul>
   </section>

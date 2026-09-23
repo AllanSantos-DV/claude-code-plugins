@@ -30,6 +30,11 @@ const DEFAULTS = {
   scriptsDirSearch: ['.vscode/scripts', '.curation/scripts', 'scripts'],
   shellsConfigSearch: ['.vscode/shells.json', '.curation/shells.json', 'shells.json'],
 };
+const PROJECT_MARKERS = [
+  '.git', 'package.json', 'pyproject.toml', 'requirements.txt', 'setup.py',
+  'Cargo.toml', 'go.mod', 'Gemfile', 'composer.json', 'pom.xml',
+  'build.gradle', 'Dockerfile', 'docker-compose.yml',
+];
 
 let _cfgCache = null;
 function loadCurationConfig() {
@@ -58,15 +63,18 @@ function findProjectRoot(cwd) {
   const cfg = loadCurationConfig();
   const candidates = [cfg.shellsConfigPath, ...cfg.shellsConfigSearch];
   let dir = cwd;
+  let nearestMarker = null;
   for (let i = 0; i < 10; i++) {
+    const hasProjectMarker = PROJECT_MARKERS.some(marker => fs.existsSync(path.join(dir, marker)));
     for (const rel of candidates) {
-      if (fs.existsSync(path.join(dir, rel))) return dir;
+      if (fs.existsSync(path.join(dir, rel)) && (!nearestMarker || hasProjectMarker)) return dir;
     }
+    if (!nearestMarker && hasProjectMarker) nearestMarker = dir;
     const parent = path.dirname(dir);
     if (parent === dir) break;
     dir = parent;
   }
-  return null;
+  return nearestMarker;
 }
 
 /**

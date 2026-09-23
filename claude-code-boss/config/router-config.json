@@ -153,8 +153,16 @@
   "upstream": {
     "enabled": false,
     "baseUrl": "",
+    "wireProtocol": "anthropic",
+    "modelAliasPrefix": "anthropic-",
+    "endpoints": {
+      "models": "",
+      "generate": "",
+      "countTokens": "",
+      "classify": ""
+    },
     "forwardHeaders": [],
-    "_comment_upstream": "Alvo de upstream alternativo (ex.: gateway corporativo atras de LiteLLM/Bedrock) + headers extras repassados VERBATIM do cliente. Diferente de byok: aqui a credencial real (authorization/x-api-key) do Claude Code CONTINUA fluindo normalmente (buildHeaders nao muda) -- so o host/porta/protocolo e os headers listados em forwardHeaders mudam. Sem isso, ambientes atras de gateway corporativo (que exige um header proprio, ex.: x-litellm-team-id, e nao aceita api.anthropic.com direto) nao conseguem usar o proxy. baseUrl: ex. https://gateway.empresa.com (path ignorado, o proxy sempre usa /v1/messages). forwardHeaders: lista de nomes de header (case-insensitive) a copiar do request do Claude Code para o upstream, alem dos ja padrao (anthropic-version/anthropic-beta/authorization/x-api-key)."
+    "_comment_upstream": "Gateway corporativo que preserva authorization/x-api-key do Claude Code e repassa forwardHeaders. wireProtocol aceita anthropic ou openai. endpoints define URLs COMPLETAS por operacao; campo vazio herda baseUrl + path padrao. modelAliasPrefix usa anthropic- por default; o marcador interno ccb-alias- e fixo."
   },
   "byok": {
     "_comment": "BYOK: endpoint Anthropic-compatible GENERICO do usuario. O plugin NAO conhece o provedor nem de onde vem o token: recebe uma Base URL e um MAPA de headers pelo dashboard e os anexa em toda request ao endpoint. Contrato: POST /v1/messages em formato Anthropic NATIVO (zero traducao) e o campo model repassado VERBATIM (o endpoint normaliza os nomes sozinho e erra alto no inexistente). SEGURANCA: na rota BYOK o authorization/x-api-key que vem do Claude Code (token da ASSINATURA) e REMOVIDO — so vao os headers configurados aqui, senao a credencial da assinatura vazaria para um terceiro.",
@@ -162,7 +170,15 @@
     "mode": "on-limit",
     "_comment_mode": "always = o endpoint atende TODAS as requests (nao depende da assinatura Claude). on-limit = o Claude atende normalmente e o endpoint so entra quando a janela esgota (429), ANTES do plano B da NVIDIA; se o endpoint responder 429 (teto por credencial) a vez passa para a NVIDIA. Ja 401/404/5xx e o corpo \"model is not supported\" NAO caem em silencio para a NVIDIA: erro de configuracao precisa aparecer (fail-loud), senao o usuario nunca conserta a credencial.",
     "baseUrl": "",
-    "_comment_baseUrl": "Ex.: https://exemplo.ts.net ou http://10.0.0.5:4143. O PATH e ignorado (o proxy sempre usa /v1/messages). Com enabled=true e baseUrl vazia o proxy NAO roteia e registra a causa — nunca finge que funcionou.",
+    "_comment_baseUrl": "Fallback legado. URLs completas em endpoints.* vencem. Com enabled=true e nenhum destino valido o proxy NAO roteia e registra a causa.",
+    "wireProtocol": "anthropic",
+    "modelAliasPrefix": "anthropic-",
+    "endpoints": {
+      "models": "",
+      "generate": "",
+      "countTokens": "",
+      "classify": ""
+    },
     "headers": {},
     "_comment_headers": "Mapa GENERICO nome->valor, ex.: { \"Authorization\": \"Bearer ...\" }. E mapa (e nao um campo token) de proposito: se o endpoint exigir outro header (chave de gateway, tenant id, dois headers), muda a config e nao o codigo. NUNCA commitar valores reais — o usuario preenche pelo dashboard, que grava em DATA_DIR/model-router/user-config.json.",
     "classifyRemote": false,

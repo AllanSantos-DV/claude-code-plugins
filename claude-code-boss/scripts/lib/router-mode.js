@@ -44,6 +44,8 @@ function resolveMode(config) {
   //   on-limit → mesma postura do fallback (passthrough + intervir no 429).
   const by = (c.byok && typeof c.byok === 'object') ? c.byok : {};
   if (by.enabled === true) return by.mode === 'always' ? 'byok-direct' : 'fallback-only';
+  const upstream = (c.upstream && typeof c.upstream === 'object') ? c.upstream : {};
+  if (upstream.enabled === true) return 'fallback-only';
   return 'off';
 }
 

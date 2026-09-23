@@ -6,7 +6,7 @@ const { execSync, execFileSync, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const { getShellsConfigPath } = require('./curation-paths.js');
+const { findProjectRoot, getShellsConfigPath } = require('./curation-paths.js');
 const configTesters = require('./config-testers');
 const { USER_SENTINEL, prepareForUserScope } = require('./lib/scope-sanitizer.js');
 const { sanitizeProjectId } = require('./lib/project-id.js');
@@ -22,6 +22,7 @@ const { resolveStaticPath } = require('./lib/dashboard-static.js');
 const { writeFileAtomic, writeJsonAtomic } = require('./lib/atomic-write.js');
 const { routerUserConfigPath, hardenRouterConfigPerms } = require('./lib/router-config-path.js');
 const { normalizeTimeoutMs } = require('./lib/normalize-timeout.js');
+const upstreamProfile = require('../servers/model-router/upstream-profile.js');
 
 // Session token — generated at boot, injected into index.html, required on all /api/* requests.
 const SESSION_TOKEN = crypto.randomBytes(16).toString('hex');
@@ -1098,20 +1099,22 @@ function getCurationProjects(req, res) {
   }
   // For each cwd, check if a curated shells config exists (configurable path)
   const projects = [...seen].map(cwd => {
-    const shellsPath = getShellsConfigPath(cwd);
+    const projectRoot = findProjectRoot(cwd) || cwd;
+    const shellsPath = getShellsConfigPath(projectRoot);
     const hasShells = !!shellsPath && fs.existsSync(shellsPath);
     let shellCount = 0;
     if (hasShells) {
       try { shellCount = JSON.parse(fs.readFileSync(shellsPath, 'utf-8')).shells?.length || 0; } catch (err) { console.error(`[DASHBOARD] Shells count read error: ${err.message}`); }
     }
-    return { cwd, hasShells, shellCount, shellsPath };
+    return { cwd, projectRoot, hasShells, shellCount, shellsPath };
   });
   json(res, projects);
 }
 
 function getCurationShells(req, res, url) {
   const cwd = url.searchParams.get('cwd') || '';
-  const shellsPath = cwd ? getShellsConfigPath(cwd) : null;
+  const projectRoot = cwd ? (findProjectRoot(cwd) || cwd) : '';
+  const shellsPath = projectRoot ? getShellsConfigPath(projectRoot) : null;
   if (!shellsPath || !fs.existsSync(shellsPath)) {
     return json(res, { shells: [], whitelist: [], cwd, found: false });
   }
@@ -1121,7 +1124,7 @@ function getCurationShells(req, res, url) {
     // Schema: `script` is the canonical field; legacy `command` accepted as fallback.
     const shells = (data.shells || []).map(s => {
       const scriptRel = s.script || s.command;
-      const scriptPath = scriptRel && cwd ? path.resolve(cwd, scriptRel) : null;
+      const scriptPath = scriptRel && projectRoot ? path.resolve(projectRoot, scriptRel) : null;
       const scriptExists = scriptPath ? fs.existsSync(scriptPath) : false;
       let scriptContent = null;
       if (scriptExists) {
@@ -1136,7 +1139,8 @@ function getCurationShells(req, res, url) {
 async function deleteCurationShell(req, res, url) {
   const cwd = url.searchParams.get('cwd') || '';
   const idx = parseInt(url.pathname.split('/').pop());
-  const shellsPath = cwd ? getShellsConfigPath(cwd) : null;
+  const projectRoot = cwd ? (findProjectRoot(cwd) || cwd) : '';
+  const shellsPath = projectRoot ? getShellsConfigPath(projectRoot) : null;
   if (!shellsPath || !fs.existsSync(shellsPath)) return fail(res, 'shells config not found', 404);
   try {
     const data = JSON.parse(fs.readFileSync(shellsPath, 'utf-8'));
@@ -1543,10 +1547,39 @@ function writeRouterOverride(body) {
     // Log de TTFB opt-in (default false) — mesmo padrão preserve-on-absent.
     logLatency: byokInput.logLatency !== undefined
       ? byokInput.logLatency === true
-      : (existing.byok?.logLatency === true)
+      : (existing.byok?.logLatency === true),
+    wireProtocol: byokInput.wireProtocol !== undefined
+      ? String(byokInput.wireProtocol).trim()
+      : (existing.byok?.wireProtocol || 'anthropic'),
+    modelAliasPrefix: byokInput.modelAliasPrefix !== undefined
+      ? String(byokInput.modelAliasPrefix).trim()
+      : (existing.byok?.modelAliasPrefix || 'anthropic-'),
+    endpoints: upstreamProfile.mergeRouterSection(existing.byok, byokInput).endpoints || {},
+  };
+
+  const upstreamInput = (body.upstream && typeof body.upstream === 'object') ? body.upstream : {};
+  const upstreamMerged = upstreamProfile.mergeRouterSection(existing.upstream, upstreamInput);
+  const upstreamOut = {
+    ...upstreamMerged,
+    enabled: upstreamInput.enabled !== undefined
+      ? upstreamInput.enabled === true
+      : (existing.upstream?.enabled === true),
+    wireProtocol: upstreamInput.wireProtocol !== undefined
+      ? String(upstreamInput.wireProtocol).trim()
+      : (existing.upstream?.wireProtocol || 'anthropic'),
+    modelAliasPrefix: upstreamInput.modelAliasPrefix !== undefined
+      ? String(upstreamInput.modelAliasPrefix).trim()
+      : (existing.upstream?.modelAliasPrefix || 'anthropic-'),
+    endpoints: upstreamProfile.mergeRouterSection(existing.upstream, upstreamInput).endpoints || {},
+    forwardHeaders: upstreamInput.forwardHeaders !== undefined
+      ? (Array.isArray(upstreamInput.forwardHeaders)
+        ? upstreamInput.forwardHeaders.map(v => String(v).trim()).filter(Boolean)
+        : [])
+      : (Array.isArray(existing.upstream?.forwardHeaders) ? existing.upstream.forwardHeaders : []),
   };
   
   const out = {
+    ...existing,
     enabled: body.enabled === true,
     stickyEnabled: body.stickyEnabled === true,
     fallbackEnabled: body.fallbackEnabled === true,
@@ -1562,6 +1595,7 @@ function writeRouterOverride(body) {
     routing: { ...(existing.routing || {}), ...(body.routing || {}) },
     // PRESERVA byok existente + atualiza campos enviados
     byok: byokOut,
+    upstream: upstreamOut,
     // Preserve-on-absent: só escreve contextTuning quando o body trouxe o campo.
     // Sem isso, TODO save de rota que não conhece o toggle (ex.: POST /config)
     // resetaria um contextTuning.enabled:true editado à mão — clobber silencioso.
@@ -1577,7 +1611,8 @@ function writeRouterOverride(body) {
   // após CADA escrita, senão o POSIX fica com o override legível por todos.
   hardenRouterConfigPerms(ROUTER_USER_CONFIG);
 }function resolveRouterFlags() {
-  const shipped = readJSON(ROUTER_SHIPPED_CONFIG) || {};
+  const shippedRaw = readJSON(ROUTER_SHIPPED_CONFIG) || {};
+  const shipped = upstreamProfile.applyRouterEnvironment(shippedRaw, process.env);
   const override = fs.existsSync(ROUTER_USER_CONFIG) ? (readJSON(ROUTER_USER_CONFIG) || {}) : {};
   const enabled = override.enabled !== undefined ? override.enabled !== false : shipped.enabled !== false;
   const shippedSticky = (shipped.sticky && shipped.sticky.enabled === true);
@@ -1591,6 +1626,7 @@ function writeRouterOverride(body) {
   // BYOK efetivo: mesmo merge shipped⊕override, campo a campo.
   const sb = (shipped.byok && typeof shipped.byok === 'object') ? shipped.byok : {};
   const ob = (override.byok && typeof override.byok === 'object') ? override.byok : {};
+  const mergedByok = upstreamProfile.mergeRouterSection(sb, ob);
   const byok = {
     enabled: ob.enabled !== undefined ? ob.enabled === true : sb.enabled === true,
     mode: (ob.mode === 'always' || ob.mode === 'on-limit') ? ob.mode
@@ -1612,24 +1648,29 @@ function writeRouterOverride(body) {
       return o !== undefined ? o : normalizeTimeoutMs(sb.rotatingTimeoutMs);
     })(),
     logLatency: ob.logLatency !== undefined ? ob.logLatency === true : sb.logLatency === true,
+    wireProtocol: mergedByok.wireProtocol || 'anthropic',
+    modelAliasPrefix: mergedByok.modelAliasPrefix || 'anthropic-',
+    endpoints: mergedByok.endpoints || {},
   };
-  return { shipped, override, enabled, stickyEnabled, fallbackEnabled, byok, contextTuningEnabled: override?.contextTuning?.enabled === true || shipped?.contextTuning?.enabled === true };
+  const upstream = upstreamProfile.mergeRouterSection(shipped.upstream, override.upstream);
+  return { shipped, override, enabled, stickyEnabled, fallbackEnabled, byok, upstream, contextTuningEnabled: override?.contextTuning?.enabled === true || shipped?.contextTuning?.enabled === true };
 }
 
 // Modo CONFIGURADO (o que o proxy DEVERIA rodar após um reload) via a fonte única.
 function configuredRouterMode() {
-  const { enabled, stickyEnabled, fallbackEnabled, byok } = resolveRouterFlags();
+  const { enabled, stickyEnabled, fallbackEnabled, byok, upstream } = resolveRouterFlags();
   return resolveMode({
     enabled,
     sticky:   { enabled: stickyEnabled },
     fallback: { enabled: fallbackEnabled },
     byok:     { enabled: byok.enabled, mode: byok.mode },
+    upstream: { enabled: upstream.enabled },
   });
 }
 
 function getRouterConfig(req, res) {
   try {
-    const { shipped, override, enabled, stickyEnabled, fallbackEnabled, byok, contextTuningEnabled } = resolveRouterFlags();
+    const { shipped, override, enabled, stickyEnabled, fallbackEnabled, byok, upstream, contextTuningEnabled } = resolveRouterFlags();
     const nim = { ...(shipped.nim || {}), ...(override.nim || {}) };
     const routing = { ...(shipped.routing || {}), ...(override.routing || {}) };
     const key = String(nim.apiKey || '').trim();
@@ -1649,12 +1690,23 @@ function getRouterConfig(req, res) {
       fixedTimeoutMs: (byok && byok.fixedTimeoutMs !== undefined) ? byok.fixedTimeoutMs : null,
       rotatingTimeoutMs: (byok && byok.rotatingTimeoutMs !== undefined) ? byok.rotatingTimeoutMs : null,
       logLatency: !!(byok && byok.logLatency),
+      wireProtocol: (byok && byok.wireProtocol) || 'anthropic',
+      modelAliasPrefix: (byok && byok.modelAliasPrefix) || 'anthropic-',
+      endpoints: (byok && byok.endpoints) || {},
     };
     json(res, {
       enabled,
       stickyEnabled,
       fallbackEnabled,
       byok: byokSafe,
+      upstream: {
+        enabled: !!(upstream && upstream.enabled),
+        baseUrl: (upstream && upstream.baseUrl) || '',
+        wireProtocol: (upstream && upstream.wireProtocol) || 'anthropic',
+        modelAliasPrefix: (upstream && upstream.modelAliasPrefix) || 'anthropic-',
+        endpoints: (upstream && upstream.endpoints) || {},
+        forwardHeaders: Array.isArray(upstream && upstream.forwardHeaders) ? upstream.forwardHeaders : [],
+      },
       contextTuningEnabled: contextTuningEnabled === true,
       acceptedTerms: override.acceptedTerms === true,
       hasNvidiaKey: key.length > 0,

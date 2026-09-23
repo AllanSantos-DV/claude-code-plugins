@@ -93,20 +93,35 @@ function buildCatalog(rawModels) {
 function fetchModels(opts, cb) {
   const {
     host, port, protocol = 'https:', headers = {},
-    limit = 1000, timeoutMs = 6000, maxPages = 20,
+    url, limit = 1000, timeoutMs = 6000, maxPages = 20,
   } = opts || {};
-  const lib = protocol === 'http:' ? http : https;
+  let endpoint;
+  try {
+    endpoint = url
+      ? new URL(url)
+      : new URL(`${protocol}//${host}${port ? `:${port}` : ''}/v1/models`);
+  } catch (err) {
+    cb(new Error(`URL de catálogo inválida: ${err.message}`));
+    return;
+  }
+  if (endpoint.protocol !== 'http:' && endpoint.protocol !== 'https:') {
+    cb(new Error(`URL de catálogo inválida: protocolo ${endpoint.protocol} não suportado`));
+    return;
+  }
+  const lib = endpoint.protocol === 'http:' ? http : https;
   const all = [];
   let pages = 0;
 
   const requestPage = (afterId) => {
     pages += 1;
-    let qs = `limit=${encodeURIComponent(limit)}`;
-    if (afterId) qs += `&after_id=${encodeURIComponent(afterId)}`;
+    const pageUrl = new URL(endpoint.toString());
+    pageUrl.searchParams.set('limit', String(limit));
+    if (afterId) pageUrl.searchParams.set('after_id', afterId);
+    else pageUrl.searchParams.delete('after_id');
     const options = {
-      hostname: host,
-      port,
-      path:     `/v1/models?${qs}`,
+      hostname: pageUrl.hostname,
+      port:     pageUrl.port || (pageUrl.protocol === 'https:' ? 443 : 80),
+      path:     `${pageUrl.pathname}${pageUrl.search}`,
       method:   'GET',
       headers,
       timeout:  timeoutMs,
@@ -143,12 +158,37 @@ function fetchModels(opts, cb) {
   requestPage(null);
 }
 
-// ── Singleton de cache ────────────────────────────────────────────────────────
+// ── Cache por destino/tenant/credencial ──────────────────────────────────────
 
-let _snapshot    = null; // último catálogo construído (ou null = nunca aquecido)
-let _lastFetchAt = 0;    // epoch ms do último fetch BEM-SUCEDIDO
-let _lastErrorAt = 0;    // epoch ms do último erro (p/ backoff)
-let _inflight    = false; // há um refresh em curso? (evita rajada concorrente)
+const DEFAULT_SCOPE = '_';
+const MAX_SCOPES = 64;
+const _states = new Map();
+
+function normalizeScope(scope) {
+  return (typeof scope === 'string' && scope) ? scope : DEFAULT_SCOPE;
+}
+
+function stateFor(scope, create) {
+  const key = normalizeScope(scope);
+  let state = _states.get(key);
+  if (!state && create) {
+    if (_states.size >= MAX_SCOPES) {
+      let oldestKey = null;
+      let oldestAt = Infinity;
+      for (const [candidate, value] of _states) {
+        if (!value.inflight && value.touchedAt < oldestAt) {
+          oldestKey = candidate;
+          oldestAt = value.touchedAt;
+        }
+      }
+      if (oldestKey !== null) _states.delete(oldestKey);
+    }
+    state = { snapshot: null, lastFetchAt: 0, lastErrorAt: 0, inflight: false, touchedAt: Date.now() };
+    _states.set(key, state);
+  }
+  if (state) state.touchedAt = Date.now();
+  return state || null;
+}
 
 // Dispara um refresh SE o cache estiver vazio/stale, sem outro em curso e fora do
 // backoff de erro. Fire-and-forget: não retorna nada útil ao hot path. As callbacks
@@ -158,50 +198,55 @@ function maybeRefresh(opts) {
   const ttlMs          = Number.isFinite(o.ttlMs) ? o.ttlMs : 3600000;       // 1h
   const errorBackoffMs = Number.isFinite(o.errorBackoffMs) ? o.errorBackoffMs : 300000; // 5min
   const now = Date.now();
+  const state = stateFor(o.scope, true);
 
-  if (_inflight) return;
-  if (_snapshot && (now - _lastFetchAt) < ttlMs) return;             // ainda fresco
-  if (_lastErrorAt && (now - _lastErrorAt) < errorBackoffMs) return; // em backoff
+  if (state.inflight) return;
+  if (state.snapshot && (now - state.lastFetchAt) < ttlMs) return;             // ainda fresco
+  if (state.lastErrorAt && (now - state.lastErrorAt) < errorBackoffMs) return; // em backoff
 
-  _inflight = true;
+  state.inflight = true;
   fetchModels(o, (err, models) => {
-    _inflight = false;
+    state.inflight = false;
+    state.touchedAt = Date.now();
     if (err) {
-      _lastErrorAt = Date.now();
+      state.lastErrorAt = Date.now();
       if (typeof o.onError === 'function') o.onError(err);
       return;
     }
-    _snapshot    = buildCatalog(models);
-    _lastFetchAt = Date.now();
-    _lastErrorAt = 0;
-    if (typeof o.onRefresh === 'function') o.onRefresh(_snapshot);
+    state.snapshot = buildCatalog(models);
+    state.lastFetchAt = Date.now();
+    state.lastErrorAt = 0;
+    if (typeof o.onRefresh === 'function') o.onRefresh(state.snapshot);
   });
 }
 
 // Snapshot atual (ou null). Inclui idade p/ observabilidade.
-function getSnapshot() {
-  if (!_snapshot) return null;
-  return { ..._snapshot, ageMs: Date.now() - _lastFetchAt };
+function getSnapshot(scope) {
+  const state = stateFor(scope, false);
+  if (!state || !state.snapshot) return null;
+  return { ...state.snapshot, ageMs: Date.now() - state.lastFetchAt };
 }
 
 // Família → id do modelo MAIS NOVO no catálogo. null se indisponível (sem aquecer
 // ou família ausente) → chamador usa o mapa estático.
-function modelForFamily(family) {
-  if (!_snapshot) return null;
-  const e = _snapshot.byFamily[family];
+function modelForFamily(family, scope) {
+  const state = stateFor(scope, false);
+  if (!state || !state.snapshot) return null;
+  const e = state.snapshot.byFamily[family];
   return e ? e.model : null;
 }
 
 // Níveis de effort de um modelo (match exato; senão por PREFIXO, p/ cobrir sufixo
 // de data tipo "claude-sonnet-4-6-20251101"). Retorna array (possivelmente []) ou
 // null = catálogo não conhece este modelo (chamador usa o estático).
-function effortForModel(modelId) {
-  if (!_snapshot || !modelId) return null;
-  if (Object.prototype.hasOwnProperty.call(_snapshot.support, modelId)) {
-    return _snapshot.support[modelId];
+function effortForModel(modelId, scope) {
+  const state = stateFor(scope, false);
+  if (!state || !state.snapshot || !modelId) return null;
+  if (Object.prototype.hasOwnProperty.call(state.snapshot.support, modelId)) {
+    return state.snapshot.support[modelId];
   }
-  const key = Object.keys(_snapshot.support).find((k) => modelId.startsWith(k));
-  return key ? _snapshot.support[key] : null;
+  const key = Object.keys(state.snapshot.support).find((k) => modelId.startsWith(k));
+  return key ? state.snapshot.support[key] : null;
 }
 
 // ── Alias de id p/ o picker `/model` (só usado sob BYOK) ──────────────────────
@@ -222,8 +267,9 @@ function looksAnthropic(id) {
 }
 
 function aliasModelId(id, prefix) {
-  if (typeof id !== 'string' || !id || looksAnthropic(id)) return id;
+  if (typeof id !== 'string' || !id) return id;
   const p = prefix || DEFAULT_ALIAS_PREFIX;
+  if (id.startsWith(`${p}${INTERNAL_ALIAS_ID}`) || looksAnthropic(id)) return id;
   return `${p}${INTERNAL_ALIAS_ID}${id}`;
 }
 
@@ -252,19 +298,23 @@ function aliasedModelList(snapshot, prefix) {
 
 // ── Hooks de teste (determinísticos, sem rede) ────────────────────────────────
 
-function _setSnapshot(rawModels) {
-  _snapshot    = buildCatalog(rawModels);
-  _lastFetchAt = Date.now();
-  _lastErrorAt = 0;
-  _inflight    = false;
-  return _snapshot;
+function _setSnapshot(rawModels, scope) {
+  const state = stateFor(scope, true);
+  state.snapshot = buildCatalog(rawModels);
+  state.lastFetchAt = Date.now();
+  state.lastErrorAt = 0;
+  state.inflight = false;
+  return state.snapshot;
 }
 
-function _reset() {
-  _snapshot    = null;
-  _lastFetchAt = 0;
-  _lastErrorAt = 0;
-  _inflight    = false;
+const setSnapshot = _setSnapshot;
+
+function _reset(scope) {
+  if (arguments.length === 0) {
+    _states.clear();
+    return;
+  }
+  _states.delete(normalizeScope(scope));
 }
 
 module.exports = {
@@ -281,6 +331,7 @@ module.exports = {
   aliasModelId,
   unaliasModelId,
   aliasedModelList,
+  setSnapshot,
   _setSnapshot,
   _reset,
 };

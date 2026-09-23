@@ -4995,11 +4995,74 @@ test('catalog.maybeRefresh: warms snapshot then serves modelForFamily', async ()
   }
 });
 
+test('catalog.fetchModels: usa URL completa customizada e preserva query ao paginar', async () => {
+  catalog._reset();
+  const seen = [];
+  const srv = await startFakeModelsServer((req, res) => {
+    seen.push(req.url);
+    const after = new URL(req.url, 'http://x').searchParams.get('after_id');
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(after
+      ? { data: [{ id: 'gpt-b' }], has_more: false }
+      : { data: [{ id: 'gpt-a' }], has_more: true, last_id: 'gpt-a' }));
+  });
+  try {
+    const models = await new Promise((resolve, reject) => {
+      catalog.fetchModels({
+        url: `http://127.0.0.1:${srv.port}/custom/models?tenant=acme`,
+        headers: {},
+      }, (err, out) => err ? reject(err) : resolve(out));
+    });
+    assertEq(models.map(m => m.id), ['gpt-a', 'gpt-b']);
+    assert(seen.every(url => url.startsWith('/custom/models?')), 'path customizado deve ser preservado');
+    assert(seen.every(url => url.includes('tenant=acme')), 'query configurada deve ser preservada');
+    assert(seen[0].includes('limit=1000'));
+    assert(seen[1].includes('after_id=gpt-a'));
+  } finally {
+    await srv.close();
+  }
+});
+
+test('catalog: snapshot, refresh state e lookup são isolados por scope', () => {
+  catalog._reset();
+  catalog._setSnapshot([{ id: 'claude-sonnet-a', created_at: '2025-01-01T00:00:00Z' }], 'scope-a');
+  catalog._setSnapshot([{ id: 'claude-sonnet-b', created_at: '2026-01-01T00:00:00Z' }], 'scope-b');
+  assertEq(catalog.modelForFamily('sonnet', 'scope-a'), 'claude-sonnet-a');
+  assertEq(catalog.modelForFamily('sonnet', 'scope-b'), 'claude-sonnet-b');
+  assertEq(catalog.getSnapshot('scope-missing'), null);
+  catalog._reset('scope-a');
+  assertEq(catalog.getSnapshot('scope-a'), null);
+  assert(catalog.getSnapshot('scope-b'), 'reset de um scope não pode apagar outro');
+  catalog._reset();
+});
+
+test('router: resolveModel e reconcileEffort usam o scope de catálogo da request', () => {
+  catalog._reset();
+  const cfg = { routing: { catalog: { enabled: true } } };
+  catalog._setSnapshot([{
+    id: 'claude-sonnet-tenant-a',
+    created_at: '2026-01-01T00:00:00Z',
+    capabilities: { effort: { supported: true, low: { supported: true } } },
+  }], 'tenant-a-scope');
+  catalog._setSnapshot([{
+    id: 'claude-sonnet-tenant-b',
+    created_at: '2026-01-02T00:00:00Z',
+    capabilities: { effort: { supported: true, high: { supported: true } } },
+  }], 'tenant-b-scope');
+  assertEq(router.resolveModel('sonnet', cfg, 'tenant-a-scope'), 'claude-sonnet-tenant-a');
+  assertEq(router.resolveModel('sonnet', cfg, 'tenant-b-scope'), 'claude-sonnet-tenant-b');
+  const body = { output_config: { effort: 'high' } };
+  assertEq(router.reconcileEffort(body, 'claude-sonnet-tenant-a', cfg, 'tenant-a-scope').action, 'clamp');
+  assertEq(body.output_config.effort, 'low');
+  catalog._reset();
+});
+
 // ─── catalog: alias de id BYOK p/ o picker `/model` ────────────────────────────
 
 test('catalog.aliasModelId: prefixa id não-Anthropic com o default; ids "claude"/"anthropic" passam intactos', () => {
   assertEq(catalog.aliasModelId('gpt-4', undefined), 'anthropic-ccb-alias-gpt-4');
   assertEq(catalog.aliasModelId('llama-3', 'custom-'), 'custom-ccb-alias-llama-3');
+  assertEq(catalog.aliasModelId('custom-ccb-alias-llama-3', 'custom-'), 'custom-ccb-alias-llama-3');
   assertEq(catalog.aliasModelId('claude-sonnet-4-6', undefined), 'claude-sonnet-4-6'); // já passa no filtro
   assertEq(catalog.aliasModelId('my-anthropic-model', undefined), 'my-anthropic-model'); // contém "anthropic"
   assertEq(catalog.aliasModelId('', undefined), '');
@@ -5053,6 +5116,17 @@ test('router.unaliasBodyModel: só desfaz o alias quando isByok=true; não-BYOK 
   router.unaliasBodyModel(body2, nonByokCfg);
   assertEq(body2.model, 'anthropic-ccb-alias-gpt-4'); // sem BYOK → não mexe (evita regressão no caso comum)
 
+  const upstreamCfg = {
+    upstream: {
+      enabled: true,
+      baseUrl: 'http://gateway',
+      modelAliasPrefix: 'corp-',
+    },
+  };
+  const bodyUpstream = { model: 'corp-ccb-alias-gpt-4' };
+  router.unaliasBodyModel(bodyUpstream, upstreamCfg);
+  assertEq(bodyUpstream.model, 'gpt-4'); // custom upstream também desfaz o alias
+
   const body3 = { model: 'claude-sonnet-4-6' };
   router.unaliasBodyModel(body3, byokCfg);
   assertEq(body3.model, 'claude-sonnet-4-6'); // sem prefixo → inalterado
@@ -5067,6 +5141,314 @@ test('router.unaliasBodyModel: só desfaz o alias quando isByok=true; não-BYOK 
   assertEq(router.unaliasBodyModel(null, byokCfg), null);
 });
 
+test('router.mergeUserConfig: upstream e endpoints fazem merge parcial sem apagar irmãos', () => {
+  const base = {
+    upstream: {
+      enabled: true,
+      baseUrl: 'https://gateway.test',
+      wireProtocol: 'anthropic',
+      endpoints: {
+        models: 'https://gateway.test/models',
+        generate: 'https://gateway.test/messages',
+        countTokens: 'https://gateway.test/count',
+      },
+      forwardHeaders: ['x-team'],
+    },
+  };
+  const merged = router.mergeUserConfig(base, {
+    upstream: {
+      wireProtocol: 'openai',
+      endpoints: { generate: 'https://gateway.test/chat' },
+    },
+  });
+  assertEq(merged.upstream.enabled, true);
+  assertEq(merged.upstream.baseUrl, 'https://gateway.test');
+  assertEq(merged.upstream.wireProtocol, 'openai');
+  assertEq(merged.upstream.endpoints.models, 'https://gateway.test/models');
+  assertEq(merged.upstream.endpoints.generate, 'https://gateway.test/chat');
+  assertEq(merged.upstream.endpoints.countTokens, 'https://gateway.test/count');
+  assertEq(merged.upstream.forwardHeaders, ['x-team']);
+});
+
+// ─── model-router: perfil configurável de upstream ───────────────────────────
+
+test('upstream-profile: env sobrescreve defaults e user-config sobrescreve env, campo a campo', () => {
+  const profile = require('../servers/model-router/upstream-profile.js');
+  const shipped = {
+    upstream: {
+      enabled: false,
+      wireProtocol: 'anthropic',
+      endpoints: {
+        models: 'https://default.test/v1/models',
+        generate: 'https://default.test/v1/messages',
+        countTokens: 'https://default.test/v1/messages/count_tokens',
+        classify: '',
+      },
+      forwardHeaders: ['x-default'],
+    },
+  };
+  const withEnv = profile.applyRouterEnvironment(shipped, {
+    ROUTER_UPSTREAM_ENABLED: 'true',
+    ROUTER_UPSTREAM_WIRE_PROTOCOL: 'openai',
+    ROUTER_UPSTREAM_MODELS_URL: 'https://env.test/models',
+    ROUTER_UPSTREAM_GENERATE_URL: 'https://env.test/v1/chat/completions?tenant=a',
+  });
+  const merged = profile.mergeRouterSection(withEnv.upstream, {
+    endpoints: { generate: 'https://user.test/custom/chat' },
+  });
+  assertEq(merged.enabled, true);
+  assertEq(merged.wireProtocol, 'openai');
+  assertEq(merged.endpoints.models, 'https://env.test/models');
+  assertEq(merged.endpoints.generate, 'https://user.test/custom/chat');
+  assertEq(merged.endpoints.countTokens, 'https://default.test/v1/messages/count_tokens');
+  assertEq(merged.forwardHeaders, ['x-default']);
+});
+
+test('upstream-profile: URL explícita preserva path/query e classify herda generate', () => {
+  const profile = require('../servers/model-router/upstream-profile.js');
+  const config = {
+    upstream: {
+      enabled: true,
+      wireProtocol: 'openai',
+      endpoints: {
+        generate: 'https://gateway.test/api/v9/chat/completions?deployment=blue',
+        classify: '',
+      },
+    },
+  };
+  const target = { isCustomEndpoint: true, isByok: false, protocol: 'https:', host: 'gateway.test', port: 443 };
+  const generation = profile.resolveOperationProfile(config, target, 'generate');
+  const classify = profile.resolveOperationProfile(config, target, 'classify');
+  assertEq(generation.ok, true);
+  assertEq(generation.url, 'https://gateway.test/api/v9/chat/completions?deployment=blue');
+  assertEq(generation.wireProtocol, 'openai');
+  assertEq(classify.ok, true);
+  assertEq(classify.url, generation.url);
+});
+
+test('upstream-profile: baseUrl legado deriva paths por protocolo sem perder prefixo de path', () => {
+  const profile = require('../servers/model-router/upstream-profile.js');
+  const anthropic = {
+    upstream: { enabled: true, wireProtocol: 'anthropic', baseUrl: 'https://gateway.test/root/' },
+  };
+  const openai = {
+    upstream: { enabled: true, wireProtocol: 'openai', baseUrl: 'https://gateway.test/root/' },
+  };
+  const target = { isCustomEndpoint: true, isByok: false, protocol: 'https:', host: 'gateway.test', port: 443 };
+  assertEq(profile.resolveOperationProfile(anthropic, target, 'generate').url, 'https://gateway.test/root/v1/messages');
+  assertEq(profile.resolveOperationProfile(anthropic, target, 'models').url, 'https://gateway.test/root/v1/models');
+  assertEq(profile.resolveOperationProfile(openai, target, 'generate').url, 'https://gateway.test/root/v1/chat/completions');
+  const missingCount = profile.resolveOperationProfile(openai, target, 'countTokens');
+  assertEq(missingCount.ok, false);
+  assert(/countTokens/.test(missingCount.error), 'OpenAI sem countTokens explícito deve falhar alto');
+});
+
+test('upstream-profile: endpoint de models não autoriza derivar geração sem baseUrl', () => {
+  const profile = require('../servers/model-router/upstream-profile.js');
+  const config = {
+    upstream: {
+      enabled: true,
+      wireProtocol: 'anthropic',
+      endpoints: { models: 'https://catalog.test/custom/models' },
+    },
+  };
+  const target = { isCustomEndpoint: true, isByok: false, protocol: 'https:', host: 'catalog.test', port: 443 };
+  const generation = profile.resolveOperationProfile(config, target, 'generate');
+  assertEq(generation.ok, false);
+  assert(/generate/.test(generation.error), 'erro precisa identificar a operação ausente');
+});
+
+test('upstream-profile: protocolo/URL inválidos falham alto em vez de cair em default silencioso', () => {
+  const profile = require('../servers/model-router/upstream-profile.js');
+  const target = { isCustomEndpoint: true, isByok: false, protocol: 'https:', host: 'gateway.test', port: 443 };
+  const badProtocol = profile.resolveOperationProfile({
+    upstream: { enabled: true, wireProtocol: 'coisa', endpoints: { generate: 'https://gateway.test/x' } },
+  }, target, 'generate');
+  assertEq(badProtocol.ok, false);
+  assert(/wireProtocol/.test(badProtocol.error));
+
+  const badUrl = profile.resolveOperationProfile({
+    upstream: { enabled: true, wireProtocol: 'anthropic', endpoints: { generate: 'not-a-url' } },
+  }, target, 'generate');
+  assertEq(badUrl.ok, false);
+  assert(/URL/.test(badUrl.error));
+});
+
+test('upstream-profile: alias vale para BYOK e upstream, mas não para Anthropic direta', () => {
+  const profile = require('../servers/model-router/upstream-profile.js');
+  const config = {
+    upstream: { modelAliasPrefix: 'corp-' },
+    byok: { modelAliasPrefix: 'mine-' },
+  };
+  assertEq(profile.resolveAliasPolicy(config, { isCustomEndpoint: false, isByok: false }), { enabled: false, prefix: 'anthropic-' });
+  assertEq(profile.resolveAliasPolicy(config, { isCustomEndpoint: true, isByok: false }), { enabled: true, prefix: 'corp-' });
+  assertEq(profile.resolveAliasPolicy(config, { isCustomEndpoint: true, isByok: true }), { enabled: true, prefix: 'mine-' });
+});
+
+// ─── model-router: adapters Anthropic/OpenAI ─────────────────────────────────
+
+test('protocol-adapters: Anthropic preserva request/response sem tradução', () => {
+  const adapters = require('../servers/model-router/protocols/index.js');
+  const adapter = adapters.getAdapter('anthropic');
+  const request = { model: 'claude-x', messages: [{ role: 'user', content: 'oi' }], stream: true };
+  assertEq(adapter.toUpstreamRequest(request), request);
+  const response = { id: 'msg_1', type: 'message', content: [{ type: 'text', text: 'ok' }] };
+  assertEq(adapter.fromUpstreamJson(response, request), response);
+});
+
+test('protocol-adapters: OpenAI preserva tools, tool results, imagem e parâmetros da request', () => {
+  const adapters = require('../servers/model-router/protocols/index.js');
+  const adapter = adapters.getAdapter('openai');
+  const request = {
+    model: 'gpt-4.1',
+    system: [{ type: 'text', text: 'system prompt' }],
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'analise' },
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'YWJj' } },
+        ],
+      },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'vou consultar' },
+          { type: 'tool_use', id: 'tool_1', name: 'buscar', input: { q: 'x' } },
+        ],
+      },
+      {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'tool_1', content: 'resultado' }],
+      },
+    ],
+    tools: [{ name: 'buscar', description: 'Busca', input_schema: { type: 'object', properties: { q: { type: 'string' } } } }],
+    tool_choice: { type: 'tool', name: 'buscar' },
+    max_tokens: 1234,
+    temperature: 0.2,
+    stop_sequences: ['FIM'],
+    stream: true,
+  };
+  const out = adapter.toUpstreamRequest(request);
+  assertEq(out.model, 'gpt-4.1');
+  assertEq(out.max_tokens, 1234);
+  assertEq(out.temperature, 0.2);
+  assertEq(out.stop, ['FIM']);
+  assertEq(out.stream, true);
+  assertEq(out.tools[0], {
+    type: 'function',
+    function: { name: 'buscar', description: 'Busca', parameters: request.tools[0].input_schema },
+  });
+  assertEq(out.tool_choice, { type: 'function', function: { name: 'buscar' } });
+  assert(out.messages.some(m => m.role === 'user' && Array.isArray(m.content)
+    && m.content.some(p => p.type === 'image_url' && p.image_url.url === 'data:image/png;base64,YWJj')));
+  assert(out.messages.some(m => m.role === 'assistant' && m.tool_calls
+    && m.tool_calls[0].function.arguments === '{"q":"x"}'));
+  assert(out.messages.some(m => m.role === 'tool' && m.tool_call_id === 'tool_1' && m.content === 'resultado'));
+});
+
+test('protocol-adapters: OpenAI JSON retorna blocos text/tool_use, usage e stop_reason Anthropic', () => {
+  const adapters = require('../servers/model-router/protocols/index.js');
+  const adapter = adapters.getAdapter('openai');
+  const upstream = {
+    id: 'chatcmpl_1',
+    model: 'gpt-4.1',
+    choices: [{
+      finish_reason: 'tool_calls',
+      message: {
+        role: 'assistant',
+        content: 'consultando',
+        tool_calls: [{
+          id: 'call_1',
+          type: 'function',
+          function: { name: 'buscar', arguments: '{"q":"abc"}' },
+        }],
+      },
+    }],
+    usage: { prompt_tokens: 10, completion_tokens: 4 },
+  };
+  const out = adapter.fromUpstreamJson(upstream, { model: 'gpt-4.1' });
+  assertEq(out.id, 'chatcmpl_1');
+  assertEq(out.type, 'message');
+  assertEq(out.role, 'assistant');
+  assertEq(out.model, 'gpt-4.1');
+  assertEq(out.content, [
+    { type: 'text', text: 'consultando' },
+    { type: 'tool_use', id: 'call_1', name: 'buscar', input: { q: 'abc' } },
+  ]);
+  assertEq(out.stop_reason, 'tool_use');
+  assertEq(out.usage, { input_tokens: 10, output_tokens: 4 });
+});
+
+test('protocol-adapters: OpenAI SSE preserva texto, argumentos fragmentados, usage e stop reason', () => {
+  const adapters = require('../servers/model-router/protocols/index.js');
+  const stream = adapters.getAdapter('openai').createStreamTranslator({ model: 'gpt-4.1' });
+  const events = [
+    ...stream.start(),
+    ...stream.consume({ id: 'chatcmpl_s', model: 'gpt-4.1', choices: [{ delta: { content: 'Oi ' } }] }),
+    ...stream.consume({ choices: [{ delta: { tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'buscar', arguments: '{"q":' } }] } }] }),
+    ...stream.consume({ choices: [{ delta: { tool_calls: [{ index: 0, function: { arguments: '"abc"}' } }] }, finish_reason: 'tool_calls' }], usage: { prompt_tokens: 8, completion_tokens: 3 } }),
+    ...stream.finish(),
+  ];
+  assert(events.some(e => e.event === 'content_block_delta' && e.data.delta.type === 'text_delta' && e.data.delta.text === 'Oi '));
+  assert(events.some(e => e.event === 'content_block_start' && e.data.content_block.type === 'tool_use'
+    && e.data.content_block.id === 'call_1' && e.data.content_block.name === 'buscar'));
+  assertEq(events.filter(e => e.event === 'content_block_delta' && e.data.delta.type === 'input_json_delta')
+    .map(e => e.data.delta.partial_json).join(''), '{"q":"abc"}');
+  const messageDelta = events.find(e => e.event === 'message_delta');
+  assertEq(messageDelta.data.delta.stop_reason, 'tool_use');
+  assertEq(messageDelta.data.usage.output_tokens, 3);
+  assertEq(events.filter(e => e.event === 'message_stop').length, 1);
+});
+
+test('protocol-adapters: bloco Anthropic não suportado falha alto, sem omitir conteúdo', () => {
+  const adapters = require('../servers/model-router/protocols/index.js');
+  let error = null;
+  try {
+    adapters.getAdapter('openai').toUpstreamRequest({
+      model: 'gpt',
+      messages: [{ role: 'user', content: [{ type: 'document', source: { type: 'text', data: 'x' } }] }],
+    });
+  } catch (err) {
+    error = err;
+  }
+  assert(error && /document/.test(error.message), 'bloco não suportado precisa gerar erro acionável');
+});
+
+test('protocol-adapters: OpenAI tolera thinking histórico e preserva imagem em tool_result', () => {
+  const adapters = require('../servers/model-router/protocols/index.js');
+  const out = adapters.getAdapter('openai').toUpstreamRequest({
+    model: 'gpt',
+    messages: [
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'raciocínio interno' },
+          { type: 'redacted_thinking', data: 'opaque' },
+          { type: 'text', text: 'resultado público' },
+          { type: 'tool_use', id: 'tool_1', name: 'ver', input: {} },
+        ],
+      },
+      {
+        role: 'user',
+        content: [{
+          type: 'tool_result',
+          tool_use_id: 'tool_1',
+          content: [
+            { type: 'text', text: 'imagem capturada' },
+            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'YWJj' } },
+          ],
+        }],
+      },
+    ],
+  });
+  const assistant = out.messages.find(m => m.role === 'assistant');
+  assertEq(assistant.content, 'resultado público');
+  const tool = out.messages.find(m => m.role === 'tool');
+  assertEq(tool.content, 'imagem capturada');
+  const imageMessage = out.messages.find(m => m.role === 'user' && Array.isArray(m.content));
+  assert(imageMessage.content.some(p => p.type === 'image_url' && p.image_url.url === 'data:image/png;base64,YWJj'));
+});
 // ─── model-router-shim (instalador do shim do claude.exe, Windows) ────────────
 // Testes herméticos: NUNCA tocam no claude.exe real — usam dirs temporários com
 // arquivos "grandes" (>1MB = original) e "pequenos" (<1MB = wrapper). A lógica de
@@ -5546,6 +5928,27 @@ test('mergeRouterConfig: nim/routing merge RASO preserva chaves shipadas', () =>
   assertEq(m.routing.a, 2);            // sobrescrito pelo override
   assertEq(m.routing.catalog.enabled, true); // preservado do shipped
   assertEq(m.enabled, false);          // não veio no override → shipped
+});
+
+test('mergeRouterConfig: upstream/byok preservam endpoints irmãos em override parcial', () => {
+  const shipped = {
+    upstream: {
+      enabled: false,
+      wireProtocol: 'anthropic',
+      endpoints: { models: 'M', generate: 'G', countTokens: 'C' },
+    },
+    byok: {
+      enabled: false,
+      endpoints: { models: 'BM', generate: 'BG' },
+    },
+  };
+  const m = routerEnsure.mergeRouterConfig(shipped, {
+    upstream: { enabled: true, endpoints: { generate: 'G2' } },
+    byok: { endpoints: { generate: 'BG2' } },
+  });
+  assertEq(m.upstream.enabled, true);
+  assertEq(m.upstream.endpoints, { models: 'M', generate: 'G2', countTokens: 'C' });
+  assertEq(m.byok.endpoints, { models: 'BM', generate: 'BG2' });
 });
 
 test('mergeRouterConfig: override não-objeto (undefined) → retorna shipped', () => {
@@ -6755,6 +7158,25 @@ test('ADR-010 byok-classify: opt-in ON + always → TENTA endpoint; sucesso → 
   assertEq(tier, 'opus');
 });
 
+test('ADR-010 byok-classify: endpoints completos funcionam sem baseUrl legado', async () => {
+  let byokCalls = 0;
+  const deps = {
+    classifyByok: async () => { byokCalls++; return 'sonnet'; },
+    classifyLocal: async () => 'haiku',
+  };
+  const cfg = {
+    byok: {
+      enabled: true,
+      mode: 'always',
+      classifyRemote: true,
+      endpoints: { generate: 'https://e/chat', classify: 'https://e/classify' },
+    },
+  };
+  const tier = await routerServer.classify('oi', cfg, deps);
+  assertEq(byokCalls, 1);
+  assertEq(tier, 'sonnet');
+});
+
 test('ADR-010 byok-classify: on-limit SEM cooldown → NÃO classifica remotamente (gate de privacidade)', async () => {
   let byokCalls = 0;
   const deps = { classifyByok: async () => { byokCalls++; return 'opus'; }, classifyLocal: async () => 'sonnet' };
@@ -7289,6 +7711,348 @@ test('byok.resolveUpstream: gateway alternativo (config.upstream) → isCustomEn
   assertEq(u.isByok, false, 'credencial da assinatura continua fluindo — nao e BYOK');
   assertEq(u.isCustomEndpoint, true, 'mas o destino NAO e a Anthropic real — precisa do teto de timeout maior');
   assertEq(u.host, 'gateway.corp.example.com');
+});
+
+test('byok.resolveUpstream: custom endpoint pode ser definido somente pela URL operacional', () => {
+  const cfg = {
+    upstream: {
+      enabled: true,
+      endpoints: { generate: 'http://gateway.corp.example.com:8080/custom/chat' },
+    },
+  };
+  const u = byok.resolveUpstream(cfg, { onLimit: false });
+  assertEq(u.isByok, false);
+  assertEq(u.isCustomEndpoint, true);
+  assertEq(u.host, 'gateway.corp.example.com');
+  assertEq(u.port, 8080);
+  assertEq(u.protocol, 'http:');
+});
+
+test('custom upstream OpenAI E2E: usa URL configurada, remove alias e traduz request/response', async () => {
+  const { PassThrough } = require('stream');
+  let received = null;
+  const fake = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', chunk => { raw += chunk; });
+    req.on('end', () => {
+      received = { path: req.url, headers: req.headers, body: JSON.parse(raw) };
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        id: 'chatcmpl_e2e',
+        model: 'gpt-4.1',
+        choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'feito' } }],
+        usage: { prompt_tokens: 7, completion_tokens: 2 },
+      }));
+    });
+  });
+  const port = await _listen0(fake);
+  try {
+    const cfg = {
+      upstream: {
+        enabled: true,
+        wireProtocol: 'openai',
+        modelAliasPrefix: 'anthropic-',
+        endpoints: {
+          generate: `http://127.0.0.1:${port}/tenant/acme/v1/chat/completions?deployment=blue`,
+        },
+        forwardHeaders: ['x-team'],
+      },
+      fallback: { triggerStatuses: [429], cooldown: { enabled: false } },
+    };
+    const requestBody = {
+      model: 'anthropic-ccb-alias-gpt-4.1',
+      messages: [{ role: 'user', content: 'oi' }],
+      tools: [{ name: 'buscar', input_schema: { type: 'object', properties: {} } }],
+      max_tokens: 32,
+      stream: false,
+    };
+    router.unaliasBodyModel(requestBody, cfg);
+    const sink = new PassThrough();
+    sink.headersSent = false;
+    let status = null;
+    let responseText = '';
+    sink.writeHead = (code) => { status = code; sink.headersSent = true; };
+    sink.on('data', chunk => { responseText += chunk.toString(); });
+    const ended = new Promise((resolve, reject) => {
+      sink.on('end', resolve);
+      sink.on('error', reject);
+    });
+    router.forwardRequest(
+      requestBody,
+      { authorization: '******', 'x-team': 'acme', 'anthropic-version': '2023-06-01' },
+      sink,
+      cfg,
+      { origTier: null, finalTier: null, path: '/v1/messages', tenant: 'acme' },
+    );
+    await ended;
+    assertEq(status, 200);
+    assertEq(received.path, '/tenant/acme/v1/chat/completions?deployment=blue');
+    assertEq(received.body.model, 'gpt-4.1');
+    assertEq(received.body.tools[0].type, 'function');
+    assertEq(received.headers.authorization, '******');
+    assertEq(received.headers['x-team'], 'acme');
+    const response = JSON.parse(responseText);
+    assertEq(response.type, 'message');
+    assertEq(response.content, [{ type: 'text', text: 'feito' }]);
+    assertEq(response.usage, { input_tokens: 7, output_tokens: 2 });
+  } finally {
+    await new Promise(resolve => fake.close(resolve));
+  }
+});
+
+test('custom upstream OpenAI SSE E2E: traduz texto e tool call para eventos Anthropic', async () => {
+  const { PassThrough } = require('stream');
+  const fake = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('data: {"id":"chat_s","choices":[{"delta":{"content":"Oi "}}]}\n\n');
+      res.write('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"buscar","arguments":"{\\"q\\":"}}]}}]}\n\n');
+      res.write('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"x\\"}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":5,"completion_tokens":2}}\n\n');
+      res.end('data: [DONE]\n\n');
+    });
+  });
+  const port = await _listen0(fake);
+  try {
+    const cfg = {
+      upstream: {
+        enabled: true,
+        wireProtocol: 'openai',
+        endpoints: { generate: `http://127.0.0.1:${port}/stream` },
+      },
+      fallback: { triggerStatuses: [429], cooldown: { enabled: false } },
+    };
+    const sink = new PassThrough();
+    sink.headersSent = false;
+    sink.writeHead = () => { sink.headersSent = true; };
+    let text = '';
+    sink.on('data', chunk => { text += chunk.toString(); });
+    const ended = new Promise((resolve, reject) => {
+      sink.on('end', resolve);
+      sink.on('error', reject);
+    });
+    router.forwardRequest({
+      model: 'gpt-4.1',
+      messages: [{ role: 'user', content: 'oi' }],
+      max_tokens: 32,
+      stream: true,
+    }, { authorization: 'fixture' }, sink, cfg, { path: '/v1/messages' });
+    await ended;
+    assert(text.includes('event: message_start'), `message_start ausente: ${text}`);
+    assert(text.includes('"type":"text_delta","text":"Oi "'), `text_delta ausente: ${text}`);
+    assert(text.includes('"type":"tool_use","id":"call_1","name":"buscar"'), `tool_use ausente: ${text}`);
+    assertEq((text.match(/"type":"input_json_delta"/g) || []).length, 2,
+      `argumentos fragmentados precisam permanecer em dois input_json_delta: ${text}`);
+    assert(text.includes('"stop_reason":"tool_use"'), `stop_reason ausente: ${text}`);
+    assertEq((text.match(/event: message_stop/g) || []).length, 1);
+  } finally {
+    await new Promise(resolve => fake.close(resolve));
+  }
+});
+
+test('custom upstream /v1/models E2E: catálogo aquecido aplica alias no picker', async () => {
+  catalog._reset();
+  const seen = [];
+  const fake = http.createServer((req, res) => {
+    seen.push(req.url);
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({
+      object: 'list',
+      data: [{ id: 'gpt-4.1', display_name: 'GPT 4.1', created_at: '2026-01-01T00:00:00Z' }],
+      has_more: false,
+    }));
+  });
+  const upstreamPort = await _listen0(fake);
+  const cfg = {
+    upstream: {
+      enabled: true,
+      wireProtocol: 'openai',
+      modelAliasPrefix: 'anthropic-',
+      endpoints: {
+        models: `http://127.0.0.1:${upstreamPort}/catalog/custom?tenant=acme`,
+        generate: `http://127.0.0.1:${upstreamPort}/chat`,
+      },
+    },
+  };
+  const proxy = await router.createServer(cfg, 'fallback-only', 'a'.repeat(64));
+  const proxyPort = await _listen0(proxy);
+  const getModels = () => new Promise((resolve, reject) => {
+    const req = http.get(`http://127.0.0.1:${proxyPort}/v1/models`, {
+      headers: { 'x-api-key': 'fixture-key' },
+    }, (res) => {
+      let raw = '';
+      res.on('data', chunk => { raw += chunk; });
+      res.on('end', () => {
+        try { resolve(JSON.parse(raw)); } catch (err) { reject(err); }
+      });
+    });
+    req.on('error', reject);
+  });
+  try {
+    const first = await getModels();
+    assertEq(first.data[0].id, 'anthropic-ccb-alias-gpt-4.1');
+    assertEq(first.data[0].display_name, 'GPT 4.1');
+    assert(seen.some(url => url.startsWith('/catalog/custom?tenant=acme')), 'models URL configurada deve ser usada');
+  } finally {
+    await new Promise(resolve => proxy.close(resolve));
+    await new Promise(resolve => fake.close(resolve));
+    catalog._reset();
+  }
+});
+
+test('custom upstream count_tokens E2E: usa URL própria e nunca envia alias do picker', async () => {
+  const { PassThrough } = require('stream');
+  let received = null;
+  const fake = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', chunk => { raw += chunk; });
+    req.on('end', () => {
+      received = { path: req.url, body: JSON.parse(raw) };
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ input_tokens: 9 }));
+    });
+  });
+  const port = await _listen0(fake);
+  try {
+    const cfg = {
+      upstream: {
+        enabled: true,
+        wireProtocol: 'openai',
+        endpoints: {
+          generate: `http://127.0.0.1:${port}/chat`,
+          countTokens: `http://127.0.0.1:${port}/tokenizer/count?format=anthropic`,
+        },
+      },
+    };
+    const sink = new PassThrough();
+    sink.headersSent = false;
+    sink.writeHead = () => { sink.headersSent = true; };
+    let responseText = '';
+    sink.on('data', chunk => { responseText += chunk.toString(); });
+    const ended = new Promise((resolve, reject) => {
+      sink.on('end', resolve);
+      sink.on('error', reject);
+    });
+    router.passthrough(
+      JSON.stringify({ model: 'anthropic-ccb-alias-gpt-4.1', messages: [] }),
+      { authorization: '******' },
+      sink,
+      '/v1/messages/count_tokens',
+      cfg,
+    );
+    await ended;
+    assertEq(received.path, '/tokenizer/count?format=anthropic');
+    assertEq(received.body.model, 'gpt-4.1');
+    assertEq(JSON.parse(responseText), { input_tokens: 9 });
+  } finally {
+    await new Promise(resolve => fake.close(resolve));
+  }
+});
+
+test('BYOK OpenAI classify E2E: usa classify URL e traduz resposta para tier', async () => {
+  let received = null;
+  const fake = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', chunk => { raw += chunk; });
+    req.on('end', () => {
+      received = { path: req.url, body: JSON.parse(raw) };
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        id: 'chatcmpl_classify',
+        choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'sonnet' } }],
+        usage: { prompt_tokens: 20, completion_tokens: 1 },
+      }));
+    });
+  });
+  const port = await _listen0(fake);
+  try {
+    const cfg = {
+      byok: {
+        enabled: true,
+        mode: 'always',
+        classifyRemote: true,
+        wireProtocol: 'openai',
+        endpoints: {
+          generate: `http://127.0.0.1:${port}/chat`,
+          classify: `http://127.0.0.1:${port}/classify/custom`,
+        },
+        headers: { Authorization: 'Bearer fixture-byok' },
+      },
+      routing: { haikuTier: { model: 'gpt-mini' } },
+    };
+    const tier = await router.classifyByok('implementar uma feature', cfg);
+    assertEq(tier, 'sonnet');
+    assertEq(received.path, '/classify/custom');
+    assertEq(received.body.model, 'gpt-mini');
+    assert(Array.isArray(received.body.messages));
+  } finally {
+    await new Promise(resolve => fake.close(resolve));
+  }
+});
+
+test('BYOK OpenAI fallback E2E: usa generate URL e devolve contrato Anthropic', async () => {
+  const { PassThrough } = require('stream');
+  let receivedPath = null;
+  const fake = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', chunk => { raw += chunk; });
+    req.on('end', () => {
+      receivedPath = req.url;
+      const body = JSON.parse(raw);
+      assertEq(body.model, 'gpt-4.1');
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({
+        id: 'chatcmpl_fallback',
+        model: 'gpt-4.1',
+        choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: 'fallback ok' } }],
+        usage: { prompt_tokens: 3, completion_tokens: 2 },
+      }));
+    });
+  });
+  const port = await _listen0(fake);
+  try {
+    const cfg = {
+      byok: {
+        enabled: true,
+        mode: 'always',
+        wireProtocol: 'openai',
+        endpoints: { generate: `http://127.0.0.1:${port}/fallback/chat` },
+        headers: { Authorization: 'Bearer fixture-byok' },
+      },
+    };
+    const sink = new PassThrough();
+    sink.headersSent = false;
+    sink.writeHead = () => { sink.headersSent = true; };
+    let responseText = '';
+    sink.on('data', chunk => { responseText += chunk.toString(); });
+    const ended = new Promise((resolve, reject) => {
+      sink.on('end', resolve);
+      sink.on('error', reject);
+    });
+    router.handleLimitExceeded({
+      model: 'gpt-4.1',
+      messages: [{ role: 'user', content: 'oi' }],
+      max_tokens: 16,
+      stream: false,
+    }, cfg, sink, '');
+    await ended;
+    assertEq(receivedPath, '/fallback/chat');
+    assertEq(JSON.parse(responseText).content, [{ type: 'text', text: 'fallback ok' }]);
+  } finally {
+    await new Promise(resolve => fake.close(resolve));
+  }
+});
+
+test('router.catalogScopeKey: varia por tenant/destino/header sem revelar segredo', () => {
+  const target = { isByok: false, isCustomEndpoint: true };
+  const profile = { kind: 'upstream', wireProtocol: 'openai', url: 'https://gateway.test/models' };
+  const a = router.catalogScopeKey('tenant-a', profile, { authorization: 'fixture-value-a' });
+  const b = router.catalogScopeKey('tenant-b', profile, { authorization: 'fixture-value-a' });
+  const c = router.catalogScopeKey('tenant-a', profile, { authorization: 'fixture-value-b' });
+  assert(a !== b && a !== c, 'tenant e credencial precisam participar do escopo');
+  assert(!a.includes('fixture-value-a') && !c.includes('fixture-value-b'), 'segredos não podem aparecer na chave');
+  assert(a.startsWith('tenant-a:'), 'tenant pode permanecer legível para diagnóstico');
+  void target;
 });
 
 test('byok.resolveUpstream: gateway alternativo DESLIGADO → Anthropic pura, isCustomEndpoint false', () => {
@@ -8102,6 +8866,13 @@ test('resolveMode: byok always liga o proxy quando nada mais esta ligado', () =>
 test('resolveMode: byok NAO rouba a precedencia de sticky (destino e ortogonal a rota)', () => {
   const rm = require('./lib/router-mode.js');
   assertEq(rm.resolveMode({ sticky: { enabled: true }, byok: { enabled: true, mode: 'always' } }), 'sticky-tier');
+});
+
+test('resolveMode: custom upstream sozinho liga o proxy em passthrough', () => {
+  const rm = require('./lib/router-mode.js');
+  assertEq(rm.resolveMode({ upstream: { enabled: true } }), 'fallback-only');
+  assertEq(rm.resolveMode({ upstream: { enabled: false } }), 'off');
+  assertEq(rm.resolveMode({ enabled: true, upstream: { enabled: true } }), 'routing');
 });
 
 test('modeMeta: byok-direct tem rotulo e cor proprios (nao cai no fail-safe off)', () => {
@@ -10103,6 +10874,126 @@ test('dashboard.writeRouterOverride: BYOK persiste url/modo/headers e PRESERVA o
       delete require.cache[require.resolve('./dashboard.js')];
     }
   });
+});
+
+test('dashboard.writeRouterOverride: custom upstream persiste protocolo/endpoints/alias e preserva campos ausentes', () => {
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-upstream-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      const gp = path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json');
+      delete require.cache[require.resolve('./dashboard.js')];
+      const dash = require('./dashboard.js');
+      dash.writeRouterOverride({
+        upstream: {
+          enabled: true,
+          wireProtocol: 'openai',
+          modelAliasPrefix: 'corp-',
+          endpoints: {
+            models: 'https://gateway.test/catalog',
+            generate: 'https://gateway.test/chat',
+            countTokens: 'https://gateway.test/count',
+            classify: 'https://gateway.test/classify',
+          },
+          forwardHeaders: ['x-team'],
+        },
+      });
+      let out = JSON.parse(fs.readFileSync(gp, 'utf-8'));
+      assertEq(out.upstream.enabled, true);
+      assertEq(out.upstream.wireProtocol, 'openai');
+      assertEq(out.upstream.modelAliasPrefix, 'corp-');
+      assertEq(out.upstream.endpoints.generate, 'https://gateway.test/chat');
+      assertEq(out.upstream.forwardHeaders, ['x-team']);
+
+      dash.writeRouterOverride({ upstream: { endpoints: { generate: 'https://gateway.test/chat-v2' } } });
+      out = JSON.parse(fs.readFileSync(gp, 'utf-8'));
+      assertEq(out.upstream.endpoints.models, 'https://gateway.test/catalog');
+      assertEq(out.upstream.endpoints.generate, 'https://gateway.test/chat-v2');
+      assertEq(out.upstream.endpoints.countTokens, 'https://gateway.test/count');
+      assertEq(out.upstream.forwardHeaders, ['x-team']);
+    } finally {
+      process.env.CLAUDE_PLUGIN_DATA = saved;
+      delete require.cache[require.resolve('./dashboard.js')];
+    }
+  });
+});
+
+test('dashboard.resolveRouterFlags: user-config vence env e env vence shipped por campo', () => {
+  withTempHome(() => {
+    const savedData = process.env.CLAUDE_PLUGIN_DATA;
+    const savedProtocol = process.env.ROUTER_UPSTREAM_WIRE_PROTOCOL;
+    const savedModels = process.env.ROUTER_UPSTREAM_MODELS_URL;
+    const savedGenerate = process.env.ROUTER_UPSTREAM_GENERATE_URL;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-upstream-env-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      process.env.ROUTER_UPSTREAM_WIRE_PROTOCOL = 'openai';
+      process.env.ROUTER_UPSTREAM_MODELS_URL = 'https://env.test/models';
+      process.env.ROUTER_UPSTREAM_GENERATE_URL = 'https://env.test/chat';
+      const gp = path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json');
+      fs.mkdirSync(path.dirname(gp), { recursive: true });
+      fs.writeFileSync(gp, JSON.stringify({
+        upstream: { endpoints: { generate: 'https://user.test/chat' } },
+      }));
+      delete require.cache[require.resolve('./dashboard.js')];
+      const effective = require('./dashboard.js').resolveRouterFlags().upstream;
+      assertEq(effective.wireProtocol, 'openai');
+      assertEq(effective.endpoints.models, 'https://env.test/models');
+      assertEq(effective.endpoints.generate, 'https://user.test/chat');
+    } finally {
+      process.env.CLAUDE_PLUGIN_DATA = savedData;
+      if (savedProtocol === undefined) delete process.env.ROUTER_UPSTREAM_WIRE_PROTOCOL;
+      else process.env.ROUTER_UPSTREAM_WIRE_PROTOCOL = savedProtocol;
+      if (savedModels === undefined) delete process.env.ROUTER_UPSTREAM_MODELS_URL;
+      else process.env.ROUTER_UPSTREAM_MODELS_URL = savedModels;
+      if (savedGenerate === undefined) delete process.env.ROUTER_UPSTREAM_GENERATE_URL;
+      else process.env.ROUTER_UPSTREAM_GENERATE_URL = savedGenerate;
+      delete require.cache[require.resolve('./dashboard.js')];
+    }
+  });
+});
+
+test('dashboard UI: custom upstream expõe protocolo, alias e URLs por operação e envia body.upstream', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf8');
+  for (const id of [
+    'router-upstream-enable',
+    'router-upstream-wire-protocol',
+    'router-upstream-alias-prefix',
+    'router-upstream-models-url',
+    'router-upstream-generate-url',
+    'router-upstream-count-tokens-url',
+    'router-upstream-classify-url',
+    'router-upstream-forward-headers',
+  ]) {
+    assert(html.includes(`id="${id}"`), `dashboard precisa expor #${id}`);
+  }
+  assert(/body\.upstream\s*=\s*upstream/.test(html), 'applyRouter precisa enviar body.upstream');
+  assert(/const up = cfg\.upstream \|\| \{\}/.test(html), 'loadRouterConfig precisa carregar cfg.upstream');
+});
+
+test('curation-paths: config do monorepo vence marcador package.json da subpasta; marcador local vence ancestral alheio', () => {
+  const curationPaths = require('./curation-paths.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-curation-root-'));
+  try {
+    const monorepo = path.join(root, 'repo');
+    const pkg = path.join(monorepo, 'packages', 'api');
+    fs.mkdirSync(path.join(monorepo, '.vscode'), { recursive: true });
+    fs.mkdirSync(pkg, { recursive: true });
+    fs.writeFileSync(path.join(monorepo, 'package.json'), '{}');
+    fs.writeFileSync(path.join(monorepo, '.vscode', 'shells.json'), '{"version":1,"shells":[]}');
+    fs.writeFileSync(path.join(pkg, 'package.json'), '{}');
+    assertEq(curationPaths.findProjectRoot(pkg), monorepo);
+
+    const isolated = path.join(root, 'isolated');
+    fs.mkdirSync(isolated, { recursive: true });
+    fs.writeFileSync(path.join(isolated, 'package.json'), '{}');
+    fs.mkdirSync(path.join(root, '.vscode'), { recursive: true });
+    fs.writeFileSync(path.join(root, '.vscode', 'shells.json'), '{"version":1,"shells":[]}');
+    assertEq(curationPaths.findProjectRoot(isolated), isolated);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('byok.parseHeaderLines: "Nome: valor" por linha → mapa', () => {
