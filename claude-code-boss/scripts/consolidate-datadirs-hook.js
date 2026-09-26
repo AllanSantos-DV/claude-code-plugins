@@ -45,7 +45,11 @@ function enumerateDefault(activeDir) {
   return require('./doctor.js').findDataDirCandidates(activeDir);
 }
 function spawnDefault(cmd, args, opts) {
-  return require('child_process').spawn(cmd, args, opts);
+  // windowsHide forced here (not trusted to callers): hooks run console-less.
+  // args must be an array: anything else in that slot would be read by Node as
+  // the options and the forced windowsHide ignored — fail loud instead.
+  if (!Array.isArray(args)) throw new TypeError('spawnDefault: args must be an array (options go in the 3rd argument)');
+  return require('child_process').spawn(cmd, args, { ...opts, windowsHide: true });
 }
 
 /**
@@ -137,5 +141,6 @@ if (require.main === module) {
   });
 }
 
-// Exported for deterministic unit tests (inject the spawn / fs / enumerate seams).
-module.exports = { run, openLogFd };
+// Exported for deterministic unit tests (inject the spawn / fs / enumerate seams;
+// _spawnDefault is the default spawn wrapper that forces windowsHide).
+module.exports = { run, openLogFd, _spawnDefault: spawnDefault };

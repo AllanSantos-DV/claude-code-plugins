@@ -86,6 +86,7 @@ class McpClient extends EventEmitter {
 
     this._process = spawn(javaCmd, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     });
 
     this._process.stdout.on('data', (chunk) => {
@@ -170,6 +171,7 @@ class McpClient extends EventEmitter {
 
     this._process = spawn(javaCmd, args, {
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     });
 
     // Handle basic output to avoid hanging
@@ -321,7 +323,7 @@ class McpClient extends EventEmitter {
     const candidates = ['java', 'java.exe'];
     for (const cmd of candidates) {
       try {
-        const result = require('child_process').execSync(`${cmd} -version 2>&1`, { stdio: 'pipe' });
+        const result = require('child_process').execSync(`${cmd} -version 2>&1`, { stdio: 'pipe', windowsHide: true });
         const out = result.toString();
         const match = out.match(/(?:openjdk|java|jdk) (?:version "?)?(\d+)/i);
         if (match && parseInt(match[1]) >= 21) return cmd;

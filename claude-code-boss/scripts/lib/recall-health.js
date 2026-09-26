@@ -9,10 +9,11 @@
  * unavailable — recall has been empty for N turns").
  *
  * Degraded reasons: 'no-compose' (daemon < 2.18 / tool missing), 'remote-error',
- * 'timeout'. The F2 ancestor-spine arm adds 'ancestor-timeout' / 'ancestor-error'
- * (a PARTIAL degradation: compose still returned, only the hierarchical union was
- * skipped) so byReason surfaces it without failing the turn. Everything else (a hit,
- * or an honest 'no-match') counts as ok.
+ * 'timeout'. The project arm (2.29.1; it replaced the F2 ancestor arm and its
+ * 'ancestor-*' reasons) adds 'project-arm-timeout' / 'project-arm-error' (a PARTIAL
+ * degradation: compose still returned, only the project search was skipped) so
+ * byReason surfaces it without failing the turn. Everything else (a hit, or an honest
+ * 'no-match') counts as ok.
  *
  * JANELA DESLIZANTE (report de campo v2.19.0): os totais eram VITALÍCIOS, sem
  * janela nem decaimento. Um usuário consertou a causa raiz e o alarme continuou
@@ -33,7 +34,7 @@ const { writeJsonAtomic } = require('./atomic-write.js');
 const DATA_DIR = dataDir();
 const FILE = path.join(DATA_DIR, '.runtime', 'recall-health.json');
 
-const DEGRADED_REASONS = new Set(['no-compose', 'remote-error', 'timeout', 'ancestor-timeout', 'ancestor-error']);
+const DEGRADED_REASONS = new Set(['no-compose', 'remote-error', 'timeout', 'project-arm-timeout', 'project-arm-error']);
 
 // Quantos outcomes recentes decidem o veredito. Grande o bastante para uma
 // degradação real não sumir num soluço; pequeno o bastante para o alarme APAGAR

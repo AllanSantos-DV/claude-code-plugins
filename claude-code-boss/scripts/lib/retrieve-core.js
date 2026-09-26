@@ -18,14 +18,39 @@ const brainConfig = require('./brain-config.js');
 const recallHealth = require('./recall-health.js');
 const { extractKeywords } = require('./text-utils.js');
 const { searchTwoPass } = require('./scope-search.js');
+const { USER_SENTINEL } = require('./scope-sanitizer.js');
 
 /**
- * F2 — timeout (ms) for the AUXILIARY ancestor-spine `search_memory` arm. Deliberately
- * short (default 500ms) and separate from the compose timeout: the ancestor union is a
- * best-effort ENRICHMENT, so it must never stall the per-turn recall — on timeout we
- * degrade to compose-only. Env-tunable via CCB_ANCESTOR_TIMEOUT_MS.
+ * 2.29.1 — timeout (ms) override for the PROJECT arm (`search_memory` filtered by the
+ * project chain + `__user__`). The arm now runs IN PARALLEL with compose, so by default
+ * it shares compose's `timeoutMs` (0 here = "use cc.timeoutMs"). Env-tunable via
+ * CCB_ANCESTOR_TIMEOUT_MS (name kept for compatibility with existing setups).
  */
-const ANCESTOR_TIMEOUT_MS = Number.parseInt(process.env.CCB_ANCESTOR_TIMEOUT_MS, 10) || 500;
+const ANCESTOR_TIMEOUT_MS = Number.parseInt(process.env.CCB_ANCESTOR_TIMEOUT_MS, 10) || 0;
+
+/**
+ * 2.29.1 — cap the recall query. The daemon's embed + FTS cost grows with the query
+ * length (a 4.7k-char prompt took 14 s in compose; the same prompt cut to 800 chars took
+ * 1.1 s and kept the top hit). The head of the prompt carries the intent. `max<=0` = off.
+ */
+function capQuery(prompt, max) {
+  const s = typeof prompt === 'string' ? prompt : '';
+  return max > 0 && s.length > max ? s.slice(0, max) : s;
+}
+
+/**
+ * 2.29.1 — ids the PROJECT arm searches: the focus, its ancestor spine, and the
+ * `__user__` scope (on mcp-memory only docs imported by brain-migrate carry it —
+ * saveMcp writes scope:"user" under the handshake project; see BACKLOG). Deduped,
+ * focus first. Home (no project_id) stays with compose.
+ */
+function projectArmIds(project, ancestorIds) {
+  const out = [];
+  for (const id of [project, ...(Array.isArray(ancestorIds) ? ancestorIds : []), USER_SENTINEL]) {
+    if (id && !out.includes(id)) out.push(id);
+  }
+  return out;
+}
 
 /** Race a promise against a timeout (ms<=0 disables). Rejects with a timeout error. */
 function withTimeout(promise, ms) {
@@ -66,48 +91,50 @@ function pickInjectable(facts, caps, { topK, maxChars, includeHomeSpine }) {
 }
 
 /**
- * F2 — map raw `search_memory` hits (the ancestor arm) to the compose FACT shape so
- * pickInjectable can budget the merged list uniformly. Hits carry no block `scope`, so
- * they are tagged 'ancestor' (non-home → survive the home-spine filter): they are the
- * project-hierarchy signal, not the home spine (which compose already federates).
+ * Map raw `search_memory` hits (the PROJECT arm) to the compose FACT shape so
+ * pickInjectable can budget the merged list uniformly. Hits below `minScore` are
+ * dropped: the arm always returns topK hits, and unrelated prompts still score
+ * ~0.5–0.63 on the hybrid scale (relevant ones ~0.65–0.77, measured 2026-09-25).
+ * Tagged scope 'project' (non-home → survives the home-spine filter).
  */
-function ancestorHitsToFacts(hits) {
-  return (Array.isArray(hits) ? hits : []).map((h) => ({
-    id: h.id || h.documentId || '',
-    title: h.title || '',
-    type: h.type || 'memory',
-    scope: 'ancestor',
-    summary: h.summary || '',
-    text: h.summary || '',
-    score: h.score || 0,
-  }));
+function armHitsToFacts(hits, minScore = 0) {
+  return (Array.isArray(hits) ? hits : [])
+    .filter((h) => (h.score || 0) >= minScore)
+    .map((h) => ({
+      id: h.id || h.documentId || '',
+      title: h.title || '',
+      type: h.type || 'memory',
+      scope: 'project',
+      summary: h.summary || '',
+      text: h.summary || '',
+      score: h.score || 0,
+    }));
 }
 
 /**
- * F2 — merge the CWD focus (compose facts) with the ancestor-spine hits into ONE list,
- * weighting the CWD highest: compose facts come FIRST (positions 1..K), THEN ancestor
- * hits by DESCENDING score. DEDUP by documentId — a doc present in BOTH keeps the
- * COMPOSE occurrence (its inline grounding text + scope). Pure → unit-testable. The
- * caller still runs pickInjectable on the result, so the SAME topK/maxChars budget and
- * title-dedup apply to the merged list.
+ * Merge compose facts with the PROJECT-arm hits into ONE list, project first:
+ * compose NON-home facts (the focus's composable docs), THEN arm hits by DESCENDING
+ * score, THEN compose HOME facts (the global spine — relevant to any project, so it
+ * fills the budget last instead of pushing project hits out). DEDUP by documentId —
+ * a doc present in BOTH keeps the COMPOSE occurrence (inline grounding text + scope).
+ * Pure → unit-testable. pickInjectable still applies topK/maxChars/title-dedup.
  */
-function mergeFactsSpine(composeFacts, ancestorFacts) {
-  const cf = Array.isArray(composeFacts) ? composeFacts.slice() : [];
-  const af = (Array.isArray(ancestorFacts) ? ancestorFacts.slice() : [])
+function mergeFactsSpine(composeFacts, armFacts) {
+  const cf = Array.isArray(composeFacts) ? composeFacts.filter(Boolean) : [];
+  const af = (Array.isArray(armFacts) ? armFacts.slice() : [])
     .sort((a, b) => (b.score || 0) - (a.score || 0));
+  const composeIds = new Set(cf.map((f) => f.id).filter(Boolean));
   const seen = new Set();
   const out = [];
-  for (const f of cf) {                 // compose FIRST — the CWD focus, highest relevance
+  const push = (f) => {
     const id = f && f.id;
+    if (id && seen.has(id)) return;
     if (id) seen.add(id);
     out.push(f);
-  }
-  for (const f of af) {                 // ancestors appended by score, skipping compose dups
-    const id = f && f.id;
-    if (id && seen.has(id)) continue;   // a doc in BOTH keeps the COMPOSE occurrence
-    if (id) seen.add(id);
-    out.push(f);
-  }
+  };
+  for (const f of cf) if (f.scope !== 'home') push(f);
+  for (const f of af) if (!(f.id && composeIds.has(f.id))) push(f); // a doc in BOTH keeps the COMPOSE occurrence
+  for (const f of cf) if (f.scope === 'home') push(f);
   return out;
 }
 
@@ -116,11 +143,15 @@ function mergeFactsSpine(composeFacts, ancestorFacts) {
  * recall path on mcp-memory (breaking change: no silent flat fallback). Degrades
  * fail-loud (empty context + recorded health) so a bad daemon never breaks a turn.
  *
- * F2 — HIERARCHICAL ancestor-spine: compose recalls the CWD focus (its handshake scope
- * = `project`); when `ancestorIds` carries ids BEYOND the focus, a SEPARATE
- * `search_memory` unions those ancestor scopes (server-side IN(...)), and the two are
- * merged CWD-first. The ancestor arm is best-effort — on timeout/error it degrades to
- * compose-only, never failing the turn.
+ * 2.29.1 — TWO arms IN PARALLEL over a capped query (`maxQueryChars`):
+ *   - compose_recall: the typed blocks (procedural/knowledge/skill + the home spine);
+ *   - PROJECT arm: `search_memory` filtered by project_id IN (focus, ancestors,
+ *     `__user__`), all types, `includeHome:false`. Compose only reads composable types,
+ *     and Boss-written projects hold lessons/patterns/decisions — without this arm the
+ *     project's own memory never reached the prompt (spike S0, 2026-09-25).
+ * Merged project-first (see mergeFactsSpine). Each arm degrades on its own: a failed
+ * compose still injects the arm's hits (and records the compose reason); a failed arm
+ * records 'project-arm-timeout'/'project-arm-error'. ONE health record per turn.
  *
  * `deps` is a test seam (inject a fake backend/recallHealth); production passes none.
  * @returns {Promise<{entries:object[], capabilities:object[], keywords:string[], project:string, reason?:string}>}
@@ -129,53 +160,57 @@ async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords }, 
   const backendRef = deps.backend || backend;
   const healthRef = deps.recallHealth || recallHealth;
   const cc = brainConfig.getRecallCompose();
+  const isTimeout = (err) => /timed out|timeout/i.test((err && err.message) || '');
   try {
     await backendRef.init({ project, skipEmbedder: true });
-    if (!backendRef.hasCompose || !backendRef.hasCompose()) {
-      console.error('[retrieve-core] compose_recall unavailable on mcp-memory daemon — recall degraded to empty (requires memory-server >=2.18)');
-      healthRef.record('no-compose');
-      return { entries: [], capabilities: [], keywords, project, reason: 'no-compose' };
-    }
+    const query = capQuery(prompt, cc.maxQueryChars);
     // Pool-warming (ADR-017): fire a home-federated search IN PARALLEL with compose
     // so ingested HOME docs accumulate recall signal and graduate (async Dreaming).
     // Best-effort, NOT injected, result DISCARDED — and fire-and-forget: retrieve-core
     // runs in the persistent brain-server daemon, so the search completes in the
     // background without adding its latency (up to timeoutMs) to this per-turn recall.
     if (cc.poolWarming && backendRef.warmPool) {
-      withTimeout(backendRef.warmPool(prompt, { topK }), cc.timeoutMs)
+      withTimeout(backendRef.warmPool(query, { topK }), cc.timeoutMs)
         .catch((err) => { console.error(`[retrieve-core] pool-warming skipped: ${err.message}`); });
     }
-    const composed = await withTimeout(
-      backendRef.compose(prompt, cc.overlay ? { metadata: cc.overlay } : {}),
-      cc.timeoutMs,
-    );
-    // F2 ancestor arm (LAZY): only when there are ancestor ids DISTINCT from the focus
-    // (`project`). Union those scopes via search_memory (still includeHome so the home
-    // spine federates). Degrade to compose-only on timeout/error — visible, never fatal.
-    let ancestorFacts = [];
-    const ancestorIdsOnly = (Array.isArray(ancestorIds) ? ancestorIds : []).filter((id) => id && id !== project);
-    if (ancestorIdsOnly.length && backendRef.search) {
-      try {
-        const hits = await withTimeout(
-          backendRef.search(prompt, { projectIds: ancestorIdsOnly, includeHome: true, topK }),
-          ANCESTOR_TIMEOUT_MS,
-        );
-        ancestorFacts = ancestorHitsToFacts(hits);
-      } catch (err) {
-        const areason = /timed out|timeout/i.test(err.message || '') ? 'ancestor-timeout' : 'ancestor-error';
-        console.error(`[retrieve-core] ancestor-spine recall degraded (${areason}) — compose-only: ${err.message}`);
-        healthRef.record(areason); // partial degradation (compose still returned) — visible in byReason
-        ancestorFacts = [];
-      }
+    const hasCompose = !!(backendRef.hasCompose && backendRef.hasCompose());
+    if (!hasCompose) {
+      console.error('[retrieve-core] compose_recall unavailable on mcp-memory daemon — typed/home recall skipped (requires memory-server >=2.18)');
     }
-    const merged = mergeFactsSpine(composed.facts, ancestorFacts);
+    const armIds = projectArmIds(project, ancestorIds);
+    const [composeRes, armRes] = await Promise.allSettled([
+      hasCompose
+        ? withTimeout(backendRef.compose(query, cc.overlay ? { metadata: cc.overlay } : {}), cc.timeoutMs)
+        : Promise.reject(Object.assign(new Error('compose_recall unavailable'), { reason: 'no-compose' })),
+      backendRef.search
+        ? withTimeout(backendRef.search(query, { projectIds: armIds, includeHome: false, topK: topK + 4 }), ANCESTOR_TIMEOUT_MS || cc.timeoutMs)
+        : Promise.resolve([]),
+    ]);
+    let composeReason;
+    let composed = { facts: [], capabilities: [] };
+    if (composeRes.status === 'fulfilled') composed = composeRes.value || composed;
+    else {
+      const err = composeRes.reason;
+      composeReason = (err && err.reason) || (isTimeout(err) ? 'timeout' : 'remote-error');
+      if (composeReason !== 'no-compose') console.error(`[retrieve-core] compose failed (${composeReason}) — project arm only: ${err && err.message}`);
+    }
+    let armReason;
+    let armFacts = [];
+    if (armRes.status === 'fulfilled') armFacts = armHitsToFacts(armRes.value, cc.projectArmMinScore);
+    else {
+      armReason = isTimeout(armRes.reason) ? 'project-arm-timeout' : 'project-arm-error';
+      console.error(`[retrieve-core] project arm failed (${armReason}): ${armRes.reason && armRes.reason.message}`);
+    }
+    const merged = mergeFactsSpine(composed.facts, armFacts);
     const { facts, capabilities } = pickInjectable(merged, composed.capabilities, {
       topK, maxChars: cc.maxInjectChars, includeHomeSpine: cc.includeHomeSpine,
     });
-    healthRef.record(facts.length ? undefined : 'no-match');
-    return { entries: facts, capabilities, keywords, project, reason: facts.length ? undefined : 'no-match' };
+    // One record per turn: a failed compose outranks a failed arm, which outranks an honest miss.
+    const reason = composeReason || armReason || (facts.length ? undefined : 'no-match');
+    healthRef.record(reason);
+    return { entries: facts, capabilities, keywords, project, reason: facts.length && !composeReason ? undefined : reason };
   } catch (err) {
-    const reason = /timed out|timeout/i.test(err.message || '') ? 'timeout' : 'remote-error';
+    const reason = isTimeout(err) ? 'timeout' : 'remote-error';
     console.error(`[retrieve-core] remote retrieve failed (${reason}): ${err.message}`);
     healthRef.record(reason);
     return { entries: [], capabilities: [], keywords, project, reason };
@@ -186,7 +221,7 @@ async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords }, 
  * @param {string} prompt
  * @param {{project?:string, ancestorIds?:string[]}} opts
  *   ancestorIds (F2, mcp-memory only) — the ancestor-spine project_ids (DEEPEST→shallow,
- *   focus first). When it carries ids beyond `project`, retrieveRemote unions them.
+ *   focus first). retrieveRemote's project arm searches them together with `__user__`.
  * @param {{store?:object, backend?:object, recallHealth?:object}} deps
  *   deps.store — same seam as getKB()/recordLessonMetric() in mcp-server.js: the http
  *   daemon passes kbWorker.storeClient here so the local (non mcp-memory) search below
@@ -272,5 +307,5 @@ module.exports = {
   retrieve, formatContext, filterInjectableEntries, pickInjectable, ANCESTOR_TIMEOUT_MS,
   // F2 test seam: retrieveRemote accepts an injected fake backend/recallHealth via its
   // 3rd `deps` arg; mergeFactsSpine is pure (order/dedup assertions).
-  __testHooks: { retrieveRemote, mergeFactsSpine },
+  __testHooks: { retrieveRemote, mergeFactsSpine, capQuery, projectArmIds, armHitsToFacts },
 };

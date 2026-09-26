@@ -1,6 +1,6 @@
 # claude-code-boss
 
-Plugin para Claude Code Desktop — **v2.29.0**
+Plugin para Claude Code Desktop — **v2.29.1**
 
 Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizado leve para Claude Code. A orquestração fica a cargo das ferramentas nativas (Agent/Workflow) — o plugin foca no que o nativo não tem.
 
@@ -96,7 +96,7 @@ com um processo compartilhado.
 | SessionStart (via dispatcher) | `doctor-advisory.js` | Roda `doctor.js` com cooldown; advisory de 1 linha só se algo crítico falhar (Node/PATH, data-dir fragmentado, daemon, token) |
 | SessionStart (via dispatcher) | `review-checklist-advisory.js` | Se existir `.claude/brain-review-checklist.md` (lições recorrentes de código), lembra o `/code-review` nativo de consultá-lo |
 | SessionStart (via dispatcher) | `tuning-advisory.js` | Recomendação determinística de tuning (perfil/curadoria) com cooldown de 6h |
-| SessionStart (via dispatcher) | `project-identity-advisory.js` | Detecta identidade de projeto frágil (`basename(cwd)`) no backend `mcp-memory` e oferece fixar `.claude-boss-project` |
+| SessionStart (via dispatcher) | `project-identity-advisory.js` | Pasta sem project id → avisa que a memória está desligada e pede ao agente para perguntar o nome e criar `.memory/project.json` |
 | SessionStart (via dispatcher) | `graph-warm.js` | mcp-memory: dispara um `ingest` incremental do Session Graph (fire-and-forget, cooldown por projeto) pra o grafo ficar pronto-e-fresco antes da 1ª busca — o servidor faz o delta (no-op ~5s se nada mudou). Silencioso, fail-open |
 | SessionStart (via dispatcher) | `policy-inject.js` | Injeta as políticas standing (always) no contexto da sessão |
 | SubagentStart | `policy-inject.js` | Injeta as políticas standing (always) no contexto próprio do subagente — mesma injeção do SessionStart (spawn próprio; matcher com um único hook, não consolidado) |
@@ -119,6 +119,7 @@ com um processo compartilhado.
 | Stop (via dispatcher) | `self-review.js` | Se o turno editou arquivos, recupera lições/failures relevantes do Brain (daemon HTTP autenticado, fallback keyword) e injeta advisory — "você já errou X nisso antes" |
 | Stop (via dispatcher) | `verify-nudge.js` | Se o turno editou arquivos e nenhum comando de teste/lint rodou, injeta 1 advisory (cap por sessão, sem escalonamento) |
 | Stop (via dispatcher) | `refine-research.js` | Injeta lembrete de pesquisa (web → Brain → usuário) |
+| Stop (via dispatcher) | `project-id-stop.js` | Pasta sem project id → bloqueia 1×/turno pedindo para definir o id (memória desligada até lá); silencia os detectores que pedem captura |
 | Stop (via dispatcher) | `curation-stop.js` | Bloqueia stop se há comandos noisy detectados no turno (escalating, anti-loop) |
 | Stop (via dispatcher) | `session-summary.js` | Cap 1/sessão: resumo positivo ("N lições capturadas") quando a sessão gerou aprendizado |
 | Stop (via dispatcher) | + 7 outros | `skill-promote-trigger`, `decision-scan-response`, `decision-promote`, `research-followup-detect`, `failure-retro`, `skill-success-detect`, `retrieval-feedback`, `auto-continue-stop` — mesmo comportamento de antes, agora in-process |
@@ -244,36 +245,28 @@ node claude-code-boss/scripts/brain-migrate.js
 ```
 
 **Identidade do projeto (recall entre máquinas/pastas)**: o cliente escopa a
-memória por um `projectId`. Por padrão ele é o **nome da pasta** (`basename` do
-`cwd`) — o que muda entre máquinas/clones e pode colidir. Para fixar um id
-estável e escolhido por você (resolve o caso "estou na pasta `Hpositiva` mas
-quero que a sessão use o projeto `positiva`"), a precedência do cliente é:
+memória por um `projectId`, resolvido por uma escada **estrita** (sem fallback
+para o nome da pasta):
 
-1. variável de ambiente **`CCB_PROJECT_ID`** — força o id da sessão inteira
-   (ex.: iniciar o Claude Code com `CCB_PROJECT_ID=positiva`);
-2. arquivo **`.claude-boss-project`** na pasta do projeto (ou em um ancestral) —
-   contém o nome escolhido (`positiva`); viaja com a pasta, **independe de git**,
-   do nome da pasta e do path absoluto;
-3. **`basename(cwd)`** — default legado (inalterado quando não há override).
+1. variável de ambiente **`CCB_PROJECT_ID`** — força o id da sessão inteira;
+2. **`.memory/project.json`** na pasta do projeto (ou em um ancestral), com
+   `{"version":"1","metadata":{"defaults":{"project_id":"owner/repo"}}}` —
+   viaja com a pasta, **independe de git**, do nome da pasta e do path absoluto;
+3. legado `.claude-boss-project` (deprecado, ainda honrado);
+4. **git remote origin** normalizado;
+5. nada → **a memória fica DESLIGADA nessa pasta** (2.29.1).
 
-Todos os hooks (recall no `UserPromptSubmit` e ingestão da conversa) passam a
-mandar esse id ao servidor, então a busca semântica casa mesmo com a pasta tendo
-outro nome. O servidor escopa/filtra por esse `projectId` (metadata/override).
-
-**Projeto novo? Fixe a identidade em 10 segundos.** No backend `mcp-memory`, se a
-pasta não tiver `.claude-boss-project` nem `CCB_PROJECT_ID`, o recall cai no
-`basename(cwd)` — frágil. Um advisory no `SessionStart` detecta isso e pede pro
-agente **oferecer** (com o seu ok) criar o marcador. O processo é:
-
-1. escolha um id estável e único (ex.: `positiva`, `acme-checkout`);
-2. crie o arquivo `.claude-boss-project` na **raiz** do projeto com esse id numa
-   **única linha** (ex.: `echo positiva > .claude-boss-project`);
-3. pronto — todo hook nessa árvore passa a mandar `positiva`. Commite o arquivo
-   pra o id viajar com o repo (todos os clones/máquinas usam o mesmo escopo).
-
-O advisory é silencioso quando já há id estável, no backend `local` (onde o
-`basename` é o esperado), e sob cooldown por-pasta. Para desligar de vez:
-`onboarding.projectIdentity: false` na config.
+**Pasta sem id = sem memória** (mesmo modelo do plugin copilot-memory). Em uma
+pasta sem id (ex.: exploração fora de um repo git) o boss **não injeta recall**
+(`brain_retrieve_context` volta vazio e o `self-review` do Stop não roda) e **não
+salva nada** (`capture_lesson`/`brain_store`/`brain_search` com `cwd` sem id são
+recusados; o `cwd` com id vence um `project` explícito). O
+`SessionStart` avisa o agente, e o `Stop` (`project-id-stop`) repete o aviso a
+cada turno — uma vez por turno, sem loop — até o id existir; nesse meio-tempo os
+detectores de Stop que pedem captura ficam em silêncio. Para resolver, responda
+ao agente o nome do projeto (ele cria o `.memory/project.json`) ou trabalhe num
+repo git com remote. Para desligar os avisos: `onboarding.projectIdentity: false`
+na config (a memória continua desligada sem id).
 
 ## Brain MCP: daemon único, zero processo por sessão (ADR-001)
 
@@ -366,9 +359,74 @@ vir de variáveis de ambiente; a precedência é
   headers são **removidos**; só vão os que você configurou. Repassá-los seria
   vazar a credencial da assinatura para um terceiro. Há um teste ponta a ponta
   que sobe um endpoint falso e falha se o token aparecer lá.
-- Os headers ficam em `DATA_DIR/model-router/user-config.json` (permissão `0600`,
+- Os headers ficam em `~/.claude/claude-code-boss/model-router/user-config.json` (permissão `0600`,
   nunca commitado) e a UI **não reexibe** os valores — mostra os nomes mascarados
   e mantém o que já está gravado quando você salva com o campo em branco.
+- **Mapeamento de modelo** (opcional, só na rota BYOK): regras origem → destino
+  trocam o `model` enviado ao endpoint. A ordem é: ID exato, depois o ID sem a
+  data de snapshot (`-AAAAMMDD`), depois padrões com `*` (vence o que tem mais
+  caracteres literais; empate, a regra que vem primeiro). Os padrões são
+  testados contra o ID original, com a data: `claude-opus-*-2025*` casa
+  `claude-opus-5-20250101`, e a base sem data não entra nessa etapa. Sem regra, o `model` vai como veio, e `claude-opus-5` nunca captura
+  `claude-opus-5-5`. Para gateways que decidem a rota por outro campo, a
+  **injeção** (desligada por padrão) grava o modelo resolvido num caminho do
+  corpo ou num header via template `{model}`:
+
+  ```json
+  "byok": {
+    "modelMap": {
+      "claude-opus-5-5": "provedor.modelo-a",
+      "claude-haiku-4-5": "provedor.modelo-b",
+      "claude-sonnet-5-*": "provedor.modelo-c"
+    },
+    "modelInjection": { "body": { "metadata.force_model": "{model}" } }
+  }
+  ```
+
+  Editável em `/dashboard` → Model Router → BYOK. Headers de credencial e de
+  protocolo (`authorization`, `x-api-key`, `content-type`,
+  `anthropic-version`, …), o próprio `model` e os campos de protocolo do corpo
+  (`messages`, `system`, `tools`, `stream`, `max_tokens`, …) não podem ser alvo
+  da injeção, e todo template precisa conter `{model}` (valor fixo é recusado).
+  Nomes de header com cara de credencial (`auth`, `token`, `secret`,
+  `api-key`, `cookie`, `session`, …) ou de roteamento (`Content-*`,
+  `X-Original-*`, `X-Envoy-*`, `CF-*`, `*-Client-IP`, …) também são recusados
+  (a lista é uma rede de segurança, não é exaustiva), e a injeção não sobrescreve um
+  campo de topo que a request já traz nem cria chave que só difere de uma
+  existente na caixa. **O template não é lugar
+  de segredo**: aceita até 64 caracteres de texto fixo e o dashboard o exibe em
+  claro. Credencial vai em *Headers*, que ficam mascarados. Uma request sem
+  `model` de texto com injeção ligada falha em vez de enviar o campo vazio.
+  Nomes de modelo com mais de 256 caracteres ou fora de ASCII visível nunca
+  casam uma regra e seguem como vieram. O limite é de 500 regras. Se o arquivo de config tiver regra
+  inválida (editado à mão), a aba mostra o erro e trava o salvar até você
+  corrigir o arquivo (a mensagem mostra o caminho); o "Desligar tudo" continua funcionando.
+- **Compatibilidade OpenAI Chat Completions** (opcional, só com
+  `wireProtocol: "openai"` no BYOK): o padrão é o formato que um gateway
+  passthrough aceita — assistant com tool calls e sem texto sai com `content: null`,
+  `system` no meio do histórico fica na posição, e `tool_reference` dentro de
+  `tool_result` vira texto JSON. Se o seu endpoint recusar algum desses casos,
+  troque em `/dashboard` → BYOK → *Avançado: compatibilidade OpenAI Chat
+  Completions* ou no arquivo:
+
+  ```json
+  "byok": {
+    "openaiCompat": { "assistantEmptyContent": "empty", "systemInMessages": "reject", "toolReference": "reject" }
+  }
+  ```
+
+  Valores (strings), com o padrão primeiro: `assistantEmptyContent`
+  `"null"`/`"empty"`, `systemInMessages` `"keep"`/`"reject"`, `toolReference`
+  `"text"`/`"reject"`. O exemplo acima troca os três.
+
+  `"reject"` recusa a request citando a opção, sem chamar o endpoint: `400` no
+  `mode: "always"`; no fallback (`on-limit`/cooldown) a resposta vira um aviso
+  explicando por que a request não pôde ir ao BYOK. Valor ou chave desconhecida
+  é erro de configuração, nunca default silencioso: no `always` a request falha
+  com `502` citando a opção (o catálogo repassado também), e no fallback a
+  resposta mostra a causa em vez de ceder à NVIDIA. O dashboard valida a opção mesmo com `wireProtocol:
+  "anthropic"` (em que o router a ignora), para o erro não aparecer só ao trocar
+  o protocolo.
 
 ## Diagnóstico e higiene do KB
 - **`node scripts/doctor.js`** — checklist zero-config: Node no PATH + versão,

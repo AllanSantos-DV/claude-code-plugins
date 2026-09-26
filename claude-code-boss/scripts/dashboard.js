@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const { execSync, execFileSync, spawn } = require('child_process');
@@ -23,6 +24,9 @@ const { writeFileAtomic, writeJsonAtomic } = require('./lib/atomic-write.js');
 const { routerUserConfigPath, hardenRouterConfigPerms } = require('./lib/router-config-path.js');
 const { normalizeTimeoutMs } = require('./lib/normalize-timeout.js');
 const upstreamProfile = require('../servers/model-router/upstream-profile.js');
+const byokModel = require('../servers/model-router/byok-model.js');
+const byokLib = require('../servers/model-router/byok.js');
+const openaiChat = require('../servers/model-router/protocols/openai-chat.js');
 
 // Session token — generated at boot, injected into index.html, required on all /api/* requests.
 const SESSION_TOKEN = crypto.randomBytes(16).toString('hex');
@@ -176,6 +180,7 @@ function runEnsureSync(scriptPath) {
     const child = spawn(process.execPath, [scriptPath], {
       detached: false,
       stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
       env: { ...process.env, CLAUDE_PLUGIN_ROOT: ROOT, CLAUDE_PLUGIN_DATA: DATA_DIR, BOSS_ROUTER_FORCE_RESTART: '1' },
     });
     let stderr = '', childExited = false;
@@ -464,6 +469,7 @@ function restartDashboard(req, res) {
       {
         detached: true,
         stdio: 'ignore',
+        windowsHide: true,
         env: { ...process.env, DASHBOARD_PORT: String(port), DASHBOARD_NO_OPEN: '1' },
       }
     );
@@ -997,6 +1003,7 @@ function runBrainPromote(argvArray) {
     encoding: 'utf-8',
     env: { ...process.env, CLAUDE_PLUGIN_ROOT: ROOT, CLAUDE_PLUGIN_DATA: DATA_DIR },
     stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
   });
   return JSON.parse(out.trim());
 }
@@ -1501,9 +1508,34 @@ async function getSkillRoi(req, res, url) {
 
 // ─── API: Model Router (F3) ────────────────────────────────────────
 
+// byok.openaiCompat já normalizado → só as chaves fora do default (ou undefined).
+function compatOverrides(compat) {
+  const out = {};
+  for (const [key, value] of Object.entries(compat)) {
+    if (value !== openaiChat.COMPAT_DEFAULTS[key]) out[key] = value;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+// A mensagem do validador já abre com o nome do campo ("modelMap precisa…",
+// "modelInjection.headers: …", "openaiCompat.x: …")? Então quem monta o erro
+// não repete o nome. Exige fronteira depois do nome: valor do usuário no meio
+// da mensagem ("regra 1: … (\"modelMap x\")") não conta.
+function opensWithField(message, name) {
+  return message.startsWith(name) && /^[\s.:]/.test(message.slice(name.length));
+}
+
+// Campo gravado à mão em user-config.json inválido, no mesmo formato para o
+// save (400) e para o GET (500).
+function savedFieldError(name, message) {
+  return opensWithField(message, name)
+    ? `${message} — gravado em ${ROUTER_USER_CONFIG}`
+    : `${name} gravado em ${ROUTER_USER_CONFIG} é inválido: ${message}`;
+}
+
 /**
  * Merge the POST body ({ enabled, stickyEnabled?, fallbackEnabled?, acceptedTerms, nimApiKey?, routing? })
- * into DATA_DIR/model-router/user-config.json. Never clobbers an existing NVIDIA
+ * into globalDir()/model-router/user-config.json. Never clobbers an existing NVIDIA
  * key unless nimApiKey === null (clear) or a non-empty string (replace).
  * `stickyEnabled` is the RECOMMENDED cache-safe router switch (opt-in), persisted
  * as {sticky:{enabled}} so the shipped sticky.ttlMs survives the shipped⊕user
@@ -1556,6 +1588,73 @@ function writeRouterOverride(body) {
       : (existing.byok?.modelAliasPrefix || 'anthropic-'),
     endpoints: upstreamProfile.mergeRouterSection(existing.byok, byokInput).endpoints || {},
   };
+  // Mapeamento de modelo + injeção: preserve-on-absent (`undefined` mantém o
+  // que está no arquivo). Limpeza explícita: o mapa com `null`, `[]` ou `{}`;
+  // a injeção com `null` ou `{}` (sem nenhum campo).
+  // Tudo validado aqui — regra inválida nunca chega ao disco (erro 400).
+  // Campo preservado do arquivo que falha diz de onde veio o erro: o usuário
+  // não enviou aquilo nesta edição.
+  // Erro que vem só do ARQUIVO (campo não enviado nesta gravação): com o BYOK
+  // ligado, recusa; com o BYOK desligado nesta gravação o router não usa as
+  // regras, então o campo fica verbatim — senão uma regra quebrada no arquivo
+  // travaria o "Desligar tudo", o único jeito de sair do BYOK pelo dashboard.
+  // O erro continua visível no GET (500) até ser corrigido.
+  const byokOn = byokOut.enabled === true;
+  const KEEP = Symbol('keep');
+  const savedField = (name, fn) => {
+    try { return fn(); }
+    catch (err) {
+      if (!byokOn) {
+        console.error(`[DASHBOARD] BYOK desligado: campo inválido no arquivo mantido como está: ${opensWithField(err.message, name) ? err.message : `${name}: ${err.message}`}`);
+        return KEEP;
+      }
+      throw new Error(savedFieldError(name, err.message));
+    }
+  };
+  // `null` gravado = sem regra, como no router (resolveTargetModel) e no GET.
+  if (byokOut.modelMap === null) byokOut.modelMap = undefined;
+  if (byokOut.modelInjection === null) byokOut.modelInjection = undefined;
+  try {
+    if (byokInput.modelMap !== undefined) {
+      const raw = byokInput.modelMap;
+      const empty = raw === null || (Array.isArray(raw) && !raw.length)
+        || (raw && typeof raw === 'object' && !Array.isArray(raw) && !Object.keys(raw).length);
+      byokOut.modelMap = empty ? undefined : byokModel.normalizeModelMap(raw);
+    } else if (byokOut.modelMap !== undefined) {
+      const map = savedField('modelMap', () => byokModel.normalizeModelMap(byokOut.modelMap));
+      if (map !== KEEP) byokOut.modelMap = map;
+    }
+    if (byokInput.modelInjection !== undefined) {
+      byokOut.modelInjection = byokModel.normalizeInjection(byokInput.modelInjection, byokOut.headers) || undefined;
+    } else if (byokOut.modelInjection !== undefined) {
+      // A injeção salva primeiro precisa ser válida sozinha (erro do ARQUIVO);
+      // depois é revalidada contra os headers — a culpa da colisão é dos
+      // headers ENVIADOS (sempre recusada) só quando eles vieram nesta gravação.
+      const saved = savedField('modelInjection', () => byokModel.normalizeInjection(byokOut.modelInjection));
+      if (saved !== KEEP && byokInput.headers !== undefined) {
+        try {
+          byokOut.modelInjection = byokModel.normalizeInjection(saved, byokOut.headers) || undefined;
+        } catch (err) {
+          throw new Error(`os headers enviados colidem com a injeção de modelo salva: ${err.message}`);
+        }
+      } else if (saved !== KEEP) {
+        const inj = savedField('modelInjection', () => byokModel.normalizeInjection(saved, byokOut.headers));
+        if (inj !== KEEP) byokOut.modelInjection = inj || undefined;
+      }
+    }
+    // Compatibilidade Chat Completions: grava só o que DIFERE do default, para
+    // o default continuar sendo o do plugin. `null`/`{}` limpam. Inválido = 400.
+    if (byokOut.openaiCompat === null) byokOut.openaiCompat = undefined;
+    if (byokInput.openaiCompat !== undefined) {
+      byokOut.openaiCompat = compatOverrides(openaiChat.normalizeCompat(byokInput.openaiCompat));
+    } else if (byokOut.openaiCompat !== undefined) {
+      savedField('openaiCompat', () => openaiChat.normalizeCompat(byokOut.openaiCompat));
+    }
+  } catch (err) {
+    const e = new Error(`BYOK: ${err.message}`);
+    e.status = 400;
+    throw e;
+  }
 
   const upstreamInput = (body.upstream && typeof body.upstream === 'object') ? body.upstream : {};
   const upstreamMerged = upstreamProfile.mergeRouterSection(existing.upstream, upstreamInput);
@@ -1651,7 +1750,35 @@ function writeRouterOverride(body) {
     wireProtocol: mergedByok.wireProtocol || 'anthropic',
     modelAliasPrefix: mergedByok.modelAliasPrefix || 'anthropic-',
     endpoints: mergedByok.endpoints || {},
+    modelMap: {},
+    modelInjection: null,
+    openaiCompat: { ...openaiChat.COMPAT_DEFAULTS },
+    // Erro de modelMap/modelInjection/openaiCompat gravado NÃO derruba status/modo (quem só
+    // quer saber se o router está ligado não depende disso). Quem EXIBE ou USA
+    // as regras (GET config, catálogo) falha explicitamente com esta lista —
+    // senão a UI mostraria um form vazio e o próximo save apagaria o arquivo.
+    configErrors: [],
   };
+  // Normaliza (array [{from,to}] também é formato aceito pelo router): a UI
+  // precisa mostrar as MESMAS regras que o proxy aplica, senão salvar as apaga.
+  if (mergedByok.modelMap != null) {
+    try { byok.modelMap = byokModel.normalizeModelMap(mergedByok.modelMap); }
+    catch (err) {
+      byok.configErrors.push(`byok.${savedFieldError('modelMap', err.message)}`);
+    }
+  }
+  if (mergedByok.modelInjection != null) {
+    try { byok.modelInjection = byokModel.normalizeInjection(mergedByok.modelInjection, byok.headers); }
+    catch (err) {
+      byok.configErrors.push(`byok.${savedFieldError('modelInjection', err.message)}`);
+    }
+  }
+  if (mergedByok.openaiCompat != null) {
+    try { byok.openaiCompat = { ...openaiChat.normalizeCompat(mergedByok.openaiCompat) }; }
+    catch (err) {
+      byok.configErrors.push(`byok.${savedFieldError('openaiCompat', err.message)}`);
+    }
+  }
   const upstream = upstreamProfile.mergeRouterSection(shipped.upstream, override.upstream);
   return { shipped, override, enabled, stickyEnabled, fallbackEnabled, byok, upstream, contextTuningEnabled: override?.contextTuning?.enabled === true || shipped?.contextTuning?.enabled === true };
 }
@@ -1671,6 +1798,7 @@ function configuredRouterMode() {
 function getRouterConfig(req, res) {
   try {
     const { shipped, override, enabled, stickyEnabled, fallbackEnabled, byok, upstream, contextTuningEnabled } = resolveRouterFlags();
+    if (byok.configErrors.length) throw new Error(byok.configErrors.join('; '));
     const nim = { ...(shipped.nim || {}), ...(override.nim || {}) };
     const routing = { ...(shipped.routing || {}), ...(override.routing || {}) };
     const key = String(nim.apiKey || '').trim();
@@ -1693,6 +1821,12 @@ function getRouterConfig(req, res) {
       wireProtocol: (byok && byok.wireProtocol) || 'anthropic',
       modelAliasPrefix: (byok && byok.modelAliasPrefix) || 'anthropic-',
       endpoints: (byok && byok.endpoints) || {},
+      // Regras e templates são CONFIGURAÇÃO, exibidos em claro: o valor de header
+      // configurado é mascarado acima, mas o template aceita texto fixo (até 64
+      // caracteres) — não é lugar de segredo (documentado no README).
+      modelMap: Object.entries((byok && byok.modelMap) || {}).map(([from, to]) => ({ from, to })),
+      modelInjection: (byok && byok.modelInjection) || null,
+      openaiCompat: (byok && byok.openaiCompat) || { ...openaiChat.COMPAT_DEFAULTS },
     };
     json(res, {
       enabled,
@@ -1727,6 +1861,102 @@ async function saveRouterConfig(req, res) {
     json(res, { ok: true, restartRequired: true });
   } catch (err) {
     console.error(`[DASHBOARD] /api/router/config (POST) failed: ${err.message}`);
+    fail(res, err.message, err.status || 500);
+  }
+}
+
+// Teto do corpo lido do catálogo /v1/models.
+const MAX_CATALOG_BYTES = 4 * 1024 * 1024;
+
+// Catálogo do endpoint BYOK (GET na operação `models`) para sugerir destinos
+// no editor de regras. Usa SÓ os headers configurados no BYOK (nunca credencial
+// da assinatura) e não devolve nada além dos IDs. Falha → {ok:false,error}
+// visível; o editor continua aceitando digitação manual.
+function fetchByokModelIds(timeoutMs = 8000) {
+  const { byok } = resolveRouterFlags();
+  // Erro local (config gravada inválida / BYOK sem Base URL) ≠ falha do endpoint:
+  // `status` diz ao handler que não é 502.
+  if (byok.configErrors.length) return Promise.resolve({ ok: false, status: 500, error: byok.configErrors.join('; ') });
+  const target ={ isByok: true, isCustomEndpoint: true, headers: byok.headers || {} };
+  const profile = upstreamProfile.resolveOperationProfile({ byok }, target, 'models');
+  if (!profile.ok) return Promise.resolve({ ok: false, status: 409, error: profile.error });
+  const url = new URL(profile.url);
+  const headers = byokLib.buildHeaders({}, target);
+  delete headers['content-type'];
+  if (profile.wireProtocol === 'openai') {
+    delete headers['anthropic-version'];
+    delete headers['anthropic-beta'];
+  }
+  headers.accept = 'application/json';
+  const lib = url.protocol === 'https:' ? https : http;
+  return new Promise((resolve) => {
+    const r = lib.request(url, { method: 'GET', headers, timeout: timeoutMs }, (resp) => {
+      const chunks = [];
+      let bytes = 0;
+      let overflow = false;
+      // Corpo cortado no meio (conexão fechada antes do fim): sem estes
+      // listeners nem `end` nem `error` chegam e a Promise ficaria pendurada.
+      const cut = (why) => resolve({ ok: false, error: `resposta incompleta de ${url.origin}${url.pathname}: ${why}` });
+      resp.on('error', (err) => cut(err.message));
+      resp.on('close', () => { if (!resp.complete) cut('conexão encerrada antes do fim'); });
+      resp.on('data', (c) => {
+        if (overflow) return;
+        if (bytes + c.length > MAX_CATALOG_BYTES) {
+          // Para de baixar na hora: sem isto um catálogo enorme (ou infinito)
+          // prenderia o botão até o fim da transferência.
+          overflow = true;
+          chunks.length = 0;
+          resolve(resp.statusCode < 200 || resp.statusCode >= 300
+            ? { ok: false, error: `HTTP ${resp.statusCode} em ${url.origin}${url.pathname}` }
+            : { ok: false, error: `catálogo de ${url.origin}${url.pathname} passa do teto de ${MAX_CATALOG_BYTES / (1024 * 1024)} MB do dashboard — digite o modelo manualmente` });
+          resp.destroy();
+          return;
+        }
+        // Buffers crus, decodificados só no fim: o teto conta BYTES e um
+        // caractere multibyte partido entre chunks não vira lixo.
+        chunks.push(c);
+        bytes += c.length;
+      });
+      resp.on('end', () => {
+        if (resp.statusCode < 200 || resp.statusCode >= 300) {
+          resolve({ ok: false, error: `HTTP ${resp.statusCode} em ${url.origin}${url.pathname}` });
+          return;
+        }
+        if (overflow) return; // já resolvido no `data` (teto do dashboard, não "JSON inválido")
+        try {
+          const parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+          const list = Array.isArray(parsed && parsed.data) ? parsed.data : null;
+          if (!list) { resolve({ ok: false, error: 'resposta sem lista "data"' }); return; }
+          const ids = [...new Set(list.map(m => m && m.id).filter(id => typeof id === 'string' && id))].sort();
+          // Catálogo paginado (`has_more`): não seguimos páginas — avisamos que a
+          // lista é parcial, e o editor continua aceitando digitação manual.
+          resolve({ ok: true, models: ids, truncated: parsed.has_more === true });
+        } catch (err) {
+          resolve({ ok: false, error: `JSON inválido: ${err.message}` });
+        }
+      });
+    });
+    r.on('timeout', () => r.destroy(new Error(`timeout de ${timeoutMs}ms`)));
+    // `timeout` só mede inatividade: um endpoint que pinga 1 byte por vez
+    // prenderia a busca. Prazo TOTAL (2× o de inatividade), do envio ao fim do corpo.
+    const totalMs = timeoutMs * 2;
+    const deadline = setTimeout(() => {
+      resolve({ ok: false, error: `catálogo de ${url.origin}${url.pathname} não terminou em ${totalMs}ms — digite o modelo manualmente` });
+      r.destroy();
+    }, totalMs);
+    r.on('close', () => clearTimeout(deadline));
+    r.on('error', (err) => resolve({ ok: false, error: err.message }));
+    r.end();
+  });
+}
+
+async function getByokModels(req, res) {
+  try {
+    const out = await fetchByokModelIds();
+    if (!out.ok) console.error(`[DASHBOARD] /api/router/byok/models: ${out.error}`);
+    json(res, out, out.ok ? 200 : (out.status || 502));
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/router/byok/models failed: ${err.message}`);
     fail(res, err.message, 500);
   }
 }
@@ -1767,7 +1997,7 @@ async function applyRouter(req, res) {
     json(res, { ok: true, restartRequired: true });
   } catch (err) {
     console.error(`[DASHBOARD] /api/router/apply failed: ${err.message}`);
-    fail(res, err.message, 500);
+    fail(res, err.message, err.status || 500);
   } finally {
     applyRouterLock = false;
   }
@@ -2001,6 +2231,7 @@ function handleAPI(req, res, url) {
   if (p === '/api/router/config' && m === 'GET') return getRouterConfig(req, res);
   if (p === '/api/router/config' && m === 'POST') return saveRouterConfig(req, res);
   if (p === '/api/router/status' && m === 'GET') return getRouterStatus(req, res);
+  if (p === '/api/router/byok/models' && m === 'GET') return getByokModels(req, res);
   if (p === '/api/router/apply' && m === 'POST') return applyRouter(req, res);
   if (p === '/api/router/metrics' && m === 'GET') return getRouterMetrics(req, res);
   if (p === '/api/router/history' && m === 'GET') return getRouterHistory(req, res, url);
@@ -2101,7 +2332,7 @@ server.listen(PORT, '127.0.0.1', () => {
   } catch (err) { console.error(`[DASHBOARD] Failed to write dashboard.json: ${err.message}`); }
   const browser = { win32: 'start', darwin: 'open', linux: 'xdg-open' }[process.platform];
   if (browser && !process.env.DASHBOARD_NO_OPEN) {
-    try { execSync(`${browser} http://localhost:${port}`, { stdio: 'ignore', timeout: 5000 }); } catch (err) { console.error(`[DASHBOARD] Browser open failed: ${err.message}`); }
+    try { execSync(`${browser} http://localhost:${port}`, { stdio: 'ignore', timeout: 5000, windowsHide: true }); } catch (err) { console.error(`[DASHBOARD] Browser open failed: ${err.message}`); }
   }
 });
 }
@@ -2115,4 +2346,4 @@ if (require.main === module) startDashboardServer();
 // exported so a test can call it with a fake res ({writeHead,end}) and assert
 // on the exact JSON it serializes — otherwise a bug in byokSafe (e.g. `x || null`
 // silently turning a valid `0` into `null`) would never be caught by any test.
-module.exports = { writeRouterOverride, resolveRouterFlags, getRouterConfig };
+module.exports = { writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField };

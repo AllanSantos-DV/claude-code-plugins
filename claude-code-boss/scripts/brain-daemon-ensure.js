@@ -54,6 +54,7 @@ function runSetupInBackground(root, dataDir) {
     const child = spawn(process.execPath, [setupScript], {
       detached: true,
       stdio: 'ignore',
+      windowsHide: true,
       env: { ...process.env, CLAUDE_PLUGIN_ROOT: root, CLAUDE_PLUGIN_DATA: dataDir },
     });
     child.unref();

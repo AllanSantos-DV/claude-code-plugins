@@ -297,9 +297,9 @@ function processCommandLine(pid) {
     const out = process.platform === 'win32'
       ? execFileSync('powershell.exe', ['-NoProfile', '-Command',
         `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").CommandLine`],
-      { encoding: 'utf-8', timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'] })
+      { encoding: 'utf-8', timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true })
       : execFileSync('ps', ['-o', 'command=', '-p', String(pid)],
-        { encoding: 'utf-8', timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'] });
+        { encoding: 'utf-8', timeout: 8000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
     return out.trim() || null;
   } catch (err) {
     // Não dá para inspecionar o processo (sem permissão, PID morto, powershell/ps
@@ -469,7 +469,7 @@ function getSystemEnvVar(name) {
   try {
     const out = execSync(
       `powershell -NoProfile -Command "[System.Environment]::GetEnvironmentVariable('${name}', 'User')"`,
-      { encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'] }
+      { encoding: 'utf-8', timeout: 3000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }
     ).trim();
     return out || null;
   } catch (_) { void _; return null; }
@@ -480,7 +480,7 @@ function clearSystemEnvVar(name) {
   try {
     execSync(
       `powershell -NoProfile -Command "[System.Environment]::SetEnvironmentVariable('${name}', $null, 'User')"`,
-      { timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'] }
+      { timeout: 5000, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }
     );
     return true;
   } catch (e) {
@@ -676,6 +676,7 @@ function startServer(mode) {
     ], {
       detached: true,
       stdio:    ['ignore', 'ignore', 'ignore'],
+      windowsHide: true,
       // BOSS_ROUTER_MODE é só diagnóstico: o server recomputa o modo da própria
       // config (fonte única lib/router-mode.js). Não é a fonte de verdade.
       env: { ...process.env, CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT, CLAUDE_PLUGIN_DATA: DATA_DIR, BOSS_ROUTER_MODE: mode || '' },

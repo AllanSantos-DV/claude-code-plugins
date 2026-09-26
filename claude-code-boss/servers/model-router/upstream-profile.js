@@ -1,6 +1,7 @@
 'use strict';
 
 const { DEFAULT_ALIAS_PREFIX } = require('./catalog.js');
+const openaiChat = require('./protocols/openai-chat.js');
 const VALID_WIRE_PROTOCOLS = new Set(['anthropic', 'openai']);
 
 const DEFAULT_PATHS = {
@@ -175,6 +176,17 @@ function resolveOperationProfile(config, target, operation) {
   }
   if (!resolved.ok) return resolved;
 
+  // `byok.openaiCompat` só vale para o BYOK em Chat Completions (os outros
+  // destinos usam o default). Inválido = perfil inválido, nunca default mudo.
+  let openaiCompat;
+  if (wire.wireProtocol === 'openai') {
+    try {
+      openaiCompat = openaiChat.normalizeCompat(kind === 'byok' ? section.openaiCompat : undefined);
+    } catch (err) {
+      return { ok: false, error: `byok.${err.message}` };
+    }
+  }
+
   return {
     ok: true,
     kind,
@@ -182,6 +194,7 @@ function resolveOperationProfile(config, target, operation) {
     url: resolved.url,
     parsed: resolved.parsed,
     wireProtocol: wire.wireProtocol,
+    openaiCompat,
     target,
   };
 }

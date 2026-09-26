@@ -1,5 +1,332 @@
 # Changelog
 
+## [2.29.1] - 2026-09-25
+
+### Changed — pasta sem project id = memória desligada (mesmo modelo do copilot-memory)
+- Em uma pasta sem project id (escada estrita: `CCB_PROJECT_ID` →
+  `.memory/project.json` → `.claude-boss-project` → git remote), o
+  `brain_retrieve_context` volta vazio de forma explícita, antes de resolver o
+  projeto. Antes, a mesma pasta caía num erro engolido pelo catch fail-open, e um
+  `project` explícito ainda re-escopava o recall.
+- `brain_search`, `brain_store`, `capture_lesson`, `brain_related` e `brain_count`
+  aceitam `cwd`: o id da pasta vence um `project` explícito, e uma pasta sem id é
+  recusada com `NO_PROJECT_ID`. Isso impede lições gravadas sob ids inventados a
+  partir do nome da pasta (o recall fraco em pastas de exploração vinha daí e do
+  `self-review`). Sem `cwd`, o comportamento é o de antes.
+- No daemon HTTP compartilhado, o `cwd` do chamador é resolvido sem o
+  `CCB_PROJECT_ID`/`CLAUDE_PROJECT_DIR` herdados da sessão que subiu o daemon;
+  vale só o `sessionRoot` do próprio chamador.
+- Um project id com segmento `..` ou `.` agora é recusado (`assertSafeProjectId`):
+  o id vira a pasta `brain/<id>` do store local.
+- O advisory de `SessionStart` (`project-identity-advisory`) agora vale em
+  qualquer backend e não tem cooldown. Ele avisa que a memória está desligada e
+  pede ao agente para perguntar o nome do projeto e criar `.memory/project.json`
+  (antes recomendava o marcador legado).
+- Novo detector de Stop, `project-id-stop`, com a maior prioridade: repete o
+  aviso uma vez por turno (respeita `stop_hook_active`, sem loop) até o id
+  existir. Enquanto isso, `pattern-detect`, `decision-scan-response`,
+  `decision-promote`, `research-followup-detect` e `failure-retro` ficam em
+  silêncio, porque pediriam capturas que seriam recusadas, e o `self-review` também,
+  porque faria recall da KB. Na telemetria de Stop eles aparecem como `no_id`, fora
+  da contagem `gated` do profile. Opt-out dos avisos: `onboarding.projectIdentity: false`.
+
+### Fixed — recall do `mcp-memory` lento e sem as memórias do projeto
+- Os docs do projeto (lições, padrões, decisões) nunca voltavam pelo
+  `compose_recall`, porque os blocos tipados do daemon não os cobrem. O braço de
+  projeto (`search_memory` filtrado pelo project id + ancestrais + `__user__`)
+  agora roda sempre, em paralelo ao compose e não só como fallback, e os hits dele
+  vêm antes do spine global. Um compose que falha ou estoura o tempo não derruba
+  mais os hits do projeto.
+- A query do recall é truncada em `kb.retrieval.compose.maxQueryChars` (800). O
+  custo de embed+FTS do daemon cresce com o tamanho do prompt: um prompt de 4,7k
+  chars levava 11–14 s ou estourava o timeout de 8 s. Com o teto, leva 1,6–2,4 s
+  com o mesmo hit no topo, e prompts curtos levam ~0,6 s.
+- Os hits do braço de projeto abaixo de `kb.retrieval.compose.projectArmMinScore`
+  (0,65) são descartados. Nas medições, prompts sem relação ficam em ~0,49–0,63 e
+  os relevantes em ~0,65–0,77.
+- `recall-health` passa a contar `project-arm-timeout` e `project-arm-error` como
+  degradação. O aviso do `brain-health` agora diz "degraded (empty, or one of
+  compose / project arm failed)" em vez de "came back empty", porque um turno com
+  um braço falho ainda pode injetar os fatos do outro.
+
+### Fixed — janelas de console piscando no Windows
+- Todo spawn de processo filho em runtime (hooks, daemons, updater, testers de
+  config, dashboard, router, brain-server) agora passa `windowsHide: true`. Na
+  2.29.0 vários desses spawns (entre eles o cliente do `mcp-memory` no
+  `SessionStart`, com a detecção de Java e a subida do daemon, e a detecção de
+  GPU via `nvidia-smi` do auto-update) não ocultavam a janela; como os hooks
+  rodam sem console, com subagentes e sessões paralelas isso abria dezenas de
+  consoles `cmd` e roubava o foco do teclado.
+- Wrappers que recebem opções de terceiros (`plugin-setup` `run()`) e os seams
+  de injeção padrão (`consolidate-datadirs-hook`, `mcp-daemon-restart`,
+  `plugin-updater`) forçam `windowsHide: true` depois do spread, então um
+  chamador não consegue desligá-lo. Os seams exigem `args` como array: qualquer
+  outra coisa nessa posição (que o Node leria como opções) é rejeitada com
+  `TypeError`, em vez de subir o processo visível.
+
+### Added — guarda de regressão
+- Regra ESLint `local/require-windows-hide`, que nega por padrão. Só aceita
+  `child_process` na forma canônica: `require`/`import`/`await import()`
+  ligado uma única vez em `const` (ou desestruturado dele), sem reatribuição
+  nem export, e chamado diretamente (`spawn(…)`, `cp.spawn(…)`) com um objeto
+  literal de opções na posição que o Node lê, contendo `windowsHide: true`
+  depois de qualquer spread ou chave computada, e sem spread nos argumentos.
+  `require` inclui `module.require`, `createRequire()` e `require.call`.
+- Todo o resto é reportado:
+  - qualquer outro uso do módulo: alias, `bind`/`call`/`apply`, `promisify`,
+    injeção, guarda, export, re-export;
+  - qualquer outra ocorrência da string `'child_process'` no arquivo
+    (`require` com alias, `process.getBuiltinModule`, `Module._load`,
+    `createRequire` renomeado);
+  - os bindings internos `'spawn_sync'`/`'process_wrap'` (`process.binding`,
+    com ou sem alias), que sobem processo sem passar pelo `child_process`;
+  - especificadores `data:` em import ou passados a `module.register`
+    (hook de loader), que podem reexportar ou chamar o módulo,
+    normalizados como o parser de URL (maiúsculas, espaço inicial,
+    tab/quebra de linha);
+  - os módulos que sobem processo sozinhos: qualquer literal `'cluster'`,
+    `'node:cluster'` ou `'node:test'`;
+  - um callback (função ou classe) no slot de args (`execFile(cmd, cb, opts)`),
+    caso em que o Node descarta as opções, ou um literal que não é array
+    (regex, string, template), que o Node lê como opções ou rejeita.
+- Comentários `eslint-disable` inline ficam desligados em `scripts/` e
+  `servers/` (`noInlineConfig`), então a regra não pode ser desligada
+  localmente. Cobre `.js`, `.mjs`, `.cjs`, `.ts`, `.mts` e `.cts` nessas
+  pastas; só
+  `scripts/test-*`/`smoke-*` ficam isentos, e um teste trava essa ligação na
+  config real.
+- Limites conhecidos:
+  - uma expressão não literal no slot de args que na verdade guarda as opções
+    ou um callback só é pega quando é variável inicializada com objeto literal
+    ou função;
+  - especificador que não está escrito como literal no próprio import
+    (variável, objeto `URL`, `require(variavel)`, concatenação) e código
+    executado a partir de string (`eval`, `new Function`, `vm`, `Worker` com
+    `eval: true`) ficam fora do alcance de qualquer linter;
+  - nome de binding interno que não está escrito como literal
+    (`process.binding('spawn' + '_sync')`) não é pego;
+  - um `ChildProcess` obtido por reflexão sobre o retorno de uma chamada
+    (`spawn(…).constructor`) não é seguido;
+  - pacotes de terceiros em `node_modules` e arquivos com extensão fora dessa
+    lista (inclusive em maiúsculas, como `.JS`) não são analisados.
+
+### Fixed — `/v1/models` e `count_tokens` pulavam a checagem de assinatura
+- As rotas `GET /v1/models` e `POST /v1/messages/count_tokens` são declaradas
+  com `auth: "signature"`, mas o repasse respondia antes da checagem: uma
+  request sem `x-api-key` nem `authorization` era aceita e, sob BYOK, seguia
+  com a credencial configurada. Agora a checagem roda antes de qualquer
+  despacho e essas requests recebem `401 missing signature`. O router só
+  escuta em `127.0.0.1` e a checagem é de presença do header, então o efeito
+  prático era só a inconsistência com a rota declarada.
+
+### Fixed — corpo ou `model` malformado derrubava o router
+- Um `POST /v1/messages` com corpo JSON válido mas que não é objeto (`null`,
+  `"texto"`, `1`, `true`, `[]`) passava pelo parse e o `TypeError` ao ler ou
+  gravar `model` escapava do handler, encerrando o processo do router. Agora
+  responde `400 invalid_request_error`. O mesmo vale para um `model` que é
+  número, objeto ou lista (`42`, `{}`, `[]`), que quebrava o cálculo de tier em
+  qualquer modo.
+- Mudança de contrato: `model: null` não derrubava o router (seguia como
+  `unknown` e o upstream decidia); agora também é recusado com `400`, por
+  coerência com os demais tipos que não são texto.
+- `count_tokens` com corpo que não é JSON respondia `502 proxy_error` (com o
+  erro do parse na mensagem); agora é `400 invalid_request_error`.
+- `stream` que não é booleano (`"false"`, `1`, `null`) é recusado com `400`
+  na entrada de `/v1/messages`: o texto `"false"` é verdadeiro em JavaScript e
+  virava streaming no upstream OpenAI.
+- Upstream OpenAI (BYOK ou endpoint próprio): um stream que terminava com tool
+  call sem nome lançava ao fechar a tradução e derrubava o router. Agora a
+  resposta é interrompida com log e o router segue no ar.
+- Upstream OpenAI: request que não pode ser traduzida (`messages` que não é
+  lista, mensagem ou tool que não é objeto, `system`/`content` de tipo
+  inválido, `tool_choice` que não é objeto) respondia `502 proxy_error` ou era
+  enviada com o campo esvaziado em silêncio. Agora é `400
+  invalid_request_error` e nada sai na rede; no plano B BYOK a resposta diz que
+  a request não pôde ir ao BYOK.
+- Mudança de contrato: request Anthropic válida com conteúdo que o adaptador
+  OpenAI não traduz (bloco `document`, imagem que não é base64, `tool_choice`
+  `none`, role desconhecido) também passa de `502 proxy_error` para `400
+  invalid_request_error`. A mensagem diz "não suportado": o limite é do
+  adaptador, não um erro na forma da request.
+- Plano B NVIDIA: com a chave configurada, uma falha ao preparar a request
+  respondia que o plano B "ainda não está configurado" e contava como
+  limite sem chave. Agora diz que a NVIDIA não pôde processar a request, com
+  o motivo; `nim.endpoint` inválido é apontado como erro de configuração.
+- Plano B (BYOK ou NVIDIA) que falhava depois de o stream já ter começado
+  (tool call sem nome, reset ou queda da conexão) tentava mandar o aviso
+  reescrevendo os headers e derrubava o router com `ERR_HTTP_HEADERS_SENT`.
+  Agora a resposta já iniciada é encerrada com log, sem aviso colado no fim.
+- Upstream principal que respondia com um status de `fallback.triggerStatuses`
+  (ex.: `429`) e caía (reset) enquanto o router lia o corpo virava `502` para
+  o cliente. Agora segue para o plano B mesmo sem o corpo (o cooldown usa só
+  os headers, como antes).
+- Stream do plano B NVIDIA cortado no meio (reset, conexão fechada antes do
+  fim ou frame SSE incompleto) chegava ao cliente com `message_stop`, como
+  resposta completa. Agora a conexão com o cliente é cortada, para ele ver a
+  falha (o stream BYOK já era cortado). Um stream que fecha limpo com a última
+  linha completa sem `\n` final continua valendo como completo, e o texto
+  dessa linha, que antes se perdia, agora chega ao cliente.
+- Stream OpenAI (plano B BYOK e endpoint próprio) que fechava limpo com a
+  última linha completa sem `\n` final era cortado como falha. Agora essa
+  linha é aceita (com ou sem espaço depois de `data:`) e o texto dela chega
+  ao cliente. Nos streams OpenAI e NVIDIA, entre as últimas linhas que não
+  são frame, só o comentário SSE (`:`) e a linha em branco são descartados sem contar como corte.
+  `data:` vazio, prefixo cortado (ex.: `da`), outro campo (ex.: `event:`),
+  JSON cortado e valor que não é objeto (ex.: `data: 12`, `data: null`,
+  `data: [1]`) continuam cortando a conexão com o cliente. No stream OpenAI,
+  um último frame completo que o tradutor recusa também corta.
+- Resposta não-stream do plano B (BYOK OpenAI ou NVIDIA) cuja conexão caía no
+  meio do corpo, depois de o endpoint responder, era apontada como endpoint
+  "inacessível" (e mandava revisar a Base URL). Agora diz que a conexão caiu
+  no meio da resposta. No BYOK Anthropic, que repassa o corpo direto, o
+  cliente vê o corte.
+- Plano B que recusava a chamada (status de erro) e fechava a conexão no meio
+  do corpo da recusa deixava o cliente pendurado para sempre. Agora a recusa é
+  respondida com o status recebido; um `429` do BYOK nessa situação continua
+  cedendo a vez à NVIDIA. O mesmo vale quando o corpo da recusa para de chegar
+  sem a conexão fechar: depois de 5 s sem dados, a recusa é respondida. Uma
+  recusa que continua mandando dados sem nunca terminar é respondida em até
+  30 s. Nesses dois casos, um `429` do BYOK também cede a vez à NVIDIA.
+- Resposta não-stream acima de 32 MiB no plano B BYOK aparecia como endpoint
+  "inacessível". Agora diz que a resposta passou do teto do router; o mesmo
+  vale para a resposta não-stream da NVIDIA. O teto passou a contar bytes
+  (antes contava caracteres, e um corpo com acentos passava do limite real).
+- Nos streams OpenAI (plano B BYOK e endpoint próprio) e NVIDIA, uma linha SSE
+  sem quebra de linha crescia sem limite na memória. Agora uma linha acima de
+  32 MiB corta a conexão com o cliente (com log); o teto é por linha, não pelo
+  stream inteiro.
+- Mudança de contrato: no adaptador OpenAI, `text` de bloco que não é texto
+  (número, objeto, booleano ou `null`) passa a ser recusado com `400
+  invalid_request_error`, em vez de virar texto vazio em silêncio. `text`
+  ausente continua valendo como vazio.
+- Dashboard (aba Router): as dicas da chave NVIDIA e dos headers do BYOK
+  indicavam `DATA_DIR` como local do arquivo. O caminho real é
+  `~/.claude/claude-code-boss/model-router/user-config.json`; a permissão 0600
+  só é aplicada onde o sistema suporta.
+
+### Added — mapeamento de modelo do BYOK (origem → destino)
+- `byok.modelMap` troca o `model` enviado ao endpoint BYOK. Vale só na rota
+  BYOK: `always`, fallback `on-limit` (429) e cooldown, incluindo geração,
+  classificação remota e `count_tokens`. O caminho da assinatura nunca é
+  alterado e o corpo original não é mutado: o mapeamento trabalha sobre uma
+  cópia, depois da tradução de protocolo, e vale para Anthropic e OpenAI
+  (streaming, tools e conversão da resposta preservados).
+- Ordem de correspondência previsível: ID exato; depois o ID sem data de
+  snapshot (`-AAAAMMDD`, exatamente 8 dígitos); depois padrões com `*` (vence o
+  que tem mais caracteres literais, empate pela ordem de inserção), testados
+  contra o ID original com a data, não contra a base sem data. Não há prefixo
+  implícito: `claude-opus-5` nunca captura `claude-opus-5-5`. Sem regra,
+  o `model` segue como veio, sem rebaixamento silencioso. O casamento de `*`
+  é polinomial, O(|padrão|·|nome|), sem regex e imune a ReDoS; nomes acima de
+  256 caracteres ou fora de ASCII visível nunca casam; o limite é de 500 regras. A data de snapshot não
+  é validada como calendário, e origem só com dígitos é recusada.
+- `byok.modelInjection` (desligado por padrão) injeta o modelo resolvido em
+  campos extras do corpo (`"metadata.force_model": "{model}"`) ou em headers.
+  O único placeholder é `{model}`, todo template precisa usá-lo, e nada é
+  avaliado como código. Não altera `model`, os campos de protocolo do corpo
+  (`messages`, `system`, `tools`, `stream`, `max_tokens`, `metadata` inteiro,
+  parâmetros de amostragem e raciocínio, …) nem headers de credencial ou
+  protocolo. Nomes com cara de credencial (`auth`, `token`, `secret`, `pass`,
+  `jwt`, `hmac`, `otp`, `csrf`, `cert`, `api-key`, `access-key`, `private`,
+  `bearer`, `cookie`, `session`, `subscription-key`, terminados em
+  `-key`/`_key`/`.key` ou só `key`, …) e de roteamento/integridade
+  (`Content-*`, `X-Original-*`, `X-Rewrite-URL`, `X-Host`, `X-Envoy-*`, `CF-*`,
+  `*-Client-IP`, `Max-Forwards`, `Digest`, …) também são recusados — a lista é
+  uma rede de segurança, não exaustiva. O valor renderizado de um header tem
+  teto de 1024 caracteres. No `count_tokens`, corpo JSON que não é objeto
+  (`[]`, `"texto"`) segue como veio quando nenhuma regra casa e não há
+  injeção; do contrário, é recusado com `400`. Em `/v1/messages` esse corpo
+  já é recusado na entrada (ver Fixed acima). Não repete um header já configurado no
+  BYOK, não sobrescreve um campo de topo que a request já traz nem cria, em
+  qualquer nível, chave que difere de uma existente só na caixa (`Foo` ao lado
+  de `foo`, `metadata.User_Id` ao lado de `metadata.user_id`), e headers
+  aceitam só ASCII visível e espaço interno (inclusive o valor renderizado,
+  checado antes do envio). Caminhos aceitam só letras, dígitos,
+  `_` e `-` (até 8 segmentos), sem duplicata nem conflito mesmo diferindo só
+  na caixa, com teto de 32 caminhos e 32 headers. O texto
+  fixo do template tem até 64 caracteres e sem espaço nas pontas. O template é
+  configuração, não segredo: o dashboard o exibe em claro. Request sem `model`
+  de texto não vazio com injeção ligada falha, sem enviar valor vazio. `model`
+  que não é texto (`42`, lista) nunca casa regra no `count_tokens` (em
+  `/v1/messages` a request já é recusada na entrada). Falha causada pela request
+  (não pela regra) é dita como tal: `400 invalid_request_error` em `always` e
+  no `count_tokens`, e no fallback uma resposta que não manda revisar regras.
+- Dashboard → BYOK: editor de regras (adicionar/editar/remover/limpar), com
+  destinos sugeridos pelo `/v1/models` do endpoint (avisa quando o catálogo é
+  paginado e a lista é parcial; a leitura tem teto de 4 MiB e prazo total de
+  2× o timeout, então um endpoint lento não prende a busca) e digitação manual livre, e campos para os
+  templates de injeção. Regra inválida é recusada com `400`
+  e não chega ao disco. Salvar outros campos preserva regras e templates, e
+  a injeção salva é revalidada quando os headers mudam. Regras gravadas à mão
+  em lista aparecem no editor. Config gravado inválido gera erro que aponta o
+  arquivo: o status do router continua funcionando, mas o carregamento da aba
+  mostra o erro com o caminho do `user-config.json` e trava o botão de salvar (salvar um form vazio apagaria as
+  regras), e a busca de modelos responde `{ok:false}` sem sair na rede.
+  "Desligar tudo" continua funcionando: com o BYOK desligado, a regra inválida
+  fica no arquivo como está (o erro segue visível) e não bloqueia a gravação.
+- Fail-loud: regra inválida no fallback responde com a causa em vez de ceder à
+  NVIDIA. Em `always` e no `count_tokens`, vira `502 proxy_error`. No fallback
+  `on-limit`/cooldown, os erros do endpoint citam o modelo enviado e a regra
+  aplicada. Na classificação remota, a regra inválida é registrada como erro e
+  a classificação usa o classificador local. Quando uma regra casa, o log
+  registra origem, destino e regra; sem casamento (com mapa configurado),
+  registra o `model` enviado verbatim. Nos logs e notas, `model` longo é
+  cortado em 256 caracteres e o que não é texto aparece como `<tipo>`.
+
+### Added — compatibilidade OpenAI Chat Completions configurável (`byok.openaiCompat`)
+- A tradução Anthropic → Chat Completions passa a aceitar, por padrão, dois
+  casos que antes derrubavam a request e que um gateway passthrough aceita
+  (teste manual em 2026-09-25 num gateway LiteLLM passthrough, com Claude via
+  Bedrock e via Vertex AI, com e sem streaming): mensagem
+  `role: "system"` dentro de `messages` segue na posição original, e bloco
+  `tool_reference` dentro de `tool_result` vira texto JSON na mensagem `tool`.
+  Assistant com `tool_use` e sem texto continua saindo com `content: null`,
+  como já saía.
+- Assistant sem texto e sem `tool_use` (ex.: só `thinking`) sai com
+  `content: ""` em vez de `null`, que a spec do Chat Completions só aceita
+  junto de `tool_calls`.
+- `byok.openaiCompat` (opcional, só com `wireProtocol: "openai"`) troca cada
+  caso: `assistantEmptyContent` `"null"` (padrão) ou `"empty"` (string vazia);
+  `systemInMessages` `"keep"` (padrão) ou `"reject"`; `toolReference` `"text"`
+  (padrão) ou `"reject"`. `"reject"` recusa a request citando a opção, sem
+  chamar o endpoint: `400` no `mode: "always"` e aviso na resposta no fallback
+  (`on-limit`/cooldown). Valor ou chave inválida torna a configuração do BYOK
+  inválida (erro alto, nunca default silencioso) em toda request que vai ao
+  BYOK em Chat Completions: no `mode: "always"`; no `on-limit`, a geração
+  quando a Anthropic ou o custom upstream responde um status de
+  `fallback.triggerStatuses` (padrão `429`) ou, sem custom upstream, quando o
+  cooldown está ativo; classify remoto, count_tokens e catálogo só com o
+  cooldown ativo. Nesses casos: `502` no `always`; no fallback a resposta
+  mostra a causa em vez de ceder à NVIDIA; classify remoto cai no classificador
+  local e count_tokens responde `502`, sem chamar o endpoint; `GET /v1/models`
+  repassado responde `502`, e o catálogo local fica vazio com aviso no log.
+  Fora disso a geração, o count_tokens e o catálogo vão para a Anthropic ou
+  para o custom upstream, o classify não passa pelo BYOK (fica no
+  classificador local, ou vai à NVIDIA com `nim.classifyRemote`), e o router
+  não lê o `openaiCompat`. O custom upstream usa sempre o padrão.
+- Fallback BYOK (`on-limit`/cooldown): perfil de protocolo inválido
+  (`openaiCompat`, `wireProtocol`, ou a URL de geração — `endpoints.generate`
+  em texto que, sem os espaços das pontas, não fica vazio nem é URL http(s)
+  válida, com a Base URL válida, ou
+  `endpoints.generate` ausente quando o
+  destino vem de `endpoints.models`/`endpoints.countTokens`) agora responde
+  com a causa em vez de ceder à NVIDIA — antes só o `modelMap` e o
+  `modelInjection` faziam isso. Esses avisos e o de request recusada pelo
+  `openaiCompat` também dizem quando o Claude volta. Sem mudança quando a
+  Base URL do BYOK é inválida, ou quando ela falta e não há
+  `endpoints.generate`, `models` nem `countTokens` (`classify` sozinho não
+  conta) ou o primeiro presente na ordem `generate`, `models`, `countTokens` é inválido
+  (inclusive uma `endpoints.generate` inválida sem Base URL; nesta escolha,
+  texto só com espaços, na Base URL ou no endpoint, conta como presente e
+  inválido, não como ausente): o BYOK é
+  ignorado com erro no log e o plano B segue para a NVIDIA.
+- Dashboard → BYOK: três seletores em "Avançado: compatibilidade OpenAI Chat
+  Completions". Só o que difere do padrão vai ao `user-config.json`; valor
+  inválido é recusado com `400`, e gravado à mão inválido segue a mesma regra
+  de `modelMap` (GET acusa o arquivo; "Desligar tudo" continua funcionando).
+  O dashboard valida a opção mesmo com `wireProtocol: "anthropic"` (em que o
+  router a ignora), para o erro não aparecer só ao trocar o protocolo.
+
 ## [2.29.0] - 2026-09-23
 
 ### Added — custom upstream configurável por operação e protocolo

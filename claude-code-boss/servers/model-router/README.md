@@ -18,6 +18,8 @@ Claude Code --> model-router (13456) --+--> api.anthropic.com  (passthrough, def
 |---------|------------------|
 | `index.js` | HTTP server, roteamento por modo, classificacao sticky/per-turn, fallback chain |
 | `byok.js` | Resolve upstream BYOK, headers, classificacao de resposta (429 vs fail-loud) |
+| `byok-model.js` | Mapeamento de modelo do BYOK (`byok.modelMap`) e injecao opcional do modelo resolvido (`byok.modelInjection`) |
+| `protocols/openai-chat.js` | Traducao Anthropic Messages <-> OpenAI Chat Completions; compatibilidade opcional do BYOK (`byok.openaiCompat`, valores string: `assistantEmptyContent` `"null"`/`"empty"`, `systemInMessages` `"keep"`/`"reject"`, `toolReference` `"text"`/`"reject"`; padrao = primeiro valor de cada) |
 | `catalog.js` | Catalogo dinamico via GET /v1/models (familia -> modelo mais novo + effort levels) |
 | `cache-cycle.js` | Observabilidade do prompt cache: hits/misses, fronteiras frias, premio de reconstrucao |
 | `wrapper.cs` | Fonte C# compilada em runtime pelo shim (Windows) |

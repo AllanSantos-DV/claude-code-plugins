@@ -32,7 +32,7 @@ const INSTALLED_PLUGINS = path.join(os.homedir(), '.claude', 'plugins', 'install
 // ── Resolve SHA ──────────────────────────────────────────────────────────────
 let sha;
 try {
-  sha = cp.execSync('git rev-parse --short=12 HEAD', { cwd: PLUGIN_ROOT, encoding: 'utf-8' }).trim();
+  sha = cp.execSync('git rev-parse --short=12 HEAD', { cwd: PLUGIN_ROOT, encoding: 'utf-8', windowsHide: true }).trim();
 } catch {
   sha = `dev-${Date.now()}`;
 }

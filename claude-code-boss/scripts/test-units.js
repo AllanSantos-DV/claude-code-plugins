@@ -3512,6 +3512,8 @@ test('brain-config.getRecallCompose: sane defaults', () => {
   assert(c.timeoutMs > 0, 'timeoutMs default');
   assertEq(c.overlay, null);
   assertEq(c.poolWarming, true);
+  assertEq(c.maxQueryChars, 800, 'maxQueryChars default (2.29.1)');
+  assertEq(c.projectArmMinScore, 0.65, 'projectArmMinScore default (2.29.1)');
 });
 
 test('retrieve-core: short prompt pre-filters (no embedder)', async () => {
@@ -3520,65 +3522,123 @@ test('retrieve-core: short prompt pre-filters (no embedder)', async () => {
   assertEq(r.entries.length, 0);
 });
 
-test('retrieve-core mergeFactsSpine (F2): compose FIRST, ancestors by score, dedup keeps compose', () => {
+test('retrieve-core mergeFactsSpine (2.29.1): compose non-home, then arm by score, then compose home; dedup keeps compose', () => {
   const { mergeFactsSpine } = retrieveCore.__testHooks;
   const compose = [
+    { id: 'h1', title: 'H1', scope: 'home', score: 0.95 },
     { id: 'd1', title: 'C1', scope: 'projB', score: 0.9 },
     { id: 'd2', title: 'C2', scope: 'projB', score: 0.5 },
   ];
-  const ancestors = [
-    { id: 'd3', title: 'A-lo', scope: 'ancestor', score: 0.2 },
-    { id: 'd1', title: 'A-dup', scope: 'ancestor', score: 0.99 }, // same doc as a compose fact
-    { id: 'd4', title: 'A-hi', scope: 'ancestor', score: 0.8 },
+  const arm = [
+    { id: 'd3', title: 'A-lo', scope: 'project', score: 0.2 },
+    { id: 'd1', title: 'A-dup', scope: 'project', score: 0.99 }, // same doc as a compose fact
+    { id: 'd4', title: 'A-hi', scope: 'project', score: 0.8 },
   ];
-  const merged = mergeFactsSpine(compose, ancestors);
-  assertEq(merged.map((f) => f.id), ['d1', 'd2', 'd4', 'd3'], 'compose first (d1,d2), then ancestors by score (d4>d3); d1 dup dropped');
+  const merged = mergeFactsSpine(compose, arm);
+  assertEq(merged.map((f) => f.id), ['d1', 'd2', 'd4', 'd3', 'h1'], 'compose project facts, arm by score, home spine last; d1 dup dropped');
   assertEq(merged.find((f) => f.id === 'd1').title, 'C1', 'dedup keeps the COMPOSE occurrence of d1');
-  // empty/absent inputs are safe
   assertEq(mergeFactsSpine(null, null), [], 'null inputs → []');
-  assertEq(mergeFactsSpine(compose, []).map((f) => f.id), ['d1', 'd2'], 'no ancestors → compose only');
+  assertEq(mergeFactsSpine(compose, []).map((f) => f.id), ['d1', 'd2', 'h1'], 'no arm hits → compose only, home last');
+});
+
+test('retrieve-core capQuery / projectArmIds / armHitsToFacts (2.29.1): pure helpers', () => {
+  const { capQuery, projectArmIds, armHitsToFacts } = retrieveCore.__testHooks;
+  assertEq(capQuery('x'.repeat(900), 800).length, 800, 'long query capped');
+  assertEq(capQuery('short', 800), 'short', 'short query untouched');
+  assertEq(capQuery('x'.repeat(900), 0).length, 900, '0 disables the cap');
+  assertEq(capQuery(undefined, 800), '', 'non-string → empty');
+  assertEq(projectArmIds('projB', ['projB', 'root/A', '']), ['projB', 'root/A', '__user__'], 'focus first, deduped, __user__ appended');
+  assertEq(projectArmIds('projB', null), ['projB', '__user__']);
+  const f = armHitsToFacts([{ id: 'a', title: 'A', score: 0.7 }, { id: 'b', title: 'B', score: 0.6 }], 0.65);
+  assertEq(f.map((x) => x.id), ['a'], 'hits below the floor dropped');
+  assertEq(f[0].scope, 'project', 'arm hits are non-home');
+  assertEq(armHitsToFacts([{ id: 'e', score: 0.65 }], 0.65).length, 1, 'a hit exactly at the floor is kept');
+});
+
+test('retrieve-core mergeFactsSpine (2.29.1): dedup inside the arm; an arm dup of a compose HOME fact keeps the compose one', () => {
+  const { mergeFactsSpine } = retrieveCore.__testHooks;
+  assertEq(mergeFactsSpine([], [{ id: 'x', score: 0.9 }, { id: 'x', score: 0.8 }]).length, 1, 'arm dup by id dropped');
+  assertEq(mergeFactsSpine([{ id: 'h', scope: 'home' }], [{ id: 'h', scope: 'project', score: 0.99 }]), [{ id: 'h', scope: 'home' }]);
+});
+
+test('brain-config.getRecallCompose: maxQueryChars / projectArmMinScore overrides (0 disables the cap; negative → default)', () => {
+  const bc = require('./lib/brain-config.js');
+  const c = withUserConfig({ kb: { retrieval: { compose: { maxQueryChars: 0, projectArmMinScore: 0.5 } } } }, () => bc.getRecallCompose());
+  assertEq([c.maxQueryChars, c.projectArmMinScore], [0, 0.5]);
+  const d = withUserConfig({ kb: { retrieval: { compose: { maxQueryChars: -1 } } } }, () => bc.getRecallCompose());
+  assertEq(d.maxQueryChars, 800);
 });
 
 // Fake mcp-memory backend for retrieveRemote (no warmPool → pool-warming branch skipped).
-function fakeComposeBackend({ facts, onSearch }) {
+function fakeComposeBackend({ facts, onSearch, onCompose, hasCompose = true }) {
   return {
     init: async () => {},
-    hasCompose: () => true,
-    compose: async () => ({ facts, capabilities: [] }),
+    hasCompose: () => hasCompose,
+    compose: onCompose || (async () => ({ facts, capabilities: [] })),
     search: onSearch,
   };
 }
 
-test('retrieve-core retrieveRemote (F2): NO ancestor search when ancestorIds ⊆ {focus} (single-call)', async () => {
-  let searchCalls = 0;
-  const fake = fakeComposeBackend({
-    facts: [{ id: 'd1', title: 'C1', type: 'knowledge', scope: 'projB', summary: 'focus', score: 0.9 }],
-    onSearch: async () => { searchCalls++; return []; },
-  });
-  const out = await retrieveCore.__testHooks.retrieveRemote(
-    'a real prompt here', { project: 'projB', ancestorIds: ['projB'], topK: 10, keywords: ['x'] },
-    { backend: fake, recallHealth: { record: () => {} } },
-  );
-  assertEq(searchCalls, 0, 'ancestorIds equal to focus → no ancestor search');
-  assertEq(out.entries.map((e) => e.id), ['d1'], 'compose facts injected (CWD focus)');
-});
-
-test('retrieve-core retrieveRemote (F2): ancestor search FIRES for distinct ids; merged compose-first', async () => {
+test('retrieve-core retrieveRemote (2.29.1): project arm ALWAYS fires (focus+ancestors+__user__, no home) with the capped query; merged project-first', async () => {
   let seenOpts = null;
+  let seenSearchQ = null;
+  let seenComposeQ = null;
   const fake = fakeComposeBackend({
-    facts: [{ id: 'd1', title: 'C1', type: 'knowledge', scope: 'projB', summary: 'focus', score: 0.9 }],
-    onSearch: async (q, opts) => { seenOpts = opts; return [{ id: 'd2', title: 'A1', type: 'knowledge', summary: 'anc', score: 0.7 }]; },
+    onCompose: async (q) => {
+      seenComposeQ = q;
+      return { facts: [
+        { id: 'h1', title: 'H1', type: 'procedural', scope: 'home', summary: 'home', score: 0.9 },
+        { id: 'd1', title: 'C1', type: 'knowledge', scope: 'projB', summary: 'focus', score: 0.9 },
+      ], capabilities: [] };
+    },
+    onSearch: async (q, opts) => {
+      seenSearchQ = q;
+      seenOpts = opts;
+      return [
+        { id: 'd2', title: 'A1', type: 'lesson', summary: 'anc', score: 0.7 },
+        { id: 'd3', title: 'noise', type: 'lesson', summary: 'n', score: 0.55 },
+      ];
+    },
   });
+  const reasons = [];
+  const long = 'a real prompt here ' + 'x'.repeat(2000);
   const out = await retrieveCore.__testHooks.retrieveRemote(
-    'a real prompt here', { project: 'projB', ancestorIds: ['projB', 'root/A'], topK: 10, keywords: ['x'] },
-    { backend: fake, recallHealth: { record: () => {} } },
+    long, { project: 'projB', ancestorIds: ['projB'], topK: 10, keywords: ['x'] },
+    { backend: fake, recallHealth: { record: (r) => reasons.push(r) } },
   );
-  assertEq(seenOpts.projectIds, ['root/A'], 'ancestor search unions ONLY ids beyond focus (no double-count)');
-  assertEq(seenOpts.includeHome, true, 'ancestor search federates home');
-  assertEq(out.entries.map((e) => e.id), ['d1', 'd2'], 'merged: compose focus first, ancestor appended');
+  assertEq(seenOpts.projectIds, ['projB', '__user__'], 'arm fires even with ancestorIds ⊆ {focus}; includes __user__');
+  assertEq(seenOpts.includeHome, false, 'home stays with compose');
+  assertEq(seenComposeQ.length, 800, 'compose gets the capped query');
+  assertEq(seenSearchQ.length, 800, 'arm gets the capped query');
+  assertEq(out.entries.map((e) => e.id), ['d1', 'd2', 'h1'], 'compose project fact, arm hit above the floor, home last');
+  assertEq(reasons, [undefined], 'one ok record per turn');
+  assertEq(out.reason, undefined);
 });
 
-test('retrieve-core retrieveRemote (F2): ancestor-search timeout DEGRADES to compose-only (no throw) + ANCESTOR_TIMEOUT_MS env-tunable', async () => {
+test('retrieve-core retrieveRemote (2.29.1): compose FAILS → arm hits still injected, compose reason recorded', async () => {
+  const reasons = [];
+  const fake = fakeComposeBackend({
+    onCompose: async () => { throw new Error('boom'); },
+    onSearch: async () => [{ id: 'd2', title: 'A1', type: 'lesson', summary: 'anc', score: 0.7 }],
+  });
+  const out = await retrieveCore.__testHooks.retrieveRemote(
+    'a real prompt here', { project: 'projB', ancestorIds: [], topK: 10, keywords: ['x'] },
+    { backend: fake, recallHealth: { record: (r) => reasons.push(r) } },
+  );
+  assertEq(out.entries.map((e) => e.id), ['d2'], 'arm hits survive a compose failure');
+  assertEq(reasons, ['remote-error'], 'compose failure stays visible in recall-health');
+  assertEq(out.reason, 'remote-error');
+  const noCompose = fakeComposeBackend({ hasCompose: false, onSearch: async () => [{ id: 'd9', title: 'X', score: 0.8 }] });
+  const reasons2 = [];
+  const out2 = await retrieveCore.__testHooks.retrieveRemote(
+    'a real prompt here', { project: 'projB', ancestorIds: [], topK: 10, keywords: ['x'] },
+    { backend: noCompose, recallHealth: { record: (r) => reasons2.push(r) } },
+  );
+  assertEq(out2.entries.map((e) => e.id), ['d9'], 'no compose tool → arm only');
+  assertEq(reasons2, ['no-compose']);
+});
+
+test('retrieve-core retrieveRemote (2.29.1): arm timeout DEGRADES to compose-only (no throw) + CCB_ANCESTOR_TIMEOUT_MS env-tunable', async () => {
   delete require.cache[require.resolve('./lib/retrieve-core.js')];
   const prev = process.env.CCB_ANCESTOR_TIMEOUT_MS;
   process.env.CCB_ANCESTOR_TIMEOUT_MS = '10';
@@ -3594,13 +3654,62 @@ test('retrieve-core retrieveRemote (F2): ancestor-search timeout DEGRADES to com
       'a real prompt here', { project: 'projB', ancestorIds: ['projB', 'root/A'], topK: 10, keywords: ['x'] },
       { backend: fake, recallHealth: { record: (r) => reasons.push(r) } },
     );
-    assertEq(out.entries.map((e) => e.id), ['d1'], 'compose-only survives the ancestor timeout (turn never fails)');
-    assert(reasons.includes('ancestor-timeout'), 'records the ancestor-timeout health reason');
+    assertEq(out.entries.map((e) => e.id), ['d1'], 'compose-only survives the arm timeout (turn never fails)');
+    assertEq(out.reason, undefined, 'facts injected → no turn reason; the arm degradation lives in recall-health');
+    assertEq(reasons, ['project-arm-timeout'], 'records the project-arm-timeout health reason (once)');
+    assert(require('./lib/recall-health.js').isDegraded('project-arm-timeout'), 'project-arm-timeout counts as degraded');
   } finally {
     if (prev === undefined) delete process.env.CCB_ANCESTOR_TIMEOUT_MS; else process.env.CCB_ANCESTOR_TIMEOUT_MS = prev;
     delete require.cache[require.resolve('./lib/retrieve-core.js')];
     require('./lib/retrieve-core.js'); // restore a warm cache at the default timeout
   }
+});
+
+test('retrieve-core retrieveRemote (2.29.1): compose and the project arm run IN PARALLEL', async () => {
+  const order = [];
+  const fake = fakeComposeBackend({
+    onCompose: async () => { order.push('c:start'); await new Promise((r) => setImmediate(r)); order.push('c:end'); return { facts: [], capabilities: [] }; },
+    onSearch: async () => { order.push('s:start'); return []; },
+  });
+  await retrieveCore.__testHooks.retrieveRemote('a real prompt here', { project: 'projB', ancestorIds: [], topK: 5, keywords: ['x'] },
+    { backend: fake, recallHealth: { record: () => {} } });
+  assertEq(order, ['c:start', 's:start', 'c:end'], 'the arm starts before compose finishes');
+});
+
+test('retrieve-core retrieveRemote (2.29.1): arm error → project-arm-error; compose error outranks an arm error', async () => {
+  const run = async (fake) => {
+    const reasons = [];
+    const out = await retrieveCore.__testHooks.retrieveRemote('a real prompt here', { project: 'projB', ancestorIds: [], topK: 5, keywords: ['x'] },
+      { backend: fake, recallHealth: { record: (r) => reasons.push(r) } });
+    return { out, reasons };
+  };
+  const a = await run(fakeComposeBackend({
+    facts: [{ id: 'd1', title: 'C1', type: 'knowledge', scope: 'projB', summary: 'f', score: 0.9 }],
+    onSearch: async () => { throw new Error('boom'); },
+  }));
+  assertEq(a.reasons, ['project-arm-error']);
+  assertEq(a.out.entries.map((e) => e.id), ['d1'], 'compose facts survive an arm error');
+  const b = await run(fakeComposeBackend({
+    onCompose: async () => { throw new Error('boom'); },
+    onSearch: async () => { throw new Error('boom'); },
+  }));
+  assertEq(b.reasons, ['remote-error'], 'a failed compose outranks a failed arm');
+  assert(require('./lib/recall-health.js').isDegraded('project-arm-error'), 'project-arm-error counts as degraded');
+});
+
+test('retrieve-core retrieveRemote (2.29.1): arm timeout defaults to compose.timeoutMs (no CCB_ANCESTOR_TIMEOUT_MS)', async () => {
+  assertEq(retrieveCore.ANCESTOR_TIMEOUT_MS, 0, 'precondition: env override unset');
+  const reasons = [];
+  const fake = fakeComposeBackend({
+    facts: [],
+    onSearch: () => new Promise((res) => setTimeout(() => res([]), 200)),
+  });
+  // getRecallCompose() is read synchronously, before retrieveRemote's first await.
+  const p = withUserConfig({ kb: { retrieval: { compose: { timeoutMs: 20 } } } }, () => retrieveCore.__testHooks.retrieveRemote(
+    'a real prompt here', { project: 'projB', ancestorIds: [], topK: 5, keywords: ['x'] },
+    { backend: fake, recallHealth: { record: (r) => reasons.push(r) } }));
+  await p;
+  assertEq(reasons, ['project-arm-timeout']);
 });
 
 test('hooks.json (F2): brain_retrieve_context UserPromptSubmit hook passes sessionRoot=${CLAUDE_PROJECT_DIR}', () => {
@@ -4048,7 +4157,7 @@ test('project-id legacy marker: READ-ONLY back-compat + migration nudge (never a
 });
 
 test('project-id assertSafeProjectId: rejects path-shaped ids; accepts owner/repo + host/owner/repo', () => {
-  for (const bad of ['C:\\Users\\x', 'C:/Users/x', '\\\\srv\\share', '/etc/passwd', 'a\\b', '']) {
+  for (const bad of ['C:\\Users\\x', 'C:/Users/x', '\\\\srv\\share', '/etc/passwd', 'a\\b', '', '../../../x', 'owner/../x', './x']) {
     let threw = false;
     try { projectId.assertSafeProjectId(bad); } catch (e) { void e; threw = true; }
     assert(threw, 'rejects ' + JSON.stringify(bad));
@@ -4157,91 +4266,79 @@ test('project-id resolveProjectChain: env CCB_PROJECT_ID wins as focusId over th
   } finally { fs.rmSync(cwdWithOwnIdentity, { recursive: true, force: true }); }
 });
 
-// ─── project-identity-advisory: fragile-basename nudge (SessionStart) ─────────
+// ─── project-identity-advisory + project-id-stop: strict project-id gate (2.29.1) ──
 const pia = require('./project-identity-advisory.js');
+const pidStop = require('./project-id-stop.js');
+const noId = () => null;
+const hasId = () => 'owner/repo';
 
-test('pia.needsNudge: local backend → never nudge (basename is by design)', () => {
-  const cwd = path.join('C:', 'proj', 'app');
-  assert(pia.needsProjectIdentityNudge({ mode: 'local', cwd, env: {}, fs: fakeFs({}) }) === false);
+test('pia.needsProjectId: resolver null → true; resolver id → false; resolver gets {cwd}', () => {
+  let seen = null;
+  assert(pia.needsProjectId('C:\\x', (a) => { seen = a; return null; }) === true);
+  assertEq(seen, { cwd: 'C:\\x' });
+  assert(pia.needsProjectId('C:\\x', hasId) === false);
 });
 
-test('pia.needsNudge: mcp-memory + CCB_PROJECT_ID → stable, no nudge', () => {
-  const cwd = path.join('C:', 'proj', 'app');
-  const env = { CCB_PROJECT_ID: ' positiva ' };
-  assert(pia.needsProjectIdentityNudge({ mode: 'mcp-memory', cwd, env, fs: fakeFs({}) }) === false);
+test('pia.buildNotice: names the cwd, says memory is OFF, gives the .memory/project.json recipe', () => {
+  const msg = pia.buildNotice('C:\\explore\\tmp');
+  assert(msg.includes('C:\\explore\\tmp'), 'names the folder');
+  assert(/DESLIGADA/.test(msg), 'says memory is off');
+  assert(msg.includes('.memory/project.json') && msg.includes('"project_id"'), 'gives the marker recipe');
+  assert(!msg.includes(projectId.MARKER_FILE), 'no longer recommends the legacy .claude-boss-project');
 });
 
-test('pia.needsNudge: mcp-memory + config mcpProjectId → stable, no nudge (handshake override)', () => {
-  const cwd = path.join('C:', 'proj', 'app');
-  const opts = { mode: 'mcp-memory', cwd, env: {}, mcpProjectId: 'my-stable-id', fs: fakeFs({}) };
-  assert(pia.needsProjectIdentityNudge(opts) === false);
+test('pia.run: no id → notice for event.cwd; id → null (mode-agnostic, no cooldown)', async () => {
+  const cwd = path.join('C:', 'explore');
+  const a = await pia.run({ cwd }, { resolve: noId });
+  const b = await pia.run({ cwd }, { resolve: noId });
+  assert(typeof a === 'string' && a.includes(cwd), 'notice fires');
+  assertEq(b, a, 'fires again on the next session (no cooldown)');
+  assertEq(await pia.run({ cwd }, { resolve: hasId }), null);
 });
 
-test('pia.needsNudge: mcp-memory + whitespace-only mcpProjectId → still stamped raw by handshake → no nudge', () => {
-  // brain-backend: `mcpCfg.projectId || _project` + mcp-client: `projectId ? {projectId} : {}`
-  // → a truthy '   ' is sent RAW as the scope (wins over the marker), so the marker
-  // remedy would be inert; nudging there repeats Finding 1. Faithful superset ⇒ silent.
-  const cwd = path.join('C:', 'proj', 'app');
-  const opts = { mode: 'mcp-memory', cwd, env: {}, mcpProjectId: '   ', fs: fakeFs({}) };
-  assert(pia.needsProjectIdentityNudge(opts) === false);
+test('project-id-stop.run: no id → block with the shared notice', () => {
+  const cwd = path.join('C:', 'explore');
+  const r = pidStop.run({ cwd }, { resolve: noId });
+  assertEq(r, { block: true, reason: pia.buildNotice(cwd) });
 });
 
-test('pia.needsNudge: mcp-memory + marker in tree → stable, no nudge', () => {
-  const cwd = path.join('C:', 'proj', 'app');
-  const fs = fakeFs({ [path.join(cwd, '.claude-boss-project')]: 'positiva\n' });
-  assert(pia.needsProjectIdentityNudge({ mode: 'mcp-memory', cwd, env: {}, fs }) === false);
+test('project-id-stop.run: id present / stop_hook_active / no cwd → null (one nag per turn, never a loop)', () => {
+  const cwd = path.join('C:', 'explore');
+  assertEq(pidStop.run({ cwd }, { resolve: hasId }), null, 'id present');
+  assertEq(pidStop.run({ cwd, stop_hook_active: true }, { resolve: noId }), null, 'already continuing');
+  assertEq(pidStop.run({}, { resolve: noId }), null, 'no cwd → cannot judge');
+  assertEq(pidStop.run(null, { resolve: noId }), null, 'null event');
 });
 
-test('pia.needsNudge: mcp-memory + no marker + no env + no config id → nudge (basename fallback)', () => {
-  const cwd = path.join('C:', 'proj', 'app');
-  assert(pia.needsProjectIdentityNudge({ mode: 'mcp-memory', cwd, env: {}, fs: fakeFs({}) }) === true);
+test('pia.run / project-id-stop.run: onboarding.projectIdentity:false silences both', async () => {
+  const cwd = path.join('C:', 'explore');
+  const [a, b] = withUserConfig({ onboarding: { projectIdentity: false } }, () => [
+    pia.run({ cwd }, { resolve: noId }), // getOnboarding() is read before the first await
+    pidStop.run({ cwd }, { resolve: noId }),
+  ]);
+  assertEq(await a, null, 'SessionStart notice opted out');
+  assertEq(b, null, 'Stop detector opted out');
 });
 
-test('pia.needsNudge: marker in an ANCESTOR (monorepo) → no nudge', () => {
-  const root = path.join('C:', 'mono');
-  const sub = path.join(root, 'packages', 'api');
-  const fs = fakeFs({ [path.join(root, '.claude-boss-project')]: 'mono-id' });
-  assert(pia.needsProjectIdentityNudge({ mode: 'mcp-memory', cwd: sub, env: {}, fs }) === false);
+test('pia.run: event without cwd → resolves process.cwd()', async () => {
+  let seen = null;
+  await pia.run({}, { resolve: (a) => { seen = a; return 'owner/repo'; } });
+  assertEq(seen, { cwd: process.cwd() });
 });
 
-test('pia cooldown: absent→false; stamped→true; boundary half-open at +COOLDOWN_MS', () => {
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pia-')), 'f.json');
-  const t0 = 1000000;
-  assert(pia.onCooldown(file, t0) === false, 'absent → not on cooldown');
-  pia.stamp(file, t0);
-  assert(pia.onCooldown(file, t0 + pia.COOLDOWN_MS - 1) === true, 'inside window → cooldown');
-  assert(pia.onCooldown(file, t0 + pia.COOLDOWN_MS) === false, 'at boundary → fires (half-open)');
-  assert(pia.onCooldown(file, t0 + pia.COOLDOWN_MS + 1) === false, 'past window → fires');
-});
-
-test('pia cooldown: corrupt/torn stamp file → fail-open (fires), no crash', () => {
-  const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pia-')), 'f.json');
-  fs.writeFileSync(file, '{ this is not json');
-  assert(pia.onCooldown(file, Date.now()) === false, 'unparseable → not on cooldown (fail-open)');
-});
-
-test('pia stampFileFor: same cwd → same file; different cwd → different file (per-folder isolation)', () => {
-  const a = path.join('C:', 'proj', 'a');
-  const b = path.join('C:', 'proj', 'b');
-  assert(pia.stampFileFor(a) === pia.stampFileFor(a), 'stable per folder');
-  assert(pia.stampFileFor(a) !== pia.stampFileFor(b), 'distinct folders → distinct files (no shared mutation)');
-});
-
-test('pia stamp: two folders write independent files — no cross-folder lost update', () => {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pia-'));
-  const fileA = path.join(dir, 'A.json');
-  const fileB = path.join(dir, 'B.json');
-  pia.stamp(fileA, 100);
-  pia.stamp(fileB, 200);
-  assertEq(pia.readTs(fileA), 100);
-  assertEq(pia.readTs(fileB), 200);
-});
-
-test('pia.buildAdvisory: names the marker file + the basename, consent-first', () => {
-  const msg = pia.buildAdvisory('my-repo');
-  assert(msg.includes(projectId.MARKER_FILE), 'mentions .claude-boss-project');
-  assert(msg.includes('my-repo'), 'mentions the fragile basename');
-  assert(/OFEREÇA|ofere/i.test(msg), 'consent-first (offers, never auto-writes)');
+test('project-identity-advisory main(): no-id cwd → SessionStart additionalContext naming the folder', () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pia-main-'));
+  try {
+    const env = { ...process.env };
+    delete env.CCB_PROJECT_ID; delete env.CLAUDE_PROJECT_DIR;
+    const r = require('child_process').spawnSync(process.execPath, [path.join(__dirname, 'project-identity-advisory.js')], {
+      input: JSON.stringify({ cwd, hook_event_name: 'SessionStart' }), encoding: 'utf8', env, timeout: 20000,
+    });
+    assertEq(r.status, 0, r.stderr);
+    const out = JSON.parse(r.stdout);
+    assertEq(out.hookSpecificOutput.hookEventName, 'SessionStart');
+    assert(out.hookSpecificOutput.additionalContext.includes(cwd), 'names the folder');
+  } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
 });
 
 // ─── Sprint 1 — security hardening (injection / XSS / traversal / rebinding) ──
@@ -5885,6 +5982,21 @@ test('upstream-profile: protocolo/URL inválidos falham alto em vez de cair em d
   }, target, 'generate');
   assertEq(badUrl.ok, false);
   assert(/URL/.test(badUrl.error));
+});
+
+// Aqui (ao contrário de byok.resolveUpstream, ver docs/BACKLOG.md) o endpoint é
+// aparado: só espaços conta como ausente e a URL deriva da Base URL.
+test('upstream-profile: endpoint só com espaços conta como ausente (deriva da Base URL; classify herda generate)', () => {
+  const profile = require('../servers/model-router/upstream-profile.js');
+  const target = { isByok: true };
+  const cfg = (endpoints) => ({ byok: { wireProtocol: 'openai', baseUrl: 'http://127.0.0.1:9', endpoints } });
+  const gen = profile.resolveOperationProfile(cfg({ generate: '   ' }), target, 'generate');
+  assertEq([gen.ok, gen.url], [true, 'http://127.0.0.1:9/v1/chat/completions'], gen.error);
+  const cls = profile.resolveOperationProfile(cfg({ classify: '   ', generate: 'http://127.0.0.1:9/x/chat' }), target, 'classify');
+  assertEq([cls.ok, cls.url], [true, 'http://127.0.0.1:9/x/chat'], cls.error);
+  // generate herdado pelo classify também é aparado.
+  const inh = profile.resolveOperationProfile(cfg({ generate: '   ' }), target, 'classify');
+  assertEq([inh.ok, inh.url], [true, 'http://127.0.0.1:9/v1/chat/completions'], inh.error);
 });
 
 test('upstream-profile: alias vale para BYOK e upstream, mas não para Anthropic direta', () => {
@@ -8302,6 +8414,28 @@ test('byok.resolveUpstream: ligado SEM baseUrl → NAO roteia e diz o porque (fa
   assertEq(/baseUrl/i.test(u.misconfigured || ''), true, 'e a causa fica VISIVEL, nao silenciosa');
 });
 
+// Comportamento atual documentado no CHANGELOG 2.29.1: na escolha do destino,
+// texto só com espaços conta como presente e inválido (não como ausente). A
+// divergência com resolveOperationProfile, que apara, está no docs/BACKLOG.md —
+// se ela for resolvida, este teste e o CHANGELOG mudam juntos.
+test('byok.resolveUpstream: destino = primeiro presente em baseUrl → generate → models → countTokens; nenhum presente (classify sozinho não conta), só espaços ou inválido → misconfigured', () => {
+  for (const b of [
+    // classify sozinho não conta como destino.
+    { endpoints: { classify: 'http://127.0.0.1:1/classify' } },
+    { baseUrl: '   ', endpoints: { generate: 'http://127.0.0.1:1/chat' } },
+    { endpoints: { generate: '   ', models: 'http://127.0.0.1:1/v1/models' } },
+    { endpoints: { models: '   ', countTokens: 'http://127.0.0.1:1/count' } },
+    // Ordem generate → models → countTokens: models inválido não cede ao countTokens.
+    { endpoints: { models: 'nao-url', countTokens: 'http://127.0.0.1:1/count' } },
+  ]) {
+    const u = byok.resolveUpstream({ byok: { enabled: true, mode: 'on-limit', headers: {}, ...b } }, { onLimit: true });
+    assertEq(u.isByok, false, JSON.stringify(b));
+    assert(u.misconfigured, `misconfigured: ${JSON.stringify(b)}`);
+  }
+  const only = byok.resolveUpstream({ byok: { enabled: true, mode: 'on-limit', headers: {}, endpoints: { countTokens: 'http://127.0.0.1:7/count' } } }, { onLimit: true });
+  assertEq([only.isByok, only.host, only.port], [true, '127.0.0.1', 7], 'só countTokens também define o destino');
+});
+
 // ── isCustomEndpoint: ORTOGONAL a isByok, decide o teto de timeout ───────────
 // Achado de campo: o gateway alternativo (config.upstream) troca o destino pra
 // um endpoint de terceiro mas mantem isByok=false (credencial da assinatura
@@ -8515,6 +8649,765 @@ test('custom upstream /v1/models E2E: catálogo aquecido aplica alias no picker'
   }
 });
 
+test('router: POST /v1/messages com corpo JSON não-objeto → 400 e o processo segue vivo', async () => {
+  for (const mode of ['fallback-only', 'sticky-tier', 'per-turn']) {
+    // Catálogo desligado: com a x-api-key da fixture, o aquecimento iria à
+    // Anthropic real antes de o corpo ser recusado.
+    const proxy = await router.createServer({ routing: { catalog: { enabled: false } } }, mode, 'a'.repeat(64));
+    const port = await _listen0(proxy);
+    const post = (payload = 'null') => new Promise((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port, method: 'POST', path: '/v1/messages', headers: { 'content-type': 'application/json', 'x-api-key': 'fixture-key' } }, (res) => {
+        let raw = '';
+        res.on('data', c => { raw += c; });
+        res.on('end', () => resolve({ status: res.statusCode, raw }));
+      });
+      req.on('error', reject);
+      req.end(payload);
+    });
+    try {
+      for (const payload of ['null', '"texto"', '1', 'true', '[]', '{"model":42}', '{"model":{"a":1}}', '{"model":["opus"]}', '{"model":null}']) {
+        const r = await post(payload);
+        assertEq(r.status, 400, `${mode} ${payload}: ${r.raw}`);
+        assertEq(JSON.parse(r.raw).error.type, 'invalid_request_error');
+      }
+      const again = await post();
+      assertEq(again.status, 400, `${mode}: o servidor continua respondendo`);
+    } finally {
+      await new Promise(resolve => proxy.close(resolve));
+    }
+  }
+});
+
+function _postJson(port, payload) {
+  return new Promise((resolve) => {
+    const req = http.request({ host: '127.0.0.1', port, method: 'POST', path: '/v1/messages', headers: { 'content-type': 'application/json', 'x-api-key': 'fixture-key' } }, (res) => {
+      let raw = '';
+      res.on('data', c => { raw += c; });
+      res.on('end', () => resolve({ status: res.statusCode, raw }));
+      res.on('error', err => resolve({ status: res.statusCode, raw, err: err.message }));
+    });
+    req.on('error', err => resolve({ status: 0, raw: '', err: err.message }));
+    req.end(typeof payload === 'string' ? payload : JSON.stringify(payload));
+  });
+}
+
+test('router: stream OpenAI com tool call sem nome não derruba o processo ([DONE] e fim do stream)', async () => {
+  let variant = 'done';
+  const fake = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      if (variant === 'ok') { _openaiOk(res, 'vivo'); return; }
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write('data: ' + JSON.stringify({ id: 'c', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 't1', function: { arguments: '{}' } }] } }] }) + '\n\n');
+      if (variant === 'done') res.write('data: [DONE]\n\n');
+      res.end();
+    });
+  });
+  const upPort = await _listen0(fake);
+  const cfg = { upstream: { enabled: true, wireProtocol: 'openai', endpoints: { generate: 'http://127.0.0.1:' + upPort + '/chat' } } };
+  const proxy = await router.createServer(cfg, 'fallback-only', 'a'.repeat(64));
+  const port = await _listen0(proxy);
+  try {
+    for (const v of ['done', 'end']) {
+      variant = v;
+      await _postJson(port, { model: 'claude-sonnet-5', max_tokens: 8, stream: true, messages: [{ role: 'user', content: 'oi' }] });
+      variant = 'ok';
+      const alive = await _postJson(port, { model: 'claude-sonnet-5', max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'oi' }] });
+      assertEq(alive.status, 200, v + ': o router segue respondendo — ' + alive.raw);
+    }
+  } finally {
+    await new Promise(resolve => proxy.close(resolve));
+    await new Promise(resolve => fake.close(resolve));
+  }
+});
+
+test('router: request intraduzível para OpenAI → 400 (não 502) e stream não-booleano → 400', async () => {
+  const fake = http.createServer((req, res) => { req.resume(); req.on('end', () => _openaiOk(res, 'não devia')); });
+  const upPort = await _listen0(fake);
+  let hits = 0;
+  fake.on('request', () => { hits++; });
+  const cfg = { upstream: { enabled: true, wireProtocol: 'openai', endpoints: { generate: 'http://127.0.0.1:' + upPort + '/chat' } } };
+  const proxy = await router.createServer(cfg, 'fallback-only', 'a'.repeat(64));
+  const port = await _listen0(proxy);
+  try {
+    const base = { model: 'claude-sonnet-5', max_tokens: 8, stream: false };
+    const bad = [
+      { messages: 5 }, { messages: {} }, { messages: [null] }, { messages: [5] },
+      { system: [null], messages: [] }, { system: 5, messages: [] }, { tools: [null], messages: [] }, { tools: 5, messages: [] },
+      { tool_choice: 'auto', messages: [] }, { messages: [{ role: 'user', content: {} }] },
+      { messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'x', content: [null] }] }] },
+    ];
+    for (const extra of bad) {
+      const r = await _postJson(port, { ...base, ...extra });
+      assertEq(r.status, 400, JSON.stringify(extra) + ': ' + r.raw);
+      assertEq(JSON.parse(r.raw).error.type, 'invalid_request_error');
+    }
+    const s = await _postJson(port, { ...base, stream: 'false', messages: [] });
+    assertEq(s.status, 400, s.raw);
+    assert(/stream/.test(JSON.parse(s.raw).error.message), s.raw);
+    assertEq(hits, 0, 'nada disso pode sair na rede');
+  } finally {
+    await new Promise(resolve => proxy.close(resolve));
+    await new Promise(resolve => fake.close(resolve));
+  }
+});
+
+test('plano B NVIDIA: request intraduzível com chave configurada não diz "não configurado"', async () => {
+  const fake = http.createServer((req, res) => { req.resume(); req.on('end', () => _openaiOk(res, 'não devia')); });
+  const upPort = await _listen0(fake);
+  let hits = 0;
+  fake.on('request', () => { hits++; });
+  try {
+    const sink = _byokSink();
+    router.handleLimitExceeded({ model: 'claude-opus-5-5', max_tokens: 8, stream: false, messages: [null] },
+      { nim: { apiKey: 'fixture-nim', endpoint: 'http://127.0.0.1:' + upPort + '/v1/chat/completions' }, fallback: { triggerStatuses: [429], cooldown: { enabled: false } } }, sink, '');
+    await sink.ended;
+    assertEq(hits, 0);
+    assert(/não pôde processar esta request/.test(sink.text) && !/ainda não está configurado/.test(sink.text), sink.text);
+  } finally {
+    await new Promise(resolve => fake.close(resolve));
+  }
+});
+
+test('plano B NVIDIA: nim.endpoint inválido é apontado como erro de configuração, não da request', async () => {
+  const sink = _byokSink();
+  router.handleLimitExceeded({ model: 'claude-opus-5-5', max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'oi' }] },
+    { nim: { apiKey: 'fixture-nim', endpoint: 'não é url' }, fallback: { triggerStatuses: [429], cooldown: { enabled: false } } }, sink, '');
+  await sink.ended;
+  assert(/mal configurado/.test(sink.text) && /nim\.endpoint/.test(sink.text), sink.text);
+  assert(!/não pôde processar esta request/.test(sink.text), sink.text);
+});
+
+// Sobe um front que entrega a request ao plano B (handleLimitExceeded, ou
+// `invoke(body, cfg, res)`) e devolve { status, raw, err, hung } do lado do
+// cliente. `hung`: o router não respondeu em 10 s (cliente pendurado).
+async function _planBRun(cfg, body, invoke) {
+  const run = invoke || ((b, c, r) => router.handleLimitExceeded(b, c, r, ''));
+  const front = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => run(body, cfg, res));
+  });
+  const fp = await _listen0(front);
+  try {
+    return await new Promise((resolve) => {
+      let raw = '';
+      let status = 0;
+      const q = http.request({ host: '127.0.0.1', port: fp, method: 'POST', path: '/' }, (rs) => {
+        status = rs.statusCode;
+        rs.on('data', c => { raw += c; });
+        rs.on('end', () => { clearTimeout(timer); resolve({ status, raw }); });
+        rs.on('error', e => { clearTimeout(timer); resolve({ status, raw, err: e.message }); });
+      });
+      const timer = setTimeout(() => { resolve({ status, raw, hung: true }); q.destroy(); }, 10000);
+      q.on('error', e => { clearTimeout(timer); resolve({ status, raw, err: e.message }); });
+      q.end('{}');
+    });
+  } finally {
+    await new Promise(r => setTimeout(r, 150)); // callbacks de erro tardios rodam aqui
+    front.closeAllConnections();
+    await new Promise(r => front.close(r));
+  }
+}
+
+test('plano B: falha no meio do stream (tool call sem nome, reset, FIN, linha sem fim) chega cortada ao cliente, sem derrubar o processo', async () => {
+  let variant = 'noname-done';
+  const fake = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.on('error', (err) => { void err; }); // o router corta o socket no meio: esperado
+      if (variant.startsWith('longline')) {
+        // Linha SSE sem '\n' que passa de 32 MiB e NUNCA termina: só o teto
+        // do router encerra (sem ele, o cliente fica pendurado → r.hung).
+        // '-mb': 40 MiB de 'ã' são só 20 M caracteres — o teto conta bytes.
+        res.write('data: ');
+        const chunk = variant.endsWith('-mb') ? 'ã'.repeat(512 * 1024) : 'x'.repeat(1024 * 1024);
+        let n = 0;
+        const pump = () => { while (n < 40 && !res.destroyed) { n++; if (!res.write(chunk)) { res.once('drain', pump); return; } } };
+        pump();
+        return;
+      }
+      if (variant === 'rst-anthropic') {
+        res.write('event: message_start\ndata: {"type":"message_start","message":{"id":"m","type":"message","role":"assistant","model":"x","content":[],"usage":{"input_tokens":0,"output_tokens":0}}}\n\n');
+      } else if (variant.startsWith('noname')) {
+        res.write('data: ' + JSON.stringify({ id: 'c', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 't1', function: { arguments: '{}' } }] } }] }) + '\n\n');
+      } else {
+        res.write('data: ' + JSON.stringify({ id: 'c', choices: [{ index: 0, delta: { content: 'parcial' } }] }) + '\n\n');
+      }
+      if (variant === 'noname-done') { res.write('data: [DONE]\n\n'); res.end(); return; }
+      if (variant === 'noname-end') { res.end(); return; }
+      if (variant.startsWith('fin')) { setTimeout(() => res.socket.destroy(), 50); return; }
+      setTimeout(() => res.socket.resetAndDestroy(), 50);
+    });
+  });
+  const up = await _listen0(fake);
+  const fb = { triggerStatuses: [429], cooldown: { enabled: false } };
+  const byokCfg = (wire) => ({ byok: { enabled: true, mode: 'on-limit', wireProtocol: wire, baseUrl: 'http://127.0.0.1:' + up,
+    endpoints: { generate: 'http://127.0.0.1:' + up + (wire === 'openai' ? '/chat' : '/v1/messages') }, headers: {} }, fallback: fb });
+  const nimCfg = { nim: { apiKey: 'fixture-nim', endpoint: 'http://127.0.0.1:' + up + '/v1/chat/completions' }, fallback: fb };
+  const body = { model: 'claude-opus-5-5', max_tokens: 8, stream: true, messages: [{ role: 'user', content: 'oi' }] };
+  try {
+    const cases = [
+      ['noname-done', byokCfg('openai')], ['noname-end', byokCfg('openai')],
+      ['rst-openai', byokCfg('openai')], ['rst-anthropic', byokCfg('anthropic')],
+      ['rst-nvidia', nimCfg], ['fin-openai', byokCfg('openai')], ['fin-nvidia', nimCfg],
+      ['longline-openai', byokCfg('openai')], ['longline-nvidia', nimCfg],
+      ['longline-openai-mb', byokCfg('openai')], ['longline-nvidia-mb', nimCfg],
+    ];
+    for (const [v, cfg] of cases) {
+      variant = v;
+      const r = await _planBRun(cfg, body);
+      assert(!r.hung, v + ': cliente ficou pendurado');
+      assertEq(r.status, 200, v + ': o stream começou antes da falha');
+      assert(!/"message_stop"[\s\S]*"message_start"/.test(r.raw), v + ': nenhum aviso colado depois do fim — ' + r.raw.slice(0, 300));
+      // O cliente precisa ver o corte: resposta truncada não pode fechar como completa.
+      assert(r.err, v + ': conexão devia chegar cortada ao cliente — ' + r.raw.slice(-300));
+      assert(!/"message_stop"/.test(r.raw), v + ': stream cortado não pode terminar com message_stop — ' + r.raw.slice(-300));
+    }
+  } finally {
+    fake.closeAllConnections(); // longline nunca termina sozinho: sem isto, uma regressão penduraria a suíte
+    await new Promise(resolve => fake.close(resolve));
+  }
+});
+
+test('plano B BYOK: resposta acima de 32 MiB (medida em bytes) é apontada como teto do router, não como endpoint inacessível', async () => {
+  // 'ã' ocupa 2 bytes: 34 MiB de bytes são só 17 M caracteres — o teto conta bytes.
+  let unit = 'x';
+  const fake = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.on('error', (err) => { void err; }); // o router corta o socket no meio: esperado
+      const chunk = unit.repeat((1024 * 1024) / Buffer.byteLength(unit));
+      let n = 0;
+      const pump = () => { while (n < 34 && !res.destroyed) { n++; if (!res.write(chunk)) { res.once('drain', pump); return; } } if (!res.destroyed) res.end(); };
+      pump();
+    });
+  });
+  const up = await _listen0(fake);
+  try {
+    const fb = { triggerStatuses: [429], cooldown: { enabled: false } };
+    const cfgs = {
+      byok: { byok: { enabled: true, mode: 'on-limit', wireProtocol: 'openai', endpoints: { generate: 'http://127.0.0.1:' + up + '/chat' }, headers: {} }, fallback: fb },
+      nim: { nim: { apiKey: 'fixture-nim', endpoint: 'http://127.0.0.1:' + up + '/v1/chat/completions' }, fallback: fb },
+    };
+    for (const [name, cfg] of Object.entries(cfgs)) {
+      for (const u of ['x', 'ã']) {
+        unit = u;
+        const tag = name + '/' + u + ': ';
+        const r = await _planBRun(cfg, { model: 'claude-opus-5-5', max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'oi' }] });
+        assertEq(r.status, 200, tag + r.raw.slice(0, 300));
+        assert(/passou do teto do router/.test(r.raw) && /32 MiB/.test(r.raw), tag + r.raw.slice(0, 300));
+        assert(!/inacessível|Revise a Base URL/.test(r.raw), tag + r.raw.slice(0, 300));
+      }
+    }
+  } finally {
+    await new Promise(resolve => fake.close(resolve));
+  }
+});
+
+test('plano B: conexão que cai no meio do corpo (reset ou FIN) não é apontada como endpoint inacessível', async () => {
+  let cut = 'rst';
+  const fake = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.on('error', (err) => { void err; });
+      res.write('{"id":');
+      setTimeout(() => (cut === 'rst' ? res.socket.resetAndDestroy() : res.socket.destroy()), 50);
+    });
+  });
+  const up = await _listen0(fake);
+  const fb = { triggerStatuses: [429], cooldown: { enabled: false } };
+  const byokCfg = { byok: { enabled: true, mode: 'on-limit', wireProtocol: 'openai', endpoints: { generate: 'http://127.0.0.1:' + up + '/chat' }, headers: {} }, fallback: fb };
+  const nimCfg = { nim: { apiKey: 'fixture-nim', endpoint: 'http://127.0.0.1:' + up + '/v1/chat/completions' }, fallback: fb };
+  const body = { model: 'claude-opus-5-5', max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'oi' }] };
+  try {
+    for (const [name, c, cfg] of [['byok-rst', 'rst', byokCfg], ['byok-fin', 'fin', byokCfg], ['nim-rst', 'rst', nimCfg], ['nim-fin', 'fin', nimCfg]]) {
+      cut = c;
+      const r = await _planBRun(cfg, body);
+      assertEq(r.status, 200, name + ': ' + r.raw.slice(0, 300));
+      assert(/caiu no meio da resposta/.test(r.raw), name + ': ' + r.raw.slice(0, 300));
+      assert(!/inacessível|Revise a Base URL/.test(r.raw), name + ': ' + r.raw.slice(0, 300));
+    }
+  } finally {
+    await new Promise(resolve => fake.close(resolve));
+  }
+});
+
+test('router: 429 seguido de reset ao ler o corpo vai ao plano B, não vira 502', async () => {
+  const fake = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      if (req.url === '/gen') {
+        res.writeHead(429, { 'content-type': 'application/json' });
+        res.on('error', (err) => { void err; });
+        res.write('{"type":"error"');
+        setTimeout(() => res.socket.resetAndDestroy(), 50);
+        return;
+      }
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'ok-nim' } }] }));
+    });
+  });
+  const up = await _listen0(fake);
+  try {
+    const cfg = {
+      upstream: { enabled: true, wireProtocol: 'anthropic', endpoints: { generate: 'http://127.0.0.1:' + up + '/gen' } },
+      nim: { apiKey: 'fixture-nim', endpoint: 'http://127.0.0.1:' + up + '/nim' },
+      fallback: { triggerStatuses: [429], cooldown: { enabled: false } },
+    };
+    const r = await _planBRun(cfg, { model: 'claude-opus-5-5', max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'oi' }] },
+      (b, c, res) => router.forwardRequest(b, {}, res, c, { path: '/v1/messages' }));
+    assertEq(r.status, 200, r.raw.slice(0, 300));
+    assert(/Plano B ativo/.test(r.raw) && /ok-nim/.test(r.raw), r.raw.slice(0, 300));
+  } finally {
+    await new Promise(resolve => fake.close(resolve));
+  }
+});
+
+test('plano B: resposta ao cliente já iniciada não é reescrita nem aciona o plano B (sem ERR_HTTP_HEADERS_SENT)', async () => {
+  let hits = 0;
+  const fake = http.createServer((req, res) => { hits++; req.resume(); res.writeHead(500); res.end(); });
+  const up = await _listen0(fake);
+  const body = { model: 'claude-opus-5-5', max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'oi' }] };
+  const cfg = { nim: { apiKey: 'fixture-nim', endpoint: 'http://127.0.0.1:' + up + '/v1/chat/completions' }, fallback: { triggerStatuses: [429], cooldown: { enabled: false } } };
+  try {
+    for (const [headersSent, writableEnded, destroysExpected] of [[true, false, 1], [false, true, 0]]) {
+      let destroys = 0;
+      let writes = 0;
+      const sink = {
+        headersSent, writableEnded, destroyed: false,
+        destroy() { destroys++; this.destroyed = true; },
+        writeHead() { writes++; }, write() { writes++; }, end() { writes++; },
+        on() { return this; }, once() { return this; },
+      };
+      router.handleLimitExceeded(body, cfg, sink, '');
+      await new Promise(r => setTimeout(r, 200)); // o plano B, se disparasse, chegaria ao fake aqui
+      const tag = `headersSent=${headersSent} writableEnded=${writableEnded}`;
+      assertEq(destroys, destroysExpected, tag);
+      assertEq(writes, 0, tag + ': nada pode ser escrito numa resposta já iniciada');
+      assertEq(hits, 0, tag + ': o plano B não pode ser acionado');
+    }
+  } finally {
+    await new Promise(resolve => fake.close(resolve));
+  }
+});
+
+test('plano B: corpo de RECUSA cortado (FIN, reset) ou parado no meio responde a recusa (sem pendurar o cliente)', async () => {
+  let status = 401;
+  let cut = 'fin';
+  const fake = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      if (req.url === '/nim-ok') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'ok-nim' } }] }));
+        return;
+      }
+      res.writeHead(status, { 'content-type': 'application/json' });
+      res.on('error', (err) => { void err; });
+      res.write('{"error":');
+      if (cut === 'stall') return; // corpo parado sem FIN: só o teto de inatividade do router encerra
+      setTimeout(() => (cut === 'rst' ? res.socket.resetAndDestroy() : res.socket.destroy()), 50);
+    });
+  });
+  const up = await _listen0(fake);
+  const fb = { triggerStatuses: [429], cooldown: { enabled: false } };
+  const byokCfg = (nimPath) => ({ byok: { enabled: true, mode: 'on-limit', wireProtocol: 'openai', endpoints: { generate: 'http://127.0.0.1:' + up + '/chat' }, headers: {} },
+    nim: { apiKey: 'fixture-nim', endpoint: 'http://127.0.0.1:' + up + nimPath }, fallback: fb });
+  const nimCfg = { nim: { apiKey: 'fixture-nim', endpoint: 'http://127.0.0.1:' + up + '/nim' }, fallback: fb };
+  const body = { model: 'claude-opus-5-5', max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'oi' }] };
+  const limits = router.__testHooks.getRefusalBodyLimits();
+  assertEq(limits.idleMs, 5000, 'teto de inatividade default');
+  assertEq(limits.totalMs, 30000, 'prazo total default');
+  // Parado, a recusa sai pelo teto de inatividade (~5 s), não pelo prazo total.
+  const timed = async (tag, cfg) => {
+    const t0 = Date.now();
+    const r = await _planBRun(cfg, body);
+    const ms = Date.now() - t0;
+    if (cut === 'stall') assert(ms >= 4500 && ms <= 7500, tag + ': recusa parada respondida em ' + ms + 'ms (esperado ~5 s)');
+    return r;
+  };
+  try {
+    for (const c of ['fin', 'rst', 'stall']) {
+      cut = c;
+      status = 401;
+      let r = await timed('nim-' + c, nimCfg);
+      assert(!r.hung, 'nim-' + c + ': cliente ficou pendurado');
+      assert(/NVIDIA\) recusou a chamada \(HTTP 401\)/.test(r.raw), 'nim-' + c + ': ' + r.raw.slice(0, 300));
+      r = await timed('byok-' + c, byokCfg('/nim'));
+      assert(!r.hung, 'byok-' + c + ': cliente ficou pendurado');
+      assert(/BYOK recusou a request/.test(r.raw) && /HTTP 401/.test(r.raw), 'byok-' + c + ': ' + r.raw.slice(0, 300));
+      // 429 do BYOK com o corpo cortado ainda cede a vez à NVIDIA.
+      status = 429;
+      r = await timed('byok429-' + c, byokCfg('/nim-ok'));
+      assert(!r.hung, 'byok429-' + c + ': cliente ficou pendurado');
+      assert(/ok-nim/.test(r.raw), 'byok429-' + c + ': ' + r.raw.slice(0, 300));
+    }
+  } finally {
+    fake.closeAllConnections(); // stall nunca termina sozinho: sem isto, uma regressão penduraria a suíte
+    await new Promise(resolve => fake.close(resolve));
+  }
+});
+
+test('plano B: recusa que chega aos poucos (dados a cada 2,3 s) é lida inteira — o teto de inatividade rearma a cada pedaço', async () => {
+  const msg = 'chave expirada em 2026-09-01, gere outra no painel';
+  const full = JSON.stringify({ error: { message: msg } });
+  const q = Math.ceil(full.length / 4);
+  const parts = [full.slice(0, q), full.slice(q, 2 * q), full.slice(2 * q, 3 * q), full.slice(3 * q)];
+  const timers = [];
+  const fake = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(403, { 'content-type': 'application/json' });
+      res.on('error', (err) => { void err; });
+      // 4 pedaços com 2,3 s entre eles: ~6,9 s no total, acima dos 5 s de
+      // inatividade. Sem rearmar, a recusa sairia cortada, sem a mensagem.
+      parts.forEach((p, i) => timers.push(setTimeout(() => {
+        if (res.destroyed) return;
+        if (i === parts.length - 1) res.end(p); else res.write(p);
+      }, i * 2300)));
+    });
+  });
+  const up = await _listen0(fake);
+  try {
+    const cfg = { byok: { enabled: true, mode: 'on-limit', wireProtocol: 'openai', endpoints: { generate: 'http://127.0.0.1:' + up + '/chat' }, headers: {} },
+      fallback: { triggerStatuses: [429], cooldown: { enabled: false } } };
+    const r = await _planBRun(cfg, { model: 'claude-opus-5-5', max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'oi' }] });
+    assert(!r.hung, 'cliente ficou pendurado');
+    assert(/BYOK recusou a request/.test(r.raw) && /HTTP 403/.test(r.raw), r.raw.slice(0, 400));
+    assert(r.raw.includes(msg), 'a mensagem do endpoint se perdeu — ' + r.raw.slice(0, 400));
+  } finally {
+    timers.forEach(clearTimeout);
+    fake.closeAllConnections();
+    await new Promise(resolve => fake.close(resolve));
+  }
+});
+
+test('plano B: recusa que pinga dados e nunca termina é respondida no prazo total (sem pendurar o cliente)', async () => {
+  const saved = router.__testHooks.getRefusalBodyLimits();
+  const intervals = [];
+  const fake = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      if (req.url === '/nim-ok') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'ok-nim' } }] }));
+        return;
+      }
+      res.writeHead(req.url === '/chat429' ? 429 : 401, { 'content-type': 'application/json' });
+      res.on('error', (err) => { void err; });
+      res.write('{"error":');
+      // 1 byte a cada 500 ms: o teto de inatividade nunca vence.
+      const iv = setInterval(() => { if (res.destroyed) clearInterval(iv); else res.write(' '); }, 500);
+      intervals.push(iv);
+    });
+  });
+  const up = await _listen0(fake);
+  const fb = { triggerStatuses: [429], cooldown: { enabled: false } };
+  const body = { model: 'claude-opus-5-5', max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'oi' }] };
+  try {
+    router.__testHooks.setRefusalBodyLimits({ idleMs: 5000, totalMs: 2000 });
+    for (const [name, cfg, re] of [
+      ['nim', { nim: { apiKey: 'fixture-nim', endpoint: 'http://127.0.0.1:' + up + '/nim' }, fallback: fb }, /NVIDIA\) recusou a chamada \(HTTP 401\)/],
+      ['byok', { byok: { enabled: true, mode: 'on-limit', wireProtocol: 'openai', endpoints: { generate: 'http://127.0.0.1:' + up + '/chat' }, headers: {} }, fallback: fb }, /BYOK recusou a request[\s\S]*HTTP 401/],
+      // 429 do BYOK que pinga sem terminar: no prazo total, ainda cede a vez à NVIDIA.
+      ['byok429', { byok: { enabled: true, mode: 'on-limit', wireProtocol: 'openai', endpoints: { generate: 'http://127.0.0.1:' + up + '/chat429' }, headers: {} },
+        nim: { apiKey: 'fixture-nim', endpoint: 'http://127.0.0.1:' + up + '/nim-ok' }, fallback: fb }, /ok-nim/],
+    ]) {
+      const t0 = Date.now();
+      const r = await _planBRun(cfg, body);
+      const ms = Date.now() - t0;
+      assert(!r.hung, name + ': cliente ficou pendurado');
+      assert(re.test(r.raw), name + ': ' + r.raw.slice(0, 300));
+      assert(ms >= 1500 && ms <= 4500, name + ': recusa respondida em ' + ms + 'ms (esperado ~2 s)');
+    }
+  } finally {
+    router.__testHooks.setRefusalBodyLimits(saved);
+    intervals.forEach(clearInterval);
+    fake.closeAllConnections();
+    await new Promise(resolve => fake.close(resolve));
+  }
+});
+
+test('plano B: stream com várias linhas SSE somando mais de 32 MiB termina completo (o teto é por linha)', async () => {
+  const fake = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      // 2 linhas de ~20 MiB cada, com '\n\n': nenhuma passa do teto sozinha.
+      const frame = 'data: ' + JSON.stringify({ id: 'c', choices: [{ index: 0, delta: { content: 'y'.repeat(20 * 1024 * 1024) } }] }) + '\n\n';
+      res.write(frame);
+      res.write(frame);
+      res.end('data: [DONE]\n\n');
+    });
+  });
+  const up = await _listen0(fake);
+  const fb = { triggerStatuses: [429], cooldown: { enabled: false } };
+  const body = { model: 'claude-opus-5-5', max_tokens: 8, stream: true, messages: [{ role: 'user', content: 'oi' }] };
+  try {
+    for (const [name, cfg] of [
+      ['openai', { byok: { enabled: true, mode: 'on-limit', wireProtocol: 'openai', endpoints: { generate: 'http://127.0.0.1:' + up + '/chat' }, headers: {} }, fallback: fb }],
+      ['nvidia', { nim: { apiKey: 'fixture-nim', endpoint: 'http://127.0.0.1:' + up + '/v1/chat/completions' }, fallback: fb }],
+    ]) {
+      const r = await _planBRun(cfg, body);
+      assert(!r.err && !r.hung, name + ': ' + (r.err || 'pendurado'));
+      assert(/"message_stop"/.test(r.raw), name + ': ' + r.raw.slice(-300));
+      assert(r.raw.length > 40 * 1024 * 1024, name + ': conteúdo perdido (' + r.raw.length + ' chars)');
+    }
+  } finally {
+    await new Promise(resolve => fake.close(resolve));
+  }
+});
+
+test('plano B: stream que fecha limpo com a última linha sem \\n — frame completo termina, frame cortado chega cortado', async () => {
+  const frame = (text) => 'data: ' + JSON.stringify({ id: 'c', choices: [{ index: 0, delta: { content: text } }] });
+  const tails = {
+    done: 'data: [DONE]',
+    json: frame('parte2'),
+    nospace: frame('parte2').replace('data: ', 'data:'),
+    comment: 'data: [DONE]\n\n: keep-alive',
+    empty: 'data:',
+    prefix: 'da',
+    field: 'event: x',
+    partial: 'data: {"id":"c","choices":[{"index":0,"delta":{"content":"ab',
+    prim: 'data: 12',
+    null: 'data: null',
+    arr: 'data: [1]',
+    // Frame completo que o tradutor recusa (tool call sem nome): o erro sai
+    // como corte, sem derrubar o processo. Só no wire openai (o NVIDIA ignora tools).
+    toolnoname: 'data: ' + JSON.stringify({ id: 'c', choices: [{ index: 0, delta: { tool_calls: [{ index: 0, id: 't1', function: { arguments: '{}' } }] }, finish_reason: 'tool_calls' }] }),
+  };
+  const cutTails = new Set(['empty', 'prefix', 'field', 'partial', 'prim', 'null', 'arr', 'toolnoname']);
+  const fake = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.write(frame('parte1') + '\n\n');
+      res.end(tails[req.url.split('/').pop()]);
+    });
+  });
+  const up = await _listen0(fake);
+  const fb = { triggerStatuses: [429], cooldown: { enabled: false } };
+  const cfgs = {
+    nvidia: (t) => ({ nim: { apiKey: 'fixture-nim', endpoint: 'http://127.0.0.1:' + up + '/nim/' + t }, fallback: fb }),
+    openai: (t) => ({ byok: { enabled: true, mode: 'on-limit', wireProtocol: 'openai', endpoints: { generate: 'http://127.0.0.1:' + up + '/chat/' + t }, headers: {} }, fallback: fb }),
+  };
+  const body = { model: 'claude-opus-5-5', max_tokens: 8, stream: true, messages: [{ role: 'user', content: 'oi' }] };
+  try {
+    for (const [wire, cfg] of Object.entries(cfgs)) {
+      for (const t of Object.keys(tails)) {
+        if (t === 'toolnoname' && wire !== 'openai') continue;
+        const tag = wire + '/' + t + ': ';
+        const r = await _planBRun(cfg(t), body);
+        assert(!r.hung, tag + 'cliente ficou pendurado');
+        assert(/parte1/.test(r.raw), tag + r.raw.slice(-300));
+        if (cutTails.has(t)) {
+          assert(r.err, tag + 'frame cortado devia chegar cortado ao cliente — ' + r.raw.slice(-300));
+          assert(!/"message_stop"/.test(r.raw), tag + 'frame cortado não pode fechar com message_stop');
+        } else {
+          assert(!r.err, tag + r.err);
+          assert(/"message_stop"/.test(r.raw), tag + r.raw.slice(-300));
+        }
+        if (t === 'json' || t === 'nospace') assert(/parte2/.test(r.raw), tag + 'a última linha sem \\n se perdeu');
+      }
+    }
+  } finally {
+    await new Promise(resolve => fake.close(resolve));
+  }
+});
+
+test('plano B: teto da linha SSE é 32 MiB em bytes — exatamente no teto passa, 1 byte acima corta', async () => {
+  const MAX = 32 * 1024 * 1024;
+  const pre = 'data: {"id":"c","choices":[{"index":0,"delta":{"content":"';
+  const suf = '"}}]}';
+  let over = 0;
+  const fake = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.on('error', (err) => { void err; }); // o router corta o socket no caso acima do teto: esperado
+      // Conteúdo em 'ã' (2 bytes): contar caracteres ficaria bem abaixo do teto.
+      const fill = MAX + over - Buffer.byteLength(pre) - Buffer.byteLength(suf);
+      res.write(pre + 'ã'.repeat(Math.floor(fill / 2)) + 'x'.repeat(fill % 2) + suf);
+      if (over) return; // acima do teto: só o router encerra (sem o corte, o cliente fica pendurado)
+      setTimeout(() => { if (!res.destroyed) res.end('\n\ndata: [DONE]\n\n'); }, 500);
+    });
+  });
+  const up = await _listen0(fake);
+  const fb = { triggerStatuses: [429], cooldown: { enabled: false } };
+  const cfgs = {
+    nvidia: { nim: { apiKey: 'fixture-nim', endpoint: 'http://127.0.0.1:' + up + '/v1/chat/completions' }, fallback: fb },
+    openai: { byok: { enabled: true, mode: 'on-limit', wireProtocol: 'openai', endpoints: { generate: 'http://127.0.0.1:' + up + '/chat' }, headers: {} }, fallback: fb },
+  };
+  const body = { model: 'claude-opus-5-5', max_tokens: 8, stream: true, messages: [{ role: 'user', content: 'oi' }] };
+  try {
+    for (const [wire, cfg] of Object.entries(cfgs)) {
+      for (const o of [0, 1]) {
+        over = o;
+        const tag = wire + (o ? '/teto+1: ' : '/teto: ');
+        const r = await _planBRun(cfg, body);
+        assert(!r.hung, tag + 'cliente ficou pendurado');
+        if (o) {
+          assert(r.err && !/"message_stop"/.test(r.raw), tag + 'linha acima do teto devia ser cortada');
+        } else {
+          assert(!r.err && /"message_stop"/.test(r.raw), tag + (r.err || r.raw.slice(-300)));
+        }
+      }
+    }
+  } finally {
+    fake.closeAllConnections(); // o caso acima do teto nunca termina sozinho
+    await new Promise(resolve => fake.close(resolve));
+  }
+});
+
+test('adaptador OpenAI: text de bloco que não é texto é recusado; ausente vira vazio', () => {
+  const openaiChat = require('../servers/model-router/protocols/openai-chat.js');
+  const bad = [
+    { system: [{ type: 'text', text: 5 }], messages: [] },
+    { messages: [{ role: 'user', content: [{ type: 'text', text: null }] }] },
+    { messages: [{ role: 'user', content: [{ type: 'text', text: {} }] }] },
+    { messages: [{ role: 'assistant', content: [{ type: 'text', text: false }] }] },
+    { messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'x', content: [{ type: 'text', text: 0 }] }] }] },
+  ];
+  for (const body of bad) {
+    let err = null;
+    try { openaiChat.toUpstreamRequest(body); } catch (e) { err = e; }
+    assert(err && err.code === 'REQUEST_SHAPE' && /deve ser texto/.test(err.message), JSON.stringify(body) + ': ' + (err && err.message));
+  }
+  const ok = openaiChat.toUpstreamRequest({ model: 'm', messages: [{ role: 'user', content: [{ type: 'text' }] }, { role: 'assistant', content: [{ type: 'text' }, { type: 'text', text: 'b' }] }] });
+  assertEq(ok.messages, [{ role: 'user', content: '' }, { role: 'assistant', content: '\nb' }]);
+});
+
+test('adaptador OpenAI: erro de forma da request sai com code REQUEST_SHAPE', () => {
+  const openaiChat = require('../servers/model-router/protocols/openai-chat.js');
+  for (const body of [{ messages: 5 }, { system: 5 }, { tools: 5 }, { messages: [{ role: 'user', content: {} }] }, { messages: [{ role: 'x', content: '' }] }]) {
+    let err = null;
+    try { openaiChat.toUpstreamRequest(body); } catch (e) { err = e; }
+    assert(err && err.code === 'REQUEST_SHAPE', JSON.stringify(body) + ': ' + (err && err.message));
+  }
+  const ok = openaiChat.toUpstreamRequest({ model: 'm', system: '', messages: [{ role: 'user' }, { role: 'assistant' }] });
+  assertEq(ok.messages, [{ role: 'user', content: '' }, { role: 'assistant', content: '' }]);
+});
+
+// ── byok.openaiCompat: default = o que o gateway passthrough aceita ──────────
+const _compatBody = () => ({
+  model: 'm',
+  messages: [
+    { role: 'user', content: 'clima?' },
+    { role: 'assistant', content: [{ type: 'tool_use', id: 'call_1', name: 'get_weather', input: { city: 'Recife' } }] },
+    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_1', content: [{ type: 'tool_reference', tool_name: 'get_weather' }] }] },
+    { role: 'system', content: 'Responda em pt-BR.' },
+    { role: 'user', content: 'resuma' },
+  ],
+});
+
+test('openaiCompat default: tool_use puro → content null; system no meio mantido; tool_reference vira texto JSON', () => {
+  const openaiChat = require('../servers/model-router/protocols/openai-chat.js');
+  for (const options of [undefined, {}, { openaiCompat: undefined }, { openaiCompat: null }, { openaiCompat: {} }]) {
+    const out = openaiChat.toUpstreamRequest(_compatBody(), options);
+    assertEq(out.messages[1].content, null, 'assistant só com tool_use');
+    assertEq(out.messages[1].tool_calls[0].id, 'call_1');
+    assertEq(out.messages[2], { role: 'tool', tool_call_id: 'call_1', content: JSON.stringify({ type: 'tool_reference', tool_name: 'get_weather' }) });
+    assertEq(out.messages[3], { role: 'system', content: 'Responda em pt-BR.' }, 'system na posição original');
+    assertEq(out.messages[4], { role: 'user', content: 'resuma' });
+  }
+  assertEq(openaiChat.COMPAT_DEFAULTS, { assistantEmptyContent: 'null', systemInMessages: 'keep', toolReference: 'text' });
+});
+
+test('openai-chat: assistant sem texto e sem tool_use (só thinking ou vazio) sai com content "" em qualquer opção', () => {
+  const openaiChat = require('../servers/model-router/protocols/openai-chat.js');
+  for (const content of [[{ type: 'thinking', thinking: 'meio raciocínio' }], [{ type: 'redacted_thinking', data: 'x' }], []]) {
+    for (const openaiCompat of [undefined, { assistantEmptyContent: 'null' }, { assistantEmptyContent: 'empty' }]) {
+      const out = openaiChat.toUpstreamRequest({ model: 'm', messages: [
+        { role: 'user', content: 'oi' }, { role: 'assistant', content }, { role: 'user', content: 'segue' },
+      ] }, { openaiCompat });
+      assertEq(out.messages[1], { role: 'assistant', content: '' }, `${JSON.stringify(content)} / ${JSON.stringify(openaiCompat)}`);
+    }
+  }
+});
+
+test('openaiCompat personalizado: "empty" vira string vazia; "reject" recusa com REQUEST_SHAPE citando a opção', () => {
+  const openaiChat = require('../servers/model-router/protocols/openai-chat.js');
+  const empty = openaiChat.toUpstreamRequest(_compatBody(), { openaiCompat: { assistantEmptyContent: 'empty' } });
+  assertEq(empty.messages[1].content, '');
+  assertEq(empty.messages[3].role, 'system', 'opções não citadas ficam no default');
+  for (const [key, re] of [['systemInMessages', /openaiCompat\.systemInMessages = "reject"/], ['toolReference', /openaiCompat\.toolReference = "reject"/]]) {
+    let err = null;
+    try { openaiChat.toUpstreamRequest(_compatBody(), { openaiCompat: { [key]: 'reject' } }); } catch (e) { err = e; }
+    assert(err && err.code === 'REQUEST_SHAPE' && re.test(err.message), key + ': ' + (err && err.message));
+  }
+  // "reject" só recusa quando o caso aparece: request sem system/tool_reference passa.
+  const plain = openaiChat.toUpstreamRequest({ model: 'm', messages: [{ role: 'user', content: 'oi' }] },
+    { openaiCompat: { systemInMessages: 'reject', toolReference: 'reject' } });
+  assertEq(plain.messages, [{ role: 'user', content: 'oi' }]);
+});
+
+test('openaiCompat default: tool_reference entre textos mantém a ordem; system em blocos no meio junta com \\n', () => {
+  const openaiChat = require('../servers/model-router/protocols/openai-chat.js');
+  const ref = { type: 'tool_reference', tool_name: 'get_weather' };
+  const out = openaiChat.toUpstreamRequest({
+    model: 'm',
+    messages: [
+      { role: 'user', content: 'oi' },
+      { role: 'assistant', content: [{ type: 'tool_use', id: 'c1', name: 'get_weather', input: {} }] },
+      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'c1', content: [
+        { type: 'text', text: 'antes' }, ref, { type: 'text', text: 'depois' }] }] },
+      { role: 'system', content: [{ type: 'text', text: 'linha 1' }, { type: 'text', text: 'linha 2' }] },
+    ],
+  });
+  assertEq(out.messages[2], { role: 'tool', tool_call_id: 'c1', content: `antes\n${JSON.stringify(ref)}\ndepois` });
+  assertEq(out.messages[3], { role: 'system', content: 'linha 1\nlinha 2' });
+});
+
+test('openaiCompat inválido: normalizeCompat lança erro de configuração (sem code REQUEST_SHAPE)', () => {
+  const openaiChat = require('../servers/model-router/protocols/openai-chat.js');
+  const cases = [
+    [5, /precisa ser um objeto/],
+    ['null', /precisa ser um objeto/],
+    [[], /precisa ser um objeto/],
+    [{ foo: 'x' }, /chave desconhecida "foo"/],
+    [{ assistantEmptyContent: 'vazio' }, /openaiCompat\.assistantEmptyContent: valor inválido/],
+    [{ systemInMessages: true }, /openaiCompat\.systemInMessages: valor inválido/],
+    [{ toolReference: null }, /openaiCompat\.toolReference: valor inválido/],
+  ];
+  for (const [input, re] of cases) {
+    let err = null;
+    try { openaiChat.normalizeCompat(input); } catch (e) { err = e; }
+    assert(err && re.test(err.message) && err.code !== 'REQUEST_SHAPE', JSON.stringify(input) + ': ' + (err && err.message));
+    err = null;
+    try { openaiChat.toUpstreamRequest({ model: 'm', messages: [] }, { openaiCompat: input }); } catch (e) { err = e; }
+    assert(err && re.test(err.message) && err.code !== 'REQUEST_SHAPE', 'toUpstreamRequest ' + JSON.stringify(input));
+  }
+  const partial = openaiChat.normalizeCompat({ toolReference: 'reject' });
+  assertEq(partial, { assistantEmptyContent: 'null', systemInMessages: 'keep', toolReference: 'reject' });
+  assert(Object.isFrozen(partial));
+});
+
+test('upstream-profile: byok.openaiCompat entra no perfil só no BYOK OpenAI; inválido invalida o perfil', () => {
+  const up = require('../servers/model-router/upstream-profile.js');
+  const byokTarget = { isByok: true };
+  const cfg = (compat, wire = 'openai') => ({ byok: { wireProtocol: wire, baseUrl: 'http://127.0.0.1:9', openaiCompat: compat } });
+  const valid = up.resolveOperationProfile(cfg({ assistantEmptyContent: 'empty' }), byokTarget, 'generate');
+  assert(valid.ok, valid.error);
+  assertEq(valid.openaiCompat, { assistantEmptyContent: 'empty', systemInMessages: 'keep', toolReference: 'text' });
+  const dflt = up.resolveOperationProfile(cfg(undefined), byokTarget, 'generate');
+  assertEq(dflt.openaiCompat, { assistantEmptyContent: 'null', systemInMessages: 'keep', toolReference: 'text' });
+  const bad = up.resolveOperationProfile(cfg({ toolReference: 'x' }), byokTarget, 'generate');
+  assertEq(bad.ok, false);
+  assert(/^byok\.openaiCompat\.toolReference: valor inválido/.test(bad.error), bad.error);
+  // Wire anthropic ignora a opção (nem valida): perfil sem openaiCompat.
+  const anth = up.resolveOperationProfile(cfg({ toolReference: 'x' }, 'anthropic'), byokTarget, 'generate');
+  assert(anth.ok, anth.error);
+  assertEq(anth.openaiCompat, undefined);
+  // Custom upstream OpenAI usa sempre o default (a opção é só do BYOK).
+  const upstreamCfg = { upstream: { wireProtocol: 'openai', baseUrl: 'http://127.0.0.1:9', openaiCompat: { toolReference: 'x' } } };
+  const upProfile = up.resolveOperationProfile(upstreamCfg, { isCustomEndpoint: true }, 'generate');
+  assert(upProfile.ok, upProfile.error);
+  assertEq(upProfile.openaiCompat, { assistantEmptyContent: 'null', systemInMessages: 'keep', toolReference: 'text' });
+});
+
 test('custom upstream count_tokens E2E: usa URL própria e nunca envia alias do picker', async () => {
   const { PassThrough } = require('stream');
   let received = null;
@@ -8655,6 +9548,1653 @@ test('BYOK OpenAI fallback E2E: usa generate URL e devolve contrato Anthropic', 
     assertEq(JSON.parse(responseText).content, [{ type: 'text', text: 'fallback ok' }]);
   } finally {
     await new Promise(resolve => fake.close(resolve));
+  }
+});
+
+// ── BYOK: mapeamento de modelo origem→destino + injeção opcional ─────────────
+const byokModelLib = require('../servers/model-router/byok-model.js');
+
+function _byokSink() {
+  const { PassThrough } = require('stream');
+  const sink = new PassThrough();
+  sink.headersSent = false;
+  sink.status = null;
+  sink.writeHead = (code) => { sink.status = code; sink.headersSent = true; };
+  sink.text = '';
+  sink.on('data', chunk => { sink.text += chunk.toString(); });
+  sink.ended = new Promise((resolve, reject) => { sink.on('end', resolve); sink.on('error', reject); });
+  return sink;
+}
+
+function _byokFake(handler) {
+  const hits = [];
+  const server = http.createServer((req, res) => {
+    let raw = '';
+    req.on('data', c => { raw += c; });
+    req.on('end', () => {
+      const hit = { path: req.url, headers: req.headers, body: raw ? JSON.parse(raw) : null };
+      hits.push(hit);
+      handler(hit, res);
+    });
+  });
+  return { server, hits };
+}
+
+function _openaiOk(res, text) {
+  res.writeHead(200, { 'content-type': 'application/json' });
+  res.end(JSON.stringify({
+    id: 'chatcmpl_map', model: 'x',
+    choices: [{ finish_reason: 'stop', message: { role: 'assistant', content: text } }],
+    usage: { prompt_tokens: 3, completion_tokens: 1 },
+  }));
+}
+
+const BYOK_MAP = {
+  'claude-opus-5': 'dest-opus-5',
+  'claude-opus-5-5': 'dest-opus-5-5',
+  'claude-haiku-4-5': 'dest-haiku',
+  'claude-sonnet-*': 'dest-sonnet-generic',
+  'claude-sonnet-5-*': 'dest-sonnet-5',
+};
+
+test('byok-model.resolveTargetModel: exato vence; claude-opus-5-5 NUNCA cai em claude-opus-5', () => {
+  assertEq(byokModelLib.resolveTargetModel('claude-opus-5-5', BYOK_MAP),
+    { model: 'dest-opus-5-5', rule: 'claude-opus-5-5', matched: true, how: 'exact' });
+  assertEq(byokModelLib.resolveTargetModel('claude-opus-5', BYOK_MAP).model, 'dest-opus-5');
+  // Sem a regra 5-5, a versão 5-5 NÃO é rebaixada para 5: segue verbatim.
+  const semNova = { 'claude-opus-5': 'dest-opus-5' };
+  assertEq(byokModelLib.resolveTargetModel('claude-opus-5-5', semNova),
+    { model: 'claude-opus-5-5', rule: null, matched: false, how: 'none' });
+  assertEq(byokModelLib.resolveTargetModel('claude-opus-5-6', semNova).matched, false);
+});
+
+test('byok-model.resolveTargetModel: snapshot -AAAAMMDD usa a base; só 8 dígitos contam como data', () => {
+  const r = byokModelLib.resolveTargetModel('claude-haiku-4-5-20251001', BYOK_MAP);
+  assertEq(r, { model: 'dest-haiku', rule: 'claude-haiku-4-5', matched: true, how: 'snapshot' });
+  assertEq(byokModelLib.resolveTargetModel('claude-haiku-4-5-2025100', BYOK_MAP).matched, false);
+  // Regra exata do snapshot vence a da base.
+  const m = { 'claude-haiku-4-5': 'base', 'claude-haiku-4-5-20251001': 'snap' };
+  assertEq(byokModelLib.resolveTargetModel('claude-haiku-4-5-20251001', m).model, 'snap');
+});
+
+test('byok-model.resolveTargetModel: curinga mais específico vence; empate → ordem de inserção', () => {
+  assertEq(byokModelLib.resolveTargetModel('claude-sonnet-5-1', BYOK_MAP),
+    { model: 'dest-sonnet-5', rule: 'claude-sonnet-5-*', matched: true, how: 'pattern' });
+  assertEq(byokModelLib.resolveTargetModel('claude-sonnet-4', BYOK_MAP).model, 'dest-sonnet-generic');
+  // "*" exige ao menos 1 caractere: a própria raiz não casa.
+  assertEq(byokModelLib.resolveTargetModel('claude-sonnet-', BYOK_MAP).matched, false);
+  const tie = { 'a-*-x': 'primeiro', '*-b-x': 'segundo' };
+  assertEq(byokModelLib.resolveTargetModel('a-b-x', tie).model, 'primeiro');
+  // Exato vence curinga mesmo quando o curinga é mais longo.
+  assertEq(byokModelLib.resolveTargetModel('m', { 'm': 'exato', 'm*': 'nunca' }).model, 'exato');
+  // Metacaracteres de regex são literais.
+  assertEq(byokModelLib.resolveTargetModel('gptX4', { 'gpt.4': 'no' }).matched, false);
+});
+
+test('byok-model.resolveTargetModel: sem mapa/sem regra → verbatim, sem erro', () => {
+  assertEq(byokModelLib.resolveTargetModel('claude-opus-5-5', undefined).model, 'claude-opus-5-5');
+  assertEq(byokModelLib.resolveTargetModel('claude-opus-5-5', {}).matched, false);
+  assertEq(byokModelLib.resolveTargetModel('outro', BYOK_MAP).how, 'none');
+});
+
+test('byok-model.normalizeModelMap: aceita lista e objeto; rejeita regra inválida com mensagem', () => {
+  assertEq(byokModelLib.normalizeModelMap([{ from: ' a ', to: ' b ' }]), { a: 'b' });
+  assertEq(byokModelLib.normalizeModelMap({ a: 'b' }), { a: 'b' });
+  const bad = [
+    [[{ from: 'a', to: '' }], /destino vazio/],
+    [[{ from: 'a b', to: 'x' }], /espaços/],
+    [[{ from: 'a', to: 'x*' }], /destino não aceita/],
+    [[{ from: 'a**', to: 'x' }], /ambígua/],
+    [[{ from: '*', to: 'x' }], /literal/],
+    [[{ from: 'a', to: 'x' }, { from: 'a', to: 'y' }], /duplicada/],
+    [[{ from: '__proto__', to: 'x' }], /reservada/],
+    [[{ from: 1, to: 'x' }], /texto/],
+    [[{ from: 'a'.repeat(257), to: 'x' }], /excede/],
+    ['texto', /lista de regras/],
+  ];
+  for (const [input, re] of bad) {
+    let msg = '';
+    try { byokModelLib.normalizeModelMap(input); } catch (e) { msg = e.message; }
+    assert(re.test(msg), `esperava ${re} para ${JSON.stringify(input).slice(0, 60)}, veio "${msg}"`);
+  }
+});
+
+test('byok-model.normalizeInjection: desligada por padrão; valida caminho, template e headers', () => {
+  assertEq(byokModelLib.normalizeInjection(undefined), null);
+  assertEq(byokModelLib.normalizeInjection({ body: {}, headers: {} }), null);
+  assertEq(byokModelLib.normalizeInjection({ body: { 'metadata.force_model': '{model}' } }),
+    { body: { 'metadata.force_model': '{model}' }, headers: {} });
+  // Template é texto: "$" é literal, nada é interpolado além de {model}.
+  const lit = byokModelLib.normalizeInjection({ body: { a: '${model}' } });
+  assertEq(byokModelLib.injectBody({}, lit, 'm'), { a: '$m' });
+  const bad = [
+    [{ body: { 'model': '{model}' } }, /não pode alterar "model"/],
+    [{ body: { 'model.x': '{model}' } }, /não pode alterar "model"/],
+    [{ body: { 'a..b': '{model}' } }, /segmento vazio/],
+    [{ body: { '__proto__.x': '{model}' } }, /reservada/],
+    [{ body: { 'a': '{model}', 'a.b': '{model}' } }, /conflitantes/],
+    [{ body: { 'a': '{env}' } }, /placeholder desconhecido/],
+    [{ body: { 'a': '{{model}}' } }, /solta/],
+    [{ body: { 'a': '{model' } }, /solta/],
+    [{ body: { 'a': 'x\ny' } }, /quebra de linha/],
+    [{ headers: { 'Authorization': '{model}' } }, /reservado/],
+    [{ headers: { 'x-api-key': '{model}' } }, /reservado/],
+    [{ headers: { 'X Bad': '{model}' } }, /nome inválido/],
+    [{ headers: { 'X-M': '{model}', 'x-m': '{model}' } }, /duplicado/],
+    [{ extra: {} }, /chave desconhecida/],
+  ];
+  for (const [input, re] of bad) {
+    let msg = '';
+    try { byokModelLib.normalizeInjection(input); } catch (e) { msg = e.message; }
+    assert(re.test(msg), `esperava ${re} para ${JSON.stringify(input)}, veio "${msg}"`);
+  }
+  let msg = '';
+  try { byokModelLib.normalizeInjection({ headers: { 'x-team': '{model}' } }, { 'X-Team': 'acme' }); } catch (e) { msg = e.message; }
+  assert(/já está nos headers/.test(msg), `colisão com header configurado: "${msg}"`);
+});
+
+test('byok-model.prepareByokBody: não muta o corpo; injeção usa o modelo EFETIVO; intermediário não-objeto falha', () => {
+  const original = { model: 'claude-opus-5-5', metadata: { user_id: 'u1' }, messages: [] };
+  const snapshot = JSON.parse(JSON.stringify(original));
+  const cfg = { modelMap: BYOK_MAP, modelInjection: { body: { 'metadata.force_model': 'p/{model}' }, headers: { 'X-Model': '{model}' } } };
+  const out = byokModelLib.prepareByokBody(original, original.model, cfg);
+  assertEq(original, snapshot, 'corpo original intacto');
+  assertEq(out.body.model, 'dest-opus-5-5');
+  assertEq(out.body.metadata, { user_id: 'u1', force_model: 'p/dest-opus-5-5' });
+  assertEq(out.model, 'dest-opus-5-5');
+  const h = byokModelLib.injectHeaders({ 'x-model': 'velho', a: '1' }, out.injection, out.model);
+  assertEq(h, { a: '1', 'X-Model': 'dest-opus-5-5' }, 'substitui variante de caixa sem duplicar');
+  // Sem injeção configurada: nada além do model muda.
+  const plain = byokModelLib.prepareByokBody({ model: 'x', metadata: { a: 1 } }, 'x', {});
+  assertEq(plain.body, { model: 'x', metadata: { a: 1 } });
+  assertEq(plain.injection, null);
+  let msg = '';
+  try {
+    byokModelLib.prepareByokBody({ model: 'x', metadata: 'str' }, 'x',
+      { modelInjection: { body: { 'metadata.force_model': '{model}' } } });
+  } catch (e) { msg = e.message; }
+  assert(/existe e não é objeto/.test(msg), msg);
+});
+
+test('BYOK OpenAI always E2E: model mapeado, tools traduzidas, injeção corpo+header, reqBody intacto', async () => {
+  const fake = _byokFake((hit, res) => _openaiOk(res, 'ok'));
+  const port = await _listen0(fake.server);
+  try {
+    const cfg = {
+      byok: {
+        enabled: true, mode: 'always', wireProtocol: 'openai',
+        endpoints: { generate: `http://127.0.0.1:${port}/chat` },
+        headers: { Authorization: 'Bearer fixture-byok' },
+        modelMap: BYOK_MAP,
+        modelInjection: { body: { 'metadata.force_model': '{model}' }, headers: { 'X-Target-Model': '{model}' } },
+      },
+      fallback: { triggerStatuses: [429], cooldown: { enabled: false } },
+    };
+    const reqBody = {
+      model: 'claude-opus-5-5', max_tokens: 16, stream: false,
+      messages: [{ role: 'user', content: 'oi' }],
+      tools: [{ name: 'buscar', input_schema: { type: 'object', properties: {} } }],
+    };
+    const before = JSON.parse(JSON.stringify(reqBody));
+    const sink = _byokSink();
+    router.forwardRequest(reqBody, { authorization: 'Bearer SUBSCRIPTION', 'x-api-key': 'sk-sub' }, sink, cfg, { path: '/v1/messages' });
+    await sink.ended;
+    assertEq(sink.status, 200);
+    const hit = fake.hits[0];
+    assertEq(hit.body.model, 'dest-opus-5-5');
+    assertEq(hit.body.metadata.force_model, 'dest-opus-5-5');
+    assertEq(hit.body.tools[0].type, 'function');
+    assertEq(hit.headers['x-target-model'], 'dest-opus-5-5');
+    assertEq(hit.headers.authorization, 'Bearer fixture-byok', 'credencial da assinatura não vai ao BYOK');
+    assertEq(hit.headers['x-api-key'], undefined);
+    assertEq(reqBody, before, 'reqBody não pode ser contaminado');
+    assertEq(JSON.parse(sink.text).content, [{ type: 'text', text: 'ok' }]);
+  } finally {
+    await new Promise(resolve => fake.server.close(resolve));
+  }
+});
+
+test('BYOK OpenAI always E2E: sem modelInjection → nenhum campo/header extra; sem regra → verbatim', async () => {
+  const fake = _byokFake((hit, res) => _openaiOk(res, 'ok'));
+  const port = await _listen0(fake.server);
+  try {
+    const cfg = {
+      byok: {
+        enabled: true, mode: 'always', wireProtocol: 'openai',
+        endpoints: { generate: `http://127.0.0.1:${port}/chat` },
+        headers: {}, modelMap: BYOK_MAP,
+      },
+      fallback: { triggerStatuses: [429], cooldown: { enabled: false } },
+    };
+    for (const [model, expected] of [['claude-opus-5-5', 'dest-opus-5-5'], ['modelo-sem-regra', 'modelo-sem-regra']]) {
+      const sink = _byokSink();
+      router.forwardRequest({ model, max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'oi' }] },
+        {}, sink, cfg, { path: '/v1/messages' });
+      await sink.ended;
+      const hit = fake.hits[fake.hits.length - 1];
+      assertEq(hit.body.model, expected);
+      assertEq(hit.body.metadata, undefined, 'injeção ausente por padrão');
+      assertEq(Object.keys(hit.headers).filter(h => /model/i.test(h)), [], 'nenhum header de modelo');
+    }
+  } finally {
+    await new Promise(resolve => fake.server.close(resolve));
+  }
+});
+
+test('BYOK OpenAI always E2E: byok.openaiCompat chega ao fio; inválido falha alto sem chamar o destino', async () => {
+  const fake = _byokFake((hit, res) => _openaiOk(res, 'ok'));
+  const port = await _listen0(fake.server);
+  try {
+    const base = {
+      enabled: true, mode: 'always', wireProtocol: 'openai',
+      endpoints: { generate: `http://127.0.0.1:${port}/chat` }, headers: {},
+    };
+    const run = async (openaiCompat) => {
+      const cfg = { byok: { ...base, openaiCompat }, fallback: { triggerStatuses: [429], cooldown: { enabled: false } } };
+      const sink = _byokSink();
+      router.forwardRequest({ ..._compatBody(), max_tokens: 8, stream: false }, {}, sink, cfg, { path: '/v1/messages' });
+      await sink.ended;
+      return sink;
+    };
+    let sink = await run(undefined);
+    assertEq(sink.status, 200);
+    assertEq(fake.hits[0].body.messages[1].content, null, 'default: null');
+    assertEq(fake.hits[0].body.messages[3].role, 'system', 'default: system mantido');
+    sink = await run({ assistantEmptyContent: 'empty' });
+    assertEq(sink.status, 200);
+    assertEq(fake.hits[1].body.messages[1].content, '');
+    sink = await run({ systemInMessages: 'reject' });
+    assertEq(sink.status, 400, 'recusa de forma = 400');
+    assert(/openaiCompat\.systemInMessages/.test(sink.text), sink.text);
+    sink = await run({ assistantEmptyContent: 'talvez' });
+    assertEq(sink.status, 502, 'config inválida = erro do proxy, não recusa de forma (400)');
+    assert(/proxy_error/.test(sink.text) && /openaiCompat\.assistantEmptyContent/.test(sink.text), sink.text);
+    assertEq(fake.hits.length, 2, 'recusas não chegam ao destino');
+  } finally {
+    await new Promise(resolve => fake.server.close(resolve));
+  }
+});
+
+test('BYOK OpenAI always SSE E2E: byok.openaiCompat vale também com stream; reject no stream = 400 sem chamar o destino', async () => {
+  const fake = _byokFake((hit, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write('data: {"id":"s","choices":[{"delta":{"content":"ok"},"finish_reason":"stop"}]}\n\n');
+    res.end('data: [DONE]\n\n');
+  });
+  const port = await _listen0(fake.server);
+  try {
+    const byok = {
+      enabled: true, mode: 'always', wireProtocol: 'openai',
+      endpoints: { generate: `http://127.0.0.1:${port}/chat` }, headers: {},
+    };
+    const run = async (openaiCompat) => {
+      const cfg = { byok: { ...byok, openaiCompat }, fallback: { triggerStatuses: [429], cooldown: { enabled: false } } };
+      const sink = _byokSink();
+      router.forwardRequest({ ..._compatBody(), max_tokens: 8, stream: true }, {}, sink, cfg, { path: '/v1/messages' });
+      await sink.ended;
+      return sink;
+    };
+    let sink = await run({ assistantEmptyContent: 'empty' });
+    assertEq(sink.status, 200);
+    assert(/ok/.test(sink.text), sink.text);
+    assertEq(fake.hits[0].body.stream, true);
+    assertEq(fake.hits[0].body.messages[1].content, '');
+    sink = await run({ toolReference: 'reject' });
+    assertEq(sink.status, 400);
+    assert(/openaiCompat\.toolReference/.test(sink.text), sink.text);
+    sink = await run({ toolReference: 'texto' });
+    assertEq(sink.status, 502, 'config inválida no stream = erro do proxy');
+    assert(/proxy_error/.test(sink.text) && /openaiCompat\.toolReference/.test(sink.text), sink.text);
+    assertEq(fake.hits.length, 1, 'reject e config inválida não chegam ao destino');
+  } finally {
+    await new Promise(resolve => fake.server.close(resolve));
+  }
+});
+
+test('BYOK fallback on-limit: openaiCompat inválido responde a causa sem ceder à NVIDIA; reject vira aviso sem chamar o endpoint', async () => {
+  const fake = _byokFake((hit, res) => _openaiOk(res, 'não devia'));
+  const port = await _listen0(fake.server);
+  const nim = _byokFake((hit, res) => _openaiOk(res, 'ok-nim'));
+  const nimPort = await _listen0(nim.server);
+  try {
+    const cfgFor = (openaiCompat) => ({
+      byok: {
+        enabled: true, mode: 'on-limit', wireProtocol: 'openai',
+        endpoints: { generate: `http://127.0.0.1:${port}/chat` }, headers: {}, openaiCompat,
+      },
+      nim: { apiKey: 'nvapi-teste', endpoint: `http://127.0.0.1:${nimPort}/v1/chat/completions` },
+      fallback: { triggerStatuses: [429], cooldown: { enabled: false } },
+    });
+    const badWire = cfgFor(undefined);
+    badWire.byok.wireProtocol = 'grpc';
+    // URL de geração: ausente (Base URL veio de endpoints.models) ou inválida.
+    const noGenerate = cfgFor(undefined);
+    noGenerate.byok.endpoints = { models: `http://127.0.0.1:${port}/v1/models` };
+    const badGenerate = cfgFor(undefined);
+    badGenerate.byok.baseUrl = `http://127.0.0.1:${port}`;
+    badGenerate.byok.endpoints = { generate: 'ftp://x/y' };
+    const badMap = cfgFor(undefined);
+    badMap.byok.modelMap = { 'com espaço': 'x' };
+    const injection = cfgFor(undefined);
+    injection.byok.modelInjection = { headers: { 'X-Target-Model': '{model}' } };
+    const semModelo = { ..._compatBody(), model: undefined };
+    // Qualquer perfil BYOK inválido (não só openaiCompat) segue a mesma regra;
+    // com e sem stream, o aviso é 200 e traz o hint de quando o Claude volta.
+    const cases = [
+      [cfgFor({ toolReference: 'texto' }), 'Configuração BYOK inválida', /openaiCompat\.toolReference/],
+      [badWire, 'Configuração BYOK inválida', /wireProtocol inválido: \\?"grpc\\?"/],
+      [cfgFor({ systemInMessages: 'reject' }), 'Esta request não pôde ir ao BYOK', /openaiCompat\.systemInMessages = \\?"reject\\?"/],
+      [cfgFor({ toolReference: 'reject' }), 'Esta request não pôde ir ao BYOK', /openaiCompat\.toolReference = \\?"reject\\?"/],
+      [noGenerate, 'Configuração BYOK inválida', /URL ausente para generate/],
+      [badGenerate, 'Configuração BYOK inválida', /URL inválida para generate/],
+      [badMap, 'Configuração BYOK inválida (mapeamento/injeção de modelo)', /espaços/],
+      [injection, 'Esta request não pôde ir ao BYOK', /As regras estão válidas/, semModelo],
+    ];
+    for (const stream of [false, true]) {
+      for (const [cfg, prefix, cause, body] of cases) {
+        const sink = _byokSink();
+        router.handleLimitExceeded({ ...(body || { ..._compatBody(), model: 'claude-opus-5-5' }), max_tokens: 8, stream }, cfg, sink, 'volta às 12h');
+        await sink.ended;
+        const label = `${prefix} stream=${stream}`;
+        assertEq(sink.status, 200, `${label}: no plano B é um aviso, não 4xx/5xx`);
+        assert(sink.text.includes(prefix) && cause.test(sink.text), `${label}: ${sink.text}`);
+        assert(sink.text.includes('volta às 12h'), `${label}: sem o hint: ${sink.text}`);
+        assert(!/Configuração do upstream inválida/.test(sink.text), `${label}: prefixo duplicado: ${sink.text}`);
+        if (stream) assert(/event: message_stop/.test(sink.text), `${label}: SSE incompleto: ${sink.text}`);
+      }
+    }
+    assertEq(fake.hits.length, 0, 'endpoint BYOK não é chamado');
+    assertEq(nim.hits.length, 0, 'NVIDIA não é chamada');
+  } finally {
+    await new Promise(resolve => fake.server.close(resolve));
+    await new Promise(resolve => nim.server.close(resolve));
+  }
+});
+
+test('BYOK openaiCompat inválido em classify remoto e count_tokens: falha visível sem chamar o destino', async () => {
+  const fake = _byokFake((hit, res) => _openaiOk(res, 'não devia'));
+  const port = await _listen0(fake.server);
+  try {
+    const byok = {
+      enabled: true, mode: 'always', wireProtocol: 'openai', baseUrl: `http://127.0.0.1:${port}`,
+      endpoints: { generate: `http://127.0.0.1:${port}/chat`, countTokens: `http://127.0.0.1:${port}/v1/messages/count_tokens` },
+      headers: {}, classifyRemote: true, openaiCompat: { toolReference: 'texto' },
+    };
+    const cfg = { byok, fallback: { triggerStatuses: [429], cooldown: { enabled: false } } };
+    assertEq(await router.classifyByok('implementar uma feature', cfg), null, 'classify cai no local');
+    const sink = _byokSink();
+    router.passthroughGeneric('POST', JSON.stringify({ model: 'm', messages: [{ role: 'user', content: 'oi' }] }), {}, sink, '/v1/messages/count_tokens', cfg);
+    await sink.ended;
+    assertEq(sink.status, 502);
+    assert(/openaiCompat\.toolReference/.test(sink.text), sink.text);
+    // Catálogo repassado (GET /v1/models) também falha alto.
+    const models = _byokSink();
+    router.passthroughGeneric('GET', '', {}, models, '/v1/models', cfg);
+    await models.ended;
+    assertEq(models.status, 502);
+    assert(/proxy_error/.test(models.text) && /openaiCompat\.toolReference/.test(models.text), models.text);
+    assertEq(fake.hits.length, 0);
+  } finally {
+    await new Promise(resolve => fake.server.close(resolve));
+  }
+});
+
+// Comportamento atual (CHANGELOG 2.29.1, docs/BACKLOG.md): destino do BYOK
+// inválido no fallback → erro no log e o plano B segue para a NVIDIA.
+test('BYOK fallback on-limit: destino inválido (Base URL/endpoint só com espaços, Base URL não http, só classify) → erro no log e NVIDIA', async () => {
+  const fake = _byokFake((hit, res) => _openaiOk(res, 'não devia'));
+  const port = await _listen0(fake.server);
+  const nim = _byokFake((hit, res) => _openaiOk(res, 'ok-nim'));
+  const nimPort = await _listen0(nim.server);
+  const origError = router.logger.error;
+  const errors = [];
+  router.logger.error = (m, e) => { errors.push({ m, e }); };
+  try {
+    const dests = [
+      { baseUrl: '   ', endpoints: { generate: `http://127.0.0.1:${port}/chat` } },
+      { endpoints: { generate: '   ', models: `http://127.0.0.1:${port}/v1/models` } },
+      { baseUrl: 'ftp://x', endpoints: { generate: `http://127.0.0.1:${port}/chat` } },
+      { endpoints: { classify: `http://127.0.0.1:${port}/classify` } },
+    ];
+    for (const dest of dests) {
+      const cfg = {
+        byok: { enabled: true, mode: 'on-limit', wireProtocol: 'openai', headers: {}, ...dest },
+        nim: { apiKey: 'nvapi-teste', endpoint: `http://127.0.0.1:${nimPort}/v1/chat/completions` },
+        fallback: { triggerStatuses: [429], cooldown: { enabled: false } },
+      };
+      const before = nim.hits.length;
+      errors.length = 0;
+      const sink = _byokSink();
+      router.handleLimitExceeded({ ..._compatBody(), model: 'claude-opus-5-5', max_tokens: 8, stream: false }, cfg, sink, '');
+      await sink.ended;
+      const label = JSON.stringify(dest);
+      assertEq(nim.hits.length, before + 1, `${label}: NVIDIA atende`);
+      assert(sink.text.includes('ok-nim') && !/Configuração BYOK inválida/.test(sink.text), `${label}: ${sink.text}`);
+      assert(errors.some(x => /mal configurado/.test(x.m) && x.e && x.e.causa), `${label}: sem erro no log`);
+    }
+    assertEq(fake.hits.length, 0, 'endpoint BYOK não é chamado');
+  } finally {
+    router.logger.error = origError;
+    await new Promise(resolve => fake.server.close(resolve));
+    await new Promise(resolve => nim.server.close(resolve));
+  }
+});
+
+test('BYOK openaiCompat inválido no catálogo local: aviso no log, catálogo vazio e GET /v1/models → 502 (mesmo já aquecido), endpoint não chamado', async () => {
+  const fake = _byokFake((hit, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ data: [{ id: 'claude-opus-5-5', type: 'model' }], has_more: false }));
+  });
+  const origWarn = router.logger.warn;
+  const warns = [];
+  const proxies = [];
+  const getOf = (port, path, headers = {}) => new Promise((resolve, reject) => {
+    http.get(`http://127.0.0.1:${port}${path}`, { headers }, (res) => {
+      let raw = '';
+      res.on('data', c => { raw += c; });
+      res.on('end', () => resolve({ status: res.statusCode, raw }));
+    }).on('error', reject);
+  });
+  const catalogOf = async (port) => {
+    const r = await getOf(port, '/catalog');
+    return { ...r, json: JSON.parse(r.raw) };
+  };
+  try {
+    const upPort = await _listen0(fake.server);
+    const cfgFor = (openaiCompat) => ({
+      byok: {
+        enabled: true, mode: 'always', wireProtocol: 'openai', baseUrl: `http://127.0.0.1:${upPort}`,
+        endpoints: { models: `http://127.0.0.1:${upPort}/v1/models` }, headers: {}, openaiCompat,
+      },
+      fallback: { triggerStatuses: [429], cooldown: { enabled: false } },
+      // TTL 0: o snapshot já aquecido não barra uma nova busca, então a contagem
+      // de chamadas ao endpoint continua valendo depois do aquecimento.
+      routing: { catalog: { ttlMs: 0 } },
+    });
+    // Espera curta antes de contar chamadas: a busca do catálogo é assíncrona.
+    const settle = () => new Promise(r => setTimeout(r, 100));
+    const serve = async (cfg) => {
+      const proxy = await router.createServer(cfg, 'fallback-only', 'a'.repeat(64));
+      proxies.push(proxy);
+      return _listen0(proxy);
+    };
+    const valid = cfgFor(undefined);
+    const bad = cfgFor({ toolReference: 'texto' });
+    const validPort = await serve(valid);
+    router.logger.warn = (m, e) => { warns.push({ m, e }); };
+    // Fria: com a config inválida e nada aquecido, o endpoint não é chamado.
+    router.maybeWarmCatalog({}, bad, '_');
+    const cold = await catalogOf(validPort);
+    assertEq([cold.json.warmed, cold.json.count], [false, 0], `fria: ${cold.raw}`);
+    await settle();
+    assertEq(fake.hits.length, 0, 'fria: endpoint de models não é chamado com a config inválida');
+
+    // Aquece com a config válida: a chave do catálogo não inclui openaiCompat,
+    // então o snapshot antigo existiria para a config que ficou inválida.
+    warns.length = 0;
+    router.maybeWarmCatalog({}, valid, '_');
+    let warm;
+    for (let i = 0; i < 50; i++) {
+      warm = await catalogOf(validPort);
+      if (warm.json.warmed) break;
+      await new Promise(r => setTimeout(r, 20));
+    }
+    assertEq([warm.json.warmed, warm.json.count, fake.hits.length], [true, 1, 1], `aquecimento válido: ${warm.raw}`);
+
+    const badPort = await serve(bad);
+    router.maybeWarmCatalog({}, bad, '_');
+    assert(warns.some(x => /Catálogo: configuração de models inválida/.test(x.m) && /openaiCompat\.toolReference/.test(x.e && x.e.err)),
+      `sem aviso: ${JSON.stringify(warns)}`);
+    const st = await catalogOf(badPort);
+    assertEq(st.status, 200, st.raw);
+    assertEq([st.json.warmed, st.json.count], [false, 0], st.raw);
+    // /v1/models repassado: com o catálogo aquecido, o ramo do snapshot com alias
+    // também não pode servir a lista antiga.
+    const models = await getOf(badPort, '/v1/models', { 'x-api-key': 'sk-ant-SUB' });
+    assert(models.status === 502 && /openaiCompat\.toolReference/.test(models.raw), `/v1/models: ${models.status} ${models.raw}`);
+    await settle();
+    assertEq(fake.hits.length, 1, 'endpoint de models não é chamado com a config inválida');
+  } finally {
+    router.logger.warn = origWarn;
+    router.catalog._reset();
+    for (const p of proxies) await new Promise(resolve => p.close(resolve));
+    if (fake.server.listening) await new Promise(resolve => fake.server.close(resolve));
+  }
+});
+
+test('router: rotas passthrough com auth signature (GET /v1/models, POST count_tokens) sem x-api-key nem authorization → 401, BYOK não é chamado', async () => {
+  const fake = _byokFake((hit, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ data: [], input_tokens: 1 }));
+  });
+  let proxy;
+  const call = (port, method, path, headers) => new Promise((resolve, reject) => {
+    const req = http.request({ host: '127.0.0.1', port, method, path, headers }, (res) => {
+      let raw = '';
+      res.on('data', c => { raw += c; });
+      res.on('end', () => resolve({ status: res.statusCode, raw }));
+    });
+    req.on('error', reject);
+    req.end(method === 'POST' ? JSON.stringify({ model: 'claude-opus-5-5', messages: [{ role: 'user', content: 'oi' }] }) : undefined);
+  });
+  try {
+    const upPort = await _listen0(fake.server);
+    const cfg = {
+      byok: {
+        enabled: true, mode: 'always', wireProtocol: 'anthropic', baseUrl: `http://127.0.0.1:${upPort}`, headers: {},
+      },
+      fallback: { triggerStatuses: [429], cooldown: { enabled: false } },
+      routing: { catalog: { enabled: false } },
+    };
+    proxy = await router.createServer(cfg, 'fallback-only', 'a'.repeat(64));
+    const port = await _listen0(proxy);
+    const models = await call(port, 'GET', '/v1/models', {});
+    assert(models.status === 401 && /missing signature/.test(models.raw), `/v1/models: ${models.status} ${models.raw}`);
+    const ct = await call(port, 'POST', '/v1/messages/count_tokens', { 'content-type': 'application/json' });
+    assert(ct.status === 401 && /missing signature/.test(ct.raw), `count_tokens: ${ct.status} ${ct.raw}`);
+    assertEq(fake.hits.length, 0, 'BYOK não é chamado sem assinatura');
+    // Com assinatura o passthrough segue para o BYOK.
+    const signed = await call(port, 'GET', '/v1/models', { 'x-api-key': 'sk-ant-SUB' });
+    assertEq(signed.status, 200, `com assinatura: ${signed.raw}`);
+    assertEq(fake.hits.length, 1, 'com assinatura o BYOK é chamado');
+  } finally {
+    if (proxy) await new Promise(resolve => proxy.close(resolve));
+    if (fake.server.listening) await new Promise(resolve => fake.server.close(resolve));
+  }
+});
+
+test('BYOK OpenAI always SSE E2E: model mapeado e streaming com tool call preservados', async () => {
+  const fake = _byokFake((hit, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write('data: {"id":"s","choices":[{"delta":{"content":"Oi"}}]}\n\n');
+    res.write('data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"buscar","arguments":"{}"}}]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":2,"completion_tokens":1}}\n\n');
+    res.end('data: [DONE]\n\n');
+  });
+  const port = await _listen0(fake.server);
+  try {
+    const cfg = {
+      byok: {
+        enabled: true, mode: 'always', wireProtocol: 'openai',
+        endpoints: { generate: `http://127.0.0.1:${port}/chat` }, headers: {}, modelMap: BYOK_MAP,
+      },
+      fallback: { triggerStatuses: [429], cooldown: { enabled: false } },
+    };
+    const sink = _byokSink();
+    router.forwardRequest({
+      model: 'claude-sonnet-5-2', max_tokens: 8, stream: true,
+      messages: [{ role: 'user', content: 'oi' }],
+      tools: [{ name: 'buscar', input_schema: { type: 'object', properties: {} } }],
+    }, {}, sink, cfg, { path: '/v1/messages' });
+    await sink.ended;
+    assertEq(fake.hits[0].body.model, 'dest-sonnet-5');
+    assertEq(fake.hits[0].body.stream, true);
+    assert(sink.text.includes('"type":"text_delta","text":"Oi"'), sink.text);
+    assert(sink.text.includes('"name":"buscar"'), sink.text);
+    assertEq((sink.text.match(/event: message_stop/g) || []).length, 1);
+  } finally {
+    await new Promise(resolve => fake.server.close(resolve));
+  }
+});
+
+test('BYOK Anthropic always SSE E2E: model mapeado no corpo Anthropic, stream repassado, reqBody intacto', async () => {
+  const fake = _byokFake((hit, res) => {
+    res.writeHead(200, { 'content-type': 'text/event-stream' });
+    res.write('event: message_start\ndata: {"type":"message_start","message":{"id":"m","model":"dest-opus-5-5"}}\n\n');
+    res.end('event: message_stop\ndata: {"type":"message_stop"}\n\n');
+  });
+  const port = await _listen0(fake.server);
+  try {
+    const cfg = {
+      byok: {
+        enabled: true, mode: 'always', baseUrl: `http://127.0.0.1:${port}`,
+        headers: { 'x-api-key': 'byok-key' }, modelMap: BYOK_MAP,
+        modelInjection: { body: { 'metadata.force_model': '{model}' } },
+      },
+      fallback: { triggerStatuses: [429], cooldown: { enabled: false } },
+    };
+    const reqBody = { model: 'claude-opus-5-5', max_tokens: 8, stream: true, messages: [{ role: 'user', content: 'oi' }] };
+    const before = JSON.parse(JSON.stringify(reqBody));
+    const sink = _byokSink();
+    router.forwardRequest(reqBody, { authorization: 'Bearer SUBSCRIPTION' }, sink, cfg, { path: '/v1/messages' });
+    await sink.ended;
+    const hit = fake.hits[0];
+    assertEq(hit.path, '/v1/messages');
+    assertEq(hit.body.model, 'dest-opus-5-5');
+    assertEq(hit.body.metadata.force_model, 'dest-opus-5-5');
+    assertEq(hit.headers['x-api-key'], 'byok-key');
+    assertEq(hit.headers.authorization, undefined);
+    assertEq(reqBody, before, 'adapter Anthropic devolve o próprio objeto — precisa ser clonado');
+    assert(sink.text.includes('message_start') && sink.text.includes('message_stop'), sink.text);
+  } finally {
+    await new Promise(resolve => fake.server.close(resolve));
+  }
+});
+
+test('BYOK on-limit E2E: caminho da assinatura intocado; 429 → BYOK com model mapeado e injeção', async () => {
+  const fake = _byokFake((hit, res) => {
+    if (hit.path === '/sub/v1/messages') {
+      res.writeHead(429, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'limite' } }));
+      return;
+    }
+    _openaiOk(res, 'coberto pelo byok');
+  });
+  const port = await _listen0(fake.server);
+  try {
+    const cfg = {
+      // "Assinatura" simulada por um gateway local (isByok:false) — nunca a Anthropic real.
+      upstream: { enabled: true, endpoints: { generate: `http://127.0.0.1:${port}/sub/v1/messages` } },
+      byok: {
+        enabled: true, mode: 'on-limit', wireProtocol: 'openai',
+        endpoints: { generate: `http://127.0.0.1:${port}/byok/chat` },
+        headers: { Authorization: 'Bearer fixture-byok' },
+        modelMap: BYOK_MAP,
+        modelInjection: { body: { 'metadata.force_model': '{model}' } },
+      },
+      fallback: { triggerStatuses: [429], cooldown: { enabled: false } },
+    };
+    const reqBody = { model: 'claude-opus-5-5', max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'oi' }] };
+    const sink = _byokSink();
+    router.forwardRequest(reqBody, { authorization: 'Bearer SUBSCRIPTION' }, sink, cfg, { path: '/v1/messages' });
+    await sink.ended;
+    assertEq(fake.hits.map(h => h.path), ['/sub/v1/messages', '/byok/chat']);
+    const [sub, by] = fake.hits;
+    assertEq(sub.body.model, 'claude-opus-5-5', 'assinatura recebe o modelo original');
+    assertEq(sub.body.metadata, undefined, 'assinatura nunca recebe injeção');
+    assertEq(by.body.model, 'dest-opus-5-5');
+    assertEq(by.body.metadata.force_model, 'dest-opus-5-5');
+    assertEq(by.headers.authorization, 'Bearer fixture-byok');
+    assertEq(reqBody.model, 'claude-opus-5-5');
+    assertEq(JSON.parse(sink.text).content, [{ type: 'text', text: 'coberto pelo byok' }]);
+  } finally {
+    await new Promise(resolve => fake.server.close(resolve));
+  }
+});
+
+test('BYOK on-limit E2E: 429 real com openaiCompat reject/inválido → aviso 200 sem chamar BYOK nem NVIDIA', async () => {
+  const fake = _byokFake((hit, res) => {
+    if (hit.path === '/sub/v1/messages') {
+      res.writeHead(429, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'rate_limit_error', message: 'limite' } }));
+      return;
+    }
+    _openaiOk(res, 'não devia');
+  });
+  const port = await _listen0(fake.server);
+  try {
+    for (const [openaiCompat, expected] of [
+      [{ systemInMessages: 'reject' }, 'Esta request não pôde ir ao BYOK'],
+      [{ systemInMessages: 'talvez' }, 'Configuração BYOK inválida'],
+    ]) {
+      const cfg = {
+        upstream: { enabled: true, endpoints: { generate: `http://127.0.0.1:${port}/sub/v1/messages` } },
+        byok: {
+          enabled: true, mode: 'on-limit', wireProtocol: 'openai',
+          endpoints: { generate: `http://127.0.0.1:${port}/byok/chat` }, headers: {}, openaiCompat,
+        },
+        nim: { apiKey: 'nvapi-teste', endpoint: `http://127.0.0.1:${port}/nim/v1/chat/completions` },
+        fallback: { triggerStatuses: [429], cooldown: { enabled: false } },
+      };
+      const sink = _byokSink();
+      router.forwardRequest({ ..._compatBody(), model: 'claude-opus-5-5', max_tokens: 8, stream: false }, {}, sink, cfg, { path: '/v1/messages' });
+      await sink.ended;
+      assertEq(sink.status, 200, `${expected}: aviso, não erro`);
+      assert(sink.text.includes(expected) && /openaiCompat\.systemInMessages/.test(sink.text), sink.text);
+    }
+    assertEq(fake.hits.map(h => h.path), ['/sub/v1/messages', '/sub/v1/messages'], 'só a assinatura é chamada');
+  } finally {
+    await new Promise(resolve => fake.server.close(resolve));
+  }
+});
+
+test('BYOK on-limit: openaiCompat inválido só é lido quando o destino é o BYOK (sem 429 nem cooldown: geração, count_tokens e catálogo vão ao custom upstream e o classify fica local; com cooldown e custom upstream a geração segue no gateway; com cooldown sem custom upstream a causa aparece)', async () => {
+  const fake = _byokFake((hit, res) => {
+    if (/count_tokens/.test(hit.path)) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ input_tokens: 4 }));
+      return;
+    }
+    if (/models/.test(hit.path)) {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ object: 'list', data: [{ id: 'claude-opus-5-5', object: 'model' }] }));
+      return;
+    }
+    _openaiOk(res, 'do gateway');
+  });
+  const port = await _listen0(fake.server);
+  const origWarn = router.logger.warn; const origError = router.logger.error; const logs = [];
+  router.logger.warn = (m, e) => { logs.push(`${m} ${JSON.stringify(e || {})}`); };
+  router.logger.error = (m, e) => { logs.push(`${m} ${JSON.stringify(e || {})}`); };
+  router.__testHooks.reset();
+  const byokPaths = () => fake.hits.map(h => h.path).filter(p => p.startsWith('/byok/'));
+  const body = () => ({ model: 'claude-opus-5-5', max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'oi' }] });
+  const ctBody = JSON.stringify({ model: 'claude-opus-5-5', messages: [{ role: 'user', content: 'oi' }] });
+  const byokCfg = {
+    enabled: true, mode: 'on-limit', wireProtocol: 'openai', classifyRemote: true, headers: {},
+    endpoints: {
+      generate: `http://127.0.0.1:${port}/byok/chat`,
+      models: `http://127.0.0.1:${port}/byok/models`,
+      countTokens: `http://127.0.0.1:${port}/byok/count_tokens`,
+    },
+    openaiCompat: { toolReference: 'texto' },
+  };
+  try {
+    // (a) Cooldown inativo e o custom upstream respondendo 200: nada vai ao BYOK
+    // e nada lê o openaiCompat (o upstream também é Chat Completions, então um
+    // perfil que lesse o openaiCompat do BYOK para ele quebraria aqui).
+    const cfgA = {
+      upstream: {
+        enabled: true, wireProtocol: 'openai',
+        endpoints: {
+          generate: `http://127.0.0.1:${port}/gw/chat`,
+          models: `http://127.0.0.1:${port}/gw/models`,
+          countTokens: `http://127.0.0.1:${port}/gw/count_tokens`,
+        },
+      },
+      byok: byokCfg,
+      nim: { apiKey: '' },
+      fallback: { triggerStatuses: [429], cooldown: { enabled: true } },
+    };
+    const gen = _byokSink();
+    router.forwardRequest(body(), { 'x-api-key': 'sk-ant-SUB' }, gen, cfgA, { path: '/v1/messages' });
+    await gen.ended;
+    assert(gen.status === 200 && gen.text.includes('do gateway'), `(a) geração: ${gen.status} ${gen.text}`);
+    const ct = _byokSink();
+    router.passthroughGeneric('POST', ctBody, { 'x-api-key': 'sk-ant-SUB' }, ct, '/v1/messages/count_tokens', cfgA);
+    await ct.ended;
+    assertEq(ct.status, 200, `(a) count_tokens: ${ct.text}`);
+    const models = _byokSink();
+    router.passthroughGeneric('GET', '', { 'x-api-key': 'sk-ant-SUB' }, models, '/v1/models', cfgA);
+    await models.ended;
+    assertEq(models.status, 200, `(a) /v1/models: ${models.text}`);
+    router.maybeWarmCatalog({ 'x-api-key': 'sk-ant-SUB' }, cfgA, '_');
+    let spyCalls = 0;
+    const tier = await router.classify('oi', cfgA, { classifyByok: async () => { spyCalls++; return 'opus'; }, classifyLocal: async () => 'haiku' });
+    assertEq([tier, spyCalls], ['haiku', 0], '(a) classify fica local, sem o BYOK');
+    // O aquecimento é assíncrono: espera o 2º hit em models (o 1º é do
+    // passthrough) para as asserções negativas valerem depois dele.
+    const modelsHits = () => fake.hits.filter(h => h.path.startsWith('/gw/models')).length;
+    for (let i = 0; i < 150 && modelsHits() < 2; i++) await new Promise(r => setTimeout(r, 20));
+    assert(modelsHits() >= 2, `(a) aquecimento do catálogo foi ao gateway: ${JSON.stringify(fake.hits.map(h => h.path))}`);
+    assertEq(byokPaths(), [], '(a) nenhum hit no BYOK');
+    assert(fake.hits.some(h => h.path === '/gw/chat') && fake.hits.some(h => h.path === '/gw/count_tokens'),
+      `(a) gateway atendeu geração e count_tokens: ${JSON.stringify(fake.hits.map(h => h.path))}`);
+    assert(!logs.some(l => /openaiCompat/.test(l)), `(a) nenhum log cita openaiCompat: ${JSON.stringify(logs)}`);
+
+    // (a2) Cooldown ativo com custom upstream: o cooldown é da janela da
+    // Anthropic, então a geração continua indo ao gateway, sem ler o openaiCompat.
+    router.__testHooks.setCooldownUntil(Date.now() + 60000);
+    const genA2 = _byokSink();
+    router.forwardRequest(body(), { 'x-api-key': 'sk-ant-SUB' }, genA2, cfgA, { path: '/v1/messages' });
+    await genA2.ended;
+    assert(genA2.status === 200 && genA2.text.includes('do gateway'), `(a2) geração: ${genA2.status} ${genA2.text}`);
+    assertEq(byokPaths(), [], '(a2) nenhum hit no BYOK');
+    assert(!logs.some(l => /openaiCompat/.test(l)), `(a2) nenhum log cita openaiCompat: ${JSON.stringify(logs)}`);
+    router.__testHooks.reset();
+
+    // (b) Cooldown ativo, sem custom upstream: a geração vai direto ao plano B e
+    // mostra a causa; count_tokens responde 502 com a causa; o BYOK não é chamado.
+    const cfgB = { byok: byokCfg, nim: { apiKey: '' }, fallback: { triggerStatuses: [429], cooldown: { enabled: true } } };
+    router.__testHooks.setCooldownUntil(Date.now() + 60000);
+    const genB = _byokSink();
+    router.forwardRequest(body(), {}, genB, cfgB, { path: '/v1/messages' });
+    await genB.ended;
+    assertEq(genB.status, 200, `(b) geração: aviso, não erro: ${genB.text}`);
+    assert(genB.text.includes('Configuração BYOK inválida') && /openaiCompat\.toolReference/.test(genB.text), `(b) geração: ${genB.text}`);
+    const ctB = _byokSink();
+    router.passthroughGeneric('POST', ctBody, {}, ctB, '/v1/messages/count_tokens', cfgB);
+    await ctB.ended;
+    assert(ctB.status === 502 && /openaiCompat\.toolReference/.test(ctB.text), `(b) count_tokens: ${ctB.status} ${ctB.text}`);
+    assertEq(byokPaths(), [], '(b) nenhum hit no BYOK');
+  } finally {
+    router.logger.warn = origWarn; router.logger.error = origError;
+    router.__testHooks.reset(); router.catalog._reset();
+    await new Promise(resolve => fake.server.close(resolve));
+  }
+});
+
+test('BYOK fallback: erro do endpoint informa o modelo enviado e a regra aplicada', async () => {
+  const fake = _byokFake((hit, res) => {
+    res.writeHead(500, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: 'upstream down' } }));
+  });
+  const port = await _listen0(fake.server);
+  try {
+    const cfg = {
+      byok: {
+        enabled: true, mode: 'on-limit', wireProtocol: 'openai',
+        endpoints: { generate: `http://127.0.0.1:${port}/chat` }, headers: {}, modelMap: BYOK_MAP,
+      },
+      fallback: { triggerStatuses: [429], cooldown: { enabled: false } },
+    };
+    const sink = _byokSink();
+    router.handleLimitExceeded({ model: 'claude-opus-5-5', max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'oi' }] }, cfg, sink, '');
+    await sink.ended;
+    assert(fake.hits.length >= 1, 'endpoint precisa ter sido chamado');
+    assert(fake.hits.every(h => h.body.model === 'dest-opus-5-5'), 'retentativas mantêm o destino mapeado');
+    assert(sink.text.includes('dest-opus-5-5') && sink.text.includes('claude-opus-5-5'),
+      `mensagem deve citar destino e origem: ${sink.text}`);
+  } finally {
+    await new Promise(resolve => fake.server.close(resolve));
+  }
+});
+
+test('BYOK fallback: regra inválida no config → resposta explícita, sem chamar endpoint nem plano B', async () => {
+  const fake = _byokFake((hit, res) => _openaiOk(res, 'não devia'));
+  const port = await _listen0(fake.server);
+  try {
+    const cfg = {
+      byok: {
+        enabled: true, mode: 'on-limit', wireProtocol: 'openai',
+        endpoints: { generate: `http://127.0.0.1:${port}/chat` }, headers: {},
+        modelMap: { 'com espaço': 'x' },
+      },
+      nim: { apiKey: '' },
+      fallback: { triggerStatuses: [429], cooldown: { enabled: false } },
+    };
+    const sink = _byokSink();
+    router.handleLimitExceeded({ model: 'claude-opus-5-5', max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'oi' }] }, cfg, sink, '');
+    await sink.ended;
+    assertEq(fake.hits.length, 0);
+    assert(sink.text.includes('Configuração BYOK inválida') && sink.text.includes('espaços'), sink.text);
+  } finally {
+    await new Promise(resolve => fake.server.close(resolve));
+  }
+});
+
+test('BYOK always: regra inválida → 502 proxy_error explícito, endpoint não é chamado', async () => {
+  const fake = _byokFake((hit, res) => _openaiOk(res, 'não devia'));
+  const port = await _listen0(fake.server);
+  try {
+    const cfg = {
+      byok: {
+        enabled: true, mode: 'always', wireProtocol: 'openai',
+        endpoints: { generate: `http://127.0.0.1:${port}/chat` }, headers: {},
+        modelInjection: { body: { model: '{model}' } },
+      },
+      fallback: { triggerStatuses: [429], cooldown: { enabled: false } },
+    };
+    const sink = _byokSink();
+    router.forwardRequest({ model: 'a', max_tokens: 8, messages: [{ role: 'user', content: 'oi' }] }, {}, sink, cfg, { path: '/v1/messages' });
+    await sink.ended;
+    assertEq(sink.status, 502);
+    assertEq(fake.hits.length, 0);
+    assert(/não pode alterar "model"/.test(JSON.parse(sink.text).error.message), sink.text);
+  } finally {
+    await new Promise(resolve => fake.server.close(resolve));
+  }
+});
+
+test('BYOK classify + count_tokens: aplicam o mesmo mapeamento e a injeção', async () => {
+  const fake = _byokFake((hit, res) => {
+    if (hit.path === '/v1/messages/count_tokens') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ input_tokens: 3 }));
+      return;
+    }
+    _openaiOk(res, 'haiku');
+  });
+  const port = await _listen0(fake.server);
+  try {
+    const cfgClassify = {
+      byok: {
+        enabled: true, mode: 'always', classifyRemote: true, wireProtocol: 'openai',
+        endpoints: { generate: `http://127.0.0.1:${port}/chat`, classify: `http://127.0.0.1:${port}/classify` },
+        headers: {}, modelMap: { 'gpt-mini': 'mapped-mini' },
+        modelInjection: { headers: { 'X-Target-Model': '{model}' } },
+      },
+      routing: { haikuTier: { model: 'gpt-mini' } },
+    };
+    const tier = await router.classifyByok('pergunta simples', cfgClassify);
+    assertEq(tier, 'haiku');
+    assertEq(fake.hits[0].path, '/classify');
+    assertEq(fake.hits[0].body.model, 'mapped-mini');
+    assertEq(fake.hits[0].headers['x-target-model'], 'mapped-mini');
+
+    const cfgCount = {
+      byok: {
+        enabled: true, mode: 'always', baseUrl: `http://127.0.0.1:${port}`, headers: {},
+        modelMap: BYOK_MAP, modelInjection: { body: { 'metadata.force_model': '{model}' } },
+      },
+    };
+    const sink = _byokSink();
+    const raw = JSON.stringify({ model: 'claude-opus-5-5', messages: [{ role: 'user', content: 'oi' }] });
+    router.passthroughGeneric('POST', raw, {}, sink, '/v1/messages/count_tokens', cfgCount);
+    await sink.ended;
+    const hit = fake.hits[fake.hits.length - 1];
+    assertEq(hit.path, '/v1/messages/count_tokens');
+    assertEq(hit.body.model, 'dest-opus-5-5');
+    assertEq(hit.body.metadata.force_model, 'dest-opus-5-5');
+    assertEq(JSON.parse(sink.text), { input_tokens: 3 });
+  } finally {
+    await new Promise(resolve => fake.server.close(resolve));
+  }
+});
+
+test('byok-model: templates sem {model}, headers/regras fora de ASCII e headers reservados são recusados', () => {
+  const bad = [
+    [{ body: { a: 'fixo' } }, /precisa conter \{model\}/],
+    [{ headers: { 'X-Tag': 'valor-colado' } }, /precisa conter \{model\}/],
+    [{ headers: { 'X-M': 'ç-{model}' } }, /ASCII/],
+    [{ headers: { 'api-key': '{model}' } }, /reservado/],
+    [{ headers: { 'x-goog-api-key': '{model}' } }, /reservado/],
+    [{ headers: { 'Accept-Encoding': '{model}' } }, /reservado/],
+    [{ headers: { TE: '{model}' } }, /reservado/],
+    [JSON.parse('{"headers":{"__proto__":"{model}"}}'), /reservado/],
+  ];
+  for (const [input, re] of bad) {
+    let msg = '';
+    try { byokModelLib.normalizeInjection(input); } catch (e) { msg = e.message; }
+    assert(re.test(msg), `esperava ${re} para ${JSON.stringify(input)}, veio "${msg}"`);
+  }
+  for (const rule of [{ from: 'a', to: 'modelo-ç' }, { from: 'órigem', to: 'x' }]) {
+    let msg = '';
+    try { byokModelLib.normalizeModelMap([rule]); } catch (e) { msg = e.message; }
+    assert(/ASCII/.test(msg), `regra fora de ASCII: "${msg}"`);
+  }
+  // Valor renderizado inválido (model do cliente fora de ASCII) falha na PREPARAÇÃO.
+  let msg = '';
+  try {
+    byokModelLib.prepareByokBody({ model: 'modelo-ç' }, 'modelo-ç', { modelInjection: { headers: { 'X-M': '{model}' } } });
+  } catch (e) { msg = e.message; }
+  assert(/valor renderizado inválido/.test(msg), msg);
+});
+
+test('byok-model.resolveTargetModel: modelMap de tipo errado lança (não vira "sem mapa")', () => {
+  for (const wrong of ['texto', 42, true]) {
+    let msg = '';
+    try { byokModelLib.resolveTargetModel('claude-opus-5-5', wrong); } catch (e) { msg = e.message; }
+    assert(/lista de regras/.test(msg), `modelMap=${JSON.stringify(wrong)}: "${msg}"`);
+  }
+  assertEq(byokModelLib.resolveTargetModel('claude-opus-5-5', [{ from: 'claude-opus-5-5', to: 'x' }]).model, 'x');
+  assertEq(byokModelLib.resolveTargetModel('claude-opus-5-5', null).matched, false);
+});
+
+test('BYOK always: header injetado com valor fora de ASCII → 400 invalid_request_error, sem crash e sem chamar o endpoint', async () => {
+  const fake = _byokFake((hit, res) => _openaiOk(res, 'não devia'));
+  const port = await _listen0(fake.server);
+  try {
+    const cfg = {
+      byok: {
+        enabled: true, mode: 'always', wireProtocol: 'openai',
+        endpoints: { generate: `http://127.0.0.1:${port}/chat` }, headers: {},
+        modelInjection: { headers: { 'X-Target-Model': '{model}' } },
+      },
+      fallback: { triggerStatuses: [429], cooldown: { enabled: false } },
+    };
+    const sink = _byokSink();
+    router.forwardRequest({ model: 'modelo-ç', max_tokens: 8, messages: [{ role: 'user', content: 'oi' }] }, {}, sink, cfg, { path: '/v1/messages' });
+    await sink.ended;
+    assertEq(sink.status, 400);
+    assertEq(JSON.parse(sink.text).error.type, 'invalid_request_error');
+    assertEq(fake.hits.length, 0);
+    assert(/valor renderizado inválido/.test(JSON.parse(sink.text).error.message), sink.text);
+  } finally {
+    await new Promise(resolve => fake.server.close(resolve));
+  }
+});
+
+test('BYOK fallback: modelMap de tipo errado → resposta explícita, sem chamar endpoint', async () => {
+  const fake = _byokFake((hit, res) => _openaiOk(res, 'não devia'));
+  const port = await _listen0(fake.server);
+  try {
+    const cfg = {
+      byok: {
+        enabled: true, mode: 'on-limit', wireProtocol: 'openai',
+        endpoints: { generate: `http://127.0.0.1:${port}/chat` }, headers: {}, modelMap: 'texto',
+      },
+      nim: { apiKey: '' },
+      fallback: { triggerStatuses: [429], cooldown: { enabled: false } },
+    };
+    const sink = _byokSink();
+    router.handleLimitExceeded({ model: 'claude-opus-5-5', max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'oi' }] }, cfg, sink, '');
+    await sink.ended;
+    assertEq(fake.hits.length, 0);
+    assert(sink.text.includes('Configuração BYOK inválida') && sink.text.includes('lista de regras'), sink.text);
+  } finally {
+    await new Promise(resolve => fake.server.close(resolve));
+  }
+});
+
+test('count_tokens para destino NÃO-BYOK (on-limit, assinatura/gateway) não é mapeado nem injetado', async () => {
+  const fake = _byokFake((hit, res) => {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ input_tokens: 5 }));
+  });
+  const port = await _listen0(fake.server);
+  try {
+    const cfg = {
+      upstream: { enabled: true, baseUrl: `http://127.0.0.1:${port}` },
+      byok: {
+        enabled: true, mode: 'on-limit', baseUrl: 'http://127.0.0.1:9', headers: {},
+        modelMap: BYOK_MAP, modelInjection: { body: { 'metadata.force_model': '{model}' }, headers: { 'X-Target-Model': '{model}' } },
+      },
+    };
+    const sink = _byokSink();
+    const raw = JSON.stringify({ model: 'claude-opus-5-5', messages: [{ role: 'user', content: 'oi' }] });
+    router.passthroughGeneric('POST', raw, {}, sink, '/v1/messages/count_tokens', cfg);
+    await sink.ended;
+    assertEq(fake.hits.length, 1);
+    assertEq(fake.hits[0].body.model, 'claude-opus-5-5');
+    assertEq(fake.hits[0].body.metadata, undefined);
+    assertEq(fake.hits[0].headers['x-target-model'], undefined);
+  } finally {
+    await new Promise(resolve => fake.server.close(resolve));
+  }
+});
+
+test('byok-model: curinga é polinomial, O(|padrão|·|nome|) com nome ≤ 256 (sem ReDoS), e mantém a semântica de 1+ caracteres', () => {
+  const map = { 'claude-*-*-*-*-x': 'never', 'a*': 'A', 'x*y*z': 'XYZ' };
+  const evil = 'claude-a-'.repeat(28); // 252 caracteres: dentro do teto, pior caso para `.+`
+  let t0 = Date.now();
+  assertEq(byokModelLib.resolveTargetModel(evil, map).matched, false);
+  assert(Date.now() - t0 < 50, `casamento levou ${Date.now() - t0}ms`);
+  // Acima do teto de 256: nunca casa (e não custa nada), mesmo que o padrão casasse.
+  t0 = Date.now();
+  assertEq(byokModelLib.resolveTargetModel(`a${'b'.repeat(100000)}`, map).matched, false);
+  assert(Date.now() - t0 < 50, `nome gigante levou ${Date.now() - t0}ms`);
+  // Semântica preservada.
+  assertEq(byokModelLib.resolveTargetModel('ab', map).model, 'A');
+  assertEq(byokModelLib.resolveTargetModel('a', map).matched, false, '* exige ao menos 1 caractere');
+  assertEq(byokModelLib.resolveTargetModel('x1y2z', map).model, 'XYZ');
+  assertEq(byokModelLib.resolveTargetModel('xyz', map).matched, false);
+  assertEq(byokModelLib.resolveTargetModel('xAyByCz', map).model, 'XYZ', 'retrocesso estende o segundo * até o z');
+  assertEq(byokModelLib.resolveTargetModel('claude-a-b-c-d-x', map).model, 'never');
+  // Quebra de linha/espaço no model do cliente: nunca casa, segue verbatim.
+  const nl = byokModelLib.resolveTargetModel('a\nb', map);
+  assertEq([nl.matched, nl.model], [false, 'a\nb']);
+});
+
+test('byok-model: injeção não sobrescreve campos de protocolo nem injeta modelo vazio', () => {
+  for (const key of ['stream', 'messages', 'tools', 'max_tokens', 'system', 'stream_options']) {
+    let msg = '';
+    try { byokModelLib.normalizeInjection({ body: { [key]: '{model}' } }); } catch (e) { msg = e.message; }
+    assert(/campo de protocolo/.test(msg), `${key}: "${msg}"`);
+  }
+  // Caminho aninhado sob o campo de protocolo também é recusado.
+  let msg = '';
+  try { byokModelLib.normalizeInjection({ body: { 'stream_options.x': '{model}' } }); } catch (e) { msg = e.message; }
+  assert(/campo de protocolo/.test(msg), msg);
+  // metadata.* continua aceito.
+  assert(byokModelLib.normalizeInjection({ body: { 'metadata.force_model': '{model}' } }));
+  // Sem model na request: com injeção → erro; sem injeção → segue como antes.
+  msg = '';
+  try {
+    byokModelLib.prepareByokBody({ messages: [] }, undefined, { modelInjection: { headers: { 'X-M': '{model}' } } });
+  } catch (e) { msg = e.message; }
+  assert(/não tem `model`/.test(msg), msg);
+  assertEq(byokModelLib.prepareByokBody({ messages: [] }, undefined, {}).body, { messages: [] });
+  // Colisão com header configurado ignora espaços nas pontas do nome.
+  msg = '';
+  try { byokModelLib.normalizeInjection({ headers: { 'X-Model': '{model}' } }, { ' x-model ': 'v' }); } catch (e) { msg = e.message; }
+  assert(/já está nos headers/.test(msg), msg);
+});
+
+test('BYOK cooldown: geração e count_tokens desviados aplicam mapeamento e injeção; assinatura não é tocada', async () => {
+  const fake = _byokFake((hit, res) => {
+    if (hit.path === '/v1/messages/count_tokens') {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ input_tokens: 4 }));
+      return;
+    }
+    _openaiOk(res, 'coberto no cooldown');
+  });
+  const port = await _listen0(fake.server);
+  router.__testHooks.reset();
+  try {
+    const cfg = {
+      byok: {
+        enabled: true, mode: 'on-limit', wireProtocol: 'openai',
+        endpoints: { generate: `http://127.0.0.1:${port}/chat`, countTokens: `http://127.0.0.1:${port}/v1/messages/count_tokens` },
+        headers: {}, modelMap: BYOK_MAP,
+        modelInjection: { body: { 'metadata.force_model': '{model}' }, headers: { 'X-Target-Model': '{model}' } },
+      },
+      nim: { apiKey: '' },
+      fallback: { triggerStatuses: [429], cooldown: { enabled: true } },
+    };
+    // Disjuntor armado localmente: a geração vai DIRETO ao plano B, sem tocar a Anthropic.
+    router.__testHooks.setCooldownUntil(Date.now() + 60000);
+    const reqBody = { model: 'claude-opus-5-5', max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'oi' }] };
+    const sink = _byokSink();
+    router.forwardRequest(reqBody, { authorization: 'Bearer SUBSCRIPTION' }, sink, cfg, { path: '/v1/messages' });
+    await sink.ended;
+    const gen = fake.hits.find(h => h.path === '/chat');
+    assert(gen, `geração deveria ir ao BYOK: ${JSON.stringify(fake.hits.map(h => h.path))}`);
+    assertEq(gen.body.model, 'dest-opus-5-5');
+    assertEq(gen.body.metadata.force_model, 'dest-opus-5-5');
+    assertEq(gen.headers['x-target-model'], 'dest-opus-5-5');
+    assertEq(gen.headers.authorization, undefined, 'credencial da assinatura não vai ao BYOK');
+    assertEq(reqBody.model, 'claude-opus-5-5');
+
+    const cSink = _byokSink();
+    router.passthroughGeneric('POST', JSON.stringify({ model: 'claude-opus-5-5', messages: [{ role: 'user', content: 'oi' }] }),
+      { authorization: 'Bearer SUBSCRIPTION', 'x-api-key': 'sk-ant-SUBSCRIPTION' }, cSink, '/v1/messages/count_tokens', cfg);
+    await cSink.ended;
+    const ct = fake.hits.find(h => h.path === '/v1/messages/count_tokens');
+    assert(ct, `count_tokens deveria ir ao BYOK: ${JSON.stringify(fake.hits.map(h => h.path))}`);
+    assertEq(ct.body.model, 'dest-opus-5-5');
+    assertEq(ct.body.metadata.force_model, 'dest-opus-5-5');
+    assertEq(ct.headers['x-target-model'], 'dest-opus-5-5');
+    assertEq(ct.headers.authorization, undefined, 'credencial da assinatura não vai ao BYOK no count_tokens');
+    assertEq(ct.headers['x-api-key'], undefined, 'x-api-key da assinatura não vai ao BYOK no count_tokens');
+  } finally {
+    router.__testHooks.reset();
+    await new Promise(resolve => fake.server.close(resolve));
+  }
+});
+
+test('byok-model: headers com cara de credencial/protocolo, campos de protocolo novos e metadata como folha são recusados', () => {
+  const headers = ['Ocp-Apim-Subscription-Key', 'X-Auth-Token', 'X-Forwarded-For', 'X-Session-Id', 'Cookie2',
+    'X-Amz-Date', 'Anthropic-Beta', 'OpenAI-Organization', 'If-Match', 'User-Agent', 'X-HTTP-Method-Override', 'Sec-Fetch-Mode'];
+  for (const h of headers) {
+    let msg = '';
+    try { byokModelLib.normalizeInjection({ headers: { [h]: '{model}' } }); } catch (e) { msg = e.message; }
+    assert(/reservado/.test(msg), `${h}: "${msg}"`);
+  }
+  for (const key of ['parallel_tool_calls', 'reasoning_effort', 'service_tier', 'user', 'store', 'seed']) {
+    let msg = '';
+    try { byokModelLib.normalizeInjection({ body: { [key]: '{model}' } }); } catch (e) { msg = e.message; }
+    assert(/campo de protocolo/.test(msg), `${key}: "${msg}"`);
+  }
+  let msg = '';
+  try { byokModelLib.normalizeInjection({ body: { metadata: '{model}' } }); } catch (e) { msg = e.message; }
+  assert(/trocaria o objeto "metadata"/.test(msg), msg);
+  // Nomes comuns de roteamento continuam aceitos.
+  assert(byokModelLib.normalizeInjection({ headers: { 'X-Target-Model': '{model}', 'x-team': 't-{model}' } }));
+});
+
+test('byok-model: segmentos, tetos, espaço nas pontas e origem só com dígitos são recusados', () => {
+  const cases = [
+    [{ body: { 'a=b': '{model}' } }, /só aceita letras, dígitos/],
+    [{ body: { 'a b.c': '{model}' } }, /só aceita letras, dígitos/],
+    [{ body: { 'a.b.c.d.e.f.g.h.i': '{model}' } }, /excede 8 segmentos/],
+    [{ body: { x: ` {model}` } }, /espaço nas pontas/],
+    [{ body: { x: `{model}${'k'.repeat(65)}` } }, /texto fixo do template excede 64/],
+    [{ body: Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`k${i}`, '{model}'])) }, /excede 32 caminhos/],
+    [{ headers: Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`X-K${i}`, '{model}'])) }, /excede 32 headers/],
+  ];
+  for (const [input, re] of cases) {
+    let msg = '';
+    try { byokModelLib.normalizeInjection(input); } catch (e) { msg = e.message; }
+    assert(re.test(msg), `esperava ${re} para ${JSON.stringify(input).slice(0, 80)}, veio "${msg}"`);
+  }
+  // No limite exato: 64 de texto fixo e 8 segmentos passam.
+  assert(byokModelLib.normalizeInjection({ body: { 'a.b.c.d.e.f.g.h': `{model}${'k'.repeat(64)}` } }));
+  let msg = '';
+  try { byokModelLib.normalizeModelMap({ 12345: 'x' }); } catch (e) { msg = e.message; }
+  assert(/só com dígitos/.test(msg), msg);
+});
+
+test('byok-model: snapshot exige exatamente 8 dígitos; modelMap de tipo errado lança mesmo sem model', () => {
+  assertEq(byokModelLib.resolveTargetModel('claude-haiku-4-5-20251001', BYOK_MAP).model, 'dest-haiku');
+  const nine = byokModelLib.resolveTargetModel('claude-haiku-4-5-202510011', BYOK_MAP);
+  assertEq([nine.matched, nine.model], [false, 'claude-haiku-4-5-202510011']);
+  const seven = byokModelLib.resolveTargetModel('claude-haiku-4-5-2025100', BYOK_MAP);
+  assertEq(seven.matched, false);
+  let msg = '';
+  try { byokModelLib.resolveTargetModel(undefined, 'texto'); } catch (e) { msg = e.message; }
+  assert(/lista de regras/.test(msg), msg);
+});
+
+test('byok-model: injeção recusa campo de topo existente e request sem `model` de texto não vazio', () => {
+  const inj = { modelInjection: { body: { foo: '{model}' } } };
+  let msg = '';
+  try { byokModelLib.prepareByokBody({ model: 'm', foo: 1 }, 'm', inj); } catch (e) { msg = e.message; }
+  assert(/já traz o campo "foo"/.test(msg), msg);
+  // Caminho aninhado sob objeto existente continua sobrescrevendo só a folha.
+  const ok = byokModelLib.prepareByokBody({ model: 'm', metadata: { a: 1, force_model: 'velho' } }, 'm',
+    { modelInjection: { body: { 'metadata.force_model': '{model}' } } });
+  assertEq(ok.body.metadata, { a: 1, force_model: 'm' });
+  const hdr = { modelInjection: { headers: { 'X-M': '{model}' } } };
+  for (const model of ['   ', 42, { a: 1 }, '']) {
+    msg = '';
+    try { byokModelLib.prepareByokBody({ model }, model, hdr); } catch (e) { msg = e.message; }
+    assert(/não tem `model` de texto não vazio/.test(msg), `model=${JSON.stringify(model)}: "${msg}"`);
+  }
+  // Não-texto nunca vira texto para casar regra: ["x"] não é "x", 42 não é "42".
+  const mapped = { modelMap: { 'claude-opus-5-5': 'dest-a', '4*': 'dest-n' }, ...hdr };
+  for (const model of [['claude-opus-5-5'], 42]) {
+    assertEq(byokModelLib.resolveTargetModel(model, mapped.modelMap).matched, false, JSON.stringify(model));
+    msg = '';
+    try { byokModelLib.prepareByokBody({ model }, model, mapped); } catch (e) { msg = e.message; }
+    assert(/não tem `model` de texto não vazio/.test(msg), `mapeado model=${JSON.stringify(model)}: "${msg}"`);
+  }
+  // Sem injeção, o não-texto segue intocado (o endpoint recusa; nada é trocado).
+  const raw = byokModelLib.prepareByokBody({ model: 42 }, 42, { modelMap: mapped.modelMap });
+  assertEq(raw.body.model, 42);
+  assertEq(raw.resolution.matched, false);
+});
+
+test('byok-model: variação de maiúsculas não contorna as restrições de caminho nem de campo de topo', () => {
+  const cases = [
+    [{ body: { Model: '{model}' } }, /"model"/],
+    [{ body: { System: '{model}' } }, /campo de protocolo "system"/],
+    [{ body: { 'Metadata.user_id': '{model}' } }, /escreva "metadata" em minúsculas/],
+    [{ body: { 'a.b': '{model}', 'A.b': '{model}' } }, /caminho "A\.b" duplicado/],
+    [{ body: { 'a.b': '{model}', 'A.b.c': '{model}' } }, /caminhos conflitantes/],
+  ];
+  for (const [input, re] of cases) {
+    let msg = '';
+    try { byokModelLib.normalizeInjection(input); } catch (e) { msg = e.message; }
+    assert(re.test(msg), `esperava ${re} para ${JSON.stringify(input)}, veio "${msg}"`);
+  }
+  let msg = '';
+  try { byokModelLib.normalizeInjection({ body: { metadata: '{model}' } }); } catch (e) { msg = e.message; }
+  assert(/trocaria o objeto "metadata"/.test(msg), msg);
+  // Campo de topo existente em outra caixa: folha (`Foo`) e raiz de caminho (`Extra.x`).
+  for (const [path, body] of [['Foo', { model: 'm', foo: 1 }], ['Extra.x', { model: 'm', extra: { y: 1 } }]]) {
+    msg = '';
+    try { byokModelLib.prepareByokBody(body, 'm', { modelInjection: { body: { [path]: '{model}' } } }); } catch (e) { msg = e.message; }
+    assert(/já traz o campo/.test(msg), `${path}: "${msg}"`);
+  }
+  // Mesma caixa sob objeto existente continua valendo.
+  const ok = byokModelLib.prepareByokBody({ model: 'm', extra: { y: 1 } }, 'm', { modelInjection: { body: { 'extra.x': '{model}' } } });
+  assertEq(ok.body.extra, { y: 1, x: 'm' });
+});
+
+test('byok-model: nomes de header de credencial em outras grafias são recusados', () => {
+  for (const h of ['X-Api_Key', 'api.key', 'X-Access-Key', 'Private-Key', 'X-Key', 'X-Bearer', 'Key']) {
+    let msg = '';
+    try { byokModelLib.normalizeInjection({ headers: { [h]: '{model}' } }); } catch (e) { msg = e.message; }
+    assert(/reservado/.test(msg), `${h}: "${msg}"`);
+  }
+  // Nomes de roteamento com "key" no meio (não credencial) seguem aceitos.
+  assert(byokModelLib.normalizeInjection({ headers: { 'X-Keyword-Model': '{model}', 'X-Monkey-Model': '{model}' } }));
+});
+
+test('byok-model.modelForLog: não-texto vira <tipo>, texto longo é truncado com contagem', () => {
+  assertEq(byokModelLib.modelForLog('claude-opus-5-5'), 'claude-opus-5-5');
+  assertEq(byokModelLib.modelForLog(42), '<number>');
+  assertEq(byokModelLib.modelForLog(undefined), '<undefined>');
+  const long = byokModelLib.modelForLog('x'.repeat(300));
+  assert(long.startsWith('x'.repeat(256)) && long.includes('(+44 caracteres)') && long.length < 300, long);
+});
+
+test('dashboard (UI real em vm): collectByokInjection e trava do save com config que não carregou', () => {
+  const vm = require('vm');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'index.html'), 'utf8');
+  const slice = (from, to) => {
+    const a = html.indexOf(from); const b = html.indexOf(to, a);
+    assert(a > 0 && b > a, `trecho não encontrado: ${from}`);
+    return html.slice(a, b);
+  };
+  const els = {};
+  const ctx = { document: { getElementById: (id) => els[id] || null }, t: (k) => k };
+  vm.createContext(ctx);
+  vm.runInContext(`let _routerConfigLoadError = '';\n${slice('function updateRouterSaveState()', '// Espelha byok.parseHeaderLines')}\n${slice('function collectByokInjection()', 'async function loadByokModelIds()')}\nthis.setLoadError = (v) => { _routerConfigLoadError = v; };`, ctx);
+  const collect = (b, h) => {
+    els['router-byok-inject-body'] = { value: b };
+    els['router-byok-inject-headers'] = { value: h };
+    return ctx.collectByokInjection();
+  };
+  const ok = collect('metadata.force_model = p={model}:q\r\n', 'X-Force-Model: u:{model}');
+  assertEq(JSON.parse(JSON.stringify(ok.value)), { body: { 'metadata.force_model': 'p={model}:q' }, headers: { 'X-Force-Model': 'u:{model}' } });
+  assert(byokModelLib.normalizeInjection(JSON.parse(JSON.stringify(ok.value))));
+  assertEq(collect('', '').value, null);
+  assert(/router.byokInjectionDuplicate/.test(collect('a.b = {model}\nA.b = {model}', '').error));
+  assert(/router.byokInjectionDuplicate/.test(collect('', 'X-A: {model}\nx-a: {model}').error));
+  assert(/router.byokInjectionInvalid/.test(collect('a.b {model}', '').error));
+  // `__proto__` chega ao servidor como chave comum e é recusado com mensagem.
+  const proto = collect('__proto__ = {model}', '');
+  let msg = '';
+  try { byokModelLib.normalizeInjection(JSON.parse(JSON.stringify(proto.value))); } catch (e) { msg = e.message; }
+  assert(msg.length > 0, 'servidor devia recusar __proto__');
+  // Trava do save: com erro de carga o botão fica desabilitado mesmo tudo desligado.
+  for (const id of ['router-enable', 'router-sticky-enable', 'router-fallback-enable', 'router-accept', 'router-byok-enable', 'router-upstream-enable']) els[id] = { checked: false };
+  els['router-save-btn'] = { disabled: false, title: '' };
+  ctx.updateRouterSaveState();
+  assertEq(els['router-save-btn'].disabled, false);
+  ctx.setLoadError('byok.modelMap inválido');
+  ctx.updateRouterSaveState();
+  assertEq(els['router-save-btn'].disabled, true);
+  assert(/Config não carregou: byok.modelMap inválido/.test(els['router-save-btn'].title));
+});
+
+test('dashboard (UI real em vm): selects de openaiCompat carregam o salvo/padrão e o save manda as 3 chaves', () => {
+  const vm = require('vm');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'index.html'), 'utf8');
+  const slice = (from, to) => {
+    const a = html.indexOf(from); const b = html.indexOf(to, a);
+    assert(a > 0 && b > a, `trecho não encontrado: ${from}`);
+    return html.slice(a, b);
+  };
+  const els = {};
+  for (const id of ['router-byok-compat-empty', 'router-byok-compat-system', 'router-byok-compat-toolref']) els[id] = { value: '' };
+  els['router-byok-compat-state'] = { textContent: '' };
+  const ctx = { document: { getElementById: (id) => els[id] || null } };
+  vm.createContext(ctx);
+  // Trechos literais do load (loadRouterConfig), do catch dele e do save (saveRouterConfig).
+  const loadFailSnippet = slice("if (mapState) mapState.textContent = 'Erro: ' + e.message;", 'updateRouterSaveState();');
+  assert(loadFailSnippet.includes('router-byok-compat-state'), 'catch do load não mostra o erro em "Avançado"');
+  vm.runInContext(`${slice('const BYOK_COMPAT_FIELDS', 'function collectByokInjection()')}
+this.load = (by) => { ${slice("const compatState = document.getElementById('router-byok-compat-state');", 'updateRouterSaveState();')} };
+this.loadFail = (e) => { const mapState = null; ${loadFailSnippet} };
+this.save = () => { const byok = {}; ${slice('byok.openaiCompat = {};', 'body.byok = byok;')} return byok; };`, ctx);
+  // Erro de carregamento aparece dentro de "Avançado"; o load seguinte limpa.
+  ctx.loadFail(new Error('byok.openaiCompat.toolReference: valor inválido'));
+  assertEq(els['router-byok-compat-state'].textContent, 'Erro: byok.openaiCompat.toolReference: valor inválido');
+  ctx.load({ openaiCompat: { toolReference: 'reject' } });
+  assertEq(els['router-byok-compat-state'].textContent, '', 'load com sucesso limpa o erro');
+  assertEq(els['router-byok-compat-empty'].value, 'null');
+  assertEq(els['router-byok-compat-system'].value, 'keep');
+  assertEq(els['router-byok-compat-toolref'].value, 'reject');
+  assertEq(JSON.parse(JSON.stringify(ctx.save().openaiCompat)), { assistantEmptyContent: 'null', systemInMessages: 'keep', toolReference: 'reject' });
+  // Sem openaiCompat no GET → padrões (os mesmos COMPAT_DEFAULTS do tradutor).
+  const openaiChat = require('../servers/model-router/protocols/openai-chat.js');
+  ctx.load({});
+  assertEq(JSON.parse(JSON.stringify(ctx.save().openaiCompat)), { ...openaiChat.COMPAT_DEFAULTS });
+  // O HTML oferece exatamente os valores aceitos pelo tradutor.
+  for (const [id, allowed] of [['router-byok-compat-empty', ['null', 'empty']], ['router-byok-compat-system', ['keep', 'reject']], ['router-byok-compat-toolref', ['text', 'reject']]]) {
+    const sel = slice(`<select id="${id}"`, '</select>');
+    assertEq([...sel.matchAll(/<option value="([^"]+)"/g)].map((m) => m[1]), allowed, id);
+  }
+});
+
+test('BYOK: regra inválida no count_tokens → 502 sem chamar o endpoint; no classify → null sem chamar', async () => {
+  const fake = _byokFake((hit, res) => _openaiOk(res, 'não devia'));
+  const port = await _listen0(fake.server);
+  try {
+    const cfg = {
+      byok: {
+        enabled: true, mode: 'always', classifyRemote: true, wireProtocol: 'openai', baseUrl: `http://127.0.0.1:${port}`,
+        endpoints: {
+          generate: `http://127.0.0.1:${port}/chat`, classify: `http://127.0.0.1:${port}/classify`,
+          countTokens: `http://127.0.0.1:${port}/v1/messages/count_tokens`,
+        },
+        headers: {}, modelMap: { 'com espaço': 'x' },
+      },
+      routing: { haikuTier: { model: 'gpt-mini' } },
+    };
+    const sink = _byokSink();
+    router.passthroughGeneric('POST', JSON.stringify({ model: 'claude-opus-5-5', messages: [] }), {}, sink, '/v1/messages/count_tokens', cfg);
+    await sink.ended;
+    assertEq(sink.status, 502);
+    assertEq(JSON.parse(sink.text).error.type, 'proxy_error');
+    assert(/espaços/.test(JSON.parse(sink.text).error.message), sink.text);
+    assertEq(await router.classifyByok('pergunta', cfg), null);
+    assertEq(fake.hits.length, 0);
+  } finally {
+    await new Promise(resolve => fake.server.close(resolve));
+  }
+});
+
+test('BYOK fallback: erro do endpoint sem regra aplicável informa "(sem regra de mapeamento)"', async () => {
+  const fake = _byokFake((hit, res) => {
+    res.writeHead(500, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: { message: 'upstream down' } }));
+  });
+  const port = await _listen0(fake.server);
+  try {
+    const cfg = {
+      byok: {
+        enabled: true, mode: 'on-limit', wireProtocol: 'openai',
+        endpoints: { generate: `http://127.0.0.1:${port}/chat` }, headers: {}, modelMap: BYOK_MAP,
+      },
+      fallback: { triggerStatuses: [429], cooldown: { enabled: false } },
+    };
+    const sink = _byokSink();
+    router.handleLimitExceeded({ model: 'outro-modelo', max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'oi' }] }, cfg, sink, '');
+    await sink.ended;
+    assert(fake.hits.length >= 1 && fake.hits.every(h => h.body.model === 'outro-modelo'), 'sem regra: verbatim');
+    assert(sink.text.includes('outro-modelo') && sink.text.includes('sem regra de mapeamento'), sink.text);
+  } finally {
+    await new Promise(resolve => fake.server.close(resolve));
+  }
+});
+
+test('byok-model r6: caixa em nível aninhado, erro de header curto, trim, logModel e corte de surrogate', () => {
+  const inj = (body) => ({ modelInjection: body });
+  let e = null;
+  try { byokModelLib.prepareByokBody({ model: 'm', metadata: { user_id: 'u' } }, 'm', inj({ body: { 'metadata.User_Id': '{model}' } })); } catch (err) { e = err; }
+  assert(e && e.code === 'BYOK_REQUEST' && /outra caixa/.test(e.message), String(e && e.message));
+  e = null;
+  try { byokModelLib.prepareByokBody({ model: 'm', extra: { cfg: {} } }, 'm', inj({ body: { 'extra.CFG.k': '{model}' } })); } catch (err) { e = err; }
+  assert(e && e.code === 'BYOK_REQUEST' && /outra caixa/.test(e.message), String(e && e.message));
+  const okNested = byokModelLib.prepareByokBody({ model: 'm', extra: { cfg: { a: 1 } } }, 'm', inj({ body: { 'extra.cfg.k': '{model}' } }));
+  assertEq(okNested.body.extra.cfg.k, 'm');
+  assertEq(okNested.body.extra.cfg.a, 1);
+  const huge = 'é'.repeat(100000);
+  e = null;
+  try { byokModelLib.prepareByokBody({ model: huge }, huge, inj({ headers: { 'X-Target-Model': '{model}' } })); } catch (err) { e = err; }
+  assert(e && e.code === 'BYOK_REQUEST' && e.message.length < 400, String(e && e.message.length));
+  e = null;
+  try { byokModelLib.prepareByokBody({ model: ' m ' }, ' m ', inj({ headers: { 'X-Target-Model': '{model}' } })); } catch (err) { e = err; }
+  assert(e && e.code === 'BYOK_REQUEST', 'espaço nas pontas do valor do header é recusado');
+  e = null;
+  try { byokModelLib.prepareByokBody({ messages: [] }, undefined, inj({ headers: { 'X-Target-Model': '{model}' } })); } catch (err) { e = err; }
+  assert(e && e.code === 'BYOK_REQUEST', 'request sem model é erro da request');
+  const n = byokModelLib.prepareByokBody({ model: 42 }, 42, {});
+  assertEq(n.logModel, '<number>');
+  const cut = byokModelLib.modelForLog('a'.repeat(255) + '😀' + 'b');
+  assert(!/[\uD800-\uDBFF]$/.test(cut.replace(/…$/, '')), 'não termina em high surrogate');
+});
+
+test('byok-model r6: headers de credencial/roteamento novos e campos de protocolo recusados', () => {
+  for (const h of ['X-Jwt', 'X-Hmac', 'X-Pwd', 'X-Pass', 'X-Otp', 'X-Csrf', 'X-Xsrf-Token', 'X-Client-Cert', 'X-Ms-Client-Principal',
+    'X-Original-Url', 'X-Rewrite-Url', 'X-Original-Host', 'X-Host', 'Max-Forwards', 'Digest', 'Content-Md5']) {
+    let e = null;
+    try { byokModelLib.normalizeInjection({ headers: { [h]: '{model}' } }); } catch (err) { e = err; }
+    assert(e, `${h} deveria ser recusado`);
+  }
+  for (const f of ['output_format', 'prompt_cache_retention']) {
+    let e = null;
+    try { byokModelLib.normalizeInjection({ body: { [f]: '{model}' } }); } catch (err) { e = err; }
+    assert(e, `${f} deveria ser recusado`);
+  }
+});
+
+test('byok-model r7: corpo não-objeto, teto do header renderizado, headers de IP/roteamento e critério de curinga', () => {
+  // Corpo JSON que não é objeto: verbatim sem regra/injeção; senão, erro da request.
+  for (const body of [[], 'texto', null]) {
+    const v = byokModelLib.prepareByokBody(body, undefined, { modelMap: { 'claude-opus-5-5': 'x' } });
+    assertEq(v.body, body, 'sem regra que case: segue como veio');
+    let e = null;
+    try { byokModelLib.prepareByokBody(body, undefined, { modelInjection: { body: { 'extra.m': '{model}' } } }); } catch (err) { e = err; }
+    assert(e && e.code === 'BYOK_REQUEST', `injeção com corpo ${JSON.stringify(body)}`);
+  }
+  let e = null;
+  try { byokModelLib.prepareByokBody([], 'claude-opus-5-5', { modelMap: { 'claude-opus-5-5': 'x' } }); } catch (err) { e = err; }
+  assert(e && e.code === 'BYOK_REQUEST' && /não é um objeto JSON/.test(e.message), String(e && e.message));
+  // Teto de 1024 no valor renderizado do header; no corpo não há teto.
+  const big = 'm'.repeat(1100);
+  e = null;
+  try { byokModelLib.prepareByokBody({ model: big }, big, { modelInjection: { headers: { 'X-Target-Model': '{model}' } } }); } catch (err) { e = err; }
+  assert(e && e.code === 'BYOK_REQUEST' && /teto de 1024/.test(e.message) && e.message.length < 400, String(e && e.message));
+  const okLen = 'm'.repeat(1024);
+  assertEq(byokModelLib.injectHeaders({}, byokModelLib.normalizeInjection({ headers: { 'X-Target-Model': '{model}' } }), okLen)['X-Target-Model'], okLen);
+  assertEq(byokModelLib.prepareByokBody({ model: big }, big, { modelInjection: { body: { 'extra.m': '{model}' } } }).body.extra.m, big);
+  for (const h of ['X-Original-Uri', 'X-Envoy-Original-Path', 'X-Client-IP', 'True-Client-IP', 'CF-Connecting-IP', 'X-Cluster-Client-Ip']) {
+    e = null;
+    try { byokModelLib.normalizeInjection({ headers: { [h]: '{model}' } }); } catch (err) { e = err; }
+    assert(e, `${h} deveria ser recusado`);
+  }
+  for (const h of ['X-Target-Model', 'X-Route-Model', 'X-Monkey-Model']) byokModelLib.normalizeInjection({ headers: { [h]: '{model}' } });
+  // Curinga: vence o que tem mais caracteres literais (documentado).
+  const map = byokModelLib.normalizeModelMap({ 'claude-*-4-5': 'A', 'claude-opus-*': 'B' });
+  assertEq(byokModelLib.resolveTargetModel('claude-opus-4-5', map).model, 'B');
+});
+
+test('BYOK: count_tokens com corpo null → 400 com injeção; sem regra nem injeção segue verbatim', async () => {
+  const fake = _byokFake((hit, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"input_tokens":1}'); });
+  const port = await _listen0(fake.server);
+  try {
+    const byok = {
+      enabled: true, mode: 'always', wireProtocol: 'anthropic', baseUrl: `http://127.0.0.1:${port}`,
+      endpoints: { generate: `http://127.0.0.1:${port}/v1/messages`, countTokens: `http://127.0.0.1:${port}/v1/messages/count_tokens` },
+      headers: {}, modelInjection: { headers: { 'X-Target-Model': '{model}' } },
+    };
+    let sink = _byokSink();
+    router.passthroughGeneric('POST', 'null', {}, sink, '/v1/messages/count_tokens', { byok });
+    await sink.ended;
+    assertEq(sink.status, 400, sink.text);
+    assertEq(JSON.parse(sink.text).error.type, 'invalid_request_error');
+    assertEq(fake.hits.length, 0);
+    const plain = { ...byok };
+    delete plain.modelInjection;
+    sink = _byokSink();
+    router.passthroughGeneric('POST', 'null', {}, sink, '/v1/messages/count_tokens', { byok: plain });
+    await sink.ended;
+    assertEq(sink.status, 200, sink.text);
+    assertEq(fake.hits.length, 1, 'sem mapa nem injeção: chega ao endpoint como antes');
+    // JSON inválido é erro da request (400), não de configuração (502).
+    sink = _byokSink();
+    router.passthroughGeneric('POST', '{nope', {}, sink, '/v1/messages/count_tokens', { byok: plain });
+    await sink.ended;
+    assertEq(sink.status, 400, sink.text);
+    assertEq(JSON.parse(sink.text).error.type, 'invalid_request_error');
+    assertEq(fake.hits.length, 1, 'JSON inválido não sai na rede');
+  } finally {
+    await new Promise(resolve => fake.server.close(resolve));
+  }
+});
+
+test('BYOK_REQUEST: always e count_tokens → 400 invalid_request_error; fallback → texto sem culpar regras', async () => {
+  const fake = _byokFake((hit, res) => _openaiOk(res, 'não devia'));
+  const port = await _listen0(fake.server);
+  try {
+    const byok = {
+      enabled: true, mode: 'always', wireProtocol: 'openai', baseUrl: `http://127.0.0.1:${port}`,
+      endpoints: { generate: `http://127.0.0.1:${port}/chat`, countTokens: `http://127.0.0.1:${port}/v1/messages/count_tokens` },
+      headers: {}, modelInjection: { headers: { 'X-Target-Model': '{model}' } },
+    };
+    const cfg = { byok, fallback: { triggerStatuses: [429], cooldown: { enabled: false } } };
+    let sink = _byokSink();
+    router.forwardRequest({ max_tokens: 8, messages: [{ role: 'user', content: 'oi' }] }, {}, sink, cfg, { path: '/v1/messages' });
+    await sink.ended;
+    assertEq(sink.status, 400);
+    assertEq(JSON.parse(sink.text).error.type, 'invalid_request_error');
+    sink = _byokSink();
+    router.passthroughGeneric('POST', JSON.stringify({ messages: [] }), {}, sink, '/v1/messages/count_tokens', cfg);
+    await sink.ended;
+    assertEq(sink.status, 400);
+    assertEq(JSON.parse(sink.text).error.type, 'invalid_request_error');
+    sink = _byokSink();
+    router.handleLimitExceeded({ max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'oi' }] },
+      { byok: { ...byok, mode: 'on-limit' }, fallback: cfg.fallback }, sink, '');
+    await sink.ended;
+    assert(sink.text.includes('Esta request não pôde ir ao BYOK') && !sink.text.includes('Configuração BYOK inválida'), sink.text);
+    assertEq(fake.hits.length, 0);
+  } finally {
+    await new Promise(resolve => fake.server.close(resolve));
+  }
+});
+test('dashboard.fetchByokModelIds: só headers do BYOK; has_more → truncated; não-2xx e timeout → {ok:false}', async () => {
+  const hits = [];
+  let mode = 'ok';
+  const server = http.createServer((req, res) => {
+    hits.push({ url: req.url, headers: req.headers });
+    if (mode === 'hang') return; // nunca responde → timeout
+    if (mode === '500') { res.writeHead(500); res.end('x'); return; }
+    if (mode === 'endless') { // manda dados sem parar; o dashboard tem de cortar no teto
+      res.writeHead(200, { 'content-type': 'application/json' });
+      const chunk = 'x'.repeat(64 * 1024);
+      const pump = () => { while (res.write(chunk)) { /* enche o buffer */ } };
+      res.on('drain', pump);
+      res.on('close', () => res.removeListener('drain', pump));
+      pump();
+      return;
+    }
+    if (mode === 'drip') { // 1 byte a cada 50ms: nunca fica inativo, nunca termina
+      res.writeHead(200, { 'content-type': 'application/json' });
+      const iv = setInterval(() => res.write(' '), 50);
+      res.on('close', () => clearInterval(iv));
+      return;
+    }
+    if (mode === 'utf8') { // ~2,1M caracteres de 2 bytes (~4,2 MB): passa em chars, estoura em bytes
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'x', description: 'é'.repeat(2.1 * 1024 * 1024) }] }));
+      return;
+    }
+    if (mode === 'huge') { // JSON válido acima do teto de 4 MB do dashboard
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ data: [{ id: 'x', description: 'd'.repeat(5 * 1024 * 1024) }] }));
+      return;
+    }
+    if (mode === 'cut') { // corpo prometido maior que o enviado; conexão fecha no meio
+      res.writeHead(200, { 'content-type': 'application/json', 'content-length': 1000 });
+      res.write('{"data":[');
+      setTimeout(() => res.socket.destroy(), 20);
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ data: [{ id: 'b' }, { id: 'a' }, { id: 'a' }], has_more: true }));
+  });
+  const port = await _listen0(server);
+  const savedHome = process.env.HOME;
+  const savedProfile = process.env.USERPROFILE;
+  const savedData = process.env.CLAUDE_PLUGIN_DATA;
+  const savedKey = process.env.ANTHROPIC_API_KEY;
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-home-'));
+  try {
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-models-'));
+    process.env.ANTHROPIC_API_KEY = 'sk-subscription-fixture';
+    delete require.cache[require.resolve('./dashboard.js')];
+    const dash = require('./dashboard.js');
+    dash.writeRouterOverride({ byok: { enabled: true, mode: 'on-limit', baseUrl: `http://127.0.0.1:${port}`, headers: { 'X-Byok-Key': 'fixture-byok' } } });
+
+    const ok = await dash.fetchByokModelIds(2000);
+    assertEq(ok, { ok: true, models: ['a', 'b'], truncated: true });
+    assertEq(hits[0].url, '/v1/models');
+    assertEq(hits[0].headers['x-byok-key'], 'fixture-byok');
+    assertEq(hits[0].headers.authorization, undefined, 'credencial da assinatura nunca vai ao BYOK');
+    assertEq(hits[0].headers['x-api-key'], undefined);
+
+    mode = '500';
+    const fail = await dash.fetchByokModelIds(2000);
+    assertEq(fail.ok, false);
+    assert(/HTTP 500/.test(fail.error), fail.error);
+
+    mode = 'hang';
+    const slow = await dash.fetchByokModelIds(150);
+    assertEq(slow.ok, false);
+    assert(/timeout/.test(slow.error), slow.error);
+
+    mode = 'endless';
+    const endless = await Promise.race([dash.fetchByokModelIds(5000), new Promise(r => setTimeout(() => r('pendurou'), 3000))]);
+    assert(endless !== 'pendurou', 'catálogo sem fim não pode prender a busca');
+    assert(/passa do teto de 4 MB/.test(endless.error), endless.error);
+
+    mode = 'drip';
+    const drip = await Promise.race([dash.fetchByokModelIds(300), new Promise(r => setTimeout(() => r('pendurou'), 3000))]);
+    assert(drip !== 'pendurou', 'catálogo que pinga bytes não pode prender a busca');
+    assert(/não terminou em 600ms/.test(drip.error), drip.error);
+
+    mode = 'utf8';
+    const u8 = await dash.fetchByokModelIds(5000);
+    assertEq(u8.ok, false, 'o teto mede bytes, não caracteres');
+    assert(/passa do teto de 4 MB/.test(u8.error), u8.error);
+
+    mode = 'huge';
+    const huge = await dash.fetchByokModelIds(5000);
+    assertEq(huge.ok, false);
+    assert(/passa do teto de 4 MB do dashboard/.test(huge.error) && !/JSON inválido/.test(huge.error), huge.error);
+
+    mode = 'cut';
+    const cut = await Promise.race([dash.fetchByokModelIds(5000), new Promise(r => setTimeout(() => r('pendurou'), 3000))]);
+    assert(cut !== 'pendurou', 'corpo cortado não pode deixar a Promise pendurada');
+    assertEq(cut.ok, false);
+    assert(/resposta incompleta/.test(cut.error), cut.error);
+    assertEq(cut.status, undefined, 'falha do endpoint fica sem status local (502 no handler)');
+
+    // Erro LOCAL (BYOK sem Base URL): 409, não 502 — não é o endpoint que falhou.
+    dash.writeRouterOverride({ byok: { enabled: true, mode: 'on-limit', baseUrl: '' } });
+    const hitsBefore = hits.length;
+    let status = null;
+    let body = null;
+    await dash.getByokModels({}, { writeHead: (c) => { status = c; }, end: (t) => { body = JSON.parse(t); } });
+    assertEq(status, 409, JSON.stringify(body));
+    assertEq(body.ok, false);
+    assertEq(hits.length, hitsBefore, 'sem Base URL não sai na rede');
+  } finally {
+    for (const [k, v] of [['HOME', savedHome], ['USERPROFILE', savedProfile], ['CLAUDE_PLUGIN_DATA', savedData], ['ANTHROPIC_API_KEY', savedKey]]) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+    delete require.cache[require.resolve('./dashboard.js')];
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+    fs.rmSync(home, { recursive: true, force: true });
   }
 });
 
@@ -9464,10 +12004,11 @@ test('byok.classifyResponse: corpo com "model is not supported" → fail loud me
   assertEq(r.failLoud, true);
 });
 
-test('byok: o modelo e repassado VERBATIM (o endpoint normaliza; mapear seria errar)', () => {
+test('byok.js: sem mapeamento implicito de nome (so o byok.modelMap explicito, em byok-model.js)', () => {
   // Contrato verificado: claude-haiku-4-5 → servido como claude-haiku-4.5;
-  // inexistente → erro explicito. Normalizar aqui so criaria divergencia.
-  assertEq(typeof byok.mapModel, 'undefined', 'nao pode existir mapeamento de nome');
+  // inexistente → erro explicito. Um mapeamento embutido aqui renomearia sem
+  // o usuario pedir; o unico mapeamento e a regra configurada em byok.modelMap.
+  assertEq(typeof byok.mapModel, 'undefined', 'byok.js nao pode ter mapeamento implicito de nome');
 });
 
 test('resolveMode: byok always liga o proxy quando nada mais esta ligado', () => {
@@ -10764,15 +13305,17 @@ test('stop-dispatcher.mergeBlocks: stable within same rank (exec order kept)', (
 });
 
 test('stop-dispatcher.rank: known priorities + default', () => {
+  assertEq(dispatcher.rank('project-id-stop'), -1);
   assertEq(dispatcher.rank('curation-stop'), 0);
   assertEq(dispatcher.rank('failure-retro'), 1);
   assertEq(dispatcher.rank('pattern-detect'), 2);
   assertEq(dispatcher.rank('anything'), 2);
 });
 
-test('stop-dispatcher.DETECTORS: 16 detectors, ordering invariants hold', () => {
+test('stop-dispatcher.DETECTORS: 17 detectors, ordering invariants hold', () => {
   const names = dispatcher.DETECTORS.map(d => d.name);
-  assertEq(names.length, 16);
+  assertEq(names.length, 17);
+  assertEq(names[0], 'project-id-stop', 'project-id-stop (2.29.1 strict gate) runs first');
   assert(names.includes('verify-nudge'), 'verify-nudge (D2) registered');
   assert(names.includes('self-review'), 'self-review (D1) registered');
   assert(names.includes('session-summary'), 'session-summary (U2) registered');
@@ -10786,6 +13329,40 @@ test('stop-dispatcher.DETECTORS: 16 detectors, ordering invariants hold', () => 
     'decision-scan-response must stage before decision-promote reads');
   assert(dispatcher.DETECTORS.every(d => typeof d.mod.run === 'function'),
     'every detector exposes run()');
+});
+
+test('stop-dispatcher: no project id for event.cwd → NO_ID_SKIP detectors gated (no_project_id); others still run', async () => {
+  // Unflagged names (no PROFILE_GATE entry) so the real hooks config can't gate them.
+  const ran = [];
+  const mk = (name) => ({ name, mod: { run: () => { ran.push(name); return null; } } });
+  const detectors = [mk('decision-promote'), mk('skill-success-detect')];
+  assert(dispatcher.NO_ID_SKIP.has('decision-promote') && !dispatcher.NO_ID_SKIP.has('skill-success-detect'));
+  const out = await dispatcher.dispatch({ cwd: 'C:\\explore' }, { profile: 'dev', detectors, shadowRate: 0, resolveProjectId: () => null });
+  assertEq(ran, ['skill-success-detect'], 'only non-NO_ID_SKIP detectors ran');
+  const skipped = out.detectors.find(d => d.name === 'decision-promote');
+  assertEq(skipped.reason, 'no_project_id');
+  assert(skipped.gated === true && skipped.blocked === false);
+  ran.length = 0;
+  await dispatcher.dispatch({ cwd: 'C:\\repo' }, { profile: 'dev', detectors, shadowRate: 0, resolveProjectId: () => 'owner/repo' });
+  assertEq(ran, ['decision-promote', 'skill-success-detect'], 'id present → all run');
+  ran.length = 0;
+  await dispatcher.dispatch({}, { profile: 'dev', detectors, shadowRate: 0, resolveProjectId: () => null });
+  assertEq(ran, ['decision-promote', 'skill-success-detect'], 'no cwd → no gate (cannot judge)');
+  assertEq([...dispatcher.NO_ID_SKIP].sort(), ['decision-promote', 'decision-scan-response', 'failure-retro', 'pattern-detect', 'research-followup-detect', 'self-review']);
+});
+
+test('stop-telemetry.summarize: a no_project_id skip is state no_id, NOT counted as a profile gate', () => {
+  const s = telem.summarize('dev', 'r', [
+    { name: 'self-review', gated: true, blocked: false, would_block: null, chars: 0, ms: 0, reason: 'no_project_id' },
+    { name: 'c', gated: true, blocked: false, would_block: null, chars: 0, ms: 0, reason: 'profile_match' },
+  ]);
+  assertEq(s.gated, 1, 'only the profile gate counts');
+  assertEq(s.detectors.map((d) => d.s), ['no_id', 'gated']);
+});
+
+test('stop-dispatcher.mergeBlocks: project-id-stop reason leads curation-stop', () => {
+  const out = dispatcher.mergeBlocks([{ name: 'curation-stop', reason: 'C' }, { name: 'project-id-stop', reason: 'P' }]);
+  assertEq(out.reason, 'P' + dispatcher.SEP + 'C');
 });
 
 test('pretooluse-bash-dispatcher: exposes dispatch() and DEFAULT_ALLOW shape', () => {
@@ -11496,6 +14073,373 @@ test('dashboard.writeRouterOverride: BYOK persiste url/modo/headers e PRESERVA o
   });
 });
 
+test('dashboard.writeRouterOverride: BYOK modelMap/modelInjection persistem, preservam, limpam e validam', () => {
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-map-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      const gp = path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json');
+      delete require.cache[require.resolve('./dashboard.js')];
+      const dash = require('./dashboard.js');
+      const read = () => JSON.parse(fs.readFileSync(gp, 'utf-8'));
+
+      dash.writeRouterOverride({ byok: {
+        enabled: true, baseUrl: 'https://ex.ts.net', headers: { 'X-Team': 'acme' },
+        modelMap: [{ from: 'claude-opus-5-5', to: 'dest-a' }, { from: 'claude-sonnet-*', to: 'dest-b' }],
+        modelInjection: { body: { 'metadata.force_model': '{model}' } },
+      } });
+      let out = read();
+      assertEq(out.byok.modelMap, { 'claude-opus-5-5': 'dest-a', 'claude-sonnet-*': 'dest-b' });
+      assertEq(out.byok.modelInjection, { body: { 'metadata.force_model': '{model}' }, headers: {} });
+
+      // Editar outro campo sem reenviar regras → preservadas.
+      dash.writeRouterOverride({ byok: { mode: 'always' } });
+      out = read();
+      assertEq(out.byok.mode, 'always');
+      assertEq(Object.keys(out.byok.modelMap).length, 2);
+      assert(out.byok.modelInjection, 'injeção preservada');
+
+      // Regra inválida → erro 400, arquivo intacto.
+      let err = null;
+      try { dash.writeRouterOverride({ byok: { modelMap: [{ from: 'a b', to: 'x' }] } }); } catch (e) { err = e; }
+      assert(err && err.status === 400 && /^BYOK: /.test(err.message), `esperava 400: ${err && err.message}`);
+      assertEq(Object.keys(read().byok.modelMap).length, 2);
+
+      // Header de injeção colide com header configurado → 400.
+      err = null;
+      try { dash.writeRouterOverride({ byok: { modelInjection: { headers: { 'x-team': '{model}' } } } }); } catch (e) { err = e; }
+      assert(err && err.status === 400, 'colisão precisa ser 400');
+
+      // Injeção salva é revalidada quando os headers mudam.
+      dash.writeRouterOverride({ byok: { modelInjection: { headers: { 'X-Model': '{model}' } } } });
+      err = null;
+      try { dash.writeRouterOverride({ byok: { headers: { 'X-Model': 'fixo' } } }); } catch (e) { err = e; }
+      assert(err && err.status === 400 && /já está nos headers/.test(err.message), `revalidação: ${err && err.message}`);
+      assert(/os headers enviados colidem com a injeção de modelo salva/.test(err.message),
+        `a mensagem culpa os headers ENVIADOS, não o arquivo: ${err.message}`);
+      assert(!/gravado no arquivo/.test(err.message), err.message);
+
+      // getRouterConfig devolve regras como lista e a injeção; header continua mascarado.
+      let body = null;
+      let status = null;
+      dash.getRouterConfig({}, { writeHead: (c) => { status = c; }, end: (t) => { body = JSON.parse(t); } });
+      assertEq(status, 200);
+      const by = body.byok || (body.config && body.config.byok);
+      assert(by, `byok ausente em ${JSON.stringify(body).slice(0, 200)}`);
+      assertEq(by.modelMap, [{ from: 'claude-opus-5-5', to: 'dest-a' }, { from: 'claude-sonnet-*', to: 'dest-b' }]);
+      assertEq(by.modelInjection, { body: {}, headers: { 'X-Model': '{model}' } });
+      assertEq(by.headers['X-Team'], '••••');
+
+      // Limpeza explícita: lista vazia e null.
+      dash.writeRouterOverride({ byok: { modelMap: [], modelInjection: null } });
+      out = read();
+      assertEq(out.byok.modelMap, undefined);
+      assertEq(out.byok.modelInjection, undefined);
+      assertEq(out.byok.baseUrl, 'https://ex.ts.net', 'demais campos intactos');
+      assertEq(dash.resolveRouterFlags().byok.modelMap, {});
+      assertEq(dash.resolveRouterFlags().byok.modelInjection, null);
+
+      // Limpeza pelas outras formas vazias: objeto vazio e { body:{}, headers:{} }.
+      for (const [map, inj] of [[{}, {}], [{}, { body: {}, headers: {} }]]) {
+        dash.writeRouterOverride({ byok: { modelMap: [{ from: 'a', to: 'b' }], modelInjection: { body: { 'x.m': '{model}' } } } });
+        assert(read().byok.modelMap && read().byok.modelInjection, 'pré-condição: regras gravadas');
+        dash.writeRouterOverride({ byok: { modelMap: map, modelInjection: inj } });
+        assertEq(read().byok.modelMap, undefined, `modelMap=${JSON.stringify(map)} limpa`);
+        assertEq(read().byok.modelInjection, undefined, `modelInjection=${JSON.stringify(inj)} limpa`);
+      }
+    } finally {
+      process.env.CLAUDE_PLUGIN_DATA = saved;
+      delete require.cache[require.resolve('./dashboard.js')];
+    }
+  });
+});
+
+test('dashboard: byok.openaiCompat grava só o que difere do default, preserva, limpa e valida', () => {
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-compat-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      const gp = path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json');
+      delete require.cache[require.resolve('./dashboard.js')];
+      const dash = require('./dashboard.js');
+      const read = () => JSON.parse(fs.readFileSync(gp, 'utf-8'));
+      let body = null;
+      let status = null;
+      const res = { writeHead: (c) => { status = c; }, end: (t) => { body = JSON.parse(t); } };
+      const DEFAULTS = { assistantEmptyContent: 'null', systemInMessages: 'keep', toolReference: 'text' };
+
+      // Sem nada gravado: GET mostra os defaults.
+      dash.writeRouterOverride({ byok: { enabled: true, baseUrl: 'https://ex.ts.net', wireProtocol: 'openai' } });
+      assertEq(read().byok.openaiCompat, undefined);
+      dash.getRouterConfig({}, res);
+      assertEq(status, 200);
+      assertEq(body.byok.openaiCompat, DEFAULTS);
+
+      // UI manda o estado completo; só o que difere do default vai ao disco.
+      dash.writeRouterOverride({ byok: { openaiCompat: { ...DEFAULTS, assistantEmptyContent: 'empty' } } });
+      assertEq(read().byok.openaiCompat, { assistantEmptyContent: 'empty' });
+      dash.getRouterConfig({}, res);
+      assertEq(body.byok.openaiCompat, { ...DEFAULTS, assistantEmptyContent: 'empty' });
+
+      // Outro campo sem openaiCompat → preservado (com o BYOK LIGADO: é o
+      // caminho que revalida o valor salvo em vez de mantê-lo verbatim).
+      dash.writeRouterOverride({ byok: { enabled: true, mode: 'always' } });
+      assertEq(read().byok.enabled, true);
+      assertEq(read().byok.openaiCompat, { assistantEmptyContent: 'empty' });
+
+      // Inválido → 400, arquivo intacto — com o BYOK ligado e desligado, e no
+      // wire anthropic (o dashboard valida sempre).
+      for (const extra of [{ enabled: true }, { enabled: false }, { enabled: true, wireProtocol: 'anthropic' }]) {
+        for (const bad of [{ toolReference: 'x' }, { foo: 'keep' }, 'reject']) {
+          let err = null;
+          try { dash.writeRouterOverride({ byok: { ...extra, openaiCompat: bad } }); } catch (e) { err = e; }
+          const label = `${JSON.stringify(extra)} ${JSON.stringify(bad)}`;
+          assert(err && err.status === 400 && /^BYOK: openaiCompat/.test(err.message), `${label}: ${err && err.message}`);
+          assertEq(read().byok.openaiCompat, { assistantEmptyContent: 'empty' });
+          assertEq(read().byok.enabled, true, `${label}: save recusado não toca o arquivo`);
+        }
+      }
+
+      // Voltar tudo ao default, null ou {} limpam o campo (BYOK segue ligado).
+      for (const clear of [DEFAULTS, null, {}]) {
+        dash.writeRouterOverride({ byok: { enabled: true, openaiCompat: { systemInMessages: 'reject' } } });
+        assertEq(read().byok.openaiCompat, { systemInMessages: 'reject' });
+        dash.writeRouterOverride({ byok: { enabled: true, openaiCompat: clear } });
+        assertEq(read().byok.openaiCompat, undefined, `${JSON.stringify(clear)} limpa`);
+        assertEq(read().byok.enabled, true);
+      }
+
+      // Inválido gravado à mão: GET 500 citando o arquivo; save de outro campo
+      // com BYOK ligado recusa; "Desligar tudo" passa e mantém verbatim.
+      fs.writeFileSync(gp, JSON.stringify({ byok: { enabled: true, baseUrl: 'https://ex.ts.net', headers: {},
+        wireProtocol: 'openai', openaiCompat: { toolReference: 'x' } } }));
+      dash.getRouterConfig({}, res);
+      assertEq(status, 500);
+      assert(/openaiCompat\.toolReference.*user-config\.json/.test(JSON.stringify(body)), JSON.stringify(body));
+      assert(!/\) \(gravado/.test(JSON.stringify(body)), `parênteses duplos: ${JSON.stringify(body)}`);
+      let err = null;
+      try { dash.writeRouterOverride({ byok: { enabled: true, mode: 'on-limit' } }); } catch (e) { err = e; }
+      assert(err && err.status === 400
+        && /^BYOK: openaiCompat\.toolReference: valor inválido "x" .* — gravado em .*user-config\.json$/.test(err.message),
+        `save: ${err && err.message}`);
+      assertEq(err.message.split('openaiCompat').length - 1, 1, `chave repetida: ${err.message}`);
+      assertEq(read().byok.openaiCompat, { toolReference: 'x' }, 'save recusado não toca o arquivo');
+      const compatLogs = [];
+      const origCompatErr = console.error;
+      console.error = (...a) => compatLogs.push(a.join(' '));
+      try {
+        dash.writeRouterOverride({ enabled: false, stickyEnabled: false, fallbackEnabled: false, byokEnabled: false,
+          byokMode: 'on-limit', byokBaseUrl: '', byokHeaders: '', acceptedTerms: true, contextTuningEnabled: false });
+      } finally { console.error = origCompatErr; }
+      const compatLog = compatLogs.find(l => l.includes('BYOK desligado'));
+      assert(compatLog && compatLog.includes('mantido como está: openaiCompat.toolReference: valor inválido "x"'),
+        `log: ${compatLogs.join(' | ')}`);
+      assertEq(compatLog.split('openaiCompat').length - 1, 1, `chave repetida no log: ${compatLog}`);
+      assertEq(read().byok.enabled, false);
+      assertEq(read().byok.openaiCompat, { toolReference: 'x' }, 'verbatim com BYOK desligado');
+
+      // Contrato: o dashboard valida SEMPRE, mesmo no wire anthropic (em que o
+      // router ignora a opção) — senão o erro só apareceria ao trocar o protocolo.
+      fs.writeFileSync(gp, JSON.stringify({ byok: { enabled: true, baseUrl: 'https://ex.ts.net', headers: {},
+        wireProtocol: 'anthropic', openaiCompat: { toolReference: 'x' } } }));
+      dash.getRouterConfig({}, res);
+      assertEq(status, 500);
+      assert(/openaiCompat\.toolReference/.test(JSON.stringify(body)), JSON.stringify(body));
+      err = null;
+      try { dash.writeRouterOverride({ byok: { enabled: true, mode: 'on-limit' } }); } catch (e) { err = e; }
+      assert(err && err.status === 400 && /openaiCompat/.test(err.message), `anthropic save: ${err && err.message}`);
+    } finally {
+      process.env.CLAUDE_PLUGIN_DATA = saved;
+      delete require.cache[require.resolve('./dashboard.js')];
+    }
+  });
+});
+
+test('dashboard: modelMap gravado como LISTA aparece na UI; gravado inválido falha dizendo que veio do arquivo', () => {
+  withTempHome(() => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-maparr-'));
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = dir;
+      const gp = path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json');
+      fs.mkdirSync(path.dirname(gp), { recursive: true });
+      delete require.cache[require.resolve('./dashboard.js')];
+      const dash = require('./dashboard.js');
+      // Editado à mão no formato de lista — o router aceita, a UI precisa mostrar.
+      fs.writeFileSync(gp, JSON.stringify({ byok: { enabled: true, baseUrl: 'https://ex.ts.net', headers: {},
+        modelMap: [{ from: 'claude-opus-5-5', to: 'dest-a' }] } }));
+      let body = null;
+      let status = null;
+      const res = { writeHead: (c) => { status = c; }, end: (t) => { body = JSON.parse(t); } };
+      dash.getRouterConfig({}, res);
+      assertEq(status, 200);
+      assertEq((body.byok || body.config.byok).modelMap, [{ from: 'claude-opus-5-5', to: 'dest-a' }]);
+      // Salvar outro campo não apaga a regra gravada em lista.
+      dash.writeRouterOverride({ byok: { mode: 'always' } });
+      assertEq(JSON.parse(fs.readFileSync(gp, 'utf-8')).byok.modelMap, { 'claude-opus-5-5': 'dest-a' });
+
+      // Regra inválida gravada à mão: GET e save de OUTRO campo falham citando o arquivo.
+      fs.writeFileSync(gp, JSON.stringify({ byok: { enabled: true, baseUrl: 'https://ex.ts.net', headers: {},
+        modelMap: { 'a b': 'x' } } }));
+      dash.getRouterConfig({}, res);
+      assertEq(status, 500);
+      assert(/gravado em .*user-config\.json é inválido/.test(JSON.stringify(body)), JSON.stringify(body));
+      let err = null;
+      try { dash.writeRouterOverride({ byok: { enabled: true, mode: 'on-limit' } }); } catch (e) { err = e; }
+      assert(err && err.status === 400 && /modelMap gravado em .*user-config\.json é inválido/.test(err.message),
+        `save: ${err && err.message}`);
+      assertEq(JSON.parse(fs.readFileSync(gp, 'utf-8')).byok.modelMap, { 'a b': 'x' }, 'save recusado não toca o arquivo');
+
+      // "Desligar tudo" (corpo plano, sem `byok`) NÃO pode ficar refém da regra
+      // quebrada: desliga, e a regra fica verbatim — o GET continua acusando.
+      fs.writeFileSync(gp, JSON.stringify({ enabled: true, byok: { enabled: true, mode: 'always', baseUrl: 'https://ex.ts.net',
+        headers: { 'X-Model': 'fixo' }, modelMap: { 'a b': 'x' }, modelInjection: { headers: { 'X-Model': '{model}' } } } }));
+      const mapLogs = [];
+      const origMapErr = console.error;
+      console.error = (...a) => mapLogs.push(a.join(' '));
+      try {
+        dash.writeRouterOverride({ enabled: false, stickyEnabled: false, fallbackEnabled: false, byokEnabled: false,
+          byokMode: 'on-limit', byokBaseUrl: '', byokHeaders: '', acceptedTerms: true, contextTuningEnabled: false });
+      } finally { console.error = origMapErr; }
+      assert(mapLogs.some(l => l.includes('BYOK desligado: campo inválido no arquivo mantido como está: modelMap: ')),
+        `log: ${mapLogs.join(' | ')}`);
+      // A mensagem da injeção já abre com o nome do campo: o log não o repete.
+      assert(mapLogs.some(l => l.includes('mantido como está: modelInjection.headers: "X-Model"')),
+        `log injeção: ${mapLogs.join(' | ')}`);
+      for (const name of ['modelMap', 'modelInjection']) {
+        assert(!mapLogs.some(l => l.includes(`${name}: ${name}`)), `chave repetida no log: ${mapLogs.join(' | ')}`);
+      }
+      let out = JSON.parse(fs.readFileSync(gp, 'utf-8'));
+      assertEq(out.byok.enabled, false, 'desligar tudo desliga o BYOK');
+      assertEq(out.byok.modelMap, { 'a b': 'x' }, 'regra do arquivo preservada verbatim');
+      assertEq(out.byok.modelInjection, { headers: { 'X-Model': '{model}' } });
+      dash.getRouterConfig({}, res);
+      assertEq(status, 500, 'o erro continua visível');
+
+      // Mensagem de normalizeModelMap que já abre com o nome: sem repetição. Nome
+      // do campo só DENTRO do valor do usuário: o prefixo continua.
+      for (const [modelMap, want] of [
+        ['texto', 'mantido como está: modelMap precisa ser uma lista'],
+        [{ 'modelMap x': 'y' }, 'mantido como está: modelMap: regra 1: '],
+      ]) {
+        fs.writeFileSync(gp, JSON.stringify({ enabled: true, byok: { enabled: true, mode: 'always', baseUrl: 'https://ex.ts.net',
+          headers: {}, modelMap } }));
+        const logs = [];
+        console.error = (...a) => logs.push(a.join(' '));
+        try {
+          dash.writeRouterOverride({ enabled: false, stickyEnabled: false, fallbackEnabled: false, byokEnabled: false,
+            byokMode: 'on-limit', byokBaseUrl: '', byokHeaders: '', acceptedTerms: true, contextTuningEnabled: false });
+        } finally { console.error = origMapErr; }
+        assert(logs.length === 1 && logs[0].includes(want) && !logs[0].includes('modelMap: modelMap'),
+          `log ${JSON.stringify(modelMap)}: ${logs.join(' | ')}`);
+        assertEq(JSON.parse(fs.readFileSync(gp, 'utf-8')).byok.modelMap, modelMap, 'verbatim');
+      }
+      // Mensagem que já abre com o nome, com o BYOK ligado (400): sem repetir a chave.
+      fs.writeFileSync(gp, JSON.stringify({ byok: { enabled: true, baseUrl: 'https://ex.ts.net', headers: {}, modelMap: 'texto' } }));
+      err = null;
+      try { dash.writeRouterOverride({ byok: { enabled: true, mode: 'on-limit' } }); } catch (e) { err = e; }
+      assert(err && err.status === 400
+        && /^BYOK: modelMap precisa ser uma lista .* — gravado em .*user-config\.json$/.test(err.message)
+        && !/modelMap gravado em/.test(err.message), `400 texto: ${err && err.message}`);
+      assertEq(dash.opensWithField('modelMap precisa', 'modelMap'), true);
+      assertEq(dash.opensWithField('modelInjection.headers: x', 'modelInjection'), true);
+      assertEq(dash.opensWithField('modelInjection: chave desconhecida "foo"', 'modelInjection'), true);
+      assertEq(dash.opensWithField('modelMapping: x', 'modelMap'), false, 'exige fronteira depois do nome');
+      assertEq(dash.opensWithField('regra 1: ("modelMap x")', 'modelMap'), false);
+
+      // Colisão vinda do ARQUIVO (headers não enviados): a culpa é do arquivo.
+      fs.writeFileSync(gp, JSON.stringify({ byok: { enabled: true, baseUrl: 'https://ex.ts.net',
+        headers: { 'X-Model': 'fixo' }, modelInjection: { headers: { 'X-Model': '{model}' } } } }));
+      err = null;
+      try { dash.writeRouterOverride({ byok: { enabled: true, mode: 'always' } }); } catch (e) { err = e; }
+      // A mensagem já abre com o nome do campo: o erro não o repete.
+      assert(err && err.status === 400
+        && /modelInjection\.headers: "X-Model" já está nos headers do BYOK — gravado em .*user-config\.json$/.test(err.message)
+        && !/modelInjection gravado em/.test(err.message),
+        `colisão do arquivo: ${err && err.message}`);
+      assert(!/enviados/.test(err.message), err.message);
+
+      // `null` gravado = sem regra (como no router e no GET): salvar não falha.
+      fs.writeFileSync(gp, JSON.stringify({ byok: { enabled: true, baseUrl: 'https://ex.ts.net', headers: {},
+        modelMap: null, modelInjection: null } }));
+      dash.getRouterConfig({}, res);
+      assertEq(status, 200);
+      dash.writeRouterOverride({ byok: { enabled: true, mode: 'always' } });
+      out = JSON.parse(fs.readFileSync(gp, 'utf-8'));
+      assertEq(out.byok.modelMap, undefined);
+      assertEq(out.byok.modelInjection, undefined);
+    } finally {
+      process.env.CLAUDE_PLUGIN_DATA = saved;
+      delete require.cache[require.resolve('./dashboard.js')];
+    }
+  });
+});
+
+test('dashboard: config BYOK inválida no arquivo não derruba status/modo, mas GET config e catálogo falham explícitos', async () => {
+  const saved = process.env.CLAUDE_PLUGIN_DATA;
+  const savedHome = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-cfgerr-home-'));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dash-cfgerr-'));
+  const hits = [];
+  const server = http.createServer((req, res) => { hits.push(req.url); res.writeHead(200); res.end('{"data":[]}'); });
+  const port = await _listen0(server);
+  try {
+    process.env.HOME = home;
+    process.env.USERPROFILE = home;
+    process.env.CLAUDE_PLUGIN_DATA = dir;
+    const gp = path.join(dataDirLib.globalDir(), 'model-router', 'user-config.json');
+    fs.mkdirSync(path.dirname(gp), { recursive: true });
+    delete require.cache[require.resolve('./dashboard.js')];
+    const dash = require('./dashboard.js');
+    const cases = [
+      [{ modelMap: { 'a b': 'x' } }, /byok\.modelMap gravado em .*user-config\.json é inválido/],
+      [{ modelMap: 'texto' }, /byok\.modelMap precisa ser uma lista .* — gravado em .*user-config\.json/],
+      [{ modelInjection: { foo: 1 } }, /byok\.modelInjection: chave desconhecida \W*foo\W* — gravado em .*user-config\.json/],
+      [{ modelInjection: { body: { model: '{model}' } } }, /byok\.modelInjection gravado em .*user-config\.json é inválido/],
+      [{ headers: { 'X-Model': 'v' }, modelInjection: { headers: { 'x-model': '{model}' } } }, /byok\.modelInjection\.headers: \W*x-model\W* já está nos headers do BYOK — gravado em .*user-config\.json/],
+    ];
+    for (const [extra, re] of cases) {
+      fs.writeFileSync(gp, JSON.stringify({ enabled: true, byok: { enabled: true, mode: 'always', baseUrl: `http://127.0.0.1:${port}`, headers: {}, ...extra } }));
+      // Status/modo: não lança e continua refletindo o arquivo.
+      const flags = dash.resolveRouterFlags();
+      assertEq(flags.byok.enabled, true);
+      assertEq(flags.byok.mode, 'always');
+      assert(flags.byok.configErrors.length === 1 && re.test(flags.byok.configErrors[0]), JSON.stringify(flags.byok.configErrors));
+      // GET config: 500 com a mensagem (a UI trava o save em vez de mostrar form vazio).
+      let status = null;
+      let body = null;
+      dash.getRouterConfig({}, { writeHead: (c) => { status = c; }, end: (t) => { body = JSON.parse(t); } });
+      assertEq(status, 500);
+      assert(re.test(JSON.stringify(body)), JSON.stringify(body));
+      assertEq(body.byok, undefined, 'resposta de erro não traz um form "vazio" para a UI salvar');
+      // Catálogo: {ok:false} sem sair na rede.
+      const cat = await dash.fetchByokModelIds(2000);
+      assertEq(cat.ok, false);
+      assertEq(cat.status, 500, 'config gravada inválida é erro local, não 502');
+      assert(re.test(cat.error), cat.error);
+    }
+    assertEq(hits.length, 0, 'catálogo não chama o endpoint com config inválida');
+  } finally {
+    process.env.CLAUDE_PLUGIN_DATA = saved;
+    for (const [k, v] of Object.entries(savedHome)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    delete require.cache[require.resolve('./dashboard.js')];
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test('dashboard UI: loadRouterConfig trata resposta de erro e trava o save (não mostra form vazio salvável)', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'index.html'), 'utf-8');
+  const load = html.slice(html.indexOf('async function loadRouterConfig()'), html.indexOf('// Espelha scripts/lib/router-mode.js'));
+  assert(load.length > 0, 'loadRouterConfig não encontrado');
+  assert(/if \(!cfg \|\| cfg\.error \|\| !cfg\.byok\)/.test(load), 'precisa detectar resposta de erro antes de preencher o form');
+  assert(load.indexOf('cfg.error') < load.indexOf("getElementById('router-enable').checked"), 'checagem vem antes de preencher');
+  assert(/_routerConfigLoadError = e\.message/.test(load), 'o catch registra o erro');
+  const upd = html.slice(html.indexOf('function updateRouterSaveState()'), html.indexOf('function parseHeaderLinesUI'));
+  assert(/btn\.disabled = !!_routerConfigLoadError/.test(upd), 'save travado enquanto a config não carregou');
+});
+
 test('dashboard.writeRouterOverride: custom upstream persiste protocolo/endpoints/alias e preserva campos ausentes', () => {
   withTempHome(() => {
     const saved = process.env.CLAUDE_PLUGIN_DATA;
@@ -12180,7 +15124,8 @@ test('data-dir: migrated consumers import the shared resolver', () => {
     'curation-session.js', 'curation-detect.js', 'decision-detect.js',
     'brain-index-native.js', 'brain-promote.js', 'dashboard.js',
     // Phase-1 inliners repointed off the bare fallback onto the shared resolver.
-    'brain-embedder.js', 'doctor-advisory.js', 'project-identity-advisory.js',
+    // project-identity-advisory.js dropped in 2.29.1: no cooldown stamp → no data dir.
+    'brain-embedder.js', 'doctor-advisory.js',
     'research-followup-detect.js', 'skill-promote-trigger.js', 'tuning-advisory.js',
     'review-checklist-advisory.js',
   ];
@@ -13011,6 +15956,138 @@ test('capture_lesson local: a null merge (vanished dedup hit) does NOT phantom-a
   // With the pre-fix bug (ack on a null merge), decision would be 'merge' and nothing saved.
   assertEq(out.decision, 'admit', 'a vanished merge target falls through to admit (stores the lesson), never a phantom merge');
   assertEq(saved.length, 1, 'the lesson was actually persisted before the ack (no silent loss)');
+});
+
+
+// ─── 2.29.1 strict project-id gate on the KB tools (cwd wins; no id → refused) ──
+async function _kbGateServer(kbProjects, saved) {
+  const url = require('url');
+  const R = process.env.CLAUDE_PLUGIN_ROOT;
+  const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+  return mod.createBrainServer({ pluginRoot: R, mode: 'stdio', _testHooks: {
+    getKB: async (p) => {
+      kbProjects.push(p);
+      return {
+        store: { search: async () => [], merge: async () => null, save: async (e) => { saved.push(e); }, count: async () => 0 },
+        index: { index: async () => {} },
+        graph: { registerNode: async () => {} },
+      };
+    },
+    embedder: { init: async () => {}, getStatus: () => ({ ready: true }), embed: async () => [0.1, 0.2, 0.3] },
+  } });
+}
+function _withoutEnvProjectId(fn) {
+  return async () => {
+    const prev = process.env.CCB_PROJECT_ID;
+    delete process.env.CCB_PROJECT_ID;
+    try { await fn(); } finally { if (prev !== undefined) process.env.CCB_PROJECT_ID = prev; }
+  };
+}
+
+test('KB gate: capture_lesson/brain_store/brain_search with a cwd WITHOUT project id → isError NO_PROJECT_ID, nothing touched', _withoutEnvProjectId(async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-noid-'));
+  try {
+    assertEq(projectId.tryResolveProjectId({ cwd }), null, 'precondition: temp dir has no id');
+    const kbProjects = []; const saved = [];
+    const server = await _kbGateServer(kbProjects, saved);
+    for (const [name, args] of [
+      ['capture_lesson', { title: 'T', summary: 'S', type: 'decision', scope: 'project', project: 'invented-basename', cwd }],
+      ['brain_store', { title: 'T', summary: 'S', type: 'decision', project: 'invented-basename', cwd }],
+      ['brain_search', { query: 'q', cwd }],
+      ['brain_related', { id: 'x', project: 'invented-basename', cwd }],
+      ['brain_count', { project: 'invented-basename', cwd }],
+    ]) {
+      const res = await server.handleTool(name, args);
+      assert(res.isError === true, `${name} refused`);
+      assert(/no project id/.test(res.content[0].text) && /memory is OFF/.test(res.content[0].text), `${name} says why`);
+    }
+    assertEq(kbProjects, [], 'no KB opened');
+    assertEq(saved, [], 'nothing saved');
+  } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
+}));
+
+test('KB gate: cwd WITH .memory/project.json → its id wins over an explicit (invented) project', _withoutEnvProjectId(async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hasid-'));
+  try {
+    fs.mkdirSync(path.join(cwd, '.memory'));
+    fs.writeFileSync(path.join(cwd, '.memory', 'project.json'), JSON.stringify({ version: '1', metadata: { defaults: { project_id: 'owner/gated-repo' } } }));
+    const kbProjects = []; const saved = [];
+    const server = await _kbGateServer(kbProjects, saved);
+    const res = await server.handleTool('brain_store', { title: 'T', summary: 'S', type: 'decision', scope: 'project', project: 'invented-basename', cwd });
+    assert(!res.isError, `stored: ${res.content[0].text}`);
+    assertEq(JSON.parse(res.content[0].text).project, 'owner/gated-repo');
+    assert(kbProjects.every(p => p === 'owner/gated-repo'), `KB opened only for the cwd id: ${JSON.stringify(kbProjects)}`);
+    assertEq(saved.length, 1);
+  } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
+}));
+
+test('KB gate: no cwd → explicit project still honored (legacy callers unchanged)', _withoutEnvProjectId(async () => {
+  const kbProjects = []; const saved = [];
+  const server = await _kbGateServer(kbProjects, saved);
+  const res = await server.handleTool('brain_count', { project: 'explicitProj' });
+  assert(!res.isError, res.content[0].text);
+  assertEq(kbProjects, ['explicitProj']);
+}));
+
+test('KB gate: brain_retrieve_context with a cwd WITHOUT project id → empty even with an explicit project; retrieve never runs', _withoutEnvProjectId(async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-noid-rc-'));
+  try {
+    assertEq(projectId.tryResolveProjectId({ cwd }), null, 'precondition: temp dir has no id');
+    const touched = [];
+    const kbWorker = { poolSize: 1, workerIndexFor: () => 0, clientsFor: (p) => { touched.push(p); return { storeClient: { search: async () => [] } }; } };
+    const url = require('url');
+    const R = process.env.CLAUDE_PLUGIN_ROOT;
+    const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+    const server = mod.createBrainServer({ pluginRoot: R, mode: 'stdio', kbWorker });
+    const res = await server.handleTool('brain_retrieve_context', { prompt: 'how does the router work', project: 'explicitProj', cwd, session_id: 's' });
+    assert(!res.isError);
+    assertEq(res.content[0].text, '', 'no recall injected in an id-less folder');
+    assertEq(touched, [], 'retrieve never ran (the explicit project does not re-scope an id-less folder)');
+  } finally { fs.rmSync(cwd, { recursive: true, force: true }); }
+}));
+
+test('KB gate: mcp-memory backend (handleRemoteKbTool) — cwd WITHOUT id refused before any daemon contact', _withoutEnvProjectId(async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-noid-remote-'));
+  const backend = require('./brain-backend.js');
+  try {
+    const url = require('url');
+    const R = process.env.CLAUDE_PLUGIN_ROOT;
+    const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+    const server = mod.createBrainServer({ pluginRoot: R, mode: 'stdio' });
+    // Unreachable serverUrl: a regressed gate fails fast instead of reaching a live daemon.
+    const pending = withUserConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: 'http://127.0.0.1:1' } } }, () => {
+      backend._resetConfig();
+      assertEq(backend.peekMode(), 'mcp-memory', 'precondition: remote KB path');
+      return server.handleTool('brain_store', { title: 'T', summary: 'S', project: 'invented', cwd }); // routing is sync
+    });
+    const res = await pending;
+    assert(res.isError === true && /no project id/.test(res.content[0].text), res.content[0].text);
+  } finally { backend._resetConfig(); fs.rmSync(cwd, { recursive: true, force: true }); }
+}));
+
+test('KB gate (http daemon): the lock slot follows the cwd id, and the daemon\'s inherited CCB_PROJECT_ID is ignored', async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-http-id-'));
+  const prev = process.env.CCB_PROJECT_ID;
+  process.env.CCB_PROJECT_ID = 'spawning-session-id'; // env the shared daemon inherited
+  try {
+    fs.mkdirSync(path.join(cwd, '.memory'));
+    fs.writeFileSync(path.join(cwd, '.memory', 'project.json'), JSON.stringify({ version: '1', metadata: { defaults: { project_id: 'owner/gated-repo' } } }));
+    const slots = []; const kbProjects = [];
+    const kbWorker = { poolSize: 2, workerIndexFor: (p) => { slots.push(p); return 0; }, clientsFor: () => ({}) };
+    const url = require('url');
+    const R = process.env.CLAUDE_PLUGIN_ROOT;
+    const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+    const server = mod.createBrainServer({ pluginRoot: R, mode: 'http', kbWorker, _testHooks: {
+      getKB: async (p) => { kbProjects.push(p); return { store: { count: async () => 0 }, index: { index: async () => {} }, graph: { registerNode: async () => {} } }; },
+    } });
+    const res = await server.dispatch('brain_count', { project: 'invented', cwd }); // resolve → lock → run
+    assert(!res.isError, res.content[0].text);
+    assertEq(kbProjects, ['owner/gated-repo'], 'KB = the cwd id, not the daemon env nor the explicit project');
+    assert(slots.includes('owner/gated-repo') && !slots.includes('invented') && !slots.includes('spawning-session-id'), `lock slot: ${JSON.stringify(slots)}`);
+  } finally {
+    if (prev === undefined) delete process.env.CCB_PROJECT_ID; else process.env.CCB_PROJECT_ID = prev;
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
 });
 
 test('capture_lesson type:"skill": out-of-range description is rejected — isError, nothing saved', async () => {
@@ -15977,6 +19054,320 @@ test('workerIndexFor: poolSize=1 pins every project to slot 0, reproducing exact
     await pool.shutdown();
   }
 });
+
+// ─── ESLint rule: local/require-windows-hide ───────────────────────────────
+// The gate is only as good as the rule: with zero violations in the tree, a rule
+// that silently stopped reporting would keep CI green. Pin what it must catch.
+function lintWindowsHide(code, sourceType) {
+  const { Linter } = require('eslint');
+  const cfg = require(path.join(ROOT, 'eslint.config.cjs'));
+  const local = cfg.find(c => c.plugins && c.plugins.local).plugins.local;
+  const linter = new Linter({ configType: 'flat' });
+  const msgs = linter.verify(code, [{
+    files: ['**/*.js'],
+    plugins: { local },
+    languageOptions: { ecmaVersion: 2022, sourceType, globals: { require: 'readonly', module: 'readonly' } },
+    rules: { 'local/require-windows-hide': 'error' },
+  }], 'probe.js');
+  // A syntax error would make every "accept" case pass vacuously.
+  const fatal = msgs.find(m => m.fatal);
+  if (fatal) throw new Error(`probe does not parse: ${fatal.message} :: ${code}`);
+  return msgs.filter(m => m.ruleId === 'local/require-windows-hide');
+}
+function assertFlags(code, sourceType, id) {
+  const msgs = lintWindowsHide(code, sourceType);
+  const got = JSON.stringify(msgs.map(m => m.messageId));
+  assert(msgs.length > 0, `must flag ${id}: ${code} → got ${got}`);
+  // Exactly the expected kind: any other report is a false positive.
+  assert(msgs.every(m => m.messageId === id), `unexpected report kind for: ${code} → got ${got}`);
+}
+function assertClean(code, sourceType) {
+  const msgs = lintWindowsHide(code, sourceType);
+  assertEq(msgs.length, 0, `must accept: ${code} → ${JSON.stringify(msgs.map(m => m.message))}`);
+}
+
+test('require-windows-hide: canonical calls without windowsHide in the options slot Node reads are flagged', () => {
+  const bad = [
+    "const { spawnSync } = require('child_process'); spawnSync('git', [], { encoding: 'utf-8' });",
+    "const { execFile: ef } = require('child_process'); ef('a', [], () => {});",
+    "const cp = require('node:child_process'); cp.spawn('a', [], { detached: true });",
+    "require('child_process').execSync('a');",
+    "require(`child_process`).execSync('a');",
+    "const cp = require('child_process'); cp.execSync('a', { windowsHide: false });",
+    "const cp = require('child_process'); cp.execSync('a', { windowsHide: true, ...o });",
+    "const cp = require('child_process'); cp.execSync('a', { windowsHide: true, [k]: false });",
+    "const cp = require('child_process'); const opts = { windowsHide: true }; cp.execSync('a', opts);",
+    "const cp = require('child_process'); cp.spawnSync('a', [], {}, { windowsHide: true });",
+    "const cp = require('child_process'); cp.spawn({ windowsHide: true }, 'a');",
+    "const cp = require('child_process'); cp.exec('a', opts, { windowsHide: true });",
+    "const cp = require('child_process'); cp.spawn('a', args, opts, { windowsHide: true });",
+    "const cp = require('child_process'); const o = {}; cp.spawn('a', o, { windowsHide: true });",
+    "const cp = require('child_process'); const { spawn: sp } = cp; sp('a');",
+    "const cp = require('child_process'); cp['spawn']('a');",
+    "const cp = require('child_process'); cp?.spawn?.('a');",
+    "const cp = require('child_process'); (cp?.spawn)('a');",
+    "const cp = require('child_process'); cp.execSync('a', opts, { windowsHide: true });",
+    "const { execFileSync } = require('child_process'); execFileSync('git', ['status'], { encoding: 'utf8' });",
+    "function early() { spawn('a'); } const { spawn } = require('child_process');",
+    "const cp = module.require('child_process'); cp.spawn('a');",
+    "const cp = process.mainModule.require('child_process'); cp.execSync('a');",
+    "require.call(null, 'child_process').spawn('a');",
+    "const { execFile } = require('child_process'); execFile('git', (e, o) => o, { windowsHide: true });",
+    "const cp = require('child_process'); cp.execFileSync('git', function () {}, { windowsHide: true });",
+    "const cp = require('child_process'); function cb() {} cp.execFile('git', cb, { windowsHide: true });",
+    "const cp = require('child_process'); const cb = () => 0; cp.execFile('git', cb, { windowsHide: true });",
+    "const cp = require('child_process'); cp.spawn('x', /a/, { windowsHide: true });",
+    "const { spawnSync } = require('child_process'); spawnSync('x', /a/g, { windowsHide: true });",
+    "const cp = require('child_process'); cp.fork('m.js', 'a', { windowsHide: true });",
+    "const cp = require('child_process'); cp.spawn('x', `a`, { windowsHide: true });",
+    "const { execFile } = require('child_process'); execFile('calc', class {}, { windowsHide: true });",
+    "const { execFileSync } = require('child_process'); class K {} execFileSync('calc', K, { windowsHide: true });",
+    "const { execFileSync } = require('child_process'); const K = class {}; execFileSync('calc', K, { windowsHide: true });",
+    "const { createRequire } = require('module'); createRequire(__filename)('child_process').spawn('a');",
+  ];
+  for (const code of bad) assertFlags(code, 'commonjs', 'missing');
+});
+
+test('require-windows-hide: every non-canonical use of child_process is reported (deny by default)', () => {
+  const escapes = [
+    "const cp = require('child_process'); module.exports = { run: cp.spawn };",
+    "const { spawn } = require('child_process'); wrap(spawn);",
+    "const cp = require('child_process'); use(cp);",
+    "const cp = require('child_process'); const m = x ? 'execFileSync' : 'execFile'; cp[m]('a', []);",
+    "const cp = require('child_process'); const f = cp.execSync; f('a');",
+    "const x = require('child_process').spawn; x('a');",
+    "let cp2; cp2 = require('child_process'); cp2.fork('a');",
+    "let cp3 = require('child_process'); cp3 = null;",
+    "let cp4; (cp4 = require('child_process')).spawn('a');",
+    "const cp = require('child_process'); let x = cp; x.spawn('a');",
+    "const cp = require('child_process'); cp.spawn.call(null, 'a', [], { windowsHide: true });",
+    "const cp = require('child_process'); cp.spawn.apply(null, ['a', [], { windowsHide: true }]);",
+    "const cp = require('child_process'); const b = cp.spawn.bind(cp); b('a');",
+    "const { promisify } = require('util'); const e = promisify(require('child_process').exec); e('a');",
+    "const { exec: ex = null } = require('child_process'); ex('a');",
+    "const { spawn } = require('child_process'); function f(deps) { const s = deps.spawn || spawn; s('a'); }",
+    "const { spawn } = require('child_process'); function run(sp = spawn) { sp('a'); }",
+    "const { spawn, ...rest } = require('child_process'); rest.exec('a');",
+    "const { spawn: { call } } = require('child_process'); call(null, 'a');",
+    "const { [k]: s } = require('child_process'); s('a');",
+    "const { ChildProcess } = require('child_process'); new ChildProcess();",
+    "const cp = require('child_process'); if (typeof cp.spawn === 'function') cp.spawn('a', [], { windowsHide: true });",
+    "const [a] = require('child_process');",
+    "const cp = require('child_process'); use(cp.spawn);",
+    "const spawn = 'exec'; const { [spawn]: s } = require('child_process'); s('a', [], { windowsHide: true });",
+    "require('cluster').fork();",
+    "const { run } = require('node:test'); run();",
+    "const { createRequire } = require('module'); const r = createRequire(__filename); r('cluster').fork();",
+    "require.call(null, 'cluster').fork();",
+    "require.call(null, 'node:test').run({});",
+    "let cp5 = require('child_process'); cp5.spawn('a', [], { windowsHide: true });",
+    "const r = require; r('child_process').spawn('a');",
+    "(0, require)('child_process').spawn('a');",
+    "require.apply(null, ['child_process']).spawn('a');",
+    "process.getBuiltinModule('node:child_process').spawn('a');",
+    "const cp = process.getBuiltinModule('child_process'); cp.execSync('a');",
+    "module.constructor._load('child_process').spawn('a');",
+    "const { createRequire: cr } = require('module'); cr(__filename)('child_process').spawn('a');",
+    "console.log('child_process');",
+    "process.binding('spawn_sync').spawn({ file: 'cmd.exe', args: [], stdio: [] });",
+    "const { Process } = process.binding('process_wrap'); new Process();",
+    "process.binding.call(process, 'spawn_sync').spawn({ file: 'cmd.exe' });",
+    "const { binding } = process; binding('spawn_sync').spawn({ file: 'cmd.exe' });",
+    "const p = process; p.binding(`process_wrap`);",
+    "Reflect.apply(process.binding, process, ['spawn_sync']).spawn({ file: 'cmd.exe' });",
+    "const cp = require('child_process'); const x = ['a', [], {}]; cp.spawn(...x, { windowsHide: true });",
+    "const cp = require('child_process'); const x = ['a', {}]; cp.execSync(...x, { windowsHide: true });",
+    "const cp = require('child_process'); const r = [[], {}]; cp.spawn('a', ...r, { windowsHide: true });",
+  ];
+  for (const code of escapes) assertFlags(code, 'commonjs', 'escape');
+});
+
+test('require-windows-hide: ESM imports, import(), createRequire and exports', () => {
+  for (const code of [
+    "import { spawn } from 'node:child_process'; spawn('a', []);",
+    "import * as cp from 'child_process'; cp.execSync('a');",
+    "import cp from 'child_process'; cp.fork('a');",
+    "import { default as cp } from 'child_process'; cp.fork('a');",
+    "const m = await import('child_process'); m.spawn('a');",
+    "import { createRequire } from 'node:module'; const r = createRequire(import.meta.url); const { spawn } = r('child_process'); spawn('a');",
+  ]) assertFlags(code, 'module', 'missing');
+  for (const code of [
+    "import('child_process').then(({ spawn }) => spawn('a'));",
+    "(await import('node:child_process')).default.spawn('a');",
+    "const cp = (await import('node:child_process')).default; cp.spawn('a');",
+    "const { default: cp } = await import('child_process'); cp.execSync('a');",
+    "export { spawn } from 'child_process';",
+    "export * from 'node:child_process';",
+    "import cp from 'child_process'; export const run = cp.spawn;",
+    "import { spawn } from 'child_process'; export { spawn };",
+    "export const cp = await import('child_process');",
+    "import { ChildProcess } from 'child_process';",
+    "import { spawn } from 'data:text/javascript,export { spawn } from \"node:child_process\"'; spawn('a');",
+    "import cluster from 'node:cluster'; cluster.fork();",
+    "import('data:text/javascript,export{spawn}from\"node:child_process\"');",
+    "export * from 'data:text/javascript,export * from \"node:child_process\"';",
+    "import { spawn } from 'DATA:text/javascript,export { spawn } from \"node:child_process\"';",
+    "import(' data:text/javascript,export * from \"node:child_process\"');",
+    "import { spawn } from 'da\\tta:text/javascript,export { spawn } from \"node:child_process\"';",
+    "import { register } from 'node:module'; register('data:text/javascript,import(\"node:child_process\")');",
+    "import('da\\nta:text/javascript,export * from \"node:child_process\"');",
+    "import('da\\rta:text/javascript,export * from \"node:child_process\"');",
+    "import * as m from 'node:module'; m.register('./x.mjs', 'DATA:text/javascript,');",
+  ]) assertFlags(code, 'module', 'escape');
+  assertFlags("const m = require('node:module'); m.register('data:text/javascript,import(\"node:child_process\")');", 'commonjs', 'escape');
+  // A re-export is reported ONCE (the literal catch-all must not double it).
+  assertEq(lintWindowsHide("export { spawn } from 'child_process';", 'module').length, 1, 're-export reported once');
+});
+
+test('require-windows-hide: accepts canonical hidden calls and ignores lookalikes', () => {
+  for (const code of [
+    "const { spawnSync } = require('child_process'); spawnSync('git', [], { windowsHide: true });",
+    "const cp = require('child_process'); cp.fork('a', [], { ...o, windowsHide: true });",
+    "const cp = require('child_process'); cp.exec('a', { windowsHide: true }, () => {});",
+    "const cp = require('child_process'); cp.execFile('a', [], { windowsHide: true }, () => {});",
+    "const cp = require('child_process'); cp.execFile('a', { windowsHide: true }, () => {});",
+    "const cp = require('child_process'); const args = ['x']; cp.spawn('a', args, { windowsHide: true });",
+    "const cp = require('child_process'); cp?.spawn?.('a', [], { windowsHide: true });",
+    "const cp = require('child_process'); const { spawn: sp } = cp; sp('a', [], { windowsHide: true });",
+    "require('child_process').execSync('a', { windowsHide: true });",
+    // Injection seam: the default is a wrapper that forces windowsHide after the spread.
+    "const { spawn } = require('child_process'); const hidden = (c, a, o) => spawn(c, a, { ...o, windowsHide: true }); function f(deps) { const s = deps.spawn || hidden; s('a'); }",
+    "const log = (m) => m; log('child-process spawned'); const s = 'node:child_proc' + 'ess_x';",
+    "const db = { exec() {} }; db.exec('sql');",
+    "for (const line of lines) if (!line.startsWith('data:')) continue;",
+    "const m = new Map(); m.set('data:', 1); m.register && m.register('./hooks.mjs');",
+    "const kind = 'k8s-cluster'; const label = 'test'; void kind; void label;",
+    "const cp = require('child_process'); function g() { const cp = require('fs'); cp.spawn('x'); } cp.execSync('a', { windowsHide: true });",
+  ]) assertClean(code, 'commonjs');
+  for (const code of [
+    "import { spawn } from 'node:child_process'; spawn('a', [], { windowsHide: true });",
+    "import * as cp from 'child_process'; cp.execSync('a', { windowsHide: true });",
+    "const m = await import('node:child_process'); m.spawn('a', [], { windowsHide: true });",
+    "(await import('child_process')).spawn('a', [], { windowsHide: true });",
+  ]) assertClean(code, 'module');
+});
+
+test('require-windows-hide: the REAL eslint.config.cjs enables it for runtime files and exempts only test/smoke', async () => {
+  // Pins the wiring: flipping the rule to 'off' in a block (or a bad `files`
+  // glob) keeps every probe above green, so check the effective config per path.
+  const { ESLint } = require('eslint');
+  const eslint = new ESLint({ cwd: ROOT, overrideConfigFile: path.join(ROOT, 'eslint.config.cjs') });
+  const sev = async (rel) => {
+    const c = await eslint.calculateConfigForFile(path.join(ROOT, rel));
+    const r = c && c.rules && c.rules['local/require-windows-hide'];
+    return Array.isArray(r) ? r[0] : r;
+  };
+  for (const rel of ['scripts/probe.js', 'scripts/lib/probe.js', 'scripts/probe.mjs', 'scripts/lib/probe.cjs',
+    'servers/brain-server/probe.js', 'servers/brain-server/lib/probe.mjs', 'servers/model-router/probe.js', 'servers/probe.cjs',
+    'scripts/probe.mts', 'scripts/lib/probe.ts', 'servers/probe.cts', 'scripts/lib/test-probe.js']) {
+    assertEq(await sev(rel), 2, `rule must be 'error' for ${rel}`);
+  }
+  for (const rel of ['scripts/test-probe.js', 'scripts/smoke-probe.mjs', 'scripts/test-probe.cjs', 'scripts/test-probe.mts']) {
+    assertEq(await sev(rel), 0, `rule must be off for ${rel}`);
+  }
+});
+
+// The injection seams default to wrappers that force windowsHide AFTER the
+// spread — a caller passing windowsHide:false must still get a hidden window.
+function withStubbedChildProcess(stubs, rel, fn) {
+  const cp = require('child_process');
+  // Resolve and validate BEFORE touching child_process, so a bad path or key
+  // cannot leave a stub installed for the rest of the suite.
+  const file = require.resolve(path.join(SCRIPTS, rel));
+  for (const k of Object.keys(stubs)) {
+    if (typeof cp[k] !== 'function') throw new Error(`withStubbedChildProcess: child_process.${k} is not a function`);
+  }
+  const cachedBefore = new Set(Object.keys(require.cache));
+  const prev = require.cache[file];
+  const saved = {};
+  for (const k of Object.keys(stubs)) { saved[k] = cp[k]; cp[k] = stubs[k]; }
+  delete require.cache[file];
+  const restore = () => {
+    for (const k of Object.keys(saved)) cp[k] = saved[k];
+    // Drop every module first loaded under the stub (it may have captured it).
+    for (const k of Object.keys(require.cache)) if (!cachedBefore.has(k)) delete require.cache[k];
+    delete require.cache[file];
+    if (prev) require.cache[file] = prev;
+  };
+  let out;
+  try { out = fn(require(file)); } catch (err) { restore(); throw err; }
+  return Promise.resolve(out).finally(restore);
+}
+
+test('seams: mcp-daemon-restart default wrappers force windowsHide even when the caller passes false', () => {
+  const seen = [];
+  const rec = (name, ret) => (file, args, opts) => { seen.push({ name, file, args, opts }); return ret; };
+  return withStubbedChildProcess({ execFileSync: rec('execFileSync', ''), spawn: rec('spawn', { unref() {}, pid: 7 }) },
+    'lib/mcp-daemon-restart.js', async (M) => {
+      M._hiddenExecFileSync('powershell.exe', ['-NoProfile'], { timeout: 1, windowsHide: false });
+      M._hiddenSpawn('java', ['-jar', 'a.jar'], { detached: true, windowsHide: false });
+      assertEq(seen[0].opts.timeout, 1, 'caller options are preserved (execFileSync)');
+      assertEq(seen[1].opts.detached, true, 'caller options are preserved (spawn)');
+      assertEq([seen[0].file, seen[0].args], ['powershell.exe', ['-NoProfile']], 'execFileSync file/args forwarded');
+      assertEq([seen[1].file, seen[1].args], ['java', ['-jar', 'a.jar']], 'spawn file/args forwarded');
+      // Non-array args would be read by Node as the options: rejected loudly.
+      for (const [fn, bad] of [[M._hiddenExecFileSync, { windowsHide: false }], [M._hiddenSpawn, { detached: true }], [M._hiddenSpawn, undefined]]) {
+        let err = null;
+        try { fn('java', bad); } catch (e) { err = e; }
+        assert(err instanceof TypeError && /args must be an array/.test(err.message), 'non-array args must throw TypeError');
+      }
+      assertEq(seen.length, 2, 'rejected calls never reach child_process');
+      // The real call paths also reach child_process hidden (their call sites
+      // pass windowsHide:true too; that the fallback IS the wrapper is enforced
+      // by require-windows-hide, which rejects `deps.x || execFileSync`).
+      let threw = false;
+      try { M.inspectWindowsProcess(123); } catch (err) { threw = /não encontrado/.test(err.message); }
+      assert(threw, 'empty probe output must still fail loud');
+      await M.spawnDetached('java', ['-jar', 'x.jar'], {});
+      assertEq(seen.map(s => s.name), ['execFileSync', 'spawn', 'execFileSync', 'spawn']);
+      assertEq([seen[3].file, seen[3].args], ['java', ['-jar', 'x.jar']], 'spawnDetached forwards file/args');
+      assertEq(seen[2].file, 'powershell.exe', 'inspectWindowsProcess goes through the execFileSync seam');
+      for (const s of seen) assertEq(s.opts.windowsHide, true, s.name + ' default seam must hide the window');
+    });
+});
+
+test('seams: consolidate-datadirs-hook default spawn forces windowsHide even when the caller passes false', () =>
+  withStubbedChildProcess({ spawn: (cmd, args, opts) => ({ cmd, args, opts }) }, 'consolidate-datadirs-hook.js', (M) => {
+    const r = M._spawnDefault('node', ['x'], { detached: true, windowsHide: false });
+    assertEq(r.opts.windowsHide, true);
+    assertEq(r.opts.detached, true, 'caller options are preserved');
+    assertEq([r.cmd, r.args], ['node', ['x']], 'cmd/args forwarded');
+    let err = null;
+    try { M._spawnDefault('node', { detached: true, windowsHide: false }); } catch (e) { err = e; }
+    assert(err instanceof TypeError && /args must be an array/.test(err.message), 'non-array args must throw TypeError');
+  }));
+
+test('require-windows-hide: inline eslint comments cannot switch it off in runtime files', async () => {
+  const { ESLint } = require('eslint');
+  const eslint = new ESLint({ cwd: ROOT, overrideConfigFile: path.join(ROOT, 'eslint.config.cjs') });
+  const code = "/* eslint-disable */\nconst cp = require('child_process');\ncp.spawn('a');\n";
+  for (const rel of [['scripts', 'probe-inline.js'], ['servers', 'brain-server', 'probe-inline.js'], ['servers', 'model-router', 'probe-inline.js'],
+    ['scripts', 'lib', 'probe-inline.cjs'], ['scripts', 'probe-inline.mjs'], ['servers', 'probe-inline.cts'], ['scripts', 'probe-inline.mts'], ['scripts', 'probe-inline.ts']]) {
+    const [res] = await eslint.lintText(code, { filePath: path.join(ROOT, ...rel) });
+    assert(res.messages.some(m => m.ruleId === 'local/require-windows-hide'), `rule still reports under /* eslint-disable */ in ${rel.join('/')}`);
+    assert(res.warningCount > 0, `the ignored inline config is itself a warning in ${rel.join('/')}`);
+  }
+});
+
+test('seams: withStubbedChildProcess leaves child_process untouched on a bad path', () => {
+  const cp = require('child_process');
+  const real = cp.spawn;
+  let threw = false;
+  try { withStubbedChildProcess({ spawn: () => null }, 'lib/does-not-exist.js', () => {}); } catch (err) { threw = !!err; }
+  assert(threw, 'bad path must throw');
+  assert(cp.spawn === real, 'spawn must not stay stubbed');
+});
+
+test('seams: plugin-updater default spawnSync forces windowsHide after the spread', () =>
+  withStubbedChildProcess({ spawnSync: (cmd, args, opts) => ({ cmd, args, opts }) }, 'lib/plugin-updater.js', (M) => {
+    const r = M._hiddenSpawnSync('npm', ['install'], { cwd: '/x', windowsHide: false });
+    assertEq(r.opts.windowsHide, true);
+    assertEq(r.opts.cwd, '/x', 'caller options are preserved');
+    assertEq([r.cmd, r.args], ['npm', ['install']], 'cmd/args forwarded');
+    let err = null;
+    try { M._hiddenSpawnSync('npm', { cwd: '/y', windowsHide: false }); } catch (e) { err = e; }
+    assert(err instanceof TypeError && /args must be an array/.test(err.message), 'non-array args must throw TypeError');
+  }));
 
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {

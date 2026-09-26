@@ -105,7 +105,8 @@ function assertSafeProjectId(projectId) {
     /^[A-Za-z]:[\\/]/.test(s) ||   // C:\ or C:/ (Windows drive)
     s.startsWith('\\\\') ||        // UNC \\server\share
     s.startsWith('/') ||           // unix absolute path
-    s.includes('\\');              // any backslash — covers Windows AppData/Temp/...
+    s.includes('\\') ||            // any backslash — covers Windows AppData/Temp/...
+    s.split('/').some((seg) => seg === '..' || seg === '.'); // traversal (id → brain/<id> dir)
   if (looksLikePath) {
     throw new Error('project_id looks like a filesystem path ("' + s + '") — refused to avoid ' +
       'scope-junk. ' + SCOPE_HELP);
@@ -246,7 +247,7 @@ function legacyMarkerPresent(cwd, fs = fsDefault) {
 
 /**
  * Read the nearest `.claude-boss-project`, walking up from `startDir`.
- * Preserved legacy export (project-identity-advisory + dashboard depend on it).
+ * Preserved legacy export (rung 3 of the ladder below; tests use it directly).
  * @returns {string} sanitized chosen id, or '' if none found/readable.
  */
 function readMarker(startDir, fs = fsDefault) {

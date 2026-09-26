@@ -422,7 +422,7 @@ code { color: var(--fg); font-family: var(--font-mono); }
         <span id="project-marker-status" class="text-muted" style="font-size:.8rem"></span>
       </div>
       <p class="text-muted" style="font-size:.8rem;line-height:1.5;margin:.25rem 0 .75rem" data-i18n="brain.identityHelp">
-        O recall é escopado por um projectId. Por padrão é o nome da pasta, que muda entre máquinas. Escreva um <code>.claude-boss-project</code> na pasta do projeto para fixar um nome escolhido (ex.: pasta <code>Hpositiva</code> → id <code>positiva</code>). Também vale a env <code>CCB_PROJECT_ID</code>.
+        O recall é escopado por um projectId. Sem id (<code>.memory/project.json</code>, git remote ou o marker abaixo) a memória fica DESLIGADA na pasta. Escreva um <code>.claude-boss-project</code> na pasta do projeto para fixar um nome escolhido (ex.: pasta <code>Hpositiva</code> → id <code>positiva</code>). Também vale a env <code>CCB_PROJECT_ID</code>.
       </p>
       <div class="flex flex-wrap gap-1" style="align-items:flex-end">
         <div style="flex:2;min-width:280px">
@@ -925,7 +925,7 @@ code { color: var(--fg); font-family: var(--font-mono); }
         </label>
         <input type="password" id="router-nvidia-key" autocomplete="off" placeholder="nvapi-..." style="width:100%">
         <div id="router-key-state" class="text-muted" style="font-size:.78rem;margin-top:.25rem"></div>
-        <div class="text-muted" style="font-size:.78rem;margin-top:.25rem" data-i18n="router.nvidiaHint">Opcional. Chave grátis em build.nvidia.com. Fica só na sua máquina (DATA_DIR), nunca é commitada. Por padrão a classificação é LOCAL: nenhum prompt sai da máquina. A chave só envia dados em 2 casos: (1) plano-B de geração no 429; (2) classificação remota, se você ativar classifyRemote (opt-in), enviando ~500 chars de cada prompt à NVIDIA.</div>
+        <div class="text-muted" style="font-size:.78rem;margin-top:.25rem" data-i18n="router.nvidiaHint">Opcional. Chave grátis em build.nvidia.com. Fica só na sua máquina (~/.claude/claude-code-boss/model-router/user-config.json), nunca é commitada. Por padrão a classificação é LOCAL: nenhum prompt sai da máquina. A chave só envia dados em 2 casos: (1) plano-B de geração no 429; (2) classificação remota, se você ativar classifyRemote (opt-in), enviando ~500 chars de cada prompt à NVIDIA.</div>
       </div>
 
       <div style="margin:1.25rem 0;max-width:560px;padding-top:1rem;border-top:1px solid var(--border)">
@@ -1035,7 +1035,48 @@ code { color: var(--fg); font-family: var(--font-mono); }
           <label class="field-label"><span data-i18n="router.byokHeaders">Headers (um por linha: Nome: valor)</span></label>
           <textarea id="router-byok-headers" rows="3" autocomplete="off" placeholder="Authorization: Bearer ..." style="width:100%;font-family:var(--mono,monospace);font-size:.8rem"></textarea>
           <div id="router-byok-headers-state" class="text-muted" style="font-size:.78rem;margin-top:.25rem"></div>
-          <div class="text-muted" style="font-size:.78rem;margin-top:.25rem" data-i18n="router.byokHeadersHint">Mapa livre — se o endpoint exigir outro header (chave de gateway, tenant id), é só acrescentar. Guardado só na sua máquina (DATA_DIR, permissão 0600), nunca commitado. O token da SUA ASSINATURA Claude NÃO é enviado ao endpoint.</div>
+          <div class="text-muted" style="font-size:.78rem;margin-top:.25rem" data-i18n="router.byokHeadersHint">Mapa livre — se o endpoint exigir outro header (chave de gateway, tenant id), é só acrescentar. Guardado só na sua máquina (~/.claude/claude-code-boss/model-router/user-config.json, permissão 0600 onde o sistema suporta), nunca commitado. O token da SUA ASSINATURA Claude NÃO é enviado ao endpoint.</div>
+
+          <label class="field-label" style="margin-top:1rem" data-i18n="router.byokModelMap">Mapeamento de modelo (origem → destino)</label>
+          <div class="text-muted" style="font-size:.78rem;margin-bottom:.25rem" data-i18n="router.byokModelMapHint">Opcional. Troca o campo model enviado ao endpoint BYOK (nunca o da assinatura). Ordem: ID exato; depois o ID sem a data de snapshot (-AAAAMMDD); depois padrões com *, testados contra o ID original com a data (vence o que tem mais caracteres literais; empate, a regra que vem primeiro). Sem regra, o model vai como veio.</div>
+          <div id="router-byok-map-rows"></div>
+          <datalist id="router-byok-model-ids"></datalist>
+          <div style="display:flex;gap:.5rem;margin-top:.4rem;flex-wrap:wrap">
+            <button type="button" class="btn-sm" onclick="addByokMapRow('', '')" data-i18n="router.byokMapAdd">+ Regra</button>
+            <button type="button" class="btn-sm" onclick="loadByokModelIds()" data-i18n="router.byokMapFetch">Buscar modelos do endpoint</button>
+            <button type="button" class="btn-sm btn-danger" onclick="clearByokMapRows()" data-i18n="router.byokMapClear">Remover todas</button>
+          </div>
+          <div id="router-byok-map-state" class="text-muted" style="font-size:.78rem;margin-top:.25rem"></div>
+
+          <details style="margin-top:.75rem">
+            <summary data-i18n="router.byokInjection">Avançado: injetar o modelo resolvido no corpo ou em header</summary>
+            <div class="text-muted" style="font-size:.78rem;margin:.25rem 0" data-i18n="router.byokInjectionHint">Desligado por padrão. Só para endpoints que exigem o modelo num campo extra. O único placeholder é {model} (o valor enviado em model); nada é executado. Aplicado depois da tradução de protocolo: caminho aninhado sobrescreve a folha; campo de topo que a request já traz é recusado.</div>
+            <label class="field-label" data-i18n="router.byokInjectionBody">Campos do corpo (um por linha: caminho.pontilhado = template)</label>
+            <textarea id="router-byok-inject-body" rows="2" autocomplete="off" placeholder="metadata.force_model = {model}" style="width:100%;font-family:var(--mono,monospace);font-size:.8rem" oninput="updateRouterSaveState()"></textarea>
+            <label class="field-label" data-i18n="router.byokInjectionHeaders">Headers (um por linha: Nome: template)</label>
+            <textarea id="router-byok-inject-headers" rows="2" autocomplete="off" placeholder="X-Router-Force-Model: {model}" style="width:100%;font-family:var(--mono,monospace);font-size:.8rem" oninput="updateRouterSaveState()"></textarea>
+          </details>
+
+          <details style="margin-top:.75rem">
+            <summary data-i18n="router.byokCompat">Avançado: compatibilidade OpenAI Chat Completions</summary>
+            <div class="text-muted" style="font-size:.78rem;margin:.25rem 0" data-i18n="router.byokCompatHint">Só vale com o protocolo OpenAI Chat Completions. O padrão é o formato que um gateway passthrough aceita; mude só se o seu endpoint recusar algum destes casos.</div>
+            <label class="field-label" data-i18n="router.byokCompatEmpty">Assistant com tool calls e sem texto: content</label>
+            <select id="router-byok-compat-empty" style="width:100%" onchange="updateRouterSaveState()">
+              <option value="null" data-i18n="router.byokCompatEmptyNull">null (padrão)</option>
+              <option value="empty" data-i18n="router.byokCompatEmptyEmpty">string vazia ""</option>
+            </select>
+            <label class="field-label" data-i18n="router.byokCompatSystem">Mensagem system no meio do histórico</label>
+            <select id="router-byok-compat-system" style="width:100%" onchange="updateRouterSaveState()">
+              <option value="keep" data-i18n="router.byokCompatSystemKeep">manter na posição (padrão)</option>
+              <option value="reject" data-i18n="router.byokCompatSystemReject">recusar a request (400 no modo always; aviso no fallback)</option>
+            </select>
+            <label class="field-label" data-i18n="router.byokCompatToolRef">tool_reference dentro de tool_result</label>
+            <select id="router-byok-compat-toolref" style="width:100%" onchange="updateRouterSaveState()">
+              <option value="text" data-i18n="router.byokCompatToolRefText">enviar como texto JSON (padrão)</option>
+              <option value="reject" data-i18n="router.byokCompatToolRefReject">recusar a request (400 no modo always; aviso no fallback)</option>
+            </select>
+            <div id="router-byok-compat-state" class="text-muted" style="font-size:.78rem;margin-top:.25rem"></div>
+          </details>
         </div>
       </div>
 
@@ -1118,17 +1159,48 @@ const I18N = {
     'router.byokBaseUrl': 'Base URL',
     'router.byokUrlHint': 'Legacy fallback. Per-operation URLs take precedence when filled.',
     'router.byokHeaders': 'Headers (one per line: Name: value)',
-    'router.byokHeadersHint': 'Free-form map — if the endpoint requires another header (gateway key, tenant id), just add it. Stored only on your machine (DATA_DIR, mode 0600), never committed. YOUR Claude subscription token is NOT sent to the endpoint.',
+    'router.byokHeadersHint': 'Free-form map — if the endpoint requires another header (gateway key, tenant id), just add it. Stored only on your machine (~/.claude/claude-code-boss/model-router/user-config.json, mode 0600 where the OS supports it), never committed. YOUR Claude subscription token is NOT sent to the endpoint.',
     'router.byokHeadersStored': 'Stored',
     'router.byokHeadersKeep': 'leave blank to keep',
     'router.byokHeadersNone': 'No header configured yet.',
     'router.byokHeadersInvalid': 'Invalid line (expected "Name: value")',
+    'router.byokModelMap': 'Model mapping (source → destination)',
+    'router.byokModelMapHint': 'Optional. Replaces the model field sent to the BYOK endpoint (never the subscription one). Order: exact ID; then the ID without the snapshot date (-YYYYMMDD); then * patterns, matched against the original ID with its date (the one with more literal characters wins; on a tie, the earlier rule). With no rule, model is sent as-is.',
+    'router.byokMapAdd': '+ Rule',
+    'router.byokMapFetch': 'Fetch endpoint models',
+    'router.byokMapClear': 'Remove all',
+    'router.byokMapRemove': 'Remove rule',
+    'router.byokMapFrom': 'source (e.g. claude-opus-5-5)',
+    'router.byokMapTo': 'destination',
+    'router.byokMapIncomplete': 'Incomplete rule (fill in source and destination)',
+    'router.byokMapCleared': 'All rules removed — save to apply.',
+    'router.byokMapFetching': 'Fetching models (saved configuration)…',
+    'router.byokMapFetched': 'models available as suggestions (manual entry still allowed).',
+    'router.byokMapFetchFail': 'Could not list models — type the destination manually',
+    'router.byokInjection': 'Advanced: inject the resolved model into the body or a header',
+    'router.byokInjectionHint': 'Off by default. Only for endpoints that require the model in an extra field. The only placeholder is {model} (the value sent in model); nothing is executed. Applied after protocol translation: a nested path overwrites the leaf; a top-level field the request already has is rejected.',
+    'router.byokInjectionBody': 'Body fields (one per line: dotted.path = template)',
+    'router.byokInjectionHeaders': 'Headers (one per line: Name: template)',
+    'router.byokCompat': 'Advanced: OpenAI Chat Completions compatibility',
+    'router.byokCompatHint': 'Only applies with the OpenAI Chat Completions protocol. The default is the shape a passthrough gateway accepts; change it only if your endpoint rejects one of these cases.',
+    'router.byokCompatEmpty': 'Assistant with tool calls and no text: content',
+    'router.byokCompatEmptyNull': 'null (default)',
+    'router.byokCompatEmptyEmpty': 'empty string ""',
+    'router.byokCompatSystem': 'System message in the middle of the history',
+    'router.byokCompatSystemKeep': 'keep in place (default)',
+    'router.byokCompatSystemReject': 'reject the request (400 in always mode; warning in fallback)',
+    'router.byokCompatToolRef': 'tool_reference inside tool_result',
+    'router.byokCompatToolRefText': 'send as JSON text (default)',
+    'router.byokCompatToolRefReject': 'reject the request (400 in always mode; warning in fallback)',
+    'router.byokInjectionInvalid': 'Invalid injection line',
+    'router.byokInjectionDuplicate': 'Duplicate injection key',
+    'router.byokMapTruncated': 'partial list: the endpoint paginates the catalog.',
     'router.byokTimeoutInvalid': 'Invalid timeout (use a number of seconds, 0 or greater)',
     'router.byokClassifyEnable': 'Classify prompts via my endpoint (BYOK Classify)',
     'router.byokClassifyHint': 'Opt-in. Uses YOUR endpoint to pick the tier (~500 chars of the prompt per session, haiku model). on-limit: only while cooldown is active. Failure falls back to local MiniLM.',
     'mode.byokDirect': 'BYOK direct',
     'router.nvidiaKey': 'NVIDIA API key (optional)',
-    'router.nvidiaHint': 'Optional. Free key at build.nvidia.com. Stays only on your machine (DATA_DIR), never committed. By default classification is LOCAL: no prompt leaves the machine. The key only sends data in 2 cases: (1) plan-B generation on 429; (2) remote classification, if you enable classifyRemote (opt-in), sending ~500 chars of each prompt to NVIDIA.',
+    'router.nvidiaHint': 'Optional. Free key at build.nvidia.com. Stays only on your machine (~/.claude/claude-code-boss/model-router/user-config.json), never committed. By default classification is LOCAL: no prompt leaves the machine. The key only sends data in 2 cases: (1) plan-B generation on 429; (2) remote classification, if you enable classifyRemote (opt-in), sending ~500 chars of each prompt to NVIDIA.',
     'router.heroKicker': 'Live router state',
     'router.controlsTitle': 'Router controls',
     'router.recommended': 'Recommended',
@@ -1223,7 +1295,7 @@ const I18N = {
     'brain.wizardJava': 'Checking Java', 'brain.wizardJar': 'Validating JAR',
     'brain.wizardDaemon': 'Starting Daemon', 'brain.wizardHandshake': 'MCP Handshake',
     'brain.wizardProject': 'Project Validation',
-    'brain.identity': 'Project identity', 'brain.identityHelp': 'Recall is scoped by a projectId. It defaults to the folder name, which changes across machines. Write a <code>.claude-boss-project</code> file in the project folder to pin a chosen name (e.g. folder <code>Hpositiva</code> → id <code>positiva</code>). The env <code>CCB_PROJECT_ID</code> also works.',
+    'brain.identity': 'Project identity', 'brain.identityHelp': 'Recall is scoped by a projectId. Without an id (<code>.memory/project.json</code>, git remote or the marker below) memory is OFF in that folder. Write a <code>.claude-boss-project</code> file in the project folder to pin a chosen name (e.g. folder <code>Hpositiva</code> → id <code>positiva</code>). The env <code>CCB_PROJECT_ID</code> also works.',
     'brain.projectFolder': 'Project folder', 'brain.projectChosenId': 'chosen projectId',
     'brain.projectRead': 'Read',
     'tip.transport': 'http = connect to a running mcp-memory-server (recommended). stdio = the plugin spawns the JAR locally.',
@@ -1307,17 +1379,48 @@ const I18N = {
     'router.byokBaseUrl': 'Base URL',
     'router.byokUrlHint': 'Fallback legado. URLs específicas por operação têm precedência quando preenchidas.',
     'router.byokHeaders': 'Headers (um por linha: Nome: valor)',
-    'router.byokHeadersHint': 'Mapa livre — se o endpoint exigir outro header (chave de gateway, tenant id), é só acrescentar. Guardado só na sua máquina (DATA_DIR, permissão 0600), nunca commitado. O token da SUA ASSINATURA Claude NÃO é enviado ao endpoint.',
+    'router.byokHeadersHint': 'Mapa livre — se o endpoint exigir outro header (chave de gateway, tenant id), é só acrescentar. Guardado só na sua máquina (~/.claude/claude-code-boss/model-router/user-config.json, permissão 0600 onde o sistema suporta), nunca commitado. O token da SUA ASSINATURA Claude NÃO é enviado ao endpoint.',
     'router.byokHeadersStored': 'Guardado',
     'router.byokHeadersKeep': 'deixe em branco para manter',
     'router.byokHeadersNone': 'Nenhum header configurado ainda.',
     'router.byokHeadersInvalid': 'Linha inválida (esperado "Nome: valor")',
+    'router.byokModelMap': 'Mapeamento de modelo (origem → destino)',
+    'router.byokModelMapHint': 'Opcional. Troca o campo model enviado ao endpoint BYOK (nunca o da assinatura). Ordem: ID exato; depois o ID sem a data de snapshot (-AAAAMMDD); depois padrões com *, testados contra o ID original com a data (vence o que tem mais caracteres literais; empate, a regra que vem primeiro). Sem regra, o model vai como veio.',
+    'router.byokMapAdd': '+ Regra',
+    'router.byokMapFetch': 'Buscar modelos do endpoint',
+    'router.byokMapClear': 'Remover todas',
+    'router.byokMapRemove': 'Remover regra',
+    'router.byokMapFrom': 'origem (ex.: claude-opus-5-5)',
+    'router.byokMapTo': 'destino',
+    'router.byokMapIncomplete': 'Regra incompleta (preencha origem e destino)',
+    'router.byokMapCleared': 'Todas as regras removidas — salve para aplicar.',
+    'router.byokMapFetching': 'Buscando modelos (configuração salva)…',
+    'router.byokMapFetched': 'modelos disponíveis como sugestão (digitação manual continua valendo).',
+    'router.byokMapFetchFail': 'Não foi possível listar os modelos — digite o destino manualmente',
+    'router.byokInjection': 'Avançado: injetar o modelo resolvido no corpo ou em header',
+    'router.byokInjectionHint': 'Desligado por padrão. Só para endpoints que exigem o modelo num campo extra. O único placeholder é {model} (o valor enviado em model); nada é executado. Aplicado depois da tradução de protocolo: caminho aninhado sobrescreve a folha; campo de topo que a request já traz é recusado.',
+    'router.byokInjectionBody': 'Campos do corpo (um por linha: caminho.pontilhado = template)',
+    'router.byokInjectionHeaders': 'Headers (um por linha: Nome: template)',
+    'router.byokCompat': 'Avançado: compatibilidade OpenAI Chat Completions',
+    'router.byokCompatHint': 'Só vale com o protocolo OpenAI Chat Completions. O padrão é o formato que um gateway passthrough aceita; mude só se o seu endpoint recusar algum destes casos.',
+    'router.byokCompatEmpty': 'Assistant com tool calls e sem texto: content',
+    'router.byokCompatEmptyNull': 'null (padrão)',
+    'router.byokCompatEmptyEmpty': 'string vazia ""',
+    'router.byokCompatSystem': 'Mensagem system no meio do histórico',
+    'router.byokCompatSystemKeep': 'manter na posição (padrão)',
+    'router.byokCompatSystemReject': 'recusar a request (400 no modo always; aviso no fallback)',
+    'router.byokCompatToolRef': 'tool_reference dentro de tool_result',
+    'router.byokCompatToolRefText': 'enviar como texto JSON (padrão)',
+    'router.byokCompatToolRefReject': 'recusar a request (400 no modo always; aviso no fallback)',
+    'router.byokInjectionInvalid': 'Linha de injeção inválida',
+    'router.byokInjectionDuplicate': 'Chave de injeção duplicada',
+    'router.byokMapTruncated': 'lista parcial: o endpoint pagina o catálogo.',
     'router.byokTimeoutInvalid': 'Timeout inválido (use um número de segundos, 0 ou maior)',
     'router.byokClassifyEnable': 'Classificar prompts via meu endpoint (BYOK Classify)',
     'router.byokClassifyHint': 'Opt-in. Usa o SEU endpoint para escolher o tier (~500 chars do prompt por sessão, modelo haiku). on-limit: só com o cooldown ativo. Falha cai no MiniLM local.',
     'mode.byokDirect': 'BYOK direto',
     'router.nvidiaKey': 'Chave NVIDIA API (opcional)',
-    'router.nvidiaHint': 'Opcional. Chave grátis em build.nvidia.com. Fica só na sua máquina (DATA_DIR), nunca é commitada. Por padrão a classificação é LOCAL: nenhum prompt sai da máquina. A chave só envia dados em 2 casos: (1) plano-B de geração no 429; (2) classificação remota, se você ativar classifyRemote (opt-in), enviando ~500 chars de cada prompt à NVIDIA.',
+    'router.nvidiaHint': 'Opcional. Chave grátis em build.nvidia.com. Fica só na sua máquina (~/.claude/claude-code-boss/model-router/user-config.json), nunca é commitada. Por padrão a classificação é LOCAL: nenhum prompt sai da máquina. A chave só envia dados em 2 casos: (1) plano-B de geração no 429; (2) classificação remota, se você ativar classifyRemote (opt-in), enviando ~500 chars de cada prompt à NVIDIA.',
     'router.heroKicker': 'Estado do roteador',
     'router.controlsTitle': 'Controles do roteador',
     'router.recommended': 'Recomendado',
@@ -1412,7 +1515,7 @@ const I18N = {
     'brain.wizardJava': 'Verificando Java', 'brain.wizardJar': 'Validando JAR',
     'brain.wizardDaemon': 'Iniciando Daemon', 'brain.wizardHandshake': 'Handshake MCP',
     'brain.wizardProject': 'Validação do Projeto',
-    'brain.identity': 'Identidade do projeto', 'brain.identityHelp': 'O recall é escopado por um projectId. Por padrão é o nome da pasta, que muda entre máquinas. Escreva um <code>.claude-boss-project</code> na pasta do projeto para fixar um nome escolhido (ex.: pasta <code>Hpositiva</code> → id <code>positiva</code>). Também vale a env <code>CCB_PROJECT_ID</code>.',
+    'brain.identity': 'Identidade do projeto', 'brain.identityHelp': 'O recall é escopado por um projectId. Sem id (<code>.memory/project.json</code>, git remote ou o marker abaixo) a memória fica DESLIGADA na pasta. Escreva um <code>.claude-boss-project</code> na pasta do projeto para fixar um nome escolhido (ex.: pasta <code>Hpositiva</code> → id <code>positiva</code>). Também vale a env <code>CCB_PROJECT_ID</code>.',
     'brain.projectFolder': 'Pasta do projeto', 'brain.projectChosenId': 'projectId escolhido',
     'brain.projectRead': 'Ler',
     'tip.transport': 'http = conectar a um mcp-memory-server já rodando (recomendado). stdio = o plugin sobe o JAR localmente.',
@@ -1525,9 +1628,19 @@ async function loadRouter() {
   }
 }
 
+// Erro da última carga da config do router; enquanto houver, salvar fica travado.
+let _routerConfigLoadError = '';
+
 async function loadRouterConfig() {
   try {
     const cfg = await api('GET', '/api/router/config');
+    // `api()` não olha o status HTTP: resposta de erro chega como `{ error }`.
+    // Preencher o form com os defaults e deixar salvar APAGARIA a config gravada
+    // (ex.: modelMap inválido no arquivo) — trava o save até o arquivo ser corrigido.
+    if (!cfg || cfg.error || !cfg.byok) {
+      throw new Error((cfg && cfg.error) || 'resposta sem a seção byok');
+    }
+    _routerConfigLoadError = '';
     document.getElementById('router-enable').checked = !!cfg.enabled;
     const stEl = document.getElementById('router-sticky-enable');
     if (stEl) stEl.checked = !!cfg.stickyEnabled;
@@ -1608,9 +1721,34 @@ async function loadRouterConfig() {
         : t('router.byokHeadersNone');
     }
     if (byHdr) byHdr.placeholder = nomes.length ? nomes.map((n) => `${n}: ••••`).join('\n') : 'Authorization: Bearer ...';
+    const mapRows = document.getElementById('router-byok-map-rows');
+    if (mapRows) {
+      mapRows.textContent = '';
+      for (const r of (Array.isArray(by.modelMap) ? by.modelMap : [])) addByokMapRow(r.from, r.to);
+    }
+    const mapState = document.getElementById('router-byok-map-state');
+    if (mapState) mapState.textContent = '';
+    const inj = by.modelInjection || {};
+    const injBody = document.getElementById('router-byok-inject-body');
+    if (injBody) injBody.value = Object.entries(inj.body || {}).map(([k, v]) => `${k} = ${v}`).join('\n');
+    const injHdr = document.getElementById('router-byok-inject-headers');
+    if (injHdr) injHdr.value = Object.entries(inj.headers || {}).map(([k, v]) => `${k}: ${v}`).join('\n');
+    const compatState = document.getElementById('router-byok-compat-state');
+    if (compatState) compatState.textContent = '';
+    const compat = by.openaiCompat || {};
+    for (const [id, key, dflt] of BYOK_COMPAT_FIELDS) {
+      const el = document.getElementById(id);
+      if (el) el.value = compat[key] || dflt;
+    }
     updateRouterSaveState();
   } catch (e) {
+    _routerConfigLoadError = e.message;
     document.getElementById('router-key-state').textContent = 'Erro: ' + e.message;
+    const mapState = document.getElementById('router-byok-map-state');
+    if (mapState) mapState.textContent = 'Erro: ' + e.message;
+    const compatState = document.getElementById('router-byok-compat-state');
+    if (compatState) compatState.textContent = 'Erro: ' + e.message;
+    updateRouterSaveState();
   }
 }
 
@@ -1971,7 +2109,9 @@ function updateRouterSaveState() {
   if (upFields) upFields.style.display = upstreamEnabled ? 'block' : 'none';
   // Aceite dos termos é exigido para LIGAR qualquer um dos três (todos rodam o
   // proxy local / plano B por sua conta). Desligar nunca exige aceite.
-  btn.disabled = (enabled || stickyEnabled || fallbackEnabled || upstreamEnabled || byokEnabled) && !accepted;
+  btn.disabled = !!_routerConfigLoadError
+    || ((enabled || stickyEnabled || fallbackEnabled || upstreamEnabled || byokEnabled) && !accepted);
+  btn.title = _routerConfigLoadError ? 'Config não carregou: ' + _routerConfigLoadError : '';
 }
 
 // Espelha byok.parseHeaderLines do servidor (o dashboard é HTML estático, não
@@ -2125,6 +2265,29 @@ async function applyRouter() {
     }
     const byLogLatency = document.getElementById('router-byok-log-latency');
     if (byLogLatency) byok.logLatency = byLogLatency.checked;
+    // A UI sempre carrega o estado completo das regras e da injeção, então envia
+    // o estado completo: lista vazia / campos vazios = LIMPAR explicitamente.
+    // A validação definitiva (duplicata, placeholder, header reservado) é do
+    // servidor — o erro dele aparece aqui em vez de "salvo".
+    const mapped = collectByokMapRows();
+    if (mapped.error) {
+      document.getElementById('router-saved').textContent = mapped.error;
+      return;
+    }
+    byok.modelMap = mapped.rules;
+    const injection = collectByokInjection();
+    if (injection.error) {
+      document.getElementById('router-saved').textContent = injection.error;
+      return;
+    }
+    byok.modelInjection = injection.value;
+    // Estado completo dos três selects; o servidor valida e grava só o que
+    // difere do padrão.
+    byok.openaiCompat = {};
+    for (const [id, key] of BYOK_COMPAT_FIELDS) {
+      const el = document.getElementById(id);
+      if (el) byok.openaiCompat[key] = el.value;
+    }
     body.byok = byok;
   }
 
@@ -2134,6 +2297,7 @@ async function applyRouter() {
   saved.textContent = t('router.saving');
   try {
     const r = await api('POST', '/api/router/apply', body);
+    if (!r || r.ok !== true) throw new Error((r && r.error) || 'Server error');
     saved.textContent = t('router.saved');
     if (r.restartRequired) document.getElementById('router-restart-banner').style.display = 'flex';
     await loadRouterConfig();
@@ -2143,6 +2307,115 @@ async function applyRouter() {
     saved.textContent = 'Erro: ' + e.message;
   } finally {
     updateRouterSaveState();
+  }
+}
+
+// ─── BYOK: mapeamento de modelo + injeção ──────────────────────────
+function addByokMapRow(from, to) {
+  const wrap = document.getElementById('router-byok-map-rows');
+  if (!wrap) return;
+  const row = document.createElement('div');
+  row.className = 'byok-map-row';
+  row.style.cssText = 'display:flex;gap:.4rem;align-items:center;margin-top:.3rem';
+  const src = document.createElement('input');
+  src.type = 'text'; src.className = 'byok-map-from'; src.value = from || '';
+  src.placeholder = t('router.byokMapFrom'); src.style.flex = '1'; src.autocomplete = 'off';
+  src.oninput = updateRouterSaveState;
+  const arrow = document.createElement('span');
+  arrow.textContent = '→';
+  const dst = document.createElement('input');
+  dst.type = 'text'; dst.className = 'byok-map-to'; dst.value = to || '';
+  dst.placeholder = t('router.byokMapTo'); dst.style.flex = '1'; dst.autocomplete = 'off';
+  dst.setAttribute('list', 'router-byok-model-ids');
+  dst.oninput = updateRouterSaveState;
+  const del = document.createElement('button');
+  del.type = 'button'; del.className = 'btn-sm btn-danger'; del.textContent = '✕';
+  del.title = t('router.byokMapRemove');
+  del.onclick = () => { row.remove(); updateRouterSaveState(); };
+  row.append(src, arrow, dst, del);
+  wrap.appendChild(row);
+}
+
+function clearByokMapRows() {
+  const wrap = document.getElementById('router-byok-map-rows');
+  if (wrap) wrap.textContent = '';
+  const state = document.getElementById('router-byok-map-state');
+  if (state) state.textContent = t('router.byokMapCleared');
+  updateRouterSaveState();
+}
+
+function collectByokMapRows() {
+  const rules = [];
+  for (const row of document.querySelectorAll('#router-byok-map-rows .byok-map-row')) {
+    const from = row.querySelector('.byok-map-from').value.trim();
+    const to = row.querySelector('.byok-map-to').value.trim();
+    if (!from && !to) continue;
+    if (!from || !to) return { error: `${t('router.byokMapIncomplete')}: ${from || '?'} → ${to || '?'}` };
+    rules.push({ from, to });
+  }
+  return { rules };
+}
+
+// byok.openaiCompat: [id do select, chave, padrão] — padrões = COMPAT_DEFAULTS
+// de protocols/openai-chat.js (o que um gateway passthrough aceita).
+const BYOK_COMPAT_FIELDS = [
+  ['router-byok-compat-empty', 'assistantEmptyContent', 'null'],
+  ['router-byok-compat-system', 'systemInMessages', 'keep'],
+  ['router-byok-compat-toolref', 'toolReference', 'text'],
+];
+
+function collectByokInjection() {
+  // Sem protótipo: `__proto__` vira chave comum e o servidor a rejeita com
+  // mensagem, em vez de sumir em silêncio no cliente.
+  const parse = (id, sep, caseInsensitive) => {
+    const out = Object.create(null);
+    const seen = new Set();
+    const text = (document.getElementById(id)?.value || '').trim();
+    for (const raw of text ? text.split(/\r?\n/) : []) {
+      const line = raw.trim();
+      if (!line) continue;
+      const i = line.indexOf(sep);
+      const key = i > 0 ? line.slice(0, i).trim() : '';
+      const val = i > 0 ? line.slice(i + 1).trim() : '';
+      if (!key || !val) throw new Error(`${t('router.byokInjectionInvalid')}: ${line}`);
+      const norm = caseInsensitive ? key.toLowerCase() : key;
+      if (seen.has(norm)) throw new Error(`${t('router.byokInjectionDuplicate')}: ${key}`);
+      seen.add(norm);
+      out[key] = val;
+    }
+    return out;
+  };
+  try {
+    const bodyMap = parse('router-byok-inject-body', '=', true);
+    const headerMap = parse('router-byok-inject-headers', ':', true);
+    if (!Object.keys(bodyMap).length && !Object.keys(headerMap).length) return { value: null };
+    return { value: { body: bodyMap, headers: headerMap } };
+  } catch (e) {
+    return { error: e.message };
+  }
+}
+
+async function loadByokModelIds() {
+  const state = document.getElementById('router-byok-map-state');
+  const list = document.getElementById('router-byok-model-ids');
+  if (state) state.textContent = t('router.byokMapFetching');
+  try {
+    const r = await api('GET', '/api/router/byok/models');
+    if (!r || r.ok !== true) throw new Error((r && r.error) || 'Server error');
+    if (list) {
+      list.textContent = '';
+      for (const id of r.models) {
+        const opt = document.createElement('option');
+        opt.value = id;
+        list.appendChild(opt);
+      }
+    }
+    if (state) {
+      state.textContent = `${r.models.length} ${t('router.byokMapFetched')}`
+        + (r.truncated ? ` ${t('router.byokMapTruncated')}` : '');
+    }
+  } catch (e) {
+    if (state) state.textContent = `${t('router.byokMapFetchFail')}: ${e.message}`;
   }
 }
 

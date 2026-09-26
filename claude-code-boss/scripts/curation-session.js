@@ -90,7 +90,7 @@ async function run(event) {
         const { spawn } = require('child_process');
         const child = spawn(process.execPath,
           [path.join(root, 'scripts', 'brain-consolidate.js'), '--project', path.basename(cwd), '--apply'],
-          { detached: true, stdio: 'ignore', env: process.env });
+          { detached: true, stdio: 'ignore', windowsHide: true, env: process.env });
         child.unref();
       }
     } catch (e) { void e; }

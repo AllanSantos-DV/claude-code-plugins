@@ -22,7 +22,8 @@
  *     via parallel reads; here we make it deterministic via order.
  *
  * Merge/display priority (when >1 detector blocks in the same Stop):
- *   curation-stop > failure-retro > everything else (stable, execution order).
+ *   project-id-stop > curation-stop > failure-retro > everything else (stable,
+ *   execution order).
  *   curation-stop is the only detector with escalation semantics, so its reason
  *   leads.
  *
@@ -40,6 +41,7 @@ const telem = require('./lib/stop-telemetry.js');
 
 // Execution order — see the header for the invariants this encodes.
 const DETECTORS = [
+  { name: 'project-id-stop',          mod: require('./project-id-stop.js') },
   { name: 'pattern-detect',           mod: require('./pattern-detect.js') },
   { name: 'skill-promote-trigger',    mod: require('./skill-promote-trigger.js') },
   { name: 'decision-scan-response',   mod: require('./decision-scan-response.js') },
@@ -58,9 +60,16 @@ const DETECTORS = [
   { name: 'auto-continue-stop',       mod: require('./auto-continue-stop.js') },
 ];
 
-// Reason-concatenation priority when multiple detectors block at once.
-const PRIORITY = { 'curation-stop': 0, 'failure-retro': 1 };
+// Reason-concatenation priority when multiple detectors block at once. The missing
+// project id leads: until it is fixed, memory is off for the folder.
+const PRIORITY = { 'project-id-stop': -1, 'curation-stop': 0, 'failure-retro': 1 };
 const DEFAULT_RANK = 2;
+
+// 2.29.1 — detectors that ask the agent for capture_lesson/brain_store (writes refused
+// with no project id, so the nudge would only cost a turn) or that recall from the KB
+// (self-review: memory is off in a folder without id). Skipped (reason 'no_project_id')
+// while the folder has no id. capture-dispatch and conversation-ingest gate themselves.
+const NO_ID_SKIP = new Set(['pattern-detect', 'decision-scan-response', 'decision-promote', 'research-followup-detect', 'failure-retro', 'self-review']);
 const SEP = '\n\n---\n\n';
 
 function rank(name) {
@@ -90,8 +99,11 @@ function getShadowRate() {
  *     (labeled estimate, never enforced). `free` gates everything.
  *
  * @param {object} event  parsed Stop payload
+ * With `event.cwd` set and no project id for it, the NO_ID_SKIP detectors are
+ * skipped (gated, reason 'no_project_id'); `opts.resolveProjectId` is the test seam.
+ *
  * @param {{ profile?:string, runId?:string, shadowRate?:number,
- *           onError?:(name:string,msg:string)=>void }} [opts]
+ *           onError?:(name:string,msg:string)=>void, resolveProjectId?:Function }} [opts]
  * @returns {Promise<{ blocks:Array<{name,reason}>, profile:string, runId:string,
  *                     detectors:Array<object> }>}
  */
@@ -101,10 +113,16 @@ async function dispatch(event, opts = {}) {
   const shadowRate = typeof opts.shadowRate === 'number' ? opts.shadowRate : getShadowRate();
   const onError = typeof opts.onError === 'function' ? opts.onError : () => {};
   const list = Array.isArray(opts.detectors) ? opts.detectors : DETECTORS;
+  const resolveId = typeof opts.resolveProjectId === 'function' ? opts.resolveProjectId : require('./lib/project-id.js').tryResolveProjectId;
+  const noProjectId = !!(event && typeof event.cwd === 'string' && event.cwd) && !resolveId({ cwd: event.cwd });
   const blocks = [];
   const detectors = [];
 
   for (const { name, mod } of list) {
+    if (noProjectId && NO_ID_SKIP.has(name)) {
+      detectors.push({ name, gated: true, blocked: false, would_block: null, chars: 0, ms: 0, reason: 'no_project_id' });
+      continue;
+    }
     const gs = telem.gateState(name, profile, hooksConfig);
     const entry = { name, gated: !gs.enabled, blocked: false, would_block: null, chars: 0, ms: 0, reason: gs.reason };
 
@@ -195,4 +213,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { dispatch, mergeBlocks, rank, DETECTORS, PRIORITY, SEP, getShadowRate };
+module.exports = { dispatch, mergeBlocks, rank, DETECTORS, PRIORITY, NO_ID_SKIP, SEP, getShadowRate };
