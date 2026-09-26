@@ -23,6 +23,7 @@ const { URL } = require('url');
 const cacheCycle = require('./cache-cycle.js');
 const contextRewrite = require('./context-rewrite.js');
 const byok = require('./byok.js');
+const byokModel = require('./byok-model.js');
 const catalog = require('./catalog.js');
 const upstreamProfile = require('./upstream-profile.js');
 const protocolAdapters = require('./protocols/index.js');
@@ -177,7 +178,7 @@ function mergeUserConfig(base, override) {
 
 // ── Route manager (DoD: declarativo, shipping=default, user=overlay) ───────────
 // Shipping vive em config/router-config.json#routes (versionado); user vive em
-// DATA_DIR/model-router/user-config.json#routes (nunca versionado). mergeUserConfig
+// globalDir()/model-router/user-config.json#routes (nunca versionado). mergeUserConfig
 // garante que o user vença sem apagar defaults não tocados. null/false desabilita.
 const DEFAULT_ROUTES = {
   '/health':                  { method: 'GET',  upstream: 'local:health',       auth: 'none' },
@@ -457,7 +458,8 @@ async function classifyNim(prompt, config) {
 // privacidade do on-limit: só classifica remotamente quando o cooldown está ativo
 // (o endpoint já é o plano B nesse momento) — no fluxo normal on-limit NADA sai.
 // Modelo pedido = o tier haiku configurado (classificação deve ser o mais barato
-// possível; o endpoint normaliza nomes sozinho, mesmo contrato do passthrough).
+// possível). Esse nome passa pelo `byok.modelMap`/injeção como qualquer request
+// BYOK; sem regra, vai verbatim e o endpoint resolve o nome.
 async function classifyByok(prompt, config) {
   const by = config.byok || {};
   if (by.enabled !== true || by.classifyRemote !== true) return null;
@@ -483,19 +485,30 @@ async function classifyByok(prompt, config) {
   let adapter;
   let operationTarget;
   let body;
+  let prepared;
   try {
     profile = requiredOperationProfile(config, target, 'classify');
     adapter = protocolAdapters.getAdapter(profile.wireProtocol);
     operationTarget = targetForProfile(target, profile);
-    body = JSON.stringify(adapter.toUpstreamRequest(requestBody));
+    prepared = prepareByokOutbound(adapter.toUpstreamRequest(requestBody, profile), requestBody.model, config, 'classify');
+    body = JSON.stringify(prepared.body);
   } catch (e) {
-    logger.warn('BYOK classify config error', { err: e.message });
+    // Configuração inválida (perfil, tradução ou mapeamento/injeção de modelo):
+    // o classify NÃO sai pelo BYOK e o chamador cai no classificador local.
+    // Erro, não aviso — a regra quebrada também derruba o caminho de geração.
+    logger.error(e.code === 'BYOK_REQUEST' || e.code === 'REQUEST_SHAPE'
+      ? 'BYOK classify — request incompatível (injeção de modelo ou tradução de protocolo); usando o classificador local'
+      : 'BYOK classify — configuração inválida; usando o classificador local', {
+      err: e.message, model: byokModel.modelForLog(requestBody.model),
+    });
     return null;
   }
   const lib = operationTarget.protocol === 'https:' ? require('https') : require('http');
   // Headers do MAPA do usuário (mesma regra do passthrough BYOK): nada de Bearer
   // fixo — o endpoint pode exigir outro esquema. Protocolo http/https por `.protocol`.
-  const headers = protocolHeaders({ 'anthropic-version': '2023-06-01' }, operationTarget, profile.wireProtocol, false);
+  const headers = byokModel.injectHeaders(
+    protocolHeaders({ 'anthropic-version': '2023-06-01' }, operationTarget, profile.wireProtocol, false),
+    prepared.injection, prepared.model);
   headers['content-length'] = Buffer.byteLength(body);
 
   return new Promise((resolve) => {
@@ -645,7 +658,7 @@ const TIER_RANK = { haiku: 0, sonnet: 1, opus: 2 };
 
 // Mapeia um NOME de modelo (o que veio no body.model = escolha do dropdown) ao tier.
 function modelTier(modelStr) {
-  const s = (modelStr || '').toLowerCase();
+  const s = typeof modelStr === 'string' ? modelStr.toLowerCase() : '';
   if (s.includes('haiku'))  return 'haiku';
   if (s.includes('opus'))   return 'opus';
   if (s.includes('sonnet')) return 'sonnet';
@@ -946,6 +959,71 @@ const UPSTREAM_FALLBACK = { host: UPSTREAM_HOST, port: UPSTREAM_PORT, protocol: 
 
 // ── Fallback "limite excedido" (plano B) ──────────────────────────────────────
 
+// Teto de memória para ler resposta de upstream: o corpo inteiro no
+// não-stream, a linha SSE ainda sem '\n' no stream. Conta BYTES, não
+// caracteres — um corpo multibyte medido em caracteres passaria do teto.
+const MAX_UPSTREAM_BODY_BYTES = 32 * 1024 * 1024;
+
+function responseTooLarge(what) {
+  const err = new Error(`${what} excedeu 32 MiB`);
+  err.code = 'RESPONSE_TOO_LARGE';
+  return err;
+}
+
+// Bytes da linha SSE ainda sem '\n', sem re-medir o buffer inteiro a cada chunk.
+function ssePendingBytes(prev, chunk, remainder) {
+  return chunk.includes('\n') ? Buffer.byteLength(remainder) : prev + Buffer.byteLength(chunk);
+}
+
+// Última linha de um stream que fechou limpo, sem '\n' final. Upstream
+// compatível pode fechar assim: `[DONE]` e objeto JSON são frames completos,
+// e comentário SSE (`:`) é descartado. O resto é frame incompleto: o corte
+// pode cair nos primeiros bytes de `data: {...}` (`d`, `data:`, `data: `),
+// então prefixo, `data:` vazio, outro campo, JSON cortado e valor que não é
+// objeto (primitivo, `null`, array) contam como corte.
+function sseTailFrame(buf) {
+  const line = buf.trim();
+  if (!line || line.startsWith(':')) return { kind: 'skip' };
+  if (!line.startsWith('data:')) return { kind: 'partial', reason: 'linha final não é um frame data completo' };
+  const data = line.slice(5).trim();
+  if (!data) return { kind: 'partial', reason: 'data: vazio na linha final' };
+  if (data === '[DONE]') return { kind: 'done' };
+  let value;
+  try {
+    value = JSON.parse(data);
+  } catch (err) {
+    return { kind: 'partial', reason: err.message };
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { kind: 'partial', reason: 'não é um objeto JSON' };
+  return { kind: 'json', value };
+}
+
+// Corpo de RECUSA que para no meio sem FIN: o timeout de TTFB já foi desarmado
+// quando os headers chegaram, então sem este teto de inatividade o cliente fica
+// pendurado. Destruir com erro cai no listener 'error' da recusa, que responde.
+// O prazo total cobre a recusa que pinga dados (keep-alive) e nunca termina:
+// o teto de inatividade sozinho seria rearmado a cada byte.
+const refusalBodyLimits = { idleMs: 5000, totalMs: 30000 };
+
+function armRefusalIdle(upRes, what) {
+  const { idleMs, totalMs } = refusalBodyLimits;
+  let idle = null;
+  const arm = () => {
+    clearTimeout(idle);
+    idle = setTimeout(() => {
+      upRes.destroy(new Error(`${what}: corpo da recusa parado por ${idleMs}ms`));
+    }, idleMs);
+  };
+  const total = setTimeout(() => {
+    upRes.destroy(new Error(`${what}: corpo da recusa não terminou em ${totalMs}ms`));
+  }, totalMs);
+  const clear = () => { clearTimeout(idle); clearTimeout(total); };
+  arm();
+  upRes.on('data', arm);
+  upRes.on('end', clear);
+  upRes.on('close', clear);
+}
+
 function sseHeaders(res) {
   res.writeHead(200, {
     'content-type':  'text/event-stream; charset=utf-8',
@@ -961,6 +1039,14 @@ function sseEvent(res, event, data) {
 // Emite uma mensagem assistant de texto único — em SSE (se stream) ou JSON —
 // no formato da Anthropic Messages API, para o Claude Code renderizar normal.
 function respondAnthropicText(reqBody, res, text) {
+  // Resposta já iniciada (ex.: stream do plano B que caiu no meio): não dá
+  // para mandar o aviso — reescrever headers derrubaria o processo. Encerra a
+  // conexão para o cliente ver o corte; resposta já concluída fica como está.
+  if (res.headersSent || res.writableEnded) {
+    logger.error('Resposta já iniciada — aviso não enviado', { aviso: String(text).slice(0, 300) });
+    if (!res.writableEnded) res.destroy();
+    return;
+  }
   const model = reqBody.model || 'claude';
   const id = 'msg_fb_' + Date.now();
   if (reqBody.stream) {
@@ -1044,6 +1130,7 @@ function streamNvidiaToAnthropic(nvRes, res, reqBody, warning) {
   sseEvent(res, 'content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: warning } });
 
   let buf = '';
+  let pending = 0;
   nvRes.setEncoding('utf-8');
   nvRes.on('data', (chunk) => {
     buf += chunk;
@@ -1062,11 +1149,29 @@ function streamNvidiaToAnthropic(nvRes, res, reqBody, warning) {
         logger.debug('NVIDIA SSE parse skip', { err: e.message });
       }
     }
+    pending = ssePendingBytes(pending, chunk, buf);
+    if (pending > MAX_UPSTREAM_BODY_BYTES) nvRes.destroy(responseTooLarge('Linha SSE do stream NVIDIA'));
   });
-  nvRes.on('end', () => finishStream(res));
-  nvRes.on('error', (e) => {
-    logger.error('NVIDIA stream erro', { err: e.message });
+  nvRes.on('end', () => {
+    if (res.destroyed) return;
+    const tail = sseTailFrame(buf);
+    if (tail.kind === 'partial') {
+      logger.error('Stream NVIDIA terminou com frame incompleto', { bytes: Buffer.byteLength(buf), reason: tail.reason });
+      res.destroy(new Error('Stream NVIDIA terminou com frame SSE incompleto'));
+      return;
+    }
+    if (tail.kind === 'json') {
+      const j = tail.value;
+      const delta = j.choices && j.choices[0] && j.choices[0].delta && j.choices[0].delta.content;
+      if (delta) sseEvent(res, 'content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: delta } });
+    }
     finishStream(res);
+  });
+  // Corte no meio (reset, FIN sem o fim do chunked, teto): fechar com
+  // message_stop mostraria ao cliente uma resposta truncada como completa.
+  nvRes.on('error', (e) => {
+    logger.error('NVIDIA stream erro — resposta interrompida', { err: e.message });
+    if (!res.writableEnded && !res.destroyed) res.destroy(e);
   });
 }
 
@@ -1078,14 +1183,22 @@ function finishStream(res) {
 }
 
 // Resposta única OpenAI (NVIDIA) → Anthropic JSON, com o aviso de plano B.
-function jsonNvidiaToAnthropic(nvRes, res, reqBody, warning) {
-  let data = '';
-  nvRes.setEncoding('utf-8');
-  nvRes.on('data', c => data += c);
+// Falha de leitura (corte, teto) vai para `onReadFail`, que dá o aviso.
+function jsonNvidiaToAnthropic(nvRes, res, reqBody, warning, onReadFail) {
+  const chunks = [];
+  let bytes = 0;
+  nvRes.on('data', (c) => {
+    bytes += c.length;
+    if (bytes > MAX_UPSTREAM_BODY_BYTES) {
+      nvRes.destroy(responseTooLarge('Resposta NVIDIA'));
+      return;
+    }
+    chunks.push(c);
+  });
   nvRes.on('end', () => {
     let text = warning;
     try {
-      const j = JSON.parse(data);
+      const j = JSON.parse(Buffer.concat(chunks).toString('utf8'));
       text += (j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content) || '';
     } catch (e) {
       logger.error('NVIDIA JSON parse erro', { err: e.message });
@@ -1093,10 +1206,7 @@ function jsonNvidiaToAnthropic(nvRes, res, reqBody, warning) {
     }
     respondAnthropicText(reqBody, res, text);
   });
-  nvRes.on('error', (e) => {
-    logger.error('NVIDIA JSON erro', { err: e.message });
-    respondAnthropicText(reqBody, res, warning + '(falha ao ler a resposta do plano B)');
-  });
+  nvRes.on('error', onReadFail);
 }
 
 // Plano B: roteia a chamada para a NVIDIA NIM (OpenAI-compat), traduzindo o
@@ -1107,7 +1217,14 @@ function nvidiaFallback(reqBody, config, res, nimKey, hint) {
   const aviso = hint ? ` (${hint})` : '';
   const warning = `⚠️ Plano B ativo — limite do Claude esgotado${aviso}. Esta resposta foi gerada pela NVIDIA (${fbModel}), NÃO pelo Claude.\n\n`;
   const payload = JSON.stringify(openaiBody);
-  const endpoint = new URL((config.nim && config.nim.endpoint) || 'https://integrate.api.nvidia.com/v1/chat/completions');
+  let endpoint;
+  try {
+    endpoint = new URL((config.nim && config.nim.endpoint) || 'https://integrate.api.nvidia.com/v1/chat/completions');
+  } catch (err) {
+    const cfgErr = new Error(`nim.endpoint inválido (${err.message})`);
+    cfgErr.code = 'NIM_CONFIG';
+    throw cfgErr;
+  }
   const isHttps = endpoint.protocol === 'https:';
   const lib = isHttps ? https : http;
   const options = {
@@ -1123,22 +1240,55 @@ function nvidiaFallback(reqBody, config, res, nimKey, hint) {
     },
   };
   logger.info('Acionando plano B NVIDIA', { model: fbModel, stream: openaiBody.stream });
+  // Falha DEPOIS que a NVIDIA respondeu (corte no meio do corpo, teto) não é
+  // "inacessível". O reset chega por dois caminhos (request e resposta): só o
+  // primeiro responde.
+  let responded = false;
+  let reported = false;
+  let refusedStatus = 0; // a NVIDIA recusou: corte no corpo da recusa ainda é recusa
+  const refusalText = (status) => `⚠️ Limite do Claude esgotado e o plano B (NVIDIA) recusou a chamada (HTTP ${status}). Revise sua chave em /dashboard.`;
+  const reportFailure = (e) => {
+    if (reported) {
+      logger.debug('NVIDIA — falha já reportada', { err: e.message });
+      return;
+    }
+    reported = true;
+    if (refusedStatus) {
+      logger.error('NVIDIA fallback HTTP erro — corpo da recusa interrompido', { status: refusedStatus, err: e.message });
+      respondAnthropicText(reqBody, res, refusalText(refusedStatus));
+      return;
+    }
+    if (!responded) {
+      logger.error('NVIDIA fallback inacessível', { err: e.message });
+      respondAnthropicText(reqBody, res, `⚠️ Limite do Claude esgotado e o plano B (NVIDIA) está inacessível (${e.message}). Tente de novo ou revise /dashboard.`);
+      return;
+    }
+    logger.error('NVIDIA — resposta do plano B interrompida', { err: e.message, code: e.code });
+    respondAnthropicText(reqBody, res, e.code === 'RESPONSE_TOO_LARGE'
+      ? `⚠️ Limite do Claude esgotado; o plano B (NVIDIA) respondeu, mas a resposta passou do teto do router: ${e.message}.`
+      : `⚠️ Limite do Claude esgotado; o plano B (NVIDIA) respondeu, mas a conexão caiu no meio da resposta (${e.message}). Tente de novo.`);
+  };
   sendUpstreamRequest(lib, options, payload, (nvRes) => {
+    responded = true;
     if (nvRes.statusCode >= 400) {
+      refusedStatus = nvRes.statusCode;
       let eb = '';
-      nvRes.on('data', c => eb += c);
+      nvRes.on('data', (c) => { if (eb.length < 8192) eb += c; });
+      // Sem este listener, um FIN no meio do corpo só emite 'aborted' (nem
+      // 'end' nem 'error') e o cliente fica pendurado.
+      nvRes.on('error', reportFailure);
+      armRefusalIdle(nvRes, 'NVIDIA');
       nvRes.on('end', () => {
+        if (reported) return;
+        reported = true;
         logger.error('NVIDIA fallback HTTP erro', { status: nvRes.statusCode, body: eb.slice(0, 300) });
-        respondAnthropicText(reqBody, res, `⚠️ Limite do Claude esgotado e o plano B (NVIDIA) recusou a chamada (HTTP ${nvRes.statusCode}). Revise sua chave em /dashboard.`);
+        respondAnthropicText(reqBody, res, refusalText(nvRes.statusCode));
       });
       return;
     }
     if (openaiBody.stream) streamNvidiaToAnthropic(nvRes, res, reqBody, warning);
-    else                   jsonNvidiaToAnthropic(nvRes, res, reqBody, warning);
-  }, (e) => {
-    logger.error('NVIDIA fallback inacessível', { err: e.message });
-    respondAnthropicText(reqBody, res, `⚠️ Limite do Claude esgotado e o plano B (NVIDIA) está inacessível (${e.message}). Tente de novo ou revise /dashboard.`);
-  });
+    else                   jsonNvidiaToAnthropic(nvRes, res, reqBody, warning, reportFailure);
+  }, reportFailure);
 }
 
 // Headers hop-by-hop que NUNCA podem ser repassados verbatim de uma conexão
@@ -1362,7 +1512,9 @@ function emitAdapterEvents(res, events) {
   for (const item of events) sseEvent(res, item.event, item.data);
 }
 
-function proxyOpenAIResponse(upRes, res, reqBody, adapter) {
+// `onReadError` (opcional): quem chama responde à falha de leitura que chega
+// antes dos headers (o plano B avisa em texto); sem ele, 502.
+function proxyOpenAIResponse(upRes, res, reqBody, adapter, onReadError) {
   if (upRes.statusCode >= 400) {
     let errorBody = '';
     upRes.on('data', chunk => {
@@ -1392,6 +1544,7 @@ function proxyOpenAIResponse(upRes, res, reqBody, adapter) {
     sseHeaders(res);
     emitAdapterEvents(res, translator.start());
     let buffer = '';
+    let pending = 0;
     upRes.setEncoding('utf8');
     upRes.on('data', chunk => {
       buffer += chunk;
@@ -1403,7 +1556,16 @@ function proxyOpenAIResponse(upRes, res, reqBody, adapter) {
         const data = line.slice(5).trim();
         if (!data) continue;
         if (data === '[DONE]') {
-          emitAdapterEvents(res, translator.finish());
+          // finish() também valida (tool call sem nome): lançar aqui sairia do
+          // handler do stream e derrubaria o processo.
+          try {
+            emitAdapterEvents(res, translator.finish());
+          } catch (err) {
+            logger.error('Falha ao fechar stream OpenAI', { err: err.message });
+            res.destroy(err);
+            upRes.destroy(err);
+            return;
+          }
           continue;
         }
         try {
@@ -1415,15 +1577,25 @@ function proxyOpenAIResponse(upRes, res, reqBody, adapter) {
           return;
         }
       }
+      pending = ssePendingBytes(pending, chunk, buffer);
+      if (pending > MAX_UPSTREAM_BODY_BYTES) upRes.destroy(responseTooLarge('Linha SSE do stream OpenAI'));
     });
     upRes.on('end', () => {
       if (!res.destroyed) {
-        if (buffer.trim()) {
-          logger.error('Stream OpenAI terminou com frame incompleto', { bytes: Buffer.byteLength(buffer) });
+        const tail = sseTailFrame(buffer);
+        if (tail.kind === 'partial') {
+          logger.error('Stream OpenAI terminou com frame incompleto', { bytes: Buffer.byteLength(buffer), reason: tail.reason });
           res.destroy(new Error('Stream OpenAI terminou com frame SSE incompleto'));
           return;
         }
-        emitAdapterEvents(res, translator.finish());
+        try {
+          if (tail.kind === 'json') emitAdapterEvents(res, translator.consume(tail.value));
+          emitAdapterEvents(res, translator.finish());
+        } catch (err) {
+          logger.error('Falha ao fechar stream OpenAI', { err: err.message });
+          res.destroy(err);
+          return;
+        }
         res.end();
       }
     });
@@ -1434,17 +1606,20 @@ function proxyOpenAIResponse(upRes, res, reqBody, adapter) {
     return;
   }
 
-  let raw = '';
-  upRes.setEncoding('utf8');
+  // Buffers crus: com setEncoding o teto contaria caracteres, não bytes.
+  const chunks = [];
+  let bytes = 0;
   upRes.on('data', chunk => {
-    raw += chunk;
-    if (raw.length > 32 * 1024 * 1024) {
-      upRes.destroy(new Error('Resposta OpenAI excedeu 32 MiB'));
+    bytes += chunk.length;
+    if (bytes > MAX_UPSTREAM_BODY_BYTES) {
+      upRes.destroy(responseTooLarge('Resposta OpenAI'));
+      return;
     }
+    chunks.push(chunk);
   });
   upRes.on('end', () => {
     try {
-      const translated = adapter.fromUpstreamJson(JSON.parse(raw), reqBody);
+      const translated = adapter.fromUpstreamJson(JSON.parse(Buffer.concat(chunks).toString('utf8')), reqBody);
       res.writeHead(upRes.statusCode, { 'content-type': 'application/json' });
       res.end(JSON.stringify(translated));
     } catch (err) {
@@ -1459,10 +1634,12 @@ function proxyOpenAIResponse(upRes, res, reqBody, adapter) {
   });
   upRes.on('error', err => {
     logger.error('Erro ao ler resposta OpenAI', { err: err.message });
-    if (!res.headersSent) {
+    if (!res.headersSent && typeof onReadError === 'function') {
+      onReadError(err);
+    } else if (!res.headersSent) {
       res.writeHead(502, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ type: 'error', error: { type: 'proxy_error', message: err.message } }));
-    } else {
+    } else if (!res.writableEnded) {
       res.destroy(err);
     }
   });
@@ -1480,9 +1657,36 @@ function requestUpstream(upstreamTarget, path, headers, bodyStr, onResponse, onE
   return sendUpstreamRequest(lib, options, bodyStr, withLatencyLog(upstreamTarget, onResponse), onError, timeoutMs);
 }
 
+// Prepara o corpo JÁ traduzido para o BYOK: `model` ← destino de
+// `byok.modelMap` + injeção opcional de `byok.modelInjection`. Sempre devolve
+// cópia — o adapter Anthropic devolve o próprio reqBody, e mutá-lo contaminaria
+// a tentativa seguinte (ex.: plano B NVIDIA depois de um 429 do endpoint).
+// Lança em configuração inválida (fail-loud; quem chama decide como responder).
+function prepareByokOutbound(translatedBody, sourceModel, config, operation) {
+  const byokCfg = (config && config.byok) || {};
+  const prepared = byokModel.prepareByokBody(translatedBody, sourceModel, byokCfg);
+  const r = prepared.resolution;
+  if (r.matched) {
+    logger.info('BYOK — modelo mapeado', {
+      operation, origem: byokModel.modelForLog(sourceModel), destino: r.model, regra: r.rule, match: r.how,
+    });
+  } else if (byokCfg.modelMap != null && Object.keys(byokCfg.modelMap).length) {
+    logger.info('BYOK — nenhuma regra casou; model enviado verbatim', { operation, model: prepared.logModel });
+  }
+  return prepared;
+}
+
+function byokModelNote(prepared, sourceModel) {
+  if (!prepared) return '';
+  const sent = prepared.logModel;
+  return prepared.resolution.matched
+    ? `\n\nModelo enviado ao endpoint: \`${sent}\` (mapeado de \`${byokModel.modelForLog(sourceModel)}\` pela regra \`${prepared.resolution.rule}\`).`
+    : `\n\nModelo enviado ao endpoint: \`${sent}\` (sem regra de mapeamento).`;
+}
+
 // Plano B via ENDPOINT do usuário (BYOK). Baseado no `passthrough`: pipe limpo,
-// sem tee de telemetria, sem cooldown, sem classificar — o corpo vai como veio e
-// o `model` é repassado VERBATIM (o endpoint normaliza o nome sozinho).
+// sem tee de telemetria, sem cooldown, sem classificar. O `model` vai VERBATIM,
+// a menos que `byok.modelMap` tenha regra para ele (ver byok-model.js).
 //
 // FAIL-LOUD por contrato: 401/404/5xx e "model is not supported" NÃO caem em
 // silêncio para a NVIDIA — um erro de configuração precisa aparecer, senão o
@@ -1490,28 +1694,106 @@ function requestUpstream(upstreamTarget, path, headers, bodyStr, onResponse, onE
 // como retentável e cede a vez ao próximo plano.
 // @param {Function} onRetryable chamado quando o endpoint respondeu 429
 function byokFallback(reqBody, config, res, hint, upstreamTarget, onRetryable) {
-  const profile = requiredOperationProfile(config, upstreamTarget, 'generate');
+  // Perfil inválido (ex.: byok.openaiCompat, wireProtocol) é erro de CONFIG do
+  // BYOK: responde com a causa em vez de ceder à NVIDIA, como o modelMap abaixo.
+  // Recusas locais também dizem quando o Claude volta, como a NVIDIA e o endpoint.
+  const aviso = hint ? `\n\n⏳ ${hint}.` : '';
+  const profile = upstreamProfile.resolveOperationProfile(config, upstreamTarget, 'generate');
+  if (!profile.ok) {
+    logger.error('BYOK — configuração do upstream inválida', { err: profile.error });
+    respondAnthropicText(reqBody, res,
+      `⚠️ Configuração BYOK inválida: ${profile.error}.\n\n`
+      + `Revise /dashboard → BYOK ou o user-config.json.${aviso}`);
+    return;
+  }
   const adapter = protocolAdapters.getAdapter(profile.wireProtocol);
   const operationTarget = targetForProfile(upstreamTarget, profile);
-  const bodyStr = JSON.stringify(adapter.toUpstreamRequest(reqBody));
-  const headers = protocolHeaders({}, operationTarget, profile.wireProtocol, !!reqBody.stream);
+  // Falha de TRADUÇÃO (REQUEST_SHAPE) responde aqui com a causa — não é erro
+  // do mapeamento e não pode aparecer com a mensagem dele. Outro erro sobe.
+  let translated;
+  try {
+    translated = adapter.toUpstreamRequest(reqBody, profile);
+  } catch (err) {
+    if (err.code !== 'REQUEST_SHAPE') throw err;
+    logger.error('BYOK — request não pôde ser traduzida para o protocolo do endpoint', { err: err.message });
+    respondAnthropicText(reqBody, res, `⚠️ Esta request não pôde ir ao BYOK: ${err.message}.${aviso}`);
+    return;
+  }
+  let prepared;
+  try {
+    prepared = prepareByokOutbound(translated, reqBody.model, config, 'generate');
+  } catch (err) {
+    // Erro do mapeamento/injeção: responde explícito em vez de ceder à NVIDIA
+    // — senão o usuário nunca descobre. BYOK_REQUEST = a request (não a regra)
+    // é incompatível com a injeção; não mandar revisar regras que estão certas.
+    if (err.code === 'BYOK_REQUEST') {
+      logger.error('BYOK — request incompatível com a injeção de modelo', { err: err.message });
+      respondAnthropicText(reqBody, res,
+        `⚠️ Esta request não pôde ir ao BYOK: ${err.message}.\n\n`
+        + `As regras estão válidas; o problema está no \`model\` ou nos campos que a request trouxe.${aviso}`);
+      return;
+    }
+    logger.error('BYOK — mapeamento/injeção de modelo inválido', { err: err.message });
+    respondAnthropicText(reqBody, res,
+      `⚠️ Configuração BYOK inválida (mapeamento/injeção de modelo): ${err.message}.\n\n`
+      + `Revise as regras em /dashboard → BYOK.${aviso}`);
+    return;
+  }
+  const bodyStr = JSON.stringify(prepared.body);
+  const headers = byokModel.injectHeaders(
+    protocolHeaders({}, operationTarget, profile.wireProtocol, !!reqBody.stream),
+    prepared.injection, prepared.model);
   headers['content-length'] = Buffer.byteLength(bodyStr);
 
+  // Falha DEPOIS que o endpoint respondeu (corte no meio do corpo, teto) não é
+  // "inacessível" — mandar revisar a Base URL apontaria a causa errada. O reset
+  // chega por dois caminhos (request e resposta): só o primeiro responde.
+  let responded = false;
+  let reported = false;
+  let settleRefusal = null; // o endpoint recusou: corte no corpo da recusa ainda é recusa
+  const reportFailure = (e) => {
+    if (reported) {
+      logger.debug('BYOK — falha já reportada', { err: e.message });
+      return;
+    }
+    reported = true;
+    if (settleRefusal) {
+      logger.warn('BYOK — corpo da recusa interrompido; classificando pelo que chegou', { host: upstreamTarget.host, err: e.message });
+      settleRefusal();
+      return;
+    }
+    if (e.code === 'RESPONSE_TOO_LARGE') {
+      logger.error('BYOK — resposta do endpoint grande demais', { host: upstreamTarget.host, err: e.message });
+      respondAnthropicText(reqBody, res,
+        `⚠️ O endpoint BYOK (${upstreamTarget.host}) respondeu, mas a resposta passou do teto do router: ${e.message}.`);
+      return;
+    }
+    if (responded) {
+      logger.error('BYOK — conexão caiu no meio da resposta', { host: upstreamTarget.host, err: e.message });
+      respondAnthropicText(reqBody, res,
+        `⚠️ O endpoint BYOK (${upstreamTarget.host}) respondeu, mas a conexão caiu no meio da resposta: ${e.message}. Tente de novo.`);
+      return;
+    }
+    logger.error('BYOK — endpoint inacessível', { host: upstreamTarget.host, err: e.message });
+    respondAnthropicText(reqBody, res,
+      `⚠️ O endpoint BYOK (${upstreamTarget.host}) está inacessível: ${e.message}.\n\n`
+      + 'Revise a Base URL em /dashboard → BYOK.');
+  };
   requestUpstream(operationTarget, pathForProfile(profile), headers, bodyStr, (upRes) => {
+    responded = true;
     const cls = byok.classifyResponse(upRes.statusCode, '');
     if (cls.ok) {
       logger.info('BYOK — limite do Claude coberto pelo endpoint do usuário', {
-        host: operationTarget.host, status: upRes.statusCode,
+        host: operationTarget.host, status: upRes.statusCode, model: prepared.logModel,
       });
-      if (profile.wireProtocol === 'openai') proxyOpenAIResponse(upRes, res, reqBody, adapter);
+      if (profile.wireProtocol === 'openai') proxyOpenAIResponse(upRes, res, reqBody, adapter, reportFailure);
       else pipeUpstreamResponse(upRes, res);
       return;
     }
     // Lê um pedaço do corpo: o contrato manda gritar também por corpo
     // ("model is not supported") mesmo quando o status parece aceitável.
     let errBody = '';
-    upRes.on('data', (c) => { if (errBody.length < 8192) errBody += c; });
-    upRes.on('end', () => {
+    settleRefusal = () => {
       const finalCls = byok.classifyResponse(upRes.statusCode, errBody);
       if (finalCls.retryable && typeof onRetryable === 'function') {
         logger.warn('BYOK — endpoint no teto (429); cedendo ao próximo plano', { host: upstreamTarget.host });
@@ -1519,19 +1801,33 @@ function byokFallback(reqBody, config, res, hint, upstreamTarget, onRetryable) {
         return;
       }
       logger.error('BYOK — endpoint recusou a request', {
-        host: upstreamTarget.host, status: upRes.statusCode, causa: finalCls.reason,
+        host: upstreamTarget.host, status: upRes.statusCode, causa: finalCls.reason, model: prepared.logModel,
       });
-      respondAnthropicText(reqBody, res, byok.userAdvice(upRes.statusCode, finalCls, hint));
+      respondAnthropicText(reqBody, res, byok.userAdvice(upRes.statusCode, finalCls, hint) + byokModelNote(prepared, reqBody.model));
+    };
+    upRes.on('data', (c) => { if (errBody.length < 8192) errBody += c; });
+    // Sem este listener, um FIN no meio do corpo só emite 'aborted' (nem
+    // 'end' nem 'error') e o cliente fica pendurado.
+    upRes.on('error', reportFailure);
+    armRefusalIdle(upRes, 'BYOK');
+    upRes.on('end', () => {
+      if (reported) return;
+      reported = true;
+      settleRefusal();
     });
-  }, (e) => {
-    logger.error('BYOK — endpoint inacessível', { host: upstreamTarget.host, err: e.message });
-    respondAnthropicText(reqBody, res,
-      `⚠️ O endpoint BYOK (${upstreamTarget.host}) está inacessível: ${e.message}.\n\n`
-      + 'Revise a Base URL em /dashboard → BYOK.');
-  });
+  }, reportFailure);
 }
 
 function handleLimitExceeded(reqBody, config, res, hint) {
+  // A resposta ao cliente já começou (ou acabou): um plano B aqui reescreveria
+  // headers e derrubaria o processo com ERR_HTTP_HEADERS_SENT.
+  if (res.headersSent || res.writableEnded) {
+    logger.error('Plano B não iniciado — a resposta ao cliente já começou', {
+      headersSent: !!res.headersSent, writableEnded: !!res.writableEnded,
+    });
+    if (!res.writableEnded && !res.destroyed) res.destroy();
+    return;
+  }
   // O plano B do ENDPOINT vem antes do da NVIDIA: ele serve os mesmos modelos
   // Claude, então é a substituição mais fiel. Só entra se o usuário ligou.
   const target = byok.resolveUpstream(config, { onLimit: true }, UPSTREAM_FALLBACK);
@@ -1554,7 +1850,16 @@ function nvidiaOrMessage(reqBody, config, res, hint) {
   const nimKey = (config && config.nim && config.nim.apiKey) || process.env.NVIDIA_NIM_KEY || '';
   if (nimKey) {
     try { nvidiaFallback(reqBody, config, res, nimKey, hint); return; }
-    catch (e) { logger.error('Falha ao iniciar o plano B NVIDIA', { err: e.message }); }
+    catch (e) {
+      // A chave existe: dizer que falta configurá-la (e contar como "sem chave")
+      // mandaria o usuário consertar o que já está certo.
+      logger.error('Falha ao iniciar o plano B NVIDIA', { err: e.message, code: e.code });
+      const aviso = hint ? `\n\n⏳ ${hint}.` : '';
+      respondAnthropicText(reqBody, res, e.code === 'NIM_CONFIG'
+        ? `⚠️ Limite de acesso do Claude atingido e o plano B (NVIDIA) está mal configurado: ${e.message} — corrija \`nim.endpoint\` na configuração do router.${aviso}`
+        : `⚠️ Limite de acesso do Claude atingido e o plano B (NVIDIA) não pôde processar esta request: ${e.message}.${aviso}`);
+      return;
+    }
   }
   const msg = hint ? `${NO_NIM_MESSAGE}\n\n⏳ ${hint}.` : NO_NIM_MESSAGE;
   metricsNoKey();
@@ -2532,8 +2837,9 @@ function metricsSnapshot() {
 
 // Repasse VERBATIM ao upstream, preservando o path original. Usado para
 // `/v1/messages/count_tokens`, `/v1/models` e qualquer endpoint genérico: a
-// semântica passa verbatim (GENÉRICO), sem exceção. Não classifica, não troca
-// modelo e não faz tee — só repassa.
+// semântica passa verbatim (GENÉRICO). Não classifica e não faz tee. No
+// count_tokens, além de tirar o prefixo de alias, a rota BYOK passa o nome pelo
+// `byok.modelMap`/injeção (o mesmo que a geração enviaria); na assinatura, não.
 function passthrough(rawBody, originalHeaders, res, pathOriginal, config, _retried) {
   return passthroughGeneric('POST', rawBody, originalHeaders, res, pathOriginal, config, _retried);
 }
@@ -2555,6 +2861,7 @@ function passthroughGeneric(method, rawBody, originalHeaders, res, pathOriginal,
   let outboundPath = pathOriginal || '/';
   let wireProtocol = 'anthropic';
   let payload = rawBody || '';
+  let prepared = null;
   if (operation) {
     let profile;
     try {
@@ -2563,18 +2870,35 @@ function passthroughGeneric(method, rawBody, originalHeaders, res, pathOriginal,
       outboundPath = pathForProfile(profile);
       wireProtocol = profile.wireProtocol;
       if (operation === 'countTokens' && payload) {
-        const parsed = JSON.parse(payload);
+        let parsed;
+        try { parsed = JSON.parse(payload); } catch (parseErr) {
+          const reqErr = new Error(`corpo do count_tokens não é JSON válido: ${parseErr.message}`);
+          reqErr.code = 'REQUEST_JSON';
+          throw reqErr;
+        }
         unaliasBodyModel(parsed, config, baseTarget);
-        payload = JSON.stringify(parsed);
+        if (baseTarget.isByok) {
+          prepared = prepareByokOutbound(parsed, parsed && typeof parsed === 'object' ? parsed.model : undefined, config, 'countTokens');
+          payload = JSON.stringify(prepared.body);
+        } else {
+          payload = JSON.stringify(parsed);
+        }
       }
     } catch (err) {
+      if (err.code === 'BYOK_REQUEST' || err.code === 'REQUEST_JSON') {
+        logger.error(err.code === 'REQUEST_JSON' ? 'Corpo inválido no count_tokens' : 'Request incompatível com a injeção de modelo BYOK', { operation, err: err.message });
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: err.message } }));
+        return null;
+      }
       logger.error('Configuração inválida no passthrough', { operation, err: err.message });
       res.writeHead(502, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ type: 'error', error: { type: 'proxy_error', message: err.message } }));
       return null;
     }
   }
-  const headers = protocolHeaders(originalHeaders, upstreamTarget, wireProtocol, false);
+  let headers = protocolHeaders(originalHeaders, upstreamTarget, wireProtocol, false);
+  if (prepared) headers = byokModel.injectHeaders(headers, prepared.injection, prepared.model);
   if (payload.length) headers['content-length'] = Buffer.byteLength(payload);
   const lib2 = upstreamTarget.protocol === 'http:' ? http : https;
   const options = {
@@ -2637,11 +2961,24 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
   let generationProfile;
   let adapter;
   let outboundBody;
+  let prepared = null;
   try {
     generationProfile = requiredOperationProfile(config, upstreamTarget, 'generate');
     adapter = protocolAdapters.getAdapter(generationProfile.wireProtocol);
-    outboundBody = adapter.toUpstreamRequest(reqBody);
+    outboundBody = adapter.toUpstreamRequest(reqBody, generationProfile);
+    if (upstreamTarget.isByok === true) {
+      prepared = prepareByokOutbound(outboundBody, reqBody && typeof reqBody === 'object' ? reqBody.model : undefined, config, 'generate');
+      outboundBody = prepared.body;
+    }
   } catch (err) {
+    if (err.code === 'BYOK_REQUEST' || err.code === 'REQUEST_SHAPE') {
+      logger.error(err.code === 'REQUEST_SHAPE'
+        ? 'Request não pôde ser traduzida para o protocolo do upstream'
+        : 'Request incompatível com a injeção de modelo BYOK', { err: err.message });
+      res.writeHead(400, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: err.message } }));
+      return;
+    }
     logger.error('Não foi possível preparar a request para o upstream', { err: err.message });
     res.writeHead(502, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ type: 'error', error: { type: 'proxy_error', message: err.message } }));
@@ -2649,12 +2986,13 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
   }
   const operationTarget = targetForProfile(upstreamTarget, generationProfile);
   const bodyStr = JSON.stringify(outboundBody);
-  const headers = protocolHeaders(originalHeaders, operationTarget, generationProfile.wireProtocol, !!reqBody.stream);
+  let headers = protocolHeaders(originalHeaders, operationTarget, generationProfile.wireProtocol, !!reqBody.stream);
+  if (prepared) headers = byokModel.injectHeaders(headers, prepared.injection, prepared.model);
   headers['content-length'] = Buffer.byteLength(bodyStr);
 
   if (upstreamTarget.isByok) {
     logger.info('BYOK — request servida pelo endpoint do usuário', {
-      host: upstreamTarget.host, port: upstreamTarget.port, mode: upstreamTarget.mode,
+      host: upstreamTarget.host, port: upstreamTarget.port, mode: upstreamTarget.mode, model: prepared.logModel,
     });
   }
 
@@ -2662,7 +3000,9 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
     ? config.fallback.triggerStatuses
     : [429];
 
+  let upstreamResponded = false;
   requestUpstream(operationTarget, pathForProfile(generationProfile), headers, bodyStr, (upRes) => {
+    upstreamResponded = true;
     // Janela esgotada / limite → plano B (NÃO repassa o erro ao cliente).
     if (triggers.includes(upRes.statusCode)) {
       let errBody = '';
@@ -2690,6 +3030,13 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
         handleLimitExceeded(reqBody, config, res, resumeHint());
       });
       return;
+    }
+    if (prepared && upRes.statusCode >= 400) {
+      // Status do PRÓPRIO endpoint BYOK (não do plugin): registra o modelo
+      // efetivo para separar destino quebrado de defeito no mapeamento.
+      logger.error('BYOK — endpoint respondeu erro', {
+        host: operationTarget.host, status: upRes.statusCode, model: prepared.logModel,
+      });
     }
     if (generationProfile.wireProtocol === 'openai') {
       if (_consec429 !== 0) _consec429 = 0;
@@ -2765,6 +3112,12 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
     }
     upRes.pipe(res);
   }, (e) => {
+    // Depois que a resposta chegou, o handler dela decide o desfecho (ex.:
+    // reset lendo o corpo do 429 → plano B); um 502 aqui atropelaria.
+    if (upstreamResponded) {
+      logger.warn('Upstream caiu depois de responder — desfecho fica com o handler da resposta', { err: e.message });
+      return;
+    }
     logger.error('Upstream request error', { err: e.message });
     if (!res.headersSent) {
       res.writeHead(502);
@@ -2882,6 +3235,10 @@ async function createServer(config, mode, routerToken) {
     const methodOk = (r) => !r || !r.method || String(r.method).toUpperCase() === String(req.method).toUpperCase();
     // Dispatch declarativo: health/metrics/catalog + genericos passthrough/routed
     if (routeEarly && methodOk(routeEarly)) {
+      // Auth antes de qualquer despacho: passthrough e local:* retornam abaixo.
+      const auth = routeEarly.auth || (pathnameEarly.startsWith('/v1/') ? 'signature' : 'none');
+      if (auth === 'loopback' && !isLoopbackHost(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'Forbidden: non-loopback Host' })); return; }
+      if (auth === 'signature' && !hasSignature(req.headers)) { res.writeHead(401, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: { type: 'auth_error', message: 'missing signature' } })); return; }
       const up = routeEarly.upstream || '';
       if (up === 'local:health') {
         const authenticated = routerTokenMatches(req.headers['x-router-token'], routerToken);
@@ -2972,14 +3329,6 @@ async function createServer(config, mode, routerToken) {
       res.end(JSON.stringify({ error: 'method not allowed' }));
       return;
     }
-    if (routeEarly && routeEarly.auth) {
-      const auth = routeEarly.auth ?? (pathnameEarly.startsWith('/v1/') ? 'signature' : 'none');
-      if (auth === 'loopback' && !isLoopbackHost(req)) { res.writeHead(403, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: 'Forbidden: non-loopback Host' })); return; }
-      if (auth === 'signature' && !hasSignature(req.headers)) { res.writeHead(401, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: { type: 'auth_error', message: 'missing signature' } })); return; }
-    } else if (routeEarly) {
-      const authDefault = pathnameEarly.startsWith('/v1/') ? 'signature' : 'none';
-      if (authDefault === 'signature' && !hasSignature(req.headers)) { res.writeHead(401, { 'content-type': 'application/json' }); res.end(JSON.stringify({ error: { type: 'auth_error', message: 'missing signature' } })); return; }
-    }
     if (!routeEarly) {
       res.writeHead(404);
       res.end(JSON.stringify({ error: 'not found' }));
@@ -3041,6 +3390,34 @@ async function createServer(config, mode, routerToken) {
         logger.warn('Body parse error', { err: e.message });
         res.writeHead(400);
         res.end(JSON.stringify({ error: 'invalid json' }));
+        return;
+      }
+      if (body === null || typeof body !== 'object' || Array.isArray(body)) {
+        // JSON válido mas não-objeto (`null`, `"texto"`, `1`, `true`, `[]`): o
+        // fluxo abaixo lê e grava `body.model` (em strict, gravar num primitivo
+        // lança); o TypeError escaparia do handler async e derrubaria o router.
+        const kind = body === null ? 'null' : Array.isArray(body) ? 'lista' : typeof body;
+        logger.warn('Corpo JSON não-objeto em /v1/messages recusado', { kind });
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: `corpo da request é JSON ${kind} — esperado um objeto` } }));
+        return;
+      }
+      if (body.model !== undefined && typeof body.model !== 'string') {
+        // `model` que não é texto (42, objeto, lista, null): o roteamento abaixo
+        // trata o nome como string (tier, teto, effort, sticky) — recusar na
+        // entrada em vez de proteger cada ponto; `null` entra por coerência.
+        const kind = body.model === null ? 'null' : Array.isArray(body.model) ? 'lista' : typeof body.model;
+        logger.warn('Campo model não-texto em /v1/messages recusado', { kind });
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: `campo model é ${kind} — esperado texto` } }));
+        return;
+      }
+      if (body.stream !== undefined && typeof body.stream !== 'boolean') {
+        // `"false"` (texto) é truthy: viraria stream no upstream OpenAI.
+        const kind = body.stream === null ? 'null' : Array.isArray(body.stream) ? 'lista' : typeof body.stream;
+        logger.warn('Campo stream não-booleano em /v1/messages recusado', { kind });
+        res.writeHead(400, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: `campo stream é ${kind} — esperado booleano` } }));
         return;
       }
 
@@ -3350,6 +3727,9 @@ if (require.main === module) {
       // testes que provam que rotas laterais (count_tokens, catálogo) acompanham
       // o disjuntor da geração em byok.mode=on-limit.
       setCooldownUntil(ms) { _cooldownUntil = ms; },
+      // Encurta os prazos do corpo de recusa para os testes não esperarem 30 s.
+      setRefusalBodyLimits(limits) { Object.assign(refusalBodyLimits, limits); },
+      getRefusalBodyLimits() { return { ...refusalBodyLimits }; },
     },
     modelTier,
     tierWeight,
@@ -3416,6 +3796,7 @@ if (require.main === module) {
     byokAliasPrefix,
     modelAliasPolicy,
     unaliasBodyModel,
+    prepareByokOutbound,
     catalogScopeKey,
     // Ponto de CONSUMO do teto de timeout por isCustomEndpoint (ver comentário
     // em requestUpstream): docs/BACKLOG.md apontava que só a ORIGEM do dado

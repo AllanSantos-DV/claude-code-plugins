@@ -25,7 +25,7 @@ const steps = [
 const results = [];
 for (const step of steps) {
   console.log(`\n--- ${step.name} ---`);
-  const r = spawnSync(step.cmd, { stdio: 'inherit', shell: true });
+  const r = spawnSync(step.cmd, { stdio: 'inherit', shell: true, windowsHide: true });
   results.push({ name: step.name, ok: r.status === 0 });
 }
 

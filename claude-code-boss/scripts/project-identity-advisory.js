@@ -1,137 +1,53 @@
 #!/usr/bin/env node
 /**
- * project-identity-advisory.js — SessionStart hook.
+ * project-identity-advisory.js — SessionStart hook (strict project-id gate, 2.29.1).
  *
- * Under the SHARED mcp-memory daemon, the client scopes every memory op by a
- * `projectId` resolved from the folder (env `CCB_PROJECT_ID` → `.claude-boss-project`
- * marker → `basename(cwd)`). When there's NO marker and NO env override, recall
- * silently rides `basename(cwd)` — which changes per machine/clone and can COLLIDE
- * with another folder of the same name on the shared daemon (wrong/split memory).
+ * The client resolves the project id by a STRICT ladder (lib/project-id.js: env
+ * `CCB_PROJECT_ID` → `.memory/project.json` → legacy `.claude-boss-project` → git
+ * remote → nothing). With no id, memory is OFF for the folder: capture-dispatch and
+ * conversation-ingest already refuse to write, brain_retrieve_context returns nothing,
+ * and the KB tools refuse a `cwd` without id. Before 2.29.1 this hook was a
+ * consent-first nudge with a 7-day cooldown that still recommended the legacy marker —
+ * so exploratory folders kept pulling weak, unrelated recall and agents wrote lessons
+ * under invented basename ids (spike S0, 2026-09-25).
  *
- * The marker mechanism already exists (see README "Identidade do projeto"), but
- * nothing prompts the user to pin it — so in practice most projects never get the
- * stable identity the marker was built for. This hook closes that gap: it detects
- * the fragile-fallback state and injects a single guided advisory telling the agent
- * to OFFER (with the user's consent) to create the marker. It never writes anything
- * itself — the identity must be user-chosen, so the agent mediates.
- *
- * Silent when: not mcp-memory (local SQLite keys by basename BY DESIGN); a marker or
- * env id already exists; on per-folder cooldown; or opted out (`onboarding.projectIdentity`).
+ * Now (same model as the copilot-memory plugin): every session in a folder without id
+ * gets a VISIBLE notice — memory is off, and the agent must ask the user for the
+ * project name and create `.memory/project.json`. No cooldown; the Stop detector
+ * (project-id-stop.js) repeats it until the id exists. Opt-out:
+ * `onboarding.projectIdentity: false`.
  */
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
-
 const { readStdin, emitEmpty, emitJson } = require('./lib/hook-io.js');
-const { readMarker, sanitize, MARKER_FILE } = require('./lib/project-id.js');
-const { getBackendType, getMcpProjectId, getOnboarding } = require('./lib/brain-config.js');
-
-// Per-folder: nudge at most once per window (creating the marker silences it
-// permanently, so this only bounds the reminder for folders left on basename).
-const COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
+const { tryResolveProjectId } = require('./lib/project-id.js');
+const { getOnboarding } = require('./lib/brain-config.js');
 
 /**
- * PURE — does this session lack a STABLE project identity, so recall is riding the
- * fragile `basename(cwd)` fallback on the shared daemon?
- *
- * Only meaningful under mcp-memory: the local SQLite backend keys by basename by
- * design, so it NEVER nudges there. The stability test is a SUPERSET of the real
- * handshake's scope sources (`brain-backend`: `mcpCfg.projectId || resolveProjectId(cwd)`,
- * where resolveProjectId = env `CCB_PROJECT_ID` → `.claude-boss-project` marker →
- * basename): config-pinned `mcpProjectId` wins, then env, then marker; only the raw
- * basename fallback warrants a nudge.
- *
- * @param {object} o
- * @param {string} o.mode           backend type (`local` | `mcp-memory`)
- * @param {string} [o.cwd]          session working directory
- * @param {object} [o.env]          environment (defaults {})
- * @param {string} [o.mcpProjectId] config `backend.mcpMemory.projectId` (handshake override)
- * @param {object} [o.fs]           fs impl (for tests)
- * @returns {boolean} true iff a guided identity nudge is warranted
+ * PURE-ish — does this folder lack a project id (strict ladder)? `resolve` is a test
+ * seam (defaults to tryResolveProjectId with the real env/fs/git).
  */
-function needsProjectIdentityNudge({ mode, cwd, env = {}, mcpProjectId, fs: fsImpl = fs } = {}) {
-  if (mode !== 'mcp-memory') return false;          // local: basename is by design
-  // Config-pinned handshake id wins RAW (brain-backend `mcpCfg.projectId || _project`
-  // + mcp-client `projectId ? {projectId} : {}`): any truthy value is stamped as the
-  // scope, so the marker/env remedy is inert → treat any non-empty string as stable.
-  if (mcpProjectId) return false;
-  if (sanitize(env.CCB_PROJECT_ID)) return false;   // explicit env id → stable
-  if (cwd && readMarker(cwd, fsImpl)) return false;  // marker in tree → stable
-  return true;                                       // neither → basename fallback
+function needsProjectId(cwd, resolve = tryResolveProjectId) {
+  return !resolve({ cwd });
 }
 
-function dataDir() {
-  return require('./lib/data-dir.js').dataDir();
+/** The notice (pt-BR, user-facing via the agent). Shared with project-id-stop.js. */
+function buildNotice(cwd) {
+  const where = cwd ? ` (\`${cwd}\`)` : '';
+  return `[PROJETO] ERRO: esta pasta${where} não tem project id — a memória do Brain está DESLIGADA aqui: `
+    + 'nenhum recall é injetado e nada é salvo (capture_lesson/brain_store recusam quando recebem o `cwd` — passe sempre). '
+    + 'Avise o usuário e pergunte o nome do projeto (ex.: "owner/repo"). Com a resposta, crie '
+    + '`.memory/project.json` na raiz do projeto com '
+    + '`{"version":"1","metadata":{"defaults":{"project_id":"<nome>"}}}` '
+    + '— ou trabalhe num repositório git com remote origin. '
+    + 'NÃO chame brain_store/capture_lesson com um `project` inventado enquanto isso.';
 }
 
-function stampDir() {
-  return path.join(dataDir(), '.runtime', 'project-identity-advisory');
-}
-
-/**
- * Per-FOLDER stamp file: each folder gets its OWN file (named by a stable hash of
- * the cwd), so concurrent SessionStart hooks for DIFFERENT folders never share a
- * file → no read-modify-write lost updates across folders. Combined with the
- * atomic write in stamp(), a reader never sees a torn file either.
- */
-function stampFileFor(cwd) {
-  const h = crypto.createHash('sha1').update(String(cwd)).digest('hex').slice(0, 16);
-  return path.join(stampDir(), `${h}.json`);
-}
-
-/** Read the folder's stamp ts; missing/corrupt/torn → null (fail-open). */
-function readTs(file) {
-  try {
-    const ts = JSON.parse(fs.readFileSync(file, 'utf8')).ts;
-    return Number.isFinite(ts) ? ts : null;
-  } catch { /* absent/corrupt → not stamped */ return null; }
-}
-
-/** True iff this folder was stamped within COOLDOWN_MS of `now`. */
-function onCooldown(file, now = Date.now()) {
-  const last = readTs(file);
-  return last !== null && (now - last) < COOLDOWN_MS;
-}
-
-/** Record this folder's nudge at `now`. Atomic (temp+rename) + best-effort. */
-function stamp(file, now = Date.now()) {
-  try {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify({ ts: now }));
-    fs.renameSync(tmp, file);  // atomic swap: readers never observe a partial write
-  } catch (e) { void e; /* stamp is best-effort; never block the session */ }
-}
-
-/** The guided advisory text. Consent-first: the agent OFFERS, never auto-writes. */
-function buildAdvisory(basename) {
-  const name = basename ? ` (\`${basename}\`)` : '';
-  return `[PROJETO] Esta pasta não tem identidade de memória fixa — o recall está usando o nome da pasta${name}, `
-    + `que muda entre máquinas/clones e pode colidir no daemon compartilhado (memória trocada/dividida). `
-    + `Se o usuário for trabalhar de verdade aqui, OFEREÇA fixar um id estável: pergunte o nome do projeto e, `
-    + `com o "ok" dele, crie o arquivo \`${MARKER_FILE}\` na raiz do projeto com esse nome numa única linha `
-    + `(processo em "Identidade do projeto" no README do plugin). Se ele preferir manter o padrão, siga sem alterar.`;
-}
-
-async function run(event) {
+async function run(event, { resolve } = {}) {
   if (!getOnboarding().projectIdentity) return null;     // opted out
-
   const cwd = (event && typeof event.cwd === 'string' && event.cwd) ? event.cwd : process.cwd();
-  const nudge = needsProjectIdentityNudge({
-    mode: getBackendType(),
-    cwd,
-    env: process.env,
-    mcpProjectId: getMcpProjectId(),
-  });
-  if (!nudge) return null;
-
-  const file = stampFileFor(cwd);
-  if (onCooldown(file)) return null;
-  stamp(file);
-
-  return buildAdvisory(path.basename(cwd));
+  if (!needsProjectId(cwd, resolve)) return null;
+  return buildNotice(cwd);
 }
 
 async function main() {
@@ -151,14 +67,4 @@ if (require.main === module) {
   main().catch((err) => { console.error(`[project-identity-advisory] ${err.message}`); emitEmpty(); });
 }
 
-module.exports = {
-  needsProjectIdentityNudge,
-  onCooldown,
-  stamp,
-  readTs,
-  stampFileFor,
-  stampDir,
-  run,
-  buildAdvisory,
-  COOLDOWN_MS,
-};
+module.exports = { needsProjectId, buildNotice, run };

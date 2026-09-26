@@ -122,7 +122,7 @@ function buildWrapper(pluginRoot, dataDir, log) {
   if (!csc) { log('shim: csc.exe (.NET Framework) não encontrado — sem como compilar o wrapper'); return null; }
   try { fs.mkdirSync(outDir, { recursive: true }); } catch (e) { void e; }
   try {
-    execSync(`"${csc}" /nologo /out:"${out}" "${src}"`, { stdio: ['pipe', 'pipe', 'pipe'], timeout: 30000 });
+    execSync(`"${csc}" /nologo /out:"${out}" "${src}"`, { stdio: ['pipe', 'pipe', 'pipe'], timeout: 30000, windowsHide: true });
   } catch (e) {
     log(`shim: falha ao compilar wrapper: ${e.message}`);
     return null;

@@ -21,7 +21,7 @@ const JAR_ASSET_RE = /^mcp-memory-server-\d+(?:\.\d+){1,3}(-gpu)?\.jar$/;
 /** NVIDIA-only: nvidia-smi ships with the driver on Windows/Linux, absent everywhere else
  *  (including AMD/Apple GPUs) — the CPU-only jar is the correct default for those. */
 function detectGpu() {
-  const r = spawnSync('nvidia-smi', ['--query-gpu=name', '--format=csv,noheader'], { encoding: 'utf-8', timeout: 5000 });
+  const r = spawnSync('nvidia-smi', ['--query-gpu=name', '--format=csv,noheader'], { encoding: 'utf-8', timeout: 5000, windowsHide: true });
   if (r.error || r.status !== 0) return { present: false };
   const name = (r.stdout || '').trim().split('\n')[0].trim();
   return name ? { present: true, name } : { present: false };

@@ -25,8 +25,21 @@ function extractJarPath(commandLine) {
   return jarIndex >= 0 ? String(args[jarIndex + 1] || '') : '';
 }
 
+// Default seams call child_process directly with windowsHide forced after the
+// spread (never trusted to callers): these run from console-less hooks.
+// args must be an array: anything else in that slot would be read by Node as
+// the options (or a callback) and the forced windowsHide ignored — fail loud.
+const hiddenExecFileSync = (file, args, opts) => {
+  if (!Array.isArray(args)) throw new TypeError('hiddenExecFileSync: args must be an array (options go in the 3rd argument)');
+  return execFileSync(file, args, { ...opts, windowsHide: true });
+};
+const hiddenSpawn = (file, args, opts) => {
+  if (!Array.isArray(args)) throw new TypeError('hiddenSpawn: args must be an array (options go in the 3rd argument)');
+  return spawn(file, args, { ...opts, windowsHide: true });
+};
+
 function inspectWindowsProcess(pid, deps = {}) {
-  const exec = deps.execFileSync || execFileSync;
+  const exec = deps.execFileSync || hiddenExecFileSync;
   const script = `$p=Get-CimInstance Win32_Process -Filter "ProcessId=${pid}";`
     + 'if($p){[pscustomobject]@{ExecutablePath=$p.ExecutablePath;CommandLine=$p.CommandLine}|ConvertTo-Json -Compress}';
   const raw = exec('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
@@ -120,7 +133,7 @@ async function prepareVerifiedUpdate(currentJar, latestVersion, deps = {}) {
 }
 
 function spawnDetached(executable, args, deps = {}) {
-  const spawnFn = deps.spawn || spawn;
+  const spawnFn = deps.spawn || hiddenSpawn;
   const child = spawnFn(executable, args, {
     detached: true,
     stdio: 'ignore',
@@ -205,5 +218,8 @@ module.exports = {
   prepareVerifiedUpdate,
   spawnDetached,
   restartForBootUpdate,
+  // test seams: the default child_process wrappers (force windowsHide)
+  _hiddenExecFileSync: hiddenExecFileSync,
+  _hiddenSpawn: hiddenSpawn,
   rollbackAfterFailedUpdate,
 };

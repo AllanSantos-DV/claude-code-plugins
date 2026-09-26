@@ -70,6 +70,7 @@ config efetiva (lida por ensure/server/dashboard)
 | `byok.baseUrl` | string | `""` | Fallback legado para derivar URLs operacionais |
 | `byok.wireProtocol` | enum | `"anthropic"` | `anthropic` ou `openai` |
 | `byok.endpoints.*` | URL | `""` | Mesmas quatro URLs por operação de `upstream.endpoints` |
+| `byok.openaiCompat` | objeto | `{}` (= `"null"`/`"keep"`/`"text"`) | Só com `wireProtocol: "openai"`. Valores são strings: `assistantEmptyContent` `"null"` ou `"empty"` (vale para assistant com tool calls e sem texto), `systemInMessages` `"keep"` ou `"reject"`, `toolReference` `"text"` ou `"reject"`. Valor ou chave inválida = config do BYOK inválida |
 | `byok.headers` | map | `{}` | Headers livres (ex.: `Authorization: Bearer ...`). **Nunca commitar valores reais** |
 | `byok.classifyRemote` | bool | `false` | **ADR-010**: classifica via SEU endpoint (~500 chars/sessão, modelo haiku). on-limit: só com cooldown ativo. Falha → MiniLM local |
 | `byok.modelAliasPrefix` | string | `"anthropic-"` | Prefixo externo usado para modelos não Anthropic aparecerem no picker |
@@ -147,6 +148,8 @@ nenhum                       → off            (cinza)
 | `retrieval.fastTopK` | `1` | Resultados na busca rápida (in-loop) |
 | `retrieval.deepTopK` | `3` | Resultados na busca profunda |
 | `retrieval.minScoreFast` | `0.50` | Score mínimo cosine (fast) — calibrado p/ multilingual MiniLM |
+| `kb.retrieval.compose.maxQueryChars` | `800` | (`mcp-memory`) Teto do texto do prompt enviado ao recall; o custo de embed+FTS do daemon cresce com o tamanho (4,7k chars → 14 s; 800 → ~1 s). `0` = prompt inteiro |
+| `kb.retrieval.compose.projectArmMinScore` | `0.65` | (`mcp-memory`) Score mínimo dos hits do braço de projeto (`search_memory` filtrado pelo project id), que roda sempre em paralelo ao compose. Abaixo disso é ruído (~0,5–0,63) |
 | `kb.maxEntriesPerProject` | `10000` | Teto de entradas por projeto |
 | `kb.submission.minBashLines` | `3` | Mínimo de linhas de output Bash p/ submissão |
 | `kb.submission.minOutputChars` | `1500` | Mínimo de chars p/ submissão |
@@ -178,6 +181,11 @@ O recall e escopado por `projectId`. Resolucao em ordem (fail-loud se nada resol
 3. Legacy `.claude-boss-project` na raiz — deprecado, ainda honrado
 4. Git remote origin normalizado (`host/owner/repo`)
 
+Sem id (2.29.1): memória desligada na pasta — `brain_retrieve_context` volta vazio,
+os KB tools com `cwd` sem id são recusados (`NO_PROJECT_ID`), e o SessionStart +
+Stop (`project-id-stop`) pedem para definir o id. Avisos desligáveis com
+`onboarding.projectIdentity: false`.
+
 ---
 
 ## 3. Hooks
@@ -206,7 +214,7 @@ Trocar perfil: `/dashboard` → aba Hooks, ou `/boss-profile <standard|dev|free>
 | `UserPromptSubmit` | model-router-ensure, brain-health, correction-detect, active-research-detect, brain_retrieve_context (MCP) |
 | `PreToolUse` | curation-guard + error-guard (Bash); policy-enforce-shadow (Edit); graph-guard (Grep/Glob) |
 | `PostToolUse` | curation-detect, decision-detect, error-resolve (Bash); file-edit-detect (Edit/Write/NotebookEdit); policy-glob-inject (Edit/Write/MultiEdit/NotebookEdit) |
-| `Stop` | stop-dispatcher (coordena 16 detectors in-process) |
+| `Stop` | stop-dispatcher (coordena 17 detectors in-process, incl. project-id-stop) |
 | `SubagentStart` | policy-inject |
 | `UserPromptExpansion` | skill-metric |
 | `PostToolUseFailure` | curation-detect, failure-detect |

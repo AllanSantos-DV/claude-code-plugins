@@ -40,7 +40,7 @@ const MIN_NODE = [22, 13, 0];
 
 function run(cmd, opts = {}) {
   try {
-    execSync(cmd, { stdio: 'inherit', cwd: PLUGIN_ROOT, timeout: 120000, ...opts });
+    execSync(cmd, { stdio: 'inherit', cwd: PLUGIN_ROOT, timeout: 120000, ...opts, windowsHide: true });
     return true;
   } catch (err) {
     console.error(`[PLUGIN-SETUP] command failed: ${cmd} → ${err.message}`);

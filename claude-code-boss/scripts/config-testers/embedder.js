@@ -27,7 +27,7 @@ async function test(input) {
     if (provider === 'ollama') {
       const { spawn } = require('child_process');
       const pullResult = await new Promise((resolve) => {
-        const p = spawn('ollama', ['pull', model], { stdio: ['ignore', 'pipe', 'pipe'] });
+        const p = spawn('ollama', ['pull', model], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
         let stderr = '';
         p.stderr.on('data', (d) => { stderr += d.toString(); });
         p.on('error', (err) => resolve({ ok: false, error: `Ollama not installed or not in PATH: ${err.message}` }));

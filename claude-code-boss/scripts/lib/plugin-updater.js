@@ -305,16 +305,16 @@ function unzip(zipFile, destDir) {
     const r = spawnSync(
       'powershell',
       ['-NoProfile', '-NonInteractive', '-Command', psCmd],
-      { encoding: 'utf8' }
+      { encoding: 'utf8', windowsHide: true }
     );
     if (r.status !== 0) {
       throw new Error(`Expand-Archive falhou: ${String(r.stderr || '').split('\n')[0]}`);
     }
     return;
   }
-  let r = spawnSync('unzip', ['-o', zipFile, '-d', destDir], { encoding: 'utf8' });
+  let r = spawnSync('unzip', ['-o', zipFile, '-d', destDir], { encoding: 'utf8', windowsHide: true });
   if (r.error || r.status !== 0) {
-    r = spawnSync('tar', ['-xf', zipFile, '-C', destDir], { encoding: 'utf8' });
+    r = spawnSync('tar', ['-xf', zipFile, '-C', destDir], { encoding: 'utf8', windowsHide: true });
     if (r.status !== 0) {
       throw new Error(`unzip/tar falhou: ${String(r.stderr || '').split('\n')[0]}`);
     }
@@ -336,11 +336,12 @@ function killStale(keepSha, selfPid) {
         `} | ForEach-Object { Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue }`;
       spawnSync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], {
         encoding: 'utf8',
+        windowsHide: true,
       });
     } else {
       // brain-server/index.js is a distinct process from the dashboard (self),
       // so pkill by module path won't hit us.
-      spawnSync('pkill', ['-f', 'servers/brain-server/index.js'], { encoding: 'utf8' });
+      spawnSync('pkill', ['-f', 'servers/brain-server/index.js'], { encoding: 'utf8', windowsHide: true });
     }
   } catch (err) {
     void err;
@@ -357,6 +358,14 @@ async function checkForUpdate(root) {
   return { ...state, repo, sha: info.sha, node: info.node };
 }
 
+// Default seam: windowsHide forced after the spread, never trusted to callers.
+// args must be an array: anything else in that slot would be read by Node as
+// the options and the forced windowsHide ignored — fail loud instead.
+const hiddenSpawnSync = (cmd, args, opts) => {
+  if (!Array.isArray(args)) throw new TypeError('hiddenSpawnSync: args must be an array (options go in the 3rd argument)');
+  return spawnSync(cmd, args, { ...opts, windowsHide: true });
+};
+
 async function performUpdate(root, opts = {}) {
   // Injectable IO seams (default = the real functions) so the apply/registry/
   // rollback path is hermetically unit-testable without network or a shell.
@@ -364,7 +373,7 @@ async function performUpdate(root, opts = {}) {
   const _download = io.download || download;
   const _unzip = io.unzip || unzip;
   const _sha256File = io.sha256File || sha256File;
-  const _spawnSync = io.spawnSync || spawnSync;
+  const _spawnSync = io.spawnSync || hiddenSpawnSync;
   const _fetchRelease = io.fetchRelease || fetchLatestRelease;
   const _resolveSha = io.resolveSha || resolveCommitSha;
 
@@ -444,6 +453,7 @@ async function performUpdate(root, opts = {}) {
         encoding: 'utf8',
         timeout: 5 * 60 * 1000,
         shell: process.platform === 'win32',
+        windowsHide: true,
       });
       if (r.status !== 0) {
         const tail = String(r.stderr || r.stdout || '').split('\n').filter(Boolean).slice(-3).join(' ');
@@ -522,4 +532,6 @@ module.exports = {
   DEFAULT_REPO,
   MARKETPLACE,
   PLUGIN,
+  // test seam: the default spawnSync used by performUpdate (forces windowsHide)
+  _hiddenSpawnSync: hiddenSpawnSync,
 };

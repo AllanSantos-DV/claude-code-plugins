@@ -108,6 +108,7 @@ function embedOllama(text) {
       encoding: 'utf-8',
       timeout: 15000,
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     });
     return JSON.parse(out.trim());
   } catch (err) {

@@ -176,7 +176,7 @@ function spawnDaemon({ pluginRoot, dataDir, port, env }) {
   const child = spawn(
     process.execPath,
     [INDEX, '--port', String(port), '--plugin-data', dataDir],
-    { detached: true, stdio: 'ignore', env: childEnv },
+    { detached: true, stdio: 'ignore', windowsHide: true, env: childEnv },
   );
   child.unref();
   return child.pid;

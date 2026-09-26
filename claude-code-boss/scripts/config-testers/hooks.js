@@ -47,6 +47,7 @@ function syntaxCheck(scriptPath) {
   const r = spawnSync(process.execPath, ['--check', scriptPath], {
     encoding: 'utf-8',
     timeout: 5000,
+    windowsHide: true,
   });
   if (r.error) return { ok: false, error: r.error.message };
   if (r.status !== 0) return { ok: false, error: (r.stderr || '').trim().split('\n').slice(0, 3).join(' | ') };

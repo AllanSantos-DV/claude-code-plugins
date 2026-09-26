@@ -72,7 +72,7 @@ function writeCache(cwd, md) {
 function runCmd(cmd, args, cwd, timeoutMs) {
   return new Promise((resolve) => {
     let done = false;
-    const p = spawn(cmd, args, { cwd, env: process.env });
+    const p = spawn(cmd, args, { cwd, env: process.env, windowsHide: true });
     let out = '', err = '';
     const finish = (code) => {
       if (done) return; done = true;

@@ -49,6 +49,7 @@ function run() {
   const child = spawn(process.execPath, [DASHBOARD_SCRIPT], {
     detached: true,
     stdio: 'ignore',
+    windowsHide: true,
     env: {
       ...process.env,
       DASHBOARD_NO_OPEN: '0', // allow browser open on first start

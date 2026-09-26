@@ -237,6 +237,8 @@ function getIngestion() {
  *   maxInjectChars   (int,  default 6000) — hard cap on total injected fact text.
  *   timeoutMs        (int,  default 8000) — abort a slow compose → degraded (empty).
  *   overlay          (obj  | null)        — generic metadata overlay for active blocks.
+ *   maxQueryChars    (int,  default 800)  — recall query cap; 0 = send the whole prompt.
+ *   projectArmMinScore (num, default 0.65) — floor for the project-arm search_memory hits.
  */
 function getRecallCompose() {
   const cfg = load();
@@ -247,6 +249,12 @@ function getRecallCompose() {
     maxInjectChars: Number.isInteger(c.maxInjectChars) && c.maxInjectChars > 0 ? c.maxInjectChars : 6000,
     timeoutMs: Number.isInteger(c.timeoutMs) && c.timeoutMs > 0 ? c.timeoutMs : 8000,
     overlay,
+    // 2.29.1: the daemon's embed + FTS cost grows with query length (4.7k chars → 14 s
+    // in compose; capped at 800 → 1.1 s, same top hit). 0 disables the cap.
+    maxQueryChars: Number.isInteger(c.maxQueryChars) && c.maxQueryChars >= 0 ? c.maxQueryChars : 800,
+    // 2.29.1: hybrid scores of unrelated prompts sit at ~0.5–0.63, relevant ones at
+    // ~0.65–0.77 — below the floor the project arm injects noise, not memory.
+    projectArmMinScore: typeof c.projectArmMinScore === 'number' ? c.projectArmMinScore : 0.65,
     // Pool-warming (ADR-017): fire a home-federated search alongside compose so
     // ingested HOME docs accumulate recall signal and graduate (async Dreaming).
     // Non-injected; default ON. Set false to disable the extra background search.
@@ -268,8 +276,7 @@ function getBackendType() {
  * The mcp-memory handshake projectId pinned in config (`backend.mcpMemory.projectId`).
  * When non-empty it WINS over the cwd-resolved id (`brain-backend`: `mcpCfg.projectId
  * || _project`), so recall is stable regardless of marker/env/basename. Empty → the
- * cwd resolution (env → marker → basename) decides. Used by the onboarding advisory
- * so its "is identity stable?" test is a true superset of the handshake's sources.
+ * cwd resolution (strict ladder, see project-id.js) decides.
  * @returns {string}
  */
 function getMcpProjectId() {
@@ -280,10 +287,9 @@ function getMcpProjectId() {
 
 /**
  * Onboarding nudges (config: `onboarding`).
- *   projectIdentity (bool, default true) — SessionStart advisory when a
- *     mcp-memory session has no stable project identity (no `.claude-boss-project`
- *     marker and no `CCB_PROJECT_ID`), so recall is silently riding the fragile
- *     `basename(cwd)` fallback. Set false to opt out (keep basename silently).
+ *   projectIdentity (bool, default true) — SessionStart notice + the project-id-stop
+ *     Stop detector when the cwd has no project id (strict ladder: memory is off
+ *     there). Set false to silence both (memory stays off in that folder).
  * @returns {{projectIdentity:boolean}}
  */
 function getOnboarding() {

@@ -77,6 +77,7 @@ async function run(event) {
   const child = spawn(process.execPath, args, {
     detached: true,
     stdio: 'ignore',
+    windowsHide: true,
     cwd: ev.cwd && fs.existsSync(ev.cwd) ? ev.cwd : undefined,
     env: { ...process.env, CLAUDE_PLUGIN_ROOT: root, CLAUDE_PLUGIN_DATA: data },
   });

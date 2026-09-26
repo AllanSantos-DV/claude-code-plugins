@@ -106,7 +106,7 @@ function _emit(step, status, detail) {
 
 async function checkJava() {
   return new Promise((resolve) => {
-    const r = spawnSync('java', ['-version'], { encoding: 'utf-8', timeout: 5000 });
+    const r = spawnSync('java', ['-version'], { encoding: 'utf-8', timeout: 5000, windowsHide: true });
     if (r.error) {
       return resolve({ ok: false, error: r.error.code === 'ENOENT' ? 'Java 21+ not found in PATH' : r.error.message });
     }
@@ -211,7 +211,7 @@ async function downloadJar(downloadUrl, jarPath) {
 async function spawnDaemon(jarPath, workspacePath, javaArgs) {
   return new Promise((resolve, reject) => {
     const args = [...javaArgs, '-jar', jarPath, '--workspace', workspacePath || '.', '--transport', 'http'];
-    const proc = spawn('java', args, { stdio: 'ignore', detached: true });
+    const proc = spawn('java', args, { stdio: 'ignore', detached: true, windowsHide: true });
     proc.unref();
     const deadline = Date.now() + MINDATA_TIMEOUT_MS;
     const check = async () => {

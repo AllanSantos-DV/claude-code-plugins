@@ -25,6 +25,7 @@ claude-code-boss/.runtime/
 docs/maps/
 docs/plans/
 docs/research/
+docs/PLAN-*.md
 # claude-code-boss/docs/: planning/analysis local-only. Product docs
 # (GETTING-STARTED, CONFIGURATION, FUNCTIONAL-SPEC, features/) ARE versioned —
 # keep ignoring only internal plan/analysis artifacts:
@@ -81,3 +82,8 @@ claude-code-boss/.lcov*
 
 # Cache local do hook de design (impeccable) — artefato de ferramenta do dev
 .impeccable/
+
+# Artefatos locais de dev tooling — nunca versionar
+.token-guard/
+.opencode/
+.worktrees/

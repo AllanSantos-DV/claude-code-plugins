@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Claude Code Boss — a memória local do seu Claude Code</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%230c0b0f'/%3E%3Cg fill='none' stroke='%23e59247' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M6 8h12M6 12h8M6 16h10'/%3E%3C/g%3E%3C/svg%3E" />
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica local, curadoria anti context-bloat e Model Router com custom upstream ou BYOK em protocolos Anthropic e OpenAI. v2.29.0, MIT." />
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica local, curadoria anti context-bloat e Model Router com custom upstream ou BYOK em protocolos Anthropic e OpenAI. v2.29.1, MIT." />
 <style>
   :root{
     --bg:#0c0b0f; --surface:#131118; --surface-2:#191620; --ink:#edeae1; --muted:#a09d93;
@@ -171,12 +171,16 @@
     overflow-wrap:break-word }
   .route-state{ font-family:var(--mono); font-size:9.5px; letter-spacing:.1em; text-transform:uppercase;
     color:var(--muted); white-space:nowrap }
-  .router-details{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-top:14px }
+  .router-details{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin-top:14px }
   .router-detail{ border:1px solid var(--line); border-radius:13px; padding:17px; background:var(--surface) }
   .router-detail .k{ font-family:var(--mono); font-size:10px; letter-spacing:.14em;
     text-transform:uppercase; color:var(--amber); margin:0 0 9px }
   .router-detail b{ display:block; font-size:14px; margin-bottom:6px }
   .router-detail p{ margin:0; color:var(--muted); font-size:12.8px; line-height:1.52 }
+  .router-detail p.more{ margin-top:10px }
+  .router-detail p b{ display:inline; font-size:inherit; margin:0; color:var(--ink) }
+  .router-detail .k .new{ display:inline-block; margin-left:6px; padding:1px 6px; border:1px solid var(--amber);
+    border-radius:999px; font-size:9px; letter-spacing:.08em }
   .alias-flow{ display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin:10px 0 0;
     font-family:var(--mono); font-size:10.5px; color:var(--muted) }
   .alias-flow span{ border:1px solid var(--line); background:var(--bg); border-radius:6px; padding:4px 7px }
@@ -293,7 +297,7 @@
     <a href="#leve">Custo por sessão</a>
     <a href="#instalar">Instalar</a>
     <a href="tech.html">Detalhes técnicos</a>
-    <a class="ver" href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">v2.29.0</a>
+    <a class="ver" href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">v2.29.1</a>
   </nav>
 </header>
 
@@ -309,7 +313,7 @@
       <a class="btn btn--ghost" href="tech.html">Ver detalhes técnicos</a>
     </div>
     <ul class="facts">
-      <li><span class="dot" aria-hidden="true"></span><b>v2.29.0</b></li>
+      <li><span class="dot" aria-hidden="true"></span><b>v2.29.1</b></li>
       <li><span class="dot" aria-hidden="true"></span>Claude Code Desktop + <b>Node 22.13+</b></li>
       <li><span class="dot" aria-hidden="true"></span><b>Sem chave de API</b> no caminho padrão</li>
       <li><span class="dot" aria-hidden="true"></span>Licença <b>MIT</b></li>
@@ -437,6 +441,15 @@
         <b>Tradução completa na rota OpenAI</b>
         <p>Mensagens, imagens base64 suportadas, tools, tool results, JSON e stop reasons atravessam a ponte nos dois sentidos. No stream SSE, nomes de tool calls fragmentados são recompostos e o usage do chunk final separado chega no fechamento. Campo incompatível falha alto; nada some em silêncio.</p>
       </article>
+      <article class="router-detail">
+        <p class="k">04 · mapeie <span class="new">novo na v2.29.1</span></p>
+        <b>Mapeamento de modelo, só no BYOK</b>
+        <p>Opcional e vazio por padrão: regras origem → destino trocam o <code>model</code> enviado ao seu endpoint, em qualquer rota BYOK (<code>always</code>, fallback <code>on-limit</code> e cooldown). A ordem é previsível: ID exato, depois o ID sem data de snapshot, depois padrões com <code>*</code> (o mais específico vence). Sem regra, o modelo segue como veio; o caminho da assinatura nunca é alterado.</p>
+        <div class="alias-flow" aria-label="Exemplo de regra de mapeamento de modelo">
+          <span>claude-sonnet-5-*</span><i>→</i><span>provedor.modelo-c</span>
+        </div>
+        <p class="more">Para gateways que roteiam por outro campo, a <b>injeção</b> (desligada por padrão) grava o modelo resolvido num campo do corpo ou num header via template <code>{model}</code>. Regras e templates são editados em <code>/dashboard</code> → BYOK; regra inválida é recusada e falha alto, sem cair em silêncio para o plano B.</p>
+      </article>
     </div>
 
     <div class="router-note">
@@ -522,7 +535,7 @@
       </li>
       <li>
         <p class="head"><span aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 6.5a4 4 0 1 1 3.2 6.9L11 20.1 7.9 17l6.7-6.7a4 4 0 0 1-.1-3.8z"/><path d="m7.2 15.8-3 3.1L6 20.7"/></svg></span><b>BYOK e Model Router (opt-in)</b></p>
-        <p>Nasce <b>desativado</b>. Você conecta custom upstream ou BYOK em Anthropic Messages ou OpenAI Chat Completions, separa as URLs por operação e escolhe modelos não Anthropic no picker por um alias reversível.</p>
+        <p>Nasce <b>desativado</b>. Você conecta custom upstream ou BYOK em Anthropic Messages ou OpenAI Chat Completions, separa as URLs por operação e escolhe modelos não Anthropic no picker por um alias reversível. No BYOK, um mapeamento opcional origem → destino ajusta o <code>model</code> enviado ao endpoint.</p>
       </li>
     </ul>
   </section>
@@ -555,6 +568,10 @@
         <li>
           <b>Auto-update com fronteira explícita</b>
           <p>No <code>SessionStart</code>, o dispatcher existente consulta atualizações no máximo uma vez a cada 24 horas, sem hook novo. Um <code>serverUrl</code> remoto só participa com opt-in explícito e, mesmo assim, nunca aciona o fallback local. No caminho local do Windows, o Boss valida o processo Java, promove apenas o JAR verificado e preserva o anterior. Se a versão nova não sobe, restaura a anterior e só confirma o rollback depois que <code>/health.version</code> devolve exatamente essa versão; qualquer falha vira advisory sem bloquear o backend.</p>
+        </li>
+        <li>
+          <b>Nenhum console piscando no Windows</b>
+          <p>Desde a v2.29.1, todo processo filho que o plugin sobe em runtime (hooks, daemons, updater, dashboard, router) passa <code>windowsHide: true</code>: com subagentes e sessões paralelas, nenhuma janela <code>cmd</code> abre nem rouba o foco do teclado. A regra ESLint <code>local/require-windows-hide</code>, que não pode ser desligada inline em <code>scripts/</code> e <code>servers/</code>, impede a regressão.</p>
         </li>
         <li>
           <b>Nada de regressão silenciosa</b>
@@ -599,7 +616,7 @@
         <a href="https://github.com/AllanSantos-DV/claude-code-plugins">Repositório</a>
         <a href="../index.html">Outros plugins</a>
       </div>
-      <p class="legal">MIT · Allan Santos · claude-code-boss v2.29.0</p>
+      <p class="legal">MIT · Allan Santos · claude-code-boss v2.29.1</p>
     </div>
   </div>
 </footer>

@@ -112,7 +112,7 @@ function alreadyPromoted(key) {
 
 function getRepoUrl() {
   try {
-    const r = spawnSync('git', ['remote', 'get-url', 'origin'], { encoding: 'utf-8', timeout: 1000 });
+    const r = spawnSync('git', ['remote', 'get-url', 'origin'], { encoding: 'utf-8', timeout: 1000, windowsHide: true });
     if (r.status === 0) return (r.stdout || '').trim();
   } catch { /* ignore */ }
   return null;
@@ -120,7 +120,7 @@ function getRepoUrl() {
 
 function getHeadSha() {
   try {
-    const r = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf-8', timeout: 1000 });
+    const r = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf-8', timeout: 1000, windowsHide: true });
     if (r.status === 0) return (r.stdout || '').trim();
   } catch { /* ignore */ }
   return null;

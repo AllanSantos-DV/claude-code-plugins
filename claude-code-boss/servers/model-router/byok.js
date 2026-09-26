@@ -6,10 +6,10 @@
 // sabe de onde veio o token e não tem nada disso no código: recebe do dashboard
 // uma Base URL e um MAPA de headers, e anexa esses headers em toda request.
 //
-// O contrato é Anthropic nativo em `/v1/messages` — zero tradução — e o `model`
-// é repassado VERBATIM: o endpoint normaliza os nomes sozinho
-// (`claude-haiku-4-5` → `claude-haiku-4.5`) e erra alto no inexistente. Mapear
-// nome aqui só criaria uma segunda fonte de verdade para divergir da primeira.
+// O `model` é repassado VERBATIM por padrão: o endpoint normaliza os nomes
+// sozinho (`claude-haiku-4-5` → `claude-haiku-4.5`) e erra alto no inexistente.
+// Quando o endpoint exige outros IDs, o usuário declara a troca explicitamente em
+// `byok.modelMap` (ver byok-model.js); este arquivo não conhece nenhum nome.
 //
 // SEGURANÇA — a regra que manda neste arquivo: o header `authorization` /
 // `x-api-key` que chega do Claude Code carrega o token da ASSINATURA do usuário.

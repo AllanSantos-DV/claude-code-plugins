@@ -1,26 +1,87 @@
 'use strict';
 
+function kindOf(value) {
+  return value === null ? 'null' : Array.isArray(value) ? 'lista' : typeof value;
+}
+
+// Ajustes de compatibilidade da tradução Anthropic → Chat Completions
+// (`byok.openaiCompat`). O default é o formato padrão da OpenAI, que um
+// gateway em passthrough aceita; cada chave troca um ponto para gateways que
+// recusam esse formato. Valor desconhecido lança — nunca troca em silêncio.
+const COMPAT_OPTIONS = Object.freeze({
+  // Assistant com tool_calls e sem texto: `content: null` (spec OpenAI) ou `''`.
+  // Sem tool_calls (ex.: só thinking) sai sempre `''` — null seria inválido.
+  assistantEmptyContent: Object.freeze(['null', 'empty']),
+  // `role: "system"` dentro de `messages`: repassa na posição ou recusa
+  // (REQUEST_SHAPE: 400 no always, aviso no fallback).
+  systemInMessages: Object.freeze(['keep', 'reject']),
+  // Bloco `tool_reference` dentro de `tool_result`: vira texto JSON ou recusa
+  // (REQUEST_SHAPE: 400 no always, aviso no fallback).
+  toolReference: Object.freeze(['text', 'reject']),
+});
+const COMPAT_DEFAULTS = Object.freeze({
+  assistantEmptyContent: 'null',
+  systemInMessages: 'keep',
+  toolReference: 'text',
+});
+
+function normalizeCompat(input) {
+  if (input === undefined || input === null) return COMPAT_DEFAULTS;
+  if (typeof input !== 'object' || Array.isArray(input)) {
+    throw new Error(`openaiCompat precisa ser um objeto (veio ${kindOf(input)})`);
+  }
+  const out = { ...COMPAT_DEFAULTS };
+  for (const [key, value] of Object.entries(input)) {
+    if (!Object.prototype.hasOwnProperty.call(COMPAT_OPTIONS, key)) {
+      throw new Error(`openaiCompat: chave desconhecida "${key}" (use ${Object.keys(COMPAT_OPTIONS).join(', ')})`);
+    }
+    const allowed = COMPAT_OPTIONS[key];
+    if (!allowed.includes(value)) {
+      throw new Error(`openaiCompat.${key}: valor inválido ${JSON.stringify(value)} (use ${allowed.map(v => `"${v}"`).join(' ou ')})`);
+    }
+    out[key] = value;
+  }
+  return Object.freeze(out);
+}
+
+function blockText(block, context) {
+  if (block.text === undefined) return '';
+  if (typeof block.text !== 'string') throw new Error(`text de bloco em ${context} deve ser texto (veio ${kindOf(block.text)})`);
+  return block.text;
+}
+
 function textFromBlocks(blocks, context) {
   if (typeof blocks === 'string') return blocks;
-  if (!Array.isArray(blocks)) return '';
+  if (!Array.isArray(blocks)) throw new Error(`${context} Anthropic deve ser texto ou lista (veio ${kindOf(blocks)})`);
   return blocks.map((block) => {
-    if (block && block.type === 'text') return block.text || '';
+    if (block && block.type === 'text') return blockText(block, context);
     throw new Error(`Bloco Anthropic não suportado em ${context}: ${block && block.type || typeof block}`);
   }).join('\n');
 }
 
-function toolResultMessages(block) {
+function toolResultMessages(block, compat) {
   if (typeof block.content === 'string') {
     return [{ role: 'tool', tool_call_id: block.tool_use_id, content: block.content }];
   }
-  if (!Array.isArray(block.content)) {
+  if (block.content === undefined) {
     return [{ role: 'tool', tool_call_id: block.tool_use_id, content: '' }];
+  }
+  if (!Array.isArray(block.content)) {
+    throw new Error(`tool_result.content Anthropic deve ser texto ou lista (veio ${kindOf(block.content)})`);
   }
   const texts = [];
   const images = [];
   for (const part of block.content) {
-    if (part && part.type === 'text') texts.push(part.text || '');
+    if (part && part.type === 'text') texts.push(blockText(part, 'tool_result.content'));
     else if (part && part.type === 'image') images.push(imagePart(part));
+    else if (part && part.type === 'tool_reference') {
+      if (compat.toolReference === 'reject') {
+        throw new Error('Bloco Anthropic tool_reference em tool_result.content recusado por openaiCompat.toolReference = "reject"');
+      }
+      // Chat Completions não tem bloco tool_reference: a referência segue como
+      // dado do resultado da ferramenta, sem virar instrução.
+      texts.push(JSON.stringify(part));
+    }
     else throw new Error(`Bloco Anthropic não suportado em tool_result.content: ${part && part.type || typeof part}`);
   }
   const messages = [{
@@ -51,9 +112,10 @@ function imagePart(block) {
   };
 }
 
-function userMessages(content) {
+function userMessages(content, compat) {
   if (typeof content === 'string') return [{ role: 'user', content }];
-  if (!Array.isArray(content)) return [{ role: 'user', content: '' }];
+  if (content === undefined) return [{ role: 'user', content: '' }];
+  if (!Array.isArray(content)) throw new Error(`user.content Anthropic deve ser texto ou lista (veio ${kindOf(content)})`);
 
   const out = [];
   let parts = [];
@@ -72,12 +134,12 @@ function userMessages(content) {
       throw new Error(`Bloco Anthropic não suportado em user.content: ${typeof block}`);
     }
     if (block.type === 'text') {
-      parts.push({ type: 'text', text: block.text || '' });
+      parts.push({ type: 'text', text: blockText(block, 'user.content') });
     } else if (block.type === 'image') {
       parts.push(imagePart(block));
     } else if (block.type === 'tool_result') {
       flushParts();
-      out.push(...toolResultMessages(block));
+      out.push(...toolResultMessages(block, compat));
     } else {
       throw new Error(`Bloco Anthropic não suportado em user.content: ${block.type}`);
     }
@@ -86,9 +148,10 @@ function userMessages(content) {
   return out.length ? out : [{ role: 'user', content: '' }];
 }
 
-function assistantMessage(content) {
+function assistantMessage(content, compat) {
   if (typeof content === 'string') return { role: 'assistant', content };
-  if (!Array.isArray(content)) return { role: 'assistant', content: '' };
+  if (content === undefined) return { role: 'assistant', content: '' };
+  if (!Array.isArray(content)) throw new Error(`assistant.content Anthropic deve ser texto ou lista (veio ${kindOf(content)})`);
   const texts = [];
   const toolCalls = [];
   for (const block of content) {
@@ -96,7 +159,7 @@ function assistantMessage(content) {
       throw new Error(`Bloco Anthropic não suportado em assistant.content: ${typeof block}`);
     }
     if (block.type === 'text') {
-      texts.push(block.text || '');
+      texts.push(blockText(block, 'assistant.content'));
     } else if (block.type === 'thinking' || block.type === 'redacted_thinking') {
       continue;
     } else if (block.type === 'tool_use') {
@@ -112,13 +175,20 @@ function assistantMessage(content) {
       throw new Error(`Bloco Anthropic não suportado em assistant.content: ${block.type}`);
     }
   }
-  const out = { role: 'assistant', content: texts.join('\n') || null };
+  const text = texts.join('\n');
+  // `content: null` só é válido com `tool_calls`; sem eles (ex.: só thinking)
+  // o turno sai com '' em qualquer opção.
+  const nullable = toolCalls.length > 0 && compat.assistantEmptyContent === 'null';
+  const out = { role: 'assistant', content: text || (nullable ? null : '') };
   if (toolCalls.length) out.tool_calls = toolCalls;
   return out;
 }
 
 function openAIToolChoice(choice) {
-  if (!choice) return undefined;
+  if (choice === undefined || choice === null) return undefined;
+  if (typeof choice !== 'object' || Array.isArray(choice)) {
+    throw new Error(`tool_choice Anthropic deve ser objeto (veio ${kindOf(choice)})`);
+  }
   if (choice.type === 'auto') return 'auto';
   if (choice.type === 'any') return 'required';
   if (choice.type === 'tool' && choice.name) {
@@ -127,18 +197,45 @@ function openAIToolChoice(choice) {
   throw new Error(`tool_choice Anthropic não suportado: ${JSON.stringify(choice)}`);
 }
 
-function toUpstreamRequest(body) {
+// Todo erro aqui nasce do conteúdo da request (não da configuração): sai com
+// `code = 'REQUEST_SHAPE'` para o chamador responder 400, não 502. A config
+// `openaiCompat` inválida é erro de configuração: lança antes, sem esse code
+// (o perfil do upstream já a valida — ver upstream-profile.js).
+function toUpstreamRequest(body, options) {
+  const compat = normalizeCompat(options && options.openaiCompat);
+  try {
+    return buildUpstreamRequest(body, compat);
+  } catch (err) {
+    if (!err.code) err.code = 'REQUEST_SHAPE';
+    throw err;
+  }
+}
+
+function buildUpstreamRequest(body, compat) {
   const source = body || {};
   const messages = [];
-  if (source.system) {
+  if (source.system !== undefined && source.system !== null && source.system !== '') {
     const system = textFromBlocks(source.system, 'system');
     if (system) messages.push({ role: 'system', content: system });
   }
+  if (source.messages !== undefined && !Array.isArray(source.messages)) {
+    throw new Error(`messages Anthropic deve ser lista (veio ${kindOf(source.messages)})`);
+  }
   for (const message of source.messages || []) {
+    if (!message || typeof message !== 'object' || Array.isArray(message)) {
+      throw new Error(`mensagem Anthropic deve ser objeto (veio ${kindOf(message)})`);
+    }
     if (message.role === 'assistant') {
-      messages.push(assistantMessage(message.content));
+      messages.push(assistantMessage(message.content, compat));
     } else if (message.role === 'user') {
-      messages.push(...userMessages(message.content));
+      messages.push(...userMessages(message.content, compat));
+    } else if (message.role === 'system') {
+      if (compat.systemInMessages === 'reject') {
+        throw new Error('Role Anthropic system dentro de messages recusado por openaiCompat.systemInMessages = "reject"');
+      }
+      // Há clientes que mandam instrução de sistema no meio do histórico:
+      // repassa com o mesmo role e na mesma posição (texto ou blocos de texto).
+      messages.push({ role: 'system', content: textFromBlocks(message.content, 'messages.system') });
     } else {
       throw new Error(`Role Anthropic não suportado: ${message.role}`);
     }
@@ -154,7 +251,15 @@ function toUpstreamRequest(body) {
   if (typeof source.temperature === 'number') out.temperature = source.temperature;
   if (typeof source.top_p === 'number') out.top_p = source.top_p;
   if (Array.isArray(source.stop_sequences) && source.stop_sequences.length) out.stop = source.stop_sequences;
+  if (source.tools !== undefined && source.tools !== null && !Array.isArray(source.tools)) {
+    throw new Error(`tools Anthropic deve ser lista (veio ${kindOf(source.tools)})`);
+  }
   if (Array.isArray(source.tools) && source.tools.length) {
+    for (const tool of source.tools) {
+      if (!tool || typeof tool !== 'object' || Array.isArray(tool)) {
+        throw new Error(`tool Anthropic deve ser objeto (veio ${kindOf(tool)})`);
+      }
+    }
     out.tools = source.tools.map(tool => ({
       type: 'function',
       function: {
@@ -365,6 +470,9 @@ function createStreamTranslator(request) {
 
 module.exports = {
   wireProtocol: 'openai',
+  COMPAT_OPTIONS,
+  COMPAT_DEFAULTS,
+  normalizeCompat,
   toUpstreamRequest,
   fromUpstreamJson,
   createStreamTranslator,

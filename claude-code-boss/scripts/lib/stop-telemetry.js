@@ -11,6 +11,8 @@
  *   - `gated`         = disabled by profile (cheap, always known).
  *   - `shadow_block`  = we ran it in a sampled shadow pass and it WOULD have
  *                       blocked (labeled estimate, never enforced).
+ *   - `no_id`         = skipped because the folder has no project id (2.29.1);
+ *                       not counted as gated — the profile didn't skip it.
  * We never claim "tokens saved" — only `chars` of Stop-message text avoided,
  * which the UI presents as an estimate.
  */
@@ -87,7 +89,9 @@ function summarize(profile, runId, detectors) {
   const compact = [];
   for (const d of detectors) {
     let state;
-    if (!d.gated) {
+    if (d.reason === 'no_project_id') {
+      state = 'no_id'; // skipped for a folder without project id — not a profile gate
+    } else if (!d.gated) {
       state = d.blocked ? 'block' : 'ran';
       if (d.blocked) { blocked += 1; enforcedChars += d.chars || 0; }
     } else {

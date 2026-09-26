@@ -70,7 +70,7 @@ async function checkRemote(input, t0) {
 }
 
 function detectJava() {
-  const r = spawnSync('java', ['-version'], { encoding: 'utf-8', timeout: 5000 });
+  const r = spawnSync('java', ['-version'], { encoding: 'utf-8', timeout: 5000, windowsHide: true });
   if (r.error) {
     if (r.error.code === 'ENOENT') return { ok: false, error: 'Java not installed or not in PATH (install JDK 21+)' };
     return { ok: false, error: `java -version failed: ${r.error.message}` };

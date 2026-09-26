@@ -315,7 +315,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
     const a = args || {};
     const asText = (o) => ({ content: [{ type: 'text', text: JSON.stringify(o, null, 2) }] });
     let project;
-    try { project = resolveProject(a); }
+    try { project = resolveKbProject(a); }
     catch (err) { return { isError: true, content: [{ type: 'text', text: `${name} failed: ${err.message}` }] }; }
     try {
       await backend.init({ project, skipEmbedder: true });
@@ -429,6 +429,38 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
     return projectId.resolveProjectId({ cwd: process.cwd() });
   }
 
+  /**
+   * Env for resolving a CALLER's cwd. The HTTP daemon is shared by every session and
+   * inherits the env of the session that spawned it (brain-daemon-ensure), so its
+   * CCB_PROJECT_ID / CLAUDE_PROJECT_DIR belong to THAT session — never to the caller.
+   * In HTTP mode only the caller's own `sessionRoot` (its CLAUDE_PROJECT_DIR) is used.
+   */
+  function cwdResolveEnv(a) {
+    if (mode !== 'http') return process.env;
+    return a && a.sessionRoot ? { CLAUDE_PROJECT_DIR: String(a.sessionRoot) } : {};
+  }
+
+  /**
+   * 2.29.1 — project for the KB tools (brain_search/brain_store/capture_lesson/
+   * brain_related/brain_count). When the caller passes its `cwd`, the folder's STRICT
+   * id wins over any explicit `project` (agents in id-less folders were inventing
+   * basename ids like "launcher-genai" → scope-junk on the shared daemon), and a
+   * folder WITHOUT id is refused with SCOPE_HELP — memory is off there. Without `cwd`
+   * this is resolveProject (an explicit project can't be verified in HTTP mode).
+   */
+  function resolveKbProject(args) {
+    const a = args || {};
+    if (!a.cwd) return resolveProject(a);
+    const id = projectId.tryResolveProjectId({ cwd: a.cwd, env: cwdResolveEnv(a) });
+    if (!id) {
+      throw Object.assign(
+        new Error(`no project id for ${a.cwd} — memory is OFF in this folder (nothing is stored or recalled). ${projectId.SCOPE_HELP}`),
+        { code: 'NO_PROJECT_ID' },
+      );
+    }
+    return id;
+  }
+
   // ─── Async mutex pool (serialize KB ops per kb-worker slot) ────────────────
   // kbLock is a POOL of N mutexes shared across ALL sessions in http mode (one per
   // daemon process, created by http-daemon.js) — one lock per kb-worker pool slot
@@ -473,10 +505,10 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
   function resolveDispatchProjects(name, args) {
     if (name === 'brain_retrieve_context') {
       const project = resolveProject(args);
-      const { focusId } = projectId.resolveProjectChain({ cwd: (args && args.cwd) || '', sessionRoot: args && args.sessionRoot });
+      const { focusId } = projectId.resolveProjectChain({ cwd: (args && args.cwd) || '', sessionRoot: args && args.sessionRoot, env: cwdResolveEnv(args) });
       return [focusId || project];
     }
-    const project = resolveProject(args);
+    const project = resolveKbProject(args);
     if (name === 'brain_search') {
       const scope = (args && args.scope) || 'both';
       return scope === 'user' ? [project, USER_SENTINEL] : [project];
@@ -556,27 +588,27 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
     {
       name: 'brain_search',
       description: 'Search the Brain Knowledge Base semantically (vector) with keyword fallback. Finds stored entries relevant to the query text.',
-      inputSchema: { type: 'object', properties: { query: { type: 'string', description: 'The search query in natural language' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode)' }, topK: { type: 'number', description: 'Number of results (default: 5)' }, minScore: { type: 'number', description: 'Minimum relevance score (default: 0.2)' }, scope: { type: 'string', enum: ['both', 'project', 'user'], description: 'Which memory scope to search. "both" (default) = two-pass merge of current project + global __user__ entries. "project" = current project only. "user" = global __user__ only.' } }, required: ['query'] },
+      inputSchema: { type: 'object', properties: { query: { type: 'string', description: 'The search query in natural language' }, cwd: { type: 'string', description: 'Your working directory. When set, the folder\'s project id (.memory/project.json / git remote) WINS over `project`; a folder with NO project id is REFUSED (memory is off there). Pass it whenever you know it.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode)' }, topK: { type: 'number', description: 'Number of results (default: 5)' }, minScore: { type: 'number', description: 'Minimum relevance score (default: 0.2)' }, scope: { type: 'string', enum: ['both', 'project', 'user'], description: 'Which memory scope to search. "both" (default) = two-pass merge of current project + global __user__ entries. "project" = current project only. "user" = global __user__ only.' } }, required: ['query'] },
     },
     {
       name: 'brain_store',
       description: 'Manually save a structured entry to the Brain Knowledge Base. The entry is vectorized and added to the inverted index + citation graph.',
-      inputSchema: { type: 'object', properties: { title: { type: 'string', description: 'Entry title (required)' }, summary: { type: 'string', description: 'One-line summary (required)' }, detail: { type: 'string', description: 'Full content / body text' }, type: { type: 'string', enum: ['note', 'pattern', 'lesson', 'research', 'code', 'reference', 'decision'], description: 'Entry type (default: note)' }, tags: { type: 'array', items: { type: 'string' }, description: 'Tags for search filtering' }, project: { type: 'string', description: 'Project name (default: auto-detect; REQUIRED in HTTP mode)' }, confidence: { type: 'number', description: 'Confidence score 0.0-1.0 (default: 0.8)' }, sourceUrl: { type: 'string', description: 'Source URL if applicable' }, scope: { type: 'string', enum: ['auto', 'project', 'user'], description: 'Where to store. "auto" (default) infers from type+tags (reference/research/user-tag → user; decision/code → project). "user" routes to global __user__ DB and sanitizes user paths/emails/project name. Entries with detected secrets are rejected if scope=user.' } }, required: ['title', 'summary'] },
+      inputSchema: { type: 'object', properties: { title: { type: 'string', description: 'Entry title (required)' }, summary: { type: 'string', description: 'One-line summary (required)' }, detail: { type: 'string', description: 'Full content / body text' }, type: { type: 'string', enum: ['note', 'pattern', 'lesson', 'research', 'code', 'reference', 'decision'], description: 'Entry type (default: note)' }, tags: { type: 'array', items: { type: 'string' }, description: 'Tags for search filtering' }, cwd: { type: 'string', description: 'Your working directory. When set, the folder\'s project id (.memory/project.json / git remote) WINS over `project`; a folder with NO project id is REFUSED (memory is off there). Pass it whenever you know it.' }, project: { type: 'string', description: 'Project name (default: auto-detect; REQUIRED in HTTP mode)' }, confidence: { type: 'number', description: 'Confidence score 0.0-1.0 (default: 0.8)' }, sourceUrl: { type: 'string', description: 'Source URL if applicable' }, scope: { type: 'string', enum: ['auto', 'project', 'user'], description: 'Where to store. "auto" (default) infers from type+tags (reference/research/user-tag → user; decision/code → project). "user" routes to global __user__ DB and sanitizes user paths/emails/project name. Entries with detected secrets are rejected if scope=user.' } }, required: ['title', 'summary'] },
     },
     {
       name: 'brain_related',
       description: 'Get entries related to a given KB entry via the citation graph.',
-      inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'Entry ID from a previous brain_search result' }, project: { type: 'string', description: 'Project name (default: auto-detect; REQUIRED in HTTP mode)' } }, required: ['id'] },
+      inputSchema: { type: 'object', properties: { id: { type: 'string', description: 'Entry ID from a previous brain_search result' }, cwd: { type: 'string', description: 'Your working directory. When set, the folder\'s project id (.memory/project.json / git remote) WINS over `project`; a folder with NO project id is REFUSED (memory is off there). Pass it whenever you know it.' }, project: { type: 'string', description: 'Project name (default: auto-detect; REQUIRED in HTTP mode)' } }, required: ['id'] },
     },
     {
       name: 'brain_count',
       description: 'Get the number of entries in the Knowledge Base for the current (or specified) project.',
-      inputSchema: { type: 'object', properties: { project: { type: 'string', description: 'Project name (default: auto-detect; REQUIRED in HTTP mode)' } } },
+      inputSchema: { type: 'object', properties: { cwd: { type: 'string', description: 'Your working directory. When set, the folder\'s project id (.memory/project.json / git remote) WINS over `project`; a folder with NO project id is REFUSED (memory is off there). Pass it whenever you know it.' }, project: { type: 'string', description: 'Project name (default: auto-detect; REQUIRED in HTTP mode)' } } },
     },
     {
       name: 'capture_lesson',
       description: 'Capture a CURATED lesson in-loop (the agent post-mortem pattern). Call this when the user corrects you, or when a reusable pattern emerges — YOU write the clean summary + correction + generalized lesson (you have full context; do not make the KB re-read transcripts). WRITE IN ENGLISH — the KB is English-canonical so entries stay retrievable regardless of the user\'s prompt language. Runs admission control inline: a near-duplicate is MERGED (bumping recurrence, which drives skill promotion) instead of duplicated.',
-      inputSchema: { type: 'object', properties: { title: { type: 'string', description: 'Short lesson title in English (max 80 chars)' }, summary: { type: 'string', description: 'One-line in English: what went wrong / the pattern, and what to do instead' }, detail: { type: 'string', description: 'Full lesson in English: what happened + the correction + the generalized rule. Keep the valuable specifics.' }, type: { type: 'string', enum: ['lesson', 'pattern', 'decision', 'research', 'skill'], description: 'lesson (correction), pattern (reusable workflow), decision (architectural choice + rationale — plugin Stop hooks nudge this type), research (external findings worth reusing — plugin Stop hooks nudge this type too), or skill (this is ALREADY a generalizable, reusable instruction worth a global Agent Skill — requires description/useFor/doNotUseFor; validated and staged directly for review, no separate promotion step). Default: lesson' }, description: { type: 'string', description: 'ONLY for type:"skill". The Skill frontmatter description — what Claude reads to decide whether to load this skill. 40-280 chars. Phrase it as a trigger condition (when this applies), not a summary of what happened. Rejected (nothing stored) if out of range — not truncated for you.' }, useFor: { type: 'string', description: 'ONLY for type:"skill". Non-empty, max 400 chars: concrete situations where this skill SHOULD be used.' }, doNotUseFor: { type: 'string', description: 'ONLY for type:"skill". Non-empty, max 400 chars: situations where this skill should NOT be used (the boundary that keeps it from firing on the wrong task).' }, tags: { type: 'array', items: { type: 'string' }, description: '3-8 CANONICAL English concept tags, lowercase, hyphenated (e.g. "error-handling", "token-efficiency", "cross-lingual"). These are the language-neutral retrieval anchor — choose the terms a future query (in any language) would map to.' }, confidence: { type: 'number', description: '0.0-1.0 (default 0.85)' }, windowId: { type: 'string', description: 'When the plugin offered a review block, pass its windowId to close (ack) that capture window as captured.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode)' }, scope: { type: 'string', enum: ['auto', 'project', 'user'], description: 'Where to store. "auto" (default) infers from type+tags (decision/code → project; reference/research/user-tag hints like workflow/preferences/agent-behavior → user). "user" routes to global __user__ DB and sanitizes user paths/emails/project name. Entries with detected secrets are rejected if scope=user.' } }, required: ['title', 'summary'] },
+      inputSchema: { type: 'object', properties: { title: { type: 'string', description: 'Short lesson title in English (max 80 chars)' }, summary: { type: 'string', description: 'One-line in English: what went wrong / the pattern, and what to do instead' }, detail: { type: 'string', description: 'Full lesson in English: what happened + the correction + the generalized rule. Keep the valuable specifics.' }, type: { type: 'string', enum: ['lesson', 'pattern', 'decision', 'research', 'skill'], description: 'lesson (correction), pattern (reusable workflow), decision (architectural choice + rationale — plugin Stop hooks nudge this type), research (external findings worth reusing — plugin Stop hooks nudge this type too), or skill (this is ALREADY a generalizable, reusable instruction worth a global Agent Skill — requires description/useFor/doNotUseFor; validated and staged directly for review, no separate promotion step). Default: lesson' }, description: { type: 'string', description: 'ONLY for type:"skill". The Skill frontmatter description — what Claude reads to decide whether to load this skill. 40-280 chars. Phrase it as a trigger condition (when this applies), not a summary of what happened. Rejected (nothing stored) if out of range — not truncated for you.' }, useFor: { type: 'string', description: 'ONLY for type:"skill". Non-empty, max 400 chars: concrete situations where this skill SHOULD be used.' }, doNotUseFor: { type: 'string', description: 'ONLY for type:"skill". Non-empty, max 400 chars: situations where this skill should NOT be used (the boundary that keeps it from firing on the wrong task).' }, tags: { type: 'array', items: { type: 'string' }, description: '3-8 CANONICAL English concept tags, lowercase, hyphenated (e.g. "error-handling", "token-efficiency", "cross-lingual"). These are the language-neutral retrieval anchor — choose the terms a future query (in any language) would map to.' }, confidence: { type: 'number', description: '0.0-1.0 (default 0.85)' }, windowId: { type: 'string', description: 'When the plugin offered a review block, pass its windowId to close (ack) that capture window as captured.' }, cwd: { type: 'string', description: 'Your working directory. When set, the folder\'s project id (.memory/project.json / git remote) WINS over `project`; a folder with NO project id is REFUSED (memory is off there). Pass it whenever you know it.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode)' }, scope: { type: 'string', enum: ['auto', 'project', 'user'], description: 'Where to store. "auto" (default) infers from type+tags (decision/code → project; reference/research/user-tag hints like workflow/preferences/agent-behavior → user). "user" routes to global __user__ DB and sanitizes user paths/emails/project name. Entries with detected secrets are rejected if scope=user.' } }, required: ['title', 'summary'] },
     },
     {
       name: 'capture_ack',
@@ -586,7 +618,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
     {
       name: 'brain_retrieve_context',
       description: 'Internal — adaptive KB retrieval for the UserPromptSubmit hook (runs with the embedder warm in this server). Embeds the prompt, vector-searches the project KB behind a relevance gate, and returns a short formatted context block (or empty). Prefer brain_search for explicit lookups.',
-      inputSchema: { type: 'object', properties: { prompt: { type: 'string', description: 'The user prompt text' }, cwd: { type: 'string', description: 'Working directory (project = its basename); also the base for F2 ancestor-spine chain resolution' }, sessionRoot: { type: 'string', description: 'Session root dir (CLAUDE_PROJECT_DIR) — the F2 chain-walk CEILING; recall unions project_ids from cwd up to here. Optional; falls back to git toplevel/cap.' }, session_id: { type: 'string', description: 'Session id (for the retrieval journal)' } }, required: ['prompt'] },
+      inputSchema: { type: 'object', properties: { prompt: { type: 'string', description: 'The user prompt text' }, cwd: { type: 'string', description: 'Working directory (project = its strict project id; no id → empty result, memory is off there); also the base for F2 ancestor-spine chain resolution' }, sessionRoot: { type: 'string', description: 'Session root dir (CLAUDE_PROJECT_DIR) — the F2 chain-walk CEILING; recall unions project_ids from cwd up to here. Optional; falls back to git toplevel/cap.' }, session_id: { type: 'string', description: 'Session id (for the retrieval journal)' } }, required: ['prompt'] },
     },
     {
       name: 'curation_mark_oneoff',
@@ -741,7 +773,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
       case 'brain_search': {
         try {
           const { query, topK = 5, minScore = 0.05, scope = 'both' } = args;
-          const currentProject = resolveProject(args);
+          const currentProject = resolveKbProject(args);
           let vector = null;
           try {
             const embedder = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-embedder.js'));
@@ -788,7 +820,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
       case 'brain_store': {
         try {
           const { title, summary, detail, type = 'note', tags, confidence = 0.8, sourceUrl, scope = 'auto' } = args;
-          const currentProject = resolveProject(args);
+          const currentProject = resolveKbProject(args);
           const effectiveScope = (scope === 'project' || scope === 'user') ? scope : inferDefaultScope(type, tags);
           let safeTitle = title, safeSummary = summary, safeDetail = detail;
           if (effectiveScope === 'user') {
@@ -831,7 +863,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
             // mas o fluxo de armazenamento continua o mesmo dos outros 4 tipos.
             skillFields = { description: check.description, useFor: check.useFor, doNotUseFor: check.doNotUseFor };
           }
-          const currentProject = resolveProject(args);
+          const currentProject = resolveKbProject(args);
           const effectiveScope = (scope === 'project' || scope === 'user') ? scope : inferDefaultScope(type, tags);
           let safeTitle = title, safeSummary = summary, safeDetail = detail;
           if (effectiveScope === 'user') {
@@ -893,7 +925,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
       case 'brain_related': {
         try {
           const { id } = args;
-          const project = resolveProject(args);
+          const project = resolveKbProject(args);
           const { store: kbStore, graph: kbGraph } = await getKB(project);
           const related = await kbGraph.getRelated(id);
           const full = [];
@@ -909,7 +941,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
 
       case 'brain_count': {
         try {
-          const project = resolveProject(args);
+          const project = resolveKbProject(args);
           const { store: kbStore } = await getKB(project);
           const count = await kbStore.count();
           return { content: [{ type: 'text', text: JSON.stringify({ project, count }, null, 2) }] };
@@ -921,12 +953,16 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
       case 'brain_retrieve_context': {
         try {
           const { prompt, session_id } = args || {};
-          const project = resolveProject(args);
           // F2 — resolve the ancestor-spine against the REAL user cwd (the daemon lives
           // elsewhere, but resolveProjectChain's git/fs probes are {cwd:args.cwd}-scoped).
           // Non-throwing by contract → safe inside the outer fail-open try/catch. focusId
-          // is the CWD's strict id (declared marker/git-remote); null → home-only recall.
-          const { chain, focusId } = projectId.resolveProjectChain({ cwd: (args && args.cwd) || '', sessionRoot: args && args.sessionRoot });
+          // is the CWD's strict id (declared marker/git-remote).
+          const { chain, focusId } = projectId.resolveProjectChain({ cwd: (args && args.cwd) || '', sessionRoot: args && args.sessionRoot, env: cwdResolveEnv(args) });
+          // 2.29.1 strict gate: a cwd WITHOUT project id gets NO recall — memory is off
+          // there (the SessionStart/Stop notices ask for the id). Explicit: an explicit
+          // `project` no longer re-scopes the recall of an id-less folder.
+          if (args && args.cwd && !focusId) return { content: [{ type: 'text', text: '' }] };
+          const project = resolveProject(args);
           const retrieveCore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'retrieve-core.js'));
           // Same rationale as getKB()/recordLessonMetric() above: the LOCAL (non
           // mcp-memory) search path inside retrieve() runs synchronous better-sqlite3

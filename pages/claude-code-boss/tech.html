@@ -3,8 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v2.29.0 — detalhes técnicos</title>
-<meta name="description" content="Detalhes técnicos do claude-code-boss v2.29.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard." />
+<title>claude-code-boss v2.29.1 — detalhes técnicos</title>
+<meta name="description" content="Detalhes técnicos do claude-code-boss v2.29.1: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard." />
 <style>
   :root{
     --bg:#0d0c10; --bg-soft:#131218; --ink:#edeae1; --muted:#9a978d;
@@ -128,13 +128,13 @@
     <a href="index.html">← Apresentação</a>
     <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a>
     <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">Changelog</a>
-    <a href="#top" class="ver">v2.29.0</a>
+    <a href="#top" class="ver">v2.29.1</a>
   </nav>
 </header>
 
 <main class="wrap" id="top">
   <div class="page-head">
-    <p class="kick">documentação técnica · v2.29.0</p>
+    <p class="kick">documentação técnica · v2.29.1</p>
     <h1>Arquitetura e funcionamento interno</h1>
     <p class="intro">Para quem quer saber <b>como funciona por baixo</b>: daemon HTTP único, pipeline de hooks, Brain KB em 3 camadas, Model Router Anthropic/OpenAI, backend MCP Memory, exploração de repositório por grafo e dashboard. Fontes: <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a> e <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG</a>.</p>
     <div class="toc">
@@ -306,6 +306,17 @@
         <li><b>Precedência:</b> dashboard/<code>user-config.json</code> → ambiente → defaults. Campos incompatíveis falham explicitamente, sem omissão silenciosa.</li>
       </ul>
     </div>
+
+    <div class="panel" style="margin-top:16px">
+      <h3>Mapeamento de modelo do BYOK (origem → destino) · v2.29.1</h3>
+      <ul class="tight">
+        <li><b>Escopo:</b> opcional e vazio por padrão. <code>byok.modelMap</code> troca o <code>model</code> enviado ao endpoint só na rota BYOK (<code>always</code>, fallback <code>on-limit</code> e cooldown), em geração, classificação remota e <code>count_tokens</code>. O caminho da assinatura nunca é alterado e o corpo original não é mutado: o mapeamento trabalha sobre uma cópia, depois da tradução de protocolo, em Anthropic e OpenAI.</li>
+        <li><b>Correspondência:</b> ID exato; depois o ID sem data de snapshot (<code>-AAAAMMDD</code>); depois padrões com <code>*</code> (o mais específico vence, empate pela ordem de inserção). Sem prefixo implícito: <code>claude-opus-5</code> nunca captura <code>claude-opus-5-5</code>. Sem regra, o <code>model</code> segue como veio.</li>
+        <li><b>Injeção:</b> <code>byok.modelInjection</code> (desligado por padrão) grava o modelo resolvido em campos extras do corpo ou em headers via template <code>{model}</code>, o único placeholder; nada é avaliado como código. Não pode alterar <code>model</code> nem headers de credencial/protocolo.</li>
+        <li><b>Dashboard:</b> editor de regras em <code>/dashboard</code> → BYOK, com destinos sugeridos pelo <code>/v1/models</code> do endpoint ou digitação livre. Regra inválida é recusada com <code>400</code> e não chega ao disco.</li>
+        <li><b>Fail-loud:</b> regra inválida no fallback responde com a causa em vez de ceder à NVIDIA; em <code>always</code> vira <code>502 proxy_error</code>. Erros do endpoint citam o modelo enviado e a regra aplicada.</li>
+      </ul>
+    </div>
   </section>
 
   <section id="graph">
@@ -343,12 +354,13 @@
   </section>
 
   <section id="versoes">
-    <h2>Versões <span class="tag">83 releases</span></h2>
-    <p class="lead">O changelog completo (v1.0.0 → v2.29.0) vive no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>. Destaques recentes:</p>
+    <h2>Versões <span class="tag">84 releases</span></h2>
+    <p class="lead">O changelog completo (v1.0.0 → v2.29.1) vive no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>. Destaques recentes:</p>
     <div class="table-scroll">
       <table>
         <thead><tr><th>Versão</th><th>Destaque</th></tr></thead>
         <tbody>
+          <tr><td><b>v2.29.1</b></td><td>Hotfix no Windows: todo spawn de processo filho em runtime (hooks, daemons, updater, testers de config, dashboard, router, brain-server) passa <code>windowsHide: true</code>, acabando com os consoles <code>cmd</code> que piscavam e roubavam o foco; wrappers e seams de injeção forçam a opção depois do spread. Nova regra ESLint <code>local/require-windows-hide</code>, que nega por padrão e não aceita <code>eslint-disable</code> inline em <code>scripts/</code> e <code>servers/</code>, impede a regressão. Novo mapeamento de modelo do BYOK (origem → destino), opcional e restrito à rota BYOK, com injeção opcional via template <code>{model}</code> e editor no dashboard.</td></tr>
           <tr><td><b>v2.29.0</b></td><td>Custom upstream e BYOK configuráveis por operação nos protocolos Anthropic Messages e OpenAI Chat Completions, com alias reversível no picker e catálogo isolado por destino e credencial. O adapter recompõe nomes fragmentados de tool calls e preserva o <code>usage</code> do chunk final separado. No MCP Memory HTTP, update remoto exige opt-in e nunca usa fallback local; se a versão nova falha, o rollback só é confirmado após <code>/health.version</code> validar a versão anterior restaurada.</td></tr>
           <tr><td><b>v2.28.0</b></td><td>Seis dispatchers in-process (<code>SessionStart</code>, <code>UserPromptSubmit</code>, <code>PreToolUse/Bash</code>, <code>PostToolUse/Bash</code>, <code>PostToolUseFailure</code> e o <code>Stop</code> já existente) eliminam ~34 spawns de Node por sessão/prompt/comando; detectores concorrentes com timeout próprio e distinção <code>ok</code>/<code>timeout</code>/<code>error</code>; <code>brain-status.js</code> ganha <code>run(event)</code> advisory-only sem mexer na CLI; +21 testes unitários e +9 de integração real.</td></tr>
           <tr><td><b>v2.27.0</b></td><td>Pool de <code>kb-worker</code>s com roteamento sticky por projeto (ADR-014): lock por worker em vez de global, projetos diferentes rodam de fato concorrentes (<code>/health</code> em <code>max=5ms</code> sob carga); teste de regressão fecha o gap de cobertura de <code>CCB_PROJECT_ID</code> em <code>resolveProjectChain</code>.</td></tr>
@@ -378,7 +390,7 @@
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">Changelog</a>
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins">GitHub</a>
     </div>
-    <div class="legal">MIT · Allan Santos · claude-code-boss v2.29.0</div>
+    <div class="legal">MIT · Allan Santos · claude-code-boss v2.29.1</div>
   </div>
 </footer>
 

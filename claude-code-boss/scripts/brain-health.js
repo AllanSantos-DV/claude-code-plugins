@@ -246,7 +246,7 @@ function buildRecallDegradedText(status) {
   const reason = status.lastDegraded && status.lastDegraded.reason;
   const pct = Math.round(status.degradedRate * 100);
   return `[BRAIN-HEALTH] Memory recall is DEGRADED — ${status.windowDegraded} of the last ` +
-    `${status.windowTotal} recalls came back empty (${pct}%)` +
+    `${status.windowTotal} recalls were degraded (${pct}%: empty, or one of compose / project arm failed)` +
     (reason ? ` (last reason: ${reason})` : '') + '. ' +
     'compose_recall is the required path on the mcp-memory backend: check the daemon is running and is version >= 2.18.';
 }
