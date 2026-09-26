@@ -27,6 +27,18 @@ const { searchTwoPass } = require('./scope-search.js');
  */
 const ANCESTOR_TIMEOUT_MS = Number.parseInt(process.env.CCB_ANCESTOR_TIMEOUT_MS, 10) || 500;
 
+/**
+ * Circuit breaker for a down mcp-memory daemon. Without this, every single
+ * UserPromptSubmit pays the full `cc.timeoutMs` (default 8000ms) waiting on a
+ * daemon that is already known to be unreachable — recall-health.js only
+ * OBSERVES outcomes, it never gates the next call. Module-level state is
+ * correct here: retrieve-core runs inside the persistent brain-server daemon,
+ * and daemon-down is a condition shared by every session/project using it.
+ * Resets to closed on the next successful (or honest no-match) compose.
+ */
+let circuitOpenUntil = 0;
+const CIRCUIT_COOLDOWN_MS = Number.parseInt(process.env.CCB_MCP_MEMORY_CIRCUIT_MS, 10) || 15000;
+
 /** Race a promise against a timeout (ms<=0 disables). Rejects with a timeout error. */
 function withTimeout(promise, ms) {
   if (!ms || ms <= 0) return promise;
@@ -129,6 +141,14 @@ async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords }, 
   const backendRef = deps.backend || backend;
   const healthRef = deps.recallHealth || recallHealth;
   const cc = brainConfig.getRecallCompose();
+  // Checks BOTH this function's own fast breaker AND brain-backend.js's shared
+  // one (feature-detected — test fakes for backendRef don't implement it, and
+  // must keep working unchanged) so a search/save/getRelated failure elsewhere
+  // also short-circuits this per-turn recall, not just a prior compose timeout.
+  if (Date.now() < circuitOpenUntil || (backendRef.circuitOpen && backendRef.circuitOpen())) {
+    healthRef.record('circuit-open');
+    return { entries: [], capabilities: [], keywords, project, reason: 'circuit-open' };
+  }
   try {
     await backendRef.init({ project, skipEmbedder: true });
     if (!backendRef.hasCompose || !backendRef.hasCompose()) {
@@ -173,11 +193,15 @@ async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords }, 
       topK, maxChars: cc.maxInjectChars, includeHomeSpine: cc.includeHomeSpine,
     });
     healthRef.record(facts.length ? undefined : 'no-match');
+    circuitOpenUntil = 0;
+    if (backendRef.reportMcpSuccess) backendRef.reportMcpSuccess();
     return { entries: facts, capabilities, keywords, project, reason: facts.length ? undefined : 'no-match' };
   } catch (err) {
     const reason = /timed out|timeout/i.test(err.message || '') ? 'timeout' : 'remote-error';
     console.error(`[retrieve-core] remote retrieve failed (${reason}): ${err.message}`);
     healthRef.record(reason);
+    circuitOpenUntil = Date.now() + CIRCUIT_COOLDOWN_MS;
+    if (backendRef.reportMcpFailure) backendRef.reportMcpFailure(err);
     return { entries: [], capabilities: [], keywords, project, reason };
   }
 }
