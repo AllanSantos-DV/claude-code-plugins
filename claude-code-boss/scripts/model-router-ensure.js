@@ -648,9 +648,11 @@ function maintainShimSafe() {
 
 // Caminho de saída "sem roteamento": tira a URL do settings.json, limpa resíduo
 // global de versões antigas e o arquivo de URL legado. Claude Code usa Anthropic direto.
-function disableRoutingFootprint() {
+// `safeWindow` gateia o cleanupGlobalEnv (ver comentário na definição): só vale a
+// pena pagar o custo do spawn de PowerShell no SessionStart/force-restart.
+function disableRoutingFootprint(safeWindow) {
   disableSettingsRouting();
-  cleanupGlobalEnv();
+  if (safeWindow) cleanupGlobalEnv();
   clearLegacyUrlFile();
 }
 
@@ -711,6 +713,14 @@ async function main() {
   // fixo faz o Claude Code rejeitar o hook inteiro com "expected 'SessionStart' but
   // got 'UserPromptSubmit'" — e aí nem o additionalContext nem o hook entram.
   const hookEventName = hookInput.hook_event_name || hookInput.hookEventName || 'UserPromptSubmit';
+  // Janela segura para trabalho de manutenção caro (spawn de processo): o SessionStart
+  // roda antes do primeiro request da sessão; force-restart é uma ação EXPLÍCITA do
+  // usuário (dashboard "Salvar & aplicar"). Turnos normais de UserPromptSubmit (a
+  // maioria) pulam esse trabalho — usado por cleanupGlobalEnv (2 spawns de PowerShell,
+  // ~2s cada nesta máquina) e por servesThisBuild() abaixo.
+  const isSessionStart = hookEventName === 'SessionStart';
+  const forceRestart = process.env.BOSS_ROUTER_FORCE_RESTART === '1';
+  const safeWindow = isSessionStart || forceRestart;
 
   // MODO (fonte única: lib/router-mode.js). 'off' = inerte → limpa o footprint e sai.
   // 'routing' (cost-routing) e 'fallback-only' (passthrough cache-safe + 429→plano B)
@@ -719,7 +729,7 @@ async function main() {
   const mode = resolveMode(config);
   if (mode === 'off') {
     log('Roteador e fallback desabilitados (mode: off). Limpando footprint e saindo.');
-    disableRoutingFootprint();
+    disableRoutingFootprint(safeWindow);
     // O "Salvar & aplicar" do dashboard desligou o roteador: derruba o daemon órfão
     // que ainda segura a porta fixa (senão ele fica vivo consumindo recursos mesmo
     // com o footprint removido). Só quando a invocação pede aplicação explícita —
@@ -755,15 +765,8 @@ async function main() {
   let isRunning = await healthCheck(FIXED_PORT);
   if (isRunning) {
     const st = readState();
-    // Janela segura para trocar o build OU recarregar a config: o SessionStart roda
-    // antes do primeiro request da sessão; o "Salvar & aplicar" do dashboard
-    // (BOSS_ROUTER_FORCE_RESTART=1) é uma ação EXPLÍCITA do usuário pedindo a
-    // aplicação IMEDIATA. No UserPromptSubmit estamos no meio de um turno e derrubar
-    // a porta cortaria a API em uso — nunca trocamos ali (e evitamos o custo do
-    // spawn de inspeção a cada prompt).
-    const isSessionStart = hookEventName === 'SessionStart';
-    const forceRestart = process.env.BOSS_ROUTER_FORCE_RESTART === '1';
-    const safeWindow = isSessionStart || forceRestart;
+    // Troca de build/config só acontece na mesma safeWindow (SessionStart/force-restart,
+    // ver definição acima): no meio de um turno derrubar a porta cortaria a API em uso.
     // O daemon detached carrega a config UMA vez no boot e não a relê. Sem comparar
     // o fingerprint da config efetiva ele serviria para sempre uma config ANTIGA
     // (o bug do "Salvar & aplicar" que nunca aplicava: o dashboard gravava o
@@ -772,7 +775,12 @@ async function main() {
     const currentFp = configFingerprint(config);
     const servedFp = st && st.configFingerprint;
     const configChanged = !servedFp || servedFp !== currentFp;
-    const rawBuildChanged = st && st.pid && !servesThisBuild(st.pid);
+    // servesThisBuild() spawna powershell.exe (Get-CimInstance Win32_Process) — custo
+    // medido nesta máquina: 3,7–5,3s por chamada, porque o Application Control
+    // (Thycotic/Delinea) avalia todo processo novo antes de liberá-lo. O resultado
+    // (buildChanged) só é lido dentro do bloco `safeWindow` (SessionStart/force-restart)
+    // abaixo — por isso o gate: turnos normais de UserPromptSubmit pulam o spawn.
+    const rawBuildChanged = safeWindow && st && st.pid && !servesThisBuild(st.pid);
     // Debounce SÓ para buildChanged: configChanged é sempre uma ação deliberada do
     // usuário (Salvar & aplicar) e não tem o modo de falha de ping-pong entre dois
     // PLUGIN_ROOT — não faz sentido atrasá-la.
@@ -828,7 +836,7 @@ async function main() {
       } else {
         log('AVISO: roteamento indisponível nesta sessão. Removendo footprint; Claude Code usará Anthropic API diretamente.');
       }
-      disableRoutingFootprint();
+      disableRoutingFootprint(safeWindow);
       process.exit(0);
     }
     justStarted = true;
@@ -842,9 +850,10 @@ async function main() {
   // api.anthropic.com no processo e o claude-code IGNORA o settings.json env → quem
   // roteia é o SHIM do claude.exe, que lê a URL viva do url.txt. Mantemos os dois
   // mecanismos: settings.json (CLI) + shim (Desktop). Nenhuma variável global é
-  // definida → zero efeito em outros apps. Resíduo global antigo é removido (self-heal).
+  // definida → zero efeito em outros apps. Resíduo global antigo é removido (self-heal,
+  // gated por safeWindow — ver definição acima).
   const wired = enableSettingsRouting(proxyUrl);
-  cleanupGlobalEnv();
+  if (safeWindow) cleanupGlobalEnv();
   writeProxyUrlFile(proxyUrl);   // canal oficial wrapper(shim) ↔ ensure
   maintainShimSafe();            // instala/reaplica o shim do claude.exe (Windows)
 

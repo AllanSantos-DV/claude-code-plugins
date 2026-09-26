@@ -3603,6 +3603,127 @@ test('retrieve-core retrieveRemote (F2): ancestor-search timeout DEGRADES to com
   }
 });
 
+// ─── brain-backend: circuit breaker on a down mcp-memory daemon ──────────────
+// EVERY mcp-memory dispatch call (init/save/search/compose/count/getRelated/
+// delete/list/ingest*/warmPool) goes through guardMcp(), a single choke point
+// so a failure anywhere fails the NEXT call fast instead of paying the
+// client's own 60s request timeout again.
+
+test('brain-backend circuit breaker: reportMcpFailure opens on transport errors; reportMcpSuccess closes it', () => {
+  delete require.cache[require.resolve('./brain-backend.js')];
+  const backend = require('./brain-backend.js');
+  assertEq(backend.circuitOpen(), false, 'starts closed');
+  backend.reportMcpFailure(new Error('MCP request "search_memory" timed out after 8000ms'));
+  assertEq(backend.circuitOpen(), true, 'a timeout message opens the circuit');
+  backend.reportMcpSuccess();
+  assertEq(backend.circuitOpen(), false, 'a success resets the circuit');
+  backend.reportMcpFailure(new Error('connect ECONNREFUSED 127.0.0.1:9999'));
+  assertEq(backend.circuitOpen(), true, 'ECONNREFUSED also counts as a transport failure');
+});
+
+test('brain-backend circuit breaker: a non-transport error does NOT open the circuit', () => {
+  delete require.cache[require.resolve('./brain-backend.js')];
+  const backend = require('./brain-backend.js');
+  backend.reportMcpFailure(new Error('validation failed: title is required'));
+  assertEq(backend.circuitOpen(), false,
+    'a business-logic error from a healthy daemon must not degrade unrelated calls');
+});
+
+test('brain-backend mcp: while the circuit is open, search/save/etc. fail fast WITHOUT reaching the daemon', async () => {
+  const daemon = await startFakeDaemon({ toolResult: () => ({ content: [{ type: 'text', text: JSON.stringify({ results: [] }) }] }) });
+  delete require.cache[require.resolve('./brain-backend.js')];
+  const backend = require('./brain-backend.js');
+  backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
+  try {
+    await backend.init({ project: 'projCircuit' });
+    backend.reportMcpFailure(new Error('ECONNRESET'));
+    let threw = null;
+    try { await backend.search('q'); } catch (err) { threw = err; }
+    assert(threw && threw.code === 'CIRCUIT_OPEN', 'search must reject fast with CIRCUIT_OPEN while the breaker is open');
+    assertEq(daemon.seen.callCount, 0, 'no tools/call reached the daemon while the circuit was open');
+    await backend.close();
+  } finally {
+    delete require.cache[require.resolve('./brain-backend.js')];
+    await daemon.close();
+  }
+});
+
+test('brain-backend mcp: circuit closes after cooldown, so calls reach the daemon again', async () => {
+  const daemon = await startFakeDaemon({ toolResult: () => ({ content: [{ type: 'text', text: JSON.stringify({ results: [] }) }] }) });
+  delete require.cache[require.resolve('./brain-backend.js')];
+  const prev = process.env.CCB_MCP_MEMORY_CIRCUIT_MS;
+  process.env.CCB_MCP_MEMORY_CIRCUIT_MS = '10';
+  const backend = require('./brain-backend.js');
+  backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
+  try {
+    await backend.init({ project: 'projCooldown' });
+    backend.reportMcpFailure(new Error('ECONNRESET'));
+    assertEq(backend.circuitOpen(), true);
+    await new Promise((r) => setTimeout(r, 40)); // > 10ms cooldown
+    assertEq(backend.circuitOpen(), false, 'cooldown elapsed → circuit closed');
+    const hits = await backend.search('q');
+    assertEq(Array.isArray(hits), true, 'a call after cooldown reaches the daemon again');
+    assertEq(daemon.seen.callCount, 1);
+    await backend.close();
+  } finally {
+    if (prev === undefined) delete process.env.CCB_MCP_MEMORY_CIRCUIT_MS; else process.env.CCB_MCP_MEMORY_CIRCUIT_MS = prev;
+    delete require.cache[require.resolve('./brain-backend.js')];
+    await daemon.close();
+  }
+});
+
+test('brain-backend mcp: a REAL transport failure (daemon closed mid-session) opens the circuit', async () => {
+  const daemon = await startFakeDaemon();
+  delete require.cache[require.resolve('./brain-backend.js')];
+  const backend = require('./brain-backend.js');
+  backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url, timeout: 800 } } });
+  try {
+    await backend.init({ project: 'projDeath' });
+    await daemon.close(); // daemon now unreachable — no manual reportMcpFailure() involved
+    let threw = null;
+    try { await backend.search('q'); } catch (err) { threw = err; }
+    assert(threw, 'the call itself must fail once the daemon is gone');
+    assertEq(backend.circuitOpen(), true, 'a genuine connection failure (not just a simulated one) trips the breaker');
+  } finally {
+    delete require.cache[require.resolve('./brain-backend.js')];
+  }
+});
+
+test('retrieve-core retrieveRemote: a shared backend.circuitOpen()===true short-circuits before even calling init (cooperative breaker)', async () => {
+  let initCalls = 0;
+  const fake = { circuitOpen: () => true, init: async () => { initCalls++; } };
+  const out = await retrieveCore.__testHooks.retrieveRemote(
+    'prompt', { project: 'p', ancestorIds: ['p'], topK: 5, keywords: [] },
+    { backend: fake, recallHealth: { record: () => {} } },
+  );
+  assertEq(out.reason, 'circuit-open');
+  assertEq(initCalls, 0, 'the shared breaker skips init entirely, not just the compose call');
+});
+
+test('retrieve-core retrieveRemote: reports success/failure to backend.reportMcpSuccess/Failure when the backend exposes them', async () => {
+  const reports = [];
+  const okFake = fakeComposeBackend({
+    facts: [{ id: 'd1', title: 'T', type: 'knowledge', summary: 's', score: 1 }],
+    onSearch: async () => [],
+  });
+  okFake.reportMcpSuccess = () => reports.push('success');
+  okFake.reportMcpFailure = () => reports.push('failure');
+  await retrieveCore.__testHooks.retrieveRemote(
+    'p', { project: 'p', ancestorIds: ['p'], topK: 5, keywords: [] },
+    { backend: okFake, recallHealth: { record: () => {} } },
+  );
+  assertEq(reports, ['success'], 'a successful compose reports success to the shared breaker');
+
+  const failFake = { init: async () => {}, hasCompose: () => true, compose: async () => { throw new Error('remote-error boom'); } };
+  failFake.reportMcpSuccess = () => reports.push('success2');
+  failFake.reportMcpFailure = () => reports.push('failure2');
+  await retrieveCore.__testHooks.retrieveRemote(
+    'p', { project: 'p', ancestorIds: ['p'], topK: 5, keywords: [] },
+    { backend: failFake, recallHealth: { record: () => {} } },
+  );
+  assertEq(reports, ['success', 'failure2'], 'a failing compose reports failure to the shared breaker');
+});
+
 test('hooks.json (F2): brain_retrieve_context UserPromptSubmit hook passes sessionRoot=${CLAUDE_PROJECT_DIR}', () => {
   const hooksPath = path.join(__dirname, '..', 'hooks', 'hooks.json');
   const parsed = JSON.parse(fs.readFileSync(hooksPath, 'utf-8')); // still valid JSON
@@ -7562,8 +7683,8 @@ test('build-swap servesThisBuild: FAIL-SAFE — na dúvida NUNCA derruba o route
 
 test('build-swap: a troca só acontece em janela segura (SessionStart OU apply explícito do dashboard)', () => {
   const src = fs.readFileSync(path.join(SCRIPTS, 'model-router-ensure.js'), 'utf-8');
-  assertEq(/const rawBuildChanged = st && st\.pid && !servesThisBuild/.test(src), true,
-    'a divergência de build é computada via servesThisBuild');
+  assertEq(/const rawBuildChanged = safeWindow && st && st\.pid && !servesThisBuild/.test(src), true,
+    'a sondagem de build (servesThisBuild, que spawna powershell.exe) só corre dentro da janela segura');
   assertEq(/if \(safeWindow && st && st\.pid && \(buildChanged \|\| configChanged\)\)/.test(src), true,
     'o kill de build/config divergente deve estar guardado pela janela segura');
   assertEq(/isSessionStart\s*\|\|\s*forceRestart/.test(src), true,
@@ -7573,6 +7694,19 @@ test('build-swap: a troca só acontece em janela segura (SessionStart OU apply e
   // do usuário. O "Salvar & aplicar" do dashboard É uma janela segura (ação explícita).
   assertEq(/waitPortFree/.test(src), true,
     'após o kill é preciso esperar a porta liberar, senão o bind novo dá EADDRINUSE');
+});
+
+test('cleanupGlobalEnv: o self-heal de resíduo global só corre em janela segura', () => {
+  const src = fs.readFileSync(path.join(SCRIPTS, 'model-router-ensure.js'), 'utf-8');
+  // cleanupGlobalEnv() spawna 2x powershell.exe (GetEnvironmentVariable/User) — medido
+  // ~2s cada nesta máquina (Application Control), ~4.1s total. Sem o gate, isso corria
+  // em TODO UserPromptSubmit (inclusive no fast-path mode:off), não só no SessionStart.
+  assertEq(/function disableRoutingFootprint\(safeWindow\)/.test(src), true,
+    'disableRoutingFootprint precisa receber safeWindow para gatear o cleanup');
+  assertEq(/if \(safeWindow\) cleanupGlobalEnv\(\);/.test(src), true,
+    'cleanupGlobalEnv só deve ser chamado quando safeWindow é verdadeiro');
+  assertEq(/disableRoutingFootprint\(safeWindow\)/.test(src), true,
+    'todo call site de disableRoutingFootprint deve propagar safeWindow');
 });
 
 // ═══ debounce de troca de build (o ping-pong entre dev checkout e cache do marketplace) ═══
@@ -15460,6 +15594,34 @@ test('brain daemon supervisor: HOME/USERPROFILE inherited by spawnDaemon', async
   }
   fs.rmSync(tmpHome, { recursive: true, force: true });
   fs.rmSync(dataDir, { recursive: true, force: true });
+});
+
+test('mcp-server createBrainServer({mode:"http"}): CCB_PROJECT_ID is never honored, even when poisoned by the spawning process (regression, found live 2026-09-24 — daemon-supervisor.spawnDaemon() used to bake a caller\'s leftover env into the shared daemon permanently)', async () => {
+  const MCP_SERVER_URL = pathToFileURL(
+    path.join(ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js'),
+  ).href;
+  const { createBrainServer } = await import(MCP_SERVER_URL);
+  const savedEnv = process.env.CCB_PROJECT_ID;
+  // Simulates the exact leak: some OTHER session's brain-status.js sub-detector
+  // mutated this var in what became the process that (re)spawned the daemon.
+  process.env.CCB_PROJECT_ID = 'poisoned-by-another-session';
+  try {
+    const server = createBrainServer({ pluginRoot: ROOT, mode: 'http' });
+    // server.dispatch is the test/automation seam (same gated path as a real
+    // CallToolRequestSchema request) — no live MCP transport needed.
+    const result = await server.dispatch('brain_count', {});
+    const text = JSON.stringify(result);
+    assert(!text.includes('poisoned-by-another-session'), 'http-mode dispatch must not resolve to the poisoned CCB_PROJECT_ID');
+    assert(result.isError && /project is required in HTTP mode/.test(text), `must surface PROJECT_REQUIRED, not a silent fallback (got: ${text})`);
+  } finally {
+    if (savedEnv === undefined) delete process.env.CCB_PROJECT_ID; else process.env.CCB_PROJECT_ID = savedEnv;
+  }
+});
+
+test('daemon-supervisor spawnDaemon: never forwards CCB_PROJECT_ID from the spawning process into the shared daemon\'s env (regression, found live 2026-09-24)', async () => {
+  const src = fs.readFileSync(path.join(ROOT, 'servers', 'brain-server', 'lib', 'daemon-supervisor.js'), 'utf8');
+  const fnBody = src.slice(src.indexOf('function spawnDaemon'), src.indexOf('function spawnDaemon') + 700);
+  assert(/delete\s+spawnerEnv\.CCB_PROJECT_ID/.test(fnBody), 'spawnDaemon must strip CCB_PROJECT_ID before spreading process.env into the child');
 });
 
 test('brain daemon supervisor: same pluginRoot but different dataDir → error, not current', async () => {
