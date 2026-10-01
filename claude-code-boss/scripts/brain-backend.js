@@ -17,6 +17,48 @@ let _graph = null;
 let _embedder = null;
 let _mcp = null;
 
+// ── Circuit breaker for a down mcp-memory daemon ────────────────────────────
+// EVERY mcp-memory operation (init/connect, save, search, compose, count,
+// getRelated, delete, list, ingestConversation, searchByKeywords, warmPool)
+// goes through guardMcp() below — a single choke point so one detected failure
+// protects them all, instead of each caller discovering independently (up to
+// the client's own 60s request timeout, per call) that the daemon is down.
+// Trips only on a TRANSPORT-shaped failure (timeout/connection refused/reset) —
+// a validation error from a healthy daemon must not degrade unrelated calls.
+let _circuitOpenUntil = 0;
+const CIRCUIT_COOLDOWN_MS = Number.parseInt(process.env.CCB_MCP_MEMORY_CIRCUIT_MS, 10) || 15000;
+
+function isTransportFailure(err) {
+  return /timed out|timeout|ECONNREFUSED|ECONNRESET|ENOTFOUND|EHOSTUNREACH|socket hang up|fetch failed/i
+    .test((err && err.message) || '');
+}
+
+function circuitOpen() { return Date.now() < _circuitOpenUntil; }
+
+/** Externally reportable so a caller racing its OWN shorter timeout against a
+ *  backend call (e.g. retrieve-core.js's compose race) can still trip/reset
+ *  this shared breaker rather than waiting for the raw client timeout. */
+function reportMcpFailure(err) { if (!err || isTransportFailure(err)) _circuitOpenUntil = Date.now() + CIRCUIT_COOLDOWN_MS; }
+function reportMcpSuccess() { _circuitOpenUntil = 0; }
+
+/** Wrap one mcp-memory call: fail fast (no network) while the circuit is open;
+ *  otherwise run it and report the outcome. `label` only annotates the error. */
+async function guardMcp(label, fn) {
+  if (circuitOpen()) {
+    const err = new Error(`mcp-memory backend circuit open (recent failure) — skipped ${label}`);
+    err.code = 'CIRCUIT_OPEN';
+    throw err;
+  }
+  try {
+    const result = await fn();
+    reportMcpSuccess();
+    return result;
+  } catch (err) {
+    reportMcpFailure(err);
+    throw err;
+  }
+}
+
 // Shipped config (config/brain-config.json) ⊕ per-user override
 // (globalDir()/user-config.json). Delegating to lib/brain-config keeps the
 // merge in ONE place: this is what lets a user enable the mcp-memory backend +
@@ -532,7 +574,7 @@ async function init(opts = {}) {
   _mode = (config.backend && config.backend.type) || 'local';
 
   if (_mode === 'mcp-memory') {
-    await initMcp();
+    await guardMcp('init', initMcp);
   } else {
     await initLocal({ skipEmbedder: !!opts.skipEmbedder });
   }
@@ -541,18 +583,18 @@ async function init(opts = {}) {
 
 async function save(entry) {
   if (!entry) throw new Error('save: entry is required');
-  if (_mode === 'mcp-memory') return saveMcp(entry);
+  if (_mode === 'mcp-memory') return guardMcp('save', () => saveMcp(entry));
   return saveLocal(entry);
 }
 
 async function get(id) {
   if (!id) return null;
-  if (_mode === 'mcp-memory') return getMcp(id);
+  if (_mode === 'mcp-memory') return guardMcp('get', () => getMcp(id));
   return getLocal(id);
 }
 
 async function search(query, opts = {}) {
-  if (_mode === 'mcp-memory') return searchMcp(query, opts);
+  if (_mode === 'mcp-memory') return guardMcp('search', () => searchMcp(query, opts));
   return searchLocal(query, opts);
 }
 
@@ -568,7 +610,7 @@ function hasCompose() {
  */
 async function compose(query, opts = {}) {
   if (_mode !== 'mcp-memory') throw new Error('compose is only available on the mcp-memory backend');
-  return composeMcp(query, opts);
+  return guardMcp('compose', () => composeMcp(query, opts));
 }
 
 /**
@@ -578,13 +620,13 @@ async function compose(query, opts = {}) {
  */
 async function ingestConversation(raw, opts = {}) {
   if (_mode !== 'mcp-memory') throw new Error('ingestConversation is only available on the mcp-memory backend');
-  return ingestConversationMcp(raw, opts);
+  return guardMcp('ingestConversation', () => ingestConversationMcp(raw, opts));
 }
 
 /** Staging observability for a consumer×session (pending/cooldown/success/…). mcp-memory ONLY. */
 async function ingestStatus(opts = {}) {
   if (_mode !== 'mcp-memory') throw new Error('ingestStatus is only available on the mcp-memory backend');
-  return ingestStatusMcp(opts);
+  return guardMcp('ingestStatus', () => ingestStatusMcp(opts));
 }
 
 /**
@@ -605,36 +647,36 @@ async function warmPool(query, opts = {}) {
   if (_warmInFlight) return [];
   _warmInFlight = true;
   try {
-    return await searchMcp(query, { topK: opts.topK || 5, includeHome: true });
+    return await guardMcp('warmPool', () => searchMcp(query, { topK: opts.topK || 5, includeHome: true }));
   } finally {
     _warmInFlight = false;
   }
 }
 
 async function searchByKeywords(keywords, opts = {}) {
-  if (_mode === 'mcp-memory') return searchByKeywordsMcp(keywords, opts);
+  if (_mode === 'mcp-memory') return guardMcp('searchByKeywords', () => searchByKeywordsMcp(keywords, opts));
   return searchByKeywordsLocal(keywords, opts);
 }
 
 async function delete_(id) {
   if (!id) return;
-  if (_mode === 'mcp-memory') return deleteMcp(id);
+  if (_mode === 'mcp-memory') return guardMcp('delete', () => deleteMcp(id));
   return deleteLocal(id);
 }
 
 async function list(type, project) {
-  if (_mode === 'mcp-memory') return listMcp(type, project);
+  if (_mode === 'mcp-memory') return guardMcp('list', () => listMcp(type, project));
   return listLocal(type, project);
 }
 
 async function count() {
-  if (_mode === 'mcp-memory') return countMcp();
+  if (_mode === 'mcp-memory') return guardMcp('count', () => countMcp());
   return countLocal();
 }
 
 async function getRelated(id) {
   if (!id) return [];
-  if (_mode === 'mcp-memory') return getRelatedMcp(id);
+  if (_mode === 'mcp-memory') return guardMcp('getRelated', () => getRelatedMcp(id));
   return getRelatedLocal(id);
 }
 
@@ -669,6 +711,10 @@ module.exports = {
   compose, hasCompose, ingestConversation, ingestStatus, warmPool,
   delete: delete_, list, count, getRelated, close,
   getStatus, getMode, peekMode, _resetConfig,
+  // Circuit breaker on the mcp-memory backend — reportMcpFailure/reportMcpSuccess
+  // let an external caller racing its OWN shorter timeout (retrieve-core.js's
+  // compose race) trip/reset the SAME breaker every dispatch call above checks.
+  circuitOpen, reportMcpFailure, reportMcpSuccess,
   // Exposed for deterministic offline tests of the MCP-tool mappings.
   __testHooks: {
     parseSearchResults, parseListResults, parseAddedId, deriveTitle,

@@ -172,7 +172,15 @@ function lockMatchesHealth(lock, health) {
 }
 
 function spawnDaemon({ pluginRoot, dataDir, port, env }) {
-  const childEnv = { ...process.env, ...normalizeEnv(env), CLAUDE_PLUGIN_ROOT: pluginRoot, CLAUDE_PLUGIN_DATA: dataDir };
+  // The daemon serves every session/project on the machine — it must never
+  // inherit a single-session identity marker from whichever hook process
+  // happens to trigger this spawn. `CCB_PROJECT_ID` is set per-session by
+  // `scripts/brain-status.js` inside its OWN ephemeral process; spreading it
+  // here would bake one caller's project into the shared daemon permanently
+  // (see the matching guard in `lib/mcp-server.js`'s `resolveProject()`).
+  const spawnerEnv = { ...process.env };
+  delete spawnerEnv.CCB_PROJECT_ID;
+  const childEnv = { ...spawnerEnv, ...normalizeEnv(env), CLAUDE_PLUGIN_ROOT: pluginRoot, CLAUDE_PLUGIN_DATA: dataDir };
   const child = spawn(
     process.execPath,
     [INDEX, '--port', String(port), '--plugin-data', dataDir],
