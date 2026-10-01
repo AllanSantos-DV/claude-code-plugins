@@ -17,6 +17,7 @@
 | **CAS multi-writer no fallback JSON do brain-store** | ✅ DONE (2026-08-23) — lock por entrada via mkdir exclusivo + owner-file com idade (stale >5s arrebenta), merge-on-write preserva campos não tocados; leitura em timeout devolve sem bump (nunca hard-fail) | — | ✅ morto |
 | **Auditoria onclick-string-args no index.html** | ✅ DONE (2026-08-23) — `toggleHook`, `deleteShell`, `previewSkillDraft` migrados p/ data-* + listener delegado; asserção permanente proíbe aspa em atributo onclick | — | ✅ morto (restam só interpolações numéricas) |
 | **Brain dashboard CRUD via fachada mcp-memory** | desvio da Fase F — ver dossiê dela | ADR-012 | 🟡 ÚNICO backlog restante — exige E2E contra daemon Java real (sandbox próprio); não é bloqueador de release |
+| **Fase G** — Hooks via transporte de daemon | [PHASE-G-hook-daemon-transport.md](./PHASE-G-hook-daemon-transport.md) | [ADR-015](../adr/ADR-015-hook-daemon-transport.md) | 🟡 SPIKES FECHADOS (S1/S1b/S2/S3/S4, dado real) — pronta pra iniciar tasks 2-8 (implementação) |
 
 ## Regras de ouro (do dono)
 

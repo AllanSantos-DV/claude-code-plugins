@@ -403,10 +403,18 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
   }
 
   // ─── Project scoping (stdio = CWD; http = explicit-or-reject) ──────────────
-  // Client-chosen identity: an explicit `project` arg wins, then the shared
-  // resolver (env CCB_PROJECT_ID → .claude-boss-project marker → basename(cwd)),
-  // so the id we stamp on the daemon is stable across machines/clones instead of
-  // the raw folder name. Default (no override) stays basename(cwd) — unchanged.
+  // Client-chosen identity: an explicit `project` arg wins, then (STDIO ONLY)
+  // the env CCB_PROJECT_ID override → .claude-boss-project marker →
+  // basename(cwd), so the id we stamp on the daemon is stable across
+  // machines/clones instead of the raw folder name.
+  //
+  // `CCB_PROJECT_ID` must NEVER be honored in http mode: `brain-status.js`
+  // mutates it per-session inside its own ephemeral process, but
+  // `daemon-supervisor.js`'s `spawnDaemon()` spreads the spawning process's
+  // full `process.env` into the long-lived shared daemon. Honoring this var
+  // in http mode would silently misattribute every caller that omits an
+  // explicit `project` to whichever session's hook happened to (re)spawn the
+  // daemon, for the daemon's entire lifetime.
   const projectId = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'project-id.js'));
   function resolveProject(args) {
     const a = args || {};
@@ -417,8 +425,6 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
       const safe = projectId.sanitizeProjectId(a.project);
       if (safe) return safe;
     }
-    const forced = projectId.sanitize(process.env.CCB_PROJECT_ID);
-    if (forced) return forced;
     if (a.cwd) return projectId.resolveProjectId({ cwd: a.cwd });
     if (mode === 'http') {
       throw Object.assign(
@@ -426,6 +432,10 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
         { code: 'PROJECT_REQUIRED' },
       );
     }
+    // stdio only past this point: one process per session, so both the env
+    // override and process.cwd() legitimately describe THIS caller alone.
+    const forced = projectId.sanitize(process.env.CCB_PROJECT_ID);
+    if (forced) return forced;
     return projectId.resolveProjectId({ cwd: process.cwd() });
   }
 

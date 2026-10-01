@@ -144,7 +144,7 @@
             "type": "command",
             "command": "node",
             "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/model-router-ensure.js"],
-            "timeout": 10
+            "timeout": 30
           },
           {
             "type": "command",
@@ -162,7 +162,7 @@
               "sessionRoot": "${CLAUDE_PROJECT_DIR}",
               "session_id": "${session_id}"
             },
-            "timeout": 10
+            "timeout": 30
           }
         ]
       }

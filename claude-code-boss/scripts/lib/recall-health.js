@@ -9,7 +9,8 @@
  * unavailable — recall has been empty for N turns").
  *
  * Degraded reasons: 'no-compose' (daemon < 2.18 / tool missing), 'remote-error',
- * 'timeout'. The project arm (2.29.1; it replaced the F2 ancestor arm and its
+ * 'timeout', 'circuit-open' (retrieve-core's breaker skipped the wait — daemon was
+ * already known down). The project arm (2.29.1; it replaced the F2 ancestor arm and its
  * 'ancestor-*' reasons) adds 'project-arm-timeout' / 'project-arm-error' (a PARTIAL
  * degradation: compose still returned, only the project search was skipped) so
  * byReason surfaces it without failing the turn. Everything else (a hit, or an honest
@@ -34,7 +35,7 @@ const { writeJsonAtomic } = require('./atomic-write.js');
 const DATA_DIR = dataDir();
 const FILE = path.join(DATA_DIR, '.runtime', 'recall-health.json');
 
-const DEGRADED_REASONS = new Set(['no-compose', 'remote-error', 'timeout', 'project-arm-timeout', 'project-arm-error']);
+const DEGRADED_REASONS = new Set(['no-compose', 'remote-error', 'timeout', 'project-arm-timeout', 'project-arm-error', 'circuit-open']);
 
 // Quantos outcomes recentes decidem o veredito. Grande o bastante para uma
 // degradação real não sumir num soluço; pequeno o bastante para o alarme APAGAR
