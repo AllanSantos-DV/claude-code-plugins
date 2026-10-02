@@ -1008,6 +1008,10 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           return { content: [{ type: 'text', text: payload }] };
         } catch (err) {
           console.error(`[brain_retrieve_context] ${err.message}`);
+          // Fail-open hides the failure from the turn — make it visible to brain-health
+          // and the dashboard (the daemon's stderr is kept nowhere).
+          try { require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'recall-health.js')).record('retrieve-error', err.message); }
+          catch (e) { console.error(`[brain_retrieve_context] recall-health: ${e.message}`); }
           return { content: [{ type: 'text', text: '' }] }; // fail-open: never break the prompt
         }
       }

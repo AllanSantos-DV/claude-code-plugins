@@ -3605,6 +3605,24 @@ test('retrieve-core.pickInjectable: home-spine filter + dedup + topK + char budg
   assertEq(retrieveCore.pickInjectable(facts, caps, { topK: 5, maxChars: 150, includeHomeSpine: true }).facts.length, 1);
 });
 
+test('brain_retrieve_context: a handler failure is recorded in recall-health (fail-open, but not silent)', async () => {
+  const rh = require('./lib/recall-health.js');
+  const pkPath = require.resolve('./lib/prompt-kind.js');
+  const saved = require.cache[pkPath];
+  require.cache[pkPath] = { id: pkPath, filename: pkPath, loaded: true, exports: { isSyntheticPrompt: () => { throw new Error('boom-retrieve-u715'); } } };
+  try {
+    const { createBrainServer } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+    const server = createBrainServer({ pluginRoot: ROOT, mode: 'http' });
+    const r = await server.dispatch('brain_retrieve_context', { prompt: 'anything', cwd: process.env.CLAUDE_PLUGIN_DATA, session_id: 'u715' });
+    assertEq(JSON.stringify(r.content), JSON.stringify([{ type: 'text', text: '' }]), 'still fail-open: empty context, no error to the prompt');
+    const st = rh.getStatus();
+    assert(st.lastDegraded && st.lastDegraded.reason === 'retrieve-error' && /boom-retrieve-u715/.test(st.lastDegraded.detail || ''),
+      `the failure must be recorded with its message, got ${JSON.stringify(st.lastDegraded)}`);
+  } finally {
+    if (saved) require.cache[pkPath] = saved; else delete require.cache[pkPath];
+  }
+});
+
 test('recall-health.isDegraded: classifies degraded vs ok reasons', () => {
   const rh = require('./lib/recall-health.js');
   assert(rh.isDegraded('no-compose') && rh.isDegraded('remote-error') && rh.isDegraded('timeout'), 'degraded reasons');
