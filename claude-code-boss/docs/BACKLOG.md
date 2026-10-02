@@ -298,8 +298,30 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   `command-signature.indexOfShellMeta`) e corrigir o comentário.
 - [ ] **U4 — assinatura de uso único genérica demais** (`ls lib` de um comando
   `ls lib && wc … && grep …`): marcar como one-off silencia qualquer `ls lib`.
+  **Medido em 2026-10-02 — decisão do dono**: a assinatura de composto é o 1º
+  segmento de trabalho POR DESENHO declarado (teste "the sig is the FIRST
+  invocation (by design)"). No histórico, 425 assinaturas cobrem 2+ comandos de
+  trabalho diferentes (2.285 de 9.625 comandos, ~24%): `git status` cobre 50
+  variantes (`git status && git diff`, `… && ls .vscode/scripts`). Efeito além do
+  one-off: recorrência e saída volumosa são atribuídas ao 1º segmento (a saída
+  de um `git diff` vira "git status precisa de script curado"). Proposta: a sig
+  de composto = sigs de todos os segmentos de trabalho. Mexe na identidade usada
+  por curadoria/one-off/aliases (marcações gravadas deixam de casar e são podadas
+  pelo `oneoff-store.load`) — por isso não foi feito sem decisão.
+- [ ] **U13 — número de descritor fica na assinatura** (`git status 2>&1` →
+  `git status 2`, diferente de `git status`). Medido em 2026-10-02: corrigir muda
+  2.919 de 9.625 assinaturas (~30%) e quebra 2 testes que fixam a identidade das
+  sigs gravadas — mesma natureza do U4 (migração de dados gravados). Testado e
+  REVERTIDO; aguarda a mesma decisão do U4. Fix pronto: no `canonicalSig`, ao
+  cortar no redirecionamento, remover o número COLADO (`2>`), nunca um argumento
+  seguido de espaço (`sleep 2 > f`).
 - [ ] **U5 — comandos de subagente entram na curadoria do `Stop` do pai** (o `find`
   em `token-guard` foi do subagente e bloqueou o turno principal).
+  **Pesquisado em 2026-10-02**: a doc oficial do Claude Code não diz se o input de
+  `PreToolUse`/`PostToolUse` de uma chamada de subagente traz `agent_id`, nem
+  documenta placeholder `${agent_id}` para `mcp_tool` (consulta via agente de
+  docs, sem fonte conclusiva). Depende de teste no Claude Code REAL: logar o input
+  do hook quando um subagente roda Bash — entra no smoke de validação.
 - [x] **U6 — hooks de `UserPromptSubmit` disparam sobre `<task-notification>`**:
   "the user may be correcting you" e sugestão `research_query({query:"<task-notification>"})`.
   **RESOLVIDO em 2026-10-02**: `lib/prompt-kind.js` (`isSyntheticPrompt`: prompt que
@@ -559,6 +581,7 @@ Lacunas conhecidas do gate de project id (2.29.1):
 
 ## Curation / command-signature
 
+- [x] **RESOLVIDOS em 2026-10-02 (os 2 itens abaixo)**: `command-signature` trata `(`/`{` iniciais e `)`/`}` finais sem par como estrutura, e `VAR=$(cmd …)` assina pelo `cmd` interno (`$((` segue sendo atribuição aritmética; `VAR=$(cat <<EOF` é setup). Casos: `(cd /p && git diff)` → `git diff`, `(cd /p && npm test)` → `npm test`, `(\ncd x\nnpm test\n)` → `npm test`, `{\n git log\n} > f` → `git log`, `X=$(git diff HEAD)` → `git diff HEAD`, `OUT=$(python3 - <<EOF …)` → `python3 heredoc-<digest>` (era vazio). Replay no histórico: 150 de 9.627 assinaturas mudaram, todas para melhor (ex.: `stash create)` → `git stash create`, `root 2` → `npm root 2`).
 - **Subshell/grupo `(...)`/`{...}` funde comandos não relacionados** (achado pré-existente, revisão round 2 do fix de misattribution, 2026-09-24): `(cd /p && git diff)` e `(cd /p && npm test)` assinam ambos `(cd /p` (NAV_SEGMENT não casa por causa do `(`); `(\ncd x\nnpm test\n)` e `{\n git log\n} > f` assinam `(`/`{` — 1 token não-programa: MCP recusa, não é ceiling-exempt, não é curável. Fix provável: `stripPrefixes` remover `(`/`{` iniciais (e `GROUP_CLOSE` já pula o fechamento). `scripts/lib/command-signature.js`.
 - **`ENV_ASSIGN` (`\S*`) come `$(` de command substitution** (pré-existente): `OUT=$(python3 - <<EOF ...)` → sig `''` (sinalizado sem sig, nada limpa); `X=$(git diff HEAD)` → `diff HEAD)` (perde o programa). Fix provável: tratar `VAR=$(cmd ...)` assinando pelo `cmd` interno.
 - **Programa chamado por caminho (`./gradlew`) não é ceiling-exempt** (pré-existente): `PROGRAM_NAME` exige nome sem `/`; `./gradlew | tail` → sig 1-token recusada pelo MCP. Ainda curável registrando o script. Avaliar aceitar `./x`/`bin/x` em `isCeilingExempt` (`scripts/lib/oneoff-store.js`).

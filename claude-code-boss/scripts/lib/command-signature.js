@@ -131,12 +131,50 @@ function bodyDigest(body) {
   return crypto.createHash('sha1').update(norm).digest('hex').slice(0, 8);
 }
 
+// `VAR=$(cmd …)`: the work is the substituted command (ENV_ASSIGN's `\S*` would
+// otherwise eat `$(git` and leave `diff HEAD)` as the "command").
+// (`$((` is arithmetic, not a command — left to ASSIGN_ONLY_SEGMENT.)
+const SUBST_ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=\$\((?!\()\s*/;
+// `VAR=$(cat <<EOF` only loads a heredoc into a variable — setup, like `cat > f <<EOF`.
+const SUBST_HEREDOC_LOAD = /^cat\s*<<@\d+\s*$/;
+
+/** Drop trailing `)`/`}` that close a group opened BEFORE this segment (unbalanced). */
+function _dropUnbalancedClose(s) {
+  let out = s;
+  for (;;) {
+    const m = /[)}]\s*$/.exec(out);
+    if (!m) return out;
+    const opens = (out.match(/[({]/g) || []).length;
+    const closes = (out.match(/[)}]/g) || []).length;
+    if (closes <= opens) return out;
+    out = out.slice(0, m.index).trimEnd();
+  }
+}
+
+/**
+ * Leading group openers (`(cd /p && git diff)`, `{ git log; } > f`) and
+ * `VAR=$(` are structure, not the command; so are the matching trailing closers.
+ * Without this `(cd /p && x)` and `(cd /p && y)` both signed as `(cd /p`.
+ */
+function _ungroup(segment) {
+  let s = segment.trim();
+  let hadSubst = false;
+  for (;;) {
+    if (/^[({]\s*/.test(s)) { s = s.replace(/^[({]\s*/, ''); continue; }
+    if (SUBST_ASSIGN.test(s)) { s = s.replace(SUBST_ASSIGN, ''); hadSubst = true; continue; }
+    break;
+  }
+  return { s: _dropUnbalancedClose(s), hadSubst };
+}
+
 function stripPrefixes(segment) {
   let s = segment.trim();
   let changed = true;
   while (changed) {
     changed = false;
-    while (ENV_ASSIGN.test(s)) { s = s.replace(ENV_ASSIGN, ''); changed = true; }
+    const g = _ungroup(s);
+    if (g.s !== s) { s = g.s; changed = true; }
+    while (ENV_ASSIGN.test(s) && !SUBST_ASSIGN.test(s)) { s = s.replace(ENV_ASSIGN, ''); changed = true; }
     if (WRAPPER_PREFIX.test(s)) { s = s.replace(WRAPPER_PREFIX, ''); changed = true; }
   }
   return s.trim();
@@ -199,7 +237,13 @@ function principalSegment(command) {
 
 /** principalSegment over a command whose heredoc bodies are already folded. */
 /** The segment's command once setup/decoration is discounted, or '' when it is not work. */
-function _workOf(seg) {
+function _workOf(rawSeg) {
+  if (ASSIGN_ONLY_SEGMENT.test(rawSeg.trim())) return '';
+  // `(cd /p` must still read as navigation: look past group openers first.
+  const g = _ungroup(rawSeg);
+  const seg = g.s;
+  if (!seg) return '';
+  if (g.hadSubst && SUBST_HEREDOC_LOAD.test(seg)) return '';
   if (NAV_SEGMENT.test(seg)) return '';
   if (ASSIGN_ONLY_SEGMENT.test(seg)) return '';
   if (COMMENT_SEGMENT.test(seg)) return '';
