@@ -19,6 +19,9 @@ import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { createBrainServer, createKbLockPool } from './mcp-server.js';
 import { createKbWorkerPool } from './kb-worker-client.js';
 import { createHookWorker } from './hook-worker-client.js';
+import { createEmbedWorker } from './embed-worker-client.js';
+import { createRequire } from 'node:module';
+import path from 'node:path';
 import fs from 'node:fs';
 import { HEALTH_PATH, MCP_PATH, lockFile, ensureToken, requestAllowed, originAllowed, tokenFile, canonicalDataDir } from './daemon-common.js';
 
@@ -55,6 +58,18 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
   // ONE heavy-lane hook worker for the whole daemon (G2): Stop + PostToolUse hooks
   // run there, off the thread that serves every session's HTTP and fast guards.
   const hookWorker = createHookWorker({ pluginRoot });
+  // ONE embedder worker (G12): the model and its inference leave the main thread that
+  // serves every session's HTTP and guards; brain-embedder delegates to it in-process.
+  const embedWorker = createEmbedWorker({ pluginRoot });
+  // The embedder is optional (keyword fallback) and was only ever loaded on demand:
+  // an unloadable module must not stop the daemon from booting — say so and go on.
+  let embedderModule = null;
+  try {
+    embedderModule = createRequire(import.meta.url)(path.join(pluginRoot, 'scripts', 'brain-embedder.js'));
+    embedderModule.setDelegate(embedWorker);
+  } catch (err) {
+    console.error(`[brain-http] embedder module unavailable (${err.message}) — semantic search off, keyword fallback only`);
+  }
   // ONE lock pool (one mutex per kb-worker slot) for the whole daemon process (not
   // per session): dispatchKbTool only serializes KB tool calls that land on the SAME
   // slot across sessions if every session's createBrainServer shares this same pool
@@ -196,6 +211,8 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
     await new Promise((r) => httpServer.close(r));
     try { await kbWorker.shutdown(); } catch (e) { void e; }
     try { await hookWorker.shutdown(); } catch (e) { void e; }
+    if (embedderModule) embedderModule.setDelegate(null); // never leave the module pointing at a closed worker
+    try { await embedWorker.shutdown(); } catch (e) { void e; }
   }
   process.once('SIGTERM', () => { shutdown().finally(() => {}); });
   process.once('SIGINT', () => { shutdown().finally(() => {}); });

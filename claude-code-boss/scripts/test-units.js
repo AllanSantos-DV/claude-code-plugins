@@ -3677,6 +3677,60 @@ test('brain_retrieve_context: a handler failure is recorded in recall-health (fa
   }
 });
 
+test('G12 embed-worker: inference runs off the main thread (event loop stays free), a crash degrades to null and the worker respawns', async () => {
+  const { createEmbedWorker } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'embed-worker-client.js')).href);
+  const { monitorEventLoopDelay } = require('perf_hooks');
+  const fakeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-embedw-'));
+  fs.mkdirSync(path.join(fakeRoot, 'scripts'));
+  fs.writeFileSync(path.join(fakeRoot, 'scripts', 'brain-embedder.js'), [
+    "let ready = false;",
+    "const busy = (ms) => { const end = Date.now() + ms; while (Date.now() < end) { /* synchronous work, like tokenization */ } };",
+    "module.exports = {",
+    "  async init() { ready = true; return true; },",
+    "  async embed(t) { if (t === 'crash') process.exit(7); busy(200); return [1, 2, 3]; },",
+    "  async embedBatch(ts) { return ts.map(() => [1, 2, 3]); },",
+    "  getStatus() { return { provider: 'stub', model: 'stub', dimensions: 3, ready, error: null }; },",
+    "};",
+  ].join('\n'));
+  const w = createEmbedWorker({ pluginRoot: fakeRoot, callTimeoutMs: 10000 });
+  try {
+    assertEq(await w.init(), true);
+    const h = monitorEventLoopDelay({ resolution: 1 }); h.enable();
+    const vecs = await Promise.all([w.embed('a'), w.embed('b'), w.embed('c')]);
+    h.disable();
+    assertEq(vecs, [[1, 2, 3], [1, 2, 3], [1, 2, 3]]);
+    assert(h.max / 1e6 < 100, `600 ms of synchronous embedding must not block the main loop, max delay ${(h.max / 1e6).toFixed(1)} ms`);
+    assertEq(w.getStatus().ready, true); assertEq(w.getDimensions(), 3);
+    assertEq(await w.embed('crash'), null, 'a dead worker degrades to null (keyword fallback)');
+    assertEq(await w.embed('again'), [1, 2, 3], 'the next call respawns the worker');
+  } finally {
+    await w.shutdown();
+    fs.rmSync(fakeRoot, { recursive: true, force: true });
+  }
+});
+
+test('G12 brain-embedder.setDelegate: every consumer is routed to the delegate; setDelegate(null) restores the local embedder', async () => {
+  const emb = require('./brain-embedder.js');
+  const calls = [];
+  emb.setDelegate({
+    init: async () => { calls.push('init'); return true; },
+    embed: async (t) => { calls.push('embed:' + t); return [9]; },
+    embedBatch: async (ts) => { calls.push('batch'); return ts.map(() => [9]); },
+    getStatus: () => ({ provider: 'delegate', ready: true }),
+    getDimensions: () => 1,
+  });
+  try {
+    assertEq(await emb.init(), true);
+    assertEq(await emb.embed('x'), [9]);
+    assertEq(await emb.embedBatch(['a', 'b']), [[9], [9]]);
+    assertEq(emb.getStatus().provider, 'delegate'); assertEq(emb.getDimensions(), 1);
+    assertEq(calls, ['init', 'embed:x', 'batch']);
+  } finally {
+    emb.setDelegate(null);
+  }
+  assert(emb.getStatus().provider !== 'delegate', 'local status is back after setDelegate(null)');
+});
+
 test('recall-health.isDegraded: classifies degraded vs ok reasons', () => {
   const rh = require('./lib/recall-health.js');
   assert(rh.isDegraded('no-compose') && rh.isDegraded('remote-error') && rh.isDegraded('timeout'), 'degraded reasons');
