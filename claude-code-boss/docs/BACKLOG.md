@@ -318,7 +318,18 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   `deriveTitle` nunca devolve vazio — cai em `'memory'` —, por isso o teste do
   texto vem antes). Teste: vazio descartado, nome derivado da descrição, nenhum
   bloco `[BRAIN·SKILLS]` quando só havia ponteiros vazios.
-- [ ] **U9 — `active-research-detect` com falso positivo `libMention`** em
+- [x] **U9 — `active-research-detect` com falso positivo `libMention`** —
+  **RESOLVIDO em 2026-10-02 pelo resultado medido** (1.365 prompts humanos reais):
+  disparava em 75, sendo 66 só por menção de lib e 9 por lib + versão — na amostra,
+  praticamente tudo ruído ("verifica o docker", "faz o fetch", `\claude` de um
+  caminho `…\claude-code`, `v1` em nome de arquivo). Agora: lib 1.0 → 0,5 e
+  versão 0,5 → 0,4 (contexto, não pedido — só disparam com "melhor forma"/
+  integração), nome de lib dentro de caminho/identificador não conta, e novo sinal
+  forte `researchAsk` (1.0: "pesquisa/pesquise/research/procure na internet/
+  estado da arte", fora de caminho), config `activeResearch.triggers.researchAsk`.
+  Replay: 75 → 50 disparos, a maioria pedidos reais de pesquisa. Testes: casos
+  reais que não disparam mais, pedido explícito e "melhor forma" + lib disparam,
+  lib/research dentro de caminho não contam. (Texto original:) em
   "Teste rápido do MCP smart-tool".
 - [x] **U10 — `curation-guard` e `error-guard` se travam em runner de teste.** (RESOLVIDO com o U2 em 2026-10-02.)
   Parte RESOLVIDA em 2026-10-02 pelo O4 (`node - <<EOF`/`cat <<EOF` não colapsam

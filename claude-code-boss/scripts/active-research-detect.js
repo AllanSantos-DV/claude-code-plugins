@@ -33,6 +33,7 @@ const DEFAULTS = {
     versionMention: true,
     bestPracticeAsk: true,
     integrationMention: true,
+    researchAsk: true,
   },
   maxPerSession: 3,
   cooldownMinutes: 60,
@@ -76,8 +77,10 @@ function buildLibRegex(libs) {
   if (_libRegexCache && _libRegexCache.k === libs) return _libRegexCache.re;
   // Empty lib list → a NEVER-matching regex, not an empty alternation `(?:)` which
   // matches almost any punctuated prompt (fail-open) and would nudge every turn.
+  // A lib name that is part of a path or an identifier (`\claude-code`, `x.node`,
+  // `my_docker`) is not a mention of the lib — U9: `C:\…\claude-code` fired as "Claude".
   const re = libs.length
-    ? new RegExp(`(?:^|[^a-z0-9])(?:${libs.map(escapeRegex).sort((a, b) => b.length - a.length).join('|')})(?=$|[^a-z0-9])`, 'i')
+    ? new RegExp(`(?:^|[^a-z0-9\\\\/._-])(?:${libs.map(escapeRegex).sort((a, b) => b.length - a.length).join('|')})(?=$|[^a-z0-9\\\\/._-])`, 'i')
     : /(?!x)x/; // matches nothing
   _libRegexCache = { k: libs, re };
   return re;
@@ -88,23 +91,34 @@ function buildLibRegex(libs) {
 const VERSION_RE = /\b(?:v\d+(?:\.\d+){0,2}|version\s+\d+(?:\.\d+){0,2}|@\d+(?:\.\d+){0,2})\b/i;
 const BEST_PRACTICE_RE = /\b(?:qual a melhor|melhor forma|melhor maneira|best practice|best way|how (?:do|to|should) i|recommended way|what(?:'?s| is)? the (?:best|proper|right))\b/i;
 const INTEGRATION_RE = /\b(?:integrar com|integrate with|connect(?:ing)? to|set\s?up\s+a?\s*webhook|webhook(?:s)?|api de|sdk de|wire (?:up|in))\b/i;
+// An EXPLICIT research ask — the strongest signal (U9: 43 of 1,365 real prompts,
+// mostly genuine). Not inside a path/identifier (`research-followup-detect.js`).
+const RESEARCH_ASK_RE = /(?:^|[^a-z0-9\\/._-])(?:pesquis[ae]\w*|fa[cç]a uma pesquisa|research(?:e|ing)?|procur[ae] na (?:internet|web)|busque na (?:internet|web)|search the web|look (?:it )?up online|estado da arte)(?=$|[^a-z0-9\\/._-])/i;
 
+// Weights (U9, measured on 1,365 real human prompts): a lib mention ALONE fired 66
+// of 75 nudges and was almost never a research ask ("verifica o docker", "faz o
+// fetch", "roda o claude plugin update"); lib + version was the same noise (a `v1`
+// in a file name). A lib or a version is context, not a request: they only fire
+// together with an ask (best-practice / integration).
 function detectSignals(text, triggers) {
   if (!text || typeof text !== 'string') return [];
   const out = [];
   if (triggers.libMention) {
     const re = buildLibRegex(loadLibs());
     const m = text.match(re);
-    if (m) out.push({ kind: 'libMention', weight: 1.0, match: m[0].trim() });
+    if (m) out.push({ kind: 'libMention', weight: 0.5, match: m[0].trim() });
   }
   if (triggers.versionMention && VERSION_RE.test(text)) {
-    out.push({ kind: 'versionMention', weight: 0.5 });
+    out.push({ kind: 'versionMention', weight: 0.4 });
   }
   if (triggers.bestPracticeAsk && BEST_PRACTICE_RE.test(text)) {
     out.push({ kind: 'bestPracticeAsk', weight: 0.7 });
   }
   if (triggers.integrationMention && INTEGRATION_RE.test(text)) {
     out.push({ kind: 'integrationMention', weight: 0.8 });
+  }
+  if (triggers.researchAsk && RESEARCH_ASK_RE.test(text)) {
+    out.push({ kind: 'researchAsk', weight: 1.0 });
   }
   return out;
 }
