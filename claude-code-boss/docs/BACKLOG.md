@@ -210,8 +210,15 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   `ls lib && wc … && grep …`): marcar como one-off silencia qualquer `ls lib`.
 - [ ] **U5 — comandos de subagente entram na curadoria do `Stop` do pai** (o `find`
   em `token-guard` foi do subagente e bloqueou o turno principal).
-- [ ] **U6 — hooks de `UserPromptSubmit` disparam sobre `<task-notification>`**:
+- [x] **U6 — hooks de `UserPromptSubmit` disparam sobre `<task-notification>`**:
   "the user may be correcting you" e sugestão `research_query({query:"<task-notification>"})`.
+  **RESOLVIDO em 2026-10-02**: `lib/prompt-kind.js` (`isSyntheticPrompt`: prompt que
+  começa com `<task-notification>`, formato confirmado no transcript desta sessão).
+  `correction-detect`, `active-research-detect` e `brain_retrieve_context` não
+  rodam sobre ele (o recall injetava lições sem relação sobre o relatório do
+  agente — parte do U7). Testes: helper, os 2 detectores calados na notificação e
+  ativos no mesmo texto digitado pelo usuário, `retrieve()` nunca chamado na
+  notificação e chamado num prompt real.
 - [ ] **U7 — recall injeta lição de outro projeto/irrelevante** ("Memory convergence…
   hermes… develop 92 commits" numa sessão do claude-code).
 - [ ] **U8 — `[BRAIN·SKILLS] 1 available capability pointer(s): - (unnamed)`** em

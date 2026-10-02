@@ -970,6 +970,9 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
       case 'brain_retrieve_context': {
         try {
           const { prompt, session_id } = args || {};
+          // A background agent's result (<task-notification>) is not a user prompt:
+          // recall over the agent's report only injected unrelated lessons.
+          if (require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'prompt-kind.js')).isSyntheticPrompt(prompt)) return { content: [{ type: 'text', text: '' }] };
           // F2 — resolve the ancestor-spine against the REAL user cwd (the daemon lives
           // elsewhere, but resolveProjectChain's git/fs probes are {cwd:args.cwd}-scoped).
           // Non-throwing by contract → safe inside the outer fail-open try/catch. focusId

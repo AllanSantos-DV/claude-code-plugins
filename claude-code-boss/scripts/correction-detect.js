@@ -44,6 +44,7 @@ const NUDGE_TEXT =
 function run(event) {
   if (!hooksCfg.getCorrectionDetect().enabled) return null;
   const msg = (event && (event.prompt || event.userMessage || event.text)) || '';
+  if (require('./lib/prompt-kind.js').isSyntheticPrompt(msg)) return null; // not the user talking
   if (!looksLikeCorrection(msg)) return null;
   metrics.fire('nudge.emitted', { kind: 'correction' }, { sessionId: event.session_id || event.sessionId, cwd: event.cwd });
   return NUDGE_TEXT;

@@ -16834,6 +16834,45 @@ test('brain_retrieve_context: routes retrieve-core\'s local search through kbWor
   }
 });
 
+// ─── U6: a background agent's <task-notification> is not a user prompt ─────────────
+const NOTIFICATION = '<task-notification>\n<task-id>a1</task-id>\n<summary>Agent "x" finished</summary>\n<result>isso está errado, não era assim; qual a melhor forma de integrar com a api?</result>\n</task-notification>';
+test('U6: prompt-kind.isSyntheticPrompt — task-notification yes, a user prompt quoting the tag no', () => {
+  const { isSyntheticPrompt } = require('./lib/prompt-kind.js');
+  assertEq(isSyntheticPrompt(NOTIFICATION), true);
+  assertEq(isSyntheticPrompt('  \n' + NOTIFICATION), true);
+  assertEq(isSyntheticPrompt('o que é uma <task-notification>?'), false);
+  assertEq(isSyntheticPrompt(''), false);
+  assertEq(isSyntheticPrompt(undefined), false);
+});
+
+test('U6: correction-detect and active-research-detect stay silent on a task-notification (but still fire on the same words typed by the user)', () => {
+  const cd = require('./correction-detect.js');
+  const ar = require('./active-research-detect.js');
+  assertEq(cd.run({ prompt: NOTIFICATION, session_id: 'u6', cwd: process.env.CLAUDE_PLUGIN_DATA }), null);
+  assertEq(ar.run({ prompt: NOTIFICATION, session_id: 'u6', cwd: process.env.CLAUDE_PLUGIN_DATA }), null);
+  assert(cd.run({ prompt: 'isso está errado, não era assim', session_id: 'u6', cwd: process.env.CLAUDE_PLUGIN_DATA }), 'a real correction still nudges');
+});
+
+test('U6: brain_retrieve_context does not run a recall over a task-notification', async () => {
+  const url = require('url');
+  const R = process.env.CLAUDE_PLUGIN_ROOT;
+  const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+  const rc = require(path.join(R, 'scripts', 'lib', 'retrieve-core.js'));
+  const originalRetrieve = rc.retrieve;
+  let calls = 0;
+  rc.retrieve = async () => { calls++; return { entries: [], capabilities: [] }; };
+  try {
+    const server = mod.createBrainServer({ pluginRoot: R, mode: 'http' });
+    const res = await server.handleTool('brain_retrieve_context', { prompt: NOTIFICATION, cwd: R });
+    assertEq(calls, 0, 'retrieve() never ran');
+    assertEq(res.content[0].text, '');
+    await server.handleTool('brain_retrieve_context', { prompt: 'does this route through the worker client', cwd: R });
+    assertEq(calls, 1, 'a user prompt still recalls');
+  } finally {
+    rc.retrieve = originalRetrieve;
+  }
+});
+
 test('capture_lesson: getKB() routes index/graph through kbWorker.indexClient/graphClient when kbWorker is present (not a direct require of brain-index.js/brain-graph.js)', async () => {
   const url = require('url');
   const R = process.env.CLAUDE_PLUGIN_ROOT;
