@@ -226,6 +226,23 @@ function readLock(dataDir) {
   } catch (e) { void e; return null; }
 }
 
+/** Version of the install at `pluginRoot` (its package.json), or null when unreadable. */
+function installVersion(pluginRoot) {
+  try {
+    const v = JSON.parse(fs.readFileSync(path.join(pluginRoot, 'package.json'), 'utf8')).version;
+    return typeof v === 'string' ? v : null;
+  } catch (e) { void e; return null; }
+}
+
+/** Is semver `a` strictly newer than `b` (x.y.z, pre-release ignored)? False when either is unparseable. */
+function isNewerVersion(a, b) {
+  const parse = (v) => /^(\d+)\.(\d+)\.(\d+)/.exec(String(v ?? ''))?.slice(1).map(Number);
+  const x = parse(a), y = parse(b);
+  if (!x || !y) return false;
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i];
+  return false;
+}
+
 /** Is a pluginRoot still a real install on disk (so its daemon is worth sharing)? */
 function ownerRootExists(pluginRoot) {
   try {
@@ -369,7 +386,12 @@ export async function ensureDaemon({ pluginRoot, dataDir, env = process.env } = 
     if (probe.kind === 'daemon') {
       const h = probe.health;
       if (samePluginData({ pluginRoot, dataDir }, h)) return { status: 'current', pid: h.pid, port };
-      if (h.pluginRoot !== pluginRoot && ownerRootExists(h.pluginRoot)) {
+      // An upgrade leaves the previous version's cache dir on disk, so "owner root
+      // still exists" alone kept an OLD daemon serving a NEWER install forever (its
+      // hooks call tools the old daemon lacks). A strictly newer install swaps it;
+      // equal/older/unknown versions keep sharing (never downgrade the daemon).
+      if (h.pluginRoot !== pluginRoot && ownerRootExists(h.pluginRoot)
+        && !isNewerVersion(installVersion(pluginRoot), h.version)) {
         return { status: 'current', pid: h.pid, port, note: `sharing daemon owned by another install: ${h.pluginRoot}` };
       }
       await swapDaemon({ port, health: h, dataDir, env: normalizedEnv });

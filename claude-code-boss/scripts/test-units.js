@@ -13819,10 +13819,19 @@ test('G7: UserPromptSubmit spawns ONE node process (the dispatcher); model-route
 });
 
 test('G7: the dispatcher CLI exits on its own after answering (model-router-ensure handles do not hang it)', () => {
+  // Fully isolated: the real dispatcher runs brain-daemon-ensure + model-router-ensure,
+  // and with the inherited env they swapped the developer's REAL daemon on 38217 and
+  // probed the real router/settings. No global state may be touched by a unit test.
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-g7-home-'));
+  const env = {
+    ...process.env, HOME: home, USERPROFILE: home, CLAUDE_CONFIG_DIR: path.join(home, '.claude'),
+    CCB_ISOLATED: '1', BRAIN_HTTP_AUTOSTART: '0', BRAIN_HTTP_PORT: '1',
+  };
   const r = require('child_process').spawnSync(process.execPath, [path.join(SCRIPTS, 'user-prompt-submit-dispatcher.js')], {
     input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 'g7-cli', cwd: process.env.CLAUDE_PLUGIN_DATA, prompt: 'ok' }),
-    env: process.env, encoding: 'utf8', timeout: 28000, windowsHide: true,
+    env, encoding: 'utf8', timeout: 28000, windowsHide: true,
   });
+  fs.rmSync(home, { recursive: true, force: true });
   assert(!r.error, `dispatcher did not exit by itself: ${r.error && r.error.message}`);
   assertEq(r.status, 0);
   const out = (r.stdout || '').trim();
@@ -18974,13 +18983,13 @@ const COMMON_URL = pathToFileURL(
  *  no evento real de 'listening' — os testes não podem depender de um sleep
  *  arbitrário, senão em máquina lenta o probe encontra 'absent' e o cenário
  *  testa a coisa errada (falso 'started' por spawn, não por swap). */
-function makeFakeDaemon({ pluginRoot, port, pid = process.pid, dataDir, onHealth, onShutdown, closeOnShutdown = true, healthDelayMs = 0 }) {
+function makeFakeDaemon({ pluginRoot, port, pid = process.pid, dataDir, onHealth, onShutdown, closeOnShutdown = true, healthDelayMs = 0, version = '1.0.0' }) {
   const sockets = new Set();
   const server = http.createServer((req, res) => {
     const u = (req.url || '').split('?')[0];
     if (req.method === 'GET' && u === '/health') {
       const resolvedPid = typeof pid === 'function' ? pid() : pid;
-      const health = onHealth ? (onHealth() || { ok: true, pluginRoot, dataDir, version: '1.0.0', pid: resolvedPid, port, sessions: 0, startedAt: Date.now(), uptimeMs: 0 }) : { ok: true, pluginRoot, dataDir, version: '1.0.0', pid: resolvedPid, port, sessions: 0, startedAt: Date.now(), uptimeMs: 0 };
+      const health = onHealth ? (onHealth() || { ok: true, pluginRoot, dataDir, version, pid: resolvedPid, port, sessions: 0, startedAt: Date.now(), uptimeMs: 0 }) : { ok: true, pluginRoot, dataDir, version, pid: resolvedPid, port, sessions: 0, startedAt: Date.now(), uptimeMs: 0 };
       const send = () => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(health)); };
       if (healthDelayMs > 0) { setTimeout(send, healthDelayMs); return; }
       return send();
@@ -19044,6 +19053,54 @@ test('brain daemon supervisor: stale owner (root removed) → swapDaemon → sta
   fake.server.close();
   fs.rmSync(tmpHome, { recursive: true, force: true });
   fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+/** Owner install A (root kept on disk, as an upgrade leaves it) serving a fake daemon at
+ *  `ownerVersion`; ensureDaemon runs as install B at `ourVersion`. */
+async function runUpgradeCase(ownerVersion, ourVersion) {
+  const { ensureDaemon } = await import(SUPERVISOR_URL);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-upgrade-'));
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-upgrade-home-'));
+  const oldRoot = path.join(tmp, 'install-A');
+  fs.mkdirSync(path.join(oldRoot, 'servers', 'brain-server'), { recursive: true });
+  fs.writeFileSync(path.join(oldRoot, 'servers', 'brain-server', 'index.js'), '// old');
+  const newRoot = path.join(tmp, 'install-B');
+  fs.mkdirSync(newRoot, { recursive: true });
+  fs.writeFileSync(path.join(newRoot, 'package.json'), JSON.stringify({ version: ourVersion }));
+  const dataDir = path.join(tmp, 'data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  const p = await waitFreePort();
+  let shutdowns = 0;
+  const fake = makeFakeDaemon({ pluginRoot: oldRoot, port: p, dataDir, version: ownerVersion, onShutdown: () => { shutdowns++; } });
+  await fake.ready;
+  const res = await ensureDaemon({
+    pluginRoot: newRoot, dataDir,
+    env: { BRAIN_HTTP_PORT: String(p), HOME: tmpHome, USERPROFILE: tmpHome },
+  });
+  try { if (res.status === 'started' && res.pid) process.kill(res.pid, 'SIGTERM'); } catch { void 0; }
+  fake.server.close();
+  fs.rmSync(tmpHome, { recursive: true, force: true });
+  fs.rmSync(tmp, { recursive: true, force: true });
+  return { res, shutdowns };
+}
+
+test('brain daemon supervisor: OLDER owner whose root still exists (upgrade) → swapped → started', async () => {
+  const { res, shutdowns } = await runUpgradeCase('2.29.0', '3.0.0');
+  assertEq(res.status, 'started', `a newer install must replace an older daemon even when its root lingers, got ${res.status}: ${res.error || res.note || ''}`);
+  assert(shutdowns >= 1, 'the old daemon must be asked to shut down');
+});
+
+test('brain daemon supervisor: SAME-version owner from another install → shared, not swapped', async () => {
+  const { res, shutdowns } = await runUpgradeCase('3.0.0', '3.0.0');
+  assertEq(res.status, 'current', `same version must share, got ${res.status}`);
+  assert(/sharing daemon owned by another install/.test(res.note || ''), 'share note expected');
+  assertEq(shutdowns, 0, 'a same-version daemon must not be signaled');
+});
+
+test('brain daemon supervisor: NEWER owner from another install → shared (never downgrade)', async () => {
+  const { res, shutdowns } = await runUpgradeCase('3.1.0', '3.0.0');
+  assertEq(res.status, 'current', `an older install must not replace a newer daemon, got ${res.status}`);
+  assertEq(shutdowns, 0, 'a newer daemon must not be signaled');
 });
 
 test('brain daemon supervisor: legacy daemon on old port → exileLegacyDaemon → started', async () => {
