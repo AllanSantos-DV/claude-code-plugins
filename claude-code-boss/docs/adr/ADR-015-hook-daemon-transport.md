@@ -1,6 +1,14 @@
 # ADR-015 — Hooks migram de spawn efêmero para transporte via daemon já residente
 
-**Status:** Proposto | **Data:** 2026-09-24 | **Escopo:** os 14 scripts de hook registrados em `hooks/hooks.json`
+**Status:** Implementado (não lançado — sai no próximo pacote major) | **Data:** 2026-09-24 | **Atualizado:** 2026-10-02 | **Escopo:** os 14 scripts de hook registrados em `hooks/hooks.json`
+
+> **Atualização 2026-10-02 (hardening, `docs/BACKLOG.md` G1–G9):** a classe 4
+> deixou de estar pendente — `policy-inject` no `SubagentStart` virou
+> `hook_policy_inject` (G6) e o `model-router-ensure` do `UserPromptSubmit` roda
+> dentro do `user-prompt-submit-dispatcher` (G7, 1 processo por prompt). No daemon,
+> `Stop` e os hooks de efeito colateral rodam num worker próprio com fila FIFO (G2);
+> os que sempre devolvem `{}` respondem na hora (G4, como esta ADR decidiu na
+> classe 1); cada hook tem prazo de `timeout − 1 s` (G5).
 
 ## Contexto
 

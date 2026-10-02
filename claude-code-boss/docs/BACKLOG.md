@@ -234,15 +234,22 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   **RESOLVIDO em 2026-10-02**: uma cópia só, `readRange` em `lib/transcript-tail.js`;
   os dois módulos importam (`readRange: _readBuf`). Teste do range (intervalo,
   além do EOF, arquivo ausente, intervalo vazio) + suíte inteira verde.
-- [ ] **O3 — ADR-015 com cabeçalho "Proposto"** apesar de implementada; e a branch
+- [x] **O3 — ADR-015 com cabeçalho "Proposto"** apesar de implementada; e a branch
   `dev` tinha outro "ADR-015" (router upstream override) — numeração colidindo.
+  **RESOLVIDO em 2026-10-02**: cabeçalho "Implementado (não lançado)" + nota do
+  hardening (classe 4 resolvida por G6/G7, filas G2/G4/G5). A colisão só existe no
+  patch resgatado da `dev` (`docs/plans/salvage/dev-commits/0002-…ADR-015.patch`) —
+  se for reaproveitado (O4), renumerar como ADR-016.
 - [ ] **O4 — trabalho não commitado resgatado das worktrees removidas** (patches em
   `docs/plans/salvage/`, local): `loving-morse` (fix de assinatura de curadoria
   com testes), `dazzling-jang` (`command-signature`/`oneoff-store`), `dev`
   (2 commits de router + `scripts/detectors/` não versionado). Avaliar e
   reaproveitar ou descartar.
-- [ ] **O5 — preflight do `.vscode/scripts/test-units.mjs` não detecta devDependency
-  ausente.** Sem `eslint` instalado, os 6 testes `require-windows-hide` falham como
+- [x] **O5 — preflight do `.vscode/scripts/test-units.mjs` não detecta devDependency
+  ausente.** **RESOLVIDO em 2026-10-02** (ferramenta local, `.vscode/` não é
+  versionado): o preflight resolve cada `devDependency` do `package.json` e falha
+  com "devDependencies ausentes: eslint (rode: npm install)" antes de rodar.
+  Verificado numa árvore temporária sem o eslint. Sem `eslint` instalado, os 6 testes `require-windows-hide` falham como
   falha de teste (`Cannot find module 'eslint'`), não como ambiente incompleto.
   Visto em 2026-10-02; resolvido localmente com `npm install`. Fix: o preflight
   checar `require.resolve` das devDependencies que a suíte usa.
