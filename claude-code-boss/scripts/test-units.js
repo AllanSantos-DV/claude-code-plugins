@@ -15645,91 +15645,7 @@ test('data-dir: dashboard.js resolvers are guarded (no bare `env || fallback` sp
     'dashboard.js must resolve its data dir via lib/data-dir.js');
 });
 
-// ─── session-marker (capture-window cursor state machine — Phase 1 task 1) ───
-// Failing-first: lazy require so only these RED until lib/session-marker.js exists.
-test('session-marker: initIfAbsent baselines committed at START (offset 0); idempotent', () => {
-  const sm = require('./lib/session-marker.js');
-  const project = 'sm-init-' + Date.now();
-  const sid = 's1-' + Date.now();
-  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `t1-${sid}.jsonl`);
-  fs.writeFileSync(tp, 'line1\nline2\n');
-  const st1 = sm.initIfAbsent(project, sid, tp);
-  assert(st1.committed, 'committed set');
-  assertEq(st1.committed.offset, 0, 'committed at transcript start (nothing before first Stop is skipped)');
-  assertEq(st1.pending, null, 'no pending initially');
-  fs.appendFileSync(tp, 'line3\n');
-  const st2 = sm.initIfAbsent(project, sid, tp);
-  assertEq(st2.committed.offset, 0, 'init idempotent (committed unchanged)');
-  sm.resetAll(project, sid);
-});
-
-test('session-marker: beginPending keeps committed; commit advances + clears pending', () => {
-  const sm = require('./lib/session-marker.js');
-  const project = 'sm-commit-' + Date.now();
-  const sid = 's2-' + Date.now();
-  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `t2-${sid}.jsonl`);
-  fs.writeFileSync(tp, 'a\nb\n');
-  sm.initIfAbsent(project, sid, tp);
-  fs.appendFileSync(tp, 'c\nd\n');
-  const size = fs.statSync(tp).size;
-  sm.beginPending(project, sid, 4, size, 'win1');
-  let st = sm.getState(project, sid);
-  assertEq(st.committed.offset, 0, 'committed unchanged during pending');
-  assert(st.pending && st.pending.to === size, 'pending open at window end');
-  sm.commit(project, sid, size, sm.anchorAt(tp, size), size);
-  st = sm.getState(project, sid);
-  assertEq(st.committed.offset, size, 'committed advanced to window end');
-  assertEq(st.pending, null, 'pending cleared on commit');
-  sm.resetAll(project, sid);
-});
-
-test('session-marker: clearPending aborts window; committed stays', () => {
-  const sm = require('./lib/session-marker.js');
-  const project = 'sm-abort-' + Date.now();
-  const sid = 's3-' + Date.now();
-  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `t3-${sid}.jsonl`);
-  fs.writeFileSync(tp, 'x\n');
-  sm.initIfAbsent(project, sid, tp);
-  fs.appendFileSync(tp, 'y\n');
-  const size = fs.statSync(tp).size;
-  sm.beginPending(project, sid, 2, size, 'w');
-  sm.clearPending(project, sid);
-  const st = sm.getState(project, sid);
-  assertEq(st.committed.offset, 0, 'committed unchanged after abort');
-  assertEq(st.pending, null, 'pending cleared');
-  sm.resetAll(project, sid);
-});
-
-test('session-marker: validateAnchor matches unchanged file, detects truncation', () => {
-  const sm = require('./lib/session-marker.js');
-  const project = 'sm-anchor-' + Date.now();
-  const sid = 's4-' + Date.now();
-  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `t4-${sid}.jsonl`);
-  fs.writeFileSync(tp, 'aaaa\nbbbb\n');
-  const size = fs.statSync(tp).size;
-  sm.initIfAbsent(project, sid, tp);
-  sm.commit(project, sid, size, sm.anchorAt(tp, size), size);
-  let v = sm.validateAnchor(tp, sm.getState(project, sid).committed);
-  assert(v.ok, 'anchor matches on unchanged file');
-  fs.writeFileSync(tp, 'zz\n'); // compaction rewrites the file shorter
-  v = sm.validateAnchor(tp, sm.getState(project, sid).committed);
-  assert(!v.ok, 'anchor mismatch detected after truncation');
-  sm.resetAll(project, sid);
-});
-
-test('session-marker: append-only transitions — latest pending wins (race-free)', () => {
-  const sm = require('./lib/session-marker.js');
-  const project = 'sm-race-' + Date.now();
-  const sid = 's5-' + Date.now();
-  const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `t5-${sid}.jsonl`);
-  fs.writeFileSync(tp, 'a\n');
-  sm.initIfAbsent(project, sid, tp);
-  sm.beginPending(project, sid, 2, 4, 'w1');
-  sm.beginPending(project, sid, 2, 6, 'w2');
-  const st = sm.getState(project, sid);
-  assertEq(st.pending.windowHash, 'w2', 'latest pending wins');
-  sm.resetAll(project, sid);
-});
+// (session-marker removed — O10: capture reads the last N turns, lib/transcript-turns.js; no cursor)
 
 // ─── transcript-block (deterministic JSONL clean — Phase 1 task 2) ───────────
 // Failing-first: lazy require until lib/transcript-block.js exists.
@@ -16035,26 +15951,19 @@ test('capture-dispatch: an OPEN offer re-blocks even on stop_hook_active until t
 
 test('capture-dispatch: run stays silent below budget and when stop_hook_active', () => {
   const cd = require('./capture-dispatch.js');
-  const marker = require('./lib/session-marker.js');
   const cwd = process.env.CLAUDE_PLUGIN_DATA;
-  const project = require('./lib/project-id.js').resolveProjectId({ cwd });
   const sid = 'cap-quiet-' + Date.now();
   const tp = path.join(process.env.CLAUDE_PLUGIN_DATA, `capq-${sid}.jsonl`);
-  marker.resetAll(project, sid);
   fs.writeFileSync(tp, '');
-  marker.initIfAbsent(project, sid, tp);
   fs.writeFileSync(tp, [
     JSON.stringify({ type: 'user', promptId: 'p1', message: { role: 'user', content: 'hi' } }),
     JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'hello' }] } }),
   ].join('\n') + '\n');
   assert(!(cd.run({ session_id: sid, cwd, transcript_path: tp })).block, 'below min turns → silent');
-  marker.resetAll(project, sid);
 
   const sid2 = 'cap-active-' + Date.now();
   const tp2 = path.join(process.env.CLAUDE_PLUGIN_DATA, `capa-${sid2}.jsonl`);
-  marker.resetAll(project, sid2);
   fs.writeFileSync(tp2, '');
-  marker.initIfAbsent(project, sid2, tp2);
   const many = [];
   for (let i = 1; i <= 6; i++) {
     many.push(JSON.stringify({ type: 'user', promptId: 'q' + i, message: { role: 'user', content: 'q' + i } }));
@@ -16062,20 +15971,16 @@ test('capture-dispatch: run stays silent below budget and when stop_hook_active'
   }
   fs.writeFileSync(tp2, many.join('\n') + '\n');
   assert(!(cd.run({ session_id: sid2, cwd, transcript_path: tp2, stop_hook_active: true })).block, 'stop_hook_active → silent');
-  marker.resetAll(project, sid2);
 });
 
 test('capture-dispatch: emits capture.offered metric on fire', () => {
   const cd = require('./capture-dispatch.js');
-  const marker = require('./lib/session-marker.js');
   const metrics = require('./lib/metrics.js');
   const cwd = process.env.CLAUDE_PLUGIN_DATA;
   const project = require('./lib/project-id.js').resolveProjectId({ cwd });
   const sid = 'cap-metric-' + Date.now();
   const tp = path.join(cwd, `capm-${sid}.jsonl`);
-  marker.resetAll(project, sid);
   fs.writeFileSync(tp, '');
-  marker.initIfAbsent(project, sid, tp);
   const lines = [];
   for (let i = 1; i <= 6; i++) {
     lines.push(JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: 'q' + i } }));
@@ -16095,19 +16000,15 @@ test('capture-dispatch: emits capture.offered metric on fire', () => {
   assert(offered, 'capture.offered emitted');
   assertEq(offered.p.cycles, 6, 'cycles in payload');
   assert(typeof offered.p.model === 'string', 'model in payload');
-  marker.resetAll(project, sid);
 });
 
 test('capture-dispatch: over-budget window is offered in chunks, never skipping cycles (regression)', () => {
   const cd = require('./capture-dispatch.js');
-  const marker = require('./lib/session-marker.js');
   const cwd = process.env.CLAUDE_PLUGIN_DATA;
   const project = require('./lib/project-id.js').resolveProjectId({ cwd });
   const sid = 'cap-budget-' + Date.now();
   const tp = path.join(cwd, `capb-${sid}.jsonl`);
-  marker.resetAll(project, sid);
   fs.writeFileSync(tp, '');
-  marker.initIfAbsent(project, sid, tp);
   // 12 cycles, each ~1.8KB → window >> sonnet 8KB cap, so it MUST be offered in
   // contiguous chunks (4/chunk). 12 = 3 full chunks (last chunk >= minTurns), so it
   // drains fully — proving no cycle is skipped past the cursor.
@@ -16137,7 +16038,6 @@ test('capture-dispatch: over-budget window is offered in chunks, never skipping 
   assert(arr.length >= 8, `multiple chunks drained, got ${arr.join(',')}`);
   assertEq(arr[0], 1, 'offers start at the oldest uncaptured cycle');
   assert(arr.every((v, i) => v === i + 1), `offered cycles are a contiguous prefix (no skip), got ${arr.join(',')}`);
-  marker.resetAll(project, sid);
 });
 
 // ── FIX #6: capture-dispatch anti-deadlock SAFETY RELENT (mirrors curation-stop) ──
@@ -16148,14 +16048,11 @@ test('capture-dispatch: over-budget window is offered in chunks, never skipping 
 function _capRelentSeed(nCycles, big) {
   const cd = require('./capture-dispatch.js');
   const cq = require('./lib/capture-queue.js');
-  const marker = require('./lib/session-marker.js');
   const cwd = process.env.CLAUDE_PLUGIN_DATA;
   const project = require('./lib/project-id.js').resolveProjectId({ cwd });
   const sid = 'cap-relent-' + Math.random().toString(16).slice(2) + '-' + Date.now();
   const tp = path.join(cwd, `capr-${sid}.jsonl`);
-  marker.resetAll(project, sid);
   fs.writeFileSync(tp, '');
-  marker.initIfAbsent(project, sid, tp);
   const pad = big ? ('x'.repeat(1800)) : '';
   const lines = [];
   for (let i = 1; i <= nCycles; i++) {
@@ -16163,7 +16060,7 @@ function _capRelentSeed(nCycles, big) {
     lines.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'a' + i }] } }));
   }
   _writeTurnsAsStops(tp, project, sid, lines);
-  return { cd, cq, marker, project, sid, evt: { session_id: sid, cwd, transcript_path: tp } };
+  return { cd, cq, project, sid, evt: { session_id: sid, cwd, transcript_path: tp } };
 }
 
 test('capture-dispatch (FIX #6): below the cap an open un-acked offer keeps re-blocking (block-until-ack preserved)', () => {
@@ -16177,7 +16074,7 @@ test('capture-dispatch (FIX #6): below the cap an open un-acked offer keeps re-b
   assert(r2 && r2.block === true, 'below the cap an un-acked offer re-blocks');
   assert(/capture_lesson|capture_ack/.test(r2.reason || ''), 're-block carries the capture instruction');
   assert(t.cq.getState(t.project, t.sid).offer.blockCount >= 1, 'each re-block advances the per-offer counter');
-  t.marker.resetAll(t.project, t.sid);
+  t.cq.reset(t.project, t.sid);
 });
 
 test('capture-dispatch (FIX #6): after maxBlockAttempts un-acked blocks it RELENTS (allows stop) and never drops the cycle', () => {
@@ -16196,7 +16093,7 @@ test('capture-dispatch (FIX #6): after maxBlockAttempts un-acked blocks it RELEN
   const r4 = t.cd.run(t.evt, deps);
   assert(!(r4 && r4.block), 'past the cap it keeps allowing the stop');
   assertEq(t.cq.getState(t.project, t.sid).queue.length, 6, 'cycle still queued after repeated relents');
-  t.marker.resetAll(t.project, t.sid);
+  t.cq.reset(t.project, t.sid);
 });
 
 test('capture-dispatch (FIX #6): an ack drains the offer so a LATER offer starts the block counter fresh', () => {
@@ -16215,7 +16112,7 @@ test('capture-dispatch (FIX #6): an ack drains the offer so a LATER offer starts
   const off2 = t.cq.getState(t.project, t.sid).offer;
   assert(off2 && off2.windowId !== off1, 'a genuinely NEW offer window opened');
   assertEq(off2.blockCount, 0, 'the ack reset the counter — the later offer starts fresh (no cross-offer carryover)');
-  t.marker.resetAll(t.project, t.sid);
+  t.cq.reset(t.project, t.sid);
 });
 
 // ─── capture-queue (Phase 1.5a: durable redacted cycle queue) ────────────────
