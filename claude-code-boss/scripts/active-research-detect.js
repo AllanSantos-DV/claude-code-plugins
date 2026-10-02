@@ -175,6 +175,7 @@ function run(ev) {
 
   const prompt = ev.prompt || ev.userMessage || ev.text || '';
   if (!prompt) return null;
+  if (require('./lib/prompt-kind.js').isSyntheticPrompt(prompt)) return null; // not the user asking
 
   const sid = ev.session_id || ev.sessionId || 'default';
 
