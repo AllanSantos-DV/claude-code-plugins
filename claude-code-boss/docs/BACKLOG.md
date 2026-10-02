@@ -359,6 +359,8 @@ real (2.29.0, porta 38217) seguiu intacto. Resultados (Claude Code 2.1.283):
   exceto `--check`/`-c`). Testes: grep do script + pipe → allow; `node --no-warnings script | tail` → deny;
   `powershell … -File script | tail` segue deny.
 
+- [x] **Limpeza dos backups antigos (autorizada pelo usuário em 2026-10-02)**: `pruneBackups` aplicado em `~/.claude/plugins/data`: 34 dirs (jul) apagados, 5 mais novos mantidos; 2,38 GB → 133 MB.
+
 ### UX / ruído visto usando a ferramenta (sessão de 2026-10-02)
 
 - [x] **U1 — `curation-guard` redireciona comando composto para script que não o
@@ -505,6 +507,7 @@ real (2.29.0, porta 38217) seguiu intacto. Resultados (Claude Code 2.1.283):
   causa está no lado do servidor (`native-java`), fora deste plugin. Próximo
   passo: capturar o trace do `compose_recall` (bloco/escopo/score da entrada) no
   teste em ambiente real e abrir o achado no projeto do servidor.
+  **2026-10-02 — evidência para o servidor (o usuário corrige lá)**: o schema real do `compose_recall` aceita só `query`/`setup`/`includeLifecycleState`/`metadata`; os blocos home (`procedural`, `skill_global`) vêm "ALWAYS present" e o `metadata` "NEVER" os filtra — o cliente não controla relevância do home. Amostra real (pergunta sobre o daemon de hooks): home trouxe "Memory consolidation completed with 3119 documents" (0,672), "The directory is now empty" (0,649/0,606), "IPv6 monitor" (0,617) — lixo na MESMA faixa de score das relevantes, então piso de score no cliente não discrimina. Pedido do usuário: corte por qualidade/relevância no home no servidor (o home é a "skill global" para todas as IDEs). Itens de `compose_recall` abaixo (custo por bloco, FTS por tamanho, post-filter de escopo, blocos sem docs do boss, Dreaming) são todos do servidor.
 - [x] **U8 — `[BRAIN·SKILLS] 1 available capability pointer(s): - (unnamed)`** em
   todo turno: ponteiro sem nome renderizado.
   **RESOLVIDO em 2026-10-02**: `brain-backend.splitComposeBlocks` deriva o nome da
@@ -677,8 +680,10 @@ Achados da rodada reviewer/tester que ficaram fora do patch:
 - [x] `resolveProject` (chamadas sem `cwd`) ainda usa o `CCB_PROJECT_ID` do env do daemon HTTP, que é o env da sessão que subiu o daemon, não o da sessão que chama. Pré-existente; em HTTP essa chamada deveria recusar ou usar só o `project` explícito.
   **JÁ RESOLVIDO** (verificado em 2026-10-02): em modo HTTP o `resolveProject` nunca lê `CCB_PROJECT_ID` e sem `cwd`/`project` recusa com PROJECT_REQUIRED; o `spawnDaemon` também remove a variável. Provas: testes "CCB_PROJECT_ID is never honored" e "spawnDaemon: never forwards CCB_PROJECT_ID".
 - O inverso: um `CCB_PROJECT_ID` definido só na sessão chamadora não chega à resolução por `cwd` no daemon HTTP (o `cwdResolveEnv` só repassa o `sessionRoot`). A sessão com id por env fica com memória off se a pasta não tiver `.memory/project.json` nem git remote. Repassar o id da sessão no payload (como o `sessionRoot`) se isso for um caso real.
-- No modo HTTP, um agente num subdiretório de um projeto sem git, chamando sem `sessionRoot`, é recusado: sem o teto `CLAUDE_PROJECT_DIR`, o `findProjectRoot` (`scripts/lib/project-id.js` ~198) só olha o próprio `cwd` e o toplevel git, e não sobe até o `.memory/project.json` da raiz. Fazer os clientes mandarem sempre o `sessionRoot`, ou subir até achar um marker quando não há teto.
-- Quem fixou `backend.mcpMemory.projectId` na config passa a ver o aviso de "sem project id" nas pastas sem id, porque essa config deixou de valer como id da pasta. Decidir se o aviso deve citar essa config (ela não liga mais a memória) ou se ela deve voltar a contar como degrau da escada.
+- [x] No modo HTTP, um agente num subdiretório de um projeto sem git, chamando sem `sessionRoot`, é recusado: sem o teto `CLAUDE_PROJECT_DIR`, o `findProjectRoot` (`scripts/lib/project-id.js` ~198) só olha o próprio `cwd` e o toplevel git, e não sobe até o `.memory/project.json` da raiz. Fazer os clientes mandarem sempre o `sessionRoot`, ou subir até achar um marker quando não há teto.
+  **RESOLVIDO em 2026-10-02** (decisão do usuário, revertendo a regra da F1): sem teto e sem git, o `findProjectRoot` sobe até 8 níveis procurando `.memory/project.json` e para ANTES da home (marcador em `~` nunca é adotado). Testes: subida até o marcador, home não adotada, limite de 8 níveis.
+- [x] Quem fixou `backend.mcpMemory.projectId` na config passa a ver o aviso de "sem project id" nas pastas sem id, porque essa config deixou de valer como id da pasta. Decidir se o aviso deve citar essa config (ela não liga mais a memória) ou se ela deve voltar a contar como degrau da escada.
+  **RESOLVIDO em 2026-10-02** (decisão do usuário): o aviso cita o valor de `backend.mcpMemory.projectId` e explica que ele não liga mais a memória da pasta. Teste.
 
 ## Config/Hooks
 
@@ -776,7 +781,8 @@ Lacunas conhecidas do gate de project id (2.29.1):
 - `servers/brain-server/lib/mcp-server.js` (`handleRemoteKbTool`) — no backend `mcp-memory`, `scope: user` não é roteado para `__user__` (grava sob o projeto do handshake) e o `brain_search` ignora `scope`. O caminho local já faz isso. Rotear via `metadata.project_id` no `saveMcp` e `projectIds` no `search`, depois de confirmar que o servidor aceita `__user__` declarado pelo chamador.
 - [x] `servers/brain-server/lib/mcp-server.js` (`resolveProject`) — no modo HTTP, um `project` explícito no formato `owner/repo` (o formato que a escada estrita produz) é zerado pelo `sanitizeProjectId` (barra recusada) e a chamada falha com `PROJECT_REQUIRED`. Visto ao vivo em 2026-09-25 com `capture_lesson project:"AllanSantos-DV/claude-code-plugins"`. Com `cwd` (2.29.1) funciona; validar `project` explícito com `assertSafeProjectId` em vez do sanitizador legado.
   **RESOLVIDO em 2026-10-02** junto com o U14 (Fase G).
-- `scripts/project-id-stop.js` — pastas de exploração recebem o aviso a cada turno sem opção de "não é um projeto, pare de pedir" além do opt-out global. Avaliar um opt-out por pasta.
+- [x] `scripts/project-id-stop.js` — pastas de exploração recebem o aviso a cada turno sem opção de "não é um projeto, pare de pedir" além do opt-out global. Avaliar um opt-out por pasta.
+  **RESOLVIDO em 2026-10-02** (decisão do usuário): o aviso agora também sai a cada prompt (`UserPromptSubmit`, pulado em `<task-notification>`), além do SessionStart e do Stop, até o id existir; se o usuário RECUSAR, o agente cria `.memory/memory-off.json` e os avisos param (memória segue off ali; marcador mais próximo vence). Testes.
 
 ## UX
 
