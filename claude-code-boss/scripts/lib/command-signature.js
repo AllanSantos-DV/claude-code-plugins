@@ -319,7 +319,11 @@ function canonicalSig(command) {
   // command's identity, so the signature is the command BEFORE it. Quoted or
   // escaped metachars are argument data and do NOT cut (see indexOfShellMeta).
   const cut = indexOfShellMeta(seg);
-  if (cut >= 0) seg = seg.slice(0, cut);
+  // The fd number GLUED to the redirection (`2>&1`, `2>/dev/null`) belongs to the
+  // redirection (U13, changed in the major): it made `git status 2>&1` sign as
+  // `git status 2`, another command than `git status` (~30% of real signatures).
+  // An argument followed by a space (`sleep 2 > f`) is kept: the slice ends in ' '.
+  if (cut >= 0) seg = seg.slice(0, cut).replace(/(^|\s)\d+$/, '$1');
   const tokens = significantTokens(seg);
   // Stdin-fed script (`node - <<EOF`, `bash -s <<EOF`): the program alone is not
   // the identity — the BODY is what runs. Signing as bare `node` pooled every such

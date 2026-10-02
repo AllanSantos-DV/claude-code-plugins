@@ -4894,10 +4894,14 @@ test('command-signature: distinct quoted greps no longer collide', () => {
   const b = cmdSig.canonicalSig('grep -n "ANTHROPIC_BASE_URL\\|apiKey" scripts/model-router-ensure.js | head');
   assert(a !== b, `sigs must differ, both = ${a}`);
 });
-test('command-signature: unquoted pipe/redirect still cuts (sig identity preserved)', () => {
-  // Historical identity `npm test 2` (from `2>&1`) must survive the fix —
-  // stored one-off entries keyed on it stay matchable.
-  assertEq(cmdSig.canonicalSig('CLAUDE_SKIP_EMBED_WARM=1 npm test 2>&1 | tail -40'), 'npm test 2');
+test('command-signature: unquoted pipe/redirect cuts, and the fd number of `2>&1` is not part of the command (U13)', () => {
+  // Identity CHANGED in the major (owner decision): it used to be `npm test 2`.
+  // Entries stored under the old ` 2` form simply stop matching (re-asked once).
+  assertEq(cmdSig.canonicalSig('CLAUDE_SKIP_EMBED_WARM=1 npm test 2>&1 | tail -40'), 'npm test');
+  assertEq(cmdSig.canonicalSig('git status 2>&1'), cmdSig.canonicalSig('git status'));
+  assertEq(cmdSig.canonicalSig('git fetch origin 2>/dev/null'), 'git fetch origin');
+  assertEq(cmdSig.canonicalSig('sleep 2 > f'), 'sleep 2', 'a real argument followed by a space stays');
+  assertEq(cmdSig.canonicalSig('sleep 2 | cat'), 'sleep 2');
   assertEq(cmdSig.canonicalSig('git log | head -5'), 'git log');
 });
 
@@ -5016,8 +5020,7 @@ test('command-signature: subshell/group openers and `VAR=$(cmd)` are structure �
   assertEq(cmdSig.canonicalSig('{ git log -5; } > f'), 'git log');
   assertEq(cmdSig.canonicalSig('X=$(git diff HEAD)'), 'git diff HEAD');
   assertEq(cmdSig.canonicalSig('S=$(git stash create) && git update-ref refs/x $S'), 'git stash create');
-  // (`2>&1` still leaves the fd number in the sig — backlog U13, owner decision.)
-  assertEq(cmdSig.canonicalSig('cd /x && (npx supabase --version 2>&1)'), 'npx supabase 2');
+  assertEq(cmdSig.canonicalSig('cd /x && (npx supabase --version 2>&1)'), 'npx supabase');
   assertEq(cmdSig.canonicalSig('a=$((x+1))\ngit status'), 'git status', 'arithmetic $(( is still an assignment');
   for (const c of ['(cd /p && git diff)', 'X=$(git diff HEAD)']) assertEq(cmdSig.canonicalSig(cmdSig.canonicalSig(c)), cmdSig.canonicalSig(c), `idempotent: ${c}`);
 });
@@ -5110,11 +5113,11 @@ test('oneoff-store: marked one-hit under ceiling is suppressible (detect path)',
 });
 test('oneoff-store: mark accepts exact sigs verbatim (no alias derivation)', () => {
   const dd = freshDataDir(); const pk = 'p'; const now = 1_700_000_000_000;
-  // sig copied verbatim from a Stop-hook reason — includes a token an alias
-  // derivation would never produce ("npm test 2" from `npm test 2>&1 | tail`).
-  const m = oneoff.mark(dd, pk, { sigs: ['npm test 2'], now, maxRecurrence: 3 });
+  // sig copied verbatim from a Stop-hook reason ("npm test" — since U13 the
+  // `2>&1` fd number is no longer part of it).
+  const m = oneoff.mark(dd, pk, { sigs: ['npm test'], now, maxRecurrence: 3 });
   assertEq(m.decision, 'marked');
-  assertEq(m.sig, 'npm test 2');
+  assertEq(m.sig, 'npm test');
   const store = oneoff.load(dd, pk);
   assert(oneoff.isOneHit(store, { command: 'CLAUDE_SKIP_EMBED_WARM=1 npm test 2>&1 | tail -40' }, { now }),
     'raw command must resolve to the sig-marked entry');
