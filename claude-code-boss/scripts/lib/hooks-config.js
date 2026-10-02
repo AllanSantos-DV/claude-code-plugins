@@ -368,6 +368,20 @@ function saveProfile(name) {
 
 function _resetCache() { _cache = null; _resolvedCache = null; }
 
+/**
+ * Cheap identity of every file load() reads (mtime+size; 'none' when absent).
+ * The daemon resets the cache only when this changes, instead of re-reading and
+ * re-parsing on every hook call — same "an edit is seen on the next call" as a
+ * fresh process, for the price of three stat() calls.
+ */
+function sourceStamp() {
+  const st = (p) => { try { const s = fs.statSync(p); return `${s.mtimeMs}:${s.size}`; } catch (err) { void err; return 'none'; } };
+  // The legacy path is left out on purpose: it only matters for the one-time
+  // legacy→global backfill, and resolving it calls dataDir() (~1 ms here) — the
+  // very cost this stamp exists to avoid.
+  return `${st(CONFIG_PATH)}|${st(userConfigPath())}`;
+}
+
 module.exports = {
   load,
   getProfile,
@@ -394,4 +408,5 @@ module.exports = {
   getSessionSummary,
   PROFILE_PRESETS,
   _resetCache,
+  sourceStamp,
 };

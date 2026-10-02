@@ -147,6 +147,9 @@ function writeActivePointer(dir) {
   if (typeof dir !== 'string' || dir.trim().length === 0) return;
   try {
     const existing = readActivePointer(); // resolved dir that STILL EXISTS, or null
+    // Already published: nothing reads `ts`, so rewriting it was a disk write + rename
+    // on EVERY dataDir() call — every hook call, in the shared daemon.
+    if (existing && path.resolve(existing) === path.resolve(dir)) return;
     if (_losesToPointer(dir, existing)) {
       return; // don't regress the pointer onto a lighter (near-empty) folder
     }
@@ -171,6 +174,10 @@ function writeActivePointer(dir) {
  * @returns {string} `dir`, or the heavier existing pointer dir if `dir` loses to it
  */
 function publishAndFollow(dir) {
+  // Hot path (every dataDir() call with a real env — every hook call in the daemon):
+  // already published → one pointer read, no write, no weigh-in.
+  const current = readActivePointer();
+  if (current && path.resolve(current) === path.resolve(dir)) return dir;
   writeActivePointer(dir);
   const ptr = readActivePointer();
   return _losesToPointer(dir, ptr) ? ptr : dir;
@@ -182,22 +189,40 @@ function publishAndFollow(dir) {
  * null (missing file / corrupt JSON / stale dir). Never throws.
  * @returns {string|null}
  */
+// Parsed pointer, keyed by the file's identity (path + ino + mtime + size): the
+// daemon calls this on every hook; an unchanged file is not re-read/re-parsed.
+// Any rewrite (atomic rename → new ino/mtime) invalidates it.
+let _ptrCache = null;
+
 function readActivePointer() {
   const p = activePointerPath();
-  let raw;
+  let st;
   try {
-    raw = fs.readFileSync(p, 'utf-8');
+    st = fs.statSync(p);
   } catch (err) {
     void err; // no pointer file yet — the common cold-start case (ENOENT)
     return null;
   }
+  const key = `${p}|${st.ino}|${st.mtimeMs}|${st.size}`;
   let dir;
-  try {
-    const parsed = JSON.parse(raw);
-    dir = parsed && parsed.dir;
-  } catch (err) {
-    console.error(`[data-dir] ignoring corrupt active-data-dir pointer (${p}): ${err.message}`);
-    return null;
+  if (_ptrCache && _ptrCache.key === key) {
+    dir = _ptrCache.dir;
+  } else {
+    let raw;
+    try {
+      raw = fs.readFileSync(p, 'utf-8');
+    } catch (err) {
+      void err; // vanished between stat and read
+      return null;
+    }
+    try {
+      const parsed = JSON.parse(raw);
+      dir = parsed && parsed.dir;
+    } catch (err) {
+      console.error(`[data-dir] ignoring corrupt active-data-dir pointer (${p}): ${err.message}`);
+      return null;
+    }
+    _ptrCache = { key, dir };
   }
   if (typeof dir !== 'string' || dir.trim().length === 0) return null;
   try {

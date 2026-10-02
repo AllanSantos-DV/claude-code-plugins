@@ -300,6 +300,15 @@ function getOnboarding() {
 
 function _resetCache() { _cache = null; _cacheVersion = 0; }
 
+/** Cheap identity of every file load() reads — see hooks-config.sourceStamp(). */
+function sourceStamp() {
+  const st = (p) => { try { const s = fs.statSync(p); return `${s.mtimeMs}:${s.size}`; } catch (err) { void err; return 'none'; } };
+  // The legacy path is left out on purpose: it only matters for the one-time
+  // legacy→global backfill, and resolving it calls dataDir() (~1 ms here) — the
+  // very cost this stamp exists to avoid.
+  return `${st(CONFIG_PATH)}|${st(userConfigPath())}`;
+}
+
 // `config` recebido aqui é sempre um snapshot COMPLETO do caller (não um
 // delta) — tanto mcp-wizard.js's start() quanto dashboard.js's PUT
 // /api/brain/backend-config montam o objeto inteiro antes de chamar save().
@@ -370,4 +379,5 @@ module.exports = {
   getMcpProjectId,
   getOnboarding,
   _resetCache,
+  sourceStamp,
 };
