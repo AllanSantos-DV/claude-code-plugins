@@ -117,6 +117,24 @@ const HOOKS = {
   hook_stop_dispatcher: { lane: 'heavy', script: 'stop-dispatcher.js', call: async (m, ev) => json(await m.run(ev)) },
 };
 
+// Last config source stamp seen per module path (one entry per thread: the main
+// thread and the hook worker each keep their own module caches).
+const _stamps = new Map();
+
+/**
+ * Reset a config module's cache only when one of its source files changed.
+ * `dependents`: modules that cache a slice of this config themselves.
+ */
+function refreshConfig(modPath, dependents = []) {
+  const mod = require(modPath);
+  const stamp = mod.sourceStamp();
+  if (_stamps.get(modPath) !== stamp) {
+    mod._resetCache();
+    for (const d of dependents) require(d)._resetConfigCache();
+    _stamps.set(modPath, stamp);
+  }
+}
+
 const degraded = (name, msg) => JSON.stringify({ systemMessage: `[claude-code-boss] hook ${name} degradado no daemon (fail-open): ${msg}` });
 
 /**
@@ -129,9 +147,12 @@ async function runHookInline(pluginRoot, name, args) {
   if (!spec) throw new Error(`unknown hook tool: ${name}`);
   const scripts = path.join(pluginRoot, 'scripts');
   try {
-    // Fresh config per call (parity with a fresh process).
-    require(path.join(scripts, 'lib', 'hooks-config.js'))._resetCache();
-    require(path.join(scripts, 'lib', 'brain-config.js'))._resetCache();
+    // Config as fresh as a new process would see it: an edited file is picked up
+    // on the next call (stat-based), without re-parsing on every call.
+    // curation-paths caches its own copy of the `curation` block: without this an
+    // edited curation config was never seen until the daemon restarted.
+    refreshConfig(path.join(scripts, 'lib', 'hooks-config.js'), [path.join(scripts, 'curation-paths.js')]);
+    refreshConfig(path.join(scripts, 'lib', 'brain-config.js'));
     const ev = rebuildEvent(args);
     const mod = require(path.join(scripts, spec.script));
     return await runWithHookEnv({ CLAUDE_PROJECT_DIR: (args && args.project_dir) || '' }, () => spec.call(mod, ev));

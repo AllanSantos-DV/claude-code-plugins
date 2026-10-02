@@ -121,16 +121,61 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   (~110 ms). Testes: lista do dispatcher, `run()` não chama `process.exit`,
   `UserPromptSubmit` com 1 só `command`, CLI do dispatcher termina sozinho.
   O ruído dos detectores em `<task-notification>` segue no **U6**.
-- [ ] **G8 — não há como subir um daemon isolado para bench/teste.**
+- [x] **G8 — não há como subir um daemon isolado para bench/teste.**
+  **RESOLVIDO em 2026-10-02 (sem código novo no plugin)**: `startHttpDaemon` direto,
+  com `CLAUDE_PLUGIN_DATA`/`HOME`/`USERPROFILE` temporários e `port: 0`, sobe um
+  daemon isolado sem ponteiro global nem consolidação. Usado pelo teste do G3 e
+  pelo bench local `.claude/scripts/bench-hook-daemon-launcher.mjs`.
   `servers/brain-server/index.js` publica o ponteiro global de data-dir
   (`publishAndFollow`) e consolida pastas vizinhas no boot. Fix: modo
   `--isolated` (data-dir e porta próprios, sem ponteiro global, sem consolidação).
   Nota (G3, 2026-10-02): chamar `startHttpDaemon` direto (sem o `index.js`) com
   `CLAUDE_PLUGIN_DATA`/`HOME`/`USERPROFILE` num diretório temporário e `port: 0`
   já sobe um daemon isolado — o teste de G3 usa isso. Pode bastar para o bench.
-- [ ] **G9 — bench de aceite realista** (depende de G8): 6–8 sessões MCP, transcripts
+- [~] **G9 — bench de aceite realista** (depende de G8): 6–8 sessões MCP, transcripts
   grandes reais, `Stop` concorrente com `PreToolUse` e indexação rodando. Critério:
   p95 de `PreToolUse` < 100 ms durante `Stop`s e RSS do daemon estável.
+  **Bench feito (2026-10-02)** — `.claude/scripts/bench-hook-daemon.mjs` (local):
+  daemon isolado em processo filho, 8 sessões MCP reais por HTTP, por rodada os 2
+  guards irmãos de `PreToolUse`, `PostToolUse` Bash, edição, `Stop` a cada 4 com o
+  transcript real de 90 MB; depois rajada de 60 `PreToolUse` + 8 `Stop` juntos.
+  Base da Fase G (`72de19b`) → HEAD:
+
+  | | base | HEAD |
+  |---|---|---|
+  | PreToolUse em regime p50/p95/máx | 53 / 971 / 2181 ms | **5 / 32 / 47 ms** |
+  | PostToolUse p50/p95 | 53 / 90 ms | **2 / 17 ms** |
+  | Stop p50/p95 | 503 / 2529 ms | 574 / 2147 ms |
+  | rajada 60 PreToolUse p50/p95 | 912 / 1160 ms | **131 / 222 ms** |
+  | RSS pico do daemon | 388 MB | 566 MB |
+
+  **Achados no bench e corrigidos na hora** (caminho quente do daemon):
+  (a) `data-dir.writeActivePointer` reescrevia o ponteiro global (tmp+rename) em
+  TODA chamada de `dataDir()` com env — agora não escreve se já aponta para a
+  pasta; `publishAndFollow` com caminho rápido; `readActivePointer` com cache por
+  ino/mtime/tamanho: `dataDir()` 0,8 → 0,07 ms. (b) Reset+releitura da config a
+  cada chamada → `sourceStamp()` (stat) em `hooks-config`/`brain-config`, reset só
+  quando muda. (c) `runWithHookEnv` copiava o `process.env` inteiro por chamada →
+  visão read-through (Proxy). (d) `curation-paths.findProjectRoot` fazia até 170
+  `existsSync` por chamada → memo de 30 s por cwd. (e) **Bug**: o `_cfgCache` do
+  `curation-paths` nunca era invalidado no daemon (config de curadoria editada só
+  valia após reiniciar o daemon) — agora segue o carimbo do `hooks-config`; teste
+  falha sem a correção e passa com ela. Custo por chamada: `error_guard` 3,9 →
+  0,8 ms, `correction_detect` 2,3 → 0,5 ms.
+  **Ainda abertos**: rajada de 60 com p95 222 ms (> 100 ms) → **G11**; RSS → **G10**.
+- [ ] **G10 — primeira passada do `capture-queue.ingest` lê o transcript inteiro.**
+  `scripts/lib/capture-queue.js:95-130`: com cursor 0 (1º `Stop` da sessão, ou
+  rebase após compactação) faz `_readBuf(from=0, boundary)` do arquivo todo, extrai
+  TODOS os ciclos e grava todos na fila e no arquivo de estado. Medido: 1 `Stop`
+  com transcript de 90 MB leva o daemon de 207 → 340 MB; 8 sessões → pico 566 MB.
+  Decisão do dono necessária: limitar a 1ª passada a uma janela final (últimos
+  N MB / K ciclos) muda a semântica (ciclos antigos da sessão não seriam
+  oferecidos). Fix proposto: janela final + leitura em blocos.
+- [ ] **G11 — rajada de 60 `PreToolUse` simultâneos ainda com p95 ~220 ms.**
+  120 chamadas MCP (2 guards irmãos × 60) serializadas na thread principal: o que
+  sobra é ~1,6 ms de CPU do `curation_guard` + o overhead por requisição do SDK
+  MCP/HTTP. Próximos passos: perfilar o `curation_guard` (shells.json / assinatura)
+  e medir o custo fixo do SDK por chamada.
 
 ### UX / ruído visto usando a ferramenta (sessão de 2026-10-02)
 

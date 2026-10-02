@@ -11,10 +11,28 @@
  * with that call's own values; code that needs the session env reads hookEnv(),
  * which falls back to process.env outside a hook call (CLI / spawned hooks —
  * unchanged behaviour).
+ *
+ * The per-call env is a read-through VIEW over process.env, not a copy: copying
+ * process.env (OS-backed on Windows) on every hook call was ~15% of a fast
+ * guard's CPU in the daemon.
  */
 const { AsyncLocalStorage } = require('node:async_hooks');
 
 const als = new AsyncLocalStorage();
+
+function makeView(overrides, dropped) {
+  const own = (k) => Object.prototype.hasOwnProperty.call(overrides, k);
+  const hidden = (k) => dropped.has(k);
+  return new Proxy({}, {
+    get: (_, k) => (typeof k !== 'string' ? undefined : own(k) ? overrides[k] : hidden(k) ? undefined : process.env[k]),
+    has: (_, k) => own(k) || (!hidden(k) && k in process.env),
+    ownKeys: () => [...new Set([...Object.keys(process.env).filter(k => !hidden(k)), ...Object.keys(overrides)])],
+    getOwnPropertyDescriptor: (t, k) => {
+      const v = own(k) ? overrides[k] : hidden(k) ? undefined : process.env[k];
+      return v === undefined ? undefined : { value: v, enumerable: true, configurable: true, writable: true };
+    },
+  });
+}
 
 /**
  * @param {{ CLAUDE_PROJECT_DIR?: string }} overrides  values for THIS call; an
@@ -22,14 +40,17 @@ const als = new AsyncLocalStorage();
  * @param {() => any} fn
  */
 function runWithHookEnv(overrides, fn) {
-  const env = { ...process.env, ...overrides };
-  if (!overrides || !overrides.CLAUDE_PROJECT_DIR) delete env.CLAUDE_PROJECT_DIR;
-  return als.run({ env }, fn);
+  const o = { ...(overrides || {}) };
+  const dropped = new Set();
+  if (!o.CLAUDE_PROJECT_DIR) { delete o.CLAUDE_PROJECT_DIR; dropped.add('CLAUDE_PROJECT_DIR'); }
+  return als.run({ overrides: o, dropped, view: null }, fn);
 }
 
 function hookEnv() {
   const s = als.getStore();
-  return s ? s.env : process.env;
+  if (!s) return process.env;
+  if (!s.view) s.view = makeView(s.overrides, s.dropped);
+  return s.view;
 }
 
 module.exports = { runWithHookEnv, hookEnv };

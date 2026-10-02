@@ -49,8 +49,16 @@ function loadCurationConfig() {
   return _cfgCache;
 }
 
-/** Reset cache — only for tests. */
-function _resetConfigCache() { _cfgCache = null; }
+/** Reset caches — tests, and the daemon when hooks-config changes on disk. */
+function _resetConfigCache() { _cfgCache = null; _rootMemo.clear(); }
+
+// The walk-up below is up to 10 levels × 17 existsSync — ~1 ms per call on
+// Windows, paid by every curation hook call in the shared daemon. Same 30 s memo
+// rule as lib/project-id.js's git lookups: a shells.json created mid-session is
+// picked up within 30 s.
+const ROOT_TTL_MS = 30_000;
+const ROOT_MEMO_MAX = 256;
+const _rootMemo = new Map();
 
 /**
  * Walk up from `cwd` to find the directory that contains the shells config
@@ -60,6 +68,15 @@ function _resetConfigCache() { _cfgCache = null; }
  */
 function findProjectRoot(cwd) {
   if (!cwd) return null;
+  const hit = _rootMemo.get(cwd);
+  if (hit && Date.now() - hit.at < ROOT_TTL_MS) return hit.root;
+  const root = _walkProjectRoot(cwd);
+  if (_rootMemo.size >= ROOT_MEMO_MAX) _rootMemo.delete(_rootMemo.keys().next().value);
+  _rootMemo.set(cwd, { root, at: Date.now() });
+  return root;
+}
+
+function _walkProjectRoot(cwd) {
   const cfg = loadCurationConfig();
   const candidates = [cfg.shellsConfigPath, ...cfg.shellsConfigSearch];
   let dir = cwd;

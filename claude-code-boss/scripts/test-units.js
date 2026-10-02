@@ -14052,6 +14052,30 @@ test('data-dir: honors a real CLAUDE_PLUGIN_DATA value AND publishes the active 
   });
 });
 
+test('data-dir: an already-published pointer is NOT rewritten on every dataDir() call (hot path in the daemon)', () => {
+  withTempHome((home) => {
+    const saved = process.env.CLAUDE_PLUGIN_DATA;
+    const real = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dd-same-'));
+    const ptr = path.join(home, '.claude', 'claude-code-boss', 'active-data-dir.json');
+    try {
+      process.env.CLAUDE_PLUGIN_DATA = real;
+      assertEq(dataDirLib.dataDir(), real);
+      const before = fs.readFileSync(ptr, 'utf8');
+      const realWrite = fs.renameSync;
+      let renames = 0;
+      fs.renameSync = function (...a) { renames++; return realWrite.apply(fs, a); };
+      try { for (let i = 0; i < 20; i++) assertEq(dataDirLib.dataDir(), real); } finally { fs.renameSync = realWrite; }
+      assertEq(renames, 0, 'no atomic rewrite when the pointer already names this dir');
+      assertEq(fs.readFileSync(ptr, 'utf8'), before, 'pointer untouched');
+      // A DIFFERENT dir still publishes (the write path itself is intact).
+      const other = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dd-other-'));
+      process.env.CLAUDE_PLUGIN_DATA = other;
+      assertEq(dataDirLib.dataDir(), other);
+      assertEq(dataDirLib.readActivePointer(), other);
+    } finally { process.env.CLAUDE_PLUGIN_DATA = saved; }
+  });
+});
+
 test('data-dir: FOLLOWS the published pointer when env is absent', () => {
   // (b) no env → resolve the app's live folder from the global pointer that an
   // env-aware process (brain-server / a guarded hook) previously published.
@@ -19901,6 +19925,70 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
       assertEq(await hw.run('hook_stop_dispatcher', args), '{}');
       assertEq(hw.stats().spawned, 2, 'a fresh worker took over');
     } finally { await hw.shutdown(); }
+  });
+
+  // ── G9 hot path: per-call costs inside the shared daemon ────────────────────
+  test('G9: hookEnv() view reads through process.env, honors the per-call override/drop, and spreads', () => {
+    const { hookEnv, runWithHookEnv } = require('./lib/hook-context.js');
+    process.env.CCB_G9_PROBE = 'from-daemon';
+    try {
+      runWithHookEnv({ CLAUDE_PROJECT_DIR: '/call/x' }, () => {
+        const e = hookEnv();
+        assertEq(e.CLAUDE_PROJECT_DIR, '/call/x');
+        assertEq(e.CCB_G9_PROBE, 'from-daemon');
+        assert('CCB_G9_PROBE' in e && 'CLAUDE_PROJECT_DIR' in e, 'in operator');
+        const copy = { ...e };
+        assertEq(copy.CLAUDE_PROJECT_DIR, '/call/x');
+        assertEq(copy.CCB_G9_PROBE, 'from-daemon');
+      });
+      const prev = process.env.CLAUDE_PROJECT_DIR;
+      process.env.CLAUDE_PROJECT_DIR = '/daemon/first';
+      try {
+        runWithHookEnv({}, () => {
+          assertEq(hookEnv().CLAUDE_PROJECT_DIR, undefined);
+          assert(!('CLAUDE_PROJECT_DIR' in hookEnv()), 'dropped key is absent');
+          assert(!Object.keys({ ...hookEnv() }).includes('CLAUDE_PROJECT_DIR'), 'dropped key not spread');
+        });
+      } finally { if (prev === undefined) delete process.env.CLAUDE_PROJECT_DIR; else process.env.CLAUDE_PROJECT_DIR = prev; }
+    } finally { delete process.env.CCB_G9_PROBE; }
+  });
+
+  test('G9: curation-paths.findProjectRoot memoizes the walk-up per cwd; reset clears it', () => {
+    const cp = require('./curation-paths.js');
+    cp._resetConfigCache();
+    const deep = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-g9-root-'));
+    fs.writeFileSync(path.join(deep, 'package.json'), '{}');
+    const sub = path.join(deep, 'a', 'b'); fs.mkdirSync(sub, { recursive: true });
+    assertEq(cp.findProjectRoot(sub), deep);
+    const orig = fs.existsSync; let n = 0;
+    fs.existsSync = function (...a) { n++; return orig.apply(fs, a); };
+    try { for (let i = 0; i < 10; i++) assertEq(cp.findProjectRoot(sub), deep); } finally { fs.existsSync = orig; }
+    assertEq(n, 0, 'memo hit does no filesystem probing');
+    fs.mkdirSync(path.join(sub, '.vscode'), { recursive: true });
+    fs.writeFileSync(path.join(sub, '.vscode', 'shells.json'), '{}');
+    fs.writeFileSync(path.join(sub, 'package.json'), '{}');
+    cp._resetConfigCache();
+    assertEq(cp.findProjectRoot(sub), sub, 'after reset the walk-up runs again');
+  });
+
+  test('G9: an edited curation config is seen by the next daemon hook call (curation-paths cache follows hooks-config)', async () => {
+    const hooksCfg = require('./lib/hooks-config.js');
+    const cp = require('./curation-paths.js');
+    const { globalDir } = require('./lib/data-dir.js');
+    const uc = path.join(globalDir(), 'hooks', 'user-config.json');
+    const had = fs.existsSync(uc) ? fs.readFileSync(uc, 'utf8') : null;
+    try {
+      await hookTools.handle('hook_curation_guard', { ...wire(PARITY[0][2]), project_dir: proj });
+      const before = cp.loadCurationConfig().scriptsDir;
+      fs.mkdirSync(path.dirname(uc), { recursive: true });
+      const cur = had ? JSON.parse(had) : {};
+      fs.writeFileSync(uc, JSON.stringify({ ...cur, curation: { ...(cur.curation || {}), scriptsDir: 'g9/custom-scripts' } }));
+      await hookTools.handle('hook_curation_guard', { ...wire(PARITY[0][2]), project_dir: proj });
+      assertEq(cp.loadCurationConfig().scriptsDir, 'g9/custom-scripts', `was ${before}`);
+    } finally {
+      if (had === null) { try { fs.unlinkSync(uc); } catch (err) { void err; } } else fs.writeFileSync(uc, had);
+      hooksCfg._resetCache(); cp._resetConfigCache();
+    }
   });
 
   // ── G6: SubagentStart policy-inject through the daemon ──────────────────────
