@@ -690,6 +690,27 @@ const TESTS = [
     },
   },
   {
+    name: 'curation-guard    [PreToolUse/curated-script + pipe in ANOTHER segment→allow (U3)]',
+    script: 'curation-guard.js',
+    payload: (() => {
+      // Field case 2026-10-02: `<curated test script> && node audit.mjs check | tail -2`
+      // was denied as "curated script invoked with a pipe" — the pipe was the audit's.
+      const cwd = mkTempProject({ shells: [{ id: 'th', script: '.vscode/scripts/test-hooks.mjs', aliases: [] }], whitelist: [] });
+      return {
+        tool_name: 'Bash',
+        tool_input: { command: 'node .vscode/scripts/test-hooks.mjs && node .github/scripts/release-audit.mjs check | tail -2' },
+        session_id: SESSION,
+        cwd,
+      };
+    })(),
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    validate: r => {
+      const d = r.parsed?.hookSpecificOutput?.permissionDecision;
+      if (d !== 'allow') return `pipe belongs to another segment → allow, got: ${d} (${r.parsed?.hookSpecificOutput?.additionalContext || ''})`;
+      return null;
+    },
+  },
+  {
     name: 'curation-guard    [PreToolUse/curated-script+logical-or→allow]',
     script: 'curation-guard.js',
     payload: (() => {

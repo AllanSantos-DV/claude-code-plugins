@@ -182,13 +182,30 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
 - [ ] **U1 — `curation-guard` redireciona comando composto para script que não o
   cobre** (`git log …; git diff --shortstat; git show --stat` → `git-log-branch.mjs`,
   sem data nem diffstat) e sugere caminho relativo (`.vscode/scripts/…`) que
-  quebra fora da raiz do repo.
+  quebra fora da raiz do repo. **Decisão do dono**: hoje QUALQUER segmento que
+  bate com um alias nega o comando composto inteiro (`shells-config.js:149-160`).
+  Proposta: negar só quando o alias é o comando todo (ou o único segmento
+  significativo); em composto, permitir + `additionalContext` apontando o script
+  curado do segmento — a curadoria do `Stop` continua pegando saída volumosa. E
+  sugerir o caminho ABSOLUTO do script. Nesta sessão foram 8+ chamadas negadas
+  por isso, incluindo `git diff > arquivo` e `for … git -C …` de inspeção.
 - [ ] **U2 — `error-guard` bloqueia por falhas registradas em OUTRO cwd** (falhou em
   `claude-code-boss/`, bloqueou na raiz onde funcionaria): a chave ignora o cwd.
-- [ ] **U3 — script curado proíbe pipe e trunca a saída ("--full to see")**,
+- [~] **U3 — script curado proíbe pipe e trunca a saída ("--full to see")**,
   forçando nova execução. E a detecção de pipe olha o comando INTEIRO, não o
   segmento: `… test-hooks.mjs && node release-audit.mjs check | tail -2` foi
   bloqueado como "script curado com pipe" — o pipe era do `release-audit`.
+  **Parte do bug RESOLVIDA em 2026-10-02**: `pipesCuratedScript` só nega quando o
+  pipe está no MESMO segmento, à direita da chamada do script curado. Teste em
+  `test-hooks.js` (falha no código antigo, passa no novo). **Aberto (decisão de
+  desenho)**: a política "script curado nunca com pipe" + saída truncada continua
+  — o atrito de rodar de novo com `--full` é do contrato da curadoria.
+- [ ] **U11 — comentário do `matchCuratedShell` (`shells-config.js:126-136`) é
+  falso.** Diz que `echo "running .vscode/scripts/vitest.ps1"` NÃO casa, mas o
+  `_tokenize` tira as aspas de cada token e o path casa. Na prática um nome de
+  script curado dentro de uma string (`node -e "…test-units.mjs…"`) conta como
+  "invocando o script". Fix: tokenizar respeitando aspas (como
+  `command-signature.indexOfShellMeta`) e corrigir o comentário.
 - [ ] **U4 — assinatura de uso único genérica demais** (`ls lib` de um comando
   `ls lib && wc … && grep …`): marcar como one-off silencia qualquer `ls lib`.
 - [ ] **U5 — comandos de subagente entram na curadoria do `Stop` do pai** (o `find`
