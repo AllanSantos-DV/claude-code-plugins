@@ -55,17 +55,29 @@ function test(name, fn) {
   TESTS.push({ name, fn });
 }
 
+// Per-test deadline: a test that never settles used to hang the whole suite with no
+// hint of which one. Now it fails BY NAME and the run moves on.
+const TEST_TIMEOUT_MS = Number(process.env.CCB_TEST_TIMEOUT_MS) || 120000;
+
 async function runTest({ name, fn }) {
+  let timer = null;
   try {
     const maybe = fn();
     if (maybe && typeof maybe.then === 'function') {
-      await maybe;
+      await Promise.race([
+        maybe,
+        new Promise((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`test timed out after ${TEST_TIMEOUT_MS}ms (never settled)`)), TEST_TIMEOUT_MS);
+        }),
+      ]);
     } else {
       void maybe;
     }
     RESULTS.push({ name, ok: true });
   } catch (err) {
     RESULTS.push({ name, ok: false, err: err && err.stack || String(err) });
+  } finally {
+    if (timer) clearTimeout(timer);
   }
 }
 
