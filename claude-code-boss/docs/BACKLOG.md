@@ -213,7 +213,9 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   chamadas de higiene de fixture nos testes do `capture-dispatch` saíram (o
   teardown agora é `capture-queue.reset`, o estado que importa). Suíte 1291/0.
 - [ ] **G11 — rajada de 60 `PreToolUse` simultâneos ainda com p95 ~220 ms.**
-  (Após o G10: p95 103 ms, praticamente na meta de 100 ms.)
+  (Após o G10: p95 103 ms, praticamente na meta de 100 ms.) Fica aberto só para
+  confirmar no bench do ambiente real (máquina mais fraca); nada a otimizar antes
+  dessa medição.
   120 chamadas MCP (2 guards irmãos × 60) serializadas na thread principal: o que
   sobra é ~1,6 ms de CPU do `curation_guard` + o overhead por requisição do SDK
   MCP/HTTP. Próximos passos: perfilar o `curation_guard` (shells.json / assinatura)
@@ -333,6 +335,14 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   notificação e chamado num prompt real.
 - [ ] **U7 — recall injeta lição de outro projeto/irrelevante** ("Memory convergence…
   hermes… develop 92 commits" numa sessão do claude-code).
+  **Investigado em 2026-10-02**: parte do ruído vinha de recall sobre
+  `<task-notification>` (resolvido no U6). A lição "hermes" NÃO aparece no
+  `brain_search` do projeto (`scope: both`) — logo não vem do KB do projeto: veio
+  do caminho do `brain_retrieve_context`, que em `mcp-memory` chama o
+  `compose_recall` do servidor externo (blocos de escopo global/ancestral). A
+  causa está no lado do servidor (`native-java`), fora deste plugin. Próximo
+  passo: capturar o trace do `compose_recall` (bloco/escopo/score da entrada) no
+  teste em ambiente real e abrir o achado no projeto do servidor.
 - [x] **U8 — `[BRAIN·SKILLS] 1 available capability pointer(s): - (unnamed)`** em
   todo turno: ponteiro sem nome renderizado.
   **RESOLVIDO em 2026-10-02**: `brain-backend.splitComposeBlocks` deriva o nome da
