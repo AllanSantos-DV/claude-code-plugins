@@ -12903,9 +12903,10 @@ test('self-review-retrieve.readDaemonPort/Token: absent → null', () => {
 
 /** Fake warm brain-server HTTP daemon: token-gated /mcp with initialize→tools/call. */
 function startFakeBrainHttp({ results = [], toolError = false } = {}) {
-  const seen = { auth: null, calledTool: null, callArgs: null };
+  const seen = { auth: null, calledTool: null, callArgs: null, deleted: [] };
   const server = http.createServer((req, res) => {
     seen.auth = req.headers['authorization'] || null;
+    if (req.method === 'DELETE') { seen.deleted.push(req.headers['mcp-session-id'] || null); res.writeHead(200); return res.end(); }
     let body = '';
     req.on('data', c => { body += c; });
     req.on('end', () => {
@@ -12947,6 +12948,8 @@ test('self-review-retrieve.retrieveViaDaemon: token handshake + brain_search par
     assertEq(entries[0].id, 'x');
     assert(String(daemon.seen.auth || '').includes('tok'), 'daemon received bearer token');
     assertEq(daemon.seen.calledTool, 'brain_search');
+    // G3: the session is ended (DELETE) — otherwise it holds a MAX_SESSIONS slot for 30 min.
+    assertEq(JSON.stringify(daemon.seen.deleted), JSON.stringify(['sess-1']));
   } finally {
     if (savedTok !== undefined) process.env.BRAIN_HTTP_TOKEN = savedTok;
     await daemon.close();
@@ -12971,9 +12974,25 @@ test('self-review-retrieve.retrieveViaDaemon: tool-level error (isError) → nul
     // A reachable daemon whose brain_search errors must return null (not []), so
     // retrieve() degrades to the keyword index rather than silently yielding nothing.
     assertEq(await srRetrieve.retrieveViaDaemon('q', { dataDir: dir, project: 'p1', topK: 2, minScore: 0.2, timeoutMs: 3000 }), null);
+    assertEq(JSON.stringify(daemon.seen.deleted), JSON.stringify(['sess-1']), 'session ended on the error path too');
   } finally {
     if (savedTok !== undefined) process.env.BRAIN_HTTP_TOKEN = savedTok;
     await daemon.close();
+  }
+});
+
+test('self-review-retrieve.retrieveViaDaemon: REAL daemon — sessions do not accumulate (G3)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sr-real-'));
+  const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
+  const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0 });
+  const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
+  try {
+    fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify({ port: d.httpServer.address().port }));
+    for (let i = 0; i < 3; i++) await srRetrieve.retrieveViaDaemon('q', { dataDir: dir, project: 'p1', topK: 2, minScore: 0.2, timeoutMs: 1500 });
+    assertEq(d.sessions.size, 0, 'every self-review session ended');
+  } finally {
+    if (savedTok !== undefined) process.env.BRAIN_HTTP_TOKEN = savedTok;
+    await d.shutdown();
   }
 });
 
