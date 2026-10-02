@@ -613,7 +613,47 @@ const TESTS = [
     expect: { hasKey: 'hookSpecificOutput', noError: true },
     validate: r => {
       const out = r.parsed?.hookSpecificOutput || {};
-      return out.permissionDecision === 'allow' && !out.updatedInput ? null : `exploration is bounded generically, never redirected, got: ${JSON.stringify(out)}`;
+      const cmd = (out.updatedInput || {}).command || '';
+      if (/gitstatus\.mjs/.test(cmd)) return `exploration must never be redirected to a curated script, got: ${cmd}`;
+      // No Token Guard in the test HOME/project → the boss shaper bounds it instead.
+      return /^set -o pipefail; \{ git status; \} 2>&1 \| node ".*shape-output\.js" --family "git status"$/.test(cmd) ? null : `expected the boss shaper (no Token Guard), got: ${JSON.stringify(out)}`;
+    },
+  },
+  {
+    name: 'curation-guard    [C2b: EXPLORATION with Token Guard installed → untouched (Token Guard bounds it)]',
+    script: 'curation-guard.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: 'git log --stat -40' },
+      permission_mode: 'bypassPermissions',
+      session_id: SESSION,
+      cwd: (() => {
+        const p = mkTempProject({ shells: [], whitelist: [] });
+        fs.mkdirSync(path.join(p, '.claude'), { recursive: true });
+        fs.writeFileSync(path.join(p, '.claude', 'settings.json'), JSON.stringify({ hooks: { PostToolUse: [{ hooks: [{ type: 'command', command: 'node "/x/token-guard/adapters/post-hook.cjs"' }] }] } }));
+        return p;
+      })(),
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    validate: r => {
+      const out = r.parsed?.hookSpecificOutput || {};
+      return out.permissionDecision === 'allow' && !out.updatedInput ? null : `with Token Guard the boss must not shape, got: ${JSON.stringify(out)}`;
+    },
+  },
+  {
+    name: 'curation-guard    [C2b: compound exploration (cd && git log) → untouched (cd must persist)]',
+    script: 'curation-guard.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: 'cd sub && git log -5' },
+      permission_mode: 'bypassPermissions',
+      session_id: SESSION,
+      cwd: (() => mkTempProject({ shells: [], whitelist: [] }))(),
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    validate: r => {
+      const out = r.parsed?.hookSpecificOutput || {};
+      return !out.updatedInput ? null : `a compound is never wrapped, got: ${JSON.stringify(out)}`;
     },
   },
   {

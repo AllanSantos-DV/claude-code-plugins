@@ -23,7 +23,7 @@ const { hookLog } = require('./hook-logger.js');
 const { loadCurationConfig } = require('./curation-paths.js');
 const { runPreToolUseCli } = require('./lib/hook-io.js');
 const { findProjectRoot, loadShellsConfig, matchCuratedShell, _pathMatches, _tokenize } = require('./shells-config.js');
-const { planRedirect } = require('./lib/curation-redirect.js');
+const { planRedirect, planShaping } = require('./lib/curation-redirect.js');
 const metrics = require('./lib/metrics.js');
 
 const hooksConfig = require('./lib/hooks-config.js');
@@ -189,6 +189,17 @@ async function run(event) {
       const cfg = loadCurationConfig();
       const reason = `[curation-guard] Command \`${command}\` is unknown (denyUnknown mode active). Add it to the whitelist in \`${cfg.shellsConfigPath}\` or create a curated script in \`${cfg.scriptsDir}/\`.`;
       return decision('deny', { additionalContext: reason, permissionDecisionReason: reason });
+    }
+
+    // 3b. C2b: an EXPLORATION command (git log/grep/cat/ls…) gets its output bounded
+    //     by the boss ONLY when Token Guard isn't installed (both coexist — the owner's
+    //     decision). Single segment only (a `cd` must keep persisting), never when the
+    //     output goes to a file/tee. Same permission rule as the redirect.
+    const shaped = plan.bypass ? null : planShaping(command, projectRoot);
+    if (shaped) {
+      const mode = event.permission_mode === 'bypassPermissions' ? 'allow' : 'ask';
+      const ctx = '[boss] Saída de exploração limitada pelo boss (Token Guard não instalado): o comando roda igual; se passar do limite, o resto fica salvo em arquivo. `CCB_RAW=1` na frente desliga o corte.';
+      return decision(mode, { updatedInput: { command: shaped }, additionalContext: ctx, ...(mode === 'ask' ? { permissionDecisionReason: ctx } : {}) });
     }
 
     // 4. Default: allow. If output is bulky, PostToolUse → Stop discovery
