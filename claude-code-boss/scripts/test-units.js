@@ -9716,6 +9716,61 @@ test('plano B: stream com várias linhas SSE somando mais de 32 MiB termina comp
   }
 });
 
+test('plano B: client leaves mid-stream → the NVIDIA/BYOK upstream request is aborted (no generation for nobody); destroyed res → no plan B call at all', async () => {
+  let written = 0;
+  let upstreamClosedAt = 0;
+  let hits = 0;
+  const fake = http.createServer((req, res) => {
+    hits++;
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      const iv = setInterval(() => {
+        if (written >= 60) { clearInterval(iv); res.end('data: [DONE]\n\n'); return; }
+        written++;
+        res.write('data: ' + JSON.stringify({ id: 'c', choices: [{ index: 0, delta: { content: 'x' } }] }) + '\n\n');
+      }, 50);
+      res.on('close', () => { clearInterval(iv); if (!upstreamClosedAt) upstreamClosedAt = Date.now(); });
+    });
+  });
+  const up = await _listen0(fake);
+  const fb = { triggerStatuses: [429], cooldown: { enabled: false } };
+  const body = { model: 'claude-opus-5-5', max_tokens: 8, stream: true, messages: [{ role: 'user', content: 'oi' }] };
+  const cases = [
+    ['nvidia', { nim: { apiKey: 'fixture-nim', endpoint: 'http://127.0.0.1:' + up + '/v1/chat/completions' }, fallback: fb }],
+    ['byok', { byok: { enabled: true, mode: 'on-limit', wireProtocol: 'openai', endpoints: { generate: 'http://127.0.0.1:' + up + '/chat' }, headers: {} }, fallback: fb }],
+  ];
+  try {
+    for (const [name, cfg] of cases) {
+      written = 0; upstreamClosedAt = 0;
+      const front = http.createServer((req, res) => { req.resume(); req.on('end', () => router.handleLimitExceeded(body, cfg, res, '')); });
+      const fp = await _listen0(front);
+      let leftAt = 0;
+      await new Promise((resolve) => {
+        const q = http.request({ host: '127.0.0.1', port: fp, method: 'POST', path: '/' }, (rs) => {
+          rs.once('data', () => { leftAt = Date.now(); q.destroy(); resolve(); });
+        });
+        q.on('error', () => resolve());
+        q.end('{}');
+      });
+      for (let i = 0; i < 40 && !upstreamClosedAt; i++) await new Promise((r) => setTimeout(r, 50));
+      front.closeAllConnections();
+      await new Promise((r) => front.close(r));
+      assert(upstreamClosedAt > 0, `${name}: the upstream request must be aborted when the client leaves (frames written: ${written})`);
+      assert(upstreamClosedAt - leftAt < 1500 && written < 40, `${name}: upstream kept generating after the client left (${written} frames, ${upstreamClosedAt - leftAt}ms)`);
+    }
+    // 702: the client is already gone when the plan B would start → no upstream call.
+    hits = 0;
+    const gone = { headersSent: false, writableEnded: false, destroyed: true, writeHead() { throw new Error('must not write'); }, end() { throw new Error('must not write'); }, destroy() {} };
+    router.handleLimitExceeded(body, cases[0][1], gone, '');
+    await new Promise((r) => setTimeout(r, 200));
+    assertEq(hits, 0, 'no plan B call for a client that already left');
+  } finally {
+    fake.closeAllConnections();
+    await new Promise((r) => fake.close(r));
+  }
+});
+
 test('plano B: stream que fecha limpo com a última linha sem \\n — frame completo termina, frame cortado chega cortado', async () => {
   const frame = (text) => 'data: ' + JSON.stringify({ id: 'c', choices: [{ index: 0, delta: { content: text } }] });
   const tails = {

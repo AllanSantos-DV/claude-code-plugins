@@ -1211,6 +1211,17 @@ function jsonNvidiaToAnthropic(nvRes, res, reqBody, warning, onReadFail) {
 
 // Plano B: roteia a chamada para a NVIDIA NIM (OpenAI-compat), traduzindo o
 // protocolo nos dois sentidos e SEMPRE avisando que a resposta não é do Claude.
+// The client left mid plan B (closed the response before it ended): abort the
+// upstream request so NVIDIA/BYOK stop generating — and spending quota — for nobody.
+function abortOnClientClose(res, upReq, what) {
+  if (!upReq || typeof upReq.destroy !== 'function') return;
+  res.once('close', () => {
+    if (res.writableEnded || upReq.destroyed) return;
+    logger.info('Cliente saiu no meio do plano B — abortando a request ao upstream', { what });
+    upReq.destroy(new Error('cliente desconectou'));
+  });
+}
+
 function nvidiaFallback(reqBody, config, res, nimKey, hint) {
   const openaiBody = anthropicToOpenAI(reqBody, config);
   const fbModel = openaiBody.model;
@@ -1252,6 +1263,7 @@ function nvidiaFallback(reqBody, config, res, nimKey, hint) {
       logger.debug('NVIDIA — falha já reportada', { err: e.message });
       return;
     }
+    if (res.destroyed) { reported = true; logger.debug('NVIDIA — cliente já saiu; nada a responder', { err: e.message }); return; }
     reported = true;
     if (refusedStatus) {
       logger.error('NVIDIA fallback HTTP erro — corpo da recusa interrompido', { status: refusedStatus, err: e.message });
@@ -1268,7 +1280,7 @@ function nvidiaFallback(reqBody, config, res, nimKey, hint) {
       ? `⚠️ Limite do Claude esgotado; o plano B (NVIDIA) respondeu, mas a resposta passou do teto do router: ${e.message}.`
       : `⚠️ Limite do Claude esgotado; o plano B (NVIDIA) respondeu, mas a conexão caiu no meio da resposta (${e.message}). Tente de novo.`);
   };
-  sendUpstreamRequest(lib, options, payload, (nvRes) => {
+  const upReq = sendUpstreamRequest(lib, options, payload, (nvRes) => {
     responded = true;
     if (nvRes.statusCode >= 400) {
       refusedStatus = nvRes.statusCode;
@@ -1289,6 +1301,7 @@ function nvidiaFallback(reqBody, config, res, nimKey, hint) {
     if (openaiBody.stream) streamNvidiaToAnthropic(nvRes, res, reqBody, warning);
     else                   jsonNvidiaToAnthropic(nvRes, res, reqBody, warning, reportFailure);
   }, reportFailure);
+  abortOnClientClose(res, upReq, 'NVIDIA');
 }
 
 // Headers hop-by-hop que NUNCA podem ser repassados verbatim de uma conexão
@@ -1756,6 +1769,7 @@ function byokFallback(reqBody, config, res, hint, upstreamTarget, onRetryable) {
       logger.debug('BYOK — falha já reportada', { err: e.message });
       return;
     }
+    if (res.destroyed) { reported = true; logger.debug('BYOK — cliente já saiu; nada a responder', { err: e.message }); return; }
     reported = true;
     if (settleRefusal) {
       logger.warn('BYOK — corpo da recusa interrompido; classificando pelo que chegou', { host: upstreamTarget.host, err: e.message });
@@ -1779,7 +1793,7 @@ function byokFallback(reqBody, config, res, hint, upstreamTarget, onRetryable) {
       `⚠️ O endpoint BYOK (${upstreamTarget.host}) está inacessível: ${e.message}.\n\n`
       + 'Revise a Base URL em /dashboard → BYOK.');
   };
-  requestUpstream(operationTarget, pathForProfile(profile), headers, bodyStr, (upRes) => {
+  const upReq = requestUpstream(operationTarget, pathForProfile(profile), headers, bodyStr, (upRes) => {
     responded = true;
     const cls = byok.classifyResponse(upRes.statusCode, '');
     if (cls.ok) {
@@ -1816,9 +1830,16 @@ function byokFallback(reqBody, config, res, hint, upstreamTarget, onRetryable) {
       settleRefusal();
     });
   }, reportFailure);
+  abortOnClientClose(res, upReq, 'BYOK');
 }
 
 function handleLimitExceeded(reqBody, config, res, hint) {
+  // The client already left (closed while the router read the 429 body): a plan B
+  // now would be a useless call to NVIDIA/BYOK that nobody reads.
+  if (res.destroyed) {
+    logger.info('Plano B não iniciado — o cliente já desconectou');
+    return;
+  }
   // A resposta ao cliente já começou (ou acabou): um plano B aqui reescreveria
   // headers e derrubaria o processo com ERR_HTTP_HEADERS_SENT.
   if (res.headersSent || res.writableEnded) {
