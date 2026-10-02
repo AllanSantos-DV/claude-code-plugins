@@ -19057,7 +19057,7 @@ test('brain daemon supervisor: stale owner (root removed) → swapDaemon → sta
 
 /** Owner install A (root kept on disk, as an upgrade leaves it) serving a fake daemon at
  *  `ownerVersion`; ensureDaemon runs as install B at `ourVersion`. */
-async function runUpgradeCase(ownerVersion, ourVersion) {
+async function runUpgradeCase(ownerVersion, ourVersion, { otherData = false } = {}) {
   const { ensureDaemon } = await import(SUPERVISOR_URL);
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-upgrade-'));
   const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-upgrade-home-'));
@@ -19071,7 +19071,7 @@ async function runUpgradeCase(ownerVersion, ourVersion) {
   fs.mkdirSync(dataDir, { recursive: true });
   const p = await waitFreePort();
   let shutdowns = 0;
-  const fake = makeFakeDaemon({ pluginRoot: oldRoot, port: p, dataDir, version: ownerVersion, onShutdown: () => { shutdowns++; } });
+  const fake = makeFakeDaemon({ pluginRoot: oldRoot, port: p, dataDir: otherData ? path.join(tmp, 'other-data') : dataDir, version: ownerVersion, onShutdown: () => { shutdowns++; } });
   await fake.ready;
   const res = await ensureDaemon({
     pluginRoot: newRoot, dataDir,
@@ -19095,6 +19095,13 @@ test('brain daemon supervisor: SAME-version owner from another install → share
   assertEq(res.status, 'current', `same version must share, got ${res.status}`);
   assert(/sharing daemon owned by another install/.test(res.note || ''), 'share note expected');
   assertEq(shutdowns, 0, 'a same-version daemon must not be signaled');
+});
+
+test('brain daemon supervisor: another install serving a DIFFERENT dataDir → error, not shared, not signaled', async () => {
+  const { res, shutdowns } = await runUpgradeCase('3.0.0', '3.0.0', { otherData: true });
+  assertEq(res.status, 'error', `sharing another dataDir must be refused, got ${res.status}`);
+  assert(/refusing to share/.test(res.error || '') && /other-data/.test(res.error || ''), res.error);
+  assertEq(shutdowns, 0, 'the daemon of the other install must not be signaled');
 });
 
 test('brain daemon supervisor: NEWER owner from another install → shared (never downgrade)', async () => {

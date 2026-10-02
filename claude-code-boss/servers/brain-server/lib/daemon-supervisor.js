@@ -392,6 +392,16 @@ export async function ensureDaemon({ pluginRoot, dataDir, env = process.env } = 
       // equal/older/unknown versions keep sharing (never downgrade the daemon).
       if (h.pluginRoot !== pluginRoot && ownerRootExists(h.pluginRoot)
         && !isNewerVersion(installVersion(pluginRoot), h.version)) {
+        // Sharing is only sound on the SAME data: a daemon serving another dataDir
+        // would make this install's sessions read/write the other install's KB.
+        // Not ours to kill either (that install would swap back) — fail loud.
+        if (canonicalDataDir(h.dataDir) !== canonicalDataDir(dataDir)) {
+          return {
+            status: 'error', pid: h.pid, port,
+            error: `port ${port} is held by another install's daemon (${h.pluginRoot}) serving dataDir ${JSON.stringify(h.dataDir)}, not ${JSON.stringify(canonicalDataDir(dataDir))} — refusing to share it. ` +
+              'Close the sessions of the other install, or set BRAIN_HTTP_PORT to a different one for this install.',
+          };
+        }
         return { status: 'current', pid: h.pid, port, note: `sharing daemon owned by another install: ${h.pluginRoot}` };
       }
       await swapDaemon({ port, health: h, dataDir, env: normalizedEnv });

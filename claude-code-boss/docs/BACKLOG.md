@@ -280,13 +280,18 @@ real (2.29.0, porta 38217) seguiu intacto. Resultados (Claude Code 2.1.283):
   rastreado instrumentando `ensureDaemon`. Correção: o teste roda com HOME/config
   temporários, `CCB_ISOLATED=1`, `BRAIN_HTTP_AUTOSTART=0` e porta inválida. Prova:
   units 1299/0 e hooks 117/0 sem nenhuma resolução da porta 38217 no trace.
-- [ ] **G15 — daemon de outra instalação é compartilhado mesmo servindo OUTRO
+- [x] **G15 — daemon de outra instalação é compartilhado mesmo servindo OUTRO
   dataDir**. `ensureDaemon` (`daemon-supervisor.js`, bloco "sharing daemon owned by
   another install") só olha `pluginRoot`/versão: se o dono serve um dataDir
   diferente do pedido, as sessões desta instalação gravam no KB do outro. Visto
   durante o G14 (daemon de teste com dataDir temporário foi "compartilhado").
   Proposta: compartilhar só quando o dataDir canônico coincide; senão tratar como
   conflito visível (erro com diagnóstico), sem derrubar o outro.
+  **RESOLVIDO em 2026-10-02 (achado e corrigido na hora)**: com dataDir canônico
+  diferente o `ensureDaemon` devolve `error` com o dono, os dois dataDirs e a saída
+  (fechar a outra instalação ou outro `BRAIN_HTTP_PORT`); o `brain-daemon-ensure`
+  mostra como aviso `[BRAIN]`. Teste: mesma versão + outro dataDir → `error`, sem
+  sinal ao outro daemon. Units 1300/0.
 
 ### UX / ruído visto usando a ferramenta (sessão de 2026-10-02)
 
