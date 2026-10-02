@@ -1702,7 +1702,9 @@ function writeRouterOverride(body) {
   // modo anterior NÃO sobrevive). O arquivo guarda a chave NVIDIA: harden 0600
   // após CADA escrita, senão o POSIX fica com o override legível por todos.
   hardenRouterConfigPerms(ROUTER_USER_CONFIG);
-}function resolveRouterFlags() {
+}
+
+function resolveRouterFlags() {
   const shippedRaw = readJSON(ROUTER_SHIPPED_CONFIG) || {};
   const shipped = upstreamProfile.applyRouterEnvironment(shippedRaw, process.env);
   const override = fs.existsSync(ROUTER_USER_CONFIG) ? (readJSON(ROUTER_USER_CONFIG) || {}) : {};
