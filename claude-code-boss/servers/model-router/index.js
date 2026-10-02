@@ -1234,11 +1234,11 @@ function abortOnClientClose(res, upReq, what) {
   });
 }
 
-function nvidiaFallback(reqBody, config, res, nimKey, hint) {
+function nvidiaFallback(reqBody, config, res, nimKey, hint, note) {
   const openaiBody = anthropicToOpenAI(reqBody, config);
   const fbModel = openaiBody.model;
   const aviso = hint ? ` (${hint})` : '';
-  const warning = `⚠️ Plano B ativo — limite do Claude esgotado${aviso}. Esta resposta foi gerada pela NVIDIA (${fbModel}), NÃO pelo Claude.\n\n`;
+  const warning = `⚠️ Plano B ativo — limite do Claude esgotado${aviso}. Esta resposta foi gerada pela NVIDIA (${fbModel}), NÃO pelo Claude.${note ? ` ⚠️ ${note}` : ''}\n\n`;
   const payload = JSON.stringify(openaiBody);
   let endpoint;
   try {
@@ -1871,8 +1871,12 @@ function handleLimitExceeded(reqBody, config, res, hint) {
   // O plano B do ENDPOINT vem antes do da NVIDIA: ele serve os mesmos modelos
   // Claude, então é a substituição mais fiel. Só entra se o usuário ligou.
   const target = byok.resolveUpstream(config, { onLimit: true }, UPSTREAM_FALLBACK);
+  // Why the user's BYOK was skipped travels to the answer they read — a log line
+  // alone left them on NVIDIA with no idea their BYOK config was broken.
+  let note = '';
   if (target.misconfigured) {
     logger.error('BYOK ligado mas mal configurado — não é possível usá-lo como plano B', { causa: target.misconfigured });
+    note = `O BYOK está ligado mas foi pulado: ${target.misconfigured}.`;
   }
   if (target.isByok) {
     try {
@@ -1881,27 +1885,29 @@ function handleLimitExceeded(reqBody, config, res, hint) {
       return;
     } catch (e) {
       logger.error('Falha ao iniciar o plano B BYOK', { err: e.message });
+      note = `O BYOK está ligado mas não pôde ser usado: ${e.message}.`;
     }
   }
-  nvidiaOrMessage(reqBody, config, res, hint);
+  nvidiaOrMessage(reqBody, config, res, hint, note);
 }
 
-function nvidiaOrMessage(reqBody, config, res, hint) {
+function nvidiaOrMessage(reqBody, config, res, hint, note) {
   const nimKey = (config && config.nim && config.nim.apiKey) || process.env.NVIDIA_NIM_KEY || '';
+  const nota = note ? `\n\n⚠️ ${note}` : '';
   if (nimKey) {
-    try { nvidiaFallback(reqBody, config, res, nimKey, hint); return; }
+    try { nvidiaFallback(reqBody, config, res, nimKey, hint, note); return; }
     catch (e) {
       // A chave existe: dizer que falta configurá-la (e contar como "sem chave")
       // mandaria o usuário consertar o que já está certo.
       logger.error('Falha ao iniciar o plano B NVIDIA', { err: e.message, code: e.code });
       const aviso = hint ? `\n\n⏳ ${hint}.` : '';
       respondAnthropicText(reqBody, res, e.code === 'NIM_CONFIG'
-        ? `⚠️ Limite de acesso do Claude atingido e o plano B (NVIDIA) está mal configurado: ${e.message} — corrija \`nim.endpoint\` na configuração do router.${aviso}`
-        : `⚠️ Limite de acesso do Claude atingido e o plano B (NVIDIA) não pôde processar esta request: ${e.message}.${aviso}`);
+        ? `⚠️ Limite de acesso do Claude atingido e o plano B (NVIDIA) está mal configurado: ${e.message} — corrija \`nim.endpoint\` na configuração do router.${aviso}${nota}`
+        : `⚠️ Limite de acesso do Claude atingido e o plano B (NVIDIA) não pôde processar esta request: ${e.message}.${aviso}${nota}`);
       return;
     }
   }
-  const msg = hint ? `${NO_NIM_MESSAGE}\n\n⏳ ${hint}.` : NO_NIM_MESSAGE;
+  const msg = (hint ? `${NO_NIM_MESSAGE}\n\n⏳ ${hint}.` : NO_NIM_MESSAGE) + nota;
   metricsNoKey();
   respondAnthropicText(reqBody, res, msg);
 }

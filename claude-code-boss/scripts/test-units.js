@@ -9771,6 +9771,26 @@ test('plano B: client leaves mid-stream → the NVIDIA/BYOK upstream request is 
   }
 });
 
+test('plano B: a broken BYOK config is surfaced in the answer the user reads (not only in the log) — with and without a NIM key', async () => {
+  const fake = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'ok-nim' } }] })); });
+  });
+  const up = await _listen0(fake);
+  const savedKey = process.env.NVIDIA_NIM_KEY; delete process.env.NVIDIA_NIM_KEY;
+  const body = { model: 'claude-opus-5-5', max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'oi' }] };
+  const fb = { triggerStatuses: [429], cooldown: { enabled: false } };
+  try {
+    let r = await _planBRun({ byok: { enabled: true, mode: 'on-limit', headers: {} }, nim: { apiKey: 'fixture-nim', endpoint: `http://127.0.0.1:${up}/nim` }, fallback: fb }, body);
+    assert(/ok-nim/.test(r.raw) && /O BYOK está ligado mas foi pulado/.test(r.raw), `NVIDIA answer must carry why BYOK was skipped, got ${r.raw.slice(0, 300)}`);
+    r = await _planBRun({ byok: { enabled: true, mode: 'on-limit', headers: {} }, fallback: fb }, body);
+    assert(/O BYOK está ligado mas foi pulado/.test(r.raw), `no-NIM message must carry it too, got ${r.raw.slice(0, 300)}`);
+  } finally {
+    if (savedKey !== undefined) process.env.NVIDIA_NIM_KEY = savedKey;
+    await new Promise((resolve) => fake.close(resolve));
+  }
+});
+
 test('local:catalog with an invalid models profile → /v1/models 502 with the cause, /catalog carries `error`, warning logged (no silent empty list)', async () => {
   const cfg = {
     routes: { '/v1/models': { method: 'GET', upstream: 'local:catalog', auth: 'none' } },
