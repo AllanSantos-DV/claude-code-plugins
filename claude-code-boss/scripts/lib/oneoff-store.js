@@ -104,7 +104,10 @@ function sigsRelated(a, b) {
  * `heredoc-<digest>`) pooled unrelated commands, and exempting it would silence
  * them all forever. Those keep the ceiling and age out of the window.
  */
-const PROGRAM_NAME = /^[A-Za-z_][A-Za-z0-9_.+-]*$/;
+// A program run by RELATIVE path (`./gradlew`, `bin/build.sh`, `../tools/x`) is just as
+// much a program — and a 1-token sig the MCP refuses as an alias, so without the
+// exemption it could never be marked. Absolute paths stay out (machine-specific).
+const PROGRAM_NAME = /^(?:\.{1,2}\/)?(?:[A-Za-z0-9_+-][A-Za-z0-9_.+-]*\/)*[A-Za-z_][A-Za-z0-9_.+-]*$/;
 function isCeilingExempt(sig) {
   if (!sig) return false;
   const toks = sig.split(' ').filter(Boolean);
