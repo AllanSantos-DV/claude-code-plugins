@@ -221,8 +221,13 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   notificação e chamado num prompt real.
 - [ ] **U7 — recall injeta lição de outro projeto/irrelevante** ("Memory convergence…
   hermes… develop 92 commits" numa sessão do claude-code).
-- [ ] **U8 — `[BRAIN·SKILLS] 1 available capability pointer(s): - (unnamed)`** em
+- [x] **U8 — `[BRAIN·SKILLS] 1 available capability pointer(s): - (unnamed)`** em
   todo turno: ponteiro sem nome renderizado.
+  **RESOLVIDO em 2026-10-02**: `brain-backend.splitComposeBlocks` deriva o nome da
+  1ª linha da descrição/texto e DESCARTA o ponteiro sem nada que o nomeie (o
+  `deriveTitle` nunca devolve vazio — cai em `'memory'` —, por isso o teste do
+  texto vem antes). Teste: vazio descartado, nome derivado da descrição, nenhum
+  bloco `[BRAIN·SKILLS]` quando só havia ponteiros vazios.
 - [ ] **U9 — `active-research-detect` com falso positivo `libMention`** em
   "Teste rápido do MCP smart-tool".
 - [ ] **U10 — `curation-guard` e `error-guard` se travam em runner de teste.**

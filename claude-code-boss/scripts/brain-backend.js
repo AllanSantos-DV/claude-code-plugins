@@ -316,7 +316,13 @@ function splitComposeBlocks(blocks) {
         const title = it.name || deriveTitle(text) || deriveTitle(it.description || '') || '(memory)';
         facts.push({ id, title, type: it.type || block, scope, summary: text || it.description || '', text, score });
       } else if (COMPOSE_CAPABILITY_BLOCKS.has(block)) {
-        capabilities.push({ id, name: it.name || '(unnamed)', description: it.description || '', type: it.type || block, scope, score });
+        // A pointer with no name and nothing to derive one from points at nothing —
+        // it used to render as "- (unnamed)" in the context of EVERY turn.
+        // (deriveTitle never returns '' — it falls back to 'memory' — so test for text first.)
+        const fromText = (s) => (String(s || '').split(/\r?\n/)[0].trim() ? deriveTitle(s) : '');
+        const name = it.name || fromText(it.description) || fromText(typeof it.text === 'string' ? it.text : '');
+        if (!name) continue;
+        capabilities.push({ id, name, description: it.description || '', type: it.type || block, scope, score });
       }
     }
   }

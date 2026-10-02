@@ -16834,6 +16834,21 @@ test('brain_retrieve_context: routes retrieve-core\'s local search through kbWor
   }
 });
 
+// ─── U8: a capability pointer with nothing to name it is dropped, not "(unnamed)" ───
+test('U8: splitComposeBlocks drops nameless empty capability pointers; derives a name from the description', () => {
+  const { splitComposeBlocks } = require('./brain-backend.js').__testHooks;
+  const { capabilities } = splitComposeBlocks([{ block: 'skill', scope: 'p', items: [
+    { id: 'a', name: null, description: '' },
+    { id: 'b', description: 'Abre o dashboard do plugin\nsegunda linha' },
+    { id: 'c', name: 'brain-knowledge', description: 'KB' },
+  ] }]);
+  assertEq(capabilities.map(c => c.id), ['b', 'c']);
+  assertEq(capabilities[0].name, 'Abre o dashboard do plugin');
+  const ctx = require('./lib/retrieve-core.js').formatContext([], capabilities);
+  assert(!/\(unnamed\)/.test(ctx), ctx);
+  assertEq(require('./lib/retrieve-core.js').formatContext([], splitComposeBlocks([{ block: 'skill', items: [{ id: 'x' }] }]).capabilities), '', 'only-empty pointers → no [BRAIN·SKILLS] block at all');
+});
+
 // ─── U6: a background agent's <task-notification> is not a user prompt ─────────────
 const NOTIFICATION = '<task-notification>\n<task-id>a1</task-id>\n<summary>Agent "x" finished</summary>\n<result>isso está errado, não era assim; qual a melhor forma de integrar com a api?</result>\n</task-notification>';
 test('U6: prompt-kind.isSyntheticPrompt — task-notification yes, a user prompt quoting the tag no', () => {
