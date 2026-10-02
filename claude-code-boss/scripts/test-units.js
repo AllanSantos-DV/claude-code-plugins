@@ -2069,6 +2069,25 @@ test('mcp-health.probeHealth: backend mcp-memory conectado via daemon real (fake
   const down = await mcpHealth.probeHealth(config);
   assertEq(down.backend, 'mcp-memory');
   assertEq(down.connected, false, 'porta TCP fechada (nada escutando) deve reportar connected:false, não travar nem lançar');
+  assertEq(down.details.reason, 'tcp-closed', 'a disconnected report must say which check failed');
+});
+
+test('mcp-health.probeHealth: mcp-memory restarted on a NEW port mid-probe → re-reads daemon.json and reports connected (BRAIN-STATUS false alarm)', async () => {
+  const http2 = require('http');
+  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mcphealth-move-'));
+  const server = http2.createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ status: 'healthy' })); });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const dead = await new Promise((resolve) => { const t = http2.createServer(); t.listen(0, '127.0.0.1', () => { const p = t.address().port; t.close(() => resolve(p)); }); });
+  try {
+    fs.writeFileSync(path.join(runDir, 'daemon.json'), JSON.stringify({ url: `http://127.0.0.1:${dead}` }));
+    const config = { backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', runDir } } };
+    setTimeout(() => fs.writeFileSync(path.join(runDir, 'daemon.json'), JSON.stringify({ url: `http://127.0.0.1:${server.address().port}` })), 50);
+    const r = await mcpHealth.probeHealth(config);
+    assertEq(r.connected, true, `the retry must follow the daemon to its new port, got ${JSON.stringify(r)}`);
+    assertEq(r.details.serverUrl, `http://127.0.0.1:${server.address().port}`);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });
 
 // mcp-memory >= 2.44 answers /health with {status:'healthy'} and no `ok` field —

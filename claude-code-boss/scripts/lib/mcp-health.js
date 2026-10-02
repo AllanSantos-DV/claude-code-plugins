@@ -62,27 +62,41 @@ async function probeHealth(config) {
     const transport = mcpCfg.transport === 'http' ? 'http' : 'stdio';
     const serverUrl = mcpCfg.serverUrl || '';
     const runDir = mcpCfg.runDir || path.join(require('os').homedir(), '.mcp-memory', 'run');
-    const daemonUrl = serverUrl || (() => { try { return JSON.parse(fs.readFileSync(path.join(runDir, 'daemon.json'), 'utf8')).url; } catch (err) { console.error(`[mcp-health] read daemon.json (${runDir}): ${err.message}`); return ''; } })();
+    const resolveUrl = () => serverUrl || (() => { try { return JSON.parse(fs.readFileSync(path.join(runDir, 'daemon.json'), 'utf8')).url; } catch (err) { console.error(`[mcp-health] read daemon.json (${runDir}): ${err.message}`); return ''; } })();
+    let daemonUrl = resolveUrl();
 
     if (daemonUrl) {
-      try {
-        const port = _derivePort(daemonUrl);
-        if (Number.isInteger(port) && await probeTcpPort(port)) {
-          const result = await httpGetJson(daemonUrl + '/health', HTTP_TIMEOUT_MS);
+      // One probe → { ok, reason }. The reason travels in `details` so a "not
+      // connected" report says WHY (an advisory once claimed "unreachable" while the
+      // backend answered and nobody could tell which check had failed).
+      const attempt = async (url) => {
+        try {
+          const port = _derivePort(url);
+          if (!Number.isInteger(port) || !(await probeTcpPort(port))) return { ok: false, reason: 'tcp-closed' };
+          const result = await httpGetJson(url + '/health', HTTP_TIMEOUT_MS);
+          if (!result || !result.json) return { ok: false, reason: 'health-timeout-or-unparseable' };
           // mcp-memory >= 2.44 answers /health with {status:'healthy'} (no `ok`);
           // older builds answer {ok:true}. Accept both, nothing else.
-          if (result && result.json && (result.json.ok === true || result.json.status === 'healthy')) {
-            return { mode: 'mcp-memory', connected: true, project, backend: 'mcp-memory', details: { transport, serverUrl: daemonUrl }, latency: result.latency };
-          }
+          if (result.json.ok === true || result.json.status === 'healthy') return { ok: true, latency: result.latency };
+          return { ok: false, reason: `health-bad:${JSON.stringify(result.json).slice(0, 120)}` };
+        } catch (err) {
+          // probeTcpPort/httpGetJson resolve network failures themselves — reaching
+          // here means something upstream broke (URL edge case). Surface it.
+          console.error(`[mcp-health] probe failed for ${url}: ${err.message}`);
+          return { ok: false, reason: `probe-error:${err.message}` };
         }
-      } catch (err) {
-        // probeTcpPort/httpGetJson already resolve network failures to false/null —
-        // reaching here means something upstream of them broke (bad daemon.json,
-        // URL edge case). Surface it instead of silently reporting "disconnected"
-        // for a reason nobody can see.
-        console.error(`[mcp-health] probe failed for ${daemonUrl}: ${err.message}`);
+      };
+      let r = await attempt(daemonUrl);
+      if (!r.ok) {
+        // One retry: the mcp-memory daemon may be mid-restart on a NEW port (its
+        // daemon.json is rewritten) — re-resolve the URL instead of reporting the
+        // old port as down.
+        await new Promise((res) => setTimeout(res, 300));
+        daemonUrl = resolveUrl() || daemonUrl;
+        r = await attempt(daemonUrl);
       }
-      return { mode: 'mcp-memory', connected: false, project, backend: 'mcp-memory', details: { transport, serverUrl: daemonUrl }, latency: 0 };
+      if (r.ok) return { mode: 'mcp-memory', connected: true, project, backend: 'mcp-memory', details: { transport, serverUrl: daemonUrl }, latency: r.latency };
+      return { mode: 'mcp-memory', connected: false, project, backend: 'mcp-memory', details: { transport, serverUrl: daemonUrl, reason: r.reason }, latency: 0 };
     }
 
     const jarPath = mcpCfg.jarPath || path.join(dataDir(), 'mcp', 'mcp-memory-server.jar');
