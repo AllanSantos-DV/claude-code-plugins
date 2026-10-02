@@ -596,7 +596,36 @@ async function applyConsolidation(d, report, siblings) {
     }
     report.siblings.push(s);
   }
+  // Retention: every consolidation left a full copy behind and nothing pruned them
+  // (39 dirs / 2.4 GB seen in the field). Only after a fully successful run, drop the
+  // backups that are BOTH older than BACKUP_MAX_AGE_DAYS and outside the newest
+  // BACKUP_KEEP — the safety net of recent merges stays intact.
+  if (report.siblings.every((x) => x.failed === 0)) report.prunedBackups = pruneBackups(d);
   return report;
+}
+
+const BACKUP_KEEP = 5;
+const BACKUP_MAX_AGE_DAYS = 30;
+
+/** Delete old `_boss-backup-*` dirs under d.backupBase; returns the deleted names. */
+function pruneBackups(d, { keep = BACKUP_KEEP, maxAgeDays = BACKUP_MAX_AGE_DAYS } = {}) {
+  let names;
+  try { names = d.fsx.readdirSync(d.backupBase).filter((n) => n.startsWith('_boss-backup-')); }
+  catch (err) { console.error(`[consolidate-datadirs] backup prune: cannot list ${d.backupBase}: ${err.message}`); return []; }
+  const items = [];
+  for (const n of names) {
+    try { items.push({ n, t: d.fsx.statSync(path.join(d.backupBase, n)).mtimeMs }); }
+    catch (err) { console.error(`[consolidate-datadirs] backup prune: stat ${n}: ${err.message}`); }
+  }
+  items.sort((a, b) => b.t - a.t);
+  const cutoff = d.now() - maxAgeDays * 24 * 60 * 60 * 1000;
+  const deleted = [];
+  for (const it of items.slice(keep)) {
+    if (it.t >= cutoff) continue;
+    try { d.fsx.rmSync(path.join(d.backupBase, it.n), { recursive: true, force: true }); deleted.push(it.n); }
+    catch (err) { console.error(`[consolidate-datadirs] backup prune: rm ${it.n}: ${err.message}`); }
+  }
+  return deleted;
 }
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
@@ -611,6 +640,7 @@ function formatReport(r) {
     return lines.join('\n');
   }
   if (r.backupDir) lines.push(`  backup: ${r.backupDir}`);
+  if (r.prunedBackups && r.prunedBackups.length) lines.push(`  pruned: ${r.prunedBackups.length} old backup(s) (> 30 days, beyond the newest 5)`);
   if (r.reason) lines.push(`  reason: ${r.reason}`);
   if (r.activeLocal) {
     lines.push(`  active-local push: ${r.activeLocal.pushed} pushed, ${r.activeLocal.failed} failed (${r.activeLocal.projects} project[s])`);
@@ -663,5 +693,5 @@ module.exports = {
   consolidate,
   formatReport,
   // Exposed for deterministic unit tests of the pure pieces.
-  _test: { validVec, blobToVec, safeJson, recencyKey, toRecurrence, unionArrays, backupStamp, rowToEntry, readShardDefault, listProjectsDefault, acquireLock, releaseLock, defaultPidAlive, resolveDeps },
+  _test: { validVec, blobToVec, safeJson, recencyKey, toRecurrence, unionArrays, backupStamp, rowToEntry, readShardDefault, listProjectsDefault, acquireLock, releaseLock, defaultPidAlive, resolveDeps, pruneBackups, BACKUP_KEEP, BACKUP_MAX_AGE_DAYS },
 };

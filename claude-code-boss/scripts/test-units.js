@@ -18935,6 +18935,27 @@ test('graph/dispatch: mcp-memory + unreachable daemon fails open (offline guidan
     assert(fsx._paths.has(sib), 'the sibling is left intact while locked');
   });
 
+  test('consolidate-datadirs: backup retention prunes only backups > 30 days AND beyond the newest 5 (O12: 39 dirs / 2.4 GB piled up)', () => {
+    const { pruneBackups } = CONS._test;
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune-'));
+    const DAY = 24 * 60 * 60 * 1000; const NOW = Date.now();
+    const ages = { a: 1, b: 2, c: 3, d: 40, e: 50, f: 60, g: 70, h: 80 }; // days
+    for (const [k, days] of Object.entries(ages)) {
+      const dir = path.join(base, `_boss-backup-${k}`);
+      fs.mkdirSync(dir); fs.writeFileSync(path.join(dir, 'x'), 'x');
+      const t = (NOW - days * DAY) / 1000; fs.utimesSync(dir, t, t);
+    }
+    fs.mkdirSync(path.join(base, 'claude-code-boss')); // not a backup: never touched
+    const deleted = pruneBackups({ fsx: fs, backupBase: base, now: () => NOW }).sort();
+    assertEq(deleted, ['_boss-backup-f', '_boss-backup-g', '_boss-backup-h'], 'old AND beyond the newest 5');
+    assertEq(fs.readdirSync(base).sort(), ['_boss-backup-a', '_boss-backup-b', '_boss-backup-c', '_boss-backup-d', '_boss-backup-e', 'claude-code-boss']);
+    // Recent ones are never pruned, even beyond the newest 5.
+    const base2 = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune2-'));
+    for (let i = 0; i < 8; i++) fs.mkdirSync(path.join(base2, `_boss-backup-r${i}`));
+    assertEq(pruneBackups({ fsx: fs, backupBase: base2, now: () => Date.now() }), [], 'nothing older than 30 days → nothing pruned');
+    fs.rmSync(base, { recursive: true, force: true }); fs.rmSync(base2, { recursive: true, force: true });
+  });
+
   test('consolidate-datadirs: a STALE (old-ts) lock is STOLEN, the apply proceeds, and the lock is RELEASED', async () => {
     const active = '/A/active'; const sib = '/A/sib1';
     const NOW = 1710000000000; const TTL = 30 * 60 * 1000;

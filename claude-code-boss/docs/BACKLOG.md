@@ -195,11 +195,12 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   `errorGuard.windowDays` (90 dias) da config. Testes: 11 do store saíram; o do
   `failure-detect` passou a verificar o journal de falhas (o efeito que ficou);
   fixtures do `error-guard` só com transcript. Docs: README, CONFIGURATION.
-- [ ] **O12 — 39 pastas `_boss-backup-*` (2,4 GB) acumuladas em
+- [x] **O12 — 39 pastas `_boss-backup-*` (2,4 GB) acumuladas em
   `~/.claude/plugins/data/`** (vistas em 2026-10-02, de 2026-07-18 a 2026-08-01).
   Parecem backups da consolidação de data-dirs sem poda. Verificar quem cria
   (`consolidate-datadirs`?), limitar retenção (ex.: últimos N / X dias) e oferecer
   limpeza no doctor/dashboard.
+  **RESOLVIDO em 2026-10-02**: quem cria é o `consolidate-datadirs` (backup antes de cada fusão), sem poda. Agora, após uma consolidação 100% bem-sucedida, `pruneBackups` apaga só os backups com mais de 30 dias E fora dos 5 mais novos (relatório mostra `pruned`). Teste com dirs reais e mtimes. Nota: sem pastas irmãs a consolidar a poda não roda — os 39 dirs atuais da máquina do usuário (jul–ago) ficam até a próxima fusão ou limpeza manual autorizada.
 - [x] **Proteção de sessão isolada (achado ao preparar a validação, 2026-10-02)**:
   numa config isolada o `model-router-ensure` ainda mexeria em estado da máquina
   (porta fixa do router, limpeza de env de usuário via PowerShell, shim do
