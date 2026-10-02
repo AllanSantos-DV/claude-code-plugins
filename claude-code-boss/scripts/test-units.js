@@ -16919,6 +16919,94 @@ test('brain_retrieve_context: routes retrieve-core\'s local search through kbWor
   }
 });
 
+// ─── U2/U10: error-guard policy P8 — session transcript, effective dir, edit lifts ───
+function _sfTranscript() {
+  const tp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sf-')), 't.jsonl');
+  fs.writeFileSync(tp, '');
+  let n = 0;
+  const add = (o) => fs.appendFileSync(tp, JSON.stringify(o) + '\n');
+  return {
+    tp,
+    bash(cwd, command, { fail = true, denied = false, sidechain = false } = {}) {
+      const id = `sf${n++}`;
+      add({ type: 'assistant', cwd, ...(sidechain ? { isSidechain: true } : {}), message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'Bash', input: { command } }] } });
+      const content = denied ? 'PreToolUse:Bash hook error: [error-guard] blocked' : (fail ? 'Exit code 1\nboom: cannot find module' : 'ok');
+      add({ type: 'user', cwd, ...(sidechain ? { isSidechain: true } : {}), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: fail || denied, content }] } });
+    },
+    edit(cwd) { add({ type: 'assistant', cwd, message: { role: 'assistant', content: [{ type: 'tool_use', id: `e${n++}`, name: 'Edit', input: { file_path: 'x.js' } }] } }); },
+  };
+}
+
+test('U2/U10 P8: 2 failures of the same command in the same dir with no edit → blocked, with the last output; 1 failure → not', () => {
+  const sf = require('./lib/session-failures.js'); sf._resetMemo();
+  const t = _sfTranscript(); const cwd = path.join(os.tmpdir(), 'repoA');
+  t.bash(cwd, 'npm test');
+  assertEq(sf.lookup(t.tp, 'npm test', cwd).hit, false, 'one failure is the benefit of the doubt');
+  t.bash(cwd, 'npm test');
+  const r = sf.lookup(t.tp, 'npm test', cwd);
+  assertEq(r.hit, true); assertEq(r.count, 2); assertEq(r.exitCode, 1);
+  assert(/cannot find module/.test(r.cause), r.cause);
+});
+
+test('U2/U10 P8: an Edit after the last failure lifts the block (fix attempt); a hook-denied retry never does', () => {
+  const sf = require('./lib/session-failures.js'); sf._resetMemo();
+  const t = _sfTranscript(); const cwd = path.join(os.tmpdir(), 'repoA');
+  t.bash(cwd, 'npm test'); t.bash(cwd, 'npm test');
+  t.bash(cwd, 'npm test', { denied: true });
+  assertEq(sf.lookup(t.tp, 'npm test', cwd).hit, true, 'a blocked retry is not a fix');
+  t.edit(cwd);
+  assertEq(sf.lookup(t.tp, 'npm test', cwd).hit, false, 'after an edit the re-run is allowed');
+  t.bash(cwd, 'npm test');
+  assertEq(sf.lookup(t.tp, 'npm test', cwd).hit, true, 'failed again after the edit, no new edit → blocked again');
+  t.bash(cwd, 'npm test', { fail: false });
+  // (a success can only happen via a run the guard let through, e.g. after an edit)
+  assertEq(sf.lookup(t.tp, 'npm test', cwd).hit, false, 'a success clears it');
+});
+
+test('U2/U10 P8: scope is the session and the EFFECTIVE directory; sub-agent commands do not count', () => {
+  const sf = require('./lib/session-failures.js'); sf._resetMemo();
+  const t = _sfTranscript(); const a = path.join(os.tmpdir(), 'repoA'); const b = path.join(os.tmpdir(), 'repoB');
+  t.bash(a, 'ls -la'); t.bash(a, 'ls -la');
+  assertEq(sf.lookup(t.tp, 'ls -la', a).hit, true);
+  assertEq(sf.lookup(t.tp, 'ls -la', b).hit, false, 'same command, other cwd');
+  assertEq(sf.lookup(t.tp, `cd "${b}" && ls -la`, a).hit, false, 'cd into another dir → another command');
+  t.bash(a, `cd "${b}" && git status`, { sidechain: true }); t.bash(a, `cd "${b}" && git status`, { sidechain: true });
+  assertEq(sf.lookup(t.tp, `cd "${b}" && git status`, a).hit, false, 'a sub-agent loop is not this session\'s loop');
+  const other = _sfTranscript();
+  assertEq(sf.lookup(other.tp, 'ls -la', a).hit, false, 'another session (transcript) starts clean');
+  assertEq(sf.lookup('', 'ls -la', a).hit, false, 'no transcript → abstain');
+});
+
+test('U2/U10 P8: incremental — each lookup parses only the bytes appended since the previous one; a rewrite rescans', () => {
+  const sf = require('./lib/session-failures.js'); sf._resetMemo();
+  const t = _sfTranscript(); const cwd = path.join(os.tmpdir(), 'repoA');
+  for (let i = 0; i < 200; i++) t.bash(cwd, `echo ${i}`, { fail: false });
+  t.bash(cwd, 'make'); t.bash(cwd, 'make');
+  assertEq(sf.lookup(t.tp, 'make', cwd).hit, true);
+  const orig = fs.readSync; let bytes = 0;
+  fs.readSync = function (...x) { const n = orig.apply(fs, x); bytes += n; return n; };
+  try {
+    t.edit(cwd);
+    assertEq(sf.lookup(t.tp, 'make', cwd).hit, false);
+  } finally { fs.readSync = orig; }
+  assert(bytes < 1000, `only the appended edit line was read (${bytes} bytes)`);
+  fs.writeFileSync(t.tp, ''); // compaction-like rewrite (shorter file)
+  assertEq(sf.lookup(t.tp, 'make', cwd).hit, false, 'shrunk transcript → rescanned from scratch');
+});
+
+test('U2/U10: error-guard denies through the transcript, and its message never suggests running a variation', async () => {
+  const sf = require('./lib/session-failures.js'); sf._resetMemo();
+  const eg = require('./error-guard.js');
+  const t = _sfTranscript(); const cwd = path.join(os.tmpdir(), 'repoA');
+  t.bash(cwd, 'npm run build'); t.bash(cwd, 'npm run build');
+  const out = await eg.run({ tool_name: 'Bash', tool_input: { command: 'npm run build' }, cwd, transcript_path: t.tp });
+  assertEq(out.hookSpecificOutput.permissionDecision, 'deny');
+  const why = out.hookSpecificOutput.additionalContext;
+  assert(/nesta sessão/.test(why) && /nenhum arquivo foi editado/.test(why), why);
+  assert(!/varia/i.test(why), `must not teach the bypass: ${why}`);
+  assertEq(await eg.run({ tool_name: 'Bash', tool_input: { command: 'npm run build' }, cwd }), null, 'no transcript → abstain');
+});
+
 // ─── U8: a capability pointer with nothing to name it is dropped, not "(unnamed)" ───
 test('U8: splitComposeBlocks drops nameless empty capability pointers; derives a name from the description', () => {
   const { splitComposeBlocks } = require('./brain-backend.js').__testHooks;

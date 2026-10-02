@@ -2,21 +2,23 @@
 /**
  * Error Guard — PreToolUse hook for Bash tool calls (deterministic, Phase 2 micro-1).
  *
- * DENY-on-recurring-failure: when a shell command whose canonical signature has
- * already FAILED >= threshold times within the window (recorded by
- * failure-detect into lib/error-store) is about to run AGAIN, this hook DENIES
- * it and injects the recorded cause — so the agent stops re-running a
- * known-failing command and fixes the cause first, instead of looping on it.
+ * DENY-on-recurring-failure: when a shell command already FAILED >= threshold
+ * times IN THIS SESSION, in the same directory, and no file was edited since its
+ * last failure, this hook DENIES the blind re-run and injects the last output —
+ * so the agent fixes the cause first instead of looping. Retrying never unblocks;
+ * a success or an edit (a fix attempt) does. Source of truth: the session's own
+ * transcript (lib/session-failures.js) — policy chosen by replaying real history
+ * (backlog U2/U10); it replaced a 90-day project-wide store that blocked commands
+ * from other sessions/directories and could only be lifted by a success that the
+ * block itself prevented.
  *
- * Deterministic: exact canonicalSig match — NO semantic search, NO LLM. A
- * successful run clears the sig (error-resolve.js, PostToolUse) so a fixed
- * command is no longer guarded.
+ * Deterministic: canonicalSig + effective directory — NO semantic search, NO LLM.
  *
  * Cascade:
- *   1. not Bash / no command            → abstain
- *   2. errorGuard.enabled === false     → abstain
- *   3. sig recorded, count >= threshold → deny (inject cause)
- *   4. default                          → abstain
+ *   1. not Bash / no command / no transcript_path        → abstain
+ *   2. errorGuard.enabled === false                      → abstain
+ *   3. >= threshold session failures, no edit since last → deny (inject output)
+ *   4. default                                           → abstain
  *
  * Fail-open: any error → abstain. The guard must never break the tool flow.
  *
@@ -41,8 +43,7 @@
 
 const { hookLog } = require('./hook-logger.js');
 const { runPreToolUseCli } = require('./lib/hook-io.js');
-const { dataDir } = require('./lib/data-dir.js');
-const errorStore = require('./lib/error-store.js');
+const sessionFailures = require('./lib/session-failures.js');
 const { getErrorGuard } = require('./lib/hooks-config.js');
 
 // Build a properly-formatted PreToolUse decision object per Claude Code docs.
@@ -76,16 +77,17 @@ async function run(event) {
     const cfg = getErrorGuard();
     if (cfg.enabled === false) return null;
 
-    const projectKey = errorStore.resolveProjectKey(event.cwd || process.cwd());
-    const res = errorStore.lookup(dataDir(), projectKey, command, {
+    // Session-scoped, read from the session's own transcript (lib/session-failures.js):
+    // blocks a command that failed >= threshold times in THIS session, in the SAME
+    // directory, with no file edited since its last failure. No transcript → abstain.
+    const res = sessionFailures.lookup(event.transcript_path, command, event.cwd || process.cwd(), {
       threshold: cfg.threshold,
-      windowDays: cfg.windowDays,
     });
 
     if (res.hit) {
       const exit = res.exitCode === null || res.exitCode === undefined ? '?' : res.exitCode;
-      const cause = res.cause ? `Causa registrada: ${res.cause}. ` : '';
-      const reason = `[error-guard] \`${res.sig}\` já falhou ${res.count}× (exit ${exit}) neste projeto. ${cause}NÃO repita o mesmo comando — corrija a causa (ou rode uma variação que resolva) antes de tentar de novo.`;
+      const cause = res.cause ? `Última saída: ${res.cause}. ` : '';
+      const reason = `[error-guard] \`${res.sig}\` já falhou ${res.count}× nesta sessão (exit ${exit}) e nenhum arquivo foi editado desde a última falha. ${cause}Rodar de novo do mesmo jeito vai falhar igual: corrija a causa primeiro (edite o que for preciso) e então rode.`;
       return decision('deny', { additionalContext: reason, permissionDecisionReason: reason });
     }
 
