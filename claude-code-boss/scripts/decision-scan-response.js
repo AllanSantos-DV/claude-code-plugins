@@ -92,9 +92,10 @@ async function run(event) {
     snippet: span.slice(0, 240),
     fullLen: span.length,
     repoUrl: null,
+    sessionId: sid,
     ts: Date.now(),
   });
-  if (state.pending.length > 10) state.pending = state.pending.slice(-10);
+  if (state.pending.length > 50) state.pending = state.pending.slice(-50);
   writeJsonSafe(PENDING, state);
 
   return {};

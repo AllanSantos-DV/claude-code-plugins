@@ -9,8 +9,7 @@
  * the tool dedups/merges (bumping recurrence). Throttled so it doesn't nag.
  */
 'use strict';
-const fs = require('fs');
-const { writeJsonAtomic } = require('./lib/atomic-write.js');
+const sessionCounter = require('./lib/session-counter.js');
 const path = require('path');
 
 const { dataDir } = require('./lib/data-dir.js');
@@ -27,15 +26,10 @@ const REASON =
   'repeating), capture it via the `capture_lesson` MCP tool (type: "pattern"). ' +
   'Only durable, generalizable patterns — skip one-offs.';
 
-function tick() {
-  let n = 0;
-  try { n = JSON.parse(fs.readFileSync(STATE, 'utf-8')).n || 0; } catch { /* fresh */ }
-  n += 1;
-  try {
-    fs.mkdirSync(path.dirname(STATE), { recursive: true });
-    writeJsonAtomic(STATE, { n });
-  } catch { /* best effort */ }
-  return n;
+// Per session (Phase G: one daemon serves all sessions — a global counter let one
+// session's Stops fire another's reminder).
+function tick(sid) {
+  return sessionCounter.tick(STATE, sid);
 }
 
 async function run(event) {
@@ -44,7 +38,7 @@ async function run(event) {
   // Anti-loop guard: if Claude already retried this hook, allow stop.
   // https://code.claude.com/docs/en/hooks#stop_hook_active
   if (input.stop_hook_active) return {};
-  const n = tick();
+  const n = tick(input.session_id || input.sessionId);
   if (n % EVERY !== 0) return {};
   metrics.fire('nudge.emitted', { kind: 'pattern' }, { sessionId: input.session_id || input.sessionId, cwd: input.cwd });
   return { block: true, reason: REASON };

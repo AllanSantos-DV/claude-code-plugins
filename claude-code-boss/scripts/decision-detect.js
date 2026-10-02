@@ -173,10 +173,13 @@ async function run(event) {
     snippet: msg.slice(0, 240),
     fullLen: msg.length,
     repoUrl: getRepoUrl(event.cwd || undefined),
+    // Owner session: decision-promote surfaces an entry only in the session that
+    // produced it (the file is shared by every session the daemon serves).
+    sessionId: event.session_id || event.sessionId || null,
     ts: Date.now(),
   });
   // Cap pending to last 10 (defensive).
-  if (pending.pending.length > 10) pending.pending = pending.pending.slice(-10);
+  if (pending.pending.length > 50) pending.pending = pending.pending.slice(-50);
   writeJsonSafe(PENDING, pending);
 }
 
