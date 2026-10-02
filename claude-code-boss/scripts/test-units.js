@@ -15298,14 +15298,18 @@ test('dashboard.writeRouterOverride: fixedEndpoint é PRESERVADO ao trocar só o
       assertEq(out.byok.fixedEndpoint, true);
 
       // Trocar SO o modo nao pode apagar fixedEndpoint ja gravado (preserve-on-absent,
-      // ADR-010) — mas `enabled` NAO tem essa protecao (comportamento pre-existente,
-      // ver docs/BACKLOG.md): checar os dois aqui pega um copy-paste que trocasse as
-      // duas logicas entre si.
+      // ADR-010) — e desde 2026-10-02 `enabled` tambem e preservado (antes um byok
+      // parcial desligava o BYOK; era o defeito anotado no backlog).
       dash.writeRouterOverride({ byok: { mode: 'on-limit' } });
       out = JSON.parse(fs.readFileSync(gp, 'utf-8'));
       assertEq(out.byok.mode, 'on-limit');
       assertEq(out.byok.fixedEndpoint, true, 'fixedEndpoint sobreviveu ao toggle de outro campo');
-      assertEq(out.byok.enabled, false, 'enabled NAO sobrevive (pre-existente) — distingue das duas logicas');
+      assertEq(out.byok.enabled, true, 'enabled sobrevive a um byok parcial (preserve-on-absent)');
+      // Sem `mode` no envio, o modo gravado fica (antes voltava a on-limit).
+      dash.writeRouterOverride({ byok: { mode: 'always' } });
+      dash.writeRouterOverride({ byok: { classifyRemote: true } });
+      out = JSON.parse(fs.readFileSync(gp, 'utf-8'));
+      assertEq([out.byok.enabled, out.byok.mode], [true, 'always'], 'edicao parcial preserva enabled e mode');
     } finally {
       process.env.CLAUDE_PLUGIN_DATA = saved;
       delete require.cache[require.resolve('./dashboard.js')];
