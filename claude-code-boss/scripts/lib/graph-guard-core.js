@@ -65,13 +65,34 @@ function isNarrowTarget(tok) {
  * @param {string} command
  * @returns {null | {tool: 'grep'|'rg'|'find', pattern: string}}
  */
+/**
+ * The command up to its first UNQUOTED single `|`, split into shell words
+ * (a quoted run is one word, quotes kept so callers can strip them). Splitting on
+ * every `|` cut `grep -rn "a\|b" file1 file2` inside its own pattern, dropping the
+ * file targets and flagging a scoped search as broad (backlog U12).
+ */
+function _firstPipelineWords(cmd) {
+  const words = [];
+  let cur = '';
+  let q = null;
+  for (let i = 0; i < cmd.length; i++) {
+    const c = cmd[i];
+    if (q) { cur += c; if (c === q) q = null; continue; }
+    if (c === '"' || c === "'") { q = c; cur += c; continue; }
+    if (c === '|' && cmd[i + 1] !== '|' && cmd[i - 1] !== '|') break;
+    if (/\s/.test(c)) { if (cur) words.push(cur); cur = ''; continue; }
+    cur += c;
+  }
+  if (cur) words.push(cur);
+  return words;
+}
+
 function matchBroadBashSearch(command) {
   const cmd = String(command || '').trim();
   if (!cmd) return null;
   // Only inspect the FIRST pipeline segment — `foo | grep x` filters foo's
   // output in-memory; it never walks the filesystem.
-  const first = cmd.split(/(?<!\|)\|(?!\|)/)[0].trim();
-  const toks = first.split(/\s+/);
+  const toks = _firstPipelineWords(cmd);
   const bin = (toks[0] || '').replace(/^.*[\\/]/, '');
 
   if (bin === 'grep') {

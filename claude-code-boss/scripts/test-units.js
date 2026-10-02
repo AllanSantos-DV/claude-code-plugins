@@ -18605,6 +18605,10 @@ test('graph-guard: bash heuristics flag only the machine-hurting shapes', () => 
   assertEq(ggCore.matchBroadBashSearch('find scripts -name "*.js"'), null, 'find in a subdir passes');
   assertEq(ggCore.matchBroadBashSearch('git log --oneline | grep fix'), null, 'pipe-fed grep never walks the fs');
   assertEq(ggCore.matchBroadBashSearch('npm test'), null, 'non-search commands pass');
+  // U12: a `\|` inside the quoted pattern is not a pipe — the file targets stay.
+  assertEq(ggCore.matchBroadBashSearch('grep -rn "error-resolve\\|windowDays" a/README.md docs/X.md 2>/dev/null | head'), null, 'quoted alternation + explicit files = scoped');
+  assertEq(ggCore.matchBroadBashSearch('grep -rn "a b|c" scripts/lib'), null, 'quoted pattern with space and pipe stays one word');
+  assert(ggCore.matchBroadBashSearch('grep -rn "a\\|b" . | head'), 'still broad at . with a quoted alternation');
 });
 
 test('graph-guard: redirect reason teaches the graph→scoped-grep two-step + the escape hatch', () => {
