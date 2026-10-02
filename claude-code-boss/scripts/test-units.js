@@ -2659,6 +2659,27 @@ test('brain-store: recordCitation persists + bumps when SQLite available', async
   }
 });
 
+test('O1: retrieval-feedback records the citation in the KB scope the entry was RETRIEVED from (not basename(cwd))', async () => {
+  const store = require('./brain-store.js');
+  const journal = require('./lib/retrieval-journal.js');
+  const scope = `ccb-o1/kb-${Date.now()}`;
+  const id = `o1-${Date.now()}`;
+  const title = 'Autorizou escopo grave mesmo escopo persistido';
+  await store.init({ project: scope });
+  if (store.getStorageType() !== 'sqlite') return; // JSON fallback: citations are a no-op by design
+  await store.save({ id, type: 'lesson', title, summary: 'S', content: { text: 'x' }, tags: [], confidence: 0.5 });
+  const sid = `o1-sid-${Date.now()}`;
+  journal.appendEntry(sid, { retrievalId: journal.newRetrievalId(), ts: Date.now(), sid, tool: 'UserPromptSubmit', project: scope, returnedIds: [id], returnedTitles: [title] });
+  const tdir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-o1-'));
+  const tpath = path.join(tdir, 't.jsonl');
+  fs.writeFileSync(tpath, JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Segui a lição: autorizou o escopo, grave o mesmo escopo persistido.' }] } }) + '\n');
+  // cwd = a folder whose basename is NOT the scope (the old code wrote there).
+  await rfeedback.run({ session_id: sid, cwd: process.env.CLAUDE_PLUGIN_DATA, transcript_path: tpath });
+  await store.init({ project: scope });
+  assertEq(store.recordCitation(id), 2, 'run() already counted one citation in the entry\'s own scope');
+  assertEq(journal.readEntries(sid).length, 0, 'journal cleared');
+});
+
 // ─── active-research-detect (Plan #4) ────────────────────────────────────────
 const ardetect = require('./active-research-detect.js');
 const arstate = require('./lib/active-research-state.js');

@@ -164,7 +164,9 @@ function findCitations(journalEntries, replyText) {
       const m = citationMatch(titles[i] || '', replyText);
       if (m.cited) {
         seen.add(id);
-        out.push({ id, title: titles[i] || '', matchedTokens: m.matchedTokens });
+        // `project` = the KB scope the entry was RETRIEVED from (journal), so the
+        // citation is recorded where the entry actually lives.
+        out.push({ id, title: titles[i] || '', matchedTokens: m.matchedTokens, project: ent.project || null });
       }
     }
   }
@@ -177,6 +179,7 @@ async function run(event) {
   const ev = event || {};
   const sid = ev.session_id || ev.sessionId || 'default';
   const transcriptPath = ev.transcript_path || ev.transcriptPath || '';
+  // Metrics are a local per-folder store (basename, like every other metrics writer).
   const project = ev.cwd ? path.basename(ev.cwd) : 'default';
 
   // Always sweep stale journal entries (>1h) regardless of outcome.
@@ -197,12 +200,24 @@ async function run(event) {
     try {
       const store = require('./brain-store.js');
       const metrics = require('./lib/metrics.js');
-      await store.init({ project });
       if (injectedIds.size) metrics.fire('retrieve.injected', { count: injectedIds.size }, { project, sessionId: sid });
+      // KB citations go to the scope each entry was retrieved from. It used to be
+      // basename(cwd): the UPDATE then hit a shard without the entry and silently
+      // changed 0 rows, so citations of real lessons were never counted. No scope
+      // (folder without a project id = memory off) → nothing recorded.
+      const fallback = require('./lib/project-id.js').tryResolveProjectId({ cwd: ev.cwd });
+      const byScope = new Map();
       for (const c of cited) {
-        store.recordCitation(c.id);
-        metrics.fire('retrieve.cited', { entryId: c.id }, { project, sessionId: sid });
+        const scope = c.project || fallback;
+        if (!scope) continue;
+        if (!byScope.has(scope)) byScope.set(scope, []);
+        byScope.get(scope).push(c.id);
       }
+      for (const [scope, ids] of byScope) {
+        await store.init({ project: scope });
+        for (const id of ids) store.recordCitation(id);
+      }
+      for (const c of cited) metrics.fire('retrieve.cited', { entryId: c.id }, { project, sessionId: sid });
     } catch (err) {
       console.error(`[retrieval-feedback] recordCitation failed: ${err.message}`);
     }
