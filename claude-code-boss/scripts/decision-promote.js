@@ -24,6 +24,7 @@ const { dataDir } = require('./lib/data-dir.js');
 const DATA_DIR = dataDir();
 const PENDING = path.join(DATA_DIR, '.runtime', 'decision-pending.json');
 const PROMOTED = path.join(DATA_DIR, '.runtime', 'decision-promoted-sha.json');
+const OTHERS_TTL_MS = 24 * 60 * 60 * 1000; // another session's unconsumed entries expire after a day
 const PROMOTED_LRU = 50;
 
 function readJsonSafe(p, fallback) {
@@ -81,21 +82,32 @@ async function run(event) {
   if (input.stop_hook_active) return {};
 
   const state = readJsonSafe(PENDING, { pending: [] });
-  const pending = Array.isArray(state.pending) ? state.pending : [];
-  if (pending.length === 0) return {};
+  const all = Array.isArray(state.pending) ? state.pending : [];
+  if (all.length === 0) return {};
+  // The file is shared by every session the daemon serves: surface ONLY this
+  // session's entries (another session's commits are not this turn's to capture),
+  // keep the other sessions' fresh entries for their own Stop, drop the stale/legacy.
+  const sid = input.session_id || input.sessionId || null;
+  const now = Date.now();
+  const pending = all.filter(p => sid && p.sessionId === sid);
+  const others = all.filter(p => p.sessionId && p.sessionId !== sid && now - (p.ts || 0) < OTHERS_TTL_MS);
+  if (pending.length === 0) {
+    if (others.length !== all.length) writeJsonSafe(PENDING, { pending: others });
+    return {};
+  }
 
   // Filter out anything already promoted (defensive — detect already filters).
   const promotedSet = new Set(readJsonSafe(PROMOTED, []));
   const fresh = pending.filter(p => p.key && !promotedSet.has(p.key));
   if (fresh.length === 0) {
-    // Nothing fresh — clear stale pending and exit.
-    writeJsonSafe(PENDING, { pending: [] });
+    // Nothing fresh — drop this session's stale entries and exit.
+    writeJsonSafe(PENDING, { pending: others });
     return {};
   }
 
   // Promote first (so a hook retry doesn't double-nudge) then emit.
   promote(fresh.map(p => p.key));
-  writeJsonSafe(PENDING, { pending: [] });
+  writeJsonSafe(PENDING, { pending: others });
 
   for (const item of fresh) {
     metrics.fire('nudge.emitted', { kind: 'decision', decisionKind: item.kind, key: item.key, repoUrl: item.repoUrl },

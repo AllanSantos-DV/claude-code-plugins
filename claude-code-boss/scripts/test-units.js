@@ -13106,6 +13106,22 @@ test('http-daemon: unknown mcp-session-id → 404 (client re-initializes); no id
   }
 });
 
+test('session-counter: per-session cadence, TTL prune, size cap (cross-session leak fix)', () => {
+  const sc = require('./lib/session-counter.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sc-'));
+  const file = path.join(dir, '.runtime', 'c.json');
+  const t0 = 1_000_000;
+  assertEq(sc.tick(file, 'A', t0), 1);
+  assertEq(sc.tick(file, 'A', t0 + 1), 2);
+  assertEq(sc.tick(file, 'B', t0 + 2), 1, 'B does not inherit the count of A');
+  assertEq(sc.tick(file, 'A', t0 + sc.TTL_MS + 10), 1, 'a stale session restarts');
+  for (let i = 0; i < sc.MAX_SESSIONS + 5; i++) sc.tick(file, 's' + i, t0 + sc.TTL_MS + 20 + i);
+  const state = JSON.parse(fs.readFileSync(file, 'utf8'));
+  assertEq(Object.keys(state.sessions).length, sc.MAX_SESSIONS, 'capped');
+  assert(!state.sessions.s0 && state.sessions['s' + (sc.MAX_SESSIONS + 4)], 'oldest evicted, newest kept');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('self-review-retrieve.retrieveViaIndex: lookup → store.get wiring + score merge', async () => {
   // In-memory fakes via DI: verifies the orchestration (index.lookup → per-hit
   // store.get → attach score) without touching the real singletons/fs, so it's
@@ -15633,12 +15649,19 @@ test('atomic-write: broadened shared-snapshot writers route through atomic-write
   const writers = [
     'auto-continue-stop.js', 'brain-graph.js', 'brain-index.js', 'brain-index-native.js',
     'brain-health.js', 'session-whitelist.js', 'decision-detect.js', 'decision-promote.js',
-    'decision-scan-response.js', 'model-router-ensure.js', 'pattern-detect.js', 'refine-research.js',
+    'decision-scan-response.js', 'model-router-ensure.js', 'lib/session-counter.js',
     'self-review.js', 'session-summary.js', 'skill-success-detect.js', 'verify-nudge.js',
     'research-followup-detect.js', 'curation-stop.js', 'hook-logger.js', 'project-snapshot.js',
     'doctor-advisory.js', 'review-checklist-advisory.js', 'tuning-advisory.js',
     'conversation-ingest.js', 'curation-session.js', 'lib/hooks-config.js', 'dashboard.js',
   ];
+  // Cadence writers persist ONLY through lib/session-counter.js (per-session state),
+  // which is itself held to the atomic-write rule above.
+  for (const rel of ['pattern-detect.js', 'refine-research.js']) {
+    const src = fs.readFileSync(path.join(SCRIPTS, rel), 'utf-8');
+    assert(/require\(['"]\.\/lib\/session-counter\.js['"]\)/.test(src) && !/writeFileSync/.test(src),
+      `${rel} must persist through lib/session-counter.js only`);
+  }
   for (const rel of writers) {
     const src = fs.readFileSync(path.join(SCRIPTS, rel), 'utf-8');
     assert(/require\(['"](\.\/|\.\/lib\/)atomic-write\.js['"]\)/.test(src),

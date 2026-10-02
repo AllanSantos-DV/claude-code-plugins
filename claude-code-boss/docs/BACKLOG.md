@@ -332,6 +332,19 @@ real (2.29.0, porta 38217) seguiu intacto. Resultados (Claude Code 2.1.283):
   sleep pedido). Suspeita: hooks `mcp_tool` esperando o timeout enquanto o servidor
   está "connecting". Medir quanto cada hook espera nesse estado.
 
+- [x] **G18 — Stop de uma sessão mostrava commits de OUTRA sessão (relato do usuário;
+  achado e corrigido na hora)**. `decision-detect`/`decision-scan-response` gravavam em
+  `.runtime/decision-pending.json` (um arquivo para o daemon inteiro) sem dono, e o
+  `decision-promote` do Stop de qualquer sessão exibia e esvaziava tudo. Correção: cada
+  entrada leva `sessionId`; o Stop só exibe as da própria sessão, mantém as das outras
+  (expiram em 24 h) e descarta as legadas sem dono; teto 10 → 50. Mesma classe: a
+  cadência "a cada N Stops" de `pattern-detect`/`refine-research` era um contador global
+  (os Stops de uma sessão disparavam o lembrete em outra) → `lib/session-counter.js`
+  (por sessão, TTL 24 h, teto 200). Varredura dos outros estados em `.runtime`: os
+  demais já são por sessão ou são throttles da máquina (doctor/tuning/consolidate).
+  Testes: hooks com duas sessões no mesmo data dir (a outra não vê nem consome; a dona
+  vê e consome), cadência por sessão, unit do `session-counter`. Units 1303/0, hooks 120/0.
+
 ### UX / ruído visto usando a ferramenta (sessão de 2026-10-02)
 
 - [x] **U1 — `curation-guard` redireciona comando composto para script que não o

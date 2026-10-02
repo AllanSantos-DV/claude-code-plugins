@@ -10,8 +10,7 @@
  * https://docs.claude.com/en/docs/claude-code/hooks#stop-hook-active
  */
 'use strict';
-const fs = require('fs');
-const { writeJsonAtomic } = require('./lib/atomic-write.js');
+const sessionCounter = require('./lib/session-counter.js');
 const path = require('path');
 
 const { dataDir } = require('./lib/data-dir.js');
@@ -28,15 +27,10 @@ const REASON =
   '(WebSearch, WebFetch). Do NOT wait for the user — resolve the gaps ' +
   'yourself, then proceed with the task.';
 
-function tick() {
-  let n = 0;
-  try { n = JSON.parse(fs.readFileSync(STATE, 'utf-8')).n || 0; } catch { /* fresh */ }
-  n += 1;
-  try {
-    fs.mkdirSync(path.dirname(STATE), { recursive: true });
-    writeJsonAtomic(STATE, { n });
-  } catch { /* best effort */ }
-  return n;
+// Per session (Phase G: one daemon serves all sessions — a global counter let one
+// session's Stops fire another's reminder).
+function tick(sid) {
+  return sessionCounter.tick(STATE, sid);
 }
 
 async function run(event) {
@@ -47,7 +41,7 @@ async function run(event) {
   // Profile gate: silenced in standard/free (dev-only nag).
   if (!hooksCfg.getRefineResearch().enabled) return {};
 
-  const n = tick();
+  const n = tick(ev.session_id || ev.sessionId);
   if (n % EVERY !== 0) return {};
 
   return { block: true, reason: REASON };

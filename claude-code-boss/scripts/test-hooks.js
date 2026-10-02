@@ -1578,6 +1578,35 @@ const TESTS = [
       if (!fs.existsSync(pendingPath)) return `decision-detect must have stashed a pending decision at ${pendingPath}`;
       const pending = JSON.parse(fs.readFileSync(pendingPath, 'utf-8'));
       if (!Array.isArray(pending.pending) || pending.pending.length === 0) return `decision-pending.json has no entries: ${JSON.stringify(pending)}`;
+      if (!pending.pending.every(p => p.sessionId === SESSION)) return `pending entries must carry the producing session id: ${JSON.stringify(pending.pending)}`;
+      return null;
+    },
+  },
+  {
+    // Cross-session leak (seen live): one shared daemon/data dir, so ANOTHER
+    // session's Stop used to surface (and clear) this session's commit.
+    name: 'decision-promote  [Stop of ANOTHER session → {} and the entry stays]',
+    script: 'decision-promote.js',
+    payload: { hook_event_name: 'Stop', session_id: 'some-other-session', cwd: _pubMerge.cwd },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _pubMerge.dataDir }),
+    validateWithEnv: (r, env) => {
+      if (!r.parsed || Object.keys(r.parsed).length !== 0) return `another session must not see this commit, got: ${JSON.stringify(r.parsed)}`;
+      const pending = JSON.parse(fs.readFileSync(path.join(env.CLAUDE_PLUGIN_DATA, '.runtime', 'decision-pending.json'), 'utf-8'));
+      if (!pending.pending.some(p => p.sessionId === SESSION)) return `the owner session's entry must survive another session's Stop: ${JSON.stringify(pending)}`;
+      return null;
+    },
+  },
+  {
+    name: 'decision-promote  [Stop of the OWNER session → surfaces its commit, consumes it]',
+    script: 'decision-promote.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION, cwd: _pubMerge.cwd },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _pubMerge.dataDir }),
+    validateWithEnv: (r, env) => {
+      if (!r.parsed || r.parsed.decision !== 'block' || !/commit/i.test(r.parsed.reason || '')) return `owner must be nudged about its commit, got: ${JSON.stringify(r.parsed)}`;
+      const pending = JSON.parse(fs.readFileSync(path.join(env.CLAUDE_PLUGIN_DATA, '.runtime', 'decision-pending.json'), 'utf-8'));
+      if (pending.pending.some(p => p.sessionId === SESSION)) return `the owner's entries must be consumed: ${JSON.stringify(pending)}`;
       return null;
     },
   },
@@ -2216,10 +2245,28 @@ const TESTS = [
       const runtimeDir = path.join(tmpData, '.runtime');
       fs.mkdirSync(runtimeDir, { recursive: true });
       // n=5 → next tick would fire in dev; standard must suppress before ticking.
-      fs.writeFileSync(path.join(runtimeDir, 'pattern-detect-state.json'), JSON.stringify({ n: 5 }));
+      fs.writeFileSync(path.join(runtimeDir, 'pattern-detect-state.json'), JSON.stringify({ sessions: { [SESSION]: { n: 5, ts: Date.now() } } }));
       return { CLAUDE_PLUGIN_ROOT: tmpRoot, CLAUDE_PLUGIN_DATA: tmpData };
     },
     validate: r => Object.keys(r.parsed || {}).length === 0 ? null : `expected {} (standard disables pattern), got: ${JSON.stringify(r.parsed)}`,
+  },
+  {
+    // Cadence is PER SESSION (Phase G: one daemon serves all sessions): another
+    // session at n=5 must not make the 1st Stop of THIS session fire.
+    name: 'pattern-detect    [profile=dev+ANOTHER session at n=5→this session silent]',
+    script: 'pattern-detect.js',
+    payload: { hook_event_name: 'Stop', session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => {
+      const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-u1root-pd3-'));
+      fs.mkdirSync(path.join(tmpRoot, 'config'), { recursive: true });
+      fs.writeFileSync(path.join(tmpRoot, 'config', 'hooks-config.json'), JSON.stringify({ profile: 'dev' }));
+      const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-u1data-pd3-'));
+      fs.mkdirSync(path.join(tmpData, '.runtime'), { recursive: true });
+      fs.writeFileSync(path.join(tmpData, '.runtime', 'pattern-detect-state.json'), JSON.stringify({ sessions: { 'other-session': { n: 5, ts: Date.now() } } }));
+      return { CLAUDE_PLUGIN_ROOT: tmpRoot, CLAUDE_PLUGIN_DATA: tmpData };
+    },
+    validate: r => (r.parsed && Object.keys(r.parsed).length === 0) ? null : `the count of another session leaked into this one: ${JSON.stringify(r.parsed)}`,
   },
   {
     name: 'pattern-detect    [profile=dev+n=5→fires→block]',
@@ -2233,7 +2280,7 @@ const TESTS = [
       const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-u1data-pd2-'));
       const runtimeDir = path.join(tmpData, '.runtime');
       fs.mkdirSync(runtimeDir, { recursive: true });
-      fs.writeFileSync(path.join(runtimeDir, 'pattern-detect-state.json'), JSON.stringify({ n: 5 }));
+      fs.writeFileSync(path.join(runtimeDir, 'pattern-detect-state.json'), JSON.stringify({ sessions: { [SESSION]: { n: 5, ts: Date.now() } } }));
       return { CLAUDE_PLUGIN_ROOT: tmpRoot, CLAUDE_PLUGIN_DATA: tmpData };
     },
     validate: r => {
