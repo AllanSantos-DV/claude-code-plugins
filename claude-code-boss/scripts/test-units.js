@@ -16714,6 +16714,22 @@ test('brain_retrieve_context: routes retrieve-core\'s local search through kbWor
   }
 });
 
+// ─── U9: active-research fires on research ASKS, not on any lib name ──────────
+test('U9: a lib mention alone (or with a version) no longer fires; an explicit research ask does; names inside paths are not mentions', () => {
+  const ar = require('./active-research-detect.js');
+  const T = ar.DEFAULTS.triggers;
+  const fires = (t) => ar.shouldFire(ar.detectSignals(t, T), ar.DEFAULTS.fireThreshold);
+  assertEq(fires('verifica o docker'), false, 'lib alone (real field case)');
+  assertEq(fires('Teste rápido do MCP smart-tool'), false, 'the U9 field case');
+  assertEq(fires('roda o claude plugin update de novo v2'), false, 'lib + version (a v1/v2 in a name) is context, not an ask');
+  assertEq(fires('pesquisa o preço de mercado pra ter embasamento'), true, 'explicit research ask');
+  assertEq(fires('qual a melhor forma de usar o docker compose?'), true, 'best-practice ask + lib');
+  assertEq(fires('qual a melhor forma de integrar com a api?'), true, 'best-practice + integration (unchanged)');
+  const kinds = (t) => ar.detectSignals(t, T).map(s => s.kind);
+  assert(!kinds('In C:\\Users\\a\\Desktop\\claude-code (plugin)').includes('libMention'), 'claude inside a path is not a Claude mention');
+  assert(!kinds('edit scripts/research-followup-detect.js').includes('researchAsk'), 'research inside a file name is not an ask');
+});
+
 // ─── U11: shells-config._tokenize respects quotes ──────────────────────────────
 test('U11: a curated script name INSIDE a quoted string is not an invocation; a quoted path still is; Windows paths survive', () => {
   const sc = require('./shells-config.js');

@@ -45,7 +45,8 @@
       "libMention": true,
       "versionMention": true,
       "bestPracticeAsk": true,
-      "integrationMention": true
+      "integrationMention": true,
+      "researchAsk": true
     },
     "maxPerSession": 3,
     "cooldownMinutes": 60,
