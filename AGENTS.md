@@ -35,6 +35,39 @@ The `.gitignore` already enforces all the above. If you add a new dev workflow t
 - **Public repo stays minimal** — easy to audit, easy to understand.
 - **Your dev loop is yours** — slash commands, install scripts, task maps can evolve freely without PR review.
 
+## Branch policy (strict)
+
+At rest the repo has exactly **two** branches: `develop` (integration/testing)
+and `main` (what gets released). While something is being worked on there is
+**one** extra work branch — `feat/<topic>` or `fix/<topic>`, cut from `develop`.
+
+1. Cut the work branch from `develop`; commit each fix as its own minimal,
+   tested commit on that branch.
+2. When done: merge into `develop`, test there (including install in an isolated
+   / real environment), then merge `develop` into `main` to release.
+3. Once merged and validated, **delete the work branch** (local and remote) and
+   any worktree that used it. No parked `claude/*`, `other-machine/*`,
+   `openhands/*`, `dev`, `release/*` leftovers.
+4. Never delete a branch or worktree with unmerged commits or uncommitted work
+   without first salvaging it (patch under `docs/plans/salvage/`, which is
+   gitignored) and logging it in the backlog.
+
+Releases are batched: small fixes do **not** each get a release. They accumulate
+on the work branch / `develop` (each one tested on its own) and ship together.
+
+## Findings policy (strict)
+
+Nothing found during a review, a test or a fix is left unrecorded — whether it is
+pre-existing or introduced now does not matter, and there is no need to prove
+which.
+
+- **In scope of the current work** → fix it now, with a test, and log it in
+  `claude-code-boss/docs/BACKLOG.md` as *found and fixed immediately*.
+- **Out of scope** → log it in `claude-code-boss/docs/BACKLOG.md` (what, where
+  `file:line`, how it was seen, proposed fix) before moving on.
+- Backlog items being worked are marked in progress, then marked resolved only
+  after the test/validation that proves the fix has run.
+
 ## Release flow
 
 Use the slash command **`/release`** (defined in `.claude/commands/release.md`). It enforces:

@@ -2,8 +2,102 @@
 
 Pontos de melhoria identificados fora do escopo do trabalho corrente (ver política de sessão: "ponto óbvio de melhoria encontrado FORA do escopo atual não é implementado na hora").
 
+## Fase G — hardening do daemon de hooks (rumo à 3.0.0)
+
+Revisão de 2026-10-02 sobre a Fase G (ADR-015) não lançada. Branch de trabalho:
+`feat/hook-daemon-transport`. Cada item = um commit mínimo com teste; só vira
+`[x]` depois da validação que prova a correção. Legenda: `[ ]` pendente, `[~]` em
+andamento, `[x]` resolvido. Medição de referência (servidor de thread única
+imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
+`PreToolUse` esperam **3,1 s** (p50 = p95) e o RSS vai a **1,16 GB**.
+
+### Performance / robustez do daemon
+
+- [ ] **G1 — `Stop` lê o transcript inteiro, síncrono, até 3×, na thread do daemon.**
+  `retrieval-feedback.js:70-73` (`readLastAssistantText`, também usado por
+  `decision-scan-response.js:74`), `retrieval-feedback.js:140-143`
+  (`readLastUserText`) e `conversation-ingest.js:109` (lê tudo e só depois
+  `clampRaw`). ~200 ms por leitura de 90 MB; no daemon isso trava os hooks de
+  TODAS as sessões. Fix: leitura do final do arquivo com teto de bytes (já existe
+  `_readTail` em `capture-dispatch.js:86`) e `conversation-ingest` lendo só
+  `SAFE_MAX_CHARS` do fim.
+- [ ] **G2 — SQLite síncrono dos hooks na thread principal do daemon.** As tools
+  do KB passam pelo pool de workers (ADR-014), os hooks não: `metrics.fire` →
+  `metrics-store.js`, `brain-store.js` em `retrieval-feedback`, `session-summary`,
+  `skill-success-detect`, `research-followup-detect`, `self-review`. Com
+  `busy_timeout = 5000` (`brain-store.js:194`, `metrics-store.js:121`) um worker
+  gravando para o daemon inteiro por até 5 s. Fix: separar fila rápida (guards de
+  `PreToolUse`, `graph-guard`) da fila pesada (`Stop`, `PostToolUse`, SQLite) fora
+  da thread principal.
+- [ ] **G3 — `self-review` vaza 1 sessão MCP por `Stop` com edição.**
+  `lib/self-review-retrieve.js:143` faz `initialize` no próprio daemon e nunca
+  encerra (sem `DELETE`/`terminateSession`); o slot só volta no reaper de 30 min
+  (`http-daemon.js:24`). Com 6–8 sessões os 50 slots (`MAX_SESSIONS`) esgotam e
+  sessão nova do Claude Code recebe 429 → sem hooks e sem tools do Brain. Fix:
+  dentro do daemon chamar a busca in-process; fora dele, encerrar a sessão.
+- [ ] **G4 — classe "async-elegível" não é fire-and-forget.** `hook-tools.js:84-88`
+  faz `await m.run(ev)` antes de responder, contra a ADR-015 §Decisão 1. Fix:
+  responder `{}` na hora e enfileirar o trabalho.
+- [ ] **G5 — sem prazo, cancelamento nem limite de concorrência por hook.** Hook
+  que estoura o `timeout` do `hooks.json` continua rodando no daemon; `Stop`s se
+  acumulam sem teto. (Substitui o item de timeout em "Arquitetura".) Fix: prazo
+  interno abaixo do timeout declarado; `Stop` serializado por sessão com coalescência.
+- [ ] **G6 — `SubagentStart` ainda sobe 1 `node` por subagente** (`policy-inject.js`,
+  `hooks/hooks.json:21-31`) — exatamente o cenário de fan-out. `mcp_tool` funciona
+  nesse evento. Fix: migrar para `mcp_tool`.
+- [ ] **G7 — `UserPromptSubmit` sobe 2 `node` por prompt** (`model-router-ensure` +
+  `user-prompt-submit-dispatcher`, `hooks/hooks.json:240-254`) e roda também em
+  cada `<task-notification>` de agente em background. Fix: um só spawn, saída
+  rápida antes de carregar módulos pesados, throttle por sessão para as checagens
+  de saúde, e pular prompts sintéticos.
+- [ ] **G8 — não há como subir um daemon isolado para bench/teste.**
+  `servers/brain-server/index.js` publica o ponteiro global de data-dir
+  (`publishAndFollow`) e consolida pastas vizinhas no boot. Fix: modo
+  `--isolated` (data-dir e porta próprios, sem ponteiro global, sem consolidação).
+- [ ] **G9 — bench de aceite realista** (depende de G8): 6–8 sessões MCP, transcripts
+  grandes reais, `Stop` concorrente com `PreToolUse` e indexação rodando. Critério:
+  p95 de `PreToolUse` < 100 ms durante `Stop`s e RSS do daemon estável.
+
+### UX / ruído visto usando a ferramenta (sessão de 2026-10-02)
+
+- [ ] **U1 — `curation-guard` redireciona comando composto para script que não o
+  cobre** (`git log …; git diff --shortstat; git show --stat` → `git-log-branch.mjs`,
+  sem data nem diffstat) e sugere caminho relativo (`.vscode/scripts/…`) que
+  quebra fora da raiz do repo.
+- [ ] **U2 — `error-guard` bloqueia por falhas registradas em OUTRO cwd** (falhou em
+  `claude-code-boss/`, bloqueou na raiz onde funcionaria): a chave ignora o cwd.
+- [ ] **U3 — script curado proíbe pipe e trunca a saída ("--full to see")**,
+  forçando nova execução.
+- [ ] **U4 — assinatura de uso único genérica demais** (`ls lib` de um comando
+  `ls lib && wc … && grep …`): marcar como one-off silencia qualquer `ls lib`.
+- [ ] **U5 — comandos de subagente entram na curadoria do `Stop` do pai** (o `find`
+  em `token-guard` foi do subagente e bloqueou o turno principal).
+- [ ] **U6 — hooks de `UserPromptSubmit` disparam sobre `<task-notification>`**:
+  "the user may be correcting you" e sugestão `research_query({query:"<task-notification>"})`.
+- [ ] **U7 — recall injeta lição de outro projeto/irrelevante** ("Memory convergence…
+  hermes… develop 92 commits" numa sessão do claude-code).
+- [ ] **U8 — `[BRAIN·SKILLS] 1 available capability pointer(s): - (unnamed)`** em
+  todo turno: ponteiro sem nome renderizado.
+- [ ] **U9 — `active-research-detect` com falso positivo `libMention`** em
+  "Teste rápido do MCP smart-tool".
+
+### Outros achados da revisão
+
+- [ ] **O1 — `retrieval-feedback.js:186` escopa por nome de pasta**
+  (`path.basename(ev.cwd)`), contra o contrato de project id da 2.29.1.
+- [ ] **O2 — `_readBuf` duplicado** em `capture-dispatch.js:56` e
+  `lib/capture-queue.js:71`.
+- [ ] **O3 — ADR-015 com cabeçalho "Proposto"** apesar de implementada; e a branch
+  `dev` tinha outro "ADR-015" (router upstream override) — numeração colidindo.
+- [ ] **O4 — trabalho não commitado resgatado das worktrees removidas** (patches em
+  `docs/plans/salvage/`, local): `loving-morse` (fix de assinatura de curadoria
+  com testes), `dazzling-jang` (`command-signature`/`oneoff-store`), `dev`
+  (2 commits de router + `scripts/detectors/` não versionado). Avaliar e
+  reaproveitar ou descartar.
+
 ## Testes
 
+- `scripts/test-units.js`, teste `plano B: stream com várias linhas SSE somando mais de 32 MiB termina completo (o teto é por linha)` (~9361): flake intermitente sob carga (anotado em 2026-09-30, durante a Fase G da 2.29.1, que não toca o model-router): falhou com `nvidia: conteúdo perdido (867 chars)` em 1 de 3 rodadas completas da suíte, e outra rodada teve 2 falhas da família `plano B`; a terceira passou limpa. Mesma família de timing do item de FIN/reset abaixo. Investigar se o stream de >40 MiB é cortado por prazo do teste ou do router quando a máquina está carregada.
 - `scripts/test-units.js`, teste `plano B: corpo de RECUSA cortado (FIN, reset) ou parado no meio…` (~8898): flake intermitente, 1 falha em cerca de 17 execuções completas da suíte (anotado em 2026-09-25 pelo tester da r28 do gate da 2.29.1, numa rodada lenta de 111,9 s contra ~86 s). Isolado, inclusive sob 32 processos ocupando a CPU, passa. Hipótese não confirmada: a janela `ms >= 4500 && ms <= 7500` (~8930) é apertada sob carga; a mensagem não foi capturada porque o wrapper `.vscode/scripts/test-units.mjs` (no ramo de falha, ~74) só repassa as linhas `✗`; o runner cru (`scripts/test-units.js`, ~18975) imprime na linha seguinte a primeira linha do erro, que traz os ms medidos se a falha for a da janela (~8930). Próximo passo: capturar essa mensagem (rodando o runner cru ou fazendo o wrapper repassar a linha) e medir do lado do servidor falso ou alargar o limite superior.
 - `.vscode/scripts/i18n-audit.mjs` falha em `dashboard/index.html` já no HEAD `44a9ff6` (anotado em 2026-09-25, durante o `byok.openaiCompat` da 2.29.1, que não criou nenhuma das chaves abaixo): 6 chaves usadas no HTML sem tradução em EN nem PT (`brain.migrateTitle`, `brain.migrateHint`, `brain.migrateBtn`, `brain.editorTitle`, `brain.reembedHint`, `router.oneMillionWarn`) e 62 chaves órfãs por idioma (várias são usadas por `t()` em JS, o que o audit talvez não enxergue — confirmar antes de apagar). Corrigir as traduções ausentes e separar órfã real de falso positivo do audit.
 - `scripts/test-units.js` (`runTest`, ~58-70) e o wrapper `.vscode/scripts/test-units.mjs` (`execSync`, ~53) não têm timeout: um teste que nunca resolve pendura a suíte inteira sem dizer qual é (o tester da r30 do gate da 2.29.1 viu isso com um mutante, 2026-09-25). Dar um prazo por teste no `runTest` que falha com o nome do teste, e um teto no `execSync` do wrapper.
@@ -47,6 +141,10 @@ Achados da rodada reviewer/tester que ficaram fora do patch:
 
 ## Arquitetura
 
+- Fase G (2.29.1, anotado em 2026-09-30) — `.mcp.json` tem a porta do brain-server fixa na URL (`http://127.0.0.1:38217/mcp`): quem define `BRAIN_HTTP_PORT` precisa editar o `.mcp.json` à mão, e a edição some a cada atualização do plugin. Sincronizar a URL com a porta efetiva exige mudança de arquitetura (o Claude Code lê o `.mcp.json` estático).
+- Fase G (2.29.1, anotado em 2026-09-30) — timeout de `mcp_tool` sem abort no daemon: movido para **G5** acima.
+- Fase G (2.29.1, anotado em 2026-09-30) — as 12 tools `hook_*` aparecem na lista de tools do modelo (descrição marca como internas). Avaliar esconder do `tools/list` sem quebrar a chamada via `mcp_tool`.
+- Fase G (2.29.1, anotado em 2026-09-30) — o `user-prompt-submit-dispatcher` ainda sobe 1 processo Node por prompt para `brain-daemon-ensure`/`brain-health`/`brain-status` (excluídos por dependência circular com o daemon), e `policy-inject`/`model-router-ensure` seguem como `command`. Desenhar o tratamento próprio deles.
 - ~~`servers/model-router/protocols/openai-chat.js`: um turno assistant só com blocos `thinking` (sem texto nem `tool_use`) vira `{"role":"assistant","content":null}` sem `tool_calls`, fora da spec do Chat Completions.~~ — **RESOLVIDO em 2026-09-25, na própria 2.29.1** (o reviewer r19 apontou que estava dentro do botão da feature `assistantEmptyContent`): sem `tool_calls` o turno sai sempre com `content: ""`; `null` só com `tool_calls` e a opção no padrão. Teste `openai-chat: assistant sem texto e sem tool_use (só thinking ou vazio) sai com content "" em qualquer opção`.
 - `servers/model-router/index.js` (`handleLimitExceeded`, ~1833) + `byok.js` (`resolveUpstream`, ~152): no fallback `on-limit`/cooldown, BYOK ligado com Base URL (ou, sem ela, o primeiro endpoint) ausente ou inválida vira `misconfigured` e o plano B segue para a NVIDIA só com `logger.error` — o usuário não vê a causa. Já um perfil de protocolo inválido (`openaiCompat`, `wireProtocol`, URL de operação) responde com a causa (2.29.1). Pré-existente; anotado em 2026-09-25 pelo tester r19. Decidir se o `misconfigured` também responde com a causa em vez de ceder à NVIDIA. Caso vizinho (tester r21): sem Base URL, `endpoints.generate: '   '` (só espaços) com `endpoints.models` válido vira `misconfigured` em `resolveUpstream`, que não apara a string, enquanto `resolveOperationProfile` apara e trataria `generate` como ausente — as duas funções discordam sobre o mesmo valor. Variantes (reviewer e tester r22): Base URL `'   '` com `endpoints.generate` válido vai para a NVIDIA (`resolveUpstream` não apara), enquanto o perfil usaria o `generate`; e `endpoints.generate` que não é texto (`123`, `true`, `{}`) é descartado sem aviso por `resolveOperationProfile` (`upstream-profile.js:151`) — com Base URL válida o router deriva o endpoint e chama o BYOK em silêncio, sem Base URL vira `misconfigured`. Fail-loud pediria `{ok:false}` para `endpoints[op]` presente que não é texto.
 - `servers/model-router/index.js` (rota `local:catalog`, ~3262): quando o perfil `models` é inválido (qualquer causa, inclusive `byok.openaiCompat` inválido), `GET /v1/models` encurtado para o catálogo local responde `200 {"data": []}` e a rota não loga nada (o aviso só aparece se outra request passar por `maybeWarmCatalog`) — lista vazia silenciosa. Pré-existente para qualquer erro de perfil; anotado em 2026-09-25 na revisão r19. Decidir se responde `502` com a causa, como o passthrough.
