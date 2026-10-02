@@ -310,7 +310,12 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   de composto = sigs de todos os segmentos de trabalho. Mexe na identidade usada
   por curadoria/one-off/aliases (marcações gravadas deixam de casar e são podadas
   pelo `oneoff-store.load`) — por isso não foi feito sem decisão.
-- [ ] **U13 — número de descritor fica na assinatura** (`git status 2>&1` →
+- [x] **U13 — número de descritor fica na assinatura** — **RESOLVIDO em
+  2026-10-02 (decisão do dono: mudar na major)**: o número COLADO ao
+  redirecionamento sai da assinatura (`git status 2>&1` = `git status`;
+  `sleep 2 > f` mantém o `2`). Testes de identidade atualizados (antes fixavam
+  `npm test 2`). Entradas gravadas com o sufixo antigo deixam de casar — o
+  usuário é cobrado uma vez (registrar no CHANGELOG da major). Texto original: (`git status 2>&1` →
   `git status 2`, diferente de `git status`). Medido em 2026-10-02: corrigir muda
   2.919 de 9.625 assinaturas (~30%) e quebra 2 testes que fixam a identidade das
   sigs gravadas — mesma natureza do U4 (migração de dados gravados). Testado e
