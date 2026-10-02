@@ -37,6 +37,7 @@ const brainConfig = require('./lib/brain-config.js');
 const backend = require('./brain-backend.js');
 
 const { dataDir } = require('./lib/data-dir.js');
+const { readTailText } = require('./lib/transcript-tail.js');
 const DATA_DIR = dataDir();
 const STAMP = path.join(DATA_DIR, '.runtime', 'ingest-stamp.json');
 
@@ -106,7 +107,10 @@ async function run(event) {
   }
 
   let raw = '';
-  try { raw = fs.readFileSync(transcriptPath, 'utf-8'); }
+  // Only the trailing window is ever sent: read just that (async, off the event
+  // loop). 4 bytes/char + 4 covers SAFE_MAX_CHARS of any utf-8 plus one cut char,
+  // so clampRaw() yields exactly what it did on the whole file.
+  try { raw = await readTailText(transcriptPath, SAFE_MAX_CHARS * 4 + 4); }
   catch (err) { console.error(`[conversation-ingest] read transcript: ${err.message}`); return {}; }
   raw = clampRaw(raw);
   if (!raw.trim()) return {};

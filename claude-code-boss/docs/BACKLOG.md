@@ -13,7 +13,14 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
 
 ### Performance / robustez do daemon
 
-- [ ] **G1 — `Stop` lê o transcript inteiro, síncrono, até 3×, na thread do daemon.**
+- [x] **G1 — `Stop` lê o transcript inteiro, síncrono, até 3×, na thread do daemon.**
+  **RESOLVIDO em 2026-10-02**: novo `scripts/lib/transcript-tail.js` —
+  `readTailLines` (lê do fim para trás, para ao juntar as N linhas, teto 4 MiB)
+  em `readLastAssistantText`/`readLastUserText`; `readTailText` (assíncrono, só a
+  janela final `SAFE_MAX_CHARS*4+4`) no `conversation-ingest`. Medido no
+  transcript real de 90 MB: 179 ms → 1,6 ms / 0,9 ms, mesmas 30 linhas. 4 testes
+  novos (paridade com leitura inteira, leitura limitada ao final via espião de
+  `fs.readSync`, teto de bytes, `clampRaw` idêntico num arquivo de 31 MB).
   `retrieval-feedback.js:70-73` (`readLastAssistantText`, também usado por
   `decision-scan-response.js:74`), `retrieval-feedback.js:140-143`
   (`readLastUserText`) e `conversation-ingest.js:109` (lê tudo e só depois
@@ -80,6 +87,15 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   todo turno: ponteiro sem nome renderizado.
 - [ ] **U9 — `active-research-detect` com falso positivo `libMention`** em
   "Teste rápido do MCP smart-tool".
+- [ ] **U10 — `curation-guard` e `error-guard` se travam em runner de teste.**
+  `error-guard` bloqueia `node .vscode/scripts/test-units.mjs` por falhas antigas
+  (registro "1137 passed / 1 failed", de outra época) — e a chave ignora os
+  argumentos (`--all` também é bloqueado); o `curation-guard` bloqueia o runner
+  cru e manda de volta para o wrapper. Só saiu pelo caminho absoluto. Pior: a
+  chave chega a colapsar para o programa sozinho — `node` (qualquer `node - <<EOF`)
+  ficou bloqueado por uma falha antiga de outro script stdin. Runner de
+  teste é exatamente o comando que se repete depois de corrigir: não deveria
+  ser bloqueado por falha anterior, ou a chave deveria considerar mudança de código.
 
 ### Outros achados da revisão
 
@@ -94,6 +110,11 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   com testes), `dazzling-jang` (`command-signature`/`oneoff-store`), `dev`
   (2 commits de router + `scripts/detectors/` não versionado). Avaliar e
   reaproveitar ou descartar.
+- [ ] **O5 — preflight do `.vscode/scripts/test-units.mjs` não detecta devDependency
+  ausente.** Sem `eslint` instalado, os 6 testes `require-windows-hide` falham como
+  falha de teste (`Cannot find module 'eslint'`), não como ambiente incompleto.
+  Visto em 2026-10-02; resolvido localmente com `npm install`. Fix: o preflight
+  checar `require.resolve` das devDependencies que a suíte usa.
 
 ## Testes
 

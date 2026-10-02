@@ -15,12 +15,12 @@
  */
 'use strict';
 
-const fs = require('fs');
 const path = require('path');
 
 const { runStopDetectorCli } = require('./lib/hook-io.js');
 const retrievalJournal = require('./lib/retrieval-journal.js');
 const { extractKeywords } = require('./lib/text-utils.js');
+const { readTailLines } = require('./lib/transcript-tail.js');
 
 // ── Pure helpers (testable) ───────────────────────────────────────────────
 
@@ -69,10 +69,7 @@ function citationMatch(title, replyText) {
  */
 function readLastAssistantText(transcriptPath, lookback = 30) {
   try {
-    if (!transcriptPath || !fs.existsSync(transcriptPath)) return '';
-    const buf = fs.readFileSync(transcriptPath, 'utf-8');
-    const lines = buf.split('\n').filter(Boolean);
-    const tail = lines.slice(-lookback);
+    const tail = readTailLines(transcriptPath, lookback);
     const chunks = [];
     for (let i = tail.length - 1; i >= 0; i--) {
       try {
@@ -139,10 +136,7 @@ function extractUserText(rec) {
  */
 function readLastUserText(transcriptPath, lookback = 30) {
   try {
-    if (!transcriptPath || !fs.existsSync(transcriptPath)) return '';
-    const buf = fs.readFileSync(transcriptPath, 'utf-8');
-    const lines = buf.split('\n').filter(Boolean);
-    const tail = lines.slice(-lookback);
+    const tail = readTailLines(transcriptPath, lookback);
     for (let i = tail.length - 1; i >= 0; i--) {
       try {
         const rec = JSON.parse(tail[i]);
