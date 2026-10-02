@@ -3731,6 +3731,28 @@ test('G12 brain-embedder.setDelegate: every consumer is routed to the delegate; 
   assert(emb.getStatus().provider !== 'delegate', 'local status is back after setDelegate(null)');
 });
 
+test('C2 curation-redirect: exact task signature+flags rewritten (also inside compounds); variants, files, tee, heredoc and exploration are not; CCB_RAW=1 bypasses', () => {
+  const { planRedirect } = require('./lib/curation-redirect.js');
+  const shells = [
+    { id: 'tu', script: '.vscode/scripts/tu.mjs', aliases: ['node scripts/test-units.js', 'node scripts/test-units.js 2>&1 | tail -40'] },
+    { id: 'gate', script: '.vscode/scripts/gate.ps1', aliases: ['node scripts/gate.mjs'] },
+    { id: 'glog', script: '.vscode/scripts/glog.mjs', aliases: ['git log'] },
+  ];
+  const plan = (c) => planRedirect(c, shells, 'C:/repo');
+  assertEq(plan('node scripts/test-units.js 2>&1 | tail -40').rewritten, 'node "C:/repo/.vscode/scripts/tu.mjs"');
+  assertEq(plan('cd x && node scripts/test-units.js; echo done').rewritten, 'cd x && node "C:/repo/.vscode/scripts/tu.mjs" ; echo done', 'only the matching part is rewritten');
+  const two = plan('node scripts/gate.mjs && node scripts/test-units.js');
+  assertEq(two.replaced.map((r) => r.shellId), ['gate', 'tu']);
+  assert(/^powershell .*gate\.ps1" && node /.test(two.rewritten), two.rewritten);
+  assertEq(plan('node scripts/test-units.js --filter x'), { rewritten: null, replaced: [], uncovered: ['tu'] }, 'variant → uncovered, not rewritten');
+  for (const raw of ['node scripts/test-units.js > /tmp/u.log 2>&1', 'node scripts/test-units.js | tee x.log', 'node scripts/test-units.js <<EOF\nx\nEOF', 'git log --oneline']) {
+    assertEq(plan(raw).rewritten, null, `not rewritten: ${raw}`);
+  }
+  assertEq(plan('node scripts/test-units.js > /dev/null').rewritten, 'node "C:/repo/.vscode/scripts/tu.mjs"', '/dev/null is not a file sink');
+  assertEq(plan('CCB_RAW=1 node scripts/test-units.js'), { bypass: true });
+  assertEq(plan('echo "a && node scripts/test-units.js"').rewritten, null, 'text inside quotes is not a command');
+});
+
 test('C1 curation-families: exploration / inline / task classes (compound = task if any segment is a task)', () => {
   const { classifyCommand } = require('./lib/curation-families.js');
   const cases = {

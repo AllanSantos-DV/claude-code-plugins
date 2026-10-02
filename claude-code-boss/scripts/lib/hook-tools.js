@@ -47,6 +47,8 @@ const FIELDS = {
   // Set only for a SUB-AGENT's tool call (empty in the main session) — verified live.
   agent_id: 'Sub-agent id when the call came from a sub-agent',
   agent_type: 'Sub-agent type when the call came from a sub-agent',
+  // C2: the redirect respects the session posture — bypassPermissions → allow, else ask.
+  permission_mode: 'Session permission mode (default/acceptEdits/plan/bypassPermissions)',
 };
 const JSON_FIELDS = new Set(['tool_input', 'tool_response']);
 const BOOL_FIELDS = new Set(['is_interrupt', 'stop_hook_active']);

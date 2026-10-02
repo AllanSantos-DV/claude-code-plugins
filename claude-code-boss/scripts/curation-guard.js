@@ -20,10 +20,11 @@
  *   4. default → allow (PostToolUse/Stop discovery loop handles the rest)
  */
 const { hookLog } = require('./hook-logger.js');
-const { workSegments } = require('./lib/command-signature.js');
 const { loadCurationConfig } = require('./curation-paths.js');
 const { runPreToolUseCli } = require('./lib/hook-io.js');
-const { findProjectRoot, loadShellsConfig, matchCuratedShell, buildCuratedInvocation, _pathMatches, _tokenize } = require('./shells-config.js');
+const { findProjectRoot, loadShellsConfig, matchCuratedShell, _pathMatches, _tokenize } = require('./shells-config.js');
+const { planRedirect } = require('./lib/curation-redirect.js');
+const metrics = require('./lib/metrics.js');
 
 const hooksConfig = require('./lib/hooks-config.js');
 
@@ -107,51 +108,35 @@ async function run(event) {
     const projectRoot = findProjectRoot(event.cwd || process.cwd());
     const { shells, whitelist } = loadShellsConfig(projectRoot);
 
-    // 1. Curated match (path or alias).
+    // 1. The curated script itself is being run: allowed, but never through a pipe (its
+    //    output is already shaped — measured: this denial is followed 76% of the time).
     const curatedShell = matchCuratedShell(command, shells);
-    if (curatedShell) {
-      const scriptPath = (curatedShell.script || '').trim();
-      const tokens = _tokenize(command.trim());
-      const isInvokingScript = scriptPath && tokens.some(t => _pathMatches(t, scriptPath));
-
-      if (isInvokingScript) {
-        if (pipesCuratedScript(command, scriptPath)) {
-          const reason = `[curation-guard] Curated script \`${scriptPath}\` invoked with a pipe. Its output is already shaped (filter: ${curatedShell.outputFilter || 'summary'}, lines: ${curatedShell.outputLines || 200}) and is meant to be consumed as-is. If the output is not adequate, edit the script. See skill \`curation-script-pattern\`.`;
-          return decision('deny', { additionalContext: reason, permissionDecisionReason: reason });
-        }
-        return decision('allow');
+    const scriptPath = curatedShell ? (curatedShell.script || '').trim() : '';
+    if (scriptPath && _tokenize(command.trim()).some(t => _pathMatches(t, scriptPath))) {
+      if (pipesCuratedScript(command, scriptPath)) {
+        const reason = `[curation-guard] Curated script \`${scriptPath}\` invoked with a pipe. Its output is already shaped (filter: ${curatedShell.outputFilter || 'summary'}, lines: ${curatedShell.outputLines || 200}) and is meant to be consumed as-is. If the output is not adequate, edit the script. See skill \`curation-script-pattern\`.`;
+        return decision('deny', { additionalContext: reason, permissionDecisionReason: reason });
       }
+      return decision('allow');
+    }
 
-      // Forward slashes: valid in both bash and PowerShell on Windows.
-      const absScript = (projectRoot ? require('path').resolve(projectRoot, scriptPath) : scriptPath).replace(/\\/g, '/');
-
-      // U1 (measured: 9.4k real Bash calls — 404 of 726 alias matches were compound,
-      // only 15% of those produced bulky output): a COMPOUND command where the alias
-      // is one piece among other work is NOT denied whole — that forced the agent to
-      // drop or re-split the other segments. It runs, with a pointer to the curated
-      // script; bulky output is still caught by the Stop curation loop.
-      if (workSegments(command).length > 1) {
-        const hint = `[curation-guard] Part of this command has a curated script: \`${absScript}\` (output ${curatedShell.outputFilter || 'summary'}, limit ${curatedShell.outputLines || 200} lines). Prefer it for that part next time.`;
-        return decision('allow', { additionalContext: hint });
-      }
-
-      // Raw alias matched — AUTO-REDIRECT (Parte A, Fase 1) when safely
-      // rebuildable: rewrite the call to invoke the curated script (allow +
-      // updatedInput), sparing the extra deny→retry turn. buildCuratedInvocation
-      // returns null for anything we can't safely rebuild (args, non-.ps1) → we
-      // fall back to the proven deny+instruct path. updatedInput is a TOTAL
-      // replacement of tool_input, so we spread the original to keep timeout/etc.
-      const curatedCmd = buildCuratedInvocation(curatedShell, command);
-      if (curatedCmd) {
-        const ctx = `[curation-guard] Redirected \`${command}\` → \`${curatedCmd}\` automatically (curated script; output ${curatedShell.outputFilter || 'summary'}, limit ${curatedShell.outputLines || 200} lines).`;
-        return decision('allow', {
-          updatedInput: { ...event.tool_input, command: curatedCmd },
-          additionalContext: ctx,
-        });
-      }
-      // Absolute path: the relative one broke when the agent's cwd was not the repo root.
-      const reason = `[curation-guard] Command \`${command}\` has a curated script. Run \`${absScript}\` instead — output filtered (${curatedShell.outputFilter || 'summary'}, limit ${curatedShell.outputLines || 200} lines).`;
-      return decision('deny', { additionalContext: reason, permissionDecisionReason: reason });
+    // 1b. C2 (Phase C): a TASK part whose signature + flags match a curated alias is
+    //     REWRITTEN to the script (updatedInput — verified through mcp_tool). The old
+    //     "Prefer it next time" hint (followed 19%) and deny-redirect (47%) are gone.
+    //     Permission posture is the user's: bypassPermissions → allow; any other mode
+    //     → ask (the prompt shows the rewrite). Variants run raw and are only measured.
+    const plan = planRedirect(command, shells, projectRoot);
+    const mctx = { sessionId: event.session_id, cwd: event.cwd };
+    if (plan.bypass) {
+      metrics.fire('curation.bypass', {}, mctx);
+    } else if (plan.rewritten) {
+      const mode = event.permission_mode === 'bypassPermissions' ? 'allow' : 'ask';
+      const list = plan.replaced.map((r) => `\`${r.from}\` → \`${r.to}\``).join('; ');
+      const ctx = `[curadoria] Redirecionado para o script curado do projeto: ${list}. A saída é o resumo curado (não a crua). Se precisar da saída crua, rode de novo com \`CCB_RAW=1\` na frente do comando.`;
+      for (const r of plan.replaced) metrics.fire('curation.redirected', { shellId: r.shellId, mode, compound: plan.replaced.length > 1 || r.from !== command.trim() }, mctx);
+      return decision(mode, { updatedInput: { command: plan.rewritten }, additionalContext: ctx, ...(mode === 'ask' ? { permissionDecisionReason: ctx } : {}) });
+    } else if (plan.uncovered.length) {
+      metrics.fire('curation.uncovered', { shells: plan.uncovered }, mctx);
     }
 
     // 2. Project whitelist.

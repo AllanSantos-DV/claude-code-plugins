@@ -52,6 +52,7 @@
               "transcript_path": "${transcript_path}",
               "tool_name": "${tool_name}",
               "tool_input": "${tool_input}",
+              "permission_mode": "${permission_mode}",
               "project_dir": "${CLAUDE_PROJECT_DIR}"
             },
             "timeout": 8
