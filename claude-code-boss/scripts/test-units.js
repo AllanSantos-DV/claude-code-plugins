@@ -5010,6 +5010,18 @@ test('command-signature: `&>` redirection cuts cleanly (fixed-point sig)', () =>
     assertEq(cmdSig.canonicalSig(s), s, 'idempotent');
   }
 });
+test('command-signature: subshell/group openers and `VAR=$(cmd)` are structure — the inner command is the identity', () => {
+  assertEq(cmdSig.canonicalSig('(cd /p && git diff)'), 'git diff');
+  assertEq(cmdSig.canonicalSig('(cd /p && npm test)'), 'npm test', 'two different subshells no longer fuse on `(cd /p`');
+  assertEq(cmdSig.canonicalSig('{ git log -5; } > f'), 'git log');
+  assertEq(cmdSig.canonicalSig('X=$(git diff HEAD)'), 'git diff HEAD');
+  assertEq(cmdSig.canonicalSig('S=$(git stash create) && git update-ref refs/x $S'), 'git stash create');
+  // (`2>&1` still leaves the fd number in the sig — backlog U13, owner decision.)
+  assertEq(cmdSig.canonicalSig('cd /x && (npx supabase --version 2>&1)'), 'npx supabase 2');
+  assertEq(cmdSig.canonicalSig('a=$((x+1))\ngit status'), 'git status', 'arithmetic $(( is still an assignment');
+  for (const c of ['(cd /p && git diff)', 'X=$(git diff HEAD)']) assertEq(cmdSig.canonicalSig(cmdSig.canonicalSig(c)), cmdSig.canonicalSig(c), `idempotent: ${c}`);
+});
+
 test('command-signature: `VAR=$(cat <<EOF)` never signs as a bare heredoc digest', () => {
   const s = cmdSig.canonicalSig('MSG=$(cat <<EOF\nx\nEOF\n)\ngit commit -m "$MSG"');
   assert(/^git commit/.test(s), `got ${s}`);
