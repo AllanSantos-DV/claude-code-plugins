@@ -31,7 +31,7 @@ A maioria dos hooks não sobe mais um processo Node por disparo: o `hooks.json` 
 - **Fire-and-forget:** hook pesado que sempre devolve `{}` leva `async: true` — responde `{}` na hora e roda em segundo plano na mesma FIFO. Falha dele aparece como `systemMessage` no próximo `Stop` daquela sessão.
 - **Prazo:** cada tool tem prazo = `timeout` do `hooks.json` − 1 s. Passou do prazo, responde a mensagem de fail-open visível; na fila pesada o job que ainda nem começou é descartado. Código síncrono não é abortável: um hook que passa do prazo termina em segundo plano.
 - Transcript: leia só o final (`lib/transcript-tail.js`), nunca `readFileSync` do arquivo inteiro.
-- Ficam como `command` os hooks que precisam funcionar **sem** o daemon: `SessionStart`, `user-prompt-submit-dispatcher` (`brain-daemon-ensure`, `brain-health`, `brain-status`) e `model-router-ensure`.
+- Ficam como `command` os hooks que precisam funcionar **sem** o daemon: `SessionStart` (dispatcher + `model-router-ensure`) e o `user-prompt-submit-dispatcher` (`model-router-ensure`, `brain-daemon-ensure`, `brain-health`, `brain-status` — 1 processo por prompt).
 - Para um hook novo: adicione a entrada em `HOOKS`, a entrada `mcp_tool` no `hooks.json`, o caso de paridade em `test-units.js` (mesma saída via stdin e via tool) e a linha no README.
 
 Eventos em uso: `SessionStart`, `SubagentStart`, `UserPromptSubmit`, `UserPromptExpansion`, `PreToolUse` (com `matcher`), `PostToolUse`, `PostToolUseFailure`, `Stop`.

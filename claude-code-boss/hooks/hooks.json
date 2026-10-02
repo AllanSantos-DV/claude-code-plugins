@@ -250,12 +250,6 @@
           {
             "type": "command",
             "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/model-router-ensure.js"],
-            "timeout": 30
-          },
-          {
-            "type": "command",
-            "command": "node",
             "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/user-prompt-submit-dispatcher.js"],
             "timeout": 30
           },

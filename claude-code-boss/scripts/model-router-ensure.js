@@ -701,13 +701,21 @@ function startServer(mode) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 
-async function main() {
+/**
+ * One ensure pass for a hook event. Returns the additionalContext text, or null
+ * (nothing to say). Never calls process.exit — so the UserPromptSubmit dispatcher
+ * can run it in-process (G7: one spawn per prompt instead of two); main() below is
+ * the standalone CLI the SessionStart hook still spawns.
+ * @param {object} hookInput  parsed hook payload (session_id, hook_event_name…)
+ * @returns {Promise<string|null>}
+ */
+async function run(hookInput) {
+  hookInput = hookInput || {};
   // One-time Phase-1.5 migration: copy a legacy DATA_DIR/model-router/user-config.json
   // up to the stable global path (never overwriting an existing global) so the saved
   // NVIDIA key + toggles survive the move. Fail-open — never throws at SessionStart.
   backfillRouterUserConfig();
   const config = readConfig();
-  const hookInput = readHookInput();
   const sessionId = hookInput.session_id || hookInput.sessionId || null;
   // Este script roda em DOIS eventos (SessionStart e UserPromptSubmit). O
   // hookSpecificOutput.hookEventName precisa ecoar o evento REAL: devolver um nome
@@ -754,7 +762,7 @@ async function main() {
     if (process.platform === 'win32') {
       try { shim.removeShimAll(log); } catch (e) { log(`AVISO: remoção do shim falhou: ${e.message}`); }
     }
-    process.exit(0);
+    return null;
   }
   log(`Modo do proxy: ${mode}${mode === 'fallback-only' ? ' (passthrough cache-safe + fallback de limite)' : ''}${mode === 'sticky-tier' ? ' (sticky cache-safe: tier fixo por sessao + fallback de limite)' : ''}.`);
 
@@ -838,7 +846,7 @@ async function main() {
         log('AVISO: roteamento indisponível nesta sessão. Removendo footprint; Claude Code usará Anthropic API diretamente.');
       }
       disableRoutingFootprint(safeWindow);
-      process.exit(0);
+      return null;
     }
     justStarted = true;
   }
@@ -897,6 +905,14 @@ async function main() {
   else if (announce)     additionalContext = contextMsg;
   else if (nudge)        additionalContext = nudge;
 
+  return additionalContext;
+}
+
+async function main() {
+  const hookInput = readHookInput();
+  // Echo the REAL event (see run()): a fixed name makes Claude Code reject the hook.
+  const hookEventName = hookInput.hook_event_name || hookInput.hookEventName || 'UserPromptSubmit';
+  const additionalContext = await run(hookInput);
   if (additionalContext) {
     process.stdout.write(JSON.stringify({
       hookSpecificOutput: { hookEventName, additionalContext },
@@ -915,7 +931,7 @@ if (require.main === module) {
 // Export p/ testes herméticos da lógica de opt-in. O guard require.main===module
 // acima garante que um require() em teste NÃO dispara main() (nenhum efeito colateral).
 // healthCheck/probeAlive/readRouterToken exportados p/ os testes de verify-before-trust.
-module.exports = { mergeRouterConfig, readConfig, healthCheck, probeAlive, readRouterToken,
+module.exports = { run, mergeRouterConfig, readConfig, healthCheck, probeAlive, readRouterToken,
   resolveAutoCompactWindow, planEnableEnv, planDisableEnv, enableSettingsRouting, disableSettingsRouting,
   contextTuningEnabled, planTuningEnv, planTuningRemoval, applySettingsTuning,
   // servesThisBuild/processCommandLine/normPath exportados p/ os testes de troca-de-build no boot.

@@ -1,12 +1,14 @@
 #!/usr/bin/env node
 /**
  * user-prompt-submit-dispatcher.js — the single UserPromptSubmit Node-hook
- * entry (excludes `model-router-ensure.js`, which stays a separate spawn: it
- * calls `process.exit()` in its normal flow and does real multi-second waits,
- * so it cannot safely share a process with the other detectors).
+ * entry. Since G7 it also runs `model-router-ensure.js` (its `run()` no longer
+ * calls `process.exit()`; its multi-second waits are bounded by its own ceiling
+ * below, concurrently with the others) — one node spawn per prompt instead of
+ * two. On this machine the bare node process floor is ~70-90 ms and ~63 MB, so
+ * the spawn itself, not the script, was most of the cost.
  *
- * Consolidates 3 per-prompt Node spawns (brain-daemon-ensure.js,
- * brain-health.js, brain-status.js) into ONE in-process pass — same "N spawns → 1"
+ * Consolidates 4 per-prompt Node spawns (model-router-ensure.js,
+ * brain-daemon-ensure.js, brain-health.js, brain-status.js) into ONE in-process pass — same "N spawns → 1"
  * pattern as the other dispatchers here. The `mcp_tool` entries
  * (`brain_retrieve_context`, and since Phase G / ADR-015 `hook_correction_detect`
  * + `hook_active_research_detect`) are not Node spawns — Claude Code calls the
@@ -45,6 +47,7 @@ const { readStdin, parsePayload, emitJson, emitEmpty } = require('./lib/hook-io.
 const brainDaemonEnsure = require('./brain-daemon-ensure.js');
 const brainHealth = require('./brain-health.js');
 const brainStatus = require('./brain-status.js');
+const modelRouterEnsure = require('./model-router-ensure.js');
 
 const SEP = '\n\n';
 
@@ -59,6 +62,9 @@ const SEP = '\n\n';
 // equal ceilings the external kill would always land first or tie, and the
 // internal timeout would never get to run its graceful `null` path.
 const DETECTORS = [
+  // First: it was the first UserPromptSubmit hook in hooks.json, so its text keeps leading.
+  // 25000 like brain-daemon-ensure: its old standalone timeout was 30 s (same reasoning).
+  { name: 'model-router-ensure', mod: modelRouterEnsure, timeoutMs: 25000 },
   { name: 'brain-daemon-ensure', mod: brainDaemonEnsure, timeoutMs: 25000 },
   { name: 'brain-health', mod: brainHealth, timeoutMs: 5000 },
   { name: 'brain-status', mod: brainStatus, timeoutMs: 5000 },
@@ -127,10 +133,15 @@ async function main() {
   emitEmpty();
 }
 
+// model-router-ensure leaves handles behind (it always ended with process.exit):
+// exit explicitly once stdout has flushed, or the hook would hang until its timeout.
+const exitAfterFlush = () => process.stdout.write('', () => process.exit(0));
+
 if (require.main === module) {
-  main().catch((err) => {
+  main().then(exitAfterFlush, (err) => {
     console.error(`[claude-code-boss:user-prompt-submit-dispatcher] fatal: ${err && err.message ? err.message : err}`);
     emitEmpty();
+    exitAfterFlush();
   });
 }
 
