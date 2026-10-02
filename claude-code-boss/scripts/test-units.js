@@ -19981,6 +19981,31 @@ test('mcp-server createBrainServer({mode:"http"}): CCB_PROJECT_ID is never honor
   }
 });
 
+test('mcp-server http (727): a session bound to its MCP roots resolves calls without cwd to its folder and refuses a mismatched explicit project', async () => {
+  const { createBrainServer } = await import(pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bind-'));
+  fs.mkdirSync(path.join(root, '.memory'), { recursive: true });
+  fs.writeFileSync(path.join(root, '.memory', 'project.json'), JSON.stringify({ metadata: { defaults: { project_id: 'bind/me' } } }));
+  const noId = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bind-noid-'));
+  try {
+    const server = createBrainServer({ pluginRoot: ROOT, mode: 'http' });
+    // Unbound (roots not fetched yet / client without roots): previous behavior.
+    assert(/project is required in HTTP mode/.test(JSON.stringify(await server.dispatch('brain_count', {}))), 'unbound + no cwd → PROJECT_REQUIRED as before');
+    server._setSessionRoots([root]);
+    const own = await server.dispatch('brain_count', {});
+    assert(!own.isError && /bind\/me/.test(JSON.stringify(own)), `no cwd → the session folder's id, got ${JSON.stringify(own)}`);
+    const same = await server.dispatch('brain_count', { project: 'bind/me' });
+    assert(!same.isError, 'explicit project that IS the session project → accepted');
+    const other = await server.dispatch('brain_count', { project: 'someone/else' });
+    assert(other.isError && /not this session's project/.test(JSON.stringify(other)), `mismatched explicit project → refused, got ${JSON.stringify(other)}`);
+    server._setSessionRoots([noId]);
+    const off = await server.dispatch('brain_count', {});
+    assert(off.isError && /no project id for this session's folder/.test(JSON.stringify(off)), 'session folder without id → memory off, said loud');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(noId, { recursive: true, force: true });
+  }
+});
+
 test('mcp-server http: explicit owner/repo project is accepted (U14); path-like explicit project still refused', async () => {
   const { createBrainServer } = await import(pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
   const server = createBrainServer({ pluginRoot: ROOT, mode: 'http' });

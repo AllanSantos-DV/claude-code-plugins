@@ -26,7 +26,8 @@
  * The tool LOGIC below is unchanged by the transport the assembly is used from.
  */
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { CallToolRequestSchema, ListToolsRequestSchema, RootsListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
+import { fileURLToPath } from 'url';
 import { createRequire } from 'module';
 import path from 'path';
 
@@ -449,7 +450,22 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
    */
   function cwdResolveEnv(a) {
     if (mode !== 'http') return process.env;
-    return a && a.sessionRoot ? { CLAUDE_PROJECT_DIR: String(a.sessionRoot) } : {};
+    const root = a && a.sessionRoot ? a.sessionRoot : sessionRoots[0];
+    return root ? { CLAUDE_PROJECT_DIR: String(root) } : {};
+  }
+
+  // ─── Session binding (727): the MCP client's own roots ─────────────────────
+  // Claude Code declares the MCP `roots` capability; once its stream is up, roots/list
+  // returns the session's project folder (verified in 2.1.283, 2026-10-02). Bound here
+  // per MCP session, so a call WITHOUT cwd resolves the session's real folder and an
+  // explicit `project` that isn't that folder's id is refused — instead of an
+  // unverifiable explicit project on the shared daemon. Empty until fetched (or for a
+  // client without roots): the previous behavior applies.
+  let sessionRoots = [];
+  function sessionRootIds() {
+    return sessionRoots
+      .map((r) => projectId.tryResolveProjectId({ cwd: r, env: { CLAUDE_PROJECT_DIR: r } }))
+      .filter(Boolean);
   }
 
   /**
@@ -462,6 +478,24 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
    */
   function resolveKbProject(args) {
     const a = args || {};
+    if (!a.cwd && mode === 'http' && sessionRoots.length) {
+      const ids = sessionRootIds();
+      if (a.project) {
+        const safe = projectId.sanitizeLogicalProjectId(a.project);
+        if (safe && !ids.includes(safe)) {
+          throw Object.assign(
+            new Error(`project "${safe}" is not this session's project (${ids.length ? ids.join(', ') : 'its folder has no project id'}) — pass your cwd instead of naming a project`),
+            { code: 'PROJECT_MISMATCH' },
+          );
+        }
+        if (safe) return safe;
+      }
+      if (ids.length) return ids[0];
+      throw Object.assign(
+        new Error(`no project id for this session's folder (${sessionRoots[0]}) — memory is OFF there. ${projectId.SCOPE_HELP}`),
+        { code: 'NO_PROJECT_ID' },
+      );
+    }
     if (!a.cwd) return resolveProject(a);
     const id = projectId.tryResolveProjectId({ cwd: a.cwd, env: cwdResolveEnv(a) });
     if (!id) {
@@ -1796,6 +1830,33 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
 
   // ─── Server wiring ──────────────────────────────────────────────────────────
   const server = new Server({ name: 'brain-server', version: '2.0.0' }, { capabilities: { tools: {} } });
+  if (mode === 'http') {
+    // roots/list only answers once the client's SSE stream is open (right after the
+    // handshake it times out), so fetch in the background with retries; refetch when
+    // the client says its roots changed. Never blocks a tool call.
+    const fetchRoots = async () => {
+      const r = await Promise.race([
+        server.listRoots(),
+        new Promise((_, rej) => { const t = setTimeout(() => rej(new Error('roots/list timeout')), 4000); t.unref(); }),
+      ]);
+      sessionRoots = ((r && r.roots) || []).map((x) => {
+        try { return fileURLToPath(x.uri); } catch (err) { void err; return null; }
+      }).filter(Boolean);
+    };
+    const scheduleRoots = (delays) => {
+      let i = 0;
+      const tick = async () => {
+        try { await fetchRoots(); }
+        catch (err) {
+          if (i < delays.length) { const t = setTimeout(tick, delays[i++]); t.unref(); }
+          else console.error(`[brain-server] session roots unavailable (${err.message}) — calls without cwd keep the unbound behavior`);
+        }
+      };
+      const t = setTimeout(tick, delays[i++]); t.unref();
+    };
+    server.oninitialized = () => { if (server.getClientCapabilities()?.roots) scheduleRoots([1000, 3000, 8000]); };
+    server.setNotificationHandler(RootsListChangedNotificationSchema, () => { scheduleRoots([0, 2000]); });
+  }
   // The hook_* tools are called by Claude Code's `mcp_tool` hooks BY NAME and are never
   // the model's to call: listing them cost context in every session and invited misuse.
   // Verified in real Claude Code 2.1.283 (2026-10-02): with them unlisted, PostToolUse
@@ -1816,5 +1877,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
   // tool calls that land on the SAME slot across two createBrainServer() instances
   // that share one kbLock pool — without standing up a live MCP transport.
   server.dispatch = (name, args) => (KB_TOOLS.has(name) ? dispatchKbTool(name, args, () => handleTool(name, args)) : handleTool(name, args));
+  // Test seam (727): bind the session roots the way roots/list would.
+  server._setSessionRoots = (roots) => { sessionRoots = Array.isArray(roots) ? roots.slice() : []; };
   return server;
 }
