@@ -637,7 +637,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
     },
     {
       name: 'curation_mark_oneoff',
-      description: 'Mark a volume-heavy command the curation Stop hook flagged as ONE-HIT (single-use), so it stops asking to curate it. PREFERRED: pass `sigs` with each `sig` string from the Stop-hook reason VERBATIM (exact match, no guessing). Alternatively provide alias forms of the command via `aliases` (e.g. ["npm test","npm run test"]). Refused if the command already recurs past the configured ceiling — then create a curated script instead. Aliases/sigs must name the subcommand (e.g. "git log", not "git").',
+      description: 'Mark a volume-heavy command the curation Stop hook flagged as ONE-HIT (single-use), so it stops asking to curate it. PREFERRED: pass `sigs` with each `sig` string from the Stop-hook reason VERBATIM (exact match, no guessing). Alternatively provide alias forms of the command via `aliases` (e.g. ["npm test","npm run test"]); each distinct signature is tracked (and counted) on its own. Refused if the command already recurs past the configured ceiling — then create a curated script instead. Aliases must name the subcommand (e.g. "git log", not "git"); a verbatim 1-token sig is marked by exact match only.',
       inputSchema: { type: 'object', properties: { sigs: { type: 'array', items: { type: 'string' }, description: 'Canonical signatures copied VERBATIM from the Stop-hook reason (the `sig \\`...\\`` field). Preferred over aliases — matches the store exactly.' }, aliases: { type: 'array', items: { type: 'string' }, description: 'Raw command forms identifying this one-hit command (>=2 significant tokens each, e.g. ["git log","git lg"])' }, cwd: { type: 'string', description: 'Working directory (for project scoping)' }, session_id: { type: 'string', description: 'Session id' } } },
     },
     {
@@ -1016,22 +1016,32 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
             return { isError: true, content: [{ type: 'text', text: 'curation_mark_oneoff: sigs[] or aliases[] required — pass the `sig` values from the Stop-hook reason verbatim (preferred), or raw command forms, e.g. ["npm test","npm run test"].' }] };
           }
           const cmdSig = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'command-signature.js'));
-          const tooBroad = [...aliases, ...sigs].filter(x => cmdSig.isGenericAlias(x));
+          // Only raw ALIASES are refused as too broad. A verbatim `sig` of 1 token
+          // (`pytest`) is marked by exact match (oneoff-store isCeilingExempt) — it
+          // can't silence `pytest x`, and refusing it left the flagged sig with no
+          // sanctioned way to clear it (it can't be curated either).
+          const oneoff = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'oneoff-store.js'));
+          const tooBroad = [
+            ...aliases.filter(x => cmdSig.isGenericAlias(x)),
+            // A 1-token sig that is not a program name (`2`) pooled unrelated commands.
+            ...sigs.filter(x => cmdSig.isGenericAlias(x) && !oneoff.isCeilingExempt(x)),
+          ];
           if (tooBroad.length) {
             return { isError: true, content: [{ type: 'text', text: `curation_mark_oneoff: alias/sig too broad: ${tooBroad.join(', ')}. A 1-token form (e.g. "git") would silence unrelated subcommands — name the subcommand (e.g. "git log").` }] };
           }
-          const oneoff = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'oneoff-store.js'));
-          const cfg = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'brain-config.js')).getCuration();
+          const cfg =require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'brain-config.js')).getCuration();
           const projectKey = oneoff.resolveProjectKey(a.cwd || process.cwd());
           const res = oneoff.mark(process.env.CLAUDE_PLUGIN_DATA, projectKey, { aliases, sigs, sessionId: a.session_id || null, maxRecurrence: cfg.oneHitMaxRecurrence, windowDays: cfg.oneHitWindowDays });
           if (res.decision === 'rejected') {
-            return { content: [{ type: 'text', text: JSON.stringify({ decision: 'rejected', signature: res.sig, count: res.count, ceiling: cfg.oneHitMaxRecurrence, message: `"${res.sig}" already recurs ${res.count}x in this project (>= ceiling ${cfg.oneHitMaxRecurrence}). Create a curated script instead of marking one-hit.` }, null, 2) }] };
+            return { content: [{ type: 'text', text: JSON.stringify({ decision: 'rejected', signature: res.sig, count: res.count, ceiling: cfg.oneHitMaxRecurrence, rejected: res.rejected || [], message: `"${res.sig}" already recurs ${res.count}x in this project (>= ceiling ${cfg.oneHitMaxRecurrence}). Create a curated script instead of marking one-hit.` }, null, 2) }] };
           }
-          // Surface EVERY signature that registered (a batch call coalesces into one
-          // entry whose aliasSigs cover them all) — the old response echoed only the
-          // representative `sig`, hiding the others (they DID register + are suppressed).
+          // Surface EVERY signature that registered (each distinct sig gets its own
+          // entry) — the old response echoed only the representative `sig`. Per-sig
+          // refusals in a partly-accepted batch are surfaced, never swallowed.
           const sigList = Array.isArray(res.signatures) && res.signatures.length ? res.signatures : (res.sig ? [res.sig] : []);
-          return { content: [{ type: 'text', text: JSON.stringify({ decision: res.decision, signature: res.sig, signatures: sigList, count: res.count, aliases: res.aliases, message: `Marked one-hit: ${sigList.length} signature(s) — the Stop hook will not ask to curate ${sigList.length === 1 ? 'it' : 'them'} again until they recur past the ceiling.` }, null, 2) }] };
+          const refused = Array.isArray(res.rejected) ? res.rejected : [];
+          const refusedMsg = refused.length ? ` REFUSED (past ceiling ${cfg.oneHitMaxRecurrence} — curate these instead): ${refused.map(r => `"${r.sig}" ${r.count}x`).join(', ')}.` : '';
+          return { content: [{ type: 'text', text: JSON.stringify({ decision: res.decision, signature: res.sig, signatures: sigList, count: res.count, aliases: res.aliases, rejected: refused, message: `Marked one-hit: ${sigList.length} signature(s) — the Stop hook will not ask to curate ${sigList.length === 1 ? 'it' : 'them'} again until they recur past the ceiling.${refusedMsg}` }, null, 2) }] };
         } catch (err) {
           return { isError: true, content: [{ type: 'text', text: `curation_mark_oneoff failed: ${err.message}` }] };
         }

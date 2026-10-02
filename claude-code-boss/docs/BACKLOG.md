@@ -240,11 +240,34 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   hardening (classe 4 resolvida por G6/G7, filas G2/G4/G5). A colisão só existe no
   patch resgatado da `dev` (`docs/plans/salvage/dev-commits/0002-…ADR-015.patch`) —
   se for reaproveitado (O4), renumerar como ADR-016.
-- [ ] **O4 — trabalho não commitado resgatado das worktrees removidas** (patches em
+- [x] **O4 — trabalho não commitado resgatado das worktrees removidas** (patches em
   `docs/plans/salvage/`, local): `loving-morse` (fix de assinatura de curadoria
   com testes), `dazzling-jang` (`command-signature`/`oneoff-store`), `dev`
   (2 commits de router + `scripts/detectors/` não versionado). Avaliar e
   reaproveitar ou descartar.
+  **AVALIADO em 2026-10-02**: `loving-morse` **aplicado** (limpo sobre o HEAD,
+  +14 testes, suíte 1294/0): heredoc deixa de colapsar a assinatura para o
+  programa puro (`node - <<EOF` → `node heredoc-<digest>`; `cat > f <<EOF` é
+  setup), `>&2`/`&>` não viram segmento, sig de 1 token de programa é marcável
+  como one-off, batch de `curation_mark_oneoff` não funde sigs sem relação — é a
+  raiz do bloqueio de `node`/`cat` do **U10** (o `error-store` usa `canonicalSig`).
+  `dazzling-jang`: versão anterior/paralela da mesma correção (`stripHeredocBodies`,
+  `markExact`/`markGroup`), superada pela `loving-morse` — descartada. `dev`:
+  "cache-aware sticky" e "upstream override + custom headers" já estão na `main`
+  em forma mais evoluída (modo `sticky-tier`; gateway `upstream` com
+  `forwardHeaders`/`endpoints`/`wireProtocol`) — descartada. MAS o não commitado
+  da `dev` traz uma FEATURE inacabada que não está na `main`:
+  `scripts/detectors/execution-guard-detect.js` (detector de `Stop`: o assistente
+  anuncia que vai editar — "vou corrigir", "I'll apply the fix" — e encerra o turno
+  sem chamar Edit/Write) + `getExecutionGuard` no `hooks-config` + ligação no
+  `stop-dispatcher` (`dev-uncommitted.patch` + `dev-untracked-detectors.tar`). Não
+  aplicado (feature nova, fora do escopo de correção) → item **F1** abaixo.
+  `openhands`: vitrine da v2.23.0, obsoleta — descartada.
+- [ ] **F1 — (feature candidata, resgatada da `dev`) `execution-guard-detect`.**
+  Decisão do dono: seguir com ela ou descartar. Se seguir: reaplicar sobre o HEAD
+  (o `stop-dispatcher` mudou), testes, e entrar na fila pesada do daemon como
+  detector do `Stop`.
+  Os patches seguem em `docs/plans/salvage/` (local) caso precise consultar.
 - [x] **O5 — preflight do `.vscode/scripts/test-units.mjs` não detecta devDependency
   ausente.** **RESOLVIDO em 2026-10-02** (ferramenta local, `.vscode/` não é
   versionado): o preflight resolve cada `devDependency` do `package.json` e falha
@@ -392,3 +415,9 @@ Lacunas conhecidas do gate de project id (2.29.1):
 ## CI/Infra
 
 - ~~`actions/setup-node@v4` sendo forçado a rodar em Node 24 mesmo mirando Node 20~~ — **RESOLVIDO em 2026-09-20**: `actions/setup-node@v4` → `@v6` em `ci.yml`, `release-audit.yml`, `release-guard.yml`, `pages-guard.yml` (runtime Node 24 nativo, elimina warning `forced to run on Node.js 24` em toda run).
+
+## Curation / command-signature
+
+- **Subshell/grupo `(...)`/`{...}` funde comandos não relacionados** (achado pré-existente, revisão round 2 do fix de misattribution, 2026-09-24): `(cd /p && git diff)` e `(cd /p && npm test)` assinam ambos `(cd /p` (NAV_SEGMENT não casa por causa do `(`); `(\ncd x\nnpm test\n)` e `{\n git log\n} > f` assinam `(`/`{` — 1 token não-programa: MCP recusa, não é ceiling-exempt, não é curável. Fix provável: `stripPrefixes` remover `(`/`{` iniciais (e `GROUP_CLOSE` já pula o fechamento). `scripts/lib/command-signature.js`.
+- **`ENV_ASSIGN` (`\S*`) come `$(` de command substitution** (pré-existente): `OUT=$(python3 - <<EOF ...)` → sig `''` (sinalizado sem sig, nada limpa); `X=$(git diff HEAD)` → `diff HEAD)` (perde o programa). Fix provável: tratar `VAR=$(cmd ...)` assinando pelo `cmd` interno.
+- **Programa chamado por caminho (`./gradlew`) não é ceiling-exempt** (pré-existente): `PROGRAM_NAME` exige nome sem `/`; `./gradlew | tail` → sig 1-token recusada pelo MCP. Ainda curável registrando o script. Avaliar aceitar `./x`/`bin/x` em `isCeilingExempt` (`scripts/lib/oneoff-store.js`).

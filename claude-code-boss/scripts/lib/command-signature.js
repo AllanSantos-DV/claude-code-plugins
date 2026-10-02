@@ -14,7 +14,14 @@
  * Limits (honest): a command embedded inside `-c "..."` (shell-in-shell) and
  * variable positional args (file paths) are best-effort — volume+recurrence is the
  * final net.
+ *
+ * Heredocs: an UNQUOTED heredoc's body is folded out (it is stdin data, not
+ * structure); one inside `"$(cat <<EOF ...)"` stays best-effort. A heredoc
+ * that only writes a file (`cat > f <<EOF`) is skipped as setup; a script fed on
+ * stdin (`node - <<EOF`) signs as `<cmd> heredoc-<digest>` — specific to that
+ * body, never the bare 1-token `node` that no one-hit marking may target.
  */
+const crypto = require('crypto');
 
 // Navigation/setup segments that are dropped entirely.
 const NAV_SEGMENT = /^(?:cd|pushd|popd)\b/;
@@ -42,6 +49,87 @@ const ENV_ASSIGN = /^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/;
 const WRAPPER_PREFIX = /^(?:env|time|nice|sudo|command|builtin|exec)\b\s+/;
 // A backslash before a newline JOINS the two lines -- it is not a separator.
 const LINE_CONT = /\\\r?\n/g;
+// Placeholder a folded heredoc leaves in its segment (`<<@0`). Starts with `<`, so
+// indexOfShellMeta still cuts there exactly like the original `<<'EOF'` operator.
+const HEREDOC_MARK = /<<@(\d+)/;
+// A heredoc that only WRITES a file (`cat > f <<EOF`, `cat <<EOF > f`, `tee f <<EOF`)
+// is setup for the segments that follow, not the work — skipped like `cd`.
+const HEREDOC_MARK_START = /^<<@\d+/;
+const GROUP_CLOSE = /^[)}]+$/;
+const HEREDOC_WRITE_SEGMENT =/^(?:cat\b[^|]*>|tee\b)[^|]*<<@\d+|^cat\b[^|]*<<@\d+[^|]*>/;
+
+/**
+ * Fold heredoc BODIES out of a command. A body is data fed on stdin, not shell
+ * structure: left in place, every body line became a segment (splitSegments splits
+ * on newlines) and a stray `'`/`"` in it flipped the quote state for the rest of the
+ * command. Each unquoted `<<[-]WORD` operator becomes a `<<@N` placeholder and its
+ * body lines (up to the WORD terminator line) are removed into `bodies[N]`.
+ * `<<<` (here-string) is not a heredoc. An unterminated heredoc swallows the rest.
+ * @param {string} command
+ * @returns {{ text: string, bodies: string[] }}
+ */
+function foldHeredocs(command) {
+  const s = String(command || '');
+  const bodies = [];
+  let out = '';
+  let pending = []; // heredocs opened on the current line: { idx, delim }
+  let inSingle = false, inDouble = false;
+  let arith = 0; // open `((` / `$((` arithmetic: `<<` there is a bit shift
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '\\' && !inSingle) { out += c + (s[i + 1] ?? ''); i++; continue; }
+    if (c === "'" && !inDouble) { inSingle = !inSingle; out += c; continue; }
+    if (c === '"' && !inSingle) { inDouble = !inDouble; out += c; continue; }
+    // Line-scoped (reset at newline): a stray `((` in a comment must not disable
+    // heredoc folding for the rest of the command.
+    if (!inSingle && !inDouble && s.startsWith('((', i)) { arith++; out += '(('; i++; continue; }
+    if (!inSingle && !inDouble && arith && s.startsWith('))', i)) { arith--; out += '))'; i++; continue; }
+    if (c === '\n' && !inSingle && !inDouble) arith = 0;
+    // `<<<` here-string: consume the whole operator, or its 2nd/3rd `<` would
+    // re-scan as a `<<` heredoc opener.
+    if (!inSingle && !inDouble && s.startsWith('<<<', i)) { out += '<<<'; i += 2; continue; }
+    if (!inSingle && !inDouble && !arith && c === '<' && s[i + 1] === '<') {
+      const m = /^<<-?[ \t]*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/.exec(s.slice(i));
+      if (m) {
+        const idx = bodies.length;
+        bodies.push('');
+        pending.push({ idx, delim: m[2] });
+        out += `<<@${idx}`;
+        i += m[0].length - 1;
+        continue;
+      }
+    }
+    if (c === '\n' && !inSingle && !inDouble && pending.length) {
+      out += c;
+      let pos = i + 1;
+      for (const h of pending) {
+        const lines = [];
+        let terminated = false;
+        while (pos < s.length) {
+          const nl = s.indexOf('\n', pos);
+          const end = nl === -1 ? s.length : nl;
+          const line = s.slice(pos, end);
+          pos = nl === -1 ? s.length : nl + 1;
+          if (line.trim() === h.delim) { terminated = true; break; }
+          lines.push(line.replace(/\r$/, ''));
+        }
+        bodies[h.idx] = lines.join('\n');
+        if (!terminated) break;
+      }
+      pending = [];
+      i = pos - 1;
+      continue;
+    }
+    out += c;
+  }
+  return { text: out, bodies };
+}
+
+/** Short stable digest of a heredoc body — CRLF/outer-whitespace insensitive. */
+function bodyDigest(body) {
+  const norm = String(body || '').replace(/\r\n/g, '\n').trim();
+  return crypto.createHash('sha1').update(norm).digest('hex').slice(0, 8);
+}
 
 function stripPrefixes(segment) {
   let s = segment.trim();
@@ -87,6 +175,9 @@ function splitSegments(command) {
       continue;
     }
     // Lone `&` backgrounds the command to its left -- a separator, unlike `&&`.
+    // Not inside a redirection (`>&2`, `2>&1`, `<&0`, `&>f`): splitting there made
+    // the fd number (`2`) its own segment, and so a junk 1-token signature.
+    if (c === '&' && (s[i - 1] === '>' || s[i - 1] === '<' || s[i + 1] === '>')) continue;
     if (c === '&') { out.push(s.slice(start, i)); start = i + 1; }
   }
   out.push(s.slice(start));
@@ -103,13 +194,22 @@ function splitSegments(command) {
  * @returns {string}
  */
 function principalSegment(command) {
-  const segments = splitSegments(command);
+  return principalOfFolded(foldHeredocs(command).text);
+}
+
+/** principalSegment over a command whose heredoc bodies are already folded. */
+function principalOfFolded(text) {
+  const segments = splitSegments(text);
   for (const seg of segments) {
     if (NAV_SEGMENT.test(seg)) continue;
     if (ASSIGN_ONLY_SEGMENT.test(seg)) continue;
     if (COMMENT_SEGMENT.test(seg)) continue;
     if (DECOR_SEGMENT.test(seg)) continue;
     const stripped = stripPrefixes(seg);
+    if (HEREDOC_WRITE_SEGMENT.test(stripped)) continue;
+    // No command of its own: the heredoc left behind by `VAR=$(cat <<EOF` once the
+    // assignment prefix is stripped, and the `)` line that closes that `$(`.
+    if (HEREDOC_MARK_START.test(stripped) || GROUP_CLOSE.test(stripped)) continue;
     if (stripped) return stripped;
   }
   return segments.length ? stripPrefixes(segments[segments.length - 1]) : '';
@@ -138,6 +238,9 @@ function indexOfShellMeta(s) {
     if (c === "'" && !inDouble) { inSingle = !inSingle; continue; }
     if (c === '"' && !inSingle) { inDouble = !inDouble; continue; }
     if (!inSingle && !inDouble && (c === '|' || c === '<' || c === '>')) return i;
+    // `&>f` / `&>>f` redirects both streams: cut at the `&`, or it leaks a trailing
+    // `&` token and the sig stops being a fixed point (pruneOrphanKeys drops it).
+    if (!inSingle && !inDouble && c === '&' && s[i + 1] === '>') return i;
   }
   return -1;
 }
@@ -149,14 +252,24 @@ function indexOfShellMeta(s) {
  * @returns {string}
  */
 function canonicalSig(command) {
-  let seg = principalSegment(command);
+  const { text, bodies } = foldHeredocs(command);
+  let seg = principalOfFolded(text);
   if (!seg) return '';
+  const heredoc = HEREDOC_MARK.exec(seg);
   // A pipe/redirection filters the command's output — it is not part of the
   // command's identity, so the signature is the command BEFORE it. Quoted or
   // escaped metachars are argument data and do NOT cut (see indexOfShellMeta).
   const cut = indexOfShellMeta(seg);
   if (cut >= 0) seg = seg.slice(0, cut);
-  return significantTokens(seg).join(' ');
+  const tokens = significantTokens(seg);
+  // Stdin-fed script (`node - <<EOF`, `bash -s <<EOF`): the program alone is not
+  // the identity — the BODY is what runs. Signing as bare `node` pooled every such
+  // script into one 1-token sig that curation_mark_oneoff must refuse as too broad.
+  // Only when the command itself names nothing more (<2 tokens): `psql db <<EOF`
+  // or `python3 x.py <<EOF` keeps its own sig across inputs.
+  // Never a digest ALONE: with no program named it would pool unrelated commands.
+  if (heredoc && tokens.length === 1) tokens.push(`heredoc-${bodyDigest(bodies[Number(heredoc[1])])}`);
+  return tokens.join(' ');
 }
 
 /**
@@ -173,4 +286,4 @@ function isGenericAlias(alias) {
   return sig.split(' ').filter(Boolean).length < 2;
 }
 
-module.exports = { canonicalSig, isGenericAlias, principalSegment, significantTokens, indexOfShellMeta, splitSegments };
+module.exports = { canonicalSig, isGenericAlias, principalSegment, significantTokens, indexOfShellMeta, splitSegments, foldHeredocs };
