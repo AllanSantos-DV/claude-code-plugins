@@ -260,6 +260,34 @@ real (2.29.0, porta 38217) seguiu intacto. Resultados (Claude Code 2.1.283):
   prompt (`brain_retrieve_context`, backend local): trava os guards durante a
   inferência. Medir o tempo por prompt; se relevante, mover para worker.
 
+### Validação na instalação REAL (install-local, 2026-10-02)
+
+- [x] **G13 — upgrade não trocava o daemon (achado e corrigido na hora)**. Depois do
+  `install-local` + `/reload-plugins`, a porta 38217 seguia com o daemon antigo
+  (2.29.0, cache `44a9ff6e1264`), sem as tools `hook_*` que os hooks novos chamam.
+  Causa: `daemon-supervisor.js` `ensureDaemon` compartilhava qualquer daemon cujo
+  `pluginRoot` ainda existe no disco, e o Claude Code mantém a pasta da versão
+  anterior no cache. Correção: uma instalação **estritamente mais nova** (semver do
+  `package.json` contra o `version` do `/health`) troca o daemon; versão igual,
+  mais velha ou ilegível continua compartilhando (nunca faz downgrade). Testes:
+  dono mais velho com pasta presente → `started`; versão igual → compartilha sem
+  sinal; dono mais novo → compartilha sem sinal.
+- [x] **G14 — teste G7 tocava estado global (achado e corrigido na hora)**. O teste
+  "dispatcher CLI exits on its own" rodava o `user-prompt-submit-dispatcher.js` real
+  com o env herdado: o `brain-daemon-ensure` agia na porta real 38217 e o
+  `model-router-ensure` no router/settings reais. Com o G13 isso apareceu: a suíte
+  trocou o daemon real por um de teste (dataDir temporário). Visto por `/health`;
+  rastreado instrumentando `ensureDaemon`. Correção: o teste roda com HOME/config
+  temporários, `CCB_ISOLATED=1`, `BRAIN_HTTP_AUTOSTART=0` e porta inválida. Prova:
+  units 1299/0 e hooks 117/0 sem nenhuma resolução da porta 38217 no trace.
+- [ ] **G15 — daemon de outra instalação é compartilhado mesmo servindo OUTRO
+  dataDir**. `ensureDaemon` (`daemon-supervisor.js`, bloco "sharing daemon owned by
+  another install") só olha `pluginRoot`/versão: se o dono serve um dataDir
+  diferente do pedido, as sessões desta instalação gravam no KB do outro. Visto
+  durante o G14 (daemon de teste com dataDir temporário foi "compartilhado").
+  Proposta: compartilhar só quando o dataDir canônico coincide; senão tratar como
+  conflito visível (erro com diagnóstico), sem derrubar o outro.
+
 ### UX / ruído visto usando a ferramenta (sessão de 2026-10-02)
 
 - [x] **U1 — `curation-guard` redireciona comando composto para script que não o
