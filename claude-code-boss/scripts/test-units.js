@@ -13572,6 +13572,34 @@ test('self-review-retrieve.retrieveViaDaemon: REAL daemon — sessions do not ac
   }
 });
 
+test('http-daemon: hook_* tools are NOT in tools/list (model never sees them) but stay callable by name for mcp_tool hooks', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hidehooks-'));
+  const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
+  const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0 });
+  const url = `http://127.0.0.1:${d.httpServer.address().port}/mcp`;
+  const H = { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' };
+  const post = async (body, sid) => {
+    const r = await fetch(url, { method: 'POST', headers: sid ? { ...H, 'mcp-session-id': sid } : H, body: JSON.stringify(body) });
+    const text = await r.text();
+    return { r, json: text ? JSON.parse(text) : null };
+  };
+  try {
+    const init = await post({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } } });
+    const sid = init.r.headers.get('mcp-session-id');
+    assert(sid, 'session id issued');
+    await post({ jsonrpc: '2.0', method: 'notifications/initialized' }, sid);
+    const list = await post({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }, sid);
+    const names = list.json.result.tools.map((t) => t.name);
+    assert(!names.some((n) => n.startsWith('hook_')), `hook_* must not be listed, got ${names.filter((n) => n.startsWith('hook_')).join(',')}`);
+    assert(names.includes('brain_search') && names.includes('capture_lesson'), 'model-facing tools stay listed');
+    const call = await post({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'hook_error_guard', arguments: { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'echo ok' }, session_id: 's', cwd: dir } } }, sid);
+    assert(call.json.result && !call.json.result.isError, `a hook tool stays callable by name, got ${JSON.stringify(call.json).slice(0, 300)}`);
+  } finally {
+    await d.shutdown();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('http-daemon: unknown mcp-session-id → 404 (client re-initializes); no id + non-initialize → 400 (G16)', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-404-'));
   const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);

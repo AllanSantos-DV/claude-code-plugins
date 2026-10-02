@@ -1796,7 +1796,11 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
 
   // ─── Server wiring ──────────────────────────────────────────────────────────
   const server = new Server({ name: 'brain-server', version: '2.0.0' }, { capabilities: { tools: {} } });
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS }));
+  // The hook_* tools are called by Claude Code's `mcp_tool` hooks BY NAME and are never
+  // the model's to call: listing them cost context in every session and invited misuse.
+  // Verified in real Claude Code 2.1.283 (2026-10-02): with them unlisted, PostToolUse
+  // side effects ran and a blocking PreToolUse guard (error-guard) still denied.
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS.filter((t) => !t.name.startsWith('hook_')) }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     return KB_TOOLS.has(name) ? dispatchKbTool(name, args, () => handleTool(name, args)) : handleTool(name, args);
