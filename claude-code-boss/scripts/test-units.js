@@ -2472,6 +2472,58 @@ test('failure-journal: append + read roundtrip', () => {
   assert(fjournal.readEntries(sid).length === 0, 'clear wiped');
 });
 
+// ─── transcript-tail (G1: bounded reads, no whole-file readFileSync in Stop) ──
+const transcriptTail = require('./lib/transcript-tail.js');
+function _tailTmp(name, content) {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-tail-'));
+  const f = path.join(d, name);
+  fs.writeFileSync(f, content);
+  return f;
+}
+const _naiveTail = (f, n) => fs.readFileSync(f, 'utf-8').split('\n').filter(Boolean).slice(-n);
+
+test('transcript-tail.readTailLines: same lines as the whole-file read (multibyte, blank lines, a 300 KB line)', () => {
+  const lines = [];
+  for (let i = 0; i < 400; i++) lines.push(JSON.stringify({ i, t: i % 7 ? `ação ${i} 🚀` : 'x'.repeat(i === 350 ? 300000 : 50) }));
+  const f = _tailTmp('t.jsonl', lines.join('\n') + '\n\n');
+  for (const n of [1, 5, 30, 60, 1000]) {
+    assertEq(JSON.stringify(transcriptTail.readTailLines(f, n)), JSON.stringify(_naiveTail(f, n)), `maxLines=${n}`);
+  }
+});
+
+test('transcript-tail.readTailLines: reads only the tail of a big file, not the whole thing', () => {
+  const small = Array.from({ length: 30 }, (_, i) => JSON.stringify({ type: 'assistant', i }));
+  const f = _tailTmp('big.jsonl', 'y'.repeat(200) + '\n' + ('z'.repeat(1000) + '\n').repeat(20000) + small.join('\n') + '\n');
+  const size = fs.statSync(f).size;
+  const orig = fs.readSync;
+  let bytes = 0;
+  fs.readSync = function (fd, buf, off, len, pos) { const n = orig.call(fs, fd, buf, off, len, pos); bytes += n; return n; };
+  let got;
+  try { got = transcriptTail.readTailLines(f, 30); } finally { fs.readSync = orig; }
+  assertEq(JSON.stringify(got), JSON.stringify(small));
+  assert(bytes < 256 * 1024, `read ${bytes} of ${size} bytes — must stay near the tail`);
+});
+
+test('transcript-tail.readTailLines: byte cap returns only complete lines; missing file → []', () => {
+  const f = _tailTmp('cap.jsonl', ['a'.repeat(5000), 'b'.repeat(5000), 'c'.repeat(10)].join('\n') + '\n');
+  assertEq(JSON.stringify(transcriptTail.readTailLines(f, 30, 6000)), JSON.stringify(['b'.repeat(5000), 'c'.repeat(10)]));
+  assertEq(JSON.stringify(transcriptTail.readTailLines(path.join(os.tmpdir(), 'nope-ccb-tail.jsonl'), 30)), '[]');
+  assertEq(JSON.stringify(transcriptTail.readTailLines('', 30)), '[]');
+});
+
+test('transcript-tail.readTailText + clampRaw: identical to clamping the whole file (31 MB multibyte transcript)', async () => {
+  const convIngestMod = require('./conversation-ingest.js');
+  const line = JSON.stringify({ type: 'user', text: 'é'.repeat(500) + ' ação 🚀' }) + '\n';
+  const f = _tailTmp('huge.jsonl', line.repeat(Math.ceil(31e6 / Buffer.byteLength(line))));
+  const SAFE = 7_500_000;
+  const whole = convIngestMod.clampRaw(fs.readFileSync(f, 'utf-8'));
+  const tail = convIngestMod.clampRaw(await transcriptTail.readTailText(f, SAFE * 4 + 4));
+  assertEq(tail.length, whole.length, 'same window length');
+  assert(tail === whole, 'same window content');
+  const small = _tailTmp('small.jsonl', 'one\ntwo\n');
+  assertEq(await transcriptTail.readTailText(small, 1000), 'one\ntwo\n');
+});
+
 // ─── retrieval-feedback (Plan #1) ────────────────────────────────────────────
 const rfeedback = require('./retrieval-feedback.js');
 const rjournal = require('./lib/retrieval-journal.js');
