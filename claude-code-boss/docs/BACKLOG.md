@@ -255,12 +255,14 @@ real (2.29.0, porta 38217) seguiu intacto. Resultados (Claude Code 2.1.283):
   inicial não foi medida). Medir na instalação real (1ª sessão após boot) e
   avaliar subir o daemon já no `SessionStart` ou no logon (como o token-guard).
   **MEDIDO em 2026-10-02 (G16)**: o cliente tem retentativas de conexão inicial (0,5/1,5/4 s) e depois reconecta; no experimento C a sessão fria passou de ECONNREFUSED a conectada sozinha; num `-p` de 1 turno, só o 1º turno fica sem MCP. O `SessionStart` já roda o `brain-daemon-ensure`. Sem ação adicional (logon/keeper recusados pelo usuário).
-- [ ] **O13 — RSS do daemon com backend local: ~533 MB parado** em sessão real
+- [x] **O13 — RSS do daemon com backend local: ~533 MB parado** em sessão real
   (bench sem embedder: ~440 MB). Medir a divisão (embedder na thread principal,
   N slots do pool do KB, hook worker) antes de otimizar.
-- [ ] **G12 — inferência do embedder na thread principal do daemon** a cada
+  **MEDIDO em 2026-10-02**: processo só com o embedder carregado = 594 MB; o modelo (~400 MB com onnxruntime) é a maior parte, em UMA cópia (o pool do KB não carrega o embedder — só store/index/graph/metrics). Com backend mcp-memory o modelo não carrega: daemon real ~203 MB. É o custo inerente da busca semântica local; mover de thread (G12) não muda a memória. Sem ação adicional.
+- [x] **G12 — inferência do embedder na thread principal do daemon** a cada
   prompt (`brain_retrieve_context`, backend local): trava os guards durante a
   inferência. Medir o tempo por prompt; se relevante, mover para worker.
+  **RESOLVIDO em 2026-10-02**: medido — cada embed bloqueava o laço 18–33 ms (prompt longo, máquina rápida; ollama usa execFileSync). Agora `embed-worker.js` + `embed-worker-client.js`: o daemon instala o worker como delegate do `brain-embedder` (`setDelegate`), sem mudar os pontos de chamada; falha/timeout → null (keyword) com log, worker morto é recriado; módulo ausente não impede o boot. Modelo real no worker: 384 dims, atraso máximo do laço 32,5 → 3,0 ms em 10 embeds longos. Testes: stub com 600 ms síncronos sem travar o laço, crash → null + respawn, roteamento do delegate.
 
 ### Validação na instalação REAL (install-local, 2026-10-02)
 

@@ -172,7 +172,14 @@ async function embedBatchVoyage(texts) {
   }
 }
 
+// In the brain daemon the model runs in a worker thread (G12: an embed blocked the
+// shared event loop 18–33 ms). The daemon installs a delegate with this same API;
+// every in-process consumer then goes through it without changing its call site.
+let _delegate = null;
+function setDelegate(delegate) { _delegate = delegate || null; }
+
 async function init() {
+  if (_delegate) return _delegate.init();
   if (_initialized) return true;
   loadConfig();
   let ok = false;
@@ -195,6 +202,7 @@ async function init() {
 }
 
 async function embed(text) {
+  if (_delegate) return _delegate.embed(text);
   if (!_initialized && !(await init())) return null;
   switch (_provider) {
     case 'transformers':
@@ -209,6 +217,7 @@ async function embed(text) {
 }
 
 async function embedBatch(texts) {
+  if (_delegate) return _delegate.embedBatch(texts);
   if (!_initialized && !(await init())) return null;
   switch (_provider) {
     case 'transformers':
@@ -222,7 +231,7 @@ async function embedBatch(texts) {
   }
 }
 
-function getDimensions() { return _dimensions; }
+function getDimensions() { return _delegate ? _delegate.getDimensions() : _dimensions; }
 
 function getProvider() { return _provider; }
 
@@ -233,6 +242,7 @@ function getModel() { loadConfig(); return _model; }
 function getModelCacheDir() { return modelCacheDir(); }
 
 function getStatus() {
+  if (_delegate) return _delegate.getStatus();
   return {
     provider: _provider,
     model: _model,
@@ -242,4 +252,4 @@ function getStatus() {
   };
 }
 
-module.exports = { init, embed, embedBatch, getDimensions, getProvider, getModel, getModelCacheDir, getStatus };
+module.exports = { init, embed, embedBatch, getDimensions, getProvider, getModel, getModelCacheDir, getStatus, setDelegate };
