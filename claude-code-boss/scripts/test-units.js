@@ -21145,6 +21145,27 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
     assertEq(cp.findProjectRoot(sub), sub, 'after reset the walk-up runs again');
   });
 
+  test('curation-paths.findProjectRoot never adopts the HOME folder (a stray ~/.vscode/shells.json, seen in the field)', () => {
+    const cp = require('./curation-paths.js');
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-homeroot-'));
+    fs.mkdirSync(path.join(home, '.vscode'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.vscode', 'shells.json'), '{"shells":[]}');
+    const sub = path.join(home, 'Desktop', 'scratch'); fs.mkdirSync(sub, { recursive: true });
+    const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+    process.env.HOME = home; process.env.USERPROFILE = home;
+    try {
+      cp._resetConfigCache();
+      assertEq(cp.findProjectRoot(sub), null, 'a folder without its own config/markers has no curation root — not ~');
+      fs.writeFileSync(path.join(sub, 'package.json'), '{}');
+      cp._resetConfigCache();
+      assertEq(cp.findProjectRoot(sub), sub, 'its own marker still makes it the root');
+    } finally {
+      process.env.HOME = saved.HOME; process.env.USERPROFILE = saved.USERPROFILE;
+      cp._resetConfigCache();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   test('G9: an edited curation config is seen by the next daemon hook call (curation-paths cache follows hooks-config)', async () => {
     const hooksCfg = require('./lib/hooks-config.js');
     const cp = require('./curation-paths.js');

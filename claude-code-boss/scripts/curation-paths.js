@@ -22,6 +22,7 @@
  */
 const fs   = require('fs');
 const path = require('path');
+const os = require('os');
 
 
 const DEFAULTS = {
@@ -81,7 +82,13 @@ function _walkProjectRoot(cwd) {
   const candidates = [cfg.shellsConfigPath, ...cfg.shellsConfigSearch];
   let dir = cwd;
   let nearestMarker = null;
+  // Never adopt the HOME folder (or anything above it) as a project: a stray
+  // ~/.vscode/shells.json (seen in the field) made every folder without its own
+  // config inherit the home's curated scripts — and ~/.claude/settings.json read as
+  // "project settings". Same stop rule as the project-id climb.
+  const home = path.resolve(os.homedir()).toLowerCase();
   for (let i = 0; i < 10; i++) {
+    if (path.resolve(dir).toLowerCase() === home) break;
     const hasProjectMarker = PROJECT_MARKERS.some(marker => fs.existsSync(path.join(dir, marker)));
     for (const rel of candidates) {
       if (fs.existsSync(path.join(dir, rel)) && (!nearestMarker || hasProjectMarker)) return dir;
