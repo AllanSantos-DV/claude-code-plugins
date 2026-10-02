@@ -195,6 +195,16 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   `errorGuard.windowDays` (90 dias) da config. Testes: 11 do store saíram; o do
   `failure-detect` passou a verificar o journal de falhas (o efeito que ficou);
   fixtures do `error-guard` só com transcript. Docs: README, CONFIGURATION.
+- [ ] **O12 — 39 pastas `_boss-backup-*` (2,4 GB) acumuladas em
+  `~/.claude/plugins/data/`** (vistas em 2026-10-02, de 2026-07-18 a 2026-08-01).
+  Parecem backups da consolidação de data-dirs sem poda. Verificar quem cria
+  (`consolidate-datadirs`?), limitar retenção (ex.: últimos N / X dias) e oferecer
+  limpeza no doctor/dashboard.
+- [x] **Proteção de sessão isolada (achado ao preparar a validação, 2026-10-02)**:
+  numa config isolada o `model-router-ensure` ainda mexeria em estado da máquina
+  (porta fixa do router, limpeza de env de usuário via PowerShell, shim do
+  `claude.exe`). `CCB_ISOLATED=1` faz ele não gerenciar o router (commit
+  e4954b2). Teste: nenhum processo é disparado com a variável ligada.
 - [x] **U12 — `graph-guard` trata `grep -rn padrão arq1 arq2 …` com arquivos
   explícitos como "busca recursiva ampla"** e nega (deny-once). Visto em
   2026-10-02. `lib/graph-guard-core.js` `matchBroadBashSearch`: só deveria valer
