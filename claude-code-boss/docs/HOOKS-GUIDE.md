@@ -27,7 +27,11 @@ A maioria dos hooks não sobe mais um processo Node por disparo: o `hooks.json` 
 - Nada síncrono e caro no caminho do hook: um `execFileSync` trava o event loop de todas as sessões (por isso o `git rev-parse` de `lib/project-id.js` tem memo de 30 s).
 - **Fail-open visível:** exceção na tool → `systemMessage` "[claude-code-boss] hook X degradado no daemon (fail-open): …", sem bloquear. Daemon fora do ar → o Claude Code trata o `mcp_tool` como erro não bloqueante.
 - Hooks irmãos no mesmo evento rodam em paralelo; em PreToolUse, `deny` vence.
-- Ficam como `command` os hooks que precisam funcionar **sem** o daemon: `SessionStart`, `SubagentStart`, `user-prompt-submit-dispatcher` (`brain-daemon-ensure`, `brain-health`, `brain-status`) e `model-router-ensure`.
+- **Duas filas no daemon.** Rápida (thread principal): guards de `PreToolUse`, `graph-guard`, detectores de prompt, `policy-glob-inject`, `policy-inject`. Pesada (`lane: 'heavy'`, worker próprio `servers/brain-server/lib/hook-worker.js`, FIFO serial): `Stop` e os hooks de efeito colateral de `PostToolUse` — tudo que faz SQLite síncrono ou I/O de journal/transcript. A FIFO garante que a escrita de um `PostToolUse` cai antes do `Stop` que a lê. Hook novo que faz SQLite/I/O pesado vai para a fila pesada.
+- **Fire-and-forget:** hook pesado que sempre devolve `{}` leva `async: true` — responde `{}` na hora e roda em segundo plano na mesma FIFO. Falha dele aparece como `systemMessage` no próximo `Stop` daquela sessão.
+- **Prazo:** cada tool tem prazo = `timeout` do `hooks.json` − 1 s. Passou do prazo, responde a mensagem de fail-open visível; na fila pesada o job que ainda nem começou é descartado. Código síncrono não é abortável: um hook que passa do prazo termina em segundo plano.
+- Transcript: leia só o final (`lib/transcript-tail.js`), nunca `readFileSync` do arquivo inteiro.
+- Ficam como `command` os hooks que precisam funcionar **sem** o daemon: `SessionStart`, `user-prompt-submit-dispatcher` (`brain-daemon-ensure`, `brain-health`, `brain-status`) e `model-router-ensure`.
 - Para um hook novo: adicione a entrada em `HOOKS`, a entrada `mcp_tool` no `hooks.json`, o caso de paridade em `test-units.js` (mesma saída via stdin e via tool) e a linha no README.
 
 Eventos em uso: `SessionStart`, `SubagentStart`, `UserPromptSubmit`, `UserPromptExpansion`, `PreToolUse` (com `matcher`), `PostToolUse`, `PostToolUseFailure`, `Stop`.

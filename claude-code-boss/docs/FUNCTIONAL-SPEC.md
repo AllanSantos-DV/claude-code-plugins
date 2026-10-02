@@ -185,13 +185,17 @@ Stop Hook
     └─► policy-enforce (enforça policies glob/glob)
 ```
 
-**Transporte dos hooks (2.29.1, ADR-015):** fora `SessionStart`, `SubagentStart`, o
+**Transporte dos hooks (2.29.1, ADR-015):** fora `SessionStart`, o
 `user-prompt-submit-dispatcher` e o `model-router-ensure`, os hooks são `mcp_tool`
 (`hook_<nome>`) executados in-process no daemon HTTP do brain-server (porta padrão
 38217), em vez de um processo Node por disparo. Uma exceção na tool vira
 `systemMessage` de degradação (fail-open visível); daemon fora do ar = erro não
 bloqueante do Claude Code. Medido: 8,9 ms p50 por hook (antes 122 ms) e 60 hooks
 concorrentes em 0,6–1,9 s (antes 7–8 s), com 234 MB no daemon.
+Hardening (backlog G1–G6): `Stop` e os hooks de efeito colateral de `PostToolUse`
+rodam num worker do daemon (fila FIFO), fora da thread que atende os guards; os que
+sempre devolvem `{}` respondem na hora; cada hook tem prazo de `timeout − 1 s`; o
+`Stop` lê só o final do transcript; o `SubagentStart` também roda no daemon.
 
 ---
 

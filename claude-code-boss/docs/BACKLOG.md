@@ -88,9 +88,22 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   passa do prazo termina em segundo plano. Testes: prazos derivados do
   `hooks.json`, hook inline travado responde no prazo, `Stop` preso atrás da fila
   responde no prazo e depois é pulado (worker real).
-- [ ] **G6 — `SubagentStart` ainda sobe 1 `node` por subagente** (`policy-inject.js`,
+- [x] **G6 — `SubagentStart` ainda sobe 1 `node` por subagente** (`policy-inject.js`,
   `hooks/hooks.json:21-31`) — exatamente o cenário de fan-out. `mcp_tool` funciona
   nesse evento. Fix: migrar para `mcp_tool`.
+  **RESOLVIDO em 2026-10-02**: `hook_policy_inject` (fila rápida; ecoa
+  `hook_event_name` como o CLI) e `SubagentStart` no `hooks.json` como `mcp_tool`.
+  Bench (60 `SubagentStart` simultâneos): spawn ~3,9–4,0 s com 60 processos
+  `node` → daemon ~0,26 s, 0 processos. Testes: paridade sem política e com
+  política ATIVA (byte a byte com o CLI, eco `SubagentStart`, silêncio após
+  desativar); `policy-inject` na lista de scripts que não podem mais ser
+  spawnados. Achado e corrigido na hora: `config-testers: hooks validates this
+  repo hooks.json` tinha piso fixo `>= 5` hooks `command` — virou a contagem exata
+  lida do `hooks.json`. Docs: README, HOOKS-GUIDE (filas, fire-and-forget, prazo,
+  leitura do final do transcript — cobre G1–G5), FUNCTIONAL-SPEC.
+  **Pendente de validação no Claude Code real** (instalação isolada, antes do
+  pacote): confirmar que o `mcp_tool` no `SubagentStart` injeta no contexto do
+  subagente — o dossiê afirma suporte ao evento, este teste roda fora do harness.
 - [ ] **G7 — `UserPromptSubmit` sobe 2 `node` por prompt** (`model-router-ensure` +
   `user-prompt-submit-dispatcher`, `hooks/hooks.json:240-254`) e roda também em
   cada `<task-notification>` de agente em background. Fix: um só spawn, saída
@@ -116,7 +129,9 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
 - [ ] **U2 — `error-guard` bloqueia por falhas registradas em OUTRO cwd** (falhou em
   `claude-code-boss/`, bloqueou na raiz onde funcionaria): a chave ignora o cwd.
 - [ ] **U3 — script curado proíbe pipe e trunca a saída ("--full to see")**,
-  forçando nova execução.
+  forçando nova execução. E a detecção de pipe olha o comando INTEIRO, não o
+  segmento: `… test-hooks.mjs && node release-audit.mjs check | tail -2` foi
+  bloqueado como "script curado com pipe" — o pipe era do `release-audit`.
 - [ ] **U4 — assinatura de uso único genérica demais** (`ls lib` de um comando
   `ls lib && wc … && grep …`): marcar como one-off silencia qualquer `ls lib`.
 - [ ] **U5 — comandos de subagente entram na curadoria do `Stop` do pai** (o `find`

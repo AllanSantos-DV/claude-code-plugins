@@ -98,6 +98,9 @@ const HOOKS = {
   hook_correction_detect: { script: 'correction-detect.js', call: async (m, ev) => additional(ev.hook_event_name || 'UserPromptSubmit', await m.run(ev)) },
   hook_active_research_detect: { script: 'active-research-detect.js', call: async (m, ev) => additional(ev.hook_event_name || 'UserPromptSubmit', await m.run(ev)) },
   hook_policy_glob_inject: { script: 'policy-glob-inject.js', call: async (m, ev) => json(await m.evaluate(ev)) },
+  // context-bearing (G6): standing policies into every subagent's context. Was one
+  // `node` spawn per subagent — the fan-out case. Echoes the event name like the CLI.
+  hook_policy_inject: { script: 'policy-inject.js', call: async (m, ev) => additional(ev.hook_event_name || 'SessionStart', await m.run(ev)) },
   // sync-real. curation-guard + error-guard are SIBLING hooks on PreToolUse/Bash
   // (Claude Code: deny wins, verified in spike S1b): curation keeps the
   // dispatcher's default allow, error-guard only ever speaks to deny.
