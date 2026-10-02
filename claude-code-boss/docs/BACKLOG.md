@@ -201,7 +201,9 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
 - [ ] **U1 — `curation-guard` redireciona comando composto para script que não o
   cobre** (`git log …; git diff --shortstat; git show --stat` → `git-log-branch.mjs`,
   sem data nem diffstat) e sugere caminho relativo (`.vscode/scripts/…`) que
-  quebra fora da raiz do repo. **Decisão do dono**: hoje QUALQUER segmento que
+  quebra fora da raiz do repo. **Decisão do dono (2026-10-02)**: entender melhor o
+  comportamento — pesquisar, medir, testar cenários — e escolher pelo resultado dos
+  testes (nada de mudar no escuro). Contexto da análise: hoje QUALQUER segmento que
   bate com um alias nega o comando composto inteiro (`shells-config.js:149-160`).
   Proposta: negar só quando o alias é o comando todo (ou o único segmento
   significativo); em composto, permitir + `additionalContext` apontando o script
@@ -220,6 +222,9 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   (sessão, sig) injetando a causa — o retry idêntico na mesma sessão passa (padrão
   que o `graph-guard` já usa) — e/ou considerar o cwd quando o comando tem caminho
   relativo. Mantém o objetivo (o agente vê a causa antes de repetir) sem travar.
+  **Decisão do dono (2026-10-02)**: NÃO liberar por retentativa — o modelo aprende
+  a burlar e nunca corrige a causa; e janela de 90 dias está errada. Mesmo método
+  do U1: pesquisar, medir, testar cenários e escolher pelo resultado.
 - [~] **U3 — script curado proíbe pipe e trunca a saída ("--full to see")**,
   forçando nova execução. E a detecção de pipe olha o comando INTEIRO, não o
   segmento: `… test-hooks.mjs && node release-audit.mjs check | tail -2` foi
@@ -324,10 +329,10 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   `stop-dispatcher` (`dev-uncommitted.patch` + `dev-untracked-detectors.tar`). Não
   aplicado (feature nova, fora do escopo de correção) → item **F1** abaixo.
   `openhands`: vitrine da v2.23.0, obsoleta — descartada.
-- [ ] **F1 — (feature candidata, resgatada da `dev`) `execution-guard-detect`.**
-  Decisão do dono: seguir com ela ou descartar. Se seguir: reaplicar sobre o HEAD
-  (o `stop-dispatcher` mudou), testes, e entrar na fila pesada do daemon como
-  detector do `Stop`.
+- [ ] **F1 — (feature, resgatada da `dev`) `execution-guard-detect`.**
+  **Decisão do dono (2026-10-02)**: ENTRA na nova major, mas precisa ser melhor
+  desenhada antes (ainda está crua) — não analisar agora. Quando for: redesenhar,
+  reaplicar sobre o HEAD (o `stop-dispatcher` mudou), testes, fila pesada do daemon.
   Os patches seguem em `docs/plans/salvage/` (local) caso precise consultar.
 - [x] **O5 — preflight do `.vscode/scripts/test-units.mjs` não detecta devDependency
   ausente.** **RESOLVIDO em 2026-10-02** (ferramenta local, `.vscode/` não é
