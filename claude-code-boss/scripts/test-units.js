@@ -3731,6 +3731,38 @@ test('G12 brain-embedder.setDelegate: every consumer is routed to the delegate; 
   assert(emb.getStatus().provider !== 'delegate', 'local status is back after setDelegate(null)');
 });
 
+test('C1 curation-families: exploration / inline / task classes (compound = task if any segment is a task)', () => {
+  const { classifyCommand } = require('./lib/curation-families.js');
+  const cases = {
+    'git log --oneline -6': 'exploration', 'git status --short | head': 'exploration', 'git -C repo diff a.js': 'exploration',
+    'sed -n 1,40p a.js': 'exploration', 'cat big.json': 'exploration', 'ls': 'exploration', 'grep -rn foo .': 'exploration',
+    'node -e "console.log(1)"': 'inline', 'python - <<EOF\nprint(1)\nEOF': 'inline', 'FOO=1 node -e 1': 'inline', 'bash -c "ls"': 'inline',
+    'node scripts/test-units.js 2>&1 | tail -40': 'task', 'npm test': 'task', 'git commit -m x': 'task', 'git -C repo push': 'task',
+    'grep -rn foo . && node scripts/test-hooks.js': 'task',
+  };
+  for (const [cmd, want] of Object.entries(cases)) assertEq(classifyCommand(cmd), want, cmd);
+});
+
+test('C1 curation-families: Token Guard detected from a PostToolUse hook in user or project settings (cached by mtime)', () => {
+  const fam = require('./lib/curation-families.js');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-tg-home-'));
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-tg-proj-'));
+  try {
+    fam._resetTokenGuardCache();
+    assertEq(fam.tokenGuardActive({ projectRoot: proj, home }), false, 'no settings → inactive');
+    fs.mkdirSync(path.join(proj, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(proj, '.claude', 'settings.json'), JSON.stringify({ hooks: { PostToolUse: [{ hooks: [{ type: 'command', command: 'node "/x/token-guard/adapters/post-hook.cjs"' }] }] } }));
+    assertEq(fam.tokenGuardActive({ projectRoot: proj, home }), true, 'project PostToolUse token-guard hook → active');
+    fs.mkdirSync(path.join(home, '.claude'), { recursive: true });
+    fs.writeFileSync(path.join(home, '.claude', 'settings.json'), JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ command: 'token-guard pre' }] }] } }));
+    fs.rmSync(path.join(proj, '.claude'), { recursive: true, force: true });
+    assertEq(fam.tokenGuardActive({ projectRoot: proj, home }), false, 'only a PreToolUse mention does not count (PostToolUse bounds output)');
+  } finally {
+    fam._resetTokenGuardCache();
+    fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(proj, { recursive: true, force: true });
+  }
+});
+
 test('recall-health.isDegraded: classifies degraded vs ok reasons', () => {
   const rh = require('./lib/recall-health.js');
   assert(rh.isDegraded('no-compose') && rh.isDegraded('remote-error') && rh.isDegraded('timeout'), 'degraded reasons');
@@ -17391,8 +17423,13 @@ test('U5: curation-detect journals a bulky MAIN-session command, not a sub-agent
   const bulky = { stdout: 'x\n'.repeat(400), stderr: '' };
   const base = { hook_event_name: 'PostToolUse', tool_name: 'Bash', cwd: process.env.CLAUDE_PLUGIN_DATA, tool_response: bulky };
   const sMain = `u5-main-${Date.now()}`; const sSub = `u5-sub-${Date.now()}`;
-  await cd.run({ ...base, session_id: sMain, tool_input: { command: `cat u5-main-${Date.now()}.log` } });
-  await cd.run({ ...base, session_id: sSub, agent_id: 'ad838ed94863c25b6', agent_type: 'general-purpose', tool_input: { command: `cat u5-sub-${Date.now()}.log` } });
+  // A TASK command (C3: exploration like `cat` is never curated), run twice — the first
+  // noisy occurrence stays pending, the second is journaled for the Stop.
+  const mainCmd = `node scripts/u5-main-${Date.now()}.js`; const subCmd = `node scripts/u5-sub-${Date.now()}.js`;
+  for (let i = 0; i < 2; i++) {
+    await cd.run({ ...base, session_id: sMain, tool_input: { command: mainCmd } });
+    await cd.run({ ...base, session_id: sSub, agent_id: 'ad838ed94863c25b6', agent_type: 'general-purpose', tool_input: { command: subCmd } });
+  }
   assertEq(tj.readEntries(sMain).length, 1, 'main session: bulky command journaled for its Stop');
   assertEq(tj.readEntries(sSub).length, 0, 'sub-agent: not journaled for the parent Stop');
   const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;

@@ -13,6 +13,15 @@ const fs = require('fs');
 const os = require('os');
 
 const SCRIPTS = path.resolve(__dirname);
+
+// C3 (Phase C): a task command is only journaled for curation from its 2nd noisy
+// occurrence. Tests that exercise the journal seed ONE prior occurrence first.
+function seedRecurrence(dataDir, cwd, commands) {
+  const oneoff = require('./lib/oneoff-store.js');
+  const key = oneoff.resolveProjectKey(cwd);
+  for (const c of [].concat(commands)) oneoff.touch(dataDir, key, c, { create: true });
+  return dataDir;
+}
 const VERBOSE = process.argv.includes('--verbose');
 const FILTER = process.argv.find(a => !a.startsWith('-') && a !== process.argv[0] && a !== process.argv[1]);
 
@@ -1123,7 +1132,7 @@ const TESTS = [
     script: 'posttoolusefailure-dispatcher.js',
     payload: { ...require('./__fixtures__/post-tool-use-failure.json'), session_id: SESSION },
     expect: { noError: true },
-    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ptuf-data-')) }),
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: seedRecurrence(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ptuf-data-')), 'C:\fixture', 'npm test') }),
     validateWithEnv: (r, env) => {
       if (!r.parsed || Object.keys(r.parsed).length !== 0) return `dispatcher must always reply {}, got: ${JSON.stringify(r.parsed)}`;
       const runtimeDir = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime');
@@ -1475,7 +1484,7 @@ const TESTS = [
     script: 'curation-detect.js',
     payload: { ...require('./__fixtures__/post-tool-use-success-noisy.json'), session_id: SESSION },
     expect: { noError: true },
-    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-det-lrg-')) }),
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: seedRecurrence(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-det-lrg-')), 'C:\fixture', 'npm test') }),
     validateWithEnv: (r, env) => {
       // Journal: one file per entry under .runtime/curation-turn-<sid>--<ts>-<rand>.json
       const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
@@ -1490,11 +1499,50 @@ const TESTS = [
     },
   },
   {
+    // C3: exploration output (git log …) is never curated per project — no journal.
+    name: 'curation-detect   [C3: noisy EXPLORATION (git log) → no curation journal]',
+    script: 'curation-detect.js',
+    payload: { ...require('./__fixtures__/post-tool-use-success-noisy.json'), tool_input: { command: 'git log --stat -50' }, session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: seedRecurrence(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-c3-expl-')), 'C:\\fixture', ['git log --stat -50', 'git log --stat -50']) }),
+    validateWithEnv: (r, env) => {
+      const rt = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime');
+      const files = fs.existsSync(rt) ? fs.readdirSync(rt).filter(f => f.startsWith('curation-turn-')) : [];
+      return files.length === 0 ? null : `exploration must not be journaled for curation, got ${files.join(',')}`;
+    },
+  },
+  {
+    // C3: inline code (node -e) is single-use by definition — no journal, even recurring.
+    name: 'curation-detect   [C3: noisy INLINE (node -e) → no curation journal]',
+    script: 'curation-detect.js',
+    payload: { ...require('./__fixtures__/post-tool-use-success-noisy.json'), tool_input: { command: 'node -e "for(let i=0;i<9999;i++)console.log(i)"' }, session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: seedRecurrence(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-c3-inl-')), 'C:\\fixture', ['node -e "for(let i=0;i<9999;i++)console.log(i)"']) }),
+    validateWithEnv: (r, env) => {
+      const rt = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime');
+      const files = fs.existsSync(rt) ? fs.readdirSync(rt).filter(f => f.startsWith('curation-turn-')) : [];
+      return files.length === 0 ? null : `inline code must not be journaled for curation, got ${files.join(',')}`;
+    },
+  },
+  {
+    // C3: a TASK command's FIRST noisy occurrence stays pending — no journal yet.
+    name: 'curation-detect   [C3: TASK first noisy occurrence → pending, no journal]',
+    script: 'curation-detect.js',
+    payload: { ...require('./__fixtures__/post-tool-use-success-noisy.json'), session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-c3-first-')) }),
+    validateWithEnv: (r, env) => {
+      const rt = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime');
+      const files = fs.existsSync(rt) ? fs.readdirSync(rt).filter(f => f.startsWith('curation-turn-')) : [];
+      return files.length === 0 ? null : `a first occurrence must stay pending, got ${files.join(',')}`;
+    },
+  },
+  {
     name: 'curation-detect   [PostToolUseFailure→needs-curation]',
     script: 'curation-detect.js',
     payload: { ...require('./__fixtures__/post-tool-use-failure.json'), session_id: SESSION },
     expect: { noError: true },
-    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-det-fail-')) }),
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: seedRecurrence(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-det-fail-')), 'C:\fixture', 'npm test') }),
     validateWithEnv: (r, env) => {
       const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
       const runtimeDir = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime');
@@ -1588,7 +1636,7 @@ const TESTS = [
     script: 'posttoolusebash-dispatcher.js',
     payload: { ...require('./__fixtures__/post-tool-use-success-noisy.json'), session_id: SESSION },
     expect: { noError: true },
-    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ptub-data-')) }),
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: seedRecurrence(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ptub-data-')), 'C:\fixture', 'npm test') }),
     validateWithEnv: (r, env) => {
       if (!r.parsed || Object.keys(r.parsed).length !== 0) return `dispatcher must always reply {}, got: ${JSON.stringify(r.parsed)}`;
       const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
@@ -2555,6 +2603,7 @@ console.log(DIM('─'.repeat(70)));
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-race-'));
     const N = 5;
     const fixture = require('./__fixtures__/post-tool-use-success-noisy.json');
+    seedRecurrence(dataDir, fixture.cwd, Array.from({ length: N }, (_, i) => `echo race-${i}`));
     const { spawn } = require('child_process');
 
     const env = {
