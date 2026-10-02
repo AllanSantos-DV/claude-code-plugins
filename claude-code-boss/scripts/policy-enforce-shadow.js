@@ -83,23 +83,23 @@ function countOccurrences(hay, needle, caseSensitive) {
 }
 
 /**
- * Hook entry point. Records zero or more shadow-evaluation metrics as a side effect,
- * then ALWAYS emits `{}`. The CLI wrapper below only emits on a THROWN error, so
- * there is exactly one write to stdout per invocation.
+ * Pure evaluation: records zero or more shadow-evaluation metrics as a side effect
+ * and returns `{}` without writing — run() emits it; the Phase G daemon tool
+ * returns it. Throws on unexpected errors (the CLI wrapper fails open with `{}`).
  * @param {object} event  parsed PreToolUse payload
  */
-async function run(event) {
+async function evaluate(event) {
   const ev = event || {};
 
   const cfg = getPolicyInject();
-  if (cfg.enabled === false) return emitEmpty();
+  if (cfg.enabled === false) return {};
 
   const tool = ev.tool_name || '';
-  if (!EDIT_TOOLS.has(tool)) return emitEmpty();
+  if (!EDIT_TOOLS.has(tool)) return {};
 
   const ti = ev.tool_input || {};
   const filePath = ti.file_path || '';
-  if (!filePath) return emitEmpty();
+  if (!filePath) return {};
 
   // Fail-open LOCAL scope key (per-machine store, not the memory contract):
   // resolveLocalScopeId degrades to basename(cwd)/'default' and never throws.
@@ -109,11 +109,11 @@ async function run(event) {
 
   // Normalize to a project-relative path; null → outside project / other drive.
   const rel = policyStore.toRelPath(filePath, ev.cwd);
-  if (rel == null) return emitEmpty();
+  if (rel == null) return {};
 
   const DATA_DIR = dataDir();
   const matches = policyStore.listShadowMatching(DATA_DIR, { projectId, filePath, cwd: ev.cwd });
-  if (!matches.length) return emitEmpty();
+  if (!matches.length) return {};
 
   const projKey = metricsProjectKey(ev.cwd);
   const oldStr = typeof ti.old_string === 'string' ? ti.old_string : '';
@@ -168,6 +168,12 @@ async function run(event) {
   }
 
   // ALWAYS silent — shadow mode never blocks and never speaks to the agent.
+  return {};
+}
+
+/** CLI/stdout entry: always `{}` (exactly one write). */
+async function run(event) {
+  await evaluate(event);
   return emitEmpty();
 }
 
@@ -186,4 +192,4 @@ if (require.main === module) {
   })();
 }
 
-module.exports = { run, countOccurrences, EDIT_TOOLS };
+module.exports = { run, evaluate, countOccurrences, EDIT_TOOLS };

@@ -31,34 +31,35 @@ function decision(permissionDecision, { additionalContext, permissionDecisionRea
   return JSON.stringify({ hookSpecificOutput });
 }
 
-(async () => {
+/**
+ * Pure entry point: the decision JSON string for `event` (the CLI writes it to
+ * stdout; the Phase G daemon tool returns it). Fail-open — never throws.
+ * @param {object} event
+ * @returns {Promise<string>}
+ */
+async function run(event) {
   try {
-    const raw = await readStdin();
-    if (!raw) { process.stdout.write(decision('allow')); return; }
-    const event = JSON.parse(raw);
+    if (!event) return decision('allow');
 
     const toolName = event.tool_name || '';
     if (toolName !== 'Grep' && toolName !== 'Glob') {
-      process.stdout.write(decision('allow'));
-      return;
+      return decision('allow');
     }
 
     const cfg = require('./lib/hooks-config.js').getGraphGuard();
-    if (!cfg.enabled) { process.stdout.write(decision('allow')); return; }
+    if (!cfg.enabled) { return decision('allow'); }
 
     const core = require('./lib/graph-guard-core.js');
     const ti = event.tool_input || {};
     if (!core.isBroadNativeSearch(toolName, ti)) {
-      process.stdout.write(decision('allow'));
-      return;
+      return decision('allow');
     }
 
     // The graph rides the mcp-memory daemon — on the local backend there is no
     // graph to redirect to.
     const brainCfg = require('./lib/brain-config.js').load();
     if (((brainCfg.backend && brainCfg.backend.type) || 'local') !== 'mcp-memory') {
-      process.stdout.write(decision('allow'));
-      return;
+      return decision('allow');
     }
 
     const cwd = event.cwd || process.cwd();
@@ -82,13 +83,29 @@ function decision(permissionDecision, { additionalContext, permissionDecisionRea
       try {
         require('./lib/metrics.js').fire('graph-guard.fired', { kind }, { sessionId: sid, cwd });
       } catch (e) { void e; /* metrics are best-effort */ }
-      process.stdout.write(decision('deny', { additionalContext: res.reason, permissionDecisionReason: res.reason }));
-      return;
+      return decision('deny', { additionalContext: res.reason, permissionDecisionReason: res.reason });
     }
-    process.stdout.write(decision('allow'));
+    return decision('allow');
   } catch (err) {
     console.error(`[GRAPH-GUARD] Error: ${err.message}`);
     hookLog('error', 'graph-guard', `Unhandled error: ${err.message}`);
-    process.stdout.write(decision('allow'));
+    return decision('allow');
   }
-})();
+}
+
+if (require.main === module) {
+  (async () => {
+    let out;
+    try {
+      const raw = await readStdin();
+      out = await run(raw ? JSON.parse(raw) : null);
+    } catch (err) {
+      console.error(`[GRAPH-GUARD] Error: ${err.message}`);
+      hookLog('error', 'graph-guard', `Unhandled error: ${err.message}`);
+      out = decision('allow');
+    }
+    process.stdout.write(out);
+  })();
+}
+
+module.exports = { run, decision };

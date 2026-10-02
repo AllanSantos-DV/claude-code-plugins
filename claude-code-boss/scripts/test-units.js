@@ -712,6 +712,9 @@ test('brain daemon path normalization: same dir, different spelling → SAME por
     path.join(ROOT, 'servers', 'brain-server', 'lib', 'daemon-common.js'),
   ).href;
   const { resolvePort, tokenFile, lockFile, canonicalDataDir, DEFAULT_PORT } = await import(fileUrl);
+  // Explicit empty env: a BRAIN_HTTP_PORT exported in the developer's shell must
+  // not turn the DEFAULT_PORT assertions below into a false failure.
+  const NOENV = {};
   // NOTE: deliberately does NOT mutate process.env.BRAIN_HTTP_PORT — this runner runs
   // async tests in sequence but multiple of them exercise the daemon modules, so
   // touching global env is still fragile. DELTA vs the pre-fixed-port era: the
@@ -726,22 +729,32 @@ test('brain daemon path normalization: same dir, different spelling → SAME por
     const back = 'C:\\Users\\me\\.claude\\plugins\\data\\ccb';
     const fwd = 'C:/Users/me/.claude/plugins/data/ccb';
     const mixedCase = 'C:\\users\\ME\\.claude\\plugins\\data\\CCB'; // Windows FS is case-insensitive
-    assertEq(resolvePort(back), DEFAULT_PORT, 'all spellings → the fixed default');
-    assertEq(resolvePort(fwd), DEFAULT_PORT, 'all spellings → the fixed default');
-    assertEq(resolvePort(mixedCase), DEFAULT_PORT, 'all spellings → the fixed default');
+    assertEq(resolvePort(back, NOENV), DEFAULT_PORT, 'all spellings → the fixed default');
+    assertEq(resolvePort(fwd, NOENV), DEFAULT_PORT, 'all spellings → the fixed default');
+    assertEq(resolvePort(mixedCase, NOENV), DEFAULT_PORT, 'all spellings → the fixed default');
     assertEq(tokenFile(back), tokenFile(fwd), 'one identity → one secret');
     assertEq(lockFile(back), lockFile(fwd), 'one identity → one lock');
     assertEq(canonicalDataDir(back), canonicalDataDir(fwd), 'canonical form agrees');
   }
   // Relative vs absolute of the SAME dir converge everywhere (path.resolve anchors to cwd).
   assertEq(tokenFile('sub/../ccb-x'), tokenFile(path.resolve('ccb-x')));
-  assertEq(resolvePort('sub/../ccb-x'), resolvePort(path.resolve('ccb-x')));
-  assertEq(resolvePort('sub/../ccb-x'), DEFAULT_PORT, 'fixed default even for tricky spellings');
+  assertEq(resolvePort('sub/../ccb-x', NOENV), resolvePort(path.resolve('ccb-x'), NOENV));
+  assertEq(resolvePort('sub/../ccb-x', NOENV), DEFAULT_PORT, 'fixed default even for tricky spellings');
   // A missing/undefined dataDir FAILS LOUD instead of hashing String(undefined).
   let threw = false; try { resolvePort(undefined); } catch { threw = true; }
   assert(threw, 'resolvePort(undefined) must throw, not boot on a phantom dir');
   threw = false; try { tokenFile('undefined'); } catch { threw = true; }
   assert(threw, 'tokenFile("undefined") must throw, not build a phantom token path');
+});
+
+test('brain daemon DEFAULT_PORT: outside the Windows-reserved 58048-58247 range + matches .mcp.json', async () => {
+  const fileUrl = require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'daemon-common.js')).href;
+  const { DEFAULT_PORT, resolvePort } = await import(fileUrl);
+  // 58217 (the old default) sat inside an excludedportrange → listen EACCES, no daemon.
+  assert(DEFAULT_PORT < 49152, `DEFAULT_PORT ${DEFAULT_PORT} must stay below the dynamic range Windows reserves from`);
+  const mcp = JSON.parse(fs.readFileSync(path.join(ROOT, '.mcp.json'), 'utf8'));
+  assertEq(new URL(mcp.mcpServers['brain-server'].url).port, String(DEFAULT_PORT), '.mcp.json url is static — it must carry DEFAULT_PORT');
+  assertEq(resolvePort(path.resolve('ccb-x'), { BRAIN_HTTP_PORT: '41234' }), 41234, 'BRAIN_HTTP_PORT override still wins');
 });
 
 test('brain-server/index.js: DATA_DIR follows the pointer verdict, not just publishes it', () => {
@@ -2058,6 +2071,34 @@ test('mcp-health.probeHealth: backend mcp-memory conectado via daemon real (fake
   assertEq(down.connected, false, 'porta TCP fechada (nada escutando) deve reportar connected:false, não travar nem lançar');
 });
 
+// mcp-memory >= 2.44 answers /health with {status:'healthy'} and no `ok` field —
+// probeHealth reported a live daemon as disconnected. Both formats count; a body
+// with neither field does not.
+for (const [body, expected] of [[{ ok: true }, true], [{ status: 'healthy', version: '2.44.3' }, true], [{ version: '2.44.3' }, false], [{ ok: false, status: 'degraded' }, false]]) {
+  test(`mcp-health.probeHealth: /health ${JSON.stringify(body)} → connected:${expected}`, async () => {
+    const http2 = require('http');
+    const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mcphealth-fmt-'));
+    const server = http2.createServer((req, res) => {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+    });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    try {
+      fs.writeFileSync(path.join(runDir, 'daemon.json'), JSON.stringify({ url: `http://127.0.0.1:${server.address().port}` }));
+      const config = { backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', runDir } } };
+      let r;
+      for (let attempt = 0; attempt < 5; attempt++) { // same jitter retry as above
+        r = await mcpHealth.probeHealth(config);
+        if (r.connected === expected) break;
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+      assertEq(r.connected, expected);
+    } finally {
+      await new Promise((resolve) => server.close(resolve));
+    }
+  });
+}
+
 // ─── decision-detect (regex extractors + heuristic) ─────────────────────────
 const dd = require('./decision-detect.js');
 
@@ -2236,7 +2277,8 @@ test('config-testers: curation rejects invalid JSON in shells', async () => {
 test('config-testers: hooks validates this repo hooks.json (all green)', async () => {
   const out = await testers.run('hooks', { hooksRoot: ROOT });
   assert(out.ok === true, `expected ok=true, got: ${out.error || ''} (missing=${out.details?.missing?.length}, syntaxErrors=${out.details?.syntaxErrors?.length})`);
-  assert(out.details.checked > 5, `expected >5 hooks, got ${out.details.checked}`);
+  // Phase G moved most hooks to mcp_tool (not script-backed; covered by the Phase G tests).
+  assert(out.details.checked >= 5, `expected >=5 command hooks, got ${out.details.checked}`);
   assert(out.details.missing.length === 0, `unexpected missing: ${JSON.stringify(out.details.missing)}`);
 });
 
@@ -4286,6 +4328,20 @@ test('project-id findProjectRoot: CLAUDE_PROJECT_DIR is the walk-up ceiling (bos
     assertEq(projectId.findProjectRoot({ cwd: sub, env: {}, git: noGit }), null, 'no ceiling + no git → no fs climb');
     assertEq(projectId.tryResolveProjectId({ cwd: sub, env: {}, git: noGit }), null, 'no ceiling → unresolved');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('project-id defaultGit: memoized per (cwd,args) within the TTL (daemon event loop is not re-blocked)', () => {
+  const pid = require(path.join(ROOT, 'scripts', 'lib', 'project-id.js'));
+  pid._gitCache.clear();
+  const first = pid._defaultGit(['rev-parse', '--show-toplevel'], ROOT);
+  assert(first && pid._gitCache.size === 1, 'first call runs git and stores the answer');
+  const entry = [...pid._gitCache.values()][0];
+  entry.value = 'MEMO-SENTINEL';
+  assertEq(pid._defaultGit(['rev-parse', '--show-toplevel'], ROOT), 'MEMO-SENTINEL', 'second call inside the TTL is served from the memo');
+  entry.ts = Date.now() - pid.GIT_TTL_MS - 1;
+  assertEq(pid._defaultGit(['rev-parse', '--show-toplevel'], ROOT), first, 'an expired entry re-runs git');
+  assertEq(pid._defaultGit(['rev-parse', '--show-toplevel'], ''), null, 'no cwd → null, nothing cached');
+  pid._gitCache.clear();
 });
 
 test('project-id legacy marker: READ-ONLY back-compat + migration nudge (never auto-writes .memory)', () => {
@@ -13557,10 +13613,10 @@ test('posttoolusefailure-dispatcher.DETECTORS: 2 detectors, correct order + shap
   assert(d.DETECTORS.every(x => typeof x.mod.run === 'function'), 'every detector exposes run()');
 });
 
-test('user-prompt-submit-dispatcher.DETECTORS: 5 detectors, correct order + shape (model-router-ensure excluded)', () => {
+test('user-prompt-submit-dispatcher.DETECTORS: 3 daemon detectors, correct order + shape (model-router-ensure excluded; Phase G moved correction/active-research to mcp_tool)', () => {
   const d = require('./user-prompt-submit-dispatcher.js');
   const names = d.DETECTORS.map(x => x.name);
-  assertEq(names, ['brain-daemon-ensure', 'brain-health', 'brain-status', 'correction-detect', 'active-research-detect']);
+  assertEq(names, ['brain-daemon-ensure', 'brain-health', 'brain-status']);
   assert(d.DETECTORS.every(x => typeof x.mod.run === 'function'), 'every detector exposes run()');
   assert(!names.includes('model-router-ensure'), 'model-router-ensure must stay OUT (process.exit() in its main flow)');
 });
@@ -18620,6 +18676,34 @@ test('brain daemon supervisor: port squat (non-brain HTTP) → error, squat unto
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
+test('brain daemon supervisor: port blocked (listen EACCES) → error carries the real cause + netsh hint', async () => {
+  const { ensureDaemon, spawnLogFile } = await import(SUPERVISOR_URL);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-eacces-'));
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-eacces-home-'));
+  const dataDir = path.join(tmp, 'data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  // Reproduce a Windows excludedportrange deterministically on any OS: the
+  // REAL daemon child boots, but its listen() fails the way a reserved port does.
+  const preload = path.join(tmp, 'eacces-preload.cjs');
+  fs.writeFileSync(preload, "const net = require('net');\n" +
+    "net.Server.prototype.listen = function (port) {\n" +
+    "  const e = Object.assign(new Error('listen EACCES: permission denied 127.0.0.1:' + port), { code: 'EACCES', syscall: 'listen' });\n" +
+    "  process.nextTick(() => this.emit('error', e)); return this;\n" +
+    "};\n");
+  const p = await waitFreePort();
+  const res = await ensureDaemon({
+    pluginRoot: path.join(tmp, 'install-B'),
+    dataDir,
+    env: { BRAIN_HTTP_PORT: String(p), HOME: tmpHome, USERPROFILE: tmpHome, NODE_OPTIONS: `--require "${preload}"` },
+  });
+  assertEq(res.status, 'error', `blocked port must be an error, got ${res.status}`);
+  assert(/EACCES/.test(res.error || ''), `error must carry the child's real cause, got: ${res.error}`);
+  assert((res.error || '').includes('netsh int ipv4 show excludedportrange protocol=tcp'), 'error must carry the netsh hint');
+  assert(fs.existsSync(spawnLogFile(dataDir)), 'child stderr must be captured in DATA_DIR');
+  fs.rmSync(tmpHome, { recursive: true, force: true });
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
 test('brain daemon supervisor: env null/non-object → no TypeError, still probes', async () => {
   const { ensureDaemon } = await import(SUPERVISOR_URL);
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-envnull-'));
@@ -19567,6 +19651,107 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
     try { M._hiddenSpawnSync('npm', { cwd: '/y', windowsHide: false }); } catch (e) { err = e; }
     assert(err instanceof TypeError && /args must be an array/.test(err.message), 'non-array args must throw TypeError');
   }));
+
+// ─── Phase G (ADR-015): hook tools served by the brain daemon ─────────────────
+{
+  const { createHookTools, rebuildEvent } = require('./lib/hook-tools.js');
+  const hookTools = createHookTools({ pluginRoot: ROOT });
+  // Claude Code's mcp_tool `${path}` substitution: objects → JSON string,
+  // scalars → String, absent → "".
+  const wire = (ev) => {
+    const out = {};
+    for (const [k, v] of Object.entries(ev)) out[k] = v && typeof v === 'object' ? JSON.stringify(v) : String(v);
+    return out;
+  };
+  const viaTool = async (tool, ev, projectDir) => {
+    const r = await hookTools.handle(tool, { ...wire(ev), project_dir: projectDir });
+    return r.content[0].text;
+  };
+  const viaCli = (script, ev, projectDir) => {
+    const r = require('child_process').spawnSync(process.execPath, [path.join(__dirname, script)], {
+      input: JSON.stringify(ev),
+      env: { ...process.env, CLAUDE_PROJECT_DIR: projectDir },
+      encoding: 'utf8',
+      timeout: 20000,
+    });
+    if (r.status !== 0) throw new Error(`${script} exit ${r.status}: ${r.stderr}`);
+    return r.stdout.trim();
+  };
+  const proj = process.env.CLAUDE_PLUGIN_DATA; // has a declared .memory/project.json (top of file)
+  const base = { session_id: 'phase-g-parity', cwd: proj, transcript_path: '' };
+  // [tool, CLI script it must match byte-for-byte, event]
+  const PARITY = [
+    ['hook_curation_guard', 'pretooluse-bash-dispatcher.js', { ...base, hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'echo phase-g' } }],
+    ['hook_graph_guard', 'graph-guard.js', { ...base, hook_event_name: 'PreToolUse', tool_name: 'Grep', tool_input: { pattern: 'createHookTools' } }],
+    ['hook_policy_enforce_shadow', 'policy-enforce-shadow.js', { ...base, hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: path.join(proj, 'a.js'), old_string: 'a', new_string: 'b' } }],
+    ['hook_policy_glob_inject', 'policy-glob-inject.js', { ...base, hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: path.join(proj, 'a.js') }, tool_response: {} }],
+    ['hook_file_edit_detect', 'file-edit-detect.js', { ...base, hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: path.join(proj, 'a.js') } }],
+    ['hook_posttoolusebash_dispatcher', 'posttoolusebash-dispatcher.js', { ...base, hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'echo phase-g' }, tool_response: { stdout: 'phase-g', stderr: '' } }],
+    ['hook_posttoolusefailure_dispatcher', 'posttoolusefailure-dispatcher.js', { ...base, hook_event_name: 'PostToolUseFailure', tool_name: 'Bash', tool_input: { command: 'false' }, error: 'exit 1', is_interrupt: false, duration_ms: 12 }],
+    ['hook_skill_metric', 'skill-metric.js', { ...base, hook_event_name: 'UserPromptExpansion', command_name: 'phase-g-skill', command: '/phase-g-skill' }],
+    ['hook_correction_detect', 'correction-detect.js', { ...base, hook_event_name: 'UserPromptSubmit', prompt: 'isso esta errado, nao era assim' }],
+    ['hook_correction_detect', 'correction-detect.js', { ...base, hook_event_name: 'UserPromptSubmit', prompt: 'segue o plano' }],
+    ['hook_active_research_detect', 'active-research-detect.js', { ...base, hook_event_name: 'UserPromptSubmit', prompt: 'qual a melhor forma de integrar com a api?' }],
+    ['hook_stop_dispatcher', 'stop-dispatcher.js', { ...base, hook_event_name: 'Stop', stop_hook_active: true }],
+  ];
+  for (const [tool, script, ev] of PARITY) {
+    test(`Phase G parity: ${tool} == ${script} stdout (${ev.prompt || (ev.tool_input && JSON.stringify(ev.tool_input)) || ev.hook_event_name})`, async () => {
+      const cli = viaCli(script, ev, proj);
+      const daemon = await viaTool(tool, ev, proj);
+      assertEq(daemon, cli);
+    });
+  }
+
+  test('Phase G parity: alert hooks really alert through the tool (non-empty additionalContext)', async () => {
+    const out = JSON.parse(await viaTool('hook_correction_detect', PARITY[8][2], proj));
+    assertEq(out.hookSpecificOutput.hookEventName, 'UserPromptSubmit');
+    assert(/capture_lesson/.test(out.hookSpecificOutput.additionalContext), 'correction nudge must come through');
+  });
+
+  test('Phase G: hook_error_guard abstains with {} (deny-only sibling of hook_curation_guard)', async () => {
+    assertEq(await viaTool('hook_error_guard', PARITY[0][2], proj), '{}');
+  });
+
+  test('Phase G: a throwing hook degrades VISIBLY (systemMessage), never {} and never a block', async () => {
+    const r = await hookTools.handle('hook_curation_guard', { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: '{not json', project_dir: proj });
+    const out = JSON.parse(r.content[0].text);
+    assert(/\[claude-code-boss\] hook hook_curation_guard degradado no daemon/.test(out.systemMessage), `got ${r.content[0].text}`);
+    assert(!out.hookSpecificOutput && !out.decision, 'degradation must not decide anything');
+  });
+
+  test('Phase G: rebuildEvent drops absent ("") fields and decodes JSON/bool/number', () => {
+    const ev = rebuildEvent({ cwd: '', tool_input: '{"a":1}', stop_hook_active: 'false', duration_ms: '7', prompt: 'x', project_dir: '/p' });
+    assertEq(ev, { tool_input: { a: 1 }, duration_ms: 7, prompt: 'x', stop_hook_active: false });
+  });
+
+  test('Phase G: per-call CLAUDE_PROJECT_DIR never leaks the daemon env', async () => {
+    const { hookEnv, runWithHookEnv } = require('./lib/hook-context.js');
+    const prev = process.env.CLAUDE_PROJECT_DIR;
+    process.env.CLAUDE_PROJECT_DIR = '/daemon/first-session';
+    try {
+      assertEq(runWithHookEnv({ CLAUDE_PROJECT_DIR: '/call/b' }, () => hookEnv().CLAUDE_PROJECT_DIR), '/call/b');
+      assertEq(runWithHookEnv({ CLAUDE_PROJECT_DIR: '' }, () => hookEnv().CLAUDE_PROJECT_DIR), undefined);
+      assertEq(hookEnv().CLAUDE_PROJECT_DIR, '/daemon/first-session');
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_PROJECT_DIR; else process.env.CLAUDE_PROJECT_DIR = prev;
+    }
+  });
+
+  test('Phase G: every hooks.json mcp_tool hook_* entry targets brain-server and an existing tool; migrated scripts are no longer spawned', () => {
+    const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
+    const all = Object.values(hooks).flat().flatMap(g => g.hooks || []);
+    const hookEntries = all.filter(h => h.type === 'mcp_tool' && /^hook_/.test(h.tool));
+    assertEq(hookEntries.map(h => h.tool).sort(), [...hookTools.names].sort());
+    for (const h of hookEntries) {
+      assertEq(h.server, 'plugin:claude-code-boss:brain-server');
+      assertEq(h.input.project_dir, '${CLAUDE_PROJECT_DIR}');
+    }
+    const spawned = all.filter(h => h.type === 'command').map(h => (h.args || []).join(' '));
+    for (const s of ['pretooluse-bash-dispatcher', 'graph-guard', 'policy-enforce-shadow', 'posttoolusebash-dispatcher', 'file-edit-detect', 'policy-glob-inject', 'skill-metric', 'posttoolusefailure-dispatcher', 'stop-dispatcher']) {
+      assert(!spawned.some(c => c.includes(`/scripts/${s}.js`)), `${s} must not be spawned anymore`);
+    }
+  });
+}
 
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {

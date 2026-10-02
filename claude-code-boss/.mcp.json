@@ -2,7 +2,7 @@
   "mcpServers": {
     "brain-server": {
       "type": "http",
-      "url": "http://127.0.0.1:58217/mcp"
+      "url": "http://127.0.0.1:38217/mcp"
     }
   }
 }

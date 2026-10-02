@@ -89,7 +89,7 @@ thin HTTP client of the one daemon:
 ```json
 {
   "mcpServers": {
-    "brain-server": { "type": "http", "url": "http://127.0.0.1:58217/mcp" }
+    "brain-server": { "type": "http", "url": "http://127.0.0.1:38217/mcp" }
   }
 }
 ```
@@ -100,7 +100,7 @@ Code's own MCP client tries to connect — that hook is ephemeral (runs, ensures
 exits), so it does not itself violate the daemon-único principle it exists to
 serve.
 
-- **Port is FIXED** (`58217` — override with `--port` or `BRAIN_HTTP_PORT`), not
+- **Port is FIXED** (`38217` — override with `--port` or `BRAIN_HTTP_PORT`), not
   derived per data-dir, so `.mcp.json`'s static `url` can point at it directly.
 - **`project` is required per request** — there is no CWD to infer from (the
   daemon serves every project on the machine). A request without `project` is
@@ -185,7 +185,7 @@ find the running daemon.
 | --- | --- | --- |
 | `CLAUDE_PLUGIN_ROOT` | `../..` of `index.js` | Plugin root — where KB logic + the model live. |
 | `CLAUDE_PLUGIN_DATA` / `--plugin-data <DIR>` | `~/.claude/plugins/data/claude-code-boss` | KB data dir (SQLite + models) — one **global** dir per machine, not per-project. |
-| `BRAIN_HTTP_PORT` | `58217` | Pin the daemon port (must match `.mcp.json`'s `url`). |
+| `BRAIN_HTTP_PORT` | `38217` | Pin the daemon port (must match `.mcp.json`'s `url`). |
 | `BRAIN_HTTP_TOKEN` | read/created at `<DATA_DIR>/brain-http.token` | Fix the `/shutdown` auth token (containerized/remote-configured clients). |
 | `BRAIN_HTTP_AUTOSTART` | `1` | `0` disables the ensure-hook's daemon auto-start. |
 | `--port <N>` | — | Pin the daemon's listening port. |
@@ -195,7 +195,7 @@ find the running daemon.
 
 ## Consuming from outside Claude Code (e.g. OpenCode)
 
-Point any other same-machine MCP client at `http://127.0.0.1:58217/mcp`
+Point any other same-machine MCP client at `http://127.0.0.1:38217/mcp`
 (override the port via `BRAIN_HTTP_PORT` if pinned differently), passing an
 explicit `project` per call. No auth header needed for `/mcp` — only `/shutdown`
 requires `Authorization: Bearer <token>` (token at `<DATA_DIR>/brain-http.token`,

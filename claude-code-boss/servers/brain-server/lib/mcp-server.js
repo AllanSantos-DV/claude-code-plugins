@@ -583,6 +583,11 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
     resolveDaemon: graphInject.resolveDaemon || graphInject.discover || graphConfigResolver,
   });
 
+  // Phase G (ADR-015): hooks.json `mcp_tool` transport — one tool per migrated hook,
+  // running the hook's own logic in this process instead of a fresh `node` spawn.
+  const { createHookTools } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'hook-tools.js'));
+  const hookTools = createHookTools({ pluginRoot: PLUGIN_ROOT });
+
   // ─── Tool list ──────────────────────────────────────────────────────────────
   const TOOLS = [
     {
@@ -715,6 +720,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
 
   // Advertise the Session Graph Engine tools alongside the KB/research tools.
   TOOLS.push(...graphTools.definitions);
+  TOOLS.push(...hookTools.definitions);
 
   // ─── Tool handlers (faithful move from the previous index.js switch) ───────
   async function handleTool(name, args) {
@@ -724,6 +730,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
     // KB via _testHooks.getKB forces the LOCAL path (so it exercises the local case
     // without depending on / mutating the shared brain-backend singleton mode).
     const forceLocal = !!(_testHooks && _testHooks.getKB);
+    if (hookTools.names.has(name)) return hookTools.handle(name, args);
     // Session Graph Engine tools — Part A COHERENCE GATE. The graph is HOSTED BY the memory
     // (mcp-memory) daemon, and the mcp-memory backend is precisely what points at that server.
     // When the KB backend is 'local', the graph-hosting daemon is opt-in and is NOT the configured

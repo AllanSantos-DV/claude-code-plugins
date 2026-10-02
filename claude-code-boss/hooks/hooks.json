@@ -35,9 +35,33 @@
         "matcher": "Bash",
         "hooks": [
           {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/pretooluse-bash-dispatcher.js"],
+            "type": "mcp_tool",
+            "server": "plugin:claude-code-boss:brain-server",
+            "tool": "hook_curation_guard",
+            "input": {
+              "hook_event_name": "${hook_event_name}",
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "transcript_path": "${transcript_path}",
+              "tool_name": "${tool_name}",
+              "tool_input": "${tool_input}",
+              "project_dir": "${CLAUDE_PROJECT_DIR}"
+            },
+            "timeout": 8
+          },
+          {
+            "type": "mcp_tool",
+            "server": "plugin:claude-code-boss:brain-server",
+            "tool": "hook_error_guard",
+            "input": {
+              "hook_event_name": "${hook_event_name}",
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "transcript_path": "${transcript_path}",
+              "tool_name": "${tool_name}",
+              "tool_input": "${tool_input}",
+              "project_dir": "${CLAUDE_PROJECT_DIR}"
+            },
             "timeout": 8
           }
         ]
@@ -46,9 +70,18 @@
         "matcher": "Edit",
         "hooks": [
           {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/policy-enforce-shadow.js"],
+            "type": "mcp_tool",
+            "server": "plugin:claude-code-boss:brain-server",
+            "tool": "hook_policy_enforce_shadow",
+            "input": {
+              "hook_event_name": "${hook_event_name}",
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "transcript_path": "${transcript_path}",
+              "tool_name": "${tool_name}",
+              "tool_input": "${tool_input}",
+              "project_dir": "${CLAUDE_PROJECT_DIR}"
+            },
             "timeout": 10
           }
         ]
@@ -57,9 +90,18 @@
         "matcher": "Grep|Glob",
         "hooks": [
           {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/graph-guard.js"],
+            "type": "mcp_tool",
+            "server": "plugin:claude-code-boss:brain-server",
+            "tool": "hook_graph_guard",
+            "input": {
+              "hook_event_name": "${hook_event_name}",
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "transcript_path": "${transcript_path}",
+              "tool_name": "${tool_name}",
+              "tool_input": "${tool_input}",
+              "project_dir": "${CLAUDE_PROJECT_DIR}"
+            },
             "timeout": 5
           }
         ]
@@ -70,9 +112,19 @@
         "matcher": "Bash",
         "hooks": [
           {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/posttoolusebash-dispatcher.js"],
+            "type": "mcp_tool",
+            "server": "plugin:claude-code-boss:brain-server",
+            "tool": "hook_posttoolusebash_dispatcher",
+            "input": {
+              "hook_event_name": "${hook_event_name}",
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "transcript_path": "${transcript_path}",
+              "tool_name": "${tool_name}",
+              "tool_input": "${tool_input}",
+              "tool_response": "${tool_response}",
+              "project_dir": "${CLAUDE_PROJECT_DIR}"
+            },
             "timeout": 10
           }
         ]
@@ -81,9 +133,18 @@
         "matcher": "Edit|Write|NotebookEdit",
         "hooks": [
           {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/file-edit-detect.js"],
+            "type": "mcp_tool",
+            "server": "plugin:claude-code-boss:brain-server",
+            "tool": "hook_file_edit_detect",
+            "input": {
+              "hook_event_name": "${hook_event_name}",
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "transcript_path": "${transcript_path}",
+              "tool_name": "${tool_name}",
+              "tool_input": "${tool_input}",
+              "project_dir": "${CLAUDE_PROJECT_DIR}"
+            },
             "timeout": 5
           }
         ]
@@ -92,9 +153,18 @@
         "matcher": "Edit|Write|MultiEdit|NotebookEdit",
         "hooks": [
           {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/policy-glob-inject.js"],
+            "type": "mcp_tool",
+            "server": "plugin:claude-code-boss:brain-server",
+            "tool": "hook_policy_glob_inject",
+            "input": {
+              "hook_event_name": "${hook_event_name}",
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "transcript_path": "${transcript_path}",
+              "tool_name": "${tool_name}",
+              "tool_input": "${tool_input}",
+              "project_dir": "${CLAUDE_PROJECT_DIR}"
+            },
             "timeout": 10
           }
         ]
@@ -105,9 +175,19 @@
         "matcher": ".*",
         "hooks": [
           {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/skill-metric.js"],
+            "type": "mcp_tool",
+            "server": "plugin:claude-code-boss:brain-server",
+            "tool": "hook_skill_metric",
+            "input": {
+              "hook_event_name": "${hook_event_name}",
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "transcript_path": "${transcript_path}",
+              "prompt": "${prompt}",
+              "command": "${command}",
+              "command_name": "${command_name}",
+              "project_dir": "${CLAUDE_PROJECT_DIR}"
+            },
             "timeout": 5
           }
         ]
@@ -117,9 +197,21 @@
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/posttoolusefailure-dispatcher.js"],
+            "type": "mcp_tool",
+            "server": "plugin:claude-code-boss:brain-server",
+            "tool": "hook_posttoolusefailure_dispatcher",
+            "input": {
+              "hook_event_name": "${hook_event_name}",
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "transcript_path": "${transcript_path}",
+              "tool_name": "${tool_name}",
+              "tool_input": "${tool_input}",
+              "error": "${error}",
+              "is_interrupt": "${is_interrupt}",
+              "duration_ms": "${duration_ms}",
+              "project_dir": "${CLAUDE_PROJECT_DIR}"
+            },
             "timeout": 10
           }
         ]
@@ -129,9 +221,17 @@
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/stop-dispatcher.js"],
+            "type": "mcp_tool",
+            "server": "plugin:claude-code-boss:brain-server",
+            "tool": "hook_stop_dispatcher",
+            "input": {
+              "hook_event_name": "${hook_event_name}",
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "transcript_path": "${transcript_path}",
+              "stop_hook_active": "${stop_hook_active}",
+              "project_dir": "${CLAUDE_PROJECT_DIR}"
+            },
             "timeout": 30
           }
         ]
@@ -151,6 +251,34 @@
             "command": "node",
             "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/user-prompt-submit-dispatcher.js"],
             "timeout": 30
+          },
+          {
+            "type": "mcp_tool",
+            "server": "plugin:claude-code-boss:brain-server",
+            "tool": "hook_correction_detect",
+            "input": {
+              "hook_event_name": "${hook_event_name}",
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "transcript_path": "${transcript_path}",
+              "prompt": "${prompt}",
+              "project_dir": "${CLAUDE_PROJECT_DIR}"
+            },
+            "timeout": 5
+          },
+          {
+            "type": "mcp_tool",
+            "server": "plugin:claude-code-boss:brain-server",
+            "tool": "hook_active_research_detect",
+            "input": {
+              "hook_event_name": "${hook_event_name}",
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "transcript_path": "${transcript_path}",
+              "prompt": "${prompt}",
+              "project_dir": "${CLAUDE_PROJECT_DIR}"
+            },
+            "timeout": 5
           },
           {
             "type": "mcp_tool",

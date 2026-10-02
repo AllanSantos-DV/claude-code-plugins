@@ -99,7 +99,7 @@ async function run(event) {
   // the Stop hook stays fail-OPEN (returns {}, never crashes the session).
   let project;
   try {
-    project = require('./lib/project-id.js').resolveProjectId({ cwd: ev.cwd || process.env.CLAUDE_PROJECT_DIR });
+    project = require('./lib/project-id.js').resolveProjectId({ cwd: ev.cwd || require('./lib/hook-context.js').hookEnv().CLAUDE_PROJECT_DIR });
   } catch (err) {
     console.error(`[conversation-ingest] ${err.message}`);
     return {};

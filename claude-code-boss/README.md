@@ -56,12 +56,12 @@ claude-code-boss/
 ├── dashboard/
 │   └── index.html             # SPA — 4 abas: Home / Brain KB / Hooks / Logs
 ├── hooks/
-│   └── hooks.json             # 8 eventos; 6 dispatchers in-process (Stop, PreToolUse/Bash, PostToolUse/Bash, PostToolUseFailure, UserPromptSubmit, SessionStart) consolidam 16+2+3+2+5+12 scripts; sobram só model-router-ensure.js (SessionStart+UserPromptSubmit, spawn próprio) + 6 hooks de matcher único + 1 mcp_tool (brain_retrieve_context)
+│   └── hooks.json             # 8 eventos; 12 hooks `mcp_tool` (hook_*) rodam in-process no daemon do brain-server + brain_retrieve_context; ficam como command só SessionStart (dispatcher de 12), SubagentStart, user-prompt-submit-dispatcher (3) e model-router-ensure.js
 ├── scripts/                   # Scripts Node.js (zero deps extras para hooks)
 │   ├── dashboard.js           # Servidor HTTP local com ring buffer de logs
 │   ├── brain-*.js             # Brain KB: store, index, graph, embedder, backend, CLI, consolidate (higiene)
 │   ├── curation-guard.js      # PreToolUse: bloqueia/redireciona comandos curados
-│   ├── stop-dispatcher.js     # Stop: roda todos os detectores in-process (1 spawn, não 11)
+│   ├── stop-dispatcher.js     # Stop: roda todos os detectores in-process (via mcp_tool hook_stop_dispatcher, no daemon)
 │   ├── doctor.js              # CLI + dashboard: diagnóstico zero-config (Node/PATH, data-dirs, daemon, hooks)
 │   ├── hook-logger.js         # Utilitário: append a .runtime/hook-errors.jsonl
 │   └── sync-version.js        # Propaga versão para todos os arquivos de versão
@@ -83,6 +83,16 @@ resultado. Só `model-router-ensure.js` fica de fora dos dispatchers de
 e faz esperas reais de vários segundos (spawn/troca de daemon), incompatível
 com um processo compartilhado.
 
+**Desde a 2.29.1 (ADR-015)** a maioria desses hooks nem sobe processo: o
+`hooks.json` declara um `mcp_tool` `hook_<nome>` do brain-server, que roda o
+mesmo script in-process no daemon HTTP compartilhado (porta padrão 38217).
+Medido: 8,9 ms p50 por hook (antes 122 ms com spawn) e 60 hooks concorrentes em
+0,6–1,9 s (antes 7–8 s), com 234 MB no daemon em vez de ~3,9 GB somados. Uma
+exceção na tool vira `systemMessage` de degradação (fail-open visível); com o
+daemon fora do ar o Claude Code trata o `mcp_tool` como erro não bloqueante.
+Ficam como `command` os hooks que precisam funcionar sem o daemon: `SessionStart`,
+`SubagentStart`, `user-prompt-submit-dispatcher` e `model-router-ensure`.
+
 | Evento | Script | O que faz |
 | --- | --- | --- |
 | SessionStart | `model-router-ensure.js` | Garante o daemon do model-router na porta fixa e publica `ANTHROPIC_BASE_URL`/shim (roteamento de custo opcional) — spawn próprio, fora do dispatcher |
@@ -100,21 +110,20 @@ com um processo compartilhado.
 | SessionStart (via dispatcher) | `graph-warm.js` | mcp-memory: dispara um `ingest` incremental do Session Graph (fire-and-forget, cooldown por projeto) pra o grafo ficar pronto-e-fresco antes da 1ª busca — o servidor faz o delta (no-op ~5s se nada mudou). Silencioso, fail-open |
 | SessionStart (via dispatcher) | `policy-inject.js` | Injeta as políticas standing (always) no contexto da sessão |
 | SubagentStart | `policy-inject.js` | Injeta as políticas standing (always) no contexto próprio do subagente — mesma injeção do SessionStart (spawn próprio; matcher com um único hook, não consolidado) |
-| **PreToolUse (Bash)** | **`pretooluse-bash-dispatcher.js`** | **Entry único** — roda `curation-guard.js` + `error-guard.js` in-process; `deny` do error-guard vence, senão propaga a decisão do curation-guard (preserva o `updatedInput` de auto-redirect) |
-| PreToolUse (Bash, via dispatcher) | `curation-guard.js` | Bloqueia/redireciona comandos curados; inclui o graph-guard p/ `grep -r`/`rg`/`find` amplos (mcp-memory + grafo ready → deny-once com redirect ao grafo) |
-| PreToolUse (Bash, via dispatcher) | `error-guard.js` | Nega um comando cuja assinatura já falhou ≥N vezes recentemente, injetando a causa registrada |
-| PreToolUse (Edit) | `policy-enforce-shadow.js` | Shadow-mode: detecta se uma edição viola uma política de código ativa (sem bloquear ainda) |
-| PreToolUse (Grep\|Glob) | `graph-guard.js` | Busca recursiva ampla com Session Graph READY → deny-once: `graph_search`/`graph_symbols` primeiro (estrutural, ~300ms), depois re-rodar escopado; retry idêntico passa |
-| **PostToolUse (Bash)** | **`posttoolusebash-dispatcher.js`** | **Entry único** — roda `curation-detect.js` + `decision-detect.js` + `error-resolve.js` in-process (todos side-effect only, sempre `{}`) |
+| PreToolUse (Bash) | `mcp_tool` → `hook_curation_guard` (`curation-guard.js`) | Bloqueia/redireciona comandos curados; inclui o graph-guard p/ `grep -r`/`rg`/`find` amplos (mcp-memory + grafo ready → deny-once com redirect ao grafo) |
+| PreToolUse (Bash) | `mcp_tool` → `hook_error_guard` (`error-guard.js`) | Nega um comando cuja assinatura já falhou ≥N vezes recentemente, injetando a causa registrada. Roda em paralelo ao `hook_curation_guard`; `deny` vence (o `pretooluse-bash-dispatcher.js` segue como entry por stdin, com a mesma regra) |
+| PreToolUse (Edit) | `mcp_tool` → `hook_policy_enforce_shadow` (`policy-enforce-shadow.js`) | Shadow-mode: detecta se uma edição viola uma política de código ativa (sem bloquear ainda) |
+| PreToolUse (Grep\|Glob) | `mcp_tool` → `hook_graph_guard` (`graph-guard.js`) | Busca recursiva ampla com Session Graph READY → deny-once: `graph_search`/`graph_symbols` primeiro (estrutural, ~300ms), depois re-rodar escopado; retry idêntico passa |
+| **PostToolUse (Bash)** | **`mcp_tool` → `hook_posttoolusebash_dispatcher` (`posttoolusebash-dispatcher.js`)** | **Entry único** — roda `curation-detect.js` + `decision-detect.js` + `error-resolve.js` in-process (todos side-effect only, sempre `{}`) |
 | PostToolUse (Bash, via dispatcher) | `curation-detect.js` | Detecta outputs grandes para curação |
 | PostToolUse (Bash, via dispatcher) | `decision-detect.js` | Detecta commit/PR com cara de decisão arquitetural e stash pending para o Stop promover |
 | PostToolUse (Bash, via dispatcher) | `error-resolve.js` | Limpa o registro de falha de uma assinatura quando o comando volta a ter sucesso |
-| PostToolUse (Edit\|Write\|NotebookEdit) | `file-edit-detect.js` | Journala arquivos editados no turno (alimenta `verify-nudge` e `self-review`) |
-| PostToolUse (Edit\|Write\|MultiEdit\|NotebookEdit) | `policy-glob-inject.js` | Injeta advisory de política glob (per-file) quando o arquivo editado casa um padrão de política ativa |
-| UserPromptExpansion | `skill-metric.js` | Métrica de uso de skill (matcher `.*`) |
-| **PostToolUseFailure** | **`posttoolusefailure-dispatcher.js`** | **Entry único** — roda `curation-detect.js` (já filtra `tool_name==='Bash'` internamente) + `failure-detect.js` in-process |
+| PostToolUse (Edit\|Write\|NotebookEdit) | `mcp_tool` → `hook_file_edit_detect` (`file-edit-detect.js`) | Journala arquivos editados no turno (alimenta `verify-nudge` e `self-review`) |
+| PostToolUse (Edit\|Write\|MultiEdit\|NotebookEdit) | `mcp_tool` → `hook_policy_glob_inject` (`policy-glob-inject.js`) | Injeta advisory de política glob (per-file) quando o arquivo editado casa um padrão de política ativa |
+| UserPromptExpansion | `mcp_tool` → `hook_skill_metric` (`skill-metric.js`) | Métrica de uso de skill (matcher `.*`) |
+| **PostToolUseFailure** | **`mcp_tool` → `hook_posttoolusefailure_dispatcher` (`posttoolusefailure-dispatcher.js`)** | **Entry único** — roda `curation-detect.js` (já filtra `tool_name==='Bash'` internamente) + `failure-detect.js` in-process |
 | PostToolUseFailure (via dispatcher) | `failure-detect.js` | Journala a falha (alimenta `failure-retro`) e registra a assinatura no error-store (alimenta o `error-guard`) |
-| **Stop** | **`stop-dispatcher.js`** | **Entry único** — roda in-process, em ordem, todos os detectores abaixo e funde os blocks num só `{decision:'block', reason}` (1 spawn de Node, não 11+) |
+| **Stop** | **`mcp_tool` → `hook_stop_dispatcher` (`stop-dispatcher.js`)** | **Entry único** — roda in-process no daemon, em ordem, todos os detectores abaixo e funde os blocks num só `{decision:'block', reason}` |
 | Stop (via dispatcher) | `pattern-detect.js` | Nudge advisory (throttled): capturar padrão reusável via `capture_lesson` |
 | Stop (via dispatcher) | `self-review.js` | Se o turno editou arquivos, recupera lições/failures relevantes do Brain (daemon HTTP autenticado, fallback keyword) e injeta advisory — "você já errou X nisso antes" |
 | Stop (via dispatcher) | `verify-nudge.js` | Se o turno editou arquivos e nenhum comando de teste/lint rodou, injeta 1 advisory (cap por sessão, sem escalonamento) |
@@ -124,12 +133,12 @@ com um processo compartilhado.
 | Stop (via dispatcher) | `session-summary.js` | Cap 1/sessão: resumo positivo ("N lições capturadas") quando a sessão gerou aprendizado |
 | Stop (via dispatcher) | + 7 outros | `skill-promote-trigger`, `decision-scan-response`, `decision-promote`, `research-followup-detect`, `failure-retro`, `skill-success-detect`, `retrieval-feedback`, `auto-continue-stop` — mesmo comportamento de antes, agora in-process |
 | UserPromptSubmit | `model-router-ensure.js` | Mesma garantia de daemon do model-router, agora por-turno (settings/env já publicados no SessionStart) — spawn próprio, fora do dispatcher |
-| **UserPromptSubmit** | **`user-prompt-submit-dispatcher.js`** | **Entry único** — roda in-process os 5 detectores abaixo, concorrente com timeout próprio por detector, funde os textos de advisory num só `additionalContext` |
+| **UserPromptSubmit** | **`user-prompt-submit-dispatcher.js`** | **Entry único** (command, funciona com o daemon fora do ar) — roda in-process os 3 detectores abaixo, concorrente com timeout próprio por detector, funde os textos de advisory num só `additionalContext` |
 | UserPromptSubmit (via dispatcher) | `brain-daemon-ensure.js` | Mesma garantia de daemon do SessionStart — captura o daemon caído em sessões resumidas |
 | UserPromptSubmit (via dispatcher) | `brain-health.js` | Mesma probe do SessionStart, com cooldown de 60s — captura MCP caído em sessões resumidas |
 | UserPromptSubmit (via dispatcher) | `brain-status.js` | Advisory só quando o backend `mcp-memory` está desconectado (silencioso no backend `local`, sempre conectado por design) |
-| UserPromptSubmit (via dispatcher) | `correction-detect.js` | Detecta sinal de correção → nudge p/ `capture_lesson` (sem ler transcript) |
-| UserPromptSubmit (via dispatcher) | `active-research-detect.js` | Detecta prompt com sinais de pesquisa externa (lib/versão/best-practice) → nudge p/ `research_query` |
+| UserPromptSubmit | `mcp_tool` → `hook_correction_detect` (`correction-detect.js`) | Detecta sinal de correção → nudge p/ `capture_lesson` (sem ler transcript) |
+| UserPromptSubmit | `mcp_tool` → `hook_active_research_detect` (`active-research-detect.js`) | Detecta prompt com sinais de pesquisa externa (lib/versão/best-practice) → nudge p/ `research_query` |
 | UserPromptSubmit | `mcp_tool` → `brain_retrieve_context` | Retrieval QUENTE por-turno: embeda o prompt no brain-server (warm ~12–26ms), gate 0.20, federa `__user__`, injeta bloco `[BRAIN]` (substitui o antigo `brain-retrieve-prompt.js`) |
 
 > **Captura de lição in-loop:** quando o usuário corrige, o agente (no loop, com
@@ -271,7 +280,7 @@ na config (a memória continua desligada sem id).
 ## Brain MCP: daemon único, zero processo por sessão (ADR-001)
 
 O brain-server (`servers/brain-server/`) tem **um único modo**: um daemon HTTP de
-longa duração (StreamableHTTP, *stateful*) numa **porta fixa** (`58217`),
+longa duração (StreamableHTTP, *stateful*) numa **porta fixa** (`38217`),
 compartilhado por toda sessão do Claude Code e qualquer outro consumidor na
 máquina — **um modelo, um SQLite**. O `.mcp.json` aponta direto pra URL
 (`"type":"http"`, sem `command`) — **Claude Code não spawna processo nenhum por
@@ -281,7 +290,7 @@ O daemon em si é garantido (encontrado-ou-iniciado) por um hook
 `SessionStart`/`UserPromptSubmit` (`scripts/brain-daemon-ensure.js`) — efêmero
 (roda, garante, sai), então não fere o próprio princípio que existe pra servir.
 
-- **Porta é FIXA** (`58217`, não derivada por data-dir), pra bater com a `url`
+- **Porta é FIXA** (`38217`, não derivada por data-dir), pra bater com a `url`
   estática do `.mcp.json`. Override com `--port` ou `BRAIN_HTTP_PORT`.
 - `project` é **obrigatório** por chamada (não há CWD de sessão pra inferir — o
   daemon serve todos os projetos da máquina); sem `project`, rejeita
@@ -292,7 +301,7 @@ cada atualização do plugin, **troca um daemon obsoleto pelo novo** (lock em
 `DATA_DIR` + checagem de versão via `/health`). Desligue com `BRAIN_HTTP_AUTOSTART=0`.
 
 **Consumir de fora do Claude Code** (ex.: OpenCode): aponte pra
-`http://127.0.0.1:58217/mcp` (ou a porta fixada via `BRAIN_HTTP_PORT`), passando
+`http://127.0.0.1:38217/mcp` (ou a porta fixada via `BRAIN_HTTP_PORT`), passando
 `project` explícito. Nenhum header de auth é exigido em `/mcp` — o `.mcp.json`
 não consegue carregar um segredo gerado em runtime, então esse endpoint usa
 apenas guarda de `Origin` (defesa contra DNS rebinding).

@@ -30,9 +30,9 @@ const { findProjectRoot, loadShellsConfig, matchCuratedShell } = require('./shel
 const { classify, successBudgetFor }                            = require('./curation-classifier.js');
 
 const { dataDir } = require('./lib/data-dir.js');
+const { hookEnv } = require('./lib/hook-context.js');
 const DATA_DIR = dataDir();
-const _curationCfg = require('./lib/brain-config.js').getCuration();
-const thresholds = { maxChars: _curationCfg.maxOutputChars, maxLines: _curationCfg.maxOutputLines };
+const brainConfig = require('./lib/brain-config.js');
 
 // ─── Turn state ──────────────────────────────────────────────────────────────
 // All state lives in the append-only turn journal (lib/turn-journal.js) —
@@ -59,6 +59,10 @@ async function run(event) {
   try {
     // Only handle Bash tool PostToolUse
     if (!event || event.tool_name !== 'Bash') return;
+    // Read per call (not at module load): in the shared daemon (Phase G) a
+    // module-level snapshot would freeze the config for every later session.
+    const _curationCfg = brainConfig.getCuration();
+    const thresholds = { maxChars: _curationCfg.maxOutputChars, maxLines: _curationCfg.maxOutputLines };
 
     // Two different event shapes:
     //   PostToolUse (success):
@@ -88,7 +92,7 @@ async function run(event) {
 
     const command = event.tool_input?.command || '';
     const sessionId = event.session_id || event.sessionId || 'default';
-    const cwd = event.cwd || process.env.CLAUDE_PROJECT_DIR || '';
+    const cwd = event.cwd || hookEnv().CLAUDE_PROJECT_DIR || '';
     const charCount = output.length;
     const lineCount = output ? output.split('\n').length : 0;
 

@@ -33,6 +33,8 @@ const { execFileSync } = require('child_process');
 const fsDefault = require('fs');
 const path = require('path');
 const { loadProjectConfig, declaredProjectId, projectConfigPath } = require('./project-config.js');
+// Default env is the per-call hook env when running inside the daemon (Phase G).
+const { hookEnv } = require('./hook-context.js');
 
 const MARKER_FILE = '.claude-boss-project'; // legacy boss marker (deprecated; read-only)
 const MAX_WALK_UP = 8; // cap parent traversal so a stray cwd can't scan the whole disk
@@ -116,9 +118,28 @@ function assertSafeProjectId(projectId) {
 
 // ─── git runner (injectable) ─────────────────────────────────────────────────
 
+// Read-only git answers memoized per (cwd, args) for a short TTL. Neutral in a
+// one-shot hook process; in the brain daemon (Phase G hook tools) every miss is
+// a ~50-80ms execFileSync that blocks the event loop for ALL sessions, and a
+// burst of hooks asks the same cwd the same question. A repo's toplevel/remote
+// changing inside the TTL is the accepted staleness.
+const GIT_TTL_MS = 30000;
+const GIT_CACHE_MAX = 500;
+const _gitCache = new Map();
+
 /** Run git in `cwd`; return trimmed stdout or null (never throws). */
 function defaultGit(args, cwd) {
   if (!cwd || typeof cwd !== 'string') return null;
+  const key = cwd + '\0' + args.join('\0');
+  const hit = _gitCache.get(key);
+  if (hit && Date.now() - hit.ts < GIT_TTL_MS) return hit.value;
+  const value = runGitOnce(args, cwd);
+  if (_gitCache.size >= GIT_CACHE_MAX) _gitCache.clear();
+  _gitCache.set(key, { value, ts: Date.now() });
+  return value;
+}
+
+function runGitOnce(args, cwd) {
   try {
     const out = execFileSync('git', args, {
       cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000, windowsHide: true,
@@ -195,7 +216,7 @@ function isWithin(child, parent) {
  * So worktrees + subfolders of the same project converge on the SAME root → SAME id.
  * null when no marker is found at any anchor (outside git it does NOT climb the disk).
  */
-function findProjectRoot({ cwd, env = process.env, fs = fsDefault, git = defaultGit } = {}) {
+function findProjectRoot({ cwd, env = hookEnv(), fs = fsDefault, git = defaultGit } = {}) {
   const dir = _trim(cwd);
   if (!dir) return null;
   if (hasMarker(dir, fs)) return safeResolve(dir);
@@ -258,7 +279,7 @@ function readMarker(startDir, fs = fsDefault) {
 // ─── the strict resolver (single source of truth for the ladder) ─────────────
 
 /** Resolve id + which rung produced it, or THROW. Internal (DRY for the 3 facades). */
-function _resolveWithStrength({ cwd, env = process.env, fs = fsDefault, git = defaultGit } = {}) {
+function _resolveWithStrength({ cwd, env = hookEnv(), fs = fsDefault, git = defaultGit } = {}) {
   // Rung 1 — env override (explicit, wins over everything).
   const forced = sanitize(env && env.CCB_PROJECT_ID);
   if (forced) return { id: assertSafeProjectId(forced), strength: 'env' };
@@ -344,7 +365,7 @@ function fallbackStrength({ cwd, git = defaultGit } = {}) {
  * legacy marker) OR a declared .memory/project.json already wins (migration done).
  * NEVER writes anything (the boss never auto-creates .memory/project.json — owner "c").
  */
-function migrationHint({ cwd, env = process.env, fs = fsDefault, git = defaultGit } = {}) {
+function migrationHint({ cwd, env = hookEnv(), fs = fsDefault, git = defaultGit } = {}) {
   const dir = _trim(cwd);
   if (!dir) return null;
   const legacy = legacyMarkerPresent(dir, fs);
@@ -369,7 +390,7 @@ function migrationHint({ cwd, env = process.env, fs = fsDefault, git = defaultGi
  * non-contaminating (these stores are local, not the shared memory daemon), so the
  * basename fallback is acceptable here where it is NOT at the memory boundary.
  */
-function resolveLocalScopeId({ cwd, env = process.env, fs = fsDefault, git = defaultGit } = {}) {
+function resolveLocalScopeId({ cwd, env = hookEnv(), fs = fsDefault, git = defaultGit } = {}) {
   const id = tryResolveProjectId({ cwd, env, fs, git });
   if (id) return id;
   if (cwd && typeof cwd === 'string') {
@@ -421,7 +442,7 @@ function _chainCeiling({ start, sessionRoot, git }) {
  * Never climbs above the ceiling; never scans the raw filesystem unbounded. Best-effort:
  * every git/fs probe is guarded so it NEVER throws (safe on the per-turn recall path).
  */
-function resolveProjectChain({ cwd, sessionRoot, env = process.env, fs = fsDefault, git = defaultGit } = {}) {
+function resolveProjectChain({ cwd, sessionRoot, env = hookEnv(), fs = fsDefault, git = defaultGit } = {}) {
   const start = _trim(cwd);
   if (!start) return { focusId: null, chain: [] };
 
@@ -488,4 +509,6 @@ module.exports = {
   legacyMarkerPresent, migrationHint,
   // ── Hierarchical ancestor-spine (F2) ──
   resolveProjectChain,
+  // test-only: the daemon-side git memo
+  _defaultGit: defaultGit, _gitCache, GIT_TTL_MS,
 };

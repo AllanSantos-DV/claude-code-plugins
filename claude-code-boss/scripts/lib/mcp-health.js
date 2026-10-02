@@ -69,7 +69,9 @@ async function probeHealth(config) {
         const port = _derivePort(daemonUrl);
         if (Number.isInteger(port) && await probeTcpPort(port)) {
           const result = await httpGetJson(daemonUrl + '/health', HTTP_TIMEOUT_MS);
-          if (result && result.json && result.json.ok) {
+          // mcp-memory >= 2.44 answers /health with {status:'healthy'} (no `ok`);
+          // older builds answer {ok:true}. Accept both, nothing else.
+          if (result && result.json && (result.json.ok === true || result.json.status === 'healthy')) {
             return { mode: 'mcp-memory', connected: true, project, backend: 'mcp-memory', details: { transport, serverUrl: daemonUrl }, latency: result.latency };
           }
         }
