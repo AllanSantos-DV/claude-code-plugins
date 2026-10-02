@@ -213,8 +213,20 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
 
 ### Outros achados da revisão
 
-- [ ] **O1 — `retrieval-feedback.js:186` escopa por nome de pasta**
+- [x] **O1 — `retrieval-feedback.js:186` escopa por nome de pasta**
   (`path.basename(ev.cwd)`), contra o contrato de project id da 2.29.1.
+  **RESOLVIDO em 2026-10-02**: era bug real — `store.init({project: basename})` +
+  `recordCitation(id)` fazia `UPDATE` num shard sem a entrada (0 linhas, silencioso):
+  citações de lições reais nunca contavam (só se o nome da pasta fosse o id).
+  Agora a citação vai para o escopo de onde a entrada foi RECUPERADA (`project` do
+  journal, gravado por `brain_retrieve_context`), com fallback
+  `tryResolveProjectId(cwd)`; sem escopo (pasta sem id) não registra. Métricas
+  seguem por `basename`, como todos os outros writers de métrica (store local,
+  consistente entre escrita e leitura). Teste falha no código antigo, passa no novo.
+- [ ] **O9 — `lib/metrics.js:14-18` cai em `process.cwd()` sem `ctx.cwd`.** No
+  daemon é o cwd do próprio daemon (1ª sessão), não o da sessão. Todos os chamadores
+  atuais passam `ev.cwd` e o `hooks.json` sempre envia `cwd`, então não foi visto
+  acontecer; fallback correto no daemon seria `hookEnv().CLAUDE_PROJECT_DIR`.
 - [ ] **O2 — `_readBuf` duplicado** em `capture-dispatch.js:56` e
   `lib/capture-queue.js:71`.
 - [ ] **O3 — ADR-015 com cabeçalho "Proposto"** apesar de implementada; e a branch
