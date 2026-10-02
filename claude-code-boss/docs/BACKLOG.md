@@ -253,7 +253,13 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   falha de teste (`Cannot find module 'eslint'`), não como ambiente incompleto.
   Visto em 2026-10-02; resolvido localmente com `npm install`. Fix: o preflight
   checar `require.resolve` das devDependencies que a suíte usa.
-- [ ] **O6 — slot do pool de workers do KB nunca é recriado.**
+- [x] **O6 — slot do pool de workers do KB nunca é recriado.**
+  **RESOLVIDO em 2026-10-02**: worker morto falha as chamadas em voo e é recriado
+  na próxima chamada do slot (o worker novo começa sem estado de `init` — toda
+  sequência do chamador já começa com `init({project})`). Teste: `poolSize 1`,
+  salva, mata o worker, a próxima sequência funciona e lê o dado salvo. O teste
+  existente de `pluginRoot` inválido segue verde (o worker recriado também falha
+  ao carregar → rejeita, nunca trava).
   `servers/brain-server/lib/kb-worker-client.js:105-130`: depois de `error`/`exit`,
   `dead` fica setado e toda chamada para aquele slot (projetos com o mesmo hash)
   falha até reiniciar o daemon. Fix: recriar o slot na próxima chamada, como o

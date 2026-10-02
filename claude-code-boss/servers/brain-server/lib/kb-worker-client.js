@@ -99,39 +99,56 @@ export function createKbWorkerPool({ pluginRoot, callTimeoutMs = 30000, poolSize
   }
 
   function createSlot(slotIndex) {
-    const worker = new Worker(path.join(__dirname, 'kb-worker.js'), { workerData: { pluginRoot } });
     const pending = new Map();
     let nextId = 1;
-    let dead = null; // Error once the worker has exited — new calls fail loud instead of hanging.
+    let worker = null;
+    let closed = null; // Error once shutdown() ran — new calls fail loud instead of hanging.
+
+    function failAll(err) {
+      for (const [, p] of pending) { clearTimeout(p.timer); p.reject(err); }
+      pending.clear();
+    }
+
+    // A worker that dies (error/exit) fails its in-flight calls loud and is REPLACED on
+    // the next call. It used to stay dead: every project hashed to this slot (KB tools
+    // and the brain_retrieve_context hook) failed until the daemon restarted. The new
+    // worker starts without per-project init state — each caller sequence begins with
+    // init({project}) anyway (see makeClient below).
+    function spawnWorker() {
+      const w = new Worker(path.join(__dirname, 'kb-worker.js'), { workerData: { pluginRoot } });
+      w.on('message', (msg) => {
+        const p = pending.get(msg.id);
+        if (!p) return;
+        pending.delete(msg.id);
+        clearTimeout(p.timer);
+        if (pending.size === 0) w.unref();
+        if (msg.ok) p.resolve(msg.result); else p.reject(new Error(msg.error));
+      });
+      const onDeath = (err) => {
+        if (worker !== w) return;
+        worker = null;
+        failAll(err);
+      };
+      w.on('error', (err) => { console.error(`[kb-worker-pool] slot ${slotIndex} error: ${err.message}`); onDeath(err); });
+      w.on('exit', (code) => onDeath(new Error(`kb-worker exited unexpectedly (code ${code}, pool slot ${slotIndex})`)));
+      w.unref();
+      worker = w;
+      return w;
+    }
+    spawnWorker();
 
     function settle(id, fn) {
       const p = pending.get(id);
       if (!p) return;
       pending.delete(id);
       clearTimeout(p.timer);
-      if (pending.size === 0) worker.unref();
+      if (pending.size === 0 && worker) worker.unref();
       fn(p);
     }
 
-    worker.on('message', (msg) => {
-      settle(msg.id, (p) => { if (msg.ok) p.resolve(msg.result); else p.reject(new Error(msg.error)); });
-    });
-    worker.on('error', (err) => {
-      dead = err;
-      for (const [, p] of pending) { clearTimeout(p.timer); p.reject(err); }
-      pending.clear();
-      worker.unref();
-    });
-    worker.on('exit', (code) => {
-      if (!dead) dead = new Error(`kb-worker exited unexpectedly (code ${code}, pool slot ${slotIndex})`);
-      for (const [, p] of pending) { clearTimeout(p.timer); p.reject(dead); }
-      pending.clear();
-      worker.unref();
-    });
-    worker.unref();
-
     function call(mod, method, args, project) {
-      if (dead) return Promise.reject(dead);
+      if (closed) return Promise.reject(closed);
+      const w = worker || spawnWorker();
       const id = nextId++;
       const callId = `${slotIndex}-${id}`;
       const startedAt = Date.now();
@@ -154,19 +171,23 @@ export function createKbWorkerPool({ pluginRoot, callTimeoutMs = 30000, poolSize
           },
           timer,
         });
-        worker.ref();
-        worker.postMessage({ id, mod, method, args });
+        w.ref();
+        w.postMessage({ id, mod, method, args });
       });
     }
 
     async function shutdown() {
-      dead = dead || new Error('kb-worker shutting down');
-      for (const [, p] of pending) p.reject(dead);
-      pending.clear();
-      await worker.terminate();
+      closed = closed || new Error('kb-worker shutting down');
+      failAll(closed);
+      const w = worker;
+      worker = null;
+      if (w) await w.terminate();
     }
 
-    return { call, shutdown };
+    /** Test seam: kill this slot's worker as a crash would (the slot stays open). */
+    async function _kill() { if (worker) await worker.terminate(); }
+
+    return { call, shutdown, _kill };
   }
 
   // Callers (mcp-server.js's getKB(project), and the brain_retrieve_context /
@@ -210,5 +231,6 @@ export function createKbWorkerPool({ pluginRoot, callTimeoutMs = 30000, poolSize
     clientsFor,
     poolSize: size,
     shutdown,
+    _killSlot: (i) => slots[i]._kill(),
   };
 }

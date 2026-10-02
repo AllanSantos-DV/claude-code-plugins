@@ -19281,6 +19281,25 @@ test('kb-worker-client: a worker that fails to load (bad pluginRoot) rejects a p
   }
 });
 
+test('O6: kb-worker-client — a crashed slot worker is REPLACED on the next call (the slot does not stay dead)', async () => {
+  const { createKbWorkerPool } = await import(KB_WORKER_CLIENT_URL);
+  const keepAlive = setInterval(() => {}, 50);
+  const pool = createKbWorkerPool({ pluginRoot: ROOT, poolSize: 1 });
+  try {
+    const project = 'kbw-respawn-' + Date.now();
+    const { storeClient } = pool.clientsFor(project);
+    await storeClient.init({ project });
+    await storeClient.save({ id: 'kbw-r1', title: 'T', summary: 'S', content: { detail: 'd' }, type: 'lesson', tags: [], project });
+    await pool._killSlot(0);
+    await storeClient.init({ project }); // a fresh worker; each caller sequence starts with init
+    const got = await storeClient.get('kbw-r1');
+    assert(got && got.id === 'kbw-r1', 'the replacement worker serves the slot again (data is on disk)');
+  } finally {
+    clearInterval(keepAlive);
+    await pool.shutdown();
+  }
+});
+
 test('kb-worker-client: a call that never gets a matching reply times out and fails loud instead of hanging forever', async () => {
   const { createKbWorkerPool } = await import(KB_WORKER_CLIENT_URL);
   const keepAlive = setInterval(() => {}, 50);
