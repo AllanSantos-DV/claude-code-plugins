@@ -25,6 +25,7 @@ const verifyJournal = require('./lib/verify-journal.js');
 const metrics = require('./lib/metrics.js');
 const { canonicalSig } = require('./lib/command-signature.js');
 const oneoff = require('./lib/oneoff-store.js');
+const { classifyCommand } = require('./lib/curation-families.js');
 
 const { findProjectRoot, loadShellsConfig, matchCuratedShell } = require('./shells-config.js');
 const { classify, successBudgetFor }                            = require('./curation-classifier.js');
@@ -140,6 +141,24 @@ async function run(event) {
     // output landed in the sub-agent's context, and the parent's Stop would block on
     // a command it never ran. Recurrence above still counts it.
     if (event.agent_id) return;
+
+    // C3 (Phase C): a per-project script only pays off for a TASK command that RECURS.
+    // Exploration (git log/grep/cat…) is bounded generically — Token Guard or the boss
+    // shaper — and inline code (`node -e`, heredoc) is single-use by definition; both
+    // used to be curated on their first noisy output and the script was never used
+    // again (18 of 41 in the field). A task's FIRST noisy occurrence stays pending; the
+    // second one asks for the script. A noisy CURATED script still asks (tune it).
+    if (reason === 'needs-curation') {
+      const cls = classifyCommand(command);
+      if (cls !== 'task') {
+        metrics.fire('curation.skipped', { class: cls, chars: charCount, lines: lineCount }, { sessionId, cwd });
+        return;
+      }
+      if (seen.count < 2) {
+        metrics.fire('curation.pending', { sig: seen.sig, chars: charCount, lines: lineCount }, { sessionId, cwd });
+        return;
+      }
+    }
 
     // A valid one-hit marking (still under the ceiling) suppresses the block, so
     // the Stop hook never re-asks to curate a genuine single-use command. A 1-token
