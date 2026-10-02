@@ -4817,8 +4817,25 @@ test('R1 dashboard brain HTTP handlers sanitize project (traversal class closed 
   const src = fs.readFileSync(path.join(ROOT, 'scripts', 'dashboard.js'), 'utf-8');
   assert(/require\('\.\/lib\/project-id\.js'\)/.test(src), 'dashboard must import sanitizeProjectId');
   assert(!/=\s*url\.searchParams\.get\('project'\)\s*\|\|\s*'';/.test(src), 'no raw project query read may reach store.init');
-  const wrapped = src.match(/sanitizeProjectId\((?:url\.searchParams\.get\('project'\)|parsed\.targetProject|bundle\.project)/g) || [];
+  // Logical sanitizer: nested owner/repo KBs (listed since 653) must open too; it
+  // still refuses .., backslash, drive colon and empty segments (unit-tested).
+  const wrapped = src.match(/sanitizeLogicalProjectId\((?:url\.searchParams\.get\('project'\)|parsed\.targetProject|bundle\.project)/g) || [];
   assert(wrapped.length >= 6, `expected >=6 sanitized project reads in brain handlers, got ${wrapped.length}`);
+  assert(!/sanitizeProjectId\((?:url\.searchParams\.get\('project'\)|parsed\.targetProject|bundle\.project)/.test(src),
+    'project reads must use the logical sanitizer (the single-segment one hides nested KBs)');
+});
+
+test('brain-projects: nested owner/repo and host/owner/repo KBs are listed (653); dot dirs and depth cap respected', () => {
+  const { listBrainProjects, brainDbPath } = require('./lib/brain-projects.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bp-'));
+  for (const id of ['flat', 'owner/repo', 'github.com/acme/widgets', '.hidden/x', 'a/b/c/d/e']) {
+    fs.mkdirSync(path.dirname(brainDbPath(dir, id)), { recursive: true });
+    fs.writeFileSync(brainDbPath(dir, id), '');
+  }
+  fs.mkdirSync(path.join(dir, 'empty-dir'), { recursive: true });
+  assertEq(listBrainProjects(dir), ['flat', 'github.com/acme/widgets', 'owner/repo']);
+  assertEq(listBrainProjects(path.join(dir, 'missing')), []);
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 // ─── retrieve-core.filterInjectableEntries ───────────────────────────────────

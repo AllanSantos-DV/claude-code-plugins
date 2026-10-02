@@ -19,7 +19,6 @@
  *
  * Uso (CLI, manual): node claude-code-boss/scripts/brain-migrate.js
  */
-const fs = require('fs');
 const path = require('path');
 
 /**
@@ -86,11 +85,8 @@ function activeBrainDir(opts) {
 /** Enumera os projetos com KB local sob o data-dir ativo (brain/<project>/brain.db). */
 async function defaultEnumerateProjects(opts = {}) {
   const brainDir = activeBrainDir(opts);
-  let names;
-  try { names = fs.readdirSync(brainDir); } catch (e) { void e; return []; }
-  return names.filter((n) => {
-    try { return fs.existsSync(path.join(brainDir, n, 'brain.db')); } catch (e) { void e; return false; }
-  });
+  // Nested logical ids (owner/repo → brain/owner/repo/brain.db) included.
+  return require('./lib/brain-projects.js').listBrainProjects(brainDir);
 }
 
 /** Lê as entradas LOCAIS full-fidelity de um projeto (brain-store, direto no SQLite). */
