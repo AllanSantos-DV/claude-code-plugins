@@ -14,7 +14,7 @@
  */
 'use strict';
 
-const { tryResolveProjectId } = require('./lib/project-id.js');
+const { tryResolveProjectId, memoryOptedOut } = require('./lib/project-id.js');
 const { getOnboarding } = require('./lib/brain-config.js');
 const { buildNotice } = require('./project-identity-advisory.js');
 
@@ -27,7 +27,7 @@ function run(event, { resolve = tryResolveProjectId } = {}) {
   if (!getOnboarding().projectIdentity) return null;
   const cwd = event && typeof event.cwd === 'string' ? event.cwd : '';
   if (!cwd || (event && event.stop_hook_active)) return null;
-  if (resolve({ cwd })) return null;
+  if (resolve({ cwd }) || memoryOptedOut({ cwd })) return null;
   return { block: true, reason: buildNotice(cwd) };
 }
 

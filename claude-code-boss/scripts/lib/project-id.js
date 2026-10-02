@@ -237,7 +237,48 @@ function findProjectRoot({ cwd, env = hookEnv(), fs = fsDefault, git = defaultGi
   if (top && hasMarker(top, fs)) return top;
   const base = gitRepoBase(dir, git);
   if (base && hasMarker(base, fs)) return safeResolve(base);
+
+  // No session ceiling and no git anchor (decided 2026-10-02, reversing the F1 "never
+  // climb without a ceiling" rule): a sub-folder of a declared NON-git project was
+  // refused — memory off — although `.memory/project.json` sat a few levels up. Climb
+  // at most MAX_WALK_UP levels and stop BEFORE the user's home folder, so a stray
+  // marker in ~ (or above it) is never adopted as the project.
+  const home = homeDirOf(env);
+  let d = path.dirname(dir);
+  for (let i = 0; i < MAX_WALK_UP - 1 && d !== path.dirname(d); i++) {
+    if (home && (pathsEqual(d, home) || !isWithin(d, home))) break; // reached ~ (exclusive) or left it
+    if (hasMarker(d, fs)) return safeResolve(d);
+    d = path.dirname(d);
+  }
   return null;
+}
+
+const OPT_OUT_FILE = path.join('.memory', 'memory-off.json');
+
+/**
+ * The user REFUSED to define a project id for this folder (decided 2026-10-02): the
+ * agent writes `.memory/memory-off.json` and the project-id nags stop — memory stays
+ * off there (it already is without an id). Nearest wins: walking up from cwd (same
+ * bounds as the findProjectRoot climb), an opt-out found before any project marker.
+ */
+function memoryOptedOut({ cwd, env = hookEnv(), fs = fsDefault } = {}) {
+  let d = _trim(cwd);
+  if (!d) return false;
+  const home = homeDirOf(env);
+  for (let i = 0; i < MAX_WALK_UP && d; i++) {
+    if (hasMarker(d, fs)) return false;
+    try { if (fs.existsSync(path.join(d, OPT_OUT_FILE))) return true; } catch (err) { void err; return false; }
+    const parent = path.dirname(d);
+    if (parent === d || (home && (pathsEqual(parent, home) || !isWithin(parent, home)))) break;
+    d = parent;
+  }
+  return false;
+}
+
+/** The user's home folder for the climb stop (env first, so tests and isolated runs can move it). */
+function homeDirOf(env) {
+  const h = (env && (env.USERPROFILE || env.HOME)) || process.env.USERPROFILE || process.env.HOME || require('os').homedir();
+  return _trim(h);
 }
 
 // ─── legacy marker (READ-ONLY back-compat + migration nudge, boss 2b) ─────────
@@ -518,6 +559,7 @@ function sanitizeLogicalProjectId(raw) {
 module.exports = {
   // ── Preserved legacy exports (contract unchanged for existing call-sites) ──
   resolveProjectId, readMarker, sanitize, sanitizeProjectId, sanitizeLogicalProjectId, MARKER_FILE,
+  memoryOptedOut, OPT_OUT_FILE,
   // ── Strict resolver API (F1) ──
   tryResolveProjectId, projectIdStrength, isFragileScope,
   resolveFallbackProjectId, fallbackStrength,

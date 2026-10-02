@@ -4561,10 +4561,54 @@ test('project-id findProjectRoot: CLAUDE_PROJECT_DIR is the walk-up ceiling (bos
     const found = projectId.findProjectRoot({ cwd: sub, env: { CLAUDE_PROJECT_DIR: root }, git: noGit });
     assert(found && path.resolve(found) === path.resolve(root), 'ceiling walk-up finds the session root');
     assertEq(projectId.resolveProjectId({ cwd: sub, env: { CLAUDE_PROJECT_DIR: root }, git: noGit }), 'sess/root', 'resolves declared id via ceiling');
-    // Without the ceiling and with no git anchor, it does NOT climb the filesystem.
-    assertEq(projectId.findProjectRoot({ cwd: sub, env: {}, git: noGit }), null, 'no ceiling + no git → no fs climb');
-    assertEq(projectId.tryResolveProjectId({ cwd: sub, env: {}, git: noGit }), null, 'no ceiling → unresolved');
+    // Without the ceiling and with no git anchor (decided 2026-10-02): climb to the declared
+    // marker — bounded (8 levels) and never reaching the home folder.
+    const homeAbove = path.dirname(root);
+    const found2 = projectId.findProjectRoot({ cwd: sub, env: { HOME: homeAbove, USERPROFILE: homeAbove }, git: noGit });
+    assert(found2 && path.resolve(found2) === path.resolve(root), 'no ceiling: climbs to the declared marker of a non-git project');
+    assertEq(projectId.tryResolveProjectId({ cwd: sub, env: { HOME: homeAbove, USERPROFILE: homeAbove }, git: noGit }), 'sess/root');
+    // The marker IS the home folder → not adopted (a stray ~/.memory/project.json never scopes everything).
+    assertEq(projectId.findProjectRoot({ cwd: sub, env: { HOME: root, USERPROFILE: root }, git: noGit }), null, 'a marker in ~ itself is never adopted');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('project identity notice: repeats on every prompt, explains the refusal marker, cites a config projectId; silent once refused', async () => {
+  const adv = require('./project-identity-advisory.js');
+  const n = adv.buildNotice('C:/x/proj', '');
+  assert(/repete a cada prompt/.test(n) && /\.memory\/memory-off\.json/.test(n), 'notice explains the repetition and the refusal marker');
+  assert(!/backend\.mcpMemory\.projectId/.test(n), 'no config note when no projectId is set');
+  assert(/backend\.mcpMemory\.projectId` \("acme\/app"\)/.test(adv.buildNotice('C:/x', 'acme/app')), 'a config projectId is cited with its value');
+  // As a prompt detector: notice for an id-less folder; nothing once the user refused.
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pidn-'));
+  try {
+    const text = await adv.run({ cwd: base, prompt: 'oi' }, { resolve: () => null });
+    assert(typeof text === 'string' && /não tem project id/.test(text), 'id-less folder → notice');
+    fs.mkdirSync(path.join(base, '.memory'), { recursive: true });
+    fs.writeFileSync(path.join(base, '.memory', 'memory-off.json'), '{"memory":"off"}');
+    assertEq(await adv.run({ cwd: base, prompt: 'oi' }, { resolve: () => null }), null, 'refused → silent');
+    const stop = require('./project-id-stop.js');
+    assertEq(stop.run({ cwd: base }, { resolve: () => null }), null, 'the Stop nag also stops once refused');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('project-id: climb cap (8 levels) and the memory-off refusal marker (nags stop; nearest marker wins)', () => {
+  const projectId = require(path.join(ROOT, 'scripts', 'lib', 'project-id.js'));
+  const base = pidTmpDir('ccb-climb-');
+  try {
+    const env = { HOME: path.dirname(base), USERPROFILE: path.dirname(base) };
+    fs.mkdirSync(path.join(base, '.memory'), { recursive: true });
+    fs.writeFileSync(path.join(base, '.memory', 'project.json'), JSON.stringify({ metadata: { defaults: { project_id: 'climb/root' } } }));
+    const deep = path.join(base, 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i');
+    fs.mkdirSync(deep, { recursive: true });
+    assertEq(projectId.findProjectRoot({ cwd: deep, env, git: () => null }), null, '9 levels down: past the 8-level cap');
+    assert(projectId.findProjectRoot({ cwd: path.join(base, 'a', 'b', 'c'), env, git: () => null }), 'within the cap: found');
+    // Refusal marker in a sub-folder: nearest wins → opted out; the parent stays a project.
+    const off = path.join(base, 'a', 'b');
+    fs.mkdirSync(path.join(off, '.memory'), { recursive: true });
+    fs.writeFileSync(path.join(off, '.memory', 'memory-off.json'), '{"memory":"off"}');
+    assertEq(projectId.memoryOptedOut({ cwd: path.join(off, 'c'), env }), true, 'below the refusal marker → opted out');
+    assertEq(projectId.memoryOptedOut({ cwd: path.join(base, 'a'), env }), false, 'the project marker is nearer → not opted out');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
 
 test('project-id defaultGit: memoized per (cwd,args) within the TTL (daemon event loop is not re-blocked)', () => {
@@ -14330,7 +14374,7 @@ test('posttoolusefailure-dispatcher.DETECTORS: 2 detectors, correct order + shap
 test('user-prompt-submit-dispatcher.DETECTORS: model-router-ensure (G7) + 3 daemon detectors, correct order + shape', () => {
   const d = require('./user-prompt-submit-dispatcher.js');
   const names = d.DETECTORS.map(x => x.name);
-  assertEq(names, ['model-router-ensure', 'brain-daemon-ensure', 'brain-health', 'brain-status']);
+  assertEq(names, ['model-router-ensure', 'brain-daemon-ensure', 'brain-health', 'brain-status', 'project-identity']);
   assert(d.DETECTORS.every(x => typeof x.mod.run === 'function'), 'every detector exposes run()');
   assert(d.DETECTORS.every(x => x.timeoutMs > 0 && x.timeoutMs < 30000), 'every detector bounded below the 30 s hooks.json timeout');
 });
@@ -14416,7 +14460,7 @@ test('user-prompt-submit-dispatcher.dispatch: a synthetic <task-notification> pr
   ran.length = 0;
   assertEq(await d.dispatch({ prompt: 'a real prompt' }, { detectors: fakes }), 'NOISE');
   assertEq(ran, ['ensure', 'health'], 'a user prompt runs everything');
-  assert(d.DETECTORS.filter((x) => x.advisory).map((x) => x.name).join(',') === 'brain-health,brain-status', 'health/status are the advisories; the ensures are not');
+  assert(d.DETECTORS.filter((x) => x.advisory).map((x) => x.name).join(',') === 'brain-health,brain-status,project-identity', 'health/status/project-identity are the advisories; the ensures are not');
 });
 
 test('user-prompt-submit-dispatcher.dispatch: concatenates multiple advisories in order with SEP', async () => {

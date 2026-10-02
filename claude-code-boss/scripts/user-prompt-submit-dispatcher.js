@@ -68,6 +68,9 @@ const DETECTORS = [
   { name: 'brain-daemon-ensure', mod: brainDaemonEnsure, timeoutMs: 25000 },
   { name: 'brain-health', mod: brainHealth, timeoutMs: 5000, advisory: true },
   { name: 'brain-status', mod: brainStatus, timeoutMs: 5000, advisory: true },
+  // Folder without project id: repeat the notice on EVERY user prompt until the id
+  // exists or the user refuses (.memory/memory-off.json) — decided 2026-10-02.
+  { name: 'project-identity', mod: require('./project-identity-advisory.js'), timeoutMs: 5000, advisory: true },
 ];
 
 /**

@@ -111,7 +111,7 @@ prazo interno de `timeout − 1 s`.
 | SessionStart (via dispatcher) | `doctor-advisory.js` | Roda `doctor.js` com cooldown; advisory de 1 linha só se algo crítico falhar (Node/PATH, data-dir fragmentado, daemon, token) |
 | SessionStart (via dispatcher) | `review-checklist-advisory.js` | Se existir `.claude/brain-review-checklist.md` (lições recorrentes de código), lembra o `/code-review` nativo de consultá-lo |
 | SessionStart (via dispatcher) | `tuning-advisory.js` | Recomendação determinística de tuning (perfil/curadoria) com cooldown de 6h |
-| SessionStart (via dispatcher) | `project-identity-advisory.js` | Pasta sem project id → avisa que a memória está desligada e pede ao agente para perguntar o nome e criar `.memory/project.json` |
+| SessionStart + UserPromptSubmit (via dispatchers) | `project-identity-advisory.js` | Pasta sem project id (e sem recusa `.memory/memory-off.json`) → avisa que a memória está desligada e pede ao agente para perguntar o nome e criar `.memory/project.json` |
 | SessionStart (via dispatcher) | `graph-warm.js` | mcp-memory: dispara um `ingest` incremental do Session Graph (fire-and-forget, cooldown por projeto) pra o grafo ficar pronto-e-fresco antes da 1ª busca — o servidor faz o delta (no-op ~5s se nada mudou). Silencioso, fail-open |
 | SessionStart (via dispatcher) | `policy-inject.js` | Injeta as políticas standing (always) no contexto da sessão |
 | SubagentStart | `policy-inject.js` | Injeta as políticas standing (always) no contexto próprio do subagente — mesma injeção do SessionStart (via `mcp_tool` `hook_policy_inject` no daemon, sem spawn por subagente) |
@@ -274,11 +274,15 @@ pasta sem id (ex.: exploração fora de um repo git) o boss **não injeta recall
 (`brain_retrieve_context` volta vazio e o `self-review` do Stop não roda) e **não
 salva nada** (`capture_lesson`/`brain_store`/`brain_search` com `cwd` sem id são
 recusados; o `cwd` com id vence um `project` explícito). O
-`SessionStart` avisa o agente, e o `Stop` (`project-id-stop`) repete o aviso a
-cada turno — uma vez por turno, sem loop — até o id existir; nesse meio-tempo os
-detectores de Stop que pedem captura ficam em silêncio. Para resolver, responda
-ao agente o nome do projeto (ele cria o `.memory/project.json`) ou trabalhe num
-repo git com remote. Para desligar os avisos: `onboarding.projectIdentity: false`
+`SessionStart` avisa o agente, o `UserPromptSubmit` repete o aviso **a cada prompt**
+seu, e o `Stop` (`project-id-stop`) bloqueia uma vez por turno, sem loop — até o id
+existir; nesse meio-tempo os detectores de Stop que pedem captura ficam em silêncio.
+Para resolver, responda ao agente o nome do projeto (ele cria o
+`.memory/project.json`) ou trabalhe num repo git com remote. **Se não quiser memória
+nessa pasta**, recuse: o agente cria `.memory/memory-off.json` e os avisos param
+(a memória segue desligada ali). Subpasta de um projeto declarado é coberta: o
+`.memory/project.json` é procurado até 8 níveis acima, parando antes da sua pasta
+home. Para desligar os avisos em todas as pastas: `onboarding.projectIdentity: false`
 na config (a memória continua desligada sem id).
 
 ## Brain MCP: daemon único, zero processo por sessão (ADR-001)
