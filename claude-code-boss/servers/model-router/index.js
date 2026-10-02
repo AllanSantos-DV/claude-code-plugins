@@ -1965,7 +1965,13 @@ function cooldownCfg(config) {
 // cooldown em vez de o tempo todo.
 function cooldownActive(config) {
   const cd = cooldownCfg(config);
-  return !!(cd.enabled && _cooldownUntil && Date.now() < _cooldownUntil);
+  if (!(cd.enabled && _cooldownUntil && Date.now() < _cooldownUntil)) return false;
+  // The cooldown is the ANTHROPIC subscription window. With a custom gateway as the
+  // base upstream it doesn't govern the traffic — generation already skipped it
+  // there (isRealAnthropic), but count_tokens/catalog/classify still honored a
+  // restored cooldown and diverged to the BYOK while generation went to the gateway.
+  const base = byok.resolveUpstream(config, { onLimit: false }, UPSTREAM_FALLBACK);
+  return !base.isCustomEndpoint;
 }
 
 // Extrai o epoch ms do reset a partir dos headers de um 429 da Anthropic.
