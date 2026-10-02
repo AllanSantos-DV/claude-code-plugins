@@ -44,6 +44,9 @@ const FIELDS = {
   command: 'Expanded slash command (UserPromptExpansion)',
   command_name: 'Expanded slash command name (UserPromptExpansion)',
   stop_hook_active: 'true/false (Stop)',
+  // Set only for a SUB-AGENT's tool call (empty in the main session) — verified live.
+  agent_id: 'Sub-agent id when the call came from a sub-agent',
+  agent_type: 'Sub-agent type when the call came from a sub-agent',
 };
 const JSON_FIELDS = new Set(['tool_input', 'tool_response']);
 const BOOL_FIELDS = new Set(['is_interrupt', 'stop_hook_active']);

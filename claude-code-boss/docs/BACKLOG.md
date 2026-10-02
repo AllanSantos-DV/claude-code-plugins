@@ -342,7 +342,16 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   REVERTIDO; aguarda a mesma decisão do U4. Fix pronto: no `canonicalSig`, ao
   cortar no redirecionamento, remover o número COLADO (`2>`), nunca um argumento
   seguido de espaço (`sleep 2 > f`).
-- [ ] **U5 — comandos de subagente entram na curadoria do `Stop` do pai** (o `find`
+- [x] **U5 — RESOLVIDO em 2026-10-02 com teste no Claude Code REAL (sessão
+  isolada)**: o input do `PreToolUse`/`PostToolUse` de uma chamada de subagente
+  traz `agent_id` e `agent_type` (da sessão principal, não); e os placeholders
+  `${agent_id}`/`${agent_type}` FUNCIONAM no `input` de `mcp_tool` (probe: subagente
+  → `ad838ed94863c25b6`, principal → vazio). `hooks.json` passa `agent_id`/`agent_type`
+  aos dispatchers de `PostToolUse`/`PostToolUseFailure`; o `curation-detect` não
+  põe comando de subagente no journal do turno (o `Stop` do pai não cobra) — a
+  recorrência segue contando. Teste unitário: principal entra no journal,
+  subagente não; `hooks.json` passa o campo; `rebuildEvent` descarta vazio.
+- [ ] ~~U5 — comandos de subagente entram na curadoria do `Stop` do pai~~ (o `find`
   em `token-guard` foi do subagente e bloqueou o turno principal).
   **Pesquisado em 2026-10-02**: a doc oficial do Claude Code não diz se o input de
   `PreToolUse`/`PostToolUse` de uma chamada de subagente traz `agent_id`, nem

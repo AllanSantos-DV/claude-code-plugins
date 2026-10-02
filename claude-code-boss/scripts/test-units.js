@@ -16749,6 +16749,27 @@ test('brain_retrieve_context: routes retrieve-core\'s local search through kbWor
   }
 });
 
+// ─── U5: a sub-agent's bulky command is not the parent turn's to curate ────────
+test('U5: curation-detect journals a bulky MAIN-session command, not a sub-agent one (agent_id); hooks.json passes agent_id', async () => {
+  const cd = require('./curation-detect.js');
+  const tj = require('./lib/turn-journal.js');
+  const bulky = { stdout: 'x\n'.repeat(400), stderr: '' };
+  const base = { hook_event_name: 'PostToolUse', tool_name: 'Bash', cwd: process.env.CLAUDE_PLUGIN_DATA, tool_response: bulky };
+  const sMain = `u5-main-${Date.now()}`; const sSub = `u5-sub-${Date.now()}`;
+  await cd.run({ ...base, session_id: sMain, tool_input: { command: `cat u5-main-${Date.now()}.log` } });
+  await cd.run({ ...base, session_id: sSub, agent_id: 'ad838ed94863c25b6', agent_type: 'general-purpose', tool_input: { command: `cat u5-sub-${Date.now()}.log` } });
+  assertEq(tj.readEntries(sMain).length, 1, 'main session: bulky command journaled for its Stop');
+  assertEq(tj.readEntries(sSub).length, 0, 'sub-agent: not journaled for the parent Stop');
+  const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
+  for (const tool of ['hook_posttoolusebash_dispatcher', 'hook_posttoolusefailure_dispatcher']) {
+    const h = Object.values(hooks).flat().flatMap(g => g.hooks || []).find(x => x.tool === tool);
+    assertEq(h.input.agent_id, '${agent_id}', `${tool} passes agent_id`);
+  }
+  const { rebuildEvent } = require('./lib/hook-tools.js');
+  assertEq(rebuildEvent({ agent_id: 'a1', agent_type: 'general-purpose' }).agent_id, 'a1');
+  assertEq(rebuildEvent({ agent_id: '' }).agent_id, undefined, 'main session: empty → absent');
+});
+
 // ─── U9: active-research fires on research ASKS, not on any lib name ──────────
 test('U9: a lib mention alone (or with a version) no longer fires; an explicit research ask does; names inside paths are not mentions', () => {
   const ar = require('./active-research-detect.js');
