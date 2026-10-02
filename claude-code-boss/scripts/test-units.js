@@ -2513,6 +2513,14 @@ test('transcript-tail.readTailLines: byte cap returns only complete lines; missi
   assertEq(JSON.stringify(transcriptTail.readTailLines('', 30)), '[]');
 });
 
+test('O2: transcript-tail.readRange — the one range reader (range, short file, missing file, empty range)', () => {
+  const f = _tailTmp('range.txt', '0123456789');
+  assertEq(transcriptTail.readRange(f, 2, 5).toString(), '234');
+  assertEq(transcriptTail.readRange(f, 8, 50).toString(), '89', 'past EOF → what exists');
+  assertEq(transcriptTail.readRange(f, 5, 5).length, 0);
+  assertEq(transcriptTail.readRange(path.join(os.tmpdir(), 'nope-ccb-range.txt'), 0, 10).length, 0);
+});
+
 test('transcript-tail.readTailText + clampRaw: identical to clamping the whole file (31 MB multibyte transcript)', async () => {
   const convIngestMod = require('./conversation-ingest.js');
   const line = JSON.stringify({ type: 'user', text: 'é'.repeat(500) + ' ação 🚀' }) + '\n';

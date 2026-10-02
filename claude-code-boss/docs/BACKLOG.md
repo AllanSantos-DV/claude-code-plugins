@@ -229,8 +229,11 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   acontecer; fallback correto no daemon seria `hookEnv().CLAUDE_PROJECT_DIR`.
   **RESOLVIDO em 2026-10-02**: fallback `ctx.cwd` → `hookEnv().CLAUDE_PROJECT_DIR` →
   `process.cwd()`. Teste: dentro de `runWithHookEnv` usa a raiz da sessão que chamou.
-- [ ] **O2 — `_readBuf` duplicado** em `capture-dispatch.js:56` e
+- [x] **O2 — `_readBuf` duplicado** em `capture-dispatch.js:56` e
   `lib/capture-queue.js:71`.
+  **RESOLVIDO em 2026-10-02**: uma cópia só, `readRange` em `lib/transcript-tail.js`;
+  os dois módulos importam (`readRange: _readBuf`). Teste do range (intervalo,
+  além do EOF, arquivo ausente, intervalo vazio) + suíte inteira verde.
 - [ ] **O3 — ADR-015 com cabeçalho "Proposto"** apesar de implementada; e a branch
   `dev` tinha outro "ADR-015" (router upstream override) — numeração colidindo.
 - [ ] **O4 — trabalho não commitado resgatado das worktrees removidas** (patches em
