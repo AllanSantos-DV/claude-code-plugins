@@ -3223,8 +3223,26 @@ function isLoopbackHost(req) {
   return true;
 }
 
+// Last line of defense for ONE request: an unexpected throw answers 500 in the
+// Anthropic error shape (or cuts the stream if headers already went out) and is
+// logged — instead of an unhandled rejection that could end the shared router.
+function failRequest(res, err, where) {
+  logger.error('Falha inesperada tratando a request', { where, err: err && err.message, stack: err && err.stack && err.stack.split('\n').slice(0, 4).join(' | ') });
+  try {
+    if (!res.headersSent) {
+      res.writeHead(500, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: `model-router: falha interna (${err && err.message})` } }));
+    } else if (!res.writableEnded) {
+      res.destroy(err instanceof Error ? err : undefined);
+    }
+  } catch (e) { logger.error('failRequest: não consegui responder', { err: e.message }); }
+}
+
 async function createServer(config, mode, routerToken) {
-  const server = http.createServer(async (req, res) => {
+  const server = http.createServer((req, res) => {
+    _handleRequest(req, res).catch((err) => failRequest(res, err, 'request'));
+  });
+  async function _handleRequest(req, res) {
     const tenantEarly = resolveTenant(req.headers);
     const cfgEarly = effectiveConfig(config, tenantEarly);
     if (tenantEarly !== '_') logger.debug('Tenant (pre-route)', { tenant: tenantEarly });
@@ -3348,7 +3366,11 @@ async function createServer(config, mode, routerToken) {
       res.writeHead(400);
       res.end();
     });
-    req.on('end', async () => {
+    // Any unexpected throw in the async flow used to be an unhandled rejection
+    // that could take the whole router down (every session's routing). Fail
+    // THIS request instead (500 in the Anthropic error shape).
+    req.on('end', () => { _onEnd().catch((err) => failRequest(res, err, '/v1 request')); });
+    async function _onEnd() {
       // Multi-tenant (ADR-011): resolve o tenant do header UMA vez, NO TOPO do
       // handler (o branch count_tokens abaixo já usa cfg — declarar depois seria
       // TDZ e mataria toda rajada de boot do Claude Code com ReferenceError).
@@ -3549,8 +3571,8 @@ async function createServer(config, mode, routerToken) {
       try { maybeRewriteContext(body, cfg, _routingSessionKey); }
       catch (e) { logger.debug('maybeRewriteContext falhou (ignorado)', { err: e.message }); }
       forwardRequest(body, req.headers, res, cfg, { origTier, finalTier, path: req.url, sessionKey: _routingSessionKey, tenant });
-    });
-  });
+    }
+  }
 
   return server;
 }
@@ -3671,6 +3693,11 @@ async function main() {
     server.removeListener('error', onError);
     // Handler permanente para erros de runtime após o bind (não derruba o processo).
     server.on('error', (e) => logger.error('Server runtime error', { err: e.message }));
+    // A stray rejection outside a request (timer, fire-and-forget warm-up) must not
+    // end the router every session routes through: log it loudly and keep serving.
+    process.on('unhandledRejection', (reason) => {
+      logger.error('Promise rejeitada sem tratamento (router segue de pé)', { err: reason && reason.message ? reason.message : String(reason) });
+    });
     logger.info(`=== Servidor pronto em http://127.0.0.1:${FIXED_PORT} ===`, { port: FIXED_PORT });
     writeState(FIXED_PORT, mode, configFingerprint(config));
     process.stdout.write(`ROUTER_PORT=${FIXED_PORT}\n`);
