@@ -57,8 +57,15 @@ async function pump() {
   if (busy) return;
   busy = true;
   while (queue.length) {
-    const { id, name, args, background } = queue.shift();
+    const { id, name, args, background, deadline } = queue.shift();
     if (background) backgroundQueued--;
+    // G5: the caller already answered (fail-open) when its deadline passed —
+    // running the job now would only burn the queue for a reply nobody reads.
+    if (deadline && Date.now() > deadline) {
+      console.error(`[hook-worker] ${name} skipped: deadline passed while queued`);
+      parentPort.postMessage({ id, ok: false, expired: true, error: 'deadline passed while queued' });
+      continue;
+    }
     try {
       let text = await runHookInline(pluginRoot, name, args);
       if (background) {

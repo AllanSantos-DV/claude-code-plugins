@@ -18,6 +18,7 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000 } = {}) {
   let worker = null;
   let nextId = 1;
   let spawned = 0;
+  let expired = 0; // jobs the worker skipped because their deadline had passed (G5)
   let closed = false;
   const pending = new Map();
 
@@ -31,6 +32,7 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000 } = {}) {
     const w = new Worker(path.join(__dirname, 'hook-worker.js'), { workerData: { pluginRoot } });
     spawned++;
     w.on('message', (msg) => {
+      if (msg.expired) expired++;
       const p = pending.get(msg.id);
       if (!p) return;
       pending.delete(msg.id);
@@ -49,8 +51,12 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000 } = {}) {
     return w;
   }
 
-  /** Run a heavy hook in the worker; resolves the hook's stdout text. */
-  function run(name, args) {
+  /**
+   * Run a heavy hook in the worker; resolves the hook's stdout text. Past
+   * `timeoutMs` it rejects (the caller answers with its fail-open message) and the
+   * worker skips the job if it has not started yet (G5) — nobody reads that reply.
+   */
+  function run(name, args, { timeoutMs = callTimeoutMs } = {}) {
     if (closed) return Promise.reject(new Error('hook-worker shut down'));
     const w = ensure();
     const id = nextId++;
@@ -58,12 +64,12 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000 } = {}) {
       const timer = setTimeout(() => {
         if (!pending.delete(id)) return;
         if (pending.size === 0) w.unref();
-        reject(new Error(`hook-worker call timed out after ${callTimeoutMs}ms (${name})`));
-      }, callTimeoutMs);
+        reject(new Error(`prazo de ${timeoutMs}ms estourado no hook-worker (${name})`));
+      }, timeoutMs);
       timer.unref();
       pending.set(id, { resolve, reject, timer });
       w.ref();
-      w.postMessage({ id, name, args });
+      w.postMessage({ id, name, args, deadline: Date.now() + timeoutMs });
     });
   }
 
@@ -82,7 +88,7 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000 } = {}) {
   }
 
   function stats() {
-    return { alive: !!worker, spawned, inFlight: pending.size };
+    return { alive: !!worker, spawned, inFlight: pending.size, expired };
   }
 
   async function shutdown() {

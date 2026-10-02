@@ -73,10 +73,21 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   (60 `PostToolUse` Bash simultâneos): p95 ~580 ms → ~2 ms. Testes: conjunto async
   ⊂ fila pesada, ack sem esperar o worker, ordem FIFO com worker real, falha
   reportada no próximo `Stop` só da sessão certa e só uma vez.
-- [ ] **G5 — sem prazo, cancelamento nem limite de concorrência por hook.** Hook
+- [x] **G5 — sem prazo, cancelamento nem limite de concorrência por hook.** Hook
   que estoura o `timeout` do `hooks.json` continua rodando no daemon; `Stop`s se
   acumulam sem teto. (Substitui o item de timeout em "Arquitetura".) Fix: prazo
   interno abaixo do timeout declarado; `Stop` serializado por sessão com coalescência.
+  **RESOLVIDO em 2026-10-02**: prazo por tool = `timeout` do próprio `hooks.json`
+  − 1 s (fonte única, `deadlinesFromHooksJson`). Fila rápida: `withDeadline` —
+  passado o prazo responde a mensagem de fail-open visível (nunca decide nada).
+  Fila pesada: `hookWorker.run(…, {timeoutMs})` + prazo absoluto no job; o worker
+  PULA o job que ainda estava na fila quando o prazo passou (`/health` →
+  `hookWorker.expired`), em vez de rodar trabalho que ninguém lê. A "coalescência"
+  sai disso: um `Stop` velho abandonado expira e não roda. Fila de segundo plano já
+  tem teto (G4). Limite conhecido: código síncrono não é abortável — um hook que
+  passa do prazo termina em segundo plano. Testes: prazos derivados do
+  `hooks.json`, hook inline travado responde no prazo, `Stop` preso atrás da fila
+  responde no prazo e depois é pulado (worker real).
 - [ ] **G6 — `SubagentStart` ainda sobe 1 `node` por subagente** (`policy-inject.js`,
   `hooks/hooks.json:21-31`) — exatamente o cenário de fan-out. `mcp_tool` funciona
   nesse evento. Fix: migrar para `mcp_tool`.
