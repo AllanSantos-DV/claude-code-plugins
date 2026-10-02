@@ -298,7 +298,17 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   script curado dentro de uma string (`node -e "…test-units.mjs…"`) conta como
   "invocando o script". Fix: tokenizar respeitando aspas (como
   `command-signature.indexOfShellMeta`) e corrigir o comentário.
-- [ ] **U4 — assinatura de uso único genérica demais** (`ls lib` de um comando
+- [x] **U4 — RESOLVIDO em 2026-10-02 (decisão do dono: mudar na major)**:
+  assinatura de composto = assinatura de cada segmento de trabalho, em ordem,
+  sem repetição, unidas por ` && ` (1 segmento de trabalho continua igual).
+  Achado e corrigido na hora: `{ …; } > f` expôs o fechamento `} > f` como
+  "comando" — `GROUP_CLOSE` agora aceita o fechamento com redirecionamento.
+  Replay: assinaturas que cobriam comandos de trabalho diferentes 425 (2.285
+  comandos) → 27 (248, só repetição colapsada); 4.041 assinaturas de compostos
+  mudam (major: marcações/curadoria antigas de compostos são pedidas de novo
+  uma vez — CHANGELOG). 9 testes que fixavam "o 1º segmento" atualizados para a
+  nova identidade, mantendo o que cada um protege (sem fusão, sem vazamento).
+- [ ] ~~U4 — assinatura de uso único genérica demais~~ (`ls lib` de um comando
   `ls lib && wc … && grep …`): marcar como one-off silencia qualquer `ls lib`.
   **Medido em 2026-10-02 — decisão do dono**: a assinatura de composto é o 1º
   segmento de trabalho POR DESENHO declarado (teste "the sig is the FIRST
