@@ -14404,6 +14404,21 @@ test('user-prompt-submit-dispatcher.dispatch: no signals → null', async () => 
   assertEq(out, null);
 });
 
+test('user-prompt-submit-dispatcher.dispatch: a synthetic <task-notification> prompt runs the ensures but skips the advisories', async () => {
+  const d = require('./user-prompt-submit-dispatcher.js');
+  const ran = [];
+  const fakes = [
+    { name: 'ensure', mod: { run: async () => { ran.push('ensure'); return null; } } },
+    { name: 'health', advisory: true, mod: { run: async () => { ran.push('health'); return 'NOISE'; } } },
+  ];
+  assertEq(await d.dispatch({ prompt: '<task-notification><task-id>x</task-id></task-notification>' }, { detectors: fakes }), null);
+  assertEq(ran, ['ensure'], 'advisories skipped on a synthetic prompt');
+  ran.length = 0;
+  assertEq(await d.dispatch({ prompt: 'a real prompt' }, { detectors: fakes }), 'NOISE');
+  assertEq(ran, ['ensure', 'health'], 'a user prompt runs everything');
+  assert(d.DETECTORS.filter((x) => x.advisory).map((x) => x.name).join(',') === 'brain-health,brain-status', 'health/status are the advisories; the ensures are not');
+});
+
 test('user-prompt-submit-dispatcher.dispatch: concatenates multiple advisories in order with SEP', async () => {
   const d = require('./user-prompt-submit-dispatcher.js');
   const fakes = [

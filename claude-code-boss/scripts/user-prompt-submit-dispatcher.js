@@ -66,8 +66,8 @@ const DETECTORS = [
   // 25000 like brain-daemon-ensure: its old standalone timeout was 30 s (same reasoning).
   { name: 'model-router-ensure', mod: modelRouterEnsure, timeoutMs: 25000 },
   { name: 'brain-daemon-ensure', mod: brainDaemonEnsure, timeoutMs: 25000 },
-  { name: 'brain-health', mod: brainHealth, timeoutMs: 5000 },
-  { name: 'brain-status', mod: brainStatus, timeoutMs: 5000 },
+  { name: 'brain-health', mod: brainHealth, timeoutMs: 5000, advisory: true },
+  { name: 'brain-status', mod: brainStatus, timeoutMs: 5000, advisory: true },
 ];
 
 /**
@@ -103,7 +103,12 @@ function withTimeout(promise, ms) {
  * @returns {Promise<string|null>}
  */
 async function dispatch(event, opts = {}) {
-  const list = Array.isArray(opts.detectors) ? opts.detectors : DETECTORS;
+  let list = Array.isArray(opts.detectors) ? opts.detectors : DETECTORS;
+  // A synthetic prompt (a sub-agent's <task-notification>) is not the user typing:
+  // keep the cheap idempotent ENSURES (they keep the daemon up inside the client's
+  // reconnect window, G16) but skip the advisories — diagnostics injected into an
+  // agent notification are noise.
+  if (require('./lib/prompt-kind.js').isSyntheticPrompt(event && event.prompt)) list = list.filter((d) => !d.advisory);
   const results = await Promise.all(list.map(async ({ name, mod, timeoutMs }) => {
     const outcome = await withTimeout(Promise.resolve().then(() => mod.run(event)), timeoutMs || 5000);
     if (outcome.status === 'timeout') {
