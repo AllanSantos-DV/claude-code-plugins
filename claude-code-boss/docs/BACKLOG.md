@@ -191,6 +191,16 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   por isso, incluindo `git diff > arquivo` e `for … git -C …` de inspeção.
 - [ ] **U2 — `error-guard` bloqueia por falhas registradas em OUTRO cwd** (falhou em
   `claude-code-boss/`, bloqueou na raiz onde funcionaria): a chave ignora o cwd.
+  **Análise (2026-10-02) — decisão do dono, junto com o U10**: ignorar cwd/flags é
+  DESENHO declarado (`lib/error-store.js:15-16`: "identity is the exact
+  canonicalSig … so cwd/flags/wrappers don't fragment the count"). O defeito real é
+  um IMPASSE: 2 falhas em 90 dias (`DEFAULT_WINDOW_DAYS`/`DEFAULT_THRESHOLD`)
+  bloqueiam o comando, e só um SUCESSO do mesmo comando limpa (`error-resolve`) —
+  que nunca acontece, porque ele está bloqueado. A única saída é uma variação do
+  comando (caminho absoluto, outro argumento). Proposta: negar UMA vez por
+  (sessão, sig) injetando a causa — o retry idêntico na mesma sessão passa (padrão
+  que o `graph-guard` já usa) — e/ou considerar o cwd quando o comando tem caminho
+  relativo. Mantém o objetivo (o agente vê a causa antes de repetir) sem travar.
 - [~] **U3 — script curado proíbe pipe e trunca a saída ("--full to see")**,
   forçando nova execução. E a detecção de pipe olha o comando INTEIRO, não o
   segmento: `… test-hooks.mjs && node release-audit.mjs check | tail -2` foi
@@ -230,7 +240,10 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   bloco `[BRAIN·SKILLS]` quando só havia ponteiros vazios.
 - [ ] **U9 — `active-research-detect` com falso positivo `libMention`** em
   "Teste rápido do MCP smart-tool".
-- [ ] **U10 — `curation-guard` e `error-guard` se travam em runner de teste.**
+- [~] **U10 — `curation-guard` e `error-guard` se travam em runner de teste.**
+  Parte RESOLVIDA em 2026-10-02 pelo O4 (`node - <<EOF`/`cat <<EOF` não colapsam
+  mais para a sig do programa puro). O impasse "bloqueado até passar, mas não pode
+  rodar" fica com a decisão do **U2**.
   `error-guard` bloqueia `node .vscode/scripts/test-units.mjs` por falhas antigas
   (registro "1137 passed / 1 failed", de outra época) — e a chave ignora os
   argumentos (`--all` também é bloqueado); o `curation-guard` bloqueia o runner
