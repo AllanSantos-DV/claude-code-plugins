@@ -9161,6 +9161,41 @@ test('custom upstream /v1/models E2E: catálogo aquecido aplica alias no picker'
   }
 });
 
+test('router: an unexpected throw inside a request → 500 for THAT request, server keeps serving (no unhandled rejection)', async () => {
+  let armed = false;
+  const cfg = new Proxy({ routing: { catalog: { enabled: false } } }, {
+    get(target, prop) {
+      if (armed && typeof prop === 'string') throw new Error('boom-config-u699');
+      return target[prop];
+    },
+  });
+  const proxy = await router.createServer(cfg, 'fallback-only', 'a'.repeat(64));
+  const port = await _listen0(proxy);
+  const rejections = [];
+  const onRej = (r) => rejections.push(r);
+  process.on('unhandledRejection', onRej);
+  try {
+    armed = true;
+    const r = await fetch(`http://127.0.0.1:${port}/v1/messages`, {
+      method: 'POST', headers: { 'content-type': 'application/json', 'x-api-key': 'fixture' },
+      body: JSON.stringify({ model: 'claude-opus-5-5', max_tokens: 8, messages: [{ role: 'user', content: 'oi' }] }),
+      signal: AbortSignal.timeout(10000),
+    });
+    const body = await r.json();
+    assertEq(r.status, 500, 'the failing request gets a 500');
+    assert(body.type === 'error' && /boom-config-u699/.test(body.error.message), JSON.stringify(body));
+    armed = false;
+    const h = await fetch(`http://127.0.0.1:${port}/health`, { signal: AbortSignal.timeout(5000) });
+    assertEq(h.status, 200, 'the server keeps serving after the failure');
+    await new Promise((res) => setTimeout(res, 50));
+    assertEq(rejections.length, 0, `no unhandled rejection may escape: ${rejections.map(String).join('; ')}`);
+  } finally {
+    process.off('unhandledRejection', onRej);
+    armed = false;
+    await new Promise((resolve) => proxy.close(resolve));
+  }
+});
+
 test('router: POST /v1/messages com corpo JSON não-objeto → 400 e o processo segue vivo', async () => {
   for (const mode of ['fallback-only', 'sticky-tier', 'per-turn']) {
     // Catálogo desligado: com a x-api-key da fixture, o aquecimento iria à
