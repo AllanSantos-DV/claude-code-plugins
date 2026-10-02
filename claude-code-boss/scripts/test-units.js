@@ -2659,6 +2659,15 @@ test('brain-store: recordCitation persists + bumps when SQLite available', async
   }
 });
 
+test('O9: metrics scope without ctx.cwd follows the CALLING session root inside a daemon hook call, not process.cwd()', () => {
+  const { _resolveProject } = require('./lib/metrics.js');
+  const { runWithHookEnv } = require('./lib/hook-context.js');
+  assertEq(_resolveProject({ cwd: path.join('x', 'proj-a') }), 'proj-a');
+  assertEq(_resolveProject({ project: 'p' }), 'p');
+  assertEq(runWithHookEnv({ CLAUDE_PROJECT_DIR: path.join('y', 'session-b') }, () => _resolveProject({})), 'session-b');
+  assertEq(runWithHookEnv({}, () => _resolveProject({})), path.basename(process.cwd()), 'no session root → process.cwd() as before');
+});
+
 test('O1: retrieval-feedback records the citation in the KB scope the entry was RETRIEVED from (not basename(cwd))', async () => {
   const store = require('./brain-store.js');
   const journal = require('./lib/retrieval-journal.js');

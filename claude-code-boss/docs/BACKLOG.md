@@ -223,10 +223,12 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   `tryResolveProjectId(cwd)`; sem escopo (pasta sem id) não registra. Métricas
   seguem por `basename`, como todos os outros writers de métrica (store local,
   consistente entre escrita e leitura). Teste falha no código antigo, passa no novo.
-- [ ] **O9 — `lib/metrics.js:14-18` cai em `process.cwd()` sem `ctx.cwd`.** No
+- [x] **O9 — `lib/metrics.js:14-18` cai em `process.cwd()` sem `ctx.cwd`.** No
   daemon é o cwd do próprio daemon (1ª sessão), não o da sessão. Todos os chamadores
   atuais passam `ev.cwd` e o `hooks.json` sempre envia `cwd`, então não foi visto
   acontecer; fallback correto no daemon seria `hookEnv().CLAUDE_PROJECT_DIR`.
+  **RESOLVIDO em 2026-10-02**: fallback `ctx.cwd` → `hookEnv().CLAUDE_PROJECT_DIR` →
+  `process.cwd()`. Teste: dentro de `runWithHookEnv` usa a raiz da sessão que chamou.
 - [ ] **O2 — `_readBuf` duplicado** em `capture-dispatch.js:56` e
   `lib/capture-queue.js:71`.
 - [ ] **O3 — ADR-015 com cabeçalho "Proposto"** apesar de implementada; e a branch
