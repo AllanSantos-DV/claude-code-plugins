@@ -132,7 +132,7 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   Nota (G3, 2026-10-02): chamar `startHttpDaemon` direto (sem o `index.js`) com
   `CLAUDE_PLUGIN_DATA`/`HOME`/`USERPROFILE` num diretório temporário e `port: 0`
   já sobe um daemon isolado — o teste de G3 usa isso. Pode bastar para o bench.
-- [~] **G9 — bench de aceite realista** (depende de G8): 6–8 sessões MCP, transcripts
+- [x] **G9 — bench de aceite realista** (depende de G8): 6–8 sessões MCP, transcripts
   grandes reais, `Stop` concorrente com `PreToolUse` e indexação rodando. Critério:
   p95 de `PreToolUse` < 100 ms durante `Stop`s e RSS do daemon estável.
   **Bench feito (2026-10-02)** — `.claude/scripts/bench-hook-daemon.mjs` (local):
@@ -223,7 +223,7 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   **RESOLVIDO em 2026-10-02**: módulo removido; 5 testes dele saíram; as 18
   chamadas de higiene de fixture nos testes do `capture-dispatch` saíram (o
   teardown agora é `capture-queue.reset`, o estado que importa). Suíte 1291/0.
-- [ ] **G11 — rajada de 60 `PreToolUse` simultâneos ainda com p95 ~220 ms.**
+- [x] **G11 — rajada de 60 `PreToolUse` simultâneos ainda com p95 ~220 ms.**
   (Após o G10: p95 103 ms, praticamente na meta de 100 ms.) Fica aberto só para
   confirmar no bench do ambiente real (máquina mais fraca); nada a otimizar antes
   dessa medição.
@@ -231,6 +231,7 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   sobra é ~1,6 ms de CPU do `curation_guard` + o overhead por requisição do SDK
   MCP/HTTP. Próximos passos: perfilar o `curation_guard` (shells.json / assinatura)
   e medir o custo fixo do SDK por chamada.
+  **MEDIDO em 2026-10-02 (fechado)**: bench com transcript real de 90 MB, 8 sessões, rajada de 60 PreToolUse + 8 Stop. Todos os núcleos: rajada p95/máx 90/94 ms (meta < 100 ms atingida). Máquina fraca simulada (daemon preso a 1 núcleo, `BENCH_AFFINITY=1`): rajada p95/máx 134/141 ms, PreToolUse em regime p95 55 ms, Stop p95 719 ms, zero hooks expirados — longe do timeout de 8 s.
 
 ### Validação no Claude Code REAL — sessão isolada (2026-10-02)
 
@@ -297,7 +298,7 @@ real (2.29.0, porta 38217) seguiu intacto. Resultados (Claude Code 2.1.283):
   mostra como aviso `[BRAIN]`. Teste: mesma versão + outro dataDir → `error`, sem
   sinal ao outro daemon. Units 1300/0.
 
-- [ ] **G16 — sessões não reconectam ao brain-server depois de update/reload (em andamento)**.
+- [x] **G16 — sessões não reconectam ao brain-server depois de update/reload** (resolvido: 404 + install-local + G13; risco residual aceito — ver nota).
   Relato do usuário: depois de atualizar/reload, o MCP nunca volta sozinho; precisa
   `/mcp` manual. Medido no Claude Code real 2.1.283 (sandbox isolado, A/B):
   daemon reiniciado (~2,5 s fora), sessão reapada e cold start com ECONNREFUSED →
@@ -445,7 +446,7 @@ real (2.29.0, porta 38217) seguiu intacto. Resultados (Claude Code 2.1.283):
   mudam (major: marcações/curadoria antigas de compostos são pedidas de novo
   uma vez — CHANGELOG). 9 testes que fixavam "o 1º segmento" atualizados para a
   nova identidade, mantendo o que cada um protege (sem fusão, sem vazamento).
-- [ ] ~~U4 — assinatura de uso único genérica demais~~ (`ls lib` de um comando
+- [x] ~~U4 — assinatura de uso único genérica demais~~ (`ls lib` de um comando
   `ls lib && wc … && grep …`): marcar como one-off silencia qualquer `ls lib`.
   **Medido em 2026-10-02 — decisão do dono**: a assinatura de composto é o 1º
   segmento de trabalho POR DESENHO declarado (teste "the sig is the FIRST
@@ -478,7 +479,7 @@ real (2.29.0, porta 38217) seguiu intacto. Resultados (Claude Code 2.1.283):
   põe comando de subagente no journal do turno (o `Stop` do pai não cobra) — a
   recorrência segue contando. Teste unitário: principal entra no journal,
   subagente não; `hooks.json` passa o campo; `rebuildEvent` descarta vazio.
-- [ ] ~~U5 — comandos de subagente entram na curadoria do `Stop` do pai~~ (o `find`
+- [x] ~~U5 — comandos de subagente entram na curadoria do `Stop` do pai~~ (o `find`
   em `token-guard` foi do subagente e bloqueou o turno principal).
   **Pesquisado em 2026-10-02**: a doc oficial do Claude Code não diz se o input de
   `PreToolUse`/`PostToolUse` de uma chamada de subagente traz `agent_id`, nem
@@ -621,7 +622,7 @@ real (2.29.0, porta 38217) seguiu intacto. Resultados (Claude Code 2.1.283):
   usa `getEvaluationCountsIsolated` (conexão própria, read-only, 1 chamada
   síncrona). Comentário do `kb-worker.js` reescrito com essa regra e o aviso para
   novos chamadores. (Texto original do achado abaixo.)
-- [ ] ~~O7 — `kb-worker.js:14-17` afirma "uma mensagem por vez", mas o handler é~~
+- [x] ~~O7 — `kb-worker.js:14-17` afirma "uma mensagem por vez", mas o handler é~~
   `async`** (`parentPort.on('message', async …)`): chamadas assíncronas se
   intercalam nos `await`. Verificar se algum método do store depende dessa
   serialização; se sim, fila explícita (como `hook-worker.js`); se não, corrigir
@@ -700,7 +701,7 @@ Achados da rodada reviewer/tester que ficaram fora do patch:
 
 - [x] Fase G (2.29.1, anotado em 2026-09-30) — `.mcp.json` tem a porta do brain-server fixa na URL (`http://127.0.0.1:38217/mcp`): quem define `BRAIN_HTTP_PORT` precisa editar o `.mcp.json` à mão, e a edição some a cada atualização do plugin. Sincronizar a URL com a porta efetiva exige mudança de arquitetura (o Claude Code lê o `.mcp.json` estático).
   **RESOLVIDO em 2026-10-02**: url `http://127.0.0.1:${BRAIN_HTTP_PORT:-38217}/mcp` — o Claude Code expande `${VAR:-default}` na `url` (docs MCP › env var expansion, https://code.claude.com/docs/en/mcp, acesso 2026-10-02). Prova no Claude Code real: sandbox com `BRAIN_HTTP_PORT=38219` só no env → `brain_count` respondeu do daemon 38219 (`iso/smoke`), daemon real intocado.
-- Fase G (2.29.1, anotado em 2026-09-30) — timeout de `mcp_tool` sem abort no daemon: movido para **G5** acima.
+- [x] Fase G (2.29.1, anotado em 2026-09-30) — timeout de `mcp_tool` sem abort no daemon: movido para **G5** acima (resolvido lá).
 - [x] Fase G (2.29.1, anotado em 2026-09-30) — as 12 tools `hook_*` aparecem na lista de tools do modelo (descrição marca como internas). Avaliar esconder do `tools/list` sem quebrar a chamada via `mcp_tool`.
   **RESOLVIDO em 2026-10-02**: fora do `tools/list` (o `mcp_tool` chama pelo nome). Provado no Claude Code real 2.1.283 (sandbox): o modelo não as enxerga, o PostToolUse seguiu gravando o journal e o error-guard (PreToolUse bloqueante) negou a 3ª execução. Teste com o daemon real via HTTP: não listadas, mas chamáveis.
 - [x] Fase G (2.29.1, anotado em 2026-09-30) — o `user-prompt-submit-dispatcher` ainda sobe 1 processo Node por prompt para `brain-daemon-ensure`/`brain-health`/`brain-status` (excluídos por dependência circular com o daemon), e `policy-inject`/`model-router-ensure` seguem como `command`. Desenhar o tratamento próprio deles.
