@@ -56,7 +56,7 @@ claude-code-boss/
 ├── dashboard/
 │   └── index.html             # SPA — 4 abas: Home / Brain KB / Hooks / Logs
 ├── hooks/
-│   └── hooks.json             # 8 eventos; 13 hooks `mcp_tool` (hook_*) rodam no daemon do brain-server + brain_retrieve_context; ficam como command só SessionStart (dispatcher de 12), user-prompt-submit-dispatcher (3) e model-router-ensure.js
+│   └── hooks.json             # 8 eventos; 13 hooks `mcp_tool` (hook_*) rodam no daemon do brain-server + brain_retrieve_context; ficam como command só SessionStart (dispatcher de 12 + model-router-ensure.js) e user-prompt-submit-dispatcher (4, inclui model-router-ensure)
 ├── scripts/                   # Scripts Node.js (zero deps extras para hooks)
 │   ├── dashboard.js           # Servidor HTTP local com ring buffer de logs
 │   ├── brain-*.js             # Brain KB: store, index, graph, embedder, backend, CLI, consolidate (higiene)
@@ -78,10 +78,10 @@ Todos os hooks estão declarados em `hooks/hooks.json`. Por evento, cada script
 roda **num único processo Node por hook** — os detectores de cada evento são
 consolidados num *dispatcher* in-process (mesmo padrão do `stop-dispatcher.js`
 original): lê o payload uma vez, roda cada `run(event)` puro, funde o
-resultado. Só `model-router-ensure.js` fica de fora dos dispatchers de
-`SessionStart`/`UserPromptSubmit` — ele chama `process.exit()` no fluxo normal
-e faz esperas reais de vários segundos (spawn/troca de daemon), incompatível
-com um processo compartilhado.
+resultado. `model-router-ensure.js` fica de fora do dispatcher de
+`SessionStart` (spawn próprio; faz esperas reais de vários segundos na troca de
+daemon). No `UserPromptSubmit` ele roda dentro do `user-prompt-submit-dispatcher`
+(`run()` sem `process.exit`, com teto próprio): 1 processo por prompt, não 2.
 
 **Desde a 2.29.1 (ADR-015)** a maioria desses hooks nem sobe processo: o
 `hooks.json` declara um `mcp_tool` `hook_<nome>` do brain-server, que roda o
@@ -91,7 +91,7 @@ Medido: 8,9 ms p50 por hook (antes 122 ms com spawn) e 60 hooks concorrentes em
 exceção na tool vira `systemMessage` de degradação (fail-open visível); com o
 daemon fora do ar o Claude Code trata o `mcp_tool` como erro não bloqueante.
 Ficam como `command` os hooks que precisam funcionar sem o daemon: `SessionStart`,
-`user-prompt-submit-dispatcher` e `model-router-ensure`. O `SubagentStart`
+`user-prompt-submit-dispatcher` (que inclui o `model-router-ensure`). O `SubagentStart`
 (`policy-inject`) também roda no daemon (`hook_policy_inject`): era 1 processo por
 subagente. No daemon, `Stop` e os hooks de efeito colateral de `PostToolUse` rodam
 num worker próprio (fila FIFO), fora da thread que atende os guards; os que
@@ -137,7 +137,7 @@ prazo interno de `timeout − 1 s`.
 | Stop (via dispatcher) | `curation-stop.js` | Bloqueia stop se há comandos noisy detectados no turno (escalating, anti-loop) |
 | Stop (via dispatcher) | `session-summary.js` | Cap 1/sessão: resumo positivo ("N lições capturadas") quando a sessão gerou aprendizado |
 | Stop (via dispatcher) | + 7 outros | `skill-promote-trigger`, `decision-scan-response`, `decision-promote`, `research-followup-detect`, `failure-retro`, `skill-success-detect`, `retrieval-feedback`, `auto-continue-stop` — mesmo comportamento de antes, agora in-process |
-| UserPromptSubmit | `model-router-ensure.js` | Mesma garantia de daemon do model-router, agora por-turno (settings/env já publicados no SessionStart) — spawn próprio, fora do dispatcher |
+| UserPromptSubmit | `model-router-ensure.js` | Mesma garantia de daemon do model-router, agora por-turno (settings/env já publicados no SessionStart) — roda dentro do `user-prompt-submit-dispatcher` (mesmo processo) |
 | **UserPromptSubmit** | **`user-prompt-submit-dispatcher.js`** | **Entry único** (command, funciona com o daemon fora do ar) — roda in-process os 3 detectores abaixo, concorrente com timeout próprio por detector, funde os textos de advisory num só `additionalContext` |
 | UserPromptSubmit (via dispatcher) | `brain-daemon-ensure.js` | Mesma garantia de daemon do SessionStart — captura o daemon caído em sessões resumidas |
 | UserPromptSubmit (via dispatcher) | `brain-health.js` | Mesma probe do SessionStart, com cooldown de 60s — captura MCP caído em sessões resumidas |

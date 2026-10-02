@@ -157,8 +157,7 @@ User Prompt
     ▼
 UserPromptSubmit Hook
     │
-    ├─► model-router-ensure.js  (command: garante proxy vivo, configura ANTHROPIC_BASE_URL)
-    ├─► user-prompt-submit-dispatcher.js (command: brain-daemon-ensure, brain-health, brain-status)
+    ├─► user-prompt-submit-dispatcher.js (command, 1 processo: model-router-ensure, brain-daemon-ensure, brain-health, brain-status)
     ├─► brain_retrieve_context  (mcp_tool: injeta lições relevantes no prompt)
     ├─► hook_correction_detect  (mcp_tool: detecta correções do usuário)
     └─► hook_active_research_detect (mcp_tool: detecta necessidade de pesquisa)
@@ -186,7 +185,7 @@ Stop Hook
 ```
 
 **Transporte dos hooks (2.29.1, ADR-015):** fora `SessionStart`, o
-`user-prompt-submit-dispatcher` e o `model-router-ensure`, os hooks são `mcp_tool`
+`user-prompt-submit-dispatcher` (que inclui o `model-router-ensure`), os hooks são `mcp_tool`
 (`hook_<nome>`) executados in-process no daemon HTTP do brain-server (porta padrão
 38217), em vez de um processo Node por disparo. Uma exceção na tool vira
 `systemMessage` de degradação (fail-open visível); daemon fora do ar = erro não
@@ -392,7 +391,7 @@ tail -f ~/.claude/plugins/data/claude-code-boss/model-router/router.log
 | `scripts/model-router-ensure.js` | Garante proxy vivo, injeta env vars |
 | `servers/model-router/index.js` | Proxy HTTP, classificação, fallback |
 | `scripts/dashboard.js` | API HTTP, persistência config |
-| `scripts/model-router-ensure.js:754` | Bloco `mode === 'off'` (cleanup) |
+| `scripts/model-router-ensure.js:739` | Bloco `mode === 'off'` (cleanup) |
 | `scripts/dashboard.js:1426` | `applyRouter` endpoint |
 | `dashboard/index.html:1405` | `disableAllRouter()` function |
 

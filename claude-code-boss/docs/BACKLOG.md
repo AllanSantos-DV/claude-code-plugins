@@ -104,11 +104,23 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   **Pendente de validação no Claude Code real** (instalação isolada, antes do
   pacote): confirmar que o `mcp_tool` no `SubagentStart` injeta no contexto do
   subagente — o dossiê afirma suporte ao evento, este teste roda fora do harness.
-- [ ] **G7 — `UserPromptSubmit` sobe 2 `node` por prompt** (`model-router-ensure` +
+- [x] **G7 — `UserPromptSubmit` sobe 2 `node` por prompt** (`model-router-ensure` +
   `user-prompt-submit-dispatcher`, `hooks/hooks.json:240-254`) e roda também em
   cada `<task-notification>` de agente em background. Fix: um só spawn, saída
   rápida antes de carregar módulos pesados, throttle por sessão para as checagens
   de saúde, e pular prompts sintéticos.
+  **RESOLVIDO em 2026-10-02 (o que a medição justificou)**: medido em ambiente
+  isolado, o script quase não pesa — o piso do processo `node` nesta máquina é
+  ~50–90 ms / ~63 MB (antivírus avalia cada processo). Por isso "saída rápida" e
+  "pular sintético" dentro do script quase não economizam; o que economiza é
+  eliminar spawn. Feito: `model-router-ensure.main()` virou `run(evento)` sem
+  `process.exit` (o CLI segue igual para o `SessionStart`) e entrou como 1º
+  detector do `user-prompt-submit-dispatcher` (teto 25 s, concorrente com os
+  outros); o dispatcher sai sozinho após esvaziar o stdout (o router deixa handles
+  abertos). Por prompt: 2 processos (~72 + 68 MB) → 1 (~75 MB), latência igual
+  (~110 ms). Testes: lista do dispatcher, `run()` não chama `process.exit`,
+  `UserPromptSubmit` com 1 só `command`, CLI do dispatcher termina sozinho.
+  O ruído dos detectores em `<task-notification>` segue no **U6**.
 - [ ] **G8 — não há como subir um daemon isolado para bench/teste.**
   `servers/brain-server/index.js` publica o ponteiro global de data-dir
   (`publishAndFollow`) e consolida pastas vizinhas no boot. Fix: modo

@@ -13686,12 +13686,42 @@ test('posttoolusefailure-dispatcher.DETECTORS: 2 detectors, correct order + shap
   assert(d.DETECTORS.every(x => typeof x.mod.run === 'function'), 'every detector exposes run()');
 });
 
-test('user-prompt-submit-dispatcher.DETECTORS: 3 daemon detectors, correct order + shape (model-router-ensure excluded; Phase G moved correction/active-research to mcp_tool)', () => {
+test('user-prompt-submit-dispatcher.DETECTORS: model-router-ensure (G7) + 3 daemon detectors, correct order + shape', () => {
   const d = require('./user-prompt-submit-dispatcher.js');
   const names = d.DETECTORS.map(x => x.name);
-  assertEq(names, ['brain-daemon-ensure', 'brain-health', 'brain-status']);
+  assertEq(names, ['model-router-ensure', 'brain-daemon-ensure', 'brain-health', 'brain-status']);
   assert(d.DETECTORS.every(x => typeof x.mod.run === 'function'), 'every detector exposes run()');
-  assert(!names.includes('model-router-ensure'), 'model-router-ensure must stay OUT (process.exit() in its main flow)');
+  assert(d.DETECTORS.every(x => x.timeoutMs > 0 && x.timeoutMs < 30000), 'every detector bounded below the 30 s hooks.json timeout');
+});
+
+test('G7: model-router-ensure.run() returns instead of calling process.exit (safe in-process)', async () => {
+  const realExit = process.exit;
+  let exited = null;
+  process.exit = (c) => { exited = c; throw new Error(`process.exit(${c}) called from run()`); };
+  try {
+    const out = await require('./model-router-ensure.js').run({ hook_event_name: 'UserPromptSubmit', session_id: 'g7' });
+    assert(out === null || typeof out === 'string', `run() resolves text or null, got ${typeof out}`);
+  } finally { process.exit = realExit; }
+  assertEq(exited, null);
+});
+
+test('G7: UserPromptSubmit spawns ONE node process (the dispatcher); model-router-ensure stays standalone only on SessionStart', () => {
+  const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
+  const cmds = (ev) => hooks[ev].flatMap(g => g.hooks || []).filter(h => h.type === 'command').map(h => (h.args || []).join(' '));
+  assertEq(cmds('UserPromptSubmit').length, 1);
+  assert(/user-prompt-submit-dispatcher\.js$/.test(cmds('UserPromptSubmit')[0]), cmds('UserPromptSubmit')[0]);
+  assert(cmds('SessionStart').some(c => /model-router-ensure\.js$/.test(c)), 'SessionStart keeps its own model-router-ensure');
+});
+
+test('G7: the dispatcher CLI exits on its own after answering (model-router-ensure handles do not hang it)', () => {
+  const r = require('child_process').spawnSync(process.execPath, [path.join(SCRIPTS, 'user-prompt-submit-dispatcher.js')], {
+    input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', session_id: 'g7-cli', cwd: process.env.CLAUDE_PLUGIN_DATA, prompt: 'ok' }),
+    env: process.env, encoding: 'utf8', timeout: 28000, windowsHide: true,
+  });
+  assert(!r.error, `dispatcher did not exit by itself: ${r.error && r.error.message}`);
+  assertEq(r.status, 0);
+  const out = (r.stdout || '').trim();
+  assert(out === '' || out === '{}' || JSON.parse(out).hookSpecificOutput.hookEventName === 'UserPromptSubmit', out);
 });
 
 test('user-prompt-submit-dispatcher.dispatch: no signals → null', async () => {
