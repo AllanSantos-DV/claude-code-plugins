@@ -480,7 +480,7 @@ export async function ensureDaemon({ pluginRoot, dataDir, env = process.env } = 
         status: 'error',
         error: `spawned daemon (pid ${pid}) on port ${port} never became healthy — cause: ${cause}. ` +
           `If this is EACCES on Windows the port may be reserved: check \`netsh int ipv4 show excludedportrange protocol=tcp\` ` +
-          `and set BRAIN_HTTP_PORT to a free port outside those ranges (also update the plugin's .mcp.json url).`,
+          `and set BRAIN_HTTP_PORT to a free port outside those ranges in the environment Claude Code runs with (the plugin's .mcp.json url follows it).`,
         pid,
         port,
       };

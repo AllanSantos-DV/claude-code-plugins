@@ -2,7 +2,7 @@
   "mcpServers": {
     "brain-server": {
       "type": "http",
-      "url": "http://127.0.0.1:38217/mcp"
+      "url": "http://127.0.0.1:${BRAIN_HTTP_PORT:-38217}/mcp"
     }
   }
 }

@@ -753,7 +753,11 @@ test('brain daemon DEFAULT_PORT: outside the Windows-reserved 58048-58247 range 
   // 58217 (the old default) sat inside an excludedportrange → listen EACCES, no daemon.
   assert(DEFAULT_PORT < 49152, `DEFAULT_PORT ${DEFAULT_PORT} must stay below the dynamic range Windows reserves from`);
   const mcp = JSON.parse(fs.readFileSync(path.join(ROOT, '.mcp.json'), 'utf8'));
-  assertEq(new URL(mcp.mcpServers['brain-server'].url).port, String(DEFAULT_PORT), '.mcp.json url is static — it must carry DEFAULT_PORT');
+  // Claude Code expands ${VAR:-default} in an http server's url (docs: MCP › env var
+  // expansion), so the client follows BRAIN_HTTP_PORT exactly like the daemon does
+  // and falls back to DEFAULT_PORT — no hand edit of .mcp.json that updates erase.
+  assertEq(mcp.mcpServers['brain-server'].url, `http://127.0.0.1:\${BRAIN_HTTP_PORT:-${DEFAULT_PORT}}/mcp`,
+    '.mcp.json url must follow BRAIN_HTTP_PORT with DEFAULT_PORT as the fallback');
   assertEq(resolvePort(path.resolve('ccb-x'), { BRAIN_HTTP_PORT: '41234' }), 41234, 'BRAIN_HTTP_PORT override still wins');
 });
 
