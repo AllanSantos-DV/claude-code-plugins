@@ -12588,6 +12588,12 @@ test('cooldownActive: false por padrao, true durante a janela armada, false apos
     rs.__testHooks.setCooldownUntil(Date.now() + 60000);
     assertEq(rs.cooldownActive({ fallback: { cooldown: { enabled: false } } }), false,
       'cooldown.enabled=false tem que desarmar mesmo com janela no futuro');
+    // Custom gateway as the base upstream: the Anthropic window doesn't govern it, so the
+    // side routes (count_tokens/catalog/classify) can't diverge to the BYOK either.
+    const gw = { upstream: { enabled: true, baseUrl: 'http://127.0.0.1:9' }, byok: { enabled: true, mode: 'on-limit', baseUrl: 'http://127.0.0.1:8' } };
+    assertEq(rs.cooldownActive(gw), false, 'custom upstream gateway: a restored cooldown must not apply');
+    assertEq(rs.cooldownActive({ byok: { enabled: true, mode: 'on-limit', baseUrl: 'http://127.0.0.1:8' } }), true,
+      'real Anthropic as base: the cooldown still applies');
   } finally {
     rs.__testHooks.reset();
   }
