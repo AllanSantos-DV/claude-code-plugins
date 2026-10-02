@@ -36,7 +36,12 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   gravando para o daemon inteiro por até 5 s. Fix: separar fila rápida (guards de
   `PreToolUse`, `graph-guard`) da fila pesada (`Stop`, `PostToolUse`, SQLite) fora
   da thread principal.
-- [ ] **G3 — `self-review` vaza 1 sessão MCP por `Stop` com edição.**
+- [x] **G3 — `self-review` vaza 1 sessão MCP por `Stop` com edição.**
+  **RESOLVIDO em 2026-10-02**: `retrieveViaDaemon` encerra a sessão com `DELETE
+  /mcp` no `finally` (sucesso, erro e timeout). Prova contra o daemon REAL
+  (`startHttpDaemon`, data-dir temporário): código antigo deixa 5 sessões abertas
+  após 5 chamadas, o novo deixa 0. Testes: `DELETE` com o session id no caminho
+  feliz e no de erro (daemon falso) + teste com o daemon real (`sessions.size === 0`).
   `lib/self-review-retrieve.js:143` faz `initialize` no próprio daemon e nunca
   encerra (sem `DELETE`/`terminateSession`); o slot só volta no reaper de 30 min
   (`http-daemon.js:24`). Com 6–8 sessões os 50 slots (`MAX_SESSIONS`) esgotam e
@@ -61,6 +66,9 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   `servers/brain-server/index.js` publica o ponteiro global de data-dir
   (`publishAndFollow`) e consolida pastas vizinhas no boot. Fix: modo
   `--isolated` (data-dir e porta próprios, sem ponteiro global, sem consolidação).
+  Nota (G3, 2026-10-02): chamar `startHttpDaemon` direto (sem o `index.js`) com
+  `CLAUDE_PLUGIN_DATA`/`HOME`/`USERPROFILE` num diretório temporário e `port: 0`
+  já sobe um daemon isolado — o teste de G3 usa isso. Pode bastar para o bench.
 - [ ] **G9 — bench de aceite realista** (depende de G8): 6–8 sessões MCP, transcripts
   grandes reais, `Stop` concorrente com `PreToolUse` e indexação rodando. Critério:
   p95 de `PreToolUse` < 100 ms durante `Stop`s e RSS do daemon estável.

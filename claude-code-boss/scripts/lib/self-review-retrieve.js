@@ -134,6 +134,25 @@ function daemonPost({ port, token, sessionId, body, timeoutMs }, onHeaders) {
 }
 
 /**
+ * End a daemon MCP session (StreamableHTTP DELETE /mcp). Without it every call
+ * held one of the daemon's MAX_SESSIONS slots until the 30-min idle reaper — a
+ * Stop with edits per call, so a few busy sessions exhausted the daemon and new
+ * Claude Code sessions got 429 (no hooks, no Brain tools). Best-effort: never throws.
+ */
+function daemonDelete({ port, token, sessionId, timeoutMs }) {
+  return new Promise((resolve) => {
+    const req = http.request(
+      { hostname: '127.0.0.1', port, path: '/mcp', method: 'DELETE', timeout: timeoutMs,
+        headers: { 'Authorization': `Bearer ${token}`, 'mcp-session-id': sessionId } },
+      (res) => { res.resume(); res.on('end', resolve); },
+    );
+    req.on('timeout', () => req.destroy(new Error('timeout')));
+    req.on('error', (err) => { console.error(`[self-review-retrieve] session DELETE failed: ${err.message}`); resolve(); });
+    req.end();
+  });
+}
+
+/**
  * Query the warm daemon's `brain_search`. Returns entries[] on success, or null
  * when the daemon is unavailable / the handshake fails (caller falls back).
  * @param {string} query
@@ -147,8 +166,8 @@ async function retrieveViaDaemon(query, opts = {}) {
   const token = readDaemonToken(dir);
   if (!port || !token) return null;
 
+  let sessionId = null;
   try {
-    let sessionId = null;
     const init = await daemonPost({
       port, token, timeoutMs,
       body: {
@@ -183,6 +202,8 @@ async function retrieveViaDaemon(query, opts = {}) {
   } catch (err) {
     console.error(`[self-review-retrieve] daemon query failed: ${err.message}`);
     return null;
+  } finally {
+    if (sessionId) await daemonDelete({ port, token, sessionId, timeoutMs });
   }
 }
 
