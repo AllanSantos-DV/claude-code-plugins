@@ -9771,6 +9771,29 @@ test('plano B: client leaves mid-stream → the NVIDIA/BYOK upstream request is 
   }
 });
 
+test('local:catalog with an invalid models profile → /v1/models 502 with the cause, /catalog carries `error`, warning logged (no silent empty list)', async () => {
+  const cfg = {
+    routes: { '/v1/models': { method: 'GET', upstream: 'local:catalog', auth: 'none' } },
+    byok: { enabled: true, mode: 'always', wireProtocol: 'openai', baseUrl: 'http://127.0.0.1:9', openaiCompat: { toolReference: 'x' }, headers: {} },
+  };
+  const origWarn = router.logger.warn; const warns = [];
+  router.logger.warn = (m, e) => { warns.push(`${m} ${JSON.stringify(e || {})}`); };
+  const proxy = await router.createServer(cfg, 'fallback-only', 'a'.repeat(64));
+  const port = await _listen0(proxy);
+  try {
+    const m = await fetch(`http://127.0.0.1:${port}/v1/models`, { signal: AbortSignal.timeout(5000) });
+    const mb = await m.json();
+    assertEq(m.status, 502, 'an unusable catalog is an error, not an empty list');
+    assert(/catálogo indisponível/.test(mb.error.message) && /toolReference/.test(mb.error.message), JSON.stringify(mb));
+    const c = await (await fetch(`http://127.0.0.1:${port}/catalog`, { signal: AbortSignal.timeout(5000) })).json();
+    assert(c.error && /toolReference/.test(c.error), `/catalog must carry the cause, got ${JSON.stringify(c)}`);
+    assert(warns.some((w) => /Catálogo local indisponível/.test(w)), 'the cause is logged');
+  } finally {
+    router.logger.warn = origWarn;
+    await new Promise((resolve) => proxy.close(resolve));
+  }
+});
+
 test('upstream gateway enabled with an unusable URL → requests refused loudly (502 + cause), never silently sent to api.anthropic.com', async () => {
   const byokMod = require(path.join(ROOT, 'servers', 'model-router', 'byok.js'));
   const bad = { upstream: { enabled: true, baseUrl: 'not a url' } };
