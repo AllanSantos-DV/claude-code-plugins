@@ -19380,6 +19380,19 @@ test('mcp-server createBrainServer({mode:"http"}): CCB_PROJECT_ID is never honor
   }
 });
 
+test('mcp-server http: explicit owner/repo project is accepted (U14); path-like explicit project still refused', async () => {
+  const { createBrainServer } = await import(pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+  const server = createBrainServer({ pluginRoot: ROOT, mode: 'http' });
+  const ok = await server.dispatch('brain_count', { project: 'u14-owner/u14-repo' });
+  const okText = JSON.stringify(ok);
+  assert(!ok.isError, `owner/repo must resolve, got: ${okText}`);
+  assert(/u14-owner\/u14-repo/.test(okText) && !/mcp-memory/.test(okText), `count must run on the local test KB for owner/repo, got: ${okText}`);
+  for (const bad of ['../escape', 'a//b', '/abs', 'C:drive', 'x\\y']) {
+    const r = await server.dispatch('brain_count', { project: bad });
+    assert(r.isError && /project is required in HTTP mode/.test(JSON.stringify(r)), `path-like project ${JSON.stringify(bad)} must be refused, got: ${JSON.stringify(r)}`);
+  }
+});
+
 test('daemon-supervisor spawnDaemon: never forwards CCB_PROJECT_ID from the spawning process into the shared daemon\'s env (regression, found live 2026-09-24)', async () => {
   const src = fs.readFileSync(path.join(ROOT, 'servers', 'brain-server', 'lib', 'daemon-supervisor.js'), 'utf8');
   const fnBody = src.slice(src.indexOf('function spawnDaemon'), src.indexOf('function spawnDaemon') + 700);

@@ -325,9 +325,10 @@ real (2.29.0, porta 38217) seguiu intacto. Resultados (Claude Code 2.1.283):
   na hora)**: no Windows, `NODE_OPTIONS --require "C:\..."` perde as barras e o preload
   nunca carregava; o teste passava porque a dica do netsh contém "EACCES". Agora o
   caminho vai com `/` e o teste exige `listen EACCES: permission denied` (a causa real).
-- [ ] **U14 — `brain_count` com `project` explícito responde "project is required in
+- [x] **U14 — `brain_count` com `project` explícito responde "project is required in
   HTTP mode"**. Visto 9× nos experimentos do G16 (`project: "iso/smoke"` passado em
   todas). Verificar se o argumento se perde no schema/dispatch da tool.
+  **RESOLVIDO em 2026-10-02**: mesma causa do item `owner/repo` (seção Brain/Retrieval): o `resolveProject` usava o sanitizador de nome de arquivo (`sanitizeProjectId`, que recusa `/`). Agora usa `sanitizeLogicalProjectId` (aceita `owner/repo`; recusa `..`, barra invertida, dois-pontos, segmento vazio/borda). Teste com o `dispatch` real em modo HTTP.
 - [ ] **O15 — sessão com o daemon fora no início levou 269 s para 9 turnos** (45 s de
   sleep pedido). Suspeita: hooks `mcp_tool` esperando o timeout enquanto o servidor
   está "connecting". Medir quanto cada hook espera nesse estado.
@@ -651,7 +652,8 @@ Achados da rodada reviewer/tester que ficaram fora do patch:
 
 - Resolução git síncrona duplicada: o daemon (`resolveDispatchProjects` e o handler de `brain_retrieve_context`) e o Stop (`stop-dispatcher.dispatch` e `project-id-stop.run`) chamam `tryResolveProjectId`/`resolveProjectChain` mais de uma vez para o mesmo `cwd` na mesma chamada, e cada uma pode rodar `git remote`. Resolver uma vez e repassar, ou cachear por `cwd` dentro da chamada.
 - Id `host/owner/repo` vindo do git remote (ex.: `github.com/owner/repo`) vira uma KB local aninhada em `brain/github.com/owner/repo`, que o dashboard e o `brain-migrate` não listam (eles varrem só um nível). Listar recursivamente ou achatar o id no nome do diretório.
-- `resolveProject` (chamadas sem `cwd`) ainda usa o `CCB_PROJECT_ID` do env do daemon HTTP, que é o env da sessão que subiu o daemon, não o da sessão que chama. Pré-existente; em HTTP essa chamada deveria recusar ou usar só o `project` explícito.
+- [x] `resolveProject` (chamadas sem `cwd`) ainda usa o `CCB_PROJECT_ID` do env do daemon HTTP, que é o env da sessão que subiu o daemon, não o da sessão que chama. Pré-existente; em HTTP essa chamada deveria recusar ou usar só o `project` explícito.
+  **JÁ RESOLVIDO** (verificado em 2026-10-02): em modo HTTP o `resolveProject` nunca lê `CCB_PROJECT_ID` e sem `cwd`/`project` recusa com PROJECT_REQUIRED; o `spawnDaemon` também remove a variável. Provas: testes "CCB_PROJECT_ID is never honored" e "spawnDaemon: never forwards CCB_PROJECT_ID".
 - O inverso: um `CCB_PROJECT_ID` definido só na sessão chamadora não chega à resolução por `cwd` no daemon HTTP (o `cwdResolveEnv` só repassa o `sessionRoot`). A sessão com id por env fica com memória off se a pasta não tiver `.memory/project.json` nem git remote. Repassar o id da sessão no payload (como o `sessionRoot`) se isso for um caso real.
 - No modo HTTP, um agente num subdiretório de um projeto sem git, chamando sem `sessionRoot`, é recusado: sem o teto `CLAUDE_PROJECT_DIR`, o `findProjectRoot` (`scripts/lib/project-id.js` ~198) só olha o próprio `cwd` e o toplevel git, e não sobe até o `.memory/project.json` da raiz. Fazer os clientes mandarem sempre o `sessionRoot`, ou subir até achar um marker quando não há teto.
 - Quem fixou `backend.mcpMemory.projectId` na config passa a ver o aviso de "sem project id" nas pastas sem id, porque essa config deixou de valer como id da pasta. Decidir se o aviso deve citar essa config (ela não liga mais a memória) ou se ela deve voltar a contar como degrau da escada.
@@ -726,7 +728,8 @@ Lacunas conhecidas do gate de project id (2.29.1):
 
 - `servers/brain-server/lib/mcp-server.js` (`resolveKbProject`) — sem `cwd`, um `project` explícito continua aceito sem verificação (o daemon HTTP não sabe a pasta do chamador). Ideia: amarrar a sessão MCP ao `cwd` no handshake e recusar `project` que não bata.
 - `servers/brain-server/lib/mcp-server.js` (`handleRemoteKbTool`) — no backend `mcp-memory`, `scope: user` não é roteado para `__user__` (grava sob o projeto do handshake) e o `brain_search` ignora `scope`. O caminho local já faz isso. Rotear via `metadata.project_id` no `saveMcp` e `projectIds` no `search`, depois de confirmar que o servidor aceita `__user__` declarado pelo chamador.
-- `servers/brain-server/lib/mcp-server.js` (`resolveProject`) — no modo HTTP, um `project` explícito no formato `owner/repo` (o formato que a escada estrita produz) é zerado pelo `sanitizeProjectId` (barra recusada) e a chamada falha com `PROJECT_REQUIRED`. Visto ao vivo em 2026-09-25 com `capture_lesson project:"AllanSantos-DV/claude-code-plugins"`. Com `cwd` (2.29.1) funciona; validar `project` explícito com `assertSafeProjectId` em vez do sanitizador legado.
+- [x] `servers/brain-server/lib/mcp-server.js` (`resolveProject`) — no modo HTTP, um `project` explícito no formato `owner/repo` (o formato que a escada estrita produz) é zerado pelo `sanitizeProjectId` (barra recusada) e a chamada falha com `PROJECT_REQUIRED`. Visto ao vivo em 2026-09-25 com `capture_lesson project:"AllanSantos-DV/claude-code-plugins"`. Com `cwd` (2.29.1) funciona; validar `project` explícito com `assertSafeProjectId` em vez do sanitizador legado.
+  **RESOLVIDO em 2026-10-02** junto com o U14 (Fase G).
 - `scripts/project-id-stop.js` — pastas de exploração recebem o aviso a cada turno sem opção de "não é um projeto, pare de pedir" além do opt-out global. Avaliar um opt-out por pasta.
 
 ## UX
