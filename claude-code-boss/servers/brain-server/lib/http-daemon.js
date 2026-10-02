@@ -18,6 +18,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
 import { createBrainServer, createKbLockPool } from './mcp-server.js';
 import { createKbWorkerPool } from './kb-worker-client.js';
+import { createHookWorker } from './hook-worker-client.js';
 import fs from 'node:fs';
 import { HEALTH_PATH, MCP_PATH, lockFile, ensureToken, requestAllowed, originAllowed, tokenFile, canonicalDataDir } from './daemon-common.js';
 
@@ -51,6 +52,9 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
   // and every other session's HTTP traffic keep responding while a KB call is in
   // flight elsewhere. Sticky per-project routing (ADR-014) — see lib/kb-worker-client.js.
   const kbWorker = createKbWorkerPool({ pluginRoot });
+  // ONE heavy-lane hook worker for the whole daemon (G2): Stop + PostToolUse hooks
+  // run there, off the thread that serves every session's HTTP and fast guards.
+  const hookWorker = createHookWorker({ pluginRoot });
   // ONE lock pool (one mutex per kb-worker slot) for the whole daemon process (not
   // per session): dispatchKbTool only serializes KB tool calls that land on the SAME
   // slot across sessions if every session's createBrainServer shares this same pool
@@ -71,7 +75,7 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           ok: true, pluginRoot, dataDir, version, pid: process.pid, port,
-          sessions: sessions.size, startedAt, uptimeMs: Date.now() - startedAt,
+          sessions: sessions.size, hookWorker: hookWorker.stats(), startedAt, uptimeMs: Date.now() - startedAt,
         }));
         return;
       }
@@ -125,7 +129,7 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
           res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'Too many sessions' }, id: (body && body.id) ?? null }));
           return;
         }
-        const server = createBrainServer({ pluginRoot, mode: 'http', kbWorker, kbLock });
+        const server = createBrainServer({ pluginRoot, mode: 'http', kbWorker, kbLock, hookWorker });
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           enableJsonResponse: true,
@@ -186,6 +190,7 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
     try { httpServer.closeAllConnections?.(); } catch (e) { void e; } // drop keep-alive so close() resolves
     await new Promise((r) => httpServer.close(r));
     try { await kbWorker.shutdown(); } catch (e) { void e; }
+    try { await hookWorker.shutdown(); } catch (e) { void e; }
   }
   process.once('SIGTERM', () => { shutdown().finally(() => {}); });
   process.once('SIGINT', () => { shutdown().finally(() => {}); });

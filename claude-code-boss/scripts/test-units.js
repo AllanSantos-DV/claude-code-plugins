@@ -19822,6 +19822,52 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
       assert(!spawned.some(c => c.includes(`/scripts/${s}.js`)), `${s} must not be spawned anymore`);
     }
   });
+
+  // ── G2: heavy lane runs in the daemon's hook worker, not on the main thread ──
+  const { HOOKS: HOOK_SPECS } = require('./lib/hook-tools.js');
+  const HEAVY = Object.keys(HOOK_SPECS).filter(n => HOOK_SPECS[n].lane === 'heavy').sort();
+  const loadHookWorker = async () => (await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'hook-worker-client.js')).href)).createHookWorker;
+
+  test('G2: heavy lane = Stop + the PostToolUse side-effect hooks; guards and prompt detectors stay on the fast lane', () => {
+    assertEq(HEAVY, ['hook_file_edit_detect', 'hook_policy_enforce_shadow', 'hook_posttoolusebash_dispatcher', 'hook_posttoolusefailure_dispatcher', 'hook_skill_metric', 'hook_stop_dispatcher']);
+  });
+
+  test('G2: with a hook worker, heavy hooks go to it and fast hooks never do; a worker failure degrades visibly', async () => {
+    const calls = [];
+    const fake = { run: async (name) => { calls.push(name); if (name === 'hook_stop_dispatcher') throw new Error('worker died'); return '{"via":"worker"}'; } };
+    const t = createHookTools({ pluginRoot: ROOT, hookWorker: fake });
+    const fileEdit = PARITY.find(p => p[0] === 'hook_file_edit_detect')[2];
+    assertEq((await t.handle('hook_file_edit_detect', { ...wire(fileEdit), project_dir: proj })).content[0].text, '{"via":"worker"}');
+    const stop = JSON.parse((await t.handle('hook_stop_dispatcher', { ...wire(PARITY[11][2]), project_dir: proj })).content[0].text);
+    assert(/hook_stop_dispatcher degradado no daemon \(fail-open\): worker died/.test(stop.systemMessage), JSON.stringify(stop));
+    assert(!stop.decision, 'a worker failure must not block the Stop');
+    const guard = await t.handle('hook_curation_guard', { ...wire(PARITY[0][2]), project_dir: proj });
+    assertEq(guard.content[0].text, viaCli('pretooluse-bash-dispatcher.js', PARITY[0][2], proj));
+    assertEq(calls, ['hook_file_edit_detect', 'hook_stop_dispatcher']);
+  });
+
+  test('G2: REAL hook worker — every heavy hook gives the same stdout as its CLI script', async () => {
+    const hw = (await loadHookWorker())({ pluginRoot: ROOT });
+    try {
+      const t = createHookTools({ pluginRoot: ROOT, hookWorker: hw });
+      for (const [tool, script, ev] of PARITY.filter(p => HEAVY.includes(p[0]))) {
+        const got = (await t.handle(tool, { ...wire(ev), project_dir: proj })).content[0].text;
+        assertEq(got, viaCli(script, ev, proj), `${tool} via worker`);
+      }
+      assertEq(hw.stats().spawned, 1, 'one worker serves every call');
+    } finally { await hw.shutdown(); }
+  });
+
+  test('G2: a crashed hook worker is replaced on the next call (no permanent outage)', async () => {
+    const hw = (await loadHookWorker())({ pluginRoot: ROOT });
+    try {
+      const args = { ...wire(PARITY[11][2]), project_dir: proj };
+      assertEq(await hw.run('hook_stop_dispatcher', args), '{}');
+      await hw._kill();
+      assertEq(await hw.run('hook_stop_dispatcher', args), '{}');
+      assertEq(hw.stats().spawned, 2, 'a fresh worker took over');
+    } finally { await hw.shutdown(); }
+  });
 }
 
 // ─── Runner ──────────────────────────────────────────────────────────────────

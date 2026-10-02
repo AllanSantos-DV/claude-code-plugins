@@ -243,7 +243,7 @@ export function createKbLockPool(poolSize) {
   return locks;
 }
 
-export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock, _testHooks } = {}) {
+export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock, hookWorker, _testHooks } = {}) {
   const PLUGIN_ROOT = pluginRoot;
 
   // ─── KB modules (lazy-loaded) ──────────────────────────────────────────────
@@ -586,7 +586,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
   // Phase G (ADR-015): hooks.json `mcp_tool` transport — one tool per migrated hook,
   // running the hook's own logic in this process instead of a fresh `node` spawn.
   const { createHookTools } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'hook-tools.js'));
-  const hookTools = createHookTools({ pluginRoot: PLUGIN_ROOT });
+  const hookTools = createHookTools({ pluginRoot: PLUGIN_ROOT, hookWorker });
 
   // ─── Tool list ──────────────────────────────────────────────────────────────
   const TOOLS = [
