@@ -2894,8 +2894,21 @@ function operationForPassthrough(method, pathOriginal) {
   return null;
 }
 
+// The configured gateway URL is unusable: refuse loudly (never fall back to the real
+// Anthropic the user routed away from). Returns true when it answered.
+function refuseMisconfiguredUpstream(target, res, what) {
+  if (!target || !target.upstreamMisconfigured || target.isByok) return false;
+  logger.error('Upstream alternativo mal configurado — request recusada', { what, causa: target.upstreamMisconfigured });
+  if (!res.headersSent) {
+    res.writeHead(502, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: `model-router: ${target.upstreamMisconfigured}` } }));
+  }
+  return true;
+}
+
 function passthroughGeneric(method, rawBody, originalHeaders, res, pathOriginal, config, _retried) {
   const baseTarget = byok.resolveUpstream(config, { onLimit: cooldownActive(config) }, UPSTREAM_FALLBACK);
+  if (refuseMisconfiguredUpstream(baseTarget, res, pathOriginal || 'passthrough')) return null;
   const operation = operationForPassthrough(method, pathOriginal);
   let upstreamTarget = baseTarget;
   let outboundPath = pathOriginal || '/';
@@ -2970,6 +2983,7 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
   // no caminho — aplicar o breaker ali desviaria para o plano B uma request que
   // seria atendida normalmente pelo endpoint do usuário.
   const upstreamTarget = byok.resolveUpstream(config, { onLimit: false }, UPSTREAM_FALLBACK);
+  if (refuseMisconfiguredUpstream(upstreamTarget, res, '/v1/messages')) return;
   if (upstreamTarget.misconfigured) {
     // Fail-loud: ligado sem destino não pode virar "usa o Claude e ninguém vê".
     logger.error('BYOK mal configurado — request NÃO roteada ao endpoint', { causa: upstreamTarget.misconfigured });
@@ -3188,6 +3202,7 @@ function catalogScopeKey(tenant, profile, headers) {
 function catalogRequestContext(originalHeaders, config, tenant) {
   const h = originalHeaders || {};
   const target = byok.resolveUpstream(config, { onLimit: cooldownActive(config) }, UPSTREAM_FALLBACK);
+  if (target.upstreamMisconfigured && !target.isByok) return { ok: false, error: target.upstreamMisconfigured, target };
   const profile = upstreamProfile.resolveOperationProfile(config, target, 'models');
   if (!profile.ok) return { ok: false, error: profile.error, target };
   if (!target.isByok && !h['x-api-key'] && !h.authorization) {

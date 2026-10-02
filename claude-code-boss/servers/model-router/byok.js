@@ -127,6 +127,11 @@ function resolveUpstream(config, opts, fallback) {
       anthropic.protocol = dest.protocol;
       anthropic.forwardHeaders = Array.isArray(u.forwardHeaders) ? u.forwardHeaders : [];
       anthropic.isCustomEndpoint = true;
+    } else {
+      // Fail loud: the user pointed the router at a gateway; silently sending the
+      // request (and its credential) to api.anthropic.com instead is a destination
+      // they never chose. Callers refuse the request with this cause.
+      anthropic.upstreamMisconfigured = 'upstream.enabled=true mas a URL operacional (baseUrl/endpoints.*) está ausente ou inválida — nada foi enviado; corrija o gateway em /dashboard → Upstream';
     }
   }
 
