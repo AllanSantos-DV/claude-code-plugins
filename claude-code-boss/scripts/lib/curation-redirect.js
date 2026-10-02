@@ -111,4 +111,29 @@ function planRedirect(command, shells, projectRoot) {
   return { rewritten: replaced.length ? joinParts(parts) : null, replaced, uncovered };
 }
 
-module.exports = { planRedirect, splitTopLevel, profilesFor, invocationFor, flagsOf, RAW_ESCAPE };
+const FILE_SINK = /(^|\s)(?:\d|&)?>>?\s*(?!&\d)(?!\/dev\/null)[^\s|&;]+/;
+const SHAPER = path.join(__dirname, '..', 'shape-output.js').replace(/\\/g, '/');
+
+/**
+ * C2b: the shaped form of a single EXPLORATION command when Token Guard isn't
+ * installed, else null. `deps` is a test seam for the Token Guard detection.
+ */
+function planShaping(command, projectRoot, deps = {}) {
+  const { classifyCommand, tokenGuardActive } = require('./curation-families.js');
+  const cmd = String(command || '').trim();
+  if (!cmd || RAW_ESCAPE.test(cmd) || cmd.includes('shape-output.js')) return null;
+  const parts = splitTopLevel(cmd);
+  if (!parts || parts.length !== 1 || /&\s*$/.test(cmd)) return null;
+  if (FILE_SINK.test(cmd.split('|')[0]) || /\|\s*tee\b/.test(cmd)) return null;
+  if (classifyCommand(cmd) !== 'exploration') return null;
+  const tgActive = deps.tokenGuardActive || tokenGuardActive;
+  if (tgActive({ projectRoot })) return null;
+  let fam = 'exploration';
+  try {
+    const t = canonicalSig(cmd).split(' ');
+    fam = (t[0] === 'git' ? t.slice(0, 2) : t.slice(0, 1)).join(' ') || fam; // `git log`, `cat`, `grep`
+  } catch (err) { void err; }
+  return `set -o pipefail; { ${cmd}; } 2>&1 | node "${SHAPER}" --family "${fam.replace(/"/g, '')}"`;
+}
+
+module.exports = { planRedirect, planShaping, splitTopLevel, profilesFor, invocationFor, flagsOf, RAW_ESCAPE };

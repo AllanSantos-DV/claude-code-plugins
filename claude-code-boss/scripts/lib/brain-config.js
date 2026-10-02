@@ -197,6 +197,10 @@ function getCuration() {
     maxOutputLines: Number.isInteger(c.maxOutputLines) && c.maxOutputLines > 0 ? c.maxOutputLines : 30,
     oneHitMaxRecurrence: Number.isInteger(c.oneHitMaxRecurrence) && c.oneHitMaxRecurrence > 0 ? c.oneHitMaxRecurrence : 3,
     oneHitWindowDays: Number.isInteger(c.oneHitWindowDays) && c.oneHitWindowDays > 0 ? c.oneHitWindowDays : 90,
+    // C2b: bound of an EXPLORATION command's output when Token Guard isn't installed
+    // (looser than the curation-nag thresholds above — a real git log legitimately exceeds 30 lines).
+    shapeMaxLines: Number.isInteger(c.shapeMaxLines) && c.shapeMaxLines > 0 ? c.shapeMaxLines : 80,
+    shapeMaxChars: Number.isInteger(c.shapeMaxChars) && c.shapeMaxChars > 0 ? c.shapeMaxChars : 8000,
   };
 }
 

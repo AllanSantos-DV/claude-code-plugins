@@ -3753,6 +3753,26 @@ test('C2 curation-redirect: exact task signature+flags rewritten (also inside co
   assertEq(plan('echo "a && node scripts/test-units.js"').rewritten, null, 'text inside quotes is not a command');
 });
 
+test('C2b shape-output: passes small output untouched; cuts by lines or chars and reports both counts', () => {
+  const { shape } = require('./shape-output.js');
+  assertEq(shape('a\nb\n', { maxLines: 5, maxChars: 100 }), { cut: false, shown: 'a\nb\n', shownLines: 2, rawLines: 2 });
+  const big = Array.from({ length: 50 }, (_, i) => `line ${i}`).join('\n');
+  const byLines = shape(big, { maxLines: 10, maxChars: 10000 });
+  assertEq([byLines.cut, byLines.shownLines, byLines.rawLines], [true, 10, 50]);
+  const byChars = shape(big, { maxLines: 1000, maxChars: 30 });
+  assert(byChars.cut && byChars.shown.length <= 30 && byChars.shownLines < 50, JSON.stringify(byChars));
+});
+
+test('C2b planShaping: single exploration command without Token Guard is wrapped (pipefail + shaper); never with Token Guard, compounds, file sinks, tee, CCB_RAW, tasks', () => {
+  const { planShaping } = require('./lib/curation-redirect.js');
+  const noTG = { tokenGuardActive: () => false }; const TG = { tokenGuardActive: () => true };
+  const w = planShaping('git log --oneline -40', 'C:/r', noTG);
+  assert(/^set -o pipefail; \{ git log --oneline -40; \} 2>&1 \| node ".*shape-output\.js" --family "git log"$/.test(w), w);
+  assert(/--family "cat"$/.test(planShaping('cat big.json', 'C:/r', noTG)), 'family is the program outside git');
+  assertEq(planShaping('git log -5', 'C:/r', TG), null, 'Token Guard installed → the boss does not shape');
+  for (const c of ['cd x && git log', 'git log > out.txt', 'ls | tee l.txt', 'CCB_RAW=1 cat a', 'npm test', 'sleep 9 &']) assertEq(planShaping(c, 'C:/r', noTG), null, c);
+});
+
 test('C1 curation-families: exploration / inline / task classes (compound = task if any segment is a task)', () => {
   const { classifyCommand } = require('./lib/curation-families.js');
   const cases = {
