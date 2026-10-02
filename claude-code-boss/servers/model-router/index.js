@@ -1795,22 +1795,24 @@ function byokFallback(reqBody, config, res, hint, upstreamTarget, onRetryable) {
       settleRefusal();
       return;
     }
+    // Transport failures carry the same "when Claude is back" hint as refusals do.
+    const quando = hint ? `\n\n⏳ ${hint}.` : '';
     if (e.code === 'RESPONSE_TOO_LARGE') {
       logger.error('BYOK — resposta do endpoint grande demais', { host: operationTarget.host, err: e.message });
       respondAnthropicText(reqBody, res,
-        `⚠️ O endpoint BYOK (${operationTarget.host}) respondeu, mas a resposta passou do teto do router: ${e.message}.`);
+        `⚠️ O endpoint BYOK (${operationTarget.host}) respondeu, mas a resposta passou do teto do router: ${e.message}.${quando}`);
       return;
     }
     if (responded) {
       logger.error('BYOK — conexão caiu no meio da resposta', { host: operationTarget.host, err: e.message });
       respondAnthropicText(reqBody, res,
-        `⚠️ O endpoint BYOK (${operationTarget.host}) respondeu, mas a conexão caiu no meio da resposta: ${e.message}. Tente de novo.`);
+        `⚠️ O endpoint BYOK (${operationTarget.host}) respondeu, mas a conexão caiu no meio da resposta: ${e.message}. Tente de novo.${quando}`);
       return;
     }
     logger.error('BYOK — endpoint inacessível', { host: operationTarget.host, err: e.message });
     respondAnthropicText(reqBody, res,
       `⚠️ O endpoint BYOK (${operationTarget.host}) está inacessível: ${e.message}.\n\n`
-      + 'Revise a Base URL (ou o endpoints.generate, se configurado) em /dashboard → BYOK.');
+      + `Revise a Base URL (ou o endpoints.generate, se configurado) em /dashboard → BYOK.${quando}`);
   };
   const upReq = requestUpstream(operationTarget, pathForProfile(profile), headers, bodyStr, (upRes) => {
     responded = true;

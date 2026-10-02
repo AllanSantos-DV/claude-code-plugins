@@ -9835,6 +9835,10 @@ test('plano B BYOK: a failure names the host actually called (endpoints.generate
   const r = await _planBRun(cfg, { model: 'claude-opus-5-5', max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'oi' }] });
   assert(/BYOK \(127\.0\.0\.1\) está inacessível/.test(r.raw), `must name the generate host, got ${r.raw.slice(0, 300)}`);
   assert(!/base-host\.example/.test(r.raw), 'must not blame the Base URL host it never called');
+  // The "when Claude is back" hint reaches transport failures too (it did only for refusals).
+  const withHint = await _planBRun(cfg, { model: 'claude-opus-5-5', max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'oi' }] },
+    (b, c, res) => router.handleLimitExceeded(b, c, res, 'o Claude volta às 15:30'));
+  assert(/⏳ o Claude volta às 15:30\./.test(withHint.raw), `transport failure must carry the resume hint, got ${withHint.raw.slice(0, 300)}`);
 });
 
 test('router: bodies that stop arriving without FIN no longer hang the client (limit body → plan B; OpenAI 4xx → 502; plan-B 200 non-stream → error text)', async () => {
