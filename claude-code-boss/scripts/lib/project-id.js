@@ -498,9 +498,26 @@ function sanitizeProjectId(raw) {
   return s;
 }
 
+/**
+ * Sanitize a CALLER-SUPPLIED *logical* project id for the KB (brain-server tools).
+ * Unlike sanitizeProjectId (a single file-name segment for per-project stores), a
+ * logical id may be `owner/repo` — exactly what the strict resolver produces from a
+ * git remote and what lands in brain/<owner>/<repo> when resolved from a cwd. Returns
+ * '' (caller falls back to safe resolution) for anything path-like: backslash,
+ * drive/ADS colon, leading/trailing slash, empty, `.` or `..` segments.
+ */
+function sanitizeLogicalProjectId(raw) {
+  const s = sanitize(raw);
+  if (!s) return '';
+  if (/[\\:]/.test(s)) return '';
+  const segs = s.split('/');
+  if (segs.some((seg) => !seg || seg === '.' || seg === '..')) return '';
+  return s;
+}
+
 module.exports = {
   // ── Preserved legacy exports (contract unchanged for existing call-sites) ──
-  resolveProjectId, readMarker, sanitize, sanitizeProjectId, MARKER_FILE,
+  resolveProjectId, readMarker, sanitize, sanitizeProjectId, sanitizeLogicalProjectId, MARKER_FILE,
   // ── Strict resolver API (F1) ──
   tryResolveProjectId, projectIdStrength, isFragileScope,
   resolveFallbackProjectId, fallbackStrength,

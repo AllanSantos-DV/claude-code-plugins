@@ -419,10 +419,12 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
   function resolveProject(args) {
     const a = args || {};
     if (a.project) {
-      // Explicit caller id → sanitize to a single path segment (no `..`/separators
-      // that could escape brainDir via path.join). Empty (pure traversal) falls
-      // through to the safe resolution below rather than trusting the raw value.
-      const safe = projectId.sanitizeProjectId(a.project);
+      // Explicit caller id → a LOGICAL id: `owner/repo` (what the strict resolver
+      // yields from a git remote) is valid, path-like input (`..`, backslash, drive
+      // colon, leading/empty segments) is not. A single-segment sanitizer here made
+      // every `owner/repo` explicit project fail with PROJECT_REQUIRED (U14). Empty
+      // falls through to the safe resolution below rather than trusting the raw value.
+      const safe = projectId.sanitizeLogicalProjectId(a.project);
       if (safe) return safe;
     }
     if (a.cwd) return projectId.resolveProjectId({ cwd: a.cwd });
