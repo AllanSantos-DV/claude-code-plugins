@@ -135,6 +135,12 @@ async function run(event) {
 
     if (!reason) return;
 
+    // U5: a SUB-AGENT's command (the hook input carries agent_id — verified in a
+    // real Claude Code session, 2026-10-02) is not the parent turn's to curate: the
+    // output landed in the sub-agent's context, and the parent's Stop would block on
+    // a command it never ran. Recurrence above still counts it.
+    if (event.agent_id) return;
+
     // A valid one-hit marking (still under the ceiling) suppresses the block, so
     // the Stop hook never re-asks to curate a genuine single-use command. A 1-token
     // sig can't be curated at all, so its marking holds past the ceiling.

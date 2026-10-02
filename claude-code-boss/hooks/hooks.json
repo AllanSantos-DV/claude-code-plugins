@@ -130,6 +130,8 @@
               "tool_name": "${tool_name}",
               "tool_input": "${tool_input}",
               "tool_response": "${tool_response}",
+              "agent_id": "${agent_id}",
+              "agent_type": "${agent_type}",
               "project_dir": "${CLAUDE_PROJECT_DIR}"
             },
             "timeout": 10
@@ -217,6 +219,8 @@
               "error": "${error}",
               "is_interrupt": "${is_interrupt}",
               "duration_ms": "${duration_ms}",
+              "agent_id": "${agent_id}",
+              "agent_type": "${agent_type}",
               "project_dir": "${CLAUDE_PROJECT_DIR}"
             },
             "timeout": 10
