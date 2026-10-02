@@ -198,21 +198,36 @@ function principalSegment(command) {
 }
 
 /** principalSegment over a command whose heredoc bodies are already folded. */
+/** The segment's command once setup/decoration is discounted, or '' when it is not work. */
+function _workOf(seg) {
+  if (NAV_SEGMENT.test(seg)) return '';
+  if (ASSIGN_ONLY_SEGMENT.test(seg)) return '';
+  if (COMMENT_SEGMENT.test(seg)) return '';
+  if (DECOR_SEGMENT.test(seg)) return '';
+  const stripped = stripPrefixes(seg);
+  if (HEREDOC_WRITE_SEGMENT.test(stripped)) return '';
+  // No command of its own: the heredoc left behind by `VAR=$(cat <<EOF` once the
+  // assignment prefix is stripped, and the `)` line that closes that `$(`.
+  if (HEREDOC_MARK_START.test(stripped) || GROUP_CLOSE.test(stripped)) return '';
+  return stripped;
+}
+
 function principalOfFolded(text) {
   const segments = splitSegments(text);
   for (const seg of segments) {
-    if (NAV_SEGMENT.test(seg)) continue;
-    if (ASSIGN_ONLY_SEGMENT.test(seg)) continue;
-    if (COMMENT_SEGMENT.test(seg)) continue;
-    if (DECOR_SEGMENT.test(seg)) continue;
-    const stripped = stripPrefixes(seg);
-    if (HEREDOC_WRITE_SEGMENT.test(stripped)) continue;
-    // No command of its own: the heredoc left behind by `VAR=$(cat <<EOF` once the
-    // assignment prefix is stripped, and the `)` line that closes that `$(`.
-    if (HEREDOC_MARK_START.test(stripped) || GROUP_CLOSE.test(stripped)) continue;
-    if (stripped) return stripped;
+    const work = _workOf(seg);
+    if (work) return work;
   }
   return segments.length ? stripPrefixes(segments[segments.length - 1]) : '';
+}
+
+/**
+ * Every segment of `command` that is real work (cd/assignments/comments/echo
+ * banners/heredoc-writes discounted), in order. One entry = a single command
+ * however it is dressed (`cd x && npm test 2>&1 | tail`); more = a compound.
+ */
+function workSegments(command) {
+  return splitSegments(foldHeredocs(command).text).map(_workOf).filter(Boolean);
 }
 
 /** Significant (non-flag) tokens of a segment — drops anything starting with '-'. */
@@ -286,4 +301,4 @@ function isGenericAlias(alias) {
   return sig.split(' ').filter(Boolean).length < 2;
 }
 
-module.exports = { canonicalSig, isGenericAlias, principalSegment, significantTokens, indexOfShellMeta, splitSegments, foldHeredocs };
+module.exports = { canonicalSig, isGenericAlias, principalSegment, workSegments, significantTokens, indexOfShellMeta, splitSegments, foldHeredocs };

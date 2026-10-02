@@ -723,6 +723,28 @@ const TESTS = [
     },
   },
   {
+    name: 'curation-guard    [PreToolUse/compound with a curated alias as ONE piece→allow+hint, absolute path (U1)]',
+    script: 'curation-guard.js',
+    payload: (() => {
+      const cwd = mkTempProject({ shells: [{ id: 'glog', script: '.vscode/scripts/git-log-branch.mjs', aliases: ['git log'] }], whitelist: [] });
+      return {
+        tool_name: 'Bash',
+        tool_input: { command: 'git status --short; echo "=== last ==="; git log --oneline -6' },
+        session_id: SESSION,
+        cwd,
+      };
+    })(),
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    validate: r => {
+      const out = r.parsed?.hookSpecificOutput || {};
+      if (out.permissionDecision !== 'allow') return `compound → allow, got: ${out.permissionDecision}`;
+      if (out.updatedInput) return 'compound must run as written (no rewrite)';
+      const ctx = out.additionalContext || '';
+      if (!/curated script: `[A-Za-z]:\/.*\.vscode\/scripts\/git-log-branch\.mjs`|curated script: `\/.*\.vscode\/scripts\/git-log-branch\.mjs`/.test(ctx)) return `hint must carry the ABSOLUTE script path, got: ${ctx}`;
+      return null;
+    },
+  },
+  {
     name: 'curation-guard    [PreToolUse/curated-script+logical-or→allow]',
     script: 'curation-guard.js',
     payload: (() => {
