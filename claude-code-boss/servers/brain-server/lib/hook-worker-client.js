@@ -67,6 +67,20 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000 } = {}) {
     });
   }
 
+  /**
+   * Fire-and-forget (G4): queue a hook whose reply is always `{}` and return at
+   * once. It still runs in FIFO order with the awaited hooks, so its side effect
+   * lands before any later Stop. Failures surface on the session's next Stop.
+   */
+  function enqueue(name, args) {
+    if (closed) { console.error(`[hook-worker] shut down; dropped ${name}`); return; }
+    try {
+      ensure().postMessage({ id: nextId++, name, args, background: true });
+    } catch (err) {
+      console.error(`[hook-worker] enqueue ${name} failed: ${err.message}`);
+    }
+  }
+
   function stats() {
     return { alive: !!worker, spawned, inFlight: pending.size };
   }
@@ -85,5 +99,5 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000 } = {}) {
     if (w) await w.terminate();
   }
 
-  return { run, stats, shutdown, _kill };
+  return { run, enqueue, stats, shutdown, _kill };
 }

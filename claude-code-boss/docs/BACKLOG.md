@@ -60,9 +60,19 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   (`http-daemon.js:24`). Com 6–8 sessões os 50 slots (`MAX_SESSIONS`) esgotam e
   sessão nova do Claude Code recebe 429 → sem hooks e sem tools do Brain. Fix:
   dentro do daemon chamar a busca in-process; fora dele, encerrar a sessão.
-- [ ] **G4 — classe "async-elegível" não é fire-and-forget.** `hook-tools.js:84-88`
+- [x] **G4 — classe "async-elegível" não é fire-and-forget.** `hook-tools.js:84-88`
   faz `await m.run(ev)` antes de responder, contra a ADR-015 §Decisão 1. Fix:
   responder `{}` na hora e enfileirar o trabalho.
+  **RESOLVIDO em 2026-10-02**: `async: true` nos 5 hooks que sempre devolvem `{}`
+  (`skill_metric`, `file_edit_detect`, `posttoolusebash_dispatcher`,
+  `posttoolusefailure_dispatcher`, `policy_enforce_shadow`) → `hookWorker.enqueue`
+  e ack `{}` imediato. Continuam na MESMA fila FIFO do worker (o efeito colateral
+  cai antes do próximo `Stop`). Fila de segundo plano com teto de 1000 (descarta o
+  mais antigo, com log). Fail-open continua VISÍVEL (P2): falha em segundo plano é
+  anexada como `systemMessage` no próximo `Stop` daquela sessão, uma vez. Bench
+  (60 `PostToolUse` Bash simultâneos): p95 ~580 ms → ~2 ms. Testes: conjunto async
+  ⊂ fila pesada, ack sem esperar o worker, ordem FIFO com worker real, falha
+  reportada no próximo `Stop` só da sessão certa e só uma vez.
 - [ ] **G5 — sem prazo, cancelamento nem limite de concorrência por hook.** Hook
   que estoura o `timeout` do `hooks.json` continua rodando no daemon; `Stop`s se
   acumulam sem teto. (Substitui o item de timeout em "Arquitetura".) Fix: prazo
