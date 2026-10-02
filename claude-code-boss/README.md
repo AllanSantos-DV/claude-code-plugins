@@ -119,10 +119,9 @@ prazo interno de `timeout − 1 s`.
 | PreToolUse (Bash) | `mcp_tool` → `hook_error_guard` (`error-guard.js`) | Nega o comando que já falhou ≥N vezes NESTA sessão, no mesmo diretório, sem nenhuma edição de arquivo desde a última falha — injeta a última saída. Repetir não desbloqueia; um sucesso ou uma edição (tentativa de correção) sim. Roda em paralelo ao `hook_curation_guard`; `deny` vence (o `pretooluse-bash-dispatcher.js` segue como entry por stdin, com a mesma regra) |
 | PreToolUse (Edit) | `mcp_tool` → `hook_policy_enforce_shadow` (`policy-enforce-shadow.js`) | Shadow-mode: detecta se uma edição viola uma política de código ativa (sem bloquear ainda) |
 | PreToolUse (Grep\|Glob) | `mcp_tool` → `hook_graph_guard` (`graph-guard.js`) | Busca recursiva ampla com Session Graph READY → deny-once: `graph_search`/`graph_symbols` primeiro (estrutural, ~300ms), depois re-rodar escopado; retry idêntico passa |
-| **PostToolUse (Bash)** | **`mcp_tool` → `hook_posttoolusebash_dispatcher` (`posttoolusebash-dispatcher.js`)** | **Entry único** — roda `curation-detect.js` + `decision-detect.js` + `error-resolve.js` in-process (todos side-effect only, sempre `{}`) |
+| **PostToolUse (Bash)** | **`mcp_tool` → `hook_posttoolusebash_dispatcher` (`posttoolusebash-dispatcher.js`)** | **Entry único** — roda `curation-detect.js` + `decision-detect.js` in-process (side-effect only, sempre `{}`) |
 | PostToolUse (Bash, via dispatcher) | `curation-detect.js` | Detecta outputs grandes para curação |
 | PostToolUse (Bash, via dispatcher) | `decision-detect.js` | Detecta commit/PR com cara de decisão arquitetural e stash pending para o Stop promover |
-| PostToolUse (Bash, via dispatcher) | `error-resolve.js` | Limpa o registro de falha de uma assinatura quando o comando volta a ter sucesso |
 | PostToolUse (Edit\|Write\|NotebookEdit) | `mcp_tool` → `hook_file_edit_detect` (`file-edit-detect.js`) | Journala arquivos editados no turno (alimenta `verify-nudge` e `self-review`) |
 | PostToolUse (Edit\|Write\|MultiEdit\|NotebookEdit) | `mcp_tool` → `hook_policy_glob_inject` (`policy-glob-inject.js`) | Injeta advisory de política glob (per-file) quando o arquivo editado casa um padrão de política ativa |
 | UserPromptExpansion | `mcp_tool` → `hook_skill_metric` (`skill-metric.js`) | Métrica de uso de skill (matcher `.*`) |

@@ -11,9 +11,6 @@
 
 const { runSideEffectCli } = require('./lib/hook-io.js');
 const failureJournal = require('./lib/failure-journal.js');
-const { dataDir } = require('./lib/data-dir.js');
-const errorStore = require('./lib/error-store.js');
-const { getErrorGuard } = require('./lib/hooks-config.js');
 
 function normalizeCmd(cmd) {
   return String(cmd || '')
@@ -51,37 +48,10 @@ function buildEntry(ev) {
 }
 
 /**
- * Deterministic error-guard recording (Phase 2 micro-1): on a Bash failure,
- * durably record the RAW command's canonical signature into lib/error-store so
- * error-guard (PreToolUse) can DENY a recurring re-run. Uses the RAW command
- * (event.tool_input.command), NOT the masked/truncated normalizeCmd string, so
- * canonicalSig sees the real command. Best-effort and gated — never blocks the
- * failure-journal path above.
- * @param {object} ev   the PostToolUseFailure event
- * @param {object} entry the buildEntry() result (reuses snippet + exitCode)
- * @param {string} sid  session id
- */
-function recordErrorGuard(ev, entry, sid) {
-  if (ev.tool_name !== 'Bash') return;
-  try {
-    if (getErrorGuard().enabled === false) return;
-    const command = (ev.tool_input && ev.tool_input.command) || '';
-    if (!command) return;
-    const projectKey = errorStore.resolveProjectKey(ev.cwd || process.cwd());
-    errorStore.record(dataDir(), projectKey, {
-      command,
-      cause: entry.snippet,
-      exitCode: entry.exitCode,
-      sessionId: sid,
-    });
-  } catch (err) {
-    console.error(`[failure-detect] error-store record failed: ${err.message}`);
-  }
-}
-
-/**
  * Pure detector entry point — side effect only (appends to the failure
- * journal + records the error-guard signature). Reply is always `{}`.
+ * journal). Reply is always `{}`. (It used to also record the command into
+ * lib/error-store for error-guard; error-guard now reads the session transcript
+ * — lib/session-failures.js — so that store had no reader and was removed.)
  * @param {object} ev
  */
 async function run(ev) {
@@ -95,7 +65,6 @@ async function run(ev) {
   } catch (err) {
     console.error(`[failure-detect] ${err.message}`);
   }
-  recordErrorGuard(ev, entry, sid);
 }
 
 if (require.main === module) {

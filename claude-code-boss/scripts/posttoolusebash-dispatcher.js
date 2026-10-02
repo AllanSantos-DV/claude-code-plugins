@@ -2,13 +2,13 @@
 /**
  * posttoolusebash-dispatcher.js — the single PostToolUse/Bash-hook entry.
  *
- * Consolidates the 3 per-Bash Node spawns (curation-detect.js,
- * decision-detect.js, error-resolve.js) into ONE in-process pass — same
- * "N spawns → 1" pattern as `stop-dispatcher.js` and
- * `pretooluse-bash-dispatcher.js`.
+ * Consolidates the per-Bash detectors (curation-detect.js, decision-detect.js)
+ * into ONE in-process pass — same "N spawns → 1" pattern as `stop-dispatcher.js`
+ * and `pretooluse-bash-dispatcher.js`. (error-resolve.js was removed with the
+ * error-store: error-guard reads the session transcript now.)
  *
- * All three detectors are side-effect only (turn-journal append, pending-
- * promotion stash, error-store clear) and never block or inject context — the
+ * Both detectors are side-effect only (turn-journal append, pending-
+ * promotion stash) and never block or inject context — the
  * reply is always `{}`. Each runs in its own try/catch so a crash in one never
  * blocks the others (same fail-open guarantee as separate processes); errors
  * are logged, never propagated into the reply.
@@ -18,12 +18,10 @@
 const { readStdin, parsePayload, emitEmpty } = require('./lib/hook-io.js');
 const curationDetect = require('./curation-detect.js');
 const decisionDetect = require('./decision-detect.js');
-const errorResolve = require('./error-resolve.js');
 
 const DETECTORS = [
   { name: 'curation-detect', mod: curationDetect },
   { name: 'decision-detect', mod: decisionDetect },
-  { name: 'error-resolve', mod: errorResolve },
 ];
 
 /**

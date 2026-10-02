@@ -127,14 +127,10 @@ function check(result, expectations = {}) {
 const SESSION = 'test-00000000-0000-0000-0000-000000000001';
 
 // ─── error-guard fixtures (deterministic recurring-failure guard) ───────────
-// The error-guard PreToolUse hook DENIES a Bash command whose canonical sig has
-// already failed >= threshold times. To exercise it across a spawned subprocess
-// we must seed the SAME error-store the hook reads: build each fixture ONCE so
-// payload.cwd, the seeded projectKey (resolveProjectKey(cwd)) and
-// CLAUDE_PLUGIN_DATA all agree. Each fixture gets its own temp cwd + dataDir.
-const _errorStore = require('./lib/error-store.js');
-// error-guard now decides from the SESSION transcript (lib/session-failures.js):
-// a transcript where `command` failed `n` times in `cwd`, with no edit in between.
+// The error-guard PreToolUse hook DENIES a Bash command that already failed
+// >= threshold times in the SESSION (lib/session-failures.js reads the session
+// transcript): a fixture is a transcript where `command` failed `n` times in
+// `cwd`, with no edit in between.
 function writeFailTranscript(cwd, command, n, { cause = 'TS2345: type error in foo.ts', exitCode = 2 } = {}) {
   const tp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-eg-tr-')), 't.jsonl');
   const lines = [];
@@ -149,30 +145,19 @@ function seedErrorGuard(command, { threshold = 2, cause = 'TS2345: type error in
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-eg-proj-'));
   fs.mkdirSync(path.join(cwd, '.git'), { recursive: true }); // stable projectKey
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-eg-data-'));
-  const pk = _errorStore.resolveProjectKey(cwd);
-  for (let i = 0; i < threshold; i++) {
-    _errorStore.record(dataDir, pk, { command, cause, exitCode });
-  }
   return { cwd, dataDir, command, transcriptPath: writeFailTranscript(cwd, command, threshold, { cause, exitCode }) };
 }
 // Recorded recurring failure — read-only across guard tests (deny/allow/gate).
 const _egHit = seedErrorGuard('npm run build');
-// Dedicated fixture the error-resolve test MUTATES (cleared on success).
-const _egResolve = seedErrorGuard('npm run build');
-// Fresh project (no seed) — failure-detect must POPULATE its error-store.
-// Combined fixture for posttoolusebash-dispatcher.js's 3-detector integration
-// test: a `git commit` command that (a) is large output (curation-detect),
-// (b) reads as an architectural decision (decision-detect), and (c) has a
-// PRE-RECORDED failure for its own signature that a successful run must
-// clear (error-resolve) — proves all three detectors actually ran, not just
-// the first one in the array.
+// Combined fixture for posttoolusebash-dispatcher.js's 2-detector integration
+// test: a `git commit` command that (a) is large output (curation-detect) and
+// (b) reads as an architectural decision (decision-detect) — proves both
+// detectors actually ran, not just the first one in the array.
 const _pubMerge = (() => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pub-proj-'));
   fs.mkdirSync(path.join(cwd, '.git'), { recursive: true });
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pub-data-'));
   const command = 'git commit -m "Switch to esbuild because webpack is too slow"';
-  const pk = _errorStore.resolveProjectKey(cwd);
-  _errorStore.record(dataDir, pk, { command, cause: 'flaky, unrelated to this run', exitCode: 1 });
   return { cwd, dataDir, command };
 })();
 
@@ -188,13 +173,9 @@ const _fdIntegration = (() => {
 // (error-guard wants deny) — proves deny wins over the redirect.
 const _pdMerge = (() => {
   const cwd = mkTempProject({ shells: [{ id: 'vitest', script: '.vscode/scripts/vitest.ps1', aliases: ['npm test'] }], whitelist: [] });
-  fs.mkdirSync(path.join(cwd, '.git'), { recursive: true }); // stable projectKey for error-store too
+  fs.mkdirSync(path.join(cwd, '.git'), { recursive: true });
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pd-data-'));
   const command = 'npm test';
-  const pk = _errorStore.resolveProjectKey(cwd);
-  for (let i = 0; i < 2; i++) {
-    _errorStore.record(dataDir, pk, { command, cause: 'flaky assertion', exitCode: 1 });
-  }
   return { cwd, dataDir, command, transcriptPath: writeFailTranscript(cwd, command, 2, { cause: 'flaky assertion', exitCode: 1 }) };
 })();
 // Sibling fixture — SAME curated alias, but a FRESH dataDir with no recorded
@@ -1074,27 +1055,7 @@ const TESTS = [
     },
   },
   {
-    name: 'error-resolve     [PostToolUse/Bash-success→clears recorded failure]',
-    script: 'error-resolve.js',
-    payload: {
-      hook_event_name: 'PostToolUse',
-      tool_name: 'Bash',
-      tool_input: { command: _egResolve.command },
-      session_id: SESSION,
-      cwd: _egResolve.cwd,
-    },
-    expect: { noError: true },
-    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _egResolve.dataDir }),
-    validateWithEnv: (r, env) => {
-      const pk = _errorStore.resolveProjectKey(_egResolve.cwd);
-      const store = _errorStore.load(env.CLAUDE_PLUGIN_DATA, pk);
-      if (Object.keys(store.entries).length !== 0) return `success must clear the sig, entries remain: ${JSON.stringify(Object.keys(store.entries))}`;
-      if (_errorStore.lookup(env.CLAUDE_PLUGIN_DATA, pk, _egResolve.command, { threshold: 2 }).hit) return 'guard must no longer hit after resolve';
-      return null;
-    },
-  },
-  {
-    name: 'failure-detect    [PostToolUseFailure/Bash→records error-store]',
+    name: 'failure-detect    [PostToolUseFailure/Bash→journals the failure]',
     script: 'failure-detect.js',
     payload: {
       hook_event_name: 'PostToolUseFailure',
@@ -1108,13 +1069,11 @@ const TESTS = [
     expect: { noError: true },
     extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-fd-data-')) }),
     validateWithEnv: (r, env) => {
-      const pk = _errorStore.resolveProjectKey(_fdIntegration.cwd);
-      // RAW command 'cd /x && npm run typecheck -- --strict' → sig 'npm run typecheck'.
-      const l = _errorStore.lookup(env.CLAUDE_PLUGIN_DATA, pk, 'npm run typecheck', { threshold: 1 });
-      if (!l.hit) return `failure-detect must record the Bash failure sig, got: ${JSON.stringify(l)}`;
-      if (l.sig !== 'npm run typecheck') return `expected sig 'npm run typecheck', got '${l.sig}'`;
-      if (l.exitCode !== 2) return `expected exitCode 2 (parsed from the failure), got ${l.exitCode}`;
-      if (!/TS2345/.test(l.cause || '')) return `expected recorded cause to include the error snippet, got: ${l.cause}`;
+      // The failure journal (failure-retro's input) is failure-detect's only effect now.
+      const dir = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime');
+      const files = fs.existsSync(dir) ? fs.readdirSync(dir) : [];
+      const hit = files.map(f => fs.readFileSync(path.join(dir, f), 'utf8')).find(t => /npm run typecheck/.test(t) && /TS2345/.test(t));
+      if (!hit) return `failure-detect must journal the Bash failure (command + snippet) under ${dir}, got files: ${JSON.stringify(files)}`;
       return null;
     },
   },
@@ -1602,7 +1561,7 @@ const TESTS = [
     },
   },
   {
-    name: 'posttoolusebash-dispatcher [decision-detect AND error-resolve also ran (not just curation-detect)]',
+    name: 'posttoolusebash-dispatcher [decision-detect also ran (not just curation-detect)]',
     script: 'posttoolusebash-dispatcher.js',
     payload: {
       ...require('./__fixtures__/post-tool-use-success-noisy.json'),
@@ -1619,10 +1578,6 @@ const TESTS = [
       if (!fs.existsSync(pendingPath)) return `decision-detect must have stashed a pending decision at ${pendingPath}`;
       const pending = JSON.parse(fs.readFileSync(pendingPath, 'utf-8'));
       if (!Array.isArray(pending.pending) || pending.pending.length === 0) return `decision-pending.json has no entries: ${JSON.stringify(pending)}`;
-      // error-resolve: the pre-recorded failure for this exact command must be cleared.
-      const pk = _errorStore.resolveProjectKey(_pubMerge.cwd);
-      const hit = _errorStore.lookup(env.CLAUDE_PLUGIN_DATA, pk, _pubMerge.command, { threshold: 1 }).hit;
-      if (hit) return `error-resolve must have cleared the pre-recorded failure for ${_pubMerge.command}`;
       return null;
     },
   },

@@ -226,8 +226,9 @@ function getErrorGuard() {
   const eg = load().errorGuard || {};
   return {
     enabled: eg.enabled !== false,
+    // Failures counted within the CURRENT session only (lib/session-failures.js) —
+    // the old 90-day `windowDays` is gone with the project-wide store.
     threshold: Number.isInteger(eg.threshold) && eg.threshold > 0 ? eg.threshold : 2,
-    windowDays: Number.isInteger(eg.windowDays) && eg.windowDays > 0 ? eg.windowDays : 90,
   };
 }
 

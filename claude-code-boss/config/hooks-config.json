@@ -14,8 +14,7 @@
   },
   "errorGuard": {
     "enabled": true,
-    "threshold": 2,
-    "windowDays": 90
+    "threshold": 2
   },
   "policyInject": {
     "enabled": true,
