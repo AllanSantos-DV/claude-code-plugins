@@ -22,8 +22,25 @@ const path = require('path');
 const SCRIPTS = __dirname;
 const ROOT = path.resolve(SCRIPTS, '..');
 
+// Network egress guard: a unit test must never leave the machine. Tests used to
+// reach api.anthropic.com with a fake key (router e2e), fall through to the real
+// fallback upstream on a bug/mutant (BYOK), or download the embedder model from
+// huggingface.co — varying offline and with the cache. Any non-loopback request now
+// fails LOCALLY with the host in the error (child processes get the same guard via
+// NODE_OPTIONS, set below). Opt-out for a deliberate online run: CCB_TEST_ALLOW_NET=1.
+const EGRESS_GUARD = path.join(SCRIPTS, 'lib', 'test-egress-guard.cjs');
+if (process.env.CCB_TEST_ALLOW_NET !== '1') {
+  require(EGRESS_GUARD);
+  const req = `--require "${EGRESS_GUARD.replace(/\\/g, '/')}"`;
+  if (!(process.env.NODE_OPTIONS || '').includes('test-egress-guard')) {
+    process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS || ''} ${req}`.trim();
+  }
+}
+
 // Force a deterministic plugin root so hooks-config loads from this repo.
 process.env.CLAUDE_PLUGIN_ROOT = ROOT;
+
+
 // Isolate runtime artifacts.
 process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-units-'));
 // v2.15.0: the STRICT resolver throws (blocks) when a cwd has no declared/legacy/git
@@ -80,6 +97,27 @@ async function runTest({ name, fn }) {
     if (timer) clearTimeout(timer);
   }
 }
+
+test('test egress guard: non-loopback http/https/fetch/net refused in-process AND in spawned children; loopback allowed', async () => {
+  if (process.env.CCB_TEST_ALLOW_NET === '1') return;
+  let threw = null;
+  try { require('https').request('https://api.anthropic.com/v1/messages'); } catch (err) { threw = err; }
+  assert(threw && threw.code === 'ECCB_EGRESS' && /api\.anthropic\.com/.test(threw.message), `https.request must be refused, got ${threw && threw.message}`);
+  threw = null;
+  try { require('net').connect(443, 'huggingface.co'); } catch (err) { threw = err; }
+  assert(threw && threw.code === 'ECCB_EGRESS', 'net.connect to a remote host must be refused');
+  const f = await fetch('https://huggingface.co/x').then(() => null, (err) => err);
+  assert(f && f.code === 'ECCB_EGRESS', 'fetch to a remote host must be refused');
+  const srv = require('http').createServer((q, s) => s.end('ok'));
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  try {
+    const body = await (await fetch(`http://127.0.0.1:${srv.address().port}/`)).text();
+    assertEq(body, 'ok', 'loopback stays allowed');
+  } finally { srv.close(); }
+  const child = require('child_process').spawnSync(process.execPath, ['-e', "fetch('https://example.com').then(()=>process.exit(0),e=>{console.log(e.code);process.exit(3)})"], { encoding: 'utf8', env: process.env, timeout: 20000, windowsHide: true });
+  assertEq(child.status, 3, `a spawned child must inherit the guard, got status ${child.status} ${child.stderr}`);
+  assert(/ECCB_EGRESS/.test(child.stdout), child.stdout);
+});
 
 function assert(cond, msg) {
   if (!cond) throw new Error(msg || 'assertion failed');
@@ -7559,6 +7597,16 @@ test('FASE-E e2e: POST /v1/messages/count_tokens responde (sem hang por TDZ)', a
     s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); });
   });
   const tmp = fsMod.mkdtempSync(pathMod.join(osMod.tmpdir(), 'ccb-faseE-'));
+  // Hermetic upstream: the child used to open REAL connections to api.anthropic.com
+  // with a fake key (count_tokens, catalog warm-up, both /v1/messages). Pin it to a
+  // local fake and assert the traffic landed there.
+  const upstreamHits = [];
+  const fakeUpstream = require('http').createServer((req, res) => {
+    upstreamHits.push(`${req.method} ${req.url.split('?')[0]}`);
+    req.resume();
+    req.on('end', () => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ input_tokens: 1, data: [], id: 'msg_fake', type: 'message', role: 'assistant', content: [], model: 'claude-sonnet-4-5', stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } })); });
+  });
+  await new Promise((resolve) => fakeUpstream.listen(0, '127.0.0.1', resolve));
   // Config hermética: o server lê o user-config GLOBAL (homedir) — o patch
   // redireciona essa ÚNICA leitura para a config da porta efêmera.
   fsMod.writeFileSync(pathMod.join(tmp, 'ucfg.json'),
@@ -7580,7 +7628,7 @@ test('FASE-E e2e: POST /v1/messages/count_tokens responde (sem hang por TDZ)', a
   const childErrs = [];
   const child = spawn(process.execPath,
     ['--require', pathMod.join(tmp, 'patch.js'), pathMod.join(__dirname, '..', 'servers', 'model-router', 'index.js')],
-    { env: Object.assign({}, process.env, { CLAUDE_PLUGIN_DATA: tmp }), stdio: ['ignore', 'pipe', 'pipe'] });
+    { env: Object.assign({}, process.env, { CLAUDE_PLUGIN_DATA: tmp, ROUTER_UPSTREAM_HOST: '127.0.0.1', ROUTER_UPSTREAM_PORT: String(fakeUpstream.address().port), ROUTER_UPSTREAM_PROTOCOL: 'http:' }), stdio: ['ignore', 'pipe', 'pipe'] });
   child.stdout.on('data', () => {});
   child.stderr.on('data', (d) => childErrs.push(String(d)));
   try {
@@ -7619,8 +7667,11 @@ test('FASE-E e2e: POST /v1/messages/count_tokens responde (sem hang por TDZ)', a
     assertEq(snap.total, 2, 'fallback-only conta requests no total');
     assertEq(snap.byTenant['proj-fb'].total, 1, 'e também por tenant');
     // count_tokens NÃO é mensagem — não pode ter inflado contagem.
+    assert(upstreamHits.includes('POST /v1/messages/count_tokens') && upstreamHits.filter((h) => h === 'POST /v1/messages').length === 2,
+      `all upstream traffic must hit the local fake, got ${JSON.stringify(upstreamHits)}`);
   } finally {
     child.kill();
+    fakeUpstream.close();
     try { fsMod.rmSync(tmp, { recursive: true, force: true }); } catch (_) { void _; }
   }
 });
