@@ -92,16 +92,49 @@ function loadShellsConfig(projectRoot) {
  * @returns {object|null}
  */
 /**
- * Tokenize a command by shell separators/whitespace.
- * Strips surrounding quotes from each token so quoted forms still tokenize cleanly.
- * Quoted tokens NOT containing the literal scriptPath (e.g. `"running x.ps1"`)
- * won't equal scriptPath after stripping, defeating naive substring bypass.
+ * Tokenize a command like a shell would: separators/whitespace split tokens only
+ * OUTSIDE quotes, and a quoted run is one token (its quotes removed). So
+ * `node "C:/p/.vscode/scripts/x.mjs"` yields the path, while
+ * `echo "running .vscode/scripts/x.ps1"` and `node -e "…x.ps1…"` yield ONE token
+ * that is not the path. (The old split-then-strip-quotes version turned every
+ * quoted word into its own token, so a script name inside a string counted as
+ * invoking the script — backlog U11.)
  */
+// A quoted argument right after one of these IS a command line (shell-in-shell:
+// `pwsh -Command "& ./x.ps1"`, `bash -c "node x.mjs"`, `cmd /c "x.bat"`), so its
+// content is tokenized too.
+const SHELL_CMD_FLAG = /^(?:-c|-command|\/c)$/i;
+
 function _tokenize(command) {
-  return command
-    .split(/[\s;&|`()<>]+/)
-    .map(t => t.replace(/^['"]+|['"]+$/g, ''))
-    .filter(Boolean);
+  const s = String(command || '');
+  const out = [];
+  let cur = '';
+  let quoted = false;
+  let q = null;
+  const flush = () => {
+    if (cur) {
+      const prev = out[out.length - 1];
+      out.push(cur);
+      if (quoted && /\s/.test(cur) && prev && SHELL_CMD_FLAG.test(prev)) out.push(..._tokenize(cur));
+    }
+    cur = ''; quoted = false;
+  };
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (q) {
+      if (c === q) q = null;
+      // Only `\"` is an escape (inside double quotes); any other backslash is
+      // literal — Windows paths (`C:\p\x.ps1`) must survive tokenization.
+      else if (c === '\\' && q === '"' && s[i + 1] === '"') cur += s[++i];
+      else cur += c;
+      continue;
+    }
+    if (c === '"' || c === "'") { q = c; quoted = true; continue; }
+    if (/[\s;&|`()<>]/.test(c)) { flush(); continue; }
+    cur += c;
+  }
+  flush();
+  return out;
 }
 
 /**
