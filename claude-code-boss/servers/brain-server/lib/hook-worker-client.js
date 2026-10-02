@@ -21,6 +21,12 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000 } = {}) {
   let expired = 0; // jobs the worker skipped because their deadline had passed (G5)
   let closed = false;
   const pending = new Map();
+  // Background jobs the worker has not acked (bgDone) yet. A crash used to drop
+  // every job still queued inside the dead worker — silently losing their journal
+  // and metric writes. Now they are re-queued on the replacement worker
+  // (at-least-once: the job running at crash time may run twice).
+  const bgPending = new Map();
+  let requeued = 0;
 
   function failAll(err) {
     for (const [, p] of pending) { clearTimeout(p.timer); p.reject(err); }
@@ -32,6 +38,7 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000 } = {}) {
     const w = new Worker(path.join(__dirname, 'hook-worker.js'), { workerData: { pluginRoot } });
     spawned++;
     w.on('message', (msg) => {
+      if (msg.bgDone !== undefined) { bgPending.delete(msg.bgDone); return; }
       if (msg.expired) expired++;
       const p = pending.get(msg.id);
       if (!p) return;
@@ -41,8 +48,19 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000 } = {}) {
       if (msg.ok) p.resolve(msg.text); else p.reject(new Error(msg.error));
     });
     const onDeath = (err) => {
-      if (worker === w) worker = null;
+      if (worker !== w) return;
+      worker = null;
       failAll(err);
+      const lost = [...bgPending.values()];
+      bgPending.clear();
+      if (closed || !lost.length) return;
+      console.error(`[hook-worker] worker died with ${lost.length} background job(s) un-acked — re-queuing on a fresh worker`);
+      for (const j of lost) {
+        // One retry per job: a job that kills the worker every time must not crash-loop it.
+        if (j.attempt >= 1) { console.error(`[hook-worker] dropping ${j.name}: worker died on its retry too`); continue; }
+        requeued++;
+        enqueue(j.name, j.args, j.attempt + 1);
+      }
     };
     w.on('error', (err) => { console.error(`[hook-worker] error: ${err.message}`); onDeath(err); });
     w.on('exit', (code) => { if (worker === w) onDeath(new Error(`hook-worker exited (code ${code})`)); });
@@ -78,17 +96,19 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000 } = {}) {
    * once. It still runs in FIFO order with the awaited hooks, so its side effect
    * lands before any later Stop. Failures surface on the session's next Stop.
    */
-  function enqueue(name, args) {
+  function enqueue(name, args, attempt = 0) {
     if (closed) { console.error(`[hook-worker] shut down; dropped ${name}`); return; }
     try {
-      ensure().postMessage({ id: nextId++, name, args, background: true });
+      const id = nextId++;
+      bgPending.set(id, { name, args, attempt });
+      ensure().postMessage({ id, name, args, background: true });
     } catch (err) {
       console.error(`[hook-worker] enqueue ${name} failed: ${err.message}`);
     }
   }
 
   function stats() {
-    return { alive: !!worker, spawned, inFlight: pending.size, expired };
+    return { alive: !!worker, spawned, inFlight: pending.size, expired, background: bgPending.size, requeued };
   }
 
   async function shutdown() {

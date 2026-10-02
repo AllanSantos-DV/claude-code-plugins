@@ -269,9 +269,18 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   intercalam nos `await`. Verificar se algum método do store depende dessa
   serialização; se sim, fila explícita (como `hook-worker.js`); se não, corrigir
   o comentário.
-- [ ] **O8 — mensagem para um hook worker morrendo se perde até o timeout.** Entre a
+- [x] **O8 — mensagem para um hook worker morrendo se perde até o timeout.** Entre a
   morte do worker e o evento `exit`, um `run()` posta para o worker morto e só
   falha no `callTimeoutMs` (60 s). Coberto na prática pelo prazo do G5.
+  **RESOLVIDO em 2026-10-02 — e era pior do que o registrado**: além do `run()`
+  (que o `exit` já rejeita, e o prazo do G5 limita), um crash perdia em SILÊNCIO
+  todos os jobs de segundo plano ainda na fila do worker morto (até 1000: gravações
+  de journal/métrica). Agora o worker confirma cada job de segundo plano (`bgDone`)
+  e o cliente reenfileira os não confirmados no worker novo — pelo menos uma vez,
+  com no máximo 1 nova tentativa por job (um job que derruba o worker sempre não
+  vira loop de crash). `/health` → `hookWorker.background`/`requeued`. Teste: 40
+  jobs ocupando + 5 edições na fila, mata o worker, as 5 edições aparecem no
+  journal depois do dreno.
 
 ## Testes
 

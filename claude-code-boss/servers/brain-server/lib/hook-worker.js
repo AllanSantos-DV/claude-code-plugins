@@ -70,13 +70,14 @@ async function pump() {
       let text = await runHookInline(pluginRoot, name, args);
       if (background) {
         if (DEGRADED_RE.test(text)) noteDegraded(args, name);
+        parentPort.postMessage({ bgDone: id }); // the client re-queues un-acked jobs if we die
         continue;
       }
       if (name === 'hook_stop_dispatcher') text = withBackgroundDegradation(args, text);
       parentPort.postMessage({ id, ok: true, text });
     } catch (err) {
       const error = err && err.message ? err.message : String(err);
-      if (background) { console.error(`[hook-worker] ${name}: ${error}`); noteDegraded(args, name); continue; }
+      if (background) { console.error(`[hook-worker] ${name}: ${error}`); noteDegraded(args, name); parentPort.postMessage({ bgDone: id }); continue; }
       parentPort.postMessage({ id, ok: false, error });
     }
   }
@@ -91,6 +92,7 @@ parentPort.on('message', (msg) => {
       backgroundQueued--;
       console.error(`[hook-worker] background queue full (${MAX_BACKGROUND}); dropped ${dropped.name}`);
       noteDegraded(dropped.args, dropped.name);
+      parentPort.postMessage({ bgDone: dropped.id }); // settled (dropped, reported) — not re-queued
     }
     backgroundQueued++;
   }
