@@ -275,8 +275,16 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   `test-hooks.js` (falha no código antigo, passa no novo). **Aberto (decisão de
   desenho)**: a política "script curado nunca com pipe" + saída truncada continua
   — o atrito de rodar de novo com `--full` é do contrato da curadoria.
-- [ ] **U11 — comentário do `matchCuratedShell` (`shells-config.js:126-136`) é
-  falso.** Diz que `echo "running .vscode/scripts/vitest.ps1"` NÃO casa, mas o
+- [x] **U11 — comentário do `matchCuratedShell` (`shells-config.js:126-136`) é
+  falso.** **RESOLVIDO em 2026-10-02**: `_tokenize` agora respeita aspas como um
+  shell (string entre aspas = 1 token; `\` literal p/ caminho Windows; `\"`
+  escapa); string após `-c`/`-Command`/`/c` é tokenizada por dentro (shell-in-
+  shell). Replay nas 9.558 chamadas reais: a decisão "invoca o script curado"
+  mudou em 3, todas falsos positivos eliminados (nome do script dentro de padrão
+  `grep`, expressão `sed`, `node -e`); a regressão vista na 1ª versão
+  (`pwsh -Command "& ./…ps1"`) foi pega pelo replay e corrigida. Testes: dentro de
+  string não conta, caminho citado conta, caminho Windows sem aspas conta,
+  `-Command`/`bash -c` contam. Diz que `echo "running .vscode/scripts/vitest.ps1"` NÃO casa, mas o
   `_tokenize` tira as aspas de cada token e o path casa. Na prática um nome de
   script curado dentro de uma string (`node -e "…test-units.mjs…"`) conta como
   "invocando o script". Fix: tokenizar respeitando aspas (como

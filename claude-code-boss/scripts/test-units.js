@@ -16714,6 +16714,22 @@ test('brain_retrieve_context: routes retrieve-core\'s local search through kbWor
   }
 });
 
+// ─── U11: shells-config._tokenize respects quotes ──────────────────────────────
+test('U11: a curated script name INSIDE a quoted string is not an invocation; a quoted path still is; Windows paths survive', () => {
+  const sc = require('./shells-config.js');
+  const script = '.vscode/scripts/test-units.mjs';
+  const invokes = (cmd) => sc._tokenize(cmd).some(t => sc._pathMatches(t, script));
+  assertEq(invokes('node .vscode/scripts/test-units.mjs --all'), true);
+  assertEq(invokes('node "C:/p/.vscode/scripts/test-units.mjs"'), true, 'quoted path is still the script');
+  assertEq(invokes('node C:\\p\\.vscode\\scripts\\test-units.mjs'), true, 'unquoted Windows path (backslashes literal)');
+  assertEq(invokes('echo "running .vscode/scripts/test-units.mjs"'), false, 'path inside a sentence');
+  assertEq(invokes(`node -e "const x='node .vscode/scripts/test-units.mjs --all'"`), false, 'path inside code in a string');
+  assertEq(invokes('pwsh -NoProfile -Command "& ./.vscode/scripts/test-units.mjs"'), true, 'shell-in-shell -Command string is a command');
+  assertEq(invokes(`bash -c "node .vscode/scripts/test-units.mjs"`), true, 'bash -c string is a command');
+  assertEq(sc._tokenize('a "b c" d'), ['a', 'b c', 'd']);
+  assertEq(sc._tokenize(`echo "say \\"hi\\"" && ls`), ['echo', 'say "hi"', 'ls']);
+});
+
 // ─── U1: workSegments — what counts as ONE command vs a compound ───────────────
 test('U1: command-signature.workSegments — cd/echo/assign/heredoc-write are not work; pipes stay inside a segment', () => {
   const { workSegments } = require('./lib/command-signature.js');
