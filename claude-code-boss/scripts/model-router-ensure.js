@@ -711,6 +711,13 @@ function startServer(mode) {
  */
 async function run(hookInput) {
   hookInput = hookInput || {};
+  // Isolated test runs (a temp CLAUDE_CONFIG_DIR/HOME, the plugin via --plugin-dir):
+  // the router is machine-wide state — its fixed port, the User-level env cleanup
+  // (PowerShell) and the claude.exe shim — so an isolated session must not manage it.
+  if (process.env.CCB_ISOLATED === '1') {
+    log('CCB_ISOLATED=1 — sessão isolada: o router não é gerenciado (nada global é tocado).');
+    return null;
+  }
   // One-time Phase-1.5 migration: copy a legacy DATA_DIR/model-router/user-config.json
   // up to the stable global path (never overwriting an existing global) so the saved
   // NVIDIA key + toggles survive the move. Fail-open — never throws at SessionStart.

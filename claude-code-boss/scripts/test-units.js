@@ -13790,6 +13790,26 @@ test('G7: model-router-ensure.run() returns instead of calling process.exit (saf
   assertEq(exited, null);
 });
 
+test('isolated runs: CCB_ISOLATED=1 makes model-router-ensure touch nothing (no router, no global env, no shim)', async () => {
+  const mre = require('./model-router-ensure.js');
+  const cp = require('child_process');
+  const spawnOrig = cp.spawn, spawnSyncOrig = cp.spawnSync, execSyncOrig = cp.execSync, execFileSyncOrig = cp.execFileSync;
+  let spawned = 0;
+  cp.spawn = (...a) => { spawned++; return spawnOrig(...a); };
+  cp.spawnSync = (...a) => { spawned++; return spawnSyncOrig(...a); };
+  cp.execSync = (...a) => { spawned++; return execSyncOrig(...a); };
+  cp.execFileSync = (...a) => { spawned++; return execFileSyncOrig(...a); };
+  const prev = process.env.CCB_ISOLATED;
+  process.env.CCB_ISOLATED = '1';
+  try {
+    assertEq(await mre.run({ hook_event_name: 'SessionStart', session_id: 'iso' }), null);
+    assertEq(spawned, 0, 'no PowerShell/router process spawned');
+  } finally {
+    if (prev === undefined) delete process.env.CCB_ISOLATED; else process.env.CCB_ISOLATED = prev;
+    Object.assign(cp, { spawn: spawnOrig, spawnSync: spawnSyncOrig, execSync: execSyncOrig, execFileSync: execFileSyncOrig });
+  }
+});
+
 test('G7: UserPromptSubmit spawns ONE node process (the dispatcher); model-router-ensure stays standalone only on SessionStart', () => {
   const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
   const cmds = (ev) => hooks[ev].flatMap(g => g.hooks || []).filter(h => h.type === 'command').map(h => (h.args || []).join(' '));
