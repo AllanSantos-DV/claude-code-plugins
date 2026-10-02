@@ -1791,26 +1791,26 @@ function byokFallback(reqBody, config, res, hint, upstreamTarget, onRetryable) {
     if (res.destroyed) { reported = true; logger.debug('BYOK — cliente já saiu; nada a responder', { err: e.message }); return; }
     reported = true;
     if (settleRefusal) {
-      logger.warn('BYOK — corpo da recusa interrompido; classificando pelo que chegou', { host: upstreamTarget.host, err: e.message });
+      logger.warn('BYOK — corpo da recusa interrompido; classificando pelo que chegou', { host: operationTarget.host, err: e.message });
       settleRefusal();
       return;
     }
     if (e.code === 'RESPONSE_TOO_LARGE') {
-      logger.error('BYOK — resposta do endpoint grande demais', { host: upstreamTarget.host, err: e.message });
+      logger.error('BYOK — resposta do endpoint grande demais', { host: operationTarget.host, err: e.message });
       respondAnthropicText(reqBody, res,
-        `⚠️ O endpoint BYOK (${upstreamTarget.host}) respondeu, mas a resposta passou do teto do router: ${e.message}.`);
+        `⚠️ O endpoint BYOK (${operationTarget.host}) respondeu, mas a resposta passou do teto do router: ${e.message}.`);
       return;
     }
     if (responded) {
-      logger.error('BYOK — conexão caiu no meio da resposta', { host: upstreamTarget.host, err: e.message });
+      logger.error('BYOK — conexão caiu no meio da resposta', { host: operationTarget.host, err: e.message });
       respondAnthropicText(reqBody, res,
-        `⚠️ O endpoint BYOK (${upstreamTarget.host}) respondeu, mas a conexão caiu no meio da resposta: ${e.message}. Tente de novo.`);
+        `⚠️ O endpoint BYOK (${operationTarget.host}) respondeu, mas a conexão caiu no meio da resposta: ${e.message}. Tente de novo.`);
       return;
     }
-    logger.error('BYOK — endpoint inacessível', { host: upstreamTarget.host, err: e.message });
+    logger.error('BYOK — endpoint inacessível', { host: operationTarget.host, err: e.message });
     respondAnthropicText(reqBody, res,
-      `⚠️ O endpoint BYOK (${upstreamTarget.host}) está inacessível: ${e.message}.\n\n`
-      + 'Revise a Base URL em /dashboard → BYOK.');
+      `⚠️ O endpoint BYOK (${operationTarget.host}) está inacessível: ${e.message}.\n\n`
+      + 'Revise a Base URL (ou o endpoints.generate, se configurado) em /dashboard → BYOK.');
   };
   const upReq = requestUpstream(operationTarget, pathForProfile(profile), headers, bodyStr, (upRes) => {
     responded = true;
@@ -1829,12 +1829,12 @@ function byokFallback(reqBody, config, res, hint, upstreamTarget, onRetryable) {
     settleRefusal = () => {
       const finalCls = byok.classifyResponse(upRes.statusCode, errBody);
       if (finalCls.retryable && typeof onRetryable === 'function') {
-        logger.warn('BYOK — endpoint no teto (429); cedendo ao próximo plano', { host: upstreamTarget.host });
+        logger.warn('BYOK — endpoint no teto (429); cedendo ao próximo plano', { host: operationTarget.host });
         onRetryable();
         return;
       }
       logger.error('BYOK — endpoint recusou a request', {
-        host: upstreamTarget.host, status: upRes.statusCode, causa: finalCls.reason, model: prepared.logModel,
+        host: operationTarget.host, status: upRes.statusCode, causa: finalCls.reason, model: prepared.logModel,
       });
       respondAnthropicText(reqBody, res, byok.userAdvice(upRes.statusCode, finalCls, hint) + byokModelNote(prepared, reqBody.model));
     };

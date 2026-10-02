@@ -9771,6 +9771,15 @@ test('plano B: client leaves mid-stream → the NVIDIA/BYOK upstream request is 
   }
 });
 
+test('plano B BYOK: a failure names the host actually called (endpoints.generate), not the Base URL host', async () => {
+  const dead = await new Promise((resolve) => { const t = http.createServer(); t.listen(0, '127.0.0.1', () => { const p = t.address().port; t.close(() => resolve(p)); }); });
+  const cfg = { byok: { enabled: true, mode: 'on-limit', wireProtocol: 'openai', baseUrl: 'http://base-host.example', endpoints: { generate: `http://127.0.0.1:${dead}/chat` }, headers: {} },
+    fallback: { triggerStatuses: [429], cooldown: { enabled: false } } };
+  const r = await _planBRun(cfg, { model: 'claude-opus-5-5', max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'oi' }] });
+  assert(/BYOK \(127\.0\.0\.1\) está inacessível/.test(r.raw), `must name the generate host, got ${r.raw.slice(0, 300)}`);
+  assert(!/base-host\.example/.test(r.raw), 'must not blame the Base URL host it never called');
+});
+
 test('router: bodies that stop arriving without FIN no longer hang the client (limit body → plan B; OpenAI 4xx → 502; plan-B 200 non-stream → error text)', async () => {
   const savedRef = router.__testHooks.getRefusalBodyLimits();
   const savedOk = router.__testHooks.getSuccessBodyLimits();
