@@ -4933,7 +4933,7 @@ test('command-signature: quoted separators do not split segments', () => {
   assertEq(cmdSig.canonicalSig('echo "a; b"'), 'echo "a; b"');
   // Uses grep, not echo: a decorative `echo` segment is now skipped as narration,
   // so this must assert the QUOTING property with a segment that survives the skip.
-  assertEq(cmdSig.canonicalSig('grep "a && b" f && ls'), 'grep "a && b" f');
+  assertEq(cmdSig.canonicalSig('grep "a && b" f && ls'), 'grep "a && b" f && ls', 'the quoted && stays inside the grep; the real && separates');
 });
 
 
@@ -4941,13 +4941,13 @@ test('command-signature: newline separates segments (multi-line command)', () =>
   assertEq(cmdSig.canonicalSig('echo hi\nnpm test'), 'npm test');
   assertEq(cmdSig.canonicalSig('cd /x\r\nnpm test'), 'npm test');
   // The defect was FUSION: every line ran together into one segment, so the sig
-  // carried tokens from unrelated invocations. The sig is the FIRST invocation
-  // (by design) -- what must not happen is the tail leaking into it.
-  assertEq(cmdSig.canonicalSig('cat a.js\nnode b.js'), 'cat a.js');
+  // carried tokens from unrelated invocations. Since U4 (major) a multi-command
+  // run signs as EACH command, separated — never one fused token soup.
+  assertEq(cmdSig.canonicalSig('cat a.js\nnode b.js'), 'cat a.js && node b.js');
 });
 
 test('command-signature: lone & backgrounds (separator), && does not', () => {
-  assertEq(cmdSig.canonicalSig('npm run dev & npm test'), 'npm run dev');
+  assertEq(cmdSig.canonicalSig('npm run dev & npm test'), 'npm run dev && npm test');
   assertEq(cmdSig.canonicalSig('cd /x && npm test'), 'npm test');
 });
 
@@ -4960,7 +4960,7 @@ test('command-signature: comment and echo-banner segments are not the command', 
   assertEq(cmdSig.canonicalSig('# proximo passo\nnpm test'), 'npm test');
   // Observed live: a banner-bracketed inspection signed as the BANNER TEXT.
   const real = 'cd /p\necho "=== a"; sed -n 1,30p f.yml\necho "=== b"; cat g.json';
-  assertEq(cmdSig.canonicalSig(real), 'sed 1,30p f.yml');
+  assertEq(cmdSig.canonicalSig(real), 'sed 1,30p f.yml && cat g.json', 'banners and cd skipped; both real commands kept');
   // Fallback: a command that is ONLY decoration still signs as itself.
   assertEq(cmdSig.canonicalSig('echo hello world'), 'echo hello world');
 });
@@ -4991,13 +4991,13 @@ test('command-signature: `cat > f <<EOF` write prelude is skipped as setup', () 
 });
 test('command-signature: observed subagent diff command signs as git diff', () => {
   const cmd = 'git --no-pager diff --stat > /s/stat.txt 2>&1; mkdir -p /s; git --no-pager diff > /s/full.diff; git --no-pager diff --stat | cat; wc -l /s/full.diff';
-  assertEq(cmdSig.canonicalSig(cmd), 'git diff');
+  assertEq(cmdSig.canonicalSig(cmd), 'git diff && mkdir /s && wc /s/full.diff', 'repeated git diff collapses; the other commands are part of the identity');
 });
 test('command-signature: fd redirection `>&2` is not a background separator', () => {
   // Was: `cat <<@0 >` | `2` | `git log` → the junk 1-token sig `2`.
   assertEq(cmdSig.canonicalSig('cat <<EOF >&2\nusage\nEOF\ngit log -5'), 'git log');
   assertEq(cmdSig.canonicalSig('echo x >&2\nnpm run build'), 'npm run build');
-  assertEq(cmdSig.canonicalSig('sleep 5 & git status'), 'sleep 5', 'lone & still separates');
+  assertEq(cmdSig.canonicalSig('sleep 5 & git status'), 'sleep 5 && git status', 'lone & still separates');
 });
 test('command-signature: arithmetic `<<` is a shift, not a heredoc', () => {
   assertEq(cmdSig.foldHeredocs('a=$((x<<y))\ngit status').bodies, []);
@@ -5008,9 +5008,9 @@ test('command-signature: arithmetic `<<` is a shift, not a heredoc', () => {
   }
 });
 test('command-signature: `&>` redirection cuts cleanly (fixed-point sig)', () => {
-  for (const cmd of ['npm run build &> build.log; tail -200 build.log', 'npm run build&>>b.log']) {
+  for (const [cmd, want] of [['npm run build &> build.log; tail -200 build.log', 'npm run build && tail build.log'], ['npm run build&>>b.log', 'npm run build']]) {
     const s = cmdSig.canonicalSig(cmd);
-    assertEq(s, 'npm run build', cmd);
+    assertEq(s, want, cmd);
     assertEq(cmdSig.canonicalSig(s), s, 'idempotent');
   }
 });
@@ -5019,7 +5019,7 @@ test('command-signature: subshell/group openers and `VAR=$(cmd)` are structure �
   assertEq(cmdSig.canonicalSig('(cd /p && npm test)'), 'npm test', 'two different subshells no longer fuse on `(cd /p`');
   assertEq(cmdSig.canonicalSig('{ git log -5; } > f'), 'git log');
   assertEq(cmdSig.canonicalSig('X=$(git diff HEAD)'), 'git diff HEAD');
-  assertEq(cmdSig.canonicalSig('S=$(git stash create) && git update-ref refs/x $S'), 'git stash create');
+  assertEq(cmdSig.canonicalSig('S=$(git stash create) && git update-ref refs/x $S'), 'git stash create && git update-ref refs/x $S');
   assertEq(cmdSig.canonicalSig('cd /x && (npx supabase --version 2>&1)'), 'npx supabase');
   assertEq(cmdSig.canonicalSig('a=$((x+1))\ngit status'), 'git status', 'arithmetic $(( is still an assignment');
   for (const c of ['(cd /p && git diff)', 'X=$(git diff HEAD)']) assertEq(cmdSig.canonicalSig(cmdSig.canonicalSig(c)), cmdSig.canonicalSig(c), `idempotent: ${c}`);
@@ -5221,8 +5221,8 @@ test('oneoff-store: load detaches unrelated aliasSigs from a legacy fused entry'
   const cmd = 'git --no-pager diff --stat > /s/stat.txt 2>&1; mkdir -p /s; git --no-pager diff > /s/full.diff';
   assertEq(oneoff.matchEntry(store, cmd), null, 'git diff no longer matches the ssh entry');
   const r = oneoff.touch(dd, pk, cmd, { now: now + 1, create: true });
-  assertEq([r.sig, r.count], ['git diff', 1]);
-  assertEq(oneoff.mark(dd, pk, { sigs: ['git diff'], now: now + 2, maxRecurrence: 3 }).decision, 'merged');
+  assertEq([r.sig, r.count], ['git diff && mkdir /s', 1]);
+  assertEq(oneoff.mark(dd, pk, { sigs: ['git diff && mkdir /s'], now: now + 2, maxRecurrence: 3 }).decision, 'merged');
 });
 test('oneoff-store: batch mark registers the rest when one sig is past the ceiling', () => {
   const dd = freshDataDir(); const pk = 'p'; let now = 1_700_000_000_000;

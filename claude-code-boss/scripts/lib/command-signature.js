@@ -55,7 +55,8 @@ const HEREDOC_MARK = /<<@(\d+)/;
 // A heredoc that only WRITES a file (`cat > f <<EOF`, `cat <<EOF > f`, `tee f <<EOF`)
 // is setup for the segments that follow, not the work — skipped like `cd`.
 const HEREDOC_MARK_START = /^<<@\d+/;
-const GROUP_CLOSE = /^[)}]+$/;
+// A group closer, optionally redirecting the group's output (`} > f`, `) 2>&1 | tail`).
+const GROUP_CLOSE = /^[)}]+\s*(?:\d*[<>|&].*)?$/;
 const HEREDOC_WRITE_SEGMENT =/^(?:cat\b[^|]*>|tee\b)[^|]*<<@\d+|^cat\b[^|]*<<@\d+[^|]*>/;
 
 /**
@@ -305,15 +306,28 @@ function indexOfShellMeta(s) {
 }
 
 /**
- * Canonical signature: principal segment, env/wrapper/nav stripped, non-flag
- * tokens joined. Returns '' for an empty/whitespace command.
+ * Canonical signature. ONE work segment (however dressed: `cd x && npm test 2>&1 |
+ * tail`) → that command's tokens. A COMPOUND (several work segments) → each
+ * segment's signature joined with ` && ` (U4, changed in the major): it used to be
+ * the first segment only, so ~24% of real commands collapsed onto another
+ * command's signature (`git status && git diff` counted — and its bulky diff was
+ * blamed — as `git status`). Returns '' for an empty/whitespace command.
  * @param {string} command
  * @returns {string}
  */
 function canonicalSig(command) {
   const { text, bodies } = foldHeredocs(command);
-  let seg = principalOfFolded(text);
+  const work = splitSegments(text).map(_workOf).filter(Boolean);
+  // Repeats collapse (order kept): `git diff --stat > a; git diff > b` is `git diff` once.
+  if (work.length > 1) return [...new Set(work.map(seg => _segmentSig(seg, bodies)).filter(Boolean))].join(' && ');
+  const seg = work.length ? work[0] : principalOfFolded(text);
   if (!seg) return '';
+  return _segmentSig(seg, bodies);
+}
+
+/** Signature of ONE work segment (heredoc digest, cut at pipe/redirect, flags dropped). */
+function _segmentSig(segment, bodies) {
+  let seg = segment;
   const heredoc = HEREDOC_MARK.exec(seg);
   // A pipe/redirection filters the command's output — it is not part of the
   // command's identity, so the signature is the command BEFORE it. Quoted or
