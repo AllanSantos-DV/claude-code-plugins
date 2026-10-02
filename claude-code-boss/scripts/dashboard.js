@@ -10,7 +10,8 @@ const crypto = require('crypto');
 const { findProjectRoot, getShellsConfigPath } = require('./curation-paths.js');
 const configTesters = require('./config-testers');
 const { USER_SENTINEL, prepareForUserScope } = require('./lib/scope-sanitizer.js');
-const { sanitizeProjectId } = require('./lib/project-id.js');
+const { sanitizeProjectId, sanitizeLogicalProjectId } = require('./lib/project-id.js');
+const { listBrainProjects, brainDbPath } = require('./lib/brain-projects.js');
 const { aggregateSkillRoi } = require('./lib/skill-roi.js');
 const { aggregateCaptureRate } = require('./lib/capture-rate.js');
 const { loadSqlite } = require('./lib/sqlite-compat.js');
@@ -76,10 +77,7 @@ function resolveBestDataDir() {
   for (const dir of candidates) {
     let total = 0;
     const brainDir = path.join(dir, 'brain');
-    for (const proj of fs.readdirSync(brainDir)) {
-      const dbPath = path.join(brainDir, proj, 'brain.db');
-      if (fs.existsSync(dbPath)) total += countEntriesInDb(dbPath);
-    }
+    for (const proj of listBrainProjects(brainDir)) total += countEntriesInDb(brainDbPath(brainDir, proj));
     if (total > bestCount) { bestCount = total; best = dir; }
   }
   return best;
@@ -313,13 +311,10 @@ async function getStatusAsync(req, res) {
   let brainProjects = [], brainTotal = 0;
   const brainBaseDir = path.join(DATA_DIR, 'brain');
   if (fs.existsSync(brainBaseDir)) {
-    for (const p of fs.readdirSync(brainBaseDir)) {
-      const dbPath = path.join(brainBaseDir, p, 'brain.db');
-      if (fs.existsSync(dbPath)) {
-        const count = countEntriesInDb(dbPath);
-        brainTotal += count;
-        if (count > 0) brainProjects.push({ project: p, entries: count });
-      }
+    for (const p of listBrainProjects(brainBaseDir)) {
+      const count = countEntriesInDb(brainDbPath(brainBaseDir, p));
+      brainTotal += count;
+      if (count > 0) brainProjects.push({ project: p, entries: count });
     }
     brainProjects.sort((a, b) => b.entries - a.entries);
   }
@@ -508,16 +503,14 @@ function getBrainProjects(req, res) {
   const projects = [];
   const brainBaseDir = path.join(DATA_DIR, 'brain');
   if (!fs.existsSync(brainBaseDir)) return json(res, []);
-  for (const p of fs.readdirSync(brainBaseDir)) {
-    const dbPath = path.join(brainBaseDir, p, 'brain.db');
-    if (fs.existsSync(dbPath)) {
-      try {
-        const count = countEntriesInDb(dbPath);
-        if (count === 0) continue;
-        const stats = fs.statSync(dbPath);
-        projects.push({ project: p, entries: count, dbSize: stats.size, lastModified: stats.mtime });
-      } catch (err) { console.error(`[DASHBOARD] Brain project stat error (${p}): ${err.message}`); }
-    }
+  for (const p of listBrainProjects(brainBaseDir)) {
+    const dbPath = brainDbPath(brainBaseDir, p);
+    try {
+      const count = countEntriesInDb(dbPath);
+      if (count === 0) continue;
+      const stats = fs.statSync(dbPath);
+      projects.push({ project: p, entries: count, dbSize: stats.size, lastModified: stats.mtime });
+    } catch (err) { console.error(`[DASHBOARD] Brain project stat error (${p}): ${err.message}`); }
   }
   projects.sort((a, b) => b.entries - a.entries);
   json(res, projects);
@@ -525,7 +518,7 @@ function getBrainProjects(req, res) {
 
 async function searchBrain(req, res, url) {
   const q = url.searchParams.get('q') || '';
-  const project = sanitizeProjectId(url.searchParams.get('project') || '');
+  const project = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
   const k = parseInt(url.searchParams.get('k') || '10', 10);
   const scope = url.searchParams.get('scope') || 'project';
   if (!q || !project) return json(res, []);
@@ -578,7 +571,7 @@ async function searchBrain(req, res, url) {
 async function getBrainEntry(req, res, url) {
   const parts = url.pathname.split('/');
   const id = parts[parts.length - 1];
-  const project = sanitizeProjectId(url.searchParams.get('project') || '');
+  const project = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
   if (!id || !project) return fail(res, 'Missing id or project', 400);
   try {
     const brainBackend = require('./brain-backend.js');
@@ -591,7 +584,7 @@ async function getBrainEntry(req, res, url) {
 async function deleteBrainEntry(req, res, url) {
   const parts = url.pathname.split('/');
   const id = parts[parts.length - 1];
-  const project = sanitizeProjectId(url.searchParams.get('project') || '');
+  const project = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
   if (!id || !project) return fail(res, 'Missing id or project', 400);
   try {
     const brainBackend = require('./brain-backend.js');
@@ -678,7 +671,7 @@ async function deleteBrainEntry(req, res, url) {
 async function updateBrainEntry(req, res, url) {
   const parts = url.pathname.split('/');
   const id = parts[parts.length - 1];
-  const project = sanitizeProjectId(url.searchParams.get('project') || '');
+  const project = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
   if (!id || !project) return fail(res, 'Missing id or project', 400);
   let body = '';
   for await (const chunk of req) body += chunk;
@@ -772,7 +765,7 @@ async function updateBrainEntry(req, res, url) {
 
 // Fase F: browse paginado (descoberta sem precisar de query de busca).
 async function listBrainEntries(req, res, url) {
-  const project = sanitizeProjectId(url.searchParams.get('project') || '');
+  const project = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
   if (!project) return fail(res, 'Missing project', 400);
   const type = sanitizeProjectId(url.searchParams.get('type') || '') || null;
   const offset = Math.max(0, parseInt(url.searchParams.get('offset') || '0', 10) || 0);
@@ -787,7 +780,7 @@ async function listBrainEntries(req, res, url) {
 async function moveBrainEntryScope(req, res, url) {
   const parts = url.pathname.split('/');
   const id = parts[parts.length - 2];
-  const srcProject = sanitizeProjectId(url.searchParams.get('project') || '');
+  const srcProject = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
   if (!id || !srcProject) return fail(res, 'Missing id or project', 400);
   let body = '';
   for await (const chunk of req) body += chunk;
@@ -795,7 +788,7 @@ async function moveBrainEntryScope(req, res, url) {
   try { parsed = JSON.parse(body || '{}'); }
   catch { /* malformed JSON body → 400 */ return fail(res, 'Invalid JSON body', 400); }
   const targetScope = String(parsed.scope || '').toLowerCase();
-  const targetProject = sanitizeProjectId(parsed.targetProject || '');
+  const targetProject = sanitizeLogicalProjectId(parsed.targetProject || '');
   if (targetScope !== 'user' && targetScope !== 'project') {
     return fail(res, 'scope must be "user" or "project"', 400);
   }
@@ -863,7 +856,7 @@ async function moveBrainEntryScope(req, res, url) {
 // Response: { version, exportedAt, project, scope, entries: [{...entry, vector?}] }
 async function exportBrain(req, res, url) {
   const scope = url.searchParams.get('scope') || '';
-  const projectArg = sanitizeProjectId(url.searchParams.get('project') || '');
+  const projectArg = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
   const project = scope === 'user' ? USER_SENTINEL : projectArg;
   if (!project) return fail(res, 'Missing scope=user or project=<name>', 400);
   try {
@@ -890,7 +883,7 @@ async function exportBrain(req, res, url) {
     }
     res.writeHead(200, {
       'Content-Type': 'application/json',
-      'Content-Disposition': `attachment; filename="brain-${project}-${new Date().toISOString().slice(0, 10)}.json"`,
+      'Content-Disposition': `attachment; filename="brain-${project.replace(/\//g, '__')}-${new Date().toISOString().slice(0, 10)}.json"`,
     });
     res.end(JSON.stringify({
       version: 1,
@@ -923,7 +916,7 @@ async function importBrain(req, res) {
 
   const dstProject = bundle.scope === 'user' || bundle.project === USER_SENTINEL
     ? USER_SENTINEL
-    : sanitizeProjectId(bundle.project || '');
+    : sanitizeLogicalProjectId(bundle.project || '');
   if (!dstProject) return fail(res, 'project or scope=user required', 400);
 
   try {
@@ -976,7 +969,7 @@ async function importBrain(req, res) {
 async function getBrainRelated(req, res, url) {
   const parts = url.pathname.split('/');
   const id = parts[parts.length - 1];
-  const project = sanitizeProjectId(url.searchParams.get('project') || '');
+  const project = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
   if (!id || !project) return fail(res, 'Missing id or project', 400);
   try {
     const brainBackend = require('./brain-backend.js');
@@ -1017,7 +1010,7 @@ function getSkillPromotionConfig(req, res) {
   } catch { /* defaults */ }
   const brainDir = path.join(DATA_DIR, 'brain');
   const projects = fs.existsSync(brainDir)
-    ? fs.readdirSync(brainDir).filter(d => fs.existsSync(path.join(brainDir, d, 'brain.db')))
+    ? listBrainProjects(brainDir)
     : [];
   json(res, { ok: true, config: cfg, projects, stagingDir: SKILL_STAGING_DIR, globalSkillsDir: GLOBAL_SKILLS_DIR });
 }
@@ -1291,7 +1284,7 @@ async function aggregateAcrossProjects(projects, op) {
 async function getMetricsSummary(req, res, url) {
   try {
     const range = Math.max(1, Math.min(90, parseInt(url.searchParams.get('range') || '7', 10)));
-    const projectFilter = sanitizeProjectId(url.searchParams.get('project') || '');
+    const projectFilter = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
     if (projects.length === 0) {
       return json(res, { rangeDays: range, totals: {}, daily: [], projects: [] });
@@ -1418,7 +1411,7 @@ async function getValueSummary(req, res, url) {
   try {
     const range = Math.max(1, Math.min(365, parseInt(url.searchParams.get('days') || '30', 10)));
     const sinceTs = Date.now() - range * 86400_000;
-    const projectFilter = sanitizeProjectId(url.searchParams.get('project') || '');
+    const projectFilter = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
     const EVENTS = ['curation.flagged', 'lesson.captured', 'retrieve.cited', 'retrieve.injected'];
 
@@ -1443,7 +1436,7 @@ async function getProfileImpact(req, res, url) {
   try {
     const range = Math.max(1, Math.min(365, parseInt(url.searchParams.get('days') || '7', 10)));
     const sinceTs = Date.now() - range * 86400_000;
-    const projectFilter = sanitizeProjectId(url.searchParams.get('project') || '');
+    const projectFilter = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
     const perProject = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName: 'stop.dispatch', limit: 2000 }));
     const rows = [];
@@ -1462,7 +1455,7 @@ async function getMetricsEventLog(req, res, url) {
   try {
     const eventName = url.searchParams.get('event') || null;
     const limit = Math.max(1, Math.min(500, parseInt(url.searchParams.get('limit') || '50', 10)));
-    const projectFilter = sanitizeProjectId(url.searchParams.get('project') || '');
+    const projectFilter = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
 
     const perProject = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName, limit }));
@@ -1491,7 +1484,7 @@ async function postMetricsCleanup(req, res, url) {
 
 async function getSkillRoi(req, res, url) {
   try {
-    const projectFilter = sanitizeProjectId(url.searchParams.get('project') || '');
+    const projectFilter = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
     if (projects.length === 0) return json(res, { skills: [] });
 
@@ -2123,7 +2116,7 @@ function postPluginUpdate(req, res) {
 
 async function getCaptureRate(req, res, url) {
   try {
-    const projectFilter = sanitizeProjectId(url.searchParams.get('project') || '');
+    const projectFilter = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
     if (projects.length === 0) return json(res, { byKind: {}, spontaneous: {} });
 
@@ -2145,7 +2138,7 @@ async function getTuningRecommendations(req, res, url) {
   try {
     const range = Math.max(1, Math.min(365, parseInt(url.searchParams.get('days') || '7', 10)));
     const sinceTs = Date.now() - range * 86400_000;
-    const projectFilter = sanitizeProjectId(url.searchParams.get('project') || '');
+    const projectFilter = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
     const gather = async (eventName) => {
       const per = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName, limit: 2000 }));
