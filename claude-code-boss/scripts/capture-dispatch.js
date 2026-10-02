@@ -53,23 +53,7 @@ function _safeSize(p) {
   try { return fs.statSync(p).size; } catch (err) { void err; return 0; }
 }
 
-function _readBuf(transcriptPath, from, to) {
-  const len = Math.max(0, to - from);
-  if (len === 0) return Buffer.alloc(0);
-  try {
-    const fd = fs.openSync(transcriptPath, 'r');
-    try {
-      const buf = Buffer.alloc(len);
-      const bytesRead = fs.readSync(fd, buf, 0, len, from);
-      return bytesRead === len ? buf : buf.subarray(0, bytesRead);
-    } finally {
-      fs.closeSync(fd);
-    }
-  } catch (err) {
-    void err;
-    return Buffer.alloc(0);
-  }
-}
+const { readRange: _readBuf } = require('./lib/transcript-tail.js');
 
 function _lastModel(buf) {
   const lines = buf.toString('utf-8').split('\n');

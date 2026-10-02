@@ -64,6 +64,24 @@ function readTailLines(filePath, maxLines, maxBytes = DEFAULT_MAX_BYTES) {
 }
 
 /**
+ * Bytes [from, to) of a file (fewer if it is shorter). Missing/unreadable → empty
+ * Buffer. The one copy of the range reader capture-dispatch and capture-queue
+ * each used to carry.
+ * @param {string} filePath
+ * @param {number} from
+ * @param {number} to
+ * @returns {Buffer}
+ */
+function readRange(filePath, from, to) {
+  const len = Math.max(0, to - from);
+  if (len === 0) return Buffer.alloc(0);
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    try { return _readRange(fd, from, len); } finally { fs.closeSync(fd); }
+  } catch (err) { void err; return Buffer.alloc(0); }
+}
+
+/**
  * The trailing `maxBytes` of a file as a utf-8 string, read asynchronously (the
  * read runs on the libuv pool, not the event loop). Whole file when smaller.
  *
@@ -84,4 +102,4 @@ async function readTailText(filePath, maxBytes) {
   }
 }
 
-module.exports = { readTailLines, readTailText, DEFAULT_MAX_BYTES };
+module.exports = { readTailLines, readTailText, readRange, DEFAULT_MAX_BYTES };

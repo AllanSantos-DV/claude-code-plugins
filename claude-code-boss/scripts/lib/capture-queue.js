@@ -68,18 +68,7 @@ function _save(project, sid, state, expectRev) {
   }
 }
 
-function _readBuf(transcriptPath, from, to) {
-  const len = Math.max(0, to - from);
-  if (len === 0) return Buffer.alloc(0);
-  try {
-    const fd = fs.openSync(transcriptPath, 'r');
-    try {
-      const buf = Buffer.alloc(len);
-      const n = fs.readSync(fd, buf, 0, len, from);
-      return n === len ? buf : buf.subarray(0, n);
-    } finally { fs.closeSync(fd); }
-  } catch (err) { void err; return Buffer.alloc(0); }
-}
+const { readRange: _readBuf } = require('./transcript-tail.js');
 
 function _hash(promptId, user, assistant) {
   return crypto.createHash('sha256').update(`${promptId}\u0000${user}\u0000${assistant}`).digest('hex').slice(0, 20);
