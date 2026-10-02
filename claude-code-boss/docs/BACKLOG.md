@@ -28,7 +28,20 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   TODAS as sessões. Fix: leitura do final do arquivo com teto de bytes (já existe
   `_readTail` em `capture-dispatch.js:86`) e `conversation-ingest` lendo só
   `SAFE_MAX_CHARS` do fim.
-- [ ] **G2 — SQLite síncrono dos hooks na thread principal do daemon.** As tools
+- [x] **G2 — SQLite síncrono dos hooks na thread principal do daemon.**
+  **RESOLVIDO em 2026-10-02**: fila pesada num worker dedicado
+  (`servers/brain-server/lib/hook-worker.js` + `hook-worker-client.js`, 1 por
+  daemon, FIFO serial — preserva "PostToolUse grava antes do Stop ler"; recriado
+  se morrer). `lane: 'heavy'` em `hook-tools.js`: `hook_stop_dispatcher`,
+  `hook_posttoolusebash_dispatcher`, `hook_posttoolusefailure_dispatcher`,
+  `hook_file_edit_detect`, `hook_skill_metric`, `hook_policy_enforce_shadow`.
+  Guards de `PreToolUse`, `graph-guard` e detectores de prompt seguem na thread
+  principal (só gravam métrica no SQLite próprio, transação curta). `/health`
+  expõe `hookWorker`. Bench (6 sessões × 5 PostToolUse Bash + 3 edits + Stop,
+  transcript real de 44 MB): inline o guard respondeu **1 vez** em 1,5 s; com o
+  worker **157–166 vezes**, p50 4,4 ms / p95 6,4–7,5 ms. Testes: composição da
+  fila, roteamento (pesado → worker, rápido nunca), falha do worker → mensagem
+  visível sem bloquear, paridade byte a byte via worker REAL, recriação após crash. As tools
   do KB passam pelo pool de workers (ADR-014), os hooks não: `metrics.fire` →
   `metrics-store.js`, `brain-store.js` em `retrieval-feedback`, `session-summary`,
   `skill-success-detect`, `research-followup-detect`, `self-review`. Com
@@ -123,6 +136,19 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   falha de teste (`Cannot find module 'eslint'`), não como ambiente incompleto.
   Visto em 2026-10-02; resolvido localmente com `npm install`. Fix: o preflight
   checar `require.resolve` das devDependencies que a suíte usa.
+- [ ] **O6 — slot do pool de workers do KB nunca é recriado.**
+  `servers/brain-server/lib/kb-worker-client.js:105-130`: depois de `error`/`exit`,
+  `dead` fica setado e toda chamada para aquele slot (projetos com o mesmo hash)
+  falha até reiniciar o daemon. Fix: recriar o slot na próxima chamada, como o
+  hook worker do G2 faz.
+- [ ] **O7 — `kb-worker.js:14-17` afirma "uma mensagem por vez", mas o handler é
+  `async`** (`parentPort.on('message', async …)`): chamadas assíncronas se
+  intercalam nos `await`. Verificar se algum método do store depende dessa
+  serialização; se sim, fila explícita (como `hook-worker.js`); se não, corrigir
+  o comentário.
+- [ ] **O8 — mensagem para um hook worker morrendo se perde até o timeout.** Entre a
+  morte do worker e o evento `exit`, um `run()` posta para o worker morto e só
+  falha no `callTimeoutMs` (60 s). Coberto na prática pelo prazo do G5.
 
 ## Testes
 

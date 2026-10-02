@@ -78,14 +78,20 @@ const additional = (hookEventName, text) => (text ? JSON.stringify({ hookSpecifi
 /**
  * Each entry: the script that owns the logic + how to turn its pure entry point
  * into the stdout text of the `command` form.
+ *
+ * `lane: 'heavy'` runs in the daemon's hook worker (G2), never on the main thread
+ * that serves every session's HTTP and the fast PreToolUse guards: these do
+ * synchronous SQLite (brain-store/metrics-store) and transcript/journal I/O. The
+ * worker is one FIFO queue, so a PostToolUse journal write still lands before
+ * the Stop that reads it.
  */
 const HOOKS = {
   // async-eligible (side effect only, reply `{}`)
-  hook_skill_metric: { script: 'skill-metric.js', call: async (m, ev) => { await m.run(ev); return EMPTY; } },
-  hook_file_edit_detect: { script: 'file-edit-detect.js', call: async (m, ev) => { await m.run(ev); return EMPTY; } },
-  hook_posttoolusebash_dispatcher: { script: 'posttoolusebash-dispatcher.js', call: async (m, ev) => { await m.dispatch(ev); return EMPTY; } },
-  hook_posttoolusefailure_dispatcher: { script: 'posttoolusefailure-dispatcher.js', call: async (m, ev) => { await m.dispatch(ev); return EMPTY; } },
-  hook_policy_enforce_shadow: { script: 'policy-enforce-shadow.js', call: async (m, ev) => json(await m.evaluate(ev)) },
+  hook_skill_metric: { lane: 'heavy', script: 'skill-metric.js', call: async (m, ev) => { await m.run(ev); return EMPTY; } },
+  hook_file_edit_detect: { lane: 'heavy', script: 'file-edit-detect.js', call: async (m, ev) => { await m.run(ev); return EMPTY; } },
+  hook_posttoolusebash_dispatcher: { lane: 'heavy', script: 'posttoolusebash-dispatcher.js', call: async (m, ev) => { await m.dispatch(ev); return EMPTY; } },
+  hook_posttoolusefailure_dispatcher: { lane: 'heavy', script: 'posttoolusefailure-dispatcher.js', call: async (m, ev) => { await m.dispatch(ev); return EMPTY; } },
+  hook_policy_enforce_shadow: { lane: 'heavy', script: 'policy-enforce-shadow.js', call: async (m, ev) => json(await m.evaluate(ev)) },
   // silent-except-alert
   hook_correction_detect: { script: 'correction-detect.js', call: async (m, ev) => additional(ev.hook_event_name || 'UserPromptSubmit', await m.run(ev)) },
   hook_active_research_detect: { script: 'active-research-detect.js', call: async (m, ev) => additional(ev.hook_event_name || 'UserPromptSubmit', await m.run(ev)) },
@@ -103,16 +109,42 @@ const HOOKS = {
   },
   hook_graph_guard: { script: 'graph-guard.js', call: async (m, ev) => m.run(ev) },
   // Stop stays ONE consolidated tool: sibling Stop hooks do not merge reasons (spike S4-iii).
-  hook_stop_dispatcher: { script: 'stop-dispatcher.js', call: async (m, ev) => json(await m.run(ev)) },
+  hook_stop_dispatcher: { lane: 'heavy', script: 'stop-dispatcher.js', call: async (m, ev) => json(await m.run(ev)) },
 };
 
+const degraded = (name, msg) => JSON.stringify({ systemMessage: `[claude-code-boss] hook ${name} degradado no daemon (fail-open): ${msg}` });
+
 /**
- * @param {{ pluginRoot: string }} opts
+ * Run one hook in THIS thread and return the stdout text of its `command` form.
+ * Never throws: an unexpected error becomes the visible fail-open message.
+ * Used directly (fast lane / no worker) and by the hook worker (heavy lane).
+ */
+async function runHookInline(pluginRoot, name, args) {
+  const spec = HOOKS[name];
+  if (!spec) throw new Error(`unknown hook tool: ${name}`);
+  const scripts = path.join(pluginRoot, 'scripts');
+  try {
+    // Fresh config per call (parity with a fresh process).
+    require(path.join(scripts, 'lib', 'hooks-config.js'))._resetCache();
+    require(path.join(scripts, 'lib', 'brain-config.js'))._resetCache();
+    const ev = rebuildEvent(args);
+    const mod = require(path.join(scripts, spec.script));
+    return await runWithHookEnv({ CLAUDE_PROJECT_DIR: (args && args.project_dir) || '' }, () => spec.call(mod, ev));
+  } catch (err) {
+    const msg = err && err.message ? err.message : String(err);
+    console.error(`[hook-tools] ${name} degraded: ${msg}`);
+    return degraded(name, msg);
+  }
+}
+
+/**
+ * @param {{ pluginRoot: string, hookWorker?: { run: Function, enqueue: Function } }} opts
+ *   hookWorker: the daemon's heavy-lane worker (servers/brain-server/lib/hook-worker-client.js).
+ *   Absent (tests, tools without a daemon) → every hook runs inline, as before.
  * @returns {{ definitions: object[], names: Set<string>, handle: (name:string, args:object) => Promise<object> }}
  */
-function createHookTools({ pluginRoot }) {
+function createHookTools({ pluginRoot, hookWorker } = {}) {
   if (!pluginRoot) throw new Error('createHookTools: pluginRoot is required');
-  const scripts = path.join(pluginRoot, 'scripts');
   const properties = {};
   for (const [k, description] of Object.entries(FIELDS)) properties[k] = { type: 'string', description };
   const definitions = Object.keys(HOOKS).map((name) => ({
@@ -125,17 +157,16 @@ function createHookTools({ pluginRoot }) {
     const spec = HOOKS[name];
     if (!spec) throw new Error(`unknown hook tool: ${name}`);
     let text;
-    try {
-      // Fresh config per call (parity with a fresh process).
-      require(path.join(scripts, 'lib', 'hooks-config.js'))._resetCache();
-      require(path.join(scripts, 'lib', 'brain-config.js'))._resetCache();
-      const ev = rebuildEvent(args);
-      const mod = require(path.join(scripts, spec.script));
-      text = await runWithHookEnv({ CLAUDE_PROJECT_DIR: (args && args.project_dir) || '' }, () => spec.call(mod, ev));
-    } catch (err) {
-      const msg = err && err.message ? err.message : String(err);
-      console.error(`[hook-tools] ${name} degraded: ${msg}`);
-      text = JSON.stringify({ systemMessage: `[claude-code-boss] hook ${name} degradado no daemon (fail-open): ${msg}` });
+    if (spec.lane === 'heavy' && hookWorker) {
+      try {
+        text = await hookWorker.run(name, args);
+      } catch (err) {
+        const msg = err && err.message ? err.message : String(err);
+        console.error(`[hook-tools] ${name} degraded: ${msg}`);
+        text = degraded(name, msg);
+      }
+    } else {
+      text = await runHookInline(pluginRoot, name, args);
     }
     return { content: [{ type: 'text', text }] };
   }
@@ -143,4 +174,4 @@ function createHookTools({ pluginRoot }) {
   return { definitions, names: new Set(Object.keys(HOOKS)), handle };
 }
 
-module.exports = { createHookTools, rebuildEvent, HOOKS, FIELDS };
+module.exports = { createHookTools, runHookInline, rebuildEvent, HOOKS, FIELDS };
