@@ -2,6 +2,17 @@
 
 Pontos de melhoria identificados fora do escopo do trabalho corrente (ver política de sessão: "ponto óbvio de melhoria encontrado FORA do escopo atual não é implementado na hora").
 
+## Fase C — redesenho da curadoria (branch `feat/curation-redesign`, aprovado em 2026-10-02)
+
+Diagnóstico (replay `.claude/scripts/replay-curation-reuse.mjs`, 3.990 chamadas Bash reais do projeto): 670 invocações de script curado; 191 comandos crus que casavam com alias DEPOIS de o script existir; dicas do guard seguidas 19% (77/401), negações com redirecionamento 47% (72/153), negações por pipe 76%; 18 de 41 scripts nunca usados; aliases superajustados (comando literal de um dia) ou em linguagem natural; a única métrica (`curation.flagged`) mede saída crua que ENTROU no contexto e o dashboard a exibe como "tokens economizados" (invertida). Cada fase: commit próprio, teste, replay antes/depois e stress no Claude Code real.
+
+- [ ] **C0 — `updatedInput` pelo `mcp_tool`**: provar no Claude Code real se um PreToolUse `mcp_tool` pode reescrever o comando (allow + updatedInput). Se não puder, o curation-guard volta a ser hook `command` (decisão do usuário).
+- [ ] **C1 — casar por assinatura**: cada script guarda as assinaturas canônicas da família que o originou; o guard casa a assinatura de cada segmento (aliases seguem por compatibilidade).
+- [ ] **C2 — redirecionamento automático**: comando inteiro que casa por assinatura é reescrito para o script (updatedInput); composto → nega com a substituição exata (fim da dica que ninguém segue).
+- [ ] **C3 — só curar o que se repete**: o Stop cobra curadoria a partir da 2ª ocorrência da família; a 1ª fica pendente.
+- [ ] **C4 — métricas reais**: `curation.used` (execuções por script, tamanho da saída), `curation.redirected`, `curation.raw-after-curated`, economia estimada; métricas dos demais mecanismos não padrão (guards: dica/negação/redirecionamento; daemon: latência/expirados por hook).
+- [ ] **C5 — dashboard**: uso por script, redirecionamentos, scripts sem uso, economia; corrigir o rótulo invertido; limpeza de scripts sem uso.
+
 ## Fase G — hardening do daemon de hooks (rumo à 3.0.0)
 
 Revisão de 2026-10-02 sobre a Fase G (ADR-015) não lançada. Branch de trabalho:
@@ -593,7 +604,7 @@ real (2.29.0, porta 38217) seguiu intacto. Resultados (Claude Code 2.1.283):
   `stop-dispatcher` (`dev-uncommitted.patch` + `dev-untracked-detectors.tar`). Não
   aplicado (feature nova, fora do escopo de correção) → item **F1** abaixo.
   `openhands`: vitrine da v2.23.0, obsoleta — descartada.
-- [ ] **F1 — (feature, resgatada da `dev`) `execution-guard-detect`.**
+- [x] **F1 — (feature, resgatada da `dev`) `execution-guard-detect`.** **ARQUIVADO em 2026-10-02** após reavaliação (0,06% dos turnos com modelos atuais; regra no AGENTS.md custa menos que um hook em todo Stop; detector resgatado não funcionaria no Claude Code).
   **Decisão do dono (2026-10-02)**: ENTRA na nova major, mas precisa ser melhor
   desenhada antes (ainda está crua) — não analisar agora. Quando for: redesenhar,
   reaplicar sobre o HEAD (o `stop-dispatcher` mudou), testes, fila pesada do daemon.
