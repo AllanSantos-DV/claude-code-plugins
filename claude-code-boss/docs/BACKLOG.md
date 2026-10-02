@@ -598,6 +598,7 @@ real (2.29.0, porta 38217) seguiu intacto. Resultados (Claude Code 2.1.283):
   desenhada antes (ainda está crua) — não analisar agora. Quando for: redesenhar,
   reaplicar sobre o HEAD (o `stop-dispatcher` mudou), testes, fila pesada do daemon.
   Os patches seguem em `docs/plans/salvage/` (local) caso precise consultar.
+  **Análise em 2026-10-02**: o detector resgatado não funciona no Claude Code — lê `event.history`/`event.tool_calls`, que o Stop não envia (só `transcript_path`), e escreve `console.log` no stdout (corrompe o protocolo do hook); padrões frouxos ("a solução consiste em"). Replay (`.claude/scripts/replay-execution-guard.mjs`, local) nas 115 transcrições mais recentes, 3.124 turnos: heurística ingênua 14 disparos (quase todos adiamentos legítimos: "vou aplicar quando o tester terminar"); refinada (frase da promessa entre as 2 últimas, sem adiamento/pergunta, sem escrita no turno) 2 disparos (0,06%), 1 inércia clara. Fenômeno raro e regex frágil → decisão de produto pendente com o usuário (bloquear vs. só avisar vs. não incluir).
 - [x] **O5 — preflight do `.vscode/scripts/test-units.mjs` não detecta devDependency
   ausente.** **RESOLVIDO em 2026-10-02** (ferramenta local, `.vscode/` não é
   versionado): o preflight resolve cada `devDependency` do `package.json` e falha
