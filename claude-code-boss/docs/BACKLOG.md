@@ -186,6 +186,10 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   Decisão do dono necessária: limitar a 1ª passada a uma janela final (últimos
   N MB / K ciclos) muda a semântica (ciclos antigos da sessão não seriam
   oferecidos). Fix proposto: janela final + leitura em blocos.
+- [ ] **O11 — `lib/error-store.js` virou só escrita** depois do U2/U10: o
+  `error-guard` lê o transcript; `failure-detect` (record) e `error-resolve`
+  (resolve, detector do `posttoolusebash-dispatcher`) seguem gravando um store que
+  ninguém lê. Remover gravação + módulo + fixtures num commit de limpeza.
 - [ ] **O10 — `scripts/lib/session-marker.js` ficou sem uso** depois do G10 (o
   `capture-queue` era o único consumidor do cursor). Só os próprios testes o usam.
   Remover módulo + testes num commit de limpeza.
@@ -210,7 +214,7 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   curado do segmento — a curadoria do `Stop` continua pegando saída volumosa. E
   sugerir o caminho ABSOLUTO do script. Nesta sessão foram 8+ chamadas negadas
   por isso, incluindo `git diff > arquivo` e `for … git -C …` de inspeção.
-- [ ] **U2 — `error-guard` bloqueia por falhas registradas em OUTRO cwd** (falhou em
+- [x] **U2 — `error-guard` bloqueia por falhas registradas em OUTRO cwd** (falhou em
   `claude-code-boss/`, bloqueou na raiz onde funcionaria): a chave ignora o cwd.
   **Análise (2026-10-02) — decisão do dono, junto com o U10**: ignorar cwd/flags é
   DESENHO declarado (`lib/error-store.js:15-16`: "identity is the exact
@@ -225,6 +229,23 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   **Decisão do dono (2026-10-02)**: NÃO liberar por retentativa — o modelo aprende
   a burlar e nunca corrige a causa; e janela de 90 dias está errada. Mesmo método
   do U1: pesquisar, medir, testar cenários e escolher pelo resultado.
+  **RESOLVIDO em 2026-10-02 (U2 + U10) pelo resultado medido**: replay de 9.459
+  chamadas Bash reais (66 sessões, `.claude/scripts/replay-guards.mjs`, local) contra
+  8 políticas. Escolhida a **P8 — sessão + diretório efetivo + só uma edição real
+  desbloqueia**: bloqueios falsos (o comando teria funcionado) 34 → 4, loops cegos
+  deixados passar 17 → 14 (melhor que o atual). Retentativa NÃO desbloqueia (um
+  retry negado não conta); só sucesso ou Edit/Write. Políticas descartadas pelos
+  números: P4 "libera se rodar outro comando" (é o burlar), janela de 4 h, só
+  cwd. Implementação: `lib/session-failures.js` lê o transcript da própria sessão,
+  incremental (só os bytes novos; a frio até 8 MB: 26 ms 1×/sessão, depois
+  0,04 ms/consulta); chave `canonicalSig + diretório efetivo` (`cd X &&` ou cwd;
+  `/c/x` = `C:\x`); comandos de subagente e negações de hook não contam. Mensagem
+  não sugere mais "rode uma variação". **Achado e corrigido na hora**: com o G4 o
+  registro da falha (`posttoolusefailure`, fila de segundo plano) podia cair DEPOIS
+  do próximo `PreToolUse` — corrida que some ao ler o transcript (verificado nesta
+  sessão: o tool_result anterior já está no transcript quando a próxima chamada
+  começa). Testes: 2 falhas bloqueiam/1 não, edição libera e retry negado não,
+  escopo sessão/diretório/subagente, incremental + reescrita, mensagem sem "variação".
 - [~] **U3 — script curado proíbe pipe e trunca a saída ("--full to see")**,
   forçando nova execução. E a detecção de pipe olha o comando INTEIRO, não o
   segmento: `… test-hooks.mjs && node release-audit.mjs check | tail -2` foi
@@ -264,7 +285,7 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   bloco `[BRAIN·SKILLS]` quando só havia ponteiros vazios.
 - [ ] **U9 — `active-research-detect` com falso positivo `libMention`** em
   "Teste rápido do MCP smart-tool".
-- [~] **U10 — `curation-guard` e `error-guard` se travam em runner de teste.**
+- [x] **U10 — `curation-guard` e `error-guard` se travam em runner de teste.** (RESOLVIDO com o U2 em 2026-10-02.)
   Parte RESOLVIDA em 2026-10-02 pelo O4 (`node - <<EOF`/`cat <<EOF` não colapsam
   mais para a sig do programa puro). O impasse "bloqueado até passar, mas não pode
   rodar" fica com a decisão do **U2**.

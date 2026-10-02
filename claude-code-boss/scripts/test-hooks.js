@@ -133,6 +133,18 @@ const SESSION = 'test-00000000-0000-0000-0000-000000000001';
 // payload.cwd, the seeded projectKey (resolveProjectKey(cwd)) and
 // CLAUDE_PLUGIN_DATA all agree. Each fixture gets its own temp cwd + dataDir.
 const _errorStore = require('./lib/error-store.js');
+// error-guard now decides from the SESSION transcript (lib/session-failures.js):
+// a transcript where `command` failed `n` times in `cwd`, with no edit in between.
+function writeFailTranscript(cwd, command, n, { cause = 'TS2345: type error in foo.ts', exitCode = 2 } = {}) {
+  const tp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-eg-tr-')), 't.jsonl');
+  const lines = [];
+  for (let i = 0; i < n; i++) {
+    lines.push(JSON.stringify({ type: 'assistant', cwd, message: { role: 'assistant', content: [{ type: 'tool_use', id: `eg${i}`, name: 'Bash', input: { command } }] } }));
+    lines.push(JSON.stringify({ type: 'user', cwd, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: `eg${i}`, is_error: true, content: `Exit code ${exitCode}\n${cause}` }] } }));
+  }
+  fs.writeFileSync(tp, lines.join('\n') + '\n');
+  return tp;
+}
 function seedErrorGuard(command, { threshold = 2, cause = 'TS2345: type error in foo.ts', exitCode = 2 } = {}) {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-eg-proj-'));
   fs.mkdirSync(path.join(cwd, '.git'), { recursive: true }); // stable projectKey
@@ -141,7 +153,7 @@ function seedErrorGuard(command, { threshold = 2, cause = 'TS2345: type error in
   for (let i = 0; i < threshold; i++) {
     _errorStore.record(dataDir, pk, { command, cause, exitCode });
   }
-  return { cwd, dataDir, command };
+  return { cwd, dataDir, command, transcriptPath: writeFailTranscript(cwd, command, threshold, { cause, exitCode }) };
 }
 // Recorded recurring failure — read-only across guard tests (deny/allow/gate).
 const _egHit = seedErrorGuard('npm run build');
@@ -183,7 +195,7 @@ const _pdMerge = (() => {
   for (let i = 0; i < 2; i++) {
     _errorStore.record(dataDir, pk, { command, cause: 'flaky assertion', exitCode: 1 });
   }
-  return { cwd, dataDir, command };
+  return { cwd, dataDir, command, transcriptPath: writeFailTranscript(cwd, command, 2, { cause: 'flaky assertion', exitCode: 1 }) };
 })();
 // Sibling fixture — SAME curated alias, but a FRESH dataDir with no recorded
 // failure, so error-guard abstains and curation-guard's redirect must survive.
@@ -774,6 +786,7 @@ const TESTS = [
       tool_input: { command: _egHit.command },
       session_id: SESSION,
       cwd: _egHit.cwd,
+      transcript_path: _egHit.transcriptPath,
     },
     expect: { hasKey: 'hookSpecificOutput', noError: true },
     extraEnv: () => ({ CLAUDE_PLUGIN_DATA: _egHit.dataDir }),
@@ -819,6 +832,7 @@ const TESTS = [
       tool_input: { command: _egHit.command },
       session_id: SESSION,
       cwd: _egHit.cwd,
+      transcript_path: _egHit.transcriptPath,
     },
     expect: { noError: true, noOutput: true },
     extraEnv: () => ({
@@ -1023,6 +1037,7 @@ const TESTS = [
     payload: {
       tool_name: 'Bash',
       tool_input: { command: _pdMerge.command, timeout: 12345 },
+      transcript_path: _pdMerge.transcriptPath,
       session_id: SESSION,
       cwd: _pdMerge.cwd,
     },
