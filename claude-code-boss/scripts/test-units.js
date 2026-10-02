@@ -5318,6 +5318,10 @@ test('curation_mark_oneoff: 1-token sig accepted, 1-token alias still refused', 
 });
 test('oneoff-store: only a PROGRAM-NAME 1-token sig is ceiling-exempt', () => {
   assert(oneoff.isCeilingExempt('pytest'));
+  // A program run by relative path is a program too (`./gradlew | tail` → `./gradlew`).
+  assert(oneoff.isCeilingExempt('./gradlew') && oneoff.isCeilingExempt('bin/build.sh') && oneoff.isCeilingExempt('../tools/x'));
+  assert(!oneoff.isCeilingExempt('/usr/bin/x') && !oneoff.isCeilingExempt('C:/x/y'), 'absolute paths keep the ceiling');
+  assert(!oneoff.isCeilingExempt('a/../b') && !oneoff.isCeilingExempt('./'), 'traversal/empty program keeps the ceiling');
   assert(!oneoff.isCeilingExempt('2'), 'fd-number junk sig keeps the ceiling');
   assert(!oneoff.isCeilingExempt('heredoc-abcd1234'), 'bare digest keeps the ceiling');
   assert(!oneoff.isCeilingExempt('git log'));
