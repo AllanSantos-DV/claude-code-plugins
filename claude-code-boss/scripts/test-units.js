@@ -20136,6 +20136,26 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
     } finally { verifyJournal.clearEntries(sid); await hw.shutdown(); }
   });
 
+  test('O8: REAL worker — background jobs queued in a worker that crashes are re-queued, not silently lost', async () => {
+    const verifyJournal = require('./lib/verify-journal.js');
+    const hw = (await loadHookWorker())({ pluginRoot: ROOT });
+    const sid = `o8-${Date.now()}`;
+    try {
+      // Keep the worker busy so the edit jobs are still QUEUED inside it when it dies.
+      const bash = PARITY.find(p => p[0] === 'hook_posttoolusebash_dispatcher')[2];
+      for (let i = 0; i < 40; i++) hw.enqueue('hook_posttoolusebash_dispatcher', { ...wire({ ...bash, tool_input: { command: `git log -${i}` }, tool_response: { stdout: 'x\n'.repeat(4000), stderr: '' } }), project_dir: proj });
+      for (let i = 0; i < 5; i++) hw.enqueue('hook_file_edit_detect', { ...wire({ ...base, session_id: sid, hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: path.join(proj, `o8-${i}.js`) } }), project_dir: proj });
+      await hw._kill();
+      await hw.run('hook_skill_metric', { ...wire(PARITY.find(p => p[0] === 'hook_skill_metric')[2]), project_dir: proj }, { timeoutMs: 60000 }); // FIFO drain on the new worker
+      const paths = verifyJournal.readEntries(sid).filter(e => e.kind === 'edit').map(e => path.basename(String(e.path)));
+      for (let i = 0; i < 5; i++) assert(paths.includes(`o8-${i}.js`), `edit ${i} survived the crash: ${JSON.stringify(paths)}`);
+      const st = hw.stats();
+      assertEq(st.spawned, 2);
+      assert(st.requeued >= 5, `re-queued the un-acked jobs (requeued=${st.requeued})`);
+      assertEq(st.background, 0, 'every background job acked in the end');
+    } finally { verifyJournal.clearEntries(sid); await hw.shutdown(); }
+  });
+
   test('G4: REAL worker — a background hook that degrades is reported on that session\'s next Stop, once', async () => {
     const hw = (await loadHookWorker())({ pluginRoot: ROOT });
     const sid = `g4-degrade-${Date.now()}`;
