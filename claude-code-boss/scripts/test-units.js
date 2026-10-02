@@ -7438,6 +7438,27 @@ test('modeMeta: mapeia cada modo para cor/deprecado corretos', () => {
   assertEq(modeMeta('routing').deprecated, true);      // per-turn é deprecado
 });
 
+test('dashboard i18n: every key the page uses has an EN and a PT translation (a missing one renders as the raw key)', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf8');
+  const used = new Set();
+  for (const m of html.matchAll(/data-i18n(?:-tip|-placeholder)?="([^"]+)"/g)) used.add(m[1]);
+  for (const m of html.matchAll(/\bt\(\s*['"]([^'"]+)['"]\s*\)/g)) used.add(m[1]);
+  for (const m of html.matchAll(/\bi18n:\s*['"]([^'"]+)['"]/g)) used.add(m[1]);
+  const block = (lang) => {
+    const start = html.search(new RegExp(`\\n\\s*${lang}:\\s*\\{`));
+    assert(start > 0, `I18N.${lang} block not found`);
+    let depth = 0; let i = html.indexOf('{', start);
+    const from = i;
+    for (; i < html.length; i++) { if (html[i] === '{') depth++; else if (html[i] === '}' && --depth === 0) break; }
+    return new Set([...html.slice(from, i).matchAll(/'([^']+?)'\s*:/g)].map((m) => m[1]));
+  };
+  for (const lang of ['en', 'pt']) {
+    const have = block(lang);
+    const missing = [...used].filter((k) => !have.has(k));
+    assertEq(missing, [], `keys used without a ${lang.toUpperCase()} translation`);
+  }
+});
+
 test('modeMeta: cada modo tem uma chave i18n mode.*', () => {
   for (const mode of ['off', 'fallback-only', 'sticky-tier', 'routing']) {
     assert(/^mode\./.test(modeMeta(mode).i18n), `i18n key p/ ${mode}`);
