@@ -13,7 +13,9 @@ const metricsStore = require('./metrics-store.js');
 
 function _resolveProject(ctx) {
   if (ctx && ctx.project) return ctx.project;
-  const cwd = (ctx && ctx.cwd) || process.cwd();
+  // In the shared daemon process.cwd() is the daemon's (first session's) folder:
+  // prefer the calling session's root (hookEnv = process.env outside the daemon).
+  const cwd = (ctx && ctx.cwd) || require('./hook-context.js').hookEnv().CLAUDE_PROJECT_DIR || process.cwd();
   try { return path.basename(cwd); } catch { /* basename failed: default */ return 'default'; }
 }
 
@@ -45,4 +47,4 @@ function _resetForTests() {
   metricsStore.close();
 }
 
-module.exports = { record, fire, _resetForTests };
+module.exports = { record, fire, _resetForTests, _resolveProject };
