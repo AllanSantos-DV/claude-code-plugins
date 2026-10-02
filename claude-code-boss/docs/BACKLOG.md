@@ -186,10 +186,19 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   Decisão do dono necessária: limitar a 1ª passada a uma janela final (últimos
   N MB / K ciclos) muda a semântica (ciclos antigos da sessão não seriam
   oferecidos). Fix proposto: janela final + leitura em blocos.
-- [ ] **O11 — `lib/error-store.js` virou só escrita** depois do U2/U10: o
+- [x] **O11 — `lib/error-store.js` virou só escrita** depois do U2/U10: o
   `error-guard` lê o transcript; `failure-detect` (record) e `error-resolve`
   (resolve, detector do `posttoolusebash-dispatcher`) seguem gravando um store que
   ninguém lê. Remover gravação + módulo + fixtures num commit de limpeza.
+  **RESOLVIDO em 2026-10-02**: removidos `lib/error-store.js`, `error-resolve.js`,
+  o `recordErrorGuard` do `failure-detect`, o detector do dispatcher e o
+  `errorGuard.windowDays` (90 dias) da config. Testes: 11 do store saíram; o do
+  `failure-detect` passou a verificar o journal de falhas (o efeito que ficou);
+  fixtures do `error-guard` só com transcript. Docs: README, CONFIGURATION.
+- [ ] **U12 — `graph-guard` trata `grep -rn padrão arq1 arq2 …` com arquivos
+  explícitos como "busca recursiva ampla"** e nega (deny-once). Visto em
+  2026-10-02. `lib/graph-guard-core.js` `matchBroadBashSearch`: só deveria valer
+  quando o alvo é a raiz/diretório, não uma lista de arquivos.
 - [ ] **O10 — `scripts/lib/session-marker.js` ficou sem uso** depois do G10 (o
   `capture-queue` era o único consumidor do cursor). Só os próprios testes o usam.
   Remover módulo + testes num commit de limpeza.
