@@ -195,10 +195,17 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   `errorGuard.windowDays` (90 dias) da config. Testes: 11 do store saíram; o do
   `failure-detect` passou a verificar o journal de falhas (o efeito que ficou);
   fixtures do `error-guard` só com transcript. Docs: README, CONFIGURATION.
-- [ ] **U12 — `graph-guard` trata `grep -rn padrão arq1 arq2 …` com arquivos
+- [x] **U12 — `graph-guard` trata `grep -rn padrão arq1 arq2 …` com arquivos
   explícitos como "busca recursiva ampla"** e nega (deny-once). Visto em
   2026-10-02. `lib/graph-guard-core.js` `matchBroadBashSearch`: só deveria valer
   quando o alvo é a raiz/diretório, não uma lista de arquivos.
+  **RESOLVIDO em 2026-10-02**: a causa real era o corte no 1º `|` sem respeitar
+  aspas — o `\|` do padrão (`"a\|b"`) cortava o comando ali e os arquivos-alvo
+  sumiam. Agora `_firstPipelineWords` corta só no `|` fora de aspas e separa
+  palavras respeitando aspas. Replay no histórico: "busca ampla" 49 → 17
+  comandos; todos os que mudaram eram `grep -r` com escopo explícito e padrão com
+  alternativas. Testes: alternativa citada + arquivos = escopado; padrão com
+  espaço e `|` = 1 palavra; `.` continua amplo.
 - [x] **O10 — `scripts/lib/session-marker.js` ficou sem uso** depois do G10 (o
   `capture-queue` era o único consumidor do cursor). Só os próprios testes o usam.
   Remover módulo + testes num commit de limpeza.
