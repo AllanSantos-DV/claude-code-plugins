@@ -1083,13 +1083,24 @@ const NO_NIM_MESSAGE =
   'mesmo com o limite excedido.';
 
 // Traduz o corpo Anthropic Messages → OpenAI chat/completions (NVIDIA NIM).
+// Same contract as the OpenAI-compat adapter (protocols/openai-chat.js): a block
+// `text` that isn't a string is a malformed request (REQUEST_SHAPE), not something
+// to coerce — `b.text || ''` turned 0 into "", an object into "[object Object]".
+function shapeText(value, context) {
+  if (typeof value === 'string') return value;
+  const kind = value === null ? 'null' : Array.isArray(value) ? 'lista' : typeof value;
+  const err = new Error(`text de bloco em ${context} deve ser texto (veio ${kind})`);
+  err.code = 'REQUEST_SHAPE';
+  throw err;
+}
+
 function anthropicToOpenAI(body, config) {
   const messages = [];
   if (body.system) {
     const sys = typeof body.system === 'string'
       ? body.system
       : Array.isArray(body.system)
-        ? body.system.filter(b => b.type === 'text').map(b => b.text).join('\n')
+        ? body.system.filter(b => b.type === 'text').map(b => shapeText(b.text, 'system')).join('\n')
         : '';
     if (sys) messages.push({ role: 'system', content: sys });
   }
@@ -1102,12 +1113,12 @@ function anthropicToOpenAI(body, config) {
       const parts = [];
       for (const b of m.content) {
         if (b.type === 'text') {
-          parts.push(b.text || '');
+          parts.push(shapeText(b.text, `${role}.content`));
         } else if (b.type === 'tool_result') {
           const tr = typeof b.content === 'string'
             ? b.content
             : Array.isArray(b.content)
-              ? b.content.filter(x => x.type === 'text').map(x => x.text).join('\n')
+              ? b.content.filter(x => x.type === 'text').map(x => shapeText(x.text, 'tool_result.content')).join('\n')
               : '';
           parts.push(`[resultado de ferramenta] ${tr}`);
         } else if (b.type === 'tool_use') {

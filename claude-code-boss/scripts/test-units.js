@@ -9771,6 +9771,28 @@ test('plano B: client leaves mid-stream → the NVIDIA/BYOK upstream request is 
   }
 });
 
+test('plano B NVIDIA: a non-string block text is a malformed request (cause shown, NIM not called) — no silent coercion; "" stays valid', async () => {
+  let calls = 0;
+  const fake = http.createServer((req, res) => {
+    calls++; req.resume();
+    req.on('end', () => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'ok-nim' } }] })); });
+  });
+  const up = await _listen0(fake);
+  const cfg = { nim: { apiKey: 'fixture-nim', endpoint: `http://127.0.0.1:${up}/nim` }, fallback: { triggerStatuses: [429], cooldown: { enabled: false } } };
+  const bodyWith = (text) => ({ model: 'claude-opus-5-5', max_tokens: 8, stream: false, messages: [{ role: 'user', content: [{ type: 'text', text }] }] });
+  try {
+    for (const [bad, kind] of [[0, 'number'], [null, 'null'], [{ a: 1 }, 'object']]) {
+      const r = await _planBRun(cfg, bodyWith(bad));
+      assert(new RegExp(`deve ser texto \\(veio ${kind}\\)`).test(r.raw), `${kind}: cause must be shown, got ${r.raw.slice(0, 250)}`);
+    }
+    assertEq(calls, 0, 'a malformed request never reaches the NIM');
+    const ok = await _planBRun(cfg, bodyWith(''));
+    assert(/ok-nim/.test(ok.raw) && calls === 1, `"" is valid text, got ${ok.raw.slice(0, 200)}`);
+  } finally {
+    await new Promise((resolve) => fake.close(resolve));
+  }
+});
+
 test('plano B: a broken BYOK config is surfaced in the answer the user reads (not only in the log) — with and without a NIM key', async () => {
   const fake = http.createServer((req, res) => {
     req.resume();
