@@ -83,15 +83,17 @@ const additional = (hookEventName, text) => (text ? JSON.stringify({ hookSpecifi
  * that serves every session's HTTP and the fast PreToolUse guards: these do
  * synchronous SQLite (brain-store/metrics-store) and transcript/journal I/O. The
  * worker is one FIFO queue, so a PostToolUse journal write still lands before
- * the Stop that reads it.
+ * the Stop that reads it. `async: true` (reply is always `{}`) is acked at once
+ * and runs in the background (G4, ADR-015 §Decisão 1); its failures ride on the
+ * session's next Stop reply (see hook-worker.js).
  */
 const HOOKS = {
   // async-eligible (side effect only, reply `{}`)
-  hook_skill_metric: { lane: 'heavy', script: 'skill-metric.js', call: async (m, ev) => { await m.run(ev); return EMPTY; } },
-  hook_file_edit_detect: { lane: 'heavy', script: 'file-edit-detect.js', call: async (m, ev) => { await m.run(ev); return EMPTY; } },
-  hook_posttoolusebash_dispatcher: { lane: 'heavy', script: 'posttoolusebash-dispatcher.js', call: async (m, ev) => { await m.dispatch(ev); return EMPTY; } },
-  hook_posttoolusefailure_dispatcher: { lane: 'heavy', script: 'posttoolusefailure-dispatcher.js', call: async (m, ev) => { await m.dispatch(ev); return EMPTY; } },
-  hook_policy_enforce_shadow: { lane: 'heavy', script: 'policy-enforce-shadow.js', call: async (m, ev) => json(await m.evaluate(ev)) },
+  hook_skill_metric: { lane: 'heavy', async: true, script: 'skill-metric.js', call: async (m, ev) => { await m.run(ev); return EMPTY; } },
+  hook_file_edit_detect: { lane: 'heavy', async: true, script: 'file-edit-detect.js', call: async (m, ev) => { await m.run(ev); return EMPTY; } },
+  hook_posttoolusebash_dispatcher: { lane: 'heavy', async: true, script: 'posttoolusebash-dispatcher.js', call: async (m, ev) => { await m.dispatch(ev); return EMPTY; } },
+  hook_posttoolusefailure_dispatcher: { lane: 'heavy', async: true, script: 'posttoolusefailure-dispatcher.js', call: async (m, ev) => { await m.dispatch(ev); return EMPTY; } },
+  hook_policy_enforce_shadow: { lane: 'heavy', async: true, script: 'policy-enforce-shadow.js', call: async (m, ev) => json(await m.evaluate(ev)) },
   // silent-except-alert
   hook_correction_detect: { script: 'correction-detect.js', call: async (m, ev) => additional(ev.hook_event_name || 'UserPromptSubmit', await m.run(ev)) },
   hook_active_research_detect: { script: 'active-research-detect.js', call: async (m, ev) => additional(ev.hook_event_name || 'UserPromptSubmit', await m.run(ev)) },
@@ -157,7 +159,10 @@ function createHookTools({ pluginRoot, hookWorker } = {}) {
     const spec = HOOKS[name];
     if (!spec) throw new Error(`unknown hook tool: ${name}`);
     let text;
-    if (spec.lane === 'heavy' && hookWorker) {
+    if (spec.lane === 'heavy' && hookWorker && spec.async) {
+      hookWorker.enqueue(name, args);
+      text = EMPTY;
+    } else if (spec.lane === 'heavy' && hookWorker) {
       try {
         text = await hookWorker.run(name, args);
       } catch (err) {

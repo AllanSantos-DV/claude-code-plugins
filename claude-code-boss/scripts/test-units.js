@@ -19834,25 +19834,26 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
 
   test('G2: with a hook worker, heavy hooks go to it and fast hooks never do; a worker failure degrades visibly', async () => {
     const calls = [];
-    const fake = { run: async (name) => { calls.push(name); if (name === 'hook_stop_dispatcher') throw new Error('worker died'); return '{"via":"worker"}'; } };
+    const fake = {
+      run: async (name) => { calls.push(name); if (name === 'hook_stop_dispatcher') throw new Error('worker died'); return '{"via":"worker"}'; },
+      enqueue: (name) => { calls.push(`bg:${name}`); },
+    };
     const t = createHookTools({ pluginRoot: ROOT, hookWorker: fake });
     const fileEdit = PARITY.find(p => p[0] === 'hook_file_edit_detect')[2];
-    assertEq((await t.handle('hook_file_edit_detect', { ...wire(fileEdit), project_dir: proj })).content[0].text, '{"via":"worker"}');
+    assertEq((await t.handle('hook_file_edit_detect', { ...wire(fileEdit), project_dir: proj })).content[0].text, '{}');
     const stop = JSON.parse((await t.handle('hook_stop_dispatcher', { ...wire(PARITY[11][2]), project_dir: proj })).content[0].text);
     assert(/hook_stop_dispatcher degradado no daemon \(fail-open\): worker died/.test(stop.systemMessage), JSON.stringify(stop));
     assert(!stop.decision, 'a worker failure must not block the Stop');
     const guard = await t.handle('hook_curation_guard', { ...wire(PARITY[0][2]), project_dir: proj });
     assertEq(guard.content[0].text, viaCli('pretooluse-bash-dispatcher.js', PARITY[0][2], proj));
-    assertEq(calls, ['hook_file_edit_detect', 'hook_stop_dispatcher']);
+    assertEq(calls, ['bg:hook_file_edit_detect', 'hook_stop_dispatcher']);
   });
 
   test('G2: REAL hook worker — every heavy hook gives the same stdout as its CLI script', async () => {
     const hw = (await loadHookWorker())({ pluginRoot: ROOT });
     try {
-      const t = createHookTools({ pluginRoot: ROOT, hookWorker: hw });
       for (const [tool, script, ev] of PARITY.filter(p => HEAVY.includes(p[0]))) {
-        const got = (await t.handle(tool, { ...wire(ev), project_dir: proj })).content[0].text;
-        assertEq(got, viaCli(script, ev, proj), `${tool} via worker`);
+        assertEq(await hw.run(tool, { ...wire(ev), project_dir: proj }), viaCli(script, ev, proj), `${tool} via worker`);
       }
       assertEq(hw.stats().spawned, 1, 'one worker serves every call');
     } finally { await hw.shutdown(); }
@@ -19866,6 +19867,52 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
       await hw._kill();
       assertEq(await hw.run('hook_stop_dispatcher', args), '{}');
       assertEq(hw.stats().spawned, 2, 'a fresh worker took over');
+    } finally { await hw.shutdown(); }
+  });
+
+  // ── G4: always-{} hooks are fire-and-forget ─────────────────────────────────
+  test('G4: the always-{} hooks are exactly the async ones, and every one is in the heavy lane', () => {
+    const ASYNC = Object.keys(HOOK_SPECS).filter(n => HOOK_SPECS[n].async).sort();
+    assertEq(ASYNC, ['hook_file_edit_detect', 'hook_policy_enforce_shadow', 'hook_posttoolusebash_dispatcher', 'hook_posttoolusefailure_dispatcher', 'hook_skill_metric']);
+    for (const n of ASYNC) assertEq(HOOK_SPECS[n].lane, 'heavy', `${n} must run in the worker`);
+  });
+
+  test('G4: an async hook acks {} at once — never waits for the worker', async () => {
+    let enqueued = 0;
+    const never = new Promise(() => {});
+    const t = createHookTools({ pluginRoot: ROOT, hookWorker: { run: () => never, enqueue: () => { enqueued++; } } });
+    const ev = PARITY.find(p => p[0] === 'hook_posttoolusebash_dispatcher')[2];
+    const r = await Promise.race([t.handle('hook_posttoolusebash_dispatcher', { ...wire(ev), project_dir: proj }), new Promise(res => setTimeout(() => res('TIMEOUT'), 500))]);
+    assert(r !== 'TIMEOUT', 'must not wait for the worker');
+    assertEq(r.content[0].text, '{}');
+    assertEq(enqueued, 1);
+  });
+
+  test('G4: REAL worker — a background write lands before the next awaited hook (FIFO)', async () => {
+    const verifyJournal = require('./lib/verify-journal.js');
+    const hw = (await loadHookWorker())({ pluginRoot: ROOT });
+    const sid = `g4-order-${Date.now()}`;
+    try {
+      const file = path.join(proj, 'g4-order.js');
+      hw.enqueue('hook_file_edit_detect', { ...wire({ ...base, session_id: sid, hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: file } }), project_dir: proj });
+      await hw.run('hook_skill_metric', { ...wire({ ...base, session_id: sid, hook_event_name: 'UserPromptExpansion', command_name: 'x' }), project_dir: proj });
+      const entries = verifyJournal.readEntries(sid);
+      assert(entries.some(e => e.kind === 'edit' && String(e.path).endsWith('g4-order.js')), `edit journaled before the awaited hook replied: ${JSON.stringify(entries)}`);
+    } finally { verifyJournal.clearEntries(sid); await hw.shutdown(); }
+  });
+
+  test('G4: REAL worker — a background hook that degrades is reported on that session\'s next Stop, once', async () => {
+    const hw = (await loadHookWorker())({ pluginRoot: ROOT });
+    const sid = `g4-degrade-${Date.now()}`;
+    try {
+      hw.enqueue('hook_posttoolusefailure_dispatcher', { hook_event_name: 'PostToolUseFailure', session_id: sid, cwd: proj, tool_name: 'Bash', tool_input: '{not json', project_dir: proj });
+      const stopArgs = { ...wire({ ...base, session_id: sid, hook_event_name: 'Stop', stop_hook_active: true }), project_dir: proj };
+      const first = JSON.parse(await hw.run('hook_stop_dispatcher', stopArgs));
+      assert(/hooks em segundo plano degradados.*hook_posttoolusefailure_dispatcher/.test(first.systemMessage || ''), JSON.stringify(first));
+      assert(!first.decision, 'the note must not block the Stop');
+      assertEq(await hw.run('hook_stop_dispatcher', stopArgs), '{}', 'reported once, then cleared');
+      const other = await hw.run('hook_stop_dispatcher', { ...stopArgs, session_id: `${sid}-other` });
+      assertEq(other, '{}', 'another session never sees it');
     } finally { await hw.shutdown(); }
   });
 }
