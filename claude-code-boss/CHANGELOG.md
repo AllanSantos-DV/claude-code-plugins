@@ -2,6 +2,70 @@
 
 ## [2.29.1] - 2026-09-25
 
+### Changed — hooks rodam no daemon do brain-server (Fase G, ADR-015)
+- 12 hooks deixam de subir um processo Node por disparo e viram tools `mcp_tool`
+  do brain-server (`hook_<nome>`), executadas in-process no daemon HTTP
+  compartilhado: `hook_curation_guard`, `hook_error_guard` (PreToolUse/Bash, deny
+  vence entre irmãos), `hook_policy_enforce_shadow`, `hook_graph_guard`,
+  `hook_posttoolusebash_dispatcher`, `hook_file_edit_detect`,
+  `hook_policy_glob_inject`, `hook_skill_metric`,
+  `hook_posttoolusefailure_dispatcher`, `hook_stop_dispatcher`,
+  `hook_correction_detect` e `hook_active_research_detect`. A lógica de cada hook
+  é a mesma (os scripts exportam `run`/`evaluate` e continuam rodáveis por
+  stdin); só o transporte muda.
+- Ficam como `command`: `SessionStart`, `SubagentStart`, o
+  `user-prompt-submit-dispatcher` (agora só `brain-daemon-ensure`, `brain-health`
+  e `brain-status`, que precisam funcionar com o daemon fora do ar) e o
+  `model-router-ensure`. `policy-inject` e `model-router-ensure` estão no backlog.
+- Fail-open **visível**: uma exceção dentro da tool não bloqueia nada e devolve um
+  `systemMessage` "[claude-code-boss] hook X degradado no daemon (fail-open): …".
+  Com o daemon fora do ar, o Claude Code trata o `mcp_tool` como erro não
+  bloqueante.
+- Higiene do daemon: cada chamada roda num `AsyncLocalStorage` com o env do
+  chamador (`project_dir` vem de `${CLAUDE_PROJECT_DIR}`) e invalida os caches de
+  `hooks-config` e `brain-config`, então uma sessão não vê a configuração de outra.
+- `git rev-parse` em `lib/project-id.js` agora tem memo por `(cwd, args)` com TTL
+  de 30 s. No daemon, cada chamada síncrona de git (50–80 ms) travava o event loop
+  de todas as sessões; sem o memo, N=60 hooks concorrentes levavam 9,5–16,6 s.
+- Medido (daemon isolado, 8 sessões MCP, N hooks concorrentes):
+
+  | | spawn por hook (2.29.0) | daemon (2.29.1) |
+  |---|---|---|
+  | latência unitária (p50) | 122 ms | 8,9 ms |
+  | N=60 (wall) | 7,0–8,3 s | 0,62–1,9 s |
+  | memória | ~3,9 GB somando os processos | 234 MB de pico no daemon |
+
+### Fixed — porta padrão do daemon reservada pelo Windows
+- A porta padrão do brain-server passa de 58217 para **38217**. A 58217 cai numa
+  faixa que o Windows reserva (`excludedportrange` do Hyper-V/WinNAT, ex.:
+  58048–58247): o `listen` falhava com `EACCES` e nenhum daemon subia.
+- O stderr do daemon recém-spawnado vai para `brain-http.spawn.log` no data dir.
+  Se ele nunca fica saudável, o erro final traz a causa real (ex.:
+  `listen EACCES: permission denied 127.0.0.1:58217`) e a dica do
+  `netsh int ipv4 show excludedportrange protocol=tcp`.
+- **Atenção:** o `.mcp.json` do plugin tem a porta fixa na URL. Quem definir
+  `BRAIN_HTTP_PORT` precisa editar também a URL do `.mcp.json`, e essa edição é
+  sobrescrita a cada atualização do plugin.
+
+### Fixed — health check do `mcp-memory` recusava daemon saudável
+- `probeHealth` (`lib/mcp-health.js`) aceita `ok === true` **ou**
+  `status === 'healthy'`. O `mcp-memory` >= 2.44 responde o `/health` no segundo
+  formato, sem `ok`, e o daemon saudável era reportado como desconectado.
+
+### Fixed — `mcp-memory` fora do ar travava cada chamada até o timeout
+- Circuit breaker no `brain-backend`: toda operação do `mcp-memory` passa por um
+  único ponto (`guardMcp`). Uma falha de transporte (timeout, conexão recusada ou
+  resetada) abre o circuito por 15 s (`CCB_MCP_MEMORY_CIRCUIT_MS`), e as chamadas
+  seguintes falham na hora com `CIRCUIT_OPEN`, em vez de cada uma esperar o
+  timeout de 60 s do cliente. Um erro de validação de um daemon saudável não abre
+  o circuito. O recall pula com o motivo `circuit-open`, contado pelo
+  `recall-health`.
+- `CCB_PROJECT_ID` só vale no modo stdio: o spawn do daemon remove a variável do
+  env, para o id de uma sessão não vazar para as outras.
+- `model-router-ensure` só roda os spawns de PowerShell no `SessionStart` ou num
+  restart forçado. O timeout do hook `brain_retrieve_context` subiu de 10 s para
+  30 s.
+
 ### Changed — pasta sem project id = memória desligada (mesmo modelo do copilot-memory)
 - Em uma pasta sem project id (escada estrita: `CCB_PROJECT_ID` →
   `.memory/project.json` → `.claude-boss-project` → git remote), o

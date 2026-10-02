@@ -85,22 +85,22 @@ function renderGlobBlock(rel, matches, maxChars) {
 }
 
 /**
- * Hook entry point. Emits directly (empty or the advisory envelope) and returns.
- * The CLI wrapper below only emits on a THROWN error (fail-open), so there is
- * exactly one write to stdout per invocation.
+ * Pure evaluation: returns the hook output object (`{}` or the advisory
+ * envelope) without writing — run() emits it; the Phase G daemon tool returns it.
+ * Throws on unexpected errors (the CLI wrapper fails open with `{}`).
  * @param {object} event  parsed PostToolUse payload
  */
-async function run(event) {
+async function evaluate(event) {
   const ev = event || {};
 
   const cfg = getPolicyInject();
-  if (cfg.enabled === false) return emitEmpty();
+  if (cfg.enabled === false) return {};
 
   const tool = ev.tool_name || '';
-  if (!EDIT_TOOLS.has(tool)) return emitEmpty();
+  if (!EDIT_TOOLS.has(tool)) return {};
 
   const rawPath = editedPath(ev);
-  if (!rawPath) return emitEmpty();
+  if (!rawPath) return {};
 
   // Fail-open LOCAL scope key (per-machine store, not the memory contract):
   // resolveLocalScopeId degrades to basename(cwd)/'default' and never throws.
@@ -110,14 +110,20 @@ async function run(event) {
 
   // Normalize to a project-relative path; null → outside project / other drive.
   const rel = policyStore.toRelPath(rawPath, ev.cwd);
-  if (rel == null) return emitEmpty();
+  if (rel == null) return {};
 
   const DATA_DIR = dataDir();
   const matches = policyStore.listGlobMatching(DATA_DIR, { projectId, filePath: rawPath, cwd: ev.cwd });
-  if (!matches.length) return emitEmpty();
+  if (!matches.length) return {};
 
   const block = renderGlobBlock(rel, matches, cfg.maxChars);
-  return emitJson({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: block } });
+  return { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: block } };
+}
+
+/** CLI/stdout entry: writes evaluate()'s output (exactly one write). */
+async function run(event) {
+  const out = await evaluate(event);
+  return out && Object.keys(out).length ? emitJson(out) : emitEmpty();
 }
 
 if (require.main === module) {
@@ -135,4 +141,4 @@ if (require.main === module) {
   })();
 }
 
-module.exports = { run, renderGlobBlock, editedPath, EDIT_TOOLS };
+module.exports = { run, evaluate, renderGlobBlock, editedPath, EDIT_TOOLS };

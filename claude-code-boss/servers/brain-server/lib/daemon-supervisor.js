@@ -171,6 +171,22 @@ function lockMatchesHealth(lock, health) {
   } catch (err) { void err; return false; }
 }
 
+/** stderr of the last spawned daemon — a boot failure (e.g. listen EACCES) lands here. */
+function spawnLogFile(dataDir) {
+  return path.join(canonicalDataDir(dataDir), 'brain-http.spawn.log');
+}
+
+/** Last error-looking lines of the spawn log ('' when there is none). */
+function readSpawnLogTail(dataDir) {
+  let text;
+  try { text = fs.readFileSync(spawnLogFile(dataDir), 'utf8'); } catch (err) { void err; return ''; }
+  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  // `Error: listen EACCES …` lines first (Node also prints the throwing source
+  // line, which merely CONTAINS "error"); else whatever the child last said.
+  const errs = lines.filter((l) => /^\w*Error\b/.test(l));
+  return (errs.length ? errs : lines).slice(-3).join(' | ').slice(0, 600);
+}
+
 function spawnDaemon({ pluginRoot, dataDir, port, env }) {
   // The daemon serves every session/project on the machine — it must never
   // inherit a single-session identity marker from whichever hook process
@@ -181,13 +197,25 @@ function spawnDaemon({ pluginRoot, dataDir, port, env }) {
   const spawnerEnv = { ...process.env };
   delete spawnerEnv.CCB_PROJECT_ID;
   const childEnv = { ...spawnerEnv, ...normalizeEnv(env), CLAUDE_PLUGIN_ROOT: pluginRoot, CLAUDE_PLUGIN_DATA: dataDir };
-  const child = spawn(
-    process.execPath,
-    [INDEX, '--port', String(port), '--plugin-data', dataDir],
-    { detached: true, stdio: 'ignore', windowsHide: true, env: childEnv },
-  );
-  child.unref();
-  return child.pid;
+  // Child stderr → spawn log in DATA_DIR (was 'ignore': a boot crash such as
+  // listen EACCES vanished and ensureDaemon could only say "check the logs").
+  let errFd = 'ignore';
+  try {
+    errFd = fs.openSync(spawnLogFile(dataDir), 'w');
+  } catch (err) {
+    console.error(`[brain-supervisor] cannot open spawn log ${spawnLogFile(dataDir)}: ${err.message} — daemon stderr will be lost`);
+  }
+  try {
+    const child = spawn(
+      process.execPath,
+      [INDEX, '--port', String(port), '--plugin-data', dataDir],
+      { detached: true, stdio: ['ignore', 'ignore', errFd], windowsHide: true, env: childEnv },
+    );
+    child.unref();
+    return child.pid;
+  } finally {
+    if (typeof errFd === 'number') fs.closeSync(errFd);
+  }
 }
 
 /** Read the daemon's lock/census file (written by every daemon boot). Null when absent/corrupt. */
@@ -408,10 +436,14 @@ export async function ensureDaemon({ pluginRoot, dataDir, env = process.env } = 
         };
       }
       // Port free and no /health: the child genuinely failed to boot. Honest
-      // 'error' beats a claim that a spawn that never served is a success.
+      // 'error' beats a claim that a spawn that never served is a success —
+      // and it carries the child's own stderr (real cause) + where to look.
+      const cause = readSpawnLogTail(dataDir) || `no stderr captured (${spawnLogFile(dataDir)})`;
       return {
         status: 'error',
-        error: `spawned daemon (pid ${pid}) on port ${port} never became healthy and left the port free to boot elsewhere — check the plugin's logs`,
+        error: `spawned daemon (pid ${pid}) on port ${port} never became healthy — cause: ${cause}. ` +
+          `If this is EACCES on Windows the port may be reserved: check \`netsh int ipv4 show excludedportrange protocol=tcp\` ` +
+          `and set BRAIN_HTTP_PORT to a free port outside those ranges (also update the plugin's .mcp.json url).`,
         pid,
         port,
       };
@@ -424,4 +456,4 @@ export async function ensureDaemon({ pluginRoot, dataDir, env = process.env } = 
 }
 
 // Internal helpers exported for unit tests (the pure, side-effect-free ones).
-export { samePluginData, sameIdentity, lockMatchesHealth, acquireSpawnLock, releaseSpawnLock, spawnLockDir, SPAWN_LOCK_STALE_MS, WAIT_CURRENT_MS };
+export { samePluginData, sameIdentity, lockMatchesHealth, acquireSpawnLock, releaseSpawnLock, spawnLockDir, spawnLogFile, readSpawnLogTail, SPAWN_LOCK_STALE_MS, WAIT_CURRENT_MS };

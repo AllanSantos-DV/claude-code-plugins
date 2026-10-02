@@ -2333,7 +2333,7 @@ const TESTS = [
     expect: { noError: true },
   },
   {
-    name: 'user-prompt-submit-dispatcher [correction + active-research both fire, concatenated]',
+    name: 'user-prompt-submit-dispatcher [Phase G: correction/active-research no longer run here (mcp_tool)]',
     script: 'user-prompt-submit-dispatcher.js',
     payload: {
       hook_event_name: 'UserPromptSubmit',
@@ -2341,7 +2341,7 @@ const TESTS = [
       session_id: SESSION,
       cwd: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ups-proj-')),
     },
-    expect: { hasKey: 'hookSpecificOutput', noError: true, hookEvent: 'UserPromptSubmit' },
+    expect: { noError: true },
     extraEnv: () => {
       // Isolated CLAUDE_PLUGIN_ROOT (same pattern as session-start-dispatcher's
       // test below) so brain-daemon-ensure/brain-health/brain-status fail FAST
@@ -2359,9 +2359,11 @@ const TESTS = [
       return { CLAUDE_PLUGIN_ROOT: root, CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ups-data-')) };
     },
     validate: r => {
+      // Both nudges now come from hook_correction_detect / hook_active_research_detect
+      // (hooks.json mcp_tool); keeping them here too would inject them twice.
       const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
-      if (!ctx.includes('capture_lesson')) return `correction-detect's nudge must be present, got: ${ctx}`;
-      if (!ctx.includes('research_query')) return `active-research-detect's nudge must be present, got: ${ctx}`;
+      if (ctx.includes('The user may be correcting you')) return `correction-detect must NOT run in the dispatcher anymore, got: ${ctx}`;
+      if (ctx.includes('## Active research suggestion')) return `active-research-detect must NOT run in the dispatcher anymore, got: ${ctx}`;
       return null;
     },
   },

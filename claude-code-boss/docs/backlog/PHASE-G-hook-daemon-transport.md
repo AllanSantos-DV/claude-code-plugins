@@ -1,5 +1,25 @@
 # Fase G — Hooks via transporte de daemon (spawn efêmero → mcp_tool)
 
+> **Status (2026-09-30): IMPLEMENTADA na `release/2.29.1` (não lançada, não commitada).**
+> Tasks 2–8 feitas: 12 tools `hook_*` em `scripts/lib/hook-tools.js`, registradas
+> no `mcp-server.js`; `hooks/hooks.json` migrado; testes de paridade em
+> `test-units.js`; bench N=60 + RSS; docs (`HOOKS-GUIDE`, `FUNCTIONAL-SPEC`,
+> `README`, `CHANGELOG` 2.29.1). Resultado medido (daemon isolado, 8 sessões MCP):
+>
+> | | spawn por hook | daemon (Fase G) |
+> |---|---|---|
+> | latência unitária (p50) | 122 ms | 8,9 ms |
+> | N=60 (wall) | 7,0–8,3 s | 0,62–1,9 s |
+> | memória | ~3,9 GB somando processos | 234 MB de pico no daemon |
+>
+> Achado no bench: sem memo, o `git rev-parse` síncrono de `lib/project-id.js`
+> (50–80 ms) travava o event loop do daemon para todas as sessões e N=60 ia a
+> 9,5–16,6 s (pior que o spawn). Corrigido com memo por `(cwd,args)`, TTL 30 s.
+> Ressalvas: o `user-prompt-submit-dispatcher` ainda faz spawn (3 detectores
+> excluídos); um hook que estoura o timeout continua rodando no daemon; as 12
+> tools aparecem na lista de tools do modelo (marcadas como internas).
+> Pendente: revisão adversarial independente antes do release.
+
 > **Status: TODOS OS 5 SPIKES (S1/S1b/S2/S3/S4) FECHADOS COM DADO REAL.**
 > Rodada 1 achou dependência circular em 3 scripts (excluídos
 > permanentemente) + 3 perguntas (P2/P3/P4, todas respondidas pelo dono do
@@ -22,7 +42,7 @@
   `scripts/graph-guard.js`, `scripts/posttoolusebash-dispatcher.js`, `scripts/file-edit-detect.js`,
   `scripts/policy-glob-inject.js`, `scripts/skill-metric.js`, `scripts/posttoolusefailure-dispatcher.js`,
   `scripts/stop-dispatcher.js`, `scripts/policy-inject.js`; `servers/brain-server/lib/http-daemon.js`
-  (daemon MCP já vivo, porta 58217, `MAX_SESSIONS=50`); `servers/brain-server/lib/mcp-server.js`
+  (daemon MCP já vivo, porta 38217, `MAX_SESSIONS=50`); `servers/brain-server/lib/mcp-server.js`
   (onde novas ferramentas MCP entrariam).
 - **Fatos verificados nesta sessão (medição real, `.ccb-daemon-bench/`, não
   re-provar):**
@@ -272,16 +292,17 @@ escolhida (ver tabela).
 - [x] S2 fechado — sem degradação sob concorrência real (8 sessões), `MAX_SESSIONS=50` não precisa subir
 - [x] S3 fechado — RAM real medida (não estimativa): N=60 → 3415MB agregado ephemeral, ~57MB/processo
 - [x] S1/S1b fechados; S4 com os 3 testes (i/ii/iii) fechados — `pretooluse-bash-dispatcher.js` e `graph-guard.js` liberados pra migração fracionada; `stop-dispatcher.js` migra consolidado (achado real de S4-iii, não bloqueio)
-- [ ] Suite de testes existente (`scripts/run-test-units.mjs`) verde + testes
-      novos de paridade por hook migrado
-- [ ] Fail-open preservado: daemon inacessível ⇒ caminho `command` local
-      idêntico ao de hoje, nunca bloqueia/degrada a sessão
-- [ ] Bench de concorrência (N=60) pós-migração NÃO mostra mais o padrão
-      superlinear medido nesta investigação (referência: 38,9× a N=60 no
+- [x] Suite de testes existente (`scripts/run-test-units.mjs`) verde + testes
+      novos de paridade por hook migrado (test-units 1250/0, test-hooks 116/0)
+- [x] Fail-open preservado: exceção na tool ⇒ `systemMessage` de degradação,
+      sem bloquear; daemon inacessível ⇒ erro não bloqueante do `mcp_tool` no
+      Claude Code (sem dual-registro `command`, decisão P3)
+- [x] Bench de concorrência (N=60) pós-migração NÃO mostra mais o padrão
+      superlinear (0,62–1,9 s; ver Status) medido nesta investigação (referência: 38,9× a N=60 no
       modelo atual)
-- [ ] RAM sob burst medida com técnica validada em S3 (não estimativa) e
-      dentro de um teto a definir nesse spike
-- [ ] `hooks/hooks.json` atualizado + docs (`HOOKS-GUIDE.md`,
+- [x] RAM sob burst medida com técnica validada em S3 (não estimativa):
+      234 MB de pico no daemon a N=60
+- [x] `hooks/hooks.json` atualizado + docs (`HOOKS-GUIDE.md`,
       `FUNCTIONAL-SPEC.md` roadmap, `CHANGELOG.md`)
 - [ ] Suite inteira verde + gate PASS + revisor adversarial PASS por fase
 

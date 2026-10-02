@@ -24,7 +24,7 @@ const { loadCurationConfig } = require('./curation-paths.js');
 const { runPreToolUseCli } = require('./lib/hook-io.js');
 const { findProjectRoot, loadShellsConfig, matchCuratedShell, buildCuratedInvocation, _pathMatches, _tokenize } = require('./shells-config.js');
 
-const _guardCfg = require('./lib/hooks-config.js').getCurationGuard();
+const hooksConfig = require('./lib/hooks-config.js');
 
 /**
  * Case-insensitive prefix match with word boundary for project whitelist.
@@ -157,7 +157,8 @@ async function run(event) {
     }
 
     // 3. Paranoid mode.
-    if (_guardCfg.denyUnknown) {
+    // Read per call (not at module load) — the shared daemon (Phase G) would freeze it.
+    if (hooksConfig.getCurationGuard().denyUnknown) {
       const cfg = loadCurationConfig();
       const reason = `[curation-guard] Command \`${command}\` is unknown (denyUnknown mode active). Add it to the whitelist in \`${cfg.shellsConfigPath}\` or create a curated script in \`${cfg.scriptsDir}/\`.`;
       return decision('deny', { additionalContext: reason, permissionDecisionReason: reason });

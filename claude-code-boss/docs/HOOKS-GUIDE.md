@@ -12,6 +12,24 @@ Todo hook vive em `hooks/hooks.json`. Formatos aceitos:
 
 Também existe o tipo `"type": "mcp_tool"` (ex.: `brain_retrieve_context` no UserPromptSubmit), que invoca uma tool do MCP server em vez de um comando.
 
+### Hooks via `mcp_tool` no daemon (padrão desde a 2.29.1)
+
+A maioria dos hooks não sobe mais um processo Node por disparo: o `hooks.json` aponta para uma tool `hook_<nome>` do brain-server, que roda o mesmo script in-process no daemon HTTP compartilhado (ADR-015).
+
+```json
+{ "type": "mcp_tool", "server": "plugin:claude-code-boss:brain-server", "tool": "hook_curation_guard",
+  "input": { "session_id": "${session_id}", "tool_input": "${tool_input}", "project_dir": "${CLAUDE_PROJECT_DIR}" }, "timeout": 8 }
+```
+
+- As tools são registradas em `scripts/lib/hook-tools.js` (`HOOKS` + `FIELDS`). O Claude Code substitui os campos como **string**; `rebuildEvent` decodifica os campos JSON (`tool_input`, `tool_response`, …) e remonta o evento que o script espera no stdin.
+- O script exporta `run(ev)` / `evaluate(ev)` e continua rodável por stdin (`require.main === module`).
+- Cada chamada roda num `AsyncLocalStorage` com o env do chamador e invalida os caches de `hooks-config`/`brain-config`. Não guarde estado de sessão em variável de módulo: o daemon atende todas as sessões.
+- Nada síncrono e caro no caminho do hook: um `execFileSync` trava o event loop de todas as sessões (por isso o `git rev-parse` de `lib/project-id.js` tem memo de 30 s).
+- **Fail-open visível:** exceção na tool → `systemMessage` "[claude-code-boss] hook X degradado no daemon (fail-open): …", sem bloquear. Daemon fora do ar → o Claude Code trata o `mcp_tool` como erro não bloqueante.
+- Hooks irmãos no mesmo evento rodam em paralelo; em PreToolUse, `deny` vence.
+- Ficam como `command` os hooks que precisam funcionar **sem** o daemon: `SessionStart`, `SubagentStart`, `user-prompt-submit-dispatcher` (`brain-daemon-ensure`, `brain-health`, `brain-status`) e `model-router-ensure`.
+- Para um hook novo: adicione a entrada em `HOOKS`, a entrada `mcp_tool` no `hooks.json`, o caso de paridade em `test-units.js` (mesma saída via stdin e via tool) e a linha no README.
+
 Eventos em uso: `SessionStart`, `SubagentStart`, `UserPromptSubmit`, `UserPromptExpansion`, `PreToolUse` (com `matcher`), `PostToolUse`, `PostToolUseFailure`, `Stop`.
 
 **Regra:** cada script novo precisa (1) entrada no hooks.json, (2) documentação no README do plugin — CI (`release-audit.mjs → hooks-doc-drift`) bloqueia drift.

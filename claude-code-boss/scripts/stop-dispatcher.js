@@ -182,9 +182,13 @@ function mergeBlocks(blocks) {
   return { decision: 'block', reason: ordered.map(b => b.reason).join(SEP) };
 }
 
-async function main() {
-  const raw = await readStdin();
-  const event = parsePayload(raw) || {};
+/**
+ * Full Stop pass for one event: dispatch + telemetry + merge. Returns the hook
+ * output object (`{decision:'block',reason}` or `{}`) without writing — main()
+ * emits it; the Phase G daemon tool returns it.
+ */
+async function run(event) {
+  event = event || {};
   const ctx = { sessionId: event.session_id || event.sessionId, cwd: event.cwd };
   const profile = hooksConfig.getProfile();
   const runId = telem.newRunId();
@@ -201,7 +205,12 @@ async function main() {
 
   metrics.fire('stop.dispatch', telem.summarize(profile, runId, detectors), ctx);
 
-  const out = mergeBlocks(blocks);
+  return mergeBlocks(blocks);
+}
+
+async function main() {
+  const raw = await readStdin();
+  const out = await run(parsePayload(raw));
   if (out.decision === 'block') emitStopBlock(out.reason);
   else emitEmpty();
 }
@@ -213,4 +222,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { dispatch, mergeBlocks, rank, DETECTORS, PRIORITY, NO_ID_SKIP, SEP, getShadowRate };
+module.exports = { run, dispatch, mergeBlocks, rank, DETECTORS, PRIORITY, NO_ID_SKIP, SEP, getShadowRate };

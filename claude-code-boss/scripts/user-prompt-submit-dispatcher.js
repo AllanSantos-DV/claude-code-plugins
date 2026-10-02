@@ -5,21 +5,22 @@
  * calls `process.exit()` in its normal flow and does real multi-second waits,
  * so it cannot safely share a process with the other detectors).
  *
- * Consolidates 5 per-prompt Node spawns (brain-daemon-ensure.js,
- * brain-health.js, brain-status.js, correction-detect.js,
- * active-research-detect.js) into ONE in-process pass — same "N spawns → 1"
- * pattern as the other dispatchers here. The `mcp_tool` entry
- * (`brain_retrieve_context`) stays in `hooks.json` as-is — it is not a Node
- * spawn, Claude Code calls it directly.
+ * Consolidates 3 per-prompt Node spawns (brain-daemon-ensure.js,
+ * brain-health.js, brain-status.js) into ONE in-process pass — same "N spawns → 1"
+ * pattern as the other dispatchers here. The `mcp_tool` entries
+ * (`brain_retrieve_context`, and since Phase G / ADR-015 `hook_correction_detect`
+ * + `hook_active_research_detect`) are not Node spawns — Claude Code calls the
+ * brain daemon directly. These three stay here PERMANENTLY: they are the ones
+ * that start/diagnose the daemon, so they cannot depend on it.
  *
  * CONCURRENT, not sequential: when these were separate processes, each ran in
  * PARALLEL with its own `hooks.json` timeout (brain-daemon-ensure had 30s;
- * the other four had 5s each) — total perceived latency was `max()` of them.
+ * the other two had 5s each) — total perceived latency was `max()` of them.
  * `brain-daemon-ensure` legitimately does multi-second waits in its normal
  * flow (`ensureDaemon`'s `waitCurrent`/`waitGone`, up to ~9s/5s — the same
  * class of wait that got `model-router-ensure.js` excluded above, just
  * shorter). Running detectors in a plain sequential loop would turn that
- * `max()` into a `sum()` and let one slow detector delay the other four's
+ * `max()` into a `sum()` and let one slow detector delay the other two's
  * cheap advisories on EVERY prompt — a real latency regression the
  * per-process-parallel design never had. `dispatch()` below runs all
  * detectors via `Promise.all` (concurrent) and bounds each one with its own
@@ -44,8 +45,6 @@ const { readStdin, parsePayload, emitJson, emitEmpty } = require('./lib/hook-io.
 const brainDaemonEnsure = require('./brain-daemon-ensure.js');
 const brainHealth = require('./brain-health.js');
 const brainStatus = require('./brain-status.js');
-const correctionDetect = require('./correction-detect.js');
-const activeResearchDetect = require('./active-research-detect.js');
 
 const SEP = '\n\n';
 
@@ -63,8 +62,6 @@ const DETECTORS = [
   { name: 'brain-daemon-ensure', mod: brainDaemonEnsure, timeoutMs: 25000 },
   { name: 'brain-health', mod: brainHealth, timeoutMs: 5000 },
   { name: 'brain-status', mod: brainStatus, timeoutMs: 5000 },
-  { name: 'correction-detect', mod: correctionDetect, timeoutMs: 5000 },
-  { name: 'active-research-detect', mod: activeResearchDetect, timeoutMs: 5000 },
 ];
 
 /**

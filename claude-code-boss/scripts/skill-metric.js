@@ -12,18 +12,22 @@
 const { readStdin, parsePayload, emitEmpty } = require('./lib/hook-io.js');
 const metrics = require('./lib/metrics.js');
 
-async function main() {
-  const raw = await readStdin();
-  const ev = parsePayload(raw) || {};
+/** Side-effect only (records the metric); the reply is always `{}`. */
+async function run(ev) {
+  ev = ev || {};
   const cmd = ev.command || ev.command_name || '';
   const skillName = String(cmd).replace(/^\//, '').split(/\s/)[0].slice(0, 80);
-  if (!skillName) return emitEmpty();
+  if (!skillName) return;
 
   metrics.fire('skill.invoked', { skillName }, {
     sessionId: ev.session_id || ev.sessionId,
     cwd: ev.cwd,
   });
+}
 
+async function main() {
+  const raw = await readStdin();
+  await run(parsePayload(raw));
   return emitEmpty();
 }
 
@@ -34,4 +38,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { main };
+module.exports = { main, run };

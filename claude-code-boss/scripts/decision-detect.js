@@ -110,17 +110,19 @@ function alreadyPromoted(key) {
   return Array.isArray(arr) && arr.includes(key);
 }
 
-function getRepoUrl() {
+// git runs in the EVENT's cwd: inside the shared daemon (Phase G) process.cwd()
+// is the daemon's, not the session's project.
+function getRepoUrl(cwd) {
   try {
-    const r = spawnSync('git', ['remote', 'get-url', 'origin'], { encoding: 'utf-8', timeout: 1000, windowsHide: true });
+    const r = spawnSync('git', ['remote', 'get-url', 'origin'], { cwd, encoding: 'utf-8', timeout: 1000, windowsHide: true });
     if (r.status === 0) return (r.stdout || '').trim();
   } catch { /* ignore */ }
   return null;
 }
 
-function getHeadSha() {
+function getHeadSha(cwd) {
   try {
-    const r = spawnSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf-8', timeout: 1000, windowsHide: true });
+    const r = spawnSync('git', ['rev-parse', 'HEAD'], { cwd, encoding: 'utf-8', timeout: 1000, windowsHide: true });
     if (r.status === 0) return (r.stdout || '').trim();
   } catch { /* ignore */ }
   return null;
@@ -152,7 +154,7 @@ async function run(event) {
   //   pr-*    → first url-looking token in the command, else hash of msg
   let key = null;
   if (kind === 'commit') {
-    key = getHeadSha() || ('msg:' + msg.slice(0, 60));
+    key = getHeadSha(event.cwd || undefined) || ('msg:' + msg.slice(0, 60));
   } else {
     const urlM = cmd.match(/https?:\/\/[^\s"']+/);
     key = urlM ? urlM[0] : ('msg:' + msg.slice(0, 60));
@@ -170,7 +172,7 @@ async function run(event) {
     key,
     snippet: msg.slice(0, 240),
     fullLen: msg.length,
-    repoUrl: getRepoUrl(),
+    repoUrl: getRepoUrl(event.cwd || undefined),
     ts: Date.now(),
   });
   // Cap pending to last 10 (defensive).

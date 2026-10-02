@@ -55,7 +55,11 @@ function identityKey(dataDir) {
  * mutating process.env — the runner executes tests sequentially but still
  * guards against env races.
  */
-export const DEFAULT_PORT = 58217;
+// 38217, not the original 58217: 58217 sits inside a range Windows reserves
+// (Hyper-V/WinNAT `excludedportrange`, e.g. 58048-58247) → listen EACCES and no
+// daemon at all. Keep it below 49152 (the dynamic range those reservations come
+// from). .mcp.json carries the same port statically.
+export const DEFAULT_PORT = 38217;
 export function resolvePort(dataDir, env = process.env) {
   identityKey(dataDir); // throws on missing/invalid dataDir — see canonicalDataDir
   const e = env.BRAIN_HTTP_PORT && Number(env.BRAIN_HTTP_PORT);

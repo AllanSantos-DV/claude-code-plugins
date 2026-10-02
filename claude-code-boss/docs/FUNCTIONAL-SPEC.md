@@ -157,10 +157,11 @@ User Prompt
     ▼
 UserPromptSubmit Hook
     │
-    ├─► model-router-ensure.js  (garante proxy vivo, configura ANTHROPIC_BASE_URL)
-    ├─► brain-retrieve-context  (injeta lições relevantes no prompt)
-    ├─► correction-detect       (detecta correções do usuário)
-    └─► active-research-detect  (detecta necessidade de pesquisa)
+    ├─► model-router-ensure.js  (command: garante proxy vivo, configura ANTHROPIC_BASE_URL)
+    ├─► user-prompt-submit-dispatcher.js (command: brain-daemon-ensure, brain-health, brain-status)
+    ├─► brain_retrieve_context  (mcp_tool: injeta lições relevantes no prompt)
+    ├─► hook_correction_detect  (mcp_tool: detecta correções do usuário)
+    └─► hook_active_research_detect (mcp_tool: detecta necessidade de pesquisa)
     │
     ▼
 Claude Code envia request → Model Router (localhost:13456)
@@ -176,13 +177,21 @@ Response → User
     ▼
 Stop Hook
     │
-    ├─► stop-dispatcher.js (coordena detectors)
+    ├─► hook_stop_dispatcher (mcp_tool → stop-dispatcher.js in-process no daemon; coordena detectors)
     ├─► curation-detect (detecta comandos repetidos)
     ├─► decision-detect (detecta decisões)
     ├─► failure-detect (detecta falhas)
     ├─► capture-dispatch (oferece captura de lição)
     └─► policy-enforce (enforça policies glob/glob)
 ```
+
+**Transporte dos hooks (2.29.1, ADR-015):** fora `SessionStart`, `SubagentStart`, o
+`user-prompt-submit-dispatcher` e o `model-router-ensure`, os hooks são `mcp_tool`
+(`hook_<nome>`) executados in-process no daemon HTTP do brain-server (porta padrão
+38217), em vez de um processo Node por disparo. Uma exceção na tool vira
+`systemMessage` de degradação (fail-open visível); daemon fora do ar = erro não
+bloqueante do Claude Code. Medido: 8,9 ms p50 por hook (antes 122 ms) e 60 hooks
+concorrentes em 0,6–1,9 s (antes 7–8 s), com 234 MB no daemon.
 
 ---
 
