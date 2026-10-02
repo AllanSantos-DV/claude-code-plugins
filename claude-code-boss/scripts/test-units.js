@@ -2278,7 +2278,9 @@ test('config-testers: hooks validates this repo hooks.json (all green)', async (
   const out = await testers.run('hooks', { hooksRoot: ROOT });
   assert(out.ok === true, `expected ok=true, got: ${out.error || ''} (missing=${out.details?.missing?.length}, syntaxErrors=${out.details?.syntaxErrors?.length})`);
   // Phase G moved most hooks to mcp_tool (not script-backed; covered by the Phase G tests).
-  assert(out.details.checked >= 5, `expected >=5 command hooks, got ${out.details.checked}`);
+  const cmdHooks = Object.values(JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks)
+    .flat().flatMap(g => g.hooks || []).filter(h => h.type === 'command').length;
+  assert(cmdHooks >= 1 && out.details.checked === cmdHooks, `expected every command hook checked (${cmdHooks}), got ${out.details.checked}`);
   assert(out.details.missing.length === 0, `unexpected missing: ${JSON.stringify(out.details.missing)}`);
 });
 
@@ -19764,6 +19766,7 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
     ['hook_correction_detect', 'correction-detect.js', { ...base, hook_event_name: 'UserPromptSubmit', prompt: 'segue o plano' }],
     ['hook_active_research_detect', 'active-research-detect.js', { ...base, hook_event_name: 'UserPromptSubmit', prompt: 'qual a melhor forma de integrar com a api?' }],
     ['hook_stop_dispatcher', 'stop-dispatcher.js', { ...base, hook_event_name: 'Stop', stop_hook_active: true }],
+    ['hook_policy_inject', 'policy-inject.js', { ...base, hook_event_name: 'SubagentStart' }],
   ];
   for (const [tool, script, ev] of PARITY) {
     test(`Phase G parity: ${tool} == ${script} stdout (${ev.prompt || (ev.tool_input && JSON.stringify(ev.tool_input)) || ev.hook_event_name})`, async () => {
@@ -19818,7 +19821,7 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
       assertEq(h.input.project_dir, '${CLAUDE_PROJECT_DIR}');
     }
     const spawned = all.filter(h => h.type === 'command').map(h => (h.args || []).join(' '));
-    for (const s of ['pretooluse-bash-dispatcher', 'graph-guard', 'policy-enforce-shadow', 'posttoolusebash-dispatcher', 'file-edit-detect', 'policy-glob-inject', 'skill-metric', 'posttoolusefailure-dispatcher', 'stop-dispatcher']) {
+    for (const s of ['pretooluse-bash-dispatcher', 'graph-guard', 'policy-enforce-shadow', 'posttoolusebash-dispatcher', 'file-edit-detect', 'policy-glob-inject', 'skill-metric', 'posttoolusefailure-dispatcher', 'stop-dispatcher', 'policy-inject']) {
       assert(!spawned.some(c => c.includes(`/scripts/${s}.js`)), `${s} must not be spawned anymore`);
     }
   });
@@ -19868,6 +19871,27 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
       assertEq(await hw.run('hook_stop_dispatcher', args), '{}');
       assertEq(hw.stats().spawned, 2, 'a fresh worker took over');
     } finally { await hw.shutdown(); }
+  });
+
+  // ── G6: SubagentStart policy-inject through the daemon ──────────────────────
+  test('G6: hook_policy_inject == policy-inject.js with an ACTIVE policy (SubagentStart echo)', async () => {
+    const policyStore = require('./lib/policy-store.js');
+    const { resolveLocalScopeId } = require('./lib/project-id.js');
+    const dataDirNow = require('./lib/data-dir.js').dataDir();
+    const projectId = resolveLocalScopeId({ cwd: proj });
+    const r = policyStore.activate(dataDirNow, { entryId: 'g6-parity', text: 'G6 parity: never skip the smoke', projectId });
+    assert(r.activated, `policy activated: ${JSON.stringify(r)}`);
+    try {
+      const ev = { ...base, hook_event_name: 'SubagentStart' };
+      const daemon = await viaTool('hook_policy_inject', ev, proj);
+      assertEq(daemon, viaCli('policy-inject.js', ev, proj));
+      const out = JSON.parse(daemon);
+      assertEq(out.hookSpecificOutput.hookEventName, 'SubagentStart');
+      assert(/G6 parity: never skip the smoke/.test(out.hookSpecificOutput.additionalContext), daemon);
+    } finally {
+      policyStore.deactivate(dataDirNow, r.id || 'g6-parity');
+      assertEq(await viaTool('hook_policy_inject', { ...base, hook_event_name: 'SubagentStart' }, proj), '{}', 'deactivated → silent again');
+    }
   });
 
   // ── G5: per-hook deadline below the hooks.json timeout ──────────────────────

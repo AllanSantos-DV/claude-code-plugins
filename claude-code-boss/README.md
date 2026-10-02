@@ -56,7 +56,7 @@ claude-code-boss/
 ├── dashboard/
 │   └── index.html             # SPA — 4 abas: Home / Brain KB / Hooks / Logs
 ├── hooks/
-│   └── hooks.json             # 8 eventos; 12 hooks `mcp_tool` (hook_*) rodam in-process no daemon do brain-server + brain_retrieve_context; ficam como command só SessionStart (dispatcher de 12), SubagentStart, user-prompt-submit-dispatcher (3) e model-router-ensure.js
+│   └── hooks.json             # 8 eventos; 13 hooks `mcp_tool` (hook_*) rodam no daemon do brain-server + brain_retrieve_context; ficam como command só SessionStart (dispatcher de 12), user-prompt-submit-dispatcher (3) e model-router-ensure.js
 ├── scripts/                   # Scripts Node.js (zero deps extras para hooks)
 │   ├── dashboard.js           # Servidor HTTP local com ring buffer de logs
 │   ├── brain-*.js             # Brain KB: store, index, graph, embedder, backend, CLI, consolidate (higiene)
@@ -91,7 +91,12 @@ Medido: 8,9 ms p50 por hook (antes 122 ms com spawn) e 60 hooks concorrentes em
 exceção na tool vira `systemMessage` de degradação (fail-open visível); com o
 daemon fora do ar o Claude Code trata o `mcp_tool` como erro não bloqueante.
 Ficam como `command` os hooks que precisam funcionar sem o daemon: `SessionStart`,
-`SubagentStart`, `user-prompt-submit-dispatcher` e `model-router-ensure`.
+`user-prompt-submit-dispatcher` e `model-router-ensure`. O `SubagentStart`
+(`policy-inject`) também roda no daemon (`hook_policy_inject`): era 1 processo por
+subagente. No daemon, `Stop` e os hooks de efeito colateral de `PostToolUse` rodam
+num worker próprio (fila FIFO), fora da thread que atende os guards; os que
+sempre devolvem `{}` respondem na hora e rodam em segundo plano; cada hook tem um
+prazo interno de `timeout − 1 s`.
 
 | Evento | Script | O que faz |
 | --- | --- | --- |
@@ -109,7 +114,7 @@ Ficam como `command` os hooks que precisam funcionar sem o daemon: `SessionStart
 | SessionStart (via dispatcher) | `project-identity-advisory.js` | Pasta sem project id → avisa que a memória está desligada e pede ao agente para perguntar o nome e criar `.memory/project.json` |
 | SessionStart (via dispatcher) | `graph-warm.js` | mcp-memory: dispara um `ingest` incremental do Session Graph (fire-and-forget, cooldown por projeto) pra o grafo ficar pronto-e-fresco antes da 1ª busca — o servidor faz o delta (no-op ~5s se nada mudou). Silencioso, fail-open |
 | SessionStart (via dispatcher) | `policy-inject.js` | Injeta as políticas standing (always) no contexto da sessão |
-| SubagentStart | `policy-inject.js` | Injeta as políticas standing (always) no contexto próprio do subagente — mesma injeção do SessionStart (spawn próprio; matcher com um único hook, não consolidado) |
+| SubagentStart | `policy-inject.js` | Injeta as políticas standing (always) no contexto próprio do subagente — mesma injeção do SessionStart (via `mcp_tool` `hook_policy_inject` no daemon, sem spawn por subagente) |
 | PreToolUse (Bash) | `mcp_tool` → `hook_curation_guard` (`curation-guard.js`) | Bloqueia/redireciona comandos curados; inclui o graph-guard p/ `grep -r`/`rg`/`find` amplos (mcp-memory + grafo ready → deny-once com redirect ao grafo) |
 | PreToolUse (Bash) | `mcp_tool` → `hook_error_guard` (`error-guard.js`) | Nega um comando cuja assinatura já falhou ≥N vezes recentemente, injetando a causa registrada. Roda em paralelo ao `hook_curation_guard`; `deny` vence (o `pretooluse-bash-dispatcher.js` segue como entry por stdin, com a mesma regra) |
 | PreToolUse (Edit) | `mcp_tool` → `hook_policy_enforce_shadow` (`policy-enforce-shadow.js`) | Shadow-mode: detecta se uma edição viola uma política de código ativa (sem bloquear ainda) |

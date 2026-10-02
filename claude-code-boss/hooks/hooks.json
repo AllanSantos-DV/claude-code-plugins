@@ -22,9 +22,16 @@
       {
         "hooks": [
           {
-            "type": "command",
-            "command": "node",
-            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/policy-inject.js"],
+            "type": "mcp_tool",
+            "server": "plugin:claude-code-boss:brain-server",
+            "tool": "hook_policy_inject",
+            "input": {
+              "hook_event_name": "${hook_event_name}",
+              "session_id": "${session_id}",
+              "cwd": "${cwd}",
+              "transcript_path": "${transcript_path}",
+              "project_dir": "${CLAUDE_PROJECT_DIR}"
+            },
             "timeout": 10
           }
         ]
