@@ -35,7 +35,9 @@ const { writeJsonAtomic } = require('./atomic-write.js');
 const DATA_DIR = dataDir();
 const FILE = path.join(DATA_DIR, '.runtime', 'recall-health.json');
 
-const DEGRADED_REASONS = new Set(['no-compose', 'remote-error', 'timeout', 'project-arm-timeout', 'project-arm-error', 'circuit-open']);
+// 'retrieve-error': the daemon's brain_retrieve_context handler itself threw (fail-open
+// → empty recall); before, only the daemon's stderr — kept nowhere — saw it.
+const DEGRADED_REASONS = new Set(['no-compose', 'remote-error', 'timeout', 'project-arm-timeout', 'project-arm-error', 'circuit-open', 'retrieve-error']);
 
 // Quantos outcomes recentes decidem o veredito. Grande o bastante para uma
 // degradação real não sumir num soluço; pequeno o bastante para o alarme APAGAR
@@ -58,7 +60,7 @@ function read() {
  * vazia a partir de agora, que é justamente o que permite o alarme se apagar.
  * @returns {object} novo estado
  */
-function applyOutcome(state, reason, now) {
+function applyOutcome(state, reason, now, detail) {
   const h = state || {};
   const degraded = isDegraded(reason);
   const recent = Array.isArray(h.recent) ? h.recent.slice() : [];
@@ -73,7 +75,7 @@ function applyOutcome(state, reason, now) {
     byReason: degraded
       ? { ...(h.byReason || {}), [reason]: ((h.byReason || {})[reason] || 0) + 1 }
       : { ...(h.byReason || {}) },
-    lastDegraded: degraded ? { reason, ts: now } : (h.lastDegraded || null),
+    lastDegraded: degraded ? { reason, ts: now, ...(detail ? { detail: String(detail).slice(0, 300) } : {}) } : (h.lastDegraded || null),
     recent,
   };
 }
@@ -102,9 +104,9 @@ function summarize(state) {
   };
 }
 
-/** Record one recall outcome. Returns the updated snapshot. */
-function record(reason) {
-  const h = applyOutcome(read(), reason, Date.now());
+/** Record one recall outcome (`detail`: optional error text kept on lastDegraded). */
+function record(reason, detail) {
+  const h = applyOutcome(read(), reason, Date.now(), detail);
   // Best-effort, last-writer-wins (tear-free publish, no cross-process lock).
   try {
     writeJsonAtomic(FILE, h);
