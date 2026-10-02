@@ -1545,8 +1545,12 @@ function writeRouterOverride(body) {
   const byokInput = body.byok || {};
   const byokOut = {
     ...(existing.byok || {}),
-    enabled: byokInput.enabled !== undefined ? byokInput.enabled === true : (body.byokEnabled === true),
-    mode: byokInput.mode || body.byokMode || 'on-limit',
+    // Preserve-on-absent like every other field: a partial `{byok:{mode:'always'}}`
+    // used to switch BYOK OFF (enabled fell to `body.byokEnabled === true`) and reset
+    // the mode — and with BYOK off, an invalid saved modelMap was kept silently.
+    enabled: byokInput.enabled !== undefined ? byokInput.enabled === true
+      : (body.byokEnabled !== undefined ? body.byokEnabled === true : existing.byok?.enabled === true),
+    mode: byokInput.mode || body.byokMode || existing.byok?.mode || 'on-limit',
     baseUrl: (byokInput.baseUrl !== undefined && byokInput.baseUrl !== null) ? byokInput.baseUrl : (existing.byok?.baseUrl || ''),
     headers: (byokInput.headers !== undefined) ? (byokInput.headers || {}) : (existing.byok?.headers || {}),
     // ADR-010: preserve-on-absent — chamadores que não conhecem o flag não o apagam
