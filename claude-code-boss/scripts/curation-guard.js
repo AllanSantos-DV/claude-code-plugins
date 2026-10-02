@@ -47,6 +47,16 @@ function hasPipe(command) {
   return /(?<!\|)\|(?!\|)/.test(command);
 }
 
+/**
+ * True when a segment that INVOKES `scriptPath` pipes its output. The pipe must
+ * belong to that segment: `run-tests.mjs && audit check | tail` pipes the audit,
+ * not the curated script — judging the whole command denied it by mistake.
+ */
+function pipesCuratedScript(command, scriptPath) {
+  const segments = String(command || '').split(/\s*(?:&&|\|\||;|\r?\n)\s*/).filter(Boolean);
+  return segments.some(seg => hasPipe(seg) && _tokenize(seg.split(/(?<!\|)\|(?!\|)/)[0]).some(t => _pathMatches(t, scriptPath)));
+}
+
 // Build a properly-formatted PreToolUse decision object per Claude Code docs.
 // permissionDecision MUST be "allow" | "deny" | "ask" and live INSIDE hookSpecificOutput.
 // https://docs.claude.com/en/docs/claude-code/hooks
@@ -87,7 +97,7 @@ async function run(event) {
       const isInvokingScript = scriptPath && tokens.some(t => _pathMatches(t, scriptPath));
 
       if (isInvokingScript) {
-        if (hasPipe(command)) {
+        if (pipesCuratedScript(command, scriptPath)) {
           const reason = `[curation-guard] Curated script \`${scriptPath}\` invoked with a pipe. Its output is already shaped (filter: ${curatedShell.outputFilter || 'summary'}, lines: ${curatedShell.outputLines || 200}) and is meant to be consumed as-is. If the output is not adequate, edit the script. See skill \`curation-script-pattern\`.`;
           return decision('deny', { additionalContext: reason, permissionDecisionReason: reason });
         }
@@ -178,4 +188,4 @@ if (require.main === module) {
   runPreToolUseCli(run, 'curation-guard', { defaultDecision: decision('allow') });
 }
 
-module.exports = { run, decision, isWhitelisted, hasPipe };
+module.exports = { run, decision, isWhitelisted, hasPipe, pipesCuratedScript };
