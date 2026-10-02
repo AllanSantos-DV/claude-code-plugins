@@ -9914,6 +9914,48 @@ test('router: bodies that stop arriving without FIN no longer hang the client (l
   }
 });
 
+test('plano B SSE: an UNFRAMED (close-delimited) stream cut between lines is a cut unless [DONE]/finish_reason was seen; framed streams without markers stay compatible', async () => {
+  const net = require('net');
+  const frame = (content, finish) => 'data: ' + JSON.stringify({ id: 'c', choices: [{ index: 0, delta: content ? { content } : {}, finish_reason: finish || null }] }) + '\n\n';
+  let mode = 'cut';
+  const raw = net.createServer((sock) => {
+    sock.once('data', () => {
+      const bodyLines = mode === 'cut' ? frame('parte1') : frame('parte1') + frame('', 'stop');
+      // HTTP/1.1 response with NO content-length and NO chunked: the body ends when the socket closes.
+      sock.end('HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n' + bodyLines);
+    });
+  });
+  const up = await new Promise((r) => raw.listen(0, '127.0.0.1', () => r(raw.address().port)));
+  const framed = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => { res.writeHead(200, { 'content-type': 'text/event-stream' }); res.end(frame('parte1')); });
+  });
+  const fup = await _listen0(framed);
+  const fb = { triggerStatuses: [429], cooldown: { enabled: false } };
+  const body = { model: 'claude-opus-5-5', max_tokens: 8, stream: true, messages: [{ role: 'user', content: 'oi' }] };
+  const cfgs = (port) => [
+    ['nvidia', { nim: { apiKey: 'fixture-nim', endpoint: `http://127.0.0.1:${port}/v1/chat/completions` }, fallback: fb }],
+    ['openai', { byok: { enabled: true, mode: 'on-limit', wireProtocol: 'openai', endpoints: { generate: `http://127.0.0.1:${port}/chat` }, headers: {} }, fallback: fb }],
+  ];
+  try {
+    for (const [name, cfg] of cfgs(up)) {
+      mode = 'cut';
+      let r = await _planBRun(cfg, body);
+      assert(!/"message_stop"/.test(r.raw), `${name}: unframed close without an end marker must NOT look like a complete answer, got ${r.raw.slice(-200)}`);
+      mode = 'finished';
+      r = await _planBRun(cfg, body);
+      assert(/"message_stop"/.test(r.raw) && /parte1/.test(r.raw), `${name}: unframed close AFTER finish_reason is a clean end, got ${r.raw.slice(-200)}`);
+    }
+    for (const [name, cfg] of cfgs(fup)) {
+      const r = await _planBRun(cfg, body);
+      assert(/"message_stop"/.test(r.raw), `${name}: a framed (chunked) stream without markers stays a clean end (compat), got ${r.raw.slice(-200)}`);
+    }
+  } finally {
+    await new Promise((r) => raw.close(r));
+    await new Promise((r) => framed.close(r));
+  }
+});
+
 test('plano B: stream que fecha limpo com a última linha sem \\n — frame completo termina, frame cortado chega cortado', async () => {
   const frame = (text) => 'data: ' + JSON.stringify({ id: 'c', choices: [{ index: 0, delta: { content: text } }] });
   const tails = {

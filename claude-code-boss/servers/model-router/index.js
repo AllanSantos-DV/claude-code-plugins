@@ -981,6 +981,20 @@ function ssePendingBytes(prev, chunk, remainder) {
 // pode cair nos primeiros bytes de `data: {...}` (`d`, `data:`, `data: `),
 // então prefixo, `data:` vazio, outro campo, JSON cortado e valor que não é
 // objeto (primitivo, `null`, array) contam como corte.
+// A body delimited only by the connection closing (no content-length, not chunked)
+// that is cut exactly between two complete lines looks like a clean end. A framed
+// body can't hide a cut (it surfaces as 'aborted'/'error'), so ONLY for an unframed
+// body do we require an end marker — `[DONE]` or a `finish_reason` — before treating
+// the close as the end. Framed upstreams that send neither keep working.
+function isCloseDelimited(upRes) {
+  const h = (upRes && upRes.headers) || {};
+  return h['content-length'] == null && !/chunked/i.test(String(h['transfer-encoding'] || ''));
+}
+function frameEnds(value) {
+  const c = value && Array.isArray(value.choices) && value.choices[0];
+  return !!(c && c.finish_reason);
+}
+
 function sseTailFrame(buf) {
   const line = buf.trim();
   if (!line || line.startsWith(':')) return { kind: 'skip' };
@@ -1153,6 +1167,7 @@ function streamNvidiaToAnthropic(nvRes, res, reqBody, warning) {
 
   let buf = '';
   let pending = 0;
+  let sawEnd = false;
   nvRes.setEncoding('utf-8');
   nvRes.on('data', (chunk) => {
     buf += chunk;
@@ -1162,9 +1177,11 @@ function streamNvidiaToAnthropic(nvRes, res, reqBody, warning) {
       buf = buf.slice(idx + 1);
       if (!line.startsWith('data:')) continue;
       const data = line.slice(5).trim();
-      if (!data || data === '[DONE]') continue;
+      if (data === '[DONE]') { sawEnd = true; continue; }
+      if (!data) continue;
       try {
         const j = JSON.parse(data);
+        if (frameEnds(j)) sawEnd = true;
         const delta = j.choices && j.choices[0] && j.choices[0].delta && j.choices[0].delta.content;
         if (delta) sseEvent(res, 'content_block_delta', { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: delta } });
       } catch (e) {
@@ -1180,6 +1197,12 @@ function streamNvidiaToAnthropic(nvRes, res, reqBody, warning) {
     if (tail.kind === 'partial') {
       logger.error('Stream NVIDIA terminou com frame incompleto', { bytes: Buffer.byteLength(buf), reason: tail.reason });
       res.destroy(new Error('Stream NVIDIA terminou com frame SSE incompleto'));
+      return;
+    }
+    if (tail.kind === 'done' || (tail.kind === 'json' && frameEnds(tail.value))) sawEnd = true;
+    if (!sawEnd && isCloseDelimited(nvRes)) {
+      logger.error('Stream NVIDIA sem enquadramento fechou sem [DONE] nem finish_reason — tratado como corte');
+      res.destroy(new Error('Stream NVIDIA fechou sem marcador de fim'));
       return;
     }
     if (tail.kind === 'json') {
@@ -1587,6 +1610,7 @@ function proxyOpenAIResponse(upRes, res, reqBody, adapter, onReadError) {
     emitAdapterEvents(res, translator.start());
     let buffer = '';
     let pending = 0;
+    let sawEnd = false;
     upRes.setEncoding('utf8');
     upRes.on('data', chunk => {
       buffer += chunk;
@@ -1598,6 +1622,7 @@ function proxyOpenAIResponse(upRes, res, reqBody, adapter, onReadError) {
         const data = line.slice(5).trim();
         if (!data) continue;
         if (data === '[DONE]') {
+          sawEnd = true;
           // finish() também valida (tool call sem nome): lançar aqui sairia do
           // handler do stream e derrubaria o processo.
           try {
@@ -1611,7 +1636,9 @@ function proxyOpenAIResponse(upRes, res, reqBody, adapter, onReadError) {
           continue;
         }
         try {
-          emitAdapterEvents(res, translator.consume(JSON.parse(data)));
+          const frame = JSON.parse(data);
+          if (frameEnds(frame)) sawEnd = true;
+          emitAdapterEvents(res, translator.consume(frame));
         } catch (err) {
           logger.error('Falha ao traduzir stream OpenAI', { err: err.message });
           res.destroy(err);
@@ -1628,6 +1655,12 @@ function proxyOpenAIResponse(upRes, res, reqBody, adapter, onReadError) {
         if (tail.kind === 'partial') {
           logger.error('Stream OpenAI terminou com frame incompleto', { bytes: Buffer.byteLength(buffer), reason: tail.reason });
           res.destroy(new Error('Stream OpenAI terminou com frame SSE incompleto'));
+          return;
+        }
+        if (tail.kind === 'done' || (tail.kind === 'json' && frameEnds(tail.value))) sawEnd = true;
+        if (!sawEnd && isCloseDelimited(upRes)) {
+          logger.error('Stream OpenAI sem enquadramento fechou sem [DONE] nem finish_reason — tratado como corte');
+          res.destroy(new Error('Stream OpenAI fechou sem marcador de fim'));
           return;
         }
         try {
