@@ -199,9 +199,12 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   explícitos como "busca recursiva ampla"** e nega (deny-once). Visto em
   2026-10-02. `lib/graph-guard-core.js` `matchBroadBashSearch`: só deveria valer
   quando o alvo é a raiz/diretório, não uma lista de arquivos.
-- [ ] **O10 — `scripts/lib/session-marker.js` ficou sem uso** depois do G10 (o
+- [x] **O10 — `scripts/lib/session-marker.js` ficou sem uso** depois do G10 (o
   `capture-queue` era o único consumidor do cursor). Só os próprios testes o usam.
   Remover módulo + testes num commit de limpeza.
+  **RESOLVIDO em 2026-10-02**: módulo removido; 5 testes dele saíram; as 18
+  chamadas de higiene de fixture nos testes do `capture-dispatch` saíram (o
+  teardown agora é `capture-queue.reset`, o estado que importa). Suíte 1291/0.
 - [ ] **G11 — rajada de 60 `PreToolUse` simultâneos ainda com p95 ~220 ms.**
   (Após o G10: p95 103 ms, praticamente na meta de 100 ms.)
   120 chamadas MCP (2 guards irmãos × 60) serializadas na thread principal: o que
