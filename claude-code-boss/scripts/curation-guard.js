@@ -53,9 +53,26 @@ function hasPipe(command) {
  * belong to that segment: `run-tests.mjs && audit check | tail` pipes the audit,
  * not the curated script — judging the whole command denied it by mistake.
  */
+// The curated script must be the PROGRAM being run (`node x.mjs …`, `./x.sh`), not
+// an argument of another program: `grep -n foo x.mjs | head` READS the script and was
+// denied as "curated script invoked with a pipe" (seen live, 2026-10-02).
+const INTERPRETERS = new Set(['node', 'bash', 'sh', 'zsh', 'python', 'python3', 'pwsh', 'powershell', 'deno', 'bun']);
+const NON_RUN_FLAGS = new Set(['--check', '-c', '--syntax-check']);
+function invokesScript(tokens, scriptPath) {
+  if (!tokens.length) return false;
+  if (_pathMatches(tokens[0], scriptPath)) return true;
+  const prog = String(tokens[0]).replace(/\\/g, '/').split('/').pop().replace(/\.exe$/i, '').toLowerCase();
+  if (!INTERPRETERS.has(prog)) return false;
+  // Interpreter flags may take values (`powershell -ExecutionPolicy Bypass -File x`),
+  // so the script counts anywhere in its args — unless a flag means "don't run it".
+  const args = tokens.slice(1);
+  if (args.some(t => NON_RUN_FLAGS.has(t))) return false;
+  return args.some(t => _pathMatches(t, scriptPath));
+}
+
 function pipesCuratedScript(command, scriptPath) {
   const segments = String(command || '').split(/\s*(?:&&|\|\||;|\r?\n)\s*/).filter(Boolean);
-  return segments.some(seg => hasPipe(seg) && _tokenize(seg.split(/(?<!\|)\|(?!\|)/)[0]).some(t => _pathMatches(t, scriptPath)));
+  return segments.some(seg => hasPipe(seg) && invokesScript(_tokenize(seg.split(/(?<!\|)\|(?!\|)/)[0]), scriptPath));
 }
 
 // Build a properly-formatted PreToolUse decision object per Claude Code docs.

@@ -704,6 +704,46 @@ const TESTS = [
     },
   },
   {
+    name: 'curation-guard    [PreToolUse/curated script only READ by grep/cat + pipe→allow (not an invocation)]',
+    script: 'curation-guard.js',
+    payload: (() => {
+      // Field case 2026-10-02: `grep -n "catch" -A3 .vscode/scripts/test-hooks.mjs | head -6`
+      // was denied as "curated script invoked with a pipe" — grep READS the file.
+      const cwd = mkTempProject({ shells: [{ id: 'th', script: '.vscode/scripts/test-hooks.mjs', aliases: [] }], whitelist: [] });
+      return {
+        tool_name: 'Bash',
+        tool_input: { command: 'grep -n "catch (err)" -A3 .vscode/scripts/test-hooks.mjs | head -6' },
+        session_id: SESSION,
+        cwd,
+      };
+    })(),
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    validate: r => {
+      const d = r.parsed?.hookSpecificOutput?.permissionDecision;
+      if (d !== 'allow') return `reading a curated script is not running it → allow, got: ${d} (${r.parsed?.hookSpecificOutput?.additionalContext || ''})`;
+      return null;
+    },
+  },
+  {
+    name: 'curation-guard    [PreToolUse/curated script run via node + pipe→deny (still enforced)]',
+    script: 'curation-guard.js',
+    payload: (() => {
+      const cwd = mkTempProject({ shells: [{ id: 'th', script: '.vscode/scripts/test-hooks.mjs', aliases: [] }], whitelist: [] });
+      return {
+        tool_name: 'Bash',
+        tool_input: { command: 'node --no-warnings .vscode/scripts/test-hooks.mjs | tail -3' },
+        session_id: SESSION,
+        cwd,
+      };
+    })(),
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    validate: r => {
+      const d = r.parsed?.hookSpecificOutput?.permissionDecision;
+      if (d !== 'deny') return `running the curated script and piping it must still deny, got: ${d}`;
+      return null;
+    },
+  },
+  {
     name: 'curation-guard    [PreToolUse/compound with a curated alias as ONE piece→allow+hint, absolute path (U1)]',
     script: 'curation-guard.js',
     payload: (() => {

@@ -348,6 +348,13 @@ real (2.29.0, porta 38217) seguiu intacto. Resultados (Claude Code 2.1.283):
   Testes: hooks com duas sessões no mesmo data dir (a outra não vê nem consome; a dona
   vê e consome), cadência por sessão, unit do `session-counter`. Units 1303/0, hooks 120/0.
 
+- [x] **G19 — `curation-guard` negava LER um script curado com pipe (achado e corrigido na hora)**.
+  `grep -n … .vscode/scripts/test-hooks.mjs | head` foi negado como "curated script invoked with a
+  pipe": `pipesCuratedScript` contava o caminho em qualquer posição do 1º trecho do pipe. Agora
+  só conta como programa (1º token, ou argumento de um interpretador — node/bash/python/pwsh…,
+  exceto `--check`/`-c`). Testes: grep do script + pipe → allow; `node --no-warnings script | tail` → deny;
+  `powershell … -File script | tail` segue deny.
+
 ### UX / ruído visto usando a ferramenta (sessão de 2026-10-02)
 
 - [x] **U1 — `curation-guard` redireciona comando composto para script que não o
