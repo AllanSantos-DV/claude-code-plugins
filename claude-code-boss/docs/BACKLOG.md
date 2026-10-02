@@ -394,7 +394,15 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   `dead` fica setado e toda chamada para aquele slot (projetos com o mesmo hash)
   falha até reiniciar o daemon. Fix: recriar o slot na próxima chamada, como o
   hook worker do G2 faz.
-- [ ] **O7 — `kb-worker.js:14-17` afirma "uma mensagem por vez", mas o handler é
+- [x] **O7 — `kb-worker.js:14-17` afirma "uma mensagem por vez", mas o handler é**
+  **VERIFICADO em 2026-10-02 — sem bug, comentário corrigido**: as chamadas se
+  intercalam nos `await`, mas toda sequência que troca o projeto singleton do
+  worker roda sob o `kbLock` do slot (`dispatchKbTool`, inclusive o caminho remoto
+  e o `recordLessonMetric`); o único chamador fora do lock (`policy_shadow_report`)
+  usa `getEvaluationCountsIsolated` (conexão própria, read-only, 1 chamada
+  síncrona). Comentário do `kb-worker.js` reescrito com essa regra e o aviso para
+  novos chamadores. (Texto original do achado abaixo.)
+- [ ] ~~O7 — `kb-worker.js:14-17` afirma "uma mensagem por vez", mas o handler é~~
   `async`** (`parentPort.on('message', async …)`): chamadas assíncronas se
   intercalam nos `await`. Verificar se algum método do store depende dessa
   serialização; se sim, fila explícita (como `hook-worker.js`); se não, corrigir

@@ -12,9 +12,14 @@
  * possible ever since (one shared process, one shared thread).
  *
  * This worker requires brain-store.js and metrics-store.js in ITS OWN thread,
- * so their synchronous SQLite work never touches the main thread. Messages are
- * processed one at a time (a worker has a single event loop too), which keeps
- * kb-worker-client.js's call ordering intact.
+ * so their synchronous SQLite work never touches the main thread. The handler is
+ * async, so calls DO interleave at their `await`s — messages are NOT processed
+ * strictly one at a time. Correctness does not rely on that: every caller sequence
+ * that switches this worker's singleton project (init({project}) → ops) runs under
+ * the per-slot kbLock in mcp-server.js (dispatchKbTool), and the one unlocked
+ * caller (policy_shadow_report → metrics getEvaluationCountsIsolated) opens its own
+ * read-only connection in a single synchronous call. A new unlocked caller that
+ * touches the singleton would race — route it through dispatchKbTool.
  *
  * brain-index.js/brain-graph.js live here too: same failure mode, different
  * I/O (synchronous fs.readFileSync/writeFileAtomic instead of better-sqlite3),
