@@ -76,9 +76,39 @@ const ASSIGN_ONLY_KEY = /^(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*[A-Za-z_][A-Za-z0-9_
 function pruneOrphanKeys(store) {
   if (!store || !store.entries) return store;
   for (const k of Object.keys(store.entries)) {
-    if (ASSIGN_ONLY_KEY.test(k) || canonicalSig(k) !== k) delete store.entries[k];
+    if (ASSIGN_ONLY_KEY.test(k) || canonicalSig(k) !== k) { delete store.entries[k]; continue; }
+    const e = store.entries[k];
+    // 3. UNRELATED alias sigs. A batch mark used to coalesce every passed sig into
+    //    ONE entry, so `ssh mac-ts ...` carried aliasSigs [`grep ...`, `git diff`]:
+    //    every later `git diff` bumped the ssh entry (observed at 50/3) and the Stop
+    //    reason blamed the ssh sig, which mark_oneoff then refused past the ceiling.
+    //    Detach them; the unrelated commands get their own entries on next sight.
+    if (Array.isArray(e.aliasSigs)) e.aliasSigs = e.aliasSigs.filter(a => sigsRelated(a, k));
   }
   return store;
+}
+
+/** Same command family: equal, or one is a whole-token prefix of the other. */
+function sigsRelated(a, b) {
+  if (!a || !b) return false;
+  return a === b || a.startsWith(b + ' ') || b.startsWith(a + ' ');
+}
+
+/**
+ * A 1-token sig (`node`, `pytest`) can't be curated — curation_register_shell
+ * refuses 1-token aliases — so the recurrence ceiling is unenforceable for it:
+ * holding it to one would leave a flagged sig with NO sanctioned way to clear it.
+ * Such a sig is marked by EXACT match only (never as a prefix alias) and stays
+ * suppressible regardless of count.
+ * Only a PROGRAM NAME qualifies: a junk token (`2` from an old `>&2` split, a bare
+ * `heredoc-<digest>`) pooled unrelated commands, and exempting it would silence
+ * them all forever. Those keep the ceiling and age out of the window.
+ */
+const PROGRAM_NAME = /^[A-Za-z_][A-Za-z0-9_.+-]*$/;
+function isCeilingExempt(sig) {
+  if (!sig) return false;
+  const toks = sig.split(' ').filter(Boolean);
+  return toks.length === 1 && PROGRAM_NAME.test(toks[0]) && !toks[0].startsWith('heredoc-');
 }
 
 function load(dataDir, projectKey) {
@@ -142,7 +172,7 @@ function isOneHit(store, { command, sig } = {}, { now = Date.now(), windowDays =
   for (const key of Object.keys(store.entries)) {
     const e = store.entries[key];
     if (e.oneHit && entryMatchesSig(e, s)) {
-      return countInWindow(e, now, windowDays) < maxRecurrence;
+      return isCeilingExempt(e.sig) || countInWindow(e, now, windowDays) < maxRecurrence;
     }
   }
   return false;
@@ -187,64 +217,97 @@ function touch(dataDir, projectKey, command, { sessionId, now = Date.now(), wind
   entry.lastSeen = now;
   if (sessionId && !entry.sessions.includes(sessionId)) pushCapped(entry.sessions, sessionId, MAX_SESSIONS);
   save(dataDir, projectKey, store);
-  return { matched: true, created, oneHit: !!entry.oneHit, count: countInWindow(entry, now, windowDays), sig: entry.sig };
+  return { matched: true, created, oneHit: !!entry.oneHit, count: countInWindow(entry, now, windowDays), sig: entry.sig, ceilingExempt: isCeilingExempt(entry.sig) };
 }
 
 /**
- * Mark a command (by its aliases and/or exact canonical sigs) as one-hit,
- * MERGING into an overlapping entry (D3). Refuses (D2) when the windowed count
- * already crossed the ceiling — the command recurs too much to be one-hit and
- * must be curated.
+ * Mark commands (by their aliases and/or exact canonical sigs) as one-hit.
+ *
+ * Each DISTINCT signature is resolved on its own: it MERGES into the entry that
+ * already matches it (D3) or gets a fresh entry. A batch call used to coalesce
+ * every passed sig into ONE entry, pooling unrelated commands' recurrence — the
+ * next `git diff` then bumped (and was reported under) an unrelated `ssh ...` sig
+ * past the ceiling. Aliases ride with the sig they canonicalize to.
+ *
+ * Refuses (D2) a sig whose windowed count already crossed the ceiling — it recurs
+ * too much to be one-hit and must be curated. A refusal is per-sig: the rest of a
+ * batch still registers. 1-token sigs are ceiling-exempt and exact-match only
+ * (see isCeilingExempt).
  *
  * `sigs` are canonical signatures taken verbatim (e.g. copied from the Stop-hook
  * reason's `sig \`...\``) — preferred over aliases because they match the store
  * exactly, with no alias→sig derivation to get wrong.
  *
- * @returns {{ decision:'marked'|'merged'|'rejected', sig, signatures?, count, sessions?, aliases? }}
- *   `sig` is the REPRESENTATIVE (first) signature; `signatures` (marked/merged only)
- *   is the COMPLETE set actually covered by the entry (all sigs/aliases), so a batch
- *   caller can see every signature that registered — not just the first.
+ * @returns {{ decision:'marked'|'merged'|'rejected', sig, signatures?, count, sessions?, aliases?, rejected? }}
+ *   `sig` is the REPRESENTATIVE (first registered) signature; `signatures`
+ *   (marked/merged only) is the COMPLETE set covered by every touched entry, so a
+ *   batch caller sees all that registered. `rejected` lists the per-sig refusals
+ *   ({ sig, count }) — present whenever at least one sig was refused.
  */
 function mark(dataDir, projectKey, { aliases = [], sigs = [], sessionId, now = Date.now(), maxRecurrence = 3, windowDays = 90 } = {}) {
   const store = load(dataDir, projectKey);
   const cleanAliases = [...new Set((Array.isArray(aliases) ? aliases : []).map(a => String(a || '').trim()).filter(Boolean))];
   const explicitSigs = [...new Set((Array.isArray(sigs) ? sigs : []).map(s => String(s || '').trim()).filter(Boolean))];
-  const aliasSigs = [...new Set([...explicitSigs, ...cleanAliases.map(canonicalSig)].filter(Boolean))];
-  const sig = aliasSigs[0];
-  if (!sig) return { decision: 'rejected', sig: '', count: 0, reason: 'empty-signature' };
-
-  let entry = null;
-  for (const key of Object.keys(store.entries)) {
-    const e = store.entries[key];
-    if (aliasSigs.some(s => entryMatchesSig(e, s))) { entry = e; break; }
+  // sig → raw aliases that canonicalize to it (insertion order = caller order).
+  const groups = new Map();
+  for (const s of explicitSigs) if (!groups.has(s)) groups.set(s, []);
+  for (const a of cleanAliases) {
+    const s = canonicalSig(a);
+    if (!s) continue;
+    if (!groups.has(s)) groups.set(s, []);
+    groups.get(s).push(a);
   }
+  if (groups.size === 0) return { decision: 'rejected', sig: '', count: 0, reason: 'empty-signature' };
 
-  const existingCount = entry ? countInWindow(entry, now, windowDays) : 0;
-  if (existingCount >= maxRecurrence) {
-    return { decision: 'rejected', sig: entry.sig, count: existingCount, sessions: (entry.sessions || []).slice(), aliases: (entry.aliases || []).slice() };
-  }
-
-  if (entry) {
-    entry.aliases = [...new Set([...(entry.aliases || []), ...cleanAliases])].slice(0, MAX_ALIASES);
-    entry.aliasSigs = [...new Set([...(entry.aliasSigs || []), ...aliasSigs])].slice(0, MAX_ALIASES);
+  const touched = [];   // { entry, created }
+  const rejected = [];  // { sig, count, entry }
+  for (const [sig, rawAliases] of groups) {
+    const exempt = isCeilingExempt(sig);
+    // A 1-token sig matches by exact key only — as a prefix alias it would
+    // silence every `node <anything>`.
+    let entry = exempt ? (store.entries[sig] || null) : null;
+    if (!exempt) {
+      for (const key of Object.keys(store.entries)) {
+        if (entryMatchesSig(store.entries[key], sig)) { entry = store.entries[key]; break; }
+      }
+    }
+    const count = entry ? countInWindow(entry, now, windowDays) : 0;
+    if (!exempt && count >= maxRecurrence) { rejected.push({ sig: entry.sig, count, entry }); continue; }
+    const created = !entry;
+    if (created) {
+      entry = { sig, aliases: [], aliasSigs: [], seen: [], sessions: [], firstSeen: now, lastSeen: now, oneHit: true, markedAt: now };
+      store.entries[sig] = entry;
+    }
+    entry.aliases = [...new Set([...(entry.aliases || []), ...rawAliases])].slice(0, MAX_ALIASES);
+    // Only a RELATED sig joins aliasSigs (an unrelated one is already covered by the
+    // alias that matched it, and pruneOrphanKeys would detach it anyway).
+    if (!exempt && sigsRelated(sig, entry.sig)) {
+      entry.aliasSigs = [...new Set([...(entry.aliasSigs || []), sig])].slice(0, MAX_ALIASES);
+    }
     entry.oneHit = true;
     entry.markedAt = now;
     entry.lastSeen = now;
     if (sessionId && !entry.sessions.includes(sessionId)) pushCapped(entry.sessions, sessionId, MAX_SESSIONS);
-    save(dataDir, projectKey, store);
-    // `signatures` = the entry's FULL merged coverage (every sig/alias), so a batch
-    // caller sees all of them; `sig` stays the representative for backward compat.
-    return { decision: 'merged', sig: entry.sig, signatures: (entry.aliasSigs || []).slice(), count: countInWindow(entry, now, windowDays), aliases: entry.aliases.slice() };
+    if (!touched.some(t => t.entry === entry)) touched.push({ entry, created });
   }
 
-  store.entries[sig] = {
-    sig, aliases: cleanAliases, aliasSigs, seen: [],
-    sessions: sessionId ? [sessionId] : [], firstSeen: now, lastSeen: now, oneHit: true, markedAt: now,
-  };
+  const rejectedOut = rejected.map(r => ({ sig: r.sig, count: r.count }));
+  if (touched.length === 0) {
+    const first = rejected[0];
+    return { decision: 'rejected', sig: first.sig, count: first.count, sessions: (first.entry.sessions || []).slice(), aliases: (first.entry.aliases || []).slice(), rejected: rejectedOut };
+  }
   save(dataDir, projectKey, store);
-  // `signatures` = every signature this new entry covers (all passed sigs+aliases),
-  // not just the representative `sig` — a batch mark registered all of them.
-  return { decision: 'marked', sig, signatures: aliasSigs.slice(), count: 0, aliases: cleanAliases.slice() };
+  const head = touched[0].entry;
+  const signatures = [...new Set(touched.flatMap(t => [t.entry.sig, ...(t.entry.aliasSigs || [])]))];
+  const out = {
+    decision: touched.every(t => t.created) ? 'marked' : 'merged',
+    sig: head.sig,
+    signatures,
+    count: countInWindow(head, now, windowDays),
+    aliases: [...new Set(touched.flatMap(t => t.entry.aliases || []))],
+  };
+  if (rejectedOut.length) out.rejected = rejectedOut;
+  return out;
 }
 
 /** Remove entries with no occurrence/marking inside the window (cold). #removed. */
@@ -272,5 +335,5 @@ module.exports = {
   pruneOrphanKeys,
   resolveProjectKey, storePath, load, save,
   touch, mark, prune, summary, matchEntry, countInWindow, entryMatchesSig,
-  isOneHit, markedSince,
+  isOneHit, markedSince, sigsRelated, isCeilingExempt,
 };

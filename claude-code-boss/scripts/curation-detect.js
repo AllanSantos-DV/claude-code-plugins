@@ -136,8 +136,9 @@ async function run(event) {
     if (!reason) return;
 
     // A valid one-hit marking (still under the ceiling) suppresses the block, so
-    // the Stop hook never re-asks to curate a genuine single-use command.
-    if (seen.matched && seen.oneHit && seen.count < _curationCfg.oneHitMaxRecurrence) {
+    // the Stop hook never re-asks to curate a genuine single-use command. A 1-token
+    // sig can't be curated at all, so its marking holds past the ceiling.
+    if (seen.matched && seen.oneHit && (seen.ceilingExempt || seen.count < _curationCfg.oneHitMaxRecurrence)) {
       console.error(`[CURATION-DETECT] suppressed one-hit (${seen.sig} ${seen.count}/${_curationCfg.oneHitMaxRecurrence})`);
       return;
     }

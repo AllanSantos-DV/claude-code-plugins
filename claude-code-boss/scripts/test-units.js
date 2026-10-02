@@ -4961,6 +4961,61 @@ test('command-signature: comment and echo-banner segments are not the command', 
   assertEq(cmdSig.canonicalSig('echo hello world'), 'echo hello world');
 });
 
+test('command-signature: heredoc body is data, not segments', () => {
+  const { text, bodies } = cmdSig.foldHeredocs("node - <<'EOF'\nconst a = 'x;y'; it's\nEOF\nls -la");
+  assertEq(text, 'node - <<@0\nls -la');
+  assertEq(bodies, ["const a = 'x;y'; it's"]);
+  // `<<<` here-string is not a heredoc.
+  assertEq(cmdSig.foldHeredocs('grep a <<< "abc"').bodies, []);
+});
+test('command-signature: stdin heredoc script gets a body-specific sig, not bare `node`', () => {
+  const a = cmdSig.canonicalSig("node - <<'EOF'\nconsole.log(1)\nEOF");
+  const b = cmdSig.canonicalSig("node - <<'EOF'\nconsole.log(2)\nEOF");
+  assert(/^node heredoc-[0-9a-f]{8}$/.test(a), `got ${a}`);
+  assert(a !== b, 'different bodies → different sigs');
+  assertEq(cmdSig.canonicalSig("node - <<'EOF'\r\nconsole.log(1)\r\nEOF\r\n"), a, 'CRLF-insensitive');
+  assert(!cmdSig.isGenericAlias(a), 'heredoc sig is markable (>=2 tokens)');
+  assertEq(cmdSig.canonicalSig(a), a, 'idempotent (pruneOrphanKeys keeps it)');
+  // A command that already names its target keeps its own sig across inputs.
+  assertEq(cmdSig.canonicalSig('psql db <<SQL\nselect 1;\nSQL'), 'psql db');
+});
+test('command-signature: `cat > f <<EOF` write prelude is skipped as setup', () => {
+  assertEq(cmdSig.canonicalSig("cat > /tmp/p.js <<'EOF'\nconst x='a;b'\nEOF\nnode /tmp/p.js --v"), 'node /tmp/p.js');
+  assertEq(cmdSig.canonicalSig('cat <<EOF > f\nx\nEOF\ngit status'), 'git status');
+  // Prelude alone: body-specific, never bare `cat`.
+  assert(/^cat heredoc-[0-9a-f]{8}$/.test(cmdSig.canonicalSig("cat > f.txt <<'EOF'\nhello; world\nEOF")));
+});
+test('command-signature: observed subagent diff command signs as git diff', () => {
+  const cmd = 'git --no-pager diff --stat > /s/stat.txt 2>&1; mkdir -p /s; git --no-pager diff > /s/full.diff; git --no-pager diff --stat | cat; wc -l /s/full.diff';
+  assertEq(cmdSig.canonicalSig(cmd), 'git diff');
+});
+test('command-signature: fd redirection `>&2` is not a background separator', () => {
+  // Was: `cat <<@0 >` | `2` | `git log` → the junk 1-token sig `2`.
+  assertEq(cmdSig.canonicalSig('cat <<EOF >&2\nusage\nEOF\ngit log -5'), 'git log');
+  assertEq(cmdSig.canonicalSig('echo x >&2\nnpm run build'), 'npm run build');
+  assertEq(cmdSig.canonicalSig('sleep 5 & git status'), 'sleep 5', 'lone & still separates');
+});
+test('command-signature: arithmetic `<<` is a shift, not a heredoc', () => {
+  assertEq(cmdSig.foldHeredocs('a=$((x<<y))\ngit status').bodies, []);
+  assertEq(cmdSig.canonicalSig('a=$((x<<y))\ngit status'), 'git status');
+  // A `((` in quotes or a comment must not disable folding for later lines.
+  for (const pre of ['echo "(("', '# ((see']) {
+    assert(/^node heredoc-/.test(cmdSig.canonicalSig(`${pre}\nnode - <<'EOF'\nconsole.log(1)\nEOF`)), pre);
+  }
+});
+test('command-signature: `&>` redirection cuts cleanly (fixed-point sig)', () => {
+  for (const cmd of ['npm run build &> build.log; tail -200 build.log', 'npm run build&>>b.log']) {
+    const s = cmdSig.canonicalSig(cmd);
+    assertEq(s, 'npm run build', cmd);
+    assertEq(cmdSig.canonicalSig(s), s, 'idempotent');
+  }
+});
+test('command-signature: `VAR=$(cat <<EOF)` never signs as a bare heredoc digest', () => {
+  const s = cmdSig.canonicalSig('MSG=$(cat <<EOF\nx\nEOF\n)\ngit commit -m "$MSG"');
+  assert(/^git commit/.test(s), `got ${s}`);
+  assertEq(cmdSig.canonicalSig(s), s, 'idempotent');
+});
+
 // ─── oneoff-store ─────────────────────────────────────────────────────────────
 const oneoff = require(path.join(SCRIPTS, 'lib', 'oneoff-store.js'));
 const freshDataDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-oneoff-'));
@@ -5076,10 +5131,9 @@ test('oneoff-store: markedSince sees only markings at/after the cutoff', () => {
 });
 
 // ── FIX #9: curation_mark_oneoff response must reflect ALL marked signatures ──
-// A batch mark COALESCES its sigs into ONE entry (aliasSigs cover them all) — the
-// suppression/count semantics are correct and UNCHANGED here; the only gap was that
-// the response echoed just the representative `sig`. These tests pin that `signatures`
-// now lists every covered sig, while `sig` stays the first for backward compat.
+// The response echoed just the representative `sig`. These tests pin that
+// `signatures` lists every covered sig, while `sig` stays the first for backward
+// compat. (Each distinct sig now gets its OWN entry — see the misattribution tests.)
 test('oneoff-store (FIX #9): mark surfaces ALL batch signatures, not just the representative first', () => {
   const dd = freshDataDir(); const pk = 'p'; const now = 1_700_000_000_000;
   const m = oneoff.mark(dd, pk, { sigs: ['npm run alpha', 'npm run beta'], now, maxRecurrence: 3 });
@@ -5087,9 +5141,9 @@ test('oneoff-store (FIX #9): mark surfaces ALL batch signatures, not just the re
   assert(Array.isArray(m.signatures), 'response carries a signatures[] array');
   assertEq(m.signatures.slice().sort(), ['npm run alpha', 'npm run beta'], 'BOTH marked sigs surfaced (not only the first)');
   assertEq(m.sig, 'npm run alpha', 'sig stays the representative (first) for backward compat');
-  // Semantics UNCHANGED: one coalesced entry; BOTH sigs resolve to it (suppression covers all).
+  // One entry PER sig (coalescing pooled unrelated recurrence); both suppressible.
   const store = oneoff.load(dd, pk);
-  assertEq(Object.keys(store.entries).length, 1, 'still a single coalesced entry');
+  assertEq(Object.keys(store.entries).sort(), ['npm run alpha', 'npm run beta'], 'one entry per distinct sig');
   assert(oneoff.isOneHit(store, { sig: 'npm run alpha' }, { now, maxRecurrence: 3 }), 'first sig suppressible');
   assert(oneoff.isOneHit(store, { sig: 'npm run beta' }, { now, maxRecurrence: 3 }), 'second sig ALSO suppressible');
 });
@@ -5123,6 +5177,86 @@ test('curation_mark_oneoff (FIX #9): handler response lists ALL batch signatures
   assertEq(out.signatures.slice().sort(), ['npm run alpha', 'npm run beta'], 'BOTH sigs surfaced in the handler response');
   assertEq(out.signature, 'npm run alpha', 'signature stays the representative (backward compat)');
   assert(/2 signature/.test(out.message || ''), `message reflects the batch count, got: ${out.message}`);
+});
+
+// ── Misattribution: a batch mark fused unrelated sigs into one entry ──────────
+// Observed live: `ssh mac-ts "echo '--- listening ports` carried aliasSigs
+// [grep ..., git diff]; every later `git diff` bumped it (50/3) and the Stop hook
+// reported the diff under the ssh sig, which mark_oneoff then refused.
+test('oneoff-store: batch mark keeps unrelated sigs in separate entries', () => {
+  const dd = freshDataDir(); const pk = 'p'; let now = 1_700_000_000_000;
+  oneoff.mark(dd, pk, { sigs: ['ssh mac-ts x', 'git diff'], now: now++, maxRecurrence: 3 });
+  const r = oneoff.touch(dd, pk, 'git --no-pager diff --stat | cat', { now: now++, create: true });
+  assertEq(r.sig, 'git diff', 'git diff attributed to its own sig');
+  const store = oneoff.load(dd, pk);
+  assertEq(oneoff.countInWindow(store.entries['ssh mac-ts x'], now, 90), 0, 'ssh entry not bumped');
+});
+test('oneoff-store: load detaches unrelated aliasSigs from a legacy fused entry', () => {
+  const dd = freshDataDir(); const pk = 'p'; const now = 1_700_000_000_000;
+  const sshSig = 'ssh mac-ts "echo \'--- listening ports';
+  const p = oneoff.storePath(dd, pk);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ entries: { [sshSig]: {
+    sig: sshSig, aliases: [], aliasSigs: [sshSig, 'grep "passthrough" index.js', 'git diff', `${sshSig} extra`],
+    seen: Array.from({ length: 50 }, (_, i) => now - i), sessions: [], firstSeen: now, lastSeen: now, oneHit: true, markedAt: now,
+  } } }));
+  const store = oneoff.load(dd, pk);
+  assertEq(store.entries[sshSig].aliasSigs, [sshSig, `${sshSig} extra`], 'only related aliasSigs survive');
+  // The subagent diff command no longer lands on the ssh sig, and is markable.
+  const cmd = 'git --no-pager diff --stat > /s/stat.txt 2>&1; mkdir -p /s; git --no-pager diff > /s/full.diff';
+  assertEq(oneoff.matchEntry(store, cmd), null, 'git diff no longer matches the ssh entry');
+  const r = oneoff.touch(dd, pk, cmd, { now: now + 1, create: true });
+  assertEq([r.sig, r.count], ['git diff', 1]);
+  assertEq(oneoff.mark(dd, pk, { sigs: ['git diff'], now: now + 2, maxRecurrence: 3 }).decision, 'merged');
+});
+test('oneoff-store: batch mark registers the rest when one sig is past the ceiling', () => {
+  const dd = freshDataDir(); const pk = 'p'; let now = 1_700_000_000_000;
+  for (let i = 0; i < 3; i++) oneoff.touch(dd, pk, 'git log', { now: now++, create: true });
+  const m = oneoff.mark(dd, pk, { sigs: ['git log', 'npm run once'], now: now++, maxRecurrence: 3 });
+  assertEq(m.decision, 'marked');
+  assertEq(m.signatures, ['npm run once']);
+  assertEq(m.rejected, [{ sig: 'git log', count: 3 }], 'refusal surfaced, not swallowed');
+  const store = oneoff.load(dd, pk);
+  assert(!store.entries['git log'].oneHit, 'over-ceiling sig NOT marked');
+  assert(oneoff.isOneHit(store, { sig: 'npm run once' }, { now, maxRecurrence: 3 }));
+});
+test('oneoff-store: 1-token sig marks by EXACT match and stays clearable past the ceiling', () => {
+  const dd = freshDataDir(); const pk = 'p'; let now = 1_700_000_000_000;
+  for (let i = 0; i < 5; i++) oneoff.touch(dd, pk, 'pytest -q', { now: now++, create: true });
+  const m = oneoff.mark(dd, pk, { sigs: ['pytest'], now: now++, maxRecurrence: 3 });
+  assertEq(m.decision, 'merged', 'uncuratable 1-token sig is still clearable');
+  const store = oneoff.load(dd, pk);
+  assertEq(store.entries.pytest.aliasSigs, [], 'never stored as a prefix alias');
+  assert(oneoff.isOneHit(store, { command: 'pytest -q' }, { now, maxRecurrence: 3 }), 'exact sig suppressed past ceiling');
+  assert(!oneoff.isOneHit(store, { command: 'pytest tests/unit' }, { now, maxRecurrence: 3 }), 'does not silence `pytest <arg>`');
+  const t = oneoff.touch(dd, pk, 'pytest', { now: now++, create: false });
+  assert(t.oneHit && t.ceilingExempt, 'detect path sees the exemption');
+});
+test('curation_mark_oneoff: 1-token sig accepted, 1-token alias still refused', async () => {
+  const url = require('url');
+  const R = process.env.CLAUDE_PLUGIN_ROOT;
+  const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+  const server = mod.createBrainServer({ pluginRoot: R, mode: 'stdio' });
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mark1tok-'));
+  fs.mkdirSync(path.join(work, '.git'), { recursive: true });
+  const ok = await server.handleTool('curation_mark_oneoff', { sigs: ['pytest'], cwd: work });
+  assert(!ok.isError, `sig accepted, got ${ok.content[0].text}`);
+  assertEq(JSON.parse(ok.content[0].text).decision, 'marked');
+  const bad = await server.handleTool('curation_mark_oneoff', { aliases: ['git'], cwd: work });
+  assert(bad.isError && /too broad/.test(bad.content[0].text), 'generic alias refused');
+  const junk = await server.handleTool('curation_mark_oneoff', { sigs: ['2'], cwd: work });
+  assert(junk.isError && /too broad/.test(junk.content[0].text), 'non-program 1-token sig refused');
+});
+test('oneoff-store: only a PROGRAM-NAME 1-token sig is ceiling-exempt', () => {
+  assert(oneoff.isCeilingExempt('pytest'));
+  assert(!oneoff.isCeilingExempt('2'), 'fd-number junk sig keeps the ceiling');
+  assert(!oneoff.isCeilingExempt('heredoc-abcd1234'), 'bare digest keeps the ceiling');
+  assert(!oneoff.isCeilingExempt('git log'));
+  const dd = freshDataDir(); const pk = 'p'; let now = 1_700_000_000_000;
+  const p = oneoff.storePath(dd, pk);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ entries: { 2: { sig: '2', aliases: [], aliasSigs: [], seen: Array.from({ length: 21 }, (_, i) => now - i), sessions: [], firstSeen: now, lastSeen: now, oneHit: false, markedAt: null } } }));
+  assertEq(oneoff.mark(dd, pk, { sigs: ['2'], now: now++, maxRecurrence: 3 }).decision, 'rejected', 'junk sig past ceiling not silenceable');
 });
 
 // ─── error-store (deterministic error-guard: recurring Bash failures) ────────
