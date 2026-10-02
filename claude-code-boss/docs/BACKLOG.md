@@ -330,9 +330,10 @@ real (2.29.0, porta 38217) seguiu intacto. Resultados (Claude Code 2.1.283):
   HTTP mode"**. Visto 9× nos experimentos do G16 (`project: "iso/smoke"` passado em
   todas). Verificar se o argumento se perde no schema/dispatch da tool.
   **RESOLVIDO em 2026-10-02**: mesma causa do item `owner/repo` (seção Brain/Retrieval): o `resolveProject` usava o sanitizador de nome de arquivo (`sanitizeProjectId`, que recusa `/`). Agora usa `sanitizeLogicalProjectId` (aceita `owner/repo`; recusa `..`, barra invertida, dois-pontos, segmento vazio/borda). Teste com o `dispatch` real em modo HTTP.
-- [ ] **O15 — sessão com o daemon fora no início levou 269 s para 9 turnos** (45 s de
+- [x] **O15 — sessão com o daemon fora no início levou 269 s para 9 turnos** (45 s de
   sleep pedido). Suspeita: hooks `mcp_tool` esperando o timeout enquanto o servidor
   está "connecting". Medir quanto cada hook espera nesse estado.
+  **MEDIDO em 2026-10-02 — não é do plugin**: `duration_api_ms` 221 s de 268 s; a transcrição tem 11 `api_error` 401 ("Invalid proxy server token") do gateway de inferência herdado no env do sandbox, com o backoff do próprio Claude Code. Os hooks não respondem pelos buracos (todos os gaps > 8 s antecedem retentativas de API).
 
 - [x] **G18 — Stop de uma sessão mostrava commits de OUTRA sessão (relato do usuário;
   achado e corrigido na hora)**. `decision-detect`/`decision-scan-response` gravavam em
