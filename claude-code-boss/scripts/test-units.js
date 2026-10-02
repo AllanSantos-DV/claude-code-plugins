@@ -9512,12 +9512,16 @@ test('plano B: corpo de RECUSA cortado (FIN, reset) ou parado no meio responde a
   const limits = router.__testHooks.getRefusalBodyLimits();
   assertEq(limits.idleMs, 5000, 'teto de inatividade default');
   assertEq(limits.totalMs, 30000, 'prazo total default');
-  // Parado, a recusa sai pelo teto de inatividade (~5 s), não pelo prazo total.
+  // Parado, a recusa sai pelo teto de inatividade, não pelo prazo total. Tetos do teste:
+  // inatividade 1 s, total 20 s — a janela 0,9–10 s prova "saiu pela inatividade" com
+  // folga para máquina carregada (a janela antiga 4,5–7,5 s com os 5 s default falhava
+  // ~1 em 17 rodadas lentas da suíte).
+  router.__testHooks.setRefusalBodyLimits({ idleMs: 1000, totalMs: 20000 });
   const timed = async (tag, cfg) => {
     const t0 = Date.now();
     const r = await _planBRun(cfg, body);
     const ms = Date.now() - t0;
-    if (cut === 'stall') assert(ms >= 4500 && ms <= 7500, tag + ': recusa parada respondida em ' + ms + 'ms (esperado ~5 s)');
+    if (cut === 'stall') assert(ms >= 900 && ms <= 10000, tag + ': recusa parada respondida em ' + ms + 'ms (esperado ~1 s de inatividade, bem abaixo do prazo total de 20 s)');
     return r;
   };
   try {
@@ -9537,6 +9541,7 @@ test('plano B: corpo de RECUSA cortado (FIN, reset) ou parado no meio responde a
       assert(/ok-nim/.test(r.raw), 'byok429-' + c + ': ' + r.raw.slice(0, 300));
     }
   } finally {
+    router.__testHooks.setRefusalBodyLimits(limits);
     fake.closeAllConnections(); // stall nunca termina sozinho: sem isto, uma regressão penduraria a suíte
     await new Promise(resolve => fake.close(resolve));
   }
@@ -9645,7 +9650,10 @@ test('plano B: stream com várias linhas SSE somando mais de 32 MiB termina comp
       const r = await _planBRun(cfg, body);
       assert(!r.err && !r.hung, name + ': ' + (r.err || 'pendurado'));
       assert(/"message_stop"/.test(r.raw), name + ': ' + r.raw.slice(-300));
-      assert(r.raw.length > 40 * 1024 * 1024, name + ': conteúdo perdido (' + r.raw.length + ' chars)');
+      // A short raw ending in message_stop is the router's OWN error text (reportFailure →
+      // respondAnthropicText) — print it, so an intermittent loss names its cause
+      // (the old message gave only the length: "conteúdo perdido (867 chars)").
+      assert(r.raw.length > 40 * 1024 * 1024, name + ': conteúdo perdido (' + r.raw.length + ' chars): ' + r.raw.slice(0, 700).replace(/\s+/g, ' '));
     }
   } finally {
     await new Promise(resolve => fake.close(resolve));
