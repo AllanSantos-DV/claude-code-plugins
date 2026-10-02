@@ -247,12 +247,13 @@ real (2.29.0, porta 38217) seguiu intacto. Resultados (Claude Code 2.1.283):
   mensagem nova (`permission_denials` no resultado do CLI).
 - [x] 4 sessões reais simultâneas: todas concluíram; hook worker sem expirados
   nem re-enfileirados.
-- [ ] **O14 — 1ª sessão com o daemon parado: o MCP falha ao conectar
+- [x] **O14 — 1ª sessão com o daemon parado: o MCP falha ao conectar
   (ECONNREFUSED) no início** e os hooks `mcp_tool` só passam a funcionar depois
   que o `brain-daemon-ensure` (UserPromptSubmit) sobe o daemon — os do 1º
   prompt podem ser perdidos (vistos: os efeitos da sessão apareceram, a janela
   inicial não foi medida). Medir na instalação real (1ª sessão após boot) e
   avaliar subir o daemon já no `SessionStart` ou no logon (como o token-guard).
+  **MEDIDO em 2026-10-02 (G16)**: o cliente tem retentativas de conexão inicial (0,5/1,5/4 s) e depois reconecta; no experimento C a sessão fria passou de ECONNREFUSED a conectada sozinha; num `-p` de 1 turno, só o 1º turno fica sem MCP. O `SessionStart` já roda o `brain-daemon-ensure`. Sem ação adicional (logon/keeper recusados pelo usuário).
 - [ ] **O13 — RSS do daemon com backend local: ~533 MB parado** em sessão real
   (bench sem embedder: ~440 MB). Medir a divisão (embedder na thread principal,
   N slots do pool do KB, hook worker) antes de otimizar.
@@ -677,7 +678,8 @@ Achados da rodada reviewer/tester que ficaram fora do patch:
 
 ## Arquitetura
 
-- Fase G (2.29.1, anotado em 2026-09-30) — `.mcp.json` tem a porta do brain-server fixa na URL (`http://127.0.0.1:38217/mcp`): quem define `BRAIN_HTTP_PORT` precisa editar o `.mcp.json` à mão, e a edição some a cada atualização do plugin. Sincronizar a URL com a porta efetiva exige mudança de arquitetura (o Claude Code lê o `.mcp.json` estático).
+- [x] Fase G (2.29.1, anotado em 2026-09-30) — `.mcp.json` tem a porta do brain-server fixa na URL (`http://127.0.0.1:38217/mcp`): quem define `BRAIN_HTTP_PORT` precisa editar o `.mcp.json` à mão, e a edição some a cada atualização do plugin. Sincronizar a URL com a porta efetiva exige mudança de arquitetura (o Claude Code lê o `.mcp.json` estático).
+  **RESOLVIDO em 2026-10-02**: url `http://127.0.0.1:${BRAIN_HTTP_PORT:-38217}/mcp` — o Claude Code expande `${VAR:-default}` na `url` (docs MCP › env var expansion, https://code.claude.com/docs/en/mcp, acesso 2026-10-02). Prova no Claude Code real: sandbox com `BRAIN_HTTP_PORT=38219` só no env → `brain_count` respondeu do daemon 38219 (`iso/smoke`), daemon real intocado.
 - Fase G (2.29.1, anotado em 2026-09-30) — timeout de `mcp_tool` sem abort no daemon: movido para **G5** acima.
 - Fase G (2.29.1, anotado em 2026-09-30) — as 12 tools `hook_*` aparecem na lista de tools do modelo (descrição marca como internas). Avaliar esconder do `tools/list` sem quebrar a chamada via `mcp_tool`.
 - Fase G (2.29.1, anotado em 2026-09-30) — o `user-prompt-submit-dispatcher` ainda sobe 1 processo Node por prompt para `brain-daemon-ensure`/`brain-health`/`brain-status` (excluídos por dependência circular com o daemon), e `policy-inject`/`model-router-ensure` seguem como `command`. Desenhar o tratamento próprio deles.
