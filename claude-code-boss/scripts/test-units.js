@@ -19870,6 +19870,42 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
     } finally { await hw.shutdown(); }
   });
 
+  // ── G5: per-hook deadline below the hooks.json timeout ──────────────────────
+  test('G5: deadlines come from hooks.json (timeout − 1 s) for every hook tool', () => {
+    const { deadlinesFromHooksJson } = require('./lib/hook-tools.js');
+    const d = deadlinesFromHooksJson(ROOT);
+    assertEq(Object.keys(d).sort(), [...hookTools.names].sort());
+    assertEq(d.hook_stop_dispatcher, 29000);
+    assertEq(d.hook_curation_guard, 7000);
+    assertEq(d.hook_graph_guard, 4000);
+  });
+
+  test('G5: an inline hook past its deadline answers with the visible fail-open message, not a hang', async () => {
+    HOOK_SPECS.hook_test_hang = { script: 'skill-metric.js', call: () => new Promise(() => {}) };
+    try {
+      const t = createHookTools({ pluginRoot: ROOT, deadlines: { hook_test_hang: 100 } });
+      const a = Date.now();
+      const out = JSON.parse((await t.handle('hook_test_hang', { project_dir: proj })).content[0].text);
+      assert(Date.now() - a < 2000, 'answered near the deadline');
+      assert(/hook_test_hang degradado no daemon \(fail-open\): prazo de 100ms estourado/.test(out.systemMessage), JSON.stringify(out));
+      assert(!out.hookSpecificOutput && !out.decision, 'a missed deadline decides nothing');
+    } finally { delete HOOK_SPECS.hook_test_hang; }
+  });
+
+  test('G5: REAL worker — a Stop stuck behind a busy queue answers at its deadline and is then skipped, not run', async () => {
+    const hw = (await loadHookWorker())({ pluginRoot: ROOT });
+    try {
+      const t = createHookTools({ pluginRoot: ROOT, hookWorker: hw, deadlines: { hook_stop_dispatcher: 50 } });
+      const bash = PARITY.find(p => p[0] === 'hook_posttoolusebash_dispatcher')[2];
+      for (let i = 0; i < 60; i++) hw.enqueue('hook_posttoolusebash_dispatcher', { ...wire({ ...bash, tool_input: { command: `git log -${i}` }, tool_response: { stdout: 'x\n'.repeat(4000), stderr: '' } }), project_dir: proj });
+      const out = JSON.parse((await t.handle('hook_stop_dispatcher', { ...wire(PARITY[11][2]), project_dir: proj })).content[0].text);
+      assert(/prazo de 50ms estourado/.test(out.systemMessage || ''), JSON.stringify(out));
+      assert(!out.decision, 'a missed deadline never blocks the Stop');
+      await hw.run('hook_skill_metric', { ...wire(PARITY.find(p => p[0] === 'hook_skill_metric')[2]), project_dir: proj }, { timeoutMs: 60000 }); // drain FIFO
+      assertEq(hw.stats().expired, 1, 'the expired Stop was skipped, not executed');
+    } finally { await hw.shutdown(); }
+  });
+
   // ── G4: always-{} hooks are fire-and-forget ─────────────────────────────────
   test('G4: the always-{} hooks are exactly the async ones, and every one is in the heavy lane', () => {
     const ASYNC = Object.keys(HOOK_SPECS).filter(n => HOOK_SPECS[n].async).sort();

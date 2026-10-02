@@ -139,14 +139,52 @@ async function runHookInline(pluginRoot, name, args) {
   }
 }
 
+// G5: answer this long before Claude Code's own `timeout` gives up on the hook,
+// so an overrun is OUR visible fail-open message, not a harness hook error.
+const DEADLINE_MARGIN_MS = 1000;
+const MIN_DEADLINE_MS = 500;
+const DEFAULT_TIMEOUT_S = 10;
+
 /**
- * @param {{ pluginRoot: string, hookWorker?: { run: Function, enqueue: Function } }} opts
+ * Per-tool deadline (ms) from the `timeout` each hook declares in hooks.json —
+ * the single source of truth, so the two can never drift apart.
+ */
+function deadlinesFromHooksJson(pluginRoot) {
+  const out = {};
+  const hooks = JSON.parse(require('fs').readFileSync(path.join(pluginRoot, 'hooks', 'hooks.json'), 'utf8')).hooks || {};
+  for (const group of Object.values(hooks).flat()) {
+    for (const h of (group && group.hooks) || []) {
+      if (h.type !== 'mcp_tool' || !HOOKS[h.tool]) continue;
+      const s = Number(h.timeout) > 0 ? Number(h.timeout) : DEFAULT_TIMEOUT_S;
+      out[h.tool] = Math.max(MIN_DEADLINE_MS, s * 1000 - DEADLINE_MARGIN_MS);
+    }
+  }
+  return out;
+}
+
+/** Resolve `work` or, past `ms`, the visible fail-open message. The work is not
+ *  aborted (sync JS cannot be) — it finishes in the background, its reply unused. */
+function withDeadline(name, ms, work) {
+  let timer;
+  const late = new Promise((resolve) => {
+    timer = setTimeout(() => {
+      console.error(`[hook-tools] ${name} passed its ${ms}ms deadline`);
+      resolve(degraded(name, `prazo de ${ms}ms estourado`));
+    }, ms);
+  });
+  return Promise.race([work, late]).finally(() => clearTimeout(timer));
+}
+
+/**
+ * @param {{ pluginRoot: string, hookWorker?: { run: Function, enqueue: Function }, deadlines?: object }} opts
  *   hookWorker: the daemon's heavy-lane worker (servers/brain-server/lib/hook-worker-client.js).
  *   Absent (tests, tools without a daemon) → every hook runs inline, as before.
+ *   deadlines: per-tool ms override (tests); default from hooks.json.
  * @returns {{ definitions: object[], names: Set<string>, handle: (name:string, args:object) => Promise<object> }}
  */
-function createHookTools({ pluginRoot, hookWorker } = {}) {
+function createHookTools({ pluginRoot, hookWorker, deadlines } = {}) {
   if (!pluginRoot) throw new Error('createHookTools: pluginRoot is required');
+  const deadlineMs = { ...deadlinesFromHooksJson(pluginRoot), ...(deadlines || {}) };
   const properties = {};
   for (const [k, description] of Object.entries(FIELDS)) properties[k] = { type: 'string', description };
   const definitions = Object.keys(HOOKS).map((name) => ({
@@ -158,20 +196,22 @@ function createHookTools({ pluginRoot, hookWorker } = {}) {
   async function handle(name, args) {
     const spec = HOOKS[name];
     if (!spec) throw new Error(`unknown hook tool: ${name}`);
+    const ms = deadlineMs[name] || DEFAULT_TIMEOUT_S * 1000 - DEADLINE_MARGIN_MS;
     let text;
     if (spec.lane === 'heavy' && hookWorker && spec.async) {
       hookWorker.enqueue(name, args);
       text = EMPTY;
     } else if (spec.lane === 'heavy' && hookWorker) {
       try {
-        text = await hookWorker.run(name, args);
+        // The worker also skips the job outright if it is still queued past the deadline.
+        text = await hookWorker.run(name, args, { timeoutMs: ms });
       } catch (err) {
         const msg = err && err.message ? err.message : String(err);
         console.error(`[hook-tools] ${name} degraded: ${msg}`);
         text = degraded(name, msg);
       }
     } else {
-      text = await runHookInline(pluginRoot, name, args);
+      text = await withDeadline(name, ms, runHookInline(pluginRoot, name, args));
     }
     return { content: [{ type: 'text', text }] };
   }
@@ -179,4 +219,4 @@ function createHookTools({ pluginRoot, hookWorker } = {}) {
   return { definitions, names: new Set(Object.keys(HOOKS)), handle };
 }
 
-module.exports = { createHookTools, runHookInline, rebuildEvent, HOOKS, FIELDS };
+module.exports = { createHookTools, runHookInline, deadlinesFromHooksJson, rebuildEvent, HOOKS, FIELDS };
