@@ -154,6 +154,8 @@ nenhum                       → off            (cinza)
 | `kb.submission.minBashLines` | `3` | Mínimo de linhas de output Bash p/ submissão |
 | `kb.submission.minOutputChars` | `1500` | Mínimo de chars p/ submissão |
 | `kb.capture.maxBlockAttempts` | `5` | Tentativas de re-block da oferta de captura antes de relentar |
+| `kb.capture.turns` | `3` | Quantos turnos humanos FINAIS do transcript a captura lê a cada Stop (`lib/transcript-turns.js`) — nunca o transcript inteiro |
+| `kb.capture.includeThinking` | `false` | Inclui o thinking do assistente nos ciclos oferecidos para captura (tool call/output nunca entram) |
 
 ### Data dirs e identidade de instalação
 

@@ -120,7 +120,7 @@ function run(event, deps) {
   const redactText = s => redact(s).text;
 
   // 1. Scan new cycles into the durable, redacted-at-rest, compaction-safe queue.
-  queue.ingest(project, sid, transcriptPath, redactText);
+  queue.ingest(project, sid, transcriptPath, redactText, { turns: cfg.turns, includeThinking: cfg.includeThinking === true });
   // 2. Reconcile the open offer via the explicit ack marker: drain on ack, else re-block.
   queue.reconcile(project, sid);
 

@@ -2,14 +2,14 @@
 /**
  * capture-queue.js — Phase 1.5 durable, redacted cleaned-cycle queue.
  *
- * Separates the deterministic TRANSCRIPT SCAN (a byte cursor advanced as cycles
- * are extracted) from CAPTURE PROGRESS (cycles leave the queue only once the
- * agent acknowledges — see the offer/ack layer). Cleaned cycles are REDACTED at
- * rest and addressed by content-hash, so:
- *   - in-band compaction (transcript rewritten shorter) triggers a rebase re-scan
- *     from 0 WITHOUT duplicating already-queued cycles (seen-set dedup);
- *   - a cycle summarized away before it was ever queued is simply gone (inherent),
- *     but nothing already queued is lost.
+ * Separates the deterministic TRANSCRIPT READ (the last N human turns each Stop,
+ * lib/transcript-turns.js — never the whole transcript) from CAPTURE PROGRESS
+ * (cycles leave the queue only once the agent acknowledges — see the offer/ack
+ * layer). Cleaned cycles are REDACTED at rest and addressed by content-hash, so:
+ *   - re-reading the same window, or a compaction rewrite, never duplicates an
+ *     already-queued cycle (seen-set dedup);
+ *   - turns older than the window when capture first sees a session (e.g. the
+ *     plugin installed mid-session) are not offered — by design (G10).
  *
  * Persistence is a single atomic (tmp+rename) JSON file with a `rev` counter that
  * the 1.5c CAS layer uses to reject stale writes.
@@ -19,8 +19,8 @@ const path = require('path');
 const crypto = require('crypto');
 const { sanitizeSessionId } = require('./session-id.js');
 const { dataDir } = require('./data-dir.js');
-const { anchorAt, validateAnchor, _boundaryAtOrBefore } = require('./session-marker.js');
-const { extractCyclesFromBuffer, packCycles } = require('./transcript-block.js');
+const { packCycles } = require('./transcript-block.js');
+const { readLastTurns } = require('./transcript-turns.js');
 
 const SEEN_CAP = 5000;
 
@@ -29,7 +29,7 @@ function _file(project, sid) {
   return path.join(_runtimeDir(), `capture-queue-${sanitizeSessionId(project)}--${sanitizeSessionId(sid)}.json`);
 }
 
-function _default() { return { rev: 0, scan: { offset: 0, anchorHash: '' }, seen: [], queue: [], offer: null, offers: 0, captured: 0, lastOfferTs: 0 }; }
+function _default() { return { rev: 0, scan: { offset: 0, anchorHash: '' }, seen: [], seenPrompts: [], queue: [], offer: null, offers: 0, captured: 0, lastOfferTs: 0 }; }
 
 function _load(project, sid) {
   try {
@@ -38,6 +38,7 @@ function _load(project, sid) {
       rev: o.rev || 0,
       scan: (o.scan && typeof o.scan.offset === 'number') ? o.scan : { offset: 0, anchorHash: '' },
       seen: Array.isArray(o.seen) ? o.seen : [],
+      seenPrompts: Array.isArray(o.seenPrompts) ? o.seenPrompts : [],
       queue: Array.isArray(o.queue) ? o.queue : [],
       offer: o.offer || null,
       offers: o.offers || 0,       // review interruptions opened this session (cadence cap)
@@ -68,55 +69,62 @@ function _save(project, sid, state, expectRev) {
   }
 }
 
-const { readRange: _readBuf } = require('./transcript-tail.js');
-
 function _hash(promptId, user, assistant) {
   return crypto.createHash('sha256').update(`${promptId}\u0000${user}\u0000${assistant}`).digest('hex').slice(0, 20);
 }
 
 /**
- * Scan the transcript from the durable cursor, extract new human cycles, REDACT
- * them, and append the ones not already seen (by content-hash) to the queue.
- * Compaction-safe: an invalid cursor rebases to a full re-scan that dedups.
+ * Read the LAST `opts.turns` human turns (lib/transcript-turns.js — user +
+ * assistant, thinking only with includeThinking; tool calls/outputs dropped),
+ * REDACT them, and append the ones not already seen to the queue.
+ *
+ * It used to scan from a byte cursor that starts at 0, so the FIRST Stop of a
+ * session read and queued the whole transcript (90 MB → +133 MB in the daemon).
+ * Every Stop now looks only at the last few turns; dedup (content hash + promptId)
+ * keeps re-reading the same window idempotent and compaction-safe. A turn seen
+ * before whose text grew (it continued after a blocked Stop) is refreshed while it
+ * is still queued and un-offered; once offered/captured it is not re-offered.
+ * @param {{turns?:number, includeThinking?:boolean}} [opts]
  * @returns {{added:number, queueLen:number}}
  */
-function ingest(project, sid, transcriptPath, redactFn) {
+function ingest(project, sid, transcriptPath, redactFn, opts = {}) {
   const redact = typeof redactFn === 'function' ? redactFn : (s => s);
   const state = _load(project, sid);
   let size = 0;
   try { size = fs.statSync(transcriptPath).size; } catch (err) { void err; return { added: 0, queueLen: state.queue.length }; }
 
-  const committed = { offset: state.scan.offset, anchorHash: state.scan.anchorHash, size };
-  const v = validateAnchor(transcriptPath, committed);
-  const from = (state.scan.offset > 0 && v.ok) ? state.scan.offset : 0; // mismatch → rebase re-scan
-  const boundary = _boundaryAtOrBefore(transcriptPath, size);
-  if (!(boundary > from)) {
-    if (from === 0 && state.scan.offset !== 0) {
-      state.scan = { offset: 0, anchorHash: anchorAt(transcriptPath, 0) };
-      state.rev = (state.rev || 0) + 1;
-      _save(project, sid, state);
-    }
-    return { added: 0, queueLen: state.queue.length };
-  }
-
-  const buf = _readBuf(transcriptPath, from, boundary);
-  const cycles = extractCyclesFromBuffer(buf, from);
+  const cycles = readLastTurns(transcriptPath, { turns: opts.turns, includeThinking: opts.includeThinking });
   const seenSet = new Set(state.seen);
+  const promptSet = new Set(state.seenPrompts);
+  const offered = new Set(state.offer ? state.offer.ids : []);
   let added = 0;
+  let changed = false;
   for (const c of cycles) {
     const user = redact(c.user || '');
     const assistant = redact(c.assistant || '');
+    const thinking = c.thinking ? redact(c.thinking) : '';
     const id = _hash(c.promptId, user, assistant);
     if (seenSet.has(id)) continue; // already queued/captured — compaction-safe dedup
     seenSet.add(id);
     state.seen.push(id);
-    state.queue.push({ id, promptId: c.promptId, user, assistant });
+    changed = true;
+    if (promptSet.has(c.promptId)) {
+      const q = state.queue.find(x => x.promptId === c.promptId && !offered.has(x.id));
+      if (q) Object.assign(q, { id, user, assistant, ...(thinking ? { thinking } : {}) });
+      continue;
+    }
+    promptSet.add(c.promptId);
+    state.seenPrompts.push(c.promptId);
+    state.queue.push({ id, promptId: c.promptId, user, assistant, ...(thinking ? { thinking } : {}) });
     added++;
   }
   if (state.seen.length > SEEN_CAP) state.seen = state.seen.slice(-SEEN_CAP);
-  state.scan = { offset: boundary, anchorHash: anchorAt(transcriptPath, boundary) };
-  state.rev = (state.rev || 0) + 1;
-  _save(project, sid, state);
+  if (state.seenPrompts.length > SEEN_CAP) state.seenPrompts = state.seenPrompts.slice(-SEEN_CAP);
+  state.scan = { offset: size, anchorHash: '' }; // telemetry only (offer.scanAt) — no cursor any more
+  if (changed) {
+    state.rev = (state.rev || 0) + 1;
+    _save(project, sid, state);
+  }
   return { added, queueLen: state.queue.length };
 }
 

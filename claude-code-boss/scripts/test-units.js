@@ -15990,6 +15990,91 @@ test('capture-dispatch: BLOCKS ingestion when scope is UNRESOLVED (no stage, ret
   }
 });
 
+// ─── G10: lib/transcript-turns.js — last N human turns, cleaned ───────────────
+function _turnLines(n, { pad = '', toolBlob = '' } = {}) {
+  const out = [];
+  for (let i = 1; i <= n; i++) {
+    out.push(JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: `question ${i} ${pad}` } }));
+    out.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [
+      { type: 'thinking', thinking: `thought ${i}` },
+      { type: 'tool_use', id: 't' + i, name: 'Bash', input: { command: 'ls' } },
+    ] } }));
+    out.push(JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 't' + i, content: `TOOLOUT ${i} ${toolBlob}` }] } }));
+    out.push(JSON.stringify({ type: 'user', isMeta: true, message: { role: 'user', content: `hook feedback ${i}` } }));
+    out.push(JSON.stringify({ type: 'assistant', isSidechain: true, message: { role: 'assistant', content: [{ type: 'text', text: `SUBAGENT ${i}` }] } }));
+    out.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: `answer ${i}` }] } }));
+  }
+  return out.join('\n') + '\n';
+}
+
+test('G10: readLastTurns — last N turns only, user + assistant, no tool call/output, no subagent/hook feedback; thinking opt-in', () => {
+  const { readLastTurns } = require('./lib/transcript-turns.js');
+  const f = _tailTmp('turns.jsonl', _turnLines(6));
+  const t = readLastTurns(f, { turns: 3 });
+  assertEq(t.map(c => c.promptId), ['p4', 'p5', 'p6']);
+  assertEq(t[2].user, 'question 6 ');
+  assertEq(t[2].assistant, 'answer 6');
+  const all = JSON.stringify(t);
+  for (const bad of ['TOOLOUT', 'tool_use', 'SUBAGENT', 'hook feedback', 'thought']) assert(!all.includes(bad), `${bad} must be stripped: ${all}`);
+  const th = readLastTurns(f, { turns: 2, includeThinking: true });
+  assertEq(th.map(c => c.thinking), ['thought 5', 'thought 6']);
+  assertEq(readLastTurns(f).length, 3, 'default is 3 turns');
+  assertEq(readLastTurns(f, { turns: 50 }).length, 6, 'fewer turns than asked → all of them');
+  assertEq(JSON.stringify(readLastTurns(path.join(os.tmpdir(), 'nope-ccb-turns.jsonl'))), '[]');
+});
+
+test('G10: readLastTurns reads the tail of a big session, not the whole file', () => {
+  const { readLastTurns } = require('./lib/transcript-turns.js');
+  // 400 old turns with 20 KB tool outputs each (~8 MB), then the 3 we want.
+  const f = _tailTmp('big-turns.jsonl', _turnLines(400, { toolBlob: 'y'.repeat(20000) }));
+  const size = fs.statSync(f).size;
+  const orig = fs.readSync; let bytes = 0;
+  fs.readSync = function (...a) { const n = orig.apply(fs, a); bytes += n; return n; };
+  let t;
+  try { t = readLastTurns(f, { turns: 3 }); } finally { fs.readSync = orig; }
+  assertEq(t.map(c => c.promptId), ['p398', 'p399', 'p400']);
+  assert(bytes < size / 4, `read ${bytes} of ${size} bytes`);
+});
+
+test('G10: capture-queue.ingest queues only the last N turns of a long session; a re-read is idempotent; a grown turn is refreshed, not duplicated', () => {
+  const q = require('./lib/capture-queue.js');
+  const project = 'g10-' + Date.now();
+  const sid = 'g10s-' + Date.now();
+  const f = _tailTmp('g10.jsonl', _turnLines(40));
+  q.reset(project, sid);
+  try {
+    assertEq(q.ingest(project, sid, f, s => s, { turns: 3 }).added, 3, 'first Stop of a 40-turn session: 3, not 40');
+    assertEq(q.getState(project, sid).queue.map(c => c.promptId), ['p38', 'p39', 'p40']);
+    assertEq(q.ingest(project, sid, f, s => s, { turns: 3 }).added, 0, 'same window again → nothing new');
+    // p40 continues (a blocked Stop made the assistant keep going) → refreshed in place.
+    fs.appendFileSync(f, JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'more of answer 40' }] } }) + '\n');
+    q.ingest(project, sid, f, s => s, { turns: 3 });
+    const queue = q.getState(project, sid).queue;
+    assertEq(queue.filter(c => c.promptId === 'p40').length, 1, 'no duplicate for the grown turn');
+    assert(/more of answer 40/.test(queue.find(c => c.promptId === 'p40').assistant), 'grown text kept');
+    // A new turn arrives → only it is added.
+    fs.appendFileSync(f, _turnLines(41).split('\n').slice(-7).join('\n'));
+    assertEq(q.ingest(project, sid, f, s => s, { turns: 3 }).added, 1);
+    const withThinking = q.ingest(project + '-th', sid, f, s => s, { turns: 1, includeThinking: true });
+    assertEq(withThinking.added, 1);
+    assert(/## THINKING\nthought 41/.test(require('./lib/transcript-block.js').packCycles(q.getState(project + '-th', sid).queue, 9000).text), 'thinking reaches the offered text when enabled');
+  } finally { q.reset(project, sid); q.reset(project + '-th', sid); }
+});
+
+// G10: capture reads only the LAST N turns per Stop. A real session reaches a
+// Stop after EVERY turn, so the queue fills turn by turn — seed it that way
+// (one ingest per turn, same redaction as capture-dispatch) instead of writing
+// the whole transcript and expecting one Stop to read all of it.
+function _writeTurnsAsStops(tp, project, sid, lines) {
+  const cq = require('./lib/capture-queue.js');
+  const { redact } = require('./lib/redact.js');
+  fs.writeFileSync(tp, '');
+  for (let i = 0; i < lines.length; i += 2) {
+    fs.appendFileSync(tp, lines.slice(i, i + 2).join('\n') + '\n');
+    cq.ingest(project, sid, tp, s => redact(s).text);
+  }
+}
+
 test('capture-dispatch: run offers from the queue, then acks when capture_lesson appears', () => {
   const cd = require('./capture-dispatch.js');
   const queue = require('./lib/capture-queue.js');
@@ -16003,7 +16088,7 @@ test('capture-dispatch: run offers from the queue, then acks when capture_lesson
     lines.push(JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: 'question ' + i } }));
     lines.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'answer ' + i }] } }));
   }
-  fs.writeFileSync(tp, lines.join('\n') + '\n');
+  _writeTurnsAsStops(tp, project, sid, lines);
   const res = cd.run({ session_id: sid, cwd, transcript_path: tp });
   assert(res && res.block === true, 'offers a block');
   assert(/capture_lesson/.test(res.reason), 'instruction present');
@@ -16032,7 +16117,7 @@ test('capture-dispatch: an OPEN offer re-blocks even on stop_hook_active until t
     lines.push(JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: 'question ' + i } }));
     lines.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'answer ' + i }] } }));
   }
-  fs.writeFileSync(tp, lines.join('\n') + '\n');
+  _writeTurnsAsStops(tp, project, sid, lines);
   const first = cd.run({ session_id: sid, cwd, transcript_path: tp });
   assert(first && first.block, 'first Stop opens an offer and blocks');
   const wid = queue.getState(project, sid).offer.windowId;
@@ -16098,7 +16183,7 @@ test('capture-dispatch: emits capture.offered metric on fire', () => {
     lines.push(JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: 'q' + i } }));
     lines.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'a' + i }] } }));
   }
-  fs.writeFileSync(tp, lines.join('\n') + '\n');
+  _writeTurnsAsStops(tp, project, sid, lines);
   const calls = [];
   const orig = metrics.fire;
   metrics.fire = (n, p) => calls.push({ n, p });
@@ -16134,7 +16219,7 @@ test('capture-dispatch: over-budget window is offered in chunks, never skipping 
     lines.push(JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: 'MARK' + i + '_ ' + big } }));
     lines.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'ans' + i }] } }));
   }
-  fs.writeFileSync(tp, lines.join('\n') + '\n');
+  _writeTurnsAsStops(tp, project, sid, lines);
   const seen = new Set();
   const cq = require('./lib/capture-queue.js');
   const deps = { config: { cooldownMs: 0, maxCapturesPerSession: 50 } }; // isolate chunking from cadence bounds
@@ -16179,7 +16264,7 @@ function _capRelentSeed(nCycles, big) {
     lines.push(JSON.stringify({ type: 'user', promptId: 'p' + i, message: { role: 'user', content: 'q' + i + '_ ' + pad } }));
     lines.push(JSON.stringify({ type: 'assistant', message: { role: 'assistant', model: 'claude-sonnet-5', content: [{ type: 'text', text: 'a' + i }] } }));
   }
-  fs.writeFileSync(tp, lines.join('\n') + '\n');
+  _writeTurnsAsStops(tp, project, sid, lines);
   return { cd, cq, marker, project, sid, evt: { session_id: sid, cwd, transcript_path: tp } };
 }
 

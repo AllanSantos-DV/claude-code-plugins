@@ -42,8 +42,20 @@ function _assistantText(msg) {
   return '';
 }
 
+/** Assistant thinking: only 'thinking' content blocks (opt-in — see includeThinking). */
+function _assistantThinking(msg) {
+  const c = msg && msg.content;
+  if (!Array.isArray(c)) return '';
+  return c.filter(b => b && b.type === 'thinking' && typeof b.thinking === 'string' && b.thinking).map(b => b.thinking).join('\n');
+}
+
 function _excluded(o) {
   return !o || o.isSidechain === true || !!o.agentId || o.isMeta === true || o.isCompactSummary === true;
+}
+
+/** True when a parsed envelope STARTS or continues a human turn (what counts as a "turn"). */
+function isHumanTurn(o) {
+  return !_excluded(o) && o.type === 'user' && _userText(o.message) != null;
 }
 
 /**
@@ -51,8 +63,8 @@ function _excluded(o) {
  * @param {Array<string|object>} lines
  * @returns {Array<{promptId:string, user:string, assistant:string}>}
  */
-function _newAcc() {
-  return { cycles: [], byPrompt: new Map(), current: null };
+function _newAcc(opts) {
+  return { cycles: [], byPrompt: new Map(), current: null, includeThinking: !!(opts && opts.includeThinking) };
 }
 
 // Fold one parsed envelope into the accumulator. endOffset (absolute byte offset
@@ -78,6 +90,10 @@ function _step(acc, o, endOffset) {
     if (!acc.current) return; // assistant with no preceding human turn → skip
     const text = _assistantText(o.message);
     if (text) acc.current.assistant += (acc.current.assistant ? '\n' : '') + text;
+    if (acc.includeThinking) {
+      const th = _assistantThinking(o.message);
+      if (th) acc.current.thinking = (acc.current.thinking ? acc.current.thinking + '\n' : '') + th;
+    }
     if (endOffset != null) acc.current.endOffset = endOffset;
   }
   // other top-level types (attachment, last-prompt, queue-operation) ignored
@@ -88,8 +104,8 @@ function _step(acc, o, endOffset) {
  * @param {Array<string|object>} lines
  * @returns {Array<{promptId:string, user:string, assistant:string}>}
  */
-function extractCycles(lines) {
-  const acc = _newAcc();
+function extractCycles(lines, opts) {
+  const acc = _newAcc(opts);
   for (const line of lines || []) _step(acc, _asObj(line), null);
   return acc.cycles;
 }
@@ -131,7 +147,8 @@ function packCycles(cycles, maxChars) {
   const parts = [];
   let total = 0;
   for (let i = 0; i < list.length; i++) {
-    const piece = `## USER\n${list[i].user}\n## ASSISTANT\n${list[i].assistant}`;
+    const thinking = list[i].thinking ? `\n## THINKING\n${list[i].thinking}` : '';
+    const piece = `## USER\n${list[i].user}${thinking}\n## ASSISTANT\n${list[i].assistant}`;
     const add = piece.length + (parts.length ? 2 : 0); // '\n\n' join cost
     if (parts.length > 0 && total + add > cap) break; // always keep at least the oldest
     parts.push(piece);
@@ -147,4 +164,4 @@ function renderBlock(cycles, maxChars) {
   return packCycles(cycles, maxChars).text;
 }
 
-module.exports = { extractCycles, extractCyclesFromBuffer, renderBlock, packCycles, _userText, _assistantText };
+module.exports = { extractCycles, extractCyclesFromBuffer, renderBlock, packCycles, isHumanTurn, _userText, _assistantText, _assistantThinking };

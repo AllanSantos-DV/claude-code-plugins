@@ -163,7 +163,22 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   falha sem a correção e passa com ela. Custo por chamada: `error_guard` 3,9 →
   0,8 ms, `correction_detect` 2,3 → 0,5 ms.
   **Ainda abertos**: rajada de 60 com p95 222 ms (> 100 ms) → **G11**; RSS → **G10**.
-- [ ] **G10 — primeira passada do `capture-queue.ingest` lê o transcript inteiro.**
+- [x] **G10 — primeira passada do `capture-queue.ingest` lê o transcript inteiro.**
+  **RESOLVIDO em 2026-10-02 (decisão do dono: "ler o inteiro está errado; últimos
+  X turnos, configurável, padrão 3, via tool reutilizável, só user + assistant,
+  thinking opcional")**: novo `lib/transcript-turns.js` (`readLastTurns`, lê do fim
+  para trás até juntar N turnos humanos, teto 16 MiB; limpeza mecânica do
+  `transcript-block`: sem tool call/output, subagente, hook feedback, resumo de
+  compactação; thinking só com `includeThinking`). `capture-queue.ingest` usa ele
+  a cada `Stop` (cursor de bytes removido); dedup por hash + `promptId` (turno que
+  cresceu é atualizado na fila, não duplicado). Config `kb.capture.turns: 3` e
+  `kb.capture.includeThinking: false` (CONFIGURATION.md). 1 `Stop` no transcript
+  de 90 MB: pico do daemon 340 → 254 MB. Bench 8 sessões: RSS 566 → 440 MB, Stop
+  p95 2147 → 495 ms, rajada p95 222 → 103 ms. Testes: janela/limpeza/thinking,
+  leitura limitada ao final (espião de bytes), fila com 3 de 40 turnos,
+  idempotência, turno crescido sem duplicata. Os 5 cenários de teste do
+  `capture-dispatch` que gravavam o transcript inteiro e esperavam 1 `Stop` lendo
+  tudo agora semeiam turno a turno (como uma sessão real: 1 `Stop` por turno).
   `scripts/lib/capture-queue.js:95-130`: com cursor 0 (1º `Stop` da sessão, ou
   rebase após compactação) faz `_readBuf(from=0, boundary)` do arquivo todo, extrai
   TODOS os ciclos e grava todos na fila e no arquivo de estado. Medido: 1 `Stop`
@@ -171,7 +186,11 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   Decisão do dono necessária: limitar a 1ª passada a uma janela final (últimos
   N MB / K ciclos) muda a semântica (ciclos antigos da sessão não seriam
   oferecidos). Fix proposto: janela final + leitura em blocos.
+- [ ] **O10 — `scripts/lib/session-marker.js` ficou sem uso** depois do G10 (o
+  `capture-queue` era o único consumidor do cursor). Só os próprios testes o usam.
+  Remover módulo + testes num commit de limpeza.
 - [ ] **G11 — rajada de 60 `PreToolUse` simultâneos ainda com p95 ~220 ms.**
+  (Após o G10: p95 103 ms, praticamente na meta de 100 ms.)
   120 chamadas MCP (2 guards irmãos × 60) serializadas na thread principal: o que
   sobra é ~1,6 ms de CPU do `curation_guard` + o overhead por requisição do SDK
   MCP/HTTP. Próximos passos: perfilar o `curation_guard` (shells.json / assinatura)
