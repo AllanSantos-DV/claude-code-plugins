@@ -142,8 +142,13 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
         return;
       }
 
-      res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'No valid session ID (send an initialize request first)' }, id: (body && body.id) ?? null }));
+      // A session id we don't know (daemon swapped/restarted, or the idle reaper took
+      // it) MUST be 404: the MCP spec (2025-06-18, Streamable HTTP › Session
+      // Management 3–4) makes 404 the client's cue to re-initialize; a 400 leaves it
+      // stuck on a dead session. 400 stays for a non-initialize request with NO id.
+      const unknown = !!sessionId;
+      res.writeHead(unknown ? 404 : 400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: unknown ? 'Session not found (re-initialize)' : 'No valid session ID (send an initialize request first)' }, id: (body && body.id) ?? null }));
     } catch (err) {
       console.error(`[brain-http] request error: ${err.message}`);
       if (!res.headersSent) {

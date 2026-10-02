@@ -456,6 +456,11 @@ export async function ensureDaemon({ pluginRoot, dataDir, env = process.env } = 
         } else if (ownerRootExists(h.pluginRoot)) {
           why = `it belongs to another install (${h.pluginRoot})`;
         }
+        // The process on the port is the child WE just spawned (pid match): don't
+        // leave it squatting the port while we report failure — stop it.
+        if (h.pid === pid) {
+          try { process.kill(pid); why += ' — stopped it'; } catch (err) { why += ` — could not stop it (${err.message})`; }
+        }
         return { status: 'error', error: `spawned daemon did not become OUR daemon on ${port}: ${why}`, pid, port };
       }
       if (again.kind !== 'absent') {

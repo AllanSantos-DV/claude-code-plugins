@@ -13083,6 +13083,29 @@ test('self-review-retrieve.retrieveViaDaemon: REAL daemon — sessions do not ac
   }
 });
 
+test('http-daemon: unknown mcp-session-id → 404 (client re-initializes); no id + non-initialize → 400 (G16)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-404-'));
+  const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
+  const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0 });
+  try {
+    const url = `http://127.0.0.1:${d.httpServer.address().port}/mcp`;
+    const call = (headers) => fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', ...headers },
+      body: JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'tools/list', params: {} }),
+    });
+    const stale = await call({ 'mcp-session-id': 'gone-after-a-daemon-swap' });
+    assertEq(stale.status, 404, 'a session the daemon does not know must be 404 (MCP spec: re-initialize cue)');
+    const body = await stale.json();
+    assertEq(body.id, 7);
+    const noId = await call({});
+    assertEq(noId.status, 400, 'no session id on a non-initialize request stays 400');
+  } finally {
+    await d.shutdown();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('self-review-retrieve.retrieveViaIndex: lookup → store.get wiring + score merge', async () => {
   // In-memory fakes via DI: verifies the orchestration (index.lookup → per-hit
   // store.get → attach score) without touching the real singletons/fs, so it's
@@ -19181,12 +19204,43 @@ test('brain daemon supervisor: port blocked (listen EACCES) → error carries th
   const res = await ensureDaemon({
     pluginRoot: path.join(tmp, 'install-B'),
     dataDir,
-    env: { BRAIN_HTTP_PORT: String(p), HOME: tmpHome, USERPROFILE: tmpHome, NODE_OPTIONS: `--require "${preload}"` },
+    env: { BRAIN_HTTP_PORT: String(p), HOME: tmpHome, USERPROFILE: tmpHome, NODE_OPTIONS: `--require "${preload.replace(/\\/g, '/')}"` },
   });
   assertEq(res.status, 'error', `blocked port must be an error, got ${res.status}`);
-  assert(/EACCES/.test(res.error || ''), `error must carry the child's real cause, got: ${res.error}`);
+  assert(/listen EACCES: permission denied/.test(res.error || ''), `error must carry the child's real cause (not just the netsh hint), got: ${res.error}`);
   assert((res.error || '').includes('netsh int ipv4 show excludedportrange protocol=tcp'), 'error must carry the netsh hint');
   assert(fs.existsSync(spawnLogFile(dataDir)), 'child stderr must be captured in DATA_DIR');
+  fs.rmSync(tmpHome, { recursive: true, force: true });
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('brain daemon supervisor: spawned child serving ANOTHER dataDir → error AND the child is stopped (G17)', async () => {
+  const { ensureDaemon } = await import(SUPERVISOR_URL);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-g17-'));
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-g17-home-'));
+  const dataDir = path.join(tmp, 'data');
+  const otherData = path.join(tmp, 'other-data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  fs.mkdirSync(otherData, { recursive: true });
+  // The REAL daemon child boots, but resolves a different dataDir than requested
+  // (as data-dir.js does when it yields to a heavier live global folder).
+  const preload = path.join(tmp, 'other-data-preload.cjs');
+  fs.writeFileSync(preload, `const i = process.argv.indexOf('--plugin-data'); if (i > 0) process.argv[i + 1] = ${JSON.stringify(otherData)};\n`);
+  const p = await waitFreePort();
+  const res = await ensureDaemon({
+    pluginRoot: path.join(tmp, 'install-B'),
+    dataDir,
+    env: { BRAIN_HTTP_PORT: String(p), HOME: tmpHome, USERPROFILE: tmpHome, NODE_OPTIONS: `--require "${preload.replace(/\\/g, '/')}"` },
+  });
+  assertEq(res.status, 'error', `a child serving another dataDir is not ours, got ${res.status}`);
+  assert(/serves dataDir/.test(res.error || '') && /stopped it/.test(res.error || ''), `error must say it stopped the child, got: ${res.error}`);
+  let free = false;
+  for (let i = 0; i < 30 && !free; i++) {
+    free = await fetch(`http://127.0.0.1:${p}/health`).then(() => false, () => true);
+    if (!free) await new Promise((r) => setTimeout(r, 100));
+  }
+  if (!free) { try { process.kill(res.pid); } catch { void 0; } }
+  assert(free, 'the port must be released — the spawned child may not keep squatting it');
   fs.rmSync(tmpHome, { recursive: true, force: true });
   fs.rmSync(tmp, { recursive: true, force: true });
 });

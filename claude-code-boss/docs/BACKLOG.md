@@ -293,6 +293,45 @@ real (2.29.0, porta 38217) seguiu intacto. Resultados (Claude Code 2.1.283):
   mostra como aviso `[BRAIN]`. Teste: mesma versão + outro dataDir → `error`, sem
   sinal ao outro daemon. Units 1300/0.
 
+- [ ] **G16 — sessões não reconectam ao brain-server depois de update/reload (em andamento)**.
+  Relato do usuário: depois de atualizar/reload, o MCP nunca volta sozinho; precisa
+  `/mcp` manual. Medido no Claude Code real 2.1.283 (sandbox isolado, A/B):
+  daemon reiniciado (~2,5 s fora), sessão reapada e cold start com ECONNREFUSED →
+  **reconecta sozinho**; daemon fora por 150 s → `failed` para sempre (60 s depois
+  do daemon voltar, ainda `ECONNREFUSED`; hooks `mcp_tool` não religam). Causa no
+  cliente (binário 2.1.283): `d9=5` tentativas, backoff `min(1000·2^(n−1),30000)` →
+  janela de ~15 s, depois `Max reconnection attempts (5) reached, giving up`.
+  Causa do nosso lado: o daemon pode ficar fora > 15 s — `.claude/scripts/install-local.mjs`
+  `killStaleBrainServers` mata o daemon e ninguém sobe outro até o próximo prompt
+  (premissa da era stdio: "o Claude Code relança o MCP"); crash/kill externo idem.
+  Também: o daemon responde **400** a `mcp-session-id` desconhecido; a spec MCP
+  2025-06-18 (Transports › Session Management, itens 3–4) exige **404**, que obriga
+  o cliente a reinicializar.
+  Decisão (usuário, 2026-10-02): sem processo residente (keeper/tarefa de logon);
+  o ensure segue no SessionStart/UserPromptSubmit e cada caminho que derruba o daemon
+  tem de subi-lo de novo dentro da janela. Feito: 404 para sessão desconhecida
+  (`http-daemon.js`, teste com daemon real); `install-local` derruba o daemon de outra
+  instalação e sobe o novo na hora (antes só matava). Risco residual aceito: crash do
+  daemon com o usuário parado > 15 s deixa as sessões `failed` até `/mcp`.
+- [x] **G17 — `ensureDaemon` devolve `error` mas deixa vivo o daemon recém-criado**
+  quando ele resolve outro dataDir (`daemon-supervisor.js`, ramo "did not become OUR
+  daemon"): o processo segue segurando a porta. Visto no harness isolado (start com
+  HOME real → dataDir real na porta 38219; matei à mão). Proposta: encerrar o filho
+  que nós mesmos criamos antes de devolver o erro.
+  **RESOLVIDO em 2026-10-02 (achado e corrigido na hora)**: se o pid do `/health` é o
+  do filho criado agora, ele é encerrado e o erro diz "stopped it". Teste com o
+  daemon real (preload troca o `--plugin-data`): `error` + porta liberada.
+- [x] **Teste "port blocked (listen EACCES)" era falso positivo (achado e corrigido
+  na hora)**: no Windows, `NODE_OPTIONS --require "C:\..."` perde as barras e o preload
+  nunca carregava; o teste passava porque a dica do netsh contém "EACCES". Agora o
+  caminho vai com `/` e o teste exige `listen EACCES: permission denied` (a causa real).
+- [ ] **U14 — `brain_count` com `project` explícito responde "project is required in
+  HTTP mode"**. Visto 9× nos experimentos do G16 (`project: "iso/smoke"` passado em
+  todas). Verificar se o argumento se perde no schema/dispatch da tool.
+- [ ] **O15 — sessão com o daemon fora no início levou 269 s para 9 turnos** (45 s de
+  sleep pedido). Suspeita: hooks `mcp_tool` esperando o timeout enquanto o servidor
+  está "connecting". Medir quanto cada hook espera nesse estado.
+
 ### UX / ruído visto usando a ferramenta (sessão de 2026-10-02)
 
 - [x] **U1 — `curation-guard` redireciona comando composto para script que não o
