@@ -9771,6 +9771,20 @@ test('plano B: client leaves mid-stream → the NVIDIA/BYOK upstream request is 
   }
 });
 
+test('upstream gateway enabled with an unusable URL → requests refused loudly (502 + cause), never silently sent to api.anthropic.com', async () => {
+  const byokMod = require(path.join(ROOT, 'servers', 'model-router', 'byok.js'));
+  const bad = { upstream: { enabled: true, baseUrl: 'not a url' } };
+  const t = byokMod.resolveUpstream(bad, { onLimit: false }, { host: 'api.anthropic.com', port: 443, protocol: 'https:' });
+  assert(t.upstreamMisconfigured && /upstream\.enabled=true/.test(t.upstreamMisconfigured), `target must carry the cause, got ${JSON.stringify(t)}`);
+  const ok = byokMod.resolveUpstream({ upstream: { enabled: true, baseUrl: 'http://127.0.0.1:9' } }, { onLimit: false }, { host: 'api.anthropic.com', port: 443, protocol: 'https:' });
+  assert(!ok.upstreamMisconfigured && ok.isCustomEndpoint, 'a valid gateway is not flagged');
+  const gen = await _planBRun(bad, { model: 'claude-opus-5-5', max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'oi' }] },
+    (b, c, res) => router.forwardRequest(b, {}, res, c, { path: '/v1/messages' }));
+  assert(gen.status === 502 && /upstream\.enabled=true/.test(gen.raw), `generation must be refused with the cause, got ${gen.status} ${gen.raw.slice(0, 200)}`);
+  const ct = await _planBRun(bad, {}, (b, c, res) => router.passthrough(JSON.stringify({ model: 'claude-opus-5-5', messages: [] }), {}, res, '/v1/messages/count_tokens', c));
+  assert(ct.status === 502 && /upstream\.enabled=true/.test(ct.raw), `count_tokens must be refused with the cause, got ${ct.status} ${ct.raw.slice(0, 200)}`);
+});
+
 test('plano B BYOK: a failure names the host actually called (endpoints.generate), not the Base URL host', async () => {
   const dead = await new Promise((resolve) => { const t = http.createServer(); t.listen(0, '127.0.0.1', () => { const p = t.address().port; t.close(() => resolve(p)); }); });
   const cfg = { byok: { enabled: true, mode: 'on-limit', wireProtocol: 'openai', baseUrl: 'http://base-host.example', endpoints: { generate: `http://127.0.0.1:${dead}/chat` }, headers: {} },
