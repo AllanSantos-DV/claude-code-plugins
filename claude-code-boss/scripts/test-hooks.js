@@ -528,57 +528,92 @@ const TESTS = [
       ? null : `wrapper invocation should be allowed silently (matcher.includes), got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
   },
   {
-    name: 'curation-guard    [PreToolUse/alias arg-less + .ps1 → AUTO-REDIRECT allow+updatedInput]',
+    name: 'curation-guard    [C2: task alias, bypassPermissions → allow + updatedInput {command} to the script]',
     script: 'curation-guard.js',
     payload: {
       tool_name: 'Bash',
       tool_input: { command: 'npm test', timeout: 12345 },
+      permission_mode: 'bypassPermissions',
       session_id: SESSION,
       cwd: (() => mkTempProject({ shells: [{ id: 'vitest', script: '.vscode/scripts/vitest.ps1', aliases: ['npm test'] }], whitelist: [] }))(),
     },
     expect: { hasKey: 'hookSpecificOutput', noError: true },
     validate: r => {
       const out = r.parsed?.hookSpecificOutput || {};
-      if (out.permissionDecision !== 'allow') return `arg-less .ps1 alias must AUTO-REDIRECT (allow), got: ${out.permissionDecision}`;
-      if (!out.updatedInput) return `must carry updatedInput with the rewritten command`;
-      if (out.updatedInput.command !== 'powershell -File ".vscode/scripts/vitest.ps1"') return `rewritten command wrong: ${out.updatedInput.command}`;
-      if (out.updatedInput.timeout !== 12345) return `updatedInput must PRESERVE original tool_input fields (spread), got: ${JSON.stringify(out.updatedInput)}`;
+      if (out.permissionDecision !== 'allow') return `bypassPermissions → allow, got: ${out.permissionDecision}`;
+      const cmd = out.updatedInput && out.updatedInput.command;
+      if (!/^powershell -NoProfile -ExecutionPolicy Bypass -File ".*\/\.vscode\/scripts\/vitest\.ps1"$/.test(cmd || '')) return `rewritten to the absolute script, got: ${cmd}`;
+      if (Object.keys(out.updatedInput).join() !== 'command') return `updatedInput carries only command (Claude Code merges it), got: ${JSON.stringify(out.updatedInput)}`;
+      if (!/CCB_RAW=1/.test(out.additionalContext || '')) return 'the redirect must be announced with the raw escape hatch';
       return null;
     },
   },
   {
-    name: 'curation-guard    [PreToolUse/alias WITH args → keeps deny (Fase 1 não reescreve)]',
+    name: 'curation-guard    [C2: task alias, default permission mode → ask (the user sees the rewrite)]',
+    script: 'curation-guard.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: 'npm test' },
+      permission_mode: 'default',
+      session_id: SESSION,
+      cwd: (() => mkTempProject({ shells: [{ id: 'vitest', script: '.vscode/scripts/vitest.ps1', aliases: ['npm test'] }], whitelist: [] }))(),
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    validate: r => {
+      const out = r.parsed?.hookSpecificOutput || {};
+      if (out.permissionDecision !== 'ask') return `non-bypass mode must not skip permissions → ask, got: ${out.permissionDecision}`;
+      if (!out.updatedInput || !/vitest\.ps1/.test(out.updatedInput.command)) return 'ask still carries the proposed rewrite';
+      if (!/Redirecionado/.test(out.permissionDecisionReason || '')) return 'the prompt explains the rewrite';
+      return null;
+    },
+  },
+  {
+    name: 'curation-guard    [C2: VARIANT (alias + extra args) → runs raw, no rewrite, no hint]',
     script: 'curation-guard.js',
     payload: {
       tool_name: 'Bash',
       tool_input: { command: 'npm test -- --watch' },
+      permission_mode: 'bypassPermissions',
       session_id: SESSION,
       cwd: (() => mkTempProject({ shells: [{ id: 'vitest', script: '.vscode/scripts/vitest.ps1', aliases: ['npm test'] }], whitelist: [] }))(),
     },
     expect: { hasKey: 'hookSpecificOutput', noError: true },
     validate: r => {
       const out = r.parsed?.hookSpecificOutput || {};
-      if (out.permissionDecision !== 'deny') return `alias with args must NOT auto-redirect (keep deny), got: ${out.permissionDecision}`;
-      if (out.updatedInput) return `deny path must not carry updatedInput`;
-      if (!(out.additionalContext || '').includes('.vscode/scripts/vitest.ps1')) return `deny must reference the script path`;
+      if (out.permissionDecision !== 'allow' || out.updatedInput || out.additionalContext) return `a variant runs as written, silently, got: ${JSON.stringify(out)}`;
       return null;
     },
   },
   {
-    name: 'curation-guard    [PreToolUse/non-.ps1 arg-less alias → keeps deny (Fase 1 só .ps1)]',
+    name: 'curation-guard    [C2: .mjs task script → node "<abs>" rewrite]',
+    script: 'curation-guard.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: 'npm run lint 2>&1 | tail -20' },
+      permission_mode: 'bypassPermissions',
+      session_id: SESSION,
+      cwd: (() => mkTempProject({ shells: [{ id: 'lint', script: '.vscode/scripts/lint.mjs', aliases: ['npm run lint'] }], whitelist: [] }))(),
+    },
+    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    validate: r => {
+      const out = r.parsed?.hookSpecificOutput || {};
+      return /^node ".*\/\.vscode\/scripts\/lint\.mjs"$/.test((out.updatedInput || {}).command || '') ? null : `expected node rewrite, got: ${JSON.stringify(out)}`;
+    },
+  },
+  {
+    name: 'curation-guard    [C2: EXPLORATION alias (git status) is never rewritten]',
     script: 'curation-guard.js',
     payload: {
       tool_name: 'Bash',
       tool_input: { command: 'git status' },
+      permission_mode: 'bypassPermissions',
       session_id: SESSION,
       cwd: (() => mkTempProject({ shells: [{ id: 'gs', script: '.vscode/scripts/gitstatus.mjs', aliases: ['git status'] }], whitelist: [] }))(),
     },
     expect: { hasKey: 'hookSpecificOutput', noError: true },
     validate: r => {
       const out = r.parsed?.hookSpecificOutput || {};
-      if (out.permissionDecision !== 'deny') return `non-.ps1 must NOT auto-redirect in Fase 1 (keep deny), got: ${out.permissionDecision}`;
-      if (out.updatedInput) return `deny path must not carry updatedInput`;
-      return null;
+      return out.permissionDecision === 'allow' && !out.updatedInput ? null : `exploration is bounded generically, never redirected, got: ${JSON.stringify(out)}`;
     },
   },
   {
@@ -642,7 +677,7 @@ const TESTS = [
     },
   },
   {
-    name: 'curation-guard    [PreToolUse/alias-after-cd→deny+redirect]',
+    name: 'curation-guard    [C2: alias after `cd && ` → that part rewritten, the cd kept]',
     script: 'curation-guard.js',
     payload: (() => {
       // Real-world case from the field: agent prepends `cd <project> && ` to
@@ -652,6 +687,7 @@ const TESTS = [
       return {
         tool_name: 'Bash',
         tool_input: { command: `cd ${cwd.replace(/\\/g, '/')} && npm run compile 2>&1 | tail -20` },
+        permission_mode: 'bypassPermissions',
         session_id: SESSION,
         cwd,
       };
@@ -660,8 +696,9 @@ const TESTS = [
     validate: r => {
       const d = r.parsed?.hookSpecificOutput?.permissionDecision;
       const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
-      if (d !== 'deny') return `alias after 'cd && ' should deny+redirect, got: ${d} (ctx: ${ctx})`;
-      if (!ctx.includes('.vscode/scripts/tsc_check.ps1')) return `redirect should reference script path, got: ${ctx}`;
+      const cmd = (r.parsed?.hookSpecificOutput?.updatedInput || {}).command || '';
+      if (d !== 'allow') return `alias after 'cd && ' should be rewritten (allow), got: ${d} (ctx: ${ctx})`;
+      if (!/^cd .+ && powershell .*tsc_check\.ps1"$/.test(cmd)) return `the cd is kept and only the alias part rewritten, got: ${cmd}`;
       return null;
     },
   },
@@ -753,7 +790,7 @@ const TESTS = [
     },
   },
   {
-    name: 'curation-guard    [PreToolUse/compound with a curated alias as ONE piece→allow+hint, absolute path (U1)]',
+    name: 'curation-guard    [C2: compound whose curated alias is EXPLORATION (git log) → runs as written, no hint]',
     script: 'curation-guard.js',
     payload: (() => {
       const cwd = mkTempProject({ shells: [{ id: 'glog', script: '.vscode/scripts/git-log-branch.mjs', aliases: ['git log'] }], whitelist: [] });
@@ -768,9 +805,8 @@ const TESTS = [
     validate: r => {
       const out = r.parsed?.hookSpecificOutput || {};
       if (out.permissionDecision !== 'allow') return `compound → allow, got: ${out.permissionDecision}`;
-      if (out.updatedInput) return 'compound must run as written (no rewrite)';
-      const ctx = out.additionalContext || '';
-      if (!/curated script: `[A-Za-z]:\/.*\.vscode\/scripts\/git-log-branch\.mjs`|curated script: `\/.*\.vscode\/scripts\/git-log-branch\.mjs`/.test(ctx)) return `hint must carry the ABSOLUTE script path, got: ${ctx}`;
+      if (out.updatedInput) return 'exploration is never rewritten';
+      if (out.additionalContext) return `the ignored "Prefer it next time" hint is gone, got: ${out.additionalContext}`;
       return null;
     },
   },
@@ -803,8 +839,8 @@ const TESTS = [
       cwd: (() => mkTempProject({ shells: [{ id: 'legacy', command: '.vscode/scripts/legacy.mjs', aliases: ['npm test'] }], whitelist: [] }))(),
     },
     expect: { hasKey: 'hookSpecificOutput', noError: true },
-    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'deny'
-      ? null : `legacy command-field entry should still drive deny+redirect, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
+    validate: r => /legacy\.mjs"$/.test((r.parsed?.hookSpecificOutput?.updatedInput || {}).command || '')
+      ? null : `legacy command-field entry should still drive the redirect, got: ${JSON.stringify(r.parsed?.hookSpecificOutput)}`,
   },
   {
     // Security: token-aware matcher must NOT treat quoted-arg occurrence as invocation.
@@ -1069,6 +1105,7 @@ const TESTS = [
     payload: {
       tool_name: 'Bash',
       tool_input: { command: 'npm test', timeout: 12345 },
+      permission_mode: 'bypassPermissions',
       session_id: SESSION,
       cwd: _pdRedirectOnly.cwd,
     },
@@ -1077,7 +1114,7 @@ const TESTS = [
     validate: r => {
       const out = r.parsed?.hookSpecificOutput || {};
       if (out.permissionDecision !== 'allow') return `must allow (redirect), got: ${out.permissionDecision}`;
-      if (!out.updatedInput || out.updatedInput.command !== 'powershell -File ".vscode/scripts/vitest.ps1"') {
+      if (!out.updatedInput || !/vitest\.ps1"$/.test(out.updatedInput.command)) {
         return `curation-guard's updatedInput must survive when error-guard abstains, got: ${JSON.stringify(out.updatedInput)}`;
       }
       return null;
