@@ -9771,6 +9771,57 @@ test('plano B: client leaves mid-stream → the NVIDIA/BYOK upstream request is 
   }
 });
 
+test('router: bodies that stop arriving without FIN no longer hang the client (limit body → plan B; OpenAI 4xx → 502; plan-B 200 non-stream → error text)', async () => {
+  const savedRef = router.__testHooks.getRefusalBodyLimits();
+  const savedOk = router.__testHooks.getSuccessBodyLimits();
+  router.__testHooks.setRefusalBodyLimits({ idleMs: 300, totalMs: 5000 });
+  router.__testHooks.setSuccessBodyLimits({ idleMs: 300, totalMs: 5000 });
+  const fake = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      if (req.url === '/nim-ok') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: 'ok-nim' } }] }));
+        return;
+      }
+      res.on('error', (err) => { void err; });
+      if (req.url === '/gen429') { res.writeHead(429, { 'content-type': 'application/json' }); res.write('{"error":'); return; }
+      if (req.url === '/oai401') { res.writeHead(401, { 'content-type': 'application/json' }); res.write('{"error":'); return; }
+      // /nim-stall and /byok-stall: a 200 whose body never finishes
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.write('{"choices":[{"message":{"role":"assistant","content":"par');
+    });
+  });
+  const up = await _listen0(fake);
+  const fb = { triggerStatuses: [429], cooldown: { enabled: false } };
+  const body = { model: 'claude-opus-5-5', max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'oi' }] };
+  const viaMain = (b, c, res) => router.forwardRequest(b, {}, res, c, { path: '/v1/messages' });
+  try {
+    // 1) limit (429) body stalls on the main path → the plan B still fires.
+    let t0 = Date.now();
+    let r = await _planBRun({ upstream: { enabled: true, wireProtocol: 'anthropic', endpoints: { generate: `http://127.0.0.1:${up}/gen429` } },
+      nim: { apiKey: 'fixture-nim', endpoint: `http://127.0.0.1:${up}/nim-ok` }, fallback: fb }, body, viaMain);
+    assert(!r.hung && /ok-nim/.test(r.raw), `stalled limit body must still lead to the plan B, got ${r.hung ? 'HUNG' : r.raw.slice(0, 200)}`);
+    assert(Date.now() - t0 < 5000, 'answered by the idle deadline, not a hang');
+    // 2) OpenAI-compat 4xx body stalls → 502 in the Anthropic error shape.
+    r = await _planBRun({ upstream: { enabled: true, wireProtocol: 'openai', endpoints: { generate: `http://127.0.0.1:${up}/oai401` } }, fallback: fb }, body, viaMain);
+    assert(!r.hung && r.status === 502 && /HTTP 401/.test(r.raw), `stalled OpenAI error body → 502, got ${r.hung ? 'HUNG' : r.status + ' ' + r.raw.slice(0, 200)}`);
+    // 3) plan-B NVIDIA 200 non-stream body stalls → the client gets the error text.
+    t0 = Date.now();
+    r = await _planBRun({ nim: { apiKey: 'fixture-nim', endpoint: `http://127.0.0.1:${up}/nim-stall` }, fallback: fb }, body);
+    assert(!r.hung && /NVIDIA/.test(r.raw) && /parado|caiu/.test(r.raw), `stalled NVIDIA body → error text, got ${r.hung ? 'HUNG' : r.raw.slice(0, 200)}`);
+    // 4) plan-B BYOK (OpenAI wire) 200 non-stream body stalls → the client gets the error text.
+    r = await _planBRun({ byok: { enabled: true, mode: 'on-limit', wireProtocol: 'openai', endpoints: { generate: `http://127.0.0.1:${up}/byok-stall` }, headers: {} }, fallback: fb }, body);
+    assert(!r.hung && /BYOK/.test(r.raw), `stalled BYOK body → error text, got ${r.hung ? 'HUNG' : r.raw.slice(0, 200)}`);
+    assert(Date.now() - t0 < 9000, 'both plan-B stalls answered by the idle deadline');
+  } finally {
+    router.__testHooks.setRefusalBodyLimits(savedRef);
+    router.__testHooks.setSuccessBodyLimits(savedOk);
+    fake.closeAllConnections();
+    await new Promise((resolve) => fake.close(resolve));
+  }
+});
+
 test('plano B: stream que fecha limpo com a última linha sem \\n — frame completo termina, frame cortado chega cortado', async () => {
   const frame = (text) => 'data: ' + JSON.stringify({ id: 'c', choices: [{ index: 0, delta: { content: text } }] });
   const tails = {

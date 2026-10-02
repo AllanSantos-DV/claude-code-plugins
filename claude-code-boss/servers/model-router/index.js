@@ -1005,17 +1005,28 @@ function sseTailFrame(buf) {
 // o teto de inatividade sozinho seria rearmado a cada byte.
 const refusalBodyLimits = { idleMs: 5000, totalMs: 30000 };
 
+// The same hang exists for a SUCCESS body read whole (non-stream 200 of the plan B,
+// OpenAI-compat translation): a body that stops arriving without FIN hung the client.
+// Looser limits than a refusal — a large answer over a slow link is legitimate.
+const successBodyLimits = { idleMs: 30000, totalMs: 120000 };
+
 function armRefusalIdle(upRes, what) {
-  const { idleMs, totalMs } = refusalBodyLimits;
+  armBodyDeadline(upRes, what, refusalBodyLimits, 'corpo da recusa');
+}
+
+/** Idle + total deadline on a body read to the end; destroying with an error lands
+ *  in the caller's 'error' listener, which answers the client. */
+function armBodyDeadline(upRes, what, limits, label) {
+  const { idleMs, totalMs } = limits;
   let idle = null;
   const arm = () => {
     clearTimeout(idle);
     idle = setTimeout(() => {
-      upRes.destroy(new Error(`${what}: corpo da recusa parado por ${idleMs}ms`));
+      upRes.destroy(new Error(`${what}: ${label} parado por ${idleMs}ms`));
     }, idleMs);
   };
   const total = setTimeout(() => {
-    upRes.destroy(new Error(`${what}: corpo da recusa não terminou em ${totalMs}ms`));
+    upRes.destroy(new Error(`${what}: ${label} não terminou em ${totalMs}ms`));
   }, totalMs);
   const clear = () => { clearTimeout(idle); clearTimeout(total); };
   arm();
@@ -1187,6 +1198,7 @@ function finishStream(res) {
 function jsonNvidiaToAnthropic(nvRes, res, reqBody, warning, onReadFail) {
   const chunks = [];
   let bytes = 0;
+  armBodyDeadline(nvRes, 'Resposta NVIDIA', successBodyLimits, 'corpo da resposta');
   nvRes.on('data', (c) => {
     bytes += c.length;
     if (bytes > MAX_UPSTREAM_BODY_BYTES) {
@@ -1547,8 +1559,14 @@ function proxyOpenAIResponse(upRes, res, reqBody, adapter, onReadError) {
     });
     upRes.on('error', err => {
       logger.error('Erro ao ler resposta OpenAI', { err: err.message });
-      res.destroy(err);
+      if (!res.headersSent) {
+        res.writeHead(502, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: `OpenAI upstream recusou a request (HTTP ${upRes.statusCode}) e o corpo do erro não chegou: ${err.message}` } }));
+      } else {
+        res.destroy(err);
+      }
     });
+    armRefusalIdle(upRes, 'OpenAI');
     return;
   }
 
@@ -1622,6 +1640,7 @@ function proxyOpenAIResponse(upRes, res, reqBody, adapter, onReadError) {
   // Buffers crus: com setEncoding o teto contaria caracteres, não bytes.
   const chunks = [];
   let bytes = 0;
+  armBodyDeadline(upRes, 'Resposta OpenAI', successBodyLimits, 'corpo da resposta');
   upRes.on('data', chunk => {
     bytes += chunk.length;
     if (bytes > MAX_UPSTREAM_BODY_BYTES) {
@@ -3028,6 +3047,9 @@ function forwardRequest(reqBody, originalHeaders, res, config, route) {
     if (triggers.includes(upRes.statusCode)) {
       let errBody = '';
       upRes.on('data', (c) => { if (errBody.length < 16384) errBody += c; }); // limita memória
+      // A limit body that stops without FIN would hang the client: the deadline
+      // destroys it → the 'error' listener below still fires the plan B.
+      armRefusalIdle(upRes, 'Corpo do limite');
       upRes.on('end', () => {
         // Arma DEPOIS de ler o corpo: na assinatura o reset pode vir no CORPO
         // (rate_limit_event/marcador), não só nos headers. Só arma p/ Anthropic
@@ -3777,6 +3799,8 @@ if (require.main === module) {
       setCooldownUntil(ms) { _cooldownUntil = ms; },
       // Encurta os prazos do corpo de recusa para os testes não esperarem 30 s.
       setRefusalBodyLimits(limits) { Object.assign(refusalBodyLimits, limits); },
+      setSuccessBodyLimits(limits) { Object.assign(successBodyLimits, limits); },
+      getSuccessBodyLimits() { return { ...successBodyLimits }; },
       getRefusalBodyLimits() { return { ...refusalBodyLimits }; },
     },
     modelTier,
