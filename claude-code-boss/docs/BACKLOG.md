@@ -202,8 +202,16 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
 
 ### UX / ruído visto usando a ferramenta (sessão de 2026-10-02)
 
-- [ ] **U1 — `curation-guard` redireciona comando composto para script que não o
-  cobre** (`git log …; git diff --shortstat; git show --stat` → `git-log-branch.mjs`,
+- [x] **U1 — `curation-guard` redireciona comando composto para script que não o
+  cobre** — **RESOLVIDO em 2026-10-02 pelo resultado medido** (replay de 9.459
+  chamadas reais): dos 727 comandos que casam com um alias, 401 eram compostos e
+  só 51 desses tiveram saída volumosa. Nova regra: o alias sendo o comando inteiro
+  (`command-signature.workSegments` = 1 segmento de trabalho, descontando
+  `cd`/`echo`/atribuição/heredoc de escrita) → nega como antes; composto → permite
+  + `additionalContext` com o script curado; a saída volumosa segue cobrada pela
+  curadoria do `Stop`. Negações no histórico: 727 → 326 (−55%). Caminho do
+  script agora ABSOLUTO (com `/`) na negação e na dica. Testes: composto → allow +
+  dica com caminho absoluto, `cd x && alias | tail` segue negando, `workSegments`. (`git log …; git diff --shortstat; git show --stat` → `git-log-branch.mjs`,
   sem data nem diffstat) e sugere caminho relativo (`.vscode/scripts/…`) que
   quebra fora da raiz do repo. **Decisão do dono (2026-10-02)**: entender melhor o
   comportamento — pesquisar, medir, testar cenários — e escolher pelo resultado dos

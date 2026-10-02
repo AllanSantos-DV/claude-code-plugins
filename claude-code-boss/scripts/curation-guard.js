@@ -20,6 +20,7 @@
  *   4. default → allow (PostToolUse/Stop discovery loop handles the rest)
  */
 const { hookLog } = require('./hook-logger.js');
+const { workSegments } = require('./lib/command-signature.js');
 const { loadCurationConfig } = require('./curation-paths.js');
 const { runPreToolUseCli } = require('./lib/hook-io.js');
 const { findProjectRoot, loadShellsConfig, matchCuratedShell, buildCuratedInvocation, _pathMatches, _tokenize } = require('./shells-config.js');
@@ -104,6 +105,19 @@ async function run(event) {
         return decision('allow');
       }
 
+      // Forward slashes: valid in both bash and PowerShell on Windows.
+      const absScript = (projectRoot ? require('path').resolve(projectRoot, scriptPath) : scriptPath).replace(/\\/g, '/');
+
+      // U1 (measured: 9.4k real Bash calls — 404 of 726 alias matches were compound,
+      // only 15% of those produced bulky output): a COMPOUND command where the alias
+      // is one piece among other work is NOT denied whole — that forced the agent to
+      // drop or re-split the other segments. It runs, with a pointer to the curated
+      // script; bulky output is still caught by the Stop curation loop.
+      if (workSegments(command).length > 1) {
+        const hint = `[curation-guard] Part of this command has a curated script: \`${absScript}\` (output ${curatedShell.outputFilter || 'summary'}, limit ${curatedShell.outputLines || 200} lines). Prefer it for that part next time.`;
+        return decision('allow', { additionalContext: hint });
+      }
+
       // Raw alias matched — AUTO-REDIRECT (Parte A, Fase 1) when safely
       // rebuildable: rewrite the call to invoke the curated script (allow +
       // updatedInput), sparing the extra deny→retry turn. buildCuratedInvocation
@@ -118,7 +132,8 @@ async function run(event) {
           additionalContext: ctx,
         });
       }
-      const reason = `[curation-guard] Command \`${command}\` has a curated script. Run \`${scriptPath}\` instead — output filtered (${curatedShell.outputFilter || 'summary'}, limit ${curatedShell.outputLines || 200} lines).`;
+      // Absolute path: the relative one broke when the agent's cwd was not the repo root.
+      const reason = `[curation-guard] Command \`${command}\` has a curated script. Run \`${absScript}\` instead — output filtered (${curatedShell.outputFilter || 'summary'}, limit ${curatedShell.outputLines || 200} lines).`;
       return decision('deny', { additionalContext: reason, permissionDecisionReason: reason });
     }
 

@@ -16919,6 +16919,16 @@ test('brain_retrieve_context: routes retrieve-core\'s local search through kbWor
   }
 });
 
+// ─── U1: workSegments — what counts as ONE command vs a compound ───────────────
+test('U1: command-signature.workSegments — cd/echo/assign/heredoc-write are not work; pipes stay inside a segment', () => {
+  const { workSegments } = require('./lib/command-signature.js');
+  assertEq(workSegments('cd /x && npm run compile 2>&1 | tail -20'), ['npm run compile 2>&1 | tail -20']);
+  assertEq(workSegments('git status --short; echo "=== last ==="; git log --oneline -6').length, 2);
+  assertEq(workSegments('FOO=1; cd a && git log -3').length, 1);
+  assertEq(workSegments("cat > /tmp/x.mjs <<'EOF'\nconsole.log(1)\nEOF\nnode /tmp/x.mjs"), ['node /tmp/x.mjs']);
+  assertEq(workSegments('git add a && git commit -m x && git log -1').length, 3);
+});
+
 // ─── U2/U10: error-guard policy P8 — session transcript, effective dir, edit lifts ───
 function _sfTranscript() {
   const tp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sf-')), 't.jsonl');
