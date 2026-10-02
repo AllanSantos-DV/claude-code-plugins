@@ -231,6 +231,35 @@ imitando o daemon, transcript real de 90 MB): 6 `Stop` simultâneos → 60
   MCP/HTTP. Próximos passos: perfilar o `curation_guard` (shells.json / assinatura)
   e medir o custo fixo do SDK por chamada.
 
+### Validação no Claude Code REAL — sessão isolada (2026-10-02)
+
+Harness local `.claude/scripts/isolated-smoke.mjs` (plugin via `--plugin-dir` a
+partir de `git archive HEAD`, `CLAUDE_CONFIG_DIR`/`HOME` temporários, daemon na
+porta 38219, `CCB_ISOLATED=1`, probe que grava o input bruto dos hooks). O daemon
+real (2.29.0, porta 38217) seguiu intacto. Resultados (Claude Code 2.1.283):
+- [x] Hooks `mcp_tool` rodam no daemon isolado (journal do `posttoolusebash` em
+  segundo plano e `capture-queue` do `Stop` gravados no data-dir isolado).
+- [x] **G6**: `hook_policy_inject` no `SubagentStart` injeta a política no
+  contexto do subagente (o subagente citou "veio pelo hook SubagentStart").
+- [x] **U5**: `agent_id`/`agent_type` no input de hook de subagente e os
+  placeholders funcionam em `mcp_tool` (corrigido, commit 1c5cbe7).
+- [x] **U2/U10 (P8)**: 3ª execução idêntica sem edição foi bloqueada com a
+  mensagem nova (`permission_denials` no resultado do CLI).
+- [x] 4 sessões reais simultâneas: todas concluíram; hook worker sem expirados
+  nem re-enfileirados.
+- [ ] **O14 — 1ª sessão com o daemon parado: o MCP falha ao conectar
+  (ECONNREFUSED) no início** e os hooks `mcp_tool` só passam a funcionar depois
+  que o `brain-daemon-ensure` (UserPromptSubmit) sobe o daemon — os do 1º
+  prompt podem ser perdidos (vistos: os efeitos da sessão apareceram, a janela
+  inicial não foi medida). Medir na instalação real (1ª sessão após boot) e
+  avaliar subir o daemon já no `SessionStart` ou no logon (como o token-guard).
+- [ ] **O13 — RSS do daemon com backend local: ~533 MB parado** em sessão real
+  (bench sem embedder: ~440 MB). Medir a divisão (embedder na thread principal,
+  N slots do pool do KB, hook worker) antes de otimizar.
+- [ ] **G12 — inferência do embedder na thread principal do daemon** a cada
+  prompt (`brain_retrieve_context`, backend local): trava os guards durante a
+  inferência. Medir o tempo por prompt; se relevante, mover para worker.
+
 ### UX / ruído visto usando a ferramenta (sessão de 2026-10-02)
 
 - [x] **U1 — `curation-guard` redireciona comando composto para script que não o
