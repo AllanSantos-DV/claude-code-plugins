@@ -3341,8 +3341,17 @@ async function createServer(config, mode, routerToken) {
       if (up === 'local:catalog') {
         const ctx = catalogRequestContext(req.headers, cfgEarly, tenantEarly);
         const snap = ctx.ok ? catalog.getSnapshot(ctx.scope) : null;
+        // An invalid models profile (not a merely missing credential) used to answer
+        // 200 {"data": []} with no log at all — an empty model list nobody could explain.
+        const profileError = !ctx.ok && !ctx.optional ? ctx.error : null;
+        if (profileError) logger.warn('Catálogo local indisponível — perfil de models inválido', { err: profileError, path: pathnameEarly });
         // /v1/models quando encurtado para local:catalog devolve snapshot em forma Anthropic
         if (pathnameEarly === '/v1/models') {
+          if (profileError) {
+            res.writeHead(502, { 'content-type': 'application/json' });
+            res.end(JSON.stringify({ type: 'error', error: { type: 'api_error', message: `model-router: catálogo indisponível — ${profileError}` } }));
+            return;
+          }
           const data = snap
             ? (ctx.alias.enabled
               ? catalog.aliasedModelList(snap, ctx.alias.prefix)
@@ -3359,6 +3368,7 @@ async function createServer(config, mode, routerToken) {
           ageMs:    snap ? snap.ageMs : null,
           count:    snap ? snap.count : 0,
           byFamily: snap ? snap.byFamily : {},
+          ...(profileError ? { error: profileError } : {}),
         }));
         return;
       }
