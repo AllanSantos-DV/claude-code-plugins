@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Claude Code Boss — a memória local do seu Claude Code</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%230c0b0f'/%3E%3Cg fill='none' stroke='%23e59247' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M6 8h12M6 12h8M6 16h10'/%3E%3C/g%3E%3C/svg%3E" />
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica local, curadoria anti context-bloat e Model Router com custom upstream ou BYOK em protocolos Anthropic e OpenAI. v2.29.1, MIT." />
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica local, curadoria anti context-bloat com auto-redirect, hooks servidos por um daemon local e Model Router com custom upstream ou BYOK em protocolos Anthropic e OpenAI. v3.0.0, MIT." />
 <style>
   :root{
     --bg:#0c0b0f; --surface:#131118; --surface-2:#191620; --ink:#edeae1; --muted:#a09d93;
@@ -46,13 +46,13 @@
 
   /* ── nav ── */
   header.nav{ display:flex; align-items:center; justify-content:space-between; gap:16px;
-    padding:18px 0; border-bottom:1px solid var(--line) }
+    padding:18px 24px; border-bottom:1px solid var(--line) }
   .brand{ display:flex; align-items:center; gap:11px; text-decoration:none; flex-shrink:0 }
   .brand .mark{ width:32px; height:32px; border-radius:9px; display:grid; place-items:center;
     background:var(--amber-soft); border:1px solid var(--amber); color:var(--amber) }
   .brand .name{ font-family:var(--mono); font-size:14px; font-weight:600; letter-spacing:-.01em }
   .nav-links{ display:flex; align-items:center; gap:2px; flex-wrap:wrap }
-  .nav-links a{ font-size:13.5px; color:var(--muted); text-decoration:none; padding:8px 12px; border-radius:8px }
+  .nav-links a{ font-size:13.5px; color:var(--muted); text-decoration:none; padding:8px 9px; border-radius:8px }
   .nav-links a:hover{ color:var(--ink); background:var(--surface) }
   .nav-links a.ver{ font-family:var(--mono); font-size:12.5px; color:var(--amber);
     border:1px solid var(--amber); border-radius:999px; padding:5px 12px; margin-left:6px }
@@ -101,6 +101,7 @@
 
   /* ── seções ── */
   section{ padding:clamp(52px,7vw,86px) 0 }
+  section.wrap:not(.hero){ padding-top:clamp(52px,7vw,86px); padding-bottom:clamp(52px,7vw,86px) }
   section + section{ border-top:1px solid var(--line) }
   .sec-head{ display:grid; grid-template-columns:minmax(0,1fr) minmax(0,42ch); gap:18px 40px;
     align-items:end; margin:0 0 38px }
@@ -172,6 +173,8 @@
   .route-state{ font-family:var(--mono); font-size:9.5px; letter-spacing:.1em; text-transform:uppercase;
     color:var(--muted); white-space:nowrap }
   .router-details{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin-top:14px }
+  .break-grid{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px }
+  .break-grid .break-wide{ grid-column:1 / -1 }
   .router-detail{ border:1px solid var(--line); border-radius:13px; padding:17px; background:var(--surface) }
   .router-detail .k{ font-family:var(--mono); font-size:10px; letter-spacing:.14em;
     text-transform:uppercase; color:var(--amber); margin:0 0 9px }
@@ -256,7 +259,7 @@
     .extras{ grid-template-columns:minmax(0,1fr) }
     .router-intro{ grid-template-columns:minmax(0,1fr) }
     .router-copy h2{ max-width:20ch }
-    .router-details{ grid-template-columns:minmax(0,1fr) }
+    .router-details,.break-grid{ grid-template-columns:minmax(0,1fr) }
     .perf{ grid-template-columns:minmax(0,1fr); gap:30px }
     .install{ grid-template-columns:minmax(0,1fr); gap:32px }
   }
@@ -292,12 +295,13 @@
   </a>
   <nav class="nav-links" aria-label="Seções">
     <a href="#memoria">Como funciona</a>
+    <a href="#novo">Novo na 3.0</a>
     <a href="#rotear">Conectar modelos</a>
     <a href="#recursos">Recursos</a>
     <a href="#leve">Custo por sessão</a>
     <a href="#instalar">Instalar</a>
     <a href="tech.html">Detalhes técnicos</a>
-    <a class="ver" href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">v2.29.1</a>
+    <a class="ver" href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">v3.0.0</a>
   </nav>
 </header>
 
@@ -313,7 +317,7 @@
       <a class="btn btn--ghost" href="tech.html">Ver detalhes técnicos</a>
     </div>
     <ul class="facts">
-      <li><span class="dot" aria-hidden="true"></span><b>v2.29.1</b></li>
+      <li><span class="dot" aria-hidden="true"></span><b>v3.0.0</b> (major)</li>
       <li><span class="dot" aria-hidden="true"></span>Claude Code Desktop + <b>Node 22.13+</b></li>
       <li><span class="dot" aria-hidden="true"></span><b>Sem chave de API</b> no caminho padrão</li>
       <li><span class="dot" aria-hidden="true"></span>Licença <b>MIT</b></li>
@@ -352,8 +356,8 @@
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18V7a3 3 0 0 1 6 0v11M14 18V7a3 3 0 0 1 6 0v11"/><path d="M4 12h6M14 12h6"/></svg>
           </span>
           <div>
-            <span class="t">Comandos ruidosos são curados na hora</span>
-            <span class="d">A guarda de curadoria encurta ou redireciona saídas gigantes; um comando cuja assinatura já falhou várias vezes volta com a causa registrada, em vez de falhar de novo.</span>
+            <span class="t">Comandos ruidosos são reescritos para o script curado</span>
+            <span class="d">Se a assinatura do comando casa com um script curado, a guarda o reescreve antes de rodar e avisa o modelo. Um comando que já falhou na mesma sessão, sem edição desde então, volta com a última saída em vez de falhar de novo.</span>
           </div>
         </div>
         <div class="arrow" aria-hidden="true">
@@ -370,6 +374,46 @@
           <span class="tag">saída</span>
         </div>
       </div>
+    </div>
+  </section>
+
+  <section id="novo" class="wrap">
+    <div class="sec-head">
+      <h2>3.0.0: a curadoria redesenhada, e o que muda para você</h2>
+      <p>Uma versão major. Ela inclui tudo o que estava preparado como 2.29.1 (nunca publicada), o redesenho da curadoria, o endurecimento do daemon de hooks e as correções de escopo por sessão.</p>
+    </div>
+
+    <div class="break-grid">
+      <article class="router-detail">
+        <p class="k">incompatível · U4</p>
+        <b>Composto identificado por todos os segmentos</b>
+        <p>Um comando composto passa a ser identificado por <b>todos</b> os seus segmentos de trabalho, em ordem: <code>git status &amp;&amp; git diff</code> ≠ <code>git status</code>. Antes, 425 assinaturas cobriam 2.285 comandos diferentes; agora são 27.</p>
+      </article>
+      <article class="router-detail">
+        <p class="k">incompatível · U13</p>
+        <b>Número de descritor fora da assinatura</b>
+        <p><code>git status 2&gt;&amp;1</code> passa a ser <code>git status</code>: o <code>2</code> colado ao redirecionamento sai, mas <code>sleep 2 &gt; f</code> mantém o <code>2</code>.</p>
+      </article>
+      <article class="router-detail">
+        <p class="k">incompatível · curadoria</p>
+        <b>Redirecionar em vez de negar</b>
+        <p>O guard não nega mais variantes nem pipes: reescreve comandos de tarefa para o script curado e só pede script para comando de tarefa que se repete.</p>
+      </article>
+      <article class="router-detail">
+        <p class="k">incompatível · hooks no daemon</p>
+        <b>13 hooks rodam como <code>mcp_tool</code></b>
+        <p>Os 12 da Fase G mais o <code>hook_policy_inject</code> do <code>SubagentStart</code> rodam no brain-server, que precisa estar conectado. Com ele fora do ar, o Claude Code trata o hook como erro não bloqueante. Na 1ª sessão depois de boot, update ou reload, os hooks dos primeiros segundos podem ser pulados enquanto o cliente reconecta.</p>
+      </article>
+      <article class="router-detail break-wide">
+        <p class="k">incompatível · permissões</p>
+        <b>O boss não aprova mais comandos por você</b>
+        <p>O <code>curation-guard</code> e o <code>graph-guard</code> respondiam <code>allow</code> como padrão "nada a fazer" para todo comando Bash/Grep/Glob, e um <code>allow</code> de PreToolUse pula o sistema de permissões do Claude Code: quem não usa <code>bypassPermissions</code> tinha tudo aprovado sem prompt (vinha da 1.x; achado pela auditoria pré-release). Agora "nada a fazer" é <b>abstenção</b> (<code>{}</code>) e o seu fluxo de permissões decide. Só as reescritas decidem: o redirect (<code>allow</code> em bypass, <code>ask</code> nos demais modos) e o moldador (só em bypass). A whitelist do <code>shells.json</code> passa a só isentar do modo <code>denyUnknown</code>.</p>
+      </article>
+    </div>
+
+    <div class="router-note">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2.8 20h18.4z"/><path d="M12 9v5M12 17.5v.1"/></svg>
+      <p><b>Efeito das novas assinaturas:</b> marcações de uso único e recorrências gravadas para compostos, ou com o sufixo de descritor antigo, deixam de casar. A curadoria pode perguntar de novo, <b>uma vez</b>, por esses comandos.</p>
     </div>
   </section>
 
@@ -442,7 +486,7 @@
         <p>Mensagens, imagens base64 suportadas, tools, tool results, JSON e stop reasons atravessam a ponte nos dois sentidos. No stream SSE, nomes de tool calls fragmentados são recompostos e o usage do chunk final separado chega no fechamento. Campo incompatível falha alto; nada some em silêncio.</p>
       </article>
       <article class="router-detail">
-        <p class="k">04 · mapeie <span class="new">novo na v2.29.1</span></p>
+        <p class="k">04 · mapeie <span class="new">novo na v3.0.0</span></p>
         <b>Mapeamento de modelo, só no BYOK</b>
         <p>Opcional e vazio por padrão: regras origem → destino trocam o <code>model</code> enviado ao seu endpoint, em qualquer rota BYOK (<code>always</code>, fallback <code>on-limit</code> e cooldown). A ordem é previsível: ID exato, depois o ID sem data de snapshot, depois padrões com <code>*</code> (o mais específico vence). Sem regra, o modelo segue como veio; o caminho da assinatura nunca é alterado.</p>
         <div class="alias-flow" aria-label="Exemplo de regra de mapeamento de modelo">
@@ -487,13 +531,15 @@
         </span>
         <div>
           <h3>Curadoria anti context-bloat</h3>
-          <p class="lead">Saídas enormes e buscas recursivas amplas são interceptadas antes de entrarem no contexto. O tom é advisory: os hooks informam e redirecionam, não coagem, e num retry idêntico o comando passa.</p>
+          <p class="lead">Na 3.0.0 a curadoria casa por assinatura, redireciona e mede. No replay do histórico real (4.170 chamadas Bash, com o código do plugin), as negações do guard antigo caíram de 243 para 0.</p>
         </div>
         <ul>
-          <li>Comandos curados são bloqueados ou <b>auto-redirecionados</b> para a alternativa enxuta</li>
+          <li><b>Redirecionamento automático</b> via <code>updatedInput</code>, inclusive dentro de compostos: <code>allow</code> em <code>bypassPermissions</code>, <code>ask</code> nos demais modos (o prompt mostra a reescrita). <code>CCB_RAW=1</code> pede a saída crua</li>
+          <li><b>Só cura o que se repete:</b> exploração (<code>git log</code>, <code>grep</code>, <code>cat</code>…) e código inline nunca viram script; no replay, cobranças do Stop caíram de 1.316 para 45 (−96,6%)</li>
+          <li><b>Exploração limitada sem Token Guard e em <code>bypassPermissions</code>:</b> um comando de exploração isolado e sem pipe próprio (nunca <code>tail -f</code>/<code>less</code>) tem a saída limitada em streaming, até 80 linhas / 8000 caracteres, e a saída completa fica em <code>.runtime/shaped</code>. Com o Token Guard presente, o boss não interfere</li>
+          <li><b>Pipe sobre script curado é permitido</b> e medido por script, como sinal de que a saída precisa de ajuste</li>
+          <li>Guarda de erro: nega só a repetição na <b>mesma sessão</b> e no mesmo diretório, sem edição desde a falha; no replay de 9.459 chamadas, bloqueios falsos caíram de 34 para 4</li>
           <li><code>grep -r</code>/<code>rg</code>/<code>find</code> amplos viram consulta estrutural ao grafo quando ele está pronto</li>
-          <li>Guarda de erro: assinatura que já falhou N vezes volta com a <b>causa registrada</b></li>
-          <li>Whitelist por ecossistema detectada no início da sessão</li>
         </ul>
       </article>
 
@@ -527,7 +573,7 @@
       </li>
       <li>
         <p class="head"><span aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18M8 13h8M8 16.5h5"/></svg></span><b>Dashboard local sob demanda</b></p>
-        <p>Servido em <code>127.0.0.1</code>, com porta dinâmica e token gerado no boot. A aba Router configura upstream, BYOK, protocolos, URLs e headers; Brain KB, Hooks, Insights e Logs ficam no mesmo painel local.</p>
+        <p>Servido em <code>127.0.0.1</code>, com porta dinâmica e token gerado no boot. A aba Router configura upstream, BYOK, protocolos, URLs e headers; Brain KB, Hooks, Insights e Logs ficam no mesmo painel local. Novo na 3.0.0: o painel <b>Curation &amp; guards</b> na Home separa a economia exata da estimada (sem linha de base, diz "sem base"), mostra o custo, uso por script, scripts nunca usados e a latência por hook.</p>
       </li>
       <li>
         <p class="head"><span aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21a9 9 0 1 0-9-9"/><path d="M3 12H7l2.2 5 3-11 2.3 6h3.3"/></svg></span><b>Doctor: diagnóstico zero-config</b></p>
@@ -543,39 +589,41 @@
   <section id="leve" class="wrap">
     <div class="sec-head">
       <h2>Um plugin de memória não pode custar caro para existir</h2>
-      <p>A v2.28.0 consolidou os hooks em seis dispatchers in-process: cada evento lê o payload uma vez e roda seus detectores no mesmo processo, concorrentes e com timeout individual.</p>
+      <p>A v2.28.0 juntou os detectores de cada evento num dispatcher in-process. Na 3.0.0, 13 hooks nem sobem processo: viram tools <code>mcp_tool</code> do brain-server e rodam no daemon HTTP compartilhado. A lógica de cada hook é a mesma; só o transporte muda.</p>
     </div>
     <div class="perf">
       <div class="table">
-        <div class="row row--head"><span class="ev">Evento</span><span class="n">Processos Node</span></div>
-        <div class="row"><span class="ev">SessionStart<small>12 detectores + o ensure do router</small></span><span class="n">13 → <b>2</b></span></div>
-        <div class="row"><span class="ev">UserPromptSubmit<small>a cada prompt seu</small></span><span class="n">6 → <b>2</b></span></div>
-        <div class="row"><span class="ev">PreToolUse · Bash<small>curadoria + guarda de erro</small></span><span class="n">2 → <b>1</b></span></div>
-        <div class="row"><span class="ev">PostToolUse · Bash<small>detecção e resolução</small></span><span class="n">3 → <b>1</b></span></div>
-        <div class="row"><span class="ev">PostToolUseFailure<small>journal da falha</small></span><span class="n">2 → <b>1</b></span></div>
-        <div class="row"><span class="ev">Stop<small>consolidado desde a v1.19.0</small></span><span class="n">11+ → <b>1</b></span></div>
-        <div class="row row--total"><span class="ev">Total eliminado<small>por sessão, por prompt e por comando</small></span><span class="n">≈ <b>34 spawns</b></span></div>
+        <div class="row row--head"><span class="ev">Medido · 8 sessões MCP</span><span class="n">spawn → daemon</span></div>
+        <div class="row"><span class="ev">Latência unitária (p50)<small>um hook, do disparo à resposta</small></span><span class="n">122 ms → <b>8,9 ms</b></span></div>
+        <div class="row"><span class="ev">N=60 hooks concorrentes<small>tempo de parede</small></span><span class="n">7,0–8,3 s → <b>0,62–1,9 s</b></span></div>
+        <div class="row"><span class="ev">Memória<small>processos somados vs. pico do daemon</small></span><span class="n">~3,9 GB → <b>234 MB</b></span></div>
+        <div class="row"><span class="ev">Atraso do event loop<small>embedder num worker thread (G12)</small></span><span class="n">32,5 → <b>3,0 ms</b></span></div>
+        <div class="row row--total"><span class="ev">Máquina fraca simulada<small>1 núcleo, rajada de hooks</small></span><span class="n">p95 <b>134 ms</b>, 0 prazos estourados</span></div>
       </div>
       <ul class="perf-notes">
         <li>
-          <b>Concorrente, não sequencial</b>
-          <p>Os detectores de um dispatcher rodam juntos, cada um com o timeout que já tinha. Um laço sequencial trocaria o pior caso por uma soma; a primeira versão fazia isso e foi corrigida antes do release.</p>
+          <b>Fail-open visível</b>
+          <p>Uma exceção dentro da tool não bloqueia nada e devolve um <code>systemMessage</code> dizendo que o hook degradou. Cada hook tem um prazo interno abaixo do <code>timeout</code> do <code>hooks.json</code>. Ficam como <code>command</code> só os hooks que precisam funcionar com o daemon fora do ar, como o <code>SessionStart</code>.</p>
         </li>
         <li>
-          <b>Timeout genuíno ≠ crash</b>
-          <p>Cada resultado é marcado como <code>ok</code>, <code>timeout</code> ou <code>error</code>. Misturar os dois mascararia uma falha real como se fosse lentidão.</p>
+          <b>Auditoria pré-release, tudo reproduzido antes de corrigir</b>
+          <p>O moldador não embrulha mais comando com pipe próprio, com <code>#</code> de comentário ou de follow/interativo (<code>tail -f</code>, <code>less</code>, <code>watch</code>), e faz streaming: a cabeça sai na hora. Um job que nunca termina na lane pesada não trava mais os hooks pesados de todas as sessões: depois de 3 prazos seguidos sem progresso, o worker é reciclado. E o desligamento do worker de embedding no meio do init não derruba mais o daemon.</p>
+        </li>
+        <li>
+          <b>Cada sessão com a sua raiz</b>
+          <p>O Claude Code entregava <code>${CLAUDE_PROJECT_DIR}</code> vazio ao <code>mcp_tool</code>. Agora o <code>SessionStart</code> grava <code>session_id → raiz</code> e o daemon resolve por ela; as métricas usam a raiz da sessão, não o <code>cwd</code> do shell. O Stop de uma sessão não mostra mais commits feitos em outra.</p>
+        </li>
+        <li>
+          <b>Reconexão e upgrade sem ficar preso</b>
+          <p>Sessão MCP desconhecida responde <code>404</code> e o cliente reinicializa sozinho em vez de ficar <code>failed</code> (G16). Uma instalação mais nova substitui o daemon antigo, nunca faz downgrade (G13), e um daemon servindo outro <code>dataDir</code> não é compartilhado (G15).</p>
         </li>
         <li>
           <b>Auto-update com fronteira explícita</b>
-          <p>No <code>SessionStart</code>, o dispatcher existente consulta atualizações no máximo uma vez a cada 24 horas, sem hook novo. Um <code>serverUrl</code> remoto só participa com opt-in explícito e, mesmo assim, nunca aciona o fallback local. No caminho local do Windows, o Boss valida o processo Java, promove apenas o JAR verificado e preserva o anterior. Se a versão nova não sobe, restaura a anterior e só confirma o rollback depois que <code>/health.version</code> devolve exatamente essa versão; qualquer falha vira advisory sem bloquear o backend.</p>
+          <p>No <code>SessionStart</code>, o dispatcher existente consulta atualizações do MCP Memory no máximo uma vez a cada 24 horas, sem hook novo. Um <code>serverUrl</code> remoto só participa com opt-in explícito e nunca aciona o fallback local. Se a versão nova não sobe, o Boss restaura a anterior e só confirma o rollback depois que <code>/health.version</code> devolve exatamente essa versão.</p>
         </li>
         <li>
           <b>Nenhum console piscando no Windows</b>
-          <p>Desde a v2.29.1, todo processo filho que o plugin sobe em runtime (hooks, daemons, updater, dashboard, router) passa <code>windowsHide: true</code>: com subagentes e sessões paralelas, nenhuma janela <code>cmd</code> abre nem rouba o foco do teclado. A regra ESLint <code>local/require-windows-hide</code>, que não pode ser desligada inline em <code>scripts/</code> e <code>servers/</code>, impede a regressão.</p>
-        </li>
-        <li>
-          <b>Nada de regressão silenciosa</b>
-          <p>A entrega trouxe 21 testes unitários e 9 de integração real sobre os dispatchers, sobre um gate de 1046 testes unitários. Todos os scripts consolidados mantêm a CLI standalone.</p>
+          <p>Todo processo filho que o plugin sobe em runtime passa <code>windowsHide: true</code>: com subagentes e sessões paralelas, nenhuma janela <code>cmd</code> abre nem rouba o foco. A regra ESLint <code>local/require-windows-hide</code>, que não pode ser desligada inline em <code>scripts/</code> e <code>servers/</code>, impede a regressão. A porta padrão do daemon passou de 58217 para <code>38217</code>, fora da faixa que o Windows reserva.</p>
         </li>
       </ul>
     </div>
@@ -616,7 +664,7 @@
         <a href="https://github.com/AllanSantos-DV/claude-code-plugins">Repositório</a>
         <a href="../index.html">Outros plugins</a>
       </div>
-      <p class="legal">MIT · Allan Santos · claude-code-boss v2.29.1</p>
+      <p class="legal">MIT · Allan Santos · claude-code-boss v3.0.0</p>
     </div>
   </div>
 </footer>
