@@ -133,6 +133,9 @@ async function main() {
   const raw = await readStdin();
   const event = parsePayload(raw) || {};
   const eventName = event.hook_event_name || 'UserPromptSubmit';
+  // `/dashboard` is answered here, WITHOUT the model (blocks the prompt with the URL).
+  const dash = await require('./dashboard-command.js').runForPrompt(event.prompt);
+  if (dash) { emitJson(dash); return; }
   const text = await dispatch(event);
   if (text) {
     emitJson({ hookSpecificOutput: { hookEventName: eventName, additionalContext: text } });

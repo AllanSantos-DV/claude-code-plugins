@@ -56,6 +56,17 @@ async function run(event, deps = {}) {
   };
 }
 
+/**
+ * Same answer from the RAW prompt (UserPromptSubmit dispatcher). Proven in a real session:
+ * a short `/dashboard` the CLI can't resolve as a command reaches the model as plain text
+ * (unknown_command_fallback) — the expansion hook never fires. Catching the typed text
+ * covers `/dashboard` and `/claude-code-boss:dashboard` however they resolve.
+ */
+async function runForPrompt(prompt, deps) {
+  const m = /^\s*\/((?:[\w.-]+:)?dashboard)\s*$/i.exec(String(prompt || ''));
+  return m ? run({ command_name: m[1].toLowerCase() }, deps) : null;
+}
+
 async function main() {
   const event = parsePayload(await readStdin()) || {};
   const out = await run(event);
@@ -69,4 +80,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { run, openBrowser, IS_DASHBOARD };
+module.exports = { run, runForPrompt, openBrowser, IS_DASHBOARD };

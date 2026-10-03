@@ -3943,6 +3943,18 @@ test('/dashboard without LLM: the expansion hook answers only /dashboard, blocks
   assert(re.test('dashboard') && re.test('claude-code-boss:dashboard') && !re.test('boss-profile') && !re.test('dashboardx'), `matcher ${entry.matcher}`);
 });
 
+test('/dashboard without LLM: the typed prompt is caught too (a short /dashboard the CLI cannot resolve reaches UserPromptSubmit as text)', async () => {
+  const dc = require('./dashboard-command.js');
+  const ok = { ensure: async () => ({ ok: true, status: 'already-running', port: 5, pid: 1, url: 'http://localhost:5' }), open: () => false };
+  for (const p of ['/dashboard', '  /claude-code-boss:dashboard  ', '/DASHBOARD']) {
+    const out = await dc.runForPrompt(p, ok);
+    assert(out && out.decision === 'block' && /localhost:5/.test(out.reason), `caught: ${JSON.stringify(p)}`);
+  }
+  for (const p of ['abra o /dashboard', '/dashboard agora', 'dashboard', '/dashboards', '']) {
+    assertEq(await dc.runForPrompt(p, ok), null, `not a /dashboard command: ${JSON.stringify(p)}`);
+  }
+});
+
 test('/dashboard without LLM: ensureDashboard starts the REAL dashboard once, then reuses it (live HTTP probe)', async () => {
   const { ensureDashboard, probe } = require('./dashboard-start.js');
   const saved = process.env.DASHBOARD_NO_OPEN;
