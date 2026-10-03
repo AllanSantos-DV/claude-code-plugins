@@ -1,5 +1,43 @@
 # Changelog
 
+## [Não lançado]
+
+Zeragem do backlog da 3.0 (branch `fix/backlog-zero`). Cada item com teste,
+mutação e, onde muda comportamento visível, prova no Claude Code real.
+
+### ⚠️ Mudanças incompatíveis — o que muda para você
+- **O `/mcp` do brain daemon exige o token local.** O Claude Code o recebe pelo
+  novo `headersHelper` do `.mcp.json` (`scripts/mcp-headers.js`), sem nada a
+  configurar. **Consumidor externo** (ex.: OpenCode) apontado para
+  `http://127.0.0.1:38217/mcp` precisa mandar `Authorization: Bearer <token>` com o
+  conteúdo de `<DATA_DIR>/brain-http.token`. **Na atualização:** sessões abertas
+  antes dela recebem 401 do daemon novo até `/reload-plugins` ou reinício.
+
+### Added
+- **`headersHelper` do brain-server** (`scripts/mcp-headers.js`): roda antes de cada
+  conexão MCP, garante o daemon e entrega o token. Efeito colateral bom: a 1ª
+  conexão já encontra o daemon de pé — os hooks `mcp_tool` do 1º turno depois de
+  boot/update/reload **não são mais pulados** (provado a frio 3 de 3 no Claude
+  Code real; antes os de UserPromptSubmit eram sempre perdidos).
+
+### Fixed
+- **Daemon compartilhado nunca age na pasta de outra sessão**: `curation_mark_oneoff`,
+  `curation_register_shell` (gravava script e `shells.json` no projeto errado), graph
+  tools sem `root`, `policy_shadow_report` e `policy_adjudication_prepare` caíam no
+  `process.cwd()` do daemon quando chamados sem `cwd`. Agora usam a pasta da sessão
+  MCP ou recusam com "cwd is required".
+- **`CCB_PROJECT_ID` da sessão chega ao que o daemon serve** (hooks e tools MCP) —
+  antes o override documentado não valia para nada servido pelo daemon.
+- **Backend `mcp-memory`: `scope: user` vai para `__user__`** e o `brain_search`
+  respeita `scope`, como no backend local (sanitização e recusa de segredo
+  incluídas); `capture_lesson type:"skill"` remoto valida os campos como o local.
+- **Poda de scripts com `shells.json` numa subpasta** lê as métricas da raiz da
+  sessão (tool e painel do dashboard) em vez de um banco vazio.
+- **Dashboard**: duas sessões abrindo `/dashboard` juntas sobem um servidor só
+  (trava de subida); um update do plugin por vez (2º clique → 409).
+- **release-guard** data a versão pelo push que a levou ao `main` (API de atividade
+  do GitHub), não pelo commit do bump — acabou o DRIFT falso no push de release.
+
 ## [3.0.0] - 2026-10-03
 
 Versão major: inclui tudo o que estava preparado como 2.29.1 (nunca publicada —
