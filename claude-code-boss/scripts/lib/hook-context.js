@@ -35,14 +35,16 @@ function makeView(overrides, dropped) {
 }
 
 /**
- * @param {{ CLAUDE_PROJECT_DIR?: string }} overrides  values for THIS call; an
- *   empty/missing CLAUDE_PROJECT_DIR is REMOVED (never inherited from the daemon).
+ * @param {{ CLAUDE_PROJECT_DIR?: string, CCB_PROJECT_ID?: string }} overrides  values for
+ *   THIS call; an empty/missing one is REMOVED (never inherited from the daemon).
  * @param {() => any} fn
  */
 function runWithHookEnv(overrides, fn) {
   const o = { ...(overrides || {}) };
   const dropped = new Set();
-  if (!o.CLAUDE_PROJECT_DIR) { delete o.CLAUDE_PROJECT_DIR; dropped.add('CLAUDE_PROJECT_DIR'); }
+  for (const k of ['CLAUDE_PROJECT_DIR', 'CCB_PROJECT_ID']) {
+    if (!o[k]) { delete o[k]; dropped.add(k); }
+  }
   return als.run({ overrides: o, dropped, view: null }, fn);
 }
 

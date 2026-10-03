@@ -162,8 +162,10 @@ async function runHookInline(pluginRoot, name, args) {
     const mod = require(path.join(scripts, spec.script));
     // `project_dir` arrives "" (Claude Code doesn't interpolate env vars into mcp_tool
     // input): the root SessionStart recorded for this session_id — see lib/session-root.js.
-    const root = (args && args.project_dir) || require('./session-root.js').sessionRootFor(args && args.session_id);
-    return await runWithHookEnv({ CLAUDE_PROJECT_DIR: root || '' }, () => spec.call(mod, ev));
+    // The session's CCB_PROJECT_ID comes from the same record (the daemon's env has none).
+    const rec = require('./session-root.js').sessionRecordFor(args && args.session_id);
+    const root = (args && args.project_dir) || rec.projectDir;
+    return await runWithHookEnv({ CLAUDE_PROJECT_DIR: root || '', CCB_PROJECT_ID: rec.projectId || '' }, () => spec.call(mod, ev));
   } catch (err) {
     const msg = err && err.message ? err.message : String(err);
     console.error(`[hook-tools] ${name} degraded: ${msg}`);

@@ -2771,6 +2771,39 @@ test('session-root: a daemon-served hook with project_dir "" (what Claude Code r
   } finally { delete HOOKS.hook_test_root; sr._resetMemo(); }
 });
 
+test('session-root: the calling session\'s CCB_PROJECT_ID reaches what the daemon serves (record → hook env → MCP tools), never another session\'s', async () => {
+  const sr = require('./lib/session-root.js');
+  const { runHookInline, HOOKS } = require('./lib/hook-tools.js');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sroot-id-'));
+  HOOKS.hook_test_envid = { script: 'skill-metric.js', call: () => require('./lib/hook-context.js').hookEnv().CCB_PROJECT_ID || '<none>' };
+  const noId = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-envid-noid-'));
+  try {
+    sr._resetMemo();
+    // Record + read back; folder adoption only when every session there agrees.
+    sr.recordSessionRoot('a', 'C:\\w\\p', { base, projectId: 'env/one' });
+    assertEq(sr.sessionRecordFor('a', { base }).projectId, 'env/one');
+    assertEq(sr.envProjectIdForRoot('C:\\w\\p', { base }), 'env/one', 'one session with the override → adopted');
+    sr.recordSessionRoot('b', 'C:\\w\\p', { base });
+    assertEq(sr.envProjectIdForRoot('C:\\w\\p', { base }), '', 'another session of that folder without it → never inherited');
+    // Daemon-served hook: the session's id in its env (the daemon's own env has none).
+    const saved = process.env.CCB_PROJECT_ID; delete process.env.CCB_PROJECT_ID;
+    try {
+      sr.recordSessionRoot('sess-envid', noId, { projectId: 'env/forced' });
+      sr.recordSessionRoot('sess-plain', path.join(noId, '..', path.basename(noId) + '-x'));
+      assertEq(await runHookInline(ROOT, 'hook_test_envid', { project_dir: '', session_id: 'sess-envid' }), 'env/forced', 'hook env carries the session id');
+      assertEq(await runHookInline(ROOT, 'hook_test_envid', { project_dir: '', session_id: 'sess-plain' }), '<none>', 'a session without it gets none');
+      // MCP tools in the shared daemon: by the session's folder (no session_id on model calls).
+      const { createBrainServer } = await import(pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+      const server = createBrainServer({ pluginRoot: ROOT, mode: 'http' });
+      server._setSessionRoots([noId]);
+      const own = await server.dispatch('brain_count', {});
+      assert(!own.isError && /env\/forced/.test(JSON.stringify(own)), `no cwd → the session's CCB_PROJECT_ID, got ${JSON.stringify(own)}`);
+      const withCwd = await server.dispatch('brain_count', { cwd: noId });
+      assert(!withCwd.isError && /env\/forced/.test(JSON.stringify(withCwd)), `cwd in an id-less folder → the session's CCB_PROJECT_ID, got ${JSON.stringify(withCwd)}`);
+    } finally { if (saved === undefined) delete process.env.CCB_PROJECT_ID; else process.env.CCB_PROJECT_ID = saved; }
+  } finally { delete HOOKS.hook_test_envid; sr._resetMemo(); fs.rmSync(base, { recursive: true, force: true }); fs.rmSync(noId, { recursive: true, force: true }); }
+});
+
 test('O9: metrics scope without ctx.cwd follows the CALLING session root inside a daemon hook call, not process.cwd()', () => {
   const { _resolveProject } = require('./lib/metrics.js');
   const { runWithHookEnv } = require('./lib/hook-context.js');
