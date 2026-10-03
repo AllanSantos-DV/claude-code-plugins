@@ -19,8 +19,12 @@
  *   curated-failure-noisy — curated script failed, output exceeded raw thresholds
  *   (null)                — no condition matched; no entry recorded
  */
+const fs = require('fs');
+const path = require('path');
 const { runSideEffectCli } = require('./lib/hook-io.js');
 const turnJournal = require('./lib/turn-journal.js');
+const pipedStore = require('./lib/piped-store.js');
+const { pipeFilterOf } = require('./curation-guard.js');
 const verifyJournal = require('./lib/verify-journal.js');
 const metrics = require('./lib/metrics.js');
 const { canonicalSig } = require('./lib/command-signature.js');
@@ -157,6 +161,30 @@ async function run(event) {
     // the dashboard compares against the raw baseline of the same signature.
     if (scriptRan) {
       metrics.fire('curation.used', { scriptId: curatedShell.id || scriptRel, chars: charCount, lines: lineCount, success: isSuccess, compound }, { sessionId, cwd });
+    }
+
+    // Piped → refine: the agent filtering the SAME script the SAME way again (`| tail -3`)
+    // means the script prints more than is wanted — the fix belongs in the script, once,
+    // not in every call. From the 2nd time (per project/script/filter, reset when the
+    // script file changes) the Stop asks to bake the filter in.
+    if (scriptRan && !compound) {
+      const filter = pipeFilterOf(command, scriptRel);
+      if (filter) {
+        let scriptMtimeMs = NaN;
+        try { scriptMtimeMs = fs.statSync(path.resolve(projectRoot || cwd, scriptRel)).mtimeMs; } catch (err) { void err; /* script unreadable → no reset signal */ }
+        const n = pipedStore.touch({
+          file: path.join(DATA_DIR, '.runtime', 'curation-piped.json'), project: projectKey,
+          scriptId: curatedShell.id || scriptRel, scriptMtimeMs, filter, windowDays: _curationCfg.oneHitWindowDays,
+        });
+        if (n >= 2 && !event.agent_id) {
+          appendTurnEntry(sessionId, {
+            command, reason: `filtered ${n}x with \`| ${filter}\` — bake this filter into the script (or its outputLines) instead of filtering every call`,
+            lines: lineCount, chars: charCount, isCurated: true, curatedScript: scriptRel, isSuccess, interrupted, hookEvent, exitCode,
+            sig: seen.sig, recurrence: seen.count, timestamp: new Date().toISOString(),
+          });
+        }
+        return;
+      }
     }
 
     // A COMPOUND that includes a curated script (`a.mjs; b.mjs; eslint … | tail`) produced
