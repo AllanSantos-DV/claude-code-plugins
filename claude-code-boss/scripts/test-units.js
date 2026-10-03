@@ -20913,6 +20913,23 @@ test('curation_prune_unused: shells.json in a SUBFOLDER of the session reads the
   } finally { fs.rmSync(sess, { recursive: true, force: true }); }
 });
 
+test('config-merge: deepMerge (objects recurse, arrays/scalars replace, base untouched) + filesStamp tracks edits', () => {
+  const { deepMerge, filesStamp } = require('./lib/config-merge.js');
+  const base = { a: { b: 1, c: [1, 2] }, d: 1 };
+  assertEq(deepMerge(base, { a: { c: [9] }, e: 2 }), { a: { b: 1, c: [9] }, d: 1, e: 2 });
+  assertEq(base, { a: { b: 1, c: [1, 2] }, d: 1 }, 'base not mutated');
+  assertEq(deepMerge(base, null), base, 'non-object override → copy of base');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-stamp-'));
+  try {
+    const f = path.join(dir, 'x.json');
+    const s0 = filesStamp(f, path.join(dir, 'none.json'));
+    assert(/^none\|none$/.test(s0), s0);
+    fs.writeFileSync(f, '{}');
+    const s1 = filesStamp(f, path.join(dir, 'none.json'));
+    assert(s1 !== s0 && s1.endsWith('|none'), 'a created file changes the stamp');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('hook-io.runTextCli echoes the event name (default when absent), {} on null/throw; sideEffectDispatch isolates detector crashes', async () => {
   const cp = require('child_process');
   const io = JSON.stringify(path.join(SCRIPTS, 'lib', 'hook-io.js'));

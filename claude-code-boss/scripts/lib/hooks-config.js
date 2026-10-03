@@ -26,6 +26,7 @@
 const fs = require('fs');
 const { writeFileAtomic } = require('./atomic-write.js');
 const path = require('path');
+const { isPlainObject, deepMerge, filesStamp } = require('./config-merge.js');
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..', '..');
 const CONFIG_PATH = path.join(PLUGIN_ROOT, 'config', 'hooks-config.json');
@@ -99,21 +100,6 @@ const PROFILE_PRESETS = {
 let _cache = null;          // raw (shipped ⊕ user) file contents
 let _resolvedCache = null;  // profile-resolved contents
 
-function isPlainObject(v) {
-  return !!v && typeof v === 'object' && !Array.isArray(v);
-}
-
-// Deep-merge `override` onto `base`: plain objects merge recursively; arrays and
-// scalars from the override REPLACE the base value.
-function deepMerge(base, override) {
-  const out = isPlainObject(base) ? { ...base } : {};
-  if (!isPlainObject(override)) return out;
-  for (const k of Object.keys(override)) {
-    const ov = override[k];
-    out[k] = (isPlainObject(ov) && isPlainObject(out[k])) ? deepMerge(out[k], ov) : ov;
-  }
-  return out;
-}
 
 function load() {
   if (_cache) return _cache;
@@ -376,11 +362,10 @@ function _resetCache() { _cache = null; _resolvedCache = null; }
  * fresh process, for the price of three stat() calls.
  */
 function sourceStamp() {
-  const st = (p) => { try { const s = fs.statSync(p); return `${s.mtimeMs}:${s.size}`; } catch (err) { void err; return 'none'; } };
   // The legacy path is left out on purpose: it only matters for the one-time
   // legacy→global backfill, and resolving it calls dataDir() (~1 ms here) — the
   // very cost this stamp exists to avoid.
-  return `${st(CONFIG_PATH)}|${st(userConfigPath())}`;
+  return filesStamp(CONFIG_PATH, userConfigPath());
 }
 
 module.exports = {
