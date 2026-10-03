@@ -26,7 +26,7 @@
 const fs = require('fs');
 const { writeFileAtomic } = require('./atomic-write.js');
 const path = require('path');
-const { isPlainObject, deepMerge, filesStamp } = require('./config-merge.js');
+const { isPlainObject, deepMerge, filesStamp, loadLayered } = require('./config-merge.js');
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..', '..');
 const CONFIG_PATH = path.join(PLUGIN_ROOT, 'config', 'hooks-config.json');
@@ -103,35 +103,8 @@ let _resolvedCache = null;  // profile-resolved contents
 
 function load() {
   if (_cache) return _cache;
-  let shipped = {};
-  try {
-    shipped = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
-  } catch (err) {
-    console.error(`[hooks-config] load failed (${CONFIG_PATH}): ${err.message}`);
-    shipped = {};
-  }
-  // One-time backfill: if the global override doesn't exist yet but a legacy
-  // per-data-dir one does, copy it up so the user's profile choice survives the
-  // Phase-1.5 move to the global path. Guarded by !exists so an existing global
-  // is never overwritten; only the resolved active data dir is consulted (no
-  // sibling scan). Fail-open — a failed backfill just means load() uses shipped.
-  try {
-    const globalPath = userConfigPath();
-    if (!fs.existsSync(globalPath)) {
-      const legacyPath = legacyUserConfigPath();
-      if (fs.existsSync(legacyPath)) {
-        writeFileAtomic(globalPath, fs.readFileSync(legacyPath));
-      }
-    }
-  } catch (err) {
-    console.error(`[hooks-config] user-config backfill skipped: ${err.message}`);
-  }
-  let override = null;
-  try {
-    const p = userConfigPath();
-    if (fs.existsSync(p)) override = JSON.parse(fs.readFileSync(p, 'utf-8'));
-  } catch (err) { void err; /* override ausente/ilegível → ignora, usa só o shipped */ }
-  _cache = isPlainObject(override) ? deepMerge(shipped, override) : shipped;
+  // Layered (shipped + global user-config, legacy backfilled) — lib/config-merge.
+  _cache = loadLayered({ label: 'hooks-config', shippedPath: CONFIG_PATH, userPath: userConfigPath, legacyPath: legacyUserConfigPath }).config;
   return _cache;
 }
 
