@@ -1,6 +1,6 @@
 # Changelog
 
-## [3.0.0] - 2026-10-02
+## [3.0.0] - 2026-10-03
 
 Versão major: inclui tudo o que estava preparado como 2.29.1 (nunca publicada —
 seções no fim desta entrada) e o redesenho da curadoria, o endurecimento do
