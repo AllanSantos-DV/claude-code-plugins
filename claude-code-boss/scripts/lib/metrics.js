@@ -13,9 +13,12 @@ const metricsStore = require('./metrics-store.js');
 
 function _resolveProject(ctx) {
   if (ctx && ctx.project) return ctx.project;
-  // In the shared daemon process.cwd() is the daemon's (first session's) folder:
-  // prefer the calling session's root (hookEnv = process.env outside the daemon).
-  const cwd = (ctx && ctx.cwd) || require('./hook-context.js').hookEnv().CLAUDE_PROJECT_DIR || process.cwd();
+  // The calling session's ROOT wins over the event cwd: a hook's `cwd` is the shell's
+  // current directory and drifts with `cd` — one session's events landed under two
+  // project keys (seen live: curation.piped under the subfolder, curation.used under
+  // the root). In the shared daemon process.cwd() is the first session's folder, so
+  // it is only the last resort (hookEnv = process.env outside the daemon).
+  const cwd = require('./hook-context.js').hookEnv().CLAUDE_PROJECT_DIR || (ctx && ctx.cwd) || process.cwd();
   try { return path.basename(cwd); } catch { /* basename failed: default */ return 'default'; }
 }
 
