@@ -16,6 +16,7 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { isPlainObject, deepMerge, filesStamp } = require('./config-merge.js');
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..', '..');
 const CONFIG_PATH = path.join(PLUGIN_ROOT, 'config', 'brain-config.json');
@@ -55,21 +56,6 @@ function legacyUserConfigPath() {
   return path.join(dataDir(), 'brain', 'user-config.json');
 }
 
-function isPlainObject(v) {
-  return !!v && typeof v === 'object' && !Array.isArray(v);
-}
-
-// Deep-merge `override` onto `base`: plain objects merge recursively; arrays and
-// scalars from the override REPLACE the base value.
-function deepMerge(base, override) {
-  const out = isPlainObject(base) ? { ...base } : {};
-  if (!isPlainObject(override)) return out;
-  for (const k of Object.keys(override)) {
-    const ov = override[k];
-    out[k] = (isPlainObject(ov) && isPlainObject(out[k])) ? deepMerge(out[k], ov) : ov;
-  }
-  return out;
-}
 
 // Inverse of deepMerge, for persistence: the subtree of `next` that differs from
 // `base`, so a caller stores ONLY what changed from the factory defaults. Future
@@ -306,11 +292,10 @@ function _resetCache() { _cache = null; _cacheVersion = 0; }
 
 /** Cheap identity of every file load() reads — see hooks-config.sourceStamp(). */
 function sourceStamp() {
-  const st = (p) => { try { const s = fs.statSync(p); return `${s.mtimeMs}:${s.size}`; } catch (err) { void err; return 'none'; } };
   // The legacy path is left out on purpose: it only matters for the one-time
   // legacy→global backfill, and resolving it calls dataDir() (~1 ms here) — the
   // very cost this stamp exists to avoid.
-  return `${st(CONFIG_PATH)}|${st(userConfigPath())}`;
+  return filesStamp(CONFIG_PATH, userConfigPath());
 }
 
 // `config` recebido aqui é sempre um snapshot COMPLETO do caller (não um
