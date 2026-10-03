@@ -20,7 +20,17 @@
 |---------|------|------|
 | Model Router (:13456) | loopback | `/health` aberto (liveness); demais rotas exigem router token — squatter na porta nunca é trusted |
 | Dashboard | `127.0.0.1`, porta efêmera | Token de sessão por boot + allowlist de **Host header** (anti DNS-rebinding) |
-| Brain daemon | loopback, porta efêmera | Bearer token + origin guard; `/health` aberto p/ supervisão |
+| Brain daemon | `127.0.0.1`, porta fixa **38217** (`BRAIN_HTTP_PORT`) | `/mcp`: só origin guard (sem token — o cliente MCP do Claude Code conecta numa URL estática do `.mcp.json`); `/shutdown`: token; `/health` aberto p/ supervisão |
+
+**Risco aceito — porta fixa do brain daemon.** Desde a 3.0.0 o `/mcp` carrega também os
+payloads dos hooks (prompt, `tool_input`/`tool_response`, caminho do transcript) e as
+decisões de PreToolUse que reescrevem comandos (`updatedInput`). Um processo de **outro
+usuário do mesmo SO** que ocupe a 38217 antes do daemon receberia esse tráfego e poderia
+responder decisões. O supervisor recusa compartilhar uma porta que não responde um
+`/health` de brain daemon (e um daemon de outra instalação/dataDir), mas o cliente MCP
+não tem como verificar a identidade de quem atende a URL. Mitigação disponível: máquina
+de usuário único (o caso suportado) ou `BRAIN_HTTP_PORT` próprio. Um token no `.mcp.json`
+via `${VAR}` está no backlog como melhoria.
 
 Nenhuma variável é gravada em escopo User/sistema do Windows — roteamento vive só no bloco `env` do settings.json do Claude Code (resíduos globais de versões antigas são limpos pelo self-heal).
 

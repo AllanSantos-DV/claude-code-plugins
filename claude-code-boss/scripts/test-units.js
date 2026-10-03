@@ -3710,6 +3710,35 @@ test('brain_retrieve_context: a handler failure is recorded in recall-health (fa
   }
 });
 
+test('embed-worker shutdown: the op in flight (native init) finishes BEFORE terminate — terminating mid-init fast-failed the process (0xC0000409)', async () => {
+  const { createEmbedWorker } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'embed-worker-client.js')).href);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ew-drain-'));
+  const marker = path.join(dir, 'init-finished').replace(/\\/g, '/');
+  const wp = path.join(dir, 'slow-init-worker.cjs');
+  fs.writeFileSync(wp, "const { parentPort } = require('worker_threads'); const fs = require('fs');\n"
+    + "parentPort.on('message', (m) => { const t = Date.now(); while (Date.now() - t < 400) {} /* a sync native-like init */\n"
+    + `  fs.writeFileSync(${JSON.stringify(marker)}, 'ok'); parentPort.postMessage({ id: m.id, ok: true, result: true }); });\n`);
+  try {
+    const ew = createEmbedWorker({ pluginRoot: ROOT, workerPath: wp });
+    const init = ew.init();
+    await new Promise((r) => setTimeout(r, 60)); // the worker is now inside its "init"
+    const t0 = Date.now();
+    await ew.shutdown();
+    assert(Date.now() - t0 >= 250, `shutdown waited for the op in flight (${Date.now() - t0}ms)`);
+    assert(fs.existsSync(marker), 'the in-flight op ran to completion — it was not terminated mid-way');
+    assertEq(await init, false, 'the caller was released at once with the shutdown failure (no hang)');
+
+    const hang = path.join(dir, 'hang-worker.cjs');
+    fs.writeFileSync(hang, "require('worker_threads').parentPort.on('message', () => {});\n");
+    const ew2 = createEmbedWorker({ pluginRoot: ROOT, workerPath: hang, shutdownDrainMs: 150 });
+    ew2.init();
+    await new Promise((r) => setTimeout(r, 30));
+    const t1 = Date.now();
+    await ew2.shutdown();
+    assert(Date.now() - t1 < 2000, `a worker that never answers is terminated after the drain cap (${Date.now() - t1}ms)`);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('G12 embed-worker: inference runs off the main thread (event loop stays free), a crash degrades to null and the worker respawns', async () => {
   const { createEmbedWorker } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'embed-worker-client.js')).href);
   const { monitorEventLoopDelay } = require('perf_hooks');
@@ -3838,6 +3867,60 @@ test('C1 curation-families: Token Guard detected from a PostToolUse hook in user
   }
 });
 
+test('audit: planShaping never wraps a command with its own pipe (SIGPIPE 141), a # comment / trailing \\ (syntax error), or a follow/interactive command', () => {
+  const { planShaping } = require('./lib/curation-redirect.js');
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-shape-refuse-'));
+  const d = { tokenGuardActive: () => false };
+  try {
+    for (const cmd of ['grep -rn a scripts | head -1', 'git log | head -5', 'cat big.txt | grep foo', 'ls -la #x', 'cat foo\\', 'tail -f app.log', 'tail -n 50 -F app.log', 'tail --follow app.log', 'less README.md', 'watch ls', 'vim x']) {
+      assertEq(planShaping(cmd, proj, d), null, `never wrapped: ${cmd}`);
+    }
+    for (const cmd of ['cat big.txt', 'tail -n 50 app.log', 'grep -rn "a|b" src', 'grep -rn "#x" src', 'git log --oneline -50']) {
+      assert(planShaping(cmd, proj, d), `still wrapped (quoted | and # are data): ${cmd}`);
+    }
+  } finally { fs.rmSync(proj, { recursive: true, force: true }); }
+});
+
+test('audit: the wrapped command keeps its real exit code (no fake failures)', () => {
+  const { planShaping } = require('./lib/curation-redirect.js');
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-shape-exit-'));
+  try {
+    const run = (cmd) => require('child_process').spawnSync('bash', ['-c', planShaping(cmd, proj, { tokenGuardActive: () => false })], { encoding: 'utf8', cwd: proj, env: { ...process.env, CLAUDE_PLUGIN_DATA: proj }, windowsHide: true });
+    fs.writeFileSync(path.join(proj, 'f.txt'), Array.from({ length: 300 }, (_, i) => `line ${i}`).join('\n'));
+    const ok = run('cat f.txt');
+    assertEq(ok.status, 0, `success stays 0: ${ok.stderr}`);
+    assert(/saída cortada: 80 de 300 linhas/.test(ok.stdout), `cut footer: ${ok.stdout.slice(-200)}`);
+    assertEq(run('cat nope.txt').status, 1, 'a real failure stays a failure (pipefail keeps cat\'s status)');
+  } finally { fs.rmSync(proj, { recursive: true, force: true }); }
+});
+
+test('audit: shape-output STREAMS — the head is written before the input ends; the rest goes to the file', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-shape-stream-'));
+  try {
+    const child = require('child_process').spawn(process.execPath, [path.join(SCRIPTS, 'shape-output.js'), '--family', 'cat'], { env: { ...process.env, CLAUDE_PLUGIN_DATA: dir }, windowsHide: true });
+    let out = '';
+    child.stdout.on('data', (c) => { out += c; });
+    child.stdin.write(Array.from({ length: 5 }, (_, i) => `head ${i}\n`).join(''));
+    await new Promise((r) => setTimeout(r, 400));
+    assertEq(out, 'head 0\nhead 1\nhead 2\nhead 3\nhead 4\n', 'head visible BEFORE EOF (a long find / a Bash-timeout kill keeps it)');
+    child.stdin.end(Array.from({ length: 200 }, (_, i) => `tail ${i}\n`).join(''));
+    await new Promise((r) => child.on('close', r));
+    assert(/saída cortada: 80 de 205 linhas/.test(out), `footer counts every line: ${out.slice(-300)}`);
+    const file = /Completa em: (\S+)/.exec(out)[1];
+    const saved = fs.readFileSync(file, 'utf8');
+    assert(saved.startsWith('head 0\n') && saved.endsWith('tail 199\n'), 'the file holds the FULL output, head included');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('audit: invocationFor refuses a script path that would break out of the quotes or leave the project', () => {
+  const { invocationFor } = require('./lib/curation-redirect.js');
+  const root = path.join(os.tmpdir(), 'ccb-inv-root');
+  assert(invocationFor({ script: '.vscode/scripts/t.mjs' }, root), 'own script → invocation');
+  for (const bad of ['x".mjs', '$(evil).mjs', 'a`b`.mjs', '../outside.mjs', path.join(os.tmpdir(), 'elsewhere.mjs')]) {
+    assertEq(invocationFor({ script: bad }, root), null, `refused: ${bad}`);
+  }
+});
+
 test('C6 unwrapShaped: round-trips planShaping exactly; anything else → null', () => {
   const { planShaping, unwrapShaped } = require('./lib/curation-redirect.js');
   const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-unwrap-'));
@@ -3895,9 +3978,9 @@ test('C4 curation-guard: a pipe on the curated script is ALLOWED and measured (c
   const orig = metrics.fire; const fired = [];
   metrics.fire = (name, payload) => { fired.push([name, payload && payload.shellId]); };
   try {
-    const run = async (command) => (await guard.run({ tool_name: 'Bash', tool_input: { command }, cwd: proj, session_id: 's' })).hookSpecificOutput;
+    const run = async (command) => (await guard.run({ tool_name: 'Bash', tool_input: { command }, cwd: proj, session_id: 's' }));
     const a = await run('node .vscode/scripts/test-hooks.mjs | tail -3');
-    assertEq(a.permissionDecision, 'allow', 'pipe on the curated script → allow'); assert(!a.additionalContext, 'no nag text');
+    assertEq(JSON.stringify(a), '{}', 'pipe on the curated script → abstain (passes; no deny, no nag, never a blanket allow)');
     await run('node .vscode/scripts/test-hooks.mjs && node audit.mjs check | tail -2');
     await run('grep -n catch .vscode/scripts/test-hooks.mjs | head -3');
     await run('node .vscode/scripts/test-hooks.mjs');
@@ -14525,11 +14608,10 @@ test('stop-dispatcher.mergeBlocks: project-id-stop reason leads curation-stop', 
   assertEq(out.reason, 'P' + dispatcher.SEP + 'C');
 });
 
-test('pretooluse-bash-dispatcher: exposes dispatch() and DEFAULT_ALLOW shape', () => {
+test('pretooluse-bash-dispatcher: exposes dispatch() and DEFAULT_PASS (abstain, never a blanket allow)', () => {
   const d = require('./pretooluse-bash-dispatcher.js');
   assertEq(typeof d.dispatch, 'function');
-  assertEq(d.DEFAULT_ALLOW.hookSpecificOutput.hookEventName, 'PreToolUse');
-  assertEq(d.DEFAULT_ALLOW.hookSpecificOutput.permissionDecision, 'allow');
+  assertEq(JSON.stringify(d.DEFAULT_PASS), '{}', 'default = abstain: a PreToolUse allow bypasses the permission system');
 });
 
 test('posttoolusebash-dispatcher.DETECTORS: 2 detectors (error-resolve removed with the error-store), correct order + shape', () => {
@@ -21367,6 +21449,38 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
     } finally {
       delete HOOK_SPECS.hook_test_ok; delete HOOK_SPECS.hook_test_hang; delete HOOK_SPECS.hook_test_throw; _resetLatencyStats();
     }
+  });
+
+  test('audit: a job that never settles no longer wedges the heavy lane — after N silent deadlines the worker is recycled', async () => {
+    const wp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-stuck-')), 'stuck-worker.cjs');
+    fs.writeFileSync(wp, "const { parentPort } = require('worker_threads');\n"
+      + "parentPort.on('message', (m) => { if (m.name === 'hang') return; parentPort.postMessage({ id: m.id, ok: true, text: 'ok:' + m.name }); });\n");
+    const hw = (await loadHookWorker())({ pluginRoot: ROOT, workerPath: wp, stallTimeouts: 3 });
+    try {
+      assertEq(await hw.run('a', {}, { timeoutMs: 2000 }), 'ok:a', 'healthy job answered');
+      for (let i = 0; i < 3; i++) {
+        let err = null; try { await hw.run('hang', {}, { timeoutMs: 60 }); } catch (e) { err = e; }
+        assert(err && /prazo/.test(err.message), `stuck job expires visibly (#${i + 1})`);
+      }
+      await new Promise((r) => setTimeout(r, 300)); // terminate → exit → replacement on next call
+      assertEq(hw.stats().recycled, 1, 'recycled once after 3 silent deadlines');
+      assertEq(await hw.run('b', {}, { timeoutMs: 2000 }), 'ok:b', 'the next heavy hook runs on a FRESH worker instead of queueing behind the stuck job');
+      assertEq(hw.stats().spawned, 2, 'a replacement worker was spawned');
+    } finally { await hw.shutdown(); }
+  });
+
+  test('audit: deadlines interleaved with progress do NOT recycle a busy-but-healthy worker', async () => {
+    const wp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-busy-')), 'busy-worker.cjs');
+    fs.writeFileSync(wp, "const { parentPort } = require('worker_threads');\n"
+      + "parentPort.on('message', (m) => { if (m.name === 'hang') return; parentPort.postMessage({ id: m.id, ok: true, text: 'ok' }); });\n");
+    const hw = (await loadHookWorker())({ pluginRoot: ROOT, workerPath: wp, stallTimeouts: 3 });
+    try {
+      for (let i = 0; i < 4; i++) {
+        try { await hw.run('hang', {}, { timeoutMs: 40 }); } catch (e) { void e; }
+        if (i % 2 === 1) await hw.run('ok', {}, { timeoutMs: 2000 }); // progress resets the count
+      }
+      assertEq(hw.stats().recycled, 0, 'progress between deadlines → never recycled');
+    } finally { await hw.shutdown(); }
   });
 
   // ── G4: always-{} hooks are fire-and-forget ─────────────────────────────────
