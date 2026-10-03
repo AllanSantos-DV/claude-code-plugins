@@ -46,6 +46,7 @@
 'use strict';
 
 const fs = require('fs');
+const { pidAlive } = require('./lib/process-lock.js');
 const { blobToVector, safeJson, rowToEntry: kbRowToEntry } = require('./lib/kb-row.js');
 const os = require('os');
 const path = require('path');
@@ -200,11 +201,7 @@ function resolveDeps(_deps) {
  * @param {number} pid
  * @returns {boolean}
  */
-function defaultPidAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); return true; }
-  catch (err) { return !!(err && err.code === 'EPERM'); }
-}
+const defaultPidAlive = pidAlive; // lib/process-lock
 
 /**
  * Acquire the process-level apply lock so a manual `--apply` and the SessionStart

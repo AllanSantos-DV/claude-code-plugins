@@ -12,6 +12,7 @@
  * CLI contract: writes one JSON line to stdout and exits 0.
  */
 const fs = require('fs');
+const { pidAlive } = require('./lib/process-lock.js');
 const path = require('path');
 const http = require('http');
 const { spawn } = require('child_process');
@@ -24,11 +25,7 @@ function runtimeDir() {
   return path.join(validEnvDir(process.env.CLAUDE_PLUGIN_DATA) || dataDir(), '.runtime');
 }
 
-function isAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); return true; }
-  catch (err) { return err.code !== 'ESRCH'; }
-}
+const isAlive = pidAlive; // lib/process-lock
 
 function readJson(file) {
   try { return JSON.parse(fs.readFileSync(file, 'utf-8')); }

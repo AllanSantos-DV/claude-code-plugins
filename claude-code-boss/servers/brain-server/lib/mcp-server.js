@@ -148,21 +148,9 @@ function adjLineForOffset(lineStarts, offset) {
   return ans + 1;
 }
 
-/** Count non-overlapping occurrences of `needle` in `hay` (case-adjusted). */
-function adjCountOccurrences(hay, needle, caseSensitive) {
-  if (!needle) return 0;
-  const h = caseSensitive ? hay : hay.toLowerCase();
-  const n = caseSensitive ? needle : needle.toLowerCase();
-  let count = 0;
-  let from = 0;
-  for (;;) {
-    const idx = h.indexOf(n, from);
-    if (idx === -1) break;
-    count++;
-    from = idx + n.length;
-  }
-  return count;
-}
+// Same counter the shadow measurement uses (policy-enforce-shadow), so the adjudication
+// count and the shadow trigger can never disagree on a literal.
+const { countOccurrences: adjCountOccurrences } = require(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'scripts', 'policy-enforce-shadow.js'));
 
 /** First `cap` non-overlapping match offsets of `needle` in `hay` (case-adjusted). */
 function adjFindLiteralOffsets(hay, needle, caseSensitive, cap) {

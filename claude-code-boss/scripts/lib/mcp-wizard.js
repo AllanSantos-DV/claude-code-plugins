@@ -13,12 +13,13 @@
  * Concurrency: lock-file at globalDir()/.mcp-wizard.lock prevents parallel spawns.
  */
 const fs = require('fs');
+const { readDaemonUrl } = require('./mcp-registry.js');
+const { probeHealth } = require('./http-health.js');
 const { sha256File } = require('./file-hash.js');
 const path = require('path');
 const { spawnSync, spawn } = require('child_process');
 const https = require('https');
 const http = require('http');
-const { URL } = require('url');
 const { globalDir } = require('./data-dir.js');
 const { loadWithVersion: loadBrainConfigWithVersion, save: saveBrainConfig } = require('./brain-config.js');
 const { detectGpu, resolveLatestAsset } = require('./mcp-release-resolver.js');
@@ -219,25 +220,13 @@ async function spawnDaemon(jarPath, workspacePath, javaArgs) {
 }
 
 function discoverDaemonUrl() {
-  const reg = path.join(process.env.MCP_RUN_DIR || path.join(require('os').homedir(), '.mcp-memory', 'run'), 'daemon.json');
-  try {
-    const raw = JSON.parse(fs.readFileSync(reg, 'utf8'));
-    return raw && raw.url ? String(raw.url) : null;
-  } catch (err) { console.error(`[mcp-wizard] read daemon registry (${reg}): ${err.message}`); return null; }
+  return readDaemonUrl(process.env.MCP_RUN_DIR || path.join(require('os').homedir(), '.mcp-memory', 'run'), { label: 'mcp-wizard' });
 }
 
-function httpHealth(baseUrl) {
-  return new Promise((resolve) => {
-    let u;
-    try { u = new URL(baseUrl + '/health'); } catch (err) { console.error(`[mcp-wizard] invalid health URL (${baseUrl}): ${err.message}`); return resolve(false); }
-    const lib = u.protocol === 'https:' ? https : http;
-    const req = lib.get({ hostname: u.hostname, port: u.port, path: u.pathname, timeout: 3000 }, (res) => {
-      res.resume();
-      resolve(res.statusCode === 200);
-    });
-    req.on('timeout', () => { req.destroy(); resolve(false); });
-    req.on('error', () => resolve(false));
-  });
+async function httpHealth(baseUrl) {
+  const r = await probeHealth(baseUrl, { timeoutMs: 3000 });
+  if (r.error && /^bad URL/.test(r.error)) console.error(`[mcp-wizard] invalid health URL (${baseUrl}): ${r.error}`);
+  return r.status === 200;
 }
 
 async function validateDaemon(serverUrl, retries) {

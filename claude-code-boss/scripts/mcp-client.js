@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 const { spawn } = require('child_process');
+const { readDaemonUrl } = require('./lib/mcp-registry.js');
 const { sha256File } = require('./lib/file-hash.js');
 const path = require('path');
 const fs = require('fs');
@@ -210,16 +211,7 @@ class McpClient extends EventEmitter {
 
   /** Read the daemon registry (~/.mcp-memory/run/daemon.json) and return its base URL. */
   _discoverDaemonUrl() {
-    const reg = path.join(this.runDir, 'daemon.json');
-    try {
-      const raw = JSON.parse(fs.readFileSync(reg, 'utf8'));
-      if (raw && raw.url && raw.port) return String(raw.url);
-      console.error(`[MCP] daemon.json at ${reg} missing url/port`);
-      return '';
-    } catch (err) {
-      console.error(`[MCP] daemon registry not found/readable (${reg}): ${err.message}`);
-      return '';
-    }
+    return readDaemonUrl(this.runDir, { label: 'MCP', requirePort: true }) || '';
   }
 
   /** GET <url>/health — 200 or 503 both mean "process alive". Returns boolean. */
