@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 const { spawn } = require('child_process');
+const { sha256File } = require('./lib/file-hash.js');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 const https = require('https');
 const http = require('http');
 const { URL } = require('url');
-const crypto = require('crypto');
 const EventEmitter = require('events');
 
 const { dataDir } = require('./lib/data-dir.js');
@@ -443,13 +443,7 @@ class McpClient extends EventEmitter {
 
   /** Compute SHA-256 of a file, returns hex string. */
   _computeSha256(filePath) {
-    return new Promise((resolve, reject) => {
-      const hash = crypto.createHash('sha256');
-      const stream = fs.createReadStream(filePath);
-      stream.on('data', chunk => hash.update(chunk));
-      stream.on('end', () => resolve(hash.digest('hex')));
-      stream.on('error', reject);
-    });
+    return sha256File(filePath);
   }
 
   async _handshake() {

@@ -16746,10 +16746,12 @@ test('atomic-write: hot state stores route writes through writeJsonAtomic (no ra
     assert(/require\(['"]\.\/session-journal\.js['"]\)/.test(src) && !/fs\.writeFileSync\(/.test(src),
       `${rel} must write through lib/session-journal.js only`);
   }
+  // lib/json-file.js (saveJson) is itself held to the rule — a store may write through it.
+  assert(/require\(['"]\.\/atomic-write\.js['"]\)/.test(fs.readFileSync(path.join(SCRIPTS, 'lib', 'json-file.js'), 'utf-8')), 'lib/json-file.js must require atomic-write.js');
   for (const rel of stores) {
     const src = fs.readFileSync(path.join(SCRIPTS, rel), 'utf-8');
-    assert(/require\(['"]\.\/atomic-write\.js['"]\)/.test(src),
-      `${rel} must require lib/atomic-write.js`);
+    assert(/require\(['"]\.\/(atomic-write|json-file)\.js['"]\)/.test(src),
+      `${rel} must write through lib/atomic-write.js (directly or via json-file.js)`);
     // No direct fs.writeFileSync of a state payload left in these stores.
     assert(!/fs\.writeFileSync\(/.test(src),
       `${rel} must not call fs.writeFileSync directly (use writeJsonAtomic)`);

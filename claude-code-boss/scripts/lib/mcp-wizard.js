@@ -13,8 +13,8 @@
  * Concurrency: lock-file at globalDir()/.mcp-wizard.lock prevents parallel spawns.
  */
 const fs = require('fs');
+const { sha256File } = require('./file-hash.js');
 const path = require('path');
-const crypto = require('crypto');
 const { spawnSync, spawn } = require('child_process');
 const https = require('https');
 const http = require('http');
@@ -139,15 +139,6 @@ async function checkJar(jarPath, downloadUrl) {
   });
 }
 
-function sha256File(filePath) {
-  return new Promise((resolve, reject) => {
-    const hash = crypto.createHash('sha256');
-    const stream = fs.createReadStream(filePath);
-    stream.on('data', (d) => hash.update(d));
-    stream.on('end', () => resolve(hash.digest('hex')));
-    stream.on('error', reject);
-  });
-}
 
 /**
  * Resolve where to download the JAR from: an explicit mcpCfg.downloadUrl is a manual

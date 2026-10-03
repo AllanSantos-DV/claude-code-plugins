@@ -24,7 +24,7 @@
  */
 const { hookLog } = require('./hook-logger.js');
 const { loadCurationConfig } = require('./curation-paths.js');
-const { runPreToolUseCli } = require('./lib/hook-io.js');
+const { runPreToolUseCli, preToolUseDecision } = require('./lib/hook-io.js');
 const { findProjectRoot, loadShellsConfig, matchCuratedShell, _pathMatches, _tokenize } = require('./shells-config.js');
 const { planRedirect, planShaping } = require('./lib/curation-redirect.js');
 const { canonicalSig } = require('./lib/command-signature.js');
@@ -95,16 +95,7 @@ function pipeFilterOf(command, scriptPath) {
   return null;
 }
 
-// Build a properly-formatted PreToolUse decision object per Claude Code docs.
-// permissionDecision MUST be "allow" | "deny" | "ask" and live INSIDE hookSpecificOutput.
-// https://docs.claude.com/en/docs/claude-code/hooks
-function decision(permissionDecision, { additionalContext, permissionDecisionReason, updatedInput } = {}) {
-  const hookSpecificOutput = { hookEventName: 'PreToolUse', permissionDecision };
-  if (additionalContext) hookSpecificOutput.additionalContext = additionalContext;
-  if (permissionDecisionReason) hookSpecificOutput.permissionDecisionReason = permissionDecisionReason;
-  if (updatedInput) hookSpecificOutput.updatedInput = updatedInput;
-  return { hookSpecificOutput };
-}
+const decision = preToolUseDecision; // lib/hook-io
 
 // "Nothing to do" is an ABSTENTION, never `allow`: a PreToolUse `allow` bypasses Claude
 // Code's permission system, so answering it for every Bash command auto-approved

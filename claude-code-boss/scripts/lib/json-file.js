@@ -18,4 +18,15 @@ function writeJsonSafe(p, obj) {
   } catch { /* write failed (perms/disk): caller sees false */ return false; }
 }
 
-module.exports = { readJsonSafe, writeJsonSafe };
+/** Atomic JSON write that LOGS a failure (tagged `label`) and reports it as false. */
+function saveJson(p, obj, label) {
+  try {
+    writeJsonAtomic(p, obj);
+    return true;
+  } catch (err) {
+    console.error(`[${label}] save failed (${p}): ${err.message}`);
+    return false;
+  }
+}
+
+module.exports = { readJsonSafe, writeJsonSafe, saveJson };
