@@ -131,6 +131,14 @@ daemon de hooks e as correções de escopo por sessão.
   falhando). Os mesmos números do painel; sem atividade, nada aparece. Provado no Claude
   Code real (aparece na sessão seguinte à atividade; não se repete no mesmo dia).
 
+### Added — alerta de hook lento
+- O BRAIN-HEALTH avisa quando um hook servido pelo daemon fica **sem folga**: p95 em
+  metade ou mais do seu prazo (com 10+ chamadas medidas) ou algum prazo estourado — o
+  sinal antes de o hook começar a não decidir nada (fail-open). No máximo uma vez por
+  hook a cada 6 h por processo do daemon, e só sobre o daemon desta instalação. Provado
+  no Claude Code real (hook forçado a estourar → alerta na sessão seguinte; não se
+  repete na próxima).
+
 ### Added — métricas reais e painel "Curation & guards"
 - Eventos novos no store de métricas: `curation.used` (execuções por script,
   tamanho, sucesso), `curation.redirected`, `curation.uncovered` (variante sem

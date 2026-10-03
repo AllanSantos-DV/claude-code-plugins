@@ -105,7 +105,7 @@ prazo interno de `timeout − 1 s`.
 | SessionStart (via dispatcher) | `brain-daemon-ensure.js` | Garante o daemon único e, no backend `mcp-memory` HTTP, verifica update no máximo 1x/24h; aplica/reinicia/valida versão automaticamente sem criar outro hook |
 | SessionStart (via dispatcher) | `memory-rotate.js` | Rotaciona MEMORY.md quando >150 linhas (side-effect only) |
 | SessionStart (via dispatcher) | `session-whitelist.js` | Detecta ecossistema do projeto, popula whitelist (side-effect only) |
-| SessionStart (via dispatcher) | `brain-health.js` | Liveness probe (static + active backend.init/count): se MCP estiver caído, injeta advisory acionável; senão, silencioso |
+| SessionStart (via dispatcher) | `brain-health.js` | Liveness probe (static + active backend.init/count): se MCP estiver caído, injeta advisory acionável; avisa também quando um hook do daemon fica **sem folga** (p95 ≥ metade do prazo, ou prazo estourado — 1×/hook/6 h); senão, silencioso |
 | SessionStart (via dispatcher) | `project-snapshot.js` | Snapshot do estado do repo (branch/PRs/CI) via `git`/`gh`, cacheado 5min |
 | SessionStart (via dispatcher) | `curation-session.js` | Poda one-hits antigos e injeta panorama de scripts curados; dispara higiene semanal do KB (fire-and-forget) |
 | SessionStart (via dispatcher) | `doctor-advisory.js` | Roda `doctor.js` com cooldown; advisory de 1 linha só se algo crítico falhar (Node/PATH, data-dir fragmentado, daemon, token) |
