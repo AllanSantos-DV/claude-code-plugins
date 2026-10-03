@@ -24,14 +24,20 @@ const _memo = new Map();
 const safeId = (sid) => String(sid || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
 const dirOf = (base) => path.join(base || dataDir(), '.runtime', 'session-roots');
 
-/** Record the root of `sessionId` (SessionStart, command hook). Returns true when written. */
-function recordSessionRoot(sessionId, projectDir, { base } = {}) {
+/**
+ * Record the root of `sessionId` (SessionStart, command hook) and the session's
+ * CCB_PROJECT_ID, if set — the daemon strips that variable from its own env, so the
+ * documented override reached nothing it serves. Returns true when written.
+ */
+function recordSessionRoot(sessionId, projectDir, { base, projectId } = {}) {
   const id = safeId(sessionId);
   if (!id || !projectDir) return false;
   const dir = dirOf(base);
   try {
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, `${id}.json`), JSON.stringify({ projectDir, at: Date.now() }));
+    const rec = { projectDir, at: Date.now() };
+    if (projectId) rec.projectId = String(projectId);
+    fs.writeFileSync(path.join(dir, `${id}.json`), JSON.stringify(rec));
     const now = Date.now();
     for (const f of fs.readdirSync(dir)) {
       const p = path.join(dir, f);
@@ -44,25 +50,55 @@ function recordSessionRoot(sessionId, projectDir, { base } = {}) {
   }
 }
 
-/** Root recorded for `sessionId`, or '' when unknown (session started before this build). */
-function sessionRootFor(sessionId, { base } = {}) {
+/** { projectDir, projectId } recorded for `sessionId` ('' when unknown — session started before this build). */
+function sessionRecordFor(sessionId, { base } = {}) {
   const id = safeId(sessionId);
-  if (!id) return '';
+  if (!id) return { projectDir: '', projectId: '' };
   const key = `${base || ''}|${id}`;
   if (_memo.has(key)) return _memo.get(key);
-  let root = '';
+  let rec = { projectDir: '', projectId: '' };
   try {
-    root = String(JSON.parse(fs.readFileSync(path.join(dirOf(base), `${id}.json`), 'utf8')).projectDir || '');
+    const j = JSON.parse(fs.readFileSync(path.join(dirOf(base), `${id}.json`), 'utf8'));
+    rec = { projectDir: String(j.projectDir || ''), projectId: String(j.projectId || '') };
   } catch (err) {
     if (err.code !== 'ENOENT') console.error(`[session-root] read failed for ${id}: ${err.message}`);
   }
-  if (root) { // only hits are memoized: a session recorded later must still be found
+  if (rec.projectDir) { // only hits are memoized: a session recorded later must still be found
     if (_memo.size >= MEMO_MAX) _memo.delete(_memo.keys().next().value);
-    _memo.set(key, root);
+    _memo.set(key, rec);
   }
-  return root;
+  return rec;
+}
+
+/** Root recorded for `sessionId`, or '' when unknown. */
+function sessionRootFor(sessionId, opts) { return sessionRecordFor(sessionId, opts).projectDir; }
+
+/**
+ * The CCB_PROJECT_ID of the sessions rooted at `root`, for calls that carry no
+ * session_id (the model's MCP tool calls). Adopted only when EVERY recorded session
+ * of that folder declared the same id — a session there without the override (or
+ * with another) must never inherit it. '' otherwise.
+ */
+function envProjectIdForRoot(root, { base } = {}) {
+  if (!root) return '';
+  const norm = (p) => { const r = path.resolve(String(p)); return process.platform === 'win32' ? r.toLowerCase() : r; };
+  const want = norm(root);
+  const ids = new Set();
+  let dir;
+  try { dir = fs.readdirSync(dirOf(base)); } catch (err) {
+    if (err.code !== 'ENOENT') console.error(`[session-root] list failed: ${err.message}`);
+    return '';
+  }
+  for (const f of dir) {
+    if (!f.endsWith('.json')) continue;
+    try {
+      const j = JSON.parse(fs.readFileSync(path.join(dirOf(base), f), 'utf8'));
+      if (j.projectDir && norm(j.projectDir) === want) ids.add(String(j.projectId || ''));
+    } catch (err) { void err; /* raced with a write/prune: skip that record */ }
+  }
+  return ids.size === 1 ? [...ids][0] : '';
 }
 
 function _resetMemo() { _memo.clear(); }
 
-module.exports = { recordSessionRoot, sessionRootFor, _resetMemo };
+module.exports = { recordSessionRoot, sessionRecordFor, sessionRootFor, envProjectIdForRoot, _resetMemo };

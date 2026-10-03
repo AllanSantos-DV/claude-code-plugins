@@ -446,12 +446,19 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
    * Env for resolving a CALLER's cwd. The HTTP daemon is shared by every session and
    * inherits the env of the session that spawned it (brain-daemon-ensure), so its
    * CCB_PROJECT_ID / CLAUDE_PROJECT_DIR belong to THAT session — never to the caller.
-   * In HTTP mode only the caller's own `sessionRoot` (its CLAUDE_PROJECT_DIR) is used.
+   * In HTTP mode only the caller's own `sessionRoot` (its CLAUDE_PROJECT_DIR) is used,
+   * plus the caller's CCB_PROJECT_ID as SessionStart recorded it (by session_id, else
+   * by its folder when unambiguous — lib/session-root.js).
    */
   function cwdResolveEnv(a) {
     if (mode !== 'http') return process.env;
-    const root = a && a.sessionRoot ? a.sessionRoot : sessionRoots[0];
-    return root ? { CLAUDE_PROJECT_DIR: String(root) } : {};
+    const sr = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'session-root.js'));
+    const rec = a && a.session_id ? sr.sessionRecordFor(a.session_id) : { projectDir: '', projectId: '' };
+    const root = (a && a.sessionRoot) || rec.projectDir || sessionRoots[0];
+    const env = root ? { CLAUDE_PROJECT_DIR: String(root) } : {};
+    const forced = rec.projectId || (root ? sr.envProjectIdForRoot(root) : '');
+    if (forced) env.CCB_PROJECT_ID = forced;
+    return env;
   }
 
   // ─── Session binding (727): the MCP client's own roots ─────────────────────
@@ -480,7 +487,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
 
   function sessionRootIds() {
     return sessionRoots
-      .map((r) => projectId.tryResolveProjectId({ cwd: r, env: { CLAUDE_PROJECT_DIR: r } }))
+      .map((r) => projectId.tryResolveProjectId({ cwd: r, env: cwdResolveEnv({ sessionRoot: r }) }))
       .filter(Boolean);
   }
 
