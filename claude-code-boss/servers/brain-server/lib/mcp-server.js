@@ -462,6 +462,22 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
   // unverifiable explicit project on the shared daemon. Empty until fetched (or for a
   // client without roots): the previous behavior applies.
   let sessionRoots = [];
+  /**
+   * The CALLER's folder for tools that act on "this project" when no `cwd` is passed.
+   * stdio: one server per session, so process.cwd() is the caller's. HTTP: the daemon
+   * is shared and its process.cwd() is the FIRST session's folder — use the MCP
+   * session's own root, else refuse rather than act on another project.
+   */
+  function callerCwd(a) {
+    if (a && typeof a.cwd === 'string' && a.cwd) return a.cwd;
+    if (mode !== 'http') return process.cwd();
+    if (sessionRoots.length) return String(sessionRoots[0]);
+    throw Object.assign(
+      new Error('cwd is required (the project folder) — the shared daemon cannot infer which project you mean.'),
+      { code: 'CWD_REQUIRED' },
+    );
+  }
+
   function sessionRootIds() {
     return sessionRoots
       .map((r) => projectId.tryResolveProjectId({ cwd: r, env: { CLAUDE_PROJECT_DIR: r } }))
@@ -614,7 +630,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
   // discover/resolver takes precedence over the config-derived one.
   const graphInject = (_testHooks && _testHooks.graph) || {};
   const graphTools = createGraphTools({
-    cwd: () => process.cwd(),
+    cwd: () => callerCwd(null),
     ...(graphInject.fetchImpl ? { fetchImpl: graphInject.fetchImpl } : {}),
     resolveDaemon: graphInject.resolveDaemon || graphInject.discover || graphConfigResolver,
   });
@@ -674,7 +690,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
     {
       name: 'curation_mark_oneoff',
       description: 'Mark a volume-heavy command the curation Stop hook flagged as ONE-HIT (single-use), so it stops asking to curate it. PREFERRED: pass `sigs` with each `sig` string from the Stop-hook reason VERBATIM (exact match, no guessing). Alternatively provide alias forms of the command via `aliases` (e.g. ["npm test","npm run test"]); each distinct signature is tracked (and counted) on its own. Refused if the command already recurs past the configured ceiling — then create a curated script instead. Aliases must name the subcommand (e.g. "git log", not "git"); a verbatim 1-token sig is marked by exact match only.',
-      inputSchema: { type: 'object', properties: { sigs: { type: 'array', items: { type: 'string' }, description: 'Canonical signatures copied VERBATIM from the Stop-hook reason (the `sig \\`...\\`` field). Preferred over aliases — matches the store exactly.' }, aliases: { type: 'array', items: { type: 'string' }, description: 'Raw command forms identifying this one-hit command (>=2 significant tokens each, e.g. ["git log","git lg"])' }, cwd: { type: 'string', description: 'Working directory (for project scoping)' }, session_id: { type: 'string', description: 'Session id' } } },
+      inputSchema: { type: 'object', properties: { sigs: { type: 'array', items: { type: 'string' }, description: 'Canonical signatures copied VERBATIM from the Stop-hook reason (the `sig \\`...\\`` field). Preferred over aliases — matches the store exactly.' }, aliases: { type: 'array', items: { type: 'string' }, description: 'Raw command forms identifying this one-hit command (>=2 significant tokens each, e.g. ["git log","git lg"])' }, cwd: { type: 'string', description: 'Working directory (project scoping). Omitted: the folder of this MCP session; refused if unknown' }, session_id: { type: 'string', description: 'Session id' } } },
     },
     {
       name: 'curation_register_shell',
@@ -1087,7 +1103,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
             return { isError: true, content: [{ type: 'text', text: `curation_mark_oneoff: alias/sig too broad: ${tooBroad.join(', ')}. A 1-token form (e.g. "git") would silence unrelated subcommands — name the subcommand (e.g. "git log").` }] };
           }
           const cfg =require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'brain-config.js')).getCuration();
-          const projectKey = oneoff.resolveProjectKey(a.cwd || process.cwd());
+          const projectKey = oneoff.resolveProjectKey(callerCwd(a));
           const res = oneoff.mark(process.env.CLAUDE_PLUGIN_DATA, projectKey, { aliases, sigs, sessionId: a.session_id || null, maxRecurrence: cfg.oneHitMaxRecurrence, windowDays: cfg.oneHitWindowDays });
           if (res.decision === 'rejected') {
             return { content: [{ type: 'text', text: JSON.stringify({ decision: 'rejected', signature: res.sig, count: res.count, ceiling: cfg.oneHitMaxRecurrence, rejected: res.rejected || [], message: `"${res.sig}" already recurs ${res.count}x in this project (>= ceiling ${cfg.oneHitMaxRecurrence}). Create a curated script instead of marking one-hit.` }, null, 2) }] };
@@ -1107,7 +1123,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
       case 'curation_register_shell': {
         try {
           const registerShell = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'shell-register.js'));
-          const res = registerShell.register(args || {});
+          const res = registerShell.register({ ...(args || {}), cwd: callerCwd(args) });
           if (res.isError) return { isError: true, content: [{ type: 'text', text: res.message }] };
           return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
         } catch (err) {
@@ -1260,7 +1276,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           const a = args || {};
           // The report reads the SAME canonical metrics key the hook writes under, so
           // the read/write agree on the metrics db regardless of marker/env/basename.
-          const cwd = typeof a.cwd === 'string' && a.cwd ? a.cwd : process.cwd();
+          const cwd = callerCwd(a);
           const pid = resolveProject(a);
           const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
           const { dataDir } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'data-dir.js'));
@@ -1464,7 +1480,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           const a = args || {};
           const policyId = typeof a.policyId === 'string' ? a.policyId.trim() : '';
           if (!policyId) return adjErr('policy_adjudication_prepare: policyId is required (from policy_list).');
-          const cwd = typeof a.cwd === 'string' && a.cwd ? a.cwd : process.cwd();
+          const cwd = callerCwd(a);
           const pid = resolveProject(a);
 
           const policyStore = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'policy-store.js'));
