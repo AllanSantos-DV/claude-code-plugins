@@ -15,7 +15,7 @@
  */
 'use strict';
 
-const { readStdin, parsePayload, emitEmpty } = require('./lib/hook-io.js');
+const { sideEffectDispatch, runSideEffectCli } = require('./lib/hook-io.js');
 const curationDetect = require('./curation-detect.js');
 const failureDetect = require('./failure-detect.js');
 
@@ -29,28 +29,8 @@ const DETECTORS = [
  * it can be exercised directly in unit tests.
  * @param {object} event  PostToolUseFailure payload
  */
-async function dispatch(event) {
-  for (const { name, mod } of DETECTORS) {
-    try {
-      await mod.run(event);
-    } catch (err) {
-      console.error(`[claude-code-boss:posttoolusefailure-dispatcher] ${name}: ${err && err.message ? err.message : err}`);
-    }
-  }
-}
+const dispatch = sideEffectDispatch('posttoolusefailure-dispatcher', DETECTORS);
 
-async function main() {
-  const raw = await readStdin();
-  const event = parsePayload(raw) || {};
-  await dispatch(event);
-  emitEmpty();
-}
-
-if (require.main === module) {
-  main().catch((err) => {
-    console.error(`[claude-code-boss:posttoolusefailure-dispatcher] fatal: ${err && err.message ? err.message : err}`);
-    emitEmpty();
-  });
-}
+if (require.main === module) runSideEffectCli(dispatch, 'claude-code-boss:posttoolusefailure-dispatcher');
 
 module.exports = { dispatch, DETECTORS };

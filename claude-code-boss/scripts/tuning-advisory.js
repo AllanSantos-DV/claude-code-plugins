@@ -14,7 +14,7 @@ const fs = require('fs');
 const { writeJsonAtomic } = require('./lib/atomic-write.js');
 const path = require('path');
 
-const { readStdin, emitEmpty, emitJson } = require('./lib/hook-io.js');
+const { runTextCli } = require('./lib/hook-io.js');
 const hooksConfig = require('./lib/hooks-config.js');
 const { analyze } = require('./lib/tuning-advisor.js');
 const { aggregateProfileImpact } = require('./lib/profile-impact.js');
@@ -77,21 +77,10 @@ async function run(event) {
   return `[TUNING] ${top.title} — ${top.detail} (${top.evidence}). Detalhes no card "Recomendações de tuning" do /dashboard.`;
 }
 
-async function main() {
-  const raw = await readStdin();
-  let event = {};
-  try { event = JSON.parse(raw || '{}'); } catch { /* defaults */ }
-  const eventName = event.hook_event_name || 'SessionStart';
-  const text = await run(event);
-  if (text) {
-    emitJson({ hookSpecificOutput: { hookEventName: eventName, additionalContext: text } });
-    return;
-  }
-  emitEmpty();
-}
+function main() { return runTextCli(run, 'TUNING-ADVISORY', 'SessionStart'); }
 
 if (require.main === module) {
-  main().catch((err) => { console.error(`[tuning-advisory] ${err && err.message ? err.message : err}`); emitEmpty(); });
+  main(); // runTextCli never rejects: it logs and emits {} itself
 }
 
 module.exports = { onCooldown, stampPath, gather, COOLDOWN_MS, run };

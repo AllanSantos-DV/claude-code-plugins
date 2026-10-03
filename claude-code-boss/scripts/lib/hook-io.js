@@ -187,7 +187,55 @@ async function runSideEffectTextCli(run, name, hookEventName) {
   else emitEmpty();
 }
 
+/**
+ * Multi-event variant of runSideEffectTextCli: `run(event)` returns advisory text
+ * or null, and the emitted `hookEventName` ECHOES `event.hook_event_name` (falling
+ * back to `defaultEvent`) — for hooks registered on more than one event
+ * (SessionStart + UserPromptSubmit advisories, brain-health…).
+ *
+ * @param {(event:object)=>Promise<string|null>|string|null} run
+ * @param {string} name  short label for error logs
+ * @param {string} defaultEvent  event name when stdin carries none
+ */
+async function runTextCli(run, name, defaultEvent = 'SessionStart') {
+  let text = null;
+  let eventName = defaultEvent;
+  try {
+    const event = parsePayload(await readStdin()) || {};
+    eventName = event.hook_event_name || defaultEvent;
+    text = await run(event);
+  } catch (err) {
+    console.error(`[${name}] ${err && err.message ? err.message : err}`);
+    text = null;
+  }
+  if (text) emitJson({ hookSpecificOutput: { hookEventName: eventName, additionalContext: text } });
+  else emitEmpty();
+}
+
+/**
+ * In-process dispatch over side-effect-only detectors (`mod.run(event)`), each in
+ * its own try/catch so one crash never skips the others — the shared body of the
+ * PostToolUse dispatchers. `detectors` is read at call time (tests may edit it).
+ *
+ * @param {string} label  log tag, e.g. 'posttoolusebash-dispatcher'
+ * @param {Array<{name:string, mod:{run:Function}}>} detectors
+ * @returns {(event:object)=>Promise<void>}
+ */
+function sideEffectDispatch(label, detectors) {
+  return async function dispatch(event) {
+    for (const { name, mod } of detectors) {
+      try {
+        await mod.run(event);
+      } catch (err) {
+        console.error(`[claude-code-boss:${label}] ${name}: ${err && err.message ? err.message : err}`);
+      }
+    }
+  };
+}
+
 module.exports = {
+  sideEffectDispatch,
+  runTextCli,
   readStdin,
   emitEmpty,
   emitJson,

@@ -17,7 +17,7 @@
 const fs = require('fs');
 const { writeJsonAtomic, writeFileAtomic } = require('./lib/atomic-write.js');
 const path = require('path');
-const { readStdin, emitEmpty, emitJson } = require('./lib/hook-io.js');
+const { runTextCli } = require('./lib/hook-io.js');
 const oneoff = require('./lib/oneoff-store.js');
 const { getCuration } = require('./lib/brain-config.js');
 
@@ -120,18 +120,7 @@ async function run(event) {
   }
 }
 
-async function main() {
-  const raw = await readStdin();
-  let event = {};
-  try { event = JSON.parse(raw || '{}'); } catch { /* non-JSON stdin → defaults */ }
-  const eventName = event.hook_event_name || 'SessionStart';
-  const text = await run(event);
-  if (text) {
-    emitJson({ hookSpecificOutput: { hookEventName: eventName, additionalContext: text } });
-    return;
-  }
-  emitEmpty();
-}
+function main() { return runTextCli(run, 'CURATION-SESSION', 'SessionStart'); }
 
 if (require.main === module) {
   main();
