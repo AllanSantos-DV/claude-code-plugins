@@ -3921,6 +3921,36 @@ test('audit: invocationFor refuses a script path that would break out of the quo
   }
 });
 
+test('variant → alias: a recurring noisy uncovered VARIANT of a curated script is journaled as EXTEND (not CREATE, not REFINE)', async () => {
+  const detect = require('./curation-detect.js');
+  const journal = require('./lib/turn-journal.js');
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-variant-'));
+  fs.mkdirSync(path.join(proj, '.vscode', 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(proj, 'package.json'), '{}');
+  fs.writeFileSync(path.join(proj, '.vscode', 'shells.json'), JSON.stringify({ shells: [{ id: 'tests', script: '.vscode/scripts/tests.mjs', aliases: ['npm test'] }] }));
+  const sid = 'variant-' + Date.now();
+  const noisy = Array.from({ length: 300 }, (_, i) => `case ${i} ok`).join('\n');
+  const ev = (command) => ({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command }, tool_response: { stdout: noisy, stderr: '' }, session_id: sid, cwd: proj });
+  try {
+    await detect.run(ev('npm test -- --reporter=dot'));
+    assertEq(journal.readEntries(sid).length, 0, '1st noisy occurrence stays pending (C3)');
+    await detect.run(ev('npm test -- --reporter=dot'));
+    const entries = journal.readEntries(sid);
+    assertEq(entries.length, 1, '2nd occurrence is journaled');
+    const e = entries[0];
+    assert(e.extendShell && e.extendShell.id === 'tests', `points at the existing script: ${JSON.stringify(e.extendShell)}`);
+    assertEq(JSON.stringify(e.extendShell.aliases), '["npm test"]', 'carries the current aliases (register replaces the list)');
+    assertEq(e.curatedScript, null, 'a raw variant is NOT a run of the script (no REFINE)');
+    const reason = require('./curation-stop.js')._buildReason(entries, 1, 3);
+    assert(/^EXTEND an existing curated script/m.test(reason), `EXTEND section: ${reason}`);
+    assert(/variant of `tests` \(\.vscode\/scripts\/tests\.mjs\)/.test(reason) && /current aliases \["npm test"\]/.test(reason), reason);
+    assert(!/^CREATE a curated script/m.test(reason) && !/^REFINE:/m.test(reason), 'neither CREATE (a second script) nor REFINE');
+  } finally {
+    journal.clearEntries(sid);
+    fs.rmSync(proj, { recursive: true, force: true });
+  }
+});
+
 test('/dashboard without LLM: the expansion hook answers only /dashboard, blocks with the URL, and fails loud', async () => {
   const dc = require('./dashboard-command.js');
   let opened = null;

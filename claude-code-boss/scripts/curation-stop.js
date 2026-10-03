@@ -133,7 +133,7 @@ function curatedScriptsTouchedSince(prev, cwd) {
   const since = new Date(prev.firstBlockedAt).getTime();
   if (!Number.isFinite(since)) return false;
   for (const e of prev.blockedEntries) {
-    const rel = e && e.curatedScript;
+    const rel = e && (e.curatedScript || (e.extendShell && e.extendShell.script));
     if (!rel) continue;
     const abs = path.isAbsolute(rel) ? rel : path.resolve(cwd, rel);
     try {
@@ -148,7 +148,8 @@ function buildReason(entries, attempt, maxAttempts) {
   const curationCfg = loadCurationConfig();
   const { oneHitMaxRecurrence } = require('./lib/brain-config.js').getCuration();
   const refineEntries = entries.filter(e => e.curatedScript);
-  const createEntries = entries.filter(e => !e.curatedScript);
+  const extendEntries = entries.filter(e => !e.curatedScript && e.extendShell);
+  const createEntries = entries.filter(e => !e.curatedScript && !e.extendShell);
 
   const sections = [];
 
@@ -167,6 +168,19 @@ function buildReason(entries, attempt, maxAttempts) {
       sections.push(`  • \`${e.curatedScript}\` — ${e.command} (${e.lines}L/${e.chars}c, ${e.reason})`);
     }
     sections.push(``);
+  }
+
+  if (extendEntries.length > 0) {
+    sections.push('EXTEND an existing curated script — a VARIANT of its command keeps running raw (other args/flags), so the redirect cannot fire. Make the script accept this variant (args/flags), then call `curation_register_shell` with the SAME id and scriptPath and aliases = the current aliases PLUS the variant (the list is replaced, not merged) — the next run is redirected. OR, if this variant is genuinely single-use, `curation_mark_oneoff({ sigs:[...] })` with the sig VERBATIM:');
+    for (const e of extendEntries) {
+      const x = e.extendShell;
+      const parts = ['`' + e.command + '`', 'variant of `' + x.id + '`' + (x.script ? ' (' + x.script + ')' : ''), 'current aliases [' + (x.aliases || []).map((a) => JSON.stringify(a)).join(', ') + ']'];
+      if (e.sig) parts.push('sig `' + e.sig + '`');
+      if (Number.isInteger(e.recurrence)) parts.push(e.recurrence + '/' + oneHitMaxRecurrence);
+      parts.push(e.lines + 'L/' + e.chars + 'c');
+      sections.push('  • ' + parts.join(' · '));
+    }
+    sections.push('');
   }
 
   if (createEntries.length > 0) {
@@ -301,4 +315,4 @@ if (require.main === module) {
   runStopDetectorCli(run, 'curation-stop');
 }
 
-module.exports = { run };
+module.exports = { run, _buildReason: buildReason };
