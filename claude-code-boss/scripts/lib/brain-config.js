@@ -16,7 +16,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { isPlainObject, deepMerge, filesStamp } = require('./config-merge.js');
+const { isPlainObject, filesStamp, loadLayered } = require('./config-merge.js');
 
 const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..', '..');
 const CONFIG_PATH = path.join(PLUGIN_ROOT, 'config', 'brain-config.json');
@@ -76,49 +76,11 @@ function deepDiff(base, next) {
 
 function load() {
   if (_cache) return _cache;
-  let shipped = {};
-  try {
-    shipped = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
-  } catch (err) {
-    console.error(`[brain-config] load failed (${CONFIG_PATH}): ${err.message}`);
-    shipped = {};
-  }
-  // One-time backfill: if the global override doesn't exist yet but a legacy
-  // per-data-dir one does, copy it up so the user's backend choice survives the
-  // Phase-1 move to the global path. Guarded by !exists so an existing global is
-  // never overwritten; only the resolved active data dir is consulted (no sibling
-  // scan). Fail-open — a failed backfill just means load() uses shipped defaults.
-  try {
-    const globalPath = userConfigPath();
-    if (!fs.existsSync(globalPath)) {
-      const legacyPath = legacyUserConfigPath();
-      if (fs.existsSync(legacyPath)) {
-        const { writeFileAtomic } = require('./atomic-write.js');
-        writeFileAtomic(globalPath, fs.readFileSync(legacyPath));
-      }
-    }
-  } catch (err) {
-    console.error(`[brain-config] user-config backfill skipped: ${err.message}`);
-  }
-  let override = null;
-  let overrideVersion = 0;
-  try {
-    const p = userConfigPath();
-    if (fs.existsSync(p)) {
-      const raw = JSON.parse(fs.readFileSync(p, 'utf-8'));
-      if (isPlainObject(raw)) {
-        overrideVersion = Number.isInteger(raw._v) ? raw._v : 0;
-        // Strip `_v` before merging — it's a wire/persistence-only version stamp,
-        // never a real config field. Leaking it into the merged config would let
-        // it round-trip back out through getters/dashboard responses as if it
-        // were user data.
-        const { _v, ...rest } = raw;
-        override = rest;
-      }
-    }
-  } catch (err) { void err; /* override ausente/ilegível → ignora, usa só o shipped */ }
-  _cache = isPlainObject(override) ? deepMerge(shipped, override) : shipped;
-  _cacheVersion = overrideVersion;
+  // Layered (shipped + global user-config, legacy backfilled); `_v` is the
+  // persistence-only version stamp the CAS save checks — stripped, never config.
+  const { config, version } = loadLayered({ label: 'brain-config', shippedPath: CONFIG_PATH, userPath: userConfigPath, legacyPath: legacyUserConfigPath, versioned: true });
+  _cache = config;
+  _cacheVersion = version;
   return _cache;
 }
 
