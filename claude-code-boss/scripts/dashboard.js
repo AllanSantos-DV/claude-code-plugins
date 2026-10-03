@@ -171,6 +171,14 @@ function fail(res, msg, status = 500) {
   json(res, { error: msg }, status);
 }
 
+/** An async handler whose rejection is logged and answered 500 (never an unhandled rejection). */
+function asyncRoute(route, handler) {
+  return (req, res) => handler(req, res).catch((err) => {
+    console.error(`[DASHBOARD] ${route} failed: ${err.message}`);
+    fail(res, err.message, 500);
+  });
+}
+
 let applyRouterLock = false;
 
 function runEnsureSync(scriptPath) {
@@ -279,12 +287,7 @@ function atomicWriteJSON(filePath, data) {
 
 // ─── API: Status ───────────────────────────────────────────────────
 
-function getStatus(req, res) {
-  return getStatusAsync(req, res).catch(err => {
-    console.error(`[DASHBOARD] /api/status failed: ${err.message}`);
-    fail(res, err.message, 500);
-  });
-}
+const getStatus = asyncRoute('/api/status', getStatusAsync);
 
 async function getStatusAsync(req, res) {
   const hooksRaw = readJSON(path.join(ROOT, 'hooks', 'hooks.json'));
@@ -2016,12 +2019,7 @@ async function getByokModels(req, res) {
   }
 }
 
-function getRouterStatus(req, res) {
-  return getRouterStatusAsync(req, res).catch(err => {
-    console.error(`[DASHBOARD] /api/router/status failed: ${err.message}`);
-    fail(res, err.message, 500);
-  });
-}
+const getRouterStatus = asyncRoute('/api/router/status', getRouterStatusAsync);
 
 async function getRouterStatusAsync(req, res) {
   const shipped = readJSON(ROUTER_SHIPPED_CONFIG) || {};
@@ -2106,12 +2104,7 @@ function routerHttpPost(port, pathName) {
   });
 }
 
-function getRouterMetrics(req, res) {
-  return getRouterMetricsAsync(req, res).catch(err => {
-    console.error(`[DASHBOARD] /api/router/metrics failed: ${err.message}`);
-    fail(res, err.message, 500);
-  });
-}
+const getRouterMetrics = asyncRoute('/api/router/metrics', getRouterMetricsAsync);
 
 async function getRouterMetricsAsync(req, res) {
   const shipped = readJSON(ROUTER_SHIPPED_CONFIG) || {};
