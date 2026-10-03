@@ -83,6 +83,21 @@ daemon de hooks e as correções de escopo por sessão.
   imprime `{ok, url}` (o texto de reserva do comando, usado quando o próprio modelo o
   invoca, usa essa saída em vez de adivinhar o caminho do arquivo de descoberta).
 
+### Added — variante recorrente vira alias do script curado
+- Quando uma **variante** de um comando curado (mesma família, outros argumentos ou
+  flags — ex.: `npm test -- --reporter=dot` com o script cobrindo `npm test`) roda crua,
+  ruidosa e se repete, o Stop deixa de pedir um **segundo** script (CREATE) e pede para
+  **estender** o existente (EXTEND): aceitar a variante e registrá-la como alias, com a
+  lista de aliases atuais na mensagem (o registro substitui a lista). Daí em diante a
+  variante é redirecionada. Ciclo provado no Claude Code real: na sessão seguinte, a
+  variante rodou pelo script — 1 linha em vez de 404.
+- **Corrigido:** o daemon não via edições do `shells.json` (script ou alias registrado
+  no meio da sessão) até reiniciar — o cache só olhava a raiz do projeto, herança da era
+  "um processo por hook". Agora segue o carimbo do arquivo.
+- **Corrigido:** uma execução `CCB_RAW=1` (o escape que o próprio redirect oferece) era
+  cobrada como falta de curadoria e contava para o teto do uso único — beco sem saída.
+- **Corrigido:** uma variante crua caía em REFINE do script (como se ele tivesse rodado).
+
 ### Added — métricas reais e painel "Curation & guards"
 - Eventos novos no store de métricas: `curation.used` (execuções por script,
   tamanho, sucesso), `curation.redirected`, `curation.uncovered` (variante sem
