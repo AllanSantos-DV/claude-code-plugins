@@ -20846,6 +20846,21 @@ test('curation_prune_unused: shells.json in a SUBFOLDER of the session reads the
   } finally { fs.rmSync(sess, { recursive: true, force: true }); }
 });
 
+test('dashboard prune (no session known): metrics key = nearest folder up to the repo top that has a metrics db', () => {
+  const { metricsProjectFor } = require('./lib/shells-prune.js');
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mpf-'));
+  const app = path.join(repo, 'packages', 'app');
+  fs.mkdirSync(app, { recursive: true });
+  fs.mkdirSync(path.join(repo, '.git'));
+  try {
+    assertEq(metricsProjectFor(app, [path.basename(repo)]), path.basename(repo), 'session root = repo → its key');
+    assertEq(metricsProjectFor(app, ['app', path.basename(repo)]), 'app', 'nearest wins');
+    assertEq(metricsProjectFor(app, [path.basename(os.tmpdir())]), 'app', 'never above the repo top → basename(root)');
+    const src = fs.readFileSync(path.join(ROOT, 'scripts', 'dashboard.js'), 'utf8');
+    assertEq((src.match(/project: sp\.metricsProjectFor\(root, listMetricsProjects\(\)\)/g) || []).length, 2, 'both dashboard prune paths pass the key');
+  } finally { fs.rmSync(repo, { recursive: true, force: true }); }
+});
+
 test('shared daemon: tools acting on "this project" never fall back to the daemon\'s process.cwd() (mark_oneoff, register_shell, graph, policy)', async () => {
   const oneoff = require('./lib/oneoff-store.js');
   const sess = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-callercwd-'));

@@ -113,4 +113,23 @@ function pruneShells({ root, ids, days = 30, now = Date.now(), usage, project } 
   return { ok: true, removed: want, kept: json.shells.length, removedCount: before - json.shells.length, backup: backup.replace(/\\/g, '/'), file: file.replace(/\\/g, '/') };
 }
 
-module.exports = { pruneCandidates, pruneShells };
+/**
+ * Metrics key for a shells root when the calling session is unknown (dashboard): the
+ * nearest folder from `root` up to its repo top (`.git`) whose basename has a metrics
+ * db in `known` — sessions record under the SESSION root, which can be an ancestor of
+ * the shells.json folder. Falls back to basename(root).
+ */
+function metricsProjectFor(root, known) {
+  const have = new Set(known || []);
+  let dir = path.resolve(root);
+  for (let i = 0; i < 12; i++) {
+    if (have.has(path.basename(dir))) return path.basename(dir);
+    if (fs.existsSync(path.join(dir, '.git'))) break;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return path.basename(path.resolve(root));
+}
+
+module.exports = { pruneCandidates, pruneShells, metricsProjectFor };
