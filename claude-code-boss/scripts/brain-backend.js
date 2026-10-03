@@ -191,6 +191,8 @@ async function saveMcp(entry) {
     sessionId: entry.session_id || '',
     source: entry.source || {},
     ...(entry.id ? { brainId: entry.id } : {}),
+    // Explicit target scope (e.g. '__user__' for scope=user); absent → the handshake project.
+    ...(entry.projectId ? { project_id: entry.projectId } : {}),
   };
   const result = await _mcp.callTool('add_document', {
     content: entryToContent(entry),

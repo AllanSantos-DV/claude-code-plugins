@@ -309,8 +309,11 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
    * Remote-backend KB handler: when backend.type === 'mcp-memory', write/search/
    * related/count tools delegate to the dispatcher (which talks to the external
    * Native Java daemon) instead of the local SQLite store. The local-only scope
-   * sentinel + graph dedup are NOT modeled remotely — the daemon scopes by the
-   * projectId stamped at the MCP handshake.
+   * sentinel + graph dedup are NOT modeled remotely. Scope mirrors the local path:
+   * a write's effective scope (inferDefaultScope for 'auto') picks metadata.project_id
+   * (the project, or USER_SENTINEL — sanitized, secrets refused) and brain_search maps
+   * scope to project_id [project], [__user__] or both. The server accepts a
+   * caller-declared project_id and isolates it (verified live on native-java 2.44.3).
    */
   async function handleRemoteKbTool(backend, name, args) {
     const a = args || {};
@@ -318,25 +321,50 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
     let project;
     try { project = resolveKbProject(a); }
     catch (err) { return { isError: true, content: [{ type: 'text', text: `${name} failed: ${err.message}` }] }; }
+    // Write scope → { effective, projectId, fields } or { rejected } (same rule as the local path).
+    const writeScope = (type) => {
+      const tags = Array.isArray(a.tags) ? a.tags : [];
+      const effective = (a.scope === 'project' || a.scope === 'user') ? a.scope : inferDefaultScope(type, tags);
+      if (effective !== 'user') return { effective, projectId: project, fields: { title: a.title, summary: a.summary, detail: a.detail } };
+      const prep = prepareForUserScope({ title: a.title, summary: a.summary, detail: a.detail }, project);
+      if (prep.rejected) return { rejected: prep.reason };
+      return { effective, projectId: USER_SENTINEL, fields: prep.safe };
+    };
     try {
       await backend.init({ project, skipEmbedder: true });
       switch (name) {
         case 'brain_search': {
-          const hits = await backend.search(a.query, { topK: a.topK || 5, minScore: typeof a.minScore === 'number' ? a.minScore : 0 });
-          return asText({ query: a.query, project, scope: a.scope || 'both', count: hits.length, results: hits, backend: 'mcp-memory' });
+          const scope = a.scope === 'project' || a.scope === 'user' ? a.scope : 'both';
+          const projectIds = scope === 'user' ? [USER_SENTINEL] : scope === 'project' ? [project] : [project, USER_SENTINEL];
+          const hits = await backend.search(a.query, { topK: a.topK || 5, minScore: typeof a.minScore === 'number' ? a.minScore : 0, projectIds });
+          return asText({ query: a.query, project: scope === 'user' ? USER_SENTINEL : project, scope, count: hits.length, results: hits, backend: 'mcp-memory' });
         }
         case 'brain_store': {
-          const id = await backend.save({ title: a.title, summary: a.summary, content: { detail: a.detail || a.summary }, type: a.type || 'note', tags: Array.isArray(a.tags) ? a.tags : [], confidence: typeof a.confidence === 'number' ? a.confidence : 0.8, scope: a.scope || 'auto', source: a.sourceUrl ? { url: a.sourceUrl } : {} });
-          return asText({ id, project, scope: a.scope || 'auto', status: 'saved', title: a.title, type: a.type || 'note', backend: 'mcp-memory' });
+          const type = a.type || 'note';
+          const w = writeScope(type);
+          if (w.rejected) return { isError: true, content: [{ type: 'text', text: `brain_store rejected: scope=user but ${w.rejected}. Strip the secret or use scope=project.` }] };
+          const f = w.fields;
+          const id = await backend.save({ title: f.title, summary: f.summary, content: { detail: f.detail || f.summary }, type, tags: Array.isArray(a.tags) ? a.tags : [], confidence: typeof a.confidence === 'number' ? a.confidence : 0.8, scope: w.effective, projectId: w.projectId, source: a.sourceUrl ? { url: a.sourceUrl } : {} });
+          return asText({ id, project: w.projectId, scope: w.effective, status: 'saved', title: f.title, type, backend: 'mcp-memory' });
         }
         case 'capture_lesson': {
-          const id = await backend.save({ title: a.title, summary: a.summary, content: { detail: a.detail || a.summary }, type: a.type || 'lesson', tags: Array.isArray(a.tags) ? a.tags : [], confidence: typeof a.confidence === 'number' ? a.confidence : 0.85, scope: a.scope || 'auto' });
+          const type = a.type || 'lesson';
+          if (type === 'skill') { // same contract as the local path: out of range → nothing stored
+            const brainConfig = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'brain-config.js'));
+            const { validateSkillFields } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'skill-capture.js'));
+            const check = validateSkillFields(a, brainConfig.getSkillCapture());
+            if (!check.ok) return { isError: true, content: [{ type: 'text', text: check.message }] };
+          }
+          const w = writeScope(type);
+          if (w.rejected) return { isError: true, content: [{ type: 'text', text: `capture_lesson rejected: scope=user but ${w.rejected}. Strip the secret or use scope=project.` }] };
+          const f = w.fields;
+          const id = await backend.save({ title: f.title, summary: f.summary, content: { detail: f.detail || f.summary }, type, tags: Array.isArray(a.tags) ? a.tags : [], confidence: typeof a.confidence === 'number' ? a.confidence : 0.85, scope: w.effective, projectId: w.projectId });
           // No dedup/merge tool on the mcp-memory daemon's contract (unlike the
           // local path below) — every capture here is an 'admit'. Recorded
           // locally regardless: metrics are per-machine, not part of the KB.
-          await recordLessonMetric(project, { type: a.type || 'lesson', decision: 'admit', scope: a.scope || 'auto' });
+          await recordLessonMetric(project, { type, decision: 'admit', scope: w.effective });
           recordCaptureAck(a.windowId, 'captured');
-          return asText({ decision: 'admit', id, type: a.type || 'lesson', project, scope: a.scope || 'auto', backend: 'mcp-memory' });
+          return asText({ decision: 'admit', id, type, project: w.projectId, scope: w.effective, backend: 'mcp-memory' });
         }
         case 'brain_related': {
           const related = await backend.getRelated(a.id);
