@@ -158,6 +158,12 @@ nenhum                       → off            (cinza)
 | `kb.capture.maxBlockAttempts` | `5` | Tentativas de re-block da oferta de captura antes de relentar |
 | `kb.capture.turns` | `3` | Quantos turnos humanos FINAIS do transcript a captura lê a cada Stop (`lib/transcript-turns.js`) — nunca o transcript inteiro |
 | `kb.capture.includeThinking` | `false` | Inclui o thinking do assistente nos ciclos oferecidos para captura (tool call/output nunca entram) |
+| `curation.maxOutputChars` | `1500` | Saída de um comando acima disso conta como volumosa para a curadoria |
+| `curation.maxOutputLines` | `30` | Idem, em linhas |
+| `curation.oneHitMaxRecurrence` | `3` | Teto de recorrência de um comando marcado como uso único; passou disso, a curadoria volta a ser pedida |
+| `curation.oneHitWindowDays` | `90` | Janela da contagem de recorrência |
+| `curation.shapeMaxLines` | `80` | Sem Token Guard instalado: linhas de um comando de exploração isolado que chegam ao modelo (o resto fica em `.runtime/shaped`, com o caminho indicado) |
+| `curation.shapeMaxChars` | `8000` | Idem, em caracteres |
 
 ### Data dirs e identidade de instalação
 
@@ -258,6 +264,12 @@ Iniciar: `/dashboard` (slash command) ou `node scripts/dashboard-start.js`.
 - Bind: `127.0.0.1`, porta efêmera
 - Auth: token de sessão (injetado no HTML) + allowlist de **Host header** (`localhost:<port>` / `127.0.0.1:<port>`, anti DNS-rebinding)
 - Abas: Home · Brain KB · Skills · Hooks · Insights · Logs · Router
+- Home › **Curation & guards** lê `GET /api/metrics/curation?days&project&root`
+  (eventos `curation.*` e dos guards no store de métricas + latência por hook do
+  `/health` do brain daemon em `BRAIN_HTTP_PORT`, padrão 38217). `root` = pasta
+  de um projeto com `shells.json`, para listar scripts nunca usados (o campo
+  "project folder" do painel guarda no navegador). Daemon fora → a latência
+  aparece como indisponível, nunca vazia.
 - O painel Router configura custom upstream e BYOK por operação. A precedência é
   `dashboard/user-config.json` > variáveis de ambiente > defaults versionados.
 - As rotas locais consumidas pelo Claude Code permanecem Anthropic. Quando
