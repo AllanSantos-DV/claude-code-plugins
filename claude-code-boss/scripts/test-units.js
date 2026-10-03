@@ -20913,6 +20913,25 @@ test('curation_prune_unused: shells.json in a SUBFOLDER of the session reads the
   } finally { fs.rmSync(sess, { recursive: true, force: true }); }
 });
 
+test('dashboard /api/plugin/update: one update at a time (a 2nd click while one runs → 409, never a 2nd performUpdate)', async () => {
+  const pu = require('./lib/plugin-updater.js');
+  const dash = require('./dashboard.js');
+  const orig = pu.performUpdate;
+  let calls = 0; let finish;
+  pu.performUpdate = () => { calls++; return new Promise((r) => { finish = r; }); };
+  const res = () => { const o = { status: 0, body: null }; o.writeHead = (s) => { o.status = s; }; o.end = (b) => { o.body = JSON.parse(b); }; return o; };
+  try {
+    const r1 = res(); const p1 = dash.postPluginUpdate({}, r1);
+    const r2 = res(); dash.postPluginUpdate({}, r2);
+    assertEq([r2.status, calls], [409, 1], 'second click refused while the first runs');
+    finish({ ok: true, version: 'x' }); await p1;
+    assertEq(r1.status, 200, 'first completes');
+    const r3 = res(); const p3 = dash.postPluginUpdate({}, r3);
+    assertEq(calls, 2, 'after it finishes a new update may start');
+    finish({ ok: true }); await p3;
+  } finally { pu.performUpdate = orig; }
+});
+
 test('dashboard prune (no session known): metrics key = nearest folder up to the repo top that has a metrics db', () => {
   const { metricsProjectFor } = require('./lib/shells-prune.js');
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mpf-'));

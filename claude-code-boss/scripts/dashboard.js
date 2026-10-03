@@ -2167,13 +2167,20 @@ function checkPluginUpdate(req, res, url) {
     });
 }
 
+// One update at a time: two clicks/tabs ran two performUpdate() at once — both
+// downloading/extracting/npm-installing into the same target and repointing
+// installed_plugins.json concurrently.
+let pluginUpdateInFlight = false;
 function postPluginUpdate(req, res) {
-  pluginUpdater.performUpdate(ROOT)
+  if (pluginUpdateInFlight) return json(res, { ok: false, error: 'update already in progress' }, 409);
+  pluginUpdateInFlight = true;
+  return pluginUpdater.performUpdate(ROOT)
     .then((result) => { _updateCheckCache = null; json(res, result); })
     .catch((err) => {
       console.error(`[DASHBOARD] /api/plugin/update failed: ${err.message}`);
       fail(res, err.message, 500);
-    });
+    })
+    .finally(() => { pluginUpdateInFlight = false; });
 }
 
 async function getCaptureRate(req, res, url) {
@@ -2403,4 +2410,4 @@ if (require.main === module) startDashboardServer();
 // exported so a test can call it with a fake res ({writeHead,end}) and assert
 // on the exact JSON it serializes — otherwise a bug in byokSafe (e.g. `x || null`
 // silently turning a valid `0` into `null`) would never be caught by any test.
-module.exports = { writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField };
+module.exports = { writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField, postPluginUpdate };
