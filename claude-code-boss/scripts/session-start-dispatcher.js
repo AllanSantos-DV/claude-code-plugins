@@ -46,6 +46,7 @@
 'use strict';
 
 const { readStdin, parsePayload, emitJson, emitEmpty } = require('./lib/hook-io.js');
+const { settleWithin: withTimeout } = require('./lib/settle-within.js');
 const brainDaemonEnsure = require('./brain-daemon-ensure.js');
 const memoryRotate = require('./memory-rotate.js');
 const sessionWhitelist = require('./session-whitelist.js');
@@ -86,15 +87,6 @@ const DETECTORS = [
  * for the identical helper and full rationale.
  * @returns {Promise<{status:'ok', value:*}|{status:'timeout'}|{status:'error', err:Error}>}
  */
-function withTimeout(promise, ms) {
-  return new Promise((resolve) => {
-    const t = setTimeout(() => resolve({ status: 'timeout' }), ms);
-    promise.then(
-      (value) => { clearTimeout(t); resolve({ status: 'ok', value }); },
-      (err) => { clearTimeout(t); resolve({ status: 'error', err }); },
-    );
-  });
-}
 
 /**
  * Run every detector against the same event CONCURRENTLY, and concatenate

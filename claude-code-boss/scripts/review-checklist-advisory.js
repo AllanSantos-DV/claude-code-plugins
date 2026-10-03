@@ -12,13 +12,14 @@
 'use strict';
 
 const fs = require('fs');
-const { writeJsonAtomic } = require('./lib/atomic-write.js');
 const path = require('path');
 
 const { runTextCli } = require('./lib/hook-io.js');
 const { CHECKLIST_RELPATH } = require('./lib/review-checklist.js');
 
 const COOLDOWN_MS = 6 * 60 * 60 * 1000; // at most once per 6h per project
+const { onCooldown: cooldownActive, stamp } = require('./lib/cooldown-stamp.js');
+const onCooldown = (p) => cooldownActive(p, COOLDOWN_MS);
 
 function dataDir() {
   return require('./lib/data-dir.js').dataDir();
@@ -27,18 +28,6 @@ function dataDir() {
 function stampPath(cwd) {
   const key = Buffer.from(String(cwd || '')).toString('base64').replace(/[/+=]/g, '').slice(-32);
   return path.join(dataDir(), '.runtime', `review-checklist-advisory-${key}.json`);
-}
-
-function onCooldown(p) {
-  try {
-    const last = JSON.parse(fs.readFileSync(p, 'utf8')).ts;
-    return Number.isFinite(last) && (Date.now() - last) < COOLDOWN_MS;
-  } catch { /* absent → not on cooldown */ return false; }
-}
-
-function stamp(p) {
-  try { fs.mkdirSync(path.dirname(p), { recursive: true }); writeJsonAtomic(p, { ts: Date.now() }); }
-  catch (e) { void e; }
 }
 
 /** Count unchecked items ("- [ ]") for a more useful one-liner. Best-effort. */

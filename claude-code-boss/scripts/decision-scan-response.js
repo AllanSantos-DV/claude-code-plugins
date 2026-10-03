@@ -18,8 +18,7 @@
 'use strict';
 
 const crypto = require('crypto');
-const { writeJsonAtomic } = require('./lib/atomic-write.js');
-const fs = require('fs');
+const { readJsonSafe, writeJsonSafe } = require('./lib/json-file.js');
 const path = require('path');
 
 const { runStopDetectorCli } = require('./lib/hook-io.js');
@@ -48,16 +47,6 @@ function findDecisionSpan(text) {
   return null;
 }
 
-function readJsonSafe(p, fallback) {
-  try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { /* absent or corrupt: use fallback */ return fallback; }
-}
-function writeJsonSafe(p, obj) {
-  try {
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    writeJsonAtomic(p, obj);
-    return true;
-  } catch { /* write failed (perms/disk): caller sees false */ return false; }
-}
 
 function spanKey(sid, span) {
   const h = crypto.createHash('sha1').update(span).digest('hex').slice(0, 12);

@@ -20913,6 +20913,21 @@ test('curation_prune_unused: shells.json in a SUBFOLDER of the session reads the
   } finally { fs.rmSync(sess, { recursive: true, force: true }); }
 });
 
+test('cooldown-stamp: absent → off; stamped → on until ms elapses; settleWithin tells ok/timeout/error apart', async () => {
+  const { onCooldown, stamp } = require('./lib/cooldown-stamp.js');
+  const { settleWithin } = require('./lib/settle-within.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cool-'));
+  try {
+    const p = path.join(dir, 'sub', 'x.json');
+    assertEq(onCooldown(p, 1000), false, 'absent → not on cooldown');
+    stamp(p, 5000);
+    assertEq([onCooldown(p, 1000, 5500), onCooldown(p, 1000, 6500)], [true, false], 'window honored');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  assertEq(await settleWithin(Promise.resolve(7), 1000), { status: 'ok', value: 7 });
+  assertEq((await settleWithin(new Promise(() => {}), 20)).status, 'timeout');
+  assertEq((await settleWithin(Promise.reject(new Error('x')), 1000)).status, 'error');
+});
+
 test('config-merge: deepMerge (objects recurse, arrays/scalars replace, base untouched) + filesStamp tracks edits', () => {
   const { deepMerge, filesStamp } = require('./lib/config-merge.js');
   const base = { a: { b: 1, c: [1, 2] }, d: 1 };

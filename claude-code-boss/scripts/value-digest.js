@@ -10,12 +10,12 @@
  * project (stamp in the plugin data dir).
  */
 'use strict';
-const fs = require('fs');
 const path = require('path');
-const { writeJsonAtomic } = require('./lib/atomic-write.js');
 
 const WINDOW_DAYS = 7;
 const COOLDOWN_MS = 24 * 60 * 60 * 1000;
+const { onCooldown: cooldownActive, stamp } = require('./lib/cooldown-stamp.js');
+const onCooldown = (p, now) => cooldownActive(p, COOLDOWN_MS, now);
 const tok = (chars) => {
   const t = Math.round(chars / 4);
   return t >= 1000 ? `~${(t / 1000).toFixed(1).replace(/\.0$/, '')}k` : `~${t}`;
@@ -24,11 +24,6 @@ const tok = (chars) => {
 function stampPath(project) {
   const { dataDir } = require('./lib/data-dir.js');
   return path.join(dataDir(), '.runtime', `value-digest-${String(project).replace(/[^\w.-]+/g, '_').slice(0, 80)}.json`);
-}
-
-function onCooldown(p, now) {
-  try { const t = JSON.parse(fs.readFileSync(p, 'utf8')).ts; return Number.isFinite(t) && now - t < COOLDOWN_MS; }
-  catch (err) { if (err.code !== 'ENOENT') console.error(`[value-digest] stamp ${p}: ${err.message}`); return false; }
 }
 
 /** Pure: the biggest bottleneck of a summarizeCuration() result, or null. */
@@ -67,8 +62,7 @@ async function run(event, { now = Date.now() } = {}) {
   for (const ev of CURATION_EVENTS) for (const r of ms.getEventLogIsolated(project, { eventName: ev, limit: 500 })) if (r.ts >= since) rows.push(r);
   const text = formatDigest(summarizeCuration(rows));
   if (!text) return null; // nothing to report: stay silent, and don't burn the day's slot
-  try { fs.mkdirSync(path.dirname(sp), { recursive: true }); writeJsonAtomic(sp, { ts: now }); }
-  catch (err) { console.error(`[value-digest] could not stamp ${sp}: ${err.message}`); }
+  stamp(sp, now);
   return text;
 }
 

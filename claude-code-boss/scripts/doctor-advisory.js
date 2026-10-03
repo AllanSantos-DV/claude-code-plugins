@@ -9,14 +9,14 @@
  */
 'use strict';
 
-const fs = require('fs');
-const { writeJsonAtomic } = require('./lib/atomic-write.js');
 const path = require('path');
 
 const { runTextCli } = require('./lib/hook-io.js');
 const { checkNode, checkEnv } = require('./doctor.js');
 
 const COOLDOWN_MS = 6 * 60 * 60 * 1000; // at most once per 6h
+const { onCooldown: cooldownActive, stamp } = require('./lib/cooldown-stamp.js');
+const onCooldown = (p) => cooldownActive(p, COOLDOWN_MS);
 
 function dataDir() {
   return require('./lib/data-dir.js').dataDir();
@@ -24,18 +24,6 @@ function dataDir() {
 
 function stampPath() {
   return path.join(dataDir(), '.runtime', 'doctor-advisory-last.json');
-}
-
-function onCooldown(p) {
-  try {
-    const last = JSON.parse(fs.readFileSync(p, 'utf8')).ts;
-    return Number.isFinite(last) && (Date.now() - last) < COOLDOWN_MS;
-  } catch { /* absent → not on cooldown */ return false; }
-}
-
-function stamp(p) {
-  try { fs.mkdirSync(path.dirname(p), { recursive: true }); writeJsonAtomic(p, { ts: Date.now() }); }
-  catch (e) { void e; }
 }
 
 async function run(_event) {
