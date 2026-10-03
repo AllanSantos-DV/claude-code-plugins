@@ -98,6 +98,15 @@ daemon de hooks e as correções de escopo por sessão.
   cobrada como falta de curadoria e contava para o teto do uso único — beco sem saída.
 - **Corrigido:** uma variante crua caía em REFINE do script (como se ele tivesse rodado).
 
+### Added — filtro repetido vira ajuste do script curado
+- Se o agente filtra a saída de um script curado sempre do mesmo jeito
+  (`node tests.mjs | tail -3`), o script imprime mais do que o necessário. Na 2ª vez
+  (por projeto, script e filtro) o Stop pede **uma vez** para embutir o filtro no
+  script ou no seu `outputLines` — a correção vai para a origem, não para cada chamada.
+  Depois do aviso a decisão é do agente: ajustou, ótimo; explicou por que o filtro fica,
+  o boss não insiste. Provado no Claude Code real: o modelo reduziu o script a uma linha
+  no sucesso e, na sessão seguinte, filtrar de novo não gerou cobrança.
+
 ### Added — métricas reais e painel "Curation & guards"
 - Eventos novos no store de métricas: `curation.used` (execuções por script,
   tamanho, sucesso), `curation.redirected`, `curation.uncovered` (variante sem
