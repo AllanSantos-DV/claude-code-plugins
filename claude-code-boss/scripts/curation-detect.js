@@ -171,9 +171,9 @@ async function run(event) {
       if (filter) {
         const { count: n, ask } = pipedStore.touch({
           file: path.join(DATA_DIR, '.runtime', 'curation-piped.json'), project: projectKey,
-          scriptId: curatedShell.id || scriptRel, filter, windowDays: _curationCfg.oneHitWindowDays,
+          scriptId: curatedShell.id || scriptRel, filter, windowDays: _curationCfg.oneHitWindowDays, deliverable: !event.agent_id,
         });
-        if (ask && !event.agent_id) {
+        if (ask) {
           appendTurnEntry(sessionId, {
             command, reason: `filtered ${n}x with \`| ${filter}\` — bake this filter into the script (or its outputLines) instead of filtering every call; asked once — if the filter must stay, just say why`,
             lines: lineCount, chars: charCount, isCurated: true, curatedScript: scriptRel, isSuccess, interrupted, hookEvent, exitCode,

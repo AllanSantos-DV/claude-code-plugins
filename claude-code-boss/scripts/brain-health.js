@@ -319,19 +319,23 @@ async function run(event) {
 
     // Daemon-served hooks with no headroom left (p95 ≥ half the deadline, or expiring):
     // warned before they start deciding nothing. Once per hook per 6 h per daemon pid.
+    // Added to — never in place of — the advisory below (the audit saw it hiding recall /
+    // SQLite / embedder / drafts notices for the session it fired in).
     const slow = await slowHookAlert(root, data);
-    if (slow) return slow;
 
+    let other = null;
     if (eventName === 'SessionStart') {
       const rstat = recallDegradedStatus();
-      if (rstat) return buildRecallDegradedText(rstat);
-      if (getSqliteBackend() === 'none') return buildDegradedSqliteText();
-      if (embedderModelMissing()) return buildEmbedderText();
-      const { count, dir } = countPendingDrafts(data);
-      if (count > 0) return buildPendingDraftsText(count, dir);
+      if (rstat) other = buildRecallDegradedText(rstat);
+      else if (getSqliteBackend() === 'none') other = buildDegradedSqliteText();
+      else if (embedderModelMissing()) other = buildEmbedderText();
+      else {
+        const { count, dir } = countPendingDrafts(data);
+        if (count > 0) other = buildPendingDraftsText(count, dir);
+      }
     }
 
-    return null;
+    return [slow, other].filter(Boolean).join('\n\n') || null;
   } catch (err) {
     console.error(`[BRAIN-HEALTH] probe crashed: ${err.message}`);
     return null;

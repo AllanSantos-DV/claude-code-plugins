@@ -311,6 +311,11 @@ function getMetricsSummary(rangeDays = 7) {
  * never-used prune, which must not trust a history shorter than its window.
  * @returns {{historyFromTs:(number|null), usedIds:string[]}}
  */
+// Events born together with usage tracking (3.0, Phase C) — any of them proves the usage
+// counters were live at that time. curation.flagged is deliberately absent (2.x).
+const USAGE_ERA_EVENTS = ['curation.used', 'curation.redirected', 'curation.piped', 'curation.uncovered',
+  'curation.skipped', 'curation.pending', 'curation.bypass', 'curation.shaped'];
+
 function getCurationUsageIsolated(project, sinceTs = 0) {
   const Database = loadSqlite();
   const empty = { historyFromTs: null, usedIds: [] };
@@ -320,7 +325,11 @@ function getCurationUsageIsolated(project, sinceTs = 0) {
   let db;
   try { db = new Database(p); } catch (e) { console.error('[metrics-store] usage open failed:', p, e.message); return empty; }
   try {
-    const first = db.prepare(`SELECT MIN(ts) AS t FROM metrics_event WHERE event_name LIKE 'curation.%'`).get();
+    // "Usage measured since" = the oldest event that only exists since USAGE was tracked
+    // (3.0). NOT any curation.* event: curation.flagged dates back to 2.x, which made a
+    // 2.x→3.0 install pass the history check on day one and list in-use scripts as
+    // "never ran" (pre-release audit: 23 of 42 on a real project).
+    const first = db.prepare(`SELECT MIN(ts) AS t FROM metrics_event WHERE event_name IN (${USAGE_ERA_EVENTS.map(() => '?').join(',')})`).get(...USAGE_ERA_EVENTS);
     const rows = db.prepare(`SELECT DISTINCT COALESCE(json_extract(payload,'$.scriptId'), json_extract(payload,'$.shellId')) AS id
                                FROM metrics_event
                               WHERE event_name IN ('curation.used','curation.redirected','curation.piped') AND ts >= ?`).all(sinceTs);

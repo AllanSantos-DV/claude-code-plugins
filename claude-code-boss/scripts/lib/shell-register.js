@@ -115,7 +115,7 @@ function register(args) {
 
   if (!id) return err('curation_register_shell: id is required.');
   if (!scriptPathRel) return err('curation_register_shell: scriptPath is required.');
-  if (typeof content !== 'string' || !content.trim()) return err('curation_register_shell: content is required (the script source).');
+  const hasContent = typeof content === 'string' && content.trim().length > 0;
   if (aliases.length === 0) return err('curation_register_shell: aliases[] required — at least one raw command form that should route to this script.');
 
   const tooBroad = aliases.filter(x => isGenericAlias(x));
@@ -138,35 +138,48 @@ function register(args) {
     return err(`curation_register_shell: scriptPath must resolve inside the project's scripts dir (${path.relative(projectRoot, scriptsDirResolved) || '.'}), got "${scriptPathRel}".`);
   }
 
-  try {
-    fs.mkdirSync(path.dirname(absScriptPath), { recursive: true });
-    fs.writeFileSync(absScriptPath, content);
-  } catch (e) {
-    return err(`curation_register_shell: failed to write script file: ${e.message}`);
-  }
-
   let shellsFile;
   try {
     shellsFile = loadShellsFile(shellsConfigPath);
   } catch (e) {
     return err(`curation_register_shell: ${e.message}`);
   }
+  const idx = shellsFile.shells.findIndex(s => s && s.id === id);
+  const existing = idx >= 0 ? shellsFile.shells[idx] : null;
 
+  // UPDATE of an existing id (e.g. EXTEND: add a variant alias) preserves what isn't
+  // passed — the tuned budget/timeout/label/icon used to reset to defaults and `content`
+  // was required just to add an alias (pre-release audit). Without content the script
+  // file is left untouched (it must exist). A NEW id still requires content.
+  if (!hasContent && !existing) return err('curation_register_shell: content is required (the script source).');
+  if (!hasContent && !fs.existsSync(absScriptPath)) return err(`curation_register_shell: no content given and the script file does not exist: ${scriptPathRel}`);
+  if (hasContent) {
+    try {
+      fs.mkdirSync(path.dirname(absScriptPath), { recursive: true });
+      fs.writeFileSync(absScriptPath, content);
+    } catch (e) {
+      return err(`curation_register_shell: failed to write script file: ${e.message}`);
+    }
+  }
+
+  const prev = existing || {};
+  const pick = (val, keep, dflt) => (val !== undefined ? val : (keep !== undefined ? keep : dflt));
   const relScriptPath = path.relative(projectRoot, absScriptPath).split(path.sep).join('/');
+  const icon = pick(a.icon ? String(a.icon) : undefined, prev.icon, undefined);
+  const outputChars = pick(Number.isFinite(a.outputChars) && a.outputChars > 0 ? a.outputChars : undefined, prev.outputChars, undefined);
   const entry = {
     id,
-    label: a.label ? String(a.label) : id,
+    label: pick(a.label ? String(a.label) : undefined, prev.label, id),
     type: 'script',
     command: relScriptPath,
-    ...(a.icon ? { icon: String(a.icon) } : {}),
+    ...(icon ? { icon } : {}),
     aliases,
-    outputFilter: a.outputFilter ? String(a.outputFilter) : DEFAULT_OUTPUT_FILTER,
-    outputLines: Number.isFinite(a.outputLines) ? a.outputLines : DEFAULT_OUTPUT_LINES,
-    ...(Number.isFinite(a.outputChars) && a.outputChars > 0 ? { outputChars: a.outputChars } : {}),
-    timeoutMs: Number.isFinite(a.timeoutMs) ? a.timeoutMs : DEFAULT_TIMEOUT_MS,
+    outputFilter: pick(a.outputFilter ? String(a.outputFilter) : undefined, prev.outputFilter, DEFAULT_OUTPUT_FILTER),
+    outputLines: pick(Number.isFinite(a.outputLines) ? a.outputLines : undefined, prev.outputLines, DEFAULT_OUTPUT_LINES),
+    ...(outputChars ? { outputChars } : {}),
+    timeoutMs: pick(Number.isFinite(a.timeoutMs) ? a.timeoutMs : undefined, prev.timeoutMs, DEFAULT_TIMEOUT_MS),
   };
 
-  const idx = shellsFile.shells.findIndex(s => s && s.id === id);
   const decision = idx >= 0 ? 'updated' : 'registered';
   if (idx >= 0) shellsFile.shells[idx] = entry;
   else shellsFile.shells.push(entry);

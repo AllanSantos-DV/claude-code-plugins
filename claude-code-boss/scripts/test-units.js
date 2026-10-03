@@ -3973,6 +3973,49 @@ test('piped → refine: the same curated script filtered the same way twice asks
   } finally { journal.clearEntries(sid); fs.rmSync(proj, { recursive: true, force: true }); }
 });
 
+test('register (EXTEND path): updating an existing id keeps omitted fields and may skip content; a new id still needs content', () => {
+  const reg = require('./lib/shell-register.js');
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-reg-upsert-'));
+  fs.writeFileSync(path.join(proj, 'package.json'), '{}');
+  try {
+    const first = reg.register({ cwd: proj, id: 'tests', scriptPath: '.vscode/scripts/tests.mjs', content: 'console.log("OK tests")\n', aliases: ['npm test'],
+      label: 'Unit tests', icon: 'beaker', outputLines: 5, outputChars: 900, timeoutMs: 120000, outputFilter: 'errors-only' });
+    assert(!first.isError, JSON.stringify(first));
+    const script = path.join(proj, '.vscode', 'scripts', 'tests.mjs');
+    const r = reg.register({ cwd: proj, id: 'tests', scriptPath: '.vscode/scripts/tests.mjs', aliases: ['npm test', 'npm test -- --reporter=dot'] });
+    assert(!r.isError && r.decision === 'updated', `alias-only update accepted without content: ${JSON.stringify(r)}`);
+    assertEq(fs.readFileSync(script, 'utf8'), 'console.log("OK tests")\n', 'the script file is untouched');
+    const e = JSON.parse(fs.readFileSync(path.join(proj, '.vscode', 'shells.json'), 'utf8')).shells.find((s) => s.id === 'tests');
+    assertEq(JSON.stringify(e.aliases), '["npm test","npm test -- --reporter=dot"]', 'aliases replaced by the given list');
+    assert(e.label === 'Unit tests' && e.icon === 'beaker' && e.outputLines === 5 && e.outputChars === 900 && e.timeoutMs === 120000 && e.outputFilter === 'errors-only',
+      `tuned fields kept (they used to reset to defaults): ${JSON.stringify(e)}`);
+    const fresh = reg.register({ cwd: proj, id: 'new-one', scriptPath: '.vscode/scripts/new.mjs', aliases: ['npm run new'] });
+    assert(fresh.isError && /content is required/.test(fresh.message), 'a NEW id without content is refused');
+    fs.rmSync(script);
+    const gone = reg.register({ cwd: proj, id: 'tests', scriptPath: '.vscode/scripts/tests.mjs', aliases: ['npm test'] });
+    assert(gone.isError && /does not exist/.test(gone.message), 'no content and no script file → refused, loud');
+  } finally { fs.rmSync(proj, { recursive: true, force: true }); }
+});
+
+test('piped → refine: a sub-agent run counts but never spends the single ask (the main agent still gets it)', async () => {
+  const detect = require('./curation-detect.js');
+  const journal = require('./lib/turn-journal.js');
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-piped-sub-'));
+  fs.mkdirSync(path.join(proj, '.vscode', 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(proj, 'package.json'), '{}');
+  fs.writeFileSync(path.join(proj, '.vscode', 'scripts', 'tests.mjs'), 'x');
+  fs.writeFileSync(path.join(proj, '.vscode', 'shells.json'), JSON.stringify({ shells: [{ id: 'tests', script: '.vscode/scripts/tests.mjs', aliases: ['npm test'] }] }));
+  const sid = 'piped-sub-' + Date.now();
+  const ev = (extra) => ({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'node .vscode/scripts/tests.mjs | tail -3' }, tool_response: { stdout: 'a', stderr: '' }, session_id: sid, cwd: proj, ...extra });
+  try {
+    await detect.run(ev({}));
+    await detect.run(ev({ agent_id: 'sub-1' }));
+    assertEq(journal.readEntries(sid).length, 0, 'the 2nd run came from a sub-agent: no ask (its Stop is not the parent\'s)');
+    await detect.run(ev({}));
+    assertEq(journal.readEntries(sid).length, 1, 'the next MAIN run gets the ask — the sub-agent did not burn it');
+  } finally { journal.clearEntries(sid); fs.rmSync(proj, { recursive: true, force: true }); }
+});
+
 test('CCB_RAW=1: a deliberate raw run is never a curation gap (no journal, no recurrence toward the one-off ceiling)', async () => {
   const detect = require('./curation-detect.js');
   const journal = require('./lib/turn-journal.js');
@@ -4033,6 +4076,7 @@ test('/dashboard without LLM: the expansion hook answers only /dashboard, blocks
   assertEq(opened, 'http://localhost:4321', 'the browser is opened on the URL');
   assertEq(await dc.run({ command_name: 'boss-profile' }, ok), null, 'other commands are left alone');
   assertEq(await dc.run({ command_name: 'dashboard-extra' }, ok), null, 'no prefix match');
+  assertEq(await dc.run({ command_name: 'other-plugin:dashboard' }, ok), null, "another plugin's /dashboard is never hijacked");
   const bad = await dc.run({ command_name: 'dashboard' }, { ensure: async () => ({ ok: false, error: 'porta ocupada' }), open: () => true });
   assertEq(bad.decision, 'block', 'a failure still blocks (no silent hand-off to the model)');
   assert(/falhou — porta ocupada/.test(bad.reason), `the cause is shown: ${bad.reason}`);
@@ -4050,7 +4094,7 @@ test('/dashboard without LLM: the typed prompt is caught too (a short /dashboard
     const out = await dc.runForPrompt(p, ok);
     assert(out && out.decision === 'block' && /localhost:5/.test(out.reason), `caught: ${JSON.stringify(p)}`);
   }
-  for (const p of ['abra o /dashboard', '/dashboard agora', 'dashboard', '/dashboards', '']) {
+  for (const p of ['abra o /dashboard', '/dashboard agora', 'dashboard', '/dashboards', '', '/other-plugin:dashboard']) {
     assertEq(await dc.runForPrompt(p, ok), null, `not a /dashboard command: ${JSON.stringify(p)}`);
   }
 });
@@ -20567,6 +20611,27 @@ test('prune never-used: no candidates without a history covering the window; old
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test('prune never-used: a 2.x-era curation.flagged does NOT count as usage history (2.x→3.0 install lists nothing)', () => {
+  // Pre-release audit (high): history was MIN(ts) of any curation.* event, and
+  // curation.flagged already existed in 2.x — a real project listed 23 of 42 in-use
+  // scripts as "never ran" on the day it updated.
+  const ms = require('./lib/metrics-store.js');
+  const project = 'ccb-prune-2x-' + Date.now();
+  try {
+    ms.close(); ms.init({ project });
+    const db = ms._getDbForTests();
+    const old = Date.now() - 60 * 86400_000;
+    db.prepare('INSERT INTO metrics_event (ts, event_name, payload, session_id, project) VALUES (?,?,?,?,?)').run(old, 'curation.flagged', '{"chars":9000}', 's', project);
+    ms.close();
+    assertEq(ms.getCurationUsageIsolated(project, Date.now() - 30 * 86400_000).historyFromTs, null, 'flagged alone → no usage history');
+    ms.init({ project });
+    ms._getDbForTests().prepare('INSERT INTO metrics_event (ts, event_name, payload, session_id, project) VALUES (?,?,?,?,?)').run(Date.now() - 1000, 'curation.used', '{"scriptId":"x"}', 's', project);
+    ms.close();
+    const u = ms.getCurationUsageIsolated(project, Date.now() - 30 * 86400_000);
+    assert(u.historyFromTs && Date.now() - u.historyFromTs < 60_000, 'usage history starts at the first usage-era event, not at the old flagged one');
+  } finally { ms.close(); }
+});
+
 test('prune never-used: apply removes only current candidates (non-candidates refused, loud), keeps a backup and human-readable JSON', () => {
   const { pruneShells } = require('./lib/shells-prune.js');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune-apply-'));
@@ -20586,6 +20651,13 @@ test('prune never-used: apply removes only current candidates (non-candidates re
     assertEq(after.whitelist.join(','), 'git', 'other fields kept');
     assert(fs.readFileSync(file, 'utf8').includes('\n  "shells"'), 'written human-readable (indented)');
     assertEq(fs.readFileSync(r.backup, 'utf8'), orig, 'backup holds the previous file');
+    assert(!/\/\.vscode\//.test(r.backup), `backup lives in the plugin data dir, never next to shells.json (a versioned .vscode/ would commit it): ${r.backup}`);
+    for (let i = 0; i < 7; i++) {
+      fs.writeFileSync(file, orig);
+      pruneShells({ root, ids: ['B'], days: 30, usage, now: Date.now() + i + 1 });
+    }
+    const bdir = path.dirname(r.backup);
+    assertEq(fs.readdirSync(bdir).filter((f) => f.startsWith(path.basename(root) + '-')).length, 5, 'only the newest 5 backups per project are kept');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -20613,6 +20685,10 @@ test('prune never-used: real metrics usage (exact, no row cap) + the MCP tool li
     assert(!list.isError && Array.isArray(listed.candidates) && /insufficient usage history/.test(listed.reason), `history is seconds old → no candidates yet: ${list.content[0].text}`);
     const refused = await server.dispatch('curation_prune_unused', { cwd: root, days: 30, apply: true, ids: ['X'] });
     assert(refused.isError && /refused/.test(refused.content[0].text), `apply on a non-candidate is refused: ${refused.content[0].text}`);
+    for (const args of [{ days: 30 }, { apply: true, ids: ['X'] }]) {
+      const noCwd = await server.dispatch('curation_prune_unused', args);
+      assert(noCwd.isError && /cwd is required/.test(noCwd.content[0].text), `without cwd the daemon must not guess the project: ${noCwd.content[0].text}`);
+    }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 

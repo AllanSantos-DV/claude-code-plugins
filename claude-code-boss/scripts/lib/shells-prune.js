@@ -28,6 +28,21 @@ function readShellsFile(root) {
 
 const scriptOf = (s) => String((s && (s.script || s.command || s.path)) || '').trim();
 
+// Backups live in the plugin data dir — never next to shells.json (a versioned .vscode/
+// would get them committed) — and only the newest KEEP_BACKUPS per project are kept.
+const KEEP_BACKUPS = 5;
+function backupPath(root, now) {
+  const { dataDir } = require('./data-dir.js');
+  const dir = path.join(dataDir(), '.runtime', 'shells-backups');
+  fs.mkdirSync(dir, { recursive: true });
+  const prefix = `${path.basename(path.resolve(root)).replace(/[^\w.-]+/g, '_')}-`;
+  const old = fs.readdirSync(dir).filter((f) => f.startsWith(prefix) && f.endsWith('.json')).sort();
+  for (const f of old.slice(0, Math.max(0, old.length - (KEEP_BACKUPS - 1)))) {
+    try { fs.unlinkSync(path.join(dir, f)); } catch (err) { console.error(`[shells-prune] could not drop old backup ${f}: ${err.message}`); }
+  }
+  return path.join(dir, `${prefix}${now}.json`);
+}
+
 function ageDaysOf(root, rel, now) {
   try {
     const st = fs.statSync(path.resolve(root, rel));
@@ -88,7 +103,7 @@ function pruneShells({ root, ids, days = 30, now = Date.now(), usage } = {}) {
     return { ok: false, error: `refused — not prune candidates in a ${days}-day window: ${refused.join(', ')}${c.reason ? ` (${c.reason})` : ''}` };
   }
   const { file, json } = readShellsFile(root);
-  const backup = `${file}.bak-${now}`;
+  const backup = backupPath(root, now);
   fs.copyFileSync(file, backup);
   const before = json.shells.length;
   json.shells = json.shells.filter((s) => !want.includes(String(s && s.id)));
