@@ -486,7 +486,7 @@ real (2.29.0, porta 38217) seguiu intacto. Resultados (Claude Code 2.1.283):
   sessão: o tool_result anterior já está no transcript quando a próxima chamada
   começa). Testes: 2 falhas bloqueiam/1 não, edição libera e retry negado não,
   escopo sessão/diretório/subagente, incremental + reescrita, mensagem sem "variação".
-- [~] **U3 — script curado proíbe pipe e trunca a saída ("--full to see")**,
+- [x] **U3 — script curado proíbe pipe e trunca a saída ("--full to see")**,
   forçando nova execução. E a detecção de pipe olha o comando INTEIRO, não o
   segmento: `… test-hooks.mjs && node release-audit.mjs check | tail -2` foi
   bloqueado como "script curado com pipe" — o pipe era do `release-audit`.
@@ -495,6 +495,7 @@ real (2.29.0, porta 38217) seguiu intacto. Resultados (Claude Code 2.1.283):
   `test-hooks.js` (falha no código antigo, passa no novo). **Aberto (decisão de
   desenho)**: a política "script curado nunca com pipe" + saída truncada continua
   — o atrito de rodar de novo com `--full` é do contrato da curadoria.
+  **RESOLVIDO na 3.0** (verificado em 2026-10-03 no inventário do backlog zero; estava marcado `[~]` por esquecimento): a decisão de desenho foi tomada na Fase C — `62acdd0` (C4/C6): rodar o script curado COM pipe é permitido (sem negar, sem round-trip); o pipe vira a métrica `curation.piped` por script e o piped→refine pede UMA vez para ajustar o script, em vez de bloquear o agente. Replay no histórico real: 99 das 243 negações do guard antigo eram esta regra. Testes: `test-units` "C4 curation-guard: a pipe on the curated script is ALLOWED and measured" e `test-hooks` "curated-script+pipe→abstain".
 - [x] **U11 — comentário do `matchCuratedShell` (`shells-config.js:126-136`) é
   falso.** **RESOLVIDO em 2026-10-02**: `_tokenize` agora respeita aspas como um
   shell (string entre aspas = 1 token; `\` literal p/ caminho Windows; `\"`
