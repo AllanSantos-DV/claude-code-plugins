@@ -4,6 +4,9 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { createRequire } from 'node:module';
+
+const { tokenMatches } = createRequire(import.meta.url)('../../../scripts/lib/token-compare.js');
 
 /**
  * Canonicalize a data dir so the SAME directory spelled differently (forward vs
@@ -137,12 +140,6 @@ export function ensureToken(dataDir) {
   return tok;
 }
 
-function timingSafeEq(a, b) {
-  const A = Buffer.from(String(a || ''));
-  const B = Buffer.from(String(b || ''));
-  return A.length === B.length && crypto.timingSafeEqual(A, B);
-}
-
 const LOCAL_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
 
 /**
@@ -177,7 +174,7 @@ export function requestAllowed(req, token, dataDir) {
   if (!originGate.ok) return originGate;
   const bearer = String((req.headers && req.headers.authorization) || '').replace(/^Bearer\s+/i, '').trim();
   const given = (req.headers && req.headers['x-brain-token']) || bearer;
-  if (!token || !timingSafeEq(given, token)) {
+  if (!tokenMatches(given, token)) {
     // Human-readable hint only — never let canonicalization throw while building an error.
     let where = '<DATA_DIR>';
     try { where = tokenFile(dataDir); } catch { /* dataDir absent → keep placeholder */ }

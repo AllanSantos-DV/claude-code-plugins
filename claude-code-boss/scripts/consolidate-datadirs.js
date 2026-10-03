@@ -46,6 +46,7 @@
 'use strict';
 
 const fs = require('fs');
+const { blobToVector, safeJson, rowToEntry: kbRowToEntry } = require('./lib/kb-row.js');
 const os = require('os');
 const path = require('path');
 const { loadSqlite } = require('./lib/sqlite-compat.js');
@@ -61,22 +62,6 @@ const LOCK_TTL_MS = 30 * 60 * 1000;
 /** An embedding is usable only when it is a non-empty numeric array. */
 function validVec(v) {
   return Array.isArray(v) && v.length > 0;
-}
-
-/** node:sqlite hands BLOBs back as Uint8Array (offset-safe via slice); mirror
- *  brain-store.blobToVector so a sibling's Float32 vector round-trips exactly. */
-function blobToVec(blob) {
-  const u8 = blob instanceof Uint8Array ? blob : Uint8Array.from(blob);
-  const copy = u8.slice();
-  return Array.from(new Float32Array(copy.buffer, 0, copy.byteLength >> 2));
-}
-
-/** Tolerant JSON decode for the TEXT columns (content/source/tags). */
-function safeJson(str, fallback) {
-  if (str == null) return fallback;
-  if (typeof str !== 'string') return str;
-  try { return JSON.parse(str); }
-  catch (err) { console.error(`[consolidate-datadirs] JSON parse failed: ${err.message}`); return fallback; }
 }
 
 /**
@@ -113,26 +98,9 @@ function backupStamp(nowMs) {
   return new Date(nowMs).toISOString().replace(/[:.]/g, '-');
 }
 
-/** Row → entry, mirroring brain-store.rowToEntry (+ the joined embedding). */
+/** Row → entry (lib/kb-row, shared with brain-store) + the joined embedding. */
 function rowToEntry(row) {
-  return {
-    id: row.id,
-    type: row.type,
-    project: row.project,
-    session_id: row.session_id,
-    title: row.title,
-    summary: row.summary,
-    content: safeJson(row.content, {}),
-    source: safeJson(row.source, {}),
-    tags: safeJson(row.tags, []),
-    confidence: row.confidence,
-    access_count: row.access_count,
-    recurrence: row.recurrence != null ? row.recurrence : 1,
-    scope: row.scope || 'project',
-    last_accessed: row.last_accessed,
-    created_at: row.created_at,
-    vector: row.vector ? blobToVec(row.vector) : null,
-  };
+  return { ...kbRowToEntry(row), vector: row.vector ? blobToVector(row.vector) : null };
 }
 
 // ── Default IO seams (all injectable for tests) ──────────────────────────────
@@ -693,5 +661,5 @@ module.exports = {
   consolidate,
   formatReport,
   // Exposed for deterministic unit tests of the pure pieces.
-  _test: { validVec, blobToVec, safeJson, recencyKey, toRecurrence, unionArrays, backupStamp, rowToEntry, readShardDefault, listProjectsDefault, acquireLock, releaseLock, defaultPidAlive, resolveDeps, pruneBackups, BACKUP_KEEP, BACKUP_MAX_AGE_DAYS },
+  _test: { validVec, blobToVec: blobToVector, safeJson, recencyKey, toRecurrence, unionArrays, backupStamp, rowToEntry, readShardDefault, listProjectsDefault, acquireLock, releaseLock, defaultPidAlive, resolveDeps, pruneBackups, BACKUP_KEEP, BACKUP_MAX_AGE_DAYS },
 };

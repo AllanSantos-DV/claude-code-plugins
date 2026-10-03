@@ -30,6 +30,7 @@ const protocolAdapters = require('./protocols/index.js');
 const { resolveMode } = require('../../scripts/lib/router-mode.js');
 const { routerUserConfigPath } = require('../../scripts/lib/router-config-path.js');
 const { configFingerprint } = require('../../scripts/lib/router-fingerprint.js');
+const { tokenMatches } = require('../../scripts/lib/token-compare.js');
 
 // ── Resolução de paths ────────────────────────────────────────────────────────
 
@@ -101,14 +102,8 @@ function ensureRouterToken(stateDir = STATE_DIR) {
   return tok;
 }
 
-// Compara em tempo constante, com guarda de tamanho. crypto.timingSafeEqual LANÇA
-// quando os buffers têm tamanhos diferentes, então o check de length evita o throw
-// E curto-circuita tokens obviamente errados. Segredo vazio NUNCA autentica.
-function routerTokenMatches(given, expected) {
-  const a = Buffer.from(String(given == null ? '' : given));
-  const b = Buffer.from(String(expected == null ? '' : expected));
-  return b.length > 0 && a.length === b.length && crypto.timingSafeEqual(a, b);
-}
+// Compara em tempo constante; segredo vazio NUNCA autentica (lib/token-compare).
+const routerTokenMatches = tokenMatches;
 
 // ── Logger ────────────────────────────────────────────────────────────────────
 

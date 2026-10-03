@@ -14,6 +14,7 @@
  *   await store.delete(id);
  */
 const fs = require('fs');
+const { blobToVector, rowToEntry } = require('./lib/kb-row.js');
 const path = require('path');
 const crypto = require('crypto');
 const { loadSqlite, getSqliteBackend } = require('./lib/sqlite-compat');
@@ -284,15 +285,6 @@ function vectorToBlob(vec) {
   return Buffer.from(new Float32Array(vec).buffer);
 }
 
-function blobToVector(blob) {
-  // better-sqlite3 returns a Node Buffer; node:sqlite returns a Uint8Array whose
-  // byteOffset may be non-zero. slice() yields a fresh, offset-0 ArrayBuffer of the
-  // exact length, which we reinterpret as Float32 (vectors are written as Float32Array).
-  const u8 = blob instanceof Uint8Array ? blob : Uint8Array.from(blob);
-  const copy = u8.slice();
-  return Array.from(new Float32Array(copy.buffer, 0, copy.byteLength >> 2));
-}
-
 async function saveSqlite(entry, vector) {
   const stmt = _db.prepare(`
     INSERT OR REPLACE INTO entries
@@ -343,33 +335,6 @@ async function getSqlite(id) {
     .run(now(), id);
 
   return entry;
-}
-
-function rowToEntry(row) {
-  return {
-    id: row.id,
-    type: row.type,
-    project: row.project,
-    session_id: row.session_id,
-    title: row.title,
-    summary: row.summary,
-    content: safeJson(row.content),
-    source: safeJson(row.source),
-    tags: safeJson(row.tags),
-    confidence: row.confidence,
-    access_count: row.access_count,
-    recurrence: row.recurrence != null ? row.recurrence : 1,
-    scope: row.scope || 'project',
-    last_accessed: row.last_accessed,
-    created_at: row.created_at,
-  };
-}
-
-function safeJson(str) {
-  try { return JSON.parse(str); } catch (err) {
-    console.error(`[BRAIN-STORE] JSON parse error in safeJson: ${err.message}`);
-    return {};
-  }
 }
 
 async function searchSqlite(queryVector, opts = {}) {
