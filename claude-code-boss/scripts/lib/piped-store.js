@@ -21,9 +21,9 @@ const ASK_AT = 2;
 /**
  * Count one piped run. Returns {count, ask}: `ask` is true exactly once per key —
  * the run that reaches ASK_AT while the key was never asked.
- * @param {{file:string, project:string, scriptId:string, filter:string, windowDays:number, now?:number}} a
+ * @param {{file:string, project:string, scriptId:string, filter:string, windowDays:number, deliverable?:boolean, now?:number}} a
  */
-function touch({ file, project, scriptId, filter, windowDays, now = Date.now() }) {
+function touch({ file, project, scriptId, filter, windowDays, deliverable = true, now = Date.now() }) {
   let state = {};
   try { state = JSON.parse(fs.readFileSync(file, 'utf-8')); } catch (err) { if (err.code !== 'ENOENT') console.error(`[piped-store] read ${file}: ${err.message}`); }
   const entries = state && typeof state.entries === 'object' && state.entries ? state.entries : {};
@@ -33,7 +33,9 @@ function touch({ file, project, scriptId, filter, windowDays, now = Date.now() }
   const e = entries[key] || { count: 0, asked: false };
   e.count += 1;
   e.last = now;
-  const ask = e.count >= ASK_AT && !e.asked;
+  // Only a DELIVERABLE ask spends the once-per-key slot: a sub-agent run (its Stop is not
+  // the parent's) counts, but must not burn the ask the main agent never sees (audit).
+  const ask = deliverable && e.count >= ASK_AT && !e.asked;
   if (ask) e.asked = true;
   entries[key] = e;
   const keys = Object.keys(entries);

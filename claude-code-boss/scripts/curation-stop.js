@@ -171,7 +171,7 @@ function buildReason(entries, attempt, maxAttempts) {
   }
 
   if (extendEntries.length > 0) {
-    sections.push('EXTEND an existing curated script — a VARIANT of its command keeps running raw (other args/flags), so the redirect cannot fire. Make the script accept this variant (args/flags), then call `curation_register_shell` with the SAME id and scriptPath and aliases = the current aliases PLUS the variant (the list is replaced, not merged) — the next run is redirected. OR, if this variant is genuinely single-use, `curation_mark_oneoff({ sigs:[...] })` with the sig VERBATIM:');
+    sections.push('EXTEND an existing curated script — a VARIANT of its command keeps running raw (other args/flags), so the redirect cannot fire. Make the script accept this variant (args/flags), then call `curation_register_shell` with the SAME id and scriptPath and aliases = the current aliases PLUS the variant (the list is replaced, not merged; every other field you omit is kept, and `content` can be omitted if the script file already handles the variant) — the next run is redirected. OR, if this variant is genuinely single-use, `curation_mark_oneoff({ sigs:[...] })` with the sig VERBATIM:');
     for (const e of extendEntries) {
       const x = e.extendShell;
       const parts = ['`' + e.command + '`', 'variant of `' + x.id + '`' + (x.script ? ' (' + x.script + ')' : ''), 'current aliases [' + (x.aliases || []).map((a) => JSON.stringify(a)).join(', ') + ']'];

@@ -18,7 +18,9 @@
 const { spawn } = require('child_process');
 const { readStdin, parsePayload } = require('./lib/hook-io.js');
 
-const IS_DASHBOARD = /^(?:[\w.-]+:)?dashboard$/;
+// Ours only: `/dashboard` or `/claude-code-boss:dashboard` — never another plugin's
+// `/<other>:dashboard` (pre-release audit: any prefix used to be hijacked).
+const IS_DASHBOARD = /^(?:claude-code-boss:)?dashboard$/;
 
 function openBrowser(url) {
   if (process.env.DASHBOARD_NO_OPEN) return false;
@@ -63,7 +65,7 @@ async function run(event, deps = {}) {
  * covers `/dashboard` and `/claude-code-boss:dashboard` however they resolve.
  */
 async function runForPrompt(prompt, deps) {
-  const m = /^\s*\/((?:[\w.-]+:)?dashboard)\s*$/i.exec(String(prompt || ''));
+  const m = /^\s*\/((?:claude-code-boss:)?dashboard)\s*$/i.exec(String(prompt || ''));
   return m ? run({ command_name: m[1].toLowerCase() }, deps) : null;
 }
 

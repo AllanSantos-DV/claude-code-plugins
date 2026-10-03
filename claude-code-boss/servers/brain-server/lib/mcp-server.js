@@ -678,13 +678,13 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
     },
     {
       name: 'curation_register_shell',
-      description: 'Create a curated shell script and register it in shells.json in one atomic operation — bypasses the need for direct Write/Edit on .vscode/scripts and shells.json (which the Auto Mode classifier gates as persistent config outside a task\'s stated scope). Use this instead of manually writing the script file when the curation Stop hook asks you to CREATE a curated script. The script content must follow the OK/FAIL output contract from the curation-script-pattern skill. Calling it twice with the same id updates the existing entry instead of duplicating it.',
+      description: 'Create a curated shell script and register it in shells.json in one atomic operation — bypasses the need for direct Write/Edit on .vscode/scripts and shells.json (which the Auto Mode classifier gates as persistent config outside a task\'s stated scope). Use this instead of manually writing the script file when the curation Stop hook asks you to CREATE a curated script. The script content must follow the OK/FAIL output contract from the curation-script-pattern skill. Calling it twice with the same id updates the existing entry instead of duplicating it: fields you omit KEEP their current values (budget, timeout, label, icon), `content` may be omitted to leave the script file untouched (e.g. to only add a variant alias), and `aliases` REPLACES the list (pass the current aliases plus the new one). A new id requires content.',
       inputSchema: {
         type: 'object',
         properties: {
           id: { type: 'string', description: 'Unique slug for the shells.json entry (e.g. "grep-file")' },
           scriptPath: { type: 'string', description: 'Relative path to the script file, e.g. ".vscode/scripts/grep-file.mjs" — must resolve inside the project\'s curated scripts dir' },
-          content: { type: 'string', description: 'Full script source (must honor the OK/FAIL output contract from the curation-script-pattern skill)' },
+          content: { type: 'string', description: 'Full script source (must honor the OK/FAIL output contract from the curation-script-pattern skill). Required for a NEW id; optional when updating an existing id (omit to keep the script file as is)' },
           aliases: { type: 'array', items: { type: 'string' }, description: 'Raw command forms that should redirect to this script (>=2 significant tokens each, e.g. ["npm test","npm run test"])' },
           label: { type: 'string', description: 'Human-readable label for the shells.json entry (default: id)' },
           icon: { type: 'string', description: 'Optional icon hint (e.g. "search", "beaker")' },
@@ -694,7 +694,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           timeoutMs: { type: 'number', description: 'Timeout in ms (default: 60000)' },
           cwd: { type: 'string', description: 'Working directory (for project root resolution)' },
         },
-        required: ['id', 'scriptPath', 'content', 'aliases'],
+        required: ['id', 'scriptPath', 'aliases'],
       },
     },
     {
@@ -703,11 +703,12 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
       inputSchema: {
         type: 'object',
         properties: {
-          cwd: { type: 'string', description: 'Working directory (project root resolution)' },
+          cwd: { type: 'string', description: 'REQUIRED — the project folder (the shared daemon cannot infer it)' },
           days: { type: 'number', description: 'Window in days (default 30)' },
           apply: { type: 'boolean', description: 'false (default) = list candidates only; true = prune `ids`' },
           ids: { type: 'array', items: { type: 'string' }, description: 'Script ids to prune (only with apply:true; each must be a current candidate)' },
         },
+        required: ['cwd'],
       },
     },
     {
@@ -1119,8 +1120,11 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           const a = args || {};
           const { findProjectRoot } = require(path.join(PLUGIN_ROOT, 'scripts', 'shells-config.js'));
           const prune = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'shells-prune.js'));
-          const root = findProjectRoot(a.cwd || process.cwd());
-          if (!root) return { isError: true, content: [{ type: 'text', text: `curation_prune_unused: no project root (shells config) found from ${a.cwd || process.cwd()}` }] };
+          // cwd is REQUIRED: in the shared daemon process.cwd() is the FIRST session's folder —
+          // a tool that deletes registrations must never guess the project (pre-release audit).
+          if (!a.cwd || typeof a.cwd !== 'string') return { isError: true, content: [{ type: 'text', text: 'curation_prune_unused: cwd is required (the project folder) — the shared daemon cannot infer which project you mean.' }] };
+          const root = findProjectRoot(a.cwd);
+          if (!root) return { isError: true, content: [{ type: 'text', text: `curation_prune_unused: no project root (shells config) found from ${a.cwd}` }] };
           const days = Math.max(1, Math.min(365, Number(a.days) || 30));
           const res = a.apply ? prune.pruneShells({ root, ids: a.ids, days }) : prune.pruneCandidates({ root, days });
           if (!res.ok) return { isError: true, content: [{ type: 'text', text: `curation_prune_unused: ${res.error}` }] };
