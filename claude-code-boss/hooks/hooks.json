@@ -182,6 +182,17 @@
     ],
     "UserPromptExpansion": [
       {
+        "matcher": "^(claude-code-boss:)?dashboard$",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node",
+            "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/dashboard-command.js"],
+            "timeout": 20
+          }
+        ]
+      },
+      {
         "matcher": ".*",
         "hooks": [
           {

@@ -3,6 +3,11 @@ description: Abre o dashboard de configuração do plugin (Brain, Hooks, Router)
 argument-hint: "(sem argumentos)"
 ---
 
+<!-- Normalmente este texto NUNCA chega ao modelo: o hook UserPromptExpansion
+     (scripts/dashboard-command.js) sobe o dashboard, abre o navegador e bloqueia a
+     expansão mostrando a URL — sem LLM. Os passos abaixo só valem se os hooks do
+     plugin estiverem desligados. -->
+
 Abra o dashboard local de configuração do plugin para o usuário. Siga estes passos:
 
 1. **Garanta que o dashboard está no ar** rodando o starter idempotente (ele não

@@ -3921,6 +3921,52 @@ test('audit: invocationFor refuses a script path that would break out of the quo
   }
 });
 
+test('/dashboard without LLM: the expansion hook answers only /dashboard, blocks with the URL, and fails loud', async () => {
+  const dc = require('./dashboard-command.js');
+  let opened = null;
+  const ok = { ensure: async () => ({ ok: true, status: 'started', port: 4321, pid: 1, url: 'http://localhost:4321' }), open: (u) => { opened = u; return true; } };
+  for (const name of ['dashboard', 'claude-code-boss:dashboard', '/dashboard']) {
+    const out = await dc.run({ hook_event_name: 'UserPromptExpansion', command_name: name }, ok);
+    assertEq(out.decision, 'block', `${name}: the expansion is blocked (never reaches the model)`);
+    assert(/http:\/\/localhost:4321/.test(out.reason) && /aberto no navegador/.test(out.reason), `${name}: URL + opened: ${out.reason}`);
+  }
+  assertEq(opened, 'http://localhost:4321', 'the browser is opened on the URL');
+  assertEq(await dc.run({ command_name: 'boss-profile' }, ok), null, 'other commands are left alone');
+  assertEq(await dc.run({ command_name: 'dashboard-extra' }, ok), null, 'no prefix match');
+  const bad = await dc.run({ command_name: 'dashboard' }, { ensure: async () => ({ ok: false, error: 'porta ocupada' }), open: () => true });
+  assertEq(bad.decision, 'block', 'a failure still blocks (no silent hand-off to the model)');
+  assert(/falhou — porta ocupada/.test(bad.reason), `the cause is shown: ${bad.reason}`);
+  const hooks = require('../hooks/hooks.json').hooks.UserPromptExpansion;
+  const entry = hooks.find((h) => (h.hooks || []).some((x) => /dashboard-command\.js/.test((x.args || []).join(' '))));
+  assert(entry && entry.hooks[0].type === 'command', 'registered as a COMMAND hook (works with the daemon down)');
+  const re = new RegExp(entry.matcher);
+  assert(re.test('dashboard') && re.test('claude-code-boss:dashboard') && !re.test('boss-profile') && !re.test('dashboardx'), `matcher ${entry.matcher}`);
+});
+
+test('/dashboard without LLM: ensureDashboard starts the REAL dashboard once, then reuses it (live HTTP probe)', async () => {
+  const { ensureDashboard, probe } = require('./dashboard-start.js');
+  const saved = process.env.DASHBOARD_NO_OPEN;
+  process.env.DASHBOARD_NO_OPEN = '1';
+  let pid = null;
+  try {
+    const a = await ensureDashboard({ waitMs: 15000 });
+    assert(a.ok && a.status === 'started' && /^http:\/\/localhost:\d+$/.test(a.url), `started: ${JSON.stringify(a)}`);
+    pid = a.pid;
+    assert(await probe(a.port), 'the published port answers');
+    const b = await ensureDashboard({ waitMs: 15000 });
+    assertEq(b.status, 'already-running', 'second call reuses it');
+    assertEq(b.pid, a.pid, 'same process — no duplicate dashboard');
+  } finally {
+    // Kill what we started AND whatever the test data dir's discovery file points at
+    // (a regression that spawns twice must not leave a stray dashboard behind).
+    const { runtimeDir } = require('./dashboard-start.js');
+    let recorded = null;
+    try { recorded = JSON.parse(fs.readFileSync(path.join(runtimeDir(), 'dashboard.json'), 'utf8')).pid; } catch (err) { void err; }
+    for (const p of new Set([pid, recorded].filter(Boolean))) { try { process.kill(p); } catch (err) { void err; } }
+    if (saved === undefined) delete process.env.DASHBOARD_NO_OPEN; else process.env.DASHBOARD_NO_OPEN = saved;
+  }
+});
+
 test('C6 unwrapShaped: round-trips planShaping exactly; anything else → null', () => {
   const { planShaping, unwrapShaped } = require('./lib/curation-redirect.js');
   const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-unwrap-'));
