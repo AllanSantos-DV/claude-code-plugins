@@ -16,7 +16,7 @@
  */
 'use strict';
 const fs = require('fs');
-const { writeJsonAtomic } = require('./lib/atomic-write.js');
+const { readJsonSafe, writeJsonSafe } = require('./lib/json-file.js');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
@@ -94,16 +94,6 @@ function looksLikeDecision(text) {
 
 // ─── State I/O ───────────────────────────────────────────────────────────────
 
-function readJsonSafe(p, fallback) {
-  try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { /* absent or corrupt: use fallback */ return fallback; }
-}
-function writeJsonSafe(p, obj) {
-  try {
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    writeJsonAtomic(p, obj);
-    return true;
-  } catch { /* write failed (perms/disk): caller sees false */ return false; }
-}
 
 function alreadyPromoted(key) {
   const arr = readJsonSafe(PROMOTED, []);

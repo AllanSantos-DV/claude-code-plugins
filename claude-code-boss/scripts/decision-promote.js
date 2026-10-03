@@ -13,8 +13,7 @@
  * re-nudge if decision-detect somehow re-stages the same key.
  */
 'use strict';
-const fs = require('fs');
-const { writeJsonAtomic } = require('./lib/atomic-write.js');
+const { readJsonSafe, writeJsonSafe } = require('./lib/json-file.js');
 const path = require('path');
 
 const { runStopDetectorCli } = require('./lib/hook-io.js');
@@ -27,16 +26,6 @@ const PROMOTED = path.join(DATA_DIR, '.runtime', 'decision-promoted-sha.json');
 const OTHERS_TTL_MS = 24 * 60 * 60 * 1000; // another session's unconsumed entries expire after a day
 const PROMOTED_LRU = 50;
 
-function readJsonSafe(p, fallback) {
-  try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { /* absent or corrupt: use fallback */ return fallback; }
-}
-function writeJsonSafe(p, obj) {
-  try {
-    fs.mkdirSync(path.dirname(p), { recursive: true });
-    writeJsonAtomic(p, obj);
-    return true;
-  } catch { /* write failed (perms/disk): caller sees false */ return false; }
-}
 
 function promote(keys) {
   const arr = readJsonSafe(PROMOTED, []);

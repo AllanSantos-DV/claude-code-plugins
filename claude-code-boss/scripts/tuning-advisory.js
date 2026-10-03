@@ -10,8 +10,6 @@
  */
 'use strict';
 
-const fs = require('fs');
-const { writeJsonAtomic } = require('./lib/atomic-write.js');
 const path = require('path');
 
 const { runTextCli } = require('./lib/hook-io.js');
@@ -21,24 +19,14 @@ const { aggregateProfileImpact } = require('./lib/profile-impact.js');
 const { aggregateCaptureRate } = require('./lib/capture-rate.js');
 
 const COOLDOWN_MS = 6 * 60 * 60 * 1000; // at most once per 6h
+const { onCooldown: cooldownActive, stamp } = require('./lib/cooldown-stamp.js');
+const onCooldown = (p) => cooldownActive(p, COOLDOWN_MS);
 
 function dataDir() {
   return require('./lib/data-dir.js').dataDir();
 }
 
 function stampPath() { return path.join(dataDir(), '.runtime', 'tuning-advisory-last.json'); }
-
-function onCooldown(p) {
-  try {
-    const t = JSON.parse(fs.readFileSync(p, 'utf8')).ts;
-    return Number.isFinite(t) && (Date.now() - t) < COOLDOWN_MS;
-  } catch { /* absent → not on cooldown */ return false; }
-}
-
-function stamp(p) {
-  try { fs.mkdirSync(path.dirname(p), { recursive: true }); writeJsonAtomic(p, { ts: Date.now() }); }
-  catch (e) { void e; }
-}
 
 /** Read one project's telemetry into the shape tuning-advisor.analyze() expects. */
 async function gather(project) {
