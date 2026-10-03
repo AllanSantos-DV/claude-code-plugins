@@ -42,20 +42,11 @@
 'use strict';
 
 const { hookLog } = require('./hook-logger.js');
-const { runPreToolUseCli } = require('./lib/hook-io.js');
+const { runPreToolUseCli, preToolUseDecision } = require('./lib/hook-io.js');
 const sessionFailures = require('./lib/session-failures.js');
 const { getErrorGuard } = require('./lib/hooks-config.js');
 
-// Build a properly-formatted PreToolUse decision object per Claude Code docs.
-// permissionDecision MUST be "allow" | "deny" | "ask" and live INSIDE
-// hookSpecificOutput. Copied verbatim from curation-guard.js (proven shape).
-// https://docs.claude.com/en/docs/claude-code/hooks
-function decision(permissionDecision, { additionalContext, permissionDecisionReason } = {}) {
-  const hookSpecificOutput = { hookEventName: 'PreToolUse', permissionDecision };
-  if (additionalContext) hookSpecificOutput.additionalContext = additionalContext;
-  if (permissionDecisionReason) hookSpecificOutput.permissionDecisionReason = permissionDecisionReason;
-  return { hookSpecificOutput };
-}
+const decision = preToolUseDecision; // lib/hook-io
 
 /**
  * Pure detector entry point. Returns a `deny` decision object on a hit, or

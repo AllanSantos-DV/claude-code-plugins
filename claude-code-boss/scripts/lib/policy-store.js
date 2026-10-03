@@ -38,10 +38,10 @@
  *                so a later KB edit (different hash) can require re-approval.
  */
 const fs = require('fs');
+const { saveJson } = require('./json-file.js');
 const path = require('path');
 const crypto = require('crypto');
 const { redact } = require('./redact.js');
-const { writeJsonAtomic } = require('./atomic-write.js');
 const { anyGlobMatches } = require('./glob-match.js');
 
 const MAX_POLICY_CHARS = 2000;   // per-policy stored/injected text cap
@@ -113,14 +113,7 @@ function loadResult(dataDir) {
 // does NOT add cross-process locking — activate/deactivate are low-frequency, EXPLICIT
 // user actions, so a proportionate mitigation (not a lock) is the honest fit here.
 function save(dataDir, store) {
-  const p = storePath(dataDir);
-  try {
-    writeJsonAtomic(p, store);
-    return true;
-  } catch (err) {
-    console.error(`[policy-store] save failed (${p}): ${err.message}`);
-    return false;
-  }
+  return saveJson(storePath(dataDir), store, 'policy-store');
 }
 
 /**

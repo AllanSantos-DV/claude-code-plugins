@@ -21,15 +21,11 @@
 
 const path = require('path');
 const { hookLog } = require('./hook-logger.js');
-const { readStdin } = require('./lib/hook-io.js');
+const { readStdin, preToolUseDecision } = require('./lib/hook-io.js');
 
 // Same decision shape as curation-guard (per Claude Code hooks docs).
-function decision(permissionDecision, { additionalContext, permissionDecisionReason } = {}) {
-  const hookSpecificOutput = { hookEventName: 'PreToolUse', permissionDecision };
-  if (additionalContext) hookSpecificOutput.additionalContext = additionalContext;
-  if (permissionDecisionReason) hookSpecificOutput.permissionDecisionReason = permissionDecisionReason;
-  return JSON.stringify({ hookSpecificOutput });
-}
+// graph-guard hands Claude Code the serialized decision.
+const decision = (...args) => JSON.stringify(preToolUseDecision(...args));
 
 // Not a broad search / nothing to redirect → ABSTAIN ("{}"), never `allow`: a PreToolUse
 // `allow` bypasses Claude Code's permission system (pre-release audit).

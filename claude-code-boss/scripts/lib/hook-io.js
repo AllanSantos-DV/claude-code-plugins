@@ -233,7 +233,21 @@ function sideEffectDispatch(label, detectors) {
   };
 }
 
+/**
+ * A PreToolUse decision in the shape Claude Code expects: `permissionDecision`
+ * ("allow" | "deny" | "ask") INSIDE hookSpecificOutput, plus the optional
+ * context/reason/rewritten input. https://code.claude.com/docs/en/hooks
+ */
+function preToolUseDecision(permissionDecision, { additionalContext, permissionDecisionReason, updatedInput } = {}) {
+  const hookSpecificOutput = { hookEventName: 'PreToolUse', permissionDecision };
+  if (additionalContext) hookSpecificOutput.additionalContext = additionalContext;
+  if (permissionDecisionReason) hookSpecificOutput.permissionDecisionReason = permissionDecisionReason;
+  if (updatedInput) hookSpecificOutput.updatedInput = updatedInput;
+  return { hookSpecificOutput };
+}
+
 module.exports = {
+  preToolUseDecision,
   sideEffectDispatch,
   runTextCli,
   readStdin,

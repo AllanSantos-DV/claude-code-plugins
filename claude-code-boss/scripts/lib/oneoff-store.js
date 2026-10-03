@@ -15,10 +15,10 @@
  * Identity = canonicalSig(command), so cwd/flags/wrappers don't fragment the count.
  */
 const fs = require('fs');
+const { saveJson } = require('./json-file.js');
 const path = require('path');
 const crypto = require('crypto');
 const { canonicalSig } = require('./command-signature.js');
-const { writeJsonAtomic } = require('./atomic-write.js');
 
 const DAY_MS = 86400_000;
 const MAX_SEEN = 50;        // cap of retained per-entry occurrence timestamps
@@ -131,14 +131,7 @@ function load(dataDir, projectKey) {
 // Best-effort, last-writer-wins: writeJsonAtomic publishes tear-free, but two
 // concurrent load→mutate→save cycles can still lose an update (see atomic-write.js).
 function save(dataDir, projectKey, store) {
-  const p = storePath(dataDir, projectKey);
-  try {
-    writeJsonAtomic(p, store);
-    return true;
-  } catch (err) {
-    console.error(`[oneoff-store] save failed (${p}): ${err.message}`);
-    return false;
-  }
+  return saveJson(storePath(dataDir, projectKey), store, 'oneoff-store');
 }
 
 function countInWindow(entry, now, windowDays) {
