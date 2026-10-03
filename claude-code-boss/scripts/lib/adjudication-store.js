@@ -22,7 +22,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { writeJsonAtomic } = require('./atomic-write.js');
+const { loadList, appendCapped, newestByPolicy } = require('./json-list-store.js');
 const { sanitizeProjectId } = require('./project-id.js');
 
 /** Cap of retained dispositions per project (newest kept) — bounds file growth. */
@@ -61,15 +61,7 @@ function dispositionsPath(dataDir, projectId) {
  * @returns {{dispositions: Array<object>}}
  */
 function load(dataDir, projectId) {
-  const p = dispositionsPath(dataDir, projectId);
-  try {
-    if (!fs.existsSync(p)) return { dispositions: [] };
-    const obj = JSON.parse(fs.readFileSync(p, 'utf-8'));
-    return obj && typeof obj === 'object' && Array.isArray(obj.dispositions) ? obj : { dispositions: [] };
-  } catch (err) {
-    console.error(`[adjudication-store] load failed (${p}): ${err.message}`);
-    return { dispositions: [] };
-  }
+  return loadList(dispositionsPath(dataDir, projectId), 'dispositions', 'adjudication-store');
 }
 
 /** Coerce a value to a finite non-negative integer count (defaults to 0). */
@@ -121,18 +113,7 @@ function normalizeRecord(record) {
  * @returns {boolean}
  */
 function saveDisposition(dataDir, projectId, record) {
-  try {
-    const store = load(dataDir, projectId);
-    store.dispositions.push(normalizeRecord(record));
-    if (store.dispositions.length > MAX_DISPOSITIONS) {
-      store.dispositions = store.dispositions.slice(store.dispositions.length - MAX_DISPOSITIONS);
-    }
-    writeJsonAtomic(dispositionsPath(dataDir, projectId), store);
-    return true;
-  } catch (err) {
-    console.error(`[adjudication-store] saveDisposition failed: ${err.message}`);
-    return false;
-  }
+  return appendCapped(dispositionsPath(dataDir, projectId), 'dispositions', 'adjudication-store', normalizeRecord(record), MAX_DISPOSITIONS);
 }
 
 /**
@@ -141,14 +122,7 @@ function saveDisposition(dataDir, projectId, record) {
  * @returns {Array<object>}
  */
 function listDispositions(dataDir, projectId, { policyId } = {}) {
-  const store = load(dataDir, projectId);
-  let out = store.dispositions.slice();
-  if (policyId != null && policyId !== '') {
-    const want = String(policyId);
-    out = out.filter((d) => d && String(d.policyId) === want);
-  }
-  out.sort((a, b) => (b.ts || 0) - (a.ts || 0));
-  return out;
+  return newestByPolicy(load(dataDir, projectId).dispositions, policyId);
 }
 
 /**
