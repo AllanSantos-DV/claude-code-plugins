@@ -13891,7 +13891,7 @@ test('self-review.run: edits + retrieved lesson → block, journals, dedups next
 const valueSummary = require('./lib/value-summary.js');
 const sessionSummary = require('./session-summary.js');
 
-test('value-summary.summarize: context saved (chars→tokens), learned, cited', () => {
+test('value-summary.summarize: learned, cited — curation.flagged is NOT counted as saved (it is a cost; curation-metrics owns it)', () => {
   const now = Date.UTC(2026, 6, 3);
   const rows = [
     { eventName: 'curation.flagged', ts: now, payload: { chars: 4000, lines: 100 }, project: 'a' },
@@ -13901,9 +13901,7 @@ test('value-summary.summarize: context saved (chars→tokens), learned, cited', 
     { eventName: 'retrieve.cited', ts: now, payload: { entryId: 'x' }, project: 'a' },
   ];
   const s = valueSummary.summarize(rows);
-  assertEq(s.contextSaved.chars, 6000);
-  assertEq(s.contextSaved.tokens, 1500);
-  assertEq(s.contextSaved.events, 2);
+  assertEq(s.contextSaved, undefined, 'no inverted "saved" field');
   assertEq(s.learned.total, 2);
   assertEq(s.learned.byType, { lesson: 1, pattern: 1 });
   assertEq(s.memoryCited, 1);

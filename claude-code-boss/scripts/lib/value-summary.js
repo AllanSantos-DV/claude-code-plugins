@@ -7,8 +7,8 @@
  * the dashboard endpoint stays a thin adapter.
  *
  * Cards:
- *   - Context saved by curation: sum of `curation.flagged.chars` (raw output that
- *     tripped the curation thresholds) → tokens ≈ chars/4.
+ *   (Curation savings left this module: `curation.flagged` is raw output that ENTERED
+ *     the context — a cost, once shown here as "saved". lib/curation-metrics.js owns it.)
  *   - Learned: count of `lesson.captured` (any decision).
  *   - Memory in action: count of `retrieve.cited` (KB entries the reply used).
  *   - Learning loop (D4): captured vs merged per week from `lesson.captured`
@@ -33,7 +33,6 @@ function weekKey(ts) {
  * @param {Array<{eventName:string, ts:number, payload:object, project?:string}>} rows
  * @param {{project?:string}} [opts]  when set, only rows for that project are counted
  * @returns {{
- *   contextSaved: {chars:number, tokens:number, events:number},
  *   learned: {total:number, byType:Object<string,number>},
  *   memoryCited: number,
  *   learningLoop: {captured:number, merged:number, admitted:number, mergeRate:number, byWeek:Array<{week:string, captured:number, merged:number}>}
@@ -42,7 +41,6 @@ function weekKey(ts) {
 function summarize(rows, opts = {}) {
   const project = opts.project || null;
   const out = {
-    contextSaved: { chars: 0, tokens: 0, events: 0 },
     learned: { total: 0, byType: {} },
     memoryCited: 0,
     retrievalPrecision: { injected: 0, cited: 0, rate: 0 },
@@ -55,11 +53,6 @@ function summarize(rows, opts = {}) {
     if (project && r.project && r.project !== project) continue;
     const p = r.payload || {};
     switch (r.eventName) {
-      case 'curation.flagged': {
-        out.contextSaved.chars += _num(p.chars);
-        out.contextSaved.events += 1;
-        break;
-      }
       case 'lesson.captured': {
         out.learned.total += 1;
         const t = String(p.type || 'lesson');
@@ -87,7 +80,6 @@ function summarize(rows, opts = {}) {
     }
   }
 
-  out.contextSaved.tokens = Math.round(out.contextSaved.chars / CHARS_PER_TOKEN);
   out.retrievalPrecision.rate = out.retrievalPrecision.injected > 0
     ? Math.round((out.retrievalPrecision.cited / out.retrievalPrecision.injected) * 100) / 100
     : 0;

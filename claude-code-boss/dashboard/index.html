@@ -282,6 +282,15 @@ code { color: var(--fg); font-family: var(--font-mono); }
       </div>
       <div class="grid" id="home-value"><div class="spinner" style="margin:1rem auto"></div></div>
     </div>
+    <div class="card">
+      <div class="flex mb-1" style="align-items:center;justify-content:space-between;gap:.5rem">
+        <h2 style="margin:0"><span data-i18n="home.curation">Curation &amp; guards</span> <span class="text-muted" style="font-size:.8rem">(last 30 days)</span>
+          <span class="tip" data-tip="Saved = exact (shaper cuts) + estimated (redirect: the command's raw average minus the curated script's average, only where a raw baseline exists). Raw output that entered context is a COST. Hook latency comes from the running brain daemon (since its start).">i</span>
+        </h2>
+        <input id="curation-root" type="text" placeholder="project folder (for never-used scripts)" style="flex:0 1 22rem;font-size:.8rem" onchange="localStorage.setItem('ccb.curationRoot', this.value); loadCurationPanel()">
+      </div>
+      <div id="home-curation"><div class="spinner" style="margin:1rem auto"></div></div>
+    </div>
     <div class="card" id="home-learning-loop-card" style="display:none">
       <h2 style="margin:0 0 .25rem 0">Learning loop
         <span class="tip" data-tip="Lições capturadas vs. mescladas (uma lição recorreu) por semana. Taxa de merge caindo = a autocrítica está mudando o comportamento (menos repetição). Subindo = lição não está sendo aplicada.">i</span>
@@ -1282,7 +1291,7 @@ const I18N = {
     'action.refresh': 'Refresh',
     'action.close': 'Close',
     'brain.testInstall': 'Test / Install',
-    'home.title': 'System Overview', 'home.brain': 'Brain Knowledge Base', 'home.value': 'Value at a glance',
+    'home.title': 'System Overview', 'home.brain': 'Brain Knowledge Base', 'home.value': 'Value at a glance', 'home.curation': 'Curation & guards',
     'brain.title': 'Knowledge Base', 'brain.backend': 'Backend Configuration',
     'brain.restartNeeded': 'Restart required', 'brain.restartHint': 'to apply the changes.',
     'brain.restartBtn': 'Restart Dashboard', 'brain.backendType': 'Backend Type',
@@ -1504,7 +1513,7 @@ const I18N = {
     'action.refresh': 'Atualizar',
     'action.close': 'Fechar',
     'brain.testInstall': 'Testar / Instalar',
-    'home.title': 'Visão Geral', 'home.brain': 'Base de Conhecimento (Brain)', 'home.value': 'Valor gerado',
+    'home.title': 'Visão Geral', 'home.brain': 'Base de Conhecimento (Brain)', 'home.value': 'Valor gerado', 'home.curation': 'Curadoria e guards',
     'brain.title': 'Base de Conhecimento', 'brain.backend': 'Configuração do Backend',
     'brain.restartNeeded': 'Restart necessário', 'brain.restartHint': 'para aplicar as mudanças.',
     'brain.restartBtn': 'Reiniciar Dashboard', 'brain.backendType': 'Tipo de Backend',
@@ -2490,14 +2499,21 @@ async function loadValueSummary() {
   let v;
   try {
     v = await api('GET', '/api/metrics/value-summary?days=30');
+    // Isolated: a panel render failure is shown in the panel, never wipes these cards.
+    const cur = await loadCurationPanel().catch((e) => {
+      const p = document.getElementById('home-curation');
+      if (p) p.innerHTML = `<p class="text-muted">Curation panel failed: ${escapeHtml(e && e.message ? e.message : e)}</p>`;
+      return null;
+    });
     const learned = v.learned?.total || 0;
     const cited = v.memoryCited || 0;
-    const tokens = v.contextSaved?.tokens || 0;
     const prec = v.retrievalPrecision || { injected: 0, cited: 0, rate: 0 };
     const precPct = Math.round((prec.rate || 0) * 100);
     const fmt = n => n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n);
     const cards = [
-      { value: '~' + fmt(tokens), label: 'Tokens of raw output curated away', badge: (v.contextSaved?.events || 0) + ' commands', cls: 'badge-green' },
+      cur
+        ? { value: '~' + fmt(cur.totals.savedTokensApprox), label: 'Tokens saved by curation (exact + est.)', badge: cur.redirects.total + ' redirects · ' + cur.shaped.cuts + ' cuts', cls: cur.totals.savedChars > 0 ? 'badge-green' : 'badge-yellow' }
+        : { value: '—', label: 'Tokens saved by curation', badge: 'metrics unavailable', cls: 'badge-red' },
       { value: fmt(learned), label: 'Lessons learned', badge: Object.keys(v.learned?.byType || {}).length + ' types', cls: 'badge-green' },
       { value: fmt(cited), label: 'Memories cited in replies', badge: 'retrieval in action', cls: cited > 0 ? 'badge-green' : 'badge-yellow' },
       { value: prec.injected > 0 ? precPct + '%' : '—', label: 'Retrieval precision (cited/injected)', badge: prec.injected + ' injected', cls: prec.injected === 0 ? 'badge-yellow' : precPct >= 20 ? 'badge-green' : 'badge-yellow' },
@@ -2508,6 +2524,62 @@ async function loadValueSummary() {
   } catch { el.innerHTML = '<p class="text-muted">No metrics yet.</p>'; return; }
   // Isolated: a D4-card failure must not wipe the value cards above.
   try { renderLearningLoop(v.learningLoop); } catch (e) { void e; }
+}
+
+// C5: curation & guards panel (/api/metrics/curation). Returns the summary (the
+// value card above reuses it) or null — the failure is shown in the panel.
+async function loadCurationPanel() {
+  const el = document.getElementById('home-curation');
+  if (!el) return null;
+  const rootInput = document.getElementById('curation-root');
+  const root = (rootInput.value || localStorage.getItem('ccb.curationRoot') || '').trim();
+  if (root && !rootInput.value) rootInput.value = root;
+  let c;
+  try {
+    c = await api('GET', '/api/metrics/curation?days=30' + (root ? '&root=' + encodeURIComponent(root) : ''));
+  } catch (e) {
+    el.innerHTML = `<p class="text-muted">Failed to load curation metrics: ${escapeHtml(e && e.message ? e.message : e)}</p>`;
+    return null;
+  }
+  const fmt = n => n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n);
+  const tok = chars => '~' + fmt(Math.round(chars / 4));
+  const stat = (value, label, badge, cls) => `<div class="stat"><div class="value">${value}</div><div class="label">${label}</div><span class="badge ${cls}">${badge}</span></div>`;
+  const rs = c.redirectSavings;
+  let html = '<div class="grid">'
+    + stat(tok(c.shaped.savedChars), 'Saved by the shaper (exact)', c.shaped.cuts + ' cuts', c.shaped.cuts ? 'badge-green' : 'badge-yellow')
+    + stat(tok(rs.estChars), 'Saved by redirects (estimated)', rs.withBaseline + ' with baseline · ' + rs.withoutBaseline + ' without', rs.withBaseline ? 'badge-green' : 'badge-yellow')
+    + stat(tok(c.rawEnteredContext.chars), 'Raw output that entered context (cost)', c.rawEnteredContext.count + ' noisy commands', c.rawEnteredContext.count ? 'badge-red' : 'badge-green')
+    + stat(String(c.redirects.total), 'Commands redirected to a script', c.redirects.allow + ' allow · ' + c.redirects.ask + ' ask', 'badge-green')
+    + '</div>';
+  const ids = [...new Set([...Object.keys(c.redirects.byScript), ...Object.keys(c.runs.byScript), ...Object.keys(c.uncovered.byScript)])];
+  if (ids.length) {
+    html += '<table style="width:100%;font-size:.8rem;margin-top:.5rem"><thead><tr><th>Script</th><th>Redirects</th><th>Runs</th><th>Avg output (tokens)</th><th>Success</th><th>Uncovered variants</th></tr></thead><tbody>'
+      + ids.map(id => {
+        const r = c.runs.byScript[id];
+        return `<tr><td>${escapeHtml(id)}</td><td>${c.redirects.byScript[id] || 0}</td><td>${r ? r.runs : 0}</td><td>${r ? tok(r.avgChars) : '—'}</td><td>${r ? Math.round(r.successRate * 100) + '%' : '—'}</td><td>${c.uncovered.byScript[id] || 0}</td></tr>`;
+      }).join('') + '</tbody></table>';
+  }
+  const g = c.guards;
+  html += `<p class="text-muted" style="font-size:.8rem;margin-top:.5rem">Not curated: ${c.skipped.exploration} exploration · ${c.skipped.inline} inline · ${c.pending} first occurrences (pending). `
+    + `Bypass (CCB_RAW=1): ${c.bypass}. Guards: ${g.pipeDenied} pipe denied · ${g.errorGuardDenied} error-guard · ${g.graphGuardFired} graph-guard.</p>`;
+  if (root) {
+    html += c.neverUsed.length
+      ? `<p style="font-size:.8rem"><span class="badge badge-yellow">${c.neverUsed.length} never used</span> ${c.neverUsed.map(escapeHtml).join(', ')} — candidates to prune from shells.json.</p>`
+      : '<p style="font-size:.8rem"><span class="badge badge-green">every curated script was used</span></p>';
+  }
+  const lat = c.hookLatency || {};
+  if (lat.unavailable) {
+    html += `<p class="text-muted" style="font-size:.8rem">Hook latency: ${escapeHtml(lat.unavailable)}</p>`;
+  } else {
+    const rows = Object.entries(lat).sort((a, b) => b[1].p95Ms - a[1].p95Ms);
+    html += rows.length
+      ? '<table style="width:100%;font-size:.8rem;margin-top:.5rem"><thead><tr><th>Hook (daemon)</th><th>Calls</th><th>p50</th><th>p95</th><th>Max</th><th>Expired</th><th>Degraded</th><th>Queued</th></tr></thead><tbody>'
+        + rows.map(([n, s]) => `<tr><td>${escapeHtml(n.replace(/^hook_/, ''))}</td><td>${s.calls}</td><td>${s.p50Ms}ms</td><td>${s.p95Ms}ms</td><td>${s.maxMs}ms</td><td>${s.expired ? `<span class="badge badge-red">${s.expired}</span>` : 0}</td><td>${s.degraded ? `<span class="badge badge-yellow">${s.degraded}</span>` : 0}</td><td>${s.queued}</td></tr>`).join('')
+        + `</tbody></table><p class="text-muted" style="font-size:.72rem">Since the daemon started (${Math.round((c.daemonUptimeMs || 0) / 60000)} min ago).</p>`
+      : '<p class="text-muted" style="font-size:.8rem">Hook latency: no hook calls since the daemon started.</p>';
+  }
+  el.innerHTML = html;
+  return c;
 }
 
 async function runConsolidate(apply) {
