@@ -58,6 +58,15 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
   // ONE heavy-lane hook worker for the whole daemon (G2): Stop + PostToolUse hooks
   // run there, off the thread that serves every session's HTTP and fast guards.
   const hookWorker = createHookWorker({ pluginRoot });
+  // C4c: per-hook latency (process-wide accumulator shared by every session's hookTools).
+  // Read at /health time; an unloadable module must not stop the boot — reported, not hidden.
+  const hookLatencyStats = () => {
+    try {
+      return createRequire(import.meta.url)(path.join(pluginRoot, 'scripts', 'lib', 'hook-tools.js')).hookLatencyStats();
+    } catch (err) {
+      return { unavailable: err.message };
+    }
+  };
   // ONE embedder worker (G12): the model and its inference leave the main thread that
   // serves every session's HTTP and guards; brain-embedder delegates to it in-process.
   const embedWorker = createEmbedWorker({ pluginRoot });
@@ -90,7 +99,7 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           ok: true, pluginRoot, dataDir, version, pid: process.pid, port,
-          sessions: sessions.size, hookWorker: hookWorker.stats(), startedAt, uptimeMs: Date.now() - startedAt,
+          sessions: sessions.size, hookWorker: hookWorker.stats(), hookLatency: hookLatencyStats(), startedAt, uptimeMs: Date.now() - startedAt,
         }));
         return;
       }

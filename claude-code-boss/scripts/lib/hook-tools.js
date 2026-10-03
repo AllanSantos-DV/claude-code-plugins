@@ -23,6 +23,7 @@
  * unreachable Claude Code reports a non-blocking hook error (also visible).
  */
 const path = require('path');
+const { performance } = require('perf_hooks');
 const { runWithHookEnv } = require('./hook-context.js');
 
 const EMPTY = '{}';
@@ -192,17 +193,44 @@ function deadlinesFromHooksJson(pluginRoot) {
 }
 
 /** Resolve `work` or, past `ms`, the visible fail-open message. The work is not
- *  aborted (sync JS cannot be) — it finishes in the background, its reply unused. */
-function withDeadline(name, ms, work) {
+ *  aborted (sync JS cannot be) — it finishes in the background, its reply unused.
+ *  `onExpire` lets the caller count the expiry (C4c latency stats). */
+function withDeadline(name, ms, work, onExpire) {
   let timer;
   const late = new Promise((resolve) => {
     timer = setTimeout(() => {
       console.error(`[hook-tools] ${name} passed its ${ms}ms deadline`);
+      if (onExpire) onExpire();
       resolve(degraded(name, `prazo de ${ms}ms estourado`));
     }, ms);
   });
   return Promise.race([work, late]).finally(() => clearTimeout(timer));
 }
+
+// C4c: per-hook latency, process-wide (the daemon builds one hookTools per MCP
+// session; the stats must cover all of them). In memory only — /health exposes it,
+// a daemon restart resets it. Last LAT_WINDOW durations per hook feed p50/p95.
+const LAT_WINDOW = 200;
+const _latency = new Map();
+function recordLatency(name, ms, outcome) {
+  let s = _latency.get(name);
+  if (!s) { s = { calls: 0, ok: 0, degraded: 0, expired: 0, queued: 0, maxMs: 0, recent: [] }; _latency.set(name, s); }
+  s.calls++; s[outcome]++;
+  if (outcome === 'queued') return; // async enqueue: no latency the session waits on
+  s.maxMs = Math.max(s.maxMs, ms);
+  s.recent.push(ms); if (s.recent.length > LAT_WINDOW) s.recent.shift();
+}
+function hookLatencyStats() {
+  const pct = (sorted, p) => (sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))] : 0);
+  const out = {};
+  for (const [name, s] of _latency) {
+    const sorted = [...s.recent].sort((a, b) => a - b);
+    out[name] = { calls: s.calls, ok: s.ok, degraded: s.degraded, expired: s.expired, queued: s.queued,
+      p50Ms: Math.round(pct(sorted, 0.5)), p95Ms: Math.round(pct(sorted, 0.95)), maxMs: Math.round(s.maxMs) };
+  }
+  return out;
+}
+function _resetLatencyStats() { _latency.clear(); }
 
 /**
  * @param {{ pluginRoot: string, hookWorker?: { run: Function, enqueue: Function }, deadlines?: object }} opts
@@ -226,10 +254,13 @@ function createHookTools({ pluginRoot, hookWorker, deadlines } = {}) {
     const spec = HOOKS[name];
     if (!spec) throw new Error(`unknown hook tool: ${name}`);
     const ms = deadlineMs[name] || DEFAULT_TIMEOUT_S * 1000 - DEADLINE_MARGIN_MS;
+    const t0 = performance.now();
     let text;
+    let outcome = 'ok';
     if (spec.lane === 'heavy' && hookWorker && spec.async) {
       hookWorker.enqueue(name, args);
       text = EMPTY;
+      outcome = 'queued';
     } else if (spec.lane === 'heavy' && hookWorker) {
       try {
         // The worker also skips the job outright if it is still queued past the deadline.
@@ -238,14 +269,17 @@ function createHookTools({ pluginRoot, hookWorker, deadlines } = {}) {
         const msg = err && err.message ? err.message : String(err);
         console.error(`[hook-tools] ${name} degraded: ${msg}`);
         text = degraded(name, msg);
+        outcome = /deadline|timeout|prazo/i.test(msg) ? 'expired' : 'degraded';
       }
     } else {
-      text = await withDeadline(name, ms, runHookInline(pluginRoot, name, args));
+      text = await withDeadline(name, ms, runHookInline(pluginRoot, name, args), () => { outcome = 'expired'; });
+      if (outcome === 'ok' && text.includes(`hook ${name} degradado`)) outcome = 'degraded';
     }
+    recordLatency(name, performance.now() - t0, outcome);
     return { content: [{ type: 'text', text }] };
   }
 
   return { definitions, names: new Set(Object.keys(HOOKS)), handle };
 }
 
-module.exports = { createHookTools, runHookInline, deadlinesFromHooksJson, rebuildEvent, HOOKS, FIELDS };
+module.exports = { createHookTools, runHookInline, deadlinesFromHooksJson, rebuildEvent, hookLatencyStats, _resetLatencyStats, HOOKS, FIELDS };
