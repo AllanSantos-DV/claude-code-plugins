@@ -23,7 +23,7 @@
 'use strict';
 
 const path = require('path');
-const { readStdin, emitEmpty } = require('./lib/hook-io.js');
+const { runSideEffectCli } = require('./lib/hook-io.js');
 
 /**
  * Pure detector entry point — side effect only (pokes the graph-ingest
@@ -62,16 +62,10 @@ async function run(event) {
   }
 }
 
-async function main() {
-  const raw = await readStdin();
-  let event = {};
-  try { event = JSON.parse(raw || '{}'); } catch { /* defaults */ }
-  await run(event);
-  emitEmpty();
-}
+function main() { return runSideEffectCli(run, 'graph-warm'); }
 
 if (require.main === module) {
-  main().catch((err) => { console.error(`[graph-warm] ${err && err.message ? err.message : err}`); emitEmpty(); });
+  main(); // runSideEffectCli never rejects: it logs and emits {} itself
 }
 
 module.exports = { main, run };
