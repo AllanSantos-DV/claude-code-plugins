@@ -136,4 +136,16 @@ function planShaping(command, projectRoot, deps = {}) {
   return `set -o pipefail; { ${cmd}; } 2>&1 | node "${SHAPER}" --family "${fam.replace(/"/g, '')}"`;
 }
 
-module.exports = { planRedirect, planShaping, splitTopLevel, profilesFor, invocationFor, flagsOf, RAW_ESCAPE };
+/**
+ * The original command inside a planShaping() wrapper, else null. PostToolUse sees the
+ * REWRITTEN command: without this the detector read `set -o pipefail; { cat big.txt; }…`
+ * as a TASK (`set`) and asked to curate output the shaper already bounds (seen live in
+ * the C6 stress: the agent was nudged to mark `set pipefail && cat big.txt` one-off).
+ */
+const SHAPED_RE = /^set -o pipefail; \{ ([\s\S]+); \} 2>&1 \| node "[^"]*shape-output\.js" --family "[^"]*"$/;
+function unwrapShaped(command) {
+  const m = SHAPED_RE.exec(String(command || '').trim());
+  return m ? m[1] : null;
+}
+
+module.exports = { planRedirect, planShaping, unwrapShaped, splitTopLevel, profilesFor, invocationFor, flagsOf, RAW_ESCAPE };

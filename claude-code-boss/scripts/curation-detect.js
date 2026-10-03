@@ -26,6 +26,7 @@ const metrics = require('./lib/metrics.js');
 const { canonicalSig } = require('./lib/command-signature.js');
 const oneoff = require('./lib/oneoff-store.js');
 const { classifyCommand } = require('./lib/curation-families.js');
+const { unwrapShaped } = require('./lib/curation-redirect.js');
 
 const { findProjectRoot, loadShellsConfig, matchCuratedShell, _tokenize, _pathMatches } = require('./shells-config.js');
 const { classify, successBudgetFor }                            = require('./curation-classifier.js');
@@ -91,7 +92,10 @@ async function run(event) {
       output = [stdout, stderr].filter(Boolean).join('\n');
     }
 
-    const command = event.tool_input?.command || '';
+    // A command the boss shaper wrapped (C2b) is judged as the ORIGINAL command
+    // (exploration → never curated); the wrapper's `set -o pipefail` is not a task.
+    const rawCommand = event.tool_input?.command || '';
+    const command = unwrapShaped(rawCommand) || rawCommand;
     const sessionId = event.session_id || event.sessionId || 'default';
     const cwd = event.cwd || hookEnv().CLAUDE_PROJECT_DIR || '';
     const charCount = output.length;

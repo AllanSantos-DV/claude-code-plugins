@@ -3805,6 +3805,20 @@ test('C1 curation-families: Token Guard detected from a PostToolUse hook in user
   }
 });
 
+test('C6 unwrapShaped: round-trips planShaping exactly; anything else → null', () => {
+  const { planShaping, unwrapShaped } = require('./lib/curation-redirect.js');
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-unwrap-'));
+  try {
+    for (const cmd of ['cat big.txt', 'git log --oneline -50', 'grep -rn "a; b" src']) {
+      const w = planShaping(cmd, proj, { tokenGuardActive: () => false });
+      assert(w, `shaped: ${cmd}`);
+      assertEq(unwrapShaped(w), cmd, `round trip of ${cmd}`);
+    }
+    assertEq(unwrapShaped('npm test'), null, 'plain command');
+    assertEq(unwrapShaped('set -o pipefail; { npm test; } 2>&1 | tail -3'), null, 'look-alike without the shaper');
+  } finally { fs.rmSync(proj, { recursive: true, force: true }); }
+});
+
 test('C4 curation-metrics: exact shaper savings, redirect savings only with a baseline, raw output counted as a COST, never-used scripts', () => {
   const { summarizeCuration } = require('./lib/curation-metrics.js');
   const ev = (eventName, payload) => ({ eventName, payload });

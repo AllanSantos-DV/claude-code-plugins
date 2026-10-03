@@ -1208,7 +1208,7 @@ const TESTS = [
     script: 'posttoolusefailure-dispatcher.js',
     payload: { ...require('./__fixtures__/post-tool-use-failure.json'), session_id: SESSION },
     expect: { noError: true },
-    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: seedRecurrence(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ptuf-data-')), 'C:\fixture', 'npm test') }),
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: seedRecurrence(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ptuf-data-')), 'C:\\fixture', 'npm test') }),
     validateWithEnv: (r, env) => {
       if (!r.parsed || Object.keys(r.parsed).length !== 0) return `dispatcher must always reply {}, got: ${JSON.stringify(r.parsed)}`;
       const runtimeDir = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime');
@@ -1560,7 +1560,7 @@ const TESTS = [
     script: 'curation-detect.js',
     payload: { ...require('./__fixtures__/post-tool-use-success-noisy.json'), session_id: SESSION },
     expect: { noError: true },
-    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: seedRecurrence(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-det-lrg-')), 'C:\fixture', 'npm test') }),
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: seedRecurrence(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-det-lrg-')), 'C:\\fixture', 'npm test') }),
     validateWithEnv: (r, env) => {
       // Journal: one file per entry under .runtime/curation-turn-<sid>--<ts>-<rand>.json
       const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
@@ -1601,6 +1601,24 @@ const TESTS = [
     },
   },
   {
+    // C6 stress (real Claude Code): PostToolUse sees the SHAPER's rewritten command; its
+    // `set -o pipefail` read as a TASK and the 2nd occurrence asked to curate `cat` output
+    // the shaper already bounds. The wrapper is judged as the original (exploration).
+    name: 'curation-detect   [C6: shaper-wrapped exploration, recurring + noisy → no curation journal]',
+    script: 'curation-detect.js',
+    payload: (() => {
+      const shaped = 'set -o pipefail; { cat big.txt; } 2>&1 | node "C:/x/claude-code-boss/scripts/shape-output.js" --family "cat"';
+      return { ...require('./__fixtures__/post-tool-use-success-noisy.json'), tool_input: { command: shaped }, session_id: SESSION };
+    })(),
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: seedRecurrence(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-c6-shaped-')), 'C:\\fixture', ['set -o pipefail; { cat big.txt; } 2>&1 | node "C:/x/claude-code-boss/scripts/shape-output.js" --family "cat"', 'cat big.txt']) }),
+    validateWithEnv: (r, env) => {
+      const rt = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime');
+      const files = fs.existsSync(rt) ? fs.readdirSync(rt).filter(f => f.startsWith('curation-turn-')) : [];
+      return files.length === 0 ? null : `a shaped exploration command must not be journaled for curation, got ${files.join(',')}`;
+    },
+  },
+  {
     // C3: a TASK command's FIRST noisy occurrence stays pending — no journal yet.
     name: 'curation-detect   [C3: TASK first noisy occurrence → pending, no journal]',
     script: 'curation-detect.js',
@@ -1618,7 +1636,7 @@ const TESTS = [
     script: 'curation-detect.js',
     payload: { ...require('./__fixtures__/post-tool-use-failure.json'), session_id: SESSION },
     expect: { noError: true },
-    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: seedRecurrence(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-det-fail-')), 'C:\fixture', 'npm test') }),
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: seedRecurrence(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-det-fail-')), 'C:\\fixture', 'npm test') }),
     validateWithEnv: (r, env) => {
       const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
       const runtimeDir = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime');
@@ -1712,7 +1730,7 @@ const TESTS = [
     script: 'posttoolusebash-dispatcher.js',
     payload: { ...require('./__fixtures__/post-tool-use-success-noisy.json'), session_id: SESSION },
     expect: { noError: true },
-    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: seedRecurrence(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ptub-data-')), 'C:\fixture', 'npm test') }),
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: seedRecurrence(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ptub-data-')), 'C:\\fixture', 'npm test') }),
     validateWithEnv: (r, env) => {
       if (!r.parsed || Object.keys(r.parsed).length !== 0) return `dispatcher must always reply {}, got: ${JSON.stringify(r.parsed)}`;
       const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
