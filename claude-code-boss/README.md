@@ -124,6 +124,7 @@ prazo interno de `timeout − 1 s`.
 | PostToolUse (Bash, via dispatcher) | `decision-detect.js` | Detecta commit/PR com cara de decisão arquitetural e stash pending para o Stop promover |
 | PostToolUse (Edit\|Write\|NotebookEdit) | `mcp_tool` → `hook_file_edit_detect` (`file-edit-detect.js`) | Journala arquivos editados no turno (alimenta `verify-nudge` e `self-review`) |
 | PostToolUse (Edit\|Write\|MultiEdit\|NotebookEdit) | `mcp_tool` → `hook_policy_glob_inject` (`policy-glob-inject.js`) | Injeta advisory de política glob (per-file) quando o arquivo editado casa um padrão de política ativa |
+| UserPromptExpansion | `dashboard-command.js` (command, matcher `dashboard`) | **`/dashboard` sem LLM**: garante o dashboard no ar (sonda HTTP da porta publicada), abre o navegador e **bloqueia** a expansão mostrando a URL — o prompt nunca chega ao modelo; falha também bloqueia, com a causa |
 | UserPromptExpansion | `mcp_tool` → `hook_skill_metric` (`skill-metric.js`) | Métrica de uso de skill (matcher `.*`) |
 | **PostToolUseFailure** | **`mcp_tool` → `hook_posttoolusefailure_dispatcher` (`posttoolusefailure-dispatcher.js`)** | **Entry único** — roda `curation-detect.js` (já filtra `tool_name==='Bash'` internamente) + `failure-detect.js` in-process |
 | PostToolUseFailure (via dispatcher) | `failure-detect.js` | Journala a falha (alimenta `failure-retro`). O `error-guard` não depende mais dele: decide pelo transcript da própria sessão (`lib/session-failures.js`) |
@@ -137,7 +138,7 @@ prazo interno de `timeout − 1 s`.
 | Stop (via dispatcher) | `session-summary.js` | Cap 1/sessão: resumo positivo ("N lições capturadas") quando a sessão gerou aprendizado |
 | Stop (via dispatcher) | + 7 outros | `skill-promote-trigger`, `decision-scan-response`, `decision-promote`, `research-followup-detect`, `failure-retro`, `skill-success-detect`, `retrieval-feedback`, `auto-continue-stop` — mesmo comportamento de antes, agora in-process |
 | UserPromptSubmit | `model-router-ensure.js` | Mesma garantia de daemon do model-router, agora por-turno (settings/env já publicados no SessionStart) — roda dentro do `user-prompt-submit-dispatcher` (mesmo processo) |
-| **UserPromptSubmit** | **`user-prompt-submit-dispatcher.js`** | **Entry único** (command, funciona com o daemon fora do ar) — roda in-process os 3 detectores abaixo, concorrente com timeout próprio por detector, funde os textos de advisory num só `additionalContext` |
+| **UserPromptSubmit** | **`user-prompt-submit-dispatcher.js`** | **Entry único** (command, funciona com o daemon fora do ar) — antes de tudo atende `/dashboard` digitado (o nome curto que a CLI não resolve chega aqui como texto) do mesmo jeito, sem LLM; depois roda in-process os 3 detectores abaixo, concorrente com timeout próprio por detector, funde os textos de advisory num só `additionalContext` |
 | UserPromptSubmit (via dispatcher) | `brain-daemon-ensure.js` | Mesma garantia de daemon do SessionStart — captura o daemon caído em sessões resumidas |
 | UserPromptSubmit (via dispatcher) | `brain-health.js` | Mesma probe do SessionStart, com cooldown de 60s — captura MCP caído em sessões resumidas |
 | UserPromptSubmit (via dispatcher) | `brain-status.js` | Advisory só quando o backend `mcp-memory` está desconectado (silencioso no backend `local`, sempre conectado por design) |
@@ -328,8 +329,9 @@ guarda de `Origin`; `/health` permanece totalmente aberto.
 ## Dashboard
 
 Iniciado **sob demanda** (não mais no SessionStart). Configura o **plugin**
-(brain-config, hooks). Lance com `node scripts/dashboard.js` (ou via skill
-`config-dashboard`).
+(brain-config, hooks). Abra com **`/dashboard`** — respondido por hook, **sem passar
+pelo modelo** (zero turnos, zero tokens): sobe o dashboard se preciso, abre o navegador
+e mostra a URL. Também: `node scripts/dashboard-start.js` (imprime `{ok, url}`).
 
 - **Abas**: Home, Brain KB, Hooks, Logs
 - **Porta**: dinâmica (0 → auto-assign, sempre `127.0.0.1`); fixe com `DASHBOARD_PORT`
