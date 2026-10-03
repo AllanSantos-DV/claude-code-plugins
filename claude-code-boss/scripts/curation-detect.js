@@ -26,7 +26,7 @@ const metrics = require('./lib/metrics.js');
 const { canonicalSig } = require('./lib/command-signature.js');
 const oneoff = require('./lib/oneoff-store.js');
 const { classifyCommand } = require('./lib/curation-families.js');
-const { unwrapShaped, splitTopLevel } = require('./lib/curation-redirect.js');
+const { unwrapShaped, splitTopLevel, planRedirect } = require('./lib/curation-redirect.js');
 
 const { findProjectRoot, loadShellsConfig, matchCuratedShell, _tokenize, _pathMatches } = require('./shells-config.js');
 const { classify, successBudgetFor }                            = require('./curation-classifier.js');
@@ -193,6 +193,19 @@ async function run(event) {
       return;
     }
 
+    // A recurring noisy TASK command that is an uncovered VARIANT of an existing curated
+    // script (same family, other positionals/flags — e.g. `npm test -- --reporter=dot` while
+    // `tests` covers `npm test`) is not a reason for a SECOND script: the Stop asks to EXTEND
+    // the existing one (accept the variant + add it as an alias), so the next run redirects.
+    let extendShell = null;
+    if (reason === 'needs-curation' && !isCurated) {
+      try {
+        const plan = planRedirect(command, shells, projectRoot);
+        const target = plan && plan.uncovered && plan.uncovered.length ? shells.find((sh) => sh.id === plan.uncovered[0]) : null;
+        if (target) extendShell = { id: target.id, script: target.script || null, aliases: Array.isArray(target.aliases) ? target.aliases : [] };
+      } catch (err) { console.error(`[CURATION-DETECT] variant check failed: ${err.message}`); }
+    }
+
     // Append to per-turn state (curation-stop.js reads it at end of turn). The
     // signature + windowed recurrence travel with the entry so the Stop reason
     // can orient the agent (O1/O2).
@@ -202,7 +215,8 @@ async function run(event) {
       lines: lineCount,
       chars: charCount,
       isCurated,
-      curatedScript: curatedShell?.script || null,
+      curatedScript: isCurated ? (curatedShell?.script || null) : null,
+      extendShell,
       isSuccess,
       interrupted,
       hookEvent,
