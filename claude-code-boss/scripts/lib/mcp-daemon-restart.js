@@ -1,6 +1,7 @@
 'use strict';
 
 const fs = require('fs');
+const { pidAlive } = require('./process-lock.js');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
@@ -63,10 +64,7 @@ function inspectWindowsProcess(pid, deps = {}) {
 }
 
 async function waitPidGone(pid, opts = {}) {
-  const alive = opts.pidAlive || ((candidate) => {
-    try { process.kill(candidate, 0); return true; }
-    catch (err) { return !!(err && err.code === 'EPERM'); }
-  });
+  const alive = opts.pidAlive || pidAlive;
   const sleep = opts.sleep || (ms => new Promise(resolve => setTimeout(resolve, ms)));
   const now = opts.now || Date.now;
   const deadline = now() + (opts.timeoutMs || 5000);
@@ -192,10 +190,7 @@ async function rollbackAfterFailedUpdate(restartInfo, deps = {}) {
   if (!restartInfo || !restartInfo.executable || !Array.isArray(restartInfo.previousArgs)) {
     throw new Error('dados insuficientes para rollback do daemon');
   }
-  const alive = deps.pidAlive || (pid => {
-    try { process.kill(pid, 0); return true; }
-    catch (err) { return !!(err && err.code === 'EPERM'); }
-  });
+  const alive = deps.pidAlive || pidAlive;
   const kill = deps.kill || (pid => process.kill(pid, 'SIGTERM'));
   if (Number.isInteger(restartInfo.newPid) && alive(restartInfo.newPid)) {
     kill(restartInfo.newPid);

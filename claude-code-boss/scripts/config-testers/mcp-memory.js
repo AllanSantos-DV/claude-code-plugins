@@ -8,11 +8,9 @@
  * transport 'stdio' → cheap local checks (Java present, JAR magic, optional sha256).
  */
 const fs = require('fs');
+const { probeHealth } = require('../lib/http-health.js');
 const os = require('os');
 const path = require('path');
-const http = require('http');
-const https = require('https');
-const { URL } = require('url');
 const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 const { detectGpu, resolveLatestAsset } = require('../lib/mcp-release-resolver.js');
@@ -35,20 +33,9 @@ function resolveDaemonUrl(input) {
 }
 
 /** GET <url>/health — 200 or 503 both mean "process alive". */
-function httpHealth(baseUrl) {
-  return new Promise((resolve) => {
-    let u;
-    try { u = new URL(baseUrl.replace(/\/+$/, '') + '/health'); }
-    catch (err) { return resolve({ ok: false, error: `bad URL: ${err.message}` }); }
-    const lib = u.protocol === 'https:' ? https : http;
-    const req = lib.get({ hostname: u.hostname, port: u.port, path: u.pathname, timeout: 5000 }, (res) => {
-      let b = '';
-      res.on('data', (c) => (b += c));
-      res.on('end', () => resolve({ ok: res.statusCode === 200 || res.statusCode === 503, status: res.statusCode, body: b }));
-    });
-    req.on('timeout', () => { req.destroy(); resolve({ ok: false, error: 'timeout' }); });
-    req.on('error', (e) => resolve({ ok: false, error: e.message }));
-  });
+async function httpHealth(baseUrl) {
+  const r = await probeHealth(baseUrl, { timeoutMs: 5000 });
+  return r.status ? { ok: r.status === 200 || r.status === 503, status: r.status, body: r.body } : { ok: false, error: r.error };
 }
 
 async function checkRemote(input, t0) {
