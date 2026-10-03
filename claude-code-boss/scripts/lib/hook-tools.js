@@ -34,7 +34,7 @@ const FIELDS = {
   session_id: 'Session id',
   cwd: 'Working directory',
   transcript_path: 'Transcript path',
-  project_dir: 'CLAUDE_PROJECT_DIR of the calling session',
+  project_dir: 'CLAUDE_PROJECT_DIR of the calling session (Claude Code sends "" — no env interpolation in mcp_tool input; resolved by session_id, lib/session-root.js)',
   tool_name: 'Tool name',
   tool_input: 'Tool input (JSON)',
   tool_response: 'Tool response (JSON)',
@@ -161,7 +161,10 @@ async function runHookInline(pluginRoot, name, args) {
     refreshConfig(path.join(scripts, 'lib', 'brain-config.js'));
     const ev = rebuildEvent(args);
     const mod = require(path.join(scripts, spec.script));
-    return await runWithHookEnv({ CLAUDE_PROJECT_DIR: (args && args.project_dir) || '' }, () => spec.call(mod, ev));
+    // `project_dir` arrives "" (Claude Code doesn't interpolate env vars into mcp_tool
+    // input): the root SessionStart recorded for this session_id — see lib/session-root.js.
+    const root = (args && args.project_dir) || require('./session-root.js').sessionRootFor(args && args.session_id);
+    return await runWithHookEnv({ CLAUDE_PROJECT_DIR: root || '' }, () => spec.call(mod, ev));
   } catch (err) {
     const msg = err && err.message ? err.message : String(err);
     console.error(`[hook-tools] ${name} degraded: ${msg}`);

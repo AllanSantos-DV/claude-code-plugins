@@ -2740,6 +2740,37 @@ test('brain-store: recordCitation persists + bumps when SQLite available', async
   }
 });
 
+test('session-root: SessionStart records session_id → root; read back by id; unknown → ""; files older than 7 days pruned', () => {
+  const sr = require('./lib/session-root.js');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sroot-'));
+  try {
+    sr._resetMemo();
+    assertEq(sr.sessionRootFor('s-1', { base }), '', 'unknown session → ""');
+    assert(sr.recordSessionRoot('s-1', 'C:\\work\\proj', { base }), 'recorded');
+    assertEq(sr.sessionRootFor('s-1', { base }), 'C:\\work\\proj', 'read back by session id');
+    assert(!sr.recordSessionRoot('', 'C:\\x', { base }) && !sr.recordSessionRoot('s-2', '', { base }), 'no id / no root → not recorded');
+    const dir = path.join(base, '.runtime', 'session-roots');
+    const stale = path.join(dir, 'old.json');
+    fs.writeFileSync(stale, '{"projectDir":"C:\\\\old"}');
+    const t = (Date.now() - 8 * 86400_000) / 1000; fs.utimesSync(stale, t, t);
+    sr.recordSessionRoot('s-3', 'C:\\work\\other', { base });
+    assert(!fs.existsSync(stale), 'a root older than 7 days is pruned on the next record');
+  } finally { sr._resetMemo(); fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('session-root: a daemon-served hook with project_dir "" (what Claude Code really sends) runs under the root SessionStart recorded for its session', async () => {
+  const sr = require('./lib/session-root.js');
+  const { runHookInline, HOOKS } = require('./lib/hook-tools.js');
+  HOOKS.hook_test_root = { script: 'skill-metric.js', call: () => require('./lib/hook-context.js').hookEnv().CLAUDE_PROJECT_DIR || '<none>' };
+  try {
+    sr._resetMemo();
+    sr.recordSessionRoot('sess-root-1', 'C:\\work\\session-root');
+    assertEq(await runHookInline(ROOT, 'hook_test_root', { project_dir: '', session_id: 'sess-root-1', cwd: 'C:\\work\\session-root\\sub' }), 'C:\\work\\session-root', 'root from SessionStart, not the drifted cwd');
+    assertEq(await runHookInline(ROOT, 'hook_test_root', { project_dir: 'C:\\explicit', session_id: 'sess-root-1' }), 'C:\\explicit', 'a real project_dir still wins');
+    assertEq(await runHookInline(ROOT, 'hook_test_root', { project_dir: '', session_id: 'never-started' }), '<none>', 'unknown session → no root (callers fall back to cwd)');
+  } finally { delete HOOKS.hook_test_root; sr._resetMemo(); }
+});
+
 test('O9: metrics scope without ctx.cwd follows the CALLING session root inside a daemon hook call, not process.cwd()', () => {
   const { _resolveProject } = require('./lib/metrics.js');
   const { runWithHookEnv } = require('./lib/hook-context.js');
