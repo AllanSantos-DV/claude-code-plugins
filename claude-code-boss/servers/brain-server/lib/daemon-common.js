@@ -1,12 +1,12 @@
 /**
  * lib/daemon-common.js — shared helpers for the HTTP daemon + its supervisor.
  */
-import crypto from 'node:crypto';
-import fs from 'node:fs';
 import path from 'node:path';
 import { createRequire } from 'node:module';
 
-const { tokenMatches } = createRequire(import.meta.url)('../../../scripts/lib/token-compare.js');
+const requireCjs = createRequire(import.meta.url);
+const { tokenMatches } = requireCjs('../../../scripts/lib/token-compare.js');
+const { readSecret, writeSecret, ensureSecret } = requireCjs('../../../scripts/lib/secret-file.js');
 
 /**
  * Canonicalize a data dir so the SAME directory spelled differently (forward vs
@@ -108,10 +108,7 @@ export function readToken(dataDir, env = process.env) {
   const token = (env && typeof env === 'object' && !Array.isArray(env)) ? (env.BRAIN_HTTP_TOKEN ?? '') : '';
   const normalizedToken = String(token).trim();
   if (normalizedToken) return normalizedToken;
-  try {
-    const tok = fs.readFileSync(tokenFile(dataDir), 'utf8').trim();
-    return tok || null;
-  } catch (e) { void e; return null; }
+  return readSecret(tokenFile(dataDir));
 }
 
 /** Read-or-create the shared token (daemon boot path). */
@@ -123,21 +120,14 @@ export function ensureToken(dataDir) {
     // file equal to the effective token so the helper and the daemon agree.
     const pinned = String(process.env.BRAIN_HTTP_TOKEN || '').trim();
     if (pinned && pinned === existing) {
-      let onDisk = null;
-      try { onDisk = fs.readFileSync(tokenFile(dataDir), 'utf8').trim(); } catch (e) { void e; }
-      if (onDisk !== pinned) {
-        try { fs.mkdirSync(dataDir, { recursive: true }); fs.writeFileSync(tokenFile(dataDir), pinned, { mode: 0o600 }); }
+      if (readSecret(tokenFile(dataDir)) !== pinned) {
+        try { writeSecret(tokenFile(dataDir), pinned); }
         catch (e) { console.error(`[brain-http] could not sync the pinned token to ${tokenFile(dataDir)}: ${e.message}`); }
       }
     }
     return existing;
   }
-  const tok = crypto.randomBytes(24).toString('hex');
-  try {
-    fs.mkdirSync(dataDir, { recursive: true });
-    fs.writeFileSync(tokenFile(dataDir), tok, { mode: 0o600 });
-  } catch (e) { void e; /* fs failure → token still enforced for this run */ }
-  return tok;
+  return ensureSecret(tokenFile(dataDir), 24);
 }
 
 const LOCAL_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;

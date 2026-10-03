@@ -20925,6 +20925,21 @@ test('curation_prune_unused: shells.json in a SUBFOLDER of the session reads the
   } finally { fs.rmSync(sess, { recursive: true, force: true }); }
 });
 
+test('secret-file: ensureSecret creates once (bytes → hex), reuses after; empty/absent → null; 0600 on POSIX', () => {
+  const { readSecret, ensureSecret } = require('./lib/secret-file.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-secret-'));
+  try {
+    const f = path.join(dir, 'sub', 'tok');
+    assertEq(readSecret(f), null, 'absent → null');
+    const a = ensureSecret(f, 24);
+    assert(/^[0-9a-f]{48}$/.test(a), `24 bytes hex: ${a}`);
+    assertEq(ensureSecret(f, 24), a, 'reused, not regenerated');
+    if (process.platform !== 'win32') assertEq(fs.statSync(f).mode & 0o777, 0o600, 'owner-only');
+    fs.writeFileSync(f, '  \n');
+    assertEq(readSecret(f), null, 'blank → null');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('session-journal: per-sid files (no "foo"/"foobar" collision), same-ms order with seqNames, tail cap, sweepOld only touches its own prefix', () => {
   const { createJournal } = require('./lib/session-journal.js');
   const a = createJournal({ prefix: 'tj-a', label: 'tj', seqNames: true, stampTs: true });

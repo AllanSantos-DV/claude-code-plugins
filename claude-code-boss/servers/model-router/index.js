@@ -31,6 +31,7 @@ const { resolveMode } = require('../../scripts/lib/router-mode.js');
 const { routerUserConfigPath } = require('../../scripts/lib/router-config-path.js');
 const { configFingerprint } = require('../../scripts/lib/router-fingerprint.js');
 const { tokenMatches } = require('../../scripts/lib/token-compare.js');
+const { readSecret, ensureSecret } = require('../../scripts/lib/secret-file.js');
 
 // ── Resolução de paths ────────────────────────────────────────────────────────
 
@@ -81,25 +82,12 @@ function routerTokenFile(stateDir) { return path.join(stateDir, 'router.token');
 
 // Lê o token (trim). Ausente/ilegível → null.
 function readRouterToken(stateDir = STATE_DIR) {
-  try {
-    const tok = fs.readFileSync(routerTokenFile(stateDir), 'utf-8').trim();
-    return tok || null;
-  } catch (e) { void e; return null; } // arquivo ausente/ilegível → sem token
+  return readSecret(routerTokenFile(stateDir)); // absent/unreadable → no token
 }
 
-// Read-or-create idempotente (boot do server). Reusa entre reinícios: só cria se
-// ausente. 32 bytes hex de crypto.randomBytes. Escrito com mode 0o600 (só o dono lê)
-// via writeFileSync DIRETO — o helper atômico (temp+rename) não preserva o modo
-// restritivo no arquivo final, então aqui um write direto é o certo.
+// Read-or-create idempotente (boot do server), 32 bytes hex, modo 0o600 (lib/secret-file).
 function ensureRouterToken(stateDir = STATE_DIR) {
-  const existing = readRouterToken(stateDir);
-  if (existing) return existing;
-  const tok = crypto.randomBytes(32).toString('hex');
-  try {
-    fs.mkdirSync(stateDir, { recursive: true });
-    fs.writeFileSync(routerTokenFile(stateDir), tok, { mode: 0o600 });
-  } catch (e) { void e; /* falha de fs → token ainda vale em memória nesta execução */ }
-  return tok;
+  return ensureSecret(routerTokenFile(stateDir), 32);
 }
 
 // Compara em tempo constante; segredo vazio NUNCA autentica (lib/token-compare).

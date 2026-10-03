@@ -28,6 +28,7 @@
 'use strict';
 
 const http   = require('http');
+const { readSecret } = require('./lib/secret-file.js');
 const fs     = require('fs');
 const path   = require('path');
 const os     = require('os');
@@ -395,10 +396,7 @@ function firstRunNudge() {
 // null: o healthCheck então falha fechado (um processo sem o token NÃO é tratado
 // como o nosso roteador).
 function readRouterToken() {
-  try {
-    const tok = fs.readFileSync(ROUTER_TOKEN_FILE, 'utf-8').trim();
-    return tok || null;
-  } catch (_) { void _; return null; } // arquivo ausente/ilegível → sem token
+  return readSecret(ROUTER_TOKEN_FILE); // absent/unreadable → no token
 }
 
 // Sonda /health COM PROVA DE IDENTIDADE. WHY (credential-leak defense): sem isto,
