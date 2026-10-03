@@ -3941,7 +3941,7 @@ test('shells-config: a shells.json edited mid-process is seen on the next call (
   } finally { sc._resetCache(); fs.rmSync(proj, { recursive: true, force: true }); }
 });
 
-test('piped → refine: the same curated script filtered the same way twice asks to bake the filter in; another filter counts apart; tuning the script resets', async () => {
+test('piped → refine: the same curated script filtered the same way twice asks ONCE to bake the filter in; never again for that pair; another filter counts apart', async () => {
   const detect = require('./curation-detect.js');
   const journal = require('./lib/turn-journal.js');
   const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-piped-refine-'));
@@ -3965,9 +3965,9 @@ test('piped → refine: the same curated script filtered the same way twice asks
     journal.clearEntries(sid);
     await detect.run(ev('node .vscode/scripts/tests.mjs | grep FAIL'));
     assertEq(journal.readEntries(sid).length, 0, 'another filter has its own count');
-    fs.writeFileSync(script, 'console.log("tuned")\n'); // the agent tuned the script
-    await detect.run(ev('node .vscode/scripts/tests.mjs | tail -3'));
-    assertEq(journal.readEntries(sid).length, 0, 'after the script changed, the count starts over — no nag for an already tuned script');
+    fs.writeFileSync(script, 'console.log("tuned")\n'); // the agent tuned the script (or explained why not)
+    for (let i = 0; i < 3; i++) await detect.run(ev('node .vscode/scripts/tests.mjs | tail -3'));
+    assertEq(journal.readEntries(sid).length, 0, 'asked once: never again for the same script+filter (seen live: re-asking after tuning was pure noise)');
     await detect.run(ev('node .vscode/scripts/tests.mjs'));
     assertEq(journal.readEntries(sid).length, 0, 'an unfiltered run never asks');
   } finally { journal.clearEntries(sid); fs.rmSync(proj, { recursive: true, force: true }); }
