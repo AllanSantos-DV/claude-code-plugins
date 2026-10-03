@@ -20,6 +20,9 @@ on:
     - cron: '17 */6 * * *'   # a cada 6h (minuto 17 p/ fugir do pico da hora cheia)
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   release-guard:
     runs-on: ubuntu-latest
@@ -36,4 +39,8 @@ jobs:
           node-version: '22'
 
       - name: Verificar drift de release (versão vs tag)
+        # O token lê a atividade da main: a versão é datada pelo PUSH que a trouxe
+        # (o develop → main é fast-forward; a data do commit do bump é de horas antes).
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: node .github/scripts/release-guard.mjs check

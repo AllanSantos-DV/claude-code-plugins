@@ -102,27 +102,91 @@ function classify(p, tags, ageMs, graceMs) {
 }
 
 /**
- * Há quanto tempo o valor ATUAL da versão entrou no arquivo (ms), via pickaxe do
- * git (`-S`): o commit em que a contagem daquela string mudou. Isso responde "há
- * quanto tempo esta versão está na main", que é o que define drift — e não o
- * timestamp do HEAD, que qualquer push desloca. `null` quando não dá para medir
- * (histórico raso, arquivo novo): o chamador trata como drift, nunca como OK.
+ * O commit em que o valor ATUAL da versão entrou no arquivo, via pickaxe do git
+ * (`-S`): { sha, ms } (ms = data do commit) ou null (histórico raso, arquivo novo).
  */
-function versionAgeMs(relFile, version, nowMs) {
+function bumpCommit(relFile, version) {
   if (!version) return null;
   try {
     const out = execFileSync(
       'git',
-      ['log', '-1', '--format=%cI', `-S${version}`, '--', relFile],
+      ['log', '-1', '--format=%H %cI', `-S${version}`, '--', relFile],
       { cwd: REPO_ROOT, encoding: 'utf8' },
     ).trim();
     if (!out) return null;
-    const t = Date.parse(out);
-    return Number.isFinite(t) ? nowMs - t : null;
+    const [sha, date] = out.split(' ');
+    const ms = Date.parse(date);
+    return sha && Number.isFinite(ms) ? { sha, ms } : null;
   } catch (err) {
     process.stderr.write(`[release-guard] aviso: não deu p/ datar ${relFile} (${err.message})\n`);
     return null;
   }
+}
+
+function isAncestor(a, b) {
+  if (!b || /^0+$/.test(b)) return false; // criação do branch: nada antes
+  try {
+    execFileSync('git', ['merge-base', '--is-ancestor', a, b], { cwd: REPO_ROOT, stdio: 'ignore' });
+    return true;
+  } catch (err) {
+    if (err.status === 1) return false; // não é ancestral
+    throw new Error(`git merge-base ${a} ${b}: ${err.message}`);
+  }
+}
+
+/**
+ * Quando o commit do bump CHEGOU na main (PURA — `pushes` e `isAnc` injetados): o
+ * push cujo `after` contém o commit e cujo `before` não. O fluxo develop → main é
+ * fast-forward, então a data do commit é a de quando foi escrito (horas antes do
+ * push) e a janela já tinha passado no push do release (visto na 3.0.0). null
+ * quando nenhum push da lista o trouxe.
+ */
+function pushArrival(bumpSha, pushes, isAnc) {
+  for (const p of pushes || []) {
+    if (isAnc(bumpSha, p.after) && !isAnc(bumpSha, p.before)) {
+      const t = Date.parse(p.timestamp);
+      if (Number.isFinite(t)) return t;
+    }
+  }
+  return null;
+}
+
+/**
+ * Pushes recentes na main (API de atividade do GitHub; o CI passa GITHUB_TOKEN e
+ * GITHUB_REPOSITORY). null sem token (uso local) ou em erro — dito no stderr; o
+ * chamador então data pelo commit, que só pode acusar drift CEDO, nunca esconder.
+ */
+async function fetchMainPushes() {
+  const token = process.env.GITHUB_TOKEN;
+  const repo = process.env.GITHUB_REPOSITORY;
+  if (!token || !repo) return null;
+  try {
+    const res = await fetch(`https://api.github.com/repos/${repo}/activity?ref=refs/heads/main&per_page=100`, {
+      headers: { Authorization: `Bearer ${token}`, Accept: 'application/vnd.github+json' },
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const list = await res.json();
+    return list.filter((a) => a && a.after && a.timestamp && a.activity_type !== 'branch_deletion');
+  } catch (err) {
+    process.stderr.write(`[release-guard] aviso: atividade da main indisponível (${err.message}) — datando pelo commit do bump\n`);
+    return null;
+  }
+}
+
+/**
+ * Há quanto tempo a versão ATUAL está na main: { ageMs, note? }. Pela chegada do
+ * bump na main quando os pushes são conhecidos; senão pela data do commit (dito na
+ * nota). ageMs null quando não dá para medir — o chamador trata como drift.
+ */
+function versionAge(relFile, version, nowMs, pushes, isAnc = isAncestor) {
+  const bump = bumpCommit(relFile, version);
+  if (!bump) return { ageMs: null };
+  if (pushes) {
+    const t = pushArrival(bump.sha, pushes, isAnc);
+    if (t != null) return { ageMs: nowMs - t };
+    return { ageMs: nowMs - bump.ms, note: 'push de chegada fora da atividade listada — datado pelo commit do bump' };
+  }
+  return { ageMs: nowMs - bump.ms, note: 'sem atividade da main (GITHUB_TOKEN) — datado pelo commit do bump' };
 }
 
 const VERSION_FILES = {
@@ -130,17 +194,19 @@ const VERSION_FILES = {
   'rf-reviewer': 'rf-reviewer/servers/rf-engine/rf_engine/__init__.py',
 };
 
-/** Resultado completo (impuro: lê git). */
-function evaluate(nowMs) {
+/** Resultado completo (impuro: lê git e a atividade da main). */
+async function evaluate(nowMs) {
   const tags = allTags();
+  const pushes = await fetchMainPushes();
   return plugins().map((p) => {
-    const age = versionAgeMs(VERSION_FILES[p.name], p.version, nowMs);
-    return classify(p, tags, age, GRACE_MS);
+    const { ageMs, note } = versionAge(VERSION_FILES[p.name], p.version, nowMs, pushes);
+    const r = classify(p, tags, ageMs, GRACE_MS);
+    return note && r.state !== 'ok' ? { ...r, note: r.note ? `${r.note}; ${note}` : note } : r;
   });
 }
 
-function cmdCheck() {
-  const results = evaluate(Date.now());
+async function cmdCheck() {
+  const results = await evaluate(Date.now());
   for (const r of results.filter((x) => x.state === 'pending')) {
     process.stdout.write(`[release-guard] ${r.name} ${r.version}: ${r.note} — aguardando a tag ${r.tag}.\n`);
   }
@@ -167,11 +233,11 @@ function cmdCheck() {
   process.exit(1);
 }
 
-function cmdList() {
-  process.stdout.write(JSON.stringify(evaluate(Date.now()), null, 2) + '\n');
+async function cmdList() {
+  process.stdout.write(JSON.stringify(await evaluate(Date.now()), null, 2) + '\n');
 }
 
-export { classify, versionAgeMs, evaluate, statusOf, plugins, GRACE_MS, VERSION_FILES };
+export { classify, pushArrival, versionAge, evaluate, statusOf, plugins, GRACE_MS, VERSION_FILES };
 
 // CLI só quando executado DIRETAMENTE. Sem esta guarda, um `import` do módulo
 // (por um teste, por exemplo) roda o check e chama process.exit, derrubando o
