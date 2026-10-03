@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Claude Code Boss — a memória local do seu Claude Code</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%230c0b0f'/%3E%3Cg fill='none' stroke='%23e59247' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M6 8h12M6 12h8M6 16h10'/%3E%3C/g%3E%3C/svg%3E" />
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica local, curadoria anti context-bloat com auto-redirect, hooks servidos por um daemon local e Model Router com custom upstream ou BYOK em protocolos Anthropic e OpenAI. v3.0.0, MIT." />
+<meta name="description" content="Plugin para Claude Code Desktop: memória semântica local, curadoria anti context-bloat com auto-redirect que se estende, se ajusta e se poda, /dashboard sem gastar turno do modelo, hooks servidos por um daemon local e Model Router com custom upstream ou BYOK em protocolos Anthropic e OpenAI. v3.0.0, MIT." />
 <style>
   :root{
     --bg:#0c0b0f; --surface:#131118; --surface-2:#191620; --ink:#edeae1; --muted:#a09d93;
@@ -107,6 +107,52 @@
     align-items:end; margin:0 0 38px }
   .sec-head h2{ font-size:clamp(1.45rem,3.1vw,2.05rem); letter-spacing:-.028em; line-height:1.15; margin:0 }
   .sec-head p{ margin:0; color:var(--muted); font-size:15px; line-height:1.55 }
+
+  /* destaques 3.0 */
+  .feat-grid{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px }
+  .feat{ position:relative; display:flex; flex-direction:column; border:1px solid var(--line);
+    background:var(--surface); border-radius:15px; padding:20px 20px 18px }
+  .feat--lead{ grid-column:span 2; grid-row:span 2; border-color:var(--amber);
+    background:linear-gradient(135deg,var(--amber-soft),transparent 62%),var(--surface) }
+  .feat .k{ margin:0 0 12px; font-family:var(--mono); font-size:10.5px; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--amber) }
+  .feat h3{ margin:0 0 10px; font-size:16.5px; line-height:1.3; letter-spacing:-.015em }
+  .feat .stat{ margin:0 0 12px; font-family:var(--mono); font-size:clamp(1.25rem,2.4vw,1.6rem);
+    font-weight:700; letter-spacing:-.03em; color:var(--amber-ink); line-height:1.15 }
+  .feat--lead .stat{ font-size:clamp(1.8rem,4.4vw,3.1rem) }
+  .feat--lead h3{ font-size:clamp(1.1rem,1.9vw,1.35rem) }
+  .feat--lead p.d{ font-size:14.5px }
+  .feat .stat small{ display:block; margin-top:5px; font-family:var(--sans); font-size:12.5px;
+    font-weight:500; letter-spacing:0; color:var(--muted) }
+  .feat p.d{ margin:0; color:var(--muted); font-size:13.5px; line-height:1.55 }
+  .feat p.d + p.d{ margin-top:9px }
+  .feat p.d b{ color:var(--ink); font-weight:600 }
+  .feat .proof{ margin:auto 0 0; padding-top:12px; border-top:1px dashed var(--line-strong);
+    font-family:var(--mono); font-size:11px; line-height:1.5; color:var(--muted) }
+  .feat .proof::before{ content:"✓ "; color:var(--amber); font-weight:700 }
+  .feat .body{ margin-bottom:14px }
+  .hop{ list-style:none; margin:16px 0 0; padding:0; display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px }
+  .hop li{ position:relative; border:1px solid var(--line); background:var(--bg); border-radius:10px;
+    padding:13px 12px; font-size:12.5px; line-height:1.5; color:var(--muted) }
+  .hop li b{ display:block; margin-bottom:3px; font-family:var(--mono); font-size:10px; letter-spacing:.1em;
+    text-transform:uppercase; color:var(--amber) }
+  .hop li.skip{ border-style:dashed; border-color:var(--amber) }
+  .vs{ display:grid; gap:10px; margin:22px 0 22px }
+  .vs-row{ display:grid; grid-template-columns:64px minmax(0,1fr) auto; gap:12px; align-items:center;
+    font-family:var(--mono); font-size:12px; color:var(--muted) }
+  .vs-bar{ height:10px; border-radius:999px; background:var(--line-strong) }
+  .vs-row--now .vs-bar{ width:4%; min-width:10px; background:var(--amber) }
+  .vs-row--now{ color:var(--amber-ink) }
+  .vs-row b{ white-space:nowrap; font-weight:600 }
+  .fixes{ margin:14px 0 0; padding:16px 18px; border:1px solid var(--line); border-radius:13px;
+    background:var(--surface) }
+  .fixes .k{ margin:0 0 10px; font-family:var(--mono); font-size:10.5px; letter-spacing:.14em;
+    text-transform:uppercase; color:var(--amber) }
+  .fixes ul{ margin:0; padding:0; list-style:none; display:grid;
+    grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 28px }
+  .fixes li{ position:relative; padding-left:18px; font-size:13px; color:var(--muted); line-height:1.5 }
+  .fixes li::before{ content:""; position:absolute; left:2px; top:.6em; width:7px; height:2px; background:var(--amber) }
+  .fixes li b{ color:var(--ink); font-weight:600 }
 
   /* pilares */
   .pillars{ display:grid; gap:1px; background:var(--line); border:1px solid var(--line);
@@ -253,6 +299,11 @@
 
   @media (max-width:880px){
     .sec-head{ grid-template-columns:minmax(0,1fr) }
+    .feat-grid{ grid-template-columns:repeat(2,minmax(0,1fr)) }
+    .feat-grid .feat:last-child{ grid-column:1 / -1 }
+    .feat--lead{ grid-row:auto }
+    .hop{ grid-template-columns:repeat(2,minmax(0,1fr)) }
+    .fixes ul{ grid-template-columns:minmax(0,1fr) }
     .pillar{ grid-template-columns:44px minmax(0,1fr); gap:16px }
     .pillar .ic{ width:44px; height:44px }
     .pillar ul{ grid-template-columns:minmax(0,1fr) }
@@ -272,6 +323,11 @@
     .step .tag{ display:none }
     .pillar{ grid-template-columns:minmax(0,1fr); gap:14px }
     .pillar ul{ grid-column:1 }
+    .feat-grid{ grid-template-columns:minmax(0,1fr) }
+    .feat--lead,.feat-grid .feat:last-child{ grid-column:auto }
+    .hop{ grid-template-columns:minmax(0,1fr) }
+    .vs-row{ grid-template-columns:52px minmax(0,1fr); gap:4px 10px }
+    .vs-row b{ grid-column:2; white-space:normal }
     .router-choice{ grid-template-columns:minmax(0,1fr) }
     .patch-head{ grid-template-columns:minmax(0,1fr) }
     .protocols{ flex-wrap:wrap }
@@ -295,7 +351,7 @@
   </a>
   <nav class="nav-links" aria-label="Seções">
     <a href="#memoria">Como funciona</a>
-    <a href="#novo">Novo na 3.0</a>
+    <a href="#destaques">Novo na 3.0</a>
     <a href="#rotear">Conectar modelos</a>
     <a href="#recursos">Recursos</a>
     <a href="#leve">Custo por sessão</a>
@@ -318,6 +374,7 @@
     </div>
     <ul class="facts">
       <li><span class="dot" aria-hidden="true"></span><b>v3.0.0</b> (major)</li>
+      <li><span class="dot" aria-hidden="true"></span><code>/dashboard</code> em <b>0 turnos</b></li>
       <li><span class="dot" aria-hidden="true"></span>Claude Code Desktop + <b>Node 22.13+</b></li>
       <li><span class="dot" aria-hidden="true"></span><b>Sem chave de API</b> no caminho padrão</li>
       <li><span class="dot" aria-hidden="true"></span>Licença <b>MIT</b></li>
@@ -374,6 +431,95 @@
           <span class="tag">saída</span>
         </div>
       </div>
+    </div>
+  </section>
+
+  <section id="destaques" class="wrap">
+    <div class="sec-head">
+      <h2>Novo na 3.0: a curadoria fecha o ciclo, e presta contas</h2>
+      <p>Seis recursos novos: o dashboard abre sem gastar um turno, o script curado se estende, se ajusta e é podado quando ninguém o usa, e a sessão começa dizendo o que a curadoria rendeu. Cada um foi provado no Claude Code real.</p>
+    </div>
+
+    <div class="feat-grid">
+      <article class="feat feat--lead">
+        <div class="body">
+          <p class="k">/dashboard · sem passar pelo modelo</p>
+          <h3>O pedido mais frequente agora é respondido por um hook</h3>
+          <p class="stat">0 turnos · US$&nbsp;0<small>~2 s na primeira vez, ~0,8 s com o dashboard já no ar.</small></p>
+          <div class="vs" role="img" aria-label="Antes: 5 turnos, cerca de 0,21 a 0,31 dólar. Agora: 0 turnos, 0 dólar.">
+            <div class="vs-row"><span>antes</span><span class="vs-bar"></span><b>5 turnos · ~US$&nbsp;0,21–0,31</b></div>
+            <div class="vs-row vs-row--now"><span>agora</span><span class="vs-bar"></span><b>0 turnos · US$&nbsp;0</b></div>
+          </div>
+          <p class="d">Digite <code>/dashboard</code> ou <code>/claude-code-boss:dashboard</code>: o hook garante o dashboard no ar (sonda HTTP da porta publicada, sem subir um segundo processo), abre o navegador e <b>bloqueia</b> o prompt mostrando a URL. São hooks <code>command</code> (<code>UserPromptExpansion</code> e <code>UserPromptSubmit</code>), então funcionam mesmo com o brain daemon fora do ar. Falha também bloqueia, com a causa.</p>
+          <ol class="hop" aria-label="Caminho do /dashboard">
+            <li><b>1 · você digita</b><code>/dashboard</code> ou o nome completo</li>
+            <li><b>2 · hook command</b>sonda HTTP da porta publicada; sobe o dashboard só se preciso</li>
+            <li><b>3 · navegador</b>abre o painel; o prompt é bloqueado mostrando a URL</li>
+            <li class="skip"><b>modelo</b>não recebe o prompt: 0 turnos, US$&nbsp;0</li>
+          </ol>
+        </div>
+        <p class="proof">medido no Claude Code real</p>
+      </article>
+
+      <article class="feat">
+        <div class="body">
+          <p class="k">variante → alias</p>
+          <h3>Variante recorrente estende o script curado</h3>
+          <p class="stat">1 linha<small>em vez de 404, na sessão seguinte</small></p>
+          <p class="d">Quando uma <b>variante</b> de um comando curado (ex.: <code>npm test -- --reporter=dot</code> com o script cobrindo <code>npm test</code>) roda crua, ruidosa e se repete, o Stop não pede um segundo script: pede para <b>estender</b> o existente (EXTEND) e registrar a variante como alias. Daí em diante ela é redirecionada, e o registro preserva os ajustes do script (orçamento, timeout, label, ícone).</p>
+        </div>
+        <p class="proof">ciclo provado no Claude Code real, com os ajustes do script intactos</p>
+      </article>
+
+      <article class="feat">
+        <div class="body">
+          <p class="k">filtro repetido → ajuste</p>
+          <h3>O filtro vai para a origem, não para cada chamada</h3>
+          <p class="stat">pede 1 vez<small>na 2ª vez, por projeto, script e filtro</small></p>
+          <p class="d">Se o agente filtra a saída de um script curado sempre do mesmo jeito (<code>node tests.mjs | tail -3</code>), o Stop pede <b>uma vez</b> para embutir o filtro no script ou no seu <code>outputLines</code>. Depois a decisão é do agente: se ele explica por que o filtro fica, o boss não insiste.</p>
+        </div>
+        <p class="proof">provado: script reduzido a uma linha no sucesso; filtrar de novo não gerou cobrança</p>
+      </article>
+
+      <article class="feat">
+        <div class="body">
+          <p class="k">poda · Prune</p>
+          <h3>Script curado que nunca rodou sai do caminho</h3>
+          <p class="stat">botão + tool<small>painel Curation &amp; guards e <code>curation_prune_unused</code></small></p>
+          <p class="d">Lista os scripts que <b>nunca rodaram</b> na janela (nem execução, nem redirect, nem pipe). Seguro por construção: nenhum candidato enquanto o histórico de <b>uso</b> da 3.0 não cobrir a janela inteira (numa instalação recém-atualizada nada é "não usado"), nunca um script mais novo que ela, ids recalculados na poda. Sai só o registro do <code>shells.json</code>, com backup no diretório de dados do plugin (os 5 mais recentes por projeto); o arquivo do script fica.</p>
+        </div>
+        <p class="proof">provado no Claude Code real (tool) e no dashboard</p>
+      </article>
+
+      <article class="feat">
+        <div class="body">
+          <p class="k">SessionStart · resumo de valor</p>
+          <h3>A sessão começa dizendo o que a curadoria rendeu</h3>
+          <p class="stat">1×/dia<small>por projeto, sobre os últimos 7 dias</small></p>
+          <p class="d">Uma linha: tokens economizados (moldador exato + redirects estimados), redirects, execuções de scripts curados, custo cru e <b>o maior gargalo</b>, por regras fixas. Os mesmos números do painel; sem atividade, nada aparece.</p>
+        </div>
+        <p class="proof">provado no Claude Code real; não se repete no mesmo dia</p>
+      </article>
+
+      <article class="feat">
+        <div class="body">
+          <p class="k">BRAIN-HEALTH · hook lento</p>
+          <h3>Aviso antes de um hook ficar sem folga</h3>
+          <p class="stat">p95 ≥ ½ prazo<small>com 10+ chamadas medidas, ou algum prazo estourado</small></p>
+          <p class="d">O sinal vem antes de o hook começar a não decidir nada (fail-open). No máximo uma vez por hook a cada 6 h por processo do daemon, e só sobre o daemon desta instalação.</p>
+        </div>
+        <p class="proof">provado: hook forçado a estourar → alerta na sessão seguinte</p>
+      </article>
+    </div>
+
+    <div class="fixes">
+      <p class="k">corrigido junto</p>
+      <ul>
+        <li><b>O dashboard não carregava nenhum painel:</b> o script da página não compilava (um apóstrofo numa string JS). Corrigido, e um teste agora compila todo script embutido no <code>index.html</code>.</li>
+        <li><b>Edições do <code>shells.json</code></b> (script ou alias registrado no meio da sessão) passam a ser vistas pelo daemon sem reiniciar.</li>
+        <li><b>Uma execução <code>CCB_RAW=1</code></b>, o escape que o próprio redirect oferece, nunca mais é cobrada como falta de curadoria.</li>
+        <li><b>O navegador nunca abria</b> na primeira subida do dashboard (<code>DASHBOARD_NO_OPEN='0'</code> era lido como "não abrir").</li>
+      </ul>
     </div>
   </section>
 
@@ -537,7 +683,9 @@
           <li><b>Redirecionamento automático</b> via <code>updatedInput</code>, inclusive dentro de compostos: <code>allow</code> em <code>bypassPermissions</code>, <code>ask</code> nos demais modos (o prompt mostra a reescrita). <code>CCB_RAW=1</code> pede a saída crua</li>
           <li><b>Só cura o que se repete:</b> exploração (<code>git log</code>, <code>grep</code>, <code>cat</code>…) e código inline nunca viram script; no replay, cobranças do Stop caíram de 1.316 para 45 (−96,6%)</li>
           <li><b>Exploração limitada sem Token Guard e em <code>bypassPermissions</code>:</b> um comando de exploração isolado e sem pipe próprio (nunca <code>tail -f</code>/<code>less</code>) tem a saída limitada em streaming, até 80 linhas / 8000 caracteres, e a saída completa fica em <code>.runtime/shaped</code>. Com o Token Guard presente, o boss não interfere</li>
-          <li><b>Pipe sobre script curado é permitido</b> e medido por script, como sinal de que a saída precisa de ajuste</li>
+          <li><b>Pipe sobre script curado é permitido</b> e medido por script; o mesmo filtro repetido gera <b>um</b> pedido para embutir o filtro no script</li>
+          <li><b>Variante recorrente vira alias</b> do script curado (EXTEND) em vez de um segundo script, e passa a ser redirecionada</li>
+          <li><b>Poda segura</b> dos scripts que nunca rodaram na janela: botão <b>Prune</b> no dashboard ou a tool <code>curation_prune_unused</code></li>
           <li>Guarda de erro: nega só a repetição na <b>mesma sessão</b> e no mesmo diretório, sem edição desde a falha; no replay de 9.459 chamadas, bloqueios falsos caíram de 34 para 4</li>
           <li><code>grep -r</code>/<code>rg</code>/<code>find</code> amplos viram consulta estrutural ao grafo quando ele está pronto</li>
         </ul>
@@ -573,7 +721,7 @@
       </li>
       <li>
         <p class="head"><span aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18M8 13h8M8 16.5h5"/></svg></span><b>Dashboard local sob demanda</b></p>
-        <p>Servido em <code>127.0.0.1</code>, com porta dinâmica e token gerado no boot. A aba Router configura upstream, BYOK, protocolos, URLs e headers; Brain KB, Hooks, Insights e Logs ficam no mesmo painel local. Novo na 3.0.0: o painel <b>Curation &amp; guards</b> na Home separa a economia exata da estimada (sem linha de base, diz "sem base"), mostra o custo, uso por script, scripts nunca usados e a latência por hook.</p>
+        <p>Abra com <code>/dashboard</code>: um hook responde, sem passar pelo modelo (0 turnos, US$&nbsp;0), sobe o painel se preciso, abre o navegador e mostra a URL. Servido em <code>127.0.0.1</code>, com porta dinâmica e token gerado no boot. A aba Router configura upstream, BYOK, protocolos, URLs e headers; Brain KB, Hooks, Insights e Logs ficam no mesmo painel local. Novo na 3.0.0: o painel <b>Curation &amp; guards</b> na Home separa a economia exata da estimada (sem linha de base, diz "sem base"), mostra o custo, uso por script, scripts que nunca rodaram (com botão <b>Prune</b>) e a latência por hook.</p>
       </li>
       <li>
         <p class="head"><span aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21a9 9 0 1 0-9-9"/><path d="M3 12H7l2.2 5 3-11 2.3 6h3.3"/></svg></span><b>Doctor: diagnóstico zero-config</b></p>
