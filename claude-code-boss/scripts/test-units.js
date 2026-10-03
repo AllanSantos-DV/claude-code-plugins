@@ -1632,6 +1632,24 @@ test('brain-backend mcp: init() re-handshakes on project change (BLOCKING-B leak
   }
 });
 
+test('brain-backend saveMcp: entry.projectId → metadata.project_id (scope=user lands in __user__); absent → omitted (handshake project)', async () => {
+  const daemon = await startFakeDaemon({ toolResult: () => ({ content: [{ type: 'text', text: 'Document added with ID: x1' }] }) });
+  delete require.cache[require.resolve('./brain-backend.js')];
+  const backend = require('./brain-backend.js');
+  backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
+  try {
+    await backend.init({ project: 'projA' });
+    await backend.save({ title: 't', summary: 's', projectId: '__user__' });
+    assertEq(daemon.seen.callArgs.arguments.metadata.project_id, '__user__', 'explicit target scope sent');
+    await backend.save({ title: 't', summary: 's' });
+    assertEq(daemon.seen.callArgs.arguments.metadata.project_id, undefined, 'no projectId → server stamps the handshake project');
+    await backend.close();
+  } finally {
+    delete require.cache[require.resolve('./brain-backend.js')];
+    await daemon.close();
+  }
+});
+
 test('brain-backend searchMcp (F2): opts.projectIds → metadata.project_id LIST; coexists with type; omitted otherwise', async () => {
   const daemon = await startFakeDaemon({ toolResult: () => ({ content: [{ type: 'text', text: JSON.stringify({ results: [] }) }] }) });
   delete require.cache[require.resolve('./brain-backend.js')];
@@ -17667,6 +17685,41 @@ test('KB gate: mcp-memory backend (handleRemoteKbTool) — cwd WITHOUT id refuse
     const res = await pending;
     assert(res.isError === true && /no project id/.test(res.content[0].text), res.content[0].text);
   } finally { backend._resetConfig(); fs.rmSync(cwd, { recursive: true, force: true }); }
+}));
+
+test('mcp-memory backend: scope routes to __user__ like the local path (writes sanitized + secrets refused; search scope → project_id list)', _withoutEnvProjectId(async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-remote-scope-'));
+  fs.mkdirSync(path.join(cwd, '.memory'));
+  fs.writeFileSync(path.join(cwd, '.memory', 'project.json'), JSON.stringify({ version: '1', metadata: { defaults: { project_id: 'owner/scoped' } } }));
+  const backend = require('./brain-backend.js');
+  const orig = { init: backend.init, save: backend.save, search: backend.search };
+  const saves = []; const searches = [];
+  backend.init = async () => {};
+  backend.save = async (e) => { saves.push(e); return 'id-' + saves.length; };
+  backend.search = async (q, o) => { searches.push(o); return []; };
+  try {
+    const url = require('url');
+    const mod = await import(url.pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+    const server = mod.createBrainServer({ pluginRoot: ROOT, mode: 'stdio' });
+    // withUserConfig is synchronous: route each call inside it (routing reads the mode sync).
+    const cfg = { backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: 'http://127.0.0.1:1' } } };
+    const tool = (n, a) => withUserConfig(cfg, () => { backend._resetConfig(); assertEq(backend.peekMode(), 'mcp-memory', 'precondition'); return server.handleTool(n, a); });
+    {
+      const u = JSON.parse((await tool('brain_store', { title: 'T', summary: `see ${cwd}`, scope: 'user', cwd })).content[0].text);
+      assertEq([saves[0].projectId, u.project, u.scope], ['__user__', '__user__', 'user'], 'scope=user → __user__');
+      assert(!String(saves[0].summary).includes(cwd), `user scope is sanitized like the local path: ${saves[0].summary}`);
+      await tool('capture_lesson', { title: 'L', summary: 'S', type: 'decision', cwd });
+      assertEq([saves[1].projectId, saves[1].scope], ['owner/scoped', 'project'], 'auto → inferred (decision → project)');
+      const sec = await tool('capture_lesson', { title: 'L', summary: 'token ghp_abcdefghijklmnopqrstuvwxyz0123456789AB', scope: 'user', cwd });
+      assert(sec.isError && /rejected/.test(sec.content[0].text) && saves.length === 2, `secret in user scope refused, nothing saved: ${sec.content[0].text}`);
+      const sk = await tool('capture_lesson', { title: 'S', summary: 'S', type: 'skill', description: 'short', useFor: 'x', doNotUseFor: 'y', cwd });
+      assert(sk.isError && saves.length === 2, `skill out of range refused on the remote path too, nothing saved: ${sk.content[0].text}`);
+      for (const [scope, want] of [['user', ['__user__']], ['project', ['owner/scoped']], [undefined, ['owner/scoped', '__user__']]]) {
+        await tool('brain_search', { query: 'q', scope, cwd });
+        assertEq(searches[searches.length - 1].projectIds, want, `search scope ${scope}`);
+      }
+    }
+  } finally { Object.assign(backend, orig); backend._resetConfig(); fs.rmSync(cwd, { recursive: true, force: true }); }
 }));
 
 test('KB gate (http daemon): the lock slot follows the cwd id, and the daemon\'s inherited CCB_PROJECT_ID is ignored', async () => {
