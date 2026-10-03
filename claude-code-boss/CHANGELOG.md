@@ -67,6 +67,22 @@ daemon de hooks e as correções de escopo por sessão.
 - Um comando já moldado pelo boss é julgado pelo comando original; a saída de um
   composto não é debitada do orçamento de um script curado que é só uma das partes.
 
+### Added — `/dashboard` abre sem passar pelo modelo
+- O pedido mais frequente: `/dashboard` virava um prompt e o agente gastava vários
+  turnos rodando o starter, lendo o arquivo de descoberta e montando a URL. Agora um
+  hook responde o comando: garante o dashboard no ar (sonda HTTP da porta publicada,
+  sem subir um segundo processo), abre o navegador e **bloqueia** o prompt mostrando a
+  URL. Medido no Claude Code real: **0 turnos, US$ 0**, ~2 s na primeira vez e ~0,8 s
+  com o dashboard já no ar (antes: 5 turnos, ~US$ 0,21–0,31).
+- Funciona digitando `/dashboard` ou `/claude-code-boss:dashboard`: o nome curto que a
+  CLI não resolve como comando chega ao `UserPromptSubmit` como texto e é atendido lá; o
+  nome completo é atendido na expansão (`UserPromptExpansion`). Hooks `command`, então
+  funcionam mesmo com o brain daemon fora do ar. Falha também bloqueia, com a causa.
+- **Corrigido:** o starter passava `DASHBOARD_NO_OPEN='0'`, que o dashboard lia como
+  "não abrir" — o navegador nunca abria na primeira subida. `dashboard-start.js`
+  imprime `{ok, url}` (o texto de reserva do comando, usado quando o próprio modelo o
+  invoca, usa essa saída em vez de adivinhar o caminho do arquivo de descoberta).
+
 ### Added — métricas reais e painel "Curation & guards"
 - Eventos novos no store de métricas: `curation.used` (execuções por script,
   tamanho, sucesso), `curation.redirected`, `curation.uncovered` (variante sem
