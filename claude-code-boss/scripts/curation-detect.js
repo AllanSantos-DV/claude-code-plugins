@@ -27,7 +27,7 @@ const { canonicalSig } = require('./lib/command-signature.js');
 const oneoff = require('./lib/oneoff-store.js');
 const { classifyCommand } = require('./lib/curation-families.js');
 
-const { findProjectRoot, loadShellsConfig, matchCuratedShell } = require('./shells-config.js');
+const { findProjectRoot, loadShellsConfig, matchCuratedShell, _tokenize, _pathMatches } = require('./shells-config.js');
 const { classify, successBudgetFor }                            = require('./curation-classifier.js');
 
 const { dataDir } = require('./lib/data-dir.js');
@@ -134,6 +134,14 @@ async function run(event) {
       sessionId, windowDays: _curationCfg.oneHitWindowDays, create: !!reason,
     });
 
+    // C4: a curated script actually RAN (its path is a token — a raw alias match is not a
+    // run; redirected commands arrive here already rewritten). Output size per run is what
+    // the dashboard compares against the raw baseline of the same signature.
+    const scriptRel = curatedShell ? String(curatedShell.script || '').trim() : '';
+    if (scriptRel && _tokenize(command).some((t) => _pathMatches(t, scriptRel))) {
+      metrics.fire('curation.used', { scriptId: curatedShell.id || scriptRel, chars: charCount, lines: lineCount, success: isSuccess }, { sessionId, cwd });
+    }
+
     if (!reason) return;
 
     // U5: a SUB-AGENT's command (the hook input carries agent_id — verified in a
@@ -190,7 +198,7 @@ async function run(event) {
     console.error(`[CURATION-DETECT] ${reason} (${seen.sig} ${seen.count}/${_curationCfg.oneHitMaxRecurrence}): ${charCount} chars, ${lineCount} lines`);
     // Value signal (U2): raw output that tripped the curation thresholds — the
     // dashboard sums these chars as "context saved". Fire-and-forget; never blocks.
-    metrics.fire('curation.flagged', { chars: charCount, lines: lineCount, reason, isCurated },
+    metrics.fire('curation.flagged', { chars: charCount, lines: lineCount, reason, isCurated, sig: seen.sig },
       { sessionId, cwd });
   } catch (err) {
     console.error(`[CURATION-DETECT] Error: ${err.message}`);

@@ -24,6 +24,7 @@ const { loadCurationConfig } = require('./curation-paths.js');
 const { runPreToolUseCli } = require('./lib/hook-io.js');
 const { findProjectRoot, loadShellsConfig, matchCuratedShell, _pathMatches, _tokenize } = require('./shells-config.js');
 const { planRedirect, planShaping } = require('./lib/curation-redirect.js');
+const { canonicalSig } = require('./lib/command-signature.js');
 const metrics = require('./lib/metrics.js');
 
 const hooksConfig = require('./lib/hooks-config.js');
@@ -114,6 +115,7 @@ async function run(event) {
     const scriptPath = curatedShell ? (curatedShell.script || '').trim() : '';
     if (scriptPath && _tokenize(command.trim()).some(t => _pathMatches(t, scriptPath))) {
       if (pipesCuratedScript(command, scriptPath)) {
+        metrics.fire('curation.pipe-denied', { shellId: curatedShell.id || scriptPath }, { sessionId: event.session_id, cwd: event.cwd });
         const reason = `[curation-guard] Curated script \`${scriptPath}\` invoked with a pipe. Its output is already shaped (filter: ${curatedShell.outputFilter || 'summary'}, lines: ${curatedShell.outputLines || 200}) and is meant to be consumed as-is. If the output is not adequate, edit the script. See skill \`curation-script-pattern\`.`;
         return decision('deny', { additionalContext: reason, permissionDecisionReason: reason });
       }
@@ -133,7 +135,10 @@ async function run(event) {
       const mode = event.permission_mode === 'bypassPermissions' ? 'allow' : 'ask';
       const list = plan.replaced.map((r) => `\`${r.from}\` → \`${r.to}\``).join('; ');
       const ctx = `[curadoria] Redirecionado para o script curado do projeto: ${list}. A saída é o resumo curado (não a crua). Se precisar da saída crua, rode de novo com \`CCB_RAW=1\` na frente do comando.`;
-      for (const r of plan.replaced) metrics.fire('curation.redirected', { shellId: r.shellId, mode, compound: plan.replaced.length > 1 || r.from !== command.trim() }, mctx);
+      for (const r of plan.replaced) {
+        let sig = ''; try { sig = canonicalSig(r.from); } catch (err) { void err; }
+        metrics.fire('curation.redirected', { shellId: r.shellId, sig, mode, compound: plan.replaced.length > 1 || r.from !== command.trim() }, mctx);
+      }
       return decision(mode, { updatedInput: { command: plan.rewritten }, additionalContext: ctx, ...(mode === 'ask' ? { permissionDecisionReason: ctx } : {}) });
     } else if (plan.uncovered.length) {
       metrics.fire('curation.uncovered', { shells: plan.uncovered }, mctx);

@@ -3805,6 +3805,35 @@ test('C1 curation-families: Token Guard detected from a PostToolUse hook in user
   }
 });
 
+test('C4 curation-metrics: exact shaper savings, redirect savings only with a baseline, raw output counted as a COST, never-used scripts', () => {
+  const { summarizeCuration } = require('./lib/curation-metrics.js');
+  const ev = (eventName, payload) => ({ eventName, payload });
+  const s = summarizeCuration([
+    ev('curation.flagged', { sig: 'npm test', chars: 9000 }),
+    ev('curation.pending', { sig: 'npm test', chars: 7000 }),
+    ev('curation.redirected', { shellId: 'tests', sig: 'npm test', mode: 'allow' }),
+    ev('curation.used', { scriptId: 'tests', chars: 1000, success: true }),
+    ev('curation.used', { scriptId: 'tests', chars: 3000, success: false }),
+    ev('curation.redirected', { shellId: 'build', sig: 'npm run build', mode: 'ask' }),
+    ev('curation.uncovered', { shells: ['tests'] }),
+    ev('curation.skipped', { class: 'inline' }), ev('curation.skipped', { class: 'exploration' }),
+    { event_name: 'curation.shaped', payload: JSON.stringify({ family: 'cat', rawChars: 5000, shownChars: 800 }) },
+    ev('curation.bypass', {}), ev('curation.pipe-denied', {}), ev('error-guard.denied', {}),
+  ], { shellIds: ['tests', 'build', 'lint'] });
+  assertEq(s.redirects.total, 2, 'two redirects'); assertEq(s.redirects.ask, 1, 'one under ask');
+  assertEq(s.runs.byScript.tests.avgChars, 2000, 'avg curated output'); assertEq(s.runs.byScript.tests.successRate, 0.5, 'success rate');
+  assertEq(s.redirectSavings.withBaseline, 1, 'npm test has a raw baseline');
+  assertEq(s.redirectSavings.estChars, 8000 - 2000, 'baseline avg (9000+7000)/2 minus curated avg');
+  assertEq(s.redirectSavings.withoutBaseline, 1, 'build has no baseline → not invented');
+  assertEq(s.shaped.savedChars, 4200, 'shaper saving is exact (string payload parsed)');
+  assertEq(s.rawEnteredContext.chars, 9000, 'flagged raw output is a cost, not a saving');
+  assertEq(s.totals.savedChars, 4200 + 6000, 'total = exact + estimated savings only');
+  assertEq(s.skipped.inline, 1, 'inline skipped'); assertEq(s.uncovered.byScript.tests, 1, 'uncovered variant');
+  assertEq(s.guards.pipeDenied + s.guards.errorGuardDenied, 2, 'guards counted');
+  assertEq(JSON.stringify(s.neverUsed), '["lint"]', 'build was redirected (counts as use); lint never used');
+  assertEq(summarizeCuration([]).totals.savedChars, 0, 'empty → zeros');
+});
+
 test('recall-health.isDegraded: classifies degraded vs ok reasons', () => {
   const rh = require('./lib/recall-health.js');
   assert(rh.isDegraded('no-compose') && rh.isDegraded('remote-error') && rh.isDegraded('timeout'), 'degraded reasons');
