@@ -123,6 +123,14 @@ daemon de hooks e as correções de escopo por sessão.
   apóstrofo numa string JS) — **nenhum painel carregava**. Um teste agora compila todo
   script embutido no `index.html`. O painel aceita `?root=<pasta>` como link direto.
 
+### Added — resumo de valor no início da sessão
+- Uma vez por dia por projeto, o SessionStart diz numa linha o que a curadoria fez nos
+  últimos 7 dias — tokens economizados (moldador exato + redirects estimados), redirects,
+  execuções de scripts curados, custo cru — e **o maior gargalo**, por regras fixas
+  (variantes de um script rodando cruas, custo cru maior que a economia, script
+  falhando). Os mesmos números do painel; sem atividade, nada aparece. Provado no Claude
+  Code real (aparece na sessão seguinte à atividade; não se repete no mesmo dia).
+
 ### Added — métricas reais e painel "Curation & guards"
 - Eventos novos no store de métricas: `curation.used` (execuções por script,
   tamanho, sucesso), `curation.redirected`, `curation.uncovered` (variante sem
