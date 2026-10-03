@@ -80,7 +80,7 @@ function profilesFor(shells) {
 
 /** The command that runs a curated script, by extension (absolute, forward slashes). */
 function invocationFor(shell, projectRoot) {
-  const rel = String((shell && (shell.script || shell.path)) || '').trim();
+  const rel = String((shell && (shell.script || shell.path || shell.command)) || '').trim(); // `command` = legacy field register writes
   if (!rel) return null;
   // The path is interpolated into a shell command between "…": a `"`, `$` or backtick in a
   // repo's shells.json would break out of the quotes. And the rewrite only ever targets

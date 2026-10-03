@@ -3921,6 +3921,26 @@ test('audit: invocationFor refuses a script path that would break out of the quo
   }
 });
 
+test('shells-config: a shells.json edited mid-process is seen on the next call (daemon-lived cache keyed by the file stamp)', () => {
+  const sc = require('./shells-config.js');
+  const { planRedirect } = require('./lib/curation-redirect.js');
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-shells-stamp-'));
+  fs.mkdirSync(path.join(proj, '.vscode', 'scripts'), { recursive: true });
+  const file = path.join(proj, '.vscode', 'shells.json');
+  try {
+    sc._resetCache();
+    assertEq(sc.loadShellsConfig(proj).shells.length, 0, 'no file yet → empty');
+    // what curation_register_shell writes: the legacy `command` field
+    fs.writeFileSync(file, JSON.stringify({ shells: [{ id: 'tests', type: 'script', command: '.vscode/scripts/tests.mjs', aliases: ['npm test'] }] }));
+    assertEq(sc.loadShellsConfig(proj).shells.length, 1, 'a file created later is picked up');
+    assert(!planRedirect('npm test -- --reporter=dot', sc.loadShellsConfig(proj).shells, proj).rewritten, 'variant not covered yet');
+    fs.writeFileSync(file, JSON.stringify({ shells: [{ id: 'tests', type: 'script', command: '.vscode/scripts/tests.mjs', aliases: ['npm test', 'npm test -- --reporter=dot'] }] }));
+    const shells = sc.loadShellsConfig(proj).shells;
+    assertEq(shells[0].aliases.length, 2, 'the alias registered mid-process is seen without any reset');
+    assert(/tests\.mjs"$/.test(planRedirect('npm test -- --reporter=dot', shells, proj).rewritten || ''), 'and the variant now redirects to the script');
+  } finally { sc._resetCache(); fs.rmSync(proj, { recursive: true, force: true }); }
+});
+
 test('variant → alias: a recurring noisy uncovered VARIANT of a curated script is journaled as EXTEND (not CREATE, not REFINE)', async () => {
   const detect = require('./curation-detect.js');
   const journal = require('./lib/turn-journal.js');

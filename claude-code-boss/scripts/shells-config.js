@@ -37,41 +37,49 @@ const {
   getShellsConfigPath,
 } = require('./curation-paths.js');
 
-/** @type {Map<string, { shells: object[], whitelist: string[] }>} */
+/** @type {Map<string, { stamp: string, result: { shells: object[], whitelist: string[] } }>} */
 const _cache = new Map();
 
+// The cache is keyed by the shells file's stamp (path + mtime + size), not just the
+// root: hooks now run in the long-lived brain daemon (Phase G), and a root-only cache
+// froze shells.json at its first read — a script/alias registered mid-session
+// (curation_register_shell or a hand edit) never redirected until a daemon restart
+// (seen live in the variant→alias stress). One stat per call, as refreshConfig does.
+function stampOf(shellsPath) {
+  if (!shellsPath) return 'none';
+  try { const st = fs.statSync(shellsPath); return `${shellsPath}|${st.mtimeMs}|${st.size}`; }
+  catch (err) { if (err.code !== 'ENOENT') console.error(`[SHELLS-CONFIG] stat ${shellsPath}: ${err.message}`); return `${shellsPath}|absent`; }
+}
+
 /**
- * Load (and cache) shells config for the given project root.
+ * Load (and cache until the file changes) shells config for the given project root.
  * Returns { shells: [], whitelist: [] } on any error — never throws.
  * @param {string|null} projectRoot
  * @returns {{ shells: object[], whitelist: string[] }}
  */
 function loadShellsConfig(projectRoot) {
   if (!projectRoot) return { shells: [], whitelist: [] };
-  if (_cache.has(projectRoot)) return _cache.get(projectRoot);
+  const shellsPath = getShellsConfigPath(projectRoot);
+  const stamp = stampOf(shellsPath);
+  const hit = _cache.get(projectRoot);
+  if (hit && hit.stamp === stamp) return hit.result;
 
+  let result = { shells: [], whitelist: [] };
   try {
-    const shellsPath = getShellsConfigPath(projectRoot);
-    if (!shellsPath || !fs.existsSync(shellsPath)) {
-      const result = { shells: [], whitelist: [] };
-      _cache.set(projectRoot, result);
-      return result;
+    if (shellsPath && fs.existsSync(shellsPath)) {
+      const config = JSON.parse(fs.readFileSync(shellsPath, 'utf-8'));
+      const shells = (config.shells || []).map(s => {
+        // Normalize: legacy `command` (was path) becomes `script`.
+        if (!s.script && s.command) return { ...s, script: s.command };
+        return s;
+      });
+      result = { shells, whitelist: config.whitelist || [] };
     }
-    const config = JSON.parse(fs.readFileSync(shellsPath, 'utf-8'));
-    const shells = (config.shells || []).map(s => {
-      // Normalize: legacy `command` (was path) becomes `script`.
-      if (!s.script && s.command) return { ...s, script: s.command };
-      return s;
-    });
-    const result = { shells, whitelist: config.whitelist || [] };
-    _cache.set(projectRoot, result);
-    return result;
   } catch (err) {
     console.error(`[SHELLS-CONFIG] Failed to parse shells config: ${err.message}`);
-    const result = { shells: [], whitelist: [] };
-    _cache.set(projectRoot, result);
-    return result;
   }
+  _cache.set(projectRoot, { stamp, result });
+  return result;
 }
 
 /**
