@@ -89,8 +89,11 @@ daemon de hooks e as correções de escopo por sessão.
   ruidosa e se repete, o Stop deixa de pedir um **segundo** script (CREATE) e pede para
   **estender** o existente (EXTEND): aceitar a variante e registrá-la como alias, com a
   lista de aliases atuais na mensagem (o registro substitui a lista). Daí em diante a
-  variante é redirecionada. Ciclo provado no Claude Code real: na sessão seguinte, a
-  variante rodou pelo script — 1 linha em vez de 404.
+  variante é redirecionada. `curation_register_shell` num id existente agora **preserva**
+  os campos não enviados (orçamento, timeout, label, ícone) e aceita omitir `content`
+  (o arquivo do script fica como está). Ciclo provado no Claude Code real: na sessão
+  seguinte, a variante rodou pelo script — 1 linha em vez de 404 — com os ajustes do
+  script intactos.
 - **Corrigido:** o daemon não via edições do `shells.json` (script ou alias registrado
   no meio da sessão) até reiniciar — o cache só olhava a raiz do projeto, herança da era
   "um processo por hook". Agora segue o carimbo do arquivo.
@@ -112,12 +115,14 @@ daemon de hooks e as correções de escopo por sessão.
   linha no aviso de curadoria de toda sessão. O painel **Curation & guards** lista os
   que **nunca rodaram** na janela (nem execução, nem redirect, nem pipe) com um botão
   **Prune**; a tool MCP `curation_prune_unused` faz o mesmo pelo chat (lista por padrão;
-  poda só com `apply` e os ids explícitos).
+  poda só com `apply` e os ids explícitos; `cwd` obrigatório — o daemon compartilhado
+  não adivinha o projeto).
 - Seguro por construção: nenhum candidato enquanto o histórico de uso não cobrir a
-  janela inteira (as métricas de uso nasceram na 3.0 — numa instalação recém-atualizada
-  nada é "não usado"); nunca um script mais novo que a janela; a poda recalcula os
-  candidatos e recusa qualquer outro id. Sai só o registro do `shells.json` (backup
-  gravado, JSON legível); o arquivo do script fica. Provado no Claude Code real (tool) e
+  janela inteira — contado a partir dos eventos de **uso** da 3.0, nunca do
+  `curation.flagged` que já existia na 2.x (numa instalação recém-atualizada nada é "não
+  usado"); nunca um script mais novo que a janela; a poda recalcula os candidatos e recusa
+  qualquer outro id. Sai só o registro do `shells.json` (backup no diretório de dados do
+  plugin, os 5 mais recentes por projeto; JSON legível); o arquivo do script fica. Provado no Claude Code real (tool) e
   no dashboard (botão renderizado, poda e recusa).
 - **Corrigido:** o script da página do dashboard não compilava desde a curadoria nova (um
   apóstrofo numa string JS) — **nenhum painel carregava**. Um teste agora compila todo

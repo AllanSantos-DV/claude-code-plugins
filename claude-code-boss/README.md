@@ -101,7 +101,7 @@ prazo interno de `timeout − 1 s`.
 | Evento | Script | O que faz |
 | --- | --- | --- |
 | SessionStart | `model-router-ensure.js` | Garante o daemon do model-router na porta fixa e publica `ANTHROPIC_BASE_URL`/shim (roteamento de custo opcional) — spawn próprio, fora do dispatcher |
-| **SessionStart** | **`session-start-dispatcher.js`** | **Entry único** — roda in-process os 12 detectores abaixo (`brain-daemon-ensure` + os 11 seguintes), concorrente com timeout próprio por detector (mirror dos timeouts antigos), funde os textos de advisory num só `additionalContext` |
+| **SessionStart** | **`session-start-dispatcher.js`** | **Entry único** — roda in-process os 13 detectores abaixo (`brain-daemon-ensure` + os 12 seguintes), concorrente com timeout próprio por detector (mirror dos timeouts antigos), funde os textos de advisory num só `additionalContext` |
 | SessionStart (via dispatcher) | `brain-daemon-ensure.js` | Garante o daemon único e, no backend `mcp-memory` HTTP, verifica update no máximo 1x/24h; aplica/reinicia/valida versão automaticamente sem criar outro hook |
 | SessionStart (via dispatcher) | `memory-rotate.js` | Rotaciona MEMORY.md quando >150 linhas (side-effect only) |
 | SessionStart (via dispatcher) | `session-whitelist.js` | Detecta ecossistema do projeto, popula whitelist (side-effect only) |
