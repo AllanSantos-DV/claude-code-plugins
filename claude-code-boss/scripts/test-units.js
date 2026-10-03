@@ -20439,6 +20439,20 @@ test('mcp-server http: explicit owner/repo project is accepted (U14); path-like 
   }
 });
 
+test('dashboard: every inline <script> of index.html compiles (one syntax error blanks EVERY panel)', () => {
+  // Found in the prune stress: an apostrophe inside a single-quoted JS string (a column
+  // title, C6) broke the whole page script — no panel loaded — and nothing caught it
+  // (the i18n audit only reads keys). Compile, don't run.
+  const vm = require('vm');
+  const html = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf8');
+  const blocks = [...html.matchAll(/<script(?![^>]*\bsrc=)[^>]*>([\s\S]*?)<\/script>/gi)].map((m) => m[1]);
+  assert(blocks.length > 0, 'found the inline scripts');
+  blocks.forEach((code, i) => {
+    try { new vm.Script(code, { filename: `index.html#script${i}` }); }
+    catch (err) { throw new Error(`inline script ${i} does not compile: ${err.message}`); }
+  });
+});
+
 test('prune never-used: no candidates without a history covering the window; old unused + dangling are candidates; young and used are not', () => {
   const { pruneCandidates } = require('./lib/shells-prune.js');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune-'));
