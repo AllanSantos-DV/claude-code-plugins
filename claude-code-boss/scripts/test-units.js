@@ -20439,6 +20439,51 @@ test('mcp-server http: explicit owner/repo project is accepted (U14); path-like 
   }
 });
 
+test('slow-hook alert: p95 at half the deadline (enough calls) or any expiry → slow; few samples / queued-only / unavailable → not', () => {
+  const { slowHooks } = require('./lib/hook-latency-alert.js');
+  const d = { hook_curation_guard: 7000, hook_error_guard: 7000, hook_stop_dispatcher: 29000, hook_skill_metric: 9000 };
+  const lat = {
+    hook_curation_guard: { calls: 50, queued: 0, expired: 0, p95Ms: 3600 },   // ≥ 3500 → slow
+    hook_error_guard: { calls: 50, queued: 0, expired: 0, p95Ms: 3400 },      // just under half → fine
+    hook_stop_dispatcher: { calls: 3, queued: 0, expired: 1, p95Ms: 400 },    // an expiry is slow even with few calls
+    hook_skill_metric: { calls: 200, queued: 200, expired: 0, p95Ms: 0 },     // fire-and-forget: no latency
+    hook_x: { calls: 4, queued: 0, expired: 0, p95Ms: 99999 },                // too few samples
+  };
+  assertEq(slowHooks(lat, d).map((h) => h.name).join(','), 'hook_stop_dispatcher,hook_curation_guard', 'expired first, then p95 order');
+  assertEq(slowHooks({ unavailable: 'down' }, d).length, 0, 'unavailable → none');
+});
+
+test('slow-hook alert: once per hook per 6 h per daemon pid; the BRAIN-HEALTH check only judges the daemon serving THIS install', async () => {
+  const alert = require('./lib/hook-latency-alert.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-slowhook-'));
+  const stampFile = path.join(dir, 'hook-latency-alert.json');
+  const health = (pid) => ({ pid, pluginRoot: ROOT, hookLatency: { hook_curation_guard: { calls: 40, queued: 0, expired: 2, p95Ms: 6900 } } });
+  const deadlines = { hook_curation_guard: 7000 };
+  const t0 = Date.now();
+  try {
+    const first = alert.alertOnce({ health: health(11), deadlines, stampFile, now: t0 });
+    assert(/\[BRAIN-HEALTH\] Hook\(s\) do daemon sem folga: `curation_guard` p95 6900ms \(prazo 7000ms\), 2 prazo\(s\) estourado\(s\)/.test(first), first);
+    assertEq(alert.alertOnce({ health: health(11), deadlines, stampFile, now: t0 + 3600_000 }), null, 'same daemon, within 6 h → silent');
+    assert(alert.alertOnce({ health: health(22), deadlines, stampFile, now: t0 + 3600_000 }), 'a restarted daemon (new pid) can alert again');
+    assert(alert.alertOnce({ health: health(22), deadlines, stampFile, now: t0 + 7 * 3600_000 }), 'after 6 h → again');
+    // BRAIN-HEALTH integration against a fake /health on a random port
+    const srv = require('http').createServer((req, res) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(srv.body)); });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    const saved = process.env.BRAIN_HTTP_PORT;
+    process.env.BRAIN_HTTP_PORT = String(srv.address().port);
+    try {
+      const bh = require('./brain-health.js');
+      srv.body = { ...health(33), pluginRoot: path.join(os.tmpdir(), 'another-install') };
+      assertEq(await bh._slowHookAlert(ROOT, dir), null, "another install's daemon is not judged");
+      srv.body = health(33);
+      assert(/sem folga/.test(await bh._slowHookAlert(ROOT, dir) || ''), 'the daemon serving this install is');
+    } finally {
+      if (saved === undefined) delete process.env.BRAIN_HTTP_PORT; else process.env.BRAIN_HTTP_PORT = saved;
+      await new Promise((r) => srv.close(r));
+    }
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('value digest: the line reports saved tokens, redirects, runs, raw cost and the biggest bottleneck (deterministic picks)', () => {
   const { formatDigest, bottleneck } = require('./value-digest.js');
   const { summarizeCuration } = require('./lib/curation-metrics.js');
