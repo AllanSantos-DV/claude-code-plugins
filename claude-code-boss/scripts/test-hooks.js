@@ -1118,11 +1118,16 @@ const TESTS = [
       tool_input: { command: 'grep -rn "freshBashSymbol2" scripts/lib' },
       session_id: SESSION,
       cwd: _gg.cwd,
+      // Hermetic: this asserts graph-guard lets a SCOPED grep through. Without Token Guard
+      // the boss shaper also wraps it (allow under bypassPermissions, ask otherwise). This
+      // test used to pass only because the project-root walk from %TEMP% reached the REAL
+      // home's stray ~/.vscode/shells.json and read Token Guard from ~/.claude/settings.json.
+      permission_mode: 'bypassPermissions',
     },
     expect: { hasKey: 'hookSpecificOutput', noError: true },
     extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _gg.root, CLAUDE_PLUGIN_DATA: _gg.dataDir }),
-    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
-      ? null : `scoped bash grep must pass, got: ${r.parsed?.hookSpecificOutput?.permissionDecision} (ctx: ${r.parsed?.hookSpecificOutput?.additionalContext})`,
+    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow' && !/graph/i.test(r.parsed?.hookSpecificOutput?.additionalContext || '')
+      ? null : `scoped bash grep must pass graph-guard, got: ${r.parsed?.hookSpecificOutput?.permissionDecision} (ctx: ${r.parsed?.hookSpecificOutput?.additionalContext})`,
   },
   // ── PreToolUse / Bash — pretooluse-bash-dispatcher (curation-guard + error-guard, 1 process) ─
   {
@@ -1633,6 +1638,23 @@ const TESTS = [
       const rt = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime');
       const files = fs.existsSync(rt) ? fs.readdirSync(rt).filter(f => f.startsWith('curation-turn-')) : [];
       return files.length === 0 ? null : `a compound's output must not be charged to the curated script, got ${files.join(',')}`;
+    },
+  },
+  {
+    // Seen live: a RAW `git log … | cut` matched the alias of git-log-branch.mjs (exploration
+    // aliases are never rewritten) and its 102 lines asked to "refine" a script that never ran.
+    name: 'curation-detect   [raw exploration ALIAS of a curated script (script did not run) + noisy → no journal]',
+    script: 'curation-detect.js',
+    payload: (() => {
+      const cwd = mkTempProject({ shells: [{ id: 'glog', script: '.vscode/scripts/git-log-branch.mjs', aliases: ['git log'], outputLines: 30 }], whitelist: [] });
+      return { ...require('./__fixtures__/post-tool-use-success-noisy.json'), tool_input: { command: "git log --reverse --format='%h %s' v1..develop | cut -c1-150" }, cwd, session_id: SESSION };
+    })(),
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-raw-alias-')) }),
+    validateWithEnv: (r, env) => {
+      const rt = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime');
+      const files = fs.existsSync(rt) ? fs.readdirSync(rt).filter(f => f.startsWith('curation-turn-')) : [];
+      return files.length === 0 ? null : `a raw alias match is not a run of the curated script, got ${files.join(',')}`;
     },
   },
   {

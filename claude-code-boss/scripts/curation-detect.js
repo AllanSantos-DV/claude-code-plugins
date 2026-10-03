@@ -114,7 +114,13 @@ async function run(event) {
     const projectRoot = findProjectRoot(cwd);
     const { shells } = loadShellsConfig(projectRoot);
     const curatedShell = matchCuratedShell(command, shells);
-    const isCurated = curatedShell !== null;
+    // The curated script actually RAN (its path is a token). A raw ALIAS match is not a
+    // run: exploration aliases are never rewritten, so `git log …` matched the
+    // git-log-branch.mjs alias and its raw 102 lines asked to "refine" a script that never
+    // ran (seen live). A raw alias falls through to the C3 class/recurrence rules.
+    const scriptRel = curatedShell ? String(curatedShell.script || '').trim() : '';
+    const scriptRan = !!scriptRel && _tokenize(command).some((t) => _pathMatches(t, scriptRel));
+    const isCurated = scriptRan;
 
     // D2 verify-nudge: record EVERY Bash command's signature in the per-turn
     // verify-journal (separate from the curation turn-journal) so the Stop
@@ -129,7 +135,7 @@ async function run(event) {
     // budget so content-surfacing scripts aren't flagged on legitimate output.
     const { reason } = classify({
       command, isCurated, isSuccess, charCount, lineCount, thresholds,
-      successBudget: curatedShell ? successBudgetFor(curatedShell) : undefined,
+      successBudget: scriptRan ? successBudgetFor(curatedShell) : undefined,
     });
 
     // One-hit / recurrence accounting (cross-session, per-project). Count every
@@ -143,8 +149,7 @@ async function run(event) {
     // C4: a curated script actually RAN (its path is a token — a raw alias match is not a
     // run; redirected commands arrive here already rewritten). Output size per run is what
     // the dashboard compares against the raw baseline of the same signature.
-    const scriptRel = curatedShell ? String(curatedShell.script || '').trim() : '';
-    if (scriptRel && _tokenize(command).some((t) => _pathMatches(t, scriptRel))) {
+    if (scriptRan) {
       metrics.fire('curation.used', { scriptId: curatedShell.id || scriptRel, chars: charCount, lines: lineCount, success: isSuccess, compound }, { sessionId, cwd });
     }
 
@@ -152,7 +157,7 @@ async function run(event) {
     // the output of every part: charging it to the script's budget asked to "refine" a
     // script whose own output was fine (seen live: test-hooks.mjs flagged for 42 lines of
     // test-units + lint + audit). The script's budget is judged on its solo runs only.
-    if (curatedShell && compound) return;
+    if (scriptRan && compound) return;
 
     if (!reason) return;
 
