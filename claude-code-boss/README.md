@@ -110,6 +110,7 @@ prazo interno de `timeout − 1 s`.
 | SessionStart (via dispatcher) | `curation-session.js` | Poda one-hits antigos e injeta panorama de scripts curados; dispara higiene semanal do KB (fire-and-forget) |
 | SessionStart (via dispatcher) | `doctor-advisory.js` | Roda `doctor.js` com cooldown; advisory de 1 linha só se algo crítico falhar (Node/PATH, data-dir fragmentado, daemon, token) |
 | SessionStart (via dispatcher) | `review-checklist-advisory.js` | Se existir `.claude/brain-review-checklist.md` (lições recorrentes de código), lembra o `/code-review` nativo de consultá-lo |
+| SessionStart (via dispatcher) | `value-digest.js` | 1×/dia por projeto: uma linha com o que a curadoria economizou nos últimos 7 dias (moldador + redirects), redirects, execuções, custo cru e o maior gargalo; silencioso sem atividade |
 | SessionStart (via dispatcher) | `tuning-advisory.js` | Recomendação determinística de tuning (perfil/curadoria) com cooldown de 6h |
 | SessionStart + UserPromptSubmit (via dispatchers) | `project-identity-advisory.js` | Pasta sem project id (e sem recusa `.memory/memory-off.json`) → avisa que a memória está desligada e pede ao agente para perguntar o nome e criar `.memory/project.json` |
 | SessionStart (via dispatcher) | `graph-warm.js` | mcp-memory: dispara um `ingest` incremental do Session Graph (fire-and-forget, cooldown por projeto) pra o grafo ficar pronto-e-fresco antes da 1ª busca — o servidor faz o delta (no-op ~5s se nada mudou). Silencioso, fail-open |
