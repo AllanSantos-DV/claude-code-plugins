@@ -2743,8 +2743,10 @@ test('brain-store: recordCitation persists + bumps when SQLite available', async
 test('O9: metrics scope without ctx.cwd follows the CALLING session root inside a daemon hook call, not process.cwd()', () => {
   const { _resolveProject } = require('./lib/metrics.js');
   const { runWithHookEnv } = require('./lib/hook-context.js');
-  assertEq(_resolveProject({ cwd: path.join('x', 'proj-a') }), 'proj-a');
+  assertEq(runWithHookEnv({}, () => _resolveProject({ cwd: path.join('x', 'proj-a') })), 'proj-a', 'no session root → the event cwd');
   assertEq(_resolveProject({ project: 'p' }), 'p');
+  assertEq(runWithHookEnv({ CLAUDE_PROJECT_DIR: path.join('y', 'session-b') }, () => _resolveProject({ cwd: path.join('y', 'session-b', 'sub') })), 'session-b',
+    'the session root wins over a cwd that drifted with `cd` (one session, one project key)');
   assertEq(runWithHookEnv({ CLAUDE_PROJECT_DIR: path.join('y', 'session-b') }, () => _resolveProject({})), 'session-b');
   assertEq(runWithHookEnv({}, () => _resolveProject({})), path.basename(process.cwd()), 'no session root → process.cwd() as before');
 });
