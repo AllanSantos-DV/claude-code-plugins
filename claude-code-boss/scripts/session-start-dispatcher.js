@@ -55,6 +55,7 @@ const curationSession = require('./curation-session.js');
 const doctorAdvisory = require('./doctor-advisory.js');
 const reviewChecklistAdvisory = require('./review-checklist-advisory.js');
 const tuningAdvisory = require('./tuning-advisory.js');
+const valueDigest = require('./value-digest.js');
 const projectIdentityAdvisory = require('./project-identity-advisory.js');
 const graphWarm = require('./graph-warm.js');
 const policyInject = require('./policy-inject.js');
@@ -72,6 +73,7 @@ const DETECTORS = [
   { name: 'doctor-advisory', mod: doctorAdvisory, timeoutMs: 5000 },
   { name: 'review-checklist-advisory', mod: reviewChecklistAdvisory, timeoutMs: 5000 },
   { name: 'tuning-advisory', mod: tuningAdvisory, timeoutMs: 8000 },
+  { name: 'value-digest', mod: valueDigest, timeoutMs: 5000 },
   { name: 'project-identity-advisory', mod: projectIdentityAdvisory, timeoutMs: 5000 },
   { name: 'graph-warm', mod: graphWarm, timeoutMs: 5000 },
   { name: 'policy-inject', mod: policyInject, timeoutMs: 10000 },

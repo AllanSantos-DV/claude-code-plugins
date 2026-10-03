@@ -14913,13 +14913,13 @@ test('user-prompt-submit-dispatcher.withTimeout: distinguishes a genuine error f
   assertEq(okOutcome.value, 'VALUE');
 });
 
-test('session-start-dispatcher.DETECTORS: 12 detectors, correct order + shape (model-router-ensure excluded)', () => {
+test('session-start-dispatcher.DETECTORS: 13 detectors, correct order + shape (model-router-ensure excluded)', () => {
   const d = require('./session-start-dispatcher.js');
   const names = d.DETECTORS.map(x => x.name);
   assertEq(names, [
     'brain-daemon-ensure', 'memory-rotate', 'session-whitelist', 'brain-health',
     'project-snapshot', 'curation-session', 'doctor-advisory',
-    'review-checklist-advisory', 'tuning-advisory', 'project-identity-advisory',
+    'review-checklist-advisory', 'tuning-advisory', 'value-digest', 'project-identity-advisory',
     'graph-warm', 'policy-inject',
   ]);
   assert(d.DETECTORS.every(x => typeof x.mod.run === 'function'), 'every detector exposes run()');
@@ -20437,6 +20437,50 @@ test('mcp-server http: explicit owner/repo project is accepted (U14); path-like 
     const r = await server.dispatch('brain_count', { project: bad });
     assert(r.isError && /project is required in HTTP mode/.test(JSON.stringify(r)), `path-like project ${JSON.stringify(bad)} must be refused, got: ${JSON.stringify(r)}`);
   }
+});
+
+test('value digest: the line reports saved tokens, redirects, runs, raw cost and the biggest bottleneck (deterministic picks)', () => {
+  const { formatDigest, bottleneck } = require('./value-digest.js');
+  const { summarizeCuration } = require('./lib/curation-metrics.js');
+  const ev = (eventName, payload) => ({ eventName, payload });
+  assertEq(formatDigest(summarizeCuration([])), null, 'no activity → silent');
+  const s = summarizeCuration([
+    ev('curation.shaped', { family: 'cat', rawChars: 40000, shownChars: 4000 }),
+    ev('curation.redirected', { shellId: 'tests', sig: 'npm test', mode: 'allow' }),
+    ev('curation.used', { scriptId: 'tests', chars: 400, success: true }),
+    ev('curation.uncovered', { shells: ['tests'] }), ev('curation.uncovered', { shells: ['tests'] }),
+  ]);
+  const line = formatDigest(s);
+  assert(/^\[BOSS\] Curadoria nos últimos 7 dias: ~9k tokens economizados \(moldador ~9k/.test(line), line);
+  assert(/1 redirects, 1 execuções de scripts curados/.test(line) && /Maior gargalo: variantes do script `tests` rodando cruas \(2x\)/.test(line), line);
+  const raw = summarizeCuration([ev('curation.flagged', { chars: 80000 }), ev('curation.flagged', { chars: 80000 }), ev('curation.shaped', { rawChars: 2000, shownChars: 1000 })]);
+  assert(/saída crua entrando no contexto/.test(bottleneck(raw)), bottleneck(raw));
+  const failing = summarizeCuration([1, 2, 3].map((i) => ev('curation.used', { scriptId: 'build', chars: 10, success: i === 1 })));
+  assert(/script `build` falhando \(33% de sucesso em 3 execuções\)/.test(bottleneck(failing)), bottleneck(failing));
+  assertEq(bottleneck(summarizeCuration([ev('curation.used', { scriptId: 'ok', chars: 1, success: true })])), null, 'nothing stands out → null');
+});
+
+test('value digest: real metrics → shown once a day per project; silent (and slot kept) without activity', async () => {
+  const vd = require('./value-digest.js');
+  const ms = require('./lib/metrics-store.js');
+  const { runWithHookEnv } = require('./lib/hook-context.js');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-digest-'));
+  const active = path.join(base, 'digest-active-' + Date.now()); fs.mkdirSync(active);
+  const idle = path.join(base, 'digest-idle-' + Date.now()); fs.mkdirSync(idle);
+  try {
+    ms.close(); ms.init({ project: path.basename(active) });
+    ms.recordMetric('curation.redirected', { shellId: 'tests', sig: 'npm test', mode: 'allow' }, 's');
+    ms.recordMetric('curation.shaped', { family: 'cat', rawChars: 20000, shownChars: 2000 }, 's');
+    ms.close();
+    const t0 = Date.now();
+    const first = await runWithHookEnv({ CLAUDE_PROJECT_DIR: active }, () => vd.run({}, { now: t0 }));
+    assert(first && /1 redirects/.test(first) && /moldador ~4\.5k/.test(first), `shown: ${first}`);
+    assertEq(await runWithHookEnv({ CLAUDE_PROJECT_DIR: active }, () => vd.run({}, { now: t0 + 3600_000 })), null, 'same day → silent');
+    assert(await runWithHookEnv({ CLAUDE_PROJECT_DIR: active }, () => vd.run({}, { now: t0 + 25 * 3600_000 })), 'next day → shown again');
+    assertEq(await runWithHookEnv({ CLAUDE_PROJECT_DIR: idle }, () => vd.run({}, { now: t0 })), null, 'no curation activity → silent');
+    const { dataDir } = require('./lib/data-dir.js');
+    assert(!fs.existsSync(path.join(dataDir(), '.runtime', `value-digest-${path.basename(idle)}.json`)), 'an idle project does not burn its daily slot');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
 
 test('dashboard: every inline <script> of index.html compiles (one syntax error blanks EVERY panel)', () => {
