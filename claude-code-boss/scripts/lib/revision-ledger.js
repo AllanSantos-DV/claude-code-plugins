@@ -19,9 +19,8 @@
  * Storage: one JSON file per project under
  *   <dataDir>/policy-revisions/<project>/ledger.json
  */
-const fs = require('fs');
 const path = require('path');
-const { writeJsonAtomic } = require('./atomic-write.js');
+const { loadList, appendCapped, newestByPolicy } = require('./json-list-store.js');
 const { sanitizeProjectId } = require('./project-id.js');
 
 /** Cap of retained revisions per project (newest kept) — bounds file growth. */
@@ -50,15 +49,7 @@ function ledgerPath(dataDir, projectId) {
  * @returns {{revisions: Array<object>}}
  */
 function load(dataDir, projectId) {
-  const p = ledgerPath(dataDir, projectId);
-  try {
-    if (!fs.existsSync(p)) return { revisions: [] };
-    const obj = JSON.parse(fs.readFileSync(p, 'utf-8'));
-    return obj && typeof obj === 'object' && Array.isArray(obj.revisions) ? obj : { revisions: [] };
-  } catch (err) {
-    console.error(`[revision-ledger] load failed (${p}): ${err.message}`);
-    return { revisions: [] };
-  }
+  return loadList(ledgerPath(dataDir, projectId), 'revisions', 'revision-ledger');
 }
 
 /** A nullable string field → String or null (never an object/array). */
@@ -94,18 +85,7 @@ function normalizeEntry(entry) {
  * @returns {boolean}
  */
 function appendRevision(dataDir, projectId, entry) {
-  try {
-    const store = load(dataDir, projectId);
-    store.revisions.push(normalizeEntry(entry));
-    if (store.revisions.length > MAX_REVISIONS) {
-      store.revisions = store.revisions.slice(store.revisions.length - MAX_REVISIONS);
-    }
-    writeJsonAtomic(ledgerPath(dataDir, projectId), store);
-    return true;
-  } catch (err) {
-    console.error(`[revision-ledger] appendRevision failed: ${err.message}`);
-    return false;
-  }
+  return appendCapped(ledgerPath(dataDir, projectId), 'revisions', 'revision-ledger', normalizeEntry(entry), MAX_REVISIONS);
 }
 
 /**
@@ -114,14 +94,7 @@ function appendRevision(dataDir, projectId, entry) {
  * @returns {Array<object>}
  */
 function listRevisions(dataDir, projectId, { policyId } = {}) {
-  const store = load(dataDir, projectId);
-  let out = store.revisions.slice();
-  if (policyId != null && policyId !== '') {
-    const want = String(policyId);
-    out = out.filter((r) => r && String(r.policyId) === want);
-  }
-  out.sort((a, b) => (b.ts || 0) - (a.ts || 0));
-  return out;
+  return newestByPolicy(load(dataDir, projectId).revisions, policyId);
 }
 
 module.exports = {

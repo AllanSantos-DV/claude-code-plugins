@@ -38,9 +38,9 @@
  * Never throws: load returns an empty shape on any error, append returns a boolean,
  * purge returns a count — all console.error on failure (per the house store convention).
  */
-const fs = require('fs');
 const path = require('path');
 const { writeJsonAtomic } = require('./atomic-write.js');
+const { loadList } = require('./json-list-store.js');
 const { sanitizeProjectId } = require('./project-id.js');
 const { redact } = require('./redact.js');
 
@@ -77,15 +77,7 @@ function queuePath(dataDir, projectId) {
  * @returns {{evidence: Array<object>}}
  */
 function load(dataDir, projectId) {
-  const p = queuePath(dataDir, projectId);
-  try {
-    if (!fs.existsSync(p)) return { evidence: [] };
-    const obj = JSON.parse(fs.readFileSync(p, 'utf-8'));
-    return obj && typeof obj === 'object' && Array.isArray(obj.evidence) ? obj : { evidence: [] };
-  } catch (err) {
-    console.error(`[trigger-evidence-store] load failed (${p}): ${err.message}`);
-    return { evidence: [] };
-  }
+  return loadList(queuePath(dataDir, projectId), 'evidence', 'trigger-evidence-store');
 }
 
 /** Coerce a value to a finite non-negative integer (defaults to 0). */
