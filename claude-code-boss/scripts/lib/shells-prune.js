@@ -55,11 +55,13 @@ function ageDaysOf(root, rel, now) {
 }
 
 /**
- * @param {{root:string, days:number, now?:number, usage?:Function}} a
- *   usage(project, sinceTs) → {historyFromTs, usedIds} (default: metrics-store, project = basename(root))
+ * @param {{root:string, days:number, now?:number, usage?:Function, project?:string}} a
+ *   usage(project, sinceTs) → {historyFromTs, usedIds} (default: metrics-store)
+ *   project — the METRICS key (lib/metrics.js writes under the session root's basename;
+ *   with shells.json in a subfolder, basename(root) reads an empty db). Default basename(root).
  * @returns {{ok:boolean, days:number, historyFromTs:(number|null), candidates:Array<{id:string, script:string, ageDays:number|null}>, reason?:string, error?:string}}
  */
-function pruneCandidates({ root, days = 30, now = Date.now(), usage } = {}) {
+function pruneCandidates({ root, days = 30, now = Date.now(), usage, project } = {}) {
   if (!root) return { ok: false, days, historyFromTs: null, candidates: [], error: 'root is required' };
   let shells;
   try {
@@ -71,7 +73,7 @@ function pruneCandidates({ root, days = 30, now = Date.now(), usage } = {}) {
   }
   const since = now - days * DAY;
   const read = usage || ((project, sinceTs) => require('./metrics-store.js').getCurationUsageIsolated(project, sinceTs));
-  const { historyFromTs, usedIds } = read(path.basename(path.resolve(root)), since);
+  const { historyFromTs, usedIds } = read(project || path.basename(path.resolve(root)), since);
   if (!historyFromTs || historyFromTs > since) {
     const from = historyFromTs ? new Date(historyFromTs).toISOString().slice(0, 10) : 'never';
     return { ok: true, days, historyFromTs, candidates: [], reason: `insufficient usage history for a ${days}-day window (curation metrics since ${from}) — nothing is called unused before the window is covered` };
@@ -92,10 +94,10 @@ function pruneCandidates({ root, days = 30, now = Date.now(), usage } = {}) {
  * Remove `ids` from shells.json — only ids that are CURRENT candidates.
  * @returns {{ok:boolean, removed?:string[], backup?:string, file?:string, error?:string}}
  */
-function pruneShells({ root, ids, days = 30, now = Date.now(), usage } = {}) {
+function pruneShells({ root, ids, days = 30, now = Date.now(), usage, project } = {}) {
   const want = [...new Set((ids || []).map(String))];
   if (!want.length) return { ok: false, error: 'no ids to prune' };
-  const c = pruneCandidates({ root, days, now, usage });
+  const c = pruneCandidates({ root, days, now, usage, project });
   if (!c.ok) return { ok: false, error: c.error };
   const allowed = new Set(c.candidates.map((x) => x.id));
   const refused = want.filter((id) => !allowed.has(id));

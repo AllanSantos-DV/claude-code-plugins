@@ -20696,6 +20696,38 @@ test('prune never-used: real metrics usage (exact, no row cap) + the MCP tool li
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test('curation_prune_unused: shells.json in a SUBFOLDER of the session reads the session root\'s usage metrics (the key lib/metrics.js writes)', async () => {
+  const ms = require('./lib/metrics-store.js');
+  const sess = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune-nested-'));
+  const app = path.join(sess, 'app');
+  try {
+    ms.close(); ms.init({ project: path.basename(sess) });
+    ms.recordMetric('curation.used', { scriptId: 'X' }, 's');
+    ms.close();
+    fs.mkdirSync(path.join(app, '.vscode'), { recursive: true });
+    fs.writeFileSync(path.join(app, 'package.json'), '{}');
+    fs.writeFileSync(path.join(app, '.vscode', 'shells.json'), JSON.stringify({ shells: [{ id: 'X', script: '.vscode/scripts/x.mjs', aliases: ['npm run x'] }] }));
+    const { createBrainServer } = await import(pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+    const server = createBrainServer({ pluginRoot: ROOT, mode: 'http' });
+    server._setSessionRoots([sess]);
+    const r = JSON.parse((await server.dispatch('curation_prune_unused', { cwd: app, days: 30 })).content[0].text);
+    assert(r.historyFromTs && !/since never/.test(r.reason || ''), `usage read from the session root key, not basename(app): ${JSON.stringify(r)}`);
+    // A shells root OUTSIDE the session keeps its own basename (its metrics, not the session's).
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune-other-'));
+    try {
+      ms.close(); ms.init({ project: path.basename(other) });
+      ms.recordMetric('curation.used', { scriptId: 'X' }, 's');
+      ms.close();
+      fs.mkdirSync(path.join(other, '.vscode'), { recursive: true });
+      fs.writeFileSync(path.join(other, 'package.json'), '{}');
+      fs.writeFileSync(path.join(other, '.vscode', 'shells.json'), JSON.stringify({ shells: [] }));
+      server._setSessionRoots([path.join(os.tmpdir(), `ccb-no-metrics-${process.pid}`)]);
+      const r2 = JSON.parse((await server.dispatch('curation_prune_unused', { cwd: other, days: 30 })).content[0].text);
+      assert(r2.historyFromTs, `outside the session root → basename(root) metrics: ${JSON.stringify(r2)}`);
+    } finally { fs.rmSync(other, { recursive: true, force: true }); }
+  } finally { fs.rmSync(sess, { recursive: true, force: true }); }
+});
+
 test('shared daemon: tools acting on "this project" never fall back to the daemon\'s process.cwd() (mark_oneoff, register_shell, graph, policy)', async () => {
   const oneoff = require('./lib/oneoff-store.js');
   const sess = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-callercwd-'));
