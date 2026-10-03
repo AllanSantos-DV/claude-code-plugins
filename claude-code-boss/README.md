@@ -1,6 +1,6 @@
 # claude-code-boss
 
-Plugin para Claude Code Desktop — **v2.29.1**
+Plugin para Claude Code Desktop — **v3.0.0**
 
 Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizado leve para Claude Code. A orquestração fica a cargo das ferramentas nativas (Agent/Workflow) — o plugin foca no que o nativo não tem.
 
@@ -60,7 +60,7 @@ claude-code-boss/
 ├── scripts/                   # Scripts Node.js (zero deps extras para hooks)
 │   ├── dashboard.js           # Servidor HTTP local com ring buffer de logs
 │   ├── brain-*.js             # Brain KB: store, index, graph, embedder, backend, CLI, consolidate (higiene)
-│   ├── curation-guard.js      # PreToolUse: bloqueia/redireciona comandos curados
+│   ├── curation-guard.js      # PreToolUse: redireciona comandos de tarefa ao script curado; molda exploração
 │   ├── stop-dispatcher.js     # Stop: roda todos os detectores in-process (via mcp_tool hook_stop_dispatcher, no daemon)
 │   ├── doctor.js              # CLI + dashboard: diagnóstico zero-config (Node/PATH, data-dirs, daemon, hooks)
 │   ├── hook-logger.js         # Utilitário: append a .runtime/hook-errors.jsonl
@@ -115,12 +115,12 @@ prazo interno de `timeout − 1 s`.
 | SessionStart (via dispatcher) | `graph-warm.js` | mcp-memory: dispara um `ingest` incremental do Session Graph (fire-and-forget, cooldown por projeto) pra o grafo ficar pronto-e-fresco antes da 1ª busca — o servidor faz o delta (no-op ~5s se nada mudou). Silencioso, fail-open |
 | SessionStart (via dispatcher) | `policy-inject.js` | Injeta as políticas standing (always) no contexto da sessão |
 | SubagentStart | `policy-inject.js` | Injeta as políticas standing (always) no contexto próprio do subagente — mesma injeção do SessionStart (via `mcp_tool` `hook_policy_inject` no daemon, sem spawn por subagente) |
-| PreToolUse (Bash) | `mcp_tool` → `hook_curation_guard` (`curation-guard.js`) | Bloqueia/redireciona comandos curados quando o alias é o comando inteiro (caminho absoluto do script); comando composto em que o alias é só uma parte roda com uma dica apontando o script (a saída volumosa segue cobrada no Stop); inclui o graph-guard p/ `grep -r`/`rg`/`find` amplos (mcp-memory + grafo ready → deny-once com redirect ao grafo) |
+| PreToolUse (Bash) | `mcp_tool` → `hook_curation_guard` (`curation-guard.js`) | **Redireciona** (reescreve via `updatedInput`) cada parte de TAREFA cuja assinatura + flags casam com um alias curado para o script, inclusive dentro de compostos — `allow` em `bypassPermissions`, `ask` nos demais modos (o prompt mostra a reescrita); avisa o modelo e oferece `CCB_RAW=1` para a saída crua. Variantes não cobertas rodam cruas e são medidas. Rodar o próprio script curado (com ou sem pipe) é sempre permitido — o pipe é medido como sinal de que o script precisa de ajuste. Sem Token Guard instalado, um comando de EXPLORAÇÃO isolado (`cat`, `grep`, `git log`…) tem a saída limitada pelo `shape-output.js` (completa salva em `.runtime/shaped`). Inclui o graph-guard p/ `grep -r`/`rg`/`find` amplos (mcp-memory + grafo ready → deny-once com redirect ao grafo) |
 | PreToolUse (Bash) | `mcp_tool` → `hook_error_guard` (`error-guard.js`) | Nega o comando que já falhou ≥N vezes NESTA sessão, no mesmo diretório, sem nenhuma edição de arquivo desde a última falha — injeta a última saída. Repetir não desbloqueia; um sucesso ou uma edição (tentativa de correção) sim. Roda em paralelo ao `hook_curation_guard`; `deny` vence (o `pretooluse-bash-dispatcher.js` segue como entry por stdin, com a mesma regra) |
 | PreToolUse (Edit) | `mcp_tool` → `hook_policy_enforce_shadow` (`policy-enforce-shadow.js`) | Shadow-mode: detecta se uma edição viola uma política de código ativa (sem bloquear ainda) |
 | PreToolUse (Grep\|Glob) | `mcp_tool` → `hook_graph_guard` (`graph-guard.js`) | Busca recursiva ampla com Session Graph READY → deny-once: `graph_search`/`graph_symbols` primeiro (estrutural, ~300ms), depois re-rodar escopado; retry idêntico passa |
 | **PostToolUse (Bash)** | **`mcp_tool` → `hook_posttoolusebash_dispatcher` (`posttoolusebash-dispatcher.js`)** | **Entry único** — roda `curation-detect.js` + `decision-detect.js` in-process (side-effect only, sempre `{}`) |
-| PostToolUse (Bash, via dispatcher) | `curation-detect.js` | Detecta outputs grandes para curação |
+| PostToolUse (Bash, via dispatcher) | `curation-detect.js` | Detecta saída volumosa de comandos de TAREFA (exploração e código inline nunca viram script); a 1ª ocorrência fica pendente, a curadoria é pedida só quando o comando se repete; mede execuções dos scripts curados |
 | PostToolUse (Bash, via dispatcher) | `decision-detect.js` | Detecta commit/PR com cara de decisão arquitetural e stash pending para o Stop promover |
 | PostToolUse (Edit\|Write\|NotebookEdit) | `mcp_tool` → `hook_file_edit_detect` (`file-edit-detect.js`) | Journala arquivos editados no turno (alimenta `verify-nudge` e `self-review`) |
 | PostToolUse (Edit\|Write\|MultiEdit\|NotebookEdit) | `mcp_tool` → `hook_policy_glob_inject` (`policy-glob-inject.js`) | Injeta advisory de política glob (per-file) quando o arquivo editado casa um padrão de política ativa |
@@ -133,7 +133,7 @@ prazo interno de `timeout − 1 s`.
 | Stop (via dispatcher) | `verify-nudge.js` | Se o turno editou arquivos e nenhum comando de teste/lint rodou, injeta 1 advisory (cap por sessão, sem escalonamento) |
 | Stop (via dispatcher) | `refine-research.js` | Injeta lembrete de pesquisa (web → Brain → usuário) |
 | Stop (via dispatcher) | `project-id-stop.js` | Pasta sem project id → bloqueia 1×/turno pedindo para definir o id (memória desligada até lá); silencia os detectores que pedem captura |
-| Stop (via dispatcher) | `curation-stop.js` | Bloqueia stop se há comandos noisy detectados no turno (escalating, anti-loop) |
+| Stop (via dispatcher) | `curation-stop.js` | Pede script curado (ou marcação de uso único) para comandos de tarefa ruidosos e recorrentes do turno, e ajuste de um script curado cuja execução solo saiu ruidosa (escalating, anti-loop) |
 | Stop (via dispatcher) | `session-summary.js` | Cap 1/sessão: resumo positivo ("N lições capturadas") quando a sessão gerou aprendizado |
 | Stop (via dispatcher) | + 7 outros | `skill-promote-trigger`, `decision-scan-response`, `decision-promote`, `research-followup-detect`, `failure-retro`, `skill-success-detect`, `retrieval-feedback`, `auto-continue-stop` — mesmo comportamento de antes, agora in-process |
 | UserPromptSubmit | `model-router-ensure.js` | Mesma garantia de daemon do model-router, agora por-turno (settings/env já publicados no SessionStart) — roda dentro do `user-prompt-submit-dispatcher` (mesmo processo) |
@@ -335,9 +335,13 @@ Iniciado **sob demanda** (não mais no SessionStart). Configura o **plugin**
 - **Porta**: dinâmica (0 → auto-assign, sempre `127.0.0.1`); fixe com `DASHBOARD_PORT`
 - **Auth**: token aleatório gerado no boot (salvo em `.runtime/dashboard.json`)
 - **Logs tab**: ring buffer de 500 entradas + `hook-errors.jsonl` agregado. Auto-refresh a cada 2s, Copy JSON, Clear
-- **Home tab**: cards de valor (tokens de output curados, lições aprendidas, %
-  de retrieval citado) + card "learning loop" (capturadas vs. mescladas por
-  semana) + botão de consolidação do KB (ver abaixo).
+- **Home tab**: cards de valor (tokens economizados pela curadoria, lições
+  aprendidas, % de retrieval citado) + painel **Curation & guards** (economia
+  exata do moldador / estimada dos redirects / custo da saída crua que entrou no
+  contexto; por script: redirects, execuções, saída média, sucesso, variantes não
+  cobertas, pipes; scripts nunca usados; latência por hook do daemon) + card
+  "learning loop" (capturadas vs. mescladas por semana) + botão de consolidação
+  do KB (ver abaixo).
 
 ## Endpoints custom — upstream e BYOK
 

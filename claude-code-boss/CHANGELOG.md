@@ -1,6 +1,146 @@
 # Changelog
 
-## [2.29.1] - 2026-09-25
+## [3.0.0] - 2026-10-02
+
+Versão major: inclui tudo o que estava preparado como 2.29.1 (nunca publicada —
+seções no fim desta entrada) e o redesenho da curadoria, o endurecimento do
+daemon de hooks e as correções de escopo por sessão.
+
+### ⚠️ Mudanças incompatíveis — o que muda para você
+- **Assinatura de comando composto (U4).** Um composto passa a ser identificado
+  por TODOS os seus segmentos de trabalho, em ordem (`git status && git diff` ≠
+  `git status`), e não só pelo primeiro. Antes, 425 assinaturas cobriam 2.285
+  comandos diferentes (a saída de um `git diff` virava "git status precisa de
+  script"); agora 27, só por repetição colapsada. **Efeito:** marcações de uso
+  único e recorrências gravadas para compostos deixam de casar — a curadoria pode
+  perguntar de novo **uma vez** por esses comandos.
+- **Número de descritor fora da assinatura (U13).** `git status 2>&1` passa a ser
+  `git status` (o `2` colado ao redirecionamento sai; `sleep 2 > f` mantém o
+  `2`). Mesmo efeito: entradas gravadas com o sufixo antigo são pedidas uma vez.
+- **Curadoria redesenhada (Fase C).** Ver "Changed — curadoria" abaixo: o guard
+  não nega mais variantes nem pipes, reescreve comandos de tarefa para o script
+  curado e só pede script para comando de tarefa que se repete.
+- **Hooks no daemon (Fase G, ADR-015).** 12 hooks rodam como `mcp_tool` no
+  brain-server (detalhes na seção da Fase G). O brain-server precisa estar
+  conectado para esses hooks rodarem; com ele fora, o Claude Code trata o hook
+  como erro não bloqueante. Na 1ª sessão depois de boot/update/reload, os hooks
+  dos primeiros segundos podem ser pulados enquanto o cliente reconecta (limite do
+  cliente, documentado no backlog).
+
+### Changed — curadoria: casar por assinatura, redirecionar, medir (Fase C)
+- **Redirecionamento automático (C2).** Cada parte de TAREFA de um comando cuja
+  assinatura + flags casam com um alias curado é reescrita para o script
+  (`updatedInput` pelo `mcp_tool`, provado no Claude Code 2.1.283), inclusive
+  dentro de compostos. `bypassPermissions` → `allow`; demais modos → `ask` (o
+  prompt mostra a reescrita — a postura do usuário nunca é contornada). O modelo
+  é avisado da reescrita e pode pedir a saída crua com `CCB_RAW=1`. Saída enviada
+  a arquivo (`> log`, `| tee`) não é reescrita. A dica "Prefer it next time"
+  (seguida 19% das vezes) e a negação-com-redirect (47%) saíram.
+- **Só cura o que se repete (C3).** Exploração (`git log/status/diff`, `grep`,
+  `cat`, `ls`, `find`…) e código inline (`node -e`, heredoc) nunca viram script
+  por projeto; comando de tarefa ruidoso fica pendente na 1ª ocorrência e a
+  curadoria só é pedida quando se repete. Replay no histórico real: 1.316
+  cobranças do Stop → 45 (−96,6%).
+- **Exploração limitada sem Token Guard (C2b).** Sem o Token Guard instalado, um
+  comando de exploração isolado passa pelo `shape-output.js`: chegam ao modelo até
+  `curation.shapeMaxLines` (80) linhas / `shapeMaxChars` (8000) caracteres, a
+  saída completa fica em `.runtime/shaped` (24 h) com o caminho indicado. Com o
+  Token Guard presente, ele cuida disso e o boss não interfere. Medido no Claude
+  Code real: `cat` de 600 linhas, 59,8k → 7,8k caracteres.
+- **Pipe sobre script curado é permitido (C6).** Antes negado — seguir a negação
+  era rodar de novo SEM o filtro (mais saída e uma volta perdida; 99 das 243
+  negações do guard antigo no histórico real). Agora passa e é medido por script
+  como sinal de que a saída do script precisa de ajuste. Ler um script curado
+  (`grep … script.mjs | head`) nunca é tratado como execução (G19).
+- **Resultado no histórico real** (4.170 chamadas Bash, replay com o código do
+  plugin): negações do guard antigo 243 → 0.
+- A curadoria nunca adota a pasta HOME como raiz de projeto (um
+  `~/.vscode/shells.json` solto fazia todo projeto herdar os scripts dela).
+- Um comando já moldado pelo boss é julgado pelo comando original; a saída de um
+  composto não é debitada do orçamento de um script curado que é só uma das partes.
+
+### Added — métricas reais e painel "Curation & guards"
+- Eventos novos no store de métricas: `curation.used` (execuções por script,
+  tamanho, sucesso), `curation.redirected`, `curation.uncovered` (variante sem
+  script), `curation.skipped`, `curation.pending`, `curation.bypass`,
+  `curation.shaped`, `curation.piped`, `error-guard.denied`.
+- `GET /api/metrics/curation` e o painel **Curation & guards** na Home do
+  dashboard: economia **exata** (moldador) separada da **estimada** (redirect:
+  média crua da assinatura − média da saída curada, só quando há linha de base —
+  sem ela o painel diz "sem base", nada inventado), **custo** (saída crua que
+  entrou no contexto), tabela por script, scripts nunca usados (candidatos a poda)
+  e latência por hook.
+- **Corrigido:** o card "Tokens of raw output curated away" somava a saída crua
+  que ENTROU no contexto como se fosse economia. Saiu; o card de valor agora mostra
+  os tokens economizados pela curadoria.
+- `/health` do brain daemon expõe `hookLatency` por hook (chamadas, ok,
+  degradados, prazos estourados, em fila, p50/p95/máx das últimas 200).
+
+### Fixed — daemon de hooks (endurecimento da Fase G)
+- **Sessão sem raiz no daemon.** O Claude Code só interpola `${…}` de campos do
+  input do hook no `mcp_tool` — `${CLAUDE_PROJECT_DIR}` chegava sempre vazio, e os
+  hooks caíam no `cwd` (que muda com `cd`) ou na pasta da 1ª sessão do daemon.
+  Agora o SessionStart (hook `command`) grava `session_id → raiz` e o daemon
+  resolve por ela. Métricas passam a usar a raiz da sessão, não o `cwd` do shell.
+- **Reconexão depois de update/reload (G16).** Sessão MCP desconhecida responde
+  **404** (spec MCP), e o cliente reinicializa sozinho em vez de ficar `failed`.
+- **Upgrade troca o daemon (G13).** Uma instalação estritamente mais nova substitui
+  o daemon antigo mesmo com a pasta antiga ainda no cache; nunca faz downgrade.
+  Daemon de outra instalação servindo **outro dataDir** não é compartilhado (G15,
+  aviso `[BRAIN]`); um spawn nosso que sobe errado é parado (G17).
+- **Hooks pesados fora da thread principal:** worker de hooks (G2), hooks
+  sempre-`{}` em fire-and-forget (G4), prazo por hook abaixo do `timeout` do
+  hooks.json com fail-open visível (G5), embedder num worker thread (G12: atraso
+  do event loop 32,5 → 3,0 ms). Máquina fraca simulada (1 núcleo): rajada com p95
+  de 134 ms, zero prazos estourados.
+- O Stop lê só o fim do transcript (G1); a captura de lição lê os últimos N turnos
+  (G10); o self-review encerra sua sessão MCP (G3); `SubagentStart` sem spawn por
+  subagente (G6); 1 processo por prompt no `UserPromptSubmit` (G7).
+- Worker do pool do KB que cai é substituído (O6); jobs em segundo plano
+  sobrevivem a uma queda do worker de hooks (O8).
+- As tools `hook_*` não aparecem mais na lista de tools do modelo.
+
+### Fixed — escopo por sessão e por projeto
+- O Stop de uma sessão não mostra mais commits feitos em OUTRA sessão (G18).
+- O comando volumoso de um subagente não bloqueia mais o Stop da sessão-pai (U5).
+- Prompts sintéticos `<task-notification>` não disparam os detectores de prompt
+  nem o recall.
+- **error-guard (U2/U10):** nega só repetição na MESMA sessão e no mesmo diretório
+  efetivo, sem edição desde a falha; um sucesso ou uma edição desbloqueia, repetir
+  não. Escolhido por replay de 9.459 chamadas reais: bloqueios falsos 34 → 4.
+- **curation-guard (U1/U3/U11):** não nega mais comandos compostos inteiros; julga
+  o pipe no segmento do próprio script; respeita aspas.
+- Sessões MCP presas às `roots` do cliente: uma tool sem `cwd` resolve a pasta da
+  sessão; `project` explícito que não bate com a pasta é recusado.
+- **Project id:** subpastas de um projeto declarado (sem git) são cobertas — a
+  busca sobe até 8 níveis, parando antes da HOME; o aviso se repete a cada prompt
+  até o id ser definido; recusar desliga a memória da pasta
+  (`.memory/memory-off.json`). `owner/repo` explícito aceito pelas tools (U14).
+- Citações do KB gravadas no escopo de onde a entrada veio (O1).
+
+### Fixed — model-router
+- Exceção inesperada falha só aquela request com 500 (o processo compartilhado
+  segue de pé); o plano B para de gerar quando o cliente sai; corpo que para de
+  chegar sem FIN não trava mais o cliente; stream SSE sem marcador de fim que fecha
+  é tratado como corte, não como resposta completa.
+- URL de gateway upstream inutilizável é recusada em voz alta — nunca desviada para
+  `api.anthropic.com`; o cooldown da Anthropic não desvia rotas laterais quando um
+  gateway próprio é o upstream.
+- Falhas do plano B BYOK dizem o host chamado, por que o BYOK foi pulado e quando o
+  Claude volta; catálogo local com perfil inválido mostra a causa.
+
+### Fixed — diversos
+- `.mcp.json` segue `BRAIN_HTTP_PORT` (`${BRAIN_HTTP_PORT:-38217}`).
+- BRAIN-STATUS diz por que o health falhou e segue um `mcp-memory` que mudou de
+  porta; falha de `brain_retrieve_context` entra no recall-health.
+- Dashboard: chaves i18n sem tradução apareciam cruas; salvar BYOK parcial não
+  desliga mais o BYOK nem reseta o modo; KBs `owner/repo` aninhados listados.
+- `consolidate-datadirs` poda os próprios backups antigos.
+- Programa rodado por caminho relativo (`./gradlew`) isento do teto de uso único.
+- `CCB_ISOLATED=1`: sessões isoladas nunca gerenciam o router.
+- Testes: prazo por teste, suíte sem acesso à rede.
+
+### — parte preparada como 2.29.1 (2026-09-25, não publicada) —
 
 ### Changed — hooks rodam no daemon do brain-server (Fase G, ADR-015)
 - 12 hooks deixam de subir um processo Node por disparo e viram tools `mcp_tool`
@@ -22,7 +162,7 @@
   Com o daemon fora do ar, o Claude Code trata o `mcp_tool` como erro não
   bloqueante.
 - Higiene do daemon: cada chamada roda num `AsyncLocalStorage` com o env do
-  chamador (`project_dir` vem de `${CLAUDE_PROJECT_DIR}`) e invalida os caches de
+  chamador (a raiz da sessão — ver "Sessão sem raiz no daemon" acima: o `${CLAUDE_PROJECT_DIR}` do hooks.json chega vazio) e invalida os caches de
   `hooks-config` e `brain-config`, então uma sessão não vê a configuração de outra.
 - `git rev-parse` em `lib/project-id.js` agora tem memo por `(cwd, args)` com TTL
   de 30 s. No daemon, cada chamada síncrona de git (50–80 ms) travava o event loop
