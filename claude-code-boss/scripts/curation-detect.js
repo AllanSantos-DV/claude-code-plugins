@@ -26,7 +26,7 @@ const metrics = require('./lib/metrics.js');
 const { canonicalSig } = require('./lib/command-signature.js');
 const oneoff = require('./lib/oneoff-store.js');
 const { classifyCommand } = require('./lib/curation-families.js');
-const { unwrapShaped, splitTopLevel, planRedirect } = require('./lib/curation-redirect.js');
+const { unwrapShaped, splitTopLevel, planRedirect, RAW_ESCAPE } = require('./lib/curation-redirect.js');
 
 const { findProjectRoot, loadShellsConfig, matchCuratedShell, _tokenize, _pathMatches } = require('./shells-config.js');
 const { classify, successBudgetFor }                            = require('./curation-classifier.js');
@@ -130,6 +130,12 @@ async function run(event) {
       sig: canonicalSig(command),
       curated: curatedShell ? (curatedShell.id || curatedShell.script || null) : null,
     });
+
+    // `CCB_RAW=1 <cmd>` is the escape the redirect itself offers ("need the raw output?
+    // prefix CCB_RAW=1"). A deliberate raw run is not a curation gap: no journal, no
+    // recurrence — seen live, it made the Stop demand curation of a command that was
+    // already curated and the one-off was refused at the ceiling (a dead end).
+    if (RAW_ESCAPE.test(command)) return;
 
     // Classify — curated shells carry their declared outputLines/outputChars
     // budget so content-surfacing scripts aren't flagged on legitimate output.
