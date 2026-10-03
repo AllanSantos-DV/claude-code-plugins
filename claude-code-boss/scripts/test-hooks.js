@@ -2649,6 +2649,23 @@ const TESTS = [
     expect: { noError: true },
   },
   {
+    // /dashboard without LLM: the typed prompt is answered by the dispatcher and BLOCKED
+    // with the URL (real dashboard started in this test's temp data dir, then killed).
+    name: 'user-prompt-submit-dispatcher [/dashboard → block with the dashboard URL, no model]',
+    script: 'user-prompt-submit-dispatcher.js',
+    payload: { hook_event_name: 'UserPromptSubmit', prompt: '/dashboard', session_id: SESSION, cwd: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ups-dash-')) },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ups-dash-data-')), DASHBOARD_NO_OPEN: '1' }),
+    validateWithEnv: (r, env) => {
+      let pid = null;
+      try { pid = JSON.parse(fs.readFileSync(path.join(env.CLAUDE_PLUGIN_DATA, '.runtime', 'dashboard.json'), 'utf8')).pid; } catch (err) { void err; }
+      if (pid) { try { process.kill(pid); } catch (err) { void err; } }
+      const out = r.parsed || {};
+      if (out.decision !== 'block') return `expected the prompt to be blocked, got: ${JSON.stringify(out)}`;
+      return /Dashboard: http:\/\/localhost:\d+/.test(out.reason || '') ? null : `expected the URL in the reason, got: ${out.reason}`;
+    },
+  },
+  {
     name: 'user-prompt-submit-dispatcher [Phase G: correction/active-research no longer run here (mcp_tool)]',
     script: 'user-prompt-submit-dispatcher.js',
     payload: {

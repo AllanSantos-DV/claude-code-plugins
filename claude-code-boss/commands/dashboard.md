@@ -11,30 +11,21 @@ argument-hint: "(sem argumentos)"
 Abra o dashboard local de configuração do plugin para o usuário. Siga estes passos:
 
 1. **Garanta que o dashboard está no ar** rodando o starter idempotente (ele não
-   sobe um segundo processo se já estiver rodando):
+   sobe um segundo processo se já estiver rodando e só responde quando a porta
+   atende de verdade):
 
    ```
    node "${CLAUDE_PLUGIN_ROOT}/scripts/dashboard-start.js"
    ```
 
-   Em Windows, prefira a ferramenta de PowerShell; em macOS/Linux, o shell padrão.
+   Ele imprime uma linha JSON: `{"ok":true,"status":"started|already-running","url":"http://localhost:<port>",…}`
+   ou `{"ok":false,"error":"…"}`.
 
-2. **Descubra a porta e o token** lendo o arquivo de descoberta que o dashboard
-   escreve ao subir. O caminho usa o diretório de dados do plugin:
+2. **Apresente ao usuário** a `url` como link clicável. Se `ok` for `false`, mostre o
+   `error` tal como veio. Não procure arquivos de descoberta nem exponha o token — ele
+   é injetado automaticamente na página servida.
 
-   ```
-   ${CLAUDE_PLUGIN_DATA:-$HOME/.claude/plugins/data/claude-code-boss}/.runtime/dashboard.json
-   ```
-
-   No Windows, o equivalente é `%USERPROFILE%\.claude\plugins\data\claude-code-boss\.runtime\dashboard.json`.
-   O arquivo é um JSON com `{ "port", "token", "startTime", "pid" }`. Se ele ainda
-   não existir, aguarde 1–2 segundos e tente de novo (o servidor acabou de subir).
-
-3. **Apresente ao usuário** uma URL clicável `http://localhost:<port>` (use o
-   `port` lido no passo 2). Não exponha o token — ele é injetado automaticamente
-   na página servida.
-
-4. **Mencione a aba Router**: explique que, além de Brain KB, Hooks, Skills,
+3. **Mencione a aba Router**: explique que, além de Brain KB, Hooks, Skills,
    Insights e Logs, há a aba **Router**, onde o usuário pode ativar a reescrita de
    modelo, informar uma chave NVIDIA grátis (opcional, fica só na máquina) e
    aplicar a configuração. Lembre que, ao aplicar, é preciso reiniciar o Claude
