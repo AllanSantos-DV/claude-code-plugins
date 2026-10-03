@@ -3800,9 +3800,13 @@ test('C2 curation-redirect: exact task signature+flags rewritten (also inside co
     { id: 'gate', script: '.vscode/scripts/gate.ps1', aliases: ['node scripts/gate.mjs'] },
     { id: 'glog', script: '.vscode/scripts/glog.mjs', aliases: ['git log'] },
   ];
-  const plan = (c) => planRedirect(c, shells, 'C:/repo');
-  assertEq(plan('node scripts/test-units.js 2>&1 | tail -40').rewritten, 'node "C:/repo/.vscode/scripts/tu.mjs"');
-  assertEq(plan('cd x && node scripts/test-units.js; echo done').rewritten, 'cd x && node "C:/repo/.vscode/scripts/tu.mjs" ; echo done', 'only the matching part is rewritten');
+  // A platform-native absolute root: 'C:/repo' is not absolute on Linux (CI), where
+  // path.resolve prefixed the runner's cwd — the test, not the product, was Windows-only.
+  const R = path.resolve(os.tmpdir(), 'ccb-c2-repo');
+  const TU = `node "${R.replace(/\\/g, '/')}/.vscode/scripts/tu.mjs"`;
+  const plan = (c) => planRedirect(c, shells, R);
+  assertEq(plan('node scripts/test-units.js 2>&1 | tail -40').rewritten, TU);
+  assertEq(plan('cd x && node scripts/test-units.js; echo done').rewritten, `cd x && ${TU} ; echo done`, 'only the matching part is rewritten');
   const two = plan('node scripts/gate.mjs && node scripts/test-units.js');
   assertEq(two.replaced.map((r) => r.shellId), ['gate', 'tu']);
   assert(/^powershell .*gate\.ps1" && node /.test(two.rewritten), two.rewritten);
@@ -3810,7 +3814,7 @@ test('C2 curation-redirect: exact task signature+flags rewritten (also inside co
   for (const raw of ['node scripts/test-units.js > /tmp/u.log 2>&1', 'node scripts/test-units.js | tee x.log', 'node scripts/test-units.js <<EOF\nx\nEOF', 'git log --oneline']) {
     assertEq(plan(raw).rewritten, null, `not rewritten: ${raw}`);
   }
-  assertEq(plan('node scripts/test-units.js > /dev/null').rewritten, 'node "C:/repo/.vscode/scripts/tu.mjs"', '/dev/null is not a file sink');
+  assertEq(plan('node scripts/test-units.js > /dev/null').rewritten, TU, '/dev/null is not a file sink');
   assertEq(plan('CCB_RAW=1 node scripts/test-units.js'), { bypass: true });
   assertEq(plan('echo "a && node scripts/test-units.js"').rewritten, null, 'text inside quotes is not a command');
 });
