@@ -698,6 +698,19 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
       },
     },
     {
+      name: 'curation_prune_unused',
+      description: 'List (default) or prune curated scripts that NEVER ran (no run, redirect or pipe) in the last `days`. Candidates require the usage history to cover the whole window and the script to be older than it. Pruning removes only the shells.json registration (backup written; the script file stays — re-register to restore). To prune, call again with apply:true and ids = the candidate ids you want removed (non-candidates are refused).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          cwd: { type: 'string', description: 'Working directory (project root resolution)' },
+          days: { type: 'number', description: 'Window in days (default 30)' },
+          apply: { type: 'boolean', description: 'false (default) = list candidates only; true = prune `ids`' },
+          ids: { type: 'array', items: { type: 'string' }, description: 'Script ids to prune (only with apply:true; each must be a current candidate)' },
+        },
+      },
+    },
+    {
       name: 'policy_activate',
       description: 'Activate a standing user policy (explicit user action only; NOT for automatic capture). THREE modes: (1) ALWAYS-mode (default, no `globs`) — injected every session/subagent start, for a persistent global constraint (e.g. "never let pre-existing code errors pass"). (2) GLOB-mode (pass `globs`) — a project-scoped POST-EDIT ADVISORY that surfaces ONLY when an edited file path matches one of the globs (e.g. globs:["src/**/*.ts"] text:"keep this layer free of console.log"). (3) SHADOW-ASSERTION mode (pass `globs` AND `assert` with `enforcement:"shadow"`) — a project-scoped, Edit-ONLY MEASUREMENT that is SILENT and NEVER blocks: it records how often an Edit WOULD add the asserted literal on a matching path, so you can size a future guard before enabling it (a "trigger" is a candidate-guard hit, not a violation). The assert literal is stored UNREDACTED (a redacted literal could not match), so a secret-bearing literal is REJECTED (reason:"sensitive-literal") — never pass a token/key as a literal. Only enforcement:"shadow" is supported now (enforce/block is a later micro). NOTE: activating a shadow-assertion policy PERSISTS your literal locally and BEGINS local, per-machine monitoring on the next matching Edit (results stay on this machine; read them with policy_shadow_report). Glob and shadow policies are ALWAYS project-scoped and never injected at session start. In all modes the non-assert `text` is redacted + capped and stored in a local registry. Surfacing/measuring ≠ enforcement — none of these modes block.',
       inputSchema: { type: 'object', properties: { text: { type: 'string', description: 'The policy / standing constraint in plain language (required). Redacted + capped before storage.' }, entryId: { type: 'string', description: 'Optional stable id (e.g. a KB entry id) so re-activating the same policy upserts instead of duplicating. Default: a hash of text+mode+project(+globs).' }, scope: { type: 'string', enum: ['project', 'user'], description: 'project (default) = applies only in this project; user = applies in every project. IGNORED when globs are given (glob/shadow policies are always project-scoped).' }, globs: { type: 'array', items: { type: 'string' }, description: 'Optional glob patterns (e.g. ["src/**/*.ts","*.md"]). When present the policy becomes a project-scoped GLOB-mode advisory (or SHADOW-ASSERTION when `assert` is also given), surfaced/measured ONLY when an edited file matches — never at session start. Must be a non-empty array of valid patterns (≤20 patterns, each ≤200 chars); otherwise activation is rejected.' }, assert: { type: 'object', description: 'Optional deterministic content assertion that turns a GLOB policy into a SHADOW-ASSERTION MEASUREMENT (requires `globs` and `enforcement:"shadow"`). Edit-only, silent, never blocks.', properties: { kind: { type: 'string', enum: ['forbid-added-literal'], description: 'The only supported assertion this micro: measure when an Edit ADDS an occurrence of `literal` (net count increase old→new).' }, literal: { type: 'string', description: 'The exact substring to watch for (≤256 chars, stored UNREDACTED). A literal that would be redacted (secret-bearing) is REJECTED.' }, caseSensitive: { type: 'boolean', description: 'Match case-sensitively (default: true).' } }, required: ['kind', 'literal'] }, enforcement: { type: 'string', enum: ['shadow'], description: 'Required when `assert` is given. Only "shadow" (measure, never block) is supported this release; anything else is rejected.' }, project: { type: 'string', description: 'Project name (default: auto-detect from CWD; REQUIRED in HTTP mode). Ignored for user scope.' }, cwd: { type: 'string', description: 'Working directory (for project scoping when project is omitted).' } }, required: ['text'] },
@@ -1098,6 +1111,22 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           return { content: [{ type: 'text', text: JSON.stringify(res, null, 2) }] };
         } catch (err) {
           return { isError: true, content: [{ type: 'text', text: `curation_register_shell failed: ${err.message}` }] };
+        }
+      }
+
+      case 'curation_prune_unused': {
+        try {
+          const a = args || {};
+          const { findProjectRoot } = require(path.join(PLUGIN_ROOT, 'scripts', 'shells-config.js'));
+          const prune = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'shells-prune.js'));
+          const root = findProjectRoot(a.cwd || process.cwd());
+          if (!root) return { isError: true, content: [{ type: 'text', text: `curation_prune_unused: no project root (shells config) found from ${a.cwd || process.cwd()}` }] };
+          const days = Math.max(1, Math.min(365, Number(a.days) || 30));
+          const res = a.apply ? prune.pruneShells({ root, ids: a.ids, days }) : prune.pruneCandidates({ root, days });
+          if (!res.ok) return { isError: true, content: [{ type: 'text', text: `curation_prune_unused: ${res.error}` }] };
+          return { content: [{ type: 'text', text: JSON.stringify({ root, ...res }, null, 2) }] };
+        } catch (err) {
+          return { isError: true, content: [{ type: 'text', text: `curation_prune_unused failed: ${err.message}` }] };
         }
       }
 

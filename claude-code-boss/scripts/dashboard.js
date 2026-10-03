@@ -1455,13 +1455,33 @@ async function getCurationSummary(req, res, url) {
       if (!shellsPath || !fs.existsSync(shellsPath)) return fail(res, `no shells config under ${root}`, 400);
       shellIds = loadShellsConfig(root).shells.map((s) => s.id).filter(Boolean);
     }
+    // F3.0-4: never-used scripts that are SAFE to prune (history covers the window,
+    // script older than it) — the panel's prune button acts on exactly these.
+    const prune = root ? require('./lib/shells-prune.js').pruneCandidates({ root, days: range }) : null;
     // C4c: per-hook latency lives in the brain daemon's memory (/health), not in the store.
     const brainPort = Number(process.env.BRAIN_HTTP_PORT) || 38217;
     const health = await routerHttpGetJson(brainPort, '/health');
     const hookLatency = health && health.hookLatency ? health.hookLatency : { unavailable: `brain daemon not reachable on port ${brainPort}` };
-    json(res, { rangeDays: range, projects, ...summarizeCuration(rows, { shellIds }), hookLatency, daemonUptimeMs: health ? health.uptimeMs : null });
+    json(res, { rangeDays: range, projects, ...summarizeCuration(rows, { shellIds }), hookLatency, daemonUptimeMs: health ? health.uptimeMs : null, prune });
   } catch (err) {
     console.error(`[DASHBOARD] /api/metrics/curation failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
+// F3.0-4: prune never-used curated scripts (registration only; backup written).
+// The ids are re-checked server-side against the current candidates.
+async function postCurationPrune(req, res, url) {
+  try {
+    const root = url.searchParams.get('root') || '';
+    const days = Math.max(1, Math.min(365, parseInt(url.searchParams.get('days') || '30', 10)));
+    let body = {};
+    try { body = JSON.parse((await readBody(req)) || '{}'); } catch (err) { return fail(res, `invalid JSON body: ${err.message}`, 400); }
+    const r = require('./lib/shells-prune.js').pruneShells({ root, ids: body.ids, days });
+    if (!r.ok) return fail(res, r.error, 400);
+    json(res, r);
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/curation/prune failed: ${err.message}`);
     fail(res, err.message, 500);
   }
 }
@@ -2257,6 +2277,7 @@ function handleAPI(req, res, url) {
   if (p === '/api/metrics/summary' && m === 'GET') return getMetricsSummary(req, res, url);
   if (p === '/api/metrics/value-summary' && m === 'GET') return getValueSummary(req, res, url);
   if (p === '/api/metrics/curation' && m === 'GET') return getCurationSummary(req, res, url);
+  if (p === '/api/curation/prune' && m === 'POST') return postCurationPrune(req, res, url);
   if (p === '/api/doctor' && m === 'GET') return getDoctor(req, res);
   if (p === '/api/brain/consolidate' && m === 'POST') return postBrainConsolidate(req, res, url);
   if (p === '/api/metrics/event-log' && m === 'GET') return getMetricsEventLog(req, res, url);

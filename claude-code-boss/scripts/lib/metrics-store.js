@@ -304,6 +304,35 @@ function getMetricsSummary(rangeDays = 7) {
   }
 }
 
+/**
+ * EXACT curation usage of `project` (isolated read-only connection, no row cap): the
+ * oldest curation.* event (how far the usage history goes back) and the ids of curated
+ * scripts that RAN since `sinceTs` (curation.used / .redirected / .piped). Feeds the
+ * never-used prune, which must not trust a history shorter than its window.
+ * @returns {{historyFromTs:(number|null), usedIds:string[]}}
+ */
+function getCurationUsageIsolated(project, sinceTs = 0) {
+  const Database = loadSqlite();
+  const empty = { historyFromTs: null, usedIds: [] };
+  if (!Database) return empty;
+  const p = dbPath(project);
+  if (!fs.existsSync(p)) return empty;
+  let db;
+  try { db = new Database(p); } catch (e) { console.error('[metrics-store] usage open failed:', p, e.message); return empty; }
+  try {
+    const first = db.prepare(`SELECT MIN(ts) AS t FROM metrics_event WHERE event_name LIKE 'curation.%'`).get();
+    const rows = db.prepare(`SELECT DISTINCT COALESCE(json_extract(payload,'$.scriptId'), json_extract(payload,'$.shellId')) AS id
+                               FROM metrics_event
+                              WHERE event_name IN ('curation.used','curation.redirected','curation.piped') AND ts >= ?`).all(sinceTs);
+    return { historyFromTs: first && Number.isFinite(first.t) ? first.t : null, usedIds: rows.map((r) => r.id).filter(Boolean) };
+  } catch (err) {
+    console.error(`[metrics-store] getCurationUsageIsolated(${project}) failed: ${err.message}`);
+    return empty;
+  } finally {
+    try { db.close(); } catch { /* throwaway connection */ }
+  }
+}
+
 /** Delete metrics_event rows older than `keepDays`. Returns count deleted. */
 function cleanupMetrics(keepDays = 30) {
   if (!_db) return 0;
@@ -326,7 +355,7 @@ function listProjects() {
 
 module.exports = {
   init, isReady, close,
-  recordMetric, getEventLog, getEventLogIsolated,
+  recordMetric, getEventLog, getEventLogIsolated, getCurationUsageIsolated,
   getEvaluationCounts, getEvaluationCountsIsolated,
   getMetricsSummary, cleanupMetrics,
   listProjects,

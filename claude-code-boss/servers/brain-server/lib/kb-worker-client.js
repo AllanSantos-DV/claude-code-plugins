@@ -36,7 +36,7 @@ const STORE_METHODS = [
 ];
 
 const METRICS_METHODS = [
-  'init', 'isReady', 'close', 'recordMetric', 'getEventLog', 'getEventLogIsolated',
+  'init', 'isReady', 'close', 'recordMetric', 'getEventLog', 'getEventLogIsolated', 'getCurationUsageIsolated',
   'getEvaluationCounts', 'getEvaluationCountsIsolated', 'getMetricsSummary',
   'cleanupMetrics', 'listProjects',
 ];
