@@ -21272,6 +21272,31 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
     } finally { await hw.shutdown(); }
   });
 
+  test('C4c: per-hook latency stats are process-wide (summed across hookTools instances) with ok / expired / degraded / queued', async () => {
+    const { hookLatencyStats, _resetLatencyStats } = require('./lib/hook-tools.js');
+    HOOK_SPECS.hook_test_ok = { script: 'skill-metric.js', call: () => new Promise((r) => setTimeout(() => r('{}'), 30)) };
+    HOOK_SPECS.hook_test_hang = { script: 'skill-metric.js', call: () => new Promise(() => {}) };
+    HOOK_SPECS.hook_test_throw = { script: 'skill-metric.js', call: () => { throw new Error('boom'); } };
+    _resetLatencyStats();
+    try {
+      const a = createHookTools({ pluginRoot: ROOT, deadlines: { hook_test_hang: 80 } });
+      const b = createHookTools({ pluginRoot: ROOT, hookWorker: { run: () => Promise.reject(new Error('x')), enqueue: () => {} } });
+      await a.handle('hook_test_ok', { project_dir: proj });
+      await a.handle('hook_test_ok', { project_dir: proj });
+      await a.handle('hook_test_hang', { project_dir: proj });
+      await a.handle('hook_test_throw', { project_dir: proj });
+      await b.handle('hook_skill_metric', { project_dir: proj }); // async + worker → queued
+      const s = hookLatencyStats();
+      assertEq(s.hook_test_ok.calls, 2, 'two ok calls'); assertEq(s.hook_test_ok.ok, 2, 'counted ok');
+      assert(s.hook_test_ok.p50Ms >= 25 && s.hook_test_ok.maxMs < 1000, `latency measured: ${JSON.stringify(s.hook_test_ok)}`);
+      assertEq(s.hook_test_hang.expired, 1, 'deadline overrun counted as expired');
+      assertEq(s.hook_test_throw.degraded, 1, 'inline throw counted as degraded');
+      assertEq(s.hook_skill_metric.queued, 1, 'async enqueue counted as queued'); assertEq(s.hook_skill_metric.maxMs, 0, 'queued adds no latency');
+    } finally {
+      delete HOOK_SPECS.hook_test_ok; delete HOOK_SPECS.hook_test_hang; delete HOOK_SPECS.hook_test_throw; _resetLatencyStats();
+    }
+  });
+
   // ── G4: always-{} hooks are fire-and-forget ─────────────────────────────────
   test('G4: the always-{} hooks are exactly the async ones, and every one is in the heavy lane', () => {
     const ASYNC = Object.keys(HOOK_SPECS).filter(n => HOOK_SPECS[n].async).sort();
