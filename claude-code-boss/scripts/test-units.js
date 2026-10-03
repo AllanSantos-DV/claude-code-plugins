@@ -20696,6 +20696,43 @@ test('prune never-used: real metrics usage (exact, no row cap) + the MCP tool li
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test('shared daemon: tools acting on "this project" never fall back to the daemon\'s process.cwd() (mark_oneoff, register_shell, graph, policy)', async () => {
+  const oneoff = require('./lib/oneoff-store.js');
+  const sess = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-callercwd-'));
+  fs.mkdirSync(path.join(sess, '.git'));
+  try {
+    const { createBrainServer } = await import(pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+    const server = createBrainServer({ pluginRoot: ROOT, mode: 'http' });
+    // No cwd and no session root → refused (was: the first session's folder).
+    const calls = [
+      ['curation_mark_oneoff', { sigs: ['npm run zeta'] }],
+      ['curation_register_shell', { id: 'z', scriptPath: '.vscode/scripts/z.mjs', content: 'x', aliases: ['npm run zeta'] }],
+      ['policy_shadow_report', { project: 'p' }],
+      ['policy_adjudication_prepare', { policyId: 'x', project: 'p' }],
+    ];
+    for (const [name, args] of calls) {
+      const r = await server.dispatch(name, args);
+      assert(r.isError && /cwd is required/.test(r.content[0].text), `${name} without cwd must refuse: ${r.content[0].text}`);
+    }
+    // Graph tools: cwd() is consulted only without a root, and its refusal surfaces.
+    const { createGraphTools } = require('./lib/graph/tools.js');
+    let cwdCalls = 0;
+    const gt = createGraphTools({ cwd: () => { cwdCalls++; throw new Error('cwd is required'); }, resolveDaemon: async () => ({ url: 'http://127.0.0.1:9' }), fetchImpl: async () => { throw new Error('offline'); } });
+    const g = await gt.handle('graph_status', {});
+    assert(/cwd is required/.test(g.content[0].text) && cwdCalls === 1, `graph without root must refuse: ${g.content[0].text}`);
+    await gt.handle('graph_status', { root: sess });
+    assertEq(cwdCalls, 1, 'an explicit root never consults the caller cwd');
+    // With the MCP session's root bound, that folder is the caller's project.
+    server._setSessionRoots([sess]);
+    const ok = await server.dispatch('curation_mark_oneoff', { sigs: ['npm run zeta'] });
+    assert(!ok.isError, `mark with a session root: ${ok.content[0].text}`);
+    const store = oneoff.load(process.env.CLAUDE_PLUGIN_DATA, oneoff.resolveProjectKey(sess));
+    assert(JSON.stringify(store).includes('npm run zeta'), 'marked under the session folder\'s project key');
+    // A given-but-missing cwd names the caller's folder, never the daemon's.
+    assert(oneoff.resolveProjectKey(path.join(sess, 'gone', 'sub')) === oneoff.resolveProjectKey(sess), 'missing subfolder walks up to the session repo');
+  } finally { fs.rmSync(sess, { recursive: true, force: true }); }
+});
+
 test('daemon-supervisor spawnDaemon: never forwards CCB_PROJECT_ID from the spawning process into the shared daemon\'s env (regression, found live 2026-09-24)', async () => {
   const src = fs.readFileSync(path.join(ROOT, 'servers', 'brain-server', 'lib', 'daemon-supervisor.js'), 'utf8');
   const fnBody = src.slice(src.indexOf('function spawnDaemon'), src.indexOf('function spawnDaemon') + 700);

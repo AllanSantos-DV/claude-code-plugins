@@ -31,7 +31,9 @@ function sanitize(s) {
 
 /** Stable per-project key: nearest `.git` ancestor (or cwd) basename + path hash. */
 function resolveProjectKey(cwd) {
-  let dir = cwd && fs.existsSync(cwd) ? path.resolve(cwd) : process.cwd();
+  // A given-but-missing cwd still names the caller's folder; never swap in process.cwd()
+  // (in the shared daemon that is another session's project).
+  let dir = cwd ? path.resolve(cwd) : process.cwd();
   const start = dir;
   for (let i = 0; i < 12; i++) {
     try { if (fs.existsSync(path.join(dir, '.git'))) break; } catch { /* unreadable: stop walking */ break; }

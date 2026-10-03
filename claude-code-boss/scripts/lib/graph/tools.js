@@ -167,7 +167,8 @@ function createGraphTools({ cwd = () => process.cwd(), fetchImpl = globalThis.fe
     try { base = await G.graphBase({ discover: resolve, fetchImpl }); }
     catch (e) { return { error: explainError(e) }; }
     if (!base) return { error: '🕸️ Graph unavailable: the memory daemon is offline. (Run memory_setup / memory_status to bring it up.)' };
-    const ctx = G.graphContextFor(rootArg, cwd());
+    // cwd() only when no root is given: in the shared daemon it refuses without the session folder.
+    const ctx = G.graphContextFor(rootArg, rootArg && String(rootArg).trim() ? null : cwd());
     // §6.1: refuse broad/missing roots BEFORE the daemon walks the filesystem.
     const unsafe = G.assertSafeRoot(ctx.root);
     if (unsafe) return { error: '🚫 ' + unsafe };
