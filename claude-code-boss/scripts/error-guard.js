@@ -88,6 +88,8 @@ async function run(event) {
       const exit = res.exitCode === null || res.exitCode === undefined ? '?' : res.exitCode;
       const cause = res.cause ? `Última saída: ${res.cause}. ` : '';
       const reason = `[error-guard] \`${res.sig}\` já falhou ${res.count}× nesta sessão (exit ${exit}) e nenhum arquivo foi editado desde a última falha. ${cause}Rodar de novo do mesmo jeito vai falhar igual: corrija a causa primeiro (edite o que for preciso) e então rode.`;
+      // C4: every block is counted — how often the guard saves a doomed re-run.
+      require('./lib/metrics.js').fire('error-guard.denied', { sig: res.sig, failures: res.count }, { sessionId: event.session_id, cwd: event.cwd });
       return decision('deny', { additionalContext: reason, permissionDecisionReason: reason });
     }
 

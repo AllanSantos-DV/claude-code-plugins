@@ -1432,6 +1432,36 @@ async function getValueSummary(req, res, url) {
   }
 }
 
+// C4 (Phase C): what curation and the guards actually did — redirects, script runs,
+// exact/estimated savings, raw output that entered context, gaps. `root` (optional) is
+// a project folder whose shells config lists the scripts (for "never used").
+async function getCurationSummary(req, res, url) {
+  try {
+    const range = Math.max(1, Math.min(365, parseInt(url.searchParams.get('days') || '30', 10)));
+    const sinceTs = Date.now() - range * 86400_000;
+    const projectFilter = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
+    const projects = projectFilter ? [projectFilter] : listMetricsProjects();
+    const { summarizeCuration, CURATION_EVENTS } = require('./lib/curation-metrics.js');
+    const rows = [];
+    for (const ev of CURATION_EVENTS) {
+      const perProject = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName: ev, limit: 2000 }));
+      for (const { value } of perProject) for (const r of value) if (r.ts >= sinceTs) rows.push(r);
+    }
+    let shellIds = [];
+    const root = url.searchParams.get('root') || '';
+    if (root) {
+      const { loadShellsConfig } = require('./shells-config.js');
+      const shellsPath = require('./curation-paths.js').getShellsConfigPath(root);
+      if (!shellsPath || !fs.existsSync(shellsPath)) return fail(res, `no shells config under ${root}`, 400);
+      shellIds = loadShellsConfig(root).shells.map((s) => s.id).filter(Boolean);
+    }
+    json(res, { rangeDays: range, projects, ...summarizeCuration(rows, { shellIds }) });
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/metrics/curation failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
 async function getProfileImpact(req, res, url) {
   try {
     const range = Math.max(1, Math.min(365, parseInt(url.searchParams.get('days') || '7', 10)));
@@ -2222,6 +2252,7 @@ function handleAPI(req, res, url) {
   if (p === '/api/logs/clear' && m === 'POST') return clearLogs(req, res);
   if (p === '/api/metrics/summary' && m === 'GET') return getMetricsSummary(req, res, url);
   if (p === '/api/metrics/value-summary' && m === 'GET') return getValueSummary(req, res, url);
+  if (p === '/api/metrics/curation' && m === 'GET') return getCurationSummary(req, res, url);
   if (p === '/api/doctor' && m === 'GET') return getDoctor(req, res);
   if (p === '/api/brain/consolidate' && m === 'POST') return postBrainConsolidate(req, res, url);
   if (p === '/api/metrics/event-log' && m === 'GET') return getMetricsEventLog(req, res, url);
