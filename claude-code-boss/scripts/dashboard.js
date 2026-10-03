@@ -1457,7 +1457,8 @@ async function getCurationSummary(req, res, url) {
     }
     // F3.0-4: never-used scripts that are SAFE to prune (history covers the window,
     // script older than it) — the panel's prune button acts on exactly these.
-    const prune = root ? require('./lib/shells-prune.js').pruneCandidates({ root, days: range }) : null;
+    const sp = require('./lib/shells-prune.js');
+    const prune = root ? sp.pruneCandidates({ root, days: range, project: sp.metricsProjectFor(root, listMetricsProjects()) }) : null;
     // C4c: per-hook latency lives in the brain daemon's memory (/health), not in the store.
     const brainPort = Number(process.env.BRAIN_HTTP_PORT) || 38217;
     const health = await routerHttpGetJson(brainPort, '/health');
@@ -1477,7 +1478,8 @@ async function postCurationPrune(req, res, url) {
     const days = Math.max(1, Math.min(365, parseInt(url.searchParams.get('days') || '30', 10)));
     let body = {};
     try { body = JSON.parse((await readBody(req)) || '{}'); } catch (err) { return fail(res, `invalid JSON body: ${err.message}`, 400); }
-    const r = require('./lib/shells-prune.js').pruneShells({ root, ids: body.ids, days });
+    const sp = require('./lib/shells-prune.js');
+    const r = sp.pruneShells({ root, ids: body.ids, days, project: sp.metricsProjectFor(root, listMetricsProjects()) });
     if (!r.ok) return fail(res, r.error, 400);
     json(res, r);
   } catch (err) {
