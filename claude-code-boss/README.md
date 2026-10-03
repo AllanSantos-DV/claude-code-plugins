@@ -341,7 +341,7 @@ e mostra a URL. Também: `node scripts/dashboard-start.js` (imprime `{ok, url}`)
   aprendidas, % de retrieval citado) + painel **Curation & guards** (economia
   exata do moldador / estimada dos redirects / custo da saída crua que entrou no
   contexto; por script: redirects, execuções, saída média, sucesso, variantes não
-  cobertas, pipes; scripts nunca usados; latência por hook do daemon) + card
+  cobertas, pipes; scripts que **nunca rodaram** na janela, com botão **Prune** — também pela tool `curation_prune_unused`; latência por hook do daemon) + card
   "learning loop" (capturadas vs. mescladas por semana) + botão de consolidação
   do KB (ver abaixo).
 

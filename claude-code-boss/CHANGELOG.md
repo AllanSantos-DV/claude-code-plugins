@@ -107,6 +107,22 @@ daemon de hooks e as correções de escopo por sessão.
   o boss não insiste. Provado no Claude Code real: o modelo reduziu o script a uma linha
   no sucesso e, na sessão seguinte, filtrar de novo não gerou cobrança.
 
+### Added — poda de scripts curados que nunca rodaram
+- Script curado que ninguém roda é ruído: aliases que o guard pode redirecionar e uma
+  linha no aviso de curadoria de toda sessão. O painel **Curation & guards** lista os
+  que **nunca rodaram** na janela (nem execução, nem redirect, nem pipe) com um botão
+  **Prune**; a tool MCP `curation_prune_unused` faz o mesmo pelo chat (lista por padrão;
+  poda só com `apply` e os ids explícitos).
+- Seguro por construção: nenhum candidato enquanto o histórico de uso não cobrir a
+  janela inteira (as métricas de uso nasceram na 3.0 — numa instalação recém-atualizada
+  nada é "não usado"); nunca um script mais novo que a janela; a poda recalcula os
+  candidatos e recusa qualquer outro id. Sai só o registro do `shells.json` (backup
+  gravado, JSON legível); o arquivo do script fica. Provado no Claude Code real (tool) e
+  no dashboard (botão renderizado, poda e recusa).
+- **Corrigido:** o script da página do dashboard não compilava desde a curadoria nova (um
+  apóstrofo numa string JS) — **nenhum painel carregava**. Um teste agora compila todo
+  script embutido no `index.html`. O painel aceita `?root=<pasta>` como link direto.
+
 ### Added — métricas reais e painel "Curation & guards"
 - Eventos novos no store de métricas: `curation.used` (execuções por script,
   tamanho, sucesso), `curation.redirected`, `curation.uncovered` (variante sem
