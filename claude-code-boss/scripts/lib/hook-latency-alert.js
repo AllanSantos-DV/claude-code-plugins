@@ -39,7 +39,7 @@ function slowHooks(hookLatency, deadlines = {}) {
 
 function alertText(list) {
   const items = list.map((h) => `\`${h.name.replace(/^hook_/, '')}\` p95 ${h.p95Ms}ms${h.deadlineMs ? ` (prazo ${h.deadlineMs}ms)` : ''}${h.expired ? `, ${h.expired} prazo(s) estourado(s) — decidiu nada nesses casos` : ''}`);
-  return `[BRAIN-HEALTH] Hook(s) do daemon sem folga: ${items.join('; ')}. Em ${list[0].calls}+ chamadas desde o início do daemon. Veja /dashboard → Curation & guards (latência por hook); reiniciar o Claude Code reinicia o daemon e zera a medição.`;
+  return `[BRAIN-HEALTH] Hook(s) do daemon sem folga: ${items.join('; ')}. Medido em ${list[0].calls} chamada(s) desde o início do daemon. Veja /dashboard → Curation & guards (latência por hook); reiniciar o Claude Code reinicia o daemon e zera a medição.`;
 }
 
 /** GET the daemon's /health (short timeout). Resolves the JSON or null. */
