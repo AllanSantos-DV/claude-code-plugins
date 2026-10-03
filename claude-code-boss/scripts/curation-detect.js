@@ -19,7 +19,6 @@
  *   curated-failure-noisy — curated script failed, output exceeded raw thresholds
  *   (null)                — no condition matched; no entry recorded
  */
-const fs = require('fs');
 const path = require('path');
 const { runSideEffectCli } = require('./lib/hook-io.js');
 const turnJournal = require('./lib/turn-journal.js');
@@ -165,20 +164,18 @@ async function run(event) {
 
     // Piped → refine: the agent filtering the SAME script the SAME way again (`| tail -3`)
     // means the script prints more than is wanted — the fix belongs in the script, once,
-    // not in every call. From the 2nd time (per project/script/filter, reset when the
-    // script file changes) the Stop asks to bake the filter in.
+    // not in every call. On the 2nd time (per project/script/filter) the Stop asks ONCE to
+    // bake the filter in; after that the agent's call stands (lib/piped-store.js).
     if (scriptRan && !compound) {
       const filter = pipeFilterOf(command, scriptRel);
       if (filter) {
-        let scriptMtimeMs = NaN;
-        try { scriptMtimeMs = fs.statSync(path.resolve(projectRoot || cwd, scriptRel)).mtimeMs; } catch (err) { void err; /* script unreadable → no reset signal */ }
-        const n = pipedStore.touch({
+        const { count: n, ask } = pipedStore.touch({
           file: path.join(DATA_DIR, '.runtime', 'curation-piped.json'), project: projectKey,
-          scriptId: curatedShell.id || scriptRel, scriptMtimeMs, filter, windowDays: _curationCfg.oneHitWindowDays,
+          scriptId: curatedShell.id || scriptRel, filter, windowDays: _curationCfg.oneHitWindowDays,
         });
-        if (n >= 2 && !event.agent_id) {
+        if (ask && !event.agent_id) {
           appendTurnEntry(sessionId, {
-            command, reason: `filtered ${n}x with \`| ${filter}\` — bake this filter into the script (or its outputLines) instead of filtering every call`,
+            command, reason: `filtered ${n}x with \`| ${filter}\` — bake this filter into the script (or its outputLines) instead of filtering every call; asked once — if the filter must stay, just say why`,
             lines: lineCount, chars: charCount, isCurated: true, curatedScript: scriptRel, isSuccess, interrupted, hookEvent, exitCode,
             sig: seen.sig, recurrence: seen.count, timestamp: new Date().toISOString(),
           });
