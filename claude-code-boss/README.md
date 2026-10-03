@@ -296,9 +296,12 @@ máquina — **um modelo, um SQLite**. O `.mcp.json` aponta direto pra URL
 (`"type":"http"`, sem `command`) — **Claude Code não spawna processo nenhum por
 sessão**; cada sessão é um cliente HTTP fino do daemon único.
 
-O daemon em si é garantido (encontrado-ou-iniciado) por um hook
-`SessionStart`/`UserPromptSubmit` (`scripts/brain-daemon-ensure.js`) — efêmero
-(roda, garante, sai), então não fere o próprio princípio que existe pra servir.
+O daemon em si é garantido (encontrado-ou-iniciado) pelo `headersHelper` do
+`.mcp.json` (`scripts/mcp-headers.js`), que o Claude Code roda ANTES de cada conexão
+— a 1ª conexão já encontra o daemon de pé (antes, subido só pelo hook, ele chegava
+depois da 1ª tentativa e os hooks `mcp_tool` do 1º turno eram pulados durante o
+backoff do cliente) — e pelo hook `SessionStart`/`UserPromptSubmit`
+(`scripts/brain-daemon-ensure.js`). Ambos efêmeros (rodam, garantem, saem).
 
 - **Porta é FIXA** (`38217`, não derivada por data-dir), pra bater com a `url`
   estática do `.mcp.json`. Override com `--port` ou `BRAIN_HTTP_PORT`.
@@ -312,13 +315,15 @@ cada atualização do plugin, **troca um daemon obsoleto pelo novo** (lock em
 
 **Consumir de fora do Claude Code** (ex.: OpenCode): aponte pra
 `http://127.0.0.1:38217/mcp` (ou a porta fixada via `BRAIN_HTTP_PORT`), passando
-`project` explícito. Nenhum header de auth é exigido em `/mcp` — o `.mcp.json`
-não consegue carregar um segredo gerado em runtime, então esse endpoint usa
-apenas guarda de `Origin` (defesa contra DNS rebinding).
+`project` explícito e o header `Authorization: Bearer <token>` com o conteúdo de
+`<DATA_DIR>/brain-http.token`.
 
-**Auth**: só `/shutdown` (ação destrutiva) exige token — token local em
-`<DATA_DIR>/brain-http.token`, fixável via `BRAIN_HTTP_TOKEN`. `/mcp` usa apenas
-guarda de `Origin`; `/health` permanece totalmente aberto.
+**Auth**: `/mcp` e `/shutdown` exigem o token local (`<DATA_DIR>/brain-http.token`,
+fixável via `BRAIN_HTTP_TOKEN` — o daemon mantém o arquivo igual ao valor fixado) além
+da guarda de `Origin` (DNS rebinding); o Claude Code recebe o token pelo
+`headersHelper`. `/health` permanece aberto (supervisão). Limite: o cliente MCP não
+verifica quem atende a porta — um helper que falha não impede a conexão (medido no
+2.1.283) — ver `docs/SECURITY.md`.
 
 > **Referência técnica completa** (tools, endpoints, supervisor, config):
 > [`servers/brain-server/README.md`](servers/brain-server/README.md).
