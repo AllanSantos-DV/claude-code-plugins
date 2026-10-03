@@ -16738,9 +16738,14 @@ test('atomic-write: hot state stores route writes through writeJsonAtomic (no ra
   const stores = [
     'lib/oneoff-store.js', 'lib/cooldown-store.js',
     'lib/recall-health.js', 'lib/active-research-state.js',
-    'lib/failure-journal.js', 'lib/turn-journal.js',
-    'lib/retrieval-journal.js', 'lib/verify-journal.js',
+    'lib/session-journal.js',
   ];
+  // The journals write ONLY through lib/session-journal.js (held to the rule above).
+  for (const rel of ['lib/failure-journal.js', 'lib/turn-journal.js', 'lib/retrieval-journal.js', 'lib/verify-journal.js']) {
+    const src = fs.readFileSync(path.join(SCRIPTS, rel), 'utf-8');
+    assert(/require\(['"]\.\/session-journal\.js['"]\)/.test(src) && !/fs\.writeFileSync\(/.test(src),
+      `${rel} must write through lib/session-journal.js only`);
+  }
   for (const rel of stores) {
     const src = fs.readFileSync(path.join(SCRIPTS, rel), 'utf-8');
     assert(/require\(['"]\.\/atomic-write\.js['"]\)/.test(src),
@@ -16819,7 +16824,7 @@ test('test/smoke harnesses that spawn a hook with a temp CLAUDE_PLUGIN_DATA must
 
 test('data-dir: migrated consumers import the shared resolver', () => {
   const consumers = [
-    'lib/cooldown-store.js', 'lib/verify-journal.js', 'lib/failure-journal.js',
+    'lib/cooldown-store.js', 'lib/session-journal.js', // the journals resolve it through session-journal
     'lib/recall-health.js', 'lib/scope-search.js', 'conversation-ingest.js',
     'curation-session.js', 'curation-detect.js', 'decision-detect.js',
     'brain-index-native.js', 'brain-promote.js', 'dashboard.js',
@@ -20916,6 +20921,26 @@ test('curation_prune_unused: shells.json in a SUBFOLDER of the session reads the
       assert(r2.historyFromTs, `outside the session root → basename(root) metrics: ${JSON.stringify(r2)}`);
     } finally { fs.rmSync(other, { recursive: true, force: true }); }
   } finally { fs.rmSync(sess, { recursive: true, force: true }); }
+});
+
+test('session-journal: per-sid files (no "foo"/"foobar" collision), same-ms order with seqNames, tail cap, sweepOld only touches its own prefix', () => {
+  const { createJournal } = require('./lib/session-journal.js');
+  const a = createJournal({ prefix: 'tj-a', label: 'tj', seqNames: true, stampTs: true });
+  const b = createJournal({ prefix: 'tj-b', label: 'tj' });
+  fs.mkdirSync(a.RUNTIME_DIR, { recursive: true });
+  for (let i = 0; i < 30; i++) a.appendEntry('foo', { i });
+  a.appendEntry('foobar', { i: 'other' });
+  b.appendEntry('foo', { i: 'b' });
+  const all = a.readAll('foo');
+  assertEq(all.map((e) => e.i), [...Array(30).keys()], 'same-ms appends keep their order; foobar not mixed in');
+  assert(all.every((e) => Number.isFinite(e.ts)), 'stampTs adds ts');
+  assertEq(a.readEntries('foo', 5).map((e) => e.i), [25, 26, 27, 28, 29], 'tail cap');
+  const old = (Date.now() - 10 * 86400_000) / 1000;
+  for (const f of fs.readdirSync(a.RUNTIME_DIR).filter((f) => f.startsWith('tj-'))) fs.utimesSync(path.join(a.RUNTIME_DIR, f), old, old);
+  assertEq(a.sweepOld(86400_000), 31, 'sweeps its own files of every session');
+  assertEq(b.readAll('foo').map((e) => e.i), ['b'], 'another journal untouched');
+  b.clearEntries('foo');
+  assertEq(b.readAll('foo'), [], 'clear');
 });
 
 test('cooldown-stamp: absent → off; stamped → on until ms elapses; settleWithin tells ok/timeout/error apart', async () => {

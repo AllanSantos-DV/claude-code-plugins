@@ -23,40 +23,15 @@
  */
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 
 const { sanitizeSessionId } = require('./session-id.js');
-const { dataDir } = require('./data-dir.js');
-const { writeJsonAtomic } = require('./atomic-write.js');
+const { createJournal } = require('./session-journal.js');
 
-const DATA_DIR = dataDir();
-const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');
-
-const SEP = '--';
-
-function _journalPrefix(sessionId) {
-  return `curation-turn-${sanitizeSessionId(sessionId)}${SEP}`;
-}
+const journal = createJournal({ prefix: 'curation-turn', label: 'turn-journal' });
+const { appendEntry, RUNTIME_DIR } = journal;
 
 function _legacyPath(sessionId) {
   return path.join(RUNTIME_DIR, `curation-turn-${sanitizeSessionId(sessionId)}.json`);
-}
-
-/**
- * Append one entry as a new journal file. Race-free: never reads or rewrites
- * existing files.
- * @param {string} sessionId
- * @param {object} entry
- */
-function appendEntry(sessionId, entry) {
-  try {
-    const ts = Date.now();
-    const rand = crypto.randomBytes(4).toString('hex');
-    const file = path.join(RUNTIME_DIR, `${_journalPrefix(sessionId)}${ts}-${rand}.json`);
-    writeJsonAtomic(file, entry);
-  } catch (err) {
-    console.error(`[turn-journal] append failed: ${err.message}`);
-  }
 }
 
 /**
@@ -80,25 +55,8 @@ function readEntries(sessionId, maxEntries = 50) {
     console.error(`[turn-journal] legacy read failed: ${err.message}`);
   }
 
-  // 2. Journal files — order by timestamp embedded in filename
-  try {
-    if (fs.existsSync(RUNTIME_DIR)) {
-      const prefix = _journalPrefix(sessionId);
-      const files = fs.readdirSync(RUNTIME_DIR)
-        .filter(f => f.startsWith(prefix) && f.endsWith('.json'))
-        .sort(); // lexical sort = timestamp order (fixed-width ms timestamps)
-      for (const f of files) {
-        try {
-          const data = JSON.parse(fs.readFileSync(path.join(RUNTIME_DIR, f), 'utf-8'));
-          if (data && typeof data === 'object') entries.push(data);
-        } catch (err) {
-          console.error(`[turn-journal] entry read failed (${f}): ${err.message}`);
-        }
-      }
-    }
-  } catch (err) {
-    console.error(`[turn-journal] dir read failed: ${err.message}`);
-  }
+  // 2. Journal files, oldest first
+  entries.push(...journal.readAll(sessionId));
 
   // Dedup by (command, reason): later entries replace earlier ones
   const byKey = new Map();
@@ -122,19 +80,7 @@ function clearEntries(sessionId) {
     const legacyP = _legacyPath(sessionId);
     if (fs.existsSync(legacyP)) fs.unlinkSync(legacyP);
   } catch { /* best effort */ }
-
-  try {
-    if (!fs.existsSync(RUNTIME_DIR)) return;
-    const prefix = _journalPrefix(sessionId);
-    for (const f of fs.readdirSync(RUNTIME_DIR)) {
-      if (f.startsWith(prefix) && f.endsWith('.json')) {
-        try { fs.unlinkSync(path.join(RUNTIME_DIR, f)); }
-        catch { /* best effort */ }
-      }
-    }
-  } catch (err) {
-    console.error(`[turn-journal] clear failed: ${err.message}`);
-  }
+  journal.clearEntries(sessionId);
 }
 
 module.exports = { appendEntry, readEntries, clearEntries, RUNTIME_DIR };

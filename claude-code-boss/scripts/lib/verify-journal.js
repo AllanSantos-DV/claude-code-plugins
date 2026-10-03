@@ -18,48 +18,12 @@
  */
 'use strict';
 
-const fs = require('fs');
-const path = require('path');
-const crypto = require('crypto');
+const { createJournal } = require('./session-journal.js');
 
-const { sanitizeSessionId } = require('./session-id.js');
-const { dataDir } = require('./data-dir.js');
-const { writeJsonAtomic } = require('./atomic-write.js');
-
-const DATA_DIR = dataDir();
-const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');
-
-const SEP = '--';
-
-// Monotonic per-process counter: breaks ordering ties when multiple appends land
-// in the SAME millisecond (Date.now() collision). Without it, the random suffix
-// alone would sort same-ms entries in arbitrary order — verify-journal promises
-// chronological order, so we make the filename sort deterministic within a
-// process: <ts(13)>-<seq(6)>-<rand>. Across processes ts still orders (and a
-// cross-process same-ms collision is irrelevant to the edits-vs-verify tally).
-let _seq = 0;
-
-function _prefix(sessionId) {
-  return `turn-verify-${sanitizeSessionId(sessionId)}${SEP}`;
-}
-
-/**
- * Append one entry as a fresh file. Race-free: never reads or rewrites existing
- * files. Swallows errors — journaling must never break a hook.
- * @param {string} sessionId
- * @param {object} entry
- */
-function _append(sessionId, entry) {
-  try {
-    const ts = Date.now();
-    const seq = String(_seq++ % 1000000).padStart(6, '0');
-    const rand = crypto.randomBytes(3).toString('hex');
-    const file = path.join(RUNTIME_DIR, `${_prefix(sessionId)}${ts}-${seq}-${rand}.json`);
-    writeJsonAtomic(file, { ts, ...entry });
-  } catch (err) {
-    console.error(`[verify-journal] append failed: ${err.message}`);
-  }
-}
+// seqNames: same-millisecond appends keep their order (the tally is chronological);
+// stampTs: every entry carries its ts.
+const journal = createJournal({ prefix: 'turn-verify', label: 'verify-journal', seqNames: true, stampTs: true });
+const { readEntries, clearEntries, RUNTIME_DIR } = journal;
 
 /**
  * Record a file edit (Edit/Write/NotebookEdit).
@@ -67,7 +31,7 @@ function _append(sessionId, entry) {
  * @param {string} filePath
  */
 function appendEdit(sessionId, filePath) {
-  _append(sessionId, { kind: 'edit', path: String(filePath || '') });
+  journal.appendEntry(sessionId, { kind: 'edit', path: String(filePath || '') });
 }
 
 /**
@@ -76,59 +40,11 @@ function appendEdit(sessionId, filePath) {
  * @param {{ sig?: string, curated?: string|null }} info
  */
 function appendCommand(sessionId, info = {}) {
-  _append(sessionId, {
+  journal.appendEntry(sessionId, {
     kind: 'cmd',
     sig: String(info.sig || ''),
     curated: info.curated ? String(info.curated) : null,
   });
-}
-
-/**
- * Read all entries for a session in chronological order (no dedup).
- * @param {string} sessionId
- * @param {number} maxEntries
- * @returns {object[]}
- */
-function readEntries(sessionId, maxEntries = 200) {
-  const entries = [];
-  try {
-    if (fs.existsSync(RUNTIME_DIR)) {
-      const prefix = _prefix(sessionId);
-      const files = fs.readdirSync(RUNTIME_DIR)
-        .filter(f => f.startsWith(prefix) && f.endsWith('.json'))
-        .sort(); // lexical = timestamp order (fixed-width ms timestamps)
-      for (const f of files) {
-        try {
-          const data = JSON.parse(fs.readFileSync(path.join(RUNTIME_DIR, f), 'utf-8'));
-          if (data && typeof data === 'object') entries.push(data);
-        } catch (err) {
-          console.error(`[verify-journal] entry read failed (${f}): ${err.message}`);
-        }
-      }
-    }
-  } catch (err) {
-    console.error(`[verify-journal] dir read failed: ${err.message}`);
-  }
-  return entries.length > maxEntries ? entries.slice(-maxEntries) : entries;
-}
-
-/**
- * Remove all journal files for a session (turn boundary reset).
- * @param {string} sessionId
- */
-function clearEntries(sessionId) {
-  try {
-    if (!fs.existsSync(RUNTIME_DIR)) return;
-    const prefix = _prefix(sessionId);
-    for (const f of fs.readdirSync(RUNTIME_DIR)) {
-      if (f.startsWith(prefix) && f.endsWith('.json')) {
-        try { fs.unlinkSync(path.join(RUNTIME_DIR, f)); }
-        catch { /* best effort */ }
-      }
-    }
-  } catch (err) {
-    console.error(`[verify-journal] clear failed: ${err.message}`);
-  }
 }
 
 module.exports = { appendEdit, appendCommand, readEntries, clearEntries, RUNTIME_DIR };
