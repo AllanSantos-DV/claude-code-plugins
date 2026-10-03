@@ -55,6 +55,30 @@ async function liveDashboard(dir) {
 }
 
 /**
+ * One starter at a time (O_EXCL lock): two sessions running /dashboard together used to
+ * spawn two servers — the last discovery write won, the other waited and answered "não
+ * respondeu", leaving an orphan. A lock whose owner died or that outlived a start
+ * attempt is taken over. Returns a release function, or null when another start is live.
+ */
+function acquireStartLock(file, staleMs) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fd = fs.openSync(file, 'wx');
+      fs.writeSync(fd, JSON.stringify({ pid: process.pid, at: Date.now() }));
+      fs.closeSync(fd);
+      return () => { try { fs.unlinkSync(file); } catch (err) { if (err.code !== 'ENOENT') console.error(`[DASHBOARD-START] release lock: ${err.message}`); } };
+    } catch (err) {
+      if (err.code !== 'EEXIST') throw err;
+      const held = readJson(file);
+      if (held && isAlive(held.pid) && Date.now() - Number(held.at) < staleMs) return null;
+      try { fs.unlinkSync(file); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    }
+  }
+  return null;
+}
+
+/**
  * Make sure the dashboard is up and answering. Never opens a browser itself
  * (the caller decides). Resolves {ok:true, status:'already-running'|'started',
  * port, pid, url} or {ok:false, error} — never throws.
@@ -64,6 +88,25 @@ async function ensureDashboard({ waitMs = 8000 } = {}) {
   const live = await liveDashboard(dir);
   if (live) return { ok: true, status: 'already-running', ...live, url: `http://localhost:${live.port}` };
 
+  const lockFile = path.join(dir, 'dashboard.starting');
+  let release;
+  try { release = acquireStartLock(lockFile, waitMs + 2000); }
+  catch (err) { return { ok: false, error: `não foi possível travar a subida do dashboard (${lockFile}): ${err.message}` }; }
+  if (!release) {
+    // Another session is starting it: wait for THAT server instead of spawning a second.
+    const deadline = Date.now() + waitMs;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 150));
+      const up = await liveDashboard(dir);
+      if (up) return { ok: true, status: 'already-running', ...up, url: `http://localhost:${up.port}` };
+    }
+    return { ok: false, error: `outra sessão está subindo o dashboard e ele não respondeu em ${Math.round(waitMs / 1000)}s (trava ${lockFile})` };
+  }
+  try { return await spawnAndWait(dir, waitMs); }
+  finally { release(); }
+}
+
+async function spawnAndWait(dir, waitMs) {
   let child;
   try {
     child = spawn(process.execPath, [DASHBOARD_SCRIPT], {

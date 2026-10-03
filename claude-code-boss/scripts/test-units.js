@@ -4108,10 +4108,24 @@ test('/dashboard without LLM: ensureDashboard starts the REAL dashboard once, th
   const saved = process.env.DASHBOARD_NO_OPEN;
   process.env.DASHBOARD_NO_OPEN = '1';
   let pid = null;
+  const { runtimeDir } = require('./dashboard-start.js');
+  const lockFile = path.join(runtimeDir(), 'dashboard.starting');
   try {
-    const a = await ensureDashboard({ waitMs: 15000 });
-    assert(a.ok && a.status === 'started' && /^http:\/\/localhost:\d+$/.test(a.url), `started: ${JSON.stringify(a)}`);
+    // A held lock (live owner, fresh) with no server → wait, then say so; never spawn.
+    fs.mkdirSync(runtimeDir(), { recursive: true });
+    fs.writeFileSync(lockFile, JSON.stringify({ pid: process.pid, at: Date.now() }));
+    const held = await ensureDashboard({ waitMs: 600 });
+    assert(!held.ok && /outra sessão está subindo/.test(held.error), `held lock → no second spawn: ${JSON.stringify(held)}`);
+    // A lock left by a dead owner is taken over.
+    fs.writeFileSync(lockFile, JSON.stringify({ pid: 2147483646, at: Date.now() }));
+    // Two sessions at the same instant: ONE server, the other reuses it.
+    const [a1, a2] = await Promise.all([ensureDashboard({ waitMs: 15000 }), ensureDashboard({ waitMs: 15000 })]);
+    const a = a1.status === 'started' ? a1 : a2;
+    assert(a.ok && a.status === 'started' && /^http:\/\/localhost:\d+$/.test(a.url), `started: ${JSON.stringify([a1, a2])}`);
     pid = a.pid;
+    const other = a === a1 ? a2 : a1;
+    assert(other.ok && other.status === 'already-running' && other.pid === a.pid, `concurrent start reuses the same server: ${JSON.stringify([a1, a2])}`);
+    assert(!fs.existsSync(lockFile), 'the start lock is released');
     assert(await probe(a.port), 'the published port answers');
     const b = await ensureDashboard({ waitMs: 15000 });
     assertEq(b.status, 'already-running', 'second call reuses it');
@@ -4119,7 +4133,6 @@ test('/dashboard without LLM: ensureDashboard starts the REAL dashboard once, th
   } finally {
     // Kill what we started AND whatever the test data dir's discovery file points at
     // (a regression that spawns twice must not leave a stray dashboard behind).
-    const { runtimeDir } = require('./dashboard-start.js');
     let recorded = null;
     try { recorded = JSON.parse(fs.readFileSync(path.join(runtimeDir(), 'dashboard.json'), 'utf8')).pid; } catch (err) { void err; }
     for (const p of new Set([pid, recorded].filter(Boolean))) { try { process.kill(p); } catch (err) { void err; } }
