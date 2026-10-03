@@ -26,7 +26,7 @@ const metrics = require('./lib/metrics.js');
 const { canonicalSig } = require('./lib/command-signature.js');
 const oneoff = require('./lib/oneoff-store.js');
 const { classifyCommand } = require('./lib/curation-families.js');
-const { unwrapShaped } = require('./lib/curation-redirect.js');
+const { unwrapShaped, splitTopLevel } = require('./lib/curation-redirect.js');
 
 const { findProjectRoot, loadShellsConfig, matchCuratedShell, _tokenize, _pathMatches } = require('./shells-config.js');
 const { classify, successBudgetFor }                            = require('./curation-classifier.js');
@@ -96,6 +96,8 @@ async function run(event) {
     // (exploration → never curated); the wrapper's `set -o pipefail` is not a task.
     const rawCommand = event.tool_input?.command || '';
     const command = unwrapShaped(rawCommand) || rawCommand;
+    const topParts = splitTopLevel(command);
+    const compound = !topParts || topParts.filter((p) => p.text.trim()).length > 1;
     const sessionId = event.session_id || event.sessionId || 'default';
     const cwd = event.cwd || hookEnv().CLAUDE_PROJECT_DIR || '';
     const charCount = output.length;
@@ -143,8 +145,14 @@ async function run(event) {
     // the dashboard compares against the raw baseline of the same signature.
     const scriptRel = curatedShell ? String(curatedShell.script || '').trim() : '';
     if (scriptRel && _tokenize(command).some((t) => _pathMatches(t, scriptRel))) {
-      metrics.fire('curation.used', { scriptId: curatedShell.id || scriptRel, chars: charCount, lines: lineCount, success: isSuccess }, { sessionId, cwd });
+      metrics.fire('curation.used', { scriptId: curatedShell.id || scriptRel, chars: charCount, lines: lineCount, success: isSuccess, compound }, { sessionId, cwd });
     }
+
+    // A COMPOUND that includes a curated script (`a.mjs; b.mjs; eslint … | tail`) produced
+    // the output of every part: charging it to the script's budget asked to "refine" a
+    // script whose own output was fine (seen live: test-hooks.mjs flagged for 42 lines of
+    // test-units + lint + audit). The script's budget is judged on its solo runs only.
+    if (curatedShell && compound) return;
 
     if (!reason) return;
 

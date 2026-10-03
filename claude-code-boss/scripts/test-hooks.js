@@ -1619,6 +1619,39 @@ const TESTS = [
     },
   },
   {
+    // Seen live: `node .vscode/scripts/test-units.mjs; node .vscode/scripts/test-hooks.mjs;
+    // eslint … | tail` — 42 lines of EVERY part were charged to test-hooks.mjs ("refine it").
+    name: 'curation-detect   [compound with a curated script + noisy output → no refine journal]',
+    script: 'curation-detect.js',
+    payload: (() => {
+      const cwd = mkTempProject({ shells: [{ id: 'th', script: '.vscode/scripts/test-hooks.mjs', aliases: [], outputLines: 5 }], whitelist: [] });
+      return { ...require('./__fixtures__/post-tool-use-success-noisy.json'), tool_input: { command: 'node .vscode/scripts/test-units.mjs; node .vscode/scripts/test-hooks.mjs; npx eslint scripts | tail -3' }, cwd, session_id: SESSION };
+    })(),
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-cur-')) }),
+    validateWithEnv: (r, env) => {
+      const rt = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime');
+      const files = fs.existsSync(rt) ? fs.readdirSync(rt).filter(f => f.startsWith('curation-turn-')) : [];
+      return files.length === 0 ? null : `a compound's output must not be charged to the curated script, got ${files.join(',')}`;
+    },
+  },
+  {
+    // ...while the SAME curated script run SOLO with noisy output is still asked to be refined.
+    name: 'curation-detect   [curated script SOLO + noisy output → refine journal (budget still enforced)]',
+    script: 'curation-detect.js',
+    payload: (() => {
+      const cwd = mkTempProject({ shells: [{ id: 'th', script: '.vscode/scripts/test-hooks.mjs', aliases: [], outputLines: 5 }], whitelist: [] });
+      return { ...require('./__fixtures__/post-tool-use-success-noisy.json'), tool_input: { command: 'node .vscode/scripts/test-hooks.mjs' }, cwd, session_id: SESSION };
+    })(),
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-solo-cur-')) }),
+    validateWithEnv: (r, env) => {
+      const rt = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime');
+      const files = fs.existsSync(rt) ? fs.readdirSync(rt).filter(f => f.startsWith('curation-turn-')) : [];
+      return files.length > 0 ? null : 'a noisy SOLO run of a curated script must still be journaled for refine';
+    },
+  },
+  {
     // C3: a TASK command's FIRST noisy occurrence stays pending — no journal yet.
     name: 'curation-detect   [C3: TASK first noisy occurrence → pending, no journal]',
     script: 'curation-detect.js',
