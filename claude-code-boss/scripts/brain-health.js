@@ -277,6 +277,23 @@ function recallDegradedStatus() {
  * @param {object} event
  * @returns {Promise<string|null>}
  */
+async function slowHookAlert(root, data) {
+  try {
+    const alert = require('./lib/hook-latency-alert.js');
+    const health = await alert.fetchHealth(Number(process.env.BRAIN_HTTP_PORT) || 38217);
+    if (!health) return null; // daemon down: the live probe / ensure already speak to that
+    // Only the daemon serving THIS install: another install's daemon (G15) is not ours to
+    // judge — and a test runner (repo root) never reads the machine's real daemon.
+    const same = (a, b) => path.resolve(String(a || '')).toLowerCase() === path.resolve(String(b || '')).toLowerCase();
+    if (!health.pluginRoot || !same(health.pluginRoot, root)) return null;
+    const { deadlinesFromHooksJson } = require('./lib/hook-tools.js');
+    return alert.alertOnce({ health, deadlines: deadlinesFromHooksJson(root), stampFile: path.join(data, '.runtime', 'hook-latency-alert.json') });
+  } catch (err) {
+    console.error(`[BRAIN-HEALTH] slow-hook check failed: ${err.message}`);
+    return null;
+  }
+}
+
 async function run(event) {
   try {
     const eventName = event.hook_event_name || 'SessionStart';
@@ -299,6 +316,11 @@ async function run(event) {
     recordRun(data);
 
     if (defects.length > 0) return buildAdvisoryText(defects);
+
+    // Daemon-served hooks with no headroom left (p95 ≥ half the deadline, or expiring):
+    // warned before they start deciding nothing. Once per hook per 6 h per daemon pid.
+    const slow = await slowHookAlert(root, data);
+    if (slow) return slow;
 
     if (eventName === 'SessionStart') {
       const rstat = recallDegradedStatus();
@@ -330,4 +352,4 @@ async function main() {
 
 if (require.main === module) main();
 
-module.exports = { countPendingDrafts, shouldRunOnPrompt, brainServerDepsOk, run };
+module.exports = { countPendingDrafts, shouldRunOnPrompt, brainServerDepsOk, run, _slowHookAlert: slowHookAlert };
