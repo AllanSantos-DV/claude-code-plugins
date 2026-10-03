@@ -23,7 +23,7 @@ import { createEmbedWorker } from './embed-worker-client.js';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 import fs from 'node:fs';
-import { HEALTH_PATH, MCP_PATH, lockFile, ensureToken, requestAllowed, originAllowed, tokenFile, canonicalDataDir } from './daemon-common.js';
+import { HEALTH_PATH, MCP_PATH, lockFile, ensureToken, requestAllowed, tokenFile, canonicalDataDir } from './daemon-common.js';
 
 const SESSION_IDLE_MS = 30 * 60 * 1000; // reap sessions idle > 30 min
 
@@ -84,10 +84,10 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
   // slot across sessions if every session's createBrainServer shares this same pool
   // — see createKbLockPool()'s doc comment in mcp-server.js.
   const kbLock = createKbLockPool(kbWorker.poolSize);
-  // Shared local token (dashboard pattern) — but ONLY /shutdown requires it now:
-  // /mcp is a static .mcp.json "type":"http" url with no room for a runtime
-  // secret, so it's gated by originAllowed() alone (see daemon-common.js).
-  // /health stays open so any version's supervisor can probe stale-vs-current.
+  // Shared local token (dashboard pattern): /shutdown and /mcp require it. Claude Code
+  // gets it for /mcp from the .mcp.json `headersHelper` (scripts/mcp-headers.js), which
+  // reads this same file. /health stays open so any version's supervisor can probe
+  // stale-vs-current.
   const token = ensureToken(dataDir);
 
   const httpServer = http.createServer(async (req, res) => {
@@ -126,10 +126,10 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
         return;
       }
 
-      // /mcp: .mcp.json declares this as a static "type":"http" URL with no
-      // command spawn and no per-session secret to inject — origin guard only
-      // (see originAllowed() in daemon-common.js for the rationale).
-      const gate = originAllowed(req);
+      // /mcp: origin guard + the local token (sent by Claude Code through the
+      // headersHelper). Without it any local process — another OS user's included —
+      // could read/write the KB and drive the hook tools through the fixed port.
+      const gate = requestAllowed(req, token, dataDir);
       if (!gate.ok) {
         res.writeHead(gate.code, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: gate.error }));

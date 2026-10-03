@@ -14170,7 +14170,8 @@ test('http-daemon: hook_* tools are NOT in tools/list (model never sees them) bu
   const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
   const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0 });
   const url = `http://127.0.0.1:${d.httpServer.address().port}/mcp`;
-  const H = { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' };
+  // The token Claude Code sends through the .mcp.json headersHelper (scripts/mcp-headers.js).
+  const H = { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: `Bearer ${fs.readFileSync(path.join(dir, 'brain-http.token'), 'utf8').trim()}` };
   const post = async (body, sid) => {
     const r = await fetch(url, { method: 'POST', headers: sid ? { ...H, 'mcp-session-id': sid } : H, body: JSON.stringify(body) });
     const text = await r.text();
@@ -14193,6 +14194,72 @@ test('http-daemon: hook_* tools are NOT in tools/list (model never sees them) bu
   }
 });
 
+test('http-daemon /mcp requires the local token (headersHelper): none/wrong → 401, foreign Origin → 403 even with it, right token → MCP works', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mcptok-'));
+  const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
+  const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
+  const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0 });
+  try {
+    const url = `http://127.0.0.1:${d.httpServer.address().port}/mcp`;
+    const tok = fs.readFileSync(path.join(dir, 'brain-http.token'), 'utf8').trim();
+    const init = (headers) => fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', ...headers }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } } }) });
+    assertEq((await init({})).status, 401, 'no token → 401');
+    assertEq((await init({ Authorization: 'Bearer nope' })).status, 401, 'wrong token → 401');
+    assertEq((await init({ Authorization: `Bearer ${tok}`, Origin: 'http://evil.example' })).status, 403, 'foreign Origin → 403 (DNS-rebinding guard kept)');
+    const ok = await init({ Authorization: `Bearer ${tok}` });
+    assert(ok.status === 200 && ok.headers.get('mcp-session-id'), `right token → session, got ${ok.status}`);
+  } finally {
+    if (savedTok !== undefined) process.env.BRAIN_HTTP_TOKEN = savedTok;
+    await d.shutdown();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('mcp-headers (headersHelper): prints the daemon token of the plugin data dir; ensure runs first and a slow one never holds the client', async () => {
+  const { headers } = require('./mcp-headers.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mcphdr-'));
+  const savedData = process.env.CLAUDE_PLUGIN_DATA;
+  const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
+  try {
+    const order = [];
+    const h = await headers({ argvDataDir: dir, ensure: async (d) => { order.push(d); return null; } });
+    // The data dir the hooks resolve from the same CLAUDE_PLUGIN_DATA (dataDir() may follow a heavier live folder).
+    const resolved = require('./lib/data-dir.js').dataDir();
+    assertEq(order, [resolved], 'the daemon is ensured (for that data dir) before answering');
+    const { tokenFile } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'daemon-common.js')).href);
+    const tok = fs.readFileSync(tokenFile(resolved), 'utf8').trim();
+    assertEq(h, { Authorization: `Bearer ${tok}` }, 'Bearer <token file of that data dir>');
+    const t0 = Date.now();
+    const slow = await headers({ argvDataDir: dir, budgetMs: 200, ensure: () => new Promise(() => {}) });
+    assert(slow.Authorization === `Bearer ${tok}` && Date.now() - t0 < 2000, 'an ensure past the budget still answers, in time');
+    // CLI contract as Claude Code runs it: argv[2] = ${CLAUDE_PLUGIN_DATA}, JSON on stdout, exit 0.
+    const r = require('child_process').spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'mcp-headers.js'), dir], { encoding: 'utf8', env: { ...process.env, BRAIN_HTTP_AUTOSTART: '0', CLAUDE_PLUGIN_DATA: '' }, timeout: 20000 });
+    assertEq(r.status, 0, `exit 0, stderr: ${r.stderr}`);
+    assertEq(JSON.parse(r.stdout), { Authorization: `Bearer ${tok}` }, 'stdout is the headers object');
+  } finally {
+    if (savedData === undefined) delete process.env.CLAUDE_PLUGIN_DATA; else process.env.CLAUDE_PLUGIN_DATA = savedData;
+    if (savedTok !== undefined) process.env.BRAIN_HTTP_TOKEN = savedTok;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('daemon token: a pinned BRAIN_HTTP_TOKEN is synced to the token file (the headersHelper never sees that var); .mcp.json wires the helper', async () => {
+  const { ensureToken, tokenFile } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'daemon-common.js')).href);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-pintok-'));
+  const savedTok = process.env.BRAIN_HTTP_TOKEN;
+  try {
+    fs.writeFileSync(tokenFile(dir), 'old-file-token');
+    process.env.BRAIN_HTTP_TOKEN = 'pinned-xyz';
+    assertEq(ensureToken(dir), 'pinned-xyz');
+    assertEq(fs.readFileSync(tokenFile(dir), 'utf8').trim(), 'pinned-xyz', 'file follows the pinned token');
+    const mcp = JSON.parse(fs.readFileSync(path.join(ROOT, '.mcp.json'), 'utf8')).mcpServers['brain-server'];
+    assert(/scripts\/mcp-headers\.js/.test(mcp.headersHelper) && /\$\{CLAUDE_PLUGIN_DATA\}/.test(mcp.headersHelper), `headersHelper wired: ${mcp.headersHelper}`);
+  } finally {
+    if (savedTok === undefined) delete process.env.BRAIN_HTTP_TOKEN; else process.env.BRAIN_HTTP_TOKEN = savedTok;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('http-daemon: unknown mcp-session-id → 404 (client re-initializes); no id + non-initialize → 400 (G16)', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-404-'));
   const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
@@ -14201,7 +14268,7 @@ test('http-daemon: unknown mcp-session-id → 404 (client re-initializes); no id
     const url = `http://127.0.0.1:${d.httpServer.address().port}/mcp`;
     const call = (headers) => fetch(url, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', ...headers },
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: `Bearer ${fs.readFileSync(path.join(dir, 'brain-http.token'), 'utf8').trim()}`, ...headers },
       body: JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'tools/list', params: {} }),
     });
     const stale = await call({ 'mcp-session-id': 'gone-after-a-daemon-swap' });

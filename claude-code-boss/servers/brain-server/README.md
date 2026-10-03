@@ -112,42 +112,35 @@ serve.
 
 | Endpoint | Method | Auth | Purpose |
 | --- | --- | --- | --- |
-| `/mcp` | POST / GET / DELETE | origin guard only | StreamableHTTP MCP channel (session via `mcp-session-id`). |
+| `/mcp` | POST / GET / DELETE | origin guard + token | StreamableHTTP MCP channel (session via `mcp-session-id`). Claude Code gets the token from the `.mcp.json` `headersHelper`. |
 | `/health` | GET | open | `{ pluginRoot, pid, ... }` — liveness + version checks. |
-| `/shutdown` | POST | token | Graceful drain + close (destructive — the only endpoint gated by a token). |
+| `/shutdown` | POST | origin guard + token | Graceful drain + close (destructive). |
 
 ### Auth
 
-`127.0.0.1` bind is not authorization on its own, but `.mcp.json`'s static
-`url`/`headers` can't carry a runtime-generated secret, so `/mcp` cannot require
-a token — Claude Code's own MCP HTTP client sends none. Instead:
+`127.0.0.1` bind is not authorization on its own. Token generated at first boot,
+persisted at `<DATA_DIR>/brain-http.token` (mode 0600, next to the lock file,
+survives upgrades); fix/override with `BRAIN_HTTP_TOKEN` (the daemon keeps the
+file equal to the pinned value).
 
-- **`/mcp` — origin guard only**: requests carrying a non-localhost `Origin`
-  header are rejected with 403 (DNS-rebinding defense — a browser page always
-  sends `Origin`; Claude Code's native MCP client and other same-machine
-  processes don't). `Origin: null` and host-suffix lookalikes
-  (`127.0.0.1.evil.com`, `localhost.evil.com`) are also rejected.
-- **`/shutdown` — token required**: this is a destructive action never invoked
-  by Claude Code's own client. Token generated at first boot, persisted at
-  `<DATA_DIR>/brain-http.token` (next to the lock file, survives upgrades).
-  Fix/override with `BRAIN_HTTP_TOKEN`.
+- **`/mcp` — origin guard + token**: `Authorization: Bearer <token>` (or
+  `X-Brain-Token`) is required; a non-localhost `Origin` (incl. `null` and
+  host-suffix lookalikes) is rejected with 403 (DNS-rebinding defense). Claude
+  Code gets the token from the `.mcp.json` `headersHelper`
+  (`scripts/mcp-headers.js`), run before every connection — which also starts the
+  daemon first, so the client's first connection attempt finds it listening.
+- **`/shutdown` — origin guard + token** (destructive).
 - `/health` stays fully open so any version's supervisor can probe
   stale-vs-current.
 
-**Trust boundary (accepted limit):** dropping the token on `/mcp` moves it from
-*same-OS-user* (token file ACL, mode 0600) to *any process that can reach
-loopback* — including a different OS user, and untrusted content served from a
-localhost origin (e.g. something previewed through `http://localhost:<port>` on
-a dev server). Browser **cross-origin** reads stay closed: the daemon emits no
-`Access-Control-Allow-Origin`, and non-simple MCP `POST`s require a CORS
-preflight that fails without it. What remains is a local, loopback-only,
-**machine-trust** boundary — an accepted trade, not a silent one. Do not bind
-the daemon off `127.0.0.1` without re-adding a real auth layer.
-
-E2E coverage: `smoke/brain-http-auth.mjs` (local-only, like the other smokes) —
-asserts the CURRENT contract: foreign/`null` Origin → 403 on `/mcp`;
-tokenless `/mcp` MCP handshake → works (origin guard only); `/shutdown`
-without token → 401, with token → 200.
+**Trust boundary:** the token keeps `/mcp` at *same-OS-user* (token file ACL) —
+another OS user's process can no longer read/write the KB or drive the hook tools.
+**Accepted limit:** the client cannot verify WHO answers the port: a process that
+squats it before the daemon still receives the traffic (and the token). Measured on
+Claude Code 2.1.283: a failing `headersHelper` (exit 1 or invalid JSON) does NOT
+stop the connection — the client connects without the header — so the helper
+cannot refuse an impostor. Mitigation: single-user machine or a private
+`BRAIN_HTTP_PORT`. Do not bind the daemon off `127.0.0.1`.
 
 ## Auto-start & version swap
 
@@ -197,9 +190,9 @@ find the running daemon.
 
 Point any other same-machine MCP client at `http://127.0.0.1:38217/mcp`
 (override the port via `BRAIN_HTTP_PORT` if pinned differently), passing an
-explicit `project` per call. No auth header needed for `/mcp` — only `/shutdown`
-requires `Authorization: Bearer <token>` (token at `<DATA_DIR>/brain-http.token`,
-or pin it via `BRAIN_HTTP_TOKEN`). Claude Code and any external consumer share
+explicit `project` per call and `Authorization: Bearer <token>` (token at
+`<DATA_DIR>/brain-http.token`, or pin it via `BRAIN_HTTP_TOKEN`) — required on
+`/mcp` and `/shutdown`. Claude Code and any external consumer share
 the same daemon and the same SQLite.
 
 ## Dependencies

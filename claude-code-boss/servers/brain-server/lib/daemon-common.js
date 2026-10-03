@@ -114,7 +114,21 @@ export function readToken(dataDir, env = process.env) {
 /** Read-or-create the shared token (daemon boot path). */
 export function ensureToken(dataDir) {
   const existing = readToken(dataDir);
-  if (existing) return existing;
+  if (existing) {
+    // BRAIN_HTTP_TOKEN pins it, but the .mcp.json headersHelper never sees that var
+    // (Claude Code strips credential-named vars from it) and reads the FILE — keep the
+    // file equal to the effective token so the helper and the daemon agree.
+    const pinned = String(process.env.BRAIN_HTTP_TOKEN || '').trim();
+    if (pinned && pinned === existing) {
+      let onDisk = null;
+      try { onDisk = fs.readFileSync(tokenFile(dataDir), 'utf8').trim(); } catch (e) { void e; }
+      if (onDisk !== pinned) {
+        try { fs.mkdirSync(dataDir, { recursive: true }); fs.writeFileSync(tokenFile(dataDir), pinned, { mode: 0o600 }); }
+        catch (e) { console.error(`[brain-http] could not sync the pinned token to ${tokenFile(dataDir)}: ${e.message}`); }
+      }
+    }
+    return existing;
+  }
   const tok = crypto.randomBytes(24).toString('hex');
   try {
     fs.mkdirSync(dataDir, { recursive: true });
