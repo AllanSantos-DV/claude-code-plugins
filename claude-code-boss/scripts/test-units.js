@@ -3818,7 +3818,7 @@ test('C4 curation-metrics: exact shaper savings, redirect savings only with a ba
     ev('curation.uncovered', { shells: ['tests'] }),
     ev('curation.skipped', { class: 'inline' }), ev('curation.skipped', { class: 'exploration' }),
     { event_name: 'curation.shaped', payload: JSON.stringify({ family: 'cat', rawChars: 5000, shownChars: 800 }) },
-    ev('curation.bypass', {}), ev('curation.pipe-denied', {}), ev('error-guard.denied', {}),
+    ev('curation.bypass', {}), ev('curation.piped', { shellId: 'tests' }), ev('error-guard.denied', {}),
   ], { shellIds: ['tests', 'build', 'lint'] });
   assertEq(s.redirects.total, 2, 'two redirects'); assertEq(s.redirects.ask, 1, 'one under ask');
   assertEq(s.runs.byScript.tests.avgChars, 2000, 'avg curated output'); assertEq(s.runs.byScript.tests.successRate, 0.5, 'success rate');
@@ -3829,9 +3829,32 @@ test('C4 curation-metrics: exact shaper savings, redirect savings only with a ba
   assertEq(s.rawEnteredContext.chars, 9000, 'flagged raw output is a cost, not a saving');
   assertEq(s.totals.savedChars, 4200 + 6000, 'total = exact + estimated savings only');
   assertEq(s.skipped.inline, 1, 'inline skipped'); assertEq(s.uncovered.byScript.tests, 1, 'uncovered variant');
-  assertEq(s.guards.pipeDenied + s.guards.errorGuardDenied, 2, 'guards counted');
+  assertEq(s.piped.byScript.tests, 1, 'piped per script (tune-the-script signal)'); assertEq(s.guards.errorGuardDenied, 1, 'guards counted');
   assertEq(JSON.stringify(s.neverUsed), '["lint"]', 'build was redirected (counts as use); lint never used');
   assertEq(summarizeCuration([]).totals.savedChars, 0, 'empty → zeros');
+});
+
+test('C4 curation-guard: a pipe on the curated script is ALLOWED and measured (curation.piped) — not for another segment\'s pipe, not for reading the file', async () => {
+  const metrics = require('./lib/metrics.js');
+  const guard = require('./curation-guard.js');
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-piped-'));
+  fs.mkdirSync(path.join(proj, '.vscode', 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(proj, 'package.json'), '{}');
+  fs.writeFileSync(path.join(proj, '.vscode', 'shells.json'), JSON.stringify({ shells: [{ id: 'th', script: '.vscode/scripts/test-hooks.mjs', aliases: [] }] }));
+  const orig = metrics.fire; const fired = [];
+  metrics.fire = (name, payload) => { fired.push([name, payload && payload.shellId]); };
+  try {
+    const run = async (command) => (await guard.run({ tool_name: 'Bash', tool_input: { command }, cwd: proj, session_id: 's' })).hookSpecificOutput;
+    const a = await run('node .vscode/scripts/test-hooks.mjs | tail -3');
+    assertEq(a.permissionDecision, 'allow', 'pipe on the curated script → allow'); assert(!a.additionalContext, 'no nag text');
+    await run('node .vscode/scripts/test-hooks.mjs && node audit.mjs check | tail -2');
+    await run('grep -n catch .vscode/scripts/test-hooks.mjs | head -3');
+    await run('node .vscode/scripts/test-hooks.mjs');
+    assertEq(JSON.stringify(fired.filter((f) => f[0] === 'curation.piped')), '[["curation.piped","th"]]', 'measured once, only for the real pipe');
+  } finally {
+    metrics.fire = orig;
+    fs.rmSync(proj, { recursive: true, force: true });
+  }
 });
 
 test('recall-health.isDegraded: classifies degraded vs ok reasons', () => {
