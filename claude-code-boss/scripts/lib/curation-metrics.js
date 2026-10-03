@@ -54,8 +54,10 @@ function summarizeCuration(rows, { shellIds = [] } = {}) {
       case 'curation.used': {
         s.runs.total++;
         const id = p.scriptId || '?';
-        const u = used[id] || (used[id] = { chars: 0, n: 0, ok: 0 });
-        u.chars += num(p.chars); u.n++; if (p.success !== false) u.ok++;
+        const u = used[id] || (used[id] = { chars: 0, n: 0, ok: 0, runs: 0 });
+        u.runs++; if (p.success !== false) u.ok++;
+        // A compound's output belongs to all its parts: it counts as a run, not as size.
+        if (!p.compound) { u.chars += num(p.chars); u.n++; }
         break;
       }
       case 'curation.uncovered':
@@ -85,7 +87,7 @@ function summarizeCuration(rows, { shellIds = [] } = {}) {
     }
   }
   for (const [id, u] of Object.entries(used)) {
-    s.runs.byScript[id] = { runs: u.n, avgChars: Math.round(u.chars / u.n), successRate: +(u.ok / u.n).toFixed(2) };
+    s.runs.byScript[id] = { runs: u.runs, avgChars: u.n ? Math.round(u.chars / u.n) : null, successRate: +(u.ok / u.runs).toFixed(2) };
   }
   for (const p of redirects) {
     const b = p.sig && baseline[p.sig];

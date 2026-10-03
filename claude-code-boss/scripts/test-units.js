@@ -3879,6 +3879,10 @@ test('C4 curation-metrics: exact shaper savings, redirect savings only with a ba
   assertEq(s.piped.byScript.tests, 1, 'piped per script (tune-the-script signal)'); assertEq(s.guards.errorGuardDenied, 1, 'guards counted');
   assertEq(JSON.stringify(s.neverUsed), '["lint"]', 'build was redirected (counts as use); lint never used');
   assertEq(summarizeCuration([]).totals.savedChars, 0, 'empty → zeros');
+  const c = summarizeCuration([ev('curation.used', { scriptId: 'x', chars: 100 }), ev('curation.used', { scriptId: 'x', chars: 9000, compound: true }), ev('curation.used', { scriptId: 'y', chars: 50000, compound: true })]);
+  assertEq(c.runs.byScript.x.runs, 2, 'a compound run counts as a run');
+  assertEq(c.runs.byScript.x.avgChars, 100, 'but its output (all parts) stays out of the script average');
+  assertEq(c.runs.byScript.y.avgChars, null, 'only compound runs → no size claimed');
 });
 
 test('C4 curation-guard: a pipe on the curated script is ALLOWED and measured (curation.piped) — not for another segment\'s pipe, not for reading the file', async () => {

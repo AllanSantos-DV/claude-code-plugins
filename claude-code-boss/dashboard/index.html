@@ -2556,7 +2556,7 @@ async function loadCurationPanel() {
     html += '<table style="width:100%;font-size:.8rem;margin-top:.5rem"><thead><tr><th>Script</th><th>Redirects</th><th>Runs</th><th>Avg output (tokens)</th><th>Success</th><th>Uncovered variants</th><th title="times the agent filtered this script's output (| tail, | grep): its output doesn't fit — tune the script">Piped</th></tr></thead><tbody>'
       + ids.map(id => {
         const r = c.runs.byScript[id];
-        return `<tr><td>${escapeHtml(id)}</td><td>${c.redirects.byScript[id] || 0}</td><td>${r ? r.runs : 0}</td><td>${r ? tok(r.avgChars) : '—'}</td><td>${r ? Math.round(r.successRate * 100) + '%' : '—'}</td><td>${c.uncovered.byScript[id] || 0}</td><td>${c.piped.byScript[id] ? `<span class="badge badge-yellow">${c.piped.byScript[id]}</span>` : 0}</td></tr>`;
+        return `<tr><td>${escapeHtml(id)}</td><td>${c.redirects.byScript[id] || 0}</td><td>${r ? r.runs : 0}</td><td>${r && r.avgChars != null ? tok(r.avgChars) : '—'}</td><td>${r ? Math.round(r.successRate * 100) + '%' : '—'}</td><td>${c.uncovered.byScript[id] || 0}</td><td>${c.piped.byScript[id] ? `<span class="badge badge-yellow">${c.piped.byScript[id]}</span>` : 0}</td></tr>`;
       }).join('') + '</tbody></table>';
   }
   const g = c.guards;
