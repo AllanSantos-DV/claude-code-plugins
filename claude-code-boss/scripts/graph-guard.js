@@ -31,6 +31,10 @@ function decision(permissionDecision, { additionalContext, permissionDecisionRea
   return JSON.stringify({ hookSpecificOutput });
 }
 
+// Not a broad search / nothing to redirect → ABSTAIN ("{}"), never `allow`: a PreToolUse
+// `allow` bypasses Claude Code's permission system (pre-release audit).
+const PASS = '{}';
+
 /**
  * Pure entry point: the decision JSON string for `event` (the CLI writes it to
  * stdout; the Phase G daemon tool returns it). Fail-open — never throws.
@@ -39,27 +43,27 @@ function decision(permissionDecision, { additionalContext, permissionDecisionRea
  */
 async function run(event) {
   try {
-    if (!event) return decision('allow');
+    if (!event) return PASS;
 
     const toolName = event.tool_name || '';
     if (toolName !== 'Grep' && toolName !== 'Glob') {
-      return decision('allow');
+      return PASS;
     }
 
     const cfg = require('./lib/hooks-config.js').getGraphGuard();
-    if (!cfg.enabled) { return decision('allow'); }
+    if (!cfg.enabled) { return PASS; }
 
     const core = require('./lib/graph-guard-core.js');
     const ti = event.tool_input || {};
     if (!core.isBroadNativeSearch(toolName, ti)) {
-      return decision('allow');
+      return PASS;
     }
 
     // The graph rides the mcp-memory daemon — on the local backend there is no
     // graph to redirect to.
     const brainCfg = require('./lib/brain-config.js').load();
     if (((brainCfg.backend && brainCfg.backend.type) || 'local') !== 'mcp-memory') {
-      return decision('allow');
+      return PASS;
     }
 
     const cwd = event.cwd || process.cwd();
@@ -85,11 +89,11 @@ async function run(event) {
       } catch (e) { void e; /* metrics are best-effort */ }
       return decision('deny', { additionalContext: res.reason, permissionDecisionReason: res.reason });
     }
-    return decision('allow');
+    return PASS;
   } catch (err) {
     console.error(`[GRAPH-GUARD] Error: ${err.message}`);
     hookLog('error', 'graph-guard', `Unhandled error: ${err.message}`);
-    return decision('allow');
+    return PASS;
   }
 }
 
@@ -102,7 +106,7 @@ if (require.main === module) {
     } catch (err) {
       console.error(`[GRAPH-GUARD] Error: ${err.message}`);
       hookLog('error', 'graph-guard', `Unhandled error: ${err.message}`);
-      out = decision('allow');
+      out = PASS;
     }
     process.stdout.write(out);
   })();

@@ -13,7 +13,13 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-export function createHookWorker({ pluginRoot, callTimeoutMs = 60000 } = {}) {
+// A job that never settles (a detector waiting on I/O with no deadline) used to wedge the
+// strict-FIFO worker for EVERY session until a daemon restart — each later heavy hook just
+// expired (pre-release audit). After STALL_TIMEOUTS deadlines in a row with no message from
+// the worker in between, it is recycled; the death path re-queues background jobs once.
+const STALL_TIMEOUTS = 3;
+
+export function createHookWorker({ pluginRoot, callTimeoutMs = 60000, stallTimeouts = STALL_TIMEOUTS, workerPath } = {}) {
   if (!pluginRoot) throw new Error('createHookWorker: pluginRoot is required');
   let worker = null;
   let nextId = 1;
@@ -27,6 +33,8 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000 } = {}) {
   // (at-least-once: the job running at crash time may run twice).
   const bgPending = new Map();
   let requeued = 0;
+  let recycled = 0;
+  let silentTimeouts = 0; // deadlines in a row with no message from the worker
 
   function failAll(err) {
     for (const [, p] of pending) { clearTimeout(p.timer); p.reject(err); }
@@ -35,9 +43,10 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000 } = {}) {
 
   function ensure() {
     if (worker) return worker;
-    const w = new Worker(path.join(__dirname, 'hook-worker.js'), { workerData: { pluginRoot } });
+    const w = new Worker(workerPath || path.join(__dirname, 'hook-worker.js'), { workerData: { pluginRoot } });
     spawned++;
     w.on('message', (msg) => {
+      silentTimeouts = 0;
       if (msg.bgDone !== undefined) { bgPending.delete(msg.bgDone); return; }
       if (msg.expired) expired++;
       const p = pending.get(msg.id);
@@ -83,6 +92,11 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000 } = {}) {
         if (!pending.delete(id)) return;
         if (pending.size === 0) w.unref();
         reject(new Error(`prazo de ${timeoutMs}ms estourado no hook-worker (${name})`));
+        if (++silentTimeouts >= stallTimeouts && worker === w) {
+          silentTimeouts = 0; recycled++;
+          console.error(`[hook-worker] ${stallTimeouts} deadlines in a row with no progress — recycling the stuck worker`);
+          w.terminate().catch((err) => console.error(`[hook-worker] terminate failed: ${err.message}`));
+        }
       }, timeoutMs);
       timer.unref();
       pending.set(id, { resolve, reject, timer });
@@ -108,7 +122,7 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000 } = {}) {
   }
 
   function stats() {
-    return { alive: !!worker, spawned, inFlight: pending.size, expired, background: bgPending.size, requeued };
+    return { alive: !!worker, spawned, inFlight: pending.size, expired, background: bgPending.size, requeued, recycled };
   }
 
   async function shutdown() {

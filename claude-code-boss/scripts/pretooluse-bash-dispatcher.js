@@ -7,12 +7,13 @@
  * detectors in-process, and merge into a single decision — mirroring
  * `stop-dispatcher.js`'s "N spawns → 1" pattern for `Stop`.
  *
- * Merge rule (deny wins over allow, replicated from Claude Code's own
+ * Merge rule (deny wins, replicated from Claude Code's own
  * multi-hook precedence for the same matcher):
  *   - `error-guard` returns `null` (abstain) or a `deny` decision — never
  *     `allow`/`ask` (see error-guard.js's "WHY ABSTAIN" note).
- *   - `curation-guard` always returns a decision (`allow` by default, `deny`,
- *     or `allow` + `updatedInput` for curated-alias auto-redirect).
+ *   - `curation-guard` returns `{}` (abstain — never a blanket `allow`, which would
+ *     bypass Claude Code's permission system), `deny`, or `allow`/`ask` +
+ *     `updatedInput` for a rewrite (curated redirect / shaper).
  *   - If `error-guard` denies, THAT decision wins — even over
  *     `curation-guard`'s `updatedInput` — because the call never runs anyway.
  *   - Otherwise, `curation-guard`'s decision is emitted as-is.
@@ -29,7 +30,7 @@ const { readStdin, parsePayload, emitJson } = require('./lib/hook-io.js');
 const curationGuard = require('./curation-guard.js');
 const errorGuard = require('./error-guard.js');
 
-const DEFAULT_ALLOW = { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } };
+const DEFAULT_PASS = {}; // abstain: the user's permission flow decides
 
 /**
  * Run both detectors against the same event and merge per the deny-wins rule.
@@ -55,7 +56,7 @@ async function dispatch(event) {
   if (errorOut && errorOut.hookSpecificOutput && errorOut.hookSpecificOutput.permissionDecision === 'deny') {
     return errorOut;
   }
-  return curationOut || DEFAULT_ALLOW;
+  return curationOut || DEFAULT_PASS;
 }
 
 async function main() {
@@ -68,8 +69,8 @@ async function main() {
 if (require.main === module) {
   main().catch((err) => {
     console.error(`[claude-code-boss:pretooluse-bash-dispatcher] fatal: ${err && err.message ? err.message : err}`);
-    emitJson(DEFAULT_ALLOW);
+    emitJson(DEFAULT_PASS);
   });
 }
 
-module.exports = { dispatch, DEFAULT_ALLOW };
+module.exports = { dispatch, DEFAULT_PASS };

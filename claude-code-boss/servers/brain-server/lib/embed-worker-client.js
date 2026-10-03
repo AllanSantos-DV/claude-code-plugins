@@ -14,8 +14,16 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-export function createEmbedWorker({ pluginRoot, initTimeoutMs = 120000, callTimeoutMs = 30000 } = {}) {
+// terminate() while the worker is inside the embedder's NATIVE init (onnxruntime loading
+// the model) fast-fails the WHOLE process — 0xC0000409, reproduced 1 in 10 shutdowns that
+// raced an in-flight init; it was the intermittent unit-suite death and a daemon restart
+// could die the same way. shutdown() lets the op in flight finish (bounded) first.
+const SHUTDOWN_DRAIN_MS = 30000;
+
+export function createEmbedWorker({ pluginRoot, initTimeoutMs = 120000, callTimeoutMs = 30000, workerPath, shutdownDrainMs = SHUTDOWN_DRAIN_MS } = {}) {
   let worker = null;
+  let inWorker = 0;          // messages posted to the CURRENT worker and not yet answered
+  let drained = null;        // resolves when inWorker drops to 0 (shutdown waits on it)
   let nextId = 1;
   const pending = new Map();
   let status = { provider: null, model: null, dimensions: null, ready: false, error: null };
@@ -27,8 +35,9 @@ export function createEmbedWorker({ pluginRoot, initTimeoutMs = 120000, callTime
   }
 
   function spawn() {
-    const w = new Worker(path.join(__dirname, 'embed-worker.js'), { workerData: { pluginRoot } });
+    const w = new Worker(workerPath || path.join(__dirname, 'embed-worker.js'), { workerData: { pluginRoot } });
     w.on('message', (msg) => {
+      if (worker === w && inWorker > 0 && --inWorker === 0 && drained) drained();
       const p = pending.get(msg.id);
       if (!p) return;
       pending.delete(msg.id);
@@ -40,6 +49,7 @@ export function createEmbedWorker({ pluginRoot, initTimeoutMs = 120000, callTime
     const onDeath = (err) => {
       if (worker !== w) return;
       worker = null;
+      inWorker = 0; if (drained) drained();
       status = { ...status, ready: false, error: err.message };
       failAll(err);
     };
@@ -61,6 +71,7 @@ export function createEmbedWorker({ pluginRoot, initTimeoutMs = 120000, callTime
       }, timeoutMs);
       pending.set(id, { resolve, timer });
       w.ref();
+      inWorker++;
       w.postMessage({ id, op, arg });
     });
   }
@@ -80,11 +91,20 @@ export function createEmbedWorker({ pluginRoot, initTimeoutMs = 120000, callTime
     embedBatch: (texts) => run('embedBatch', texts, callTimeoutMs, null),
     getStatus: () => ({ ...status }),
     getDimensions: () => status.dimensions,
-    shutdown() {
+    async shutdown() {
       closed = true;
-      failAll(new Error('embed-worker shut down'));
-      if (worker) { const w = worker; worker = null; return w.terminate(); }
-      return Promise.resolve();
+      failAll(new Error('embed-worker shut down')); // callers are released now; the op itself drains
+      const w = worker;
+      if (!w) return;
+      if (inWorker > 0) {
+        const done = new Promise((r) => { drained = r; });
+        let timer;
+        const capped = await Promise.race([done.then(() => false), new Promise((r) => { timer = setTimeout(() => r(true), shutdownDrainMs); })]);
+        clearTimeout(timer);
+        if (capped) console.error(`[embed-worker] shutdown: op still running after ${shutdownDrainMs}ms — terminating anyway`);
+      }
+      worker = null;
+      await w.terminate();
     },
   };
 }

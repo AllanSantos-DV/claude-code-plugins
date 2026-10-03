@@ -78,7 +78,6 @@ function rebuildEvent(args) {
 }
 
 const json = (out) => (out && Object.keys(out).length ? JSON.stringify(out) : EMPTY);
-const PRETOOL_ALLOW = { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } };
 const additional = (hookEventName, text) => (text ? JSON.stringify({ hookSpecificOutput: { hookEventName, additionalContext: text } }) : EMPTY);
 
 /**
@@ -110,7 +109,7 @@ const HOOKS = {
   // sync-real. curation-guard + error-guard are SIBLING hooks on PreToolUse/Bash
   // (Claude Code: deny wins, verified in spike S1b): curation keeps the
   // dispatcher's default allow, error-guard only ever speaks to deny.
-  hook_curation_guard: { script: 'curation-guard.js', call: async (m, ev) => JSON.stringify((await m.run(ev)) || PRETOOL_ALLOW) },
+  hook_curation_guard: { script: 'curation-guard.js', call: async (m, ev) => json(await m.run(ev)) }, // {} = abstain (never a blanket allow)
   hook_error_guard: {
     script: 'error-guard.js',
     call: async (m, ev) => {

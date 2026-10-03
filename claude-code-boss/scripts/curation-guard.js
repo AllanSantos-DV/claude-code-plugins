@@ -12,12 +12,15 @@
  *
  * Cascade:
  *   1. Bash + command matches curated entry (path or alias)
- *      a. invoking the curated script with no pipe → allow
- *      b. invoking the curated script with a pipe   → allow + `curation.piped` metric
- *      c. raw alias (not invoking the script)       → deny (redirect to script)
- *   2. command matches project whitelist → allow
+ *      a. invoking the curated script               → abstain
+ *      b. invoking the curated script with a pipe   → abstain + `curation.piped` metric
+ *      c. a TASK part matching an alias             → rewrite (updatedInput; allow in
+ *         bypassPermissions, ask otherwise)
+ *   2. command matches project whitelist → abstain (exempt from denyUnknown)
  *   3. denyUnknown=true → deny (paranoid mode)
- *   4. default → allow (PostToolUse/Stop discovery loop handles the rest)
+ *   3b. exploration without Token Guard, bypassPermissions only → shaper rewrite
+ *   4. default → abstain (`{}` — the user's permission flow decides; PostToolUse/Stop
+ *      discovery handles bulky output)
  */
 const { hookLog } = require('./hook-logger.js');
 const { loadCurationConfig } = require('./curation-paths.js');
@@ -88,6 +91,12 @@ function decision(permissionDecision, { additionalContext, permissionDecisionRea
   return { hookSpecificOutput };
 }
 
+// "Nothing to do" is an ABSTENTION, never `allow`: a PreToolUse `allow` bypasses Claude
+// Code's permission system, so answering it for every Bash command auto-approved
+// everything for users NOT in bypassPermissions (pre-release audit; it dated from 1.x).
+// Only the rewrites (redirect / shaper) decide, and they follow the session's posture.
+const PASS = {};
+
 /**
  * Pure detector entry point — never abstains, always returns a decision
  * object. Shared by the standalone CLI (below) and
@@ -98,12 +107,12 @@ function decision(permissionDecision, { additionalContext, permissionDecisionRea
 async function run(event) {
   try {
     if (!event || event.tool_name !== 'Bash') {
-      return decision('allow');
+      return PASS;
     }
 
     const command = event.tool_input?.command || '';
     if (!command) {
-      return decision('allow');
+      return PASS;
     }
 
     const projectRoot = findProjectRoot(event.cwd || process.cwd());
@@ -120,7 +129,7 @@ async function run(event) {
       if (pipesCuratedScript(command, scriptPath)) {
         metrics.fire('curation.piped', { shellId: curatedShell.id || scriptPath }, { sessionId: event.session_id, cwd: event.cwd });
       }
-      return decision('allow');
+      return PASS;
     }
 
     // 1b. C2 (Phase C): a TASK part whose signature + flags match a curated alias is
@@ -147,7 +156,7 @@ async function run(event) {
 
     // 2. Project whitelist.
     if (isWhitelisted(command, whitelist)) {
-      return decision('allow');
+      return PASS;
     }
 
     // 2.5 Graph-guard (Bash surface): a BROAD recursive search (grep -r/rg/find
@@ -201,25 +210,27 @@ async function run(event) {
     //     by the boss ONLY when Token Guard isn't installed (both coexist — the owner's
     //     decision). Single segment only (a `cd` must keep persisting), never when the
     //     output goes to a file/tee. Same permission rule as the redirect.
-    const shaped = plan.bypass ? null : planShaping(command, projectRoot);
+    //     Only under bypassPermissions: in the other modes Claude Code lets read-only
+    //     commands (cat/grep/ls) through without asking, and a rewrite needs `ask` —
+    //     every exploration command would start prompting.
+    const shaped = plan.bypass || event.permission_mode !== 'bypassPermissions' ? null : planShaping(command, projectRoot);
     if (shaped) {
-      const mode = event.permission_mode === 'bypassPermissions' ? 'allow' : 'ask';
       const ctx = '[boss] Saída de exploração limitada pelo boss (Token Guard não instalado): o comando roda igual; se passar do limite, o resto fica salvo em arquivo. `CCB_RAW=1` na frente desliga o corte.';
-      return decision(mode, { updatedInput: { command: shaped }, additionalContext: ctx, ...(mode === 'ask' ? { permissionDecisionReason: ctx } : {}) });
+      return decision('allow', { updatedInput: { command: shaped }, additionalContext: ctx });
     }
 
     // 4. Default: allow. If output is bulky, PostToolUse → Stop discovery
     //    loop will demand a curated script at end of turn.
-    return decision('allow');
+    return PASS;
   } catch (err) {
     console.error(`[CURATION-GUARD] Error: ${err.message}`);
     hookLog('error', 'curation-guard', `Unhandled error: ${err.message}`);
-    return decision('allow');
+    return PASS;
   }
 }
 
 if (require.main === module) {
-  runPreToolUseCli(run, 'curation-guard', { defaultDecision: decision('allow') });
+  runPreToolUseCli(run, 'curation-guard', { defaultDecision: PASS });
 }
 
 module.exports = { run, decision, isWhitelisted, hasPipe, pipesCuratedScript };

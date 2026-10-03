@@ -20,12 +20,20 @@ daemon de hooks e as correções de escopo por sessão.
 - **Curadoria redesenhada (Fase C).** Ver "Changed — curadoria" abaixo: o guard
   não nega mais variantes nem pipes, reescreve comandos de tarefa para o script
   curado e só pede script para comando de tarefa que se repete.
-- **Hooks no daemon (Fase G, ADR-015).** 12 hooks rodam como `mcp_tool` no
+- **Hooks no daemon (Fase G, ADR-015).** 13 hooks rodam como `mcp_tool` no
   brain-server (detalhes na seção da Fase G). O brain-server precisa estar
   conectado para esses hooks rodarem; com ele fora, o Claude Code trata o hook
   como erro não bloqueante. Na 1ª sessão depois de boot/update/reload, os hooks
   dos primeiros segundos podem ser pulados enquanto o cliente reconecta (limite do
   cliente, documentado no backlog).
+- **O boss não aprova mais comandos por você.** O `curation-guard` e o
+  `graph-guard` respondiam `allow` como padrão "nada a fazer" para TODO comando
+  Bash/Grep/Glob — e um `allow` de PreToolUse pula o sistema de permissões do Claude
+  Code: quem não usa `bypassPermissions` tinha tudo aprovado sem prompt (vinha da
+  1.x; achado pela auditoria pré-release). Agora "nada a fazer" é **abstenção** (`{}`)
+  e o fluxo de permissões do usuário decide. Só as reescritas decidem: redirect
+  (`allow` em bypass, `ask` nos demais modos) e o moldador (só em bypass). A
+  whitelist do `shells.json` passa a só isentar do modo `denyUnknown`.
 
 ### Changed — curadoria: casar por assinatura, redirecionar, medir (Fase C)
 - **Redirecionamento automático (C2).** Cada parte de TAREFA de um comando cuja
@@ -75,6 +83,29 @@ daemon de hooks e as correções de escopo por sessão.
   os tokens economizados pela curadoria.
 - `/health` do brain daemon expõe `hookLatency` por hook (chamadas, ok,
   degradados, prazos estourados, em fila, p50/p95/máx das últimas 200).
+
+### Fixed — auditoria pré-release (todas reproduzidas antes de corrigir)
+- **Moldador:** não embrulha mais comando com pipe próprio (`grep … | head` virava
+  exit 141 — falha falsa que alimentava o error-guard), com `#` de comentário ou
+  `\` no fim (erro de sintaxe), nem de follow/interativo (`tail -f`, `less`,
+  `watch`…). Agora faz **streaming**: a cabeça sai na hora (uma busca longa ou
+  morta pelo timeout do Bash mantém o que já saiu) e o resto vai direto para o
+  arquivo, com teto de 50 MB e memória limitada à cabeça.
+- **Daemon:** um job que nunca termina na lane pesada travava os hooks pesados de
+  todas as sessões até reiniciar o daemon; depois de 3 prazos seguidos sem progresso
+  o worker é reciclado (jobs de background reenfileirados 1×).
+- **Daemon:** `terminate()` do worker de embedding no meio do init nativo derrubava
+  o processo inteiro (`0xC0000409`, 1 em ~10 desligamentos com o init em curso — era
+  a morte intermitente da suíte de testes, e um restart do daemon podia morrer igual);
+  o shutdown agora deixa a operação em curso terminar (com teto) antes do terminate.
+- **Redirect:** caminho de script do `shells.json` com `"`, `$` ou crase, ou fora
+  da raiz do projeto, nunca vira reescrita.
+- **Curadoria:** alias cru de um script curado (ex.: `git log`, que não é reescrito)
+  não conta mais como execução do script, e a saída de um comando composto não é
+  debitada do orçamento de um script que é só uma das partes — ambos pediam para
+  "refinar" scripts cuja saída estava certa.
+- `docs/SECURITY.md` descrevia o brain daemon com porta efêmera e token; corrigido
+  (porta fixa 38217, `/mcp` só com origin guard) e documentado o risco aceito.
 
 ### Fixed — daemon de hooks (endurecimento da Fase G)
 - **Sessão sem raiz no daemon.** O Claude Code só interpola `${…}` de campos do

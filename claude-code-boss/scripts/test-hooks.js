@@ -133,6 +133,9 @@ function check(result, expectations = {}) {
 
 // ─── Test Cases ─────────────────────────────────────────────────────────────
 
+// A PreToolUse "nothing to do" is an ABSTENTION ({}), never a blanket allow — allow bypasses
+// Claude Code's permission system (pre-release audit).
+const abstained = (r) => { const o = r.parsed && r.parsed.hookSpecificOutput; return !o || (!o.permissionDecision && !o.updatedInput); };
 const SESSION = 'test-00000000-0000-0000-0000-000000000001';
 
 // ─── error-guard fixtures (deterministic recurring-failure guard) ───────────
@@ -438,35 +441,35 @@ const TESTS = [
 
   // ── PreToolUse / Bash ─────────────────────────────────────────────────────
   {
-    name: 'curation-guard    [PreToolUse/no-curated,no-whitelist→allow-default]',
+    name: 'curation-guard    [PreToolUse/no-curated,no-whitelist→abstain]',
     script: 'curation-guard.js',
     payload: {
       tool_name: 'Bash',
       tool_input: { command: 'git status' },
       session_id: SESSION,
     },
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
-    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+    expect: { noError: true },
+    validate: r => abstained(r)
       ? null : `unmatched command should fall through to default allow, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
   },
   {
-    name: 'curation-guard    [PreToolUse/uncurated-build→allow-default]',
+    name: 'curation-guard    [PreToolUse/uncurated-build→abstain]',
     script: 'curation-guard.js',
     payload: {
       tool_name: 'Bash',
       tool_input: { command: 'npm install' },
       session_id: SESSION,
     },
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
-    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+    expect: { noError: true },
+    validate: r => abstained(r)
       ? null : `uncurated build command should allow (discovery loop in PostToolUse/Stop handles it), got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
   },
   {
-    name: 'curation-guard    [PreToolUse/non-Bash→pass]',
+    name: 'curation-guard    [PreToolUse/non-Bash→abstain]',
     script: 'curation-guard.js',
     payload: { tool_name: 'Write', tool_input: { file_path: 'foo.js' } },
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
-    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+    expect: { noError: true },
+    validate: r => abstained(r)
       ? null : `non-Bash should pass, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
   },
   {
@@ -482,21 +485,21 @@ const TESTS = [
         return d;
       })(),
     },
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
-    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+    expect: { noError: true },
+    validate: r => abstained(r)
       ? null : `whitelisted cmd should be allowed, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
   },
   {
     // denyUnknown=false (default): unknown command still allowed
-    name: 'curation-guard    [denyUnknown=false→allows-unknown]',
+    name: 'curation-guard    [denyUnknown=false→abstains-on-unknown]',
     script: 'curation-guard.js',
     payload: {
       tool_name: 'Bash',
       tool_input: { command: 'some-totally-unknown-command-xyz123' },
       session_id: SESSION,
     },
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
-    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+    expect: { noError: true },
+    validate: r => abstained(r)
       ? null : `denyUnknown=false → should allow unknown, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
   },
   {
@@ -515,7 +518,7 @@ const TESTS = [
   },
 
   {
-    name: 'curation-guard    [PreToolUse/wrapper-invokes-curated→allow]',
+    name: 'curation-guard    [PreToolUse/wrapper-invokes-curated→abstain]',
     script: 'curation-guard.js',
     payload: {
       tool_name: 'Bash',
@@ -523,8 +526,8 @@ const TESTS = [
       session_id: SESSION,
       cwd: (() => mkTempProject({ shells: [{ id: 'vitest', script: '.vscode/scripts/vitest.ps1', aliases: ['npm test'] }], whitelist: [] }))(),
     },
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
-    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+    expect: { noError: true },
+    validate: r => abstained(r)
       ? null : `wrapper invocation should be allowed silently (matcher.includes), got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
   },
   {
@@ -577,10 +580,10 @@ const TESTS = [
       session_id: SESSION,
       cwd: (() => mkTempProject({ shells: [{ id: 'vitest', script: '.vscode/scripts/vitest.ps1', aliases: ['npm test'] }], whitelist: [] }))(),
     },
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    expect: { noError: true },
     validate: r => {
       const out = r.parsed?.hookSpecificOutput || {};
-      if (out.permissionDecision !== 'allow' || out.updatedInput || out.additionalContext) return `a variant runs as written, silently, got: ${JSON.stringify(out)}`;
+      if (!abstained(r) || out.additionalContext) return `a variant runs as written, silently, got: ${JSON.stringify(out)}`;
       return null;
     },
   },
@@ -620,6 +623,22 @@ const TESTS = [
     },
   },
   {
+    // Pre-release audit: outside bypassPermissions a rewrite needs `ask`, and Claude Code
+    // lets read-only commands through without asking — shaping would add a prompt to every
+    // cat/grep. And "nothing to do" must ABSTAIN (a blanket allow bypassed permissions).
+    name: 'curation-guard    [default permission mode: exploration NOT shaped, unknown command → abstain (no allow)]',
+    script: 'curation-guard.js',
+    payload: {
+      tool_name: 'Bash',
+      tool_input: { command: 'git status' },
+      permission_mode: 'default',
+      session_id: SESSION,
+      cwd: (() => mkTempProject({ shells: [], whitelist: [] }))(),
+    },
+    expect: { noError: true },
+    validate: r => abstained(r) ? null : `default mode must abstain (no allow, no shaper rewrite), got: ${JSON.stringify(r.parsed)}`,
+  },
+  {
     name: 'curation-guard    [C2b: EXPLORATION with Token Guard installed → untouched (Token Guard bounds it)]',
     script: 'curation-guard.js',
     payload: {
@@ -634,10 +653,10 @@ const TESTS = [
         return p;
       })(),
     },
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    expect: { noError: true },
     validate: r => {
       const out = r.parsed?.hookSpecificOutput || {};
-      return out.permissionDecision === 'allow' && !out.updatedInput ? null : `with Token Guard the boss must not shape, got: ${JSON.stringify(out)}`;
+      return abstained(r) ? null : `with Token Guard the boss must not shape, got: ${JSON.stringify(out)}`;
     },
   },
   {
@@ -650,7 +669,7 @@ const TESTS = [
       session_id: SESSION,
       cwd: (() => mkTempProject({ shells: [], whitelist: [] }))(),
     },
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    expect: { noError: true },
     validate: r => {
       const out = r.parsed?.hookSpecificOutput || {};
       return !out.updatedInput ? null : `a compound is never wrapped, got: ${JSON.stringify(out)}`;
@@ -677,7 +696,7 @@ const TESTS = [
     },
   },
   {
-    name: 'curation-guard    [PreToolUse/abs-path-invokes-relative-script→allow]',
+    name: 'curation-guard    [PreToolUse/abs-path-invokes-relative-script→abstain]',
     script: 'curation-guard.js',
     payload: (() => {
       const cwd = mkTempProject({ shells: [{ id: 'adb', script: '.vscode/scripts/adb-logcat-tail.ps1', aliases: ['adb logcat'] }], whitelist: [] });
@@ -691,8 +710,8 @@ const TESTS = [
         cwd,
       };
     })(),
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
-    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+    expect: { noError: true },
+    validate: r => abstained(r)
       ? null : `absolute-path invocation of relative-registered script should allow, got: ${r.parsed?.hookSpecificOutput?.permissionDecision} (ctx: ${r.parsed?.hookSpecificOutput?.additionalContext})`,
   },
   {
@@ -707,7 +726,7 @@ const TESTS = [
         cwd,
       };
     })(),
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    expect: { noError: true },
     validate: r => {
       const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
       if (ctx.includes('x.ps1') && ctx.includes('curated script')) {
@@ -743,7 +762,7 @@ const TESTS = [
     },
   },
   {
-    name: 'curation-guard    [PreToolUse/curated-script+pipe→allow, no nag (measured as curation.piped)]',
+    name: 'curation-guard    [PreToolUse/curated-script+pipe→abstain, no nag (measured as curation.piped)]',
     script: 'curation-guard.js',
     payload: (() => {
       // Real-world: agent invokes curated script then pipes output. The old deny cost a
@@ -758,17 +777,17 @@ const TESTS = [
         cwd,
       };
     })(),
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    expect: { noError: true },
     validate: r => {
       const d = r.parsed?.hookSpecificOutput?.permissionDecision;
       const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
-      if (d !== 'allow') return `curated-script + pipe → allow, got: ${d}`;
+      if (!abstained(r)) return `curated-script + pipe → allow, got: ${d}`;
       if (ctx) return `no nag text (it costs tokens), got: ${ctx}`;
       return null;
     },
   },
   {
-    name: 'curation-guard    [PreToolUse/curated-script + pipe in ANOTHER segment→allow (U3)]',
+    name: 'curation-guard    [PreToolUse/curated-script + pipe in ANOTHER segment→abstain (U3)]',
     script: 'curation-guard.js',
     payload: (() => {
       // Field case 2026-10-02: `<curated test script> && node audit.mjs check | tail -2`
@@ -781,15 +800,15 @@ const TESTS = [
         cwd,
       };
     })(),
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    expect: { noError: true },
     validate: r => {
       const d = r.parsed?.hookSpecificOutput?.permissionDecision;
-      if (d !== 'allow') return `pipe belongs to another segment → allow, got: ${d} (${r.parsed?.hookSpecificOutput?.additionalContext || ''})`;
+      if (!abstained(r)) return `pipe belongs to another segment → allow, got: ${d} (${r.parsed?.hookSpecificOutput?.additionalContext || ''})`;
       return null;
     },
   },
   {
-    name: 'curation-guard    [PreToolUse/curated script only READ by grep/cat + pipe→allow (not an invocation)]',
+    name: 'curation-guard    [PreToolUse/curated script only READ by grep/cat + pipe→abstain (not an invocation)]',
     script: 'curation-guard.js',
     payload: (() => {
       // Field case 2026-10-02: `grep -n "catch" -A3 .vscode/scripts/test-hooks.mjs | head -6`
@@ -802,15 +821,15 @@ const TESTS = [
         cwd,
       };
     })(),
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    expect: { noError: true },
     validate: r => {
       const d = r.parsed?.hookSpecificOutput?.permissionDecision;
-      if (d !== 'allow') return `reading a curated script is not running it → allow, got: ${d} (${r.parsed?.hookSpecificOutput?.additionalContext || ''})`;
+      if (!abstained(r)) return `reading a curated script is not running it → allow, got: ${d} (${r.parsed?.hookSpecificOutput?.additionalContext || ''})`;
       return null;
     },
   },
   {
-    name: 'curation-guard    [PreToolUse/curated script run via node + pipe→allow]',
+    name: 'curation-guard    [PreToolUse/curated script run via node + pipe→abstain]',
     script: 'curation-guard.js',
     payload: (() => {
       const cwd = mkTempProject({ shells: [{ id: 'th', script: '.vscode/scripts/test-hooks.mjs', aliases: [] }], whitelist: [] });
@@ -821,10 +840,10 @@ const TESTS = [
         cwd,
       };
     })(),
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    expect: { noError: true },
     validate: r => {
       const d = r.parsed?.hookSpecificOutput?.permissionDecision;
-      if (d !== 'allow') return `running the curated script and piping it → allow, got: ${d}`;
+      if (!abstained(r)) return `running the curated script and piping it → allow, got: ${d}`;
       return null;
     },
   },
@@ -840,17 +859,17 @@ const TESTS = [
         cwd,
       };
     })(),
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    expect: { noError: true },
     validate: r => {
       const out = r.parsed?.hookSpecificOutput || {};
-      if (out.permissionDecision !== 'allow') return `compound → allow, got: ${out.permissionDecision}`;
+      if (!abstained(r)) return `compound → allow, got: ${out.permissionDecision}`;
       if (out.updatedInput) return 'exploration is never rewritten';
       if (out.additionalContext) return `the ignored "Prefer it next time" hint is gone, got: ${out.additionalContext}`;
       return null;
     },
   },
   {
-    name: 'curation-guard    [PreToolUse/curated-script+logical-or→allow]',
+    name: 'curation-guard    [PreToolUse/curated-script+logical-or→abstain]',
     script: 'curation-guard.js',
     payload: (() => {
       // `||` is logical OR, not a pipe. Should NOT trigger filter-pipe deny.
@@ -863,8 +882,8 @@ const TESTS = [
         cwd,
       };
     })(),
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
-    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+    expect: { noError: true },
+    validate: r => abstained(r)
       ? null : `\`||\` is logical OR not a filter pipe, should allow. Got: ${r.parsed?.hookSpecificOutput?.permissionDecision} (ctx: ${r.parsed?.hookSpecificOutput?.additionalContext})`,
   },
   {
@@ -892,14 +911,14 @@ const TESTS = [
       session_id: SESSION,
       cwd: (() => mkTempProject({ shells: [{ id: 'vitest', script: '.vscode/scripts/vitest.ps1', aliases: [] }], whitelist: [] }))(),
     },
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    expect: { noError: true },
     validate: r => {
       // `echo "running script.ps1"` mentions the script path inside a quoted arg.
       // Matcher must NOT treat that as an invocation (would silently allow under
       // the wrong branch). With no curated match and no whitelist, falls through
       // to the default allow. Either way, expected: allow with no deny redirect.
       const d = r.parsed?.hookSpecificOutput?.permissionDecision;
-      if (d !== 'allow') return `quoted-arg must not trigger curated-redirect, got: ${d} (ctx: ${r.parsed?.hookSpecificOutput?.additionalContext})`;
+      if (!abstained(r)) return `quoted-arg must not trigger curated-redirect, got: ${d} (ctx: ${r.parsed?.hookSpecificOutput?.additionalContext})`;
       return null;
     },
   },
@@ -994,7 +1013,7 @@ const TESTS = [
   },
   {
     // SAME payload, SAME session/dataDir as above — the deny-once stamp must release it.
-    name: 'graph-guard       [identical retry → allow (deny-once stamp)]',
+    name: 'graph-guard       [identical retry →abstain (deny-once stamp)]',
     script: 'graph-guard.js',
     payload: {
       tool_name: 'Grep',
@@ -1002,13 +1021,13 @@ const TESTS = [
       session_id: SESSION,
       cwd: _gg.cwd,
     },
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    expect: { noError: true },
     extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _gg.root, CLAUDE_PLUGIN_DATA: _gg.dataDir }),
-    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+    validate: r => abstained(r)
       ? null : `identical retry must pass (deny-once), got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
   },
   {
-    name: 'graph-guard       [scoped Grep (path) → allow, no interception]',
+    name: 'graph-guard       [scoped Grep (path) →abstain, no interception]',
     script: 'graph-guard.js',
     payload: {
       tool_name: 'Grep',
@@ -1016,9 +1035,9 @@ const TESTS = [
       session_id: SESSION,
       cwd: _gg.cwd,
     },
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    expect: { noError: true },
     extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _gg.root, CLAUDE_PLUGIN_DATA: _gg.dataDir }),
-    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+    validate: r => abstained(r)
       ? null : `scoped Grep must never be intercepted, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
   },
   {
@@ -1040,7 +1059,7 @@ const TESTS = [
     },
   },
   {
-    name: 'graph-guard       [backend local → allow (no graph to redirect to)]',
+    name: 'graph-guard       [backend local →abstain (no graph to redirect to)]',
     script: 'graph-guard.js',
     payload: {
       tool_name: 'Grep',
@@ -1048,13 +1067,13 @@ const TESTS = [
       session_id: SESSION,
       cwd: _gg.cwd,
     },
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    expect: { noError: true },
     extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _gg.rootLocal, CLAUDE_PLUGIN_DATA: _gg.dataDir }),
-    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+    validate: r => abstained(r)
       ? null : `local backend must always allow, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
   },
   {
-    name: 'graph-guard       [profile free → allow despite READY graph]',
+    name: 'graph-guard       [profile free →abstain despite READY graph]',
     script: 'graph-guard.js',
     payload: {
       tool_name: 'Grep',
@@ -1062,9 +1081,9 @@ const TESTS = [
       session_id: SESSION,
       cwd: _gg.cwd,
     },
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
+    expect: { noError: true },
     extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _gg.rootFree, CLAUDE_PLUGIN_DATA: _gg.dataDir }),
-    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+    validate: r => abstained(r)
       ? null : `free profile is passthrough — must allow, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
   },
   {
@@ -1131,7 +1150,7 @@ const TESTS = [
   },
   // ── PreToolUse / Bash — pretooluse-bash-dispatcher (curation-guard + error-guard, 1 process) ─
   {
-    name: 'pretooluse-bash-dispatcher [no-curated,no-error→allow-default]',
+    name: 'pretooluse-bash-dispatcher [no-curated,no-error→abstain]',
     script: 'pretooluse-bash-dispatcher.js',
     payload: {
       tool_name: 'Bash',
@@ -1139,8 +1158,8 @@ const TESTS = [
       session_id: SESSION,
       cwd: (() => mkTempProject({ shells: [], whitelist: [] }))(),
     },
-    expect: { hasKey: 'hookSpecificOutput', noError: true },
-    validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow'
+    expect: { noError: true },
+    validate: r => abstained(r)
       ? null : `no curated/error signal must allow, got: ${r.parsed?.hookSpecificOutput?.permissionDecision}`,
   },
   {

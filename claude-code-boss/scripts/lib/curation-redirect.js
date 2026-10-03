@@ -47,6 +47,18 @@ function splitTopLevel(command) {
   return parts;
 }
 
+/** True when `test(s, i)` holds at some index outside single/double quotes. */
+function hasUnquoted(s, test) {
+  let q = null;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (q) { if (c === q && s[i - 1] !== '\\') q = null; continue; }
+    if (c === '"' || c === "'") { q = c; continue; }
+    if (test(s, i)) return true;
+  }
+  return false;
+}
+
 function joinParts(parts) {
   return parts.map((p, i) => `${i ? ' ' : ''}${p.text.trim()}${p.sep ? ` ${p.sep}` : ''}`).join('');
 }
@@ -70,6 +82,14 @@ function profilesFor(shells) {
 function invocationFor(shell, projectRoot) {
   const rel = String((shell && (shell.script || shell.path)) || '').trim();
   if (!rel) return null;
+  // The path is interpolated into a shell command between "…": a `"`, `$` or backtick in a
+  // repo's shells.json would break out of the quotes. And the rewrite only ever targets
+  // the project's OWN scripts — never a path outside its root (pre-release audit).
+  if (/["$`]/.test(rel)) return null;
+  if (projectRoot) {
+    const back = path.relative(path.resolve(projectRoot), path.resolve(projectRoot, rel));
+    if (!back || back.startsWith('..') || path.isAbsolute(back)) return null;
+  }
   const abs = (projectRoot ? path.resolve(projectRoot, rel) : rel).replace(/\\/g, '/');
   if (/\.(mjs|cjs|js)$/i.test(abs)) return `node "${abs}"`;
   if (/\.ps1$/i.test(abs)) return `powershell -NoProfile -ExecutionPolicy Bypass -File "${abs}"`;
@@ -125,6 +145,14 @@ function planShaping(command, projectRoot, deps = {}) {
   const parts = splitTopLevel(cmd);
   if (!parts || parts.length !== 1 || /&\s*$/.test(cmd)) return null;
   if (FILE_SINK.test(cmd.split('|')[0]) || /\|\s*tee\b/.test(cmd)) return null;
+  // Never wrapped (pre-release audit, all reproduced):
+  //  - its own pipe (`grep … | head`): the agent already bounds it, and pipefail turned
+  //    head's early exit into SIGPIPE 141 — a fake failure feeding the error-guard;
+  //  - a `#` comment or a trailing `\`: `{ cmd #x; }` is a shell syntax error;
+  //  - follow / interactive commands (`tail -f`, `less`, `watch`…): they never reach EOF.
+  if (hasUnquoted(cmd, (s, i) => s[i] === '|' && s[i + 1] !== '|' && s[i - 1] !== '|')) return null;
+  if (hasUnquoted(cmd, (s, i) => s[i] === '#' && (i === 0 || /\s/.test(s[i - 1]))) || /\\\s*$/.test(cmd)) return null;
+  if (/^(?:\S*\/)?(?:less|more|watch|top|htop|vi|vim|nano)\b/.test(cmd) || /^(?:\S*\/)?tail\b.*\s(?:-[a-zA-Z]*[fF]|--follow)\b/.test(cmd)) return null;
   if (classifyCommand(cmd) !== 'exploration') return null;
   const tgActive = deps.tokenGuardActive || tokenGuardActive;
   if (tgActive({ projectRoot })) return null;

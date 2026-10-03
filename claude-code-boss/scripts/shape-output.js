@@ -3,9 +3,11 @@
  * shape-output.js — C2b (Phase C): bound an EXPLORATION command's output when Token
  * Guard isn't installed (both plugins coexist; with it installed this never runs).
  *
- * The curation-guard appends it to a single exploration command:
+ * The curation-guard appends it to a single exploration command WITHOUT a pipe of its own:
  *   set -o pipefail; { <cmd>; } 2>&1 | node shape-output.js --family "git log"
- * so the command runs exactly as the agent wrote it (pipefail keeps its exit code).
+ * so the command runs exactly as the agent wrote it (pipefail keeps <cmd>'s exit code;
+ * a command with its own `| head` is never wrapped — pipefail would turn head's early
+ * exit into SIGPIPE 141, a fake failure).
  * Within the limits the output passes through untouched; beyond them the head is shown
  * and the FULL output saved to a file the agent can read by slice. Every cut is
  * measured (`curation.shaped`: raw vs shown chars) — the real saving, not a guess.
@@ -50,26 +52,58 @@ function saveFull(text, family) {
   return file.replace(/\\/g, '/');
 }
 
+// The full-output file is capped: past this the rest is only counted, not stored.
+const FILE_MAX_BYTES = 50 * 1024 * 1024;
+
+/**
+ * STREAMING: the head is written as it arrives (a `find` that runs long, or one killed by
+ * the Bash timeout, still shows its first lines — the first version buffered everything
+ * until EOF, and lost it all on a kill); past the limits the rest goes straight to the
+ * file (capped). Memory holds at most the head.
+ */
 async function main() {
   const family = familyArg(process.argv);
-  const chunks = [];
-  for await (const c of process.stdin) chunks.push(c);
-  const text = Buffer.concat(chunks).toString('utf8');
-  let r;
-  try {
-    const cfg = getCuration();
-    r = shape(text, { maxLines: cfg.shapeMaxLines, maxChars: cfg.shapeMaxChars });
-  } catch (err) {
-    // Never swallow the command's output: on any failure, pass it through raw, said loud.
-    process.stdout.write(`${text}\n[boss] shape-output falhou (${err.message}) — saída crua acima.\n`);
-    return;
+  let maxLines = 80; let maxChars = 8000;
+  try { const cfg = getCuration(); maxLines = cfg.shapeMaxLines; maxChars = cfg.shapeMaxChars; }
+  catch (err) { console.error(`[shape-output] config unreadable (${err.message}) — default limits`); }
+  const { StringDecoder } = require('string_decoder');
+  const decoder = new StringDecoder('utf8');
+  const head = [];
+  let partial = ''; let shownLines = 0; let shownChars = 0; let rawLines = 0; let rawChars = 0;
+  let cut = false; let file = null; let fd = null; let fileBytes = 0; let saveErr = '';
+
+  const toFile = (s) => {
+    if (fd === null || fileBytes >= FILE_MAX_BYTES) return;
+    try { const b = Buffer.from(s, 'utf8'); fs.writeSync(fd, b); fileBytes += b.length; }
+    catch (err) { saveErr = err.message; try { fs.closeSync(fd); } catch (e) { void e; } fd = null; }
+  };
+  const startCut = () => {
+    cut = true;
+    try { file = saveFull('', family); fd = fs.openSync(file, 'a'); toFile(head.join('')); }
+    catch (err) { saveErr = err.message; }
+  };
+  const onLine = (line) => { // `line` includes its '\n' (the last one may not)
+    rawLines++; rawChars += line.length;
+    if (!cut && shownLines < maxLines && shownChars + line.length <= maxChars) {
+      process.stdout.write(line); head.push(line); shownLines++; shownChars += line.length;
+      return;
+    }
+    if (!cut) startCut();
+    toFile(line);
+  };
+
+  for await (const chunk of process.stdin) {
+    const parts = (partial + decoder.write(chunk)).split('\n');
+    partial = parts.pop();
+    for (const p of parts) onLine(p + '\n');
   }
-  if (!r.cut) { process.stdout.write(text); return; }
-  let where = '';
-  try { where = saveFull(text, family); }
-  catch (err) { where = `(não foi possível salvar: ${err.message})`; }
-  process.stdout.write(`${r.shown}\n[boss] saída cortada: ${r.shownLines} de ${r.rawLines} linhas, ${r.shown.length} de ${text.length} caracteres. Completa em: ${where} — leia por trecho (Read com offset/limit) em vez de despejar tudo. CCB_RAW=1 na frente do comando desliga este corte.\n`);
-  try { await metrics.record('curation.shaped', { family, rawChars: text.length, shownChars: r.shown.length, rawLines: r.rawLines }, { cwd: process.cwd() }); }
+  const rest = partial + decoder.end();
+  if (rest) onLine(rest);
+  if (!cut) return;
+  if (fd !== null) { try { fs.closeSync(fd); } catch (err) { saveErr = err.message; } }
+  const where = saveErr ? `(não foi possível salvar: ${saveErr})` : `${file}${fileBytes >= FILE_MAX_BYTES ? ` (primeiros ${FILE_MAX_BYTES / 1048576} MB)` : ''}`;
+  process.stdout.write(`${shownChars && !head[head.length - 1].endsWith('\n') ? '\n' : ''}[boss] saída cortada: ${shownLines} de ${rawLines} linhas, ${shownChars} de ${rawChars} caracteres. Completa em: ${where} — leia por trecho (Read com offset/limit) em vez de despejar tudo. CCB_RAW=1 na frente do comando desliga este corte.\n`);
+  try { await metrics.record('curation.shaped', { family, rawChars, shownChars, rawLines }, { cwd: process.cwd() }); }
   catch (err) { console.error(`[shape-output] metrics: ${err.message}`); }
 }
 
