@@ -129,9 +129,14 @@ deterministic guard — **no AI, no quota**, like pages-guard —
   release (v2.19.0, v2.19.1, v2.20.0: 3 for 3). An alarm that always fires teaches
   you to ignore the alarm. Two coupled fixes: the script got a **settling window**
   (`GRACE_MS`, 45min) so a version that *just* landed is reported `pending`
-  ("release in flight") instead of drift — dated by git pickaxe (`log -S`) on the
-  version file, i.e. *how long this version has been on main*, not the HEAD
-  timestamp which any push moves; and the **cron** exists so that window never
+  ("release in flight") instead of drift — dated by *when the bump arrived on main*:
+  the bump commit (git pickaxe `log -S` on the version file) is matched to the push
+  that brought it, via the GitHub repository-activity API (the workflow passes
+  `GITHUB_TOKEN`). The commit date alone is wrong here: `develop` → `main` is a
+  fast-forward, so the bump was written hours before the push and the window had
+  already passed (red on the 3.0.0 push). Without the token (local runs) it falls
+  back to the commit date and says so — that can only report drift early, never
+  hide it; and the **cron** exists so that window never
   becomes a blind spot (without it, "merged and forgot to tag" would pass at push
   time and never be re-evaluated). Indeterminate age is **not** an excuse: it is
   reported as drift, saying it couldn't measure.

@@ -8112,6 +8112,25 @@ test('release-guard: o workflow tem trigger AGENDADO (drift e estado, nao evento
   assertEq(/cron:/.test(wf), true, 'com cron declarado');
 });
 
+test('release-guard.pushArrival: data pela CHEGADA do bump na main (push), nao pela data do commit (visto no push da 3.0.0)', async () => {
+  const { pushArrival } = await loadReleaseGuard();
+  // Historia linear a→b(bump)→c→d; o push c→d nao trouxe o bump, o push a→c trouxe.
+  const order = ['a', 'b', 'c', 'd'];
+  const isAnc = (x, y) => !!y && order.indexOf(x) >= 0 && order.indexOf(y) >= order.indexOf(x);
+  const pushes = [
+    { before: 'c', after: 'd', timestamp: '2026-10-03T14:26:03Z' },
+    { before: 'a', after: 'c', timestamp: '2026-10-03T14:19:54Z' },
+  ];
+  assertEq(pushArrival('b', pushes, isAnc), Date.parse('2026-10-03T14:19:54Z'), 'o push que trouxe o bump');
+  assertEq(pushArrival('b', [pushes[0]], isAnc), null, 'push de chegada fora da lista → null (o chamador data pelo commit e diz)');
+  assertEq(pushArrival('b', [{ before: '0000000', after: 'c', timestamp: '2026-10-03T10:00:00Z' }], (x, y) => y !== '0000000' && isAnc(x, y)), Date.parse('2026-10-03T10:00:00Z'), 'criacao do branch conta como chegada');
+});
+
+test('release-guard: o workflow passa o token p/ datar pela atividade da main', () => {
+  const wf = fs.readFileSync(path.resolve(ROOT, '..', '.github', 'workflows', 'release-guard.yml'), 'utf8');
+  assert(/GITHUB_TOKEN:\s*\$\{\{\s*github\.token\s*\}\}/.test(wf), 'sem o token o guard volta a datar pelo commit (drift falso no push do release)');
+});
+
 
 const routerServer = require('../servers/model-router/index.js');
 
