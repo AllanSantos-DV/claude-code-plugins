@@ -16855,10 +16855,15 @@ test('atomic-write: broadened shared-snapshot writers route through atomic-write
     assert(/require\(['"]\.\/lib\/session-counter\.js['"]\)/.test(src) && !/writeFileSync/.test(src),
       `${rel} must persist through lib/session-counter.js only`);
   }
+  // Shared writers that are themselves held to the rule (a writer may route through them).
+  const routes = ['json-file.js', 'cooldown-stamp.js'];
+  for (const r of routes) {
+    assert(/require\(['"]\.\/atomic-write\.js['"]\)/.test(fs.readFileSync(path.join(SCRIPTS, 'lib', r), 'utf-8')), `lib/${r} must import atomic-write.js`);
+  }
+  const via = new RegExp(`require\\(['"](\\./|\\./lib/)(atomic-write|${routes.map((r) => r.replace(/\.js$/, '')).join('|')})\\.js['"]\\)`);
   for (const rel of writers) {
     const src = fs.readFileSync(path.join(SCRIPTS, rel), 'utf-8');
-    assert(/require\(['"](\.\/|\.\/lib\/)atomic-write\.js['"]\)/.test(src),
-      `${rel} must import lib/atomic-write.js`);
+    assert(via.test(src), `${rel} must write through lib/atomic-write.js (directly or via ${routes.join('/')})`);
   }
 });
 
