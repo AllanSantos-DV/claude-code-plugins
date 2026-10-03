@@ -743,13 +743,12 @@ const TESTS = [
     },
   },
   {
-    name: 'curation-guard    [PreToolUse/curated-script+pipe→deny+edit-script]',
+    name: 'curation-guard    [PreToolUse/curated-script+pipe→allow, no nag (measured as curation.piped)]',
     script: 'curation-guard.js',
     payload: (() => {
-      // Real-world: agent invokes curated script then pipes output. Any pipe
-      // signals post-processing — block and tell the agent to edit the script
-      // if its output isn't adequate. Hook doesn't enumerate filter commands;
-      // the LLM reads the reason and decides.
+      // Real-world: agent invokes curated script then pipes output. The old deny cost a
+      // round trip and its fix (re-run unfiltered) put MORE output in context (replay:
+      // 99 of 243 old-guard denials). Now allowed; the pipe is measured per script.
       const cwd = mkTempProject({ shells: [{ id: 'rep', script: '.vscode/scripts/repackage.ps1', aliases: [] }], whitelist: [] });
       const absPath = `${cwd.replace(/\\/g, '/')}/.vscode/scripts/repackage.ps1`;
       return {
@@ -763,8 +762,8 @@ const TESTS = [
     validate: r => {
       const d = r.parsed?.hookSpecificOutput?.permissionDecision;
       const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
-      if (d !== 'deny') return `curated-script + pipe should deny (edit script), got: ${d}`;
-      if (!/edit the script/i.test(ctx)) return `deny reason must instruct to edit the script, got: ${ctx}`;
+      if (d !== 'allow') return `curated-script + pipe → allow, got: ${d}`;
+      if (ctx) return `no nag text (it costs tokens), got: ${ctx}`;
       return null;
     },
   },
@@ -811,7 +810,7 @@ const TESTS = [
     },
   },
   {
-    name: 'curation-guard    [PreToolUse/curated script run via node + pipe→deny (still enforced)]',
+    name: 'curation-guard    [PreToolUse/curated script run via node + pipe→allow]',
     script: 'curation-guard.js',
     payload: (() => {
       const cwd = mkTempProject({ shells: [{ id: 'th', script: '.vscode/scripts/test-hooks.mjs', aliases: [] }], whitelist: [] });
@@ -825,7 +824,7 @@ const TESTS = [
     expect: { hasKey: 'hookSpecificOutput', noError: true },
     validate: r => {
       const d = r.parsed?.hookSpecificOutput?.permissionDecision;
-      if (d !== 'deny') return `running the curated script and piping it must still deny, got: ${d}`;
+      if (d !== 'allow') return `running the curated script and piping it → allow, got: ${d}`;
       return null;
     },
   },

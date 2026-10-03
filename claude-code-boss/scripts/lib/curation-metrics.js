@@ -13,7 +13,7 @@
 
 const CURATION_EVENTS = [
   'curation.used', 'curation.redirected', 'curation.uncovered', 'curation.skipped', 'curation.pending',
-  'curation.bypass', 'curation.shaped', 'curation.flagged', 'curation.pipe-denied',
+  'curation.bypass', 'curation.shaped', 'curation.flagged', 'curation.piped',
   'error-guard.denied', 'graph-guard.fired',
 ];
 
@@ -35,7 +35,8 @@ function summarizeCuration(rows, { shellIds = [] } = {}) {
     shaped: { cuts: 0, rawChars: 0, shownChars: 0, savedChars: 0, byFamily: {} },
     redirectSavings: { estChars: 0, withBaseline: 0, withoutBaseline: 0 },
     rawEnteredContext: { count: 0, chars: 0 },
-    guards: { pipeDenied: 0, errorGuardDenied: 0, graphGuardFired: 0 },
+    piped: { total: 0, byScript: {} }, // curated output filtered by the agent → tune that script
+    guards: { errorGuardDenied: 0, graphGuardFired: 0 },
     neverUsed: [],
     totals: { savedChars: 0, savedTokensApprox: 0 },
   };
@@ -77,7 +78,7 @@ function summarizeCuration(rows, { shellIds = [] } = {}) {
         s.rawEnteredContext.count++; s.rawEnteredContext.chars += num(p.chars);
         if (p.sig) { const b = baseline[p.sig] || (baseline[p.sig] = { chars: 0, n: 0 }); b.chars += num(p.chars); b.n++; }
         break;
-      case 'curation.pipe-denied': s.guards.pipeDenied++; break;
+      case 'curation.piped': s.piped.total++; bump(s.piped.byScript, p.shellId || '?'); break;
       case 'error-guard.denied': s.guards.errorGuardDenied++; break;
       case 'graph-guard.fired': s.guards.graphGuardFired++; break;
       default: break;

@@ -13,7 +13,7 @@
  * Cascade:
  *   1. Bash + command matches curated entry (path or alias)
  *      a. invoking the curated script with no pipe → allow
- *      b. invoking the curated script with a pipe   → deny (edit the script)
+ *      b. invoking the curated script with a pipe   → allow + `curation.piped` metric
  *      c. raw alias (not invoking the script)       → deny (redirect to script)
  *   2. command matches project whitelist → allow
  *   3. denyUnknown=true → deny (paranoid mode)
@@ -109,15 +109,16 @@ async function run(event) {
     const projectRoot = findProjectRoot(event.cwd || process.cwd());
     const { shells, whitelist } = loadShellsConfig(projectRoot);
 
-    // 1. The curated script itself is being run: allowed, but never through a pipe (its
-    //    output is already shaped — measured: this denial is followed 76% of the time).
+    // 1. The curated script itself is being run → allowed, piped or not. The old deny of a
+    //    pipe cost a round trip and its "fix" (re-run without the filter) put MORE output in
+    //    context — replay on real history: 99 of the 243 old-guard denials were this rule.
+    //    A pipe on a curated script is the signal its output doesn't fit: measured per
+    //    script (`curation.piped`, dashboard) so the script gets tuned, not the agent blocked.
     const curatedShell = matchCuratedShell(command, shells);
     const scriptPath = curatedShell ? (curatedShell.script || '').trim() : '';
     if (scriptPath && _tokenize(command.trim()).some(t => _pathMatches(t, scriptPath))) {
       if (pipesCuratedScript(command, scriptPath)) {
-        metrics.fire('curation.pipe-denied', { shellId: curatedShell.id || scriptPath }, { sessionId: event.session_id, cwd: event.cwd });
-        const reason = `[curation-guard] Curated script \`${scriptPath}\` invoked with a pipe. Its output is already shaped (filter: ${curatedShell.outputFilter || 'summary'}, lines: ${curatedShell.outputLines || 200}) and is meant to be consumed as-is. If the output is not adequate, edit the script. See skill \`curation-script-pattern\`.`;
-        return decision('deny', { additionalContext: reason, permissionDecisionReason: reason });
+        metrics.fire('curation.piped', { shellId: curatedShell.id || scriptPath }, { sessionId: event.session_id, cwd: event.cwd });
       }
       return decision('allow');
     }
