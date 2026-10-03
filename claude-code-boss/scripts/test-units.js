@@ -20439,6 +20439,80 @@ test('mcp-server http: explicit owner/repo project is accepted (U14); path-like 
   }
 });
 
+test('prune never-used: no candidates without a history covering the window; old unused + dangling are candidates; young and used are not', () => {
+  const { pruneCandidates } = require('./lib/shells-prune.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune-'));
+  fs.mkdirSync(path.join(root, '.vscode', 'scripts'), { recursive: true });
+  const old = (Date.now() - 90 * 86400_000) / 1000;
+  for (const n of ['a', 'b', 'c']) fs.writeFileSync(path.join(root, '.vscode', 'scripts', `${n}.mjs`), 'x');
+  fs.utimesSync(path.join(root, '.vscode', 'scripts', 'a.mjs'), old, old);
+  fs.utimesSync(path.join(root, '.vscode', 'scripts', 'b.mjs'), old, old); // c.mjs stays young
+  fs.writeFileSync(path.join(root, '.vscode', 'shells.json'), JSON.stringify({ shells: [
+    { id: 'A', script: '.vscode/scripts/a.mjs', aliases: ['npm run a'] },
+    { id: 'B', command: '.vscode/scripts/b.mjs', aliases: ['npm run b'] }, // legacy field, as register writes
+    { id: 'C', script: '.vscode/scripts/c.mjs', aliases: ['npm run c'] },
+    { id: 'D', script: '.vscode/scripts/gone.mjs', aliases: ['npm run d'] },
+  ] }));
+  try {
+    const short = pruneCandidates({ root, days: 30, usage: () => ({ historyFromTs: Date.now() - 5 * 86400_000, usedIds: [] }) });
+    assert(short.ok && short.candidates.length === 0 && /insufficient usage history/.test(short.reason), `a 5-day history never calls anything unused in a 30-day window: ${JSON.stringify(short)}`);
+    const none = pruneCandidates({ root, days: 30, usage: () => ({ historyFromTs: null, usedIds: [] }) });
+    assertEq(none.candidates.length, 0, 'no history at all (fresh 3.0 install) → nothing');
+    const full = pruneCandidates({ root, days: 30, usage: () => ({ historyFromTs: Date.now() - 60 * 86400_000, usedIds: ['A'] }) });
+    assertEq(full.candidates.map((x) => x.id).sort().join(','), 'B,D', 'B (old, unused) and D (script file missing); A was used, C is younger than the window');
+    assertEq(full.candidates.find((x) => x.id === 'D').ageDays, null, 'a dangling entry has no age');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('prune never-used: apply removes only current candidates (non-candidates refused, loud), keeps a backup and human-readable JSON', () => {
+  const { pruneShells } = require('./lib/shells-prune.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune-apply-'));
+  fs.mkdirSync(path.join(root, '.vscode'), { recursive: true });
+  const file = path.join(root, '.vscode', 'shells.json');
+  const orig = JSON.stringify({ shells: [{ id: 'A', script: '.vscode/scripts/a.mjs', aliases: ['npm run a'] }, { id: 'B', script: '.vscode/scripts/b.mjs', aliases: ['npm run b'] }], whitelist: ['git'] });
+  fs.writeFileSync(file, orig);
+  const usage = () => ({ historyFromTs: Date.now() - 60 * 86400_000, usedIds: ['A'] });
+  try {
+    const refused = pruneShells({ root, ids: ['A', 'B'], days: 30, usage });
+    assert(!refused.ok && /refused — not prune candidates.*A/.test(refused.error), `a used script is refused: ${JSON.stringify(refused)}`);
+    assertEq(fs.readFileSync(file, 'utf8'), orig, 'a refusal changes nothing');
+    const r = pruneShells({ root, ids: ['B'], days: 30, usage });
+    assert(r.ok && r.removedCount === 1, JSON.stringify(r));
+    const after = JSON.parse(fs.readFileSync(file, 'utf8'));
+    assertEq(after.shells.map((s) => s.id).join(','), 'A', 'only B removed');
+    assertEq(after.whitelist.join(','), 'git', 'other fields kept');
+    assert(fs.readFileSync(file, 'utf8').includes('\n  "shells"'), 'written human-readable (indented)');
+    assertEq(fs.readFileSync(r.backup, 'utf8'), orig, 'backup holds the previous file');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('prune never-used: real metrics usage (exact, no row cap) + the MCP tool lists by default and prunes only with apply', async () => {
+  const ms = require('./lib/metrics-store.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune-tool-'));
+  const project = path.basename(root);
+  try {
+    ms.close(); ms.init({ project });
+    ms.recordMetric('curation.used', { scriptId: 'used-run' }, 's');
+    ms.recordMetric('curation.redirected', { shellId: 'used-redirect' }, 's');
+    ms.recordMetric('curation.piped', { shellId: 'used-pipe' }, 's');
+    ms.recordMetric('curation.skipped', { class: 'inline' }, 's');
+    ms.close();
+    const u = ms.getCurationUsageIsolated(project, 0);
+    assertEq(u.usedIds.sort().join(','), 'used-pipe,used-redirect,used-run', 'run, redirect and pipe all count as use');
+    assert(Number.isFinite(u.historyFromTs) && Date.now() - u.historyFromTs < 60_000, 'history starts at the first curation event');
+    fs.mkdirSync(path.join(root, '.vscode'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'package.json'), '{}');
+    fs.writeFileSync(path.join(root, '.vscode', 'shells.json'), JSON.stringify({ shells: [{ id: 'X', script: '.vscode/scripts/x.mjs', aliases: ['npm run x'] }] }));
+    const { createBrainServer } = await import(pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+    const server = createBrainServer({ pluginRoot: ROOT, mode: 'http' });
+    const list = await server.dispatch('curation_prune_unused', { cwd: root, days: 30 });
+    const listed = JSON.parse(list.content[0].text);
+    assert(!list.isError && Array.isArray(listed.candidates) && /insufficient usage history/.test(listed.reason), `history is seconds old → no candidates yet: ${list.content[0].text}`);
+    const refused = await server.dispatch('curation_prune_unused', { cwd: root, days: 30, apply: true, ids: ['X'] });
+    assert(refused.isError && /refused/.test(refused.content[0].text), `apply on a non-candidate is refused: ${refused.content[0].text}`);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('daemon-supervisor spawnDaemon: never forwards CCB_PROJECT_ID from the spawning process into the shared daemon\'s env (regression, found live 2026-09-24)', async () => {
   const src = fs.readFileSync(path.join(ROOT, 'servers', 'brain-server', 'lib', 'daemon-supervisor.js'), 'utf8');
   const fnBody = src.slice(src.indexOf('function spawnDaemon'), src.indexOf('function spawnDaemon') + 700);

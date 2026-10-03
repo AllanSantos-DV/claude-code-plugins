@@ -2563,9 +2563,20 @@ async function loadCurationPanel() {
   html += `<p class="text-muted" style="font-size:.8rem;margin-top:.5rem">Not curated: ${c.skipped.exploration} exploration · ${c.skipped.inline} inline · ${c.pending} first occurrences (pending). `
     + `Bypass (CCB_RAW=1): ${c.bypass}. Guards: ${g.errorGuardDenied} error-guard · ${g.graphGuardFired} graph-guard.</p>`;
   if (root) {
-    html += c.neverUsed.length
-      ? `<p style="font-size:.8rem"><span class="badge badge-yellow">${c.neverUsed.length} never used</span> ${c.neverUsed.map(escapeHtml).join(', ')} — candidates to prune from shells.json.</p>`
-      : '<p style="font-size:.8rem"><span class="badge badge-green">every curated script was used</span></p>';
+    const pr = c.prune || {};
+    if (pr.error) {
+      html += `<p class="text-muted" style="font-size:.8rem">Prune: ${escapeHtml(pr.error)}</p>`;
+    } else if (pr.candidates && pr.candidates.length) {
+      window.__ccbPrune = { root, days: pr.days, ids: pr.candidates.map(x => x.id) };
+      html += `<p style="font-size:.8rem"><span class="badge badge-yellow">${pr.candidates.length} never ran in ${pr.days} days</span> `
+        + pr.candidates.map(x => `${escapeHtml(x.id)}${x.ageDays != null ? ` <span class="text-muted">(${x.ageDays}d old)</span>` : ' <span class="text-muted">(script file missing)</span>'}`).join(', ')
+        + ` <button class="btn btn-sm" onclick="pruneUnusedScripts()">Prune ${pr.candidates.length}</button>`
+        + ' <span class="text-muted">— removes only the shells.json entries (backup kept; script files stay).</span></p>';
+    } else {
+      html += pr.reason
+        ? `<p class="text-muted" style="font-size:.8rem">Prune: ${escapeHtml(pr.reason)}</p>`
+        : '<p style="font-size:.8rem"><span class="badge badge-green">every curated script ran in the window</span></p>';
+    }
   }
   const lat = c.hookLatency || {};
   if (lat.unavailable) {
@@ -2580,6 +2591,21 @@ async function loadCurationPanel() {
   }
   el.innerHTML = html;
   return c;
+}
+
+async function pruneUnusedScripts() {
+  const p = window.__ccbPrune;
+  if (!p || !p.ids.length) return;
+  if (!confirm(`Remove ${p.ids.length} never-used curated script(s) from shells.json?\n\n${p.ids.join(', ')}\n\nOnly the registrations go (a backup is written); the script files stay.`)) return;
+  try {
+    const r = await api('POST', `/api/curation/prune?root=${encodeURIComponent(p.root)}&days=${p.days}`, { ids: p.ids });
+    // api() resolves the JSON even on HTTP errors: a refusal comes back as {error}.
+    if (r && r.error) alert(`Prune refused: ${r.error}`);
+    else alert(`Pruned ${r.removedCount} script(s). Backup: ${r.backup}`);
+  } catch (e) {
+    alert(`Prune failed: ${e && e.message ? e.message : e}`);
+  }
+  loadCurationPanel();
 }
 
 async function runConsolidate(apply) {
