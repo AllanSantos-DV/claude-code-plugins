@@ -3941,6 +3941,38 @@ test('shells-config: a shells.json edited mid-process is seen on the next call (
   } finally { sc._resetCache(); fs.rmSync(proj, { recursive: true, force: true }); }
 });
 
+test('piped → refine: the same curated script filtered the same way twice asks to bake the filter in; another filter counts apart; tuning the script resets', async () => {
+  const detect = require('./curation-detect.js');
+  const journal = require('./lib/turn-journal.js');
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-piped-refine-'));
+  fs.mkdirSync(path.join(proj, '.vscode', 'scripts'), { recursive: true });
+  fs.writeFileSync(path.join(proj, 'package.json'), '{}');
+  const script = path.join(proj, '.vscode', 'scripts', 'tests.mjs');
+  fs.writeFileSync(script, 'console.log("x")\n');
+  const old = (Date.now() - 3600_000) / 1000; fs.utimesSync(script, old, old);
+  fs.writeFileSync(path.join(proj, '.vscode', 'shells.json'), JSON.stringify({ shells: [{ id: 'tests', script: '.vscode/scripts/tests.mjs', aliases: ['npm test'] }] }));
+  const sid = 'piped-' + Date.now();
+  const ev = (command) => ({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command }, tool_response: { stdout: 'a\nb\nc', stderr: '' }, session_id: sid, cwd: proj });
+  try {
+    await detect.run(ev('node .vscode/scripts/tests.mjs | tail -3'));
+    assertEq(journal.readEntries(sid).length, 0, '1st filtered run: counted, not asked');
+    await detect.run(ev('node .vscode/scripts/tests.mjs |  tail  -3'));
+    let entries = journal.readEntries(sid);
+    assertEq(entries.length, 1, '2nd run with the same filter (whitespace-normalized) asks');
+    assert(entries[0].curatedScript === '.vscode/scripts/tests.mjs' && /filtered 2x with `\| tail -3` — bake this filter into the script/.test(entries[0].reason), JSON.stringify(entries[0]));
+    const reason = require('./curation-stop.js')._buildReason(entries, 1, 3);
+    assert(/^REFINE:/m.test(reason) && /tests\.mjs/.test(reason) && /bake this filter/.test(reason), reason);
+    journal.clearEntries(sid);
+    await detect.run(ev('node .vscode/scripts/tests.mjs | grep FAIL'));
+    assertEq(journal.readEntries(sid).length, 0, 'another filter has its own count');
+    fs.writeFileSync(script, 'console.log("tuned")\n'); // the agent tuned the script
+    await detect.run(ev('node .vscode/scripts/tests.mjs | tail -3'));
+    assertEq(journal.readEntries(sid).length, 0, 'after the script changed, the count starts over — no nag for an already tuned script');
+    await detect.run(ev('node .vscode/scripts/tests.mjs'));
+    assertEq(journal.readEntries(sid).length, 0, 'an unfiltered run never asks');
+  } finally { journal.clearEntries(sid); fs.rmSync(proj, { recursive: true, force: true }); }
+});
+
 test('CCB_RAW=1: a deliberate raw run is never a curation gap (no journal, no recurrence toward the one-off ceiling)', async () => {
   const detect = require('./curation-detect.js');
   const journal = require('./lib/turn-journal.js');

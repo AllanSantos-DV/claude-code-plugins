@@ -76,8 +76,23 @@ function invokesScript(tokens, scriptPath) {
 }
 
 function pipesCuratedScript(command, scriptPath) {
+  return pipeFilterOf(command, scriptPath) !== null;
+}
+
+/**
+ * The filter the agent applied to the curated script's output (`tail -3`, `grep -E x`)
+ * — what follows the first pipe of the segment that RUNS the script, whitespace
+ * collapsed — or null when it isn't piped. Feeds the piped→refine nudge.
+ */
+function pipeFilterOf(command, scriptPath) {
   const segments = String(command || '').split(/\s*(?:&&|\|\||;|\r?\n)\s*/).filter(Boolean);
-  return segments.some(seg => hasPipe(seg) && invokesScript(_tokenize(seg.split(/(?<!\|)\|(?!\|)/)[0]), scriptPath));
+  for (const seg of segments) {
+    if (!hasPipe(seg)) continue;
+    const stages = seg.split(/(?<!\|)\|(?!\|)/);
+    if (!invokesScript(_tokenize(stages[0]), scriptPath)) continue;
+    return stages.slice(1).map((s) => s.trim().replace(/\s+/g, ' ')).filter(Boolean).join(' | ');
+  }
+  return null;
 }
 
 // Build a properly-formatted PreToolUse decision object per Claude Code docs.
@@ -233,4 +248,4 @@ if (require.main === module) {
   runPreToolUseCli(run, 'curation-guard', { defaultDecision: PASS });
 }
 
-module.exports = { run, decision, isWhitelisted, hasPipe, pipesCuratedScript };
+module.exports = { run, decision, isWhitelisted, hasPipe, pipesCuratedScript, pipeFilterOf };
