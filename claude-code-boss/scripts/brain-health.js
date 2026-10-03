@@ -27,7 +27,7 @@ const fs = require('fs');
 const path = require('path');
 const { writeFileAtomic } = require('./lib/atomic-write.js');
 
-const { readStdin, emitEmpty, emitJson, parsePayload } = require('./lib/hook-io.js');
+const { runTextCli } = require('./lib/hook-io.js');
 const { getSqliteBackend } = require('./lib/sqlite-compat.js');
 
 const COOLDOWN_MS = 60_000;
@@ -342,17 +342,7 @@ async function run(event) {
   }
 }
 
-async function main() {
-  const raw = await readStdin();
-  const event = parsePayload(raw) || {};
-  const eventName = event.hook_event_name || 'SessionStart';
-  const text = await run(event);
-  if (text) {
-    emitJson({ hookSpecificOutput: { hookEventName: eventName, additionalContext: text } });
-    return;
-  }
-  emitEmpty();
-}
+function main() { return runTextCli(run, 'BRAIN-HEALTH', 'SessionStart'); }
 
 if (require.main === module) main();
 

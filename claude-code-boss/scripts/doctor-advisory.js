@@ -13,7 +13,7 @@ const fs = require('fs');
 const { writeJsonAtomic } = require('./lib/atomic-write.js');
 const path = require('path');
 
-const { readStdin, emitEmpty, emitJson } = require('./lib/hook-io.js');
+const { runTextCli } = require('./lib/hook-io.js');
 const { checkNode, checkEnv } = require('./doctor.js');
 
 const COOLDOWN_MS = 6 * 60 * 60 * 1000; // at most once per 6h
@@ -54,21 +54,10 @@ async function run(_event) {
   return `[DOCTOR] Critical setup issue — ${items}. Run \`npm run doctor\` (or the dashboard Doctor button) for the fix.`;
 }
 
-async function main() {
-  const raw = await readStdin();
-  let event = {};
-  try { event = JSON.parse(raw || '{}'); } catch { /* defaults */ }
-  const eventName = event.hook_event_name || 'SessionStart';
-  const text = await run(event);
-  if (text) {
-    emitJson({ hookSpecificOutput: { hookEventName: eventName, additionalContext: text } });
-    return;
-  }
-  emitEmpty();
-}
+function main() { return runTextCli(run, 'DOCTOR-ADVISORY', 'SessionStart'); }
 
 if (require.main === module) {
-  main().catch((err) => { console.error(`[doctor-advisory] ${err.message}`); emitEmpty(); });
+  main(); // runTextCli never rejects: it logs and emits {} itself
 }
 
 module.exports = { onCooldown, stampPath, COOLDOWN_MS, run };

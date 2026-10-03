@@ -20,7 +20,7 @@
  * Fail-open: any error → emit empty `{}`. Disabled (policyInject.enabled=false)
  * → empty. No active policies (and registry not corrupt) → empty.
  */
-const { readStdin, emitEmpty, emitJson } = require('./lib/hook-io.js');
+const { runTextCli } = require('./lib/hook-io.js');
 const { dataDir } = require('./lib/data-dir.js');
 const { resolveLocalScopeId } = require('./lib/project-id.js');
 const policyStore = require('./lib/policy-store.js');
@@ -86,18 +86,7 @@ async function run(event) {
   }
 }
 
-async function main() {
-  const raw = await readStdin();
-  let event = {};
-  try { event = JSON.parse(raw || '{}'); } catch { /* non-JSON stdin → defaults */ }
-  const eventName = event.hook_event_name || 'SessionStart';
-  const text = await run(event);
-  if (text) {
-    emitJson({ hookSpecificOutput: { hookEventName: eventName, additionalContext: text } });
-    return;
-  }
-  emitEmpty();
-}
+function main() { return runTextCli(run, 'POLICY-INJECT', 'SessionStart'); }
 
 if (require.main === module) {
   main();

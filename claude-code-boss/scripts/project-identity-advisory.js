@@ -19,7 +19,7 @@
  */
 'use strict';
 
-const { readStdin, emitEmpty, emitJson } = require('./lib/hook-io.js');
+const { runTextCli } = require('./lib/hook-io.js');
 const { tryResolveProjectId, memoryOptedOut } = require('./lib/project-id.js');
 const { getOnboarding, load: loadBrainConfig } = require('./lib/brain-config.js');
 
@@ -66,21 +66,10 @@ async function run(event, { resolve } = {}) {
   return buildNotice(cwd);
 }
 
-async function main() {
-  const raw = await readStdin();
-  let event = {};
-  try { event = JSON.parse(raw || '{}'); } catch { /* defaults */ }
-  const eventName = event.hook_event_name || 'SessionStart';
-  const text = await run(event);
-  if (text) {
-    emitJson({ hookSpecificOutput: { hookEventName: eventName, additionalContext: text } });
-    return;
-  }
-  emitEmpty();
-}
+function main() { return runTextCli(run, 'PROJECT-IDENTITY', 'SessionStart'); }
 
 if (require.main === module) {
-  main().catch((err) => { console.error(`[project-identity-advisory] ${err.message}`); emitEmpty(); });
+  main(); // runTextCli never rejects: it logs and emits {} itself
 }
 
 module.exports = { needsProjectId, buildNotice, run };

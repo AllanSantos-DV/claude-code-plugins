@@ -20913,6 +20913,21 @@ test('curation_prune_unused: shells.json in a SUBFOLDER of the session reads the
   } finally { fs.rmSync(sess, { recursive: true, force: true }); }
 });
 
+test('hook-io.runTextCli echoes the event name (default when absent), {} on null/throw; sideEffectDispatch isolates detector crashes', async () => {
+  const cp = require('child_process');
+  const io = JSON.stringify(path.join(SCRIPTS, 'lib', 'hook-io.js'));
+  const cli = (body, stdin) => cp.spawnSync(process.execPath, ['-e', `require(${io}).runTextCli(${body}, 'T', 'SessionStart')`], { input: stdin, encoding: 'utf8' }).stdout;
+  assertEq(JSON.parse(cli('() => "hi"', '{"hook_event_name":"UserPromptSubmit"}')), { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: 'hi' } });
+  assertEq(JSON.parse(cli('() => "hi"', 'not json')).hookSpecificOutput.hookEventName, 'SessionStart', 'no event name → default');
+  assertEq(JSON.parse(cli('() => null', '{}')), {}, 'null → {}');
+  assertEq(JSON.parse(cli('() => { throw new Error("x"); }', '{}')), {}, 'throw → {} (fail-open)');
+  const { sideEffectDispatch } = require('./lib/hook-io.js');
+  const ran = [];
+  const dets = [{ name: 'a', mod: { run: () => { throw new Error('boom'); } } }, { name: 'b', mod: { run: (e) => { ran.push(e.x); } } }];
+  await sideEffectDispatch('t', dets)({ x: 1 });
+  assertEq(ran, [1], 'a crash in one detector never skips the next');
+});
+
 test('dashboard /api/plugin/update: one update at a time (a 2nd click while one runs → 409, never a 2nd performUpdate)', async () => {
   const pu = require('./lib/plugin-updater.js');
   const dash = require('./dashboard.js');
