@@ -1413,7 +1413,7 @@ async function getValueSummary(req, res, url) {
     const sinceTs = Date.now() - range * 86400_000;
     const projectFilter = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
-    const EVENTS = ['curation.flagged', 'lesson.captured', 'retrieve.cited', 'retrieve.injected'];
+    const EVENTS = ['lesson.captured', 'retrieve.cited', 'retrieve.injected'];
 
     const rows = [];
     for (const ev of EVENTS) {
@@ -1455,7 +1455,11 @@ async function getCurationSummary(req, res, url) {
       if (!shellsPath || !fs.existsSync(shellsPath)) return fail(res, `no shells config under ${root}`, 400);
       shellIds = loadShellsConfig(root).shells.map((s) => s.id).filter(Boolean);
     }
-    json(res, { rangeDays: range, projects, ...summarizeCuration(rows, { shellIds }) });
+    // C4c: per-hook latency lives in the brain daemon's memory (/health), not in the store.
+    const brainPort = Number(process.env.BRAIN_HTTP_PORT) || 38217;
+    const health = await routerHttpGetJson(brainPort, '/health');
+    const hookLatency = health && health.hookLatency ? health.hookLatency : { unavailable: `brain daemon not reachable on port ${brainPort}` };
+    json(res, { rangeDays: range, projects, ...summarizeCuration(rows, { shellIds }), hookLatency, daemonUptimeMs: health ? health.uptimeMs : null });
   } catch (err) {
     console.error(`[DASHBOARD] /api/metrics/curation failed: ${err.message}`);
     fail(res, err.message, 500);
