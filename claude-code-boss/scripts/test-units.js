@@ -3941,6 +3941,24 @@ test('shells-config: a shells.json edited mid-process is seen on the next call (
   } finally { sc._resetCache(); fs.rmSync(proj, { recursive: true, force: true }); }
 });
 
+test('CCB_RAW=1: a deliberate raw run is never a curation gap (no journal, no recurrence toward the one-off ceiling)', async () => {
+  const detect = require('./curation-detect.js');
+  const journal = require('./lib/turn-journal.js');
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rawrun-'));
+  fs.writeFileSync(path.join(proj, 'package.json'), '{}');
+  const sid = 'rawrun-' + Date.now();
+  const noisy = Array.from({ length: 300 }, (_, i) => `line ${i}`).join('\n');
+  const ev = (command) => ({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command }, tool_response: { stdout: noisy, stderr: '' }, session_id: sid, cwd: proj });
+  try {
+    for (let i = 0; i < 3; i++) await detect.run(ev('CCB_RAW=1 npm run rawcheck'));
+    assertEq(journal.readEntries(sid).length, 0, 'raw runs are never journaled');
+    await detect.run(ev('npm run rawcheck'));
+    assertEq(journal.readEntries(sid).length, 0, 'the next normal run is still the FIRST occurrence (pending) — raw runs did not count');
+    await detect.run(ev('npm run rawcheck'));
+    assertEq(journal.readEntries(sid).length, 1, 'the 2nd normal run asks, as usual');
+  } finally { journal.clearEntries(sid); fs.rmSync(proj, { recursive: true, force: true }); }
+});
+
 test('variant → alias: a recurring noisy uncovered VARIANT of a curated script is journaled as EXTEND (not CREATE, not REFINE)', async () => {
   const detect = require('./curation-detect.js');
   const journal = require('./lib/turn-journal.js');
