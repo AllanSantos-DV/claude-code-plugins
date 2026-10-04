@@ -2,9 +2,48 @@
 
 Plugin para Claude Code Desktop — **v3.0.0**
 
-Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizado leve para Claude Code. A orquestração fica a cargo das ferramentas nativas (Agent/Workflow) — o plugin foca no que o nativo não tem.
+**Menos repetição. Mais memória.** Com o claude-code-boss, o seu Claude Code lembra o
+que deu certo e errado em cada projeto, resume a saída barulhenta de comandos que se
+repetem e guarda uma lição toda vez que você o corrige. Tudo roda na sua máquina, sem
+chave de API.
+
+| Dark | Light |
+| :-: | :-: |
+| ![Página do produto no tema Dark](docs/assets/landing-dark.jpg) | ![Página do produto no tema Light](docs/assets/landing-light.jpg) |
+
+**[Página do produto](https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/)** · [Detalhes técnicos](https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/tech.html) · [Changelog](CHANGELOG.md)
+
+## Instalar em dois comandos
+
+No Claude Code:
+
+```
+/plugin marketplace add AllanSantos-DV/claude-code-plugins
+/plugin install claude-code-boss@allansantos-plugins
+```
+
+Precisa do **Node.js 22.13+ no PATH do sistema** (detalhes em [Pré-requisitos](#pré-requisitos)).
+No primeiro prompt depois de instalar, uma mensagem confirma que o plugin está ativo.
+Nada mais a configurar.
+
+## O que você ganha
+
+- **Ele lembra.** Cada projeto tem a sua memória. As lições certas entram na conversa
+  sozinhas, e um prompt em português encontra uma lição escrita em inglês.
+- **Ele resume.** Um comando que se repete e enche a tela ganha um script que devolve
+  só o resumo. A sessão começa dizendo quanto isso economizou.
+- **Ele aprende.** Quando você corrige o agente, a correção vira uma lição na hora. Lição
+  que se repete fica mais forte, e o mesmo erro não roda duas vezes à toa.
+- **Painel em 0 turnos.** Digite `/dashboard`: o painel abre no navegador sem passar
+  pelo modelo, nos temas Dark e Light. Numa instalação nova, ele mostra os primeiros passos.
+
+![Dashboard do claude-code-boss no tema Dark](docs/assets/dashboard-dark.jpg)
 
 ---
+
+# Documentação técnica
+
+Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizado leve para Claude Code. A orquestração fica a cargo das ferramentas nativas (Agent/Workflow) — o plugin foca no que o nativo não tem.
 
 ## Pré-requisitos
 
@@ -21,7 +60,10 @@ Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizad
 - (Opcional) Java 21+ para backend MCP Memory
 - (Opcional) Ollama para embeddings locais via GPU
 
-## Instalação
+## Instalação manual (desenvolvimento)
+
+Para uso normal, instale pelo marketplace ([dois comandos](#instalar-em-dois-comandos)).
+O caminho abaixo é para quem desenvolve o plugin a partir do repositório.
 
 ```bash
 cd claude-code-boss
@@ -339,7 +381,9 @@ Iniciado **sob demanda** (não mais no SessionStart). Configura o **plugin**
 pelo modelo** (zero turnos, zero tokens): sobe o dashboard se preciso, abre o navegador
 e mostra a URL. Também: `node scripts/dashboard-start.js` (imprime `{ok, url}`).
 
-- **Abas**: Home, Brain KB, Hooks, Logs
+- **Abas**: Home, Brain KB, Skills, Hooks, Insights, Logs, Router
+- **Temas**: Dark (padrão) e Light, no seletor do topo; a escolha (`localStorage` `ccb-theme`) vale também para a página do produto e a página técnica
+- **Instalação nova**: a Home mostra um cartão "Primeiros passos" enquanto não houver nenhuma atividade (lição, recall ou curadoria) e some com a primeira
 - **Porta**: dinâmica (0 → auto-assign, sempre `127.0.0.1`); fixe com `DASHBOARD_PORT`
 - **Auth**: token aleatório gerado no boot (salvo em `.runtime/dashboard.json`)
 - **Logs tab**: ring buffer de 500 entradas + `hook-errors.jsonl` agregado. Auto-refresh a cada 2s, Copy JSON, Clear
