@@ -17,7 +17,7 @@ const path = require('path');
 const MESSAGE = [
   'claude-code-boss está ativo ✓ A partir de agora o Claude Code lembra o que deu certo e errado em cada projeto, resume a saída de comandos repetidos e guarda uma lição sempre que você o corrige.',
   'Abra o painel com /dashboard · escolha o perfil com /boss-profile (o padrão, standard, trabalha em silêncio) · nada mais a configurar.',
-].join('\n');
+].join(' '); // one line: Claude Code prefixes EACH line with "UserPromptSubmit says:"
 
 function markerPath(dir) {
   return path.join(dir || require('./data-dir.js').globalDir(), 'welcome.json');
