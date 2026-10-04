@@ -128,11 +128,13 @@ async function main() {
   // `/dashboard` is answered here, WITHOUT the model (blocks the prompt with the URL).
   const dash = await require('./dashboard-command.js').runForPrompt(event.prompt);
   if (dash) { emitJson(dash); return; }
+  // First prompt after installing (once per machine): a visible "it works" message.
+  const welcome = require('./lib/welcome.js').takeWelcome({ prompt: event.prompt });
   const text = await dispatch(event);
-  if (text) {
-    emitJson({ hookSpecificOutput: { hookEventName: eventName, additionalContext: text } });
-    return;
-  }
+  const out = {};
+  if (welcome) out.systemMessage = welcome;
+  if (text) out.hookSpecificOutput = { hookEventName: eventName, additionalContext: text };
+  if (Object.keys(out).length) { emitJson(out); return; }
   emitEmpty();
 }
 

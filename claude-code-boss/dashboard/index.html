@@ -303,6 +303,12 @@ pre { background: var(--pre-bg); color: var(--fg); padding: .6rem; border-radius
 code { color: var(--fg); font-family: var(--font-mono); }
 
 .empty-state { text-align: center; padding: 2rem; color: var(--fg-muted); }
+.start-card { border-left: 3px solid var(--ccb-primary, var(--accent, #7c5cff)); }
+.start-steps { margin: 0; padding: 0; list-style: none; counter-reset: st; display: grid; gap: .75rem; }
+.start-steps li { position: relative; padding-left: 2.4rem; counter-increment: st; }
+.start-steps li::before { content: counter(st); position: absolute; left: 0; top: .05rem; width: 1.7rem; height: 1.7rem; border-radius: 50%; display: grid; place-items: center; font-weight: 700; font-size: .85rem; background: var(--ccb-surface-alt, rgba(124,92,255,.15)); color: var(--ccb-primary, var(--accent, #7c5cff)); }
+.start-steps b { display: block; }
+.start-steps span { color: var(--fg-muted); font-size: .9rem; }
 
 
 :root, [data-theme="dark"] {
@@ -435,6 +441,15 @@ table{font-variant-numeric:tabular-nums}
         <span class="tip" data-tip="Regras determinísticas sobre a telemetria (impacto do perfil, taxa de captura, precisão do recall). Recomenda; não altera nada sozinho. Silencioso quando não há sinal claro.">i</span>
       </h2>
       <div id="home-tuning"><p class="text-muted" style="font-size:.85rem">Analisando telemetria…</p></div>
+    </div>
+    <div class="card start-card" id="home-start" hidden>
+      <h2 style="margin:0 0 .35rem 0" data-i18n="home.start.title">Getting started</h2>
+      <p class="text-muted" style="margin:0 0 .75rem 0" data-i18n="home.start.lead">This panel fills itself as you use Claude Code. Nothing to set up.</p>
+      <ol class="start-steps">
+        <li><b data-i18n="home.start.s1t">Correct the agent when it gets something wrong</b><span data-i18n="home.start.s1">The correction becomes a lesson and shows up under Lessons learned. Next time, it is remembered.</span></li>
+        <li><b data-i18n="home.start.s2t">Repeat a command with long output</b><span data-i18n="home.start.s2">It gets a curated script that returns a summary; the saving shows up under Curation &amp; guards.</span></li>
+        <li><b data-i18n="home.start.s3t">Pick a profile, if you want</b><span data-i18n="home.start.s3">Hooks tab or /boss-profile. The default, standard, works in silence.</span></li>
+      </ol>
     </div>
     <div class="card">
       <div class="flex mb-1" style="align-items:center;justify-content:space-between">
@@ -1452,6 +1467,10 @@ const I18N = {
     'action.close': 'Close',
     'brain.testInstall': 'Test / Install',
     'home.title': 'System Overview', 'home.brain': 'Brain Knowledge Base', 'home.value': 'Value at a glance', 'home.curation': 'Curation & guards',
+    'home.start.title': 'Getting started', 'home.start.lead': 'This panel fills itself as you use Claude Code. Nothing to set up.',
+    'home.start.s1t': 'Correct the agent when it gets something wrong', 'home.start.s1': 'The correction becomes a lesson and shows up under Lessons learned. Next time, it is remembered.',
+    'home.start.s2t': 'Repeat a command with long output', 'home.start.s2': 'It gets a curated script that returns a summary; the saving shows up under Curation & guards.',
+    'home.start.s3t': 'Pick a profile, if you want', 'home.start.s3': 'Hooks tab or /boss-profile. The default, standard, works in silence.',
     'brain.title': 'Knowledge Base', 'brain.backend': 'Backend Configuration',
     'brain.restartNeeded': 'Restart required', 'brain.restartHint': 'to apply the changes.',
     'brain.restartBtn': 'Restart Dashboard', 'brain.backendType': 'Backend Type',
@@ -1674,6 +1693,10 @@ const I18N = {
     'action.close': 'Fechar',
     'brain.testInstall': 'Testar / Instalar',
     'home.title': 'Visão Geral', 'home.brain': 'Base de Conhecimento (Brain)', 'home.value': 'Valor gerado', 'home.curation': 'Curadoria e guards',
+    'home.start.title': 'Primeiros passos', 'home.start.lead': 'Este painel se preenche sozinho conforme você usa o Claude Code. Nada a configurar.',
+    'home.start.s1t': 'Corrija o agente quando ele errar', 'home.start.s1': 'A correção vira uma lição e aparece em Lições aprendidas. Na próxima vez, ele lembra.',
+    'home.start.s2t': 'Repita um comando de saída longa', 'home.start.s2': 'Ele ganha um script curado que devolve um resumo; a economia aparece em Curadoria e guards.',
+    'home.start.s3t': 'Escolha um perfil, se quiser', 'home.start.s3': 'Aba Hooks ou /boss-profile. O padrão, standard, trabalha em silêncio.',
     'brain.title': 'Base de Conhecimento', 'brain.backend': 'Configuração do Backend',
     'brain.restartNeeded': 'Restart necessário', 'brain.restartHint': 'para aplicar as mudanças.',
     'brain.restartBtn': 'Reiniciar Dashboard', 'brain.backendType': 'Tipo de Backend',
@@ -2653,6 +2676,12 @@ async function loadTuningRecs() {
   }
 }
 
+/** No activity yet: nothing learned, cited or injected and no curation redirect/run. */
+function isFreshInstall({ learned, cited, injected, cur }) {
+  const curActive = cur && ((cur.redirects && cur.redirects.total) || (cur.runs && cur.runs.total) || (cur.shaped && cur.shaped.cuts));
+  return !learned && !cited && !injected && !curActive;
+}
+
 async function loadValueSummary() {
   const el = document.getElementById('home-value');
   if (!el) return;
@@ -2681,6 +2710,10 @@ async function loadValueSummary() {
     el.innerHTML = cards.map(c =>
       `<div class="stat"><div class="value">${c.value}</div><div class="label">${c.label}</div><span class="badge ${c.cls}">${c.badge}</span></div>`
     ).join('');
+    // Fresh install (no lesson, no citation, no injection, no curation activity): say how
+    // the panel fills instead of a wall of zeros. Disappears with the first activity.
+    const start = document.getElementById('home-start');
+    if (start) start.hidden = !isFreshInstall({ learned, cited, injected: prec.injected, cur });
   } catch { el.innerHTML = '<p class="text-muted">No metrics yet.</p>'; return; }
   // Isolated: a D4-card failure must not wipe the value cards above.
   try { renderLearningLoop(v.learningLoop); } catch (e) { void e; }

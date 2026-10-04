@@ -15048,7 +15048,11 @@ test('G7: the dispatcher CLI exits on its own after answering (model-router-ensu
   assert(!r.error, `dispatcher did not exit by itself: ${r.error && r.error.message}`);
   assertEq(r.status, 0);
   const out = (r.stdout || '').trim();
-  assert(out === '' || out === '{}' || JSON.parse(out).hookSpecificOutput.hookEventName === 'UserPromptSubmit', out);
+  // A fresh HOME is a first run: the answer may carry only the welcome systemMessage.
+  const o = out === '' ? {} : JSON.parse(out);
+  assert(Object.keys(o).every((k) => k === 'systemMessage' || k === 'hookSpecificOutput'), out);
+  assert(!o.hookSpecificOutput || o.hookSpecificOutput.hookEventName === 'UserPromptSubmit', out);
+  assert(o.systemMessage === undefined || typeof o.systemMessage === 'string', out);
 });
 
 test('user-prompt-submit-dispatcher.dispatch: no signals → null', async () => {
@@ -20923,6 +20927,48 @@ test('curation_prune_unused: shells.json in a SUBFOLDER of the session reads the
       assert(r2.historyFromTs, `outside the session root → basename(root) metrics: ${JSON.stringify(r2)}`);
     } finally { fs.rmSync(other, { recursive: true, force: true }); }
   } finally { fs.rmSync(sess, { recursive: true, force: true }); }
+});
+
+test('dashboard getting-started card: shown only while the install has no activity; translated en + pt', () => {
+  const html = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf8');
+  const src = html.match(/function isFreshInstall\([\s\S]*?\n\}/);
+  assert(src, 'isFreshInstall present in the dashboard');
+  const isFresh = new (require('vm').Script)(`(${src[0]})`).runInThisContext();
+  const zero = { redirects: { total: 0 }, runs: { total: 0 }, shaped: { cuts: 0 } };
+  assertEq(isFresh({ learned: 0, cited: 0, injected: 0, cur: zero }), true, 'all zero → fresh');
+  assertEq(isFresh({ learned: 0, cited: 0, injected: 0, cur: null }), true, 'curation metrics unavailable → still fresh');
+  assertEq(isFresh({ learned: 1, cited: 0, injected: 0, cur: zero }), false, 'a lesson → not fresh');
+  assertEq(isFresh({ learned: 0, cited: 0, injected: 3, cur: zero }), false, 'recall injected → not fresh');
+  assertEq(isFresh({ learned: 0, cited: 0, injected: 0, cur: { ...zero, runs: { total: 2 } } }), false, 'curated script ran → not fresh');
+  assert(/id="home-start" hidden/.test(html), 'hidden until known fresh (no flash on a busy install)');
+  for (const k of ['home.start.title', 'home.start.lead', 'home.start.s1t', 'home.start.s1', 'home.start.s2t', 'home.start.s2', 'home.start.s3t', 'home.start.s3']) {
+    assertEq((html.match(new RegExp(`'${k.replace(/\./g, '\\.')}':`, 'g')) || []).length, 2, `${k} translated in en and pt`);
+  }
+});
+
+test('welcome: shown once per machine (O_EXCL claim, concurrent-safe), never to a synthetic prompt; the dispatcher sends it as systemMessage', async () => {
+  const { takeWelcome, markerPath } = require('./lib/welcome.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-welcome-'));
+  try {
+    assertEq(takeWelcome({ prompt: '<task-notification>done</task-notification>', dir }), null, 'sub-agent notification never greeted');
+    assert(!fs.existsSync(markerPath(dir)), 'and it does not consume the one showing');
+    const first = takeWelcome({ prompt: 'oi', dir });
+    assert(/claude-code-boss está ativo/.test(first) && /\/dashboard/.test(first) && /\/boss-profile/.test(first), first);
+    assertEq(takeWelcome({ prompt: 'oi', dir }), null, 'second prompt: nothing');
+    // two sessions racing: exactly one wins
+    const d2 = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-welcome2-'));
+    const wins = [takeWelcome({ prompt: 'a', dir: d2 }), takeWelcome({ prompt: 'b', dir: d2 })].filter(Boolean).length;
+    assertEq(wins, 1, 'one showing per machine');
+    fs.rmSync(d2, { recursive: true, force: true });
+    // end to end through the real hook process, with an isolated HOME
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-welcome-home-'));
+    const run = () => require('child_process').spawnSync(process.execPath, [path.join(SCRIPTS, 'user-prompt-submit-dispatcher.js')], { input: JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt: 'olá', session_id: 'w1', cwd: process.env.CLAUDE_PLUGIN_DATA }), encoding: 'utf8', timeout: 60000, env: { ...process.env, HOME: home, USERPROFILE: home, BRAIN_HTTP_AUTOSTART: '0' } });
+    const o1 = JSON.parse(run().stdout || '{}');
+    assert(/claude-code-boss está ativo/.test(o1.systemMessage || ''), `first prompt shows the welcome: ${JSON.stringify(o1).slice(0, 300)}`);
+    const o2 = JSON.parse(run().stdout || '{}');
+    assert(!o2.systemMessage, 'second prompt does not');
+    fs.rmSync(home, { recursive: true, force: true });
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
 test('secret-file: ensureSecret creates once (bytes → hex), reuses after; empty/absent → null; 0600 on POSIX', () => {
