@@ -2384,7 +2384,8 @@ server.listen(PORT, '127.0.0.1', () => {
   try {
     writeJsonAtomic(
       path.join(RUNTIME_DIR, 'dashboard.json'),
-      { port, token: SESSION_TOKEN, startTime: SERVER_START_TIME, pid: process.pid }
+      // pluginRoot: which install this server runs — /dashboard replaces it after an update.
+      { port, token: SESSION_TOKEN, startTime: SERVER_START_TIME, pid: process.pid, pluginRoot: ROOT }
     );
   } catch (err) { console.error(`[DASHBOARD] Failed to write dashboard.json: ${err.message}`); }
   const browser = { win32: 'start', darwin: 'open', linux: 'xdg-open' }[process.platform];

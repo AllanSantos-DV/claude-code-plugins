@@ -44,11 +44,28 @@ function probe(port, timeoutMs = 800) {
   });
 }
 
-/** The live dashboard ({port, pid}) if its discovery file points at a responding server. */
+/** The live dashboard ({port, pid, pluginRoot}) if its discovery file points at a responding server. */
 async function liveDashboard(dir) {
   const d = readJson(path.join(dir, 'dashboard.json'));
   if (!d || !Number.isInteger(d.port) || !isAlive(d.pid)) return null;
-  return (await probe(d.port)) ? { port: d.port, pid: d.pid } : null;
+  return (await probe(d.port)) ? { port: d.port, pid: d.pid, pluginRoot: d.pluginRoot || null } : null;
+}
+
+const sameRoot = (a, b) => {
+  if (!a || !b) return false;
+  const n = (p) => { const r = path.resolve(p); return process.platform === 'win32' ? r.toLowerCase() : r; };
+  return n(a) === n(b);
+};
+
+/**
+ * A dashboard left running by ANOTHER install (an older version after an update; one
+ * that predates the pluginRoot field counts as older) would keep serving its old code
+ * to every session — alive is not enough. Stop it so the current install starts its own.
+ */
+async function retireStale(live) {
+  try { process.kill(live.pid); } catch (err) { if (err.code !== 'ESRCH') throw err; }
+  for (let i = 0; i < 30 && isAlive(live.pid); i++) await new Promise((r) => setTimeout(r, 100));
+  if (isAlive(live.pid)) throw new Error(`o dashboard antigo (pid ${live.pid}) não encerrou`);
 }
 
 /**
@@ -83,7 +100,11 @@ function acquireStartLock(file, staleMs) {
 async function ensureDashboard({ waitMs = 8000 } = {}) {
   const dir = runtimeDir();
   const live = await liveDashboard(dir);
-  if (live) return { ok: true, status: 'already-running', ...live, url: `http://localhost:${live.port}` };
+  if (live && sameRoot(live.pluginRoot, PLUGIN_ROOT)) return { ok: true, status: 'already-running', ...live, url: `http://localhost:${live.port}` };
+  if (live) {
+    try { await retireStale(live); }
+    catch (err) { return { ok: false, error: `dashboard de outra instalação no ar (${live.pluginRoot || 'versão antiga'}): ${err.message}` }; }
+  }
 
   const lockFile = path.join(dir, 'dashboard.starting');
   let release;
