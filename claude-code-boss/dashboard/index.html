@@ -4,6 +4,63 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Plugin Dashboard</title>
+<script data-ccb-theme-script>
+/* Shared theme; executed before styles and first paint. */
+(function () {
+  'use strict';
+  const dashboard = true;
+  const root = document.documentElement;
+  const read = key => { try { return localStorage.getItem(key); } catch (error) { void error; return null; } };
+  const write = (key, value) => { try { localStorage.setItem(key, value); } catch (error) { console.info('Tema mantido nesta página: armazenamento indisponível.'); } };
+  const normalize = value => value === 'light' ? 'light' : 'dark';
+  const initial = normalize(read('ccb-theme'));
+  root.setAttribute('data-theme', initial);
+  // Seed the existing application's preference; its original scripts stay untouched.
+  if (dashboard) write('dash.theme', initial);
+  function reflect(theme) {
+    document.querySelectorAll('[data-ccb-theme]').forEach(button => {
+      button.setAttribute('aria-pressed', String(button.dataset.ccbTheme === theme));
+    });
+    document.querySelectorAll('[data-ccb-section]').forEach(link => {
+      link.setAttribute('href', '#' + theme + '-' + link.dataset.ccbSection);
+    });
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.content = theme === 'dark' ? '#10101b' : '#f7f9fc';
+  }
+  function choose(value) {
+    const theme = normalize(value);
+    if (dashboard) {
+      // Invoke the preserved application control, keeping its internal state in sync.
+      if (normalize(root.getAttribute('data-theme')) !== theme) document.getElementById('theme-toggle').click();
+    }
+    root.setAttribute('data-theme', theme);
+    write('ccb-theme', theme);
+    reflect(theme);
+    const target = location.hash.match(/^#(?:dark|light)-(.+)$/);
+    if (target && document.querySelector('.theme-story')) {
+      const hash = '#' + theme + '-' + target[1];
+      history.replaceState(null, '', hash);
+      document.getElementById(hash.slice(1))?.scrollIntoView({behavior:'instant'});
+    }
+  }
+  if (dashboard) new MutationObserver(() => {
+    const theme = normalize(root.getAttribute('data-theme'));
+    // The original applyTheme removes the attribute for Dark. Normalize it for tokens.
+    if (!root.hasAttribute('data-theme')) root.setAttribute('data-theme', theme);
+    if (read('ccb-theme') !== theme) write('ccb-theme', theme);
+    reflect(theme);
+  }).observe(root, {attributes:true, attributeFilter:['data-theme']});
+  document.addEventListener('DOMContentLoaded', () => {
+    reflect(normalize(root.getAttribute('data-theme')));
+    document.querySelectorAll('[data-ccb-theme]').forEach(button => {
+      button.addEventListener('click', () => choose(button.dataset.ccbTheme));
+    });
+  });
+  window.addEventListener('storage', event => {
+    if (event.key === 'ccb-theme' || event.key === null) choose(event.newValue);
+  });
+})();
+</script>
 <script>
   // Pre-paint theme application to avoid flash-of-light-theme
   (function() {
@@ -13,7 +70,7 @@
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&family=Lora:ital,wght@0,400;0,500;0,600;1,400&display=swap">
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&amp;family=DM+Sans:wght@400;500;600;700&amp;family=Space+Grotesk:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet">
 <style>
 /* ─── Anthropic brand tokens (theme-independent) ───────────────── */
 :root {
@@ -247,9 +304,112 @@ code { color: var(--fg); font-family: var(--font-mono); }
 
 .empty-state { text-align: center; padding: 2rem; color: var(--fg-muted); }
 
+
+:root, [data-theme="dark"] {
+  color-scheme: dark;
+  --ccb-bg:#10101b; --ccb-surface:#191725; --ccb-surface-alt:#232034;
+  --ccb-text:#f4f1ff; --ccb-muted:#b1abc4; --ccb-border:#49415e;
+  --ccb-primary:#c7afff; --ccb-on-primary:#24153e; --ccb-highlight:#edb9df;
+  --ccb-success:#9bd8b5; --ccb-error:#ffabab; --ccb-warning:#efc582;
+  --ccb-display:'Manrope','Segoe UI',sans-serif;
+  --ccb-body:'Manrope','Segoe UI',sans-serif;
+  --ccb-mono:'IBM Plex Mono',Consolas,monospace;
+  --ccb-radius:14px; --ccb-radius-sm:8px;
+  --ccb-shadow:0 12px 36px #00000024;
+}
+[data-theme="light"] {
+  color-scheme: light;
+  --ccb-bg:#f7f9fc; --ccb-surface:#ffffff; --ccb-surface-alt:#eaf0ff;
+  --ccb-text:#15264a; --ccb-muted:#55627b; --ccb-border:#c1cce1;
+  --ccb-primary:#2455ed; --ccb-on-primary:#ffffff; --ccb-highlight:#ac3813;
+  --ccb-success:#246345; --ccb-error:#b42d43; --ccb-warning:#855515;
+  --ccb-display:'Space Grotesk','Segoe UI',sans-serif;
+  --ccb-body:'DM Sans','Segoe UI',sans-serif;
+  --ccb-mono:'IBM Plex Mono',Consolas,monospace;
+  --ccb-radius:14px; --ccb-radius-sm:8px;
+  --ccb-shadow:0 12px 36px #173d790d;
+}
+
+/* Shared identity and theme control. */
+html { background:var(--ccb-bg); }
+body { font-family:var(--ccb-body); background:var(--ccb-bg); color:var(--ccb-text); }
+.ccb-theme { display:inline-flex; flex:none; align-items:center; gap:3px; padding:4px; margin:0;
+  border:1px solid var(--ccb-border); border-radius:999px; background:var(--ccb-surface); }
+.ccb-theme button { appearance:none; font:600 11px/1 var(--ccb-body); letter-spacing:0;
+  padding:10px 13px; min-height:34px; margin:0; border:0; border-radius:999px;
+  background:transparent; color:var(--ccb-muted); cursor:pointer; white-space:nowrap; }
+.ccb-theme button[aria-pressed="true"] { background:var(--ccb-primary); color:var(--ccb-on-primary); }
+.ccb-theme button:hover { box-shadow:inset 0 0 0 1px var(--ccb-primary); }
+:where(a,button,input,select,textarea,[tabindex]):focus-visible {
+  outline:3px solid var(--ccb-primary); outline-offset:4px; }
+@media(prefers-reduced-motion:reduce) {
+  *,*::before,*::after { animation:none!important; transition:none!important; scroll-behavior:auto!important; }
+}
+
+/* Map every original application token onto the shared product identity. */
+:root,[data-theme="dark"],[data-theme="light"]{
+ --bg:var(--ccb-bg);--bg-card:var(--ccb-surface);--bg-soft:var(--ccb-surface-alt);
+ --bg-elev:var(--ccb-surface-alt);--bg-hover:var(--ccb-surface-alt);
+ --fg:var(--ccb-text);--fg-muted:var(--ccb-muted);--fg-dim:var(--ccb-muted);--border:var(--ccb-border);
+ --nav-bg:var(--ccb-surface);--nav-fg:var(--ccb-muted);--nav-fg-active:var(--ccb-primary);
+ --accent:var(--ccb-primary);--accent-fg:var(--ccb-on-primary);--primary:var(--ccb-primary);
+ --primary-hover:var(--ccb-primary);--on-primary:var(--ccb-on-primary);
+ --danger:var(--ccb-error);--warning:var(--ccb-warning);--on-warning:var(--ccb-bg);--success:var(--ccb-success);
+ --pre-bg:var(--ccb-surface-alt);--shadow:var(--ccb-shadow);
+ --tag-bg:var(--ccb-surface-alt);--tag-fg:var(--ccb-primary);
+ --tag-warn-bg:var(--ccb-surface-alt);--tag-warn-fg:var(--ccb-warning);
+ --tag-green-bg:var(--ccb-surface-alt);--tag-green-fg:var(--ccb-success);
+ --brand-dark:var(--ccb-text);--brand-light:var(--ccb-bg);--brand-mid:var(--ccb-muted);
+ --brand-light-gray:var(--ccb-border);--brand-orange:var(--ccb-highlight);
+ --brand-blue:var(--ccb-primary);--brand-green:var(--ccb-success);
+ --font-head:var(--ccb-display);--font-body:var(--ccb-body);--font-mono:var(--ccb-mono);
+ --muted:var(--ccb-muted);--text-muted:var(--ccb-muted);--mono:var(--ccb-mono);
+ --radius:var(--ccb-radius);--radius-sm:var(--ccb-radius-sm);
+}
+body{transition:none}
+.ccb-app-header{max-width:1100px;margin:0 auto;display:flex;align-items:center;justify-content:space-between;gap:18px;padding:22px 24px}
+.ccb-app-brand{display:flex;align-items:center;gap:12px;font-family:var(--ccb-display);font-weight:700;letter-spacing:-.035em;font-size:19px}
+.ccb-app-brand svg{width:28px;height:28px;color:var(--ccb-primary);flex:none}
+.ccb-app-brand small{display:block;font:11px/1.6 var(--ccb-body);color:var(--ccb-muted);letter-spacing:0}
+#theme-toggle{display:none}
+#tabs{border-top:1px solid var(--border);border-bottom:1px solid var(--border);padding-left:max(16px,calc((100% - 1052px)/2));padding-right:max(16px,calc((100% - 1052px)/2))}
+nav a:hover,nav .nav-toggle:hover{color:var(--fg);background:var(--bg-hover)}
+nav a.active{background:var(--bg-hover)}
+h1{letter-spacing:-.04em;font-size:1.75rem;margin-bottom:1.3rem}
+.card{padding:1.3rem}.stat .value{color:var(--accent)}
+input,select,textarea{min-height:36px}input[type=checkbox],input[type=radio]{min-height:auto}
+input:focus,select:focus,textarea:focus{box-shadow:0 0 0 3px color-mix(in srgb,var(--accent) 20%,transparent)}
+.btn-primary:hover{filter:brightness(.94)}
+.btn-danger{color:var(--ccb-bg)}.btn-success{color:var(--ccb-bg)}
+[data-theme="light"] .btn-danger,[data-theme="light"] .btn-success,[data-theme="light"] .btn-warning{color:#fff}
+.mode-dot.mode-grey{background:var(--fg-muted)}.mode-dot.mode-blue{background:var(--accent)}
+.mode-dot.mode-green{background:var(--success)}.mode-dot.mode-amber{background:var(--warning)}
+.router-dot,.mode-dot{animation:none!important}
+.badge-deprecated{background:var(--tag-warn-bg);border-color:var(--border)}
+.badge-red{background:var(--bg-soft)}
+.card,.panel,.stat,.panel-body,.grid>*{min-width:0}
+table{font-variant-numeric:tabular-nums}
+.card{overflow-x:auto}
+.tip::after{max-width:min(280px,75vw)}
+#logs-list [style*="color:#4a5568"]{color:var(--fg-muted)!important}
+#logs-list [style*="color:#64ffda"]{color:var(--success)!important}
+#logs-list [style*="color:#ff7070"]{color:var(--danger)!important}
+#logs-list [style*="color:#ffa94d"]{color:var(--warning)!important}
+#logs-list [style*="color:#8892b0"]{color:var(--fg-muted)!important}
+#logs-list [style*="border-bottom"]{border-color:var(--border)!important}
+#insights-daily-chart{overflow-x:auto}
+#insights-daily-chart svg{min-width:800px}
+@media(max-width:760px){
+ .ccb-app-header{padding:18px 16px;flex-wrap:wrap;gap:14px}.ccb-app-brand{font-size:17px}
+ main{padding:22px 16px}.card{padding:18px}#tabs{padding:0 8px}
+ .flex{flex-wrap:wrap}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+ [style*="grid-template-columns"]{grid-template-columns:minmax(0,1fr)!important}
+ .hero-main{flex-wrap:wrap}.hero-meta{overflow-wrap:anywhere}
+}
 </style>
 </head>
 <body>
+<header class="ccb-app-header"><div class="ccb-app-brand"><svg viewBox="0 0 28 28" fill="none" aria-hidden="true"><path d="M5 8h7V3h5v5h6v5h-6v10h-5V13H5z" fill="currentColor"/><path d="M3 18h5v5H3zM21 3h4v4h-4z" fill="currentColor" opacity=".5"/></svg><span>claude-code-boss<small>Painel local</small></span></div><div class="ccb-theme" role="group" aria-label="Tema"><button type="button" data-ccb-theme="dark" aria-pressed="true">Dark</button><button type="button" data-ccb-theme="light" aria-pressed="false">Light</button></div></header>
 
 <nav id="tabs">
   <a href="#home" class="active" data-i18n="nav.home">Home</a>

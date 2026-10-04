@@ -1,821 +1,184 @@
 <!doctype html>
-<html lang="pt-BR">
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Claude Code Boss — a memória local do seu Claude Code</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='6' fill='%230c0b0f'/%3E%3Cg fill='none' stroke='%23e59247' stroke-width='2' stroke-linecap='round'%3E%3Cpath d='M6 8h12M6 12h8M6 16h10'/%3E%3C/g%3E%3C/svg%3E" />
-<meta name="description" content="Plugin para Claude Code Desktop: memória semântica local, curadoria anti context-bloat com auto-redirect que se estende, se ajusta e se poda, /dashboard sem gastar turno do modelo, hooks servidos por um daemon local e Model Router com custom upstream ou BYOK em protocolos Anthropic e OpenAI. v3.0.0, MIT." />
-<style>
-  :root{
-    --bg:#0c0b0f; --surface:#131118; --surface-2:#191620; --ink:#edeae1; --muted:#a09d93;
-    --line:rgba(255,255,255,.10); --line-strong:rgba(255,255,255,.18);
-    --amber:#e59247; --amber-ink:#f6c694; --amber-soft:rgba(229,146,71,.12); --on-amber:#1a1105;
-    --maxw:1060px;
-    --mono:ui-monospace,"Cascadia Code","JetBrains Mono",Consolas,"Liberation Mono",monospace;
-    --sans:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-    --shadow:0 18px 40px -26px rgba(0,0,0,.85);
+<html lang="pt-BR" data-theme="dark"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="description" content="Seu Claude Code com memória, resumos de tarefas repetidas e lições que ficam. Tudo na sua máquina. Conheça o claude-code-boss."><meta name="theme-color" content="#10101b"><title>Memória que fica. Trabalho que continua. — claude-code-boss</title><script data-ccb-theme-script>
+/* Shared theme; executed before styles and first paint. */
+(function () {
+  'use strict';
+  const dashboard = false;
+  const root = document.documentElement;
+  const read = key => { try { return localStorage.getItem(key); } catch (error) { void error; return null; } };
+  const write = (key, value) => { try { localStorage.setItem(key, value); } catch (error) { console.info('Tema mantido nesta página: armazenamento indisponível.'); } };
+  const normalize = value => value === 'light' ? 'light' : 'dark';
+  const initial = normalize(read('ccb-theme'));
+  root.setAttribute('data-theme', initial);
+  // Seed the existing application's preference; its original scripts stay untouched.
+  if (dashboard) write('dash.theme', initial);
+  function reflect(theme) {
+    document.querySelectorAll('[data-ccb-theme]').forEach(button => {
+      button.setAttribute('aria-pressed', String(button.dataset.ccbTheme === theme));
+    });
+    document.querySelectorAll('[data-ccb-section]').forEach(link => {
+      link.setAttribute('href', '#' + theme + '-' + link.dataset.ccbSection);
+    });
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.content = theme === 'dark' ? '#10101b' : '#f7f9fc';
   }
-  @media (prefers-color-scheme:light){
-    :root{
-      --bg:#faf7f1; --surface:#f3efe7; --surface-2:#ece7dc; --ink:#191820; --muted:#5f5d57;
-      --line:rgba(20,18,25,.14); --line-strong:rgba(20,18,25,.26);
-      --amber:#9c4f16; --amber-ink:#7d3f10; --amber-soft:rgba(156,79,22,.09); --on-amber:#fff8f0;
-      --shadow:0 18px 40px -28px rgba(60,40,20,.45);
+  function choose(value) {
+    const theme = normalize(value);
+    if (dashboard) {
+      // Invoke the preserved application control, keeping its internal state in sync.
+      if (normalize(root.getAttribute('data-theme')) !== theme) document.getElementById('theme-toggle').click();
+    }
+    root.setAttribute('data-theme', theme);
+    write('ccb-theme', theme);
+    reflect(theme);
+    const target = location.hash.match(/^#(?:dark|light)-(.+)$/);
+    if (target && document.querySelector('.theme-story')) {
+      const hash = '#' + theme + '-' + target[1];
+      history.replaceState(null, '', hash);
+      document.getElementById(hash.slice(1))?.scrollIntoView({behavior:'instant'});
     }
   }
-  @media (prefers-reduced-motion:reduce){
-    *{ animation:none !important; transition:none !important; scroll-behavior:auto !important }
-  }
-  *{ box-sizing:border-box; min-width:0 }
-  html{ -webkit-text-size-adjust:100%; scroll-behavior:smooth }
-  body{
-    margin:0; background:var(--bg); color:var(--ink);
-    font-family:var(--sans); font-size:17px; line-height:1.62;
-    -webkit-font-smoothing:antialiased; overflow-x:hidden;
-  }
-  a{ color:inherit }
-  a:focus-visible,button:focus-visible{ outline:2px solid var(--amber); outline-offset:3px; border-radius:4px }
-  h1,h2,h3{ text-wrap:balance }
-  p{ overflow-wrap:break-word }
-  code{ font-family:var(--mono); font-size:.86em; color:var(--amber-ink);
-    background:var(--amber-soft); padding:1px 6px; border-radius:5px; overflow-wrap:break-word }
-  svg{ display:block }
-  .wrap{ max-width:var(--maxw); margin:0 auto; padding:0 24px }
-  .mono{ font-family:var(--mono) }
+  if (dashboard) new MutationObserver(() => {
+    const theme = normalize(root.getAttribute('data-theme'));
+    // The original applyTheme removes the attribute for Dark. Normalize it for tokens.
+    if (!root.hasAttribute('data-theme')) root.setAttribute('data-theme', theme);
+    if (read('ccb-theme') !== theme) write('ccb-theme', theme);
+    reflect(theme);
+  }).observe(root, {attributes:true, attributeFilter:['data-theme']});
+  document.addEventListener('DOMContentLoaded', () => {
+    reflect(normalize(root.getAttribute('data-theme')));
+    document.querySelectorAll('[data-ccb-theme]').forEach(button => {
+      button.addEventListener('click', () => choose(button.dataset.ccbTheme));
+    });
+  });
+  window.addEventListener('storage', event => {
+    if (event.key === 'ccb-theme' || event.key === null) choose(event.newValue);
+  });
+})();
+</script><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&amp;family=DM+Sans:wght@400;500;600;700&amp;family=Space+Grotesk:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet"><style>
+html[data-theme="dark"] *{box-sizing:border-box}html[data-theme="dark"]{scroll-behavior:smooth;scroll-padding-top:90px}html[data-theme="dark"] body{margin:0;-webkit-font-smoothing:antialiased}html[data-theme="dark"] button,html[data-theme="dark"] a,html[data-theme="dark"] input{-webkit-tap-highlight-color:transparent}html[data-theme="dark"] button,html[data-theme="dark"] input{font:inherit}html[data-theme="dark"] button,html[data-theme="dark"] a{touch-action:manipulation}html[data-theme="dark"] button{cursor:pointer}html[data-theme="dark"] a{color:inherit;text-decoration:none}html[data-theme="dark"] button{color:inherit}html[data-theme="dark"] a,html[data-theme="dark"] button{outline-offset:6px}html[data-theme="dark"] a:focus-visible,html[data-theme="dark"] button:focus-visible,html[data-theme="dark"] input:focus-visible{outline:3px solid var(--focus)}html[data-theme="dark"] ::selection{background:var(--accent);color:var(--on-accent)}html[data-theme="dark"] p{line-height:1.65}html[data-theme="dark"] h1,html[data-theme="dark"] h2,html[data-theme="dark"] h3,html[data-theme="dark"] p{margin-top:0}html[data-theme="dark"] h1,html[data-theme="dark"] h2{font-weight:600;letter-spacing:-.065em;line-height:1.02}html[data-theme="dark"] h3{letter-spacing:-.03em}html[data-theme="dark"] button{border:0}html[data-theme="dark"] svg{display:block;max-width:100%}html[data-theme="dark"] .wrap{width:min(1200px,calc(100% - 80px));margin:auto}html[data-theme="dark"] .eyebrow{text-transform:uppercase;letter-spacing:.15em;font-size:11px;font-weight:700}html[data-theme="dark"] .muted{color:var(--muted)}html[data-theme="dark"] .brand{display:inline-flex;align-items:center;gap:10px;font-weight:700;letter-spacing:-.04em;font-size:18px}html[data-theme="dark"] .brand-mark{width:27px;height:27px;display:grid;place-items:center;flex:none}html[data-theme="dark"] .brand-mark svg{width:24px;height:24px}html[data-theme="dark"] .brand small{font-size:10px;font-weight:500;letter-spacing:0;border:1px solid var(--line);border-radius:5px;padding:3px 5px;margin-left:3px}html[data-theme="dark"] .header{height:90px;display:flex;align-items:center;justify-content:space-between;gap:20px;position:relative;z-index:10}html[data-theme="dark"] .nav{display:flex;align-items:center;gap:30px;font-size:12px;font-weight:500}html[data-theme="dark"] .nav a:hover,html[data-theme="dark"] .footer a:hover{text-decoration:underline;text-underline-offset:5px}html[data-theme="dark"] .nav .nav-cta{border:1px solid var(--line);padding:10px 17px;border-radius:100px}html[data-theme="dark"] .btn{display:inline-flex;align-items:center;justify-content:center;gap:28px;min-height:52px;padding:0 25px;background:var(--accent);color:var(--on-accent);border-radius:9px;font-weight:600;font-size:14px;transition:transform .25s,box-shadow .25s}html[data-theme="dark"] .btn:hover{transform:translateY(-3px);box-shadow:0 8px 30px var(--glow)}html[data-theme="dark"] .btn .arrow{font-size:20px;font-weight:400}html[data-theme="dark"] .text-link{font-size:13px;display:inline-flex;gap:10px;align-items:center}html[data-theme="dark"] .hero-actions{display:flex;gap:26px;align-items:center;flex-wrap:wrap}html[data-theme="dark"] .micro{font-size:11px;line-height:1.7}html[data-theme="dark"] .section{padding:110px 0}html[data-theme="dark"] .section h2{font-size:clamp(38px,5.2vw,65px)}html[data-theme="dark"] .section-head{display:flex;align-items:end;justify-content:space-between;gap:45px;margin-bottom:50px}html[data-theme="dark"] .section-head h2{margin-bottom:0;max-width:710px}html[data-theme="dark"] .section-head p{max-width:315px;font-size:14px;margin:0;color:var(--muted)}html[data-theme="dark"] .grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px}html[data-theme="dark"] .card{min-width:0}html[data-theme="dark"] .card h3{font-size:23px;margin:25px 0 12px}html[data-theme="dark"] .card p{color:var(--muted);font-size:14px}html[data-theme="dark"] .tag{display:inline-flex;align-items:center;gap:7px;font-size:10px;text-transform:uppercase;letter-spacing:.09em}html[data-theme="dark"] .dot{width:5px;height:5px;border-radius:50%;background:currentColor;display:inline-block}html[data-theme="dark"] .simulation{font-size:10px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted)}html[data-theme="dark"] .step-tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}html[data-theme="dark"] .step-tab{text-align:left;padding:22px 16px;background:transparent;border-top:1px solid var(--line);transition:background .25s,border-color .25s}html[data-theme="dark"] .step-tab .step-n{font-size:11px;display:block;color:var(--muted);margin-bottom:16px}html[data-theme="dark"] .step-tab strong{display:block;font-size:15px;font-weight:600}html[data-theme="dark"] .step-tab span:last-child{display:block;font-size:12px;line-height:1.6;margin-top:8px;color:var(--muted)}html[data-theme="dark"] .step-tab[aria-selected=true]{border-color:var(--accent);background:var(--subtle)}html[data-theme="dark"] .turn-screen{margin-top:22px;padding:30px;border:1px solid var(--line);border-radius:12px;min-height:178px}html[data-theme="dark"] .turn-screen .simulation{display:block;margin-bottom:18px}html[data-theme="dark"] .turn-screen code{font-family:"IBM Plex Mono",Consolas,monospace;font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.9}html[data-theme="dark"] .turn-desc{font-size:12px;color:var(--muted);margin-top:16px;margin-bottom:0}html[data-theme="dark"] .proof{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:25px}html[data-theme="dark"] .proof-item{border-top:1px solid var(--line);padding-top:28px}html[data-theme="dark"] .proof-value{font-size:clamp(38px,5vw,63px);letter-spacing:-.075em;line-height:1.1;font-weight:500;white-space:nowrap}html[data-theme="dark"] .proof-value small{font-size:19px;letter-spacing:-.04em}html[data-theme="dark"] .proof-item p{font-size:12px;color:var(--muted);margin:15px 0 0;max-width:225px}html[data-theme="dark"] .install{scroll-margin-top:35px}html[data-theme="dark"] .install-shell{padding:60px;border:1px solid var(--line);border-radius:22px}html[data-theme="dark"] .install-top{display:flex;justify-content:space-between;gap:45px;align-items:center;margin-bottom:35px}html[data-theme="dark"] .install-top h2{font-size:clamp(38px,5vw,60px);max-width:620px;margin-bottom:0}html[data-theme="dark"] .install-top p{font-size:13px;color:var(--muted);max-width:230px;margin:0}html[data-theme="dark"] .command{display:grid;grid-template-columns:28px minmax(0,1fr) auto;align-items:center;gap:15px;padding:21px 22px;border:1px solid var(--line);margin-top:12px;border-radius:10px;background:var(--code-bg)}html[data-theme="dark"] .command .num{font-size:11px;color:var(--muted)}html[data-theme="dark"] .command code{font-size:12px;line-height:1.7;font-family:"IBM Plex Mono",Consolas,monospace;overflow-wrap:anywhere;user-select:all}html[data-theme="dark"] .copy{min-width:83px;min-height:38px;font-size:11px;border:1px solid var(--line);background:var(--subtle);border-radius:6px;padding:8px 12px}html[data-theme="dark"] .copy:hover{border-color:var(--accent)}html[data-theme="dark"] .requirements{font-size:11px;color:var(--muted);line-height:1.9;margin:24px 0 0}html[data-theme="dark"] .requirements strong{font-weight:500;color:var(--text)}html[data-theme="dark"] .install-status{min-height:18px;margin:8px 0 0;font-size:11px;color:var(--muted)}html[data-theme="dark"] .footer{border-top:1px solid var(--line);padding:32px 0 28px;display:flex;align-items:center;justify-content:space-between;gap:25px;font-size:11px;color:var(--muted)}html[data-theme="dark"] .footer-links{display:flex;gap:23px;flex-wrap:wrap}html[data-theme="dark"] .motion-toggle{position:fixed;bottom:18px;right:20px;z-index:40;border:1px solid var(--line);background:var(--bg);color:var(--text);border-radius:100px;font-size:10px;padding:10px 14px;box-shadow:0 3px 18px #0002;display:flex;align-items:center;gap:7px}html[data-theme="dark"] .motion-icon{display:flex;gap:2px}html[data-theme="dark"] .motion-icon i{width:2px;height:9px;background:currentColor}html[data-theme="dark"] .skip{position:fixed;top:8px;left:8px;transform:translateY(-150%);z-index:100;background:var(--accent);color:var(--on-accent);padding:12px}html[data-theme="dark"] .skip:focus{transform:translateY(0)}html[data-theme="dark"] .reveal{opacity:1;transform:none}html[data-theme="dark"].js-motion .reveal{opacity:0;transform:translateY(24px);transition:opacity .8s,transform .8s}html[data-theme="dark"].js-motion .reveal.visible{opacity:1;transform:none}html[data-theme="dark"] .paused *,html[data-theme="dark"] .paused *::before,html[data-theme="dark"] .paused *::after{animation-play-state:paused!important}html[data-theme="dark"] .tiny-rule{display:inline-block;width:30px;height:1px;background:currentColor;vertical-align:middle;margin-right:10px}html[data-theme="dark"] .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}@media (min-width:900px){html[data-theme="dark"] .card:nth-child(2){transition-delay:.1s}html[data-theme="dark"] .card:nth-child(3){transition-delay:.2s}}@media (max-width:760px){html[data-theme="dark"] .wrap{width:calc(100% - 40px)}html[data-theme="dark"] .header{height:75px}html[data-theme="dark"] .brand{font-size:16px}html[data-theme="dark"] .brand small{display:none}html[data-theme="dark"] .nav{gap:12px}html[data-theme="dark"] .nav .nav-link{display:none}html[data-theme="dark"] .nav .nav-cta{padding:9px 15px;font-size:11px}html[data-theme="dark"] .section{padding:70px 0}html[data-theme="dark"] .section-head{display:block;margin-bottom:32px}html[data-theme="dark"] .section-head p{margin-top:22px}html[data-theme="dark"] .grid3{grid-template-columns:1fr}html[data-theme="dark"] .step-tabs{grid-template-columns:1fr 1fr;gap:8px}html[data-theme="dark"] .step-tab{padding:17px 12px}html[data-theme="dark"] .step-tab .step-n{margin-bottom:10px}html[data-theme="dark"] .turn-screen{padding:22px;min-height:220px}html[data-theme="dark"] .proof{grid-template-columns:1fr 1fr;gap:30px 20px}html[data-theme="dark"] .proof-value{font-size:44px}html[data-theme="dark"] .install-shell{padding:30px 20px}html[data-theme="dark"] .install-top{display:block}html[data-theme="dark"] .install-top p{margin-top:20px;max-width:none}html[data-theme="dark"] .command{grid-template-columns:20px minmax(0,1fr);gap:8px;padding:17px 12px}html[data-theme="dark"] .command code{font-size:11px}html[data-theme="dark"] .command .copy{grid-column:2;justify-self:start;margin-top:7px}html[data-theme="dark"] .footer{align-items:flex-start;flex-direction:column;padding-bottom:80px}html[data-theme="dark"] .footer-links{gap:18px}html[data-theme="dark"] .hero-actions{gap:18px}html[data-theme="dark"] .motion-toggle{right:12px;bottom:12px}html[data-theme="dark"] .section h2{font-size:41px}}@media (prefers-reduced-motion:reduce){html[data-theme="dark"]{scroll-behavior:auto}html[data-theme="dark"] *,html[data-theme="dark"] *::before,html[data-theme="dark"] *::after{animation:none!important;transition:none!important}html[data-theme="dark"].js-motion .reveal{opacity:1;transform:none}}
 
-  /* ── nav ── */
-  header.nav{ display:flex; align-items:center; justify-content:space-between; gap:16px;
-    padding:18px 24px; border-bottom:1px solid var(--line) }
-  .brand{ display:flex; align-items:center; gap:11px; text-decoration:none; flex-shrink:0 }
-  .brand .mark{ width:32px; height:32px; border-radius:9px; display:grid; place-items:center;
-    background:var(--amber-soft); border:1px solid var(--amber); color:var(--amber) }
-  .brand .name{ font-family:var(--mono); font-size:14px; font-weight:600; letter-spacing:-.01em }
-  .nav-links{ display:flex; align-items:center; gap:2px; flex-wrap:wrap }
-  .nav-links a{ font-size:13.5px; color:var(--muted); text-decoration:none; padding:8px 9px; border-radius:8px }
-  .nav-links a:hover{ color:var(--ink); background:var(--surface) }
-  .nav-links a.ver{ font-family:var(--mono); font-size:12.5px; color:var(--amber);
-    border:1px solid var(--amber); border-radius:999px; padding:5px 12px; margin-left:6px }
 
-  /* ── hero ── */
-  .hero{ padding-top:clamp(56px,9vw,110px); padding-bottom:clamp(34px,5vw,54px) }
-  h1{
-    font-size:clamp(2.05rem,5.6vw,3.7rem); line-height:1.05; letter-spacing:-.03em;
-    font-weight:700; margin:0; max-width:19ch;
-  }
-  h1 em{ font-style:normal; color:var(--amber) }
-  .hero .sub{ font-size:clamp(1.04rem,2.1vw,1.28rem); line-height:1.55; color:var(--muted);
-    margin:24px 0 0; max-width:62ch }
-  .hero .sub b{ color:var(--ink); font-weight:600 }
-  .cta-row{ display:flex; flex-wrap:wrap; align-items:center; gap:14px; margin-top:32px }
-  .btn{ display:inline-flex; align-items:center; gap:10px; font-size:15px; font-weight:600;
-    text-decoration:none; padding:13px 22px; border-radius:12px; letter-spacing:-.01em;
-    transition:filter .18s,border-color .18s,color .18s }
-  .btn--primary{ background:var(--amber); color:var(--on-amber); box-shadow:0 12px 26px -14px rgba(0,0,0,.6) }
-  .btn--primary:hover{ filter:brightness(1.08) }
-  .btn--ghost{ border:1px solid var(--line-strong); color:var(--ink) }
-  .btn--ghost:hover{ border-color:var(--amber); color:var(--amber) }
-  .hero .facts{ display:flex; flex-wrap:wrap; gap:8px 22px; margin:26px 0 0; padding:0; list-style:none;
-    font-family:var(--mono); font-size:12.5px; color:var(--muted) }
-  .hero .facts li{ display:flex; align-items:center; gap:8px }
-  .hero .facts b{ color:var(--ink); font-weight:600 }
-  .hero .facts .dot{ width:5px; height:5px; border-radius:50%; background:var(--amber); flex-shrink:0 }
+html[data-theme="dark"]{--bg:#10101b;--text:#f4f1ff;--muted:#a7a4b9;--accent:#c7afff;--on-accent:#24153e;--line:#ffffff21;--subtle:#bc9bff0b;--code-bg:#0f0f1b;--focus:#c7afff;--glow:#ab78ff33}html[data-theme="dark"] body{background:var(--bg);color:var(--text);font-family:"Manrope",sans-serif}html[data-theme="dark"] .brand-mark{color:#c7afff}html[data-theme="dark"] .hero{text-align:center;position:relative;padding:65px 0 0;isolation:isolate}html[data-theme="dark"] .hero:before{content:"";position:absolute;z-index:-1;width:80%;height:700px;left:10%;top:70px;background:radial-gradient(ellipse,#7243a224,transparent 67%);pointer-events:none}html[data-theme="dark"] .hero .eyebrow{color:#c9b6ed;display:inline-flex;gap:10px;align-items:center;border:1px solid #c9a8ff30;border-radius:100px;padding:9px 14px;background:#b79aff08}html[data-theme="dark"] .hero h1{font-size:clamp(54px,6.9vw,96px);max-width:1000px;margin:24px auto;letter-spacing:-.07em}html[data-theme="dark"] .hero h1 em{font-style:normal;background:linear-gradient(100deg,#e7d8ff,#b38af9 50%,#efbde8);color:transparent;background-clip:text}html[data-theme="dark"] .hero-intro{max-width:460px;margin:0 auto 28px;color:var(--muted);font-size:15px}html[data-theme="dark"] .hero-actions{justify-content:center}html[data-theme="dark"] .hero .micro{color:var(--muted);margin:19px 0 0}html[data-theme="dark"] .orbital{overflow:clip;overflow-clip-margin:8px;height:430px;position:relative;max-width:880px;margin:15px auto 0;perspective:900px}html[data-theme="dark"] .orbit-plane{position:absolute;inset:20px 90px 30px;transform:rotateX(57deg) rotateZ(-14deg);transform-style:preserve-3d}html[data-theme="dark"] .orbit{position:absolute;inset:0;border:1px solid #c7a0ff35;border-radius:50%;box-shadow:0 0 40px #9370e408 inset;animation:orbit-breathe 6s ease-in-out infinite}html[data-theme="dark"] .orbit:nth-child(2){inset:45px;animation-delay:-2s;border-style:dashed;border-color:#c7a0ff25}html[data-theme="dark"] .orbit:nth-child(3){inset:90px;animation-delay:-4s}html[data-theme="dark"] .satellite{position:absolute;inset:0;border-radius:50%;animation:revolve 20s linear infinite}html[data-theme="dark"] .satellite:before{content:"";position:absolute;top:49%;left:-3px;width:7px;height:7px;border-radius:50%;background:#dec9ff;box-shadow:0 0 20px #c396ff,0 0 5px #fff}html[data-theme="dark"] .satellite.s2{inset:45px;animation-direction:reverse;animation-duration:15s}html[data-theme="dark"] .satellite.s3{inset:90px;animation-duration:12s}html[data-theme="dark"] .memory-core{position:absolute;top:134px;left:50%;transform:translateX(-50%);width:126px;height:126px;border-radius:34px;display:grid;place-items:center;background:linear-gradient(140deg,#ddd0f433,#9275bd0a);border:1px solid #dfc3ff77;box-shadow:0 0 0 12px #b59fe805,0 0 100px #a573dc44,inset 0 0 35px #bb91ff20;backdrop-filter:blur(14px)}html[data-theme="dark"] .memory-core svg{width:53px;height:53px;color:#ecdfff}html[data-theme="dark"] .memory-core:after{content:"";position:absolute;inset:-15px;border:1px solid #c7a0ff2a;border-radius:48px;animation:core-pulse 4s ease-in-out infinite}html[data-theme="dark"] .memory-node{position:absolute;text-align:left;border:1px solid #cdb2ff3d;background:linear-gradient(125deg,#242134eF,#171522f5);border-radius:10px;padding:16px 20px;box-shadow:0 20px 40px #0003;animation:levitate 6s ease-in-out infinite;max-width:270px}html[data-theme="dark"] .memory-node .node-icon{color:#c6a3ff;margin-right:8px}html[data-theme="dark"] .memory-node strong{font-weight:500;font-size:12px}html[data-theme="dark"] .memory-node small{display:block;color:var(--muted);font-size:10px;margin:7px 0 0 23px}html[data-theme="dark"] .node-a{top:48px;left:10%}html[data-theme="dark"] .node-b{top:103px;right:1%;animation-delay:-2s}html[data-theme="dark"] .node-c{bottom:58px;left:8%;animation-delay:-4s}html[data-theme="dark"] .orbit-label{position:absolute;bottom:40px;left:52%;color:#c5acd8;font-size:10px;letter-spacing:.09em}html[data-theme="dark"] .orbit-sim{position:absolute;bottom:8px;left:0;right:0}html[data-theme="dark"] .hero-foot{display:flex;justify-content:center;gap:50px;border-bottom:1px solid var(--line);padding:30px 0;color:#a29aac;font-size:11px}html[data-theme="dark"] .hero-foot span:before{content:"✧";color:#d9bfff;margin-right:10px}html[data-theme="dark"] .benefit-card{border:1px solid var(--line);border-radius:16px;padding:30px;background:linear-gradient(140deg,#ffffff04,#ffffff00)}html[data-theme="dark"] .mini-art{height:135px;position:relative;display:flex;justify-content:center;align-items:center;border-bottom:1px solid #ffffff09;padding-bottom:22px}html[data-theme="dark"] .mini-memory{gap:10px}html[data-theme="dark"] .mini-memory i{width:40px;height:50px;border:1px solid #c7afff66;border-radius:6px;transform:rotate(-13deg);background:#ac7bf21c;animation:card-glow 5s infinite}html[data-theme="dark"] .mini-memory i:nth-child(2){transform:translateY(-15px);animation-delay:-2s}html[data-theme="dark"] .mini-memory i:nth-child(3){transform:rotate(13deg);animation-delay:-4s}html[data-theme="dark"] .mini-filter{gap:20px}html[data-theme="dark"] .noise-lines{width:65px;display:grid;gap:5px}html[data-theme="dark"] .noise-lines i{height:3px;background:#6e687b;border-radius:5px;animation:noise 3s infinite}html[data-theme="dark"] .noise-lines i:nth-child(2n){width:70%;animation-delay:-1s}html[data-theme="dark"] .clean-lines{width:65px;padding:13px 10px;border:1px solid #c7afff66;border-radius:8px;display:grid;gap:7px;background:#ac7bf212}html[data-theme="dark"] .clean-lines i{height:3px;background:#c7afff;border-radius:5px}html[data-theme="dark"] .mini-learn span{font-size:17px;width:55px;height:55px;border:1px solid #c7afff44;border-radius:50%;display:grid;place-items:center;background:#b388f514;box-shadow:0 0 0 10px #b388f505,0 0 0 23px #b388f503;animation:core-pulse 4s infinite}html[data-theme="dark"] .card-number{color:#81798e;font-size:10px;letter-spacing:.1em}html[data-theme="dark"] .benefit-card h3{margin-top:18px}html[data-theme="dark"] .benefit-card p{margin-bottom:0}html[data-theme="dark"] .spotlight{display:grid;grid-template-columns:1.05fr 1fr;gap:80px;align-items:center;padding:65px;border:1px solid var(--line);border-radius:20px;background:radial-gradient(ellipse at 85% 50%,#704ca31a,transparent 65%)}html[data-theme="dark"] .spotlight h2{font-size:54px}html[data-theme="dark"] .spotlight p{font-size:14px;color:var(--muted)}html[data-theme="dark"] .dashboard-art{border:1px solid #c2a3fc40;border-radius:15px;padding:25px;background:#181422;transform:rotate(-3deg);box-shadow:0 25px 60px #0004}html[data-theme="dark"] .dash-bar{display:flex;justify-content:space-between;font-size:10px;color:#b5a2d0;border-bottom:1px solid var(--line);padding-bottom:16px}html[data-theme="dark"] .dash-command{padding:24px 0;font-family:"IBM Plex Mono",monospace;font-size:22px;color:#dfc8ff}html[data-theme="dark"] .zero-pair{display:flex;gap:28px}html[data-theme="dark"] .zero-pair b{font-size:46px;font-weight:500;letter-spacing:-.05em}html[data-theme="dark"] .zero-pair small{display:block;font-size:10px;color:#a99bbc;margin-top:5px}html[data-theme="dark"] .dash-pills{display:flex;flex-wrap:wrap;gap:7px;margin-top:25px}html[data-theme="dark"] .dash-pills span{font-size:9px;padding:7px 10px;border-radius:5px;background:#c7afff0c;border:1px solid #c7afff1a}html[data-theme="dark"] .extra-row{display:grid;grid-template-columns:1fr 1fr;gap:60px;margin-top:35px;padding:25px 0}html[data-theme="dark"] .extra-row h3{font-size:18px}html[data-theme="dark"] .extra-row p{font-size:13px;color:var(--muted);margin-bottom:0}html[data-theme="dark"] .proof-source{margin-top:30px}html[data-theme="dark"] .install-shell{background:radial-gradient(ellipse at top right,#8152ab24,transparent 70%)}html[data-theme="dark"] .install .eyebrow{color:#c7afff}html[data-theme="dark"] .turn-screen{background:#13111e}html[data-theme="dark"] .turn-title{font-size:17px;font-weight:500}html[data-theme="dark"] .turn-screen code{color:#c2b0df}html[data-theme="dark"] .measured{border-top:1px solid var(--line)}@keyframes revolve{to{transform:rotate(360deg)}}@keyframes levitate{50%{transform:translateY(-12px)}}@keyframes orbit-breathe{50%{border-color:#c7a0ff70;box-shadow:0 0 35px #ad7de510 inset}}@keyframes core-pulse{50%{box-shadow:0 0 30px #ba89fd30;border-color:#cfadff80}}@keyframes card-glow{50%{background:#bc92ff40;box-shadow:0 0 25px #b080ff20}}@keyframes noise{50%{opacity:.35;transform:scaleX(.7)}}@media (max-width:760px){html[data-theme="dark"] .hero{padding-top:42px}html[data-theme="dark"] .hero h1{font-size:clamp(39px,11vw,53px)}html[data-theme="dark"] .hero-intro{font-size:14px;max-width:310px}html[data-theme="dark"] .hero .text-link{display:none}html[data-theme="dark"] .orbital{height:365px;width:100%;margin-top:15px}html[data-theme="dark"] .orbit-plane{inset:45px 12px 30px}html[data-theme="dark"] .memory-core{top:132px;width:86px;height:86px;border-radius:24px}html[data-theme="dark"] .memory-core:after{border-radius:36px}html[data-theme="dark"] .memory-core svg{width:36px}html[data-theme="dark"] .memory-node{padding:11px 12px;max-width:210px}html[data-theme="dark"] .memory-node strong{font-size:10px}html[data-theme="dark"] .memory-node small{font-size:8px;margin-left:19px}html[data-theme="dark"] .node-a{left:0;top:36px}html[data-theme="dark"] .node-b{right:0;top:242px}html[data-theme="dark"] .node-c{left:0;bottom:115px;max-width:145px}html[data-theme="dark"] .node-c small{margin-left:0}html[data-theme="dark"] .orbit-label{display:none}html[data-theme="dark"] .hero-foot{gap:17px;font-size:9px;padding:25px 0;flex-wrap:wrap}html[data-theme="dark"] .hero-foot span:before{margin-right:5px}html[data-theme="dark"] .spotlight{grid-template-columns:1fr;padding:30px 23px;gap:35px}html[data-theme="dark"] .spotlight h2{font-size:42px}html[data-theme="dark"] .dashboard-art{transform:rotate(-2deg)}html[data-theme="dark"] .extra-row{grid-template-columns:1fr;gap:28px}html[data-theme="dark"] .benefit-card{display:grid;grid-template-columns:80px 1fr;gap:0 24px;padding:24px}html[data-theme="dark"] .benefit-card .mini-art{grid-row:1/5;height:100%;border:0;padding:0}html[data-theme="dark"] .benefit-card .card-number{grid-column:2}html[data-theme="dark"] .benefit-card h3{margin:12px 0 9px;font-size:22px}html[data-theme="dark"] .benefit-card p{font-size:13px}html[data-theme="dark"] .mini-memory{gap:4px}html[data-theme="dark"] .mini-memory i{width:22px;height:40px}html[data-theme="dark"] .mini-filter{gap:6px}html[data-theme="dark"] .noise-lines{width:26px}html[data-theme="dark"] .clean-lines{width:35px;padding:10px 5px}html[data-theme="dark"] .mini-filter>span{font-size:10px}html[data-theme="dark"] .mini-learn span{width:40px;height:40px}html[data-theme="dark"] .zero-pair{gap:22px}}@media (prefers-reduced-motion:reduce){html[data-theme="dark"] .orbit-plane{transform:rotateX(57deg) rotateZ(-14deg)}}
 
-  /* ── loop ── */
-  .loop{ margin-top:clamp(40px,6vw,60px); border:1px solid var(--line); border-radius:16px;
-    background:var(--surface); box-shadow:var(--shadow); padding:clamp(18px,3vw,28px) }
-  .loop .cap{ margin:0 0 18px; font-family:var(--mono); font-size:11px; letter-spacing:.2em;
-    text-transform:uppercase; color:var(--muted) }
-  .loop .cap b{ color:var(--amber); font-weight:700 }
-  .steps-flow{ display:grid; gap:6px }
-  .step{ display:grid; grid-template-columns:42px minmax(0,1fr) auto; align-items:center; gap:16px;
-    background:var(--bg); border:1px solid var(--line); border-radius:13px; padding:15px 17px }
-  .step .ic{ width:42px; height:42px; border-radius:11px; display:grid; place-items:center;
-    border:1px solid var(--amber); background:var(--amber-soft); color:var(--amber) }
-  .step .t{ display:block; font-size:14.5px; font-weight:600; letter-spacing:-.01em }
-  .step .d{ display:block; font-size:13px; color:var(--muted); margin-top:4px; line-height:1.5 }
-  .step .tag{ font-family:var(--mono); font-size:10px; letter-spacing:.12em; text-transform:uppercase;
-    color:var(--amber); border:1px solid var(--amber); border-radius:999px; padding:4px 10px; white-space:nowrap }
-  .step--out{ border-color:var(--amber) }
-  .arrow{ display:grid; place-items:center; color:var(--amber); padding:2px 0 }
 
-  /* ── seções ── */
-  section{ padding:clamp(52px,7vw,86px) 0 }
-  section.wrap:not(.hero){ padding-top:clamp(52px,7vw,86px); padding-bottom:clamp(52px,7vw,86px) }
-  section + section{ border-top:1px solid var(--line) }
-  .sec-head{ display:grid; grid-template-columns:minmax(0,1fr) minmax(0,42ch); gap:18px 40px;
-    align-items:end; margin:0 0 38px }
-  .sec-head h2{ font-size:clamp(1.45rem,3.1vw,2.05rem); letter-spacing:-.028em; line-height:1.15; margin:0 }
-  .sec-head p{ margin:0; color:var(--muted); font-size:15px; line-height:1.55 }
+html[data-theme="light"] *{box-sizing:border-box}html[data-theme="light"]{scroll-behavior:smooth;scroll-padding-top:90px}html[data-theme="light"] body{margin:0;-webkit-font-smoothing:antialiased}html[data-theme="light"] button,html[data-theme="light"] a,html[data-theme="light"] input{-webkit-tap-highlight-color:transparent}html[data-theme="light"] button,html[data-theme="light"] input{font:inherit}html[data-theme="light"] button,html[data-theme="light"] a{touch-action:manipulation}html[data-theme="light"] button{cursor:pointer}html[data-theme="light"] a{color:inherit;text-decoration:none}html[data-theme="light"] button{color:inherit}html[data-theme="light"] a,html[data-theme="light"] button{outline-offset:6px}html[data-theme="light"] a:focus-visible,html[data-theme="light"] button:focus-visible,html[data-theme="light"] input:focus-visible{outline:3px solid var(--focus)}html[data-theme="light"] ::selection{background:var(--accent);color:var(--on-accent)}html[data-theme="light"] p{line-height:1.65}html[data-theme="light"] h1,html[data-theme="light"] h2,html[data-theme="light"] h3,html[data-theme="light"] p{margin-top:0}html[data-theme="light"] h1,html[data-theme="light"] h2{font-weight:600;letter-spacing:-.065em;line-height:1.02}html[data-theme="light"] h3{letter-spacing:-.03em}html[data-theme="light"] button{border:0}html[data-theme="light"] svg{display:block;max-width:100%}html[data-theme="light"] .wrap{width:min(1200px,calc(100% - 80px));margin:auto}html[data-theme="light"] .eyebrow{text-transform:uppercase;letter-spacing:.15em;font-size:11px;font-weight:700}html[data-theme="light"] .muted{color:var(--muted)}html[data-theme="light"] .brand{display:inline-flex;align-items:center;gap:10px;font-weight:700;letter-spacing:-.04em;font-size:18px}html[data-theme="light"] .brand-mark{width:27px;height:27px;display:grid;place-items:center;flex:none}html[data-theme="light"] .brand-mark svg{width:24px;height:24px}html[data-theme="light"] .brand small{font-size:10px;font-weight:500;letter-spacing:0;border:1px solid var(--line);border-radius:5px;padding:3px 5px;margin-left:3px}html[data-theme="light"] .header{height:90px;display:flex;align-items:center;justify-content:space-between;gap:20px;position:relative;z-index:10}html[data-theme="light"] .nav{display:flex;align-items:center;gap:30px;font-size:12px;font-weight:500}html[data-theme="light"] .nav a:hover,html[data-theme="light"] .footer a:hover{text-decoration:underline;text-underline-offset:5px}html[data-theme="light"] .nav .nav-cta{border:1px solid var(--line);padding:10px 17px;border-radius:100px}html[data-theme="light"] .btn{display:inline-flex;align-items:center;justify-content:center;gap:28px;min-height:52px;padding:0 25px;background:var(--accent);color:var(--on-accent);border-radius:9px;font-weight:600;font-size:14px;transition:transform .25s,box-shadow .25s}html[data-theme="light"] .btn:hover{transform:translateY(-3px);box-shadow:0 8px 30px var(--glow)}html[data-theme="light"] .btn .arrow{font-size:20px;font-weight:400}html[data-theme="light"] .text-link{font-size:13px;display:inline-flex;gap:10px;align-items:center}html[data-theme="light"] .hero-actions{display:flex;gap:26px;align-items:center;flex-wrap:wrap}html[data-theme="light"] .micro{font-size:11px;line-height:1.7}html[data-theme="light"] .section{padding:110px 0}html[data-theme="light"] .section h2{font-size:clamp(38px,5.2vw,65px)}html[data-theme="light"] .section-head{display:flex;align-items:end;justify-content:space-between;gap:45px;margin-bottom:50px}html[data-theme="light"] .section-head h2{margin-bottom:0;max-width:710px}html[data-theme="light"] .section-head p{max-width:315px;font-size:14px;margin:0;color:var(--muted)}html[data-theme="light"] .grid3{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px}html[data-theme="light"] .card{min-width:0}html[data-theme="light"] .card h3{font-size:23px;margin:25px 0 12px}html[data-theme="light"] .card p{color:var(--muted);font-size:14px}html[data-theme="light"] .tag{display:inline-flex;align-items:center;gap:7px;font-size:10px;text-transform:uppercase;letter-spacing:.09em}html[data-theme="light"] .dot{width:5px;height:5px;border-radius:50%;background:currentColor;display:inline-block}html[data-theme="light"] .simulation{font-size:10px;text-transform:uppercase;letter-spacing:.12em;color:var(--muted)}html[data-theme="light"] .step-tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}html[data-theme="light"] .step-tab{text-align:left;padding:22px 16px;background:transparent;border-top:1px solid var(--line);transition:background .25s,border-color .25s}html[data-theme="light"] .step-tab .step-n{font-size:11px;display:block;color:var(--muted);margin-bottom:16px}html[data-theme="light"] .step-tab strong{display:block;font-size:15px;font-weight:600}html[data-theme="light"] .step-tab span:last-child{display:block;font-size:12px;line-height:1.6;margin-top:8px;color:var(--muted)}html[data-theme="light"] .step-tab[aria-selected=true]{border-color:var(--accent);background:var(--subtle)}html[data-theme="light"] .turn-screen{margin-top:22px;padding:30px;border:1px solid var(--line);border-radius:12px;min-height:178px}html[data-theme="light"] .turn-screen .simulation{display:block;margin-bottom:18px}html[data-theme="light"] .turn-screen code{font-family:"IBM Plex Mono",Consolas,monospace;font-size:12px;white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.9}html[data-theme="light"] .turn-desc{font-size:12px;color:var(--muted);margin-top:16px;margin-bottom:0}html[data-theme="light"] .proof{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:25px}html[data-theme="light"] .proof-item{border-top:1px solid var(--line);padding-top:28px}html[data-theme="light"] .proof-value{font-size:clamp(38px,5vw,63px);letter-spacing:-.075em;line-height:1.1;font-weight:500;white-space:nowrap}html[data-theme="light"] .proof-value small{font-size:19px;letter-spacing:-.04em}html[data-theme="light"] .proof-item p{font-size:12px;color:var(--muted);margin:15px 0 0;max-width:225px}html[data-theme="light"] .install{scroll-margin-top:35px}html[data-theme="light"] .install-shell{padding:60px;border:1px solid var(--line);border-radius:22px}html[data-theme="light"] .install-top{display:flex;justify-content:space-between;gap:45px;align-items:center;margin-bottom:35px}html[data-theme="light"] .install-top h2{font-size:clamp(38px,5vw,60px);max-width:620px;margin-bottom:0}html[data-theme="light"] .install-top p{font-size:13px;color:var(--muted);max-width:230px;margin:0}html[data-theme="light"] .command{display:grid;grid-template-columns:28px minmax(0,1fr) auto;align-items:center;gap:15px;padding:21px 22px;border:1px solid var(--line);margin-top:12px;border-radius:10px;background:var(--code-bg)}html[data-theme="light"] .command .num{font-size:11px;color:var(--muted)}html[data-theme="light"] .command code{font-size:12px;line-height:1.7;font-family:"IBM Plex Mono",Consolas,monospace;overflow-wrap:anywhere;user-select:all}html[data-theme="light"] .copy{min-width:83px;min-height:38px;font-size:11px;border:1px solid var(--line);background:var(--subtle);border-radius:6px;padding:8px 12px}html[data-theme="light"] .copy:hover{border-color:var(--accent)}html[data-theme="light"] .requirements{font-size:11px;color:var(--muted);line-height:1.9;margin:24px 0 0}html[data-theme="light"] .requirements strong{font-weight:500;color:var(--text)}html[data-theme="light"] .install-status{min-height:18px;margin:8px 0 0;font-size:11px;color:var(--muted)}html[data-theme="light"] .footer{border-top:1px solid var(--line);padding:32px 0 28px;display:flex;align-items:center;justify-content:space-between;gap:25px;font-size:11px;color:var(--muted)}html[data-theme="light"] .footer-links{display:flex;gap:23px;flex-wrap:wrap}html[data-theme="light"] .motion-toggle{position:fixed;bottom:18px;right:20px;z-index:40;border:1px solid var(--line);background:var(--bg);color:var(--text);border-radius:100px;font-size:10px;padding:10px 14px;box-shadow:0 3px 18px #0002;display:flex;align-items:center;gap:7px}html[data-theme="light"] .motion-icon{display:flex;gap:2px}html[data-theme="light"] .motion-icon i{width:2px;height:9px;background:currentColor}html[data-theme="light"] .skip{position:fixed;top:8px;left:8px;transform:translateY(-150%);z-index:100;background:var(--accent);color:var(--on-accent);padding:12px}html[data-theme="light"] .skip:focus{transform:translateY(0)}html[data-theme="light"] .reveal{opacity:1;transform:none}html[data-theme="light"].js-motion .reveal{opacity:0;transform:translateY(24px);transition:opacity .8s,transform .8s}html[data-theme="light"].js-motion .reveal.visible{opacity:1;transform:none}html[data-theme="light"] .paused *,html[data-theme="light"] .paused *::before,html[data-theme="light"] .paused *::after{animation-play-state:paused!important}html[data-theme="light"] .tiny-rule{display:inline-block;width:30px;height:1px;background:currentColor;vertical-align:middle;margin-right:10px}html[data-theme="light"] .sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}@media (min-width:900px){html[data-theme="light"] .card:nth-child(2){transition-delay:.1s}html[data-theme="light"] .card:nth-child(3){transition-delay:.2s}}@media (max-width:760px){html[data-theme="light"] .wrap{width:calc(100% - 40px)}html[data-theme="light"] .header{height:75px}html[data-theme="light"] .brand{font-size:16px}html[data-theme="light"] .brand small{display:none}html[data-theme="light"] .nav{gap:12px}html[data-theme="light"] .nav .nav-link{display:none}html[data-theme="light"] .nav .nav-cta{padding:9px 15px;font-size:11px}html[data-theme="light"] .section{padding:70px 0}html[data-theme="light"] .section-head{display:block;margin-bottom:32px}html[data-theme="light"] .section-head p{margin-top:22px}html[data-theme="light"] .grid3{grid-template-columns:1fr}html[data-theme="light"] .step-tabs{grid-template-columns:1fr 1fr;gap:8px}html[data-theme="light"] .step-tab{padding:17px 12px}html[data-theme="light"] .step-tab .step-n{margin-bottom:10px}html[data-theme="light"] .turn-screen{padding:22px;min-height:220px}html[data-theme="light"] .proof{grid-template-columns:1fr 1fr;gap:30px 20px}html[data-theme="light"] .proof-value{font-size:44px}html[data-theme="light"] .install-shell{padding:30px 20px}html[data-theme="light"] .install-top{display:block}html[data-theme="light"] .install-top p{margin-top:20px;max-width:none}html[data-theme="light"] .command{grid-template-columns:20px minmax(0,1fr);gap:8px;padding:17px 12px}html[data-theme="light"] .command code{font-size:11px}html[data-theme="light"] .command .copy{grid-column:2;justify-self:start;margin-top:7px}html[data-theme="light"] .footer{align-items:flex-start;flex-direction:column;padding-bottom:80px}html[data-theme="light"] .footer-links{gap:18px}html[data-theme="light"] .hero-actions{gap:18px}html[data-theme="light"] .motion-toggle{right:12px;bottom:12px}html[data-theme="light"] .section h2{font-size:41px}}@media (prefers-reduced-motion:reduce){html[data-theme="light"]{scroll-behavior:auto}html[data-theme="light"] *,html[data-theme="light"] *::before,html[data-theme="light"] *::after{animation:none!important;transition:none!important}html[data-theme="light"].js-motion .reveal{opacity:1;transform:none}}
 
-  /* destaques 3.0 */
-  .feat-grid{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px }
-  .feat{ position:relative; display:flex; flex-direction:column; border:1px solid var(--line);
-    background:var(--surface); border-radius:15px; padding:20px 20px 18px }
-  .feat--lead{ grid-column:span 2; grid-row:span 2; border-color:var(--amber);
-    background:linear-gradient(135deg,var(--amber-soft),transparent 62%),var(--surface) }
-  .feat .k{ margin:0 0 12px; font-family:var(--mono); font-size:10.5px; letter-spacing:.14em;
-    text-transform:uppercase; color:var(--amber) }
-  .feat h3{ margin:0 0 10px; font-size:16.5px; line-height:1.3; letter-spacing:-.015em }
-  .feat .stat{ margin:0 0 12px; font-family:var(--mono); font-size:clamp(1.25rem,2.4vw,1.6rem);
-    font-weight:700; letter-spacing:-.03em; color:var(--amber-ink); line-height:1.15 }
-  .feat--lead .stat{ font-size:clamp(1.8rem,4.4vw,3.1rem) }
-  .feat--lead h3{ font-size:clamp(1.1rem,1.9vw,1.35rem) }
-  .feat--lead p.d{ font-size:14.5px }
-  .feat .stat small{ display:block; margin-top:5px; font-family:var(--sans); font-size:12.5px;
-    font-weight:500; letter-spacing:0; color:var(--muted) }
-  .feat p.d{ margin:0; color:var(--muted); font-size:13.5px; line-height:1.55 }
-  .feat p.d + p.d{ margin-top:9px }
-  .feat p.d b{ color:var(--ink); font-weight:600 }
-  .feat .proof{ margin:auto 0 0; padding-top:12px; border-top:1px dashed var(--line-strong);
-    font-family:var(--mono); font-size:11px; line-height:1.5; color:var(--muted) }
-  .feat .proof::before{ content:"✓ "; color:var(--amber); font-weight:700 }
-  .feat .body{ margin-bottom:14px }
-  .hop{ list-style:none; margin:16px 0 0; padding:0; display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px }
-  .hop li{ position:relative; border:1px solid var(--line); background:var(--bg); border-radius:10px;
-    padding:13px 12px; font-size:12.5px; line-height:1.5; color:var(--muted) }
-  .hop li b{ display:block; margin-bottom:3px; font-family:var(--mono); font-size:10px; letter-spacing:.1em;
-    text-transform:uppercase; color:var(--amber) }
-  .hop li.skip{ border-style:dashed; border-color:var(--amber) }
-  .vs{ display:grid; gap:10px; margin:22px 0 22px }
-  .vs-row{ display:grid; grid-template-columns:64px minmax(0,1fr) auto; gap:12px; align-items:center;
-    font-family:var(--mono); font-size:12px; color:var(--muted) }
-  .vs-bar{ height:10px; border-radius:999px; background:var(--line-strong) }
-  .vs-row--now .vs-bar{ width:4%; min-width:10px; background:var(--amber) }
-  .vs-row--now{ color:var(--amber-ink) }
-  .vs-row b{ white-space:nowrap; font-weight:600 }
-  .fixes{ margin:14px 0 0; padding:16px 18px; border:1px solid var(--line); border-radius:13px;
-    background:var(--surface) }
-  .fixes .k{ margin:0 0 10px; font-family:var(--mono); font-size:10.5px; letter-spacing:.14em;
-    text-transform:uppercase; color:var(--amber) }
-  .fixes ul{ margin:0; padding:0; list-style:none; display:grid;
-    grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px 28px }
-  .fixes li{ position:relative; padding-left:18px; font-size:13px; color:var(--muted); line-height:1.5 }
-  .fixes li::before{ content:""; position:absolute; left:2px; top:.6em; width:7px; height:2px; background:var(--amber) }
-  .fixes li b{ color:var(--ink); font-weight:600 }
 
-  /* pilares */
-  .pillars{ display:grid; gap:1px; background:var(--line); border:1px solid var(--line);
-    border-radius:16px; overflow:hidden }
-  .pillar{ background:var(--surface); padding:clamp(22px,3vw,30px);
-    display:grid; grid-template-columns:48px minmax(0,1fr); gap:20px 22px; align-items:start }
-  .pillar .ic{ width:48px; height:48px; border-radius:13px; display:grid; place-items:center;
-    border:1px solid var(--amber); background:var(--amber-soft); color:var(--amber) }
-  .pillar h3{ margin:0 0 8px; font-size:17px; letter-spacing:-.015em }
-  .pillar .lead{ margin:0; color:var(--muted); font-size:14.5px; line-height:1.58; max-width:58ch }
-  .pillar ul{ grid-column:2; margin:16px 0 0; padding:0; list-style:none;
-    display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px 26px }
-  .pillar li{ position:relative; padding-left:22px; font-size:13.5px; color:var(--muted); line-height:1.5 }
-  .pillar li::before{ content:""; position:absolute; left:2px; top:.52em; width:8px; height:8px;
-    border-radius:2px; border:1px solid var(--amber); background:var(--amber-soft) }
-  .pillar li b{ color:var(--ink); font-weight:600 }
+html[data-theme="light"]{--bg:#f7f9fc;--text:#15264a;--muted:#55627b;--accent:#2455ed;--on-accent:#fff;--line:#1e397326;--subtle:#eaf0ff;--code-bg:#fff;--focus:#e04a20;--glow:#2455ed22}html[data-theme="light"] body{background:var(--bg);color:var(--text);font-family:"DM Sans",sans-serif}html[data-theme="light"] .brand-mark{color:#2455ed}html[data-theme="light"] .header{border-bottom:1px solid var(--line)}html[data-theme="light"] h1,html[data-theme="light"] h2,html[data-theme="light"] h3{font-family:"Space Grotesk",sans-serif}html[data-theme="light"] .nav .nav-cta{background:#2455ed;color:white;border-color:#2455ed}html[data-theme="light"] .hero{padding:90px 0 64px;display:grid;grid-template-columns:1.05fr 1fr;gap:30px;align-items:center}html[data-theme="light"] .hero h1{font-size:clamp(55px,6.7vw,91px);line-height:1.01;margin:26px 0;letter-spacing:-.07em}html[data-theme="light"] .hero h1 .blue{color:#2455ed;position:relative;display:inline-block}html[data-theme="light"] .hero h1 .blue:after{content:"";height:7px;position:absolute;bottom:-8px;left:0;right:0;background:#ff8458;clip-path:polygon(0 30%,100% 0,98% 45%,2% 100%)}html[data-theme="light"] .hero p.hero-intro{color:var(--muted);font-size:16px;max-width:390px;margin:30px 0}html[data-theme="light"] .hero .eyebrow{display:flex;align-items:center;gap:9px;color:#2455ed}html[data-theme="light"] .hero .micro{color:var(--muted);margin-top:20px}html[data-theme="light"] .btn{border-radius:5px}html[data-theme="light"] .text-link{font-size:12px}html[data-theme="light"] .machine{--compression:72%;position:relative;height:510px;border:1px solid #d6def2;border-radius:18px;background:#edf2fc;background-image:radial-gradient(#b5c3e7 1px,transparent 1px);background-size:17px 17px;box-shadow:0 20px 70px #2455ed0a;isolation:isolate;overflow:hidden}html[data-theme="light"] .machine-top{padding:21px 23px;display:flex;justify-content:space-between;font-size:10px;letter-spacing:.08em;text-transform:uppercase;position:relative;z-index:2}html[data-theme="light"] .machine-top span:last-child{color:#5d729c}html[data-theme="light"] .input-stack{position:absolute;left:36px;top:100px;width:235px;height:225px;transform:rotate(-9deg);transition:transform .7s}html[data-theme="light"] .paper{position:absolute;inset:0;border:1px solid #c5cee2;background:#fff;border-radius:9px;padding:20px;box-shadow:0 7px 18px #21345409}html[data-theme="light"] .paper:nth-child(1){transform:translate(17px,-20px) rotate(4deg)}html[data-theme="light"] .paper:nth-child(2){transform:translate(8px,-10px) rotate(2deg)}html[data-theme="light"] .paper .paper-caption{font-size:9px;letter-spacing:.1em;color:#64769a}html[data-theme="light"] .paper-lines{display:grid;gap:10px;margin-top:21px}html[data-theme="light"] .paper-lines i{height:5px;border-radius:2px;background:#c6d0e3;animation:feed-lines 4s ease-in-out infinite}html[data-theme="light"] .paper-lines i:nth-child(2n){width:80%;animation-delay:-1s}html[data-theme="light"] .paper-lines i:nth-child(3n){width:65%;animation-delay:-2s}html[data-theme="light"] .processor{position:absolute;z-index:3;top:198px;left:48%;width:90px;height:90px;background:#2555ee;border:1px solid #7695ff;transform:rotate(-9deg);border-radius:22px;display:grid;place-items:center;box-shadow:0 12px 30px #2455ed35,0 0 0 7px #2455ed0a;color:#fff;animation:processor 5s ease-in-out infinite}html[data-theme="light"] .processor svg{width:37px;height:37px}html[data-theme="light"] .summary-paper{position:absolute;z-index:4;right:26px;top:278px;width:240px;min-height:119px;border:1px solid #7b99f9;border-radius:10px;background:#fff;padding:20px;transform:rotate(5deg);box-shadow:0 15px 25px #214cdc1a;animation:summary-float 5s ease-in-out infinite}html[data-theme="light"] .summary-paper header{font-size:9px;letter-spacing:.1em;color:#2455ed;display:flex;justify-content:space-between}html[data-theme="light"] .summary-paper strong{font-size:19px;display:block;letter-spacing:-.04em;margin:15px 0 7px}html[data-theme="light"] .summary-paper p{font-size:10px;color:#65718a;margin-bottom:0}html[data-theme="light"] .compression-trail{position:absolute;left:25%;top:185px;width:60%;height:150px;border:2px dashed #2455ed38;border-radius:50%;transform:rotate(30deg);z-index:0}html[data-theme="light"] .flow-dot{position:absolute;left:44%;top:270px;width:9px;height:9px;border-radius:50%;background:#ff8458;animation:flow 4s infinite;z-index:3}html[data-theme="light"] .machine-bottom{position:absolute;bottom:20px;left:23px;right:23px;display:flex;justify-content:space-between;align-items:center;color:#586b90;font-size:9px}html[data-theme="light"] .machine-bottom span:first-child{display:flex;align-items:center;gap:5px}html[data-theme="light"] .machine-bottom i{width:5px;height:5px;background:#2455ed;border-radius:50%}html[data-theme="light"] .compress-control{display:flex;align-items:center;gap:11px;font-size:10px;letter-spacing:.03em;max-width:220px}html[data-theme="light"] .compress-control input{width:92px;accent-color:#2455ed;cursor:pointer;min-height:28px}html[data-theme="light"] .machine[data-mode=raw] .summary-paper{opacity:.15;transform:translateY(15px) rotate(8deg);animation:none}html[data-theme="light"] .machine[data-mode=raw] .input-stack{transform:rotate(-4deg) scale(1.06)}html[data-theme="light"] .machine[data-mode=raw] .processor{opacity:.4}html[data-theme="light"] .summary-paper{transition:opacity .4s,transform .4s}html[data-theme="light"] .brand-strip{background:#2455ed;color:#fff;padding:21px 0}html[data-theme="light"] .strip-inner{display:flex;justify-content:space-between;gap:18px;font-size:12px;font-weight:500}html[data-theme="light"] .strip-inner span{display:flex;gap:11px;align-items:center}html[data-theme="light"] .strip-inner b{color:#ffb398;font-size:18px;font-weight:400}html[data-theme="light"] .benefits-heading{display:grid;grid-template-columns:1fr 1fr;align-items:end;gap:40px}html[data-theme="light"] .benefits-heading h2{max-width:620px}html[data-theme="light"] .feature-list{border-top:1px solid var(--line);margin-top:45px}html[data-theme="light"] .feature-row{display:grid;grid-template-columns:70px 1fr 1fr;gap:30px;align-items:center;padding:32px 0;border-bottom:1px solid var(--line)}html[data-theme="light"] .feature-row .index{color:#2455ed;font-family:"Space Grotesk",sans-serif;font-size:14px}html[data-theme="light"] .feature-row h3{font-size:30px;margin:0;letter-spacing:-.05em}html[data-theme="light"] .feature-row p{margin:0;color:var(--muted);font-size:14px;max-width:380px}html[data-theme="light"] .feature-row h3 span{display:inline-flex;align-items:center;justify-content:center;width:40px;height:40px;margin-right:16px;background:#e4ebff;border-radius:10px;color:#2455ed;font-size:21px;vertical-align:middle}html[data-theme="light"] .compression-section{background:#e7eeff;border-top:1px solid #d2dcf7;border-bottom:1px solid #d2dcf7}html[data-theme="light"] .curation-layout{display:grid;grid-template-columns:1fr 1.1fr;gap:80px;align-items:center}html[data-theme="light"] .curation-layout h2{font-size:57px}html[data-theme="light"] .curation-layout p{font-size:14px;color:var(--muted)}html[data-theme="light"] .curation-layout .eyebrow{color:#2455ed}html[data-theme="light"] .curation-visual{display:grid;grid-template-columns:1fr 1fr;gap:16px;position:relative}html[data-theme="light"] .audit-ticket{background:white;border:1px solid #cbd7f3;padding:26px;border-radius:9px;min-height:250px;display:flex;flex-direction:column;justify-content:space-between;box-shadow:0 15px 25px #173d7906}html[data-theme="light"] .audit-ticket:first-child{transform:rotate(-5deg)}html[data-theme="light"] .audit-ticket:last-child{transform:rotate(4deg) translateY(25px);background:#2455ed;color:white}html[data-theme="light"] .audit-ticket .ticket-label{font-size:10px;text-transform:uppercase;letter-spacing:.12em}html[data-theme="light"] .audit-ticket .ticket-icon{font-size:50px;font-weight:400}html[data-theme="light"] .audit-ticket h3{font-size:21px;line-height:1.2;margin-bottom:0}html[data-theme="light"] .audit-ticket:last-child p{color:#d7e1ff;font-size:11px;margin:10px 0 0}html[data-theme="light"] .audit-ticket:first-child p{font-size:11px;margin:10px 0 0}html[data-theme="light"] .turn-screen{background:#fff;box-shadow:0 8px 20px #14295504;border-left:3px solid #2455ed}html[data-theme="light"] .turn-title{font-size:19px}html[data-theme="light"] .turn-screen code{color:#25479e}html[data-theme="light"] .step-tab[aria-selected=true]{border-top-width:3px;padding-top:20px}html[data-theme="light"] .zero-band{background:#172c54;color:white;border-radius:15px;display:grid;grid-template-columns:1fr 1fr;overflow:hidden}html[data-theme="light"] .zero-band .zero-copy{padding:50px}html[data-theme="light"] .zero-band h2{font-size:46px}html[data-theme="light"] .zero-band p{font-size:13px;color:#c0cce3}html[data-theme="light"] .zero-art{background:#1d3764;display:flex;align-items:center;justify-content:center;flex-direction:column;padding:50px;position:relative}html[data-theme="light"] .zero-art:before{content:"";position:absolute;width:190px;height:190px;border:1px solid #ffffff14;border-radius:50%;box-shadow:0 0 0 35px #ffffff04,0 0 0 70px #ffffff02}html[data-theme="light"] .zero-art .big-zero{font-size:115px;letter-spacing:-.1em;font-family:"Space Grotesk",sans-serif;line-height:1;position:relative}html[data-theme="light"] .zero-art code{font-size:12px;margin-bottom:15px;color:#ffb494}html[data-theme="light"] .zero-art p{margin:20px 0 0;position:relative}html[data-theme="light"] .tool-notes{display:grid;grid-template-columns:1fr 1fr;gap:45px;margin-top:35px}html[data-theme="light"] .tool-notes h3{font-size:18px}html[data-theme="light"] .tool-notes p{font-size:13px;color:var(--muted)}html[data-theme="light"] .measured{padding-top:50px}html[data-theme="light"] .proof-value{color:#2455ed;font-family:"Space Grotesk",sans-serif}html[data-theme="light"] .proof-source{margin-top:28px}html[data-theme="light"] .install-shell{background:white;border-color:#cbd8ef;box-shadow:0 15px 55px #2455ed07}html[data-theme="light"] .install .eyebrow{color:#2455ed}html[data-theme="light"] .install{padding-top:40px}html[data-theme="light"] .footer .brand-mark{color:#2455ed}@keyframes feed-lines{50%{opacity:.45;transform:translateX(5px)}}@keyframes processor{50%{box-shadow:0 12px 40px #2455ed60,0 0 0 12px #2455ed08;transform:rotate(-9deg) translateY(-4px)}}@keyframes summary-float{50%{transform:rotate(5deg) translateY(-9px)}}@keyframes flow{0%{transform:translate(-50px,-60px);opacity:0}20%{opacity:1}85%{opacity:1}100%{transform:translate(90px,55px);opacity:0}}@media (max-width:1000px){html[data-theme="light"] .hero{gap:20px}html[data-theme="light"] .input-stack{left:20px;width:200px}html[data-theme="light"] .summary-paper{right:18px;width:210px}html[data-theme="light"] .curation-layout{gap:40px}html[data-theme="light"] .audit-ticket{padding:20px}html[data-theme="light"] .feature-row{gap:20px;grid-template-columns:40px 1.1fr 1fr}html[data-theme="light"] .feature-row h3{font-size:26px}html[data-theme="light"] .feature-row h3 span{display:none}}@media (max-width:760px){html[data-theme="light"] .hero{grid-template-columns:1fr;padding:45px 0 35px;gap:35px}html[data-theme="light"] .hero h1{font-size:61px;margin:22px 0}html[data-theme="light"] .hero p.hero-intro{font-size:15px;margin:27px 0}html[data-theme="light"] .hero .text-link{display:none}html[data-theme="light"] .machine{height:440px;max-width:510px;width:100%;margin:auto}html[data-theme="light"] .input-stack{top:89px;left:18px;width:185px;height:185px}html[data-theme="light"] .paper{padding:17px}html[data-theme="light"] .paper-lines{gap:8px;margin-top:17px}html[data-theme="light"] .paper-lines i{height:4px}html[data-theme="light"] .processor{width:72px;height:72px;top:176px;left:45%;border-radius:18px}html[data-theme="light"] .summary-paper{top:257px;right:16px;width:202px;padding:17px;min-height:105px}html[data-theme="light"] .summary-paper strong{font-size:17px}html[data-theme="light"] .machine-top{padding:17px;font-size:8px}html[data-theme="light"] .machine-bottom{left:17px;right:17px;bottom:12px;gap:10px}html[data-theme="light"] .machine-bottom>span{font-size:8px;max-width:100px}html[data-theme="light"] .compress-control{font-size:9px;gap:6px}html[data-theme="light"] .compress-control input{width:65px}html[data-theme="light"] .strip-inner{display:grid;grid-template-columns:1fr 1fr;gap:17px;font-size:10px}html[data-theme="light"] .strip-inner span{gap:8px}html[data-theme="light"] .strip-inner b{font-size:14px}html[data-theme="light"] .benefits-heading{display:block}html[data-theme="light"] .feature-row{grid-template-columns:28px 1fr;gap:14px;padding:26px 0}html[data-theme="light"] .feature-row h3{font-size:26px}html[data-theme="light"] .feature-row p{grid-column:2;font-size:13px}html[data-theme="light"] .curation-layout{grid-template-columns:1fr;gap:35px}html[data-theme="light"] .curation-layout h2{font-size:43px}html[data-theme="light"] .curation-visual{gap:10px;padding-bottom:25px}html[data-theme="light"] .audit-ticket{padding:20px 16px;min-height:218px}html[data-theme="light"] .audit-ticket h3{font-size:20px}html[data-theme="light"] .audit-ticket .ticket-label{font-size:8px}html[data-theme="light"] .audit-ticket .ticket-icon{font-size:42px}html[data-theme="light"] .zero-band{grid-template-columns:1fr}html[data-theme="light"] .zero-band .zero-copy{padding:30px 25px}html[data-theme="light"] .zero-band h2{font-size:39px}html[data-theme="light"] .zero-art{padding:30px}html[data-theme="light"] .zero-art .big-zero{font-size:95px}html[data-theme="light"] .zero-art:before{width:130px;height:130px}html[data-theme="light"] .tool-notes{grid-template-columns:1fr;gap:15px}html[data-theme="light"] .measured{padding-top:0}html[data-theme="light"] .proof-value{font-size:42px}}
 
-  /* extras */
-  .extras{ margin:0; padding:0; list-style:none; display:grid;
-    grid-template-columns:repeat(2,minmax(0,1fr)); gap:0 44px }
-  .extras li{ padding:22px 0; border-top:1px solid var(--line) }
-  .extras .head{ display:flex; align-items:center; gap:11px; margin:0 0 7px }
-  .extras .head b{ font-size:15px; letter-spacing:-.01em }
-  .extras .head span{ color:var(--amber); flex-shrink:0 }
-  .extras p{ margin:0; color:var(--muted); font-size:14px; line-height:1.55 }
+:root, [data-theme="dark"] {
+  color-scheme: dark;
+  --ccb-bg:#10101b; --ccb-surface:#191725; --ccb-surface-alt:#232034;
+  --ccb-text:#f4f1ff; --ccb-muted:#b1abc4; --ccb-border:#49415e;
+  --ccb-primary:#c7afff; --ccb-on-primary:#24153e; --ccb-highlight:#edb9df;
+  --ccb-success:#9bd8b5; --ccb-error:#ffabab; --ccb-warning:#efc582;
+  --ccb-display:'Manrope','Segoe UI',sans-serif;
+  --ccb-body:'Manrope','Segoe UI',sans-serif;
+  --ccb-mono:'IBM Plex Mono',Consolas,monospace;
+  --ccb-radius:14px; --ccb-radius-sm:8px;
+  --ccb-shadow:0 12px 36px #00000024;
+}
+[data-theme="light"] {
+  color-scheme: light;
+  --ccb-bg:#f7f9fc; --ccb-surface:#ffffff; --ccb-surface-alt:#eaf0ff;
+  --ccb-text:#15264a; --ccb-muted:#55627b; --ccb-border:#c1cce1;
+  --ccb-primary:#2455ed; --ccb-on-primary:#ffffff; --ccb-highlight:#ac3813;
+  --ccb-success:#246345; --ccb-error:#b42d43; --ccb-warning:#855515;
+  --ccb-display:'Space Grotesk','Segoe UI',sans-serif;
+  --ccb-body:'DM Sans','Segoe UI',sans-serif;
+  --ccb-mono:'IBM Plex Mono',Consolas,monospace;
+  --ccb-radius:14px; --ccb-radius-sm:8px;
+  --ccb-shadow:0 12px 36px #173d790d;
+}
 
-  /* patchbay de endpoints */
-  .router-intro{ display:grid; grid-template-columns:minmax(0,.8fr) minmax(0,1.2fr); gap:34px;
-    align-items:start; margin-bottom:28px }
-  .router-copy h2{ font-size:clamp(1.55rem,3.4vw,2.35rem); letter-spacing:-.032em;
-    line-height:1.08; margin:0 0 16px; max-width:15ch }
-  .router-copy h2 em{ color:var(--amber); font-style:normal }
-  .router-copy > p{ color:var(--muted); font-size:15px; margin:0; max-width:45ch }
-  .router-choice{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px }
-  .route-mode{ border:1px solid var(--line); background:var(--surface); border-radius:14px;
-    padding:18px; min-height:100% }
-  .route-mode .label{ display:flex; align-items:center; justify-content:space-between; gap:10px;
-    margin-bottom:10px; font-family:var(--mono); font-size:11px; letter-spacing:.12em;
-    text-transform:uppercase; color:var(--amber) }
-  .route-mode .label span{ border:1px solid var(--amber); border-radius:999px; padding:2px 8px }
-  .route-mode b{ display:block; font-size:15px; margin-bottom:7px }
-  .route-mode p{ margin:0; color:var(--muted); font-size:13px; line-height:1.52 }
-  .patchbay{ border:1px solid var(--line); border-radius:18px; background:var(--surface);
-    box-shadow:var(--shadow); overflow:hidden }
-  .patch-head{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:18px; align-items:center;
-    padding:15px 18px; border-bottom:1px solid var(--line); background:var(--surface-2) }
-  .patch-head .title{ display:flex; align-items:center; gap:10px; font-family:var(--mono);
-    font-size:12px; color:var(--ink) }
-  .patch-head .light{ width:8px; height:8px; border-radius:50%; background:var(--amber);
-    box-shadow:0 0 0 4px var(--amber-soft) }
-  .protocols{ display:flex; align-items:center; gap:7px; font-family:var(--mono); font-size:10.5px;
-    color:var(--muted) }
-  .protocols b{ color:var(--amber-ink); border:1px solid var(--amber); border-radius:999px;
-    padding:3px 9px; font-weight:600 }
-  .patch-body{ padding:clamp(18px,3vw,28px) }
-  .route-line{ display:grid; grid-template-columns:112px minmax(0,1fr) auto; gap:12px;
-    align-items:center; padding:11px 0; border-top:1px solid var(--line) }
-  .route-line:first-child{ border-top:0; padding-top:0 }
-  .route-line:last-child{ padding-bottom:0 }
-  .route-op{ font-family:var(--mono); font-size:11px; color:var(--amber); letter-spacing:.04em }
-  .route-url{ border:1px solid var(--line); border-radius:8px; background:var(--bg);
-    padding:8px 11px; font-family:var(--mono); font-size:11.5px; color:var(--muted);
-    overflow-wrap:break-word }
-  .route-state{ font-family:var(--mono); font-size:9.5px; letter-spacing:.1em; text-transform:uppercase;
-    color:var(--muted); white-space:nowrap }
-  .router-details{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; margin-top:14px }
-  .break-grid{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px }
-  .break-grid .break-wide{ grid-column:1 / -1 }
-  .router-detail{ border:1px solid var(--line); border-radius:13px; padding:17px; background:var(--surface) }
-  .router-detail .k{ font-family:var(--mono); font-size:10px; letter-spacing:.14em;
-    text-transform:uppercase; color:var(--amber); margin:0 0 9px }
-  .router-detail b{ display:block; font-size:14px; margin-bottom:6px }
-  .router-detail p{ margin:0; color:var(--muted); font-size:12.8px; line-height:1.52 }
-  .router-detail p.more{ margin-top:10px }
-  .router-detail p b{ display:inline; font-size:inherit; margin:0; color:var(--ink) }
-  .router-detail .k .new{ display:inline-block; margin-left:6px; padding:1px 6px; border:1px solid var(--amber);
-    border-radius:999px; font-size:9px; letter-spacing:.08em }
-  .alias-flow{ display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin:10px 0 0;
-    font-family:var(--mono); font-size:10.5px; color:var(--muted) }
-  .alias-flow span{ border:1px solid var(--line); background:var(--bg); border-radius:6px; padding:4px 7px }
-  .alias-flow i{ color:var(--amber); font-style:normal }
-  .router-note{ display:flex; gap:12px; align-items:flex-start; margin-top:14px; padding:14px 16px;
-    border-left:3px solid var(--amber); background:var(--amber-soft); border-radius:0 10px 10px 0 }
-  .router-note svg{ flex:0 0 auto; color:var(--amber); margin-top:3px }
-  .router-note p{ margin:0; color:var(--muted); font-size:13px; line-height:1.55 }
-  .router-note b{ color:var(--ink) }
+/* Shared identity and theme control. */
+html { background:var(--ccb-bg); }
+body { font-family:var(--ccb-body); background:var(--ccb-bg); color:var(--ccb-text); }
+.ccb-theme { display:inline-flex; flex:none; align-items:center; gap:3px; padding:4px; margin:0;
+  border:1px solid var(--ccb-border); border-radius:999px; background:var(--ccb-surface); }
+.ccb-theme button { appearance:none; font:600 11px/1 var(--ccb-body); letter-spacing:0;
+  padding:10px 13px; min-height:34px; margin:0; border:0; border-radius:999px;
+  background:transparent; color:var(--ccb-muted); cursor:pointer; white-space:nowrap; }
+.ccb-theme button[aria-pressed="true"] { background:var(--ccb-primary); color:var(--ccb-on-primary); }
+.ccb-theme button:hover { box-shadow:inset 0 0 0 1px var(--ccb-primary); }
+:where(a,button,input,select,textarea,[tabindex]):focus-visible {
+  outline:3px solid var(--ccb-primary); outline-offset:4px; }
+@media(prefers-reduced-motion:reduce) {
+  *,*::before,*::after { animation:none!important; transition:none!important; scroll-behavior:auto!important; }
+}
 
-  /* tabela de spawns */
-  .perf{ display:grid; grid-template-columns:minmax(0,1.05fr) minmax(0,.95fr); gap:34px; align-items:start }
-  .table{ border:1px solid var(--line); border-radius:15px; overflow:hidden; background:var(--surface) }
-  .row{ display:grid; grid-template-columns:minmax(0,1fr) auto; gap:14px 18px; align-items:center;
-    padding:13px 18px; border-top:1px solid var(--line) }
-  .row:first-child{ border-top:0; background:var(--surface-2) }
-  .row .ev{ font-family:var(--mono); font-size:13px; letter-spacing:-.01em; overflow-wrap:break-word }
-  .row .ev small{ display:block; font-family:var(--sans); font-size:12px; color:var(--muted);
-    margin-top:3px; letter-spacing:0 }
-  .row .n{ font-family:var(--mono); font-size:13px; white-space:nowrap; color:var(--muted) }
-  .row .n b{ color:var(--amber); font-weight:700 }
-  .row--head .ev,.row--head .n{ font-family:var(--mono); font-size:10.5px; letter-spacing:.16em;
-    text-transform:uppercase; color:var(--muted) }
-  .row--total{ background:var(--surface-2) }
-  .row--total .ev{ font-weight:700; color:var(--ink) }
-  .perf-notes{ margin:0; padding:0; list-style:none; display:grid; gap:20px }
-  .perf-notes li{ position:relative; padding-left:26px }
-  .perf-notes li::before{ content:""; position:absolute; left:0; top:.55em; width:10px; height:2px;
-    background:var(--amber) }
-  .perf-notes b{ display:block; font-size:15px; margin-bottom:5px; letter-spacing:-.01em }
-  .perf-notes p{ margin:0; color:var(--muted); font-size:14px; line-height:1.55 }
+html[data-theme] {
+ --bg:var(--ccb-bg);--text:var(--ccb-text);--muted:var(--ccb-muted);--accent:var(--ccb-primary);
+ --on-accent:var(--ccb-on-primary);--line:var(--ccb-border);--subtle:var(--ccb-surface-alt);
+ --code-bg:var(--ccb-surface);--focus:var(--ccb-primary);
+}
+html[data-theme] body{font-family:var(--ccb-body)}
+html[data-theme] h1,html[data-theme] h2,html[data-theme] h3{font-family:var(--ccb-display)}
+.story-light{display:none}
+html[data-theme="light"] .story-dark{display:none}
+html[data-theme="light"] .story-light{display:block}
+html[data-theme] .ccb-theme{margin:0}
+html[data-theme] .header{height:auto;min-height:90px}
+html[data-theme] .nav{gap:22px}
+.theme-hint{text-align:center;font:11px/1.6 var(--ccb-body);color:var(--ccb-muted);margin:0;padding:0 20px 12px}
+html[data-theme] .turn-screen{background:var(--ccb-surface);border-radius:var(--ccb-radius)}
+html[data-theme="dark"] .card-number{color:var(--ccb-muted)}
+html[data-theme] .install-shell{border-radius:var(--ccb-radius);box-shadow:var(--ccb-shadow)}
+html[data-theme] .command{border-radius:var(--ccb-radius-sm)}
+html[data-theme] .proof-value{font-family:var(--ccb-display)}
+@media(max-width:1050px){html[data-theme] .nav .nav-link{display:none}}
+@media(max-width:620px){
+ html[data-theme] .header{padding:18px 0;flex-wrap:wrap;gap:15px}
+ html[data-theme] .header .brand{width:100%;justify-content:center;font-size:18px}
+ html[data-theme] .header .nav{width:100%;justify-content:center;gap:16px}
+ html[data-theme] .hero{padding-top:30px}
+ html[data-theme] .ccb-theme button{min-height:36px}
+}
+</style></head><body><a class="skip" href="#conteudo">Pular para o conteúdo</a><header class="header wrap"><a class="brand" href="#" aria-label="claude-code-boss, início"><span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 28 28" fill="none"><path d="M5 8h7V3h5v5h6v5h-6v10h-5V13H5z" fill="currentColor"/><path d="M3 18h5v5H3zM21 3h4v4h-4z" fill="currentColor" opacity=".5"/></svg></span>claude-code-boss <small>v3.0.0</small></a><nav class="nav" aria-label="Principal"><a class="nav-link" data-ccb-section="beneficios" href="#dark-beneficios">O que você ganha</a><a class="nav-link" data-ccb-section="como-funciona" href="#dark-como-funciona">Como funciona</a><a class="nav-cta" data-ccb-section="instalar" href="#dark-instalar">Instalar <span aria-hidden="true">↗</span></a><div class="ccb-theme" role="group" aria-label="Tema"><button type="button" data-ccb-theme="dark" aria-pressed="true">Dark</button><button type="button" data-ccb-theme="light" aria-pressed="false">Light</button></div></nav></header><p class="theme-hint">Explore a apresentação em Dark ou Light.</p><main id="conteudo"><div class="theme-story story-dark">
+<section class="hero wrap"><p class="eyebrow"><span class="dot"></span> Um upgrade para o seu Claude Code</p><h1>Menos repetição.<br><em>Mais memória.</em></h1><p class="hero-intro">Seu Claude Code lembra o que deu certo, resume o ruído e aprende com cada correção sua.</p><div class="hero-actions"><a class="btn" href="#dark-instalar">Dar memória ao meu Claude <span class="arrow" aria-hidden="true">↗</span></a><a class="text-link" href="#dark-como-funciona">Veja como funciona <span aria-hidden="true">↓</span></a></div><p class="micro">Na sua máquina. Sem chave de API no uso padrão.</p><div class="orbital" aria-label="Ilustração animada: as lições de um projeto orbitam uma memória central"><div class="orbit-plane" aria-hidden="true"><div class="orbit"></div><div class="orbit"></div><div class="orbit"></div><div class="satellite"></div><div class="satellite s2"></div><div class="satellite s3"></div></div><div class="memory-core" aria-hidden="true"><svg viewBox="0 0 60 60" fill="none"><path d="M30 8 49 19v22L30 52 11 41V19L30 8Z" stroke="currentColor" stroke-width="1.3"/><path d="m11 19 19 11 19-11M30 30v22M20 14l20 11v11L20 47" stroke="currentColor" stroke-width="1.3"/></svg></div><div class="memory-node node-a"><strong><span class="node-icon">✧</span> O que deu certo fica.</strong><small>Memória separada por projeto</small></div><div class="memory-node node-b"><strong><span class="node-icon">↳</span> Sua correção vira lição.</strong><small>Aprendizado no mesmo instante</small></div><div class="memory-node node-c"><strong><span class="node-icon">≋</span> Menos ruído na conversa.</strong><small>Resumos de tarefas repetidas</small></div><span class="orbit-label">CADA PROJETO, SUA ÓRBITA.</span><span class="simulation orbit-sim">Visualização conceitual · simulação</span></div><div class="hero-foot"><span>Memória local</span><span>Aprende com você</span><span>Código aberto · MIT</span></div></section>
+<section class="section wrap" id="dark-beneficios"><div class="section-head reveal"><div><p class="eyebrow">A experiência se acumula</p><h2>Seu próximo pedido<br>não começa do zero.</h2></div><p>Um pouco menos de “eu já te falei isso”. Um pouco mais de trabalho que anda.</p></div><div class="grid3"><article class="card benefit-card reveal"><div class="mini-art mini-memory" aria-hidden="true"><i></i><i></i><i></i></div><span class="card-number">01 / MEMÓRIA</span><h3>Ele lembra do projeto.</h3><p>Encontra o que já funcionou e o que deu errado. Mesmo quando você pergunta com outras palavras.</p></article><article class="card benefit-card reveal"><div class="mini-art mini-filter" aria-hidden="true"><div class="noise-lines"><i></i><i></i><i></i><i></i><i></i><i></i></div><span>→</span><div class="clean-lines"><i></i><i></i><i></i></div></div><span class="card-number">02 / CURADORIA</span><h3>O ruído vira resumo.</h3><p>Comandos de tarefa repetidos ganham resumos para ocupar menos espaço na conversa.</p></article><article class="card benefit-card reveal"><div class="mini-art mini-learn" aria-hidden="true"><span>↗</span></div><span class="card-number">03 / APRENDIZADO</span><h3>Sua correção fica.</h3><p>A lição é guardada na hora. Correções parecidas se juntam e ganham força na memória.</p></article></div></section>
+<section class="section wrap" id="dark-como-funciona"><div class="section-head reveal"><div><p class="eyebrow">Um turno de cada vez</p><h2>Pede. Faz.<br>Aprende. Lembra.</h2></div><p>Da sua primeira instrução à próxima lição. Toque nas etapas para explorar.</p></div><div class="step-tabs reveal" role="tablist" aria-label="Etapas de um turno"><button class="step-tab" id="dark-step-0" role="tab" aria-selected="true" aria-controls="dark-turn-panel" tabindex="0"><span class="step-n">01</span><strong>Você pede</strong><span>As lições do projeto acompanham o pedido.</span></button><button class="step-tab" id="dark-step-1" role="tab" aria-selected="false" aria-controls="dark-turn-panel" tabindex="-1"><span class="step-n">02</span><strong>O Boss resume</strong><span>Tarefas repetidas passam pela curadoria.</span></button><button class="step-tab" id="dark-step-2" role="tab" aria-selected="false" aria-controls="dark-turn-panel" tabindex="-1"><span class="step-n">03</span><strong>Você corrige</strong><span>A correção vira uma lição na hora.</span></button><button class="step-tab" id="dark-step-3" role="tab" aria-selected="false" aria-controls="dark-turn-panel" tabindex="-1"><span class="step-n">04</span><strong>Ele lembra</strong><span>O próximo pedido encontra essa experiência.</span></button></div><div class="turn-screen reveal" id="dark-turn-panel" role="tabpanel" aria-labelledby="dark-step-0" tabindex="0"><span class="simulation">Simulação · mensagens no formato real</span><h3 class="turn-title">Você pede. A memória entra em cena.</h3><code>[BRAIN] 2 relevant lesson(s):
+• Preserve as preferências deste projeto
+• Confira o que já falhou neste arquivo</code><p class="turn-desc">Exemplo de títulos de lições. O formato da mensagem é real.</p></div></section>
+<section class="section wrap"><div class="spotlight reveal"><div><p class="eyebrow">Tudo à vista</p><h2>Um painel.<br>Zero turnos.</h2><p>Digite <code>/dashboard</code>. O painel abre no navegador sem passar pelo modelo, até com o servidor de memória desligado.</p><p>Veja memórias, perfis e quanto a curadoria economiza — incluindo o custo de fazer os resumos.</p><a class="text-link" href="#dark-instalar">Colocar o Boss para trabalhar <span>↗</span></a></div><div class="dashboard-art"><div class="dash-bar"><span>VISÃO CONCEITUAL</span><span>SIMULAÇÃO</span></div><div class="dash-command">/dashboard <span aria-hidden="true">↵</span></div><div class="zero-pair"><div><b>0</b><small>turnos para abrir</small></div><div><b>US$ 0</b><small>para abrir o painel</small></div></div><div class="dash-pills"><span>Memória</span><span>Curadoria</span><span>Perfis</span><span>Hooks</span><span>Modelos</span></div></div></div><div class="extra-row reveal"><div><h3>Encontre o caminho no projeto.</h3><p>O Graph mostra as conexões entre arquivos e ajuda a entender quem chama o quê em repositórios grandes.</p></div><div><h3>Confirme que está tudo pronto.</h3><p>O Doctor faz o diagnóstico automático da instalação. E o perfil standard aprende em silêncio.</p></div></div></section>
+<section class="section wrap measured"><div class="section-head reveal"><div><p class="eyebrow">Medido, não prometido</p><h2>Leve no caminho.<br>Forte na memória.</h2></div><p>Resultados dos testes do produto. As condições de cada medição estão aqui.</p></div><div class="proof reveal"><div class="proof-item"><div class="proof-value">8,9 <small>ms</small></div><p>Latência p50 de um hook. São 13 hooks em um serviço compartilhado.</p></div><div class="proof-item"><div class="proof-value">234 <small>MB</small></div><p>Pico de memória do serviço com 8 sessões ao mesmo tempo.</p></div><div class="proof-item"><div class="proof-value">134 <small>ms</small></div><p>p95 em máquina fraca simulada, com 1 núcleo. Nenhum prazo estourado.</p></div><div class="proof-item"><div class="proof-value">4.170</div><p>Comandos reais em replay. Zero bloqueios desnecessários da curadoria.</p></div></div><p class="micro muted proof-source">Medições registradas na documentação do produto. <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md" style="text-decoration:underline;text-underline-offset:3px">Consultar README ↗</a></p></section><section class="section install wrap" id="dark-instalar"><div class="install-shell reveal"><div class="install-top"><div><p class="eyebrow">Comece aqui</p><h2>Seu Claude tem<br>muito a lembrar.</h2></div><p>Cole os dois comandos no Claude Code, na ordem abaixo.</p></div><div class="command"><span class="num">01</span><code>/plugin marketplace add AllanSantos-DV/claude-code-plugins</code><button type="button" class="copy" aria-label="Copiar comando 1">Copiar ↗</button></div><div class="command"><span class="num">02</span><code>/plugin install claude-code-boss@allansantos-plugins</code><button type="button" class="copy" aria-label="Copiar comando 2">Copiar ↗</button></div><p class="install-status" role="status" aria-live="polite"></p><p class="requirements"><strong>Antes de instalar:</strong> Node.js 22.13+ no PATH. O modelo de memória (~100–200 MB) é baixado uma única vez.<br><strong>No Windows:</strong> feche o Claude Code Desktop por completo e reabra após a instalação.<br>Quer o perfil silencioso? Use <code>/boss-profile standard</code> (opcional). <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md" style="text-decoration:underline;text-underline-offset:3px">Ver guia de instalação ↗</a></p></div></section></div><div class="theme-story story-light">
+<section class="hero wrap"><div><p class="eyebrow"><span class="tiny-rule"></span> Menos ruído. Mais continuidade.</p><h1>Dê espaço<br>ao que<br><span class="blue">importa.</span></h1><p class="hero-intro">Seu Claude Code com memória, resumos de tarefas repetidas e lições que ficam depois da sua correção.</p><div class="hero-actions"><a href="#light-instalar" class="btn">Instalar o Boss <span class="arrow" aria-hidden="true">↗</span></a><a class="text-link" href="#light-beneficios">Conheça o upgrade ↓</a></div><p class="micro">Tudo local · Sem chave de API no uso padrão · MIT</p></div><div class="machine" data-mode="clean"><div class="machine-top"><span>Do excesso ao essencial</span><span>Simulação</span></div><div class="compression-trail" aria-hidden="true"></div><div class="flow-dot" aria-hidden="true"></div><div class="input-stack"><div class="paper" aria-hidden="true"></div><div class="paper" aria-hidden="true"></div><div class="paper"><span class="paper-caption">SAÍDA DE UMA TAREFA REPETIDA</span><div class="paper-lines" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div></div></div><div class="processor" aria-label="Curadoria"><svg viewBox="0 0 40 40" fill="none" aria-hidden="true"><path d="M6 9h28L24 21v11l-8-4v-7L6 9Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg></div><div class="summary-paper"><header><span>RESUMO CURADO</span><span>✦</span></header><strong>O essencial fica.</strong><p>Menos saída bruta na conversa.</p></div><div class="machine-bottom"><span><i></i> Ilustração conceitual</span><label class="compress-control">Bruto <input type="range" min="0" max="100" value="100" aria-label="Comparar saída bruta e resumo curado" aria-valuetext="Resumo curado"> Resumo</label></div></div></section><div class="brand-strip"><div class="strip-inner wrap"><span><b>✦</b> Lembra do seu projeto</span><span><b>≋</b> Resume o repetitivo</span><span><b>↗</b> Aprende com você</span><span><b>⌂</b> Roda na sua máquina</span></div></div>
+<section class="section wrap" id="light-beneficios"><div class="section-head benefits-heading reveal"><div><p class="eyebrow">Três coisas a menos na sua cabeça</p><h2>O trabalho continua.<br>A experiência também.</h2></div><p>O Boss dá ao Claude Code uma memória do projeto — e cuida do que ocupa a conversa.</p></div><div class="feature-list"><article class="feature-row reveal"><span class="index">01</span><h3><span aria-hidden="true">⌘</span> Pare de reexplicar.</h3><p>As lições ficam separadas por projeto e são encontradas pelo significado, mesmo em outro idioma.</p></article><article class="feature-row reveal"><span class="index">02</span><h3><span aria-hidden="true">≋</span> Leia o que interessa.</h3><p>Tarefas repetidas ganham scripts que devolvem resumos. Menos saída de comandos ocupando a conversa.</p></article><article class="feature-row reveal"><span class="index">03</span><h3><span aria-hidden="true">↗</span> Faça a correção valer.</h3><p>Uma correção sua vira lição na hora. Ao editar um arquivo, o agente lembra o que já deu errado nele.</p></article></div></section>
+<section class="section compression-section"><div class="wrap curation-layout"><div class="reveal"><p class="eyebrow">Curadoria que presta contas</p><h2>O resumo vem.<br>A conta também.</h2><p>Veja quanto a curadoria economizou, quanto custou e quais scripts foram usados. Uma linha no início da sessão informa a economia, uma vez por dia.</p><p>Comandos de exploração e código improvisado ficam fora da curadoria. E um erro sem mudança não precisa rodar outra vez à toa.</p></div><div class="curation-visual reveal"><article class="audit-ticket"><span class="ticket-label">Na conversa</span><span class="ticket-icon" aria-hidden="true">≋</span><div><h3>Menos ruído.</h3><p>Resumos de tarefas que se repetem.</p></div></article><article class="audit-ticket"><span class="ticket-label">No painel</span><span class="ticket-icon" aria-hidden="true">↗</span><div><h3>Mais clareza.</h3><p>Economia, custo, uso e latência por script.</p></div></article></div></div></section>
+<section class="section wrap" id="light-como-funciona"><div class="section-head reveal"><div><p class="eyebrow">Um turno de cada vez</p><h2>Um fluxo simples.<br>Uma memória melhor.</h2></div><p>Da sua primeira instrução à próxima lição. Toque nas etapas para explorar.</p></div><div class="step-tabs reveal" role="tablist" aria-label="Etapas de um turno"><button class="step-tab" id="light-step-0" role="tab" aria-selected="true" aria-controls="light-turn-panel" tabindex="0"><span class="step-n">01</span><strong>Você pede</strong><span>As lições do projeto acompanham o pedido.</span></button><button class="step-tab" id="light-step-1" role="tab" aria-selected="false" aria-controls="light-turn-panel" tabindex="-1"><span class="step-n">02</span><strong>O Boss resume</strong><span>Tarefas repetidas passam pela curadoria.</span></button><button class="step-tab" id="light-step-2" role="tab" aria-selected="false" aria-controls="light-turn-panel" tabindex="-1"><span class="step-n">03</span><strong>Você corrige</strong><span>A correção vira uma lição na hora.</span></button><button class="step-tab" id="light-step-3" role="tab" aria-selected="false" aria-controls="light-turn-panel" tabindex="-1"><span class="step-n">04</span><strong>Ele lembra</strong><span>O próximo pedido encontra essa experiência.</span></button></div><div class="turn-screen reveal" id="light-turn-panel" role="tabpanel" aria-labelledby="light-step-0" tabindex="0"><span class="simulation">Simulação · mensagens no formato real</span><h3 class="turn-title">Você pede. A memória entra em cena.</h3><code>[BRAIN] 2 relevant lesson(s):
+• Preserve as preferências deste projeto
+• Confira o que já falhou neste arquivo</code><p class="turn-desc">Exemplo de títulos de lições. O formato da mensagem é real.</p></div></section>
+<section class="section wrap" style="padding-top:0"><div class="zero-band reveal"><div class="zero-copy"><p class="eyebrow">Acesso direto ao painel</p><h2>Abra. Veja.<br>Sem gastar um turno.</h2><p>Digite <code>/dashboard</code> para abrir o painel no navegador. A abertura não passa pelo modelo e funciona até com o servidor de memória desligado.</p></div><div class="zero-art"><code>/dashboard ↵</code><div class="big-zero">0 + 0</div><p>0 turnos · US$ 0 para abrir o painel</p></div></div><div class="tool-notes reveal"><div><h3>Um mapa para se encontrar.</h3><p>O Graph revela as conexões de repositórios grandes e os arquivos centrais.</p></div><div><h3>Uma checagem para começar.</h3><p>O Doctor diagnostica a instalação. O perfil standard fica silencioso, mas continua aprendendo.</p></div></div></section>
+<section class="section wrap measured"><div class="section-head reveal"><div><p class="eyebrow">Medido, não prometido</p><h2>O ganho tem base.</h2></div><p>Resultados dos testes do produto. As condições de cada medição estão aqui.</p></div><div class="proof reveal"><div class="proof-item"><div class="proof-value">8,9 <small>ms</small></div><p>Latência p50 de um hook. São 13 hooks em um serviço compartilhado.</p></div><div class="proof-item"><div class="proof-value">234 <small>MB</small></div><p>Pico de memória do serviço com 8 sessões ao mesmo tempo.</p></div><div class="proof-item"><div class="proof-value">134 <small>ms</small></div><p>p95 em máquina fraca simulada, com 1 núcleo. Nenhum prazo estourado.</p></div><div class="proof-item"><div class="proof-value">4.170</div><p>Comandos reais em replay. Zero bloqueios desnecessários da curadoria.</p></div></div><p class="micro muted proof-source">Medições registradas na documentação do produto. <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md" style="text-decoration:underline;text-underline-offset:3px">Consultar README ↗</a></p></section><section class="section install wrap" id="light-instalar"><div class="install-shell reveal"><div class="install-top"><div><p class="eyebrow">Comece aqui</p><h2>Dois comandos.<br>Um novo hábito.</h2></div><p>Cole os dois comandos no Claude Code, na ordem abaixo.</p></div><div class="command"><span class="num">01</span><code>/plugin marketplace add AllanSantos-DV/claude-code-plugins</code><button type="button" class="copy" aria-label="Copiar comando 1">Copiar ↗</button></div><div class="command"><span class="num">02</span><code>/plugin install claude-code-boss@allansantos-plugins</code><button type="button" class="copy" aria-label="Copiar comando 2">Copiar ↗</button></div><p class="install-status" role="status" aria-live="polite"></p><p class="requirements"><strong>Antes de instalar:</strong> Node.js 22.13+ no PATH. O modelo de memória (~100–200 MB) é baixado uma única vez.<br><strong>No Windows:</strong> feche o Claude Code Desktop por completo e reabra após a instalação.<br>Quer o perfil silencioso? Use <code>/boss-profile standard</code> (opcional). <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md" style="text-decoration:underline;text-underline-offset:3px">Ver guia de instalação ↗</a></p></div></section></div></main><footer class="footer wrap"><span>Feito por Allan Santos · Código aberto · MIT</span><div class="footer-links"><a href="tech.html">Detalhes técnicos</a><a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">Changelog</a><a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a><a href="https://github.com/AllanSantos-DV/claude-code-plugins">GitHub ↗</a></div></footer><button class="motion-toggle" type="button" aria-pressed="false"><span class="motion-icon" aria-hidden="true"><i></i><i></i></span><span class="motion-label">Pausar movimento</span></button><script>
+const reduce = matchMedia('(prefers-reduced-motion: reduce)');
+let paused = reduce.matches;
+const toggle = document.querySelector('.motion-toggle');
+function motionState(){document.body.classList.toggle('paused',paused);toggle.setAttribute('aria-pressed',String(paused));toggle.disabled=reduce.matches;toggle.querySelector('.motion-label').textContent=reduce.matches?'Movimento reduzido':paused?'Ativar movimento':'Pausar movimento';if(reduce.matches)document.getAnimations().forEach(a=>a.cancel());}
+toggle.addEventListener('click',()=>{paused=!paused;motionState()});
+reduce.addEventListener('change',()=>{paused=reduce.matches;motionState();if(paused){document.documentElement.classList.remove('js-motion');document.querySelectorAll('.reveal').forEach(el=>el.classList.add('visible'))}});
+motionState();
+if(!reduce.matches && 'IntersectionObserver' in window){document.documentElement.classList.add('js-motion');const observer=new IntersectionObserver(entries=>entries.forEach(entry=>{if(entry.isIntersecting){entry.target.classList.add('visible');observer.unobserve(entry.target)}}),{threshold:.08});document.querySelectorAll('.reveal').forEach(el=>observer.observe(el));}
+document.querySelectorAll('.copy').forEach(button=>button.addEventListener('click',async()=>{
+ const value=button.parentElement.querySelector('code').textContent;
+ const status=button.closest('.install').querySelector('.install-status');let copied=false;
+ try{if(navigator.clipboard && window.isSecureContext){await navigator.clipboard.writeText(value);copied=true;}}catch(error){console.info('Usando alternativa de cópia.',error.name)}
+ if(!copied){const text=document.createElement('textarea');text.value=value;text.style.cssText='position:fixed;top:0;left:0;opacity:0';document.body.append(text);text.select();try{copied=document.execCommand('copy')}catch(error){console.info('Cópia manual disponível.',error.name)}text.remove();button.focus();}
+ button.textContent=copied?'Copiado ✓':'Selecionar';status.textContent=copied?'Comando copiado. Cole no Claude Code.':'Selecione o comando acima e copie com Ctrl+C (ou ⌘C).';
+ if(!copied){const range=document.createRange();range.selectNodeContents(button.parentElement.querySelector('code'));const selection=window.getSelection();selection.removeAllRanges();selection.addRange(range)}
+ setTimeout(()=>button.textContent='Copiar ↗',2200);
+}));
+const turnData=[
+ ['Você pede. A memória entra em cena.','[BRAIN] 2 relevant lesson(s):\n• Preserve as preferências deste projeto\n• Confira o que já falhou neste arquivo','Exemplo de títulos de lições. O formato da mensagem é real.'],
+ ['O que se repete ganha um resumo.','[curadoria] Redirecionado para o script curado do projeto: npm test → node .vscode/scripts/tests.mjs','Comandos de tarefa repetidos passam por scripts curados. A exploração continua livre.'],
+ ['Você corrige. A lição fica.','capture_lesson\nmesclada com a lição existente · recorrência 4','Uma correção vira uma lição. Se já houver uma parecida, elas são mescladas.'],
+ ['No próximo pedido, ela volta.','[BRAIN] 2 relevant lesson(s):\n• Preserve as preferências deste projeto\n• Confira o que já falhou neste arquivo','A busca recupera lições por significado e por palavras, dentro de cada projeto.']
+];
+document.querySelectorAll('.theme-story').forEach(story=>{
+story.querySelectorAll('.step-tab').forEach((tab,i)=>{tab.addEventListener('click',()=>{story.querySelectorAll('.step-tab').forEach(t=>{t.setAttribute('aria-selected','false');t.tabIndex=-1});tab.setAttribute('aria-selected','true');tab.tabIndex=0;const panel=story.querySelector('.turn-screen');panel.setAttribute('aria-labelledby',tab.id);panel.querySelector('.turn-title').textContent=turnData[i][0];panel.querySelector('code').textContent=turnData[i][1];panel.querySelector('.turn-desc').textContent=turnData[i][2];if(!reduce.matches && !paused)panel.animate([{opacity:.3,transform:'translateY(5px)'},{opacity:1,transform:'translateY(0)'}],{duration:260})});tab.addEventListener('keydown',event=>{const tabs=[...story.querySelectorAll('.step-tab')];let next;if(event.key==='ArrowRight')next=(i+1)%4;if(event.key==='ArrowLeft')next=(i+3)%4;if(event.key==='Home')next=0;if(event.key==='End')next=3;if(next!==undefined){event.preventDefault();tabs[next].focus();tabs[next].click()}})});
 
-  /* instalação */
-  .install{ display:grid; grid-template-columns:minmax(0,1fr) minmax(0,.9fr); gap:40px; align-items:start }
-  .install-title{ font-size:clamp(1.45rem,3.1vw,2.05rem); letter-spacing:-.028em; line-height:1.15;
-    margin:0 0 18px }
-  .install .lead{ color:var(--muted); font-size:15.5px; line-height:1.6; margin:0 0 26px; max-width:52ch }
-  .install .lead b{ color:var(--ink); font-weight:600 }
-  ol.steps{ list-style:none; margin:0; padding:0; counter-reset:st; display:grid; gap:16px }
-  ol.steps li{ counter-increment:st; position:relative; padding-left:48px; min-height:34px }
-  ol.steps li::before{ content:counter(st); position:absolute; left:0; top:0; width:34px; height:34px;
-    border-radius:10px; display:grid; place-items:center; font-family:var(--mono); font-size:12.5px;
-    font-weight:700; color:var(--amber); border:1px solid var(--amber); background:var(--amber-soft) }
-  ol.steps b{ display:block; font-size:15px; letter-spacing:-.01em; padding-top:5px }
-  ol.steps span{ display:block; font-size:13.5px; color:var(--muted); margin-top:3px; line-height:1.5 }
-  .term{ border:1px solid var(--line); border-radius:15px; background:var(--surface);
-    box-shadow:var(--shadow); overflow:hidden }
-  .term .bar{ display:flex; align-items:center; gap:7px; padding:12px 16px;
-    border-bottom:1px solid var(--line); background:var(--surface-2) }
-  .term .bar i{ width:10px; height:10px; border-radius:50%; display:block }
-  .term .bar i:nth-child(1){ background:#d8574f } .term .bar i:nth-child(2){ background:#d8a34f }
-  .term .bar i:nth-child(3){ background:#57c25f }
-  .term .bar span{ margin-left:8px; font-family:var(--mono); font-size:11.5px; color:var(--muted) }
-  .term pre{ margin:0; padding:20px 18px; font-family:var(--mono); font-size:12.5px; line-height:1.95;
-    color:var(--ink); white-space:pre-wrap; overflow-wrap:break-word }
-  .term .c{ color:var(--amber) }
-  .term .cm{ color:var(--muted) }
 
-  /* footer */
-  footer{ border-top:1px solid var(--line); padding:40px 0 60px }
-  .foot-grid{ display:flex; align-items:center; justify-content:space-between; gap:18px; flex-wrap:wrap }
-  .foot-grid .links{ display:flex; gap:4px; flex-wrap:wrap }
-  .foot-grid .links a{ font-size:13.5px; color:var(--muted); text-decoration:none; padding:7px 11px;
-    border-radius:8px }
-  .foot-grid .links a:hover{ color:var(--amber); background:var(--amber-soft) }
-  .legal{ font-family:var(--mono); font-size:11.5px; color:var(--muted) }
-
-  @media (max-width:880px){
-    .sec-head{ grid-template-columns:minmax(0,1fr) }
-    .feat-grid{ grid-template-columns:repeat(2,minmax(0,1fr)) }
-    .feat-grid .feat:last-child{ grid-column:1 / -1 }
-    .feat--lead{ grid-row:auto }
-    .hop{ grid-template-columns:repeat(2,minmax(0,1fr)) }
-    .fixes ul{ grid-template-columns:minmax(0,1fr) }
-    .pillar{ grid-template-columns:44px minmax(0,1fr); gap:16px }
-    .pillar .ic{ width:44px; height:44px }
-    .pillar ul{ grid-template-columns:minmax(0,1fr) }
-    .extras{ grid-template-columns:minmax(0,1fr) }
-    .router-intro{ grid-template-columns:minmax(0,1fr) }
-    .router-copy h2{ max-width:20ch }
-    .router-details,.break-grid{ grid-template-columns:minmax(0,1fr) }
-    .perf{ grid-template-columns:minmax(0,1fr); gap:30px }
-    .install{ grid-template-columns:minmax(0,1fr); gap:32px }
-  }
-  @media (max-width:620px){
-    body{ font-size:16px }
-    .nav-links a:not(.ver){ display:none }
-    .hero .facts{ gap:6px 18px }
-    .step{ grid-template-columns:38px minmax(0,1fr); padding:13px 14px; gap:13px }
-    .step .ic{ width:38px; height:38px }
-    .step .tag{ display:none }
-    .pillar{ grid-template-columns:minmax(0,1fr); gap:14px }
-    .pillar ul{ grid-column:1 }
-    .feat-grid{ grid-template-columns:minmax(0,1fr) }
-    .feat--lead,.feat-grid .feat:last-child{ grid-column:auto }
-    .hop{ grid-template-columns:minmax(0,1fr) }
-    .vs-row{ grid-template-columns:52px minmax(0,1fr); gap:4px 10px }
-    .vs-row b{ grid-column:2; white-space:normal }
-    .router-choice{ grid-template-columns:minmax(0,1fr) }
-    .patch-head{ grid-template-columns:minmax(0,1fr) }
-    .protocols{ flex-wrap:wrap }
-    .route-line{ grid-template-columns:minmax(0,1fr); gap:6px }
-    .route-state{ white-space:normal }
-    .btn{ width:100%; justify-content:center }
-    .row{ grid-template-columns:minmax(0,1fr); gap:6px }
-    .row .n{ justify-self:start }
-    .row--head{ display:none }
-  }
-</style>
-</head>
-<body>
-
-<header class="nav wrap">
-  <a class="brand" href="#top" aria-label="claude-code-boss, início">
-    <span class="mark" aria-hidden="true">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M4 12h10M4 17h13"/></svg>
-    </span>
-    <span class="name">claude-code-boss</span>
-  </a>
-  <nav class="nav-links" aria-label="Seções">
-    <a href="#memoria">Como funciona</a>
-    <a href="#destaques">Novo na 3.0</a>
-    <a href="#rotear">Conectar modelos</a>
-    <a href="#recursos">Recursos</a>
-    <a href="#leve">Custo por sessão</a>
-    <a href="#instalar">Instalar</a>
-    <a href="tech.html">Detalhes técnicos</a>
-    <a class="ver" href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">v3.0.0</a>
-  </nav>
-</header>
-
-<main id="top">
-
-  <section class="hero wrap">
-    <h1>O Claude Code que <em>não esquece</em> — e aprende com as suas correções.</h1>
-    <p class="sub">Base de conhecimento <b>semântica e local</b> (Brain KB), execução <b>curada</b> contra context-bloat e captura de lições a cada vez que você corrige o agente. Quando você precisa sair da rota padrão, conecta seu gateway ou sua chave a endpoints Anthropic ou OpenAI sem perder o picker do Claude Code.</p>
-    <div class="cta-row">
-      <a class="btn btn--primary" href="#instalar">Instalar pelo marketplace
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
-      </a>
-      <a class="btn btn--ghost" href="tech.html">Ver detalhes técnicos</a>
-    </div>
-    <ul class="facts">
-      <li><span class="dot" aria-hidden="true"></span><b>v3.0.0</b> (major)</li>
-      <li><span class="dot" aria-hidden="true"></span><code>/dashboard</code> em <b>0 turnos</b></li>
-      <li><span class="dot" aria-hidden="true"></span>Claude Code Desktop + <b>Node 22.13+</b></li>
-      <li><span class="dot" aria-hidden="true"></span><b>Sem chave de API</b> no caminho padrão</li>
-      <li><span class="dot" aria-hidden="true"></span>Licença <b>MIT</b></li>
-    </ul>
-
-    <div class="loop" id="memoria">
-      <p class="cap"><b>o loop</b> · o que acontece a cada turno</p>
-      <div class="steps-flow">
-        <div class="step">
-          <span class="ic" aria-hidden="true">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-8 8H4l2.2-2.6A8 8 0 1 1 21 12z"/></svg>
-          </span>
-          <div>
-            <span class="t">Você escreve o prompt</span>
-            <span class="d">Pergunta, pedido ou correção. O hook do turno é um processo só, não um por detector.</span>
-          </div>
-          <span class="tag">entrada</span>
-        </div>
-        <div class="arrow" aria-hidden="true">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
-        </div>
-        <div class="step">
-          <span class="ic" aria-hidden="true">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6"/><path d="m20 20-4.5-4.5"/></svg>
-          </span>
-          <div>
-            <span class="t">O Brain recupera o que é relevante</span>
-            <span class="d">O prompt é embedado no daemon local (quente, na casa dos milissegundos) e as lições acima do gate entram como um bloco <code>[BRAIN]</code>.</span>
-          </div>
-        </div>
-        <div class="arrow" aria-hidden="true">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
-        </div>
-        <div class="step">
-          <span class="ic" aria-hidden="true">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 18V7a3 3 0 0 1 6 0v11M14 18V7a3 3 0 0 1 6 0v11"/><path d="M4 12h6M14 12h6"/></svg>
-          </span>
-          <div>
-            <span class="t">Comandos ruidosos são reescritos para o script curado</span>
-            <span class="d">Se a assinatura do comando casa com um script curado, a guarda o reescreve antes de rodar e avisa o modelo. Um comando que já falhou na mesma sessão, sem edição desde então, volta com a última saída em vez de falhar de novo.</span>
-          </div>
-        </div>
-        <div class="arrow" aria-hidden="true">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M6 13l6 6 6-6"/></svg>
-        </div>
-        <div class="step step--out">
-          <span class="ic" aria-hidden="true">
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/><circle cx="12" cy="12" r="3.2"/></svg>
-          </span>
-          <div>
-            <span class="t">Sua correção vira lição durável</span>
-            <span class="d">O agente chama <code>capture_lesson</code> ainda no loop, com contexto completo: dedup e merge inline somam recorrência em vez de duplicar. Nada de reler transcript nem subagente caro.</span>
-          </div>
-          <span class="tag">saída</span>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <section id="destaques" class="wrap">
-    <div class="sec-head">
-      <h2>Novo na 3.0: a curadoria fecha o ciclo, e presta contas</h2>
-      <p>Seis recursos novos: o dashboard abre sem gastar um turno, o script curado se estende, se ajusta e é podado quando ninguém o usa, e a sessão começa dizendo o que a curadoria rendeu. Cada um foi provado no Claude Code real.</p>
-    </div>
-
-    <div class="feat-grid">
-      <article class="feat feat--lead">
-        <div class="body">
-          <p class="k">/dashboard · sem passar pelo modelo</p>
-          <h3>O pedido mais frequente agora é respondido por um hook</h3>
-          <p class="stat">0 turnos · US$&nbsp;0<small>~2 s na primeira vez, ~0,8 s com o dashboard já no ar.</small></p>
-          <div class="vs" role="img" aria-label="Antes: 5 turnos, cerca de 0,21 a 0,31 dólar. Agora: 0 turnos, 0 dólar.">
-            <div class="vs-row"><span>antes</span><span class="vs-bar"></span><b>5 turnos · ~US$&nbsp;0,21–0,31</b></div>
-            <div class="vs-row vs-row--now"><span>agora</span><span class="vs-bar"></span><b>0 turnos · US$&nbsp;0</b></div>
-          </div>
-          <p class="d">Digite <code>/dashboard</code> ou <code>/claude-code-boss:dashboard</code>: o hook garante o dashboard no ar (sonda HTTP da porta publicada, sem subir um segundo processo), abre o navegador e <b>bloqueia</b> o prompt mostrando a URL. São hooks <code>command</code> (<code>UserPromptExpansion</code> e <code>UserPromptSubmit</code>), então funcionam mesmo com o brain daemon fora do ar. Falha também bloqueia, com a causa.</p>
-          <ol class="hop" aria-label="Caminho do /dashboard">
-            <li><b>1 · você digita</b><code>/dashboard</code> ou o nome completo</li>
-            <li><b>2 · hook command</b>sonda HTTP da porta publicada; sobe o dashboard só se preciso</li>
-            <li><b>3 · navegador</b>abre o painel; o prompt é bloqueado mostrando a URL</li>
-            <li class="skip"><b>modelo</b>não recebe o prompt: 0 turnos, US$&nbsp;0</li>
-          </ol>
-        </div>
-        <p class="proof">medido no Claude Code real</p>
-      </article>
-
-      <article class="feat">
-        <div class="body">
-          <p class="k">variante → alias</p>
-          <h3>Variante recorrente estende o script curado</h3>
-          <p class="stat">1 linha<small>em vez de 404, na sessão seguinte</small></p>
-          <p class="d">Quando uma <b>variante</b> de um comando curado (ex.: <code>npm test -- --reporter=dot</code> com o script cobrindo <code>npm test</code>) roda crua, ruidosa e se repete, o Stop não pede um segundo script: pede para <b>estender</b> o existente (EXTEND) e registrar a variante como alias. Daí em diante ela é redirecionada, e o registro preserva os ajustes do script (orçamento, timeout, label, ícone).</p>
-        </div>
-        <p class="proof">ciclo provado no Claude Code real, com os ajustes do script intactos</p>
-      </article>
-
-      <article class="feat">
-        <div class="body">
-          <p class="k">filtro repetido → ajuste</p>
-          <h3>O filtro vai para a origem, não para cada chamada</h3>
-          <p class="stat">pede 1 vez<small>na 2ª vez, por projeto, script e filtro</small></p>
-          <p class="d">Se o agente filtra a saída de um script curado sempre do mesmo jeito (<code>node tests.mjs | tail -3</code>), o Stop pede <b>uma vez</b> para embutir o filtro no script ou no seu <code>outputLines</code>. Depois a decisão é do agente: se ele explica por que o filtro fica, o boss não insiste.</p>
-        </div>
-        <p class="proof">provado: script reduzido a uma linha no sucesso; filtrar de novo não gerou cobrança</p>
-      </article>
-
-      <article class="feat">
-        <div class="body">
-          <p class="k">poda · Prune</p>
-          <h3>Script curado que nunca rodou sai do caminho</h3>
-          <p class="stat">botão + tool<small>painel Curation &amp; guards e <code>curation_prune_unused</code></small></p>
-          <p class="d">Lista os scripts que <b>nunca rodaram</b> na janela (nem execução, nem redirect, nem pipe). Seguro por construção: nenhum candidato enquanto o histórico de <b>uso</b> da 3.0 não cobrir a janela inteira (numa instalação recém-atualizada nada é "não usado"), nunca um script mais novo que ela, ids recalculados na poda. Sai só o registro do <code>shells.json</code>, com backup no diretório de dados do plugin (os 5 mais recentes por projeto); o arquivo do script fica.</p>
-        </div>
-        <p class="proof">provado no Claude Code real (tool) e no dashboard</p>
-      </article>
-
-      <article class="feat">
-        <div class="body">
-          <p class="k">SessionStart · resumo de valor</p>
-          <h3>A sessão começa dizendo o que a curadoria rendeu</h3>
-          <p class="stat">1×/dia<small>por projeto, sobre os últimos 7 dias</small></p>
-          <p class="d">Uma linha: tokens economizados (moldador exato + redirects estimados), redirects, execuções de scripts curados, custo cru e <b>o maior gargalo</b>, por regras fixas. Os mesmos números do painel; sem atividade, nada aparece.</p>
-        </div>
-        <p class="proof">provado no Claude Code real; não se repete no mesmo dia</p>
-      </article>
-
-      <article class="feat">
-        <div class="body">
-          <p class="k">BRAIN-HEALTH · hook lento</p>
-          <h3>Aviso antes de um hook ficar sem folga</h3>
-          <p class="stat">p95 ≥ ½ prazo<small>com 10+ chamadas medidas, ou algum prazo estourado</small></p>
-          <p class="d">O sinal vem antes de o hook começar a não decidir nada (fail-open). No máximo uma vez por hook a cada 6 h por processo do daemon, e só sobre o daemon desta instalação.</p>
-        </div>
-        <p class="proof">provado: hook forçado a estourar → alerta na sessão seguinte</p>
-      </article>
-    </div>
-
-    <div class="fixes">
-      <p class="k">corrigido junto</p>
-      <ul>
-        <li><b>O dashboard não carregava nenhum painel:</b> o script da página não compilava (um apóstrofo numa string JS). Corrigido, e um teste agora compila todo script embutido no <code>index.html</code>.</li>
-        <li><b>Edições do <code>shells.json</code></b> (script ou alias registrado no meio da sessão) passam a ser vistas pelo daemon sem reiniciar.</li>
-        <li><b>Uma execução <code>CCB_RAW=1</code></b>, o escape que o próprio redirect oferece, nunca mais é cobrada como falta de curadoria.</li>
-        <li><b>O navegador nunca abria</b> na primeira subida do dashboard (<code>DASHBOARD_NO_OPEN='0'</code> era lido como "não abrir").</li>
-      </ul>
-    </div>
-  </section>
-
-  <section id="novo" class="wrap">
-    <div class="sec-head">
-      <h2>3.0.0: a curadoria redesenhada, e o que muda para você</h2>
-      <p>Uma versão major. Ela inclui tudo o que estava preparado como 2.29.1 (nunca publicada), o redesenho da curadoria, o endurecimento do daemon de hooks e as correções de escopo por sessão.</p>
-    </div>
-
-    <div class="break-grid">
-      <article class="router-detail">
-        <p class="k">incompatível · U4</p>
-        <b>Composto identificado por todos os segmentos</b>
-        <p>Um comando composto passa a ser identificado por <b>todos</b> os seus segmentos de trabalho, em ordem: <code>git status &amp;&amp; git diff</code> ≠ <code>git status</code>. Antes, 425 assinaturas cobriam 2.285 comandos diferentes; agora são 27.</p>
-      </article>
-      <article class="router-detail">
-        <p class="k">incompatível · U13</p>
-        <b>Número de descritor fora da assinatura</b>
-        <p><code>git status 2&gt;&amp;1</code> passa a ser <code>git status</code>: o <code>2</code> colado ao redirecionamento sai, mas <code>sleep 2 &gt; f</code> mantém o <code>2</code>.</p>
-      </article>
-      <article class="router-detail">
-        <p class="k">incompatível · curadoria</p>
-        <b>Redirecionar em vez de negar</b>
-        <p>O guard não nega mais variantes nem pipes: reescreve comandos de tarefa para o script curado e só pede script para comando de tarefa que se repete.</p>
-      </article>
-      <article class="router-detail">
-        <p class="k">incompatível · hooks no daemon</p>
-        <b>13 hooks rodam como <code>mcp_tool</code></b>
-        <p>Os 12 da Fase G mais o <code>hook_policy_inject</code> do <code>SubagentStart</code> rodam no brain-server, que precisa estar conectado. Com ele fora do ar, o Claude Code trata o hook como erro não bloqueante. Na 1ª sessão depois de boot, update ou reload, os hooks dos primeiros segundos podem ser pulados enquanto o cliente reconecta.</p>
-      </article>
-      <article class="router-detail break-wide">
-        <p class="k">incompatível · permissões</p>
-        <b>O boss não aprova mais comandos por você</b>
-        <p>O <code>curation-guard</code> e o <code>graph-guard</code> respondiam <code>allow</code> como padrão "nada a fazer" para todo comando Bash/Grep/Glob, e um <code>allow</code> de PreToolUse pula o sistema de permissões do Claude Code: quem não usa <code>bypassPermissions</code> tinha tudo aprovado sem prompt (vinha da 1.x; achado pela auditoria pré-release). Agora "nada a fazer" é <b>abstenção</b> (<code>{}</code>) e o seu fluxo de permissões decide. Só as reescritas decidem: o redirect (<code>allow</code> em bypass, <code>ask</code> nos demais modos) e o moldador (só em bypass). A whitelist do <code>shells.json</code> passa a só isentar do modo <code>denyUnknown</code>.</p>
-      </article>
-    </div>
-
-    <div class="router-note">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2.8 20h18.4z"/><path d="M12 9v5M12 17.5v.1"/></svg>
-      <p><b>Efeito das novas assinaturas:</b> marcações de uso único e recorrências gravadas para compostos, ou com o sufixo de descritor antigo, deixam de casar. A curadoria pode perguntar de novo, <b>uma vez</b>, por esses comandos.</p>
-    </div>
-  </section>
-
-  <section id="rotear" class="wrap">
-    <div class="router-intro">
-      <div class="router-copy">
-        <h2>Seu endpoint, no protocolo que ele <em>fala.</em></h2>
-        <p>Você escolhe quem recebe cada operação. O Model Router mantém a interface local do Claude Code e adapta o outro lado para Anthropic Messages ou OpenAI Chat Completions.</p>
-      </div>
-      <div class="router-choice">
-        <article class="route-mode">
-          <div class="label">custom upstream <span>assinatura</span></div>
-          <b>Leve a rota da assinatura ao seu gateway</b>
-          <p>Preserva a credencial que o Claude Code já envia e repassa somente os headers extras que você autorizou.</p>
-        </article>
-        <article class="route-mode">
-          <div class="label">BYOK <span>sua chave</span></div>
-          <b>Use suas próprias credenciais</b>
-          <p>Remove o token da assinatura Claude e envia apenas os headers que você configurou para o endpoint.</p>
-        </article>
-      </div>
-    </div>
-
-    <div class="patchbay" aria-label="Mapa configurável de operações do Model Router">
-      <div class="patch-head">
-        <div class="title"><span class="light" aria-hidden="true"></span>model-router / mapa de saída</div>
-        <div class="protocols"><span>wire protocol</span><b>Anthropic Messages</b><span>ou</span><b>OpenAI Chat Completions</b></div>
-      </div>
-      <div class="patch-body">
-        <div class="route-line">
-          <span class="route-op">models</span>
-          <span class="route-url">https://seu-gateway.example/v1/models</span>
-          <span class="route-state">picker</span>
-        </div>
-        <div class="route-line">
-          <span class="route-op">generate</span>
-          <span class="route-url">https://seu-gateway.example/v1/chat/completions</span>
-          <span class="route-state">resposta + SSE</span>
-        </div>
-        <div class="route-line">
-          <span class="route-op">countTokens</span>
-          <span class="route-url">https://seu-gateway.example/tokenize</span>
-          <span class="route-state">URL independente</span>
-        </div>
-        <div class="route-line">
-          <span class="route-op">classify</span>
-          <span class="route-url">https://seu-gateway.example/classify</span>
-          <span class="route-state">ou herda generate</span>
-        </div>
-      </div>
-    </div>
-
-    <div class="router-details">
-      <article class="router-detail">
-        <p class="k">01 · configure</p>
-        <b>Dashboard ou ambiente</b>
-        <p>Abra <code>/dashboard</code> → Router para escolher protocolo, URLs e headers. Em automação, use <code>ROUTER_UPSTREAM_*</code> ou <code>ROUTER_BYOK_*</code>. Precedência: dashboard/<code>user-config.json</code> → ambiente → defaults.</p>
-      </article>
-      <article class="router-detail">
-        <p class="k">02 · escolha</p>
-        <b>Modelos reais no picker</b>
-        <p>IDs que não parecem Anthropic ganham um alias só para passar pelo filtro de <code>/model</code>. Antes da chamada, o router restaura o ID original.</p>
-        <div class="alias-flow" aria-label="Exemplo de alias temporário de modelo">
-          <span>gpt-4.1</span><i>→</i><span>anthropic-ccb-alias-gpt-4.1</span><i>→</i><span>gpt-4.1</span>
-        </div>
-      </article>
-      <article class="router-detail">
-        <p class="k">03 · trabalhe</p>
-        <b>Tradução completa na rota OpenAI</b>
-        <p>Mensagens, imagens base64 suportadas, tools, tool results, JSON e stop reasons atravessam a ponte nos dois sentidos. No stream SSE, nomes de tool calls fragmentados são recompostos e o usage do chunk final separado chega no fechamento. Campo incompatível falha alto; nada some em silêncio.</p>
-      </article>
-      <article class="router-detail">
-        <p class="k">04 · mapeie <span class="new">novo na v3.0.0</span></p>
-        <b>Mapeamento de modelo, só no BYOK</b>
-        <p>Opcional e vazio por padrão: regras origem → destino trocam o <code>model</code> enviado ao seu endpoint, em qualquer rota BYOK (<code>always</code>, fallback <code>on-limit</code> e cooldown). A ordem é previsível: ID exato, depois o ID sem data de snapshot, depois padrões com <code>*</code> (o mais específico vence). Sem regra, o modelo segue como veio; o caminho da assinatura nunca é alterado.</p>
-        <div class="alias-flow" aria-label="Exemplo de regra de mapeamento de modelo">
-          <span>claude-sonnet-5-*</span><i>→</i><span>provedor.modelo-c</span>
-        </div>
-        <p class="more">Para gateways que roteiam por outro campo, a <b>injeção</b> (desligada por padrão) grava o modelo resolvido num campo do corpo ou num header via template <code>{model}</code>. Regras e templates são editados em <code>/dashboard</code> → BYOK; regra inválida é recusada e falha alto, sem cair em silêncio para o plano B.</p>
-      </article>
-    </div>
-
-    <div class="router-note">
-      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2.8 20h18.4z"/><path d="M12 9v5M12 17.5v.1"/></svg>
-      <p><b>O router nasce desligado.</b> Ativar BYOK ou um fallback pode gerar cobrança no endpoint escolhido. Para OpenAI, informe uma URL de contagem se o seu provedor oferecer essa operação; o protocolo não define um caminho padrão. Credenciais ficam fora do repositório.</p>
-    </div>
-  </section>
-
-  <section id="recursos" class="wrap">
-    <div class="sec-head">
-      <h2>Três coisas que o Claude Code nativo não faz</h2>
-      <p>Tudo roda na sua máquina, com o embedding local baixado uma vez na instalação.</p>
-    </div>
-
-    <div class="pillars">
-      <article class="pillar">
-        <span class="ic" aria-hidden="true">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="7" r="2.3"/><circle cx="18" cy="7" r="2.3"/><circle cx="12" cy="17" r="2.3"/><path d="M7.6 8.7 10.7 15M16.4 8.7 13.3 15M8.3 7h7.4"/></svg>
-        </span>
-        <div>
-          <h3>Brain KB: memória semântica por projeto</h3>
-          <p class="lead">Três camadas locais: storage em SQLite pelo <code>node:sqlite</code> embutido (zero dependência nativa, com fallback para JSON), índice invertido com TF scoring e um grafo de citação de 6 tipos de aresta. Busca vetorial e busca por palavra-chave convivem.</p>
-        </div>
-        <ul>
-          <li>Embedding padrão <b>multilíngue</b> (384 dim, 50 idiomas): prompt em PT recupera lição em EN</li>
-          <li>Providers alternativos: <b>Ollama</b> local ou <b>Voyage AI</b>, trocáveis na config</li>
-          <li>Escopo estável por projeto via <code>.claude-boss-project</code> ou <code>CCB_PROJECT_ID</code></li>
-          <li>Backend opcional <b>MCP Memory HTTP</b>, com wizard, migração e auto-update local; destino remoto exige opt-in e nunca cai no fallback local</li>
-        </ul>
-      </article>
-
-      <article class="pillar">
-        <span class="ic" aria-hidden="true">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.2 19 6v5.5c0 4.2-2.9 7.6-7 9.3-4.1-1.7-7-5.1-7-9.3V6z"/><path d="m9.2 12 2 2 3.6-3.8"/></svg>
-        </span>
-        <div>
-          <h3>Curadoria anti context-bloat</h3>
-          <p class="lead">Na 3.0.0 a curadoria casa por assinatura, redireciona e mede. No replay do histórico real (4.170 chamadas Bash, com o código do plugin), as negações do guard antigo caíram de 243 para 0.</p>
-        </div>
-        <ul>
-          <li><b>Redirecionamento automático</b> via <code>updatedInput</code>, inclusive dentro de compostos: <code>allow</code> em <code>bypassPermissions</code>, <code>ask</code> nos demais modos (o prompt mostra a reescrita). <code>CCB_RAW=1</code> pede a saída crua</li>
-          <li><b>Só cura o que se repete:</b> exploração (<code>git log</code>, <code>grep</code>, <code>cat</code>…) e código inline nunca viram script; no replay, cobranças do Stop caíram de 1.316 para 45 (−96,6%)</li>
-          <li><b>Exploração limitada sem Token Guard e em <code>bypassPermissions</code>:</b> um comando de exploração isolado e sem pipe próprio (nunca <code>tail -f</code>/<code>less</code>) tem a saída limitada em streaming, até 80 linhas / 8000 caracteres, e a saída completa fica em <code>.runtime/shaped</code>. Com o Token Guard presente, o boss não interfere</li>
-          <li><b>Pipe sobre script curado é permitido</b> e medido por script; o mesmo filtro repetido gera <b>um</b> pedido para embutir o filtro no script</li>
-          <li><b>Variante recorrente vira alias</b> do script curado (EXTEND) em vez de um segundo script, e passa a ser redirecionada</li>
-          <li><b>Poda segura</b> dos scripts que nunca rodaram na janela: botão <b>Prune</b> no dashboard ou a tool <code>curation_prune_unused</code></li>
-          <li>Guarda de erro: nega só a repetição na <b>mesma sessão</b> e no mesmo diretório, sem edição desde a falha; no replay de 9.459 chamadas, bloqueios falsos caíram de 34 para 4</li>
-          <li><code>grep -r</code>/<code>rg</code>/<code>find</code> amplos viram consulta estrutural ao grafo quando ele está pronto</li>
-        </ul>
-      </article>
-
-      <article class="pillar">
-        <span class="ic" aria-hidden="true">
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5M4 19h16"/><path d="m7 15 3.6-4.2 3 2.6L20 7"/><path d="M20 11V7h-4"/></svg>
-        </span>
-        <div>
-          <h3>Aprendizado leve, sem orquestrador próprio</h3>
-          <p class="lead">Correções, falhas e padrões reusáveis viram entradas curadas do KB. O self-review lembra o que já deu errado naquele arquivo; a consolidação semanal funde lições quase-duplicadas somando recorrência.</p>
-        </div>
-        <ul>
-          <li>Três perfis num eixo só: <code>standard</code> (silencioso, mas aprende), <code>dev</code> e <code>free</code></li>
-          <li>Troca update-safe pelo comando <code>/boss-profile</code> ou pelo dashboard</li>
-          <li>Retrospectiva de falha e nudge de verificação quando o turno editou arquivo e nada rodou</li>
-          <li>Checklist de revisão recorrente oferecido ao <code>/code-review</code> nativo</li>
-        </ul>
-      </article>
-    </div>
-  </section>
-
-  <section class="wrap">
-    <div class="sec-head">
-      <h2>E mais quatro peças, ligadas só quando você precisa</h2>
-      <p>Nenhuma delas exige conta, chave ou serviço remoto para o funcionamento padrão.</p>
-    </div>
-    <ul class="extras">
-      <li>
-        <p class="head"><span aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="5.5" cy="6" r="2.2"/><circle cx="18.5" cy="6" r="2.2"/><circle cx="12" cy="18" r="2.2"/><path d="M7.7 6h8.6M6.6 8 11 16M17.4 8 13 16"/></svg></span><b>Graph: exploração de repositório</b></p>
-        <p>Sete tools <code>graph_*</code> (hubs por PageRank, busca com vizinhança, quem chama um símbolo) para entender um repo grande sem garimpar arquivo por arquivo. Cliente REST puro do Session Graph Engine: nenhum Java embarcado e, com o daemon offline, falham graciosamente.</p>
-      </li>
-      <li>
-        <p class="head"><span aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2.5"/><path d="M3 9h18M8 13h8M8 16.5h5"/></svg></span><b>Dashboard local sob demanda</b></p>
-        <p>Abra com <code>/dashboard</code>: um hook responde, sem passar pelo modelo (0 turnos, US$&nbsp;0), sobe o painel se preciso, abre o navegador e mostra a URL. Servido em <code>127.0.0.1</code>, com porta dinâmica e token gerado no boot. A aba Router configura upstream, BYOK, protocolos, URLs e headers; Brain KB, Hooks, Insights e Logs ficam no mesmo painel local. Novo na 3.0.0: o painel <b>Curation &amp; guards</b> na Home separa a economia exata da estimada (sem linha de base, diz "sem base"), mostra o custo, uso por script, scripts que nunca rodaram (com botão <b>Prune</b>) e a latência por hook.</p>
-      </li>
-      <li>
-        <p class="head"><span aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21a9 9 0 1 0-9-9"/><path d="M3 12H7l2.2 5 3-11 2.3 6h3.3"/></svg></span><b>Doctor: diagnóstico zero-config</b></p>
-        <p>Checa Node no PATH e versão, variáveis do plugin, fragmentação de data-dir, modelo de embedding, daemon e token, e quais eventos de hook a sua versão do Claude Code suporta. Vira advisory de uma linha no início da sessão só quando algo crítico falha.</p>
-      </li>
-      <li>
-        <p class="head"><span aria-hidden="true"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 6.5a4 4 0 1 1 3.2 6.9L11 20.1 7.9 17l6.7-6.7a4 4 0 0 1-.1-3.8z"/><path d="m7.2 15.8-3 3.1L6 20.7"/></svg></span><b>BYOK e Model Router (opt-in)</b></p>
-        <p>Nasce <b>desativado</b>. Você conecta custom upstream ou BYOK em Anthropic Messages ou OpenAI Chat Completions, separa as URLs por operação e escolhe modelos não Anthropic no picker por um alias reversível. No BYOK, um mapeamento opcional origem → destino ajusta o <code>model</code> enviado ao endpoint.</p>
-      </li>
-    </ul>
-  </section>
-
-  <section id="leve" class="wrap">
-    <div class="sec-head">
-      <h2>Um plugin de memória não pode custar caro para existir</h2>
-      <p>A v2.28.0 juntou os detectores de cada evento num dispatcher in-process. Na 3.0.0, 13 hooks nem sobem processo: viram tools <code>mcp_tool</code> do brain-server e rodam no daemon HTTP compartilhado. A lógica de cada hook é a mesma; só o transporte muda.</p>
-    </div>
-    <div class="perf">
-      <div class="table">
-        <div class="row row--head"><span class="ev">Medido · 8 sessões MCP</span><span class="n">spawn → daemon</span></div>
-        <div class="row"><span class="ev">Latência unitária (p50)<small>um hook, do disparo à resposta</small></span><span class="n">122 ms → <b>8,9 ms</b></span></div>
-        <div class="row"><span class="ev">N=60 hooks concorrentes<small>tempo de parede</small></span><span class="n">7,0–8,3 s → <b>0,62–1,9 s</b></span></div>
-        <div class="row"><span class="ev">Memória<small>processos somados vs. pico do daemon</small></span><span class="n">~3,9 GB → <b>234 MB</b></span></div>
-        <div class="row"><span class="ev">Atraso do event loop<small>embedder num worker thread (G12)</small></span><span class="n">32,5 → <b>3,0 ms</b></span></div>
-        <div class="row row--total"><span class="ev">Máquina fraca simulada<small>1 núcleo, rajada de hooks</small></span><span class="n">p95 <b>134 ms</b>, 0 prazos estourados</span></div>
-      </div>
-      <ul class="perf-notes">
-        <li>
-          <b>Fail-open visível</b>
-          <p>Uma exceção dentro da tool não bloqueia nada e devolve um <code>systemMessage</code> dizendo que o hook degradou. Cada hook tem um prazo interno abaixo do <code>timeout</code> do <code>hooks.json</code>. Ficam como <code>command</code> só os hooks que precisam funcionar com o daemon fora do ar, como o <code>SessionStart</code>.</p>
-        </li>
-        <li>
-          <b>Auditoria pré-release, tudo reproduzido antes de corrigir</b>
-          <p>O moldador não embrulha mais comando com pipe próprio, com <code>#</code> de comentário ou de follow/interativo (<code>tail -f</code>, <code>less</code>, <code>watch</code>), e faz streaming: a cabeça sai na hora. Um job que nunca termina na lane pesada não trava mais os hooks pesados de todas as sessões: depois de 3 prazos seguidos sem progresso, o worker é reciclado. E o desligamento do worker de embedding no meio do init não derruba mais o daemon.</p>
-        </li>
-        <li>
-          <b>Cada sessão com a sua raiz</b>
-          <p>O Claude Code entregava <code>${CLAUDE_PROJECT_DIR}</code> vazio ao <code>mcp_tool</code>. Agora o <code>SessionStart</code> grava <code>session_id → raiz</code> e o daemon resolve por ela; as métricas usam a raiz da sessão, não o <code>cwd</code> do shell. O Stop de uma sessão não mostra mais commits feitos em outra.</p>
-        </li>
-        <li>
-          <b>Reconexão e upgrade sem ficar preso</b>
-          <p>Sessão MCP desconhecida responde <code>404</code> e o cliente reinicializa sozinho em vez de ficar <code>failed</code> (G16). Uma instalação mais nova substitui o daemon antigo, nunca faz downgrade (G13), e um daemon servindo outro <code>dataDir</code> não é compartilhado (G15).</p>
-        </li>
-        <li>
-          <b>Auto-update com fronteira explícita</b>
-          <p>No <code>SessionStart</code>, o dispatcher existente consulta atualizações do MCP Memory no máximo uma vez a cada 24 horas, sem hook novo. Um <code>serverUrl</code> remoto só participa com opt-in explícito e nunca aciona o fallback local. Se a versão nova não sobe, o Boss restaura a anterior e só confirma o rollback depois que <code>/health.version</code> devolve exatamente essa versão.</p>
-        </li>
-        <li>
-          <b>Nenhum console piscando no Windows</b>
-          <p>Todo processo filho que o plugin sobe em runtime passa <code>windowsHide: true</code>: com subagentes e sessões paralelas, nenhuma janela <code>cmd</code> abre nem rouba o foco. A regra ESLint <code>local/require-windows-hide</code>, que não pode ser desligada inline em <code>scripts/</code> e <code>servers/</code>, impede a regressão. A porta padrão do daemon passou de 58217 para <code>38217</code>, fora da faixa que o Windows reserva.</p>
-        </li>
-      </ul>
-    </div>
-  </section>
-
-  <section id="instalar" class="wrap">
-    <div class="install">
-      <div>
-        <h2 class="install-title">Instalar leva dois comandos</h2>
-        <p class="lead">O pré-requisito número um é <b>Node.js 22.13+ no PATH do sistema</b>: o Claude Code dispara hooks e MCP com o <code>node</code> do PATH, não com o Node embutido no Desktop. No Windows, feche o Desktop por completo depois de instalar e reabra, para herdar o PATH.</p>
-        <ol class="steps">
-          <li><b>Adicione o marketplace</b><span>Uma vez por máquina.</span></li>
-          <li><b>Instale o plugin</b><span>O postinstall baixa o modelo de embedding (~100–200 MB) para um cache durável, uma vez só.</span></li>
-          <li><b>Use normalmente</b><span>A memória indexa sozinha. Opcional: escolha o perfil com <code>/boss-profile</code>.</span></li>
-        </ol>
-      </div>
-      <div class="term">
-        <div class="bar"><i></i><i></i><i></i><span>Claude Code</span></div>
-<pre><span class="c">/plugin marketplace add</span> AllanSantos-DV/claude-code-plugins
-
-<span class="c">/plugin install</span> claude-code-boss@allansantos-plugins
-
-<span class="cm"># opcional, a partir do próximo turno</span>
-<span class="c">/boss-profile</span> standard</pre>
-      </div>
-    </div>
-  </section>
-
-</main>
-
-<footer>
-  <div class="wrap">
-    <div class="foot-grid">
-      <div class="links">
-        <a href="tech.html">Detalhes técnicos</a>
-        <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a>
-        <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">Changelog</a>
-        <a href="https://github.com/AllanSantos-DV/claude-code-plugins">Repositório</a>
-        <a href="../index.html">Outros plugins</a>
-      </div>
-      <p class="legal">MIT · Allan Santos · claude-code-boss v3.0.0</p>
-    </div>
-  </div>
-</footer>
-
-</body>
-</html>
+});
+const slider=document.querySelector('.compress-control input');const machine=document.querySelector('.machine');
+slider.addEventListener('input',()=>{const value=Number(slider.value);machine.dataset.mode=value<35?'raw':'clean';machine.querySelector('.summary-paper').style.opacity=String(.15+value*.0085);machine.querySelector('.input-stack').style.opacity=String(1-value*.002);slider.setAttribute('aria-valuetext',value<35?'Saída bruta':value<70?'Transformando em resumo':'Resumo curado');});
+</script></body></html>
