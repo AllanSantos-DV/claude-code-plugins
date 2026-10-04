@@ -18,6 +18,15 @@ mutação e, onde muda comportamento visível, prova no Claude Code real.
   landing page e na página técnica. Seletor Dark/Light no topo de cada uma; a escolha
   fica salva (`localStorage` `ccb-theme`) e vale para as três. No dashboard a troca é
   só visual: a aplicação, os ids e os endpoints são os mesmos.
+- **Boas-vindas no primeiro prompt depois de instalar**: uma mensagem visível (uma vez
+  por máquina) diz que o plugin está ativo, o que muda e os dois comandos que valem a
+  pena (`/dashboard`, `/boss-profile`).
+- **"Primeiros passos" no dashboard**: numa instalação sem nenhuma atividade, a Home
+  explica como o painel se preenche, em vez de uma parede de zeros. Some com a primeira
+  lição, recall ou curadoria.
+- **README reescrito para quem vai instalar**: o que o plugin faz em linguagem simples,
+  imagens reais da página e do painel, e a instalação pelo marketplace em dois comandos
+  (a instalação manual ficou como caminho de desenvolvimento).
 - **`headersHelper` do brain-server** (`scripts/mcp-headers.js`): roda antes de cada
   conexão MCP, garante o daemon e entrega o token. Efeito colateral bom: a 1ª
   conexão já encontra o daemon de pé — os hooks `mcp_tool` do 1º turno depois de
