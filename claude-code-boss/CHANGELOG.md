@@ -46,6 +46,7 @@ mutação e, onde muda comportamento visível, prova no Claude Code real.
   incluídas); `capture_lesson type:"skill"` remoto valida os campos como o local.
 - **Poda de scripts com `shells.json` numa subpasta** lê as métricas da raiz da
   sessão (tool e painel do dashboard) em vez de um banco vazio.
+- **Dashboard depois de atualizar o plugin**: o `/dashboard` reaproveitava qualquer painel vivo e, depois de uma atualização, continuava servindo o código da versão anterior. Agora o painel registra de qual instalação veio e o de outra instalação é substituído.
 - **Dashboard**: duas sessões abrindo `/dashboard` juntas sobem um servidor só
   (trava de subida); um update do plugin por vez (2º clique → 409).
 - **release-guard** data a versão pelo push que a levou ao `main` (API de atividade

@@ -4191,6 +4191,30 @@ test('/dashboard without LLM: ensureDashboard starts the REAL dashboard once, th
   }
 });
 
+test('/dashboard after an update: a dashboard of ANOTHER install is replaced (alive is not enough); the current one is reused', async () => {
+  const { ensureDashboard, runtimeDir } = require('./dashboard-start.js');
+  const saved = process.env.DASHBOARD_NO_OPEN; process.env.DASHBOARD_NO_OPEN = '1';
+  const disc = path.join(runtimeDir(), 'dashboard.json');
+  const pids = [];
+  try {
+    const a = await ensureDashboard({ waitMs: 15000 });
+    assert(a.ok, JSON.stringify(a)); pids.push(a.pid);
+    assert(path.resolve(JSON.parse(fs.readFileSync(disc, 'utf8')).pluginRoot) === path.resolve(ROOT), 'the server records which install it runs');
+    // simulate the running dashboard belonging to an older install
+    const d = JSON.parse(fs.readFileSync(disc, 'utf8'));
+    fs.writeFileSync(disc, JSON.stringify({ ...d, pluginRoot: path.join(os.tmpdir(), 'old-cache', 'claude-code-boss') }));
+    const b = await ensureDashboard({ waitMs: 15000 });
+    assert(b.ok && b.status === 'started' && b.pid !== a.pid, `stale one replaced: ${JSON.stringify(b)}`); pids.push(b.pid);
+    let aAlive = true; try { process.kill(a.pid, 0); } catch (e) { aAlive = e.code !== 'ESRCH'; }
+    assertEq(aAlive, false, 'the old install\'s dashboard was stopped');
+    const c = await ensureDashboard({ waitMs: 15000 });
+    assert(c.status === 'already-running' && c.pid === b.pid, 'the current install\'s dashboard is reused');
+  } finally {
+    for (const p of pids) { try { process.kill(p); } catch (err) { void err; } }
+    if (saved === undefined) delete process.env.DASHBOARD_NO_OPEN; else process.env.DASHBOARD_NO_OPEN = saved;
+  }
+});
+
 test('C6 unwrapShaped: round-trips planShaping exactly; anything else → null', () => {
   const { planShaping, unwrapShaped } = require('./lib/curation-redirect.js');
   const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-unwrap-'));
