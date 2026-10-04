@@ -103,6 +103,9 @@ function loadShellsFile(shellsPath) {
  * @param {number} [args.outputLines]
  * @param {number} [args.outputChars]
  * @param {number} [args.timeoutMs]
+ * @param {boolean} [args.acceptsArgs] - the script reads its argv: an alias that adds
+ *   arguments to the base alias (e.g. "git stash list" over "git stash") is redirected
+ *   with those arguments. Without it, such a variant alias runs raw (B-18).
  * @param {string} [args.cwd] - working directory for project root resolution
  * @returns {{isError:true, message:string} | {decision:'registered'|'updated', id:string, scriptPath:string, shellsConfigPath:string, aliases:string[], message:string}}
  */
@@ -167,6 +170,7 @@ function register(args) {
   const relScriptPath = path.relative(projectRoot, absScriptPath).split(path.sep).join('/');
   const icon = pick(a.icon ? String(a.icon) : undefined, prev.icon, undefined);
   const outputChars = pick(Number.isFinite(a.outputChars) && a.outputChars > 0 ? a.outputChars : undefined, prev.outputChars, undefined);
+  const acceptsArgs = pick(typeof a.acceptsArgs === 'boolean' ? a.acceptsArgs : undefined, prev.acceptsArgs, undefined);
   const entry = {
     id,
     label: pick(a.label ? String(a.label) : undefined, prev.label, id),
@@ -177,6 +181,7 @@ function register(args) {
     outputFilter: pick(a.outputFilter ? String(a.outputFilter) : undefined, prev.outputFilter, DEFAULT_OUTPUT_FILTER),
     outputLines: pick(Number.isFinite(a.outputLines) ? a.outputLines : undefined, prev.outputLines, DEFAULT_OUTPUT_LINES),
     ...(outputChars ? { outputChars } : {}),
+    ...(acceptsArgs === true ? { acceptsArgs: true } : {}),
     timeoutMs: pick(Number.isFinite(a.timeoutMs) ? a.timeoutMs : undefined, prev.timeoutMs, DEFAULT_TIMEOUT_MS),
   };
 

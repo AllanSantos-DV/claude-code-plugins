@@ -3870,6 +3870,21 @@ test('C2 curation-redirect: exact task signature+flags rewritten (also inside co
   assertEq(plan('echo "a && node scripts/test-units.js"').rewritten, null, 'text inside quotes is not a command');
 });
 
+test('C2 curation-redirect: an alias that adds arguments to the base alias is never redirected to an argless call (git stash list ran git stash)', () => {
+  const { planRedirect } = require('./lib/curation-redirect.js');
+  const R = path.resolve(os.tmpdir(), 'ccb-c2-args');
+  const GS = `node "${R.replace(/\\/g, '/')}/.vscode/scripts/git-stash.mjs"`;
+  const semArgs = [{ id: 'git-stash', script: '.vscode/scripts/git-stash.mjs', aliases: ['git stash', 'git stash list'] }];
+  assertEq(planRedirect('git stash', semArgs, R).rewritten, GS, 'the base alias still redirects');
+  assertEq(planRedirect('git stash list', semArgs, R), { rewritten: null, replaced: [], uncovered: ['git-stash'] }, 'the variant runs raw: the script would drop "list" and stash instead');
+  const comArgs = [{ ...semArgs[0], acceptsArgs: true }];
+  assertEq(planRedirect('git stash list', comArgs, R).rewritten, `${GS} list`, 'a script that accepts arguments receives them');
+  assertEq(planRedirect('cd x && git stash list', comArgs, R).rewritten, `cd x && ${GS} list`);
+  assertEq(planRedirect('git stash pop', comArgs, R).rewritten, null, 'only aliased variants are redirected');
+  const alternativas = [{ id: 'tests', script: '.vscode/scripts/tests.mjs', aliases: ['npm test', 'npx vitest run'] }];
+  assert(/tests\.mjs"$/.test(planRedirect('npx vitest run', alternativas, R).rewritten || ''), 'alternative spellings of the same command are not variants');
+});
+
 test('C2b shape-output: passes small output untouched; cuts by lines or chars and reports both counts', () => {
   const { shape } = require('./shape-output.js');
   assertEq(shape('a\nb\n', { maxLines: 5, maxChars: 100 }), { cut: false, shown: 'a\nb\n', shownLines: 2, rawLines: 2 });
@@ -4044,6 +4059,12 @@ test('register (EXTEND path): updating an existing id keeps omitted fields and m
     assertEq(JSON.stringify(e.aliases), '["npm test","npm test -- --reporter=dot"]', 'aliases replaced by the given list');
     assert(e.label === 'Unit tests' && e.icon === 'beaker' && e.outputLines === 5 && e.outputChars === 900 && e.timeoutMs === 120000 && e.outputFilter === 'errors-only',
       `tuned fields kept (they used to reset to defaults): ${JSON.stringify(e)}`);
+    // acceptsArgs (B-18): written only when true, kept on a later update that omits it.
+    assert(!('acceptsArgs' in e), 'not written unless declared');
+    reg.register({ cwd: proj, id: 'tests', scriptPath: '.vscode/scripts/tests.mjs', aliases: ['npm test'], acceptsArgs: true });
+    reg.register({ cwd: proj, id: 'tests', scriptPath: '.vscode/scripts/tests.mjs', aliases: ['npm test', 'npm test unit'] });
+    const comArgs = JSON.parse(fs.readFileSync(path.join(proj, '.vscode', 'shells.json'), 'utf8')).shells.find((s) => s.id === 'tests');
+    assertEq(comArgs.acceptsArgs, true, 'acceptsArgs kept across an update that omits it');
     const fresh = reg.register({ cwd: proj, id: 'new-one', scriptPath: '.vscode/scripts/new.mjs', aliases: ['npm run new'] });
     assert(fresh.isError && /content is required/.test(fresh.message), 'a NEW id without content is refused');
     fs.rmSync(script);

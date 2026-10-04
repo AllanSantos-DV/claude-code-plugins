@@ -163,6 +163,8 @@ legitimate run gets flagged.
 
 `aliases` is critical: any raw command form (`npm test`, `npm run test`, `pnpm test`, `npx vitest`) you want routed to this script must be listed, so `curation-guard.js` can redirect.
 
+**Aliases that add arguments** to the entry's shortest alias (`git stash list` over `git stash`) are only redirected when the entry has `"acceptsArgs": true`, and then the extra tokens are passed to the script (`node git-stash.mjs list`). Set it only if the script reads its argv; otherwise leave it out and the variant runs raw. Redirecting a variant to an argless call changed what the command did: `git stash list` once ran `git stash` and hid local changes.
+
 The matcher uses **substring containment** on `script`: any invocation that carries the script path in its command string matches automatically — `script.ps1`, `powershell -File script.ps1`, `node script.mjs`, `bash script.sh` all bind to the same entry without extra aliases.
 
 ## `outputFilter` cheatsheet
