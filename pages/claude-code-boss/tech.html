@@ -5,7 +5,63 @@
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>claude-code-boss v3.0.0 — detalhes técnicos</title>
 <meta name="description" content="Detalhes técnicos do claude-code-boss v3.0.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard." />
-<style>
+<script data-ccb-theme-script>
+/* Shared theme; executed before styles and first paint. */
+(function () {
+  'use strict';
+  const dashboard = false;
+  const root = document.documentElement;
+  const read = key => { try { return localStorage.getItem(key); } catch (error) { void error; return null; } };
+  const write = (key, value) => { try { localStorage.setItem(key, value); } catch (error) { console.info('Tema mantido nesta página: armazenamento indisponível.'); } };
+  const normalize = value => value === 'light' ? 'light' : 'dark';
+  const initial = normalize(read('ccb-theme'));
+  root.setAttribute('data-theme', initial);
+  // Seed the existing application's preference; its original scripts stay untouched.
+  if (dashboard) write('dash.theme', initial);
+  function reflect(theme) {
+    document.querySelectorAll('[data-ccb-theme]').forEach(button => {
+      button.setAttribute('aria-pressed', String(button.dataset.ccbTheme === theme));
+    });
+    document.querySelectorAll('[data-ccb-section]').forEach(link => {
+      link.setAttribute('href', '#' + theme + '-' + link.dataset.ccbSection);
+    });
+    const meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.content = theme === 'dark' ? '#10101b' : '#f7f9fc';
+  }
+  function choose(value) {
+    const theme = normalize(value);
+    if (dashboard) {
+      // Invoke the preserved application control, keeping its internal state in sync.
+      if (normalize(root.getAttribute('data-theme')) !== theme) document.getElementById('theme-toggle').click();
+    }
+    root.setAttribute('data-theme', theme);
+    write('ccb-theme', theme);
+    reflect(theme);
+    const target = location.hash.match(/^#(?:dark|light)-(.+)$/);
+    if (target && document.querySelector('.theme-story')) {
+      const hash = '#' + theme + '-' + target[1];
+      history.replaceState(null, '', hash);
+      document.getElementById(hash.slice(1))?.scrollIntoView({behavior:'instant'});
+    }
+  }
+  if (dashboard) new MutationObserver(() => {
+    const theme = normalize(root.getAttribute('data-theme'));
+    // The original applyTheme removes the attribute for Dark. Normalize it for tokens.
+    if (!root.hasAttribute('data-theme')) root.setAttribute('data-theme', theme);
+    if (read('ccb-theme') !== theme) write('ccb-theme', theme);
+    reflect(theme);
+  }).observe(root, {attributes:true, attributeFilter:['data-theme']});
+  document.addEventListener('DOMContentLoaded', () => {
+    reflect(normalize(root.getAttribute('data-theme')));
+    document.querySelectorAll('[data-ccb-theme]').forEach(button => {
+      button.addEventListener('click', () => choose(button.dataset.ccbTheme));
+    });
+  });
+  window.addEventListener('storage', event => {
+    if (event.key === 'ccb-theme' || event.key === null) choose(event.newValue);
+  });
+})();
+</script><link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&amp;family=DM+Sans:wght@400;500;600;700&amp;family=Space+Grotesk:wght@400;500;600;700&amp;family=IBM+Plex+Mono:wght@400;500;600&amp;display=swap" rel="stylesheet"><style>
   :root{
     --bg:#0d0c10; --bg-soft:#131218; --ink:#edeae1; --muted:#9a978d;
     --line:rgba(255,255,255,.10); --amber:#e08c3a; --amber-soft:rgba(224,140,58,.13);
@@ -121,6 +177,76 @@
     .table-scroll td:first-child{ color:var(--ink) }
     .table-scroll tr:hover td{ background:none }
   }
+
+:root, [data-theme="dark"] {
+  color-scheme: dark;
+  --ccb-bg:#10101b; --ccb-surface:#191725; --ccb-surface-alt:#232034;
+  --ccb-text:#f4f1ff; --ccb-muted:#b1abc4; --ccb-border:#49415e;
+  --ccb-primary:#c7afff; --ccb-on-primary:#24153e; --ccb-highlight:#edb9df;
+  --ccb-success:#9bd8b5; --ccb-error:#ffabab; --ccb-warning:#efc582;
+  --ccb-display:'Manrope','Segoe UI',sans-serif;
+  --ccb-body:'Manrope','Segoe UI',sans-serif;
+  --ccb-mono:'IBM Plex Mono',Consolas,monospace;
+  --ccb-radius:14px; --ccb-radius-sm:8px;
+  --ccb-shadow:0 12px 36px #00000024;
+}
+[data-theme="light"] {
+  color-scheme: light;
+  --ccb-bg:#f7f9fc; --ccb-surface:#ffffff; --ccb-surface-alt:#eaf0ff;
+  --ccb-text:#15264a; --ccb-muted:#55627b; --ccb-border:#c1cce1;
+  --ccb-primary:#2455ed; --ccb-on-primary:#ffffff; --ccb-highlight:#ac3813;
+  --ccb-success:#246345; --ccb-error:#b42d43; --ccb-warning:#855515;
+  --ccb-display:'Space Grotesk','Segoe UI',sans-serif;
+  --ccb-body:'DM Sans','Segoe UI',sans-serif;
+  --ccb-mono:'IBM Plex Mono',Consolas,monospace;
+  --ccb-radius:14px; --ccb-radius-sm:8px;
+  --ccb-shadow:0 12px 36px #173d790d;
+}
+
+/* Shared identity and theme control. */
+html { background:var(--ccb-bg); }
+body { font-family:var(--ccb-body); background:var(--ccb-bg); color:var(--ccb-text); }
+.ccb-theme { display:inline-flex; flex:none; align-items:center; gap:3px; padding:4px; margin:0;
+  border:1px solid var(--ccb-border); border-radius:999px; background:var(--ccb-surface); }
+.ccb-theme button { appearance:none; font:600 11px/1 var(--ccb-body); letter-spacing:0;
+  padding:10px 13px; min-height:34px; margin:0; border:0; border-radius:999px;
+  background:transparent; color:var(--ccb-muted); cursor:pointer; white-space:nowrap; }
+.ccb-theme button[aria-pressed="true"] { background:var(--ccb-primary); color:var(--ccb-on-primary); }
+.ccb-theme button:hover { box-shadow:inset 0 0 0 1px var(--ccb-primary); }
+:where(a,button,input,select,textarea,[tabindex]):focus-visible {
+  outline:3px solid var(--ccb-primary); outline-offset:4px; }
+@media(prefers-reduced-motion:reduce) {
+  *,*::before,*::after { animation:none!important; transition:none!important; scroll-behavior:auto!important; }
+}
+
+html[data-theme]{
+ --bg:var(--ccb-bg);--bg-soft:var(--ccb-surface);--ink:var(--ccb-text);--muted:var(--ccb-muted);
+ --line:var(--ccb-border);--amber:var(--ccb-primary);--amber-lite:var(--ccb-primary);
+ --amber-soft:var(--ccb-surface-alt);--mono:var(--ccb-mono);--sans:var(--ccb-body);
+}
+body{overflow-x:visible}
+h1,section h2,section h3{font-family:var(--ccb-display)}
+h1{font-size:clamp(2rem,4vw,3rem);letter-spacing:-.055em}
+section h2{font-size:1.5rem;letter-spacing:-.035em}
+.panel{border-radius:var(--ccb-radius);box-shadow:var(--ccb-shadow)}
+.mini,.flow-bar .f{border-radius:var(--ccb-radius-sm)}
+.brand .name{font-family:var(--ccb-display);font-size:15px}
+.brand .name small{display:block;margin:0;font:11px/1.6 var(--ccb-body)}
+header.nav{flex-wrap:wrap;gap:16px}
+header.nav .nav-links{margin-left:auto}
+code{white-space:normal;overflow-wrap:anywhere;word-break:normal}
+main.wrap{padding-top:52px;padding-bottom:30px}
+.grid2,.grid3{grid-template-columns:repeat(2,minmax(0,1fr))}
+.grid3{grid-template-columns:repeat(3,minmax(0,1fr))}
+html{scroll-behavior:auto}
+@media(max-width:860px){.grid2,.grid3{grid-template-columns:1fr}header.nav .nav-links{order:3;width:100%;margin:0}}
+@media(max-width:600px){
+ .wrap{padding-left:20px;padding-right:20px}.panel{padding:20px}.nav-links{display:flex}
+ header.nav{padding:18px 20px}.brand{flex:1 0 100%}.ccb-theme{margin-left:0}
+ header.nav .nav-links{order:initial;width:auto;flex:1;gap:3px}.nav-links a{font-size:11px;padding:7px 6px}
+ .nav-links .ver{display:none}.toc a{overflow-wrap:anywhere;max-width:100%}
+ .flow-bar .f{overflow-wrap:anywhere;max-width:100%}
+}
 </style>
 </head>
 <body>
@@ -136,6 +262,7 @@
     <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">Changelog</a>
     <a href="#top" class="ver">v3.0.0</a>
   </nav>
+<div class="ccb-theme" role="group" aria-label="Tema"><button type="button" data-ccb-theme="dark" aria-pressed="true">Dark</button><button type="button" data-ccb-theme="light" aria-pressed="false">Light</button></div>
 </header>
 
 <main class="wrap" id="top">

@@ -14,6 +14,10 @@ mutação e, onde muda comportamento visível, prova no Claude Code real.
   antes dela recebem 401 do daemon novo até `/reload-plugins` ou reinício.
 
 ### Added
+- **Nova identidade visual com dois temas, Dark (padrão) e Light**, no dashboard, na
+  landing page e na página técnica. Seletor Dark/Light no topo de cada uma; a escolha
+  fica salva (`localStorage` `ccb-theme`) e vale para as três. No dashboard a troca é
+  só visual: a aplicação, os ids e os endpoints são os mesmos.
 - **`headersHelper` do brain-server** (`scripts/mcp-headers.js`): roda antes de cada
   conexão MCP, garante o daemon e entrega o token. Efeito colateral bom: a 1ª
   conexão já encontra o daemon de pé — os hooks `mcp_tool` do 1º turno depois de
