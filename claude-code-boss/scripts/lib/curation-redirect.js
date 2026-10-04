@@ -63,16 +63,32 @@ function joinParts(parts) {
   return parts.map((p, i) => `${i ? ' ' : ''}${p.text.trim()}${p.sep ? ` ${p.sep}` : ''}`).join('');
 }
 
-/** Alias profiles of task scripts: { shell, sig, flags, family }. */
+/**
+ * Alias profiles of task scripts: { shell, sig, flags, family, extraFrom }.
+ *
+ * `extraFrom` > 0 marks a VARIANT: an alias that extends the shell's shortest alias with
+ * more positionals ("git stash list" over "git stash"). A script invocation carries no
+ * arguments, so redirecting a variant ran the base command instead — `git stash list`
+ * became `git stash` (push) and hid local changes (B-18, 03/10/2026). A variant is
+ * redirected only when the entry declares `acceptsArgs: true`, and then the extra
+ * tokens of the command (from index `extraFrom`) go along. Aliases that are not an
+ * extension of the base ("npm test" / "npx vitest run") are alternatives, as before.
+ */
 function profilesFor(shells) {
   const out = [];
   for (const shell of shells || []) {
+    const own = [];
     for (const a of shell.aliases || []) {
       const alias = String(a || '').trim();
       if (!alias || classifySegment(alias.split(/\s*(?:&&|\|\||;)\s*/).pop()) !== 'task') continue;
       let sig = ''; try { sig = canonicalSig(alias); } catch (err) { void err; continue; }
       if (!sig) continue;
-      out.push({ shell, sig, flags: flagsOf(alias.split(/\s*(?:&&|\|\||;)\s*/).pop()), family: sig.split(' ').slice(0, 2).join(' ') });
+      own.push({ shell, sig, flags: flagsOf(alias.split(/\s*(?:&&|\|\||;)\s*/).pop()), family: sig.split(' ').slice(0, 2).join(' '), extraFrom: 0 });
+    }
+    const base = own.reduce((min, p) => (!min || p.sig.split(' ').length < min.sig.split(' ').length ? p : min), null);
+    for (const p of own) {
+      if (base && p.sig !== base.sig && p.sig.startsWith(`${base.sig} `)) p.extraFrom = base.sig.split(' ').length;
+      out.push(p);
     }
   }
   return out;
@@ -121,7 +137,12 @@ function planRedirect(command, shells, projectRoot) {
     const flags = flagsOf(text);
     const exact = profiles.find((pr) => pr.sig === sig && [...flags].every((f) => pr.flags.has(f)));
     if (exact) {
-      const to = invocationFor(exact.shell, projectRoot);
+      let to = invocationFor(exact.shell, projectRoot);
+      if (to && exact.extraFrom) {
+        // Variant alias: only a script that reads its argv gets it, WITH the extra tokens.
+        const extra = text.split('|')[0].trim().split(/\s+/).slice(exact.extraFrom);
+        to = exact.shell.acceptsArgs === true ? [to, ...extra].join(' ') : null;
+      }
       if (to) { replaced.push({ shellId: exact.shell.id, from: text, to }); p.text = to; continue; }
     }
     const fam = sig.split(' ').slice(0, 2).join(' ');

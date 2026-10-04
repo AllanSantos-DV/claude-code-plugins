@@ -34,6 +34,15 @@ mutação e, onde muda comportamento visível, prova no Claude Code real.
   Code real; antes os de UserPromptSubmit eram sempre perdidos).
 
 ### Fixed
+- **Redirecionamento da curadoria não muda mais o que o comando faz quando o apelido traz
+  argumentos.** Uma entrada com os apelidos `git stash` e `git stash list` redirecionava
+  `git stash list` para o script sem o `list`. O script rodava `git stash`, que guarda as
+  alterações em vez de listá-las (visto em 03/10 numa cópia local).
+  - Agora um apelido que acrescenta argumentos ao apelido mais curto da entrada só é
+    redirecionado se a entrada declarar `acceptsArgs: true`, e os argumentos vão junto
+    (`node git-stash.mjs list`).
+  - Sem a declaração, o comando roda cru, como qualquer variante.
+  - O `curation_register_shell` aceita e preserva o campo.
 - **Daemon compartilhado nunca age na pasta de outra sessão**: `curation_mark_oneoff`,
   `curation_register_shell` (gravava script e `shells.json` no projeto errado), graph
   tools sem `root`, `policy_shadow_report` e `policy_adjudication_prepare` caíam no
