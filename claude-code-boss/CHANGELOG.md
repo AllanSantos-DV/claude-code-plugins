@@ -61,6 +61,10 @@ mutação e, onde muda comportamento visível, prova no Claude Code real.
   Code real; antes os de UserPromptSubmit eram sempre perdidos).
 
 ### Fixed
+- **Depois de uma atualização, o código antigo não volta a servir.** Sessões abertas antes da
+  atualização continuam com a versão que carregaram; se o serviço do brain caísse por um instante,
+  uma delas o subia de novo a partir da pasta antiga. Agora ele sempre sobe da versão mais nova
+  instalada.
 - **`/brain-status` mostra o projeto certo.** Usava o nome da pasta ou "default" em vez do id do
   projeto, e gravava esse valor no ambiente do processo que roda os outros avisos do prompt,
   podendo esconder o aviso de pasta sem nome de projeto.
