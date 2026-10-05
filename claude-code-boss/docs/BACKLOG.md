@@ -842,6 +842,10 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   conta como atividade), o cliente desistiu do stream e o próximo POST dos hooks `mcp_tool` levou
   "Session not found". **Corrigido na hora**: sessão com stream aberto nunca é coletada; ao fechar, o
   relógio de ociosidade recomeça. Teste com daemon real + mutação (reproduz o 404).
+- [x] **Q21 — branch redundante `fix/curadoria-args-hotfix` (outra sessão) removida a pedido do dono.**
+  Os 2 commits únicos (f6e04da = mesma correção de 1f7a4d1, código idêntico, só o cabeçalho do
+  CHANGELOG difere; 37c3fcb = bump 3.0.1, já feito aqui) e o `package-lock.json` sujo do worktree
+  (+1 linha) salvos em `docs/plans/salvage/fix-curadoria-args-hotfix-20261005/`. Worktree removido.
 ## Testes
 
 - [x] `scripts/test-units.js`, teste `plano B: stream com várias linhas SSE somando mais de 32 MiB termina completo (o teto é por linha)` (~9361): flake intermitente sob carga (anotado em 2026-09-30, durante a Fase G da 2.29.1, que não toca o model-router): falhou com `nvidia: conteúdo perdido (867 chars)` em 1 de 3 rodadas completas da suíte, e outra rodada teve 2 falhas da família `plano B`; a terceira passou limpa. Mesma família de timing do item de FIN/reset abaixo. Investigar se o stream de >40 MiB é cortado por prazo do teste ou do router quando a máquina está carregada.
