@@ -12,14 +12,5 @@
     "semantic-search",
     "curation",
     "research"
-  ],
-  "userConfig": {
-    "language": {
-      "type": "string",
-      "title": "Output Language",
-      "description": "Language for user-facing communication (pt-BR or en)",
-      "default": "pt-BR",
-      "required": false
-    }
-  }
+  ]
 }

@@ -40,8 +40,8 @@ mutação e, onde muda comportamento visível, prova no Claude Code real.
 - **Dependências do brain faltando são reinstaladas sozinhas**, em segundo plano, uma instalação
   por vez. Antes só aconteceria se faltasse a pasta `node_modules` inteira, e o aviso mandava o
   agente rodar um script de desenvolvimento que não existe na máquina do usuário.
-- **A instalação não pede mais configuração.** A opção de idioma aparecia como obrigatória
-  ("1 userConfig option not yet set") mesmo tendo padrão; agora é opcional.
+- **A instalação não pede mais configuração.** Uma opção de idioma que o código nunca leu fazia a
+  instalação avisar "1 userConfig option not yet set"; foi removida.
 - **`scripts/install-local.js` saiu do plugin.** Era ferramenta de desenvolvimento; para testar
   um checkout, use `claude --plugin-dir ./claude-code-boss`.
 - **O brain-server não cai mais a cada ~6 minutos.** O Claude Code encerra um stream SSE
