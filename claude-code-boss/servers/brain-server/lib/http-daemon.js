@@ -26,6 +26,8 @@ import fs from 'node:fs';
 import { HEALTH_PATH, MCP_PATH, lockFile, ensureToken, requestAllowed, tokenFile, canonicalDataDir } from './daemon-common.js';
 
 const SESSION_IDLE_MS = 30 * 60 * 1000; // reap sessions idle > 30 min
+// SSE comment on the open GET stream: well under Claude Code's ~6 min idle timeout.
+const SSE_KEEPALIVE_MS = Number(process.env.CCB_SSE_KEEPALIVE_MS) || 30_000;
 
 const MAX_BODY_BYTES = 1024 * 1024; // 1MB
 const MAX_SESSIONS = 50; // limite de sessões simultâneas para evitar exaustão de FDs
@@ -47,7 +49,7 @@ async function readJsonBody(req) {
  * @returns {Promise<{ httpServer, sessions:Map, shutdown:()=>Promise<void>, port:number }>}
  *   Rejects with an Error whose `.code === 'EADDRINUSE'` if the port is taken.
  */
-export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0.0.1', version = '2.0.0' }) {
+export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0.0.1', version = '2.0.0', sseKeepaliveMs = SSE_KEEPALIVE_MS }) {
   const sessions = new Map(); // sessionId -> { server, transport, lastSeen }
   const startedAt = Date.now();
   // ONE pool of N workers for the whole daemon process (not per session): moves
@@ -142,6 +144,19 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
 
       if (existing) {
         existing.lastSeen = Date.now();
+        // The GET is the client's long-lived SSE stream; the SDK sends nothing on it
+        // until there is an event. Claude Code 2.1.283 times an idle stream out at ~6
+        // min ("SSE stream disconnected: TimeoutError"), and 3 in a row close the whole
+        // transport — every session cycled through reconnects all day, and a reconnect
+        // that met a daemon restart gave up for good. An SSE comment line keeps it alive
+        // (readers ignore it); written only between whole events, after the headers.
+        if (req.method === 'GET') {
+          const ka = setInterval(() => {
+            if (res.headersSent && !res.writableEnded) res.write(': keepalive\n\n');
+          }, sseKeepaliveMs);
+          ka.unref();
+          res.on('close', () => clearInterval(ka));
+        }
         await existing.transport.handleRequest(req, res, body);
         return;
       }

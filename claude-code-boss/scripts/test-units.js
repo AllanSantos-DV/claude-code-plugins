@@ -14239,6 +14239,35 @@ test('http-daemon: hook_* tools are NOT in tools/list (model never sees them) bu
   }
 });
 
+test('http-daemon: the open SSE stream (GET) gets periodic keepalive comments, so an idle client never times it out', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ssealive-'));
+  const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
+  const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
+  const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0, sseKeepaliveMs: 150 });
+  const ctrl = new AbortController();
+  try {
+    const url = `http://127.0.0.1:${d.httpServer.address().port}/mcp`;
+    const H = { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: `Bearer ${fs.readFileSync(path.join(dir, 'brain-http.token'), 'utf8').trim()}` };
+    const init = await fetch(url, { method: 'POST', headers: H, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } } }) });
+    const sid = init.headers.get('mcp-session-id'); await init.text();
+    await (await fetch(url, { method: 'POST', headers: { ...H, 'mcp-session-id': sid }, body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) })).text();
+    const sse = await fetch(url, { method: 'GET', headers: { Accept: 'text/event-stream', Authorization: H.Authorization, 'mcp-session-id': sid }, signal: ctrl.signal });
+    assertEq(sse.status, 200, 'SSE stream opened');
+    const reader = sse.body.getReader(); const dec = new TextDecoder(); let got = '';
+    const until = Date.now() + 2000;
+    while (Date.now() < until && (got.match(/: keepalive/g) || []).length < 3) {
+      const { value, done } = await Promise.race([reader.read(), new Promise((r) => setTimeout(() => r({ value: null, done: false }), 400))]);
+      if (done) break; if (value) got += dec.decode(value);
+    }
+    assert((got.match(/: keepalive\n\n/g) || []).length >= 3, `keepalive comments on the idle stream: ${JSON.stringify(got.slice(0, 200))}`);
+  } finally {
+    ctrl.abort();
+    if (savedTok !== undefined) process.env.BRAIN_HTTP_TOKEN = savedTok;
+    await d.shutdown();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('http-daemon /mcp requires the local token (headersHelper): none/wrong → 401, foreign Origin → 403 even with it, right token → MCP works', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mcptok-'));
   const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
