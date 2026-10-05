@@ -21068,6 +21068,29 @@ test('setup-tools: backend_status/setup guide the agent (Java missing → exact 
   assert(/brew install --cask temurin@21/.test(javaInstallCommand('darwin')) && /openjdk-21/.test(javaInstallCommand('linux')), 'per-OS commands');
 });
 
+test('brain-config: a long-lived process sees a save made by ANOTHER process (cache keyed on the user override mtime/size)', () => {
+  const bc = require('./lib/brain-config.js');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bc-'));
+  const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE };
+  try {
+    process.env.HOME = home; process.env.USERPROFILE = home;
+    bc._resetCache();
+    const f = path.join(require('./lib/data-dir.js').globalDir(), 'user-config.json');
+    assert(f.startsWith(home), `isolated user config: ${f}`);
+    fs.mkdirSync(path.dirname(f), { recursive: true });
+    fs.writeFileSync(f, JSON.stringify({ backend: { type: 'local' } }));
+    assertEq(bc.load().backend.type, 'local', 'first read');
+    // Another process (the dashboard) saves — different size, so the stamp changes even within one mtime tick.
+    fs.writeFileSync(f, JSON.stringify({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http' } } }));
+    assertEq(bc.load().backend.type, 'mcp-memory', 'the next load sees it without a restart');
+    assertEq(bc.load(), bc.load(), 'unchanged file → same cached object');
+  } finally {
+    process.env.HOME = saved.HOME; process.env.USERPROFILE = saved.USERPROFILE;
+    bc._resetCache();
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
 test('backend onboarding: on the local backend the agent is told what is off and how to enable it (SessionStart); silent on mcp-memory; welcome no longer says "nothing to configure"', () => {
   const adv = require('./backend-onboarding-advisory.js');
   const t = adv.run({}, { loadConfig: () => ({ backend: { type: 'local' } }) });
