@@ -14239,6 +14239,26 @@ test('http-daemon: hook_* tools are NOT in tools/list (model never sees them) bu
   }
 });
 
+test('install-local.js: never deletes an existing cache dir (the live daemon may run from it); skips runtime junk', () => {
+  const { chooseTarget, copyDir } = require('./install-local.js');
+  const base = path.join(os.tmpdir(), 'cache');
+  assertEq(chooseTarget(base, 'abc', () => false), path.join(base, 'abc'), 'fresh sha → <sha>');
+  const taken = new Set([path.join(base, 'abc')]);
+  const t = chooseTarget(base, 'abc', (p) => taken.has(p), () => 'k1');
+  assertEq(t, path.join(base, 'abc-k1'), 'existing dir → a NEW suffixed dir, never the existing one');
+  const src = fs.readFileSync(path.join(SCRIPTS, 'install-local.js'), 'utf8');
+  assert(!/rmSync\(TARGET/.test(src), 'no rmSync of the target dir');
+  assert(/registry backup/.test(src) && /handOffDaemon\(TARGET\)/.test(src), 'backs up the registry and hands the daemon off');
+  const s = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-il-src-'));
+  const d = path.join(os.tmpdir(), `ccb-il-dst-${process.pid}`);
+  try {
+    fs.mkdirSync(path.join(s, '.runtime')); fs.writeFileSync(path.join(s, '.runtime', 'x'), '1');
+    fs.mkdirSync(path.join(s, '.claude-plugin')); fs.writeFileSync(path.join(s, '.claude-plugin', 'plugin.json'), '{}');
+    copyDir(s, d);
+    assert(fs.existsSync(path.join(d, '.claude-plugin', 'plugin.json')) && !fs.existsSync(path.join(d, '.runtime')), 'ships .claude-plugin, not .runtime');
+  } finally { fs.rmSync(s, { recursive: true, force: true }); fs.rmSync(d, { recursive: true, force: true }); }
+});
+
 test('http-daemon: the open SSE stream (GET) gets periodic keepalive comments, so an idle client never times it out', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ssealive-'));
   const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;

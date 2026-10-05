@@ -548,7 +548,7 @@ Para testar mudanças não-commitadas localmente antes de publicar:
 node claude-code-boss/scripts/install-local.js
 ```
 
-Isso copia o estado atual do diretório para o cache do Claude Code Desktop (usando o SHA do commit atual como nome do diretório). Reinicie o Desktop para carregar.
+Isso copia o estado atual do diretório para o cache do Claude Code Desktop (usando o SHA do commit atual como nome do diretório; se ele já existir, usa `<sha>-<sufixo>`, nunca apaga uma instalação existente), faz backup de `installed_plugins.json` e sobe o daemon do brain a partir da instalação nova — as sessões abertas reconectam sozinhas. Rode `/reload-plugins` nelas para carregar o código novo dos hooks.
 
 Depois de commitar e fazer push, o marketplace atualiza automaticamente via `/plugin update claude-code-boss` no Claude Code.
 

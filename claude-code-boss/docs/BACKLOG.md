@@ -723,6 +723,41 @@ real (2.29.0, porta 38217) seguiu intacto. Resultados (Claude Code 2.1.283):
   jobs ocupando + 5 edições na fila, mata o worker, as 5 edições aparecem no
   journal depois do dreno.
 
+## Queda do brain-server de 05/10/2026 (branch `fix/curadoria-redirect-args`)
+
+Visto pelo usuário: depois de reiniciar a máquina, as sessões ficaram sem o boss.
+Linha do tempo pelos logs MCP do Claude Code: às 09:00:18 uma pasta nova de cache foi
+criada e às 09:00:19 o daemon morreu; o registro foi reescrito sem backup às 09:00:37;
+as sessões desistiram às 09:00:35 (5 tentativas em ~16 s); o daemon voltou às 09:00:42.
+Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
+
+- [x] **Q1 — stream SSE ocioso caía a cada ~6 min** (`servers/brain-server/lib/http-daemon.js`).
+  O cliente do Claude Code 2.1.283 corta um GET SSE ocioso em ~6 min e, depois de 3 cortes,
+  fecha o transporte. **Achado e corrigido na hora**: comentário `: keepalive` a cada 30 s
+  no GET aberto. Teste com daemon real + mutação; prova no Claude Code real (sandbox): 447 s
+  conectado, zero `SSE stream disconnected`.
+- [x] **Q2 — `scripts/install-local.js` derrubava o daemon de todas as sessões.** Fazia
+  `rmSync` da pasta de cache (de onde o daemon rodava), sem backup do registro e sem subir o
+  daemon de novo. **Achado e corrigido na hora**: nunca apaga pasta existente (usa
+  `<sha>-<sufixo>`), faz backup de `installed_plugins.json` e passa o daemon para a
+  instalação nova (para o antigo, roda `brain-daemon-ensure`, confere `/health`). Teste
+  unitário + e2e com HOME isolado rodado 2×: pasta nova, antiga preservada, 2 backups,
+  daemon da instalação nova.
+- [x] **Q3 — primeiro `ensure` numa instalação nova não subia o daemon**
+  (`servers/brain-server/lib/daemon-supervisor.js` `acquireSpawnLock`). Sem a pasta de
+  dados, o `mkdir` da trava falhava com ENOENT, era lido como "trava ocupada" e, após
+  9 s, culpava "another process holds the spawn lock". Visto no e2e do Q2. **Achado e
+  corrigido na hora**: cria a pasta de dados antes; erro de I/O real agora sobe com a causa.
+  Teste + mutação.
+- [x] **Q4 — mesma versão compartilha o daemon, então uma instalação de dev nova continua
+  servida pelo código antigo** (`ensureDaemon`: só troca com versão estritamente maior).
+  Mitigado pelo Q2 (o `install-local` passa o daemon explicitamente); no marketplace toda
+  atualização muda a versão. Sem mudança de regra.
+- [ ] **Q5 — 14 arquivos de runtime `claude-code-boss/.token-guard/results/*.txt` estão versionados**
+  (entraram no commit 818980f4, apesar de `.token-guard/` no `.gitignore:87`). Visto ao limpar
+  a pasta durante o Q2: o `git status` mostrou as deleções. Fora do escopo. Proposta:
+  `git rm -r --cached claude-code-boss/.token-guard` num commit próprio.
+
 ## Testes
 
 - [x] `scripts/test-units.js`, teste `plano B: stream com várias linhas SSE somando mais de 32 MiB termina completo (o teto é por linha)` (~9361): flake intermitente sob carga (anotado em 2026-09-30, durante a Fase G da 2.29.1, que não toca o model-router): falhou com `nvidia: conteúdo perdido (867 chars)` em 1 de 3 rodadas completas da suíte, e outra rodada teve 2 falhas da família `plano B`; a terceira passou limpa. Mesma família de timing do item de FIN/reset abaixo. Investigar se o stream de >40 MiB é cortado por prazo do teste ou do router quando a máquina está carregada.
