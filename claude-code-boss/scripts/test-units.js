@@ -14268,6 +14268,31 @@ test('http-daemon: the open SSE stream (GET) gets periodic keepalive comments, s
   }
 });
 
+test('brain-status: reports the folder\'s real project id (not the folder name / "default") and never sets CCB_PROJECT_ID in the dispatcher process', async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bstatus-'));
+  const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, CCB: process.env.CCB_PROJECT_ID };
+  try {
+    const home = path.join(base, 'home'); fs.mkdirSync(home);
+    const named = path.join(base, 'pasta-qualquer'); fs.mkdirSync(path.join(named, '.memory'), { recursive: true });
+    fs.writeFileSync(path.join(named, '.memory', 'project.json'), JSON.stringify({ version: '1', metadata: { defaults: { project_id: 'loja-online' } } }));
+    const plain = path.join(base, 'sem-nome'); fs.mkdirSync(plain);
+    const cp = require('child_process');
+    const env = { ...process.env, HOME: home, USERPROFILE: home }; delete env.CCB_PROJECT_ID;
+    const status = (cwd) => JSON.parse(cp.execFileSync(process.execPath, [path.join(SCRIPTS, 'brain-status.js')], { cwd, env, encoding: 'utf8', timeout: 30000 }));
+    assertEq(status(named).project, 'loja-online', 'declared id, not the folder name "pasta-qualquer"');
+    assert(/memory is off/.test(status(plain).project), 'no id → says memory is off, not "default"');
+    process.env.HOME = home; process.env.USERPROFILE = home; delete process.env.CCB_PROJECT_ID;
+    require('./lib/brain-config.js')._resetCache();
+    await require('./brain-status.js').run({ cwd: named });
+    assertEq(process.env.CCB_PROJECT_ID, undefined, 'run() left the process env alone (first resolver rung)');
+  } finally {
+    process.env.HOME = saved.HOME; process.env.USERPROFILE = saved.USERPROFILE;
+    if (saved.CCB === undefined) delete process.env.CCB_PROJECT_ID; else process.env.CCB_PROJECT_ID = saved.CCB;
+    require('./lib/brain-config.js')._resetCache();
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test('mcp-client._downloadJar goes through the single release resolver (GPU-aware, published sha256 enforced) — no second copy that took the first .jar', async () => {
   const resolverPath = require.resolve('./lib/mcp-release-resolver.js');
   const real = require(resolverPath);

@@ -850,6 +850,24 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   __user__" usava o `cwd` temporário como "caminho de usuário" (no Windows o Temp fica no HOME; no Linux é
   `/tmp`, que o sanitizador corretamente não toca). Entrou em 54dfc76, depois da v3.0.0 — nunca tinha rodado no
   CI. **Corrigido**: o teste usa caminhos de usuário explícitos (`/home/alice`, `C:Usersalice`).
+- [x] **Q23 — `brain-status` com projeto errado e vazando `CCB_PROJECT_ID`.** Visto no smoke do `/release`
+  3.0.1 (sessão real): a skill mostrou `project: default` enquanto o `brain_search` resolvia o id do repo.
+  Usava `basename(cwd)`/`default` (regra anterior à 2.29.1) e o `run()` — que roda DENTRO do dispatcher do
+  prompt — gravava `process.env.CCB_PROJECT_ID`, o 1º degrau do resolvedor, para os outros detectores do
+  mesmo processo. **Corrigido na hora**: resolvedor estrito, projeto passado ao `probeHealth`, env intocado;
+  sem id → "memory is off in this folder". Teste + mutação.
+- [ ] **Q24 — model-router × gateway próprio do usuário.** Visto no smoke do `/release` 3.0.1: nesta máquina
+  as sessões usam `ANTHROPIC_BASE_URL=http://100.124.248.83` (token `local-…`) forçado pelo launcher; o
+  `model-router-ensure` grava `env.ANTHROPIC_BASE_URL=127.0.0.1:13456` no `settings.json` e o router, sem
+  upstream configurado, repassa para `api.anthropic.com` → um `claude -p` de terminal (que aplica o
+  settings) leva **401 Invalid bearer token**. Não é regressão (o router antigo fazia o mesmo; os smokes
+  anteriores usavam config isolada). Proposta: ao ativar, se o `ANTHROPIC_BASE_URL` do processo já aponta
+  para um gateway que não é o router, adotá-lo como upstream (`upstream.baseUrl`) ou não sequestrar.
+- [ ] **Q25 — 1 falha intermitente numa rodada completa do gate (05/10, durante o `/release` 3.0.1).** A
+  saída foi cortada (`tail`) e o nome do teste se perdeu. Não reproduziu em 2 rodadas completas do gate
+  nem em 35 rodadas isoladas dos testes novos sensíveis a tempo (reaper, keepalive, backup e2e,
+  brain-status, mcp-link, setup self-heal, wizard spawn). Próxima ocorrência: guardar o log inteiro e
+  registrar o nome do teste aqui antes de rodar de novo.
 ## Testes
 
 - [x] `scripts/test-units.js`, teste `plano B: stream com várias linhas SSE somando mais de 32 MiB termina completo (o teto é por linha)` (~9361): flake intermitente sob carga (anotado em 2026-09-30, durante a Fase G da 2.29.1, que não toca o model-router): falhou com `nvidia: conteúdo perdido (867 chars)` em 1 de 3 rodadas completas da suíte, e outra rodada teve 2 falhas da família `plano B`; a terceira passou limpa. Mesma família de timing do item de FIN/reset abaixo. Investigar se o stream de >40 MiB é cortado por prazo do teste ou do router quando a máquina está carregada.
