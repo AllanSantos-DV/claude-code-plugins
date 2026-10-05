@@ -21801,6 +21801,29 @@ test('brain daemon supervisor: lockMatchesHealth canonicalizes the HEALTH dataDi
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
+test('brain daemon supervisor: a session still on an OLD install spawns the newest installed version (not its own old dir); orphaned versions skipped; equal versions keep their own', async () => {
+  const { newestInstalledRoot } = await import(SUPERVISOR_URL);
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-newest-'));
+  try {
+    const plug = path.join(base, 'plugins', 'cache', 'mkt', 'claude-code-boss');
+    const mk = (dir, version, orphaned) => {
+      const r = path.join(plug, dir);
+      fs.mkdirSync(path.join(r, 'servers', 'brain-server'), { recursive: true });
+      fs.writeFileSync(path.join(r, 'servers', 'brain-server', 'index.js'), '');
+      fs.writeFileSync(path.join(r, 'package.json'), JSON.stringify({ version }));
+      if (orphaned) fs.writeFileSync(path.join(r, '.orphaned_at'), String(Date.now()));
+      return r;
+    };
+    const old = mk('aaa111', '3.0.0'); const cur = mk('bbb222', '3.0.1'); mk('ccc333', '3.0.2', true); const twin = mk('ddd444', '3.0.1');
+    assertEq(newestInstalledRoot(old), cur === newestInstalledRoot(old) ? cur : twin, 'old install → a 3.0.1 install');
+    assert([cur, twin].includes(newestInstalledRoot(old)), 'never the old dir, never the orphaned 3.0.2');
+    assertEq(newestInstalledRoot(cur), cur, 'equal version → own install');
+    const dev = path.join(base, 'checkout', 'claude-code-boss');
+    fs.mkdirSync(dev, { recursive: true });
+    assertEq(newestInstalledRoot(dev), dev, '--plugin-dir / checkout: untouched');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
 test('brain daemon supervisor: spawn mutex — live lock blocks, release frees, stale lock stolen (H1)', async () => {
   const { acquireSpawnLock, releaseSpawnLock, spawnLockDir } = await import(SUPERVISOR_URL);
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mutex-'));

@@ -868,6 +868,16 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   nem em 35 rodadas isoladas dos testes novos sensíveis a tempo (reaper, keepalive, backup e2e,
   brain-status, mcp-link, setup self-heal, wizard spawn). Próxima ocorrência: guardar o log inteiro e
   registrar o nome do teste aqui antes de rodar de novo.
+- [x] **Q26 — sessão de versão antiga ressuscitava o daemon com código antigo.** Visto no smoke do
+  `/release` 3.0.1: depois de instalar fb0d90d o daemon rodava de 4ac5858 (3.0.0) — sessões abertas
+  antes mantêm o pluginRoot antigo e, com o daemon fora por um instante, o `headersHelper`/hook delas
+  subia o daemon da própria pasta. **Corrigido na hora**: no caminho "nenhum daemon", o supervisor sobe
+  a versão mais nova instalada na mesma pasta de cache (ignora `.orphaned_at`; versão igual = a própria).
+  Teste + mutação; os 24 testes do supervisor passam.
+- [ ] **Q27 — native-java 2.45.1 travou no relançamento do auto-update** (processo vivo sem porta,
+  `daemon.json` apontando para o pid morto da 2.44.3). Visto no smoke do `/release` 3.0.1. Externo
+  (repo native-java), provavelmente o mesmo caminho do Q16. O boss reporta corretamente "instalado mas
+  não rodando".
 ## Testes
 
 - [x] `scripts/test-units.js`, teste `plano B: stream com várias linhas SSE somando mais de 32 MiB termina completo (o teto é por linha)` (~9361): flake intermitente sob carga (anotado em 2026-09-30, durante a Fase G da 2.29.1, que não toca o model-router): falhou com `nvidia: conteúdo perdido (867 chars)` em 1 de 3 rodadas completas da suíte, e outra rodada teve 2 falhas da família `plano B`; a terceira passou limpa. Mesma família de timing do item de FIN/reset abaixo. Investigar se o stream de >40 MiB é cortado por prazo do teste ou do router quando a máquina está carregada.

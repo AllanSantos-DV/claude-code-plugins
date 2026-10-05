@@ -187,7 +187,7 @@ function readSpawnLogTail(dataDir) {
   return (errs.length ? errs : lines).slice(-3).join(' | ').slice(0, 600);
 }
 
-function spawnDaemon({ pluginRoot, dataDir, port, env }) {
+function spawnDaemon({ pluginRoot, dataDir, port, env, index = null }) {
   // The daemon serves every session/project on the machine — it must never
   // inherit a single-session identity marker from whichever hook process
   // happens to trigger this spawn. `CCB_PROJECT_ID` is set per-session by
@@ -208,7 +208,7 @@ function spawnDaemon({ pluginRoot, dataDir, port, env }) {
   try {
     const child = spawn(
       process.execPath,
-      [INDEX, '--port', String(port), '--plugin-data', dataDir],
+      [index || INDEX, '--port', String(port), '--plugin-data', dataDir],
       { detached: true, stdio: ['ignore', 'ignore', errFd], windowsHide: true, env: childEnv },
     );
     child.unref();
@@ -241,6 +241,37 @@ function isNewerVersion(a, b) {
   if (!x || !y) return false;
   for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] > y[i];
   return false;
+}
+
+/** The brain-server entry of a given install (this module's own when that one has none). */
+function rootIndex(pluginRoot) {
+  const idx = path.join(String(pluginRoot || ''), 'servers', 'brain-server', 'index.js');
+  return pluginRoot && fs.existsSync(idx) ? idx : INDEX;
+}
+
+/**
+ * The newest installed version next to this one (marketplace cache layout
+ * <cache>/<marketplace>/<plugin>/<version>), else pluginRoot itself. After an update the
+ * sessions opened before it keep running the OLD install (Claude Code keeps its path until
+ * restart); when the daemon is momentarily down (a swap, a crash) their hook/headersHelper
+ * respawned it from that old dir and old code served every session. Versions Claude Code
+ * already orphaned (.orphaned_at) are skipped; equal versions keep the caller's own.
+ */
+function newestInstalledRoot(pluginRoot) {
+  const root = path.resolve(String(pluginRoot || ''));
+  const parent = path.dirname(root);
+  if (path.basename(path.dirname(path.dirname(parent))) !== 'cache') return pluginRoot;
+  let best = pluginRoot;
+  let bestV = installVersion(pluginRoot);
+  let names = [];
+  try { names = fs.readdirSync(parent); } catch (err) { void err; return pluginRoot; }
+  for (const d of names) {
+    const r = path.join(parent, d);
+    if (r === root || fs.existsSync(path.join(r, '.orphaned_at')) || !ownerRootExists(r)) continue;
+    const v = installVersion(r);
+    if (isNewerVersion(v, bestV)) { best = r; bestV = v; }
+  }
+  return best;
 }
 
 /** Is a pluginRoot still a real install on disk (so its daemon is worth sharing)? */
@@ -440,9 +471,11 @@ export async function ensureDaemon({ pluginRoot, dataDir, env = process.env } = 
       };
     }
     try {
-      const pid = spawnDaemon({ pluginRoot, dataDir, port, env: normalizedEnv });
-      const up = await waitCurrent(port, pluginRoot, dataDir);
-      if (up) return { status: 'started', pid, port };
+      const spawnRoot = newestInstalledRoot(pluginRoot);
+      // A different (newer) install runs ITS server; otherwise this module's own, as before.
+      const pid = spawnDaemon({ pluginRoot: spawnRoot, dataDir, port, env: normalizedEnv, index: spawnRoot !== pluginRoot ? rootIndex(spawnRoot) : null });
+      const up = await waitCurrent(port, spawnRoot, dataDir);
+      if (up) return { status: 'started', pid, port, ...(spawnRoot !== pluginRoot ? { note: `started the newer install ${spawnRoot}` } : {}) };
       // Spawn came up but not healthy — diagnose: index.js exits 0 on
       // EADDRINUSE (silently), so an unseen squatter is the usual cause. A
       // third shape: the daemon booted but resolved a DIFFERENT dataDir than
@@ -452,7 +485,7 @@ export async function ensureDaemon({ pluginRoot, dataDir, env = process.env } = 
       if (again.kind === 'daemon') {
         const h = again.health;
         let why = 'it is on the port but returned a non-matching /health';
-        if (h.pluginRoot === pluginRoot) {
+        if (h.pluginRoot === spawnRoot) {
           let served = h.dataDir;
           try { served = canonicalDataDir(h.dataDir); } catch { /* keep raw */ }
           why = `it serves dataDir ${JSON.stringify(served)} instead of ${JSON.stringify(canonicalDataDir(dataDir))}`;
@@ -496,4 +529,4 @@ export async function ensureDaemon({ pluginRoot, dataDir, env = process.env } = 
 }
 
 // Internal helpers exported for unit tests (the pure, side-effect-free ones).
-export { samePluginData, sameIdentity, lockMatchesHealth, acquireSpawnLock, releaseSpawnLock, spawnLockDir, spawnLogFile, readSpawnLogTail, SPAWN_LOCK_STALE_MS, WAIT_CURRENT_MS };
+export { newestInstalledRoot, samePluginData, sameIdentity, lockMatchesHealth, acquireSpawnLock, releaseSpawnLock, spawnLockDir, spawnLogFile, readSpawnLogTail, SPAWN_LOCK_STALE_MS, WAIT_CURRENT_MS };
