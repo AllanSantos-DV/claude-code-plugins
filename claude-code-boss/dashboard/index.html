@@ -449,6 +449,7 @@ table{font-variant-numeric:tabular-nums}
         <li><b data-i18n="home.start.s1t">Correct the agent when it gets something wrong</b><span data-i18n="home.start.s1">The correction becomes a lesson and shows up under Lessons learned. Next time, it is remembered.</span></li>
         <li><b data-i18n="home.start.s2t">Repeat a command with long output</b><span data-i18n="home.start.s2">It gets a curated script that returns a summary; the saving shows up under Curation &amp; guards.</span></li>
         <li><b data-i18n="home.start.s3t">Pick a profile, if you want</b><span data-i18n="home.start.s3">Hooks tab or /boss-profile. The default, standard, works in silence.</span></li>
+        <li><b data-i18n="home.start.s4t">Want the code graph and two-level memory?</b><span data-i18n="home.start.s4">They come with the memory server (optional). Ask Claude "enable the boss memory server" and it installs it for you.</span></li>
       </ol>
     </div>
     <div class="card">
@@ -776,6 +777,18 @@ table{font-variant-numeric:tabular-nums}
       </div>
     </div>
     </details>
+
+    <div class="card" id="backup-card" style="margin-bottom:1rem">
+      <h2 style="margin:0 0 .35rem 0" data-i18n="backup.title">Backup</h2>
+      <p class="text-muted" style="font-size:.8rem;margin:0 0 .6rem 0" data-i18n="backup.hint">Saves everything the plugin learned on this machine into one file you can restore elsewhere.</p>
+      <div style="display:flex;align-items:center;gap:.6rem;flex-wrap:wrap">
+        <button class="btn-primary" id="backup-create-btn" onclick="createBackup()" data-i18n="backup.create">Create backup</button>
+        <button class="btn-sm" onclick="document.getElementById('backup-file').click()" data-i18n="backup.restore">Restore from file…</button>
+        <input type="file" id="backup-file" accept=".gz,application/gzip" style="display:none" onchange="restoreBackupFile(event)">
+        <span id="backup-status" class="text-muted" style="font-size:.8rem"></span>
+      </div>
+      <div id="backup-list" style="margin-top:.6rem;font-size:.8rem"></div>
+    </div>
 
     <div class="flex flex-wrap gap-1 mb-1">
       <select id="brain-project" onchange="loadBrainStats()" style="max-width:200px"><option value="" data-i18n="brain.selectProject">Select project...</option></select>
@@ -1471,6 +1484,8 @@ const I18N = {
     'home.start.s1t': 'Correct the agent when it gets something wrong', 'home.start.s1': 'The correction becomes a lesson and shows up under Lessons learned. Next time, it is remembered.',
     'home.start.s2t': 'Repeat a command with long output', 'home.start.s2': 'It gets a curated script that returns a summary; the saving shows up under Curation & guards.',
     'home.start.s3t': 'Pick a profile, if you want', 'home.start.s3': 'Hooks tab or /boss-profile. The default, standard, works in silence.',
+    'home.start.s4t': 'Want the code graph and two-level memory?', 'home.start.s4': 'They come with the memory server (optional). Ask Claude "enable the boss memory server" and it installs it for you.',
+    'backup.title': 'Backup', 'backup.hint': 'Saves everything the plugin learned on this machine (memory, metrics, curation, policies, settings) into one file you can restore on another machine or installation. Models are re-downloaded; secrets are never included.', 'backup.create': 'Create backup', 'backup.restore': 'Restore from file…', 'backup.none': 'No backups yet.', 'backup.download': 'Download', 'backup.creating': 'Creating…', 'backup.restoring': 'Restoring…', 'backup.confirm': 'Restore this backup? The current data is saved first as a "pre-restore" backup, and the memory service restarts for a moment.', 'backup.remoteNo': 'Memory server data not included', 'backup.remoteYes': 'Includes memory server data',
     'brain.title': 'Knowledge Base', 'brain.backend': 'Backend Configuration',
     'brain.restartNeeded': 'Restart required', 'brain.restartHint': 'to apply the changes.',
     'brain.restartBtn': 'Restart Dashboard', 'brain.backendType': 'Backend Type',
@@ -1697,6 +1712,8 @@ const I18N = {
     'home.start.s1t': 'Corrija o agente quando ele errar', 'home.start.s1': 'A correção vira uma lição e aparece em Lições aprendidas. Na próxima vez, ele lembra.',
     'home.start.s2t': 'Repita um comando de saída longa', 'home.start.s2': 'Ele ganha um script curado que devolve um resumo; a economia aparece em Curadoria e guards.',
     'home.start.s3t': 'Escolha um perfil, se quiser', 'home.start.s3': 'Aba Hooks ou /boss-profile. O padrão, standard, trabalha em silêncio.',
+    'home.start.s4t': 'Quer o grafo de código e a memória em dois níveis?', 'home.start.s4': 'Eles vêm com o servidor de memória (opcional). Peça ao Claude "ative o servidor de memória do boss" e ele instala para você.',
+    'backup.title': 'Backup', 'backup.hint': 'Guarda tudo o que o plugin aprendeu nesta máquina (memória, métricas, curadoria, políticas, configurações) num arquivo que você restaura em outra máquina ou instalação. Os modelos são baixados de novo; segredos nunca entram.', 'backup.create': 'Criar backup', 'backup.restore': 'Restaurar de arquivo…', 'backup.none': 'Nenhum backup ainda.', 'backup.download': 'Baixar', 'backup.creating': 'Criando…', 'backup.restoring': 'Restaurando…', 'backup.confirm': 'Restaurar este backup? Os dados atuais são guardados antes num backup "pre-restore", e o serviço de memória reinicia por um instante.', 'backup.remoteNo': 'Dados do servidor de memória não incluídos', 'backup.remoteYes': 'Inclui os dados do servidor de memória',
     'brain.title': 'Base de Conhecimento', 'brain.backend': 'Configuração do Backend',
     'brain.restartNeeded': 'Restart necessário', 'brain.restartHint': 'para aplicar as mudanças.',
     'brain.restartBtn': 'Reiniciar Dashboard', 'brain.backendType': 'Tipo de Backend',
@@ -3201,6 +3218,7 @@ async function loadBrain() {
     }
   } catch {}
 
+  loadBackups();
   // Load KB projects
   try {
     state.brainProjects = await api('GET', '/api/brain/projects');
@@ -3625,6 +3643,62 @@ async function importBrainBundle(ev) {
     searchBrain();
     loadBrainStats();
   } catch (e) { alert('Import failed: ' + (e.message || e)); }
+}
+
+// ─── BACKUP ───────────────────────────────────────────────────────
+
+function fmtBytes(n) { return n > 1048576 ? (n / 1048576).toFixed(1) + ' MB' : Math.max(1, Math.round(n / 1024)) + ' KB'; }
+
+async function loadBackups() {
+  const box = document.getElementById('backup-list');
+  if (!box) return;
+  try {
+    const r = await api('GET', '/api/backup/list');
+    if (!r.ok) throw new Error(r.error || 'list failed');
+    box.innerHTML = r.items.length
+      ? r.items.map((b) => '<div style="display:flex;gap:.6rem;align-items:center;padding:.15rem 0"><code>' + escapeHtml(b.name) + '</code><span class="text-muted">' + fmtBytes(b.size) + '</span><button class="btn-sm" data-name="' + escapeHtml(b.name) + '" onclick="downloadBackup(this.dataset.name)">' + escapeHtml(t('backup.download')) + '</button></div>').join('')
+      : '<span class="text-muted">' + escapeHtml(t('backup.none')) + '</span>';
+  } catch (e) { box.textContent = 'Backup list failed: ' + (e.message || e); }
+}
+
+async function createBackup() {
+  const st = document.getElementById('backup-status');
+  const btn = document.getElementById('backup-create-btn');
+  btn.disabled = true; st.textContent = t('backup.creating');
+  try {
+    const r = await api('POST', '/api/backup/create');
+    if (!r.ok) throw new Error(r.error || 'backup failed');
+    const b = r.backup;
+    const rem = b.remote && b.remote.included ? t('backup.remoteYes') : t('backup.remoteNo') + (b.remote && b.remote.reason ? ' (' + b.remote.reason + ')' : '');
+    st.textContent = '✓ ' + b.name + ' · ' + fmtBytes(b.size) + ' · ' + rem;
+    loadBackups();
+  } catch (e) { st.textContent = '✗ ' + (e.message || e); }
+  finally { btn.disabled = false; }
+}
+
+async function downloadBackup(name) {
+  try {
+    const r = await fetch('/api/backup/download?name=' + encodeURIComponent(name), { headers: { 'x-dashboard-token': window.__DASHBOARD_TOKEN__ } });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const url = URL.createObjectURL(await r.blob());
+    const a = document.createElement('a'); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+  } catch (e) { alert('Download failed: ' + (e.message || e)); }
+}
+
+async function restoreBackupFile(ev) {
+  const file = ev.target.files && ev.target.files[0];
+  ev.target.value = '';
+  if (!file || !confirm(t('backup.confirm'))) return;
+  const st = document.getElementById('backup-status');
+  st.textContent = t('backup.restoring');
+  try {
+    const r = await fetch('/api/backup/restore', { method: 'POST', headers: { 'Content-Type': 'application/gzip', 'x-dashboard-token': window.__DASHBOARD_TOKEN__ }, body: await file.arrayBuffer() });
+    const j = await r.json();
+    if (!r.ok || !j.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    const rem = j.remote && j.remote.included ? (j.remote.restored ? ' · ' + t('backup.remoteYes') : ' · ✗ ' + j.remote.error) : '';
+    st.textContent = '✓ ' + j.restored + ' files · ' + j.from.host + ' ' + String(j.from.createdAt).slice(0, 10) + ' · pre-restore: ' + j.preRestoreBackup + rem;
+    loadBackups();
+  } catch (e) { st.textContent = '✗ ' + (e.message || e); }
 }
 
 // ─── HOOKS ────────────────────────────────────────────────────────

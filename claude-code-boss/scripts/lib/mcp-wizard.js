@@ -243,10 +243,12 @@ function daemonArgs(jarPath, javaArgs) {
   return [...javaArgs, '-jar', jarPath, '--daemon'];
 }
 
-async function spawnDaemon(jarPath, javaArgs, javaBin = 'java', { spawnImpl = spawn, timeoutMs = SPAWN_TIMEOUT_MS } = {}) {
+async function spawnDaemon(jarPath, javaArgs, javaBin = 'java', { spawnImpl = null, timeoutMs = SPAWN_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
     const args = daemonArgs(jarPath, javaArgs);
-    const proc = spawnImpl(javaBin, args, { stdio: 'ignore', detached: true, windowsHide: true });
+    const proc = spawnImpl
+      ? spawnImpl(javaBin, args) // tests only
+      : spawn(javaBin, args, { stdio: 'ignore', detached: true, windowsHide: true });
     proc.unref();
     // A server that dies on boot (bad JVM flag, port, corrupt jar) fails the step at once.
     let exited = null;

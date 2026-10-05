@@ -14,6 +14,20 @@ mutação e, onde muda comportamento visível, prova no Claude Code real.
   antes dela recebem 401 do daemon novo até `/reload-plugins` ou reinício.
 
 ### Added
+- **O agente ativa o servidor de memória para você.** Grafo de código, recall em dois níveis e
+  ingestão dependem do servidor de memória (mcp-memory), que antes só o dashboard instalava.
+  Agora basta pedir ao Claude: as tools `backend_status`, `backend_setup` e
+  `backend_setup_status` conferem o Java (e dão o comando de instalação se faltar), baixam e
+  sobem o servidor e trocam o backend. No backend local o agente é avisado do que está
+  desligado; as boas-vindas e o "Primeiros passos" do dashboard explicam como pedir.
+- **Pasta sem nome de projeto: o agente descobre e pergunta, sem jargão.** Ele examina a pasta,
+  lista os projetos que já existem na memória (`project_list`), pergunta se é um projeto novo ou
+  a continuação de um existente e grava com `project_set`, que recusa nome repetido sem
+  confirmação. O aviso não pede mais "owner/repo".
+- **Backup e restauração no dashboard** (aba Brain): um arquivo único com tudo o que o plugin
+  aprendeu, para levar a outra máquina ou instalação; restauração validada, com cópia de
+  segurança antes. Contrato para incluir os dados do servidor de memória:
+  [docs/BACKUP-CONTRACT.md](docs/BACKUP-CONTRACT.md).
 - **Nova identidade visual com dois temas, Dark (padrão) e Light**, no dashboard, na
   landing page e na página técnica. Seletor Dark/Light no topo de cada uma; a escolha
   fica salva (`localStorage` `ccb-theme`) e vale para as três. No dashboard a troca é
@@ -34,6 +48,14 @@ mutação e, onde muda comportamento visível, prova no Claude Code real.
   Code real; antes os de UserPromptSubmit eram sempre perdidos).
 
 ### Fixed
+- **A ativação do servidor de memória funciona com servidores atuais.** O assistente subia o
+  servidor com `--transport http`, que desde a versão 2.43 desliga o modo daemon, então a
+  ativação nunca terminava. Agora sobe em modo daemon, espera o primeiro download do modelo
+  (antes desistia em 15 s), acha um Java recém-instalado fora do PATH, grava o transporte
+  `http` e só se declara concluído depois de gravar o backend. O `projectId` do dashboard
+  chegava sempre como `default`.
+- **O serviço do brain enxerga configuração salva por outro processo** (o dashboard). Antes
+  ficava com a configuração lida na subida até reiniciar.
 - **Uma sessão que perdeu o brain agora avisa você e o agente.** Se o Claude Code desistir de
   reconectar ao brain-server, o próximo prompt mostra o que fazer (`/mcp` → brain-server →
   Reconnect, ou abrir nova sessão), assim que o serviço estiver de pé de novo.
