@@ -830,9 +830,18 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   **RESOLVIDO em 05/10** (dono pediu; fluxo do vitrine): tools inexistentes removidas, graph = backend
   mcp-memory, backends local × mcp-memory explicados, identidade de projeto atual; landing ganhou a seção
   "Quando quiser ir além". Render desktop+mobile, Dark+Light: sem overflow, sem erro de JS.
-- [ ] **Q19 — resolver de release duplicado em `scripts/mcp-client.js:337-350`** (sem detecção de
+- [x] **Q19 — resolver de release duplicado em `scripts/mcp-client.js:337-350`** (sem detecção de
   GPU) ao lado de `lib/mcp-release-resolver.js`. Fora do escopo: remover e usar o resolver único.
 
+  **RESOLVIDO em 05/10**: `_resolveLatestUrl` delega a `lib/mcp-release-resolver.js` (GPU + `.sha256`
+  publicado aplicado no download). Teste com resolvedor injetado: URL e GPU repassados, checksum
+  divergente apaga o jar.
+- [x] **Q20 — coletor de sessões ociosas derrubava sessão conectada** (`http-daemon.js`, reaper de
+  30 min). Visto pelo dono na tela: "UserPromptSubmit hook error / Connection closed" ×3 no prompt.
+  Log MCP: 31,9 min após conectar o stream SSE caiu com "Not Found" (sessão coletada — o keepalive não
+  conta como atividade), o cliente desistiu do stream e o próximo POST dos hooks `mcp_tool` levou
+  "Session not found". **Corrigido na hora**: sessão com stream aberto nunca é coletada; ao fechar, o
+  relógio de ociosidade recomeça. Teste com daemon real + mutação (reproduz o 404).
 ## Testes
 
 - [x] `scripts/test-units.js`, teste `plano B: stream com várias linhas SSE somando mais de 32 MiB termina completo (o teto é por linha)` (~9361): flake intermitente sob carga (anotado em 2026-09-30, durante a Fase G da 2.29.1, que não toca o model-router): falhou com `nvidia: conteúdo perdido (867 chars)` em 1 de 3 rodadas completas da suíte, e outra rodada teve 2 falhas da família `plano B`; a terceira passou limpa. Mesma família de timing do item de FIN/reset abaixo. Investigar se o stream de >40 MiB é cortado por prazo do teste ou do router quando a máquina está carregada.

@@ -331,30 +331,17 @@ class McpClient extends EventEmitter {
     return null;
   }
 
-  /** Resolve the latest JAR download URL from GitHub Releases API. */
-  _resolveLatestUrl() {
-    const GITHUB_REPO = 'AllanSantos-DV/mcp-memory-server-releases';
-    const apiUrl = `https://api.github.com/repos/${GITHUB_REPO}/releases/latest`;
-    return new Promise((resolve, reject) => {
-      https.get(apiUrl, { headers: { 'User-Agent': 'claude-code-boss', 'Accept': 'application/vnd.github+json' } }, (res) => {
-        let body = '';
-        res.on('data', chunk => body += chunk);
-        res.on('end', () => {
-          try {
-            const data = JSON.parse(body);
-            const asset = (data.assets || []).find(a => a.name.endsWith('.jar'));
-            if (asset) {
-              console.error(`[MCP] Latest release: ${data.tag_name} → ${asset.name}`);
-              resolve(asset.browser_download_url);
-            } else {
-              reject(new Error(`No .jar asset found in latest release of ${GITHUB_REPO}`));
-            }
-          } catch (e) {
-            reject(new Error(`GitHub API parse error: ${e.message}`));
-          }
-        });
-      }).on('error', reject);
-    });
+  /**
+   * Latest JAR from GitHub Releases through the plugin's single resolver
+   * (lib/mcp-release-resolver.js): GPU-aware (CPU build without an NVIDIA GPU) and with the
+   * published .sha256 — this used to be a second copy that took the first .jar, ignoring both.
+   * @returns {Promise<{url:string, sha256:string}>}
+   */
+  async _resolveLatestUrl() {
+    const { detectGpu, resolveLatestAsset } = require('./lib/mcp-release-resolver.js');
+    const asset = await resolveLatestAsset({ gpu: detectGpu().present });
+    console.error(`[MCP] Latest release: ${asset.version} → ${asset.name}`);
+    return { url: asset.url, sha256: asset.sha256 };
   }
 
   /** Download a JAR from a URL, following redirects, into this.jarPath. */
@@ -402,8 +389,9 @@ class McpClient extends EventEmitter {
   async _downloadJar() {
     console.error('[MCP] Resolving latest release from GitHub...');
     let url;
+    let publishedSha = '';
     try {
-      url = await this._resolveLatestUrl();
+      ({ url, sha256: publishedSha } = await this._resolveLatestUrl());
     } catch (e) {
       // Fallback to static downloadUrl in config if GitHub API is unreachable
       if (this.downloadUrl) {
@@ -418,11 +406,13 @@ class McpClient extends EventEmitter {
 
     // Compute SHA-256 of the downloaded JAR.
     const computedSha = await this._computeSha256(this.jarPath);
-    if (this.expectedSha256 && this.expectedSha256.trim()) {
-      if (computedSha !== this.expectedSha256.trim().toLowerCase()) {
+    // A pinned expectedSha256 wins; otherwise the checksum the release publishes.
+    const expected = (this.expectedSha256 && this.expectedSha256.trim()) || publishedSha;
+    if (expected) {
+      if (computedSha !== expected.toLowerCase()) {
         fs.unlinkSync(this.jarPath);
         throw new Error(
-          `[MCP] JAR checksum mismatch! Expected: ${this.expectedSha256.trim()}, Got: ${computedSha}. ` +
+          `[MCP] JAR checksum mismatch! Expected: ${expected}, Got: ${computedSha}. ` +
           `JAR has been deleted. Possible supply-chain attack. Update "backend.mcpMemory.expectedSha256" in brain-config.json if this was a legitimate update.`
         );
       }

@@ -14268,6 +14268,65 @@ test('http-daemon: the open SSE stream (GET) gets periodic keepalive comments, s
   }
 });
 
+test('mcp-client._downloadJar goes through the single release resolver (GPU-aware, published sha256 enforced) — no second copy that took the first .jar', async () => {
+  const resolverPath = require.resolve('./lib/mcp-release-resolver.js');
+  const real = require(resolverPath);
+  const McpClient = require('./mcp-client.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dljar-'));
+  const payload = Buffer.from('PK\x03\x04 fake jar');
+  const good = require('crypto').createHash('sha256').update(payload).digest('hex');
+  let asked = null;
+  try {
+    for (const [sha, ok] of [[good, true], ['0'.repeat(64), false]]) {
+      require.cache[resolverPath].exports = { ...real, detectGpu: () => ({ present: true, name: 'RTX' }), resolveLatestAsset: async (o) => { asked = o; return { url: 'https://x/mcp-memory-server-9.9.9-gpu.jar', name: 'mcp-memory-server-9.9.9-gpu.jar', version: 'v9.9.9', sha256: sha }; } };
+      const c = new McpClient({ transport: 'http', jarPath: path.join(dir, `s-${ok}.jar`) });
+      c._fetchJar = async (url) => { assertEq(url, 'https://x/mcp-memory-server-9.9.9-gpu.jar', 'URL from the resolver'); fs.writeFileSync(c.jarPath, payload); };
+      let err = null; try { await c._downloadJar(); } catch (e) { err = e; }
+      assertEq(asked, { gpu: true }, 'GPU detection passed to the resolver');
+      if (ok) assert(!err && fs.existsSync(c.jarPath), `matching published sha256 accepted: ${err && err.message}`);
+      else assert(err && /checksum mismatch/.test(err.message) && !fs.existsSync(c.jarPath), 'mismatch → jar deleted, fail loud');
+    }
+    assert(!/api\.github\.com\/repos/.test(fs.readFileSync(path.join(SCRIPTS, 'mcp-client.js'), 'utf8')), 'no private GitHub release lookup left in mcp-client.js');
+  } finally {
+    require.cache[resolverPath].exports = real;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('http-daemon: the idle reaper never takes a session whose SSE stream is open (it did after 30 min → next prompt\'s mcp_tool hooks failed "Connection closed"); idle after the stream closes → reaped', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-reaper-'));
+  const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
+  const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
+  const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0, sseKeepaliveMs: 100, sessionIdleMs: 300, reapIntervalMs: 50 });
+  const ctrl = new AbortController();
+  try {
+    const url = `http://127.0.0.1:${d.httpServer.address().port}/mcp`;
+    const H = { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: `Bearer ${fs.readFileSync(path.join(dir, 'brain-http.token'), 'utf8').trim()}` };
+    const init = await fetch(url, { method: 'POST', headers: H, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18', capabilities: {}, clientInfo: { name: 't', version: '1' } } }) });
+    const sid = init.headers.get('mcp-session-id'); await init.text();
+    await (await fetch(url, { method: 'POST', headers: { ...H, 'mcp-session-id': sid }, body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }) })).text();
+    const sse = await fetch(url, { method: 'GET', headers: { Accept: 'text/event-stream', Authorization: H.Authorization, 'mcp-session-id': sid }, signal: ctrl.signal });
+    assertEq(sse.status, 200, 'SSE stream opened');
+    const reader = sse.body.getReader();
+    const drain = (async () => { try { for (;;) { const { done } = await reader.read(); if (done) break; } } catch (e) { void e; } })();
+    await new Promise((r) => setTimeout(r, 1200)); // 4× the idle limit, no POST at all
+    const call = async () => fetch(url, { method: 'POST', headers: { ...H, 'mcp-session-id': sid }, body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) });
+    const alive = await call();
+    assertEq(alive.status, 200, `a quiet but connected session survives the reaper (got ${alive.status})`);
+    await alive.text();
+    ctrl.abort(); await drain;
+    await new Promise((r) => setTimeout(r, 900)); // stream closed → idle clock runs
+    const gone = await call();
+    assertEq(gone.status, 404, 'idle after the stream closed → reaped (404 = re-initialize)');
+    await gone.text();
+  } finally {
+    ctrl.abort();
+    if (savedTok !== undefined) process.env.BRAIN_HTTP_TOKEN = savedTok;
+    await d.shutdown();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('http-daemon /mcp requires the local token (headersHelper): none/wrong → 401, foreign Origin → 403 even with it, right token → MCP works', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mcptok-'));
   const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
