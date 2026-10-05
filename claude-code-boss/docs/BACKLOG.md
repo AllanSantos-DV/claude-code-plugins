@@ -766,6 +766,35 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   **RESOLVIDO em 05/10** (pedido do usuário): `git rm --cached` nos 40 (cópias locais mantidas);
   `.runtime/` e `coverage/` passam a valer para qualquer plugin; novo check `no-tracked-ignored` no
   `release-audit` (CI) bloqueia a recorrência. Prova: o check reprovou os 40 antes e passou depois.
+- [x] **Q6 — avaliação de ciclo de vida (pedido do usuário, 05/10): reboot, queda, atualização.**
+  Provado em Claude Code real, sandbox isolado, HEAD 60dd520: (1) queda de energia — daemon morto
+  com `taskkill /F`, trava velha no disco → sessão nova sobe o daemon e usa o brain; (2) daemon
+  morto NO MEIO da sessão → o `headersHelper` roda na 1ª tentativa de reconexão, religa o daemon
+  em 0,4 s, sessão volta sozinha (a instalação das 09:00 não tinha `headersHelper`: por isso
+  morreu); (3) atualização 3.0.0 → 3.0.1 com sessão aberta → daemon trocado, sessão antiga segue;
+  (4) porta ocupada por outro programa → o agente explica ao usuário em linguagem simples.
+- [x] **Q7 — sessão abandonada pelo cliente não avisava ninguém.** Depois de 5 tentativas (~16 s)
+  o Claude Code desiste e a sessão fica sem brain_* mesmo com o daemon de volta. **Corrigido na
+  hora**: `scripts/lib/mcp-link.js` lê o log MCP do próprio Claude Code (sessionId) e o hook do
+  prompt avisa usuário e agente (`/mcp` → Reconnect). Teste + mutação; provado com log real de
+  sessão abandonada (microclaw) e silêncio para sessão reconectada (cerne).
+- [x] **Q8 — orientação de recuperação apontava script de dev.** O aviso do `brain-health` mandava
+  o agente rodar `.vscode/scripts/install-local.mjs` (inexistente no usuário). **Corrigido na
+  hora**: o setup automático também cobre deps do brain-server faltando, com lock (uma instalação
+  por vez), e o aviso diz ao agente o que dizer ao usuário (reinstalar via /plugin se persistir).
+  Teste + 2 mutações.
+- [x] **Q9 — instalação limpa pelo marketplace mostrava "1 userConfig option not yet set".**
+  Visto na instalação isolada (`claude plugin install`). `language` era `required` com padrão e o
+  código não lê a opção. **Corrigido**: `required: false`.
+- [x] **Q10 — `scripts/install-local.js` público.** Ferramenta de dev no plugin e no README.
+  **Removido** (dev usa `.claude/scripts/install-local.mjs`, local; docs públicas → `--plugin-dir`).
+- [ ] **Q11 — auto-update desligado para o nosso marketplace (padrão do Claude Code para
+  terceiros).** Fonte: code.claude.com/docs/en/plugins/loading ("When auto-update runs"), acesso
+  05/10/2026. Sem ligar, o usuário nunca recebe versão nova. Decisão do dono pendente: o plugin
+  liga sozinho (`autoUpdate` em `known_marketplaces.json`) ou só orienta.
+- [ ] **Q12 — pasta sem project id = memória desligada + aviso a cada turno.** Visto na instalação
+  limpa: numa pasta comum o usuário não-dev recebe pergunta sobre "project id owner/repo". Decisão
+  do dono pendente (regra de 2026-10-02).
 
 ## Testes
 

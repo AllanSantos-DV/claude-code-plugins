@@ -117,6 +117,22 @@ function installBrainServer() {
 async function main() {
   warnNodeVersion();
 
+  // Every session's first prompt may spawn this in the background: one npm at a time.
+  const { acquireFileLock, releaseFileLock } = require('./lib/process-lock.js');
+  const lockFile = path.join(process.env.CLAUDE_PLUGIN_DATA || PLUGIN_ROOT, 'plugin-setup.lock');
+  const lock = acquireFileLock(lockFile);
+  if (!lock.acquired) {
+    process.stdout.write(`[plugin-setup] another setup is running (${lock.reason || 'lock held'}) — skipping\n`);
+    return;
+  }
+  try {
+    await setupSteps();
+  } finally {
+    releaseFileLock(lockFile, lock.owner);
+  }
+}
+
+async function setupSteps() {
   const nodeModules = path.join(PLUGIN_ROOT, 'node_modules');
   if (fs.existsSync(nodeModules)) {
     process.stdout.write('[plugin-setup] Dependencies present\n');

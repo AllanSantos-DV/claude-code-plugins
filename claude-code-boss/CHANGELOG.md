@@ -34,6 +34,16 @@ mutação e, onde muda comportamento visível, prova no Claude Code real.
   Code real; antes os de UserPromptSubmit eram sempre perdidos).
 
 ### Fixed
+- **Uma sessão que perdeu o brain agora avisa você e o agente.** Se o Claude Code desistir de
+  reconectar ao brain-server, o próximo prompt mostra o que fazer (`/mcp` → brain-server →
+  Reconnect, ou abrir nova sessão), assim que o serviço estiver de pé de novo.
+- **Dependências do brain faltando são reinstaladas sozinhas**, em segundo plano, uma instalação
+  por vez. Antes só aconteceria se faltasse a pasta `node_modules` inteira, e o aviso mandava o
+  agente rodar um script de desenvolvimento que não existe na máquina do usuário.
+- **A instalação não pede mais configuração.** A opção de idioma aparecia como obrigatória
+  ("1 userConfig option not yet set") mesmo tendo padrão; agora é opcional.
+- **`scripts/install-local.js` saiu do plugin.** Era ferramenta de desenvolvimento; para testar
+  um checkout, use `claude --plugin-dir ./claude-code-boss`.
 - **O brain-server não cai mais a cada ~6 minutos.** O Claude Code encerra um stream SSE
   parado depois de ~6 min e, após três quedas, fecha a conexão. O daemon agora manda um
   sinal de vida a cada 30 s.

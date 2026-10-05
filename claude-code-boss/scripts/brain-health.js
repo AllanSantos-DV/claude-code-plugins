@@ -176,10 +176,12 @@ function buildAdvisoryText(defects) {
   const lines = defects.map((d, i) => `  ${i + 1}. ${d}`).join('\n');
   return '[BRAIN-HEALTH] Brain MCP path is DOWN — defects detected:\n' +
     lines +
-    '\n\nAction: re-run `.vscode/scripts/install-local.mjs` — the new build takes effect ' +
-    'on the next turn (no Claude Code restart needed). If the live probe failed, the agent ' +
-    'must fix the listed cause before relying on `brain_search` / `brain_store` / ' +
-    '`capture_lesson` — those calls will fail until resolved.';
+    '\n\nAction: missing dependencies are re-installed automatically in the background ' +
+    '(plugin setup) on the next prompt. Until then `brain_search` / `brain_store` / ' +
+    '`capture_lesson` fail — do not rely on them, and do not run dev scripts. Tell the user ' +
+    'in plain words that the plugin memory is unavailable right now; if it is still broken in ' +
+    'a NEW session, the fix is to reinstall the plugin: /plugin → Installed → claude-code-boss → ' +
+    'Update now (or Uninstall, then install again).';
 }
 
 function countPendingDrafts(data) {
