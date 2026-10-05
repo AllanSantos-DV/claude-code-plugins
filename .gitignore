@@ -18,8 +18,8 @@ test-payload-*.json
 # Smoke tests (local-only, never versioned)
 smoke/
 
-# Runtime artifacts (PID files, log ring, dashboard state)
-claude-code-boss/.runtime/
+# Runtime artifacts (PID files, log ring, dashboard state) — any plugin
+.runtime/
 
 # Local docs (maps, plans — not for git)
 docs/maps/
@@ -72,7 +72,7 @@ claude-code-boss/dist/
 claude-code-boss/build/
 
 # Test coverage
-claude-code-boss/coverage/
+coverage/
 claude-code-boss/.lcov*
 
 # Environment variables

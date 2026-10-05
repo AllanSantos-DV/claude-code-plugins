@@ -24,6 +24,10 @@
  *   3. no-conflict-marks — no tracked source carries an unresolved merge marker
  *                          (`<<<<<<<` / `>>>>>>>`) — a real risk after manual
  *                          conflict resolution during a stacked release.
+ *   4. index-version-current — every plugin's version tile in pages/index.html
+ *                          matches its in-repo version.
+ *   5. no-tracked-ignored — no tracked file matches .gitignore (a later rule
+ *                          does not untrack what was already committed).
  *
  * Usage:
  *   node .github/scripts/release-audit.mjs check   # exit 1 if any check fails
@@ -181,11 +185,31 @@ function indexVersionCurrent() {
     : { ok: true, details: [`pages/index.html matches ${INDEX_TILES.length} in-repo version(s)`] };
 }
 
+// ── Check 5: nothing tracked that .gitignore says is local-only ──────────────
+// A rule added to .gitignore does not untrack what was committed before it: 39
+// `.token-guard/results/*.txt` dumps and a docs/PLAN-*.md stayed in the public repo
+// for weeks after `.token-guard/` and `docs/PLAN-*.md` were ignored.
+function noTrackedIgnored() {
+  let out;
+  try {
+    out = execFileSync('git', ['ls-files', '-ci', '--exclude-standard'], { cwd: REPO_ROOT, encoding: 'utf8' });
+  } catch (err) {
+    return { ok: false, details: [`cannot run git ls-files: ${err && err.message}`] };
+  }
+  const hits = out.split(/\r?\n/).filter(Boolean);
+  if (hits.length === 0) return { ok: true, details: ['no tracked file matches .gitignore'] };
+  return {
+    ok: false,
+    details: [`${hits.length} tracked file(s) match .gitignore (untrack with \`git rm --cached\`):`, ...hits.slice(0, 20).map((h) => `    ${h}`)],
+  };
+}
+
 const CHECKS = [
   { name: 'hooks-doc-drift', run: hooksDocumented },
   { name: 'changelog-current', run: changelogCurrent },
   { name: 'no-conflict-marks', run: noConflictMarkers },
   { name: 'index-version-current', run: indexVersionCurrent },
+  { name: 'no-tracked-ignored', run: noTrackedIgnored },
 ];
 
 function runAll() {
