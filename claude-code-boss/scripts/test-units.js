@@ -21326,6 +21326,10 @@ test('brain daemon supervisor: spawn mutex — live lock blocks, release frees, 
   assert(acquireSpawnLock(dataDir), 'abandoned (stale) lock must be stolen');
   releaseSpawnLock(dataDir);
   assert(!fs.existsSync(spawnLockDir(dataDir)), 'release removes the lock dir');
+  // Fresh install: the data dir does not exist yet — the first ensure must still win the lock.
+  const fresh = path.join(tmp, 'fresh', 'data');
+  assert(acquireSpawnLock(fresh), 'acquire on a not-yet-created data dir must win (was ENOENT → "held")');
+  releaseSpawnLock(fresh);
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
