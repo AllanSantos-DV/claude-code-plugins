@@ -1,6 +1,6 @@
 # claude-code-boss
 
-Plugin para Claude Code Desktop — **v3.0.0**
+Plugin para Claude Code Desktop — **v3.0.1**
 
 **Menos repetição. Mais memória.** Com o claude-code-boss, o seu Claude Code lembra o
 que deu certo e errado em cada projeto, resume a saída barulhenta de comandos que se
@@ -243,7 +243,7 @@ O script wipa a tabela `embeddings` de todo project DB e re-embeda usando o mode
 **Servidor de memória (mcp-memory) — o agente instala para você**: grafo de código
 (`graph_*`), recall em dois níveis (`compose_recall`) e ingestão de conversa exigem o
 servidor de memória (native-java). No backend `local` o agente é avisado do que está
-desligado; basta pedir "ative o servidor de memória do boss". Ele usa as tools
+desligado; basta pedir "ative o servidor de memória do boss". Primeiro ele pergunta se você já roda um servidor em outro host (com o endereço, só aponta para ele — nada é instalado); se você não souber, reaproveita o servidor que já roda na máquina (plugins irmãos instalam um; nunca sobe um segundo) ou o que outro plugin já instalou, e só baixa se não houver nenhum. Ele mostra a versão do servidor e atualiza só com o seu OK (`backend_update`). Usa as tools
 `backend_status` (o que está instalado e rodando), `backend_setup` (confere Java 21+ —
 se faltar, devolve o comando de instalação do seu sistema —, baixa o servidor, sobe em
 modo daemon e troca o backend) e `backend_setup_status` (progresso). Ao terminar, o
