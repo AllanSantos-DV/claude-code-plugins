@@ -77,5 +77,5 @@ Router fica OFF (base_url nunca publicada) mas `ENABLE_TOOL_SEARCH` + auto-compa
 
 - `/boss-profile dev` → tudo on, escalonamento 3x
 - Hooks isolados com payload fake via stdin (ver DEBUGGING.md)
-- `install-local.mjs --dirty` força seu HEAD na cache do CC Desktop
+- `claude --plugin-dir ./claude-code-boss` carrega seu checkout numa sessão
 - Aba Logs do dashboard mostra hook-errors ao vivo

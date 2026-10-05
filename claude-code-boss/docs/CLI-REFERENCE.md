@@ -33,7 +33,7 @@ node scripts/brain-reembed.js                   # re-embeda toda a KB após troc
 npm test                # test-hooks.js + test-units.js
 npm run gate            # eslint (--max-warnings=0) + version sync + testes
 npm run doctor          # atalho para scripts/doctor.js
-node .claude/scripts/install-local.mjs --dirty   # (raiz do repo) força HEAD na cache do CC Desktop
+claude --plugin-dir ./claude-code-boss   # (raiz do repo) carrega o checkout numa sessão
 ```
 
 ## Tools MCP (servidor `plugin:claude-code-boss:brain-server`)
