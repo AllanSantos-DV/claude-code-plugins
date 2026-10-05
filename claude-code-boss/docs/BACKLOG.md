@@ -793,9 +793,39 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   terceiros).** Fonte: code.claude.com/docs/en/plugins/loading ("When auto-update runs"), acesso
   05/10/2026. Sem ligar, o usuário nunca recebe versão nova. Decisão do dono pendente: o plugin
   liga sozinho (`autoUpdate` em `known_marketplaces.json`) ou só orienta.
-- [ ] **Q12 — pasta sem project id = memória desligada + aviso a cada turno.** Visto na instalação
+- [x] **Q12 — pasta sem project id = memória desligada + aviso a cada turno.** Visto na instalação
   limpa: numa pasta comum o usuário não-dev recebe pergunta sobre "project id owner/repo". Decisão
   do dono pendente (regra de 2026-10-02).
+  **RESOLVIDO em 05/10** (decisão do dono): a memória segue desligada sem id, mas o agente
+  examina a pasta, lista os projetos (`project_list`), pergunta "novo ou continuação?" e grava com
+  `project_set` (nome repetido exige `link:true`). Git remote segue automático. Provado em Claude
+  Code real: pasta nova com o código do `loja-online` → agente sugeriu, usuário confirmou, pasta
+  vinculada e a memória antiga ("checkout usa Stripe") lembrada.
+- [x] **Q13 — onboarding do servidor de memória (pedido do dono, 05/10).** Só o dashboard
+  instalava, e o wizard estava quebrado: `--transport http` desliga o modo daemon desde a 2.43
+  (sem `daemon.json`), timeout de 15 s menor que o 1º download do modelo (~430 MB), Java recém-
+  instalado fora do PATH não era achado, transport ficava `stdio`, "completed" antes de gravar o
+  backend, `projectId` do dashboard sempre `default`. **Corrigido** + tools `backend_status` /
+  `backend_setup` / `backend_setup_status` + aviso de SessionStart. Provado em Claude Code real
+  (sandbox com Java confinado por `-Duser.home`): o agente ativou e `graph_status` respondeu.
+- [x] **Q14 — config do brain em cache eterno no daemon.** Achado na prova do Q13 (o daemon
+  ignorou um `javaArgs` salvo por fora). **Corrigido**: cache válido enquanto o mtime/tamanho do
+  `user-config.json` não mudar. Teste + mutação.
+- [x] **Q15 — backup/restore no dashboard (pedido do dono, 05/10).** `lib/backup.js` (snapshot
+  `VACUUM INTO`, sem modelos/.runtime/segredos), rotas + card na aba Brain, contrato remoto
+  `docs/BACKUP-CONTRACT.md` (`backup_export`/`backup_import` no native-java). Testes: ida e volta
+  com WAL aberto (mutação: cópia crua perde a linha), e2e com 2 dashboards reais, adaptador
+  remoto. Prova com os dados reais: 495 itens, 2,2 MB, sem segredos, remoto "não incluído".
+- [ ] **Q16 — native-java: o auto-update no boot relança o servidor SEM os argumentos da JVM**
+  (perde `-Xmx512m` e qualquer `-D`). Visto na prova do Q13 (2.44.3 → 2.45.0). Externo (repo
+  native-java): repassar os args da JVM no relaunch.
+- [ ] **Q17 — native-java: `backup_export` / `backup_import`** conforme `docs/BACKUP-CONTRACT.md`
+  (o dono faz). Ao sair, o backup do dashboard passa a incluir os dados do servidor sozinho.
+- [ ] **Q18 — `pages/claude-code-boss/tech.html` desatualizada:** lista `graph_reindex` e
+  `graph_tag_node` (não existem) e diz que as graph tools são "Independentes do KB local" (exigem
+  mcp-memory). Fora do escopo (só o agente `vitrine` escreve em `pages/`). Visto no levantamento.
+- [ ] **Q19 — resolver de release duplicado em `scripts/mcp-client.js:337-350`** (sem detecção de
+  GPU) ao lado de `lib/mcp-release-resolver.js`. Fora do escopo: remover e usar o resolver único.
 
 ## Testes
 

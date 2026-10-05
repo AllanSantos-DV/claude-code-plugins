@@ -53,6 +53,11 @@ const DATA_DIR = validEnvDir(process.env.CLAUDE_PLUGIN_DATA) || dataDir();
 const MOST_POPULATED_DATA_DIR = resolveBestDataDir();
 const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');
 
+// Backup card: create / list / download / restore the plugin data (+ the memory server part).
+const backupRoutes = require('./dashboard-backup.js').createBackupRoutes({
+  pluginRoot: ROOT, dataDir: () => DATA_DIR, globalDir: () => require('./lib/data-dir.js').globalDir(), json, fail,
+});
+
 // model-router (F3) — shipped defaults vs. user override (key + toggles).
 // The override (NVIDIA key + per-user toggles) lives at a STABLE GLOBAL path
 // (globalDir()/model-router/user-config.json) so every process agrees on it and
@@ -2258,6 +2263,10 @@ function handleAPI(req, res, url) {
   if (p === '/api/brain/search' && m === 'GET') return searchBrain(req, res, url);
   if (p === '/api/brain/export' && m === 'GET') return exportBrain(req, res, url);
   if (p === '/api/brain/import' && m === 'POST') return importBrain(req, res);
+  if (p === '/api/backup/create' && m === 'POST') return backupRoutes.create(req, res);
+  if (p === '/api/backup/list' && m === 'GET') return backupRoutes.list(req, res);
+  if (p === '/api/backup/download' && m === 'GET') return backupRoutes.download(req, res, url);
+  if (p === '/api/backup/restore' && m === 'POST') return backupRoutes.restore(req, res);
   if (p === '/api/skill-promotion/config' && m === 'GET') return getSkillPromotionConfig(req, res);
   if (p === '/api/skill-promotion/scan' && m === 'POST') return scanSkillCandidates(req, res);
   if (p === '/api/skill-promotion/pending' && m === 'GET') return listSkillDrafts(req, res);

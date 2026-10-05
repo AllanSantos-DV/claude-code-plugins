@@ -21068,6 +21068,127 @@ test('setup-tools: backend_status/setup guide the agent (Java missing → exact 
   assert(/brew install --cask temurin@21/.test(javaInstallCommand('darwin')) && /openjdk-21/.test(javaInstallCommand('linux')), 'per-OS commands');
 });
 
+test('backup: round trip to another install — WAL-safe SQLite snapshot while a connection is open, no models/.runtime/tokens/router key; corrupt archive refused', () => {
+  const { createBackup, readBackup, restoreBackup } = require('./lib/backup.js');
+  const Database = require('./lib/sqlite-compat.js').loadSqlite();
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-backup-'));
+  try {
+    const A = { dataDir: path.join(base, 'a', 'data'), globalDir: path.join(base, 'a', 'global') };
+    const put = (root, rel, content) => { const f = path.join(root, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, content); return f; };
+    fs.mkdirSync(path.join(A.dataDir, 'brain', 'github.com', 'acme', 'shop'), { recursive: true });
+    const dbFile = path.join(A.dataDir, 'brain', 'github.com', 'acme', 'shop', 'brain.db');
+    const live = new Database(dbFile);
+    live.pragma('journal_mode = WAL');
+    live.exec("CREATE TABLE entries (id TEXT, title TEXT); INSERT INTO entries VALUES ('1', 'Checkout usa Stripe')");
+    // `live` stays open (like the daemon): the row lives in the -wal file, not yet in brain.db.
+    put(A.dataDir, 'policies/registry.json', '{"p":1}');
+    put(A.dataDir, 'models/Xenova/model.onnx', 'BIG');
+    put(A.dataDir, '.runtime/journal.json', '{}');
+    put(A.dataDir, 'brain-http.token', 'secret');
+    put(A.dataDir, 'model-router/router.log', 'log');
+    put(A.globalDir, 'user-config.json', '{"backend":{"type":"local"}}');
+    put(A.globalDir, 'model-router/user-config.json', '{"nimApiKey":"nvapi-SECRET"}');
+    const out = path.join(base, 'bk.tar.gz');
+    const { manifest } = createBackup({ ...A, outFile: out, pluginVersion: '3.0.0', remote: { kind: 'mcp-memory', included: false, reason: 'server has no backup_export yet' } });
+    const paths = manifest.items.map((i) => i.path).sort();
+    assertEq(paths, ['data/brain/github.com/acme/shop/brain.db', 'data/policies/registry.json', 'global/user-config.json'], `only portable data: ${paths}`);
+    assert(!fs.readFileSync(out).includes(Buffer.from('nvapi-SECRET')), 'router key never exported');
+    assertEq(manifest.remote, { kind: 'mcp-memory', included: false, reason: 'server has no backup_export yet' }, 'remote part recorded honestly');
+    live.close();
+    // "Another machine": empty install, restore, the WAL-only row is there.
+    const B = { dataDir: path.join(base, 'b', 'data'), globalDir: path.join(base, 'b', 'global') };
+    put(B.dataDir, 'policies/registry.json', '{"old":true}');
+    const r = restoreBackup(fs.readFileSync(out), B);
+    assertEq(r.restored, 3, 'three files restored');
+    const db2 = new Database(path.join(B.dataDir, 'brain', 'github.com', 'acme', 'shop', 'brain.db'), { readonly: true });
+    assertEq(db2.prepare('SELECT title FROM entries').get().title, 'Checkout usa Stripe', 'the row written under WAL survived');
+    db2.close();
+    assertEq(fs.readFileSync(path.join(B.dataDir, 'policies', 'registry.json'), 'utf8'), '{"p":1}', 'existing file replaced');
+    assert(!fs.readdirSync(path.join(B.dataDir, 'policies')).some((f) => /pre-restore|restore-/.test(f)), 'no leftovers');
+    // Corrupt: flip one byte of the payload → refused before touching anything.
+    const bad = zlib_gz_flip(fs.readFileSync(out));
+    let err = null; try { readBackup(bad); } catch (e) { err = e; }
+    assert(err && /corrupt|not a backup/.test(err.message), `corrupt archive refused: ${err && err.message}`);
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+  function zlib_gz_flip(gz) {
+    const z = require('zlib'); const tar = z.gunzipSync(gz);
+    const at = tar.indexOf(Buffer.from('{"p":1}'));
+    assert(at > 0, 'payload located');
+    tar[at + 2] ^= 0xff; // inside a file's data
+    return z.gzipSync(tar);
+  }
+});
+
+test('backup-remote: the memory-server part follows docs/BACKUP-CONTRACT.md — "not included" with the reason when the server lacks the tools, verified snapshot when it has them', async () => {
+  const { exportRemote, importRemote } = require('./lib/backup-remote.js');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bkremote-'));
+  try {
+    const calls = [];
+    const fakeClient = (tools, onCall) => class { constructor() { this._availableTools = tools.map((name) => ({ name })); } async connect() {} close() {} async callTool(n, a) { calls.push(n); return { text: JSON.stringify(onCall(n, a)) }; } };
+    const base = { pluginRoot: ROOT, tmpDir, discoverUrl: () => 'http://127.0.0.1:1', loadConfig: () => ({ backend: { type: 'mcp-memory' } }) };
+    const none = await exportRemote({ ...base, loadConfig: () => ({ backend: { type: 'local' } }) });
+    assertEq(none, { kind: 'none', included: false }, 'local backend: nothing remote');
+    const old = await exportRemote({ ...base, McpClient: fakeClient(['add_document'], () => ({})) });
+    assert(!old.included && /no backup_export tool yet/.test(old.reason), `old server: ${JSON.stringify(old)}`);
+    const payload = Buffer.from('SQLite format 3\0snapshot');
+    const sum = require('crypto').createHash('sha256').update(payload).digest('hex');
+    const ok = await exportRemote({ ...base, McpClient: fakeClient(['backup_export'], (n, a) => { fs.writeFileSync(a.destPath, payload); return { path: a.destPath, bytes: payload.length, sha256: sum, serverVersion: '2.46.0' }; }) });
+    assert(ok.included && fs.readFileSync(ok.file).equals(payload) && ok.serverVersion === '2.46.0', `exported: ${JSON.stringify(ok)}`);
+    const liar = await exportRemote({ ...base, McpClient: fakeClient(['backup_export'], (n, a) => { fs.writeFileSync(a.destPath, payload); return { sha256: '00' }; }) });
+    assert(!liar.included && /checksum mismatch/.test(liar.reason), 'a bad checksum is not packed');
+    let err = null; try { await importRemote(payload, { ...base, McpClient: fakeClient([], () => ({})) }); } catch (e) { err = e; }
+    assert(err && /no backup_import tool/.test(err.message), 'restore to an old server fails loud');
+    const r = await importRemote(payload, { ...base, McpClient: fakeClient(['backup_import'], (n, a) => ({ restored: fs.readFileSync(a.srcPath).equals(payload), documents: 3 })) });
+    assert(r.restored === true && r.documents === 3, `imported: ${JSON.stringify(r)}`);
+  } finally { fs.rmSync(tmpDir, { recursive: true, force: true }); }
+});
+
+test('dashboard backup e2e: create + download on install A, restore on install B through the real dashboard (pre-restore safety copy kept)', async () => {
+  const Database = require('./lib/sqlite-compat.js').loadSqlite();
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dashbk-'));
+  const kids = [];
+  const start = (name) => new Promise((resolve, reject) => {
+    const home = path.join(base, name, 'home'); const data = path.join(base, name, 'data');
+    fs.mkdirSync(home, { recursive: true }); fs.mkdirSync(data, { recursive: true });
+    // BRAIN_HTTP_PORT → an unused port: restore must never stop the developer's real brain daemon.
+    const env = { ...process.env, CLAUDE_PLUGIN_ROOT: ROOT, CLAUDE_PLUGIN_DATA: data, HOME: home, USERPROFILE: home, DASHBOARD_NO_OPEN: '1', DASHBOARD_PORT: '0', BRAIN_HTTP_PORT: '1' };
+    const child = require('child_process').spawn(process.execPath, [path.join(SCRIPTS, 'dashboard.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    kids.push(child);
+    let buf = '';
+    child.stdout.on('data', (c) => { buf += c; const m = buf.match(/http:\/\/localhost:(\d+)\s+\(token:\s+([a-f0-9]+)\)/); if (m) resolve({ url: `http://127.0.0.1:${m[1]}`, token: m[2], data, home }); });
+    child.on('exit', (code) => reject(new Error(`dashboard ${name} exited ${code}`)));
+    setTimeout(() => reject(new Error(`dashboard ${name} did not start`)), 15000);
+  });
+  try {
+    const A = await start('a');
+    fs.mkdirSync(path.join(A.data, 'brain', 'loja-online'), { recursive: true });
+    const db = new Database(path.join(A.data, 'brain', 'loja-online', 'brain.db'));
+    db.exec("CREATE TABLE entries (id TEXT, title TEXT); INSERT INTO entries VALUES ('1', 'Checkout usa Stripe')"); db.close();
+    const call = (I, p, opts = {}) => fetch(I.url + p, { ...opts, headers: { 'x-dashboard-token': I.token, ...(opts.headers || {}) } });
+    const made = await (await call(A, '/api/backup/create', { method: 'POST' })).json();
+    assert(made.ok && /^ccb-backup-.*\.tar\.gz$/.test(made.backup.name) && made.backup.remote.included === false, `created: ${JSON.stringify(made)}`);
+    const list = await (await call(A, '/api/backup/list')).json();
+    assertEq(list.items.map((i) => i.name), [made.backup.name], 'listed');
+    assert(list.dir.startsWith(A.home), 'archives live under the global dir, not the data dir');
+    assertEq((await call(A, '/api/backup/download?name=../../etc')).status, 400, 'path traversal refused');
+    const bytes = Buffer.from(await (await call(A, `/api/backup/download?name=${encodeURIComponent(made.backup.name)}`)).arrayBuffer());
+    assert(bytes.length > 100 && bytes[0] === 0x1f && bytes[1] === 0x8b, 'gzip archive downloaded');
+    assertEq((await call(A, '/api/backup/create', { headers: { 'x-dashboard-token': 'wrong' }, method: 'POST' })).status, 401, 'token required');
+    const B = await start('b');
+    const restored = await (await call(B, '/api/backup/restore', { method: 'POST', headers: { 'Content-Type': 'application/gzip' }, body: bytes })).json();
+    assert(restored.ok && restored.restored >= 1 && /pre-restore/.test(restored.preRestoreBackup), `restored: ${JSON.stringify(restored)}`);
+    const db2 = new Database(path.join(B.data, 'brain', 'loja-online', 'brain.db'), { readonly: true });
+    assertEq(db2.prepare('SELECT title FROM entries').get().title, 'Checkout usa Stripe', 'memory moved to install B');
+    db2.close();
+    const bad = await call(B, '/api/backup/restore', { method: 'POST', body: Buffer.from('not a backup') });
+    assert(bad.status === 400 && /not a backup/.test((await bad.json()).error), 'garbage refused before touching anything');
+  } finally {
+    for (const k of kids) k.kill();
+    await new Promise((r) => setTimeout(r, 300));
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test('project identity notice: the agent investigates and asks "new or existing project?" (project_list/project_set, link), never "owner/repo"; tool refusals point to the same tools', () => {
   const { buildNotice } = require('./project-identity-advisory.js');
   const n = buildNotice('C:\\x\\nova-pasta', '');

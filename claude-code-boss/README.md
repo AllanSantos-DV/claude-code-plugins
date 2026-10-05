@@ -154,7 +154,8 @@ prazo interno de `timeout − 1 s`.
 | SessionStart (via dispatcher) | `review-checklist-advisory.js` | Se existir `.claude/brain-review-checklist.md` (lições recorrentes de código), lembra o `/code-review` nativo de consultá-lo |
 | SessionStart (via dispatcher) | `value-digest.js` | 1×/dia por projeto: uma linha com o que a curadoria economizou nos últimos 7 dias (moldador + redirects), redirects, execuções, custo cru e o maior gargalo; silencioso sem atividade |
 | SessionStart (via dispatcher) | `tuning-advisory.js` | Recomendação determinística de tuning (perfil/curadoria) com cooldown de 6h |
-| SessionStart + UserPromptSubmit (via dispatchers) | `project-identity-advisory.js` | Pasta sem project id (e sem recusa `.memory/memory-off.json`) → avisa que a memória está desligada e pede ao agente para perguntar o nome e criar `.memory/project.json` |
+| SessionStart + UserPromptSubmit (via dispatchers) | `project-identity-advisory.js` | Pasta sem project id (e sem recusa `.memory/memory-off.json`) → avisa que a memória está desligada; o agente examina a pasta, lista os projetos (`project_list`), pergunta "novo ou continuação?" e grava com `project_set` |
+| SessionStart (via dispatcher) | `backend-onboarding-advisory.js` | Backend `local` → diz ao agente o que fica desligado (grafo, compose, ingestão) e que ele pode ativar o servidor de memória com `backend_setup`. Só contexto do agente |
 | SessionStart (via dispatcher) | `graph-warm.js` | mcp-memory: dispara um `ingest` incremental do Session Graph (fire-and-forget, cooldown por projeto) pra o grafo ficar pronto-e-fresco antes da 1ª busca — o servidor faz o delta (no-op ~5s se nada mudou). Silencioso, fail-open |
 | SessionStart (via dispatcher) | `policy-inject.js` | Injeta as políticas standing (always) no contexto da sessão |
 | SubagentStart | `policy-inject.js` | Injeta as políticas standing (always) no contexto próprio do subagente — mesma injeção do SessionStart (via `mcp_tool` `hook_policy_inject` no daemon, sem spawn por subagente) |
@@ -239,7 +240,18 @@ node claude-code-boss/scripts/brain-reembed.js
 ```
 O script wipa a tabela `embeddings` de todo project DB e re-embeda usando o modelo atual. Sem fallback, sem `previousModel`, sem dual-read — plugin é single-tenant.
 
-**Backend alternativo MCP Memory** (servidor externo): abra o dashboard
+**Servidor de memória (mcp-memory) — o agente instala para você**: grafo de código
+(`graph_*`), recall em dois níveis (`compose_recall`) e ingestão de conversa exigem o
+servidor de memória (native-java). No backend `local` o agente é avisado do que está
+desligado; basta pedir "ative o servidor de memória do boss". Ele usa as tools
+`backend_status` (o que está instalado e rodando), `backend_setup` (confere Java 21+ —
+se faltar, devolve o comando de instalação do seu sistema —, baixa o servidor, sobe em
+modo daemon e troca o backend) e `backend_setup_status` (progresso). Ao terminar, o
+serviço do brain reinicia para carregar o backend novo e as sessões reconectam sozinhas.
+A primeira subida do servidor baixa o modelo de embeddings (~430 MB) e pode levar alguns
+minutos.
+
+**Pelo dashboard** (alternativa): abra o dashboard
 (`node claude-code-boss/scripts/dashboard.js`) → aba **Brain** → **Backend
 Configuration**. Escolha `mcp-memory`, modo **http** (conectar a um
 mcp-memory-server já rodando; deixe a URL vazia para auto-descobrir via
@@ -307,7 +319,7 @@ para o nome da pasta):
 
 1. variável de ambiente **`CCB_PROJECT_ID`** — força o id da sessão inteira;
 2. **`.memory/project.json`** na pasta do projeto (ou em um ancestral), com
-   `{"version":"1","metadata":{"defaults":{"project_id":"owner/repo"}}}` —
+   `{"version":"1","metadata":{"defaults":{"project_id":"loja-online"}}}` —
    viaja com a pasta, **independe de git**, do nome da pasta e do path absoluto;
 3. legado `.claude-boss-project` (deprecado, ainda honrado);
 4. **git remote origin** normalizado;
@@ -321,8 +333,12 @@ recusados; o `cwd` com id vence um `project` explícito). O
 `SessionStart` avisa o agente, o `UserPromptSubmit` repete o aviso **a cada prompt**
 seu, e o `Stop` (`project-id-stop`) bloqueia uma vez por turno, sem loop — até o id
 existir; nesse meio-tempo os detectores de Stop que pedem captura ficam em silêncio.
-Para resolver, responda ao agente o nome do projeto (ele cria o
-`.memory/project.json`) ou trabalhe num repo git com remote. **Se não quiser memória
+Para resolver, o agente examina a pasta, lista os projetos que já existem na memória
+(`project_list`) e pergunta se é um projeto novo ou a continuação de um existente
+(sugerindo o provável pelo conteúdo da pasta); com a sua resposta ele grava o nome com
+`project_set` — que recusa um nome já existente a menos que você confirme que é o mesmo
+projeto (`link: true`). Num repo git com remote o id é automático (`host/owner/repo`),
+o mesmo em qualquer máquina ou caminho. **Se não quiser memória
 nessa pasta**, recuse: o agente cria `.memory/memory-off.json` e os avisos param
 (a memória segue desligada ali). Subpasta de um projeto declarado é coberta: o
 `.memory/project.json` é procurado até 8 níveis acima, parando antes da sua pasta
@@ -384,6 +400,7 @@ e mostra a URL. Também: `node scripts/dashboard-start.js` (imprime `{ok, url}`)
 - **Abas**: Home, Brain KB, Skills, Hooks, Insights, Logs, Router
 - **Temas**: Dark (padrão) e Light, no seletor do topo; a escolha (`localStorage` `ccb-theme`) vale também para a página do produto e a página técnica
 - **Instalação nova**: a Home mostra um cartão "Primeiros passos" enquanto não houver nenhuma atividade (lição, recall ou curadoria) e some com a primeira
+- **Backup** (aba Brain): **Criar backup** guarda num único `.tar.gz` tudo o que o plugin aprendeu na máquina — memória local, métricas, curadoria, políticas, rascunhos de skill e configurações (os bancos SQLite em snapshot consistente, mesmo com o serviço rodando). Ficam de fora os modelos (baixados de novo), arquivos transitórios e segredos (tokens, chave NVIDIA). **Restaurar de arquivo** valida tudo antes, guarda o estado atual num backup `pre-restore` e reinicia o serviço de memória por um instante. Os arquivos ficam em `~/.claude/claude-code-boss/backups` (5 mais recentes). No backend `mcp-memory`, os dados do servidor entram quando ele oferecer as tools do [contrato de backup](docs/BACKUP-CONTRACT.md); até lá o backup diz explicitamente que não os inclui
 - **Porta**: dinâmica (0 → auto-assign, sempre `127.0.0.1`); fixe com `DASHBOARD_PORT`
 - **Auth**: token aleatório gerado no boot (salvo em `.runtime/dashboard.json`)
 - **Logs tab**: ring buffer de 500 entradas + `hook-errors.jsonl` agregado. Auto-refresh a cada 2s, Copy JSON, Clear
