@@ -23,6 +23,7 @@ const CONFIG_PATH = path.join(PLUGIN_ROOT, 'config', 'brain-config.json');
 
 let _cache = null;
 let _cacheVersion = 0;
+let _cacheStamp = null;
 
 // On-disk version stamp for the user-override file (globalDir()/user-config.json).
 // Stored as `_v` alongside the diffed config fields inside the SAME JSON file (no
@@ -74,8 +75,18 @@ function deepDiff(base, next) {
   return out;
 }
 
+/** mtime+size of the user override (null when absent): another process saving it changes it. */
+function userConfigStamp() {
+  try { const st = fs.statSync(userConfigPath()); return `${st.mtimeMs}:${st.size}`; }
+  catch (err) { if (err.code !== 'ENOENT') console.error(`[brain-config] stat user config: ${err.message}`); return null; }
+}
+
 function load() {
-  if (_cache) return _cache;
+  // Long-lived processes (the brain daemon) must see a save made by ANOTHER process
+  // (the dashboard): the cache is valid only while the user override is unchanged.
+  const stamp = userConfigStamp();
+  if (_cache && stamp === _cacheStamp) return _cache;
+  _cacheStamp = stamp;
   // Layered (shipped + global user-config, legacy backfilled); `_v` is the
   // persistence-only version stamp the CAS save checks — stripped, never config.
   const { config, version } = loadLayered({ label: 'brain-config', shippedPath: CONFIG_PATH, userPath: userConfigPath, legacyPath: legacyUserConfigPath, versioned: true });
@@ -250,7 +261,7 @@ function getOnboarding() {
   return { projectIdentity: o.projectIdentity !== false };
 }
 
-function _resetCache() { _cache = null; _cacheVersion = 0; }
+function _resetCache() { _cache = null; _cacheVersion = 0; _cacheStamp = null; }
 
 /** Cheap identity of every file load() reads — see hooks-config.sourceStamp(). */
 function sourceStamp() {
