@@ -117,6 +117,8 @@ function javaCandidates(env = process.env, platform = process.platform) {
   const out = [];
   if (env.JAVA_HOME) out.push(path.join(env.JAVA_HOME, 'bin', exe));
   out.push('java');
+  // The Java runtime the native-java installer (used by the sister plugins) bundles.
+  out.push(path.join(env.USERPROFILE || env.HOME || require('os').homedir(), '.mcp-memory', 'server', 'runtime', 'bin', exe));
   const globDirs = (base, sub) => {
     try { return fs.readdirSync(base).map((d) => path.join(base, d, ...sub, exe)); } catch (err) { void err; return []; }
   };
@@ -300,31 +302,60 @@ async function validateDaemon(serverUrl, retries) {
   return { ok: false, error: `Daemon at ${url} not reachable after ${maxAttempts} attempts` };
 }
 
-async function handshake(projectId) {
+async function handshake(projectId, url = '') {
   try {
     const McpClient = require('../mcp-client.js');
     const config = loadBrainConfig();
     const mcpCfg = (config.backend && config.backend.mcpMemory) || {};
     const client = new McpClient({
       transport: 'http',
-      serverUrl: mcpCfg.serverUrl || discoverDaemonUrl() || '',
+      serverUrl: url || mcpCfg.serverUrl || discoverDaemonUrl() || '',
       runDir: mcpCfg.runDir || '',
       projectId: projectId || 'default',
       timeout: 60000,
     });
     await client.connect();
     const tools = client._availableTools || [];
-    client.close();
     const toolNames = tools.map((t) => t.name || t);
+    // Is the server current? (the user is asked before anything is updated)
+    let update = null;
+    if (toolNames.includes('check_update')) {
+      try { update = require('./mcp-memory-auto-update.js').parseCheckUpdate(await client.callTool('check_update', {})); }
+      catch (err) { update = { error: err.message }; }
+    }
+    client.close();
     const missing = REQUIRED_TOOLS.filter((t) => !toolNames.includes(t));
     if (missing.length) return { ok: false, error: `Missing required tools: ${missing.join(', ')}` };
-    return { ok: true, tools };
+    return { ok: true, tools, update };
   } catch (err) {
     return { ok: false, error: `Handshake failed: ${err.message}` };
   }
 }
 
-async function start(projectId) {
+/**
+ * A server jar another plugin already installed (copilot-memory / opencode-memory /
+ * native-java's own installer put it in ~/.mcp-memory/lib): reuse the newest instead of
+ * downloading a second copy. Null when there is none.
+ */
+function installedServerJar(home = require('os').homedir()) {
+  const dir = path.join(home, '.mcp-memory', 'lib');
+  let names;
+  try { names = fs.readdirSync(dir); } catch (err) { void err; return null; }
+  const ver = (n) => (/^mcp-memory-server-(\d+)\.(\d+)\.(\d+)(?:-gpu)?\.jar$/.exec(n) || []).slice(1).map(Number);
+  const jars = names.filter((n) => ver(n).length === 3).sort((a, b) => {
+    const x = ver(a), y = ver(b);
+    for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return y[i] - x[i];
+    return 0;
+  });
+  return jars.length ? path.join(dir, jars[0]) : null;
+}
+
+/**
+ * @param {string} projectId
+ * @param {{serverUrl?: string}} [opts] serverUrl = a server the USER pointed to (often on
+ *   another host): validate and use it — never download or start a local one instead.
+ */
+async function start(projectId, opts = {}) {
   _state = loadState();
   if (_state.status === 'running' || _activeRun) return _state;
 
@@ -342,39 +373,57 @@ async function start(projectId) {
 
   (async () => {
     try {
-      _emit(1, 'running', 'Checking Java 21+...');
-      const java = await checkJava();
-      if (!java.ok) throw new Error(`Java check failed: ${java.error}`);
-      _emit(1, 'ok', `Java ${java.version} found`);
-
       const config = loadBrainConfig();
       const mcpCfg = (config.backend && config.backend.mcpMemory) || {};
-      const jarPath = mcpCfg.jarPath || path.join(require('./data-dir.js').dataDir(), 'mcp', 'mcp-memory-server.jar');
-      const javaArgs = mcpCfg.javaArgs || ['-Xmx512m'];
+      const remoteUrl = String(opts.serverUrl || '').trim().replace(/\/+$/, '');
 
-      // One path: the plugins consume the server as the per-user HTTP daemon found via
-      // daemon.json (stdio is no longer a server default). Reuse a live one; else start it.
-      _emit(2, 'running', 'Probing daemon health...');
-      const live = await validateDaemon(mcpCfg.serverUrl, 1);
-      if (live.ok) {
-        _emit(2, 'ok', `Daemon reachable at ${live.url}`);
-        _emit(3, 'ok', 'Using the running daemon');
+      if (remoteUrl) {
+        // The user's own server (maybe on another host): no local Java, jar or daemon.
+        _emit(1, 'ok', 'Using the server the user pointed to — nothing installed locally');
+        _emit(2, 'running', `Probing ${remoteUrl}/health...`);
+        const remote = await validateDaemon(remoteUrl, 3);
+        if (!remote.ok) throw new Error(`The server at ${remoteUrl} did not answer /health (${remote.error}) — check the address and that it is running`);
+        _emit(2, 'ok', `Server reachable at ${remoteUrl}${remote.version ? ` (v${remote.version})` : ''}`);
+        _emit(3, 'ok', 'Using the remote server');
       } else {
-        _emit(2, 'running', 'Daemon down — ensuring JAR...');
-        await ensureJar(jarPath, mcpCfg, (status, detail) => _emit(2, status, detail));
-        _emit(3, 'running', 'Starting the server (the first start downloads its embedding model, ~430 MB — can take a few minutes)...');
-        const spawned = await spawnDaemon(jarPath, javaArgs, java.bin);
-        _emit(3, 'ok', `Daemon started at ${spawned.url}`);
+        _emit(1, 'running', 'Checking Java 21+...');
+        const java = await checkJava();
+        if (!java.ok) throw new Error(`Java check failed: ${java.error}`);
+        _emit(1, 'ok', `Java ${java.version} found`);
+        const ownJar = path.join(require('./data-dir.js').dataDir(), 'mcp', 'mcp-memory-server.jar');
+        const javaArgs = mcpCfg.javaArgs || ['-Xmx512m'];
+
+        // One path: the plugins consume the server as the per-user HTTP daemon found via
+        // daemon.json (stdio is no longer a server default). Reuse a live one — another
+        // plugin's included, never a second server on the machine; else start one.
+        _emit(2, 'running', 'Looking for a memory server already running on this machine...');
+        const live = await validateDaemon(mcpCfg.serverUrl, 1);
+        if (live.ok) {
+          _emit(2, 'ok', `Found a running server at ${live.url}${live.version ? ` (v${live.version})` : ''} — reusing it`);
+          _emit(3, 'ok', 'Using the running server');
+        } else {
+          const installed = !mcpCfg.jarPath && !fs.existsSync(ownJar) ? installedServerJar() : null;
+          const jarPath = mcpCfg.jarPath || installed || ownJar;
+          if (installed) _emit(2, 'ok', `Server already installed by another plugin: ${installed} — no download`);
+          else {
+            _emit(2, 'running', 'No server running — ensuring JAR...');
+            await ensureJar(jarPath, mcpCfg, (status, detail) => _emit(2, status, detail));
+          }
+          _emit(3, 'running', 'Starting the server (the first start downloads its embedding model, ~430 MB — can take a few minutes)...');
+          const spawned = await spawnDaemon(jarPath, javaArgs, java.bin);
+          _emit(3, 'ok', `Daemon started at ${spawned.url}`);
+        }
       }
 
       _emit(4, 'running', 'Performing MCP handshake...');
-      const hs = await handshake(_state.projectId);
+      const hs = await handshake(_state.projectId, remoteUrl);
       if (!hs.ok) throw new Error(`Handshake failed: ${hs.error}`);
+      _state.update = hs.update || null;
       _emit(4, 'ok', `Handshake OK (${hs.tools.length} tools)`);
 
       _emit(5, 'running', 'Validating project scope...');
       const config2 = loadBrainConfig();
-      const mcpCfg2 = (config2.backend && config2.backend.mcpMemory) || {};
+      const mcpCfg2 = { ...((config2.backend && config2.backend.mcpMemory) || {}), ...(remoteUrl ? { serverUrl: remoteUrl } : {}) };
       const finalUrl = mcpCfg2.serverUrl || discoverDaemonUrl();
       if (finalUrl) {
         const health = await httpHealth(finalUrl);
@@ -383,7 +432,8 @@ async function start(projectId) {
       _emit(5, 'ok', `Project "${_state.projectId}" validated`);
 
       const { config: brainCfg, version: brainCfgVersion } = loadBrainConfigWithVersion();
-      if (!brainCfg.backend || brainCfg.backend.type !== 'mcp-memory' || (brainCfg.backend.mcpMemory || {}).transport !== 'http') {
+      const cur = (brainCfg.backend && brainCfg.backend.mcpMemory) || {};
+      if (!brainCfg.backend || brainCfg.backend.type !== 'mcp-memory' || cur.transport !== 'http' || (remoteUrl && cur.serverUrl !== remoteUrl)) {
         // expectedVersion pinned to the load right above: if the dashboard (or
         // another wizard run) saved a change to this same override in the
         // seconds it took Java/daemon/handshake checks to run, this save is
@@ -444,7 +494,7 @@ function reset() {
 }
 
 module.exports = {
-  start, getState, reset, spawnDaemon, wizardStateFile, checkJava, checkJar, validateDaemon, handshake, REQUIRED_TOOLS, daemonArgs, discoverDaemonUrl, javaCandidates, MIN_JAVA_MAJOR,
+  start, getState, reset, spawnDaemon, wizardStateFile, checkJava, checkJar, validateDaemon, handshake, REQUIRED_TOOLS, daemonArgs, discoverDaemonUrl, javaCandidates, MIN_JAVA_MAJOR, installedServerJar,
   // Exported for isolated unit testing of the hardware-aware auto-download path
   // (mocking mcp-release-resolver.js / downloadJar) without a real spawn/network flow.
   resolveDownload, ensureJar, sha256File,

@@ -151,7 +151,10 @@ async function main() {
   const link = await linkNoticeFor(event);
   if (link) text = text ? `${text}${SEP}${link.agent}` : link.agent;
   const out = {};
-  const shown = [welcome, link && link.user].filter(Boolean);
+  // Once, after SessionStart turned plugin auto-update on: say so and how to turn it off.
+  let autoUpdate = null;
+  try { autoUpdate = require('./lib/marketplace-autoupdate.js').takeAutoUpdateNotice(); } catch (err) { console.error(`[claude-code-boss:user-prompt-submit-dispatcher] auto-update notice: ${err.message}`); }
+  const shown = [welcome, link && link.user, autoUpdate].filter(Boolean);
   if (shown.length) out.systemMessage = shown.join(' ');
   if (text) out.hookSpecificOutput = { hookEventName: eventName, additionalContext: text };
   if (Object.keys(out).length) { emitJson(out); return; }

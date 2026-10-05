@@ -16,7 +16,9 @@ function run(event, deps = {}) {
     const { OFF_ON_LOCAL } = require(path.join(__dirname, 'lib', 'setup-tools.js'));
     return `[BOSS] Memory backend: local (built in). OFF until the memory server is enabled: ${OFF_ON_LOCAL}. `
       + 'If the user wants any of these (or asks why a graph_* tool refuses), explain it in plain words and offer to enable it: '
-      + 'backend_status shows what is installed; with the user\'s OK, backend_setup installs and switches everything (it may ask you to install Java first).';
+      + 'backend_status shows what is installed and running here. Ask first whether they already run a memory server on another host '
+      + '(technical users give an address → backend_setup with serverUrl); if they do not know, backend_setup without it reuses a server already '
+      + 'on this machine (sister plugins install one) or installs one — never a second. It reports the server version; updates only with the user\'s OK (backend_update).';
   } catch (err) {
     console.error(`[backend-onboarding-advisory] ${err.message}`);
     return null;

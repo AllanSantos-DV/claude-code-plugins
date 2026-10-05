@@ -15189,14 +15189,14 @@ test('user-prompt-submit-dispatcher.withTimeout: distinguishes a genuine error f
   assertEq(okOutcome.value, 'VALUE');
 });
 
-test('session-start-dispatcher.DETECTORS: 14 detectors, correct order + shape (model-router-ensure excluded)', () => {
+test('session-start-dispatcher.DETECTORS: 15 detectors, correct order + shape (model-router-ensure excluded)', () => {
   const d = require('./session-start-dispatcher.js');
   const names = d.DETECTORS.map(x => x.name);
   assertEq(names, [
     'brain-daemon-ensure', 'memory-rotate', 'session-whitelist', 'brain-health',
     'project-snapshot', 'curation-session', 'doctor-advisory',
     'review-checklist-advisory', 'tuning-advisory', 'value-digest', 'project-identity-advisory',
-    'backend-onboarding-advisory', 'graph-warm', 'policy-inject',
+    'backend-onboarding-advisory', 'marketplace-autoupdate', 'graph-warm', 'policy-inject',
   ]);
   assert(d.DETECTORS.every(x => typeof x.mod.run === 'function'), 'every detector exposes run()');
   assert(!names.includes('model-router-ensure'), 'model-router-ensure must stay OUT (process.exit() in its main flow)');
@@ -21255,6 +21255,83 @@ test('mcp-wizard: spawns the server in DAEMON mode (no --transport: it turns dae
     assert(err && /exited with code 1 before becoming healthy/.test(err.message), `early exit reported: ${err && err.message}`);
     assert(Date.now() - t0 < 10000, 'fails fast, not at the timeout');
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('marketplace auto-update: turned on once when nobody chose (known_marketplaces + declared settings entry), user\'s explicit choice kept, user told once; inline installs untouched', () => {
+  const m = require('./lib/marketplace-autoupdate.js');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-autoupd-'));
+  try {
+    const cfg = path.join(base, 'claude'); const markerDir = path.join(base, 'global');
+    const env = { CLAUDE_CONFIG_DIR: cfg };
+    const root = path.join(cfg, 'plugins', 'cache', 'allansantos-plugins', 'claude-code-boss', '3.0.1');
+    const knownF = path.join(cfg, 'plugins', 'known_marketplaces.json'); const settingsF = path.join(cfg, 'settings.json');
+    fs.mkdirSync(path.dirname(knownF), { recursive: true });
+    const write = (k, s) => { fs.writeFileSync(knownF, JSON.stringify(k)); fs.writeFileSync(settingsF, JSON.stringify(s)); fs.rmSync(path.join(markerDir, m.MARKER), { force: true }); };
+    assertEq(m.marketplaceOf(root), 'allansantos-plugins', 'marketplace from the cache path');
+    assertEq(m.ensureAutoUpdate({ pluginRoot: path.join(base, 'checkout', 'claude-code-boss'), env, markerDir }).status, 'not-marketplace', '--plugin-dir: untouched');
+    write({ 'allansantos-plugins': { source: { source: 'git' } }, other: { source: { source: 'github' } } }, { extraKnownMarketplaces: { 'allansantos-plugins': { source: { source: 'git' } } }, theme: 'dark' });
+    assertEq(m.ensureAutoUpdate({ pluginRoot: root, env, markerDir }).status, 'enabled', 'enabled when nobody chose');
+    const k = JSON.parse(fs.readFileSync(knownF, 'utf8')); const s = JSON.parse(fs.readFileSync(settingsF, 'utf8'));
+    assert(k['allansantos-plugins'].autoUpdate === true && k.other.autoUpdate === undefined, 'only our marketplace');
+    assert(s.extraKnownMarketplaces['allansantos-plugins'].autoUpdate === true && s.theme === 'dark', 'declared settings entry too, other settings kept');
+    assertEq(m.ensureAutoUpdate({ pluginRoot: root, env, markerDir }).status, 'already-done', 'once');
+    const n = m.takeAutoUpdateNotice({ markerDir, env: {} });
+    assert(/liguei a atualização automática/.test(n) && /Disable auto-update/.test(n) && !n.includes('\n'), n);
+    assertEq(m.takeAutoUpdateNotice({ markerDir, env: {} }), null, 'told once');
+    write({ 'allansantos-plugins': { autoUpdate: false } }, {});
+    assertEq(m.ensureAutoUpdate({ pluginRoot: root, env, markerDir }).status, 'explicit', 'user turned it off → kept');
+    assertEq(JSON.parse(fs.readFileSync(knownF, 'utf8'))['allansantos-plugins'].autoUpdate, false, 'still off');
+    assertEq(m.takeAutoUpdateNotice({ markerDir, env: {} }), null, 'nothing to tell');
+    write({ 'allansantos-plugins': {} }, { extraKnownMarketplaces: { 'allansantos-plugins': { autoUpdate: false } } });
+    assertEq(m.ensureAutoUpdate({ pluginRoot: root, env, markerDir }).status, 'explicit', 'settings-level choice wins');
+    write({ 'allansantos-plugins': {} }, {});
+    assertEq(m.ensureAutoUpdate({ pluginRoot: root, env, markerDir }).status, 'enabled', 'enabled again for a fresh marker');
+    assert(/FORCE_AUTOUPDATE_PLUGINS/.test(m.takeAutoUpdateNotice({ markerDir, env: { DISABLE_AUTOUPDATER: '1' } })), 'warns when the env disables updates');
+    fs.writeFileSync(knownF, '{broken');
+    fs.rmSync(path.join(markerDir, m.MARKER), { force: true });
+    const r = m.ensureAutoUpdate({ pluginRoot: root, env, markerDir });
+    assert(r.status === 'error' && fs.readFileSync(knownF, 'utf8') === '{broken', 'an unreadable file is never rewritten');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('setup-tools: user-given server address is used as-is (no Java/download), a running local server is reused with a version check, updates only with backend_update', async () => {
+  const { createSetupTools } = require('./lib/setup-tools.js');
+  let startOpts = null, javaChecked = 0, cfg = { backend: { type: 'local' } }, state = { status: 'idle' }, updaterCalls = 0, upd = { status: 'updated', from: '2.44.3', version: '2.45.0' };
+  const wizard = {
+    checkJava: async () => { javaChecked++; return { ok: false, error: 'missing' }; },
+    discoverDaemonUrl: () => 'http://127.0.0.1:54784',
+    installedServerJar: () => null,
+    handshake: async () => ({ ok: true, tools: [], update: { currentVersion: '2.44.3', latestVersion: '2.45.0', updateAvailable: true } }),
+    start: async (p, o) => { startOpts = o; state = { status: 'running', step: 1, total: 5, details: [] }; return state; },
+    getState: () => state,
+  };
+  const t = createSetupTools({ pluginRoot: ROOT, deps: { wizard, loadConfig: () => cfg, health: async () => ({ version: '2.44.3' }), updater: async () => { updaterCalls++; return upd; } } });
+  const out = async (n, a) => (await t.handle(n, a)).content[0].text;
+  const st = await out('backend_status');
+  assert(/running v2\.44\.3 at http:\/\/127\.0\.0\.1:54784/.test(st) && /v2\.44\.3 → v2\.45\.0 — ask the user; with their OK call backend_update/.test(st) && /another host/.test(st), st);
+  const remote = await out('backend_setup', { serverUrl: 'http://10.0.0.5:54784' });
+  assert(/Connecting to http:\/\/10\.0\.0\.5:54784/.test(remote) && startOpts && startOpts.serverUrl === 'http://10.0.0.5:54784', `remote: ${remote} ${JSON.stringify(startOpts)}`);
+  const javaBefore = javaChecked;
+  assert((await t.handle('backend_setup', { serverUrl: 'not a url' })).isError, 'garbage address refused');
+  assertEq(javaChecked, javaBefore, 'no Java check for a remote server');
+  const local = await out('backend_setup');
+  assert(/Setup started/.test(local) && startOpts && !startOpts.serverUrl, 'running local server: no Java demanded, wizard reuses it');
+  state = { status: 'completed', finishedAt: 'T9', details: [], update: { currentVersion: '2.44.3', latestVersion: '2.45.0', updateAvailable: true } };
+  assert(/ask the user; with their OK call backend_update/.test(await out('backend_setup_status')), 'done message relays the update');
+  assert((await t.handle('backend_update')).isError, 'no update before the backend is mcp-memory');
+  cfg = { backend: { type: 'mcp-memory', mcpMemory: { transport: 'http' } } };
+  assert(/2\.44\.3 → 2\.45\.0/.test(await out('backend_update')) && updaterCalls === 1, 'update applied through the auto-update module');
+  upd = { status: 'skipped-remote' };
+  assert(/another host/.test(await out('backend_update')), 'remote server: whoever runs it updates it');
+  upd = { status: 'error', error: 'boom' };
+  assert((await t.handle('backend_update')).isError, 'failure reported');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-jars-'));
+  try {
+    fs.mkdirSync(path.join(home, '.mcp-memory', 'lib'), { recursive: true });
+    for (const n of ['mcp-memory-server-2.9.0.jar', 'mcp-memory-server-2.44.3.jar', 'mcp-memory-server-2.39.0-SNAPSHOT.jar', 'mcp-memory-server-2.44.10.jar', 'notes.txt']) fs.writeFileSync(path.join(home, '.mcp-memory', 'lib', n), '');
+    assertEq(path.basename(require('./lib/mcp-wizard.js').installedServerJar(home)), 'mcp-memory-server-2.44.10.jar', 'newest release jar another plugin installed');
+    assertEq(require('./lib/mcp-wizard.js').installedServerJar(path.join(home, 'none')), null, 'none installed');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
 test('setup-tools: project_set names an id-less folder, refuses a taken name unless link:true, refuses a folder that already has an id', async () => {
