@@ -49,7 +49,7 @@ async function readJsonBody(req) {
  * @returns {Promise<{ httpServer, sessions:Map, shutdown:()=>Promise<void>, port:number }>}
  *   Rejects with an Error whose `.code === 'EADDRINUSE'` if the port is taken.
  */
-export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0.0.1', version = '2.0.0', sseKeepaliveMs = SSE_KEEPALIVE_MS }) {
+export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0.0.1', version = '2.0.0', sseKeepaliveMs = SSE_KEEPALIVE_MS, sessionIdleMs = SESSION_IDLE_MS, reapIntervalMs = 60_000 }) {
   const sessions = new Map(); // sessionId -> { server, transport, lastSeen }
   const startedAt = Date.now();
   // ONE pool of N workers for the whole daemon process (not per session): moves
@@ -155,7 +155,15 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
             if (res.headersSent && !res.writableEnded) res.write(': keepalive\n\n');
           }, sseKeepaliveMs);
           ka.unref();
-          res.on('close', () => clearInterval(ka));
+          // An open stream = a connected client, however quiet: the idle reaper must not
+          // take it (it did, after 30 min — the next prompt's mcp_tool hooks then hit
+          // "Session not found" and showed "UserPromptSubmit hook error / Connection closed").
+          existing.openStreams = (existing.openStreams || 0) + 1;
+          res.on('close', () => {
+            clearInterval(ka);
+            existing.openStreams = Math.max(0, existing.openStreams - 1);
+            existing.lastSeen = Date.now();
+          });
         }
         await existing.transport.handleRequest(req, res, body);
         return;
@@ -203,12 +211,12 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
   const reaper = setInterval(() => {
     const now = Date.now();
     for (const [sid, s] of sessions) {
-      if (now - s.lastSeen > SESSION_IDLE_MS) {
+      if (!s.openStreams && now - s.lastSeen > sessionIdleMs) {
         try { s.transport.close(); } catch (e) { void e; }
         sessions.delete(sid);
       }
     }
-  }, 60_000);
+  }, reapIntervalMs);
   reaper.unref();
 
   // Bind — the port is the singleton lock. EADDRINUSE bubbles to the caller.

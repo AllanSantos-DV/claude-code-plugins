@@ -61,6 +61,12 @@ mutação e, onde muda comportamento visível, prova no Claude Code real.
   Code real; antes os de UserPromptSubmit eram sempre perdidos).
 
 ### Fixed
+- **"UserPromptSubmit hook error / Connection closed" depois de uma pausa.** O serviço do brain
+  descartava como ociosa, após 30 minutos, uma sessão que continuava conectada (stream aberto, só
+  quieta). No prompt seguinte os hooks que passam pelo brain batiam numa sessão inexistente e
+  falhavam. Agora uma sessão com stream aberto nunca é descartada.
+- O download do servidor de memória pelo cliente MCP usa o mesmo resolvedor de versão do resto do
+  plugin: baixa a versão certa para o seu hardware (GPU ou CPU) e confere o checksum publicado.
 - **A ativação do servidor de memória funciona com servidores atuais.** O assistente subia o
   servidor com `--transport http`, que desde a versão 2.43 desliga o modo daemon, então a
   ativação nunca terminava. Agora sobe em modo daemon, espera o primeiro download do modelo
