@@ -82,9 +82,18 @@ async function handOffDaemon(target) {
     encoding: 'utf8', timeout: 60000, windowsHide: true,
   });
   const out = (r.stdout || '').trim();
-  if (r.status !== 0 || (out && out !== '{}')) throw new Error(`brain daemon did not come up from ${target} (exit ${r.status}): ${out || r.stderr}`);
-  const up = await health();
-  if (!up || norm(up.pluginRoot) !== norm(target)) throw new Error(`the daemon on port ${port} is not the new install (${up ? up.pluginRoot : 'no answer'})`);
+  const err = (r.stderr || '').trim();
+  if (r.status !== 0 || (out && out !== '{}')) throw new Error(`brain daemon did not come up from ${target} (exit ${r.status}): ${out || err}`);
+  // The fresh daemon is busy right after boot (every open session reconnects at
+  // once): one 2 s probe saw "no answer" on 2026-10-05 while it was up. Poll.
+  let up = null;
+  for (const t0 = Date.now(); Date.now() - t0 < 15000; await new Promise((res) => setTimeout(res, 250))) {
+    up = await health();
+    if (up && norm(up.pluginRoot) === norm(target)) break;
+  }
+  if (!up || norm(up.pluginRoot) !== norm(target)) {
+    throw new Error(`the daemon on port ${port} is not the new install (${up ? up.pluginRoot : 'no answer'})${err ? ` — ensure stderr: ${err}` : ''}`);
+  }
   console.log(`  brain daemon up from the new install (pid ${up.pid})`);
 }
 
