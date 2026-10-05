@@ -33,7 +33,12 @@ const DEFINITIONS = [
   },
   {
     name: 'backend_setup',
-    description: 'Enable the full memory server (mcp-memory) for the user: checks Java 21+, downloads the server (~57 MB; ~530 MB GPU build when an NVIDIA GPU is present), starts it, and switches the plugin backend to it. Ask the user first. Runs in the background — then poll backend_setup_status. If Java is missing it returns the exact install command to run, then call it again.',
+    description: 'Enable the full memory server (mcp-memory) and switch the plugin to it. BEFORE calling, ask the user (plain words): "Do you already run an mcp-memory server somewhere (another machine or host) that you want to use? If so, what is its address?" — technical users may give a URL: pass it as serverUrl (it is validated and used; nothing is installed locally). If they do not know or have none, call WITHOUT serverUrl: it reuses a server already running on this machine (sister plugins install one — never a second), else one another plugin installed, else downloads (~57 MB; ~530 MB GPU build with an NVIDIA GPU) and starts it. Runs in the background — poll backend_setup_status. Without serverUrl and without Java it returns the exact install command; run it with the user\'s OK, then call again.',
+    inputSchema: { type: 'object', properties: { serverUrl: { type: 'string', description: 'Address of the user\'s own mcp-memory server, e.g. http://10.0.0.5:54784 — only when the user gave one' } } },
+  },
+  {
+    name: 'backend_update',
+    description: 'Update the local mcp-memory server to its latest release (download, restart, verify, roll back on failure). Only after backend_status/backend_setup_status reported an update AND the user agreed. A remote server is updated by whoever runs it.',
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -73,6 +78,17 @@ function createSetupTools({ pluginRoot, requestRestart = () => {}, deps = {} } =
   });
   const platform = deps.platform || process.platform;
   const pid = deps.projectId || lib('project-id.js');
+  const updater = deps.updater || ((o) => lib('mcp-memory-auto-update.js').runAutoUpdate(o));
+  const isLoopback = (u) => lib('mcp-memory-auto-update.js').isLoopbackUrl(u);
+  // One line on the server version, for the agent to relay (it asks before updating).
+  const updateLine = (u, remote) => {
+    if (!u) return 'Server version check: not available on this server.';
+    if (u.error) return `Server version check failed: ${u.error}`;
+    if (!u.updateAvailable) return `Server is up to date (v${u.currentVersion}).`;
+    return remote
+      ? `Update available on the remote server: v${u.currentVersion} → v${u.latestVersion} — tell the user; whoever runs that server updates it.`
+      : `Update available: v${u.currentVersion} → v${u.latestVersion} — ask the user; with their OK call backend_update.`;
+  };
 
   const backendType = () => {
     const b = (loadConfig() || {}).backend || {};
@@ -123,33 +139,42 @@ function createSetupTools({ pluginRoot, requestRestart = () => {}, deps = {} } =
     switch (name) {
       case 'backend_status': {
         const type = backendType();
+        const mcp = ((loadConfig() || {}).backend || {}).mcpMemory || {};
         const [java, daemon] = await Promise.all([wizard.checkJava(), daemonInfo()]);
-        const lines = [
-          `Backend: ${type === 'local' ? 'local (SQLite, built in)' : 'mcp-memory (server)'}`,
-          `Java 21+: ${java.ok ? `found (${java.version})` : `missing — ${java.error}`}`,
-          `mcp-memory server: ${daemon.running ? `running v${daemon.version} at ${daemon.url}` : 'not running'}`,
-        ];
+        const installed = wizard.installedServerJar ? wizard.installedServerJar() : null;
+        const lines = [`Backend: ${type === 'local' ? 'local (SQLite, built in)' : 'mcp-memory (server)'}`];
+        if (mcp.serverUrl) lines.push(`Configured server address: ${mcp.serverUrl}`);
+        lines.push(`mcp-memory server on this machine: ${daemon.running ? `running v${daemon.version} at ${daemon.url}` : installed ? `installed (${installed}) but not running` : 'none'}`);
+        lines.push(`Java 21+ (only for a local server): ${java.ok ? `found (${java.version})` : `missing — ${java.error}`}`);
+        const target = mcp.serverUrl || (daemon.running ? daemon.url : '');
+        if (target) lines.push(updateLine((await wizard.handshake('default', target)).update, !!mcp.serverUrl && !isLoopback(mcp.serverUrl)));
         if (type === 'local') {
           lines.push(`OFF on the local backend: ${OFF_ON_LOCAL}.`);
-          lines.push('Next: explain this to the user in plain words and offer to enable the memory server; with their OK call backend_setup.');
+          lines.push('Next: explain this in plain words and offer to enable the memory server. First ask whether the user already runs one on another host (then backend_setup with serverUrl); if not or unsure, backend_setup without it.');
         }
         return text(lines.join('\n'));
       }
 
       case 'backend_setup': {
-        const daemon = await daemonInfo();
-        if (backendType() === 'mcp-memory' && daemon.running) return text(`Already enabled: backend is mcp-memory, server v${daemon.version} running at ${daemon.url}.`);
-        const java = await wizard.checkJava();
-        if (!java.ok) {
-          return text([
-            `Java 21+ is needed first (${java.error}).`,
-            `Install it with (ask the user's OK — it installs system software): ${javaInstallCommand(platform)}`,
-            'Then call backend_setup again — no restart needed (the standard install folders are searched).',
-          ].join('\n'));
+        const serverUrl = String(args.serverUrl || '').trim();
+        if (serverUrl && !/^https?:\/\/[^\s/]+/i.test(serverUrl)) return fail(`serverUrl must look like http://host:port (got ${JSON.stringify(serverUrl)})`);
+        if (!serverUrl) {
+          const daemon = await daemonInfo();
+          if (backendType() === 'mcp-memory' && daemon.running) return text(`Already enabled: backend is mcp-memory, server v${daemon.version} running at ${daemon.url}.`);
+          const java = await wizard.checkJava();
+          if (!java.ok && !daemon.running) {
+            return text([
+              `Java 21+ is needed first for a local server (${java.error}).`,
+              `Install it with (ask the user's OK — it installs system software): ${javaInstallCommand(platform)}`,
+              'Then call backend_setup again — no restart needed (the standard install folders are searched).',
+            ].join('\n'));
+          }
         }
-        const st = await wizard.start('default');
+        const st = await wizard.start('default', serverUrl ? { serverUrl } : {});
         if (st.status === 'failed') return fail(`Setup could not start: ${st.error}`);
-        return text('Setup started (download → start → switch backend). Poll backend_setup_status every ~5-10 s and tell the user it may take a minute or two on the first download.');
+        return text(serverUrl
+          ? `Connecting to ${serverUrl} (validate → handshake → switch backend). Poll backend_setup_status every ~5 s.`
+          : 'Setup started (reuse a running/installed server, else download → start → switch backend). Poll backend_setup_status every ~5-10 s and tell the user a first download can take a minute or two.');
       }
 
       case 'backend_setup_status': {
@@ -160,12 +185,25 @@ function createSetupTools({ pluginRoot, requestRestart = () => {}, deps = {} } =
             restartedFor = st.finishedAt;
             requestRestart();
           }
-          return text(`Done: the memory server is enabled (backend mcp-memory).\n${steps}\nThe brain service restarts now to load it — Claude Code reconnects by itself in a few seconds. Graph tools and compose recall work from the next call. If brain tools disappear in this session, the user can run /mcp → brain-server → Reconnect.`);
+          const mcp = ((loadConfig() || {}).backend || {}).mcpMemory || {};
+          return text(`Done: the memory server is enabled (backend mcp-memory).\n${steps}\n${updateLine(st.update, !!mcp.serverUrl && !isLoopback(mcp.serverUrl))}\nThe brain service restarts now to load it — Claude Code reconnects by itself in a few seconds. Graph tools and compose recall work from the next call. If brain tools disappear in this session, the user can run /mcp → brain-server → Reconnect.`);
         }
         if (st.status === 'failed') return fail(`Setup failed: ${st.error}\n${steps}\nTell the user what failed in plain words; backend_setup can be called again after fixing it.`);
         // The wizard's per-step _emit writes 'running'/'ok' into status while it works.
         if (!st.status || st.status === 'idle') return text('No setup has run yet. Call backend_setup.');
         return text(`Running (step ${st.step}/${st.total}):\n${steps}`);
+      }
+
+      case 'backend_update': {
+        const cfg = loadConfig() || {};
+        if (backendType() !== 'mcp-memory') return fail('The plugin is not on the mcp-memory backend — run backend_setup first.');
+        const r = await updater({ event: { hook_event_name: 'SessionStart' }, config: cfg, ttlMs: 0 });
+        if (r.status === 'updated') return text(`Updated the memory server ${r.from} → ${r.version} (restarted and verified).`);
+        if (r.status === 'current') return text('The memory server is already up to date.');
+        if (r.status === 'skipped-remote') return text('This server runs on another host — it is updated by whoever runs it. Tell the user.');
+        if (r.status === 'locked') return text('Another update is in progress — try again in a minute.');
+        if (r.status === 'skipped') return fail('Update not possible with the current settings (needs backend mcp-memory over http, auto-update not disabled).');
+        return fail(`Update failed (the server keeps running the current version): ${r.error || r.status}`);
       }
 
       case 'project_list': {
