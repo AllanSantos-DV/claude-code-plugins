@@ -15189,14 +15189,14 @@ test('user-prompt-submit-dispatcher.withTimeout: distinguishes a genuine error f
   assertEq(okOutcome.value, 'VALUE');
 });
 
-test('session-start-dispatcher.DETECTORS: 13 detectors, correct order + shape (model-router-ensure excluded)', () => {
+test('session-start-dispatcher.DETECTORS: 14 detectors, correct order + shape (model-router-ensure excluded)', () => {
   const d = require('./session-start-dispatcher.js');
   const names = d.DETECTORS.map(x => x.name);
   assertEq(names, [
     'brain-daemon-ensure', 'memory-rotate', 'session-whitelist', 'brain-health',
     'project-snapshot', 'curation-session', 'doctor-advisory',
     'review-checklist-advisory', 'tuning-advisory', 'value-digest', 'project-identity-advisory',
-    'graph-warm', 'policy-inject',
+    'backend-onboarding-advisory', 'graph-warm', 'policy-inject',
   ]);
   assert(d.DETECTORS.every(x => typeof x.mod.run === 'function'), 'every detector exposes run()');
   assert(!names.includes('model-router-ensure'), 'model-router-ensure must stay OUT (process.exit() in its main flow)');
@@ -21043,6 +21043,91 @@ test('welcome: shown once per machine (O_EXCL claim, concurrent-safe), never to 
     assert(!o2.systemMessage, 'second prompt does not');
     fs.rmSync(home, { recursive: true, force: true });
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('setup-tools: backend_status/setup guide the agent (Java missing → exact install command), status completed restarts the daemon once', async () => {
+  const { createSetupTools, javaInstallCommand } = require('./lib/setup-tools.js');
+  let started = 0, restarts = 0, java = { ok: false, error: 'Java 21+ not found' }, state = { status: 'idle' };
+  const wizard = { checkJava: async () => java, discoverDaemonUrl: () => null, start: async () => { started++; state = { status: 'running', step: 1, total: 5, details: [] }; return state; }, getState: () => state };
+  const t = createSetupTools({ pluginRoot: ROOT, requestRestart: () => { restarts++; }, deps: { wizard, loadConfig: () => ({ backend: { type: 'local' } }), platform: 'win32', health: async () => null } });
+  const out = async (n, a) => (await t.handle(n, a)).content[0].text;
+  const st = await out('backend_status');
+  assert(/local \(SQLite/.test(st) && /graph tools/.test(st) && /backend_setup/.test(st), st);
+  const noJava = await out('backend_setup');
+  assert(noJava.includes(javaInstallCommand('win32')) && /winget install --id EclipseAdoptium\.Temurin\.21\.JRE/.test(noJava), noJava);
+  assertEq(started, 0, 'no wizard run without Java');
+  java = { ok: true, version: '21.0.4', bin: 'java' };
+  assert(/Setup started/.test(await out('backend_setup')), 'starts the wizard');
+  assertEq(started, 1, 'wizard started once');
+  state = { status: 'ok', step: 2, total: 5, details: [{ status: 'ok', detail: 'JAR valid' }] };
+  assert(/Running \(step 2\/5\)/.test(await out('backend_setup_status')), 'mid-run status reads as running');
+  state = { status: 'completed', finishedAt: 'T1', details: [] };
+  assert(/memory server is enabled/.test(await out('backend_setup_status')), 'done message');
+  await out('backend_setup_status');
+  assertEq(restarts, 1, 'the daemon restart is requested once per completed run');
+  assert(/brew install --cask temurin@21/.test(javaInstallCommand('darwin')) && /openjdk-21/.test(javaInstallCommand('linux')), 'per-OS commands');
+});
+
+test('backend onboarding: on the local backend the agent is told what is off and how to enable it (SessionStart); silent on mcp-memory; welcome no longer says "nothing to configure"', () => {
+  const adv = require('./backend-onboarding-advisory.js');
+  const t = adv.run({}, { loadConfig: () => ({ backend: { type: 'local' } }) });
+  assert(/graph tools/.test(t) && /backend_setup/.test(t) && /backend_status/.test(t), t);
+  assertEq(adv.run({}, { loadConfig: () => ({ backend: { type: 'mcp-memory' } }) }), null, 'nothing to say on mcp-memory');
+  assert(/backend-onboarding-advisory/.test(fs.readFileSync(path.join(SCRIPTS, 'session-start-dispatcher.js'), 'utf8')), 'wired into SessionStart');
+  const { MESSAGE } = require('./lib/welcome.js');
+  assert(!/nada mais a configurar/.test(MESSAGE) && /servidor de memória/.test(MESSAGE) && !MESSAGE.includes('\n'), MESSAGE);
+});
+
+test('mcp-wizard: spawns the server in DAEMON mode (no --transport: it turns daemon mode off since 2.43) and finds a Java >=21 outside PATH', async () => {
+  const w = require('./lib/mcp-wizard.js');
+  const args = w.daemonArgs('/x/server.jar', ['-Xmx512m']);
+  assert(args.includes('--daemon') && !args.includes('--transport') && !args.includes('--workspace'), `daemon-mode args: ${args.join(' ')}`);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-java-'));
+  try {
+    const j8 = path.join(tmp, 'jre8', 'bin', 'java'); const j21 = path.join(tmp, 'temurin21', 'bin', 'java');
+    for (const f of [j8, j21]) { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, ''); }
+    const probe = (bin) => (bin === 'java' ? { ok: false, error: 'not found' } : bin === j8 ? { ok: true, major: 8, version: '1.8.0' } : { ok: true, major: 21, version: '21.0.4' });
+    const r = await w.checkJava({ candidates: ['java', j8, j21], probe });
+    assert(r.ok && r.bin === j21, `a just-installed Java (not on PATH) is used: ${JSON.stringify(r)}`);
+    const old = await w.checkJava({ candidates: ['java', j8], probe });
+    assert(!old.ok && /21\+ required, found 8/.test(old.error), old.error);
+    const win = w.javaCandidates({ ProgramFiles: tmp, JAVA_HOME: path.join(tmp, 'jh') }, 'win32');
+    assert(win[0] === path.join(tmp, 'jh', 'bin', 'java.exe') && win.includes('java'), 'JAVA_HOME first, then PATH');
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('setup-tools: project_set names an id-less folder, refuses a taken name unless link:true, refuses a folder that already has an id', async () => {
+  const { createSetupTools } = require('./lib/setup-tools.js');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-projset-'));
+  try {
+    const mk = (n) => { const d = path.join(base, n); fs.mkdirSync(d); return d; };
+    let remote = ['loja-online'];
+    const t = createSetupTools({ pluginRoot: ROOT, deps: { localProjects: () => ['claude-code'], remoteProjects: async () => remote, loadConfig: () => ({ backend: { type: 'mcp-memory' } }), wizard: { discoverDaemonUrl: () => null } } });
+    const call = async (a) => t.handle('project_set', a);
+    const fresh = mk('nova-pasta');
+    const list = (await t.handle('project_list', { cwd: fresh })).content[0].text;
+    assert(/claude-code/.test(list) && /loja-online/.test(list) && /NO project id/.test(list), list);
+    const taken = await call({ cwd: fresh, name: 'loja-online' });
+    assert(taken.isError && /already exists/.test(taken.content[0].text) && /link:true/.test(taken.content[0].text), JSON.stringify(taken));
+    assert(!fs.existsSync(path.join(fresh, '.memory', 'project.json')), 'nothing written on a refused name');
+    const linked = await call({ cwd: fresh, name: 'loja-online', link: true });
+    assert(!linked.isError && /linked to the existing project/.test(linked.content[0].text), JSON.stringify(linked));
+    assertEq(JSON.parse(fs.readFileSync(path.join(fresh, '.memory', 'project.json'), 'utf8')).metadata.defaults.project_id, 'loja-online', 'id written');
+    assertEq(require('./lib/project-id.js').tryResolveProjectId({ cwd: fresh }), 'loja-online', 'the folder now resolves to it');
+    const again = await call({ cwd: fresh, name: 'outro' });
+    assert(again.isError && /already has project id "loja-online"/.test(again.content[0].text), 'a named folder is not renamed');
+    const other = mk('site');
+    fs.mkdirSync(path.join(other, '.memory'));
+    fs.writeFileSync(path.join(other, '.memory', 'memory-off.json'), '{"memory":"off"}');
+    const created = await call({ cwd: other, name: 'site-novo' });
+    assert(!created.isError && /new project/.test(created.content[0].text), JSON.stringify(created));
+    assert(!fs.existsSync(path.join(other, '.memory', 'memory-off.json')), 'the earlier opt-out marker is removed');
+    assert((await call({ cwd: mk('x'), name: '../evil' })).isError, 'path-like names refused');
+    remote = null;
+    const t2 = createSetupTools({ pluginRoot: ROOT, deps: { localProjects: () => [], remoteProjects: async () => { throw new Error('daemon down'); }, loadConfig: () => ({ backend: { type: 'mcp-memory' } }), wizard: { discoverDaemonUrl: () => null } } });
+    const blind = await t2.handle('project_set', { cwd: mk('y'), name: 'qualquer' });
+    assert(blind.isError && /could not check the name/i.test(blind.content[0].text), 'no write when the collision check cannot run');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
 
 test('mcp-link: a session Claude Code gave up on is reported (user + agent) once the daemon is healthy; reconnected/other sessions/no logs are not', async () => {

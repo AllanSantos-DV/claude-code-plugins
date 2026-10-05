@@ -16,7 +16,8 @@ const path = require('path');
 
 const MESSAGE = [
   'claude-code-boss está ativo ✓ A partir de agora o Claude Code lembra o que deu certo e errado em cada projeto, resume a saída de comandos repetidos e guarda uma lição sempre que você o corrige.',
-  'Abra o painel com /dashboard · escolha o perfil com /boss-profile (o padrão, standard, trabalha em silêncio) · nada mais a configurar.',
+  'Abra o painel com /dashboard · escolha o perfil com /boss-profile (o padrão, standard, trabalha em silêncio).',
+  'Grafo de código e memória em dois níveis vêm com o servidor de memória (opcional): peça ao Claude "ative o servidor de memória do boss" e ele instala para você.',
 ].join(' '); // one line: Claude Code prefixes EACH line with "UserPromptSubmit says:"
 
 function markerPath(dir) {

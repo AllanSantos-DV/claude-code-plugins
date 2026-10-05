@@ -232,7 +232,7 @@ export function createKbLockPool(poolSize) {
   return locks;
 }
 
-export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock, hookWorker, _testHooks } = {}) {
+export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock, hookWorker, requestRestart = () => {}, _testHooks } = {}) {
   const PLUGIN_ROOT = pluginRoot;
 
   // ─── KB modules (lazy-loaded) ──────────────────────────────────────────────
@@ -810,6 +810,10 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
 
   // Advertise the Session Graph Engine tools alongside the KB/research tools.
   TOOLS.push(...graphTools.definitions);
+  // Agent-driven setup: enable the mcp-memory server, name a folder's project.
+  const { createSetupTools } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'setup-tools.js'));
+  const setupTools = createSetupTools({ pluginRoot: PLUGIN_ROOT, requestRestart, deps: (_testHooks && _testHooks.setup) || {} });
+  TOOLS.push(...setupTools.definitions);
   TOOLS.push(...hookTools.definitions);
 
   // ─── Tool handlers (faithful move from the previous index.js switch) ───────
@@ -821,6 +825,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
     // without depending on / mutating the shared brain-backend singleton mode).
     const forceLocal = !!(_testHooks && _testHooks.getKB);
     if (hookTools.names.has(name)) return hookTools.handle(name, args);
+    if (setupTools.names.has(name)) return setupTools.handle(name, args);
     // Session Graph Engine tools — Part A COHERENCE GATE. The graph is HOSTED BY the memory
     // (mcp-memory) daemon, and the mcp-memory backend is precisely what points at that server.
     // When the KB backend is 'local', the graph-hosting daemon is opt-in and is NOT the configured
@@ -834,7 +839,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
         ? _testHooks.peekMode()
         : require(path.join(PLUGIN_ROOT, 'scripts', 'brain-backend.js')).peekMode();
       if (graphMode !== 'mcp-memory') {
-        return { content: [{ type: 'text', text: `🕸️ As tools de grafo exigem o backend "mcp-memory" (o grafo vive no memory server). O backend atual é "${graphMode}". Ative em /dashboard → Brain → backend: mcp-memory (o grafo passa a apontar para o MESMO servidor).` }] };
+        return { content: [{ type: 'text', text: `🕸️ As tools de grafo exigem o backend "mcp-memory" (o grafo vive no memory server). O backend atual é "${graphMode}". O agente pode ativar o servidor de memória para o usuário: chame backend_status e, com o OK do usuário, backend_setup (ou /dashboard → Brain → backend: mcp-memory).` }] };
       }
       return graphTools.handle(name, args);
     }
