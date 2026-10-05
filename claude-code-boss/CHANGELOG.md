@@ -61,6 +61,9 @@ mutação e, onde muda comportamento visível, prova no Claude Code real.
   Code real; antes os de UserPromptSubmit eram sempre perdidos).
 
 ### Fixed
+- **`/brain-status` mostra o projeto certo.** Usava o nome da pasta ou "default" em vez do id do
+  projeto, e gravava esse valor no ambiente do processo que roda os outros avisos do prompt,
+  podendo esconder o aviso de pasta sem nome de projeto.
 - **"UserPromptSubmit hook error / Connection closed" depois de uma pausa.** O serviço do brain
   descartava como ociosa, após 30 minutos, uma sessão que continuava conectada (stream aberto, só
   quieta). No prompt seguinte os hooks que passam pelo brain batiam numa sessão inexistente e

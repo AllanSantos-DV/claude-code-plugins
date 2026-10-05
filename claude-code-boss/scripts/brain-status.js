@@ -7,15 +7,28 @@
  */
 'use strict';
 
-const path = require('path');
 const { load: loadBrainConfig } = require('./lib/brain-config.js');
 const { probeHealth } = require('./lib/mcp-health.js');
 const { readStdin, emitJson } = require('./lib/hook-io.js');
 
-async function main() {
+const NO_ID = '(none — memory is off in this folder)';
+
+/**
+ * The folder's project id by the same strict resolver every other path uses (was the
+ * folder name, or 'default'). Never written to process.env: run() executes inside the
+ * prompt dispatcher, and CCB_PROJECT_ID is the resolver's FIRST rung — setting it there
+ * handed the other detectors in that process a made-up id.
+ */
+function statusProject(cwd) {
+  try { return require('./lib/project-id.js').tryResolveProjectId({ cwd }) || null; }
+  catch (err) { console.error(`[brain-status] project id: ${err.message}`); return null; }
+}
+
+async function main(cwd = process.cwd()) {
   const config = loadBrainConfig();
-  const status = await probeHealth(config);
-  emitJson(status);
+  const id = statusProject(cwd);
+  const status = await probeHealth(config, id ? { project: id } : {});
+  emitJson({ ...status, project: id || NO_ID });
 }
 
 /**
@@ -31,10 +44,9 @@ async function main() {
  */
 async function run(event) {
   try {
-    const project = event && event.cwd ? path.basename(event.cwd) : (process.env.CCB_PROJECT_ID || 'default');
-    process.env.CCB_PROJECT_ID = project;
+    const id = statusProject((event && event.cwd) || process.cwd());
     const config = loadBrainConfig();
-    const status = await probeHealth(config);
+    const status = await probeHealth(config, id ? { project: id } : {});
     if (status.connected) return null;
     const detail = status.details ? JSON.stringify(status.details) : '';
     return `[BRAIN-STATUS] mcp-memory backend unreachable (project: ${status.project}) ${detail}. ` +
@@ -48,10 +60,9 @@ async function run(event) {
 if (process.env.CCHOOK) {
   readStdin().then(async (raw) => {
     const payload = JSON.parse(raw || '{}');
-    const project = payload.cwd ? payload.cwd.split(path.sep).pop() : (process.env.CCB_PROJECT_ID || 'default');
-    process.env.CCB_PROJECT_ID = project;
-    await main().catch((err) => {
-      emitJson({ mode: 'unknown', connected: false, project, backend: 'unknown', details: { error: err.message }, latency: 0 });
+    const cwd = payload.cwd || process.cwd();
+    await main(cwd).catch((err) => {
+      emitJson({ mode: 'unknown', connected: false, project: statusProject(cwd) || NO_ID, backend: 'unknown', details: { error: err.message }, latency: 0 });
     });
     process.exit(0);
   }).catch((err) => {
@@ -60,7 +71,7 @@ if (process.env.CCHOOK) {
   });
 } else if (require.main === module) {
   main().catch((err) => {
-    emitJson({ mode: 'unknown', connected: false, project: 'default', backend: 'unknown', details: { error: err.message }, latency: 0 });
+    emitJson({ mode: 'unknown', connected: false, project: statusProject(process.cwd()) || NO_ID, backend: 'unknown', details: { error: err.message }, latency: 0 });
   });
 }
 

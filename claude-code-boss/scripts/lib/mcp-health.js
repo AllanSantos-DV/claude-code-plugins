@@ -53,10 +53,10 @@ function httpGetJson(url, timeoutMs) {
   });
 }
 
-async function probeHealth(config) {
+async function probeHealth(config, opts = {}) {
   const backendType = (config && config.backend && config.backend.type) || 'local';
   const mcpCfg = (config && config.backend && config.backend.mcpMemory) || {};
-  const project = process.env.CCB_PROJECT_ID || 'default';
+  const project = opts.project || process.env.CCB_PROJECT_ID || 'default';
 
   if (backendType === 'mcp-memory') {
     const transport = mcpCfg.transport === 'http' ? 'http' : 'stdio';
