@@ -266,13 +266,16 @@ function spawnLockDir(dataDir) {
 
 function acquireSpawnLock(dataDir) {
   const dir = spawnLockDir(dataDir);
+  // A fresh install has no data dir yet: the lock mkdir then failed ENOENT, was read
+  // as a held lock, and the first ensure never spawned (blaming a phantom holder).
+  fs.mkdirSync(canonicalDataDir(dataDir), { recursive: true });
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
       fs.mkdirSync(dir);
       fs.writeFileSync(path.join(dir, 'owner.json'), JSON.stringify({ pid: process.pid, ts: Date.now() }));
       return true;
     } catch (err) {
-      if (err.code !== 'EEXIST') return false; // I/O error — never block on it
+      if (err.code !== 'EEXIST') throw new Error(`cannot create the spawn lock ${dir}: ${err.message}`);
       // Held by someone. Judge age by owner.json ts, or (owner write failed)
       // by the dir mtime; steal only an abandoned lock.
       let ownerTs = 0;
