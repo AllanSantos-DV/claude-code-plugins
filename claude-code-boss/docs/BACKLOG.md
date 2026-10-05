@@ -746,6 +746,9 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   Na 1ª instalação real (05/10) o daemon novo subiu em 3 s, mas a verificação final (uma consulta
   de 2 s, com todas as sessões reconectando) acusou "no answer". **Corrigido na hora**: espera até
   15 s e leva o stderr do ensure no erro. Reinstalação real: OK, sessões reconectaram em ~8 s.
+  O script de dev do `/release` (`.claude/scripts/install-local.mjs`, local) tinha o mesmo `rmSync` e
+  aceitava o `{}` do ensure sem conferir o daemon. **Corrigido na hora**: reusa o `chooseTarget` do
+  instalador do plugin e confere `/health`. E2e isolado 2×: OK; daemon real intocado.
 - [x] **Q3 — primeiro `ensure` numa instalação nova não subia o daemon**
   (`servers/brain-server/lib/daemon-supervisor.js` `acquireSpawnLock`). Sem a pasta de
   dados, o `mkdir` da trava falhava com ENOENT, era lido como "trava ocupada" e, após
