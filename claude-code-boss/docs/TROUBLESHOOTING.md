@@ -8,7 +8,6 @@
 |---------|-------|---------|
 | Hooks não disparam | CC não recarregou o plugin | Reinicie o Claude Code **completamente**; após update de versão use `/reload-plugins` |
 | Node não encontrado pelo hook | Node fora do PATH do sistema | Instale Node 22.13+ no PATH de máquina (não só do terminal) e reinicie |
-| `install-local.mjs` falha com working tree sujo | Script se recusa com mudanças não commitadas | `--dirty` para override, ou commit antes |
 | Embedding baixando na 1ª execução | Warm do MiniLM (~100-200MB) | Normal, uma vez só. CI: `CLAUDE_SKIP_EMBED_WARM=1` |
 | Duas pastas `claude-code-boss*` em plugins/data | Fragmentação de data-dir | `node scripts/consolidate-datadirs.js --apply` |
 

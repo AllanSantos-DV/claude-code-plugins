@@ -44,11 +44,10 @@ npm install          # roda postinstall: deps + warm do modelo de embedding
 npm run gate         # valida lint + version sync + testes
 ```
 
-Force-instale na cache do Claude Code Desktop:
+Carregue o checkout numa sessão (sem tocar na instalação do marketplace):
 
 ```powershell
-node .claude/scripts/install-local.mjs --dirty
-# depois, dentro do Claude Code: /reload-plugins
+claude --plugin-dir .
 ```
 
 ## Verificação (30 segundos)

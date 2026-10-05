@@ -28,7 +28,7 @@ npm run gate         # deve passar verde antes de qualquer PR
 Teste suas mudanças num CC Desktop real:
 
 ```powershell
-node .claude/scripts/install-local.mjs --dirty   # força HEAD na cache; depois /reload-plugins
+claude --plugin-dir ./claude-code-boss   # (raiz do repo) carrega o checkout numa sessão
 ```
 
 ## Convenções de código
