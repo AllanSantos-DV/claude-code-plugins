@@ -1378,7 +1378,12 @@ function getBrainMigrateStatus(req, res) {
 
 async function postMcpWizard(req, res) {
   try {
-    const body = await readBody(req);
+    // readBody returns the raw string: parse it (projectId was always 'default').
+    const raw = await readBody(req);
+    let body = {};
+    if (raw) {
+      try { body = JSON.parse(raw); } catch (err) { return json(res, { ok: false, error: `invalid JSON body: ${err.message}` }, 400); }
+    }
     const projectId = (body && body.projectId) || 'default';
     const wizard = require('./lib/mcp-wizard.js');
     const state = await wizard.start(projectId);

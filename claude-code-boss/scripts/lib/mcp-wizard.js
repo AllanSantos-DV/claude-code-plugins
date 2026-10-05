@@ -5,7 +5,7 @@
  * Steps:
  *   1. Java check (>=21)
  *   2. JAR presence / download
- *   3. Daemon spawn (stdio) or URL validate (http)
+ *   3. Daemon: reuse the live one (daemon.json) or spawn one in daemon mode
  *   4. /health verification
  *   5. Project handshake (initialize + tools/list)
  *
@@ -105,20 +105,54 @@ function _emit(step, status, detail) {
   saveState();
 }
 
-async function checkJava() {
-  return new Promise((resolve) => {
-    const r = spawnSync('java', ['-version'], { encoding: 'utf-8', timeout: 5000, windowsHide: true });
-    if (r.error) {
-      return resolve({ ok: false, error: r.error.code === 'ENOENT' ? 'Java 21+ not found in PATH' : r.error.message });
+/**
+ * Java binaries to try: JAVA_HOME, PATH, then the standard install dirs. A Java the agent
+ * just installed (winget/brew/apt) is NOT on this process's PATH — Claude Code and the
+ * daemon inherited the old one — so the install dirs are what make it usable at once.
+ */
+function javaCandidates(env = process.env, platform = process.platform) {
+  const exe = platform === 'win32' ? 'java.exe' : 'java';
+  const out = [];
+  if (env.JAVA_HOME) out.push(path.join(env.JAVA_HOME, 'bin', exe));
+  out.push('java');
+  const globDirs = (base, sub) => {
+    try { return fs.readdirSync(base).map((d) => path.join(base, d, ...sub, exe)); } catch (err) { void err; return []; }
+  };
+  if (platform === 'win32') {
+    for (const pf of [env.ProgramFiles, env['ProgramFiles(x86)']].filter(Boolean)) {
+      for (const vendor of ['Eclipse Adoptium', 'Java', 'Microsoft', 'Zulu', 'Amazon Corretto']) out.push(...globDirs(path.join(pf, vendor), ['bin']));
     }
-    const out = (r.stderr || '') + (r.stdout || '');
-    const m = out.match(/(?:openjdk|java|jdk)\s+version\s+"?(\d+)/i);
-    if (!m) return resolve({ ok: false, error: 'Java version unparseable' });
-    const major = parseInt(m[1], 10);
-    if (major < MIN_JAVA_MAJOR) return resolve({ ok: false, error: `Java ${MIN_JAVA_MAJOR}+ required, found ${major}` });
-    const version = out.match(/(?:version\s+")?(\d+\.\d+\.\d+)/i);
-    resolve({ ok: true, version: version ? version[1] : `java ${major}`, raw: out.trim().split('\n')[0] });
-  });
+  } else if (platform === 'darwin') {
+    out.push(...globDirs('/Library/Java/JavaVirtualMachines', ['Contents', 'Home', 'bin']));
+    out.push('/opt/homebrew/opt/openjdk/bin/java', '/opt/homebrew/opt/openjdk@21/bin/java', '/usr/local/opt/openjdk@21/bin/java');
+  } else {
+    out.push(...globDirs('/usr/lib/jvm', ['bin']));
+  }
+  return [...new Set(out)];
+}
+
+function probeJava(bin) {
+  const r = spawnSync(bin, ['-version'], { encoding: 'utf-8', timeout: 5000, windowsHide: true });
+  if (r.error) return { ok: false, error: r.error.code === 'ENOENT' ? 'not found' : r.error.message };
+  const out = (r.stderr || '') + (r.stdout || '');
+  const m = out.match(/(?:openjdk|java|jdk)\s+version\s+"?(\d+)/i);
+  if (!m) return { ok: false, error: 'Java version unparseable' };
+  const major = parseInt(m[1], 10);
+  const version = out.match(/(?:version\s+")?(\d+\.\d+\.\d+)/i);
+  return { ok: true, major, version: version ? version[1] : `java ${major}`, raw: out.trim().split(/\r?\n/)[0] };
+}
+
+/** First Java >= 21 among the candidates: { ok, bin, version, raw } or { ok:false, error }. */
+async function checkJava({ candidates = javaCandidates(), probe = probeJava } = {}) {
+  let older = null;
+  for (const bin of candidates) {
+    if (bin !== 'java' && !fs.existsSync(bin)) continue;
+    const r = probe(bin);
+    if (!r.ok) continue;
+    if (r.major >= MIN_JAVA_MAJOR) return { ok: true, bin, version: r.version, raw: r.raw };
+    older = older || r;
+  }
+  return { ok: false, error: older ? `Java ${MIN_JAVA_MAJOR}+ required, found ${older.major}` : `Java ${MIN_JAVA_MAJOR}+ not found (PATH, JAVA_HOME, standard install dirs)` };
 }
 
 async function checkJar(jarPath, downloadUrl) {
@@ -200,10 +234,17 @@ async function downloadJar(downloadUrl, jarPath) {
   });
 }
 
-async function spawnDaemon(jarPath, workspacePath, javaArgs) {
+// Daemon mode is what announces the instance in ~/.mcp-memory/run/daemon.json. Since server
+// 2.43 any explicit --transport turns it OFF (native-java CHANGELOG 2.43.0), so the old
+// `--transport http` spawn never produced a daemon.json and this step always timed out.
+function daemonArgs(jarPath, javaArgs) {
+  return [...javaArgs, '-jar', jarPath, '--daemon'];
+}
+
+async function spawnDaemon(jarPath, javaArgs, javaBin = 'java') {
   return new Promise((resolve, reject) => {
-    const args = [...javaArgs, '-jar', jarPath, '--workspace', workspacePath || '.', '--transport', 'http'];
-    const proc = spawn('java', args, { stdio: 'ignore', detached: true, windowsHide: true });
+    const args = daemonArgs(jarPath, javaArgs);
+    const proc = spawn(javaBin, args, { stdio: 'ignore', detached: true, windowsHide: true });
     proc.unref();
     const deadline = Date.now() + MINDATA_TIMEOUT_MS;
     const check = async () => {
@@ -299,41 +340,28 @@ async function start(projectId) {
 
       const config = loadBrainConfig();
       const mcpCfg = (config.backend && config.backend.mcpMemory) || {};
-      const transport = mcpCfg.transport === 'http' ? 'http' : 'stdio';
       const jarPath = mcpCfg.jarPath || path.join(require('./data-dir.js').dataDir(), 'mcp', 'mcp-memory-server.jar');
       const javaArgs = mcpCfg.javaArgs || ['-Xmx512m'];
-      const workspacePath = path.join(require('./data-dir.js').dataDir(), 'brain', _state.projectId);
 
-      if (transport === 'http') {
-        _emit(2, 'running', 'Probing daemon health...');
-        let daemon = await validateDaemon(mcpCfg.serverUrl);
-        if (daemon.ok) {
-          _emit(2, 'ok', `Daemon reachable at ${daemon.url}`);
-        } else {
-          _emit(2, 'running', 'Daemon down — ensuring JAR...');
-          await ensureJar(jarPath, mcpCfg, (status, detail) => _emit(2, status, detail));
-          _emit(2, 'running', 'Starting daemon...');
-          await spawnDaemon(jarPath, workspacePath, javaArgs);
-          _emit(2, 'ok', 'Daemon restarted');
-        }
-
-        _emit(3, 'running', 'Performing MCP handshake...');
-        const hs = await handshake(_state.projectId);
-        if (!hs.ok) throw new Error(`Handshake failed: ${hs.error}`);
-        _emit(3, 'ok', `Handshake OK (${hs.tools.length} tools)`);
+      // One path: the plugins consume the server as the per-user HTTP daemon found via
+      // daemon.json (stdio is no longer a server default). Reuse a live one; else start it.
+      _emit(2, 'running', 'Probing daemon health...');
+      const live = await validateDaemon(mcpCfg.serverUrl, 1);
+      if (live.ok) {
+        _emit(2, 'ok', `Daemon reachable at ${live.url}`);
+        _emit(3, 'ok', 'Using the running daemon');
       } else {
-        _emit(2, 'running', 'Checking JAR...');
+        _emit(2, 'running', 'Daemon down — ensuring JAR...');
         await ensureJar(jarPath, mcpCfg, (status, detail) => _emit(2, status, detail));
-
         _emit(3, 'running', 'Starting daemon...');
-        const spawnResult = await spawnDaemon(jarPath, workspacePath, javaArgs);
-        _emit(3, 'ok', `Daemon started at ${spawnResult.url}`);
-
-        _emit(4, 'running', 'Performing MCP handshake...');
-        const hs = await handshake(_state.projectId);
-        if (!hs.ok) throw new Error(`Handshake failed: ${hs.error}`);
-        _emit(4, 'ok', `Handshake OK (${hs.tools.length} tools)`);
+        const spawned = await spawnDaemon(jarPath, javaArgs, java.bin);
+        _emit(3, 'ok', `Daemon started at ${spawned.url}`);
       }
+
+      _emit(4, 'running', 'Performing MCP handshake...');
+      const hs = await handshake(_state.projectId);
+      if (!hs.ok) throw new Error(`Handshake failed: ${hs.error}`);
+      _emit(4, 'ok', `Handshake OK (${hs.tools.length} tools)`);
 
       _emit(5, 'running', 'Validating project scope...');
       const config2 = loadBrainConfig();
@@ -345,22 +373,24 @@ async function start(projectId) {
       }
       _emit(5, 'ok', `Project "${_state.projectId}" validated`);
 
-      _state.status = 'completed';
-      _state.finishedAt = new Date().toISOString();
-      _state.error = null;
-      saveState();
-
       const { config: brainCfg, version: brainCfgVersion } = loadBrainConfigWithVersion();
-      if (!brainCfg.backend || brainCfg.backend.type !== 'mcp-memory') {
+      if (!brainCfg.backend || brainCfg.backend.type !== 'mcp-memory' || (brainCfg.backend.mcpMemory || {}).transport !== 'http') {
         // expectedVersion pinned to the load right above: if the dashboard (or
         // another wizard run) saved a change to this same override in the
         // seconds it took Java/daemon/handshake checks to run, this save is
         // rejected instead of silently discarding that concurrent change.
         saveBrainConfig(
-          { ...brainCfg, backend: { type: 'mcp-memory', mcpMemory: mcpCfg2 } },
+          // transport http: the daemon above IS http, and mcp-memory auto-update only runs on http.
+          { ...brainCfg, backend: { type: 'mcp-memory', mcpMemory: { ...mcpCfg2, transport: 'http' } } },
           { expectedVersion: brainCfgVersion }
         );
       }
+      // Completed only AFTER the backend is saved: a poller that acts on 'completed'
+      // (restarting the brain daemon) must find the new backend on disk.
+      _state.status = 'completed';
+      _state.finishedAt = new Date().toISOString();
+      _state.error = null;
+      saveState();
     } catch (err) {
       _state.status = 'failed';
       _state.error = err.message;
@@ -405,7 +435,7 @@ function reset() {
 }
 
 module.exports = {
-  start, getState, reset, wizardStateFile, checkJava, checkJar, validateDaemon, handshake, REQUIRED_TOOLS,
+  start, getState, reset, wizardStateFile, checkJava, checkJar, validateDaemon, handshake, REQUIRED_TOOLS, daemonArgs, discoverDaemonUrl, javaCandidates, MIN_JAVA_MAJOR,
   // Exported for isolated unit testing of the hardware-aware auto-download path
   // (mocking mcp-release-resolver.js / downloadJar) without a real spawn/network flow.
   resolveDownload, ensureJar, sha256File,

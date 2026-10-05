@@ -168,7 +168,9 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
           res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message: 'Too many sessions' }, id: (body && body.id) ?? null }));
           return;
         }
-        const server = createBrainServer({ pluginRoot, mode: 'http', kbWorker, kbLock, hookWorker });
+        // requestRestart: a backend switch (backend_setup) needs a fresh daemon — every module
+        // caches the backend mode. Shut down after the reply; the clients' headersHelper respawns it.
+        const server = createBrainServer({ pluginRoot, mode: 'http', kbWorker, kbLock, hookWorker, requestRestart: () => { setTimeout(() => { shutdown(); }, 1500); } });
         const transport = new StreamableHTTPServerTransport({
           sessionIdGenerator: () => randomUUID(),
           enableJsonResponse: true,

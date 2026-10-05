@@ -58,6 +58,7 @@ const reviewChecklistAdvisory = require('./review-checklist-advisory.js');
 const tuningAdvisory = require('./tuning-advisory.js');
 const valueDigest = require('./value-digest.js');
 const projectIdentityAdvisory = require('./project-identity-advisory.js');
+const backendOnboardingAdvisory = require('./backend-onboarding-advisory.js');
 const graphWarm = require('./graph-warm.js');
 const policyInject = require('./policy-inject.js');
 
@@ -76,6 +77,7 @@ const DETECTORS = [
   { name: 'tuning-advisory', mod: tuningAdvisory, timeoutMs: 8000 },
   { name: 'value-digest', mod: valueDigest, timeoutMs: 5000 },
   { name: 'project-identity-advisory', mod: projectIdentityAdvisory, timeoutMs: 5000 },
+  { name: 'backend-onboarding-advisory', mod: backendOnboardingAdvisory, timeoutMs: 5000 },
   { name: 'graph-warm', mod: graphWarm, timeoutMs: 5000 },
   { name: 'policy-inject', mod: policyInject, timeoutMs: 10000 },
 ];
