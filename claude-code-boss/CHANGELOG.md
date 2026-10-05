@@ -34,6 +34,14 @@ mutação e, onde muda comportamento visível, prova no Claude Code real.
   Code real; antes os de UserPromptSubmit eram sempre perdidos).
 
 ### Fixed
+- **O brain-server não cai mais a cada ~6 minutos.** O Claude Code encerra um stream SSE
+  parado depois de ~6 min e, após três quedas, fecha a conexão. O daemon agora manda um
+  sinal de vida a cada 30 s.
+- **`scripts/install-local.js` não derruba mais as sessões abertas.** Ele apagava a pasta de
+  onde o daemon rodava. Agora nunca apaga uma instalação existente, faz backup do registro
+  e sobe o daemon da instalação nova na hora, dentro da janela de reconexão do Claude Code.
+- **Numa instalação nova, o primeiro prompt já sobe o daemon.** Sem a pasta de dados, a
+  trava de inicialização falhava e era confundida com "outro processo iniciando".
 - **Redirecionamento da curadoria não muda mais o que o comando faz quando o apelido traz
   argumentos.** Uma entrada com os apelidos `git stash` e `git stash list` redirecionava
   `git stash list` para o script sem o `list`. O script rodava `git stash`, que guarda as
