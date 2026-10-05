@@ -17921,9 +17921,11 @@ test('mcp-memory backend: scope routes to __user__ like the local path (writes s
     const cfg = { backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: 'http://127.0.0.1:1' } } };
     const tool = (n, a) => withUserConfig(cfg, () => { backend._resetConfig(); assertEq(backend.peekMode(), 'mcp-memory', 'precondition'); return server.handleTool(n, a); });
     {
-      const u = JSON.parse((await tool('brain_store', { title: 'T', summary: `see ${cwd}`, scope: 'user', cwd })).content[0].text);
+      // User-home paths are what the sanitizer strips (the temp dir is under HOME only on
+      // Windows — on Linux CI `see ${cwd}` stayed as /tmp/... and this failed).
+      const u = JSON.parse((await tool('brain_store', { title: 'T', summary: 'see /home/alice/shop and C:\\Users\\alice\\shop', scope: 'user', cwd })).content[0].text);
       assertEq([saves[0].projectId, u.project, u.scope], ['__user__', '__user__', 'user'], 'scope=user → __user__');
-      assert(!String(saves[0].summary).includes(cwd), `user scope is sanitized like the local path: ${saves[0].summary}`);
+      assert(!/alice/.test(String(saves[0].summary)), `user scope is sanitized like the local path: ${saves[0].summary}`);
       await tool('capture_lesson', { title: 'L', summary: 'S', type: 'decision', cwd });
       assertEq([saves[1].projectId, saves[1].scope], ['owner/scoped', 'project'], 'auto → inferred (decision → project)');
       const sec = await tool('capture_lesson', { title: 'L', summary: 'token ghp_abcdefghijklmnopqrstuvwxyz0123456789AB', scope: 'user', cwd });
