@@ -3,22 +3,22 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v3.0.0 — detalhes técnicos</title>
-<meta name="description" content="Detalhes técnicos do claude-code-boss v3.0.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard." />
+<title>claude-code-boss v3.0.1 — detalhes técnicos</title>
+<meta name="description" content="Detalhes técnicos do claude-code-boss v3.0.1: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard." />
 <link rel="canonical" href="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/tech.html">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="allansantos-plugins">
 <meta property="og:locale" content="pt_BR">
-<meta property="og:title" content="claude-code-boss v3.0.0 — detalhes técnicos">
-<meta property="og:description" content="Detalhes técnicos do claude-code-boss v3.0.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
+<meta property="og:title" content="claude-code-boss v3.0.1 — detalhes técnicos">
+<meta property="og:description" content="Detalhes técnicos do claude-code-boss v3.0.1: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
 <meta property="og:url" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/tech.html">
 <meta property="og:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="claude-code-boss: Menos repetição. Mais memória.">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="claude-code-boss v3.0.0 — detalhes técnicos">
-<meta name="twitter:description" content="Detalhes técnicos do claude-code-boss v3.0.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
+<meta name="twitter:title" content="claude-code-boss v3.0.1 — detalhes técnicos">
+<meta name="twitter:description" content="Detalhes técnicos do claude-code-boss v3.0.1: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
 <meta name="twitter:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
 <script data-ccb-theme-script>
 /* Shared theme; executed before styles and first paint. */
@@ -275,14 +275,14 @@ html{scroll-behavior:auto}
     <a href="index.html">← Apresentação</a>
     <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a>
     <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">Changelog</a>
-    <a href="#top" class="ver">v3.0.0</a>
+    <a href="#top" class="ver">v3.0.1</a>
   </nav>
 <div class="ccb-theme" role="group" aria-label="Tema"><button type="button" data-ccb-theme="dark" aria-pressed="true">Dark</button><button type="button" data-ccb-theme="light" aria-pressed="false">Light</button></div>
 </header>
 
 <main class="wrap" id="top">
   <div class="page-head">
-    <p class="kick">documentação técnica · v3.0.0</p>
+    <p class="kick">documentação técnica · v3.0.1</p>
     <h1>Arquitetura e funcionamento interno</h1>
     <p class="intro">Para quem quer saber <b>como funciona por baixo</b>: daemon HTTP único, pipeline de hooks, Brain KB em 3 camadas, Model Router Anthropic/OpenAI, backend MCP Memory, exploração de repositório por grafo e dashboard. Fontes: <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a> e <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG</a>.</p>
     <div class="toc">
@@ -422,14 +422,15 @@ html{scroll-behavior:auto}
     <div class="panel" style="margin-top:16px">
       <h3>Backends do Brain</h3>
       <ul class="tight">
-        <li><b>local (padrão):</b> SQLite no <code>DATA_DIR/brain/&lt;projeto&gt;/brain.db</code> — zero servidor externo.</li>
-        <li><b>mcp-memory (server-side):</b> conecta a um mcp-memory-server (HTTP auto-discovery via <code>~/.mcp-memory/run/daemon.json</code> ou stdio com Java 21+). Ingestão opt-in, desligada por padrão. Botão <b>Migrar agora</b> leva o acervo local para o servidor projeto a projeto (idempotente, fail-loud).</li>
-        <li><b>MCP Activation Wizard</b> (<code>scripts/lib/mcp-wizard.js</code>): ativa o backend <code>mcp-memory</code> em 5 passos com estado persistido — Java ≥ 21, JAR presente/download, spawn do daemon, handshake MCP (<code>initialize</code> + <code>tools/list</code>), validação do <code>projectId</code>. Fire-and-forget com polling (<code>POST /api/brain/mcp-wizard</code>, <code>GET .../status</code>); no Dashboard vira o botão <b>Activate Server</b> com progresso passo-a-passo.</li>
+        <li><b>local (padrão):</b> SQLite no <code>DATA_DIR/brain/&lt;projeto&gt;/brain.db</code> — zero servidor externo. Tem memória, recall, lições, curadoria e políticas. <b>Não tem</b> as tools que só o servidor entrega: grafo de código (<code>graph_*</code>), recall em dois níveis (<code>compose_recall</code>), ingestão de conversa e migração.</li>
+        <li><b>mcp-memory (integrado):</b> o mesmo plugin passa a usar o servidor de memória (native-java) e <b>ganha essas ferramentas</b>. HTTP com auto-discovery via <code>~/.mcp-memory/run/daemon.json</code>; ingestão opt-in; <b>Migrar agora</b> leva o acervo local para o servidor projeto a projeto (idempotente, fail-loud).</li>
+        <li><b>O agente ativa para você:</b> no backend local o agente é avisado do que está desligado. Ele pergunta se você já roda um servidor em outro host (aponta para o endereço, sem instalar nada); se você não souber, reaproveita o servidor que já roda na máquina (instalado por plugins irmãos — nunca um segundo) ou o instala: <code>backend_status</code>, <code>backend_setup</code> (confere Java 21+ e dá o comando de instalação do seu sistema se faltar), <code>backend_setup_status</code>. Ele mostra a versão do servidor e atualiza só com o seu OK (<code>backend_update</code>). Pelo Dashboard, o mesmo assistente roda no botão <b>Activate Server</b>.</li>
         <li><b>Auto-update HTTP:</b> no <code>SessionStart</code>, consulta <code>check_update</code> no máximo uma vez por 24h e chama <code>update</code> uma vez, sem retry, sob lock cross-process. Um <code>serverUrl</code> remoto exige <code>autoUpdate.allowRemote=true</code> e nunca usa o fallback local. Se a nova versão falha no boot, o caminho local restaura o JAR anterior e confirma a versão restaurada em <code>/health.version</code> antes de reportar rollback concluído.</li>
+        <li><b>Backup:</b> o Dashboard (aba Brain) guarda tudo o que o plugin aprendeu num <code>.tar.gz</code> (bancos SQLite em snapshot <code>VACUUM INTO</code>, sem modelos nem segredos) e restaura em outra máquina, com cópia de segurança antes. Os dados do servidor entram quando ele oferecer <code>backup_export</code>/<code>backup_import</code> (contrato em <code>docs/BACKUP-CONTRACT.md</code>).</li>
         <li><b>Status em tempo real</b> (<code>scripts/brain-status.js</code>, hook no <code>UserPromptSubmit</code> e comando <code>/brain-status</code>): reporta <code>mode</code>, <code>connected</code>, <code>project</code>, <code>backend</code>, <code>details</code> (URL/transporte/JAR) e <code>latency</code> — mesmo contrato exposto em <code>GET /api/brain/health</code> e refletido no badge online/offline do Dashboard.</li>
       </ul>
       <h3>Identidade do projeto (recall entre máquinas/pastas)</h3>
-      <p style="color:var(--muted); font-size:13.5px">Precedência: <code>CCB_PROJECT_ID</code> (env) → <code>.claude-boss-project</code> (arquivo na raiz do projeto, viaja com a pasta) → <code>basename(cwd)</code> (default legado). Escopo anti-contaminação: o daemon filtra por <code>project_id</code> no handshake.</p>
+      <p style="color:var(--muted); font-size:13.5px">Precedência: <code>CCB_PROJECT_ID</code> (env) → <code>.memory/project.json</code> (viaja com a pasta) → <code>.claude-boss-project</code> (legado) → git remote <code>origin</code> (<code>host/owner/repo</code>, o mesmo em qualquer máquina ou caminho). Sem id, a memória fica desligada na pasta: o agente examina a pasta, lista os projetos que já existem (<code>project_list</code>), pergunta se é um projeto novo ou a continuação de um existente e grava com <code>project_set</code> (nome repetido exige confirmação).</p>
     </div>
   </section>
 
@@ -473,8 +474,8 @@ html{scroll-behavior:auto}
   </section>
 
   <section id="graph">
-    <h2>Graph tools <span class="tag">7 tools</span></h2>
-    <p class="lead">Exploração rápida de repositório via Session Graph Engine (<b>cliente REST puro</b>, nenhum Java embarcado). Hubs por PageRank, busca semântica com vizinhança (CALLS/CONTAINS/IMPORTS), quem-chama-um-símbolo — para entender um repo grande sem garimpar arquivo por arquivo.</p>
+    <h2>Graph tools <span class="tag">7 tools · backend mcp-memory</span></h2>
+    <p class="lead">Exploração rápida de repositório via Session Graph Engine do servidor de memória (<b>cliente REST puro</b>, nenhum Java embarcado no plugin) — disponíveis no backend <b>mcp-memory</b>. Hubs por PageRank, busca semântica com vizinhança (CALLS/CONTAINS/IMPORTS), quem-chama-um-símbolo — para entender um repo grande sem garimpar arquivo por arquivo.</p>
     <div class="panel">
       <div class="table-scroll">
         <table>
@@ -484,14 +485,13 @@ html{scroll-behavior:auto}
             <tr><td><b>graph_search</b></td><td>Busca semântica com expansão de vizinhança (N-hops)</td></tr>
             <tr><td><b>graph_symbols</b></td><td>Lista hubs por PageRank ou busca por nome</td></tr>
             <tr><td><b>graph_status</b></td><td>Nodes, edges, hubs — read-only, não indexa</td></tr>
-            <tr><td><b>graph_ingest / graph_reindex</b></td><td>Indexa o projeto (async, poll até ready)</td></tr>
+            <tr><td><b>graph_ingest</b></td><td>Indexa o projeto (async, poll até ready)</td></tr>
             <tr><td><b>graph_callers</b></td><td>Quem chama um nó (inbound CALLS edges)</td></tr>
             <tr><td><b>graph_references</b></td><td>Todas as referências a um nó (CALLS + CONTAINS + IMPORTS)</td></tr>
-            <tr><td><b>graph_tag_node</b></td><td>Marca um nó com termos extraídos</td></tr>
           </tbody>
         </table>
       </div>
-      <div class="callout"><b>Fail-open:</b> se o daemon de memória estiver offline, as tools <code>graph_*</code> falham graciosamente — nunca derrubam a sessão. Independentes do KB local/mutex.</div>
+      <div class="callout"><b>Exigem o backend mcp-memory:</b> no backend local elas respondem explicando como ativar — e o agente pode ativar o servidor para você (<code>backend_setup</code>). <b>Fail-open:</b> com o servidor offline, falham graciosamente — nunca derrubam a sessão.</div>
     </div>
   </section>
 

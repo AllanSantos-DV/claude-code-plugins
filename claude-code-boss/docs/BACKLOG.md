@@ -789,10 +789,13 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   **corrigido removendo o `userConfig`**; reinstalação limpa sem o aviso.
 - [x] **Q10 — `scripts/install-local.js` público.** Ferramenta de dev no plugin e no README.
   **Removido** (dev usa `.claude/scripts/install-local.mjs`, local; docs públicas → `--plugin-dir`).
-- [ ] **Q11 — auto-update desligado para o nosso marketplace (padrão do Claude Code para
+- [x] **Q11 — auto-update desligado para o nosso marketplace (padrão do Claude Code para
   terceiros).** Fonte: code.claude.com/docs/en/plugins/loading ("When auto-update runs"), acesso
   05/10/2026. Sem ligar, o usuário nunca recebe versão nova. Decisão do dono pendente: o plugin
   liga sozinho (`autoUpdate` em `known_marketplaces.json`) ou só orienta.
+  **RESOLVIDO em 05/10** (decisão do dono: ligado por padrão, avisando): `lib/marketplace-autoupdate.js`
+  liga uma vez (known_marketplaces + entrada declarada em settings), respeita escolha explícita, avisa
+  no prompt seguinte. Teste cobre ligar, uma vez, escolha explícita, arquivo ilegível intocado.
 - [x] **Q12 — pasta sem project id = memória desligada + aviso a cada turno.** Visto na instalação
   limpa: numa pasta comum o usuário não-dev recebe pergunta sobre "project id owner/repo". Decisão
   do dono pendente (regra de 2026-10-02).
@@ -821,9 +824,12 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   native-java): repassar os args da JVM no relaunch.
 - [ ] **Q17 — native-java: `backup_export` / `backup_import`** conforme `docs/BACKUP-CONTRACT.md`
   (o dono faz). Ao sair, o backup do dashboard passa a incluir os dados do servidor sozinho.
-- [ ] **Q18 — `pages/claude-code-boss/tech.html` desatualizada:** lista `graph_reindex` e
+- [x] **Q18 — `pages/claude-code-boss/tech.html` desatualizada:** lista `graph_reindex` e
   `graph_tag_node` (não existem) e diz que as graph tools são "Independentes do KB local" (exigem
   mcp-memory). Fora do escopo (só o agente `vitrine` escreve em `pages/`). Visto no levantamento.
+  **RESOLVIDO em 05/10** (dono pediu; fluxo do vitrine): tools inexistentes removidas, graph = backend
+  mcp-memory, backends local × mcp-memory explicados, identidade de projeto atual; landing ganhou a seção
+  "Quando quiser ir além". Render desktop+mobile, Dark+Light: sem overflow, sem erro de JS.
 - [ ] **Q19 — resolver de release duplicado em `scripts/mcp-client.js:337-350`** (sem detecção de
   GPU) ao lado de `lib/mcp-release-resolver.js`. Fora do escopo: remover e usar o resolver único.
 

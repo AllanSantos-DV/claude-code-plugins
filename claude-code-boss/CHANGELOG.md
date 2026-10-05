@@ -1,8 +1,9 @@
 # Changelog
 
-## [Não lançado]
+## [3.0.1] - 2026-10-05
 
-Zeragem do backlog da 3.0 (branch `fix/backlog-zero`). Cada item com teste,
+Zeragem do backlog da 3.0 (branch `fix/backlog-zero`), confiabilidade do serviço do brain e onboarding.
+Inclui a correção da curadoria que a branch `fix/curadoria-args-hotfix` preparava como 3.0.1. Cada item com teste,
 mutação e, onde muda comportamento visível, prova no Claude Code real.
 
 ### ⚠️ Mudanças incompatíveis — o que muda para você
@@ -14,6 +15,18 @@ mutação e, onde muda comportamento visível, prova no Claude Code real.
   antes dela recebem 401 do daemon novo até `/reload-plugins` ou reinício.
 
 ### Added
+- **Atualização automática ligada por padrão, com aviso.** O Claude Code deixa a atualização
+  automática desligada para marketplaces de terceiros, então quem instalava o boss ficava na mesma
+  versão para sempre. Na primeira sessão o plugin liga a opção para o próprio marketplace e avisa
+  como desligar (/plugin → Marketplaces → Disable auto-update). Uma escolha sua (ligada ou
+  desligada) nunca é sobrescrita.
+- **Servidor de memória: primeiro pergunta, depois procura, só então instala.** O agente pergunta se
+  você já roda um servidor em outro host (aponta para o endereço, sem instalar nada). Se você não
+  souber, ele reaproveita o servidor que já roda na máquina (plugins irmãos instalam um — nunca roda
+  um segundo) ou o que outro plugin já instalou, e só baixa se não houver nenhum. Mostra a versão
+  do servidor e atualiza só com o seu OK (`backend_update`).
+- Páginas do produto: a landing e a página técnica explicam o que vem no backend local e o que o
+  backend mcp-memory integrado acrescenta (grafo de código, recall em dois níveis, ingestão).
 - **O agente ativa o servidor de memória para você.** Grafo de código, recall em dois níveis e
   ingestão dependem do servidor de memória (mcp-memory), que antes só o dashboard instalava.
   Agora basta pedir ao Claude: as tools `backend_status`, `backend_setup` e
