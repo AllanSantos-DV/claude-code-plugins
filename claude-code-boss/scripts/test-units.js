@@ -21068,6 +21068,15 @@ test('setup-tools: backend_status/setup guide the agent (Java missing → exact 
   assert(/brew install --cask temurin@21/.test(javaInstallCommand('darwin')) && /openjdk-21/.test(javaInstallCommand('linux')), 'per-OS commands');
 });
 
+test('project identity notice: the agent investigates and asks "new or existing project?" (project_list/project_set, link), never "owner/repo"; tool refusals point to the same tools', () => {
+  const { buildNotice } = require('./project-identity-advisory.js');
+  const n = buildNotice('C:\\x\\nova-pasta', '');
+  for (const re of [/project_list/, /project_set/, /link: true/, /NOVO ou a continuação\/migração/, /README/, /DESLIGADA/, /repete a cada prompt/, /memory-off\.json/]) assert(re.test(n), `notice has ${re}: ${n}`);
+  assert(!/owner\/repo/.test(n), 'no owner/repo jargon');
+  const { SCOPE_HELP } = require('./lib/project-id.js');
+  assert(/project_set/.test(SCOPE_HELP) && !/owner\/repo/.test(SCOPE_HELP), SCOPE_HELP);
+});
+
 test('brain-config: a long-lived process sees a save made by ANOTHER process (cache keyed on the user override mtime/size)', () => {
   const bc = require('./lib/brain-config.js');
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bc-'));

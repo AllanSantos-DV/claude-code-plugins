@@ -47,15 +47,22 @@ function configProjectId() {
 /** The notice (pt-BR, user-facing via the agent). Shared with project-id-stop.js. */
 function buildNotice(cwd, cfgId = configProjectId()) {
   const where = cwd ? ` (\`${cwd}\`)` : '';
-  return `[PROJETO] ERRO: esta pasta${where} não tem project id — a memória do Brain está DESLIGADA aqui: `
-    + 'nenhum recall é injetado e nada é salvo (capture_lesson/brain_store recusam quando recebem o `cwd` — passe sempre). '
-    + 'Avise o usuário e pergunte o nome do projeto (ex.: "owner/repo"). Com a resposta, crie '
-    + '`.memory/project.json` na raiz do projeto com '
-    + '`{"version":"1","metadata":{"defaults":{"project_id":"<nome>"}}}` '
-    + '— ou trabalhe num repositório git com remote origin. '
-    + 'NÃO chame brain_store/capture_lesson com um `project` inventado enquanto isso. '
-    + 'Este aviso se repete a cada prompt até o id existir. Se o usuário RECUSAR definir um id para esta pasta, '
-    + 'crie `.memory/memory-off.json` com `{"memory":"off"}` na pasta: a memória fica desligada aqui e o aviso para.'
+  // A repo with a git remote names itself (host/owner/repo — the same project on any machine
+  // or path). This notice is for folders without one: the AGENT finds out what the folder is
+  // and asks the user in plain words — never "owner/repo" jargon, never a made-up name.
+  return `[PROJETO] A memória do Brain está DESLIGADA nesta pasta${where}: ela não tem project id `
+    + '(não é um repositório git com remote, nem tem nome de projeto definido), então nada é lembrado nem salvo aqui. '
+    + 'NÃO chame brain_store/capture_lesson com um `project` inventado. Resolva assim, sem jargão para o usuário: '
+    + '(1) olhe a pasta (README, package.json/pom.xml, nomes das pastas) para entender que projeto é; '
+    + '(2) chame `project_list` para ver os projetos que já existem na memória; '
+    + '(3) explique ao usuário, em uma frase, que a memória está desligada aqui porque a pasta ainda não tem nome de projeto, '
+    + 'e pergunte se é um projeto NOVO ou a continuação/migração de um projeto que já existe — se algum da lista parece ser este '
+    + '(pelo conteúdo da pasta), sugira-o pelo nome; '
+    + '(4) com a resposta, chame `project_set` com só o nome (ex.: "loja-online"; não peça dono/organização) e, se o usuário confirmou '
+    + 'que é um projeto existente, `link: true`. Não aceite nomes genéricos ("nova pasta", "teste") sem confirmar que é isso mesmo. '
+    + 'Sem a tool, grave `.memory/project.json` com `{"version":"1","metadata":{"defaults":{"project_id":"<nome>"}}}`. '
+    + 'Este aviso se repete a cada prompt até o id existir. Se o usuário NÃO quiser memória nesta pasta, '
+    + 'crie `.memory/memory-off.json` com `{"memory":"off"}`: a memória fica desligada aqui e o aviso para.'
     + (cfgId ? ` Nota: \`backend.mcpMemory.projectId\` ("${cfgId}") na config NÃO liga mais a memória de uma pasta — o id precisa ser da pasta, como acima.` : '');
 }
 

@@ -44,8 +44,9 @@ const MAX_LEN = 120;
 // Single ACTIONABLE message, reused by the resolver throw + assertSafeProjectId + the
 // ingestion guards. Surfaced to the user when a write is blocked for lack of scope.
 const SCOPE_HELP =
-  'Create a .memory/project.json at the project root (metadata.defaults.project_id, e.g. "owner/repo") ' +
-  'OR work inside a git repository with a remote origin. Without a stable identifier the memory is NOT ' +
+  'Name this folder with the project_list + project_set tools (ask the user: new project or an existing one? ' +
+  'what is it called? — just the name, e.g. "loja-online"), which writes .memory/project.json; a git repository ' +
+  'with a remote origin is identified automatically. Without a stable identifier the memory is NOT ' +
   'written or injected — this prevents spreading folder-path scope-junk (C:\\, Temp, AppData) across the memory.';
 
 // ─── small pure helpers ──────────────────────────────────────────────────────
