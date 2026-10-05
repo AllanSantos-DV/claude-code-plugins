@@ -785,7 +785,8 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   Teste + 2 mutações.
 - [x] **Q9 — instalação limpa pelo marketplace mostrava "1 userConfig option not yet set".**
   Visto na instalação isolada (`claude plugin install`). `language` era `required` com padrão e o
-  código não lê a opção. **Corrigido**: `required: false`.
+  código não lê a opção. `required: false` não bastou (o aviso segue para opção sem valor):
+  **corrigido removendo o `userConfig`**; reinstalação limpa sem o aviso.
 - [x] **Q10 — `scripts/install-local.js` público.** Ferramenta de dev no plugin e no README.
   **Removido** (dev usa `.claude/scripts/install-local.mjs`, local; docs públicas → `--plugin-dir`).
 - [ ] **Q11 — auto-update desligado para o nosso marketplace (padrão do Claude Code para
