@@ -21116,6 +21116,14 @@ test('mcp-wizard: spawns the server in DAEMON mode (no --transport: it turns dae
     assert(!old.ok && /21\+ required, found 8/.test(old.error), old.error);
     const win = w.javaCandidates({ ProgramFiles: tmp, JAVA_HOME: path.join(tmp, 'jh') }, 'win32');
     assert(win[0] === path.join(tmp, 'jh', 'bin', 'java.exe') && win.includes('java'), 'JAVA_HOME first, then PATH');
+    // A server that dies on boot fails the step at once (not after the long first-start wait).
+    const EventEmitter = require('events');
+    const fake = () => { const p = new EventEmitter(); p.unref = () => {}; p.kill = () => {}; setTimeout(() => p.emit('exit', 1, null), 50); return p; };
+    const t0 = Date.now();
+    let err = null;
+    try { await w.spawnDaemon('/x/server.jar', [], 'java', { spawnImpl: fake, timeoutMs: 60000 }); } catch (e) { err = e; }
+    assert(err && /exited with code 1 before becoming healthy/.test(err.message), `early exit reported: ${err && err.message}`);
+    assert(Date.now() - t0 < 10000, 'fails fast, not at the timeout');
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 });
 
