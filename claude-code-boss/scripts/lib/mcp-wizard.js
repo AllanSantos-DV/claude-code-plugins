@@ -35,7 +35,9 @@ const MIN_JAVA_MAJOR = 21;
 // different profile).
 function wizardStateFile() { return path.join(globalDir(), 'mcp-wizard-state.json'); }
 function lockFile() { return path.join(globalDir(), '.mcp-wizard.lock'); }
-const MINDATA_TIMEOUT_MS = 15000;
+// A first start downloads the embedding model (~430 MB) before /health answers: 15 s made
+// every fresh install fail (seen in the real-session proof). The wizard runs in the background.
+const SPAWN_TIMEOUT_MS = Number(process.env.CCB_MCP_SPAWN_TIMEOUT_MS) || 10 * 60 * 1000;
 const VALIDATE_RETRIES = 3;
 const VALIDATE_RETRY_DELAY_MS = 2000;
 const REQUIRED_TOOLS = ['add_document', 'search_memory', 'get_document', 'delete_document'];
@@ -241,14 +243,19 @@ function daemonArgs(jarPath, javaArgs) {
   return [...javaArgs, '-jar', jarPath, '--daemon'];
 }
 
-async function spawnDaemon(jarPath, javaArgs, javaBin = 'java') {
+async function spawnDaemon(jarPath, javaArgs, javaBin = 'java', { spawnImpl = spawn, timeoutMs = SPAWN_TIMEOUT_MS } = {}) {
   return new Promise((resolve, reject) => {
     const args = daemonArgs(jarPath, javaArgs);
-    const proc = spawn(javaBin, args, { stdio: 'ignore', detached: true, windowsHide: true });
+    const proc = spawnImpl(javaBin, args, { stdio: 'ignore', detached: true, windowsHide: true });
     proc.unref();
-    const deadline = Date.now() + MINDATA_TIMEOUT_MS;
+    // A server that dies on boot (bad JVM flag, port, corrupt jar) fails the step at once.
+    let exited = null;
+    proc.on('exit', (code, signal) => { exited = `exited with ${code != null ? `code ${code}` : signal}`; });
+    proc.on('error', (err) => { exited = `could not start: ${err.message}`; });
+    const deadline = Date.now() + timeoutMs;
     const check = async () => {
-      if (Date.now() > deadline) { proc.kill(); return reject(new Error('Daemon failed to become healthy after spawn')); }
+      if (exited) return reject(new Error(`The memory server ${exited} before becoming healthy (${javaBin} ${args.join(' ')})`));
+      if (Date.now() > deadline) { proc.kill(); return reject(new Error(`Daemon failed to become healthy within ${Math.round(timeoutMs / 1000)} s after spawn`)); }
       const url = await discoverDaemonUrl();
       if (url) {
         const alive = await httpHealth(url);
@@ -353,7 +360,7 @@ async function start(projectId) {
       } else {
         _emit(2, 'running', 'Daemon down — ensuring JAR...');
         await ensureJar(jarPath, mcpCfg, (status, detail) => _emit(2, status, detail));
-        _emit(3, 'running', 'Starting daemon...');
+        _emit(3, 'running', 'Starting the server (the first start downloads its embedding model, ~430 MB — can take a few minutes)...');
         const spawned = await spawnDaemon(jarPath, javaArgs, java.bin);
         _emit(3, 'ok', `Daemon started at ${spawned.url}`);
       }
@@ -435,7 +442,7 @@ function reset() {
 }
 
 module.exports = {
-  start, getState, reset, wizardStateFile, checkJava, checkJar, validateDaemon, handshake, REQUIRED_TOOLS, daemonArgs, discoverDaemonUrl, javaCandidates, MIN_JAVA_MAJOR,
+  start, getState, reset, spawnDaemon, wizardStateFile, checkJava, checkJar, validateDaemon, handshake, REQUIRED_TOOLS, daemonArgs, discoverDaemonUrl, javaCandidates, MIN_JAVA_MAJOR,
   // Exported for isolated unit testing of the hardware-aware auto-download path
   // (mocking mcp-release-resolver.js / downloadJar) without a real spawn/network flow.
   resolveDownload, ensureJar, sha256File,
