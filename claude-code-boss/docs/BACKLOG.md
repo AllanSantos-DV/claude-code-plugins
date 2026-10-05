@@ -753,10 +753,13 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   servida pelo código antigo** (`ensureDaemon`: só troca com versão estritamente maior).
   Mitigado pelo Q2 (o `install-local` passa o daemon explicitamente); no marketplace toda
   atualização muda a versão. Sem mudança de regra.
-- [ ] **Q5 — 14 arquivos de runtime `claude-code-boss/.token-guard/results/*.txt` estão versionados**
-  (entraram no commit 818980f4, apesar de `.token-guard/` no `.gitignore:87`). Visto ao limpar
-  a pasta durante o Q2: o `git status` mostrou as deleções. Fora do escopo. Proposta:
-  `git rm -r --cached claude-code-boss/.token-guard` num commit próprio.
+- [x] **Q5 — arquivos de runtime e de planejamento versionados por engano.** 39 dumps
+  `.token-guard/results/*.txt` (14 em `claude-code-boss/`, 25 na raiz) e `docs/PLAN-route-manager.md`
+  entraram em 2e145694 (15/09); as regras do `.gitignore` vieram depois (818980f4, 26/09), e regra
+  nova não tira do índice o que já foi commitado. Visto ao limpar a pasta durante o Q2.
+  **RESOLVIDO em 05/10** (pedido do usuário): `git rm --cached` nos 40 (cópias locais mantidas);
+  `.runtime/` e `coverage/` passam a valer para qualquer plugin; novo check `no-tracked-ignored` no
+  `release-audit` (CI) bloqueia a recorrência. Prova: o check reprovou os 40 antes e passou depois.
 
 ## Testes
 
