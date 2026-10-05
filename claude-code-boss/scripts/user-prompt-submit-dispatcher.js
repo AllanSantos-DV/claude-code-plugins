@@ -121,6 +121,21 @@ async function dispatch(event, opts = {}) {
   return texts.length ? texts.join(SEP) : null;
 }
 
+async function linkNoticeFor(event) {
+  if (!event.session_id || !event.cwd || require('./lib/prompt-kind.js').isSyntheticPrompt(event.prompt)) return null;
+  const port = Number(process.env.BRAIN_HTTP_PORT) || 38217;
+  try {
+    return await require('./lib/mcp-link.js').linkNotice({
+      sessionId: event.session_id,
+      cwd: event.cwd,
+      daemonHealthy: async () => (await require('./lib/http-health.js').probeHealth(`http://127.0.0.1:${port}`, { timeoutMs: 1500 })).status === 200,
+    });
+  } catch (err) {
+    console.error(`[claude-code-boss:user-prompt-submit-dispatcher] mcp-link: ${err.message}`);
+    return null;
+  }
+}
+
 async function main() {
   const raw = await readStdin();
   const event = parsePayload(raw) || {};
@@ -130,9 +145,14 @@ async function main() {
   if (dash) { emitJson(dash); return; }
   // First prompt after installing (once per machine): a visible "it works" message.
   const welcome = require('./lib/welcome.js').takeWelcome({ prompt: event.prompt });
-  const text = await dispatch(event);
+  let text = await dispatch(event);
+  // After dispatch (the daemon was ensured): a session whose MCP link Claude Code gave
+  // up on stays without brain tools until /mcp → Reconnect — say so to user and agent.
+  const link = await linkNoticeFor(event);
+  if (link) text = text ? `${text}${SEP}${link.agent}` : link.agent;
   const out = {};
-  if (welcome) out.systemMessage = welcome;
+  const shown = [welcome, link && link.user].filter(Boolean);
+  if (shown.length) out.systemMessage = shown.join(' ');
   if (text) out.hookSpecificOutput = { hookEventName: eventName, additionalContext: text };
   if (Object.keys(out).length) { emitJson(out); return; }
   emitEmpty();

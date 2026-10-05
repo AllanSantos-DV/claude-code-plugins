@@ -21045,6 +21045,87 @@ test('welcome: shown once per machine (O_EXCL claim, concurrent-safe), never to 
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('mcp-link: a session Claude Code gave up on is reported (user + agent) once the daemon is healthy; reconnected/other sessions/no logs are not', async () => {
+  const { linkState, linkNotice, cwdSlug, LOG_DIR } = require('./lib/mcp-link.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mcplink-'));
+  const cwd = 'C:\\Users\\x\\Projetos\\cerne';
+  assertEq(cwdSlug(cwd), 'C--Users-x-Projetos-cerne', 'Claude Code project slug');
+  const dir = path.join(root, cwdSlug(cwd), LOG_DIR);
+  fs.mkdirSync(dir, { recursive: true });
+  // Real lines from the 2026-10-05 09:00 outage log (sessionIds shortened).
+  const line = (sid, debug, ts) => JSON.stringify({ debug, timestamp: ts, sessionId: sid, cwd });
+  fs.writeFileSync(path.join(dir, '2026-10-05T11-33-00-000Z.jsonl'), [
+    line('s-gaveup', 'Connection established with capabilities: {"hasTools":true}', '2026-10-05T11:33:02.000Z'),
+    line('s-gaveup', 'http transport closed — reconnecting (attempt 1/5)', '2026-10-05T12:00:19.000Z'),
+    line('s-gaveup', 'Max reconnection attempts (5) reached, giving up', '2026-10-05T12:00:35.113Z'),
+    line('s-back', 'Max reconnection attempts (5) reached, giving up', '2026-10-05T12:00:35.200Z'),
+    line('s-back', 'Reconnected (attempt 1)', '2026-10-05T12:10:00.000Z'),
+    line('s-first', 'Connection failed after 141ms (ENDPOINT_NOT_FOUND): MCP endpoint not found', '2026-10-05T12:20:00.000Z'),
+    'not json',
+  ].join('\n'));
+  try {
+    assertEq(linkState({ sessionId: 's-gaveup', cwd, cacheRoot: root }).state, 'down', 'gave up → down');
+    assertEq(linkState({ sessionId: 's-back', cwd, cacheRoot: root }).state, 'up', 'reconnected after the give-up → up');
+    assertEq(linkState({ sessionId: 's-first', cwd, cacheRoot: root }).state, 'down', 'failed first connect → down');
+    assertEq(linkState({ sessionId: 's-other', cwd, cacheRoot: root }).state, 'unknown', 'no lines for this session');
+    assertEq(linkState({ sessionId: 's-gaveup', cwd: 'C:\\elsewhere', cacheRoot: root }).state, 'unknown', 'no log dir');
+    const healthy = async () => true;
+    const n = await linkNotice({ sessionId: 's-gaveup', cwd, cacheRoot: root, daemonHealthy: healthy });
+    assert(n && /\/mcp/.test(n.user) && /Reconnect/.test(n.user) && !n.user.includes('\n'), `one-line user notice: ${n && n.user}`);
+    assert(/gave up reconnecting \(2026-10-05T12:00:35\.113Z\)/.test(n.agent), n.agent);
+    assertEq(await linkNotice({ sessionId: 's-gaveup', cwd, cacheRoot: root, daemonHealthy: async () => false }), null, 'daemon still down → no reconnect advice');
+    assertEq(await linkNotice({ sessionId: 's-back', cwd, cacheRoot: root, daemonHealthy: healthy }), null, 'connected → nothing');
+    // End to end through the real hook process: Claude Code's cache root pointed at the fixture, a /health stub as the daemon.
+    const srv = http.createServer((req, res) => { res.writeHead(req.url === '/health' ? 200 : 404); res.end('{"ok":true}'); });
+    await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mcplink-home-'));
+    try {
+      const cache = process.platform === 'win32' ? { LOCALAPPDATA: path.join(root, 'la') } : { XDG_CACHE_HOME: path.join(root, 'xdg') };
+      const ccRoot = process.platform === 'win32' ? path.join(root, 'la', 'claude-cli-nodejs', 'Cache') : path.join(root, 'xdg', 'claude-cli-nodejs');
+      fs.cpSync(path.join(root, cwdSlug(cwd)), path.join(ccRoot, cwdSlug(cwd)), { recursive: true });
+      // Async child: the /health stub lives in THIS process, so a spawnSync would block it.
+      const run = (sid) => new Promise((resolve, reject) => {
+        const child = require('child_process').execFile(process.execPath, [path.join(SCRIPTS, 'user-prompt-submit-dispatcher.js')], {
+          encoding: 'utf8', timeout: 60000,
+          env: { ...process.env, ...cache, HOME: home, USERPROFILE: home, BRAIN_HTTP_AUTOSTART: '0', BRAIN_HTTP_PORT: String(srv.address().port) },
+        }, (err, stdout) => (err ? reject(err) : resolve(JSON.parse(stdout || '{}'))));
+        child.stdin.end(JSON.stringify({ hook_event_name: 'UserPromptSubmit', prompt: 'oi', session_id: sid, cwd }));
+      });
+      const o = await run('s-gaveup');
+      assert(/digite \/mcp/.test(o.systemMessage || ''), `user sees the reconnect step: ${JSON.stringify(o).slice(0, 400)}`);
+      assert(/brain-server MCP connection is down/.test((o.hookSpecificOutput || {}).additionalContext || ''), 'agent is told too');
+      assert(!/digite \/mcp/.test((await run('s-back')).systemMessage || ''), 'a reconnected session gets no notice');
+    } finally { srv.close(); fs.rmSync(home, { recursive: true, force: true }); }
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('plugin setup self-heal: re-runs in background when the brain-server deps are missing (not only the root node_modules); one setup at a time', async () => {
+  const { runSetupInBackground } = require('./brain-daemon-ensure.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-setup-'));
+  try {
+    fs.mkdirSync(path.join(root, 'node_modules'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'servers', 'brain-server'), { recursive: true });
+    fs.mkdirSync(path.join(root, 'scripts'), { recursive: true });
+    const marker = path.join(root, 'setup-ran');
+    fs.writeFileSync(path.join(root, 'scripts', 'plugin-setup.js'), `require('fs').writeFileSync(${JSON.stringify(marker)}, 'x');`);
+    const bsPkg = path.join(root, 'servers', 'brain-server', 'package.json');
+    fs.writeFileSync(bsPkg, JSON.stringify({ dependencies: {} }));
+    assertEq(runSetupInBackground(root, root), false, 'all deps resolve → no setup');
+    fs.writeFileSync(bsPkg, JSON.stringify({ dependencies: { 'ccb-definitely-missing-pkg': '1.0.0' } }));
+    assertEq(runSetupInBackground(root, root), true, 'root node_modules present but a brain-server dep missing → setup');
+    for (let i = 0; i < 50 && !fs.existsSync(marker); i++) await new Promise((r) => setTimeout(r, 100));
+    assert(fs.existsSync(marker), 'the detached setup actually ran');
+    // A second session while one setup holds the lock (live pid): it skips instead of a parallel npm.
+    const data = path.join(root, 'data');
+    const { acquireFileLock, releaseFileLock } = require('./lib/process-lock.js');
+    const lock = acquireFileLock(path.join(data, 'plugin-setup.lock'));
+    assert(lock.acquired, 'test holds the setup lock');
+    const r = require('child_process').spawnSync(process.execPath, [path.join(SCRIPTS, 'plugin-setup.js')], { encoding: 'utf8', timeout: 30000, env: { ...process.env, CLAUDE_PLUGIN_DATA: data } });
+    assert(/another setup is running/.test(r.stdout), `held lock → skip: ${r.stdout}${r.stderr}`);
+    releaseFileLock(path.join(data, 'plugin-setup.lock'), lock.owner);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('secret-file: ensureSecret creates once (bytes → hex), reuses after; empty/absent → null; 0600 on POSIX', () => {
   const { readSecret, ensureSecret } = require('./lib/secret-file.js');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-secret-'));

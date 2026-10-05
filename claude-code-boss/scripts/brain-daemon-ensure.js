@@ -48,7 +48,9 @@ function pluginRoot() {
 function runSetupInBackground(root, dataDir) {
   const nodeModules = path.join(root, 'node_modules');
   const setupScript = path.join(root, 'scripts', 'plugin-setup.js');
-  if (fs.existsSync(nodeModules)) return false; // deps presentes, sem necessidade
+  // Root deps present is not enough: the brain-server's own deps can still be
+  // missing (brain-health reports it and promises this background re-install).
+  if (fs.existsSync(nodeModules) && require('./brain-health.js').brainServerDepsOk(root).ok) return false;
   if (!fs.existsSync(setupScript)) return false;
   try {
     const child = spawn(process.execPath, [setupScript], {

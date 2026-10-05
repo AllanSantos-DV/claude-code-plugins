@@ -19,7 +19,7 @@
       "title": "Output Language",
       "description": "Language for user-facing communication (pt-BR or en)",
       "default": "pt-BR",
-      "required": true
+      "required": false
     }
   }
 }
