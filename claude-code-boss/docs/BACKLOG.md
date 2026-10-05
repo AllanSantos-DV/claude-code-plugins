@@ -743,6 +743,9 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   instalação nova (para o antigo, roda `brain-daemon-ensure`, confere `/health`). Teste
   unitário + e2e com HOME isolado rodado 2×: pasta nova, antiga preservada, 2 backups,
   daemon da instalação nova.
+  Na 1ª instalação real (05/10) o daemon novo subiu em 3 s, mas a verificação final (uma consulta
+  de 2 s, com todas as sessões reconectando) acusou "no answer". **Corrigido na hora**: espera até
+  15 s e leva o stderr do ensure no erro. Reinstalação real: OK, sessões reconectaram em ~8 s.
 - [x] **Q3 — primeiro `ensure` numa instalação nova não subia o daemon**
   (`servers/brain-server/lib/daemon-supervisor.js` `acquireSpawnLock`). Sem a pasta de
   dados, o `mkdir` da trava falhava com ENOENT, era lido como "trava ocupada" e, após
