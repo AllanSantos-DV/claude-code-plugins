@@ -1340,39 +1340,35 @@ test('mcp-auto-update: erro funcional comum da tool não reinicia nem mata daemo
   assert(/rate limit/.test(result.advisory));
 });
 
-test('mcp-daemon-restart: extrai JAR e relança somente processo Java validado na versão promovida', async () => {
+test('mcp-daemon-restart: valida o processo, encerra e relança PELO INICIALIZADOR (contrato ADR-023 — nunca java -jar); falha → jar novo sai do caminho e o anterior volta', async () => {
   const restart = require('./lib/mcp-daemon-restart.js');
   assertEq(
     restart.extractJarPath('"C:\\Program Files\\Java\\java.exe" -Xmx1g -jar "C:\\MCP Server\\mcp-memory-server-2.44.2.jar" --daemon'),
     'C:\\MCP Server\\mcp-memory-server-2.44.2.jar',
   );
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-update-restart-'));
-  let killed = null, spawned = null, unref = 0;
   try {
     fs.writeFileSync(path.join(dir, 'daemon.json'), JSON.stringify({ pid: 1234, port: 9, url: 'http://127.0.0.1:9' }));
-    const out = await restart.restartForBootUpdate({ runDir: dir }, {
-      platform: 'win32',
-      latestVersion: '2.44.3',
-      inspectProcess: () => ({
-        executable: 'C:\\Java\\java.exe',
-        jarPath: 'C:\\MCP\\mcp-memory-server-2.44.2.jar',
-        args: ['-Xmx1g', '-jar', 'C:\\MCP\\mcp-memory-server-2.44.2.jar', '--workspace', 'C:\\Data', '--daemon'],
-        jarIndex: 1,
-      }),
-      kill: pid => { killed = pid; },
-      pidAlive: () => false,
-      prepareUpdate: () => 'C:\\MCP\\mcp-memory-server-2.44.3.jar',
-      spawn: (exe, args, options) => {
-        spawned = { exe, args, options };
-        return { unref: () => { unref += 1; } };
-      },
+    const oldJar = path.join(dir, 'mcp-memory-server-2.44.2.jar'); const newJar = path.join(dir, 'mcp-memory-server-2.44.3.jar');
+    fs.writeFileSync(oldJar, 'PK'); fs.writeFileSync(newJar, 'PK');
+    const base = (launcher, killed) => ({
+      platform: 'win32', latestVersion: '2.44.3',
+      inspectProcess: () => ({ executable: 'C:\\Java\\java.exe', jarPath: oldJar, args: ['-jar', oldJar, '--daemon'], jarIndex: 0 }),
+      kill: pid => { killed.push(pid); }, pidAlive: () => false, prepareUpdate: () => newJar, runLauncher: launcher,
     });
-    assertEq(out.pid, 1234);
-    assertEq(killed, 1234);
-    assertEq(spawned.exe, 'C:\\Java\\java.exe');
-    assertEq(spawned.args, ['-Xmx1g', '-jar', 'C:\\MCP\\mcp-memory-server-2.44.3.jar', '--workspace', 'C:\\Data', '--daemon']);
-    assertEq(spawned.options.detached, true);
-    assertEq(unref, 1);
+    const killed = []; let calls = 0;
+    const out = await restart.restartForBootUpdate({ runDir: dir }, base(async () => { calls++; return { ok: true, pid: 4321, url: 'http://127.0.0.1:5555' }; }, killed));
+    assertEq([out.pid, out.newPid, out.url, out.jarPath, out.previousJarPath], [1234, 4321, 'http://127.0.0.1:5555', newJar, oldJar], 'restarted through the launcher');
+    assertEq([killed, calls], [[1234], 1], 'old daemon stopped, launcher called once');
+    // The new version fails to come up: it is moved out of the launcher's way, the launcher brings the old one back.
+    const k2 = []; const seen = [];
+    let err = null;
+    try {
+      await restart.restartForBootUpdate({ runDir: dir }, base(async () => { seen.push(fs.existsSync(newJar)); return seen.length === 1 ? { ok: false, error: '[FATAL] boom' } : { ok: true, pid: 7 }; }, k2));
+    } catch (e) { err = e; }
+    assert(err && /a anterior voltou/.test(err.message) && /\[FATAL\] boom/.test(err.message), `fail-loud with the launcher reason: ${err && err.message}`);
+    assertEq(seen, [true, false], 'second launcher call ran with the new jar set aside');
+    assert(fs.readdirSync(dir).some((f) => /2\.44\.3\.jar\.rejected-/.test(f)) && fs.existsSync(oldJar), 'new jar kept aside (not deleted), old jar untouched');
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
@@ -14293,29 +14289,94 @@ test('brain-status: reports the folder\'s real project id (not the folder name /
   }
 });
 
-test('mcp-client._downloadJar goes through the single release resolver (GPU-aware, published sha256 enforced) — no second copy that took the first .jar', async () => {
+test('mcp-launcher (native-java ADR-023 contract): one JSON line → url; exit 1 → the [FATAL] reason, no fallback; garbage refused; not installed → missing; X.Y.Z-only jar choice; launcher needs server 2.45.5+', async () => {
+  const L = require('./lib/mcp-launcher.js');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-launcher-'));
+  try {
+    const env = { USERPROFILE: home, HOME: home };
+    assert((await L.runLauncher({ env })).missing, 'no launcher file → missing (nothing started)');
+    assertEq(L.kickLauncher({ env }), false, 'kick without a launcher does nothing');
+    fs.mkdirSync(path.join(home, '.mcp-memory', 'bin'), { recursive: true });
+    fs.writeFileSync(L.launcherPath(env), '');
+    const fake = (code, stdout, stderr) => (cmd, argv, opts, cb) => { fake.last = { cmd, argv, opts }; setImmediate(() => cb(code ? Object.assign(new Error('x'), { code }) : null, stdout, stderr)); };
+    const ok = await L.runLauncher({ env, execImpl: fake(0, '{"url":"http://127.0.0.1:61234/","port":61234,"pid":42,"version":"2.45.5","spawned":true}\n', ''), javaHome: 'C:\\jdk21' });
+    assertEq([ok.ok, ok.url, ok.pid, ok.version, ok.spawned], [true, 'http://127.0.0.1:61234', 42, '2.45.5', true], 'parsed the JSON line');
+    assertEq(fake.last.opts.env.JAVA_HOME, 'C:\\jdk21', 'a Java found off-PATH is handed over as JAVA_HOME');
+    if (process.platform === 'win32') assertEq([fake.last.cmd, fake.last.argv.slice(0, 2)], ['cmd.exe', ['/d', '/c']], '.cmd runs through cmd.exe');
+    const fatal = await L.runLauncher({ env, execImpl: fake(1, '', 'starting...\n[FATAL] nenhum mcp-memory-server-X.Y.Z.jar\n') });
+    assertEq([fatal.ok, fatal.error], [false, '[FATAL] nenhum mcp-memory-server-X.Y.Z.jar'], 'exit 1 → the [FATAL] line verbatim');
+    assert(!(await L.runLauncher({ env, execImpl: fake(0, 'a\nb\n', '') })).ok, 'two lines → refused (contract: exactly one)');
+    assert(!(await L.runLauncher({ env, execImpl: fake(0, '{"port":1}\n', '') })).ok, 'no url → refused (never a fake URL)');
+    // Jar choice: exact X.Y.Z across lib/ and server/, highest version wins (2.45.10 > 2.45.9); -gpu/backups ignored.
+    for (const [sub, n] of [['lib', 'mcp-memory-server-2.45.9.jar'], ['server', 'mcp-memory-server-2.45.10.jar'], ['lib', 'mcp-memory-server-2.46.0-gpu.jar'], ['lib', 'mcp-memory-server-2.47.0.jar.bak']]) {
+      fs.mkdirSync(path.join(home, '.mcp-memory', sub), { recursive: true }); fs.writeFileSync(path.join(home, '.mcp-memory', sub, n), 'PK');
+    }
+    assertEq(L.newestInstalledJar(env).version, '2.45.10', 'highest exact X.Y.Z across lib and server');
+    const old = await L.installLauncher({ jar: { path: 'x.jar', version: '2.45.4' }, javaBin: 'java', env });
+    assert(!old.ok && old.tooOld && /2\.45\.5/.test(old.error), 'a server older than 2.45.5 cannot install the launcher (no fallback)');
+    fs.rmSync(L.launcherPath(env));
+    const inst = await L.installLauncher({ jar: { path: 'C:\\x\\mcp-memory-server-2.45.5.jar', version: '2.45.5' }, javaBin: 'java', env, execImpl: (cmd, argv, opts, cb) => { fake.last = { cmd, argv }; fs.writeFileSync(L.launcherPath(env), ''); cb(null, 'inicializador instalado: x\n', ''); } });
+    assert(inst.ok && fake.last.argv.join(' ').endsWith('-jar C:\\x\\mcp-memory-server-2.45.5.jar --install-launcher'), `installed via --install-launcher: ${JSON.stringify(fake.last)}`);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
+test('SessionStart runs the server launcher (contract step 1) on a local mcp-memory backend only — not for a user-given server, not on the local backend', async () => {
+  const ens = require('./brain-daemon-ensure.js');
+  const run = async (cfg) => {
+    let kicked = 0;
+    await ens.run({ hook_event_name: 'SessionStart' }, {
+      root: ROOT, data: os.tmpdir(), runSetupInBackground: () => false,
+      ensureDaemon: async () => ({ status: 'current' }), loadConfig: () => cfg,
+      runAutoUpdate: async () => ({ status: 'skipped' }), kickLauncher: () => { kicked++; return true; },
+    });
+    return kicked;
+  };
+  assertEq(await run({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http' } } }), 1, 'local mcp-memory → launcher kicked');
+  assertEq(await run({ backend: { type: 'mcp-memory', mcpMemory: { serverUrl: 'http://10.0.0.5:54784' } } }), 0, 'remote server → not ours');
+  assertEq(await run({ backend: { type: 'local' } }), 0, 'local backend → nothing');
+});
+
+test('mcp-wizard.downloadServerJar: the CPU build under its exact X.Y.Z name in ~/.mcp-memory/lib (the launcher only runs those); a -gpu name is refused', async () => {
+  const w = require('./lib/mcp-wizard.js');
   const resolverPath = require.resolve('./lib/mcp-release-resolver.js');
   const real = require(resolverPath);
-  const McpClient = require('./mcp-client.js');
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dljar-'));
-  const payload = Buffer.from('PK\x03\x04 fake jar');
-  const good = require('crypto').createHash('sha256').update(payload).digest('hex');
+  const https = require('https'); const realGet = https.get; const { PassThrough } = require('stream');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dlsrv-'));
+  const payload = Buffer.from('PK fake'); const sha = require('crypto').createHash('sha256').update(payload).digest('hex');
   let asked = null;
   try {
-    for (const [sha, ok] of [[good, true], ['0'.repeat(64), false]]) {
-      require.cache[resolverPath].exports = { ...real, detectGpu: () => ({ present: true, name: 'RTX' }), resolveLatestAsset: async (o) => { asked = o; return { url: 'https://x/mcp-memory-server-9.9.9-gpu.jar', name: 'mcp-memory-server-9.9.9-gpu.jar', version: 'v9.9.9', sha256: sha }; } };
-      const c = new McpClient({ transport: 'http', jarPath: path.join(dir, `s-${ok}.jar`) });
-      c._fetchJar = async (url) => { assertEq(url, 'https://x/mcp-memory-server-9.9.9-gpu.jar', 'URL from the resolver'); fs.writeFileSync(c.jarPath, payload); };
-      let err = null; try { await c._downloadJar(); } catch (e) { err = e; }
-      assertEq(asked, { gpu: true }, 'GPU detection passed to the resolver');
-      if (ok) assert(!err && fs.existsSync(c.jarPath), `matching published sha256 accepted: ${err && err.message}`);
-      else assert(err && /checksum mismatch/.test(err.message) && !fs.existsSync(c.jarPath), 'mismatch → jar deleted, fail loud');
-    }
-    assert(!/api\.github\.com\/repos/.test(fs.readFileSync(path.join(SCRIPTS, 'mcp-client.js'), 'utf8')), 'no private GitHub release lookup left in mcp-client.js');
+    require.cache[resolverPath].exports = { ...real, resolveLatestAsset: async (o) => { asked = o; return { url: 'https://x/mcp-memory-server-2.45.5.jar', name: 'mcp-memory-server-2.45.5.jar', version: 'v2.45.5', sha256: sha }; } };
+    https.get = (_u, cb) => { const res = new PassThrough(); res.statusCode = 200; cb(res); process.nextTick(() => res.end(payload)); return { on: () => {} }; };
+    const target = await w.downloadServerJar({}, () => {}, home);
+    assertEq(asked, { gpu: false }, 'always the CPU build');
+    assertEq(target, path.join(home, '.mcp-memory', 'lib', 'mcp-memory-server-2.45.5.jar'), 'exact name in ~/.mcp-memory/lib');
+    assert(fs.existsSync(target), 'downloaded and verified');
+    let err = null;
+    try { await w.downloadServerJar({ downloadUrl: 'https://x/mcp-memory-server-2.45.5-gpu.jar' }, () => {}, home); } catch (e) { err = e; }
+    assert(err && /would never be started/.test(err.message), `a -gpu name is refused: ${err && err.message}`);
   } finally {
-    require.cache[resolverPath].exports = real;
-    fs.rmSync(dir, { recursive: true, force: true });
+    require.cache[resolverPath].exports = real; https.get = realGet;
+    fs.rmSync(home, { recursive: true, force: true });
   }
+});
+
+test('mcp-client: a daemon that is down is brought back by the LAUNCHER (never java -jar); a user-given serverUrl is never started; "stdio" config is served over HTTP', async () => {
+  const launcherPath = require.resolve('./lib/mcp-launcher.js');
+  const realL = require(launcherPath);
+  const McpClient = require('./mcp-client.js');
+  let calls = 0;
+  try {
+    require.cache[launcherPath].exports = { ...realL, runLauncher: async () => { calls++; return { ok: false, error: '[FATAL] test' }; } };
+    const c = new McpClient({ transport: 'stdio', serverUrl: '', runDir: path.join(os.tmpdir(), 'ccb-none-' + Date.now()) });
+    assertEq(c.transport, 'http', 'stdio config → http (one daemon per user)');
+    await c._ensureDaemon();
+    assertEq(calls, 1, 'no daemon → launcher called once');
+    const remote = new McpClient({ transport: 'http', serverUrl: 'http://127.0.0.1:1' });
+    await remote._ensureDaemon();
+    assertEq(calls, 1, 'a user-given server is not ours to start');
+    const src = fs.readFileSync(path.join(SCRIPTS, 'mcp-client.js'), 'utf8');
+    assert(!/require\('child_process'\)/.test(src) && !/--transport/.test(src) && !/'-jar'/.test(src), 'no jar spawn left in mcp-client.js');
+  } finally { require.cache[launcherPath].exports = realL; }
 });
 
 test('http-daemon: the idle reaper never takes a session whose SSE stream is open (it did after 30 min → next prompt\'s mcp_tool hooks failed "Connection closed"); idle after the stream closes → reaped', async () => {
@@ -21317,10 +21378,10 @@ test('backend onboarding: on the local backend the agent is told what is off and
   assert(!/nada mais a configurar/.test(MESSAGE) && /servidor de memória/.test(MESSAGE) && !MESSAGE.includes('\n'), MESSAGE);
 });
 
-test('mcp-wizard: spawns the server in DAEMON mode (no --transport: it turns daemon mode off since 2.43) and finds a Java >=21 outside PATH', async () => {
+test('mcp-wizard: never starts the jar itself (launcher only, ADR-023) and finds a Java >=21 outside PATH', async () => {
   const w = require('./lib/mcp-wizard.js');
-  const args = w.daemonArgs('/x/server.jar', ['-Xmx512m']);
-  assert(args.includes('--daemon') && !args.includes('--transport') && !args.includes('--workspace'), `daemon-mode args: ${args.join(' ')}`);
+  assert(!('spawnDaemon' in w) && !('daemonArgs' in w), 'no direct jar spawn exported');
+  assert(!/--daemon'|'--transport'/.test(fs.readFileSync(path.join(SCRIPTS, 'lib', 'mcp-wizard.js'), 'utf8')), 'no java -jar --daemon/--transport left in the wizard');
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-java-'));
   try {
     const j8 = path.join(tmp, 'jre8', 'bin', 'java'); const j21 = path.join(tmp, 'temurin21', 'bin', 'java');
@@ -21332,14 +21393,6 @@ test('mcp-wizard: spawns the server in DAEMON mode (no --transport: it turns dae
     assert(!old.ok && /21\+ required, found 8/.test(old.error), old.error);
     const win = w.javaCandidates({ ProgramFiles: tmp, JAVA_HOME: path.join(tmp, 'jh') }, 'win32');
     assert(win[0] === path.join(tmp, 'jh', 'bin', 'java.exe') && win.includes('java'), 'JAVA_HOME first, then PATH');
-    // A server that dies on boot fails the step at once (not after the long first-start wait).
-    const EventEmitter = require('events');
-    const fake = () => { const p = new EventEmitter(); p.unref = () => {}; p.kill = () => {}; setTimeout(() => p.emit('exit', 1, null), 50); return p; };
-    const t0 = Date.now();
-    let err = null;
-    try { await w.spawnDaemon('/x/server.jar', [], 'java', { spawnImpl: fake, timeoutMs: 60000 }); } catch (e) { err = e; }
-    assert(err && /exited with code 1 before becoming healthy/.test(err.message), `early exit reported: ${err && err.message}`);
-    assert(Date.now() - t0 < 10000, 'fails fast, not at the timeout');
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 });
 
@@ -21386,7 +21439,6 @@ test('setup-tools: user-given server address is used as-is (no Java/download), a
   const wizard = {
     checkJava: async () => { javaChecked++; return { ok: false, error: 'missing' }; },
     discoverDaemonUrl: () => 'http://127.0.0.1:54784',
-    installedServerJar: () => null,
     handshake: async () => ({ ok: true, tools: [], update: { currentVersion: '2.44.3', latestVersion: '2.45.0', updateAvailable: true } }),
     start: async (p, o) => { startOpts = o; state = { status: 'running', step: 1, total: 5, details: [] }; return state; },
     getState: () => state,
@@ -21411,13 +21463,6 @@ test('setup-tools: user-given server address is used as-is (no Java/download), a
   assert(/another host/.test(await out('backend_update')), 'remote server: whoever runs it updates it');
   upd = { status: 'error', error: 'boom' };
   assert((await t.handle('backend_update')).isError, 'failure reported');
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-jars-'));
-  try {
-    fs.mkdirSync(path.join(home, '.mcp-memory', 'lib'), { recursive: true });
-    for (const n of ['mcp-memory-server-2.9.0.jar', 'mcp-memory-server-2.44.3.jar', 'mcp-memory-server-2.39.0-SNAPSHOT.jar', 'mcp-memory-server-2.44.10.jar', 'notes.txt']) fs.writeFileSync(path.join(home, '.mcp-memory', 'lib', n), '');
-    assertEq(path.basename(require('./lib/mcp-wizard.js').installedServerJar(home)), 'mcp-memory-server-2.44.10.jar', 'newest release jar another plugin installed');
-    assertEq(require('./lib/mcp-wizard.js').installedServerJar(path.join(home, 'none')), null, 'none installed');
-  } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
 test('setup-tools: project_set names an id-less folder, refuses a taken name unless link:true, refuses a folder that already has an id', async () => {
@@ -22495,35 +22540,24 @@ function withStubbedChildProcess(stubs, rel, fn) {
   return Promise.resolve(out).finally(restore);
 }
 
-test('seams: mcp-daemon-restart default wrappers force windowsHide even when the caller passes false', () => {
+test('seams: mcp-daemon-restart default wrapper forces windowsHide even when the caller passes false (the jar is never spawned here: the launcher starts it)', () => {
   const seen = [];
   const rec = (name, ret) => (file, args, opts) => { seen.push({ name, file, args, opts }); return ret; };
-  return withStubbedChildProcess({ execFileSync: rec('execFileSync', ''), spawn: rec('spawn', { unref() {}, pid: 7 }) },
+  return withStubbedChildProcess({ execFileSync: rec('execFileSync', '') },
     'lib/mcp-daemon-restart.js', async (M) => {
       M._hiddenExecFileSync('powershell.exe', ['-NoProfile'], { timeout: 1, windowsHide: false });
-      M._hiddenSpawn('java', ['-jar', 'a.jar'], { detached: true, windowsHide: false });
       assertEq(seen[0].opts.timeout, 1, 'caller options are preserved (execFileSync)');
-      assertEq(seen[1].opts.detached, true, 'caller options are preserved (spawn)');
       assertEq([seen[0].file, seen[0].args], ['powershell.exe', ['-NoProfile']], 'execFileSync file/args forwarded');
-      assertEq([seen[1].file, seen[1].args], ['java', ['-jar', 'a.jar']], 'spawn file/args forwarded');
-      // Non-array args would be read by Node as the options: rejected loudly.
-      for (const [fn, bad] of [[M._hiddenExecFileSync, { windowsHide: false }], [M._hiddenSpawn, { detached: true }], [M._hiddenSpawn, undefined]]) {
-        let err = null;
-        try { fn('java', bad); } catch (e) { err = e; }
-        assert(err instanceof TypeError && /args must be an array/.test(err.message), 'non-array args must throw TypeError');
-      }
-      assertEq(seen.length, 2, 'rejected calls never reach child_process');
-      // The real call paths also reach child_process hidden (their call sites
-      // pass windowsHide:true too; that the fallback IS the wrapper is enforced
-      // by require-windows-hide, which rejects `deps.x || execFileSync`).
+      let err = null;
+      try { M._hiddenExecFileSync('java', { windowsHide: false }); } catch (e) { err = e; }
+      assert(err instanceof TypeError && /args must be an array/.test(err.message), 'non-array args must throw TypeError');
+      assertEq(seen.length, 1, 'rejected calls never reach child_process');
       let threw = false;
-      try { M.inspectWindowsProcess(123); } catch (err) { threw = /não encontrado/.test(err.message); }
+      try { M.inspectWindowsProcess(123); } catch (e) { threw = /não encontrado/.test(e.message); }
       assert(threw, 'empty probe output must still fail loud');
-      await M.spawnDetached('java', ['-jar', 'x.jar'], {});
-      assertEq(seen.map(s => s.name), ['execFileSync', 'spawn', 'execFileSync', 'spawn']);
-      assertEq([seen[3].file, seen[3].args], ['java', ['-jar', 'x.jar']], 'spawnDetached forwards file/args');
-      assertEq(seen[2].file, 'powershell.exe', 'inspectWindowsProcess goes through the execFileSync seam');
-      for (const s of seen) assertEq(s.opts.windowsHide, true, s.name + ' default seam must hide the window');
+      assertEq(seen[1].file, 'powershell.exe', 'inspectWindowsProcess goes through the execFileSync seam');
+      for (const x of seen) assertEq(x.opts.windowsHide, true, x.name + ' default seam must hide the window');
+      assert(!('spawnDetached' in M) && !('_hiddenSpawn' in M), 'no jar spawn left in the restart module');
     });
 });
 

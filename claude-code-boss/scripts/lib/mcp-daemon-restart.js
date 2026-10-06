@@ -5,8 +5,8 @@ const { pidAlive } = require('./process-lock.js');
 const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
-const { execFileSync, spawn } = require('child_process');
-const { detectGpu, resolveLatestAsset } = require('./mcp-release-resolver.js');
+const { execFileSync } = require('child_process');
+const { resolveLatestAsset } = require('./mcp-release-resolver.js');
 
 function registryFile(runDir) {
   return path.join(runDir || path.join(os.homedir(), '.mcp-memory', 'run'), 'daemon.json');
@@ -33,10 +33,6 @@ function extractJarPath(commandLine) {
 const hiddenExecFileSync = (file, args, opts) => {
   if (!Array.isArray(args)) throw new TypeError('hiddenExecFileSync: args must be an array (options go in the 3rd argument)');
   return execFileSync(file, args, { ...opts, windowsHide: true });
-};
-const hiddenSpawn = (file, args, opts) => {
-  if (!Array.isArray(args)) throw new TypeError('hiddenSpawn: args must be an array (options go in the 3rd argument)');
-  return spawn(file, args, { ...opts, windowsHide: true });
 };
 
 function inspectWindowsProcess(pid, deps = {}) {
@@ -103,9 +99,9 @@ function normalizedVersion(version) {
 async function prepareVerifiedUpdate(currentJar, latestVersion, deps = {}) {
   const io = deps.fs || fs;
   const resolveAsset = deps.resolveLatestAsset || resolveLatestAsset;
-  const gpu = /-gpu\.jar$/i.test(path.basename(currentJar))
-    || (!/-\d+(?:\.\d+){1,3}(?:-gpu)?\.jar$/i.test(path.basename(currentJar)) && (deps.detectGpu || detectGpu)().present);
-  const asset = await resolveAsset({ gpu });
+  // The server launcher (native-java ADR-023, C-3) only runs exact mcp-memory-server-X.Y.Z.jar
+  // names, so the update is always the CPU build — a "-gpu" jar would never be started.
+  const asset = await resolveAsset({ gpu: false });
   if (normalizedVersion(asset.version) !== normalizedVersion(latestVersion)) {
     throw new Error(`release resolvida ${asset.version} diverge de check_update ${latestVersion}`);
   }
@@ -130,28 +126,23 @@ async function prepareVerifiedUpdate(currentJar, latestVersion, deps = {}) {
   return targetJar;
 }
 
-function spawnDetached(executable, args, deps = {}) {
-  const spawnFn = deps.spawn || hiddenSpawn;
-  const child = spawnFn(executable, args, {
-    detached: true,
-    stdio: 'ignore',
-    env: process.env,
-    windowsHide: true,
-  });
-  if (!child || typeof child.unref !== 'function') throw new Error('falha ao relançar daemon Java');
-  if (typeof child.once !== 'function') {
-    child.unref();
-    return Promise.resolve(child.pid || null);
-  }
-  return new Promise((resolve, reject) => {
-    child.once('error', reject);
-    child.once('spawn', () => {
-      child.unref();
-      resolve(child.pid || null);
-    });
-  });
+
+/** Move a just-promoted jar out of the launcher's way (it picks the newest X.Y.Z). */
+function setAside(jarPath, previousJarPath, deps = {}) {
+  const io = deps.fs || fs;
+  if (!jarPath || jarPath === previousJarPath || !io.existsSync(jarPath)) return null;
+  const aside = `${jarPath}.rejected-${Date.now()}`;
+  io.renameSync(jarPath, aside);
+  return aside;
 }
 
+/**
+ * Restart the daemon onto a downloaded update. The new jar is verified and promoted BEFORE the
+ * healthy daemon is touched; then the old process is stopped and the server's own launcher
+ * starts it again (native-java ADR-023: clients never start the jar — the launcher picks the
+ * newest installed X.Y.Z, i.e. the promoted one). If the launcher fails, the new jar is set
+ * aside and the launcher brings the previous version back.
+ */
 async function restartForBootUpdate(mcpConfig = {}, deps = {}) {
   const platform = deps.platform || process.platform;
   if (platform !== 'win32') throw new Error('restart auxiliar só é necessário/suportado no Windows');
@@ -162,6 +153,7 @@ async function restartForBootUpdate(mcpConfig = {}, deps = {}) {
   const inspect = deps.inspectProcess || (candidate => inspectWindowsProcess(candidate, deps));
   const launch = inspect(pid);
   const prepare = deps.prepareUpdate || ((jar, version) => prepareVerifiedUpdate(jar, version, deps));
+  const launcher = deps.runLauncher || (() => require('./mcp-launcher.js').runLauncher());
 
   // Validate and promote the downloaded JAR before touching the healthy daemon.
   const launchJar = await prepare(launch.jarPath, deps.latestVersion);
@@ -169,37 +161,34 @@ async function restartForBootUpdate(mcpConfig = {}, deps = {}) {
   if (verifiedAgain.executable !== launch.executable || verifiedAgain.jarPath !== launch.jarPath) {
     throw new Error(`PID ${pid} mudou entre inspeção e restart; recusando encerrar`);
   }
-  const args = [...launch.args];
-  args[launch.jarIndex + 1] = launchJar;
   const kill = deps.kill || (candidate => process.kill(candidate, 'SIGTERM'));
   kill(pid);
   if (!await waitPidGone(pid, deps)) throw new Error(`daemon PID ${pid} não encerrou`);
-  try {
-    const newPid = await spawnDetached(launch.executable, args, deps);
-    return { pid, newPid, executable: launch.executable, jarPath: launchJar, previousJarPath: launch.jarPath, previousArgs: launch.args };
-  } catch (err) {
-    try { await spawnDetached(launch.executable, launch.args, deps); }
-    catch (rollbackErr) {
-      throw new Error(`relaunch da versão nova falhou (${err.message}); rollback também falhou (${rollbackErr.message})`);
-    }
-    throw new Error(`relaunch da versão nova falhou; versão anterior relançada: ${err.message}`);
-  }
+  const started = await launcher();
+  if (started.ok) return { pid, newPid: started.pid, url: started.url, jarPath: launchJar, previousJarPath: launch.jarPath };
+  setAside(launchJar, launch.jarPath, deps);
+  const back = await launcher();
+  if (!back.ok) throw new Error(`a versão nova não subiu (${started.error}); a anterior também não (${back.error})`);
+  throw new Error(`a versão nova não subiu; a anterior voltou: ${started.error}`);
 }
 
 async function rollbackAfterFailedUpdate(restartInfo, deps = {}) {
-  if (!restartInfo || !restartInfo.executable || !Array.isArray(restartInfo.previousArgs)) {
+  if (!restartInfo || !restartInfo.jarPath || !restartInfo.previousJarPath) {
     throw new Error('dados insuficientes para rollback do daemon');
   }
   const alive = deps.pidAlive || pidAlive;
   const kill = deps.kill || (pid => process.kill(pid, 'SIGTERM'));
+  const launcher = deps.runLauncher || (() => require('./mcp-launcher.js').runLauncher());
   if (Number.isInteger(restartInfo.newPid) && alive(restartInfo.newPid)) {
     kill(restartInfo.newPid);
     if (!await waitPidGone(restartInfo.newPid, deps)) {
       throw new Error(`daemon novo PID ${restartInfo.newPid} não encerrou para rollback`);
     }
   }
-  const rollbackPid = await spawnDetached(restartInfo.executable, restartInfo.previousArgs, deps);
-  return { rollbackPid, versionJar: restartInfo.previousJarPath };
+  setAside(restartInfo.jarPath, restartInfo.previousJarPath, deps);
+  const back = await launcher();
+  if (!back.ok) throw new Error(`rollback: o inicializador não subiu a versão anterior: ${back.error}`);
+  return { rollbackPid: back.pid, versionJar: restartInfo.previousJarPath };
 }
 
 module.exports = {
@@ -211,10 +200,8 @@ module.exports = {
   assertJar,
   sha256File,
   prepareVerifiedUpdate,
-  spawnDetached,
   restartForBootUpdate,
   // test seams: the default child_process wrappers (force windowsHide)
   _hiddenExecFileSync: hiddenExecFileSync,
-  _hiddenSpawn: hiddenSpawn,
   rollbackAfterFailedUpdate,
 };

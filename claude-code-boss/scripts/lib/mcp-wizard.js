@@ -5,7 +5,7 @@
  * Steps:
  *   1. Java check (>=21)
  *   2. JAR presence / download
- *   3. Daemon: reuse the live one (daemon.json) or spawn one in daemon mode
+ *   3. Daemon: through the server launcher only (native-java ADR-023) — or the user's remote URL
  *   4. /health verification
  *   5. Project handshake (initialize + tools/list)
  *
@@ -17,12 +17,11 @@ const { readDaemonUrl } = require('./mcp-registry.js');
 const { probeHealth } = require('./http-health.js');
 const { sha256File } = require('./file-hash.js');
 const path = require('path');
-const { spawnSync, spawn } = require('child_process');
+const { spawnSync } = require('child_process');
 const https = require('https');
 const http = require('http');
 const { globalDir } = require('./data-dir.js');
 const { loadWithVersion: loadBrainConfigWithVersion, save: saveBrainConfig } = require('./brain-config.js');
-const { detectGpu, resolveLatestAsset } = require('./mcp-release-resolver.js');
 const { acquireFileLock, releaseFileLock, parseOwner, pidAlive, clearStaleReclaim } = require('./process-lock.js');
 const loadBrainConfig = () => loadBrainConfigWithVersion().config;
 
@@ -35,9 +34,6 @@ const MIN_JAVA_MAJOR = 21;
 // different profile).
 function wizardStateFile() { return path.join(globalDir(), 'mcp-wizard-state.json'); }
 function lockFile() { return path.join(globalDir(), '.mcp-wizard.lock'); }
-// A first start downloads the embedding model (~430 MB) before /health answers: 15 s made
-// every fresh install fail (seen in the real-session proof). The wizard runs in the background.
-const SPAWN_TIMEOUT_MS = Number(process.env.CCB_MCP_SPAWN_TIMEOUT_MS) || 10 * 60 * 1000;
 const VALIDATE_RETRIES = 3;
 const VALIDATE_RETRY_DELAY_MS = 2000;
 const REQUIRED_TOOLS = ['add_document', 'search_memory', 'get_document', 'delete_document'];
@@ -180,32 +176,30 @@ async function checkJar(jarPath, downloadUrl) {
 
 
 /**
- * Resolve where to download the JAR from: an explicit mcpCfg.downloadUrl is a manual
- * override and wins as-is; otherwise auto-detect the local GPU and pick the matching
- * release asset (see mcp-release-resolver.js) — this is the "sem GPU baixa CPU only"
- * contract the download button now fulfills automatically.
+ * Where to download the server from: an explicit mcpCfg.downloadUrl wins as-is; otherwise the
+ * latest release's CPU build. The launcher (native-java ADR-023, contract C-3) only runs exact
+ * mcp-memory-server-X.Y.Z.jar names — a "-gpu" jar would never be started.
  */
 async function resolveDownload(mcpCfg) {
-  if (mcpCfg.downloadUrl) return { url: mcpCfg.downloadUrl, sha256: (mcpCfg.expectedSha256 || '').toLowerCase() };
-  const gpu = detectGpu();
-  const asset = await resolveLatestAsset({ gpu: gpu.present });
-  return { url: asset.url, sha256: asset.sha256, gpu, version: asset.version, name: asset.name };
+  if (mcpCfg.downloadUrl) {
+    let name = '';
+    try { name = path.basename(new URL(mcpCfg.downloadUrl).pathname); } catch (err) { void err; name = path.basename(String(mcpCfg.downloadUrl)); }
+    return { url: mcpCfg.downloadUrl, sha256: (mcpCfg.expectedSha256 || '').toLowerCase(), name };
+  }
+  const asset = await require('./mcp-release-resolver.js').resolveLatestAsset({ gpu: false });
+  return { url: asset.url, sha256: asset.sha256, version: asset.version, name: asset.name };
 }
 
-/** Ensure jarPath exists and is a valid JAR, auto-downloading (hardware-aware) if missing. */
-async function ensureJar(jarPath, mcpCfg, emit) {
+/** Ensure jarPath exists and is a valid JAR, downloading (and verifying the checksum) if missing. */
+async function ensureJar(jarPath, mcpCfg, emit, resolvedIn = null) {
   if (fs.existsSync(jarPath)) {
     const jarCheck = await checkJar(jarPath, '');
     if (!jarCheck.ok) throw new Error(`JAR error: ${jarCheck.error}`);
     emit('ok', `JAR valid (${Math.round(jarCheck.size / 1024 / 1024)}MB)`);
     return;
   }
-  emit('running', 'Detecting hardware...');
-  const resolved = await resolveDownload(mcpCfg);
-  const label = resolved.gpu
-    ? (resolved.gpu.present ? `GPU detected (${resolved.gpu.name}) — downloading GPU build ${resolved.version}` : `No GPU detected — downloading CPU-only build ${resolved.version}`)
-    : 'Downloading configured JAR...';
-  emit('running', label);
+  const resolved = resolvedIn || await resolveDownload(mcpCfg);
+  emit('running', `Downloading ${resolved.name || 'the server'}${resolved.version ? ` (${resolved.version})` : ''}...`);
   await downloadJar(resolved.url, jarPath);
   if (resolved.sha256) {
     const actual = await sha256File(jarPath);
@@ -217,6 +211,17 @@ async function ensureJar(jarPath, mcpCfg, emit) {
   } else {
     emit('ok', 'JAR downloaded (unverified — no checksum published for this asset)');
   }
+}
+
+/** Download the latest server into ~/.mcp-memory/lib under its exact name (the launcher picks it up). */
+async function downloadServerJar(mcpCfg, emit, home = require('os').homedir()) {
+  const resolved = await resolveDownload(mcpCfg);
+  if (!require('./mcp-launcher.js').JAR_RE.test(resolved.name || '')) {
+    throw new Error(`the server launcher only runs mcp-memory-server-X.Y.Z.jar — ${resolved.name || 'this download'} would never be started`);
+  }
+  const target = path.join(home, '.mcp-memory', 'lib', resolved.name);
+  await ensureJar(target, mcpCfg, emit, resolved);
+  return target;
 }
 
 async function downloadJar(downloadUrl, jarPath) {
@@ -235,39 +240,6 @@ async function downloadJar(downloadUrl, jarPath) {
       }).on('error', (e) => { fs.unlinkSync(tmpPath); reject(e); });
     };
     doGet(downloadUrl);
-  });
-}
-
-// Daemon mode is what announces the instance in ~/.mcp-memory/run/daemon.json. Since server
-// 2.43 any explicit --transport turns it OFF (native-java CHANGELOG 2.43.0), so the old
-// `--transport http` spawn never produced a daemon.json and this step always timed out.
-function daemonArgs(jarPath, javaArgs) {
-  return [...javaArgs, '-jar', jarPath, '--daemon'];
-}
-
-async function spawnDaemon(jarPath, javaArgs, javaBin = 'java', { spawnImpl = null, timeoutMs = SPAWN_TIMEOUT_MS } = {}) {
-  return new Promise((resolve, reject) => {
-    const args = daemonArgs(jarPath, javaArgs);
-    const proc = spawnImpl
-      ? spawnImpl(javaBin, args) // tests only
-      : spawn(javaBin, args, { stdio: 'ignore', detached: true, windowsHide: true });
-    proc.unref();
-    // A server that dies on boot (bad JVM flag, port, corrupt jar) fails the step at once.
-    let exited = null;
-    proc.on('exit', (code, signal) => { exited = `exited with ${code != null ? `code ${code}` : signal}`; });
-    proc.on('error', (err) => { exited = `could not start: ${err.message}`; });
-    const deadline = Date.now() + timeoutMs;
-    const check = async () => {
-      if (exited) return reject(new Error(`The memory server ${exited} before becoming healthy (${javaBin} ${args.join(' ')})`));
-      if (Date.now() > deadline) { proc.kill(); return reject(new Error(`Daemon failed to become healthy within ${Math.round(timeoutMs / 1000)} s after spawn`)); }
-      const url = await discoverDaemonUrl();
-      if (url) {
-        const alive = await httpHealth(url);
-        if (alive) return resolve({ url });
-      }
-      setTimeout(check, 500);
-    };
-    setTimeout(check, 2000);
   });
 }
 
@@ -333,24 +305,6 @@ async function handshake(projectId, url = '') {
 }
 
 /**
- * A server jar another plugin already installed (copilot-memory / opencode-memory /
- * native-java's own installer put it in ~/.mcp-memory/lib): reuse the newest instead of
- * downloading a second copy. Null when there is none.
- */
-function installedServerJar(home = require('os').homedir()) {
-  const dir = path.join(home, '.mcp-memory', 'lib');
-  let names;
-  try { names = fs.readdirSync(dir); } catch (err) { void err; return null; }
-  const ver = (n) => (/^mcp-memory-server-(\d+)\.(\d+)\.(\d+)(?:-gpu)?\.jar$/.exec(n) || []).slice(1).map(Number);
-  const jars = names.filter((n) => ver(n).length === 3).sort((a, b) => {
-    const x = ver(a), y = ver(b);
-    for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return y[i] - x[i];
-    return 0;
-  });
-  return jars.length ? path.join(dir, jars[0]) : null;
-}
-
-/**
  * @param {string} projectId
  * @param {{serverUrl?: string}} [opts] serverUrl = a server the USER pointed to (often on
  *   another host): validate and use it — never download or start a local one instead.
@@ -376,6 +330,7 @@ async function start(projectId, opts = {}) {
       const config = loadBrainConfig();
       const mcpCfg = (config.backend && config.backend.mcpMemory) || {};
       const remoteUrl = String(opts.serverUrl || '').trim().replace(/\/+$/, '');
+      let launchedUrl = '';
 
       if (remoteUrl) {
         // The user's own server (maybe on another host): no local Java, jar or daemon.
@@ -386,37 +341,42 @@ async function start(projectId, opts = {}) {
         _emit(2, 'ok', `Server reachable at ${remoteUrl}${remote.version ? ` (v${remote.version})` : ''}`);
         _emit(3, 'ok', 'Using the remote server');
       } else {
-        _emit(1, 'running', 'Checking Java 21+...');
-        const java = await checkJava();
-        if (!java.ok) throw new Error(`Java check failed: ${java.error}`);
-        _emit(1, 'ok', `Java ${java.version} found`);
-        const ownJar = path.join(require('./data-dir.js').dataDir(), 'mcp', 'mcp-memory-server.jar');
-        const javaArgs = mcpCfg.javaArgs || ['-Xmx512m'];
-
-        // One path: the plugins consume the server as the per-user HTTP daemon found via
-        // daemon.json (stdio is no longer a server default). Reuse a live one — another
-        // plugin's included, never a second server on the machine; else start one.
-        _emit(2, 'running', 'Looking for a memory server already running on this machine...');
-        const live = await validateDaemon(mcpCfg.serverUrl, 1);
-        if (live.ok) {
-          _emit(2, 'ok', `Found a running server at ${live.url}${live.version ? ` (v${live.version})` : ''} — reusing it`);
-          _emit(3, 'ok', 'Using the running server');
-        } else {
-          const installed = !mcpCfg.jarPath && !fs.existsSync(ownJar) ? installedServerJar() : null;
-          const jarPath = mcpCfg.jarPath || installed || ownJar;
-          if (installed) _emit(2, 'ok', `Server already installed by another plugin: ${installed} — no download`);
-          else {
-            _emit(2, 'running', 'No server running — ensuring JAR...');
-            await ensureJar(jarPath, mcpCfg, (status, detail) => _emit(2, status, detail));
+        // Official contract (native-java ADR-023): the server is started ONLY by its own
+        // launcher (~/.mcp-memory/bin/mcp-memory-daemon) — it reuses a live daemon, picks the
+        // newest installed jar, and is registered to start at logon. Never `java -jar` here.
+        const L = require('./mcp-launcher.js');
+        const java = L.bundledJava() ? { ok: true, version: 'bundled runtime', bin: L.bundledJava() } : await checkJava();
+        const javaHome = java.ok && java.bin && java.bin !== 'java' ? path.dirname(path.dirname(java.bin)) : '';
+        _emit(1, 'running', 'Looking for the memory server launcher...');
+        let started = await L.runLauncher({ javaHome });
+        if (started.missing) {
+          if (!java.ok) throw new Error(`Java check failed: ${java.error}`);
+          _emit(1, 'ok', `Launcher not installed yet — Java ${java.version} found`);
+          let jar = L.newestInstalledJar();
+          if (!jar || L.compareVersions(jar.version, L.MIN_LAUNCHER_VERSION) < 0) {
+            _emit(2, 'running', jar ? `Installed server ${jar.version} is too old for the launcher — downloading the latest...` : 'No server installed — downloading the latest...');
+            await downloadServerJar(mcpCfg, (status, detail) => _emit(2, status, detail));
+            jar = L.newestInstalledJar();
+          } else {
+            _emit(2, 'ok', `Server ${jar.version} already installed (${jar.path}) — no download`);
           }
-          _emit(3, 'running', 'Starting the server (the first start downloads its embedding model, ~430 MB — can take a few minutes)...');
-          const spawned = await spawnDaemon(jarPath, javaArgs, java.bin);
-          _emit(3, 'ok', `Daemon started at ${spawned.url}`);
+          _emit(2, 'running', 'Installing the server launcher (also starts it at logon)...');
+          const inst = await L.installLauncher({ jar, javaBin: java.bin });
+          if (!inst.ok) throw new Error(inst.error);
+          _emit(2, 'ok', `Launcher installed: ${inst.launcher}`);
+          _emit(3, 'running', 'Starting the server through its launcher (a first start downloads its embedding model, ~430 MB — can take a few minutes)...');
+          started = await L.runLauncher({ javaHome });
+        } else {
+          _emit(1, 'ok', 'Launcher found');
+          _emit(2, 'ok', 'Nothing to install');
         }
+        if (!started.ok) throw new Error(started.error);
+        _emit(3, 'ok', `${started.spawned ? 'Started' : 'Reusing'} the memory server v${started.version} at ${started.url}`);
+        launchedUrl = started.url;
       }
 
       _emit(4, 'running', 'Performing MCP handshake...');
-      const hs = await handshake(_state.projectId, remoteUrl);
+      const hs = await handshake(_state.projectId, remoteUrl || launchedUrl);
       if (!hs.ok) throw new Error(`Handshake failed: ${hs.error}`);
       _state.update = hs.update || null;
       _emit(4, 'ok', `Handshake OK (${hs.tools.length} tools)`);
@@ -494,8 +454,8 @@ function reset() {
 }
 
 module.exports = {
-  start, getState, reset, spawnDaemon, wizardStateFile, checkJava, checkJar, validateDaemon, handshake, REQUIRED_TOOLS, daemonArgs, discoverDaemonUrl, javaCandidates, MIN_JAVA_MAJOR, installedServerJar,
-  // Exported for isolated unit testing of the hardware-aware auto-download path
+  start, getState, reset, wizardStateFile, checkJava, checkJar, validateDaemon, handshake, REQUIRED_TOOLS, discoverDaemonUrl, javaCandidates, MIN_JAVA_MAJOR, downloadServerJar,
+  // Exported for isolated unit testing of the download + checksum path
   // (mocking mcp-release-resolver.js / downloadJar) without a real spawn/network flow.
   resolveDownload, ensureJar, sha256File,
   // Exported for isolated unit testing only (same convention as brain-config.js's

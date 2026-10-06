@@ -1,5 +1,21 @@
 # Changelog
 
+## [Não lançado]
+
+### Changed
+- **O servidor de memória é iniciado só pelo inicializador oficial dele** (contrato
+  `daemon-launcher-contract.md` / ADR-023 do native-java). O plugin não sobe mais o jar por conta
+  própria em nenhum caminho (ativação, queda do servidor, relançamento depois de update): chama
+  `~/.mcp-memory/bin/mcp-memory-daemon`, lê a URL e conecta; se ele falhar, mostra o motivo, sem
+  plano B. Na ativação, instala o inicializador uma vez (que também liga o servidor no logon, cobrindo
+  o reboot), baixa só o jar oficial `X.Y.Z` em `~/.mcp-memory/lib` e, no início de cada sessão, chama o
+  inicializador para trazer de volta um servidor que caiu. A configuração "stdio" antiga passa a usar o
+  mesmo servidor por HTTP. Requer servidor 2.45.5 ou mais novo.
+
+### Fixed
+- Um teste de hooks lia o `~/.claude/settings.json` real da máquina e falhava quando o Token Guard
+  estava instalado; agora é hermético.
+
 ## [3.0.1] - 2026-10-05
 
 Zeragem do backlog da 3.0 (branch `fix/backlog-zero`), confiabilidade do serviço do brain e onboarding.

@@ -107,7 +107,13 @@ async function run(event, deps = {}) {
     if (event && event.hook_event_name === 'SessionStart') {
       const loadConfig = deps.loadConfig || brainConfig.load;
       const runAutoUpdate = deps.runAutoUpdate || mcpAutoUpdate.runAutoUpdate;
-      const updateResult = await runAutoUpdate({ event, config: loadConfig() });
+      const cfg = loadConfig();
+      // Contract step 1 (native-java ADR-023): at session start run the server's launcher, so a
+      // daemon that died or never came up at logon is back before the first recall. Detached —
+      // it reuses a live daemon in ~0.8 s and never blocks the session.
+      const mm = (cfg && cfg.backend) || {};
+      if (mm.type === 'mcp-memory' && !((mm.mcpMemory || {}).serverUrl)) (deps.kickLauncher || require('./lib/mcp-launcher.js').kickLauncher)();
+      const updateResult = await runAutoUpdate({ event, config: cfg });
       if (updateResult && updateResult.status === 'error') return updateResult.advisory;
     }
     return null;

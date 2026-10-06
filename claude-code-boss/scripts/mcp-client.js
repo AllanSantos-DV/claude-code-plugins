@@ -1,9 +1,6 @@
 #!/usr/bin/env node
-const { spawn } = require('child_process');
 const { readDaemonUrl } = require('./lib/mcp-registry.js');
-const { sha256File } = require('./lib/file-hash.js');
 const path = require('path');
-const fs = require('fs');
 const os = require('os');
 const https = require('https');
 const http = require('http');
@@ -33,7 +30,7 @@ class McpClient extends EventEmitter {
 
     // ── HTTP (StreamableHTTP /mcp) transport — talk to an already-running daemon ──
     // transport: 'stdio' (default, spawns the JAR) | 'http' (connects to a daemon).
-    this.transport = opts.transport === 'http' ? 'http' : 'stdio';
+    this.transport = 'http'; // the only transport (native-java ADR-023: one HTTP daemon per user)
     // Explicit daemon base URL (e.g. http://127.0.0.1:61756). Empty in http mode
     // → auto-discover via the daemon registry (~/.mcp-memory/run/daemon.json).
     this.serverUrl = opts.serverUrl || '';
@@ -54,91 +51,24 @@ class McpClient extends EventEmitter {
 
   async connect() {
     if (this._initialized) return;
-
-    if (this.transport === 'http') {
-      await this._ensureDaemon();
-      await this._connectHttp();
-      this._initialized = true;
-      return;
-    }
-
-    const jarExists = fs.existsSync(this.jarPath);
-    if (!jarExists && this.downloadUrl) {
-      await this._downloadJar();
-    }
-    if (!fs.existsSync(this.jarPath)) {
-      throw new Error(
-        `MCP Memory Server JAR not found at ${this.jarPath}. ` +
-        `Set "backend.mcpMemory.downloadUrl" in config/brain-config.json or ` +
-        `download manually from https://github.com/AllanSantos-DV/mcp-memory-server-releases`
-      );
-    }
-
-    const javaCmd = this._findJava();
-    if (!javaCmd) {
-      throw new Error('Java 21+ not found. Install Java 21 or later.');
-    }
-
-    const args = this.javaArgs.concat([
-      '-jar', this.jarPath,
-      '--workspace', this.workspacePath,
-      '--transport', 'stdio',
-    ]);
-
-    this._process = spawn(javaCmd, args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
-
-    this._process.stdout.on('data', (chunk) => {
-      this._buffer += chunk.toString();
-      this._processBuffer();
-    });
-
-    this._process.stderr.on('data', (chunk) => {
-      const text = chunk.toString();
-      if (!text.includes('SLF4J') && !text.includes('INFO') && !text.includes('DEBUG')) {
-        console.error(`[MCP-STDERR] ${text.trim()}`);
-      }
-    });
-
-    this._process.on('exit', (code) => {
-      this._initialized = false;
-      const runtime = Date.now() - this._startTime;
-      if (this._startTime > 0 && runtime < 5000 && code !== 0) {
-        console.error(`[MCP] Process exited early (code ${code}) after ${runtime}ms`);
-      }
-      for (const [id, { reject }] of this._pending) {
-        reject(new Error(`MCP process exited (code ${code})`));
-        this._pending.delete(id);
-      }
-      this.emit('disconnect');
-    });
-
-    this._startTime = Date.now();
-    await this._handshake();
+    // The server is ONE per-user HTTP daemon, started only by its own launcher (native-java
+    // ADR-023 — clients never run the jar). A "stdio" config (the old default) is served the
+    // same way: it used to start a private server process per client.
+    await this._ensureDaemon();
+    await this._connectHttp();
     this._initialized = true;
   }
 
   /** Ensure the Java daemon is actually running before attempting connection. */
   async _ensureDaemon() {
     const url = this.serverUrl || this._discoverDaemonUrl();
-    if (!url) return; // No URL to check, _connectHttp will handle the error
-
-    const alive = await this._httpHealth(url);
-    if (alive) return;
-    if (!this.autoRestart) return;
-
-    console.error(`[MCP] Daemon at ${url} is offline. Attempting auto-restart...`);
-    try {
-      // Use the stdio spawn logic to bring it back up
-      await this._spawnJar();
-      // Wait a bit for the server to boot and write the new daemon.json
-      await new Promise(r => setTimeout(r, 3000));
-    } catch (err) {
-      console.error(`[MCP] Auto-restart failed: ${err.message}`);
-      // We don't throw here; _connectHttp will perform the final health check
-    }
+    if (url && await this._httpHealth(url)) return;
+    // A server the user pointed to (serverUrl) is not ours to start.
+    if (this.serverUrl || !this.autoRestart) return;
+    console.error('[MCP] memory server not running — asking its launcher to start it...');
+    const r = await require('./lib/mcp-launcher.js').runLauncher({ timeoutMs: 60000 });
+    if (!r.ok) console.error(`[MCP] the launcher could not start the memory server: ${r.error}`);
+    // _connectHttp does the final health check and fails loud.
   }
 
   /**
@@ -151,47 +81,6 @@ class McpClient extends EventEmitter {
     return this._sendRequest('tools/call', { name, arguments: args }, opts);
   }
 
-  /** Logic to spawn the JAR (extracted from original connect() for reuse). */
-  async _spawnJar() {
-    const jarExists = fs.existsSync(this.jarPath);
-    if (!jarExists && this.downloadUrl) {
-      await this._downloadJar();
-    }
-    if (!fs.existsSync(this.jarPath)) {
-      throw new Error(`MCP Memory Server JAR not found at ${this.jarPath}`);
-    }
-
-    const javaCmd = this._findJava();
-    if (!javaCmd) throw new Error('Java 21+ not found.');
-
-    const args = this.javaArgs.concat([
-      '-jar', this.jarPath,
-      '--workspace', this.workspacePath,
-      '--transport', 'stdio', // JAR handles its own HTTP daemon transition
-    ]);
-
-    this._process = spawn(javaCmd, args, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
-
-    // Handle basic output to avoid hanging
-    this._process.stdout.on('data', () => {});
-    this._process.stderr.on('data', () => {});
-
-    // Wait for the daemon to actually start and serve /health
-    const deadline = Date.now() + 15000;
-    while (Date.now() < deadline) {
-      const url = this._discoverDaemonUrl();
-      if (url && await this._httpHealth(url)) return;
-      await new Promise(r => setTimeout(r, 500));
-    }
-    throw new Error('Daemon failed to become healthy after spawn');
-  }
-
-  // ─── HTTP (StreamableHTTP /mcp) transport ──────────────────────────────────
-
-  /** Connect to an already-running daemon over /mcp (no process spawn). */
   async _connectHttp() {
     this._resolvedUrl = (this.serverUrl || this._discoverDaemonUrl() || '').replace(/\/+$/, '');
     if (!this._resolvedUrl) {
@@ -309,123 +198,6 @@ class McpClient extends EventEmitter {
       req.write(data);
       req.end();
     });
-  }
-
-  _findJava() {
-    const candidates = ['java', 'java.exe'];
-    for (const cmd of candidates) {
-      try {
-        const result = require('child_process').execSync(`${cmd} -version 2>&1`, { stdio: 'pipe', windowsHide: true });
-        const out = result.toString();
-        const match = out.match(/(?:openjdk|java|jdk) (?:version "?)?(\d+)/i);
-        if (match && parseInt(match[1]) >= 21) return cmd;
-      } catch (err) { console.error(`[MCP] Java detection failed for ${cmd}: ${err.message}`); }
-    }
-    const javaHome = process.env.JAVA_HOME;
-    if (javaHome) {
-      const exe = path.join(javaHome, 'bin', 'java.exe');
-      if (fs.existsSync(exe)) return exe;
-      const nix = path.join(javaHome, 'bin', 'java');
-      if (fs.existsSync(nix)) return nix;
-    }
-    return null;
-  }
-
-  /**
-   * Latest JAR from GitHub Releases through the plugin's single resolver
-   * (lib/mcp-release-resolver.js): GPU-aware (CPU build without an NVIDIA GPU) and with the
-   * published .sha256 — this used to be a second copy that took the first .jar, ignoring both.
-   * @returns {Promise<{url:string, sha256:string}>}
-   */
-  async _resolveLatestUrl() {
-    const { detectGpu, resolveLatestAsset } = require('./lib/mcp-release-resolver.js');
-    const asset = await resolveLatestAsset({ gpu: detectGpu().present });
-    console.error(`[MCP] Latest release: ${asset.version} → ${asset.name}`);
-    return { url: asset.url, sha256: asset.sha256 };
-  }
-
-  /** Download a JAR from a URL, following redirects, into this.jarPath. */
-  _fetchJar(url) {
-    return new Promise((resolve, reject) => {
-      const dir = path.dirname(this.jarPath);
-      if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      const tempFile = this.jarPath + '.download';
-
-      const doGet = (targetUrl, redirectsLeft = 5) => {
-        const file = fs.createWriteStream(tempFile);
-        https.get(targetUrl, (res) => {
-          if ((res.statusCode === 301 || res.statusCode === 302) && res.headers.location) {
-            file.close();
-            if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
-            if (redirectsLeft <= 0) return reject(new Error('Too many redirects'));
-            return doGet(res.headers.location, redirectsLeft - 1);
-          }
-          if (res.statusCode !== 200) {
-            file.close();
-            if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
-            return reject(new Error(`Download failed: HTTP ${res.statusCode}`));
-          }
-          res.pipe(file);
-          file.on('finish', () => {
-            file.close();
-            fs.renameSync(tempFile, this.jarPath);
-            console.error(`[MCP] Downloaded to ${this.jarPath}`);
-            resolve();
-          });
-          file.on('error', err => {
-            if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
-            reject(err);
-          });
-        }).on('error', err => {
-          if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile);
-          reject(err);
-        });
-      };
-
-      doGet(url);
-    });
-  }
-
-  async _downloadJar() {
-    console.error('[MCP] Resolving latest release from GitHub...');
-    let url;
-    let publishedSha = '';
-    try {
-      ({ url, sha256: publishedSha } = await this._resolveLatestUrl());
-    } catch (e) {
-      // Fallback to static downloadUrl in config if GitHub API is unreachable
-      if (this.downloadUrl) {
-        console.error(`[MCP] GitHub API failed (${e.message}), falling back to configured URL`);
-        url = this.downloadUrl;
-      } else {
-        throw new Error(`Cannot resolve JAR URL: ${e.message}`);
-      }
-    }
-    console.error(`[MCP] Downloading ${url}`);
-    await this._fetchJar(url);
-
-    // Compute SHA-256 of the downloaded JAR.
-    const computedSha = await this._computeSha256(this.jarPath);
-    // A pinned expectedSha256 wins; otherwise the checksum the release publishes.
-    const expected = (this.expectedSha256 && this.expectedSha256.trim()) || publishedSha;
-    if (expected) {
-      if (computedSha !== expected.toLowerCase()) {
-        fs.unlinkSync(this.jarPath);
-        throw new Error(
-          `[MCP] JAR checksum mismatch! Expected: ${expected}, Got: ${computedSha}. ` +
-          `JAR has been deleted. Possible supply-chain attack. Update "backend.mcpMemory.expectedSha256" in brain-config.json if this was a legitimate update.`
-        );
-      }
-      console.error(`[MCP] Checksum verified: ${computedSha}`);
-    } else {
-      // No expected SHA configured — log computed value so user can pin it.
-      console.error(`[MCP] WARNING: No expectedSha256 configured. Computed SHA-256: ${computedSha}. Pin this in config/brain-config.json backend.mcpMemory.expectedSha256`);
-    }
-  }
-
-  /** Compute SHA-256 of a file, returns hex string. */
-  _computeSha256(filePath) {
-    return sha256File(filePath);
   }
 
   async _handshake() {

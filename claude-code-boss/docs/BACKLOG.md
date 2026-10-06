@@ -819,10 +819,10 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   `docs/BACKUP-CONTRACT.md` (`backup_export`/`backup_import` no native-java). Testes: ida e volta
   com WAL aberto (mutação: cópia crua perde a linha), e2e com 2 dashboards reais, adaptador
   remoto. Prova com os dados reais: 495 itens, 2,2 MB, sem segredos, remoto "não incluído".
-- [ ] **Q16 — native-java: o auto-update no boot relança o servidor SEM os argumentos da JVM**
+- [x] **Q16 — native-java: o auto-update no boot relança o servidor SEM os argumentos da JVM**
   (perde `-Xmx512m` e qualquer `-D`). Visto na prova do Q13 (2.44.3 → 2.45.0). Externo (repo
   native-java): repassar os args da JVM no relaunch.
-- [ ] **Q17 — native-java: `backup_export` / `backup_import`** conforme `docs/BACKUP-CONTRACT.md`
+- [x] **Q17 — native-java: `backup_export` / `backup_import`** conforme `docs/BACKUP-CONTRACT.md`
   (o dono faz). Ao sair, o backup do dashboard passa a incluir os dados do servidor sozinho.
 - [x] **Q18 — `pages/claude-code-boss/tech.html` desatualizada:** lista `graph_reindex` e
   `graph_tag_node` (não existem) e diz que as graph tools são "Independentes do KB local" (exigem
@@ -874,10 +874,30 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   subia o daemon da própria pasta. **Corrigido na hora**: no caminho "nenhum daemon", o supervisor sobe
   a versão mais nova instalada na mesma pasta de cache (ignora `.orphaned_at`; versão igual = a própria).
   Teste + mutação; os 24 testes do supervisor passam.
-- [ ] **Q27 — native-java 2.45.1 travou no relançamento do auto-update** (processo vivo sem porta,
+- [x] **Q27 — native-java 2.45.1 travou no relançamento do auto-update** (processo vivo sem porta,
   `daemon.json` apontando para o pid morto da 2.44.3). Visto no smoke do `/release` 3.0.1. Externo
   (repo native-java), provavelmente o mesmo caminho do Q16. O boss reporta corretamente "instalado mas
   não rodando".
+- [x] **Q16/Q17/Q27 resolvidos no native-java** (commit b7a5422, servidor 2.45.4): relaunch com os args da
+  JVM, `backup_export`/`backup_import` exatamente no contrato `docs/BACKUP-CONTRACT.md` (conferido no
+  `BackupHandler`: mesmos campos e erros; exige caminhos absolutos e destino inexistente — o adaptador já usa),
+  boot com rastro. O backup do dashboard passa a incluir os dados do servidor sem mudança no plugin.
+- [x] **Q28 — migração para o inicializador oficial (contrato `daemon-launcher-contract.md`, ADR-023).**
+  Nenhum caminho do plugin sobe o jar: `lib/mcp-launcher.js` (roda o inicializador, 1 linha JSON, `[FATAL]`
+  sem fallback, `--install-launcher` uma vez, jar X.Y.Z pela regra C-3); wizard, `mcp-client` (queda →
+  inicializador; stdio → HTTP), `mcp-daemon-restart` (update → kill + inicializador; rollback tira o jar novo
+  do caminho) e SessionStart (dispara o inicializador). Download sempre o jar CPU com nome exato em
+  `~/.mcp-memory/lib` (o inicializador ignora `-gpu`). Testes + mutações; e2e com o inicializador REAL do
+  native-java (build da develop, HOME isolado + `-Duser.home`): instalou, subiu, 56 tools; e na máquina real
+  o inicializador devolveu o servidor 2.45.5 em 2 s (`spawned:false`).
+- [ ] **Q29 — GATE DE RELEASE: a próxima versão do boss só sai com o servidor 2.45.5 público.** A release
+  pública mais nova é 2.45.4 (sem `--install-launcher`); até lá a ativação local falha com o motivo claro.
+- [ ] **Q30 — native-java: `--install-launcher` sobrescreve a chave global de logon (HKCU `McpMemoryServer`)
+  mesmo quando roda com outro `user.home`.** Visto no e2e do Q28 (a chave real passou a apontar para o HOME
+  temporário; restaurada à mão). Proposta lá: não sobrescrever uma chave que aponta para outro HOME, ou avisar.
+- [x] **Q31 — teste de hooks não-hermético** (`test-hooks.js`, graph-guard "Bash scoped grep -r"): lia o
+  `~/.claude/settings.json` real (Token Guard instalado hoje na máquina) — falhava inclusive no develop limpo.
+  **Corrigido**: HOME do teste = a pasta temporária que contém o cwd.
 ## Testes
 
 - [x] `scripts/test-units.js`, teste `plano B: stream com várias linhas SSE somando mais de 32 MiB termina completo (o teto é por linha)` (~9361): flake intermitente sob carga (anotado em 2026-09-30, durante a Fase G da 2.29.1, que não toca o model-router): falhou com `nvidia: conteúdo perdido (867 chars)` em 1 de 3 rodadas completas da suíte, e outra rodada teve 2 falhas da família `plano B`; a terceira passou limpa. Mesma família de timing do item de FIN/reset abaixo. Investigar se o stream de >40 MiB é cortado por prazo do teste ou do router quando a máquina está carregada.
