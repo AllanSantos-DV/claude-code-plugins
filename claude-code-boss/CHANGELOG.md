@@ -13,6 +13,10 @@
   mesmo servidor por HTTP. Requer servidor 2.45.5 ou mais novo.
 
 ### Fixed
+- **O atualizador do dashboard não confunde mais o boss com outro plugin do repositório.** O repositório
+  publica releases de vários plugins e o GitHub marca um único "Latest" (o último publicado, de qualquer
+  plugin); o atualizador lia esse "Latest". Agora lista as releases e pega a maior `v<X.Y.Z>` do boss, e
+  nenhuma release de nenhum plugin é publicada como "Latest".
 - **Download do servidor de memória compatível com a 2.45.6.** O jar `-gpu` deixou de existir (a GPU vem
   só do sidecar que o servidor instala sozinho): o "Testar conexão" do dashboard pedia esse jar em máquina
   com NVIDIA e quebraria. E a busca da versão não usa mais a release "mais recente" do GitHub, que às vezes é

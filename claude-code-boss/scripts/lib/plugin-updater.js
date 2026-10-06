@@ -10,7 +10,10 @@
  * ZIP from GitHub instead of the working tree.
  *
  * Flow of performUpdate():
- *   1. GET /repos/<repo>/releases/latest  → newest tag + ZIP asset.
+ *   1. GET /repos/<repo>/releases → the highest `v<X.Y.Z>` (this plugin's tag scheme) + ZIP.
+ *      Never `releases/latest`: the repo hosts several plugins (rf-reviewer tags `rf-v*`), and
+ *      GitHub's single "Latest" is whichever plugin released last — every release is published
+ *      with make_latest=false (release.yml), so each plugin finds its own by tag.
  *   2. Download the asset (following redirects to the CDN).
  *   3. Extract (Expand-Archive on Windows, unzip/tar on POSIX).
  *   4. Validate the extracted package.json.
@@ -53,6 +56,23 @@ function compareSemver(a, b) {
     if (pa[i] < pb[i]) return -1;
   }
   return 0;
+}
+
+/**
+ * This plugin's newest release among a repo-wide listing: tag exactly `<prefix><X.Y.Z>`
+ * (claude-code-boss: "v", same scheme as release-guard), no drafts/prereleases. Null if none.
+ */
+function pickPluginRelease(releases, prefix = 'v') {
+  let best = null;
+  for (const r of Array.isArray(releases) ? releases : []) {
+    if (!r || r.draft || r.prerelease) continue;
+    const tag = String(r.tag_name || '');
+    if (!tag.startsWith(prefix)) continue;
+    const ver = tag.slice(prefix.length);
+    if (!/^\d+\.\d+\.\d+$/.test(ver)) continue;
+    if (!best || compareSemver(ver, best.ver) > 0) best = { r, ver };
+  }
+  return best ? best.r : null;
 }
 
 function pickAsset(release, version) {
@@ -224,8 +244,10 @@ function ghGetJson(apiPath) {
   });
 }
 
-function fetchLatestRelease(repo) {
-  return ghGetJson(`/repos/${repo}/releases/latest`);
+async function fetchLatestRelease(repo) {
+  const rel = pickPluginRelease(await ghGetJson(`/repos/${repo}/releases?per_page=100`), 'v');
+  if (!rel) throw new Error(`no ${PLUGIN} release (tag v<X.Y.Z>) published in ${repo}`);
+  return rel;
 }
 
 /** Deref a tag ref → underlying commit SHA (handles annotated tags). */
@@ -513,6 +535,7 @@ async function performUpdate(root, opts = {}) {
 }
 
 module.exports = {
+  pickPluginRelease,
   // pure
   parseVersion,
   compareSemver,
