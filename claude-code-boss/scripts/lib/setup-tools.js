@@ -33,7 +33,7 @@ const DEFINITIONS = [
   },
   {
     name: 'backend_setup',
-    description: 'Enable the full memory server (mcp-memory) and switch the plugin to it. BEFORE calling, ask the user (plain words): "Do you already run an mcp-memory server somewhere (another machine or host) that you want to use? If so, what is its address?" — technical users may give a URL: pass it as serverUrl (it is validated and used; nothing is installed locally). If they do not know or have none, call WITHOUT serverUrl: it reuses a server already running on this machine (sister plugins install one — never a second), else one another plugin installed, else downloads (~57 MB; ~530 MB GPU build with an NVIDIA GPU) and starts it. Runs in the background — poll backend_setup_status. Without serverUrl and without Java it returns the exact install command; run it with the user\'s OK, then call again.',
+    description: 'Enable the full memory server (mcp-memory) and switch the plugin to it (the server is started only by its own launcher, which this installs once and registers to start at logon). BEFORE calling, ask the user (plain words): "Do you already run an mcp-memory server somewhere (another machine or host) that you want to use? If so, what is its address?" — technical users may give a URL: pass it as serverUrl (it is validated and used; nothing is installed locally). If they do not know or have none, call WITHOUT serverUrl: it reuses a server already running on this machine (sister plugins install one — never a second), else one another plugin installed, else downloads (~57 MB; ~530 MB GPU build with an NVIDIA GPU) and starts it. Runs in the background — poll backend_setup_status. Without serverUrl and without Java it returns the exact install command; run it with the user\'s OK, then call again.',
     inputSchema: { type: 'object', properties: { serverUrl: { type: 'string', description: 'Address of the user\'s own mcp-memory server, e.g. http://10.0.0.5:54784 — only when the user gave one' } } },
   },
   {
@@ -78,6 +78,9 @@ function createSetupTools({ pluginRoot, requestRestart = () => {}, deps = {} } =
   });
   const platform = deps.platform || process.platform;
   const pid = deps.projectId || lib('project-id.js');
+  const launcher = deps.launcher || lib('mcp-launcher.js');
+  // Java matters only to install the server launcher when the server's bundled runtime is absent.
+  const javaNeeded = () => !require('fs').existsSync(launcher.launcherPath()) && !launcher.bundledJava();
   const updater = deps.updater || ((o) => lib('mcp-memory-auto-update.js').runAutoUpdate(o));
   const isLoopback = (u) => lib('mcp-memory-auto-update.js').isLoopbackUrl(u);
   // One line on the server version, for the agent to relay (it asks before updating).
@@ -141,11 +144,13 @@ function createSetupTools({ pluginRoot, requestRestart = () => {}, deps = {} } =
         const type = backendType();
         const mcp = ((loadConfig() || {}).backend || {}).mcpMemory || {};
         const [java, daemon] = await Promise.all([wizard.checkJava(), daemonInfo()]);
-        const installed = wizard.installedServerJar ? wizard.installedServerJar() : null;
+        const installed = launcher.newestInstalledJar();
+        const hasLauncher = require('fs').existsSync(launcher.launcherPath());
         const lines = [`Backend: ${type === 'local' ? 'local (SQLite, built in)' : 'mcp-memory (server)'}`];
         if (mcp.serverUrl) lines.push(`Configured server address: ${mcp.serverUrl}`);
-        lines.push(`mcp-memory server on this machine: ${daemon.running ? `running v${daemon.version} at ${daemon.url}` : installed ? `installed (${installed}) but not running` : 'none'}`);
-        lines.push(`Java 21+ (only for a local server): ${java.ok ? `found (${java.version})` : `missing — ${java.error}`}`);
+        lines.push(`mcp-memory server on this machine: ${daemon.running ? `running v${daemon.version} at ${daemon.url}` : installed ? `installed (${installed.version}, ${installed.path}) but not running` : 'none'}`);
+        lines.push(`Server launcher (starts it, also at logon): ${hasLauncher ? 'installed' : `not installed yet (needs server ${launcher.MIN_LAUNCHER_VERSION}+)`}`);
+        lines.push(`Java 21+ (only to install the launcher without the bundled runtime): ${launcher.bundledJava() ? 'not needed (bundled runtime)' : java.ok ? `found (${java.version})` : `missing — ${java.error}`}`);
         const target = mcp.serverUrl || (daemon.running ? daemon.url : '');
         if (target) lines.push(updateLine((await wizard.handshake('default', target)).update, !!mcp.serverUrl && !isLoopback(mcp.serverUrl)));
         if (type === 'local') {
@@ -161,7 +166,7 @@ function createSetupTools({ pluginRoot, requestRestart = () => {}, deps = {} } =
         if (!serverUrl) {
           const daemon = await daemonInfo();
           if (backendType() === 'mcp-memory' && daemon.running) return text(`Already enabled: backend is mcp-memory, server v${daemon.version} running at ${daemon.url}.`);
-          const java = await wizard.checkJava();
+          const java = javaNeeded() ? await wizard.checkJava() : { ok: true };
           if (!java.ok && !daemon.running) {
             return text([
               `Java 21+ is needed first for a local server (${java.error}).`,

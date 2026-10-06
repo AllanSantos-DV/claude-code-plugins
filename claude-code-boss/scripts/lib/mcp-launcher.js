@@ -1,0 +1,130 @@
+'use strict';
+/**
+ * mcp-launcher.js — the ONLY way this plugin starts the mcp-memory server daemon.
+ *
+ * Official contract (native-java docs/contracts/daemon-launcher-contract.md, ADR-023): a client
+ * never starts the jar itself; it runs the launcher ~/.mcp-memory/bin/mcp-memory-daemon(.cmd),
+ * reads the ONE JSON line it prints ({url,port,pid,version,spawned}) and connects. Exit 1 means
+ * failure with a "[FATAL] …" reason on stderr — shown to the user, no fallback. The launcher is
+ * installed once by `java -jar mcp-memory-server-X.Y.Z.jar --install-launcher` (server ≥ 2.45.5),
+ * which also registers it to start at logon (the reboot case).
+ */
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { execFile } = require('child_process');
+
+const MIN_LAUNCHER_VERSION = '2.45.5';
+const JAR_RE = /^mcp-memory-server-(\d+)\.(\d+)\.(\d+)\.jar$/; // contract C-3: exact X.Y.Z only
+
+function home(env = process.env) {
+  return env.USERPROFILE || env.HOME || os.homedir();
+}
+
+function launcherPath(env = process.env, platform = process.platform) {
+  return path.join(home(env), '.mcp-memory', 'bin', platform === 'win32' ? 'mcp-memory-daemon.cmd' : 'mcp-memory-daemon');
+}
+
+function parseVersion(v) {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(v || '').trim());
+  return m ? m.slice(1).map(Number) : null;
+}
+
+function compareVersions(a, b) {
+  const x = parseVersion(a), y = parseVersion(b);
+  if (!x || !y) return NaN;
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] - y[i];
+  return 0;
+}
+
+/** Newest exact mcp-memory-server-X.Y.Z.jar across ~/.mcp-memory/lib and /server (contract C-3). */
+function newestInstalledJar(env = process.env) {
+  let best = null;
+  for (const sub of ['lib', 'server']) {
+    const dir = path.join(home(env), '.mcp-memory', sub);
+    let names = [];
+    try { names = fs.readdirSync(dir); } catch (err) { if (err.code !== 'ENOENT') console.error(`[mcp-launcher] cannot list ${dir}: ${err.message}`); continue; }
+    for (const n of names) {
+      const m = JAR_RE.exec(n);
+      if (!m) continue;
+      const version = `${m[1]}.${m[2]}.${m[3]}`;
+      if (!best || compareVersions(version, best.version) > 0) best = { path: path.join(dir, n), version };
+    }
+  }
+  return best;
+}
+
+/** The launcher's own Java choice (contract C-4) — used to run --install-launcher. */
+function bundledJava(env = process.env, platform = process.platform) {
+  const p = path.join(home(env), '.mcp-memory', 'server', 'runtime', 'bin', platform === 'win32' ? 'java.exe' : 'java');
+  return fs.existsSync(p) ? p : null;
+}
+
+function run(file, args, { env, timeoutMs, platform = process.platform, execImpl = null }) {
+  // A .cmd is not an executable for CreateProcess: run it through cmd.exe.
+  const [cmd, argv] = platform === 'win32' && /\.cmd$/i.test(file) ? ['cmd.exe', ['/d', '/c', file, ...args]] : [file, args];
+  return new Promise((resolve) => {
+    const done = (err, stdout, stderr) => {
+      resolve({ code: err ? (typeof err.code === 'number' ? err.code : 1) : 0, stdout: String(stdout || ''), stderr: String(stderr || ''), error: err });
+    };
+    if (execImpl) execImpl(cmd, argv, { env, timeout: timeoutMs }, done); // tests only
+    else execFile(cmd, argv, { env, timeout: timeoutMs, windowsHide: true, encoding: 'utf8', maxBuffer: 1024 * 1024 }, done);
+  });
+}
+
+const fatalOf = (stderr, fallback) => (String(stderr).split(/\r?\n/).find((l) => /\[FATAL\]/.test(l)) || fallback).trim();
+
+/**
+ * Run the launcher. { ok:true, url, port, pid, version, spawned } or { ok:false, error }.
+ * javaHome: a Java the plugin found that may not be on PATH (just installed) — the launcher
+ * honours JAVA_HOME when there is no bundled runtime.
+ */
+async function runLauncher({ env = process.env, platform = process.platform, timeoutMs = 200000, javaHome = '', execImpl } = {}) {
+  const file = launcherPath(env, platform);
+  if (!fs.existsSync(file)) return { ok: false, missing: true, error: `the mcp-memory launcher is not installed (${file})` };
+  const runEnv = javaHome ? { ...env, JAVA_HOME: javaHome } : env;
+  const r = await run(file, [], { env: runEnv, timeoutMs, platform, execImpl });
+  if (r.code !== 0) return { ok: false, error: fatalOf(r.stderr, `the launcher failed (exit ${r.code})${r.error && r.error.killed ? ' — timed out' : ''}; see ~/.mcp-memory/logs/daemon.log`) };
+  const lines = r.stdout.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (lines.length !== 1) return { ok: false, error: `the launcher printed ${lines.length} lines instead of one JSON line` };
+  let a;
+  try { a = JSON.parse(lines[0]); } catch (err) { return { ok: false, error: `the launcher output is not JSON: ${err.message}` }; }
+  if (!a || typeof a.url !== 'string' || !/^https?:\/\//.test(a.url)) return { ok: false, error: `the launcher answered without a url: ${lines[0].slice(0, 200)}` };
+  return { ok: true, url: a.url.replace(/\/+$/, ''), port: a.port, pid: a.pid, version: a.version || '', spawned: !!a.spawned };
+}
+
+/** `java -jar <jar> --install-launcher` (once). { ok:true, launcher } or { ok:false, error }. */
+async function installLauncher({ jar, javaBin, env = process.env, platform = process.platform, timeoutMs = 60000, execImpl } = {}) {
+  if (!jar || !jar.path) return { ok: false, error: 'no mcp-memory-server-X.Y.Z.jar to install the launcher from' };
+  if (compareVersions(jar.version, MIN_LAUNCHER_VERSION) < 0) {
+    return { ok: false, tooOld: true, error: `the installed memory server is ${jar.version}; the launcher needs ${MIN_LAUNCHER_VERSION} or newer` };
+  }
+  const java = bundledJava(env, platform) || javaBin;
+  if (!java) return { ok: false, error: 'Java 21+ is needed to install the memory server launcher' };
+  const r = await run(java, ['-jar', jar.path, '--install-launcher'], { env, timeoutMs, platform, execImpl });
+  if (r.code !== 0) return { ok: false, error: fatalOf(r.stderr, `--install-launcher failed (exit ${r.code})`) };
+  const file = launcherPath(env, platform);
+  if (!fs.existsSync(file)) return { ok: false, error: `--install-launcher reported success but ${file} does not exist` };
+  return { ok: true, launcher: file };
+}
+
+/**
+ * Fire-and-forget launcher run (session start): starts the daemon if it is down, without
+ * waiting. Returns false when the launcher is not installed (nothing is started then).
+ */
+function kickLauncher({ env = process.env, platform = process.platform } = {}) {
+  const file = launcherPath(env, platform);
+  if (!fs.existsSync(file)) return false;
+  const [cmd, argv] = platform === 'win32' ? ['cmd.exe', ['/d', '/c', file]] : [file, []];
+  try {
+    const child = require('child_process').spawn(cmd, argv, { detached: true, stdio: 'ignore', windowsHide: true, env });
+    child.on('error', (err) => console.error(`[mcp-launcher] kick failed: ${err.message}`));
+    child.unref();
+    return true;
+  } catch (err) {
+    console.error(`[mcp-launcher] kick failed: ${err.message}`);
+    return false;
+  }
+}
+
+module.exports = { runLauncher, installLauncher, kickLauncher, newestInstalledJar, launcherPath, bundledJava, compareVersions, MIN_LAUNCHER_VERSION, JAR_RE };

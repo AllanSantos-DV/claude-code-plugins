@@ -4,7 +4,7 @@
   "backend": {
     "type": "local",
     "mcpMemory": {
-      "transport": "stdio",
+      "transport": "http",
       "serverUrl": "",
       "runDir": "",
       "projectId": "",
