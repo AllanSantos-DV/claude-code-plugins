@@ -52,6 +52,9 @@ jobs:
         uses: softprops/action-gh-release@v3.0.0
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
+          # This repo hosts several plugins and GitHub has ONE "Latest" per repo (whichever plugin
+          # released last). No plugin is "the" latest: clients list releases by their own tag scheme.
+          make_latest: "false"
           name: "${{ steps.meta.outputs.plugin }} v${{ steps.meta.outputs.version }}"
           body: |
             ## ${{ steps.meta.outputs.plugin }} v${{ steps.meta.outputs.version }}

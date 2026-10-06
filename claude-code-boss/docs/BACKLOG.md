@@ -917,9 +917,12 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   depende de defaults do workspace. (4) parsers tolerantes (sem `memory_health`). (5) daemon só pelo
   inicializador; sidecar nunca tocado. Achado extra **corrigido**: `releases/latest` às vezes é um sidecar
   (Sidecar v1.6.1 em 05/10) → o resolvedor lista as releases e pega a maior X.Y.Z com o jar. Teste + mutação.
-- [ ] **Q34 — `scripts/lib/plugin-updater.js:228` usa `releases/latest` do repo do próprio boss**, onde também
+- [x] **Q34 — `scripts/lib/plugin-updater.js:228` usa `releases/latest` do repo do próprio boss**, onde também
   saem releases `rf-v*` (rf-reviewer): a "latest" pode ser do rf-reviewer. Visto na verificação do Q33. Fora do
   escopo. Proposta: listar releases e filtrar a tag `v<X.Y.Z>` mais alta (mesma regra do release-guard).
+  **RESOLVIDO em 07/10** (decisão do dono: o repositório é de vários plugins, nenhum é prioritário):
+  `pickPluginRelease` lista as releases e escolhe a maior `<prefixo><X.Y.Z>` do plugin (boss `v`, rf-reviewer
+  `rf-v`), sem draft/prerelease; `release.yml` publica TODA release com `make_latest: "false"`. Teste + mutação.
 - [x] **Q29 — gate da release (servidor 2.45.5+ público)** — satisfeito: v2.45.5 e v2.45.6 publicadas em 06/10.
 ## Testes
 

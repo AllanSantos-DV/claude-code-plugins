@@ -7425,6 +7425,23 @@ if (process.platform === 'win32') {
 // ─── plugin-updater (pure helpers) ───────────────────────────────────────────
 const pu = require('./lib/plugin-updater.js');
 
+test('plugin-updater: picks THIS plugin\'s newest release from a repo-wide listing (never GitHub\'s single "Latest"); every release is published with make_latest=false', () => {
+  const u = require('./lib/plugin-updater.js');
+  const listing = [
+    { tag_name: 'rf-v0.3.0' },                        // another plugin, released last
+    { tag_name: 'v3.1.0-rc1', prerelease: true },
+    { tag_name: 'v9.9.9', draft: true },
+    { tag_name: 'v3.0.2' }, { tag_name: 'v3.0.10' }, { tag_name: 'v3.0.1' },
+  ];
+  assertEq(u.pickPluginRelease(listing).tag_name, 'v3.0.10', 'highest v<X.Y.Z> by version (not by order or text)');
+  assertEq(u.pickPluginRelease(listing, 'rf-v').tag_name, 'rf-v0.3.0', 'each plugin by its own tag scheme');
+  assertEq(u.pickPluginRelease([{ tag_name: 'rf-v1.0.0' }]), null, 'no release of this plugin → null');
+  const src = fs.readFileSync(path.join(SCRIPTS, 'lib', 'plugin-updater.js'), 'utf8');
+  assert(!/['`]\/repos\/\$\{repo\}\/releases\/latest/.test(src), 'the updater never asks for releases/latest');
+  const wf = fs.readFileSync(path.join(ROOT, '..', '.github', 'workflows', 'release.yml'), 'utf8');
+  assert(/make_latest:\s*"false"/.test(wf), 'release.yml publishes every plugin release with make_latest=false');
+});
+
 test('plugin-updater.parseVersion: strips v + fills missing parts', () => {
   assertEq(pu.parseVersion('v1.15.0'), [1, 15, 0]);
   assertEq(pu.parseVersion('1.15'), [1, 15, 0]);
