@@ -14305,7 +14305,8 @@ test('mcp-launcher (native-java ADR-023 contract): one JSON line → url; exit 1
     if (process.platform === 'win32') assertEq([fake.last.cmd, fake.last.argv.slice(0, 2)], ['cmd.exe', ['/d', '/c']], '.cmd runs through cmd.exe');
     const fatal = await L.runLauncher({ env, execImpl: fake(1, '', 'starting...\n[FATAL] nenhum mcp-memory-server-X.Y.Z.jar\n') });
     assertEq([fatal.ok, fatal.error], [false, '[FATAL] nenhum mcp-memory-server-X.Y.Z.jar'], 'exit 1 → the [FATAL] line verbatim');
-    assert(!(await L.runLauncher({ env, execImpl: fake(0, 'a\nb\n', '') })).ok, 'two lines → refused (contract: exactly one)');
+    const two = await L.runLauncher({ env, execImpl: fake(0, '{"url":"http://127.0.0.1:1","pid":1}\nextra noise\n', '') });
+    assert(!two.ok && /2 lines/.test(two.error), `a valid JSON line plus noise → refused (contract: exactly one line): ${JSON.stringify(two)}`);
     assert(!(await L.runLauncher({ env, execImpl: fake(0, '{"port":1}\n', '') })).ok, 'no url → refused (never a fake URL)');
     // Jar choice: exact X.Y.Z across lib/ and server/, highest version wins (2.45.10 > 2.45.9); -gpu/backups ignored.
     for (const [sub, n] of [['lib', 'mcp-memory-server-2.45.9.jar'], ['server', 'mcp-memory-server-2.45.10.jar'], ['lib', 'mcp-memory-server-2.46.0-gpu.jar'], ['lib', 'mcp-memory-server-2.47.0.jar.bak']]) {
