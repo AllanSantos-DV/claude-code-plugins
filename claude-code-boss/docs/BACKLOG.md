@@ -898,6 +898,14 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
 - [x] **Q31 — teste de hooks não-hermético** (`test-hooks.js`, graph-guard "Bash scoped grep -r"): lia o
   `~/.claude/settings.json` real (Token Guard instalado hoje na máquina) — falhava inclusive no develop limpo.
   **Corrigido**: HOME do teste = a pasta temporária que contém o cwd.
+- [x] **Q32 — backup não escalava para o servidor real (bug da 3.0.1).** Visto ao testar o `backup_export` real
+  (servidor 2.45.5): memory.db de 6 GB → snapshot de 4,2–5,6 GB; o `.tar.gz` era montado em memória
+  (`gzipSync`/`readFileSync`), a restauração tinha teto de 1 GB e lia tudo em memória, o timeout de 120 s
+  estourava e o erro do remoto escapava sem tratamento (derrubaria o backup local). **Corrigido na hora**:
+  `lib/backup.js` em stream (snapshots em arquivo temporário, tar via gzip com backpressure, manifesto no fim,
+  extração em stream para staging com checksum antes de trocar), adaptador remoto com timeout de 1 h e erro →
+  "não incluído + motivo", dashboard com jobs (`/api/backup/status`) e upload em stream. Teste com snapshot
+  de 64 MB + caminho inseguro + corrompido; e2e com 2 dashboards; prova real: 1,2 GB, 109 s, pico 120 MB RSS.
 ## Testes
 
 - [x] `scripts/test-units.js`, teste `plano B: stream com várias linhas SSE somando mais de 32 MiB termina completo (o teto é por linha)` (~9361): flake intermitente sob carga (anotado em 2026-09-30, durante a Fase G da 2.29.1, que não toca o model-router): falhou com `nvidia: conteúdo perdido (867 chars)` em 1 de 3 rodadas completas da suíte, e outra rodada teve 2 falhas da família `plano B`; a terceira passou limpa. Mesma família de timing do item de FIN/reset abaixo. Investigar se o stream de >40 MiB é cortado por prazo do teste ou do router quando a máquina está carregada.

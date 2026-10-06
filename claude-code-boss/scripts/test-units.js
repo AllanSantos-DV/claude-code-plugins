@@ -21216,16 +21216,16 @@ test('setup-tools: backend_status/setup guide the agent (Java missing → exact 
   assert(/brew install --cask temurin@21/.test(javaInstallCommand('darwin')) && /openjdk-21/.test(javaInstallCommand('linux')), 'per-OS commands');
 });
 
-test('backup: round trip to another install — WAL-safe SQLite snapshot while a connection is open, no models/.runtime/tokens/router key; corrupt archive refused', () => {
-  const { createBackup, readBackup, restoreBackup } = require('./lib/backup.js');
+test('backup: streamed round trip to another install — WAL-safe SQLite snapshot while a connection is open, a 64 MB remote snapshot, no models/.runtime/tokens/router key; corrupt or unsafe archives refused before touching anything', async () => {
+  const { createBackup, extractBackup, applyStaged, writeTarGz } = require('./lib/backup.js');
   const Database = require('./lib/sqlite-compat.js').loadSqlite();
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-backup-'));
+  let live = null;
   try {
     const A = { dataDir: path.join(base, 'a', 'data'), globalDir: path.join(base, 'a', 'global') };
     const put = (root, rel, content) => { const f = path.join(root, rel); fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, content); return f; };
     fs.mkdirSync(path.join(A.dataDir, 'brain', 'github.com', 'acme', 'shop'), { recursive: true });
-    const dbFile = path.join(A.dataDir, 'brain', 'github.com', 'acme', 'shop', 'brain.db');
-    const live = new Database(dbFile);
+    live = new Database(path.join(A.dataDir, 'brain', 'github.com', 'acme', 'shop', 'brain.db'));
     live.pragma('journal_mode = WAL');
     live.exec("CREATE TABLE entries (id TEXT, title TEXT); INSERT INTO entries VALUES ('1', 'Checkout usa Stripe')");
     // `live` stays open (like the daemon): the row lives in the -wal file, not yet in brain.db.
@@ -21236,43 +21236,55 @@ test('backup: round trip to another install — WAL-safe SQLite snapshot while a
     put(A.dataDir, 'model-router/router.log', 'log');
     put(A.globalDir, 'user-config.json', '{"backend":{"type":"local"}}');
     put(A.globalDir, 'model-router/user-config.json', '{"nimApiKey":"nvapi-SECRET"}');
+    // A server snapshot far bigger than any stream chunk (the real one was 4.2 GB).
+    const snap = path.join(base, 'server.snapshot');
+    const block = require('crypto').randomBytes(1024 * 1024);
+    const fd = fs.openSync(snap, 'w'); for (let i = 0; i < 64; i++) fs.writeSync(fd, block); fs.writeSync(fd, Buffer.from('tail')); fs.closeSync(fd);
+    const snapSha = require('crypto').createHash('sha256').update(fs.readFileSync(snap)).digest('hex');
     const out = path.join(base, 'bk.tar.gz');
-    const { manifest } = createBackup({ ...A, outFile: out, pluginVersion: '3.0.0', remote: { kind: 'mcp-memory', included: false, reason: 'server has no backup_export yet' } });
+    const steps = [];
+    const { manifest } = await createBackup({ ...A, outFile: out, pluginVersion: '3.0.1', remote: { kind: 'mcp-memory', included: true, file: snap }, onProgress: (m) => steps.push(m) });
     const paths = manifest.items.map((i) => i.path).sort();
-    assertEq(paths, ['data/brain/github.com/acme/shop/brain.db', 'data/policies/registry.json', 'global/user-config.json'], `only portable data: ${paths}`);
-    assert(!fs.readFileSync(out).includes(Buffer.from('nvapi-SECRET')), 'router key never exported');
-    assertEq(manifest.remote, { kind: 'mcp-memory', included: false, reason: 'server has no backup_export yet' }, 'remote part recorded honestly');
-    live.close();
-    // "Another machine": empty install, restore, the WAL-only row is there.
+    assertEq(paths, ['data/brain/github.com/acme/shop/brain.db', 'data/policies/registry.json', 'global/user-config.json', 'remote/mcp-memory.snapshot'], `only portable data: ${paths}`);
+    assert(steps.length >= 3, 'progress reported');
+    live.close(); live = null;
+    // "Another machine": extract (verified), then swap in.
     const B = { dataDir: path.join(base, 'b', 'data'), globalDir: path.join(base, 'b', 'global') };
     put(B.dataDir, 'policies/registry.json', '{"old":true}');
-    const r = restoreBackup(fs.readFileSync(out), B);
-    assertEq(r.restored, 3, 'three files restored');
+    const ex = await extractBackup(out, path.join(base, 'b', 'staging'));
+    const r = applyStaged(ex, B);
+    assertEq(r.restored, 3, 'three local files restored');
+    assertEq(require('crypto').createHash('sha256').update(fs.readFileSync(r.remoteSnapshot)).digest('hex'), snapSha, 'the 64 MB server snapshot came through byte-identical');
     const db2 = new Database(path.join(B.dataDir, 'brain', 'github.com', 'acme', 'shop', 'brain.db'), { readonly: true });
     assertEq(db2.prepare('SELECT title FROM entries').get().title, 'Checkout usa Stripe', 'the row written under WAL survived');
     db2.close();
     assertEq(fs.readFileSync(path.join(B.dataDir, 'policies', 'registry.json'), 'utf8'), '{"p":1}', 'existing file replaced');
-    assert(!fs.readdirSync(path.join(B.dataDir, 'policies')).some((f) => /pre-restore|restore-/.test(f)), 'no leftovers');
-    // Corrupt: flip one byte of the payload → refused before touching anything.
-    const bad = zlib_gz_flip(fs.readFileSync(out));
-    let err = null; try { readBackup(bad); } catch (e) { err = e; }
-    assert(err && /corrupt|not a backup/.test(err.message), `corrupt archive refused: ${err && err.message}`);
-  } finally { fs.rmSync(base, { recursive: true, force: true }); }
-  function zlib_gz_flip(gz) {
-    const z = require('zlib'); const tar = z.gunzipSync(gz);
-    const at = tar.indexOf(Buffer.from('{"p":1}'));
-    assert(at > 0, 'payload located');
-    tar[at + 2] ^= 0xff; // inside a file's data
-    return z.gzipSync(tar);
-  }
+    // The router key never went in.
+    let leaked = false;
+    for await (const chunk of fs.createReadStream(out).pipe(require('zlib').createGunzip())) if (chunk.includes('nvapi-SECRET')) leaked = true;
+    assert(!leaked, 'router key never exported');
+    // Corrupt payload → refused by checksum; unsafe path → refused; garbage → refused.
+    const bad = path.join(base, 'bad.tar.gz');
+    await writeTarGz([{ name: 'data/policies/registry.json', data: Buffer.from('{"p":2}') }, { name: 'backup.json', data: Buffer.from(JSON.stringify({ format: 'claude-code-boss-backup', version: 1, items: [{ path: 'data/policies/registry.json', kind: 'file', size: 7, sha256: 'f'.repeat(64) }], remote: { included: false } })) }], bad);
+    let err = null; try { await extractBackup(bad, path.join(base, 'st2')); } catch (e) { err = e; }
+    assert(err && /checksum mismatch/.test(err.message), `corrupt refused: ${err && err.message}`);
+    const evil = path.join(base, 'evil.tar.gz');
+    await writeTarGz([{ name: '../escape.txt', data: Buffer.from('x') }], evil);
+    err = null; try { await extractBackup(evil, path.join(base, 'st3')); } catch (e) { err = e; }
+    assert(err && /unsafe path/.test(err.message) && !fs.existsSync(path.join(base, 'escape.txt')), 'path traversal refused');
+    fs.writeFileSync(path.join(base, 'junk.tar.gz'), 'not a backup');
+    err = null; try { await extractBackup(path.join(base, 'junk.tar.gz'), path.join(base, 'st4')); } catch (e) { err = e; }
+    assert(err && /not a backup|gzip/i.test(err.message), `garbage refused: ${err && err.message}`);
+    assert(!/readFileSync\(e\.file|gunzipSync|gzipSync/.test(fs.readFileSync(path.join(SCRIPTS, 'lib', 'backup.js'), 'utf8')), 'no whole-archive buffering left in backup.js');
+  } finally { if (live) live.close(); fs.rmSync(base, { recursive: true, force: true }); }
 });
 
-test('backup-remote: the memory-server part follows docs/BACKUP-CONTRACT.md — "not included" with the reason when the server lacks the tools, verified snapshot when it has them', async () => {
+test('backup-remote: the memory-server part follows docs/BACKUP-CONTRACT.md — "not included" with the reason when the server lacks the tools or the export fails/times out (never taking the local backup down), verified snapshot FILE when it works', async () => {
   const { exportRemote, importRemote } = require('./lib/backup-remote.js');
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bkremote-'));
   try {
     const calls = [];
-    const fakeClient = (tools, onCall) => class { constructor() { this._availableTools = tools.map((name) => ({ name })); } async connect() {} close() {} async callTool(n, a) { calls.push(n); return { text: JSON.stringify(onCall(n, a)) }; } };
+    const fakeClient = (tools, onCall) => class { constructor() { this._availableTools = tools.map((name) => ({ name })); } async connect() {} close() {} async callTool(n, a) { calls.push(n); return { text: JSON.stringify(await onCall(n, a)) }; } };
     const base = { pluginRoot: ROOT, tmpDir, discoverUrl: () => 'http://127.0.0.1:1', loadConfig: () => ({ backend: { type: 'mcp-memory' } }) };
     const none = await exportRemote({ ...base, loadConfig: () => ({ backend: { type: 'local' } }) });
     assertEq(none, { kind: 'none', included: false }, 'local backend: nothing remote');
@@ -21282,16 +21294,22 @@ test('backup-remote: the memory-server part follows docs/BACKUP-CONTRACT.md — 
     const sum = require('crypto').createHash('sha256').update(payload).digest('hex');
     const ok = await exportRemote({ ...base, McpClient: fakeClient(['backup_export'], (n, a) => { fs.writeFileSync(a.destPath, payload); return { path: a.destPath, bytes: payload.length, sha256: sum, serverVersion: '2.46.0' }; }) });
     assert(ok.included && fs.readFileSync(ok.file).equals(payload) && ok.serverVersion === '2.46.0', `exported: ${JSON.stringify(ok)}`);
+    fs.rmSync(ok.file); // the caller packs and deletes it
     const liar = await exportRemote({ ...base, McpClient: fakeClient(['backup_export'], (n, a) => { fs.writeFileSync(a.destPath, payload); return { sha256: '00' }; }) });
     assert(!liar.included && /checksum mismatch/.test(liar.reason), 'a bad checksum is not packed');
-    let err = null; try { await importRemote(payload, { ...base, McpClient: fakeClient([], () => ({})) }); } catch (e) { err = e; }
+    const slow = await exportRemote({ ...base, McpClient: fakeClient(['backup_export'], (n, a) => { fs.writeFileSync(a.destPath, 'partial'); throw new Error('MCP request "tools/call" timed out after 120000ms'); }) });
+    assert(!slow.included && /did not finish/.test(slow.reason) && /timed out/.test(slow.reason), `a timed-out export is reported, not thrown: ${JSON.stringify(slow)}`);
+    assert(!fs.readdirSync(tmpDir).some((f) => /\.snapshot$/.test(f)), 'the partial snapshot is removed');
+    assert(require('./lib/backup-remote.js').REMOTE_TIMEOUT_MS >= 30 * 60 * 1000, 'a long timeout for multi-GB snapshots');
+    const snapFile = path.join(tmpDir, 'restore.snapshot'); fs.writeFileSync(snapFile, payload);
+    let err = null; try { await importRemote(snapFile, { ...base, McpClient: fakeClient([], () => ({})) }); } catch (e) { err = e; }
     assert(err && /no backup_import tool/.test(err.message), 'restore to an old server fails loud');
-    const r = await importRemote(payload, { ...base, McpClient: fakeClient(['backup_import'], (n, a) => ({ restored: fs.readFileSync(a.srcPath).equals(payload), documents: 3 })) });
+    const r = await importRemote(snapFile, { ...base, McpClient: fakeClient(['backup_import'], (n, a) => ({ restored: path.isAbsolute(a.srcPath) && fs.readFileSync(a.srcPath).equals(payload), documents: 3 })) });
     assert(r.restored === true && r.documents === 3, `imported: ${JSON.stringify(r)}`);
   } finally { fs.rmSync(tmpDir, { recursive: true, force: true }); }
 });
 
-test('dashboard backup e2e: create + download on install A, restore on install B through the real dashboard (pre-restore safety copy kept)', async () => {
+test('dashboard backup e2e: create (background job) + download on install A, streamed upload + restore job on install B through the real dashboard (pre-restore safety copy kept)', async () => {
   const Database = require('./lib/sqlite-compat.js').loadSqlite();
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dashbk-'));
   const kids = [];
@@ -21313,8 +21331,11 @@ test('dashboard backup e2e: create + download on install A, restore on install B
     const db = new Database(path.join(A.data, 'brain', 'loja-online', 'brain.db'));
     db.exec("CREATE TABLE entries (id TEXT, title TEXT); INSERT INTO entries VALUES ('1', 'Checkout usa Stripe')"); db.close();
     const call = (I, p, opts = {}) => fetch(I.url + p, { ...opts, headers: { 'x-dashboard-token': I.token, ...(opts.headers || {}) } });
-    const made = await (await call(A, '/api/backup/create', { method: 'POST' })).json();
-    assert(made.ok && /^ccb-backup-.*\.tar\.gz$/.test(made.backup.name) && made.backup.remote.included === false, `created: ${JSON.stringify(made)}`);
+    const waitJob = async (I) => { for (let i = 0; i < 120; i++) { const j = (await (await call(I, '/api/backup/status')).json()).job; if (j.status === 'completed') return j.result; if (j.status === 'failed') throw new Error(j.error); await new Promise((r) => setTimeout(r, 250)); } throw new Error('job timeout'); };
+    const started = await (await call(A, '/api/backup/create', { method: 'POST' })).json();
+    assert(started.ok && started.job.status === 'running', `create starts a job: ${JSON.stringify(started)}`);
+    const made = { backup: await waitJob(A) };
+    assert(/^ccb-backup-.*\.tar\.gz$/.test(made.backup.name) && made.backup.remote.included === false, `created: ${JSON.stringify(made)}`);
     const list = await (await call(A, '/api/backup/list')).json();
     assertEq(list.items.map((i) => i.name), [made.backup.name], 'listed');
     assert(list.dir.startsWith(A.home), 'archives live under the global dir, not the data dir');
@@ -21323,13 +21344,19 @@ test('dashboard backup e2e: create + download on install A, restore on install B
     assert(bytes.length > 100 && bytes[0] === 0x1f && bytes[1] === 0x8b, 'gzip archive downloaded');
     assertEq((await call(A, '/api/backup/create', { headers: { 'x-dashboard-token': 'wrong' }, method: 'POST' })).status, 401, 'token required');
     const B = await start('b');
-    const restored = await (await call(B, '/api/backup/restore', { method: 'POST', headers: { 'Content-Type': 'application/gzip' }, body: bytes })).json();
-    assert(restored.ok && restored.restored >= 1 && /pre-restore/.test(restored.preRestoreBackup), `restored: ${JSON.stringify(restored)}`);
+    const rs = await (await call(B, '/api/backup/restore', { method: 'POST', headers: { 'Content-Type': 'application/gzip' }, body: bytes })).json();
+    assert(rs.ok && rs.job.kind === 'restore', `restore starts a job: ${JSON.stringify(rs)}`);
+    const restored = await waitJob(B);
+    assert(restored.restored >= 1 && /pre-restore/.test(restored.preRestoreBackup) && restored.remote.included === false, `restored: ${JSON.stringify(restored)}`);
     const db2 = new Database(path.join(B.data, 'brain', 'loja-online', 'brain.db'), { readonly: true });
     assertEq(db2.prepare('SELECT title FROM entries').get().title, 'Checkout usa Stripe', 'memory moved to install B');
     db2.close();
-    const bad = await call(B, '/api/backup/restore', { method: 'POST', body: Buffer.from('not a backup') });
-    assert(bad.status === 400 && /not a backup/.test((await bad.json()).error), 'garbage refused before touching anything');
+    const before = fs.readFileSync(path.join(B.data, 'brain', 'loja-online', 'brain.db'));
+    assert((await (await call(B, '/api/backup/restore', { method: 'POST', body: Buffer.from('not a backup') })).json()).ok, 'upload accepted, verified in the job');
+    let jerr = null; try { await waitJob(B); } catch (e) { jerr = e; }
+    assert(jerr && /not a backup|gzip/i.test(jerr.message), `garbage refused by the job: ${jerr && jerr.message}`);
+    assert(fs.readFileSync(path.join(B.data, 'brain', 'loja-online', 'brain.db')).equals(before), 'nothing touched by a refused archive');
+    assert(!fs.readdirSync(path.join(B.home, '.claude', 'claude-code-boss', 'backups')).some((f) => f.startsWith('.upload-')), 'uploads cleaned up');
   } finally {
     for (const k of kids) k.kill();
     await new Promise((r) => setTimeout(r, 300));

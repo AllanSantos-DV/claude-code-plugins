@@ -13,6 +13,11 @@
   mesmo servidor por HTTP. Requer servidor 2.45.5 ou mais novo.
 
 ### Fixed
+- **Backup com o servidor de memória grande não estoura mais a memória.** O arquivo era montado em
+  memória e a restauração aceitava até 1 GB; com o servidor de 6 GB (snapshot de 5,6 GB) o backup
+  quebraria. Agora tudo vai em fluxo para o disco (backup real com o servidor incluído: arquivo de
+  1,2 GB em 109 s, pico de 120 MB de memória), criar e restaurar viram tarefas em segundo plano com o
+  progresso na tela, e uma falha só da parte do servidor fica registrada no backup em vez de cancelá-lo.
 - Um teste de hooks lia o `~/.claude/settings.json` real da máquina e falhava quando o Token Guard
   estava instalado; agora é hermético.
 
