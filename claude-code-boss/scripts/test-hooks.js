@@ -1144,7 +1144,11 @@ const TESTS = [
       permission_mode: 'bypassPermissions',
     },
     expect: { hasKey: 'hookSpecificOutput', noError: true },
-    extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _gg.root, CLAUDE_PLUGIN_DATA: _gg.dataDir }),
+    // HOME = the temp root that CONTAINS the test cwd: the project-root walk stops at HOME and
+    // Token Guard is read from HOME/.claude — otherwise the REAL ~/.claude/settings.json leaked
+    // in (a sibling temp HOME let the walk climb past the real home), and the shaper abstained
+    // on a machine with Token Guard installed (seen 2026-10-06).
+    extraEnv: () => ({ CLAUDE_PLUGIN_ROOT: _gg.root, CLAUDE_PLUGIN_DATA: _gg.dataDir, HOME: require('os').tmpdir(), USERPROFILE: require('os').tmpdir() }),
     validate: r => r.parsed?.hookSpecificOutput?.permissionDecision === 'allow' && !/graph/i.test(r.parsed?.hookSpecificOutput?.additionalContext || '')
       ? null : `scoped bash grep must pass graph-guard, got: ${r.parsed?.hookSpecificOutput?.permissionDecision} (ctx: ${r.parsed?.hookSpecificOutput?.additionalContext})`,
   },
