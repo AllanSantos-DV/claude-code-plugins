@@ -186,7 +186,7 @@ async function resolveDownload(mcpCfg) {
     try { name = path.basename(new URL(mcpCfg.downloadUrl).pathname); } catch (err) { void err; name = path.basename(String(mcpCfg.downloadUrl)); }
     return { url: mcpCfg.downloadUrl, sha256: (mcpCfg.expectedSha256 || '').toLowerCase(), name };
   }
-  const asset = await require('./mcp-release-resolver.js').resolveLatestAsset({ gpu: false });
+  const asset = await require('./mcp-release-resolver.js').resolveLatestAsset();
   return { url: asset.url, sha256: asset.sha256, version: asset.version, name: asset.name };
 }
 

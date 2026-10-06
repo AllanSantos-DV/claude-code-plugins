@@ -2290,17 +2290,20 @@ test('config-testers: mcp-memory with empty jar and empty url auto-resolves hard
   // GitHub API.
   const realFetch = global.fetch;
   global.fetch = async (url) => {
-    if (String(url).includes('/releases/latest')) {
+    if (String(url).includes('/releases?')) {
+      // Newest-published first, like GitHub: a sidecar release (no server jar) on top, an
+      // older server release, and the newest server release in the middle.
       return {
         ok: true,
-        json: async () => ({
-          tag_name: 'v9.9.9',
-          assets: [
+        json: async () => ([
+          { tag_name: 'sidecar-v1.6.2', assets: [{ name: 'mcp-embedding-sidecar-win-cuda-x64-1.6.2.zip', browser_download_url: 'https://example.com/sc.zip' }] },
+          { tag_name: 'v9.9.8', assets: [{ name: 'mcp-memory-server-9.9.8.jar', browser_download_url: 'https://example.com/old.jar', size: 1 }] },
+          { tag_name: 'v9.9.9', assets: [
             { name: 'mcp-memory-server-9.9.9.jar', browser_download_url: 'https://example.com/cpu.jar', size: 123 },
             { name: 'mcp-memory-server-9.9.9.jar.sha256', browser_download_url: 'https://example.com/cpu.jar.sha256' },
-            { name: 'mcp-memory-server-9.9.9-gpu.jar', browser_download_url: 'https://example.com/gpu.jar', size: 456 },
-          ],
-        }),
+          ] },
+          { tag_name: 'v10.0.0-rc1', prerelease: true, assets: [{ name: 'mcp-memory-server-10.0.0.jar', browser_download_url: 'https://example.com/rc.jar' }] },
+        ]),
       };
     }
     return { ok: true, text: async () => 'deadbeef'.repeat(8) + '  mcp-memory-server-9.9.9.jar' };
@@ -2309,11 +2312,9 @@ test('config-testers: mcp-memory with empty jar and empty url auto-resolves hard
     const out = await testers.run('mcp-memory', { jarPath: '', downloadUrl: '' });
     assert(out.details && out.details.action === 'will-auto-download', `expected will-auto-download, got: ${JSON.stringify(out)}`);
     assertEq(out.details.resolvedVersion, 'v9.9.9');
-    // Real hardware detection runs (nvidia-smi) — the CI/dev box may or may not
-    // have an NVIDIA GPU, so assert the asset MATCHES whatever gpuDetected says,
-    // rather than hardcoding one variant.
-    const expectedAsset = out.details.gpuDetected ? 'mcp-memory-server-9.9.9-gpu.jar' : 'mcp-memory-server-9.9.9.jar';
-    assertEq(out.details.resolvedAsset, expectedAsset);
+    // The highest X.Y.Z with a server jar — not GitHub's "latest" (here a sidecar release), never a prerelease.
+    assertEq(out.details.resolvedAsset, 'mcp-memory-server-9.9.9.jar');
+    assert(!('gpuDetected' in out.details), 'no GPU variant any more (2.45.6: one jar; GPU = sidecar)');
   } finally {
     global.fetch = realFetch;
   }
@@ -14346,10 +14347,10 @@ test('mcp-wizard.downloadServerJar: the CPU build under its exact X.Y.Z name in 
   const payload = Buffer.from('PK fake'); const sha = require('crypto').createHash('sha256').update(payload).digest('hex');
   let asked = null;
   try {
-    require.cache[resolverPath].exports = { ...real, resolveLatestAsset: async (o) => { asked = o; return { url: 'https://x/mcp-memory-server-2.45.5.jar', name: 'mcp-memory-server-2.45.5.jar', version: 'v2.45.5', sha256: sha }; } };
+    require.cache[resolverPath].exports = { ...real, resolveLatestAsset: async (o) => { asked = o || {}; return { url: 'https://x/mcp-memory-server-2.45.5.jar', name: 'mcp-memory-server-2.45.5.jar', version: 'v2.45.5', sha256: sha }; } };
     https.get = (_u, cb) => { const res = new PassThrough(); res.statusCode = 200; cb(res); process.nextTick(() => res.end(payload)); return { on: () => {} }; };
     const target = await w.downloadServerJar({}, () => {}, home);
-    assertEq(asked, { gpu: false }, 'always the CPU build');
+    assertEq(asked, {}, 'one server jar — no variant asked for');
     assertEq(target, path.join(home, '.mcp-memory', 'lib', 'mcp-memory-server-2.45.5.jar'), 'exact name in ~/.mcp-memory/lib');
     assert(fs.existsSync(target), 'downloaded and verified');
     let err = null;
