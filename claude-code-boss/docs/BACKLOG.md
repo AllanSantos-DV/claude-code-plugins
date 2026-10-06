@@ -892,9 +892,12 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   o inicializador devolveu o servidor 2.45.5 em 2 s (`spawned:false`).
 - [x] **Q29 — GATE DE RELEASE: a próxima versão do boss só sai com o servidor 2.45.5 público.** A release
   pública mais nova é 2.45.4 (sem `--install-launcher`); até lá a ativação local falha com o motivo claro.
-- [ ] **Q30 — native-java: `--install-launcher` sobrescreve a chave global de logon (HKCU `McpMemoryServer`)
+- [x] **Q30 — native-java: `--install-launcher` sobrescreve a chave global de logon (HKCU `McpMemoryServer`)
   mesmo quando roda com outro `user.home`.** Visto no e2e do Q28 (a chave real passou a apontar para o HOME
   temporário; restaurada à mão). Proposta lá: não sobrescrever uma chave que aponta para outro HOME, ou avisar.
+  **RESOLVIDO no native-java** (PR #199, sai na 2.45.7): a chave só é gravada/removida quando o `user.home` é o
+  `USERPROFILE`; fora dele avisa que o logon não mudou (C-8). E o Latest do repo público passa a ser sempre o
+  servidor (C-9 manda o cliente listar as releases — o resolvedor do boss já faz isso).
 - [x] **Q31 — teste de hooks não-hermético** (`test-hooks.js`, graph-guard "Bash scoped grep -r"): lia o
   `~/.claude/settings.json` real (Token Guard instalado hoje na máquina) — falhava inclusive no develop limpo.
   **Corrigido**: HOME do teste = a pasta temporária que contém o cwd.
