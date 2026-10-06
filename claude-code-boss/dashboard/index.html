@@ -3661,6 +3661,20 @@ async function loadBackups() {
   } catch (e) { box.textContent = 'Backup list failed: ' + (e.message || e); }
 }
 
+// Create/restore run as a background job on the server (a backup with the memory server's
+// data is GBs and takes minutes): poll its status until it ends.
+async function waitBackupJob(st) {
+  for (;;) {
+    await new Promise((r) => setTimeout(r, 1500));
+    const s = await api('GET', '/api/backup/status');
+    const j = s && s.job;
+    if (!j || j.status === 'idle') throw new Error('backup job vanished');
+    if (j.status === 'completed') return j.result;
+    if (j.status === 'failed') throw new Error(j.error || 'failed');
+    st.textContent = (j.kind === 'restore' ? t('backup.restoring') : t('backup.creating')) + ' ' + (j.step || '');
+  }
+}
+
 async function createBackup() {
   const st = document.getElementById('backup-status');
   const btn = document.getElementById('backup-create-btn');
@@ -3668,7 +3682,7 @@ async function createBackup() {
   try {
     const r = await api('POST', '/api/backup/create');
     if (!r.ok) throw new Error(r.error || 'backup failed');
-    const b = r.backup;
+    const b = await waitBackupJob(st);
     const rem = b.remote && b.remote.included ? t('backup.remoteYes') : t('backup.remoteNo') + (b.remote && b.remote.reason ? ' (' + b.remote.reason + ')' : '');
     st.textContent = '✓ ' + b.name + ' · ' + fmtBytes(b.size) + ' · ' + rem;
     loadBackups();
@@ -3692,9 +3706,11 @@ async function restoreBackupFile(ev) {
   const st = document.getElementById('backup-status');
   st.textContent = t('backup.restoring');
   try {
-    const r = await fetch('/api/backup/restore', { method: 'POST', headers: { 'Content-Type': 'application/gzip', 'x-dashboard-token': window.__DASHBOARD_TOKEN__ }, body: await file.arrayBuffer() });
-    const j = await r.json();
-    if (!r.ok || !j.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    // The file is streamed as the request body (no need to load GBs into the page).
+    const r = await fetch('/api/backup/restore', { method: 'POST', headers: { 'Content-Type': 'application/gzip', 'x-dashboard-token': window.__DASHBOARD_TOKEN__ }, body: file });
+    const j0 = await r.json();
+    if (!r.ok || !j0.ok) throw new Error(j0.error || ('HTTP ' + r.status));
+    const j = await waitBackupJob(st);
     const rem = j.remote && j.remote.included ? (j.remote.restored ? ' · ' + t('backup.remoteYes') : ' · ✗ ' + j.remote.error) : '';
     st.textContent = '✓ ' + j.restored + ' files · ' + j.from.host + ' ' + String(j.from.createdAt).slice(0, 10) + ' · pre-restore: ' + j.preRestoreBackup + rem;
     loadBackups();

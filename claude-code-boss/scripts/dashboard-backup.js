@@ -4,14 +4,17 @@
  * plugin's data (lib/backup.js), plus the mcp-memory server part when the server supports it
  * (lib/backup-remote.js, docs/BACKUP-CONTRACT.md). Archives live in
  * globalDir()/backups (outside the data dir, so a backup never contains older backups).
+ *
+ * Create and restore run as a background JOB (one at a time) polled by GET /api/backup/status:
+ * with the server's data an archive is GBs and takes minutes. Uploads are streamed to disk.
  */
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { pipeline } = require('stream/promises');
 
 const KEEP = 5;
 const NAME_RE = /^ccb-backup-[0-9TZ-]+(-pre-restore)?\.tar\.gz$/;
-const MAX_UPLOAD = 1024 * 1024 * 1024;
 
 function createBackupRoutes({ pluginRoot, dataDir, globalDir, json, fail, deps = {} }) {
   const lib = (m) => require(path.join(pluginRoot, 'scripts', 'lib', m));
@@ -19,11 +22,25 @@ function createBackupRoutes({ pluginRoot, dataDir, globalDir, json, fail, deps =
   const remote = deps.remote || lib('backup-remote.js');
   const backupsDir = () => path.join(globalDir(), 'backups');
   const pluginVersion = () => { try { return JSON.parse(fs.readFileSync(path.join(pluginRoot, 'package.json'), 'utf8')).version; } catch (err) { void err; return ''; } };
-  const remoteOpts = () => ({
-    pluginRoot, tmpDir: os.tmpdir(),
+  const remoteOpts = (onProgress) => ({
+    pluginRoot, tmpDir: os.tmpdir(), onProgress,
     loadConfig: deps.loadConfig || (() => lib('brain-config.js').load()),
     discoverUrl: deps.discoverUrl || (() => lib('mcp-wizard.js').discoverDaemonUrl()),
   });
+
+  let job = { status: 'idle' };
+  const progress = (msg) => { job.step = msg; };
+
+  function startJob(kind, work) {
+    if (job.status === 'running') return { ok: false, error: `a backup ${job.kind} is already running` };
+    job = { kind, status: 'running', step: 'starting', startedAt: new Date().toISOString() };
+    const mine = job;
+    Promise.resolve().then(work).then(
+      (result) => { mine.status = 'completed'; mine.result = result; mine.finishedAt = new Date().toISOString(); },
+      (err) => { mine.status = 'failed'; mine.error = err.message; mine.finishedAt = new Date().toISOString(); console.error(`[dashboard-backup] ${kind}: ${err.message}`); },
+    );
+    return { ok: true, job: mine };
+  }
 
   function stamp() { return new Date().toISOString().replace(/[:.]/g, '-'); }
 
@@ -33,11 +50,11 @@ function createBackupRoutes({ pluginRoot, dataDir, globalDir, json, fail, deps =
     for (const { f } of files.slice(KEEP)) fs.rmSync(path.join(dir, f), { force: true });
   }
 
-  async function make(suffix = '') {
-    const rem = await remote.exportRemote(remoteOpts());
+  async function make({ suffix = '', withRemote = true } = {}) {
+    const rem = withRemote ? await remote.exportRemote(remoteOpts(progress)) : { kind: 'skipped', included: false, reason: 'pre-restore copy: local data only (the server keeps its own pre-import copy)' };
     const outFile = path.join(backupsDir(), `ccb-backup-${stamp()}${suffix}.tar.gz`);
     try {
-      const { manifest } = backup.createBackup({ dataDir: dataDir(), globalDir: globalDir(), outFile, pluginVersion: pluginVersion(), remote: rem });
+      const { manifest } = await backup.createBackup({ dataDir: dataDir(), globalDir: globalDir(), outFile, pluginVersion: pluginVersion(), remote: rem, onProgress: progress });
       prune();
       return { name: path.basename(outFile), size: fs.statSync(outFile).size, items: manifest.items.length, remote: manifest.remote };
     } finally {
@@ -60,20 +77,37 @@ function createBackupRoutes({ pluginRoot, dataDir, globalDir, json, fail, deps =
     throw new Error(`the brain daemon on port ${port} did not stop — close it and try again`);
   }
 
-  function readRaw(req) {
-    return new Promise((resolve, reject) => {
-      const chunks = []; let size = 0;
-      req.on('data', (c) => { size += c.length; if (size > MAX_UPLOAD) { reject(new Error('backup file too large (> 1 GB)')); req.destroy(); } else chunks.push(c); });
-      req.on('end', () => resolve(Buffer.concat(chunks)));
-      req.on('error', reject);
-    });
+  async function restoreFrom(upload) {
+    const staging = path.join(path.dirname(dataDir()), `.ccb-restore-staging-${Date.now()}`);
+    try {
+      progress('verifying the archive (every checksum, before touching anything)');
+      const extracted = await backup.extractBackup(upload, staging);
+      progress('saving the current data first (pre-restore copy)');
+      const safety = await make({ suffix: '-pre-restore', withRemote: false });
+      progress('stopping the memory service for a moment');
+      const stopped = await stopBrainDaemon();
+      progress('restoring');
+      const r = backup.applyStaged(extracted, { dataDir: dataDir(), globalDir: globalDir() });
+      let remoteResult = { included: false };
+      if (r.remote && r.remote.included) {
+        progress('handing the memory server its data (large databases take minutes)');
+        try { remoteResult = { included: true, restored: true, ...(await remote.importRemote(r.remoteSnapshot, remoteOpts(progress))) }; }
+        catch (err) { remoteResult = { included: true, restored: false, error: err.message }; }
+      }
+      const m = extracted.manifest;
+      return { restored: r.restored, from: { createdAt: m.createdAt, host: m.host, pluginVersion: m.pluginVersion }, preRestoreBackup: safety.name, brainDaemonRestarted: stopped, remote: remoteResult };
+    } finally {
+      fs.rmSync(staging, { recursive: true, force: true });
+      fs.rmSync(upload, { force: true });
+    }
   }
 
   return {
-    async create(req, res) {
-      try { json(res, { ok: true, backup: await make() }); }
-      catch (err) { console.error(`[dashboard-backup] create: ${err.message}`); fail(res, err.message); }
+    create(req, res) {
+      const r = startJob('create', () => make());
+      return r.ok ? json(res, r) : fail(res, r.error, 409);
     },
+    status(req, res) { json(res, { ok: true, job }); },
     list(req, res) {
       try {
         fs.mkdirSync(backupsDir(), { recursive: true });
@@ -90,19 +124,13 @@ function createBackupRoutes({ pluginRoot, dataDir, globalDir, json, fail, deps =
       fs.createReadStream(file).pipe(res);
     },
     async restore(req, res) {
-      try {
-        const buf = await readRaw(req);
-        const { manifest, data } = backup.readBackup(buf); // verify everything before touching anything
-        const safety = await make('-pre-restore');           // current state, in case the user wants it back
-        const stopped = await stopBrainDaemon();
-        const r = backup.restoreBackup(buf, { dataDir: dataDir(), globalDir: globalDir() });
-        let remoteResult = { included: false };
-        if (manifest.remote && manifest.remote.included) {
-          try { remoteResult = { included: true, restored: true, ...(await remote.importRemote(data.get('remote/mcp-memory.snapshot'), remoteOpts())) }; }
-          catch (err) { remoteResult = { included: true, restored: false, error: err.message }; }
-        }
-        json(res, { ok: true, restored: r.restored, from: { createdAt: manifest.createdAt, host: manifest.host, pluginVersion: manifest.pluginVersion }, preRestoreBackup: safety.name, brainDaemonRestarted: stopped, remote: remoteResult });
-      } catch (err) { console.error(`[dashboard-backup] restore: ${err.message}`); fail(res, err.message, 400); }
+      if (job.status === 'running') return fail(res, `a backup ${job.kind} is already running`, 409);
+      fs.mkdirSync(backupsDir(), { recursive: true });
+      const upload = path.join(backupsDir(), `.upload-${Date.now()}.tar.gz`);
+      try { await pipeline(req, fs.createWriteStream(upload)); }
+      catch (err) { fs.rmSync(upload, { force: true }); console.error(`[dashboard-backup] upload: ${err.message}`); return fail(res, `upload failed: ${err.message}`, 400); }
+      const r = startJob('restore', () => restoreFrom(upload));
+      return r.ok ? json(res, r) : fail(res, r.error, 409);
     },
   };
 }

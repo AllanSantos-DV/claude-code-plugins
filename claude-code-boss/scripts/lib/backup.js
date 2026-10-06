@@ -12,6 +12,11 @@
  * From the global dir only the brain and hooks user-config (the model-router one holds the
  * NVIDIA key — never exported).
  *
+ * STREAMED end to end: the mcp-memory server's snapshot is GBs (6 GB memory.db → 4.2 GB
+ * snapshot on the owner's machine), so nothing is held in memory — snapshots go to temp files,
+ * the archive is written through gzip as a stream with the manifest LAST, and a restore is
+ * extracted the same way into a staging dir and verified before anything is swapped.
+ *
  * The remote mcp-memory backend is backed up by its server (contract in
  * docs/BACKUP-CONTRACT.md): the archive records whether that part is included.
  */
@@ -20,10 +25,12 @@ const os = require('os');
 const path = require('path');
 const zlib = require('zlib');
 const crypto = require('crypto');
+const { once } = require('events');
 
 const FORMAT = 'claude-code-boss-backup';
 const FORMAT_VERSION = 1;
 const MANIFEST = 'backup.json';
+const REMOTE_ENTRY = 'remote/mcp-memory.snapshot';
 const SKIP_TOP_DIRS = new Set(['models', '.runtime', 'mcp', 'logs', 'brain-http.spawn.lock']);
 const SKIP_FILE = [/\.lock$/, /\.log$/, /\.token$/, /\.pid$/, /^brain-http\./, /^active-data-dir\.json$/, /^\.tmp-/, /-(wal|shm|journal)$/, /\.tmp$/, /^claude-wrapper\.exe$/, /^state\.json$/];
 const GLOBAL_FILES = ['user-config.json', path.join('hooks', 'user-config.json')];
@@ -50,33 +57,11 @@ function tarHeader(name, size, mtime) {
   return b;
 }
 
-function packTar(files) {
-  const parts = [];
-  for (const { name, data, mtime = Date.now() } of files) {
-    parts.push(tarHeader(name, data.length, mtime), data);
-    const pad = (512 - (data.length % 512)) % 512;
-    if (pad) parts.push(Buffer.alloc(pad, 0));
-  }
-  parts.push(Buffer.alloc(1024, 0));
-  return Buffer.concat(parts);
-}
-
-function unpackTar(buf) {
-  const out = [];
-  let off = 0;
-  while (off + 512 <= buf.length) {
-    const h = buf.subarray(off, off + 512);
-    if (h.every((x) => x === 0)) break;
-    const str = (s, e) => h.subarray(s, e).toString('utf8').replace(/\0.*$/s, '');
-    const size = parseInt(str(124, 136).trim() || '0', 8);
-    const prefix = str(345, 500);
-    const name = prefix ? `${prefix}/${str(0, 100)}` : str(0, 100);
-    const type = str(156, 157) || '0';
-    off += 512;
-    if (type === '0') out.push({ name, data: Buffer.from(buf.subarray(off, off + size)) });
-    off += Math.ceil(size / 512) * 512;
-  }
-  return out;
+function parseHeader(h) {
+  const str = (s, e) => h.subarray(s, e).toString('utf8').replace(/\0.*$/s, '');
+  const size = parseInt(str(124, 136).trim() || '0', 8);
+  const prefix = str(345, 500);
+  return { name: prefix ? `${prefix}/${str(0, 100)}` : str(0, 100), size, type: str(156, 157) || '0' };
 }
 
 // ── collect ─────────────────────────────────────────────────────────────────────────────
@@ -93,83 +78,178 @@ function walk(root, rel = '', acc = []) {
   return acc;
 }
 
-function sqliteSnapshot(src, Database) {
-  const tmp = path.join(os.tmpdir(), `ccb-backup-${process.pid}-${crypto.randomBytes(4).toString('hex')}.db`);
+function sqliteSnapshot(src, Database, tmpDir) {
+  const tmp = path.join(tmpDir, `ccb-backup-${process.pid}-${crypto.randomBytes(4).toString('hex')}.db`);
   const db = new Database(src, { readonly: true });
-  try {
-    db.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`);
-  } finally {
-    db.close();
-  }
-  try { return fs.readFileSync(tmp); } finally { fs.rmSync(tmp, { force: true }); }
+  try { db.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`); } finally { db.close(); }
+  return tmp;
 }
 
-const sha = (b) => crypto.createHash('sha256').update(b).digest('hex');
+async function hashFile(file) {
+  const h = crypto.createHash('sha256');
+  for await (const chunk of fs.createReadStream(file)) h.update(chunk);
+  return h.digest('hex');
+}
+
 const toPosix = (p) => p.split(path.sep).join('/');
+
+/** Write entries [{name, file|data}] as a gzip'd tar, streaming (backpressure-aware). */
+async function writeTarGz(entries, outFile) {
+  const tmp = `${outFile}.tmp-${process.pid}`;
+  const out = fs.createWriteStream(tmp);
+  const gz = zlib.createGzip();
+  gz.pipe(out);
+  const write = async (buf) => { if (!gz.write(buf)) await once(gz, 'drain'); };
+  try {
+    for (const e of entries) {
+      const size = e.data ? e.data.length : fs.statSync(e.file).size;
+      await write(tarHeader(e.name, size, Date.now()));
+      if (e.data) await write(e.data);
+      else for await (const chunk of fs.createReadStream(e.file)) await write(chunk);
+      const pad = (512 - (size % 512)) % 512;
+      if (pad) await write(Buffer.alloc(pad, 0));
+    }
+    await write(Buffer.alloc(1024, 0));
+    gz.end();
+    await once(out, 'close');
+  } catch (err) {
+    gz.destroy(); out.destroy();
+    fs.rmSync(tmp, { force: true });
+    throw err;
+  }
+  fs.renameSync(tmp, outFile);
+}
 
 /**
  * Build the archive. Returns { file, manifest }.
  * @param {{dataDir:string, globalDir:string, outFile:string, pluginVersion?:string,
- *          remote?:{kind:string, included:boolean, reason?:string, file?:string}, Database?:Function}} o
+ *          remote?:{kind:string, included:boolean, reason?:string, file?:string},
+ *          Database?:Function, onProgress?:(msg:string)=>void}} o
  */
-function createBackup({ dataDir, globalDir, outFile, pluginVersion = '', remote = null, Database }) {
+async function createBackup({ dataDir, globalDir, outFile, pluginVersion = '', remote = null, Database, onProgress = () => {} }) {
   if (!dataDir || !fs.existsSync(dataDir)) throw new Error(`backup: data dir not found: ${dataDir}`);
   const Db = Database || require('./sqlite-compat.js').loadSqlite();
   if (!Db) throw new Error('backup: no SQLite driver (node:sqlite / better-sqlite3) — cannot snapshot the stores safely');
-  const files = [];
-  const items = [];
-  const add = (name, data, kind) => { files.push({ name, data }); items.push({ path: name, kind, size: data.length, sha256: sha(data) }); };
-  for (const rel of walk(dataDir)) {
-    const abs = path.join(dataDir, rel);
-    const isDb = rel.endsWith('.db');
-    add(`data/${toPosix(rel)}`, isDb ? sqliteSnapshot(abs, Db) : fs.readFileSync(abs), isDb ? 'sqlite' : 'file');
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-backup-'));
+  try {
+    const entries = [];
+    const files = walk(dataDir);
+    onProgress(`snapshotting ${files.length} local files`);
+    for (const rel of files) {
+      const abs = path.join(dataDir, rel);
+      const isDb = rel.endsWith('.db');
+      entries.push({ name: `data/${toPosix(rel)}`, file: isDb ? sqliteSnapshot(abs, Db, tmpDir) : abs, kind: isDb ? 'sqlite' : 'file' });
+    }
+    for (const rel of GLOBAL_FILES) {
+      const abs = path.join(globalDir, rel);
+      if (fs.existsSync(abs)) entries.push({ name: `global/${toPosix(rel)}`, file: abs, kind: 'file' });
+    }
+    if (remote && remote.included && remote.file) entries.push({ name: REMOTE_ENTRY, file: remote.file, kind: 'remote' });
+    onProgress('computing checksums');
+    const items = [];
+    for (const e of entries) items.push({ path: e.name, kind: e.kind, size: fs.statSync(e.file).size, sha256: await hashFile(e.file) });
+    const manifest = {
+      format: FORMAT, version: FORMAT_VERSION, createdAt: new Date().toISOString(), host: os.hostname(),
+      pluginVersion, items,
+      remote: remote ? { kind: remote.kind, included: !!remote.included, ...(remote.reason ? { reason: remote.reason } : {}) } : { kind: 'none', included: false },
+    };
+    fs.mkdirSync(path.dirname(outFile), { recursive: true });
+    onProgress('writing the archive');
+    await writeTarGz([...entries, { name: MANIFEST, data: Buffer.from(JSON.stringify(manifest, null, 2)) }], outFile);
+    return { file: outFile, manifest };
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   }
-  for (const rel of GLOBAL_FILES) {
-    const abs = path.join(globalDir, rel);
-    if (fs.existsSync(abs)) add(`global/${toPosix(rel)}`, fs.readFileSync(abs), 'file');
-  }
-  if (remote && remote.included && remote.file) add('remote/mcp-memory.snapshot', fs.readFileSync(remote.file), 'remote');
-  const manifest = {
-    format: FORMAT, version: FORMAT_VERSION, createdAt: new Date().toISOString(), host: os.hostname(),
-    pluginVersion, items,
-    remote: remote ? { kind: remote.kind, included: !!remote.included, ...(remote.reason ? { reason: remote.reason } : {}) } : { kind: 'none', included: false },
-  };
-  const tar = packTar([{ name: MANIFEST, data: Buffer.from(JSON.stringify(manifest, null, 2)) }, ...files]);
-  fs.mkdirSync(path.dirname(outFile), { recursive: true });
-  const tmp = `${outFile}.tmp-${process.pid}`;
-  fs.writeFileSync(tmp, zlib.gzipSync(tar));
-  fs.renameSync(tmp, outFile);
-  return { file: outFile, manifest };
 }
 
-/** Parse + verify an archive (format, version, every checksum). Throws on anything wrong. */
-function readBackup(buf) {
-  let tar;
-  try { tar = zlib.gunzipSync(buf); } catch (err) { throw new Error(`not a backup archive (gzip): ${err.message}`); }
-  const entries = unpackTar(tar);
-  const m = entries.find((e) => e.name === MANIFEST);
-  if (!m) throw new Error('not a claude-code-boss backup (no backup.json)');
-  const manifest = JSON.parse(m.data.toString('utf8'));
-  if (manifest.format !== FORMAT) throw new Error(`not a claude-code-boss backup (format ${JSON.stringify(manifest.format)})`);
-  if (manifest.version > FORMAT_VERSION) throw new Error(`backup format v${manifest.version} is newer than this plugin understands (v${FORMAT_VERSION}) — update the plugin first`);
-  const byName = new Map(entries.map((e) => [e.name, e.data]));
-  for (const it of manifest.items) {
-    const data = byName.get(it.path);
-    if (!data) throw new Error(`backup is incomplete: ${it.path} missing`);
-    if (sha(data) !== it.sha256) throw new Error(`backup is corrupt: checksum mismatch on ${it.path}`);
-    if (it.path.split('/').some((s) => s === '..' || s === '')) throw new Error(`backup has an unsafe path: ${it.path}`);
-  }
-  return { manifest, data: byName };
+/** A tar entry name → a path inside stagingDir; throws on anything that could escape it. */
+function stagedPath(stagingDir, name) {
+  const segs = String(name).split('/');
+  if (!name || path.isAbsolute(name) || /^[A-Za-z]:/.test(name) || segs.some((s) => s === '..' || s === '' || s === '.')) throw new Error(`backup has an unsafe path: ${name}`);
+  const p = path.join(stagingDir, ...segs);
+  if (!p.startsWith(path.resolve(stagingDir) + path.sep)) throw new Error(`backup has an unsafe path: ${name}`);
+  return p;
 }
 
 /**
- * Restore into dataDir/globalDir. The caller must have stopped the brain daemon (it holds
- * the stores open). Every replaced file is first moved aside; on any failure everything
- * already swapped is rolled back. Files not in the backup are left alone.
- * @returns {{restored:number, remote:object}}
+ * Extract + verify an archive into stagingDir, streaming. Throws on anything wrong (format,
+ * version, unsafe path, missing item, checksum). Returns { manifest, staged: Map<name, path> }.
  */
-function restoreBackup(buf, { dataDir, globalDir }) {
-  const { manifest, data } = readBackup(buf);
+async function extractBackup(archiveFile, stagingDir) {
+  fs.mkdirSync(stagingDir, { recursive: true });
+  const staged = new Map();
+  const sums = new Map();
+  let buf = Buffer.alloc(0);
+  let cur = null; // { name, remaining, pad, out, hash }
+  let ended = false;
+  const input = fs.createReadStream(archiveFile).pipe(zlib.createGunzip());
+  try {
+    for await (const chunk of input) {
+      buf = buf.length ? Buffer.concat([buf, chunk]) : chunk;
+      while (!ended) {
+        if (cur) {
+          if (cur.remaining > 0) {
+            if (!buf.length) break;
+            const take = buf.subarray(0, Math.min(buf.length, cur.remaining));
+            buf = buf.subarray(take.length);
+            cur.remaining -= take.length;
+            cur.hash.update(take);
+            if (!cur.out.write(take)) await once(cur.out, 'drain');
+            continue;
+          }
+          if (buf.length < cur.pad) break;
+          buf = buf.subarray(cur.pad);
+          cur.out.end(); await once(cur.out, 'close');
+          sums.set(cur.name, { sha256: cur.hash.digest('hex'), size: cur.size });
+          cur = null;
+          continue;
+        }
+        if (buf.length < 512) break;
+        const h = buf.subarray(0, 512); buf = buf.subarray(512);
+        if (h.every((x) => x === 0)) { ended = true; break; }
+        const { name, size, type } = parseHeader(h);
+        if (type !== '0') throw new Error(`backup has an unsupported entry type ${JSON.stringify(type)} (${name})`);
+        const dest = stagedPath(stagingDir, name);
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        staged.set(name, dest);
+        cur = { name, size, remaining: size, pad: (512 - (size % 512)) % 512, out: fs.createWriteStream(dest), hash: crypto.createHash('sha256') };
+      }
+    }
+  } catch (err) {
+    if (cur) cur.out.destroy();
+    if (/incorrect header check|unexpected end of file|invalid/i.test(err.message) && !staged.size) throw new Error(`not a backup archive (gzip): ${err.message}`);
+    throw err;
+  }
+  if (cur) throw new Error(`backup is truncated (inside ${cur.name})`);
+  const mPath = staged.get(MANIFEST);
+  if (!mPath) throw new Error('not a claude-code-boss backup (no backup.json)');
+  const manifest = JSON.parse(fs.readFileSync(mPath, 'utf8'));
+  if (manifest.format !== FORMAT) throw new Error(`not a claude-code-boss backup (format ${JSON.stringify(manifest.format)})`);
+  if (manifest.version > FORMAT_VERSION) throw new Error(`backup format v${manifest.version} is newer than this plugin understands (v${FORMAT_VERSION}) — update the plugin first`);
+  for (const it of manifest.items) {
+    const got = sums.get(it.path);
+    if (!got) throw new Error(`backup is incomplete: ${it.path} missing`);
+    if (got.sha256 !== it.sha256 || got.size !== it.size) throw new Error(`backup is corrupt: checksum mismatch on ${it.path}`);
+  }
+  return { manifest, staged };
+}
+
+/** rename, falling back to copy when staging and target are on different volumes. */
+function moveFile(src, dst) {
+  try { fs.renameSync(src, dst); }
+  catch (err) {
+    if (err.code !== 'EXDEV') throw err;
+    fs.copyFileSync(src, dst); fs.rmSync(src, { force: true });
+  }
+}
+
+/**
+ * Swap verified staged files into dataDir/globalDir. The caller must have stopped the brain
+ * daemon (it holds the stores open). Every replaced file is first moved aside; on any failure
+ * everything already swapped is rolled back. Files not in the backup are left alone.
+ * @returns {{restored:number, remote:object, remoteSnapshot:string|null}}
+ */
+function applyStaged({ manifest, staged }, { dataDir, globalDir }) {
   const stamp = Date.now();
   const swapped = [];
   try {
@@ -180,11 +260,9 @@ function restoreBackup(buf, { dataDir, globalDir }) {
       if (!base) throw new Error(`backup: unknown section ${root}`);
       const target = path.join(base, ...rest);
       fs.mkdirSync(path.dirname(target), { recursive: true });
-      const staged = `${target}.restore-${stamp}`;
-      fs.writeFileSync(staged, data.get(it.path));
       const aside = fs.existsSync(target) ? `${target}.pre-restore-${stamp}` : null;
       if (aside) fs.renameSync(target, aside);
-      try { fs.renameSync(staged, target); } catch (err) { if (aside) fs.renameSync(aside, target); fs.rmSync(staged, { force: true }); throw err; }
+      try { moveFile(staged.get(it.path), target); } catch (err) { if (aside) fs.renameSync(aside, target); throw err; }
       swapped.push({ target, aside });
       if (it.kind === 'sqlite') for (const s of ['-wal', '-shm']) fs.rmSync(target + s, { force: true });
     }
@@ -195,7 +273,7 @@ function restoreBackup(buf, { dataDir, globalDir }) {
     throw new Error(`restore failed and was rolled back: ${err.message}`);
   }
   for (const { aside } of swapped) if (aside) fs.rmSync(aside, { force: true });
-  return { restored: swapped.length, remote: manifest.remote };
+  return { restored: swapped.length, remote: manifest.remote, remoteSnapshot: staged.get(REMOTE_ENTRY) || null };
 }
 
-module.exports = { createBackup, readBackup, restoreBackup, packTar, unpackTar, FORMAT, FORMAT_VERSION };
+module.exports = { createBackup, extractBackup, applyStaged, writeTarGz, stagedPath, FORMAT, FORMAT_VERSION, REMOTE_ENTRY };

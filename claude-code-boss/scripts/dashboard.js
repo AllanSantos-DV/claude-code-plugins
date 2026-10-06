@@ -2264,6 +2264,7 @@ function handleAPI(req, res, url) {
   if (p === '/api/brain/export' && m === 'GET') return exportBrain(req, res, url);
   if (p === '/api/brain/import' && m === 'POST') return importBrain(req, res);
   if (p === '/api/backup/create' && m === 'POST') return backupRoutes.create(req, res);
+  if (p === '/api/backup/status' && m === 'GET') return backupRoutes.status(req, res);
   if (p === '/api/backup/list' && m === 'GET') return backupRoutes.list(req, res);
   if (p === '/api/backup/download' && m === 'GET') return backupRoutes.download(req, res, url);
   if (p === '/api/backup/restore' && m === 'POST') return backupRoutes.restore(req, res);
