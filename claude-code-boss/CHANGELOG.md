@@ -13,6 +13,10 @@
   mesmo servidor por HTTP. Requer servidor 2.45.5 ou mais novo.
 
 ### Fixed
+- **Download do servidor de memória compatível com a 2.45.6.** O jar `-gpu` deixou de existir (a GPU vem
+  só do sidecar que o servidor instala sozinho): o "Testar conexão" do dashboard pedia esse jar em máquina
+  com NVIDIA e quebraria. E a busca da versão não usa mais a release "mais recente" do GitHub, que às vezes é
+  um sidecar sem o servidor: escolhe a maior versão publicada que tem o jar.
 - **Backup com o servidor de memória grande não estoura mais a memória.** O arquivo era montado em
   memória e a restauração aceitava até 1 GB; com o servidor de 6 GB (snapshot de 5,6 GB) o backup
   quebraria. Agora tudo vai em fluxo para o disco (backup real com o servidor incluído: arquivo de

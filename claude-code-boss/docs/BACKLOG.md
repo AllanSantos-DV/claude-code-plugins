@@ -890,7 +890,7 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   `~/.mcp-memory/lib` (o inicializador ignora `-gpu`). Testes + mutações; e2e com o inicializador REAL do
   native-java (build da develop, HOME isolado + `-Duser.home`): instalou, subiu, 56 tools; e na máquina real
   o inicializador devolveu o servidor 2.45.5 em 2 s (`spawned:false`).
-- [ ] **Q29 — GATE DE RELEASE: a próxima versão do boss só sai com o servidor 2.45.5 público.** A release
+- [x] **Q29 — GATE DE RELEASE: a próxima versão do boss só sai com o servidor 2.45.5 público.** A release
   pública mais nova é 2.45.4 (sem `--install-launcher`); até lá a ativação local falha com o motivo claro.
 - [ ] **Q30 — native-java: `--install-launcher` sobrescreve a chave global de logon (HKCU `McpMemoryServer`)
   mesmo quando roda com outro `user.home`.** Visto no e2e do Q28 (a chave real passou a apontar para o HOME
@@ -906,6 +906,18 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   extração em stream para staging com checksum antes de trocar), adaptador remoto com timeout de 1 h e erro →
   "não incluído + motivo", dashboard com jobs (`/api/backup/status`) e upload em stream. Teste com snapshot
   de 64 MB + caminho inseguro + corrompido; e2e com 2 dashboards; prova real: 1,2 GB, 109 s, pico 120 MB RSS.
+- [x] **Q33 — servidor 2.45.6 (retorno do native-java).** Verificado: (1) `-gpu.jar` — o testador de
+  configuração (`config-testers/mcp-memory.js`) ainda pedia o asset `-gpu` com NVIDIA → **corrigido**;
+  `mcp-release-resolver.js` sem variante GPU/`detectGpu`; texto do `backend_setup` sem "530 MB GPU". (2) todo
+  `initialize` manda `projectId` (brain-backend = projeto resolvido; wizard/setup-tools/backup = `default`;
+  auto-update = `__ccb_auto_update__`). (3) gravação passa `project_id` explícito ou o do handshake — não
+  depende de defaults do workspace. (4) parsers tolerantes (sem `memory_health`). (5) daemon só pelo
+  inicializador; sidecar nunca tocado. Achado extra **corrigido**: `releases/latest` às vezes é um sidecar
+  (Sidecar v1.6.1 em 05/10) → o resolvedor lista as releases e pega a maior X.Y.Z com o jar. Teste + mutação.
+- [ ] **Q34 — `scripts/lib/plugin-updater.js:228` usa `releases/latest` do repo do próprio boss**, onde também
+  saem releases `rf-v*` (rf-reviewer): a "latest" pode ser do rf-reviewer. Visto na verificação do Q33. Fora do
+  escopo. Proposta: listar releases e filtrar a tag `v<X.Y.Z>` mais alta (mesma regra do release-guard).
+- [x] **Q29 — gate da release (servidor 2.45.5+ público)** — satisfeito: v2.45.5 e v2.45.6 publicadas em 06/10.
 ## Testes
 
 - [x] `scripts/test-units.js`, teste `plano B: stream com várias linhas SSE somando mais de 32 MiB termina completo (o teto é por linha)` (~9361): flake intermitente sob carga (anotado em 2026-09-30, durante a Fase G da 2.29.1, que não toca o model-router): falhou com `nvidia: conteúdo perdido (867 chars)` em 1 de 3 rodadas completas da suíte, e outra rodada teve 2 falhas da família `plano B`; a terceira passou limpa. Mesma família de timing do item de FIN/reset abaixo. Investigar se o stream de >40 MiB é cortado por prazo do teste ou do router quando a máquina está carregada.

@@ -13,7 +13,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { spawnSync } = require('child_process');
-const { detectGpu, resolveLatestAsset } = require('../lib/mcp-release-resolver.js');
+const { resolveLatestAsset } = require('../lib/mcp-release-resolver.js');
 
 const MIN_JAVA_MAJOR = 21;
 
@@ -124,10 +124,10 @@ async function test(input) {
         ms: Date.now() - t0,
       };
     }
-    const gpu = detectGpu();
+    // One server jar per release since 2.45.6 (the -gpu jar is gone; GPU = the server's sidecar).
     let asset;
     try {
-      asset = await resolveLatestAsset({ gpu: gpu.present });
+      asset = await resolveLatestAsset();
     } catch (err) {
       return { ok: false, error: `auto-download resolution failed: ${err.message}`, ms: Date.now() - t0 };
     }
@@ -137,8 +137,6 @@ async function test(input) {
       error: java.ok ? undefined : java.error,
       details: {
         action: 'will-auto-download',
-        gpuDetected: gpu.present,
-        gpuName: gpu.name || '',
         resolvedAsset: asset.name,
         resolvedVersion: asset.version,
         downloadSize: asset.size,

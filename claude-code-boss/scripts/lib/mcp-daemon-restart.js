@@ -101,7 +101,7 @@ async function prepareVerifiedUpdate(currentJar, latestVersion, deps = {}) {
   const resolveAsset = deps.resolveLatestAsset || resolveLatestAsset;
   // The server launcher (native-java ADR-023, C-3) only runs exact mcp-memory-server-X.Y.Z.jar
   // names, so the update is always the CPU build — a "-gpu" jar would never be started.
-  const asset = await resolveAsset({ gpu: false });
+  const asset = await resolveAsset();
   if (normalizedVersion(asset.version) !== normalizedVersion(latestVersion)) {
     throw new Error(`release resolvida ${asset.version} diverge de check_update ${latestVersion}`);
   }
