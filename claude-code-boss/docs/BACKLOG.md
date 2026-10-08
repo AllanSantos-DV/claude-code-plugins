@@ -588,6 +588,7 @@ real (2.29.0, porta 38217) seguiu intacto. Resultados (Claude Code 2.1.283):
   teste em ambiente real e abrir o achado no projeto do servidor.
   **2026-10-02 — evidência para o servidor (o usuário corrige lá)**: o schema real do `compose_recall` aceita só `query`/`setup`/`includeLifecycleState`/`metadata`; os blocos home (`procedural`, `skill_global`) vêm "ALWAYS present" e o `metadata` "NEVER" os filtra — o cliente não controla relevância do home. Amostra real (pergunta sobre o daemon de hooks): home trouxe "Memory consolidation completed with 3119 documents" (0,672), "The directory is now empty" (0,649/0,606), "IPv6 monitor" (0,617) — lixo na MESMA faixa de score das relevantes, então piso de score no cliente não discrimina. Pedido do usuário: corte por qualidade/relevância no home no servidor (o home é a "skill global" para todas as IDEs). Itens de `compose_recall` abaixo (custo por bloco, FTS por tamanho, post-filter de escopo, blocos sem docs do boss, Dreaming) são todos do servidor.
   **2026-10-08 — repassado** à sessão do native-java (evidência + mitigações do boss + pedido de corte por qualidade no home). Fecha quando o servidor publicar.
+  **2026-10-08 — servidor corrigiu**: espaços com `project_id` começando com `__` (exceto `__user__`) saem da leitura padrão e só voltam com `metadata.project_id` explícito. Verificado no boss (varredura exata dos arquivos versionados): nenhum fluxo cita `__lessons__`/`__quarentena__`, e o braço de projeto já filtra `project_id IN (foco, ancestrais, __user__)` — sem ajuste necessário. Fecha quando a versão do servidor for publicada e o ruído sumir no uso real.
 - [x] **U8 — `[BRAIN·SKILLS] 1 available capability pointer(s): - (unnamed)`** em
   todo turno: ponteiro sem nome renderizado.
   **RESOLVIDO em 2026-10-02**: `brain-backend.splitComposeBlocks` deriva o nome da
@@ -1013,6 +1014,22 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   **2026-10-08**: lido — o valor era VAZIO (REG_SZ de 0 caracteres; o endereço das sessões vem do env do launcher).
   Não é do boss (o `cleanupGlobalEnv` só apaga valores localhost, e apaga a variável inteira). **Removido** com
   aprovação do dono (`reg delete`; `reg query` confirma ausência).
+- [ ] **Q41 — papel de ORQUESTRADOR como capacidade do boss (pedido do dono, 2026-10-08, via Jarvis).** O orquestrador
+  agia como ponte pura (repassava achado → esperava decisão → repassava), inclusive quando a ação óbvia já estava clara.
+  Regras pedidas, para QUALQUER agente no papel: (1) release só com todo item não-ambíguo resolvido; o ambíguo (escolha de
+  produto/arquitetura) vai ao dono, o resto o orquestrador decide e manda executar; (2) teste quebrado/erro de log/dúvida
+  técnica rotineira: investiga, pesquisa, decide, só reporta; (3) mudança no comportamento do usuário final: SEMPRE escala,
+  com pesquisa + validação (spike) + 1 a 3 sugestões validadas com trade-off; (4) ciência proativa do fim de sessão
+  (commits/build) ligada ao self-forge, sem polling a pedido; (5) memória de decisão por padrão recorrente no Brain/MCP
+  memory (do PAPEL, não da sessão); (6) curadoria periódica (a cada poucos dias) do que foi aprendido/decidido.
+  **Status: proposta pronta (2026-10-08)** — levantamento + pesquisa com fontes + 5 fases (F0 spike, F1 kit do papel, F2 eventos de
+  fim de sessão, F3 memória de decisão, F4 curadoria) em `docs/plans/orchestrator-role-design.md` (local). Aguardando o dono decidir
+  D1 (como a sessão vira orquestradora), D2 (limiar de re-aplicação automática), D3 (cadência/autonomia da curadoria), D4 (interface
+  de eventos do self-forge agora ou na migração para runners efêmeros).
+- [ ] **Q42 — `capture_lesson` funde por similaridade sem olhar o tipo** (`servers/brain-server/lib/mcp-server.js:996-1005`): com
+  cosine ≥ 0,9 contra o top-1, uma `decision` vira `recurrence++` de uma `lesson` parecida (e vice-versa) — perde-se o registro da
+  decisão. Visto no levantamento do Q41 (2026-10-08). Proposta: só fundir com o mesmo tipo (ou comparar o top-k do mesmo tipo); teste
+  com uma lição e uma decisão quase iguais. Pré-requisito da F3 do Q41.
 ## Testes
 
 - [x] `scripts/test-units.js`, teste `plano B: stream com várias linhas SSE somando mais de 32 MiB termina completo (o teto é por linha)` (~9361): flake intermitente sob carga (anotado em 2026-09-30, durante a Fase G da 2.29.1, que não toca o model-router): falhou com `nvidia: conteúdo perdido (867 chars)` em 1 de 3 rodadas completas da suíte, e outra rodada teve 2 falhas da família `plano B`; a terceira passou limpa. Mesma família de timing do item de FIN/reset abaixo. Investigar se o stream de >40 MiB é cortado por prazo do teste ou do router quando a máquina está carregada.
