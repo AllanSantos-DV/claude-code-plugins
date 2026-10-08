@@ -982,10 +982,12 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   cache quente** (o teto saiu: se não esfriar, age o auto-compact do engine, também pela poda). Slider no painel,
   `GET/PUT /api/compaction/config` gravando no user-config (à prova de update); sessões abertas pegam no próximo turno.
   Provado no sandbox interativo: janela 200k (env), limiar 20k, 420 s ocioso → `cache-cold` → 58.517 → 31.303 tokens.
-- [ ] **Q37 — nome "claude-code-boss" é reservado para o `claude plugin validate`** (prefixo `claude-`), visto ao
+- [x] **Q37 — nome "claude-code-boss" é reservado para o `claude plugin validate`** (prefixo `claude-`), visto ao
   validar o módulo de compactação. Hoje só o validador reprova: em execução o engine carrega e admite o módulo
   (provado com plugin instalado de marketplace e `--plugin-dir`, 2.1.291). Risco: se a regra passar a valer na
   carga, os módulos do boss deixam de rodar. Proposta: decidir com o dono um nome não reservado antes disso.
+  **DECIDIDO pelo dono em 2026-10-08: adiar, sem renomear; monitorar.** Sem impacto hoje. Gatilho para reabrir: nota de versão do
+  Claude Code aplicando a regra de nome reservado na carga de plugins (ou o módulo deixar de carregar num smoke).
 - [x] **Q38 — `scripts/dashboard.js` `saveHooksConfig` (PUT /api/hooks/config) grava o `config/hooks-config.json` SHIPPED** (pasta do
   plugin), que o auto-update substitui: o que o usuário ajusta por essa rota some na próxima versão. Visto ao planejar o
   controle de limiar da compactação (08/10). O perfil já faz certo (`saveProfile` → `<globalDir>/hooks/user-config.json`).
