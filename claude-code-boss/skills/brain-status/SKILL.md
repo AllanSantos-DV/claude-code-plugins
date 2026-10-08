@@ -1,5 +1,5 @@
 ---
-description: Report real-time backend integration status — mode, connection, project, latency. USE FOR: checking if mcp-memory is connected, diagnosing backend issues, verifying which KB backend is active, understanding the current brain integration state. DO NOT USE FOR: general brain queries, changing backend configuration, embedding model selection.
+description: "Report real-time backend integration status — mode, connection, project, latency. USE FOR: checking if mcp-memory is connected, diagnosing backend issues, verifying which KB backend is active, understanding the current brain integration state. DO NOT USE FOR: general brain queries, changing backend configuration, embedding model selection."
 ---
 
 # Brain Status — Backend Integration Monitor
