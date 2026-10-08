@@ -587,6 +587,7 @@ real (2.29.0, porta 38217) seguiu intacto. Resultados (Claude Code 2.1.283):
   passo: capturar o trace do `compose_recall` (bloco/escopo/score da entrada) no
   teste em ambiente real e abrir o achado no projeto do servidor.
   **2026-10-02 — evidência para o servidor (o usuário corrige lá)**: o schema real do `compose_recall` aceita só `query`/`setup`/`includeLifecycleState`/`metadata`; os blocos home (`procedural`, `skill_global`) vêm "ALWAYS present" e o `metadata` "NEVER" os filtra — o cliente não controla relevância do home. Amostra real (pergunta sobre o daemon de hooks): home trouxe "Memory consolidation completed with 3119 documents" (0,672), "The directory is now empty" (0,649/0,606), "IPv6 monitor" (0,617) — lixo na MESMA faixa de score das relevantes, então piso de score no cliente não discrimina. Pedido do usuário: corte por qualidade/relevância no home no servidor (o home é a "skill global" para todas as IDEs). Itens de `compose_recall` abaixo (custo por bloco, FTS por tamanho, post-filter de escopo, blocos sem docs do boss, Dreaming) são todos do servidor.
+  **2026-10-08 — repassado** à sessão do native-java (evidência + mitigações do boss + pedido de corte por qualidade no home). Fecha quando o servidor publicar.
 - [x] **U8 — `[BRAIN·SKILLS] 1 available capability pointer(s): - (unnamed)`** em
   todo turno: ponteiro sem nome renderizado.
   **RESOLVIDO em 2026-10-02**: `brain-backend.splitComposeBlocks` deriva o nome da
@@ -871,11 +872,13 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   não adia. Achado junto: o shim (`servers/model-router/wrapper.cs:111`) troca QUALQUER `ANTHROPIC_BASE_URL` pela do
   url.txt — coberto pela remoção do url.txt no adiamento. Testes: `sessionGateway` + `run()` hermético (limpa,
   persiste sem o env); mutação (adiamento desligado) reprova.
-- [ ] **Q25 — 1 falha intermitente numa rodada completa do gate (05/10, durante o `/release` 3.0.1).** A
+- [x] **Q25 — 1 falha intermitente numa rodada completa do gate (05/10, durante o `/release` 3.0.1).** A
   saída foi cortada (`tail`) e o nome do teste se perdeu. Não reproduziu em 2 rodadas completas do gate
   nem em 35 rodadas isoladas dos testes novos sensíveis a tempo (reaper, keepalive, backup e2e,
   brain-status, mcp-link, setup self-heal, wizard spawn). Próxima ocorrência: guardar o log inteiro e
   registrar o nome do teste aqui antes de rodar de novo.
+  **Fechado em 2026-10-08 como não reproduzido** (aprovado pelo dono): ~20 rodadas completas do gate em 08/10 sem
+  nenhuma falha intermitente. Se voltar: log inteiro + nome do teste num item novo.
 - [x] **Q26 — sessão de versão antiga ressuscitava o daemon com código antigo.** Visto no smoke do
   `/release` 3.0.1: depois de instalar fb0d90d o daemon rodava de 4ac5858 (3.0.0) — sessões abertas
   antes mantêm o pluginRoot antigo e, com o daemon fora por um instante, o `headersHelper`/hook delas
@@ -998,9 +1001,18 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   (LiteLLM → `vertex_ai.anthropic.claude-haiku-4-5`). Visto em todas as sessões interativas do sandbox (08/10), com e sem o
   boss compactando; o Claude Code repete e segue. Externo (parâmetro de thinking que o gateway/modelo não aceita), relacionado
   ao Q24 (gateway próprio do dono). Ação: confirmar com o dono se o gateway deve aceitar `display` ou o modelo dele não usa thinking.
-- [ ] **Q36 — `ANTHROPIC_BASE_URL` no ambiente de usuário do Windows (HKCU\Environment)** desta máquina, visto
+  **2026-10-08 — causa exata** (debug log do sandbox, 12:32:45Z): `invalid_request_error … thinking.enabled.display:
+  Input should be 'summarized', 'omitted'`, `request_id: req_vrtx_011CfpmwxaMM4QugvqUQZW5u` — quem recusa é a **Vertex**
+  (o LiteLLM só repassa). Logo depois o Claude Code registra `[betas] the API refused thinking-display-updates-2026-08-18;
+  not sent again … in this process`: ele desliga o beta sozinho → custo de 1 tentativa por PROCESSO, não por pedido.
+  O corpo da requisição não é logado (o valor de `display` enviado não é visível sem capturar). Nada a corrigir no
+  boss nem no gateway; aguardando o dono decidir se fecha como externo.
+- [x] **Q36 — `ANTHROPIC_BASE_URL` no ambiente de usuário do Windows (HKCU\Environment)** desta máquina, visto
   no spike do Q35 (valor não lido). O boss não grava HKCU (grep em `scripts/`: nenhum `setx`/`reg add`); afeta
   qualquer app, não só o Claude Code. Relacionado ao Q24. Ação: confirmar com o dono quem gravou e se é intencional.
+  **2026-10-08**: lido — o valor era VAZIO (REG_SZ de 0 caracteres; o endereço das sessões vem do env do launcher).
+  Não é do boss (o `cleanupGlobalEnv` só apaga valores localhost, e apaga a variável inteira). **Removido** com
+  aprovação do dono (`reg delete`; `reg query` confirma ausência).
 ## Testes
 
 - [x] `scripts/test-units.js`, teste `plano B: stream com várias linhas SSE somando mais de 32 MiB termina completo (o teto é por linha)` (~9361): flake intermitente sob carga (anotado em 2026-09-30, durante a Fase G da 2.29.1, que não toca o model-router): falhou com `nvidia: conteúdo perdido (867 chars)` em 1 de 3 rodadas completas da suíte, e outra rodada teve 2 falhas da família `plano B`; a terceira passou limpa. Mesma família de timing do item de FIN/reset abaixo. Investigar se o stream de >40 MiB é cortado por prazo do teste ou do router quando a máquina está carregada.
