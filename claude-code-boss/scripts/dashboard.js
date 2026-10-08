@@ -18,6 +18,7 @@ const { loadSqlite } = require('./lib/sqlite-compat.js');
 const pluginUpdater = require('./lib/plugin-updater.js');
 const { resolveMode } = require('./lib/router-mode.js');
 const hooksConfig = require('./lib/hooks-config.js');
+const { HOOKS: HOOK_TOOLS } = require('./lib/hook-tools.js');
 const { validEnvDir, dataDir } = require('./lib/data-dir.js');
 const { isValidHost, tokenMatches } = require('./lib/dashboard-auth.js');
 const { resolveStaticPath } = require('./lib/dashboard-static.js');
@@ -1200,15 +1201,19 @@ function getHooks(req, res) {
         const isMcp = hook && hook.type === 'mcp_tool';
         const fullPath = hookScriptPath(hook);
         const exists = isMcp ? true : (fullPath ? fs.existsSync(fullPath) : false);
-        const disabled = fullPath.endsWith('.disabled');
-        const active = exists && !disabled;
+        // Only daemon-served hook tools can be switched off (update-safe, BACKLOG Q43);
+        // the command entries are infrastructure (session root, daemon/router ensure).
+        const togglable = isMcp && Object.prototype.hasOwnProperty.call(HOOK_TOOLS, hook.tool);
+        const off = togglable && hooksConfig.isHookDisabled(hook.tool);
         result.push({
           event,
           matcher,
           command: cmd,
           scriptFile: isMcp ? `${hook.server}/${hook.tool}` : (fullPath ? path.basename(fullPath) : ''),
-          active,
+          id: isMcp ? hook.tool : (fullPath ? path.basename(fullPath) : ''),
+          active: exists && !off,
           exists,
+          togglable,
         });
       }
     }
@@ -1216,23 +1221,21 @@ function getHooks(req, res) {
   json(res, result);
 }
 
+// Switch a daemon-served hook off/on in the update-safe user-config (BACKLOG Q43).
+// It used to rename the script inside the plugin folder: an auto-update brought the
+// hook back silently, and renaming a dispatcher broke every detector of its event.
 function toggleHook(req, res, url) {
-  const parts = url.pathname.split('/');
-  const name = parts[parts.length - 1];
-  if (!name) return fail(res, 'Missing hook name', 400);
-
-  const scriptPath = path.join(ROOT, 'scripts', name);
-  const disabledPath = scriptPath + '.disabled';
-
-  if (fs.existsSync(scriptPath)) {
-    fs.renameSync(scriptPath, disabledPath);
-    return json(res, { ok: true, active: false });
+  hooksConfig._resetCache();
+  const id = decodeURIComponent(url.pathname.split('/').pop() || '');
+  if (!id) return fail(res, 'Missing hook id', 400);
+  if (!Object.prototype.hasOwnProperty.call(HOOK_TOOLS, id)) {
+    return fail(res, `'${id}' can't be switched off here: only the daemon-served hook tools can (the command hooks are infrastructure — session root, daemon and router ensure; use a profile or the router panel)`, 400);
   }
-  if (fs.existsSync(disabledPath)) {
-    fs.renameSync(disabledPath, scriptPath);
-    return json(res, { ok: true, active: true });
-  }
-  fail(res, 'Hook script not found', 404);
+  try {
+    const off = !hooksConfig.isHookDisabled(id);
+    hooksConfig.setHookDisabled(id, off);
+    json(res, { ok: true, id, active: !off });
+  } catch (e) { fail(res, e.message, 500); }
 }
 
 // ─── API: Logs ─────────────────────────────────────────────────────

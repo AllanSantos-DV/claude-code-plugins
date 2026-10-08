@@ -264,6 +264,11 @@ function createHookTools({ pluginRoot, hookWorker, deadlines } = {}) {
   async function handle(name, args) {
     const spec = HOOKS[name];
     if (!spec) throw new Error(`unknown hook tool: ${name}`);
+    // Switched off in the dashboard (update-safe user-config, BACKLOG Q43): answer
+    // "nothing to say" without running the hook — fresh like any config read.
+    const hooksConfigPath = path.join(pluginRoot, 'scripts', 'lib', 'hooks-config.js');
+    refreshConfig(hooksConfigPath, [path.join(pluginRoot, 'scripts', 'curation-paths.js')]);
+    if (require(hooksConfigPath).isHookDisabled(name)) return { content: [{ type: 'text', text: EMPTY }] };
     const ms = deadlineMs[name] || DEFAULT_TIMEOUT_S * 1000 - DEADLINE_MARGIN_MS;
     const t0 = performance.now();
     let text;

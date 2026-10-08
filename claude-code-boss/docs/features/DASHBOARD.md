@@ -50,7 +50,7 @@ Banner "Reinicie o Claude Code" aparece quando a mudanca precisa engatar no prox
 
 ### Hooks
 
-- Perfil ativo (standard/dev/free) + toggles individuais
+- Perfil ativo (standard/dev/free) + liga/desliga por hook (só os servidos pelo daemon; gravado no seu arquivo de usuário, sobrevive a updates)
 - Config por hook (ex.: maxLines do memory-rotate)
 
 ### Insights

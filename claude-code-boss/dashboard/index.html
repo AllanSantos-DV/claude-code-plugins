@@ -3854,7 +3854,7 @@ function renderHooks() {
       <td>${h.matcher}</td>
       <td class="text-muted">${h.scriptFile}</td>
       <td><span class="tag ${h.active ? 'tag-green' : 'tag-warn'}">${h.active ? 'Active' : 'Inactive'}</span></td>
-      <td><button class="btn-sm ${h.active ? 'btn-warning' : 'btn-success'}" data-hook-file="${escapeHtml(h.scriptFile)}">${h.active ? 'Disable' : 'Enable'}</button></td>
+      <td>${h.togglable ? `<button class="btn-sm ${h.active ? 'btn-warning' : 'btn-success'}" data-hook-file="${escapeHtml(h.id)}">${h.active ? 'Disable' : 'Enable'}</button>` : '<span class="text-muted" title="Infrastructure hook — use a profile or the router panel">—</span>'}</td>
     </tr>`
   ).join('');
   // Padrão data-* + listener (args NUNCA em onclick string — ver busca Brain).

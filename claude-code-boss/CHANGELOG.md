@@ -69,6 +69,11 @@
 - **O seu ajuste da promoção de skills passa a valer.** `kb.skillPromotion` (recorrência e confiança mínimas)
   era lido só do arquivo que vem com o plugin, tanto pela promoção quanto pelo painel; o que você gravava no seu
   arquivo de usuário era ignorado.
+- **Desligar um hook no painel não é mais desfeito pelo update, nem derruba os outros.** O botão renomeava o
+  script dentro da pasta do plugin: o update seguinte o religava sem aviso, e desligar um dispatcher tirava todos
+  os detectores daquele evento, com erro a cada disparo; nos hooks servidos pelo daemon (a maioria) o botão nem
+  funcionava. Agora ele grava a escolha no seu arquivo de usuário e o daemon simplesmente não roda o hook; os hooks
+  de infraestrutura (dispatchers de início de sessão e de prompt, ensure do roteador) não têm botão.
 
 ## [3.0.1] - 2026-10-05
 

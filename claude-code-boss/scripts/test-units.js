@@ -17983,6 +17983,37 @@ test('capture_lesson (Q42): dedup merges only within the SAME type — a decisio
   assertEq([entries.length, merges], [2, 1]);
 });
 
+test('hook switch-off (Q43): kept in the update-safe user-config, and the daemon answers {} WITHOUT running the hook', async () => {
+  const hc = require('./lib/hooks-config.js');
+  const ht = require('./lib/hook-tools.js');
+  const file = hc.userConfigPath();
+  assert(file.startsWith(process.env.USERPROFILE), `the suite's temp HOME, never the real one (${file})`);
+  const prev = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+  const scriptsBefore = fs.readdirSync(SCRIPTS).sort().join('|');
+  let ran = 0;
+  ht.HOOKS.hook_q43_probe = { lane: 'fast', script: 'lib/hooks-config.js', call: async () => { ran++; return JSON.stringify({ systemMessage: 'probe ran' }); } };
+  try {
+    const tools = ht.createHookTools({ pluginRoot: ROOT, hookWorker: null });
+    assertEq((await tools.handle('hook_q43_probe', {})).content[0].text, JSON.stringify({ systemMessage: 'probe ran' }));
+    assertEq(ran, 1);
+    assertEq(hc.setHookDisabled('hook_q43_probe', true), ['hook_q43_probe']);
+    assertEq(JSON.parse(fs.readFileSync(file, 'utf8')).disabledHooks, ['hook_q43_probe'], 'written to the user-config');
+    assertEq((await tools.handle('hook_q43_probe', {})).content[0].text, '{}', 'switched off → "nothing to say"');
+    assertEq(ran, 1, 'the hook did NOT run');
+    hc.setHookDisabled('hook_q43_probe', false);
+    await tools.handle('hook_q43_probe', {});
+    assertEq(ran, 2, 'switched back on → runs again');
+    assertEq(fs.readdirSync(SCRIPTS).sort().join('|'), scriptsBefore, 'no plugin file renamed (an update can no longer undo it)');
+    let threw = null;
+    try { hc.setHookDisabled('', true); } catch (err) { threw = err.message; }
+    assert(/non-empty/.test(threw || ''), 'an empty id fails loud');
+  } finally {
+    delete ht.HOOKS.hook_q43_probe;
+    if (prev == null) { try { fs.unlinkSync(file); } catch (err) { void err; } } else fs.writeFileSync(file, prev);
+    hc._resetCache();
+  }
+});
+
 test('skill promotion (Q44): the user override of kb.skillPromotion reaches brain-promote and the dashboard (not only the shipped file)', () => {
   const bc = require('./lib/brain-config.js');
   const file = path.join(require('./lib/data-dir.js').globalDir(), 'user-config.json');
