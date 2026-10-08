@@ -69,19 +69,47 @@ export function planCompaction(messages, options = {}) {
   // messages vs 18; the API then saw the same tool_use twice and rejected the thinking of the
   // latest assistant message). Tool ids are unique per call, so a message whose tool ids were
   // all seen before is a copy; plain text is never matched (a repeated "ok" is legitimate).
+  // The copies form one contiguous run. Inside it, a text message identical to an earlier one
+  // is a copy too (its thinking was what the API rejected); the run opens at a tool-id copy —
+  // and reaches back over the repeated text right before it — and closes at the first message
+  // that is new (a new tool id, or a text never seen). Outside a run, repeated text is kept.
   const seenUse = new Set();
   const seenRes = new Set();
-  let duplicatesDropped = 0;
-  const list = input.filter((m) => {
+  const firstText = new Map(); // textKey → index of its first occurrence
+  const keep = input.map(() => true);
+  let inCopyRun = false;
+  input.forEach((m, i) => {
     const uses = (m.toolUses || []).map((u) => u.tool_use_id);
     const res = (m.toolResults || []).map((r) => r.tool_use_id);
-    if (!uses.length && !res.length) return true;
+    const textKey = m.text ? `${m.role}\u0000${m.text}` : null;
+    const repeatedText = textKey != null && firstText.has(textKey) && firstText.get(textKey) < i;
+    if (!uses.length && !res.length) {
+      if (inCopyRun && repeatedText) { keep[i] = false; return; }
+      if (inCopyRun && textKey && !repeatedText) inCopyRun = false;
+      if (textKey && !firstText.has(textKey)) firstText.set(textKey, i);
+      return;
+    }
     const dup = uses.every((id) => seenUse.has(id)) && res.every((id) => seenRes.has(id));
-    if (dup) { duplicatesDropped++; return false; }
+    if (dup) {
+      if (!inCopyRun) { // reach back over the repeated text the run started with
+        for (let j = i - 1; j >= 0 && keep[j]; j--) {
+          const p = input[j];
+          const pk = p.text ? `${p.role}\u0000${p.text}` : null;
+          if ((p.toolUses || []).length || (p.toolResults || []).length || !pk || !(firstText.get(pk) < j)) break;
+          keep[j] = false;
+        }
+      }
+      inCopyRun = true;
+      keep[i] = false;
+      return;
+    }
+    inCopyRun = false;
     for (const id of uses) seenUse.add(id);
     for (const id of res) seenRes.add(id);
-    return true;
+    if (textKey && !firstText.has(textKey)) firstText.set(textKey, i);
   });
+  const list = input.filter((_, i) => keep[i]);
+  const duplicatesDropped = input.length - list.length;
   const last = list.length - 1;
   const pinned = (i) => i === 0 || i > last - o.preserveRecentMessages;
 

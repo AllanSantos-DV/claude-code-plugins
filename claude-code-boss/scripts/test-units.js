@@ -23140,6 +23140,18 @@ test('compaction-core.planCompaction: a resumed history rebuilt with the engine\
   assert(p.messages.some((m) => m.handle === 'again' && m.text === 'go on'), 'a repeated plain-text message is legitimate and kept');
   assertEq(p.verbatimTextIntact, true);
   assertEq(cmpCore.planCompaction(msgs).duplicatesDropped, 0, 'a normal history has none');
+  // run boundaries: the text copies around the tool copies go; new text after the run stays
+  const U = (t) => ({ role: 'user', text: t, toolUses: [] });
+  const A = (t) => ({ role: 'assistant', text: t, toolUses: [] });
+  const call = (id) => ({ role: 'assistant', text: '', toolUses: [{ tool_use_id: id, tool: 'Read', input: {} }] });
+  const res = (id) => ({ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text: 'x', isError: false }] });
+  const show = (q) => q.messages.map((m) => m.text || ((m.toolUses || []).length ? '[use]' : '[res]')).join(',');
+  const orig = [U('task'), A('reading'), call('t1'), res('t1'), A('DONE')];
+  const r = cmpCore.planCompaction([...orig, A('reading'), call('t1'), res('t1'), A('DONE'), U('ok'), U('ok')], { preserveRecentMessages: 0 });
+  assertEq(show(r), 'task,reading,[use],[res],DONE,ok,ok', 'copies (incl. the text before the first tool copy) dropped; both new "ok" kept');
+  assertEq(r.duplicatesDropped, 4);
+  const plain = cmpCore.planCompaction([U('ok'), A('a'), U('ok'), A('a')], { preserveRecentMessages: 0 });
+  assertEq(plain.duplicatesDropped, 0, 'no tool copy = no run: repeated text is never touched');
 });
 
 test('compaction-core.decideTiming: waits for the cache to expire, compacts cold or at the ceiling, never busy/cooldown/no-reading, unknown TTL = the longer window', () => {
