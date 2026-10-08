@@ -16,7 +16,7 @@
 //   - a plugin's own $.prompt.submit skips its own hook → no loop;
 //   - interactive: session.measure carries no tokens, usage() does (headless: reverse).
 // Observability: every decision and cut goes to the boss metrics store through the
-// daemon (tool hook_compaction_event → scripts/compaction-event.js).
+// daemon (POST /hook/compaction-event → tool hook_compaction_event → scripts/compaction-event.js).
 
 import { planCompaction, decideTiming, classifyResume, estimateTokens, DEFAULTS } from '../scripts/lib/compaction-core.mjs';
 
@@ -26,7 +26,7 @@ function newCtx() {
   return {
     config: { ...DEFAULTS },
     configLoaded: false,
-    server: null,           // the brain-server name as /mcp lists it
+    daemon: null,           // { base, token } of the brain daemon
     identity: null,         // { host, auth } — never a secret value
     busy: false,
     interactive: true,       // session.start says; headless (-p/SDK) cannot compact from a plugin
@@ -43,12 +43,21 @@ function newCtx() {
   };
 }
 
-async function serverName($, ctx) {
-  if (ctx.server) return ctx.server;
-  const c = await $.mcp.connect('brain-server');
-  if (!c.isConnected) throw new Error(`brain-server not connected: ${c.reason || ''} ${c.message || ''}`.trim());
-  ctx.server = c.server;
-  return ctx.server;
+// The daemon's address and local token. The hook_* tools are unlisted (never the model's), and
+// a module's $.mcp.call only reaches listed tools — so the module POSTs to the daemon's
+// /hook/compaction-event route, behind the same token gate as /mcp. /health is open (the
+// supervisor's probe) and names the data dir that holds the token file.
+async function daemon($, ctx, refresh = false) {
+  if (ctx.daemon && !refresh) return ctx.daemon;
+  const port = Number(await $.env.get('BRAIN_HTTP_PORT')) || 38217;
+  const base = `http://127.0.0.1:${port}`;
+  const h = await $.http.fetch(`${base}/health`);
+  if (!h.ok) throw new Error(`brain daemon /health answered ${h.status} on port ${port}`);
+  const { dataDir } = JSON.parse(h.text);
+  if (!dataDir) throw new Error('brain daemon /health has no dataDir');
+  const token = (await $.fs.read(`${String(dataDir).replace(/[\\/]+$/, '')}/brain-http.token`)).trim();
+  ctx.daemon = { base, token };
+  return ctx.daemon;
 }
 
 async function identity($, ctx) {
@@ -68,7 +77,6 @@ async function identity($, ctx) {
 
 // One event to the daemon. Replies the parsed JSON; a degraded daemon reply throws.
 async function send($, ctx, kind, data) {
-  const server = await serverName($, ctx);
   const args = {
     session_id: await $.session.id(),
     cwd: await $.session.cwd(),
@@ -76,11 +84,14 @@ async function send($, ctx, kind, data) {
     transcript_path: ctx.transcriptPath || '',
     payload: JSON.stringify({ kind, ...data }),
   };
-  const r = await $.mcp.call(server, 'hook_compaction_event', args);
-  const text = (r.content || []).map((b) => b.text || '').join('');
-  if (r.isError) throw new Error(`hook_compaction_event ${kind}: ${text.slice(0, 300)}`);
-  const out = text ? JSON.parse(text) : {};
-  if (out.systemMessage) throw new Error(out.systemMessage);
+  const post = async (d) => $.http.fetch(`${d.base}/hook/compaction-event`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${d.token}` }, body: JSON.stringify(args),
+  });
+  let r = await post(await daemon($, ctx));
+  if (r.status === 401) r = await post(await daemon($, ctx, true)); // the daemon restarted with a new token
+  if (!r.ok) throw new Error(`hook_compaction_event ${kind}: daemon answered ${r.status} ${String(r.text).slice(0, 200)}`);
+  const out = r.text ? JSON.parse(r.text) : {};
+  if (out.systemMessage) throw new Error(out.systemMessage); // the hook degraded in the daemon (visible)
   return out;
 }
 

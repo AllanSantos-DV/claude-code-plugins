@@ -122,7 +122,8 @@ const HOOKS = {
   hook_graph_guard: { script: 'graph-guard.js', call: async (m, ev) => m.run(ev) },
   // Stop stays ONE consolidated tool: sibling Stop hooks do not merge reasons (spike S4-iii).
   hook_stop_dispatcher: { lane: 'heavy', script: 'stop-dispatcher.js', call: async (m, ev) => json(await m.run(ev)) },
-  // Called by the function-hook module (hooks/compaction.mjs, $.mcp.call), not by hooks.json:
+  // Called by the function-hook module (hooks/compaction.mjs) through the daemon route
+  // POST /hook/compaction-event (servers/brain-server/lib/http-daemon.js), not by hooks.json:
   // records the compaction trail + cache.turn (metrics store) and replies config / observed TTL.
   // caller 'module': absent from hooks.json on purpose (its deadline is the default).
   hook_compaction_event: { lane: 'heavy', caller: 'module', script: 'compaction-event.js', call: async (m, ev) => json(await m.run(ev)) },
