@@ -265,7 +265,11 @@ export const register = (on) => {
     if (e.agentId) return r;
     ctx.busy = false;
     ctx.lastAnswerAt = await $.clock.now();
-    if (ctx.config.enabled) $.clock.after(1, () => { void afterTurn($, ctx); });
+    if (!ctx.config.enabled) return r;
+    // Interactive: off the turn's path (the next prompt is not delayed). Headless: the
+    // process ends right after the turn, so a deferred observation would never run.
+    if (ctx.interactive) $.clock.after(1, () => { void afterTurn($, ctx); });
+    else await afterTurn($, ctx);
     return r;
   });
 
