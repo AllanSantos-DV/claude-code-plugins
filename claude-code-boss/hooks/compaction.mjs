@@ -62,9 +62,11 @@ async function daemon($, ctx, refresh = false) {
 
 async function identity($, ctx) {
   if (ctx.identity) return ctx.identity;
-  const provider = (await $.env.get('CLAUDE_CODE_USE_BEDROCK')) ? 'bedrock'
-    : (await $.env.get('CLAUDE_CODE_USE_VERTEX')) ? 'vertex'
-      : (await $.env.get('CLAUDE_CODE_USE_FOUNDRY')) ? 'foundry' : null;
+  // "0" is set and OFF (seen live: all three = "0" behind a gateway) — only 1/true/yes turn one on.
+  const on = (v) => /^(1|true|yes)$/i.test(String(v ?? '').trim());
+  const provider = on(await $.env.get('CLAUDE_CODE_USE_BEDROCK')) ? 'bedrock'
+    : on(await $.env.get('CLAUDE_CODE_USE_VERTEX')) ? 'vertex'
+      : on(await $.env.get('CLAUDE_CODE_USE_FOUNDRY')) ? 'foundry' : null;
   let host = provider;
   if (!host) {
     const base = await $.env.get('ANTHROPIC_BASE_URL');
