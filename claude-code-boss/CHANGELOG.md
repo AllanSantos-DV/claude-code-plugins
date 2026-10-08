@@ -66,6 +66,8 @@
   máquina usa um gateway próprio …"), em vez de sugerir um reload pendente.
 - O lembrete de registrar decisões citava o conteúdo de um arquivo criado no mesmo comando como se fosse a
   mensagem do commit; agora lê a mensagem certa.
+- **O embedder escolhido no painel passa a ser usado.** O painel do Brain gravava o provedor/modelo no seu arquivo
+  de usuário, mas o embedder lia só o arquivo do plugin e seguia com o modelo padrão.
 - **Uma decisão registrada não some mais dentro de uma lição parecida.** A memória junta capturas quase
   iguais (somando a recorrência); isso valia entre tipos diferentes, então uma decisão com texto parecido com o de
   uma lição virava só "+1" na lição e o registro da decisão se perdia. Agora só junta com o mesmo tipo.
