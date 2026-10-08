@@ -22740,7 +22740,13 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
     const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
     const all = Object.values(hooks).flat().flatMap(g => g.hooks || []);
     const hookEntries = all.filter(h => h.type === 'mcp_tool' && /^hook_/.test(h.tool));
-    assertEq(hookEntries.map(h => h.tool).sort(), [...hookTools.names].sort());
+    // Tools a function-hook MODULE calls ($.mcp.call) are absent from hooks.json on purpose —
+    // but each must really be called by a shipped module, so none is left orphaned.
+    const { HOOKS: SPECS_G } = require('./lib/hook-tools.js');
+    const moduleCalled = Object.keys(SPECS_G).filter(n => SPECS_G[n].caller === 'module');
+    assertEq(hookEntries.map(h => h.tool).sort(), [...hookTools.names].filter(n => !moduleCalled.includes(n)).sort());
+    const modulesSrc = (JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).modules || []).map(m => fs.readFileSync(path.join(ROOT, 'hooks', m), 'utf8')).join('\n');
+    for (const n of moduleCalled) assert(modulesSrc.includes(`'${n}'`), `${n} is called by a hooks module`);
     for (const h of hookEntries) {
       assertEq(h.server, 'plugin:claude-code-boss:brain-server');
       assertEq(h.input.project_dir, '${CLAUDE_PROJECT_DIR}');
@@ -22757,7 +22763,8 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
   const loadHookWorker = async () => (await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'hook-worker-client.js')).href)).createHookWorker;
 
   test('G2: heavy lane = Stop + the PostToolUse side-effect hooks; guards and prompt detectors stay on the fast lane', () => {
-    assertEq(HEAVY, ['hook_file_edit_detect', 'hook_policy_enforce_shadow', 'hook_posttoolusebash_dispatcher', 'hook_posttoolusefailure_dispatcher', 'hook_skill_metric', 'hook_stop_dispatcher']);
+    // + hook_compaction_event: SQLite (metrics store) and a transcript tail read, like Stop.
+    assertEq(HEAVY, ['hook_compaction_event', 'hook_file_edit_detect', 'hook_policy_enforce_shadow', 'hook_posttoolusebash_dispatcher', 'hook_posttoolusefailure_dispatcher', 'hook_skill_metric', 'hook_stop_dispatcher']);
   });
 
   test('G2: with a hook worker, heavy hooks go to it and fast hooks never do; a worker failure degrades visibly', async () => {
@@ -22908,7 +22915,9 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
   test('G5: deadlines come from hooks.json (timeout − 1 s) for every hook tool', () => {
     const { deadlinesFromHooksJson } = require('./lib/hook-tools.js');
     const d = deadlinesFromHooksJson(ROOT);
-    assertEq(Object.keys(d).sort(), [...hookTools.names].sort());
+    const { HOOKS: SPECS_D } = require('./lib/hook-tools.js');
+    // module-called tools have no hooks.json entry: they run on the default deadline.
+    assertEq(Object.keys(d).sort(), [...hookTools.names].filter(n => SPECS_D[n].caller !== 'module').sort());
     assertEq(d.hook_stop_dispatcher, 29000);
     assertEq(d.hook_curation_guard, 7000);
     assertEq(d.hook_graph_guard, 4000);
@@ -23063,6 +23072,196 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
     } finally { await hw.shutdown(); }
   });
 }
+
+// ─── controlled compaction (hooks/compaction.mjs → compaction-core / compaction-event / metrics) ──
+
+const cmpCore = require('./lib/compaction-core.mjs'); // ESM by require (Node >= 22.13, package.json engines)
+
+function cmpSession() {
+  const big = (c, n = 5000) => c.repeat(n);
+  const user = (text, handle) => ({ role: 'user', text, toolUses: [], handle });
+  const call = (id, tool, input, handle, text = '') => ({ role: 'assistant', text, toolUses: [{ tool_use_id: id, tool, input }], handle });
+  const result = (id, text, handle, isError = false) => ({ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text, isError }], handle });
+  return [
+    user('Plan: PINNED-DECISION-42 = never touch module.exports', 'h0'),
+    call('r1', 'Read', { file_path: 'src/p.js' }, 'h1', 'Reading the parser.'),
+    result('r1', big('a'), 'h2'),
+    call('b1', 'Bash', { command: 'npm test' }, 'h3'),
+    result('b1', big('E', 900), 'h4', true),
+    call('e1', 'Edit', { file_path: 'src/p.js', old_string: 'x', new_string: 'y' }, 'h5', 'Decision: keep the signature.'),
+    result('e1', 'ok', 'h6'),
+    call('b2', 'Bash', { command: 'npm test' }, 'h7'),
+    result('b2', 'all green', 'h8'),
+    user('document it', 'h9'),
+    call('r2', 'Read', { file_path: 'README.md' }, 'h10'),
+    result('r2', big('r', 100), 'h11'),
+    user('go on', 'h12'),
+    call('w1', 'Write', { file_path: 'README.md', content: 'doc' }, 'h13'),
+    result('w1', 'ok', 'h14'),
+  ];
+}
+
+test('compaction-core.planCompaction: stale results truncated with a note, every text verbatim, untouched messages are the engine objects', () => {
+  const msgs = cmpSession();
+  const p = cmpCore.planCompaction(msgs);
+  const why = Object.fromEntries(p.pruned.map((x) => [x.tool_use_id, x.reason]));
+  assertEq(why.r1, 'superseded-read');
+  assertEq(why.b1, 'failed-then-fixed');
+  assert(!('r2' in why), 'r2 is inside the pinned newest messages');
+  assertEq(p.verbatimTextIntact, true);
+  for (let i = 0; i < msgs.length; i++) assertEq(p.messages[i].text, msgs[i].text, `text ${i} verbatim`);
+  assert(p.messages[0] === msgs[0] && p.messages[6] === msgs[6], 'untouched → same object (engine handle kept)');
+  assertEq(p.messages[2].handle, undefined, 'a rebuilt message carries no handle');
+  assert(/\[compaction: \d+ chars of this Read result pruned — a later read\/edit of src\/p\.js supersedes it\]/.test(p.messages[2].toolResults[0].text), 'the cut says why');
+  assert(p.ratio > 0.5, `ratio ${p.ratio}`);
+  const none = cmpCore.planCompaction([msgs[0], msgs[1], { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'r1', text: 'tiny', isError: false }] }]);
+  assertEq(none.pruned.length, 0);
+  assert(none.ratio < cmpCore.DEFAULTS.minReductionRatio, 'nothing stale → below the minimum → the engine summary runs');
+});
+
+test('compaction-core.decideTiming: waits for the cache to expire, compacts cold or at the ceiling, never busy/cooldown/no-reading, unknown TTL = the longer window', () => {
+  const T = { thresholdTokens: 250000, hardCeilingTokens: 400000, minIntervalMs: 600000 };
+  const d = (s) => cmpCore.decideTiming({ busy: false, now: 10_000_000, ...s }, T);
+  assertEq(d({ tokens: 100000, lastAnswerAt: 0, ttlMs: 300000 }), { action: 'none', reason: 'below-threshold' });
+  assertEq(d({ tokens: 260000, lastAnswerAt: 10_000_000 - 60000, ttlMs: 300000 }), { action: 'wait', reason: 'cache-warm', dueInMs: 240000 });
+  assertEq(d({ tokens: 260000, lastAnswerAt: 10_000_000 - 300000, ttlMs: 300000 }), { action: 'compact', reason: 'cache-cold' });
+  assertEq(d({ tokens: 410000, lastAnswerAt: 10_000_000 - 1000, ttlMs: 3600000 }), { action: 'compact', reason: 'hard-ceiling' });
+  assertEq(d({ tokens: 500000, busy: true }).action, 'none');
+  assertEq(d({ tokens: 500000, lastCompactAt: 10_000_000 - 60000 }), { action: 'none', reason: 'cooldown' });
+  assertEq(d({}), { action: 'none', reason: 'no-reading' });
+  // 10 min idle, no TTL observed: assume 1h (5 min would compact with the cache alive) → wait.
+  assertEq(d({ tokens: 260000, lastAnswerAt: 10_000_000 - 600000 }), { action: 'wait', reason: 'cache-warm', dueInMs: 3600000 - 600000 });
+  // No answer seen yet: the cache age is unknown — never "cold" (a fresh session's first prompt).
+  assertEq(d({ tokens: 260000, ttlMs: 300000 }), { action: 'none', reason: 'cache-age-unknown' });
+  assertEq(d({ tokens: 410000 }), { action: 'compact', reason: 'hard-ceiling' }, 'the ceiling still acts');
+});
+
+test('compaction-core.classifyResume: the engine re-expanded the history (relative AND absolute growth), not tied to the threshold', () => {
+  assertEq(cmpCore.classifyResume({ reloadedTokens: 100000, lastTokens: 7000 }).reexpanded, true, 'manual /compact at 100k, resumed');
+  assertEq(cmpCore.classifyResume({ reloadedTokens: 264000, lastTokens: 47000 }).reexpanded, true, 'measured case (Q35)');
+  assertEq(cmpCore.classifyResume({ reloadedTokens: 30000, lastTokens: 25000 }).reexpanded, false, 'same size → not re-expanded');
+  assertEq(cmpCore.classifyResume({ reloadedTokens: 15000, lastTokens: 5000 }).reexpanded, false, '3x but only +10k → noise');
+});
+
+test('compaction-metrics.summarizeCompaction: when/how much/cache per host — exact cuts, measured tokens, observed window', () => {
+  const { summarizeCompaction } = require('./lib/compaction-metrics.js');
+  const rows = [
+    { ts: 1, eventName: 'compaction.gate', payload: { action: 'wait', reason: 'cache-warm' } },
+    { ts: 2, eventName: 'compaction.gate', payload: { action: 'compact', reason: 'cache-cold' } },
+    { ts: 3, eventName: 'compaction.run', payload: { trigger: 'manual', reason: 'cache-cold', outcome: 'pruned', charsBefore: 170000, charsAfter: 6500, charsCut: 163500, ratio: 0.962, prunedResults: 4, byReason: { 'superseded-read': 3, 'big-old-result': 1 }, verbatimTextIntact: true } },
+    { ts: 4, eventName: 'compaction.run', payload: { trigger: 'auto', reason: 'auto', outcome: 'native-summary', charsCut: 0, ratio: 0.05, verbatimTextIntact: true } },
+    { ts: 5, eventName: 'compaction.settled', payload: { tokensBefore: 118723, tokensAfter: 46873, tokensCut: 71850, cacheRead: 32583, cacheWrite: 14286 } },
+    { ts: 6, eventName: 'compaction.resume', payload: { reexpanded: true, reloadedTokens: 264151 } },
+    { ts: 7, eventName: 'cache.turn', payload: { host: 'api.anthropic.com', auth: 'bearer', model: 'm', read: 900, write: 100, input: 0, write5m: 0, write1h: 100 } },
+    { ts: 8, eventName: 'cache.turn', payload: { host: 'gw.local', auth: 'api-key', model: 'm', read: 0, write: 500, input: 10, write5m: 500, write1h: 0, afterCompaction: true } },
+    { ts: 9, eventName: 'compaction.error', payload: { where: 'command.run compact' } },
+  ];
+  const s = summarizeCompaction(rows);
+  assertEq(s.runs.total, 2); assertEq(s.runs.pruned, 1); assertEq(s.runs.nativeSummary, 1);
+  assertEq(s.cut.charsCut, 163500); assertEq(s.cut.avgRatio, 0.962);
+  assertEq(s.runs.prunedByKind, { 'superseded-read': 3, 'big-old-result': 1 });
+  assertEq(s.gate.held, 1); assertEq(s.gate.byReason['cache-warm'], 1);
+  assertEq(s.settled.tokensCut, 71850); assertEq(s.settled.firstTurnWrite, 14286);
+  assertEq(s.resume.reexpanded, 1); assertEq(s.errors.total, 1);
+  const sub = s.cache.byHost['api.anthropic.com|bearer'];
+  const api = s.cache.byHost['gw.local|api-key'];
+  assertEq(sub.ttl.observed, '1h', 'subscription host: 1h window observed');
+  assertEq(api.ttl.observed, '5m', 'api-key host: 5m window observed — the two hosts differ');
+  assertEq(sub.hitPct, 90);
+  assertEq(api.afterCompaction.turns, 1);
+  assertEq(s.timeline[0].ts, 4, 'newest run first');
+});
+
+function cmpTranscript(dir, rows) {
+  const f = path.join(dir, 'session.jsonl');
+  fs.writeFileSync(f, rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
+  return f;
+}
+
+test('compaction-event.readLastAssistantUsage: last main-thread usage from the tail (sidechains and cut lines skipped)', () => {
+  const ce = require('./compaction-event.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-tr-'));
+  const pad = { type: 'user', message: { content: 'x'.repeat(600 * 1024) } }; // pushes old rows out of the 512 KB tail
+  const f = cmpTranscript(dir, [
+    { type: 'assistant', message: { model: 'old', usage: { input_tokens: 1 } } },
+    pad,
+    { type: 'assistant', message: { model: 'main', usage: { input_tokens: 3, cache_read_input_tokens: 900, cache_creation_input_tokens: 100, cache_creation: { ephemeral_1h_input_tokens: 100, ephemeral_5m_input_tokens: 0 } } } },
+    { type: 'assistant', isSidechain: true, message: { model: 'sub', usage: { input_tokens: 9 } } },
+    { type: 'user', message: { content: 'next' } },
+  ]);
+  const r = ce.readLastAssistantUsage(f);
+  assertEq(r.model, 'main');
+  assertEq(r.usage.cache_creation.ephemeral_1h_input_tokens, 100);
+  assertEq(ce.readLastAssistantUsage(path.join(dir, 'missing.jsonl')), null);
+});
+
+async function withCmpStore(fn) {
+  const mods = ['./lib/metrics-store.js', './lib/metrics.js', './compaction-event.js'];
+  for (const m of mods) delete require.cache[require.resolve(m)];
+  const prev = process.env.CLAUDE_PLUGIN_DATA;
+  process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-store-'));
+  try {
+    const store = require('./lib/metrics-store.js');
+    if (!store.init({ project: 'ccb-cmp-probe' })) return; // no SQLite backend here: nothing to assert
+    store.close();
+    await fn(require('./compaction-event.js'), () => require('./lib/metrics-store.js'));
+  } finally {
+    require('./lib/metrics-store.js').close();
+    for (const m of mods) delete require.cache[require.resolve(m)];
+    process.env.CLAUDE_PLUGIN_DATA = prev;
+  }
+}
+
+test('compaction-event.run: trail events land in the metrics store; turn records cache.turn and replies the window this host proved', async () => {
+  await withCmpStore(async (ce, store) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-proj-'));
+    const base = { session_id: 'sid-cmp', cwd: dir };
+    assertEq(await ce.run({ ...base, payload: { kind: 'run', trigger: 'manual', outcome: 'pruned', charsCut: 10 } }), {});
+    const f = cmpTranscript(dir, [{ type: 'assistant', message: { model: 'm1', usage: { input_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 500, cache_creation: { ephemeral_5m_input_tokens: 500, ephemeral_1h_input_tokens: 0 } } } }]);
+    const reply = await ce.run({ ...base, transcript_path: f, payload: { kind: 'turn', host: 'gw.local', auth: 'api-key', afterCompaction: true } });
+    assertEq(reply.observed.ttlMs, 300000, 'this turn contracted a 5 min write');
+    assertEq(reply.observed.write5m, 500);
+    assertEq(reply.ttl.observed, '5m');
+    const hello = await ce.run({ ...base, payload: { kind: 'hello', host: 'gw.local', auth: 'api-key' } });
+    assert(hello.config && hello.config.thresholdTokens > 0, 'hello carries the config');
+    assertEq(hello.ttl.observed, '5m', 'hello replies the window already observed for this host');
+    assertEq((await ce.run({ ...base, payload: { kind: 'hello', host: 'other', auth: 'bearer' } })).ttl.observed, null, 'another host has no observation → null, never an assumed 5m');
+    const s = store();
+    const names = s.getEventLog({ limit: 50 }).map((r) => r.eventName);
+    for (const n of ['compaction.run', 'cache.turn', 'compaction.session']) assert(names.includes(n), `${n} recorded (got ${names})`);
+    const turn = s.getEventLog({ eventName: 'cache.turn', limit: 1 })[0];
+    assertEq(turn.payload.afterCompaction, true);
+    assertEq(turn.sessionId, 'sid-cmp');
+    let threw = null;
+    try { await ce.run({ ...base, payload: { kind: 'nope' } }); } catch (err) { threw = err.message; }
+    assert(/unknown kind/.test(threw || ''), 'an unknown kind fails loud');
+    threw = null;
+    try { await ce.run({ ...base }); } catch (err) { threw = err.message; }
+    assert(/payload\.kind is required/.test(threw || ''), 'a missing payload fails loud');
+  });
+});
+
+test('hook_compaction_event: daemon transport (payload arrives as an object, bad events degrade visibly); module in hooks.json; free profile turns compaction off', async () => {
+  const ht = require('./lib/hook-tools.js');
+  const tools = ht.createHookTools({ pluginRoot: ROOT });
+  assert(tools.definitions.some((d) => d.name === 'hook_compaction_event'), 'tool listed');
+  assert(tools.definitions[0].inputSchema.properties.payload, 'payload field in the schema');
+  await withCmpStore(async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-ht-'));
+    const out = await ht.runHookInline(ROOT, 'hook_compaction_event', { session_id: 'sid-ht', cwd: dir, payload: JSON.stringify({ kind: 'gate', action: 'wait', reason: 'cache-warm' }) });
+    assertEq(out, '{}');
+    const bad = await ht.runHookInline(ROOT, 'hook_compaction_event', { session_id: 'sid-ht', cwd: dir, payload: '{"x":1}' });
+    assert(/systemMessage/.test(bad) && /payload\.kind is required/.test(bad), 'a bad event degrades VISIBLY (systemMessage), never a silent {}');
+  });
+  const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8'));
+  assertEq(hooks.modules, ['./compaction.mjs']);
+  assert(fs.existsSync(path.join(ROOT, 'hooks', 'compaction.mjs')), 'module file shipped');
+  const hc = require('./lib/hooks-config.js');
+  assertEq(hc.resolveProfileConfig({ profile: 'free' }).compaction.enabled, false, 'free = passthrough');
+  assertEq(hc.resolveProfileConfig({ profile: 'dev' }).compaction, undefined, 'dev keeps the shipped default (on)');
+  const shipped = JSON.parse(fs.readFileSync(path.join(ROOT, 'config', 'hooks-config.json'), 'utf8')).compaction;
+  assertEq(shipped.enabled, true); assertEq(shipped.thresholdTokens, 250000);
+});
 
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {

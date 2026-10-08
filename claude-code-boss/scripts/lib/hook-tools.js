@@ -50,8 +50,10 @@ const FIELDS = {
   agent_type: 'Sub-agent type when the call came from a sub-agent',
   // C2: the redirect respects the session posture — bypassPermissions → allow, else ask.
   permission_mode: 'Session permission mode (default/acceptEdits/plan/bypassPermissions)',
+  // The controlled-compaction module (hooks/compaction.mjs) sends its event as one JSON object.
+  payload: 'Event payload (JSON) — hook_compaction_event',
 };
-const JSON_FIELDS = new Set(['tool_input', 'tool_response']);
+const JSON_FIELDS = new Set(['tool_input', 'tool_response', 'payload']);
 const BOOL_FIELDS = new Set(['is_interrupt', 'stop_hook_active']);
 
 /**
@@ -120,6 +122,10 @@ const HOOKS = {
   hook_graph_guard: { script: 'graph-guard.js', call: async (m, ev) => m.run(ev) },
   // Stop stays ONE consolidated tool: sibling Stop hooks do not merge reasons (spike S4-iii).
   hook_stop_dispatcher: { lane: 'heavy', script: 'stop-dispatcher.js', call: async (m, ev) => json(await m.run(ev)) },
+  // Called by the function-hook module (hooks/compaction.mjs, $.mcp.call), not by hooks.json:
+  // records the compaction trail + cache.turn (metrics store) and replies config / observed TTL.
+  // caller 'module': absent from hooks.json on purpose (its deadline is the default).
+  hook_compaction_event: { lane: 'heavy', caller: 'module', script: 'compaction-event.js', call: async (m, ev) => json(await m.run(ev)) },
 };
 
 // Last config source stamp seen per module path (one entry per thread: the main

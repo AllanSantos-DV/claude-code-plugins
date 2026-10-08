@@ -94,6 +94,7 @@ const PROFILE_PRESETS = {
     // graph-guard stays in dev+standard (it protects MACHINE resources, not a
     // learning nag) but free's contract is "no blocking, ever" — so off here.
     graphGuard:       { enabled: false },
+    compaction:       { enabled: false },
   },
 };
 
@@ -296,6 +297,20 @@ function getSessionSummary() {
   return { enabled: ss.enabled !== false };
 }
 
+// Controlled compaction (hooks/compaction.mjs). Profile-aware: `free` turns it off
+// (holding a prompt to compact first is an intervention, and free is passthrough).
+function getCompaction() {
+  const c = _resolved().compaction || {};
+  const pos = (v, d) => (Number.isFinite(v) && v > 0 ? v : d);
+  return {
+    enabled: c.enabled !== false,
+    thresholdTokens: pos(c.thresholdTokens, 250000),
+    hardCeilingTokens: pos(c.hardCeilingTokens, 400000),
+    minIntervalMs: pos(c.minIntervalMinutes, 10) * 60000,
+    preserveRecentMessages: Number.isInteger(c.preserveRecentMessages) && c.preserveRecentMessages >= 0 ? c.preserveRecentMessages : 6,
+  };
+}
+
 /** Valid profile names (the presets we ship). */
 function profileNames() {
   return Object.keys(PROFILE_PRESETS);
@@ -365,6 +380,7 @@ module.exports = {
   getFailureRetro,
   getAutoContinue,
   getSessionSummary,
+  getCompaction,
   PROFILE_PRESETS,
   _resetCache,
   sourceStamp,

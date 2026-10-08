@@ -467,6 +467,12 @@ table{font-variant-numeric:tabular-nums}
       </div>
       <div id="home-curation"><div class="spinner" style="margin:1rem auto"></div></div>
     </div>
+    <div class="card">
+      <h2 style="margin:0 0 .5rem 0"><span data-i18n="home.compaction">Compaction &amp; cache</span> <span class="text-muted" style="font-size:.8rem">(last 30 days)</span>
+        <span class="tip" data-tip="When: the prompt gate holds a prompt only when the context is past the threshold AND the provider cache already expired (or the hard ceiling). How much: chars cut are exact (our pruning); tokens cut are measured — the context of the turn after the compaction vs the reading before. Cache: the contracted window observed in real writes per API host/credential (ephemeral_5m vs ephemeral_1h) and what the first turn after a compaction paid.">i</span>
+      </h2>
+      <div id="home-compaction"><div class="spinner" style="margin:1rem auto"></div></div>
+    </div>
     <div class="card" id="home-learning-loop-card" style="display:none">
       <h2 style="margin:0 0 .25rem 0">Learning loop
         <span class="tip" data-tip="Lições capturadas vs. mescladas (uma lição recorreu) por semana. Taxa de merge caindo = a autocrítica está mudando o comportamento (menos repetição). Subindo = lição não está sendo aplicada.">i</span>
@@ -989,6 +995,12 @@ table{font-variant-numeric:tabular-nums}
           <option value="decision.captured">decision.captured</option>
           <option value="skill.invoked">skill.invoked</option>
           <option value="skill.outcome">skill.outcome</option>
+          <option value="compaction.gate">compaction.gate</option>
+          <option value="compaction.run">compaction.run</option>
+          <option value="compaction.settled">compaction.settled</option>
+          <option value="compaction.resume">compaction.resume</option>
+          <option value="compaction.error">compaction.error</option>
+          <option value="cache.turn">cache.turn</option>
         </select>
         <span id="insights-log-meta" class="text-muted" style="font-size:.75rem"></span>
       </div>
@@ -1479,7 +1491,7 @@ const I18N = {
     'action.refresh': 'Refresh',
     'action.close': 'Close',
     'brain.testInstall': 'Test / Install',
-    'home.title': 'System Overview', 'home.brain': 'Brain Knowledge Base', 'home.value': 'Value at a glance', 'home.curation': 'Curation & guards',
+    'home.title': 'System Overview', 'home.brain': 'Brain Knowledge Base', 'home.value': 'Value at a glance', 'home.curation': 'Curation & guards', 'home.compaction': 'Compaction & cache',
     'home.start.title': 'Getting started', 'home.start.lead': 'This panel fills itself as you use Claude Code. Nothing to set up.',
     'home.start.s1t': 'Correct the agent when it gets something wrong', 'home.start.s1': 'The correction becomes a lesson and shows up under Lessons learned. Next time, it is remembered.',
     'home.start.s2t': 'Repeat a command with long output', 'home.start.s2': 'It gets a curated script that returns a summary; the saving shows up under Curation & guards.',
@@ -1707,7 +1719,7 @@ const I18N = {
     'action.refresh': 'Atualizar',
     'action.close': 'Fechar',
     'brain.testInstall': 'Testar / Instalar',
-    'home.title': 'Visão Geral', 'home.brain': 'Base de Conhecimento (Brain)', 'home.value': 'Valor gerado', 'home.curation': 'Curadoria e guards',
+    'home.title': 'Visão Geral', 'home.brain': 'Base de Conhecimento (Brain)', 'home.value': 'Valor gerado', 'home.curation': 'Curadoria e guards', 'home.compaction': 'Compactação e cache',
     'home.start.title': 'Primeiros passos', 'home.start.lead': 'Este painel se preenche sozinho conforme você usa o Claude Code. Nada a configurar.',
     'home.start.s1t': 'Corrija o agente quando ele errar', 'home.start.s1': 'A correção vira uma lição e aparece em Lições aprendidas. Na próxima vez, ele lembra.',
     'home.start.s2t': 'Repita um comando de saída longa', 'home.start.s2': 'Ele ganha um script curado que devolve um resumo; a economia aparece em Curadoria e guards.',
@@ -2711,6 +2723,11 @@ async function loadValueSummary() {
       if (p) p.innerHTML = `<p class="text-muted">Curation panel failed: ${escapeHtml(e && e.message ? e.message : e)}</p>`;
       return null;
     });
+    // Isolated like curation: a compaction panel failure is shown there, never wipes these cards.
+    loadCompactionPanel().catch((e) => {
+      const p = document.getElementById('home-compaction');
+      if (p) p.innerHTML = `<p class="text-muted">Compaction panel failed: ${escapeHtml(e && e.message ? e.message : e)}</p>`;
+    });
     const learned = v.learned?.total || 0;
     const cited = v.memoryCited || 0;
     const prec = v.retrievalPrecision || { injected: 0, cited: 0, rate: 0 };
@@ -2801,6 +2818,53 @@ async function loadCurationPanel() {
         + rows.map(([n, s]) => `<tr><td>${escapeHtml(n.replace(/^hook_/, ''))}</td><td>${s.calls}</td><td>${s.p50Ms}ms</td><td>${s.p95Ms}ms</td><td>${s.maxMs}ms</td><td>${s.expired ? `<span class="badge badge-red">${s.expired}</span>` : 0}</td><td>${s.degraded ? `<span class="badge badge-yellow">${s.degraded}</span>` : 0}</td><td>${s.queued}</td></tr>`).join('')
         + `</tbody></table><p class="text-muted" style="font-size:.72rem">Since the daemon started (${Math.round((c.daemonUptimeMs || 0) / 60000)} min ago).</p>`
       : '<p class="text-muted" style="font-size:.8rem">Hook latency: no hook calls since the daemon started.</p>';
+  }
+  el.innerHTML = html;
+  return c;
+}
+
+// Controlled compaction & provider cache (/api/metrics/compaction).
+async function loadCompactionPanel() {
+  const el = document.getElementById('home-compaction');
+  if (!el) return null;
+  let c;
+  try {
+    c = await api('GET', '/api/metrics/compaction?days=30');
+  } catch (e) {
+    el.innerHTML = `<p class="text-muted">Failed to load compaction metrics: ${escapeHtml(e && e.message ? e.message : e)}</p>`;
+    return null;
+  }
+  if (c && c.error) { el.innerHTML = `<p class="text-muted">Compaction metrics: ${escapeHtml(c.error)}</p>`; return null; }
+  const fmt = n => n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n);
+  const stat = (value, label, badge, cls) => `<div class="stat"><div class="value">${value}</div><div class="label">${label}</div><span class="badge ${cls}">${badge}</span></div>`;
+  const cfg = c.config || {};
+  const g = c.gate, r = c.runs, st = c.settled;
+  let html = `<p class="text-muted" style="font-size:.8rem;margin:0 0 .5rem 0">${cfg.enabled ? 'On' : '<b>Off</b> (profile free or config)'} · threshold ${fmt(cfg.thresholdTokens || 0)} · hard ceiling ${fmt(cfg.hardCeilingTokens || 0)} · min interval ${Math.round((cfg.minIntervalMs || 0) / 60000)} min</p>`;
+  html += '<div class="grid">'
+    + stat(String(r.total), 'Compactions', `${r.pruned} pruned · ${r.nativeSummary} built-in summary`, r.total ? 'badge-green' : 'badge-yellow')
+    + stat(fmt(c.cut.charsCut) + ' chars', 'Cut by pruning (exact)', c.cut.avgRatio != null ? `avg ${Math.round(c.cut.avgRatio * 100)}% smaller` : 'no pruning yet', c.cut.charsCut ? 'badge-green' : 'badge-yellow')
+    + stat(st.count ? '~' + fmt(st.tokensCut) : '—', 'Tokens cut (measured, next turn)', `${st.count} measured`, st.count ? 'badge-green' : 'badge-yellow')
+    + stat(String(g.held), 'Prompts held to compact first', `${g.byReason['cache-warm'] || 0} waited (cache warm)`, 'badge-green')
+    + '</div>';
+  const trig = Object.entries(r.byReason || {}).map(([k, v]) => `${escapeHtml(k)} ${v}`).join(' · ') || '—';
+  const kinds = Object.entries(r.prunedByKind || {}).map(([k, v]) => `${escapeHtml(k)} ${v}`).join(' · ') || '—';
+  html += `<p style="font-size:.8rem;margin:.5rem 0">Why: ${trig}. Pruned results: ${kinds}. `
+    + `Resume checks: ${c.resume.checks} (${c.resume.reexpanded} re-expanded by the engine → pruned again).`
+    + (c.cut.verbatimBroken ? ` <span class="badge badge-red">${c.cut.verbatimBroken} with text changed</span>` : '')
+    + (c.errors.total ? ` <span class="badge badge-red">${c.errors.total} errors</span>` : '') + '</p>';
+  if (st.count) {
+    html += `<p class="text-muted" style="font-size:.8rem;margin:.25rem 0">First turn after a compaction: ${fmt(st.firstTurnRead)} cache read · ${fmt(st.firstTurnWrite)} cache write (the price of rewriting history).</p>`;
+  }
+  const hosts = Object.values(c.cache.byHost || {});
+  html += hosts.length
+    ? '<table style="width:100%;font-size:.8rem;margin-top:.5rem"><thead><tr><th>API host</th><th>Credential</th><th>Turns</th><th>Cache window (observed)</th><th>Hit</th><th>Writes 5m / 1h</th></tr></thead><tbody>'
+      + hosts.map(h => `<tr><td>${escapeHtml(h.host)}</td><td>${escapeHtml(h.auth)}</td><td>${h.turns}</td><td>${h.ttl && h.ttl.observed ? `<span class="badge ${h.ttl.observed === '5m' ? 'badge-yellow' : 'badge-green'}">${escapeHtml(h.ttl.observed)}</span>` : '<span class="text-muted">no write yet</span>'}</td><td>${h.hitPct != null ? h.hitPct + '%' : '—'}</td><td>${fmt(h.write5m)} / ${fmt(h.write1h)}</td></tr>`).join('')
+      + '</tbody></table>'
+    : '<p class="text-muted" style="font-size:.8rem">No turn observed yet — the cache table fills from the next answered turn.</p>';
+  if (c.timeline && c.timeline.length) {
+    html += '<table style="width:100%;font-size:.78rem;margin-top:.5rem"><thead><tr><th>When</th><th>Trigger</th><th>Why</th><th>Outcome</th><th>Chars cut</th><th>Smaller</th></tr></thead><tbody>'
+      + c.timeline.map(t => `<tr><td>${t.ts ? new Date(t.ts).toLocaleString() : '—'}</td><td>${escapeHtml(t.trigger || '')}</td><td>${escapeHtml(t.reason || '')}</td><td>${escapeHtml(t.outcome || '')}</td><td>${fmt(t.charsCut)}</td><td>${Math.round(t.ratio * 100)}%</td></tr>`).join('')
+      + '</tbody></table>';
   }
   el.innerHTML = html;
   return c;
