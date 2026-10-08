@@ -35,17 +35,9 @@ function arg(name, fallback) {
   return i >= 0 && process.argv[i + 1] ? process.argv[i + 1] : fallback;
 }
 
+// Shipped ⊕ user override (BACKLOG Q44) — one reader shared with the dashboard.
 function loadPromotionCfg() {
-  const out = { enabled: true, minRecurrence: 3, minConfidence: 0.8, types: ['lesson', 'pattern'] };
-  try {
-    const cfgPath = path.join(
-      process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..'),
-      'config', 'brain-config.json'
-    );
-    const sp = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'))?.kb?.skillPromotion;
-    if (sp) Object.assign(out, sp);
-  } catch { /* defaults */ }
-  return out;
+  return require('./lib/brain-config.js').getSkillPromotion();
 }
 
 function slugify(s) {
@@ -190,7 +182,7 @@ function approve(slug) {
   console.log(JSON.stringify({ ok: true, approved: slug, installedAt: dest }));
 }
 
-module.exports = { truncateDescription, draftSkillMd, slugify };
+module.exports = { truncateDescription, draftSkillMd, slugify, loadPromotionCfg };
 
 const cmd = process.argv[2];
 if (require.main === module) (async () => {

@@ -1003,12 +1003,8 @@ function runBrainPromote(argvArray) {
 }
 
 function getSkillPromotionConfig(req, res) {
-  let cfg = { enabled: true, minRecurrence: 3, minConfidence: 0.8, types: ['lesson', 'pattern'] };
-  try {
-    const cfgPath = path.join(ROOT, 'config', 'brain-config.json');
-    const sp = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'))?.kb?.skillPromotion;
-    if (sp) cfg = { ...cfg, ...sp };
-  } catch { /* defaults */ }
+  // Shipped ⊕ user override, the same reader brain-promote uses (BACKLOG Q44).
+  const cfg = require('./lib/brain-config.js').getSkillPromotion();
   const brainDir = path.join(DATA_DIR, 'brain');
   const projects = fs.existsSync(brainDir)
     ? listBrainProjects(brainDir)
