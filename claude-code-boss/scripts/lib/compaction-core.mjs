@@ -58,11 +58,30 @@ function note(reason, tool, input, cut) {
  * @param {ReadonlyArray<{role:string,text:string,toolUses?:Array<{tool_use_id:string,tool:string,input:object}>,toolResults?:Array<{tool_use_id:string,text:string,isError:boolean}>,handle?:string}>} messages
  * @param {Partial<typeof DEFAULTS>} [options]
  * @returns {{messages:object[], charsBefore:number, charsAfter:number, ratio:number,
- *   pruned:Array<{tool_use_id:string,tool:string,reason:string,savedChars:number}>, verbatimTextIntact:boolean}}
+ *   pruned:Array<{tool_use_id:string,tool:string,reason:string,savedChars:number}>, verbatimTextIntact:boolean,
+ *   duplicatesDropped:number}}
  */
 export function planCompaction(messages, options = {}) {
   const o = { ...DEFAULTS, ...options };
-  const list = Array.isArray(messages) ? messages : [];
+  const input = Array.isArray(messages) ? messages : [];
+  // Exact duplicates go first. Resuming (-c/--resume) after a compaction answered by a hook,
+  // the engine rebuilds the history with the kept copies AND the originals (measured: 46
+  // messages vs 18; the API then saw the same tool_use twice and rejected the thinking of the
+  // latest assistant message). Tool ids are unique per call, so a message whose tool ids were
+  // all seen before is a copy; plain text is never matched (a repeated "ok" is legitimate).
+  const seenUse = new Set();
+  const seenRes = new Set();
+  let duplicatesDropped = 0;
+  const list = input.filter((m) => {
+    const uses = (m.toolUses || []).map((u) => u.tool_use_id);
+    const res = (m.toolResults || []).map((r) => r.tool_use_id);
+    if (!uses.length && !res.length) return true;
+    const dup = uses.every((id) => seenUse.has(id)) && res.every((id) => seenRes.has(id));
+    if (dup) { duplicatesDropped++; return false; }
+    for (const id of uses) seenUse.add(id);
+    for (const id of res) seenRes.add(id);
+    return true;
+  });
   const last = list.length - 1;
   const pinned = (i) => i === 0 || i > last - o.preserveRecentMessages;
 
@@ -107,10 +126,10 @@ export function planCompaction(messages, options = {}) {
     return { ...rest, toolResults: results };
   });
 
-  const charsBefore = list.reduce((n, m) => n + size(m), 0);
+  const charsBefore = input.reduce((n, m) => n + size(m), 0); // the cut counts the copies dropped
   const charsAfter = out.reduce((n, m) => n + size(m), 0);
   const verbatimTextIntact = out.length === list.length && out.every((m, i) => m.text === list[i].text && m.role === list[i].role);
-  return { messages: out, charsBefore, charsAfter, ratio: charsBefore ? (charsBefore - charsAfter) / charsBefore : 0, pruned, verbatimTextIntact };
+  return { messages: out, charsBefore, charsAfter, ratio: charsBefore ? (charsBefore - charsAfter) / charsBefore : 0, pruned, verbatimTextIntact, duplicatesDropped };
 }
 
 /**

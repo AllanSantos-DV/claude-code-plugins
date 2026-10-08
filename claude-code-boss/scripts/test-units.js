@@ -23126,6 +23126,22 @@ test('compaction-core.planCompaction: stale results truncated with a note, every
   assert(none.ratio < cmpCore.DEFAULTS.minReductionRatio, 'nothing stale → below the minimum → the engine summary runs');
 });
 
+test('compaction-core.planCompaction: a resumed history rebuilt with the engine\'s copies — exact tool-id duplicates dropped, text never matched', () => {
+  const msgs = cmpSession();
+  // the engine's reconstruction after a hook compaction: the kept copies after the originals
+  const copies = msgs.slice(1, 9).map((m) => ({ ...m, handle: 'copy-' + m.handle }));
+  const resumed = [...msgs.slice(0, 9), ...copies, { role: 'user', text: 'go on', toolUses: [], handle: 'again' }, ...msgs.slice(9)];
+  const p = cmpCore.planCompaction(resumed);
+  const copyIdsWithTools = copies.filter((m) => (m.toolUses || []).length || (m.toolResults || []).length).length;
+  assertEq(p.duplicatesDropped, copyIdsWithTools, 'every copy carrying tool ids dropped');
+  assert(!p.messages.some((m) => String(m.handle || '').startsWith('copy-') && ((m.toolUses || []).length || (m.toolResults || []).length)), 'no tool copy survives');
+  const ids = p.messages.flatMap((m) => (m.toolUses || []).map((u) => u.tool_use_id));
+  assertEq(ids.length, new Set(ids).size, 'each tool_use once — the pairing the API checks');
+  assert(p.messages.some((m) => m.handle === 'again' && m.text === 'go on'), 'a repeated plain-text message is legitimate and kept');
+  assertEq(p.verbatimTextIntact, true);
+  assertEq(cmpCore.planCompaction(msgs).duplicatesDropped, 0, 'a normal history has none');
+});
+
 test('compaction-core.decideTiming: waits for the cache to expire, compacts cold or at the ceiling, never busy/cooldown/no-reading, unknown TTL = the longer window', () => {
   const T = { thresholdTokens: 250000, hardCeilingTokens: 400000, minIntervalMs: 600000 };
   const d = (s) => cmpCore.decideTiming({ busy: false, now: 10_000_000, ...s }, T);

@@ -228,7 +228,9 @@ async function compact($, ctx, e, next) {
   if (!ctx.config.enabled) return next(e);
   const t0 = await $.clock.now();
   const plan = planCompaction(e.messages, ctx.config);
-  const ours = plan.ratio >= ctx.config.minReductionRatio && plan.verbatimTextIntact;
+  // Dropping the engine's duplicate copies is reason enough on its own (the resumed request would
+  // otherwise carry them), whatever the ratio.
+  const ours = (plan.ratio >= ctx.config.minReductionRatio || plan.duplicatesDropped > 0) && plan.verbatimTextIntact;
   const byReason = {};
   for (const p of plan.pruned) byReason[p.reason] = (byReason[p.reason] || 0) + 1;
   const { context } = await $.session.usage();
@@ -239,7 +241,7 @@ async function compact($, ctx, e, next) {
     trigger: e.trigger, reason, outcome: ours ? 'pruned' : 'native-summary',
     messages: e.messages.length, charsBefore: plan.charsBefore, charsAfter: ours ? plan.charsAfter : null,
     charsCut: ours ? plan.charsBefore - plan.charsAfter : 0, ratio: Number(plan.ratio.toFixed(3)),
-    prunedResults: plan.pruned.length, byReason, verbatimTextIntact: plan.verbatimTextIntact,
+    prunedResults: plan.pruned.length, byReason, duplicatesDropped: plan.duplicatesDropped, verbatimTextIntact: plan.verbatimTextIntact,
     tokensBefore, durationMs: (await $.clock.now()) - t0,
   });
   if (!ours) return next(e);
