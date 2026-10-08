@@ -18058,6 +18058,26 @@ test('embedder (Q47): the choice the dashboard saves (brain-config user override
   }
 });
 
+test('brain-store (Q49): kb.rerank and the KB limits honor the user override, and a long-lived process sees a later change', () => {
+  const bc = require('./lib/brain-config.js');
+  const bs = require('./brain-store.js');
+  const file = path.join(require('./lib/data-dir.js').globalDir(), 'user-config.json');
+  assert(file.startsWith(process.env.USERPROFILE), `the suite's temp HOME, never the real one (${file})`);
+  const prev = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+  const write = (kb) => { const cur = prev ? JSON.parse(prev) : {}; cur.kb = { ...(cur.kb || {}), ...kb }; fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, JSON.stringify(cur)); bc._resetCache(); };
+  try {
+    write({ rerank: { halfLifeDays: 7, weights: { recency: 0.4 } }, maxEntriesPerProject: 123, archiveAfterDays: 9 });
+    const r = bs._loadRerankConfigForTests();
+    assertEq([r.halfLifeDays, r.weights.recency, r.weights.relevance], [7, 0.4, 0.5], 'override merged over the defaults');
+    assertEq(bs._loadKbLimitsForTests(), { maxEntriesPerProject: 123, archiveAfterDays: 9, halfLifeDays: 7 });
+    write({ rerank: { halfLifeDays: 14 } });
+    assertEq(bs._loadRerankConfigForTests().halfLifeDays, 14, 'no stale cache: a later change is seen without a restart');
+  } finally {
+    if (prev == null) { try { fs.unlinkSync(file); } catch (err) { void err; } } else fs.writeFileSync(file, prev);
+    bc._resetCache();
+  }
+});
+
 test('skill promotion (Q44): the user override of kb.skillPromotion reaches brain-promote and the dashboard (not only the shipped file)', () => {
   const bc = require('./lib/brain-config.js');
   const file = path.join(require('./lib/data-dir.js').globalDir(), 'user-config.json');

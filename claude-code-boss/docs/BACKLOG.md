@@ -1083,8 +1083,11 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   (é quem decide se o scan roda). Proposta: usar `brain-config.getSkillPromotion()`.
   **Resolvido em 2026-10-08**: `loadCfg()` usa `brain-config.getSkillPromotion()` (o mesmo leitor do Q44). Teste reescrito no contrato
   novo (o usuário desliga o scan pelo arquivo dele); mutação reprova.
-- [ ] **Q49 — `scripts/brain-store.js` `loadRerankConfig` (:56) e `loadKbLimits` (:158)** leem `kb.rerank`/`kb.maxEntriesPerProject`/
+- [x] **Q49 — `scripts/brain-store.js` `loadRerankConfig` (:56) e `loadKbLimits` (:158)** leem `kb.rerank`/`kb.maxEntriesPerProject`/
   `kb.archiveAfterDays` só do arquivo do plugin — override do usuário ignorado. Proposta: ler pelo `brain-config.load()`.
+  **Resolvido em 2026-10-08**: `kbConfig()` lê o `kb` do `brain-config.load()`; o cache do rerank segue a identidade do objeto (antes
+  ficava fixo para sempre no processo). Teste: override mesclado sobre os padrões, limites honrados, mudança posterior vista; mutação
+  reprova.
 - [ ] **Q50 — `hashFile` duplicada** (`scripts/lib/backup.js:88` e `scripts/lib/backup-remote.js:24`, cópia exata — Smart Tool
   duplicates). Proposta: exportar de `backup.js` e reusar.
 ## Testes

@@ -52,26 +52,35 @@ const DEFAULT_RERANK = {
   citationBoost: { enabled: true, alpha: 0.1, cap: 1.5 },
 };
 let _rerankCfg = null;
+let _rerankSrc = null;
 
-function loadRerankConfig() {
-  if (_rerankCfg) return _rerankCfg;
-  _rerankCfg = DEFAULT_RERANK;
+/**
+ * The `kb` block of the layered brain-config (shipped ⊕ user override). Both readers
+ * below used to read only the shipped file, so a user tweak was ignored (BACKLOG Q49).
+ * brain-config.load() hands back the same object until a source file changes.
+ * @returns {object}
+ */
+function kbConfig() {
   try {
-    const cfgPath = path.join(
-      process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..'),
-      'config', 'brain-config.json'
-    );
-    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'));
-    const r = cfg?.kb?.rerank;
-    if (r) {
-      _rerankCfg = {
-        enabled: r.enabled !== false,
-        weights: { ...DEFAULT_RERANK.weights, ...(r.weights || {}) },
-        halfLifeDays: r.halfLifeDays || DEFAULT_RERANK.halfLifeDays,
-        citationBoost: { ...DEFAULT_RERANK.citationBoost, ...(r.citationBoost || {}) },
-      };
-    }
-  } catch { /* defaults */ }
+    return require('./lib/brain-config.js').load().kb || {};
+  } catch (err) {
+    console.error(`[brain-store] brain-config unreadable, using defaults: ${err.message}`);
+    return {};
+  }
+}
+
+/** kb.rerank merged over the defaults; recomputed only when the config object changes. */
+function loadRerankConfig() {
+  const kb = kbConfig();
+  if (_rerankCfg && _rerankSrc === kb) return _rerankCfg;
+  _rerankSrc = kb;
+  const r = kb.rerank;
+  _rerankCfg = r ? {
+    enabled: r.enabled !== false,
+    weights: { ...DEFAULT_RERANK.weights, ...(r.weights || {}) },
+    halfLifeDays: r.halfLifeDays || DEFAULT_RERANK.halfLifeDays,
+    citationBoost: { ...DEFAULT_RERANK.citationBoost, ...(r.citationBoost || {}) },
+  } : DEFAULT_RERANK;
   return _rerankCfg;
 }
 
@@ -156,15 +165,9 @@ function entryUtility(entry, nowMs, halfLifeDays) {
 
 function loadKbLimits() {
   const out = { maxEntriesPerProject: 10000, archiveAfterDays: 90, halfLifeDays: loadRerankConfig().halfLifeDays };
-  try {
-    const cfgPath = path.join(
-      process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..'),
-      'config', 'brain-config.json'
-    );
-    const kb = JSON.parse(fs.readFileSync(cfgPath, 'utf-8'))?.kb || {};
-    if (kb.maxEntriesPerProject) out.maxEntriesPerProject = kb.maxEntriesPerProject;
-    if (kb.archiveAfterDays) out.archiveAfterDays = kb.archiveAfterDays;
-  } catch { /* defaults */ }
+  const kb = kbConfig();
+  if (kb.maxEntriesPerProject) out.maxEntriesPerProject = kb.maxEntriesPerProject;
+  if (kb.archiveAfterDays) out.archiveAfterDays = kb.archiveAfterDays;
   return out;
 }
 
@@ -997,4 +1000,6 @@ module.exports = {
   getStorageType, getStatus, cosineSimilarity,
   recordCitation, citationMultiplier,
   _getDbForTests: () => _db,
+  _loadRerankConfigForTests: loadRerankConfig,
+  _loadKbLimitsForTests: loadKbLimits,
 };
