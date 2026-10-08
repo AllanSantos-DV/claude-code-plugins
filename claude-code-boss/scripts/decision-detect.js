@@ -30,11 +30,15 @@ const PROMOTED = path.join(DATA_DIR, '.runtime', 'decision-promoted-sha.json');
 // ─── Extractors ──────────────────────────────────────────────────────────────
 
 /** Return the commit message body extracted from a `git commit` command, or null. */
-function extractCommitMsg(cmd) {
-  if (!cmd || !/\bgit\s+commit\b/i.test(cmd)) return null;
+function extractCommitMsg(fullCmd) {
+  const at = fullCmd ? fullCmd.search(/\bgit\s+commit\b/i) : -1;
+  if (at < 0) return null;
+  // Only what follows `git commit`: an earlier `cat > f <<'EOF' … EOF && git commit …` in the
+  // same command is a file body, not the message (the decision nudge used to quote a script).
+  const cmd = fullCmd.slice(at);
 
-  // Pattern A: heredoc -- git commit -m "$(cat <<'EOF' ... EOF\n)"
-  const heredoc = cmd.match(/<<\s*['"]?(\w+)['"]?\s*\n([\s\S]*?)\n\s*\1\b/);
+  // Pattern A: heredoc FEEDING -m -- git commit -m "$(cat <<'EOF' ... EOF\n)"
+  const heredoc = cmd.match(/-m\s+"?\$\(\s*cat\s+<<\s*['"]?(\w+)['"]?\s*\n([\s\S]*?)\n\s*\1\b/);
   if (heredoc) return heredoc[2].trim();
 
   // Pattern B: --message=<value> (single or double-quoted, or bare token)
@@ -53,11 +57,13 @@ function extractCommitMsg(cmd) {
 }
 
 /** Return the PR body extracted from a `gh pr create|edit --body` command, or null. */
-function extractPrBody(cmd) {
-  if (!cmd || !/\bgh\s+pr\s+(create|edit)\b/i.test(cmd)) return null;
+function extractPrBody(fullCmd) {
+  const at = fullCmd ? fullCmd.search(/\bgh\s+pr\s+(create|edit)\b/i) : -1;
+  if (at < 0) return null;
+  const cmd = fullCmd.slice(at); // same reason as extractCommitMsg
 
   // heredoc shape: --body "$(cat <<'EOF' ... EOF\n)"
-  const heredoc = cmd.match(/<<\s*['"]?(\w+)['"]?\s*\n([\s\S]*?)\n\s*\1\b/);
+  const heredoc = cmd.match(/--body\s+"?\$\(\s*cat\s+<<\s*['"]?(\w+)['"]?\s*\n([\s\S]*?)\n\s*\1\b/);
   if (heredoc) return heredoc[2].trim();
 
   // --body "..." / --body '...'
