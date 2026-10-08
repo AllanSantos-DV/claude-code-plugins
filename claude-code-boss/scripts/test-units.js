@@ -23173,11 +23173,12 @@ test('compaction-core.decideTiming: waits for the cache to expire, compacts cold
   assertEq(d({ tokens: 410000 }), { action: 'compact', reason: 'hard-ceiling' }, 'the ceiling still acts');
 });
 
-test('compaction-core.classifyResume: the engine re-expanded the history (relative AND absolute growth), not tied to the threshold', () => {
-  assertEq(cmpCore.classifyResume({ reloadedTokens: 100000, lastTokens: 7000 }).reexpanded, true, 'manual /compact at 100k, resumed');
-  assertEq(cmpCore.classifyResume({ reloadedTokens: 264000, lastTokens: 47000 }).reexpanded, true, 'measured case (Q35)');
-  assertEq(cmpCore.classifyResume({ reloadedTokens: 30000, lastTokens: 25000 }).reexpanded, false, 'same size → not re-expanded');
-  assertEq(cmpCore.classifyResume({ reloadedTokens: 15000, lastTokens: 5000 }).reexpanded, false, '3x but only +10k → noise');
+test('compaction-core.classifyResume: re-expanded = the reloaded history carries the engine copies (exact), never a size guess', () => {
+  const fx = JSON.parse(fs.readFileSync(path.join(SCRIPTS, '__fixtures__', 'compaction-resumed-history.json'), 'utf8')).messages;
+  assertEq(cmpCore.classifyResume({ messages: fx, lastTokens: 31070 }), { reexpanded: true, copies: 20, lastTokens: 31070 }, 'the real resumed history after a hook compaction');
+  const clean = cmpCore.dropEngineCopies(fx).list;
+  assertEq(cmpCore.classifyResume({ messages: clean, lastTokens: 75720 }).reexpanded, false, 'an uncompacted resumed session — the size guess said true here (false positive, measured)');
+  assertEq(cmpCore.classifyResume({ messages: cmpSession(), lastTokens: 1000 }).reexpanded, false, 'a long normal history is not re-expanded however small the last reading');
 });
 
 test('compaction-metrics.summarizeCompaction: when/how much/cache per host — exact cuts, measured tokens, observed window', () => {
