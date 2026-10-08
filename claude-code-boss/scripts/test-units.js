@@ -7906,6 +7906,62 @@ test('contextTuningEnabled: o config SHIPADO vem com o tuning desligado', () => 
   assertEq(routerEnsure.contextTuningEnabled(shipped), false, 'de fábrica ninguém tem o env-tuning imposto');
 });
 
+// ─── model-router-ensure: gateway PRÓPRIO do usuário (BACKLOG Q24) ───────────
+test('Q24 sessionGateway: só um endpoint que não é o nosso proxy nem a API oficial conta como gateway do usuário', () => {
+  const isOurs = (u) => /^https?:\/\/(127\.0\.0\.1|localhost):\d+/.test(u);
+  assertEq(routerEnsure.sessionGateway({ ANTHROPIC_BASE_URL: 'http://100.124.248.83' }, isOurs), 'http://100.124.248.83');
+  assertEq(routerEnsure.sessionGateway({ ANTHROPIC_BASE_URL: 'http://127.0.0.1:13456' }, isOurs), null, 'o nosso proxy');
+  assertEq(routerEnsure.sessionGateway({ ANTHROPIC_BASE_URL: 'https://api.anthropic.com' }, isOurs), null, 'o Desktop força a API oficial — ali o roteamento é o esperado');
+  assertEq(routerEnsure.sessionGateway({ ANTHROPIC_BASE_URL: 'https://api.anthropic.com/' }, isOurs), null);
+  assertEq(routerEnsure.sessionGateway({ ANTHROPIC_BASE_URL: '  ' }, isOurs), null);
+  assertEq(routerEnsure.sessionGateway({}, isOurs), null);
+});
+
+test('Q24 run(): sessão com gateway próprio → o roteador NÃO se liga por cima (settings.json/url.txt limpos), e a decisão persiste sem o env', async () => {
+  const home = os.homedir();
+  assert(home.startsWith(os.tmpdir()), `HOME temporário da suíte, nunca o real (${home})`);
+  const settingsFile = path.join(home, '.claude', 'settings.json');
+  const urlFile = path.join(home, '.claude', 'model-router-url.txt');
+  const deferFile = path.join(process.env.CLAUDE_PLUGIN_DATA, 'model-router', 'gateway-defer.json');
+  const userCfg = require('./lib/router-config-path.js').routerUserConfigPath();
+  const keep = [settingsFile, urlFile, deferFile, userCfg].map((f) => [f, fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : null]);
+  const prevEnv = process.env.ANTHROPIC_BASE_URL;
+  const ours = { ANTHROPIC_BASE_URL: 'http://127.0.0.1:13456', ENABLE_TOOL_SEARCH: 'true', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200000', CLAUDE_CODE_ATTRIBUTION_HEADER: '0', KEEP: '1' };
+  try {
+    fs.mkdirSync(path.dirname(settingsFile), { recursive: true });
+    fs.mkdirSync(path.dirname(userCfg), { recursive: true });
+    fs.writeFileSync(userCfg, JSON.stringify({ fallback: { enabled: true } })); // modo ≠ off
+    fs.writeFileSync(settingsFile, JSON.stringify({ env: ours }));
+    fs.writeFileSync(urlFile, 'http://127.0.0.1:13456');
+    try { fs.unlinkSync(deferFile); } catch (err) { void err; }
+
+    process.env.ANTHROPIC_BASE_URL = 'http://gw.example:4000';
+    const out = await routerEnsure.run({ hook_event_name: 'UserPromptSubmit', session_id: 'q24-a' });
+    assert(/gateway próprio \(http:\/\/gw\.example:4000\)/.test(out || ''), `avisa uma vez por sessão (${out})`);
+    const env1 = JSON.parse(fs.readFileSync(settingsFile, 'utf8')).env || {};
+    assertEq(env1.ANTHROPIC_BASE_URL, undefined, 'o settings.json não aponta mais para o proxy (o `claude -p` filho usa o gateway)');
+    assertEq(env1.KEEP, '1', 'o que não é nosso fica');
+    assert(!fs.existsSync(urlFile), 'url.txt removido — o shim deixa o env do processo como veio');
+    assertEq(JSON.parse(fs.readFileSync(deferFile, 'utf8')).url, 'http://gw.example:4000');
+
+    delete process.env.ANTHROPIC_BASE_URL; // sessão aberta SEM o env do launcher
+    await routerEnsure.run({ hook_event_name: 'UserPromptSubmit', session_id: 'q24-b' });
+    assertEq((JSON.parse(fs.readFileSync(settingsFile, 'utf8')).env || {}).ANTHROPIC_BASE_URL, undefined, 'não religa por cima do gateway (a decisão persiste)');
+
+    fs.writeFileSync(userCfg, JSON.stringify({ upstream: { enabled: true, baseUrl: 'http://gw.example:4000' } }));
+    assertEq(require('./lib/router-mode.js').resolveMode(routerEnsure.readConfig()), 'fallback-only', 'upstream explícito liga o proxy');
+    process.env.ANTHROPIC_BASE_URL = 'http://gw.example:4000';
+    const src = fs.readFileSync(path.join(SCRIPTS, 'model-router-ensure.js'), 'utf8');
+    assert(/explicitUpstream \? null : sessionGateway/.test(src) && /explicitUpstream \? null : readGatewayDefer/.test(src),
+      'upstream configurado no roteador = escolha explícita de pôr o proxy na frente do gateway (não adia)');
+  } finally {
+    if (prevEnv === undefined) delete process.env.ANTHROPIC_BASE_URL; else process.env.ANTHROPIC_BASE_URL = prevEnv;
+    for (const [f, c] of keep) {
+      if (c == null) { try { fs.unlinkSync(f); } catch (err) { void err; } } else fs.writeFileSync(f, c);
+    }
+  }
+});
+
 // ─── model-router-ensure: token-override env bundle (Parte B) ────────────────
 // Núcleo PURO (sem I/O): resolveAutoCompactWindow (clamp) + planEnableEnv /
 // planDisableEnv (o que gravar/remover). Filosofia do dono: NÃO clobbar valor

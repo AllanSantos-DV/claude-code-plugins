@@ -856,13 +856,21 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   prompt — gravava `process.env.CCB_PROJECT_ID`, o 1º degrau do resolvedor, para os outros detectores do
   mesmo processo. **Corrigido na hora**: resolvedor estrito, projeto passado ao `probeHealth`, env intocado;
   sem id → "memory is off in this folder". Teste + mutação.
-- [ ] **Q24 — model-router × gateway próprio do usuário.** Visto no smoke do `/release` 3.0.1: nesta máquina
+- [x] **Q24 — model-router × gateway próprio do usuário.** Visto no smoke do `/release` 3.0.1: nesta máquina
   as sessões usam `ANTHROPIC_BASE_URL=http://100.124.248.83` (token `local-…`) forçado pelo launcher; o
   `model-router-ensure` grava `env.ANTHROPIC_BASE_URL=127.0.0.1:13456` no `settings.json` e o router, sem
   upstream configurado, repassa para `api.anthropic.com` → um `claude -p` de terminal (que aplica o
   settings) leva **401 Invalid bearer token**. Não é regressão (o router antigo fazia o mesmo; os smokes
   anteriores usavam config isolada). Proposta: ao ativar, se o `ANTHROPIC_BASE_URL` do processo já aponta
   para um gateway que não é o router, adotá-lo como upstream (`upstream.baseUrl`) ou não sequestrar.
+  **Resolvido em 2026-10-08** (aprovado pelo dono: não sequestrar): `model-router-ensure` detecta o gateway da
+  sessão (`sessionGateway`: `ANTHROPIC_BASE_URL` do processo que não é o proxy nem `https://api.anthropic.com`,
+  que o Desktop força), grava `model-router/gateway-defer.json` e sai pelo caminho do modo off (settings.json e
+  url.txt limpos — o shim, sem url.txt, mantém o env como veio). Persistente: uma sessão sem o env do launcher não
+  religa; o "Salvar & aplicar" (`BOSS_ROUTER_FORCE_RESTART=1`) reavalia. `upstream.enabled` = escolha explícita →
+  não adia. Achado junto: o shim (`servers/model-router/wrapper.cs:111`) troca QUALQUER `ANTHROPIC_BASE_URL` pela do
+  url.txt — coberto pela remoção do url.txt no adiamento. Testes: `sessionGateway` + `run()` hermético (limpa,
+  persiste sem o env); mutação (adiamento desligado) reprova.
 - [ ] **Q25 — 1 falha intermitente numa rodada completa do gate (05/10, durante o `/release` 3.0.1).** A
   saída foi cortada (`tail`) e o nome do teste se perdeu. Não reproduziu em 2 rodadas completas do gate
   nem em 35 rodadas isoladas dos testes novos sensíveis a tempo (reaper, keepalive, backup e2e,
