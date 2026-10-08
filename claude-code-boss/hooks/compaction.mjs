@@ -196,10 +196,10 @@ async function gate($, ctx, e, next) {
   let d;
   if (ctx.start && ctx.start.source === 'resume' && !ctx.resumeChecked) {
     ctx.resumeChecked = true;
-    const reloaded = estimateTokens(await $.session.messages());
-    tokens = tokens ?? reloaded;
-    const r = classifyResume({ reloadedTokens: reloaded, lastTokens: ctx.start.lastTokens }, ctx.config);
-    emit($, ctx, 'resume', { ...r, secondsSince: ctx.start.secondsSince ?? null });
+    const reloadedMsgs = await $.session.messages();
+    tokens = tokens ?? estimateTokens(reloadedMsgs);
+    const r = classifyResume({ messages: reloadedMsgs, lastTokens: ctx.start.lastTokens });
+    emit($, ctx, 'resume', { ...r, messages: reloadedMsgs.length, secondsSince: ctx.start.secondsSince ?? null });
     d = r.reexpanded ? { action: 'compact', reason: 'resume-reexpanded' } : null;
   }
   if (!d) d = decideTiming({ tokens, now, lastAnswerAt: ctx.lastAnswerAt, lastCompactAt: ctx.lastCompactAt, busy: false, ttlMs }, ctx.config);

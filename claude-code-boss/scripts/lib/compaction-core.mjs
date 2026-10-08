@@ -32,8 +32,6 @@ export const DEFAULTS = Object.freeze({
   // TTL used while no cache write has been observed for this host. The LONGER window on
   // purpose: assuming 5 min when the contract is 1 h would compact with the cache alive.
   unknownTtlMs: 60 * 60000,
-  resumeExpansionFactor: 1.5,  // reloaded history this much larger than the last response…
-  resumeMinGrowthTokens: 20000, // …and at least this many tokens larger = re-expanded
 });
 
 const FILE_TOOLS = new Set(['Read', 'Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
@@ -55,15 +53,12 @@ function note(reason, tool, input, cut) {
 }
 
 /**
- * @param {ReadonlyArray<{role:string,text:string,toolUses?:Array<{tool_use_id:string,tool:string,input:object}>,toolResults?:Array<{tool_use_id:string,text:string,isError:boolean}>,handle?:string}>} messages
- * @param {Partial<typeof DEFAULTS>} [options]
- * @returns {{messages:object[], charsBefore:number, charsAfter:number, ratio:number,
- *   pruned:Array<{tool_use_id:string,tool:string,reason:string,savedChars:number}>, verbatimTextIntact:boolean,
- *   duplicatesDropped:number}}
+ * The engine's copies in a history it rebuilt after a compaction answered by a hook
+ * (resume/continue). Exact rules only — see the comment inside. Also the RESUME SIGNAL:
+ * a reloaded history with copies is a re-expanded one (sizes alone gave a false positive).
+ * @returns {{list: object[], dropped: number}}
  */
-export function planCompaction(messages, options = {}) {
-  const o = { ...DEFAULTS, ...options };
-  const input = Array.isArray(messages) ? messages : [];
+export function dropEngineCopies(input) {
   // Exact duplicates go first. Resuming (-c/--resume) after a compaction answered by a hook,
   // the engine rebuilds the history with each kept copy INTERLEAVED with its original
   // (measured: 52 messages vs 22 — [thinking, tool_use, thinking', tool_use'], results in
@@ -115,7 +110,20 @@ export function planCompaction(messages, options = {}) {
     for (const id of ids) seenTool.add(id);
   });
   const list = input.filter((_, i) => keep[i]);
-  const duplicatesDropped = input.length - list.length;
+  return { list, dropped: input.length - list.length };
+}
+
+/**
+ * @param {ReadonlyArray<{role:string,text:string,toolUses?:Array<{tool_use_id:string,tool:string,input:object}>,toolResults?:Array<{tool_use_id:string,text:string,isError:boolean}>,handle?:string}>} messages
+ * @param {Partial<typeof DEFAULTS>} [options]
+ * @returns {{messages:object[], charsBefore:number, charsAfter:number, ratio:number,
+ *   pruned:Array<{tool_use_id:string,tool:string,reason:string,savedChars:number}>, verbatimTextIntact:boolean,
+ *   duplicatesDropped:number}}
+ */
+export function planCompaction(messages, options = {}) {
+  const o = { ...DEFAULTS, ...options };
+  const input = Array.isArray(messages) ? messages : [];
+  const { list, dropped: duplicatesDropped } = dropEngineCopies(input);
   const last = list.length - 1;
   const pinned = (i) => i === 0 || i > last - o.preserveRecentMessages;
 
@@ -188,20 +196,17 @@ export function decideTiming(s, options = {}) {
 }
 
 /**
- * A resumed/continued session (`--resume`, `-c`): after a compaction answered by a
- * hook, Claude Code reloads the ORIGINAL history (measured, BACKLOG Q35). The size
- * the last response had (SessionStart `context_tokens`) is the pruned size; a
- * reloaded history much larger than it was re-expanded and is pruned again before
- * anything reaches the API — the provider cache holds the pruned prefix, not this one.
- * @param {{reloadedTokens:number, lastTokens?:number}} s
- * @param {Partial<typeof DEFAULTS>} [options]
+ * A resumed/continued session (`--resume`, `-c`): after a compaction answered by a hook,
+ * Claude Code reloads the ORIGINAL history with the kept copies interleaved (measured,
+ * BACKLOG Q35). Re-expanded = the reloaded history HAS those copies (dropEngineCopies) —
+ * exact. A size comparison (reloaded estimate vs the last response) was tried and gave a
+ * false positive on an uncompacted session (140k estimated vs 75k real), compacting with a
+ * warm cache. Re-expanded is pruned again before anything reaches the API.
+ * @param {{messages: object[], lastTokens?: number}} s
  */
-export function classifyResume(s, options = {}) {
-  const o = { ...DEFAULTS, ...options };
-  const last = Number.isFinite(s.lastTokens) ? s.lastTokens : 0;
-  // Not tied to the threshold: a manual /compact at 100k reloads as 100k vs 7k — re-expanded all the same.
-  const reexpanded = s.reloadedTokens > last * o.resumeExpansionFactor && s.reloadedTokens - last >= o.resumeMinGrowthTokens;
-  return { reexpanded, reloadedTokens: s.reloadedTokens, lastTokens: last };
+export function classifyResume(s) {
+  const { dropped } = dropEngineCopies(Array.isArray(s.messages) ? s.messages : []);
+  return { reexpanded: dropped > 0, copies: dropped, lastTokens: Number.isFinite(s.lastTokens) ? s.lastTokens : 0 };
 }
 
 /** Rough tokens of a message list read as JSON (4 chars/token: sizing, never billing). */
