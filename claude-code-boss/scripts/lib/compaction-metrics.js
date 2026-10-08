@@ -40,7 +40,7 @@ function summarizeCompaction(rows, { timeline = 20 } = {}) {
     // duplicatesDropped: the engine's copies removed from a resumed history (hook-compaction resume defect).
     cut: { charsBefore: 0, charsAfter: 0, charsCut: 0, avgRatio: null, prunedResults: 0, duplicatesDropped: 0, verbatimBroken: 0 },
     // firstTurn*: the first API call after each compaction (cache.turn afterCompaction).
-    settled: { count: 0, tokensBefore: 0, tokensAfter: 0, tokensCut: 0, firstTurns: 0, firstTurnRead: 0, firstTurnWrite: 0 },
+    settled: { count: 0, prevented: 0, tokensBefore: 0, tokensAfter: 0, tokensCut: 0, firstTurns: 0, firstTurnRead: 0, firstTurnWrite: 0 },
     resume: { checks: 0, reexpanded: 0, reloadedTokens: 0 },
     errors: { total: 0, byWhere: {} },
     cache: { byHost: {} },
@@ -82,6 +82,7 @@ function summarizeCompaction(rows, { timeline = 20 } = {}) {
         runsList.push({ ts: r.ts || null, trigger: p.trigger, reason: p.reason, outcome: p.outcome, charsCut: num(p.charsCut), ratio: num(p.ratio), tokensBefore: p.tokensBefore ?? null });
         break;
       case 'compaction.settled':
+        if (p.prevented || p.tokensBefore == null) { s.settled.prevented++; break; } // no measured 'before'
         s.settled.count++;
         s.settled.tokensBefore += num(p.tokensBefore);
         s.settled.tokensAfter += num(p.tokensAfter);

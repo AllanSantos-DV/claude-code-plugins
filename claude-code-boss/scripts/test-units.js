@@ -23187,7 +23187,8 @@ test('compaction-metrics.summarizeCompaction: when/how much/cache per host — e
     { ts: 2, eventName: 'compaction.gate', payload: { action: 'compact', reason: 'cache-cold' } },
     { ts: 3, eventName: 'compaction.run', payload: { trigger: 'manual', reason: 'cache-cold', outcome: 'pruned', charsBefore: 170000, charsAfter: 6500, charsCut: 163500, ratio: 0.962, prunedResults: 4, byReason: { 'superseded-read': 3, 'big-old-result': 1 }, verbatimTextIntact: true } },
     { ts: 4, eventName: 'compaction.run', payload: { trigger: 'auto', reason: 'auto', outcome: 'native-summary', charsCut: 0, ratio: 0.05, verbatimTextIntact: true } },
-    { ts: 5, eventName: 'compaction.settled', payload: { tokensBefore: 118723, tokensAfter: 46873, tokensCut: 71850, cacheRead: 32583, cacheWrite: 14286 } },
+    { ts: 5, eventName: 'compaction.settled', payload: { tokensBefore: 118723, tokensAfter: 46873, tokensCut: 71850 } },
+    { ts: 5, eventName: 'compaction.settled', payload: { prevented: true, tokensBefore: null, tokensAfter: 36848, tokensCut: null } },
     { ts: 6, eventName: 'compaction.resume', payload: { reexpanded: true, reloadedTokens: 264151 } },
     { ts: 7, eventName: 'cache.turn', payload: { host: 'api.anthropic.com', auth: 'bearer', model: 'm', read: 900, write: 100, input: 0, write5m: 0, write1h: 100 } },
     { ts: 8, eventName: 'cache.turn', payload: { host: 'gw.local', auth: 'api-key', model: 'm', read: 0, write: 500, input: 10, write5m: 500, write1h: 0, afterCompaction: true } },
@@ -23198,7 +23199,8 @@ test('compaction-metrics.summarizeCompaction: when/how much/cache per host — e
   assertEq(s.cut.charsCut, 163500); assertEq(s.cut.avgRatio, 0.962);
   assertEq(s.runs.prunedByKind, { 'superseded-read': 3, 'big-old-result': 1 });
   assertEq(s.gate.held, 1); assertEq(s.gate.byReason['cache-warm'], 1);
-  assertEq(s.settled.tokensCut, 71850);
+  assertEq(s.settled.tokensCut, 71850); assertEq(s.settled.count, 1);
+  assertEq(s.settled.prevented, 1, 'a resumed re-expansion prevented: counted apart, never a negative cut');
   assertEq(s.settled.firstTurns, 1); assertEq(s.settled.firstTurnWrite, 500, 'the first call after a compaction = cache.turn afterCompaction');
   assertEq(s.resume.reexpanded, 1); assertEq(s.errors.total, 1);
   const sub = s.cache.byHost['api.anthropic.com|bearer'];
@@ -23235,7 +23237,9 @@ test('compaction-event.readNewApiCalls: one entry per API call since the last on
   assertEq(all.map((c) => c.id), ['m3', 'm4'], 'since m1: each later call once; copies and sidechain skipped');
   assertEq(all.map((c) => c.afterCompaction), [true, false], 'only the first real call after the boundary');
   assertEq(ce.readNewApiCalls(f, 'm4'), [], 'nothing new since the last call seen');
-  assertEq(ce.readNewApiCalls(f, null).map((c) => c.id), ['m4'], 'first observation: the latest call only');
+  assertEq(ce.readNewApiCalls(f, null).map((c) => [c.id, c.afterCompaction]), [['m3', true], ['m4', false]], 'first observation of a process: every call since the last boundary (a resumed session compacted before its first prompt)');
+  const noB = cmpTranscript(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-nb-')), [call('n1', real(5)), call('n2', real(6))]);
+  assertEq(ce.readNewApiCalls(noB, null).map((c) => c.id), ['n2'], 'no boundary: the latest call only');
   assertEq(ce.readNewApiCalls(f, 'gone-out-of-window').map((c) => c.id), ['m4'], 'since not in the tail: latest only (never a flood)');
   assertEq(ce.readNewApiCalls(path.join(dir, 'missing.jsonl'), null), []);
 });
