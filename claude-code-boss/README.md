@@ -34,8 +34,8 @@ Nada mais a configurar.
   só o resumo. A sessão começa dizendo quanto isso economizou.
 - **Ele aprende.** Quando você corrige o agente, a correção vira uma lição na hora. Lição
   que se repete fica mais forte, e o mesmo erro não roda duas vezes à toa.
-- **Ele compacta na hora certa.** Quando o contexto passa do limite e o cache do provedor já
-  expirou, o próximo prompt que você manda é segurado, o histórico é podado (seus pedidos e as
+- **Ele compacta na hora certa.** Quando o contexto passa do limite que você escolhe (um % da janela
+  do modelo, no slider do painel) e o cache do provedor já expirou, o próximo prompt que você manda é segurado, o histórico é podado (seus pedidos e as
   respostas ficam palavra por palavra; saem só resultados de ferramenta velhos) e o mesmo prompt
   segue. Sem resumo, sem gastar token, e o painel mostra quanto foi cortado e o que o cache fez.
 - **Painel em 0 turnos.** Digite `/dashboard`: o painel abre no navegador sem passar
@@ -226,10 +226,17 @@ Módulo de *function hook* do Claude Code (`hooks/compaction.mjs`, declarado em 
 `hooks.json`; exige Claude Code 2.1.274+). Decisões puras em `scripts/lib/compaction-core.mjs`
 (ESM, usado pelo módulo e pelo Node).
 
-- **Quando**: nunca sozinho. No `prompt.submit` de uma pessoa com a sessão ociosa, se o contexto
-  passou de `thresholdTokens` **e** o cache do provedor já expirou (ou passou de
-  `hardCeilingTokens`), o prompt é segurado, o `/compact` roda e o mesmo texto é reenviado como seu.
-  Com o cache ainda válido ele espera — reescrever o histórico regravaria no cache o que ainda está pago.
+- **Quando**: nunca sozinho e **nunca com o cache quente**. No `prompt.submit` de uma pessoa com a
+  sessão ociosa, se o contexto passou do limiar **e** o cache do provedor já expirou, o prompt é
+  segurado, o `/compact` roda e o mesmo texto é reenviado como seu. Com o cache válido ele espera —
+  reescrever o histórico regravaria no cache o que ainda está pago; se o cache nunca esfriar, quem age é a
+  compactação automática do próprio engine no limite dela (que também passa pela poda).
+- **Limiar**: um % (`thresholdPercent`, padrão 30, faixa 10–80) da janela que o engine aplica naquele
+  prompt — o limite do modelo ou uma janela de compactação menor (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`) —, então
+  o mesmo ajuste serve a modelos de 200K e de 1M e acompanha o `/model`. Um limiar além do ponto de
+  auto-compact do engine é sinalizado (o engine compactaria antes). Ajuste no slider do painel
+  **Compaction & cache** (gravado em `~/.claude/claude-code-boss/hooks/user-config.json`, sobrevive a
+  updates; sessões abertas pegam no próximo turno).
   A validade é a **observada** nas respostas reais de cada host (`ephemeral_5m` / `ephemeral_1h`;
   medido: assinatura 1 h, um gateway de API 5 min); sem observação, assume a mais longa.
 - **O quê**: toda compactação (manual, o limiar automático do engine, a do gate) passa pela poda:
@@ -241,8 +248,8 @@ Módulo de *function hook* do Claude Code (`hooks/compaction.mjs`, declarado em 
   rejeitava o thinking). O primeiro prompt detecta as cópias e poda antes de qualquer envio.
 - **Não age** em sessão headless (`-p`/SDK: o engine não deixa um plugin compactar ali — o `/compact`
   manual e o limiar automático continuam passando pela poda), no perfil `free`, nem com
-  `compaction.enabled: false`. Config em `hooks-config.json` → `compaction` (`thresholdTokens`
-  250000, `hardCeilingTokens` 400000, `minIntervalMinutes` 10, `preserveRecentMessages` 6).
+  `compaction.enabled: false`. Config em `hooks-config.json` → `compaction` (`thresholdPercent` 30,
+  `minIntervalMinutes` 10, `preserveRecentMessages` 6); `GET/PUT /api/compaction/config`.
 - **Observabilidade**: o módulo envia cada evento ao daemon (`POST /hook/compaction-event`, mesmo
   token do `/mcp`) → metrics store: `compaction.gate` (decisão e motivo, idade e TTL do cache),
   `compaction.run` (gatilho, caracteres cortados, cópias do engine removidas), `compaction.settled`

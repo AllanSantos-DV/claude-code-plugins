@@ -965,6 +965,11 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   por tamanho (sessão sem compactação podada com cache quente → agora pelas cópias do engine); cópias
   **intercaladas** (não contíguas) e thinking duplicado (dedupe por bloco de resposta; fixture real 52 → 32);
   boot do daemon dependia do `hook-tools.js` (rota criada sob demanda, 503 se faltar).
+  **Limiar configurável (08/10, decisão do dono)**: só limiar, em % da janela que o engine aplica (`rawMaxTokens` do
+  `usage({breakdown})`: limite do modelo ou `CLAUDE_CODE_AUTO_COMPACT_WINDOW`), padrão 30%, faixa 10–80, e **nunca com o
+  cache quente** (o teto saiu: se não esfriar, age o auto-compact do engine, também pela poda). Slider no painel,
+  `GET/PUT /api/compaction/config` gravando no user-config (à prova de update); sessões abertas pegam no próximo turno.
+  Provado no sandbox interativo: janela 200k (env), limiar 20k, 420 s ocioso → `cache-cold` → 58.517 → 31.303 tokens.
 - [ ] **Q37 — nome "claude-code-boss" é reservado para o `claude plugin validate`** (prefixo `claude-`), visto ao
   validar o módulo de compactação. Hoje só o validador reprova: em execução o engine carrega e admite o módulo
   (provado com plugin instalado de marketplace e `--plugin-dir`, 2.1.291). Risco: se a regra passar a valer na

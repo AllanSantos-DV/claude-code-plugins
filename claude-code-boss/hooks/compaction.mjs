@@ -139,6 +139,7 @@ async function observeCalls($, ctx) {
   const id = await identity($, ctx);
   const reply = await send($, ctx, 'turn', { ...id, sinceMessageId: ctx.lastMessageId });
   if (reply.lastMessageId) ctx.lastMessageId = reply.lastMessageId;
+  if (reply.config) { ctx.config = { ...DEFAULTS, ...reply.config }; ctx.configLoaded = true; } // slider changes, live
   applyTtl(ctx, reply);
   return { id, reply };
 }

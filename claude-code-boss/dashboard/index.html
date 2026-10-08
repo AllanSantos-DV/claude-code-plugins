@@ -2896,7 +2896,7 @@ async function saveCompactionConfig() {
   try {
     const r = await api('PUT', '/api/compaction/config', { thresholdPercent: Number(document.getElementById('cmp-pct').value), minIntervalMinutes: Number(document.getElementById('cmp-iv').value) });
     if (r && r.error) { msg.textContent = 'Not saved: ' + r.error; return; }
-    msg.textContent = `Saved: ${r.config.thresholdPercent}% · ${Math.round(r.config.minIntervalMs / 60000)} min (next prompt)`;
+    msg.textContent = `Saved: ${r.config.thresholdPercent}% · ${Math.round(r.config.minIntervalMs / 60000)} min (open sessions: from their next answered turn)`;
   } catch (e) { msg.textContent = 'Not saved: ' + (e && e.message ? e.message : e); }
 }
 
