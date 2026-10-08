@@ -8244,6 +8244,15 @@ test('resolveMode→modeMeta: cadeia config→modo→apresentação coerente', (
 const RG_PATH = path.resolve(ROOT, '..', '.github', 'scripts', 'release-guard.mjs');
 const loadReleaseGuard = () => import(require('url').pathToFileURL(RG_PATH).href);
 
+test('release-guard.isAncestor: commit fora do historico (push de historico reescrito) = nao-ancestral, sem derrubar o guard', async () => {
+  const rg = await loadReleaseGuard();
+  const head = require('child_process').execFileSync('git', ['rev-parse', 'HEAD'], { cwd: path.resolve(ROOT, '..'), encoding: 'utf8' }).trim();
+  const ghost = 'f'.repeat(40); // nao existe em nenhum clone
+  assertEq(rg.isAncestor(ghost, head), false, 'o CI caia aqui com exit 128 (5fd0028, de nenhum branch) e ficava vermelho a cada 6 h');
+  assertEq(rg.isAncestor(head, ghost), false);
+  assertEq(rg.isAncestor(head, head), true, 'o caso normal segue funcionando');
+});
+
 test('release-guard: importar o modulo NAO executa o CLI (senao mata o processo de teste)', async () => {
   const rg = await loadReleaseGuard();
   assertEq(typeof rg.classify, 'function', 'classify exportada');

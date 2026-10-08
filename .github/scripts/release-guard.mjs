@@ -123,6 +123,13 @@ function bumpCommit(relFile, version) {
   }
 }
 
+/**
+ * `a` é ancestral de `b`? (git merge-base --is-ancestor). Commit inexistente neste clone
+ * conta como "não" — ver abaixo. Outro erro do git propaga.
+ * @param {string} a
+ * @param {string} b
+ * @returns {boolean}
+ */
 function isAncestor(a, b) {
   if (!b || /^0+$/.test(b)) return false; // criação do branch: nada antes
   try {
@@ -130,6 +137,14 @@ function isAncestor(a, b) {
     return true;
   } catch (err) {
     if (err.status === 1) return false; // não é ancestral
+    // 128 = commit que não existe neste clone: a atividade da main ainda lista pushes de
+    // um histórico reescrito (ex.: 5fd0028, de nenhum branch). Um commit fora do histórico
+    // não contém o bump — não é ancestral. Derrubar o guard por isso deixava o cron
+    // vermelho a cada 6 h sem drift nenhum.
+    if (err.status === 128) {
+      process.stderr.write(`[release-guard] aviso: commit fora do histórico (${a} → ${b}) — tratado como não-ancestral\n`);
+      return false;
+    }
     throw new Error(`git merge-base ${a} ${b}: ${err.message}`);
   }
 }
@@ -237,7 +252,7 @@ async function cmdList() {
   process.stdout.write(JSON.stringify(await evaluate(Date.now()), null, 2) + '\n');
 }
 
-export { classify, pushArrival, versionAge, evaluate, statusOf, plugins, GRACE_MS, VERSION_FILES };
+export { classify, pushArrival, versionAge, evaluate, statusOf, plugins, isAncestor, GRACE_MS, VERSION_FILES };
 
 // CLI só quando executado DIRETAMENTE. Sem esta guarda, um `import` do módulo
 // (por um teste, por exemplo) roda o check e chama process.exit, derrubando o
