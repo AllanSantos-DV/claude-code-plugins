@@ -2852,8 +2852,8 @@ async function loadCompactionPanel() {
     + `Resume checks: ${c.resume.checks} (${c.resume.reexpanded} re-expanded by the engine → pruned again).`
     + (c.cut.verbatimBroken ? ` <span class="badge badge-red">${c.cut.verbatimBroken} with text changed</span>` : '')
     + (c.errors.total ? ` <span class="badge badge-red">${c.errors.total} errors</span>` : '') + '</p>';
-  if (st.count) {
-    html += `<p class="text-muted" style="font-size:.8rem;margin:.25rem 0">First turn after a compaction: ${fmt(st.firstTurnRead)} cache read · ${fmt(st.firstTurnWrite)} cache write (the price of rewriting history).</p>`;
+  if (st.firstTurns) {
+    html += `<p class="text-muted" style="font-size:.8rem;margin:.25rem 0">First API call after a compaction (${st.firstTurns}): ${fmt(st.firstTurnRead)} cache read · ${fmt(st.firstTurnWrite)} cache write (the price of rewriting history).</p>`;
   }
   const hosts = Object.values(c.cache.byHost || {});
   html += hosts.length

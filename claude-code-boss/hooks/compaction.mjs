@@ -40,6 +40,7 @@ function newCtx() {
     resumeChecked: false,
     compactReason: null,     // why the next compaction runs (set by the gate)
     pendingSettle: null,     // a compaction whose effect the next turn measures
+    lastMessageId: null,     // newest API call already recorded as cache.turn
   };
 }
 
@@ -136,16 +137,18 @@ async function afterTurn($, ctx) {
     const id = await identity($, ctx);
     const settle = ctx.pendingSettle;
     ctx.pendingSettle = null;
-    const reply = await send($, ctx, 'turn', { ...id, afterCompaction: !!settle });
+    const reply = await send($, ctx, 'turn', { ...id, sinceMessageId: ctx.lastMessageId });
+    if (reply.lastMessageId) ctx.lastMessageId = reply.lastMessageId;
     applyTtl(ctx, reply);
     if (settle) {
       const { context } = await $.session.usage();
       const after = context.tokens ?? ctx.measuredTokens ?? null;
-      const o = reply.observed || {};
+      // The cache price of the first call after the compaction is in cache.turn (afterCompaction,
+      // marked from the transcript) — its row may land after this turn.complete (interactive).
       emit($, ctx, 'settled', {
         reason: settle.reason, trigger: settle.trigger, tokensBefore: settle.tokensBefore, tokensAfter: after,
         tokensCut: settle.tokensBefore != null && after != null ? settle.tokensBefore - after : null,
-        cacheRead: o.read ?? null, cacheWrite: o.write ?? null, host: id.host, auth: id.auth,
+        host: id.host, auth: id.auth,
       });
     }
   } catch (err) {

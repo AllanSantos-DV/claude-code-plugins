@@ -39,11 +39,21 @@ function compactionConfig() {
 }
 
 /**
- * Last main-thread assistant `usage` in the transcript — read from the tail only (a
- * long session's transcript is many MB). null when there is none yet.
+ * The main thread's API calls in the transcript tail (a long transcript is many MB),
+ * newest last, one per `message.id` — a call's thinking / tool_use / text rows share it.
+ *
+ * Attribution is per API call, not per turn, because both of these were seen live:
+ *   - after a compaction the engine re-writes the kept assistant rows with their usage
+ *     ZEROED (synthetic copies) — never a request, skipped;
+ *   - interactive: the answer's row is not in the file yet when turn.complete fires — a
+ *     "last row" read took the previous turn's call. Reading every call since the last one
+ *     observed (`sinceId`) records each exactly once, whenever it lands.
+ * `afterCompaction` = the first real call after a compact_boundary: the price of rewriting
+ * history, read from the transcript itself.
+ * @returns {Array<{id:string, model:string|null, usage:object, afterCompaction:boolean}>}
  */
-function readLastAssistantUsage(transcriptPath) {
-  if (!transcriptPath || !fs.existsSync(transcriptPath)) return null;
+function readNewApiCalls(transcriptPath, sinceId) {
+  if (!transcriptPath || !fs.existsSync(transcriptPath)) return [];
   const st = fs.statSync(transcriptPath);
   const len = Math.min(st.size, TAIL_BYTES);
   const fd = fs.openSync(transcriptPath, 'r');
@@ -55,17 +65,29 @@ function readLastAssistantUsage(transcriptPath) {
   } finally {
     fs.closeSync(fd);
   }
-  const lines = text.split('\n');
-  for (let i = lines.length - 1; i >= 0; i--) {
-    const line = lines[i].trim();
+  const calls = [];
+  const seen = new Set();
+  let boundaryPending = false;
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
     if (!line.startsWith('{')) continue; // the first line of a tail window may be cut
     let row;
     try { row = JSON.parse(line); } catch (err) { void err; continue; }
-    if (row.type === 'assistant' && !row.isSidechain && row.message && row.message.usage) {
-      return { model: row.message.model || null, usage: row.message.usage };
-    }
+    if (row.type === 'system' && row.subtype === 'compact_boundary') { boundaryPending = true; continue; }
+    if (row.type !== 'assistant' || row.isSidechain || !row.message || !row.message.usage) continue;
+    const u = row.message.usage;
+    const total = (Number(u.input_tokens) || 0) + (Number(u.output_tokens) || 0)
+      + (Number(u.cache_read_input_tokens) || 0) + (Number(u.cache_creation_input_tokens) || 0);
+    if (total <= 0) continue; // a re-written copy, not a request
+    const id = row.message.id || row.uuid;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    calls.push({ id, model: row.message.model || null, usage: u, afterCompaction: boundaryPending });
+    boundaryPending = false;
   }
-  return null;
+  if (!sinceId) return calls.slice(-1);       // first observation: the latest call only
+  const at = calls.findIndex((c) => c.id === sinceId);
+  return at >= 0 ? calls.slice(at + 1) : calls.slice(-1); // since fell out of the window: latest only
 }
 
 /** Window verdict for one host|auth from the cache.turn rows already stored. */
@@ -108,16 +130,17 @@ async function run(ev) {
   }
 
   if (kind === 'turn') {
-    const last = readLastAssistantUsage(ev.transcript_path);
+    const calls = readNewApiCalls(ev.transcript_path, data.sinceMessageId || null);
     let observed = null;
-    if (last) {
-      const u = last.usage;
+    for (const c of calls) {
+      const u = c.usage;
       const parsed = cacheCycle().parseCacheUsage(u);
       const detail = u.cache_creation || {};
       observed = {
         host: data.host || 'unknown',
         auth: data.auth || 'unknown',
-        model: last.model,
+        model: c.model,
+        messageId: c.id,
         input: Number(u.input_tokens) || 0,
         output: Number(u.output_tokens) || 0,
         read: parsed.read,
@@ -126,14 +149,19 @@ async function run(ev) {
         write1h: Number(detail.ephemeral_1h_input_tokens) || 0,
         cacheState: parsed.state,
         ttlMs: parsed.ttlMs,
-        afterCompaction: data.afterCompaction === true,
+        afterCompaction: c.afterCompaction,
       };
       await metrics.record('cache.turn', observed, ctx);
     }
-    return { observed, ttl: ttlVerdictFor(hostKey, storedCacheTurns()) };
+    return {
+      observed, recorded: calls.length,
+      lastMessageId: calls.length ? calls[calls.length - 1].id : (data.sinceMessageId || null),
+      ttl: ttlVerdictFor(hostKey, storedCacheTurns()),
+    };
   }
+
 
   throw new Error(`compaction-event: unknown kind '${kind}'`);
 }
 
-module.exports = { run, readLastAssistantUsage, ttlVerdictFor };
+module.exports = { run, readNewApiCalls, ttlVerdictFor };

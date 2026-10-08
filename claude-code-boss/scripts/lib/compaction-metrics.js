@@ -38,7 +38,8 @@ function summarizeCompaction(rows, { timeline = 20 } = {}) {
     gate: { total: 0, byAction: {}, byReason: {}, held: 0, attachmentsPassed: 0 },
     runs: { total: 0, pruned: 0, nativeSummary: 0, byTrigger: {}, byReason: {}, prunedByKind: {} },
     cut: { charsBefore: 0, charsAfter: 0, charsCut: 0, avgRatio: null, prunedResults: 0, verbatimBroken: 0 },
-    settled: { count: 0, tokensBefore: 0, tokensAfter: 0, tokensCut: 0, firstTurnRead: 0, firstTurnWrite: 0 },
+    // firstTurn*: the first API call after each compaction (cache.turn afterCompaction).
+    settled: { count: 0, tokensBefore: 0, tokensAfter: 0, tokensCut: 0, firstTurns: 0, firstTurnRead: 0, firstTurnWrite: 0 },
     resume: { checks: 0, reexpanded: 0, reloadedTokens: 0 },
     errors: { total: 0, byWhere: {} },
     cache: { byHost: {} },
@@ -83,8 +84,6 @@ function summarizeCompaction(rows, { timeline = 20 } = {}) {
         s.settled.tokensBefore += num(p.tokensBefore);
         s.settled.tokensAfter += num(p.tokensAfter);
         s.settled.tokensCut += Math.max(0, num(p.tokensCut));
-        s.settled.firstTurnRead += num(p.cacheRead);
-        s.settled.firstTurnWrite += num(p.cacheWrite);
         break;
       case 'compaction.resume':
         s.resume.checks++;
@@ -102,7 +101,10 @@ function summarizeCompaction(rows, { timeline = 20 } = {}) {
         h.read += num(p.read); h.write += num(p.write); h.input += num(p.input);
         h.write5m += num(p.write5m); h.write1h += num(p.write1h);
         if (p.model) bump(h.models, p.model);
-        if (p.afterCompaction) { h.afterCompaction.turns++; h.afterCompaction.read += num(p.read); h.afterCompaction.write += num(p.write); }
+        if (p.afterCompaction) {
+          h.afterCompaction.turns++; h.afterCompaction.read += num(p.read); h.afterCompaction.write += num(p.write);
+          s.settled.firstTurnRead += num(p.read); s.settled.firstTurnWrite += num(p.write); s.settled.firstTurns++;
+        }
         break;
       }
       default: break;
