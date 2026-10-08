@@ -1067,12 +1067,15 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   conteúdo do ARQUIVO; o lembrete de decisão do Stop citou um script de patch como "commit" (visto em 2026-10-08, nos commits
   Q42–Q45). **Corrigido na hora**: só o que vem depois do `git commit`/`gh pr` é lido, e o heredoc só conta quando alimenta o
   `-m`/`--body` (`"$(cat <<…`). Teste: reproduzido no código anterior (extraía `const fs = require('fs');`), passa após a correção.
-- [ ] **Achado externo (Smart Tool 0.9.4) — `affected_tests` diz "nenhum teste" para código do boss** (visto em 2026-10-08 ao adotar
+- [x] **Achado externo (Smart Tool 0.9.4) — `affected_tests` diz "nenhum teste" para código do boss** (visto em 2026-10-08 ao adotar
   graph/affected_tests): o `scripts/test-units.js` (1,42 MB, ~1.430 testes) cai no teto de tamanho do índice; uma mudança só em
   `scripts/lib/hooks-config.js` deu `tests: []`, `run_all: false`; `graph` com symbol devolve `tests: []` para funções testadas.
   Também: nenhum runner inferido apesar do `npm test`; `register` devolve 128k caracteres; `degraded` sem motivo. **Repassado** à sessão
   do Smart Tool. Até corrigir: no boss, o gate continua sendo a suíte inteira (`test-units` + `test-hooks`), nunca só o que o
   `affected_tests` listar.
+  **Resolvido no Smart Tool 0.9.5 (validado aqui em 2026-10-08)**: a mesma reprodução agora lista `test-units.js` (1 passo) e `test-hooks.js`
+  (2 passos) com os comandos; `graph` vê os testes; status curto. Pontos menores repassados: `duplicates` lê o índice velho sem avisar; teste
+  aparece como "callback" em vez do título.
 - [x] **Q47 — o embedder ignora a escolha feita no painel** (`scripts/brain-embedder.js:43-55` `loadConfig`): lê só o
   `config/brain-config.json` que vem no plugin; o painel "Embedder" grava provedor/modelo no user-config via `brain-config.save`.
   **Provado** (HOME temporário): salvo `ollama/nomic-embed-text/768` → o embedder carrega `transformers/paraphrase-multilingual/384`.
