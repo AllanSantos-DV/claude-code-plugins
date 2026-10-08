@@ -210,6 +210,7 @@ Shipped em `claude-code-boss/config/hooks-config.json`; override do usuário em 
 |-------|---------|-----------|
 | `profile` | `"standard"` | `standard` (quiet), `dev` (tudo on, curadoria 3x), `free` (passthrough, zero blocking) |
 | `hooks.<name>.enabled` | varia | Toggle individual por hook |
+| `disabledHooks` | `[]` | Hooks desligados no painel (ids das ferramentas `hook_*` servidas pelo daemon); o daemon responde `{}` sem rodá-los. Os hooks de comando (dispatchers, ensure do roteador) são infraestrutura e não entram aqui |
 | `memoryRotate.maxLines` | `150` | Rotação do MEMORY.md (max 500; CC trunca em 200) |
 | `errorGuard.enabled` | `true` | Bloqueia Bash com falha recorrente conhecida |
 | `captureTriggerEvidence` | `false` | OPT-IN: captura snippets de triggers de shadow policies |

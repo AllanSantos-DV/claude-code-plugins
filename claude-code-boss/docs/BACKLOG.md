@@ -1036,12 +1036,18 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   **Resolvido em 2026-10-08**: a busca de dedup passa `type` (o `brain-store` já filtra por tipo ANTES do `topK`, nos
   dois armazenamentos). Testes: decisão quase idêntica a uma lição é admitida, repetição do mesmo tipo ainda funde; o
   `brain-store.search` honra `opts.type`. Mutação (sem o `type`) reprova.
-- [ ] **Q43 — o liga/desliga de hook do dashboard renomeia o script DENTRO da pasta do plugin** (`scripts/dashboard.js:1223`
+- [x] **Q43 — o liga/desliga de hook do dashboard renomeia o script DENTRO da pasta do plugin** (`scripts/dashboard.js:1223`
   `toggleHook`: `scripts/<nome>` → `.disabled`). Mesma família do Q38: o auto-update instala uma pasta nova e o hook volta
   ligado sem aviso; e desligar um dispatcher (`stop-dispatcher.js` etc.) tira TODOS os detectores daquele evento, com erro de
   "Cannot find module" a cada disparo, em vez de desligar só o detector. Visto ao levantar features irmãs do Q38 (2026-10-08).
   (Path traversal verificado e descartado: o `new URL` normaliza `..`/`%2e%2e`.) Proposta: o botão grava `<detector>.enabled`
   no user-config (os detectores já leem `enabled` via `hooks-config`), sem tocar arquivo do plugin; teste de sobrevivência ao update.
+  **Resolvido em 2026-10-08**: `disabledHooks` no user-config (`hooks-config.setHookDisabled`/`isHookDisabled`); o
+  `hook-tools.handle` responde `{}` sem rodar um hook desligado (vale para os 13 `hook_*` do `hooks.json`). Achado junto: nos
+  hooks `mcp_tool` (a maioria) o botão antigo dava 404 — procurava `scripts/hook_x`. As 4 entradas de comando (dispatchers de
+  SessionStart/UserPromptSubmit, ensure do roteador, `/dashboard`) e o `brain_retrieve_context` ficam sem botão: são infraestrutura
+  (raiz da sessão, ensure do daemon/roteador) e a API recusa com o motivo (400). Testes: unitário com hook-sonda (não roda quando
+  desligado, volta quando religado, nenhum arquivo do plugin renomeado) + smoke do dashboard real; mutação reprova.
 - [x] **Q44 — ajuste do usuário em `kb.skillPromotion` é ignorado**: `scripts/brain-promote.js:45` (comportamento) e
   `scripts/dashboard.js:1008` (painel) leem só o `config/brain-config.json` que vem no plugin, sem o user-config
   (`<globalDir>/user-config.json`) que o `brain-config.load()` já mescla. Visto no mesmo levantamento. Proposta: ler pelo

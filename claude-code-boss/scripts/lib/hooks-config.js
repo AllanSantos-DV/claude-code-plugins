@@ -383,6 +383,42 @@ function saveProfile(name) {
   return p;
 }
 
+/**
+ * Hooks the user switched off in the dashboard (BACKLOG Q43) — ids are hook tool
+ * names (e.g. `hook_stop_dispatcher`). Kept in the UPDATE-SAFE user-config: the old
+ * toggle renamed scripts inside the plugin folder, which every auto-update undid.
+ * @param {string} id
+ * @returns {boolean}
+ */
+function isHookDisabled(id) {
+  const d = load().disabledHooks;
+  return Array.isArray(d) && d.includes(id);
+}
+
+/**
+ * Switch a hook off/on in the update-safe user-config. Returns the new list.
+ * @param {string} id
+ * @param {boolean} disabled
+ * @returns {string[]}
+ */
+function setHookDisabled(id, disabled) {
+  if (typeof id !== 'string' || !id.trim()) throw new Error('hook id must be a non-empty string');
+  const file = userConfigPath();
+  let current = {};
+  try {
+    if (fs.existsSync(file)) current = JSON.parse(fs.readFileSync(file, 'utf-8')) || {};
+  } catch (err) { void err; /* corrupt/absent → start fresh */ }
+  if (!isPlainObject(current)) current = {};
+  const list = new Set(Array.isArray(current.disabledHooks) ? current.disabledHooks.filter((x) => typeof x === 'string') : []);
+  if (disabled) list.add(id); else list.delete(id);
+  current.disabledHooks = [...list].sort();
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  writeFileAtomic(file, `${JSON.stringify(current, null, 2)}
+`);
+  _resetCache();
+  return current.disabledHooks;
+}
+
 // What `after` changes relative to `before` (plain objects recurse; anything else is
 // compared by JSON value). `removed` lists keys present in `before` but absent in `after`.
 function diffConfig(after, before, prefix = '', removed = []) {
@@ -467,6 +503,8 @@ module.exports = {
   getCompaction,
   saveCompaction,
   saveOverrides,
+  isHookDisabled,
+  setHookDisabled,
   PROFILE_PRESETS,
   _resetCache,
   sourceStamp,
