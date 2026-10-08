@@ -469,7 +469,7 @@ table{font-variant-numeric:tabular-nums}
     </div>
     <div class="card">
       <h2 style="margin:0 0 .5rem 0"><span data-i18n="home.compaction">Compaction &amp; cache</span> <span class="text-muted" style="font-size:.8rem">(last 30 days)</span>
-        <span class="tip" data-tip="When: the prompt gate holds a prompt only when the context is past the threshold AND the provider cache already expired (or the hard ceiling). How much: chars cut are exact (our pruning); tokens cut are measured — the context of the turn after the compaction vs the reading before. Cache: the contracted window observed in real writes per API host/credential (ephemeral_5m vs ephemeral_1h) and what the first turn after a compaction paid.">i</span>
+        <span class="tip" data-tip="When: the prompt gate holds a prompt only when the context is past the threshold (a % of the window the engine applies) AND the provider cache already expired — never with a warm cache. How much: chars cut are exact (our pruning); tokens cut are measured — the context of the turn after the compaction vs the reading before. Cache: the contracted window observed in real writes per API host/credential (ephemeral_5m vs ephemeral_1h) and what the first turn after a compaction paid.">i</span>
       </h2>
       <div id="home-compaction"><div class="spinner" style="margin:1rem auto"></div></div>
     </div>
@@ -2839,7 +2839,17 @@ async function loadCompactionPanel() {
   const stat = (value, label, badge, cls) => `<div class="stat"><div class="value">${value}</div><div class="label">${label}</div><span class="badge ${cls}">${badge}</span></div>`;
   const cfg = c.config || {};
   const g = c.gate, r = c.runs, st = c.settled;
-  let html = `<p class="text-muted" style="font-size:.8rem;margin:0 0 .5rem 0">${cfg.enabled ? 'On' : '<b>Off</b> (profile free or config)'} · threshold ${fmt(cfg.thresholdTokens || 0)} · hard ceiling ${fmt(cfg.hardCeilingTokens || 0)} · min interval ${Math.round((cfg.minIntervalMs || 0) / 60000)} min</p>`;
+  const rng = cfg.thresholdRange || [10, 80];
+  const ivr = cfg.minIntervalRange || [1, 60];
+  const pct = cfg.thresholdPercent || 30;
+  const wins = (c.windows || []).length ? c.windows : [{ windowTokens: 200000, source: 'example' }, { windowTokens: 1000000, source: 'example' }];
+  const winRows = wins.map(w => `<span data-win="${w.windowTokens}" data-engine="${w.engineAutoCompactAt || ''}">${fmt(w.windowTokens)} window${w.source && w.source !== 'example' ? ' (' + escapeHtml(String(w.source)) + ')' : ''} → <b class="cmp-thr">${fmt(Math.round(w.windowTokens * pct / 100))}</b>${w.engineAutoCompactAt ? ` · engine compacts at ${fmt(w.engineAutoCompactAt)}` : ''}<span class="cmp-warn badge badge-yellow" style="display:${w.engineAutoCompactAt && w.windowTokens * pct / 100 >= w.engineAutoCompactAt ? 'inline' : 'none'};margin-left:.3rem">past the engine: it compacts first</span>${w.source === 'unknown-model' ? ' <span class="badge badge-yellow">window assumed (model not recognized)</span>' : ''}</span>`).join('<br>');
+  let html = `<p class="text-muted" style="font-size:.8rem;margin:0 0 .4rem 0">${cfg.enabled ? 'On' : '<b>Off</b> (profile free or config)'} · never compacts with a warm cache — if it never cools, the engine's own auto-compaction runs (through this pruning too)</p>`
+    + `<div style="display:flex;gap:.8rem;align-items:center;flex-wrap:wrap;font-size:.82rem;margin-bottom:.4rem">`
+    + `<label>Threshold <input id="cmp-pct" type="range" min="${rng[0]}" max="${rng[1]}" step="1" value="${pct}" oninput="compactionPreview(this.value)"> <b id="cmp-pct-v">${pct}%</b> of the window</label>`
+    + `<label>Min interval <input id="cmp-iv" type="number" min="${ivr[0]}" max="${ivr[1]}" value="${Math.round((cfg.minIntervalMs || 600000) / 60000)}" style="width:4rem"> min</label>`
+    + `<button class="btn-sm" onclick="saveCompactionConfig()">Save</button><span id="cmp-save-msg" class="text-muted"></span></div>`
+    + `<p class="text-muted" style="font-size:.78rem;margin:0 0 .5rem 0" id="cmp-wins">${winRows}</p>`;
   html += '<div class="grid">'
     + stat(String(r.total), 'Compactions', `${r.pruned} pruned · ${r.nativeSummary} built-in summary`, r.total ? 'badge-green' : 'badge-yellow')
     + stat(fmt(c.cut.charsCut) + ' chars', 'Cut by pruning (exact)', c.cut.avgRatio != null ? `avg ${Math.round(c.cut.avgRatio * 100)}% smaller` : 'no pruning yet', c.cut.charsCut ? 'badge-green' : 'badge-yellow')
@@ -2868,6 +2878,26 @@ async function loadCompactionPanel() {
   }
   el.innerHTML = html;
   return c;
+}
+
+function compactionPreview(v) {
+  document.getElementById('cmp-pct-v').textContent = v + '%';
+  const fmt = n => n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n);
+  for (const el of document.querySelectorAll('#cmp-wins [data-win]')) {
+    const t = Math.round(Number(el.dataset.win) * Number(v) / 100);
+    el.querySelector('.cmp-thr').textContent = fmt(t);
+    const eng = Number(el.dataset.engine);
+    el.querySelector('.cmp-warn').style.display = eng && t >= eng ? 'inline' : 'none';
+  }
+}
+
+async function saveCompactionConfig() {
+  const msg = document.getElementById('cmp-save-msg');
+  try {
+    const r = await api('PUT', '/api/compaction/config', { thresholdPercent: Number(document.getElementById('cmp-pct').value), minIntervalMinutes: Number(document.getElementById('cmp-iv').value) });
+    if (r && r.error) { msg.textContent = 'Not saved: ' + r.error; return; }
+    msg.textContent = `Saved: ${r.config.thresholdPercent}% · ${Math.round(r.config.minIntervalMs / 60000)} min (next prompt)`;
+  } catch (e) { msg.textContent = 'Not saved: ' + (e && e.message ? e.message : e); }
 }
 
 async function pruneUnusedScripts() {

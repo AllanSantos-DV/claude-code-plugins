@@ -1,9 +1,11 @@
 // Controlled compaction — a Claude Code function-hook module (hooks.json "modules").
 //
-// WHEN: never on its own. When the person sends a prompt with the session idle, if the
-// context is past the threshold and the provider cache has already gone cold (or the
-// hard ceiling is hit), the prompt is held, the engine's /compact runs, and the same
-// text is sent again as the person's. WHAT: our pruning (scripts/lib/compaction-core.mjs)
+// WHEN: never on its own, and never with a warm cache. When the person sends a prompt with
+// the session idle, if the context is past the threshold (a % of the window the engine
+// applies now — 200K and 1M models alike) and the provider cache has already gone cold, the
+// prompt is held, the engine's /compact runs, and the same text is sent again as the
+// person's. If the cache never cools, the engine's own auto-compaction runs at its limit —
+// through our pruning too. WHAT: our pruning (scripts/lib/compaction-core.mjs)
 // answers every compaction (manual, the engine's auto threshold, ours): text intact,
 // stale tool results truncated; too little to cut → the engine's own summary.
 // RESUME: `--resume`/`-c` reload the ORIGINAL history after a hook compaction (engine
@@ -18,7 +20,7 @@
 // Observability: every decision and cut goes to the boss metrics store through the
 // daemon (POST /hook/compaction-event → tool hook_compaction_event → scripts/compaction-event.js).
 
-import { planCompaction, decideTiming, classifyResume, estimateTokens, DEFAULTS } from '../scripts/lib/compaction-core.mjs';
+import { planCompaction, decideTiming, classifyResume, estimateTokens, thresholdFor, DEFAULTS } from '../scripts/lib/compaction-core.mjs';
 
 const PERSON_ORIGINS = new Set(['composer', 'bridge', 'sdk']);
 
@@ -190,7 +192,14 @@ async function gate($, ctx, e, next) {
   if (!ctx.config.enabled) return next(e);
 
   const now = await $.clock.now();
-  const { context } = await $.session.usage();
+  // The window the engine applies NOW (the model's limit or a smaller compaction window) and
+  // its own auto-compact point — a local estimate, no API call. The model window as fallback.
+  const { context } = await $.session.usage({ breakdown: 'summary' });
+  const bd = context.breakdown || {};
+  const windowTokens = Number(bd.rawMaxTokens) > 0 ? Number(bd.rawMaxTokens) : context.window;
+  const windowSource = Number(bd.rawMaxTokens) > 0 ? (bd.autocompactSource || null) : 'model-window';
+  const engineAutoCompactAt = bd.isAutoCompactEnabled === false ? null : (Number(bd.autoCompactThreshold) > 0 ? Number(bd.autoCompactThreshold) : null);
+  const thr = thresholdFor({ window: windowTokens, engineAutoCompactAt }, ctx.config);
   let tokens = context.tokens ?? ctx.measuredTokens;
   const { ttlMs, ttlSource } = ttlInUse(ctx);
   let d;
@@ -202,9 +211,13 @@ async function gate($, ctx, e, next) {
     emit($, ctx, 'resume', { ...r, messages: reloadedMsgs.length, secondsSince: ctx.start.secondsSince ?? null });
     d = r.reexpanded ? { action: 'compact', reason: 'resume-reexpanded' } : null;
   }
-  if (!d) d = decideTiming({ tokens, now, lastAnswerAt: ctx.lastAnswerAt, lastCompactAt: ctx.lastCompactAt, busy: false, ttlMs }, ctx.config);
+  if (!d) d = decideTiming({ tokens, now, lastAnswerAt: ctx.lastAnswerAt, lastCompactAt: ctx.lastCompactAt, busy: false, ttlMs }, { ...ctx.config, thresholdTokens: thr.thresholdTokens });
   const idleMs = ctx.lastAnswerAt == null ? null : now - ctx.lastAnswerAt;
-  emit($, ctx, 'gate', { action: d.action, reason: d.reason, dueInMs: d.dueInMs ?? null, tokens: tokens ?? null, idleMs, ttlMs, ttlSource });
+  emit($, ctx, 'gate', {
+    action: d.action, reason: d.reason, dueInMs: d.dueInMs ?? null, tokens: tokens ?? null, idleMs, ttlMs, ttlSource,
+    thresholdPercent: thr.percent, thresholdTokens: thr.thresholdTokens, windowTokens: windowTokens ?? null, windowSource,
+    engineAutoCompactAt, thresholdAboveEngine: thr.aboveEngine,
+  });
 
   if (d.action !== 'compact') return next(e);
   if (e.attachments && e.attachments.length) {

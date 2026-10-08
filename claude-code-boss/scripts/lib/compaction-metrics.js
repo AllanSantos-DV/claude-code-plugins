@@ -44,10 +44,14 @@ function summarizeCompaction(rows, { timeline = 20 } = {}) {
     resume: { checks: 0, reexpanded: 0, copies: 0 }, // copies: the engine copies found in resumed histories
     errors: { total: 0, byWhere: {} },
     cache: { byHost: {} },
+    // windows the gate measured against (model limit or compaction window), newest first:
+    // what the % threshold means in tokens for each, and whether it sits past the engine's point.
+    windows: [],
     timeline: [],
   };
   let ratioSum = 0;
   const hosts = {};
+  const windowsSeen = new Map();
   const runsList = [];
   for (const r of rows || []) {
     const name = r.eventName || r.event_name;
@@ -56,6 +60,12 @@ function summarizeCompaction(rows, { timeline = 20 } = {}) {
     switch (name) {
       case 'compaction.session': s.sessions++; break;
       case 'compaction.gate':
+        if (Number(p.windowTokens) > 0) {
+          const wk = `${p.windowTokens}|${p.windowSource || '?'}`;
+          const prev = windowsSeen.get(wk);
+          if (!prev || (r.ts || 0) >= prev.lastTs) windowsSeen.set(wk, { windowTokens: Number(p.windowTokens), source: p.windowSource || null, engineAutoCompactAt: p.engineAutoCompactAt ?? null, thresholdPercent: p.thresholdPercent ?? null, thresholdTokens: p.thresholdTokens ?? null, aboveEngine: p.thresholdAboveEngine === true, lastTs: r.ts || 0, gates: (prev ? prev.gates : 0) + 1 });
+          else prev.gates++;
+        }
         s.gate.total++;
         bump(s.gate.byAction, p.action || '?');
         bump(s.gate.byReason, p.reason || '?');
@@ -122,6 +132,7 @@ function summarizeCompaction(rows, { timeline = 20 } = {}) {
       ttl: ttlVerdict({ write5m: h.write5m, write1h: h.write1h }),
     };
   }
+  s.windows = [...windowsSeen.values()].sort((a, b) => b.lastTs - a.lastTs);
   s.timeline = runsList.sort((a, b) => (b.ts || 0) - (a.ts || 0)).slice(0, timeline);
   return s;
 }

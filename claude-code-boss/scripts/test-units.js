@@ -23157,12 +23157,14 @@ test('compaction-core.planCompaction: a resumed history rebuilt with the engine\
 });
 
 test('compaction-core.decideTiming: waits for the cache to expire, compacts cold or at the ceiling, never busy/cooldown/no-reading, unknown TTL = the longer window', () => {
-  const T = { thresholdTokens: 250000, hardCeilingTokens: 400000, minIntervalMs: 600000 };
+  const T = { thresholdTokens: 250000, minIntervalMs: 600000 };
   const d = (s) => cmpCore.decideTiming({ busy: false, now: 10_000_000, ...s }, T);
   assertEq(d({ tokens: 100000, lastAnswerAt: 0, ttlMs: 300000 }), { action: 'none', reason: 'below-threshold' });
   assertEq(d({ tokens: 260000, lastAnswerAt: 10_000_000 - 60000, ttlMs: 300000 }), { action: 'wait', reason: 'cache-warm', dueInMs: 240000 });
   assertEq(d({ tokens: 260000, lastAnswerAt: 10_000_000 - 300000, ttlMs: 300000 }), { action: 'compact', reason: 'cache-cold' });
-  assertEq(d({ tokens: 410000, lastAnswerAt: 10_000_000 - 1000, ttlMs: 3600000 }), { action: 'compact', reason: 'hard-ceiling' });
+  // NEVER with a warm cache, however far past the threshold (owner's rule: no ceiling — if it
+  // never cools, the engine's own auto-compaction runs, through our pruning).
+  assertEq(d({ tokens: 950000, lastAnswerAt: 10_000_000 - 1000, ttlMs: 3600000 }), { action: 'wait', reason: 'cache-warm', dueInMs: 3599000 });
   assertEq(d({ tokens: 500000, busy: true }).action, 'none');
   assertEq(d({ tokens: 500000, lastCompactAt: 10_000_000 - 60000 }), { action: 'none', reason: 'cooldown' });
   assertEq(d({}), { action: 'none', reason: 'no-reading' });
@@ -23170,7 +23172,41 @@ test('compaction-core.decideTiming: waits for the cache to expire, compacts cold
   assertEq(d({ tokens: 260000, lastAnswerAt: 10_000_000 - 600000 }), { action: 'wait', reason: 'cache-warm', dueInMs: 3600000 - 600000 });
   // No answer seen yet: the cache age is unknown — never "cold" (a fresh session's first prompt).
   assertEq(d({ tokens: 260000, ttlMs: 300000 }), { action: 'none', reason: 'cache-age-unknown' });
-  assertEq(d({ tokens: 410000 }), { action: 'compact', reason: 'hard-ceiling' }, 'the ceiling still acts');
+  assertEq(cmpCore.decideTiming({ busy: false, now: 1, tokens: 900000, lastAnswerAt: 0, ttlMs: 1 }, {}), { action: 'none', reason: 'no-window' }, 'no window reading = no threshold = never act on a guess');
+});
+
+test('compaction-core.thresholdFor: a % of the window the engine applies (200K and 1M alike), clamped to the slider range, flagged past the engine point', () => {
+  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }), { thresholdTokens: 300000, percent: 30, aboveEngine: false });
+  assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 167000 }), { thresholdTokens: 60000, percent: 30, aboveEngine: false });
+  assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 150000 }, { thresholdPercent: 80 }), { thresholdTokens: 160000, percent: 80, aboveEngine: true }, 'past the engine point: it compacts first — flagged, never silently moved');
+  assertEq(cmpCore.thresholdFor({ window: 200000 }, { thresholdPercent: 95 }).percent, 80, 'clamped to the range top');
+  assertEq(cmpCore.thresholdFor({ window: 200000 }, { thresholdPercent: 2 }).percent, 10, 'clamped to the range bottom');
+  assertEq(cmpCore.thresholdFor({}).thresholdTokens, null, 'no window → no threshold');
+  assertEq(cmpCore.clampPercent('x'), 30, 'garbage → the default');
+});
+
+test('hooks-config compaction: getCompaction clamps; saveCompaction writes the UPDATE-SAFE user-config (never the shipped file)', () => {
+  const hc = require('./lib/hooks-config.js');
+  const file = hc.userConfigPath();
+  assert(file.startsWith(process.env.USERPROFILE), `the suite's temp HOME, never the real one (${file})`);
+  const shippedBefore = fs.readFileSync(path.join(ROOT, 'config', 'hooks-config.json'), 'utf8');
+  const prev = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+  try {
+    const out = hc.saveCompaction({ thresholdPercent: 95, minIntervalMinutes: 0 });
+    assertEq([out.thresholdPercent, out.minIntervalMs], [80, 60000], 'clamped: 80% max, 1 min minimum');
+    assertEq(JSON.parse(fs.readFileSync(file, 'utf8')).compaction, { thresholdPercent: 80, minIntervalMinutes: 1 });
+    assertEq(hc.saveCompaction({ thresholdPercent: 25 }).minIntervalMs, 60000, 'a partial save keeps the other key');
+    assertEq(fs.readFileSync(path.join(ROOT, 'config', 'hooks-config.json'), 'utf8'), shippedBefore, 'the shipped file is untouched');
+    let threw = null;
+    try { hc.saveCompaction({}); } catch (err) { threw = err.message; }
+    assert(/nothing to save/.test(threw || ''), 'an empty save fails loud');
+    threw = null;
+    try { hc.saveCompaction({ thresholdPercent: 'abc' }); } catch (err) { threw = err.message; }
+    assert(/must be a number/.test(threw || ''), 'a non-number fails loud');
+  } finally {
+    if (prev == null) { try { fs.unlinkSync(file); } catch (err) { void err; } } else fs.writeFileSync(file, prev);
+    hc._resetCache();
+  }
 });
 
 test('compaction-core.classifyResume: re-expanded = the reloaded history carries the engine copies (exact), never a size guess', () => {
@@ -23184,7 +23220,8 @@ test('compaction-core.classifyResume: re-expanded = the reloaded history carries
 test('compaction-metrics.summarizeCompaction: when/how much/cache per host — exact cuts, measured tokens, observed window', () => {
   const { summarizeCompaction } = require('./lib/compaction-metrics.js');
   const rows = [
-    { ts: 1, eventName: 'compaction.gate', payload: { action: 'wait', reason: 'cache-warm' } },
+    { ts: 1, eventName: 'compaction.gate', payload: { action: 'wait', reason: 'cache-warm', windowTokens: 1000000, windowSource: 'auto', engineAutoCompactAt: 967000, thresholdPercent: 30, thresholdTokens: 300000 } },
+    { ts: 3, eventName: 'compaction.gate', payload: { action: 'none', reason: 'below-threshold', windowTokens: 200000, windowSource: 'env', engineAutoCompactAt: 150000, thresholdPercent: 80, thresholdTokens: 160000, thresholdAboveEngine: true } },
     { ts: 2, eventName: 'compaction.gate', payload: { action: 'compact', reason: 'cache-cold' } },
     { ts: 3, eventName: 'compaction.run', payload: { trigger: 'manual', reason: 'cache-cold', outcome: 'pruned', charsBefore: 170000, charsAfter: 6500, charsCut: 163500, ratio: 0.962, prunedResults: 4, byReason: { 'superseded-read': 3, 'big-old-result': 1 }, verbatimTextIntact: true } },
     { ts: 4, eventName: 'compaction.run', payload: { trigger: 'auto', reason: 'auto', outcome: 'native-summary', charsCut: 0, ratio: 0.05, verbatimTextIntact: true } },
@@ -23200,6 +23237,7 @@ test('compaction-metrics.summarizeCompaction: when/how much/cache per host — e
   assertEq(s.cut.charsCut, 163500); assertEq(s.cut.avgRatio, 0.962);
   assertEq(s.runs.prunedByKind, { 'superseded-read': 3, 'big-old-result': 1 });
   assertEq(s.gate.held, 1); assertEq(s.gate.byReason['cache-warm'], 1);
+  assertEq(s.windows.map((w) => [w.windowTokens, w.source, w.aboveEngine]), [[200000, 'env', true], [1000000, 'auto', false]], 'windows the gate saw, newest first, with the past-the-engine flag');
   assertEq(s.settled.tokensCut, 71850); assertEq(s.settled.count, 1);
   assertEq(s.settled.prevented, 1, 'a resumed re-expansion prevented: counted apart, never a negative cut');
   assertEq(s.settled.firstTurns, 1); assertEq(s.settled.firstTurnWrite, 500, 'the first call after a compaction = cache.turn afterCompaction');
@@ -23278,7 +23316,7 @@ test('compaction-event.run: trail events land in the metrics store; turn records
     assertEq(again.recorded, 0, 'the same call is never recorded twice');
     assertEq(again.lastMessageId, 'msg-a');
     const hello = await ce.run({ ...base, payload: { kind: 'hello', host: 'gw.local', auth: 'api-key' } });
-    assert(hello.config && hello.config.thresholdTokens > 0, 'hello carries the config');
+    assert(hello.config && hello.config.thresholdPercent >= 10 && hello.config.thresholdPercent <= 80, 'hello carries the config (threshold as % of the window)');
     assertEq(hello.ttl.observed, '5m', 'hello replies the window already observed for this host');
     assertEq((await ce.run({ ...base, payload: { kind: 'hello', host: 'other', auth: 'bearer' } })).ttl.observed, null, 'another host has no observation → null, never an assumed 5m');
     const s = store();
@@ -23315,7 +23353,7 @@ test('hook_compaction_event: daemon transport (payload arrives as an object, bad
   assertEq(hc.resolveProfileConfig({ profile: 'free' }).compaction.enabled, false, 'free = passthrough');
   assertEq(hc.resolveProfileConfig({ profile: 'dev' }).compaction, undefined, 'dev keeps the shipped default (on)');
   const shipped = JSON.parse(fs.readFileSync(path.join(ROOT, 'config', 'hooks-config.json'), 'utf8')).compaction;
-  assertEq(shipped.enabled, true); assertEq(shipped.thresholdTokens, 250000);
+  assertEq(shipped.enabled, true); assertEq(shipped.thresholdPercent, 30); assertEq(shipped.hardCeilingTokens, undefined, 'no ceiling');
 });
 
 test('http-daemon POST /hook/compaction-event: REAL daemon — token-gated like /mcp; a module reaches hook_compaction_event end to end', async () => {

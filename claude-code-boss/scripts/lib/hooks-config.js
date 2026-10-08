@@ -299,16 +299,58 @@ function getSessionSummary() {
 
 // Controlled compaction (hooks/compaction.mjs). Profile-aware: `free` turns it off
 // (holding a prompt to compact first is an intervention, and free is passthrough).
+// The threshold is a PERCENT of the window the engine applies (one setting for 200K and
+// 1M models); the clamp is the core's own (scripts/lib/compaction-core.mjs).
+const MIN_INTERVAL_RANGE = [1, 60];
+function clampInterval(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 10;
+  return Math.min(MIN_INTERVAL_RANGE[1], Math.max(MIN_INTERVAL_RANGE[0], Math.round(n)));
+}
 function getCompaction() {
   const c = _resolved().compaction || {};
-  const pos = (v, d) => (Number.isFinite(v) && v > 0 ? v : d);
+  const core = require('./compaction-core.mjs');
   return {
     enabled: c.enabled !== false,
-    thresholdTokens: pos(c.thresholdTokens, 250000),
-    hardCeilingTokens: pos(c.hardCeilingTokens, 400000),
-    minIntervalMs: pos(c.minIntervalMinutes, 10) * 60000,
+    thresholdPercent: core.clampPercent(c.thresholdPercent ?? core.DEFAULTS.thresholdPercent),
+    thresholdRange: [core.DEFAULTS.minThresholdPercent, core.DEFAULTS.maxThresholdPercent],
+    minIntervalMs: clampInterval(c.minIntervalMinutes ?? 10) * 60000,
+    minIntervalRange: MIN_INTERVAL_RANGE,
     preserveRecentMessages: Number.isInteger(c.preserveRecentMessages) && c.preserveRecentMessages >= 0 ? c.preserveRecentMessages : 6,
   };
+}
+
+/**
+ * Persist the user's compaction choice (the dashboard slider) to the UPDATE-SAFE
+ * globalDir()/hooks/user-config.json — never the shipped file (BACKLOG Q38). Only the
+ * given keys change; values are clamped. Returns the effective config.
+ * @param {{thresholdPercent?: number, minIntervalMinutes?: number, enabled?: boolean}} patch
+ */
+function saveCompaction(patch) {
+  const p = patch && typeof patch === 'object' ? patch : {};
+  const core = require('./compaction-core.mjs');
+  const next = {};
+  if (p.thresholdPercent !== undefined) {
+    if (!Number.isFinite(Number(p.thresholdPercent))) throw new Error('thresholdPercent must be a number');
+    next.thresholdPercent = core.clampPercent(p.thresholdPercent);
+  }
+  if (p.minIntervalMinutes !== undefined) {
+    if (!Number.isFinite(Number(p.minIntervalMinutes))) throw new Error('minIntervalMinutes must be a number');
+    next.minIntervalMinutes = clampInterval(p.minIntervalMinutes);
+  }
+  if (p.enabled !== undefined) next.enabled = p.enabled === true;
+  if (!Object.keys(next).length) throw new Error('nothing to save (thresholdPercent, minIntervalMinutes or enabled)');
+  const file = userConfigPath();
+  let current = {};
+  try {
+    if (fs.existsSync(file)) current = JSON.parse(fs.readFileSync(file, 'utf-8')) || {};
+  } catch (err) { void err; /* corrupt/absent → start fresh */ }
+  if (!isPlainObject(current)) current = {};
+  current.compaction = { ...(isPlainObject(current.compaction) ? current.compaction : {}), ...next };
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  writeFileAtomic(file, `${JSON.stringify(current, null, 2)}\n`);
+  _resetCache();
+  return getCompaction();
 }
 
 /** Valid profile names (the presets we ship). */
@@ -381,6 +423,7 @@ module.exports = {
   getAutoContinue,
   getSessionSummary,
   getCompaction,
+  saveCompaction,
   PROFILE_PRESETS,
   _resetCache,
   sourceStamp,
