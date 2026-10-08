@@ -1067,6 +1067,12 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   conteúdo do ARQUIVO; o lembrete de decisão do Stop citou um script de patch como "commit" (visto em 2026-10-08, nos commits
   Q42–Q45). **Corrigido na hora**: só o que vem depois do `git commit`/`gh pr` é lido, e o heredoc só conta quando alimenta o
   `-m`/`--body` (`"$(cat <<…`). Teste: reproduzido no código anterior (extraía `const fs = require('fs');`), passa após a correção.
+- [ ] **Achado externo (Smart Tool 0.9.4) — `affected_tests` diz "nenhum teste" para código do boss** (visto em 2026-10-08 ao adotar
+  graph/affected_tests): o `scripts/test-units.js` (1,42 MB, ~1.430 testes) cai no teto de tamanho do índice; uma mudança só em
+  `scripts/lib/hooks-config.js` deu `tests: []`, `run_all: false`; `graph` com symbol devolve `tests: []` para funções testadas.
+  Também: nenhum runner inferido apesar do `npm test`; `register` devolve 128k caracteres; `degraded` sem motivo. **Repassado** à sessão
+  do Smart Tool. Até corrigir: no boss, o gate continua sendo a suíte inteira (`test-units` + `test-hooks`), nunca só o que o
+  `affected_tests` listar.
 ## Testes
 
 - [x] `scripts/test-units.js`, teste `plano B: stream com várias linhas SSE somando mais de 32 MiB termina completo (o teto é por linha)` (~9361): flake intermitente sob carga (anotado em 2026-09-30, durante a Fase G da 2.29.1, que não toca o model-router): falhou com `nvidia: conteúdo perdido (867 chars)` em 1 de 3 rodadas completas da suíte, e outra rodada teve 2 falhas da família `plano B`; a terceira passou limpa. Mesma família de timing do item de FIN/reset abaixo. Investigar se o stream de >40 MiB é cortado por prazo do teste ou do router quando a máquina está carregada.
