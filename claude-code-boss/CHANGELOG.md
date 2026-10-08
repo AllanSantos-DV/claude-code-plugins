@@ -2,6 +2,26 @@
 
 ## [Não lançado]
 
+### Added
+- **Compactação controlada — na hora certa, sem resumo, com métricas.** Um módulo de *function hook*
+  (`hooks/compaction.mjs`, Claude Code 2.1.274+) assume o momento e o conteúdo da compactação:
+  - **Quando**: nunca sozinha. Ao mandar um prompt com o contexto acima do limite **e** o cache do
+    provedor já expirado (ou acima do teto), o prompt é segurado, o `/compact` roda e o mesmo texto
+    segue. Com o cache válido, espera. A validade é a observada nas respostas reais de cada host
+    (medido: assinatura 1 h; um gateway de API 5 min).
+  - **O quê**: toda compactação (manual, automática do engine ou do gate) poda em vez de resumir: seus
+    pedidos e as respostas ficam palavra por palavra; saem só resultados de ferramenta velhos, com uma
+    nota do motivo. Medido no Claude Code real: 55k → 4k tokens em ~10 ms e 0 token (o resumo nativo
+    levou 19 s, US$ 0,017 e parafraseou a decisão fixada).
+  - **Retomada** (`--resume`/`-c`, o "Retomar última" do AgentLauncher): o engine recarregava o
+    histórico original com cópias intercaladas — a API via cada ferramenta duas vezes e rejeitava o
+    thinking. O primeiro prompt detecta as cópias e poda antes do envio (medido: 52 → 32 mensagens, 0
+    rejeições, e a primeira chamada leu 34k tokens do cache).
+  - **Métricas**: painel **Compaction & cache** na Home (quando, quanto, por quê; por host de API a
+    janela de cache, o hit e o preço da primeira chamada depois de cada compactação),
+    `GET /api/metrics/compaction` e os eventos `compaction.*` / `cache.turn` no Insights.
+  - Desligada no perfil `free` e em sessões headless (`-p`); config em `hooks-config.json` → `compaction`.
+
 ### Changed
 - **O servidor de memória é iniciado só pelo inicializador oficial dele** (contrato
   `daemon-launcher-contract.md` / ADR-023 do native-java). O plugin não sobe mais o jar por conta

@@ -924,7 +924,7 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   `pickPluginRelease` lista as releases e escolhe a maior `<prefixo><X.Y.Z>` do plugin (boss `v`, rf-reviewer
   `rf-v`), sem draft/prerelease; `release.yml` publica TODA release com `make_latest: "false"`. Teste + mutação.
 - [x] **Q29 — gate da release (servidor 2.45.5+ público)** — satisfeito: v2.45.5 e v2.45.6 publicadas em 06/10.
-- [ ] **Q35 — compactação controlada (pedido do Allan, 07/10; spike F0 feito, F1–F3 aguardando decisão).**
+- [x] **Q35 — compactação controlada (pedido do Allan, 07/10; spike F0 feito; implementada em `feat/compaction`, 08/10).**
   Ideia: compactar na hora certa (limiar de tokens + cache do provedor frio), mantendo literal o que vale
   (prompts, decisões) e podando só resultado de ferramenta velho; memória como referência. Tentativa anterior
   = `contextTuning` (só o limiar `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, conteúdo = resumo nativo). Spike em
@@ -953,6 +953,22 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   o `session.start` de function hook dispara nos 3 modos mas não diz qual. **Ressalva restante**: leitura de tokens: no
   interativo `session.measure` vem `null` e `$.session.usage()` traz o valor; no headless o inverso — ler os
   dois (usage primeiro).
+  **IMPLEMENTADO em 08/10** (`feat/compaction`): `hooks/compaction.mjs` + `scripts/lib/compaction-core.mjs`;
+  métricas por `POST /hook/compaction-event` (daemon, token do `/mcp`; as `hook_*` são deslistadas e um módulo
+  não as alcança por `$.mcp.call`) → `compaction.*`/`cache.turn` → `/api/metrics/compaction` + painel da Home.
+  Provado no sandbox isolado (`isolated-smoke`, interativo real via ConPTY): gate por teto e por cache frio,
+  TTL aprendido por host (gateway 5 min), poda 96–98%, `settled` medido, retomada repodada sem erro. Achados
+  corrigidos na hora, cada um com teste: `USE_BEDROCK=0` lido como ligado; observação perdida no `-p`; atribuição
+  "última linha" errada (cópias com usage zerado + linha gravada depois do `turn.complete` → agora por
+  `message.id`); última chamada da sessão perdida (observa no `session.end`); primeira chamada após a fronteira
+  perdida num processo novo; `settled` negativo na retomada (agora `prevented`); **falso positivo** de retomada
+  por tamanho (sessão sem compactação podada com cache quente → agora pelas cópias do engine); cópias
+  **intercaladas** (não contíguas) e thinking duplicado (dedupe por bloco de resposta; fixture real 52 → 32);
+  boot do daemon dependia do `hook-tools.js` (rota criada sob demanda, 503 se faltar).
+- [ ] **Q37 — nome "claude-code-boss" é reservado para o `claude plugin validate`** (prefixo `claude-`), visto ao
+  validar o módulo de compactação. Hoje só o validador reprova: em execução o engine carrega e admite o módulo
+  (provado com plugin instalado de marketplace e `--plugin-dir`, 2.1.291). Risco: se a regra passar a valer na
+  carga, os módulos do boss deixam de rodar. Proposta: decidir com o dono um nome não reservado antes disso.
 - [ ] **Q36 — `ANTHROPIC_BASE_URL` no ambiente de usuário do Windows (HKCU\Environment)** desta máquina, visto
   no spike do Q35 (valor não lido). O boss não grava HKCU (grep em `scripts/`: nenhum `setx`/`reg add`); afeta
   qualquer app, não só o Claude Code. Relacionado ao Q24. Ação: confirmar com o dono quem gravou e se é intencional.

@@ -34,6 +34,10 @@ Nada mais a configurar.
   só o resumo. A sessão começa dizendo quanto isso economizou.
 - **Ele aprende.** Quando você corrige o agente, a correção vira uma lição na hora. Lição
   que se repete fica mais forte, e o mesmo erro não roda duas vezes à toa.
+- **Ele compacta na hora certa.** Quando o contexto passa do limite e o cache do provedor já
+  expirou, o próximo prompt que você manda é segurado, o histórico é podado (seus pedidos e as
+  respostas ficam palavra por palavra; saem só resultados de ferramenta velhos) e o mesmo prompt
+  segue. Sem resumo, sem gastar token, e o painel mostra quanto foi cortado e o que o cache fez.
 - **Painel em 0 turnos.** Digite `/dashboard`: o painel abre no navegador sem passar
   pelo modelo, nos temas Dark e Light. Numa instalação nova, ele mostra os primeiros passos.
 
@@ -215,6 +219,37 @@ prazo interno de `timeout − 1 s`.
 > versionado e **sobrevive ao auto-update**. Use o comando **`/boss-profile <dev|standard|free>`**
 > ou o seletor na aba **Hooks** do dashboard. Override individual em `hooks-config.json`
 > ainda vence o preset. Vale a partir do próximo turno (sem reiniciar o Claude Code).
+
+## Compactação controlada
+
+Módulo de *function hook* do Claude Code (`hooks/compaction.mjs`, declarado em `modules` no
+`hooks.json`; exige Claude Code 2.1.274+). Decisões puras em `scripts/lib/compaction-core.mjs`
+(ESM, usado pelo módulo e pelo Node).
+
+- **Quando**: nunca sozinho. No `prompt.submit` de uma pessoa com a sessão ociosa, se o contexto
+  passou de `thresholdTokens` **e** o cache do provedor já expirou (ou passou de
+  `hardCeilingTokens`), o prompt é segurado, o `/compact` roda e o mesmo texto é reenviado como seu.
+  Com o cache ainda válido ele espera — reescrever o histórico regravaria no cache o que ainda está pago.
+  A validade é a **observada** nas respostas reais de cada host (`ephemeral_5m` / `ephemeral_1h`;
+  medido: assinatura 1 h, um gateway de API 5 min); sem observação, assume a mais longa.
+- **O quê**: toda compactação (manual, o limiar automático do engine, a do gate) passa pela poda:
+  texto de usuário e assistente intacto; resultados de ferramenta superados (leitura refeita,
+  comando que falhou e depois passou, saída grande antiga) truncados com uma nota do motivo. Pouco a
+  cortar → o resumo do próprio engine.
+- **Retomada** (`--resume`, `-c`): depois de uma compactação feita por hook o engine recarrega o
+  histórico original com as cópias intercaladas (a API passava a ver cada tool_use duas vezes e
+  rejeitava o thinking). O primeiro prompt detecta as cópias e poda antes de qualquer envio.
+- **Não age** em sessão headless (`-p`/SDK: o engine não deixa um plugin compactar ali — o `/compact`
+  manual e o limiar automático continuam passando pela poda), no perfil `free`, nem com
+  `compaction.enabled: false`. Config em `hooks-config.json` → `compaction` (`thresholdTokens`
+  250000, `hardCeilingTokens` 400000, `minIntervalMinutes` 10, `preserveRecentMessages` 6).
+- **Observabilidade**: o módulo envia cada evento ao daemon (`POST /hook/compaction-event`, mesmo
+  token do `/mcp`) → metrics store: `compaction.gate` (decisão e motivo, idade e TTL do cache),
+  `compaction.run` (gatilho, caracteres cortados, cópias do engine removidas), `compaction.settled`
+  (tokens antes/depois, medidos no turno seguinte), `compaction.resume`, `compaction.error` e
+  `cache.turn` (por chamada de API: host, tipo de credencial, modelo, cache lido/gravado, janela
+  contratada, primeira chamada depois de uma compactação). Painel **Compaction & cache** na Home,
+  `GET /api/metrics/compaction` e o log de eventos do Insights.
 
 ## Brain KB
 
@@ -410,7 +445,9 @@ e mostra a URL. Também: `node scripts/dashboard-start.js` (imprime `{ok, url}`)
   contexto; por script: redirects, execuções, saída média, sucesso, variantes não
   cobertas, pipes; scripts que **nunca rodaram** na janela, com botão **Prune** — também pela tool `curation_prune_unused`; latência por hook do daemon) + card
   "learning loop" (capturadas vs. mescladas por semana) + botão de consolidação
-  do KB (ver abaixo).
+  do KB (ver abaixo) + painel **Compaction & cache** (compactações por motivo, caracteres e tokens
+  cortados, prompts segurados, retomadas repodadas, e por host de API: janela de cache observada,
+  hit e o preço da primeira chamada depois de cada compactação).
 
 ## Endpoints custom — upstream e BYOK
 

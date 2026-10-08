@@ -213,6 +213,11 @@ Shipped em `claude-code-boss/config/hooks-config.json`; override do usuário em 
 | `memoryRotate.maxLines` | `150` | Rotação do MEMORY.md (max 500; CC trunca em 200) |
 | `errorGuard.enabled` | `true` | Bloqueia Bash com falha recorrente conhecida |
 | `captureTriggerEvidence` | `false` | OPT-IN: captura snippets de triggers de shadow policies |
+| `compaction.enabled` | `true` | Compactação controlada (`hooks/compaction.mjs`); `free` desliga |
+| `compaction.thresholdTokens` | `250000` | Acima disso, compacta no próximo prompt **se o cache do provedor já expirou** |
+| `compaction.hardCeilingTokens` | `400000` | Acima disso, compacta no próximo prompt mesmo com o cache válido |
+| `compaction.minIntervalMinutes` | `10` | Intervalo mínimo entre duas compactações do gate |
+| `compaction.preserveRecentMessages` | `6` | Mensagens mais novas que a poda nunca toca |
 
 Trocar perfil: `/dashboard` → aba Hooks, ou `/boss-profile <standard|dev|free>`.
 
@@ -228,6 +233,7 @@ Trocar perfil: `/dashboard` → aba Hooks, ou `/boss-profile <standard|dev|free>
 | `SubagentStart` | policy-inject |
 | `UserPromptExpansion` | skill-metric |
 | `PostToolUseFailure` | curation-detect, failure-detect |
+| *function hooks* (`modules`) | `hooks/compaction.mjs`: `classic.SessionStart`, `session.start`, `prompt.submit`, `turn.start`, `session.measure`, `turn.complete`, `session.compact`, `session.end` |
 
 ---
 
