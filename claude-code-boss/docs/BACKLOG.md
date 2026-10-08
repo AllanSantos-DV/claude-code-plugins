@@ -1014,7 +1014,7 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   **2026-10-08**: lido — o valor era VAZIO (REG_SZ de 0 caracteres; o endereço das sessões vem do env do launcher).
   Não é do boss (o `cleanupGlobalEnv` só apaga valores localhost, e apaga a variável inteira). **Removido** com
   aprovação do dono (`reg delete`; `reg query` confirma ausência).
-- [ ] **Q41 — papel de ORQUESTRADOR como capacidade do boss (pedido do dono, 2026-10-08, via Jarvis).** O orquestrador
+- [x] **Q41 — papel de ORQUESTRADOR como capacidade do boss (pedido do dono, 2026-10-08, via Jarvis).** O orquestrador
   agia como ponte pura (repassava achado → esperava decisão → repassava), inclusive quando a ação óbvia já estava clara.
   Regras pedidas, para QUALQUER agente no papel: (1) release só com todo item não-ambíguo resolvido; o ambíguo (escolha de
   produto/arquitetura) vai ao dono, o resto o orquestrador decide e manda executar; (2) teste quebrado/erro de log/dúvida
@@ -1026,6 +1026,9 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   fim de sessão, F3 memória de decisão, F4 curadoria) em `docs/plans/orchestrator-role-design.md` (local). Aguardando o dono decidir
   D1 (como a sessão vira orquestradora), D2 (limiar de re-aplicação automática), D3 (cadência/autonomia da curadoria), D4 (interface
   de eventos do self-forge agora ou na migração para runners efêmeros).
+  **2026-10-08 — MOVIDO para o projeto "orchestrador"** (correção de escopo do dono): a implementação não acontece no boss.
+  O documento de design/pesquisa fica como referência a repassar. O sistema de aprendizado próprio do boss (ações autônomas
+  dele) é outra frente, a revisitar depois. O Q42 segue válido aqui.
 - [ ] **Q42 — `capture_lesson` funde por similaridade sem olhar o tipo** (`servers/brain-server/lib/mcp-server.js:996-1005`): com
   cosine ≥ 0,9 contra o top-1, uma `decision` vira `recurrence++` de uma `lesson` parecida (e vice-versa) — perde-se o registro da
   decisão. Visto no levantamento do Q41 (2026-10-08). Proposta: só fundir com o mesmo tipo (ou comparar o top-k do mesmo tipo); teste
