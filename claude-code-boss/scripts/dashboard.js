@@ -1483,6 +1483,28 @@ async function getCurationSummary(req, res, url) {
   }
 }
 
+// Controlled compaction (hooks/compaction.mjs): when it held a prompt to compact, how much
+// it cut, what the provider cache did (window per host, price of the first turn after).
+async function getCompactionSummary(req, res, url) {
+  try {
+    const range = Math.max(1, Math.min(365, parseInt(url.searchParams.get('days') || '30', 10)));
+    const sinceTs = Date.now() - range * 86400_000;
+    const projectFilter = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
+    const projects = projectFilter ? [projectFilter] : listMetricsProjects();
+    const { summarizeCompaction, COMPACTION_EVENTS } = require('./lib/compaction-metrics.js');
+    const rows = [];
+    for (const ev of COMPACTION_EVENTS) {
+      const perProject = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName: ev, limit: 2000 }));
+      for (const { value } of perProject) for (const r of value) if (r.ts >= sinceTs) rows.push(r);
+    }
+    const cfg = require('./lib/hooks-config.js').getCompaction();
+    json(res, { rangeDays: range, projects, config: cfg, ...summarizeCompaction(rows) });
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/metrics/compaction failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
 // F3.0-4: prune never-used curated scripts (registration only; backup written).
 // The ids are re-checked server-side against the current candidates.
 async function postCurationPrune(req, res, url) {
@@ -2294,6 +2316,7 @@ function handleAPI(req, res, url) {
   if (p === '/api/metrics/summary' && m === 'GET') return getMetricsSummary(req, res, url);
   if (p === '/api/metrics/value-summary' && m === 'GET') return getValueSummary(req, res, url);
   if (p === '/api/metrics/curation' && m === 'GET') return getCurationSummary(req, res, url);
+  if (p === '/api/metrics/compaction' && m === 'GET') return getCompactionSummary(req, res, url);
   if (p === '/api/curation/prune' && m === 'POST') return postCurationPrune(req, res, url);
   if (p === '/api/doctor' && m === 'GET') return getDoctor(req, res);
   if (p === '/api/brain/consolidate' && m === 'POST') return postBrainConsolidate(req, res, url);
