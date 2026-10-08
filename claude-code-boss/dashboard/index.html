@@ -1467,6 +1467,7 @@ const I18N = {
     'mode.routing': 'per-turn routing',
     'mode.deprecated': '(deprecated)',
     'mode.reloadPending': '(reload pending — run /reload-plugins)',
+    'mode.gatewayDeferred': '(not wired: this machine uses its own gateway {url}, and the router stays out of its way — Save & apply re-evaluates)',
 'tip.routerMetrics': 'Estimate by cost weights (proxy for prices: opus ~15x haiku). Baseline = the model you picked. Plan B (NVIDIA) counts as zero Claude cost.',
 'router.disableAll': 'Disable all',
 'router.disableAllSuccess': 'All controls disabled — router in OFF mode',
@@ -1695,6 +1696,7 @@ const I18N = {
     'mode.routing': 'roteamento per-turn',
     'mode.deprecated': '(deprecado)',
     'mode.reloadPending': '(reload pendente — rode /reload-plugins)',
+    'mode.gatewayDeferred': '(não ativado: esta máquina usa um gateway próprio {url}, e o roteador não se liga por cima dele — Salvar & aplicar reavalia)',
 'tip.routerMetrics': 'Estimativa por pesos de custo (proxy dos preços: opus ~15x haiku). Baseline = o modelo que você escolheu. Plano B (NVIDIA) conta como custo-Claude zero.',
 'router.disableAll': 'Desligar tudo',
 'router.disableAllSuccess': 'Todos os controles desligados — router em modo OFF',
@@ -2031,7 +2033,7 @@ async function disableAllRouter() {
   setTimeout(() => msgEl.textContent = '', 4000);
 }
 
-function renderRouterMode(runningMode, configuredMode) {
+function renderRouterMode(runningMode, configuredMode, gatewayDeferred) {
   const label = document.getElementById('router-mode-label');
   const dot = document.getElementById('router-mode-dot');
   const hint = document.getElementById('router-mode-hint');
@@ -2043,7 +2045,9 @@ function renderRouterMode(runningMode, configuredMode) {
   dot.className = 'mode-dot mode-' + meta.color;
   dot.title = text;
   // Mismatch entre configurado e rodando → reload pendente (subtil).
-  if (hint) hint.textContent = (configuredMode && configuredMode !== runningMode) ? t('mode.reloadPending') : '';
+  // Router kept out of the user's own gateway (Q24): say so instead of "reload pending".
+  if (hint) hint.textContent = gatewayDeferred ? t('mode.gatewayDeferred').replace('{url}', gatewayDeferred.url)
+    : (configuredMode && configuredMode !== runningMode) ? t('mode.reloadPending') : '';
   // Aviso condicional de cobrança: router ativo = conferir assinatura vs API.
   const active = document.getElementById('router-billing-active');
   if (active) active.style.display = (runningMode && runningMode !== 'off') ? '' : 'none';
@@ -2061,7 +2065,7 @@ async function refreshRouterStatus(silent) {
       dot.className = 'router-dot ' + (s.running ? 'live' : 'off');
       dot.title = s.running ? `${word} · porta ${s.port}${s.pid ? ' · PID ' + s.pid : ''}` : t('router.stopped');
     }
-    renderRouterMode(s.runningMode || 'off', s.configuredMode);
+    renderRouterMode(s.runningMode || 'off', s.configuredMode, s.gatewayDeferred);
   } catch (e) {
     label.textContent = '—';
     if (dot) { dot.className = 'router-dot off'; dot.title = '—'; }

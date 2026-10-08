@@ -18014,6 +18014,17 @@ test('hook switch-off (Q43): kept in the update-safe user-config, and the daemon
   }
 });
 
+test('router panel (Q45): /api/router/status exposes gateway-defer.json and the panel shows it in place of "reload pending"', () => {
+  const dash = fs.readFileSync(path.join(SCRIPTS, 'dashboard.js'), 'utf8');
+  const fn = dash.slice(dash.indexOf('async function getRouterStatusAsync'), dash.indexOf('async function applyRouter'));
+  assert(/ROUTER_GATEWAY_DEFER_FILE/.test(fn) && /gatewayDeferred/.test(fn), 'the status handler reads the defer file and returns gatewayDeferred');
+  assert(/path\.join\(DATA_DIR, 'model-router', 'gateway-defer\.json'\)/.test(dash), 'the same file model-router-ensure writes');
+  const html = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf8');
+  assertEq((html.match(/'mode\.gatewayDeferred':/g) || []).length, 2, 'message in EN and PT');
+  assert(/renderRouterMode\(s\.runningMode \|\| 'off', s\.configuredMode, s\.gatewayDeferred\)/.test(html), 'the panel passes the deferral to the renderer');
+  assert(/gatewayDeferred \? t\('mode\.gatewayDeferred'\)/.test(html), 'the deferral wins over "reload pending"');
+});
+
 test('skill promotion (Q44): the user override of kb.skillPromotion reaches brain-promote and the dashboard (not only the shipped file)', () => {
   const bc = require('./lib/brain-config.js');
   const file = path.join(require('./lib/data-dir.js').globalDir(), 'user-config.json');

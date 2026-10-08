@@ -66,6 +66,9 @@ const backupRoutes = require('./dashboard-backup.js').createBackupRoutes({
 const ROUTER_SHIPPED_CONFIG = path.join(ROOT, 'config', 'router-config.json');
 const ROUTER_USER_CONFIG = routerUserConfigPath();
 const ROUTER_STATE_FILE = path.join(DATA_DIR, 'model-router', 'state.json');
+// Written by model-router-ensure when the session already uses the user's own gateway
+// and the router stays out of its way (BACKLOG Q24) — surfaced in the panel (Q45).
+const ROUTER_GATEWAY_DEFER_FILE = path.join(DATA_DIR, 'model-router', 'gateway-defer.json');
 const ROUTER_METRICS_FILE = path.join(DATA_DIR, 'model-router', 'metrics.json');
 
 // Pick the most populated brain data dir among ~/.claude/plugins/data/claude-code-boss*.
@@ -2076,7 +2079,9 @@ async function getRouterStatusAsync(req, res) {
   const running = !!(health && health.status === 'ok');
   const runningMode = running ? (health.mode || state.mode || 'off') : 'off';
   const configuredMode = configuredRouterMode();
-  json(res, { running, port, pid: state.pid, lastError: state.lastError, runningMode, configuredMode });
+  const defer = fs.existsSync(ROUTER_GATEWAY_DEFER_FILE) ? readJSON(ROUTER_GATEWAY_DEFER_FILE) : null;
+  const gatewayDeferred = defer && typeof defer.url === 'string' ? { url: defer.url, at: defer.at || null } : null;
+  json(res, { running, port, pid: state.pid, lastError: state.lastError, runningMode, configuredMode, gatewayDeferred });
 }
 
 async function applyRouter(req, res) {
