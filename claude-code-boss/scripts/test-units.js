@@ -23312,6 +23312,7 @@ test('compaction-event.run: trail events land in the metrics store; turn records
     assertEq(reply.observed.afterCompaction, true, 'marked from the transcript (first call after the boundary)');
     assertEq(reply.lastMessageId, 'msg-a');
     assertEq(reply.ttl.observed, '5m');
+    assert(reply.config && reply.config.thresholdPercent >= 10, 'the turn reply carries the current config (a slider change reaches open sessions)');
     const again = await ce.run({ ...base, transcript_path: f, payload: { kind: 'turn', host: 'gw.local', auth: 'api-key', sinceMessageId: 'msg-a' } });
     assertEq(again.recorded, 0, 'the same call is never recorded twice');
     assertEq(again.lastMessageId, 'msg-a');

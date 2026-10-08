@@ -160,6 +160,7 @@ async function run(ev) {
       observed, recorded: calls.length,
       lastMessageId: calls.length ? calls[calls.length - 1].id : (data.sinceMessageId || null),
       ttl: ttlVerdictFor(hostKey, storedCacheTurns()),
+      config: compactionConfig(), // the dashboard slider reaches open sessions from their next turn
     };
   }
 

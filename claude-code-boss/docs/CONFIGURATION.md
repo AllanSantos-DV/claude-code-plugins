@@ -214,9 +214,8 @@ Shipped em `claude-code-boss/config/hooks-config.json`; override do usuário em 
 | `errorGuard.enabled` | `true` | Bloqueia Bash com falha recorrente conhecida |
 | `captureTriggerEvidence` | `false` | OPT-IN: captura snippets de triggers de shadow policies |
 | `compaction.enabled` | `true` | Compactação controlada (`hooks/compaction.mjs`); `free` desliga |
-| `compaction.thresholdTokens` | `250000` | Acima disso, compacta no próximo prompt **se o cache do provedor já expirou** |
-| `compaction.hardCeilingTokens` | `400000` | Acima disso, compacta no próximo prompt mesmo com o cache válido |
-| `compaction.minIntervalMinutes` | `10` | Intervalo mínimo entre duas compactações do gate |
+| `compaction.thresholdPercent` | `30` | % (10–80) da janela que o engine aplica (limite do modelo ou `CLAUDE_CODE_AUTO_COMPACT_WINDOW`); acima, compacta no próximo prompt **só com o cache do provedor já expirado** — nunca com ele quente. Slider no dashboard (`PUT /api/compaction/config`, gravado aqui) |
+| `compaction.minIntervalMinutes` | `10` | Intervalo mínimo (1–60) entre duas compactações do gate |
 | `compaction.preserveRecentMessages` | `6` | Mensagens mais novas que a poda nunca toca |
 
 Trocar perfil: `/dashboard` → aba Hooks, ou `/boss-profile <standard|dev|free>`.

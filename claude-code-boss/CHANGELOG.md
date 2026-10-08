@@ -5,10 +5,15 @@
 ### Added
 - **Compactação controlada — na hora certa, sem resumo, com métricas.** Um módulo de *function hook*
   (`hooks/compaction.mjs`, Claude Code 2.1.274+) assume o momento e o conteúdo da compactação:
-  - **Quando**: nunca sozinha. Ao mandar um prompt com o contexto acima do limite **e** o cache do
-    provedor já expirado (ou acima do teto), o prompt é segurado, o `/compact` roda e o mesmo texto
-    segue. Com o cache válido, espera. A validade é a observada nas respostas reais de cada host
-    (medido: assinatura 1 h; um gateway de API 5 min).
+  - **Quando**: nunca sozinha e nunca com o cache quente. Ao mandar um prompt com o contexto acima do
+    limiar **e** o cache do provedor já expirado, o prompt é segurado, o `/compact` roda e o mesmo texto
+    segue. Com o cache válido, espera; se ele nunca esfriar, age a compactação automática do engine no
+    limite dela (também pela poda). A validade é a observada nas respostas reais de cada host (medido:
+    assinatura 1 h; um gateway de API 5 min).
+  - **Limiar em % da janela do modelo** (padrão 30%, faixa 10–80, slider no painel): vale para modelos
+    de 200K e de 1M e acompanha o `/model`; o painel mostra quanto o % vale em tokens em cada janela
+    usada e avisa quando passa do ponto em que o engine compactaria. Gravado num arquivo do usuário que
+    sobrevive a updates; sessões abertas pegam a mudança no próximo turno.
   - **O quê**: toda compactação (manual, automática do engine ou do gate) poda em vez de resumir: seus
     pedidos e as respostas ficam palavra por palavra; saem só resultados de ferramenta velhos, com uma
     nota do motivo. Medido no Claude Code real: 55k → 4k tokens em ~10 ms e 0 token (o resumo nativo
