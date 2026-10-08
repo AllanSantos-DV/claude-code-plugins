@@ -132,14 +132,20 @@ async function ensureConfig($, ctx) {
   }
 }
 
+// Records every API call the transcript holds since the last one seen (cache.turn, per call).
+async function observeCalls($, ctx) {
+  const id = await identity($, ctx);
+  const reply = await send($, ctx, 'turn', { ...id, sinceMessageId: ctx.lastMessageId });
+  if (reply.lastMessageId) ctx.lastMessageId = reply.lastMessageId;
+  applyTtl(ctx, reply);
+  return { id, reply };
+}
+
 async function afterTurn($, ctx) {
   try {
-    const id = await identity($, ctx);
     const settle = ctx.pendingSettle;
     ctx.pendingSettle = null;
-    const reply = await send($, ctx, 'turn', { ...id, sinceMessageId: ctx.lastMessageId });
-    if (reply.lastMessageId) ctx.lastMessageId = reply.lastMessageId;
-    applyTtl(ctx, reply);
+    const { id } = await observeCalls($, ctx);
     if (settle) {
       const { context } = await $.session.usage();
       const after = context.tokens ?? ctx.measuredTokens ?? null;
@@ -290,4 +296,13 @@ export const register = (on) => {
   });
 
   on('session.compact', async ($, e, next) => compact($, ctx, e, next)).catch(compactFailed);
+
+  // The session's last API call often lands in the transcript after its turn.complete
+  // (interactive): one more observation at the end, inside session.end's short budget.
+  on('session.end', async ($, e, next) => {
+    if (ctx.config.enabled && ctx.transcriptPath) {
+      try { await observeCalls($, ctx); } catch (err) { $.ui.log(`compaction: end-of-session observation failed: ${String(err && err.message ? err.message : err)}`); }
+    }
+    return next(e);
+  });
 };
