@@ -23190,7 +23190,7 @@ test('compaction-metrics.summarizeCompaction: when/how much/cache per host — e
     { ts: 4, eventName: 'compaction.run', payload: { trigger: 'auto', reason: 'auto', outcome: 'native-summary', charsCut: 0, ratio: 0.05, verbatimTextIntact: true } },
     { ts: 5, eventName: 'compaction.settled', payload: { tokensBefore: 118723, tokensAfter: 46873, tokensCut: 71850 } },
     { ts: 5, eventName: 'compaction.settled', payload: { prevented: true, tokensBefore: null, tokensAfter: 36848, tokensCut: null } },
-    { ts: 6, eventName: 'compaction.resume', payload: { reexpanded: true, reloadedTokens: 264151 } },
+    { ts: 6, eventName: 'compaction.resume', payload: { reexpanded: true, copies: 20 } },
     { ts: 7, eventName: 'cache.turn', payload: { host: 'api.anthropic.com', auth: 'bearer', model: 'm', read: 900, write: 100, input: 0, write5m: 0, write1h: 100 } },
     { ts: 8, eventName: 'cache.turn', payload: { host: 'gw.local', auth: 'api-key', model: 'm', read: 0, write: 500, input: 10, write5m: 500, write1h: 0, afterCompaction: true } },
     { ts: 9, eventName: 'compaction.error', payload: { where: 'command.run compact' } },
@@ -23203,7 +23203,7 @@ test('compaction-metrics.summarizeCompaction: when/how much/cache per host — e
   assertEq(s.settled.tokensCut, 71850); assertEq(s.settled.count, 1);
   assertEq(s.settled.prevented, 1, 'a resumed re-expansion prevented: counted apart, never a negative cut');
   assertEq(s.settled.firstTurns, 1); assertEq(s.settled.firstTurnWrite, 500, 'the first call after a compaction = cache.turn afterCompaction');
-  assertEq(s.resume.reexpanded, 1); assertEq(s.errors.total, 1);
+  assertEq(s.resume.reexpanded, 1); assertEq(s.resume.copies, 20); assertEq(s.errors.total, 1);
   const sub = s.cache.byHost['api.anthropic.com|bearer'];
   const api = s.cache.byHost['gw.local|api-key'];
   assertEq(sub.ttl.observed, '1h', 'subscription host: 1h window observed');

@@ -41,7 +41,7 @@ function summarizeCompaction(rows, { timeline = 20 } = {}) {
     cut: { charsBefore: 0, charsAfter: 0, charsCut: 0, avgRatio: null, prunedResults: 0, duplicatesDropped: 0, verbatimBroken: 0 },
     // firstTurn*: the first API call after each compaction (cache.turn afterCompaction).
     settled: { count: 0, prevented: 0, tokensBefore: 0, tokensAfter: 0, tokensCut: 0, firstTurns: 0, firstTurnRead: 0, firstTurnWrite: 0 },
-    resume: { checks: 0, reexpanded: 0, reloadedTokens: 0 },
+    resume: { checks: 0, reexpanded: 0, copies: 0 }, // copies: the engine copies found in resumed histories
     errors: { total: 0, byWhere: {} },
     cache: { byHost: {} },
     timeline: [],
@@ -91,7 +91,7 @@ function summarizeCompaction(rows, { timeline = 20 } = {}) {
       case 'compaction.resume':
         s.resume.checks++;
         if (p.reexpanded) s.resume.reexpanded++;
-        s.resume.reloadedTokens += num(p.reloadedTokens);
+        s.resume.copies += num(p.copies);
         break;
       case 'compaction.error':
         s.errors.total++;
