@@ -3275,21 +3275,24 @@ test('skill-promote-trigger.shouldRun: garbage stamp → true', () => {
   assert(skillTrigger.shouldRun(stamp, 60_000) === true);
 });
 
-test('skill-promote-trigger.loadCfg: missing config → {}', () => {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-trigger-'));
-  assertEq(skillTrigger.loadCfg(tmpRoot), {});
-});
-
-test('skill-promote-trigger.loadCfg: reads kb.skillPromotion block', () => {
-  const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-trigger-'));
-  fs.mkdirSync(path.join(tmpRoot, 'config'), { recursive: true });
-  fs.writeFileSync(
-    path.join(tmpRoot, 'config', 'brain-config.json'),
-    JSON.stringify({ kb: { skillPromotion: { enabled: false, minRecurrence: 5 } } }),
-  );
-  const cfg = skillTrigger.loadCfg(tmpRoot);
-  assertEq(cfg.enabled, false);
-  assertEq(cfg.minRecurrence, 5);
+test('skill-promote-trigger.loadCfg (Q48): kb.skillPromotion from the layered config — the user can switch the scan off', () => {
+  const bc = require('./lib/brain-config.js');
+  const file = path.join(require('./lib/data-dir.js').globalDir(), 'user-config.json');
+  assert(file.startsWith(process.env.USERPROFILE), `the suite's temp HOME, never the real one (${file})`);
+  const prev = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+  try {
+    assertEq(skillTrigger.loadCfg().enabled, true, 'default: on');
+    const cur = prev ? JSON.parse(prev) : {};
+    cur.kb = { ...(cur.kb || {}), skillPromotion: { enabled: false, minRecurrence: 5 } };
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(cur));
+    bc._resetCache();
+    const cfg = skillTrigger.loadCfg();
+    assertEq([cfg.enabled, cfg.minRecurrence, cfg.minConfidence], [false, 5, 0.8], 'the user override wins (it used to read only the shipped file)');
+  } finally {
+    if (prev == null) { try { fs.unlinkSync(file); } catch (err) { void err; } } else fs.writeFileSync(file, prev);
+    bc._resetCache();
+  }
 });
 
 // ─── brain-health (countPendingDrafts) ───────────────────────────────────────
