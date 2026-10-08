@@ -2849,7 +2849,7 @@ async function loadCompactionPanel() {
   const trig = Object.entries(r.byReason || {}).map(([k, v]) => `${escapeHtml(k)} ${v}`).join(' · ') || '—';
   const kinds = Object.entries(r.prunedByKind || {}).map(([k, v]) => `${escapeHtml(k)} ${v}`).join(' · ') || '—';
   html += `<p style="font-size:.8rem;margin:.5rem 0">Why: ${trig}. Pruned results: ${kinds}. `
-    + `Resume checks: ${c.resume.checks} (${c.resume.reexpanded} re-expanded by the engine → pruned again).`
+    + `Resume checks: ${c.resume.checks} (${c.resume.reexpanded} re-expanded by the engine → pruned again; ${c.cut.duplicatesDropped || 0} duplicated copies dropped).`
     + (c.cut.verbatimBroken ? ` <span class="badge badge-red">${c.cut.verbatimBroken} with text changed</span>` : '')
     + (c.errors.total ? ` <span class="badge badge-red">${c.errors.total} errors</span>` : '') + '</p>';
   if (st.firstTurns) {
