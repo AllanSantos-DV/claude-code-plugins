@@ -18036,6 +18036,25 @@ test('router panel (Q45): /api/router/status exposes gateway-defer.json and the 
   assert(/gatewayDeferred \? t\('mode\.gatewayDeferred'\)/.test(html), 'the deferral wins over "reload pending"');
 });
 
+test('embedder (Q47): the choice the dashboard saves (brain-config user override) is the one the embedder loads', () => {
+  const bc = require('./lib/brain-config.js');
+  const emb = require('./brain-embedder.js');
+  const file = path.join(require('./lib/data-dir.js').globalDir(), 'user-config.json');
+  assert(file.startsWith(process.env.USERPROFILE), `the suite's temp HOME, never the real one (${file})`);
+  const prev = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+  try {
+    const { version } = bc.loadWithVersion();
+    bc.save({ ...bc.load(), embedder: { provider: 'ollama', model: 'nomic-embed-text', dimensions: 768 } }, { expectedVersion: version });
+    bc._resetCache();
+    assertEq(emb.getModel(), 'nomic-embed-text', 'the saved model, not the shipped one');
+    assertEq([emb.getStatus().provider, emb.getStatus().dimensions], ['ollama', 768]);
+  } finally {
+    if (prev == null) { try { fs.unlinkSync(file); } catch (err) { void err; } } else fs.writeFileSync(file, prev);
+    bc._resetCache();
+    emb.getModel(); // reload the module state from the restored config for the tests that follow
+  }
+});
+
 test('skill promotion (Q44): the user override of kb.skillPromotion reaches brain-promote and the dashboard (not only the shipped file)', () => {
   const bc = require('./lib/brain-config.js');
   const file = path.join(require('./lib/data-dir.js').globalDir(), 'user-config.json');

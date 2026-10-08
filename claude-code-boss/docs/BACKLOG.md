@@ -1073,10 +1073,12 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   Também: nenhum runner inferido apesar do `npm test`; `register` devolve 128k caracteres; `degraded` sem motivo. **Repassado** à sessão
   do Smart Tool. Até corrigir: no boss, o gate continua sendo a suíte inteira (`test-units` + `test-hooks`), nunca só o que o
   `affected_tests` listar.
-- [ ] **Q47 — o embedder ignora a escolha feita no painel** (`scripts/brain-embedder.js:43-55` `loadConfig`): lê só o
+- [x] **Q47 — o embedder ignora a escolha feita no painel** (`scripts/brain-embedder.js:43-55` `loadConfig`): lê só o
   `config/brain-config.json` que vem no plugin; o painel "Embedder" grava provedor/modelo no user-config via `brain-config.save`.
   **Provado** (HOME temporário): salvo `ollama/nomic-embed-text/768` → o embedder carrega `transformers/paraphrase-multilingual/384`.
   Visto na varredura da classe Q38/Q43/Q44 (2026-10-08). Proposta: `loadConfig` lê `brain-config.load().embedder`; teste com override.
+  **Resolvido em 2026-10-08**: `loadConfig` lê `brain-config.load().embedder`. Teste: escolha salva pelo caminho do painel é a que o
+  embedder carrega; mutação (voltar a ler o arquivo do plugin) reprova.
 - [ ] **Q48 — o Q44 ficou incompleto: `scripts/skill-promote-trigger.js:36` `loadCfg`** lê `kb.skillPromotion` só do arquivo do plugin
   (é quem decide se o scan roda). Proposta: usar `brain-config.getSkillPromotion()`.
 - [ ] **Q49 — `scripts/brain-store.js` `loadRerankConfig` (:56) e `loadKbLimits` (:158)** leem `kb.rerank`/`kb.maxEntriesPerProject`/

@@ -2,7 +2,8 @@
 /**
  * Brain Embedder — Provider abstraction for text embeddings.
  *
- * Supports three providers, configured via config/brain-config.json:
+ * Supports three providers, configured via the `embedder` block of brain-config
+ * (config/brain-config.json ⊕ the user override saved by the dashboard):
  *   "transformers" (default) — @huggingface/transformers (ex-@xenova), ONNX, offline
  *   "ollama"       — Ollama subprocess, local GPU if available
  *   "voyage"       — Voyage AI API, cloud, needs API key
@@ -13,12 +14,9 @@
  *   const vec = await embedder.embed("hello world");
  *   const dim = embedder.getDimensions();
  */
-const fs = require('fs');
 const path = require('path');
 const { execFileSync } = require('child_process');
 
-const PLUGIN_ROOT = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..');
-const CONFIG_PATH = path.join(PLUGIN_ROOT, 'config', 'brain-config.json');
 
 /**
  * Durable model cache — user-level, NOT inside node_modules.
@@ -40,15 +38,18 @@ let _dimensions = 384;
 let _extractor = null;
 let _error = null;
 
+/**
+ * Load provider/model/dimensions from the layered brain-config (shipped ⊕ user override).
+ * The dashboard's Embedder panel saves to the user-config through brain-config.save —
+ * reading only the shipped file ignored that choice (BACKLOG Q47). Sets the module state;
+ * a load failure is recorded in the status error, never thrown.
+ */
 function loadConfig() {
   try {
-    if (fs.existsSync(CONFIG_PATH)) {
-      const raw = JSON.parse(fs.readFileSync(CONFIG_PATH, 'utf-8'));
-      const e = raw.embedder || {};
-      _provider = e.provider || 'transformers';
-      _model = e.model || 'Xenova/all-MiniLM-L6-v2';
-      _dimensions = e.dimensions || 384;
-    }
+    const e = require('./lib/brain-config.js').load().embedder || {};
+    _provider = e.provider || 'transformers';
+    _model = e.model || 'Xenova/all-MiniLM-L6-v2';
+    _dimensions = e.dimensions || 384;
   } catch (err) {
     _error = `Config load error: ${err.message}`;
   }
