@@ -978,6 +978,14 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   plugin), que o auto-update substitui: o que o usuário ajusta por essa rota some na próxima versão. Visto ao planejar o
   controle de limiar da compactação (08/10). O perfil já faz certo (`saveProfile` → `<globalDir>/hooks/user-config.json`).
   Proposta: a rota mescla e grava no user-config (como o perfil); o shipped fica só como default.
+- [x] **Q39 — frontmatter YAML inválido em `skills/brain-status/SKILL.md`** (`description: … USE FOR: …` sem aspas: `: `
+  dentro de escalar simples não é YAML válido). Visto no debug das sessões do sandbox da compactação (08/10): "Failed to parse
+  YAML frontmatter … brain-status/SKILL.md" — o skill perdia a descrição. **Corrigido na hora** (description entre aspas) +
+  teste que faz o parse de TODO `SKILL.md` com js-yaml (o arquivo antigo reprova). Os outros 8 skills já eram válidos.
+- [ ] **Q40 — gateway herdado recusa a 1ª requisição: `400 thinking.enabled.display: Input should be summarized/omitted`**
+  (LiteLLM → `vertex_ai.anthropic.claude-haiku-4-5`). Visto em todas as sessões interativas do sandbox (08/10), com e sem o
+  boss compactando; o Claude Code repete e segue. Externo (parâmetro de thinking que o gateway/modelo não aceita), relacionado
+  ao Q24 (gateway próprio do dono). Ação: confirmar com o dono se o gateway deve aceitar `display` ou o modelo dele não usa thinking.
 - [ ] **Q36 — `ANTHROPIC_BASE_URL` no ambiente de usuário do Windows (HKCU\Environment)** desta máquina, visto
   no spike do Q35 (valor não lido). O boss não grava HKCU (grep em `scripts/`: nenhum `setx`/`reg add`); afeta
   qualquer app, não só o Claude Code. Relacionado ao Q24. Ação: confirmar com o dono quem gravou e se é intencional.

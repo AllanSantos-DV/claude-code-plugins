@@ -23386,6 +23386,23 @@ test('http-daemon POST /hook/compaction-event: REAL daemon — token-gated like 
   }
 });
 
+test('every shipped skill has a YAML frontmatter that PARSES, with a description (Claude Code skips a broken one)', () => {
+  // brain-status had `description: … USE FOR: …` unquoted — ": " inside a plain scalar is invalid
+  // YAML; Claude Code logged "Failed to parse YAML frontmatter" and lost the skill's description.
+  const yaml = require('js-yaml'); // via eslint (devDependency): always installed where the gate lints
+  const dir = path.join(ROOT, 'skills');
+  const names = fs.readdirSync(dir).filter((d) => fs.existsSync(path.join(dir, d, 'SKILL.md')));
+  assert(names.length >= 5, `skills found: ${names}`);
+  for (const n of names) {
+    const src = fs.readFileSync(path.join(dir, n, 'SKILL.md'), 'utf8');
+    const m = src.match(/^---\r?\n([\s\S]*?)\r?\n---/);
+    assert(m, `${n}: no frontmatter`);
+    let fm;
+    try { fm = yaml.load(m[1]); } catch (err) { throw new Error(`${n}: frontmatter is not valid YAML — ${err.message.split('\n')[0]}`); }
+    assert(fm && typeof fm.description === 'string' && fm.description.length > 20, `${n}: description missing`);
+  }
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   // A suíte mexe em singletons de módulo, process.env e servidores HTTP locais.
