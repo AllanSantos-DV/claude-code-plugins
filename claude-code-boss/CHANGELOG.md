@@ -66,6 +66,8 @@
   máquina usa um gateway próprio …"), em vez de sugerir um reload pendente.
 - O lembrete de registrar decisões citava o conteúdo de um arquivo criado no mesmo comando como se fosse a
   mensagem do commit; agora lê a mensagem certa.
+- O ajuste do usuário na ordenação da memória local (`kb.rerank`) e nos limites do KB passa a valer, e um daemon
+  aberto vê a mudança sem reiniciar.
 - **O embedder escolhido no painel passa a ser usado.** O painel do Brain gravava o provedor/modelo no seu arquivo
   de usuário, mas o embedder lia só o arquivo do plugin e seguia com o modelo padrão.
 - **Uma decisão registrada não some mais dentro de uma lição parecida.** A memória junta capturas quase
