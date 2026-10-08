@@ -974,10 +974,14 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   validar o módulo de compactação. Hoje só o validador reprova: em execução o engine carrega e admite o módulo
   (provado com plugin instalado de marketplace e `--plugin-dir`, 2.1.291). Risco: se a regra passar a valer na
   carga, os módulos do boss deixam de rodar. Proposta: decidir com o dono um nome não reservado antes disso.
-- [ ] **Q38 — `scripts/dashboard.js` `saveHooksConfig` (PUT /api/hooks/config) grava o `config/hooks-config.json` SHIPPED** (pasta do
+- [x] **Q38 — `scripts/dashboard.js` `saveHooksConfig` (PUT /api/hooks/config) grava o `config/hooks-config.json` SHIPPED** (pasta do
   plugin), que o auto-update substitui: o que o usuário ajusta por essa rota some na próxima versão. Visto ao planejar o
   controle de limiar da compactação (08/10). O perfil já faz certo (`saveProfile` → `<globalDir>/hooks/user-config.json`).
   Proposta: a rota mescla e grava no user-config (como o perfil); o shipped fica só como default.
+  **Resolvido em 2026-10-08**: `hooks-config.saveOverrides` grava no user-config SÓ a diferença em relação à config
+  efetiva (shipped ⊕ user), preservando o que já estava lá; remover chave falha alto (não dá para expressar como
+  override); o GET passa a servir a config efetiva. Teste: só a mudança é gravada, o perfil fixado sobrevive, o
+  shipped fica intocado, save sem mudança não escreve, remoção/não-objeto falham alto.
 - [x] **Q39 — frontmatter YAML inválido em `skills/brain-status/SKILL.md`** (`description: … USE FOR: …` sem aspas: `: `
   dentro de escalar simples não é YAML válido). Visto no debug das sessões do sandbox da compactação (08/10): "Failed to parse
   YAML frontmatter … brain-status/SKILL.md" — o skill perdia a descrição. **Corrigido na hora** (description entre aspas) +

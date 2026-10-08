@@ -283,13 +283,6 @@ function validateHooksConfig(data) {
   return null;
 }
 
-/** Atomic JSON write: write to tmpfile then rename. */
-function atomicWriteJSON(filePath, data) {
-  const tmp = filePath + '.tmp.' + process.pid;
-  fs.writeFileSync(tmp, JSON.stringify(data, null, 2));
-  fs.renameSync(tmp, filePath);
-}
-
 // ─── API: Status ───────────────────────────────────────────────────
 
 const getStatus = asyncRoute('/api/status', getStatusAsync);
@@ -1160,23 +1153,24 @@ async function deleteCurationShell(req, res, url) {
 
 // ─── API: Hooks Config ─────────────────────────────────────────────
 
+// The EFFECTIVE config (shipped ⊕ update-safe user-config): what the user sees is what
+// runs, and a save writes only the user's changes to the user-config (BACKLOG Q38) — the
+// shipped file is replaced by every auto-update, so writing there lost the edit.
 function getHooksConfig(req, res) {
-  const configPath = path.join(ROOT, 'config', 'hooks-config.json');
-  const data = readJSON(configPath);
-  if (!data) return fail(res, 'hooks-config.json not found', 404);
-  json(res, data);
+  hooksConfig._resetCache(); // long-running server: reflect any out-of-band edit
+  json(res, hooksConfig.load());
 }
 
 async function saveHooksConfig(req, res) {
   const body = await readBody(req);
+  let parsed;
+  try { parsed = JSON.parse(body); } catch (e) { return fail(res, `Invalid JSON: ${e.message}`, 400); }
+  const err = validateHooksConfig(parsed);
+  if (err) return fail(res, `Invalid hooks-config.json: ${err}`, 400);
   try {
-    const parsed = JSON.parse(body);
-    const err = validateHooksConfig(parsed);
-    if (err) return fail(res, `Invalid hooks-config.json: ${err}`, 400);
-    const configPath = path.join(ROOT, 'config', 'hooks-config.json');
-    atomicWriteJSON(configPath, parsed);
-    json(res, { ok: true });
-  } catch (e) { fail(res, e.message); }
+    const out = hooksConfig.saveOverrides(parsed);
+    json(res, { ok: true, changed: out.changed, path: out.path });
+  } catch (e) { fail(res, e.message, 400); }
 }
 
 // Active profile — read/written UPDATE-SAFE (globalDir()/hooks/user-config.json),
