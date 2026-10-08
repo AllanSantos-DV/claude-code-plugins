@@ -152,7 +152,7 @@ async function afterTurn($, ctx) {
       // The cache price of the first call after the compaction is in cache.turn (afterCompaction,
       // marked from the transcript) — its row may land after this turn.complete (interactive).
       emit($, ctx, 'settled', {
-        reason: settle.reason, trigger: settle.trigger, tokensBefore: settle.tokensBefore, tokensAfter: after,
+        reason: settle.reason, trigger: settle.trigger, prevented: settle.prevented === true, tokensBefore: settle.tokensBefore, tokensAfter: after,
         tokensCut: settle.tokensBefore != null && after != null ? settle.tokensBefore - after : null,
         host: id.host, auth: id.auth,
       });
@@ -211,7 +211,11 @@ async function gate($, ctx, e, next) {
     emit($, ctx, 'gate', { action: 'pass', reason: 'attachments-would-be-lost', tokens: tokens ?? null, idleMs, ttlMs, ttlSource });
     return next(e);
   }
-  ctx.pendingSettle = { reason: d.reason, trigger: 'prompt-gate', tokensBefore: tokens ?? null };
+  // Resumed + re-expanded: the bloated request never happens (we prevent it), so there is no
+  // measured 'before' in tokens — the run's chars say how much was cut.
+  ctx.pendingSettle = d.reason === 'resume-reexpanded'
+    ? { reason: d.reason, trigger: 'prompt-gate', tokensBefore: null, prevented: true }
+    : { reason: d.reason, trigger: 'prompt-gate', tokensBefore: tokens ?? null };
   const text = e.text;
   $.clock.after(1, () => scheduleCompactThenResend($, ctx, text, d.reason));
   return { drop: 'compacting first: the cache went cold and the context is past the threshold — your prompt follows right after' };

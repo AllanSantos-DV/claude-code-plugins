@@ -68,12 +68,13 @@ function readNewApiCalls(transcriptPath, sinceId) {
   const calls = [];
   const seen = new Set();
   let boundaryPending = false;
+  let lastBoundaryCall = -1; // index in calls of the first call after the last boundary
   for (const raw of text.split('\n')) {
     const line = raw.trim();
     if (!line.startsWith('{')) continue; // the first line of a tail window may be cut
     let row;
     try { row = JSON.parse(line); } catch (err) { void err; continue; }
-    if (row.type === 'system' && row.subtype === 'compact_boundary') { boundaryPending = true; continue; }
+    if (row.type === 'system' && row.subtype === 'compact_boundary') { boundaryPending = true; lastBoundaryCall = calls.length; continue; }
     if (row.type !== 'assistant' || row.isSidechain || !row.message || !row.message.usage) continue;
     const u = row.message.usage;
     const total = (Number(u.input_tokens) || 0) + (Number(u.output_tokens) || 0)
@@ -85,7 +86,9 @@ function readNewApiCalls(transcriptPath, sinceId) {
     calls.push({ id, model: row.message.model || null, usage: u, afterCompaction: boundaryPending });
     boundaryPending = false;
   }
-  if (!sinceId) return calls.slice(-1);       // first observation: the latest call only
+  // First observation of a process: the calls since the last compact_boundary in the tail are
+  // this session's (a resumed one compacted before its first prompt); no boundary: the latest only.
+  if (!sinceId) { const afterB = calls.filter((c, k) => k >= lastBoundaryCall); return lastBoundaryCall >= 0 && afterB.length ? afterB : calls.slice(-1); }
   const at = calls.findIndex((c) => c.id === sinceId);
   return at >= 0 ? calls.slice(at + 1) : calls.slice(-1); // since fell out of the window: latest only
 }
