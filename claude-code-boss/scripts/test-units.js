@@ -17957,6 +17957,42 @@ test('capture_lesson local: a null merge (vanished dedup hit) does NOT phantom-a
   assertEq(saved.length, 1, 'the lesson was actually persisted before the ack (no silent loss)');
 });
 
+test('capture_lesson (Q42): dedup merges only within the SAME type — a decision near-identical to a lesson is admitted, not merged into it', async () => {
+  const url = require('url');
+  const R = process.env.CLAUDE_PLUGIN_ROOT;
+  const entries = [];
+  const searches = [];
+  let merges = 0;
+  // In-memory KB honoring brain-store's search contract (opts.type filters before topK).
+  const store = {
+    search: async (_v, opts) => { searches.push(opts); return entries.filter((e) => !opts.type || e.type === opts.type).slice(0, opts.topK).map((e) => ({ id: e.id, title: e.title, type: e.type, score: 1 })); },
+    merge: async (id) => { merges++; const e = entries.find((x) => x.id === id); e.recurrence = (e.recurrence || 1) + 1; return { recurrence: e.recurrence }; },
+    save: async (e) => { e.id = e.id || `id-${entries.length + 1}`; entries.push(e); },
+  };
+  const mod = await import(url.pathToFileURL(path.join(R, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+  const server = mod.createBrainServer({ pluginRoot: R, mode: 'stdio', _testHooks: {
+    getKB: async () => ({ store, index: { index: async () => {} }, graph: { registerNode: async () => {} } }),
+    embedder: { init: async () => {}, getStatus: () => ({ ready: true }), embed: async () => [0.1, 0.2, 0.3] }, // every text = same vector
+  } });
+  const cap = async (type) => JSON.parse((await server.handleTool('capture_lesson', { title: 'Same text', summary: 'Same text', type, scope: 'project', project: 'pQ42' })).content[0].text);
+  assertEq((await cap('lesson')).decision, 'admit');
+  const d1 = await cap('decision');
+  assertEq(d1.decision, 'admit', 'the decision is its own record, not recurrence++ of the lesson');
+  assertEq(searches[1].type, 'decision', 'the dedup search is scoped to the captured type');
+  assertEq((await cap('decision')).decision, 'merge', 'a repeat of the SAME type still merges (recurrence)');
+  assertEq([entries.length, merges], [2, 1]);
+});
+
+test('brain-store.search honors opts.type before topK (the contract the Q42 dedup relies on)', async () => {
+  const bs = require('./brain-store.js');
+  const project = 'pQ42store-' + Date.now();
+  await bs.init({ project });
+  const v = [0.3, 0.1, 0.9];
+  await bs.save({ type: 'lesson', project, title: 'L', summary: 'S', content: { detail: 'D' }, tags: [] }, v);
+  assertEq((await bs.search(v, { topK: 1, minScore: 0.9, type: 'decision', project })).length, 0, 'a lesson never answers a decision-scoped search');
+  assertEq((await bs.search(v, { topK: 1, minScore: 0.9, type: 'lesson', project }))[0].type, 'lesson');
+});
+
 
 // ─── 2.29.1 strict project-id gate on the KB tools (cwd wins; no id → refused) ──
 async function _kbGateServer(kbProjects, saved) {

@@ -1029,10 +1029,13 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   **2026-10-08 — MOVIDO para o projeto "orchestrador"** (correção de escopo do dono): a implementação não acontece no boss.
   O documento de design/pesquisa fica como referência a repassar. O sistema de aprendizado próprio do boss (ações autônomas
   dele) é outra frente, a revisitar depois. O Q42 segue válido aqui.
-- [ ] **Q42 — `capture_lesson` funde por similaridade sem olhar o tipo** (`servers/brain-server/lib/mcp-server.js:996-1005`): com
+- [x] **Q42 — `capture_lesson` funde por similaridade sem olhar o tipo** (`servers/brain-server/lib/mcp-server.js:996-1005`): com
   cosine ≥ 0,9 contra o top-1, uma `decision` vira `recurrence++` de uma `lesson` parecida (e vice-versa) — perde-se o registro da
   decisão. Visto no levantamento do Q41 (2026-10-08). Proposta: só fundir com o mesmo tipo (ou comparar o top-k do mesmo tipo); teste
   com uma lição e uma decisão quase iguais. Pré-requisito da F3 do Q41.
+  **Resolvido em 2026-10-08**: a busca de dedup passa `type` (o `brain-store` já filtra por tipo ANTES do `topK`, nos
+  dois armazenamentos). Testes: decisão quase idêntica a uma lição é admitida, repetição do mesmo tipo ainda funde; o
+  `brain-store.search` honra `opts.type`. Mutação (sem o `type`) reprova.
 - [ ] **Q43 — o liga/desliga de hook do dashboard renomeia o script DENTRO da pasta do plugin** (`scripts/dashboard.js:1223`
   `toggleHook`: `scripts/<nome>` → `.disabled`). Mesma família do Q38: o auto-update instala uma pasta nova e o hook volta
   ligado sem aviso; e desligar um dispatcher (`stop-dispatcher.js` etc.) tira TODOS os detectores daquele evento, com erro de

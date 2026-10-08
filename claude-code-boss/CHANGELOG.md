@@ -63,6 +63,9 @@
   à Anthropic (401). Agora o boss detecta o gateway, deixa o caminho como está e lembra a decisão; um
   "Salvar & aplicar" no painel do roteador reavalia. Quem configurou um `upstream` no roteador continua
   com ele na frente do gateway, como escolheu.
+- **Uma decisão registrada não some mais dentro de uma lição parecida.** A memória junta capturas quase
+  iguais (somando a recorrência); isso valia entre tipos diferentes, então uma decisão com texto parecido com o de
+  uma lição virava só "+1" na lição e o registro da decisão se perdia. Agora só junta com o mesmo tipo.
 
 ## [3.0.1] - 2026-10-05
 
