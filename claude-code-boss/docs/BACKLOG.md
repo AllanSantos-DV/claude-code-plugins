@@ -1079,8 +1079,10 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   Visto na varredura da classe Q38/Q43/Q44 (2026-10-08). Proposta: `loadConfig` lê `brain-config.load().embedder`; teste com override.
   **Resolvido em 2026-10-08**: `loadConfig` lê `brain-config.load().embedder`. Teste: escolha salva pelo caminho do painel é a que o
   embedder carrega; mutação (voltar a ler o arquivo do plugin) reprova.
-- [ ] **Q48 — o Q44 ficou incompleto: `scripts/skill-promote-trigger.js:36` `loadCfg`** lê `kb.skillPromotion` só do arquivo do plugin
+- [x] **Q48 — o Q44 ficou incompleto: `scripts/skill-promote-trigger.js:36` `loadCfg`** lê `kb.skillPromotion` só do arquivo do plugin
   (é quem decide se o scan roda). Proposta: usar `brain-config.getSkillPromotion()`.
+  **Resolvido em 2026-10-08**: `loadCfg()` usa `brain-config.getSkillPromotion()` (o mesmo leitor do Q44). Teste reescrito no contrato
+  novo (o usuário desliga o scan pelo arquivo dele); mutação reprova.
 - [ ] **Q49 — `scripts/brain-store.js` `loadRerankConfig` (:56) e `loadKbLimits` (:158)** leem `kb.rerank`/`kb.maxEntriesPerProject`/
   `kb.archiveAfterDays` só do arquivo do plugin — override do usuário ignorado. Proposta: ler pelo `brain-config.load()`.
 - [ ] **Q50 — `hashFile` duplicada** (`scripts/lib/backup.js:88` e `scripts/lib/backup-remote.js:24`, cópia exata — Smart Tool

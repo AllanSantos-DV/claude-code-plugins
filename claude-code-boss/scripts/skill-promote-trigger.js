@@ -33,11 +33,9 @@ function dataDir() {
   return require('./lib/data-dir.js').dataDir();
 }
 
-function loadCfg(root) {
-  try {
-    const raw = fs.readFileSync(path.join(root, 'config', 'brain-config.json'), 'utf-8');
-    return JSON.parse(raw)?.kb?.skillPromotion || {};
-  } catch { /* missing/invalid config: defaults */ return {}; }
+/** kb.skillPromotion, shipped ⊕ user override — the reader brain-promote and the dashboard use (BACKLOG Q44/Q48). */
+function loadCfg() {
+  return require('./lib/brain-config.js').getSkillPromotion();
 }
 
 function shouldRun(stampPath, cooldownMs) {
@@ -60,7 +58,7 @@ async function run(event) {
   const root = pluginRoot();
   const data = dataDir();
 
-  const cfg = loadCfg(root);
+  const cfg = loadCfg();
   if (cfg.enabled === false) return {};
 
   const stampPath = path.join(data, '.skill-scan-last');
