@@ -1,6 +1,6 @@
 # Changelog
 
-## [Não lançado]
+## [3.1.0] - 2026-10-08
 
 ### Added
 - **Compactação controlada — na hora certa, sem resumo, com métricas.** Um módulo de *function hook*
