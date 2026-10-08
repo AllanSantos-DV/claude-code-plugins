@@ -23168,7 +23168,8 @@ test('compaction-metrics.summarizeCompaction: when/how much/cache per host — e
   assertEq(s.cut.charsCut, 163500); assertEq(s.cut.avgRatio, 0.962);
   assertEq(s.runs.prunedByKind, { 'superseded-read': 3, 'big-old-result': 1 });
   assertEq(s.gate.held, 1); assertEq(s.gate.byReason['cache-warm'], 1);
-  assertEq(s.settled.tokensCut, 71850); assertEq(s.settled.firstTurnWrite, 14286);
+  assertEq(s.settled.tokensCut, 71850);
+  assertEq(s.settled.firstTurns, 1); assertEq(s.settled.firstTurnWrite, 500, 'the first call after a compaction = cache.turn afterCompaction');
   assertEq(s.resume.reexpanded, 1); assertEq(s.errors.total, 1);
   const sub = s.cache.byHost['api.anthropic.com|bearer'];
   const api = s.cache.byHost['gw.local|api-key'];
@@ -23185,21 +23186,28 @@ function cmpTranscript(dir, rows) {
   return f;
 }
 
-test('compaction-event.readLastAssistantUsage: last main-thread usage from the tail (sidechains and cut lines skipped)', () => {
+test('compaction-event.readNewApiCalls: one entry per API call since the last one seen; synthetic re-written copies skipped; afterCompaction from the boundary', () => {
   const ce = require('./compaction-event.js');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-tr-'));
-  const pad = { type: 'user', message: { content: 'x'.repeat(600 * 1024) } }; // pushes old rows out of the 512 KB tail
+  const call = (id, usage, extra = {}) => ({ type: 'assistant', ...extra, message: { id, model: 'm', usage } });
+  const real = (w) => ({ input_tokens: 2, cache_read_input_tokens: 900, cache_creation_input_tokens: w, cache_creation: { ephemeral_5m_input_tokens: w, ephemeral_1h_input_tokens: 0 } });
+  const zeroCopy = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, cache_creation: { ephemeral_5m_input_tokens: 29227 } };
   const f = cmpTranscript(dir, [
-    { type: 'assistant', message: { model: 'old', usage: { input_tokens: 1 } } },
-    pad,
-    { type: 'assistant', message: { model: 'main', usage: { input_tokens: 3, cache_read_input_tokens: 900, cache_creation_input_tokens: 100, cache_creation: { ephemeral_1h_input_tokens: 100, ephemeral_5m_input_tokens: 0 } } } },
-    { type: 'assistant', isSidechain: true, message: { model: 'sub', usage: { input_tokens: 9 } } },
-    { type: 'user', message: { content: 'next' } },
+    { type: 'user', message: { content: 'x'.repeat(600 * 1024) } }, // older rows fall out of the 512 KB tail
+    call('m1', real(100)), call('m1', real(100)),                    // thinking + tool_use rows of ONE call
+    call('side', real(7), { isSidechain: true }),
+    { type: 'system', subtype: 'compact_boundary' },
+    call('m1', zeroCopy), call('m2', zeroCopy),                      // the engine's re-written copies
+    call('m3', real(1980)),                                          // the first real call after the compaction
+    call('m4', real(50)),
   ]);
-  const r = ce.readLastAssistantUsage(f);
-  assertEq(r.model, 'main');
-  assertEq(r.usage.cache_creation.ephemeral_1h_input_tokens, 100);
-  assertEq(ce.readLastAssistantUsage(path.join(dir, 'missing.jsonl')), null);
+  const all = ce.readNewApiCalls(f, 'm1');
+  assertEq(all.map((c) => c.id), ['m3', 'm4'], 'since m1: each later call once; copies and sidechain skipped');
+  assertEq(all.map((c) => c.afterCompaction), [true, false], 'only the first real call after the boundary');
+  assertEq(ce.readNewApiCalls(f, 'm4'), [], 'nothing new since the last call seen');
+  assertEq(ce.readNewApiCalls(f, null).map((c) => c.id), ['m4'], 'first observation: the latest call only');
+  assertEq(ce.readNewApiCalls(f, 'gone-out-of-window').map((c) => c.id), ['m4'], 'since not in the tail: latest only (never a flood)');
+  assertEq(ce.readNewApiCalls(path.join(dir, 'missing.jsonl'), null), []);
 });
 
 async function withCmpStore(fn) {
@@ -23224,11 +23232,16 @@ test('compaction-event.run: trail events land in the metrics store; turn records
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-proj-'));
     const base = { session_id: 'sid-cmp', cwd: dir };
     assertEq(await ce.run({ ...base, payload: { kind: 'run', trigger: 'manual', outcome: 'pruned', charsCut: 10 } }), {});
-    const f = cmpTranscript(dir, [{ type: 'assistant', message: { model: 'm1', usage: { input_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 500, cache_creation: { ephemeral_5m_input_tokens: 500, ephemeral_1h_input_tokens: 0 } } } }]);
-    const reply = await ce.run({ ...base, transcript_path: f, payload: { kind: 'turn', host: 'gw.local', auth: 'api-key', afterCompaction: true } });
-    assertEq(reply.observed.ttlMs, 300000, 'this turn contracted a 5 min write');
+    const f = cmpTranscript(dir, [{ type: 'system', subtype: 'compact_boundary' }, { type: 'assistant', message: { id: 'msg-a', model: 'm1', usage: { input_tokens: 2, cache_read_input_tokens: 0, cache_creation_input_tokens: 500, cache_creation: { ephemeral_5m_input_tokens: 500, ephemeral_1h_input_tokens: 0 } } } }]);
+    const reply = await ce.run({ ...base, transcript_path: f, payload: { kind: 'turn', host: 'gw.local', auth: 'api-key' } });
+    assertEq(reply.observed.ttlMs, 300000, 'this call contracted a 5 min write');
     assertEq(reply.observed.write5m, 500);
+    assertEq(reply.observed.afterCompaction, true, 'marked from the transcript (first call after the boundary)');
+    assertEq(reply.lastMessageId, 'msg-a');
     assertEq(reply.ttl.observed, '5m');
+    const again = await ce.run({ ...base, transcript_path: f, payload: { kind: 'turn', host: 'gw.local', auth: 'api-key', sinceMessageId: 'msg-a' } });
+    assertEq(again.recorded, 0, 'the same call is never recorded twice');
+    assertEq(again.lastMessageId, 'msg-a');
     const hello = await ce.run({ ...base, payload: { kind: 'hello', host: 'gw.local', auth: 'api-key' } });
     assert(hello.config && hello.config.thresholdTokens > 0, 'hello carries the config');
     assertEq(hello.ttl.observed, '5m', 'hello replies the window already observed for this host');
