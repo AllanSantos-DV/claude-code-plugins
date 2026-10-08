@@ -5,7 +5,9 @@
  *
  * The function-hook module runs with no Node, so it reaches the boss through the
  * daemon like every migrated hook: the internal tool `hook_compaction_event`
- * (lib/hook-tools.js) runs `run(ev)` here, with `ev.payload` = `{ kind, ... }`.
+ * (lib/hook-tools.js), reached through the daemon route POST /hook/compaction-event
+ * (token-gated like /mcp; the hook_* tools are unlisted, so a module cannot $.mcp.call
+ * them), runs `run(ev)` here, with `ev.payload` = `{ kind, ... }`.
  *
  *   hello    → the compaction config + the cache TTL already observed for this host
  *   turn     → reads the LAST response's real `usage` from the transcript (the module's

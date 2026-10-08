@@ -22746,7 +22746,14 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
     const moduleCalled = Object.keys(SPECS_G).filter(n => SPECS_G[n].caller === 'module');
     assertEq(hookEntries.map(h => h.tool).sort(), [...hookTools.names].filter(n => !moduleCalled.includes(n)).sort());
     const modulesSrc = (JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).modules || []).map(m => fs.readFileSync(path.join(ROOT, 'hooks', m), 'utf8')).join('\n');
-    for (const n of moduleCalled) assert(modulesSrc.includes(`'${n}'`), `${n} is called by a hooks module`);
+    // …through a daemon route (the tools are unlisted, a module cannot $.mcp.call them):
+    // http-daemon maps the route to the tool, and a shipped module calls that route.
+    const daemonSrc = fs.readFileSync(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js'), 'utf8');
+    for (const n of moduleCalled) {
+      const m = daemonSrc.match(new RegExp(`'(/hook/[a-z-]+)':\\s*'${n}'`));
+      assert(m, `${n} has a daemon route`);
+      assert(modulesSrc.includes(m[1]), `${n}: its route ${m[1]} is called by a hooks module`);
+    }
     for (const h of hookEntries) {
       assertEq(h.server, 'plugin:claude-code-boss:brain-server');
       assertEq(h.input.project_dir, '${CLAUDE_PROJECT_DIR}');
@@ -23261,6 +23268,35 @@ test('hook_compaction_event: daemon transport (payload arrives as an object, bad
   assertEq(hc.resolveProfileConfig({ profile: 'dev' }).compaction, undefined, 'dev keeps the shipped default (on)');
   const shipped = JSON.parse(fs.readFileSync(path.join(ROOT, 'config', 'hooks-config.json'), 'utf8')).compaction;
   assertEq(shipped.enabled, true); assertEq(shipped.thresholdTokens, 250000);
+});
+
+test('http-daemon POST /hook/compaction-event: REAL daemon — token-gated like /mcp; a module reaches hook_compaction_event end to end', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-cmp-route-'));
+  const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
+  const savedTok = process.env.BRAIN_HTTP_TOKEN; delete process.env.BRAIN_HTTP_TOKEN;
+  const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0 });
+  try {
+    const base = `http://127.0.0.1:${d.httpServer.address().port}`;
+    const health = await (await fetch(`${base}/health`)).json();
+    assertEq(path.resolve(health.dataDir), path.resolve(dir), '/health names the data dir the module reads the token from');
+    const token = fs.readFileSync(path.join(health.dataDir, 'brain-http.token'), 'utf8').trim();
+    const transcript = cmpTranscript(dir, [{ type: 'assistant', message: { model: 'm', usage: { input_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 40, cache_creation: { ephemeral_1h_input_tokens: 40, ephemeral_5m_input_tokens: 0 } } } }]);
+    const body = JSON.stringify({ session_id: 'sid-route', cwd: dir, transcript_path: transcript, payload: JSON.stringify({ kind: 'turn', host: 'api.anthropic.com', auth: 'bearer' }) });
+    const post = (auth) => fetch(`${base}/hook/compaction-event`, { method: 'POST', headers: { 'Content-Type': 'application/json', ...(auth ? { Authorization: auth } : {}) }, body });
+    assertEq((await post(null)).status, 401, 'no token → 401');
+    assertEq((await post('Bearer wrong')).status, 401, 'wrong token → 401');
+    const ok = await post(`Bearer ${token}`);
+    assertEq(ok.status, 200);
+    const reply = await ok.json();
+    assertEq(reply.observed.write1h, 40, 'the transcript usage was read in the daemon');
+    assertEq(reply.observed.ttlMs, 3600000);
+    const bad = await fetch(`${base}/hook/compaction-event`, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: 'not json' });
+    assertEq(bad.status, 400, 'a non-JSON body is refused, not crashed on');
+    assertEq((await fetch(`${base}/hook/other`, { method: 'POST', headers: { Authorization: `Bearer ${token}` } })).status, 404, 'only the declared module routes exist');
+  } finally {
+    if (savedTok !== undefined) process.env.BRAIN_HTTP_TOKEN = savedTok;
+    await d.shutdown();
+  }
 });
 
 // ─── Runner ──────────────────────────────────────────────────────────────────
