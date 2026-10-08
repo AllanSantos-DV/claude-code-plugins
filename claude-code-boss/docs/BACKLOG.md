@@ -924,6 +924,38 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   `pickPluginRelease` lista as releases e escolhe a maior `<prefixo><X.Y.Z>` do plugin (boss `v`, rf-reviewer
   `rf-v`), sem draft/prerelease; `release.yml` publica TODA release com `make_latest: "false"`. Teste + mutação.
 - [x] **Q29 — gate da release (servidor 2.45.5+ público)** — satisfeito: v2.45.5 e v2.45.6 publicadas em 06/10.
+- [ ] **Q35 — compactação controlada (pedido do Allan, 07/10; spike F0 feito, F1–F3 aguardando decisão).**
+  Ideia: compactar na hora certa (limiar de tokens + cache do provedor frio), mantendo literal o que vale
+  (prompts, decisões) e podando só resultado de ferramenta velho; memória como referência. Tentativa anterior
+  = `contextTuning` (só o limiar `CLAUDE_CODE_AUTO_COMPACT_WINDOW`, conteúdo = resumo nativo). Spike em
+  `smoke/compaction-spike/` (local): function hook `session.compact` + timer de TTL, 13 testes puros + 4 no
+  engine. Provado no Claude Code 2.1.291 real: o hook substitui o `/compact` manual e o auto-compact
+  (`trigger auto`) — 8–16 ms, 0 token, 55k→4k, decisão literal (o nativo leva 19 s, US$ 0,017 e parafraseia);
+  na sessão viva o prefixo system+tools segue em cache (só a conversa compactada é regravada); o cache que o
+  Claude Code grava aqui é de **1 h** (`ephemeral_1h`), não 5 min; plugin instalado de marketplace carrega o
+  módulo (inclusive sem telemetria/provedor terceiro — gate de rollout no servidor `tengu_plugin_hooks_modules`,
+  que em 04/10 estava desligado). **Momento da compactação (desenho do dono, provado no modo INTERATIVO real
+  via ConPTY/pywinpty)**: nunca compacta sozinho; no `prompt.submit` de uma pessoa (sessão ociosa), se passou do
+  limiar e o cache esfriou, SEGURA o prompt (`{drop}`), roda `$.command.run({command:'compact'})` e REENVIA o
+  mesmo texto (`$.prompt.submit({text, asUser:true})`) — 118.723→7.089 tokens em 20 ms, resposta literal.
+  Regras do engine descobertas: `session.compact` é recusado DENTRO do `prompt.submit` ("would compact under
+  the turn this hook is holding"); `$.session.compact()` pula o hook do próprio chamador (cai no resumo nativo)
+  — por isso o `/compact` via `command.run`; o reenvio do plugin não passa pelo próprio hook (sem loop);
+  prompt com anexo não é segurado (o reenvio perderia o anexo). **Retomada (defeito do engine, CONTORNADO
+  localmente)**: depois de uma compactação respondida por hook, `--resume` E `--continue`/`-c` recarregam o
+  histórico ORIGINAL (proxy: tool_results de 69k/72k sem a poda; o nativo respeita a fronteira; o AgentLauncher
+  retoma com `--continue`, `core.py:698-699`). Contorno provado no interativo real com `--continue` + proxy:
+  o `SessionStart` clássico (hookado do módulo como `classic.SessionStart`) dispara em `-c` e `--resume` com
+  `source:"resume"`, `context_tokens` (= tamanho da última resposta, já podado) e `seconds_since_last_response`;
+  no 1º prompt o gate compara o histórico recarregado com esse tamanho — reinflado → segura, poda de novo e
+  reenvia ANTES de qualquer envio. Medido: a requisição real levou o histórico podado (3 notas, maior
+  tool_result 3.024 caracteres). `$.session.messages` não está disponível no SessionStart (lido no 1º prompt);
+  o `session.start` de function hook dispara nos 3 modos mas não diz qual. **Ressalva restante**: leitura de tokens: no
+  interativo `session.measure` vem `null` e `$.session.usage()` traz o valor; no headless o inverso — ler os
+  dois (usage primeiro).
+- [ ] **Q36 — `ANTHROPIC_BASE_URL` no ambiente de usuário do Windows (HKCU\Environment)** desta máquina, visto
+  no spike do Q35 (valor não lido). O boss não grava HKCU (grep em `scripts/`: nenhum `setx`/`reg add`); afeta
+  qualquer app, não só o Claude Code. Relacionado ao Q24. Ação: confirmar com o dono quem gravou e se é intencional.
 ## Testes
 
 - [x] `scripts/test-units.js`, teste `plano B: stream com várias linhas SSE somando mais de 32 MiB termina completo (o teto é por linha)` (~9361): flake intermitente sob carga (anotado em 2026-09-30, durante a Fase G da 2.29.1, que não toca o model-router): falhou com `nvidia: conteúdo perdido (867 chars)` em 1 de 3 rodadas completas da suíte, e outra rodada teve 2 falhas da família `plano B`; a terceira passou limpa. Mesma família de timing do item de FIN/reset abaixo. Investigar se o stream de >40 MiB é cortado por prazo do teste ou do router quando a máquina está carregada.
