@@ -2212,6 +2212,17 @@ test('decision-detect: extractCommitMsg — heredoc', () => {
   assert(out.includes('because v3 is paid'), 'heredoc preserves rationale');
 });
 
+test('decision-detect: a heredoc that writes a FILE before the commit is not the message (only the -m heredoc is)', () => {
+  const cmd = "cat > /tmp/d.js <<'EOF'\nconst fs = require('fs');\nEOF\nnode /tmp/d.js && git commit -q -m \"fix(x): the real message\n\nbody\"";
+  assertEq(dd.extractCommitMsg(cmd), 'fix(x): the real message\n\nbody');
+  const both = "cat > f <<'EOF'\nfile body\nEOF\ngit commit -m \"$(cat <<'MSG'\nfeat: real\nMSG\n)\"";
+  assertEq(dd.extractCommitMsg(both), 'feat: real', 'the heredoc feeding -m wins over an earlier file heredoc');
+  const pr = "cat > b.md <<'EOF'\nnot the body\nEOF\ngh pr create --title t --body \"the PR body\"";
+  assertEq(dd.extractPrBody(pr), 'the PR body');
+  const prHeredoc = "gh pr create --title t --body \"$(cat <<'EOF'\nPR heredoc body\nEOF\n)\"";
+  assertEq(dd.extractPrBody(prHeredoc), 'PR heredoc body', 'the --body heredoc still works');
+});
+
 test('decision-detect: extractCommitMsg — non-git returns null', () => {
   assertEq(dd.extractCommitMsg('ls -la'), null);
 });

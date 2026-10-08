@@ -1062,6 +1062,11 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   (PT/EN) no lugar do "reload pendente" (que ali seria enganoso). Premissa conferida: o "Salvar & aplicar" roda o ensure com
   `BOSS_ROUTER_FORCE_RESTART=1`, que limpa e reavalia o adiamento. Testes: invariante na suíte + smoke do dashboard real (com e
   sem o arquivo; página servida com as duas mensagens).
+- [x] **Q46 — o detector de decisões lia um heredoc qualquer como mensagem do commit** (`scripts/decision-detect.js`
+  `extractCommitMsg`/`extractPrBody`): num comando `cat > f <<'EOF' … EOF && git commit -m "…"`, o padrão do heredoc casava o
+  conteúdo do ARQUIVO; o lembrete de decisão do Stop citou um script de patch como "commit" (visto em 2026-10-08, nos commits
+  Q42–Q45). **Corrigido na hora**: só o que vem depois do `git commit`/`gh pr` é lido, e o heredoc só conta quando alimenta o
+  `-m`/`--body` (`"$(cat <<…`). Teste: reproduzido no código anterior (extraía `const fs = require('fs');`), passa após a correção.
 ## Testes
 
 - [x] `scripts/test-units.js`, teste `plano B: stream com várias linhas SSE somando mais de 32 MiB termina completo (o teto é por linha)` (~9361): flake intermitente sob carga (anotado em 2026-09-30, durante a Fase G da 2.29.1, que não toca o model-router): falhou com `nvidia: conteúdo perdido (867 chars)` em 1 de 3 rodadas completas da suíte, e outra rodada teve 2 falhas da família `plano B`; a terceira passou limpa. Mesma família de timing do item de FIN/reset abaixo. Investigar se o stream de >40 MiB é cortado por prazo do teste ou do router quando a máquina está carregada.

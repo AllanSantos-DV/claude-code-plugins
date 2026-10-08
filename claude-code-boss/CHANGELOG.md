@@ -64,6 +64,8 @@
   "Salvar & aplicar" no painel do roteador reavalia. Quem configurou um `upstream` no roteador continua
   com ele na frente do gateway, como escolheu. O painel do roteador mostra quando isso acontece ("não ativado: esta
   máquina usa um gateway próprio …"), em vez de sugerir um reload pendente.
+- O lembrete de registrar decisões citava o conteúdo de um arquivo criado no mesmo comando como se fosse a
+  mensagem do commit; agora lê a mensagem certa.
 - **Uma decisão registrada não some mais dentro de uma lição parecida.** A memória junta capturas quase
   iguais (somando a recorrência); isso valia entre tipos diferentes, então uma decisão com texto parecido com o de
   uma lição virava só "+1" na lição e o registro da decisão se perdia. Agora só junta com o mesmo tipo.
