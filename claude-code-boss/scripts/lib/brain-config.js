@@ -164,6 +164,18 @@ function getCuration() {
 }
 
 /**
+ * Skill promotion thresholds (brain-promote scan + the dashboard panel).
+ * Config: kb.skillPromotion, read through load() — shipped ⊕ the user override
+ * (both readers used to read only the shipped file, so a user tweak was ignored —
+ * BACKLOG Q44).
+ * @returns {{enabled:boolean, minRecurrence:number, minConfidence:number, types:string[]}}
+ */
+function getSkillPromotion() {
+  const sp = (load().kb && load().kb.skillPromotion) || {};
+  return { enabled: true, minRecurrence: 3, minConfidence: 0.8, types: ['lesson', 'pattern'], ...sp };
+}
+
+/**
  * Limits for `capture_lesson` `type:"skill"` (mechanical validation in
  * scripts/lib/skill-capture.js). Config: kb.skillCapture. Same shape as the
  * module's own defaults — this getter exists so an operator can tune the
@@ -335,6 +347,7 @@ module.exports = {
   getContextExcludeTypes,
   getCuration,
   getSkillCapture,
+  getSkillPromotion,
   getIngestion,
   getRecallCompose,
   getBackendType,

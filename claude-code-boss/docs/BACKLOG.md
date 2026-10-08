@@ -1042,10 +1042,12 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   "Cannot find module" a cada disparo, em vez de desligar só o detector. Visto ao levantar features irmãs do Q38 (2026-10-08).
   (Path traversal verificado e descartado: o `new URL` normaliza `..`/`%2e%2e`.) Proposta: o botão grava `<detector>.enabled`
   no user-config (os detectores já leem `enabled` via `hooks-config`), sem tocar arquivo do plugin; teste de sobrevivência ao update.
-- [ ] **Q44 — ajuste do usuário em `kb.skillPromotion` é ignorado**: `scripts/brain-promote.js:45` (comportamento) e
+- [x] **Q44 — ajuste do usuário em `kb.skillPromotion` é ignorado**: `scripts/brain-promote.js:45` (comportamento) e
   `scripts/dashboard.js:1008` (painel) leem só o `config/brain-config.json` que vem no plugin, sem o user-config
   (`<globalDir>/user-config.json`) que o `brain-config.load()` já mescla. Visto no mesmo levantamento. Proposta: ler pelo
   `brain-config`; teste com override de `minRecurrence`.
+  **Resolvido em 2026-10-08**: `brain-config.getSkillPromotion()` (shipped ⊕ user) é o leitor único do `brain-promote` e do
+  painel. Teste: override de `minRecurrence` chega à promoção, o resto mantém o padrão; mutação (getter sem o override) reprova.
 - [ ] **Q45 — o painel do roteador não mostra quando ele se recusou a passar por cima do gateway do usuário (Q24)**: hoje o
   adiamento só aparece no log e num aviso por sessão; o painel continua mostrando o roteador como configurado. Proposta: o status
   do roteador expõe `gateway-defer.json` (URL, desde quando) e o painel mostra "Não ativado: gateway próprio X — Salvar &

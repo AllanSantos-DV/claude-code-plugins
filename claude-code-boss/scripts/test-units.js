@@ -17983,6 +17983,28 @@ test('capture_lesson (Q42): dedup merges only within the SAME type — a decisio
   assertEq([entries.length, merges], [2, 1]);
 });
 
+test('skill promotion (Q44): the user override of kb.skillPromotion reaches brain-promote and the dashboard (not only the shipped file)', () => {
+  const bc = require('./lib/brain-config.js');
+  const file = path.join(require('./lib/data-dir.js').globalDir(), 'user-config.json');
+  assert(file.startsWith(process.env.USERPROFILE), `the suite's temp HOME, never the real one (${file})`);
+  const prev = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+  try {
+    const cur = prev ? JSON.parse(prev) : {};
+    cur.kb = { ...(cur.kb || {}), skillPromotion: { minRecurrence: 7 } };
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(cur));
+    bc._resetCache();
+    const cfg = require('./brain-promote.js').loadPromotionCfg();
+    assertEq([cfg.minRecurrence, cfg.minConfidence, cfg.types], [7, 0.8, ['lesson', 'pattern']], 'the override wins, the rest keeps the defaults');
+    const dash = fs.readFileSync(path.join(SCRIPTS, 'dashboard.js'), 'utf8');
+    const fn = dash.slice(dash.indexOf('function getSkillPromotionConfig'), dash.indexOf('async function scanSkillCandidates'));
+    assert(/getSkillPromotion\(\)/.test(fn) && !/brain-config\.json/.test(fn), 'the dashboard panel reads the same layered getter');
+  } finally {
+    if (prev == null) { try { fs.unlinkSync(file); } catch (err) { void err; } } else fs.writeFileSync(file, prev);
+    bc._resetCache();
+  }
+});
+
 test('brain-store.search honors opts.type before topK (the contract the Q42 dedup relies on)', async () => {
   const bs = require('./brain-store.js');
   const project = 'pQ42store-' + Date.now();

@@ -66,6 +66,9 @@
 - **Uma decisão registrada não some mais dentro de uma lição parecida.** A memória junta capturas quase
   iguais (somando a recorrência); isso valia entre tipos diferentes, então uma decisão com texto parecido com o de
   uma lição virava só "+1" na lição e o registro da decisão se perdia. Agora só junta com o mesmo tipo.
+- **O seu ajuste da promoção de skills passa a valer.** `kb.skillPromotion` (recorrência e confiança mínimas)
+  era lido só do arquivo que vem com o plugin, tanto pela promoção quanto pelo painel; o que você gravava no seu
+  arquivo de usuário era ignorado.
 
 ## [3.0.1] - 2026-10-05
 
