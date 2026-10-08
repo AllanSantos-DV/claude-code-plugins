@@ -23209,6 +23209,39 @@ test('hooks-config compaction: getCompaction clamps; saveCompaction writes the U
   }
 });
 
+test('hooks-config saveOverrides (dashboard PUT /api/hooks/config): only the changes go to the UPDATE-SAFE user-config, never the shipped file (Q38)', () => {
+  const hc = require('./lib/hooks-config.js');
+  const file = hc.userConfigPath();
+  assert(file.startsWith(process.env.USERPROFILE), `the suite's temp HOME, never the real one (${file})`);
+  const shippedPath = path.join(ROOT, 'config', 'hooks-config.json');
+  const shippedBefore = fs.readFileSync(shippedPath, 'utf8');
+  const prev = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ profile: 'free' }));
+    hc._resetCache();
+    const edited = JSON.parse(JSON.stringify(hc.load()));
+    assertEq(edited.profile, 'free', 'the client edits the EFFECTIVE config (user pins included)');
+    edited.memoryRotate = { ...(edited.memoryRotate || {}), maxLines: 4321 };
+    assertEq(hc.saveOverrides(edited).changed, true);
+    assertEq(JSON.parse(fs.readFileSync(file, 'utf8')), { profile: 'free', memoryRotate: { maxLines: 4321 } }, 'only the change is written, the existing pin survives');
+    assertEq(fs.readFileSync(shippedPath, 'utf8'), shippedBefore, 'the shipped file is untouched');
+    assertEq(hc.load().memoryRotate.maxLines, 4321, 'the effective config reflects the save');
+    assertEq(hc.saveOverrides(JSON.parse(JSON.stringify(hc.load()))).changed, false, 'an unchanged save writes nothing');
+    const missing = JSON.parse(JSON.stringify(hc.load()));
+    delete missing.compaction;
+    let threw = null;
+    try { hc.saveOverrides(missing); } catch (err) { threw = err.message; }
+    assert(/removing keys is not supported.*compaction/.test(threw || ''), `a removed key fails loud, not silently ignored (${threw})`);
+    threw = null;
+    try { hc.saveOverrides([]); } catch (err) { threw = err.message; }
+    assert(/must be an object/.test(threw || ''), 'a non-object fails loud');
+  } finally {
+    if (prev == null) { try { fs.unlinkSync(file); } catch (err) { void err; } } else fs.writeFileSync(file, prev);
+    hc._resetCache();
+  }
+});
+
 test('compaction-core.classifyResume: re-expanded = the reloaded history carries the engine copies (exact), never a size guess', () => {
   const fx = JSON.parse(fs.readFileSync(path.join(SCRIPTS, '__fixtures__', 'compaction-resumed-history.json'), 'utf8')).messages;
   assertEq(cmpCore.classifyResume({ messages: fx, lastTokens: 31070 }), { reexpanded: true, copies: 20, lastTokens: 31070 }, 'the real resumed history after a hook compaction');

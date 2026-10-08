@@ -383,6 +383,48 @@ function saveProfile(name) {
   return p;
 }
 
+// What `after` changes relative to `before` (plain objects recurse; anything else is
+// compared by JSON value). `removed` lists keys present in `before` but absent in `after`.
+function diffConfig(after, before, prefix = '', removed = []) {
+  const changes = {};
+  for (const k of Object.keys(after)) {
+    const a = after[k], b = before[k];
+    if (isPlainObject(a) && isPlainObject(b)) {
+      const sub = diffConfig(a, b, `${prefix}${k}.`, removed).changes;
+      if (Object.keys(sub).length) changes[k] = sub;
+    } else if (JSON.stringify(a) !== JSON.stringify(b)) {
+      changes[k] = a;
+    }
+  }
+  for (const k of Object.keys(before)) if (!(k in after)) removed.push(`${prefix}${k}`);
+  return { changes, removed };
+}
+
+/**
+ * Persist a full edited hooks config (the dashboard's PUT /api/hooks/config) UPDATE-SAFE:
+ * only what differs from the current effective config (shipped ⊕ user) is merged into
+ * globalDir()/hooks/user-config.json — never the shipped file, which an auto-update
+ * replaces (BACKLOG Q38). Removing a key can't be expressed as an override, so it fails
+ * loud instead of being silently ignored. Returns {path, changed}.
+ * @param {object} full  the complete config as the client edited it
+ */
+function saveOverrides(full) {
+  if (!isPlainObject(full)) throw new Error('hooks config must be an object');
+  const { changes, removed } = diffConfig(full, load());
+  if (removed.length) throw new Error(`removing keys is not supported (set enabled:false instead): ${removed.join(', ')}`);
+  const file = userConfigPath();
+  if (!Object.keys(changes).length) return { path: file, changed: false };
+  let current = {};
+  try {
+    if (fs.existsSync(file)) current = JSON.parse(fs.readFileSync(file, 'utf-8')) || {};
+  } catch (err) { void err; /* corrupt/absent → start fresh */ }
+  if (!isPlainObject(current)) current = {};
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  writeFileAtomic(file, `${JSON.stringify(deepMerge(current, changes), null, 2)}\n`);
+  _resetCache();
+  return { path: file, changed: true };
+}
+
 function _resetCache() { _cache = null; _resolvedCache = null; }
 
 /**
@@ -424,6 +466,7 @@ module.exports = {
   getSessionSummary,
   getCompaction,
   saveCompaction,
+  saveOverrides,
   PROFILE_PRESETS,
   _resetCache,
   sourceStamp,

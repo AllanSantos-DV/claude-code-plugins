@@ -53,6 +53,10 @@
   progresso na tela, e uma falha só da parte do servidor fica registrada no backup em vez de cancelá-lo.
 - Um teste de hooks lia o `~/.claude/settings.json` real da máquina e falhava quando o Token Guard
   estava instalado; agora é hermético.
+- **Ajustes de hooks salvos pelo dashboard não somem mais no update.** O "Salvar" da configuração de
+  hooks gravava no arquivo que vem com o plugin, que o auto-update substitui. Agora só o que você mudou
+  vai para o seu arquivo de usuário (`~/.claude/claude-code-boss/hooks/user-config.json`), como o perfil e
+  o slider da compactação; a tela mostra a configuração efetiva (padrão + os seus ajustes).
 
 ## [3.0.1] - 2026-10-05
 
