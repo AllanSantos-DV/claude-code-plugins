@@ -1033,6 +1033,20 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   cosine ≥ 0,9 contra o top-1, uma `decision` vira `recurrence++` de uma `lesson` parecida (e vice-versa) — perde-se o registro da
   decisão. Visto no levantamento do Q41 (2026-10-08). Proposta: só fundir com o mesmo tipo (ou comparar o top-k do mesmo tipo); teste
   com uma lição e uma decisão quase iguais. Pré-requisito da F3 do Q41.
+- [ ] **Q43 — o liga/desliga de hook do dashboard renomeia o script DENTRO da pasta do plugin** (`scripts/dashboard.js:1223`
+  `toggleHook`: `scripts/<nome>` → `.disabled`). Mesma família do Q38: o auto-update instala uma pasta nova e o hook volta
+  ligado sem aviso; e desligar um dispatcher (`stop-dispatcher.js` etc.) tira TODOS os detectores daquele evento, com erro de
+  "Cannot find module" a cada disparo, em vez de desligar só o detector. Visto ao levantar features irmãs do Q38 (2026-10-08).
+  (Path traversal verificado e descartado: o `new URL` normaliza `..`/`%2e%2e`.) Proposta: o botão grava `<detector>.enabled`
+  no user-config (os detectores já leem `enabled` via `hooks-config`), sem tocar arquivo do plugin; teste de sobrevivência ao update.
+- [ ] **Q44 — ajuste do usuário em `kb.skillPromotion` é ignorado**: `scripts/brain-promote.js:45` (comportamento) e
+  `scripts/dashboard.js:1008` (painel) leem só o `config/brain-config.json` que vem no plugin, sem o user-config
+  (`<globalDir>/user-config.json`) que o `brain-config.load()` já mescla. Visto no mesmo levantamento. Proposta: ler pelo
+  `brain-config`; teste com override de `minRecurrence`.
+- [ ] **Q45 — o painel do roteador não mostra quando ele se recusou a passar por cima do gateway do usuário (Q24)**: hoje o
+  adiamento só aparece no log e num aviso por sessão; o painel continua mostrando o roteador como configurado. Proposta: o status
+  do roteador expõe `gateway-defer.json` (URL, desde quando) e o painel mostra "Não ativado: gateway próprio X — Salvar &
+  aplicar reavalia". Melhoria (visibilidade), não defeito.
 ## Testes
 
 - [x] `scripts/test-units.js`, teste `plano B: stream com várias linhas SSE somando mais de 32 MiB termina completo (o teto é por linha)` (~9361): flake intermitente sob carga (anotado em 2026-09-30, durante a Fase G da 2.29.1, que não toca o model-router): falhou com `nvidia: conteúdo perdido (867 chars)` em 1 de 3 rodadas completas da suíte, e outra rodada teve 2 falhas da família `plano B`; a terceira passou limpa. Mesma família de timing do item de FIN/reset abaixo. Investigar se o stream de >40 MiB é cortado por prazo do teste ou do router quando a máquina está carregada.
