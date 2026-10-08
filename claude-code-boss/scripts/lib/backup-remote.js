@@ -12,6 +12,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const { sha256File } = require('./file-hash.js');
 
 const EXPORT_TOOL = 'backup_export';
 const IMPORT_TOOL = 'backup_import';
@@ -21,11 +22,6 @@ function parse(result) {
   try { return JSON.parse((result && result.text) || '{}'); } catch (err) { return { error: `unparseable reply: ${err.message}` }; }
 }
 
-async function hashFile(file) {
-  const h = crypto.createHash('sha256');
-  for await (const chunk of fs.createReadStream(file)) h.update(chunk);
-  return h.digest('hex');
-}
 
 /** Connected MCP client to the configured mcp-memory daemon, or null when not on that backend. */
 async function connect({ pluginRoot, loadConfig, discoverUrl, McpClient, timeoutMs = REMOTE_TIMEOUT_MS }) {
@@ -57,7 +53,7 @@ async function exportRemote(opts) {
     try { r = parse(await client.callTool(EXPORT_TOOL, { destPath })); }
     catch (err) { return notIncluded(`${EXPORT_TOOL} did not finish: ${err.message}`); }
     if (r.error || !fs.existsSync(destPath)) return notIncluded(`${EXPORT_TOOL} failed: ${r.error || 'no file written'}`);
-    if (r.sha256 && (await hashFile(destPath)) !== String(r.sha256).toLowerCase()) return notIncluded(`${EXPORT_TOOL} checksum mismatch`);
+    if (r.sha256 && (await sha256File(destPath)) !== String(r.sha256).toLowerCase()) return notIncluded(`${EXPORT_TOOL} checksum mismatch`);
     return { kind: 'mcp-memory', included: true, file: destPath, serverVersion: r.serverVersion || '' };
   } finally {
     client.close();

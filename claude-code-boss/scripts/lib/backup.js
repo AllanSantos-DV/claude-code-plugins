@@ -25,6 +25,7 @@ const os = require('os');
 const path = require('path');
 const zlib = require('zlib');
 const crypto = require('crypto');
+const { sha256File } = require('./file-hash.js');
 const { once } = require('events');
 
 const FORMAT = 'claude-code-boss-backup';
@@ -85,11 +86,6 @@ function sqliteSnapshot(src, Database, tmpDir) {
   return tmp;
 }
 
-async function hashFile(file) {
-  const h = crypto.createHash('sha256');
-  for await (const chunk of fs.createReadStream(file)) h.update(chunk);
-  return h.digest('hex');
-}
 
 const toPosix = (p) => p.split(path.sep).join('/');
 
@@ -147,7 +143,7 @@ async function createBackup({ dataDir, globalDir, outFile, pluginVersion = '', r
     if (remote && remote.included && remote.file) entries.push({ name: REMOTE_ENTRY, file: remote.file, kind: 'remote' });
     onProgress('computing checksums');
     const items = [];
-    for (const e of entries) items.push({ path: e.name, kind: e.kind, size: fs.statSync(e.file).size, sha256: await hashFile(e.file) });
+    for (const e of entries) items.push({ path: e.name, kind: e.kind, size: fs.statSync(e.file).size, sha256: await sha256File(e.file) });
     const manifest = {
       format: FORMAT, version: FORMAT_VERSION, createdAt: new Date().toISOString(), host: os.hostname(),
       pluginVersion, items,
