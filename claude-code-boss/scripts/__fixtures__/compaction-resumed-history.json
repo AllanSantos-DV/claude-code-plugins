@@ -1,0 +1,440 @@
+{
+ "source": "session.compact input of a real interactive --continue after a hook-answered compaction (Claude Code 2.1.293, isolated sandbox, 2026-10-08); shapes only: ids/texts truncated, handles renumbered",
+ "messages": [
+  {
+   "role": "user",
+   "text": "Task for a compaction test. Do these ste",
+   "toolUses": [],
+   "handle": "h0"
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "toolUses": [],
+   "handle": "h1"
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "toolUses": [
+    {
+     "tool_use_id": "toolu_poxH2v",
+     "tool": "Read",
+     "input": {}
+    }
+   ],
+   "handle": "h2"
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "toolUses": [],
+   "handle": "h3"
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "toolUses": [
+    {
+     "tool_use_id": "toolu_poxH2v",
+     "tool": "Read",
+     "input": {}
+    }
+   ],
+   "handle": "h4"
+  },
+  {
+   "role": "user",
+   "text": "",
+   "toolUses": [],
+   "toolResults": [
+    {
+     "tool_use_id": "toolu_poxH2v",
+     "text": "result",
+     "isError": false
+    }
+   ],
+   "handle": "h5"
+  },
+  {
+   "role": "user",
+   "text": "",
+   "toolUses": [],
+   "toolResults": [
+    {
+     "tool_use_id": "toolu_poxH2v",
+     "text": "result",
+     "isError": false
+    }
+   ],
+   "handle": "h6"
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "toolUses": [],
+   "handle": "h7"
+  },
+  {
+   "role": "assistant",
+   "text": "Now running the check to see the failure",
+   "toolUses": [],
+   "handle": "h8"
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "toolUses": [
+    {
+     "tool_use_id": "toolu_PodXxm",
+     "tool": "Read",
+     "input": {}
+    }
+   ],
+   "handle": "h9"
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "toolUses": [],
+   "handle": "h10"
+  },
+  {
+   "role": "assistant",
+   "text": "Now running the check to see the failure",
+   "toolUses": [],
+   "handle": "h11"
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "toolUses": [
+    {
+     "tool_use_id": "toolu_PodXxm",
+     "tool": "Read",
+     "input": {}
+    }
+   ],
+   "handle": "h12"
+  },
+  {
+   "role": "user",
+   "text": "",
+   "toolUses": [],
+   "toolResults": [
+    {
+     "tool_use_id": "toolu_PodXxm",
+     "text": "result",
+     "isError": false
+    }
+   ],
+   "handle": "h13"
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "toolUses": [],
+   "handle": "h14"
+  },
+  {
+   "role": "assistant",
+   "text": "Reading parser.js fully now to see the c",
+   "toolUses": [],
+   "handle": "h15"
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "toolUses": [
+    {
+     "tool_use_id": "toolu_r88mna",
+     "tool": "Read",
+     "input": {}
+    }
+   ],
+   "handle": "h16"
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "toolUses": [],
+   "handle": "h17"
+  },
+  {
+   "role": "assistant",
+   "text": "Reading parser.js fully now to see the c",
+   "toolUses": [],
+   "handle": "h18"
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "toolUses": [
+    {
+     "tool_use_id": "toolu_r88mna",
+     "tool": "Read",
+     "input": {}
+    }
+   ],
+   "handle": "h19"
+  },
+  {
+   "role": "user",
+   "text": "",
+   "toolUses": [],
+   "toolResults": [
+    {
+     "tool_use_id": "toolu_r88mna",
+     "text": "result",
+     "isError": false
+    }
+   ],
+   "handle": "h20"
+  },
+  {
+   "role": "user",
+   "text": "",
+   "toolUses": [],
+   "toolResults": [
+    {
+     "tool_use_id": "toolu_r88mna",
+     "text": "result",
+     "isError": false
+    }
+   ],
+   "handle": "h21"
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "toolUses": [],
+   "handle": "h22"
+  },
+  {
+   "role": "assistant",
+   "text": "Creating the empty FIXED file.",
+   "toolUses": [],
+   "handle": "h23"
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "toolUses": [
+    {
+     "tool_use_id": "toolu_ovuPbS",
+     "tool": "Read",
+     "input": {}
+    }
+   ],
+   "handle": "h24"
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "toolUses": [],
+   "handle": "h25"
+  },
+  {
+   "role": "assistant",
+   "text": "Creating the empty FIXED file.",
+   "toolUses": [],
+   "handle": "h26"
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "toolUses": [
+    {
+     "tool_use_id": "toolu_ovuPbS",
+     "tool": "Read",
+     "input": {}
+    }
+   ],
+   "handle": "h27"
+  },
+  {
+   "role": "user",
+   "text": "",
+   "toolUses": [],
+   "toolResults": [
+    {
+     "tool_use_id": "toolu_ovuPbS",
+     "text": "result",
+     "isError": false
+    }
+   ],
+   "handle": "h28"
+  },
+  {
+   "role": "user",
+   "text": "",
+   "toolUses": [],
+   "toolResults": [
+    {
+     "tool_use_id": "toolu_ovuPbS",
+     "text": "result",
+     "isError": false
+    }
+   ],
+   "handle": "h29"
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "toolUses": [],
+   "handle": "h30"
+  },
+  {
+   "role": "assistant",
+   "text": "Running the check again to verify it pas",
+   "toolUses": [],
+   "handle": "h31"
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "toolUses": [
+    {
+     "tool_use_id": "toolu_yvq3p6",
+     "tool": "Read",
+     "input": {}
+    }
+   ],
+   "handle": "h32"
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "toolUses": [],
+   "handle": "h33"
+  },
+  {
+   "role": "assistant",
+   "text": "Running the check again to verify it pas",
+   "toolUses": [],
+   "handle": "h34"
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "toolUses": [
+    {
+     "tool_use_id": "toolu_yvq3p6",
+     "tool": "Read",
+     "input": {}
+    }
+   ],
+   "handle": "h35"
+  },
+  {
+   "role": "user",
+   "text": "",
+   "toolUses": [],
+   "toolResults": [
+    {
+     "tool_use_id": "toolu_yvq3p6",
+     "text": "result",
+     "isError": false
+    }
+   ],
+   "handle": "h36"
+  },
+  {
+   "role": "user",
+   "text": "",
+   "toolUses": [],
+   "toolResults": [
+    {
+     "tool_use_id": "toolu_yvq3p6",
+     "text": "result",
+     "isError": false
+    }
+   ],
+   "handle": "h37"
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "toolUses": [],
+   "handle": "h38"
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "toolUses": [],
+   "handle": "h39"
+  },
+  {
+   "role": "assistant",
+   "text": "DONE",
+   "toolUses": [],
+   "handle": "h40"
+  },
+  {
+   "role": "assistant",
+   "text": "DONE",
+   "toolUses": [],
+   "handle": "h41"
+  },
+  {
+   "role": "user",
+   "text": "<command-name>/compact</command-name>\n  ",
+   "toolUses": [],
+   "handle": "h42"
+  },
+  {
+   "role": "user",
+   "text": "<local-command-stdout>\u001b[2mCompacted (ctr",
+   "toolUses": [],
+   "handle": "h43"
+  },
+  {
+   "role": "user",
+   "text": "Answer from memory, no tools, one line: ",
+   "toolUses": [],
+   "handle": "h44"
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "toolUses": [],
+   "handle": "h45"
+  },
+  {
+   "role": "assistant",
+   "text": "PINNED-DECISION-42 = never touch module.",
+   "toolUses": [],
+   "handle": "h46"
+  },
+  {
+   "role": "user",
+   "text": "Reply only: ok",
+   "toolUses": [],
+   "handle": "h47"
+  },
+  {
+   "role": "assistant",
+   "text": "",
+   "toolUses": [],
+   "handle": "h48"
+  },
+  {
+   "role": "assistant",
+   "text": "ok",
+   "toolUses": [],
+   "handle": "h49"
+  },
+  {
+   "role": "user",
+   "text": "<command-name>/exit</command-name>\n     ",
+   "toolUses": [],
+   "handle": "h50"
+  },
+  {
+   "role": "user",
+   "text": "<local-command-stdout>Bye!</local-comman",
+   "toolUses": [],
+   "handle": "h51"
+  }
+ ]
+}

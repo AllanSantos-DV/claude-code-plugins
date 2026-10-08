@@ -65,48 +65,54 @@ export function planCompaction(messages, options = {}) {
   const o = { ...DEFAULTS, ...options };
   const input = Array.isArray(messages) ? messages : [];
   // Exact duplicates go first. Resuming (-c/--resume) after a compaction answered by a hook,
-  // the engine rebuilds the history with the kept copies AND the originals (measured: 46
-  // messages vs 18; the API then saw the same tool_use twice and rejected the thinking of the
-  // latest assistant message). Tool ids are unique per call, so a message whose tool ids were
-  // all seen before is a copy; plain text is never matched (a repeated "ok" is legitimate).
-  // The copies form one contiguous run. Inside it, a text message identical to an earlier one
-  // is a copy too (its thinking was what the API rejected); the run opens at a tool-id copy —
-  // and reaches back over the repeated text right before it — and closes at the first message
-  // that is new (a new tool id, or a text never seen). Outside a run, repeated text is kept.
-  const seenUse = new Set();
-  const seenRes = new Set();
-  const firstText = new Map(); // textKey → index of its first occurrence
+  // the engine rebuilds the history with each kept copy INTERLEAVED with its original
+  // (measured: 52 messages vs 22 — [thinking, tool_use, thinking', tool_use'], results in
+  // pairs, [thinking', thinking, DONE, DONE']); the API then saw each tool_use twice and
+  // rejected the latest assistant message's thinking. Two rules, both exact:
+  //   1. a message whose tool ids were ALL seen before is a copy (tool ids are unique per call);
+  //   2. a block of consecutive assistant messages is ONE API response (its tool results come
+  //      in a user message after it). A block where every non-empty signature (tool id or
+  //      text) appears exactly twice and the thinking-only rows are even in number was doubled:
+  //      keep the first of each signature and half of the thinking-only rows.
+  // Anything else is kept as it is — plain repeated text is never matched.
   const keep = input.map(() => true);
-  let inCopyRun = false;
-  input.forEach((m, i) => {
+  const sig = (m) => {
     const uses = (m.toolUses || []).map((u) => u.tool_use_id);
     const res = (m.toolResults || []).map((r) => r.tool_use_id);
-    const textKey = m.text ? `${m.role}\u0000${m.text}` : null;
-    const repeatedText = textKey != null && firstText.has(textKey) && firstText.get(textKey) < i;
-    if (!uses.length && !res.length) {
-      if (inCopyRun && repeatedText) { keep[i] = false; return; }
-      if (inCopyRun && textKey && !repeatedText) inCopyRun = false;
-      if (textKey && !firstText.has(textKey)) firstText.set(textKey, i);
-      return;
-    }
-    const dup = uses.every((id) => seenUse.has(id)) && res.every((id) => seenRes.has(id));
-    if (dup) {
-      if (!inCopyRun) { // reach back over the repeated text the run started with
-        for (let j = i - 1; j >= 0 && keep[j]; j--) {
-          const p = input[j];
-          const pk = p.text ? `${p.role}\u0000${p.text}` : null;
-          if ((p.toolUses || []).length || (p.toolResults || []).length || !pk || !(firstText.get(pk) < j)) break;
-          keep[j] = false;
-        }
+    if (uses.length || res.length) return `tool:${[...uses, ...res].sort().join(',')}`;
+    return m.text ? `text:${m.role}\u0000${m.text}` : null; // null = thinking-only row
+  };
+  for (let i = 0; i < input.length;) {
+    if (input[i].role !== 'assistant') { i++; continue; }
+    let j = i;
+    while (j < input.length && input[j].role === 'assistant') j++;
+    const block = [];
+    for (let k = i; k < j; k++) block.push(k);
+    const counts = new Map();
+    let empties = 0;
+    for (const k of block) { const s = sig(input[k]); if (s == null) empties++; else counts.set(s, (counts.get(s) || 0) + 1); }
+    // A copied block always carries a thinking-only row or a tool call; two identical texts alone
+    // are not taken for a copy.
+    const hasTool = [...counts.keys()].some((k) => k.startsWith('tool:'));
+    const doubled = counts.size > 0 && (empties > 0 || hasTool) && [...counts.values()].every((c) => c === 2) && empties % 2 === 0;
+    if (doubled) {
+      const kept = new Set();
+      let emptiesKept = 0;
+      for (const k of block) {
+        const s = sig(input[k]);
+        if (s == null) { if (emptiesKept < empties / 2) emptiesKept++; else keep[k] = false; continue; }
+        if (kept.has(s)) keep[k] = false; else kept.add(s);
       }
-      inCopyRun = true;
-      keep[i] = false;
-      return;
     }
-    inCopyRun = false;
-    for (const id of uses) seenUse.add(id);
-    for (const id of res) seenRes.add(id);
-    if (textKey && !firstText.has(textKey)) firstText.set(textKey, i);
+    i = j;
+  }
+  const seenTool = new Set();
+  input.forEach((m, i) => {
+    if (!keep[i]) return;
+    const ids = [...(m.toolUses || []).map((u) => `u:${u.tool_use_id}`), ...(m.toolResults || []).map((r) => `r:${r.tool_use_id}`)];
+    if (!ids.length) return;
+    if (ids.every((id) => seenTool.has(id))) { keep[i] = false; return; }
+    for (const id of ids) seenTool.add(id);
   });
   const list = input.filter((_, i) => keep[i]);
   const duplicatesDropped = input.length - list.length;
