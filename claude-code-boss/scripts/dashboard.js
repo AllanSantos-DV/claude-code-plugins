@@ -1505,6 +1505,24 @@ async function getCompactionSummary(req, res, url) {
   }
 }
 
+// The compaction threshold (% of the engine's window) and cooldown — the Home slider.
+// Saved UPDATE-SAFE in <globalDir>/hooks/user-config.json (BACKLOG Q38), never the shipped file.
+function getCompactionConfig(req, res) {
+  hooksConfig._resetCache();
+  json(res, hooksConfig.getCompaction());
+}
+
+async function saveCompactionConfig(req, res) {
+  let body;
+  try { body = JSON.parse((await readBody(req)) || '{}'); } catch (err) { return fail(res, `invalid JSON body: ${err.message}`, 400); }
+  try {
+    json(res, { ok: true, config: hooksConfig.saveCompaction(body) });
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/compaction/config (PUT) failed: ${err.message}`);
+    fail(res, err.message, 400);
+  }
+}
+
 // F3.0-4: prune never-used curated scripts (registration only; backup written).
 // The ids are re-checked server-side against the current candidates.
 async function postCurationPrune(req, res, url) {
@@ -2317,6 +2335,8 @@ function handleAPI(req, res, url) {
   if (p === '/api/metrics/value-summary' && m === 'GET') return getValueSummary(req, res, url);
   if (p === '/api/metrics/curation' && m === 'GET') return getCurationSummary(req, res, url);
   if (p === '/api/metrics/compaction' && m === 'GET') return getCompactionSummary(req, res, url);
+  if (p === '/api/compaction/config' && m === 'GET') return getCompactionConfig(req, res);
+  if (p === '/api/compaction/config' && m === 'PUT') return saveCompactionConfig(req, res);
   if (p === '/api/curation/prune' && m === 'POST') return postCurationPrune(req, res, url);
   if (p === '/api/doctor' && m === 'GET') return getDoctor(req, res);
   if (p === '/api/brain/consolidate' && m === 'POST') return postBrainConsolidate(req, res, url);

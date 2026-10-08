@@ -15,15 +15,20 @@
  *   - decideTiming: WHEN. Rewriting history re-bills the kept messages as a cache
  *     write on the next request. With a warm provider cache that is waste; once the
  *     cache has expired the next request pays the write anyway — so past the
- *     threshold we wait for the cache to go cold, unless the hard ceiling forces it.
+ *     threshold we wait for the cache to go cold, and NEVER compact a warm cache (owner's
+ *     rule, 08/10). If it never cools, the engine's own auto-compaction runs at its limit —
+ *     and that one goes through our pruning too (session.compact).
+ *   - thresholdFor: the threshold is a PERCENT of the window the engine applies right now
+ *     (model limit or a smaller compaction window), so one setting fits 200K and 1M models.
  *
  * Measured basis (spike F0, Claude Code 2.1.291): docs/BACKLOG.md Q35.
  */
 
 export const DEFAULTS = Object.freeze({
   enabled: true,
-  thresholdTokens: 250000,     // compact past this, once the provider cache is cold
-  hardCeilingTokens: 400000,   // past this, compact now even with a warm cache
+  thresholdPercent: 30,        // % of the engine's window; past it, compact once the cache is cold
+  minThresholdPercent: 10,     // the slider's range (and the clamp on hand-edited configs)
+  maxThresholdPercent: 80,
   minIntervalMs: 10 * 60000,   // never two compactions closer than this
   preserveRecentMessages: 6,   // newest messages never touched (the first is always kept)
   truncateHeadChars: 300,      // what survives of a pruned result, before the note
@@ -183,16 +188,46 @@ export function decideTiming(s, options = {}) {
   const o = { ...DEFAULTS, ...options };
   if (s.busy) return { action: 'none', reason: 'busy' };
   if (s.tokens == null) return { action: 'none', reason: 'no-reading' };
+  // thresholdTokens comes from thresholdFor() (a % of the engine's window, per prompt):
+  // without a window reading there is no threshold — never act on a guess.
+  if (!(Number(o.thresholdTokens) > 0)) return { action: 'none', reason: 'no-window' };
   if (s.tokens < o.thresholdTokens) return { action: 'none', reason: 'below-threshold' };
   if (s.lastCompactAt != null && s.now - s.lastCompactAt < o.minIntervalMs) return { action: 'none', reason: 'cooldown' };
-  if (s.tokens >= o.hardCeilingTokens) return { action: 'compact', reason: 'hard-ceiling' };
   // No answer seen yet (and no resumed session's age): the cache's age is unknown — never
-  // read that as "cold" (it compacted a fresh session's first prompt). Only the ceiling acts.
+  // read that as "cold" (it compacted a fresh session's first prompt).
   if (s.lastAnswerAt == null) return { action: 'none', reason: 'cache-age-unknown' };
   const ttl = Number.isFinite(s.ttlMs) && s.ttlMs > 0 ? s.ttlMs : o.unknownTtlMs;
   const idle = s.now - s.lastAnswerAt;
   if (idle >= ttl) return { action: 'compact', reason: 'cache-cold' };
   return { action: 'wait', reason: 'cache-warm', dueInMs: ttl - idle };
+}
+
+/**
+ * The threshold in tokens for the window the engine applies NOW. `window` is the
+ * compaction window (`rawMaxTokens` of usage({breakdown}) — the model's limit or a smaller
+ * one set by CLAUDE_CODE_AUTO_COMPACT_WINDOW/settings), falling back to the model window.
+ * `aboveEngine`: the threshold sits at or past the engine's own auto-compact point — the
+ * engine will compact first (through our pruning) and the gate will rarely act.
+ * @param {{window?: number, engineAutoCompactAt?: number}} w
+ * @param {Partial<typeof DEFAULTS>} [options]
+ * @returns {{thresholdTokens: number|null, percent: number, aboveEngine: boolean}}
+ */
+export function thresholdFor(w, options = {}) {
+  const o = { ...DEFAULTS, ...options };
+  const pct = clampPercent(o.thresholdPercent, o);
+  const window = Number(w && w.window);
+  if (!(window > 0)) return { thresholdTokens: null, percent: pct, aboveEngine: false };
+  const thresholdTokens = Math.round(window * pct / 100);
+  const engine = Number(w && w.engineAutoCompactAt);
+  return { thresholdTokens, percent: pct, aboveEngine: engine > 0 && thresholdTokens >= engine };
+}
+
+/** The configured percent, inside the slider's range (a hand-edited config included). */
+export function clampPercent(v, options = {}) {
+  const o = { ...DEFAULTS, ...options };
+  const n = Number(v);
+  if (!Number.isFinite(n)) return DEFAULTS.thresholdPercent;
+  return Math.min(o.maxThresholdPercent, Math.max(o.minThresholdPercent, Math.round(n)));
 }
 
 /**

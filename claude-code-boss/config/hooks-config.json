@@ -58,8 +58,7 @@
   },
   "compaction": {
     "enabled": true,
-    "thresholdTokens": 250000,
-    "hardCeilingTokens": 400000,
+    "thresholdPercent": 30,
     "minIntervalMinutes": 10,
     "preserveRecentMessages": 6
   },
