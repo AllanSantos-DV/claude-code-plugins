@@ -995,7 +995,9 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           } catch { /* embedding optional */ }
           const DEDUP = 0.9;
           if (vector) {
-            const hits = await kbStore.search(vector, { topK: 1, minScore: DEDUP, rerank: false });
+            // Same type only (BACKLOG Q42): a `decision` near-identical to a `lesson` is a
+            // distinct record — merging it would just bump the lesson's recurrence and lose it.
+            const hits = await kbStore.search(vector, { topK: 1, minScore: DEDUP, rerank: false, type });
             if (hits.length > 0) {
               const merged = await kbStore.merge(hits[0].id, { summary: safeSummary, content: { detail: safeDetail || safeSummary, ...(skillFields ? { skill: skillFields } : {}) }, confidence });
               if (merged) {
