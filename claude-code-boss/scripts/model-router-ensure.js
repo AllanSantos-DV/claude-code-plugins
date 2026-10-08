@@ -88,6 +88,12 @@ const BUILD_SWITCH_DEBOUNCE_MS = 60000;
 // no fail-open e o Claude vai direto). O settings.json env continua mantido por
 // compat com o modo CLI (entrypoint=cli respeita o env block).
 const PROXY_URL_FILE = path.join(os.homedir(), '.claude', 'model-router-url.txt');
+// Marca "o usuário tem o PRÓPRIO gateway" (BACKLOG Q24). Persistente de propósito: uma
+// sessão aberta sem o env do launcher não pode religar o roteador por cima do gateway
+// (o settings.json vale para TODO processo do Claude Code, inclusive o `claude -p` filho
+// de uma sessão do launcher, que mandaria o token do gateway à Anthropic → 401).
+// Limpa no "Salvar & aplicar" do dashboard (BOSS_ROUTER_FORCE_RESTART=1).
+const GATEWAY_DEFER_FILE = path.join(DATA_DIR, 'model-router', 'gateway-defer.json');
 // settings.json do Claude Code — onde gravamos env.ANTHROPIC_BASE_URL (escopo Claude).
 const SETTINGS_FILE  = path.join(os.homedir(), '.claude', 'settings.json');
 
@@ -542,6 +548,45 @@ function isOurProxyUrl(url) {
   return typeof url === 'string' && /^https?:\/\/(127\.0\.0\.1|localhost):\d+/.test(url);
 }
 
+// PURA: o gateway PRÓPRIO do usuário que esta sessão já usa (ANTHROPIC_BASE_URL do
+// processo), ou null. Não conta: vazio, o nosso proxy, nem a API oficial — o Claude
+// Desktop força https://api.anthropic.com no processo e ali o roteamento é o esperado.
+function sessionGateway(env, isOurs) {
+  const u = String((env && env.ANTHROPIC_BASE_URL) || '').trim();
+  if (!u || isOurs(u) || /^https:\/\/api\.anthropic\.com\/?$/i.test(u)) return null;
+  return u;
+}
+
+function readGatewayDefer() {
+  try {
+    if (!fs.existsSync(GATEWAY_DEFER_FILE)) return null;
+    const d = JSON.parse(fs.readFileSync(GATEWAY_DEFER_FILE, 'utf-8'));
+    return d && typeof d.url === 'string' ? d : null;
+  } catch (e) {
+    log(`AVISO: ${GATEWAY_DEFER_FILE} ilegível (${e.message}) — tratado como gateway próprio presente (não religo o roteador).`);
+    return { url: '(ilegível)' };
+  }
+}
+
+function writeGatewayDefer(url) {
+  const cur = readGatewayDefer();
+  if (cur && cur.url === url) return;
+  try {
+    fs.mkdirSync(path.dirname(GATEWAY_DEFER_FILE), { recursive: true });
+    fs.writeFileSync(GATEWAY_DEFER_FILE, JSON.stringify({ url, at: ts() }) + '\n');
+  } catch (e) {
+    log(`AVISO: não foi possível gravar ${GATEWAY_DEFER_FILE}: ${e.message}`);
+  }
+}
+
+function clearGatewayDefer() {
+  try {
+    if (fs.existsSync(GATEWAY_DEFER_FILE)) fs.unlinkSync(GATEWAY_DEFER_FILE);
+  } catch (e) {
+    log(`AVISO: não foi possível remover ${GATEWAY_DEFER_FILE}: ${e.message}`);
+  }
+}
+
 // Idempotente: grava env.ANTHROPIC_BASE_URL só se mudou. Retorna true se, ao final,
 // o settings.json aponta para o nosso proxy.
 function enableSettingsRouting(url) {
@@ -769,6 +814,26 @@ async function run(hookInput) {
     }
     return null;
   }
+  // Gateway PRÓPRIO do usuário (BACKLOG Q24): a sessão já aponta para um endpoint que
+  // não é o nosso nem a API oficial (ex.: um launcher que injeta ANTHROPIC_BASE_URL +
+  // token do gateway). O roteador repassaria à Anthropic com a credencial do gateway
+  // (401). Respeitamos o gateway: nada de settings.json/url.txt/shim apontando para o
+  // proxy — mesmo caminho de saída do modo off (o shim, sem url.txt, deixa o env como
+  // veio). Exceção: um upstream configurado no roteador é escolha explícita de pôr o
+  // proxy na frente do gateway.
+  if (forceRestart) clearGatewayDefer();
+  const explicitUpstream = !!(config.upstream && config.upstream.enabled === true);
+  const gw = explicitUpstream ? null : sessionGateway(process.env, isOurProxyUrl);
+  if (gw) writeGatewayDefer(gw);
+  const deferred = explicitUpstream ? null : readGatewayDefer();
+  if (deferred) {
+    log(`Gateway próprio do usuário (${deferred.url}) — roteador NÃO é ligado por cima dele; footprint removido.`);
+    disableRoutingFootprint(safeWindow);
+    applySettingsTuning(contextTuningEnabled(config));
+    return shouldAnnounce(sessionId, false)
+      ? `[model-router] Não ativado: esta máquina usa um gateway próprio (${deferred.url}) e o roteador não se liga por cima dele. Para religar sem o gateway, use "Salvar & aplicar" no /dashboard.`
+      : null;
+  }
   log(`Modo do proxy: ${mode}${mode === 'fallback-only' ? ' (passthrough cache-safe + fallback de limite)' : ''}${mode === 'sticky-tier' ? ' (sticky cache-safe: tier fixo por sessao + fallback de limite)' : ''}.`);
 
   // ── 1. Garante servidor rodando na PORTA FIXA ────────────────────────────
@@ -940,4 +1005,4 @@ module.exports = { run, mergeRouterConfig, readConfig, healthCheck, probeAlive, 
   resolveAutoCompactWindow, planEnableEnv, planDisableEnv, enableSettingsRouting, disableSettingsRouting,
   contextTuningEnabled, planTuningEnv, planTuningRemoval, applySettingsTuning,
   // servesThisBuild/processCommandLine/normPath exportados p/ os testes de troca-de-build no boot.
-  servesThisBuild, processCommandLine, normPath };
+  servesThisBuild, processCommandLine, normPath, sessionGateway };

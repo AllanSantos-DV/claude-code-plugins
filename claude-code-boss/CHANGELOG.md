@@ -57,6 +57,12 @@
   hooks gravava no arquivo que vem com o plugin, que o auto-update substitui. Agora só o que você mudou
   vai para o seu arquivo de usuário (`~/.claude/claude-code-boss/hooks/user-config.json`), como o perfil e
   o slider da compactação; a tela mostra a configuração efetiva (padrão + os seus ajustes).
+- **O roteador de modelos não se liga mais por cima do seu próprio gateway.** Quem já aponta o Claude
+  Code para um gateway (`ANTHROPIC_BASE_URL`, ex.: injetado por um launcher) tinha o endereço trocado pelo
+  do roteador no `settings.json`, e um `claude -p` aberto de dentro da sessão mandava o token do gateway
+  à Anthropic (401). Agora o boss detecta o gateway, deixa o caminho como está e lembra a decisão; um
+  "Salvar & aplicar" no painel do roteador reavalia. Quem configurou um `upstream` no roteador continua
+  com ele na frente do gateway, como escolheu.
 
 ## [3.0.1] - 2026-10-05
 
