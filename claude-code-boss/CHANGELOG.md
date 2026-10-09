@@ -1,6 +1,6 @@
 # Changelog
 
-## [Não lançado]
+## [3.1.1] - 2026-10-09
 
 ### Fixed
 - **A promoção de lições a skill (e o checklist de revisão) voltou a funcionar com o servidor de memória.**
