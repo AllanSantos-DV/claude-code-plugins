@@ -3,6 +3,11 @@ name: Deploy Pages
 # Publica pages/ no GitHub Pages via Actions. Roda quando as páginas mudam
 # (após o merge na main) e pode ser disparado manualmente. Independente do
 # pages-guard: o guard barra páginas desatualizadas; este só publica.
+#
+# Dois jobs (o modelo oficial do GitHub): no job único, o deploy consultava os
+# artefatos ~0,4 s depois do upload e às vezes não os via ainda ("Found 0
+# artifact(s)"); re-rodar o job no MESMO run deixava dois "github-pages" e o
+# deploy recusava. Com o deploy num job seguinte, o artefato já está registrado.
 
 on:
   push:
@@ -22,11 +27,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  deploy:
+  build:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6.0.2
@@ -39,6 +41,13 @@ jobs:
         with:
           path: pages
 
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
