@@ -419,6 +419,18 @@ async function listMcp(type, _project) {
   return parseListResults(result).map(item => normalizeSearchItem(item));
 }
 
+/**
+ * Project ids that hold documents on the server (`list_projects`). Internal spaces (`__*`) are
+ * hidden except `__user__` — the server hides them from default reads too.
+ * @returns {Promise<string[]>}
+ */
+async function listProjectsMcp() {
+  const result = await _mcp.callTool('list_projects', {});
+  const data = parseResult(result);
+  const ids = Array.isArray(data) ? data : (data && (data.data || data.projects)) || [];
+  return ids.filter((p) => typeof p === 'string' && (p === '__user__' || !p.startsWith('__')));
+}
+
 async function countMcp() {
   // No dedicated count tool — list (scoped by the session projectId) and count.
   const result = await _mcp.callTool('list_documents', {});
@@ -729,6 +741,12 @@ async function listDocuments(q) {
   return guardMcp('listDocuments', () => listDocumentsMcp(q || {}));
 }
 
+/** Project ids on the mcp-memory server (dashboard in server mode). Fails loud on the local backend. */
+async function listProjects() {
+  if (_mode !== 'mcp-memory') throw new Error('listProjects is the mcp-memory listing — the local backend lists its own folders');
+  return guardMcp('listProjects', () => listProjectsMcp());
+}
+
 async function count() {
   if (_mode === 'mcp-memory') return guardMcp('count', () => countMcp());
   return countLocal();
@@ -769,7 +787,7 @@ const _textUtils = require('./lib/text-utils.js');
 module.exports = {
   init, save, get, search, searchByKeywords,
   compose, hasCompose, ingestConversation, ingestStatus, warmPool,
-  delete: delete_, list, listDocuments, count, getRelated, close,
+  delete: delete_, list, listDocuments, listProjects, count, getRelated, close,
   getStatus, getMode, peekMode, _resetConfig,
   // Circuit breaker on the mcp-memory backend — reportMcpFailure/reportMcpSuccess
   // let an external caller racing its OWN shorter timeout (retrieve-core.js's

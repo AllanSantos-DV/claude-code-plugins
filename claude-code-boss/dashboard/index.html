@@ -3507,7 +3507,7 @@ function loadBrainStats() {
   const el = document.getElementById('brain-stats');
   if (!project) { el.innerHTML = ''; return; }
   const p = state.brainProjects.find(x => x.project === project);
-  el.innerHTML = p ? `<p class="text-muted">${p.entries} entries | ${(p.dbSize / 1024).toFixed(1)} KB</p>` : '';
+  el.innerHTML = p ? `<p class="text-muted">${p.entries} entries | ${typeof p.dbSize === 'number' ? (p.dbSize / 1024).toFixed(1) + ' KB' : 'on the memory server'}</p>` : '';
 }
 
 async function searchBrain() {

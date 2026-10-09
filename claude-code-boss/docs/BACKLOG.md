@@ -1150,6 +1150,16 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   `.runtime/brain-consolidate-last.json` para toda a pasta de dados — o primeiro projeto a abrir sessão consumia a semana dos outros).
   Visto ao investigar "por que nenhuma promoção" (pedido do dono, 2026-10-09). **Corrigido na hora**: carimbo por id ESTRITO de projeto
   (`consolidationDue`/`markConsolidated`; carimbo antigo `{ts}` conta como pendente). Teste.
+- [x] **Q58 — o painel, no backend servidor, mostrava a memória LOCAL antiga** (`scripts/dashboard.js`: `/api/status` e
+  `/api/brain/projects` contavam as pastas SQLite locais; `/api/brain/list` usava o `list()` do servidor, que ignora o projeto; o painel de
+  skills oferecia as pastas locais). Relato do dono (\"grava 500 lições no servidor e o painel não mostra\"), 2026-10-09. **Provado ao vivo**:
+  painel = 458 entradas locais (270 de um projeto de teste antigo), sem o id oficial; o servidor tinha 103 só deste projeto. **Corrigido**:
+  no mcp-memory os quatro leem o servidor (`brain-backend.listProjects` + `listDocuments` por projeto, cache de 60 s; falha do servidor
+  aparece como erro, nunca volta para as pastas locais calado). Prova real (`smoke/dash-server-mode.mjs`): painel = 15.047 documentos em
+  142 projetos do servidor, lista com o id oficial, listagem do projeto = 103 = servidor. Teste de invariante + mutação.
+- [ ] **Q59 — a 1ª chamada de memória depois de o servidor cair estoura o tempo** enquanto o launcher o sobe (visto no teste do watchdog,
+  2026-10-09: o servidor voltou numa porta nova e a 2ª chamada funcionou). Proposta: no circuito aberto, disparar o launcher em segundo
+  plano e responder rápido com \"servidor de memória reiniciando\" em vez de esperar até o timeout da ferramenta.
 - [x] **Q51 — Release Guard vermelho a cada 6 h sem drift** (`.github/scripts/release-guard.mjs` `isAncestor`): a atividade da main
   ainda lista um push de histórico reescrito (`5fd0028`, de nenhum branch); no clone do CI esse commit não existe, o `git merge-base`
   sai com 128 e o guard caía (visto 2026-10-08: 3 cron seguidos em falha). **Corrigido na hora**: commit fora do histórico = não-ancestral,

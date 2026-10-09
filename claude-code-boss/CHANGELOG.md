@@ -17,6 +17,9 @@
   início da sessão avisa; sem cópia boa, o aviso aparece em toda sessão até o arquivo ser corrigido.
 - A consolidação semanal passa a rodar para cada projeto; antes, o primeiro projeto que abria sessão na semana
   impedia os outros de consolidar.
+- **O painel mostra a memória do servidor quando o backend é o servidor.** Antes ele contava as pastas locais antigas
+  (de antes da troca para o servidor): os números não batiam, o projeto atual nem aparecia e a lista de lições dava
+  erro. Agora contagens, lista de projetos, lista de lições e o painel de skills leem o servidor.
 
 ## [3.1.0] - 2026-10-08
 
