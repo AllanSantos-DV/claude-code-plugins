@@ -1102,7 +1102,7 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
 
   **Resolvido em 2026-10-08**: as duas cópias saíram; ambos usam o `sha256File` do `scripts/lib/file-hash.js` que já existia (mesma
   semântica: SHA-256 em stream, hex, erro propaga). Coberto pelos testes de backup existentes (manifesto e checksum).
-- [ ] **Q53 — no backend mcp-memory, a promoção a skill (e o checklist de revisão) só enxerga a KB LOCAL, que não recebe mais nada**
+- [x] **Q53 — no backend mcp-memory, a promoção a skill (e o checklist de revisão) só enxerga a KB LOCAL, que não recebe mais nada**
   (`scripts/brain-promote.js:25,101-102`: `require('./brain-store.js')` + `project = basename(cwd)`). Com `backend: mcp-memory` o
   `capture_lesson` grava no servidor (id estrito `AllanSantos-DV/claude-code-plugins`); a recorrência que dispara a promoção nunca
   cresce localmente. **Medido em 2026-10-09** nesta máquina: KB local `claude-code` = 14 entradas, a mais nova de 16/06; id estrito
@@ -1111,6 +1111,19 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   resolvedor estrito). Provável mesmo problema no `brain-consolidate` semanal e no `.claude/brain-review-checklist.md` (a verificar).
   Proposta: no mcp-memory, o scan consulta o servidor (lições/padrões com recorrência — conferir o que o servidor expõe) pelo id estrito;
   no local, usar o id estrito também. Visto ao levantar o estado do loop de aprendizado a pedido do dono (via Jarvis).
+  **Resolvido em 2026-10-09** (pedido do dono): achado a mais — no mcp-memory o `capture_lesson` não fazia dedup (toda captura era
+  `admit`), então NEM no servidor havia recorrência. Agora: (1) dedup remoto igual ao local (`findRemoteDuplicate`: busca candidatos do
+  mesmo tipo/projeto no servidor e decide pelo cosseno local ≥ 0,9; merge = upsert no mesmo documento com `recurrence` nos metadados);
+  (2) `brain-promote scan` lê o servidor (`brain-backend.listDocuments`, filtrado por `project_id` — sem o filtro a listagem traz todos
+  os projetos) pelo id ESTRITO (`tryResolveProjectId` do `--cwd`; o gatilho não manda mais o nome da pasta). Testes: dedup remoto,
+  normalização das entradas do servidor, scan no mcp-memory (draft + checklist); mutações reprovam. **Teste real** contra o servidor
+  desta máquina (projeto isolado, `smoke/q53-real.mjs`): admit → merge(2) → merge(3) no mesmo documento, servidor com `recurrence=3`,
+  scan real gera o draft e o checklist; documentos de teste apagados.
+- [ ] **Q54 — a consolidação semanal (`scripts/brain-consolidate.js`) também só enxerga a KB local** (`require('./brain-store.js')` +
+  `project = basename(cwd)`): no mcp-memory não consolida nada. Visto ao fechar o Q53. Corrigir no servidor é destrutivo (apaga os
+  documentos absorvidos) e exige re-embedar (os vetores do servidor não são expostos) — o dedup na captura (Q53) já cobre o caso ≥ 0,9.
+  Proposta: no mcp-memory, listar pelo id estrito, embedar localmente, agrupar na faixa 0,7–0,9 e aplicar só com `--apply` (o gatilho
+  semanal já usa `--apply`: decidir com o dono se no servidor fica em dry-run por padrão).
 - [x] **Q51 — Release Guard vermelho a cada 6 h sem drift** (`.github/scripts/release-guard.mjs` `isAncestor`): a atividade da main
   ainda lista um push de histórico reescrito (`5fd0028`, de nenhum branch); no clone do CI esse commit não existe, o `git merge-base`
   sai com 128 e o guard caía (visto 2026-10-08: 3 cron seguidos em falha). **Corrigido na hora**: commit fora do histórico = não-ancestral,

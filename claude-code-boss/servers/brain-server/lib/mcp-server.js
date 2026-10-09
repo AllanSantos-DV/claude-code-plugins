@@ -303,6 +303,42 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
    * scope to project_id [project], [__user__] or both. The server accepts a
    * caller-declared project_id and isolates it (verified live on native-java 2.44.3).
    */
+  /**
+   * The near-duplicate of a capture on the mcp-memory server, or null (BACKLOG Q53). The server
+   * search proposes same-type, same-project candidates; the decision uses the SAME rule as the
+   * local path — cosine ≥ 0.9 between local embeddings of title+summary — because the server's
+   * hybrid score is on another scale. The embedder only runs when there are candidates; any
+   * failure means "no duplicate" (admit), never a lost capture.
+   * @param {object} backend  brain-backend (mcp-memory mode)
+   * @param {{type: string, projectId: string, title: string, summary: string}} q
+   * @returns {Promise<object|null>} the existing entry (id, title, tags, confidence, scope, recurrence)
+   */
+  async function findRemoteDuplicate(backend, { type, projectId, title, summary }) {
+    const DEDUP = 0.9;
+    const { buildEmbedText } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'embed-text.js'));
+    const text = buildEmbedText({ title, summary });
+    try {
+      const hits = await backend.search(text, { topK: 3, type, projectIds: [projectId] });
+      if (!hits || !hits.length) return null;
+      const embedder = (_testHooks && _testHooks.embedder) || require(path.join(PLUGIN_ROOT, 'scripts', 'brain-embedder.js'));
+      await embedder.init();
+      if (!embedder.getStatus().ready) return null;
+      const { cosineSimilarity } = require(path.join(PLUGIN_ROOT, 'scripts', 'brain-store.js'));
+      const v = await embedder.embed(text);
+      let best = null;
+      for (const h of hits) {
+        const doc = await backend.get(h.id);
+        if (!doc || doc.type !== type || (doc.project && doc.project !== projectId)) continue;
+        const sim = cosineSimilarity(v, await embedder.embed(buildEmbedText({ title: doc.title, summary: doc.summary })));
+        if (sim >= DEDUP && (!best || sim > best.sim)) best = { doc, sim };
+      }
+      return best ? best.doc : null;
+    } catch (err) {
+      console.error(`[BRAIN-SERVER] remote dedup skipped (capture admitted): ${err.message}`);
+      return null;
+    }
+  }
+
   async function handleRemoteKbTool(backend, name, args) {
     const a = args || {};
     const asText = (o) => ({ content: [{ type: 'text', text: JSON.stringify(o, null, 2) }] });
@@ -346,10 +382,20 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           const w = writeScope(type);
           if (w.rejected) return { isError: true, content: [{ type: 'text', text: `capture_lesson rejected: scope=user but ${w.rejected}. Strip the secret or use scope=project.` }] };
           const f = w.fields;
-          const id = await backend.save({ title: f.title, summary: f.summary, content: { detail: f.detail || f.summary }, type, tags: Array.isArray(a.tags) ? a.tags : [], confidence: typeof a.confidence === 'number' ? a.confidence : 0.85, scope: w.effective, projectId: w.projectId });
-          // No dedup/merge tool on the mcp-memory daemon's contract (unlike the
-          // local path below) — every capture here is an 'admit'. Recorded
-          // locally regardless: metrics are per-machine, not part of the KB.
+          const confidence = typeof a.confidence === 'number' ? a.confidence : 0.85;
+          // Admission dedup like the local path (BACKLOG Q53): without it every capture was an
+          // 'admit', recurrence never grew on the server and skill promotion / the review
+          // checklist never had a signal. Same type + same project + local cosine ≥ 0.9.
+          const dup = await findRemoteDuplicate(backend, { type, projectId: w.projectId, title: f.title, summary: f.summary });
+          if (dup) {
+            const recurrence = (dup.recurrence || 1) + 1;
+            await backend.save({ id: dup.id, title: dup.title, summary: f.summary, content: { detail: f.detail || f.summary }, type, tags: dup.tags && dup.tags.length ? dup.tags : (Array.isArray(a.tags) ? a.tags : []), confidence: Math.max(dup.confidence || 0.5, confidence), scope: dup.scope || w.effective, projectId: w.projectId, recurrence });
+            await recordLessonMetric(project, { type, decision: 'merge', scope: w.effective, recurrence });
+            recordCaptureAck(a.windowId, 'captured');
+            return asText({ decision: 'merge', id: dup.id, recurrence, title: dup.title, type, project: w.projectId, scope: w.effective, backend: 'mcp-memory' });
+          }
+          const id = await backend.save({ title: f.title, summary: f.summary, content: { detail: f.detail || f.summary }, type, tags: Array.isArray(a.tags) ? a.tags : [], confidence, scope: w.effective, projectId: w.projectId });
+          // Metrics are per-machine, not part of the KB — recorded locally.
           await recordLessonMetric(project, { type, decision: 'admit', scope: w.effective });
           recordCaptureAck(a.windowId, 'captured');
           return asText({ decision: 'admit', id, type, project: w.projectId, scope: w.effective, backend: 'mcp-memory' });

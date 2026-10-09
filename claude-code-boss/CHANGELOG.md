@@ -1,5 +1,14 @@
 # Changelog
 
+## [Não lançado]
+
+### Fixed
+- **A promoção de lições a skill (e o checklist de revisão) voltou a funcionar com o servidor de memória.**
+  Com o backend mcp-memory, toda captura entrava como nova (sem juntar com uma igual), então a recorrência
+  que dispara a promoção nunca crescia; e a promoção lia a memória local, que não recebe mais as lições, pelo
+  nome da pasta. Agora uma captura equivalente (mesmo tipo e projeto) soma a recorrência no próprio servidor, e
+  a promoção e o checklist leem o servidor pelo id oficial do projeto.
+
 ## [3.1.0] - 2026-10-08
 
 ### Added

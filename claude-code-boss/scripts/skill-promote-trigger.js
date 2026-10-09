@@ -65,9 +65,9 @@ async function run(event) {
   if (!shouldRun(stampPath, COOLDOWN_MS)) return {};
   recordRun(stampPath);
 
-  const project = ev.cwd ? path.basename(ev.cwd) : '';
+  // No --project: the scan resolves the STRICT project id from --cwd (lib/project-id.js). The
+  // folder name it used to pass is not how the KB is keyed since 2.29.1 (BACKLOG Q53).
   const args = [path.join(root, 'scripts', 'brain-promote.js'), 'scan'];
-  if (project) { args.push('--project', project); }
   // Thread the session's project root so the D3 checklist is written where
   // review-checklist-advisory.js (event.cwd) reads it — not the scan's cwd.
   if (ev.cwd) { args.push('--cwd', ev.cwd); }
