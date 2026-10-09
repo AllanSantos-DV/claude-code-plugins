@@ -23604,8 +23604,16 @@ test('hook_compaction_event: daemon transport (payload arrives as an object, bad
   const hc = require('./lib/hooks-config.js');
   assertEq(hc.resolveProfileConfig({ profile: 'free' }).compaction.enabled, false, 'free = passthrough');
   assertEq(hc.resolveProfileConfig({ profile: 'dev' }).compaction, undefined, 'dev keeps the shipped default (on)');
-  const shipped = JSON.parse(fs.readFileSync(path.join(ROOT, 'config', 'hooks-config.json'), 'utf8')).compaction;
-  assertEq(shipped.enabled, true); assertEq(shipped.thresholdPercent, 30); assertEq(shipped.hardCeilingTokens, undefined, 'no ceiling');
+  const shippedAll = JSON.parse(fs.readFileSync(path.join(ROOT, 'config', 'hooks-config.json'), 'utf8'));
+  const shipped = shippedAll.compaction;
+  // The shipped file merges OVER the profile preset: an `enabled: true` here silently beat
+  // `free`'s `enabled: false` (pre-release audit 3.1.0). On by default comes from `!== false`.
+  assertEq(shipped.enabled, undefined, 'no enabled flag in the shipped block (it would override the free preset)');
+  assertEq(shipped.thresholdPercent, 30); assertEq(shipped.hardCeilingTokens, undefined, 'no ceiling');
+  // Resolved over the REAL shipped file, the way production does it:
+  assertEq(hc.resolveProfileConfig({ ...shippedAll, profile: 'free' }).compaction.enabled, false, 'free switches compaction off for real');
+  assertEq(hc.resolveProfileConfig({ ...shippedAll, profile: 'standard' }).compaction.enabled, undefined, 'standard: on by default (!== false)');
+  assertEq(hc.resolveProfileConfig({ ...shippedAll, profile: 'free', compaction: { ...shipped, enabled: true } }).compaction.enabled, true, 'an explicit user choice still wins');
 });
 
 test('http-daemon POST /hook/compaction-event: REAL daemon — token-gated like /mcp; a module reaches hook_compaction_event end to end', async () => {
