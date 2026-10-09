@@ -1010,6 +1010,9 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   not sent again … in this process`: ele desliga o beta sozinho → custo de 1 tentativa por PROCESSO, não por pedido.
   O corpo da requisição não é logado (o valor de `display` enviado não é visível sem capturar). Nada a corrigir no
   boss nem no gateway; aguardando o dono decidir se fecha como externo.
+  **2026-10-09 — outra variante, mesma família** (smoke real do release 3.1.0, `claude -p` pelo gateway): `400 messages.1.output_config:
+  Extra inputs are not permitted` (`req_vrtx_011Cfqj8NXwKMudqfb4f7uRp`, `vertex_ai.anthropic.claude-opus-5-5`); o Claude Code repetiu e a sessão
+  concluiu. Também externo (a Vertex recusa um campo novo do cliente).
 - [x] **Q36 — `ANTHROPIC_BASE_URL` no ambiente de usuário do Windows (HKCU\Environment)** desta máquina, visto
   no spike do Q35 (valor não lido). O boss não grava HKCU (grep em `scripts/`: nenhum `setx`/`reg add`); afeta
   qualquer app, não só o Claude Code. Relacionado ao Q24. Ação: confirmar com o dono quem gravou e se é intencional.
