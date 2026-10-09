@@ -1194,7 +1194,9 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
 - [x] **Q61 — deploy das páginas falhou no release 3.1.1** (`.github/workflows/pages-deploy.yml`, job único): o upload terminou, mas o
   deploy consultou os artefatos 0,4 s depois e viu 0 (atraso de consistência do GitHub); re-rodar o job no mesmo run deixou 2 artefatos
   "github-pages" e o deploy recusou. Contornado no release com um run novo (`workflow_dispatch`, verde). **Corrigido**: dois jobs (build →
-  deploy com `needs`), o modelo oficial do GitHub. Entra no main na próxima release.
+  deploy com `needs`), o modelo oficial do GitHub. Entra no main na próxima release. Validado em 2026-10-09 com um run no `develop`:
+  job de build verde (artefato enviado); o deploy foi recusado pela política do ambiente `github-pages` (só `main`), como esperado —
+  a validação do deploy em si acontece no próximo push ao `main`.
 - [x] **Q60 — teste intermitente `audit: shape-output STREAMS`** (`scripts/test-units.js`): esperava 400 ms fixos pela cabeça da saída;
   sob carga a subida do processo filho passava disso (visto 1 vez em 2026-10-09; a rodada seguinte passou). **Corrigido na hora**:
   espera ativa até 10 s com o stdin ainda aberto (a prova "cabeça antes do EOF" continua).
