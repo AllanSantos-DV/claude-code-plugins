@@ -20,6 +20,9 @@
 - **O painel mostra a memória do servidor quando o backend é o servidor.** Antes ele contava as pastas locais antigas
   (de antes da troca para o servidor): os números não batiam, o projeto atual nem aparecia e a lista de lições dava
   erro. Agora contagens, lista de projetos, lista de lições e o painel de skills leem o servidor.
+- **Servidor de memória caído: a resposta vem na hora.** A primeira operação de memória depois de uma queda ficava
+  esperando o servidor subir e estourava o tempo; agora o boss religa o servidor em segundo plano e responde
+  imediatamente "reiniciando, tente de novo em alguns segundos".
 
 ## [3.1.0] - 2026-10-08
 

@@ -18292,6 +18292,31 @@ test('KB gate: mcp-memory backend (handleRemoteKbTool) — cwd WITHOUT id refuse
   } finally { backend._resetConfig(); fs.rmSync(cwd, { recursive: true, force: true }); }
 }));
 
+test('mcp-client restartMode (Q59): background = kick the launcher and fail FAST with a retryable error; wait = keep blocking (CLIs)', async () => {
+  const McpClient = require('./mcp-client.js');
+  let kicks = 0;
+  const bg = new McpClient({ transport: 'http', serverUrl: '', runDir: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-q59-')), restartMode: 'background', kickLauncher: () => { kicks++; return true; } });
+  bg._discoverDaemonUrl = () => 'http://127.0.0.1:1';
+  bg._httpHealth = async () => false;
+  const t0 = Date.now();
+  let err = null;
+  try { await bg._ensureDaemon(); } catch (e) { err = e; }
+  assertEq([err && err.code, kicks], ['MEMORY_SERVER_RESTARTING', 1], 'launcher kicked once, error says "retry in a few seconds"');
+  assert(/started in the background; retry/.test(err.message), err && err.message);
+  assert(Date.now() - t0 < 1000, 'answers at once instead of waiting for the server to boot');
+  const noLauncher = new McpClient({ transport: 'http', restartMode: 'background', kickLauncher: () => false });
+  noLauncher._discoverDaemonUrl = () => 'http://127.0.0.1:1'; noLauncher._httpHealth = async () => false;
+  let e2 = null; try { await noLauncher._ensureDaemon(); } catch (e) { e2 = e; }
+  assert(/launcher was not found/.test(e2 && e2.message), 'no launcher → says so');
+  const up = new McpClient({ transport: 'http', restartMode: 'background', kickLauncher: () => { kicks++; return true; } });
+  up._discoverDaemonUrl = () => 'http://127.0.0.1:1'; up._httpHealth = async () => true;
+  await up._ensureDaemon();
+  assertEq(kicks, 1, 'a healthy server is never kicked');
+  assertEq(new McpClient({ transport: 'http' }).restartMode, 'wait', 'default stays wait (CLIs)');
+  const src = fs.readFileSync(path.join(ROOT, 'servers', 'brain-server', 'index.js'), 'utf8');
+  assert(/CCB_MCP_RESTART_MODE = process\.env\.CCB_MCP_RESTART_MODE \|\| 'background'/.test(src), 'the brain daemon runs in background mode');
+});
+
 test('dashboard server mode (Q58): status, project list, listing and skills panel read the SERVER on mcp-memory (not the stale local folders)', async () => {
   const dash = fs.readFileSync(path.join(SCRIPTS, 'dashboard.js'), 'utf8');
   const body = (name, next) => dash.slice(dash.indexOf(name), dash.indexOf(next, dash.indexOf(name)));

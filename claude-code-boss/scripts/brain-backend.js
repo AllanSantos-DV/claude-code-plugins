@@ -152,6 +152,8 @@ async function initMcp() {
       runDir: mcpCfg.runDir || '',
       projectId: mcpCfg.projectId || _project,
       timeout: mcpCfg.timeout || 60000,
+      // The brain daemon answers tools in-session: fail fast while the server restarts (Q59).
+      restartMode: process.env.CCB_MCP_RESTART_MODE === 'background' ? 'background' : 'wait',
     });
     await _mcp.connect();
     return;
@@ -168,6 +170,7 @@ async function initMcp() {
     expectedSha256: mcpCfg.expectedSha256 || '',
     projectId: mcpCfg.projectId || _project,
     timeout: mcpCfg.timeout || 60000,
+    restartMode: process.env.CCB_MCP_RESTART_MODE === 'background' ? 'background' : 'wait', // Q59
   });
   await _mcp.connect();
 }

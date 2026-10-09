@@ -23,6 +23,10 @@ import { createRequire } from 'module';
 import { resolvePort } from './lib/daemon-common.js';
 import { startHttpDaemon } from './lib/http-daemon.js';
 
+// This process serves MCP tools inside sessions: when the memory server is down, kick its launcher
+// in the background and answer at once instead of outlasting the tool timeout (BACKLOG Q59).
+process.env.CCB_MCP_RESTART_MODE = process.env.CCB_MCP_RESTART_MODE || 'background';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // Resolve plugin env vars robustly: ignore unexpanded "${...}" literals (some
