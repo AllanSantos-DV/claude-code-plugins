@@ -18292,6 +18292,21 @@ test('KB gate: mcp-memory backend (handleRemoteKbTool) — cwd WITHOUT id refuse
   } finally { backend._resetConfig(); fs.rmSync(cwd, { recursive: true, force: true }); }
 }));
 
+test('dashboard server mode (Q58): status, project list, listing and skills panel read the SERVER on mcp-memory (not the stale local folders)', async () => {
+  const dash = fs.readFileSync(path.join(SCRIPTS, 'dashboard.js'), 'utf8');
+  const body = (name, next) => dash.slice(dash.indexOf(name), dash.indexOf(next, dash.indexOf(name)));
+  assert(/serverMode\(\)[\s\S]*serverKbSummary\(\)/.test(body('async function getStatusAsync', 'function getBrainBackend')), 'status counts from the server');
+  assert(/serverMode\(\)[\s\S]*serverKbSummary\(\)/.test(body('async function getBrainProjects', 'async function searchBrain')), 'project list from the server');
+  assert(/serverMode\(\)[\s\S]*listDocuments\(\{ type, projectId: project \}\)/.test(body('async function listBrainEntries', 'async function moveBrainEntryScope')), 'listing scoped to the project on the server');
+  assert(/serverMode\(\)[\s\S]*serverKbSummary\(\)/.test(body('async function getSkillPromotionConfig', 'async function scanSkillCandidates')), 'skills panel offers the server project ids');
+  const b = require('./brain-backend.js');
+  b._resetConfig(); b.__testHooks._injectConfig({ backend: { type: 'local' } });
+  let threw = null;
+  try { await b.listProjects(); } catch (err) { threw = err.message; }
+  b._resetConfig();
+  assert(/mcp-memory listing/.test(threw || ''), 'listProjects fails loud on the local backend (never a silent empty list)');
+});
+
 test('weekly consolidation stamp (Q57): per project — one project running does not consume the week for the others', () => {
   const cs = require('./curation-session.js');
   const stamp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-q57-')), 'brain-consolidate-last.json');

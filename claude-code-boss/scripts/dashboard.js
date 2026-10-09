@@ -313,9 +313,15 @@ async function getStatusAsync(req, res) {
     }
   }
 
-  let brainProjects = [], brainTotal = 0;
+  let brainProjects = [], brainTotal = 0, brainSource = 'local', brainError = null;
   const brainBaseDir = path.join(DATA_DIR, 'brain');
-  if (fs.existsSync(brainBaseDir)) {
+  if (serverMode()) {
+    brainSource = 'mcp-memory';
+    try {
+      brainProjects = await serverKbSummary();
+      brainTotal = brainProjects.reduce((n, p) => n + p.entries, 0);
+    } catch (err) { brainError = `memory server unreachable: ${err.message}`; console.error(`[DASHBOARD] ${brainError}`); }
+  } else if (fs.existsSync(brainBaseDir)) {
     for (const p of listBrainProjects(brainBaseDir)) {
       const count = countEntriesInDb(brainDbPath(brainBaseDir, p));
       brainTotal += count;
@@ -335,13 +341,42 @@ async function getStatusAsync(req, res) {
 
   json(res, {
     uptime: process.uptime().toFixed(0),
-    brain: { projects: brainProjects, totalEntries: brainTotal, backend: backendMode, connected: backendConnected },
+    brain: { projects: brainProjects, totalEntries: brainTotal, backend: backendMode, connected: backendConnected, source: brainSource, ...(brainError ? { error: brainError } : {}) },
     hooks: { total: hooksTotal, active: hooksActive },
     // Resolution diagnostics: the folder we actually use vs. the most-populated
     // sibling. When they differ the UI can flag KB fragmentation for the user.
     dataDir: DATA_DIR,
     mostPopulatedDataDir: MOST_POPULATED_DATA_DIR,
   });
+}
+
+// ─── Server-mode KB view (mcp-memory) ──────────────────────────────
+// On the mcp-memory backend the lessons live on the SERVER; the local SQLite folders are what was
+// left from before the switch — showing them made the panel report stale/test data and miss the
+// real project (owner report 2026-10-09). 60 s cache: /api/status is polled by the Home view.
+let _serverKbCache = null;
+
+function serverMode() {
+  try { return require('./brain-backend.js').peekMode() === 'mcp-memory'; } catch (err) { console.error(`[DASHBOARD] backend mode: ${err.message}`); return false; }
+}
+
+/**
+ * Projects on the server with their document counts, newest-first by size. Throws on failure
+ * (callers show the error — never fall back to the local folders silently).
+ * @returns {Promise<Array<{project: string, entries: number}>>}
+ */
+async function serverKbSummary() {
+  if (_serverKbCache && Date.now() - _serverKbCache.at < 60000) return _serverKbCache.projects;
+  const backend = require('./brain-backend.js');
+  await backend.init({ project: 'default', skipEmbedder: true });
+  const projects = [];
+  for (const project of await backend.listProjects()) {
+    const entries = (await backend.listDocuments({ projectId: project })).length;
+    if (entries > 0) projects.push({ project, entries });
+  }
+  projects.sort((a, b) => b.entries - a.entries);
+  _serverKbCache = { at: Date.now(), projects };
+  return projects;
 }
 
 // ─── API: Brain Backend Status ──────────────────────────────────────
@@ -504,7 +539,10 @@ function listConfigDomains(req, res) {
 
 // ─── API: Brain ────────────────────────────────────────────────────
 
-function getBrainProjects(req, res) {
+async function getBrainProjects(req, res) {
+  if (serverMode()) {
+    try { return json(res, await serverKbSummary()); } catch (err) { return fail(res, `memory server unreachable: ${err.message}`, 502); }
+  }
   const projects = [];
   const brainBaseDir = path.join(DATA_DIR, 'brain');
   if (!fs.existsSync(brainBaseDir)) return json(res, []);
@@ -777,7 +815,14 @@ async function listBrainEntries(req, res, url) {
   const limit = Math.min(200, Math.max(1, parseInt(url.searchParams.get('limit') || '50', 10) || 50));
   try {
     const brainBackend = require('./brain-backend.js');
-    const listed = await brainBackend.list(type, project);
+    let listed;
+    if (serverMode()) {
+      // Scoped to the project: the server's plain list() spans every project's documents.
+      await brainBackend.init({ project, skipEmbedder: true });
+      listed = (await brainBackend.listDocuments({ type, projectId: project })).map((e) => ({ id: e.id, title: e.title, type: e.type, summary: e.summary, confidence: e.confidence, recurrence: e.recurrence, createdAt: e.created_at }));
+    } else {
+      listed = await brainBackend.list(type, project);
+    }
     json(res, { total: listed.length, offset, limit, entries: listed.slice(offset, offset + limit) });
   } catch (e) { fail(res, e.message); }
 }
@@ -1006,13 +1051,17 @@ function runBrainPromote(argvArray) {
   return JSON.parse(out.trim());
 }
 
-function getSkillPromotionConfig(req, res) {
+async function getSkillPromotionConfig(req, res) {
   // Shipped ⊕ user override, the same reader brain-promote uses (BACKLOG Q44).
   const cfg = require('./lib/brain-config.js').getSkillPromotion();
-  const brainDir = path.join(DATA_DIR, 'brain');
-  const projects = fs.existsSync(brainDir)
-    ? listBrainProjects(brainDir)
-    : [];
+  let projects = [];
+  if (serverMode()) {
+    // The scan reads the server in this mode (Q53) — offer the server's project ids, not the old local folders.
+    try { projects = (await serverKbSummary()).map((p) => p.project); } catch (err) { return fail(res, `memory server unreachable: ${err.message}`, 502); }
+  } else {
+    const brainDir = path.join(DATA_DIR, 'brain');
+    projects = fs.existsSync(brainDir) ? listBrainProjects(brainDir) : [];
+  }
   json(res, { ok: true, config: cfg, projects, stagingDir: SKILL_STAGING_DIR, globalSkillsDir: GLOBAL_SKILLS_DIR });
 }
 
