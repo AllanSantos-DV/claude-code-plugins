@@ -7931,6 +7931,17 @@ test('Q24 sessionGateway: só um endpoint que não é o nosso proxy nem a API of
   assertEq(routerEnsure.sessionGateway({}, isOurs), null);
 });
 
+test('isOurProxyUrl (auditoria 3.1.0): só localhost na PORTA do roteador é nosso — um gateway local do usuário é dele', () => {
+  const ours = (u) => routerEnsure.isOurProxyUrl(u, [13456]);
+  assertEq([ours('http://127.0.0.1:13456'), ours('http://localhost:13456/'), ours('http://127.0.0.1:13456/v1')], [true, true, true]);
+  assertEq([ours('http://localhost:4000'), ours('http://127.0.0.1:3456'), ours('http://127.0.0.1:134560')], [false, false, false], 'LiteLLM/claude-code-router locais são do usuário');
+  assertEq(routerEnsure.sessionGateway({ ANTHROPIC_BASE_URL: 'http://localhost:4000' }, ours), 'http://localhost:4000', 'detectado como gateway próprio (adia)');
+  const env = { ANTHROPIC_BASE_URL: 'http://localhost:4000', ENABLE_TOOL_SEARCH: 'true' };
+  assertEq(routerEnsure.planDisableEnv(env, 200000, ours).changed, false, 'o disable não apaga o gateway local do usuário do settings.json');
+  assertEq(routerEnsure.planEnableEnv(env, 'http://127.0.0.1:13456', 200000, ours).foreign, true, 'nem o enable o sobrescreve');
+  assertEq(routerEnsure.isOurProxyUrl('http://127.0.0.1:13999', [13456, 13999]), true, 'a porta registrada pelo roteador vivo (troca de porta) segue nossa');
+});
+
 test('Q24 run(): sessão com gateway próprio → o roteador NÃO se liga por cima (settings.json/url.txt limpos), e a decisão persiste sem o env', async () => {
   const home = os.homedir();
   assert(home.startsWith(os.tmpdir()), `HOME temporário da suíte, nunca o real (${home})`);
