@@ -105,7 +105,9 @@ async function loadScanEntries(project, types) {
     await backend.init({ project, skipEmbedder: true });
     const entries = [];
     for (const type of types) entries.push(...await backend.listDocuments({ type, projectId: project }));
-    return { entries: entries.map((e) => ({ ...e, project })), source: 'mcp-memory', close: () => backend.close() };
+    // full(): the listing carries a ~200-char content PREVIEW — a draft must be written from the
+    // whole document (get_document), or the skill's lesson text is truncated (audit 3.1.1).
+    return { entries: entries.map((e) => ({ ...e, project })), source: 'mcp-memory', close: () => backend.close(), full: (id) => backend.get(id) };
   }
   await store.init({ project });
   const entries = [];
@@ -140,8 +142,15 @@ async function scan() {
   const kb = await loadScanEntries(project, [...new Set([...cfg.types, 'lesson', 'pattern'])]);
   const entries = kb.entries;
 
-  const candidates = entries.filter((e) => cfg.types.includes(e.type)
+  let candidates = entries.filter((e) => cfg.types.includes(e.type)
     && (e.recurrence || 1) >= minRec && (e.confidence || 0) >= minConf);
+  if (kb.full) {
+    candidates = await Promise.all(candidates.map(async (c) => {
+      const f = await kb.full(c.id);
+      if (!f) throw new Error(`candidate ${c.id} vanished between the listing and the read`);
+      return { ...c, title: f.title || c.title, summary: f.summary || c.summary, content: f.content || c.content };
+    }));
+  }
 
   fs.mkdirSync(STAGING_DIR, { recursive: true });
   const drafted = [];

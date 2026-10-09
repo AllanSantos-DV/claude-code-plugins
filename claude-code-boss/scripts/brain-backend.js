@@ -186,6 +186,9 @@ function entryToContent(entry) {
 
 async function saveMcp(entry) {
   const metadata = {
+    // add_document REPLACES a document's metadata on upsert (measured on the server, 2.46.1): a
+    // merge must carry the existing keys forward or they are lost (pre-release audit 3.1.1).
+    ...(entry.baseMetadata && typeof entry.baseMetadata === 'object' ? entry.baseMetadata : {}),
     title: entry.title || '',
     type: entry.type || 'note',
     tags: entry.tags || [],
@@ -245,6 +248,9 @@ function normalizeEntry(data) {
   entry.recurrence = Number(meta.recurrence) > 1 ? Number(meta.recurrence) : 1;
   entry.scope = data.scope || meta.scope || '';
   entry.project = meta.project_id || data.project || '';
+  // Written by this plugin (saveMcp always sets title+type): consolidation only touches these —
+  // never documents the server distilled itself or a sister client wrote (pre-release audit 3.1.1).
+  entry.bossWritten = !!(meta.title && meta.type);
   if (typeof entry.content === 'string') {
     const text = entry.content;
     try { entry.content = JSON.parse(text); } catch {
@@ -396,6 +402,23 @@ function splitEntryText(text, title) {
   const summary = (i < 0 ? body : body.slice(0, i)).trim();
   const detail = (i < 0 ? body : body.slice(i + 2)).trim() || summary;
   return { summary, detail };
+}
+
+/**
+ * Patch a server document's METADATA only: re-read it in full (`get_document` — `list_documents`
+ * returns a ~200-char preview) and upsert the SAME content with the metadata merged. add_document
+ * replaces metadata on upsert, so this is the only way to bump e.g. `recurrence` without losing
+ * content or other keys (pre-release audit 3.1.1: rewriting from the listing truncated content).
+ * @param {string} id
+ * @param {object} patch
+ */
+async function patchMetadataMcp(id, patch) {
+  const got = await _mcp.callTool('get_document', { documentId: id });
+  const doc = parseResult(got);
+  if (!doc || typeof doc.content !== 'string') throw new Error(`get_document ${id}: no content (${String(got && got.text).slice(0, 120)})`);
+  const result = await _mcp.callTool('add_document', { documentId: id, content: doc.content, metadata: { ...(doc.metadata || {}), ...patch } });
+  const raw = (result && result.raw) || result;
+  if (raw && raw.isError) throw new Error(`add_document (metadata patch) failed: ${String(result.text || '').slice(0, 200)}`);
 }
 
 /**
@@ -744,6 +767,12 @@ async function listDocuments(q) {
   return guardMcp('listDocuments', () => listDocumentsMcp(q || {}));
 }
 
+/** Metadata-only patch of a server document (content untouched). Fails loud on the local backend. */
+async function patchMetadata(id, patch) {
+  if (_mode !== 'mcp-memory') throw new Error('patchMetadata is an mcp-memory operation — the local store updates its own rows');
+  return guardMcp('patchMetadata', () => patchMetadataMcp(id, patch || {}));
+}
+
 /** Project ids on the mcp-memory server (dashboard in server mode). Fails loud on the local backend. */
 async function listProjects() {
   if (_mode !== 'mcp-memory') throw new Error('listProjects is the mcp-memory listing — the local backend lists its own folders');
@@ -790,7 +819,7 @@ const _textUtils = require('./lib/text-utils.js');
 module.exports = {
   init, save, get, search, searchByKeywords,
   compose, hasCompose, ingestConversation, ingestStatus, warmPool,
-  delete: delete_, list, listDocuments, listProjects, count, getRelated, close,
+  delete: delete_, list, listDocuments, listProjects, patchMetadata, count, getRelated, close,
   getStatus, getMode, peekMode, _resetConfig,
   // Circuit breaker on the mcp-memory backend — reportMcpFailure/reportMcpSuccess
   // let an external caller racing its OWN shorter timeout (retrieve-core.js's

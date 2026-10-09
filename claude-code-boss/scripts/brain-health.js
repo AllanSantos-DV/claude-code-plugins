@@ -261,13 +261,13 @@ function configRecoveryText() {
   const { userConfigRecoveryStatus } = require('./lib/config-merge.js');
   const lines = [];
   const files = [];
-  try { files.push(require('./lib/brain-config.js').userConfigPath()); } catch (err) { console.error(`[BRAIN-HEALTH] brain config path: ${err.message}`); }
-  try { files.push(require('./lib/hooks-config.js').userConfigPath()); } catch (err) { console.error(`[BRAIN-HEALTH] hooks config path: ${err.message}`); }
-  for (const f of files) {
+  try { files.push({ f: require('./lib/brain-config.js').userConfigPath(), what: ' (memory backend: local)' }); } catch (err) { console.error(`[BRAIN-HEALTH] brain config path: ${err.message}`); }
+  try { files.push({ f: require('./lib/hooks-config.js').userConfigPath(), what: ' (hooks profile and settings)' }); } catch (err) { console.error(`[BRAIN-HEALTH] hooks config path: ${err.message}`); }
+  for (const { f, what } of files) {
     const st = userConfigRecoveryStatus(f);
     if (!st) continue;
     if (st.restored) lines.push(`[BRAIN-HEALTH] Your config file ${f} was unreadable; the last good version was restored automatically (the corrupt copy is at ${st.restored.corruptCopy}).`);
-    if (st.unreadable) lines.push(`[BRAIN-HEALTH] Your config file ${f} is unreadable (${st.unreadable}) and there is no good copy to restore — the boss is running on the shipped defaults (backend: local) until you fix or delete it.`);
+    if (st.unreadable) lines.push(`[BRAIN-HEALTH] Your config file ${f} is unreadable (${st.unreadable}) and there is no good copy to restore — the boss is running on the shipped defaults${what} until you fix or delete it.`);
   }
   return lines.length ? lines.join('\n') : null;
 }

@@ -23,6 +23,9 @@
 - **Servidor de memória caído: a resposta vem na hora.** A primeira operação de memória depois de uma queda ficava
   esperando o servidor subir e estourava o tempo; agora o boss religa o servidor em segundo plano e responde
   imediatamente "reiniciando, tente de novo em alguns segundos".
+- Nota de privacidade: no modo servidor, juntar lições repetidas (na captura e na consolidação semanal) calcula a
+  semelhança com o embedder configurado. Com o embedder local (o padrão) nada sai da máquina; se você escolheu a
+  Voyage (ou um Ollama remoto), o título e o resumo das lições vão para esse serviço nesse cálculo.
 
 ## [3.1.0] - 2026-10-08
 

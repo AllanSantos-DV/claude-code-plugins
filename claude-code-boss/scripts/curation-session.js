@@ -152,4 +152,20 @@ function markConsolidated(stampFile, projectId, nowMs) {
   writeJsonAtomic(stampFile, { byProject });
 }
 
-module.exports = { run, pendingSkillsSummary, consolidationDue, markConsolidated };
+/**
+ * Give the week back when the consolidation run failed (server/embedder down): the stamp is
+ * written BEFORE spawning (so two sessions never consolidate the same project at once), and a
+ * failed run must not cost the project its week (pre-release audit 3.1.1).
+ * @param {string} stampFile
+ * @param {string} projectId
+ */
+function unmarkConsolidated(stampFile, projectId) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(stampFile, 'utf8'));
+    if (!raw || !raw.byProject || !(projectId in raw.byProject)) return;
+    delete raw.byProject[projectId];
+    writeJsonAtomic(stampFile, { byProject: raw.byProject });
+  } catch (e) { void e; /* no stamp → nothing to give back */ }
+}
+
+module.exports = { run, pendingSkillsSummary, consolidationDue, markConsolidated, unmarkConsolidated };

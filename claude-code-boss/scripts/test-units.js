@@ -18346,6 +18346,9 @@ test('weekly consolidation stamp (Q57): per project — one project running does
   cs.markConsolidated(stamp, 'owner/b', now + 1000);
   assertEq(JSON.parse(fs.readFileSync(stamp, 'utf8')).byProject, { 'owner/a': now, 'owner/b': now + 1000 }, 'both kept');
   assertEq(cs.consolidationDue(stamp, 'owner/a', now + 8 * 24 * 3600 * 1000), true, 'due again after a week');
+  cs.unmarkConsolidated(stamp, 'owner/a');
+  assertEq(cs.consolidationDue(stamp, 'owner/a', now + 1000), true, 'a failed run gives the week back (audit 3.1.1)');
+  assertEq(cs.consolidationDue(stamp, 'owner/b', now + 2000), false, '…only for that project');
   fs.writeFileSync(stamp, JSON.stringify({ ts: now }));
   assertEq(cs.consolidationDue(stamp, 'owner/a', now + 1000), true, 'a legacy global {ts} stamp counts as due');
 });
@@ -18364,7 +18367,12 @@ test('user-config recovery (owner request 2026-10-09): an unreadable file NEVER 
     bc._resetCache();
     assertEq(bc.load().backend.type, 'mcp-memory');
     assert(fs.existsSync(file + '.last-good'), 'a valid read keeps a last-good copy');
-    fs.writeFileSync(file, '{ "backend": { "type": "mcp-memory" }, }'); // stray comma
+    const old = (Date.now() - 60000) / 1000;
+    fs.writeFileSync(file, '{ "backend": { "type": "mcp-memory" }, }'); // stray comma — JUST written (a save in flight?)
+    bc._resetCache();
+    assertEq(bc.load().backend.type, 'mcp-memory', 'right after a change: the good copy is used for this read…');
+    assertEq(fs.readFileSync(file, 'utf8'), '{ "backend": { "type": "mcp-memory" }, }', '…and the user\'s file is NOT touched (audit 3.1.1: never take over a save in flight)');
+    fs.utimesSync(file, old, old); // the same corruption, a minute old → real recovery
     bc._resetCache();
     assertEq(bc.load().backend.type, 'mcp-memory', 'restored — it used to fall back to the shipped default (local) silently');
     assertEq(JSON.parse(fs.readFileSync(file, 'utf8')).backend.type, 'mcp-memory', 'the file itself is restored');
@@ -18372,12 +18380,17 @@ test('user-config recovery (owner request 2026-10-09): an unreadable file NEVER 
     const note = bh.configRecoveryText();
     assert(/restored automatically/.test(note || ''), `SessionStart notice: ${note}`);
     assertEq(bh.configRecoveryText(), null, 'the restore notice is shown once');
+    fs.writeFileSync(file, '   \n'); // emptied on purpose = reset
+    bc._resetCache();
+    assertEq(bc.load().backend.type, 'local', 'an EMPTY file is a deliberate reset to the defaults — not restored');
+    assertEq(fs.readFileSync(file, 'utf8'), '   \n', 'nothing renamed or rewritten');
     sweep();
     fs.writeFileSync(file, '{ broken');
+    fs.utimesSync(file, old, old);
     bc._resetCache();
     assertEq(bc.load().backend.type, 'local', 'no good copy → shipped defaults (nothing else to go on)…');
     const loud = bh.configRecoveryText();
-    assert(/is unreadable .* no good copy .*backend: local/.test(loud || ''), `…but said LOUD at SessionStart, never silent: ${loud}`);
+    assert(/is unreadable .* no good copy .*memory backend: local/.test(loud || ''), `…but said LOUD at SessionStart, never silent: ${loud}`);
   } finally {
     sweep();
     if (prev == null) { try { fs.unlinkSync(file); } catch (err) { void err; } } else fs.writeFileSync(file, prev);
@@ -18388,16 +18401,21 @@ test('user-config recovery (owner request 2026-10-09): an unreadable file NEVER 
 test('brain-consolidate (Q54): on mcp-memory it consolidates the SERVER — dry-run touches nothing; apply sums recurrence into the survivor, then deletes the absorbed', async () => {
   const bc = require('./brain-consolidate.js');
   const docs = [
-    { id: 'a', title: 'Lesson A', summary: 'near dup', type: 'lesson', recurrence: 2, confidence: 0.9, created_at: 1, tags: ['t'], content: { detail: 'da' }, scope: 'project' },
-    { id: 'b', title: 'Lesson A bis', summary: 'near dup', type: 'lesson', recurrence: 1, confidence: 0.8, created_at: 2, tags: [], content: { detail: 'db' }, scope: 'project' },
-    { id: 'c', title: 'Unrelated', summary: 'other', type: 'lesson', recurrence: 1, confidence: 0.8, created_at: 3, tags: [], content: { detail: 'dc' }, scope: 'project' },
+    { id: 'a', title: 'Lesson A', summary: 'near dup', type: 'lesson', recurrence: 2, confidence: 0.9, created_at: 1, bossWritten: true, metadata: { absorbedIds: ['old'] } },
+    { id: 'b', title: 'Lesson A bis', summary: 'near dup', type: 'lesson', recurrence: 1, confidence: 0.8, created_at: 2, bossWritten: true, metadata: {} },
+    { id: 'c', title: 'Unrelated', summary: 'other', type: 'lesson', recurrence: 1, confidence: 0.8, created_at: 3, bossWritten: true, metadata: {} },
+    // Same text as A but written by the server/a sister client (no title+type metadata): never touched.
+    { id: 'srv', title: 'Lesson A srv', summary: 'near dup', type: 'lesson', recurrence: 1, confidence: 0.5, created_at: 4, bossWritten: false, metadata: {} },
   ];
-  const vec = { 'Lesson A': [1, 0, 0], 'Lesson A bis': [0.8, 0.6, 0], Unrelated: [0, 0, 1] }; // cos(a,b)=0.8 (in band), c orthogonal
+  const vec = { 'Lesson A': [1, 0, 0], 'Lesson A bis': [0.8, 0.6, 0], 'Lesson A srv': [0.85, 0, 0.5268], Unrelated: [0, 0, 1] }; // cos(a,b)=0.8 and cos(a,srv)=0.85 (both in band), c orthogonal
   const calls = [];
   const backend = {
     peekMode: () => 'mcp-memory', init: async () => {}, close: async () => {},
     listDocuments: async (q) => { calls.push(['list', q.projectId, q.type]); return docs.map((d) => ({ ...d })); },
-    save: async (e) => { calls.push(['save', e.id, e.recurrence, e.projectId]); return e.id; },
+    // Metadata-only patch: the listing is a ~200-char preview and add_document replaces metadata,
+    // so the survivor must never be rewritten from it (audit 3.1.1).
+    patchMetadata: async (id, patch) => { calls.push(['patch', id, patch.recurrence, patch.absorbedIds]); },
+    save: async () => { throw new Error('consolidation must not rewrite a document'); },
     delete: async (id) => { calls.push(['delete', id]); },
   };
   const embedder = { init: async () => {}, getStatus: () => ({ ready: true }), embed: async (t) => vec[Object.keys(vec).sort((x, y) => y.length - x.length).find((k) => t.startsWith(k))] };
@@ -18408,7 +18426,13 @@ test('brain-consolidate (Q54): on mcp-memory it consolidates the SERVER — dry-
   calls.length = 0;
   const run = await bc.consolidate({ project: 'o/p', apply: true, _backend: backend, _embedder: embedder });
   assertEq([run.merged, run.deleted], [1, 1]);
-  assertEq(calls.filter((c) => c[0] !== 'list'), [['save', 'a', 3, 'o/p'], ['delete', 'b']], 'survivor upserted with the summed recurrence BEFORE the absorbed one is deleted; the unrelated entry is untouched');
+  assertEq(calls.filter((c) => c[0] !== 'list'), [['patch', 'a', 3, ['old', 'b']], ['delete', 'b']], 'survivor METADATA patched (recurrence + absorbedIds) BEFORE the absorbed one is deleted; unrelated and server-written docs untouched');
+  // A delete that failed last week: the survivor recorded 'b' — the next run deletes it WITHOUT summing again.
+  calls.length = 0;
+  docs[0].recurrence = 3; docs[0].metadata = { absorbedIds: ['old', 'b'] };
+  const rerun = await bc.consolidate({ project: 'o/p', apply: true, _backend: backend, _embedder: embedder });
+  assertEq([rerun.pendingDeletes, rerun.groups, rerun.deleted], [1, 0, 1]);
+  assertEq(calls.filter((c) => c[0] !== 'list'), [['delete', 'b']], 'pending delete finished; no recurrence inflation');
   const off = await bc.consolidate({ project: 'o/p', apply: true, _backend: backend, _embedder: { init: async () => {}, getStatus: () => ({ ready: false, error: 'no model' }) } });
   assert(off.ok === false && /embedder unavailable/.test(off.reason), 'no embedder → fails loud, nothing deleted');
 });
@@ -18421,7 +18445,7 @@ test('mcp-memory capture_lesson (Q53): admission dedup on the server — an equi
   const orig = { init: backend.init, save: backend.save, search: backend.search, get: backend.get };
   const docs = new Map(); const saves = [];
   backend.init = async () => {};
-  backend.save = async (e) => { saves.push(e); const id = e.id || `doc-${docs.size + 1}`; docs.set(id, { id, title: e.title, summary: e.summary, type: e.type, tags: e.tags, confidence: e.confidence, scope: e.scope, project: e.projectId, recurrence: e.recurrence || 1 }); return id; };
+  backend.save = async (e) => { saves.push(e); const id = e.id || `doc-${docs.size + 1}`; docs.set(id, { id, title: e.title, summary: e.summary, type: e.type, tags: e.tags, confidence: e.confidence, scope: e.scope, project: e.projectId, recurrence: e.recurrence || 1, metadata: { ...(e.baseMetadata || {}), extra: (e.baseMetadata && e.baseMetadata.extra) || 'keep-me' } }); return id; };
   backend.search = async (q, o) => [...docs.values()].filter((d) => d.type === o.type && o.projectIds.includes(d.project)).slice(0, o.topK).map((d) => ({ id: d.id, score: 0.7 }));
   backend.get = async (id) => docs.get(id) || null;
   try {
@@ -18437,6 +18461,7 @@ test('mcp-memory capture_lesson (Q53): admission dedup on the server — an equi
     const second = await cap({ title: 'Same lesson again', summary: 'same text', type: 'lesson', confidence: 0.95 });
     assertEq([second.decision, second.id, second.recurrence], ['merge', first.id, 2], 'merged into the existing document');
     assertEq([saves[1].id, saves[1].recurrence, saves[1].title, saves[1].confidence, saves[1].tags], [first.id, 2, 'Same lesson', 0.95, ['code']], 'upsert on the same documentId; keeps title/tags, max confidence');
+    assertEq(saves[1].baseMetadata && saves[1].baseMetadata.extra, 'keep-me', 'the existing metadata is carried forward (add_document replaces it on upsert — audit 3.1.1)');
     assertEq((await cap({ title: 'Same lesson', summary: 'same text', type: 'lesson' })).recurrence, 3, 'the third capture reaches the promotion threshold');
     assertEq((await cap({ title: 'Same lesson', summary: 'same text', type: 'decision' })).decision, 'admit', 'another type is never merged');
     assertEq((await cap({ title: 'A different lesson', summary: 'different text', type: 'lesson' })).decision, 'admit', 'below the 0.9 cosine → its own record');
@@ -18456,11 +18481,12 @@ test('brain-promote scan (Q53): on mcp-memory it reads the SERVER by the strict 
   fs.mkdirSync(path.join(cwd, '.memory'));
   fs.writeFileSync(path.join(cwd, '.memory', 'project.json'), JSON.stringify({ version: '1', metadata: { defaults: { project_id: 'owner/q53scan' } } }));
   const backend = require('./brain-backend.js');
-  const orig = { peekMode: backend.peekMode, init: backend.init, listDocuments: backend.listDocuments, close: backend.close };
+  const orig = { peekMode: backend.peekMode, init: backend.init, listDocuments: backend.listDocuments, close: backend.close, get: backend.get };
   const asked = [];
   backend.peekMode = () => 'mcp-memory';
   backend.init = async () => {};
   backend.close = async () => {};
+  backend.get = async (id) => (id === 'r1' ? { id, title: 'Recurring code lesson q53', summary: 'do X', content: { detail: 'because Y — and the FULL text the listing preview cuts off' } } : null);
   backend.listDocuments = async (q) => { asked.push(q); return q.type === 'lesson' ? [
     { id: 'r1', title: 'Recurring code lesson q53', summary: 'do X', content: { detail: 'because Y' }, type: 'lesson', tags: ['code', 'testing'], confidence: 0.9, recurrence: 3 },
     { id: 'r2', title: 'One-off lesson q53', summary: 's', content: { detail: 'd' }, type: 'lesson', tags: [], confidence: 0.9, recurrence: 1 },
@@ -18477,7 +18503,7 @@ test('brain-promote scan (Q53): on mcp-memory it reads the SERVER by the strict 
     assert(asked.every((q) => q.projectId === 'owner/q53scan'), 'every listing is scoped to the strict id');
     stagingUsed = out.stagingDir; // fixed at module load — the suite swaps CLAUDE_PLUGIN_DATA between tests
     const draft = path.join(out.stagingDir, 'recurring-code-lesson-q53', 'SKILL.md');
-    assert(fs.existsSync(draft) && /recurrence: 3/.test(fs.readFileSync(draft, 'utf8')) && /because Y/.test(fs.readFileSync(draft, 'utf8')), 'draft written from the server entry');
+    assert(fs.existsSync(draft) && /recurrence: 3/.test(fs.readFileSync(draft, 'utf8')) && /the FULL text the listing preview cuts off/.test(fs.readFileSync(draft, 'utf8')), 'draft written from the FULL server document, not the listing preview');
     assert(out.checklist && out.checklist.items === 1 && fs.existsSync(out.checklist.path), 'review checklist from the server lessons');
   } finally {
     console.log = origLog; process.argv = prevArgv; Object.assign(backend, orig);

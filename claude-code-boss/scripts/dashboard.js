@@ -365,18 +365,40 @@ function serverMode() {
  * (callers show the error — never fall back to the local folders silently).
  * @returns {Promise<Array<{project: string, entries: number}>>}
  */
+let _serverKbInflight = null;
+let _serverKbFail = null;
 async function serverKbSummary() {
   if (_serverKbCache && Date.now() - _serverKbCache.at < 60000) return _serverKbCache.projects;
-  const backend = require('./brain-backend.js');
-  await backend.init({ project: 'default', skipEmbedder: true });
-  const projects = [];
-  for (const project of await backend.listProjects()) {
-    const entries = (await backend.listDocuments({ projectId: project })).length;
-    if (entries > 0) projects.push({ project, entries });
+  if (_serverKbFail && Date.now() - _serverKbFail.at < 10000) throw new Error(_serverKbFail.message);
+  // One scan at a time, on its OWN client: the shared brain-backend singleton re-inits per project
+  // (/api/brain/list), which closed the connection under this loop; and 'background' restart mode
+  // never blocks the Home view for the launcher's boot (pre-release audit 3.1.1).
+  if (!_serverKbInflight) {
+    _serverKbInflight = (async () => {
+      const mcp = ((require('./lib/brain-config.js').load().backend || {}).mcpMemory) || {};
+      const McpClient = require('./mcp-client.js');
+      const client = new McpClient({ transport: 'http', serverUrl: mcp.serverUrl || '', runDir: mcp.runDir || '', projectId: 'default', timeout: 30000, restartMode: 'background' });
+      const parse = (r) => { const d = JSON.parse((r && r.text) || '{}'); return Array.isArray(d) ? d : (d.data || d.projects || d.documents || d.results || d.items || []); };
+      try {
+        await client.connect();
+        const ids = parse(await client.callTool('list_projects', {})).filter((p) => typeof p === 'string' && (p === '__user__' || !p.startsWith('__')));
+        const projects = [];
+        for (const project of ids) {
+          const entries = parse(await client.callTool('list_documents', { metadata: { project_id: project } })).length;
+          if (entries > 0) projects.push({ project, entries });
+        }
+        return projects.sort((a, b) => b.entries - a.entries);
+      } finally { client.close(); }
+    })();
   }
-  projects.sort((a, b) => b.entries - a.entries);
-  _serverKbCache = { at: Date.now(), projects };
-  return projects;
+  try {
+    const projects = await _serverKbInflight;
+    _serverKbCache = { at: Date.now(), projects };
+    return projects;
+  } catch (err) {
+    _serverKbFail = { at: Date.now(), message: err.message };
+    throw err;
+  } finally { _serverKbInflight = null; }
 }
 
 // ─── API: Brain Backend Status ──────────────────────────────────────
