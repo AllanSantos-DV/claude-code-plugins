@@ -20,7 +20,7 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { sanitizeProjectId } = require('./lib/project-id.js');
+const { sanitizeProjectId, tryResolveProjectId } = require('./lib/project-id.js');
 
 const store = require('./brain-store.js');
 
@@ -91,25 +91,57 @@ Promoted from Brain entry \`${entry.id}\` (project: ${entry.project}).
 `;
 }
 
+/**
+ * Every entry the scan looks at, full (recurrence, confidence, content). On the mcp-memory
+ * backend the lessons live on the SERVER — the local store stopped receiving them when the
+ * backend switched, so reading it made promotion and the review checklist blind (BACKLOG Q53).
+ * @param {string} project  the strict project id
+ * @param {string[]} types  entry types to read (promotion types ∪ the checklist's)
+ * @returns {Promise<{entries: object[], source: string, close: Function}>}
+ */
+async function loadScanEntries(project, types) {
+  const backend = require('./brain-backend.js');
+  if (backend.peekMode() === 'mcp-memory') {
+    await backend.init({ project, skipEmbedder: true });
+    const entries = [];
+    for (const type of types) entries.push(...await backend.listDocuments({ type, projectId: project }));
+    return { entries: entries.map((e) => ({ ...e, project })), source: 'mcp-memory', close: () => backend.close() };
+  }
+  await store.init({ project });
+  const entries = [];
+  for (const row of await store.list(null, project)) {
+    const e = store.getRaw(row.id);
+    if (e) entries.push(e);
+  }
+  return { entries, source: 'local', close: () => store.close() };
+}
+
+/**
+ * Draft SKILL.md files for recurring lessons (recurrence ≥ min, confidence ≥ min) into staging, and
+ * (re)generate the project review checklist from recurring code lessons. Prints a JSON report.
+ * @returns {Promise<void>}
+ */
 async function scan() {
   const cfg = loadPromotionCfg();
   if (!cfg.enabled) { console.log(JSON.stringify({ ok: true, skipped: 'disabled' })); return; }
-  const project = sanitizeProjectId(arg('project', path.basename(process.cwd()))) || path.basename(process.cwd());
+  // The STRICT project id of the session's folder (lib/project-id.js) — not the folder name: the
+  // KB has been keyed by that id since 2.29.1, so basename(cwd) read an empty or stale project.
+  const projectRoot = arg('cwd', process.cwd());
+  // An explicit --project (the dashboard's picker) is still sanitized (S5: traversal sink).
+  const project = arg('project', '') ? sanitizeProjectId(arg('project', '')) : tryResolveProjectId({ cwd: projectRoot });
+  if (!project) {
+    console.log(JSON.stringify({ ok: true, skipped: 'no-project-id', cwd: projectRoot, note: 'This folder has no project id — memory is off here, nothing to promote.' }));
+    return;
+  }
   const minRec = parseInt(arg('min-recurrence', cfg.minRecurrence), 10);
   const minConf = parseFloat(arg('min-confidence', cfg.minConfidence));
 
-  await store.init({ project });
-  const entries = await store.list(null, project);
+  const { selectCodeLessons, renderChecklist, CHECKLIST_RELPATH, CHECKLIST_MARKER } = require('./lib/review-checklist.js');
+  const kb = await loadScanEntries(project, [...new Set([...cfg.types, 'lesson', 'pattern'])]);
+  const entries = kb.entries;
 
-  const candidates = [];
-  for (const row of entries) {
-    if (!cfg.types.includes(row.type)) continue;
-    const e = store.getRaw(row.id);
-    if (!e) continue;
-    if ((e.recurrence || 1) >= minRec && (e.confidence || 0) >= minConf) {
-      candidates.push(e);
-    }
-  }
+  const candidates = entries.filter((e) => cfg.types.includes(e.type)
+    && (e.recurrence || 1) >= minRec && (e.confidence || 0) >= minConf);
 
   fs.mkdirSync(STAGING_DIR, { recursive: true });
   const drafted = [];
@@ -125,16 +157,9 @@ async function scan() {
   // Piggybacks on the scan (no new hook); best-effort so it never fails the scan.
   let checklist = null;
   try {
-    const { selectCodeLessons, renderChecklist, CHECKLIST_RELPATH, CHECKLIST_MARKER } = require('./lib/review-checklist.js');
-    const full = [];
-    for (const row of entries) {
-      const e = store.getRaw(row.id);
-      if (e) full.push(e);
-    }
-    const lessons = selectCodeLessons(full, { minRecurrence: minRec });
+    const lessons = selectCodeLessons(entries, { minRecurrence: minRec });
     // Write into the SESSION's project root (--cwd), not the scan process cwd —
     // this must match where review-checklist-advisory.js (event.cwd) reads it.
-    const projectRoot = arg('cwd', process.cwd());
     const target = path.join(projectRoot, ...CHECKLIST_RELPATH);
     if (lessons.length > 0) {
       fs.mkdirSync(path.dirname(target), { recursive: true });
@@ -149,9 +174,9 @@ async function scan() {
     }
   } catch (err) { console.error(`[brain-promote] checklist: ${err.message}`); }
 
-  await store.close();
+  await kb.close();
   console.log(JSON.stringify({
-    ok: true, project, candidates: drafted.length,
+    ok: true, project, source: kb.source, scanned: entries.length, candidates: drafted.length,
     thresholds: { minRecurrence: minRec, minConfidence: minConf },
     drafts: drafted, stagingDir: STAGING_DIR, checklist,
     note: drafted.length ? 'Review drafts, then `approve <slug>` to install globally.' : 'No recurring lessons cleared the threshold yet.',
@@ -182,7 +207,7 @@ function approve(slug) {
   console.log(JSON.stringify({ ok: true, approved: slug, installedAt: dest }));
 }
 
-module.exports = { truncateDescription, draftSkillMd, slugify, loadPromotionCfg };
+module.exports = { truncateDescription, draftSkillMd, slugify, loadPromotionCfg, scan };
 
 const cmd = process.argv[2];
 if (require.main === module) (async () => {

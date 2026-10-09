@@ -191,6 +191,9 @@ async function saveMcp(entry) {
     sessionId: entry.session_id || '',
     source: entry.source || {},
     ...(entry.id ? { brainId: entry.id } : {}),
+    // How many times this lesson was captured (admission dedup on the remote path, BACKLOG
+    // Q53) — the signal skill promotion and the review checklist read.
+    ...(Number.isInteger(entry.recurrence) && entry.recurrence > 1 ? { recurrence: entry.recurrence } : {}),
     // Explicit target scope (e.g. '__user__' for scope=user); absent → the handshake project.
     ...(entry.projectId ? { project_id: entry.projectId } : {}),
   };
@@ -236,8 +239,17 @@ function normalizeEntry(data) {
   entry.session_id = data.sessionId || meta.sessionId || data.session_id || '';
   entry.created_at = data.createdAt || data.created_at || now();
   entry.access_count = data.accessCount || data.access_count || 0;
+  entry.recurrence = Number(meta.recurrence) > 1 ? Number(meta.recurrence) : 1;
+  entry.scope = data.scope || meta.scope || '';
+  entry.project = meta.project_id || data.project || '';
   if (typeof entry.content === 'string') {
-    try { entry.content = JSON.parse(entry.content); } catch { entry.content = { text: entry.content }; }
+    const text = entry.content;
+    try { entry.content = JSON.parse(text); } catch {
+      // add_document content is title / summary / detail joined by blank lines (entryToContent) — split it back.
+      const parts = splitEntryText(text, entry.title);
+      entry.content = { text, detail: parts.detail };
+      if (!data.summary && !meta.summary) entry.summary = parts.summary;
+    }
   }
   if (typeof entry.source === 'string') {
     try { entry.source = JSON.parse(entry.source); } catch { entry.source = { url: entry.source }; }
@@ -365,6 +377,35 @@ async function ingestStatusMcp(opts = {}) {
     ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
   });
   return parseResult(result) || {};
+}
+
+/**
+ * Split an add_document content blob (title / summary / detail joined by blank lines, see
+ * entryToContent) back into summary + detail. The title prefix is dropped when present.
+ * @param {string} text
+ * @param {string} title
+ * @returns {{summary: string, detail: string}}
+ */
+function splitEntryText(text, title) {
+  let body = String(text || '').replace(/\r\n/g, '\n').trim();
+  if (title && body.startsWith(title)) body = body.slice(title.length).replace(/^\n+/, '');
+  const i = body.indexOf('\n\n');
+  const summary = (i < 0 ? body : body.slice(0, i)).trim();
+  const detail = (i < 0 ? body : body.slice(i + 2)).trim() || summary;
+  return { summary, detail };
+}
+
+/**
+ * Entries of one type in one project, WITH their metadata (recurrence, confidence, tags) — what
+ * skill promotion and the review checklist need (BACKLOG Q53). The listing is filtered by
+ * project_id explicitly: unfiltered, list_documents returns every project's documents.
+ * @param {{type: string, projectId: string}} q
+ * @returns {Promise<object[]>} entries shaped like the local store's (title, summary, content.detail, recurrence…)
+ */
+async function listDocumentsMcp({ type, projectId }) {
+  if (!projectId) throw new Error('listDocuments needs a projectId (an unfiltered listing spans every project)');
+  const result = await _mcp.callTool('list_documents', { metadata: { ...(type ? { type } : {}), project_id: projectId } });
+  return parseListResults(result).map((item) => normalizeEntry({ ...item, documentId: item.documentId || item.id }));
 }
 
 async function deleteMcp(id) {
@@ -677,6 +718,17 @@ async function list(type, project) {
   return listLocal(type, project);
 }
 
+/**
+ * Project-scoped entries with metadata, on the mcp-memory backend only (the local store's own
+ * list/getRaw already carry recurrence). Fails loud on the local backend instead of guessing.
+ * @param {{type: string, projectId: string}} q
+ * @returns {Promise<object[]>}
+ */
+async function listDocuments(q) {
+  if (_mode !== 'mcp-memory') throw new Error('listDocuments is the mcp-memory listing — use the local store on the local backend');
+  return guardMcp('listDocuments', () => listDocumentsMcp(q || {}));
+}
+
 async function count() {
   if (_mode === 'mcp-memory') return guardMcp('count', () => countMcp());
   return countLocal();
@@ -717,7 +769,7 @@ const _textUtils = require('./lib/text-utils.js');
 module.exports = {
   init, save, get, search, searchByKeywords,
   compose, hasCompose, ingestConversation, ingestStatus, warmPool,
-  delete: delete_, list, count, getRelated, close,
+  delete: delete_, list, listDocuments, count, getRelated, close,
   getStatus, getMode, peekMode, _resetConfig,
   // Circuit breaker on the mcp-memory backend — reportMcpFailure/reportMcpSuccess
   // let an external caller racing its OWN shorter timeout (retrieve-core.js's
@@ -726,7 +778,7 @@ module.exports = {
   // Exposed for deterministic offline tests of the MCP-tool mappings.
   __testHooks: {
     parseSearchResults, parseListResults, parseAddedId, deriveTitle,
-    entryToContent, normalizeSearchItem, normalizeEntry,
+    entryToContent, normalizeSearchItem, normalizeEntry, splitEntryText,
     needsReinit, splitComposeBlocks, parseComposeEnvelope,
     /** Inject a config object so a freshly-required module can init() a mode
      *  without touching env/files (avoids global-state races in the runner). */

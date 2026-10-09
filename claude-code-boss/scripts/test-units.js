@@ -18292,6 +18292,79 @@ test('KB gate: mcp-memory backend (handleRemoteKbTool) — cwd WITHOUT id refuse
   } finally { backend._resetConfig(); fs.rmSync(cwd, { recursive: true, force: true }); }
 }));
 
+test('mcp-memory capture_lesson (Q53): admission dedup on the server — an equivalent capture MERGES (recurrence++), a different type never does', _withoutEnvProjectId(async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-q53-dedup-'));
+  fs.mkdirSync(path.join(cwd, '.memory'));
+  fs.writeFileSync(path.join(cwd, '.memory', 'project.json'), JSON.stringify({ version: '1', metadata: { defaults: { project_id: 'owner/q53' } } }));
+  const backend = require('./brain-backend.js');
+  const orig = { init: backend.init, save: backend.save, search: backend.search, get: backend.get };
+  const docs = new Map(); const saves = [];
+  backend.init = async () => {};
+  backend.save = async (e) => { saves.push(e); const id = e.id || `doc-${docs.size + 1}`; docs.set(id, { id, title: e.title, summary: e.summary, type: e.type, tags: e.tags, confidence: e.confidence, scope: e.scope, project: e.projectId, recurrence: e.recurrence || 1 }); return id; };
+  backend.search = async (q, o) => [...docs.values()].filter((d) => d.type === o.type && o.projectIds.includes(d.project)).slice(0, o.topK).map((d) => ({ id: d.id, score: 0.7 }));
+  backend.get = async (id) => docs.get(id) || null;
+  try {
+    const url = require('url');
+    const mod = await import(url.pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+    const server = mod.createBrainServer({ pluginRoot: ROOT, mode: 'stdio', _testHooks: {
+      embedder: { init: async () => {}, getStatus: () => ({ ready: true }), embed: async (t) => (/different/.test(t) ? [0, 1, 0] : [1, 0, 0]) },
+    } });
+    const cfg = { backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: 'http://127.0.0.1:1' } } };
+    const cap = async (a) => JSON.parse((await withUserConfig(cfg, () => { backend._resetConfig(); return server.handleTool('capture_lesson', { scope: 'project', cwd, ...a }); })).content[0].text);
+    const first = await cap({ title: 'Same lesson', summary: 'same text', type: 'lesson', tags: ['code'] });
+    assertEq(first.decision, 'admit');
+    const second = await cap({ title: 'Same lesson again', summary: 'same text', type: 'lesson', confidence: 0.95 });
+    assertEq([second.decision, second.id, second.recurrence], ['merge', first.id, 2], 'merged into the existing document');
+    assertEq([saves[1].id, saves[1].recurrence, saves[1].title, saves[1].confidence, saves[1].tags], [first.id, 2, 'Same lesson', 0.95, ['code']], 'upsert on the same documentId; keeps title/tags, max confidence');
+    assertEq((await cap({ title: 'Same lesson', summary: 'same text', type: 'lesson' })).recurrence, 3, 'the third capture reaches the promotion threshold');
+    assertEq((await cap({ title: 'Same lesson', summary: 'same text', type: 'decision' })).decision, 'admit', 'another type is never merged');
+    assertEq((await cap({ title: 'A different lesson', summary: 'different text', type: 'lesson' })).decision, 'admit', 'below the 0.9 cosine → its own record');
+  } finally { Object.assign(backend, orig); backend._resetConfig(); fs.rmSync(cwd, { recursive: true, force: true }); }
+}));
+
+test('brain-backend (Q53): server entries normalize to the local shape — recurrence from metadata, summary/detail split back from the content blob', () => {
+  const h = require('./brain-backend.js').__testHooks;
+  const e = h.normalizeEntry({ documentId: 'd1', content: 'Title\n\nthe summary\n\nthe detail\n\nmore detail', metadata: { title: 'Title', type: 'lesson', tags: ['x'], confidence: 0.9, recurrence: 4, project_id: 'o/p', scope: 'project' } });
+  assertEq([e.id, e.title, e.summary, e.content.detail, e.recurrence, e.project, e.scope], ['d1', 'Title', 'the summary', 'the detail\n\nmore detail', 4, 'o/p', 'project']);
+  assertEq(h.normalizeEntry({ documentId: 'd2', content: 'T\n\nonly summary', metadata: { title: 'T' } }).recurrence, 1, 'no recurrence in metadata → 1');
+  assertEq(h.splitEntryText('T\n\nonly summary', 'T'), { summary: 'only summary', detail: 'only summary' });
+});
+
+test('brain-promote scan (Q53): on mcp-memory it reads the SERVER by the strict project id — drafts the recurring lesson and writes the checklist', _withoutEnvProjectId(async () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-q53-scan-'));
+  fs.mkdirSync(path.join(cwd, '.memory'));
+  fs.writeFileSync(path.join(cwd, '.memory', 'project.json'), JSON.stringify({ version: '1', metadata: { defaults: { project_id: 'owner/q53scan' } } }));
+  const backend = require('./brain-backend.js');
+  const orig = { peekMode: backend.peekMode, init: backend.init, listDocuments: backend.listDocuments, close: backend.close };
+  const asked = [];
+  backend.peekMode = () => 'mcp-memory';
+  backend.init = async () => {};
+  backend.close = async () => {};
+  backend.listDocuments = async (q) => { asked.push(q); return q.type === 'lesson' ? [
+    { id: 'r1', title: 'Recurring code lesson q53', summary: 'do X', content: { detail: 'because Y' }, type: 'lesson', tags: ['code', 'testing'], confidence: 0.9, recurrence: 3 },
+    { id: 'r2', title: 'One-off lesson q53', summary: 's', content: { detail: 'd' }, type: 'lesson', tags: [], confidence: 0.9, recurrence: 1 },
+  ] : []; };
+  const prevArgv = process.argv; const logs = []; const origLog = console.log;
+  let stagingUsed = null;
+  try {
+    process.argv = [prevArgv[0], 'brain-promote.js', 'scan', '--cwd', cwd];
+    console.log = (s) => logs.push(String(s));
+    await require('./brain-promote.js').scan();
+    console.log = origLog;
+    const out = JSON.parse(logs.pop());
+    assertEq([out.project, out.source, out.scanned, out.candidates], ['owner/q53scan', 'mcp-memory', 2, 1], JSON.stringify(out));
+    assert(asked.every((q) => q.projectId === 'owner/q53scan'), 'every listing is scoped to the strict id');
+    stagingUsed = out.stagingDir; // fixed at module load — the suite swaps CLAUDE_PLUGIN_DATA between tests
+    const draft = path.join(out.stagingDir, 'recurring-code-lesson-q53', 'SKILL.md');
+    assert(fs.existsSync(draft) && /recurrence: 3/.test(fs.readFileSync(draft, 'utf8')) && /because Y/.test(fs.readFileSync(draft, 'utf8')), 'draft written from the server entry');
+    assert(out.checklist && out.checklist.items === 1 && fs.existsSync(out.checklist.path), 'review checklist from the server lessons');
+  } finally {
+    console.log = origLog; process.argv = prevArgv; Object.assign(backend, orig);
+    if (stagingUsed) fs.rmSync(path.join(stagingUsed, 'recurring-code-lesson-q53'), { recursive: true, force: true });
+    fs.rmSync(cwd, { recursive: true, force: true });
+  }
+}));
+
 test('mcp-memory backend: scope routes to __user__ like the local path (writes sanitized + secrets refused; search scope → project_id list)', _withoutEnvProjectId(async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-remote-scope-'));
   fs.mkdirSync(path.join(cwd, '.memory'));
