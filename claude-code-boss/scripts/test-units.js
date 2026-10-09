@@ -18125,6 +18125,34 @@ test('brain-store (Q49): kb.rerank and the KB limits honor the user override, an
   }
 });
 
+test('brain-health (auditoria 3.1.0): vectors from another embedder dimension are reported with the re-embed command', () => {
+  const bc = require('./lib/brain-config.js');
+  const emb = require('./brain-embedder.js');
+  const bh = require('./brain-health.js');
+  const Db = require('./lib/sqlite-compat.js').loadSqlite();
+  assert(Db, 'sqlite available in the suite');
+  const file = path.join(require('./lib/data-dir.js').globalDir(), 'user-config.json');
+  const prev = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dim-'));
+  fs.mkdirSync(path.join(data, 'brain', 'p1'), { recursive: true });
+  const db = new Db(path.join(data, 'brain', 'p1', 'brain.db'));
+  db.exec('CREATE TABLE embeddings (entry_id TEXT PRIMARY KEY, vector BLOB, dimensions INTEGER, model TEXT)');
+  const ins = db.prepare('INSERT INTO embeddings (entry_id, vector, dimensions, model) VALUES (?, ?, ?, ?)');
+  ins.run('a', Buffer.alloc(4), 384, 'default'); ins.run('b', Buffer.alloc(4), 384, 'default'); ins.run('c', Buffer.alloc(4), 768, 'default');
+  db.close();
+  try {
+    const { version } = bc.loadWithVersion();
+    bc.save({ ...bc.load(), embedder: { provider: 'ollama', model: 'nomic-embed-text', dimensions: 768 } }, { expectedVersion: version });
+    bc._resetCache();
+    assertEq(bh.embedderDimMismatch(data), { count: 2, dims: 768 }, 'the 384-dim vectors no longer match a 768-dim embedder');
+    assertEq(bh.embedderDimMismatch(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dim-empty-'))), null, 'no local KB → nothing to say');
+  } finally {
+    if (prev == null) { try { fs.unlinkSync(file); } catch (err) { void err; } } else fs.writeFileSync(file, prev);
+    bc._resetCache();
+    emb.getModel();
+  }
+});
+
 test('skill promotion (Q44): the user override of kb.skillPromotion reaches brain-promote and the dashboard (not only the shipped file)', () => {
   const bc = require('./lib/brain-config.js');
   const file = path.join(require('./lib/data-dir.js').globalDir(), 'user-config.json');
