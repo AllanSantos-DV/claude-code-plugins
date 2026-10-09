@@ -220,6 +220,43 @@ function embedderModelMissing() {
   }
 }
 
+/**
+ * Local vectors embedded with a different dimension than the configured embedder: semantic
+ * recall scores every one of them 0 (silently keyword-only). Happens when the embedder changes
+ * — including on the 3.1.0 update, which starts honoring an embedder chosen earlier in the
+ * dashboard (it used to be saved but ignored, BACKLOG Q47). Read-only; null when nothing to say.
+ * @param {string} data  the plugin data dir
+ * @returns {{count:number, dims:number}|null}
+ */
+function embedderDimMismatch(data) {
+  try {
+    const brainDir = path.join(data, 'brain');
+    if (!fs.existsSync(brainDir)) return null;
+    const embedder = require('./brain-embedder.js');
+    embedder.getModel(); // loads the layered config → sets provider/model/dimensions
+    const dims = embedder.getDimensions();
+    const Db = require('./lib/sqlite-compat.js').loadSqlite();
+    if (!Db) return null;
+    let count = 0;
+    for (const proj of fs.readdirSync(brainDir)) {
+      const dbPath = path.join(brainDir, proj, 'brain.db');
+      if (!fs.existsSync(dbPath)) continue;
+      const db = new Db(dbPath, { readonly: true });
+      try { count += db.prepare('SELECT COUNT(*) AS c FROM embeddings WHERE dimensions != ?').get(dims).c; } finally { db.close(); }
+    }
+    return count > 0 ? { count, dims } : null;
+  } catch (err) {
+    console.error(`[BRAIN-HEALTH] embedder dimension check skipped: ${err.message}`);
+    return null;
+  }
+}
+
+function buildDimMismatchText({ count, dims }) {
+  return `[BRAIN-HEALTH] ${count} memory entr${count === 1 ? 'y was' : 'ies were'} embedded with a different model than the ` +
+    `configured embedder (${dims}-dim) — semantic search can't match them (keyword-only for those). ` +
+    'Run `node scripts/brain-reembed.js` (in the plugin folder) to re-embed them with the current embedder.';
+}
+
 function buildEmbedderText() {
   return '[BRAIN-HEALTH] Embedding model not downloaded — the Brain is in keyword-only mode ' +
     '(no semantic search, and the pattern→skill loop cannot advance recurrence). ' +
@@ -326,11 +363,13 @@ async function run(event) {
     const slow = await slowHookAlert(root, data);
 
     let other = null;
+    let mismatch = null;
     if (eventName === 'SessionStart') {
       const rstat = recallDegradedStatus();
       if (rstat) other = buildRecallDegradedText(rstat);
       else if (getSqliteBackend() === 'none') other = buildDegradedSqliteText();
       else if (embedderModelMissing()) other = buildEmbedderText();
+      else if ((mismatch = embedderDimMismatch(data))) other = buildDimMismatchText(mismatch);
       else {
         const { count, dir } = countPendingDrafts(data);
         if (count > 0) other = buildPendingDraftsText(count, dir);
@@ -348,4 +387,5 @@ function main() { return runTextCli(run, 'BRAIN-HEALTH', 'SessionStart'); }
 
 if (require.main === module) main();
 
-module.exports = { countPendingDrafts, shouldRunOnPrompt, brainServerDepsOk, run, _slowHookAlert: slowHookAlert };
+module.exports = {
+  embedderDimMismatch, countPendingDrafts, shouldRunOnPrompt, brainServerDepsOk, run, _slowHookAlert: slowHookAlert };
