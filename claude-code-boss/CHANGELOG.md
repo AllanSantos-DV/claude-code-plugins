@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+### Fixed
+- **Nenhuma janela pisca mais na tela por causa do servidor de memória.** A cada início de sessão (e cada
+  `claude -p` de outra ferramenta é um início de sessão — chegaram a ser vários por minuto) o plugin rodava o
+  inicializador do servidor de memória mesmo com ele já no ar, e no Windows esse lançamento abria uma janela do
+  terminal com o PowerShell do inicializador. Agora o início de sessão só chama o inicializador quando o
+  servidor não responde ao `/health`, e o lançamento passa por um `wscript` oculto que não tem console — medido:
+  janela visível antes, nenhuma depois; com o servidor derrubado ele volta sem aparecer nada.
+
 ### Changed
 - **O plugin passa a ter versão de verdade (semver) para o Claude Code.** O `plugin.json` estava sem `version`
   desde maio, e o Claude Code usava o SHA do commit como versão: cada push no `main` (até só de página ou de
