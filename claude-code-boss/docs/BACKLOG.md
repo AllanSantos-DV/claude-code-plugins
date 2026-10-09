@@ -1102,6 +1102,15 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
 
   **Resolvido em 2026-10-08**: as duas cópias saíram; ambos usam o `sha256File` do `scripts/lib/file-hash.js` que já existia (mesma
   semântica: SHA-256 em stream, hex, erro propaga). Coberto pelos testes de backup existentes (manifesto e checksum).
+- [ ] **Q53 — no backend mcp-memory, a promoção a skill (e o checklist de revisão) só enxerga a KB LOCAL, que não recebe mais nada**
+  (`scripts/brain-promote.js:25,101-102`: `require('./brain-store.js')` + `project = basename(cwd)`). Com `backend: mcp-memory` o
+  `capture_lesson` grava no servidor (id estrito `AllanSantos-DV/claude-code-plugins`); a recorrência que dispara a promoção nunca
+  cresce localmente. **Medido em 2026-10-09** nesta máquina: KB local `claude-code` = 14 entradas, a mais nova de 16/06; id estrito
+  local = 0; lições capturadas hoje estão só no servidor. Os 4 drafts em `skills-pending` são de 02/08 e 15/09 — nada novo desde a troca
+  de backend. Dois defeitos: (1) fonte errada no mcp-memory; (2) id de projeto pelo nome da pasta (regra anterior à 2.29.1, não o
+  resolvedor estrito). Provável mesmo problema no `brain-consolidate` semanal e no `.claude/brain-review-checklist.md` (a verificar).
+  Proposta: no mcp-memory, o scan consulta o servidor (lições/padrões com recorrência — conferir o que o servidor expõe) pelo id estrito;
+  no local, usar o id estrito também. Visto ao levantar o estado do loop de aprendizado a pedido do dono (via Jarvis).
 - [x] **Q51 — Release Guard vermelho a cada 6 h sem drift** (`.github/scripts/release-guard.mjs` `isAncestor`): a atividade da main
   ainda lista um push de histórico reescrito (`5fd0028`, de nenhum branch); no clone do CI esse commit não existe, o `git merge-base`
   sai com 128 e o guard caía (visto 2026-10-08: 3 cron seguidos em falha). **Corrigido na hora**: commit fora do histórico = não-ancestral,
