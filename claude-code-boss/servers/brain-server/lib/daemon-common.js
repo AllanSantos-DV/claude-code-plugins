@@ -85,16 +85,14 @@ export const MCP_PATH = '/mcp';
 // The daemon binds 127.0.0.1, but "localhost-only" is not authorization: any
 // local process could otherwise call /mcp (read/poison the KB) or /shutdown.
 //
-// Trust model (accept-the-limit): /mcp is gated by originAllowed() alone —
-// a static .mcp.json "type":"http" URL cannot carry a runtime secret, so the
-// endpoint deliberately trades the token for (127.0.0.1 bind + origin guard).
-// The remaining exposure is ANY process that can reach loopback (including a
-// different OS user) and any content served from a localhost origin (e.g. an
-// untrusted page previewed through a local dev server). That is the documented
-// MACHINE-TRUST boundary — see README §Auth. Browser cross-origin reads stay
-// closed: the daemon emits no Access-Control-Allow-Origin and non-simple MCP
-// POSTs trigger CORS preflight, which fails without it. /shutdown (destructive,
-// never called by Claude Code's MCP client) keeps the full token gate.
+// Trust model: /mcp (and /hook/*) take the origin guard AND the local token —
+// Claude Code sends the token through the .mcp.json headersHelper
+// (scripts/mcp-headers.js), so another OS user's process can no longer read or
+// poison the KB through loopback (http-daemon.js requestAllowed). What remains is
+// whoever answers the fixed port first — the accepted risk in docs/SECURITY.md.
+// Browser cross-origin reads stay closed: the daemon emits no
+// Access-Control-Allow-Origin and non-simple MCP POSTs trigger CORS preflight,
+// which fails without it. /shutdown keeps the full token gate too.
 // Token lives in DATA_DIR next to the lock file; every same-user consumer
 // (supervisor, curl) reads it from disk. Override/fix with BRAIN_HTTP_TOKEN.
 
@@ -133,15 +131,11 @@ export function ensureToken(dataDir) {
 const LOCAL_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
 
 /**
- * Origin-only guard (DNS-rebinding): a foreign browser Origin is refused; a
- * missing Origin (every native client — including Claude Code's MCP http
- * transport) passes. Used alone for /mcp: that endpoint is declared straight
- * in .mcp.json as a static "type":"http" URL with no per-session process and
- * no room for a runtime-generated secret in a static header, so /mcp trades
- * the token for this origin check + the 127.0.0.1 bind (both were already
- * true before; the token was the second, now-dropped, layer). /shutdown (a
- * destructive local action, not something Claude Code's MCP client ever
- * calls) keeps the full token gate below.
+ * Origin guard (DNS-rebinding): a foreign browser Origin is refused; a missing
+ * Origin (every native client — including Claude Code's MCP http transport)
+ * passes. It is one of the two layers of requestAllowed() — /mcp, /hook/* and
+ * /shutdown also require the local token (the comment here used to say /mcp was
+ * origin-only; it has required the token since the headersHelper landed).
  * @returns {{ ok:true } | { ok:false, code:number, error:string }}
  */
 export function originAllowed(req) {

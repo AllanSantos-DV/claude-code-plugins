@@ -66,10 +66,20 @@
   máquina usa um gateway próprio …"), em vez de sugerir um reload pendente.
 - O lembrete de registrar decisões citava o conteúdo de um arquivo criado no mesmo comando como se fosse a
   mensagem do commit; agora lê a mensagem certa.
+- **O roteador não confunde mais o seu gateway LOCAL com ele mesmo.** Qualquer `localhost` contava como o
+  roteador: um LiteLLM ou claude-code-router na sua máquina era sobrescrito no `settings.json` (e, ao desligar o
+  roteador, apagado). Agora só a porta do próprio roteador conta.
+- **Um arquivo de configuração de usuário corrompido não é mais trocado em silêncio.** Salvar o perfil, o slider
+  da compactação, o editor de hooks ou desligar um hook com o arquivo ilegível (ex.: uma vírgula a mais numa edição
+  à mão) apagava todos os outros ajustes; agora a gravação falha com a mensagem e o arquivo fica como estava.
 - O ajuste do usuário na ordenação da memória local (`kb.rerank`) e nos limites do KB passa a valer, e um daemon
   aberto vê a mudança sem reiniciar.
 - **O embedder escolhido no painel passa a ser usado.** O painel do Brain gravava o provedor/modelo no seu arquivo
   de usuário, mas o embedder lia só o arquivo do plugin e seguia com o modelo padrão.
+  **Se você tinha trocado o embedder no painel antes desta versão, a troca passa a valer agora:** as memórias
+  locais gravadas com o modelo antigo não são achadas pela busca semântica até serem regravadas — o aviso de
+  início de sessão diz quantas são e o comando (`node scripts/brain-reembed.js`, na pasta do plugin). Com a Voyage
+  escolhida, o texto passa a ir para a API da Voyage, como o painel indica.
 - **Uma decisão registrada não some mais dentro de uma lição parecida.** A memória junta capturas quase
   iguais (somando a recorrência); isso valia entre tipos diferentes, então uma decisão com texto parecido com o de
   uma lição virava só "+1" na lição e o registro da decisão se perdia. Agora só junta com o mesmo tipo.

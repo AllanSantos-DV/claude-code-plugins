@@ -1103,6 +1103,27 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   ainda lista um push de histórico reescrito (`5fd0028`, de nenhum branch); no clone do CI esse commit não existe, o `git merge-base`
   sai com 128 e o guard caía (visto 2026-10-08: 3 cron seguidos em falha). **Corrigido na hora**: commit fora do histórico = não-ancestral,
   com aviso no stderr. Teste com SHA inexistente (o git real dá 128); o caso normal segue.
+- [x] **Auditoria pré-release 3.1.0 (camada adversarial, `release-auditor`) — todos os achados conferidos no código e corrigidos na hora**:
+  - **[HIGH] perfil `free` não desligava a compactação**: o `config/hooks-config.json` trazia `compaction.enabled: true`, e o arquivo
+    mescla POR CIMA do preset do perfil. Removido do shipped (ligado por padrão vem do `!== false`). Teste resolvendo o perfil sobre o
+    arquivo REAL (o teste antigo resolvia sem ele); mutação reprova.
+  - **[MEDIUM] embedder: escolha antiga passa a valer no update (Q47)** e os vetores locais de outra dimensão viram score 0 em silêncio:
+    aviso de início de sessão (`brain-health` `embedderDimMismatch`) com a contagem e o `brain-reembed.js`; nota no CHANGELOG (inclui
+    a ida à API da Voyage quando ela é a escolhida). Teste com banco temporário; mutação reprova.
+  - **[MEDIUM] módulo de compactação agia com o padrão "ligado" quando o daemon não respondia** (o usuário podia ter desligado):
+    sem config, não age (`prompt.submit` e `session.compact`). Teste no engine; mutação reprova.
+  - **[MEDIUM] gateway LOCAL do usuário confundido com o roteador** (`isOurProxyUrl` = qualquer localhost): o roteador se ligava por
+    cima e o disable apagava a URL do usuário. Agora só a porta do roteador (configurada + a do roteador vivo). Teste; mutação reprova.
+  - **[LOW→corrigido] token lido de um caminho dito pelo `/health` aberto**: investigado a fundo (cobrança do dono — "já existia" não
+    basta): além do risco aceito (token a quem atende a porta), um ocupante podia apontar caminho UNC e ler o arquivo faria o Windows
+    entregar o hash NTLM. Pasta agora só local (`CLAUDE_PLUGIN_DATA`/ponteiro), caminho não local recusado, token só se o `/health`
+    nomear a mesma pasta. 3 testes no engine (pasta diferente não envia; UNC nunca é lido; ponteiro não local recusado); mutação
+    reprova. `docs/SECURITY.md` atualizado.
+  - **[LOW] user-config corrompido trocado em silêncio** pelos 4 gravadores (perfil, slider, editor, liga/desliga): leitura estrita
+    única (`readUserConfigForWrite`) falha alto e preserva o arquivo. Teste dos 4; mutação reprova.
+  - **[LOW] prompt segurado podia se perder** se o reenvio falhasse: o texto volta no log + evento de erro. Teste no engine; mutação reprova.
+  - Pré-existente (só doc): comentários em `servers/brain-server/lib/daemon-common.js:88-97`/`:136-144` dizem que o
+    `/mcp` só tem guarda de origem, mas `http-daemon.js:175` exige o token — **comentários corrigidos na hora**.
 - [x] `scripts/test-units.js`, teste `plano B: stream com várias linhas SSE somando mais de 32 MiB termina completo (o teto é por linha)` (~9361): flake intermitente sob carga (anotado em 2026-09-30, durante a Fase G da 2.29.1, que não toca o model-router): falhou com `nvidia: conteúdo perdido (867 chars)` em 1 de 3 rodadas completas da suíte, e outra rodada teve 2 falhas da família `plano B`; a terceira passou limpa. Mesma família de timing do item de FIN/reset abaixo. Investigar se o stream de >40 MiB é cortado por prazo do teste ou do router quando a máquina está carregada.
   **INVESTIGADO em 2026-10-02 (não reproduz)**: 867 chars com `message_stop` = a mensagem de ERRO do próprio router (`reportFailure` → `respondAnthropicText`), não perda silenciosa nem timeout (TTFB é desarmado após a resposta). Sonda com 60 execuções e fatiamento variado (1 B a ~1 MB, com yields): zero perdas — fronteira de chunk descartada. O teste agora imprime o texto do router na falha, para a próxima ocorrência nomear a causa.
 - [x] `scripts/test-units.js`, teste `plano B: corpo de RECUSA cortado (FIN, reset) ou parado no meio…` (~8898): flake intermitente, 1 falha em cerca de 17 execuções completas da suíte (anotado em 2026-09-25 pelo tester da r28 do gate da 2.29.1, numa rodada lenta de 111,9 s contra ~86 s). Isolado, inclusive sob 32 processos ocupando a CPU, passa. Hipótese não confirmada: a janela `ms >= 4500 && ms <= 7500` (~8930) é apertada sob carga; a mensagem não foi capturada porque o wrapper `.vscode/scripts/test-units.mjs` (no ramo de falha, ~74) só repassa as linhas `✗`; o runner cru (`scripts/test-units.js`, ~18975) imprime na linha seguinte a primeira linha do erro, que traz os ms medidos se a falha for a da janela (~8930). Próximo passo: capturar essa mensagem (rodando o runner cru ou fazendo o wrapper repassar a linha) e medir do lado do servidor falso ou alargar o limite superior.
