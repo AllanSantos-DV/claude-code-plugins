@@ -3982,8 +3982,11 @@ test('audit: shape-output STREAMS — the head is written before the input ends;
     let out = '';
     child.stdout.on('data', (c) => { out += c; });
     child.stdin.write(Array.from({ length: 5 }, (_, i) => `head ${i}\n`).join(''));
-    await new Promise((r) => setTimeout(r, 400));
-    assertEq(out, 'head 0\nhead 1\nhead 2\nhead 3\nhead 4\n', 'head visible BEFORE EOF (a long find / a Bash-timeout kill keeps it)');
+    // stdin stays OPEN while we wait — polling (not a fixed 400 ms: under suite load the child's own
+    // startup outlasted it and the test failed intermittently, BACKLOG Q60).
+    const want = 'head 0\nhead 1\nhead 2\nhead 3\nhead 4\n';
+    for (const deadline = Date.now() + 10000; out !== want && Date.now() < deadline;) await new Promise((r) => setTimeout(r, 25));
+    assertEq(out, want, 'head visible BEFORE EOF (a long find / a Bash-timeout kill keeps it)');
     child.stdin.end(Array.from({ length: 200 }, (_, i) => `tail ${i}\n`).join(''));
     await new Promise((r) => child.on('close', r));
     assert(/saída cortada: 80 de 205 linhas/.test(out), `footer counts every line: ${out.slice(-300)}`);
