@@ -124,6 +124,24 @@ function verifyDigest(actualHex, expectedRaw) {
   return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(actual));
 }
 
+/**
+ * A cache dir for this install that does not exist yet: `<base>/<id>`, else `<base>/<id>-<suffix>`.
+ * Never an existing dir — the running daemon may be loaded from it.
+ * @param {string} base
+ * @param {string} id
+ * @param {(p:string)=>boolean} [exists]  test seam
+ * @returns {string}
+ */
+function freshCacheDir(base, id, exists = fs.existsSync) {
+  const first = path.join(base, id);
+  if (!exists(first)) return first;
+  for (let i = 0; i < 20; i++) {
+    const alt = path.join(base, `${id}-${Date.now().toString(36)}${i ? `-${i}` : ''}`);
+    if (!exists(alt)) return alt;
+  }
+  throw new Error(`no free cache dir for ${id} under ${base}`);
+}
+
 // Given existing registry backup filenames (`<name>.bak.<ts>`), return the ones
 // to delete, keeping the newest keepN. Pure → unit-tested.
 function planBackupPrune(names, keepN = 3) {
@@ -398,6 +416,7 @@ async function performUpdate(root, opts = {}) {
   const _spawnSync = io.spawnSync || hiddenSpawnSync;
   const _fetchRelease = io.fetchRelease || fetchLatestRelease;
   const _resolveSha = io.resolveSha || resolveCommitSha;
+  const _killStale = io.killStale || killStale;
 
   const info = getInstalledInfo(root);
   const repo = readPluginRepo(root);
@@ -456,16 +475,9 @@ async function performUpdate(root, opts = {}) {
     let sha = await _resolveSha(repo, state.tag);
     sha = sha ? sha.slice(0, 12) : `rel-${newVersion.replace(/\./g, '-')}`;
 
-    const destDir = path.join(
-      os.homedir(),
-      '.claude',
-      'plugins',
-      'cache',
-      MARKETPLACE,
-      PLUGIN,
-      sha
-    );
-    if (fs.existsSync(destDir)) fs.rmSync(destDir, { recursive: true, force: true });
+    // Never delete an existing cache dir: the shared brain daemon may be running from it
+    // (removing one crashed the daemon on 2026-10-05) — a re-install goes to a fresh dir.
+    const destDir = freshCacheDir(path.join(os.homedir(), '.claude', 'plugins', 'cache', MARKETPLACE, PLUGIN), sha);
     fs.mkdirSync(destDir, { recursive: true });
     fs.cpSync(extractDir, destDir, { recursive: true });
 
@@ -506,7 +518,9 @@ async function performUpdate(root, opts = {}) {
       {
         scope: existing.scope || 'user',
         installPath: destDir,
-        version: sha,
+        // The version Claude Code computes for this plugin (plugin.json pins it): recording the
+        // SHA here made its update check see a different version and fetch the same release again.
+        version: newVersion,
         installedAt: existing.installedAt || new Date().toISOString(),
         lastUpdated: new Date().toISOString(),
         gitCommitSha: sha,
@@ -514,7 +528,7 @@ async function performUpdate(root, opts = {}) {
     ];
     fs.writeFileSync(registryPath, JSON.stringify(registry, null, 2));
 
-    killStale(sha, process.pid);
+    _killStale(path.basename(destDir), process.pid);
 
     return {
       ok: true,
@@ -536,6 +550,7 @@ async function performUpdate(root, opts = {}) {
 
 module.exports = {
   pickPluginRelease,
+  freshCacheDir,
   // pure
   parseVersion,
   compareSemver,
