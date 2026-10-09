@@ -14508,6 +14508,46 @@ test('SessionStart runs the server launcher (contract step 1) on a local mcp-mem
   assertEq(await run({ backend: { type: 'local' } }), 0, 'local backend → nothing');
 });
 
+test('SessionStart with the memory server UP spawns NOTHING (headless `claude -p` runs fired the launcher every few seconds, each one flashing a window)', async () => {
+  const ens = require('./brain-daemon-ensure.js');
+  const McpClient = require('./mcp-client.js');
+  let kicked = 0;
+  class Up extends McpClient { _discoverDaemonUrl() { return 'http://127.0.0.1:1'; } _httpHealth() { return Promise.resolve(true); } }
+  class Down extends McpClient { _discoverDaemonUrl() { return 'http://127.0.0.1:1'; } _httpHealth() { return Promise.resolve(false); } }
+  const deps = (Client) => ({
+    root: ROOT, data: os.tmpdir(), runSetupInBackground: () => false,
+    ensureDaemon: async () => ({ status: 'current' }), loadConfig: () => ({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http' } } }),
+    runAutoUpdate: async () => ({ status: 'skipped' }), kickLauncher: () => { kicked++; return true; }, McpClient: Client,
+  });
+  await ens.run({ hook_event_name: 'SessionStart' }, deps(Up));
+  assertEq(kicked, 0, 'a daemon whose /health answers is never relaunched');
+  await ens.run({ hook_event_name: 'SessionStart' }, deps(Down));
+  assertEq(kicked, 1, 'a daemon that is down is still brought back at session start');
+  assertEq(await ens.ensureMemoryServer({ McpClient: Up, kickLauncher: () => { kicked++; return true; } }), 'alive');
+  assertEq(await ens.ensureMemoryServer({ McpClient: Down, kickLauncher: () => false }), 'error', 'no launcher installed is reported, not counted as kicked');
+});
+
+test('mcp-launcher.kickLauncher on Windows goes through wscript + run-hidden.vbs (cmd.exe detached opened a VISIBLE terminal window — measured)', () => {
+  const L = require('./lib/mcp-launcher.js');
+  const [cmd, argv] = L.kickCommand('C:\\u\\.mcp-memory\\bin\\mcp-memory-daemon.cmd', 'win32');
+  assertEq(cmd, 'wscript.exe');
+  assertEq(argv, ['//B', '//Nologo', L.RUN_HIDDEN_VBS, 'C:\\u\\.mcp-memory\\bin\\mcp-memory-daemon.cmd']);
+  assertEq(L.kickCommand('/h/.mcp-memory/bin/mcp-memory-daemon', 'linux'), ['/h/.mcp-memory/bin/mcp-memory-daemon', []]);
+  const vbs = fs.readFileSync(L.RUN_HIDDEN_VBS, 'utf8');
+  assert(/\.Run\s+"""" & WScript\.Arguments\(0\) & """", 0, False/.test(vbs), 'window style 0 (hidden), no wait');
+  assert(/^[\x00-\x7F]*$/.test(vbs), 'ASCII only: wscript reads the file in the ANSI code page');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-kick-'));
+  try {
+    const env = { USERPROFILE: home, HOME: home };
+    fs.mkdirSync(path.dirname(L.launcherPath(env, 'win32')), { recursive: true });
+    fs.writeFileSync(L.launcherPath(env, 'win32'), '');
+    let seen = null;
+    const ok = L.kickLauncher({ env, platform: 'win32', spawnImpl: (c, a, o) => { seen = { c, a, o }; return { on() {}, unref() {} }; } });
+    assertEq(ok, true);
+    assertEq([seen.c, seen.a[2], seen.o.detached, seen.o.windowsHide], ['wscript.exe', L.RUN_HIDDEN_VBS, true, true], 'detached so it outlives the hook; wscript has no console to show');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
 test('mcp-wizard.downloadServerJar: the CPU build under its exact X.Y.Z name in ~/.mcp-memory/lib (the launcher only runs those); a -gpu name is refused', async () => {
   const w = require('./lib/mcp-wizard.js');
   const resolverPath = require.resolve('./lib/mcp-release-resolver.js');

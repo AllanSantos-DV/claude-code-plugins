@@ -12,7 +12,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execFile } = require('child_process');
+const { execFile, spawn } = require('child_process');
 
 const MIN_LAUNCHER_VERSION = '2.45.5';
 const JAR_RE = /^mcp-memory-server-(\d+)\.(\d+)\.(\d+)\.jar$/; // contract C-3: exact X.Y.Z only
@@ -108,16 +108,33 @@ async function installLauncher({ jar, javaBin, env = process.env, platform = pro
   return { ok: true, launcher: file };
 }
 
+const RUN_HIDDEN_VBS = path.join(__dirname, 'run-hidden.vbs');
+
 /**
- * Fire-and-forget launcher run (session start): starts the daemon if it is down, without
- * waiting. Returns false when the launcher is not installed (nothing is started then).
+ * How to start the launcher detached WITHOUT a window. On Windows it goes through wscript +
+ * run-hidden.vbs: `spawn(cmd.exe, {detached:true, windowsHide:true})` opened a visible
+ * Windows Terminal window (DETACHED_PROCESS makes Windows ignore the hide flag, and the
+ * launcher's PowerShell got a console of its own) — measured; and without `detached` the
+ * launcher died with the hook process. Pure.
+ * @returns {[string, string[]]}
  */
-function kickLauncher({ env = process.env, platform = process.platform } = {}) {
+function kickCommand(file, platform = process.platform) {
+  if (platform === 'win32') return ['wscript.exe', ['//B', '//Nologo', RUN_HIDDEN_VBS, file]];
+  return [file, []];
+}
+
+/**
+ * Fire-and-forget launcher run: starts the daemon if it is down, without waiting. Only for a
+ * daemon already known to be DOWN (callers health-check first — see mcp-client._ensureDaemon).
+ * Returns false when the launcher is not installed (nothing is started then).
+ */
+function kickLauncher({ env = process.env, platform = process.platform, spawnImpl = null } = {}) {
   const file = launcherPath(env, platform);
   if (!fs.existsSync(file)) return false;
-  const [cmd, argv] = platform === 'win32' ? ['cmd.exe', ['/d', '/c', file]] : [file, []];
+  const [cmd, argv] = kickCommand(file, platform);
   try {
-    const child = require('child_process').spawn(cmd, argv, { detached: true, stdio: 'ignore', windowsHide: true, env });
+    const opts = { detached: true, stdio: 'ignore', windowsHide: true, env };
+    const child = spawnImpl ? spawnImpl(cmd, argv, opts) : spawn(cmd, argv, { detached: true, stdio: 'ignore', windowsHide: true, env });
     child.on('error', (err) => console.error(`[mcp-launcher] kick failed: ${err.message}`));
     child.unref();
     return true;
@@ -127,4 +144,4 @@ function kickLauncher({ env = process.env, platform = process.platform } = {}) {
   }
 }
 
-module.exports = { runLauncher, installLauncher, kickLauncher, newestInstalledJar, launcherPath, bundledJava, compareVersions, MIN_LAUNCHER_VERSION, JAR_RE };
+module.exports = { runLauncher, installLauncher, kickLauncher, kickCommand, RUN_HIDDEN_VBS, newestInstalledJar, launcherPath, bundledJava, compareVersions, MIN_LAUNCHER_VERSION, JAR_RE };

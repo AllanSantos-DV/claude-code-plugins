@@ -108,11 +108,12 @@ async function run(event, deps = {}) {
       const loadConfig = deps.loadConfig || brainConfig.load;
       const runAutoUpdate = deps.runAutoUpdate || mcpAutoUpdate.runAutoUpdate;
       const cfg = loadConfig();
-      // Contract step 1 (native-java ADR-023): at session start run the server's launcher, so a
-      // daemon that died or never came up at logon is back before the first recall. Detached —
-      // it reuses a live daemon in ~0.8 s and never blocks the session.
+      // Contract step 1 (native-java ADR-023): a daemon that died or never came up at logon is
+      // started at session start, before the first recall — but ONLY when its /health does not
+      // answer. Running the launcher on every SessionStart (headless `claude -p` runs fire one
+      // every few seconds) started a process tree each time for a daemon already up.
       const mm = (cfg && cfg.backend) || {};
-      if (mm.type === 'mcp-memory' && !((mm.mcpMemory || {}).serverUrl)) (deps.kickLauncher || require('./lib/mcp-launcher.js').kickLauncher)();
+      if (mm.type === 'mcp-memory' && !((mm.mcpMemory || {}).serverUrl)) await (deps.ensureMemoryServer || ensureMemoryServer)(deps);
       const updateResult = await runAutoUpdate({ event, config: cfg });
       if (updateResult && updateResult.status === 'error') return updateResult.advisory;
     }
@@ -120,6 +121,25 @@ async function run(event, deps = {}) {
   } catch (err) {
     console.error(`[brain-daemon-ensure] ${err.message}`);
     return null; // nunca bloqueia o início da sessão
+  }
+}
+
+/**
+ * Kick the memory server's launcher only if the daemon is down (mcp-client's own health check:
+ * daemon.json → GET /health; alive → nothing is spawned). Never throws, never waits for the boot.
+ * @param {{kickLauncher?: Function, McpClient?: Function}} [deps]
+ * @returns {Promise<'alive'|'kicked'|'error'>}
+ */
+async function ensureMemoryServer(deps = {}) {
+  const Client = deps.McpClient || require('./mcp-client.js');
+  const client = new Client({ restartMode: 'background', ...(deps.kickLauncher ? { kickLauncher: deps.kickLauncher } : {}) });
+  try {
+    await client._ensureDaemon();
+    return 'alive';
+  } catch (err) {
+    if (err && err.code === 'MEMORY_SERVER_RESTARTING' && !/not found/.test(err.message)) return 'kicked';
+    console.error(`[brain-daemon-ensure] memory server check failed: ${err.message}`);
+    return 'error';
   }
 }
 
@@ -143,4 +163,4 @@ async function main() {
 
 if (require.main === module) main();
 
-module.exports = { pluginRoot, runSetupInBackground, run };
+module.exports = { pluginRoot, runSetupInBackground, run, ensureMemoryServer };
