@@ -18292,6 +18292,41 @@ test('KB gate: mcp-memory backend (handleRemoteKbTool) — cwd WITHOUT id refuse
   } finally { backend._resetConfig(); fs.rmSync(cwd, { recursive: true, force: true }); }
 }));
 
+test('user-config recovery (owner request 2026-10-09): an unreadable file NEVER silently switches the backend — last good copy restored, corrupt kept aside, SessionStart notice; no copy → loud', () => {
+  const bc = require('./lib/brain-config.js');
+  const bh = require('./brain-health.js');
+  const file = bc.userConfigPath();
+  assert(file.startsWith(process.env.USERPROFILE), `the suite's temp HOME, never the real one (${file})`);
+  const prev = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+  const sweep = () => { for (const f of fs.readdirSync(path.dirname(file))) if (f.startsWith(path.basename(file) + '.')) fs.rmSync(path.join(path.dirname(file), f), { force: true }); };
+  try {
+    sweep();
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http' } } }));
+    bc._resetCache();
+    assertEq(bc.load().backend.type, 'mcp-memory');
+    assert(fs.existsSync(file + '.last-good'), 'a valid read keeps a last-good copy');
+    fs.writeFileSync(file, '{ "backend": { "type": "mcp-memory" }, }'); // stray comma
+    bc._resetCache();
+    assertEq(bc.load().backend.type, 'mcp-memory', 'restored — it used to fall back to the shipped default (local) silently');
+    assertEq(JSON.parse(fs.readFileSync(file, 'utf8')).backend.type, 'mcp-memory', 'the file itself is restored');
+    assert(fs.readdirSync(path.dirname(file)).some((f) => f.startsWith(path.basename(file) + '.corrupt-')), 'the corrupt file is kept aside');
+    const note = bh.configRecoveryText();
+    assert(/restored automatically/.test(note || ''), `SessionStart notice: ${note}`);
+    assertEq(bh.configRecoveryText(), null, 'the restore notice is shown once');
+    sweep();
+    fs.writeFileSync(file, '{ broken');
+    bc._resetCache();
+    assertEq(bc.load().backend.type, 'local', 'no good copy → shipped defaults (nothing else to go on)…');
+    const loud = bh.configRecoveryText();
+    assert(/is unreadable .* no good copy .*backend: local/.test(loud || ''), `…but said LOUD at SessionStart, never silent: ${loud}`);
+  } finally {
+    sweep();
+    if (prev == null) { try { fs.unlinkSync(file); } catch (err) { void err; } } else fs.writeFileSync(file, prev);
+    bc._resetCache();
+  }
+});
+
 test('brain-consolidate (Q54): on mcp-memory it consolidates the SERVER — dry-run touches nothing; apply sums recurrence into the survivor, then deletes the absorbed', async () => {
   const bc = require('./brain-consolidate.js');
   const docs = [

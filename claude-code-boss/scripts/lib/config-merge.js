@@ -63,11 +63,28 @@ function loadLayered({ label, shippedPath, userPath, legacyPath, versioned = fal
   }
   let override = null;
   let version = 0;
-  try {
-    const p = userPath();
-    if (fs.existsSync(p)) {
-      const raw = JSON.parse(fs.readFileSync(p, 'utf-8'));
-      if (versioned && isPlainObject(raw)) {
+  let userConfigError = null;
+  let p = null;
+  try { p = userPath(); } catch (err) { console.error(`[${label}] user-config path unresolved: ${err.message}`); }
+  if (p && fs.existsSync(p)) {
+    let text = null;
+    let raw;
+    try {
+      text = fs.readFileSync(p, 'utf-8');
+      raw = JSON.parse(text);
+      if (!isPlainObject(raw)) throw new Error('not a JSON object');
+      keepLastGood(p, text, label);
+    } catch (err) {
+      // An unreadable user-config used to be skipped SILENTLY — the merged config fell back to the
+      // shipped defaults (backend: local), i.e. the backend switched on its own (owner: switching is
+      // always the user's explicit act). Now: restore the last good copy, keep the corrupt one aside,
+      // and leave a notice; without a good copy, say so loud (pre-release/owner request 2026-10-09).
+      console.error(`[${label}] user-config unreadable (${p}): ${err.message}`);
+      raw = restoreLastGood(p, label);
+      if (raw === undefined) userConfigError = `${p}: ${err.message}`;
+    }
+    if (isPlainObject(raw)) {
+      if (versioned) {
         version = Number.isInteger(raw._v) ? raw._v : 0;
         const { _v, ...rest } = raw;
         override = rest;
@@ -75,8 +92,78 @@ function loadLayered({ label, shippedPath, userPath, legacyPath, versioned = fal
         override = raw;
       }
     }
-  } catch (err) { void err; /* override absent/unreadable → shipped only */ }
-  return { config: isPlainObject(override) ? deepMerge(shipped, override) : shipped, version };
+  }
+  return { config: isPlainObject(override) ? deepMerge(shipped, override) : shipped, version, userConfigError };
 }
 
-module.exports = { isPlainObject, deepMerge, filesStamp, loadLayered };
+const LAST_GOOD = '.last-good';
+const NOTICE = '.recovery-notice.json';
+
+/**
+ * Keep a copy of the last user-config that parsed (written only when it changed).
+ * @param {string} p  user-config path
+ * @param {string} text  its current, valid content
+ * @param {string} label
+ */
+function keepLastGood(p, text, label) {
+  try {
+    const lg = p + LAST_GOOD;
+    if (fs.existsSync(lg) && fs.readFileSync(lg, 'utf-8') === text) return;
+    writeFileAtomic(lg, text);
+  } catch (err) { console.error(`[${label}] last-good copy not kept: ${err.message}`); }
+}
+
+/**
+ * Active recovery of an unreadable user-config: the corrupt file is kept aside
+ * (<file>.corrupt-<ts>), the last good copy is put back, and a notice is left for the next
+ * SessionStart (brain-health). Returns the restored object, or undefined when there is no
+ * usable copy (the caller reports the error loud).
+ * @param {string} p
+ * @param {string} label
+ * @returns {object|undefined}
+ */
+function restoreLastGood(p, label) {
+  try {
+    const lg = p + LAST_GOOD;
+    if (!fs.existsSync(lg)) return undefined;
+    const text = fs.readFileSync(lg, 'utf-8');
+    const obj = JSON.parse(text);
+    if (!isPlainObject(obj)) return undefined;
+    const corrupt = `${p}.corrupt-${Date.now()}`;
+    fs.renameSync(p, corrupt);
+    writeFileAtomic(p, text);
+    writeFileAtomic(p + NOTICE, JSON.stringify({ at: new Date().toISOString(), file: p, corruptCopy: corrupt }));
+    console.error(`[${label}] user-config restored from its last good copy; the corrupt one is at ${corrupt}`);
+    return obj;
+  } catch (err) {
+    console.error(`[${label}] user-config recovery failed: ${err.message}`);
+    return undefined;
+  }
+}
+
+/**
+ * Recovery state of a user-config for the SessionStart advisory: a one-shot notice after an
+ * automatic restore (consumed when read), or the file still unreadable (no good copy).
+ * @param {string} p  user-config path
+ * @param {{consume?: boolean}} [opts]
+ * @returns {{restored?: object, unreadable?: string}|null}
+ */
+function userConfigRecoveryStatus(p, { consume = true } = {}) {
+  const out = {};
+  const n = p + NOTICE;
+  try {
+    if (fs.existsSync(n)) {
+      out.restored = JSON.parse(fs.readFileSync(n, 'utf-8'));
+      if (consume) fs.rmSync(n, { force: true });
+    }
+  } catch (err) { console.error(`[config-merge] recovery notice unreadable: ${err.message}`); }
+  try {
+    if (fs.existsSync(p)) {
+      const v = JSON.parse(fs.readFileSync(p, 'utf-8'));
+      if (!isPlainObject(v)) out.unreadable = 'not a JSON object';
+    }
+  } catch (err) { out.unreadable = err.message; }
+  return Object.keys(out).length ? out : null;
+}
+
+module.exports = { isPlainObject, deepMerge, filesStamp, loadLayered, userConfigRecoveryStatus };
