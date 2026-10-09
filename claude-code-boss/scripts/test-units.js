@@ -18292,6 +18292,21 @@ test('KB gate: mcp-memory backend (handleRemoteKbTool) — cwd WITHOUT id refuse
   } finally { backend._resetConfig(); fs.rmSync(cwd, { recursive: true, force: true }); }
 }));
 
+test('weekly consolidation stamp (Q57): per project — one project running does not consume the week for the others', () => {
+  const cs = require('./curation-session.js');
+  const stamp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-q57-')), 'brain-consolidate-last.json');
+  const now = 10_000_000_000;
+  assertEq(cs.consolidationDue(stamp, 'owner/a', now), true, 'no stamp → due');
+  cs.markConsolidated(stamp, 'owner/a', now);
+  assertEq(cs.consolidationDue(stamp, 'owner/a', now + 1000), false, 'A just ran');
+  assertEq(cs.consolidationDue(stamp, 'owner/b', now + 1000), true, 'B is still due (the old single stamp made it wait a week)');
+  cs.markConsolidated(stamp, 'owner/b', now + 1000);
+  assertEq(JSON.parse(fs.readFileSync(stamp, 'utf8')).byProject, { 'owner/a': now, 'owner/b': now + 1000 }, 'both kept');
+  assertEq(cs.consolidationDue(stamp, 'owner/a', now + 8 * 24 * 3600 * 1000), true, 'due again after a week');
+  fs.writeFileSync(stamp, JSON.stringify({ ts: now }));
+  assertEq(cs.consolidationDue(stamp, 'owner/a', now + 1000), true, 'a legacy global {ts} stamp counts as due');
+});
+
 test('user-config recovery (owner request 2026-10-09): an unreadable file NEVER silently switches the backend — last good copy restored, corrupt kept aside, SessionStart notice; no copy → loud', () => {
   const bc = require('./lib/brain-config.js');
   const bh = require('./brain-health.js');

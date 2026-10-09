@@ -15,6 +15,8 @@
   ilegível (ex.: uma vírgula a mais), o boss o ignorava em silêncio e voltava para os padrões — inclusive o backend
   local, sem avisar. Agora a última versão boa é restaurada automaticamente (a corrompida fica guardada ao lado) e o
   início da sessão avisa; sem cópia boa, o aviso aparece em toda sessão até o arquivo ser corrigido.
+- A consolidação semanal passa a rodar para cada projeto; antes, o primeiro projeto que abria sessão na semana
+  impedia os outros de consolidar.
 
 ## [3.1.0] - 2026-10-08
 

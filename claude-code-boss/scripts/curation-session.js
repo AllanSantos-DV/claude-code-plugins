@@ -78,15 +78,10 @@ async function run(event) {
     // in the dashboard; this keeps the KB tidy without user action.
     try {
       const cstamp = path.join(DATA_DIR, '.runtime', 'brain-consolidate-last.json');
-      let due = true;
-      try {
-        const last = JSON.parse(fs.readFileSync(cstamp, 'utf8')).ts;
-        due = !(Number.isFinite(last) && (Date.now() - last) < 7 * 24 * 60 * 60 * 1000);
-      } catch (e) { void e; }
+      const pid = require('./lib/project-id.js').tryResolveProjectId({ cwd });
       const root = process.env.CLAUDE_PLUGIN_ROOT;
-      if (due && root && !root.includes('${')) {
-        fs.mkdirSync(path.dirname(cstamp), { recursive: true });
-        writeJsonAtomic(cstamp, { ts: Date.now() });
+      if (pid && consolidationDue(cstamp, pid, Date.now()) && root && !root.includes('${')) {
+        markConsolidated(cstamp, pid, Date.now());
         const { spawn } = require('child_process');
         const child = spawn(process.execPath,
           [path.join(root, 'scripts', 'brain-consolidate.js'), '--cwd', cwd, '--apply'], // strict id resolved there (Q54)
@@ -126,4 +121,35 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { run, pendingSkillsSummary };
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Is the weekly consolidation due for THIS project? The stamp is per project id: a single
+ * stamp for the whole data dir let one project's session consume the week for every other
+ * project, which then never consolidated (BACKLOG Q57). A legacy `{ts}` stamp counts as "due".
+ * @param {string} stampFile
+ * @param {string} projectId  strict project id
+ * @param {number} nowMs
+ * @returns {boolean}
+ */
+function consolidationDue(stampFile, projectId, nowMs) {
+  let last;
+  try { last = (JSON.parse(fs.readFileSync(stampFile, 'utf8')).byProject || {})[projectId]; } catch (e) { void e; /* absent/unreadable → due */ }
+  return !(Number.isFinite(last) && (nowMs - last) < WEEK_MS);
+}
+
+/**
+ * Record this project's consolidation run (keeps the other projects' stamps).
+ * @param {string} stampFile
+ * @param {string} projectId
+ * @param {number} nowMs
+ */
+function markConsolidated(stampFile, projectId, nowMs) {
+  let byProject = {};
+  try { const raw = JSON.parse(fs.readFileSync(stampFile, 'utf8')); if (raw && raw.byProject && typeof raw.byProject === 'object') byProject = raw.byProject; } catch (e) { void e; }
+  byProject[projectId] = nowMs;
+  fs.mkdirSync(path.dirname(stampFile), { recursive: true });
+  writeJsonAtomic(stampFile, { byProject });
+}
+
+module.exports = { run, pendingSkillsSummary, consolidationDue, markConsolidated };
