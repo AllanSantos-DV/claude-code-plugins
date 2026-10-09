@@ -1146,6 +1146,10 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   `backend: local`, sem nenhuma mensagem). **Corrigido na hora** com recuperação ativa: toda leitura válida guarda `<arquivo>.last-good`;
   ilegível → a cópia corrompida vai para `<arquivo>.corrupt-<ts>`, a boa é restaurada e o SessionStart (`brain-health`) avisa uma vez;
   sem cópia boa → aviso ALTO a cada SessionStart (roda nos padrões até corrigir). Vale para o Brain e para os hooks. Teste + mutação.
+- [x] **Q57 — a consolidação semanal rodava para UM projeto por semana** (`scripts/curation-session.js`: carimbo único
+  `.runtime/brain-consolidate-last.json` para toda a pasta de dados — o primeiro projeto a abrir sessão consumia a semana dos outros).
+  Visto ao investigar "por que nenhuma promoção" (pedido do dono, 2026-10-09). **Corrigido na hora**: carimbo por id ESTRITO de projeto
+  (`consolidationDue`/`markConsolidated`; carimbo antigo `{ts}` conta como pendente). Teste.
 - [x] **Q51 — Release Guard vermelho a cada 6 h sem drift** (`.github/scripts/release-guard.mjs` `isAncestor`): a atividade da main
   ainda lista um push de histórico reescrito (`5fd0028`, de nenhum branch); no clone do CI esse commit não existe, o `git merge-base`
   sai com 128 e o guard caía (visto 2026-10-08: 3 cron seguidos em falha). **Corrigido na hora**: commit fora do histórico = não-ancestral,
