@@ -13,6 +13,8 @@
  * Contract (tag scheme):
  *   - claude-code-boss  version V  → tag `v<V>`      (e.g. v1.29.0)
  *   - rf-reviewer       version V  → tag `rf-v<V>`   (e.g. rf-v0.1.1)
+ *   - a tagged version whose plugin code changed after the tag is drift too: the version is
+ *     pinned in plugin.json, so Claude Code never delivers that code until the version moves.
  *
  * Usage:
  *   node .github/scripts/release-guard.mjs check   # exit 1 if any plugin untagged
@@ -78,10 +80,40 @@ function statusOf(p, tags) {
 const GRACE_MS = 45 * 60 * 1000;
 
 /**
+ * Does a change to this repo path need a release to reach users? (PURE) Docs, notes and
+ * tests don't change what the installed plugin does; everything else under the plugin does.
+ * @param {string} relPath  repo-relative, forward slashes
+ * @returns {boolean}
+ */
+function shipsBehavior(relPath) {
+  const p = String(relPath || '').replace(/\\/g, '/');
+  // Notes only. A skill/agent/command .md IS behavior (the agent loads it) — not excluded.
+  if (/(^|\/)(README|CHANGELOG|LICENSE|SECURITY|CONTRIBUTING)(\.md)?$/i.test(p)) return false;
+  if (/(^|\/)(docs|tests?|__tests__|smoke)\//.test(p)) return false;
+  if (/(^|\/)scripts\/test-[^/]+\.js$/.test(p) || /(^|\/)test_[^/]+\.py$/.test(p)) return false;
+  return true;
+}
+
+const PLUGIN_DIRS = { 'claude-code-boss': 'claude-code-boss', 'rf-reviewer': 'rf-reviewer' };
+
+/** Files of the plugin's directory that differ between its release tag and HEAD (impure). */
+function changedSinceTag(name, tag) {
+  try {
+    const out = execFileSync('git', ['diff', '--name-only', tag, 'HEAD', '--', PLUGIN_DIRS[name]], { cwd: REPO_ROOT, encoding: 'utf8' });
+    return out.split(/\r?\n/).filter(Boolean);
+  } catch (err) {
+    fail(`cannot diff ${name} against ${tag}: ${err.message}`);
+    return [];
+  }
+}
+
+/**
  * Classifica UM plugin (PURA — `ageMs` e `graceMs` injetados, sem relógio nem git).
  *
- *   ok       → a tag existe
- *   pending  → sem tag, mas a versão entrou na main há menos que a janela
+ *   ok         → a tag existe e nada que muda o comportamento mudou depois dela
+ *   unreleased → a tag existe, mas código do plugin mudou depois dela sem subir a versão
+ *                (`changedSinceTag`: arquivos do plugin entre a tag e o HEAD)
+ *   pending → sem tag, mas a versão entrou na main há menos que a janela
  *              (release em andamento; o agendado reavalia depois)
  *   untagged → sem tag e já passou da janela → DRIFT REAL, falha alto
  *   unknown  → não foi possível ler a versão no repo
@@ -89,9 +121,14 @@ const GRACE_MS = 45 * 60 * 1000;
  * Idade INDETERMINADA (`ageMs == null`) não vira desculpa: sem provar que é
  * recente, assume drift — e diz que não conseguiu medir.
  */
-function classify(p, tags, ageMs, graceMs) {
+function classify(p, tags, ageMs, graceMs, changedSinceTag = []) {
   if (!p.version) return { ...p, state: 'unknown' };
-  if (tags.has(p.tag)) return { ...p, state: 'ok' };
+  if (tags.has(p.tag)) {
+    // The plugin PINS its version (plugin.json): Claude Code updates a user only when that
+    // string changes. Code changed after the tag under the same version never reaches anyone.
+    const code = changedSinceTag.filter(shipsBehavior);
+    return code.length ? { ...p, state: 'unreleased', files: code } : { ...p, state: 'ok' };
+  }
   if (!Number.isFinite(ageMs)) {
     return { ...p, state: 'untagged', note: 'idade da versão indeterminada (histórico raso?) — assumindo drift' };
   }
@@ -215,11 +252,13 @@ async function evaluate(nowMs) {
   const pushes = await fetchMainPushes();
   return plugins().map((p) => {
     const { ageMs, note } = versionAge(VERSION_FILES[p.name], p.version, nowMs, pushes);
-    const r = classify(p, tags, ageMs, GRACE_MS);
+    const changed = p.version && tags.has(p.tag) ? changedSinceTag(p.name, p.tag) : [];
+    const r = classify(p, tags, ageMs, GRACE_MS, changed);
     return note && r.state !== 'ok' ? { ...r, note: r.note ? `${r.note}; ${note}` : note } : r;
   });
 }
 
+/** CLI `check`: prints the per-plugin verdict; exits 1 on drift (untagged / unreleased / unknown). */
 async function cmdCheck() {
   const results = await evaluate(Date.now());
   for (const r of results.filter((x) => x.state === 'pending')) {
@@ -234,11 +273,16 @@ async function cmdCheck() {
     );
     process.exit(0);
   }
-  const lines = bad.map((r) => r.state === 'unknown'
-    ? `  - ${r.name}: versão não encontrada no repo`
-    : `  - ${r.name}: versão ${r.version} sem a tag ${r.tag}${r.note ? ` [${r.note}]` : ''}`);
+  const lines = bad.map((r) => {
+    if (r.state === 'unknown') return `  - ${r.name}: versão não encontrada no repo`;
+    if (r.state === 'unreleased') {
+      return `  - ${r.name}: código mudou depois da tag ${r.tag} SEM subir a versão — quem está na ${r.version} nunca recebe `
+        + `(o Claude Code só atualiza quando a versão do plugin.json muda): ${r.files.slice(0, 5).join(', ')}${r.files.length > 5 ? ` … +${r.files.length - 5}` : ''}`;
+    }
+    return `  - ${r.name}: versão ${r.version} sem a tag ${r.tag}${r.note ? ` [${r.note}]` : ''}`;
+  });
   process.stderr.write(
-    `\n[release-guard] RELEASE DRIFT - ${bad.length} plugin(s) na main sem tag publicada:\n` +
+    `\n[release-guard] RELEASE DRIFT - ${bad.length} plugin(s) com a main fora da release publicada:\n` +
     lines.join('\n') +
     `\n\nCorte a release de cada um (mantém o smoke gate do AGENTS.md):\n` +
     `  claude-code-boss → git tag -a v<versão> -m "..." && git push origin v<versão>\n` +
@@ -252,7 +296,7 @@ async function cmdList() {
   process.stdout.write(JSON.stringify(await evaluate(Date.now()), null, 2) + '\n');
 }
 
-export { classify, pushArrival, versionAge, evaluate, statusOf, plugins, isAncestor, GRACE_MS, VERSION_FILES };
+export { classify, shipsBehavior, pushArrival, versionAge, evaluate, statusOf, plugins, isAncestor, GRACE_MS, VERSION_FILES };
 
 // CLI só quando executado DIRETAMENTE. Sem esta guarda, um `import` do módulo
 // (por um teste, por exemplo) roda o check e chama process.exit, derrubando o

@@ -12,6 +12,7 @@
  * Files managed:
  *   claude-code-boss/package.json
  *   claude-code-boss/package-lock.json — BOTH version fields (root + packages[""])
+ *   claude-code-boss/.claude-plugin/plugin.json — the version Claude Code installs by
  *   README.md (repo root)     — table row  | claude-code-boss | X.Y.Z |
  *   claude-code-boss/README.md — badge/table row and **vX.Y.Z** references
  *
@@ -29,7 +30,7 @@
  *
  * Release flow (all local, no CI involvement):
  *   node scripts/sync-version.js 1.4.0
- *   git add claude-code-boss/package.json README.md claude-code-boss/README.md
+ *   git add claude-code-boss/package.json claude-code-boss/package-lock.json claude-code-boss/.claude-plugin/plugin.json README.md claude-code-boss/README.md
  *   git commit -m "chore: bump version to 1.4.0"
  *   git tag v1.4.0
  *   git push origin main --tags
@@ -124,6 +125,9 @@ const FILES = [
   // packages[""] self-entry. Syncing only one leaves the file self-contradictory.
   jsonVersionFile(lockPath, 'version'),
   jsonVersionFile(lockPath, 'packages', '', 'version'),
+  // The version Claude Code itself uses: without it the plugin's version is the commit
+  // SHA, so every push to main reached users as a new "version" (6cd3336c removed it).
+  jsonVersionFile(path.join(PLUGIN_ROOT, '.claude-plugin', 'plugin.json'), 'version'),
   markdownTableFile(path.join(REPO_ROOT, 'README.md'), 'claude-code-boss'),
   markdownBoldVersionFile(path.join(PLUGIN_ROOT, 'README.md')),
 ];
@@ -177,7 +181,7 @@ if (CHECK_MODE) {
   console.log('');
   if (explicitVersion) {
     console.log('Next steps to release:');
-    console.log(`  git add claude-code-boss/package.json README.md claude-code-boss/README.md`);
+    console.log(`  git add claude-code-boss/package.json claude-code-boss/package-lock.json claude-code-boss/.claude-plugin/plugin.json README.md claude-code-boss/README.md`);
     console.log(`  git commit -m "chore: bump version to ${version}"`);
     console.log(`  git tag v${version}`);
     console.log(`  git push origin main --tags`);

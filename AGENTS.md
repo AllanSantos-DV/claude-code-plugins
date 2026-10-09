@@ -123,6 +123,13 @@ deterministic guard — **no AI, no quota**, like pages-guard —
 
 - **Tag scheme**: `claude-code-boss` version `V` → tag `v<V>`; `rf-reviewer`
   version `V` → tag `rf-v<V>`.
+- **Real semver, pinned**: each plugin's `.claude-plugin/plugin.json` carries
+  `version` (claude-code-boss: kept in step by `scripts/sync-version.js`). Claude
+  Code updates users only when that string changes — without it the version is the
+  commit SHA and every push to `main` shipped as a "new version". The flip side is
+  guarded too: code under the plugin changed after its tag **without** a version
+  bump is drift (`unreleased`), because nobody would ever receive it. Docs, notes
+  and tests don't count (`shipsBehavior`).
 - **CI signal** (`.github/workflows/release-guard.yml`) runs on push to `main`
   **and on a 6-hourly `schedule`** (not on PRs, so it never blocks development).
 - **Why also scheduled**: release drift is a **state**, not an event. Triggered only

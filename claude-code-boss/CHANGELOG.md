@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- **O plugin passa a ter versão de verdade (semver) para o Claude Code.** O `plugin.json` estava sem `version`
+  desde maio, e o Claude Code usava o SHA do commit como versão: cada push no `main` (até só de página ou de
+  outro plugin do repositório) chegava aos usuários como "versão nova", e o `/plugin` mostrava um hash. Agora
+  o `plugin.json` traz a versão (mantida pelo `sync-version.js` junto com o `package.json`) e o usuário só
+  recebe atualização quando a versão sobe. Para que esquecer o bump não prenda ninguém numa versão velha, o
+  `release-guard` acusa código do plugin alterado depois da tag sem versão nova.
+- **A atualização pelo painel grava a versão semver no registro do Claude Code** (gravava o SHA, e o Claude
+  Code via versão diferente e baixava a mesma release de novo) e **nunca apaga uma pasta de cache existente**
+  (o daemon pode estar rodando dela) — reinstalar vai para uma pasta nova.
+
 ## [3.1.1] - 2026-10-09
 
 ### Fixed

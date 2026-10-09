@@ -7633,6 +7633,49 @@ test('plugin-updater.performUpdate: NO digest + allowUnsignedLegacy → escape h
   assert(threw && /UNZIP_REACHED/.test(threw.message), `escape hatch should pass gate to unzip, got ${threw && threw.message}`);
 });
 
+test('plugin-updater.performUpdate: registry records the SEMVER version (what Claude Code computes) and never deletes an existing cache dir', async () => {
+  const base = path.join(os.homedir(), '.claude', 'plugins', 'cache', 'allansantos-plugins', 'claude-code-boss');
+  const occupied = path.join(base, 'abc123def456');
+  fs.mkdirSync(occupied, { recursive: true });
+  fs.writeFileSync(path.join(occupied, 'daemon-is-running-here'), 'x');
+  let keep = null;
+  const io = {
+    fetchRelease: async () => _updRel,
+    resolveSha: async () => 'abc123def456',
+    download: async (url, dest) => { fs.writeFileSync(dest, url.endsWith('.sha256') ? 'a'.repeat(64) : 'fakezip'); return dest; },
+    sha256File: () => 'a'.repeat(64),
+    unzip: (_zip, dir) => { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ version: '2.0.0' })); },
+    killStale: (k) => { keep = k; },
+  };
+  const r = await pu.performUpdate(_updRoot(), { io, skipInstall: true });
+  assertEq(r.updated, true);
+  assertEq(fs.existsSync(path.join(occupied, 'daemon-is-running-here')), true, 'the dir a running daemon may load from survives the re-install');
+  assert(r.installPath !== occupied && path.basename(r.installPath).startsWith('abc123def456-'), `fresh dir expected, got ${r.installPath}`);
+  const reg = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.claude', 'plugins', 'installed_plugins.json'), 'utf8'));
+  const e = reg.plugins['claude-code-boss@allansantos-plugins'][0];
+  assertEq(e.version, '2.0.0', 'Claude Code computes the plugin.json version: recording the SHA made it re-fetch the same release');
+  assertEq(e.gitCommitSha, 'abc123def456');
+  assertEq(keep, path.basename(r.installPath), 'stale-process cleanup keeps the dir actually installed');
+});
+
+test('plugin-updater.freshCacheDir: first free name, never an existing dir', () => {
+  const taken = new Set([path.join('B', 'x'), ]);
+  assertEq(pu.freshCacheDir('B', 'y', (p) => taken.has(p)), path.join('B', 'y'));
+  const alt = pu.freshCacheDir('B', 'x', (p) => taken.has(p));
+  assert(alt !== path.join('B', 'x') && path.basename(alt).startsWith('x-'), alt);
+  let threw = null; try { pu.freshCacheDir('B', 'x', () => true); } catch (err) { threw = err; }
+  assert(threw && /no free cache dir/.test(threw.message), 'fails loud instead of reusing a dir');
+});
+
+test('semver: plugin.json PINS the version and it equals package.json (without it Claude Code versions the plugin by commit SHA)', () => {
+  const pj = JSON.parse(fs.readFileSync(path.join(ROOT, '.claude-plugin', 'plugin.json'), 'utf8'));
+  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+  assert(/^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$/.test(String(pj.version || '')), `plugin.json version must be semver, got ${pj.version}`);
+  assertEq(pj.version, pkg.version);
+  const sync = fs.readFileSync(path.join(SCRIPTS, 'sync-version.js'), 'utf8');
+  assert(/\.claude-plugin', 'plugin\.json'\), 'version'/.test(sync), 'sync-version keeps it in step on every bump');
+});
+
 // ─── Sprint 3 — correctness fixes (recall/state that failed silently) ─────────
 const arDetectS3 = require('./active-research-detect.js');
 test('C4 active-research: buildLibRegex([]) never matches (no fail-open noise)', () => {
@@ -8300,6 +8343,23 @@ test('release-guard.classify: idade INDETERMINADA nao vira desculpa (fail-loud)'
   const r = classify(p, new Set(), null, 45 * 60000);
   assertEq(r.state, 'untagged', 'sem provar que e recente, assume drift');
   assertEq(/indetermin/i.test(r.note || ''), true, 'e diz que nao conseguiu medir a idade');
+});
+
+test('release-guard.classify: versao COM tag mas codigo mudado depois dela = unreleased (a versao pinada nunca entrega)', async () => {
+  const { classify } = await loadReleaseGuard();
+  const p = { name: 'claude-code-boss', version: '3.1.1', tag: 'v3.1.1' };
+  const tags = new Set(['v3.1.1']);
+  const r = classify(p, tags, 10, 45 * 60000, ['claude-code-boss/scripts/curation-guard.js', 'claude-code-boss/docs/BACKLOG.md']);
+  assertEq(r.state, 'unreleased');
+  assertEq(r.files, ['claude-code-boss/scripts/curation-guard.js'], 'so o que muda comportamento conta');
+  assertEq(classify(p, tags, 10, 45 * 60000, ['claude-code-boss/docs/BACKLOG.md', 'claude-code-boss/CHANGELOG.md', 'claude-code-boss/scripts/test-units.js', 'rf-reviewer/servers/rf-engine/tests/x.py']).state, 'ok', 'docs/notas/testes nao exigem release');
+  assertEq(classify(p, tags, 10, 45 * 60000).state, 'ok', 'sem diff = ok');
+});
+
+test('release-guard.shipsBehavior: codigo, hooks, config e manifesto exigem release; docs/testes nao', async () => {
+  const { shipsBehavior } = await loadReleaseGuard();
+  for (const f of ['claude-code-boss/hooks/hooks.json', 'claude-code-boss/config/hooks-config.json', 'claude-code-boss/.claude-plugin/plugin.json', 'claude-code-boss/skills/x/run.mjs', 'claude-code-boss/skills/x/SKILL.md', 'claude-code-boss/agents/a.md', 'rf-reviewer/servers/rf-engine/rf_engine/cli.py']) assertEq(shipsBehavior(f), true, f);
+  for (const f of ['claude-code-boss/README.md', 'claude-code-boss/docs/features/CURATION.md', 'claude-code-boss/scripts/test-hooks.js', 'rf-reviewer/servers/rf-engine/tests/test_x.py']) assertEq(shipsBehavior(f), false, f);
 });
 
 test('release-guard.classify: versao ausente no repo continua unknown', async () => {
