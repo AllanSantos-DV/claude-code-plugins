@@ -89,7 +89,7 @@ async function run(event) {
         writeJsonAtomic(cstamp, { ts: Date.now() });
         const { spawn } = require('child_process');
         const child = spawn(process.execPath,
-          [path.join(root, 'scripts', 'brain-consolidate.js'), '--project', path.basename(cwd), '--apply'],
+          [path.join(root, 'scripts', 'brain-consolidate.js'), '--cwd', cwd, '--apply'], // strict id resolved there (Q54)
           { detached: true, stdio: 'ignore', windowsHide: true, env: process.env });
         child.unref();
       }

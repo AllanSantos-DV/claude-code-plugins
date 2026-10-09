@@ -18292,6 +18292,34 @@ test('KB gate: mcp-memory backend (handleRemoteKbTool) — cwd WITHOUT id refuse
   } finally { backend._resetConfig(); fs.rmSync(cwd, { recursive: true, force: true }); }
 }));
 
+test('brain-consolidate (Q54): on mcp-memory it consolidates the SERVER — dry-run touches nothing; apply sums recurrence into the survivor, then deletes the absorbed', async () => {
+  const bc = require('./brain-consolidate.js');
+  const docs = [
+    { id: 'a', title: 'Lesson A', summary: 'near dup', type: 'lesson', recurrence: 2, confidence: 0.9, created_at: 1, tags: ['t'], content: { detail: 'da' }, scope: 'project' },
+    { id: 'b', title: 'Lesson A bis', summary: 'near dup', type: 'lesson', recurrence: 1, confidence: 0.8, created_at: 2, tags: [], content: { detail: 'db' }, scope: 'project' },
+    { id: 'c', title: 'Unrelated', summary: 'other', type: 'lesson', recurrence: 1, confidence: 0.8, created_at: 3, tags: [], content: { detail: 'dc' }, scope: 'project' },
+  ];
+  const vec = { 'Lesson A': [1, 0, 0], 'Lesson A bis': [0.8, 0.6, 0], Unrelated: [0, 0, 1] }; // cos(a,b)=0.8 (in band), c orthogonal
+  const calls = [];
+  const backend = {
+    peekMode: () => 'mcp-memory', init: async () => {}, close: async () => {},
+    listDocuments: async (q) => { calls.push(['list', q.projectId, q.type]); return docs.map((d) => ({ ...d })); },
+    save: async (e) => { calls.push(['save', e.id, e.recurrence, e.projectId]); return e.id; },
+    delete: async (id) => { calls.push(['delete', id]); },
+  };
+  const embedder = { init: async () => {}, getStatus: () => ({ ready: true }), embed: async (t) => vec[Object.keys(vec).sort((x, y) => y.length - x.length).find((k) => t.startsWith(k))] };
+  const dry = await bc.consolidate({ project: 'o/p', apply: false, _backend: backend, _embedder: embedder });
+  assertEq([dry.source, dry.groups, dry.merged, dry.deleted], ['mcp-memory', 1, 0, 0]);
+  assertEq(calls.filter((c) => c[0] !== 'list'), [], 'dry-run never writes to the server');
+  assertEq(calls[0], ['list', 'o/p', undefined], 'all types of the strict project');
+  calls.length = 0;
+  const run = await bc.consolidate({ project: 'o/p', apply: true, _backend: backend, _embedder: embedder });
+  assertEq([run.merged, run.deleted], [1, 1]);
+  assertEq(calls.filter((c) => c[0] !== 'list'), [['save', 'a', 3, 'o/p'], ['delete', 'b']], 'survivor upserted with the summed recurrence BEFORE the absorbed one is deleted; the unrelated entry is untouched');
+  const off = await bc.consolidate({ project: 'o/p', apply: true, _backend: backend, _embedder: { init: async () => {}, getStatus: () => ({ ready: false, error: 'no model' }) } });
+  assert(off.ok === false && /embedder unavailable/.test(off.reason), 'no embedder → fails loud, nothing deleted');
+});
+
 test('mcp-memory capture_lesson (Q53): admission dedup on the server — an equivalent capture MERGES (recurrence++), a different type never does', _withoutEnvProjectId(async () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-q53-dedup-'));
   fs.mkdirSync(path.join(cwd, '.memory'));
