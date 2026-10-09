@@ -8,6 +8,9 @@
   que dispara a promoção nunca crescia; e a promoção lia a memória local, que não recebe mais as lições, pelo
   nome da pasta. Agora uma captura equivalente (mesmo tipo e projeto) soma a recorrência no próprio servidor, e
   a promoção e o checklist leem o servidor pelo id oficial do projeto.
+- **A consolidação semanal da memória funciona com o servidor de memória.** Ela só olhava a memória local (pelo
+  nome da pasta) e, com o backend mcp-memory, não consolidava nada. Agora junta as lições quase iguais no próprio
+  servidor, somando a recorrência na que fica e apagando as absorvidas.
 
 ## [3.1.0] - 2026-10-08
 

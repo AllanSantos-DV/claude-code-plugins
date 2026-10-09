@@ -1119,11 +1119,24 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   normalização das entradas do servidor, scan no mcp-memory (draft + checklist); mutações reprovam. **Teste real** contra o servidor
   desta máquina (projeto isolado, `smoke/q53-real.mjs`): admit → merge(2) → merge(3) no mesmo documento, servidor com `recurrence=3`,
   scan real gera o draft e o checklist; documentos de teste apagados.
-- [ ] **Q54 — a consolidação semanal (`scripts/brain-consolidate.js`) também só enxerga a KB local** (`require('./brain-store.js')` +
+- [x] **Q54 — a consolidação semanal (`scripts/brain-consolidate.js`) também só enxerga a KB local** (`require('./brain-store.js')` +
   `project = basename(cwd)`): no mcp-memory não consolida nada. Visto ao fechar o Q53. Corrigir no servidor é destrutivo (apaga os
   documentos absorvidos) e exige re-embedar (os vetores do servidor não são expostos) — o dedup na captura (Q53) já cobre o caso ≥ 0,9.
   Proposta: no mcp-memory, listar pelo id estrito, embedar localmente, agrupar na faixa 0,7–0,9 e aplicar só com `--apply` (o gatilho
   semanal já usa `--apply`: decidir com o dono se no servidor fica em dry-run por padrão).
+  **Resolvido em 2026-10-09** — dono decidiu: exclusão de verdade, sem dry-run por padrão (meses de dry-run sem perda). No mcp-memory,
+  `consolidateRemote` lista o projeto (id ESTRITO do `--cwd`; o gatilho semanal passa `--cwd`, não o nome da pasta), embeda cada
+  entrada localmente (título+resumo), agrupa com o mesmo planner e, por grupo, PRIMEIRO grava o sobrevivente com a recorrência somada
+  e DEPOIS apaga os absorvidos. Sem embedder → `ok:false` com o motivo, nada apagado. Teste unitário + mutação; **teste real** contra o
+  servidor (`smoke/q54-real.mjs`, projeto isolado): par a 0,789 → 1 grupo, sobrevivente rec=3, absorvido apagado, o não relacionado
+  intacto. Achado junto: o texto do painel ("no servidor, a deduplicação é feita no servidor") era falso — corrigido (EN/PT).
+- [ ] **Q55 — o inverso do Q53/Q54: quem volta do servidor (mcp-memory) para o backend LOCAL perde de vista tudo que capturou no
+  servidor.** Só existe migração local → servidor (`brain-migrate.js` `migrateLocalToMcp`, botão "Migrar agora"); não há servidor → local.
+  **Provado com teste real** (`smoke/inverse-real.mjs`, projeto isolado, troca de modo em processo sem tocar a config): a lição capturada
+  no servidor aparece na busca (1 hit); após voltar para local, busca = 0 e contagem local = 0; a lição segue no servidor (1). Além disso
+  as entradas locais antigas gravadas pelo NOME da pasta (pré-2.29.1, ex.: `claude-code` = 14) também não são vistas pelo id estrito.
+  Proposta: migração espelho `migrateMcpToLocal` (`list_projects` + `list_documents` por projeto → store local com o mesmo id, embedding
+  local + índice de palavras) + gatilho no painel ao trocar para local; decidir com o dono a forma (ver relato ao Jarvis).
 - [x] **Q51 — Release Guard vermelho a cada 6 h sem drift** (`.github/scripts/release-guard.mjs` `isAncestor`): a atividade da main
   ainda lista um push de histórico reescrito (`5fd0028`, de nenhum branch); no clone do CI esse commit não existe, o `git merge-base`
   sai com 128 e o guard caía (visto 2026-10-08: 3 cron seguidos em falha). **Corrigido na hora**: commit fora do histórico = não-ancestral,
