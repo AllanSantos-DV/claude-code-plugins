@@ -341,11 +341,7 @@ function saveCompaction(patch) {
   if (p.enabled !== undefined) next.enabled = p.enabled === true;
   if (!Object.keys(next).length) throw new Error('nothing to save (thresholdPercent, minIntervalMinutes or enabled)');
   const file = userConfigPath();
-  let current = {};
-  try {
-    if (fs.existsSync(file)) current = JSON.parse(fs.readFileSync(file, 'utf-8')) || {};
-  } catch (err) { void err; /* corrupt/absent → start fresh */ }
-  if (!isPlainObject(current)) current = {};
+  const current = readUserConfigForWrite(file);
   current.compaction = { ...(isPlainObject(current.compaction) ? current.compaction : {}), ...next };
   fs.mkdirSync(path.dirname(file), { recursive: true });
   writeFileAtomic(file, `${JSON.stringify(current, null, 2)}\n`);
@@ -371,11 +367,7 @@ function saveProfile(name) {
     throw new Error(`invalid profile '${name}'. Valid: ${profileNames().join(', ')}`);
   }
   const p = userConfigPath();
-  let current = {};
-  try {
-    if (fs.existsSync(p)) current = JSON.parse(fs.readFileSync(p, 'utf-8')) || {};
-  } catch (err) { void err; /* corrupt/absent → start fresh */ }
-  if (!isPlainObject(current)) current = {};
+  const current = readUserConfigForWrite(p);
   current.profile = name;
   fs.mkdirSync(path.dirname(p), { recursive: true });
   writeFileAtomic(p, `${JSON.stringify(current, null, 2)}\n`);
@@ -404,11 +396,7 @@ function isHookDisabled(id) {
 function setHookDisabled(id, disabled) {
   if (typeof id !== 'string' || !id.trim()) throw new Error('hook id must be a non-empty string');
   const file = userConfigPath();
-  let current = {};
-  try {
-    if (fs.existsSync(file)) current = JSON.parse(fs.readFileSync(file, 'utf-8')) || {};
-  } catch (err) { void err; /* corrupt/absent → start fresh */ }
-  if (!isPlainObject(current)) current = {};
+  const current = readUserConfigForWrite(file);
   const list = new Set(Array.isArray(current.disabledHooks) ? current.disabledHooks.filter((x) => typeof x === 'string') : []);
   if (disabled) list.add(id); else list.delete(id);
   current.disabledHooks = [...list].sort();
@@ -450,15 +438,29 @@ function saveOverrides(full) {
   if (removed.length) throw new Error(`removing keys is not supported (set enabled:false instead): ${removed.join(', ')}`);
   const file = userConfigPath();
   if (!Object.keys(changes).length) return { path: file, changed: false };
-  let current = {};
-  try {
-    if (fs.existsSync(file)) current = JSON.parse(fs.readFileSync(file, 'utf-8')) || {};
-  } catch (err) { void err; /* corrupt/absent → start fresh */ }
-  if (!isPlainObject(current)) current = {};
+  const current = readUserConfigForWrite(file);
   fs.mkdirSync(path.dirname(file), { recursive: true });
   writeFileAtomic(file, `${JSON.stringify(deepMerge(current, changes), null, 2)}\n`);
   _resetCache();
   return { path: file, changed: true };
+}
+
+/**
+ * The user-config as it is on disk, for a read-modify-write. Absent → {}. Present but not a
+ * JSON object → throws instead of starting fresh: every writer (profile, compaction slider,
+ * hooks editor, hook switch) used to replace an unreadable file with {} + its one key,
+ * silently wiping the user's other settings (pre-release audit 3.1.0).
+ * @param {string} file
+ * @returns {object}
+ */
+function readUserConfigForWrite(file) {
+  if (!fs.existsSync(file)) return {};
+  let parsed;
+  try { parsed = JSON.parse(fs.readFileSync(file, 'utf-8')); } catch (err) {
+    throw new Error(`user-config is not valid JSON (${file}): ${err.message} — fix or delete it; not overwriting your settings`);
+  }
+  if (!isPlainObject(parsed)) throw new Error(`user-config is not a JSON object (${file}) — fix or delete it; not overwriting your settings`);
+  return parsed;
 }
 
 function _resetCache() { _cache = null; _resolvedCache = null; }

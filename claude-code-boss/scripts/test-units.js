@@ -18017,6 +18017,33 @@ test('capture_lesson (Q42): dedup merges only within the SAME type — a decisio
   assertEq([entries.length, merges], [2, 1]);
 });
 
+test('user-config writers (auditoria 3.1.0): an unreadable user-config fails loud and is NOT replaced (no silent wipe of the other settings)', () => {
+  const hc = require('./lib/hooks-config.js');
+  const file = hc.userConfigPath();
+  assert(file.startsWith(process.env.USERPROFILE), `the suite's temp HOME, never the real one (${file})`);
+  const prev = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+  const broken = '{ "profile": "free", "disabledHooks": ["hook_stop_dispatcher"], }'; // stray comma (hand edit)
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    for (const [name, call] of [
+      ['saveProfile', () => hc.saveProfile('dev')],
+      ['saveCompaction', () => hc.saveCompaction({ thresholdPercent: 40 })],
+      ['setHookDisabled', () => hc.setHookDisabled('hook_x', true)],
+      ['saveOverrides', () => hc.saveOverrides({ ...hc.load(), memoryRotate: { maxLines: 77 } })],
+    ]) {
+      fs.writeFileSync(file, broken);
+      hc._resetCache();
+      let threw = null;
+      try { call(); } catch (err) { threw = err.message; }
+      assert(/not valid JSON/.test(threw || ''), `${name} fails loud (${threw})`);
+      assertEq(fs.readFileSync(file, 'utf8'), broken, `${name} left the file untouched`);
+    }
+  } finally {
+    if (prev == null) { try { fs.unlinkSync(file); } catch (err) { void err; } } else fs.writeFileSync(file, prev);
+    hc._resetCache();
+  }
+});
+
 test('hook switch-off (Q43): kept in the update-safe user-config, and the daemon answers {} WITHOUT running the hook', async () => {
   const hc = require('./lib/hooks-config.js');
   const ht = require('./lib/hook-tools.js');
