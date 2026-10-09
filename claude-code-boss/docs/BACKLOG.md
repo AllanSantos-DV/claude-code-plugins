@@ -1191,6 +1191,10 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   - **[INFO] texto do aviso**: o arquivo de hooks não diz mais "backend: local".
   - **Limitação conhecida (aceita)**: capturas/consolidação simultâneas do mesmo documento podem perder um incremento de recorrência
     (última escrita vence) — só o contador, nunca conteúdo.
+- [x] **Q61 — deploy das páginas falhou no release 3.1.1** (`.github/workflows/pages-deploy.yml`, job único): o upload terminou, mas o
+  deploy consultou os artefatos 0,4 s depois e viu 0 (atraso de consistência do GitHub); re-rodar o job no mesmo run deixou 2 artefatos
+  "github-pages" e o deploy recusou. Contornado no release com um run novo (`workflow_dispatch`, verde). **Corrigido**: dois jobs (build →
+  deploy com `needs`), o modelo oficial do GitHub. Entra no main na próxima release.
 - [x] **Q60 — teste intermitente `audit: shape-output STREAMS`** (`scripts/test-units.js`): esperava 400 ms fixos pela cabeça da saída;
   sob carga a subida do processo filho passava disso (visto 1 vez em 2026-10-09; a rodada seguinte passou). **Corrigido na hora**:
   espera ativa até 10 s com o stdin ainda aberto (a prova "cabeça antes do EOF" continua).
