@@ -1130,13 +1130,22 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   e DEPOIS apaga os absorvidos. Sem embedder → `ok:false` com o motivo, nada apagado. Teste unitário + mutação; **teste real** contra o
   servidor (`smoke/q54-real.mjs`, projeto isolado): par a 0,789 → 1 grupo, sobrevivente rec=3, absorvido apagado, o não relacionado
   intacto. Achado junto: o texto do painel ("no servidor, a deduplicação é feita no servidor") era falso — corrigido (EN/PT).
-- [ ] **Q55 — o inverso do Q53/Q54: quem volta do servidor (mcp-memory) para o backend LOCAL perde de vista tudo que capturou no
+- [x] **Q55 — o inverso do Q53/Q54: quem volta do servidor (mcp-memory) para o backend LOCAL perde de vista tudo que capturou no
   servidor.** Só existe migração local → servidor (`brain-migrate.js` `migrateLocalToMcp`, botão "Migrar agora"); não há servidor → local.
   **Provado com teste real** (`smoke/inverse-real.mjs`, projeto isolado, troca de modo em processo sem tocar a config): a lição capturada
   no servidor aparece na busca (1 hit); após voltar para local, busca = 0 e contagem local = 0; a lição segue no servidor (1). Além disso
   as entradas locais antigas gravadas pelo NOME da pasta (pré-2.29.1, ex.: `claude-code` = 14) também não são vistas pelo id estrito.
   Proposta: migração espelho `migrateMcpToLocal` (`list_projects` + `list_documents` por projeto → store local com o mesmo id, embedding
   local + índice de palavras) + gatilho no painel ao trocar para local; decidir com o dono a forma (ver relato ao Jarvis).
+  **FECHADO em 2026-10-09 — NÃO é bug, por decisão do dono:** o mcp-memory é um agregador (curadoria, correlação…); quem desliga e fica
+  só no local perde isso por natureza, não há como recriar do zero no local. Opções A e B descartadas, nada implementado; local → servidor
+  segue pelo "Migrar agora".
+- [x] **Q56 — config de usuário ilegível trocava o backend para LOCAL em silêncio** (`scripts/lib/config-merge.js` `loadLayered`: o
+  parse que falhava caía num `catch { void err }` e o merge usava só o arquivo do plugin, que vem com `backend.type: local`). Visto ao
+  investigar "a troca de backend é sempre explícita?" (pedido do dono, 2026-10-09); **provado** num HOME temporário (vírgula a mais →
+  `backend: local`, sem nenhuma mensagem). **Corrigido na hora** com recuperação ativa: toda leitura válida guarda `<arquivo>.last-good`;
+  ilegível → a cópia corrompida vai para `<arquivo>.corrupt-<ts>`, a boa é restaurada e o SessionStart (`brain-health`) avisa uma vez;
+  sem cópia boa → aviso ALTO a cada SessionStart (roda nos padrões até corrigir). Vale para o Brain e para os hooks. Teste + mutação.
 - [x] **Q51 — Release Guard vermelho a cada 6 h sem drift** (`.github/scripts/release-guard.mjs` `isAncestor`): a atividade da main
   ainda lista um push de histórico reescrito (`5fd0028`, de nenhum branch); no clone do CI esse commit não existe, o `git merge-base`
   sai com 128 e o guard caía (visto 2026-10-08: 3 cron seguidos em falha). **Corrigido na hora**: commit fora do histórico = não-ancestral,

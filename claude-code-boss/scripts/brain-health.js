@@ -251,6 +251,27 @@ function embedderDimMismatch(data) {
   }
 }
 
+/**
+ * The user's config files (Brain and hooks): a one-shot notice after an automatic restore of an
+ * unreadable file, or a loud line when one is still unreadable with no good copy — which means the
+ * boss is running on the shipped defaults (backend: local) instead of the user's choice.
+ * @returns {string|null}
+ */
+function configRecoveryText() {
+  const { userConfigRecoveryStatus } = require('./lib/config-merge.js');
+  const lines = [];
+  const files = [];
+  try { files.push(require('./lib/brain-config.js').userConfigPath()); } catch (err) { console.error(`[BRAIN-HEALTH] brain config path: ${err.message}`); }
+  try { files.push(require('./lib/hooks-config.js').userConfigPath()); } catch (err) { console.error(`[BRAIN-HEALTH] hooks config path: ${err.message}`); }
+  for (const f of files) {
+    const st = userConfigRecoveryStatus(f);
+    if (!st) continue;
+    if (st.restored) lines.push(`[BRAIN-HEALTH] Your config file ${f} was unreadable; the last good version was restored automatically (the corrupt copy is at ${st.restored.corruptCopy}).`);
+    if (st.unreadable) lines.push(`[BRAIN-HEALTH] Your config file ${f} is unreadable (${st.unreadable}) and there is no good copy to restore — the boss is running on the shipped defaults (backend: local) until you fix or delete it.`);
+  }
+  return lines.length ? lines.join('\n') : null;
+}
+
 function buildDimMismatchText({ count, dims }) {
   return `[BRAIN-HEALTH] ${count} memory entr${count === 1 ? 'y was' : 'ies were'} embedded with a different model than the ` +
     `configured embedder (${dims}-dim) — semantic search can't match them (keyword-only for those). ` +
@@ -376,7 +397,9 @@ async function run(event) {
       }
     }
 
-    return [slow, other].filter(Boolean).join('\n\n') || null;
+    // Config recovery first: it decides whether the rest is even running on the user's choices.
+    const cfgNote = eventName === 'SessionStart' ? configRecoveryText() : null;
+    return [cfgNote, slow, other].filter(Boolean).join('\n\n') || null;
   } catch (err) {
     console.error(`[BRAIN-HEALTH] probe crashed: ${err.message}`);
     return null;
@@ -388,4 +411,4 @@ function main() { return runTextCli(run, 'BRAIN-HEALTH', 'SessionStart'); }
 if (require.main === module) main();
 
 module.exports = {
-  embedderDimMismatch, countPendingDrafts, shouldRunOnPrompt, brainServerDepsOk, run, _slowHookAlert: slowHookAlert };
+  embedderDimMismatch, configRecoveryText, countPendingDrafts, shouldRunOnPrompt, brainServerDepsOk, run, _slowHookAlert: slowHookAlert };

@@ -11,6 +11,10 @@
 - **A consolidação semanal da memória funciona com o servidor de memória.** Ela só olhava a memória local (pelo
   nome da pasta) e, com o backend mcp-memory, não consolidava nada. Agora junta as lições quase iguais no próprio
   servidor, somando a recorrência na que fica e apagando as absorvidas.
+- **Um arquivo de configuração corrompido não troca mais o backend sozinho.** Se o seu arquivo de ajustes ficasse
+  ilegível (ex.: uma vírgula a mais), o boss o ignorava em silêncio e voltava para os padrões — inclusive o backend
+  local, sem avisar. Agora a última versão boa é restaurada automaticamente (a corrompida fica guardada ao lado) e o
+  início da sessão avisa; sem cópia boa, o aviso aparece em toda sessão até o arquivo ser corrigido.
 
 ## [3.1.0] - 2026-10-08
 

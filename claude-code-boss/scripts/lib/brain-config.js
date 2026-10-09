@@ -338,6 +338,7 @@ function save(config, opts) {
 
 module.exports = {
   load,
+  userConfigPath,
   loadWithVersion,
   save,
   deepDiff,
