@@ -32,7 +32,15 @@ function hasFlag(name) { return process.argv.includes(`--${name}`); }
  */
 async function consolidateRemote({ project, apply, minSim, maxSim, backend, embedder }) {
   await backend.init({ project, skipEmbedder: true });
-  const docs = await backend.listDocuments({ projectId: project });
+  // Only documents THIS plugin wrote (title+type metadata): never ones the server distilled itself
+  // or a sister client wrote (pre-release audit 3.1.1).
+  const all = (await backend.listDocuments({ projectId: project })).filter((d) => d.bossWritten);
+  // Deletes a previous run left undone (its survivor recorded them in absorbedIds): delete them,
+  // never sum their recurrence again (that inflated the count every week — audit 3.1.1).
+  const pending = new Set();
+  for (const d of all) for (const id of ((d.metadata && d.metadata.absorbedIds) || [])) pending.add(id);
+  const leftovers = all.filter((d) => pending.has(d.id));
+  const docs = all.filter((d) => !pending.has(d.id));
   const emb = embedder || require('./brain-embedder.js');
   await emb.init();
   if (!emb.getStatus().ready) {
@@ -46,19 +54,26 @@ async function consolidateRemote({ project, apply, minSim, maxSim, backend, embe
   const plans = planMerges(entries, store.cosineSimilarity, { minSim, maxSim });
   let merged = 0, deleted = 0;
   if (apply) {
+    for (const d of leftovers) {
+      try { await backend.delete(d.id); deleted += 1; } catch (err) { console.error(`[brain-consolidate] pending delete ${d.id}: ${err.message}`); }
+    }
     const byId = new Map(docs.map((d) => [d.id, d]));
     for (const p of plans) {
       const s = byId.get(p.survivorId);
       try {
-        await backend.save({ id: s.id, title: s.title, summary: s.summary, content: { detail: (s.content && s.content.detail) || s.summary }, type: s.type, tags: s.tags || [], confidence: s.confidence, scope: s.scope || 'project', projectId: project, recurrence: p.newRecurrence });
+        // METADATA-ONLY patch (get_document + same content): the listing only carries a ~200-char
+        // preview and add_document replaces metadata, so rewriting the survivor from it truncated
+        // its content and dropped keys (audit 3.1.1, measured on the server).
+        const absorbedIds = [...(((s.metadata && s.metadata.absorbedIds) || [])), ...p.absorbedIds].slice(-200);
+        await backend.patchMetadata(s.id, { recurrence: p.newRecurrence, absorbedIds });
         merged += 1;
         for (const id of p.absorbedIds) {
-          try { await backend.delete(id); deleted += 1; } catch (err) { console.error(`[brain-consolidate] delete ${id}: ${err.message}`); }
+          try { await backend.delete(id); deleted += 1; } catch (err) { console.error(`[brain-consolidate] delete ${id} (retried on the next run): ${err.message}`); }
         }
       } catch (err) { console.error(`[brain-consolidate] apply ${p.survivorId}: ${err.message}`); }
     }
   }
-  return { ok: true, project, apply, groups: plans.length, merged, deleted, plans, source: 'mcp-memory' };
+  return { ok: true, project, apply, groups: plans.length, merged, deleted, pendingDeletes: leftovers.length, plans, source: 'mcp-memory' };
 }
 
 /**
@@ -105,7 +120,16 @@ if (require.main === module) {
     const apply = hasFlag('apply');
     const minSim = parseFloat(arg('min-sim', '0.7'));
     const maxSim = parseFloat(arg('max-sim', '0.9'));
-    const res = await consolidate({ project, apply, minSim, maxSim });
+    let res;
+    try { res = await consolidate({ project, apply, minSim, maxSim }); } catch (err) {
+      // e.g. the memory server is down — reported, and the week is given back below.
+      res = { ok: false, project, apply, groups: 0, merged: 0, deleted: 0, plans: [], reason: err.message };
+    }
+    if (!res.ok && apply) {
+      // The weekly trigger stamped this project before spawning us — a failed run gives the week back.
+      const stamp = require('path').join(require('./lib/data-dir.js').dataDir(), '.runtime', 'brain-consolidate-last.json');
+      require('./curation-session.js').unmarkConsolidated(stamp, project);
+    }
     try { await store.close(); } catch (e) { void e; }
     try { await require('./brain-backend.js').close(); } catch (e) { void e; }
     console.log(JSON.stringify({
@@ -114,7 +138,7 @@ if (require.main === module) {
         ? `Merged ${res.merged} group(s), deleted ${res.deleted} duplicate(s).`
         : `Dry run — ${res.groups} mergeable group(s). Re-run with --apply to consolidate.`,
     }, null, 2));
-    process.exit(0);
+    process.exit(res.ok ? 0 : 1);
   })().catch(err => { console.error(`[brain-consolidate] ${err.message}`); process.exit(1); });
 }
 

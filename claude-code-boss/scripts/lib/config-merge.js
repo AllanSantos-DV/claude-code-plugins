@@ -79,9 +79,19 @@ function loadLayered({ label, shippedPath, userPath, legacyPath, versioned = fal
       // shipped defaults (backend: local), i.e. the backend switched on its own (owner: switching is
       // always the user's explicit act). Now: restore the last good copy, keep the corrupt one aside,
       // and leave a notice; without a good copy, say so loud (pre-release/owner request 2026-10-09).
-      console.error(`[${label}] user-config unreadable (${p}): ${err.message}`);
-      raw = restoreLastGood(p, label);
-      if (raw === undefined) userConfigError = `${p}: ${err.message}`;
+      if (text !== null && !text.trim()) {
+        raw = undefined; // emptied on purpose = a reset to the defaults, not corruption
+      } else if (modifiedWithin(p, RECENT_MS)) {
+        // Possibly a save still being written (editor truncate+write): use the good copy for THIS
+        // read only and never touch the user's file — the next read decides (audit 3.1.1).
+        console.error(`[${label}] user-config unreadable right after a change (${p}): using its last good copy for now`);
+        raw = readLastGood(p);
+        if (raw === undefined) userConfigError = `${p}: ${err.message}`;
+      } else {
+        console.error(`[${label}] user-config unreadable (${p}): ${err.message}`);
+        raw = restoreLastGood(p, label);
+        if (raw === undefined) userConfigError = `${p}: ${err.message}`;
+      }
     }
     if (isPlainObject(raw)) {
       if (versioned) {
@@ -122,6 +132,20 @@ function keepLastGood(p, text, label) {
  * @param {string} label
  * @returns {object|undefined}
  */
+const RECENT_MS = 5000;
+
+function modifiedWithin(p, ms) {
+  try { return Date.now() - fs.statSync(p).mtimeMs < ms; } catch (err) { void err; return false; }
+}
+
+/** The last good copy as an object, or undefined (no file operations). */
+function readLastGood(p) {
+  try {
+    const obj = JSON.parse(fs.readFileSync(p + LAST_GOOD, 'utf-8'));
+    return isPlainObject(obj) ? obj : undefined;
+  } catch (err) { void err; return undefined; }
+}
+
 function restoreLastGood(p, label) {
   try {
     const lg = p + LAST_GOOD;
@@ -129,9 +153,21 @@ function restoreLastGood(p, label) {
     const text = fs.readFileSync(lg, 'utf-8');
     const obj = JSON.parse(text);
     if (!isPlainObject(obj)) return undefined;
-    const corrupt = `${p}.corrupt-${Date.now()}`;
-    fs.renameSync(p, corrupt);
-    writeFileAtomic(p, text);
+    // A symlinked config (dotfiles) is repaired at its target, not replaced by a regular file.
+    let real = p;
+    try { real = fs.realpathSync(p); } catch (err) { void err; }
+    const corrupt = `${real}.corrupt-${Date.now()}`;
+    try {
+      fs.renameSync(real, corrupt);
+    } catch (err) {
+      // Another process restored it a moment ago: take what is there now.
+      if (err.code === 'ENOENT') {
+        try { const now = JSON.parse(fs.readFileSync(p, 'utf-8')); if (isPlainObject(now)) return now; } catch (e2) { void e2; }
+        return obj;
+      }
+      throw err;
+    }
+    writeFileAtomic(real, text);
     writeFileAtomic(p + NOTICE, JSON.stringify({ at: new Date().toISOString(), file: p, corruptCopy: corrupt }));
     console.error(`[${label}] user-config restored from its last good copy; the corrupt one is at ${corrupt}`);
     return obj;

@@ -389,7 +389,8 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           const dup = await findRemoteDuplicate(backend, { type, projectId: w.projectId, title: f.title, summary: f.summary });
           if (dup) {
             const recurrence = (dup.recurrence || 1) + 1;
-            await backend.save({ id: dup.id, title: dup.title, summary: f.summary, content: { detail: f.detail || f.summary }, type, tags: dup.tags && dup.tags.length ? dup.tags : (Array.isArray(a.tags) ? a.tags : []), confidence: Math.max(dup.confidence || 0.5, confidence), scope: dup.scope || w.effective, projectId: w.projectId, recurrence });
+            // baseMetadata: add_document REPLACES metadata on upsert — keep the document's other keys.
+            await backend.save({ id: dup.id, baseMetadata: dup.metadata, title: dup.title, summary: f.summary, content: { detail: f.detail || f.summary }, type, tags: dup.tags && dup.tags.length ? dup.tags : (Array.isArray(a.tags) ? a.tags : []), confidence: Math.max(dup.confidence || 0.5, confidence), scope: dup.scope || w.effective, projectId: w.projectId, recurrence });
             await recordLessonMetric(project, { type, decision: 'merge', scope: w.effective, recurrence });
             recordCaptureAck(a.windowId, 'captured');
             return asText({ decision: 'merge', id: dup.id, recurrence, title: dup.title, type, project: w.projectId, scope: w.effective, backend: 'mcp-memory' });

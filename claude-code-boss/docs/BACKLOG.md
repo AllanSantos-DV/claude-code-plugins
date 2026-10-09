@@ -1169,6 +1169,28 @@ Além disso, todas as sessões perdiam o stream SSE a cada ~6 min.
   **Resolvido em 2026-10-09**: o cliente MCP ganhou `restartMode: 'background'` (o brain daemon liga via `CCB_MCP_RESTART_MODE`):
   servidor fora → o launcher sobe em segundo plano e a chamada responde NA HORA com "reiniciando, tente de novo em alguns segundos"
   (`MEMORY_SERVER_RESTARTING`); CLIs continuam esperando. Teste + mutação; prova real no smoke do release 3.1.1.
+- [x] **Auditoria pré-release 3.1.1 (camada adversarial) — achados conferidos e corrigidos antes da tag**:
+  - **[HIGH, confirmado no servidor] a consolidação reescreveria o sobrevivente a partir da listagem**: medido no mcp-memory 2.46.1 —
+    `list_documents` devolve um PREVIEW de ~200 caracteres (4.824 → 203) e `add_document` com `documentId` SUBSTITUI os metadados
+    (chaves extras somem). O `--apply` semanal truncaria o conteúdo das lições sobreviventes e apagaria metadados. **Corrigido**:
+    `brain-backend.patchMetadata` (relê com `get_document` e regrava o MESMO conteúdo com os metadados mesclados); a consolidação só toca
+    documentos escritos pelo boss (`bossWritten` = metadados title+type); o merge da captura (Q53) leva os metadados existentes
+    (`baseMetadata`); o rascunho de skill vem do documento inteiro (`get_document`), não do preview. Prova real (`smoke/q54-real.mjs`
+    ampliado): sobrevivente com 2.541 caracteres antes e depois, chave extra preservada, documento de fora com o mesmo texto intacto.
+  - **[MEDIUM] painel: corrida no singleton do backend** (o loop de projetos e `/api/brain/list` re-iniciavam o mesmo cliente) **e bloqueio
+    de até 60 s com o servidor fora**: o resumo do servidor tem CLIENTE PRÓPRIO em modo `background`, chamada em voo compartilhada e
+    falha guardada por 10 s. Prova real repetida (`smoke/dash-server-mode.mjs`).
+  - **[MEDIUM] recuperação da config podia tomar conta de um save em andamento**: arquivo mexido há < 5 s → usa a cópia boa só em memória,
+    sem tocar no arquivo; arquivo vazio = reset deliberado (padrões, nada restaurado); `ENOENT` no rename (outro processo restaurou) →
+    relê; symlink restaurado no alvo real. Teste + mutação.
+  - **[LOW] delete que falha contava a recorrência de novo toda semana**: o sobrevivente registra `absorbedIds`; a próxima rodada só apaga
+    os pendentes, sem somar. Teste.
+  - **[LOW] a semana era gasta mesmo com a consolidação falhando**: falha (inclusive servidor fora) devolve a semana do projeto
+    (`unmarkConsolidated`); a CLI sai com código 1. Teste.
+  - **[LOW] egress com embedder remoto**: documentado no CHANGELOG (com o embedder local, padrão, nada sai).
+  - **[INFO] texto do aviso**: o arquivo de hooks não diz mais "backend: local".
+  - **Limitação conhecida (aceita)**: capturas/consolidação simultâneas do mesmo documento podem perder um incremento de recorrência
+    (última escrita vence) — só o contador, nunca conteúdo.
 - [x] **Q60 — teste intermitente `audit: shape-output STREAMS`** (`scripts/test-units.js`): esperava 400 ms fixos pela cabeça da saída;
   sob carga a subida do processo filho passava disso (visto 1 vez em 2026-10-09; a rodada seguinte passou). **Corrigido na hora**:
   espera ativa até 10 s com o stdin ainda aberto (a prova "cabeça antes do EOF" continua).
