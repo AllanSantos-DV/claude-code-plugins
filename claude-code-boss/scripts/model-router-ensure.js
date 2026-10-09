@@ -544,8 +544,28 @@ function writeSettings(obj) {
   fs.renameSync(tmp, SETTINGS_FILE);
 }
 
-function isOurProxyUrl(url) {
-  return typeof url === 'string' && /^https?:\/\/(127\.0\.0\.1|localhost):\d+/.test(url);
+/**
+ * Ports the router answers on: the configured one and the one the running router recorded
+ * (state.json) — so a port change never strands the previous URL as "foreign".
+ * @returns {number[]}
+ */
+function routerPorts() {
+  const st = readState();
+  return [...new Set([readConfig().port || 13456, st && st.port].filter((p) => Number.isInteger(p)))];
+}
+
+/**
+ * Is `url` OUR proxy? A localhost URL on the router's port — not any localhost: a user's own
+ * local gateway (LiteLLM on :4000, claude-code-router on :3456…) is theirs (pre-release audit
+ * 3.1.0: "any localhost" made the router install itself on top of it, and the disable path
+ * would even delete it from settings.json).
+ * @param {string} url
+ * @param {number[]} [ports]
+ * @returns {boolean}
+ */
+function isOurProxyUrl(url, ports = routerPorts()) {
+  const m = typeof url === 'string' && url.match(/^https?:\/\/(?:127\.0\.0\.1|localhost):(\d+)(?:\/|$)/);
+  return !!m && ports.includes(Number(m[1]));
 }
 
 // PURA: o gateway PRÓPRIO do usuário que esta sessão já usa (ANTHROPIC_BASE_URL do
@@ -1005,4 +1025,4 @@ module.exports = { run, mergeRouterConfig, readConfig, healthCheck, probeAlive, 
   resolveAutoCompactWindow, planEnableEnv, planDisableEnv, enableSettingsRouting, disableSettingsRouting,
   contextTuningEnabled, planTuningEnv, planTuningRemoval, applySettingsTuning,
   // servesThisBuild/processCommandLine/normPath exportados p/ os testes de troca-de-build no boot.
-  servesThisBuild, processCommandLine, normPath, sessionGateway };
+  servesThisBuild, processCommandLine, normPath, sessionGateway, isOurProxyUrl };
