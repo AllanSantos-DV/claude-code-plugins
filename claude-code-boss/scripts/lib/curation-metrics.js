@@ -33,7 +33,9 @@ function summarizeCuration(rows, { shellIds = [] } = {}) {
     pending: 0,
     bypass: 0,
     shaped: { cuts: 0, rawChars: 0, shownChars: 0, savedChars: 0, byFamily: {} },
-    redirectSavings: { estChars: 0, withBaseline: 0, withoutBaseline: 0 },
+    redirectSavings: { estChars: 0, withBaseline: 0, withoutBaseline: 0, measured: 0 },
+    // EXACT savings: runs whose script reported the raw size it saw (lib/raw-report.js).
+    exact: { runs: 0, rawChars: 0, shownChars: 0, savedChars: 0, byScript: {} },
     rawEnteredContext: { count: 0, chars: 0 },
     piped: { total: 0, byScript: {} }, // curated output filtered by the agent → tune that script
     guards: { errorGuardDenied: 0, graphGuardFired: 0 },
@@ -43,6 +45,7 @@ function summarizeCuration(rows, { shellIds = [] } = {}) {
   const baseline = {}; // sig → {chars, n} from raw noisy runs (flagged / pending)
   const used = {};     // scriptId → {chars, n, ok}
   const redirects = [];
+  const measured = {}; // scriptId → runs with an exact raw size (their redirects are not estimated)
   for (const r of rows || []) {
     const name = r.eventName || r.event_name;
     let p = r.payload || {};
@@ -56,6 +59,12 @@ function summarizeCuration(rows, { shellIds = [] } = {}) {
         const id = p.scriptId || '?';
         const u = used[id] || (used[id] = { chars: 0, n: 0, ok: 0, runs: 0 });
         u.runs++; if (p.success !== false) u.ok++;
+        if (Number.isFinite(Number(p.rawChars)) && p.rawChars !== undefined) {
+          const raw = num(p.rawChars); const shown = num(p.chars); const saved = Math.max(0, raw - shown);
+          s.exact.runs++; s.exact.rawChars += raw; s.exact.shownChars += shown; s.exact.savedChars += saved;
+          bump(s.exact.byScript, id, saved);
+          measured[id] = (measured[id] || 0) + 1;
+        }
         // A compound's output belongs to all its parts: it counts as a run, not as size.
         if (!p.compound) { u.chars += num(p.chars); u.n++; }
         break;
@@ -90,6 +99,7 @@ function summarizeCuration(rows, { shellIds = [] } = {}) {
     s.runs.byScript[id] = { runs: u.runs, avgChars: u.n ? Math.round(u.chars / u.n) : null, successRate: +(u.ok / u.runs).toFixed(2) };
   }
   for (const p of redirects) {
+    if (measured[p.shellId] > 0) { measured[p.shellId]--; s.redirectSavings.measured++; continue; } // already exact
     const b = p.sig && baseline[p.sig];
     const u = used[p.shellId];
     if (b && b.n && u && u.n) {
@@ -100,7 +110,7 @@ function summarizeCuration(rows, { shellIds = [] } = {}) {
     }
   }
   s.neverUsed = shellIds.filter((id) => !used[id] && !s.redirects.byScript[id]);
-  s.totals.savedChars = s.shaped.savedChars + s.redirectSavings.estChars;
+  s.totals.savedChars = s.shaped.savedChars + s.exact.savedChars + s.redirectSavings.estChars;
   s.totals.savedTokensApprox = Math.round(s.totals.savedChars / 4);
   return s;
 }

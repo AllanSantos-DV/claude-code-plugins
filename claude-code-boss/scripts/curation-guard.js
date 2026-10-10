@@ -155,7 +155,15 @@ async function run(event) {
         let sig = ''; try { sig = canonicalSig(r.from); } catch (err) { void err; }
         metrics.fire('curation.redirected', { shellId: r.shellId, sig, mode, compound: plan.replaced.length > 1 || r.from !== command.trim() }, mctx);
       }
-      return decision(mode, { updatedInput: { command: plan.rewritten }, additionalContext: ctx, ...(mode === 'ask' ? { permissionDecisionReason: ctx } : {}) });
+      // The script is told where to report the raw size it saw (lib/raw-report.js): the panel's
+      // savings become exact for every script that honors the contract.
+      let command2 = plan.rewritten;
+      try {
+        const rr = require('./lib/raw-report.js');
+        require('fs').mkdirSync(rr.reportDir(), { recursive: true });
+        command2 = rr.withReport(plan.rewritten, rr.newReportPath());
+      } catch (err) { console.error(`[curation-guard] raw report off for this run: ${err.message}`); }
+      return decision(mode, { updatedInput: { command: command2 }, additionalContext: ctx, ...(mode === 'ask' ? { permissionDecisionReason: ctx } : {}) });
     } else if (plan.uncovered.length) {
       metrics.fire('curation.uncovered', { shells: plan.uncovered }, mctx);
     }

@@ -42,7 +42,7 @@ function bottleneck(s) {
 function formatDigest(s) {
   const activity = s.redirects.total + s.runs.total + s.shaped.cuts + s.rawEnteredContext.count + s.uncovered.total + s.pending;
   if (!activity) return null;
-  const parts = [`${tok(s.totals.savedChars)} tokens economizados (moldador ${tok(s.shaped.savedChars)}, redirects ${tok(s.redirectSavings.estChars)} estimados)`,
+  const parts = [`${tok(s.totals.savedChars)} tokens economizados (moldador ${tok(s.shaped.savedChars)}, scripts curados ${tok(s.exact.savedChars)} exatos, redirects ${tok(s.redirectSavings.estChars)} estimados)`,
     `${s.redirects.total} redirects`, `${s.runs.total} execuções de scripts curados`, `custo cru ${tok(s.rawEnteredContext.chars)} tokens`];
   const b = bottleneck(s);
   return `[BOSS] Curadoria nos últimos ${WINDOW_DAYS} dias: ${parts.join(', ')}. Maior gargalo: ${b || 'nenhum claro'}. Detalhes: /dashboard → Curation & guards.`;

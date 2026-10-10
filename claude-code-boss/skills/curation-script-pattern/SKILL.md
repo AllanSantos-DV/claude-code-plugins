@@ -46,6 +46,7 @@ These rules apply regardless of script language:
 - No banners, no progress bars, no full stdout dump on success
 - Script's exit code must reflect underlying command's success/failure
 - Script must be **idempotent** and **fast** — no caching, no side effects beyond the wrapped command
+- **Report the raw size** (success AND failure): when `CCB_RAW_REPORT` is set (the redirect sets it), append one JSON line `{"rawChars": <chars of the full raw output>, "rawLines": <lines>}` to that file. It is how the dashboard shows the EXACT tokens the script saved (raw − shown); without it only an estimate is possible. It never goes to stdout.
 
 ## Templates by language
 
@@ -65,11 +66,15 @@ same script. The arguments must reach the command **exactly** — that is the wh
 // <name>.mjs — <description> (passthrough: `<program> <subcommand> ...args`; <program> is a real
 // executable such as git/node/python — for a Windows .cmd shim use the Bash template)
 import { execFileSync } from 'child_process';
+import { appendFileSync } from 'fs';
 
 const root = process.env.CCB_PROJECT_ROOT || process.cwd();
+// Raw size for the dashboard's exact savings (never printed).
+const report = (raw) => { if (process.env.CCB_RAW_REPORT) appendFileSync(process.env.CCB_RAW_REPORT, JSON.stringify({ rawChars: raw.length, rawLines: raw.split('\n').length }) + '\n'); };
 const start = Date.now();
 try {
   const stdout = execFileSync('<program>', ['<subcommand>', ...process.argv.slice(2)], { cwd: root, encoding: 'utf-8', stdio: 'pipe', shell: false });
+  report(stdout);
   const ms = Date.now() - start;
   const lines = stdout.trim().split('\n').filter(l => l.trim());
   const passCount = lines.filter(l => /✓|✔|pass|ok/i.test(l)).length;
@@ -83,6 +88,7 @@ try {
 } catch (err) {
   const ms = Date.now() - start;
   const stderr = err.stderr?.toString() || '';
+  report((err.stdout?.toString() || '') + stderr);
   const relevant = stderr.split('\n').filter(l => /error|fail|Error|FAIL/i.test(l));
   console.log(relevant.length > 0 ? relevant.join('\n') : stderr.slice(0, 1000));
   console.log(`FAIL  <tool> (${ms}ms)`);
@@ -97,6 +103,7 @@ try {
 $start = Get-Date
 try {
   $out = & <command> 2>&1 | Out-String
+  if ($env:CCB_RAW_REPORT) { Add-Content -Path $env:CCB_RAW_REPORT -Value (@{ rawChars = $out.Length; rawLines = ($out -split "`n").Count } | ConvertTo-Json -Compress) }
   $ms = [int]((Get-Date) - $start).TotalMilliseconds
   if ($LASTEXITCODE -ne 0) {
     $rel = ($out -split "`n" | Where-Object { $_ -match '(?i)error|fail' }) -join "`n"
@@ -124,6 +131,7 @@ cd "${CCB_PROJECT_ROOT:-$PWD}" || exit 1
 start=$(date +%s%3N)
 out=$(<command> "$@" 2>&1)
 ec=$?
+[ -n "$CCB_RAW_REPORT" ] && printf '{"rawChars":%d,"rawLines":%d}\n' "${#out}" "$(printf '%s\n' "$out" | wc -l)" >> "$CCB_RAW_REPORT"
 ms=$(($(date +%s%3N) - start))
 if [ $ec -ne 0 ]; then
   echo "$out" | grep -iE 'error|fail' | head -20
@@ -139,11 +147,14 @@ echo "OK  ${pass} passed (${ms}ms)"
 ```python
 #!/usr/bin/env python3
 # scripts/<name>.py — <description>
-import subprocess, sys, time, re
+import subprocess, sys, time, re, os, json
 start = time.time()
 r = subprocess.run(['<cmd>', '<args>'], capture_output=True, text=True)
 ms = int((time.time() - start) * 1000)
 out = r.stdout + r.stderr
+if os.environ.get('CCB_RAW_REPORT'):
+    with open(os.environ['CCB_RAW_REPORT'], 'a', encoding='utf-8') as f:
+        f.write(json.dumps({'rawChars': len(out), 'rawLines': out.count('\n') + 1}) + '\n')
 if r.returncode != 0:
     rel = '\n'.join(l for l in out.splitlines() if re.search(r'error|fail', l, re.I))
     print(rel or out[:1000])
