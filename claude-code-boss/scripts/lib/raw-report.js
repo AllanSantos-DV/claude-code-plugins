@@ -10,7 +10,8 @@
  *
  * Contract:
  *   1. curation-guard, when it rewrites a command to a curated script, adds
- *      `CCB_RAW_REPORT="<data>/.runtime/raw-report/<id>.jsonl"` to the script's environment.
+ *      `CCB_RAW_REPORT="<data>/.runtime/raw-report/<id>.jsonl"` to the script's environment
+ *      (curation-redirect.invocationFor) and records <id> on each `curation.redirected`.
  *   2. the script appends one JSON line per run: {"rawChars": N, "rawLines": M} (templates in the
  *      curation-script-pattern skill). A script that does not report just keeps the estimate.
  *   3. curation-detect (PostToolUse) reads the file named in the executed command — only inside
@@ -35,28 +36,19 @@ function newReportPath() {
   return path.join(reportDir(), `${Date.now().toString(36)}-${crypto.randomBytes(5).toString('hex')}.jsonl`);
 }
 
-/**
- * Put `CCB_RAW_REPORT` in front of every curated-script invocation of a rewritten command (each one
- * carries the CCB_PROJECT_ROOT prefix curation-redirect.invocationFor writes). Refuses a path that
- * could break the quoting. Pure.
- * @param {string} rewritten
- * @param {string} reportPath
- * @returns {string}
- */
-function withReport(rewritten, reportPath) {
-  const p = String(reportPath || '').replace(/\\/g, '/');
-  if (!p || /["$`\n\r]/.test(p)) return rewritten;
-  return String(rewritten).split('CCB_PROJECT_ROOT="').join(`CCB_RAW_REPORT="${p}" CCB_PROJECT_ROOT="`);
+/** The id of a report file (its name without extension): pairs a redirect with its measured run. */
+function reportIdOf(reportPath) {
+  return path.basename(String(reportPath || ''), '.jsonl');
 }
 
 /**
  * Read (and delete) the reports a run left: the files named in `command`, only inside reportDir().
  * @param {string} command the EXECUTED command (PostToolUse tool_input)
- * @returns {{rawChars:number, rawLines:number, runs:number}|null} null when nothing was reported
+ * @returns {{rawChars:number, rawLines:number, runs:number, ids:string[]}|null} null when nothing was reported
  */
 function takeReport(command) {
   const dir = path.resolve(reportDir());
-  let rawChars = 0; let rawLines = 0; let runs = 0;
+  let rawChars = 0; let rawLines = 0; let runs = 0; const ids = [];
   for (const m of String(command || '').matchAll(REPORT_RE)) {
     const file = path.resolve(m[1]);
     const rel = path.relative(dir, file);
@@ -71,13 +63,13 @@ function takeReport(command) {
       try {
         const j = JSON.parse(line);
         const c = Number(j.rawChars);
-        if (Number.isFinite(c) && c >= 0) { rawChars += c; rawLines += Number(j.rawLines) || 0; runs++; }
+        if (Number.isFinite(c) && c >= 0) { rawChars += c; rawLines += Number(j.rawLines) || 0; runs++; if (!ids.includes(reportIdOf(file))) ids.push(reportIdOf(file)); }
       } catch (err) { console.error(`[raw-report] bad line in ${path.basename(file)}: ${err.message}`); }
     }
     try { fs.rmSync(file, { force: true }); } catch (err) { console.error(`[raw-report] could not delete ${file}: ${err.message}`); }
   }
   sweepStale();
-  return runs ? { rawChars, rawLines, runs } : null;
+  return runs ? { rawChars, rawLines, runs, ids } : null;
 }
 
 /** Drop report files nobody read (a run that never reached PostToolUse). */
@@ -90,4 +82,4 @@ function sweepStale(now = Date.now()) {
   }
 }
 
-module.exports = { reportDir, newReportPath, withReport, takeReport, sweepStale };
+module.exports = { reportDir, newReportPath, reportIdOf, takeReport, sweepStale };

@@ -162,7 +162,7 @@ async function run(event) {
     // (raw − shown); without a report the dashboard keeps the signature-baseline estimate.
     const raw = command.includes('CCB_RAW_REPORT=') ? require('./lib/raw-report.js').takeReport(command) : null;
     if (scriptRan) {
-      metrics.fire('curation.used', { scriptId: curatedShell.id || scriptRel, chars: charCount, lines: lineCount, success: isSuccess, compound, ...(raw ? { rawChars: raw.rawChars, rawLines: raw.rawLines } : {}) }, { sessionId, cwd });
+      metrics.fire('curation.used', { scriptId: curatedShell.id || scriptRel, chars: charCount, lines: lineCount, success: isSuccess, compound, ...(raw ? { rawChars: raw.rawChars, rawLines: raw.rawLines, rawRuns: raw.runs, reportIds: raw.ids } : {}) }, { sessionId, cwd });
     }
 
     // Piped → refine: the agent filtering the SAME script the SAME way again (`| tail -3`)
