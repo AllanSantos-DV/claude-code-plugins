@@ -3947,6 +3947,7 @@ test('curation home: the in-repo .vscode curation MOVES to the user folder (keye
     git('init', '-q');
     fs.mkdirSync(path.join(proj, '.vscode', 'scripts', 'lib'), { recursive: true });
     fs.writeFileSync(path.join(proj, '.vscode', 'scripts', 'tests.mjs'), 'import "./lib/h.mjs";\n');
+    const oldT = (Date.now() - 90 * 86400_000) / 1000; fs.utimesSync(path.join(proj, '.vscode', 'scripts', 'tests.mjs'), oldT, oldT);
     fs.writeFileSync(path.join(proj, '.vscode', 'scripts', 'lib', 'h.mjs'), 'export {};\n');
     fs.writeFileSync(path.join(proj, '.vscode', 'scripts', 'self.mjs'), 'const root = path.resolve(__dirname, "../..");\n');
     fs.writeFileSync(path.join(proj, '.vscode', 'scripts', 'fixed.mjs'), 'const root = process.env.CCB_PROJECT_ROOT || path.resolve(__dirname, "../..");\n'); // already adapted: not flagged
@@ -3968,6 +3969,7 @@ test('curation home: the in-repo .vscode curation MOVES to the user folder (keye
     assertEq(shells.map((s) => [s.id, s.script]), [['tests', `${H}/scripts/tests.mjs`], ['self', `${H}/scripts/self.mjs`], ['own', `${proj.replace(/\\/g, '/')}/tools/own.sh`]]);
     assertEq(whitelist, ['git']);
     assertEq(fs.readFileSync(path.join(home, 'scripts', 'lib', 'h.mjs'), 'utf8'), 'export {};\n', 'the whole curation dir moves (helpers a script imports included)');
+    assert(Math.abs(fs.statSync(path.join(home, 'scripts', 'tests.mjs')).mtimeMs / 1000 - oldT) < 2, 'the moved script keeps its age (copyFileSync reset it on Linux; the never-used prune reads it)');
     assertEq(fs.existsSync(path.join(proj, '.vscode', 'shells.json')), false, 'untracked config left the repo');
     assertEq(fs.existsSync(path.join(proj, '.vscode', 'scripts', 'tests.mjs')), false);
     assertEq(fs.existsSync(path.join(proj, '.vscode', 'scripts', 'self.mjs')), true, 'a git-tracked file is never deleted');
