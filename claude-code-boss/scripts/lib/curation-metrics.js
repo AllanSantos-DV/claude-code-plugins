@@ -45,7 +45,7 @@ function summarizeCuration(rows, { shellIds = [] } = {}) {
   const baseline = {}; // sig → {chars, n} from raw noisy runs (flagged / pending)
   const used = {};     // scriptId → {chars, n, ok}
   const redirects = [];
-  const measured = {}; // scriptId → runs with an exact raw size (their redirects are not estimated)
+  const measured = new Set(); // report ids of runs with an exact raw size: their redirects are not estimated
   for (const r of rows || []) {
     const name = r.eventName || r.event_name;
     let p = r.payload || {};
@@ -63,7 +63,7 @@ function summarizeCuration(rows, { shellIds = [] } = {}) {
           const raw = num(p.rawChars); const shown = num(p.chars); const saved = Math.max(0, raw - shown);
           s.exact.runs++; s.exact.rawChars += raw; s.exact.shownChars += shown; s.exact.savedChars += saved;
           bump(s.exact.byScript, id, saved);
-          measured[id] = (measured[id] || 0) + 1;
+          for (const rid of [].concat(p.reportIds || [])) measured.add(rid);
         }
         // A compound's output belongs to all its parts: it counts as a run, not as size.
         if (!p.compound) { u.chars += num(p.chars); u.n++; }
@@ -99,7 +99,9 @@ function summarizeCuration(rows, { shellIds = [] } = {}) {
     s.runs.byScript[id] = { runs: u.runs, avgChars: u.n ? Math.round(u.chars / u.n) : null, successRate: +(u.ok / u.runs).toFixed(2) };
   }
   for (const p of redirects) {
-    if (measured[p.shellId] > 0) { measured[p.shellId]--; s.redirectSavings.measured++; continue; } // already exact
+    // Paired by the report id the redirect carried: every part of a compound is covered by its one
+    // measured run, and a measured run that was not redirected never cancels another estimate.
+    if (p.reportId && measured.has(p.reportId)) { s.redirectSavings.measured++; continue; }
     const b = p.sig && baseline[p.sig];
     const u = used[p.shellId];
     if (b && b.n && u && u.n) {

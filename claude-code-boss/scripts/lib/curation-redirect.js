@@ -110,7 +110,7 @@ function isInside(dir, p) {
  * `CCB_PROJECT_ROOT` naming the project: the script lives in the user's curation home, not
  * in the repo, so it can't find the project from its own location.
  */
-function invocationFor(shell, projectRoot) {
+function invocationFor(shell, projectRoot, { reportPath = '' } = {}) {
   const rel = String((shell && (shell.script || shell.path || shell.command)) || '').trim(); // `command` = legacy field register writes
   if (!rel) return null;
   // The path is interpolated into a shell command between "…": a `"`, `$` or backtick in a
@@ -124,7 +124,12 @@ function invocationFor(shell, projectRoot) {
   if (projectRoot && !isInside(curationHome(projectRoot), abs) && !isInside(projectRoot, abs)) return null;
   if (projectRoot && /["$`]/.test(projectRoot)) return null;
   const file = abs.replace(/\\/g, '/');
-  const env = projectRoot ? `CCB_PROJECT_ROOT="${path.resolve(projectRoot).replace(/\\/g, '/')}" ` : '';
+  // CCB_RAW_REPORT (lib/raw-report.js): where the script records its raw output size — set only on
+  // the invocations this rewrite produces, never by a text replace over the whole command (a
+  // non-redirected part that merely contained the literal got it too — audit 3.2.1).
+  const rep = String(reportPath || '').replace(/\\/g, '/');
+  const reportEnv = rep && !/["$`\n\r]/.test(rep) ? `CCB_RAW_REPORT="${rep}" ` : '';
+  const env = projectRoot ? `${reportEnv}CCB_PROJECT_ROOT="${path.resolve(projectRoot).replace(/\\/g, '/')}" ` : '';
   if (/\.(mjs|cjs|js)$/i.test(file)) return `${env}node "${file}"`;
   if (/\.ps1$/i.test(file)) return `${env}powershell -NoProfile -ExecutionPolicy Bypass -File "${file}"`;
   if (/\.sh$/i.test(file)) return `${env}bash "${file}"`;
@@ -189,7 +194,7 @@ function passthroughMatch(text, profiles) {
  * Plan the rewrite of `command`.
  * @returns {{bypass:true}|{rewritten:string|null, replaced:Array<{shellId:string, from:string, to:string}>, uncovered:string[]}}
  */
-function planRedirect(command, shells, projectRoot) {
+function planRedirect(command, shells, projectRoot, { reportPath = '' } = {}) {
   if (RAW_ESCAPE.test(String(command || ''))) return { bypass: true };
   const parts = splitTopLevel(command);
   const replaced = []; const uncovered = [];
@@ -212,7 +217,7 @@ function planRedirect(command, shells, projectRoot) {
     //    (`mvn test -Dtest=X`, `gh run list --limit 5`) no longer run raw.
     const pass = passthroughMatch(text, profiles);
     if (pass) {
-      const inv = invocationFor(pass.shell, projectRoot);
+      const inv = invocationFor(pass.shell, projectRoot, { reportPath });
       const to = inv && `${envPrefixOf(text)}${pass.args ? `${inv} ${pass.args}` : inv}`;
       if (to) { replaced.push({ shellId: pass.shell.id, from: text, to }); p.text = to; continue; }
     }
@@ -221,7 +226,7 @@ function planRedirect(command, shells, projectRoot) {
     const flags = flagsOf(text);
     const exact = profiles.find((pr) => pr.sig === sig && [...flags].every((f) => pr.flags.has(f)));
     if (exact) {
-      let to = invocationFor(exact.shell, projectRoot);
+      let to = invocationFor(exact.shell, projectRoot, { reportPath });
       if (to && exact.extraFrom) {
         // Variant alias: only a script that reads its argv gets it, WITH the extra tokens (taken
         // after the env/wrapper prefixes — splitting the raw part handed `FOO=1 git stash list`

@@ -143,7 +143,16 @@ async function run(event) {
     //     "Prefer it next time" hint (followed 19%) and deny-redirect (47%) are gone.
     //     Permission posture is the user's: bypassPermissions → allow; any other mode
     //     → ask (the prompt shows the rewrite). Variants run raw and are only measured.
-    const plan = planRedirect(command, shells, projectRoot);
+    // Where the redirected script(s) record their raw output size (lib/raw-report.js). Its id pairs
+    // each redirect with the measured run, so a measured run is never also estimated.
+    let reportPath = '';
+    try {
+      const rr = require('./lib/raw-report.js');
+      require('fs').mkdirSync(rr.reportDir(), { recursive: true });
+      reportPath = rr.newReportPath();
+    } catch (err) { console.error(`[curation-guard] raw report off for this run: ${err.message}`); }
+    const reportId = reportPath ? require('./lib/raw-report.js').reportIdOf(reportPath) : '';
+    const plan = planRedirect(command, shells, projectRoot, { reportPath });
     const mctx = { sessionId: event.session_id, cwd: event.cwd };
     if (plan.bypass) {
       metrics.fire('curation.bypass', {}, mctx);
@@ -153,17 +162,9 @@ async function run(event) {
       const ctx = `[curadoria] Redirecionado para o script curado do projeto: ${list}. A saída é o resumo curado (não a crua). Se precisar da saída crua, rode de novo com \`CCB_RAW=1\` na frente do comando.`;
       for (const r of plan.replaced) {
         let sig = ''; try { sig = canonicalSig(r.from); } catch (err) { void err; }
-        metrics.fire('curation.redirected', { shellId: r.shellId, sig, mode, compound: plan.replaced.length > 1 || r.from !== command.trim() }, mctx);
+        metrics.fire('curation.redirected', { shellId: r.shellId, sig, mode, compound: plan.replaced.length > 1 || r.from !== command.trim(), ...(reportId ? { reportId } : {}) }, mctx);
       }
-      // The script is told where to report the raw size it saw (lib/raw-report.js): the panel's
-      // savings become exact for every script that honors the contract.
-      let command2 = plan.rewritten;
-      try {
-        const rr = require('./lib/raw-report.js');
-        require('fs').mkdirSync(rr.reportDir(), { recursive: true });
-        command2 = rr.withReport(plan.rewritten, rr.newReportPath());
-      } catch (err) { console.error(`[curation-guard] raw report off for this run: ${err.message}`); }
-      return decision(mode, { updatedInput: { command: command2 }, additionalContext: ctx, ...(mode === 'ask' ? { permissionDecisionReason: ctx } : {}) });
+      return decision(mode, { updatedInput: { command: plan.rewritten }, additionalContext: ctx, ...(mode === 'ask' ? { permissionDecisionReason: ctx } : {}) });
     } else if (plan.uncovered.length) {
       metrics.fire('curation.uncovered', { shells: plan.uncovered }, mctx);
     }

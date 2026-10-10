@@ -70,7 +70,12 @@ import { appendFileSync } from 'fs';
 
 const root = process.env.CCB_PROJECT_ROOT || process.cwd();
 // Raw size for the dashboard's exact savings (never printed).
-const report = (raw) => { if (process.env.CCB_RAW_REPORT) appendFileSync(process.env.CCB_RAW_REPORT, JSON.stringify({ rawChars: raw.length, rawLines: raw.split('\n').length }) + '\n'); };
+// A metrics side channel: it must never change the script's exit code or summary.
+const report = (raw) => {
+  if (!process.env.CCB_RAW_REPORT) return;
+  try { appendFileSync(process.env.CCB_RAW_REPORT, JSON.stringify({ rawChars: raw.length, rawLines: raw.split('\n').length }) + '\n'); }
+  catch (e) { console.error(`raw report skipped: ${e.message}`); }
+};
 const start = Date.now();
 try {
   const stdout = execFileSync('<program>', ['<subcommand>', ...process.argv.slice(2)], { cwd: root, encoding: 'utf-8', stdio: 'pipe', shell: false });
@@ -152,9 +157,12 @@ start = time.time()
 r = subprocess.run(['<cmd>', '<args>'], capture_output=True, text=True)
 ms = int((time.time() - start) * 1000)
 out = r.stdout + r.stderr
-if os.environ.get('CCB_RAW_REPORT'):
-    with open(os.environ['CCB_RAW_REPORT'], 'a', encoding='utf-8') as f:
-        f.write(json.dumps({'rawChars': len(out), 'rawLines': out.count('\n') + 1}) + '\n')
+if os.environ.get('CCB_RAW_REPORT'):  # metrics side channel: never changes the exit code or summary
+    try:
+        with open(os.environ['CCB_RAW_REPORT'], 'a', encoding='utf-8') as f:
+            f.write(json.dumps({'rawChars': len(out), 'rawLines': out.count('\n') + 1}) + '\n')
+    except OSError as e:
+        print(f'raw report skipped: {e}', file=sys.stderr)
 if r.returncode != 0:
     rel = '\n'.join(l for l in out.splitlines() if re.search(r'error|fail', l, re.I))
     print(rel or out[:1000])

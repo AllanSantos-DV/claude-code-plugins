@@ -4182,17 +4182,20 @@ test('metrics totals: a time-window read is not cut at 500 rows; history COPIED 
 
 test('raw-report: the redirect tells the script where to report its raw size; PostToolUse reads it (only inside its dir), deletes it, and curation.used carries rawChars', async () => {
   const rr = require('./lib/raw-report.js');
+  const { planRedirect } = require('./lib/curation-redirect.js');
   const dir = rr.reportDir();
   fs.mkdirSync(dir, { recursive: true });
   const rep = rr.newReportPath();
-  const two = 'CCB_PROJECT_ROOT="/r" node "/h/a.mjs" && FOO=1 CCB_PROJECT_ROOT="/r" node "/h/b.mjs"';
-  const withRep = rr.withReport(two, rep);
-  assertEq((withRep.match(/CCB_RAW_REPORT="[^"]+" CCB_PROJECT_ROOT="/g) || []).length, 2, 'every script invocation gets it');
-  assertEq(rr.withReport(two, 'C:/x"y.jsonl'), two, 'a path that could break the quoting is refused');
+  const R = path.resolve(os.tmpdir(), 'ccb-rr-plan');
+  const shells = [{ id: 'a', script: 'scripts/a.mjs', aliases: ['npm run a'] }, { id: 'b', script: 'scripts/b.mjs', aliases: ['npm run b'] }];
+  const plan = planRedirect('npm run a && npm run b && echo \'CCB_PROJECT_ROOT="x"\'', shells, R, { reportPath: rep });
+  assertEq((plan.rewritten.match(/CCB_RAW_REPORT="[^"]+" CCB_PROJECT_ROOT="/g) || []).length, 2, 'every rewritten invocation gets it');
+  assert(plan.rewritten.endsWith('echo \'CCB_PROJECT_ROOT="x"\''), `a part that was not rewritten is left alone even if it holds the literal (a global replace changed it): ${plan.rewritten}`);
+  assert(!/CCB_RAW_REPORT/.test(planRedirect('npm run a', shells, R, { reportPath: 'C:/x"y.jsonl' }).rewritten), 'a path that could break the quoting is refused');
   fs.writeFileSync(rep, '{"rawChars":12000,"rawLines":140}\n{"rawChars":500,"rawLines":5}\nnot json\n');
-  assertEq(rr.takeReport(withRep), { rawChars: 12500, rawLines: 145, runs: 2 }, 'summed (both scripts of a compound), bad lines skipped');
+  assertEq(rr.takeReport(plan.rewritten), { rawChars: 12500, rawLines: 145, runs: 2, ids: [rr.reportIdOf(rep)] }, 'summed (both scripts of a compound), bad lines skipped');
   assertEq(fs.existsSync(rep), false, 'and deleted');
-  assertEq(rr.takeReport(withRep), null, 'nothing reported (a script that does not honor the contract) → null');
+  assertEq(rr.takeReport(plan.rewritten), null, 'nothing reported (a script that does not honor the contract) → null');
   const outside = path.join(os.tmpdir(), 'ccb-rr-outside.jsonl');
   fs.writeFileSync(outside, '{"rawChars":1}\n');
   assertEq(rr.takeReport(`CCB_RAW_REPORT="${outside.replace(/\\/g, '/')}" x`), null, 'a path outside the report dir is never read');
@@ -4203,7 +4206,7 @@ test('raw-report: the redirect tells the script where to report its raw size; Po
   rr.sweepStale();
   assertEq(fs.existsSync(stale), false, 'reports nobody read are swept after a day');
 
-  // End to end: guard rewrite → script appends → detect records rawChars.
+  // End to end: guard rewrite (redirect carries the report id) → script appends → detect records rawChars + the same id.
   const metrics = require('./lib/metrics.js');
   const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-rr-proj-'));
   fs.writeFileSync(path.join(proj, 'package.json'), '{}');
@@ -4213,36 +4216,44 @@ test('raw-report: the redirect tells the script where to report its raw size; Po
   fs.writeFileSync(script, "import fs from 'fs'; const raw = 'x'.repeat(9000); if (process.env.CCB_RAW_REPORT) fs.appendFileSync(process.env.CCB_RAW_REPORT, JSON.stringify({ rawChars: raw.length, rawLines: 1 }) + '\\n'); console.log('OK  big (1ms)');\n");
   fs.writeFileSync(path.join(home, 'shells.json'), JSON.stringify({ shells: [{ id: 'big', script: 'scripts/big.mjs', aliases: ['npm run big'] }] }));
   require('./curation-paths.js')._resetConfigCache(); require('./shells-config.js')._resetCache();
+  const orig = metrics.fire; const fired = [];
+  metrics.fire = (name, payload) => { fired.push([name, payload]); };
   try {
     const g = await require('./curation-guard.js').run({ tool_name: 'Bash', tool_input: { command: 'npm run big' }, cwd: proj, session_id: 'rr', permission_mode: 'bypassPermissions' });
     const cmd = g.hookSpecificOutput.updatedInput.command;
     assert(/^CCB_RAW_REPORT="[^"]+" CCB_PROJECT_ROOT="/.test(cmd), cmd);
     const repPath = /CCB_RAW_REPORT="([^"]+)"/.exec(cmd)[1];
     const out = require('child_process').execFileSync(process.execPath, [script], { env: { ...process.env, CCB_RAW_REPORT: repPath }, encoding: 'utf8' });
-    const orig = metrics.fire; const fired = [];
-    metrics.fire = (name, payload) => { fired.push([name, payload]); };
-    try {
-      await require('./curation-detect.js').run({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: cmd }, tool_response: { stdout: out, stderr: '' }, session_id: 'rr', cwd: proj });
-    } finally { metrics.fire = orig; }
+    await require('./curation-detect.js').run({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: cmd }, tool_response: { stdout: out, stderr: '' }, session_id: 'rr', cwd: proj });
+    const redirected = fired.filter((x) => x[0] === 'curation.redirected').map((x) => x[1]);
     const used = fired.filter((x) => x[0] === 'curation.used').map((x) => x[1]);
     assert(used.length === 1 && used[0].rawChars === 9000 && used[0].chars === out.length, `curation.used carries the exact raw size: ${JSON.stringify(used)}`);
+    assert(redirected.length === 1 && redirected[0].reportId && used[0].reportIds.includes(redirected[0].reportId), `the redirect and its measured run share the report id: ${JSON.stringify({ redirected, used })}`);
     assertEq(fs.existsSync(repPath), false, 'the report was consumed');
-  } finally { fs.rmSync(proj, { recursive: true, force: true }); }
+  } finally { metrics.fire = orig; fs.rmSync(proj, { recursive: true, force: true }); }
 });
 
-test('curation summary: a measured run counts its EXACT savings (raw − shown) and its redirect is not estimated again', () => {
+test('curation summary: a measured run counts its EXACT savings (raw − shown); the redirects it covers (by report id) are not estimated again, and a run that was not redirected cancels nothing', () => {
   const { summarizeCuration } = require('./lib/curation-metrics.js');
   const ev = (eventName, payload) => ({ eventName, payload });
   const s = summarizeCuration([
     ev('curation.flagged', { sig: 'npm test', chars: 10000 }),
-    ev('curation.redirected', { shellId: 'tests', sig: 'npm test' }),
-    ev('curation.used', { scriptId: 'tests', chars: 50, rawChars: 12000 }),
-    ev('curation.redirected', { shellId: 'tests', sig: 'npm test' }),
-    ev('curation.used', { scriptId: 'tests', chars: 50 }), // a run that did not report
+    ev('curation.flagged', { sig: 'npm run lint', chars: 8000 }),
+    // a compound: two redirects, ONE measured run that covers both (same report id)
+    ev('curation.redirected', { shellId: 'tests', sig: 'npm test', reportId: 'r1' }),
+    ev('curation.redirected', { shellId: 'lint', sig: 'npm run lint', reportId: 'r1' }),
+    ev('curation.used', { scriptId: 'tests', chars: 50, rawChars: 12000, reportIds: ['r1'], compound: true }),
+    // a measured run NOT from a redirect (the agent re-ran the rewritten command) …
+    ev('curation.used', { scriptId: 'tests', chars: 50, rawChars: 11000, reportIds: ['r9'] }),
+    // … must not cancel the estimate of this unmeasured redirect
+    ev('curation.redirected', { shellId: 'tests', sig: 'npm test', reportId: 'r2' }),
+    ev('curation.used', { scriptId: 'tests', chars: 50 }),
+    ev('curation.used', { scriptId: 'lint', chars: 40 }),
   ]);
-  assertEq([s.exact.runs, s.exact.savedChars, s.exact.byScript.tests], [1, 11950, 11950]);
-  assertEq([s.redirectSavings.measured, s.redirectSavings.withBaseline], [1, 1], 'one redirect exact, the other estimated');
-  assertEq(s.totals.savedChars, 11950 + s.redirectSavings.estChars, 'total = exact + estimate, never both for the same run');
+  assertEq([s.exact.runs, s.exact.savedChars], [2, 11950 + 10950]);
+  assertEq([s.redirectSavings.measured, s.redirectSavings.withBaseline], [2, 1], 'both compound parts exact (not one exact + one estimated), the unpaired redirect estimated');
+  assertEq(s.redirectSavings.estChars, 10000 - 50, 'the one estimated is the unmeasured `tests` redirect (r2), not a part of the measured compound');
+  assertEq(s.totals.savedChars, s.exact.savedChars + s.redirectSavings.estChars, 'total = exact + estimate, never both for the same run');
 });
 
 test('session-whitelist writes NOTHING for a folder without curation (SessionStart created a shells.json in every folder a session opened in)', async () => {
