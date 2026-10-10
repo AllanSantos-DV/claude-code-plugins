@@ -51,7 +51,7 @@ async function run(event) {
   const sp = stampPath();
   if (onCooldown(sp)) return null;
 
-  const project = (event && event.cwd) ? path.basename(event.cwd) : 'default';
+  const project = require('./lib/metrics-project.js').sessionMetricsKey(event && event.cwd);
   let input = null;
   try { input = await gather(project); }
   catch (err) { console.error(`[tuning-advisory] ${err && err.message ? err.message : err}`); return null; }

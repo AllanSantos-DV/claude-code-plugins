@@ -57,8 +57,8 @@ function ageDaysOf(root, rel, now) {
 /**
  * @param {{root:string, days:number, now?:number, usage?:Function, project?:string}} a
  *   usage(project, sinceTs) → {historyFromTs, usedIds} (default: metrics-store)
- *   project — the METRICS key (lib/metrics.js writes under the session root's basename;
- *   with shells.json in a subfolder, basename(root) reads an empty db). Default basename(root).
+ *   project — the METRICS key (lib/metrics-project.js metricsKeyFor: the project id, the key
+ *   lib/metrics.js writes under). Default metricsKeyFor(root).
  * @returns {{ok:boolean, days:number, historyFromTs:(number|null), candidates:Array<{id:string, script:string, ageDays:number|null}>, reason?:string, error?:string}}
  */
 function pruneCandidates({ root, days = 30, now = Date.now(), usage, project } = {}) {
@@ -73,7 +73,7 @@ function pruneCandidates({ root, days = 30, now = Date.now(), usage, project } =
   }
   const since = now - days * DAY;
   const read = usage || ((project, sinceTs) => require('./metrics-store.js').getCurationUsageIsolated(project, sinceTs));
-  const { historyFromTs, usedIds } = read(project || path.basename(path.resolve(root)), since);
+  const { historyFromTs, usedIds } = read(project || metricsProjectFor(root, require('./metrics-store.js').listProjects()), since);
   if (!historyFromTs || historyFromTs > since) {
     const from = historyFromTs ? new Date(historyFromTs).toISOString().slice(0, 10) : 'never';
     return { ok: true, days, historyFromTs, candidates: [], reason: `insufficient usage history for a ${days}-day window (curation metrics since ${from}) — nothing is called unused before the window is covered` };
@@ -114,12 +114,16 @@ function pruneShells({ root, ids, days = 30, now = Date.now(), usage, project } 
 }
 
 /**
- * Metrics key for a shells root when the calling session is unknown (dashboard): the
- * nearest folder from `root` up to its repo top (`.git`) whose basename has a metrics
- * db in `known` — sessions record under the SESSION root, which can be an ancestor of
- * the shells.json folder. Falls back to basename(root).
+ * Metrics key for a shells root when the calling session is unknown (dashboard): the project-id
+ * key lib/metrics.js writes under when the project has an id (every folder of the repo agrees).
+ * Without one, sessions record under the SESSION root's folder name, which can be an ancestor of
+ * `root`: the nearest folder from `root` up to its repo top (`.git`) whose name has a metrics db
+ * in `known`, else basename(root).
  */
 function metricsProjectFor(root, known) {
+  const pid = require('./project-id.js');
+  const id = pid.sanitizeLogicalProjectId(pid.tryResolveProjectId({ cwd: root }) || '');
+  if (id) return require('./metrics-project.js').metricsKeyFor(root);
   const have = new Set(known || []);
   let dir = path.resolve(root);
   for (let i = 0; i < 12; i++) {

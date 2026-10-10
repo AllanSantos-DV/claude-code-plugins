@@ -271,7 +271,10 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
   async function recordLessonMetric(project, payload) {
     try {
       const metricsStore = kbWorker ? kbWorker.clientsFor(project).metricsClient : require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'metrics-store.js'));
-      if (await metricsStore.init({ project })) await metricsStore.recordMetric('lesson.captured', payload, null);
+      // The metrics key the readers use (owner__repo), not the raw id: written under `owner/repo`
+      // it landed in a nested dir the session summary never read.
+      const metricsKey = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'metrics-project.js')).metricsKeyForId(project);
+      if (await metricsStore.init({ project: metricsKey })) await metricsStore.recordMetric('lesson.captured', payload, null);
     } catch (err) {
       console.error(`[BRAIN-SERVER] recordLessonMetric failed: ${err.message}`);
     }
