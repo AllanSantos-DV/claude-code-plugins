@@ -26,7 +26,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const { findProjectRoot, getScriptsDir, getShellsConfigPath } = require('../curation-paths.js');
+const { findProjectRoot, getScriptsDir, getShellsConfigPath, curationHome } = require('../curation-paths.js');
 const { isGenericAlias } = require('./command-signature.js');
 
 const DEFAULT_OUTPUT_FILTER = 'summary';
@@ -94,7 +94,8 @@ function loadShellsFile(shellsPath) {
 /**
  * @param {object} args
  * @param {string} args.id - unique slug for the shells.json entry
- * @param {string} args.scriptPath - relative path to the script file (e.g. ".vscode/scripts/foo.mjs")
+ * @param {string} args.scriptPath - the script's file name inside the curation home's scripts dir
+ *   ("foo.mjs" or "scripts/foo.mjs"; an old ".vscode/scripts/foo.mjs" maps to the same place)
  * @param {string} args.content - full script source
  * @param {string[]} args.aliases - raw command forms that redirect to this script
  * @param {string} [args.label]
@@ -106,6 +107,9 @@ function loadShellsFile(shellsPath) {
  * @param {boolean} [args.acceptsArgs] - the script reads its argv: an alias that adds
  *   arguments to the base alias (e.g. "git stash list" over "git stash") is redirected
  *   with those arguments. Without it, such a variant alias runs raw (B-18).
+ * @param {boolean} [args.passthrough] - the script hands ALL its arguments to the command it
+ *   curates (`npm test "$@"`): every command that starts with one of its aliases is then
+ *   redirected with its arguments and flags — the same command runs, only the output is curated.
  * @param {string} [args.cwd] - working directory for project root resolution
  * @returns {{isError:true, message:string} | {decision:'registered'|'updated', id:string, scriptPath:string, shellsConfigPath:string, aliases:string[], message:string}}
  */
@@ -129,16 +133,25 @@ function register(args) {
   const cwd = a.cwd || process.cwd();
   const projectRoot = resolveBoundedProjectRoot(cwd);
 
+  // Scripts and shells.json live in the user's curation home for this project — never in the repo.
+  const home = curationHome(projectRoot);
   const scriptsDir = getScriptsDir(projectRoot);
   const shellsConfigPath = getShellsConfigPath(projectRoot);
+  if (path.relative(home, shellsConfigPath).startsWith('..')) {
+    return err(`curation_register_shell: this project's curation is still in the repo (${shellsConfigPath}) because moving it to ${home} failed — see the curation notice; nothing was written.`);
+  }
 
   // Path traversal guard: the resolved absolute script path must stay inside
   // scriptsDir. Reject "../" escapes and absolute paths pointing elsewhere.
-  const absScriptPath = path.resolve(projectRoot, scriptPathRel);
+  if (path.isAbsolute(scriptPathRel)) {
+    return err(`curation_register_shell: scriptPath is a file name inside the curation scripts dir, got the absolute path "${scriptPathRel}".`);
+  }
+  const inScripts = scriptPathRel.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^(?:\.vscode\/scripts|\.curation\/scripts|scripts)\//, '');
+  const absScriptPath = path.resolve(scriptsDir, inScripts);
   const scriptsDirResolved = path.resolve(scriptsDir);
   const rel = path.relative(scriptsDirResolved, absScriptPath);
-  if (rel.startsWith('..') || path.isAbsolute(rel)) {
-    return err(`curation_register_shell: scriptPath must resolve inside the project's scripts dir (${path.relative(projectRoot, scriptsDirResolved) || '.'}), got "${scriptPathRel}".`);
+  if (!rel || rel.startsWith('..') || path.isAbsolute(rel)) {
+    return err(`curation_register_shell: scriptPath must resolve inside the curation scripts dir (${scriptsDirResolved}), got "${scriptPathRel}".`);
   }
 
   let shellsFile;
@@ -167,10 +180,11 @@ function register(args) {
 
   const prev = existing || {};
   const pick = (val, keep, dflt) => (val !== undefined ? val : (keep !== undefined ? keep : dflt));
-  const relScriptPath = path.relative(projectRoot, absScriptPath).split(path.sep).join('/');
+  const relScriptPath = path.relative(home, absScriptPath).split(path.sep).join('/'); // `scripts/x.mjs`, relative to the home
   const icon = pick(a.icon ? String(a.icon) : undefined, prev.icon, undefined);
   const outputChars = pick(Number.isFinite(a.outputChars) && a.outputChars > 0 ? a.outputChars : undefined, prev.outputChars, undefined);
   const acceptsArgs = pick(typeof a.acceptsArgs === 'boolean' ? a.acceptsArgs : undefined, prev.acceptsArgs, undefined);
+  const passthrough = pick(typeof a.passthrough === 'boolean' ? a.passthrough : undefined, prev.passthrough, undefined);
   const entry = {
     id,
     label: pick(a.label ? String(a.label) : undefined, prev.label, id),
@@ -182,6 +196,7 @@ function register(args) {
     outputLines: pick(Number.isFinite(a.outputLines) ? a.outputLines : undefined, prev.outputLines, DEFAULT_OUTPUT_LINES),
     ...(outputChars ? { outputChars } : {}),
     ...(acceptsArgs === true ? { acceptsArgs: true } : {}),
+    ...(passthrough === true ? { passthrough: true } : {}),
     timeoutMs: pick(Number.isFinite(a.timeoutMs) ? a.timeoutMs : undefined, prev.timeoutMs, DEFAULT_TIMEOUT_MS),
   };
 
@@ -196,14 +211,13 @@ function register(args) {
     return err(`curation_register_shell: failed to write shells.json: ${e.message}`);
   }
 
-  const relShellsPath = path.relative(projectRoot, shellsConfigPath).split(path.sep).join('/');
   return {
     decision,
     id,
-    scriptPath: relScriptPath,
-    shellsConfigPath: relShellsPath,
+    scriptPath: absScriptPath,
+    shellsConfigPath,
     aliases,
-    message: `${decision === 'updated' ? 'Updated' : 'Created'} curated script "${id}" at ${relScriptPath} and ${decision === 'updated' ? 'updated' : 'added'} its entry in ${relShellsPath}.`,
+    message: `${decision === 'updated' ? 'Updated' : 'Created'} curated script "${id}" at ${absScriptPath} and ${decision === 'updated' ? 'updated' : 'added'} its entry in ${shellsConfigPath} — the user's curation folder for this project; nothing is written in the repo. The script runs with CCB_PROJECT_ROOT set to the project root.`,
   };
 }
 

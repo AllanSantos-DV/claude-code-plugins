@@ -32,9 +32,12 @@
  */
 const fs   = require('fs');
 
+const path = require('path');
+
 const {
   findProjectRoot,
   getShellsConfigPath,
+  curationHome,
 } = require('./curation-paths.js');
 
 /** @type {Map<string, { stamp: string, result: { shells: object[], whitelist: string[] } }>} */
@@ -68,10 +71,16 @@ function loadShellsConfig(projectRoot) {
   try {
     if (shellsPath && fs.existsSync(shellsPath)) {
       const config = JSON.parse(fs.readFileSync(shellsPath, 'utf-8'));
+      // Entries are relative to the curation home (`scripts/x.mjs`); only a legacy in-repo file
+      // (read while its migration failed) is relative to the project root. `script` comes out
+      // ABSOLUTE (forward slashes), so matching a token never depends on the caller's cwd.
+      const home = curationHome(projectRoot);
+      const base = home && path.resolve(path.dirname(shellsPath)) === path.resolve(home) ? home : projectRoot;
       const shells = (config.shells || []).map(s => {
         // Normalize: legacy `command` (was path) becomes `script`.
-        if (!s.script && s.command) return { ...s, script: s.command };
-        return s;
+        const rel = String(s.script || s.command || '').trim();
+        if (!rel) return s;
+        return { ...s, script: path.resolve(base, rel).split(path.sep).join('/') };
       });
       result = { shells, whitelist: config.whitelist || [] };
     }

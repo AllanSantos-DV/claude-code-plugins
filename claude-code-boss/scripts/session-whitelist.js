@@ -78,8 +78,9 @@ async function run(event) {
     const shellsPath = getShellsConfigPath(projectRoot)
       || path.join(projectRoot, loadCurationConfig().shellsConfigPath);
 
-    // If the parent dir doesn't exist yet (e.g. .vscode/), bail — we won't
-    // silently provision workspace structure. Attach on next SessionStart.
+    // Only a project that already has curation (its home in the user folder exists) gets a
+    // whitelist: creating one for every folder a session opens in is how 31 repos ended up
+    // with a .vscode/shells.json. Attach on the next SessionStart once it has one.
     if (!fs.existsSync(path.dirname(shellsPath))) {
       return {};
     }

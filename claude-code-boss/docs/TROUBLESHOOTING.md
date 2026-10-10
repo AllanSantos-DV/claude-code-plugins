@@ -45,7 +45,7 @@
 
 | Sintoma | Causa | Solução |
 |---------|-------|---------|
-| Wrapper nunca dispara | Assinatura não bate (flags/cwd/argumentos diferentes) | Confira `.vscode/shells.json`; reescrita automática só p/ alias exato sem args |
+| Wrapper nunca dispara | Assinatura não bate (flags/cwd/argumentos diferentes) | Confira o `shells.json` em `~/.claude/claude-code-boss/curation/<owner>/<repo>/`; reescrita automática p/ alias exato, ou p/ qualquer variante se o script tiver `passthrough: true` |
 | Pedido de curadoria repetitivo chato | Comando é one-off | Marque via `curation_mark_oneoff` (sigs verbatim do review-block) |
 | Quero desligar tudo | — | `/boss-profile free` |
 

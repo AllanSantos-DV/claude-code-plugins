@@ -15,7 +15,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { getShellsConfigPath } = require('../curation-paths.js');
+const { getShellsConfigPath, resolveScriptPath } = require('../curation-paths.js');
 const { writeFileAtomic } = require('./atomic-write.js');
 
 const DAY = 86400_000;
@@ -45,7 +45,7 @@ function backupPath(root, now) {
 
 function ageDaysOf(root, rel, now) {
   try {
-    const st = fs.statSync(path.resolve(root, rel));
+    const st = fs.statSync(resolveScriptPath(root, rel));
     const born = Math.min(st.birthtimeMs > 0 ? st.birthtimeMs : Infinity, st.mtimeMs);
     return (now - born) / DAY;
   } catch (err) {

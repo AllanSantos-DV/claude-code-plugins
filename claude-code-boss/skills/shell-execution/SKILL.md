@@ -81,16 +81,17 @@ FAIL  <tool> (<N>ms)
 
 ### 1. Inspect existing entries
 
-The shells config path is configurable via `hooks-config.json` → `curation.shellsConfigPath` (default `.vscode/shells.json`). To inspect:
+The shells config lives outside the project, in the user's curation folder for it. To inspect:
 ```
-Read tool → <projectRoot>/<shellsConfigPath>
+Read tool → ~/.claude/claude-code-boss/curation/<owner>/<repo>/shells.json
 ```
+(`curation/local/<name>-<hash>/` for a folder without a project id; the redirect message shows the full script path.)
 
 ### 2. If the guard redirects your command
 
 When you see hook output like:
 ```
-[curation-guard] Command `npm test` has a curated script. Run `.vscode/scripts/test.mjs` instead — output filtered (summary, limit 80 lines).
+[curation-guard] Command `npm test` has a curated script. Run `~/.claude/claude-code-boss/curation/<owner>/<repo>/scripts/test.mjs` instead — output filtered (summary, limit 80 lines).
 ```
 **Do NOT retry the raw command.** Invoke the curated script directly (the matcher recognizes any invocation form that carries the script path — `node script.mjs`, `powershell -File script.ps1`, `bash script.sh`).
 

@@ -7,7 +7,7 @@ const { execSync, execFileSync, spawn } = require('child_process');
 const os = require('os');
 const crypto = require('crypto');
 
-const { findProjectRoot, getShellsConfigPath } = require('./curation-paths.js');
+const { findProjectRoot, getShellsConfigPath, resolveScriptPath } = require('./curation-paths.js');
 const configTesters = require('./config-testers');
 const { USER_SENTINEL, prepareForUserScope } = require('./lib/scope-sanitizer.js');
 const { sanitizeProjectId, sanitizeLogicalProjectId } = require('./lib/project-id.js');
@@ -1196,7 +1196,7 @@ function getCurationShells(req, res, url) {
     // Schema: `script` is the canonical field; legacy `command` accepted as fallback.
     const shells = (data.shells || []).map(s => {
       const scriptRel = s.script || s.command;
-      const scriptPath = scriptRel && projectRoot ? path.resolve(projectRoot, scriptRel) : null;
+      const scriptPath = scriptRel && projectRoot ? resolveScriptPath(projectRoot, scriptRel) : null; // curation home (or a repo script kept in place)
       const scriptExists = scriptPath ? fs.existsSync(scriptPath) : false;
       let scriptContent = null;
       if (scriptExists) {

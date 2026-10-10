@@ -12,13 +12,15 @@ You already have full turn context — don't reload payloads from disk; act on w
 
 ## Priority (in order)
 
-1. **Refine existing**: if the Stop reason lists an existing script path, `Read` it first with the Read tool. Diagnose the actual cause of bulkiness from the script's source — never invent reasons. Then edit in place.
-2. **Create new — prefer `curation_register_shell`**: when the Stop reason explicitly says "no existing script", call the `curation_register_shell({ id, scriptPath, content, aliases, ... })` MCP tool with the script's content (per the templates below) instead of using Write/Edit directly. The tool writes the script file and adds/updates its `shells.json` entry server-side in one call — this avoids the Auto Mode classifier blocking manual Write/Edit on `.vscode/scripts/**` and `shells.json` as "persistent configuration outside task scope". Calling it again with the same `id` updates the entry instead of duplicating it. Only fall back to manual Write + Edit of `shells.json` if this tool is unavailable (e.g. an older plugin install without it).
+1. **Refine existing**: if the Stop reason lists an existing script path, `Read` it first with the Read tool. Diagnose the actual cause of bulkiness from the script's source — never invent reasons. Then rewrite it with `curation_register_shell` (same `id`, `scriptPath` and `aliases`, new `content`): the script lives in the user's curation folder, outside the project, where a direct Write/Edit raises permission prompts.
+2. **Create new — use `curation_register_shell`**: when the Stop reason explicitly says "no existing script", call the `curation_register_shell({ id, scriptPath, content, aliases, passthrough, ... })` MCP tool with the script's content (per the templates below). `scriptPath` is just the file name (`npm-test.mjs`). The tool writes the script and its `shells.json` entry in one call; calling it again with the same `id` updates the entry instead of duplicating it.
 3. **Skip — one-hit**: if the command is one-shot or genuinely rare, call `curation_mark_oneoff({ sigs: [...] })` passing each `sig` shown in the Stop reason **verbatim** (exact store match — no alias guessing). The `aliases` param still works for raw command forms, but `sigs` is preferred. Marks made mid-retry are reconciled by the Stop hook and release the block immediately.
 
 ## What "curated" means here
 
-Curated shell entries live in the shells config file (default: `.vscode/shells.json`, configurable via `hooks-config.json` → `curation.shellsConfigPath`). Each entry points to a **script** that wraps a raw command and **standardizes its output**. The LLM never sees raw verbose output: it sees the script's filtered summary.
+Curated scripts and their `shells.json` live **outside the project**, in the user's curation folder for it: `~/.claude/claude-code-boss/curation/<owner>/<repo>/` (keyed by the project id; `curation/local/<name>-<hash>/` for a folder without one). Nothing is written in the repo. A project that still has the old `.vscode/shells.json` + `.vscode/scripts/` is moved there automatically (backup kept, files git tracks left in place and reported). Each entry points to a **script** that wraps a raw command and **standardizes its output**. The LLM never sees raw verbose output: it sees the script's filtered summary.
+
+The redirect runs the script with `CCB_PROJECT_ROOT` set to the project root: **find the project through that variable** (fallback `process.cwd()`), never through the script's own location (`__dirname/../..` now points into the curation folder).
 
 - Success → exactly one line: `OK  <summary> (<N>ms)`
 - Failure → relevant error lines + final line: `FAIL  <tool> (<N>ms)`
@@ -49,14 +51,19 @@ These rules apply regardless of script language:
 
 ### Node.js (`.mjs`) — use when project already uses Node
 
+A **passthrough** script (register it with `passthrough: true`): it runs `<command>` with
+whatever arguments the redirect hands it, so every variant (`npm test -- --grep x`) is covered
+by the same script.
+
 ```javascript
 #!/usr/bin/env node
-// scripts/<name>.mjs — <description>
-import { execSync } from 'child_process';
+// <name>.mjs — <description> (passthrough: `<command> ...args`)
+import { execFileSync } from 'child_process';
 
+const root = process.env.CCB_PROJECT_ROOT || process.cwd();
 const start = Date.now();
 try {
-  const stdout = execSync('<command>', { encoding: 'utf-8', stdio: 'pipe' });
+  const stdout = execFileSync('<program>', ['<subcommand>', ...process.argv.slice(2)], { cwd: root, encoding: 'utf-8', stdio: 'pipe', shell: process.platform === 'win32' });
   const ms = Date.now() - start;
   const lines = stdout.trim().split('\n').filter(l => l.trim());
   const passCount = lines.filter(l => /✓|✔|pass|ok/i.test(l)).length;
@@ -150,9 +157,20 @@ print(f'OK  {passes} passed ({ms}ms)')
   "outputFilter": "summary|errors-only",
   "outputLines": 80,
   "outputChars": 8000,                   // optional; default = outputLines * 100
-  "timeoutMs": 600000
+  "timeoutMs": 600000,
+  "passthrough": true                    // optional: the script forwards its argv to the command
 }
 ```
+
+`script` is relative to the curation folder (`scripts/<name>.mjs`).
+
+**`passthrough: true`** — the safe way to cover variants: a script that hands its arguments to
+the command it curates receives every command that **starts with** one of its aliases, with the
+remaining arguments and flags (`mvn test -Dtest=X -q` → `node mvn-test.mjs -Dtest=X -q`). The
+same command runs, so nothing changes but the output. It never matches by similarity: `git -C
+other log` is not `git log` + args, and a script that pins a flag (a "dry-run" wrapper) must
+NOT be passthrough — forwarding `--ci` would change what it does. Leading `VAR=value`
+assignments are kept on the rewritten command.
 
 `outputLines` is **enforced**, not just a hint: on a successful run, output beyond
 `outputLines` lines (or `outputChars` chars, default `outputLines * 100`) is flagged

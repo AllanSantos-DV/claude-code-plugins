@@ -3857,21 +3857,24 @@ test('G12 brain-embedder.setDelegate: every consumer is routed to the delegate; 
 
 test('C2 curation-redirect: exact task signature+flags rewritten (also inside compounds); variants, files, tee, heredoc and exploration are not; CCB_RAW=1 bypasses', () => {
   const { planRedirect } = require('./lib/curation-redirect.js');
-  const shells = [
-    { id: 'tu', script: '.vscode/scripts/tu.mjs', aliases: ['node scripts/test-units.js', 'node scripts/test-units.js 2>&1 | tail -40'] },
-    { id: 'gate', script: '.vscode/scripts/gate.ps1', aliases: ['node scripts/gate.mjs'] },
-    { id: 'glog', script: '.vscode/scripts/glog.mjs', aliases: ['git log'] },
-  ];
   // A platform-native absolute root: 'C:/repo' is not absolute on Linux (CI), where
   // path.resolve prefixed the runner's cwd — the test, not the product, was Windows-only.
   const R = path.resolve(os.tmpdir(), 'ccb-c2-repo');
-  const TU = `node "${R.replace(/\\/g, '/')}/.vscode/scripts/tu.mjs"`;
+  const Rf = R.replace(/\\/g, '/');
+  // Entries are relative to the project's curation home (outside the repo) — what loadShellsConfig hands out absolute.
+  const H = require('./curation-paths.js').curationHome(R).replace(/\\/g, '/');
+  const shells = [
+    { id: 'tu', script: 'scripts/tu.mjs', aliases: ['node scripts/test-units.js', 'node scripts/test-units.js 2>&1 | tail -40'] },
+    { id: 'gate', script: 'scripts/gate.ps1', aliases: ['node scripts/gate.mjs'] },
+    { id: 'glog', script: 'scripts/glog.mjs', aliases: ['git log'] },
+  ];
+  const TU = `CCB_PROJECT_ROOT="${Rf}" node "${H}/scripts/tu.mjs"`;
   const plan = (c) => planRedirect(c, shells, R);
-  assertEq(plan('node scripts/test-units.js 2>&1 | tail -40').rewritten, TU);
+  assertEq(plan('node scripts/test-units.js 2>&1 | tail -40').rewritten, TU, 'runs from the curation home, told where the project is');
   assertEq(plan('cd x && node scripts/test-units.js; echo done').rewritten, `cd x && ${TU} ; echo done`, 'only the matching part is rewritten');
   const two = plan('node scripts/gate.mjs && node scripts/test-units.js');
   assertEq(two.replaced.map((r) => r.shellId), ['gate', 'tu']);
-  assert(/^powershell .*gate\.ps1" && node /.test(two.rewritten), two.rewritten);
+  assert(/^CCB_PROJECT_ROOT="[^"]+" powershell .*gate\.ps1" && CCB_PROJECT_ROOT=/.test(two.rewritten), two.rewritten);
   assertEq(plan('node scripts/test-units.js --filter x'), { rewritten: null, replaced: [], uncovered: ['tu'] }, 'variant → uncovered, not rewritten');
   for (const raw of ['node scripts/test-units.js > /tmp/u.log 2>&1', 'node scripts/test-units.js | tee x.log', 'node scripts/test-units.js <<EOF\nx\nEOF', 'git log --oneline']) {
     assertEq(plan(raw).rewritten, null, `not rewritten: ${raw}`);
@@ -3884,16 +3887,143 @@ test('C2 curation-redirect: exact task signature+flags rewritten (also inside co
 test('C2 curation-redirect: an alias that adds arguments to the base alias is never redirected to an argless call (git stash list ran git stash)', () => {
   const { planRedirect } = require('./lib/curation-redirect.js');
   const R = path.resolve(os.tmpdir(), 'ccb-c2-args');
-  const GS = `node "${R.replace(/\\/g, '/')}/.vscode/scripts/git-stash.mjs"`;
-  const semArgs = [{ id: 'git-stash', script: '.vscode/scripts/git-stash.mjs', aliases: ['git stash', 'git stash list'] }];
+  const H = require('./curation-paths.js').curationHome(R).replace(/\\/g, '/');
+  const GS = `CCB_PROJECT_ROOT="${R.replace(/\\/g, '/')}" node "${H}/scripts/git-stash.mjs"`;
+  const semArgs = [{ id: 'git-stash', script: 'scripts/git-stash.mjs', aliases: ['git stash', 'git stash list'] }];
   assertEq(planRedirect('git stash', semArgs, R).rewritten, GS, 'the base alias still redirects');
   assertEq(planRedirect('git stash list', semArgs, R), { rewritten: null, replaced: [], uncovered: ['git-stash'] }, 'the variant runs raw: the script would drop "list" and stash instead');
   const comArgs = [{ ...semArgs[0], acceptsArgs: true }];
   assertEq(planRedirect('git stash list', comArgs, R).rewritten, `${GS} list`, 'a script that accepts arguments receives them');
   assertEq(planRedirect('cd x && git stash list', comArgs, R).rewritten, `cd x && ${GS} list`);
+  assertEq(planRedirect('FOO=1 git stash list', comArgs, R).rewritten, `FOO=1 ${GS} list`, 'arguments are taken after the env prefix (it handed the script "stash list"), and the prefix is kept (it was dropped)');
+  assertEq(planRedirect('NODE_ENV=test git stash', semArgs, R).rewritten, `NODE_ENV=test ${GS}`, 'an exact match keeps its env assignments too');
   assertEq(planRedirect('git stash pop', comArgs, R).rewritten, null, 'only aliased variants are redirected');
-  const alternativas = [{ id: 'tests', script: '.vscode/scripts/tests.mjs', aliases: ['npm test', 'npx vitest run'] }];
+  const alternativas = [{ id: 'tests', script: 'scripts/tests.mjs', aliases: ['npm test', 'npx vitest run'] }];
   assert(/tests\.mjs"$/.test(planRedirect('npx vitest run', alternativas, R).rewritten || ''), 'alternative spellings of the same command are not variants');
+});
+
+test('curation home: the in-repo .vscode curation MOVES to the user folder (keyed by project) — untracked files leave the repo, tracked ones stay, backup + one-shot notice', () => {
+  const cp = require('./curation-paths.js');
+  const sc = require('./shells-config.js');
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mig-'));
+  try {
+    const git = (...a) => require('child_process').execFileSync('git', a, { cwd: proj, stdio: 'ignore', windowsHide: true });
+    git('init', '-q');
+    fs.mkdirSync(path.join(proj, '.vscode', 'scripts', 'lib'), { recursive: true });
+    fs.writeFileSync(path.join(proj, '.vscode', 'scripts', 'tests.mjs'), 'import "./lib/h.mjs";\n');
+    fs.writeFileSync(path.join(proj, '.vscode', 'scripts', 'lib', 'h.mjs'), 'export {};\n');
+    fs.writeFileSync(path.join(proj, '.vscode', 'scripts', 'self.mjs'), 'const root = path.resolve(__dirname, "../..");\n');
+    fs.writeFileSync(path.join(proj, '.vscode', 'settings.json'), '{}'); // the user's own VS Code file
+    fs.mkdirSync(path.join(proj, 'tools'));
+    fs.writeFileSync(path.join(proj, 'tools', 'own.sh'), 'echo own\n'); // a repo script registered as curated: stays put
+    fs.writeFileSync(path.join(proj, '.vscode', 'shells.json'), JSON.stringify({ shells: [
+      { id: 'tests', script: '.vscode/scripts/tests.mjs', aliases: ['npm test'] },
+      { id: 'self', command: '.vscode/scripts/self.mjs', aliases: ['npm run self'] },
+      { id: 'own', script: 'tools/own.sh', aliases: ['npm run own'] },
+    ], whitelist: ['git'] }));
+    git('add', '.vscode/scripts/self.mjs'); // tracked by git → the team's file: copied, left in place
+    cp._resetConfigCache(); sc._resetCache();
+
+    const home = cp.curationHome(proj);
+    assert(!path.relative(require('./lib/data-dir.js').globalDir(), home).startsWith('..') && /curation[\\/]local[\\/]/.test(home), `home under the user folder: ${home}`);
+    const { shells, whitelist } = sc.loadShellsConfig(proj);
+    const H = home.replace(/\\/g, '/');
+    assertEq(shells.map((s) => [s.id, s.script]), [['tests', `${H}/scripts/tests.mjs`], ['self', `${H}/scripts/self.mjs`], ['own', `${proj.replace(/\\/g, '/')}/tools/own.sh`]]);
+    assertEq(whitelist, ['git']);
+    assertEq(fs.readFileSync(path.join(home, 'scripts', 'lib', 'h.mjs'), 'utf8'), 'export {};\n', 'the whole curation dir moves (helpers a script imports included)');
+    assertEq(fs.existsSync(path.join(proj, '.vscode', 'shells.json')), false, 'untracked config left the repo');
+    assertEq(fs.existsSync(path.join(proj, '.vscode', 'scripts', 'tests.mjs')), false);
+    assertEq(fs.existsSync(path.join(proj, '.vscode', 'scripts', 'self.mjs')), true, 'a git-tracked file is never deleted');
+    assertEq(fs.existsSync(path.join(proj, '.vscode', 'settings.json')), true, 'the user\'s other .vscode files are untouched');
+    assertEq(fs.existsSync(path.join(proj, 'tools', 'own.sh')), true, 'a repo script is not moved');
+    assert(fs.readdirSync(path.join(home, 'legacy-backup')).length === 1, 'backup of what left the repo, in the home');
+    const n = cp.takeMigrationNotice(proj);
+    assertEq([n.migrated, n.entries, n.keptTracked, n.selfLocating], [true, 3, ['.vscode/scripts/self.mjs'], ['scripts/self.mjs']]);
+    assertEq(cp.takeMigrationNotice(proj), null, 'the notice is shown once');
+    const lines = require('./curation-session.js').migrationLines(n);
+    assert(/moved out of the repo/.test(lines[0]) && /git rm/.test(lines[1]) && /CCB_PROJECT_ROOT/.test(lines[2]), lines.join('\n'));
+
+    // A legacy file that shows up later (a teammate's pull) is MERGED, never overwriting the home.
+    fs.writeFileSync(path.join(proj, '.vscode', 'shells.json'), JSON.stringify({ shells: [{ id: 'tests', script: '.vscode/scripts/x.mjs', aliases: ['changed'] }, { id: 'new', script: '.vscode/scripts/new.mjs', aliases: ['npm run new'] }] }));
+    cp._resetConfigCache(); sc._resetCache();
+    const merged = sc.loadShellsConfig(proj).shells;
+    assertEq(merged.map((s) => s.id), ['tests', 'self', 'own', 'new'], 'only the new id is added');
+    assertEq(merged[0].aliases, ['npm test'], 'the home\'s own entry wins');
+    assertEq(merged[3].script, `${H}/scripts/new.mjs`, 'an entry into .vscode/scripts maps to the home even when its file is missing (it kept the in-repo path)');
+
+    // Same with NO .vscode/scripts dir at all (only the config): the entry still maps to the home.
+    const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mig-bare-'));
+    fs.writeFileSync(path.join(bare, 'package.json'), '{}');
+    fs.mkdirSync(path.join(bare, '.vscode'));
+    fs.writeFileSync(path.join(bare, '.vscode', 'shells.json'), JSON.stringify({ shells: [{ id: 'g', script: '.vscode/scripts/ghost.mjs', aliases: ['npm run g'] }] }));
+    cp._resetConfigCache(); sc._resetCache();
+    assertEq(sc.loadShellsConfig(bare).shells[0].script, `${cp.curationHome(bare).replace(/\\/g, '/')}/scripts/ghost.mjs`, 'no dir on disk → still the home');
+    fs.rmSync(bare, { recursive: true, force: true });
+  } finally { cp._resetConfigCache(); sc._resetCache(); fs.rmSync(proj, { recursive: true, force: true }); }
+});
+
+test('curation home: a legacy config that cannot be moved is still USED (no curation lost) and the failure is reported; a foreign shells.json is never touched', () => {
+  const cp = require('./curation-paths.js');
+  const sc = require('./shells-config.js');
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mig-bad-'));
+  try {
+    fs.writeFileSync(path.join(proj, 'package.json'), '{}');
+    fs.mkdirSync(path.join(proj, '.vscode'));
+    fs.writeFileSync(path.join(proj, '.vscode', 'shells.json'), '{ not json');
+    cp._resetConfigCache(); sc._resetCache();
+    assertEq(cp.getShellsConfigPath(proj), path.join(proj, '.vscode', 'shells.json'), 'falls back to the legacy file');
+    assertEq(fs.readFileSync(path.join(proj, '.vscode', 'shells.json'), 'utf8'), '{ not json', 'nothing deleted');
+    const n = cp.takeMigrationNotice(proj);
+    assert(n && /not valid JSON/.test(n.error), JSON.stringify(n));
+    assert(/could NOT be moved/.test(require('./curation-session.js').migrationLines(n)[0]));
+    const reg = require('./lib/shell-register.js').register({ cwd: proj, id: 'x', scriptPath: 'x.mjs', content: 'c', aliases: ['npm run x'] });
+    assert(reg.isError && /still in the repo/.test(JSON.stringify(reg)), 'register refuses to write into the repo while the move is pending');
+
+    const other = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mig-foreign-'));
+    fs.writeFileSync(path.join(other, 'package.json'), '{}');
+    fs.writeFileSync(path.join(other, 'shells.json'), JSON.stringify({ terminals: ['bash'] })); // some other tool's file
+    cp._resetConfigCache();
+    cp.getShellsConfigPath(other);
+    assertEq(fs.readFileSync(path.join(other, 'shells.json'), 'utf8'), JSON.stringify({ terminals: ['bash'] }), 'not a curation config (no shells array) → untouched');
+    fs.rmSync(other, { recursive: true, force: true });
+  } finally { cp._resetConfigCache(); sc._resetCache(); fs.rmSync(proj, { recursive: true, force: true }); }
+});
+
+test('session-whitelist writes NOTHING for a folder without curation (SessionStart created a shells.json in every folder a session opened in)', async () => {
+  const cp = require('./curation-paths.js');
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-wl-none-'));
+  try {
+    fs.writeFileSync(path.join(proj, 'package.json'), '{}');
+    cp._resetConfigCache();
+    await require('./session-whitelist.js').run({ cwd: proj });
+    assertEq(fs.existsSync(cp.curationHome(proj)), false, 'no curation home created');
+    assertEq(fs.existsSync(path.join(proj, '.vscode')), false, 'and nothing in the repo');
+  } finally { fs.rmSync(proj, { recursive: true, force: true }); }
+});
+
+test('passthrough redirect: a script that forwards its argv takes EVERY variant that starts with its alias, args and flags included — nothing wider', () => {
+  const { planRedirect } = require('./lib/curation-redirect.js');
+  const R = path.resolve(os.tmpdir(), 'ccb-pass-repo');
+  const H = require('./curation-paths.js').curationHome(R).replace(/\\/g, '/');
+  const inv = (s) => `CCB_PROJECT_ROOT="${R.replace(/\\/g, '/')}" node "${H}/scripts/${s}"`;
+  const shells = [
+    { id: 'mvn-test', script: 'scripts/mvn-test.mjs', aliases: ['mvn test'], passthrough: true },
+    { id: 'runs', script: 'scripts/runs.mjs', aliases: ['gh run list'], passthrough: true },
+    { id: 'stash', script: 'scripts/stash.mjs', aliases: ['git stash', 'git stash list'], passthrough: true },
+    { id: 'tests', script: 'scripts/tests.mjs', aliases: ['npm test', 'npx vitest run'], passthrough: true },
+    { id: 'plain', script: 'scripts/plain.mjs', aliases: ['npm run build'] },
+  ];
+  const rw = (c) => planRedirect(c, shells, R).rewritten;
+  assertEq(rw('mvn test -Dtest=FooTest -q 2>&1 | tail -20'), `${inv('mvn-test.mjs')} -Dtest=FooTest -q`, 'flags and args forwarded; the output pipe is not an argument');
+  assertEq(rw('gh run list --limit 5 --json status'), `${inv('runs.mjs')} --limit 5 --json status`);
+  assertEq(rw('cd x && NODE_ENV=ci mvn test'), `cd x && NODE_ENV=ci ${inv('mvn-test.mjs')}`, 'env prefix kept, cd untouched');
+  assertEq(rw('git stash list --date=relative'), `${inv('stash.mjs')} list --date=relative`, 'a variant alias hands the script everything after the SCRIPT\'s command (git stash), not after the alias');
+  assertEq(rw('git stash pop'), `${inv('stash.mjs')} pop`, 'a true passthrough runs `git stash pop` — the same command');
+  assertEq(rw('npx vitest run src/a.test.ts'), `${inv('tests.mjs')} src/a.test.ts`, 'an alternative spelling forwards what follows it');
+  for (const raw of ['git -C ../other stash list', 'mvnw test', 'gh run view 123', 'mvn test > out.log', 'npm run build --prod']) {
+    assertEq(rw(raw), null, `not redirected: ${raw}`);
+  }
+  assertEq(rw('npm run build'), `${inv('plain.mjs')}`, 'a non-passthrough script keeps the exact rule');
 });
 
 test('C2b shape-output: passes small output untouched; cuts by lines or chars and reports both counts', () => {
@@ -4009,16 +4139,16 @@ test('shells-config: a shells.json edited mid-process is seen on the next call (
   const sc = require('./shells-config.js');
   const { planRedirect } = require('./lib/curation-redirect.js');
   const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-shells-stamp-'));
-  fs.mkdirSync(path.join(proj, '.vscode', 'scripts'), { recursive: true });
-  const file = path.join(proj, '.vscode', 'shells.json');
+  const file = require('./curation-paths.js').getShellsConfigPath(proj); // the project's curation home
   try {
     sc._resetCache();
     assertEq(sc.loadShellsConfig(proj).shells.length, 0, 'no file yet → empty');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
     // what curation_register_shell writes: the legacy `command` field
-    fs.writeFileSync(file, JSON.stringify({ shells: [{ id: 'tests', type: 'script', command: '.vscode/scripts/tests.mjs', aliases: ['npm test'] }] }));
+    fs.writeFileSync(file, JSON.stringify({ shells: [{ id: 'tests', type: 'script', command: 'scripts/tests.mjs', aliases: ['npm test'] }] }));
     assertEq(sc.loadShellsConfig(proj).shells.length, 1, 'a file created later is picked up');
     assert(!planRedirect('npm test -- --reporter=dot', sc.loadShellsConfig(proj).shells, proj).rewritten, 'variant not covered yet');
-    fs.writeFileSync(file, JSON.stringify({ shells: [{ id: 'tests', type: 'script', command: '.vscode/scripts/tests.mjs', aliases: ['npm test', 'npm test -- --reporter=dot'] }] }));
+    fs.writeFileSync(file, JSON.stringify({ shells: [{ id: 'tests', type: 'script', command: 'scripts/tests.mjs', aliases: ['npm test', 'npm test -- --reporter=dot'] }] }));
     const shells = sc.loadShellsConfig(proj).shells;
     assertEq(shells[0].aliases.length, 2, 'the alias registered mid-process is seen without any reset');
     assert(/tests\.mjs"$/.test(planRedirect('npm test -- --reporter=dot', shells, proj).rewritten || ''), 'and the variant now redirects to the script');
@@ -4029,30 +4159,32 @@ test('piped → refine: the same curated script filtered the same way twice asks
   const detect = require('./curation-detect.js');
   const journal = require('./lib/turn-journal.js');
   const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-piped-refine-'));
-  fs.mkdirSync(path.join(proj, '.vscode', 'scripts'), { recursive: true });
   fs.writeFileSync(path.join(proj, 'package.json'), '{}');
-  const script = path.join(proj, '.vscode', 'scripts', 'tests.mjs');
+  const home = require('./curation-paths.js').curationHome(proj);
+  fs.mkdirSync(path.join(home, 'scripts'), { recursive: true });
+  const script = path.join(home, 'scripts', 'tests.mjs');
+  const S = script.replace(/\\/g, '/');
   fs.writeFileSync(script, 'console.log("x")\n');
   const old = (Date.now() - 3600_000) / 1000; fs.utimesSync(script, old, old);
-  fs.writeFileSync(path.join(proj, '.vscode', 'shells.json'), JSON.stringify({ shells: [{ id: 'tests', script: '.vscode/scripts/tests.mjs', aliases: ['npm test'] }] }));
+  fs.writeFileSync(path.join(home, 'shells.json'), JSON.stringify({ shells: [{ id: 'tests', script: 'scripts/tests.mjs', aliases: ['npm test'] }] }));
   const sid = 'piped-' + Date.now();
   const ev = (command) => ({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command }, tool_response: { stdout: 'a\nb\nc', stderr: '' }, session_id: sid, cwd: proj });
   try {
-    await detect.run(ev('node .vscode/scripts/tests.mjs | tail -3'));
+    await detect.run(ev(`node "${S}" | tail -3`));
     assertEq(journal.readEntries(sid).length, 0, '1st filtered run: counted, not asked');
-    await detect.run(ev('node .vscode/scripts/tests.mjs |  tail  -3'));
+    await detect.run(ev(`node "${S}" |  tail  -3`));
     let entries = journal.readEntries(sid);
     assertEq(entries.length, 1, '2nd run with the same filter (whitespace-normalized) asks');
-    assert(entries[0].curatedScript === '.vscode/scripts/tests.mjs' && /filtered 2x with `\| tail -3` — bake this filter into the script/.test(entries[0].reason), JSON.stringify(entries[0]));
+    assert(entries[0].curatedScript === S && /filtered 2x with `\| tail -3` — bake this filter into the script/.test(entries[0].reason), JSON.stringify(entries[0]));
     const reason = require('./curation-stop.js')._buildReason(entries, 1, 3);
-    assert(/^REFINE:/m.test(reason) && /tests\.mjs/.test(reason) && /bake this filter/.test(reason), reason);
+    assert(/^REFINE — rewrite the script with `curation_register_shell/m.test(reason) && /tests\.mjs/.test(reason) && /bake this filter/.test(reason), reason);
     journal.clearEntries(sid);
-    await detect.run(ev('node .vscode/scripts/tests.mjs | grep FAIL'));
+    await detect.run(ev(`node "${S}" | grep FAIL`));
     assertEq(journal.readEntries(sid).length, 0, 'another filter has its own count');
     fs.writeFileSync(script, 'console.log("tuned")\n'); // the agent tuned the script (or explained why not)
-    for (let i = 0; i < 3; i++) await detect.run(ev('node .vscode/scripts/tests.mjs | tail -3'));
+    for (let i = 0; i < 3; i++) await detect.run(ev(`node "${S}" | tail -3`));
     assertEq(journal.readEntries(sid).length, 0, 'asked once: never again for the same script+filter (seen live: re-asking after tuning was pure noise)');
-    await detect.run(ev('node .vscode/scripts/tests.mjs'));
+    await detect.run(ev(`node "${S}"`));
     assertEq(journal.readEntries(sid).length, 0, 'an unfiltered run never asks');
   } finally { journal.clearEntries(sid); fs.rmSync(proj, { recursive: true, force: true }); }
 });
@@ -4065,11 +4197,14 @@ test('register (EXTEND path): updating an existing id keeps omitted fields and m
     const first = reg.register({ cwd: proj, id: 'tests', scriptPath: '.vscode/scripts/tests.mjs', content: 'console.log("OK tests")\n', aliases: ['npm test'],
       label: 'Unit tests', icon: 'beaker', outputLines: 5, outputChars: 900, timeoutMs: 120000, outputFilter: 'errors-only' });
     assert(!first.isError, JSON.stringify(first));
-    const script = path.join(proj, '.vscode', 'scripts', 'tests.mjs');
+    const cp = require('./curation-paths.js');
+    const shellsFile = cp.getShellsConfigPath(proj);
+    const script = path.join(cp.curationHome(proj), 'scripts', 'tests.mjs');
+    assertEq(fs.existsSync(path.join(proj, '.vscode')), false, 'nothing is written in the repo');
     const r = reg.register({ cwd: proj, id: 'tests', scriptPath: '.vscode/scripts/tests.mjs', aliases: ['npm test', 'npm test -- --reporter=dot'] });
     assert(!r.isError && r.decision === 'updated', `alias-only update accepted without content: ${JSON.stringify(r)}`);
     assertEq(fs.readFileSync(script, 'utf8'), 'console.log("OK tests")\n', 'the script file is untouched');
-    const e = JSON.parse(fs.readFileSync(path.join(proj, '.vscode', 'shells.json'), 'utf8')).shells.find((s) => s.id === 'tests');
+    const e = JSON.parse(fs.readFileSync(shellsFile, 'utf8')).shells.find((s) => s.id === 'tests');
     assertEq(JSON.stringify(e.aliases), '["npm test","npm test -- --reporter=dot"]', 'aliases replaced by the given list');
     assert(e.label === 'Unit tests' && e.icon === 'beaker' && e.outputLines === 5 && e.outputChars === 900 && e.timeoutMs === 120000 && e.outputFilter === 'errors-only',
       `tuned fields kept (they used to reset to defaults): ${JSON.stringify(e)}`);
@@ -4077,8 +4212,12 @@ test('register (EXTEND path): updating an existing id keeps omitted fields and m
     assert(!('acceptsArgs' in e), 'not written unless declared');
     reg.register({ cwd: proj, id: 'tests', scriptPath: '.vscode/scripts/tests.mjs', aliases: ['npm test'], acceptsArgs: true });
     reg.register({ cwd: proj, id: 'tests', scriptPath: '.vscode/scripts/tests.mjs', aliases: ['npm test', 'npm test unit'] });
-    const comArgs = JSON.parse(fs.readFileSync(path.join(proj, '.vscode', 'shells.json'), 'utf8')).shells.find((s) => s.id === 'tests');
+    const comArgs = JSON.parse(fs.readFileSync(shellsFile, 'utf8')).shells.find((s) => s.id === 'tests');
     assertEq(comArgs.acceptsArgs, true, 'acceptsArgs kept across an update that omits it');
+    reg.register({ cwd: proj, id: 'tests', scriptPath: 'tests.mjs', aliases: ['npm test'], passthrough: true });
+    reg.register({ cwd: proj, id: 'tests', scriptPath: 'tests.mjs', aliases: ['npm test'] });
+    const pt = JSON.parse(fs.readFileSync(shellsFile, 'utf8')).shells.find((s) => s.id === 'tests');
+    assertEq([pt.passthrough, pt.command], [true, 'scripts/tests.mjs'], 'passthrough written when declared and kept; the path is relative to the curation home');
     const fresh = reg.register({ cwd: proj, id: 'new-one', scriptPath: '.vscode/scripts/new.mjs', aliases: ['npm run new'] });
     assert(fresh.isError && /content is required/.test(fresh.message), 'a NEW id without content is refused');
     fs.rmSync(script);
@@ -4091,12 +4230,14 @@ test('piped → refine: a sub-agent run counts but never spends the single ask (
   const detect = require('./curation-detect.js');
   const journal = require('./lib/turn-journal.js');
   const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-piped-sub-'));
+  // A legacy in-repo curation: the first hook call moves it to the curation home.
   fs.mkdirSync(path.join(proj, '.vscode', 'scripts'), { recursive: true });
   fs.writeFileSync(path.join(proj, 'package.json'), '{}');
   fs.writeFileSync(path.join(proj, '.vscode', 'scripts', 'tests.mjs'), 'x');
   fs.writeFileSync(path.join(proj, '.vscode', 'shells.json'), JSON.stringify({ shells: [{ id: 'tests', script: '.vscode/scripts/tests.mjs', aliases: ['npm test'] }] }));
+  const S = path.join(require('./curation-paths.js').curationHome(proj), 'scripts', 'tests.mjs').replace(/\\/g, '/');
   const sid = 'piped-sub-' + Date.now();
-  const ev = (extra) => ({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'node .vscode/scripts/tests.mjs | tail -3' }, tool_response: { stdout: 'a', stderr: '' }, session_id: sid, cwd: proj, ...extra });
+  const ev = (extra) => ({ hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: `node "${S}" | tail -3` }, tool_response: { stdout: 'a', stderr: '' }, session_id: sid, cwd: proj, ...extra });
   try {
     await detect.run(ev({}));
     await detect.run(ev({ agent_id: 'sub-1' }));
@@ -4146,8 +4287,9 @@ test('variant → alias: a recurring noisy uncovered VARIANT of a curated script
     assertEq(e.curatedScript, null, 'a raw variant is NOT a run of the script (no REFINE)');
     const reason = require('./curation-stop.js')._buildReason(entries, 1, 3);
     assert(/^EXTEND an existing curated script/m.test(reason), `EXTEND section: ${reason}`);
-    assert(/variant of `tests` \(\.vscode\/scripts\/tests\.mjs\)/.test(reason) && /current aliases \["npm test"\]/.test(reason), reason);
-    assert(!/^CREATE a curated script/m.test(reason) && !/^REFINE:/m.test(reason), 'neither CREATE (a second script) nor REFINE');
+    assert(/variant of `tests` \([^)]*\/curation\/[^)]*\/scripts\/tests\.mjs\)/.test(reason) && /current aliases \["npm test"\]/.test(reason), reason);
+    assert(/PASSTHROUGH/.test(reason), 'EXTEND points at the passthrough fix first');
+    assert(!/^CREATE a curated script/m.test(reason) && !/^REFINE/m.test(reason), 'neither CREATE (a second script) nor REFINE');
   } finally {
     journal.clearEntries(sid);
     fs.rmSync(proj, { recursive: true, force: true });
@@ -4308,11 +4450,12 @@ test('C4 curation-guard: a pipe on the curated script is ALLOWED and measured (c
   metrics.fire = (name, payload) => { fired.push([name, payload && payload.shellId]); };
   try {
     const run = async (command) => (await guard.run({ tool_name: 'Bash', tool_input: { command }, cwd: proj, session_id: 's' }));
-    const a = await run('node .vscode/scripts/test-hooks.mjs | tail -3');
+    const S = `"${path.join(require('./curation-paths.js').curationHome(proj), 'scripts', 'test-hooks.mjs').replace(/\\/g, '/')}"`; // moved out of the repo
+    const a = await run(`node ${S} | tail -3`);
     assertEq(JSON.stringify(a), '{}', 'pipe on the curated script → abstain (passes; no deny, no nag, never a blanket allow)');
-    await run('node .vscode/scripts/test-hooks.mjs && node audit.mjs check | tail -2');
-    await run('grep -n catch .vscode/scripts/test-hooks.mjs | head -3');
-    await run('node .vscode/scripts/test-hooks.mjs');
+    await run(`node ${S} && node audit.mjs check | tail -2`);
+    await run(`grep -n catch ${S} | head -3`);
+    await run(`node ${S}`);
     assertEq(JSON.stringify(fired.filter((f) => f[0] === 'curation.piped')), '[["curation.piped","th"]]', 'measured once, only for the real pipe');
   } finally {
     metrics.fire = orig;
@@ -6604,6 +6747,7 @@ const freshProjectRoot = () => {
   fs.writeFileSync(path.join(dir, '.vscode', 'shells.json'), JSON.stringify({ version: 1, shells: [] }, null, 2));
   return dir;
 };
+const regHome = (root) => require(path.join(SCRIPTS, 'curation-paths.js')).curationHome(root);
 
 test('shell-register: creates script + entry when shells.json already has version/shells', () => {
   const root = freshProjectRoot();
@@ -6612,11 +6756,12 @@ test('shell-register: creates script + entry when shells.json already has versio
     aliases: ['grep -n foo'], cwd: root,
   });
   assertEq(res.decision, 'registered');
-  assert(fs.existsSync(path.join(root, '.vscode', 'scripts', 'grep-file.mjs')), 'script file written');
-  const shells = JSON.parse(fs.readFileSync(path.join(root, '.vscode', 'shells.json'), 'utf-8'));
+  assert(fs.existsSync(path.join(regHome(root), 'scripts', 'grep-file.mjs')), 'script file written in the curation home');
+  assertEq(fs.existsSync(path.join(root, '.vscode')), false, 'the legacy (empty) in-repo config was moved out; nothing written in the repo');
+  const shells = JSON.parse(fs.readFileSync(path.join(regHome(root), 'shells.json'), 'utf-8'));
   assertEq(shells.shells.length, 1);
   assertEq(shells.shells[0].id, 'grep-file');
-  assertEq(shells.shells[0].command, '.vscode/scripts/grep-file.mjs');
+  assertEq(shells.shells[0].command, 'scripts/grep-file.mjs', 'relative to the curation home');
   assertEq(shells.shells[0].aliases, ['grep -n foo']);
 });
 
@@ -6627,7 +6772,7 @@ test('shell-register: creates shells.json from scratch when missing', () => {
     aliases: ['npm run foo'], cwd: root,
   });
   assertEq(res.decision, 'registered');
-  const shells = JSON.parse(fs.readFileSync(path.join(root, '.vscode', 'shells.json'), 'utf-8'));
+  const shells = JSON.parse(fs.readFileSync(path.join(regHome(root), 'shells.json'), 'utf-8'));
   assertEq(shells.shells.length, 1);
 });
 
@@ -6636,10 +6781,10 @@ test('shell-register: same id twice updates in place, no duplicate', () => {
   shellRegister.register({ id: 'dup', scriptPath: '.vscode/scripts/dup.mjs', content: 'v1', aliases: ['npm run dup'], cwd: root });
   const res2 = shellRegister.register({ id: 'dup', scriptPath: '.vscode/scripts/dup.mjs', content: 'v2', aliases: ['npm run dup2'], cwd: root });
   assertEq(res2.decision, 'updated');
-  const shells = JSON.parse(fs.readFileSync(path.join(root, '.vscode', 'shells.json'), 'utf-8'));
+  const shells = JSON.parse(fs.readFileSync(path.join(regHome(root), 'shells.json'), 'utf-8'));
   assertEq(shells.shells.length, 1);
   assertEq(shells.shells[0].aliases, ['npm run dup2']);
-  assertEq(fs.readFileSync(path.join(root, '.vscode', 'scripts', 'dup.mjs'), 'utf-8'), 'v2');
+  assertEq(fs.readFileSync(path.join(regHome(root), 'scripts', 'dup.mjs'), 'utf-8'), 'v2');
 });
 
 test('shell-register: rejects generic alias (D4 parity with curation_mark_oneoff)', () => {
@@ -6667,7 +6812,7 @@ test('shell-register: rejects scriptPath escaping the scripts dir', () => {
 test('shell-register: shells.json stays pretty-printed (2-space indent)', () => {
   const root = freshProjectRoot();
   shellRegister.register({ id: 'pretty', scriptPath: '.vscode/scripts/pretty.mjs', content: 'c', aliases: ['npm run pretty'], cwd: root });
-  const raw = fs.readFileSync(path.join(root, '.vscode', 'shells.json'), 'utf-8');
+  const raw = fs.readFileSync(path.join(regHome(root), 'shells.json'), 'utf-8');
   assert(raw.includes('\n  "version"') || raw.includes('\n  "shells"'), `expected 2-space indent, got: ${raw.slice(0, 80)}`);
   JSON.parse(raw); // must still be valid JSON
 });
@@ -21684,9 +21829,9 @@ test('prune never-used: a 2.x-era curation.flagged does NOT count as usage histo
 test('prune never-used: apply removes only current candidates (non-candidates refused, loud), keeps a backup and human-readable JSON', () => {
   const { pruneShells } = require('./lib/shells-prune.js');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune-apply-'));
-  fs.mkdirSync(path.join(root, '.vscode'), { recursive: true });
-  const file = path.join(root, '.vscode', 'shells.json');
-  const orig = JSON.stringify({ shells: [{ id: 'A', script: '.vscode/scripts/a.mjs', aliases: ['npm run a'] }, { id: 'B', script: '.vscode/scripts/b.mjs', aliases: ['npm run b'] }], whitelist: ['git'] });
+  const file = require('./curation-paths.js').getShellsConfigPath(root); // the project's curation home
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const orig = JSON.stringify({ shells: [{ id: 'A', script: 'scripts/a.mjs', aliases: ['npm run a'] }, { id: 'B', script: 'scripts/b.mjs', aliases: ['npm run b'] }], whitelist: ['git'] });
   fs.writeFileSync(file, orig);
   const usage = () => ({ historyFromTs: Date.now() - 60 * 86400_000, usedIds: ['A'] });
   try {
