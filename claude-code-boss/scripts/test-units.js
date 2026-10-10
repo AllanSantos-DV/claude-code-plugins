@@ -10668,8 +10668,11 @@ test('plano B NVIDIA: nim.endpoint inválido é apontado como erro de configura�
 
 // Sobe um front que entrega a request ao plano B (handleLimitExceeded, ou
 // `invoke(body, cfg, res)`) e devolve { status, raw, err, hung } do lado do
-// cliente. `hung`: o router não respondeu em 10 s (cliente pendurado).
-async function _planBRun(cfg, body, invoke) {
+// cliente. `hung`: o router não respondeu em `hangMs` (10 s; cliente pendurado). Os casos de
+// ~40 MiB levam ~1,7 s sozinhos e ~4 s com 4 processos disputando a CPU: com a suíte cheia num
+// contêiner lento, 10 s davam "pendurado" sem travamento nenhum — esses casos passam 30 s.
+const PLANB_BIG_HANG_MS = 30000;
+async function _planBRun(cfg, body, invoke, { hangMs = 10000 } = {}) {
   const run = invoke || ((b, c, r) => router.handleLimitExceeded(b, c, r, ''));
   const front = http.createServer((req, res) => {
     req.resume();
@@ -10686,7 +10689,7 @@ async function _planBRun(cfg, body, invoke) {
         rs.on('end', () => { clearTimeout(timer); resolve({ status, raw }); });
         rs.on('error', e => { clearTimeout(timer); resolve({ status, raw, err: e.message }); });
       });
-      const timer = setTimeout(() => { resolve({ status, raw, hung: true }); q.destroy(); }, 10000);
+      const timer = setTimeout(() => { resolve({ status, raw, hung: true }); q.destroy(); }, hangMs);
       q.on('error', e => { clearTimeout(timer); resolve({ status, raw, err: e.message }); });
       q.end('{}');
     });
@@ -10744,7 +10747,7 @@ test('plano B: falha no meio do stream (tool call sem nome, reset, FIN, linha se
     ];
     for (const [v, cfg] of cases) {
       variant = v;
-      const r = await _planBRun(cfg, body);
+      const r = await _planBRun(cfg, body, undefined, { hangMs: PLANB_BIG_HANG_MS });
       assert(!r.hung, v + ': cliente ficou pendurado');
       assertEq(r.status, 200, v + ': o stream começou antes da falha');
       assert(!/"message_stop"[\s\S]*"message_start"/.test(r.raw), v + ': nenhum aviso colado depois do fim — ' + r.raw.slice(0, 300));
@@ -10783,7 +10786,7 @@ test('plano B BYOK: resposta acima de 32 MiB (medida em bytes) é apontada como 
       for (const u of ['x', 'ã']) {
         unit = u;
         const tag = name + '/' + u + ': ';
-        const r = await _planBRun(cfg, { model: 'claude-opus-5-5', max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'oi' }] });
+        const r = await _planBRun(cfg, { model: 'claude-opus-5-5', max_tokens: 8, stream: false, messages: [{ role: 'user', content: 'oi' }] }, undefined, { hangMs: PLANB_BIG_HANG_MS });
         assertEq(r.status, 200, tag + r.raw.slice(0, 300));
         assert(/passou do teto do router/.test(r.raw) && /32 MiB/.test(r.raw), tag + r.raw.slice(0, 300));
         assert(!/inacessível|Revise a Base URL/.test(r.raw), tag + r.raw.slice(0, 300));
@@ -11044,7 +11047,7 @@ test('plano B: stream com várias linhas SSE somando mais de 32 MiB termina comp
       ['openai', { byok: { enabled: true, mode: 'on-limit', wireProtocol: 'openai', endpoints: { generate: 'http://127.0.0.1:' + up + '/chat' }, headers: {} }, fallback: fb }],
       ['nvidia', { nim: { apiKey: 'fixture-nim', endpoint: 'http://127.0.0.1:' + up + '/v1/chat/completions' }, fallback: fb }],
     ]) {
-      const r = await _planBRun(cfg, body);
+      const r = await _planBRun(cfg, body, undefined, { hangMs: PLANB_BIG_HANG_MS });
       assert(!r.err && !r.hung, name + ': ' + (r.err || 'pendurado'));
       assert(/"message_stop"/.test(r.raw), name + ': ' + r.raw.slice(-300));
       // A short raw ending in message_stop is the router's OWN error text (reportFailure →
@@ -11383,7 +11386,7 @@ test('plano B: teto da linha SSE é 32 MiB em bytes — exatamente no teto passa
       for (const o of [0, 1]) {
         over = o;
         const tag = wire + (o ? '/teto+1: ' : '/teto: ');
-        const r = await _planBRun(cfg, body);
+        const r = await _planBRun(cfg, body, undefined, { hangMs: PLANB_BIG_HANG_MS });
         assert(!r.hung, tag + 'cliente ficou pendurado');
         if (o) {
           assert(r.err && !/"message_stop"/.test(r.raw), tag + 'linha acima do teto devia ser cortada');
@@ -14880,6 +14883,22 @@ test('http-daemon: hook_* tools are NOT in tools/list (model never sees them) bu
     const names = list.json.result.tools.map((t) => t.name);
     assert(!names.some((n) => n.startsWith('hook_')), `hook_* must not be listed, got ${names.filter((n) => n.startsWith('hook_')).join(',')}`);
     assert(names.includes('brain_search') && names.includes('capture_lesson'), 'model-facing tools stay listed');
+    // Every listed tool declares BOTH hints from the explicit classification in mcp-server.js
+    // (a new tool must be classified there — the default would be destructive + logged).
+    const hints = Object.fromEntries(list.json.result.tools.map((t) => [t.name, t.annotations]));
+    const src = fs.readFileSync(path.join(ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js'), 'utf8');
+    const setOf = (n) => new Set(JSON.parse(new RegExp(`const ${n} = new Set\\((\\[[^\\]]*\\])\\)`).exec(src)[1].replace(/'/g, '"')));
+    const classified = new Set([...setOf('READ_ONLY_TOOLS'), ...setOf('ADDITIVE_TOOLS'), ...setOf('DESTRUCTIVE_TOOLS')]);
+    for (const n of names) {
+      assert(classified.has(n), `tool ${n} is not classified in mcp-server.js (READ_ONLY/ADDITIVE/DESTRUCTIVE_TOOLS)`);
+      assert(hints[n] && typeof hints[n].readOnlyHint === 'boolean' && typeof hints[n].destructiveHint === 'boolean', `${n} must declare both hints: ${JSON.stringify(hints[n])}`);
+      assert(!(hints[n].readOnlyHint && hints[n].destructiveHint), `${n}: read-only cannot be destructive`);
+    }
+    assertEq([...classified].filter((n) => !names.includes(n)), [], 'no stale names in the classification');
+    for (const n of ['brain_count', 'policy_list', 'graph_search', 'project_list']) assertEq(hints[n].readOnlyHint, true, `${n} only reads`);
+    // store.get() bumps access_count (ranking + prune utility) → these are NOT read-only.
+    for (const n of ['brain_search', 'brain_related', 'brain_retrieve_context', 'backend_setup_status', 'graph_analyze']) assertEq(hints[n].readOnlyHint, false, `${n} writes something`);
+    for (const n of ['curation_prune_unused', 'policy_deactivate', 'policy_adjudication_purge', 'policy_trigger_evidence_purge']) assertEq(hints[n].destructiveHint, true, `${n} removes data`);
     const call = await post({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'hook_error_guard', arguments: { hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'echo ok' }, session_id: 's', cwd: dir } } }, sid);
     assert(call.json.result && !call.json.result.isError, `a hook tool stays callable by name, got ${JSON.stringify(call.json).slice(0, 300)}`);
   } finally {

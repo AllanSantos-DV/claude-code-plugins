@@ -713,6 +713,23 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
   const { createHookTools } = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'hook-tools.js'));
   const hookTools = createHookTools({ pluginRoot: PLUGIN_ROOT, hookWorker });
 
+  // ─── Tool hints (MCP ToolAnnotations) ──────────────────────────────────────
+  // Read by clients that size their approval prompts on them (e.g. OpenDots asked for every
+  // call). Claude Code does NOT use them for approval — its per-call permission check stays the
+  // gate (anthropics/claude-code#87452, closed unimplemented; 2026-10-10). readOnly = the handler
+  // was checked to write nothing: brain_search/brain_related are NOT, store.get() bumps the
+  // access_count that feeds ranking and pruning. destructive = may overwrite or remove.
+  // A tool missing here is listed as { readOnly:false, destructive:true } and fails the unit test.
+  const READ_ONLY_TOOLS = new Set(['research_status', 'brain_count', 'policy_list', 'policy_shadow_report', 'policy_adjudication_report', 'policy_self_update_report', 'graph_status', 'graph_search', 'graph_symbols', 'graph_callers', 'graph_references', 'backend_status', 'project_list']);
+  const ADDITIVE_TOOLS = new Set(['research_query', 'brain_search', 'brain_related', 'brain_store', 'capture_ack', 'brain_retrieve_context', 'curation_mark_oneoff', 'policy_adjudication_prepare', 'policy_adjudication_record', 'graph_analyze', 'graph_ingest', 'backend_setup_status', 'project_set']);
+  const DESTRUCTIVE_TOOLS = new Set(['capture_lesson', 'curation_register_shell', 'curation_prune_unused', 'policy_activate', 'policy_deactivate', 'policy_apply_candidate', 'policy_adjudication_purge', 'policy_trigger_evidence_purge', 'backend_setup', 'backend_update']);
+  function toolHints(name) {
+    if (READ_ONLY_TOOLS.has(name)) return { readOnlyHint: true, destructiveHint: false };
+    if (ADDITIVE_TOOLS.has(name)) return { readOnlyHint: false, destructiveHint: false };
+    if (!DESTRUCTIVE_TOOLS.has(name)) console.error(`[brain-server] tool ${name} has no declared hints — listed as destructive`);
+    return { readOnlyHint: false, destructiveHint: true };
+  }
+
   // ─── Tool list ──────────────────────────────────────────────────────────────
   const TOOLS = [
     {
@@ -1997,7 +2014,7 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
   // the model's to call: listing them cost context in every session and invited misuse.
   // Verified in real Claude Code 2.1.283 (2026-10-02): with them unlisted, PostToolUse
   // side effects ran and a blocking PreToolUse guard (error-guard) still denied.
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS.filter((t) => !t.name.startsWith('hook_')) }));
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: TOOLS.filter((t) => !t.name.startsWith('hook_')).map((t) => ({ ...t, annotations: toolHints(t.name) })) }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const { name, arguments: args } = request.params;
     return KB_TOOLS.has(name) ? dispatchKbTool(name, args, () => handleTool(name, args)) : handleTool(name, args);
