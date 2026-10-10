@@ -1497,7 +1497,7 @@ async function getValueSummary(req, res, url) {
 
     const rows = [];
     for (const ev of EVENTS) {
-      const perProject = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName: ev, limit: 500 }));
+      const perProject = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName: ev, sinceTs }));
       for (const { value } of perProject) {
         for (const r of value) { if (r.ts >= sinceTs) rows.push(r); }
       }
@@ -1614,7 +1614,7 @@ async function getProfileImpact(req, res, url) {
     const sinceTs = Date.now() - range * 86400_000;
     const projectFilter = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
-    const perProject = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName: 'stop.dispatch', limit: 2000 }));
+    const perProject = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName: 'stop.dispatch', sinceTs }));
     const rows = [];
     for (const { value } of perProject) {
       for (const r of value) { if (r.ts >= sinceTs) rows.push(r); }
@@ -2322,7 +2322,7 @@ async function getTuningRecommendations(req, res, url) {
     const projectFilter = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
     const gather = async (eventName) => {
-      const per = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName, limit: 2000 }));
+      const per = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName, sinceTs }));
       const rows = [];
       for (const { value } of per) for (const r of value) { if (r.ts >= sinceTs) rows.push(r); }
       return rows;

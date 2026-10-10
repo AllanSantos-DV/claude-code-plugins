@@ -4121,37 +4121,61 @@ test('curation home: under CCB_TEST_SANDBOX a project OUTSIDE the temp dir is ne
   } finally { cp._resetConfigCache(); fs.rmSync(real, { recursive: true, force: true }); }
 });
 
-test('metrics totals: a time-window read is not cut at 500 rows, and a legacy db COPIED into a project-id key is not counted twice', () => {
+test('metrics totals: a time-window read is not cut at 500 rows; history COPIED into a project-id key counts once, rows written later to the legacy db still count, a failed copy hides nothing', () => {
   const ms = require('./lib/metrics-store.js');
   const mp = require('./lib/metrics-project.js');
+  const cp = require('child_process');
   const base = path.join(require('./lib/data-dir.js').dataDir(), 'metrics');
   assert(!path.relative(os.tmpdir(), base).startsWith('..'), `the suite's data dir must be a temp dir: ${base}`);
   const legacy = `wl-legacy-${process.pid}`;
+  const work = path.join(os.tmpdir(), `ccb-wl-${process.pid}`);
+  const mkRepo = (name, owner) => {
+    const dir = path.join(work, owner, name);
+    fs.mkdirSync(dir, { recursive: true });
+    cp.execFileSync('git', ['init', '-q'], { cwd: dir, windowsHide: true });
+    cp.execFileSync('git', ['remote', 'add', 'origin', `https://github.com/${owner}/${name}.git`], { cwd: dir, windowsHide: true });
+    return dir;
+  };
+  const shaped = (p, extra = {}) => ms.getEventLogIsolated(p, { eventName: 'curation.shaped', sinceTs: 0, ...extra }).length;
   try {
     ms.close(); ms.init({ project: legacy });
     for (let i = 0; i < 620; i++) ms.recordMetric('curation.shaped', { i }, 's');
     ms.close();
-    assertEq(ms.getEventLogIsolated(legacy, { eventName: 'curation.shaped', sinceTs: 0 }).length, 620, 'a window read returns every row (was capped at 500: the 30-day panel lost rows)');
+    assertEq(shaped(legacy), 620, 'a window read returns every row (was capped at 500: the 30-day panel lost rows)');
     assertEq(ms.getEventLogIsolated(legacy, { eventName: 'curation.shaped', limit: 2000 }).length, 500, 'a plain "latest N" peek keeps its cap');
-    const mkProj = path.join(os.tmpdir(), `ccb-wl-${process.pid}`, legacy);
-    fs.mkdirSync(mkProj, { recursive: true });
-    require('child_process').execFileSync('git', ['init', '-q'], { cwd: mkProj, windowsHide: true });
-    require('child_process').execFileSync('git', ['remote', 'add', 'origin', `https://github.com/wl-owner/${legacy}.git`], { cwd: mkProj, windowsHide: true });
-    const key = mp.metricsKeyForId(require('./lib/project-id.js').tryResolveProjectId({ cwd: mkProj }));
-    // A build before the marker copied it: the copy exists, the legacy db has no marker.
+
+    // 1. A build before the marker copied it (copy exists, no marker) → backfilled BY CONTENT.
+    const repo = mkRepo(legacy, 'wl-owner');
+    const key = mp.metricsKeyForId(require('./lib/project-id.js').tryResolveProjectId({ cwd: repo }));
     fs.mkdirSync(path.join(base, key), { recursive: true });
     fs.copyFileSync(path.join(base, legacy, 'metrics.db'), path.join(base, key, 'metrics.db'));
-    assert(ms.listProjects().includes(legacy), 'unmarked: still listed (nothing says it was copied)');
+    assertEq(shaped(legacy) + shaped(key), 1240, 'before the marker the copied history counts twice');
     mp._resetAdopted();
-    assertEq(mp.metricsKeyFor(mkProj), key);
-    assertEq(JSON.parse(fs.readFileSync(path.join(base, legacy, 'adopted.json'), 'utf8')).backfilled, true, 'the marker is backfilled for a copy made before markers existed');
-    const listed = ms.listProjects();
-    assert(!listed.includes(legacy) && listed.includes(key), `the carried-over legacy db is left out of totals: ${JSON.stringify(listed.filter((p) => p.includes(legacy)))}`);
-    ms.init({ project: legacy }); ms.recordMetric('curation.shaped', { late: true }, 's'); ms.close(); // a same-named repo without an id keeps writing
-    assert(ms.listProjects().includes(legacy), 'rows after the copy → listed again (they exist nowhere else)');
-    fs.rmSync(path.join(os.tmpdir(), `ccb-wl-${process.pid}`), { recursive: true, force: true });
+    assertEq(mp.metricsKeyFor(repo), key);
+    assertEq(shaped(legacy) + shaped(key), 620, 'after it: once (the legacy reads start after the newest copied row)');
+    assert(ms.listProjects().includes(legacy), 'the legacy db stays listed: it is the rows, not the db, that are skipped');
+
+    // 2. Rows written to the legacy db later (a same-named repo without an id, a session on the old build) still count.
+    ms.init({ project: legacy }); ms.recordMetric('curation.shaped', { late: true }, 's'); ms.close();
+    assertEq(shaped(legacy), 1, 'only the row written after the copy (dropping the whole db brought the 620 back twice)');
+
+    // 3. A key db that is NOT a copy (the copy failed and the writer created it empty) hides nothing.
+    const legacy2 = `${legacy}b`;
+    ms.init({ project: legacy2 }); ms.recordMetric('curation.shaped', {}, 's'); ms.close();
+    const repo2 = mkRepo(legacy2, 'wl-owner');
+    const key2 = mp.metricsKeyForId(require('./lib/project-id.js').tryResolveProjectId({ cwd: repo2 }));
+    ms.init({ project: key2 }); ms.recordMetric('other.event', {}, 's'); ms.close();
+    mp._resetAdopted();
+    mp.metricsKeyFor(repo2);
+    assertEq([fs.existsSync(path.join(base, legacy2, 'adopted.json')), shaped(legacy2)], [false, 1], 'no common row → not marked, the legacy history stays counted');
+    const dash = fs.readFileSync(path.join(ROOT, 'scripts', 'dashboard.js'), 'utf8');
+    for (const fn of ['getCurationSummary', 'getValueSummary', 'getProfileImpact', 'getTuningRecommendations', 'getCompactionSummary']) {
+      const body = (dash.split(`async function ${fn}(`)[1] || '').split('\nasync function ')[0];
+      assert(body && /getEventLog\(\{ eventName[^}]*sinceTs \}\)/.test(body) && !/getEventLog\(\{[^}]*limit:/.test(body), `${fn}: a windowed panel route reads the whole window (sinceTs), not a capped latest-N`);
+    }
   } finally {
     ms.close();
+    fs.rmSync(work, { recursive: true, force: true });
     for (const d of fs.existsSync(base) ? fs.readdirSync(base) : []) if (d.includes(legacy)) fs.rmSync(path.join(base, d), { recursive: true, force: true });
   }
 });
