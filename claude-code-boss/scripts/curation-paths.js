@@ -320,6 +320,14 @@ function _writeNotice(projectRoot, notice) {
 }
 
 function _migrate(projectRoot, legacy) {
+  // Test suites swap HOME for a temp dir and wipe it: a hook run there with the REAL repo as cwd
+  // moved that repo's curation into the temp home, which a later test deleted (lost the
+  // claude-code repo's 46 curated scripts on 2026-10-09). Under the sandbox flag only temp-dir
+  // projects may move.
+  if (process.env.CCB_TEST_SANDBOX === '1') {
+    const back = path.relative(path.resolve(os.tmpdir()), path.resolve(projectRoot));
+    if (!back || back.startsWith('..') || path.isAbsolute(back)) throw new Error(`test sandbox: refusing to move the curation of a real project (${projectRoot})`);
+  }
   const home = curationHome(projectRoot);
   fs.mkdirSync(path.dirname(home), { recursive: true });
   const lock = `${home}.lock`;

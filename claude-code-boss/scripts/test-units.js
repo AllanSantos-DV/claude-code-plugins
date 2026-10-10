@@ -63,6 +63,10 @@ fs.writeFileSync(
 // resolves here on every platform (Windows prefers USERPROFILE, POSIX HOME).
 process.env.USERPROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-units-home-'));
 process.env.HOME = process.env.USERPROFILE;
+// The curation migration MOVES a project's in-repo files: under this flag it refuses any project
+// outside the temp dir — a test walking up from a temp cwd reached the real user folder (and a
+// hook test with the repo as cwd moved the repo's curation into a home that got wiped).
+process.env.CCB_TEST_SANDBOX = '1';
 
 // ─── Tiny test runner ────────────────────────────────────────────────────────
 const RESULTS = [];
@@ -3987,6 +3991,22 @@ test('curation home: a legacy config that cannot be moved is still USED (no cura
     assertEq(fs.readFileSync(path.join(other, 'shells.json'), 'utf8'), JSON.stringify({ terminals: ['bash'] }), 'not a curation config (no shells array) → untouched');
     fs.rmSync(other, { recursive: true, force: true });
   } finally { cp._resetConfigCache(); sc._resetCache(); fs.rmSync(proj, { recursive: true, force: true }); }
+});
+
+test('curation home: under CCB_TEST_SANDBOX a project OUTSIDE the temp dir is never moved (a test run moved and lost the real repo\'s curation)', () => {
+  const cp = require('./curation-paths.js');
+  assertEq(process.env.CCB_TEST_SANDBOX, '1', 'the suite runs sandboxed');
+  const real = path.join(ROOT, '.runtime', `sbx-probe-${process.pid}`); // outside os.tmpdir(), gitignored
+  try {
+    fs.mkdirSync(path.join(real, '.vscode', 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(real, 'package.json'), '{}');
+    fs.writeFileSync(path.join(real, '.vscode', 'scripts', 'x.mjs'), 'x');
+    fs.writeFileSync(path.join(real, '.vscode', 'shells.json'), JSON.stringify({ shells: [{ id: 'x', script: '.vscode/scripts/x.mjs', aliases: ['npm run x'] }] }));
+    cp._resetConfigCache();
+    assertEq(cp.getShellsConfigPath(real), path.join(real, '.vscode', 'shells.json'), 'keeps using the in-repo file');
+    assertEq([fs.existsSync(path.join(real, '.vscode', 'shells.json')), fs.existsSync(path.join(real, '.vscode', 'scripts', 'x.mjs'))], [true, true], 'nothing moved, nothing deleted');
+    assert(/test sandbox: refusing/.test((cp.takeMigrationNotice(real) || {}).error || ''), 'and it says why');
+  } finally { cp._resetConfigCache(); fs.rmSync(real, { recursive: true, force: true }); }
 });
 
 test('session-whitelist writes NOTHING for a folder without curation (SessionStart created a shells.json in every folder a session opened in)', async () => {
