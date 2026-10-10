@@ -238,16 +238,8 @@ function createSetupTools({ pluginRoot, requestRestart = () => {}, deps = {} } =
           return fail(`A project named "${id}" already exists in memory. Ask the user: is this folder that same project (a migration/continuation)? If yes, call project_set again with link:true; if not, pick a different name with them.`);
         }
         const root = pid.findProjectRoot({ cwd }) || cwd;
-        const memDir = path.join(root, '.memory');
-        fs.mkdirSync(memDir, { recursive: true });
-        const file = path.join(memDir, 'project.json');
-        let cfg = {};
-        try { cfg = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (err) { if (err.code !== 'ENOENT') return fail(`Existing ${file} is unreadable (${err.message}) — fix or remove it first.`); }
-        cfg.version = cfg.version || '1';
-        cfg.metadata = { ...(cfg.metadata || {}), defaults: { ...((cfg.metadata || {}).defaults || {}), project_id: id } };
-        lib('atomic-write.js').writeFileAtomic(file, JSON.stringify(cfg, null, 2) + '\n');
-        // The user chose to name it: an earlier "no memory here" marker no longer applies.
-        try { fs.unlinkSync(path.join(memDir, 'memory-off.json')); } catch (err) { if (err.code !== 'ENOENT') throw err; }
+        let file;
+        try { file = lib('project-config.js').writeDeclaredProjectId(root, id); } catch (err) { return fail(err.message); }
         const now = pid.tryResolveProjectId({ cwd });
         if (now !== id) return fail(`Wrote ${file} but the folder resolves to ${JSON.stringify(now)}, not "${id}" — check for a parent .memory/project.json.`);
         return text(`Memory is ON for this folder as project "${id}" (${exists ? 'linked to the existing project' : 'new project'}). Written: ${file}`);
