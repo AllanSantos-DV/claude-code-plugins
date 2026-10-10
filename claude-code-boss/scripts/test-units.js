@@ -3917,6 +3917,7 @@ test('curation home: the in-repo .vscode curation MOVES to the user folder (keye
     fs.writeFileSync(path.join(proj, '.vscode', 'scripts', 'tests.mjs'), 'import "./lib/h.mjs";\n');
     fs.writeFileSync(path.join(proj, '.vscode', 'scripts', 'lib', 'h.mjs'), 'export {};\n');
     fs.writeFileSync(path.join(proj, '.vscode', 'scripts', 'self.mjs'), 'const root = path.resolve(__dirname, "../..");\n');
+    fs.writeFileSync(path.join(proj, '.vscode', 'scripts', 'fixed.mjs'), 'const root = process.env.CCB_PROJECT_ROOT || path.resolve(__dirname, "../..");\n'); // already adapted: not flagged
     fs.writeFileSync(path.join(proj, '.vscode', 'settings.json'), '{}'); // the user's own VS Code file
     fs.mkdirSync(path.join(proj, 'tools'));
     fs.writeFileSync(path.join(proj, 'tools', 'own.sh'), 'echo own\n'); // a repo script registered as curated: stays put
