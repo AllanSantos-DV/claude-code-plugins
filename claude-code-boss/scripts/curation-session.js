@@ -93,14 +93,18 @@ async function run(event) {
     const { oneHits } = oneoff.summary(DATA_DIR, projectKey);
 
     let curated = 0;
+    let migration = null;
     try {
       const { findProjectRoot, loadShellsConfig } = require('./shells-config.js');
-      curated = (loadShellsConfig(findProjectRoot(cwd)).shells || []).length;
+      const root = findProjectRoot(cwd);
+      curated = (loadShellsConfig(root).shells || []).length; // runs the one-time move out of the repo
+      migration = require('./curation-paths.js').takeMigrationNotice(root);
     } catch (e) { void e; }
 
     const pending = pendingSkillsSummary(DATA_DIR);
 
     const lines = [];
+    if (migration) lines.push(...migrationLines(migration));
     if (oneHits > 0 || curated > 0) {
       lines.push(`[CURATION] This project tracks ${curated} curated script(s) and ${oneHits} one-hit command(s). Prefer existing curated scripts; mark genuine single-use commands with curation_mark_oneoff instead of re-curating.`);
     }
@@ -113,6 +117,19 @@ async function run(event) {
     console.error(`[CURATION-SESSION] ${err.message}`);
     return null;
   }
+}
+
+/**
+ * What the one-time move of the curation out of the repo did (curation-paths), for the agent and the user.
+ * @param {object} n  migration-notice.json
+ * @returns {string[]}
+ */
+function migrationLines(n) {
+  if (n.error) return [`[CURATION] The curated scripts of this project could NOT be moved out of the repo: ${n.error} — still using ${n.from || 'the in-repo config'}.`];
+  const out = [`[CURATION] Curated scripts of this project moved out of the repo to ${n.home} (${n.entries} entr${n.entries === 1 ? 'y' : 'ies'} from ${(n.from || []).join(', ')}, ${n.scripts} file(s); backup in ${n.home}/legacy-backup).`];
+  if ((n.keptTracked || []).length) out.push(`[CURATION] Still tracked by git, so left in the repo (copied to the curation folder): ${n.keptTracked.join(', ')} — \`git rm\` them to finish the move.`);
+  if ((n.selfLocating || []).length) out.push(`[CURATION] These scripts find the project from their own location and would now look in the curation folder — make them use process.env.CCB_PROJECT_ROOT (set by the redirect) via curation_register_shell: ${n.selfLocating.join(', ')}.`);
+  return out;
 }
 
 function main() { return runTextCli(run, 'CURATION-SESSION', 'SessionStart'); }
@@ -168,4 +185,4 @@ function unmarkConsolidated(stampFile, projectId) {
   } catch (e) { void e; /* no stamp → nothing to give back */ }
 }
 
-module.exports = { run, pendingSkillsSummary, consolidationDue, markConsolidated, unmarkConsolidated };
+module.exports = { run, pendingSkillsSummary, consolidationDue, markConsolidated, unmarkConsolidated, migrationLines };

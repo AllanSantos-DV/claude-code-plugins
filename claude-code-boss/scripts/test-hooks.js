@@ -383,7 +383,6 @@ const TESTS = [
       const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ssd-proj-'));
       fs.mkdirSync(path.join(proj, '.claude'), { recursive: true });
       fs.writeFileSync(path.join(proj, '.claude', 'brain-review-checklist.md'), '# Brain review checklist\n\n- [ ] **Empty catch** (recurred 5×)\n');
-      fs.mkdirSync(path.join(proj, '.vscode'), { recursive: true });
       fs.writeFileSync(path.join(proj, 'package.json'), '{}'); // node ecosystem marker
       _ssdProj = proj;
       return { hook_event_name: 'SessionStart', session_id: SESSION, cwd: proj };
@@ -398,13 +397,18 @@ const TESTS = [
       // test is verifying (that the dispatcher merges/side-effects correctly).
       const root = mkTempPluginRoot({});
       fs.writeFileSync(path.join(root, 'config', 'brain-config.json'), JSON.stringify({ backend: { type: 'local' } }));
+      // A project that already has curation (its home exists): only then is the whitelist written.
+      // Created right before the run (other tests wipe ~/.claude/claude-code-boss between definition and run).
+      fs.mkdirSync(require(path.join(SCRIPTS, 'curation-paths.js')).curationHome(_ssdProj), { recursive: true });
       return { CLAUDE_PLUGIN_ROOT: root, CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ssd-data-')) };
     },
     validate: r => {
       const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
       if (!ctx.includes('[REVIEW]')) return `review-checklist-advisory's text must be present, got: ${ctx}`;
-      const shellsPath = path.join(_ssdProj, '.vscode', 'shells.json');
+      // The whitelist goes to the project's curation home (user folder), never into the repo.
+      const shellsPath = path.join(require(path.join(SCRIPTS, 'curation-paths.js')).curationHome(_ssdProj), 'shells.json');
       if (!fs.existsSync(shellsPath)) return `session-whitelist must have written ${shellsPath}`;
+      if (fs.existsSync(path.join(_ssdProj, '.vscode', 'shells.json'))) return 'nothing may be written in the repo';
       const config = JSON.parse(fs.readFileSync(shellsPath, 'utf-8'));
       if (!Array.isArray(config.whitelist) || config.whitelist.length === 0) return `session-whitelist must have populated a whitelist, got: ${JSON.stringify(config)}`;
       return null;
@@ -545,7 +549,7 @@ const TESTS = [
       const out = r.parsed?.hookSpecificOutput || {};
       if (out.permissionDecision !== 'allow') return `bypassPermissions → allow, got: ${out.permissionDecision}`;
       const cmd = out.updatedInput && out.updatedInput.command;
-      if (!/^powershell -NoProfile -ExecutionPolicy Bypass -File ".*\/\.vscode\/scripts\/vitest\.ps1"$/.test(cmd || '')) return `rewritten to the absolute script, got: ${cmd}`;
+      if (!/^CCB_PROJECT_ROOT="[^"]+" powershell -NoProfile -ExecutionPolicy Bypass -File ".*\/curation\/.*\/scripts\/vitest\.ps1"$/.test(cmd || '')) return `rewritten to the absolute script in the curation home, got: ${cmd}`;
       if (Object.keys(out.updatedInput).join() !== 'command') return `updatedInput carries only command (Claude Code merges it), got: ${JSON.stringify(out.updatedInput)}`;
       if (!/CCB_RAW=1/.test(out.additionalContext || '')) return 'the redirect must be announced with the raw escape hatch';
       return null;
@@ -600,7 +604,7 @@ const TESTS = [
     expect: { hasKey: 'hookSpecificOutput', noError: true },
     validate: r => {
       const out = r.parsed?.hookSpecificOutput || {};
-      return /^node ".*\/\.vscode\/scripts\/lint\.mjs"$/.test((out.updatedInput || {}).command || '') ? null : `expected node rewrite, got: ${JSON.stringify(out)}`;
+      return /^CCB_PROJECT_ROOT="[^"]+" node ".*\/curation\/.*\/scripts\/lint\.mjs"$/.test((out.updatedInput || {}).command || '') ? null : `expected node rewrite, got: ${JSON.stringify(out)}`;
     },
   },
   {
@@ -757,7 +761,7 @@ const TESTS = [
       const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
       const cmd = (r.parsed?.hookSpecificOutput?.updatedInput || {}).command || '';
       if (d !== 'allow') return `alias after 'cd && ' should be rewritten (allow), got: ${d} (ctx: ${ctx})`;
-      if (!/^cd .+ && powershell .*tsc_check\.ps1"$/.test(cmd)) return `the cd is kept and only the alias part rewritten, got: ${cmd}`;
+      if (!/^cd .+ && CCB_PROJECT_ROOT="[^"]+" powershell .*tsc_check\.ps1"$/.test(cmd)) return `the cd is kept and only the alias part rewritten, got: ${cmd}`;
       return null;
     },
   },
@@ -1686,7 +1690,8 @@ const TESTS = [
     script: 'curation-detect.js',
     payload: (() => {
       const cwd = mkTempProject({ shells: [{ id: 'th', script: '.vscode/scripts/test-hooks.mjs', aliases: [], outputLines: 5 }], whitelist: [] });
-      return { ...require('./__fixtures__/post-tool-use-success-noisy.json'), tool_input: { command: 'node .vscode/scripts/test-hooks.mjs' }, cwd, session_id: SESSION };
+      const S = path.join(require(path.join(SCRIPTS, 'curation-paths.js')).curationHome(cwd), 'scripts', 'test-hooks.mjs').replace(/\\/g, '/'); // moved out of the repo
+      return { ...require('./__fixtures__/post-tool-use-success-noisy.json'), tool_input: { command: `node "${S}"` }, cwd, session_id: SESSION };
     })(),
     expect: { noError: true },
     extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-solo-cur-')) }),

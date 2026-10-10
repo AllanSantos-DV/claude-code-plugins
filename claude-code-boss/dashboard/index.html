@@ -3905,7 +3905,7 @@ async function loadCuratedShells(cwd) {
     const data = await api('GET', `/api/curation/shells?cwd=${encodeURIComponent(cwd)}`);
     if (!data.found) {
       statusEl.textContent = 'shells.json não encontrado neste projeto';
-      tableEl.innerHTML = '<p class="text-muted" style="margin-top:.5rem">Nenhum shell curado ainda. O curation-improver cria scripts em <code>.vscode/scripts/</code> e os registra em <code>.vscode/shells.json</code> quando o threshold é atingido.</p>';
+      tableEl.innerHTML = '<p class="text-muted" style="margin-top:.5rem">Nenhum shell curado ainda. Os scripts curados ficam na sua pasta de usuário (<code>~/.claude/claude-code-boss/curation/&lt;projeto&gt;/</code>), nunca dentro do repositório.</p>';
       return;
     }
     statusEl.textContent = `${data.shells.length} shell(s) encontrado(s)`;

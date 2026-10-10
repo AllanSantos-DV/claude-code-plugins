@@ -15,12 +15,22 @@
 
 Um script PowerShell (`.ps1`) gerado pelo plugin que encapsula um comando recorrente, registrado em `shells.json` com assinatura canonica + metadata.
 
-| Artefato | Local (relativo ao projeto) |
+| Artefato | Local (fora do projeto, na pasta do usuario) |
 |----------|------------------------------|
-| Wrappers | `.vscode/scripts/` (tambem aceita `.curation/scripts/` e `scripts/`) |
-| Registro | `.vscode/shells.json` (tambem aceita `.curation/shells.json` e `shells.json`) |
+| Wrappers | `~/.claude/claude-code-boss/curation/<owner>/<repo>/scripts/` |
+| Registro | `~/.claude/claude-code-boss/curation/<owner>/<repo>/shells.json` |
 
-Sao **por-projeto**, nao globais — o registro rejeita scriptPath fora da pasta do projeto.
+Sao **por-projeto**, separados pelo id do projeto (o mesmo da memoria; pasta sem id usa
+`curation/local/<nome>-<hash>/`) — e **nada fica dentro do repositorio**. Um projeto que ainda tem o
+antigo `.vscode/shells.json` + `.vscode/scripts/` e movido automaticamente na primeira chamada: copia
+de seguranca em `legacy-backup/`, arquivo rastreado pelo git fica no lugar (e e avisado), e o aviso da
+mudanca aparece uma vez no inicio da sessao. Se a mudanca falhar, a curadoria continua lendo o arquivo
+antigo e o motivo aparece.
+
+O redirecionamento roda o script com `CCB_PROJECT_ROOT` = raiz do projeto. Script com
+`passthrough: true` (repassa os argumentos ao comando que cura) recebe toda variante que comeca com um
+dos seus aliases, com os argumentos e flags — o mesmo comando roda, so a saida e curada. Semelhanca
+(embeddings) nao e usada: no replay ela mandava `git add`/`gh pr merge` para scripts so de leitura.
 
 ## Assinatura canonica
 

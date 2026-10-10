@@ -68,7 +68,7 @@ Router fica OFF (base_url nunca publicada) mas `ENABLE_TOOL_SEARCH` + auto-compa
 **Situação:** você roda a mesma suíte de testes 10x/dia com output gigante.
 
 1. PostToolUse detecta volume; Stop hook oferece wrapper
-2. Aprovado → `.vscode/scripts/meu-teste.ps1` + entrada em `.vscode/shells.json`
+2. Aprovado → `~/.claude/claude-code-boss/curation/<owner>/<repo>/scripts/meu-teste.ps1` + entrada no `shells.json` dessa pasta (nada dentro do repositório)
 3. Chamadas exatas seguintes são redirecionadas ao wrapper — output dentro do budget
 
 ## 8. Debugando o próprio plugin

@@ -23,7 +23,7 @@
  *      discovery handles bulky output)
  */
 const { hookLog } = require('./hook-logger.js');
-const { loadCurationConfig } = require('./curation-paths.js');
+const { getShellsConfigPath } = require('./curation-paths.js');
 const { runPreToolUseCli, preToolUseDecision } = require('./lib/hook-io.js');
 const { findProjectRoot, loadShellsConfig, matchCuratedShell, _pathMatches, _tokenize } = require('./shells-config.js');
 const { planRedirect, planShaping } = require('./lib/curation-redirect.js');
@@ -207,8 +207,7 @@ async function run(event) {
     // 3. Paranoid mode.
     // Read per call (not at module load) — the shared daemon (Phase G) would freeze it.
     if (hooksConfig.getCurationGuard().denyUnknown) {
-      const cfg = loadCurationConfig();
-      const reason = `[curation-guard] Command \`${command}\` is unknown (denyUnknown mode active). Add it to the whitelist in \`${cfg.shellsConfigPath}\` or create a curated script in \`${cfg.scriptsDir}/\`.`;
+      const reason = `[curation-guard] Command \`${command}\` is unknown (denyUnknown mode active). Add it to the whitelist in \`${getShellsConfigPath(projectRoot)}\` or create a curated script with curation_register_shell.`;
       return decision('deny', { additionalContext: reason, permissionDecisionReason: reason });
     }
 

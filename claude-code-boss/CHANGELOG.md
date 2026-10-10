@@ -2,7 +2,28 @@
 
 ## [Unreleased]
 
+### Changed
+- **Os scripts curados saíram do repositório.** O `.vscode/scripts/` e o `.vscode/shells.json` enchiam cada
+  projeto de arquivos que era preciso ignorar no git (e o início de sessão criava um `shells.json` em toda pasta
+  aberta). Agora eles ficam na sua pasta de usuário, um diretório por projeto, separado pelo id do projeto (o
+  mesmo da memória): `~/.claude/claude-code-boss/curation/<owner>/<repo>/`. Nada é escrito dentro do repositório.
+  Um projeto com a curadoria antiga é movido sozinho na primeira chamada: cópia de segurança na pasta nova,
+  arquivo que o git rastreia fica no lugar (e é avisado para `git rm`), e o início da sessão avisa uma vez o que
+  mudou — incluindo scripts que acham o projeto pelo próprio caminho e precisam passar a usar
+  `CCB_PROJECT_ROOT`, que o redirecionamento agora define. Se a mudança falhar, a curadoria continua usando o
+  arquivo antigo e diz por quê; nada se perde.
+- **Redirecionamento de variantes, do jeito seguro (passthrough).** Um script registrado com
+  `passthrough: true` (ele repassa os argumentos ao comando que cura) recebe toda variante que começa com um dos
+  seus aliases, com os argumentos e flags: `mvn test -Dtest=X -q` vai para o script com `-Dtest=X -q`. É a regra
+  do rtk — só redirecionar para um repasse transparente do mesmo comando. Semelhança por vetores foi medida e
+  descartada: no histórico real ela mandava `git add`, `git commit` e `gh pr merge` para scripts só de leitura.
+  Medido no histórico de 7 projetos (14,6 mil comandos): 173 redirecionamentos hoje, até 256 com os scripts em
+  passthrough.
+
 ### Fixed
+- **O redirecionamento perdia as variáveis de ambiente do comando.** `NODE_ENV=test npm test` virava o script sem
+  o `NODE_ENV`; e uma variante com prefixo (`FOO=1 git stash list`) mandava ao script os argumentos errados
+  (`stash list`). As atribuições iniciais agora são mantidas e os argumentos são tirados depois delas.
 - **Nenhuma janela pisca mais na tela por causa do servidor de memória.** A cada início de sessão (e cada
   `claude -p` de outra ferramenta é um início de sessão — chegaram a ser vários por minuto) o plugin rodava o
   inicializador do servidor de memória mesmo com ele já no ar, e no Windows esse lançamento abria uma janela do
