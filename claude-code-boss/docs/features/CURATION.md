@@ -23,7 +23,7 @@ Um script PowerShell (`.ps1`) gerado pelo plugin que encapsula um comando recorr
 Sao **por-projeto**, separados pelo id do projeto (o mesmo da memoria; pasta sem id usa
 `curation/local/<nome>-<hash>/`) — e **nada fica dentro do repositorio**. Um projeto que ainda tem o
 antigo `.vscode/shells.json` + `.vscode/scripts/` e movido automaticamente na primeira chamada: copia
-de seguranca em `legacy-backup/`, arquivo rastreado pelo git fica no lugar (e e avisado), e o aviso da
+de seguranca em `legacy-backup/`, script rastreado pelo git fica no lugar (e e avisado) — e um `shells.json` versionado no git nao e movido: e do time, vale por branch e continua sendo lido no lugar, e o aviso da
 mudanca aparece uma vez no inicio da sessao. Se a mudanca falhar, a curadoria continua lendo o arquivo
 antigo e o motivo aparece.
 

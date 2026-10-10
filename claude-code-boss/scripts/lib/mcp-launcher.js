@@ -144,4 +144,44 @@ function kickLauncher({ env = process.env, platform = process.platform, spawnImp
   }
 }
 
-module.exports = { runLauncher, installLauncher, kickLauncher, kickCommand, RUN_HIDDEN_VBS, newestInstalledJar, launcherPath, bundledJava, compareVersions, MIN_LAUNCHER_VERSION, JAR_RE };
+/**
+ * kickLauncher, CONFIRMED on Windows: wscript exits right after Run(…, 0, False) starts the
+ * launcher, so a non-zero exit (VBScript disabled — Microsoft is phasing it out — or blocked by
+ * policy; `//B` hides its error) or a spawn error means nothing started. Then it says so loudly
+ * and falls back to the plain detached launch: it may flash a window, but the server comes up
+ * (pre-release audit 3.2.0: the hidden path failed silently, reporting "kicked" forever).
+ * @returns {Promise<'kicked'|'fallback'|'missing'|'failed'>}
+ */
+function kickLauncherVerified({ env = process.env, platform = process.platform, spawnImpl = null, waitMs = 5000 } = {}) {
+  const file = launcherPath(env, platform);
+  if (!fs.existsSync(file)) return Promise.resolve('missing');
+  if (platform !== 'win32') return Promise.resolve(kickLauncher({ env, platform, spawnImpl }) ? 'kicked' : 'failed');
+  const [cmd, argv] = kickCommand(file, platform);
+  return new Promise((resolve) => {
+    let done = false;
+    const fallback = (why) => {
+      if (done) return; done = true;
+      console.error(`[mcp-launcher] hidden launch failed (${why}) — starting the launcher the plain way (a window may flash)`);
+      try {
+        const c = spawnImpl ? spawnImpl('cmd.exe', ['/d', '/c', file], { detached: true, stdio: 'ignore', windowsHide: true, env }) : spawn('cmd.exe', ['/d', '/c', file], { detached: true, stdio: 'ignore', windowsHide: true, env });
+        c.on('error', (err) => console.error(`[mcp-launcher] fallback launch failed: ${err.message}`));
+        c.unref();
+        resolve('fallback');
+      } catch (err) { console.error(`[mcp-launcher] fallback launch failed: ${err.message}`); resolve('failed'); }
+    };
+    let child;
+    try {
+      child = spawnImpl ? spawnImpl(cmd, argv, { detached: true, stdio: 'ignore', windowsHide: true, env }) : spawn(cmd, argv, { detached: true, stdio: 'ignore', windowsHide: true, env });
+    } catch (err) { fallback(err.message); return; }
+    // Kept REFERENCED while waiting (≤ waitMs; wscript returns in ms): an unref'd child and timer
+    // let a short hook process exit before the verdict, dropping its own output.
+    const t = setTimeout(() => { if (!done) { done = true; child.unref(); resolve('kicked'); } }, waitMs); // still running: it launched
+    child.on('error', (err) => { clearTimeout(t); fallback(err.message); });
+    child.on('exit', (code) => {
+      clearTimeout(t);
+      if (code === 0) { if (!done) { done = true; resolve('kicked'); } } else fallback(`wscript exit ${code}`);
+    });
+  });
+}
+
+module.exports = { runLauncher, installLauncher, kickLauncher, kickLauncherVerified, kickCommand, RUN_HIDDEN_VBS, newestInstalledJar, launcherPath, bundledJava, compareVersions, MIN_LAUNCHER_VERSION, JAR_RE };

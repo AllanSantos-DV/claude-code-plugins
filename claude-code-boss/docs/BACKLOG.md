@@ -2,6 +2,16 @@
 
 Pontos de melhoria identificados fora do escopo do trabalho corrente (ver política de sessão: "ponto óbvio de melhoria encontrado FORA do escopo atual não é implementado na hora").
 
+## Auditoria adversarial pré-release 3.2.0 (2026-10-09) — 7 achados, todos corrigidos na hora
+
+- [x] **[alto] Migração que falhava uma vez nunca mais terminava** (`curation-paths.js` `_migrate`): a 1ª falha deixava a pasta da curadoria sem `shells.json` (só o aviso) e o rename da pasta temporária por cima dela falhava sempre; `curation_register_shell` recusava tudo. Agora uma pasta existente sem `shells.json` recebe os arquivos no lugar. Teste "falha → corrige → migra" + mutação.
+- [x] **[médio] `.vscode` versionado de um branch vazava para todos os branches/clones**: a migração fundia a config rastreada pelo git na pasta compartilhada (em `bypassPermissions`, alias de PR rodando sem pergunta em outro branch). Agora config rastreada NÃO é movida nem fundida: é lida no lugar, por branch, como antes (`getRepoShellsFiles` + `shells-config`); só a pessoal (não rastreada) migra. Isso também substitui a correção anterior do "re-migrado em todo processo". Teste + mutação.
+- [x] **[médio] Falha do `git ls-files` apagava arquivos rastreados**: o erro virava "nada rastreado". Agora: sem repositório → nada rastreado; dentro de repositório, qualquer erro do git aborta a migração (fail closed, arquivo antigo continua em uso); chamadas em lotes de 50; diretório/arquivo symlink não é seguido. Teste + mutação.
+- [x] **[médio] SessionStart sobrescrevia o `shells.json` antigo no modo de fallback** (`session-whitelist.js`): só escreve dentro da pasta da curadoria e nunca sobrescreve arquivo que não leu. 2 testes + mutação.
+- [x] **[médio] Cópia do banco de métricas antigo com corrida/inconsistência** (`metrics-project.js`): agora `VACUUM INTO` (snapshot consistente com WAL, mesmo com o banco aberto) + criação exclusiva do destino. Teste com linha no WAL e banco aberto + mutação.
+- [x] **[médio] Modelo de passthrough da skill quebrava argumentos no Windows** (`shell: true` → cmd.exe relê os args): modelo Node agora `shell: false`; shim `.cmd` (npm/npx/mvn) → modelo Bash com `"$@"`. Doc.
+- [x] **[baixo] Lançamento oculto falhava em silêncio sem VBScript** (`mcp-launcher.js`): `kickLauncherVerified` confere a saída do wscript; se falhar, registra e cai para o lançamento comum (o servidor sobe). Teste + mutação.
+
 ## Ferramental de release
 
 - [x] **"O agente `vitrine` não abre" — NÃO é deste repo (verificado na release 3.2.0)**: o subagente `vitrine` que o Claude Code oferecia é o do *copilot-marketplace* (carregado da pasta de agentes do Copilot do usuário, com `tools: [read, search, edit, …]` de Copilot) e foi recusado com zero ferramentas. O `.github/agents/vitrine.agent.md` daqui já declara Read/Edit/Write/Bash e não é registrado como subagente (fica em `.github/agents/`): a prática é rodar um agente geral que segue o arquivo — foi o que se fez.

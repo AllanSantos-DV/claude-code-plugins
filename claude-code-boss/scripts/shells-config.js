@@ -38,6 +38,7 @@ const {
   findProjectRoot,
   getShellsConfigPath,
   curationHome,
+  getRepoShellsFiles,
 } = require('./curation-paths.js');
 
 /** @type {Map<string, { stamp: string, result: { shells: object[], whitelist: string[] } }>} */
@@ -63,7 +64,8 @@ function stampOf(shellsPath) {
 function loadShellsConfig(projectRoot) {
   if (!projectRoot) return { shells: [], whitelist: [] };
   const shellsPath = getShellsConfigPath(projectRoot);
-  const stamp = stampOf(shellsPath);
+  const repoFiles = getRepoShellsFiles(projectRoot); // git-tracked in-repo configs, read in place
+  const stamp = [shellsPath, ...repoFiles].map(stampOf).join('||');
   const hit = _cache.get(projectRoot);
   if (hit && hit.stamp === stamp) return hit.result;
 
@@ -86,6 +88,23 @@ function loadShellsConfig(projectRoot) {
     }
   } catch (err) {
     console.error(`[SHELLS-CONFIG] Failed to parse shells config: ${err.message}`);
+  }
+  // The team's versioned config (branch-scoped, never merged into the user's home): its entries
+  // join the user's ones (the user's id wins), scripts resolved against the project root.
+  for (const rf of repoFiles) {
+    if (path.resolve(rf) === path.resolve(shellsPath || '')) continue; // fallback mode already read it
+    try {
+      const config = JSON.parse(fs.readFileSync(rf, 'utf-8'));
+      const ids = new Set(result.shells.map((s) => s && s.id).filter(Boolean));
+      for (const s of config.shells || []) {
+        if (!s || (s.id && ids.has(s.id))) continue;
+        const rel = String(s.script || s.command || '').trim();
+        result.shells.push(rel ? { ...s, script: path.resolve(projectRoot, rel).split(path.sep).join('/') } : s);
+      }
+      result.whitelist = [...new Set([...result.whitelist, ...(config.whitelist || [])])];
+    } catch (err) {
+      console.error(`[SHELLS-CONFIG] versioned config ${rf} unreadable: ${err.message}`);
+    }
   }
   _cache.set(projectRoot, { stamp, result });
   return result;

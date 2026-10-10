@@ -18,7 +18,7 @@ You already have full turn context — don't reload payloads from disk; act on w
 
 ## What "curated" means here
 
-Curated scripts and their `shells.json` live **outside the project**, in the user's curation folder for it: `~/.claude/claude-code-boss/curation/<owner>/<repo>/` (keyed by the project id; `curation/local/<name>-<hash>/` for a folder without one). Nothing is written in the repo. A project that still has the old `.vscode/shells.json` + `.vscode/scripts/` is moved there automatically (backup kept, files git tracks left in place and reported). Each entry points to a **script** that wraps a raw command and **standardizes its output**. The LLM never sees raw verbose output: it sees the script's filtered summary.
+Curated scripts and their `shells.json` live **outside the project**, in the user's curation folder for it: `~/.claude/claude-code-boss/curation/<owner>/<repo>/` (keyed by the project id; `curation/local/<name>-<hash>/` for a folder without one). Nothing is written in the repo. A project that still has the old `.vscode/shells.json` + `.vscode/scripts/` is moved there automatically (backup kept, git-tracked scripts left in place and reported; a git-TRACKED shells.json is the team's, branch-scoped file — never moved, read in place). Each entry points to a **script** that wraps a raw command and **standardizes its output**. The LLM never sees raw verbose output: it sees the script's filtered summary.
 
 The redirect runs the script with `CCB_PROJECT_ROOT` set to the project root: **find the project through that variable** (fallback `process.cwd()`), never through the script's own location (`__dirname/../..` now points into the curation folder).
 
@@ -51,19 +51,25 @@ These rules apply regardless of script language:
 
 ### Node.js (`.mjs`) — use when project already uses Node
 
-A **passthrough** script (register it with `passthrough: true`): it runs `<command>` with
-whatever arguments the redirect hands it, so every variant (`npm test -- --grep x`) is covered
-by the same script.
+A **passthrough** script (register it with `passthrough: true`) runs `<command>` with whatever
+arguments the redirect hands it, so every variant (`npm test -- --grep "a b"`) is covered by the
+same script. The arguments must reach the command **exactly** — that is the whole safety premise:
+- spawn WITHOUT a shell (`shell: false`): with `shell: true` Node joins the args unescaped and
+  cmd.exe re-reads them (`"a b"` splits, `%h` expands);
+- on Windows, a program that is a `.cmd`/`.bat` shim (`npm`, `npx`, `mvn`, `gradle`) cannot be
+  spawned without a shell — write that passthrough in **Bash** instead (`"$@"` forwards each arg
+  verbatim; see the Bash template).
 
 ```javascript
 #!/usr/bin/env node
-// <name>.mjs — <description> (passthrough: `<command> ...args`)
+// <name>.mjs — <description> (passthrough: `<program> <subcommand> ...args`; <program> is a real
+// executable such as git/node/python — for a Windows .cmd shim use the Bash template)
 import { execFileSync } from 'child_process';
 
 const root = process.env.CCB_PROJECT_ROOT || process.cwd();
 const start = Date.now();
 try {
-  const stdout = execFileSync('<program>', ['<subcommand>', ...process.argv.slice(2)], { cwd: root, encoding: 'utf-8', stdio: 'pipe', shell: process.platform === 'win32' });
+  const stdout = execFileSync('<program>', ['<subcommand>', ...process.argv.slice(2)], { cwd: root, encoding: 'utf-8', stdio: 'pipe', shell: false });
   const ms = Date.now() - start;
   const lines = stdout.trim().split('\n').filter(l => l.trim());
   const passCount = lines.filter(l => /✓|✔|pass|ok/i.test(l)).length;
@@ -112,10 +118,11 @@ try {
 
 ```bash
 #!/usr/bin/env bash
-# scripts/<name>.sh — <description>
+# <name>.sh — <description> (passthrough: `<command> "$@"` forwards every argument verbatim)
 set -o pipefail
+cd "${CCB_PROJECT_ROOT:-$PWD}" || exit 1
 start=$(date +%s%3N)
-out=$(<command> 2>&1)
+out=$(<command> "$@" 2>&1)
 ec=$?
 ms=$(($(date +%s%3N) - start))
 if [ $ec -ne 0 ]; then

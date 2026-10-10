@@ -132,12 +132,24 @@ async function run(event, deps = {}) {
  */
 async function ensureMemoryServer(deps = {}) {
   const Client = deps.McpClient || require('./mcp-client.js');
-  const client = new Client({ restartMode: 'background', ...(deps.kickLauncher ? { kickLauncher: deps.kickLauncher } : {}) });
+  // The real kick is CONFIRMED (kickLauncherVerified): a hidden launch that silently failed
+  // reported "kicked" forever. The sync test seam (deps.kickLauncher) stays as it was.
+  let verify = null;
+  const kick = deps.kickLauncher || (() => {
+    const L = require('./lib/mcp-launcher.js');
+    if (!fs.existsSync(L.launcherPath())) return false;
+    verify = L.kickLauncherVerified();
+    return true;
+  });
+  const client = new Client({ restartMode: 'background', kickLauncher: kick });
   try {
     await client._ensureDaemon();
     return 'alive';
   } catch (err) {
-    if (err && err.code === 'MEMORY_SERVER_RESTARTING' && !/not found/.test(err.message)) return 'kicked';
+    if (err && err.code === 'MEMORY_SERVER_RESTARTING' && !/not found/.test(err.message)) {
+      const how = verify ? await verify : 'kicked';
+      return how === 'fallback' ? 'kicked-visible' : how === 'failed' ? 'error' : 'kicked';
+    }
     console.error(`[brain-daemon-ensure] memory server check failed: ${err.message}`);
     return 'error';
   }

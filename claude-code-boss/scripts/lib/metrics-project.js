@@ -63,19 +63,31 @@ function metricsKeyFor(cwd) {
 
 const _adopted = new Set();
 
-/** Copy the metrics db (and its WAL, which may hold the newest rows) from `legacy` to `key` once. */
+/**
+ * Copy the metrics db from `legacy` to `key` once, CONSISTENTLY: `VACUUM INTO` takes a snapshot
+ * through SQLite (WAL included) even while another hook writes the legacy db, and the result is
+ * published with an exclusive create — copying db + WAL file by file raced a concurrent writer
+ * and could overwrite a db another process had just opened (pre-release audit 3.2.0). If another
+ * process created `key` first, its db wins and the snapshot is dropped (the legacy db stays).
+ */
 function adoptLegacyDb(key, legacy) {
   const fs = require('fs');
   const path = require('path');
   const base = path.join(require('./data-dir.js').dataDir(), 'metrics');
   const to = path.join(base, key, 'metrics.db');
   const from = path.join(base, legacy, 'metrics.db');
+  const tmp = `${to}.adopt-${process.pid}-${Date.now().toString(36)}`;
   try {
     if (fs.existsSync(to) || !fs.existsSync(from)) return;
     fs.mkdirSync(path.dirname(to), { recursive: true });
-    if (fs.existsSync(`${from}-wal`)) fs.copyFileSync(`${from}-wal`, `${to}-wal`);
-    fs.copyFileSync(from, to);
+    const Database = require('./sqlite-compat').loadSqlite();
+    if (!Database) throw new Error('no SQLite backend');
+    const db = new Database(from);
+    try { db.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`); } finally { db.close(); }
+    try { fs.copyFileSync(tmp, to, fs.constants.COPYFILE_EXCL); } catch (err) { if (err.code !== 'EEXIST') throw err; }
+    fs.rmSync(tmp, { force: true });
   } catch (err) {
+    try { fs.rmSync(tmp, { force: true }); } catch (e) { void e; }
     console.error(`[metrics] could not carry the metrics of "${legacy}" over to "${key}": ${err.message}`);
   }
 }

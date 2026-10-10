@@ -2861,11 +2861,16 @@ test('metrics key = the project ID (two same-named repos no longer share a metri
   assert(!path.relative(os.tmpdir(), base).startsWith('..'), `the suite's data dir must be a temp dir before this test deletes under it: ${base}`);
   try {
     fs.mkdirSync(path.join(base, 'app'), { recursive: true });
-    fs.writeFileSync(path.join(base, 'app', 'metrics.db'), 'legacy-db');
+    const Database = require('./lib/sqlite-compat').loadSqlite();
+    const legacyDb = new Database(path.join(base, 'app', 'metrics.db'));
+    legacyDb.exec("PRAGMA journal_mode=WAL; CREATE TABLE t(v TEXT); INSERT INTO t VALUES ('legacy-row')"); // the newest row sits in the WAL
     mp._resetAdopted();
     const k1 = mp.metricsKeyFor(one); const k2 = mp.metricsKeyFor(two);
+    legacyDb.close();
     assert(k1 !== k2 && /__app$/.test(k1) && /__app$/.test(k2), `distinct readable keys: ${k1} / ${k2}`);
-    assertEq(fs.readFileSync(path.join(base, k1, 'metrics.db'), 'utf8'), 'legacy-db', 'history carried over (copied)');
+    const adopted = new Database(path.join(base, k1, 'metrics.db'));
+    try { assertEq(adopted.prepare('SELECT v FROM t').all().map((r) => r.v), ['legacy-row'], 'history carried over consistently (VACUUM INTO, WAL included, while the legacy db was open)'); } finally { adopted.close(); }
+    assertEq(fs.readdirSync(path.join(base, k1)).filter((f) => /\.adopt-/.test(f)), [], 'no snapshot leftovers');
     assert(fs.existsSync(path.join(base, 'app', 'metrics.db')), 'the old db stays (the other same-named repo may still read it)');
     assertEq(mp.metricsKeyForId(require('./lib/project-id.js').tryResolveProjectId({ cwd: one })), k1, 'the KB id of the folder maps to the same key (lesson.captured lands where the session summary reads)');
     assertEq(mp.metricsKeyForId('__user__'), '__user__');
@@ -3994,7 +3999,7 @@ test('curation home: the in-repo .vscode curation MOVES to the user folder (keye
   } finally { cp._resetConfigCache(); sc._resetCache(); fs.rmSync(proj, { recursive: true, force: true }); }
 });
 
-test('curation home: a legacy config that cannot be moved is still USED (no curation lost) and the failure is reported; a foreign shells.json is never touched', () => {
+test('curation home: a legacy config that cannot be moved is still USED (no curation lost) and the failure is reported; a foreign shells.json is never touched', async () => {
   const cp = require('./curation-paths.js');
   const sc = require('./shells-config.js');
   const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mig-bad-'));
@@ -4010,6 +4015,16 @@ test('curation home: a legacy config that cannot be moved is still USED (no cura
     assert(/could NOT be moved/.test(require('./curation-session.js').migrationLines(n)[0]));
     const reg = require('./lib/shell-register.js').register({ cwd: proj, id: 'x', scriptPath: 'x.mjs', content: 'c', aliases: ['npm run x'] });
     assert(reg.isError && /still in the repo/.test(JSON.stringify(reg)), 'register refuses to write into the repo while the move is pending');
+    await require('./session-whitelist.js').run({ cwd: proj });
+    assertEq(fs.readFileSync(path.join(proj, '.vscode', 'shells.json'), 'utf8'), '{ not json', 'SessionStart never rewrites the in-repo file it fell back to (it replaced it with shells: [])');
+
+    // Fixed later → the move completes (the failed attempt left a home WITHOUT shells.json: renaming
+    // over it failed on every call, locking the project in the repo forever).
+    fs.writeFileSync(path.join(proj, '.vscode', 'shells.json'), JSON.stringify({ shells: [{ id: 'ok', script: '.vscode/scripts/ok.mjs', aliases: ['npm run ok'] }] }));
+    cp._resetConfigCache(); sc._resetCache();
+    assertEq(cp.getShellsConfigPath(proj), path.join(cp.curationHome(proj), 'shells.json'), 'now the home');
+    assertEq(sc.loadShellsConfig(proj).shells.map((s) => s.id), ['ok']);
+    assertEq(fs.existsSync(path.join(proj, '.vscode', 'shells.json')), false, 'and the repo file left');
 
     const other = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mig-foreign-'));
     fs.writeFileSync(path.join(other, 'package.json'), '{}');
@@ -4021,7 +4036,7 @@ test('curation home: a legacy config that cannot be moved is still USED (no cura
   } finally { cp._resetConfigCache(); sc._resetCache(); fs.rmSync(proj, { recursive: true, force: true }); }
 });
 
-test('curation home: a git-TRACKED legacy config (kept in the repo) is merged ONCE — not again in every new process (it wrote a backup and a fresh notice each time)', () => {
+test('curation home: a git-TRACKED config is the team file, branch-scoped — read IN PLACE, never moved or merged into the shared home (branch aliases leaked into every branch)', () => {
   const cp = require('./curation-paths.js');
   const sc = require('./shells-config.js');
   const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mig-tracked-'));
@@ -4030,20 +4045,62 @@ test('curation home: a git-TRACKED legacy config (kept in the repo) is merged ON
     git('init', '-q');
     fs.mkdirSync(path.join(proj, '.vscode', 'scripts'), { recursive: true });
     fs.writeFileSync(path.join(proj, '.vscode', 'scripts', 'a.py'), 'print(1)\n');
-    fs.writeFileSync(path.join(proj, '.vscode', 'shells.json'), JSON.stringify({ shells: [{ id: 'a', script: '.vscode/scripts/a.py', aliases: ['python a'] }] }));
+    fs.writeFileSync(path.join(proj, '.vscode', 'shells.json'), JSON.stringify({ shells: [{ id: 'a', script: '.vscode/scripts/a.py', aliases: ['python a'] }, { id: 'mine', script: '.vscode/scripts/a.py', aliases: ['python m'] }] }));
     git('add', '.vscode');
-    cp._resetConfigCache(); sc._resetCache();
-    assertEq(sc.loadShellsConfig(proj).shells.length, 1);
     const home = cp.curationHome(proj);
-    const backups = () => fs.readdirSync(path.join(home, 'legacy-backup')).length;
-    assertEq([backups(), fs.existsSync(path.join(proj, '.vscode', 'shells.json'))], [1, true], 'migrated once; the tracked file stays');
-    assert(cp.takeMigrationNotice(proj).keptTracked.includes('.vscode/shells.json'));
-    for (let i = 0; i < 3; i++) { cp._resetConfigCache(); sc._resetCache(); sc.loadShellsConfig(proj); } // new processes
-    assertEq([backups(), cp.takeMigrationNotice(proj)], [1, null], 'no new backup, no new notice while the tracked file is unchanged');
-    fs.writeFileSync(path.join(proj, '.vscode', 'shells.json'), JSON.stringify({ shells: [{ id: 'b', script: '.vscode/scripts/b.py', aliases: ['python b'] }] })); // a teammate's change
+    fs.mkdirSync(home, { recursive: true });
+    fs.writeFileSync(path.join(home, 'shells.json'), JSON.stringify({ shells: [{ id: 'mine', script: 'scripts/m.mjs', aliases: ['python m'] }] })); // the user's own entry
     cp._resetConfigCache(); sc._resetCache();
-    assertEq(sc.loadShellsConfig(proj).shells.map((s) => s.id), ['a', 'b'], 'a CHANGED tracked file is merged again');
+    const P = proj.replace(/\\/g, '/');
+    const shells = sc.loadShellsConfig(proj).shells;
+    assertEq(shells.map((x) => [x.id, x.script]), [['mine', `${home.replace(/\\/g, '/')}/scripts/m.mjs`], ['a', `${P}/.vscode/scripts/a.py`]], 'the user id wins; the team entry is read in place, script in the repo');
+    assertEq([fs.existsSync(path.join(proj, '.vscode', 'shells.json')), fs.existsSync(path.join(proj, '.vscode', 'scripts', 'a.py'))], [true, true], 'nothing moved or deleted');
+    assertEq(JSON.parse(fs.readFileSync(path.join(home, 'shells.json'), 'utf8')).shells.map((x) => x.id), ['mine'], 'NOT merged into the shared home');
+    assertEq([fs.existsSync(path.join(home, 'legacy-backup')), cp.takeMigrationNotice(proj)], [false, null], 'no backup, no notice');
+    // Another branch's version of the file: applies right away, and only while it is checked out.
+    fs.writeFileSync(path.join(proj, '.vscode', 'shells.json'), JSON.stringify({ shells: [{ id: 'b', script: '.vscode/scripts/b.py', aliases: ['python b'] }] }));
+    cp._resetConfigCache(); sc._resetCache();
+    assertEq(sc.loadShellsConfig(proj).shells.map((x) => x.id), ['mine', 'b'], 'the branch own entries — "a" is gone with its branch');
   } finally { cp._resetConfigCache(); sc._resetCache(); fs.rmSync(proj, { recursive: true, force: true }); }
+});
+
+test('curation home: when git cannot tell what it tracks, NOTHING is moved or deleted (fail closed — it deleted versioned team files)', async () => {
+  const cp = require('./curation-paths.js');
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mig-gitfail-'));
+  try {
+    fs.writeFileSync(path.join(proj, '.git'), 'gitdir: ./does-not-exist\n'); // a repo marker git cannot read
+    fs.mkdirSync(path.join(proj, '.vscode', 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(proj, '.vscode', 'scripts', 'x.mjs'), 'x');
+    fs.writeFileSync(path.join(proj, '.vscode', 'shells.json'), JSON.stringify({ shells: [{ id: 'x', script: '.vscode/scripts/x.mjs', aliases: ['npm run x'] }] }));
+    cp._resetConfigCache();
+    assertEq(cp.getShellsConfigPath(proj), path.join(proj, '.vscode', 'shells.json'), 'keeps using the in-repo file');
+    assertEq([fs.existsSync(path.join(proj, '.vscode', 'shells.json')), fs.existsSync(path.join(proj, '.vscode', 'scripts', 'x.mjs'))], [true, true], 'nothing deleted');
+    assert(/git could not tell/.test((cp.takeMigrationNotice(proj) || {}).error || ''), 'and it says why');
+    const before = fs.readFileSync(path.join(proj, '.vscode', 'shells.json'), 'utf8');
+    await require('./session-whitelist.js').run({ cwd: proj });
+    assertEq(fs.readFileSync(path.join(proj, '.vscode', 'shells.json'), 'utf8'), before, 'SessionStart never writes the VALID in-repo file it fell back to (only the curation home)');
+  } finally { cp._resetConfigCache(); fs.rmSync(proj, { recursive: true, force: true }); }
+});
+
+test('mcp-launcher.kickLauncherVerified: a hidden launch that FAILS (VBScript off / blocked) falls back to the plain launch and says so — it reported "kicked" forever', async () => {
+  const L = require('./lib/mcp-launcher.js');
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-kickv-'));
+  const env = { USERPROFILE: home, HOME: home };
+  fs.mkdirSync(path.dirname(L.launcherPath(env, 'win32')), { recursive: true });
+  fs.writeFileSync(L.launcherPath(env, 'win32'), '');
+  const { EventEmitter } = require('events');
+  const fake = (behave) => { const calls = []; const impl = (c) => { calls.push(c); const ch = new EventEmitter(); ch.unref = () => {}; setImmediate(() => behave(c, ch)); return ch; }; return { calls, impl }; };
+  try {
+    let f = fake((c, ch) => ch.emit('exit', 0));
+    assertEq(await L.kickLauncherVerified({ env, platform: 'win32', spawnImpl: f.impl }), 'kicked');
+    assertEq(f.calls, ['wscript.exe'], 'hidden launch only');
+    f = fake((c, ch) => { if (c === 'wscript.exe') ch.emit('exit', 1); });
+    assertEq(await L.kickLauncherVerified({ env, platform: 'win32', spawnImpl: f.impl }), 'fallback');
+    assertEq(f.calls, ['wscript.exe', 'cmd.exe'], 'wscript failed → plain launch');
+    f = fake((c, ch) => { if (c === 'wscript.exe') ch.emit('error', new Error('spawn wscript.exe ENOENT')); });
+    assertEq(await L.kickLauncherVerified({ env, platform: 'win32', spawnImpl: f.impl }), 'fallback', 'no wscript at all → plain launch');
+    assertEq(await L.kickLauncherVerified({ env: { USERPROFILE: path.join(home, 'none'), HOME: path.join(home, 'none') }, platform: 'win32', spawnImpl: f.impl }), 'missing');
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
 });
 
 test('curation home: under CCB_TEST_SANDBOX a project OUTSIDE the temp dir is never moved (a test run moved and lost the real repo\'s curation)', () => {

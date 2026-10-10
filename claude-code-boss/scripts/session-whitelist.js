@@ -84,8 +84,14 @@ async function run(event) {
     if (!fs.existsSync(path.dirname(shellsPath))) {
       return {};
     }
+    // Only ever the user's curation home: when its move failed, getShellsConfigPath hands back
+    // the in-repo file — rewriting it here replaced an unreadable config with `shells: []`, losing
+    // it (pre-release audit 3.2.0). And never overwrite a file this run could not read.
+    const { curationHome } = require('./curation-paths.js');
+    if (path.relative(curationHome(projectRoot), shellsPath).startsWith('..')) return { skipped: 'not-in-curation-home' };
 
     const existingConfig = loadExistingConfig(shellsPath);
+    if (!existingConfig && fs.existsSync(shellsPath)) return { error: 'existing shells config unreadable — left untouched' };
     const ecosystem = detectEcosystem(projectRoot);
 
     // Merge: preserve existing whitelist entries, add base defaults.
