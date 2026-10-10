@@ -291,7 +291,7 @@ module.exports = {
   checkJava: install.checkJava, checkJar: install.checkJar, javaCandidates: install.javaCandidates,
   MIN_JAVA_MAJOR: install.MIN_JAVA_MAJOR, downloadServerJar: install.downloadServerJar,
   // Exported for isolated unit testing of the download + checksum path
-  // (mocking mcp-release-resolver.js / downloadJar) without a real spawn/network flow.
+  // (mocking mcp-bootstrap/release-resolver.js / downloadJar) without a real spawn/network flow.
   resolveDownload: install.resolveDownload, ensureJar: install.ensureJar, sha256File: require('./mcp-bootstrap/file-hash.js').sha256File,
   // Exported for isolated unit testing only (same convention as brain-config.js's
   // _resetCache) — lets lock semantics be verified without driving the full

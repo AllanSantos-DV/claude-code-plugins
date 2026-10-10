@@ -1,6 +1,6 @@
 'use strict';
 /**
- * mcp-launcher.js — the ONLY way this plugin starts the mcp-memory server daemon.
+ * launcher.js — the ONLY way this plugin starts the mcp-memory server daemon.
  *
  * Official contract (native-java docs/contracts/daemon-launcher-contract.md, ADR-023): a client
  * never starts the jar itself; it runs the launcher ~/.mcp-memory/bin/mcp-memory-daemon(.cmd),
