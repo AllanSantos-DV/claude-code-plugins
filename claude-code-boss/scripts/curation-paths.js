@@ -27,8 +27,11 @@
  *   }
  * Migration moves the dedicated curation scripts dir (never a repo's own `scripts/`),
  * rewrites the entries' paths, keeps a backup in the home, and removes the legacy files
- * that git does not track (a tracked one is the team's file — copied, left, reported).
- * A failed migration keeps reading the legacy file (no curation is lost) and says why.
+ * that git does not track (a tracked script is copied, left and reported). A config that git
+ * TRACKS is the team's, branch-scoped file: it is not moved at all — it is read in place next to
+ * the home config (getRepoShellsFiles), so a branch's aliases never leak into other branches.
+ * A failed migration keeps reading the legacy file (no curation is lost) and says why; when git
+ * cannot tell what it tracks, nothing is moved (fail closed).
  *
  * Exports:
  *   loadCurationConfig()        — config block from hooks-config.json
@@ -208,24 +211,55 @@ const LOCK_STALE_MS = 60_000;
 const SELF_LOCATING = /__dirname|import\.meta\.url|\$PSScriptRoot|BASH_SOURCE|dirname\s+["']?\$0/;
 const CLIMBS_UP = /\.\.[/\\'"]/;
 
-/** The legacy in-repo shells configs of this root that are curation configs (`shells: []`). */
+/**
+ * The legacy in-repo shells configs of this root that are curation configs (`shells: []`), each
+ * marked `tracked` (git versions it). A TRACKED config is the team's, branch-scoped file: it is
+ * never moved or merged into the shared home — merging it made a branch's aliases (a PR's
+ * `git status` → its own script) apply in every branch and clone, run unprompted under
+ * bypassPermissions (pre-release audit 3.2.0). It is read in place instead (getRepoShellsFiles).
+ * Throws on an unreadable UNTRACKED config (the caller keeps using it and reports why) and when git
+ * cannot say what it tracks (fail closed: never delete what might be the team's).
+ */
 function _legacyShellsFiles(projectRoot) {
   const cfg = loadCurationConfig();
-  const out = [];
+  const found = [];
   for (const rel of [...new Set([cfg.shellsConfigPath, ...cfg.shellsConfigSearch])]) {
     if (!rel || path.isAbsolute(rel)) continue;
     const p = path.join(projectRoot, rel);
-    if (!fs.existsSync(p)) continue;
-    const text = fs.readFileSync(p, 'utf8');
-    // Already migrated, unchanged: a git-tracked legacy file stays in the repo, and re-merging it
-    // in every new process wrote a fresh backup and overwrote the notice each time (seen live).
+    let st; try { st = fs.lstatSync(p); } catch (err) { void err; continue; }
+    if (!st.isFile()) continue; // a symlink/dir is not ours to move
+    found.push({ rel, path: p });
+  }
+  if (!found.length) return [];
+  const tracked = new Set(_trackedByGit(projectRoot, found.map((f) => f.path)));
+  const out = [];
+  for (const f of found) {
+    const isTracked = tracked.has(path.relative(projectRoot, f.path).split(path.sep).join('/'));
+    const text = fs.readFileSync(f.path, 'utf8');
+    // Already merged and unchanged (an untracked file whose removal failed): never re-merge it in
+    // every new process (that wrote a fresh backup and overwrote the notice each time).
     const fp = _fingerprint(text);
-    if (_migratedFingerprints(projectRoot)[rel] === fp) continue;
+    if (!isTracked && _migratedFingerprints(projectRoot)[f.rel] === fp) continue;
     let json;
-    try { json = JSON.parse(text); } catch (err) { throw new Error(`legacy ${rel} is not valid JSON: ${err.message}`); }
-    if (json && Array.isArray(json.shells)) out.push({ rel, path: p, json, fp });
+    try { json = JSON.parse(text); } catch (err) {
+      if (isTracked) { console.error(`[curation] ${f.rel} (versioned in git) is not valid JSON — ignored: ${err.message}`); continue; }
+      throw new Error(`legacy ${f.rel} is not valid JSON: ${err.message}`);
+    }
+    if (json && Array.isArray(json.shells)) out.push({ ...f, json, fp, tracked: isTracked });
   }
   return out;
+}
+
+/**
+ * The project's git-TRACKED in-repo curation configs, read in place (branch-scoped, as before
+ * 3.2.0) next to the user's home config. [] when there is none or git cannot tell.
+ * @param {string|null} projectRoot
+ * @returns {string[]} absolute paths
+ */
+function getRepoShellsFiles(projectRoot) {
+  if (!projectRoot) return [];
+  const m = ensureMigrated(projectRoot);
+  return (m && m.repoShells) || [];
 }
 
 function _fingerprint(text) { return crypto.createHash('sha1').update(String(text)).digest('hex'); }
@@ -244,29 +278,53 @@ function _legacyScriptDirs(projectRoot, { existing = true } = {}) {
   return [...new Set([cfg.scriptsDir, ...cfg.scriptsDirSearch])]
     .filter((rel) => rel && !path.isAbsolute(rel) && rel.replace(/\\/g, '/').replace(/\/+$/, '') !== 'scripts')
     .map((rel) => ({ rel, path: path.join(projectRoot, rel) }))
-    .filter((d) => !existing || (fs.existsSync(d.path) && fs.statSync(d.path).isDirectory()));
+    .filter((d) => {
+      if (!existing) return true;
+      // A symlinked dir is not ours: following it moved/deleted files outside the repo.
+      try { return fs.lstatSync(d.path).isDirectory(); } catch (err) { void err; return false; }
+    });
 }
 
 function _walkFiles(dir, base = dir, out = []) {
   for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
     const p = path.join(dir, e.name);
     if (e.isDirectory()) _walkFiles(p, base, out);
-    else if (e.isFile()) out.push(p);
+    else if (e.isFile()) out.push(p); // symlinks are skipped (Dirent.isFile() is false for them)
   }
   return out;
 }
 
-/** Repo-relative paths (forward slashes) of `files` that git tracks; [] outside a repo. */
-function _trackedByGit(projectRoot, files) {
-  if (!files.length) return [];
-  try {
-    const rels = files.map((f) => path.relative(projectRoot, f).split(path.sep).join('/'));
-    const out = execFileSync('git', ['ls-files', '-z', '--', ...rels], { cwd: projectRoot, encoding: 'utf8', timeout: 5000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
-    return out.split('\0').filter(Boolean);
-  } catch (err) {
-    void err; // not a git repo / git missing → nothing is tracked
-    return [];
+/** The folder holding `.git` at or above `dir`, else null. */
+function _gitTop(dir) {
+  let d = path.resolve(dir);
+  for (let i = 0; i < 40; i++) {
+    if (fs.existsSync(path.join(d, '.git'))) return d;
+    const parent = path.dirname(d);
+    if (parent === d) return null;
+    d = parent;
   }
+  return null;
+}
+
+/**
+ * Repo-relative paths (forward slashes) of `files` that git tracks. [] only when there is NO repo.
+ * Inside a repo any git failure THROWS (fail closed): treating "git failed" as "nothing tracked"
+ * deleted the team's versioned files (timeout, a long Windows command line, a symlinked dir —
+ * pre-release audit 3.2.0). Batched to stay under the Windows command-line limit.
+ */
+function _trackedByGit(projectRoot, files) {
+  if (!files.length || !_gitTop(projectRoot)) return [];
+  const rels = files.map((f) => path.relative(projectRoot, f).split(path.sep).join('/'));
+  const out = [];
+  for (let i = 0; i < rels.length; i += 50) {
+    try {
+      const txt = execFileSync('git', ['ls-files', '-z', '--', ...rels.slice(i, i + 50)], { cwd: projectRoot, encoding: 'utf8', timeout: 15000, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      out.push(...txt.split('\0').filter(Boolean));
+    } catch (err) {
+      throw new Error(`git could not tell which curation files it tracks, nothing was moved: ${String(err.stderr || err.message).trim().slice(0, 200)}`);
+    }
+  }
+  return out;
 }
 
 /** Entry path rewritten for the home: inside a moved dir → `scripts/<rel>`; else absolute. */
@@ -299,8 +357,11 @@ function ensureMigrated(projectRoot) {
   let result = null;
   let legacy = [];
   try {
-    legacy = _legacyShellsFiles(projectRoot);
+    const all = _legacyShellsFiles(projectRoot);
+    const repoShells = all.filter((l) => l.tracked).map((l) => l.path);
+    legacy = all.filter((l) => !l.tracked);
     if (legacy.length) result = _migrate(projectRoot, legacy);
+    if (repoShells.length) result = { ...(result || {}), repoShells };
   } catch (err) {
     const legacyShells = legacy[0] ? legacy[0].path : _firstExistingLegacy(projectRoot);
     result = { error: err.message, legacyShells };
@@ -355,7 +416,11 @@ function _migrate(projectRoot, legacy) {
     const dirs = _legacyScriptDirs(projectRoot);
     const files = dirs.flatMap((d) => _walkFiles(d.path));
     const existed = fs.existsSync(path.join(home, 'shells.json'));
-    const target = existed ? home : `${home}.tmp-${process.pid}-${Date.now().toString(36)}`;
+    // A home that exists WITHOUT shells.json (a failed earlier attempt left its notice there) is
+    // written in place: renaming the tmp over that non-empty dir failed on every later call, so one
+    // failure locked the project in the repo forever (pre-release audit 3.2.0).
+    const inPlace = existed || fs.existsSync(home);
+    const target = inPlace ? home : `${home}.tmp-${process.pid}-${Date.now().toString(36)}`;
     fs.mkdirSync(path.join(target, 'scripts'), { recursive: true });
 
     const selfLocating = [];
@@ -398,7 +463,7 @@ function _migrate(projectRoot, legacy) {
     for (const d of dirs) fs.cpSync(d.path, path.join(backup, d.rel), { recursive: true });
 
     fs.writeFileSync(path.join(target, 'shells.json'), JSON.stringify(base, null, 2) + '\n');
-    if (!existed) {
+    if (!inPlace) {
       try {
         fs.renameSync(target, home);
       } catch (err) {
@@ -480,6 +545,7 @@ module.exports = {
   resolveScriptPath,
   ensureMigrated,
   takeMigrationNotice,
+  getRepoShellsFiles,
   _resetConfigCache,
   DEFAULTS,
 };

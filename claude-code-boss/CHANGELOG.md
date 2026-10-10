@@ -11,7 +11,9 @@
   arquivo que o git rastreia fica no lugar (e é avisado para `git rm`), e o início da sessão avisa uma vez o que
   mudou — incluindo scripts que acham o projeto pelo próprio caminho e precisam passar a usar
   `CCB_PROJECT_ROOT`, que o redirecionamento agora define. Se a mudança falhar, a curadoria continua usando o
-  arquivo antigo e diz por quê; nada se perde.
+  arquivo antigo e diz por quê; nada se perde. Uma configuração **versionada no git** (`.vscode/shells.json`
+  rastreado) é do time e vale por branch: ela não é movida — continua sendo lida no lugar. Se o git não
+  conseguir dizer o que rastreia, nada é movido.
 - **Redirecionamento de variantes, do jeito seguro (passthrough).** Um script registrado com
   `passthrough: true` (ele repassa os argumentos ao comando que cura) recebe toda variante que começa com um dos
   seus aliases, com os argumentos e flags: `mvn test -Dtest=X -q` vai para o script com `-Dtest=X -q`. É a regra
