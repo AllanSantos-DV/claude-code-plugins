@@ -366,7 +366,8 @@ function _migrate(projectRoot, legacy) {
         if (!fs.existsSync(dest)) fs.copyFileSync(f, dest); // a merge never overwrites the home's own copy
         let text = '';
         try { text = fs.readFileSync(f, 'utf8'); } catch (err) { void err; }
-        if (SELF_LOCATING.test(text) && CLIMBS_UP.test(text)) selfLocating.push(`scripts/${path.relative(d.path, f).split(path.sep).join('/')}`);
+        // A script that already prefers CCB_PROJECT_ROOT keeps its own-location fallback on purpose.
+        if (SELF_LOCATING.test(text) && CLIMBS_UP.test(text) && !text.includes('CCB_PROJECT_ROOT')) selfLocating.push(`scripts/${path.relative(d.path, f).split(path.sep).join('/')}`);
       }
     }
 
