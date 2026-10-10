@@ -560,7 +560,7 @@ const TESTS = [
       const out = r.parsed?.hookSpecificOutput || {};
       if (out.permissionDecision !== 'allow') return `bypassPermissions → allow, got: ${out.permissionDecision}`;
       const cmd = out.updatedInput && out.updatedInput.command;
-      if (!/^CCB_PROJECT_ROOT="[^"]+" powershell -NoProfile -ExecutionPolicy Bypass -File ".*\/curation\/.*\/scripts\/vitest\.ps1"$/.test(cmd || '')) return `rewritten to the absolute script in the curation home, got: ${cmd}`;
+      if (!/^CCB_RAW_REPORT="[^"]+\/raw-report\/[^"]+\.jsonl" CCB_PROJECT_ROOT="[^"]+" powershell -NoProfile -ExecutionPolicy Bypass -File ".*\/curation\/.*\/scripts\/vitest\.ps1"$/.test(cmd || '')) return `rewritten to the absolute script in the curation home, got: ${cmd}`;
       if (Object.keys(out.updatedInput).join() !== 'command') return `updatedInput carries only command (Claude Code merges it), got: ${JSON.stringify(out.updatedInput)}`;
       if (!/CCB_RAW=1/.test(out.additionalContext || '')) return 'the redirect must be announced with the raw escape hatch';
       return null;
@@ -615,7 +615,7 @@ const TESTS = [
     expect: { hasKey: 'hookSpecificOutput', noError: true },
     validate: r => {
       const out = r.parsed?.hookSpecificOutput || {};
-      return /^CCB_PROJECT_ROOT="[^"]+" node ".*\/curation\/.*\/scripts\/lint\.mjs"$/.test((out.updatedInput || {}).command || '') ? null : `expected node rewrite, got: ${JSON.stringify(out)}`;
+      return /^CCB_RAW_REPORT="[^"]+" CCB_PROJECT_ROOT="[^"]+" node ".*\/curation\/.*\/scripts\/lint\.mjs"$/.test((out.updatedInput || {}).command || '') ? null : `expected node rewrite, got: ${JSON.stringify(out)}`;
     },
   },
   {
@@ -772,7 +772,7 @@ const TESTS = [
       const ctx = r.parsed?.hookSpecificOutput?.additionalContext || '';
       const cmd = (r.parsed?.hookSpecificOutput?.updatedInput || {}).command || '';
       if (d !== 'allow') return `alias after 'cd && ' should be rewritten (allow), got: ${d} (ctx: ${ctx})`;
-      if (!/^cd .+ && CCB_PROJECT_ROOT="[^"]+" powershell .*tsc_check\.ps1"$/.test(cmd)) return `the cd is kept and only the alias part rewritten, got: ${cmd}`;
+      if (!/^cd .+ && CCB_RAW_REPORT="[^"]+" CCB_PROJECT_ROOT="[^"]+" powershell .*tsc_check\.ps1"$/.test(cmd)) return `the cd is kept and only the alias part rewritten, got: ${cmd}`;
       return null;
     },
   },

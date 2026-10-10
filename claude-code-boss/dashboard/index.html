@@ -2781,7 +2781,8 @@ async function loadCurationPanel() {
   const rs = c.redirectSavings;
   let html = '<div class="grid">'
     + stat(tok(c.shaped.savedChars), 'Saved by the shaper (exact)', c.shaped.cuts + ' cuts', c.shaped.cuts ? 'badge-green' : 'badge-yellow')
-    + stat(tok(rs.estChars), 'Saved by redirects (estimated)', rs.withBaseline + ' with baseline · ' + rs.withoutBaseline + ' without', rs.withBaseline ? 'badge-green' : 'badge-yellow')
+    + stat(tok((c.exact || {}).savedChars || 0), 'Saved by curated scripts (exact, raw − shown)', ((c.exact || {}).runs || 0) + ' measured runs', (c.exact || {}).runs ? 'badge-green' : 'badge-yellow')
+    + stat(tok(rs.estChars), 'Saved by redirects (estimated)', rs.withBaseline + ' with baseline · ' + rs.withoutBaseline + ' without · ' + (rs.measured || 0) + ' exact', rs.withBaseline ? 'badge-green' : 'badge-yellow')
     + stat(tok(c.rawEnteredContext.chars), 'Raw output that entered context (cost)', c.rawEnteredContext.count + ' noisy commands', c.rawEnteredContext.count ? 'badge-red' : 'badge-green')
     + stat(String(c.redirects.total), 'Commands redirected to a script', c.redirects.allow + ' allow · ' + c.redirects.ask + ' ask', 'badge-green')
     + '</div>';

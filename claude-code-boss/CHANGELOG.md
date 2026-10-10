@@ -2,6 +2,14 @@
 
 ## [3.2.1] - 2026-10-10
 
+### Added
+- **Economia EXATA dos scripts curados.** Até aqui o painel só estimava a economia de um redirecionamento quando
+  tinha uma medida antiga da saída crua daquele comando — e quase nunca tinha (4 de 25 numa semana), então o
+  total exibido ficava muito abaixo do real. Agora o redirecionamento informa ao script onde registrar o tamanho
+  da saída crua que ele viu (`CCB_RAW_REPORT`); o plugin lê esse registro depois da execução e o painel (e o
+  resumo do início da sessão) passa a mostrar "scripts curados (exato)": cru menos o que entrou no contexto. A
+  estimativa continua só para os scripts que ainda não registram. Os modelos de script da skill já registram.
+
 ### Fixed
 - **O total de economia da curadoria no painel contava parte do histórico em dobro.** A 3.2.0 passou a separar as
   métricas pelo id do projeto e copiou o histórico antigo; o total somava a cópia e o original. Agora o original

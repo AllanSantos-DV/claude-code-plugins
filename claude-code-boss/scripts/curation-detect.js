@@ -158,8 +158,11 @@ async function run(event) {
     // C4: a curated script actually RAN (its path is a token — a raw alias match is not a
     // run; redirected commands arrive here already rewritten). Output size per run is what
     // the dashboard compares against the raw baseline of the same signature.
+    // The raw size the script reported for this run (lib/raw-report.js) makes its savings EXACT
+    // (raw − shown); without a report the dashboard keeps the signature-baseline estimate.
+    const raw = command.includes('CCB_RAW_REPORT=') ? require('./lib/raw-report.js').takeReport(command) : null;
     if (scriptRan) {
-      metrics.fire('curation.used', { scriptId: curatedShell.id || scriptRel, chars: charCount, lines: lineCount, success: isSuccess, compound }, { sessionId, cwd });
+      metrics.fire('curation.used', { scriptId: curatedShell.id || scriptRel, chars: charCount, lines: lineCount, success: isSuccess, compound, ...(raw ? { rawChars: raw.rawChars, rawLines: raw.rawLines } : {}) }, { sessionId, cwd });
     }
 
     // Piped → refine: the agent filtering the SAME script the SAME way again (`| tail -3`)
