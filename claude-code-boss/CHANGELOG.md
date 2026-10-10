@@ -1,5 +1,15 @@
 # Changelog
 
+## [3.2.2] - 2026-10-10
+
+### Fixed
+- **A compactação automática com cache quente não troca mais o resumo nativo pela poda.** Quando o Claude Code
+  compacta sozinho no limite da janela e o cache ainda está quente, o resumo nativo é o barato: ele lê o histórico
+  do cache e deixa ~5% da janela. A poda do boss mantinha 75–95% do histórico e obrigava a regravar tudo isso no
+  cache — medido numa sessão real: a janela caiu só 12% e o turno seguinte regravou 780 mil tokens (~7× o custo do
+  resumo, e outra compactação logo em seguida). Agora, com cache quente, a compactação automática fica com o resumo
+  nativo (a poda só vale se cortar 85% ou mais). Com cache frio e no `/compact` manual nada muda.
+
 ## [3.2.1] - 2026-10-10
 
 ### Added
