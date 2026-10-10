@@ -5184,6 +5184,40 @@ test('hooks.json (F2): brain_retrieve_context UserPromptSubmit hook passes sessi
   assertEq(entry.input.prompt, '${prompt}', 'prompt still passed');
 });
 
+// MCP permission posture: the plugin must never answer a permission question for an
+// MCP tool. Claude Code then asks for any MCP tool the user hasn't allowed (whatever
+// readOnlyHint the server declares) and re-evaluates every call. A PreToolUse /
+// PermissionRequest hook matching mcp__* — or an allow rule in the shipped settings —
+// would silently pre-approve them (OpenDots comparison, 2026-10-10).
+test('hooks.json + settings.json: no hook or allow rule can pre-approve an MCP tool (native per-call check stays the gate)', () => {
+  const parsed = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf-8'));
+  // Claude Code matcher semantics: absent/""/"*" = every tool; letters/digits/_/| = exact
+  // names; anything else is a regex.
+  const matches = (matcher, name) => {
+    if (matcher === undefined || matcher === '' || matcher === '*') return true;
+    if (/^[\w|]+$/.test(matcher)) return matcher.split('|').includes(name);
+    return new RegExp(matcher).test(name);
+  };
+  const mcpNames = [
+    'mcp__plugin_claude-code-boss_brain-server__brain_store',
+    'mcp__untrusted__write_file',
+    'mcp__github__create_issue',
+  ];
+  assert(matches('Bash', 'Bash') && matches(undefined, 'mcp__x__y') && matches('mcp__.*', 'mcp__x__y') && !matches('Grep|Glob', 'mcp__x__y'), 'matcher model sanity');
+  assert(!parsed.hooks.PermissionRequest, 'no PermissionRequest hook (it would answer the approval dialog)');
+  const groups = parsed.hooks.PreToolUse || [];
+  assert(groups.length >= 1, 'PreToolUse wiring present');
+  for (const grp of groups) {
+    for (const name of mcpNames) {
+      assert(!matches(grp.matcher, name), `PreToolUse matcher ${JSON.stringify(grp.matcher)} must not reach MCP tool ${name}`);
+    }
+  }
+  const settings = JSON.parse(fs.readFileSync(path.join(ROOT, 'settings.json'), 'utf-8'));
+  const allow = (settings.permissions && settings.permissions.allow) || [];
+  assertEq(allow.filter((r) => /^mcp__/.test(String(r))).length, 0, 'shipped settings carry no MCP allow rule');
+  assert(!(settings.permissions && settings.permissions.defaultMode), 'shipped settings do not change the permission mode');
+});
+
 // ─── brain-config: contextExcludeTypes + DATA_DIR user-override deep-merge ────
 const brainConfig = require('./lib/brain-config.js');
 
