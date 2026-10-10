@@ -8,7 +8,7 @@
   aberta). Agora eles ficam na sua pasta de usuário, um diretório por projeto, separado pelo id do projeto (o
   mesmo da memória): `~/.claude/claude-code-boss/curation/<owner>/<repo>/`. Nada é escrito dentro do repositório.
   Um projeto com a curadoria antiga é movido sozinho na primeira chamada: cópia de segurança na pasta nova,
-  arquivo que o git rastreia fica no lugar (e é avisado para `git rm`), e o início da sessão avisa uma vez o que
+  um script dessa curadoria pessoal que o git rastreie é copiado e fica no lugar (avisado para `git rm`), e o início da sessão avisa uma vez o que
   mudou — incluindo scripts que acham o projeto pelo próprio caminho e precisam passar a usar
   `CCB_PROJECT_ROOT`, que o redirecionamento agora define. Se a mudança falhar, a curadoria continua usando o
   arquivo antigo e diz por quê; nada se perde. Uma configuração **versionada no git** (`.vscode/shells.json`
