@@ -93,13 +93,15 @@ function _settingsFiles(projectRoot, home) {
 
 function tokenGuardActive({ projectRoot = '', home = os.homedir() } = {}) {
   const files = _settingsFiles(projectRoot, home);
-  const stamp = files.map((f) => { try { return `${f}:${fs.statSync(f).mtimeMs}`; } catch (err) { void err; return `${f}:-`; } }).join('|');
+  const stamp = files.map((f) => { try { const st = fs.statSync(f); return `${f}:${st.mtimeMs}:${st.size}`; } catch (err) { void err; return `${f}:-`; } }).join('|');
   if (stamp === _tgCache.key) return _tgCache.value;
   let active = false;
   for (const f of files) {
     let j; try { j = JSON.parse(fs.readFileSync(f, 'utf8')); } catch (err) { void err; continue; }
     const post = (j && j.hooks && j.hooks.PostToolUse) || [];
-    if (post.some((g) => (g.hooks || []).some((h) => /token-guard/i.test(`${h.command || ''} ${(h.args || []).join(' ')}`)))) { active = true; break; }
+    // A command hook (adapters/post-hook.cjs) or, since Token Guard 2.x, an http hook on its
+    // daemon (url …/token-guard/post) — the url was missed, so the boss shaped output on top of it.
+    if (post.some((g) => (g.hooks || []).some((h) => /token-guard/i.test(`${h.command || ''} ${(h.args || []).join(' ')} ${h.url || ''}`)))) { active = true; break; }
   }
   _tgCache.key = stamp; _tgCache.value = active;
   return active;

@@ -4358,6 +4358,12 @@ test('C1 curation-families: Token Guard detected from a PostToolUse hook in user
     fs.writeFileSync(path.join(home, '.claude', 'settings.json'), JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ command: 'token-guard pre' }] }] } }));
     fs.rmSync(path.join(proj, '.claude'), { recursive: true, force: true });
     assertEq(fam.tokenGuardActive({ projectRoot: proj, home }), false, 'only a PreToolUse mention does not count (PostToolUse bounds output)');
+    // Token Guard 2.x installs as an HTTP hook on its daemon (the owner's real settings,
+    // 2026-10-10): missed before, so the boss ALSO shaped Bash output on top of it.
+    fs.writeFileSync(path.join(home, '.claude', 'settings.json'), JSON.stringify({ hooks: { PostToolUse: [{ hooks: [{ type: 'http', url: 'http://127.0.0.1:44448/token-guard/post', headers: { 'X-Token-Guard': 'x' }, timeout: 10 }] }] } }));
+    assertEq(fam.tokenGuardActive({ projectRoot: proj, home }), true, 'PostToolUse http hook on the token-guard daemon → active');
+    fs.writeFileSync(path.join(home, '.claude', 'settings.json'), JSON.stringify({ hooks: { PostToolUse: [{ hooks: [{ type: 'http', url: 'http://127.0.0.1:8765/hooks/post' }] }] } }));
+    assertEq(fam.tokenGuardActive({ projectRoot: proj, home }), false, 'another http hook (smart-tool) is not Token Guard');
   } finally {
     fam._resetTokenGuardCache();
     fs.rmSync(home, { recursive: true, force: true }); fs.rmSync(proj, { recursive: true, force: true });
