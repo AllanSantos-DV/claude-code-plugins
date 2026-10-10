@@ -73,7 +73,7 @@ async function run(event, deps = {}) {
   // Missing stamp → count nothing this session (avoid reporting the all-time
   // total once). A present stamp bounds the count to the session lifetime.
   const sinceTs = start && Number.isFinite(start.ts) ? start.ts : Date.now();
-  const project = ev.cwd ? path.basename(ev.cwd) : (start && start.project) || 'default';
+  const project = (ev.cwd || process.env.CLAUDE_PROJECT_DIR) ? require('./lib/metrics-project.js').sessionMetricsKey(ev.cwd) : (start && start.project) || 'default';
 
   const metricsStore = deps.metricsStore || require('./lib/metrics-store.js');
   // Count lessons captured this session across BOTH the project DB and the global

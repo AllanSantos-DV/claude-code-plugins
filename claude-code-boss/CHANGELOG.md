@@ -21,6 +21,13 @@
   passthrough.
 
 ### Fixed
+- **Métricas por projeto de verdade.** As métricas de cada projeto eram separadas pelo nome da pasta: dois
+  repositórios com o mesmo nome dividiam o mesmo banco. Agora a chave é o id do projeto (o mesmo da memória);
+  o histórico antigo é copiado na primeira vez. E o resumo de lições da sessão passa a contar as lições do
+  projeto (elas eram gravadas numa chave que ele nunca lia).
+- **Alias que só serve para uma execução é recusado no registro.** `gh pr view 38 …` nunca mais casava (cada
+  chamada usa outro número); o registro agora recusa número/id, hash, faixa de linhas, UUID e caminho temporário
+  no alias e indica o prefixo estável com `passthrough: true`.
 - **O redirecionamento perdia as variáveis de ambiente do comando.** `NODE_ENV=test npm test` virava o script sem
   o `NODE_ENV`; e uma variante com prefixo (`FOO=1 git stash list`) mandava ao script os argumentos errados
   (`stash list`). As atribuições iniciais agora são mantidas e os argumentos são tirados depois delas.

@@ -27,7 +27,30 @@ const fs = require('fs');
 const path = require('path');
 
 const { findProjectRoot, getScriptsDir, getShellsConfigPath, curationHome } = require('../curation-paths.js');
-const { isGenericAlias } = require('./command-signature.js');
+const { isGenericAlias, canonicalSig } = require('./command-signature.js');
+
+/**
+ * The first positional of an alias that only fits ONE run — an id/number (`38`), a commit hash,
+ * a sed line range (`1452,1620p`), a UUID or a temp path — and the stable prefix before it.
+ * Such an alias never matches again: the replay found 715 misses in native-java from
+ * `gh pr view 38 …`-style aliases. Pure.
+ * @param {string} alias
+ * @returns {{token:string, prefix:string}|null}
+ */
+function volatileLiteral(alias) {
+  let toks;
+  try { toks = canonicalSig(alias).split(' ').filter(Boolean); } catch (err) { void err; return null; }
+  for (let i = 1; i < toks.length; i++) {
+    const t = toks[i];
+    const volatile = /^\d{2,}$/.test(t)
+      || (/^[0-9a-f]{7,40}$/i.test(t) && /\d/.test(t) && /[a-f]/i.test(t))
+      || /^\d+(,\d+)?p$/.test(t)
+      || /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-/i.test(t)
+      || /(^|[\\/])(tmp|temp)[\\/]|appdata[\\/]local[\\/]temp/i.test(t);
+    if (volatile) return { token: t, prefix: toks.slice(0, i).join(' ') };
+  }
+  return null;
+}
 
 const DEFAULT_OUTPUT_FILTER = 'summary';
 const DEFAULT_OUTPUT_LINES = 30;
@@ -130,6 +153,13 @@ function register(args) {
     return err(`curation_register_shell: alias too broad: ${tooBroad.join(', ')}. A 1-token alias (e.g. "git") would silence unrelated subcommands — name the subcommand (e.g. "git log").`);
   }
 
+  for (const x of aliases) {
+    const v = volatileLiteral(x);
+    if (v) {
+      return err(`curation_register_shell: alias "${x}" carries a one-off value (\`${v.token}\`) — it would never match a later run (seen: "gh pr view 38 …" while every later call used another PR number). Register the stable prefix ("${v.prefix}") and make the script a passthrough (passthrough: true) so each value is forwarded to it.`);
+    }
+  }
+
   const cwd = a.cwd || process.cwd();
   const projectRoot = resolveBoundedProjectRoot(cwd);
 
@@ -221,4 +251,4 @@ function register(args) {
   };
 }
 
-module.exports = { register };
+module.exports = { register, volatileLiteral };

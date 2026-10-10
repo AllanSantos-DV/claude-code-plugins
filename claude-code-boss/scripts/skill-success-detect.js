@@ -70,7 +70,7 @@ async function run(event) {
   if (ev.stop_hook_active) return {};
 
   const sid = ev.session_id || ev.sessionId || 'default';
-  const project = ev.cwd ? path.basename(ev.cwd) : 'default';
+  const project = require('./lib/metrics-project.js').sessionMetricsKey(ev.cwd);
 
   let metricsStore;
   try {

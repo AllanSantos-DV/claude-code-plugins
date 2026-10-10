@@ -8,7 +8,6 @@
  */
 'use strict';
 
-const path = require('path');
 const metricsStore = require('./metrics-store.js');
 
 function _resolveProject(ctx) {
@@ -19,7 +18,8 @@ function _resolveProject(ctx) {
   // the root). In the shared daemon process.cwd() is the first session's folder, so
   // it is only the last resort (hookEnv = process.env outside the daemon).
   const cwd = require('./hook-context.js').hookEnv().CLAUDE_PROJECT_DIR || (ctx && ctx.cwd) || process.cwd();
-  try { return path.basename(cwd); } catch { /* basename failed: default */ return 'default'; }
+  // The strict project id, not the folder name: two repos named alike shared one metrics.db.
+  try { return require('./metrics-project.js').metricsKeyFor(cwd); } catch (err) { console.error(`[metrics] project key: ${err.message}`); return 'default'; }
 }
 
 /**

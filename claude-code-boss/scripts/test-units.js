@@ -2837,12 +2837,39 @@ test('session-root: the calling session\'s CCB_PROJECT_ID reaches what the daemo
 test('O9: metrics scope without ctx.cwd follows the CALLING session root inside a daemon hook call, not process.cwd()', () => {
   const { _resolveProject } = require('./lib/metrics.js');
   const { runWithHookEnv } = require('./lib/hook-context.js');
-  assertEq(runWithHookEnv({}, () => _resolveProject({ cwd: path.join('x', 'proj-a') })), 'proj-a', 'no session root → the event cwd');
-  assertEq(_resolveProject({ project: 'p' }), 'p');
-  assertEq(runWithHookEnv({ CLAUDE_PROJECT_DIR: path.join('y', 'session-b') }, () => _resolveProject({ cwd: path.join('y', 'session-b', 'sub') })), 'session-b',
-    'the session root wins over a cwd that drifted with `cd` (one session, one project key)');
-  assertEq(runWithHookEnv({ CLAUDE_PROJECT_DIR: path.join('y', 'session-b') }, () => _resolveProject({})), 'session-b');
-  assertEq(runWithHookEnv({}, () => _resolveProject({})), path.basename(process.cwd()), 'no session root → process.cwd() as before');
+  const { metricsKeyFor } = require('./lib/metrics-project.js');
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-o9-')); // no git remote: the key is the folder name
+  const a = path.join(T, 'proj-a'); const b = path.join(T, 'session-b');
+  fs.mkdirSync(path.join(b, 'sub'), { recursive: true }); fs.mkdirSync(a);
+  try {
+    assertEq(runWithHookEnv({}, () => _resolveProject({ cwd: a })), 'proj-a', 'no session root → the event cwd');
+    assertEq(_resolveProject({ project: 'p' }), 'p');
+    assertEq(runWithHookEnv({ CLAUDE_PROJECT_DIR: b }, () => _resolveProject({ cwd: path.join(b, 'sub') })), 'session-b',
+      'the session root wins over a cwd that drifted with `cd` (one session, one project key)');
+    assertEq(runWithHookEnv({ CLAUDE_PROJECT_DIR: b }, () => _resolveProject({})), 'session-b');
+    assertEq(runWithHookEnv({}, () => _resolveProject({})), metricsKeyFor(process.cwd()), 'no session root → process.cwd() as before');
+  } finally { fs.rmSync(T, { recursive: true, force: true }); }
+});
+
+test('metrics key = the project ID (two same-named repos no longer share a metrics.db); the old basename db is carried over once', () => {
+  const mp = require('./lib/metrics-project.js');
+  const T = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mkey-'));
+  const mk = (dir, remote) => { fs.mkdirSync(dir, { recursive: true }); require('child_process').execFileSync('git', ['init', '-q'], { cwd: dir, windowsHide: true }); require('child_process').execFileSync('git', ['remote', 'add', 'origin', remote], { cwd: dir, windowsHide: true }); };
+  const one = path.join(T, 'a', 'app'); const two = path.join(T, 'b', 'app'); // same folder name
+  mk(one, 'https://github.com/org1/app.git'); mk(two, 'https://github.com/org2/app.git');
+  const base = path.join(require('./lib/data-dir.js').dataDir(), 'metrics');
+  assert(!path.relative(os.tmpdir(), base).startsWith('..'), `the suite's data dir must be a temp dir before this test deletes under it: ${base}`);
+  try {
+    fs.mkdirSync(path.join(base, 'app'), { recursive: true });
+    fs.writeFileSync(path.join(base, 'app', 'metrics.db'), 'legacy-db');
+    mp._resetAdopted();
+    const k1 = mp.metricsKeyFor(one); const k2 = mp.metricsKeyFor(two);
+    assert(k1 !== k2 && /__app$/.test(k1) && /__app$/.test(k2), `distinct readable keys: ${k1} / ${k2}`);
+    assertEq(fs.readFileSync(path.join(base, k1, 'metrics.db'), 'utf8'), 'legacy-db', 'history carried over (copied)');
+    assert(fs.existsSync(path.join(base, 'app', 'metrics.db')), 'the old db stays (the other same-named repo may still read it)');
+    assertEq(mp.metricsKeyForId(require('./lib/project-id.js').tryResolveProjectId({ cwd: one })), k1, 'the KB id of the folder maps to the same key (lesson.captured lands where the session summary reads)');
+    assertEq(mp.metricsKeyForId('__user__'), '__user__');
+  } finally { fs.rmSync(T, { recursive: true, force: true }); for (const d of fs.existsSync(base) ? fs.readdirSync(base) : []) if (d === 'app' || /__app$/.test(d)) fs.rmSync(path.join(base, d), { recursive: true, force: true }); }
 });
 
 test('O1: retrieval-feedback records the citation in the KB scope the entry was RETRIEVED from (not basename(cwd))', async () => {
@@ -6853,6 +6880,15 @@ test('shell-register: rejects scriptPath escaping the scripts dir', () => {
   const res = shellRegister.register({ id: 'escape', scriptPath: '.vscode/scripts/../../outside.mjs', content: 'c', aliases: ['npm run escape'], cwd: root });
   assert(res.isError, 'expected isError for path traversal');
   assert(!fs.existsSync(path.join(root, '..', 'outside.mjs')), 'no file written outside project root');
+});
+
+test('shell-register: an alias with a one-off value (PR number, hash, sed range, temp path) is refused — it never matched again', () => {
+  const root = freshProjectRoot();
+  const r = shellRegister.register({ id: 'pr', scriptPath: 'pr.mjs', content: 'c', aliases: ['gh pr view 38 --repo AllanSantos-DV/native-java --json title'], cwd: root });
+  assert(r.isError && /one-off value \(`38`\)/.test(JSON.stringify(r)) && /stable prefix \(\\"gh pr view\\"\)/.test(JSON.stringify(r)) && /passthrough/.test(JSON.stringify(r)), JSON.stringify(r));
+  const { volatileLiteral } = shellRegister;
+  for (const a of ['git show 1a2b3c4d', 'sed -n 1452,1620p big.txt', 'node C:/Users/x/AppData/Local/Temp/run.mjs', 'cat /tmp/out.log', 'jq . 9531d7eb-58bf-46ce-a0fb-685443771999.jsonl']) assert(volatileLiteral(a), `volatile: ${a}`);
+  for (const a of ['gh pr view', 'git log --oneline -20', 'mvn test -Dtest=Foo', 'node scripts/test-units.js 2>&1 | tail -40', 'npm run build', 'python -m rf_engine.mcp_server', 'git diff HEAD --']) assertEq(volatileLiteral(a), null, `stable: ${a}`);
 });
 
 test('shell-register: shells.json stays pretty-printed (2-space indent)', () => {
