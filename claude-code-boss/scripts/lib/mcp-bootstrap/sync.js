@@ -23,12 +23,15 @@ function hashFile(file) {
   return crypto.createHash('sha256').update(text).digest('hex');
 }
 
-/** { name: sha256 } of every file in `dir` except the manifest. */
+/**
+ * { name: sha256 } of every file in `dir` except the manifest. The folder is flat by design:
+ * a subfolder gets the marker hash "<dir>" so it never passes as in sync (it used to be skipped).
+ */
 function computeFiles(dir = DIR) {
   const out = {};
   for (const name of fs.readdirSync(dir).sort()) {
-    if (name === MANIFEST || !fs.statSync(path.join(dir, name)).isFile()) continue;
-    out[name] = hashFile(path.join(dir, name));
+    if (name === MANIFEST) continue;
+    out[name] = fs.statSync(path.join(dir, name)).isFile() ? hashFile(path.join(dir, name)) : '<dir>';
   }
   return out;
 }

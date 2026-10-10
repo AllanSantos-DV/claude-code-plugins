@@ -1,6 +1,6 @@
 'use strict';
 /**
- * mcp-release-resolver.js — which mcp-memory-server jar to download, from the public releases
+ * release-resolver.js — which mcp-memory-server jar to download, from the public releases
  * repo (github.com/AllanSantos-DV/mcp-memory-server-releases).
  *
  * Since server 2.45.6 a release publishes ONE server jar, `mcp-memory-server-X.Y.Z.jar` (+ its

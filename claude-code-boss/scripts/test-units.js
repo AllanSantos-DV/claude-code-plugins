@@ -2319,7 +2319,7 @@ test('config-testers: mcp-memory rejects nonexistent jar', async () => {
 
 test('config-testers: mcp-memory with empty jar and empty url auto-resolves hardware asset', async () => {
   // Empty jarPath + empty downloadUrl now means "auto-detect hardware and pick the
-  // matching release asset" (mcp-release-resolver.js), not "nothing to test" — mock
+  // matching release asset" (mcp-bootstrap/release-resolver.js), not "nothing to test" — mock
   // global.fetch so this stays deterministic/offline instead of hitting the real
   // GitHub API.
   const realFetch = global.fetch;
@@ -15110,6 +15110,13 @@ test('mcp-bootstrap: MANIFEST.json is current (edit a shared file → run "node 
     fs.rmSync(path.join(copy, 'file-hash.js'));
     r = await sync.check({ dir: copy });
     assert(!r.ok && /extra\.js/.test(r.problems[0]) && /file-hash\.js/.test(r.problems[0]), JSON.stringify(r));
+    fs.rmSync(path.join(copy, 'extra.js'));
+    fs.copyFileSync(path.join(dir, 'file-hash.js'), path.join(copy, 'file-hash.js'));
+    // A subfolder with code is not skipped (the folder is flat by design).
+    fs.mkdirSync(path.join(copy, 'vendor'));
+    fs.writeFileSync(path.join(copy, 'vendor', 'x.js'), '');
+    r = await sync.check({ dir: copy });
+    assert(!r.ok && /vendor/.test(r.problems[0]), `a subfolder must not pass as in sync: ${JSON.stringify(r)}`);
     fs.rmSync(copy, { recursive: true, force: true });
     fs.cpSync(dir, copy, { recursive: true });
     // Upstream moved on (re-stamped after a change) → the untouched copy is behind.
