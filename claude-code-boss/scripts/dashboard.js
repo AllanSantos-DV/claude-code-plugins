@@ -476,23 +476,27 @@ async function saveBrainConfig(req, res) {
   } catch (e) { fail(res, e.message); }
 }
 
-// Read the .claude-boss-project marker for a given folder (project identity).
+// Read the declared project id (.memory/project.json) for a given folder.
 function getProjectMarker(req, res, url) {
   const folder = (url.searchParams.get('folder') || '').trim();
   if (!folder) return fail(res, 'folder query param required', 400);
   const projectIdLib = require('./lib/project-id.js');
-  const markerPath = path.join(folder, projectIdLib.MARKER_FILE);
-  let current = '';
-  try { if (fs.existsSync(markerPath)) current = projectIdLib.sanitize(fs.readFileSync(markerPath, 'utf-8')); }
-  catch (err) { console.error(`[DASHBOARD] read marker: ${err.message}`); }
+  const projectConfig = require('./lib/project-config.js');
+  const current = projectConfig.declaredProjectId(projectConfig.loadProjectConfig(folder)) || '';
+  // The deprecated marker is only REPORTED (it still resolves, below a declared id),
+  // so the user sees why a folder without .memory/project.json has an id anyway.
+  const legacy = projectIdLib.readMarker(folder) || null;
   // Also report what the resolver would pick for that folder right now. Best-effort
   // READ: tryResolveProjectId returns null (not a throw) when scope is unresolved, so
   // this diagnostic endpoint reports resolved:null instead of failing.
   const resolved = projectIdLib.tryResolveProjectId({ cwd: folder });
-  json(res, { folder, projectId: current, exists: !!current, resolved });
+  json(res, { folder, projectId: current, exists: !!current, legacy, resolved });
 }
 
-// Write (or clear) the .claude-boss-project marker inside a user-named folder.
+// Write (or clear) the declared id in <folder>/.memory/project.json — the same
+// writer project_set uses. It used to write the deprecated .claude-boss-project,
+// which the resolver ranks BELOW .memory/project.json: saving here was silently
+// ignored in any folder that already had a declared id.
 async function saveProjectMarker(req, res) {
   const body = await readBody(req);
   try {
@@ -503,16 +507,18 @@ async function saveProjectMarker(req, res) {
     try { stat = fs.statSync(dir); } catch (err) { void err; return fail(res, `folder not found: ${dir}`, 400); }
     if (!stat.isDirectory()) return fail(res, `not a directory: ${dir}`, 400);
     const projectIdLib = require('./lib/project-id.js');
-    const clean = projectIdLib.sanitize(projectId);
-    const markerPath = path.join(dir, projectIdLib.MARKER_FILE);
+    const projectConfig = require('./lib/project-config.js');
+    const raw = String(projectId || '').trim();
+    const clean = projectIdLib.sanitizeLogicalProjectId(raw);
+    if (raw && !clean) return fail(res, `invalid projectId: ${JSON.stringify(raw)} — use letters, numbers, - _ . and optional / segments`, 400);
     if (!clean) {
-      // Empty name → remove the marker (revert to basename default).
-      try { if (fs.existsSync(markerPath)) fs.unlinkSync(markerPath); }
-      catch (err) { return fail(res, `could not remove marker: ${err.message}`); }
-      return json(res, { ok: true, projectId: '', removed: true });
+      // Empty name → drop the declared id (the folder falls back down the ladder).
+      if (!projectConfig.declaredProjectId(projectConfig.loadProjectConfig(dir))) return json(res, { ok: true, projectId: '', removed: false });
+      const file = projectConfig.writeDeclaredProjectId(dir, '');
+      return json(res, { ok: true, projectId: '', removed: true, path: file });
     }
-    fs.writeFileSync(markerPath, clean + '\n', 'utf-8');
-    json(res, { ok: true, projectId: clean, path: markerPath });
+    const file = projectConfig.writeDeclaredProjectId(dir, clean);
+    json(res, { ok: true, projectId: clean, path: file });
   } catch (e) { fail(res, e.message); }
 }
 
@@ -2531,4 +2537,4 @@ if (require.main === module) startDashboardServer();
 // exported so a test can call it with a fake res ({writeHead,end}) and assert
 // on the exact JSON it serializes — otherwise a bug in byokSafe (e.g. `x || null`
 // silently turning a valid `0` into `null`) would never be caught by any test.
-module.exports = { writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField, postPluginUpdate };
+module.exports = { writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField, postPluginUpdate, getProjectMarker, saveProjectMarker };

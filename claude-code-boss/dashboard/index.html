@@ -613,7 +613,7 @@ table{font-variant-numeric:tabular-nums}
         <span id="project-marker-status" class="text-muted" style="font-size:.8rem"></span>
       </div>
       <p class="text-muted" style="font-size:.8rem;line-height:1.5;margin:.25rem 0 .75rem" data-i18n="brain.identityHelp">
-        O recall é escopado por um projectId. Sem id (<code>.memory/project.json</code>, git remote ou o marker abaixo) a memória fica DESLIGADA na pasta. Escreva um <code>.claude-boss-project</code> na pasta do projeto para fixar um nome escolhido (ex.: pasta <code>Hpositiva</code> → id <code>positiva</code>). Também vale a env <code>CCB_PROJECT_ID</code>.
+        O recall é escopado por um projectId. Sem id (<code>.memory/project.json</code> ou git remote) a memória fica DESLIGADA na pasta. Salvar abaixo grava o <code>.memory/project.json</code> da pasta (o mesmo que a tool <code>project_set</code>) para fixar um nome escolhido (ex.: pasta <code>Hpositiva</code> → id <code>positiva</code>). Também vale a env <code>CCB_PROJECT_ID</code>.
       </p>
       <div class="flex flex-wrap gap-1" style="align-items:flex-end">
         <div style="flex:2;min-width:280px">
@@ -1507,7 +1507,7 @@ const I18N = {
     'brain.ingestion': 'Send the conversation to the server (ingest for curation)',
     'brain.downloadServer': '↓ Download & activate server', 'brain.testConn': 'Test connection',
     'brain.wizardTitle': 'Activate Memory Server',
-    'brain.identity': 'Project identity', 'brain.identityHelp': 'Recall is scoped by a projectId. Without an id (<code>.memory/project.json</code>, git remote or the marker below) memory is OFF in that folder. Write a <code>.claude-boss-project</code> file in the project folder to pin a chosen name (e.g. folder <code>Hpositiva</code> → id <code>positiva</code>). The env <code>CCB_PROJECT_ID</code> also works.',
+    'brain.identity': 'Project identity', 'brain.identityHelp': 'Recall is scoped by a projectId. Without an id (<code>.memory/project.json</code> or git remote) memory is OFF in that folder. Saving below writes <code>.memory/project.json</code> in that folder (same as the <code>project_set</code> tool) to pin a chosen name (e.g. folder <code>Hpositiva</code> → id <code>positiva</code>). The env <code>CCB_PROJECT_ID</code> also works.',
     'brain.projectFolder': 'Project folder', 'brain.projectChosenId': 'chosen projectId',
     'brain.projectRead': 'Read',
     'tip.transport': 'http = connect to a running mcp-memory-server (recommended). stdio = the plugin spawns the JAR locally.',
@@ -1736,7 +1736,7 @@ const I18N = {
     'brain.ingestion': 'Enviar a conversa ao servidor (ingestão para curadoria)',
     'brain.downloadServer': '↓ Baixar e ativar servidor', 'brain.testConn': 'Testar conexão',
     'brain.wizardTitle': 'Ativar Memory Server',
-    'brain.identity': 'Identidade do projeto', 'brain.identityHelp': 'O recall é escopado por um projectId. Sem id (<code>.memory/project.json</code>, git remote ou o marker abaixo) a memória fica DESLIGADA na pasta. Escreva um <code>.claude-boss-project</code> na pasta do projeto para fixar um nome escolhido (ex.: pasta <code>Hpositiva</code> → id <code>positiva</code>). Também vale a env <code>CCB_PROJECT_ID</code>.',
+    'brain.identity': 'Identidade do projeto', 'brain.identityHelp': 'O recall é escopado por um projectId. Sem id (<code>.memory/project.json</code> ou git remote) a memória fica DESLIGADA na pasta. Salvar abaixo grava o <code>.memory/project.json</code> da pasta (o mesmo que a tool <code>project_set</code>) para fixar um nome escolhido (ex.: pasta <code>Hpositiva</code> → id <code>positiva</code>). Também vale a env <code>CCB_PROJECT_ID</code>.',
     'brain.projectFolder': 'Pasta do projeto', 'brain.projectChosenId': 'projectId escolhido',
     'brain.projectRead': 'Ler',
     'tip.transport': 'http = conectar a um mcp-memory-server já rodando (recomendado). stdio = o plugin sobe o JAR localmente.',
@@ -3212,7 +3212,7 @@ async function loadProjectMarker() {
   try {
     const r = await api('GET', `/api/brain/project-marker?folder=${encodeURIComponent(folder)}`);
     document.getElementById('project-marker-id').value = r.projectId || '';
-    status.textContent = r.exists ? 'marker encontrado' : 'sem marker (usa nome da pasta)';
+    status.textContent = r.exists ? 'id declarado encontrado' : (r.legacy ? `só o marker legado .claude-boss-project (${r.legacy})` : 'sem id declarado');
     resolvedEl.textContent = `projectId atual desta pasta: ${r.resolved || '—'}`;
   } catch (err) {
     status.textContent = `✗ ${err.message}`;
@@ -3227,7 +3227,7 @@ async function saveProjectMarker() {
   if (!folder) { status.textContent = 'informe a pasta'; return; }
   try {
     const r = await api('POST', '/api/brain/project-marker', { folder, projectId });
-    if (r.removed) { status.textContent = 'marker removido (volta ao nome da pasta)'; }
+    if (!r.projectId) { status.textContent = r.removed ? 'id declarado removido' : 'nada a remover'; }
     else { status.textContent = `✓ salvo: ${r.projectId}`; }
     const check = await api('GET', `/api/brain/project-marker?folder=${encodeURIComponent(folder)}`);
     resolvedEl.textContent = `projectId atual desta pasta: ${check.resolved || '—'}`;

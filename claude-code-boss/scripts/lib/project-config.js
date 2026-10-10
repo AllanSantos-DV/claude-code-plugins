@@ -106,7 +106,37 @@ function configMetadata(workspacePath) {
   return out;
 }
 
+/**
+ * The ONE writer of the declared id (project_set and the dashboard both route here,
+ * so they can never write different markers again). Merges into an existing
+ * `.memory/project.json` (other fields kept) and drops a stale `memory-off.json`.
+ * `id` empty → removes only `metadata.defaults.project_id`. Throws on an unreadable
+ * existing file instead of overwriting it.
+ * @returns {string} the path written
+ */
+function writeDeclaredProjectId(dir, id) {
+  const fs = require('fs');
+  const { writeFileAtomic } = require('./atomic-write.js');
+  const file = projectConfigPath(dir);
+  let cfg = {};
+  try { cfg = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (err) {
+    if (err.code !== 'ENOENT') throw new Error(`Existing ${file} is unreadable (${err.message}) — fix or remove it first.`);
+  }
+  const defaults = { ...((cfg.metadata || {}).defaults || {}) };
+  if (id) defaults.project_id = id; else delete defaults.project_id;
+  cfg.version = cfg.version || '1';
+  cfg.metadata = { ...(cfg.metadata || {}), defaults };
+  fs.mkdirSync(join(String(dir), '.memory'), { recursive: true });
+  writeFileAtomic(file, JSON.stringify(cfg, null, 2) + '\n');
+  // The user chose to name it: an earlier "no memory here" marker no longer applies.
+  if (id) {
+    try { fs.unlinkSync(join(String(dir), '.memory', 'memory-off.json')); } catch (err) { if (err.code !== 'ENOENT') throw err; }
+  }
+  return file;
+}
+
 module.exports = {
+  writeDeclaredProjectId,
   projectConfigPath,
   loadProjectConfig,
   declaredProjectId,

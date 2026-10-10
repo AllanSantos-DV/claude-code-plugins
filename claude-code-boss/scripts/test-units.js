@@ -22625,6 +22625,69 @@ test('setup-tools: project_set names an id-less folder, refuses a taken name unl
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
 
+test('dashboard Brain tab: project identity save writes .memory/project.json (project_set writer), never the legacy .claude-boss-project', async () => {
+  const { Readable } = require('stream');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dashpid-'));
+  const savedData = process.env.CLAUDE_PLUGIN_DATA;
+  try {
+    process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(base, 'data-'));
+    delete require.cache[require.resolve('./dashboard.js')];
+    const dash = require('./dashboard.js');
+    const pid = require('./lib/project-id.js');
+    const call = async (fn, ...a) => { let status = 200; let body = null; await fn(...a, { writeHead: (c) => { status = c; }, end: (t) => { body = JSON.parse(t); } }); return { status, body }; };
+    const post = (obj) => call(dash.saveProjectMarker, Readable.from([JSON.stringify(obj)]));
+    const get = (folder) => call((res) => dash.getProjectMarker({}, res, new URL(`http://x/?folder=${encodeURIComponent(folder)}`)));
+    const cfgOf = (d) => JSON.parse(fs.readFileSync(path.join(d, '.memory', 'project.json'), 'utf8'));
+
+    // The reported bug: a folder already declared by project_set. The old route wrote
+    // .claude-boss-project, which loses to the declared id → the save was a no-op.
+    const declared = path.join(base, 'loja');
+    fs.mkdirSync(path.join(declared, '.memory'), { recursive: true });
+    fs.writeFileSync(path.join(declared, '.memory', 'project.json'), JSON.stringify({ version: '1', project: { name: 'Loja' }, metadata: { defaults: { project_id: 'antigo', team: 't1' } } }));
+    const saved = await post({ folder: declared, projectId: 'loja-online' });
+    assertEq(saved.status, 200, JSON.stringify(saved.body));
+    assert(!fs.existsSync(path.join(declared, pid.MARKER_FILE)), 'legacy marker must never be written');
+    assertEq(cfgOf(declared).metadata.defaults, { project_id: 'loja-online', team: 't1' }, 'id replaced, other defaults kept');
+    assertEq(cfgOf(declared).project, { name: 'Loja' }, 'other fields kept');
+    assertEq(pid.tryResolveProjectId({ cwd: declared, env: {} }), 'loja-online', 'the save takes effect');
+    const read = await get(declared);
+    assertEq([read.body.projectId, read.body.exists, read.body.resolved], ['loja-online', true, 'loja-online']);
+
+    // Fresh folder with an opt-out: named → declared file created, opt-out dropped (same as project_set).
+    const fresh = path.join(base, 'site');
+    fs.mkdirSync(path.join(fresh, '.memory'), { recursive: true });
+    fs.writeFileSync(path.join(fresh, '.memory', 'memory-off.json'), '{"memory":"off"}');
+    assertEq((await post({ folder: fresh, projectId: 'acme/site' })).body.projectId, 'acme/site', 'owner/repo ids accepted like project_set');
+    assertEq(cfgOf(fresh).metadata.defaults.project_id, 'acme/site');
+    assert(!fs.existsSync(path.join(fresh, '.memory', 'memory-off.json')), 'opt-out removed once named');
+
+    // Clear → only the declared id goes; a legacy marker is reported, not touched.
+    fs.writeFileSync(path.join(fresh, pid.MARKER_FILE), 'velho\n');
+    const cleared = await post({ folder: fresh, projectId: '' });
+    assertEq([cleared.body.removed, cleared.body.projectId], [true, '']);
+    assertEq(cfgOf(fresh).metadata.defaults.project_id, undefined);
+    const after = await get(fresh);
+    assertEq([after.body.exists, after.body.legacy, after.body.resolved], [false, 'velho', 'velho']);
+    assertEq((await post({ folder: path.join(base, 'site'), projectId: '' })).body.removed, false, 'nothing declared → nothing to remove');
+
+    // Invalid / path-like ids are refused (400), nothing written.
+    const bad = path.join(base, 'bad');
+    fs.mkdirSync(bad);
+    assertEq((await post({ folder: bad, projectId: '../evil' })).status, 400);
+    assert(!fs.existsSync(path.join(bad, '.memory')), 'nothing written on a refused id');
+    // Unreadable existing file → fail loud, not overwritten.
+    fs.mkdirSync(path.join(bad, '.memory'));
+    fs.writeFileSync(path.join(bad, '.memory', 'project.json'), '{corrupt');
+    const corrupt = await post({ folder: bad, projectId: 'ok' });
+    assert(corrupt.status === 500 && /unreadable/.test(corrupt.body.error), JSON.stringify(corrupt));
+    assertEq(fs.readFileSync(path.join(bad, '.memory', 'project.json'), 'utf8'), '{corrupt', 'corrupt file left as is');
+  } finally {
+    if (savedData === undefined) delete process.env.CLAUDE_PLUGIN_DATA; else process.env.CLAUDE_PLUGIN_DATA = savedData;
+    delete require.cache[require.resolve('./dashboard.js')];
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test('mcp-link: a session Claude Code gave up on is reported (user + agent) once the daemon is healthy; reconnected/other sessions/no logs are not', async () => {
   const { linkState, linkNotice, cwdSlug, LOG_DIR } = require('./lib/mcp-link.js');
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mcplink-'));
