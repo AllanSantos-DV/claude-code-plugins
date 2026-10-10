@@ -37,6 +37,12 @@ const FILTER = process.argv.find(a => !a.startsWith('-') && a !== process.argv[0
 // USERPROFILE, POSIX HOME).
 process.env.USERPROFILE = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hooks-home-'));
 process.env.HOME = process.env.USERPROFILE;
+// The curation migration MOVES a project's in-repo files: under this flag (inherited by every
+// spawned hook) it refuses any project outside the temp dir. And hooks run with a sandbox cwd:
+// a payload without `cwd` falls back to process.cwd(), which was this repo — its curation got
+// moved into this temp home and wiped by a later test (2026-10-09).
+process.env.CCB_TEST_SANDBOX = '1';
+const HOOK_CWD = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hooks-cwd-'));
 
 /**
  * Create a temp directory that mimics a minimal CLAUDE_PLUGIN_ROOT with
@@ -76,6 +82,7 @@ function run(script, payload, args = [], extraEnv = {}) {
   const scriptPath = path.join(SCRIPTS, script);
   const result = spawnSync('node', [scriptPath, ...args], {
     input,
+    cwd: HOOK_CWD,
     encoding: 'utf-8',
     timeout: 10000,
     env: {
@@ -2810,7 +2817,7 @@ console.log(DIM('─'.repeat(70)));
     for (let i = 0; i < N; i++) {
       const payload = { ...fixture, session_id: SESSION, tool_input: { ...(fixture.tool_input || {}), command: `echo race-${i}` } };
       promises.push(new Promise((resolve) => {
-        const child = spawn('node', [path.join(SCRIPTS, 'curation-detect.js')], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+        const child = spawn('node', [path.join(SCRIPTS, 'curation-detect.js')], { env, cwd: HOOK_CWD, stdio: ['pipe', 'pipe', 'pipe'] });
         child.stdin.end(JSON.stringify(payload));
         child.on('close', () => resolve());
       }));
