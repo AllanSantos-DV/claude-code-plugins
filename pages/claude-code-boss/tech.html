@@ -3,22 +3,22 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v3.2.0 — detalhes técnicos</title>
-<meta name="description" content="Detalhes técnicos do claude-code-boss v3.2.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard." />
+<title>claude-code-boss v3.2.1 — detalhes técnicos</title>
+<meta name="description" content="Detalhes técnicos do claude-code-boss v3.2.1: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard." />
 <link rel="canonical" href="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/tech.html">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="allansantos-plugins">
 <meta property="og:locale" content="pt_BR">
-<meta property="og:title" content="claude-code-boss v3.2.0 — detalhes técnicos">
-<meta property="og:description" content="Detalhes técnicos do claude-code-boss v3.2.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
+<meta property="og:title" content="claude-code-boss v3.2.1 — detalhes técnicos">
+<meta property="og:description" content="Detalhes técnicos do claude-code-boss v3.2.1: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
 <meta property="og:url" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/tech.html">
 <meta property="og:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="claude-code-boss: Menos repetição. Mais memória.">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="claude-code-boss v3.2.0 — detalhes técnicos">
-<meta name="twitter:description" content="Detalhes técnicos do claude-code-boss v3.2.0: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
+<meta name="twitter:title" content="claude-code-boss v3.2.1 — detalhes técnicos">
+<meta name="twitter:description" content="Detalhes técnicos do claude-code-boss v3.2.1: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
 <meta name="twitter:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
 <script data-ccb-theme-script>
 /* Shared theme; executed before styles and first paint. */
@@ -275,14 +275,14 @@ html{scroll-behavior:auto}
     <a href="index.html">← Apresentação</a>
     <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a>
     <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">Changelog</a>
-    <a href="#top" class="ver">v3.2.0</a>
+    <a href="#top" class="ver">v3.2.1</a>
   </nav>
 <div class="ccb-theme" role="group" aria-label="Tema"><button type="button" data-ccb-theme="dark" aria-pressed="true">Dark</button><button type="button" data-ccb-theme="light" aria-pressed="false">Light</button></div>
 </header>
 
 <main class="wrap" id="top">
   <div class="page-head">
-    <p class="kick">documentação técnica · v3.2.0</p>
+    <p class="kick">documentação técnica · v3.2.1</p>
     <h1>Arquitetura e funcionamento interno</h1>
     <p class="intro">Para quem quer saber <b>como funciona por baixo</b>: daemon HTTP único, pipeline de hooks, Brain KB em 3 camadas, Model Router Anthropic/OpenAI, backend MCP Memory, exploração de repositório por grafo e dashboard. Fontes: <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a> e <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG</a>.</p>
     <div class="toc">
@@ -507,12 +507,13 @@ html{scroll-behavior:auto}
   </section>
 
   <section id="versoes">
-    <h2>Versões <span class="tag">88 releases</span></h2>
-    <p class="lead">O changelog completo (v1.0.0 → v3.2.0) vive no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>. Destaques recentes:</p>
+    <h2>Versões <span class="tag">89 releases</span></h2>
+    <p class="lead">O changelog completo (v1.0.0 → v3.2.1) vive no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>. Destaques recentes:</p>
     <div class="table-scroll">
       <table>
         <thead><tr><th>Versão</th><th>Destaque</th></tr></thead>
         <tbody>
+          <tr><td><b>v3.2.1</b></td><td>Correções no painel. Total de economia da curadoria: o banco de métricas antigo copiado para a chave do id do projeto fica fora do total (a não ser que receba eventos novos de outro repositório com o mesmo nome), sem contar o histórico em dobro. Resumo de 30 dias (painel e início da sessão): a leitura por janela de tempo não corta mais em 500 eventos por tipo.</td></tr>
           <tr><td><b>v3.2.0</b></td><td><b>Curadoria fora do repositório</b>: scripts e <code>shells.json</code> em <code>~/.claude/claude-code-boss/curation/&lt;owner&gt;/&lt;repo&gt;/</code> (pelo id do projeto, o mesmo da memória); a curadoria pessoal (não versionada) em <code>.vscode/</code> migra sozinha na primeira chamada (cópia de segurança, script rastreado pelo git da curadoria pessoal fica no lugar com aviso para <code>git rm</code>; um <code>shells.json</code> versionado é do time, vale por branch e continua sendo lido no lugar; se o git não souber dizer o que rastreia, nada migra) e o redirecionamento define <code>CCB_PROJECT_ROOT</code>. <b>Passthrough</b>: script com <code>passthrough: true</code> recebe toda variante que começa com um alias, com argumentos e flags (semelhança por vetores medida e descartada: mandava <code>git add</code>/<code>git commit</code> para scripts só de leitura); atribuições de ambiente iniciais (<code>NODE_ENV=test npm test</code>) são mantidas. <b>Semver real</b> no <code>plugin.json</code> (antes o Claude Code usava o SHA do commit) e o <code>release-guard</code> acusa código alterado sem bump. Métricas pela chave do id do projeto; alias de uso único (número, hash, UUID, caminho temporário) recusado no registro; início de sessão só chama o inicializador do servidor de memória quando o <code>/health</code> não responde, via <code>wscript</code> oculto (nenhuma janela pisca).</td></tr>
           <tr><td><b>v3.1.1</b></td><td>Correções. Com o servidor de memória: captura equivalente (mesmo tipo e projeto) soma a recorrência no servidor, e a promoção a skill e o checklist de revisão leem o servidor pelo id oficial do projeto; consolidação semanal no servidor e para cada projeto; painel lê contagens, projetos, lições e skills do servidor; após uma queda, a primeira operação responde na hora ("reiniciando") e o servidor religa em segundo plano. Arquivo de configuração corrompido: última versão boa restaurada automaticamente, com aviso no início da sessão. Privacidade: juntar lições no modo servidor usa o embedder configurado (local por padrão; com Voyage/Ollama remoto, título e resumo vão a esse serviço).</td></tr>
           <tr><td><b>v3.1.0</b></td><td><b>Compactação controlada</b> por function hook (<code>hooks/compaction.mjs</code>, Claude Code 2.1.274+): só com o contexto acima do limiar (% da janela, padrão 30%) e o cache do provedor já expirado; poda resultados de ferramenta velhos em vez de resumir (medido: 55k → 4k tokens em ~10 ms); poda as cópias de uma retomada antes do envio; painel <b>Compaction &amp; cache</b> e <code>GET /api/metrics/compaction</code>. O servidor de memória passa a ser iniciado só pelo inicializador oficial (requer 2.45.5+). Corrigido: embedder, <code>kb.rerank</code>/limites do KB e <code>kb.skillPromotion</code> do arquivo de usuário passam a valer (um embedder trocado antes exige regravar as memórias locais: <code>node scripts/brain-reembed.js</code>); ajustes de hooks e hook desligado no painel sobrevivem ao update; arquivo de usuário ilegível não é mais trocado em silêncio; roteador não se liga por cima de um gateway próprio nem confunde um gateway local com ele mesmo; backup em fluxo com servidor grande; atualizador escolhe a release do boss.</td></tr>
@@ -547,7 +548,7 @@ html{scroll-behavior:auto}
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">Changelog</a>
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins">GitHub</a>
     </div>
-    <div class="legal">MIT · Allan Santos · claude-code-boss v3.2.0</div>
+    <div class="legal">MIT · Allan Santos · claude-code-boss v3.2.1</div>
   </div>
 </footer>
 
