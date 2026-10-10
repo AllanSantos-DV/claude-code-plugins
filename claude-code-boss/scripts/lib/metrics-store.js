@@ -161,10 +161,15 @@ function recordMetric(eventName, payload, sessionId) {
 }
 
 /** List recent raw events (newest first) for the currently-open project. */
-function getEventLog({ eventName = null, limit = 50 } = {}) {
+function getEventLog({ eventName = null, limit = 50, sinceTs = null } = {}) {
   if (!_db) return [];
-  const cap = Math.max(1, Math.min(500, Number(limit) || 50));
+  const cap = windowCap(limit, sinceTs);
   try {
+    if (sinceTs != null && eventName) {
+      return _db.prepare(`SELECT id, ts, event_name, payload, session_id, project
+                       FROM metrics_event WHERE event_name = ? AND ts >= ? ORDER BY ts DESC LIMIT ?`).all(eventName, Number(sinceTs), cap)
+        .map(r => ({ id: r.id, ts: r.ts, eventName: r.event_name, payload: safeParseJson(r.payload), sessionId: r.session_id, project: r.project }));
+    }
     const rows = eventName
       ? _db.prepare(`SELECT id, ts, event_name, payload, session_id, project
                        FROM metrics_event WHERE event_name = ? ORDER BY ts DESC LIMIT ?`).all(eventName, cap)
@@ -187,16 +192,19 @@ function getEventLog({ eventName = null, limit = 50 } = {}) {
  * different project is the active one for this hook run). Read-only; []
  * if the DB file or SQLite backend is unavailable.
  */
-function getEventLogIsolated(project, { eventName = null, limit = 50 } = {}) {
+function getEventLogIsolated(project, { eventName = null, limit = 50, sinceTs = null } = {}) {
   const Database = loadSqlite();
   if (!Database) return [];
   const p = dbPath(project);
   if (!fs.existsSync(p)) return [];
-  const cap = Math.max(1, Math.min(500, Number(limit) || 50));
+  const cap = windowCap(limit, sinceTs);
   let db;
   try { db = new Database(p); } catch (e) { console.error('[metrics-store] isolated open failed:', p, e.message); return []; }
   try {
-    const rows = eventName
+    const rows = (sinceTs != null && eventName)
+      ? db.prepare(`SELECT id, ts, event_name, payload, session_id, project
+                      FROM metrics_event WHERE event_name = ? AND ts >= ? ORDER BY ts DESC LIMIT ?`).all(eventName, Number(sinceTs), cap)
+      : eventName
       ? db.prepare(`SELECT id, ts, event_name, payload, session_id, project
                       FROM metrics_event WHERE event_name = ? ORDER BY ts DESC LIMIT ?`).all(eventName, cap)
       : db.prepare(`SELECT id, ts, event_name, payload, session_id, project
@@ -355,11 +363,48 @@ function cleanupMetrics(keepDays = 30) {
   }
 }
 
-/** Project names that have a metrics DB on disk (for cross-project aggregation). */
+/**
+ * Row cap of an event read. A TIME-WINDOW read (`sinceTs`) is a total, not a "latest N" peek: the
+ * old fixed cap of 500 silently cut the dashboard's 30-day curation summary (it asked for 2000) and
+ * the SessionStart digest down to the newest 500 events of each kind.
+ */
+function windowCap(limit, sinceTs) {
+  if (sinceTs != null) return 1_000_000;
+  return Math.max(1, Math.min(500, Number(limit) || 50));
+}
+
+/**
+ * Project names that have a metrics DB on disk (for cross-project aggregation). A legacy
+ * folder-name db whose history was COPIED into a project-id key (metrics-project.adoptLegacyDb,
+ * marker `adopted.json`) is left out unless it got rows after that copy (a same-named repo without
+ * an id still writes there) — summing both counted that history twice in every total.
+ */
 function listProjects() {
   const base = path.join(STORE_DIR, 'metrics');
   if (!fs.existsSync(base)) return [];
-  return fs.readdirSync(base).filter(p => fs.existsSync(path.join(base, p, 'metrics.db')));
+  return fs.readdirSync(base).filter((p) => {
+    if (!fs.existsSync(path.join(base, p, 'metrics.db'))) return false;
+    let marker = null;
+    try { marker = JSON.parse(fs.readFileSync(path.join(base, p, 'adopted.json'), 'utf8')); } catch (err) { void err; return true; }
+    return newestTs(p) > Number(marker.at || 0);
+  });
+}
+
+/** Newest event ts of a project's db (0 when empty/unreadable). */
+function newestTs(project) {
+  const Database = loadSqlite();
+  if (!Database) return 0;
+  let db;
+  try {
+    db = new Database(dbPath(project));
+    const r = db.prepare('SELECT MAX(ts) AS t FROM metrics_event').get();
+    return r && Number.isFinite(r.t) ? r.t : 0;
+  } catch (err) {
+    console.error(`[metrics-store] newestTs(${project}) failed: ${err.message}`);
+    return Number.MAX_SAFE_INTEGER; // unreadable: keep it listed rather than hide data
+  } finally {
+    try { if (db) db.close(); } catch (e) { void e; }
+  }
 }
 
 module.exports = {

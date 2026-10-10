@@ -59,7 +59,7 @@ async function run(event, { now = Date.now() } = {}) {
   const { summarizeCuration, CURATION_EVENTS } = require('./lib/curation-metrics.js');
   const since = now - WINDOW_DAYS * 86400_000;
   const rows = [];
-  for (const ev of CURATION_EVENTS) for (const r of ms.getEventLogIsolated(project, { eventName: ev, limit: 500 })) if (r.ts >= since) rows.push(r);
+  for (const ev of CURATION_EVENTS) for (const r of ms.getEventLogIsolated(project, { eventName: ev, sinceTs: since })) if (r.ts >= since) rows.push(r);
   const text = formatDigest(summarizeCuration(rows));
   if (!text) return null; // nothing to report: stay silent, and don't burn the day's slot
   stamp(sp, now);

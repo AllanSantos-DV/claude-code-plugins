@@ -1524,7 +1524,7 @@ async function getCurationSummary(req, res, url) {
     const { summarizeCuration, CURATION_EVENTS } = require('./lib/curation-metrics.js');
     const rows = [];
     for (const ev of CURATION_EVENTS) {
-      const perProject = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName: ev, limit: 2000 }));
+      const perProject = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName: ev, sinceTs }));
       for (const { value } of perProject) for (const r of value) if (r.ts >= sinceTs) rows.push(r);
     }
     let shellIds = [];
@@ -1561,7 +1561,7 @@ async function getCompactionSummary(req, res, url) {
     const { summarizeCompaction, COMPACTION_EVENTS } = require('./lib/compaction-metrics.js');
     const rows = [];
     for (const ev of COMPACTION_EVENTS) {
-      const perProject = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName: ev, limit: 2000 }));
+      const perProject = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName: ev, sinceTs }));
       for (const { value } of perProject) for (const r of value) if (r.ts >= sinceTs) rows.push(r);
     }
     const cfg = require('./lib/hooks-config.js').getCompaction();

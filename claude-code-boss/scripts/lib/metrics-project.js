@@ -78,14 +78,32 @@ function adoptLegacyDb(key, legacy) {
   const from = path.join(base, legacy, 'metrics.db');
   const tmp = `${to}.adopt-${process.pid}-${Date.now().toString(36)}`;
   try {
-    if (fs.existsSync(to) || !fs.existsSync(from)) return;
+    if (!fs.existsSync(from)) return;
+    if (fs.existsSync(to)) {
+      // Copied by a build before the marker existed: mark it now, dated by the copy's creation.
+      const markerPath = path.join(path.dirname(from), 'adopted.json');
+      if (!fs.existsSync(markerPath)) {
+        const st = fs.statSync(to);
+        fs.writeFileSync(markerPath, JSON.stringify({ by: [key], at: Math.round(st.birthtimeMs || st.ctimeMs), backfilled: true }, null, 2));
+      }
+      return;
+    }
     fs.mkdirSync(path.dirname(to), { recursive: true });
     const Database = require('./sqlite-compat').loadSqlite();
     if (!Database) throw new Error('no SQLite backend');
+    const at = Date.now(); // rows newer than the snapshot stay only in the legacy db
     const db = new Database(from);
     try { db.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`); } finally { db.close(); }
     try { fs.copyFileSync(tmp, to, fs.constants.COPYFILE_EXCL); } catch (err) { if (err.code !== 'EEXIST') throw err; }
     fs.rmSync(tmp, { force: true });
+    // Mark the legacy db as carried over: cross-project totals (metrics-store.listProjects) skip it
+    // unless it gets rows after `at` — summing both counted that history twice.
+    const markerPath = path.join(path.dirname(from), 'adopted.json');
+    let marker = { by: [], at };
+    try { marker = JSON.parse(fs.readFileSync(markerPath, 'utf8')); } catch (err) { void err; }
+    marker.by = [...new Set([...(marker.by || []), key])];
+    marker.at = Math.max(Number(marker.at) || 0, at);
+    fs.writeFileSync(markerPath, JSON.stringify(marker, null, 2));
   } catch (err) {
     try { fs.rmSync(tmp, { force: true }); } catch (e) { void e; }
     console.error(`[metrics] could not carry the metrics of "${legacy}" over to "${key}": ${err.message}`);
