@@ -24193,6 +24193,7 @@ test('compaction-core.chooseCompaction: with a WARM cache the engine auto-compac
   assertEq(cmpCore.isCacheWarm({ now: 1000, lastAnswerAt: null, ttlMs: 300 }), true, 'unknown → warm (auto-compaction fires right after turns)');
   const hook = fs.readFileSync(path.join(ROOT, 'hooks', 'compaction.mjs'), 'utf8');
   assert(/chooseCompaction\(\{ plan, trigger: e\.trigger, warm \}/.test(hook) && /isCacheWarm\(/.test(hook) && !/plan\.ratio >= ctx\.config\.minReductionRatio/.test(hook), 'the session.compact hook decides through chooseCompaction (the old ratio-only rule is gone)');
+  assert(/const warm = ctx\.busy \|\| isCacheWarm\(/.test(hook), 'an auto-compaction in the middle of a turn counts as warm (the turn keeps the cache alive, whatever the last answer\'s age)');
   assert(/why: choice\.why, cacheWarm: warm/.test(hook), 'the run event records why and whether the cache was warm');
 });
 
