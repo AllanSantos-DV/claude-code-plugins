@@ -2,6 +2,10 @@
 
 Pontos de melhoria identificados fora do escopo do trabalho corrente (ver política de sessão: "ponto óbvio de melhoria encontrado FORA do escopo atual não é implementado na hora").
 
+## Ferramental de release
+
+- [x] **"O agente `vitrine` não abre" — NÃO é deste repo (verificado na release 3.2.0)**: o subagente `vitrine` que o Claude Code oferecia é o do *copilot-marketplace* (carregado da pasta de agentes do Copilot do usuário, com `tools: [read, search, edit, …]` de Copilot) e foi recusado com zero ferramentas. O `.github/agents/vitrine.agent.md` daqui já declara Read/Edit/Write/Bash e não é registrado como subagente (fica em `.github/agents/`): a prática é rodar um agente geral que segue o arquivo — foi o que se fez.
+
 ## Janela piscando (relatado pelo Allan em 2026-10-09) — corrigido
 
 - [x] **Janela do terminal piscando a cada início de sessão (achado e corrigido na hora)**: o `SessionStart`
