@@ -13,11 +13,10 @@
  * Concurrency: lock-file at globalDir()/.mcp-wizard.lock prevents parallel spawns.
  */
 const fs = require('fs');
-const { readDaemonUrl } = require('./mcp-registry.js');
+const { readDaemonUrl } = require('./mcp-bootstrap/registry.js');
 const { probeHealth } = require('./http-health.js');
-const { sha256File } = require('./file-hash.js');
+const install = require('./mcp-bootstrap/install.js');
 const path = require('path');
-const { spawnSync } = require('child_process');
 const https = require('https');
 const http = require('http');
 const { globalDir } = require('./data-dir.js');
@@ -25,7 +24,6 @@ const { loadWithVersion: loadBrainConfigWithVersion, save: saveBrainConfig } = r
 const { acquireFileLock, releaseFileLock, parseOwner, pidAlive, clearStaleReclaim } = require('./process-lock.js');
 const loadBrainConfig = () => loadBrainConfigWithVersion().config;
 
-const MIN_JAVA_MAJOR = 21;
 // Resolved per-call (not frozen at module load), same convention as
 // brain-config.js's userConfigPath() — globalDir() depends on os.homedir(),
 // and a const here would freeze whatever HOME/USERPROFILE was set at the
@@ -101,146 +99,6 @@ function _emit(step, status, detail) {
   if (!_state.details) _state.details = [];
   _state.details[step - 1] = { status, detail, ts: new Date().toISOString() };
   saveState();
-}
-
-/**
- * Java binaries to try: JAVA_HOME, PATH, then the standard install dirs. A Java the agent
- * just installed (winget/brew/apt) is NOT on this process's PATH — Claude Code and the
- * daemon inherited the old one — so the install dirs are what make it usable at once.
- */
-function javaCandidates(env = process.env, platform = process.platform) {
-  const exe = platform === 'win32' ? 'java.exe' : 'java';
-  const out = [];
-  if (env.JAVA_HOME) out.push(path.join(env.JAVA_HOME, 'bin', exe));
-  out.push('java');
-  // The Java runtime the native-java installer (used by the sister plugins) bundles.
-  out.push(path.join(env.USERPROFILE || env.HOME || require('os').homedir(), '.mcp-memory', 'server', 'runtime', 'bin', exe));
-  const globDirs = (base, sub) => {
-    try { return fs.readdirSync(base).map((d) => path.join(base, d, ...sub, exe)); } catch (err) { void err; return []; }
-  };
-  if (platform === 'win32') {
-    for (const pf of [env.ProgramFiles, env['ProgramFiles(x86)']].filter(Boolean)) {
-      for (const vendor of ['Eclipse Adoptium', 'Java', 'Microsoft', 'Zulu', 'Amazon Corretto']) out.push(...globDirs(path.join(pf, vendor), ['bin']));
-    }
-  } else if (platform === 'darwin') {
-    out.push(...globDirs('/Library/Java/JavaVirtualMachines', ['Contents', 'Home', 'bin']));
-    out.push('/opt/homebrew/opt/openjdk/bin/java', '/opt/homebrew/opt/openjdk@21/bin/java', '/usr/local/opt/openjdk@21/bin/java');
-  } else {
-    out.push(...globDirs('/usr/lib/jvm', ['bin']));
-  }
-  return [...new Set(out)];
-}
-
-function probeJava(bin) {
-  const r = spawnSync(bin, ['-version'], { encoding: 'utf-8', timeout: 5000, windowsHide: true });
-  if (r.error) return { ok: false, error: r.error.code === 'ENOENT' ? 'not found' : r.error.message };
-  const out = (r.stderr || '') + (r.stdout || '');
-  const m = out.match(/(?:openjdk|java|jdk)\s+version\s+"?(\d+)/i);
-  if (!m) return { ok: false, error: 'Java version unparseable' };
-  const major = parseInt(m[1], 10);
-  const version = out.match(/(?:version\s+")?(\d+\.\d+\.\d+)/i);
-  return { ok: true, major, version: version ? version[1] : `java ${major}`, raw: out.trim().split(/\r?\n/)[0] };
-}
-
-/** First Java >= 21 among the candidates: { ok, bin, version, raw } or { ok:false, error }. */
-async function checkJava({ candidates = javaCandidates(), probe = probeJava } = {}) {
-  let older = null;
-  for (const bin of candidates) {
-    if (bin !== 'java' && !fs.existsSync(bin)) continue;
-    const r = probe(bin);
-    if (!r.ok) continue;
-    if (r.major >= MIN_JAVA_MAJOR) return { ok: true, bin, version: r.version, raw: r.raw };
-    older = older || r;
-  }
-  return { ok: false, error: older ? `Java ${MIN_JAVA_MAJOR}+ required, found ${older.major}` : `Java ${MIN_JAVA_MAJOR}+ not found (PATH, JAVA_HOME, standard install dirs)` };
-}
-
-async function checkJar(jarPath, downloadUrl) {
-  return new Promise((resolve) => {
-    if (fs.existsSync(jarPath)) {
-      try {
-        const stat = fs.statSync(jarPath);
-        if (!stat.isFile()) return resolve({ ok: false, error: 'Path exists but is not a file' });
-        const fd = fs.openSync(jarPath, 'r');
-        const buf = Buffer.alloc(4);
-        fs.readSync(fd, buf, 0, 4, 0);
-        fs.closeSync(fd);
-        if (buf[0] !== 0x50 || buf[1] !== 0x4B) return resolve({ ok: false, error: 'File is not a valid JAR (missing PK magic)' });
-        return resolve({ ok: true, jarPath, size: stat.size });
-      } catch (err) { return resolve({ ok: false, error: `JAR read failed: ${err.message}` }); }
-    }
-    if (!downloadUrl) return resolve({ ok: false, error: 'JAR not found and no downloadUrl configured' });
-    return resolve({ ok: false, jarPath: null, error: 'JAR missing — will download', needsDownload: true, downloadUrl });
-  });
-}
-
-
-/**
- * Where to download the server from: an explicit mcpCfg.downloadUrl wins as-is; otherwise the
- * latest release's CPU build. The launcher (native-java ADR-023, contract C-3) only runs exact
- * mcp-memory-server-X.Y.Z.jar names — a "-gpu" jar would never be started.
- */
-async function resolveDownload(mcpCfg) {
-  if (mcpCfg.downloadUrl) {
-    let name = '';
-    try { name = path.basename(new URL(mcpCfg.downloadUrl).pathname); } catch (err) { void err; name = path.basename(String(mcpCfg.downloadUrl)); }
-    return { url: mcpCfg.downloadUrl, sha256: (mcpCfg.expectedSha256 || '').toLowerCase(), name };
-  }
-  const asset = await require('./mcp-release-resolver.js').resolveLatestAsset();
-  return { url: asset.url, sha256: asset.sha256, version: asset.version, name: asset.name };
-}
-
-/** Ensure jarPath exists and is a valid JAR, downloading (and verifying the checksum) if missing. */
-async function ensureJar(jarPath, mcpCfg, emit, resolvedIn = null) {
-  if (fs.existsSync(jarPath)) {
-    const jarCheck = await checkJar(jarPath, '');
-    if (!jarCheck.ok) throw new Error(`JAR error: ${jarCheck.error}`);
-    emit('ok', `JAR valid (${Math.round(jarCheck.size / 1024 / 1024)}MB)`);
-    return;
-  }
-  const resolved = resolvedIn || await resolveDownload(mcpCfg);
-  emit('running', `Downloading ${resolved.name || 'the server'}${resolved.version ? ` (${resolved.version})` : ''}...`);
-  await downloadJar(resolved.url, jarPath);
-  if (resolved.sha256) {
-    const actual = await sha256File(jarPath);
-    if (actual !== resolved.sha256) {
-      fs.unlinkSync(jarPath);
-      throw new Error(`Downloaded JAR sha256 mismatch (expected ${resolved.sha256.slice(0, 16)}…, got ${actual.slice(0, 16)}…) — file removed`);
-    }
-    emit('ok', 'JAR downloaded and verified');
-  } else {
-    emit('ok', 'JAR downloaded (unverified — no checksum published for this asset)');
-  }
-}
-
-/** Download the latest server into ~/.mcp-memory/lib under its exact name (the launcher picks it up). */
-async function downloadServerJar(mcpCfg, emit, home = require('os').homedir()) {
-  const resolved = await resolveDownload(mcpCfg);
-  if (!require('./mcp-launcher.js').JAR_RE.test(resolved.name || '')) {
-    throw new Error(`the server launcher only runs mcp-memory-server-X.Y.Z.jar — ${resolved.name || 'this download'} would never be started`);
-  }
-  const target = path.join(home, '.mcp-memory', 'lib', resolved.name);
-  await ensureJar(target, mcpCfg, emit, resolved);
-  return target;
-}
-
-async function downloadJar(downloadUrl, jarPath) {
-  return new Promise((resolve, reject) => {
-    const dir = path.dirname(jarPath);
-    fs.mkdirSync(dir, { recursive: true });
-    const tmpPath = jarPath + '.tmp';
-    const doGet = (targetUrl) => {
-      const file = fs.createWriteStream(tmpPath);
-      https.get(targetUrl, (res) => {
-        if (res.statusCode === 301 || res.statusCode === 302) { file.close(); fs.unlinkSync(tmpPath); doGet(res.headers.location); return; }
-        if (res.statusCode !== 200) { file.close(); fs.unlinkSync(tmpPath); reject(new Error(`Download HTTP ${res.statusCode}`)); return; }
-        res.pipe(file);
-        file.on('finish', () => { file.close(); fs.renameSync(tmpPath, jarPath); resolve(); });
-        file.on('error', (e) => { fs.unlinkSync(tmpPath); reject(e); });
-      }).on('error', (e) => { fs.unlinkSync(tmpPath); reject(e); });
-    };
-    doGet(downloadUrl);
-  });
 }
 
 function discoverDaemonUrl() {
@@ -344,34 +202,7 @@ async function start(projectId, opts = {}) {
         // Official contract (native-java ADR-023): the server is started ONLY by its own
         // launcher (~/.mcp-memory/bin/mcp-memory-daemon) — it reuses a live daemon, picks the
         // newest installed jar, and is registered to start at logon. Never `java -jar` here.
-        const L = require('./mcp-launcher.js');
-        const java = L.bundledJava() ? { ok: true, version: 'bundled runtime', bin: L.bundledJava() } : await checkJava();
-        const javaHome = java.ok && java.bin && java.bin !== 'java' ? path.dirname(path.dirname(java.bin)) : '';
-        _emit(1, 'running', 'Looking for the memory server launcher...');
-        let started = await L.runLauncher({ javaHome });
-        if (started.missing) {
-          if (!java.ok) throw new Error(`Java check failed: ${java.error}`);
-          _emit(1, 'ok', `Launcher not installed yet — Java ${java.version} found`);
-          let jar = L.newestInstalledJar();
-          if (!jar || L.compareVersions(jar.version, L.MIN_LAUNCHER_VERSION) < 0) {
-            _emit(2, 'running', jar ? `Installed server ${jar.version} is too old for the launcher — downloading the latest...` : 'No server installed — downloading the latest...');
-            await downloadServerJar(mcpCfg, (status, detail) => _emit(2, status, detail));
-            jar = L.newestInstalledJar();
-          } else {
-            _emit(2, 'ok', `Server ${jar.version} already installed (${jar.path}) — no download`);
-          }
-          _emit(2, 'running', 'Installing the server launcher (also starts it at logon)...');
-          const inst = await L.installLauncher({ jar, javaBin: java.bin });
-          if (!inst.ok) throw new Error(inst.error);
-          _emit(2, 'ok', `Launcher installed: ${inst.launcher}`);
-          _emit(3, 'running', 'Starting the server through its launcher (a first start downloads its embedding model, ~430 MB — can take a few minutes)...');
-          started = await L.runLauncher({ javaHome });
-        } else {
-          _emit(1, 'ok', 'Launcher found');
-          _emit(2, 'ok', 'Nothing to install');
-        }
-        if (!started.ok) throw new Error(started.error);
-        _emit(3, 'ok', `${started.spawned ? 'Started' : 'Reusing'} the memory server v${started.version} at ${started.url}`);
+        const started = await install.ensureLocalDaemon(mcpCfg, _emit);
         launchedUrl = started.url;
       }
 
@@ -454,10 +285,14 @@ function reset() {
 }
 
 module.exports = {
-  start, getState, reset, wizardStateFile, checkJava, checkJar, validateDaemon, handshake, REQUIRED_TOOLS, discoverDaemonUrl, javaCandidates, MIN_JAVA_MAJOR, downloadServerJar,
+  start, getState, reset, wizardStateFile, validateDaemon, handshake, REQUIRED_TOOLS, discoverDaemonUrl,
+  // The local install steps live in the shared mcp-bootstrap/install.js; re-exported so
+  // existing callers keep one entry point.
+  checkJava: install.checkJava, checkJar: install.checkJar, javaCandidates: install.javaCandidates,
+  MIN_JAVA_MAJOR: install.MIN_JAVA_MAJOR, downloadServerJar: install.downloadServerJar,
   // Exported for isolated unit testing of the download + checksum path
   // (mocking mcp-release-resolver.js / downloadJar) without a real spawn/network flow.
-  resolveDownload, ensureJar, sha256File,
+  resolveDownload: install.resolveDownload, ensureJar: install.ensureJar, sha256File: require('./mcp-bootstrap/file-hash.js').sha256File,
   // Exported for isolated unit testing only (same convention as brain-config.js's
   // _resetCache) — lets lock semantics be verified without driving the full
   // start() orchestration (which spawns real `java` subprocesses).

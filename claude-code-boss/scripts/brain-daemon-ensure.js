@@ -136,7 +136,7 @@ async function ensureMemoryServer(deps = {}) {
   // reported "kicked" forever. The sync test seam (deps.kickLauncher) stays as it was.
   let verify = null;
   const kick = deps.kickLauncher || (() => {
-    const L = require('./lib/mcp-launcher.js');
+    const L = require('./lib/mcp-bootstrap/launcher.js');
     if (!fs.existsSync(L.launcherPath())) return false;
     verify = L.kickLauncherVerified();
     return true;

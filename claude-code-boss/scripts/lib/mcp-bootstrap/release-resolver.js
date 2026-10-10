@@ -16,7 +16,7 @@ const RELEASES_REPO = 'AllanSantos-DV/mcp-memory-server-releases';
 const JAR_ASSET_RE = /^mcp-memory-server-(\d+)\.(\d+)\.(\d+)\.jar$/;
 
 async function fetchJson(url) {
-  const r = await fetch(url, { signal: AbortSignal.timeout(10000), headers: { 'User-Agent': 'claude-code-boss', Accept: 'application/vnd.github+json' } });
+  const r = await fetch(url, { signal: AbortSignal.timeout(10000), headers: { 'User-Agent': 'mcp-memory-bootstrap', Accept: 'application/vnd.github+json' } });
   if (!r.ok) throw new Error(`GitHub API ${url} → HTTP ${r.status}`);
   return r.json();
 }

@@ -12,7 +12,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { sha256File } = require('./file-hash.js');
+const { sha256File } = require('./mcp-bootstrap/file-hash.js');
 
 const EXPORT_TOOL = 'backup_export';
 const IMPORT_TOOL = 'backup_import';

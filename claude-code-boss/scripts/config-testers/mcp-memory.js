@@ -13,7 +13,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { spawnSync } = require('child_process');
-const { resolveLatestAsset } = require('../lib/mcp-release-resolver.js');
+const { resolveLatestAsset } = require('../lib/mcp-bootstrap/release-resolver.js');
 
 const MIN_JAVA_MAJOR = 21;
 

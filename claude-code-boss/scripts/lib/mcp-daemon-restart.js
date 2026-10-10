@@ -6,7 +6,7 @@ const os = require('os');
 const path = require('path');
 const crypto = require('crypto');
 const { execFileSync } = require('child_process');
-const { resolveLatestAsset } = require('./mcp-release-resolver.js');
+const { resolveLatestAsset } = require('./mcp-bootstrap/release-resolver.js');
 
 function registryFile(runDir) {
   return path.join(runDir || path.join(os.homedir(), '.mcp-memory', 'run'), 'daemon.json');
@@ -153,7 +153,7 @@ async function restartForBootUpdate(mcpConfig = {}, deps = {}) {
   const inspect = deps.inspectProcess || (candidate => inspectWindowsProcess(candidate, deps));
   const launch = inspect(pid);
   const prepare = deps.prepareUpdate || ((jar, version) => prepareVerifiedUpdate(jar, version, deps));
-  const launcher = deps.runLauncher || (() => require('./mcp-launcher.js').runLauncher());
+  const launcher = deps.runLauncher || (() => require('./mcp-bootstrap/launcher.js').runLauncher());
 
   // Validate and promote the downloaded JAR before touching the healthy daemon.
   const launchJar = await prepare(launch.jarPath, deps.latestVersion);
@@ -178,7 +178,7 @@ async function rollbackAfterFailedUpdate(restartInfo, deps = {}) {
   }
   const alive = deps.pidAlive || pidAlive;
   const kill = deps.kill || (pid => process.kill(pid, 'SIGTERM'));
-  const launcher = deps.runLauncher || (() => require('./mcp-launcher.js').runLauncher());
+  const launcher = deps.runLauncher || (() => require('./mcp-bootstrap/launcher.js').runLauncher());
   if (Number.isInteger(restartInfo.newPid) && alive(restartInfo.newPid)) {
     kill(restartInfo.newPid);
     if (!await waitPidGone(restartInfo.newPid, deps)) {

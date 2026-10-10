@@ -78,7 +78,7 @@ function createSetupTools({ pluginRoot, requestRestart = () => {}, deps = {} } =
   });
   const platform = deps.platform || process.platform;
   const pid = deps.projectId || lib('project-id.js');
-  const launcher = deps.launcher || lib('mcp-launcher.js');
+  const launcher = deps.launcher || lib('mcp-bootstrap/launcher.js');
   // Java matters only to install the server launcher when the server's bundled runtime is absent.
   const javaNeeded = () => !require('fs').existsSync(launcher.launcherPath()) && !launcher.bundledJava();
   const updater = deps.updater || ((o) => lib('mcp-memory-auto-update.js').runAutoUpdate(o));
