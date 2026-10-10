@@ -4121,6 +4121,41 @@ test('curation home: under CCB_TEST_SANDBOX a project OUTSIDE the temp dir is ne
   } finally { cp._resetConfigCache(); fs.rmSync(real, { recursive: true, force: true }); }
 });
 
+test('metrics totals: a time-window read is not cut at 500 rows, and a legacy db COPIED into a project-id key is not counted twice', () => {
+  const ms = require('./lib/metrics-store.js');
+  const mp = require('./lib/metrics-project.js');
+  const base = path.join(require('./lib/data-dir.js').dataDir(), 'metrics');
+  assert(!path.relative(os.tmpdir(), base).startsWith('..'), `the suite's data dir must be a temp dir: ${base}`);
+  const legacy = `wl-legacy-${process.pid}`;
+  try {
+    ms.close(); ms.init({ project: legacy });
+    for (let i = 0; i < 620; i++) ms.recordMetric('curation.shaped', { i }, 's');
+    ms.close();
+    assertEq(ms.getEventLogIsolated(legacy, { eventName: 'curation.shaped', sinceTs: 0 }).length, 620, 'a window read returns every row (was capped at 500: the 30-day panel lost rows)');
+    assertEq(ms.getEventLogIsolated(legacy, { eventName: 'curation.shaped', limit: 2000 }).length, 500, 'a plain "latest N" peek keeps its cap');
+    const mkProj = path.join(os.tmpdir(), `ccb-wl-${process.pid}`, legacy);
+    fs.mkdirSync(mkProj, { recursive: true });
+    require('child_process').execFileSync('git', ['init', '-q'], { cwd: mkProj, windowsHide: true });
+    require('child_process').execFileSync('git', ['remote', 'add', 'origin', `https://github.com/wl-owner/${legacy}.git`], { cwd: mkProj, windowsHide: true });
+    const key = mp.metricsKeyForId(require('./lib/project-id.js').tryResolveProjectId({ cwd: mkProj }));
+    // A build before the marker copied it: the copy exists, the legacy db has no marker.
+    fs.mkdirSync(path.join(base, key), { recursive: true });
+    fs.copyFileSync(path.join(base, legacy, 'metrics.db'), path.join(base, key, 'metrics.db'));
+    assert(ms.listProjects().includes(legacy), 'unmarked: still listed (nothing says it was copied)');
+    mp._resetAdopted();
+    assertEq(mp.metricsKeyFor(mkProj), key);
+    assertEq(JSON.parse(fs.readFileSync(path.join(base, legacy, 'adopted.json'), 'utf8')).backfilled, true, 'the marker is backfilled for a copy made before markers existed');
+    const listed = ms.listProjects();
+    assert(!listed.includes(legacy) && listed.includes(key), `the carried-over legacy db is left out of totals: ${JSON.stringify(listed.filter((p) => p.includes(legacy)))}`);
+    ms.init({ project: legacy }); ms.recordMetric('curation.shaped', { late: true }, 's'); ms.close(); // a same-named repo without an id keeps writing
+    assert(ms.listProjects().includes(legacy), 'rows after the copy → listed again (they exist nowhere else)');
+    fs.rmSync(path.join(os.tmpdir(), `ccb-wl-${process.pid}`), { recursive: true, force: true });
+  } finally {
+    ms.close();
+    for (const d of fs.existsSync(base) ? fs.readdirSync(base) : []) if (d.includes(legacy)) fs.rmSync(path.join(base, d), { recursive: true, force: true });
+  }
+});
+
 test('session-whitelist writes NOTHING for a folder without curation (SessionStart created a shells.json in every folder a session opened in)', async () => {
   const cp = require('./curation-paths.js');
   const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-wl-none-'));
