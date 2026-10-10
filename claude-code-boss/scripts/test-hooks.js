@@ -9,6 +9,7 @@
  */
 const { spawnSync } = require('child_process');
 const path = require('path');
+require('./test-temp.cjs').createTestTemp();
 const fs = require('fs');
 const os = require('os');
 
