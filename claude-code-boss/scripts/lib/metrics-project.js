@@ -69,6 +69,11 @@ const _adopted = new Set();
  * published with an exclusive create — copying db + WAL file by file raced a concurrent writer
  * and could overwrite a db another process had just opened (pre-release audit 3.2.0). If another
  * process created `key` first, its db wins and the snapshot is dropped (the legacy db stays).
+ *
+ * Then the legacy db is marked (`adopted.json`) with the newest ts the copy really holds — found by
+ * CONTENT (rows identical in both dbs), never by a file date: a `key` db created empty after a
+ * failed copy is not a copy, and dating it by birthtime/ctime hid history (pre-release audit
+ * 3.2.1). metrics-store reads count only legacy rows AFTER that ts (floorFor).
  */
 function adoptLegacyDb(key, legacy) {
   const fs = require('fs');
@@ -79,35 +84,48 @@ function adoptLegacyDb(key, legacy) {
   const tmp = `${to}.adopt-${process.pid}-${Date.now().toString(36)}`;
   try {
     if (!fs.existsSync(from)) return;
-    if (fs.existsSync(to)) {
-      // Copied by a build before the marker existed: mark it now, dated by the copy's creation.
-      const markerPath = path.join(path.dirname(from), 'adopted.json');
-      if (!fs.existsSync(markerPath)) {
-        const st = fs.statSync(to);
-        fs.writeFileSync(markerPath, JSON.stringify({ by: [key], at: Math.round(st.birthtimeMs || st.ctimeMs), backfilled: true }, null, 2));
-      }
-      return;
-    }
-    fs.mkdirSync(path.dirname(to), { recursive: true });
     const Database = require('./sqlite-compat').loadSqlite();
     if (!Database) throw new Error('no SQLite backend');
-    const at = Date.now(); // rows newer than the snapshot stay only in the legacy db
-    const db = new Database(from);
-    try { db.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`); } finally { db.close(); }
-    try { fs.copyFileSync(tmp, to, fs.constants.COPYFILE_EXCL); } catch (err) { if (err.code !== 'EEXIST') throw err; }
-    fs.rmSync(tmp, { force: true });
-    // Mark the legacy db as carried over: cross-project totals (metrics-store.listProjects) skip it
-    // unless it gets rows after `at` — summing both counted that history twice.
-    const markerPath = path.join(path.dirname(from), 'adopted.json');
-    let marker = { by: [], at };
-    try { marker = JSON.parse(fs.readFileSync(markerPath, 'utf8')); } catch (err) { void err; }
-    marker.by = [...new Set([...(marker.by || []), key])];
-    marker.at = Math.max(Number(marker.at) || 0, at);
-    fs.writeFileSync(markerPath, JSON.stringify(marker, null, 2));
+    if (!fs.existsSync(to)) {
+      fs.mkdirSync(path.dirname(to), { recursive: true });
+      const db = new Database(from);
+      try { db.exec(`VACUUM INTO '${tmp.replace(/'/g, "''")}'`); } finally { db.close(); }
+      try { fs.copyFileSync(tmp, to, fs.constants.COPYFILE_EXCL); } catch (err) { if (err.code !== 'EEXIST') throw err; }
+      fs.rmSync(tmp, { force: true });
+    }
+    markCarriedOver(Database, from, to, key); // also backfills a copy made before markers existed
   } catch (err) {
     try { fs.rmSync(tmp, { force: true }); } catch (e) { void e; }
     console.error(`[metrics] could not carry the metrics of "${legacy}" over to "${key}": ${err.message}`);
   }
+}
+
+/**
+ * Write/raise the legacy db's carried-over floor: the newest ts of the rows present, identical
+ * (id, ts, event), in BOTH dbs. No common row → `to` is not a copy: nothing is marked, and it says so.
+ */
+function markCarriedOver(Database, from, to, key) {
+  const fs = require('fs');
+  const path = require('path');
+  const markerPath = path.join(path.dirname(from), 'adopted.json');
+  let marker = { by: [], at: 0 };
+  try { marker = JSON.parse(fs.readFileSync(markerPath, 'utf8')); } catch (err) { void err; }
+  if ((marker.by || []).includes(key)) return; // marked once per adopter: no db work on every hook process
+  const db = new Database(from);
+  let upTo = null;
+  try {
+    db.exec(`ATTACH DATABASE '${to.replace(/'/g, "''")}' AS adopted`);
+    const r = db.prepare(`SELECT MAX(l.ts) AS t FROM main.metrics_event l
+                           JOIN adopted.metrics_event c ON c.id = l.id AND c.ts = l.ts AND c.event_name = l.event_name`).get();
+    upTo = r && Number.isFinite(r.t) ? r.t : null;
+  } finally { db.close(); }
+  if (upTo == null) {
+    console.error(`[metrics] "${key}" holds none of the legacy rows of ${path.basename(path.dirname(from))} — not a copy, the legacy db stays fully counted`);
+    return;
+  }
+  marker.by = [...new Set([...(marker.by || []), key])];
+  marker.at = Math.max(Number(marker.at) || 0, upTo);
+  fs.writeFileSync(markerPath, JSON.stringify(marker, null, 2));
 }
 
 /**

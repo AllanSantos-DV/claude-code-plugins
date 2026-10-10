@@ -36,6 +36,7 @@ const STORE_DIR = dataDir();
 const VALID_EVENT_NAME = /^[a-z][a-z0-9._-]{1,63}$/;
 
 let _db = null;
+let _floor = 0; // carried-over floor of the open db (floorFor)
 let _project = null;
 
 function metricsDir(project) {
@@ -121,6 +122,7 @@ function init({ project = 'default' } = {}) {
     _db.pragma('busy_timeout = 5000');
     createTables(_db);
     _project = project;
+    _floor = floorFor(project);
     migrateLegacyIfNeeded(project, _db);
     return true;
   } catch (err) {
@@ -136,6 +138,7 @@ function isReady() { return !!_db; }
 function close() {
   if (_db) { try { _db.close(); } catch { /* noop */ } }
   _db = null;
+  _floor = 0;
   _project = null;
 }
 
@@ -165,16 +168,12 @@ function getEventLog({ eventName = null, limit = 50, sinceTs = null } = {}) {
   if (!_db) return [];
   const cap = windowCap(limit, sinceTs);
   try {
-    if (sinceTs != null && eventName) {
-      return _db.prepare(`SELECT id, ts, event_name, payload, session_id, project
-                       FROM metrics_event WHERE event_name = ? AND ts >= ? ORDER BY ts DESC LIMIT ?`).all(eventName, Number(sinceTs), cap)
-        .map(r => ({ id: r.id, ts: r.ts, eventName: r.event_name, payload: safeParseJson(r.payload), sessionId: r.session_id, project: r.project }));
-    }
+    const lo = lowerBound(sinceTs, _floor);
     const rows = eventName
       ? _db.prepare(`SELECT id, ts, event_name, payload, session_id, project
-                       FROM metrics_event WHERE event_name = ? ORDER BY ts DESC LIMIT ?`).all(eventName, cap)
+                       FROM metrics_event WHERE event_name = ? AND ts >= ? ORDER BY ts DESC LIMIT ?`).all(eventName, lo, cap)
       : _db.prepare(`SELECT id, ts, event_name, payload, session_id, project
-                       FROM metrics_event ORDER BY ts DESC LIMIT ?`).all(cap);
+                       FROM metrics_event WHERE ts >= ? ORDER BY ts DESC LIMIT ?`).all(lo, cap);
     return rows.map(r => ({
       id: r.id, ts: r.ts, eventName: r.event_name,
       payload: safeParseJson(r.payload), sessionId: r.session_id, project: r.project,
@@ -201,14 +200,12 @@ function getEventLogIsolated(project, { eventName = null, limit = 50, sinceTs = 
   let db;
   try { db = new Database(p); } catch (e) { console.error('[metrics-store] isolated open failed:', p, e.message); return []; }
   try {
-    const rows = (sinceTs != null && eventName)
+    const lo = lowerBound(sinceTs, floorFor(project));
+    const rows = eventName
       ? db.prepare(`SELECT id, ts, event_name, payload, session_id, project
-                      FROM metrics_event WHERE event_name = ? AND ts >= ? ORDER BY ts DESC LIMIT ?`).all(eventName, Number(sinceTs), cap)
-      : eventName
-      ? db.prepare(`SELECT id, ts, event_name, payload, session_id, project
-                      FROM metrics_event WHERE event_name = ? ORDER BY ts DESC LIMIT ?`).all(eventName, cap)
+                      FROM metrics_event WHERE event_name = ? AND ts >= ? ORDER BY ts DESC LIMIT ?`).all(eventName, lo, cap)
       : db.prepare(`SELECT id, ts, event_name, payload, session_id, project
-                      FROM metrics_event ORDER BY ts DESC LIMIT ?`).all(cap);
+                      FROM metrics_event WHERE ts >= ? ORDER BY ts DESC LIMIT ?`).all(lo, cap);
     return rows.map(r => ({
       id: r.id, ts: r.ts, eventName: r.event_name,
       payload: safeParseJson(r.payload), sessionId: r.session_id, project: r.project,
@@ -291,7 +288,7 @@ function getMetricsSummary(rangeDays = 7) {
   const empty = { totals: {}, daily: [], windowMs: rangeDays * 86400_000, sinceTs: 0 };
   if (!_db) return empty;
   try {
-    const sinceTs = Date.now() - rangeDays * 86400_000;
+    const sinceTs = lowerBound(Date.now() - rangeDays * 86400_000, _floor);
     const totalRows = _db.prepare(
       `SELECT event_name, COUNT(*) AS count FROM metrics_event WHERE ts >= ? GROUP BY event_name`
     ).all(sinceTs);
@@ -337,10 +334,11 @@ function getCurationUsageIsolated(project, sinceTs = 0) {
     // (3.0). NOT any curation.* event: curation.flagged dates back to 2.x, which made a
     // 2.x→3.0 install pass the history check on day one and list in-use scripts as
     // "never ran" (pre-release audit: 23 of 42 on a real project).
-    const first = db.prepare(`SELECT MIN(ts) AS t FROM metrics_event WHERE event_name IN (${USAGE_ERA_EVENTS.map(() => '?').join(',')})`).get(...USAGE_ERA_EVENTS);
+    const lo = lowerBound(0, floorFor(project)); // the carried-over history belongs to the project-id key now
+    const first = db.prepare(`SELECT MIN(ts) AS t FROM metrics_event WHERE ts >= ? AND event_name IN (${USAGE_ERA_EVENTS.map(() => '?').join(',')})`).get(lo, ...USAGE_ERA_EVENTS);
     const rows = db.prepare(`SELECT DISTINCT COALESCE(json_extract(payload,'$.scriptId'), json_extract(payload,'$.shellId')) AS id
                                FROM metrics_event
-                              WHERE event_name IN ('curation.used','curation.redirected','curation.piped') AND ts >= ?`).all(sinceTs);
+                              WHERE event_name IN ('curation.used','curation.redirected','curation.piped') AND ts >= ?`).all(Math.max(Number(sinceTs) || 0, lo));
     return { historyFromTs: first && Number.isFinite(first.t) ? first.t : null, usedIds: rows.map((r) => r.id).filter(Boolean) };
   } catch (err) {
     console.error(`[metrics-store] getCurationUsageIsolated(${project}) failed: ${err.message}`);
@@ -373,38 +371,34 @@ function windowCap(limit, sinceTs) {
   return Math.max(1, Math.min(500, Number(limit) || 50));
 }
 
-/**
- * Project names that have a metrics DB on disk (for cross-project aggregation). A legacy
- * folder-name db whose history was COPIED into a project-id key (metrics-project.adoptLegacyDb,
- * marker `adopted.json`) is left out unless it got rows after that copy (a same-named repo without
- * an id still writes there) — summing both counted that history twice in every total.
- */
+/** Project names that have a metrics DB on disk (for cross-project aggregation). */
 function listProjects() {
   const base = path.join(STORE_DIR, 'metrics');
   if (!fs.existsSync(base)) return [];
-  return fs.readdirSync(base).filter((p) => {
-    if (!fs.existsSync(path.join(base, p, 'metrics.db'))) return false;
-    let marker = null;
-    try { marker = JSON.parse(fs.readFileSync(path.join(base, p, 'adopted.json'), 'utf8')); } catch (err) { void err; return true; }
-    return newestTs(p) > Number(marker.at || 0);
-  });
+  return fs.readdirSync(base).filter(p => fs.existsSync(path.join(base, p, 'metrics.db')));
 }
 
-/** Newest event ts of a project's db (0 when empty/unreadable). */
-function newestTs(project) {
-  const Database = loadSqlite();
-  if (!Database) return 0;
-  let db;
+/**
+ * The "already carried over" floor of a project's db: a legacy folder-name db whose history was
+ * COPIED into a project-id key (metrics-project.adoptLegacyDb) is marked with the newest ts that
+ * copy holds; every read of this db counts only rows AFTER it. Summing both dbs counted that history
+ * twice in every total; dropping the whole legacy db instead hid the rows written there later (a
+ * same-named repo without an id, sessions still on the previous build) — pre-release audit 3.2.1.
+ * @returns {number} 0 when the db was never carried over
+ */
+function floorFor(project) {
   try {
-    db = new Database(dbPath(project));
-    const r = db.prepare('SELECT MAX(ts) AS t FROM metrics_event').get();
-    return r && Number.isFinite(r.t) ? r.t : 0;
+    const m = JSON.parse(fs.readFileSync(path.join(metricsDir(project), 'adopted.json'), 'utf8'));
+    return Number.isFinite(Number(m.at)) ? Number(m.at) : 0;
   } catch (err) {
-    console.error(`[metrics-store] newestTs(${project}) failed: ${err.message}`);
-    return Number.MAX_SAFE_INTEGER; // unreadable: keep it listed rather than hide data
-  } finally {
-    try { if (db) db.close(); } catch (e) { void e; }
+    if (err.code !== 'ENOENT') console.error(`[metrics-store] adopted.json of ${project} unreadable — no floor: ${err.message}`);
+    return 0;
   }
+}
+
+/** The lower ts bound of a read: the caller's window, raised past the carried-over floor. */
+function lowerBound(sinceTs, floor) {
+  return Math.max(sinceTs == null ? 0 : Number(sinceTs), floor > 0 ? floor + 1 : 0);
 }
 
 module.exports = {

@@ -7,7 +7,8 @@
   métricas pelo id do projeto e copiou o histórico antigo; o total somava a cópia e o original. Agora o original
   copiado fica fora do total (a não ser que receba eventos novos de outro repositório com o mesmo nome).
 - **O resumo de 30 dias do painel (e o do início da sessão) cortava em 500 eventos por tipo.** Projetos com muita
-  atividade perdiam a parte mais antiga da janela; agora a janela inteira é lida.
+  atividade perdiam a parte mais antiga da janela; agora a janela inteira é lida (também nas telas de valor,
+  impacto do perfil e recomendações de ajuste).
 
 ## [3.2.0] - 2026-10-09
 
