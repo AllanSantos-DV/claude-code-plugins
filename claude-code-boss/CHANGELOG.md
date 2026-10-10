@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [3.2.0] - 2026-10-09
 
 ### Changed
 - **Os scripts curados saíram do repositório.** O `.vscode/scripts/` e o `.vscode/shells.json` enchiam cada
