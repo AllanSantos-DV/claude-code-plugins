@@ -12,6 +12,9 @@ Pontos de melhoria identificados fora do escopo do trabalho corrente (ver polít
 - [x] **[médio] Modelo de passthrough da skill quebrava argumentos no Windows** (`shell: true` → cmd.exe relê os args): modelo Node agora `shell: false`; shim `.cmd` (npm/npx/mvn) → modelo Bash com `"$@"`. Doc.
 - [x] **[baixo] Lançamento oculto falhava em silêncio sem VBScript** (`mcp-launcher.js`): `kickLauncherVerified` confere a saída do wscript; se falhar, registra e cai para o lançamento comum (o servidor sobe). Teste + mutação.
 
+- [x] **Achado no CI de Linux (3.2.0) — a migração zerava a idade dos scripts (achado e corrigido na hora)**: `copyFileSync` não preserva o mtime no Linux/macOS (no Windows preserva); o prune de nunca-usados lê essa idade, então todo script movido parecia novo por 30 dias. Agora a cópia reaplica atime/mtime. Teste (pega no Linux).
+- [x] **Achado no CI de Linux (3.2.0) — testes de hooks dependiam do checkout real (achado e corrigido na hora)**: a fixture usa `cwd: "C:\\fixture"`, relativo no Linux; resolvia contra a pasta atual (o repo). Com os hooks rodando numa área isolada, a área ganhou marcador de projeto e o `seedRecurrence` resolve contra ela. A trava de sandbox passou a ser checada antes de qualquer chamada ao git. Validado num contêiner Linux (node:24) com o gate completo: só sobram as 7 falhas de ambiente que a v3.1.1 tem no mesmo contêiner (e que passam no CI real).
+
 ## Ferramental de release
 
 - [x] **"O agente `vitrine` não abre" — NÃO é deste repo (verificado na release 3.2.0)**: o subagente `vitrine` que o Claude Code oferecia é o do *copilot-marketplace* (carregado da pasta de agentes do Copilot do usuário, com `tools: [read, search, edit, …]` de Copilot) e foi recusado com zero ferramentas. O `.github/agents/vitrine.agent.md` daqui já declara Read/Edit/Write/Bash e não é registrado como subagente (fica em `.github/agents/`): a prática é rodar um agente geral que segue o arquivo — foi o que se fez.

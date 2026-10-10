@@ -18,7 +18,8 @@ const SCRIPTS = path.resolve(__dirname);
 // occurrence. Tests that exercise the journal seed ONE prior occurrence first.
 function seedRecurrence(dataDir, cwd, commands) {
   const oneoff = require('./lib/oneoff-store.js');
-  const key = oneoff.resolveProjectKey(cwd);
+  // Resolved where the spawned hook resolves it (its cwd is HOOK_CWD): `C:\fixture` is relative on Linux.
+  const key = oneoff.resolveProjectKey(path.resolve(HOOK_CWD, cwd));
   for (const c of [].concat(commands)) oneoff.touch(dataDir, key, c, { create: true });
   return dataDir;
 }

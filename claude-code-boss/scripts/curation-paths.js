@@ -231,6 +231,7 @@ function _legacyShellsFiles(projectRoot) {
     found.push({ rel, path: p });
   }
   if (!found.length) return [];
+  _assertSandboxed(projectRoot); // before any git call: a git error there hid the sandbox refusal
   const tracked = new Set(_trackedByGit(projectRoot, found.map((f) => f.path)));
   const out = [];
   for (const f of found) {
@@ -392,15 +393,19 @@ function _writeNotice(projectRoot, notice) {
   }
 }
 
+/**
+ * Test suites swap HOME for a temp dir and wipe it: a hook run there with the REAL repo as cwd
+ * moved that repo's curation into the temp home, which a later test deleted (lost the claude-code
+ * repo's 46 curated scripts on 2026-10-09). Under CCB_TEST_SANDBOX only temp-dir projects may move.
+ */
+function _assertSandboxed(projectRoot) {
+  if (process.env.CCB_TEST_SANDBOX !== '1') return;
+  const back = path.relative(path.resolve(os.tmpdir()), path.resolve(projectRoot));
+  if (!back || back.startsWith('..') || path.isAbsolute(back)) throw new Error(`test sandbox: refusing to move the curation of a real project (${projectRoot})`);
+}
+
 function _migrate(projectRoot, legacy) {
-  // Test suites swap HOME for a temp dir and wipe it: a hook run there with the REAL repo as cwd
-  // moved that repo's curation into the temp home, which a later test deleted (lost the
-  // claude-code repo's 46 curated scripts on 2026-10-09). Under the sandbox flag only temp-dir
-  // projects may move.
-  if (process.env.CCB_TEST_SANDBOX === '1') {
-    const back = path.relative(path.resolve(os.tmpdir()), path.resolve(projectRoot));
-    if (!back || back.startsWith('..') || path.isAbsolute(back)) throw new Error(`test sandbox: refusing to move the curation of a real project (${projectRoot})`);
-  }
+  _assertSandboxed(projectRoot);
   const home = curationHome(projectRoot);
   fs.mkdirSync(path.dirname(home), { recursive: true });
   const lock = `${home}.lock`;
@@ -428,7 +433,13 @@ function _migrate(projectRoot, legacy) {
       for (const f of _walkFiles(d.path)) {
         const dest = path.join(target, 'scripts', path.relative(d.path, f));
         fs.mkdirSync(path.dirname(dest), { recursive: true });
-        if (!fs.existsSync(dest)) fs.copyFileSync(f, dest); // a merge never overwrites the home's own copy
+        if (!fs.existsSync(dest)) { // a merge never overwrites the home's own copy
+          fs.copyFileSync(f, dest);
+          // Keep the script's age: copyFileSync resets mtime on Linux/macOS (not on Windows), and the
+          // never-used prune reads that age — every moved script looked brand new (Linux CI caught it).
+          const st = fs.statSync(f);
+          fs.utimesSync(dest, st.atime, st.mtime);
+        }
         let text = '';
         try { text = fs.readFileSync(f, 'utf8'); } catch (err) { void err; }
         // A script that already prefers CCB_PROJECT_ROOT keeps its own-location fallback on purpose.
