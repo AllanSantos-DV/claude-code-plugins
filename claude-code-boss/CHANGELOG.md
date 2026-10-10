@@ -1,5 +1,26 @@
 # Changelog
 
+## [3.2.3] - 2026-10-10
+
+### Fixed
+- **Com o Token Guard instalado, o boss não limita mais a saída dos comandos de exploração.** Os dois convivem:
+  quando o Token Guard está instalado, cortar saída grande é papel dele. A detecção só reconhecia o Token Guard
+  instalado como hook de comando, e a versão 2.x se instala como hook `http`; o boss achava que ele não estava lá
+  e envolvia `cat`/`grep`/`git log` no próprio limitador ("Saída de exploração limitada pelo boss (Token Guard não
+  instalado)"), e o Token Guard cortava a mesma saída de novo. Agora o hook `http` também conta.
+- **A identidade do projeto salva pelo dashboard agora vale.** A aba Brain gravava o marcador antigo
+  `.claude-boss-project`, que perde para o `.memory/project.json`; numa pasta já nomeada pela ferramenta
+  `project_set`, salvar no dashboard não mudava nada. Agora o dashboard grava o `.memory/project.json`, do mesmo
+  jeito que o `project_set` (os outros campos do arquivo são mantidos, e um marcador antigo é só informado).
+- **As ferramentas do servidor do Brain declaram se só leem ou se apagam (`readOnlyHint`/`destructiveHint`).**
+  Clientes que usam essas dicas (ex.: OpenDots) pediam confirmação para todas, inclusive as de consulta. No
+  Claude Code nada muda: ele continua pedindo confirmação do mesmo jeito.
+
+### Changed
+- **O código que instala e liga o servidor de memória (mcp-memory) virou uma pasta reaproveitável por outros
+  plugins** (`scripts/lib/mcp-bootstrap/`), com uma checagem que avisa quando uma cópia em outro plugin fica
+  diferente da original. Para quem usa o boss, o comportamento é o mesmo.
+
 ## [3.2.2] - 2026-10-10
 
 ### Fixed
