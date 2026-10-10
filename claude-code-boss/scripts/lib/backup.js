@@ -25,7 +25,7 @@ const os = require('os');
 const path = require('path');
 const zlib = require('zlib');
 const crypto = require('crypto');
-const { sha256File } = require('./file-hash.js');
+const { sha256File } = require('./mcp-bootstrap/file-hash.js');
 const { once } = require('events');
 
 const FORMAT = 'claude-code-boss-backup';

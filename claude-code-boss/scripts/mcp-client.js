@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-const { readDaemonUrl } = require('./lib/mcp-registry.js');
+const { readDaemonUrl } = require('./lib/mcp-bootstrap/registry.js');
 const path = require('path');
 const os = require('os');
 const https = require('https');
@@ -72,7 +72,7 @@ class McpClient extends EventEmitter {
       // The brain daemon answers MCP tools inside a session: waiting here for the server to boot
       // outlasted the tool's timeout, so the first call after a crash just timed out (BACKLOG Q59).
       // Start the launcher detached and answer NOW with a clear, retryable error.
-      const kicked = (this._kickLauncher || require('./lib/mcp-launcher.js').kickLauncher)();
+      const kicked = (this._kickLauncher || require('./lib/mcp-bootstrap/launcher.js').kickLauncher)();
       const err = new Error(kicked
         ? 'the memory server is not running — its launcher was started in the background; retry in a few seconds'
         : 'the memory server is not running and its launcher was not found (~/.mcp-memory/bin) — run backend_setup');
@@ -80,7 +80,7 @@ class McpClient extends EventEmitter {
       throw err;
     }
     console.error('[MCP] memory server not running — asking its launcher to start it...');
-    const r = await require('./lib/mcp-launcher.js').runLauncher({ timeoutMs: 60000 });
+    const r = await require('./lib/mcp-bootstrap/launcher.js').runLauncher({ timeoutMs: 60000 });
     if (!r.ok) console.error(`[MCP] the launcher could not start the memory server: ${r.error}`);
     // _connectHttp does the final health check and fails loud.
   }

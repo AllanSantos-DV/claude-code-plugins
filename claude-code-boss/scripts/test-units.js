@@ -4104,7 +4104,7 @@ test('curation home: when git cannot tell what it tracks, NOTHING is moved or de
 });
 
 test('mcp-launcher.kickLauncherVerified: a hidden launch that FAILS (VBScript off / blocked) falls back to the plain launch and says so — it reported "kicked" forever', async () => {
-  const L = require('./lib/mcp-launcher.js');
+  const L = require('./lib/mcp-bootstrap/launcher.js');
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-kickv-'));
   const env = { USERPROFILE: home, HOME: home };
   fs.mkdirSync(path.dirname(L.launcherPath(env, 'win32')), { recursive: true });
@@ -14937,7 +14937,7 @@ test('brain-status: reports the folder\'s real project id (not the folder name /
 });
 
 test('mcp-launcher (native-java ADR-023 contract): one JSON line → url; exit 1 → the [FATAL] reason, no fallback; garbage refused; not installed → missing; X.Y.Z-only jar choice; launcher needs server 2.45.5+', async () => {
-  const L = require('./lib/mcp-launcher.js');
+  const L = require('./lib/mcp-bootstrap/launcher.js');
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-launcher-'));
   try {
     const env = { USERPROFILE: home, HOME: home };
@@ -15004,7 +15004,7 @@ test('SessionStart with the memory server UP spawns NOTHING (headless `claude -p
 });
 
 test('mcp-launcher.kickLauncher on Windows goes through wscript + run-hidden.vbs (cmd.exe detached opened a VISIBLE terminal window — measured)', () => {
-  const L = require('./lib/mcp-launcher.js');
+  const L = require('./lib/mcp-bootstrap/launcher.js');
   const [cmd, argv] = L.kickCommand('C:\\u\\.mcp-memory\\bin\\mcp-memory-daemon.cmd', 'win32');
   assertEq(cmd, 'wscript.exe');
   assertEq(argv, ['//B', '//Nologo', L.RUN_HIDDEN_VBS, 'C:\\u\\.mcp-memory\\bin\\mcp-memory-daemon.cmd']);
@@ -15026,7 +15026,7 @@ test('mcp-launcher.kickLauncher on Windows goes through wscript + run-hidden.vbs
 
 test('mcp-wizard.downloadServerJar: the CPU build under its exact X.Y.Z name in ~/.mcp-memory/lib (the launcher only runs those); a -gpu name is refused', async () => {
   const w = require('./lib/mcp-wizard.js');
-  const resolverPath = require.resolve('./lib/mcp-release-resolver.js');
+  const resolverPath = require.resolve('./lib/mcp-bootstrap/release-resolver.js');
   const real = require(resolverPath);
   const https = require('https'); const realGet = https.get; const { PassThrough } = require('stream');
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-dlsrv-'));
@@ -15048,8 +15048,110 @@ test('mcp-wizard.downloadServerJar: the CPU build under its exact X.Y.Z name in 
   }
 });
 
+test('mcp-bootstrap (shared with other plugins): self-contained — only Node core or files of the folder are required', () => {
+  const dir = path.join(SCRIPTS, 'lib', 'mcp-bootstrap');
+  const core = new Set(require('module').builtinModules);
+  for (const name of fs.readdirSync(dir).filter((n) => n.endsWith('.js'))) {
+    const src = fs.readFileSync(path.join(dir, name), 'utf8');
+    for (const [, spec] of src.matchAll(/require\(\s*['"]([^'"]+)['"]\s*\)/g)) {
+      if (core.has(spec.replace(/^node:/, ''))) continue;
+      assert(/^\.\/[^/]+$/.test(spec) && fs.existsSync(path.join(dir, spec)), `${name} requires "${spec}" — a copy elsewhere would not have it`);
+    }
+  }
+});
+
+test('mcp-bootstrap: MANIFEST.json is current (edit a shared file → run "node sync.js stamp"); check catches an edited, extra, missing or behind-upstream copy; CRLF checkout hashes equal', async () => {
+  const dir = path.join(SCRIPTS, 'lib', 'mcp-bootstrap');
+  const sync = require('./lib/mcp-bootstrap/sync.js');
+  const upstreamFile = path.join(dir, sync.MANIFEST);
+  const here = await sync.check({ dir });
+  assert(here.ok, `upstream manifest is stale: ${here.problems.join(' | ')}`);
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bootsync-'));
+  try {
+    const copy = path.join(base, 'mcp-bootstrap');
+    fs.cpSync(dir, copy, { recursive: true });
+    assert((await sync.check({ dir: copy, upstream: upstreamFile })).ok, 'a fresh copy is in sync with upstream');
+    // CRLF checkout of the same content is the same copy.
+    const reg = path.join(copy, 'registry.js');
+    fs.writeFileSync(reg, fs.readFileSync(reg, 'utf8').replace(/\r?\n/g, '\r\n'));
+    assert((await sync.check({ dir: copy, upstream: upstreamFile })).ok, 'CRLF does not count as a change');
+    // Edited in place.
+    fs.appendFileSync(path.join(copy, 'launcher.js'), '\n// local patch\n');
+    let r = await sync.check({ dir: copy });
+    assert(!r.ok && /launcher\.js/.test(r.problems[0]) && !/registry/.test(r.problems[0]), JSON.stringify(r));
+    fs.cpSync(dir, copy, { recursive: true });
+    // Extra and missing files.
+    fs.writeFileSync(path.join(copy, 'extra.js'), '');
+    fs.rmSync(path.join(copy, 'file-hash.js'));
+    r = await sync.check({ dir: copy });
+    assert(!r.ok && /extra\.js/.test(r.problems[0]) && /file-hash\.js/.test(r.problems[0]), JSON.stringify(r));
+    fs.rmSync(copy, { recursive: true, force: true });
+    fs.cpSync(dir, copy, { recursive: true });
+    // Upstream moved on (re-stamped after a change) → the untouched copy is behind.
+    const up = path.join(base, 'upstream');
+    fs.cpSync(dir, up, { recursive: true });
+    fs.appendFileSync(path.join(up, 'install.js'), '\n// upstream fix\n');
+    sync.stamp(up);
+    r = await sync.check({ dir: copy, upstream: path.join(up, sync.MANIFEST) });
+    assert(!r.ok && /differs from upstream/.test(r.problems[0]) && /install\.js/.test(r.problems[0]), JSON.stringify(r));
+    // CLI exit codes.
+    const cli = (args) => require('child_process').spawnSync(process.execPath, [path.join(copy, 'sync.js'), ...args], { encoding: 'utf8', windowsHide: true });
+    assertEq(cli(['check']).status, 0);
+    const behind = cli(['check', '--upstream', path.join(up, sync.MANIFEST)]);
+    assert(behind.status === 1 && /FAIL copy differs from upstream/.test(behind.stderr), behind.stderr);
+    assertEq(cli(['check', '--upstream']).status, 2, 'missing upstream value is a usage error, not a pass');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('mcp-bootstrap.ensureLocalDaemon: live launcher → reused, nothing installed; no launcher → Java → download → --install-launcher → start; no Java → fail loud', async () => {
+  const { ensureLocalDaemon } = require('./lib/mcp-bootstrap/install.js');
+  const mk = ({ missingFirst, jar }) => {
+    const calls = [];
+    let runs = 0;
+    let installed = jar;
+    return {
+      calls,
+      L: {
+        bundledJava: () => null,
+        MIN_LAUNCHER_VERSION: '2.45.5',
+        compareVersions: require('./lib/mcp-bootstrap/launcher.js').compareVersions,
+        newestInstalledJar: () => installed,
+        runLauncher: async (o) => { calls.push(['run', o.javaHome]); runs++; return missingFirst && runs === 1 ? { ok: false, missing: true } : { ok: true, url: 'http://127.0.0.1:7777', version: '2.46.0', spawned: runs > 1 }; },
+        installLauncher: async ({ jar: j, javaBin }) => { calls.push(['install', j.version, javaBin]); return { ok: true, launcher: '/l' }; },
+      },
+      download: async () => { calls.push(['download']); installed = { path: '/lib/mcp-memory-server-2.46.0.jar', version: '2.46.0' }; },
+      setJar: (j) => { installed = j; },
+    };
+  };
+  const javaBin = path.join('/jdk', 'bin', 'java');
+  const java = async () => ({ ok: true, bin: javaBin, version: '21.0.1' });
+
+  const live = mk({ missingFirst: false });
+  const steps = [];
+  const a = await ensureLocalDaemon({}, (s, st) => steps.push(`${s}:${st}`), { launcher: live.L, java, download: live.download });
+  assertEq(a, { url: 'http://127.0.0.1:7777', version: '2.46.0', spawned: false });
+  assertEq(live.calls, [['run', path.dirname(path.dirname(javaBin))]], 'one launcher run, JAVA_HOME passed, no install/download');
+  assertEq(steps[steps.length - 1], '3:ok');
+
+  const fresh = mk({ missingFirst: true, jar: { path: '/lib/old.jar', version: '2.40.0' } });
+  const b = await ensureLocalDaemon({}, () => {}, { launcher: fresh.L, java, download: fresh.download });
+  assertEq(fresh.calls.map((c) => c[0]), ['run', 'download', 'install', 'run'], 'too-old jar → download before install');
+  assertEq(fresh.calls[2], ['install', '2.46.0', javaBin]);
+  assertEq(b.spawned, true);
+
+  const ready = mk({ missingFirst: true, jar: { path: '/lib/s.jar', version: '2.45.5' } });
+  await ensureLocalDaemon({}, () => {}, { launcher: ready.L, java, download: ready.download });
+  assertEq(ready.calls.map((c) => c[0]), ['run', 'install', 'run'], 'a recent enough jar is not downloaded again');
+
+  const noJava = mk({ missingFirst: true });
+  let err = null;
+  try { await ensureLocalDaemon({}, () => {}, { launcher: noJava.L, java: async () => ({ ok: false, error: 'Java 21+ not found' }), download: noJava.download }); } catch (e) { err = e; }
+  assert(err && /Java check failed: Java 21\+ not found/.test(err.message), String(err));
+  assertEq(noJava.calls.map((c) => c[0]), ['run'], 'nothing downloaded/installed without Java');
+});
+
 test('mcp-client: a daemon that is down is brought back by the LAUNCHER (never java -jar); a user-given serverUrl is never started; "stdio" config is served over HTTP', async () => {
-  const launcherPath = require.resolve('./lib/mcp-launcher.js');
+  const launcherPath = require.resolve('./lib/mcp-bootstrap/launcher.js');
   const realL = require(launcherPath);
   const McpClient = require('./mcp-client.js');
   let calls = 0;
