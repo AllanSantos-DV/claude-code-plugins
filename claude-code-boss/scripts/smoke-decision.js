@@ -10,6 +10,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+require('./test-temp.cjs').createTestTemp();
 const { spawnSync } = require('child_process');
 
 const ROOT = path.resolve(__dirname, '..');

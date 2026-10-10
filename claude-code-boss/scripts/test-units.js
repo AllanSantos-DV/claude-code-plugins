@@ -18,6 +18,12 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const tempHelpers = require('./test-temp.cjs');
+if (process.env.CCB_TEST_TEMP_ENTRY !== __filename) tempHelpers.runTestProcess(__filename);
+const borrowedRoot = process.env.CCB_TEST_TEMP_ROOT;
+delete process.env.CCB_TEST_TEMP_ENTRY;
+delete process.env.CCB_TEST_TEMP_ROOT;
+const TEST_TEMP = tempHelpers.createTestTemp({ borrowedRoot });
 
 const SCRIPTS = __dirname;
 const ROOT = path.resolve(SCRIPTS, '..');
@@ -82,6 +88,8 @@ const TEST_TIMEOUT_MS = Number(process.env.CCB_TEST_TIMEOUT_MS) || 120000;
 
 async function runTest({ name, fn }) {
   let timer = null;
+  const tempCheckpoint = TEST_TEMP.checkpoint();
+  let settled = false;
   try {
     const maybe = fn();
     if (maybe && typeof maybe.then === 'function') {
@@ -94,13 +102,22 @@ async function runTest({ name, fn }) {
     } else {
       void maybe;
     }
+    settled = true;
     RESULTS.push({ name, ok: true });
   } catch (err) {
+    settled = !String(err && err.message).includes('test timed out after');
     RESULTS.push({ name, ok: false, err: err && err.stack || String(err) });
   } finally {
     if (timer) clearTimeout(timer);
+    if (settled) TEST_TEMP.cleanupSince(tempCheckpoint);
   }
 }
+
+test('test temp lifecycle: success/failure cleanup, concurrent isolation and junction safety', () => {
+  require('child_process').execFileSync(process.execPath, ['--test', path.join(SCRIPTS, 'test-temp-lifecycle.cjs')], {
+    env: process.env, stdio: ['ignore', 'pipe', 'pipe'], timeout: 20000, windowsHide: true,
+  });
+});
 
 test('test egress guard: non-loopback http/https/fetch/net refused in-process AND in spawned children; loopback allowed', async () => {
   if (process.env.CCB_TEST_ALLOW_NET === '1') return;
@@ -633,7 +650,9 @@ test('brain-backend: keyword path applies minScore threshold', async () => {
 
   const backend = require('./brain-backend.js');
   try {
-    await backend.init({ mode: 'local', project: projectKey });
+    // This scenario asserts keyword scores; loading/copying an ONNX model is unrelated.
+    await backend.init({ mode: 'local', project: projectKey, skipEmbedder: true });
+    assert(!fs.existsSync(path.join(process.env.CLAUDE_PLUGIN_DATA, 'models')), 'keyword-only test must not create or copy a model cache');
 
     const baseEntry = {
       type: 'note',
@@ -9020,9 +9039,10 @@ test('FASE-F store round-trip: save→get→update fields→save→delete (opera
   const savedEnv = process.env.CLAUDE_PLUGIN_DATA;
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-faseF-'));
   process.env.CLAUDE_PLUGIN_DATA = tmp;
+  let store;
   try {
     delete require.cache[require.resolve('./brain-store.js')];
-    const store = require('./brain-store.js');
+    store = require('./brain-store.js');
     await store.init({ project: 'fasef-proj' });
     const entry = {
       id: 'ff-0001', type: 'lesson', project: 'fasef-proj',
@@ -9054,6 +9074,7 @@ test('FASE-F store round-trip: save→get→update fields→save→delete (opera
     const gone = await store.get('ff-0001');
     assert(!gone, 'pós-delete get → null');
   } finally {
+    if (store) await store.close();
     if (savedEnv === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
     else process.env.CLAUDE_PLUGIN_DATA = savedEnv;
     delete require.cache[require.resolve('./brain-store.js')];
@@ -23720,7 +23741,11 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
   ];
   for (const [tool, script, ev] of PARITY) {
     test(`Phase G parity: ${tool} == ${script} stdout (${ev.prompt || (ev.tool_input && JSON.stringify(ev.tool_input)) || ev.hook_event_name})`, async () => {
+      // Both paths must start from the same throttle state: the CLI records a
+      // firing, which otherwise suppresses the subsequent in-process hook.
+      if (tool === 'hook_active_research_detect') arstate.resetForTests();
       const cli = viaCli(script, ev, proj);
+      if (tool === 'hook_active_research_detect') arstate.resetForTests();
       const daemon = await viaTool(tool, ev, proj);
       assertEq(daemon, cli);
     });
@@ -24495,7 +24520,10 @@ test('every shipped skill has a YAML frontmatter that PARSES, with a description
   // Promise.all deixava esses testes disputarem o mesmo estado/event loop; em
   // Windows isso foi medido como timeouts falsos em /v1/models e handshake do
   // daemon. Rodar em ordem preserva a cobertura sem transformar corrida em flake.
-  for (const t of TESTS) {
+  const filter = process.env.CCB_TEST_FILTER || '';
+  const selected = filter ? TESTS.filter(t => t.name.toLowerCase().includes(filter.toLowerCase())) : TESTS;
+  if (!selected.length) { console.error(`No unit tests match ${JSON.stringify(filter)}`); process.exit(1); }
+  for (const t of selected) {
     await runTest(t);
   }
 
@@ -24512,5 +24540,12 @@ test('every shipped skill has a YAML frontmatter that PARSES, with a description
   }
   console.log('─'.repeat(60));
   console.log(`Results: ${passed} passed  ${failed.length} failed\n`);
-  process.exit(failed.length > 0 ? 1 : 0);
-})();
+  // SQLite handles must be closed BEFORE removing the suite tree on Windows.
+  // Include the initial and current instances: tests deliberately reload modules.
+  await brainStore.close();
+  await require('./brain-store.js').close();
+  require('./lib/metrics.js')._resetForTests();
+  require('./lib/metrics-store.js').close();
+  const cleaned = TEST_TEMP.cleanup();
+  process.exit(failed.length > 0 || cleaned === false ? 1 : 0);
+})().catch(err => { console.error(err); process.exit(1); });
