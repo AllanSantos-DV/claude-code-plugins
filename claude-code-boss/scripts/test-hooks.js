@@ -43,6 +43,9 @@ process.env.HOME = process.env.USERPROFILE;
 // moved into this temp home and wiped by a later test (2026-10-09).
 process.env.CCB_TEST_SANDBOX = '1';
 const HOOK_CWD = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hooks-cwd-'));
+// A project of its own: the fixtures' `cwd: "C:\\fixture"` is RELATIVE on Linux and resolves
+// against this cwd — it used to land in the real checkout (that is how CI found a project root).
+fs.writeFileSync(path.join(HOOK_CWD, 'package.json'), '{}');
 
 /**
  * Create a temp directory that mimics a minimal CLAUDE_PLUGIN_ROOT with
