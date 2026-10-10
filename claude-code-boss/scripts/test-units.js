@@ -24151,6 +24151,26 @@ test('compaction-core.planCompaction: stale results truncated with a note, every
   assert(none.ratio < cmpCore.DEFAULTS.minReductionRatio, 'nothing stale → below the minimum → the engine summary runs');
 });
 
+test('compaction-core.chooseCompaction: with a WARM cache the engine auto-compaction keeps its SUMMARY (pruning re-billed 780k tokens of cache for -12%); cold or manual still prune', () => {
+  const plan = (ratio, extra = {}) => ({ ratio, duplicatesDropped: 0, verbatimTextIntact: true, ...extra });
+  const c = (s) => cmpCore.chooseCompaction(s);
+  assertEq(c({ plan: plan(0.18), trigger: 'auto', warm: true }), { ours: false, why: 'warm-cache-summary-is-cheaper' }, 'the measured case: 18% chars cut, warm → summary');
+  assertEq(c({ plan: plan(0.26, { duplicatesDropped: 3 }), trigger: 'auto', warm: true }).ours, false, 'warm: even engine copies do not justify a cache rewrite (the summary drops them too)');
+  assertEq(c({ plan: plan(0.9), trigger: 'auto', warm: true }), { ours: true, why: 'warm-but-big-cut' }, 'above the ~85% break-even pruning still wins');
+  assertEq(c({ plan: plan(0.18), trigger: 'auto', warm: false }), { ours: true, why: 'pruned' }, 'cold cache: pruning (the next request pays the write anyway, and no text is lost)');
+  assertEq(c({ plan: plan(0.18), trigger: 'manual', warm: true }), { ours: true, why: 'pruned' }, 'a manual /compact keeps the pruning (only the engine auto-compaction is changed)');
+  assertEq(c({ plan: plan(0.05), trigger: 'manual', warm: false }), { ours: false, why: 'cut-too-small' });
+  assertEq(c({ plan: plan(0.05, { duplicatesDropped: 2 }), trigger: 'manual', warm: false }), { ours: true, why: 'engine-copies-dropped' });
+  assertEq(c({ plan: plan(0.9, { verbatimTextIntact: false }), trigger: 'manual', warm: false }).ours, false, 'never a broken transcript');
+  assertEq(cmpCore.DEFAULTS.warmMinReductionRatio, 0.85);
+  assertEq(cmpCore.isCacheWarm({ now: 1000, lastAnswerAt: 900, ttlMs: 300 }), true);
+  assertEq(cmpCore.isCacheWarm({ now: 1000, lastAnswerAt: 600, ttlMs: 300 }), false);
+  assertEq(cmpCore.isCacheWarm({ now: 1000, lastAnswerAt: null, ttlMs: 300 }), true, 'unknown → warm (auto-compaction fires right after turns)');
+  const hook = fs.readFileSync(path.join(ROOT, 'hooks', 'compaction.mjs'), 'utf8');
+  assert(/chooseCompaction\(\{ plan, trigger: e\.trigger, warm \}/.test(hook) && /isCacheWarm\(/.test(hook) && !/plan\.ratio >= ctx\.config\.minReductionRatio/.test(hook), 'the session.compact hook decides through chooseCompaction (the old ratio-only rule is gone)');
+  assert(/why: choice\.why, cacheWarm: warm/.test(hook), 'the run event records why and whether the cache was warm');
+});
+
 test('compaction-core.planCompaction: a resumed history rebuilt with the engine\'s copies — exact tool-id duplicates dropped, text never matched', () => {
   const msgs = cmpSession();
   // the engine's reconstruction after a hook compaction: the kept copies after the originals

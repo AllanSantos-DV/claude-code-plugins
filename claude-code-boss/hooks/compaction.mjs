@@ -20,7 +20,7 @@
 // Observability: every decision and cut goes to the boss metrics store through the
 // daemon (POST /hook/compaction-event → tool hook_compaction_event → scripts/compaction-event.js).
 
-import { planCompaction, decideTiming, classifyResume, estimateTokens, thresholdFor, DEFAULTS } from '../scripts/lib/compaction-core.mjs';
+import { planCompaction, decideTiming, classifyResume, estimateTokens, thresholdFor, chooseCompaction, isCacheWarm, DEFAULTS } from '../scripts/lib/compaction-core.mjs';
 
 const PERSON_ORIGINS = new Set(['composer', 'bridge', 'sdk']);
 
@@ -232,7 +232,8 @@ async function gate($, ctx, e, next) {
   if (e.turnId || !PERSON_ORIGINS.has(e.origin && e.origin.kind)) return next(e);
   // Headless (-p/SDK): the engine refuses a plugin's compaction ("not available in a headless
   // session yet") — holding the prompt there would only delay it. Manual /compact and the
-  // engine's auto threshold still go through our pruning (session.compact below).
+  // engine's auto threshold still go through session.compact below (pruning, or the engine's
+  // summary when the cache is warm).
   if (!ctx.interactive) return next(e);
   await ensureConfig($, ctx);
   // No config from the boss = don't act (pre-release audit 3.1.0: defaults said "on" even when
@@ -295,9 +296,11 @@ async function compact($, ctx, e, next) {
   if (!ctx.configLoaded || !ctx.config.enabled) return next(e);
   const t0 = await $.clock.now();
   const plan = planCompaction(e.messages, ctx.config);
-  // Dropping the engine's duplicate copies is reason enough on its own (the resumed request would
-  // otherwise carry them), whatever the ratio.
-  const ours = (plan.ratio >= ctx.config.minReductionRatio || plan.duplicatesDropped > 0) && plan.verbatimTextIntact;
+  // Pruning vs the engine's summary (compaction-core.chooseCompaction): with a WARM cache the
+  // engine's auto-compaction summary wins — pruning there rewrote 780k tokens of cache for −12%.
+  const warm = isCacheWarm({ now: t0, lastAnswerAt: ctx.lastAnswerAt, ttlMs: ttlInUse(ctx).ttlMs });
+  const choice = chooseCompaction({ plan, trigger: e.trigger, warm }, ctx.config);
+  const ours = choice.ours;
   const byReason = {};
   for (const p of plan.pruned) byReason[p.reason] = (byReason[p.reason] || 0) + 1;
   const { context } = await $.session.usage();
@@ -305,7 +308,7 @@ async function compact($, ctx, e, next) {
   const reason = ctx.compactReason || e.trigger;
   if (!ctx.pendingSettle) ctx.pendingSettle = { reason, trigger: e.trigger, tokensBefore };
   emit($, ctx, 'run', {
-    trigger: e.trigger, reason, outcome: ours ? 'pruned' : 'native-summary',
+    trigger: e.trigger, reason, outcome: ours ? 'pruned' : 'native-summary', why: choice.why, cacheWarm: warm,
     messages: e.messages.length, charsBefore: plan.charsBefore, charsAfter: ours ? plan.charsAfter : null,
     charsCut: ours ? plan.charsBefore - plan.charsAfter : 0, ratio: Number(plan.ratio.toFixed(3)),
     prunedResults: plan.pruned.length, byReason, duplicatesDropped: plan.duplicatesDropped, verbatimTextIntact: plan.verbatimTextIntact,

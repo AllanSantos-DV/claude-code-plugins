@@ -17,7 +17,8 @@
  *     cache has expired the next request pays the write anyway — so past the
  *     threshold we wait for the cache to go cold, and NEVER compact a warm cache (owner's
  *     rule, 08/10). If it never cools, the engine's own auto-compaction runs at its limit —
- *     and that one goes through our pruning too (session.compact).
+ *     and with the cache still warm its SUMMARY is kept (chooseCompaction): it reads the prefix
+ *     from the cache, while pruning would re-bill the kept 75–95% as a write (owner, 10/10).
  *   - thresholdFor: the threshold is a PERCENT of the window the engine applies right now
  *     (model limit or a smaller compaction window), so one setting fits 200K and 1M models.
  *
@@ -34,6 +35,11 @@ export const DEFAULTS = Object.freeze({
   truncateHeadChars: 300,      // what survives of a pruned result, before the note
   bigResultChars: 4000,        // an old result larger than this is truncated even if current
   minReductionRatio: 0.15,     // below this the engine's own summary runs instead
+  // With a WARM cache the engine's auto-compaction summary is the cheap one: it reads the prefix
+  // from the cache and leaves ~5% of the window. Our pruning keeps 75–95% and re-bills it as a
+  // cache write — measured 09/10: −12% for a 780k-token write (~7× the summary's cost). Pruning
+  // only beats the summary there above ~85% reduction (break-even), so that is the bar.
+  warmMinReductionRatio: 0.85,
   // TTL used while no cache write has been observed for this host. The LONGER window on
   // purpose: assuming 5 min when the contract is 1 h would compact with the cache alive.
   unknownTtlMs: 60 * 60000,
@@ -212,6 +218,43 @@ export function decideTiming(s, options = {}) {
  * @param {Partial<typeof DEFAULTS>} [options]
  * @returns {{thresholdTokens: number|null, percent: number, aboveEngine: boolean}}
  */
+/**
+ * Is the provider cache still warm? Unknown last answer → assume warm: the engine's
+ * auto-compaction fires mid-session, right after turns, and if the cache was in fact cold the
+ * summary costs about what the next cold request would have paid anyway.
+ * @param {{now:number, lastAnswerAt:(number|null), ttlMs:number}} s
+ * @returns {boolean}
+ */
+export function isCacheWarm(s) {
+  if (s.lastAnswerAt == null) return true;
+  return s.now - s.lastAnswerAt < s.ttlMs;
+}
+
+/**
+ * WHO compacts when the engine's compaction runs: our pruning (every message kept, stale tool
+ * results cut) or the engine's own summary.
+ *   - verbatim text not intact → the summary (never a broken transcript);
+ *   - the ENGINE'S AUTO compaction with a WARM cache → the summary, unless pruning cuts at least
+ *     `warmMinReductionRatio`: pruning there re-bills the kept 75–95% as a cache write while the
+ *     summary reads the prefix from the cache (owner-approved 10/10 after the measurement above);
+ *   - otherwise (cold cache, or a manual /compact) → pruning when it cuts `minReductionRatio`, or
+ *     when it drops the engine's duplicate copies of a resumed history.
+ * @param {{plan:{ratio:number, duplicatesDropped:number, verbatimTextIntact:boolean}, trigger:string, warm:boolean}} s
+ * @returns {{ours:boolean, why:string}}
+ */
+export function chooseCompaction(s, options = {}) {
+  const o = { ...DEFAULTS, ...options };
+  const { plan, trigger, warm } = s;
+  if (!plan.verbatimTextIntact) return { ours: false, why: 'verbatim-not-intact' };
+  if (warm && trigger === 'auto') {
+    return plan.ratio >= o.warmMinReductionRatio
+      ? { ours: true, why: 'warm-but-big-cut' }
+      : { ours: false, why: 'warm-cache-summary-is-cheaper' };
+  }
+  if (plan.duplicatesDropped > 0) return { ours: true, why: 'engine-copies-dropped' };
+  return plan.ratio >= o.minReductionRatio ? { ours: true, why: 'pruned' } : { ours: false, why: 'cut-too-small' };
+}
+
 export function thresholdFor(w, options = {}) {
   const o = { ...DEFAULTS, ...options };
   const pct = clampPercent(o.thresholdPercent, o);
