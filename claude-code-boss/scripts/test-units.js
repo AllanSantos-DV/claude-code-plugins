@@ -3993,6 +3993,31 @@ test('curation home: a legacy config that cannot be moved is still USED (no cura
   } finally { cp._resetConfigCache(); sc._resetCache(); fs.rmSync(proj, { recursive: true, force: true }); }
 });
 
+test('curation home: a git-TRACKED legacy config (kept in the repo) is merged ONCE — not again in every new process (it wrote a backup and a fresh notice each time)', () => {
+  const cp = require('./curation-paths.js');
+  const sc = require('./shells-config.js');
+  const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mig-tracked-'));
+  try {
+    const git = (...a) => require('child_process').execFileSync('git', a, { cwd: proj, stdio: 'ignore', windowsHide: true });
+    git('init', '-q');
+    fs.mkdirSync(path.join(proj, '.vscode', 'scripts'), { recursive: true });
+    fs.writeFileSync(path.join(proj, '.vscode', 'scripts', 'a.py'), 'print(1)\n');
+    fs.writeFileSync(path.join(proj, '.vscode', 'shells.json'), JSON.stringify({ shells: [{ id: 'a', script: '.vscode/scripts/a.py', aliases: ['python a'] }] }));
+    git('add', '.vscode');
+    cp._resetConfigCache(); sc._resetCache();
+    assertEq(sc.loadShellsConfig(proj).shells.length, 1);
+    const home = cp.curationHome(proj);
+    const backups = () => fs.readdirSync(path.join(home, 'legacy-backup')).length;
+    assertEq([backups(), fs.existsSync(path.join(proj, '.vscode', 'shells.json'))], [1, true], 'migrated once; the tracked file stays');
+    assert(cp.takeMigrationNotice(proj).keptTracked.includes('.vscode/shells.json'));
+    for (let i = 0; i < 3; i++) { cp._resetConfigCache(); sc._resetCache(); sc.loadShellsConfig(proj); } // new processes
+    assertEq([backups(), cp.takeMigrationNotice(proj)], [1, null], 'no new backup, no new notice while the tracked file is unchanged');
+    fs.writeFileSync(path.join(proj, '.vscode', 'shells.json'), JSON.stringify({ shells: [{ id: 'b', script: '.vscode/scripts/b.py', aliases: ['python b'] }] })); // a teammate's change
+    cp._resetConfigCache(); sc._resetCache();
+    assertEq(sc.loadShellsConfig(proj).shells.map((s) => s.id), ['a', 'b'], 'a CHANGED tracked file is merged again');
+  } finally { cp._resetConfigCache(); sc._resetCache(); fs.rmSync(proj, { recursive: true, force: true }); }
+});
+
 test('curation home: under CCB_TEST_SANDBOX a project OUTSIDE the temp dir is never moved (a test run moved and lost the real repo\'s curation)', () => {
   const cp = require('./curation-paths.js');
   assertEq(process.env.CCB_TEST_SANDBOX, '1', 'the suite runs sandboxed');

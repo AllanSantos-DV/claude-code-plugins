@@ -216,11 +216,23 @@ function _legacyShellsFiles(projectRoot) {
     if (!rel || path.isAbsolute(rel)) continue;
     const p = path.join(projectRoot, rel);
     if (!fs.existsSync(p)) continue;
+    const text = fs.readFileSync(p, 'utf8');
+    // Already migrated, unchanged: a git-tracked legacy file stays in the repo, and re-merging it
+    // in every new process wrote a fresh backup and overwrote the notice each time (seen live).
+    const fp = _fingerprint(text);
+    if (_migratedFingerprints(projectRoot)[rel] === fp) continue;
     let json;
-    try { json = JSON.parse(fs.readFileSync(p, 'utf8')); } catch (err) { throw new Error(`legacy ${rel} is not valid JSON: ${err.message}`); }
-    if (json && Array.isArray(json.shells)) out.push({ rel, path: p, json });
+    try { json = JSON.parse(text); } catch (err) { throw new Error(`legacy ${rel} is not valid JSON: ${err.message}`); }
+    if (json && Array.isArray(json.shells)) out.push({ rel, path: p, json, fp });
   }
   return out;
+}
+
+function _fingerprint(text) { return crypto.createHash('sha1').update(String(text)).digest('hex'); }
+
+/** {legacyRel: sha1} of the legacy configs already merged into this project's home. */
+function _migratedFingerprints(projectRoot) {
+  try { return JSON.parse(fs.readFileSync(path.join(curationHome(projectRoot), 'migrated.json'), 'utf8')); } catch (err) { void err; return {}; }
 }
 
 /**
@@ -406,6 +418,9 @@ function _migrate(projectRoot, legacy) {
     }
     for (const d of dirs) _removeEmptyDirs(d.path, projectRoot);
     for (const lf of legacy) _removeEmptyDirs(path.dirname(lf.path), projectRoot);
+    const fps = _migratedFingerprints(projectRoot);
+    for (const lf of legacy) fps[lf.rel] = lf.fp;
+    fs.writeFileSync(path.join(home, 'migrated.json'), JSON.stringify(fps, null, 2));
 
     _writeNotice(projectRoot, {
       migrated: true, merged: existed, home, entries: added, scripts: files.length,
