@@ -1,6 +1,6 @@
 # claude-code-boss
 
-Plugin para Claude Code Desktop — **v3.1.1**
+Plugin para Claude Code Desktop — **v3.2.0**
 
 **Menos repetição. Mais memória.** Com o claude-code-boss, o seu Claude Code lembra o
 que deu certo e errado em cada projeto, resume a saída barulhenta de comandos que se
