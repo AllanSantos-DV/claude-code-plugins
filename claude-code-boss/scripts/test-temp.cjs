@@ -32,6 +32,23 @@ function trackDaemonSpawns() {
   syncBuiltinESMExports();
 }
 
+/**
+ * Has `pid` exited? On POSIX a killed child stays a ZOMBIE until Node's event loop reaps it, and
+ * the synchronous wait below never yields to it — `kill(pid, 0)` keeps succeeding, so its state
+ * is read instead (`ps -o stat=`: gone or `Z` = exited). Windows reports ESRCH once it exits.
+ * Seen in the Linux CI container: every owned daemon was "not stopped" and its fixture deferred.
+ */
+function processGone(pid) {
+  try { process.kill(pid, 0); } catch (err) {
+    if (err.code === 'ESRCH') return true;
+    throw err;
+  }
+  if (process.platform === 'win32') return false;
+  const r = cp.spawnSync('ps', ['-o', 'stat=', '-p', String(pid)], { encoding: 'utf8', windowsHide: true });
+  const state = String(r.stdout || '').trim();
+  return !state || state.startsWith('Z');
+}
+
 function createTestTemp({ borrowedRoot } = {}) {
   const initialCwd = process.cwd();
   const base = borrowedRoot ? path.dirname(path.resolve(borrowedRoot)) : path.resolve(os.tmpdir());
@@ -69,10 +86,7 @@ function createTestTemp({ borrowedRoot } = {}) {
       const deadline = Date.now() + 2000;
       let exited = false;
       while (Date.now() < deadline) {
-        try { process.kill(child.pid, 0); } catch (err) {
-          if (err.code !== 'ESRCH') throw err;
-          exited = true; break;
-        }
+        if (processGone(child.pid)) { exited = true; break; }
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
       }
       if (!exited) throw new Error('owned test daemon has not stopped; preserving fixture');

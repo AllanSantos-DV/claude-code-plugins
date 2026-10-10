@@ -298,7 +298,9 @@ async function compact($, ctx, e, next) {
   const plan = planCompaction(e.messages, ctx.config);
   // Pruning vs the engine's summary (compaction-core.chooseCompaction): with a WARM cache the
   // engine's auto-compaction summary wins — pruning there rewrote 780k tokens of cache for −12%.
-  const warm = isCacheWarm({ now: t0, lastAnswerAt: ctx.lastAnswerAt, ttlMs: ttlInUse(ctx).ttlMs });
+  // Mid-turn (busy) the turn's own calls keep the cache warm, whatever the previous answer's age:
+  // judging it by the last answer alone pruned a warm cache after a long turn (audit 3.2.2).
+  const warm = ctx.busy || isCacheWarm({ now: t0, lastAnswerAt: ctx.lastAnswerAt, ttlMs: ttlInUse(ctx).ttlMs });
   const choice = chooseCompaction({ plan, trigger: e.trigger, warm }, ctx.config);
   const ours = choice.ours;
   const byReason = {};
