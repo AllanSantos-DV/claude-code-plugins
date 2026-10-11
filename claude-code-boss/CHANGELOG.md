@@ -1,5 +1,23 @@
 # Changelog
 
+## [3.2.8] - 2026-10-11
+
+### Fixed
+- **Heredoc e `node -e`/`python -c` não quebram mais no Windows.** O Bash tool do Claude Code corta pela metade
+  toda sequência de barras invertidas antes de o bash ver o comando (inclusive em aspas simples e em heredoc entre
+  aspas) e quebra heredoc com aspas simples no corpo — bugs abertos no Claude Code (#85856, #98622, #32563,
+  #90630). Antes de rodar, o boss agora move o conteúdo frágil para um arquivo e reescreve só o comando:
+  `cmd <<'EOF' … EOF` → `cmd < arquivo` (inclusive `git commit -m "$(cat <<'EOF' …)"`), `node -e '…'` →
+  `node < arquivo`, `python -c '…'` → `python - < arquivo`. O script chega byte a byte e o diretório de módulos
+  continua sendo a pasta atual. Medido nos 7 dias anteriores: 6,1–7,8% de falha em heredoc/`node -e`/`cat >
+  arquivo <<`, ~214 mil tokens de comandos e saídas com erro de escape; o replay em 28 mil comandos reais
+  reescreveria 5,7 mil, com os 4,1 mil corpos de heredoc idênticos aos que o bash produz. O que não dá para
+  reescrever com segurança (expansão de `$var` no conteúdo, argumentos depois do código, entrada padrão em uso,
+  `\\` que sobra no comando) recebe só um aviso com a orientação (Write + `node arquivo`, Edit em vez de `sed`).
+  Config `shellEscapeGuard` na config de hooks: `mode: "warn"` só avisa, `enabled: false` desliga, `block: true`
+  troca o aviso por bloqueio (desligado por padrão). Só age no Windows. Os arquivos ficam em
+  `.runtime/inline-scripts` e são apagados depois de um dia.
+
 ## [3.2.7] - 2026-10-11
 
 ### Fixed
