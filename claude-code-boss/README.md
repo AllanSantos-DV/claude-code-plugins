@@ -35,9 +35,11 @@ Nada mais a configurar.
 - **Ele aprende.** Quando você corrige o agente, a correção vira uma lição na hora. Lição
   que se repete fica mais forte, e o mesmo erro não roda duas vezes à toa.
 - **Ele compacta na hora certa.** Quando o contexto passa do limite que você escolhe (um % da janela
-  do modelo, no slider do painel) e o cache do provedor já expirou, o próximo prompt que você manda é segurado, o histórico é podado (seus pedidos e as
-  respostas ficam palavra por palavra; saem só resultados de ferramenta velhos) e o mesmo prompt
-  segue. Sem resumo, sem gastar token, e o painel mostra quanto foi cortado e o que o cache fez.
+  do modelo, no slider do painel) e o cache do provedor já expirou, o próximo prompt que você manda é segurado, o contexto é compactado e o mesmo prompt segue — na
+  hora em que regravar o cache já seria pago de qualquer jeito. Quem compacta é o resumo do próprio
+  Claude Code; a poda do boss (texto intacto, só resultados de ferramenta velhos cortados) só entra
+  quando corta 85% ou mais, porque o que ela mantém é relido a cada chamada e sai mais caro que o
+  resumo (medido). O painel mostra o que foi feito e o que o cache pagou.
 - **Painel em 0 turnos.** Digite `/dashboard`: o painel abre no navegador sem passar
   pelo modelo, nos temas Dark e Light. Numa instalação nova, ele mostra os primeiros passos.
 
@@ -231,7 +233,7 @@ Módulo de *function hook* do Claude Code (`hooks/compaction.mjs`, declarado em 
   sessão ociosa, se o contexto passou do limiar **e** o cache do provedor já expirou, o prompt é
   segurado, o `/compact` roda e o mesmo texto é reenviado como seu. Com o cache válido ele espera —
   reescrever o histórico regravaria no cache o que ainda está pago; se o cache nunca esfriar, quem age é a
-  compactação automática do próprio engine no limite dela (que também passa pela poda).
+  compactação automática do próprio engine no limite dela (com a mesma escolha abaixo).
 - **Limiar**: um % (`thresholdPercent`, padrão 30, faixa 10–80) da janela que o engine aplica naquele
   prompt — o limite do modelo ou uma janela de compactação menor (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`) —, então
   o mesmo ajuste serve a modelos de 200K e de 1M e acompanha o `/model`. Um limiar além do ponto de
@@ -240,15 +242,18 @@ Módulo de *function hook* do Claude Code (`hooks/compaction.mjs`, declarado em 
   updates; sessões abertas pegam no próximo turno).
   A validade é a **observada** nas respostas reais de cada host (`ephemeral_5m` / `ephemeral_1h`;
   medido: assinatura 1 h, um gateway de API 5 min); sem observação, assume a mais longa.
-- **O quê**: toda compactação (manual, o limiar automático do engine, a do gate) passa pela poda:
-  texto de usuário e assistente intacto; resultados de ferramenta superados (leitura refeita,
-  comando que falhou e depois passou, saída grande antiga) truncados com uma nota do motivo. Pouco a
-  cortar → o resumo do próprio engine.
+- **O quê**: em toda compactação (manual, o limiar automático do engine, a do gate) o boss calcula a
+  poda — texto de usuário e assistente intacto; resultados de ferramenta superados (leitura refeita,
+  comando que falhou e depois passou, saída grande antiga) truncados com uma nota do motivo — e só a
+  aplica se ela cortar **85% ou mais**; abaixo disso roda o resumo do próprio engine, com cache quente
+  ou frio. Motivo, medido nas transcrições reais (2026-10-11): depois de uma poda (que mantinha
+  60–95%) as chamadas seguintes liam ~600k de contexto e custavam US$0,50 cada; depois de um resumo,
+  ~110k e US$0,075. A primeira chamada: US$2,99 contra US$0,25.
 - **Retomada** (`--resume`, `-c`): depois de uma compactação feita por hook o engine recarrega o
   histórico original com as cópias intercaladas (a API passava a ver cada tool_use duas vezes e
-  rejeitava o thinking). O primeiro prompt detecta as cópias e poda antes de qualquer envio.
+  rejeitava o thinking). O primeiro prompt detecta as cópias e compacta antes de qualquer envio (o resumo também as remove).
 - **Não age** em sessão headless (`-p`/SDK: o engine não deixa um plugin compactar ali — o `/compact`
-  manual e o limiar automático continuam passando pela poda), no perfil `free`, nem com
+  manual e o limiar automático continuam passando pela mesma escolha), no perfil `free`, nem com
   `compaction.enabled: false`. Config em `hooks-config.json` → `compaction` (`thresholdPercent` 30,
   `minIntervalMinutes` 10, `preserveRecentMessages` 6); `GET/PUT /api/compaction/config`.
 - **Observabilidade**: o módulo envia cada evento ao daemon (`POST /hook/compaction-event`, mesmo
