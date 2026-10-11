@@ -29,7 +29,7 @@
  * `catch {}`; here every tolerant catch acknowledges the error (`void err;`) to
  * satisfy the boss lint rule `local/no-silent-return-catch`.
  */
-const { execFileSync } = require('child_process');
+const { execFile, execFileSync } = require('child_process');
 const fsDefault = require('fs');
 const path = require('path');
 const { loadProjectConfig, declaredProjectId, projectConfigPath } = require('./project-config.js');
@@ -119,34 +119,62 @@ function assertSafeProjectId(projectId) {
 
 // ─── git runner (injectable) ─────────────────────────────────────────────────
 
-// Read-only git answers memoized per (cwd, args) for a short TTL. Neutral in a
-// one-shot hook process; in the brain daemon (Phase G hook tools) every miss is
-// a ~50-80ms execFileSync that blocks the event loop for ALL sessions, and a
-// burst of hooks asks the same cwd the same question. A repo's toplevel/remote
-// changing inside the TTL is the accepted staleness.
+// Read-only git answers memoized per (cwd, args), stale-while-revalidate. In the brain
+// daemon (Phase G hook tools) a synchronous git spawn blocks the event loop for ALL
+// sessions: measured 2026-10-11 with 17 sessions open, the curation_guard → project-id
+// path held the main thread 1.4s in one burst (3 spawns, Windows), long enough for the
+// supervisor's /health probe (600ms + 2.5s) to call the live daemon a squatter. So only
+// the FIRST sight of a (cwd, args) runs git synchronously; an expired entry is served
+// as is while an async, unref'd refresh replaces it. A repo's toplevel/remote changing
+// is seen one refresh later — the accepted staleness. One-shot hook processes start
+// with an empty memo, so their behavior is unchanged.
 const GIT_TTL_MS = 30000;
 const GIT_CACHE_MAX = 500;
 const _gitCache = new Map();
+const _gitRefreshing = new Set();
 
 /** Run git in `cwd`; return trimmed stdout or null (never throws). */
 function defaultGit(args, cwd) {
   if (!cwd || typeof cwd !== 'string') return null;
   const key = cwd + '\0' + args.join('\0');
   const hit = _gitCache.get(key);
-  if (hit && Date.now() - hit.ts < GIT_TTL_MS) return hit.value;
+  if (hit) {
+    if (Date.now() - hit.ts >= GIT_TTL_MS) refreshGitAsync(key, args, cwd);
+    return hit.value;
+  }
   const value = runGitOnce(args, cwd);
-  if (_gitCache.size >= GIT_CACHE_MAX) _gitCache.clear();
-  _gitCache.set(key, { value, ts: Date.now() });
+  storeGit(key, value);
   return value;
+}
+
+function storeGit(key, value) {
+  if (_gitCache.size >= GIT_CACHE_MAX && !_gitCache.has(key)) _gitCache.clear();
+  _gitCache.set(key, { value, ts: Date.now() });
+}
+
+const GIT_OPTS = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000, windowsHide: true };
+const gitOut = (out) => String(out).trim() || null;
+
+/** Background refresh of an expired memo entry (one in flight per key; never holds the process open). */
+function refreshGitAsync(key, args, cwd) {
+  if (_gitRefreshing.has(key)) return;
+  _gitRefreshing.add(key);
+  try {
+    const child = execFile('git', args, { ...GIT_OPTS, cwd }, (err, stdout) => {
+      _gitRefreshing.delete(key);
+      // A failed refresh is still an answer (not a repo / no remote / git gone), as in runGitOnce.
+      storeGit(key, err ? null : gitOut(stdout));
+    });
+    child.unref();
+  } catch (err) {
+    _gitRefreshing.delete(key);
+    console.error(`[project-id] git refresh could not start (${err.message}) — keeping the previous answer`);
+  }
 }
 
 function runGitOnce(args, cwd) {
   try {
-    const out = execFileSync('git', args, {
-      cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000, windowsHide: true,
-    });
-    const s = String(out).trim();
-    return s || null;
+    return gitOut(execFileSync('git', args, { ...GIT_OPTS, cwd }));
   } catch (err) {
     void err; // not a repo / git absent / timeout → the ladder falls through
     return null;
@@ -570,5 +598,5 @@ module.exports = {
   // ── Hierarchical ancestor-spine (F2) ──
   resolveProjectChain,
   // test-only: the daemon-side git memo
-  _defaultGit: defaultGit, _gitCache, GIT_TTL_MS,
+  _defaultGit: defaultGit, _gitCache, _gitRefreshing, GIT_TTL_MS,
 };
