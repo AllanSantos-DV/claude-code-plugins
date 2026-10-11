@@ -213,6 +213,9 @@ Shipped em `claude-code-boss/config/hooks-config.json`; override do usuário em 
 | `disabledHooks` | `[]` | Hooks desligados no painel (ids das ferramentas `hook_*` servidas pelo daemon); o daemon responde `{}` sem rodá-los. Os hooks de comando (dispatchers, ensure do roteador) são infraestrutura e não entram aqui |
 | `memoryRotate.maxLines` | `150` | Rotação do MEMORY.md (max 500; CC trunca em 200) |
 | `errorGuard.enabled` | `true` | Bloqueia Bash com falha recorrente conhecida |
+| `shellEscapeGuard.enabled` / `.mode` | `true` / `"rewrite"` | Windows: move heredoc / `node -e` / `python -c` longo para arquivo e reescreve o comando (o Bash tool corrompe `\\` e aspas). `"warn"` só avisa |
+| `shellEscapeGuard.block` | `false` | O que não dá para reescrever com segurança vira `deny` em vez de aviso |
+| `shellEscapeGuard.inlineMaxChars` / `.platforms` | `300` / `["win32"]` | Tamanho a partir do qual `node -e` sem `\`/aspas/quebra é movido; onde o guard age |
 | `captureTriggerEvidence` | `false` | OPT-IN: captura snippets de triggers de shadow policies |
 | `compaction.enabled` | `true` | Compactação controlada (`hooks/compaction.mjs`); `free` desliga |
 | `compaction.thresholdPercent` | `30` | % (10–80) da janela que o engine aplica (limite do modelo ou `CLAUDE_CODE_AUTO_COMPACT_WINDOW`); acima, compacta no próximo prompt **só com o cache do provedor já expirado** — nunca com ele quente. Slider no dashboard (`PUT /api/compaction/config`, gravado aqui) |

@@ -16,6 +16,13 @@
     "enabled": true,
     "threshold": 2
   },
+  "shellEscapeGuard": {
+    "enabled": true,
+    "mode": "rewrite",
+    "block": false,
+    "inlineMaxChars": 300,
+    "platforms": ["win32"]
+  },
   "policyInject": {
     "enabled": true,
     "maxPolicies": 10,
