@@ -2807,6 +2807,39 @@ test('session-root: SessionStart records session_id → root; read back by id; u
   } finally { sr._resetMemo(); fs.rmSync(base, { recursive: true, force: true }); }
 });
 
+test('session-root: envProjectIdForRoot reads the records once per folder change (not every MCP call); new/rewritten/forgotten records invalidate it; SessionEnd forgets the session', () => {
+  const sr = require('./lib/session-root.js');
+  const sessionEnd = require('./session-end.js');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-sroot-idx-'));
+  const realRead = fs.readFileSync;
+  let reads = 0;
+  fs.readFileSync = function (p, ...rest) { if (String(p).includes('session-roots')) reads++; return realRead.call(this, p, ...rest); };
+  try {
+    sr._resetMemo();
+    for (let i = 0; i < 20; i++) sr.recordSessionRoot(`other-${i}`, `C:\\w\\other-${i}`, { base });
+    sr.recordSessionRoot('a', 'C:\\w\\p', { base, projectId: 'env/one' });
+    assertEq(sr.envProjectIdForRoot('C:\\w\\p', { base }), 'env/one', 'first call reads the folder');
+    reads = 0;
+    for (let i = 0; i < 5; i++) assertEq(sr.envProjectIdForRoot('C:\\w\\p', { base }), 'env/one');
+    assertEq(sr.envProjectIdForRoot('C:\\w\\other-3', { base }), '', 'another root of the same folder: same index');
+    assertEq(reads, 0, 'folder unchanged → no record is read again (was 21 reads per call)');
+    sr.recordSessionRoot('b', 'C:\\w\\p', { base });
+    assertEq(sr.envProjectIdForRoot('C:\\w\\p', { base }), '', 'a new record of that root invalidates the index');
+    sr.recordSessionRoot('b', 'C:\\w\\p', { base, projectId: 'env/one' });
+    assertEq(sr.envProjectIdForRoot('C:\\w\\p', { base }), 'env/one', 'a REWRITTEN record (same file) invalidates it too');
+    // SessionEnd: the ended session's record goes away, and so does its vote on the folder.
+    sr.recordSessionRoot('c', 'C:\\w\\p', { base, projectId: 'env/two' });
+    assertEq(sr.envProjectIdForRoot('C:\\w\\p', { base }), '', 'disagreeing sessions → none');
+    assertEq(sr.sessionRootFor('c', { base }), 'C:\\w\\p');
+    sessionEnd.run({ hook_event_name: 'SessionEnd', session_id: 'c' }, { base });
+    assert(!fs.existsSync(path.join(base, '.runtime', 'session-roots', 'c.json')), 'SessionEnd removes the record');
+    assertEq(sr.sessionRootFor('c', { base }), '', 'the forgotten session is not served from the memo');
+    assertEq(sr.envProjectIdForRoot('C:\\w\\p', { base }), 'env/one', 'its vote is gone from the folder index');
+    assertEq(sessionEnd.run({ hook_event_name: 'SessionEnd' }, { base }), false, 'no session_id → nothing removed');
+    assertEq(sr.forgetSessionRoot('never-started', { base }), false, 'unknown session → false, no throw');
+  } finally { fs.readFileSync = realRead; sr._resetMemo(); fs.rmSync(base, { recursive: true, force: true }); }
+});
+
 test('session-root: a daemon-served hook with project_dir "" (what Claude Code really sends) runs under the root SessionStart recorded for its session', async () => {
   const sr = require('./lib/session-root.js');
   const { runHookInline, HOOKS } = require('./lib/hook-tools.js');
