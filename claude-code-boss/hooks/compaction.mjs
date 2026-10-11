@@ -5,9 +5,9 @@
 // applies now — 200K and 1M models alike) and the provider cache has already gone cold, the
 // prompt is held, the engine's /compact runs, and the same text is sent again as the
 // person's. If the cache never cools, the engine's own auto-compaction runs at its limit —
-// through our pruning too. WHAT: our pruning (scripts/lib/compaction-core.mjs)
-// answers every compaction (manual, the engine's auto threshold, ours): text intact,
-// stale tool results truncated; too little to cut → the engine's own summary.
+// through the same choice. WHAT: every compaction (manual, the engine's auto threshold, ours)
+// runs the engine's own summary unless our pruning (scripts/lib/compaction-core.mjs: text intact,
+// stale tool results truncated) cuts >= 85% — what pruning keeps is re-read on every later call.
 // RESUME: `--resume`/`-c` reload the ORIGINAL history after a hook compaction (engine
 // behavior, measured); the first prompt re-prunes it before anything is sent.
 //
@@ -296,8 +296,8 @@ async function compact($, ctx, e, next) {
   if (!ctx.configLoaded || !ctx.config.enabled) return next(e);
   const t0 = await $.clock.now();
   const plan = planCompaction(e.messages, ctx.config);
-  // Pruning vs the engine's summary (compaction-core.chooseCompaction): with a WARM cache the
-  // engine's auto-compaction summary wins — pruning there rewrote 780k tokens of cache for −12%.
+  // Pruning vs the engine's summary (compaction-core.chooseCompaction): the summary unless pruning
+  // cuts >= 85% — warm or cold. `warm` is still recorded on the run event.
   // Mid-turn (busy) the turn's own calls keep the cache warm, whatever the previous answer's age:
   // judging it by the last answer alone pruned a warm cache after a long turn (audit 3.2.2).
   const warm = ctx.busy || isCacheWarm({ now: t0, lastAnswerAt: ctx.lastAnswerAt, ttlMs: ttlInUse(ctx).ttlMs });
