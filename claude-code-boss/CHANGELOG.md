@@ -1,5 +1,16 @@
 # Changelog
 
+## [3.2.6] - 2026-10-11
+
+### Fixed
+- **A compactação do boss não deixa mais a sessão pagando mais cache depois.** Com o cache frio ou num `/compact`
+  manual, o boss trocava o resumo do Claude Code pela própria poda, que mantinha 60–95% do contexto; esse contexto
+  era regravado no cache e relido a cada chamada seguinte. Medido nas transcrições reais: depois de uma poda as
+  chamadas custavam em média US$0,50 (contexto de ~600k) contra US$0,075 depois de um resumo (~110k), e a
+  primeira chamada US$2,99 contra US$0,25. Agora o resumo do Claude Code é o padrão em toda compactação, com cache
+  quente ou frio; a poda só entra quando corta 85% ou mais. A injeção de contexto a cada prompt não foi a causa:
+  fora das compactações o acerto de cache segue em 99%.
+
 ## [3.2.5] - 2026-10-11
 
 ### Fixed
