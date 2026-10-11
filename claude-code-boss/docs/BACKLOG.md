@@ -1,5 +1,29 @@
 # Backlog
 
+## Heredoc / `node -e` corrompidos no Windows (pedidos 90/91 do Allan via orquestrador, 2026-10-11)
+
+Causa: bugs abertos do Bash tool do Claude Code no Windows (anthropics/claude-code #85856, #98622/#98733: toda
+sequência de 2+ `\` cortada pela metade, até em aspas simples e heredoc entre aspas; #32563/#90630: heredoc com
+aspas simples no corpo → "unexpected EOF"). Reproduzido na 2.1.293: `printf %s 'a\\b'` → `a\b`; `node <<'EOF'`
+com `'C:\\Users\\x'` → `SyntaxError: Invalid hexadecimal escape sequence`. Medição (`.claude/scripts/measure-shell-escape.mjs`,
+local): 04–11/10, 23.648 Bash — heredoc 6,1% de falha (115 com sinal de escape), `node -e` 7,3% (77), `cat > x <<`
+7,8% (41), `python -c` 5,8% (24), `\\` 10,9% (21); ~214 mil tokens só em comandos/saídas com sinal de escape.
+Só 11/10: heredoc 4,0%, `node -e` 6,4%, ~33 mil tokens.
+
+- [x] **Correção automática no PreToolUse — feita em 2026-10-11 (`fix/shell-escape-guard`, 3.2.8)**: passo 0 do
+  `curation-guard.js` (único hook do matcher que pode emitir `updatedInput`) + `lib/shell-escape.js`: heredoc →
+  `< arquivo`, `node -e` → `node < arquivo`, `python -c` → `python - < arquivo`; o resto só avisa; `block` opcional,
+  desligado. 14 testes (casos reais: `\b`, aspas simples e duplas, caminho Windows, `EOF` dentro do corpo, commit
+  com `$(cat <<'EOF')`, execução antes/depois). Replay em 28.044 comandos reais: 0 erros, 5.745 reescritos,
+  4.155 corpos de heredoc idênticos aos do bash (`.claude/scripts/replay-shell-escape.mjs`, local). E2E pelo Bash tool real:
+  heredoc quebra, `node < arquivo`/`python - < arquivo` imprimem certo.
+- [x] **Adiado — medir a queda (orquestrador)**: rodar `node .claude/scripts/measure-shell-escape.mjs --since 2026-10-12`
+  depois de 2–3 dias com a 3.2.8 e comparar com a linha de base acima; eventos `shell-escape.rewritten/warned` no
+  dashboard. Ativar `block: true` só com aprovação do orquestrador/Allan.
+- [x] **Encontrado na medição, fora do escopo — `sys.path[0]` difere entre `python -c` (`''`) e `python -` (caminho
+  absoluto da pasta atual)**: os dois importam da pasta atual; só um script que muda de pasta (`os.chdir`) e depois
+  importa vê diferença. Aceito e documentado no cabeçalho do `lib/shell-escape.js`.
+
 ## Custo das sessões (pedido do Allan via orquestrador, 2026-10-11)
 
 Relatórios do custo-agente (10–11/10): sessões com o boss a US$62–120/dia, 60–70% dos turnos acima de 400k de contexto.

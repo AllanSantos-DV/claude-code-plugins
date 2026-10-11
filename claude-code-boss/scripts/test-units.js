@@ -24908,6 +24908,137 @@ test('every shipped skill has a YAML frontmatter that PARSES, with a description
   }
 });
 
+// ─── shell-escape (Windows Bash tool corrupts \\ and quoted heredocs) ─────────
+const SE_DIR = '/tmp/ccb-se';
+const sePlan = (cmd, o = {}) => require('./lib/shell-escape.js').planEscapeFix(cmd, { dir: SE_DIR, ...o });
+const seFile = (plan, i = 0) => plan.files[i].content;
+
+test('shell-escape: quoted heredoc with \\b regex, both quotes and a Windows path → payload moved byte-exact', () => {
+  const body = String.raw`const re = /\bfoo\b/; const p = 'C:\\Users\\allan'; console.log("it's", re.test('a foo b'), p);` + '\n';
+  const p = sePlan("node <<'EOF'\n" + body + 'EOF');
+  assert(p && p.command, `must rewrite, got ${JSON.stringify(p)}`);
+  assert(/^node < '\/tmp\/ccb-se\/[0-9a-f]{16}\.txt'\n?$/.test(p.command), `command: ${JSON.stringify(p.command)}`);
+  assert(seFile(p) === body, `body must be byte-exact: ${JSON.stringify(seFile(p))}`);
+  assert(!p.warn, `nothing left to warn: ${p.warn}`);
+});
+
+test('shell-escape: cat > file <<EOF keeps look-alike lines (indented EOF, EOFX) and the rest of the command', () => {
+  const p = sePlan("cat > out.txt <<'EOF'\n  EOF\nEOFX\nit's \"x\"\nEOF\necho done");
+  assert(p && p.command, 'must rewrite');
+  assert(/^cat > out\.txt < '[^']+'\necho done$/.test(p.command), `command: ${JSON.stringify(p.command)}`);
+  assert(seFile(p) === "  EOF\nEOFX\nit's \"x\"\n", `body: ${JSON.stringify(seFile(p))}`);
+});
+
+test('shell-escape: unquoted heredoc — rewritten only when bash would not expand anything', () => {
+  const plain = sePlan('cat <<EOF > a.txt\nhello world\nEOF');
+  assert(plain && plain.command && seFile(plain) === 'hello world\n', `plain: ${JSON.stringify(plain)}`);
+  const exp = sePlan('cat <<EOF\nhome=$HOME\nEOF');
+  assert(exp && !exp.command && /heredoc/.test(exp.warn), `expansion must only warn: ${JSON.stringify(exp)}`);
+});
+
+test('shell-escape: git commit -m "$(cat <<\'EOF\' … EOF)" — heredoc inside $( ) inside double quotes is rewritten', () => {
+  const body = 'fix: it\'s "quoted" (x)\n\nCo-Authored-By: a <b@c>\n';
+  const p = sePlan('git add -A && git commit -m "$(cat <<\'EOF\'\n' + body + 'EOF\n)" && git log -1');
+  assert(p && p.command, `must rewrite, got ${JSON.stringify(p)}`);
+  assert(/^git add -A && git commit -m "\$\(cat < '[^']+'\n\)" && git log -1$/.test(p.command), `command: ${JSON.stringify(p.command)}`);
+  assert(seFile(p) === body, `body: ${JSON.stringify(seFile(p))}`);
+});
+
+test('shell-escape: node -e inside a quoted string is data, never rewritten', () => {
+  const p = sePlan(`echo "run: node -e 'console.log(1)\nconsole.log(2)'" > notes.txt`);
+  assert(p === null, `quoted text is not a command: ${JSON.stringify(p)}`);
+  assert(sePlan("node -p 'process.version'") === null, 'short node -p is not at risk');
+});
+
+test('shell-escape: <<- strips leading tabs, arithmetic << and here-strings are not heredocs', () => {
+  const p = sePlan("cat <<-'X'\n\t\tindented\n\tX");
+  assert(p && p.command && seFile(p) === 'indented\n', `<<-: ${JSON.stringify(p)}`);
+  assert(sePlan('echo $((1<<2)); cat <<< "hi"') === null, 'shift / here-string are not at risk');
+});
+
+test('shell-escape: node -e with backslashes/quotes → node < file (stdin keeps cwd module resolution)', () => {
+  const p = sePlan(String.raw`node --input-type=module -e 'const s = "a\\b"; console.log(s.split("\\"))' && echo ok`);
+  assert(p && p.command && /^node --input-type=module < '[^']+\.js' && echo ok$/.test(p.command), `command: ${JSON.stringify(p && p.command)}`);
+  assert(seFile(p) === String.raw`const s = "a\\b"; console.log(s.split("\\"))`, `body: ${seFile(p)}`);
+  const dq = sePlan(String.raw`node -e "console.log(\"x\\\\y\", 'it\'s')"`);
+  assert(dq && dq.command && seFile(dq) === String.raw`console.log("x\\y", 'it\'s')`, `double-quoted body follows bash rules: ${JSON.stringify(dq)}`);
+});
+
+test('shell-escape: python -c multiline → python - < file', () => {
+  const p = sePlan("python3 -c 'import re\nprint(re.sub(r\"\\\\d\", \"#\", \"a1\"))'");
+  assert(p && p.command && /^python3 - < '[^']+\.py'$/.test(p.command), `command: ${JSON.stringify(p && p.command)}`);
+  assert(seFile(p) === 'import re\nprint(re.sub(r"\\\\d", "#", "a1"))', `body: ${seFile(p)}`);
+});
+
+test('shell-escape: unsafe inline code only warns (expansion, trailing args, stdin in use, -p)', () => {
+  for (const [cmd, why] of [
+    ['node -e "console.log(\'$HOME\\\\x\')"', 'expansion'],
+    ["node -e 'console.log(process.argv)\n' a b", 'args'],
+    ["echo hi | node -e 'let d=\"\";\nprocess.stdin.on(\"data\",c=>d+=c)'", 'stdin'],
+    ["node -p 'require(\"os\").EOL\n'", 'print'],
+  ]) {
+    const p = sePlan(cmd);
+    assert(p && !p.command && p.warn, `${why}: must warn without rewriting, got ${JSON.stringify(p)}`);
+  }
+});
+
+test('shell-escape: short one-liners and plain commands are left alone; a leftover \\\\ warns', () => {
+  assert(sePlan("node -e 'console.log(1)'") === null, 'short node -e untouched');
+  assert(sePlan('git status') === null, 'plain command untouched');
+  const g = sePlan(String.raw`grep -E '\\bfoo' x.txt`);
+  assert(g && !g.command && /double-backslash/.test(g.warn), `leftover \\\\ must warn: ${JSON.stringify(g)}`);
+  const w = sePlan("cat <<'EOF'\nx\nEOF", { mode: 'warn' });
+  assert(w && !w.command && w.warn, 'mode=warn never rewrites');
+});
+
+test('shell-escape: rewritten command runs and prints exactly what the intended script prints', () => {
+  const { spawnSync } = require('child_process');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-se-'));
+  const body = String.raw`const re = /\bfoo\b/; console.log("it's", re.test('a foo b'), 'C:\\Users\\x', "a\\\\b".length);` + '\n';
+  const p = require('./lib/shell-escape.js').planEscapeFix("node <<'EOF'\n" + body + 'EOF', { dir: dir.replace(/\\/g, '/') });
+  for (const f of p.files) fs.writeFileSync(path.join(dir, f.name), f.content, 'utf8');
+  fs.writeFileSync(path.join(dir, 'intended.js'), body, 'utf8');
+  const after = spawnSync('bash', ['-c', p.command], { encoding: 'utf8' });
+  const want = spawnSync(process.execPath, [path.join(dir, 'intended.js')], { encoding: 'utf8' });
+  if (after.error && after.error.code === 'ENOENT') return; // no bash on this runner
+  assert(after.status === 0, `rewritten command failed: ${after.stderr}`);
+  assert(after.stdout === want.stdout && want.stdout.includes('true'), `after=${JSON.stringify(after.stdout)} want=${JSON.stringify(want.stdout)}`);
+});
+
+test('curation-guard: shell-escape step rewrites (ask outside bypass, keeps other input fields), warns without a decision, denies only with block', async () => {
+  const hc = require('./lib/hooks-config.js');
+  const orig = hc.getShellEscapeGuard;
+  // Earlier tests reload modules: load curation-guard fresh so it shares THIS hooks-config.
+  delete require.cache[require.resolve('./curation-guard.js')];
+  const cg = require('./curation-guard.js');
+  const cwd = process.env.CLAUDE_PLUGIN_DATA;
+  try {
+    hc.getShellEscapeGuard = () => ({ enabled: true, mode: 'rewrite', block: false, inlineMaxChars: 300, platforms: [process.platform] });
+    const r = await cg.run({ tool_name: 'Bash', cwd, permission_mode: 'default', tool_input: { command: "node <<'EOF'\nconsole.log('a\\\\b')\nEOF", description: 'd' } });
+    const h = r.hookSpecificOutput;
+    assert(h && h.permissionDecision === 'ask' && /^node < '/.test(h.updatedInput.command) && h.updatedInput.description === 'd', `rewrite: ${JSON.stringify(r)}`);
+    const file = h.updatedInput.command.match(/'([^']+)'/)[1];
+    assert(fs.readFileSync(file, 'utf8') === "console.log('a\\\\b')\n", 'payload file written byte-exact');
+    const b = await cg.run({ tool_name: 'Bash', cwd, permission_mode: 'bypassPermissions', tool_input: { command: "cat <<'EOF'\nx\nEOF" } });
+    assert(b.hookSpecificOutput.permissionDecision === 'allow', `bypass → allow: ${JSON.stringify(b)}`);
+    const w = await cg.run({ tool_name: 'Bash', cwd, tool_input: { command: String.raw`grep -E '\\bx' f` } });
+    assert(w.hookSpecificOutput && !w.hookSpecificOutput.permissionDecision && /double-backslash/.test(w.hookSpecificOutput.additionalContext), `warn: ${JSON.stringify(w)}`);
+    hc.getShellEscapeGuard = () => ({ enabled: true, mode: 'rewrite', block: true, inlineMaxChars: 300, platforms: [process.platform] });
+    const d = await cg.run({ tool_name: 'Bash', cwd, tool_input: { command: String.raw`grep -E '\\bx' f` } });
+    assert(d.hookSpecificOutput.permissionDecision === 'deny', `block → deny: ${JSON.stringify(d)}`);
+    hc.getShellEscapeGuard = () => ({ enabled: true, mode: 'rewrite', block: false, inlineMaxChars: 300, platforms: ['no-such-os'] });
+    const off = await cg.run({ tool_name: 'Bash', cwd, tool_input: { command: "cat <<'EOF'\nx\nEOF" } });
+    assert(!off.hookSpecificOutput, `other platform → untouched: ${JSON.stringify(off)}`);
+  } finally {
+    hc.getShellEscapeGuard = orig;
+  }
+});
+
+test('hooks-config: shellEscapeGuard defaults (rewrite, block OFF, win32 only)', () => {
+  const c = require('./lib/hooks-config.js').getShellEscapeGuard();
+  assert(c.enabled === true && c.mode === 'rewrite' && c.block === false && c.inlineMaxChars === 300 && c.platforms.join() === 'win32', JSON.stringify(c));
+});
+
 // ─── Runner ──────────────────────────────────────────────────────────────────
 (async () => {
   // A suíte mexe em singletons de módulo, process.env e servidores HTTP locais.

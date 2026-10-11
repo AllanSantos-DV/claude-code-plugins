@@ -11,6 +11,9 @@
  *   curation-stop   — Stop: blocks turn until uncurated bulk gets a curated script
  *
  * Cascade:
+ *   0. Windows: a heredoc / long `node -e` / `python -c` the Bash tool would corrupt
+ *      → payload moved to a file, command rewritten (lib/shell-escape.js); what
+ *      can't be fixed safely → warning (or deny with shellEscapeGuard.block)
  *   1. Bash + command matches curated entry (path or alias)
  *      a. invoking the curated script               → abstain
  *      b. invoking the curated script with a pipe   → abstain + `curation.piped` metric
@@ -104,6 +107,49 @@ const decision = preToolUseDecision; // lib/hook-io
 const PASS = {};
 
 /**
+ * Step 0 — Windows shell-escape fix (lib/shell-escape.js). Lives here because only
+ * ONE hook on this matcher may emit `updatedInput` (see error-guard.js INVARIANT).
+ * Writes the moved payloads to the plugin's runtime dir (swept after a day).
+ * @returns {null | {command:string|null, ctx:string|null, deny:object|null}}
+ */
+function escapeFix(event) {
+  try {
+    const cfg = hooksConfig.getShellEscapeGuard();
+    if (!cfg.enabled || !cfg.platforms.includes(process.platform)) return null;
+    const fs = require('fs');
+    const path = require('path');
+    const dir = path.join(require('./lib/data-dir.js').dataDir(), '.runtime', 'inline-scripts');
+    const plan = require('./lib/shell-escape.js').planEscapeFix(event.tool_input.command, {
+      dir: dir.replace(/\\/g, '/'), inlineMaxChars: cfg.inlineMaxChars, mode: cfg.mode,
+    });
+    if (!plan) return null;
+    const mctx = { sessionId: event.session_id, cwd: event.cwd };
+    if (plan.command) {
+      fs.mkdirSync(dir, { recursive: true });
+      const now = Date.now();
+      for (const n of fs.readdirSync(dir)) {
+        const f = path.join(dir, n);
+        try { if (now - fs.statSync(f).mtimeMs > 24 * 3600e3) fs.rmSync(f, { force: true }); } catch (err) { void err; }
+      }
+      for (const f of plan.files) fs.writeFileSync(path.join(dir, f.name), f.content, 'utf8');
+      metrics.fire('shell-escape.rewritten', { kinds: plan.kinds }, mctx);
+    }
+    if (plan.warn && cfg.block) {
+      metrics.fire('shell-escape.denied', {}, mctx);
+      return { command: null, ctx: null, deny: decision('deny', { additionalContext: plan.warn, permissionDecisionReason: plan.warn }) };
+    }
+    if (plan.warn) metrics.fire('shell-escape.warned', {}, mctx);
+    const done = plan.command
+      ? `[boss] Bash no Windows: o conteúdo de ${[...new Set(plan.kinds)].join('/')} foi movido para arquivo e o comando reescrito, porque o Bash tool do Claude Code corrompe \\\\ e aspas nesse caminho (bug aberto). Próxima vez, grave o script com Write e rode o arquivo.`
+      : null;
+    return { command: plan.command, ctx: [done, plan.warn].filter(Boolean).join(' ') || null, deny: null };
+  } catch (err) {
+    hookLog('error', 'curation-guard', `shell-escape fix failed (fail-open): ${err.message}`);
+    return null;
+  }
+}
+
+/**
  * Pure detector entry point — never abstains, always returns a decision
  * object. Shared by the standalone CLI (below) and
  * `pretooluse-bash-dispatcher.js`.
@@ -111,6 +157,28 @@ const PASS = {};
  * @returns {Promise<object>}
  */
 async function run(event) {
+  const fix = event && event.tool_name === 'Bash' && event.tool_input?.command ? escapeFix(event) : null;
+  if (!fix) return cascade(event);
+  if (fix.deny) return fix.deny;
+  const ev = fix.command ? { ...event, tool_input: { ...event.tool_input, command: fix.command } } : event;
+  const out = await cascade(ev);
+  const hso = out && out.hookSpecificOutput;
+  if (hso && hso.permissionDecision === 'deny') return out;
+  if (hso) {
+    // The cascade rewrote the (already fixed) command: keep its decision, add our note.
+    hso.additionalContext = [hso.additionalContext, fix.ctx].filter(Boolean).join(' ');
+    return out;
+  }
+  if (fix.command) {
+    const mode = event.permission_mode === 'bypassPermissions' ? 'allow' : 'ask';
+    return decision(mode, { updatedInput: ev.tool_input, additionalContext: fix.ctx, ...(mode === 'ask' ? { permissionDecisionReason: fix.ctx } : {}) });
+  }
+  // Warn only: context, no decision — the user's permission flow is untouched.
+  return { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: fix.ctx } };
+}
+
+/** The curation cascade (header steps 1–4) over the — possibly escape-fixed — event. */
+async function cascade(event) {
   try {
     if (!event || event.tool_name !== 'Bash') {
       return PASS;

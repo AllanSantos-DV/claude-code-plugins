@@ -194,6 +194,23 @@ function getErrorGuard() {
 }
 
 // Not profile-controlled — read straight from the raw file (like getErrorGuard).
+// Backs the shell-escape fix in curation-guard (lib/shell-escape.js): the Bash tool
+// on Windows halves runs of backslashes and breaks quoted heredocs before bash sees
+// the command. mode: 'rewrite' (move the payload to a file, default) | 'warn' (only
+// tell the agent). block: what rewrite can't fix safely is DENIED instead of warned
+// (default OFF — the owner decides). platforms: where the bug exists.
+function getShellEscapeGuard() {
+  const se = load().shellEscapeGuard || {};
+  return {
+    enabled: se.enabled !== false,
+    mode: se.mode === 'warn' ? 'warn' : 'rewrite',
+    block: se.block === true,
+    inlineMaxChars: Number.isInteger(se.inlineMaxChars) && se.inlineMaxChars > 0 ? se.inlineMaxChars : 300,
+    platforms: Array.isArray(se.platforms) ? se.platforms : ['win32'],
+  };
+}
+
+// Not profile-controlled — read straight from the raw file (like getErrorGuard).
 // Backs the deterministic always-apply POLICY injection (SessionStart +
 // SubagentStart). Defaults ON; budgets bound how much standing-policy text may be
 // injected per session/subagent start.
@@ -497,6 +514,7 @@ module.exports = {
   getCurationGuard,
   getGraphGuard,
   getErrorGuard,
+  getShellEscapeGuard,
   getPolicyInject,
   getCaptureTriggerEvidence,
   getCuration,
