@@ -1,5 +1,40 @@
 # Backlog
 
+## Custo das sessões (pedido do Allan via orquestrador, 2026-10-11)
+
+Relatórios do custo-agente (10–11/10): sessões com o boss a US$62–120/dia, 60–70% dos turnos acima de 400k de contexto.
+Medição e simulação em `docs/research/cost-2026-10-11/` (local): `sim.js` repete as chamadas reais de 6 sessões-dia
+com outra janela/validade de cache (calibrado: o cenário atual dá 522 contra 513 reais).
+
+- [x] **Contexto chegava a ~967k antes de compactar — encontrado e corrigido em 2026-10-11 (`fix/cost-tuning`)**: o
+  `~/.claude/settings.json` tinha `CLAUDE_CODE_AUTO_COMPACT_WINDOW=1000000` (o auto-compact do engine disparava em
+  ~967k: 9 compactações da sessão claude-code, todas em 964–969k), e o gate do boss (`hooks/compaction.mjs`) só age no
+  prompt de uma pessoa com o cache frio — 2 eventos de gate em 323 turnos: o trabalho corre em turnos longos e em
+  sessões delegadas. Correção: `costTuning` (`scripts/lib/cost-tuning.js`, aplicado por `model-router-ensure.js`
+  depois das gravações do roteador) põe a janela em 300k. Simulado: US$513 → US$253 nas 6 sessões-dia. 7 testes +
+  2 mutações.
+- [x] **Cache de 5 min regravava o contexto inteiro a cada espera >5 min — encontrado e corrigido em 2026-10-11
+  (`fix/cost-tuning`)**: o gateway grava `ephemeral_5m`; na sessão claude-code de 10/10 foram 14 regravações de
+  450–770k tokens, todas DENTRO de turnos (intervalo de 5–10 min entre chamadas: testes, CI, espera de agente), sem
+  prompt no meio. Correção: `CLAUDE_CODE_PROMPT_CACHE_TTL=1h` para sessões cobradas por API (provado no gateway do
+  dono: `ephemeral_1h_input_tokens` na resposta). Simulado: US$513 → US$393 sozinho; com a janela, US$213.
+- [ ] **O gate de compactação ignora prompts que não vêm de uma pessoa** (`hooks/compaction.mjs:25`,
+  `PERSON_ORIGINS` = composer/bridge/sdk): mensagens de outra sessão chegam com `origin.kind: "peer"` e
+  notificações de tarefa com `task-notification` (visto nas transcrições de 10–11/10). Com a janela em 300k o
+  engine cobre esses casos. Proposta: só incluir `peer` se o reenvio preservar a origem (o `$.prompt.submit` com
+  `asUser` perderia o remetente para a resposta via SendMessage) — medir antes nos eventos `compaction.gate`.
+- [x] **Limiar do gate passa a ser 30% de 300k = 90k — analisado e mantido em 2026-10-11**: o gate só age com o cache
+  frio (agora 1 h ocioso). Compactar ali custa ~US$1,17 (reprocessar 90k + resumo + gravar ~50k) contra ~US$0,79 de
+  regravar os 90k sem compactar; a diferença se paga em ~40 chamadas lendo 50k em vez de 90k. Neutro; não muda o
+  padrão. Os eventos `compaction.gate`/`settled` mostram se isso mudar.
+- [ ] **Fase 2 (escalada ao orquestrador, muda o uso): modelo por tipo de tarefa** — teto do custo-agente US$78/dia
+  antes da Fase 1 (a preço de Sonnet 5.5); depois da Fase 1 o teto cai junto (~40% do custo restante).
+- [ ] **Fase 2 (escalada, muda o uso): ciclo de vida de sessão** — a sessão do vox-engine é a mesma desde 04/10
+  (~US$850 em 8 dias). Com a janela em 300k uma sessão longa passa a custar por chamada como uma nova; um aviso
+  "sessão nova por tarefa" só se os relatórios depois da Fase 1 ainda mostrarem contexto alto.
+- [ ] **Fase 3 (técnico, ganho pequeno): rajadas de investigação** — US$1–4/dia por projeto no consolidado; a
+  ferramenta que entrega o contexto pronto é do smart-tool/projeto, não do boss.
+
 - [x] **Teardown redundante de `ccb-shape-exit` — encontrado e corrigido em 2026-10-11**: o teste do código de saída removia sua pasta imediatamente com `rmSync` sem retry; EPERM no Windows mascarava a assertion original. O mesmo corpo anterior à correção de Temp reproduziu EPERM sem carregar test-temp. Agora a fixture fica sob o teardown proprietário já existente (por teste e, por fim, após o processo filho sair), preservando falhas reais e erros de limpeza. Validação: caso dirigido com Git Bash no PATH e lifecycle 6/6, sem pastas CCB retidas. Gate diagnóstico anterior: 135 hooks verdes; 1465 units verdes / 2 falhas, portanto não foi integralmente verde. A outra falha (catálogo BYOK, conexão de 300 ms no caso drip) passou isoladamente sem alterar seu timeout intencional; é sensível à carga. Achado de ambiente, fora deste reparo: `bash` do System32 resolve WSL; Node Linux não aceita o caminho C:/.../shape-output.js do teste. Gate de shell Windows deve usar Git Bash no PATH. Nenhum código de produção foi alterado.
 
 - [x] **Auditoria pré-release 3.2.3 (2026-10-10) — 3 achados baixos, corrigidos na hora (`cd55797`)**: (1) os cabeçalhos de `mcp-bootstrap/launcher.js` e `release-resolver.js` ainda traziam os nomes antigos, e essa pasta vai para outros plugins; (2) dois comentários citavam `mcp-release-resolver.js` (`mcp-wizard.js`, `test-units.js`); (3) `sync.js` ignorava subpastas sem avisar, então uma cópia com `vendor/x.js` passava como sincronizada. Agora a subpasta aparece como divergência. Teste novo (subpasta → FAIL); o sync.js antigo dava OK no mesmo caso. MANIFEST re-selado. Nada bloqueante segundo o auditor: nenhum caminho antigo carregado por código, escrita do dashboard segura, nenhuma ferramenta só-leitura grava.

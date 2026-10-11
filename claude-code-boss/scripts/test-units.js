@@ -8365,6 +8365,119 @@ test('S4 dashboard.countEntriesInDb: caches by db+wal mtime (WAL-safe) + cache d
 
 // ─── model-router-ensure: opt-in merge (shipped ⊕ DATA_DIR user-config) ──────
 const routerEnsure = require('./model-router-ensure.js');
+// ─── cost-tuning: 1 h cache + auto-compact window in settings.json env (ownership-safe) ──
+const costTuning = require('./lib/cost-tuning.js');
+const CT_WANT = { CLAUDE_CODE_PROMPT_CACHE_TTL: '1h', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '300000' };
+
+test('cost-tuning: applies both knobs on a clean env and remembers they were unset', () => {
+  const r = costTuning.planCostTuning({ KEEP: '1' }, CT_WANT, {});
+  assertEq(r.env, { KEEP: '1', ...CT_WANT });
+  assertEq(r.changed, true);
+  assertEq(r.state.applied, CT_WANT);
+  assertEq(r.state.previous, { CLAUDE_CODE_PROMPT_CACHE_TTL: null, CLAUDE_CODE_AUTO_COMPACT_WINDOW: null });
+  const again = costTuning.planCostTuning(r.env, CT_WANT, r.state);
+  assertEq(again.changed, false, 'idempotent');
+  assertEq(again.state, r.state);
+});
+
+test('cost-tuning: a LARGER user window (the 1M that compacted at ~967k) is replaced and restored on disable', () => {
+  const r = costTuning.planCostTuning({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000' }, CT_WANT, {});
+  assertEq(r.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '300000');
+  assertEq(r.state.previous.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '1000000');
+  const off = costTuning.planCostTuning(r.env, {}, r.state);
+  assertEq(off.env, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000' }, 'disable restores the previous value and removes the TTL we added');
+  assertEq(off.state.applied, {});
+});
+
+test('cost-tuning: never touches a SMALLER user window, nor a TTL the user set', () => {
+  const env = { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200000', CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' };
+  const r = costTuning.planCostTuning(env, CT_WANT, {});
+  assertEq(r.env, env);
+  assertEq(r.changed, false);
+  assertEq(r.state.applied, {}, 'nothing is ours, nothing to restore later');
+  const same = costTuning.planCostTuning({ CLAUDE_CODE_PROMPT_CACHE_TTL: '1h' }, { CLAUDE_CODE_PROMPT_CACHE_TTL: '1h' }, {});
+  assertEq(same.state.applied, {}, 'a value already equal to ours stays the user one');
+});
+
+test('cost-tuning: a value the user changes (or removes) after us is theirs — never re-applied over it', () => {
+  const first = costTuning.planCostTuning({}, CT_WANT, {});
+  const edited = { ...first.env, CLAUDE_CODE_AUTO_COMPACT_WINDOW: '900000' };
+  delete edited.CLAUDE_CODE_PROMPT_CACHE_TTL;
+  const r = costTuning.planCostTuning(edited, CT_WANT, first.state);
+  assertEq(r.env, edited, 'the larger 900000 is NOT replaced: it was set after us');
+  assertEq(r.state.yielded, { CLAUDE_CODE_PROMPT_CACHE_TTL: null, CLAUDE_CODE_AUTO_COMPACT_WINDOW: '900000' });
+  assertEq(costTuning.planCostTuning(r.env, CT_WANT, r.state).changed, false, 'stays yielded on the next session');
+  const off = costTuning.planCostTuning(r.env, {}, r.state);
+  assertEq(off.env, edited, 'disable does not "restore" over the user values');
+  const moved = costTuning.planCostTuning({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000' }, CT_WANT, r.state);
+  assertEq(moved.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '300000', 'a NEW larger value (not the yielded one) is managed again');
+});
+
+test('cost-tuning: TTL only for API-billed sessions (gateway, key, cloud) — not subscription, not our proxy', () => {
+  const ours = (u) => u.startsWith('http://127.0.0.1:13456');
+  assertEq(costTuning.apiBilled({ ANTHROPIC_BASE_URL: 'http://100.124.248.83' }, ours), true, 'own gateway');
+  assertEq(costTuning.apiBilled({ ANTHROPIC_API_KEY: 'x' }, ours), true);
+  assertEq(costTuning.apiBilled({ CLAUDE_CODE_USE_VERTEX: '1' }, ours), true);
+  assertEq(costTuning.apiBilled({ CLAUDE_CODE_USE_VERTEX: '0' }, ours), false, '"0" is off');
+  assertEq(costTuning.apiBilled({}, ours), false, 'subscription: 1 h is already the default');
+  assertEq(costTuning.apiBilled({ ANTHROPIC_BASE_URL: 'https://api.anthropic.com' }, ours), false);
+  assertEq(costTuning.apiBilled({ ANTHROPIC_BASE_URL: 'http://127.0.0.1:13456' }, ours), false, 'behind our proxy the credential is unknown');
+  const cfg = costTuning.resolveConfig({});
+  assertEq(costTuning.wanted(cfg, false), { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '300000' });
+  assertEq(costTuning.wanted(cfg, true), CT_WANT);
+  assertEq(costTuning.wanted(costTuning.resolveConfig({ enabled: false }), true), {});
+  assertEq(costTuning.resolveConfig({ cacheTtl: '2h', autoCompactWindow: 5 }), { enabled: true, cacheTtl: null, autoCompactWindow: 100000 }, 'unknown TTL off, window clamped');
+  assertEq(costTuning.resolveConfig({ autoCompactWindow: null }).autoCompactWindow, null, 'null = window not managed');
+});
+
+test('cost-tuning: shipped default ON (300k + 1h); the free profile turns it off (so the shipped block carries no enabled key)', () => {
+  const hc = require('./lib/hooks-config.js');
+  const file = hc.userConfigPath();
+  assert(file.startsWith(process.env.USERPROFILE), `the suite's temp HOME, never the real one (${file})`);
+  const prev = fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : null;
+  try {
+    if (prev != null) fs.unlinkSync(file);
+    hc._resetCache();
+    assertEq(hc.getCostTuning(), { enabled: true, cacheTtl: '1h', autoCompactWindow: 300000 });
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, JSON.stringify({ profile: 'free' }));
+    hc._resetCache();
+    assertEq(hc.getCostTuning().enabled, false);
+  } finally {
+    if (prev == null) { try { fs.unlinkSync(file); } catch (err) { void err; } } else fs.writeFileSync(file, prev);
+    hc._resetCache();
+  }
+});
+
+test('cost-tuning: applyCostTuning writes the temp HOME settings.json, keeps foreign keys, restores on disable', () => {
+  const hc = require('./lib/hooks-config.js');
+  const settings = path.join(os.homedir(), '.claude', 'settings.json');
+  const stateFile = path.join(require('./lib/data-dir.js').globalDir(), 'cost-tuning-state.json');
+  assert(settings.startsWith(process.env.USERPROFILE) && stateFile.startsWith(process.env.USERPROFILE), 'temp HOME only');
+  const ucfg = hc.userConfigPath();
+  const keep = [settings, stateFile, ucfg].map((f) => [f, fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : null]);
+  try {
+    for (const [f] of keep) { try { fs.unlinkSync(f); } catch (err) { void err; } }
+    hc._resetCache();
+    fs.mkdirSync(path.dirname(settings), { recursive: true });
+    fs.writeFileSync(settings, JSON.stringify({ env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000', BRAIN_HTTP_PORT: '38217' }, hooks: { X: 1 } }));
+    assertEq(routerEnsure.applyCostTuning({ ANTHROPIC_BASE_URL: 'http://100.124.248.83' }), true);
+    const on = JSON.parse(fs.readFileSync(settings, 'utf8'));
+    assertEq(on.env, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '300000', BRAIN_HTTP_PORT: '38217', CLAUDE_CODE_PROMPT_CACHE_TTL: '1h' });
+    assertEq(on.hooks, { X: 1 }, 'the rest of settings.json is untouched');
+    fs.mkdirSync(path.dirname(ucfg), { recursive: true });
+    fs.writeFileSync(ucfg, JSON.stringify({ costTuning: { enabled: false } }));
+    hc._resetCache();
+    assertEq(routerEnsure.applyCostTuning({ ANTHROPIC_BASE_URL: 'http://100.124.248.83' }), true);
+    assertEq(JSON.parse(fs.readFileSync(settings, 'utf8')).env, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000', BRAIN_HTTP_PORT: '38217' }, 'off → the user 1M is back');
+    fs.writeFileSync(stateFile, '{broken');
+    assertEq(routerEnsure.applyCostTuning({}), false, 'an unreadable state fails loud and leaves settings.json alone');
+  } finally {
+    for (const [f, v] of keep) { if (v == null) { try { fs.unlinkSync(f); } catch (err) { void err; } } else fs.writeFileSync(f, v); }
+    hc._resetCache();
+  }
+});
+
 
 test('mergeRouterConfig: sem override → shipped inalterado (enabled:false fica false)', () => {
   const m = routerEnsure.mergeRouterConfig({ enabled: false, port: 13456, nim: { apiKey: '' } }, null);

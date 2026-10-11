@@ -61,6 +61,10 @@
     "minIntervalMinutes": 10,
     "preserveRecentMessages": 6
   },
+  "costTuning": {
+    "cacheTtl": "1h",
+    "autoCompactWindow": 300000
+  },
   "verifyNudge": {
     "maxBlocks": 1,
     "testPatterns": []

@@ -1,5 +1,22 @@
 # Changelog
 
+## [Unreleased]
+
+### Fixed
+- **Sessões longas não chegam mais a ~1 milhão de tokens de contexto antes de compactar.** No início de cada sessão
+  o boss agora ajusta dois valores do `env` do `~/.claude/settings.json` (bloco `costTuning` da config de hooks):
+  - `CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000`: com a janela em 1M o Claude Code só compactava perto de 967k, e
+    cada chamada até lá relia o contexto inteiro. O controle do próprio boss só age no prompt de uma pessoa com o
+    cache frio, então não pegava turnos longos nem sessões delegadas. Com 300k o Claude Code compacta perto de 267k,
+    inclusive no meio do turno, usando o resumo dele.
+  - `CLAUDE_CODE_PROMPT_CACHE_TTL=1h` (só com chave de API, gateway ou provedor de nuvem; assinatura já usa 1 h):
+    com cache de 5 min, uma ferramenta ou espera acima de 5 min (testes, CI, agente em segundo plano) fazia a
+    chamada seguinte regravar todo o contexto. Uma sessão real teve 14 regravações de 450–770k tokens num dia.
+  Simulado nas transcrições reais de 6 sessões-dia: US$513 → ~US$210. Um valor maior que o nosso é trocado e
+  guardado, e volta quando o recurso é desligado (`costTuning.enabled: false` ou perfil `free`). Um valor que você
+  mudar depois disso, uma janela menor que a nossa ou um TTL seu não são tocados. Vale a partir da próxima sessão:
+  sessões abertas continuam com o valor antigo até reiniciar.
+
 ## [3.2.6] - 2026-10-11
 
 ### Fixed
