@@ -11,15 +11,25 @@
  *
  * SessionStart runs as a `command` hook, where CLAUDE_PROJECT_DIR IS set: it records
  * session_id → root here; the daemon reads it back by session_id. Files live under the
- * plugin data dir (shared by the command hook and the daemon), pruned after 7 days.
+ * plugin data dir (shared by the command hook and the daemon); SessionEnd removes the
+ * ended session's file (session-end.js), and files older than 7 days are pruned (sessions
+ * that died without a SessionEnd).
  */
 const fs = require('fs');
 const path = require('path');
 const { dataDir } = require('./data-dir.js');
+const { writeJsonAtomic } = require('./atomic-write.js');
 
 const TTL_MS = 7 * 86400_000;
 const MEMO_MAX = 256;
 const _memo = new Map();
+// Per records folder: { mtimeMs, byRoot: Map<normalized root, Set<projectId>> }. The
+// daemon asks envProjectIdForRoot on EVERY model MCP call; re-reading every record each
+// time (123 files measured 2026-10-11) held its main thread 145–210ms per burst. Rebuilt
+// only when the folder's mtime moves — records are created/replaced by rename (atomic
+// write) and removed by unlink, all of which touch the folder's mtime.
+const _rootIndex = new Map();
+const ROOT_INDEX_MAX = 16;
 
 const safeId = (sid) => String(sid || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
 const dirOf = (base) => path.join(base || dataDir(), '.runtime', 'session-roots');
@@ -37,7 +47,10 @@ function recordSessionRoot(sessionId, projectDir, { base, projectId } = {}) {
     fs.mkdirSync(dir, { recursive: true });
     const rec = { projectDir, at: Date.now() };
     if (projectId) rec.projectId = String(projectId);
-    fs.writeFileSync(path.join(dir, `${id}.json`), JSON.stringify(rec));
+    // Rename, not an in-place write: rewriting a session's record must move the folder's
+    // mtime, or the root index above would keep its old projectId.
+    writeJsonAtomic(path.join(dir, `${id}.json`), rec);
+    _memo.delete(`${base || ''}|${id}`);
     const now = Date.now();
     for (const f of fs.readdirSync(dir)) {
       const p = path.join(dir, f);
@@ -81,24 +94,58 @@ function sessionRootFor(sessionId, opts) { return sessionRecordFor(sessionId, op
  */
 function envProjectIdForRoot(root, { base } = {}) {
   if (!root) return '';
-  const norm = (p) => { const r = path.resolve(String(p)); return process.platform === 'win32' ? r.toLowerCase() : r; };
-  const want = norm(root);
-  const ids = new Set();
-  let dir;
-  try { dir = fs.readdirSync(dirOf(base)); } catch (err) {
-    if (err.code !== 'ENOENT') console.error(`[session-root] list failed: ${err.message}`);
-    return '';
-  }
-  for (const f of dir) {
-    if (!f.endsWith('.json')) continue;
-    try {
-      const j = JSON.parse(fs.readFileSync(path.join(dirOf(base), f), 'utf8'));
-      if (j.projectDir && norm(j.projectDir) === want) ids.add(String(j.projectId || ''));
-    } catch (err) { void err; /* raced with a write/prune: skip that record */ }
-  }
-  return ids.size === 1 ? [...ids][0] : '';
+  const byRoot = rootIndexOf(dirOf(base));
+  const ids = byRoot && byRoot.get(normRoot(root));
+  return ids && ids.size === 1 ? [...ids][0] : '';
 }
 
-function _resetMemo() { _memo.clear(); }
+const normRoot = (p) => { const r = path.resolve(String(p)); return process.platform === 'win32' ? r.toLowerCase() : r; };
 
-module.exports = { recordSessionRoot, sessionRecordFor, sessionRootFor, envProjectIdForRoot, _resetMemo };
+/** Root → declared ids of every record in `dir`, re-read only when the folder changed; null when unreadable. */
+function rootIndexOf(dir) {
+  let mtimeMs;
+  try { mtimeMs = fs.statSync(dir).mtimeMs; } catch (err) {
+    if (err.code !== 'ENOENT') console.error(`[session-root] stat failed: ${err.message}`);
+    return null;
+  }
+  const hit = _rootIndex.get(dir);
+  if (hit && hit.mtimeMs === mtimeMs) return hit.byRoot;
+  let names;
+  try { names = fs.readdirSync(dir); } catch (err) {
+    if (err.code !== 'ENOENT') console.error(`[session-root] list failed: ${err.message}`);
+    return null;
+  }
+  const byRoot = new Map();
+  for (const f of names) {
+    if (!f.endsWith('.json')) continue;
+    try {
+      const j = JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8'));
+      if (!j.projectDir) continue;
+      const k = normRoot(j.projectDir);
+      if (!byRoot.has(k)) byRoot.set(k, new Set());
+      byRoot.get(k).add(String(j.projectId || ''));
+    } catch (err) { void err; /* raced with a write/prune: skip that record */ }
+  }
+  // Keyed by the mtime read BEFORE listing: a record landing mid-read moves it again.
+  if (_rootIndex.size >= ROOT_INDEX_MAX && !_rootIndex.has(dir)) _rootIndex.clear();
+  _rootIndex.set(dir, { mtimeMs, byRoot });
+  return byRoot;
+}
+
+/** Remove the record of an ended session (SessionEnd). Returns true when a record was removed. */
+function forgetSessionRoot(sessionId, { base } = {}) {
+  const id = safeId(sessionId);
+  if (!id) return false;
+  _memo.delete(`${base || ''}|${id}`);
+  try {
+    fs.unlinkSync(path.join(dirOf(base), `${id}.json`));
+    return true;
+  } catch (err) {
+    if (err.code !== 'ENOENT') console.error(`[session-root] forget failed for ${id}: ${err.message}`);
+    return false;
+  }
+}
+
+function _resetMemo() { _memo.clear(); _rootIndex.clear(); }
+
+module.exports = { recordSessionRoot, sessionRecordFor, sessionRootFor, envProjectIdForRoot, forgetSessionRoot, _resetMemo };
