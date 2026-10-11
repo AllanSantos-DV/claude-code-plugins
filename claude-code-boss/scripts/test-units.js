@@ -5669,16 +5669,26 @@ test('project-id: climb cap (8 levels) and the memory-off refusal marker (nags s
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
 
-test('project-id defaultGit: memoized per (cwd,args) within the TTL (daemon event loop is not re-blocked)', () => {
+test('project-id defaultGit: memoized per (cwd,args); an expired entry is served stale and refreshed async (daemon event loop is not re-blocked)', async () => {
   const pid = require(path.join(ROOT, 'scripts', 'lib', 'project-id.js'));
   pid._gitCache.clear();
   const first = pid._defaultGit(['rev-parse', '--show-toplevel'], ROOT);
   assert(first && pid._gitCache.size === 1, 'first call runs git and stores the answer');
-  const entry = [...pid._gitCache.values()][0];
+  const key = [...pid._gitCache.keys()][0];
+  const entry = pid._gitCache.get(key);
   entry.value = 'MEMO-SENTINEL';
   assertEq(pid._defaultGit(['rev-parse', '--show-toplevel'], ROOT), 'MEMO-SENTINEL', 'second call inside the TTL is served from the memo');
   entry.ts = Date.now() - pid.GIT_TTL_MS - 1;
-  assertEq(pid._defaultGit(['rev-parse', '--show-toplevel'], ROOT), first, 'an expired entry re-runs git');
+  // Expired: answered from the memo in the same tick (no synchronous git), refresh in flight.
+  assertEq(pid._defaultGit(['rev-parse', '--show-toplevel'], ROOT), 'MEMO-SENTINEL', 'an expired entry is served stale, never re-runs git synchronously');
+  assert(pid._gitRefreshing.has(key), 'an expired entry starts one background refresh');
+  pid._defaultGit(['rev-parse', '--show-toplevel'], ROOT);
+  assertEq(pid._gitRefreshing.size, 1, 'a second expired read does not start a second refresh');
+  const deadline = Date.now() + 10000;
+  while (pid._gitRefreshing.has(key) && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+  assert(!pid._gitRefreshing.has(key), 'the background refresh finishes');
+  assertEq(pid._defaultGit(['rev-parse', '--show-toplevel'], ROOT), first, 'the refresh replaced the stale answer with the real one');
+  assert(Date.now() - pid._gitCache.get(key).ts < pid.GIT_TTL_MS, 'the refreshed entry is fresh again');
   assertEq(pid._defaultGit(['rev-parse', '--show-toplevel'], ''), null, 'no cwd → null, nothing cached');
   pid._gitCache.clear();
 });
