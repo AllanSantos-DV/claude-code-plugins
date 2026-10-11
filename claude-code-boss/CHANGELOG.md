@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [3.2.7] - 2026-10-11
 
 ### Fixed
 - **Sessões longas não chegam mais a ~1 milhão de tokens de contexto antes de compactar.** No início de cada sessão
