@@ -1,5 +1,14 @@
 # Changelog
 
+## [3.2.5] - 2026-10-11
+
+### Fixed
+- **O daemon do Brain não relê mais todos os registros de sessão a cada chamada de ferramenta do modelo.** Para
+  saber o id de projeto de uma pasta, ele lia de forma síncrona os registros que o início de cada sessão grava
+  (123 numa máquina real), segurando a thread que atende todas as sessões por até ~200 ms a cada vez. Agora a
+  leitura só se repete quando a pasta dos registros muda, e um hook `SessionEnd` novo apaga o registro da sessão
+  que terminou (os de sessões que morreram sem encerrar continuam saindo depois de 7 dias).
+
 ## [3.2.4] - 2026-10-11
 
 ### Fixed
