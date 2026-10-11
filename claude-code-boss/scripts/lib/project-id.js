@@ -152,7 +152,7 @@ function storeGit(key, value) {
   _gitCache.set(key, { value, ts: Date.now() });
 }
 
-const GIT_OPTS = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000, windowsHide: true };
+const GIT_OPTS = { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 5000 };
 const gitOut = (out) => String(out).trim() || null;
 
 /** Background refresh of an expired memo entry (one in flight per key; never holds the process open). */
@@ -160,7 +160,7 @@ function refreshGitAsync(key, args, cwd) {
   if (_gitRefreshing.has(key)) return;
   _gitRefreshing.add(key);
   try {
-    const child = execFile('git', args, { ...GIT_OPTS, cwd }, (err, stdout) => {
+    const child = execFile('git', args, { ...GIT_OPTS, cwd, windowsHide: true }, (err, stdout) => {
       _gitRefreshing.delete(key);
       // A failed refresh is still an answer (not a repo / no remote / git gone), as in runGitOnce.
       storeGit(key, err ? null : gitOut(stdout));
@@ -174,7 +174,7 @@ function refreshGitAsync(key, args, cwd) {
 
 function runGitOnce(args, cwd) {
   try {
-    return gitOut(execFileSync('git', args, { ...GIT_OPTS, cwd }));
+    return gitOut(execFileSync('git', args, { ...GIT_OPTS, cwd, windowsHide: true }));
   } catch (err) {
     void err; // not a repo / git absent / timeout → the ladder falls through
     return null;
