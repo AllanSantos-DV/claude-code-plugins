@@ -95,6 +95,7 @@ const PROFILE_PRESETS = {
     // learning nag) but free's contract is "no blocking, ever" — so off here.
     graphGuard:       { enabled: false },
     compaction:       { enabled: false },
+    costTuning:       { enabled: false },
   },
 };
 
@@ -320,6 +321,13 @@ function getCompaction() {
   };
 }
 
+// Session cost knobs kept in settings.json env (lib/cost-tuning.js, applied by
+// model-router-ensure at SessionStart). Profile-aware: `free` turns it off (and the
+// next SessionStart restores what was there before).
+function getCostTuning() {
+  return require('./cost-tuning.js').resolveConfig(_resolved().costTuning);
+}
+
 /**
  * Persist the user's compaction choice (the dashboard slider) to the UPDATE-SAFE
  * globalDir()/hooks/user-config.json — never the shipped file (BACKLOG Q38). Only the
@@ -503,6 +511,7 @@ module.exports = {
   getAutoContinue,
   getSessionSummary,
   getCompaction,
+  getCostTuning,
   saveCompaction,
   saveOverrides,
   isHookDisabled,

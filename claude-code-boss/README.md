@@ -263,6 +263,14 @@ Módulo de *function hook* do Claude Code (`hooks/compaction.mjs`, declarado em 
   `cache.turn` (por chamada de API: host, tipo de credencial, modelo, cache lido/gravado, janela
   contratada, primeira chamada depois de uma compactação). Painel **Compaction & cache** na Home,
   `GET /api/metrics/compaction` e o log de eventos do Insights.
+- **Janela e validade do cache** (`costTuning`, `scripts/lib/cost-tuning.js`): no início de cada sessão o boss
+  grava no `env` do `~/.claude/settings.json` `CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000` (o engine compacta perto de
+  267k, inclusive no meio de um turno longo ou numa sessão delegada, onde o gate acima não age) e, só com chave
+  de API, gateway ou provedor de nuvem, `CLAUDE_CODE_PROMPT_CACHE_TTL=1h` (com 5 min, cada espera maior regravava
+  o contexto inteiro). Uma janela sua maior que a nossa é trocada e guardada em
+  `~/.claude/claude-code-boss/cost-tuning-state.json`; volta com `costTuning.enabled: false` ou no perfil `free`.
+  Um valor que você mudar depois, uma janela menor ou um TTL seu ficam como estão. Config: `cacheTtl` (`1h` ou
+  `null`), `autoCompactWindow` (100000–1000000, ou `null` para não mexer). Vale a partir da próxima sessão.
 
 ## Brain KB
 

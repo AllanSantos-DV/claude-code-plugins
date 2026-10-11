@@ -36,7 +36,8 @@ const { spawn, execSync, execFileSync } = require('child_process');
 const shim   = require('./model-router-shim.js');
 const { resolveMode } = require('./lib/router-mode.js');
 const { writeJsonAtomic } = require('./lib/atomic-write.js');
-const { dataDir } = require('./lib/data-dir.js');
+const { dataDir, globalDir } = require('./lib/data-dir.js');
+const costTuning = require('./lib/cost-tuning.js');
 const { routerUserConfigPath, backfillRouterUserConfig } = require('./lib/router-config-path.js');
 const { configFingerprint } = require('./lib/router-fingerprint.js');
 const upstreamProfile = require('../servers/model-router/upstream-profile.js');
@@ -656,6 +657,42 @@ function applySettingsTuning(on) {
 
 // Remove SÓ o nosso bundle (base_url localhost + os 2 env que gravamos). Nunca
 // apaga uma ANTHROPIC_BASE_URL custom nem um valor deliberado do usuário.
+// Session cost knobs (lib/cost-tuning.js): 1 h cache for API-billed sessions + the engine's
+// auto-compact window. Here, not in the SessionStart dispatcher, because this script already
+// read-modify-writes settings.json — two hooks writing it in parallel would lose a write.
+// The ownership state lives in the global dir (settings.json is global, the data dir can move).
+const COST_TUNING_STATE = path.join(globalDir(), 'cost-tuning-state.json');
+function applyCostTuning(env = process.env) {
+  const s = readSettings();
+  if (s === null) return false;
+  let state = {};
+  try {
+    if (fs.existsSync(COST_TUNING_STATE)) state = JSON.parse(fs.readFileSync(COST_TUNING_STATE, 'utf-8'));
+  } catch (e) {
+    log(`AVISO: ${COST_TUNING_STATE} ilegível (${e.message}) — cost-tuning não mexe no settings.json.`);
+    return false;
+  }
+  const cfg = require('./lib/hooks-config.js').getCostTuning();
+  const want = costTuning.wanted(cfg, costTuning.apiBilled(env, isOurProxyUrl));
+  const plan = costTuning.planCostTuning(s.env || {}, want, state);
+  if (!plan.changed && JSON.stringify(plan.state) === JSON.stringify(state)) return true;
+  try {
+    // State first: a crash between the two writes leaves us owning a value not yet written
+    // (next run sees it differ and yields) — never a written value we forgot we own.
+    fs.mkdirSync(path.dirname(COST_TUNING_STATE), { recursive: true });
+    writeJsonAtomic(COST_TUNING_STATE, plan.state);
+    if (plan.changed) {
+      if (Object.keys(plan.env).length === 0) delete s.env; else s.env = plan.env;
+      writeSettings(s);
+    }
+    for (const n of plan.notes) log(`settings.json (cost-tuning): ${n}`);
+    return true;
+  } catch (e) {
+    log(`AVISO: cost-tuning não gravou o settings.json: ${e.message}`);
+    return false;
+  }
+}
+
 function disableSettingsRouting() {
   const s = readSettings();
   if (s === null || !s.env) return;
@@ -1003,6 +1040,9 @@ async function main() {
   // Echo the REAL event (see run()): a fixed name makes Claude Code reject the hook.
   const hookEventName = hookInput.hook_event_name || hookInput.hookEventName || 'UserPromptSubmit';
   const additionalContext = await run(hookInput);
+  // After run(): its own tuning writes (which remove a window equal to the router's) go first,
+  // so ours is the last word and is never mistaken for a value the user removed.
+  if (process.env.CCB_ISOLATED !== '1') applyCostTuning();
   if (additionalContext) {
     process.stdout.write(JSON.stringify({
       hookSpecificOutput: { hookEventName, additionalContext },
@@ -1023,6 +1063,6 @@ if (require.main === module) {
 // healthCheck/probeAlive/readRouterToken exportados p/ os testes de verify-before-trust.
 module.exports = { run, mergeRouterConfig, readConfig, healthCheck, probeAlive, readRouterToken,
   resolveAutoCompactWindow, planEnableEnv, planDisableEnv, enableSettingsRouting, disableSettingsRouting,
-  contextTuningEnabled, planTuningEnv, planTuningRemoval, applySettingsTuning,
+  contextTuningEnabled, planTuningEnv, planTuningRemoval, applySettingsTuning, applyCostTuning,
   // servesThisBuild/processCommandLine/normPath exportados p/ os testes de troca-de-build no boot.
   servesThisBuild, processCommandLine, normPath, sessionGateway, isOurProxyUrl };
