@@ -34,12 +34,15 @@ export const DEFAULTS = Object.freeze({
   preserveRecentMessages: 6,   // newest messages never touched (the first is always kept)
   truncateHeadChars: 300,      // what survives of a pruned result, before the note
   bigResultChars: 4000,        // an old result larger than this is truncated even if current
-  minReductionRatio: 0.15,     // below this the engine's own summary runs instead
-  // With a WARM cache the engine's auto-compaction summary is the cheap one: it reads the prefix
-  // from the cache and leaves ~5% of the window. Our pruning keeps 75–95% and re-bills it as a
-  // cache write — measured 09/10: −12% for a 780k-token write (~7× the summary's cost). Pruning
-  // only beats the summary there above ~85% reduction (break-even), so that is the bar.
-  warmMinReductionRatio: 0.85,
+  // Below this cut the engine's own summary runs instead — warm or cold, auto or manual. The
+  // summary leaves ~2–5% of the context; our pruning keeps the rest, which every later call
+  // re-reads (and the first one re-writes). Measured in the real transcripts 2026-10-11
+  // (docs/research/compaction-cache): after a pruning the next calls averaged a 600k context and
+  // US$0.50/call, after a summary 110k and US$0.075/call; the first call US$2.99 vs US$0.25. A cold
+  // cache does not change it: the summary call costs ~pre × US$5/MTok once, pruning by r saves
+  // ~r × that and re-reads (0.95 − r) × pre × US$0.20/MTok per call — break-even after
+  // 25r/(0.95 − r) calls (~7 at r = 0.2), and sessions run ~185–309 calls between compactions.
+  minReductionRatio: 0.85,
   // TTL used while no cache write has been observed for this host. The LONGER window on
   // purpose: assuming 5 min when the contract is 1 h would compact with the cache alive.
   unknownTtlMs: 60 * 60000,
@@ -234,25 +237,19 @@ export function isCacheWarm(s) {
  * WHO compacts when the engine's compaction runs: our pruning (every message kept, stale tool
  * results cut) or the engine's own summary.
  *   - verbatim text not intact → the summary (never a broken transcript);
- *   - the ENGINE'S AUTO compaction with a WARM cache → the summary, unless pruning cuts at least
- *     `warmMinReductionRatio`: pruning there re-bills the kept 75–95% as a cache write while the
- *     summary reads the prefix from the cache (owner-approved 10/10 after the measurement above);
- *   - otherwise (cold cache, or a manual /compact) → pruning when it cuts `minReductionRatio`, or
- *     when it drops the engine's duplicate copies of a resumed history.
+ *   - pruning only when it cuts at least `minReductionRatio` (85%), whatever the trigger (auto,
+ *     manual, ours) and the cache state: below it the kept context is re-read on every later call
+ *     and costs more than the summary (measured — see DEFAULTS). The summary also drops the
+ *     engine's duplicate copies of a resumed history, so they no longer force a pruning.
+ * `trigger`/`warm` stay in the input: the run event records them.
  * @param {{plan:{ratio:number, duplicatesDropped:number, verbatimTextIntact:boolean}, trigger:string, warm:boolean}} s
  * @returns {{ours:boolean, why:string}}
  */
 export function chooseCompaction(s, options = {}) {
   const o = { ...DEFAULTS, ...options };
-  const { plan, trigger, warm } = s;
+  const { plan } = s;
   if (!plan.verbatimTextIntact) return { ours: false, why: 'verbatim-not-intact' };
-  if (warm && trigger === 'auto') {
-    return plan.ratio >= o.warmMinReductionRatio
-      ? { ours: true, why: 'warm-but-big-cut' }
-      : { ours: false, why: 'warm-cache-summary-is-cheaper' };
-  }
-  if (plan.duplicatesDropped > 0) return { ours: true, why: 'engine-copies-dropped' };
-  return plan.ratio >= o.minReductionRatio ? { ours: true, why: 'pruned' } : { ours: false, why: 'cut-too-small' };
+  return plan.ratio >= o.minReductionRatio ? { ours: true, why: 'big-cut' } : { ours: false, why: 'summary-is-cheaper' };
 }
 
 export function thresholdFor(w, options = {}) {
