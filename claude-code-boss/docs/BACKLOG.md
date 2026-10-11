@@ -18,21 +18,23 @@ com outra janela/validade de cache (calibrado: o cenário atual dá 522 contra 5
   450–770k tokens, todas DENTRO de turnos (intervalo de 5–10 min entre chamadas: testes, CI, espera de agente), sem
   prompt no meio. Correção: `CLAUDE_CODE_PROMPT_CACHE_TTL=1h` para sessões cobradas por API (provado no gateway do
   dono: `ephemeral_1h_input_tokens` na resposta). Simulado: US$513 → US$393 sozinho; com a janela, US$213.
-- [ ] **O gate de compactação ignora prompts que não vêm de uma pessoa** (`hooks/compaction.mjs:25`,
+- [x] **Adiado (orquestrador, 2026-10-11) — o gate de compactação ignora prompts que não vêm de uma pessoa** (`hooks/compaction.mjs:25`,
   `PERSON_ORIGINS` = composer/bridge/sdk): mensagens de outra sessão chegam com `origin.kind: "peer"` e
   notificações de tarefa com `task-notification` (visto nas transcrições de 10–11/10). Com a janela em 300k o
   engine cobre esses casos. Proposta: só incluir `peer` se o reenvio preservar a origem (o `$.prompt.submit` com
   `asUser` perderia o remetente para a resposta via SendMessage) — medir antes nos eventos `compaction.gate`.
+  Adiado: com a janela em 300k o engine já compacta essas sessões no meio do turno; o reenvio exigiria preservar o
+  remetente. Reabrir se os eventos `compaction.gate`/`cache.turn` depois da 3.2.7 mostrarem sessão delegada acima de ~300k.
 - [x] **Limiar do gate passa a ser 30% de 300k = 90k — analisado e mantido em 2026-10-11**: o gate só age com o cache
   frio (agora 1 h ocioso). Compactar ali custa ~US$1,17 (reprocessar 90k + resumo + gravar ~50k) contra ~US$0,79 de
   regravar os 90k sem compactar; a diferença se paga em ~40 chamadas lendo 50k em vez de 90k. Neutro; não muda o
   padrão. Os eventos `compaction.gate`/`settled` mostram se isso mudar.
-- [ ] **Fase 2 (escalada ao orquestrador, muda o uso): modelo por tipo de tarefa** — teto do custo-agente US$78/dia
+- [x] **Adiado — Fase 2, com o orquestrador para levar ao Allan (pacote enviado em 2026-10-11): modelo por tipo de tarefa** — teto do custo-agente US$78/dia
   antes da Fase 1 (a preço de Sonnet 5.5); depois da Fase 1 o teto cai junto (~40% do custo restante).
-- [ ] **Fase 2 (escalada, muda o uso): ciclo de vida de sessão** — a sessão do vox-engine é a mesma desde 04/10
+- [x] **Adiado — Fase 2, com o orquestrador para levar ao Allan (pacote enviado em 2026-10-11): ciclo de vida de sessão** — a sessão do vox-engine é a mesma desde 04/10
   (~US$850 em 8 dias). Com a janela em 300k uma sessão longa passa a custar por chamada como uma nova; um aviso
   "sessão nova por tarefa" só se os relatórios depois da Fase 1 ainda mostrarem contexto alto.
-- [ ] **Fase 3 (técnico, ganho pequeno): rajadas de investigação** — US$1–4/dia por projeto no consolidado; a
+- [x] **Adiado — Fase 3, futuro e fora do boss: rajadas de investigação** — US$1–4/dia por projeto no consolidado; a
   ferramenta que entrega o contexto pronto é do smart-tool/projeto, não do boss.
 
 - [x] **Teardown redundante de `ccb-shape-exit` — encontrado e corrigido em 2026-10-11**: o teste do código de saída removia sua pasta imediatamente com `rmSync` sem retry; EPERM no Windows mascarava a assertion original. O mesmo corpo anterior à correção de Temp reproduziu EPERM sem carregar test-temp. Agora a fixture fica sob o teardown proprietário já existente (por teste e, por fim, após o processo filho sair), preservando falhas reais e erros de limpeza. Validação: caso dirigido com Git Bash no PATH e lifecycle 6/6, sem pastas CCB retidas. Gate diagnóstico anterior: 135 hooks verdes; 1465 units verdes / 2 falhas, portanto não foi integralmente verde. A outra falha (catálogo BYOK, conexão de 300 ms no caso drip) passou isoladamente sem alterar seu timeout intencional; é sensível à carga. Achado de ambiente, fora deste reparo: `bash` do System32 resolve WSL; Node Linux não aceita o caminho C:/.../shape-output.js do teste. Gate de shell Windows deve usar Git Bash no PATH. Nenhum código de produção foi alterado.
