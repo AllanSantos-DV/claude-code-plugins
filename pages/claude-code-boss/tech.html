@@ -3,22 +3,22 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v3.2.5 — detalhes técnicos</title>
-<meta name="description" content="Detalhes técnicos do claude-code-boss v3.2.5: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard." />
+<title>claude-code-boss v3.2.6 — detalhes técnicos</title>
+<meta name="description" content="Detalhes técnicos do claude-code-boss v3.2.6: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard." />
 <link rel="canonical" href="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/tech.html">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="allansantos-plugins">
 <meta property="og:locale" content="pt_BR">
-<meta property="og:title" content="claude-code-boss v3.2.5 — detalhes técnicos">
-<meta property="og:description" content="Detalhes técnicos do claude-code-boss v3.2.5: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
+<meta property="og:title" content="claude-code-boss v3.2.6 — detalhes técnicos">
+<meta property="og:description" content="Detalhes técnicos do claude-code-boss v3.2.6: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
 <meta property="og:url" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/tech.html">
 <meta property="og:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="claude-code-boss: Menos repetição. Mais memória.">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="claude-code-boss v3.2.5 — detalhes técnicos">
-<meta name="twitter:description" content="Detalhes técnicos do claude-code-boss v3.2.5: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
+<meta name="twitter:title" content="claude-code-boss v3.2.6 — detalhes técnicos">
+<meta name="twitter:description" content="Detalhes técnicos do claude-code-boss v3.2.6: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
 <meta name="twitter:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
 <script data-ccb-theme-script>
 /* Shared theme; executed before styles and first paint. */
@@ -275,14 +275,14 @@ html{scroll-behavior:auto}
     <a href="index.html">← Apresentação</a>
     <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a>
     <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">Changelog</a>
-    <a href="#top" class="ver">v3.2.5</a>
+    <a href="#top" class="ver">v3.2.6</a>
   </nav>
 <div class="ccb-theme" role="group" aria-label="Tema"><button type="button" data-ccb-theme="dark" aria-pressed="true">Dark</button><button type="button" data-ccb-theme="light" aria-pressed="false">Light</button></div>
 </header>
 
 <main class="wrap" id="top">
   <div class="page-head">
-    <p class="kick">documentação técnica · v3.2.5</p>
+    <p class="kick">documentação técnica · v3.2.6</p>
     <h1>Arquitetura e funcionamento interno</h1>
     <p class="intro">Para quem quer saber <b>como funciona por baixo</b>: daemon HTTP único, pipeline de hooks, Brain KB em 3 camadas, Model Router Anthropic/OpenAI, backend MCP Memory, exploração de repositório por grafo e dashboard. Fontes: <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a> e <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG</a>.</p>
     <div class="toc">
@@ -507,12 +507,13 @@ html{scroll-behavior:auto}
   </section>
 
   <section id="versoes">
-    <h2>Versões <span class="tag">93 releases</span></h2>
-    <p class="lead">O changelog completo (v1.0.0 → v3.2.5) vive no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>. Destaques recentes:</p>
+    <h2>Versões <span class="tag">94 releases</span></h2>
+    <p class="lead">O changelog completo (v1.0.0 → v3.2.6) vive no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>. Destaques recentes:</p>
     <div class="table-scroll">
       <table>
         <thead><tr><th>Versão</th><th>Destaque</th></tr></thead>
         <tbody>
+          <tr><td><b>v3.2.6</b></td><td>Correção de custo. Com o cache frio ou num <code>/compact</code> manual o boss trocava o resumo do Claude Code pela própria poda, que mantinha 60–95% do contexto e fazia cada chamada seguinte reler esse contexto (medido nas transcrições reais: US$0,50 por chamada com ~600k depois da poda, contra US$0,075 com ~110k depois do resumo; primeira chamada US$2,99 contra US$0,25). Agora o resumo é o padrão em toda compactação e a poda só entra com corte de 85% ou mais. A injeção por prompt não era a causa: fora das compactações o acerto de cache segue em 99%.</td></tr>
           <tr><td><b>v3.2.5</b></td><td>Correção. O daemon do Brain relia de forma síncrona todos os registros de sessão (123 numa máquina real) a cada chamada de ferramenta do modelo, segurando a thread que atende todas as sessões por até ~200 ms; agora o índice pasta→id de projeto só é relido quando a pasta dos registros muda, e um hook <code>SessionEnd</code> novo apaga o registro da sessão que terminou (as que morreram sem encerrar saem em 7 dias).</td></tr>
           <tr><td><b>v3.2.4</b></td><td>Correção. Com muitas sessões abertas o daemon do Brain era tratado como processo estranho na porta ("daemon único não pôde ser garantido" a cada prompt) porque hooks rodavam <code>git</code> de forma síncrona na thread que atende todas as sessões (medido: 1,4 s numa rajada, com 17 sessões). O cache de 30 s das respostas do <code>git</code> do id do projeto passa a servir a resposta anterior na hora e renová-la em segundo plano; só a primeira consulta de cada pasta ainda espera o <code>git</code>.</td></tr>
           <tr><td><b>v3.2.3</b></td><td>Correções. Com o Token Guard 2.x instalado como hook <code>http</code>, o boss passa a reconhecê-lo e para de limitar a saída de <code>cat</code>/<code>grep</code>/<code>git log</code> por cima dele (antes a mesma saída era cortada duas vezes). A identidade do projeto salva pela aba Brain do dashboard agora grava o <code>.memory/project.json</code>, como o <code>project_set</code>, em vez do marcador antigo <code>.claude-boss-project</code>, que perdia para ele. As ferramentas do servidor do Brain declaram <code>readOnlyHint</code>/<code>destructiveHint</code> (clientes como o OpenDots param de pedir confirmação para consultas; no Claude Code nada muda). O bootstrap do mcp-memory virou uma pasta reaproveitável (<code>scripts/lib/mcp-bootstrap/</code>) com checagem de cópias divergentes em outros plugins; comportamento igual.</td></tr>
@@ -552,7 +553,7 @@ html{scroll-behavior:auto}
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">Changelog</a>
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins">GitHub</a>
     </div>
-    <div class="legal">MIT · Allan Santos · claude-code-boss v3.2.5</div>
+    <div class="legal">MIT · Allan Santos · claude-code-boss v3.2.6</div>
   </div>
 </footer>
 
