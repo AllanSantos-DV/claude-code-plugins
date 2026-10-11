@@ -136,6 +136,22 @@ For every Bash command:
        (or DENY if curationGuard.denyUnknown=true)
 ```
 
+## Windows: no heredoc, no long `node -e` / `python -c`
+
+On Windows the Bash tool corrupts the command before bash sees it: every run of
+2+ backslashes is halved (even in single quotes and `<<'EOF'` bodies) and a
+heredoc with single quotes in its body can die with "unexpected EOF" (open
+upstream bugs anthropics/claude-code #85856, #32563). So:
+
+- Script with more than one line → write it with the **Write** tool to a file in the
+  working folder, then run `node file` / `python -I file`.
+- Changing a file → **Edit**, never `sed -i` / regex on the command line.
+- The guard (step 0, `shellEscapeGuard` in `config/hooks-config.json`) moves a quoted
+  heredoc / long inline script to a file and rewrites the command (`cmd < file`,
+  `node < file`, `python - < file`) — byte-exact, cwd semantics kept. What it can't
+  rewrite safely (shell expansion in the payload, trailing args, stdin in use, a
+  leftover `\\`) only gets a warning; `block: true` turns that warning into a deny.
+
 ## denyUnknown mode
 
 Set `curationGuard.denyUnknown: true` in `config/hooks-config.json` to deny anything not whitelisted/trivial/curated. Default `false`. Useful for locked-down environments; expect more denials and more curation work up front.
