@@ -4387,14 +4387,15 @@ test('audit: planShaping never wraps a command with its own pipe (SIGPIPE 141), 
 test('audit: the wrapped command keeps its real exit code (no fake failures)', () => {
   const { planShaping } = require('./lib/curation-redirect.js');
   const proj = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-shape-exit-'));
-  try {
-    const run = (cmd) => require('child_process').spawnSync('bash', ['-c', planShaping(cmd, proj, { tokenGuardActive: () => false })], { encoding: 'utf8', cwd: proj, env: { ...process.env, CLAUDE_PLUGIN_DATA: proj }, windowsHide: true });
-    fs.writeFileSync(path.join(proj, 'f.txt'), Array.from({ length: 300 }, (_, i) => `line ${i}`).join('\n'));
-    const ok = run('cat f.txt');
-    assertEq(ok.status, 0, `success stays 0: ${ok.stderr}`);
-    assert(/saída cortada: 80 de 300 linhas/.test(ok.stdout), `cut footer: ${ok.stdout.slice(-200)}`);
-    assertEq(run('cat nope.txt').status, 1, 'a real failure stays a failure (pipefail keeps cat\'s status)');
-  } finally { fs.rmSync(proj, { recursive: true, force: true }); }
+  // The suite owns this fixture. An immediate rmSync races shell handle release
+  // on Windows and can mask the command's actual assertion failure. The runner
+  // cleans per test; final cleanup waits for the child to exit and still fails visibly.
+  const run = (cmd) => require('child_process').spawnSync('bash', ['-c', planShaping(cmd, proj, { tokenGuardActive: () => false })], { encoding: 'utf8', cwd: proj, env: { ...process.env, CLAUDE_PLUGIN_DATA: proj }, windowsHide: true });
+  fs.writeFileSync(path.join(proj, 'f.txt'), Array.from({ length: 300 }, (_, i) => `line ${i}`).join('\n'));
+  const ok = run('cat f.txt');
+  assertEq(ok.status, 0, `success stays 0: ${ok.stderr}`);
+  assert(/saída cortada: 80 de 300 linhas/.test(ok.stdout), `cut footer: ${ok.stdout.slice(-200)}`);
+  assertEq(run('cat nope.txt').status, 1, 'a real failure stays a failure (pipefail keeps cat\'s status)');
 });
 
 test('audit: shape-output STREAMS — the head is written before the input ends; the rest goes to the file', async () => {
