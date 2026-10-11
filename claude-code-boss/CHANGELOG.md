@@ -1,5 +1,15 @@
 # Changelog
 
+## [3.2.4] - 2026-10-11
+
+### Fixed
+- **O daemon do Brain não é mais tratado como "processo estranho na porta" com muitas sessões abertas.** Cada
+  hook que precisava do id do projeto podia rodar `git` de forma síncrona na thread que atende todas as sessões;
+  com 17 sessões, uma única rajada segurou o daemon por 1,4 s, e o início de cada prompt avisava "daemon único
+  não pôde ser garantido" com o daemon vivo. As respostas do `git` continuam guardadas por 30 s, mas agora, ao
+  vencer, a resposta anterior é usada na hora e renovada em segundo plano; só a primeira consulta de cada pasta
+  ainda espera o `git`.
+
 ## [3.2.3] - 2026-10-10
 
 ### Fixed
