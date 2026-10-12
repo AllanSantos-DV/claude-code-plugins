@@ -2776,10 +2776,19 @@ async function loadCurationPanel() {
     return null;
   }
   const fmt = n => n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, '') + 'k' : String(n);
-  const tok = chars => '~' + fmt(Math.round(chars / 4));
+  const tok = chars => '~' + fmt(Math.round(chars / 3.43));
   const stat = (value, label, badge, cls) => `<div class="stat"><div class="value">${value}</div><div class="label">${label}</div><span class="badge ${cls}">${badge}</span></div>`;
   const rs = c.redirectSavings;
+  const eco = c.economy;
   let html = '<div class="grid">'
+    // What the cuts are really worth: each kept token would have been re-read every turn until the compaction.
+    + (eco && eco.total.cuts
+      ? stat('~' + fmt(Math.round(eco.total.tokens)), 'Real value of the cuts (input-equivalent tokens, with permanence)',
+        eco.measured.cuts + ' measured · ' + eco.estimated.cuts + ' estimated'
+          + (eco.eta != null ? ' · ' + (eco.eta * 100).toFixed(1) + '% of spend avoided' : '')
+          + (eco.total.usd > 0 ? ' · ~US$ ' + eco.total.usd.toFixed(2) + ' API' : '')
+          + (eco.subscriptionLimitPercent > 0 ? ' · ~' + eco.subscriptionLimitPercent.toFixed(1) + '% of the 5h plan limit' : ''), 'badge-green')
+      : '')
     + stat(tok(c.shaped.savedChars), 'Saved by the shaper (exact)', c.shaped.cuts + ' cuts', c.shaped.cuts ? 'badge-green' : 'badge-yellow')
     + stat(tok((c.exact || {}).savedChars || 0), 'Saved by curated scripts (exact, raw − shown)', ((c.exact || {}).runs || 0) + ' measured runs', (c.exact || {}).runs ? 'badge-green' : 'badge-yellow')
     + stat(tok(rs.estChars), 'Saved by redirects (estimated)', rs.withBaseline + ' with baseline · ' + rs.withoutBaseline + ' without · ' + (rs.measured || 0) + ' exact', rs.withBaseline ? 'badge-green' : 'badge-yellow')

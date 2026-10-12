@@ -15,11 +15,15 @@ const path = require('path');
 const WINDOW_DAYS = 7;
 const COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const { onCooldown: cooldownActive, stamp } = require('./lib/cooldown-stamp.js');
+const { CHARS_PER_TOKEN } = require('./lib/economy-metrics.js');
 const onCooldown = (p, now) => cooldownActive(p, COOLDOWN_MS, now);
 const tok = (chars) => {
-  const t = Math.round(chars / 4);
-  return t >= 1000 ? `~${(t / 1000).toFixed(1).replace(/\.0$/, '')}k` : `~${t}`;
+  return fmtTokens(chars / CHARS_PER_TOKEN);
 };
+function fmtTokens(n) {
+  const t = Math.round(n);
+  return t >= 1000 ? `~${(t / 1000).toFixed(1).replace(/\.0$/, '')}k` : `~${t}`;
+}
 
 function stampPath(project) {
   const { dataDir } = require('./lib/data-dir.js');
@@ -44,6 +48,13 @@ function formatDigest(s) {
   if (!activity) return null;
   const parts = [`${tok(s.totals.savedChars)} tokens economizados (moldador ${tok(s.shaped.savedChars)}, scripts curados ${tok(s.exact.savedChars)} exatos, redirects ${tok(s.redirectSavings.estChars)} estimados)`,
     `${s.redirects.total} redirects`, `${s.runs.total} execuções de scripts curados`, `custo cru ${tok(s.rawEnteredContext.chars)} tokens`];
+  const e = s.economy;
+  if (e && e.total.cuts) {
+    // Real value of the cuts: each kept token would have been re-read every turn until the compaction.
+    const usd = e.total.usd > 0 ? `, ~US$ ${e.total.usd.toFixed(2)} na rota API` : '';
+    const eta = e.eta != null ? `, ${(e.eta * 100).toFixed(1)}% do gasto evitado` : '';
+    parts.push(`com permanência (${e.measured.cuts} medidos, ${e.estimated.cuts} estimados) valem ${fmtTokens(e.total.tokens)} tokens de entrada equivalentes${usd}${eta}`);
+  }
   const b = bottleneck(s);
   return `[BOSS] Curadoria nos últimos ${WINDOW_DAYS} dias: ${parts.join(', ')}. Maior gargalo: ${b || 'nenhum claro'}. Detalhes: /dashboard → Curation & guards.`;
 }
@@ -56,10 +67,10 @@ async function run(event, { now = Date.now() } = {}) {
   const sp = stampPath(project);
   if (onCooldown(sp, now)) return null;
   const ms = require('./lib/metrics-store.js');
-  const { summarizeCuration, CURATION_EVENTS } = require('./lib/curation-metrics.js');
+  const { summarizeCuration, CURATION_EVENTS, ECONOMY_EVENTS } = require('./lib/curation-metrics.js');
   const since = now - WINDOW_DAYS * 86400_000;
   const rows = [];
-  for (const ev of CURATION_EVENTS) for (const r of ms.getEventLogIsolated(project, { eventName: ev, sinceTs: since })) if (r.ts >= since) rows.push(r);
+  for (const ev of [...CURATION_EVENTS, ...ECONOMY_EVENTS]) for (const r of ms.getEventLogIsolated(project, { eventName: ev, sinceTs: since })) if (r.ts >= since) rows.push(r);
   const text = formatDigest(summarizeCuration(rows));
   if (!text) return null; // nothing to report: stay silent, and don't burn the day's slot
   stamp(sp, now);
