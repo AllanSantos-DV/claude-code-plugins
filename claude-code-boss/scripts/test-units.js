@@ -4814,6 +4814,48 @@ test('economy-metrics: ESTIMATED when the cut has no measurable session; unprice
   assertEq(eco.limitUnits({ input: 100, read: 1000, write5m: 100, write1h: 100, output: 10 }), 100 + 50 + 125 + 200 + 50, 'fixed weights 1 / 0.05 / 1.25 / 2 / 5');
 });
 
+test('limit-calibration: rate_limit blocks + transcript spend → units per 1% (reset parsing, dedupe, trust gate, day cache)', async () => {
+  const lc = require('./lib/limit-calibration.js');
+  const txt = (t) => `You've hit your session limit · resets ${t} (America/Sao_Paulo)`;
+  // Sao Paulo is UTC−3: 10:20pm local = 01:20Z of the NEXT utc day for a block at 22:20Z.
+  assertEq(new Date(lc.parseReset(txt('10:20pm'), Date.parse('2026-09-24T22:20:10Z'))).toISOString(), '2026-09-25T01:20:00.000Z', 'pm → next utc day');
+  assertEq(new Date(lc.parseReset(txt('12am'), Date.parse('2026-09-24T22:20:10Z'))).toISOString(), '2026-09-25T03:00:00.000Z', '12am = midnight local, minutes optional');
+  assertEq(new Date(lc.parseReset(txt('3pm'), Date.parse('2026-09-24T17:00:00Z'))).toISOString(), '2026-09-24T18:00:00.000Z', 'later the same local day');
+  assertEq(lc.parseReset("You've hit your weekly limit · resets Mon", Date.parse('2026-09-24T22:20:10Z')), null, 'weekly block: another window, ignored');
+  // windows: a block repeated (copied transcripts) counts once; spend outside [reset−5h, block] is not counted
+  const reset = Date.parse('2026-09-25T01:20:00Z');
+  const turns = [{ ts: reset - 6 * 3600_000, units: 999 }, { ts: reset - 4 * 3600_000, units: 1000 }, { ts: reset - 3600_000, units: 500 }, { ts: reset + 1, units: 7 }];
+  const hit = reset - 600_000;
+  assertEq(lc.unitsPerWindow([{ ts: hit, resetTs: reset }, { ts: hit + 5, resetTs: reset }], turns), [1500], 'one window, only its own spend');
+  // trust gate: too few windows → default stays, the measurement is still reported
+  const few = lc.calibrate([{ ts: hit, resetTs: reset }], turns);
+  assertEq(few.source, 'default'); assertEq(few.unitsPerPercent, 71400); assertEq(few.measuredUnitsPerPercent, 15);
+  const blocks = []; const tr = [];
+  for (let i = 0; i < 6; i++) { const r = reset + i * 86400_000; blocks.push({ ts: r - 1000, resetTs: r }); tr.push({ ts: r - 3600_000, units: 7_000_000 + i * 10_000 }); }
+  const ok = lc.calibrate(blocks, tr);
+  assertEq(ok.source, 'rate-limit-blocks'); assertEq(ok.windows, 6); assert(Math.abs(ok.unitsPerPercent - 70250) < 1, 'median ÷ 100');
+  tr[0].units = 1_000_000; // scattered windows (CV > 0.15) → default
+  assertEq(lc.calibrate(blocks, tr).source, 'default', 'scatter → default');
+  // transcripts: one block (twice, in a copied file) + one streamed plan message written twice; an API-route message is ignored
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'limcal-')); const proj = path.join(dir, 'p'); fs.mkdirSync(proj);
+  const blockLine = JSON.stringify({ type: 'assistant', error: 'rate_limit', isApiErrorMessage: true, timestamp: '2026-09-24T22:20:10.782Z', message: { id: 'x', content: [{ type: 'text', text: txt('10:20pm') }] } });
+  const msg = (id, out, ts) => JSON.stringify({ type: 'assistant', timestamp: ts, message: { id, usage: { input_tokens: 10, output_tokens: out, cache_read_input_tokens: 100, cache_creation_input_tokens: 0 } } });
+  fs.writeFileSync(path.join(proj, 'a.jsonl'), [blockLine, blockLine, msg('msg_01A', 1, '2026-09-24T21:00:00Z'), msg('msg_01A', 40, '2026-09-24T21:00:00Z'), msg('msg_vrtx_B', 99, '2026-09-24T21:10:00Z'), '{torn'].join('\n'));
+  const now = Date.parse('2026-09-30T00:00:00Z');
+  const scanned = lc.scanTranscripts({ days: 30, now, root: dir });
+  assertEq(scanned.blocks.length, 1, 'duplicate block counted once'); assertEq(scanned.turns.length, 1, 'streamed message once, API route out');
+  assertEq(scanned.turns[0].units, 10 + 100 * 0.05 + 40 * 5, 'final usage of the streamed message');
+  // day cache: second call does not scan; a stale cache does
+  const file = path.join(dir, 'cache.json'); let scans = 0;
+  const scan = () => { scans++; return { blocks: [], turns: [] }; };
+  lc.cachedCalibration({ file, now, scan }); lc.cachedCalibration({ file, now: now + 1000, scan }); assertEq(scans, 1, 'fresh cache reused');
+  lc.cachedCalibration({ file, now: now + 2 * 86400_000, scan }); assertEq(scans, 2, 'stale cache rescans');
+  let threw = false;
+  try { lc.scanTranscripts({ days: 1, now, root: path.join(dir, 'nope') }); } catch (err) { threw = /cannot read/.test(err.message); }
+  assert(threw, 'unreadable root fails loud');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('C4 curation-guard: a pipe on the curated script is ALLOWED and measured (curation.piped) — not for another segment\'s pipe, not for reading the file', async () => {
   const metrics = require('./lib/metrics.js');
   const guard = require('./curation-guard.js');
