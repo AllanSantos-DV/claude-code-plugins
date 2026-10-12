@@ -17,6 +17,8 @@ const CURATION_EVENTS = [
   'error-guard.denied', 'graph-guard.fired',
 ];
 
+const { summarizeEconomy, CHARS_PER_TOKEN } = require('./economy-metrics');
+
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 const bump = (o, k, by = 1) => { o[k] = (o[k] || 0) + by; };
 
@@ -24,7 +26,7 @@ const bump = (o, k, by = 1) => { o[k] = (o[k] || 0) + by; };
  * @param {Array<{eventName?:string,event_name?:string,payload?:object|string}>} rows
  * @param {{shellIds?:string[]}} [opts]  ids of the curated scripts that exist (for neverUsed)
  */
-function summarizeCuration(rows, { shellIds = [] } = {}) {
+function summarizeCuration(rows, { shellIds = [], limitUnitsPerPercent } = {}) {
   const s = {
     redirects: { total: 0, allow: 0, ask: 0, byScript: {} },
     runs: { total: 0, byScript: {} },
@@ -45,6 +47,8 @@ function summarizeCuration(rows, { shellIds = [] } = {}) {
   const baseline = {}; // sig → {chars, n} from raw noisy runs (flagged / pending)
   const used = {};     // scriptId → {chars, n, ok}
   const redirects = [];
+  const cuts = []; // every cut with its time/session: the economy readings need them
+  const cutOf = (r, chars) => ({ chars, ts: Number(r.ts), session_id: r.session_id || r.sessionId || null });
   const measured = new Set(); // report ids of runs with an exact raw size: their redirects are not estimated
   for (const r of rows || []) {
     const name = r.eventName || r.event_name;
@@ -63,6 +67,7 @@ function summarizeCuration(rows, { shellIds = [] } = {}) {
           const raw = num(p.rawChars); const shown = num(p.chars); const saved = Math.max(0, raw - shown);
           s.exact.runs++; s.exact.rawChars += raw; s.exact.shownChars += shown; s.exact.savedChars += saved;
           bump(s.exact.byScript, id, saved);
+          cuts.push(cutOf(r, saved));
           for (const rid of [].concat(p.reportIds || [])) measured.add(rid);
         }
         // A compound's output belongs to all its parts: it counts as a run, not as size.
@@ -83,6 +88,7 @@ function summarizeCuration(rows, { shellIds = [] } = {}) {
         const raw = num(p.rawChars); const shown = num(p.shownChars);
         s.shaped.rawChars += raw; s.shaped.shownChars += shown; s.shaped.savedChars += Math.max(0, raw - shown);
         bump(s.shaped.byFamily, p.family || '?');
+        cuts.push(cutOf(r, Math.max(0, raw - shown)));
         break;
       }
       case 'curation.flagged':
@@ -113,8 +119,14 @@ function summarizeCuration(rows, { shellIds = [] } = {}) {
   }
   s.neverUsed = shellIds.filter((id) => !used[id] && !s.redirects.byScript[id]);
   s.totals.savedChars = s.shaped.savedChars + s.exact.savedChars + s.redirectSavings.estChars;
-  s.totals.savedTokensApprox = Math.round(s.totals.savedChars / 4);
+  s.totals.savedTokensApprox = Math.round(s.totals.savedChars / CHARS_PER_TOKEN);
+  // Redirect savings are per-signature averages without a time/session: always the estimated permanence.
+  if (s.redirectSavings.estChars > 0) cuts.push({ chars: s.redirectSavings.estChars, ts: NaN, session_id: null });
+  s.economy = summarizeEconomy(cuts, rows, { limitUnitsPerPercent });
   return s;
 }
 
-module.exports = { summarizeCuration, CURATION_EVENTS };
+// Read besides CURATION_EVENTS: the economy readings measure permanence and consumption from these.
+const ECONOMY_EVENTS = ['cache.turn', 'compaction.run'];
+
+module.exports = { summarizeCuration, CURATION_EVENTS, ECONOMY_EVENTS };

@@ -1527,9 +1527,9 @@ async function getCurationSummary(req, res, url) {
     const sinceTs = Date.now() - range * 86400_000;
     const projectFilter = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
-    const { summarizeCuration, CURATION_EVENTS } = require('./lib/curation-metrics.js');
+    const { summarizeCuration, CURATION_EVENTS, ECONOMY_EVENTS } = require('./lib/curation-metrics.js');
     const rows = [];
-    for (const ev of CURATION_EVENTS) {
+    for (const ev of [...CURATION_EVENTS, ...ECONOMY_EVENTS]) {
       const perProject = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName: ev, sinceTs }));
       for (const { value } of perProject) for (const r of value) if (r.ts >= sinceTs) rows.push(r);
     }

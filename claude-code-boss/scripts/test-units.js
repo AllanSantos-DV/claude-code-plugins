@@ -4763,6 +4763,49 @@ test('C4 curation-metrics: exact shaper savings, redirect savings only with a ba
   assertEq(c.runs.byScript.x.runs, 2, 'a compound run counts as a run');
   assertEq(c.runs.byScript.x.avgChars, 100, 'but its output (all parts) stays out of the script average');
   assertEq(c.runs.byScript.y.avgChars, null, 'only compound runs → no size claimed');
+  assertEq(s.totals.savedTokensApprox, Math.round(10200 / 3.43), 'tokens use k=3.43 chars/token, not 4');
+});
+
+test('economy-metrics: permanence MEASURED from cache.turn until the compaction, r per model, cold rewrites, route, η', () => {
+  const eco = require('./lib/economy-metrics.js');
+  const { summarizeCuration } = require('./lib/curation-metrics.js');
+  const turn = (ts, model, state, id, extra = {}) => ({ eventName: 'cache.turn', ts, session_id: 'S', payload: { model, cacheState: state, messageId: id, input: 10, output: 100, read: 50000, write: 1000, write5m: 1000, write1h: 0, ...extra } });
+  const cut = { eventName: 'curation.shaped', ts: 1000, session_id: 'S', payload: { family: 'cat', rawChars: 34300 + 100, shownChars: 100 } }; // R = 10000 tokens
+  const rows = [
+    cut,
+    turn(1100, 'claude-opus-5-5', 'hit', 'msg_vrtx_a'), turn(1200, 'claude-opus-5-5', 'miss', 'msg_vrtx_b'), turn(1300, 'claude-opus-5-5', 'hit', 'msg_vrtx_c'),
+    { eventName: 'compaction.run', ts: 1350, session_id: 'S', payload: {} },
+    turn(1400, 'claude-opus-5-5', 'hit', 'msg_vrtx_d'), // after the compaction: the item is gone
+  ];
+  const e = summarizeCuration(rows).economy;
+  // W = 1 + 1 cold rewrite = 2; w = 1.25; reads = 3 turns × 0.05 → E = 2.5 + 0.15 = 2.65
+  assertEq(e.measured.cuts, 1, 'measured'); assertEq(e.estimated.cuts, 0, 'not estimated');
+  assert(Math.abs(e.total.tokens - 10000 * 2.65 * (1 - eco.RECAPTURE)) < 1, `T = R·E·(1−recapture): ${e.total.tokens}`);
+  assert(Math.abs(e.total.usd - (e.total.tokens * 4) / 1e6) < 1e-9, 'API route priced at $4/MTok input (Opus 5.5)');
+  assert(e.byRoute.api && !e.byRoute.subscription, 'route from the message id prefix');
+  assert(e.eta > 0 && e.eta < 1, 'η = ΣT / (C + ΣT)');
+  // r per model: Sonnet 5 reads at 0.1, not 0.05
+  const e2 = summarizeCuration([cut, turn(1100, 'claude-sonnet-5', 'hit', 'msg_0_a'), { eventName: 'compaction.run', ts: 1150, session_id: 'S', payload: {} }]).economy;
+  assert(Math.abs(e2.total.tokens - 10000 * (1.25 + 0.1) * (1 - eco.RECAPTURE)) < 1, `Sonnet 5 r=0.1: ${e2.total.tokens}`);
+  assertEq(e2.total.usd, 0, 'subscription route is never priced in USD');
+  assert(e2.subscriptionLimitPercent > 0, 'subscription route reports the % of the plan limit');
+});
+
+test('economy-metrics: ESTIMATED when the cut has no measurable session; unpriced model is reported, never invented; limit calibration', () => {
+  const eco = require('./lib/economy-metrics.js');
+  const { summarizeCuration } = require('./lib/curation-metrics.js');
+  const e = summarizeCuration([{ eventName: 'curation.shaped', payload: { family: 'cat', rawChars: 3430, shownChars: 0 } }]).economy; // R = 1000, no session
+  assertEq(e.estimated.cuts, 1, 'no session → estimated'); assertEq(e.measured.cuts, 0, 'nothing measured');
+  assert(Math.abs(e.total.tokens - 1000 * eco.PERMANENCE_MEDIAN * (1 - eco.RECAPTURE)) < 1e-6, 'global median permanence 12.4×');
+  assertEq(eco.permanenceFor(30), 2.05, 'short session'); assertEq(eco.permanenceFor(500), 16.75, 'long session'); assertEq(eco.permanenceFor(5000), 22, 'very long');
+  const rows = [{ eventName: 'curation.shaped', ts: 1, session_id: 'S', payload: { rawChars: 3430, shownChars: 0 } },
+    { eventName: 'cache.turn', ts: 2, session_id: 'S', payload: { model: 'gemini-3-flash', cacheState: 'hit', messageId: 'msg_vrtx_z', input: 1, output: 1, read: 1, write: 1 } },
+    { eventName: 'compaction.run', ts: 3, session_id: 'S', payload: {} }];
+  const u = summarizeCuration(rows).economy;
+  assertEq(u.total.usd, 0, 'no documented price → no dollar figure'); assert(u.total.usdUnpricedTokens > 0, 'tokens kept as unpriced, visible');
+  assertEq(eco.calibrateLimit([]), 71400, 'no block seen → Pro default'); assertEq(eco.calibrateLimit([7000000, 7400000, 7200000]), 72000, 'median of the blocks ÷ 100');
+  assertEq(eco.routeOf('msg_bdrk_1'), 'api'); assertEq(eco.routeOf('msg_01abc'), 'subscription'); assertEq(eco.routeOf(''), 'unknown');
+  assertEq(eco.limitUnits({ input: 100, read: 1000, write5m: 100, write1h: 100, output: 10 }), 100 + 50 + 125 + 200 + 50, 'fixed weights 1 / 0.05 / 1.25 / 2 / 5');
 });
 
 test('C4 curation-guard: a pipe on the curated script is ALLOWED and measured (curation.piped) — not for another segment\'s pipe, not for reading the file', async () => {
@@ -22381,7 +22424,8 @@ test('value digest: the line reports saved tokens, redirects, runs, raw cost and
     ev('curation.uncovered', { shells: ['tests'] }), ev('curation.uncovered', { shells: ['tests'] }),
   ]);
   const line = formatDigest(s);
-  assert(/^\[BOSS\] Curadoria nos últimos 7 dias: ~9k tokens economizados \(moldador ~9k/.test(line), line);
+  assert(/^\[BOSS\] Curadoria nos últimos 7 dias: ~10.5k tokens economizados \(moldador ~10.5k/.test(line), line);
+  assert(/com permanência \(0 medidos, 1 estimados\) valem ~/.test(line) && !/do gasto evitado/.test(line), line);
   assert(/1 redirects, 1 execuções de scripts curados/.test(line) && /Maior gargalo: variantes do script `tests` rodando cruas \(2x\)/.test(line), line);
   const raw = summarizeCuration([ev('curation.flagged', { chars: 80000 }), ev('curation.flagged', { chars: 80000 }), ev('curation.shaped', { rawChars: 2000, shownChars: 1000 })]);
   assert(/saída crua entrando no contexto/.test(bottleneck(raw)), bottleneck(raw));
@@ -22404,7 +22448,7 @@ test('value digest: real metrics → shown once a day per project; silent (and s
     ms.close();
     const t0 = Date.now();
     const first = await runWithHookEnv({ CLAUDE_PROJECT_DIR: active }, () => vd.run({}, { now: t0 }));
-    assert(first && /1 redirects/.test(first) && /moldador ~4\.5k/.test(first), `shown: ${first}`);
+    assert(first && /1 redirects/.test(first) && /moldador ~5\.2k/.test(first), `shown: ${first}`);
     assertEq(await runWithHookEnv({ CLAUDE_PROJECT_DIR: active }, () => vd.run({}, { now: t0 + 3600_000 })), null, 'same day → silent');
     assert(await runWithHookEnv({ CLAUDE_PROJECT_DIR: active }, () => vd.run({}, { now: t0 + 25 * 3600_000 })), 'next day → shown again');
     assertEq(await runWithHookEnv({ CLAUDE_PROJECT_DIR: idle }, () => vd.run({}, { now: t0 })), null, 'no curation activity → silent');
