@@ -2950,6 +2950,12 @@ test('O1: retrieval-feedback records the citation in the KB scope the entry was 
   assertEq(journal.readEntries(sid).length, 0, 'journal cleared');
 });
 
+test('retrieval-feedback: injectedChars sums what the journalled recalls really injected (old entries without the field count 0)', () => {
+  assertEq(rfeedback.injectedChars([{ injectedChars: 1200 }, { injectedChars: 300 }, { returnedIds: ['a'] }]), 1500);
+  assertEq(rfeedback.injectedChars([]), 0);
+  assertEq(rfeedback.injectedChars(undefined), 0);
+});
+
 // ─── active-research-detect (Plan #4) ────────────────────────────────────────
 const ardetect = require('./active-research-detect.js');
 const arstate = require('./lib/active-research-state.js');
@@ -4873,6 +4879,19 @@ test('recall-health.record: a janela tem TETO (nao cresce sem limite no disco)',
   assertEq(h.recent.length, rh.WINDOW_SIZE, 'a janela satura no teto');
   assertEq(h.ok + h.degraded, rh.WINDOW_SIZE + 40, 'o total VITALICIO segue contando (auditoria)');
   assertEq(h.recent[h.recent.length - 1].ts, 1000 + rh.WINDOW_SIZE + 39, 'guarda os MAIS RECENTES');
+});
+
+test('recall-health: latency of each recall is kept in the window and summarized as p50/p95 (ok recalls only)', () => {
+  const rh = require('./lib/recall-health.js');
+  let s;
+  [100, 200, 300, 400, 5000].forEach((ms, i) => { s = rh.applyOutcome(s, undefined, 1000 + i, undefined, ms); });
+  s = rh.applyOutcome(s, 'timeout', 2000, undefined, 8000);
+  s = rh.applyOutcome(s, undefined, 2001); // legacy writer: no ms → no sample, never NaN
+  const lat = rh.summarize(s).latencyMs;
+  assertEq(lat.samples, 5);
+  assertEq(lat.p50, 300);
+  assertEq(lat.p95, 5000);
+  assertEq(rh.summarize(undefined).latencyMs.p50, null);
 });
 
 test('recall-health.applyOutcome: estado legado (sem `recent`) migra sem perder o historico', () => {
