@@ -172,6 +172,7 @@ async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords }, 
   const backendRef = deps.backend || backend;
   const healthRef = deps.recallHealth || recallHealth;
   const cc = brainConfig.getRecallCompose();
+  const startedAt = Date.now();
   const isTimeout = (err) => /timed out|timeout/i.test((err && err.message) || '');
   // Checks BOTH this function's own fast breaker AND brain-backend.js's shared
   // one (feature-detected — test fakes for backendRef don't implement it, and
@@ -227,7 +228,7 @@ async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords }, 
     });
     // One record per turn: a failed compose outranks a failed arm, which outranks an honest miss.
     const reason = composeReason || armReason || (facts.length ? undefined : 'no-match');
-    healthRef.record(reason);
+    healthRef.record(reason, undefined, Date.now() - startedAt);
     // Breaker: the daemon answered if compose, or a REAL project-arm search (a backend
     // without search() resolves [] locally — no evidence), settled fulfilled. Only a
     // transport failure of compose (timeout/remote-error — not 'no-compose', which is
@@ -245,7 +246,7 @@ async function retrieveRemote(prompt, { project, ancestorIds, topK, keywords }, 
   } catch (err) {
     const reason = isTimeout(err) ? 'timeout' : 'remote-error';
     console.error(`[retrieve-core] remote retrieve failed (${reason}): ${err.message}`);
-    healthRef.record(reason);
+    healthRef.record(reason, undefined, Date.now() - startedAt);
     circuitOpenUntil = Date.now() + CIRCUIT_COOLDOWN_MS;
     if (backendRef.reportMcpFailure) backendRef.reportMcpFailure(err);
     return { entries: [], capabilities: [], keywords, project, reason };

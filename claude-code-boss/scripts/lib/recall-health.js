@@ -60,11 +60,13 @@ function read() {
  * vazia a partir de agora, que é justamente o que permite o alarme se apagar.
  * @returns {object} novo estado
  */
-function applyOutcome(state, reason, now, detail) {
+function applyOutcome(state, reason, now, detail, ms) {
   const h = state || {};
   const degraded = isDegraded(reason);
   const recent = Array.isArray(h.recent) ? h.recent.slice() : [];
-  recent.push(degraded ? { ok: false, reason, ts: now } : { ok: true, ts: now });
+  // `ms` = how long the recall took: tells a slow daemon (p95 near the timeout) from a dead one.
+  const lat = Number.isFinite(ms) && ms >= 0 ? { ms: Math.round(ms) } : {};
+  recent.push(degraded ? { ok: false, reason, ts: now, ...lat } : { ok: true, ts: now, ...lat });
   // Descarta o excedente pela FRENTE: a janela guarda sempre os mais recentes.
   if (recent.length > WINDOW_SIZE) recent.splice(0, recent.length - WINDOW_SIZE);
 
@@ -90,7 +92,10 @@ function summarize(state) {
   const recent = Array.isArray(h.recent) ? h.recent : [];
   const windowDegraded = recent.filter((e) => e && e.ok === false).length;
   const windowTotal = recent.length;
+  const lat = recent.filter((e) => e && e.ok && Number.isFinite(e.ms)).map((e) => e.ms).sort((a, b) => a - b);
+  const at = (q) => (lat.length ? lat[Math.min(lat.length - 1, Math.floor(q * lat.length))] : null);
   return {
+    latencyMs: { samples: lat.length, p50: at(0.5), p95: at(0.95) },
     ok: h.ok || 0,
     degraded: h.degraded || 0,
     lifetimeOk: h.ok || 0,
@@ -105,8 +110,8 @@ function summarize(state) {
 }
 
 /** Record one recall outcome (`detail`: optional error text kept on lastDegraded). */
-function record(reason, detail) {
-  const h = applyOutcome(read(), reason, Date.now(), detail);
+function record(reason, detail, ms) {
+  const h = applyOutcome(read(), reason, Date.now(), detail, ms);
   // Best-effort, last-writer-wins (tear-free publish, no cross-process lock).
   try {
     writeJsonAtomic(FILE, h);

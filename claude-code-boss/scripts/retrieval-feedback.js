@@ -173,6 +173,13 @@ function findCitations(journalEntries, replyText) {
   return out;
 }
 
+/** Chars the journalled recalls really put in the prompt (entries from before this field count 0). */
+function injectedChars(journalEntries) {
+  let n = 0;
+  for (const e of journalEntries || []) n += Number(e.injectedChars) || 0;
+  return n;
+}
+
 // ── Main (hook entry) ─────────────────────────────────────────────────────
 
 async function run(event) {
@@ -200,7 +207,7 @@ async function run(event) {
     try {
       const store = require('./brain-store.js');
       const metrics = require('./lib/metrics.js');
-      if (injectedIds.size) metrics.fire('retrieve.injected', { count: injectedIds.size }, { project, sessionId: sid });
+      if (injectedIds.size) metrics.fire('retrieve.injected', { count: injectedIds.size, chars: injectedChars(entries) }, { project, sessionId: sid });
       // KB citations go to the scope each entry was retrieved from. It used to be
       // basename(cwd): the UPDATE then hit a shard without the entry and silently
       // changed 0 rows, so citations of real lessons were never counted. No scope
@@ -236,6 +243,7 @@ module.exports = {
   titleTokens,
   citationMatch,
   findCitations,
+  injectedChars,
   readLastAssistantText,
   extractAssistantText,
   readLastUserText,

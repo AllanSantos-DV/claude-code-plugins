@@ -1154,19 +1154,20 @@ export function createBrainServer({ pluginRoot, mode = 'http', kbWorker, kbLock,
           // work — route it through kbWorker in 'http' mode so brain_retrieve_context
           // (fires on every UserPromptSubmit) can't block /health for other sessions.
           const { entries, capabilities } = await retrieveCore.retrieve(prompt || '', { project: focusId || project, ancestorIds: chain }, kbWorker ? { store: kbWorker.clientsFor(focusId || project).storeClient } : {});
+          // mcp_tool hooks on UserPromptSubmit only inject when the tool returns a
+          // JSON output with hookSpecificOutput.additionalContext; empty → no inject.
+          // The journal measures the REAL retrieval (full entries); injection
+          // respects the config-driven exclude filter (e.g. drop lessons).
+          const injectable = retrieveCore.filterInjectableEntries(entries);
+          const text = retrieveCore.formatContext(injectable, capabilities);
           if (entries.length) {
             try {
               const journal = require(path.join(PLUGIN_ROOT, 'scripts', 'lib', 'retrieval-journal.js'));
               const sid = session_id || 'default';
-              journal.appendEntry(sid, { retrievalId: journal.newRetrievalId(), ts: Date.now(), sid, tool: 'UserPromptSubmit', project, returnedIds: entries.map(e => e.id), returnedTitles: entries.map(e => e.title) });
+              // injectedChars = what really entered the prompt (post-filter, formatted) — the cost of this recall.
+              journal.appendEntry(sid, { retrievalId: journal.newRetrievalId(), ts: Date.now(), sid, tool: 'UserPromptSubmit', project, returnedIds: entries.map(e => e.id), returnedTitles: entries.map(e => e.title), injectedChars: text ? text.length : 0 });
             } catch (err) { console.error(`[brain_retrieve_context] journal: ${err.message}`); }
           }
-          // mcp_tool hooks on UserPromptSubmit only inject when the tool returns a
-          // JSON output with hookSpecificOutput.additionalContext; empty → no inject.
-          // Journal above measures the REAL retrieval (full entries); injection
-          // respects the config-driven exclude filter (e.g. drop lessons).
-          const injectable = retrieveCore.filterInjectableEntries(entries);
-          const text = retrieveCore.formatContext(injectable, capabilities);
           const payload = text ? JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: text } }) : '';
           return { content: [{ type: 'text', text: payload }] };
         } catch (err) {
