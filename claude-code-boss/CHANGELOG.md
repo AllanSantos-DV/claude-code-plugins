@@ -1,5 +1,14 @@
 # Changelog
 
+## [3.2.10] - 2026-10-12
+
+### Fixed
+- **O aviso "o Brain está aprendendo" não gasta mais um turno do modelo.** O `session-summary` (uma vez por sessão,
+  quando há lição capturada) usava `decision:block` só para mostrar a frase; o host então rodava mais uma chamada com
+  o contexto inteiro, de US$ 0,25 a US$ 4,50 por sessão medido, sem que o agente tivesse nada a fazer. Agora a frase
+  chega ao usuário como `systemMessage` do Stop e nenhum turno extra acontece. Os outros avisos que de fato pedem uma
+  ação do agente (captura de decisão, curadoria) continuam bloqueando.
+
 ## [3.2.9] - 2026-10-12
 
 ### Changed
