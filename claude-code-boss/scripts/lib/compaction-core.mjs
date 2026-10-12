@@ -30,6 +30,11 @@ export const DEFAULTS = Object.freeze({
   thresholdPercent: 30,        // % of the engine's window; past it, compact once the cache is cold
   minThresholdPercent: 10,     // the slider's range (and the clamp on hand-edited configs)
   maxThresholdPercent: 80,
+  // Never below this, whatever the percent: a native compaction leaves ~48k (measured on 34 real
+  // ones, 2026-10-12), so with the 153k window (costTuning) 30% = 46k would compact a context the
+  // size of a fresh compaction's on every cold cache — a cold summary + re-write for nothing.
+  // 90k is what 30% of the previous 300k window gave (analysed neutral on a cold cache, BACKLOG).
+  minThresholdTokens: 90000,
   minIntervalMs: 10 * 60000,   // never two compactions closer than this
   preserveRecentMessages: 6,   // newest messages never touched (the first is always kept)
   truncateHeadChars: 300,      // what survives of a pruned result, before the note
@@ -212,16 +217,6 @@ export function decideTiming(s, options = {}) {
 }
 
 /**
- * The threshold in tokens for the window the engine applies NOW. `window` is the
- * compaction window (`rawMaxTokens` of usage({breakdown}) — the model's limit or a smaller
- * one set by CLAUDE_CODE_AUTO_COMPACT_WINDOW/settings), falling back to the model window.
- * `aboveEngine`: the threshold sits at or past the engine's own auto-compact point — the
- * engine will compact first (through our pruning) and the gate will rarely act.
- * @param {{window?: number, engineAutoCompactAt?: number}} w
- * @param {Partial<typeof DEFAULTS>} [options]
- * @returns {{thresholdTokens: number|null, percent: number, aboveEngine: boolean}}
- */
-/**
  * Is the provider cache still warm? Unknown last answer → assume warm: the engine's
  * auto-compaction fires mid-session, right after turns, and if the cache was in fact cold the
  * summary costs about what the next cold request would have paid anyway.
@@ -252,12 +247,23 @@ export function chooseCompaction(s, options = {}) {
   return plan.ratio >= o.minReductionRatio ? { ours: true, why: 'big-cut' } : { ours: false, why: 'summary-is-cheaper' };
 }
 
+/**
+ * The threshold in tokens for the window the engine applies NOW. `window` is the
+ * compaction window (`rawMaxTokens` of usage({breakdown}) — the model's limit or a smaller
+ * one set by CLAUDE_CODE_AUTO_COMPACT_WINDOW/settings), falling back to the model window.
+ * Never below `minThresholdTokens` (see DEFAULTS).
+ * `aboveEngine`: the threshold sits at or past the engine's own auto-compact point — the
+ * engine will compact first and the gate will rarely act.
+ * @param {{window?: number, engineAutoCompactAt?: number}} w
+ * @param {Partial<typeof DEFAULTS>} [options]
+ * @returns {{thresholdTokens: number|null, percent: number, aboveEngine: boolean}}
+ */
 export function thresholdFor(w, options = {}) {
   const o = { ...DEFAULTS, ...options };
   const pct = clampPercent(o.thresholdPercent, o);
   const window = Number(w && w.window);
   if (!(window > 0)) return { thresholdTokens: null, percent: pct, aboveEngine: false };
-  const thresholdTokens = Math.round(window * pct / 100);
+  const thresholdTokens = Math.max(Math.round(window * pct / 100), Number(o.minThresholdTokens) || 0);
   const engine = Number(w && w.engineAutoCompactAt);
   return { thresholdTokens, percent: pct, aboveEngine: engine > 0 && thresholdTokens >= engine };
 }

@@ -8367,7 +8367,7 @@ test('S4 dashboard.countEntriesInDb: caches by db+wal mtime (WAL-safe) + cache d
 const routerEnsure = require('./model-router-ensure.js');
 // ─── cost-tuning: 1 h cache + auto-compact window in settings.json env (ownership-safe) ──
 const costTuning = require('./lib/cost-tuning.js');
-const CT_WANT = { CLAUDE_CODE_PROMPT_CACHE_TTL: '1h', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '300000' };
+const CT_WANT = { CLAUDE_CODE_PROMPT_CACHE_TTL: '1h', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000' };
 
 test('cost-tuning: applies both knobs on a clean env and remembers they were unset', () => {
   const r = costTuning.planCostTuning({ KEEP: '1' }, CT_WANT, {});
@@ -8382,15 +8382,28 @@ test('cost-tuning: applies both knobs on a clean env and remembers they were uns
 
 test('cost-tuning: a LARGER user window (the 1M that compacted at ~967k) is replaced and restored on disable', () => {
   const r = costTuning.planCostTuning({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000' }, CT_WANT, {});
-  assertEq(r.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '300000');
+  assertEq(r.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '153000');
   assertEq(r.state.previous.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '1000000');
   const off = costTuning.planCostTuning(r.env, {}, r.state);
   assertEq(off.env, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000' }, 'disable restores the previous value and removes the TTL we added');
   assertEq(off.state.applied, {});
 });
 
+test('cost-tuning: an install that got our previous 300k moves to 153k and keeps the user value it replaced (restored on disable)', () => {
+  const OLD = { CLAUDE_CODE_PROMPT_CACHE_TTL: '1h', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '300000' };
+  const v1 = costTuning.planCostTuning({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000' }, OLD, {});
+  assertEq(v1.state.applied.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '300000');
+  const v2 = costTuning.planCostTuning(v1.env, CT_WANT, v1.state);
+  assertEq(v2.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '153000', 'our own 300k is not "the user\'s": it follows the new default');
+  assertEq(v2.state.previous.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '1000000', 'the value the user had before us is still the one to restore');
+  assertEq(v2.state.yielded, {}, 'nothing was yielded');
+  assertEq(costTuning.planCostTuning(v2.env, {}, v2.state).env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '1000000');
+  const fresh = costTuning.planCostTuning(v1.env, CT_WANT, { applied: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '300000' }, previous: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: null } });
+  assertEq(fresh.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '153000', 'unset before us: still moves to 153k');
+});
+
 test('cost-tuning: never touches a SMALLER user window, nor a TTL the user set', () => {
-  const env = { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '200000', CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' };
+  const env = { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '120000', CLAUDE_CODE_PROMPT_CACHE_TTL: '5m' };
   const r = costTuning.planCostTuning(env, CT_WANT, {});
   assertEq(r.env, env);
   assertEq(r.changed, false);
@@ -8410,7 +8423,7 @@ test('cost-tuning: a value the user changes (or removes) after us is theirs — 
   const off = costTuning.planCostTuning(r.env, {}, r.state);
   assertEq(off.env, edited, 'disable does not "restore" over the user values');
   const moved = costTuning.planCostTuning({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000' }, CT_WANT, r.state);
-  assertEq(moved.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '300000', 'a NEW larger value (not the yielded one) is managed again');
+  assertEq(moved.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '153000', 'a NEW larger value (not the yielded one) is managed again');
 });
 
 test('cost-tuning: TTL only for API-billed sessions (gateway, key, cloud) — not subscription, not our proxy', () => {
@@ -8423,14 +8436,14 @@ test('cost-tuning: TTL only for API-billed sessions (gateway, key, cloud) — no
   assertEq(costTuning.apiBilled({ ANTHROPIC_BASE_URL: 'https://api.anthropic.com' }, ours), false);
   assertEq(costTuning.apiBilled({ ANTHROPIC_BASE_URL: 'http://127.0.0.1:13456' }, ours), false, 'behind our proxy the credential is unknown');
   const cfg = costTuning.resolveConfig({});
-  assertEq(costTuning.wanted(cfg, false), { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '300000' });
+  assertEq(costTuning.wanted(cfg, false), { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000' });
   assertEq(costTuning.wanted(cfg, true), CT_WANT);
   assertEq(costTuning.wanted(costTuning.resolveConfig({ enabled: false }), true), {});
   assertEq(costTuning.resolveConfig({ cacheTtl: '2h', autoCompactWindow: 5 }), { enabled: true, cacheTtl: null, autoCompactWindow: 100000 }, 'unknown TTL off, window clamped');
   assertEq(costTuning.resolveConfig({ autoCompactWindow: null }).autoCompactWindow, null, 'null = window not managed');
 });
 
-test('cost-tuning: shipped default ON (300k + 1h); the free profile turns it off (so the shipped block carries no enabled key)', () => {
+test('cost-tuning: shipped default ON (153k + 1h); the free profile turns it off (so the shipped block carries no enabled key)', () => {
   const hc = require('./lib/hooks-config.js');
   const file = hc.userConfigPath();
   assert(file.startsWith(process.env.USERPROFILE), `the suite's temp HOME, never the real one (${file})`);
@@ -8438,7 +8451,7 @@ test('cost-tuning: shipped default ON (300k + 1h); the free profile turns it off
   try {
     if (prev != null) fs.unlinkSync(file);
     hc._resetCache();
-    assertEq(hc.getCostTuning(), { enabled: true, cacheTtl: '1h', autoCompactWindow: 300000 });
+    assertEq(hc.getCostTuning(), { enabled: true, cacheTtl: '1h', autoCompactWindow: 153000 });
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify({ profile: 'free' }));
     hc._resetCache();
@@ -8463,7 +8476,7 @@ test('cost-tuning: applyCostTuning writes the temp HOME settings.json, keeps for
     fs.writeFileSync(settings, JSON.stringify({ env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000', BRAIN_HTTP_PORT: '38217' }, hooks: { X: 1 } }));
     assertEq(routerEnsure.applyCostTuning({ ANTHROPIC_BASE_URL: 'http://100.124.248.83' }), true);
     const on = JSON.parse(fs.readFileSync(settings, 'utf8'));
-    assertEq(on.env, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '300000', BRAIN_HTTP_PORT: '38217', CLAUDE_CODE_PROMPT_CACHE_TTL: '1h' });
+    assertEq(on.env, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000', BRAIN_HTTP_PORT: '38217', CLAUDE_CODE_PROMPT_CACHE_TTL: '1h' });
     assertEq(on.hooks, { X: 1 }, 'the rest of settings.json is untouched');
     fs.mkdirSync(path.dirname(ucfg), { recursive: true });
     fs.writeFileSync(ucfg, JSON.stringify({ costTuning: { enabled: false } }));
@@ -24641,7 +24654,12 @@ test('compaction-core.decideTiming: waits for the cache to expire, compacts cold
 
 test('compaction-core.thresholdFor: a % of the window the engine applies (200K and 1M alike), clamped to the slider range, flagged past the engine point', () => {
   assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }), { thresholdTokens: 300000, percent: 30, aboveEngine: false });
-  assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 167000 }), { thresholdTokens: 60000, percent: 30, aboveEngine: false });
+  assertEq(cmpCore.thresholdFor({ window: 300000, engineAutoCompactAt: 267000 }), { thresholdTokens: 90000, percent: 30, aboveEngine: false });
+  assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 167000 }, { thresholdPercent: 50 }), { thresholdTokens: 100000, percent: 50, aboveEngine: false });
+  // The 153k window (costTuning): 30% = 46k is below what a native compaction leaves (~48k) → the 90k floor.
+  assertEq(cmpCore.thresholdFor({ window: 153000, engineAutoCompactAt: 120000 }), { thresholdTokens: 90000, percent: 30, aboveEngine: false }, 'never below minThresholdTokens');
+  assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 167000 }).thresholdTokens, 90000, '30% of 200k = 60k → floor');
+  assertEq(cmpCore.thresholdFor({ window: 153000 }, { minThresholdTokens: 0 }).thresholdTokens, 45900, 'the floor is a default, not hard-wired');
   assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 150000 }, { thresholdPercent: 80 }), { thresholdTokens: 160000, percent: 80, aboveEngine: true }, 'past the engine point: it compacts first — flagged, never silently moved');
   assertEq(cmpCore.thresholdFor({ window: 200000 }, { thresholdPercent: 95 }).percent, 80, 'clamped to the range top');
   assertEq(cmpCore.thresholdFor({ window: 200000 }, { thresholdPercent: 2 }).percent, 10, 'clamped to the range bottom');
