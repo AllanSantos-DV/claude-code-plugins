@@ -32,7 +32,7 @@ não são do boss (hook do orquestrador).
   médio 82k (a simulação previu 81k), US$ 0,044/chamada contra US$ 0,064 nos 17 ciclos a ~267k — ainda sem pareamento
   por projeto, então não é a medição do ganho (essa segue adiada para 14/10). Duração mediana da compactação: 52 s a
   ~120k contra 67 s a ~267k, e ela acontece ~3× mais vezes.
-- [ ] **Aberto (fora do escopo) — a chamada de resumo da compactação não aparece em nenhuma conta local de custo**: o
+- [x] **Resolvido em 2026-10-12 (livros deste repo) — a chamada de resumo da compactação não aparece em nenhuma conta local de custo**: o
   Claude Code não grava o usage dela na transcrição (a `compact_boundary` só traz `preTokens`/`postTokens`/`durationMs`),
   e o baseline US$ 474,24, o livro de uso do orchestrador (`src/usage-book.mjs`, a partir das transcrições) e o
   custo-agente leem só as transcrições. Visto ao medir o pedido 167. Tamanho: ~US$ 0,13–0,17 por compactação com
@@ -41,6 +41,20 @@ não são do boss (hook do orquestrador).
   Proposta: somar a estimativa por `compact_boundary` nos relatórios, ou ler o usage real no log do gateway se existir.
   **Medido em 2026-10-12** (experimento (a) autorizado pelo orquestrador, US$ 13,35 de US$ 20): ver o item seguinte —
   usar US$ 0,17 (~120k) e US$ 0,23 (~267k) por compactação, não a fórmula.
+  **Correção** (só livros locais de pesquisa, gitignored; o plugin não tem livro de custo, então não há release):
+  `docs/research/compaction-bands/summary-cost.js` dá o custo medido por compactação (lido = `pre` com cache quente,
+  gravado a 1 h com frio; instrução 3.232; saída na reta 6.746 @127,5k → 8.055 @279k). `extract.js` marca cada
+  compactação com `native`/`warm`; `sim.js` soma os resumos no custo real e usa o medido nas políticas simuladas;
+  `bands.js` grava `sumUsd` por compactação e por ciclo; `paired.js` usa `sumUsd`. Novo custo real (11/10 16h → agora,
+  8.025 chamadas): US$ 546,04 = transcrições 525,44 + 51 resumos 20,60. Validado por
+  `node --test docs/research/compaction-bands/summary-cost.test.js` (6/6: soma das 10 chamadas medidas por faixa a ±2%,
+  frio > quente, saída monotônica, `pre` inválido falha alto, `sumUsd`/`native`/`warm` presentes nos livros).
+- [ ] **Aberto (fora do escopo deste repo) — livros de custo externos sem a chamada de resumo**: o livro de uso do
+  orchestrador (`src/usage-book.mjs`) e o custo-agente leem só as transcrições, então ainda subcontam ~US$ 0,17–0,23
+  por compactação. Visto ao resolver o item acima. Proposta: em cada `compact_boundary` seguido de entrada
+  `isCompactSummary`, somar lido = `preTokens` (quente; gravado 1 h se a chamada anterior foi há ≥ 1 h) + 3.232 de
+  entrada + saída `6746 + 1309·(pre − 127506)/151449` — as mesmas constantes de `summary-cost.js`. Tem que ser
+  corrigido nos repos deles.
 - [x] **Medido em 2026-10-12 — custo real da chamada de resumo por faixa (a fórmula subestimava a saída)**:
   `docs/research/compaction-bands/exp.js` (local) copia 5 sessões Opus reais que compactaram a ~267k (5 projetos) para
   sandboxes `ccwarmtail-bands-*`, cortadas no MESMO segmento a ~120k e a ~267k; aquece o cache (`-p --resume`) e roda
