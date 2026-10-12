@@ -1,5 +1,22 @@
 # Changelog
 
+## [3.3.0] - 2026-10-12
+
+### Added
+- **Métrica de economia da curadoria com permanência medida.** O painel de economia passa a calcular tokens economizados
+  (R), custo evitado (T) e eficiência (η) por rota (assinatura ou API), com o fator de 3,43 caracteres por token e a
+  permanência medida das entradas no contexto.
+- **Recalibração do limite do plano (unidades por 1%).** Novo `lib/limit-calibration.js`: lê os blocos "session limit"
+  das transcrições, soma o gasto da rota de assinatura na janela de 5 h e calcula as unidades por 1%. A leitura só
+  substitui o padrão (71.400) com ≥ 5 janelas e dispersão ≤ 0,15; senão o painel mostra o medido ao lado do padrão.
+  Cache de um dia.
+- **Recall: custo e latência reais.** `retrieve.injected` registra os caracteres de fato injetados, e o `recall-health`
+  mostra a latência por recall (p50/p95), para separar degradação por rajada de falha constante.
+- **Compactação proativa, fase 1 (modo sombra).** `buildBrief` monta, sem chamar o modelo, a transcrição curada que
+  poderia substituir o resumo nativo (texto do usuário literal, saídas de ferramenta descartadas — a memória MCP as
+  recupera). O hook só mede o tamanho no evento `compaction.run`; o resumo nativo continua rodando e o limite
+  configurado pelo usuário não muda.
+
 ## [3.2.10] - 2026-10-12
 
 ### Fixed
