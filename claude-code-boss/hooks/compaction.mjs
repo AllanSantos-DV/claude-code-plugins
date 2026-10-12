@@ -20,7 +20,7 @@
 // Observability: every decision and cut goes to the boss metrics store through the
 // daemon (POST /hook/compaction-event → tool hook_compaction_event → scripts/compaction-event.js).
 
-import { planCompaction, decideTiming, classifyResume, estimateTokens, thresholdFor, chooseCompaction, isCacheWarm, DEFAULTS } from '../scripts/lib/compaction-core.mjs';
+import { planCompaction, buildBrief, decideTiming, classifyResume, estimateTokens, thresholdFor, chooseCompaction, isCacheWarm, DEFAULTS } from '../scripts/lib/compaction-core.mjs';
 
 const PERSON_ORIGINS = new Set(['composer', 'bridge', 'sdk']);
 
@@ -309,12 +309,21 @@ async function compact($, ctx, e, next) {
   const tokensBefore = context.tokens ?? ctx.measuredTokens ?? null;
   const reason = ctx.compactReason || e.trigger;
   if (!ctx.pendingSettle) ctx.pendingSettle = { reason, trigger: e.trigger, tokensBefore };
+  // Proactive compaction, phase 1 (shadow): size the model-free brief the summary could be replaced
+  // by. Recorded only; the engine's summary still runs. A failure here must not stop the compaction.
+  let brief = null;
+  if (!ours) {
+    try {
+      const b = buildBrief(e.messages, ctx.config);
+      brief = { briefChars: b.briefChars, charsAfter: b.charsAfter, cutMessages: b.cutMessages, userTextIntact: b.userTextIntact };
+    } catch (err) { $.ui.log(`compaction: brief shadow failed: ${String(err)}`); }
+  }
   emit($, ctx, 'run', {
     trigger: e.trigger, reason, outcome: ours ? 'pruned' : 'native-summary', why: choice.why, cacheWarm: warm,
     messages: e.messages.length, charsBefore: plan.charsBefore, charsAfter: ours ? plan.charsAfter : null,
     charsCut: ours ? plan.charsBefore - plan.charsAfter : 0, ratio: Number(plan.ratio.toFixed(3)),
     prunedResults: plan.pruned.length, byReason, duplicatesDropped: plan.duplicatesDropped, verbatimTextIntact: plan.verbatimTextIntact,
-    tokensBefore, durationMs: (await $.clock.now()) - t0,
+    tokensBefore, brief, durationMs: (await $.clock.now()) - t0,
   });
   if (!ours) return next(e);
   $.ui.toast(`compaction: every message kept, ${plan.pruned.length} stale tool results pruned (${Math.round(plan.ratio * 100)}% smaller), no summary`);
