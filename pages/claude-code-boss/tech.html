@@ -3,22 +3,22 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>claude-code-boss v3.2.9 — detalhes técnicos</title>
-<meta name="description" content="Detalhes técnicos do claude-code-boss v3.2.9: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard." />
+<title>claude-code-boss v3.2.10 — detalhes técnicos</title>
+<meta name="description" content="Detalhes técnicos do claude-code-boss v3.2.10: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard." />
 <link rel="canonical" href="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/tech.html">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="allansantos-plugins">
 <meta property="og:locale" content="pt_BR">
-<meta property="og:title" content="claude-code-boss v3.2.9 — detalhes técnicos">
-<meta property="og:description" content="Detalhes técnicos do claude-code-boss v3.2.9: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
+<meta property="og:title" content="claude-code-boss v3.2.10 — detalhes técnicos">
+<meta property="og:description" content="Detalhes técnicos do claude-code-boss v3.2.10: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
 <meta property="og:url" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/tech.html">
 <meta property="og:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="claude-code-boss: Menos repetição. Mais memória.">
 <meta name="twitter:card" content="summary_large_image">
-<meta name="twitter:title" content="claude-code-boss v3.2.9 — detalhes técnicos">
-<meta name="twitter:description" content="Detalhes técnicos do claude-code-boss v3.2.9: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
+<meta name="twitter:title" content="claude-code-boss v3.2.10 — detalhes técnicos">
+<meta name="twitter:description" content="Detalhes técnicos do claude-code-boss v3.2.10: daemon HTTP, hooks, Brain KB, Model Router Anthropic/OpenAI, MCP Memory, graph tools e dashboard.">
 <meta name="twitter:image" content="https://allansantos-dv.github.io/claude-code-plugins/claude-code-boss/og-card.jpg">
 <script data-ccb-theme-script>
 /* Shared theme; executed before styles and first paint. */
@@ -275,14 +275,14 @@ html{scroll-behavior:auto}
     <a href="index.html">← Apresentação</a>
     <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a>
     <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">Changelog</a>
-    <a href="#top" class="ver">v3.2.9</a>
+    <a href="#top" class="ver">v3.2.10</a>
   </nav>
 <div class="ccb-theme" role="group" aria-label="Tema"><button type="button" data-ccb-theme="dark" aria-pressed="true">Dark</button><button type="button" data-ccb-theme="light" aria-pressed="false">Light</button></div>
 </header>
 
 <main class="wrap" id="top">
   <div class="page-head">
-    <p class="kick">documentação técnica · v3.2.9</p>
+    <p class="kick">documentação técnica · v3.2.10</p>
     <h1>Arquitetura e funcionamento interno</h1>
     <p class="intro">Para quem quer saber <b>como funciona por baixo</b>: daemon HTTP único, pipeline de hooks, Brain KB em 3 camadas, Model Router Anthropic/OpenAI, backend MCP Memory, exploração de repositório por grafo e dashboard. Fontes: <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/README.md">README</a> e <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG</a>.</p>
     <div class="toc">
@@ -507,12 +507,13 @@ html{scroll-behavior:auto}
   </section>
 
   <section id="versoes">
-    <h2>Versões <span class="tag">97 releases</span></h2>
-    <p class="lead">O changelog completo (v1.0.0 → v3.2.9) vive no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>. Destaques recentes:</p>
+    <h2>Versões <span class="tag">98 releases</span></h2>
+    <p class="lead">O changelog completo (v1.0.0 → v3.2.10) vive no <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">CHANGELOG.md</a>. Destaques recentes:</p>
     <div class="table-scroll">
       <table>
         <thead><tr><th>Versão</th><th>Destaque</th></tr></thead>
         <tbody>
+          <tr><td><b>v3.2.10</b></td><td>Correção de custo. O aviso "o Brain está aprendendo" do <code>session-summary</code> (uma vez por sessão, quando há lição capturada) deixou de bloquear o Stop e passou a chegar como <code>systemMessage</code>: nenhum turno extra do modelo, que custava de US$ 0,25 a US$ 4,50 por sessão. Os avisos que pedem ação do agente (captura de decisão, curadoria) continuam bloqueando.</td></tr>
           <tr><td><b>v3.2.9</b></td><td>Custo. A compactação passa a acontecer perto de 120k em vez de 267k: o boss grava <code>CLAUDE_CODE_AUTO_COMPACT_WINDOW=153000</code> (o Claude Code compacta 33k abaixo da janela). O limite de 30% do boss só age com o cache frio, e com cache de 1 h só 0,19% dos intervalos esfriam, então as 34 compactações medidas chegaram todas a 266–269k. O resumo continua sendo o do Claude Code, cuja chamada lê o histórico do cache quente (medido). Simulado em 7.049 chamadas reais: −12,7% de custo, com o mesmo resumo. O limite do gate de cache frio nunca fica abaixo de 90k.</td></tr>
           <tr><td><b>v3.2.8</b></td><td>Correção. No Windows o Bash tool do Claude Code corta pela metade as barras invertidas e quebra heredoc com aspas simples no corpo (bugs abertos #85856, #98622, #32563, #90630). Antes de rodar, o boss move o conteúdo frágil para um arquivo e reescreve só o comando: <code>cmd &lt;&lt;'EOF' … EOF</code> → <code>cmd &lt; arquivo</code>, <code>node -e '…'</code> → <code>node &lt; arquivo</code>, <code>python -c '…'</code> → <code>python - &lt; arquivo</code>; o script chega byte a byte. Medido nos 7 dias anteriores: 6,1–7,8% de falha em heredoc/<code>node -e</code> e ~214 mil tokens em erros de escape. O que não dá para reescrever com segurança recebe só um aviso. Config <code>shellEscapeGuard</code> (<code>mode: "warn"</code>, <code>enabled: false</code>, <code>block: true</code>); só age no Windows.</td></tr>
           <tr><td><b>v3.2.7</b></td><td>Correção de custo. No início de cada sessão o boss grava no <code>env</code> do <code>~/.claude/settings.json</code> <code>CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000</code> (o Claude Code compacta perto de 267k em vez de ~967k, inclusive no meio de um turno longo ou numa sessão delegada) e, só com chave de API, gateway ou provedor de nuvem, <code>CLAUDE_CODE_PROMPT_CACHE_TTL=1h</code> (com 5 min, cada espera maior regravava o contexto inteiro). Simulado nas transcrições reais de 6 sessões-dia: US$513 → ~US$213. Reversível: <code>costTuning.enabled: false</code> ou o perfil <code>free</code> devolvem o valor anterior; um valor que você mudar depois fica como está.</td></tr>
@@ -556,7 +557,7 @@ html{scroll-behavior:auto}
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins/blob/main/claude-code-boss/CHANGELOG.md">Changelog</a>
       <a href="https://github.com/AllanSantos-DV/claude-code-plugins">GitHub</a>
     </div>
-    <div class="legal">MIT · Allan Santos · claude-code-boss v3.2.9</div>
+    <div class="legal">MIT · Allan Santos · claude-code-boss v3.2.10</div>
   </div>
 </footer>
 
