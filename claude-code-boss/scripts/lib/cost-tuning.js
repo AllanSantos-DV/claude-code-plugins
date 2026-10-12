@@ -14,9 +14,13 @@
  *   - CLAUDE_CODE_AUTO_COMPACT_WINDOW — the window the engine's auto-compaction budgets
  *     against. At 1M it compacts at ~967k, so every call between compactions re-reads up to
  *     ~1M tokens; the boss's own prompt gate only acts at a person's prompt on a cold cache,
- *     never mid-turn or in delegated sessions. A 300k window compacts at ~267k, mid-turn too,
- *     through the engine's summary (hooks/compaction.mjs keeps it unless pruning cuts >= 85%).
- *     Replayed on 6 real session-days: US$513 → ~US$210 with both knobs (sim.js in the research).
+ *     never mid-turn or in delegated sessions. The engine compacts at the window minus a fixed
+ *     33k buffer (`/context`, CC 2.1.293: 300k → 267k, 153k → 120k), mid-turn too, through its
+ *     summary (hooks/compaction.mjs keeps it unless pruning cuts >= 85%). 153k → ~120k: the
+ *     summary call reads the history from the warm cache (measured through a proxy), so
+ *     compacting there pays back in ~28 calls of a ~39-call cycle. Replayed on 7,049 real calls
+ *     (docs/research/compaction-warm-tail, 2026-10-12): −12.7% against the 300k window, same
+ *     summary (the 300k window itself: US$513 → ~US$210 on 6 session-days, cost-2026-10-11).
  *
  * Ownership, so nothing of the user's is lost: the state remembers what WE wrote and what was
  * there before. Turning the feature off restores the previous value. A value the user changes
@@ -27,7 +31,7 @@
 const TTL_KEY = 'CLAUDE_CODE_PROMPT_CACHE_TTL';
 const WINDOW_KEY = 'CLAUDE_CODE_AUTO_COMPACT_WINDOW';
 
-const DEFAULTS = Object.freeze({ enabled: true, cacheTtl: '1h', autoCompactWindow: 300000 });
+const DEFAULTS = Object.freeze({ enabled: true, cacheTtl: '1h', autoCompactWindow: 153000 });
 const WINDOW_RANGE = Object.freeze([100000, 1000000]);
 
 /** The effective config: unknown TTL values off, the window clamped (null = don't manage it). */
