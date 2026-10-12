@@ -39,6 +39,17 @@ não são do boss (hook do orquestrador).
   cache quente (proxy: lido = contexto inteiro a 0,20, instrução 3,2k, saída ~4,9k) — ~US$ 6 nas 34 do baseline; com
   ~3× mais compactações a 120k o peso cresce, e a comparação do dia 14 precisa somá-la pela fórmula ou medi-la por proxy.
   Proposta: somar a estimativa por `compact_boundary` nos relatórios, ou ler o usage real no log do gateway se existir.
+  **Medido em 2026-10-12** (experimento (a) autorizado pelo orquestrador, US$ 13,35 de US$ 20): ver o item seguinte —
+  usar US$ 0,17 (~120k) e US$ 0,23 (~267k) por compactação, não a fórmula.
+- [x] **Medido em 2026-10-12 — custo real da chamada de resumo por faixa (a fórmula subestimava a saída)**:
+  `docs/research/compaction-bands/exp.js` (local) copia 5 sessões Opus reais que compactaram a ~267k (5 projetos) para
+  sandboxes `ccwarmtail-bands-*`, cortadas no MESMO segmento a ~120k e a ~267k; aquece o cache (`-p --resume`) e roda
+  `/compact` pelo proxy de medição. As 10 chamadas de resumo leram o contexto inteiro do cache (gravado 4 tokens),
+  instrução 3.232. Médias: ~120k (ctx 129k) saída 6.746, US$ 0,173 pela tabela (gateway cobrou 0,160); ~267k (ctx 280k)
+  saída 8.055, US$ 0,230 (gateway 0,217). A fórmula usava saída fixa de 4,9k (0,135/0,164). Ganho recalculado
+  (`sim.js --medido`, mesmas 7.080 chamadas): janela 120k −11,9% (US$ 452,16 → 398,51; custo nas compactações
+  US$ 25,18) contra −12,6% pela fórmula (US$ 19,79). Ciclos reais (`paired.js --medido`): US$ 0,0451/chamada a ~120k
+  contra 0,0645 a ~267k (ainda não pareado; a medição do ganho segue para 14/10).
 
 ## Heredoc / `node -e` corrompidos no Windows (pedidos 90/91 do Allan via orquestrador, 2026-10-11)
 
