@@ -24,6 +24,25 @@ Só 11/10: heredoc 4,0%, `node -e` 6,4%, ~33 mil tokens.
   absoluto da pasta atual)**: os dois importam da pasta atual; só um script que muda de pasta (`os.chdir`) e depois
   importa vê diferença. Aceito e documentado no cabeçalho do `lib/shell-escape.js`.
 
+## Compactação nativa × cauda forçada com cache quente (pedido do Allan via orquestrador, 2026-10-12)
+
+Medição e simulação em `docs/research/compaction-warm-tail/` (local; README com números e fontes).
+
+- [x] **O gate de 30% não segurava o contexto — encontrado e corrigido em 2026-10-12 (`feat/compaction-window-120k`,
+  aprovado pelo Allan via orquestrador)**: o gate (`hooks/compaction.mjs` `gate` + `compaction-core.decideTiming`) só age
+  com cache frio (TTL 1 h) em prompt de pessoa; desde a 3.2.7, 1 evento de gate em ~22 h, 0 compactações por ele, 34/34
+  compactações do engine a 266–269k (89% da janela de 300k); só 0,19% dos intervalos entre chamadas passam de 1 h.
+  Simulado em 7.049 chamadas reais: resumo nativo com cache quente a ~120k = −12,7% (até −19/−23% se o pós-compactação a
+  120k for menor que os 48k medidos a 267k), mesma qualidade. A opção "cauda 2+2 + saídas limpas + docs" dá −29%, mas a
+  fidelidade cai de 83% para ~17% (cauda larga: 43–61%) → não adotada. Smoke (`claude -p /context` com `--settings`, CC
+  2.1.293): a folga do engine é fixa em 33k (300k/153k/150k/120k/100k → buffer 33k). Correção: `costTuning` com janela
+  153000 (→ ~120k); quem tinha os 300k do boss migra sozinho, preservando o valor anterior do usuário (teste). Junto:
+  `thresholdFor` com piso `minThresholdTokens` 90k — com a janela de 153k, 30% = 46k ficaria abaixo dos ~48k que uma
+  compactação nativa deixa e cada cache frio compactaria à toa (teste). Acompanhamento de 1–2 dias pelos eventos
+  `compaction.run`/`settled` e pelo usage das transcrições (`docs/research/compaction-warm-tail/sim.js`/`extract.js`).
+- [x] **Medido: a chamada de resumo do `/compact` nativo lê o histórico do cache quente** (CC 2.1.293, proxy: lido 65.972,
+  gravado 97) — a premissa do 3.2.2 confirmada; uma análise de terceiros dizia o contrário.
+
 ## Custo das sessões (pedido do Allan via orquestrador, 2026-10-11)
 
 Relatórios do custo-agente (10–11/10): sessões com o boss a US$62–120/dia, 60–70% dos turnos acima de 400k de contexto.
@@ -49,6 +68,8 @@ com outra janela/validade de cache (calibrado: o cenário atual dá 522 contra 5
   `asUser` perderia o remetente para a resposta via SendMessage) — medir antes nos eventos `compaction.gate`.
   Adiado: com a janela em 300k o engine já compacta essas sessões no meio do turno; o reenvio exigiria preservar o
   remetente. Reabrir se os eventos `compaction.gate`/`cache.turn` depois da 3.2.7 mostrarem sessão delegada acima de ~300k.
+  Evidência de 2026-10-12: a maioria dos prompts das sessões autônomas chega como attachment `queued_command` (orquestrador:
+  68 contra 1 prompt comum), que o gate também não vê; com a janela de 153k (3.2.9) o engine compacta essas sessões a ~120k.
 - [x] **Limiar do gate passa a ser 30% de 300k = 90k — analisado e mantido em 2026-10-11**: o gate só age com o cache
   frio (agora 1 h ocioso). Compactar ali custa ~US$1,17 (reprocessar 90k + resumo + gravar ~50k) contra ~US$0,79 de
   regravar os 90k sem compactar; a diferença se paga em ~40 chamadas lendo 50k em vez de 90k. Neutro; não muda o
