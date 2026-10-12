@@ -1,5 +1,20 @@
 # Changelog
 
+## [3.2.9] - 2026-10-12
+
+### Changed
+- **Compactação perto de 120k em vez de 267k.** O boss agora grava `CLAUDE_CODE_AUTO_COMPACT_WINDOW=153000` (antes
+  300000). O Claude Code compacta 33k abaixo da janela, então isso dá ~120k, ou 40% da janela anterior. Até aqui o
+  limite de 30% do boss quase nunca agia: ele só compacta com o cache frio, e com cache de 1 h só 0,19% dos intervalos
+  entre chamadas esfriam. Nas 34 compactações medidas entre 11 e 12/10, o contexto chegou a 266–269k em todas. A
+  compactação continua usando o resumo do próprio Claude Code, cuja chamada lê o histórico do cache quente (medido),
+  e se paga em ~28 chamadas de um ciclo de ~39. Simulado nas 7.049 chamadas reais de 59 sessões: −12,7% de custo,
+  mesmo resumo. Uma instalação que tinha os 300k do boss passa para 153k sozinha. O valor que você tinha antes do
+  boss continua guardado e volta se o recurso for desligado. Uma janela sua menor que 153k não é tocada. A troca vale
+  a partir da próxima sessão.
+- **O limite do gate de cache frio nunca fica abaixo de 90k.** Com a janela de 153k, 30% dariam 46k, menos do que
+  uma compactação nativa já deixa (~48k). Sem esse piso, cada volta depois de 1 h parado compactaria à toa.
+
 ## [3.2.8] - 2026-10-11
 
 ### Fixed
