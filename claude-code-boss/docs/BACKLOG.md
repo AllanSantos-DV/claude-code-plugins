@@ -1,5 +1,29 @@
 # Backlog
 
+## Métrica de economia + compactação proativa (branch `feat/economy-metric-and-proactive-compaction`, pedido do orquestrador, 2026-10-12)
+
+- **C — encontrado e corrigido na hora:** `retrieve.injected` não registrava os caracteres injetados, então o custo real do recall não
+  era calculável. Agora o journal e o evento levam `injectedChars`, e o `recall-health` mostra a latência por recall (p50/p95). Teste em `test-units.js`.
+- **E — encontrado e corrigido na hora:** o L1% (unidades do plano por 1%) era uma constante (71.400). `lib/limit-calibration.js` lê os blocos
+  `rate_limit` ("session limit · resets …") e o gasto da rota assinatura nas transcrições, e recalibra por janela de 5 h. Dado real (60 dias):
+  9 janelas, ~47,4 mil/1%, CV ≈ 0,25 → **limite inferior** (só vê este PC) e disperso, então a regra de confiança (≥ 5 janelas e CV ≤ 0,15)
+  mantém o padrão 71.400 e mostra o medido ao lado (`limitCalibration` no dashboard). O store de métricas só tem `cache.turn` desde 09/10 e só da rota API: por isso a leitura vem das transcrições.
+  Teste: "limit-calibration: …".
+- **B — causa dos recalls degradados (11/50):** são rajadas (reinício do daemon ou carga do host), não falha constante. Instrumentado (latência p50/p95
+  no `recall-health`); sem mudar timeout até haver dado. **Em aberto só como observação**, sem item de produto.
+- **D — injetar menos (~17% das entradas citadas):** medido, ganho estimado ~1–2% do gasto, com risco ao recall → **decisão: não cortar**.
+- **F — compactação proativa, fase 1 (sombra):** `buildBrief` (`compaction-core.mjs`) monta, sem chamar modelo, a transcrição curada que poderia
+  substituir o resumo nativo (mensagens do usuário literais, texto do assistente encurtado, chamadas de ferramenta em uma linha, saídas descartadas
+  — o que a memória MCP recupera). O hook só **mede** (`brief` no evento `compaction.run` quando o resumo nativo roda); não substitui nada.
+  Medido em 468 compactações reais (14 dias): mediana do brief ≈ 5,5k tokens contra ~21,5k que o resumo nativo deixa; mas há cauda longa
+  (sessões com colagens enormes do usuário chegam a 80–140k, porque o texto do usuário é literal). Economia por compactação se substituir:
+  a chamada do resumo (≈ US$ 0,13–0,17). **Fase 2 (em aberto, não é defeito):** substituir de fato, só depois do smoke no CC Desktop provar que o
+  host aceita a mensagem sintética, e com teto para colagens do usuário. O limite do usuário (`thresholdPercent`, padrão 30%) não muda; janela de 1M: o brief independe da janela.
+- **Achados fora do escopo (registrar, não implementar agora):**
+  - sessão `4877a98f` (serviço Jarvis) chegou a ~197k sem compactar — causa fora deste repo.
+  - contadores vitalícios do `recall-health` subcontam (escrita last-writer-wins) — `scripts/lib/recall-health.js`.
+  - a calibração do dashboard faz um scan síncrono (~5 s) uma vez por dia — `scripts/dashboard.js` `getCurationSummary`.
+
 ## Custo dos Stop hooks nas sessões de projeto (pedido do orquestrador, 2026-10-12)
 
 Apuração do orquestrador: US$ 1,81 só na sessão `investiga-o-a2` em 12/10. Medição (`.claude/scripts/stop-cost-probe*.mjs`,

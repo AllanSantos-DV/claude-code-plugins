@@ -290,6 +290,66 @@ export function classifyResume(s) {
   return { reexpanded: dropped > 0, copies: dropped, lastTokens: Number.isFinite(s.lastTokens) ? s.lastTokens : 0 };
 }
 
+const BRIEF_ARG_CHARS = 160;
+const BRIEF_ERROR_CHARS = 200;
+
+/** One-line description of a tool call's main argument (file, command, pattern, url…), whitespace-collapsed and cut. */
+function briefArg(input) {
+  const i = input || {};
+  const v = i.file_path ?? i.command ?? i.pattern ?? i.path ?? i.url ?? i.query ?? i.description ?? '';
+  return String(typeof v === 'string' ? v : JSON.stringify(v)).replace(/\s+/g, ' ').slice(0, BRIEF_ARG_CHARS);
+}
+
+/**
+ * The curated transcript a forced compaction can use INSTEAD of the engine's summary call (phase 1 of the
+ * proactive compaction: built and sized in shadow, not yet substituted). Deterministic, no model call:
+ *   - the first message and the newest `preserveRecentMessages` stay as the very same objects;
+ *   - everything between becomes ONE user message: every user message verbatim, assistant text cut to
+ *     `briefAssistantChars`, each tool call one line (tool + file/command), failed results a short head;
+ *     successful tool outputs are dropped — they are what MCP memory (ingested transcripts) recovers;
+ *   - the kept tail never starts on a tool result whose call was cut (the API rejects an orphan).
+ * @param {ReadonlyArray<object>} messages  same shape planCompaction takes
+ * @param {Partial<typeof DEFAULTS> & {memoryNote?: string, briefAssistantChars?: number}} [options]
+ * @returns {{messages:object[], briefChars:number, charsBefore:number, charsAfter:number, cutMessages:number, userTextIntact:boolean}}
+ */
+export function buildBrief(messages, options = {}) {
+  const o = { briefAssistantChars: 400, ...DEFAULTS, ...options };
+  const { list } = dropEngineCopies(Array.isArray(messages) ? messages : []);
+  const n = list.length;
+  let tailStart = Math.max(1, n - o.preserveRecentMessages);
+  while (tailStart > 1) { // an orphan result at the cut: pull its call into the tail
+    const uses = new Set();
+    for (let k = tailStart; k < n; k++) for (const u of list[k].toolUses || []) uses.add(u.tool_use_id);
+    if ((list[tailStart].toolResults || []).every((r) => uses.has(r.tool_use_id))) break;
+    tailStart--;
+  }
+  const middle = list.slice(1, tailStart);
+  const useById = new Map();
+  const lines = [];
+  for (const m of middle) {
+    for (const u of m.toolUses || []) useById.set(u.tool_use_id, u);
+    if (m.role === 'user' && m.text) lines.push(`USER: ${m.text}`);
+    else if (m.text) lines.push(`ASSISTANT: ${m.text.length > o.briefAssistantChars ? `${m.text.slice(0, o.briefAssistantChars)}…` : m.text}`);
+    for (const u of m.toolUses || []) lines.push(`  · ${u.tool} ${briefArg(u.input)}`);
+    for (const r of m.toolResults || []) {
+      if (!r.isError) continue;
+      const u = useById.get(r.tool_use_id);
+      lines.push(`  ! ${u ? u.tool : 'tool'} failed: ${String(r.text || '').replace(/\s+/g, ' ').slice(0, BRIEF_ERROR_CHARS)}`);
+    }
+  }
+  const head = `[Compaction brief: ${middle.length} earlier messages condensed without a model call. User messages are verbatim; `
+    + 'assistant text is shortened; tool outputs were dropped.'
+    + `${o.memoryNote ? ` ${o.memoryNote}` : ''}]\n`;
+  const text = head + lines.join('\n');
+  const out = middle.length ? [list[0], { role: 'user', text }, ...list.slice(tailStart)] : list.slice();
+  const userTextIntact = middle.every((m) => m.role !== 'user' || !m.text || text.includes(`USER: ${m.text}`));
+  return {
+    messages: out, briefChars: middle.length ? text.length : 0,
+    charsBefore: list.reduce((c, m) => c + size(m), 0), charsAfter: out.reduce((c, m) => c + size(m), 0),
+    cutMessages: middle.length, userTextIntact,
+  };
+}
+
 /** Rough tokens of a message list read as JSON (4 chars/token: sizing, never billing). */
 export function estimateTokens(messages) {
   return Math.round(JSON.stringify(messages || []).length / 4);

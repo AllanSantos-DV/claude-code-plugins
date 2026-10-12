@@ -24694,6 +24694,24 @@ test('compaction-core.planCompaction: stale results truncated with a note, every
   assert(none.ratio < cmpCore.DEFAULTS.minReductionRatio, 'nothing stale → below the minimum → the engine summary runs');
 });
 
+test('compaction-core.buildBrief: model-free brief — user text verbatim, tool outputs dropped, errors kept short, tail never starts on an orphan result', () => {
+  const msgs = cmpSession();
+  const b = cmpCore.buildBrief(msgs, { preserveRecentMessages: 3, memoryNote: 'MEMORY-NOTE' });
+  assertEq(b.userTextIntact, true);
+  assert(b.messages[0] === msgs[0], 'first message kept as the engine object');
+  const brief = b.messages[1];
+  assertEq(brief.role, 'user');
+  assert(brief.text.includes('USER: document it') && brief.text.includes('MEMORY-NOTE'), 'user text verbatim + memory note');
+  assert(brief.text.includes('· Read src/p.js') && brief.text.includes('! Bash failed: EEEE'), 'calls as lines, failed result as a short head');
+  assert(!brief.text.includes('aaaaaaaaaa'), 'a successful tool output is dropped');
+  // Tail of 3 would start at a result (w1's) → the call must be pulled in with it.
+  const tailUses = new Set(); const tail = b.messages.slice(2);
+  for (const m of tail) for (const u of m.toolUses || []) tailUses.add(u.tool_use_id);
+  for (const m of tail) for (const r of m.toolResults || []) assert(tailUses.has(r.tool_use_id), `no orphan result ${r.tool_use_id}`);
+  assert(b.charsAfter < b.charsBefore / 2, `brief ${b.charsAfter} vs ${b.charsBefore}`);
+  assertEq(cmpCore.buildBrief(msgs.slice(0, 2), { preserveRecentMessages: 6 }).cutMessages, 0, 'nothing to condense → history unchanged');
+});
+
 test('compaction-core.chooseCompaction: the engine SUMMARY unless pruning cuts >= 85% — warm or cold, auto or manual (pruned sessions re-read the kept 75–95% on every call: measured US$0.50/call vs US$0.075 after a summary)', () => {
   const plan = (ratio, extra = {}) => ({ ratio, duplicatesDropped: 0, verbatimTextIntact: true, ...extra });
   const c = (s) => cmpCore.chooseCompaction(s);
