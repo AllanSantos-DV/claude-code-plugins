@@ -70,7 +70,9 @@ function normalizeStopResult(res) {
   if (res && res.block && typeof res.reason === 'string' && res.reason.length > 0) {
     return { block: true, reason: res.reason };
   }
-  return { block: false, reason: '' };
+  // A notice is shown to the user only; it costs no model turn (unlike a block).
+  const notice = res && typeof res.notice === 'string' ? res.notice : '';
+  return { block: false, reason: '', notice };
 }
 
 /**
@@ -97,6 +99,7 @@ async function runStopDetectorCli(run, name) {
   }
   const norm = normalizeStopResult(res);
   if (norm.block) emitStopBlock(norm.reason);
+  else if (norm.notice) emitJson({ systemMessage: norm.notice });
   else emitEmpty();
 }
 
