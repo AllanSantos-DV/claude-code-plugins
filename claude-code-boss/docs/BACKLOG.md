@@ -21,7 +21,24 @@ não são do boss (hook do orquestrador).
 - [ ] **Adiado — medir o ganho real da janela de 120k (3.2.9; corte 2026-10-12T14:02:31Z; baseline US$ 474,24 em 7.049
   chamadas; previsão −12,7%)**: só a partir de **2026-10-14**, rodar `docs/research/compaction-warm-tail`
   (`extract.js`, `sim.js`, `gate-events.js`) apenas com chamadas depois do corte e comparar custo por chamada e tamanho
-  do contexto antes/depois de cada compactação. Pedido do orquestrador; registrado.
+  do contexto antes/depois de cada compactação. Pedido do orquestrador; registrado. Usar também
+  `docs/research/compaction-bands/` (`bands.js` → `paired.js`): ciclos fechados a ~120k contra ~267k por projeto.
+- [x] **Medido em 2026-10-12 (pedido 167 do orquestrador) — o pós-compactação a ~120k NÃO é menor que a 267k**:
+  `docs/research/compaction-bands/` (local) lê todas as transcrições. 1ª chamada depois da compactação, contexto
+  mediano: 48,1k nas 6 compactações a 119–129k (após o corte da 3.2.9), 48,6k nas 32 a ~267k, 42–57k a ~967k. Só o
+  resumo varia (`postTokens` do engine ~15–17k); o resto é o prefixo de ~17k + o trecho preservado. A faixa otimista
+  "−19/−23% se o pós-compactação a 120k for menor" (acima e no README da pesquisa) não se confirma: vale a previsão
+  central de −12,7%. Primeiros dados reais (4 ciclos fechados a ~120k, 217 chamadas, 2 projetos, ~50 min): contexto
+  médio 82k (a simulação previu 81k), US$ 0,044/chamada contra US$ 0,064 nos 17 ciclos a ~267k — ainda sem pareamento
+  por projeto, então não é a medição do ganho (essa segue adiada para 14/10). Duração mediana da compactação: 52 s a
+  ~120k contra 67 s a ~267k, e ela acontece ~3× mais vezes.
+- [ ] **Aberto (fora do escopo) — a chamada de resumo da compactação não aparece em nenhuma conta local de custo**: o
+  Claude Code não grava o usage dela na transcrição (a `compact_boundary` só traz `preTokens`/`postTokens`/`durationMs`),
+  e o baseline US$ 474,24, o livro de uso do orchestrador (`src/usage-book.mjs`, a partir das transcrições) e o
+  custo-agente leem só as transcrições. Visto ao medir o pedido 167. Tamanho: ~US$ 0,13–0,17 por compactação com
+  cache quente (proxy: lido = contexto inteiro a 0,20, instrução 3,2k, saída ~4,9k) — ~US$ 6 nas 34 do baseline; com
+  ~3× mais compactações a 120k o peso cresce, e a comparação do dia 14 precisa somá-la pela fórmula ou medi-la por proxy.
+  Proposta: somar a estimativa por `compact_boundary` nos relatórios, ou ler o usage real no log do gateway se existir.
 
 ## Heredoc / `node -e` corrompidos no Windows (pedidos 90/91 do Allan via orquestrador, 2026-10-11)
 
