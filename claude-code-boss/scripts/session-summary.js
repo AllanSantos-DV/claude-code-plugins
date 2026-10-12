@@ -3,11 +3,13 @@
  * session-summary.js — Stop detector (U2, "value made visible").
  *
  * Once per session (counter cap, like auto-continue-stop), when the session has
- * captured at least one lesson, inject a single positive one-liner:
+ * captured at least one lesson, show the user a single positive one-liner:
  *   "[SESSION] Captured N lesson(s) this session — the Brain is learning."
  *
- * Agent-facing (EN); the agent relays it to the user in their language. Cheap and
- * standard-friendly (fires in both profiles) — it's encouragement, not a gate.
+ * It is a NOTICE (Stop `systemMessage`, shown to the user), never a block: a block
+ * makes the host run one more model turn over the whole context — measured at
+ * US$0.25-4.50 per session for a message that asks the agent to do nothing.
+ * Standard-friendly (fires in both profiles) — it's encouragement, not a gate.
  *
  * "This session" is bounded by the session-start stamp written at SessionStart
  * (curation-session.js). lesson.captured metrics carry no session_id, so we count
@@ -42,10 +44,9 @@ function readJson(p) {
   try { return JSON.parse(fs.readFileSync(p, 'utf8')); } catch { /* absent */ return null; }
 }
 
-function buildReason(n) {
+function buildNotice(n) {
   const s = n === 1 ? '' : 's';
-  return `[SESSION] Captured ${n} lesson${s} this session — the Brain is learning. `
-    + `If more durable lessons emerged, capture them before you finish.`;
+  return `[SESSION] Captured ${n} lesson${s} this session — the Brain is learning.`;
 }
 
 /** Read this project's lesson.captured rows. Fail-open to []. */
@@ -90,7 +91,7 @@ async function run(event, deps = {}) {
     writeFileAtomic(cFile, JSON.stringify({ firedAt: Date.now(), count: n }));
   } catch (err) { console.error(`[session-summary] counter write failed: ${err.message}`); }
 
-  return { block: true, reason: buildReason(n) };
+  return { notice: buildNotice(n) };
 }
 
 if (require.main === module) {
@@ -98,4 +99,4 @@ if (require.main === module) {
   runStopDetectorCli(run, 'session-summary');
 }
 
-module.exports = { run, buildReason, counterPath, startStampPath };
+module.exports = { run, buildNotice, counterPath, startStampPath };
