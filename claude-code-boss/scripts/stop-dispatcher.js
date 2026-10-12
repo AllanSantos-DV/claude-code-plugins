@@ -34,7 +34,7 @@
 'use strict';
 
 const { performance } = require('node:perf_hooks');
-const { readStdin, parsePayload, emitStopBlock, emitEmpty } = require('./lib/hook-io.js');
+const { readStdin, parsePayload, emitStopBlock, emitEmpty, emitJson } = require('./lib/hook-io.js');
 const metrics = require('./lib/metrics.js');
 const hooksConfig = require('./lib/hooks-config.js');
 const telem = require('./lib/stop-telemetry.js');
@@ -116,6 +116,7 @@ async function dispatch(event, opts = {}) {
   const resolveId = typeof opts.resolveProjectId === 'function' ? opts.resolveProjectId : require('./lib/project-id.js').tryResolveProjectId;
   const noProjectId = !!(event && typeof event.cwd === 'string' && event.cwd) && !resolveId({ cwd: event.cwd });
   const blocks = [];
+  const notices = [];
   const detectors = [];
 
   for (const { name, mod } of list) {
@@ -142,6 +143,8 @@ async function dispatch(event, opts = {}) {
         entry.blocked = true;
         entry.chars = telem.estChars(res.reason);
         blocks.push({ name, reason: res.reason });
+      } else if (res && typeof res.notice === 'string' && res.notice) {
+        notices.push(res.notice);
       }
     } else if (typeof mod.detect === 'function' && telem.shouldShadow(runId, name, shadowRate)) {
       // Sampled shadow pass: run the ungated detection to learn if it WOULD have
@@ -163,7 +166,7 @@ async function dispatch(event, opts = {}) {
     detectors.push(entry);
   }
 
-  return { blocks, profile, runId, detectors };
+  return { blocks, notices, profile, runId, detectors };
 }
 
 /**
@@ -183,6 +186,14 @@ function mergeBlocks(blocks) {
 }
 
 /**
+ * Add the detectors' notices as a Stop `systemMessage` (user-facing, no model turn).
+ * With no block and no notice the output stays `{}`.
+ */
+function withNotices(out, notices) {
+  return Array.isArray(notices) && notices.length ? { ...out, systemMessage: notices.join('\n') } : out;
+}
+
+/**
  * Full Stop pass for one event: dispatch + telemetry + merge. Returns the hook
  * output object (`{decision:'block',reason}` or `{}`) without writing — main()
  * emits it; the Phase G daemon tool returns it.
@@ -196,7 +207,7 @@ async function run(event) {
   // Gating is resolved per detector inside dispatch() (including `free`, which
   // gates everything). No early return: even a full passthrough emits the Stop
   // summary so the bypass's impact is observable.
-  const { blocks, detectors } = await dispatch(event, {
+  const { blocks, notices, detectors } = await dispatch(event, {
     profile,
     runId,
     onError: (name, message) => metrics.fire('stop.detector.error',
@@ -205,13 +216,14 @@ async function run(event) {
 
   metrics.fire('stop.dispatch', telem.summarize(profile, runId, detectors), ctx);
 
-  return mergeBlocks(blocks);
+  return withNotices(mergeBlocks(blocks), notices);
 }
 
 async function main() {
   const raw = await readStdin();
   const out = await run(parsePayload(raw));
   if (out.decision === 'block') emitStopBlock(out.reason);
+  else if (out.systemMessage) emitJson({ systemMessage: out.systemMessage });
   else emitEmpty();
 }
 
@@ -222,4 +234,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { run, dispatch, mergeBlocks, rank, DETECTORS, PRIORITY, NO_ID_SKIP, SEP, getShadowRate };
+module.exports = { run, dispatch, mergeBlocks, withNotices, rank, DETECTORS, PRIORITY, NO_ID_SKIP, SEP, getShadowRate };

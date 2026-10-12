@@ -1,5 +1,28 @@
 # Backlog
 
+## Custo dos Stop hooks nas sessões de projeto (pedido do orquestrador, 2026-10-12)
+
+Apuração do orquestrador: US$ 1,81 só na sessão `investiga-o-a2` em 12/10. Medição (`.claude/scripts/stop-cost-probe*.mjs`,
+local; `stop.dispatch` do metrics-store + usage das transcrições): hoje, `investigacao` 12 Stops/2 bloqueados,
+`custo-agente` 6/2, `orchestrador` 15/2. Não há loop de bloqueio (cada detector tem contador por sessão ou
+`stop_hook_active`). Os blocos vinham de `session-summary` (3×) e `decision-promote` (5×); cada bloco faz o host rodar
+mais um turno do modelo sobre o contexto inteiro: US$ 0,18–0,80 por bloco, até US$ 4,5 quando o turno extra encadeia
+ferramentas (sessão de 28 US$ em `investigacao`). Os blocos "Arrived mid-turn" vistos nas transcrições do orquestrador
+não são do boss (hook do orquestrador).
+
+- [x] **`session-summary` bloqueava o Stop só para dizer "o Brain está aprendendo" — encontrado e corrigido em
+  2026-10-12 (`fix/session-summary-notice`, 3.2.10)**: a mensagem não pede nada ao agente, mas `decision:block` custa
+  um turno completo. Agora o detector devolve `{ notice }`; o dispatcher junta os avisos num `systemMessage` (só o
+  usuário vê, nenhum turno extra) e o CLI avulso (`runStopDetectorCli`) faz o mesmo. Testes: `session-summary.run` (sem
+  `block`), `stop-dispatcher.withNotices` (aviso sozinho → `{systemMessage}`, nunca `decision:block`).
+- [ ] **Aberto (decisão de produto) — `decision-promote` ainda bloqueia o Stop a cada commit com cara de decisão
+  (`scripts/decision-promote.js`)**: pede `brain_store`, então o turno extra tem função; custo medido US$ 0,18–0,25 por
+  bloco (5 blocos hoje). Só vale mexer se o Allan quiser menos capturas de decisão; em `standard` já está desligado.
+- [ ] **Adiado — medir o ganho real da janela de 120k (3.2.9; corte 2026-10-12T14:02:31Z; baseline US$ 474,24 em 7.049
+  chamadas; previsão −12,7%)**: só a partir de **2026-10-14**, rodar `docs/research/compaction-warm-tail`
+  (`extract.js`, `sim.js`, `gate-events.js`) apenas com chamadas depois do corte e comparar custo por chamada e tamanho
+  do contexto antes/depois de cada compactação. Pedido do orquestrador; registrado.
+
 ## Heredoc / `node -e` corrompidos no Windows (pedidos 90/91 do Allan via orquestrador, 2026-10-11)
 
 Causa: bugs abertos do Bash tool do Claude Code no Windows (anthropics/claude-code #85856, #98622/#98733: toda

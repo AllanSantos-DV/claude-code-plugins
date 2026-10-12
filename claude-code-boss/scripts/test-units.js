@@ -15667,9 +15667,9 @@ test('value-summary.countLessonsSince: ts window + project match', () => {
   assertEq(valueSummary.countLessonsSince(rows, { sinceTs: 0, project: 'a' }), 2);
 });
 
-test('session-summary.buildReason: [SESSION] header + singular/plural', () => {
-  assert(sessionSummary.buildReason(1).startsWith('[SESSION]') && sessionSummary.buildReason(1).includes('1 lesson '), 'singular');
-  assert(sessionSummary.buildReason(4).includes('4 lessons'), 'plural');
+test('session-summary.buildNotice: [SESSION] header + singular/plural', () => {
+  assert(sessionSummary.buildNotice(1).startsWith('[SESSION]') && sessionSummary.buildNotice(1).includes('1 lesson '), 'singular');
+  assert(sessionSummary.buildNotice(4).includes('4 lessons'), 'plural');
 });
 
 test('session-summary.run: counts lessons since stamp, fires once (cap), disabled→{}', async () => {
@@ -15697,8 +15697,8 @@ test('session-summary.run: counts lessons since stamp, fires once (cap), disable
     },
   };
   const first = await sessionSummary.run({ hook_event_name: 'Stop', session_id: sid, cwd }, { dataDir: dir, metricsStore: fakeMetricsStore });
-  assertEq(first.block, true);
-  assert(first.reason.includes('Captured 3 lesson'), 'counts 2 project + 1 user-scoped in-session lessons');
+  assert(!first.block && !first.reason, 'a notice must NEVER block: a block costs one extra model turn');
+  assert(first.notice.includes('Captured 3 lesson'), 'counts 2 project + 1 user-scoped in-session lessons');
   // Cap: second call returns {} (counter written).
   const second = await sessionSummary.run({ hook_event_name: 'Stop', session_id: sid, cwd }, { dataDir: dir, metricsStore: fakeMetricsStore });
   assertEq(Object.keys(second).length, 0);
@@ -16077,6 +16077,18 @@ test('value-summary.summarize: retrieval precision (cited / injected)', () => {
 
 // ─── stop-dispatcher: merge + priority ───────────────────────────────────────
 const dispatcher = require('./stop-dispatcher.js');
+test('stop-dispatcher.withNotices: notice-only Stop → {systemMessage}, never decision:block', async () => {
+  assertEq(dispatcher.withNotices({}, []), {});
+  assertEq(dispatcher.withNotices({}, ['hi']), { systemMessage: 'hi' });
+  const r = await dispatcher.dispatch({}, {
+    profile: 'dev', shadowRate: 0,
+    detectors: [{ name: 'session-summary', mod: { run: () => ({ notice: 'N' }) } }],
+  });
+  assertEq(r.blocks.length, 0);
+  assertEq(r.notices, ['N']);
+  assertEq(dispatcher.withNotices(dispatcher.mergeBlocks(r.blocks), r.notices), { systemMessage: 'N' });
+});
+
 test('stop-dispatcher.mergeBlocks: no blocks → {}', () => {
   assertEq(dispatcher.mergeBlocks([]), {});
   assertEq(dispatcher.mergeBlocks(null), {});
