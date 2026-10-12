@@ -1549,7 +1549,12 @@ async function getCurationSummary(req, res, url) {
     const brainPort = Number(process.env.BRAIN_HTTP_PORT) || 38217;
     const health = await routerHttpGetJson(brainPort, '/health');
     const hookLatency = health && health.hookLatency ? health.hookLatency : { unavailable: `brain daemon not reachable on port ${brainPort}` };
-    json(res, { rangeDays: range, projects, ...summarizeCuration(rows, { shellIds }), hookLatency, daemonUptimeMs: health ? health.uptimeMs : null, prune });
+    // Plan-limit unit per 1%, recalibrated from the plan's own rate_limit blocks (day-cached). A failed scan
+    // is shown, not hidden: the committed default is used and the reason travels with the numbers.
+    let limitCalibration;
+    try { limitCalibration = require('./lib/limit-calibration.js').cachedCalibration({ file: path.join(DATA_DIR, '.runtime', 'limit-calibration.json') }); }
+    catch (err) { console.error(`[DASHBOARD] limit calibration failed: ${err.message}`); limitCalibration = { source: 'default', error: err.message }; }
+    json(res, { rangeDays: range, projects, ...summarizeCuration(rows, { shellIds, limitUnitsPerPercent: limitCalibration.unitsPerPercent }), limitCalibration, hookLatency, daemonUptimeMs: health ? health.uptimeMs : null, prune });
   } catch (err) {
     console.error(`[DASHBOARD] /api/metrics/curation failed: ${err.message}`);
     fail(res, err.message, 500);
