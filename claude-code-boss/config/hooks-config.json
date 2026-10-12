@@ -70,7 +70,7 @@
   },
   "costTuning": {
     "cacheTtl": "1h",
-    "autoCompactWindow": 300000
+    "autoCompactWindow": 153000
   },
   "verifyNudge": {
     "maxBlocks": 1,

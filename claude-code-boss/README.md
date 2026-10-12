@@ -236,8 +236,10 @@ Módulo de *function hook* do Claude Code (`hooks/compaction.mjs`, declarado em 
   compactação automática do próprio engine no limite dela (com a mesma escolha abaixo).
 - **Limiar**: um % (`thresholdPercent`, padrão 30, faixa 10–80) da janela que o engine aplica naquele
   prompt — o limite do modelo ou uma janela de compactação menor (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`) —, então
-  o mesmo ajuste serve a modelos de 200K e de 1M e acompanha o `/model`. Um limiar além do ponto de
-  auto-compact do engine é sinalizado (o engine compactaria antes). Ajuste no slider do painel
+  o mesmo ajuste serve a modelos de 200K e de 1M e acompanha o `/model`. Nunca abaixo de 90k: uma
+  compactação nativa já deixa ~48k, e compactar perto disso a cada cache frio só gastaria. Um limiar além do ponto de
+  auto-compact do engine é sinalizado (o engine compactaria antes). Na prática, com cache de 1 h quase nenhum
+  intervalo esfria (0,19% medidos em 12/10) e quem segura o contexto é a janela do `costTuning` abaixo. Ajuste no slider do painel
   **Compaction & cache** (gravado em `~/.claude/claude-code-boss/hooks/user-config.json`, sobrevive a
   updates; sessões abertas pegam no próximo turno).
   A validade é a **observada** nas respostas reais de cada host (`ephemeral_5m` / `ephemeral_1h`;
@@ -264,8 +266,9 @@ Módulo de *function hook* do Claude Code (`hooks/compaction.mjs`, declarado em 
   contratada, primeira chamada depois de uma compactação). Painel **Compaction & cache** na Home,
   `GET /api/metrics/compaction` e o log de eventos do Insights.
 - **Janela e validade do cache** (`costTuning`, `scripts/lib/cost-tuning.js`): no início de cada sessão o boss
-  grava no `env` do `~/.claude/settings.json` `CLAUDE_CODE_AUTO_COMPACT_WINDOW=300000` (o engine compacta perto de
-  267k, inclusive no meio de um turno longo ou numa sessão delegada, onde o gate acima não age) e, só com chave
+  grava no `env` do `~/.claude/settings.json` `CLAUDE_CODE_AUTO_COMPACT_WINDOW=153000` (o engine compacta 33k abaixo
+  da janela, perto de 120k, inclusive no meio de um turno longo ou numa sessão delegada, onde o gate acima não age;
+  a chamada de resumo lê o histórico do cache quente, então compactar ali se paga em ~28 chamadas) e, só com chave
   de API, gateway ou provedor de nuvem, `CLAUDE_CODE_PROMPT_CACHE_TTL=1h` (com 5 min, cada espera maior regravava
   o contexto inteiro). Uma janela sua maior que a nossa é trocada e guardada em
   `~/.claude/claude-code-boss/cost-tuning-state.json`; volta com `costTuning.enabled: false` ou no perfil `free`.
