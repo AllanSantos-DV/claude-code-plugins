@@ -1,5 +1,10 @@
 # Backlog
 
+## Avisos de atualização (branch `feat/update-notices`, pedido do orquestrador, 2026-10-13)
+
+- **Encontrado e corrigido na hora:** o auto-update ligava sozinho mas (a) não havia opt-out por env, (b) nada avisava de versão nova, (c) nada avisava que o plugin foi atualizado. `lib/update-notice.js` + `CLAUDE_CODE_BOSS_AUTO_UPDATE=0`; teste `update-notice: …` em `test-units.js`.
+- **Registrado:** o plugin não é publicado no npm (`private: true`, distribuído por marketplace git + GitHub Releases); o "disponível" vem da última release `v<X.Y.Z>` no GitHub, não do npm.
+
 ## PowerShell 5.1×7 e formato de arquivo (branch `feat/powershell-compat`, pedido do orquestrador, 2026-10-13)
 
 Medição (`.claude/scripts/measure-powershell.mjs`, `measure-fileedit.mjs`, locais; 30 dias de transcrições):
