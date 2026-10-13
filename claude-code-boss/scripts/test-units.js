@@ -22980,6 +22980,45 @@ test('marketplace auto-update: turned on once when nobody chose (known_marketpla
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
 
+test('update-notice: "version available" cached 6h and told once per version; "plugin updated" told once; first run silent; env opt-out stops switch-on and check', async () => {
+  const u = require('./lib/update-notice.js');
+  const m = require('./lib/marketplace-autoupdate.js');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-updnotice-'));
+  try {
+    const root = path.join(base, 'plugin'); const dir = path.join(base, 'global');
+    const setVer = (v) => { fs.mkdirSync(root, { recursive: true }); fs.writeFileSync(path.join(root, 'package.json'), JSON.stringify({ version: v })); };
+    let calls = 0; let latest = '3.4.0';
+    const fetchLatest = async () => { calls++; return { latest }; };
+    const T0 = Date.parse('2026-10-13T00:00:00Z');
+    setVer('3.4.0');
+    assertEq(u.takeUpdateNotices({ root, dir, env: {} }), [], 'first run: only records the version');
+    assertEq((await u.refreshLatest({ root, dir, env: {}, now: T0, fetchLatest })).status, 'checked', 'checked');
+    assertEq(u.takeUpdateNotices({ root, dir, env: {} }), [], 'latest == installed: nothing to say');
+    assertEq((await u.refreshLatest({ root, dir, env: {}, now: T0 + 3600e3, fetchLatest })).status, 'fresh', 'within 6h: no network');
+    assertEq(calls, 1, 'one request');
+    latest = '3.5.0';
+    assertEq((await u.refreshLatest({ root, dir, env: {}, now: T0 + 7 * 3600e3, fetchLatest })).latest, '3.5.0', 're-checked after 6h');
+    const avail = u.takeUpdateNotices({ root, dir, env: {} });
+    assert(avail.length === 1 && /3\.5\.0 disponível \(instalada: 3\.4\.0\)/.test(avail[0]) && /CLAUDE_CODE_BOSS_AUTO_UPDATE=0/.test(avail[0]) && !avail[0].includes('\n'), JSON.stringify(avail));
+    assertEq(u.takeUpdateNotices({ root, dir, env: {} }), [], 'available told once per version');
+    setVer('3.5.0');
+    const upd = u.takeUpdateNotices({ root, dir, env: {} });
+    assert(upd.length === 1 && /atualizado: 3\.4\.0 → 3\.5\.0/.test(upd[0]), JSON.stringify(upd));
+    assertEq(u.takeUpdateNotices({ root, dir, env: {} }), [], 'updated told once');
+    setVer('3.4.0');
+    assertEq(u.takeUpdateNotices({ root, dir, env: {} }).length, 0, 'a downgrade is not announced as an update');
+    // opt-out
+    const off = { CLAUDE_CODE_BOSS_AUTO_UPDATE: '0' };
+    assertEq((await u.refreshLatest({ root, dir: path.join(base, 'g2'), env: off, now: T0, fetchLatest })).status, 'disabled', 'opt-out: no check');
+    assertEq(calls, 2, 'no request while opted out');
+    assertEq(m.ensureAutoUpdate({ pluginRoot: path.join(base, 'claude', 'plugins', 'cache', 'mkt', 'p', '1'), env: off }).status, 'disabled', 'opt-out: auto-update not switched on');
+    // a failing lookup is loud and leaves the throttle open
+    const failed = await u.refreshLatest({ root, dir: path.join(base, 'g3'), env: {}, now: T0, fetchLatest: async () => { throw new Error('GitHub API 403'); } });
+    assert(failed.status === 'error' && /403/.test(failed.error), JSON.stringify(failed));
+    assertEq((await u.refreshLatest({ root, dir: path.join(base, 'g3'), env: {}, now: T0, fetchLatest })).status, 'checked', 'retried right after a failure');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
 test('setup-tools: user-given server address is used as-is (no Java/download), a running local server is reused with a version check, updates only with backend_update', async () => {
   const { createSetupTools } = require('./lib/setup-tools.js');
   let startOpts = null, javaChecked = 0, cfg = { backend: { type: 'local' } }, state = { status: 'idle' }, updaterCalls = 0, upd = { status: 'updated', from: '2.44.3', version: '2.45.0' };

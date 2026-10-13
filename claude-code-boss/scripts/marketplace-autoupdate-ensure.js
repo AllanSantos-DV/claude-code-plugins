@@ -8,12 +8,14 @@
  */
 const path = require('path');
 
-function run() {
+async function run() {
   try {
     const root = process.env.CLAUDE_PLUGIN_ROOT && !process.env.CLAUDE_PLUGIN_ROOT.includes('${')
       ? process.env.CLAUDE_PLUGIN_ROOT : path.resolve(__dirname, '..');
     const r = require('./lib/marketplace-autoupdate.js').ensureAutoUpdate({ pluginRoot: root });
     if (r.status === 'error') console.error(`[marketplace-autoupdate] ${r.error}`);
+    // Cache the newest release so the next prompt can say "version X available" (6h throttle).
+    await require('./lib/update-notice.js').refreshLatest({ root });
   } catch (err) {
     console.error(`[marketplace-autoupdate] ${err.message}`);
   }
