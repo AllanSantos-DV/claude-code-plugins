@@ -154,7 +154,13 @@ async function main() {
   // Once, after SessionStart turned plugin auto-update on: say so and how to turn it off.
   let autoUpdate = null;
   try { autoUpdate = require('./lib/marketplace-autoupdate.js').takeAutoUpdateNotice(); } catch (err) { console.error(`[claude-code-boss:user-prompt-submit-dispatcher] auto-update notice: ${err.message}`); }
-  const shown = [welcome, link && link.user, autoUpdate].filter(Boolean);
+  // "Plugin updated X → Y" and "version Z available", each once (lib/update-notice.js).
+  let updates = [];
+  try {
+    const root = process.env.CLAUDE_PLUGIN_ROOT && !process.env.CLAUDE_PLUGIN_ROOT.includes('${') ? process.env.CLAUDE_PLUGIN_ROOT : require('path').resolve(__dirname, '..');
+    updates = require('./lib/update-notice.js').takeUpdateNotices({ root });
+  } catch (err) { console.error(`[claude-code-boss:user-prompt-submit-dispatcher] update notice: ${err.message}`); }
+  const shown = [welcome, link && link.user, autoUpdate, ...updates].filter(Boolean);
   if (shown.length) out.systemMessage = shown.join(' ');
   if (text) out.hookSpecificOutput = { hookEventName: eventName, additionalContext: text };
   if (Object.keys(out).length) { emitJson(out); return; }

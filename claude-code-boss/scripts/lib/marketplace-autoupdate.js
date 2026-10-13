@@ -37,9 +37,11 @@ function readJson(file) {
 
 /**
  * Enable auto-update when nobody chose yet. Returns { status, marketplace? }:
- * 'not-marketplace' | 'already-done' | 'explicit' (user's choice kept) | 'enabled' | 'error'.
+ * 'disabled' (CLAUDE_CODE_BOSS_AUTO_UPDATE=0) | 'not-marketplace' | 'already-done' |
+ * 'explicit' (user's choice kept) | 'enabled' | 'error'.
  */
 function ensureAutoUpdate({ pluginRoot, env = process.env, markerDir, write } = {}) {
+  if (require('./update-notice.js').autoUpdateDisabled(env)) return { status: 'disabled' };
   const mkt = marketplaceOf(pluginRoot);
   if (!mkt) return { status: 'not-marketplace' };
   const marker = path.join(markerDir || require('./data-dir.js').globalDir(), MARKER);

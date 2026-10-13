@@ -1,6 +1,6 @@
 # claude-code-boss
 
-Plugin para Claude Code Desktop — **v3.4.0**
+Plugin para Claude Code Desktop — **v3.5.0**
 
 **Menos repetição. Mais memória.** Com o claude-code-boss, o seu Claude Code lembra o
 que deu certo e errado em cada projeto, resume a saída barulhenta de comandos que se
@@ -596,6 +596,12 @@ vir de variáveis de ambiente; a precedência é
   sobrevivente somando `recurrence`; **dry-run por padrão**. Roda também
   semanalmente sozinho (cooldown via SessionStart) e tem botão dedicado na aba
   Home do dashboard.
+
+## Atualização automática e avisos
+
+Ligada por padrão: no primeiro SessionStart o plugin liga o auto-update do marketplace (se você nunca escolheu) e avisa. Depois, tudo é visível:
+uma mensagem quando há versão nova (uma vez por versão, consulta ao GitHub no máximo a cada 6 h) e outra quando o plugin foi atualizado
+(`X → Y`). Para desligar a atualização automática e a consulta: `CLAUDE_CODE_BOSS_AUTO_UPDATE=0`.
 
 ## Versionamento
 
