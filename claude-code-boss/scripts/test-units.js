@@ -16442,14 +16442,14 @@ test('user-prompt-submit-dispatcher.withTimeout: distinguishes a genuine error f
   assertEq(okOutcome.value, 'VALUE');
 });
 
-test('session-start-dispatcher.DETECTORS: 15 detectors, correct order + shape (model-router-ensure excluded)', () => {
+test('session-start-dispatcher.DETECTORS: 16 detectors, correct order + shape (model-router-ensure excluded)', () => {
   const d = require('./session-start-dispatcher.js');
   const names = d.DETECTORS.map(x => x.name);
   assertEq(names, [
     'brain-daemon-ensure', 'memory-rotate', 'session-whitelist', 'brain-health',
     'project-snapshot', 'curation-session', 'doctor-advisory',
     'review-checklist-advisory', 'tuning-advisory', 'value-digest', 'project-identity-advisory',
-    'backend-onboarding-advisory', 'marketplace-autoupdate', 'graph-warm', 'policy-inject',
+    'backend-onboarding-advisory', 'marketplace-autoupdate', 'graph-warm', 'powershell-advisory', 'policy-inject',
   ]);
   assert(d.DETECTORS.every(x => typeof x.mod.run === 'function'), 'every detector exposes run()');
   assert(!names.includes('model-router-ensure'), 'model-router-ensure must stay OUT (process.exit() in its main flow)');
@@ -24256,6 +24256,8 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
     ['hook_active_research_detect', 'active-research-detect.js', { ...base, hook_event_name: 'UserPromptSubmit', prompt: 'qual a melhor forma de integrar com a api?' }],
     ['hook_stop_dispatcher', 'stop-dispatcher.js', { ...base, hook_event_name: 'Stop', stop_hook_active: true }],
     ['hook_policy_inject', 'policy-inject.js', { ...base, hook_event_name: 'SubagentStart' }],
+    ['hook_powershell_guard', 'powershell-guard.js', { ...base, hook_event_name: 'PreToolUse', tool_name: 'PowerShell', tool_input: { command: 'git pull && git push' } }],
+    ['hook_file_format_guard', 'file-format-guard.js', { ...base, hook_event_name: 'PreToolUse', tool_name: 'Write', tool_input: { file_path: path.join(proj, 'ffg-parity-missing.txt') } }],
   ];
   for (const [tool, script, ev] of PARITY) {
     test(`Phase G parity: ${tool} == ${script} stdout (${ev.prompt || (ev.tool_input && JSON.stringify(ev.tool_input)) || ev.hook_event_name})`, async () => {
@@ -24312,7 +24314,7 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
     // but each must really be called by a shipped module, so none is left orphaned.
     const { HOOKS: SPECS_G } = require('./lib/hook-tools.js');
     const moduleCalled = Object.keys(SPECS_G).filter(n => SPECS_G[n].caller === 'module');
-    assertEq(hookEntries.map(h => h.tool).sort(), [...hookTools.names].filter(n => !moduleCalled.includes(n)).sort());
+    assertEq([...new Set(hookEntries.map(h => h.tool))].sort(), [...hookTools.names].filter(n => !moduleCalled.includes(n)).sort());
     const modulesSrc = (JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).modules || []).map(m => fs.readFileSync(path.join(ROOT, 'hooks', m), 'utf8')).join('\n');
     // …through a daemon route (the tools are unlisted, a module cannot $.mcp.call them):
     // http-daemon maps the route to the tool, and a shipped module calls that route.
@@ -25190,6 +25192,212 @@ test('curation-guard: shell-escape step rewrites (ask outside bypass, keeps othe
 test('hooks-config: shellEscapeGuard defaults (rewrite, block OFF, win32 only)', () => {
   const c = require('./lib/hooks-config.js').getShellEscapeGuard();
   assert(c.enabled === true && c.mode === 'rewrite' && c.block === false && c.inlineMaxChars === 300 && c.platforms.join() === 'win32', JSON.stringify(c));
+});
+
+// ─── powershell-compat (5.1 × 7 mistakes; bash eating $ in powershell -Command "…") ───
+const psc = require('./lib/powershell-compat.js');
+const PS_BAD = 'powershell -NoProfile -Command "Get-Process | ForEach-Object { $_.Id } | Where-Object { $_ -gt 1 }" 2>&1';
+
+test('powershell-compat: fixBashQuoting escapes $_ in -Command "…" and leaves the rest alone', () => {
+  const r = psc.fixBashQuoting(PS_BAD);
+  assert(r && r.count === 2, JSON.stringify(r));
+  assertEq(r.command, 'powershell -NoProfile -Command "Get-Process | ForEach-Object { \\$_.Id } | Where-Object { \\$_ -gt 1 }" 2>&1', 'only the PS metacharacters get a backslash');
+  assert(psc.fixBashQuoting(r.command) === null, 'idempotent: an already escaped command is not touched again');
+});
+
+test('powershell-compat: fixBashQuoting abstains on single quotes, heredocs, non-PowerShell bodies and quoted text', () => {
+  assert(psc.fixBashQuoting("powershell -Command 'Get-Process | % { $_.Id }'") === null, 'single quotes are literal already');
+  assert(psc.fixBashQuoting('pwsh -c "Get-Date" <<EOF\n$x\nEOF') === null, 'heredoc → shell-escape owns it');
+  assert(psc.fixBashQuoting('powershell -Command "echo $HOME"') === null, 'no PowerShell signal: bash expansion may be intended');
+  assert(psc.fixBashQuoting(`echo "powershell -Command \\"Get-Date; $x = 1\\""`) === null, 'inside another string it is data');
+  assert(psc.fixBashQuoting('ls -la') === null && psc.fixBashQuoting(undefined) === null, 'unrelated input');
+});
+
+test('powershell-compat: fixBashQuoting escapes backticks and $( ) and keeps existing escapes', () => {
+  const r = psc.fixBashQuoting('powershell -Command "Write-Host `n$(Get-Date) \\$keep \\"q\\" $env:TEMP"');
+  assertEq(r.command, 'powershell -Command "Write-Host \\`n\\$(Get-Date) \\$keep \\"q\\" \\$env:TEMP"', 'escapes: ` $( $env; kept: \\$ \\"');
+});
+
+test('powershell-compat: rewritten command really reaches PowerShell intact (real bash + powershell)', () => {
+  const cp = require('child_process');
+  if (process.platform !== 'win32') { console.log('  (skipped: Windows PowerShell only)'); return; }
+  const bash = ['C:/Program Files/Git/bin/bash.exe', 'C:/Program Files/Git/usr/bin/bash.exe'].find((p) => require('fs').existsSync(p));
+  assert(bash, 'Git Bash not found: the real-execution proof needs it');
+  const cmd = 'powershell -NoProfile -Command "1,2,3 | ForEach-Object { $_ * 2 }"';
+  const run = (c) => cp.spawnSync(bash, ['-c', c], { encoding: 'utf8', timeout: 30000, windowsHide: true }).stdout.trim().replace(/\r/g, '').split('\n').join(',');
+  assert(run(cmd) !== '2,4,6', 'baseline: bash really eats $_ (otherwise this test proves nothing)');
+  assertEq(run(psc.fixBashQuoting(cmd).command), '2,4,6', 'fixed command executes as written');
+});
+
+test('powershell-compat: fixBashCommand (5.1) — && / || to if($?), trailing 2>&1 to the bash level, pwsh untouched', () => {
+  assertEq(psc.fixChains51('git pull && git push').text, 'git pull; if ($?) { git push }');
+  assertEq(psc.fixChains51('a && b && c; d || e').text, 'a; if ($?) { b; if ($?) { c } }; d; if (-not $?) { e }');
+  assert(psc.fixChains51('a && b || c') === null, 'mixed operators are not rewritten');
+  assert(psc.fixChains51('Write-Host "a && b"; x') === null, 'inside a string');
+  assert(psc.fixChains51('if ($x) { a && b }') === null, 'inside a block (lint still warns)');
+  assertEq(psc.fixBashCommand('powershell -NoProfile -Command "git pull && git push 2>&1" | tail -3').command,
+    'powershell -NoProfile -Command "git pull; if (\\$?) { git push }" 2>&1 | tail -3');
+  assertEq(psc.fixBashCommand("powershell -Command 'git status 2>&1'").command, "powershell -Command 'git status' 2>&1");
+  assert(psc.fixBashCommand('powershell -Command "git x 2>&1 | Select-String e 2>&1"') === null, 'a body with an inner 2>&1 pipe is left alone');
+  assert(psc.fixBashCommand('pwsh -Command "a && b"') === null && psc.fixBashCommand('ls') === null, '7 and non-PS commands untouched');
+});
+
+test('powershell-compat: rewritten && command really runs on Windows PowerShell 5.1 through bash', () => {
+  const cp = require('child_process');
+  if (process.platform !== 'win32') { console.log('  (skipped: Windows PowerShell only)'); return; }
+  const bash = ['C:/Program Files/Git/bin/bash.exe', 'C:/Program Files/Git/usr/bin/bash.exe'].find((p) => require('fs').existsSync(p));
+  assert(bash, 'Git Bash not found: the real-execution proof needs it');
+  const run = (c) => cp.spawnSync(bash, ['-c', c], { encoding: 'utf8', timeout: 30000, windowsHide: true });
+  const cmd = 'powershell -NoProfile -Command "Write-Output one && Write-Output two"';
+  assert(run(cmd).stdout.trim() === '' && /&&|ParserError|token/i.test(run(cmd).stdout + run(cmd).stderr), 'baseline: 5.1 rejects &&');
+  assertEq(run(psc.fixBashCommand(cmd).command).stdout.replace(/\r/g, '').trim(), 'one\ntwo', 'fixed command runs');
+  const native = 'powershell -NoProfile -Command "cmd /c \'echo out& echo err 1>&2\' 2>&1"';
+  const fixed = run(psc.fixBashCommand(native).command);
+  assert(!/NativeCommandError|RemoteException/.test(fixed.stdout + fixed.stderr) && /err/.test(fixed.stdout + fixed.stderr), 'no NativeCommandError: ' + fixed.stdout + fixed.stderr);
+});
+
+test('powershell-compat: lint 5.1 flags 7-only syntax, ignores strings/comments, and 7 flags removed cmdlets', () => {
+  const ids = (t, e) => psc.lint(t, e).map((h) => h.id).sort().join();
+  assertEq(ids('git pull && git push', '5.1'), 'chain-operator');
+  assertEq(ids('$a ?? 1', '5.1'), 'null-coalescing');
+  assertEq(ids('$x = $c ? 1 : 2', '5.1'), 'ternary');
+  assertEq(ids('ConvertFrom-Json -AsHashtable', '5.1'), 'pwsh7-parameter');
+  assertEq(ids('git status 2>&1', '5.1'), 'native-stderr');
+  assertEq(ids('"a" > out.txt', '5.1'), 'utf16-redirect');
+  assertEq(ids('Set-Content f.txt x -Encoding utf8', '5.1'), 'utf8-bom');
+  assertEq(ids('Write-Host "a && b ?? c"; # x && y', '5.1'), '', 'literals and comments are not code');
+  assertEq(ids('git pull && git push', '7'), '', 'valid on 7');
+  assertEq(ids('Get-WmiObject Win32_Bios', '7'), 'removed-cmdlet');
+  assertEq(ids('Get-Content f -Encoding Byte', '7'), 'encoding-byte');
+  assertEq(ids('Get-CimInstance Win32_Bios', '7'), '');
+});
+
+test('powershell-compat: lintBash picks the edition from the executable and ignores the bash-level && and 2>&1', () => {
+  assertEq(psc.lintBash('cd x && powershell -Command "Get-Date" 2>&1').length, 0, 'bash && / 2>&1 are not PowerShell');
+  assertEq(psc.lintBash('powershell -Command "git pull && git push"').map((h) => h.id).join(), 'chain-operator');
+  assertEq(psc.lintBash('pwsh -Command "git pull && git push"').length, 0);
+  assertEq(psc.lintBash('pwsh -NoProfile -c \'Get-WmiObject Win32_Bios\'').map((h) => h.id).join(), 'removed-cmdlet');
+  assert(/PowerShell 5\.1/.test(psc.renderWarning(psc.lintBash('powershell -Command "git pull && git push"'))), 'warning names the edition');
+  assert(psc.renderWarning([]) === null);
+});
+
+test('powershell-compat: toolEdition follows pwsh on PATH', () => {
+  const fs = require('fs'), os = require('os'), path = require('path');
+  const bare = fs.mkdtempSync(path.join(os.tmpdir(), 'ps-path-'));
+  const withPwsh = fs.mkdtempSync(path.join(os.tmpdir(), 'ps-path-'));
+  try {
+    fs.writeFileSync(path.join(withPwsh, process.platform === 'win32' ? 'pwsh.exe' : 'pwsh'), '');
+    assertEq(psc.toolEdition({ PATH: bare }), '5.1', 'no pwsh');
+    assertEq(psc.toolEdition({ PATH: withPwsh }), '7', 'pwsh found');
+  } finally { fs.rmSync(bare, { recursive: true, force: true }); fs.rmSync(withPwsh, { recursive: true, force: true }); }
+});
+
+test('curation-guard: powershell -Command "$_" via Bash is rewritten (ask) with a note; advisory mode only warns', async () => {
+  if (process.platform !== 'win32') { console.log('  (skipped: win32 guard)'); return; }
+  const g = require('./curation-guard.js');
+  const hc = require('./lib/hooks-config.js');
+  const ev = { tool_name: 'Bash', tool_input: { command: PS_BAD }, session_id: 'ps-guard', cwd: process.cwd(), permission_mode: 'default' };
+  const out = (await g.run(ev)).hookSpecificOutput;
+  assert(out && out.permissionDecision === 'ask' && out.updatedInput.command.includes('\\$_.Id'), JSON.stringify(out));
+  assert(/2 \$\/crase escapados/.test(out.additionalContext), out.additionalContext);
+  const bypass = (await g.run({ ...ev, permission_mode: 'bypassPermissions' })).hookSpecificOutput;
+  assertEq(bypass.permissionDecision, 'allow', 'bypass posture → allow');
+  const orig = hc.getPowershellGuard;
+  hc.getPowershellGuard = () => ({ enabled: true, advisory: true, platforms: ['win32'] });
+  try {
+    const adv = await g.run({ ...ev, tool_input: { command: 'powershell -Command "git pull && git push"' } });
+    assert(!adv.hookSpecificOutput.updatedInput && /chain-operator|&&/.test(adv.hookSpecificOutput.additionalContext), JSON.stringify(adv));
+    hc.getPowershellGuard = () => ({ enabled: false, advisory: false, platforms: ['win32'] });
+    assert(Object.keys(await g.run({ ...ev, tool_input: { command: PS_BAD } })).length === 0, 'disabled → abstains');
+  } finally { hc.getPowershellGuard = orig; }
+});
+
+test('powershell-guard: PowerShell tool — 5.1 chains rewritten (ask/allow), 7 warns, clean/empty abstains', () => {
+  if (process.platform !== 'win32') { console.log('  (skipped: win32 guard)'); return; }
+  const pg = require('./powershell-guard.js');
+  const ev = (command, extra = {}) => ({ tool_name: 'PowerShell', tool_input: { command, timeout: 5 }, session_id: 'ps-tool', ...extra });
+  const ed = psc.toolEdition();
+  if (ed === '5.1') {
+    const h = pg.run(ev('git pull && git push')).hookSpecificOutput;
+    assertEq(h.permissionDecision, 'ask');
+    assertEq(h.updatedInput.command, 'git pull; if ($?) { git push }', 'rewritten; other tool_input fields kept');
+    assertEq(h.updatedInput.timeout, 5);
+    assertEq(pg.run(ev('git pull && git push', { permission_mode: 'bypassPermissions' })).hookSpecificOutput.permissionDecision, 'allow');
+    assert(!pg.run(ev('$a ?? 1')).hookSpecificOutput.updatedInput, 'not rewritable → warn only');
+  } else {
+    const out = pg.run(ev('Get-WmiObject Win32_Bios'));
+    assert(out.hookSpecificOutput.hookEventName === 'PreToolUse' && !out.hookSpecificOutput.permissionDecision, JSON.stringify(out));
+    assert(out.hookSpecificOutput.additionalContext.includes('PowerShell 7'), out.hookSpecificOutput.additionalContext);
+    assertEq(Object.keys(pg.run(ev('git pull && git push'))).length, 0, 'valid on 7');
+  }
+  assertEq(Object.keys(pg.run(ev('Get-Date'))).length, 0);
+  assertEq(Object.keys(pg.run(null)).length, 0);
+  assertEq(Object.keys(pg.run(ev(''))).length, 0);
+});
+
+test('powershell-advisory: states the edition per tool, win32 only, in a short text', async () => {
+  const adv = require('./powershell-advisory.js');
+  assert(/ferramenta PowerShell roda pwsh 7/.test(adv.advisory(true)) && /5\.1 \(pwsh 7 não está no PATH\)/.test(adv.advisory(false)));
+  assert(adv.advisory(true).length < 900, `advisory too long: ${adv.advisory(true).length}`);
+  const t = await adv.run({});
+  assert(process.platform === 'win32' ? /^\[POWERSHELL\]/.test(t) : t === null, String(t));
+});
+
+test('hooks-config: powershellGuard defaults (on, rewrite, win32 only)', () => {
+  const c = require('./lib/hooks-config.js').getPowershellGuard();
+  assert(c.enabled === true && c.advisory === false && c.platforms.join() === 'win32', JSON.stringify(c));
+});
+
+test('file-format-guard: formatOf classifies EOL/BOM and skips binary/UTF-16', () => {
+  const ffg = require('./file-format-guard.js');
+  const f = (s, enc) => ffg.formatOf(Buffer.from(s, enc || 'utf8'));
+  assertEq(f('a\r\nb\r\n'), { text: true, bom: false, eol: 'crlf' });
+  assertEq(f('a\nb\n'), { text: true, bom: false, eol: 'lf' });
+  assertEq(f('a\r\nb\n'), { text: true, bom: false, eol: 'mixed' });
+  assertEq(f('one line'), { text: true, bom: false, eol: 'none' });
+  assertEq(f('\ufeffx\r\n').bom, true);
+  assert(f('ab\0cd').text === false && ffg.formatOf(Buffer.from([0xff, 0xfe, 0x61, 0])).text === false);
+});
+
+test('file-format-guard: Write over a CRLF / BOM file is repaired on disk with no agent action (Pre captures, Post restores)', () => {
+  const fs = require('fs'), os = require('os'), path = require('path');
+  const ffg = require('./file-format-guard.js');
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'ffg-'));
+  const ev = (hook_event_name, file) => ({ hook_event_name, tool_name: 'Write', tool_input: { file_path: file }, session_id: 'ffg-s', cwd: d });
+  const write = (name, before, after) => {
+    const file = path.join(d, name);
+    if (before !== null) fs.writeFileSync(file, before);
+    assertEq(Object.keys(ffg.run(ev('PreToolUse', file))).length, 0, 'never emits a decision');
+    fs.writeFileSync(file, after); // what the Write tool does: LF text, no BOM
+    assertEq(Object.keys(ffg.run(ev('PostToolUse', file))).length, 0);
+    return fs.readFileSync(file);
+  };
+  try {
+    assertEq(write('crlf.txt', 'a\r\nb\r\n', 'x\ny\nz\n').toString(), 'x\r\ny\r\nz\r\n', 'CRLF kept');
+    assertEq(write('bom.txt', '\ufeffa\r\nb\r\n', 'x\ny\n'), Buffer.from('\ufeffx\r\ny\r\n'), 'BOM + CRLF kept');
+    assertEq(write('lf.txt', 'a\nb\n', 'x\r\ny\r\n').toString(), 'x\ny\n', 'LF file stays LF');
+    assertEq(write('nobom.txt', 'a\n', '\ufeffx\n').toString(), 'x\n', 'BOM the agent added to a BOM-less file is dropped');
+    assertEq(write('new.txt', null, 'x\ny\n').toString(), 'x\ny\n', 'new file untouched');
+    assertEq(write('mixed.txt', 'a\r\nb\n', 'x\ny\n').toString(), 'x\ny\n', 'mixed original: left as written');
+    assertEq(write('utf8.txt', 'a\r\n', 'ação\n').toString(), 'ação\r\n', 'non-ASCII survives byte-for-byte');
+    assertEq(write('same.txt', 'a\r\n', 'b\r\n').toString(), 'b\r\n', 'already right: nothing to do');
+    assert(fs.readdirSync(path.join(os.tmpdir(), 'ccb-file-format-guard')).every((f) => !f.includes('ffg-s')), 'state consumed');
+    // Edit/other tools and a missing path abstain
+    assertEq(Object.keys(ffg.run({ ...ev('PreToolUse', 'x'), tool_name: 'Edit' })).length, 0);
+    assertEq(Object.keys(ffg.run({ hook_event_name: 'PostToolUse', tool_name: 'Write', tool_input: {} })).length, 0);
+    assertEq(Object.keys(ffg.run(null)).length, 0);
+  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+});
+
+test('file-format-guard: hooks.json / daemon tool / config wiring', () => {
+  const fs = require('fs'), path = require('path');
+  const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8')).hooks;
+  const uses = (ev) => hooks[ev].filter((g) => g.hooks.some((h) => h.tool === 'hook_file_format_guard')).map((g) => g.matcher);
+  assertEq(uses('PreToolUse'), ['Write']);
+  assertEq(uses('PostToolUse'), ['Write']);
+  assert(require('./lib/hook-tools.js').HOOKS.hook_file_format_guard, 'registered');
+  const c = require('./lib/hooks-config.js').getFileFormatGuard();
+  assertEq(c, { enabled: true });
 });
 
 // ─── Runner ──────────────────────────────────────────────────────────────────

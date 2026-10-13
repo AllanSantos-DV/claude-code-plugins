@@ -193,6 +193,25 @@ function getErrorGuard() {
   };
 }
 
+// Not profile-controlled. PowerShell 5.1×7 guard (lib/powershell-compat.js): exact
+// `$`/backtick escaping in `powershell -Command "…"` through Bash plus syntax warnings
+// (Bash matcher in curation-guard, PowerShell-tool matcher in powershell-guard).
+// advisory: warn only, never rewrite. platforms: where PowerShell is the Windows one.
+function getPowershellGuard() {
+  const pg = load().powershellGuard || {};
+  return {
+    enabled: pg.enabled !== false,
+    advisory: pg.advisory === true,
+    platforms: Array.isArray(pg.platforms) ? pg.platforms : ['win32'],
+  };
+}
+
+// Write replaces a file with LF/no-BOM text: PreToolUse records the original EOL/BOM,
+// PostToolUse restores them (file-format-guard.js).
+function getFileFormatGuard() {
+  return { enabled: (load().fileFormatGuard || {}).enabled !== false };
+}
+
 // Not profile-controlled — read straight from the raw file (like getErrorGuard).
 // Backs the shell-escape fix in curation-guard (lib/shell-escape.js): the Bash tool
 // on Windows halves runs of backslashes and breaks quoted heredocs before bash sees
@@ -515,6 +534,8 @@ module.exports = {
   getGraphGuard,
   getErrorGuard,
   getShellEscapeGuard,
+  getPowershellGuard,
+  getFileFormatGuard,
   getPolicyInject,
   getCaptureTriggerEvidence,
   getCuration,
