@@ -150,6 +150,45 @@ function escapeFix(event) {
 }
 
 /**
+ * Step 0b — PowerShell via Bash (lib/powershell-compat.js): escape the `$`/backtick bash
+ * would eat inside `powershell -Command "…"` (exact rewrite) and warn about 5.1×7 syntax.
+ * Runs on the already shell-escape-fixed command.
+ * @returns {null | {command:string|null, ctx:string}}
+ */
+function powershellFix(event, command) {
+  try {
+    const cfg = hooksConfig.getPowershellGuard();
+    if (!cfg.enabled || !cfg.platforms.includes(process.platform)) return null;
+    const compat = require('./lib/powershell-compat.js');
+    const mctx = { sessionId: event.session_id, cwd: event.cwd };
+    const fixed = cfg.advisory ? null : compat.fixBashCommand(command);
+    const warn = compat.renderWarning(compat.lintBash(fixed ? fixed.command : command));
+    if (fixed) metrics.fire('powershell.rewritten', { escapes: fixed.escapes, chains: fixed.chains, stderr: fixed.stderr }, mctx);
+    if (warn) metrics.fire('powershell.warned', {}, mctx);
+    if (!fixed && !warn) return null;
+    // Informational only: the agent needs no action — the command already does what it wrote.
+    const note = fixed ? `[boss] PowerShell via Bash: comando ajustado automaticamente (${[fixed.escapes && `${fixed.escapes} $/crase escapados`, fixed.chains && `${fixed.chains} &&/|| → if ($?)`, fixed.stderr && '2>&1 movido para o bash'].filter(Boolean).join(', ')}).` : null;
+    return { command: fixed ? fixed.command : null, ctx: [note, warn].filter(Boolean).join(' ') };
+  } catch (err) {
+    hookLog('error', 'curation-guard', `powershell fix failed (fail-open): ${err.message}`);
+    return null;
+  }
+}
+
+/** escapeFix + powershellFix as one fix (command/ctx merged; a deny stands alone). */
+function allFixes(event) {
+  const a = escapeFix(event);
+  if (a && a.deny) return a;
+  const ps = powershellFix(event, (a && a.command) || event.tool_input.command);
+  if (!ps) return a;
+  return {
+    command: ps.command || (a && a.command) || null,
+    ctx: [a && a.ctx, ps.ctx].filter(Boolean).join(' ') || null,
+    deny: null,
+  };
+}
+
+/**
  * Pure detector entry point — never abstains, always returns a decision
  * object. Shared by the standalone CLI (below) and
  * `pretooluse-bash-dispatcher.js`.
@@ -157,7 +196,7 @@ function escapeFix(event) {
  * @returns {Promise<object>}
  */
 async function run(event) {
-  const fix = event && event.tool_name === 'Bash' && event.tool_input?.command ? escapeFix(event) : null;
+  const fix = event && event.tool_name === 'Bash' && event.tool_input?.command ? allFixes(event) : null;
   if (!fix) return cascade(event);
   if (fix.deny) return fix.deny;
   const ev = fix.command ? { ...event, tool_input: { ...event.tool_input, command: fix.command } } : event;

@@ -1,5 +1,18 @@
 # Changelog
 
+## [3.4.0] - 2026-10-13
+
+### Added
+- **PowerShell 5.1 × 7 sem o agente precisar saber.** Novo `lib/powershell-compat.js` + `powershell-guard.js` (PreToolUse da ferramenta
+  `PowerShell`) + extensão do `curation-guard` (Bash). No Windows PowerShell 5.1 (pwsh 7 fora do PATH, detectado por varredura do PATH, sem spawn)
+  `a && b` / `a || b` de topo viram `a; if ($?) { b }`; em `powershell -Command "…"` via Bash o `$_`/`$x`/crase que o bash comeria são escapados e o
+  `2>&1` final é movido para o bash (sem `NativeCommandError`). O que não dá para reescrever com exatidão (`??`, ternário, operadores mistos, blocos)
+  recebe aviso da edição correta; SessionStart (`powershell-advisory`) só complementa. Medido em 30 dias (3.089 chamadas PowerShell): erro de sintaxe de
+  versão ≈ 0; o que falha de fato é a expansão do bash e o `2>&1` do 5.1 — os dois corrigidos automaticamente. Config: `powershellGuard`.
+- **`Write` preserva EOL e BOM do arquivo sobrescrito.** Sonda real: o `Write` sobre um arquivo CRLF/BOM o regrava com LF e sem BOM (diff de todas as
+  linhas). `file-format-guard.js` registra o formato no PreToolUse e o restaura no PostToolUse, byte a byte, sem decidir nem pedir permissão.
+  Config: `fileFormatGuard`.
+
 ## [3.3.0] - 2026-10-12
 
 ### Added
