@@ -55,6 +55,7 @@ const projectSnapshot = require('./project-snapshot.js');
 const curationSession = require('./curation-session.js');
 const doctorAdvisory = require('./doctor-advisory.js');
 const reviewChecklistAdvisory = require('./review-checklist-advisory.js');
+const powershellAdvisory = require('./powershell-advisory.js');
 const tuningAdvisory = require('./tuning-advisory.js');
 const valueDigest = require('./value-digest.js');
 const projectIdentityAdvisory = require('./project-identity-advisory.js');
@@ -81,6 +82,7 @@ const DETECTORS = [
   { name: 'backend-onboarding-advisory', mod: backendOnboardingAdvisory, timeoutMs: 5000 },
   { name: 'marketplace-autoupdate', mod: marketplaceAutoupdate, timeoutMs: 5000 },
   { name: 'graph-warm', mod: graphWarm, timeoutMs: 5000 },
+  { name: 'powershell-advisory', mod: powershellAdvisory, timeoutMs: 5000 },
   { name: 'policy-inject', mod: policyInject, timeoutMs: 10000 },
 ];
 
