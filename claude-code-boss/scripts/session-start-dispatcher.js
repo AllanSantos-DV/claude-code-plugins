@@ -80,7 +80,7 @@ const DETECTORS = [
   { name: 'value-digest', mod: valueDigest, timeoutMs: 5000 },
   { name: 'project-identity-advisory', mod: projectIdentityAdvisory, timeoutMs: 5000 },
   { name: 'backend-onboarding-advisory', mod: backendOnboardingAdvisory, timeoutMs: 5000 },
-  { name: 'marketplace-autoupdate', mod: marketplaceAutoupdate, timeoutMs: 5000 },
+  { name: 'marketplace-autoupdate', mod: marketplaceAutoupdate, timeoutMs: 15000 },
   { name: 'graph-warm', mod: graphWarm, timeoutMs: 5000 },
   { name: 'powershell-advisory', mod: powershellAdvisory, timeoutMs: 5000 },
   { name: 'policy-inject', mod: policyInject, timeoutMs: 10000 },

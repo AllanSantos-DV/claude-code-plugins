@@ -1,5 +1,16 @@
 # Changelog
 
+## [3.5.0] - 2026-10-13
+
+### Added
+- **Avisos de atualização sempre visíveis.** A atualização automática do plugin já vinha ligada por padrão (`marketplace-autoupdate`);
+  faltavam os avisos. Novo `lib/update-notice.js`: o SessionStart consulta o GitHub (no máximo a cada 6 h, resultado em cache) e o
+  próximo prompt avisa **uma vez por versão** "versão X disponível (instalada: Y)"; quando a versão instalada muda entre sessões, avisa
+  "claude-code-boss foi atualizado: X → Y" com o link da release. Ambos saem pelo `systemMessage` do UserPromptSubmit (o único canal que
+  chega ao usuário). A primeira execução só registra a versão (a boas-vindas cobre).
+- **Opt-out por variável de ambiente:** `CLAUDE_CODE_BOSS_AUTO_UPDATE=0` (ou `false`/`off`/`no`) não liga a atualização automática do
+  marketplace e não consulta o GitHub (nenhum tráfego novo). A escolha explícita do usuário em `/plugin` continua sendo respeitada.
+
 ## [3.4.0] - 2026-10-13
 
 ### Added
