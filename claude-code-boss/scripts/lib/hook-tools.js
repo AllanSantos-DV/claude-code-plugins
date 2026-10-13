@@ -119,6 +119,9 @@ const HOOKS = {
       return out && out.hookSpecificOutput && out.hookSpecificOutput.permissionDecision === 'deny' ? JSON.stringify(out) : EMPTY;
     },
   },
+  // warn-only twin for the PowerShell tool (no updatedInput, so no conflict with curation-guard)
+  hook_powershell_guard: { script: 'powershell-guard.js', call: async (m, ev) => json(m.run(ev)) },
+  hook_file_format_guard: { script: 'file-format-guard.js', call: async (m, ev) => json(m.run(ev)) },
   hook_graph_guard: { script: 'graph-guard.js', call: async (m, ev) => m.run(ev) },
   // Stop stays ONE consolidated tool: sibling Stop hooks do not merge reasons (spike S4-iii).
   hook_stop_dispatcher: { lane: 'heavy', script: 'stop-dispatcher.js', call: async (m, ev) => json(await m.run(ev)) },

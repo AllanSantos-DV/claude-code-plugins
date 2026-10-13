@@ -16,6 +16,14 @@
     "enabled": true,
     "threshold": 2
   },
+  "powershellGuard": {
+    "enabled": true,
+    "advisory": false,
+    "platforms": ["win32"]
+  },
+  "fileFormatGuard": {
+    "enabled": true
+  },
   "shellEscapeGuard": {
     "enabled": true,
     "mode": "rewrite",

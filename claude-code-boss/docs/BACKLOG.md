@@ -1,5 +1,15 @@
 # Backlog
 
+## PowerShell 5.1×7 e formato de arquivo (branch `feat/powershell-compat`, pedido do orquestrador, 2026-10-13)
+
+Medição (`.claude/scripts/measure-powershell.mjs`, `measure-fileedit.mjs`, locais; 30 dias de transcrições):
+
+- **Encontrado e corrigido na hora:** `powershell -Command "…$_…"` via Bash — o bash expande `$`/crase antes do PowerShell (classe dominante de falha real). `fixBashQuoting`, testado rodando bash+powershell de verdade.
+- **Encontrado e corrigido na hora:** `2>&1` em exe nativo no 5.1 vira `NativeCommandError`; `&&`/`||` não existem no 5.1. `fixBashCommand`/`fixChains51`, testado rodando no 5.1 real.
+- **Encontrado e corrigido na hora:** `Write` sobre arquivo CRLF/BOM regrava com LF e sem BOM (sonda real; não aparece nos transcritos). `file-format-guard.js`.
+- **Medido e descartado (não é problema):** Edit com `old_string` multilinha que passaria se convertido para CRLF = 0 dos 55 "not found" em 7.109 usos (o Edit já normaliza; o resto é texto desatualizado/ambíguo); Write 17 erros em 4.332, todos "não lido/modificado"; BOM/encoding quebrado via shell ≈ 3 casos em 30 dias; heredoc truncado é o bug do Bash tool já tratado pelo `shellEscapeGuard`; retrabalho (shell grava e Edit no mesmo arquivo em ≤ 7 chamadas) 99 de 3.587 gravações (2,8%), sem causa de formato identificável.
+- **Fora do escopo (registrado):** `Set-Content`/`Out-File`/`>` no 5.1 gravam ANSI/UTF-16 (`scripts/lib/powershell-compat.js`, regras `utf16-redirect`/`utf8-bom` só avisam) — reescrever para `-Encoding utf8` exige tratar o BOM do 5.1; 2 casos em 30 dias, abaixo do custo. `??`, ternário, operadores mistos e cadeias dentro de bloco só recebem aviso.
+
 ## Métrica de economia + compactação proativa (branch `feat/economy-metric-and-proactive-compaction`, pedido do orquestrador, 2026-10-12)
 
 - **C — encontrado e corrigido na hora:** `retrieve.injected` não registrava os caracteres injetados, então o custo real do recall não

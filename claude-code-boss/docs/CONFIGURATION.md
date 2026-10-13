@@ -213,6 +213,8 @@ Shipped em `claude-code-boss/config/hooks-config.json`; override do usuário em 
 | `disabledHooks` | `[]` | Hooks desligados no painel (ids das ferramentas `hook_*` servidas pelo daemon); o daemon responde `{}` sem rodá-los. Os hooks de comando (dispatchers, ensure do roteador) são infraestrutura e não entram aqui |
 | `memoryRotate.maxLines` | `150` | Rotação do MEMORY.md (max 500; CC trunca em 200) |
 | `errorGuard.enabled` | `true` | Bloqueia Bash com falha recorrente conhecida |
+| `powershellGuard.enabled` / `.advisory` / `.platforms` | `true` / `false` / `["win32"]` | Corrige sozinho o PowerShell (escape de `$`/crase em `powershell -Command` via Bash, `&&`/`||` e `2>&1` no 5.1) e avisa o resto; `advisory: true` só avisa, nunca reescreve. Também liga o aviso de SessionStart com a edição de cada ferramenta |
+| `fileFormatGuard.enabled` | `true` | `Write` sobre arquivo existente preserva o EOL (CRLF/LF) e o BOM originais |
 | `shellEscapeGuard.enabled` / `.mode` | `true` / `"rewrite"` | Windows: move heredoc / `node -e` / `python -c` longo para arquivo e reescreve o comando (o Bash tool corrompe `\\` e aspas). `"warn"` só avisa |
 | `shellEscapeGuard.block` | `false` | O que não dá para reescrever com segurança vira `deny` em vez de aviso |
 | `shellEscapeGuard.inlineMaxChars` / `.platforms` | `300` / `["win32"]` | Tamanho a partir do qual `node -e` sem `\`/aspas/quebra é movido; onde o guard age |
@@ -228,10 +230,10 @@ Trocar perfil: `/dashboard` → aba Hooks, ou `/boss-profile <standard|dev|free>
 
 | Evento | Scripts |
 |--------|---------|
-| `SessionStart` | model-router-ensure, memory-rotate, session-whitelist, brain-health, project-snapshot, curation-session, doctor-advisory, review-checklist-advisory, tuning-advisory, project-identity-advisory, graph-warm, policy-inject |
+| `SessionStart` | model-router-ensure, memory-rotate, session-whitelist, brain-health, project-snapshot, curation-session, doctor-advisory, review-checklist-advisory, tuning-advisory, project-identity-advisory, graph-warm, powershell-advisory, policy-inject |
 | `UserPromptSubmit` | model-router-ensure, brain-health, correction-detect, active-research-detect, brain_retrieve_context (MCP) |
-| `PreToolUse` | curation-guard + error-guard (Bash); policy-enforce-shadow (Edit); graph-guard (Grep/Glob) |
-| `PostToolUse` | curation-detect, decision-detect (Bash); file-edit-detect (Edit/Write/NotebookEdit); policy-glob-inject (Edit/Write/MultiEdit/NotebookEdit) |
+| `PreToolUse` | curation-guard + error-guard (Bash); powershell-guard (PowerShell); file-format-guard (Write); policy-enforce-shadow (Edit); graph-guard (Grep/Glob) |
+| `PostToolUse` | curation-detect, decision-detect (Bash); file-format-guard (Write); file-edit-detect (Edit/Write/NotebookEdit); policy-glob-inject (Edit/Write/MultiEdit/NotebookEdit) |
 | `Stop` | stop-dispatcher (coordena 17 detectors in-process, incl. project-id-stop) |
 | `SubagentStart` | policy-inject |
 | `UserPromptExpansion` | skill-metric |
