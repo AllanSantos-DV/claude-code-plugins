@@ -31,6 +31,9 @@ const SSE_KEEPALIVE_MS = Number(process.env.CCB_SSE_KEEPALIVE_MS) || 30_000;
 
 const MAX_BODY_BYTES = 1024 * 1024; // 1MB
 const MAX_SESSIONS = 50; // limite de sessões simultâneas para evitar exaustão de FDs
+// Under the Stop hook's 29s worker deadline: a hook already running when a swap or a
+// backend switch shuts the daemon down gets its answer instead of "Connection closed".
+const SHUTDOWN_DRAIN_MS = 25_000;
 
 async function readJsonBody(req) {
   const chunks = [];
@@ -49,8 +52,13 @@ async function readJsonBody(req) {
  * @returns {Promise<{ httpServer, sessions:Map, shutdown:()=>Promise<void>, port:number }>}
  *   Rejects with an Error whose `.code === 'EADDRINUSE'` if the port is taken.
  */
-export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0.0.1', version = '2.0.0', sseKeepaliveMs = SSE_KEEPALIVE_MS, sessionIdleMs = SESSION_IDLE_MS, reapIntervalMs = 60_000 }) {
+export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0.0.1', version = '2.0.0', sseKeepaliveMs = SSE_KEEPALIVE_MS, sessionIdleMs = SESSION_IDLE_MS, reapIntervalMs = 60_000, shutdownDrainMs = SHUTDOWN_DRAIN_MS }) {
   const sessions = new Map(); // sessionId -> { server, transport, lastSeen }
+  let _shuttingDown = false;
+  // Requests awaiting an answer — everything but /health, /shutdown and the long-lived
+  // SSE GET, which never "finish" and are closed with their session.
+  const inFlight = new Set();
+  const idleWaiters = [];
   const startedAt = Date.now();
   // ONE pool of N workers for the whole daemon process (not per session): moves
   // brain-store.js's synchronous SQLite calls off this main thread, so GET /health
@@ -119,6 +127,11 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
   const httpServer = http.createServer(async (req, res) => {
     try {
       const url = (req.url || '').split('?')[0];
+      if (url !== HEALTH_PATH && url !== '/shutdown' && !(req.method === 'GET' && url === MCP_PATH)) {
+        inFlight.add(res);
+        res.once('close', () => { inFlight.delete(res); if (inFlight.size === 0) idleWaiters.splice(0).forEach((r) => r()); });
+      }
+      if (_shuttingDown) res.setHeader('Connection', 'close');
 
       // Health — the supervisor reads pluginRoot here to decide stale-vs-current.
       if (req.method === 'GET' && url === HEALTH_PATH) {
@@ -284,17 +297,31 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
   } catch (e) { void e; }
   console.error(`[brain-http] listening on http://${host}:${port}${MCP_PATH}  (pluginRoot=${pluginRoot}, token: ${tokenFile(dataDir)})`);
 
-  let _shuttingDown = false;
   async function shutdown() {
     if (_shuttingDown) return;
     _shuttingDown = true;
     setTimeout(() => {}, 2500).unref(); // fallback de tempo — o supervisor gerencia o ciclo de vida
     clearInterval(reaper);
+    // Stop listening first: the port frees at once, so the supervisor's swap goes on
+    // starting the new daemon while this one finishes what it already accepted.
+    const closed = new Promise((r) => httpServer.close(r));
+    // Draining: answer, then drop the socket so the client's next request reaches the
+    // new daemon (404 → it re-initializes) instead of this one.
+    for (const res of inFlight) { if (!res.headersSent) res.setHeader('Connection', 'close'); }
+    if (inFlight.size > 0) {
+      let timer;
+      const drained = await Promise.race([
+        new Promise((r) => { idleWaiters.push(() => r(true)); }),
+        new Promise((r) => { timer = setTimeout(() => r(false), shutdownDrainMs); }),
+      ]);
+      clearTimeout(timer);
+      if (!drained) console.error(`[brain-http] shutdown: ${inFlight.size} request(s) still running after ${shutdownDrainMs}ms — closing them`);
+    }
     for (const [, s] of sessions) { try { await s.transport.close(); } catch (e) { void e; } }
     sessions.clear();
     try { const cur = JSON.parse(fs.readFileSync(lockFile(dataDir), 'utf8')); if (cur.pid === process.pid) fs.unlinkSync(lockFile(dataDir)); } catch (e) { void e; }
     try { httpServer.closeAllConnections?.(); } catch (e) { void e; } // drop keep-alive so close() resolves
-    await new Promise((r) => httpServer.close(r));
+    await closed;
     try { await kbWorker.shutdown(); } catch (e) { void e; }
     try { await hookWorker.shutdown(); } catch (e) { void e; }
     if (embedderModule) embedderModule.setDelegate(null); // never leave the module pointing at a closed worker
