@@ -5,9 +5,12 @@
 // applies now — 200K and 1M models alike) and the provider cache has already gone cold, the
 // prompt is held, the engine's /compact runs, and the same text is sent again as the
 // person's. If the cache never cools, the engine's own auto-compaction runs at its limit —
-// through the same choice. WHAT: every compaction (manual, the engine's auto threshold, ours)
-// runs the engine's own summary unless our pruning (scripts/lib/compaction-core.mjs: text intact,
-// stale tool results truncated) cuts >= 85% — what pruning keeps is re-read on every later call.
+// through the same choice. WHAT: our pruning (scripts/lib/compaction-core.mjs: text intact, stale
+// tool results truncated) when it cuts >= 85%; else, with a COLD cache and not a person's /compact,
+// the model-free brief (user text verbatim, one line per tool call, a 2k verbatim tail); else the
+// engine's own summary. FOLDER TTL: every session reports whether it is past the threshold; while
+// all live sessions of its launch folder are, the daemon switches that folder's cache TTL to 5m
+// (scripts/lib/folder-ttl.js), so the cache cools in 5 min and the cut comes; restored after it.
 // RESUME: `--resume`/`-c` reload the ORIGINAL history after a hook compaction (engine
 // behavior, measured); the first prompt re-prunes it before anything is sent.
 //
@@ -20,9 +23,12 @@
 // Observability: every decision and cut goes to the boss metrics store through the
 // daemon (POST /hook/compaction-event → tool hook_compaction_event → scripts/compaction-event.js).
 
-import { planCompaction, buildBrief, decideTiming, decideTurnEnd, classifyResume, estimateTokens, thresholdFor, chooseCompaction, isCacheWarm, DEFAULTS } from '../scripts/lib/compaction-core.mjs';
+import { planCompaction, buildBrief, decideTiming, decideTurnEnd, classifyResume, estimateTokens, thresholdFor, chooseCompaction, isCacheWarm, isMechanicalCut, DEFAULTS } from '../scripts/lib/compaction-core.mjs';
 
 const PERSON_ORIGINS = new Set(['composer', 'bridge', 'sdk']);
+// Folder TTL (scripts/lib/folder-ttl.js): the daemon drops a session that stops reporting for 5 min; this keeps an
+// idle but open session counted.
+const FOLDER_HEARTBEAT_MS = 2 * 60000;
 
 function newCtx() {
   return {
@@ -45,6 +51,10 @@ function newCtx() {
     pendingSettle: null,     // a compaction whose effect the next turn measures
     lastMessageId: null,     // newest API call already recorded as cache.turn
     turnEndTimer: 0,         // token of the pending turn-end re-check (a newer one supersedes)
+    folder: null,            // the launch cwd: the folder whose .claude/settings.local.json this session reads
+    folderAbove: false,      // past the threshold at the last look (what the folder report says)
+    folderTtl: null,         // the daemon's last answer for this folder ({ttl, live, allAbove, action})
+    heartbeat: false,        // the folder heartbeat loop is running
   };
 }
 
@@ -147,7 +157,32 @@ function emit($, ctx, kind, data) {
 function applyTtl(ctx, reply) {
   if (reply && reply.ttl && Number(reply.ttl.observedMs) > 0) ctx.hostTtlMs = Number(reply.ttl.observedMs);
   const seen = reply && reply.observed && Number(reply.observed.ttlMs);
-  if (seen > 0) ctx.sessionTtlMs = Math.max(ctx.sessionTtlMs || 0, seen);
+  // The LATEST call's window, not the longest seen: the folder TTL switches 1h → 5m mid-session, and the cache
+  // a call just wrote lives by that call's window (a max kept judging it by 1h and never cut at 5 min).
+  if (seen > 0) ctx.sessionTtlMs = seen;
+}
+
+/**
+ * Tell the daemon whether this session is past the threshold, for its launch folder's shared TTL
+ * (scripts/lib/folder-ttl.js). Interactive sessions only (headless ones cannot compact from a plugin).
+ * @param {object} $  the module's ops
+ * @param {object} ctx  per-session state
+ * @param {{end?: boolean}} [opts]  end = the session is closing (leaves the folder)
+ */
+async function reportFolder($, ctx, { end = false } = {}) {
+  if (!ctx.folder || !ctx.interactive || !ctx.configLoaded || ctx.config.folderTtl === false) return;
+  const reply = await send($, ctx, end ? 'folder-end' : 'folder', { folder: ctx.folder, above: ctx.folderAbove });
+  ctx.folderTtl = reply.folderTtl || null;
+  if (ctx.folderTtl && ctx.folderTtl.action === 'error') $.ui.log(`compaction: folder TTL not managed: ${ctx.folderTtl.detail}`);
+}
+
+function startHeartbeat($, ctx) {
+  if (ctx.heartbeat || !ctx.interactive || ctx.config.folderTtl === false) return;
+  ctx.heartbeat = true;
+  const beat = () => $.clock.after(FOLDER_HEARTBEAT_MS, () => {
+    reportFolder($, ctx).catch((err) => $.ui.log(`compaction: folder heartbeat failed: ${String(err && err.message ? err.message : err)}`)).finally(beat);
+  });
+  beat();
 }
 
 function ttlInUse(ctx) {
@@ -189,6 +224,17 @@ async function afterTurn($, ctx) {
     const settle = ctx.pendingSettle;
     ctx.pendingSettle = null;
     const { id } = await observeCalls($, ctx);
+    if (ctx.interactive && ctx.config.folderTtl !== false && ctx.folder) {
+      try {
+        const { context, thr } = await currentWindow($, ctx);
+        const tokens = context.tokens ?? ctx.measuredTokens;
+        ctx.folderAbove = tokens != null && thr.thresholdTokens != null && tokens >= thr.thresholdTokens;
+        await reportFolder($, ctx);
+      } catch (err) {
+        $.ui.log(`compaction: folder TTL report failed: ${String(err && err.message ? err.message : err)}`);
+      }
+      startHeartbeat($, ctx);
+    }
     if (settle) {
       const { context } = await $.session.usage();
       const after = context.tokens ?? ctx.measuredTokens ?? null;
@@ -352,7 +398,9 @@ async function compact($, ctx, e, next) {
   // Mid-turn (busy) the turn's own calls keep the cache warm, whatever the previous answer's age:
   // judging it by the last answer alone pruned a warm cache after a long turn (audit 3.2.2).
   const warm = ctx.busy || isCacheWarm({ now: t0, lastAnswerAt: ctx.lastAnswerAt, ttlMs: ttlInUse(ctx).ttlMs });
-  const choice = chooseCompaction({ plan, trigger: e.trigger, warm }, ctx.config);
+  const mechanical = isMechanicalCut({ warm, trigger: e.trigger, reason: ctx.compactReason });
+  const choice = chooseCompaction({ plan, trigger: e.trigger, warm, mechanical }, ctx.config);
+  if (choice.kind === 'brief') return briefCut($, ctx, e, next, { plan, warm, t0, why: choice.why });
   const ours = choice.ours;
   const byReason = {};
   for (const p of plan.pruned) byReason[p.reason] = (byReason[p.reason] || 0) + 1;
@@ -381,6 +429,34 @@ async function compact($, ctx, e, next) {
   return { messages: plan.messages };
 }
 
+/**
+ * The cold-cache cut without a model call: the brief (every user message verbatim, one line per tool call, a
+ * `briefTailTokens` verbatim tail) replaces the history. Before handing it back, the folder report says this
+ * session is below the threshold again, so the folder TTL is restored before the next request. A brief that
+ * cuts nothing or would lose user text falls back to the engine's summary.
+ */
+async function briefCut($, ctx, e, next, { plan, warm, t0, why }) {
+  const b = buildBrief(e.messages, ctx.config);
+  const { context } = await $.session.usage();
+  const tokensBefore = context.tokens ?? ctx.measuredTokens ?? null;
+  const reason = ctx.compactReason || e.trigger;
+  const base = { trigger: e.trigger, reason, why, cacheWarm: warm, messages: e.messages.length, charsBefore: b.charsBefore, tokensBefore };
+  if (!b.cutMessages || !b.userTextIntact) {
+    emit($, ctx, 'run', { ...base, outcome: 'native-summary', why: !b.cutMessages ? 'brief-cuts-nothing' : 'brief-user-text-not-intact', ratio: Number(plan.ratio.toFixed(3)), durationMs: (await $.clock.now()) - t0 });
+    return next(e);
+  }
+  if (!ctx.pendingSettle) ctx.pendingSettle = { reason, trigger: e.trigger, tokensBefore };
+  ctx.folderAbove = false;
+  try { await reportFolder($, ctx); } catch (err) { $.ui.log(`compaction: folder TTL restore after the cut failed: ${String(err && err.message ? err.message : err)}`); }
+  emit($, ctx, 'run', {
+    ...base, outcome: 'brief', charsAfter: b.charsAfter, charsCut: b.charsBefore - b.charsAfter, ratio: Number((1 - b.charsAfter / Math.max(1, b.charsBefore)).toFixed(3)),
+    cutMessages: b.cutMessages, briefChars: b.briefChars, verbatimTextIntact: b.userTextIntact, folderTtl: ctx.folderTtl ? ctx.folderTtl.ttl : null,
+    durationMs: (await $.clock.now()) - t0,
+  });
+  $.ui.toast(`compaction: cold cache — ${b.cutMessages} older messages condensed without a model call (user text kept verbatim), recent ones kept`);
+  return { messages: b.messages };
+}
+
 async function compactFailed($, e, next) {
   $.ui.log(`compaction: pruning failed, the engine's own compaction runs: ${String(next.error)}`);
   return next(e); // never a broken transcript
@@ -401,6 +477,16 @@ export const register = (on) => {
 
   on('session.start', async ($, e, next) => {
     ctx.interactive = e.isInteractive !== false;
+    // The launch cwd is the folder whose settings.local.json this session reads (measured: a subfolder session
+    // reads its own, not the git root's) — captured before anything can move the working directory.
+    try { ctx.folder = await $.session.cwd(); } catch (err) { $.ui.log(`compaction: launch folder unknown, folder TTL off: ${String(err && err.message ? err.message : err)}`); }
+    if (ctx.interactive && ctx.folder) {
+      // Join the folder now (below the threshold): a folder switched to 5m by the others goes back to 1h.
+      $.clock.after(1, () => {
+        void (async () => { await ensureConfig($, ctx); await reportFolder($, ctx); startHeartbeat($, ctx); })()
+          .catch((err) => $.ui.log(`compaction: folder join failed: ${String(err && err.message ? err.message : err)}`));
+      });
+    }
     return next(e);
   });
 
@@ -440,6 +526,8 @@ export const register = (on) => {
     if (ctx.config.enabled && ctx.transcriptPath) {
       try { await observeCalls($, ctx); } catch (err) { $.ui.log(`compaction: end-of-session observation failed: ${String(err && err.message ? err.message : err)}`); }
     }
+    // Leave the folder: if this session held its TTL at 5m, it goes back now (a crash is swept by the next report).
+    try { await reportFolder($, ctx, { end: true }); } catch (err) { $.ui.log(`compaction: folder leave failed: ${String(err && err.message ? err.message : err)}`); }
     return next(e);
   });
 };

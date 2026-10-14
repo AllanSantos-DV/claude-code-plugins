@@ -16,6 +16,8 @@
  *              ephemeral_1h). Replies the window this turn proved, so the module waits
  *              for the REAL TTL of the host it talks to (subscription and API differ).
  *   gate | run | resume | settled | error → `compaction.<kind>` (the trail)
+ *   folder | folder-end → the folder's shared cache TTL (lib/folder-ttl.js): 5m while every live session of the
+ *              launch folder is past the threshold, restored after the cut / at the end; `compaction.folder` on change
  *
  * Every number lands in the metrics store (lib/metrics.js) → /api/metrics/compaction,
  * the Home panel and the Insights event log. Secrets never travel: the module sends
@@ -164,6 +166,14 @@ async function run(ev) {
     };
   }
 
+  // The folder's shared cache TTL (lib/folder-ttl.js): every live session of a folder reports whether it is past
+  // the threshold; 5m only while all are, restored after the cut or when a session ends / stops reporting.
+  if (kind === 'folder' || kind === 'folder-end') {
+    if (!ctx.sessionId) throw new Error('compaction-event: folder report without session_id');
+    const out = require('./lib/folder-ttl.js').report({ sessionId: ctx.sessionId, folder: data.folder, above: data.above === true, end: kind === 'folder-end' });
+    if (out.action !== 'none' || out.swept.length) await metrics.record('compaction.folder', { ...out, above: data.above === true, end: kind === 'folder-end' }, ctx);
+    return { folderTtl: out };
+  }
 
   throw new Error(`compaction-event: unknown kind '${kind}'`);
 }
