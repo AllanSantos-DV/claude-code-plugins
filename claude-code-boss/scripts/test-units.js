@@ -25766,6 +25766,7 @@ test('doctor.checkDaemonNode: foreign NODE_OPTIONS flags, --no-maglev in the dae
   const own = crashEv.reportFlags('/d');
   const clean = doctor.checkDaemonNode({ nodeOptions: '', daemon: { node: { version: 'v24.14.1', execArgv: own, nodeOptions: '' } } });
   assertEq(clean.status, 'ok', clean.detail);
+  assert(clean.detail.includes('Node v24.14.1 ') && !clean.detail.includes('vv'), `process.version already has the "v": ${clean.detail}`);
   // Node refuses V8 flags like --no-maglev in NODE_OPTIONS: there it is a heap flag; --no-maglev reaches a daemon only via execArgv.
   const env = doctor.checkDaemonNode({ nodeOptions: '--max-old-space-size=512', daemon: {} });
   assert(env.status === 'warn' && /--max-old-space-size=512/.test(env.detail) && /NODE_OPTIONS/.test(env.fix), env.detail);
