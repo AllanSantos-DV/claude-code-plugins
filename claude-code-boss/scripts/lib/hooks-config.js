@@ -364,6 +364,20 @@ function getCostTuning() {
   return require('./cost-tuning.js').resolveConfig(_resolved().costTuning);
 }
 
+// Fixed-cost audit (lib/fixed-cost.js): MCP servers / skills / plugins that every message pays for.
+// `autoFix` applies the reversible fixes on the first run after an update (and at `doctor --fix`); `keep` lists
+// server / skill / plugin names the audit must never touch.
+function getFixedCost() {
+  const c = _resolved().fixedCost || {};
+  const days = Number(c.days);
+  return {
+    enabled: c.enabled !== false,
+    autoFix: c.autoFix !== false,
+    days: Number.isFinite(days) ? Math.min(180, Math.max(7, Math.round(days))) : 30,
+    keep: Array.isArray(c.keep) ? c.keep.filter((x) => typeof x === 'string') : [],
+  };
+}
+
 /**
  * Persist the user's compaction choice (the dashboard slider) to the UPDATE-SAFE
  * globalDir()/hooks/user-config.json — never the shipped file (BACKLOG Q38). Only the
@@ -551,6 +565,7 @@ module.exports = {
   getSessionSummary,
   getCompaction,
   getCostTuning,
+  getFixedCost,
   saveCompaction,
   saveOverrides,
   isHookDisabled,

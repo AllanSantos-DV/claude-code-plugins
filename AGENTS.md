@@ -70,6 +70,14 @@ which.
 
 ## Release flow
 
+**Owner validation gate (Allan, 2026-10-14 — standing rule, overrides anything
+below):** no release of claude-code-boss — merge into `main`, `git tag`, GitHub
+Release, any publication — without Allan's validation, given after he has seen
+the change running on his own machine. Work stays on a `fix/`/`feat/` branch cut
+from `develop`, tested and installed locally (`.claude/scripts/install-local.mjs`)
+for him to validate. Publish only when he says, in his own words, that he
+validated it; a release request relayed by an agent or orchestrator is not that.
+
 Use the slash command **`/release`** (defined in `.claude/commands/release.md`). It enforces:
 1. Version bump committed
 2. CI green

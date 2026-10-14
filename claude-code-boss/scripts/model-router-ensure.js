@@ -40,6 +40,7 @@ const { dataDir, globalDir } = require('./lib/data-dir.js');
 const costTuning = require('./lib/cost-tuning.js');
 const { routerUserConfigPath, backfillRouterUserConfig } = require('./lib/router-config-path.js');
 const { configFingerprint } = require('./lib/router-fingerprint.js');
+const { pickSupportedNode } = require('./lib/node-support.js');
 const upstreamProfile = require('../servers/model-router/upstream-profile.js');
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
@@ -657,24 +658,32 @@ function applySettingsTuning(on) {
 
 // Remove SÓ o nosso bundle (base_url localhost + os 2 env que gravamos). Nunca
 // apaga uma ANTHROPIC_BASE_URL custom nem um valor deliberado do usuário.
-// Session cost knobs (lib/cost-tuning.js): 1 h cache for API-billed sessions + the engine's
-// auto-compact window. Here, not in the SessionStart dispatcher, because this script already
+// Session cost knobs (lib/cost-tuning.js): 1 h cache for API-billed sessions + Tool Search (+ the engine's opt-in
+// auto-compact window, off by default). Here, not in the SessionStart dispatcher, because this script already
 // read-modify-writes settings.json — two hooks writing it in parallel would lose a write.
 // The ownership state lives in the global dir (settings.json is global, the data dir can move).
 const COST_TUNING_STATE = path.join(globalDir(), 'cost-tuning-state.json');
-function applyCostTuning(env = process.env) {
+// What applyCostTuning would do, without writing (the doctor reports it, --fix applies it).
+// null = settings.json or the ownership state is unreadable (already logged).
+function planCostTuningNow(env = process.env) {
   const s = readSettings();
-  if (s === null) return false;
+  if (s === null) return null;
   let state = {};
   try {
     if (fs.existsSync(COST_TUNING_STATE)) state = JSON.parse(fs.readFileSync(COST_TUNING_STATE, 'utf-8'));
   } catch (e) {
     log(`AVISO: ${COST_TUNING_STATE} ilegível (${e.message}) — cost-tuning não mexe no settings.json.`);
-    return false;
+    return null;
   }
   const cfg = require('./lib/hooks-config.js').getCostTuning();
   const want = costTuning.wanted(cfg, costTuning.apiBilled(env, isOurProxyUrl));
-  const plan = costTuning.planCostTuning(s.env || {}, want, state);
+  return { s, state, plan: costTuning.planCostTuning(s.env || {}, want, state) };
+}
+
+function applyCostTuning(env = process.env) {
+  const now = planCostTuningNow(env);
+  if (now === null) return false;
+  const { s, state, plan } = now;
   if (!plan.changed && JSON.stringify(plan.state) === JSON.stringify(state)) return true;
   try {
     // State first: a crash between the two writes leaves us owning a value not yet written
@@ -771,7 +780,11 @@ function startServer(mode) {
 
     const spawnedAt = new Date().toISOString();
 
-    const child = spawn(process.execPath, [
+    // A long-running HTTPS proxy, like the Brain daemon: on a default Node outside the tested
+    // range it runs on an installed 22/24 (Node 25 aborted under parallel HTTPS).
+    const node = pickSupportedNode();
+    if (node.switched) log(`Node padrão v${node.from} fora da faixa testada: servidor no Node v${node.version} (${node.execPath}).`);
+    const child = spawn(node.execPath, [
       SERVER_SCRIPT,
       '--plugin-root', PLUGIN_ROOT,
       '--data-dir',    DATA_DIR,
@@ -1064,6 +1077,6 @@ if (require.main === module) {
 // healthCheck/probeAlive/readRouterToken exportados p/ os testes de verify-before-trust.
 module.exports = { run, mergeRouterConfig, readConfig, healthCheck, probeAlive, readRouterToken,
   resolveAutoCompactWindow, planEnableEnv, planDisableEnv, enableSettingsRouting, disableSettingsRouting,
-  contextTuningEnabled, planTuningEnv, planTuningRemoval, applySettingsTuning, applyCostTuning,
+  contextTuningEnabled, planTuningEnv, planTuningRemoval, applySettingsTuning, applyCostTuning, planCostTuningNow,
   // servesThisBuild/processCommandLine/normPath exportados p/ os testes de troca-de-build no boot.
   servesThisBuild, processCommandLine, normPath, sessionGateway, isOurProxyUrl };

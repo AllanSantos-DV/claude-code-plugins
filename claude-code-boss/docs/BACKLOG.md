@@ -1,5 +1,217 @@
 # Backlog
 
+## Auditoria de custo fixo no Doctor (pedido do orquestrador, 2026-10-14) — implementada, aguardando a validação do Allan
+
+O que cada mensagem paga antes de o usuário escrever: prompt de sistema, definições de ferramentas (MCP), lista de skills,
+plugins, arquivos de instrução, mensagens e contexto. O contexto já estava tratado; o resto passou a ser medido
+(`scripts/lib/fixed-cost.js`, `node scripts/doctor.js --cost`) e corrigido de forma reversível (`--fix`, `--undo`).
+
+Números medidos nesta máquina (30 dias, 735 sessões, ~245 requisições por sessão; tokens = 4 caracteres/token, estimativa):
+
+| Item | Medido | Custo por mensagem |
+|---|---|---|
+| MCP (Tool Search ligado, só os nomes) | 7 servidores configurados, 6 chamados em 30 dias, 217 ferramentas injetadas | 2203 tok |
+| MCP sem Tool Search (definições completas, medidas por `tools/list` real nos servidores HTTP) | mcp-gateway 3354, smart-tool 3102, brain-server 9934 | 16 390 tok só nesses três |
+| Skills listadas | 77 (32 já ocultas), 11 usadas em 30 dias | 3504 tok |
+| Arquivos de instrução (CLAUDE.md, AGENTS.md, MEMORY.md) | só medidos, nunca editados | 725–4042 tok conforme a pasta |
+
+A economia que as correções automáticas dão aqui é pequena (25 skills nunca usadas → só o nome: ~1853 tok = US$ 0,0004 por
+mensagem, US$ 0,12 por sessão a US$ 0,22/MTok de leitura e US$ 8,80/MTok de escrita 1h). O custo fixo desta máquina é pequeno
+**porque** o Tool Search está ligado e o Allan já ocultou 32 skills; o item que mais pesaria (definições completas de MCP,
+~16k tok) é justamente o que o Tool Search já evita. A auditoria existe para pegar o caso em que isso muda (outra máquina,
+Tool Search desligado, centenas de skills, MCP nunca autenticado).
+
+Achados e correções feitos na hora, com teste (`fixed-cost.*`, `doctor.*`, `doctor-first-run`):
+
+- O Doctor passa a medir: MCPs configurados × chamadas reais nos transcripts (por servidor, por prefixo da ferramenta, só
+  conta como "sem uso" com história suficiente — pelo menos metade da janela); autenticação (HTTP 401 sem credencial e sem
+  header = nunca autenticado, não funciona); tokens exatos dos nomes injetados (anexo `deferred_tools_delta` do próprio
+  transcript) e das definições completas (`tools/list` real nos servidores HTTP; os stdio **não são iniciados**, porque iniciar
+  um adaptador de WhatsApp ou um navegador só para contar tokens tem efeito colateral); skills × `skillUsage` do Claude Code;
+  plugins × `pluginUsage`.
+- Correções reversíveis, sempre diário antes de mudar (`~/.claude/claude-code-boss/fixed-cost-undo.json`) e `doctor --undo`:
+  MCP morto/nunca autenticado → `claude mcp remove` (e `add-json` para voltar); skill nunca usada → `skillOverrides: name-only`
+  (documentado em code.claude.com/docs/en/skills, acessado em 2026-10-14; **não vale para skills de plugin**); plugin sem uso →
+  `enabledPlugins:false` (o boss nunca); configurações do próprio boss.
+- **Achado no teste real:** rodando na pasta do próprio repositório, o `.mcp.json` do projeto (brain-server) apareceria como
+  "sem uso" e a correção editaria um arquivo versionado. Regra: só o que está na configuração do usuário (escopo user/local) é
+  removido; `.mcp.json` e servidor de plugin só são reportados. Teste `buildAudit MCP: .mcp.json do projeto e servidor de plugin`.
+- **Achado no teste real:** a janela `1000000` (valor que o plugin restaura) não é "janela fixa apertada": é a maior janela de
+  qualquer modelo. O check só alarma abaixo disso. Teste `auditBossConfig`.
+- O Doctor passa a checar as configurações do boss: compactação ligada e em % da janela do modelo (30% = 60k de 200k, 300k de
+  1M), janela fixa no settings (o caso 153000, com a conta de onde o engine compacta), Tool Search, plugin ligado. Cada item
+  diz o que fazer; `--fix` corrige (reversível).
+- Primeira execução depois de atualizar: o detector `doctor-first-run` (SessionStart, 60 s de teto) roda o Doctor completo uma
+  vez por build (arquivo de marcação criado com `wx`: duas sessões simultâneas, só uma roda), aplica as correções de custo se
+  `fixedCost.autoFix` (padrão ligado) e injeta o aviso com o que fez e como desfazer. Configuração: `fixedCost` em
+  `hooks-config.json` (`enabled`, `autoFix`, `days`, `keep`).
+- Custo da primeira execução: a leitura dos transcripts de 30 dias leva ~8 s nesta máquina (735 arquivos); só ocorre uma vez
+  por build. Teste de ponta a ponta real (hook como processo, perfil isolado com cópia do settings.json, ~/.claude.json e
+  skills do Allan, transcripts reais via junction só-leitura): 1º run 9,0 s, aplicou 9 skills → só o nome, avisou o que fez e
+  como desfazer; 2º run do mesmo build mudo; `doctor --undo` devolveu o settings ao estado exato; settings real do Allan
+  byte-idêntico.
+- **MCP Bridge (gateway):** o mcp-gateway aparece como um servidor só, mas agrega backends (ferramentas nomeadas
+  `<backend>__<tool>`). O relatório agora quebra por backend, com ferramentas, tokens e chamadas (medido: action 48
+  ferramentas/529 tok/3815 chamadas, files 14/146/1107, memory 9/97/713, vxk 9/82/237, gateway 3/30/237; nenhum morto).
+  Backend sem uso só é reportado: tirá-lo é editar a config do gateway (outro projeto). Teste `backends atras do agregador`.
+- **Achado no teste real (depois da queda de energia):** rodando dentro da pasta do plugin, o `.mcp.json` do próprio plugin era
+  visto como servidor de projeto "sem uso" com 9934 tok de definições. Ele não é carregado (não aprovado: 0 ferramentas
+  injetadas), então custa zero. Regra: servidor do `.mcp.json` ausente das ferramentas injetadas da última sessão do
+  projeto = `not-loaded`, sem custo e sem alarme. Teste `servidor do .mcp.json do projeto que nao foi carregado`.
+- **Achado no gate:** o `spawnSync` usado como valor padrão de parâmetro não passa no lint `local/require-windows-hide`;
+  todo spawn do módulo passa por `hiddenSpawnSync` (mesmo padrão do doctor).
+- O aviso do primeiro run agrupa as correções por tipo ("9 skill(s) now listed by name only: …") em vez de uma frase por
+  item; falha parcial falha alto e diz o que já foi aplicado. Teste `doctor fixer fixed-cost: resumo agrupado`.
+- "388 de 400 skills sob demanda": nesta máquina o número medido é outro — 77 skills listadas (64 de usuário + 13 do boss),
+  32 já ocultas pelo Allan, 11 usadas em 30 dias; o audit põe as nunca usadas de usuário/projeto em `name-only`.
+
+Pendências / fora do escopo (registradas, não implementadas):
+
+- **Rotear MCPs pelo MCP Bridge (mcp-gateway):** avaliado, não aplicado. O gateway (`~/.mcp-gateway/config.json`) já agrega
+  memory, ata-ao-vivo, action, files, vxk e bolao (desligado); smart-tool, vox, playwright e whatsapp-bridge ficam diretos
+  no Claude. Com o Tool Search ligado o ganho em tokens de roteá-los é ~0 (os nomes continuam listados); o ganho seria de
+  processos/RAM (um playwright por sessão). O whatsapp-bridge é um adaptador **por sessão** por desenho e não pode ir para um
+  agregador compartilhado. Adicionar backend é editar a configuração do projeto do gateway (outro projeto): delegar ao dono
+  se o Allan quiser (playwright e vox são os candidatos).
+- **Smart Search automático** para essa decisão: não feito; a auditoria já usa os transcripts como fonte.
+- **Skills de plugin não têm alavanca** (`skillOverrides` ignora skills de plugin, doc oficial): as 13 do próprio boss (926 tok)
+  só saem desligando o plugin. Proposta: o boss passar a trazer menos skills ou `disable-model-invocation` nas pouco usadas.
+- **README e CHANGELOG do plugin** ainda não descrevem `doctor --cost/--fix/--undo`, o `fixedCost` nem o `doctor-first-run`:
+  mexer neles muda o hash da vitrine (pages-guard) e o merge fica bloqueado até o agente `vitrine` redesenhar a página. Fazer
+  junto do release 3.9.0, quando a vitrine redesenha de qualquer forma.
+- O diário de desfazer é um arquivo único por usuário; duas máquinas com `~/.claude` sincronizado compartilhariam o diário.
+
+### Levantamento do Codex Boss (somente leitura; o dono é o projeto `codex-boss`, não editado)
+
+Medido em `~/.codex` (41 rollouts de 2026-10-08 a 2026-10-13, 34 com contagem de tokens; modelo gpt-6.x, janela 475 000):
+
+- **Custo fixo por requisição:** a 1ª requisição de uma sessão carrega mediana de **39 990 tokens** de entrada (mínimo 15 491;
+  135–138 mil em 4 sessões grandes). As instruções-base têm ~21,8 mil caracteres (~5,4k tok); o resto são ferramentas
+  (exec, js, MCPs, subagentes), skills de plugin e contexto do projeto. Fonte: evento `token_count`
+  (`last_token_usage.input_tokens`) de cada rollout.
+- **MCP direto em `config.toml`:** mcp-gateway, node_repl, smart-tool, token-guard, playwright. As chamadas nos rollouts vêm
+  sem prefixo de servidor (`smart_search`, `project_manage`, `token_audit`, `compose_recall`), então o uso por servidor só sai
+  mapeando o nome da ferramenta para o servidor (via `tools/list`).
+- **Plugins:** 14 ligados em `config.toml` (12 do pacote OpenAI, action-meeting e codex-boss); só o codex-boss e
+  os usados por sessão têm uso rastreável nos rollouts.
+- **Compactação:** nenhuma configuração do boss; `model_auto_compact_token_limit` não está no `config.toml` (padrão do
+  modelo) e houve 10 compactações em 41 rollouts (até 3 numa sessão de 166 turnos). A chave do Codex é em **tokens
+  absolutos**, não em %: documentação oficial developers.openai.com/codex/config-reference e /codex/config-sample (acessadas
+  em 2026-10-14). Para respeitar a regra "% da janela do usuário", o boss precisa calcular `pct × model_context_window` (o
+  valor está em cada `token_count`) e gravar o limite.
+- **O que corrigir lá (para o orquestrador delegar ao dono):**
+  1. `plugins/codex-boss/scripts/doctor.mjs`: adicionar a auditoria de custo fixo (1ª requisição via `token_count`, MCP e
+     plugins configurados × usados nos rollouts, skills em `~/.codex/skills` e de plugin).
+  2. Correções reversíveis em `config.toml`: `mcp_servers.<nome>.enabled = false` (documentado), `enabled_tools`/`disabled_tools`
+     para cortar ferramentas, desligar plugin sem uso; diário + `--undo` como aqui.
+  3. Doctor checar a compactação: derivar `model_auto_compact_token_limit` do % do usuário e da janela do modelo, e avisar
+     se estiver fixo num número que não bate com o %.
+  4. Rodar o Doctor na primeira execução depois de atualizar (o `auto-update.mjs` já sabe que atualizou) e mostrar o resultado.
+  5. Padrão `config.toml` é editado por vários processos (Codex, Action, token-guard): usar leitura-modificação-escrita atômica
+     e não reformatar o arquivo (há `.bak` de várias ferramentas ao lado).
+
+## Compactação só em %, Tool Search, doctor que corrige, custo da compactação quente e TTL dinâmico (pedidos do orquestrador, 2026-10-14)
+
+Achados e correções (todos no escopo, corrigidos na hora, com teste em `scripts/test-units.js`):
+
+- **Causa do custo da sessão 5461fa31 (US$ 35,26).** O próprio plugin gravava `CLAUDE_CODE_AUTO_COMPACT_WINDOW=153000`
+  (`cost-tuning`), então o engine compactava em janela−33k ≈ 120k, no meio do turno, com cache quente. 15 compactações, todas
+  `auto`, pre 119–128k, post 10,6–20,8k, intervalo 0,8–1,4 min. Resumos US$ 2,66; cada 1ª chamada depois regrava 25–43k
+  (~490k no total). O gate nunca agiu (exige cache frio). Estimativa: as compactações pesam ≈ US$ 6–8 dos 35 (17–23%).
+  **Corrigido:** a janela fixa deixou de ser aplicada por padrão (`autoCompactWindow: null`); o `planCostTuning` restaura o valor
+  anterior do usuário no próximo SessionStart (estado de posse). Teste `cost-tuning: migra o 153000`.
+- **Piso de 90k removido** (`minThresholdTokens`): o limite é só `thresholdPercent` × janela do modelo (200k → 30% de 200k,
+  1M → 30% de 1M). Teste `compaction-core.thresholdFor`.
+- **Turn-end só com cache frio** (`decideTurnEnd`): sem isso a compactação do fim de turno também compactava com cache
+  quente. Agora espera o cache esfriar por timer. Teste `compaction-core.decideTurnEnd`.
+- **Tool Search sempre** (`ENABLE_TOOL_SEARCH=true`, `cost-tuning.toolSearch`): aplicado no SessionStart; valor mudado pelo
+  usuário continua dele.
+- **Doctor corrige e orienta.** Cada aviso termina com "o que fazer"; o aviso de Hook events deixou de dizer só "safe to
+  ignore". Novo check `cost-tuning` (settings.json × configuração do plugin) e `node scripts/doctor.js --fix`, que aplica só
+  correções do próprio plugin (`cost-tuning`, lock de daemon obsoleto) e relata falha de correção sem esconder. Testes `doctor.*`.
+
+Achados fora do escopo (não implementados, por regra):
+
+- O caminho de janela fixa 200000 do router/proxy (`contextTuning`, opt-in, deprecado) continua existindo. Proposta: remover
+  junto com o proxy.
+- **Trade-off do 1M:** sem janela fixa o engine só compacta em janela−33k (~967k). Em sessões interativas sempre quentes o
+  gate/turn-end não age (esperam cache frio); só o engine compacta. Decisão do Allan (ver TTL dinâmico abaixo).
+
+### TTL do cache: 1h até o limite e 5 min depois (investigação, nada implementado)
+
+Dados e scripts em `docs/research/ttl-switch/` (local, gitignorado): `exp.js` (teste real), `sim.js` + `agg.js` (14 sessões
+reais do custo-agente, 10–14/10), `mech.mjs` (compactação mecânica).
+
+1. **Dá para trocar o TTL no meio da sessão? Sim, mas não pelo caminho que o plugin usa hoje.** No engine (2.1.293) o TTL é
+   resolvido a cada requisição (`yce`/`Ven`), na ordem: `FORCE_PROMPT_CACHING_5M` > env `CLAUDE_CODE_PROMPT_CACHE_TTL` >
+   **setting `promptCacheTtl`** > frontmatter do agente > `ENABLE_PROMPT_CACHING_1H`. O env é lido uma vez no start do processo e
+   ganha do setting: com o env gravado pelo plugin (`=1h`), o TTL fica congelado até reiniciar. Teste real (processo
+   `claude -p` stream-json vivo, Haiku, `settings.local.json` reescrito entre turnos): `5m→1h→5m` gravou
+   `ephemeral_5m 24460 → ephemeral_1h 27245 → ephemeral_5m 5753`, e `1h,1h,5m,5m` seguiu o setting turno a turno; com o env
+   `=5m` no processo, o setting `1h` foi ignorado (`ephemeral_5m 10112`, `24142`). O watcher de settings pegou a troca com
+   2,5 s de espera. Ressalvas: o gateway devolveu `cache_read 0` em turnos seguidos mesmo sem trocar o TTL (leitura de cache
+   instável no teste, então o custo de trocar não ficou isolável); testado só em `settings.local.json` do projeto; um
+   `promptCacheTtl` em arquivo vale para **todas as sessões que leem aquele arquivo** (a sessão grande forçaria 5 min na pequena).
+2. **Custo medido (simulação sobre transcripts reais, 14 sessões, US$ total; resumo a frio relê o histórico a US$ 4,4/MTok):**
+
+   | janela | 1h só engine | 1h + gate | 5m + gate | 1h→5m + gate |
+   |---|---|---|---|---|
+   | 200k, 30% | 446 | 442 | 423 | 433 |
+   | 1M, 30% | 1157 | 1041 | 907 | **850** |
+
+   Em 200k a diferença é de 3–5% (dentro do erro do modelo). Em 1M, 1h→5m + gate dá −18% sobre 1h + gate e −27% sobre o que
+   roda hoje; a maior parte do ganho vem do **gate agir com cache frio**, que com 1h quase nunca chega. Cada compactação a
+   frio custa o resumo (~US$ 0,54 de leitura sem cache a 122k + ~US$ 0,18 de saída), a quente ~US$ 0,21; a 1ª chamada
+   depois regrava 15–45k. Estimativa, não medição de fatura.
+3. **Compactação mecânica local existe** (`compaction-core.mjs`, sem chamar a API). Medido em prefixos reais do transcript
+   5461fa31: `planCompaction` (poda de resultados antigos) corta 64% a 62k, 61% a 122k, 50% a 201k, 43% a 405k tokens e
+   leva 1–2 ms; `buildBrief` (resumo determinístico, sem modelo) corta 82–86% (122k → 17,5k; 405k → 63k) em 1–3 ms.
+   Custo de API: zero na compactação; só a regravação do que sobra (17,5k a US$ 8,8/MTok ≈ US$ 0,15), contra ~US$ 0,7
+   do resumo a frio a 122k. A fidelidade do `buildBrief` medida em 10/10 foi 27%/64% contra 46%/79% do resumo nativo (2 casos),
+   e a poda deixa o contexto grande (a 405k sobram 245k), por isso não substitui o resumo.
+4. **Recomendação:** não construir a troca dinâmica agora. Passos baratos primeiro (já feitos nesta rodada): gate/turn-end
+   com cache frio e janela só em %. Se o Allan quiser a troca: (a) o plugin pára de gravar o env `CLAUDE_CODE_PROMPT_CACHE_TTL`
+   e passa a gerir `promptCacheTtl` no setting; (b) o hook troca para 5m ao cruzar o % configurado pelo usuário e volta para 1h
+   depois de compactar; (c) antes, resolver o efeito sobre as outras sessões do mesmo arquivo de settings e testar o
+   settings de usuário. Só faz sentido com janela de 1M.
+
+## Ingestão de conversa para o mcp-memory (branch `fix/ingest-delta-backoff`, pedido do orquestrador, 2026-10-14)
+
+- **Encontrado e corrigido na hora:** cada Stop reenviava o transcript inteiro (`conversation-ingest.js`). Uma sessão longa passava do limite do servidor (10 MiB → 413, ou `MAX_RAW_CHARS` 8M → `ok:false`) e falhava em todo Stop dali em diante. Agora o Stop manda só o trecho novo desde o último envio aceito, com offset por sessão em `.runtime/ingest-state.json`. Um prompt ainda sem resposta volta no próximo trecho. Nenhum trecho sai sem um par de texto user+assistant, porque o servidor marcaria o template como degradado. O payload JSON escapado fica abaixo de 7,5 MB. Testes: "conversation-ingest.selectChunk/run: …".
+- **Encontrado e corrigido na hora:** o upload da ingestão usava o timeout de 60s do cliente, mais que o prazo de 29s do worker do Stop. O worker desistia e o upload seguia pendurado, ocupando a fila do próximo Stop (`mcp-client.js` `callTool`, `brain-backend.js`). Agora o timeout é por chamada: 15s para o ingest e 5s para o status. Conferido: o timeout do próprio cliente ("timed out after") nunca foi reenviado, porque o retry só cobre conexão recusada e sessão expirada, e o teste trava esse comportamento. Teste: "mcp-client: per-call timeoutMs reaches the transport …".
+- **Encontrado e corrigido na hora:** falhas de ingestão não apareciam em lugar nenhum: o stderr do detector é descartado e o servidor responde `ok:true` mesmo com o LLM de curadoria fora. Agora há backoff persistido (30s dobrando até 30 min) e um aviso `[INGEST]` na tela na primeira falha da sequência, repetido no máximo a cada 30 min, e outro na recuperação. A resposta `ok:false` conta como falha. Uma curadoria parada (`ingest_status`: cooldown, falha permanente nova ou pendência crescendo sem sucesso, verificada no máximo a cada 10 min) também gera aviso.
+- **Encontrado e corrigido na hora:** o timeout da ingestão abria o circuit breaker compartilhado (15s) e degradava o recall de todas as chamadas (`brain-backend.js` `guardMcp`). Agora a ingestão respeita o breaker, mas a falha dela não o abre (`trip:false`). Teste: "brain-backend mcp: a failed ingestion upload does NOT open the shared breaker".
+- **Encontrado e corrigido na hora:** MCP -32000 "Connection closed". O `shutdown()` do daemon do brain (`servers/brain-server/lib/http-daemon.js`), chamado pelo swap do supervisor, pelo `requestRestart` de troca de backend e pelo SIGTERM, fazia `closeAllConnections` imediato e derrubava hooks em andamento. Agora ele libera a porta na hora (o swap segue), espera as requisições já aceitas por até 25s e responde com `Connection: close`, para que a próxima requisição chegue ao daemon novo (404 → re-initialize). Teste: "http-daemon shutdown: frees the port at once …".
+- **Encontrado e corrigido na hora:** numa pasta sem escopo de projeto estável, a ingestão era pulada só com uma linha no stderr, que o detector descarta, e ninguém via (`conversation-ingest.js` `run`). Agora aparece um aviso `[INGEST] … skipped for this project`, uma vez por sessão, e nada é enviado. Teste: "conversation-ingest.run: folder with no stable project scope …".
+- **Encontrado e corrigido na hora:** no stdio, a mensagem de timeout do `_sendRequest` mostrava `requestTimeout` em vez do timeout efetivo da chamada (`mcp-client.js`).
+- **Registrado (antes do release da 3.9.0):** `pages/claude-code-boss/index.html` não cita nada da 3.9.0 (Node automático, embedder `none`, ingestão por delta); só o hash foi re-selado para o pages-guard. Proposta: rodar o agente `vitrine` para redesenhar a página quando o Allan validar e autorizar o release.
+- **Registrado (fora do escopo):** um daemon de teste isolado (`Temp\ccb-un-*`) ocupando a porta fixa de produção 38217 também gera "Connection closed"/Unauthorized e "Maximum reconnection attempts" (visto em 2026-10-13 19:23). A suíte deveria usar `port: 0` em todo daemon real. Proposta: auditar os testes que sobem `index.js` e garantir que a porta vem de env por teste.
+- **Registrado (outro projeto: native-java / mcp-memory; não editado aqui):**
+  - `ingest_conversation` responde `ok:true` com o LLM de curadoria fora. Proposta: expor a saúde do LLM/breaker no retorno do ingest ou em `ingest_status` (`llm:{ok,lastError}`).
+  - Um chunk sem nenhum evento reconhecido marca o template como degradado e dispara redescoberta por LLM **bloqueante** na thread da requisição. Propostas: não degradar por um chunk parcial e fazer a descoberta fora da requisição.
+  - O limite de corpo de 10 MiB (`MAX_BODY_SIZE`) e o `MAX_RAW_CHARS` de 8M não estão documentados para consumidores. Proposta: documentá-los no contrato do `ingest_conversation`.
+## Compact não age em sessão autônoma — investigado (branch `fix/compaction-gate-delegated-prompts`, pedido do orquestrador, 2026-10-14)
+
+- **Config está certa:** perfil `standard` resolve `compaction.enabled=true`, 30%, 10 min; `standard` não desliga a compactação (só `free`).
+  A compactação acontece, mas pelo auto-compact do engine a ~120k (janela 153k): dezenas de `compaction.run` trigger `auto` em 14/10
+  (claude-code-plugins, agente-bolso). O gate do boss quase não registra evento desde 09/10.
+- **Por que passar de 30% (piso 90k) não compacta pelo gate:** (1) com cache quente o gate decide "não" de propósito (compactar quente custa
+  mais que o ganho, análise de 11/10 e `docs/research/compaction-warm-tail/`); (2) o gate só vê `prompt.submit` de pessoa
+  (`PERSON_ORIGINS`); `peer`, `task-notification` e `queued_command` passam direto.
+- **Opção (c) — incluir esses prompts no gate preservando o remetente — NÃO implementada, inviável pela API do engine (CC 2.1.293,
+  lido no binário):** o gate segura o prompt (`drop`), compacta e reenvia com `$.prompt.submit({ text, asUser })`, que só aceita
+  `text` (sem `origin`, sem anexos). Um reenvio de mensagem de outra sessão seria um prompt do próprio plugin: com `asUser:true` o texto
+  de um peer ganharia a autoridade da pessoa (lavagem de permissão); sem remetente o destinatário não responde por SendMessage.
+  `queued_command` nem chega como prompt.submit (é attachment). Compactar dentro do `prompt.submit` o engine recusa.
+  Alternativas a decidir com o Allan: (b) limiar valer com cache quente; (d) compactar ao fim do turno (`turn.complete`) acima do
+  limiar em sessão autônoma — sem reenvio, mas paga a regravação com cache quente; (e) baixar `autoCompactWindow` (hoje 153k).
+- **Opção (d) implementada (2026-10-14, escolhida pelo Allan via orquestrador):** ao fim de um turno que NÃO passou pelo gate
+  (`ctx.gated` falso: peer, task-notification, queued_command), `turnEnd` em `hooks/compaction.mjs` lê o uso e, se `decideTurnEnd`
+  (`lib/compaction-core.mjs`) disser que passou do limiar (`thresholdFor`: 30%, piso 90k), roda `compact` sem reenvio de prompt. Cooldown de
+  `minIntervalMs` (10 min) desde a última compactação evita loop de custo; o piso de 90k fica acima do que uma compactação deixa (~48k).
+  Turno de pessoa segue só pelo gate (cache frio). Teste: "compaction-core.decideTurnEnd" (falhava sem a função). Falta: validação do Allan
+  em sessão autônoma real (evento `compaction.gate` com `reason: turn-end-over-threshold`).
+
 ## Crash 0xC0000409 do brain (branch `fix/brain-crash-diagnostics`, pedido do orquestrador, 2026-10-14)
 
 - **Encontrado e corrigido na hora:** o daemon é detached, então a morte dele (exit code) não ficava registrada em lugar nenhum. O supervisor
@@ -26,10 +238,16 @@
   daemon via execArgv, ou seja, quando o daemon foi iniciado à mão ou por outra ferramenta.
 - **Encontrado e corrigido na hora:** o lint `require-windows-hide` rejeitava `spawnSync` usado como default de parâmetro. Troquei pelo wrapper
   `hiddenSpawnSync` (crash-evidence e doctor).
-- [ ] **Aberto (fora do escopo) — sem correção automática do Node:** quando o `node` do PATH é o 25, o plugin só avisa. Proposta: o supervisor
-  procurar um Node 22/24 instalado (nvm, volta, Program Files) e subir o daemon com ele (`servers/brain-server/lib/daemon-supervisor.js`, spawn de `process.execPath`).
-- [ ] **Aberto (fora do escopo) — não existe provider de embedder "off":** numa máquina onde o runtime nativo quebra, a única saída é trocar para
-  ollama/voyage. Proposta: provider `none`, com busca só lexical (`servers/brain-server/lib/embedder*`).
+- [x] **Resolvido (branch `fix/node-autoselect-embedder-none`, 3.9.0, aguardando validação do Allan) — correção automática do Node:** o
+  supervisor e o router sobem num Node 22/24 instalado quando o padrão está fora da faixa (`lib/node-support.js` `pickSupportedNode`;
+  testes "pickSupportedNode", "nodeCandidates", "unsupported default Node", "checkNode: a default Node 25").
+- [x] **Resolvido (mesma branch) — provider de embedder `none`:** manual ou forçado pelo teste de carga (`lib/embedder-guard.js`; testes
+  "embedder-guard", "provider \"none\"", "embed-worker-client guard", "doctor: the load test runs on the daemon's Node").
+- **Encontrado e corrigido na hora:** o lint `require-windows-hide` também rejeita `spawn`/`spawnSync` injetáveis como default de
+  parâmetro no guard. Agora o default chama o binding direto, com `windowsHide: true`.
+- **Encontrado e corrigido na hora:** o timeout do teste de carga assíncrono citava sempre 180s, mesmo com outro `timeoutMs`. Agora cita o
+  valor real (teste "ensureGuard").
+- **Encontrado e corrigido na hora:** as mensagens de fix do doctor só ofereciam ollama/voyage como saída. Agora citam também `none`.
 
 ## Dono do hook que falhou (branch `feat/hook-owner`, pedido do orquestrador, 2026-10-14)
 
