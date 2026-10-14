@@ -95,7 +95,7 @@ function checkDaemonNode(ctx) {
     fixes.unshift('Remove those flags from NODE_OPTIONS (user environment variables) and restart Claude Code: the daemon is only tested without them.');
   }
   if (problems.length) return { ...base, status: 'warn', detail: problems.join('; '), fix: fixes.join(' ') };
-  const where = d ? `daemon on Node v${d.version} with only the plugin's crash-report flags` : 'no daemon reported its runtime (not running, or started by an older version)';
+  const where = d ? `daemon on Node v${String(d.version).replace(/^v/, '')} with only the plugin's crash-report flags` : 'no daemon reported its runtime (not running, or started by an older version)';
   return { ...base, status: 'ok', detail: `${where}; NODE_OPTIONS adds no flags`, fix: '' };
 }
 
