@@ -12,6 +12,13 @@
   `<data>/embedder-guard.json` e o embedder passa a `none`: busca só por palavra-chave, daemon no ar. Erro de JS ou timeout não forçam
   nada (nova tentativa no próximo boot). O teste de carga do doctor roda no Node do daemon e grava o resultado: um teste que passa
   religa a busca semântica.
+- **Ingestão de conversa (mcp-memory) manda só o trecho novo.** Cada Stop reenviava o transcript inteiro, e uma sessão longa passava do
+  limite do servidor e falhava em todo Stop. Agora vai só o que é novo desde o último envio aceito (offset por sessão), sempre com par
+  user+assistant completo e payload abaixo de 7,5 MB. Falha faz backoff persistido (30s dobrando até 30 min) e aparece como aviso
+  `[INGEST]` (falha, recuperação, curadoria parada, pasta sem escopo de projeto). O upload tem timeout próprio de 15s, abaixo do prazo do
+  worker do Stop, e uma ingestão que falha não abre mais o circuit breaker do recall.
+- **Fim do MCP -32000 "Connection closed" na troca de daemon.** O `shutdown()` do daemon do Brain libera a porta na hora e responde às
+  requisições já aceitas (`Connection: close`) em vez de derrubá-las.
 
 ### Added
 - **Provider de embedder `none`** (dashboard, config-tester, skill `embedder-switch`): sem modelo e sem busca semântica, só palavra-chave.
