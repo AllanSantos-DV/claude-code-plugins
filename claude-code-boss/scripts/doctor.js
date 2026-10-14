@@ -16,8 +16,10 @@ const fs = require('fs');
 const path = require('path');
 const os = require('os');
 const http = require('http');
+const { spawnSync } = require('child_process');
 
-const MIN_NODE = [22, 13, 0]; // node:sqlite requires >= 22.13
+const nodeSupport = require('./lib/node-support.js');
+const { MIN_NODE } = nodeSupport;
 
 // Ciclo de vida de hooks do Claude Code, conforme a doc oficial
 // (https://code.claude.com/docs/en/hooks, tabela "Hook lifecycle").
@@ -43,22 +45,80 @@ const RUNTIME_DEPENDENT_EVENTS = new Set(['UserPromptExpansion', 'PostToolUseFai
 
 // ── Pure checks ───────────────────────────────────────────────────────────────
 
-function _cmpVersion(a, b) {
-  for (let i = 0; i < 3; i++) { if ((a[i] || 0) !== (b[i] || 0)) return (a[i] || 0) - (b[i] || 0); }
-  return 0;
-}
-
 function checkNode(ctx) {
-  const raw = String(ctx.nodeVersion || '').replace(/^v/, '');
-  const parts = raw.split('.').map(n => parseInt(n, 10));
-  const ok = parts.length >= 2 && _cmpVersion(parts, MIN_NODE) >= 0;
+  const s = nodeSupport.nodeSupport(ctx.nodeVersion);
   return {
     id: 'node', label: 'Node.js runtime',
-    status: ok ? 'ok' : 'fail',
-    detail: ok ? `v${raw} (>= 22.13)` : `v${raw || '?'} is too old`,
-    fix: ok ? '' : 'Install Node >= 22.13 (node:sqlite requirement) and restart Claude Code.',
+    status: s.ok ? 'ok' : 'fail',
+    detail: s.ok ? `v${s.version} (tested: ${nodeSupport.RANGE_TEXT})`
+      : s.reason === 'new' ? `v${s.version} is newer than the tested range (${nodeSupport.RANGE_TEXT}) — Node 25 aborted the Brain daemon with 0xC0000409`
+        : `v${s.version || '?'} is too old (node:sqlite needs ${MIN_NODE.join('.')})`,
+    fix: nodeSupport.supportAdvice(s),
     critical: true,
   };
+}
+
+/**
+ * The daemon's own runtime: the Node it really runs on (the hook that spawned it may have
+ * had another `node` on PATH than this terminal) and the flags it got. ctx.nodeOptions is
+ * this process's NODE_OPTIONS (what the next daemon inherits); ctx.daemon.node comes from
+ * the running daemon's /health and is absent when no daemon runs or it predates the field.
+ */
+function checkDaemonNode(ctx) {
+  const base = { id: 'daemon-node', label: 'Brain daemon Node runtime and flags', critical: false };
+  const d = (ctx.daemon && ctx.daemon.node) || null;
+  const envFlags = nodeSupport.foreignFlags(nodeSupport.parseNodeOptions(ctx.nodeOptions));
+  const problems = [];
+  const fixes = [];
+  if (d) {
+    const s = nodeSupport.nodeSupport(d.version);
+    if (!s.ok) {
+      return { ...base, critical: true, status: 'fail', detail: `the running daemon uses Node v${s.version}, outside the tested range (${nodeSupport.RANGE_TEXT})`, fix: nodeSupport.supportAdvice(s) };
+    }
+    // execArgv flags (V8 ones like --no-maglev, which Node refuses in NODE_OPTIONS) mean the
+    // daemon was started by hand or by another tool, not by the supervisor.
+    const argvFlags = nodeSupport.foreignFlags(d.execArgv || []);
+    if (argvFlags.length) {
+      problems.push(`the running daemon was started with Node flags the plugin does not set: ${argvFlags.join(' ')}`);
+      fixes.push('Stop that daemon and let Claude Code start it (restart Claude Code): the daemon is only tested without extra flags (--no-maglev was a workaround for the Node 25 abort; Node 24 LTS does not need it).');
+    }
+    const missing = nodeSupport.missingOwnFlags(d.execArgv);
+    if (missing.length) {
+      problems.push(`the running daemon lacks ${missing.join(' ')} (started by an older version: a crash would leave no Node report)`);
+      fixes.push('Restart Claude Code once so the current version starts the daemon.');
+    }
+    const daemonEnv = nodeSupport.foreignFlags(nodeSupport.parseNodeOptions(d.nodeOptions));
+    if (daemonEnv.length && !envFlags.length) problems.push(`the running daemon inherited NODE_OPTIONS ${daemonEnv.join(' ')}`);
+  }
+  if (envFlags.length) problems.push(`NODE_OPTIONS sets ${envFlags.join(' ')} — every Brain daemon inherits it`);
+  if (envFlags.length || problems.some(p => p.includes('inherited NODE_OPTIONS'))) {
+    fixes.unshift('Remove those flags from NODE_OPTIONS (user environment variables) and restart Claude Code: the daemon is only tested without them.');
+  }
+  if (problems.length) return { ...base, status: 'warn', detail: problems.join('; '), fix: fixes.join(' ') };
+  const where = d ? `daemon on Node v${d.version} with only the plugin's crash-report flags` : 'no daemon reported its runtime (not running, or started by an older version)';
+  return { ...base, status: 'ok', detail: `${where}; NODE_OPTIONS adds no flags`, fix: '' };
+}
+
+/** The native pieces the daemon loads: node:sqlite always, the ONNX runtime and sharp for the local embedder. */
+function checkNativeDeps(ctx) {
+  const n = ctx.native || {};
+  const base = { id: 'native-deps', label: 'Daemon native dependencies', critical: true };
+  const broken = [];
+  if (n.sqliteError) broken.push(`node:sqlite does not load (${n.sqliteError})`);
+  if (n.provider === 'transformers') {
+    if (!(n.napi >= 6)) broken.push(`Node-API ${n.napi || '?'} < 6 (the ONNX runtime binding needs napi-v6)`);
+    if (n.ortBinding === false) broken.push(`no onnxruntime binding for ${n.arch}`);
+    if (n.sharp === false) broken.push(`no sharp binary for ${n.arch}`);
+  }
+  if (broken.length) {
+    return {
+      ...base, status: 'fail', detail: broken.join('; '),
+      fix: n.sqliteError ? nodeSupport.supportAdvice({ ok: false, version: String(process.versions.node), reason: 'old' })
+        : 'Reinstall the plugin (Claude Code → plugins → update) so its node_modules are complete, or switch the embedder provider to ollama/voyage in the dashboard.',
+    };
+  }
+  const embed = n.provider === 'transformers' ? `, onnxruntime binding and sharp for ${n.arch}` : ` (embedder "${n.provider}" loads no native addon)`;
+  return { ...base, status: 'ok', detail: `node:sqlite${n.sqliteError === undefined ? ' not probed' : ''}${embed}`, fix: '' };
 }
 
 function _envResolved(v) { return typeof v === 'string' && v.length > 0 && !v.includes('${'); }
@@ -165,7 +225,147 @@ function checkHooksEvents(ctx) {
   return { id: 'hooks-events', label: 'Hook events', status: 'ok', detail: `${events.length} event(s), all standard`, fix: '', critical: false };
 }
 
-const CHECKS = [checkNode, checkEnv, checkDataDirs, checkModel, checkDaemon, checkHooksEvents];
+// onnxruntime >= 1.20 is built with the VS 17.10 STL: against an older msvcp140.dll its
+// first std::mutex lock aborts the process (microsoft/STL#4730), which Windows reports as
+// 0xC0000409. The installed redistributable must be at least this.
+const MIN_MSVCP = '14.40';
+const VC_REDIST_URL = 'https://aka.ms/vc14/vc_redist.x64.exe';
+
+function checkNativeRuntime(ctx) {
+  const n = ctx.native || {};
+  const base = { id: 'native-runtime', label: 'Native runtime (embedder)', critical: false };
+  if (n.platform !== 'win32') return { ...base, status: 'ok', detail: 'not Windows — no Visual C++ runtime needed', fix: '' };
+  if (n.provider !== 'transformers') {
+    return { ...base, status: 'ok', detail: `embedder provider "${n.provider}" — the local ONNX runtime is not loaded`, fix: '' };
+  }
+  const dlls = n.systemDlls || {};
+  const msvcp = dlls['msvcp140.dll'];
+  if (!msvcp || require('./lib/crash-evidence.js').compareVersions(msvcp, MIN_MSVCP) < 0) {
+    return {
+      ...base, critical: true, status: 'fail',
+      detail: msvcp ? `msvcp140.dll ${msvcp} is older than ${MIN_MSVCP}: the local embedder (onnxruntime) aborts the Brain daemon with 0xC0000409`
+        : 'msvcp140.dll not found in System32: the local embedder (onnxruntime) cannot load',
+      fix: `Install the latest Visual C++ x64 redistributable (${VC_REDIST_URL}), or switch the embedder provider to ollama/voyage in the dashboard.`,
+    };
+  }
+  // A System32\onnxruntime.dll (Windows 11 ships one) is only reported: Node loads an addon's
+  // dependencies from the addon's folder first, so the bundled copy wins (seen on 26100).
+  const sys = dlls['onnxruntime.dll'] ? `; System32 also has onnxruntime ${dlls['onnxruntime.dll']} (not used by the plugin)` : '';
+  return { ...base, status: 'ok', detail: `msvcp140.dll ${msvcp} (>= ${MIN_MSVCP}), bundled onnxruntime ${n.bundledOrt || '?'}${sys}`, fix: '' };
+}
+
+function checkCrashes(ctx) {
+  const c = ctx.crashes || { records: [] };
+  const base = { id: 'daemon-crashes', label: 'Brain daemon crashes', critical: false };
+  if (!c.records.length) return { ...base, status: 'ok', detail: `no unexpected daemon exit in the last ${CRASH_WINDOW_DAYS} days`, fix: '' };
+  const ce = require('./lib/crash-evidence.js');
+  const last = c.records[c.records.length - 1];
+  return {
+    ...base, status: 'warn',
+    detail: `${c.records.length} unexpected exit(s) in ${CRASH_WINDOW_DAYS} days; last: ${ce.describe(last)}`,
+    fix: `${ce.adviceFor(last)}. Evidence: ${c.file}`,
+  };
+}
+
+const CRASH_WINDOW_DAYS = 14;
+// 0xC0000409 as a child exit status: a native DLL called abort()/__fastfail. Node's own
+// aborts (V8 out-of-memory, process.abort) exit 134 instead — measured on Windows 11 —
+// so 0xC0000409 points at a native module, not at V8.
+const FAST_FAIL_STATUSES = new Set([0xC0000409, 0xC0000409 - 0x100000000]);
+const NODE_ABORT_STATUS = 134;
+const PROBE_TIMEOUT_MS = 180000;
+
+function checkEmbedderProbe(ctx) {
+  const p = ctx.embedderProbe;
+  const base = { id: 'embedder-probe', label: 'Embedder load test', critical: false };
+  if (!p) return { ...base, status: 'ok', detail: 'not run here (run `npm run doctor` in a terminal to load the embedder in a separate process)', fix: '' };
+  if (p.skipped) return { ...base, status: 'ok', detail: `skipped: ${p.skipped}`, fix: '' };
+  if (p.ok) return { ...base, status: 'ok', detail: `the embedder loaded and embedded a test sentence in a separate process (${p.ms} ms, ${p.dims} dims)`, fix: '' };
+  const hex = Number.isInteger(p.status) ? `0x${(p.status >>> 0).toString(16).toUpperCase()}` : null;
+  const last = p.lastLine ? `; last output: ${p.lastLine}` : '';
+  if (FAST_FAIL_STATUSES.has(p.status)) {
+    return {
+      ...base, critical: true, status: 'fail',
+      detail: `loading the embedder ABORTED the process (exit ${hex}, a native DLL failed) — this is what kills the Brain daemon${last}`,
+      fix: `Install the latest Visual C++ x64 redistributable (${VC_REDIST_URL}) and run the doctor again; if it still aborts, switch the embedder provider to ollama/voyage in the dashboard.`,
+    };
+  }
+  if (p.status === NODE_ABORT_STATUS) {
+    return {
+      ...base, critical: true, status: 'fail',
+      detail: `loading the embedder made Node abort (exit 134: V8 fatal error, usually out of memory)${last}`,
+      fix: `Free memory or switch the embedder provider to ollama/voyage in the dashboard; the Node report is in ${p.reportDir}.`,
+    };
+  }
+  return {
+    ...base, status: 'fail',
+    detail: `the embedder test failed (${p.error || (hex ? `exit ${hex}` : 'no result')})${last}`,
+    fix: 'Switch the embedder provider in the dashboard if it keeps failing.',
+  };
+}
+
+/**
+ * Load the embedder exactly like the daemon does, but in a throwaway process, so an abort
+ * shows up as an exit status here instead of silently killing the daemon.
+ * @param {{provider:string, modelPresent:boolean, data:string, run?:Function}} o
+ */
+// Tests inject `run`; the real one is always hidden.
+function hiddenSpawnSync(cmd, args, opts) { return spawnSync(cmd, args, { ...opts, windowsHide: true }); }
+
+function probeEmbedder({ provider, modelPresent, data, run = hiddenSpawnSync }) {
+  if (provider !== 'transformers') return { skipped: `embedder provider "${provider}" does not load a local model` };
+  if (!modelPresent) return { skipped: 'the embedding model is not downloaded yet' };
+  const ce = require('./lib/crash-evidence.js');
+  const embedder = path.join(__dirname, 'brain-embedder.js');
+  const code = `const e=require(${JSON.stringify(embedder)});const t=Date.now();` +
+    `e.init().then(ok=>{if(!ok)throw new Error(e.getStatus().error||'init failed');return e.embed('doctor probe')})` +
+    `.then(v=>{console.log(JSON.stringify({ok:true,dims:v.length,ms:Date.now()-t}))})` +
+    `.catch(err=>{console.log(JSON.stringify({ok:false,error:err.message}));process.exitCode=2})`;
+  fs.mkdirSync(ce.reportDir(data), { recursive: true });
+  const r = run(process.execPath, [...ce.reportFlags(data), '-e', code], { encoding: 'utf8', timeout: PROBE_TIMEOUT_MS, windowsHide: true });
+  const lines = `${r.stdout || ''}\n${r.stderr || ''}`.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const result = lines.map(l => { try { return JSON.parse(l); } catch (err) { void err; return null; } }).filter(x => x && typeof x.ok === 'boolean').pop();
+  const lastLine = lines.filter(l => !l.startsWith('{')).pop() || '';
+  if (r.error) return { ok: false, error: r.error.code === 'ETIMEDOUT' ? `no answer in ${PROBE_TIMEOUT_MS / 1000}s` : r.error.message, lastLine, reportDir: ce.reportDir(data) };
+  if (result && result.ok && r.status === 0) return result;
+  return { ok: false, status: r.status, error: result && result.error, lastLine, reportDir: ce.reportDir(data) };
+}
+
+/** What checkNativeRuntime reads: cheap (a few DLL headers + the config), safe for the SessionStart advisory. */
+/**
+ * @param {{sqlite?:boolean}} [o] sqlite:false skips loading node:sqlite (the SessionStart
+ *   advisory: on 22.x that prints an ExperimentalWarning into the hook's stderr).
+ */
+function gatherNative({ sqlite = true } = {}) {
+  const ce = require('./lib/crash-evidence.js');
+  const nm = path.join(pluginRoot(), 'node_modules');
+  const ortDir = path.join(nm, 'onnxruntime-node', 'bin', 'napi-v6', process.platform, process.arch);
+  const bundled = path.join(ortDir, 'onnxruntime.dll');
+  let sqliteError;
+  if (sqlite) {
+    try { require('node:sqlite'); sqliteError = null; } catch (err) { sqliteError = err.message; }
+  }
+  return {
+    platform: process.platform,
+    arch: `${process.platform}-${process.arch}`,
+    provider: ce.embedderProvider(),
+    systemDlls: ce.systemDlls(),
+    bundledOrt: process.platform === 'win32' && fs.existsSync(bundled) ? ce.peFileVersion(bundled) : null,
+    napi: Number(process.versions.napi) || 0,
+    ortBinding: fs.existsSync(path.join(ortDir, 'onnxruntime_binding.node')),
+    sharp: fs.existsSync(path.join(nm, '@img', `sharp-${process.platform}-${process.arch}`)),
+    sqliteError,
+  };
+}
+
+function gatherCrashes(data, now = Date.now()) {
+  const ce = require('./lib/crash-evidence.js');
+  const since = now - CRASH_WINDOW_DAYS * 86400000;
+  const records = ce.readRecords(data).filter(r => Date.parse(r.detectedAt) >= since);
+  return { file: ce.crashLogFile(data), records };
+}
+
+const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkCrashes, checkHooksEvents];
 
 /** Run every pure check over a ctx snapshot. */
 function runChecks(ctx) {
@@ -274,19 +474,25 @@ function _modelPresent(cacheDir) {
   } catch (e) { void e; return false; }
 }
 
+/** Resolves the parsed /health body, or null when the daemon does not answer 200. */
 function _daemonHealth(port, timeoutMs = 1200) {
   return new Promise((resolve) => {
-    if (!port) return resolve(false);
+    if (!port) return resolve(null);
     const req = http.get({ hostname: '127.0.0.1', port, path: '/health', timeout: timeoutMs }, (res) => {
-      res.resume();
-      resolve(res.statusCode === 200);
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (c) => { body += c; });
+      res.on('end', () => {
+        if (res.statusCode !== 200) return resolve(null);
+        try { resolve(JSON.parse(body)); } catch (err) { void err; resolve({}); }
+      });
     });
-    req.on('timeout', () => { req.destroy(); resolve(false); });
-    req.on('error', () => resolve(false));
+    req.on('timeout', () => { req.destroy(); resolve(null); });
+    req.on('error', () => resolve(null));
   });
 }
 
-async function gatherContext() {
+async function gatherContext({ probe = false } = {}) {
   const root = process.env.CLAUDE_PLUGIN_ROOT || '';
   const data = dataDir();
   const activeDataResolved = process.env.CLAUDE_PLUGIN_DATA || '';
@@ -308,9 +514,13 @@ async function gatherContext() {
       daemon.port = Number.isInteger(lock.port) ? lock.port : null;
       daemon.tokenReadable = !!(process.env.BRAIN_HTTP_TOKEN
         || (() => { try { return fs.readFileSync(path.join(data, 'brain-http.token'), 'utf8').trim(); } catch (e) { void e; return ''; } })());
-      daemon.healthy = await _daemonHealth(daemon.port);
+      const health = await _daemonHealth(daemon.port);
+      daemon.healthy = !!health;
+      daemon.node = (health && health.node) || null;
     }
   } catch (e) { void e; }
+
+  const native = gatherNative();
 
   let hooksEvents = [];
   try {
@@ -320,10 +530,14 @@ async function gatherContext() {
 
   return {
     nodeVersion: process.version,
+    nodeOptions: process.env.NODE_OPTIONS || '',
     env: { root, data: activeDataResolved || data },
     dataDirCandidates: findDataDirCandidates(data, { counts: true }),
     modelCacheDir, modelPresent,
     daemon,
+    native,
+    embedderProbe: probe ? probeEmbedder({ provider: native.provider, modelPresent, data }) : null,
+    crashes: gatherCrashes(data),
     hooksEvents,
   };
 }
@@ -347,7 +561,7 @@ function formatReport(results) {
 if (require.main === module) {
   (async () => {
     const asJson = process.argv.includes('--json');
-    const results = runChecks(await gatherContext());
+    const results = runChecks(await gatherContext({ probe: !process.argv.includes('--no-probe') }));
     if (asJson) {
       process.stdout.write(JSON.stringify({ results, summary: summarize(results) }, null, 2));
     } else {
@@ -359,7 +573,7 @@ if (require.main === module) {
 
 module.exports = {
   runChecks, summarize, gatherContext, formatReport,
-  checkNode, checkEnv, checkDataDirs, checkModel, checkDaemon, checkHooksEvents,
-  findDataDirCandidates,
+  checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkCrashes, checkHooksEvents,
+  findDataDirCandidates, probeEmbedder, gatherNative, gatherCrashes, MIN_MSVCP,
   STANDARD_EVENTS, RUNTIME_DEPENDENT_EVENTS, MIN_NODE,
 };
