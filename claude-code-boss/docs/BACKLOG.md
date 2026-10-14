@@ -137,6 +137,32 @@ Achados fora do escopo (não implementados, por regra):
 - **Trade-off do 1M:** sem janela fixa o engine só compacta em janela−33k (~967k). Em sessões interativas sempre quentes o
   gate/turn-end não age (esperam cache frio); só o engine compacta. Decisão do Allan (ver TTL dinâmico abaixo).
 
+### TTL 1h→5m acima do % + compactação mecânica no próximo cache frio (2ª rodada, 2026-10-14, nada implementado)
+
+Pedido do Allan via orquestrador. Medido em perfil isolado (`docs/research/ttl-switch/exp.js`, diretório temporário,
+`--setting-sources local`, sem o env de TTL) e simulado sobre 14 sessões reais (`sim.js` + `agg.js`, cenário novo
+`engine+mech`: no cache frio acima do %, compactação local sem API, histórico cai para 15% como o `buildBrief` medido).
+
+- **Troca no meio da sessão: funciona.** Sonnet, mesmo processo, `promptCacheTtl` 1h,1h,5m,5m: gravou
+  `ephemeral_1h` 18 475 e 20 015, depois `ephemeral_5m` 8065 e 9605. Haiku 1h,1h,5m,5m,1h: idem, volta para 1h no 5º.
+- **O cache já gravado em 1h continua valendo depois da troca:** no 1º turno em 5m houve `cache_read` 13 490 (o prefixo
+  gravado em 1h). Ressalva: o histórico de mensagens foi regravado em todos os turnos, inclusive sem troca, e o Haiku não
+  leu nada em turno nenhum — leitura instável no gateway/modo `-p`, não ligada à troca. O efeito exato na leitura do
+  histórico precisa ser medido numa sessão interativa real antes de construir.
+- **Simulação (US$, estimativa, 14 sessões):** hoje (1h + gate com resumo) 442 em 200k / 1041 em 1M; troca + resumo
+  433 (−2%) / 850 (−18%); troca + mecânica 390 (−12%) / 838 (−20%). O ganho vem de o cache esfriar em 5 min e o gate agir
+  cedo; a mecânica tira o custo do resumo (~US$ 0,5–0,7 por compactação).
+- **Fidelidade:** o resumo mecânico guardou 27% e 64% nos 2 casos medidos, contra 46% e 79% do resumo do modelo.
+- **Como o boss faria:** o hook de compactação já mede a ocupação; ao cruzar o % configurado grava
+  `promptCacheTtl: "5m"`, no próximo cache frio compacta (mecânica) e volta para `"1h"`. Pré-requisito: o cost-tuning parar
+  de gravar o env `CLAUDE_CODE_PROMPT_CACHE_TTL`, que ganha da setting. Latência: a troca vale na requisição seguinte
+  (watcher de settings, ~2,5 s no teste). Subagentes têm setting própria (`subagentPromptCacheTtl`).
+- **Bloqueio principal:** a setting vale para todas as sessões que leem o mesmo arquivo. Com várias sessões abertas (o
+  normal do Allan), uma sessão grande trocaria as pequenas para 5m. Usar o `settings.local.json` do projeto reduz para as
+  sessões do mesmo projeto, mas não isola por sessão; não há setting por sessão.
+- **Recomendação:** viável e vale em 1M (~−20%), mas construir só como opção desligada por padrão, no escopo do projeto,
+  depois de medir a leitura do histórico numa sessão interativa real. Decisão do Allan.
+
 ### TTL do cache: 1h até o limite e 5 min depois (investigação, nada implementado)
 
 Dados e scripts em `docs/research/ttl-switch/` (local, gitignorado): `exp.js` (teste real), `sim.js` + `agg.js` (14 sessões
