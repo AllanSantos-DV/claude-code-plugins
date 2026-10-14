@@ -34,6 +34,7 @@ const { readStdin, emitEmpty, emitJson, parsePayload } = require('./lib/hook-io.
 const { dataDir } = require('./lib/data-dir.js');
 const brainConfig = require('./lib/brain-config.js');
 const mcpAutoUpdate = require('./lib/mcp-memory-auto-update.js');
+const crashEvidence = require('./lib/crash-evidence.js');
 
 function pluginRoot() {
   const env = process.env.CLAUDE_PLUGIN_ROOT;
@@ -74,6 +75,18 @@ function runSetupInBackground(root, dataDir) {
  * @param {object} event
  * @returns {Promise<string|null>}
  */
+/**
+ * Visible notice for a daemon that died without shutting down (the supervisor recorded it
+ * before respawning). The Windows fault lookup is still running at this point, so the
+ * notice points at the doctor, which reads the enriched record.
+ * @param {object} crash  record returned by ensureDaemon (with logFile)
+ * @returns {string}
+ */
+function crashAdvisory(crash) {
+  return `[BRAIN-CRASH] The Brain daemon crashed and was restarted: ${crashEvidence.describe(crash)}. ` +
+    `Evidence saved in ${crash.logFile}. Tell the user, and suggest running \`npm run doctor\` in the claude-code-boss plugin folder to see the cause and the fix.`;
+}
+
 async function run(event, deps = {}) {
   try {
     const root = deps.root || pluginRoot();
@@ -95,12 +108,13 @@ async function run(event, deps = {}) {
     }
 
     const result = await ensureDaemon({ pluginRoot: root, dataDir: data });
+    const crashNote = result.crash ? crashAdvisory(result.crash) + '\n' : '';
 
     if (result.status === 'error') {
       const setupNote = setupStarted
         ? ' [setup em background — tente novamente se o daemon não subir]'
         : '';
-      return `[BRAIN] daemon único não pôde ser garantido (${result.error})${setupNote}. ` +
+      return crashNote + `[BRAIN] daemon único não pôde ser garantido (${result.error})${setupNote}. ` +
         'O brain-server tentará reiniciar automaticamente no próximo prompt; se falhar, ' +
         'rode `node scripts/plugin-setup.js && node servers/brain-server/index.js` manualmente.';
     }
@@ -115,9 +129,9 @@ async function run(event, deps = {}) {
       const mm = (cfg && cfg.backend) || {};
       if (mm.type === 'mcp-memory' && !((mm.mcpMemory || {}).serverUrl)) await (deps.ensureMemoryServer || ensureMemoryServer)(deps);
       const updateResult = await runAutoUpdate({ event, config: cfg });
-      if (updateResult && updateResult.status === 'error') return updateResult.advisory;
+      if (updateResult && updateResult.status === 'error') return crashNote + updateResult.advisory;
     }
-    return null;
+    return crashNote ? crashNote.trimEnd() : null;
   } catch (err) {
     console.error(`[brain-daemon-ensure] ${err.message}`);
     return null; // nunca bloqueia o início da sessão
@@ -175,4 +189,5 @@ async function main() {
 
 if (require.main === module) main();
 
-module.exports = { pluginRoot, runSetupInBackground, run, ensureMemoryServer };
+module.exports = {
+  crashAdvisory, pluginRoot, runSetupInBackground, run, ensureMemoryServer };

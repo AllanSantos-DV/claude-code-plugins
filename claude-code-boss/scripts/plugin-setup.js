@@ -36,7 +36,7 @@ function setupRoot() {
   return path.resolve(__dirname, '..');
 }
 const PLUGIN_ROOT = setupRoot();
-const MIN_NODE = [22, 13, 0];
+const { nodeSupport, supportAdvice } = require('./lib/node-support.js');
 
 function run(cmd, opts = {}) {
   try {
@@ -48,20 +48,13 @@ function run(cmd, opts = {}) {
   }
 }
 
-function meetsMinNode() {
-  const [maj, min] = process.versions.node.split('.').map((n) => parseInt(n, 10));
-  if (maj !== MIN_NODE[0]) return maj > MIN_NODE[0];
-  return min >= MIN_NODE[1];
-}
-
-function warnNodeVersion() {
-  if (meetsMinNode()) return;
-  process.stderr.write(
-    `[plugin-setup] WARNING: Node ${process.versions.node} detected. This plugin ` +
-    `recommends Node >= ${MIN_NODE.join('.')} for the built-in node:sqlite backend. ` +
-    `On older Node the Brain KB falls back to JSON (slower, no metrics). ` +
-    `Upgrade Node to enable SQLite.\n`
-  );
+// Warn, never fail: the install itself still works, and the doctor + SessionStart advisory
+// keep repeating the same advice until the Node is replaced.
+function warnNodeVersion(version = process.version, write = (s) => process.stderr.write(s)) {
+  const s = nodeSupport(version);
+  if (s.ok) return false;
+  write(`[plugin-setup] WARNING: ${supportAdvice(s)}\n`);
+  return true;
 }
 
 /**
@@ -160,4 +153,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { setupRoot };
+module.exports = { setupRoot, warnNodeVersion };
