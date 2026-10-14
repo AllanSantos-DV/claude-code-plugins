@@ -1,5 +1,22 @@
 # Changelog
 
+## [3.8.0] - 2026-10-14
+
+### Fixed
+- **Crash 0xC0000409 do Brain daemon: o Node 25 é a causa.** Com várias chamadas HTTPS em paralelo, o Node 25 abortava o daemon. Agora a faixa
+  testada é declarada (22.13 – 24.x, `lib/node-support.js`, `engines` `<25`). O doctor (`node`), o aviso do SessionStart e o `plugin-setup`
+  avisam quando a versão está fora da faixa e apontam o Node 24 LTS.
+- **A morte do daemon deixa evidência.** Antes, o daemon detached morria sem registro. Agora o supervisor detecta a morte não graciosa e grava o
+  registro do crash (`lib/crash-evidence.js`). O spawn log não é mais truncado, e o daemon sobe com `--report-on-fatalerror`. O
+  `[BRAIN-CRASH]` resume o que houve e diz o que fazer.
+
+### Added
+- **Doctor: runtime e flags do daemon (`daemon-node`).** O `/health` do daemon informa a versão real do Node, o execArgv e o NODE_OPTIONS
+  dele. O doctor aponta Node fora da faixa, flags que o plugin não usa (`--no-maglev`, workaround do Node 25 desnecessário no 24), flags
+  próprias faltando e NODE_OPTIONS herdado.
+- **Doctor: dependências nativas (`native-deps`).** O doctor verifica node:sqlite, Node-API ≥ 6, o binding do onnxruntime e o sharp da
+  arquitetura. Já existentes: `native-runtime` (msvcp140 ≥ 14.40), `embedder-probe` e `crashes`.
+
 ## [3.7.0] - 2026-10-14
 
 ### Added
