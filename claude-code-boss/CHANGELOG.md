@@ -1,5 +1,19 @@
 # Changelog
 
+## [3.6.0] - 2026-10-14
+
+### Added
+- **Falha de hook diz de quem é.** O Claude Code rotula um hook com erro só pelo evento, sem o plugin dono (anthropics/claude-code#86368).
+  (A) os 5 hooks de comando do boss prefixam todo stderr com `[claude-code-boss:<hook>]` (`lib/hook-prefix.js`). (B) `lib/hook-owner.js`,
+  melhor esforço: no prompt seguinte lê do transcript as falhas (`hook_non_blocking_error`) e timeouts (`hook_cancelled`, formato medido no CC 2.1.293)
+  novos da sessão e mostra "Hook X falhou (saída N) → dono: plugin Y" pelo `systemMessage`. Comando de hook = casamento exato contra os
+  `hooks.json` dos plugins instalados e os settings (certo); `mcp_tool` não grava comando → "dono provável"/"candidatos: A, B", nunca certeza inventada.
+  Cada falha é avisada uma vez; máximo de 3 por prompt, o excedente no seguinte.
+
+### Fixed
+- **401 "missing/invalid token" ilegível.** A resposta agora nomeia o daemon que respondeu (pid, raiz do plugin, porta) e diz que outra instalação
+  pode estar ocupando a porta fixa (BRAIN_HTTP_PORT). Causa real vista: um daemon de teste isolado ocupando a 38217 enquanto as sessões usavam o token real.
+
 ## [3.5.0] - 2026-10-13
 
 ### Added

@@ -141,6 +141,7 @@ async function main() {
 }
 
 if (require.main === module) {
+  require('./lib/hook-prefix.js').install('session-start-dispatcher');
   main().catch((err) => {
     console.error(`[claude-code-boss:session-start-dispatcher] fatal: ${err && err.message ? err.message : err}`);
     emitEmpty();
