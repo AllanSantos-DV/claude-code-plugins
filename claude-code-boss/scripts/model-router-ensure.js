@@ -1052,6 +1052,7 @@ async function main() {
 }
 
 if (require.main === module) {
+  require('./lib/hook-prefix.js').install('model-router-ensure');
   main().catch(e => {
     log(`ERRO fatal no ensure hook: ${e.message}`);
     process.exit(0); // Não bloqueia

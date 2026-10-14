@@ -76,6 +76,7 @@ async function main() {
 }
 
 if (require.main === module) {
+  require('./lib/hook-prefix.js').install('dashboard-command');
   main().catch((err) => {
     // Visible, and still blocking: falling through would hand /dashboard to the model.
     process.stdout.write(JSON.stringify({ decision: 'block', reason: `[claude-code-boss] Dashboard: falhou — ${err && err.message ? err.message : err}` }));

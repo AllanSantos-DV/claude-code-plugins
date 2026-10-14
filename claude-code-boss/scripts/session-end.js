@@ -17,6 +17,7 @@ function run(event, opts = {}) {
 }
 
 if (require.main === module) {
+  require('./lib/hook-prefix.js').install('session-end');
   readStdin()
     .then((raw) => { run(parsePayload(raw) || {}); })
     .catch((err) => { console.error(`[claude-code-boss:session-end] ${err && err.message ? err.message : err}`); })

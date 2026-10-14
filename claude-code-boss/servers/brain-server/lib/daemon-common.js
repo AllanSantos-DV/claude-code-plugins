@@ -3,6 +3,7 @@
  */
 import path from 'node:path';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 
 const requireCjs = createRequire(import.meta.url);
 const { tokenMatches } = requireCjs('../../../scripts/lib/token-compare.js');
@@ -128,7 +129,15 @@ export function ensureToken(dataDir) {
   return ensureSecret(tokenFile(dataDir), 24);
 }
 
-const LOCAL_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
+const PLUGIN_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+
+/** The port this daemon was asked to bind (BRAIN_HTTP_PORT or the default) — never throws. */
+function resolvePortSafe(env = process.env) {
+  const e = env.BRAIN_HTTP_PORT && Number(env.BRAIN_HTTP_PORT);
+  return e && e > 0 && e <= 65535 ? e : DEFAULT_PORT;
+}
+
+const LOCAL_ORIGIN =/^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
 
 /**
  * Origin guard (DNS-rebinding): a foreign browser Origin is refused; a missing
@@ -162,7 +171,13 @@ export function requestAllowed(req, token, dataDir) {
     // Human-readable hint only — never let canonicalization throw while building an error.
     let where = '<DATA_DIR>';
     try { where = tokenFile(dataDir); } catch { /* dataDir absent → keep placeholder */ }
-    return { ok: false, code: 401, error: `missing/invalid token — read it from ${where} and send Authorization: Bearer <token>` };
+    // Who ANSWERED matters: the usual cause of a 401 for a session whose headersHelper read
+    // the real token is a different install's daemon (other data dir/plugin root, e.g. an
+    // isolated test run) squatting the fixed port. Name this daemon so the hook error shows it.
+    const port = resolvePortSafe();
+    const who = `answered by brain daemon pid ${process.pid} (plugin root ${PLUGIN_ROOT}, port ${port}) — `
+      + 'if this is not the install you expect, another install owns the port: stop that daemon or set BRAIN_HTTP_PORT';
+    return { ok: false, code: 401, error: `missing/invalid token — read it from ${where} and send Authorization: Bearer <token>; ${who}` };
   }
   return { ok: true };
 }
