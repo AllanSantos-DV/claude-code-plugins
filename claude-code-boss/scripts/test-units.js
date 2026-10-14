@@ -25638,6 +25638,40 @@ test('crash-evidence.enrich: matches its own fault event by pid (decimal or hex)
   assert(/Windows query failed: denied/.test(failed.note), 'query failure is recorded, not hidden');
 });
 
+test('crash-evidence.forgetStoppedDaemon: drops only the killed pid\'s lock', () => {
+  const lock = { pid: deadPid(), port: 38217, startedAt: Date.now() - 60000 };
+  const dir = crashDir(lock);
+  assertEq(crashEv.forgetStoppedDaemon(dir, lock.pid + 1), false, 'another pid\'s lock (a newer daemon) stays');
+  assert(fs.existsSync(path.join(dir, 'brain-http.lock.json')));
+  assertEq(crashEv.forgetStoppedDaemon(dir, lock.pid), true);
+  assertEq(crashEv.detectUncleanExit({ dataDir: dir, port: 38217 }), null, 'our own kill is not a crash');
+  assertEq(crashEv.forgetStoppedDaemon(crashDir(null), 1), false, 'no lock: nothing to do');
+});
+
+test('brain daemon supervisor: the hard-kill fallback of a swap leaves no lock to be read as a crash', async () => {
+  const { swapDaemon } = await import(SUPERVISOR_URL);
+  const port = await waitFreePort();
+  const dataDir = crashDir(null);
+  // A daemon that acknowledges /shutdown but never exits: only the SIGTERM fallback stops it.
+  const script = path.join(dataDir, 'stuck-daemon.js');
+  fs.writeFileSync(script, `require('http').createServer((q, s) => { s.writeHead(200, { 'Content-Type': 'application/json' }); s.end(JSON.stringify({ ok: true, pid: process.pid, port: ${port}, pluginRoot: 'x', dataDir: 'y', version: '1.0.0' })); }).listen(${port}, '127.0.0.1');`);
+  const child = require('child_process').spawn(process.execPath, [script], { windowsHide: true, stdio: 'ignore' });
+  let health = null;
+  for (let i = 0; i < 50 && !health; i++) {
+    await new Promise((r) => setTimeout(r, 100));
+    health = await fetch(`http://127.0.0.1:${port}/health`).then((r) => r.json()).catch((err) => { void err; return null; });
+  }
+  assert(health && health.pid === child.pid, 'stuck daemon up');
+  fs.writeFileSync(path.join(dataDir, 'brain-http.lock.json'), JSON.stringify({ pid: child.pid, port, startedAt: Date.now() }));
+  try {
+    await swapDaemon({ port, health, dataDir, env: { HOME: dataDir, USERPROFILE: dataDir }, waitMs: 300 });
+    assert(!crashEv.pidAlive(child.pid), 'the fallback killed it');
+    assertEq(crashEv.detectUncleanExit({ dataDir, port }), null, 'our kill must not be reported as a crash');
+  } finally {
+    try { child.kill(); } catch (err) { void err; }
+  }
+});
+
 test('doctor.checkNativeRuntime: old msvcp140 with the local embedder → critical fail with the redist URL', () => {
   const ok = doctor.checkNativeRuntime({ native: { platform: 'win32', provider: 'transformers', systemDlls: { 'msvcp140.dll': '14.50.35719.0', 'onnxruntime.dll': '1.17.0.0' }, bundledOrt: '1.30.0.909' } });
   assertEq(ok.status, 'ok', 'a System32 onnxruntime.dll is not used by the addon (measured)');

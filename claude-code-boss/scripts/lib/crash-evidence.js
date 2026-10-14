@@ -76,6 +76,19 @@ function detectUncleanExit({ dataDir, port, now = Date.now(), bootTimeMs, alive 
 }
 
 /**
+ * A daemon WE killed (hard-kill fallback, installer) leaves its lock behind exactly like
+ * a crash: drop that lock so detectUncleanExit does not report our own kill. Only the
+ * lock of the killed pid — a newer daemon's lock is never touched.
+ * @returns {boolean} whether a lock was removed
+ */
+function forgetStoppedDaemon(dataDir, pid) {
+  const lock = readJson(lockPath(dataDir));
+  if (!lock || lock.pid !== pid) return false;
+  fs.rmSync(lockPath(dataDir), { force: true });
+  return true;
+}
+
+/**
  * FileVersion of a PE file (VS_FIXEDFILEINFO, signature 0xFEEF04BD), or null.
  * Read in-process so the doctor and the record need no PowerShell for it.
  */
@@ -327,6 +340,6 @@ if (require.main === module && process.argv[2] === 'enrich') {
 }
 
 module.exports = {
-  LOG_NAME, MAX_RECORDS, crashLogFile, reportDir, reportFlags, pidAlive, detectUncleanExit, peFileVersion, compareVersions,
+  LOG_NAME, MAX_RECORDS, crashLogFile, reportDir, reportFlags, pidAlive, detectUncleanExit, forgetStoppedDaemon, peFileVersion, compareVersions,
   systemDlls, embedderProvider, snapshot, readRecords, recordCrash, queryWindows, enrich, startEnrich, describe, adviceFor, samePid,
 };
