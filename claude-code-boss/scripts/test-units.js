@@ -25837,6 +25837,8 @@ test('compaction-core.isMechanicalCut + chooseCompaction: the brief only with a 
   assert(/await leaveAbove\(\$, ctx\);\s*emit\(\$, ctx, 'run', \{/.test(hook), 'the folder TTL is released BEFORE the brief is handed back');
   assert(/const r = await next\(e\);[^\n]*\n\s*await leaveAbove\(\$, ctx\);/.test(hook) && /await leaveAbove\(\$, ctx\);\s*\$\.ui\.toast\(`compaction: every message kept/.test(hook), 'pruning and the engine summary release it too (any compaction leaves the session below)');
   assert(/const o = reply && reply\.recorded > 0 \? reply\.observed : null;/.test(hook), '"above" comes from the last REAL call (a held prompt\'s turn has none and usage() is stale)');
+  assert(/ctx\.awaitCallAfterCut = true;/.test(hook) && /if \(reply && reply\.recorded > 0\) ctx\.awaitCallAfterCut = false;/.test(hook), 'after a cut, readings are stale until a real call is observed');
+  assert(/if \(!d && ctx\.awaitCallAfterCut\) d = \{ action: 'none', reason: 'just-compacted' \};/.test(hook) && /if \(ctx\.awaitCallAfterCut\) return; \/\/ just compacted/.test(hook), 'neither the gate nor the turn-end rule compacts again from a pre-cut reading (E2E: a second, needless summary)');
   assert(/if \(seen > 0\) ctx\.sessionTtlMs = seen;/.test(hook), 'the TTL in use is the latest call\'s (a 1h→5m switch is seen)');
 });
 
