@@ -1,6 +1,6 @@
 # claude-code-boss
 
-Plugin para Claude Code Desktop — **v3.5.0**
+Plugin para Claude Code Desktop — **v3.6.0**
 
 **Menos repetição. Mais memória.** Com o claude-code-boss, o seu Claude Code lembra o
 que deu certo e errado em cada projeto, resume a saída barulhenta de comandos que se
@@ -602,6 +602,17 @@ vir de variáveis de ambiente; a precedência é
 Ligada por padrão: no primeiro SessionStart o plugin liga o auto-update do marketplace (se você nunca escolheu) e avisa. Depois, tudo é visível:
 uma mensagem quando há versão nova (uma vez por versão, consulta ao GitHub no máximo a cada 6 h) e outra quando o plugin foi atualizado
 (`X → Y`). Para desligar a atualização automática e a consulta: `CLAUDE_CODE_BOSS_AUTO_UPDATE=0`.
+
+## Quando um hook falha: de quem é?
+
+O Claude Code rotula um hook com falha só pelo evento ("UserPromptSubmit hook error"), nunca pelo plugin dono
+([anthropics/claude-code#86368](https://github.com/anthropics/claude-code/issues/86368)). Duas camadas aqui:
+
+- **Hooks de comando do boss** prefixam toda linha de stderr com `[claude-code-boss:<hook>]` (`lib/hook-prefix.js`).
+- **Aviso no prompt seguinte** (`lib/hook-owner.js`, melhor esforço): lê do transcript as falhas e timeouts novos da sessão e mostra
+  "Hook X falhou (saída N) → dono: plugin Y". Hook de comando = casamento exato do comando com os `hooks.json` dos plugins
+  instalados e os settings (dono certo); hook `mcp_tool` não registra comando, então a resposta é "dono provável"/"candidatos: A, B" —
+  nunca certeza inventada. **Limite conhecido:** o stderr de um hook `mcp_tool` do boss não passa pelo prefixo (não há processo nosso).
 
 ## Versionamento
 
