@@ -377,6 +377,12 @@ async function swapDaemon({ port, health, dataDir, env = process.env, waitMs = 5
       try { process.kill(current.health.pid, 'SIGTERM'); } catch (e) { void e; }
     }
     await waitGone(port, 3000);
+    // On Windows SIGTERM is TerminateProcess: the lock survives and would read as a crash.
+    try {
+      if (dataDir) crashEvidence.forgetStoppedDaemon(canonicalDataDir(dataDir), health.pid);
+    } catch (err) {
+      console.error(`[brain-supervisor] could not drop the killed daemon's lock: ${err.message}`);
+    }
   }
 }
 
@@ -563,4 +569,4 @@ export async function ensureDaemon({ pluginRoot, dataDir, env = process.env } = 
 }
 
 // Internal helpers exported for unit tests (the pure, side-effect-free ones).
-export { newestInstalledRoot, samePluginData, sameIdentity, lockMatchesHealth, acquireSpawnLock, releaseSpawnLock, spawnLockDir, spawnLogFile, readSpawnLogTail, SPAWN_LOCK_STALE_MS, WAIT_CURRENT_MS };
+export { swapDaemon, newestInstalledRoot, samePluginData, sameIdentity, lockMatchesHealth, acquireSpawnLock, releaseSpawnLock, spawnLockDir, spawnLogFile, readSpawnLogTail, SPAWN_LOCK_STALE_MS, WAIT_CURRENT_MS };
