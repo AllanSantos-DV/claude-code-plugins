@@ -23,7 +23,7 @@
     },
     "ingestion": {
       "enabled": false,
-      "_comment_ingestion": "Quando true E backend.type=mcp-memory, o hook Stop envia a conversa do turno ao memory server (add_document, type=conversation) para curadoria/dreaming server-side. Ative por-usuário no dashboard (grava em DATA_DIR/brain/user-config.json, nunca aqui). Default false: enviar o chat é opt-in explícito (privacidade)."
+      "_comment_ingestion": "Quando true E backend.type=mcp-memory, o hook Stop envia ao memory server (ingest_conversation) só o trecho novo do transcript da sessão; o servidor deduplica, coloca os pares em staging e cura com o LLM dele. Falha faz backoff e aparece como aviso no Stop. Ative por-usuário no dashboard (grava em DATA_DIR/brain/user-config.json, nunca aqui). Default false: enviar o chat é opt-in explícito (privacidade)."
     }
   },
   "embedder": {
