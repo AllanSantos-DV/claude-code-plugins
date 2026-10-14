@@ -30,11 +30,9 @@ export const DEFAULTS = Object.freeze({
   thresholdPercent: 30,        // % of the engine's window; past it, compact once the cache is cold
   minThresholdPercent: 10,     // the slider's range (and the clamp on hand-edited configs)
   maxThresholdPercent: 80,
-  // Never below this, whatever the percent: a native compaction leaves ~48k (measured on 34 real
-  // ones, 2026-10-12), so with the 153k window (costTuning) 30% = 46k would compact a context the
-  // size of a fresh compaction's on every cold cache — a cold summary + re-write for nothing.
-  // 90k is what 30% of the previous 300k window gave (analysed neutral on a cold cache, BACKLOG).
-  minThresholdTokens: 90000,
+  // No token floor: the threshold is ONLY a percent of the model's window (owner, 14/10: the user's
+  // setting, 200k → 30% of 200k, 1M → 30% of 1M). A compaction leaves ~10–20k (measured on 15 real
+  // ones, 14/10), far below any percent in the slider's range, and minIntervalMs stops a loop.
   minIntervalMs: 10 * 60000,   // never two compactions closer than this
   preserveRecentMessages: 6,   // newest messages never touched (the first is always kept)
   truncateHeadChars: 300,      // what survives of a pruned result, before the note
@@ -218,23 +216,20 @@ export function decideTiming(s, options = {}) {
 
 /**
  * The END of a turn no person's prompt went through the gate for (a peer message, a task
- * notification, a queued command — autonomous sessions): past the threshold, compact now,
- * warm cache or not. Nothing is held or re-sent (the engine's prompt.submit cannot carry a
- * sender), and the cooldown plus the threshold floor (> what a compaction leaves) keep it
- * from looping. A person's turn is the gate's: it waits for a cold cache by design.
- * @param {{tokens?:number, now:number, lastCompactAt?:number, busy:boolean, gated:boolean}} s
+ * notification, a queued command — autonomous sessions). Same rule as the gate — NEVER compact
+ * a warm cache (owner, 08/10; measured 14/10: warm compactions cost a summary plus a ~32k
+ * cache re-write each, 15 of them in one session): past the threshold it compacts only when the
+ * cache is already cold, otherwise it answers `wait` with the time left so the caller can
+ * re-check then. Nothing is held or re-sent (the engine's prompt.submit cannot carry a sender).
+ * A person's turn is the gate's.
+ * @param {{tokens?:number, now:number, lastAnswerAt?:number, lastCompactAt?:number, busy:boolean, gated:boolean, ttlMs?:number}} s
  * @param {Partial<typeof DEFAULTS>} [options]
- * @returns {{action:'none'|'compact', reason:string}}
+ * @returns {{action:'none'|'compact', reason:string} | {action:'wait', reason:'cache-warm', dueInMs:number}}
  */
 export function decideTurnEnd(s, options = {}) {
-  const o = { ...DEFAULTS, ...options };
   if (s.gated) return { action: 'none', reason: 'prompt-gated' };
-  if (s.busy) return { action: 'none', reason: 'busy' };
-  if (s.tokens == null) return { action: 'none', reason: 'no-reading' };
-  if (!(Number(o.thresholdTokens) > 0)) return { action: 'none', reason: 'no-window' };
-  if (s.tokens < o.thresholdTokens) return { action: 'none', reason: 'below-threshold' };
-  if (s.lastCompactAt != null && s.now - s.lastCompactAt < o.minIntervalMs) return { action: 'none', reason: 'cooldown' };
-  return { action: 'compact', reason: 'turn-end-over-threshold' };
+  const t = decideTiming(s, options);
+  return t.action === 'compact' ? { action: 'compact', reason: 'turn-end-cache-cold' } : t;
 }
 
 /**
@@ -272,7 +267,7 @@ export function chooseCompaction(s, options = {}) {
  * The threshold in tokens for the window the engine applies NOW. `window` is the
  * compaction window (`rawMaxTokens` of usage({breakdown}) — the model's limit or a smaller
  * one set by CLAUDE_CODE_AUTO_COMPACT_WINDOW/settings), falling back to the model window.
- * Never below `minThresholdTokens` (see DEFAULTS).
+ * Pure percent of the window: no token floor (see DEFAULTS).
  * `aboveEngine`: the threshold sits at or past the engine's own auto-compact point — the
  * engine will compact first and the gate will rarely act.
  * @param {{window?: number, engineAutoCompactAt?: number}} w
@@ -284,7 +279,7 @@ export function thresholdFor(w, options = {}) {
   const pct = clampPercent(o.thresholdPercent, o);
   const window = Number(w && w.window);
   if (!(window > 0)) return { thresholdTokens: null, percent: pct, aboveEngine: false };
-  const thresholdTokens = Math.max(Math.round(window * pct / 100), Number(o.minThresholdTokens) || 0);
+  const thresholdTokens = Math.round(window * pct / 100);
   const engine = Number(w && w.engineAutoCompactAt);
   return { thresholdTokens, percent: pct, aboveEngine: engine > 0 && thresholdTokens >= engine };
 }

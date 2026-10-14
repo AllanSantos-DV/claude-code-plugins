@@ -200,7 +200,8 @@ function checkDaemon(ctx) {
   return {
     id: 'daemon', label: 'Brain HTTP daemon',
     status: 'warn', detail: why,
-    fix: !d.healthy ? 'Remove the stale brain-http.lock.json or restart the daemon.' : 'Ensure brain-http.token is readable (chmod 600) or set BRAIN_HTTP_TOKEN.',
+    fix: !d.healthy ? 'Run `node scripts/doctor.js --fix` (removes the stale brain-http.lock.json; the next session starts a fresh daemon), or restart Claude Code.' : 'Ensure brain-http.token is readable (chmod 600) or set BRAIN_HTTP_TOKEN.',
+    ...(!d.healthy && d.lockPath ? { autofix: 'stale-daemon-lock' } : {}),
     critical: false,
   };
 }
@@ -217,8 +218,9 @@ function checkHooksEvents(ctx) {
     return {
       id: 'hooks-events', label: 'Hook events',
       status: 'warn', detail: `evento(s) fora da lista conhecida: ${unknown.join(', ')}`,
-      fix: 'Pode ser um typo OU um evento mais novo que esta versão do plugin — '
-        + 'confira na doc oficial (code.claude.com/docs/en/hooks) antes de mexer no hooks.json.',
+      fix: 'What to do: compare each name with the official list (code.claude.com/docs/en/hooks). '
+        + 'If it is a typo, fix the name in hooks/hooks.json; if it is a newer event, update the plugin (`claude plugin update claude-code-boss`) '
+        + 'and do not touch hooks.json. Never delete the hook just to silence this.',
       critical: false,
     };
   }
@@ -227,11 +229,26 @@ function checkHooksEvents(ctx) {
       id: 'hooks-events', label: 'Hook events',
       status: 'warn',
       detail: `runtime-dependent event(s): ${runtimeDep.join(', ')} — honored by VS Code Copilot / newer Claude Code, no-op elsewhere`,
-      fix: 'If those features seem inactive, your runtime may not fire these events — safe to ignore otherwise.',
+      fix: 'What to do: nothing, if the features that depend on them work. If they seem inactive, your runtime does not fire these events: '
+        + 'update Claude Code (`claude update`) or use a runtime that does (VS Code Copilot).',
       critical: false,
     };
   }
   return { id: 'hooks-events', label: 'Hook events', status: 'ok', detail: `${events.length} event(s), all standard`, fix: '', critical: false };
+}
+
+/** Settings env the plugin manages (cache TTL, Tool Search, opt-in window): drift = what the next SessionStart would change. */
+function checkCostTuning(ctx) {
+  const base = { id: 'cost-tuning', label: 'Cost settings (settings.json env)', critical: false };
+  const c = ctx.costTuning;
+  if (!c) return { ...base, status: 'ok', detail: 'not checked here (settings.json unreadable or not probed)', fix: '' };
+  if (!c.notes.length) return { ...base, status: 'ok', detail: 'settings.json env already matches the plugin configuration', fix: '' };
+  return {
+    ...base, status: 'warn',
+    detail: `settings.json env differs from the plugin configuration: ${c.notes.join('; ')}`,
+    fix: 'Run `node scripts/doctor.js --fix` to apply it now (the plugin also applies it at the next session start; a value you changed yourself is never overwritten). Restart Claude Code afterwards: env is read at launch.',
+    autofix: 'cost-tuning',
+  };
 }
 
 // onnxruntime >= 1.20 is built with the VS 17.10 STL: against an older msvcp140.dll its
@@ -375,7 +392,7 @@ function gatherCrashes(data, now = Date.now()) {
   return { file: ce.crashLogFile(data), records };
 }
 
-const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkHooksEvents];
+const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkCostTuning, checkHooksEvents];
 
 /** Run every pure check over a ctx snapshot. */
 function runChecks(ctx) {
@@ -506,6 +523,7 @@ async function gatherContext({ probe = false } = {}) {
     const lockP = path.join(data, 'brain-http.lock.json');
     if (fs.existsSync(lockP)) {
       daemon.lockPresent = true;
+      daemon.lockPath = lockP;
       const lock = JSON.parse(fs.readFileSync(lockP, 'utf8'));
       daemon.port = Number.isInteger(lock.port) ? lock.port : null;
       daemon.tokenReadable = !!(process.env.BRAIN_HTTP_TOKEN
@@ -523,6 +541,12 @@ async function gatherContext({ probe = false } = {}) {
     const hp = path.join(pluginRoot(), 'hooks', 'hooks.json');
     hooksEvents = Object.keys(JSON.parse(fs.readFileSync(hp, 'utf8')).hooks || {});
   } catch (e) { void e; }
+
+  let costTuning = null;
+  try {
+    const now = require('./model-router-ensure.js').planCostTuningNow();
+    if (now) costTuning = { notes: now.plan.changed ? now.plan.notes : [] };
+  } catch (e) { console.error(`[doctor] cost tuning: ${e.message}`); }
 
   const nodeChoice = nodeSupport.pickSupportedNode();
   let embedderCfg = null;
@@ -546,7 +570,37 @@ async function gatherContext({ probe = false } = {}) {
     embedderGuard: guardApplies ? guardRec : null,
     crashes: gatherCrashes(data),
     hooksEvents,
+    costTuning,
   };
+}
+
+// ── Fixes (--fix) ─────────────────────────────────────────────────────────────
+
+// Only reversible, plugin-owned changes: never the user's data, never a user-set value.
+const FIXERS = {
+  'cost-tuning': () => {
+    const ok = require('./model-router-ensure.js').applyCostTuning();
+    return ok ? 'settings.json env updated (restart Claude Code to load it)' : 'nothing written (settings.json unreadable — see the log above)';
+  },
+  'stale-daemon-lock': (ctx) => {
+    const p = ctx.daemon && ctx.daemon.lockPath;
+    if (!p) throw new Error('lock path unknown');
+    fs.unlinkSync(p);
+    return `removed ${p}`;
+  },
+};
+
+/** Run the autofix of every non-ok result. Never throws: a failing fixer is reported, not hidden. */
+function applyFixes(results, ctx, fixers = FIXERS) {
+  const out = [];
+  for (const r of results) {
+    if (r.status === 'ok' || !r.autofix) continue;
+    const fn = fixers[r.autofix];
+    if (!fn) { out.push({ id: r.id, ok: false, message: `no fixer named ${r.autofix}` }); continue; }
+    try { out.push({ id: r.id, ok: true, message: fn(ctx) }); }
+    catch (err) { out.push({ id: r.id, ok: false, message: err.message }); }
+  }
+  return out;
 }
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
@@ -568,9 +622,17 @@ function formatReport(results) {
 if (require.main === module) {
   (async () => {
     const asJson = process.argv.includes('--json');
-    const results = runChecks(await gatherContext({ probe: !process.argv.includes('--no-probe') }));
+    const ctx = await gatherContext({ probe: !process.argv.includes('--no-probe') });
+    let results = runChecks(ctx);
+    let fixes = null;
+    if (process.argv.includes('--fix')) {
+      fixes = applyFixes(results, ctx);
+      if (!asJson) for (const f of fixes) process.stdout.write(`  [fix] ${f.id}: ${f.ok ? '' : 'FAILED — '}${f.message}\n`);
+      if (!asJson && !fixes.length) process.stdout.write('  [fix] nothing here has an automatic fix; follow the → line of each warning\n');
+      results = runChecks(await gatherContext({ probe: false }));
+    }
     if (asJson) {
-      process.stdout.write(JSON.stringify({ results, summary: summarize(results) }, null, 2));
+      process.stdout.write(JSON.stringify({ results, summary: summarize(results), fixes }, null, 2));
     } else {
       process.stdout.write(formatReport(results) + '\n');
     }
@@ -579,7 +641,7 @@ if (require.main === module) {
 }
 
 module.exports = {
-  runChecks, summarize, gatherContext, formatReport,
+  runChecks, summarize, applyFixes, FIXERS, checkCostTuning, gatherContext, formatReport,
   checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkHooksEvents,
   findDataDirCandidates, probeEmbedder, gatherNative, gatherCrashes, MIN_MSVCP,
   STANDARD_EVENTS, RUNTIME_DEPENDENT_EVENTS, MIN_NODE,
