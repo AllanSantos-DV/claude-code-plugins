@@ -23040,7 +23040,7 @@ test('hook-owner: failure/timeout records from the transcript name the owning pl
     const cfg = path.join(base, 'claude'); const inst = path.join(base, 'plug-boss'); const inst2 = path.join(base, 'plug-other');
     const w = (f, o) => { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify(o)); };
     const cmd = 'node ${CLAUDE_PLUGIN_ROOT}/hooks/f.js';
-    w(path.join(inst, 'hooks', 'hooks.json'), { hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: cmd }, { type: 'mcp_tool', server: 'plugin:boss:brain', tool: 'brain_retrieve_context' }] }] } });
+    w(path.join(inst, 'hooks', 'hooks.json'), { hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: cmd }, { type: 'command', command: 'node', args: ['${CLAUDE_PLUGIN_ROOT}/scripts/argform.js'] }, { type: 'mcp_tool', server: 'plugin:boss:brain', tool: 'brain_retrieve_context' }] }] } });
     w(path.join(inst2, 'hooks', 'hooks.json'), { hooks: { UserPromptSubmit: [{ hooks: [{ type: 'mcp_tool', server: 'other', tool: 'other_tool' }] }], SessionStart: [{ matcher: 'startup', hooks: [{ type: 'command', command: 'node s.js' }] }] } });
     w(path.join(cfg, 'plugins', 'installed_plugins.json'), { version: 2, plugins: { 'boss@m': [{ installPath: inst }], 'other@m': [{ installPath: inst2 }] } });
     w(path.join(cfg, 'settings.json'), { hooks: { Stop: [{ hooks: [{ type: 'command', command: 'node guard.js' }] }] } });
@@ -23065,6 +23065,11 @@ test('hook-owner: failure/timeout records from the transcript name the owning pl
     const again = ho.takeFailureNotices({ event, stateDir, env });
     assert(again && /SessionStart:startup falhou \(saída 2\) → dono não identificado/.test(again) && !/Stop/.test(again), `only the remainder is new: ${again}`);
     assertEq(ho.takeFailureNotices({ event, stateDir, env }), null, 'told once');
+    // command + args hooks (the boss's own form) are recorded joined: still an exact owner
+    const reg = ho.loadRegistry({ cwd: base, env });
+    const argOwner = ho.findOwners({ hookEvent: 'UserPromptSubmit', hookName: 'UserPromptSubmit', command: 'node ${CLAUDE_PLUGIN_ROOT}/scripts/argform.js' }, reg);
+    assert(argOwner.certain && argOwner.owners[0] === 'plugin boss', JSON.stringify(argOwner));
+    assert(!ho.findOwners({ hookEvent: 'UserPromptSubmit', hookName: 'UserPromptSubmit', command: 'node ${CLAUDE_PLUGIN_ROOT}/scripts/other.js' }, reg).owners.length, 'a different script must not match');
     assertEq(ho.takeFailureNotices({ event: { ...event, session_id: 's2', transcript_path: path.join(base, 'missing.jsonl') }, stateDir, env }), null, 'no transcript → silent');
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
