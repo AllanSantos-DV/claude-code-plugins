@@ -25762,6 +25762,70 @@ test('node-support: 22.13–24.x supported; 25 is "new" with the Node 24 LTS adv
   assertEq(nodeSup.missingOwnFlags(['--report-on-fatalerror']), ['--report-uncaught-exception', '--report-directory']);
 });
 
+test('node-support.pickSupportedNode: a default Node 25 switches to the newest installed 22/24; none found keeps it and says so', () => {
+  const versions = { '/a/node': 'v25.2.1', '/b/node': 'v22.14.0', '/c/node': 'v24.11.0', '/d/node': 'v20.0.0', '/e/node': null };
+  const versionOf = (f) => ({ version: versions[f], error: versions[f] ? null : 'exit 1' });
+  const exists = (f) => f in versions;
+  const cur = { execPath: '/x/node', version: 'v25.1.0' };
+  const pick = nodeSup.pickSupportedNode({ current: cur, candidates: ['/a/node', '/b/node', '/c/node', '/d/node', '/e/node', '/missing/node'], versionOf, exists });
+  assertEq([pick.execPath, pick.version, pick.switched, pick.from], ['/c/node', '24.11.0', true, '25.1.0']);
+  assertEq(pick.tried.length, 5, 'a missing file is not run');
+  const none = nodeSup.pickSupportedNode({ current: cur, candidates: ['/a/node', '/d/node'], versionOf, exists });
+  assert(none.unsupported && !none.switched && none.execPath === '/x/node', JSON.stringify(none));
+  let ran = 0;
+  const keep = nodeSup.pickSupportedNode({ current: { execPath: '/x/node', version: 'v24.0.0' }, candidates: ['/b/node'], versionOf: () => { ran++; return {}; }, exists });
+  assert(!keep.switched && keep.execPath === '/x/node' && ran === 0, 'a supported default is kept without probing anything');
+  // The real probe runs a real binary hidden.
+  assertEq(nodeSup.probeNodeVersion(process.execPath).version, process.version);
+  assert(nodeSup.probeNodeVersion(path.join(os.tmpdir(), 'no-such-node.exe')).error, 'a missing binary is an error, not a version');
+});
+
+test('node-support.nodeCandidates: PATH first, then nvm/Volta/fnm/Program Files (win) and nvm/Volta/fnm/Homebrew (posix)', () => {
+  const dirs = {
+    'C:\\nvm': ['v24.11.0', 'v22.14.0', 'settings.txt'],
+    'C:\\L\\Volta\\tools\\image\\node': ['24.10.0'],
+    'C:\\R\\fnm\\node-versions': ['v22.13.1'],
+  };
+  const win = nodeSup.nodeCandidates({ platform: 'win32', env: { Path: 'C:\\n25;C:\\tools', NVM_HOME: 'C:\\nvm', LOCALAPPDATA: 'C:\\L', APPDATA: 'C:\\R', ProgramFiles: 'C:\\PF' }, listDir: (d) => dirs[d] || [] });
+  assertEq(win, ['C:\\n25\\node.exe', 'C:\\tools\\node.exe', 'C:\\PF\\nodejs\\node.exe', 'C:\\nvm\\v24.11.0\\node.exe', 'C:\\nvm\\v22.14.0\\node.exe',
+    'C:\\L\\Volta\\tools\\image\\node\\24.10.0\\node.exe', 'C:\\R\\fnm\\node-versions\\v22.13.1\\installation\\node.exe']);
+  const posix = nodeSup.nodeCandidates({ platform: 'linux', homedir: '/h', env: { PATH: '/usr/bin:/opt/n25/bin' }, listDir: (d) => (d === '/h/.nvm/versions/node' ? ['v24.1.0'] : []) });
+  assert(posix[0] === '/usr/bin/node' && posix.includes('/h/.nvm/versions/node/v24.1.0/bin/node') && posix.includes('/opt/homebrew/opt/node@24/bin/node'), posix.join(' '));
+  assertEq(posix.filter((f) => f === '/usr/bin/node').length, 1, 'duplicates removed');
+});
+
+test('brain daemon supervisor: with an unsupported default Node the daemon is started on the supported one found (PATH of the child too)', async () => {
+  const { ensureDaemon, withNodeOnPath } = await import(SUPERVISOR_URL);
+  const env = withNodeOnPath({ Path: 'C:\\n25' }, { switched: true, execPath: path.join('C:\\n24', 'node.exe') });
+  assert(env.Path.startsWith(path.dirname(path.join('C:\\n24', 'node.exe')) + path.delimiter), env.Path);
+  assertEq(withNodeOnPath({ PATH: '/x' }, { switched: false, execPath: '/y/node' }).PATH, '/x', 'not switched: untouched');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-nodepick-'));
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-nodepick-home-'));
+  const dataDir = path.join(tmp, 'data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  const p = await waitFreePort();
+  // The "default" is a Node 25 that does not exist on disk: only the real Node (a candidate) can serve.
+  const pickNode = () => nodeSup.pickSupportedNode({ current: { execPath: path.join(tmp, 'node25', 'node.exe'), version: 'v25.2.1' }, candidates: [process.execPath] });
+  const res = await ensureDaemon({ pluginRoot: path.join(tmp, 'install-B'), dataDir, env: { BRAIN_HTTP_PORT: String(p), HOME: tmpHome, USERPROFILE: tmpHome }, pickNode });
+  let health = null;
+  try { health = await (await fetch(`http://127.0.0.1:${p}/health`)).json(); } catch (e) { console.error(`[test] /health: ${e.message}`); }
+  try { if (res.pid) process.kill(res.pid, 'SIGTERM'); } catch (e) { void e; }
+  assertEq(res.status, 'started', res.error || '');
+  assert(res.node && res.node.switched && res.node.execPath === process.execPath, JSON.stringify(res.node));
+  assert(/instead of the default v25\.2\.1/.test(res.note), res.note);
+  assert(health && health.node && health.node.version === process.version, `daemon runs on the picked Node: ${JSON.stringify(health && health.node)}`);
+  fs.rmSync(tmpHome, { recursive: true, force: true });
+});
+
+test('doctor.checkNode: a default Node 25 with a supported Node in use is a warn that names it, not a critical fail', async () => {
+  const alt = { switched: true, execPath: 'C:\\nvm\\v24.11.0\\node.exe', version: '24.11.0', from: '25.2.1' };
+  const w = doctor.checkNode({ nodeVersion: 'v25.2.1', nodeChoice: alt });
+  assert(w.status === 'warn' && !w.critical && w.detail.includes(alt.execPath), w.detail);
+  const f = doctor.checkNode({ nodeVersion: 'v25.2.1', nodeChoice: { switched: false, unsupported: true } });
+  assert(f.status === 'fail' && f.critical && /Node 24 LTS/.test(f.fix), 'none found: warns as before');
+  assertEq(doctor.checkNode({ nodeVersion: 'v24.11.0', nodeChoice: { switched: false } }).status, 'ok');
+});
+
 test('doctor.checkDaemonNode: foreign NODE_OPTIONS flags, --no-maglev in the daemon execArgv, Node 25 daemon, old daemon flags', () => {
   const own = crashEv.reportFlags('/d');
   const clean = doctor.checkDaemonNode({ nodeOptions: '', daemon: { node: { version: 'v24.14.1', execArgv: own, nodeOptions: '' } } });
