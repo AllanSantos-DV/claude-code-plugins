@@ -24958,6 +24958,21 @@ test('compaction-core.decideTiming: waits for the cache to expire, compacts cold
   assertEq(cmpCore.decideTiming({ busy: false, now: 1, tokens: 900000, lastAnswerAt: 0, ttlMs: 1 }, {}), { action: 'none', reason: 'no-window' }, 'no window reading = no threshold = never act on a guess');
 });
 
+test('compaction-core.decideTurnEnd: an autonomous turn (no person prompt gated) past the threshold compacts at its end, whatever the cache; person turns, busy, cooldown, no reading stay out', () => {
+  const T = { thresholdTokens: 90000, minIntervalMs: 600000 };
+  const d = (s) => cmpCore.decideTurnEnd({ busy: false, gated: false, now: 10_000_000, ...s }, T);
+  assertEq(d({ tokens: 100000 }), { action: 'compact', reason: 'turn-end-over-threshold' }, 'warm or cold: the turn ended, the next one is not held');
+  assertEq(d({ tokens: 89999 }), { action: 'none', reason: 'below-threshold' });
+  assertEq(d({ tokens: 100000, gated: true }), { action: 'none', reason: 'prompt-gated' }, 'a person\'s prompt was judged by the gate already');
+  assertEq(d({ tokens: 100000, busy: true }), { action: 'none', reason: 'busy' });
+  assertEq(d({ tokens: 100000, lastCompactAt: 10_000_000 - 60000 }), { action: 'none', reason: 'cooldown' }, 'no cost loop');
+  assertEq(d({ tokens: 100000, lastCompactAt: 10_000_000 - 600000 }).action, 'compact', 'cooldown over');
+  assertEq(d({}), { action: 'none', reason: 'no-reading' });
+  assertEq(cmpCore.decideTurnEnd({ busy: false, gated: false, now: 1, tokens: 900000 }, {}), { action: 'none', reason: 'no-window' });
+  const hook = fs.readFileSync(path.join(ROOT, 'hooks', 'compaction.mjs'), 'utf8');
+  assert(/decideTurnEnd\(/.test(hook) && /ctx\.gated = true/.test(hook), 'the module decides at turn.complete and the prompt gate marks the turn as judged');
+});
+
 test('compaction-core.thresholdFor: a % of the window the engine applies (200K and 1M alike), clamped to the slider range, flagged past the engine point', () => {
   assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }), { thresholdTokens: 300000, percent: 30, aboveEngine: false });
   assertEq(cmpCore.thresholdFor({ window: 300000, engineAutoCompactAt: 267000 }), { thresholdTokens: 90000, percent: 30, aboveEngine: false });

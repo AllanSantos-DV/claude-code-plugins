@@ -15,6 +15,12 @@
   `queued_command` nem chega como prompt.submit (é attachment). Compactar dentro do `prompt.submit` o engine recusa.
   Alternativas a decidir com o Allan: (b) limiar valer com cache quente; (d) compactar ao fim do turno (`turn.complete`) acima do
   limiar em sessão autônoma — sem reenvio, mas paga a regravação com cache quente; (e) baixar `autoCompactWindow` (hoje 153k).
+- **Opção (d) implementada (2026-10-14, escolhida pelo Allan via orquestrador):** ao fim de um turno que NÃO passou pelo gate
+  (`ctx.gated` falso: peer, task-notification, queued_command), `turnEnd` em `hooks/compaction.mjs` lê o uso e, se `decideTurnEnd`
+  (`lib/compaction-core.mjs`) disser que passou do limiar (`thresholdFor`: 30%, piso 90k), roda `compact` sem reenvio de prompt. Cooldown de
+  `minIntervalMs` (10 min) desde a última compactação evita loop de custo; o piso de 90k fica acima do que uma compactação deixa (~48k).
+  Turno de pessoa segue só pelo gate (cache frio). Teste: "compaction-core.decideTurnEnd" (falhava sem a função). Falta: validação do Allan
+  em sessão autônoma real (evento `compaction.gate` com `reason: turn-end-over-threshold`).
 
 ## Crash 0xC0000409 do brain (branch `fix/brain-crash-diagnostics`, pedido do orquestrador, 2026-10-14)
 
