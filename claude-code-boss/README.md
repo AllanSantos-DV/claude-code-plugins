@@ -1,6 +1,6 @@
 # claude-code-boss
 
-Plugin para Claude Code Desktop — **v3.7.0**
+Plugin para Claude Code Desktop — **v3.8.0**
 
 **Menos repetição. Mais memória.** Com o claude-code-boss, o seu Claude Code lembra o
 que deu certo e errado em cada projeto, resume a saída barulhenta de comandos que se
@@ -22,7 +22,7 @@ No Claude Code:
 /plugin install claude-code-boss@allansantos-plugins
 ```
 
-Precisa do **Node.js 22.13+ no PATH do sistema** (detalhes em [Pré-requisitos](#pré-requisitos)).
+Precisa do **Node.js 22.13 – 24.x no PATH do sistema** (recomendado: Node 24 LTS; detalhes em [Pré-requisitos](#pré-requisitos)).
 No primeiro prompt depois de instalar, uma mensagem confirma que o plugin está ativo.
 Nada mais a configurar.
 
@@ -54,7 +54,7 @@ Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizad
 ## Pré-requisitos
 
 - [Claude Code Desktop](https://claude.ai/download)
-- **Node.js 22.13+ no `PATH` do sistema** — requisito #1. O Claude Code dispara os
+- **Node.js 22.13 – 24.x no `PATH` do sistema** (recomendado: Node 24 LTS; o Node 25 derrubava o daemon do Brain com 0xC0000409) — requisito #1. O Claude Code dispara os
   hooks e o servidor MCP com `node` puro resolvido pelo **PATH do sistema**, **não**
   pelo Node embutido no Desktop ([claude-code#66183](https://github.com/anthropics/claude-code/issues/66183),
   [#35175](https://github.com/anthropics/claude-code/issues/35175)). Sem Node no
@@ -588,7 +588,9 @@ vir de variáveis de ambiente; a precedência é
   data-dir** (múltiplos `claude-code-boss*` populados sob
   `~/.claude/plugins/data/` — comum entre install via `--plugin-dir` e via
   marketplace), modelo de embedding presente, daemon HTTP + token legível, e
-  quais eventos de `hooks.json` a versão instalada do Claude Code suporta.
+  quais eventos de `hooks.json` a versão instalada do Claude Code suporta; o Node e as flags
+  com que o daemon realmente roda (`daemon-node`), as dependências nativas (`native-deps`),
+  o runtime MSVC, um probe do embedder e os crashes registrados do daemon.
   Mesmo diagnóstico acessível pelo dashboard (botão) e via advisory de
   SessionStart (só quando algo crítico falha, com cooldown).
 - **`node scripts/brain-consolidate.js [--project <k>] [--apply]`** — funde
