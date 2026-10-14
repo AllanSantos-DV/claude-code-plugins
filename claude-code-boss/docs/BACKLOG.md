@@ -16,6 +16,10 @@
   flags estranhas (`--no-maglev`), flags próprias faltando e NODE_OPTIONS herdado (teste "checkDaemonNode").
 - **Encontrado e corrigido na hora:** as dependências nativas do daemon (node:sqlite, napi ≥ 6, binding do onnxruntime e sharp para a arquitetura)
   não eram checadas. Agora o check `native-deps` faz isso (teste "checkNativeDeps").
+- **Encontrado e corrigido na hora (no install local da 3.8.0):** um daemon morto de propósito pelo próprio plugin era registrado como crash
+  (`[BRAIN-CRASH]` falso). Isso acontecia no fallback SIGTERM do swap (no Windows é TerminateProcess, e o lock sobrevivia) e no kill do
+  install-local. Quem mata agora apaga o lock daquele pid (`forgetStoppedDaemon`). Testes "forgetStoppedDaemon" e "hard-kill fallback of
+  a swap": o segundo falha sem a correção. O registro falso foi removido do `brain-crash.log` desta máquina.
 - **Registrado (medido, não defeito):** o Node 24 recusa `--no-maglev` em NODE_OPTIONS ("not allowed in NODE_OPTIONS"). Essa flag só chega ao
   daemon via execArgv, ou seja, quando o daemon foi iniciado à mão ou por outra ferramenta.
 - **Encontrado e corrigido na hora:** o lint `require-windows-hide` rejeitava `spawnSync` usado como default de parâmetro. Troquei pelo wrapper
