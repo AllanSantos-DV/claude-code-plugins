@@ -15827,6 +15827,8 @@ test('doctor.checkNode: old → fail, current → ok', () => {
   assertEq(doctor.checkNode({ nodeVersion: 'v20.10.0' }).status, 'fail');
   assertEq(doctor.checkNode({ nodeVersion: 'v22.13.0' }).status, 'ok');
   assertEq(doctor.checkNode({ nodeVersion: 'v24.0.0' }).status, 'ok');
+  const n25 = doctor.checkNode({ nodeVersion: 'v25.2.1' });
+  assert(n25.status === 'fail' && n25.critical && /Node 24 LTS/.test(n25.fix) && /0xC0000409/.test(n25.detail), 'Node 25 is outside the tested range: ' + n25.detail);
   assert(doctor.checkNode({ nodeVersion: 'v20.0.0' }).critical, 'node is critical');
 });
 
@@ -15996,11 +15998,11 @@ test('doctor.runChecks + summarize: criticalFail flagged, counts add up', () => 
     hooksEvents: ['Stop'],
   };
   const results = doctor.runChecks(ctx);
-  assertEq(results.length, 6);
+  assertEq(results.length, 11);
   const s = doctor.summarize(results);
   assert(s.criticalFail, 'old node → criticalFail');
   assertEq(s.ok, false);
-  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 6);
+  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 11);
 });
 
 test('doctor.runChecks: all-healthy ctx → ok summary', () => {
@@ -25565,6 +25567,221 @@ test('file-format-guard: hooks.json / daemon tool / config wiring', () => {
   assert(require('./lib/hook-tools.js').HOOKS.hook_file_format_guard, 'registered');
   const c = require('./lib/hooks-config.js').getFileFormatGuard();
   assertEq(c, { enabled: true });
+});
+
+// ─── Brain daemon crash evidence (0xC0000409 on a machine nobody watches) ────
+const crashEv = require('./lib/crash-evidence.js');
+function deadPid() { return require('child_process').spawnSync(process.execPath, ['-e', ''], { windowsHide: true }).pid; }
+function crashDir(lock) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-crash-'));
+  if (lock) fs.writeFileSync(path.join(dir, 'brain-http.lock.json'), JSON.stringify(lock));
+  return dir;
+}
+
+test('crash-evidence.detectUncleanExit: dead pid after boot → lock; alive, pre-boot or other port → null', () => {
+  const now = Date.now();
+  const lock = { pid: deadPid(), port: 38217, startedAt: now - 60000, version: '3.7.0' };
+  const dir = crashDir(lock);
+  assertEq(crashEv.detectUncleanExit({ dataDir: dir, port: 38217, now, bootTimeMs: now - 3600000 }).pid, lock.pid);
+  assertEq(crashEv.detectUncleanExit({ dataDir: dir, port: 38217, now, bootTimeMs: now - 3600000, alive: () => true }), null, 'alive pid is no crash');
+  assertEq(crashEv.detectUncleanExit({ dataDir: dir, port: 38217, now, bootTimeMs: now - 1000 }), null, 'started before boot: went down with the machine');
+  assertEq(crashEv.detectUncleanExit({ dataDir: dir, port: 40000, now, bootTimeMs: now - 3600000 }), null, 'legacy lock of another port (exiled daemon)');
+  assertEq(crashEv.detectUncleanExit({ dataDir: crashDir(null), port: 38217 }), null, 'no lock: graceful shutdown');
+});
+
+test('crash-evidence.peFileVersion: reads VS_FIXEDFILEINFO; compareVersions orders dotted versions', () => {
+  const buf = Buffer.alloc(64);
+  Buffer.from([0xbd, 0x04, 0xef, 0xfe]).copy(buf, 20);
+  buf.writeUInt32LE((14 << 16) | 38, 28);
+  buf.writeUInt32LE(((33135 << 16) | 0) >>> 0, 32);
+  const f = path.join(crashDir(null), 'msvcp140.dll');
+  fs.writeFileSync(f, buf);
+  assertEq(crashEv.peFileVersion(f), '14.38.33135.0');
+  assertEq(crashEv.peFileVersion(path.join(os.tmpdir(), 'ccb-no-such.dll')), null);
+  assertEq(crashEv.compareVersions('14.38.33135.0', '14.40'), -1);
+  assertEq(crashEv.compareVersions('14.50.35719.0', '14.40'), 1);
+  assertEq(crashEv.compareVersions('14.40', '14.40.0.0'), 0);
+});
+
+test('crash-evidence.recordCrash: keeps the stderr tail before the respawn truncates it, caps records, drops the lock', () => {
+  const now = Date.now();
+  const lock = { pid: deadPid(), port: 1, startedAt: now - 120000, version: '3.7.0' };
+  const dir = crashDir(lock);
+  fs.writeFileSync(path.join(dir, 'brain-http.spawn.log'), 'listening\n[embed-worker] loading model\n');
+  const rec = crashEv.recordCrash({ dataDir: dir, lock, pluginRoot: ROOT, now });
+  assertEq(rec.stderrTail, ['listening', '[embed-worker] loading model']);
+  assertEq(rec.aliveAtMostMs, 120000);
+  assertEq(rec.machine.node.version, process.version);
+  assert(!fs.existsSync(path.join(dir, 'brain-http.lock.json')), 'stale lock removed (else re-reported)');
+  for (let i = 0; i < crashEv.MAX_RECORDS + 3; i++) crashEv.recordCrash({ dataDir: dir, lock, pluginRoot: ROOT, now });
+  const all = crashEv.readRecords(dir);
+  assertEq(all.length, crashEv.MAX_RECORDS);
+  assert(crashEv.describe(rec).includes(`pid ${lock.pid} died unexpectedly`), crashEv.describe(rec));
+  assertEq(crashEv.reportFlags(dir)[0], '--report-on-fatalerror');
+});
+
+test('crash-evidence.enrich: matches its own fault event by pid (decimal or hex) and names the fix', () => {
+  const lock = { pid: 4660, port: 1, startedAt: Date.now() - 1000 };
+  const dir = crashDir(lock);
+  const rec = crashEv.recordCrash({ dataDir: dir, lock, pluginRoot: ROOT });
+  const fault = { pid: '0x1234', module: 'onnxruntime.dll', moduleVersion: '1.30.0', exception: 'c0000409' };
+  const w = crashEv.enrich(dir, rec.id, { query: () => ({ events: [{ pid: '9999', module: 'x.dll' }, fault], cpu: { avx: true, avx2: false } }) });
+  assertEq(w.fault.module, 'onnxruntime.dll');
+  const saved = crashEv.readRecords(dir).find((r) => r.id === rec.id);
+  assert(crashEv.describe(saved).includes('0xc0000409 in onnxruntime.dll'), crashEv.describe(saved));
+  assert(crashEv.adviceFor(saved).includes('aka.ms/vc14/vc_redist.x64.exe'), crashEv.adviceFor(saved));
+  assert(crashEv.samePid('4660', 4660) && crashEv.samePid('0x1234', 4660), 'decimal and hex');
+  assert(!crashEv.samePid('1234', 4660), 'a decimal pid is never read as hex');
+  const none = crashEv.enrich(dir, rec.id, { query: () => ({ events: [], cpu: null }) });
+  assert(/exit 134/.test(none.note), 'no event: the note explains a Node abort leaves none');
+  const failed = crashEv.enrich(dir, rec.id, { query: () => { throw new Error('denied'); } });
+  assert(/Windows query failed: denied/.test(failed.note), 'query failure is recorded, not hidden');
+});
+
+test('doctor.checkNativeRuntime: old msvcp140 with the local embedder → critical fail with the redist URL', () => {
+  const ok = doctor.checkNativeRuntime({ native: { platform: 'win32', provider: 'transformers', systemDlls: { 'msvcp140.dll': '14.50.35719.0', 'onnxruntime.dll': '1.17.0.0' }, bundledOrt: '1.30.0.909' } });
+  assertEq(ok.status, 'ok', 'a System32 onnxruntime.dll is not used by the addon (measured)');
+  const old = doctor.checkNativeRuntime({ native: { platform: 'win32', provider: 'transformers', systemDlls: { 'msvcp140.dll': '14.38.33135.0' } } });
+  assertEq(old.status, 'fail');
+  assert(old.critical && old.fix.includes('https://aka.ms/vc14/vc_redist.x64.exe'), old.fix);
+  assertEq(doctor.checkNativeRuntime({ native: { platform: 'win32', provider: 'transformers', systemDlls: {} } }).status, 'fail', 'missing msvcp140');
+  assertEq(doctor.checkNativeRuntime({ native: { platform: 'win32', provider: 'ollama', systemDlls: {} } }).status, 'ok', 'ollama loads no ORT');
+  assertEq(doctor.checkNativeRuntime({ native: { platform: 'linux' } }).status, 'ok');
+});
+
+test('doctor.checkEmbedderProbe + probeEmbedder: 0xC0000409 and 134 exits are named; success and skips are ok', () => {
+  const run = (status, stdout = '') => () => ({ status, stdout, stderr: 'loading model' });
+  const data = crashDir(null);
+  const base = { provider: 'transformers', modelPresent: true, data };
+  const ff = doctor.checkEmbedderProbe({ embedderProbe: doctor.probeEmbedder({ ...base, run: run(0xC0000409) }) });
+  assert(ff.status === 'fail' && ff.critical && /0xC0000409/.test(ff.detail) && /loading model/.test(ff.detail), ff.detail);
+  const oom = doctor.checkEmbedderProbe({ embedderProbe: doctor.probeEmbedder({ ...base, run: run(134) }) });
+  assert(oom.status === 'fail' && /exit 134/.test(oom.detail), oom.detail);
+  const good = doctor.checkEmbedderProbe({ embedderProbe: doctor.probeEmbedder({ ...base, run: run(0, '{"ok":true,"dims":384,"ms":900}\n') }) });
+  assertEq(good.status, 'ok');
+  assertEq(doctor.probeEmbedder({ ...base, provider: 'voyage' }).skipped.includes('voyage'), true);
+  assertEq(doctor.probeEmbedder({ ...base, modelPresent: false }).skipped, 'the embedding model is not downloaded yet');
+  assertEq(doctor.checkEmbedderProbe({}).status, 'ok', 'dashboard path: not run');
+});
+
+test('doctor.checkCrashes: recent records → warn with the advice and the evidence file', () => {
+  assertEq(doctor.checkCrashes({ crashes: { file: 'x', records: [] } }).status, 'ok');
+  const rec = { pid: 7, version: '3.7.0', detectedAt: new Date().toISOString(), windows: { fault: { module: 'MSVCP140.dll', exception: 'c0000409' } } };
+  const w = doctor.checkCrashes({ crashes: { file: '/d/brain-crash.log', records: [rec] } });
+  assert(w.status === 'warn' && w.fix.includes('/d/brain-crash.log') && w.fix.includes('vc_redist'), w.fix);
+  const dir = crashDir(null);
+  fs.writeFileSync(path.join(dir, 'brain-crash.log'), [{ detectedAt: '2020-01-01T00:00:00Z' }, rec].map((r) => JSON.stringify(r)).join('\n'));
+  assertEq(doctor.gatherCrashes(dir).records.length, 1, 'only the last 14 days');
+});
+
+test('brain-daemon-ensure: a recorded crash becomes a visible [BRAIN-CRASH] notice, also when the respawn worked', async () => {
+  const ensure = require('./brain-daemon-ensure.js');
+  const crash = { pid: 7, version: '3.7.0', detectedAt: new Date().toISOString(), logFile: '/d/brain-crash.log' };
+  const text = await ensure.run({ hook_event_name: 'UserPromptSubmit' }, {
+    root: ROOT, data: process.env.CLAUDE_PLUGIN_DATA, runSetupInBackground: () => false,
+    ensureDaemon: async () => ({ status: 'started', crash }),
+  });
+  assert(text.startsWith('[BRAIN-CRASH]') && text.includes('/d/brain-crash.log') && text.includes('Tell the user'), text);
+  const err = await ensure.run({ hook_event_name: 'UserPromptSubmit' }, {
+    root: ROOT, data: process.env.CLAUDE_PLUGIN_DATA, runSetupInBackground: () => false,
+    ensureDaemon: async () => ({ status: 'error', error: 'boom', crash }),
+  });
+  assert(err.startsWith('[BRAIN-CRASH]') && err.includes('[BRAIN] daemon único'), err);
+});
+
+test('brain daemon supervisor: a dead daemon\'s lock on a free port is recorded before the respawn', async () => {
+  const { ensureDaemon } = await import(SUPERVISOR_URL);
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-crashsup-'));
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-crashsup-home-'));
+  const dataDir = path.join(tmp, 'data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  const p = await waitFreePort();
+  const pid = deadPid();
+  fs.writeFileSync(path.join(dataDir, 'brain-http.lock.json'), JSON.stringify({ pid, port: p, startedAt: Date.now() - 5000, version: '3.7.0', dataDir }));
+  fs.writeFileSync(path.join(dataDir, 'brain-http.spawn.log'), 'last words of the dead daemon\n');
+  const res = await ensureDaemon({ pluginRoot: path.join(tmp, 'install-B'), dataDir, env: { BRAIN_HTTP_PORT: String(p), HOME: tmpHome, USERPROFILE: tmpHome } });
+  let health = null;
+  try { health = await (await fetch(`http://127.0.0.1:${p}/health`)).json(); } catch (e) { console.error(`[test] /health: ${e.message}`); }
+  try { if (res.status === 'started' && res.pid) process.kill(res.pid, 'SIGTERM'); } catch (e) { void e; }
+  assert(health && health.node && health.node.version === process.version, `/health must report the daemon's node: ${JSON.stringify(health && health.node)}`);
+  assertEq(nodeSup.missingOwnFlags(health.node.execArgv), [], 'the spawned daemon carries the crash-report flags');
+  assert(res.crash, `crash must be attached (status ${res.status}: ${res.error || ''})`);
+  assertEq(res.crash.pid, pid);
+  assertEq(res.crash.stderrTail, ['last words of the dead daemon']);
+  assertEq(crashEv.readRecords(dataDir).length, 1);
+  fs.rmSync(tmpHome, { recursive: true, force: true });
+});
+
+// ─── Node runtime: tested range (22.13 – 24.x), daemon flags, native deps ────
+const nodeSup = require('./lib/node-support.js');
+
+test('node-support: 22.13–24.x supported; 25 is "new" with the Node 24 LTS advice; own flags match reportFlags', () => {
+  assertEq(nodeSup.nodeSupport('v22.12.9').reason, 'old');
+  assertEq(nodeSup.nodeSupport('v22.13.0').ok, true);
+  assertEq(nodeSup.nodeSupport('v24.14.1').ok, true);
+  assertEq(nodeSup.nodeSupport('v25.0.0').reason, 'new');
+  assertEq(nodeSup.nodeSupport('garbage').reason, 'unknown');
+  assert(/Node 24 LTS/.test(nodeSup.supportAdvice(nodeSup.nodeSupport('v25.1.0'))), 'points at 24 LTS');
+  assertEq(nodeSup.supportAdvice(nodeSup.nodeSupport('v24.0.0')), '');
+  assertEq(crashEv.reportFlags('/d').map((f) => f.split('=')[0]), nodeSup.OWN_FLAGS, 'OWN_FLAGS must track crash-evidence.reportFlags');
+  assertEq(nodeSup.foreignFlags(['--no-maglev', ...crashEv.reportFlags('/d')]), ['--no-maglev']);
+  assertEq(nodeSup.missingOwnFlags(['--report-on-fatalerror']), ['--report-uncaught-exception', '--report-directory']);
+});
+
+test('doctor.checkDaemonNode: foreign NODE_OPTIONS flags, --no-maglev in the daemon execArgv, Node 25 daemon, old daemon flags', () => {
+  const own = crashEv.reportFlags('/d');
+  const clean = doctor.checkDaemonNode({ nodeOptions: '', daemon: { node: { version: 'v24.14.1', execArgv: own, nodeOptions: '' } } });
+  assertEq(clean.status, 'ok', clean.detail);
+  // Node refuses V8 flags like --no-maglev in NODE_OPTIONS: there it is a heap flag; --no-maglev reaches a daemon only via execArgv.
+  const env = doctor.checkDaemonNode({ nodeOptions: '--max-old-space-size=512', daemon: {} });
+  assert(env.status === 'warn' && /--max-old-space-size=512/.test(env.detail) && /NODE_OPTIONS/.test(env.fix), env.detail);
+  const argv = doctor.checkDaemonNode({ nodeOptions: '', daemon: { node: { version: 'v24.14.1', execArgv: ['--no-maglev', ...own], nodeOptions: '' } } });
+  assert(argv.status === 'warn' && /started with Node flags .*--no-maglev/.test(argv.detail) && /Node 24 LTS does not need it/.test(argv.fix), argv.detail);
+  const inherited = doctor.checkDaemonNode({ nodeOptions: '', daemon: { node: { version: 'v24.14.1', execArgv: own, nodeOptions: '--max-old-space-size=512' } } });
+  assert(inherited.status === 'warn' && /inherited NODE_OPTIONS --max-old-space-size=512/.test(inherited.detail) && /NODE_OPTIONS/.test(inherited.fix), inherited.detail);
+  const n25 = doctor.checkDaemonNode({ daemon: { node: { version: 'v25.2.1', execArgv: own } } });
+  assert(n25.status === 'fail' && n25.critical && /Node 24 LTS/.test(n25.fix), n25.detail);
+  const old = doctor.checkDaemonNode({ daemon: { node: { version: 'v24.14.1', execArgv: [] } } });
+  assert(old.status === 'warn' && /older version/.test(old.detail) && /Restart Claude Code/.test(old.fix), old.detail);
+  assertEq(doctor.checkDaemonNode({}).status, 'ok', 'no daemon, no NODE_OPTIONS');
+});
+
+test('doctor.checkNativeDeps: node:sqlite, napi, onnxruntime binding and sharp for the local embedder', () => {
+  const good = { provider: 'transformers', arch: 'win32-x64', napi: 10, ortBinding: true, sharp: true, sqliteError: null };
+  assertEq(doctor.checkNativeDeps({ native: good }).status, 'ok');
+  const noOrt = doctor.checkNativeDeps({ native: { ...good, ortBinding: false, sharp: false } });
+  assert(noOrt.status === 'fail' && noOrt.critical && /onnxruntime binding/.test(noOrt.detail) && /sharp/.test(noOrt.detail), noOrt.detail);
+  assertEq(doctor.checkNativeDeps({ native: { ...good, provider: 'ollama', ortBinding: false, sharp: false } }).status, 'ok', 'ollama loads no addon');
+  const sq = doctor.checkNativeDeps({ native: { ...good, sqliteError: 'No such built-in module: node:sqlite' } });
+  assert(sq.status === 'fail' && /node:sqlite/.test(sq.detail), sq.detail);
+  const real = doctor.gatherNative();
+  assertEq(real.sqliteError, null, 'node:sqlite loads on the Node running the tests');
+  assertEq(doctor.gatherNative({ sqlite: false }).sqliteError, undefined, 'advisory path does not load node:sqlite');
+});
+
+test('doctor-advisory: a NODE_OPTIONS flag the daemon would inherit reaches the SessionStart notice', async () => {
+  const adv = require('./doctor-advisory.js');
+  const saved = { o: process.env.NODE_OPTIONS, d: process.env.CLAUDE_PLUGIN_DATA, r: process.env.CLAUDE_PLUGIN_ROOT };
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-adv-node-'));
+  process.env.NODE_OPTIONS = '--max-old-space-size=512';
+  process.env.CLAUDE_PLUGIN_DATA = tmp;
+  process.env.CLAUDE_PLUGIN_ROOT = ROOT;
+  try {
+    const text = await adv.run({});
+    assert(text && /--max-old-space-size=512/.test(text) && text.startsWith('[DOCTOR]'), String(text));
+  } finally {
+    for (const [k, v] of [['NODE_OPTIONS', saved.o], ['CLAUDE_PLUGIN_DATA', saved.d], ['CLAUDE_PLUGIN_ROOT', saved.r]]) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+  }
+});
+
+test('plugin-setup.warnNodeVersion: Node 25 gets the Node 24 LTS warning, 24 stays quiet', () => {
+  const { warnNodeVersion } = require('./plugin-setup.js');
+  let out = '';
+  assertEq(warnNodeVersion('v25.2.1', (s) => { out += s; }), true);
+  assert(/Node 24 LTS/.test(out), out);
+  assertEq(warnNodeVersion('v24.14.1', () => { throw new Error('must not write'); }), false);
 });
 
 // ─── Runner ──────────────────────────────────────────────────────────────────

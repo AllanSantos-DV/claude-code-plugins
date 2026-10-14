@@ -12,7 +12,7 @@
 const path = require('path');
 
 const { runTextCli } = require('./lib/hook-io.js');
-const { checkNode, checkEnv } = require('./doctor.js');
+const { checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkNativeRuntime, gatherNative } = require('./doctor.js');
 
 const COOLDOWN_MS = 6 * 60 * 60 * 1000; // at most once per 6h
 const { onCooldown: cooldownActive, stamp } = require('./lib/cooldown-stamp.js');
@@ -30,15 +30,18 @@ async function run(_event) {
   const ctx = {
     nodeVersion: process.version,
     env: { root: process.env.CLAUDE_PLUGIN_ROOT || '', data: process.env.CLAUDE_PLUGIN_DATA || '' },
+    nodeOptions: process.env.NODE_OPTIONS || '',
+    native: gatherNative({ sqlite: false }),
   };
-  const criticalFails = [checkNode(ctx), checkEnv(ctx)].filter(r => r.status === 'fail');
+  // NODE_OPTIONS flags are a warn in the doctor, but they ride along into every daemon: shown here too.
+  const criticalFails = [checkNode(ctx), checkDaemonNode(ctx), checkNativeDeps(ctx), checkEnv(ctx), checkNativeRuntime(ctx)].filter(r => r.status !== 'ok');
   if (criticalFails.length === 0) return null;
 
   const sp = stampPath();
   if (onCooldown(sp)) return null;
   stamp(sp);
 
-  const items = criticalFails.map(r => `${r.label}: ${r.detail}`).join('; ');
+  const items = criticalFails.map(r => `${r.label}: ${r.detail} (fix: ${r.fix})`).join('; ');
   return `[DOCTOR] Critical setup issue — ${items}. Run \`npm run doctor\` (or the dashboard Doctor button) for the fix.`;
 }
 

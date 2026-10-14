@@ -116,6 +116,8 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({
           ok: true, pluginRoot, dataDir, version, pid: process.pid, port,
+          // The doctor checks the daemon's real runtime: the hook that spawned it may have had another node on PATH.
+          node: { version: process.version, execArgv: process.execArgv, nodeOptions: process.env.NODE_OPTIONS || '' },
           sessions: sessions.size, hookWorker: hookWorker.stats(), hookLatency: hookLatencyStats(), startedAt, uptimeMs: Date.now() - startedAt,
         }));
         return;
