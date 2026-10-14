@@ -160,7 +160,11 @@ async function main() {
     const root = process.env.CLAUDE_PLUGIN_ROOT && !process.env.CLAUDE_PLUGIN_ROOT.includes('${') ? process.env.CLAUDE_PLUGIN_ROOT : require('path').resolve(__dirname, '..');
     updates = require('./lib/update-notice.js').takeUpdateNotices({ root });
   } catch (err) { console.error(`[claude-code-boss:user-prompt-submit-dispatcher] update notice: ${err.message}`); }
-  const shown = [welcome, link && link.user, autoUpdate, ...updates].filter(Boolean);
+  // A hook that failed or timed out earlier in this session: Claude Code names only the
+  // event, so say which plugin owns it (lib/hook-owner.js — best effort, never faked).
+  let hookFailures = null;
+  try { hookFailures = require('./lib/hook-owner.js').takeFailureNotices({ event }); } catch (err) { console.error(`[claude-code-boss:user-prompt-submit-dispatcher] hook-owner notice: ${err.message}`); }
+  const shown = [welcome, link && link.user, autoUpdate, ...updates, hookFailures].filter(Boolean);
   if (shown.length) out.systemMessage = shown.join(' ');
   if (text) out.hookSpecificOutput = { hookEventName: eventName, additionalContext: text };
   if (Object.keys(out).length) { emitJson(out); return; }
@@ -172,6 +176,7 @@ async function main() {
 const exitAfterFlush = () => process.stdout.write('', () => process.exit(0));
 
 if (require.main === module) {
+  require('./lib/hook-prefix.js').install('user-prompt-submit-dispatcher');
   main().then(exitAfterFlush, (err) => {
     console.error(`[claude-code-boss:user-prompt-submit-dispatcher] fatal: ${err && err.message ? err.message : err}`);
     emitEmpty();
