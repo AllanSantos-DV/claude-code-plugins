@@ -223,12 +223,18 @@ async function afterTurn($, ctx) {
   try {
     const settle = ctx.pendingSettle;
     ctx.pendingSettle = null;
-    const { id } = await observeCalls($, ctx);
+    const { id, reply } = await observeCalls($, ctx);
     if (ctx.interactive && ctx.config.folderTtl !== false && ctx.folder) {
       try {
-        const { context, thr } = await currentWindow($, ctx);
-        const tokens = context.tokens ?? ctx.measuredTokens;
-        ctx.folderAbove = tokens != null && thr.thresholdTokens != null && tokens >= thr.thresholdTokens;
+        // Past the threshold = the size of the LAST REAL API call (input + cache read + cache write), not usage():
+        // a prompt the gate held closes a turn with no call, and usage() then still says the pre-cut size (E2E
+        // 14/10: a cut session re-claimed "above" and kept its folder at 5m). No new call → keep the last verdict.
+        const o = reply && reply.recorded > 0 ? reply.observed : null;
+        if (o) {
+          const { thr } = await currentWindow($, ctx);
+          const tokens = (Number(o.input) || 0) + (Number(o.read) || 0) + (Number(o.write) || 0);
+          ctx.folderAbove = thr.thresholdTokens != null && tokens >= thr.thresholdTokens;
+        }
         await reportFolder($, ctx);
       } catch (err) {
         $.ui.log(`compaction: folder TTL report failed: ${String(err && err.message ? err.message : err)}`);
@@ -424,9 +430,20 @@ async function compact($, ctx, e, next) {
     prunedResults: plan.pruned.length, byReason, duplicatesDropped: plan.duplicatesDropped, verbatimTextIntact: plan.verbatimTextIntact,
     tokensBefore, brief, durationMs: (await $.clock.now()) - t0,
   });
-  if (!ours) return next(e);
+  if (!ours) {
+    const r = await next(e); // the engine's summary: far below any threshold afterwards
+    await leaveAbove($, ctx);
+    return r;
+  }
+  await leaveAbove($, ctx);
   $.ui.toast(`compaction: every message kept, ${plan.pruned.length} stale tool results pruned (${Math.round(plan.ratio * 100)}% smaller), no summary`);
   return { messages: plan.messages };
+}
+
+/** After any compaction the session is below the threshold: say so now, so the folder TTL is restored at once. */
+async function leaveAbove($, ctx) {
+  ctx.folderAbove = false;
+  try { await reportFolder($, ctx); } catch (err) { $.ui.log(`compaction: folder TTL restore after the cut failed: ${String(err && err.message ? err.message : err)}`); }
 }
 
 /**
@@ -446,8 +463,7 @@ async function briefCut($, ctx, e, next, { plan, warm, t0, why }) {
     return next(e);
   }
   if (!ctx.pendingSettle) ctx.pendingSettle = { reason, trigger: e.trigger, tokensBefore };
-  ctx.folderAbove = false;
-  try { await reportFolder($, ctx); } catch (err) { $.ui.log(`compaction: folder TTL restore after the cut failed: ${String(err && err.message ? err.message : err)}`); }
+  await leaveAbove($, ctx);
   emit($, ctx, 'run', {
     ...base, outcome: 'brief', charsAfter: b.charsAfter, charsCut: b.charsBefore - b.charsAfter, ratio: Number((1 - b.charsAfter / Math.max(1, b.charsBefore)).toFixed(3)),
     cutMessages: b.cutMessages, briefChars: b.briefChars, verbatimTextIntact: b.userTextIntact, folderTtl: ctx.folderTtl ? ctx.folderTtl.ttl : null,

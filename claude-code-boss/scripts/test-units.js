@@ -25834,7 +25834,9 @@ test('compaction-core.isMechanicalCut + chooseCompaction: the brief only with a 
   const hook = fs.readFileSync(path.join(ROOT, 'hooks', 'compaction.mjs'), 'utf8');
   assert(/isMechanicalCut\(\{ warm, trigger: e\.trigger, reason: ctx\.compactReason \}\)/.test(hook), 'the hook judges the brief by warm + trigger + our reason');
   assert(/if \(!b\.cutMessages \|\| !b\.userTextIntact\)[\s\S]{0,300}return next\(e\);/.test(hook), 'a brief that cuts nothing or loses user text → the engine summary');
-  assert(/ctx\.folderAbove = false;\s*try \{ await reportFolder/.test(hook), 'the folder TTL is released BEFORE the brief is handed back');
+  assert(/await leaveAbove\(\$, ctx\);\s*emit\(\$, ctx, 'run', \{/.test(hook), 'the folder TTL is released BEFORE the brief is handed back');
+  assert(/const r = await next\(e\);[^\n]*\n\s*await leaveAbove\(\$, ctx\);/.test(hook) && /await leaveAbove\(\$, ctx\);\s*\$\.ui\.toast\(`compaction: every message kept/.test(hook), 'pruning and the engine summary release it too (any compaction leaves the session below)');
+  assert(/const o = reply && reply\.recorded > 0 \? reply\.observed : null;/.test(hook), '"above" comes from the last REAL call (a held prompt\'s turn has none and usage() is stale)');
   assert(/if \(seen > 0\) ctx\.sessionTtlMs = seen;/.test(hook), 'the TTL in use is the latest call\'s (a 1h→5m switch is seen)');
 });
 
