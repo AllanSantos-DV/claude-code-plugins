@@ -217,6 +217,27 @@ export function decideTiming(s, options = {}) {
 }
 
 /**
+ * The END of a turn no person's prompt went through the gate for (a peer message, a task
+ * notification, a queued command — autonomous sessions): past the threshold, compact now,
+ * warm cache or not. Nothing is held or re-sent (the engine's prompt.submit cannot carry a
+ * sender), and the cooldown plus the threshold floor (> what a compaction leaves) keep it
+ * from looping. A person's turn is the gate's: it waits for a cold cache by design.
+ * @param {{tokens?:number, now:number, lastCompactAt?:number, busy:boolean, gated:boolean}} s
+ * @param {Partial<typeof DEFAULTS>} [options]
+ * @returns {{action:'none'|'compact', reason:string}}
+ */
+export function decideTurnEnd(s, options = {}) {
+  const o = { ...DEFAULTS, ...options };
+  if (s.gated) return { action: 'none', reason: 'prompt-gated' };
+  if (s.busy) return { action: 'none', reason: 'busy' };
+  if (s.tokens == null) return { action: 'none', reason: 'no-reading' };
+  if (!(Number(o.thresholdTokens) > 0)) return { action: 'none', reason: 'no-window' };
+  if (s.tokens < o.thresholdTokens) return { action: 'none', reason: 'below-threshold' };
+  if (s.lastCompactAt != null && s.now - s.lastCompactAt < o.minIntervalMs) return { action: 'none', reason: 'cooldown' };
+  return { action: 'compact', reason: 'turn-end-over-threshold' };
+}
+
+/**
  * Is the provider cache still warm? Unknown last answer → assume warm: the engine's
  * auto-compaction fires mid-session, right after turns, and if the cache was in fact cold the
  * summary costs about what the next cold request would have paid anyway.

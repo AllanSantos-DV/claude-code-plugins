@@ -15,6 +15,27 @@
   - `ingest_conversation` responde `ok:true` com o LLM de curadoria fora. Proposta: expor a saúde do LLM/breaker no retorno do ingest ou em `ingest_status` (`llm:{ok,lastError}`).
   - Um chunk sem nenhum evento reconhecido marca o template como degradado e dispara redescoberta por LLM **bloqueante** na thread da requisição. Propostas: não degradar por um chunk parcial e fazer a descoberta fora da requisição.
   - O limite de corpo de 10 MiB (`MAX_BODY_SIZE`) e o `MAX_RAW_CHARS` de 8M não estão documentados para consumidores. Proposta: documentá-los no contrato do `ingest_conversation`.
+## Compact não age em sessão autônoma — investigado (branch `fix/compaction-gate-delegated-prompts`, pedido do orquestrador, 2026-10-14)
+
+- **Config está certa:** perfil `standard` resolve `compaction.enabled=true`, 30%, 10 min; `standard` não desliga a compactação (só `free`).
+  A compactação acontece, mas pelo auto-compact do engine a ~120k (janela 153k): dezenas de `compaction.run` trigger `auto` em 14/10
+  (claude-code-plugins, agente-bolso). O gate do boss quase não registra evento desde 09/10.
+- **Por que passar de 30% (piso 90k) não compacta pelo gate:** (1) com cache quente o gate decide "não" de propósito (compactar quente custa
+  mais que o ganho, análise de 11/10 e `docs/research/compaction-warm-tail/`); (2) o gate só vê `prompt.submit` de pessoa
+  (`PERSON_ORIGINS`); `peer`, `task-notification` e `queued_command` passam direto.
+- **Opção (c) — incluir esses prompts no gate preservando o remetente — NÃO implementada, inviável pela API do engine (CC 2.1.293,
+  lido no binário):** o gate segura o prompt (`drop`), compacta e reenvia com `$.prompt.submit({ text, asUser })`, que só aceita
+  `text` (sem `origin`, sem anexos). Um reenvio de mensagem de outra sessão seria um prompt do próprio plugin: com `asUser:true` o texto
+  de um peer ganharia a autoridade da pessoa (lavagem de permissão); sem remetente o destinatário não responde por SendMessage.
+  `queued_command` nem chega como prompt.submit (é attachment). Compactar dentro do `prompt.submit` o engine recusa.
+  Alternativas a decidir com o Allan: (b) limiar valer com cache quente; (d) compactar ao fim do turno (`turn.complete`) acima do
+  limiar em sessão autônoma — sem reenvio, mas paga a regravação com cache quente; (e) baixar `autoCompactWindow` (hoje 153k).
+- **Opção (d) implementada (2026-10-14, escolhida pelo Allan via orquestrador):** ao fim de um turno que NÃO passou pelo gate
+  (`ctx.gated` falso: peer, task-notification, queued_command), `turnEnd` em `hooks/compaction.mjs` lê o uso e, se `decideTurnEnd`
+  (`lib/compaction-core.mjs`) disser que passou do limiar (`thresholdFor`: 30%, piso 90k), roda `compact` sem reenvio de prompt. Cooldown de
+  `minIntervalMs` (10 min) desde a última compactação evita loop de custo; o piso de 90k fica acima do que uma compactação deixa (~48k).
+  Turno de pessoa segue só pelo gate (cache frio). Teste: "compaction-core.decideTurnEnd" (falhava sem a função). Falta: validação do Allan
+  em sessão autônoma real (evento `compaction.gate` com `reason: turn-end-over-threshold`).
 
 ## Crash 0xC0000409 do brain (branch `fix/brain-crash-diagnostics`, pedido do orquestrador, 2026-10-14)
 

@@ -20,7 +20,7 @@
 // Observability: every decision and cut goes to the boss metrics store through the
 // daemon (POST /hook/compaction-event → tool hook_compaction_event → scripts/compaction-event.js).
 
-import { planCompaction, buildBrief, decideTiming, classifyResume, estimateTokens, thresholdFor, chooseCompaction, isCacheWarm, DEFAULTS } from '../scripts/lib/compaction-core.mjs';
+import { planCompaction, buildBrief, decideTiming, decideTurnEnd, classifyResume, estimateTokens, thresholdFor, chooseCompaction, isCacheWarm, DEFAULTS } from '../scripts/lib/compaction-core.mjs';
 
 const PERSON_ORIGINS = new Set(['composer', 'bridge', 'sdk']);
 
@@ -31,6 +31,7 @@ function newCtx() {
     daemon: null,           // { base, token } of the brain daemon
     identity: null,         // { host, auth } — never a secret value
     busy: false,
+    gated: false,            // a person's prompt went through the gate in the current turn
     interactive: true,       // session.start says; headless (-p/SDK) cannot compact from a plugin
     lastAnswerAt: undefined,
     lastCompactAt: undefined,
@@ -228,6 +229,46 @@ function scheduleCompactThenResend($, ctx, text, reason) {
   compactThenResend($, ctx, text, reason).catch((err) => $.ui.log(`compaction: re-send failed: ${String(err && err.message ? err.message : err)}`));
 }
 
+// The window the engine applies NOW and the threshold it gives (shared by the prompt gate and the turn-end rule).
+async function currentWindow($, ctx) {
+  const { context } = await $.session.usage({ breakdown: 'summary' });
+  const bd = context.breakdown || {};
+  const windowTokens = Number(bd.rawMaxTokens) > 0 ? Number(bd.rawMaxTokens) : context.window;
+  const windowSource = Number(bd.rawMaxTokens) > 0 ? (bd.autocompactSource || null) : 'model-window';
+  const engineAutoCompactAt = bd.isAutoCompactEnabled === false ? null : (Number(bd.autoCompactThreshold) > 0 ? Number(bd.autoCompactThreshold) : null);
+  const thr = thresholdFor({ window: windowTokens, engineAutoCompactAt }, ctx.config);
+  return { context, windowTokens, windowSource, engineAutoCompactAt, thr };
+}
+
+// End of a turn no person's prompt went through the gate for (peer message, task notification,
+// queued command): past the threshold, compact now — the prompt gate never sees these and the
+// cache of a working session never cools. Nothing is held or re-sent.
+async function turnEnd($, ctx) {
+  try {
+    if (!ctx.interactive || !ctx.configLoaded || !ctx.config.enabled) return;
+    const now = await $.clock.now();
+    const { context, windowTokens, windowSource, engineAutoCompactAt, thr } = await currentWindow($, ctx);
+    const tokens = context.tokens ?? ctx.measuredTokens;
+    const d = decideTurnEnd({ tokens, now, lastCompactAt: ctx.lastCompactAt, busy: ctx.busy, gated: false }, { ...ctx.config, thresholdTokens: thr.thresholdTokens });
+    if (d.action !== 'compact') return;
+    const { ttlMs, ttlSource } = ttlInUse(ctx);
+    emit($, ctx, 'gate', {
+      action: d.action, reason: d.reason, dueInMs: null, tokens: tokens ?? null, idleMs: ctx.lastAnswerAt == null ? null : now - ctx.lastAnswerAt, ttlMs, ttlSource,
+      thresholdPercent: thr.percent, thresholdTokens: thr.thresholdTokens, windowTokens: windowTokens ?? null, windowSource,
+      engineAutoCompactAt, thresholdAboveEngine: thr.aboveEngine,
+    });
+    ctx.pendingSettle = { reason: d.reason, trigger: 'turn-end', tokensBefore: tokens ?? null };
+    ctx.compactReason = d.reason;
+    try {
+      await $.command.run({ command: 'compact' });
+      ctx.lastCompactAt = await $.clock.now();
+    } finally { ctx.compactReason = null; }
+  } catch (err) {
+    $.ui.log(`compaction: turn-end compaction failed: ${String(err && err.message ? err.message : err)}`);
+    emit($, ctx, 'error', { where: 'turn-end compact', error: String(err && err.message ? err.message : err) });
+  }
+}
+
 async function gate($, ctx, e, next) {
   if (e.turnId || !PERSON_ORIGINS.has(e.origin && e.origin.kind)) return next(e);
   // Headless (-p/SDK): the engine refuses a plugin's compaction ("not available in a headless
@@ -235,6 +276,7 @@ async function gate($, ctx, e, next) {
   // engine's auto threshold still go through session.compact below (pruning, or the engine's
   // summary when the cache is warm).
   if (!ctx.interactive) return next(e);
+  ctx.gated = true; // this turn is a person's: the gate judges it, the turn-end rule stays out
   await ensureConfig($, ctx);
   // No config from the boss = don't act (pre-release audit 3.1.0: defaults said "on" even when
   // the user had switched it off and the daemon was just not up yet).
@@ -243,12 +285,7 @@ async function gate($, ctx, e, next) {
   const now = await $.clock.now();
   // The window the engine applies NOW (the model's limit or a smaller compaction window) and
   // its own auto-compact point — a local estimate, no API call. The model window as fallback.
-  const { context } = await $.session.usage({ breakdown: 'summary' });
-  const bd = context.breakdown || {};
-  const windowTokens = Number(bd.rawMaxTokens) > 0 ? Number(bd.rawMaxTokens) : context.window;
-  const windowSource = Number(bd.rawMaxTokens) > 0 ? (bd.autocompactSource || null) : 'model-window';
-  const engineAutoCompactAt = bd.isAutoCompactEnabled === false ? null : (Number(bd.autoCompactThreshold) > 0 ? Number(bd.autoCompactThreshold) : null);
-  const thr = thresholdFor({ window: windowTokens, engineAutoCompactAt }, ctx.config);
+  const { context, windowTokens, windowSource, engineAutoCompactAt, thr } = await currentWindow($, ctx);
   let tokens = context.tokens ?? ctx.measuredTokens;
   const { ttlMs, ttlSource } = ttlInUse(ctx);
   let d;
@@ -373,8 +410,11 @@ export const register = (on) => {
     if (!ctx.config.enabled) return r;
     // Interactive: off the turn's path (the next prompt is not delayed). Headless: the
     // process ends right after the turn, so a deferred observation would never run.
-    if (ctx.interactive) $.clock.after(1, () => { void afterTurn($, ctx); });
-    else await afterTurn($, ctx);
+    const gated = ctx.gated;
+    ctx.gated = false;
+    if (ctx.interactive) {
+      $.clock.after(1, () => { void afterTurn($, ctx).then(() => (gated ? null : turnEnd($, ctx))); });
+    } else await afterTurn($, ctx);
     return r;
   });
 
