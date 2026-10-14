@@ -77,8 +77,7 @@
     "preserveRecentMessages": 6
   },
   "costTuning": {
-    "cacheTtl": "1h",
-    "autoCompactWindow": 153000
+    "cacheTtl": "1h"
   },
   "verifyNudge": {
     "maxBlocks": 1,

@@ -1,5 +1,70 @@
 # Backlog
 
+## Compactação só em %, Tool Search, doctor que corrige, custo da compactação quente e TTL dinâmico (pedidos do orquestrador, 2026-10-14)
+
+Achados e correções (todos no escopo, corrigidos na hora, com teste em `scripts/test-units.js`):
+
+- **Causa do custo da sessão 5461fa31 (US$ 35,26).** O próprio plugin gravava `CLAUDE_CODE_AUTO_COMPACT_WINDOW=153000`
+  (`cost-tuning`), então o engine compactava em janela−33k ≈ 120k, no meio do turno, com cache quente. 15 compactações, todas
+  `auto`, pre 119–128k, post 10,6–20,8k, intervalo 0,8–1,4 min. Resumos US$ 2,66; cada 1ª chamada depois regrava 25–43k
+  (~490k no total). O gate nunca agiu (exige cache frio). Estimativa: as compactações pesam ≈ US$ 6–8 dos 35 (17–23%).
+  **Corrigido:** a janela fixa deixou de ser aplicada por padrão (`autoCompactWindow: null`); o `planCostTuning` restaura o valor
+  anterior do usuário no próximo SessionStart (estado de posse). Teste `cost-tuning: migra o 153000`.
+- **Piso de 90k removido** (`minThresholdTokens`): o limite é só `thresholdPercent` × janela do modelo (200k → 30% de 200k,
+  1M → 30% de 1M). Teste `compaction-core.thresholdFor`.
+- **Turn-end só com cache frio** (`decideTurnEnd`): sem isso a compactação do fim de turno também compactava com cache
+  quente. Agora espera o cache esfriar por timer. Teste `compaction-core.decideTurnEnd`.
+- **Tool Search sempre** (`ENABLE_TOOL_SEARCH=true`, `cost-tuning.toolSearch`): aplicado no SessionStart; valor mudado pelo
+  usuário continua dele.
+- **Doctor corrige e orienta.** Cada aviso termina com "o que fazer"; o aviso de Hook events deixou de dizer só "safe to
+  ignore". Novo check `cost-tuning` (settings.json × configuração do plugin) e `node scripts/doctor.js --fix`, que aplica só
+  correções do próprio plugin (`cost-tuning`, lock de daemon obsoleto) e relata falha de correção sem esconder. Testes `doctor.*`.
+
+Achados fora do escopo (não implementados, por regra):
+
+- O caminho de janela fixa 200000 do router/proxy (`contextTuning`, opt-in, deprecado) continua existindo. Proposta: remover
+  junto com o proxy.
+- **Trade-off do 1M:** sem janela fixa o engine só compacta em janela−33k (~967k). Em sessões interativas sempre quentes o
+  gate/turn-end não age (esperam cache frio); só o engine compacta. Decisão do Allan (ver TTL dinâmico abaixo).
+
+### TTL do cache: 1h até o limite e 5 min depois (investigação, nada implementado)
+
+Dados e scripts em `docs/research/ttl-switch/` (local, gitignorado): `exp.js` (teste real), `sim.js` + `agg.js` (14 sessões
+reais do custo-agente, 10–14/10), `mech.mjs` (compactação mecânica).
+
+1. **Dá para trocar o TTL no meio da sessão? Sim, mas não pelo caminho que o plugin usa hoje.** No engine (2.1.293) o TTL é
+   resolvido a cada requisição (`yce`/`Ven`), na ordem: `FORCE_PROMPT_CACHING_5M` > env `CLAUDE_CODE_PROMPT_CACHE_TTL` >
+   **setting `promptCacheTtl`** > frontmatter do agente > `ENABLE_PROMPT_CACHING_1H`. O env é lido uma vez no start do processo e
+   ganha do setting: com o env gravado pelo plugin (`=1h`), o TTL fica congelado até reiniciar. Teste real (processo
+   `claude -p` stream-json vivo, Haiku, `settings.local.json` reescrito entre turnos): `5m→1h→5m` gravou
+   `ephemeral_5m 24460 → ephemeral_1h 27245 → ephemeral_5m 5753`, e `1h,1h,5m,5m` seguiu o setting turno a turno; com o env
+   `=5m` no processo, o setting `1h` foi ignorado (`ephemeral_5m 10112`, `24142`). O watcher de settings pegou a troca com
+   2,5 s de espera. Ressalvas: o gateway devolveu `cache_read 0` em turnos seguidos mesmo sem trocar o TTL (leitura de cache
+   instável no teste, então o custo de trocar não ficou isolável); testado só em `settings.local.json` do projeto; um
+   `promptCacheTtl` em arquivo vale para **todas as sessões que leem aquele arquivo** (a sessão grande forçaria 5 min na pequena).
+2. **Custo medido (simulação sobre transcripts reais, 14 sessões, US$ total; resumo a frio relê o histórico a US$ 4,4/MTok):**
+
+   | janela | 1h só engine | 1h + gate | 5m + gate | 1h→5m + gate |
+   |---|---|---|---|---|
+   | 200k, 30% | 446 | 442 | 423 | 433 |
+   | 1M, 30% | 1157 | 1041 | 907 | **850** |
+
+   Em 200k a diferença é de 3–5% (dentro do erro do modelo). Em 1M, 1h→5m + gate dá −18% sobre 1h + gate e −27% sobre o que
+   roda hoje; a maior parte do ganho vem do **gate agir com cache frio**, que com 1h quase nunca chega. Cada compactação a
+   frio custa o resumo (~US$ 0,54 de leitura sem cache a 122k + ~US$ 0,18 de saída), a quente ~US$ 0,21; a 1ª chamada
+   depois regrava 15–45k. Estimativa, não medição de fatura.
+3. **Compactação mecânica local existe** (`compaction-core.mjs`, sem chamar a API). Medido em prefixos reais do transcript
+   5461fa31: `planCompaction` (poda de resultados antigos) corta 64% a 62k, 61% a 122k, 50% a 201k, 43% a 405k tokens e
+   leva 1–2 ms; `buildBrief` (resumo determinístico, sem modelo) corta 82–86% (122k → 17,5k; 405k → 63k) em 1–3 ms.
+   Custo de API: zero na compactação; só a regravação do que sobra (17,5k a US$ 8,8/MTok ≈ US$ 0,15), contra ~US$ 0,7
+   do resumo a frio a 122k. A fidelidade do `buildBrief` medida em 10/10 foi 27%/64% contra 46%/79% do resumo nativo (2 casos),
+   e a poda deixa o contexto grande (a 405k sobram 245k), por isso não substitui o resumo.
+4. **Recomendação:** não construir a troca dinâmica agora. Passos baratos primeiro (já feitos nesta rodada): gate/turn-end
+   com cache frio e janela só em %. Se o Allan quiser a troca: (a) o plugin pára de gravar o env `CLAUDE_CODE_PROMPT_CACHE_TTL`
+   e passa a gerir `promptCacheTtl` no setting; (b) o hook troca para 5m ao cruzar o % configurado pelo usuário e volta para 1h
+   depois de compactar; (c) antes, resolver o efeito sobre as outras sessões do mesmo arquivo de settings e testar o
+   settings de usuário. Só faz sentido com janela de 1M.
+
 ## Ingestão de conversa para o mcp-memory (branch `fix/ingest-delta-backoff`, pedido do orquestrador, 2026-10-14)
 
 - **Encontrado e corrigido na hora:** cada Stop reenviava o transcript inteiro (`conversation-ingest.js`). Uma sessão longa passava do limite do servidor (10 MiB → 413, ou `MAX_RAW_CHARS` 8M → `ok:false`) e falhava em todo Stop dali em diante. Agora o Stop manda só o trecho novo desde o último envio aceito, com offset por sessão em `.runtime/ingest-state.json`. Um prompt ainda sem resposta volta no próximo trecho. Nenhum trecho sai sem um par de texto user+assistant, porque o servidor marcaria o template como degradado. O payload JSON escapado fica abaixo de 7,5 MB. Testes: "conversation-ingest.selectChunk/run: …".

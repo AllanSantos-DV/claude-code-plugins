@@ -44,6 +44,7 @@ function newCtx() {
     compactReason: null,     // why the next compaction runs (set by the gate)
     pendingSettle: null,     // a compaction whose effect the next turn measures
     lastMessageId: null,     // newest API call already recorded as cache.turn
+    turnEndTimer: 0,         // token of the pending turn-end re-check (a newer one supersedes)
   };
 }
 
@@ -241,17 +242,30 @@ async function currentWindow($, ctx) {
 }
 
 // End of a turn no person's prompt went through the gate for (peer message, task notification,
-// queued command): past the threshold, compact now — the prompt gate never sees these and the
-// cache of a working session never cools. Nothing is held or re-sent.
+// queued command): past the threshold, compact once the cache is COLD (waiting for it, never
+// compacting a warm one) — the prompt gate never sees these. Nothing is held or re-sent.
 async function turnEnd($, ctx) {
   try {
     if (!ctx.interactive || !ctx.configLoaded || !ctx.config.enabled) return;
     const now = await $.clock.now();
     const { context, windowTokens, windowSource, engineAutoCompactAt, thr } = await currentWindow($, ctx);
     const tokens = context.tokens ?? ctx.measuredTokens;
-    const d = decideTurnEnd({ tokens, now, lastCompactAt: ctx.lastCompactAt, busy: ctx.busy, gated: false }, { ...ctx.config, thresholdTokens: thr.thresholdTokens });
-    if (d.action !== 'compact') return;
     const { ttlMs, ttlSource } = ttlInUse(ctx);
+    const d = decideTurnEnd({ tokens, now, lastAnswerAt: ctx.lastAnswerAt, lastCompactAt: ctx.lastCompactAt, busy: ctx.busy, gated: false, ttlMs }, { ...ctx.config, thresholdTokens: thr.thresholdTokens });
+    if (d.action === 'wait') {
+      // Over the threshold with a warm cache: never compact it. Re-check when the cache is due
+      // to be cold (a newer turn moves lastAnswerAt, so the re-check then waits again or stands down).
+      const token = ++ctx.turnEndTimer;
+      emit($, ctx, 'gate', {
+        action: d.action, reason: d.reason, dueInMs: d.dueInMs, tokens: tokens ?? null, idleMs: now - ctx.lastAnswerAt, ttlMs, ttlSource,
+        thresholdPercent: thr.percent, thresholdTokens: thr.thresholdTokens, windowTokens: windowTokens ?? null, windowSource,
+        engineAutoCompactAt, thresholdAboveEngine: thr.aboveEngine,
+      });
+      $.clock.after(d.dueInMs + 1000, () => { if (token === ctx.turnEndTimer) void turnEnd($, ctx); });
+      return;
+    }
+    if (d.action !== 'compact') return;
+    ctx.turnEndTimer++; // a compaction supersedes any pending re-check
     emit($, ctx, 'gate', {
       action: d.action, reason: d.reason, dueInMs: null, tokens: tokens ?? null, idleMs: ctx.lastAnswerAt == null ? null : now - ctx.lastAnswerAt, ttlMs, ttlSource,
       thresholdPercent: thr.percent, thresholdTokens: thr.thresholdTokens, windowTokens: windowTokens ?? null, windowSource,

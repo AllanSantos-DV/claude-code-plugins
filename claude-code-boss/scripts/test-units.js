@@ -8802,6 +8802,7 @@ const routerEnsure = require('./model-router-ensure.js');
 // ─── cost-tuning: 1 h cache + auto-compact window in settings.json env (ownership-safe) ──
 const costTuning = require('./lib/cost-tuning.js');
 const CT_WANT = { CLAUDE_CODE_PROMPT_CACHE_TTL: '1h', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000' };
+const CT_WANT_ALL = { CLAUDE_CODE_PROMPT_CACHE_TTL: '1h', ENABLE_TOOL_SEARCH: 'true', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000' };
 
 test('cost-tuning: applies both knobs on a clean env and remembers they were unset', () => {
   const r = costTuning.planCostTuning({ KEEP: '1' }, CT_WANT, {});
@@ -8860,6 +8861,19 @@ test('cost-tuning: a value the user changes (or removes) after us is theirs — 
   assertEq(moved.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '153000', 'a NEW larger value (not the yielded one) is managed again');
 });
 
+test('cost-tuning: a 153000 window WE wrote earlier (the fixed value that made the engine compact warm at ~120k) is restored away, Tool Search added, user values untouched', () => {
+  const state = { applied: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000', CLAUDE_CODE_PROMPT_CACHE_TTL: '1h' }, previous: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: null, CLAUDE_CODE_PROMPT_CACHE_TTL: null }, yielded: {} };
+  const want = costTuning.wanted(costTuning.resolveConfig({}), true);
+  const r = costTuning.planCostTuning({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000', CLAUDE_CODE_PROMPT_CACHE_TTL: '1h', KEEP: '1' }, want, state);
+  assertEq(r.env, { CLAUDE_CODE_PROMPT_CACHE_TTL: '1h', KEEP: '1', ENABLE_TOOL_SEARCH: 'true' });
+  assertEq(r.state.applied, { CLAUDE_CODE_PROMPT_CACHE_TTL: '1h', ENABLE_TOOL_SEARCH: 'true' });
+  const mine = costTuning.planCostTuning({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000' }, want, { applied: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000' }, previous: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000' }, yielded: {} });
+  assertEq(mine.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '1000000', 'the value the user had before us comes back');
+  const theirs = costTuning.planCostTuning({ ENABLE_TOOL_SEARCH: 'false' }, want, {});
+  assertEq(theirs.env.ENABLE_TOOL_SEARCH, 'false', 'a Tool Search value the user set stays theirs');
+  assertEq(costTuning.planCostTuning({ ENABLE_TOOL_SEARCH: 'true' }, want, {}).state.applied.ENABLE_TOOL_SEARCH, undefined, 'already true: not ours to remove later');
+});
+
 test('cost-tuning: TTL only for API-billed sessions (gateway, key, cloud) — not subscription, not our proxy', () => {
   const ours = (u) => u.startsWith('http://127.0.0.1:13456');
   assertEq(costTuning.apiBilled({ ANTHROPIC_BASE_URL: 'http://100.124.248.83' }, ours), true, 'own gateway');
@@ -8870,14 +8884,16 @@ test('cost-tuning: TTL only for API-billed sessions (gateway, key, cloud) — no
   assertEq(costTuning.apiBilled({ ANTHROPIC_BASE_URL: 'https://api.anthropic.com' }, ours), false);
   assertEq(costTuning.apiBilled({ ANTHROPIC_BASE_URL: 'http://127.0.0.1:13456' }, ours), false, 'behind our proxy the credential is unknown');
   const cfg = costTuning.resolveConfig({});
-  assertEq(costTuning.wanted(cfg, false), { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000' });
-  assertEq(costTuning.wanted(cfg, true), CT_WANT);
+  assertEq(costTuning.wanted(cfg, false), { ENABLE_TOOL_SEARCH: 'true' }, 'Tool Search always; no fixed compaction window by default');
+  assertEq(costTuning.wanted(cfg, true), { CLAUDE_CODE_PROMPT_CACHE_TTL: '1h', ENABLE_TOOL_SEARCH: 'true' });
+  assertEq(costTuning.wanted(costTuning.resolveConfig({ autoCompactWindow: 153000 }), true), CT_WANT_ALL, 'the window stays available as an explicit opt-in');
+  assertEq(costTuning.wanted(costTuning.resolveConfig({ toolSearch: false }), false), {}, 'Tool Search can be turned off in the config');
   assertEq(costTuning.wanted(costTuning.resolveConfig({ enabled: false }), true), {});
-  assertEq(costTuning.resolveConfig({ cacheTtl: '2h', autoCompactWindow: 5 }), { enabled: true, cacheTtl: null, autoCompactWindow: 100000 }, 'unknown TTL off, window clamped');
+  assertEq(costTuning.resolveConfig({ cacheTtl: '2h', autoCompactWindow: 5 }), { enabled: true, toolSearch: true, cacheTtl: null, autoCompactWindow: 100000 }, 'unknown TTL off, window clamped');
   assertEq(costTuning.resolveConfig({ autoCompactWindow: null }).autoCompactWindow, null, 'null = window not managed');
 });
 
-test('cost-tuning: shipped default ON (153k + 1h); the free profile turns it off (so the shipped block carries no enabled key)', () => {
+test('cost-tuning: shipped default ON (1h + Tool Search, NO fixed compaction window); the free profile turns it off (so the shipped block carries no enabled key)', () => {
   const hc = require('./lib/hooks-config.js');
   const file = hc.userConfigPath();
   assert(file.startsWith(process.env.USERPROFILE), `the suite's temp HOME, never the real one (${file})`);
@@ -8885,7 +8901,7 @@ test('cost-tuning: shipped default ON (153k + 1h); the free profile turns it off
   try {
     if (prev != null) fs.unlinkSync(file);
     hc._resetCache();
-    assertEq(hc.getCostTuning(), { enabled: true, cacheTtl: '1h', autoCompactWindow: 153000 });
+    assertEq(hc.getCostTuning(), { enabled: true, toolSearch: true, cacheTtl: '1h', autoCompactWindow: null });
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify({ profile: 'free' }));
     hc._resetCache();
@@ -8910,13 +8926,13 @@ test('cost-tuning: applyCostTuning writes the temp HOME settings.json, keeps for
     fs.writeFileSync(settings, JSON.stringify({ env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000', BRAIN_HTTP_PORT: '38217' }, hooks: { X: 1 } }));
     assertEq(routerEnsure.applyCostTuning({ ANTHROPIC_BASE_URL: 'http://100.124.248.83' }), true);
     const on = JSON.parse(fs.readFileSync(settings, 'utf8'));
-    assertEq(on.env, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000', BRAIN_HTTP_PORT: '38217', CLAUDE_CODE_PROMPT_CACHE_TTL: '1h' });
+    assertEq(on.env, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000', BRAIN_HTTP_PORT: '38217', CLAUDE_CODE_PROMPT_CACHE_TTL: '1h', ENABLE_TOOL_SEARCH: 'true' }, 'the user\'s own 1M window is left alone; TTL and Tool Search added');
     assertEq(on.hooks, { X: 1 }, 'the rest of settings.json is untouched');
     fs.mkdirSync(path.dirname(ucfg), { recursive: true });
     fs.writeFileSync(ucfg, JSON.stringify({ costTuning: { enabled: false } }));
     hc._resetCache();
     assertEq(routerEnsure.applyCostTuning({ ANTHROPIC_BASE_URL: 'http://100.124.248.83' }), true);
-    assertEq(JSON.parse(fs.readFileSync(settings, 'utf8')).env, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000', BRAIN_HTTP_PORT: '38217' }, 'off → the user 1M is back');
+    assertEq(JSON.parse(fs.readFileSync(settings, 'utf8')).env, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000', BRAIN_HTTP_PORT: '38217' }, 'off → only what we added is removed, the user 1M stays');
     fs.writeFileSync(stateFile, '{broken');
     assertEq(routerEnsure.applyCostTuning({}), false, 'an unreadable state fails loud and leaves settings.json alone');
   } finally {
@@ -16338,6 +16354,65 @@ test('doctor.checkHooksEvents: evento DESCONHECIDO avisa (warn), nunca crava fai
   assertEq(/typo|mais nov|newer|doc/i.test(r.fix), true, 'o fix admite as DUAS hipoteses');
 });
 
+test('doctor: todo aviso/falha diz o que fazer (fix nao vazio), inclusive Hook events', () => {
+  const rt = doctor.checkHooksEvents({ hooksEvents: ['Stop', 'PostToolUseFailure'] });
+  assertEq(rt.status, 'warn');
+  assertEq(/^What to do:/.test(rt.fix), true, 'runtime-dependent diz a acao');
+  assertEq(/safe to ignore/.test(rt.fix), false, 'sem o "ignore" solto de antes');
+  const unk = doctor.checkHooksEvents({ hooksEvents: ['BogusEvent'] });
+  assertEq(/^What to do:/.test(unk.fix), true);
+  const warns = [
+    doctor.checkModel({ modelPresent: false }),
+    doctor.checkDataDirs({ dataDirCandidates: [{ path: '/a', populated: true }, { path: '/b', populated: true }], env: { data: '/a' } }),
+    doctor.checkDaemon({ daemon: { lockPresent: true, healthy: false } }),
+    doctor.checkCostTuning({ costTuning: { notes: ['X: a -> b'] } }),
+  ];
+  for (const r of warns) {
+    assertEq(r.status, 'warn', r.id);
+    assertEq(typeof r.fix === 'string' && r.fix.length > 10, true, `${r.id} sem acao`);
+  }
+});
+
+test('doctor.checkCostTuning: em dia = ok; divergente = warn com autofix cost-tuning', () => {
+  assertEq(doctor.checkCostTuning({ costTuning: { notes: [] } }).status, 'ok');
+  assertEq(doctor.checkCostTuning({}).status, 'ok');
+  const r = doctor.checkCostTuning({ costTuning: { notes: ['CLAUDE_CODE_AUTO_COMPACT_WINDOW: 153000 → unset (restored)'] } });
+  assertEq(r.status, 'warn');
+  assertEq(r.autofix, 'cost-tuning');
+  assertEq(/153000/.test(r.detail), true);
+});
+
+test('doctor.applyFixes: roda so o autofix de quem nao esta ok; falha de fixer aparece, nao some', () => {
+  const results = [
+    { id: 'a', status: 'warn', autofix: 'ok-fix' },
+    { id: 'b', status: 'ok', autofix: 'ok-fix' },
+    { id: 'c', status: 'warn' },
+    { id: 'd', status: 'warn', autofix: 'boom' },
+    { id: 'e', status: 'warn', autofix: 'missing' },
+  ];
+  const ran = [];
+  const out = doctor.applyFixes(results, { x: 1 }, {
+    'ok-fix': (ctx) => { ran.push(ctx.x); return 'done'; },
+    boom: () => { throw new Error('disk full'); },
+  });
+  assertEq(ran.length, 1, 'so o resultado warn com autofix');
+  assertEq(out.map(o => o.id + ':' + o.ok).join(','), 'a:true,d:false,e:false');
+  assertEq(out[1].message, 'disk full');
+});
+
+test('doctor stale-daemon-lock fixer apaga so o lock informado', () => {
+  const p = path.join(os.tmpdir(), `ccb-doctor-lock-${process.pid}.json`);
+  fs.writeFileSync(p, '{}');
+  const msg = doctor.FIXERS['stale-daemon-lock']({ daemon: { lockPath: p } });
+  assertEq(fs.existsSync(p), false);
+  assertEq(msg.includes(p), true);
+  let threw = false;
+  try { doctor.FIXERS['stale-daemon-lock']({ daemon: {} }); } catch (e) { threw = /lock path unknown/.test(e.message); }
+  assertEq(threw, true, 'sem caminho: falha alto');
+  const d = doctor.checkDaemon({ daemon: { lockPresent: true, healthy: false, lockPath: p } });
+  assertEq(d.autofix, 'stale-daemon-lock');
+});
+
 test('doctor: nenhum evento do NOSSO hooks.json cai como DESCONHECIDO', () => {
   // Guard anti-regressao: o plugin nunca mais pode alarmar contra si mesmo. O
   // veredito pode ser `warn` (temos eventos runtime-dependentes), mas NENHUM
@@ -16362,11 +16437,11 @@ test('doctor.runChecks + summarize: criticalFail flagged, counts add up', () => 
     hooksEvents: ['Stop'],
   };
   const results = doctor.runChecks(ctx);
-  assertEq(results.length, 12);
+  assertEq(results.length, 13);
   const s = doctor.summarize(results);
   assert(s.criticalFail, 'old node → criticalFail');
   assertEq(s.ok, false);
-  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 12);
+  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 13);
 });
 
 test('doctor.runChecks: all-healthy ctx → ok summary', () => {
@@ -25322,29 +25397,31 @@ test('compaction-core.decideTiming: waits for the cache to expire, compacts cold
   assertEq(cmpCore.decideTiming({ busy: false, now: 1, tokens: 900000, lastAnswerAt: 0, ttlMs: 1 }, {}), { action: 'none', reason: 'no-window' }, 'no window reading = no threshold = never act on a guess');
 });
 
-test('compaction-core.decideTurnEnd: an autonomous turn (no person prompt gated) past the threshold compacts at its end, whatever the cache; person turns, busy, cooldown, no reading stay out', () => {
-  const T = { thresholdTokens: 90000, minIntervalMs: 600000 };
-  const d = (s) => cmpCore.decideTurnEnd({ busy: false, gated: false, now: 10_000_000, ...s }, T);
-  assertEq(d({ tokens: 100000 }), { action: 'compact', reason: 'turn-end-over-threshold' }, 'warm or cold: the turn ended, the next one is not held');
-  assertEq(d({ tokens: 89999 }), { action: 'none', reason: 'below-threshold' });
+test('compaction-core.decideTurnEnd: an autonomous turn (no person prompt gated) past the threshold compacts at its end ONLY with a cold cache — warm waits; person turns, busy, cooldown, no reading stay out', () => {
+  const T = { thresholdTokens: 60000, minIntervalMs: 600000 };
+  const NOW = 100_000_000;
+  const d = (s) => cmpCore.decideTurnEnd({ busy: false, gated: false, now: NOW, ttlMs: 3600000, lastAnswerAt: NOW - 3600000, ...s }, T);
+  assertEq(d({ tokens: 100000 }), { action: 'compact', reason: 'turn-end-cache-cold' }, 'idle >= ttl: cold, compact');
+  assertEq(d({ tokens: 100000, lastAnswerAt: NOW - 60000 }), { action: 'wait', reason: 'cache-warm', dueInMs: 3600000 - 60000 }, 'warm: NEVER compacted (14/10: 15 warm compactions in one session)');
+  assertEq(d({ tokens: 59999 }), { action: 'none', reason: 'below-threshold' });
   assertEq(d({ tokens: 100000, gated: true }), { action: 'none', reason: 'prompt-gated' }, 'a person\'s prompt was judged by the gate already');
   assertEq(d({ tokens: 100000, busy: true }), { action: 'none', reason: 'busy' });
-  assertEq(d({ tokens: 100000, lastCompactAt: 10_000_000 - 60000 }), { action: 'none', reason: 'cooldown' }, 'no cost loop');
-  assertEq(d({ tokens: 100000, lastCompactAt: 10_000_000 - 600000 }).action, 'compact', 'cooldown over');
+  assertEq(d({ tokens: 100000, lastCompactAt: NOW - 60000 }), { action: 'none', reason: 'cooldown' }, 'no cost loop');
+  assertEq(d({ tokens: 100000, lastCompactAt: NOW - 600000 }).action, 'compact', 'cooldown over');
+  assertEq(d({ tokens: 100000, lastAnswerAt: undefined }), { action: 'none', reason: 'cache-age-unknown' });
   assertEq(d({}), { action: 'none', reason: 'no-reading' });
   assertEq(cmpCore.decideTurnEnd({ busy: false, gated: false, now: 1, tokens: 900000 }, {}), { action: 'none', reason: 'no-window' });
   const hook = fs.readFileSync(path.join(ROOT, 'hooks', 'compaction.mjs'), 'utf8');
-  assert(/decideTurnEnd\(/.test(hook) && /ctx\.gated = true/.test(hook), 'the module decides at turn.complete and the prompt gate marks the turn as judged');
+  assert(/decideTurnEnd\(/.test(hook) && /ctx\.gated = true/.test(hook) && /turnEndTimer/.test(hook), 'the module decides at turn.complete, re-checks when the cache is due cold, and the prompt gate marks the turn as judged');
 });
 
 test('compaction-core.thresholdFor: a % of the window the engine applies (200K and 1M alike), clamped to the slider range, flagged past the engine point', () => {
   assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }), { thresholdTokens: 300000, percent: 30, aboveEngine: false });
   assertEq(cmpCore.thresholdFor({ window: 300000, engineAutoCompactAt: 267000 }), { thresholdTokens: 90000, percent: 30, aboveEngine: false });
   assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 167000 }, { thresholdPercent: 50 }), { thresholdTokens: 100000, percent: 50, aboveEngine: false });
-  // The 153k window (costTuning): 30% = 46k is below what a native compaction leaves (~48k) → the 90k floor.
-  assertEq(cmpCore.thresholdFor({ window: 153000, engineAutoCompactAt: 120000 }), { thresholdTokens: 90000, percent: 30, aboveEngine: false }, 'never below minThresholdTokens');
-  assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 167000 }).thresholdTokens, 90000, '30% of 200k = 60k → floor');
-  assertEq(cmpCore.thresholdFor({ window: 153000 }, { minThresholdTokens: 0 }).thresholdTokens, 45900, 'the floor is a default, not hard-wired');
+  assertEq(cmpCore.thresholdFor({ window: 153000, engineAutoCompactAt: 120000 }), { thresholdTokens: 45900, percent: 30, aboveEngine: false }, 'pure percent: no token floor');
+  assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 167000 }).thresholdTokens, 60000, '30% of 200k = 60k, not 90k');
+  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }, { minThresholdTokens: 999999 }).thresholdTokens, 300000, 'no floor option exists any more: only the percent counts');
   assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 150000 }, { thresholdPercent: 80 }), { thresholdTokens: 160000, percent: 80, aboveEngine: true }, 'past the engine point: it compacts first — flagged, never silently moved');
   assertEq(cmpCore.thresholdFor({ window: 200000 }, { thresholdPercent: 95 }).percent, 80, 'clamped to the range top');
   assertEq(cmpCore.thresholdFor({ window: 200000 }, { thresholdPercent: 2 }).percent, 10, 'clamped to the range bottom');
