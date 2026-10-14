@@ -1682,3 +1682,10 @@ Lacunas conhecidas do gate de project id (2.29.1):
   **JÁ RESOLVIDO** pelo U4 (`SUBST_ASSIGN`): `X=$(git diff HEAD)` → `git diff HEAD`; `OUT=$(python3 - <<EOF…)` → `python3 heredoc-<digest>` (verificado em 2026-10-02).
 - [x] **Programa chamado por caminho (`./gradlew`) não é ceiling-exempt** (pré-existente): `PROGRAM_NAME` exige nome sem `/`; `./gradlew | tail` → sig 1-token recusada pelo MCP. Ainda curável registrando o script. Avaliar aceitar `./x`/`bin/x` em `isCeilingExempt` (`scripts/lib/oneoff-store.js`).
   **RESOLVIDO em 2026-10-02**: `PROGRAM_NAME` aceita caminho relativo (`./x`, `bin/x`, `../x`); absoluto, `..` no meio e programa vazio seguem com teto. Teste em `isCeilingExempt`.
+
+## CLI de bootstrap do mcp-memory-server (pedido do whatsapp-bridge, 2026-10-13)
+
+- [ ] **Atualizar servidor JÁ rodando só funciona no Windows** — `scripts/mcp-memory-bootstrap.js ensure/update` reusa `lib/mcp-daemon-restart.js`
+  (`restartForBootUpdate`, Windows-only: inspeciona o PID via PowerShell). Em Linux/macOS com daemon antigo vivo o CLI falha alto
+  ("restart auxiliar só é necessário/suportado no Windows"); instalar e subir (daemon parado) funciona em qualquer SO. Correção proposta:
+  inspeção por `/proc/<pid>/cmdline` / `ps` no restart. Só vira trabalho quando houver cliente não-Windows.

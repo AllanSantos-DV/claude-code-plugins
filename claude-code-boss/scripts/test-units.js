@@ -23083,6 +23083,70 @@ test('daemon 401 text names the answering daemon (pid, plugin root, port) so a s
   assert(gate.error.includes(`pid ${process.pid}`) && gate.error.includes(`plugin root ${ROOT}`) && /BRAIN_HTTP_PORT/.test(gate.error), gate.error);
 });
 
+test('mcp-memory-bootstrap CLI: declared minimum, no-op when current, install/start/update paths, loud failures, one JSON line + exit codes', async () => {
+  const boot = require('./mcp-memory-bootstrap.js');
+  const { MIN_SERVER_VERSION } = require('./lib/mcp-min-version.js');
+  assertEq(MIN_SERVER_VERSION, '2.49.0', 'declared official minimum');
+  const mk = (o = {}) => {
+    const calls = [];
+    let daemon = o.daemon || { running: false };
+    let jar = o.jar === undefined ? null : o.jar;
+    const deps = {
+      launcher: { newestInstalledJar: () => jar, bundledJava: () => 'java', launcherPath: () => (o.launcherFile || 'Z:/nope/mcp-memory-daemon.cmd'), compareVersions: require('./lib/mcp-bootstrap/launcher.js').compareVersions },
+      probeDaemon: async () => daemon,
+      checkJava: async () => ({ ok: true, version: '21' }),
+      resolveLatest: async () => ({ version: o.latest || 'v2.50.0' }),
+      downloadServerJar: async () => { calls.push('download'); jar = { version: (o.latest || 'v2.50.0').replace(/^v/, ''), path: 'x.jar' }; },
+      ensureLocalDaemon: async () => { calls.push('ensureLocalDaemon'); if (o.startFails) throw new Error(o.startFails); daemon = { running: true, url: 'http://127.0.0.1:1', version: jar.version }; return { spawned: true }; },
+      restartOnJar: async (p, v) => { calls.push('restart:' + v); daemon = { running: true, url: 'http://127.0.0.1:1', version: o.restartLands || v }; },
+      javaInstallCommand: () => 'winget install java',
+    };
+    return { deps, calls };
+  };
+  // already at the minimum → nothing is touched
+  let m = mk({ daemon: { running: true, url: 'http://127.0.0.1:1', version: '2.49.0' }, jar: { version: '2.49.0', path: 'x' } });
+  let r = await boot.run(['ensure'], m.deps, () => {});
+  assertEq(r.code, 0, 'current exits 0'); assertEq(r.result.action, 'none', 'no action'); assertEq(m.calls.length, 0, 'nothing called');
+  // nothing installed → download the latest, install+start through the launcher
+  m = mk({});
+  r = await boot.run(['ensure'], m.deps, () => {});
+  assertEq(r.code, 0, 'fresh install ok'); assertEq(m.calls.join(','), 'download,ensureLocalDaemon', 'download then bring-up'); assertEq(r.result.version, '2.50.0', 'reports the running version');
+  // live older daemon → download + restart onto the new jar
+  m = mk({ daemon: { running: true, url: 'http://127.0.0.1:1', version: '2.48.0' }, jar: { version: '2.48.0', path: 'old' } });
+  r = await boot.run(['ensure'], m.deps, () => {});
+  assertEq(r.code, 0, 'update ok'); assertEq(m.calls.join(','), 'download,restart:2.50.0', 'download then restart');
+  // jar new enough but daemon down → just start (no download)
+  m = mk({ jar: { version: '2.49.0', path: 'j' } });
+  r = await boot.run(['ensure'], m.deps, () => {});
+  assertEq(m.calls.join(','), 'ensureLocalDaemon', 'start only'); assertEq(r.code, 0, 'start ok');
+  // latest published below the minimum → loud failure, nothing downloaded
+  m = mk({ latest: 'v2.40.0' });
+  r = await boot.run(['ensure'], m.deps, () => {});
+  assertEq(r.code, 1, 'below-min exits 1'); assert(/below the required minimum/.test(r.result.error), 'says why'); assertEq(m.calls.length, 0, 'no download');
+  // restart that lands on an older version → verified, reported failed
+  m = mk({ daemon: { running: true, url: 'u', version: '2.48.0' }, jar: { version: '2.48.0', path: 'old' }, restartLands: '2.48.0' });
+  r = await boot.run(['ensure'], m.deps, () => {});
+  assertEq(r.code, 1, 'unverified update fails'); assert(/below the required minimum/.test(r.result.error), 'names the version');
+  // Java missing → exit 3 with the install command, not a generic failure
+  m = mk({ startFails: 'Java check failed: Java 21+ not found' });
+  r = await boot.run(['ensure'], m.deps, () => {});
+  assertEq(r.code, 3, 'java missing exits 3'); assertEq(r.result.javaInstallCommand, 'winget install java', 'carries the command');
+  // update → target is the latest published release
+  m = mk({ daemon: { running: true, url: 'u', version: '2.49.0' }, jar: { version: '2.49.0', path: 'j' } });
+  r = await boot.run(['update'], m.deps, () => {});
+  assertEq(r.code, 0, 'update ok'); assertEq(m.calls.join(','), 'download,restart:2.50.0', 'goes to latest');
+  // status never changes anything
+  m = mk({ daemon: { running: true, url: 'u', version: '2.49.0' }, jar: { version: '2.49.0', path: 'j' } });
+  r = await boot.run(['status'], m.deps, () => {});
+  assertEq(r.result.meetsMinimum, true, 'status meets'); assertEq(m.calls.length, 0, 'status is read-only');
+  // usage errors: exit 2, one JSON line on stdout
+  const { spawnSync } = require('child_process');
+  const p = spawnSync(process.execPath, [path.join(__dirname, 'mcp-memory-bootstrap.js'), 'ensure', '--min', 'abc'], { encoding: 'utf8', windowsHide: true });
+  assertEq(p.status, 2, 'bad --min exits 2');
+  assertEq(p.stdout.trim().split(/\r?\n/).length, 1, 'one stdout line');
+  assertEq(JSON.parse(p.stdout).ok, false, 'JSON says not ok');
+});
+
 test('setup-tools: user-given server address is used as-is (no Java/download), a running local server is reused with a version check, updates only with backend_update', async () => {
   const { createSetupTools } = require('./lib/setup-tools.js');
   let startOpts = null, javaChecked = 0, cfg = { backend: { type: 'local' } }, state = { status: 'idle' }, updaterCalls = 0, upd = { status: 'updated', from: '2.44.3', version: '2.45.0' };

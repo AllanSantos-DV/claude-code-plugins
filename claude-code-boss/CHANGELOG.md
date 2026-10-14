@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.7.0] - 2026-10-14
+
+### Added
+- **CLI para instalar/atualizar o servidor de memória fora do Claude Code** (`scripts/mcp-memory-bootstrap.js`: `status` · `ensure` · `update`),
+  pedido do whatsapp-bridge. Reusa `lib/mcp-bootstrap/` (Java, download verificado, launcher) e o restart do auto-update. Silencioso (sem janela),
+  uma linha JSON no stdout, código de saída 0/1/2/3 (3 = falta Java). Versão mínima oficial declarada em um lugar só
+  (`lib/mcp-min-version.js`, **2.49.0** — a que o Bridge validou); falha alto se a última release publicada for menor.
+
 ## [3.6.0] - 2026-10-14
 
 ### Added

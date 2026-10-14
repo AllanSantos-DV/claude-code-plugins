@@ -1,6 +1,6 @@
 # claude-code-boss
 
-Plugin para Claude Code Desktop — **v3.6.0**
+Plugin para Claude Code Desktop — **v3.7.0**
 
 **Menos repetição. Mais memória.** Com o claude-code-boss, o seu Claude Code lembra o
 que deu certo e errado em cada projeto, resume a saída barulhenta de comandos que se
@@ -613,6 +613,27 @@ O Claude Code rotula um hook com falha só pelo evento ("UserPromptSubmit hook e
   "Hook X falhou (saída N) → dono: plugin Y". Hook de comando = casamento exato do comando com os `hooks.json` dos plugins
   instalados e os settings (dono certo); hook `mcp_tool` não registra comando, então a resposta é "dono provável"/"candidatos: A, B" —
   nunca certeza inventada. **Limite conhecido:** o stderr de um hook `mcp_tool` do boss não passa pelo prefixo (não há processo nosso).
+
+## Instalar/atualizar o servidor de memória sem o Claude Code
+
+O mesmo bring-up das tools `backend_setup`/`backend_update` existe como **CLI silencioso** para outros programas
+(ex.: o whatsapp-bridge): `scripts/mcp-memory-bootstrap.js`.
+
+```
+node <plugin>/scripts/mcp-memory-bootstrap.js status [--min X.Y.Z]   # só lê
+node <plugin>/scripts/mcp-memory-bootstrap.js ensure [--min X.Y.Z]   # instala se falta, sobe se parado, atualiza se < mínimo
+node <plugin>/scripts/mcp-memory-bootstrap.js update                 # leva à última release publicada
+```
+
+- **Saída:** stdout é exatamente **uma linha JSON** (`ok`, `action`, `url`, `version`, `minServerVersion`, `before`, e `error` quando falha);
+  o progresso vai para o stderr. Nenhum processo filho abre janela (`windowsHide`); chame com `windowsHide: true`.
+- **Código de saída:** `0` ok · `1` falhou (o `error` diz por quê) · `2` uso errado · `3` falta Java 21+ (o JSON traz `javaInstallCommand`;
+  instalar software do sistema é decisão de quem chama).
+- **Versão mínima oficial:** `MIN_SERVER_VERSION` em `scripts/lib/mcp-min-version.js` (hoje **2.49.0**), um só lugar. `--min` sobrescreve.
+  Se a última release publicada for menor que o mínimo, falha alto em vez de fingir.
+- **Onde fica o script:** `installPath` do plugin em `~/.claude/plugins/installed_plugins.json` (chave `claude-code-boss@…`) + `/scripts/mcp-memory-bootstrap.js`.
+  Alternativa sem depender do boss instalado: copiar a pasta `scripts/lib/mcp-bootstrap/` (ver o README dela).
+- **Limite:** atualizar um servidor que já está rodando (reiniciar em cima do jar novo) só é suportado no Windows; instalar e subir funcionam em qualquer SO.
 
 ## Versionamento
 
