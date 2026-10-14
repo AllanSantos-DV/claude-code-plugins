@@ -20,6 +20,8 @@
   (`[BRAIN-CRASH]` falso). Isso acontecia no fallback SIGTERM do swap (no Windows é TerminateProcess, e o lock sobrevivia) e no kill do
   install-local. Quem mata agora apaga o lock daquele pid (`forgetStoppedDaemon`). Testes "forgetStoppedDaemon" e "hard-kill fallback of
   a swap": o segundo falha sem a correção. O registro falso foi removido do `brain-crash.log` desta máquina.
+- **Encontrado e corrigido na hora (smoke do doctor instalado):** o detail do `daemon-node` saía "Node vv24.14.1", porque `process.version`
+  já vem com o "v". Teste "checkDaemonNode" ganhou a asserção.
 - **Registrado (medido, não defeito):** o Node 24 recusa `--no-maglev` em NODE_OPTIONS ("not allowed in NODE_OPTIONS"). Essa flag só chega ao
   daemon via execArgv, ou seja, quando o daemon foi iniciado à mão ou por outra ferramenta.
 - **Encontrado e corrigido na hora:** o lint `require-windows-hide` rejeitava `spawnSync` usado como default de parâmetro. Troquei pelo wrapper
