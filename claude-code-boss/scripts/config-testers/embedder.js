@@ -1,7 +1,7 @@
 'use strict';
 /**
  * config-testers/embedder.js — extracted from dashboard.testEmbedder().
- * Input:  { provider: 'transformers'|'ollama'|'voyage', model: string }
+ * Input:  { provider: 'transformers'|'ollama'|'voyage'|'none', model: string }
  * Output: { ok, dim?, error?, ms }
  */
 
@@ -9,9 +9,11 @@ async function test(input) {
   const t0 = Date.now();
   const provider = input && input.provider;
   const model = ((input && input.model) || '').trim();
-  if (!['transformers', 'ollama', 'voyage'].includes(provider)) {
-    return { ok: false, error: 'Invalid provider (expected transformers|ollama|voyage)', ms: Date.now() - t0 };
+  if (!['transformers', 'ollama', 'voyage', 'none'].includes(provider)) {
+    return { ok: false, error: 'Invalid provider (expected transformers|ollama|voyage|none)', ms: Date.now() - t0 };
   }
+  // Nothing to load: search runs on keywords only.
+  if (provider === 'none') return { ok: true, dim: 0, details: { provider }, ms: Date.now() - t0 };
   if (!model) return { ok: false, error: 'Model is required', ms: Date.now() - t0 };
 
   try {

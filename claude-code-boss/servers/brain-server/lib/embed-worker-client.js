@@ -20,7 +20,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // could die the same way. shutdown() lets the op in flight finish (bounded) first.
 const SHUTDOWN_DRAIN_MS = 30000;
 
-export function createEmbedWorker({ pluginRoot, initTimeoutMs = 120000, callTimeoutMs = 30000, workerPath, shutdownDrainMs = SHUTDOWN_DRAIN_MS } = {}) {
+// `guard` (lib/embedder-guard.js ensureGuard, started at daemon boot) tests the local model in a
+// throwaway process first: the worker is not spawned — and the model not loaded in this
+// process — until it settles, so a native abort there forces keyword-only instead of a crash.
+export function createEmbedWorker({ pluginRoot, initTimeoutMs = 120000, callTimeoutMs = 30000, workerPath, shutdownDrainMs = SHUTDOWN_DRAIN_MS, guard = null } = {}) {
+  const guarded = guard ? Promise.resolve().then(guard).catch((err) => { console.error(`[embed-worker] guard failed: ${err.message}`); }) : null;
   let worker = null;
   let inWorker = 0;          // messages posted to the CURRENT worker and not yet answered
   let drained = null;        // resolves when inWorker drops to 0 (shutdown waits on it)
@@ -77,6 +81,7 @@ export function createEmbedWorker({ pluginRoot, initTimeoutMs = 120000, callTime
   }
 
   async function run(op, arg, timeoutMs, failValue) {
+    if (guarded) await guarded;
     const r = await call(op, arg, timeoutMs);
     if (!r.ok) {
       console.error(`[embed-worker] ${op} failed: ${r.error}`);

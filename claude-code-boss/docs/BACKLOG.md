@@ -26,10 +26,16 @@
   daemon via execArgv, ou seja, quando o daemon foi iniciado à mão ou por outra ferramenta.
 - **Encontrado e corrigido na hora:** o lint `require-windows-hide` rejeitava `spawnSync` usado como default de parâmetro. Troquei pelo wrapper
   `hiddenSpawnSync` (crash-evidence e doctor).
-- [ ] **Aberto (fora do escopo) — sem correção automática do Node:** quando o `node` do PATH é o 25, o plugin só avisa. Proposta: o supervisor
-  procurar um Node 22/24 instalado (nvm, volta, Program Files) e subir o daemon com ele (`servers/brain-server/lib/daemon-supervisor.js`, spawn de `process.execPath`).
-- [ ] **Aberto (fora do escopo) — não existe provider de embedder "off":** numa máquina onde o runtime nativo quebra, a única saída é trocar para
-  ollama/voyage. Proposta: provider `none`, com busca só lexical (`servers/brain-server/lib/embedder*`).
+- [x] **Resolvido (branch `fix/node-autoselect-embedder-none`, 3.9.0, aguardando validação do Allan) — correção automática do Node:** o
+  supervisor e o router sobem num Node 22/24 instalado quando o padrão está fora da faixa (`lib/node-support.js` `pickSupportedNode`;
+  testes "pickSupportedNode", "nodeCandidates", "unsupported default Node", "checkNode: a default Node 25").
+- [x] **Resolvido (mesma branch) — provider de embedder `none`:** manual ou forçado pelo teste de carga (`lib/embedder-guard.js`; testes
+  "embedder-guard", "provider \"none\"", "embed-worker-client guard", "doctor: the load test runs on the daemon's Node").
+- **Encontrado e corrigido na hora:** o lint `require-windows-hide` também rejeita `spawn`/`spawnSync` injetáveis como default de
+  parâmetro no guard. Agora o default chama o binding direto, com `windowsHide: true`.
+- **Encontrado e corrigido na hora:** o timeout do teste de carga assíncrono citava sempre 180s, mesmo com outro `timeoutMs`. Agora cita o
+  valor real (teste "ensureGuard").
+- **Encontrado e corrigido na hora:** as mensagens de fix do doctor só ofereciam ollama/voyage como saída. Agora citam também `none`.
 
 ## Dono do hook que falhou (branch `feat/hook-owner`, pedido do orquestrador, 2026-10-14)
 

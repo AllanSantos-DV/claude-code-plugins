@@ -71,7 +71,16 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
   };
   // ONE embedder worker (G12): the model and its inference leave the main thread that
   // serves every session's HTTP and guards; brain-embedder delegates to it in-process.
-  const embedWorker = createEmbedWorker({ pluginRoot });
+  // Started now, not on the first recall: the local model is load-tested in a throwaway
+  // process (lib/embedder-guard.js) so a native abort cannot take this daemon down with it.
+  let embedderGuard = null;
+  try {
+    embedderGuard = createRequire(import.meta.url)(path.join(pluginRoot, 'scripts', 'lib', 'embedder-guard.js'))
+      .ensureGuard({ data: dataDir });
+  } catch (err) {
+    console.error(`[brain-http] embedder load test unavailable (${err.message}) — the model loads untested`);
+  }
+  const embedWorker = createEmbedWorker({ pluginRoot, guard: embedderGuard && (() => embedderGuard) });
   // The embedder is optional (keyword fallback) and was only ever loaded on demand:
   // an unloadable module must not stop the daemon from booting — say so and go on.
   let embedderModule = null;

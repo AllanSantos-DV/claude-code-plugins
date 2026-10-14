@@ -270,8 +270,8 @@ function validateBrainConfig(data) {
   }
   if ('embedder' in data) {
     if (typeof data.embedder !== 'object') return 'embedder must be object';
-    if ('provider' in data.embedder && !['transformers', 'ollama', 'voyage'].includes(data.embedder.provider)) {
-      return `embedder.provider must be "transformers", "ollama", or "voyage"`;
+    if ('provider' in data.embedder && !['transformers', 'ollama', 'voyage', 'none'].includes(data.embedder.provider)) {
+      return `embedder.provider must be "transformers", "ollama", "voyage", or "none"`;
     }
   }
   if ('curation' in data) {
