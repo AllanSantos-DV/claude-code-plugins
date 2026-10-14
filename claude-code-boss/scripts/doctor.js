@@ -123,7 +123,7 @@ function checkNativeDeps(ctx) {
     return {
       ...base, status: 'fail', detail: broken.join('; '),
       fix: n.sqliteError ? nodeSupport.supportAdvice({ ok: false, version: String(process.versions.node), reason: 'old' })
-        : 'Reinstall the plugin (Claude Code → plugins → update) so its node_modules are complete, or switch the embedder provider to ollama/voyage in the dashboard.',
+        : 'Reinstall the plugin (Claude Code → plugins → update) so its node_modules are complete, or switch the embedder provider to ollama/voyage (or none: keyword-only search) in the dashboard.',
     };
   }
   const embed = n.provider === 'transformers' ? `, onnxruntime binding and sharp for ${n.arch}` : ` (embedder "${n.provider}" loads no native addon)`;
@@ -254,7 +254,7 @@ function checkNativeRuntime(ctx) {
       ...base, critical: true, status: 'fail',
       detail: msvcp ? `msvcp140.dll ${msvcp} is older than ${MIN_MSVCP}: the local embedder (onnxruntime) aborts the Brain daemon with 0xC0000409`
         : 'msvcp140.dll not found in System32: the local embedder (onnxruntime) cannot load',
-      fix: `Install the latest Visual C++ x64 redistributable (${VC_REDIST_URL}), or switch the embedder provider to ollama/voyage in the dashboard.`,
+      fix: `Install the latest Visual C++ x64 redistributable (${VC_REDIST_URL}), or switch the embedder provider to ollama/voyage (or none: keyword-only search) in the dashboard.`,
     };
   }
   // A System32\onnxruntime.dll (Windows 11 ships one) is only reported: Node loads an addon's
@@ -277,12 +277,10 @@ function checkCrashes(ctx) {
 }
 
 const CRASH_WINDOW_DAYS = 14;
-// 0xC0000409 as a child exit status: a native DLL called abort()/__fastfail. Node's own
-// aborts (V8 out-of-memory, process.abort) exit 134 instead — measured on Windows 11 —
-// so 0xC0000409 points at a native module, not at V8.
-const FAST_FAIL_STATUSES = new Set([0xC0000409, 0xC0000409 - 0x100000000]);
-const NODE_ABORT_STATUS = 134;
-const PROBE_TIMEOUT_MS = 180000;
+// Exit-status meanings and the load test itself live in lib/embedder-guard.js, shared with
+// the daemon's boot check.
+const embedderGuard = require('./lib/embedder-guard.js');
+const { FAST_FAIL_STATUSES, NODE_ABORT_STATUS } = embedderGuard;
 
 function checkEmbedderProbe(ctx) {
   const p = ctx.embedderProbe;
@@ -290,20 +288,20 @@ function checkEmbedderProbe(ctx) {
   if (!p) return { ...base, status: 'ok', detail: 'not run here (run `npm run doctor` in a terminal to load the embedder in a separate process)', fix: '' };
   if (p.skipped) return { ...base, status: 'ok', detail: `skipped: ${p.skipped}`, fix: '' };
   if (p.ok) return { ...base, status: 'ok', detail: `the embedder loaded and embedded a test sentence in a separate process (${p.ms} ms, ${p.dims} dims)`, fix: '' };
-  const hex = Number.isInteger(p.status) ? `0x${(p.status >>> 0).toString(16).toUpperCase()}` : null;
+  const hex = embedderGuard.exitHex(p.status);
   const last = p.lastLine ? `; last output: ${p.lastLine}` : '';
   if (FAST_FAIL_STATUSES.has(p.status)) {
     return {
       ...base, critical: true, status: 'fail',
       detail: `loading the embedder ABORTED the process (exit ${hex}, a native DLL failed) — this is what kills the Brain daemon${last}`,
-      fix: `Install the latest Visual C++ x64 redistributable (${VC_REDIST_URL}) and run the doctor again; if it still aborts, switch the embedder provider to ollama/voyage in the dashboard.`,
+      fix: `Install the latest Visual C++ x64 redistributable (${VC_REDIST_URL}) and run the doctor again; if it still aborts, switch the embedder provider to ollama/voyage (or none: keyword-only search) in the dashboard.`,
     };
   }
   if (p.status === NODE_ABORT_STATUS) {
     return {
       ...base, critical: true, status: 'fail',
       detail: `loading the embedder made Node abort (exit 134: V8 fatal error, usually out of memory)${last}`,
-      fix: `Free memory or switch the embedder provider to ollama/voyage in the dashboard; the Node report is in ${p.reportDir}.`,
+      fix: `Free memory or switch the embedder provider to ollama/voyage (or none: keyword-only search) in the dashboard; the Node report is in ${p.reportDir}.`,
     };
   }
   return {
@@ -321,23 +319,26 @@ function checkEmbedderProbe(ctx) {
 // Tests inject `run`; the real one is always hidden.
 function hiddenSpawnSync(cmd, args, opts) { return spawnSync(cmd, args, { ...opts, windowsHide: true }); }
 
-function probeEmbedder({ provider, modelPresent, data, run = hiddenSpawnSync }) {
+// Runs on the Node the daemon runs on (nodeChoice) and records the outcome like the daemon's
+// boot check does: a pass lifts a keyword-only override, a native abort sets one.
+function probeEmbedder({ provider, modelPresent, data, model, node = null, run = hiddenSpawnSync, record = embedderGuard.recordOutcome }) {
   if (provider !== 'transformers') return { skipped: `embedder provider "${provider}" does not load a local model` };
   if (!modelPresent) return { skipped: 'the embedding model is not downloaded yet' };
-  const ce = require('./lib/crash-evidence.js');
-  const embedder = path.join(__dirname, 'brain-embedder.js');
-  const code = `const e=require(${JSON.stringify(embedder)});const t=Date.now();` +
-    `e.init().then(ok=>{if(!ok)throw new Error(e.getStatus().error||'init failed');return e.embed('doctor probe')})` +
-    `.then(v=>{console.log(JSON.stringify({ok:true,dims:v.length,ms:Date.now()-t}))})` +
-    `.catch(err=>{console.log(JSON.stringify({ok:false,error:err.message}));process.exitCode=2})`;
-  fs.mkdirSync(ce.reportDir(data), { recursive: true });
-  const r = run(process.execPath, [...ce.reportFlags(data), '-e', code], { encoding: 'utf8', timeout: PROBE_TIMEOUT_MS, windowsHide: true });
-  const lines = `${r.stdout || ''}\n${r.stderr || ''}`.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-  const result = lines.map(l => { try { return JSON.parse(l); } catch (err) { void err; return null; } }).filter(x => x && typeof x.ok === 'boolean').pop();
-  const lastLine = lines.filter(l => !l.startsWith('{')).pop() || '';
-  if (r.error) return { ok: false, error: r.error.code === 'ETIMEDOUT' ? `no answer in ${PROBE_TIMEOUT_MS / 1000}s` : r.error.message, lastLine, reportDir: ce.reportDir(data) };
-  if (result && result.ok && r.status === 0) return result;
-  return { ok: false, status: r.status, error: result && result.error, lastLine, reportDir: ce.reportDir(data) };
+  const result = embedderGuard.probeSync({ data, execPath: (node && node.execPath) || process.execPath, run });
+  if (model) record(data, { model, node: (node && node.version) || process.version }, result);
+  return result;
+}
+
+/** Keyword-only override written by the load test (lib/embedder-guard.js), when it applies here. */
+function checkEmbedderGuard(ctx) {
+  const g = ctx.embedderGuard;
+  const base = { id: 'embedder-guard', label: 'Semantic search', critical: false };
+  if (!g || !g.forced) return { ...base, status: 'ok', detail: g && g.ok ? `the local embedder passed its load test on ${g.at}` : 'no keyword-only override in place', fix: '' };
+  return {
+    ...base, status: 'warn',
+    detail: `keyword-only: ${g.reason} on ${g.at}. The Brain daemon stays up; recall matches words, not meaning`,
+    fix: `Install the latest Visual C++ x64 redistributable (${VC_REDIST_URL}) and run \`npm run doctor\` again: a load test that passes turns semantic search back on. Or pick another embedder provider (ollama/voyage) in the dashboard.`,
+  };
 }
 
 /** What checkNativeRuntime reads: cheap (a few DLL headers + the config), safe for the SessionStart advisory. */
@@ -374,7 +375,7 @@ function gatherCrashes(data, now = Date.now()) {
   return { file: ce.crashLogFile(data), records };
 }
 
-const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkCrashes, checkHooksEvents];
+const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkHooksEvents];
 
 /** Run every pure check over a ctx snapshot. */
 function runChecks(ctx) {
@@ -466,21 +467,7 @@ function _hasKb(dir) {
 }
 
 function _modelPresent(cacheDir) {
-  try {
-    if (!cacheDir || !fs.existsSync(cacheDir)) return false;
-    // Any .onnx weight anywhere under the cache = model materialized.
-    const stack = [cacheDir];
-    let guard = 0;
-    while (stack.length && guard++ < 5000) {
-      const d = stack.pop();
-      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-        const full = path.join(d, e.name);
-        if (e.isDirectory()) stack.push(full);
-        else if (/\.onnx$/i.test(e.name)) return true;
-      }
-    }
-    return false;
-  } catch (e) { void e; return false; }
+  return embedderGuard.modelPresent(cacheDir);
 }
 
 /** Resolves the parsed /health body, or null when the daemon does not answer 200. */
@@ -537,16 +524,26 @@ async function gatherContext({ probe = false } = {}) {
     hooksEvents = Object.keys(JSON.parse(fs.readFileSync(hp, 'utf8')).hooks || {});
   } catch (e) { void e; }
 
+  const nodeChoice = nodeSupport.pickSupportedNode();
+  let embedderCfg = null;
+  try { embedderCfg = embedderGuard.configured(); } catch (e) { console.error(`[doctor] embedder config: ${e.message}`); }
+  const embedderProbe = probe && embedderCfg
+    ? probeEmbedder({ provider: native.provider, modelPresent, data, model: embedderCfg.model, node: nodeChoice }) : null;
+  // Read after the probe: a load test that just passed has already lifted the override.
+  const guardRec = embedderGuard.readGuard(data);
+  const guardApplies = !!(guardRec && embedderCfg && guardRec.key === embedderGuard.guardKey({ model: embedderCfg.model, node: nodeChoice.version }));
+
   return {
     nodeVersion: process.version,
-    nodeChoice: nodeSupport.pickSupportedNode(),
+    nodeChoice,
     nodeOptions: process.env.NODE_OPTIONS || '',
     env: { root, data: activeDataResolved || data },
     dataDirCandidates: findDataDirCandidates(data, { counts: true }),
     modelCacheDir, modelPresent,
     daemon,
     native,
-    embedderProbe: probe ? probeEmbedder({ provider: native.provider, modelPresent, data }) : null,
+    embedderProbe,
+    embedderGuard: guardApplies ? guardRec : null,
     crashes: gatherCrashes(data),
     hooksEvents,
   };
@@ -583,7 +580,7 @@ if (require.main === module) {
 
 module.exports = {
   runChecks, summarize, gatherContext, formatReport,
-  checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkCrashes, checkHooksEvents,
+  checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkHooksEvents,
   findDataDirCandidates, probeEmbedder, gatherNative, gatherCrashes, MIN_MSVCP,
   STANDARD_EVENTS, RUNTIME_DEPENDENT_EVENTS, MIN_NODE,
 };

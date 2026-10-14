@@ -3949,6 +3949,107 @@ test('G12 brain-embedder.setDelegate: every consumer is routed to the delegate; 
   assert(emb.getStatus().provider !== 'delegate', 'local status is back after setDelegate(null)');
 });
 
+test('embedder-guard: a native abort of the load test forces "none" for that key only; a JS error or a timeout forces nothing; a pass lifts it', async () => {
+  const g = require('./lib/embedder-guard.js');
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-eguard-'));
+  try {
+    const ff = g.recordOutcome(data, { model: 'M' }, { ok: false, status: 0xC0000409, lastLine: 'loading model' });
+    assert(ff.forced === 'none' && /0xC0000409/.test(ff.reason) && /loading model/.test(ff.reason), ff.reason);
+    assert(g.forcedNone(data, 'M'), 'same plugin/Node/arch/model: forced');
+    assertEq(g.forcedNone(data, 'other-model'), null, 'another model is not covered by this record');
+    assertEq(g.forcedNone(data, 'M', { CCB_EMBEDDER_GUARD: 'off' }), null, 'the load test itself ignores the override');
+    assertEq(g.recordOutcome(data, { model: 'M' }, { ok: false, status: 2, error: 'Cannot find module' }), null, 'a JS error is not an abort');
+    assertEq(g.recordOutcome(data, { model: 'M' }, { ok: false, error: 'no answer in 180s' }), null, 'a timeout is not an abort');
+    assert(g.forcedNone(data, 'M'), 'an inconclusive test leaves the record as it was');
+    g.recordOutcome(data, { model: 'M' }, { ok: true, dims: 384, ms: 900 });
+    assertEq(g.forcedNone(data, 'M'), null, 'a passing test lifts the override');
+    assert(g.recordOutcome(data, { model: 'M' }, { ok: false, status: 134 }).forced === 'none', 'Node abort (134) counts too');
+    assert(g.forcedNone(data, 'M', {}) && !g.readGuard(data).key.includes('undefined'), g.readGuard(data).key);
+  } finally { fs.rmSync(data, { recursive: true, force: true }); }
+});
+
+test('embedder-guard.ensureGuard: tests the local model once per key, before the daemon loads it; other providers and a missing model skip', async () => {
+  const g = require('./lib/embedder-guard.js');
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-eguard-'));
+  const cacheDir = path.join(data, 'models');
+  try {
+    let probes = 0;
+    const cfg = { provider: 'transformers', model: 'M' };
+    // The real asynchronous test process, with a child standing in for the aborting model load.
+    const probe = ({ data: d }) => { probes++; return g.probeAsync({ data: d, spawnFn: (exe, args, opts) => require('child_process').spawn(process.execPath, ['-e', "console.log('loading model'); process.exit(134)"], opts) }); };
+    assert((await g.ensureGuard({ data, cfg, cacheDir, probe })).skipped.includes('not downloaded'), 'no model yet');
+    fs.mkdirSync(path.join(cacheDir, 'Xenova', 'M', 'onnx'), { recursive: true });
+    fs.writeFileSync(path.join(cacheDir, 'Xenova', 'M', 'onnx', 'model_quantized.onnx'), 'x');
+    const first = await g.ensureGuard({ data, cfg, cacheDir, probe });
+    assert(first.record && first.record.forced === 'none' && /exit 0x86/.test(first.record.reason) && /loading model/.test(first.record.reason), JSON.stringify(first));
+    const again = await g.ensureGuard({ data, cfg, cacheDir, probe });
+    assert(again.cached && probes === 1, 'cached for this key: not re-tested on every boot');
+    assert((await g.ensureGuard({ data, cfg: { provider: 'voyage', model: 'v' }, cacheDir, probe })).skipped && probes === 1, 'voyage loads no local model');
+    const slow = await g.ensureGuard({ data, cfg: { provider: 'transformers', model: 'N' }, cacheDir, probe: ({ data: d }) => g.probeAsync({ data: d, timeoutMs: 200, spawnFn: (exe, args, opts) => require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], opts) }) });
+    assert(slow.record === null && /no answer in 0.2s/.test(slow.result.error), 'a timeout records nothing: ' + JSON.stringify(slow));
+    assertEq(g.forcedNone(data, 'N'), null);
+  } finally { fs.rmSync(data, { recursive: true, force: true }); }
+});
+
+test('brain-embedder: provider "none" (set, or forced by the load test) is ready, embeds to null (keyword fallback) and the status says why', async () => {
+  const g = require('./lib/embedder-guard.js');
+  const embPath = require.resolve('./brain-embedder.js');
+  const saved = require.cache[embPath];
+  delete require.cache[embPath];
+  const emb = require('./brain-embedder.js'); // fresh module state, no delegate
+  const data = require('./lib/data-dir.js').dataDir();
+  assert(data.startsWith(os.tmpdir()) || data.startsWith(process.env.USERPROFILE), `the suite's temp data dir, never the real one (${data})`);
+  try {
+    const model = emb.getModel();
+    assertEq(emb.getStatus().provider, 'transformers', 'precondition: the shipped provider');
+    g.recordOutcome(data, { model }, { ok: false, status: 0xC0000409 });
+    assertEq(await emb.init(), true, 'none is a working provider: init succeeds');
+    assertEq(await emb.embed('hello'), null);
+    assertEq(await emb.embedBatch(['a', 'b']), null);
+    const st = emb.getStatus();
+    assert(st.provider === 'none' && st.ready && /0xC0000409/.test(st.forced), JSON.stringify(st));
+  } finally {
+    fs.rmSync(g.guardFile(data), { force: true });
+    if (saved) require.cache[embPath] = saved; else delete require.cache[embPath];
+  }
+  const t = await require('./config-testers/embedder.js').test({ provider: 'none', model: '' });
+  assert(t.ok && t.dim === 0, 'the dashboard test accepts none: ' + JSON.stringify(t));
+});
+
+test('embed-worker-client guard: the worker (and the model) is not loaded until the load test settles', async () => {
+  const { createEmbedWorker } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'embed-worker-client.js')).href);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ew-guard-'));
+  const wp = path.join(dir, 'stamp-worker.cjs');
+  fs.writeFileSync(wp, "const { parentPort } = require('worker_threads');\nparentPort.on('message', (m) => parentPort.postMessage({ id: m.id, ok: true, result: Date.now() }));\n");
+  let settledAt = 0;
+  const ew = createEmbedWorker({ pluginRoot: ROOT, workerPath: wp, guard: () => new Promise((r) => setTimeout(() => { settledAt = Date.now(); r(); }, 150)) });
+  try {
+    const servedAt = await ew.init();
+    assert(settledAt > 0 && servedAt >= settledAt, `worker answered at ${servedAt}, guard settled at ${settledAt}`);
+  } finally {
+    await ew.shutdown();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('doctor: the load test runs on the daemon\'s Node and records its outcome; checkEmbedderGuard names a keyword-only override and how to lift it', () => {
+  const g = require('./lib/embedder-guard.js');
+  const data = crashDir(null);
+  const seen = [];
+  const run = (status, stdout = '') => (exe) => { seen.push(exe); return { status, stdout, stderr: 'loading model' }; };
+  const base = { provider: 'transformers', modelPresent: true, data, model: 'M', node: { execPath: '/opt/node24/node', version: '24.1.0' } };
+  doctor.probeEmbedder({ ...base, run: run(0xC0000409) });
+  assertEq(seen[0], '/opt/node24/node', 'the Node the daemon runs on, not the doctor\'s');
+  const rec = g.readGuard(data);
+  assert(rec.forced === 'none' && rec.key === g.guardKey({ model: 'M', node: 'v24.1.0' }), JSON.stringify(rec));
+  const w = doctor.checkEmbedderGuard({ embedderGuard: rec });
+  assert(w.status === 'warn' && !w.critical && /keyword-only/.test(w.detail) && w.fix.includes('vc_redist') && w.fix.includes('npm run doctor'), JSON.stringify(w));
+  doctor.probeEmbedder({ ...base, run: run(0, '{"ok":true,"dims":384,"ms":900}\n') });
+  assert(g.readGuard(data).ok && !g.readGuard(data).forced, 'a passing doctor test lifts the override');
+  assertEq(doctor.checkEmbedderGuard({ embedderGuard: g.readGuard(data) }).status, 'ok');
+  assertEq(doctor.checkEmbedderGuard({}).status, 'ok');
+});
+
 test('C2 curation-redirect: exact task signature+flags rewritten (also inside compounds); variants, files, tee, heredoc and exploration are not; CCB_RAW=1 bypasses', () => {
   const { planRedirect } = require('./lib/curation-redirect.js');
   // A platform-native absolute root: 'C:/repo' is not absolute on Linux (CI), where
@@ -15998,11 +16099,11 @@ test('doctor.runChecks + summarize: criticalFail flagged, counts add up', () => 
     hooksEvents: ['Stop'],
   };
   const results = doctor.runChecks(ctx);
-  assertEq(results.length, 11);
+  assertEq(results.length, 12);
   const s = doctor.summarize(results);
   assert(s.criticalFail, 'old node → criticalFail');
   assertEq(s.ok, false);
-  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 11);
+  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 12);
 });
 
 test('doctor.runChecks: all-healthy ctx → ok summary', () => {

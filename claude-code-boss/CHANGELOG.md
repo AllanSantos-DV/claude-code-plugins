@@ -1,5 +1,22 @@
 # Changelog
 
+## [3.9.0] - 2026-10-14
+
+### Fixed
+- **Node fora da faixa corrigido sozinho.** Com o `node` padrão fora de 22.13 – 24.x (ex.: Node 25), o supervisor procura um Node 22/24
+  instalado (PATH, Program Files, nvm, Volta, fnm, Homebrew), confirma com `--version` oculto e sobe nele o daemon do Brain e o router.
+  O PATH do usuário e o padrão do gerenciador de versões não mudam; só o PATH do processo filho põe o Node escolhido na frente. Sem
+  nenhum instalado, o comportamento é o de antes (aviso + doctor falha). O doctor (`node`) vira warn e nomeia o binário em uso.
+- **O onnxruntime que aborta não derruba mais o daemon.** Antes de o worker carregar o modelo local, um processo descartável testa a
+  carga (`lib/embedder-guard.js`, uma vez por versão do plugin + Node + arquitetura + modelo). Abort nativo (0xC0000409 / 134) grava
+  `<data>/embedder-guard.json` e o embedder passa a `none`: busca só por palavra-chave, daemon no ar. Erro de JS ou timeout não forçam
+  nada (nova tentativa no próximo boot). O teste de carga do doctor roda no Node do daemon e grava o resultado: um teste que passa
+  religa a busca semântica.
+
+### Added
+- **Provider de embedder `none`** (dashboard, config-tester, skill `embedder-switch`): sem modelo e sem busca semântica, só palavra-chave.
+- **Doctor: `embedder-guard`.** Warn quando a busca semântica está desligada pelo teste de carga, com o motivo, a data e como voltar.
+
 ## [3.8.0] - 2026-10-14
 
 ### Fixed

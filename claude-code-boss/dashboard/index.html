@@ -639,12 +639,13 @@ table{font-variant-numeric:tabular-nums}
         <div>
           <label class="field-label">
             <span data-i18n="brain.provider">Provider</span>
-            <span class="tip" data-i18n-tip="tip.provider" data-tip="transformers = local via @huggingface/transformers (offline). ollama/voyage = HTTP externo.">i</span>
+            <span class="tip" data-i18n-tip="tip.provider" data-tip="transformers = local via @huggingface/transformers (offline). ollama/voyage = HTTP externo. none = só palavra-chave.">i</span>
           </label>
           <select id="embedder-provider" onchange="onEmbedderProviderChange()">
             <option value="transformers">transformers (local)</option>
             <option value="ollama">ollama</option>
             <option value="voyage">voyage</option>
+            <option value="none">none (keyword search only)</option>
           </select>
         </div>
         <div>
@@ -1542,7 +1543,7 @@ const I18N = {
     'tip.backendType': 'local = embedded SQLite (default). mcp-memory = external Java server via MCP.',
     'tip.jarPath': 'Path to mcp-memory-server .jar. Leave empty to auto-download from latest release.',
     'tip.javaArgs': 'Args passed to Java process. Default: -Xmx512m (512MB heap).',
-    'tip.provider': 'transformers = local via @huggingface/transformers (offline). ollama/voyage = external HTTP.',
+    'tip.provider': 'transformers = local via @huggingface/transformers (offline). ollama/voyage = external HTTP. none = keyword search only.',
     'tip.model': 'Embedding model. Default: paraphrase-multilingual-MiniLM-L12-v2 (50 langs, 384 dim). Switching requires re-embed: node scripts/brain-reembed.js.',
     'tip.dimensions': 'Embedding vector size (must match the chosen model).',
     'tip.fastTopK': 'Number of results returned in fast searches (in-loop hints). Default: 5.',
@@ -1771,7 +1772,7 @@ const I18N = {
     'tip.backendType': 'local = SQLite embarcado (padrão). mcp-memory = servidor Java externo via MCP.',
     'tip.jarPath': 'Caminho para o .jar do mcp-memory-server. Deixe vazio para baixar automaticamente da última release.',
     'tip.javaArgs': 'Argumentos passados ao processo Java. Padrão: -Xmx512m (heap 512MB).',
-    'tip.provider': 'transformers = local via @huggingface/transformers (offline). ollama/voyage = HTTP externo.',
+    'tip.provider': 'transformers = local via @huggingface/transformers (offline). ollama/voyage = HTTP externo. none = só palavra-chave.',
     'tip.model': 'Modelo de embedding. Padrão: paraphrase-multilingual-MiniLM-L12-v2 (50 idiomas, 384 dim). Trocar requer re-embed: node scripts/brain-reembed.js.',
     'tip.dimensions': 'Tamanho do vetor de embedding (deve casar com o modelo escolhido).',
     'tip.fastTopK': 'Quantidade de resultados em buscas rápidas (hints in-loop). Padrão: 5.',
@@ -3014,11 +3015,15 @@ const EMBEDDER_MODELS = {
     { value: 'voyage-context-3', label: 'voyage-context-3 — long context', dim: 1024, desc: 'Contexto longo (32K). ✨ 200M tokens/mês grátis.' },
     { value: '__custom__', label: 'Custom (advanced)…', dim: 0, desc: 'Qualquer modelo Voyage AI disponível (incluindo voyage-3 legacy, sem free tier).' },
   ],
+  none: [
+    { value: '', label: '— (no model)', dim: 0, desc: 'Nenhum modelo é carregado; o modelo salvo fica guardado para quando voltar a um provider.' },
+  ],
 };
 
 const EMBEDDER_PROVIDER_HELP = {
   transformers: '🌐 <b>Local, offline</b> via @huggingface/transformers (ex-@xenova). Modelos baixam automaticamente do HuggingFace na primeira utilização (cache em <code>~/.cache/huggingface</code>). Clique em <b>Test / Install</b> para forçar o download agora.',
   ollama: '🦙 <b>Local via Ollama</b> (separado). Requer Ollama rodando (<code>ollama serve</code>). Clique em <b>Test / Install</b> para fazer <code>ollama pull &lt;modelo&gt;</code> automaticamente.',
+  none: '🔤 <b>Sem embeddings</b>: a busca do Brain usa só palavra-chave. Para máquinas onde o runtime ONNX não carrega (o Brain também liga isso sozinho quando o teste de carga do modelo derruba o processo — veja <code>npm run doctor</code>).',
   voyage: '☁️ <b>Cloud</b>. ✨ Free tier: 200M tokens/mês grátis nos modelos voyage-4* e voyage-code-3. Crie chave em <code>dashboard.voyageai.com</code> e exporte <code>VOYAGE_API_KEY=pa-xxxx</code> antes de iniciar o dashboard. Clique em <b>Test / Install</b> para validar.',
 };
 
@@ -3027,7 +3032,10 @@ function populateEmbedderModels(provider, currentModel) {
   const list = EMBEDDER_MODELS[provider] || EMBEDDER_MODELS.transformers;
   sel.innerHTML = list.map(m => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.label)}</option>`).join('');
   const known = list.find(m => m.value === currentModel);
-  if (known) {
+  if (provider === 'none') {
+    sel.value = '';
+    setEmbedderCustomMode(false, '', 0);
+  } else if (known) {
     sel.value = currentModel;
     setEmbedderCustomMode(false, currentModel, known.dim);
   } else if (currentModel) {
@@ -3103,7 +3111,7 @@ async function testEmbedder() {
   const status = document.getElementById('embedder-test-status');
   const provider = document.getElementById('embedder-provider').value;
   const model = getEffectiveEmbedderModel();
-  if (!model) { alert('Selecione ou informe um modelo.'); return; }
+  if (!model && provider !== 'none') { alert('Selecione ou informe um modelo.'); return; }
   btn.disabled = true;
   status.style.color = 'var(--fg-muted)';
   status.textContent = (provider === 'transformers' || provider === 'ollama')
@@ -3252,7 +3260,8 @@ function updateEmbedderWarning() {
   const savedModel = (_brainConfig.embedder || {}).model || '';
   const curProvider = document.getElementById('embedder-provider').value;
   const curModel = getEffectiveEmbedderModel();
-  warn.style.display = (curProvider !== savedProvider || curModel !== savedModel) ? '' : 'none';
+  // none keeps the saved model: only a provider change counts there.
+  warn.style.display = (curProvider !== savedProvider || (curProvider !== 'none' && curModel !== savedModel)) ? '' : 'none';
 }
 
 async function loadBrain() {
@@ -3385,14 +3394,17 @@ async function saveBrainBackendConfig() {
   // Embedder
   cfg.embedder = cfg.embedder || {};
   cfg.embedder.provider = document.getElementById('embedder-provider').value;
-  const effectiveModel = getEffectiveEmbedderModel();
-  if (!effectiveModel) {
-    alert('Please choose an embedder model.');
-    return;
+  // none loads no model: the saved model and dimensions stay for a later switch back.
+  if (cfg.embedder.provider !== 'none') {
+    const effectiveModel = getEffectiveEmbedderModel();
+    if (!effectiveModel) {
+      alert('Please choose an embedder model.');
+      return;
+    }
+    cfg.embedder.model = effectiveModel;
+    const dims = parseInt(document.getElementById('embedder-dimensions').value);
+    if (dims > 0) cfg.embedder.dimensions = dims;
   }
-  cfg.embedder.model = effectiveModel;
-  const dims = parseInt(document.getElementById('embedder-dimensions').value);
-  if (dims > 0) cfg.embedder.dimensions = dims;
 
   // KB
   cfg.kb = cfg.kb || {};

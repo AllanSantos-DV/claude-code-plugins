@@ -2,11 +2,14 @@
 /**
  * Brain Embedder — Provider abstraction for text embeddings.
  *
- * Supports three providers, configured via the `embedder` block of brain-config
+ * Supports four providers, configured via the `embedder` block of brain-config
  * (config/brain-config.json ⊕ the user override saved by the dashboard):
  *   "transformers" (default) — @huggingface/transformers (ex-@xenova), ONNX, offline
  *   "ollama"       — Ollama subprocess, local GPU if available
  *   "voyage"       — Voyage AI API, cloud, needs API key
+ *   "none"         — no embeddings: search runs on keywords only (machines where the
+ *                    ONNX runtime does not load). Also forced automatically when the
+ *                    daemon's load test aborted natively (lib/embedder-guard.js).
  *
  * Usage:
  *   const embedder = require('./brain-embedder');
@@ -37,6 +40,7 @@ let _model = 'Xenova/all-MiniLM-L6-v2';
 let _dimensions = 384;
 let _extractor = null;
 let _error = null;
+let _forced = null; // embedder-guard override in effect: why the local model is off
 
 /**
  * Load provider/model/dimensions from the layered brain-config (shipped ⊕ user override).
@@ -52,6 +56,13 @@ function loadConfig() {
     _dimensions = e.dimensions || 384;
   } catch (err) {
     _error = `Config load error: ${err.message}`;
+  }
+  // A native abort recorded by the load test for this plugin/Node/model: loading the model
+  // here would kill this process too. Keyword-only, and the status says why.
+  _forced = null;
+  if (_provider === 'transformers') {
+    const g = require('./lib/embedder-guard.js').forcedNone(embedderDataDir(), _model);
+    if (g) { _provider = 'none'; _forced = g.reason; }
   }
 }
 
@@ -192,6 +203,7 @@ async function init() {
       ok = true;
       break;
     case 'voyage':
+    case 'none':
       ok = true;
       break;
     default:
@@ -250,6 +262,7 @@ function getStatus() {
     dimensions: _dimensions,
     ready: _initialized,
     error: _error,
+    forced: _forced,
   };
 }
 

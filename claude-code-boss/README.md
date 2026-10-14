@@ -1,6 +1,6 @@
 # claude-code-boss
 
-Plugin para Claude Code Desktop — **v3.8.0**
+Plugin para Claude Code Desktop — **v3.9.0**
 
 **Menos repetição. Mais memória.** Com o claude-code-boss, o seu Claude Code lembra o
 que deu certo e errado em cada projeto, resume a saída barulhenta de comandos que se
@@ -54,7 +54,9 @@ Brain KB (busca semântica), execução curada (anti context-bloat) e aprendizad
 ## Pré-requisitos
 
 - [Claude Code Desktop](https://claude.ai/download)
-- **Node.js 22.13 – 24.x no `PATH` do sistema** (recomendado: Node 24 LTS; o Node 25 derrubava o daemon do Brain com 0xC0000409) — requisito #1. O Claude Code dispara os
+- **Node.js 22.13 – 24.x no `PATH` do sistema** (recomendado: Node 24 LTS; o Node 25 derrubava o daemon do Brain com 0xC0000409) — requisito #1. Se o `node` padrão estiver fora
+  dessa faixa e houver um Node 22/24 instalado (PATH, Program Files, nvm, Volta, fnm, Homebrew), o daemon do Brain e o router sobem
+  nele sozinhos — o seu PATH e o padrão do seu gerenciador de versões não são alterados; o doctor mostra qual binário está em uso. O Claude Code dispara os
   hooks e o servidor MCP com `node` puro resolvido pelo **PATH do sistema**, **não**
   pelo Node embutido no Desktop ([claude-code#66183](https://github.com/anthropics/claude-code/issues/66183),
   [#35175](https://github.com/anthropics/claude-code/issues/35175)). Sem Node no
@@ -293,6 +295,11 @@ Base de conhecimento local com 3 layers:
 | `transformers` (padrão) | `embedder.provider: "transformers"` | Zero build; baixa o modelo (~100-200 MB) no install | Zero |
 | `ollama` | `embedder.provider: "ollama"` | Ollama rodando localmente | Zero |
 | `voyage` | `embedder.provider: "voyage"` | Chave API Voyage AI | ~$0.10/1M tokens |
+| `none` | `embedder.provider: "none"` | Nada — busca só por palavra-chave, sem busca semântica | Zero |
+
+Antes de o daemon carregar o modelo local, um processo descartável faz o teste de carga (uma vez por versão do plugin + Node + modelo).
+Se o onnxruntime abortar esse processo (0xC0000409 / 134), o daemon continua no ar com `none` automático e o doctor (`embedder-guard`)
+diz o motivo e como voltar: instalar o Visual C++ redistributable e rodar `npm run doctor` de novo (um teste que passa religa a busca semântica).
 
 **Modelo padrão**: `Xenova/paraphrase-multilingual-MiniLM-L12-v2` (384-dim, 50 idiomas) — recupera lessons EN a partir de prompts em qualquer idioma suportado. Baixado automaticamente no `npm install` para um cache durável (`<CLAUDE_PLUGIN_DATA>/models/`, sobrevive a reinstalls); refaça/verifique com `npm run setup:brain`.
 
