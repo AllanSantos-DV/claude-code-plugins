@@ -137,6 +137,41 @@ Achados fora do escopo (não implementados, por regra):
 - **Trade-off do 1M:** sem janela fixa o engine só compacta em janela−33k (~967k). Em sessões interativas sempre quentes o
   gate/turn-end não age (esperam cache frio); só o engine compacta. Decisão do Allan (ver TTL dinâmico abaixo).
 
+### Corte mecânico + cauda e TTL por sessão em sessão interativa (4ª rodada, 2026-10-14, nada implementado)
+
+Pedido do Allan via orquestrador. Scripts: `docs/research/compaction-inject/tail-exp.js`,
+`docs/research/ttl-switch/interactive-per-session.py` (TUI real via ConPTY, `pywinpty` num venv temporário).
+
+- **O corte medido levava cauda, mas mínima:** `buildBrief` guarda a 1ª mensagem e as 6 últimas na íntegra
+  (`preserveRecentMessages: 6`), que nos 6 casos somavam só 0,4–4,4k tokens. O grosso do brief é o meio condensado
+  (pedidos verbatim + uma linha por ferramenta): 52–58k nos trechos de 350k.
+- **Brief + cauda verbatim (mesmos 6 casos, métrica corrigida, nova ingestão real, 75 docs apagados depois):**
+
+  | caso | resumo do modelo | brief (6 msgs) | brief + cauda 10k | + 20k | + 40k |
+  |---|---|---|---|---|---|
+  | cc-1009 (353k) | 15% · 5,6k | 62% · 52k | 64% · 61k | 64% · 69k | 64% · 88k |
+  | st-1008 (360k) | 51% · 3,8k | 73% · 58k | 78% · 66k | 78% · 82k | 84% · 95k |
+  | cc-1014 (~120k) | 92% · 3,9k | 92% · 7k | 96% · 16k | 100% · 26k | 100% · 35k |
+  | ab-1014 | 100% · 4,7k | 67% · 9k | 83% · 21k | 100% · 29k | 100% · 37k |
+  | wb-1014 | 83% · 3,1k | 72% · 7k | 100% · 16k | 100% · 24k | 100% · 35k |
+  | or-1014 | 94% · 2,5k | 94% · 9k | 97% · 14k | 100% · 24k | 100% · 30k |
+
+  Média: resumo 73%, brief + 10k 86%, + 20k 90%. O bloco de decisões (documentos `decision` da sessão, até 2k tokens;
+  saiu com 0,07–0,8k) somou 0 ponto com cauda e +2,7 em um caso sem cauda: os nomes que ele cita já estão no brief.
+  Tamanho final: 14–21k nos trechos de ~120k e 61–67k nos de 350k (cauda de 10k), contra 2,5–5,6k do resumo. Nos trechos
+  de 120k, uma cauda de 20k já cobre quase o trecho inteiro (~35k de texto), então não é mais um "corte".
+- **TTL por sessão em sessão INTERATIVA (2 rodadas, CC 2.1.293, perfil isolado com o settings de usuário igual ao do boss:
+  `env.CLAUDE_CODE_PROMPT_CACHE_TTL=1h`):** só `--settings '{"env":{"CLAUDE_CODE_PROMPT_CACHE_TTL":"5m"}}'` deu 5m, e as
+  outras sessões abertas ao mesmo tempo seguiram em 1h. `--settings '{"promptCacheTtl":"5m"}'` ficou em 1h (o env do
+  usuário ganha da setting) e a variável no ambiente do processo também (o `env` do settings.json do usuário sobrescreve o
+  ambiente do processo). Um `--settings <arquivo>` trocado de 5m para 1h no meio continuou em 5m (lido só ao abrir).
+  Corrige a 3ª rodada, medida com `-p` e sem settings de usuário, onde a variável do processo funcionava.
+- **Quem pode abrir cada sessão assim:** o boss não abre sessões. O Agent Launcher já abre cada sessão do Claude com
+  `--settings` inline e um bloco `env` próprio (`agent-launcher/core.py:747-793`, `overrides` → `settings_env`). Basta pôr
+  ali `CLAUDE_CODE_PROMPT_CACHE_TTL` (e `CLAUDE_CODE_SUBAGENT_PROMPT_CACHE_TTL`) por conexão/sessão. Projeto externo:
+  reportado ao orquestrador, não editado. Continua fixo desde a abertura: a troca 1h→5m no meio da sessão segue impossível
+  por sessão.
+
 ### TTL por sessão + corte mecânico com os documentos do MCP Memory (3ª rodada, 2026-10-14, nada implementado)
 
 Pedido do Allan via orquestrador. Scripts e dados em `docs/research/ttl-switch/per-session.js`, `real-ttl.js`,
