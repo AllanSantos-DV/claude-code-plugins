@@ -137,6 +137,58 @@ Achados fora do escopo (não implementados, por regra):
 - **Trade-off do 1M:** sem janela fixa o engine só compacta em janela−33k (~967k). Em sessões interativas sempre quentes o
   gate/turn-end não age (esperam cache frio); só o engine compacta. Decisão do Allan (ver TTL dinâmico abaixo).
 
+### Troca do TTL de uma sessão já aberta + corte com cauda pequena (5ª rodada, 2026-10-14, nada implementado)
+
+Pedido do Allan via orquestrador. Scripts: `docs/research/ttl-switch/interactive-switch*.py` (TUI real via ConPTY) e
+`docs/research/compaction-inject/tail-small.js`.
+
+- **Fontes (lidas em 14/10):**
+  - Claude Code Docs, "Claude Code settings" (code.claude.com/docs/en/settings): precedência managed > `--settings` >
+    `.claude/settings.local.json` > `.claude/settings.json` > usuário. "Claude Code watches your settings files and reloads
+    them when they change". "An `env` block inside a settings file is an ordinary key and follows the levels above".
+    O Claude Code tira o `settings.local.json` do git quando ele mesmo cria o arquivo; criado à mão, é preciso pôr no
+    `.gitignore`.
+  - "How Claude Code uses prompt caching": a ordem do TTL, sem nada sobre trocar no meio.
+  - Hooks: `CLAUDE_ENV_FILE` só vale para os comandos do Bash (SessionStart, Setup, CwdChanged, FileChanged), não para o
+    processo. O `ConfigChange` só pode bloquear uma mudança.
+  - Issue anthropics/claude-code#95240: `CLAUDE_CODE_EFFORT_LEVEL` no `env` do `settings.local.json` trava na abertura.
+    Medido: com o TTL isso não acontece. #42251 e #53538 pedem recarga de env e de settings.
+- **Medido (sessões interativas reais, 3 rodadas, 13 sessões, CC 2.1.293; cada sessão na sua pasta; 3 turnos: 1h →
+  grava 5m no `settings.local.json` da pasta → volta para 1h):**
+  - Com o `env` 1h do usuário, como o boss grava hoje: `env.CLAUDE_CODE_PROMPT_CACHE_TTL` no `settings.local.json` da
+    pasta trocou 1h→5m→1h nas 3 rodadas. `promptCacheTtl` na mesma pasta ficou em 1h (o env do usuário ganha da setting).
+  - Com `promptCacheTtl: "1h"` no usuário: `promptCacheTtl` na pasta trocou 1h→5m→1h.
+  - Arquivo já presente na abertura (o caso da #95240): trocou do mesmo jeito.
+  - Sessão aberta como o Agent Launcher abre (`--settings` com bloco `env` sem a chave do TTL): trocou. O env se combina
+    chave a chave.
+  - Sessões de controle em outras pastas: 1h em todos os turnos. O cache já gravado continuou sendo lido depois da troca.
+  - Conclusão: dá para trocar o TTL de UMA sessão já aberta pela pasta dela, sem mudar o cost-tuning. Isso falha se outra
+    sessão abrir na mesma pasta, com `FORCE_PROMPT_CACHING_5M`, com a chave do TTL no `--settings` ou em managed settings.
+- **Calibração do corte, sem bloco de memória (6 casos, métrica corrigida):**
+
+  | contexto | cobertura média | tamanho final (mín–máx, média) |
+  |---|---|---|
+  | resumo do modelo | 73% | 2,5–5,6k (3,9k) |
+  | brief + 6 msgs (hoje) | 77% | 6,9–58k (24k) |
+  | brief + cauda 2k | 81% | 8,3–60k (25k) |
+  | brief + cauda 4k | 83% | 8,3–61k (26k) |
+  | brief + cauda 6k | 83% | 10,5–63k (28k) |
+  | brief + cauda 10k | 86% | 13,6–66k (32k) |
+
+  ~80% com cauda de 2k. O tamanho vem do meio condensado (uma linha por ferramenta), não da cauda: 52–58k nos trechos de
+  350k, 7–9k nos de ~120k.
+- **Desenho (se o Allan aprovar):**
+  1. **Liga a troca.** Ao passar do % configurado, o módulo de compactação (`hooks/compaction.mjs`, sabe o `cwd` da
+     sessão) grava `env.CLAUDE_CODE_PROMPT_CACHE_TTL: "5m"` no `<cwd>/.claude/settings.local.json`: mescla com as outras
+     chaves, guarda o valor anterior e o dono (sessionId) no estado, e só grava se o arquivo estiver fora do git (cria a
+     entrada no `.gitignore` se o boss criar o arquivo).
+  2. **Não troca** se outra sessão viva estiver na mesma pasta (registro `.runtime/session-roots`) ou se houver
+     `FORCE_PROMPT_CACHING_5M` ou o TTL no `--settings`.
+  3. **Corta.** O cache esfria em 5 min e, no próximo prompt (gate) ou no fim do turno, a compactação devolve o `buildBrief`
+     com cauda de ~2k em vez do resumo do modelo (a fase 2 do "shadow" que já existe em `compaction.mjs:363-371`).
+  4. **Volta.** Logo depois do corte, devolve o valor anterior (ou tira a chave). O contexto pós-corte segue em 1h.
+  5. **Se cair no meio:** SessionEnd e o SessionStart seguinte restauram o arquivo cujo dono não está vivo.
+
 ### Corte mecânico + cauda e TTL por sessão em sessão interativa (4ª rodada, 2026-10-14, nada implementado)
 
 Pedido do Allan via orquestrador. Scripts: `docs/research/compaction-inject/tail-exp.js`,
