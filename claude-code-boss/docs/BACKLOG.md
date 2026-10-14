@@ -5,6 +5,7 @@
 - **Encontrado e corrigido na hora:** erro de hook sem o plugin dono na tela (`hook-prefix.js` + `hook-owner.js`, testes "hook-prefix:" e "hook-owner:").
 - **Encontrado e corrigido na hora:** o 401 "missing/invalid token" não dizia quem respondeu — causa real: daemon de teste isolado (`ccb-un-*`, dataDir temporário)
   ocupando a porta de produção 38217. `requestAllowed` agora nomeia pid/raiz/porta; teste "daemon 401 text…". `ensureDaemon` já detectava o daemon de outra instalação.
+- **Encontrado e corrigido na hora (smoke no cache instalado):** hooks declarados como `command`+`args` (a forma de todos os hooks de comando do boss) nunca casavam com o registro do transcript, e o aviso dizia "dono não identificado". `commandMatches` compara comando + cada arg; teste cobre a forma com args.
 - **Encontrado e corrigido na hora (no próprio overflow):** o excedente de falhas (>3) era marcado como já avisado sem ser mostrado; só o mostrado conta como avisado.
 - **Registrado (limite conhecido, não defeito):** o stderr de hooks `mcp_tool` do boss não leva o prefixo — não há processo nosso (o Claude Code chama o daemon). Um shim de
   comando por hook foi avaliado e descartado: dobra o custo de spawn por prompt (~19 hooks) para só recuperar a etiqueta, que a camada B já dá. Registro `mcp_tool` não tem `command`: dono só "provável".
