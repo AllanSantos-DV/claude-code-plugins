@@ -19,8 +19,31 @@
   worker do Stop, e uma ingestão que falha não abre mais o circuit breaker do recall.
 - **Fim do MCP -32000 "Connection closed" na troca de daemon.** O `shutdown()` do daemon do Brain libera a porta na hora e responde às
   requisições já aceitas (`Connection: close`) em vez de derrubá-las.
+- **Compactação só por % da janela do modelo, e só com o cache frio.** Sem piso de 90k e sem a janela fixa de 153k que o boss gravava
+  (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`, agora opt-in em `costTuning.autoCompactWindow`): com ela o engine compactava perto de 120k, no
+  meio do turno e com o cache quente (15 vezes numa sessão, cada uma um resumo mais ~32k regravados). Um 153000 gravado pelo boss é
+  devolvido ao valor anterior. 30% de 200k = 60k; 30% de 1M = 300k.
+- **Sessões autônomas também compactam.** Turnos que o gate do prompt não vê (mensagem de outra sessão, notificação de tarefa, comando
+  na fila) passam do limiar sem compactar. Agora o fim desses turnos compacta, mas só com o cache frio: com o cache quente ele
+  agenda nova checagem para quando o cache vencer. Nada é segurado nem reenviado, e o intervalo mínimo de 10 min vale.
+- **Tool Search sempre ligado** (`ENABLE_TOOL_SEARCH=true` no `env` do settings, `costTuning.toolSearch`): as definições das ferramentas
+  MCP carregam sob demanda. Um valor seu (`false`, `auto`) fica como está.
 
 ### Added
+- **Doctor: custo fixo por mensagem (`node scripts/doctor.js --cost`).** Cruza o que vai em toda mensagem com o uso real dos últimos
+  30 dias (transcripts): servidores MCP e backends de gateway (chamadas, autenticação, tokens das definições medidos por `tools/list`
+  nos servidores HTTP), skills (uso e tokens da descrição), plugins e arquivos de instrução. Diz o que sobra, em tokens e US$ por
+  mensagem e por sessão. Servidor stdio não é iniciado.
+- **Doctor: `--fix` e `--undo`.** `--fix` aplica as correções reversíveis: remove servidor MCP sem uso ou nunca autenticado (só escopo
+  user/local, e só com histórico de pelo menos metade da janela), deixa skill nunca usada só com o nome (`skillOverrides`), desliga plugin
+  sem uso (o boss nunca), acerta as configurações do próprio boss (`env` de custo, plugin ligado). Cada mudança vai antes para um diário
+  (`~/.claude/claude-code-boss/fixed-cost-undo.json`) e `--undo` desfaz tudo, em ordem inversa. Também resolve `cost-tuning` e o lock
+  velho do daemon. Cada aviso do doctor diz o que fazer.
+- **Doctor: `boss-config`.** Confere compactação por % (não janela fixa), Tool Search e o plugin ligado.
+- **Doctor completo na 1ª sessão depois de atualizar** (`doctor-first-run.js`, SessionStart). Uma vez por build (versão + pasta de
+  instalação; duas sessões juntas não repetem): roda todos os checks, aplica só as correções de custo fixo e de configuração do boss e
+  mostra o que achou, o que mudou e como desfazer. Config `fixedCost` (`enabled`, `autoFix`, `days` 7–180, `keep` = nomes que nunca
+  são mexidos).
 - **Provider de embedder `none`** (dashboard, config-tester, skill `embedder-switch`): sem modelo e sem busca semântica, só palavra-chave.
 - **Doctor: `embedder-guard`.** Warn quando a busca semântica está desligada pelo teste de carga, com o motivo, a data e como voltar.
 

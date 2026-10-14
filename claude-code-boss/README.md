@@ -39,7 +39,11 @@ Nada mais a configurar.
   hora em que regravar o cache já seria pago de qualquer jeito. Quem compacta é o resumo do próprio
   Claude Code; a poda do boss (texto intacto, só resultados de ferramenta velhos cortados) só entra
   quando corta 85% ou mais, porque o que ela mantém é relido a cada chamada e sai mais caro que o
-  resumo (medido). O painel mostra o que foi feito e o que o cache pagou.
+  resumo (medido). Sessões autônomas (só mensagens de outra sessão ou de tarefas) compactam no fim do
+  turno, também só com o cache frio. O painel mostra o que foi feito e o que o cache pagou.
+- **Ele corta o custo fixo.** Na primeira sessão depois de cada atualização, o doctor mede o que vai em
+  toda mensagem (servidores MCP, skills, plugins) contra o uso real dos últimos 30 dias, aplica as
+  correções reversíveis e diz o que mudou. `node scripts/doctor.js --undo` desfaz tudo.
 - **Painel em 0 turnos.** Digite `/dashboard`: o painel abre no navegador sem passar
   pelo modelo, nos temas Dark e Light. Numa instalação nova, ele mostra os primeiros passos.
 
@@ -159,6 +163,7 @@ prazo interno de `timeout − 1 s`.
 | SessionStart (via dispatcher) | `project-snapshot.js` | Snapshot do estado do repo (branch/PRs/CI) via `git`/`gh`, cacheado 5min |
 | SessionStart (via dispatcher) | `curation-session.js` | Poda one-hits antigos e injeta panorama de scripts curados; dispara higiene semanal do KB (fire-and-forget) |
 | SessionStart (via dispatcher) | `doctor-advisory.js` | Roda `doctor.js` com cooldown; advisory de 1 linha só se algo crítico falhar (Node/PATH, data-dir fragmentado, daemon, token) |
+| SessionStart (via dispatcher) | `doctor-first-run.js` | 1ª sessão de cada build (versão + pasta de instalação, uma vez): doctor completo + auditoria de custo fixo; aplica só as correções de custo fixo e de configuração do boss (com `fixedCost.autoFix`) e mostra o que achou, o que mudou e como desfazer (`doctor.js --undo`) |
 | SessionStart (via dispatcher) | `review-checklist-advisory.js` | Se existir `.claude/brain-review-checklist.md` (lições recorrentes de código), lembra o `/code-review` nativo de consultá-lo |
 | SessionStart (via dispatcher) | `value-digest.js` | 1×/dia por projeto: uma linha com o que a curadoria economizou nos últimos 7 dias (moldador + redirects), redirects, execuções, custo cru e o maior gargalo; silencioso sem atividade |
 | SessionStart (via dispatcher) | `tuning-advisory.js` | Recomendação determinística de tuning (perfil/curadoria) com cooldown de 6h |
@@ -239,12 +244,14 @@ Módulo de *function hook* do Claude Code (`hooks/compaction.mjs`, declarado em 
   segurado, o `/compact` roda e o mesmo texto é reenviado como seu. Com o cache válido ele espera —
   reescrever o histórico regravaria no cache o que ainda está pago; se o cache nunca esfriar, quem age é a
   compactação automática do próprio engine no limite dela (com a mesma escolha abaixo).
+- **Sessões autônomas**: um turno que nenhum prompt de pessoa abriu (mensagem de outra sessão, notificação de
+  tarefa, comando na fila) não passa pelo gate. No fim dele, passado o limiar, o boss compacta se o cache já
+  esfriou; com o cache quente, agenda nova checagem para quando ele vencer. Nada é segurado nem reenviado.
 - **Limiar**: um % (`thresholdPercent`, padrão 30, faixa 10–80) da janela que o engine aplica naquele
   prompt — o limite do modelo ou uma janela de compactação menor (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`) —, então
-  o mesmo ajuste serve a modelos de 200K e de 1M e acompanha o `/model`. Nunca abaixo de 90k: uma
-  compactação nativa já deixa ~48k, e compactar perto disso a cada cache frio só gastaria. Um limiar além do ponto de
-  auto-compact do engine é sinalizado (o engine compactaria antes). Na prática, com cache de 1 h quase nenhum
-  intervalo esfria (0,19% medidos em 12/10) e quem segura o contexto é a janela do `costTuning` abaixo. Ajuste no slider do painel
+  o mesmo ajuste serve a modelos de 200K e de 1M e acompanha o `/model` (30% de 200k = 60k; 30% de 1M = 300k). Só %:
+  sem piso em tokens e sem janela fixa (uma compactação deixa ~10–20k, abaixo de qualquer % do slider, e o intervalo
+  mínimo impede repetição). Um limiar além do ponto de auto-compact do engine é sinalizado (o engine compactaria antes). Ajuste no slider do painel
   **Compaction & cache** (gravado em `~/.claude/claude-code-boss/hooks/user-config.json`, sobrevive a
   updates; sessões abertas pegam no próximo turno).
   A validade é a **observada** nas respostas reais de cada host (`ephemeral_5m` / `ephemeral_1h`;
@@ -271,14 +278,14 @@ Módulo de *function hook* do Claude Code (`hooks/compaction.mjs`, declarado em 
   contratada, primeira chamada depois de uma compactação). Painel **Compaction & cache** na Home,
   `GET /api/metrics/compaction` e o log de eventos do Insights.
 - **Janela e validade do cache** (`costTuning`, `scripts/lib/cost-tuning.js`): no início de cada sessão o boss
-  grava no `env` do `~/.claude/settings.json` `CLAUDE_CODE_AUTO_COMPACT_WINDOW=153000` (o engine compacta 33k abaixo
-  da janela, perto de 120k, inclusive no meio de um turno longo ou numa sessão delegada, onde o gate acima não age;
-  a chamada de resumo lê o histórico do cache quente, então compactar ali se paga em ~28 chamadas) e, só com chave
-  de API, gateway ou provedor de nuvem, `CLAUDE_CODE_PROMPT_CACHE_TTL=1h` (com 5 min, cada espera maior regravava
-  o contexto inteiro). Uma janela sua maior que a nossa é trocada e guardada em
-  `~/.claude/claude-code-boss/cost-tuning-state.json`; volta com `costTuning.enabled: false` ou no perfil `free`.
-  Um valor que você mudar depois, uma janela menor ou um TTL seu ficam como estão. Config: `cacheTtl` (`1h` ou
-  `null`), `autoCompactWindow` (100000–1000000, ou `null` para não mexer). Vale a partir da próxima sessão.
+  grava no `env` do `~/.claude/settings.json` `ENABLE_TOOL_SEARCH=true` (as definições das ferramentas MCP carregam sob
+  demanda) e, só com chave de API, gateway ou provedor de nuvem, `CLAUDE_CODE_PROMPT_CACHE_TTL=1h` (com 5 min, cada
+  espera maior regravava o contexto inteiro). `CLAUDE_CODE_AUTO_COMPACT_WINDOW` é opt-in (`autoCompactWindow`, desligado
+  por padrão): a janela fixa de 153k fazia o engine compactar perto de 120k, no meio do turno e com o cache quente. O que
+  o boss grava e o valor anterior ficam em `~/.claude/claude-code-boss/cost-tuning-state.json` (um 153000 gravado por
+  versões anteriores volta ao valor de antes); tudo volta com `costTuning.enabled: false` ou no perfil `free`.
+  Um valor que você mudar depois ou um valor seu (TTL, Tool Search `false`/`auto`) ficam como estão. Config: `cacheTtl`
+  (`1h` ou `null`), `toolSearch` (padrão `true`), `autoCompactWindow` (100000–1000000, ou `null`). Vale a partir da próxima sessão.
 
 ## Brain KB
 
@@ -599,7 +606,20 @@ vir de variáveis de ambiente; a precedência é
   com que o daemon realmente roda (`daemon-node`), as dependências nativas (`native-deps`),
   o runtime MSVC, um probe do embedder e os crashes registrados do daemon.
   Mesmo diagnóstico acessível pelo dashboard (botão) e via advisory de
-  SessionStart (só quando algo crítico falha, com cooldown).
+  SessionStart (só quando algo crítico falha, com cooldown). Cada aviso diz o que fazer.
+- **`node scripts/doctor.js --cost`** — custo fixo por mensagem: servidores MCP e backends de gateway (chamadas
+  nos últimos `fixedCost.days` dias, autenticação, tokens das definições medidos por `tools/list` nos servidores
+  HTTP; stdio não é iniciado), skills, plugins e arquivos de instrução, contra o uso real nos transcripts. Mostra o
+  que sobra em tokens e US$ por mensagem e por sessão (estimativa).
+- **`node scripts/doctor.js --fix`** — aplica as correções reversíveis: servidor MCP sem uso ou nunca autenticado
+  removido (só escopo user/local, e só com histórico de pelo menos metade da janela), skill nunca usada só com o
+  nome (`skillOverrides`), plugin sem uso desligado (o boss nunca), configurações do boss (`env` de custo, plugin
+  ligado), lock velho do daemon. Nomes em `fixedCost.keep` nunca são mexidos. Reinicie o Claude Code depois.
+- **`node scripts/doctor.js --undo`** — desfaz as correções, em ordem inversa, a partir do diário gravado antes de
+  cada mudança (`~/.claude/claude-code-boss/fixed-cost-undo.json`); o que falhar fica no diário.
+- **1ª sessão depois de atualizar** — o `doctor-first-run.js` roda tudo isso uma vez por build e aplica só as
+  correções de custo fixo e de configuração do boss. Config `fixedCost` em `hooks-config.json`: `enabled`,
+  `autoFix` (padrão `true`), `days` (30, faixa 7–180), `keep`.
 - **`node scripts/brain-consolidate.js [--project <k>] [--apply]`** — funde
   lições quase-duplicadas (similaridade 0.7–0.9, mesmo tipo) num único
   sobrevivente somando `recurrence`; **dry-run por padrão**. Roda também
