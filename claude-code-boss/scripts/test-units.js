@@ -16413,6 +16413,485 @@ test('doctor stale-daemon-lock fixer apaga so o lock informado', () => {
   assertEq(d.autofix, 'stale-daemon-lock');
 });
 
+// ── fixed-cost audit (lib/fixed-cost.js), doctor integration, first run ────────────────────────────────
+
+const fixedCost = require('./lib/fixed-cost.js');
+const fcTmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), `ccb-fc-${p}-`));
+const fcWrite = (file, text) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, typeof text === 'string' ? text : JSON.stringify(text)); };
+const fcLine = (o) => JSON.stringify(o) + '\n';
+
+test('fixed-cost.parseFrontmatter: aspas, bloco dobrado (>) e ausencia de frontmatter', () => {
+  const fm = fixedCost.parseFrontmatter('---\nname: tdd\ndescription: "Use when writing tests"\nwhen_to_use: >\n  first line\n  second line\nother: 1\n---\nbody');
+  assertEq(fm.name, 'tdd');
+  assertEq(fm.description, 'Use when writing tests');
+  assertEq(fm.when_to_use, 'first line second line');
+  assertEq(fixedCost.parseFrontmatter('no frontmatter here'), {});
+});
+
+test('fixed-cost.toolNamesByServer: agrupa por servidor e conta tokens das linhas', () => {
+  const g = fixedCost.toolNamesByServer(['Read', 'mcp__a__x', 'mcp__a__y_long', 'mcp__plugin_p_srv__t']);
+  assertEq(g.a.count, 2);
+  assertEq(g.a.tokens, fixedCost.estTokens('mcp__a__x\n') + fixedCost.estTokens('mcp__a__y_long\n'));
+  assertEq(g.plugin_p_srv.count, 1);
+  assertEq(Object.keys(g).length, 2, 'ferramenta nativa nao conta como MCP');
+});
+
+test('fixed-cost.scanUsage: conta chamadas por servidor na janela, sessoes, mensagens e o delta de ferramentas do projeto', async () => {
+  const home = fcTmp('scan');
+  const cwd = path.join(home, 'work', 'proj');
+  const now = Date.parse('2026-10-14T12:00:00Z');
+  const own = cwd.replace(/[^a-zA-Z0-9]/g, '-');
+  const ts = (d) => new Date(now - d * 86400000).toISOString();
+  const call = (d, name) => fcLine({ type: 'assistant', timestamp: ts(d), message: { content: [{ type: 'tool_use', name }] } });
+  const delta = (d, names, failed) => fcLine({ type: 'attachment', timestamp: ts(d), attachment: { type: 'deferred_tools_delta', addedNames: names, failedMcpServers: failed } });
+  const s1 = path.join(home, '.claude', 'projects', own, 's1.jsonl');
+  fcWrite(s1, call(1, 'mcp__alpha__read') + call(2, 'mcp__alpha__write') + call(3, 'mcp__plugin_boss_brain-server__brain_search') + fcLine({ type: 'user', timestamp: ts(1) })
+    + delta(5, ['mcp__old__t'], []) + delta(1, ['mcp__alpha__read', 'mcp__beta__x'], ['beta']));
+  const s2 = path.join(home, '.claude', 'projects', 'other', 's2.jsonl');
+  fcWrite(s2, call(1, 'mcp__alpha__read') + delta(0.1, ['mcp__zzz__t'], []));
+  const old = path.join(home, '.claude', 'projects', 'other', 'old.jsonl');
+  fcWrite(old, call(100, 'mcp__ancient__t'));
+  fs.utimesSync(old, new Date(now - 100 * 86400000), new Date(now - 100 * 86400000));
+  fs.utimesSync(s1, new Date(now - 3600000), new Date(now - 3600000));
+  fs.utimesSync(s2, new Date(now - 3600000), new Date(now - 3600000));
+  const u = await fixedCost.scanUsage({ home, cwd, days: 30, now });
+  assertEq(u.sessions, 2, 'o arquivo fora da janela nao conta');
+  assertEq(u.byPrefix.alpha.calls, 3);
+  assertEq(u.byPrefix['plugin_boss_brain-server'].calls, 1);
+  assertEq(u.byPrefix.ancient, undefined);
+  assertEq(u.assistantMessages, 4);
+  assertEq(new Date(u.byPrefix.alpha.lastAt).toISOString(), ts(1));
+  assertEq(u.delta.names, ['mcp__alpha__read', 'mcp__beta__x'], 'delta mais recente do PROPRIO projeto, nao o mais novo de qualquer um');
+  assertEq(u.delta.failed, ['beta']);
+  assertEq(u.delta.own, true);
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('fixed-cost.listMcpServers: usuario, local, .mcp.json do projeto e servidor de plugin, com o prefixo das ferramentas', () => {
+  const home = fcTmp('list');
+  const cwd = path.join(home, 'proj');
+  fcWrite(path.join(home, '.claude.json'), { mcpServers: { 'my server': { type: 'http', url: 'http://x' } }, projects: { [cwd]: { mcpServers: { loc: { command: 'node' } }, disabledMcpjsonServers: ['pj'] } } });
+  fcWrite(path.join(cwd, '.mcp.json'), { mcpServers: { pj: { type: 'http', url: 'http://y' } } });
+  const pl = path.join(home, 'cache', 'boss', '1.0');
+  fcWrite(path.join(pl, '.mcp.json'), { mcpServers: { brain: { type: 'http', url: 'http://z' } } });
+  fcWrite(path.join(home, '.claude', 'plugins', 'installed_plugins.json'), { plugins: { 'boss@mk': [{ installPath: pl, version: '1.0' }] } });
+  fcWrite(path.join(home, '.claude', 'settings.json'), { enabledPlugins: { 'boss@mk': true } });
+  const { servers, errors } = fixedCost.listMcpServers({ home, cwd });
+  assertEq(errors, []);
+  const by = Object.fromEntries(servers.map((s) => [s.name, s]));
+  assertEq(by['my server'].prefix, 'my_server');
+  assertEq(by['my server'].scope, 'user');
+  assertEq(by.loc.scope, 'local');
+  assertEq(by.loc.type, 'stdio');
+  assertEq(by.pj.scope, 'project');
+  assertEq(by.pj.disabled, true);
+  assertEq(by['plugin:boss:brain'].prefix, 'plugin_boss_brain');
+  assertEq(by['plugin:boss:brain'].pluginRoot, pl);
+  fcWrite(path.join(home, '.claude', 'settings.json'), { enabledPlugins: { 'boss@mk': false } });
+  assertEq(fixedCost.listMcpServers({ home, cwd }).servers.some((s) => s.scope === 'plugin'), false, 'plugin desligado nao carrega servidor');
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('fixed-cost.probeHttpTools: servidor MCP HTTP real (SSE + paginacao + sessao) mede as definicoes; 401 vira needsAuth', async () => {
+  const http = require('http');
+  const tools = Array.from({ length: 5 }, (_, i) => ({ name: `tool_${i}`, description: 'd'.repeat(100), inputSchema: { type: 'object' } }));
+  const seen = [];
+  const srv = http.createServer((req, res) => {
+    let b = '';
+    req.on('data', (c) => { b += c; });
+    req.on('end', () => {
+      if (req.url === '/locked') { res.writeHead(401); res.end('no'); return; }
+      const m = JSON.parse(b);
+      seen.push({ method: m.method, session: req.headers['mcp-session-id'], auth: req.headers.authorization });
+      if (m.method === 'initialize') { res.writeHead(200, { 'content-type': 'application/json', 'mcp-session-id': 'S1' }); res.end(JSON.stringify({ jsonrpc: '2.0', id: m.id, result: {} })); return; }
+      if (m.method === 'notifications/initialized') { res.writeHead(202); res.end(); return; }
+      const page = m.params && m.params.cursor ? 1 : 0;
+      const body = { jsonrpc: '2.0', id: m.id, result: { tools: page ? tools.slice(3) : tools.slice(0, 3), ...(page ? {} : { nextCursor: 'c1' }) } };
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(`event: message\ndata: ${JSON.stringify(body)}\n\n`);
+    });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${srv.address().port}`;
+  try {
+    const ok = await fixedCost.probeHttpTools({ name: 's', config: { type: 'http', url: `${base}/mcp`, headers: { Authorization: 'Bearer ${FC_TOKEN:-dflt}' } }, pluginRoot: '' }, { env: { ...process.env, FC_TOKEN: 'abc' } });
+    assertEq(ok.ok, true, JSON.stringify(ok));
+    assertEq(ok.toolCount, 5, 'duas paginas somadas');
+    assertEq(ok.defTokens, fixedCost.estTokens(JSON.stringify(tools)));
+    assertEq(seen.map((x) => x.method), ['initialize', 'notifications/initialized', 'tools/list', 'tools/list']);
+    assertEq(seen[2].session, 'S1', 'o id de sessao do initialize volta nas chamadas seguintes');
+    assertEq(seen[0].auth, 'Bearer abc', 'header com ${VAR} expandido');
+    const locked = await fixedCost.probeHttpTools({ name: 'l', config: { type: 'http', url: `${base}/locked` } });
+    assertEq(locked.ok, false);
+    assertEq(locked.needsAuth, true);
+    const dead = await fixedCost.probeHttpTools({ name: 'd', config: { type: 'http', url: 'http://127.0.0.1:1/mcp' } }, { timeoutMs: 1500 });
+    assertEq(dead.ok, false);
+    assertEq(dead.needsAuth, false);
+    assert(dead.error, 'erro visivel, nao silencioso');
+  } finally { await new Promise((r) => srv.close(r)); }
+});
+
+test('fixed-cost.probeHttpTools: headersHelper roda com a raiz do plugin e seus headers entram; helper quebrado e erro visivel', async () => {
+  let cmdSeen = '';
+  const fetchImpl = async (url, init) => {
+    const m = JSON.parse(init.body);
+    const mk = (status, body, h = {}) => ({ ok: status < 400, status, headers: { get: (k) => h[k.toLowerCase()] || null }, text: async () => (body ? JSON.stringify(body) : '') });
+    if (m.method === 'initialize') return mk(200, { jsonrpc: '2.0', id: 1, result: {} }, { 'content-type': 'application/json' });
+    if (m.method === 'notifications/initialized') return mk(202, null);
+    assertEq(init.headers['x-token'], 'T');
+    return mk(200, { jsonrpc: '2.0', id: m.id, result: { tools: [{ name: 'a' }] } }, { 'content-type': 'application/json' });
+  };
+  const run = (cmd) => { cmdSeen = cmd; return { status: 0, stdout: '{"X-Token":"T"}', stderr: '' }; };
+  const r = await fixedCost.probeHttpTools({ name: 'p', pluginRoot: '/plug', config: { type: 'http', url: 'http://h/mcp', headersHelper: 'node "${CLAUDE_PLUGIN_ROOT}/h.js"' } }, { fetchImpl, run, env: {} });
+  assertEq(r.ok, true, JSON.stringify(r));
+  assertEq(cmdSeen, 'node "/plug/h.js"');
+  const bad = await fixedCost.probeHttpTools({ name: 'p', config: { type: 'http', url: 'http://h/mcp', headersHelper: 'x' } }, { fetchImpl, run: () => ({ status: 1, stdout: '', stderr: 'Error: Cannot find module x\n  at y' }), env: {} });
+  assertEq(bad.ok, false);
+  assert(/headersHelper failed: Error: Cannot find module x/.test(bad.error), bad.error);
+});
+
+const fcServer = (name, scope, extra = {}) => ({ name, prefix: fixedCost.sanitize(name), scope, type: extra.type || 'http', config: extra.config || { type: 'http', url: 'http://x' }, disabled: !!extra.disabled, pluginRoot: '' });
+const fcFacts = (over) => ({
+  days: 30, now: Date.parse('2026-10-14T12:00:00Z'), toolSearch: true,
+  usage: { byPrefix: {}, sessions: 100, assistantMessages: 10000, oldestMs: Date.parse('2026-09-01T00:00:00Z'), delta: { names: [], failed: [], pending: [] } },
+  servers: [], probes: {}, oauth: new Set(), skills: [], overrides: {}, counters: { skillUsage: {}, pluginUsage: {} }, plugins: [], keep: [], ...over,
+});
+
+test('fixed-cost.buildAudit MCP: sem chamadas = unused; 401 sem credencial = needs-auth; sem historico suficiente nao condena; keep protege', () => {
+  const now = Date.parse('2026-10-14T12:00:00Z');
+  const a = fixedCost.buildAudit(fcFacts({
+    servers: [fcServer('used', 'user'), fcServer('dead', 'user'), fcServer('locked', 'user'), fcServer('kept', 'user'), fcServer('auth-ok', 'user'), fcServer('hdr', 'user', { config: { type: 'http', url: 'x', headers: { Authorization: 'k' } } })],
+    keep: ['kept'],
+    oauth: new Set(['auth-ok']),
+    usage: { byPrefix: { used: { calls: 5, lastAt: now - 86400000 } }, sessions: 100, assistantMessages: 10000, oldestMs: Date.parse('2026-09-01T00:00:00Z'), delta: { names: ['mcp__used__a', 'mcp__dead__b'], failed: [], pending: [] } },
+    probes: { locked: { ok: false, needsAuth: true, error: 'HTTP 401' }, 'auth-ok': { ok: false, needsAuth: true, error: 'HTTP 401' }, hdr: { ok: false, needsAuth: true, error: 'HTTP 401' } },
+  }));
+  const v = Object.fromEntries(a.mcp.map((r) => [r.name, r.verdict]));
+  assertEq(v, { used: 'keep', dead: 'unused', locked: 'needs-auth', kept: 'keep', 'auth-ok': 'unused', hdr: 'unused' });
+  assertEq(a.actions.filter((x) => x.kind === 'mcp-remove').map((x) => x.target).sort(), ['auth-ok', 'dead', 'hdr', 'locked']);
+  const thin = fixedCost.buildAudit(fcFacts({ servers: [fcServer('dead', 'user')], usage: { byPrefix: {}, sessions: 3, assistantMessages: 30, oldestMs: now - 2 * 86400000, delta: null } }));
+  assertEq(thin.mcp[0].verdict, 'keep', 'so 2 dias de historico: nao e prova de que nao se usa');
+  assert(/not enough/.test(thin.mcp[0].reason), thin.mcp[0].reason);
+  assertEq(thin.actions.length, 0);
+});
+
+test('fixed-cost.buildAudit MCP: .mcp.json do projeto e servidor de plugin sao reportados, nunca removidos', () => {
+  const a = fixedCost.buildAudit(fcFacts({ servers: [fcServer('pj', 'project'), fcServer('plugin:x:y', 'plugin'), fcServer('off', 'user', { disabled: true })] }));
+  assertEq(a.mcp.map((r) => r.verdict), ['unused', 'unused', 'disabled']);
+  assertEq(a.actions.length, 0);
+  assert(/edit that file/.test(a.mcp[0].reason) && /disable the plugin/.test(a.mcp[1].reason));
+  assertEq(a.mcp[2].perMessageTokens, 0);
+});
+
+test('fixed-cost: backends atras do agregador (MCP Bridge gateway) sao quebrados por backend, com chamadas e tokens; sem uso so e reportado', async () => {
+  assertEq(fixedCost.backendKey('mcp-gateway', 'action__doctor'), 'mcp-gateway/action');
+  assertEq(fixedCost.backendKey('smart-tool', 'smart_search'), null);
+  const home = fcTmp('gw');
+  const cwd = path.join(home, 'p');
+  const now = Date.parse('2026-10-14T12:00:00Z');
+  const f1 = path.join(home, '.claude', 'projects', 'x', 's.jsonl');
+  fcWrite(f1, fcLine({ type: 'assistant', timestamp: new Date(now - 86400000).toISOString(), message: { content: [{ type: 'tool_use', name: 'mcp__mcp-gateway__action__doctor' }, { type: 'tool_use', name: 'mcp__mcp-gateway__action__health' }] } }));
+  fs.utimesSync(f1, new Date(now - 3600000), new Date(now - 3600000));
+  const u = await fixedCost.scanUsage({ home, cwd, days: 30, now });
+  assertEq(u.byBackend['mcp-gateway/action'].calls, 2);
+  assertEq(u.byPrefix['mcp-gateway'].calls, 2);
+  fs.rmSync(home, { recursive: true, force: true });
+  const a = fixedCost.buildAudit(fcFacts({
+    servers: [fcServer('mcp-gateway', 'user')],
+    usage: { byPrefix: { 'mcp-gateway': { calls: 2, lastAt: now } }, byBackend: { 'mcp-gateway/action': { calls: 2, lastAt: now } }, sessions: 100, assistantMessages: 10000, oldestMs: Date.parse('2026-09-01T00:00:00Z'),
+      delta: { names: ['mcp__mcp-gateway__action__doctor', 'mcp__mcp-gateway__action__health', 'mcp__mcp-gateway__bolao__palpite'], failed: [], pending: [], own: true } },
+  }));
+  const b = Object.fromEntries(a.mcp[0].backends.map((x) => [x.name, x]));
+  assertEq(b.action.tools, 2);
+  assertEq(b.action.calls, 2);
+  assertEq(b.action.unused, false);
+  assertEq(b.bolao.unused, true);
+  assertEq(a.actions.length, 0, 'backend do gateway nunca e removido daqui (config de outro projeto)');
+  assert(/backend bolao: 1 tools, .* → unused in 30d: remove it from the gateway's own config/.test(fixedCost.formatAudit(a)), fixedCost.formatAudit(a));
+});
+
+test('fixed-cost.buildAudit: servidor do .mcp.json do projeto que nao foi carregado (nao aprovado) custa zero e nao e alarmado', () => {
+  const a = fixedCost.buildAudit(fcFacts({
+    servers: [fcServer('brain', 'project')],
+    usage: { byPrefix: {}, sessions: 100, assistantMessages: 10000, oldestMs: Date.parse('2026-09-01T00:00:00Z'), delta: { names: ['mcp__other__t'], failed: [], pending: [], own: true } },
+    probes: { brain: { ok: true, toolCount: 36, defTokens: 9934 } },
+  }));
+  assertEq(a.mcp[0].verdict, 'not-loaded');
+  assertEq(a.mcp[0].perMessageTokens, 0);
+  assertEq(a.totals.mcpTokens, 0);
+  assert(!/! brain/.test(fixedCost.formatAudit(a)), 'sem marca de alerta');
+});
+
+test('fixed-cost.buildAudit: custo por mensagem usa os nomes com Tool Search ligado e as definicoes completas com ele desligado', () => {
+  const facts = (toolSearch) => fcFacts({
+    toolSearch, servers: [fcServer('s', 'user')],
+    usage: { byPrefix: { s: { calls: 1, lastAt: 1 } }, sessions: 10, assistantMessages: 100, oldestMs: Date.parse('2026-09-01T00:00:00Z'), delta: { names: ['mcp__s__a', 'mcp__s__b'], failed: [], pending: [] } },
+    probes: { s: { ok: true, toolCount: 2, defTokens: 900 } },
+  });
+  const on = fixedCost.buildAudit(facts(true));
+  assertEq(on.mcp[0].perMessageTokens, fixedCost.estTokens('mcp__s__a\n') * 2);
+  assertEq(on.mcp[0].defTokens, 900);
+  assertEq(fixedCost.buildAudit(facts(false)).mcp[0].perMessageTokens, 900);
+});
+
+test('fixed-cost.buildAudit skills: so skill de usuario/projeto nunca usada vira name-only; usada, ja oculta e keep ficam; skill de plugin nao tem alavanca', () => {
+  const sk = (name, source, l = 100, n = 10) => ({ name, source, file: name, listedTokens: l, nameOnlyTokens: n });
+  const now = Date.parse('2026-10-14T12:00:00Z');
+  const a = fixedCost.buildAudit(fcFacts({
+    skills: [sk('used', 'user'), sk('never', 'user'), sk('hidden', 'user'), sk('kept', 'project'), sk('stale', 'user'), sk('boss:cmd', 'plugin:boss')],
+    overrides: { hidden: 'off' }, keep: ['kept'],
+    counters: { skillUsage: { used: { usageCount: 3, lastUsedAt: now - 86400000 }, stale: { usageCount: 9, lastUsedAt: now - 90 * 86400000 } }, pluginUsage: {} },
+  }));
+  assertEq(a.actions.filter((x) => x.kind === 'skill-name-only').map((x) => x.target).sort(), ['never', 'stale']);
+  assertEq(a.actions[0].tokens, 90);
+  assertEq(a.totals.skillsTotal, 6);
+  assertEq(a.totals.skillsUsed, 1);
+  assertEq(a.totals.skillTokens, 100 + 100 + 0 + 100 + 100 + 100, 'a skill oculta (off) nao custa nada');
+});
+
+test('fixed-cost.buildAudit plugins e economia: plugin sem uso vira plugin-disable (o boss nunca); economia por mensagem e por sessao vem da tabela de precos', () => {
+  const now = Date.parse('2026-10-14T12:00:00Z');
+  const sk = { name: 'x:s', source: 'plugin:x', file: 'f', listedTokens: 500, nameOnlyTokens: 5 };
+  const a = fixedCost.buildAudit(fcFacts({
+    plugins: [{ id: 'x@m', name: 'x', enabled: true }, { id: 'claude-code-boss@m', name: 'claude-code-boss', enabled: true }, { id: 'y@m', name: 'y', enabled: true }, { id: 'z@m', name: 'z', enabled: false }],
+    skills: [sk],
+    counters: { skillUsage: {}, pluginUsage: { 'y@m': { usageCount: 4, lastUsedAt: now - 86400000 } } },
+    pricing: { read: 1, write: 10 },
+  }));
+  const pd = a.actions.filter((x) => x.kind === 'plugin-disable');
+  assertEq(pd.map((x) => x.target), ['x@m'], 'y foi usado, z ja esta desligado, o boss e protegido');
+  assertEq(pd[0].tokens, 500);
+  assertEq(a.savings.tokens, 500);
+  assertEq(a.msgsPerSession, 100);
+  assertEq(a.savings.perMessageUsd, 500 * 1 / 1e6);
+  assertEq(a.savings.perSessionUsd, 500 * (10 + 99 * 1) / 1e6);
+  assert(/US\$/.test(fixedCost.formatAudit(a)) && /Undo: node scripts\/doctor.js --undo/.test(fixedCost.formatAudit(a)));
+});
+
+test('fixed-cost.applyActions/undoActions (settings.json real): name-only, plugin-disable/enable e env-set gravam so a chave e o undo restaura o estado anterior exato', () => {
+  const home = fcTmp('act');
+  const sf = path.join(home, '.claude', 'settings.json');
+  const before = { env: { KEEP: '1', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000' }, skillOverrides: { old: 'off' }, enabledPlugins: { 'a@m': true, 'b@m': false }, hooks: { Stop: [] } };
+  fcWrite(sf, before);
+  const res = fixedCost.applyActions([
+    { kind: 'skill-name-only', target: 'sk1' },
+    { kind: 'skill-name-only', target: 'old' },
+    { kind: 'plugin-disable', target: 'a@m' },
+    { kind: 'plugin-enable', target: 'b@m' },
+    { kind: 'env-set', target: 'CLAUDE_CODE_AUTO_COMPACT_WINDOW', value: undefined },
+    { kind: 'env-set', target: 'ENABLE_TOOL_SEARCH', value: 'true' },
+    { kind: 'bogus', target: 'x' },
+  ], { home });
+  assertEq(res.map((r) => r.ok), [true, true, true, true, true, true, false]);
+  assert(/unknown action kind/.test(res[6].message), 'tipo desconhecido falha alto');
+  assert(res.slice(0, 6).every((r) => /doctor.js --undo/.test(r.undo)), 'cada correcao diz como desfazer');
+  const after = JSON.parse(fs.readFileSync(sf, 'utf8'));
+  assertEq(after.skillOverrides, { old: 'name-only', sk1: 'name-only' });
+  assertEq(after.enabledPlugins, { 'a@m': false, 'b@m': true });
+  assertEq(after.env, { KEEP: '1', ENABLE_TOOL_SEARCH: 'true' });
+  assertEq(after.hooks, { Stop: [] }, 'o que nao e nosso fica intacto');
+  assertEq(JSON.parse(fs.readFileSync(fixedCost.undoPath(home), 'utf8')).length, 6);
+  const undone = fixedCost.undoActions({ home });
+  assertEq(undone.every((u) => u.ok), true, JSON.stringify(undone));
+  assertEq(JSON.parse(fs.readFileSync(sf, 'utf8')), before, 'undo devolve o arquivo exatamente ao que era');
+  assertEq(JSON.parse(fs.readFileSync(fixedCost.undoPath(home), 'utf8')), [], 'diario esvaziado');
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('fixed-cost.applyActions: settings.json ilegivel nao e tocado e o erro aparece; diario ilegivel barra novas mudancas', () => {
+  const home = fcTmp('bad');
+  const sf = path.join(home, '.claude', 'settings.json');
+  fcWrite(sf, '{ not json');
+  const r = fixedCost.applyActions([{ kind: 'skill-name-only', target: 'x' }], { home });
+  assertEq(r[0].ok, false);
+  assert(/unreadable/.test(r[0].message), r[0].message);
+  assertEq(fs.readFileSync(sf, 'utf8'), '{ not json');
+  fcWrite(sf, {});
+  fcWrite(fixedCost.undoPath(home), 'garbage');
+  const r2 = fixedCost.applyActions([{ kind: 'skill-name-only', target: 'x' }], { home });
+  assertEq(r2[0].ok, false);
+  assert(/undo journal .* unreadable/.test(r2[0].message), r2[0].message);
+  assertEq(JSON.parse(fs.readFileSync(sf, 'utf8')), {}, 'sem diario nao muda nada');
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('fixed-cost.applyActions mcp-remove: diario antes de remover, argumentos do claude mcp corretos, undo re-adiciona; falha do CLI fica no diario e e reportada', () => {
+  const home = fcTmp('mcp');
+  const calls = [];
+  const cfg = { type: 'http', url: 'http://h', headers: { A: 'b' } };
+  const run = (bin, args) => { calls.push(args); return { status: 0, stdout: '', stderr: '' }; };
+  const env = { CLAUDE_CODE_EXECPATH: process.execPath };
+  const r = fixedCost.applyActions([{ kind: 'mcp-remove', target: 'dead', scope: 'user', config: cfg }], { home, env, run });
+  assertEq(r[0].ok, true, JSON.stringify(r));
+  assertEq(calls[0], ['mcp', 'remove', 'dead', '-s', 'user']);
+  const j = JSON.parse(fs.readFileSync(fixedCost.undoPath(home), 'utf8'));
+  assertEq(j[0].config, cfg, 'a config completa fica guardada para o undo');
+  const u = fixedCost.undoActions({ home, env, run });
+  assertEq(u[0].ok, true);
+  assertEq(calls[1], ['mcp', 'add-json', 'dead', JSON.stringify(cfg), '-s', 'user']);
+  assertEq(JSON.parse(fs.readFileSync(fixedCost.undoPath(home), 'utf8')), []);
+  const failing = () => ({ status: 1, stdout: '', stderr: 'boom' });
+  const r2 = fixedCost.applyActions([{ kind: 'mcp-remove', target: 'x', scope: 'user', config: cfg }], { home, env, run: failing });
+  assertEq(r2[0].ok, false);
+  assert(/boom/.test(r2[0].message), r2[0].message);
+  const u2 = fixedCost.undoActions({ home, env, run: failing });
+  assertEq(u2[0].ok, false);
+  assertEq(JSON.parse(fs.readFileSync(fixedCost.undoPath(home), 'utf8')).length, 1, 'o que nao deu para restaurar continua no diario');
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('fixed-cost mcp-remove com o claude de verdade (CLAUDE_CONFIG_DIR isolado): remove, a config some do .claude.json, undo traz igual', () => {
+  let bin;
+  try { bin = fixedCost.resolveClaudeBin(); } catch (e) { console.log(`    (pulado: ${e.message})`); return; }
+  const home = fcTmp('real');
+  const env = { ...process.env, CLAUDE_CONFIG_DIR: path.join(home, '.claude'), CLAUDE_CODE_EXECPATH: bin };
+  const cfg = { type: 'http', url: 'http://127.0.0.1:9/mcp' };
+  const sp = require('child_process').spawnSync(bin, ['mcp', 'add-json', 'fc-dead', JSON.stringify(cfg), '-s', 'user'], { env, encoding: 'utf8', windowsHide: true });
+  assertEq(sp.status, 0, sp.stderr);
+  const cj = () => JSON.parse(fs.readFileSync(path.join(home, '.claude', '.claude.json'), 'utf8')).mcpServers || {};
+  assertEq(cj()['fc-dead'], cfg);
+  const r = fixedCost.applyActions([{ kind: 'mcp-remove', target: 'fc-dead', scope: 'user', config: cfg }], { home, env });
+  assertEq(r[0].ok, true, JSON.stringify(r));
+  assertEq(cj()['fc-dead'], undefined, 'servidor removido de verdade');
+  const u = fixedCost.undoActions({ home, env });
+  assertEq(u[0].ok, true, JSON.stringify(u));
+  assertEq(cj()['fc-dead'], cfg, 'undo re-adicionou a config identica');
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('fixed-cost.auditBossConfig: compactacao em %, janela fixa, Tool Search e plugin ligado — cada item diz o que fazer', () => {
+  const base = { compaction: { enabled: true, thresholdPercent: 30 }, costTuning: { autoCompactWindow: null }, pluginId: 'claude-code-boss@m' };
+  const good = fixedCost.auditBossConfig({ ...base, settings: { env: { ENABLE_TOOL_SEARCH: 'true' }, enabledPlugins: { 'claude-code-boss@m': true } } });
+  assertEq(good.items.every((i) => i.status === 'ok'), true, JSON.stringify(good.items));
+  assertEq(good.actions, []);
+  assert(/30% of the model window \(60000 tokens of 200k, 300000 of 1M\)/.test(good.items[0].detail), good.items[0].detail);
+  const bad = fixedCost.auditBossConfig({
+    ...base, compaction: { enabled: false, thresholdPercent: 30 },
+    settings: { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000', ENABLE_TOOL_SEARCH: 'false' }, enabledPlugins: { 'claude-code-boss@m': false } },
+  });
+  const by = Object.fromEntries(bad.items.map((i) => [i.id, i]));
+  assertEq(by['boss-compaction'].status, 'warn');
+  assertEq(by['boss-fixed-window'].status, 'warn');
+  assert(/153000/.test(by['boss-fixed-window'].detail) && /120000/.test(by['boss-fixed-window'].detail), 'diz que 153000 compacta em 120000');
+  assertEq(by['boss-tool-search'].status, 'warn');
+  assertEq(by['boss-plugin'].status, 'fail');
+  assert(bad.items.filter((i) => i.status !== 'ok').every((i) => i.fix.length > 20), 'todo aviso diz o que fazer');
+  assertEq(bad.actions.map((a) => `${a.kind}:${a.target}`).sort(), ['env-set:CLAUDE_CODE_AUTO_COMPACT_WINDOW', 'env-set:ENABLE_TOOL_SEARCH', 'plugin-enable:claude-code-boss@m']);
+  assertEq(bad.actions.find((a) => a.target === 'ENABLE_TOOL_SEARCH').value, 'true');
+  // 1000000 = maior janela de modelo: nao aperta nada (e o valor que o plugin restaura)
+  const million = fixedCost.auditBossConfig({ ...base, settings: { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000', ENABLE_TOOL_SEARCH: 'auto:20' } } });
+  assertEq(million.items.every((i) => i.status === 'ok'), true, JSON.stringify(million.items));
+  // janela fixa que o usuario escolheu pelo costTuning nao e alarmada
+  const opted = fixedCost.auditBossConfig({ ...base, costTuning: { autoCompactWindow: 153000 }, settings: { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000', ENABLE_TOOL_SEARCH: 'true' } } });
+  assertEq(opted.items.find((i) => i.id === 'boss-fixed-window').status, 'ok');
+});
+
+test('doctor.checkBossConfig/checkFixedCost: um resultado por item, autofix compartilhado, e o fixer roda uma vez so', () => {
+  const bossConfig = fixedCost.auditBossConfig({ compaction: { enabled: true, thresholdPercent: 30 }, costTuning: { autoCompactWindow: null }, pluginId: null, settings: { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '100000' } } });
+  const rs = doctor.runChecks({ bossConfig });
+  const boss = rs.filter((r) => /^boss-/.test(r.id));
+  assertEq(boss.map((r) => r.id), ['boss-compaction', 'boss-fixed-window', 'boss-tool-search', 'boss-plugin']);
+  assertEq(boss.filter((r) => r.autofix).map((r) => r.id), ['boss-fixed-window', 'boss-tool-search']);
+  let ran = 0;
+  const out = doctor.applyFixes(rs, { bossConfig }, { 'boss-config': () => { ran++; return 'done'; } });
+  assertEq(ran, 1, 'dois avisos, um fixer');
+  assertEq(out.length, 1);
+  const none = doctor.checkFixedCost({});
+  assertEq(none.status, 'ok');
+  assert(/--cost/.test(none.detail), 'sem medicao, diz como medir');
+  const err = doctor.checkFixedCost({ fixedCost: { error: 'x' } });
+  assertEq(err.status, 'warn');
+  assert(err.fix.length > 20);
+  const audit = fixedCost.buildAudit(fcFacts({ skills: [{ name: 'n', source: 'user', file: 'f', listedTokens: 50, nameOnlyTokens: 5 }] }));
+  const w = doctor.checkFixedCost({ fixedCost: audit });
+  assertEq(w.status, 'warn');
+  assertEq(w.autofix, 'fixed-cost');
+  assert(/--undo/.test(w.fix));
+  assertEq(doctor.checkFixedCost({ fixedCost: fixedCost.buildAudit(fcFacts({})) }).status, 'ok');
+});
+
+test('doctor fixer fixed-cost: resumo agrupado por tipo; falha parcial falha alto e diz o que ja foi aplicado', () => {
+  const home = fcTmp('fx');
+  const old = { up: process.env.USERPROFILE, h: process.env.HOME };
+  process.env.USERPROFILE = home; process.env.HOME = home;
+  try {
+    fcWrite(path.join(home, '.claude', 'settings.json'), {});
+    const msg = doctor.FIXERS['fixed-cost']({ fixedCost: { actions: [{ kind: 'skill-name-only', target: 'a' }, { kind: 'skill-name-only', target: 'b' }, { kind: 'env-set', target: 'ENABLE_TOOL_SEARCH', value: 'true' }] } });
+    assertEq(msg.startsWith('2 skill(s) now listed by name only (loaded on demand): a, b; 1 settings.json env change(s): ENABLE_TOOL_SEARCH.'), true, msg);
+    assert(/--undo/.test(msg));
+    let err = '';
+    try { doctor.FIXERS['fixed-cost']({ fixedCost: { actions: [{ kind: 'skill-name-only', target: 'c' }, { kind: 'bogus', target: 'z' }] } }); } catch (e) { err = e.message; }
+    assert(/FAILED z: unknown action kind bogus/.test(err) && /applied: 1 skill\(s\)/.test(err), err);
+    assertEq(doctor.FIXERS['fixed-cost']({ fixedCost: { actions: [] } }), 'nothing to change');
+  } finally {
+    if (old.up === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = old.up;
+    if (old.h === undefined) delete process.env.HOME; else process.env.HOME = old.h;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('doctor.bossPluginId: tira name@marketplace do caminho do cache; sem cache usa o enabledPlugins', () => {
+  const old = process.env.CLAUDE_PLUGIN_ROOT;
+  try {
+    process.env.CLAUDE_PLUGIN_ROOT = 'C:\\Users\\u\\.claude\\plugins\\cache\\allansantos-plugins\\claude-code-boss\\abc123';
+    assertEq(doctor.bossPluginId({}), 'claude-code-boss@allansantos-plugins');
+    process.env.CLAUDE_PLUGIN_ROOT = '/home/u/.claude/plugins/cache/mk/claude-code-boss/3.9.0/';
+    assertEq(doctor.bossPluginId({}), 'claude-code-boss@mk');
+    process.env.CLAUDE_PLUGIN_ROOT = '/repo/claude-code-boss';
+    assertEq(doctor.bossPluginId({ enabledPlugins: { 'other@x': true, 'claude-code-boss@mk2': true } }), 'claude-code-boss@mk2');
+    assertEq(doctor.bossPluginId({}), null);
+  } finally { if (old === undefined) delete process.env.CLAUDE_PLUGIN_ROOT; else process.env.CLAUDE_PLUGIN_ROOT = old; }
+});
+
+test('hooks-config.getFixedCost: padroes (ligado, autoFix, 30 dias) e a config do usuario e limitada', () => {
+  const c = require('./lib/hooks-config.js').getFixedCost();
+  assertEq(c.enabled, true);
+  assertEq(c.autoFix, true);
+  assertEq(c.days, 30);
+  assertEq(c.keep, []);
+});
+
+test('doctor-first-run: so a primeira sessao do build roda, aplica so correcoes de custo, avisa e diz como desfazer', async () => {
+  const firstRun = require('./doctor-first-run.js');
+  const dir = fcTmp('first');
+  const audit = fixedCost.buildAudit(fcFacts({ skills: [{ name: 'n', source: 'user', file: 'f', listedTokens: 50, nameOnlyTokens: 5 }] }));
+  const applied = [];
+  const results = [
+    { id: 'fixed-cost', label: 'Fixed cost', status: 'warn', detail: 'd', fix: 'f', autofix: 'fixed-cost' },
+    { id: 'stale', label: 'Daemon', status: 'warn', detail: 'lock', fix: 'run --fix', autofix: 'stale-daemon-lock' },
+    { id: 'hooks-events', label: 'Hook events', status: 'warn', detail: 'x', fix: 'What to do: nothing' },
+  ];
+  const fakeDoctor = {
+    gatherContext: async (o) => { assertEq(o.audit, true); return { fixedCost: audit }; },
+    runChecks: () => results,
+    FIXERS: { 'fixed-cost': () => { applied.push('fixed-cost'); return '1 skill now lists by name only'; }, 'stale-daemon-lock': () => { applied.push('LOCK'); return 'no'; }, 'boss-config': () => 'x' },
+    applyFixes: (rs, ctx, fixers) => rs.filter((r) => r.autofix && fixers[r.autofix]).map((r) => ({ id: r.id, ok: true, message: fixers[r.autofix](ctx) })),
+  };
+  const cfg = { enabled: true, autoFix: true, days: 30, keep: [] };
+  const text = await firstRun.run({}, { dir, key: 'k1', doctor: fakeDoctor, cfg });
+  assert(/First run of build k1/.test(text), text);
+  assert(/Applied \(fixed-cost\): 1 skill now lists by name only/.test(text), text);
+  assert(/doctor.js --undo/.test(text) && /Restart Claude Code/.test(text), 'diz como desfazer e reiniciar');
+  assert(/Warning — Daemon: lock → run --fix/.test(text) && /Warning — Hook events: x → What to do: nothing/.test(text), 'o que nao foi corrigido aparece com o que fazer');
+  assertEq(applied, ['fixed-cost'], 'o lock do daemon nao e tocado pelo primeiro run');
+  assertEq(await firstRun.run({}, { dir, key: 'k1', doctor: fakeDoctor, cfg }), null, 'segunda sessao do mesmo build: silencio');
+  const t2 = await firstRun.run({}, { dir, key: 'k2', doctor: fakeDoctor, cfg: { ...cfg, autoFix: false } });
+  assert(/First run of build k2/.test(t2) && !/Applied/.test(t2), 'build novo roda de novo; autoFix desligado so avisa');
+  assertEq(applied.length, 1);
+  assertEq(await firstRun.run({}, { dir, key: 'k3', doctor: fakeDoctor, cfg: { ...cfg, enabled: false } }), null, 'desligado na config');
+  assertEq(firstRun.claim(firstRun.markerPath('k9', dir)), true);
+  assertEq(firstRun.claim(firstRun.markerPath('k9', dir)), false, 'o segundo que chega ao mesmo tempo perde a corrida');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('doctor-first-run.composeNotice: auditoria que falhou aparece e correcao que falhou nao e dada como feita', () => {
+  const firstRun = require('./doctor-first-run.js');
+  const t = firstRun.composeNotice({ key: 'k', results: [], fixes: [{ id: 'fixed-cost', ok: false, message: 'FAILED x: boom' }], audit: { error: 'no transcripts' } });
+  assert(/Fixed-cost audit failed: no transcripts/.test(t), t);
+  assert(/FIX FAILED \(fixed-cost\): FAILED x: boom/.test(t), t);
+  assert(!/Restart Claude Code/.test(t), 'nada aplicado, nada a reiniciar');
+});
+
 test('doctor: nenhum evento do NOSSO hooks.json cai como DESCONHECIDO', () => {
   // Guard anti-regressao: o plugin nunca mais pode alarmar contra si mesmo. O
   // veredito pode ser `warn` (temos eventos runtime-dependentes), mas NENHUM
@@ -16437,11 +16916,11 @@ test('doctor.runChecks + summarize: criticalFail flagged, counts add up', () => 
     hooksEvents: ['Stop'],
   };
   const results = doctor.runChecks(ctx);
-  assertEq(results.length, 13);
+  assertEq(results.length, 15);
   const s = doctor.summarize(results);
   assert(s.criticalFail, 'old node → criticalFail');
   assertEq(s.ok, false);
-  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 13);
+  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 15);
 });
 
 test('doctor.runChecks: all-healthy ctx → ok summary', () => {
@@ -16883,18 +17362,19 @@ test('user-prompt-submit-dispatcher.withTimeout: distinguishes a genuine error f
   assertEq(okOutcome.value, 'VALUE');
 });
 
-test('session-start-dispatcher.DETECTORS: 16 detectors, correct order + shape (model-router-ensure excluded)', () => {
+test('session-start-dispatcher.DETECTORS: 17 detectors, correct order + shape (model-router-ensure excluded)', () => {
   const d = require('./session-start-dispatcher.js');
   const names = d.DETECTORS.map(x => x.name);
   assertEq(names, [
     'brain-daemon-ensure', 'memory-rotate', 'session-whitelist', 'brain-health',
-    'project-snapshot', 'curation-session', 'doctor-advisory',
+    'project-snapshot', 'curation-session', 'doctor-advisory', 'doctor-first-run',
     'review-checklist-advisory', 'tuning-advisory', 'value-digest', 'project-identity-advisory',
     'backend-onboarding-advisory', 'marketplace-autoupdate', 'graph-warm', 'powershell-advisory', 'policy-inject',
   ]);
   assert(d.DETECTORS.every(x => typeof x.mod.run === 'function'), 'every detector exposes run()');
   assert(!names.includes('model-router-ensure'), 'model-router-ensure must stay OUT (process.exit() in its main flow)');
   assertEq(d.DETECTORS.find(x => x.name === 'brain-daemon-ensure').timeoutMs, 120000);
+  assertEq(d.DETECTORS.find(x => x.name === 'doctor-first-run').timeoutMs, 60000, 'o audit de custo le ~30 dias de transcripts: precisa de folga');
   const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8'));
   const sessionCommands = hooks.hooks.SessionStart.flatMap(group => group.hooks || []).map(h => (h.args || []).join(' '));
   assertEq(sessionCommands.filter(cmd => /mcp-memory-auto-update/.test(cmd)).length, 0,
