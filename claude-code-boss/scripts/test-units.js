@@ -23019,6 +23019,65 @@ test('update-notice: "version available" cached 6h and told once per version; "p
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
 
+test('hook-prefix: every stderr line carries [claude-code-boss:<hook>] once; existing tags are not doubled', () => {
+  const { prefixLines, install } = require('./lib/hook-prefix.js');
+  assertEq(prefixLines('boom\nsecond\n', 'x'), '[claude-code-boss:x] boom\n[claude-code-boss:x] second\n', 'each line, trailing newline kept');
+  assertEq(prefixLines('[claude-code-boss:y] already\n', 'x'), '[claude-code-boss:y] already\n', 'no double tag');
+  const seen = [];
+  const fake = { write: (c) => { seen.push(c); return true; } };
+  install('hk', fake); install('hk', fake);
+  fake.write('oops\n');
+  assertEq(seen, ['[claude-code-boss:hk] oops\n'], 'installed once, prefixed once');
+  let threw = false;
+  try { install(''); } catch (err) { threw = /needs a hook name/.test(err.message); }
+  assert(threw, 'name required');
+});
+
+test('hook-owner: failure/timeout records from the transcript name the owning plugin (certain for commands, candidates for mcp_tool), told once, never faked', () => {
+  const ho = require('./lib/hook-owner.js');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-hookowner-'));
+  try {
+    const cfg = path.join(base, 'claude'); const inst = path.join(base, 'plug-boss'); const inst2 = path.join(base, 'plug-other');
+    const w = (f, o) => { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, JSON.stringify(o)); };
+    const cmd = 'node ${CLAUDE_PLUGIN_ROOT}/hooks/f.js';
+    w(path.join(inst, 'hooks', 'hooks.json'), { hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: cmd }, { type: 'mcp_tool', server: 'plugin:boss:brain', tool: 'brain_retrieve_context' }] }] } });
+    w(path.join(inst2, 'hooks', 'hooks.json'), { hooks: { UserPromptSubmit: [{ hooks: [{ type: 'mcp_tool', server: 'other', tool: 'other_tool' }] }], SessionStart: [{ matcher: 'startup', hooks: [{ type: 'command', command: 'node s.js' }] }] } });
+    w(path.join(cfg, 'plugins', 'installed_plugins.json'), { version: 2, plugins: { 'boss@m': [{ installPath: inst }], 'other@m': [{ installPath: inst2 }] } });
+    w(path.join(cfg, 'settings.json'), { hooks: { Stop: [{ hooks: [{ type: 'command', command: 'node guard.js' }] }] } });
+    const env = { CLAUDE_CONFIG_DIR: cfg };
+    const rec = (uuid, a) => JSON.stringify({ type: 'attachment', uuid, attachment: a });
+    const tp = path.join(base, 't.jsonl');
+    fs.writeFileSync(tp, [
+      rec('u1', { type: 'hook_non_blocking_error', hookName: 'UserPromptSubmit', hookEvent: 'UserPromptSubmit', stderr: 'x', exitCode: 1, command: cmd }),
+      rec('u2', { type: 'hook_non_blocking_error', hookName: 'UserPromptSubmit', hookEvent: 'UserPromptSubmit', stderr: 'MCP error', exitCode: 1 }),
+      rec('u3', { type: 'hook_cancelled', hookName: 'Stop', hookEvent: 'Stop', command: 'node guard.js', timedOut: true, timeoutMs: 1000 }),
+      rec('u4', { type: 'hook_non_blocking_error', hookName: 'SessionStart:startup', hookEvent: 'SessionStart', stderr: 'x', exitCode: 2, command: 'node nobody.js' }),
+      rec('ok', { type: 'hook_success', hookName: 'Stop', hookEvent: 'Stop' }),
+      'not json {',
+    ].join('\n') + '\n');
+    const event = { transcript_path: tp, session_id: 's1', cwd: base };
+    const stateDir = path.join(base, 'global');
+    const msg = ho.takeFailureNotices({ event, stateDir, env });
+    assert(/UserPromptSubmit falhou \(saída 1\) → dono: plugin boss\./.test(msg), msg);
+    assert(/UserPromptSubmit falhou \(saída 1\) → candidatos: plugin boss, plugin other\./.test(msg) || /candidatos: plugin boss, plugin other/.test(msg), msg);
+    assert(/Hook Stop estourou o tempo \(1s\) → dono: settings do usuário/.test(msg), msg);
+    assert(!/u4|nobody/.test(msg) && /\(\+1 falhas de hook\)/.test(msg), `capped at 3 + remainder: ${msg}`);
+    const again = ho.takeFailureNotices({ event, stateDir, env });
+    assert(again && /SessionStart:startup falhou \(saída 2\) → dono não identificado/.test(again) && !/Stop/.test(again), `only the remainder is new: ${again}`);
+    assertEq(ho.takeFailureNotices({ event, stateDir, env }), null, 'told once');
+    assertEq(ho.takeFailureNotices({ event: { ...event, session_id: 's2', transcript_path: path.join(base, 'missing.jsonl') }, stateDir, env }), null, 'no transcript → silent');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('daemon 401 text names the answering daemon (pid, plugin root, port) so a squatted port is visible', async () => {
+  const { pathToFileURL } = require('url');
+  const dc = await import(pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'daemon-common.js')).href);
+  const gate = dc.requestAllowed({ headers: {} }, 'secret', path.join(os.tmpdir(), 'ccb-x'));
+  assert(!gate.ok && gate.code === 401, JSON.stringify(gate));
+  assert(/^missing\/invalid token — read it from .*brain-http\.token/.test(gate.error), gate.error);
+  assert(gate.error.includes(`pid ${process.pid}`) && gate.error.includes(`plugin root ${ROOT}`) && /BRAIN_HTTP_PORT/.test(gate.error), gate.error);
+});
+
 test('setup-tools: user-given server address is used as-is (no Java/download), a running local server is reused with a version check, updates only with backend_update', async () => {
   const { createSetupTools } = require('./lib/setup-tools.js');
   let startOpts = null, javaChecked = 0, cfg = { backend: { type: 'local' } }, state = { status: 'idle' }, updaterCalls = 0, upd = { status: 'updated', from: '2.44.3', version: '2.45.0' };

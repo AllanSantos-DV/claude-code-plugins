@@ -1,5 +1,17 @@
 # Backlog
 
+## Dono do hook que falhou (branch `feat/hook-owner`, pedido do orquestrador, 2026-10-14)
+
+- **Encontrado e corrigido na hora:** erro de hook sem o plugin dono na tela (`hook-prefix.js` + `hook-owner.js`, testes "hook-prefix:" e "hook-owner:").
+- **Encontrado e corrigido na hora:** o 401 "missing/invalid token" não dizia quem respondeu — causa real: daemon de teste isolado (`ccb-un-*`, dataDir temporário)
+  ocupando a porta de produção 38217. `requestAllowed` agora nomeia pid/raiz/porta; teste "daemon 401 text…". `ensureDaemon` já detectava o daemon de outra instalação.
+- **Encontrado e corrigido na hora (no próprio overflow):** o excedente de falhas (>3) era marcado como já avisado sem ser mostrado; só o mostrado conta como avisado.
+- **Registrado (limite conhecido, não defeito):** o stderr de hooks `mcp_tool` do boss não leva o prefixo — não há processo nosso (o Claude Code chama o daemon). Um shim de
+  comando por hook foi avaliado e descartado: dobra o custo de spawn por prompt (~19 hooks) para só recuperar a etiqueta, que a camada B já dá. Registro `mcp_tool` não tem `command`: dono só "provável".
+- **Registrado:** teste "G12 embed-worker … must not block the main loop" falhou uma vez (atraso 172 ms) sob carga da máquina e passou nas 2 reexecuções seguintes — sensível a carga, `scripts/test-units.js`.
+  Proposta: tolerância maior ou medição relativa.
+- **Comentário no issue #86368:** ver resultado no relatório ao orquestrador.
+
 ## Avisos de atualização (branch `feat/update-notices`, pedido do orquestrador, 2026-10-13)
 
 - **Encontrado e corrigido na hora:** o auto-update ligava sozinho mas (a) não havia opt-out por env, (b) nada avisava de versão nova, (c) nada avisava que o plugin foi atualizado. `lib/update-notice.js` + `CLAUDE_CODE_BOSS_AUTO_UPDATE=0`; teste `update-notice: …` em `test-units.js`.
