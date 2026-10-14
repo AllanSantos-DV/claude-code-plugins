@@ -251,6 +251,33 @@ function checkCostTuning(ctx) {
   };
 }
 
+/**
+ * The boss's own settings that decide what every session costs (compaction %, fixed window, Tool Search, plugin on).
+ * One result per setting so each says what to do; `autofix` is shared (the actions are in ctx.bossConfig.actions).
+ */
+function checkBossConfig(ctx) {
+  const b = ctx.bossConfig;
+  if (!b) return [{ id: 'boss-config', label: 'Boss settings', status: 'ok', detail: 'not checked here (settings.json unreadable or not probed)', fix: '', critical: false }];
+  return b.items.map((i) => ({ ...i, critical: i.status === 'fail', ...(i.status !== 'ok' && b.actions.length ? { autofix: 'boss-config' } : {}) }));
+}
+
+/** Fixed cost every message pays (MCP definitions, skill listing, plugins): measured in ctx.fixedCost by `--cost` / `--fix` / first run. */
+function checkFixedCost(ctx) {
+  const base = { id: 'fixed-cost', label: 'Fixed cost per message (MCP, skills, plugins)', critical: false };
+  const a = ctx.fixedCost;
+  if (!a) return { ...base, status: 'ok', detail: 'not measured in this run (it reads 30 days of transcripts: run `node scripts/doctor.js --cost`)', fix: '' };
+  if (a.error) return { ...base, status: 'warn', detail: `could not measure: ${a.error}`, fix: 'What to do: run `node scripts/doctor.js --cost` in a terminal to see the error, then fix the file it names.' };
+  const t = a.totals;
+  const detail = `${t.mcpServers} MCP server(s) (${t.mcpUsed} called in ${a.days}d, ${t.mcpTokens} tok), ${t.skillsTotal} skills (${t.skillsUsed} used, ${t.skillTokens} tok), ${t.pluginsTotal} plugin(s) (${t.pluginsUsed} used), instruction files ${t.instructionTokens} tok`;
+  if (!a.actions.length) return { ...base, status: 'ok', detail, fix: '' };
+  return {
+    ...base, status: 'warn',
+    detail: `${detail}; ${a.actions.length} reversible fix(es) would save ~${a.savings.tokens} tok per message (US$ ${a.savings.perSessionUsd.toFixed(2)} per session)`,
+    fix: 'Run `node scripts/doctor.js --cost` for the list, `--fix` to apply, `--undo` to put everything back.',
+    autofix: 'fixed-cost',
+  };
+}
+
 // onnxruntime >= 1.20 is built with the VS 17.10 STL: against an older msvcp140.dll its
 // first std::mutex lock aborts the process (microsoft/STL#4730), which Windows reports as
 // 0xC0000409. The installed redistributable must be at least this.
@@ -392,11 +419,11 @@ function gatherCrashes(data, now = Date.now()) {
   return { file: ce.crashLogFile(data), records };
 }
 
-const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkCostTuning, checkHooksEvents];
+const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkCostTuning, checkBossConfig, checkFixedCost, checkHooksEvents];
 
-/** Run every pure check over a ctx snapshot. */
+/** Run every pure check over a ctx snapshot (a check may return one result or a list). */
 function runChecks(ctx) {
-  return CHECKS.map(fn => {
+  return CHECKS.flatMap(fn => {
     try { return fn(ctx || {}); }
     catch (err) { return { id: fn.name, label: fn.name, status: 'warn', detail: `check errored: ${err.message}`, fix: '', critical: false }; }
   });
@@ -505,7 +532,17 @@ function _daemonHealth(port, timeoutMs = 1200) {
   });
 }
 
-async function gatherContext({ probe = false } = {}) {
+/** `name@marketplace` of the running plugin (from its cache path), else the boss entry in enabledPlugins, else null. */
+function bossPluginId(settings) {
+  const m = /[\\/]cache[\\/]([^\\/]+)[\\/]([^\\/]+)[\\/][^\\/]+[\\/]?$/.exec(process.env.CLAUDE_PLUGIN_ROOT || '');
+  if (m) return `${m[2]}@${m[1]}`;
+  return Object.keys((settings && settings.enabledPlugins) || {}).find((k) => k.startsWith('claude-code-boss@')) || null;
+}
+
+/**
+ * `probe` runs the embedder load test; `audit` measures the fixed cost (reads 30 days of transcripts: seconds, so opt-in).
+ */
+async function gatherContext({ probe = false, audit = false } = {}) {
   const root = process.env.CLAUDE_PLUGIN_ROOT || '';
   const data = dataDir();
   const activeDataResolved = process.env.CLAUDE_PLUGIN_DATA || '';
@@ -548,6 +585,23 @@ async function gatherContext({ probe = false } = {}) {
     if (now) costTuning = { notes: now.plan.changed ? now.plan.notes : [] };
   } catch (e) { console.error(`[doctor] cost tuning: ${e.message}`); }
 
+  let bossConfig = null;
+  const fc = require('./lib/fixed-cost.js');
+  const hooksCfg = require('./lib/hooks-config.js');
+  const home = os.homedir();
+  try {
+    let settings = {};
+    try { settings = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8')); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    bossConfig = fc.auditBossConfig({ settings, compaction: hooksCfg.getCompaction(), costTuning: hooksCfg.getCostTuning(), pluginId: bossPluginId(settings) });
+  } catch (e) { console.error(`[doctor] boss settings: ${e.message}`); }
+  let fixedCost = null;
+  if (audit) {
+    try {
+      const cfg = hooksCfg.getFixedCost();
+      fixedCost = await fc.runAudit({ home, cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd(), days: cfg.days, keep: cfg.keep });
+    } catch (e) { console.error(`[doctor] fixed cost: ${e.message}`); fixedCost = { error: e.message }; }
+  }
+
   const nodeChoice = nodeSupport.pickSupportedNode();
   let embedderCfg = null;
   try { embedderCfg = embedderGuard.configured(); } catch (e) { console.error(`[doctor] embedder config: ${e.message}`); }
@@ -571,17 +625,47 @@ async function gatherContext({ probe = false } = {}) {
     crashes: gatherCrashes(data),
     hooksEvents,
     costTuning,
+    bossConfig,
+    fixedCost,
   };
 }
 
 // ── Fixes (--fix) ─────────────────────────────────────────────────────────────
 
-// Only reversible, plugin-owned changes: never the user's data, never a user-set value.
+const APPLIED_LABEL = {
+  'skill-name-only': 'skill(s) now listed by name only (loaded on demand)',
+  'mcp-remove': 'MCP server(s) removed',
+  'plugin-disable': 'plugin(s) disabled',
+  'plugin-enable': 'plugin(s) enabled',
+  'env-set': 'settings.json env change(s)',
+};
+
+/** One clause per kind ("9 skill(s) now listed by name only: a, b, c") — a list of 25 sentences is noise in a notice. */
+function summarizeApplied(res) {
+  const by = new Map();
+  for (const r of res) { if (!by.has(r.kind)) by.set(r.kind, []); by.get(r.kind).push(r.target); }
+  return [...by].map(([k, ts]) => `${ts.length} ${APPLIED_LABEL[k] || k}: ${ts.join(', ')}`).join('; ');
+}
+
+/** Apply fixed-cost actions; a failed one fails the fix loudly (the others were still applied and journaled). */
+function applyListed(actions) {
+  if (!actions || !actions.length) return 'nothing to change';
+  const res = require('./lib/fixed-cost.js').applyActions(actions);
+  const bad = res.filter((r) => !r.ok);
+  const msg = summarizeApplied(res.filter((r) => r.ok));
+  if (bad.length) throw new Error(`${bad.map((r) => `FAILED ${r.target}: ${r.message}`).join('; ')}${msg ? ` (applied: ${msg})` : ''}`);
+  return `${msg}. Undo: node scripts/doctor.js --undo. Restart Claude Code to load it.`;
+}
+
+// Only reversible changes: never the user's data. A user-set value is only changed by a fix the user asked for (--fix) and journaled.
 const FIXERS = {
   'cost-tuning': () => {
     const ok = require('./model-router-ensure.js').applyCostTuning();
     return ok ? 'settings.json env updated (restart Claude Code to load it)' : 'nothing written (settings.json unreadable — see the log above)';
   },
+  // Reversible through `doctor --undo` (lib/fixed-cost.js journals each change before making it).
+  'fixed-cost': (ctx) => applyListed(ctx.fixedCost && ctx.fixedCost.actions),
+  'boss-config': (ctx) => applyListed(ctx.bossConfig && ctx.bossConfig.actions),
   'stale-daemon-lock': (ctx) => {
     const p = ctx.daemon && ctx.daemon.lockPath;
     if (!p) throw new Error('lock path unknown');
@@ -593,8 +677,10 @@ const FIXERS = {
 /** Run the autofix of every non-ok result. Never throws: a failing fixer is reported, not hidden. */
 function applyFixes(results, ctx, fixers = FIXERS) {
   const out = [];
+  const ran = new Set(); // several results can share one fixer (e.g. the boss settings): run it once
   for (const r of results) {
-    if (r.status === 'ok' || !r.autofix) continue;
+    if (r.status === 'ok' || !r.autofix || ran.has(r.autofix)) continue;
+    ran.add(r.autofix);
     const fn = fixers[r.autofix];
     if (!fn) { out.push({ id: r.id, ok: false, message: `no fixer named ${r.autofix}` }); continue; }
     try { out.push({ id: r.id, ok: true, message: fn(ctx) }); }
@@ -622,26 +708,35 @@ function formatReport(results) {
 if (require.main === module) {
   (async () => {
     const asJson = process.argv.includes('--json');
-    const ctx = await gatherContext({ probe: !process.argv.includes('--no-probe') });
+    if (process.argv.includes('--undo')) {
+      const undone = require('./lib/fixed-cost.js').undoActions();
+      for (const u of undone) process.stdout.write(`  [undo] ${u.target}: ${u.ok ? '' : 'FAILED — '}${u.message}\n`);
+      if (!undone.length) process.stdout.write('  [undo] nothing to undo (the undo journal is empty)\n');
+      process.exit(undone.every((u) => u.ok) ? 0 : 1);
+    }
+    const wantFix = process.argv.includes('--fix');
+    const wantCost = process.argv.includes('--cost');
+    const ctx = await gatherContext({ probe: !process.argv.includes('--no-probe'), audit: wantFix || wantCost });
     let results = runChecks(ctx);
     let fixes = null;
-    if (process.argv.includes('--fix')) {
+    if (wantFix) {
       fixes = applyFixes(results, ctx);
       if (!asJson) for (const f of fixes) process.stdout.write(`  [fix] ${f.id}: ${f.ok ? '' : 'FAILED — '}${f.message}\n`);
       if (!asJson && !fixes.length) process.stdout.write('  [fix] nothing here has an automatic fix; follow the → line of each warning\n');
-      results = runChecks(await gatherContext({ probe: false }));
+      results = runChecks(await gatherContext({ probe: false, audit: true }));
     }
     if (asJson) {
-      process.stdout.write(JSON.stringify({ results, summary: summarize(results), fixes }, null, 2));
+      process.stdout.write(JSON.stringify({ results, summary: summarize(results), fixes, fixedCost: ctx.fixedCost || null }, null, 2));
     } else {
       process.stdout.write(formatReport(results) + '\n');
+      if (wantCost && ctx.fixedCost && !ctx.fixedCost.error) process.stdout.write('\n' + require('./lib/fixed-cost.js').formatAudit(ctx.fixedCost) + '\n');
     }
     process.exit(summarize(results).ok ? 0 : 1);
   })().catch(err => { console.error(`[doctor] ${err.message}`); process.exit(1); });
 }
 
 module.exports = {
-  runChecks, summarize, applyFixes, FIXERS, checkCostTuning, gatherContext, formatReport,
+  runChecks, summarize, applyFixes, FIXERS, checkCostTuning, checkBossConfig, checkFixedCost, bossPluginId, gatherContext, formatReport,
   checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkHooksEvents,
   findDataDirCandidates, probeEmbedder, gatherNative, gatherCrashes, MIN_MSVCP,
   STANDARD_EVENTS, RUNTIME_DEPENDENT_EVENTS, MIN_NODE,

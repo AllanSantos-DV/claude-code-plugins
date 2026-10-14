@@ -1,5 +1,115 @@
 # Backlog
 
+## Auditoria de custo fixo no Doctor (pedido do orquestrador, 2026-10-14) — implementada, aguardando a validação do Allan
+
+O que cada mensagem paga antes de o usuário escrever: prompt de sistema, definições de ferramentas (MCP), lista de skills,
+plugins, arquivos de instrução, mensagens e contexto. O contexto já estava tratado; o resto passou a ser medido
+(`scripts/lib/fixed-cost.js`, `node scripts/doctor.js --cost`) e corrigido de forma reversível (`--fix`, `--undo`).
+
+Números medidos nesta máquina (30 dias, 735 sessões, ~245 requisições por sessão; tokens = 4 caracteres/token, estimativa):
+
+| Item | Medido | Custo por mensagem |
+|---|---|---|
+| MCP (Tool Search ligado, só os nomes) | 7 servidores configurados, 6 chamados em 30 dias, 217 ferramentas injetadas | 2203 tok |
+| MCP sem Tool Search (definições completas, medidas por `tools/list` real nos servidores HTTP) | mcp-gateway 3354, smart-tool 3102, brain-server 9934 | 16 390 tok só nesses três |
+| Skills listadas | 77 (32 já ocultas), 11 usadas em 30 dias | 3504 tok |
+| Arquivos de instrução (CLAUDE.md, AGENTS.md, MEMORY.md) | só medidos, nunca editados | 725–4042 tok conforme a pasta |
+
+A economia que as correções automáticas dão aqui é pequena (25 skills nunca usadas → só o nome: ~1853 tok = US$ 0,0004 por
+mensagem, US$ 0,12 por sessão a US$ 0,22/MTok de leitura e US$ 8,80/MTok de escrita 1h). O custo fixo desta máquina é pequeno
+**porque** o Tool Search está ligado e o Allan já ocultou 32 skills; o item que mais pesaria (definições completas de MCP,
+~16k tok) é justamente o que o Tool Search já evita. A auditoria existe para pegar o caso em que isso muda (outra máquina,
+Tool Search desligado, centenas de skills, MCP nunca autenticado).
+
+Achados e correções feitos na hora, com teste (`fixed-cost.*`, `doctor.*`, `doctor-first-run`):
+
+- O Doctor passa a medir: MCPs configurados × chamadas reais nos transcripts (por servidor, por prefixo da ferramenta, só
+  conta como "sem uso" com história suficiente — pelo menos metade da janela); autenticação (HTTP 401 sem credencial e sem
+  header = nunca autenticado, não funciona); tokens exatos dos nomes injetados (anexo `deferred_tools_delta` do próprio
+  transcript) e das definições completas (`tools/list` real nos servidores HTTP; os stdio **não são iniciados**, porque iniciar
+  um adaptador de WhatsApp ou um navegador só para contar tokens tem efeito colateral); skills × `skillUsage` do Claude Code;
+  plugins × `pluginUsage`.
+- Correções reversíveis, sempre diário antes de mudar (`~/.claude/claude-code-boss/fixed-cost-undo.json`) e `doctor --undo`:
+  MCP morto/nunca autenticado → `claude mcp remove` (e `add-json` para voltar); skill nunca usada → `skillOverrides: name-only`
+  (documentado em code.claude.com/docs/en/skills, acessado em 2026-10-14; **não vale para skills de plugin**); plugin sem uso →
+  `enabledPlugins:false` (o boss nunca); configurações do próprio boss.
+- **Achado no teste real:** rodando na pasta do próprio repositório, o `.mcp.json` do projeto (brain-server) apareceria como
+  "sem uso" e a correção editaria um arquivo versionado. Regra: só o que está na configuração do usuário (escopo user/local) é
+  removido; `.mcp.json` e servidor de plugin só são reportados. Teste `buildAudit MCP: .mcp.json do projeto e servidor de plugin`.
+- **Achado no teste real:** a janela `1000000` (valor que o plugin restaura) não é "janela fixa apertada": é a maior janela de
+  qualquer modelo. O check só alarma abaixo disso. Teste `auditBossConfig`.
+- O Doctor passa a checar as configurações do boss: compactação ligada e em % da janela do modelo (30% = 60k de 200k, 300k de
+  1M), janela fixa no settings (o caso 153000, com a conta de onde o engine compacta), Tool Search, plugin ligado. Cada item
+  diz o que fazer; `--fix` corrige (reversível).
+- Primeira execução depois de atualizar: o detector `doctor-first-run` (SessionStart, 60 s de teto) roda o Doctor completo uma
+  vez por build (arquivo de marcação criado com `wx`: duas sessões simultâneas, só uma roda), aplica as correções de custo se
+  `fixedCost.autoFix` (padrão ligado) e injeta o aviso com o que fez e como desfazer. Configuração: `fixedCost` em
+  `hooks-config.json` (`enabled`, `autoFix`, `days`, `keep`).
+- Custo da primeira execução: a leitura dos transcripts de 30 dias leva ~8 s nesta máquina (735 arquivos); só ocorre uma vez
+  por build. Teste de ponta a ponta real (hook como processo, perfil isolado com cópia do settings.json, ~/.claude.json e
+  skills do Allan, transcripts reais via junction só-leitura): 1º run 9,0 s, aplicou 9 skills → só o nome, avisou o que fez e
+  como desfazer; 2º run do mesmo build mudo; `doctor --undo` devolveu o settings ao estado exato; settings real do Allan
+  byte-idêntico.
+- **MCP Bridge (gateway):** o mcp-gateway aparece como um servidor só, mas agrega backends (ferramentas nomeadas
+  `<backend>__<tool>`). O relatório agora quebra por backend, com ferramentas, tokens e chamadas (medido: action 48
+  ferramentas/529 tok/3815 chamadas, files 14/146/1107, memory 9/97/713, vxk 9/82/237, gateway 3/30/237; nenhum morto).
+  Backend sem uso só é reportado: tirá-lo é editar a config do gateway (outro projeto). Teste `backends atras do agregador`.
+- **Achado no teste real (depois da queda de energia):** rodando dentro da pasta do plugin, o `.mcp.json` do próprio plugin era
+  visto como servidor de projeto "sem uso" com 9934 tok de definições. Ele não é carregado (não aprovado: 0 ferramentas
+  injetadas), então custa zero. Regra: servidor do `.mcp.json` ausente das ferramentas injetadas da última sessão do
+  projeto = `not-loaded`, sem custo e sem alarme. Teste `servidor do .mcp.json do projeto que nao foi carregado`.
+- **Achado no gate:** o `spawnSync` usado como valor padrão de parâmetro não passa no lint `local/require-windows-hide`;
+  todo spawn do módulo passa por `hiddenSpawnSync` (mesmo padrão do doctor).
+- O aviso do primeiro run agrupa as correções por tipo ("9 skill(s) now listed by name only: …") em vez de uma frase por
+  item; falha parcial falha alto e diz o que já foi aplicado. Teste `doctor fixer fixed-cost: resumo agrupado`.
+- "388 de 400 skills sob demanda": nesta máquina o número medido é outro — 77 skills listadas (64 de usuário + 13 do boss),
+  32 já ocultas pelo Allan, 11 usadas em 30 dias; o audit põe as nunca usadas de usuário/projeto em `name-only`.
+
+Pendências / fora do escopo (registradas, não implementadas):
+
+- **Rotear MCPs pelo MCP Bridge (mcp-gateway):** avaliado, não aplicado. O gateway (`~/.mcp-gateway/config.json`) já agrega
+  memory, ata-ao-vivo, action, files, vxk e bolao (desligado); smart-tool, vox, playwright e whatsapp-bridge ficam diretos
+  no Claude. Com o Tool Search ligado o ganho em tokens de roteá-los é ~0 (os nomes continuam listados); o ganho seria de
+  processos/RAM (um playwright por sessão). O whatsapp-bridge é um adaptador **por sessão** por desenho e não pode ir para um
+  agregador compartilhado. Adicionar backend é editar a configuração do projeto do gateway (outro projeto): delegar ao dono
+  se o Allan quiser (playwright e vox são os candidatos).
+- **Smart Search automático** para essa decisão: não feito; a auditoria já usa os transcripts como fonte.
+- **Skills de plugin não têm alavanca** (`skillOverrides` ignora skills de plugin, doc oficial): as 13 do próprio boss (926 tok)
+  só saem desligando o plugin. Proposta: o boss passar a trazer menos skills ou `disable-model-invocation` nas pouco usadas.
+- **README e CHANGELOG do plugin** ainda não descrevem `doctor --cost/--fix/--undo`, o `fixedCost` nem o `doctor-first-run`:
+  mexer neles muda o hash da vitrine (pages-guard) e o merge fica bloqueado até o agente `vitrine` redesenhar a página. Fazer
+  junto do release 3.9.0, quando a vitrine redesenha de qualquer forma.
+- O diário de desfazer é um arquivo único por usuário; duas máquinas com `~/.claude` sincronizado compartilhariam o diário.
+
+### Levantamento do Codex Boss (somente leitura; o dono é o projeto `codex-boss`, não editado)
+
+Medido em `~/.codex` (41 rollouts de 2026-10-08 a 2026-10-13, 34 com contagem de tokens; modelo gpt-6.x, janela 475 000):
+
+- **Custo fixo por requisição:** a 1ª requisição de uma sessão carrega mediana de **39 990 tokens** de entrada (mínimo 15 491;
+  135–138 mil em 4 sessões grandes). As instruções-base têm ~21,8 mil caracteres (~5,4k tok); o resto são ferramentas
+  (exec, js, MCPs, subagentes), skills de plugin e contexto do projeto. Fonte: evento `token_count`
+  (`last_token_usage.input_tokens`) de cada rollout.
+- **MCP direto em `config.toml`:** mcp-gateway, node_repl, smart-tool, token-guard, playwright. As chamadas nos rollouts vêm
+  sem prefixo de servidor (`smart_search`, `project_manage`, `token_audit`, `compose_recall`), então o uso por servidor só sai
+  mapeando o nome da ferramenta para o servidor (via `tools/list`).
+- **Plugins:** 14 ligados em `config.toml` (12 do pacote OpenAI, action-meeting e codex-boss); só o codex-boss e
+  os usados por sessão têm uso rastreável nos rollouts.
+- **Compactação:** nenhuma configuração do boss; `model_auto_compact_token_limit` não está no `config.toml` (padrão do
+  modelo) e houve 10 compactações em 41 rollouts (até 3 numa sessão de 166 turnos). A chave do Codex é em **tokens
+  absolutos**, não em %: documentação oficial developers.openai.com/codex/config-reference e /codex/config-sample (acessadas
+  em 2026-10-14). Para respeitar a regra "% da janela do usuário", o boss precisa calcular `pct × model_context_window` (o
+  valor está em cada `token_count`) e gravar o limite.
+- **O que corrigir lá (para o orquestrador delegar ao dono):**
+  1. `plugins/codex-boss/scripts/doctor.mjs`: adicionar a auditoria de custo fixo (1ª requisição via `token_count`, MCP e
+     plugins configurados × usados nos rollouts, skills em `~/.codex/skills` e de plugin).
+  2. Correções reversíveis em `config.toml`: `mcp_servers.<nome>.enabled = false` (documentado), `enabled_tools`/`disabled_tools`
+     para cortar ferramentas, desligar plugin sem uso; diário + `--undo` como aqui.
+  3. Doctor checar a compactação: derivar `model_auto_compact_token_limit` do % do usuário e da janela do modelo, e avisar
+     se estiver fixo num número que não bate com o %.
+  4. Rodar o Doctor na primeira execução depois de atualizar (o `auto-update.mjs` já sabe que atualizou) e mostrar o resultado.
+  5. Padrão `config.toml` é editado por vários processos (Codex, Action, token-guard): usar leitura-modificação-escrita atômica
+     e não reformatar o arquivo (há `.bak` de várias ferramentas ao lado).
+
 ## Compactação só em %, Tool Search, doctor que corrige, custo da compactação quente e TTL dinâmico (pedidos do orquestrador, 2026-10-14)
 
 Achados e correções (todos no escopo, corrigidos na hora, com teste em `scripts/test-units.js`):
