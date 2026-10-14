@@ -29,12 +29,15 @@ function stampPath() {
 async function run(_event) {
   const ctx = {
     nodeVersion: process.version,
+    nodeChoice: require('./lib/node-support.js').pickSupportedNode(),
     env: { root: process.env.CLAUDE_PLUGIN_ROOT || '', data: process.env.CLAUDE_PLUGIN_DATA || '' },
     nodeOptions: process.env.NODE_OPTIONS || '',
     native: gatherNative({ sqlite: false }),
   };
   // NODE_OPTIONS flags are a warn in the doctor, but they ride along into every daemon: shown here too.
-  const criticalFails = [checkNode(ctx), checkDaemonNode(ctx), checkNativeDeps(ctx), checkEnv(ctx), checkNativeRuntime(ctx)].filter(r => r.status !== 'ok');
+  // A default Node 25 the plugin already works around (daemon on an installed 22/24) is not a critical issue.
+  const criticalFails = [checkNode(ctx), checkDaemonNode(ctx), checkNativeDeps(ctx), checkEnv(ctx), checkNativeRuntime(ctx)]
+    .filter(r => r.status !== 'ok' && !(r.id === 'node' && r.status === 'warn'));
   if (criticalFails.length === 0) return null;
 
   const sp = stampPath();

@@ -230,10 +230,14 @@ class McpClient extends EventEmitter {
     this._availableTools = (tools?.tools || tools?.result?.tools || []).map(t => t.name);
   }
 
-  async callTool(name, args = {}, _retryCount = 0) {
+  /**
+   * @param {{ timeoutMs?: number }} [opts] `timeoutMs` overrides requestTimeout for
+   *   this call (a hook with a hard deadline must give up before it).
+   */
+  async callTool(name, args = {}, opts = {}, _retryCount = 0) {
     if (!this._initialized) await this.connect();
     try {
-      return await this._sendRequest('tools/call', { name, arguments: args });
+      return await this._sendRequest('tools/call', { name, arguments: args }, opts);
     } catch (err) {
       // The daemon dropped our HTTP session (idle TTL, ~30min). Reconnect (fresh
       // initialize → new session id) and retry the SAME call exactly ONCE. This
@@ -251,7 +255,7 @@ class McpClient extends EventEmitter {
           wrapped.reconnectError = reconnectErr;
           throw wrapped;
         }
-        return this.callTool(name, args, _retryCount + 1);
+        return this.callTool(name, args, opts, _retryCount + 1);
       }
 
       // Daemon restarted on a new port (daemon.json updated): connection refused,
@@ -274,7 +278,7 @@ class McpClient extends EventEmitter {
             wrapped.reconnectError = reconnectErr;
             throw wrapped;
           }
-          return this.callTool(name, args, _retryCount + 1);
+          return this.callTool(name, args, opts, _retryCount + 1);
         }
       }
 
@@ -330,7 +334,7 @@ class McpClient extends EventEmitter {
 
       const timer = setTimeout(() => {
         this._pending.delete(id);
-        reject(new Error(`MCP request "${method}" timed out after ${this.requestTimeout}ms`));
+        reject(new Error(`MCP request "${method}" timed out after ${timeoutMs}ms`));
       }, timeoutMs);
 
       this._pending.set(id, { resolve, reject, timer, method });

@@ -42,8 +42,12 @@ function reportMcpFailure(err) { if (!err || isTransportFailure(err)) _circuitOp
 function reportMcpSuccess() { _circuitOpenUntil = 0; }
 
 /** Wrap one mcp-memory call: fail fast (no network) while the circuit is open;
- *  otherwise run it and report the outcome. `label` only annotates the error. */
-async function guardMcp(label, fn) {
+ *  otherwise run it and report the outcome. `label` only annotates the error.
+ *  `trip: false` — the call still honours an open circuit and closes it on
+ *  success, but its own failure does not open it: conversation ingestion is a
+ *  slow bulk upload with its own persisted backoff, and its timeout says nothing
+ *  about whether a small recall would succeed. */
+async function guardMcp(label, fn, { trip = true } = {}) {
   if (circuitOpen()) {
     const err = new Error(`mcp-memory backend circuit open (recent failure) — skipped ${label}`);
     err.code = 'CIRCUIT_OPEN';
@@ -54,7 +58,7 @@ async function guardMcp(label, fn) {
     reportMcpSuccess();
     return result;
   } catch (err) {
-    reportMcpFailure(err);
+    if (trip) reportMcpFailure(err);
     throw err;
   }
 }
@@ -371,12 +375,15 @@ async function composeMcp(query, opts = {}) {
 }
 
 // ── cooperative ingestion: send raw transcript; the server distills/types/scopes ──
+// Both run inside the Stop hook's budget: `timeoutMs` bounds them below the
+// client's 60s default, and a timed-out upload is never re-sent on top of the
+// request the server may still be processing.
 async function ingestConversationMcp(raw, opts = {}) {
   const result = await _mcp.callTool('ingest_conversation', {
     consumerId: opts.consumerId || 'claude-code-boss',
     sessionId: opts.sessionId || 'default',
     raw: String(raw == null ? '' : raw),
-  });
+  }, { timeoutMs: opts.timeoutMs });
   return parseResult(result) || {};
 }
 
@@ -384,7 +391,7 @@ async function ingestStatusMcp(opts = {}) {
   const result = await _mcp.callTool('ingest_status', {
     consumerId: opts.consumerId || 'claude-code-boss',
     ...(opts.sessionId ? { sessionId: opts.sessionId } : {}),
-  });
+  }, { timeoutMs: opts.timeoutMs });
   return parseResult(result) || {};
 }
 
@@ -707,13 +714,13 @@ async function compose(query, opts = {}) {
  */
 async function ingestConversation(raw, opts = {}) {
   if (_mode !== 'mcp-memory') throw new Error('ingestConversation is only available on the mcp-memory backend');
-  return guardMcp('ingestConversation', () => ingestConversationMcp(raw, opts));
+  return guardMcp('ingestConversation', () => ingestConversationMcp(raw, opts), { trip: false });
 }
 
 /** Staging observability for a consumer×session (pending/cooldown/success/…). mcp-memory ONLY. */
 async function ingestStatus(opts = {}) {
   if (_mode !== 'mcp-memory') throw new Error('ingestStatus is only available on the mcp-memory backend');
-  return guardMcp('ingestStatus', () => ingestStatusMcp(opts));
+  return guardMcp('ingestStatus', () => ingestStatusMcp(opts), { trip: false });
 }
 
 /**

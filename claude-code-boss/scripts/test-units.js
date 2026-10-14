@@ -1041,6 +1041,36 @@ test('mcp-client: callToolOnce nunca reconecta/reexecuta uma operação mutável
   assertEq(reconnects, 0);
 });
 
+test('mcp-client: per-call timeoutMs reaches the transport; our own timeout is never re-sent (the server may still be running it); a refused connection retries once', async () => {
+  const McpClient = require('./mcp-client.js');
+  const c = new McpClient({ transport: 'http', serverUrl: 'http://127.0.0.1:1' });
+  c._initialized = true;
+  let sends = 0, reconnects = 0, seenOpts = null;
+  c._reconnect = async () => { reconnects += 1; };
+  c._sendRequest = async (method, params, opts) => {
+    sends += 1; seenOpts = opts;
+    throw new Error('MCP request "tools/call" timed out after 15000ms');
+  };
+  let error = null;
+  try { await c.callTool('ingest_conversation', { raw: 'x' }, { timeoutMs: 15000 }); } catch (err) { error = err; }
+  assert(error && /timed out/.test(error.message), 'the timeout surfaces');
+  assertEq([sends, reconnects], [1, 0], 'no second upload on top of the one the server may still be running');
+  assertEq(seenOpts.timeoutMs, 15000, 'per-call timeout reaches the transport');
+  sends = 0;
+  c._sendRequest = async () => { sends += 1; const e = new Error('connect ECONNREFUSED 127.0.0.1:1'); e.code = 'ECONNREFUSED'; throw e; };
+  try { await c.callTool('search_memory', { query: 'q' }); } catch (err) { void err; }
+  assertEq([sends, reconnects], [2, 1], 'refused (never processed) → reconnect and retry once');
+  sends = 0; reconnects = 0;
+  c._sendRequest = async () => {
+    sends += 1;
+    if (sends === 1) { const e = new Error('HTTP 400 -32600'); e.code = 'SESSION_EXPIRED'; throw e; }
+    return { ok: true };
+  };
+  const r = await c.callTool('ingest_conversation', { raw: 'x' });
+  assertEq(r.ok, true);
+  assertEq([sends, reconnects], [2, 1], 'an expired session was never processed → reconnect + retry');
+});
+
 test('mcp-auto-update: parseia check_update textual e rejeita shape inválido', () => {
   const updater = require('./lib/mcp-memory-auto-update.js');
   assertEq(updater.parseCheckUpdate({
@@ -2643,19 +2673,6 @@ test('O2: transcript-tail.readRange — the one range reader (range, short file,
   assertEq(transcriptTail.readRange(path.join(os.tmpdir(), 'nope-ccb-range.txt'), 0, 10).length, 0);
 });
 
-test('transcript-tail.readTailText + clampRaw: identical to clamping the whole file (31 MB multibyte transcript)', async () => {
-  const convIngestMod = require('./conversation-ingest.js');
-  const line = JSON.stringify({ type: 'user', text: 'é'.repeat(500) + ' ação 🚀' }) + '\n';
-  const f = _tailTmp('huge.jsonl', line.repeat(Math.ceil(31e6 / Buffer.byteLength(line))));
-  const SAFE = 7_500_000;
-  const whole = convIngestMod.clampRaw(fs.readFileSync(f, 'utf-8'));
-  const tail = convIngestMod.clampRaw(await transcriptTail.readTailText(f, SAFE * 4 + 4));
-  assertEq(tail.length, whole.length, 'same window length');
-  assert(tail === whole, 'same window content');
-  const small = _tailTmp('small.jsonl', 'one\ntwo\n');
-  assertEq(await transcriptTail.readTailText(small, 1000), 'one\ntwo\n');
-});
-
 // ─── retrieval-feedback (Plan #1) ────────────────────────────────────────────
 const rfeedback = require('./retrieval-feedback.js');
 const rjournal = require('./lib/retrieval-journal.js');
@@ -3949,6 +3966,107 @@ test('G12 brain-embedder.setDelegate: every consumer is routed to the delegate; 
   assert(emb.getStatus().provider !== 'delegate', 'local status is back after setDelegate(null)');
 });
 
+test('embedder-guard: a native abort of the load test forces "none" for that key only; a JS error or a timeout forces nothing; a pass lifts it', async () => {
+  const g = require('./lib/embedder-guard.js');
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-eguard-'));
+  try {
+    const ff = g.recordOutcome(data, { model: 'M' }, { ok: false, status: 0xC0000409, lastLine: 'loading model' });
+    assert(ff.forced === 'none' && /0xC0000409/.test(ff.reason) && /loading model/.test(ff.reason), ff.reason);
+    assert(g.forcedNone(data, 'M'), 'same plugin/Node/arch/model: forced');
+    assertEq(g.forcedNone(data, 'other-model'), null, 'another model is not covered by this record');
+    assertEq(g.forcedNone(data, 'M', { CCB_EMBEDDER_GUARD: 'off' }), null, 'the load test itself ignores the override');
+    assertEq(g.recordOutcome(data, { model: 'M' }, { ok: false, status: 2, error: 'Cannot find module' }), null, 'a JS error is not an abort');
+    assertEq(g.recordOutcome(data, { model: 'M' }, { ok: false, error: 'no answer in 180s' }), null, 'a timeout is not an abort');
+    assert(g.forcedNone(data, 'M'), 'an inconclusive test leaves the record as it was');
+    g.recordOutcome(data, { model: 'M' }, { ok: true, dims: 384, ms: 900 });
+    assertEq(g.forcedNone(data, 'M'), null, 'a passing test lifts the override');
+    assert(g.recordOutcome(data, { model: 'M' }, { ok: false, status: 134 }).forced === 'none', 'Node abort (134) counts too');
+    assert(g.forcedNone(data, 'M', {}) && !g.readGuard(data).key.includes('undefined'), g.readGuard(data).key);
+  } finally { fs.rmSync(data, { recursive: true, force: true }); }
+});
+
+test('embedder-guard.ensureGuard: tests the local model once per key, before the daemon loads it; other providers and a missing model skip', async () => {
+  const g = require('./lib/embedder-guard.js');
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-eguard-'));
+  const cacheDir = path.join(data, 'models');
+  try {
+    let probes = 0;
+    const cfg = { provider: 'transformers', model: 'M' };
+    // The real asynchronous test process, with a child standing in for the aborting model load.
+    const probe = ({ data: d }) => { probes++; return g.probeAsync({ data: d, spawnFn: (exe, args, opts) => require('child_process').spawn(process.execPath, ['-e', "console.log('loading model'); process.exit(134)"], opts) }); };
+    assert((await g.ensureGuard({ data, cfg, cacheDir, probe })).skipped.includes('not downloaded'), 'no model yet');
+    fs.mkdirSync(path.join(cacheDir, 'Xenova', 'M', 'onnx'), { recursive: true });
+    fs.writeFileSync(path.join(cacheDir, 'Xenova', 'M', 'onnx', 'model_quantized.onnx'), 'x');
+    const first = await g.ensureGuard({ data, cfg, cacheDir, probe });
+    assert(first.record && first.record.forced === 'none' && /exit 0x86/.test(first.record.reason) && /loading model/.test(first.record.reason), JSON.stringify(first));
+    const again = await g.ensureGuard({ data, cfg, cacheDir, probe });
+    assert(again.cached && probes === 1, 'cached for this key: not re-tested on every boot');
+    assert((await g.ensureGuard({ data, cfg: { provider: 'voyage', model: 'v' }, cacheDir, probe })).skipped && probes === 1, 'voyage loads no local model');
+    const slow = await g.ensureGuard({ data, cfg: { provider: 'transformers', model: 'N' }, cacheDir, probe: ({ data: d }) => g.probeAsync({ data: d, timeoutMs: 200, spawnFn: (exe, args, opts) => require('child_process').spawn(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], opts) }) });
+    assert(slow.record === null && /no answer in 0.2s/.test(slow.result.error), 'a timeout records nothing: ' + JSON.stringify(slow));
+    assertEq(g.forcedNone(data, 'N'), null);
+  } finally { fs.rmSync(data, { recursive: true, force: true }); }
+});
+
+test('brain-embedder: provider "none" (set, or forced by the load test) is ready, embeds to null (keyword fallback) and the status says why', async () => {
+  const g = require('./lib/embedder-guard.js');
+  const embPath = require.resolve('./brain-embedder.js');
+  const saved = require.cache[embPath];
+  delete require.cache[embPath];
+  const emb = require('./brain-embedder.js'); // fresh module state, no delegate
+  const data = require('./lib/data-dir.js').dataDir();
+  assert(data.startsWith(os.tmpdir()) || data.startsWith(process.env.USERPROFILE), `the suite's temp data dir, never the real one (${data})`);
+  try {
+    const model = emb.getModel();
+    assertEq(emb.getStatus().provider, 'transformers', 'precondition: the shipped provider');
+    g.recordOutcome(data, { model }, { ok: false, status: 0xC0000409 });
+    assertEq(await emb.init(), true, 'none is a working provider: init succeeds');
+    assertEq(await emb.embed('hello'), null);
+    assertEq(await emb.embedBatch(['a', 'b']), null);
+    const st = emb.getStatus();
+    assert(st.provider === 'none' && st.ready && /0xC0000409/.test(st.forced), JSON.stringify(st));
+  } finally {
+    fs.rmSync(g.guardFile(data), { force: true });
+    if (saved) require.cache[embPath] = saved; else delete require.cache[embPath];
+  }
+  const t = await require('./config-testers/embedder.js').test({ provider: 'none', model: '' });
+  assert(t.ok && t.dim === 0, 'the dashboard test accepts none: ' + JSON.stringify(t));
+});
+
+test('embed-worker-client guard: the worker (and the model) is not loaded until the load test settles', async () => {
+  const { createEmbedWorker } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'embed-worker-client.js')).href);
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ew-guard-'));
+  const wp = path.join(dir, 'stamp-worker.cjs');
+  fs.writeFileSync(wp, "const { parentPort } = require('worker_threads');\nparentPort.on('message', (m) => parentPort.postMessage({ id: m.id, ok: true, result: Date.now() }));\n");
+  let settledAt = 0;
+  const ew = createEmbedWorker({ pluginRoot: ROOT, workerPath: wp, guard: () => new Promise((r) => setTimeout(() => { settledAt = Date.now(); r(); }, 150)) });
+  try {
+    const servedAt = await ew.init();
+    assert(settledAt > 0 && servedAt >= settledAt, `worker answered at ${servedAt}, guard settled at ${settledAt}`);
+  } finally {
+    await ew.shutdown();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('doctor: the load test runs on the daemon\'s Node and records its outcome; checkEmbedderGuard names a keyword-only override and how to lift it', () => {
+  const g = require('./lib/embedder-guard.js');
+  const data = crashDir(null);
+  const seen = [];
+  const run = (status, stdout = '') => (exe) => { seen.push(exe); return { status, stdout, stderr: 'loading model' }; };
+  const base = { provider: 'transformers', modelPresent: true, data, model: 'M', node: { execPath: '/opt/node24/node', version: '24.1.0' } };
+  doctor.probeEmbedder({ ...base, run: run(0xC0000409) });
+  assertEq(seen[0], '/opt/node24/node', 'the Node the daemon runs on, not the doctor\'s');
+  const rec = g.readGuard(data);
+  assert(rec.forced === 'none' && rec.key === g.guardKey({ model: 'M', node: 'v24.1.0' }), JSON.stringify(rec));
+  const w = doctor.checkEmbedderGuard({ embedderGuard: rec });
+  assert(w.status === 'warn' && !w.critical && /keyword-only/.test(w.detail) && w.fix.includes('vc_redist') && w.fix.includes('npm run doctor'), JSON.stringify(w));
+  doctor.probeEmbedder({ ...base, run: run(0, '{"ok":true,"dims":384,"ms":900}\n') });
+  assert(g.readGuard(data).ok && !g.readGuard(data).forced, 'a passing doctor test lifts the override');
+  assertEq(doctor.checkEmbedderGuard({ embedderGuard: g.readGuard(data) }).status, 'ok');
+  assertEq(doctor.checkEmbedderGuard({}).status, 'ok');
+});
+
 test('C2 curation-redirect: exact task signature+flags rewritten (also inside compounds); variants, files, tee, heredoc and exploration are not; CCB_RAW=1 bypasses', () => {
   const { planRedirect } = require('./lib/curation-redirect.js');
   // A platform-native absolute root: 'C:/repo' is not absolute on Linux (CI), where
@@ -5240,6 +5358,35 @@ test('brain-backend mcp: a REAL transport failure (daemon closed mid-session) op
   }
 });
 
+test('brain-backend mcp: a failed ingestion upload does NOT open the shared breaker (recall keeps working)', async () => {
+  const daemon = await startFakeDaemon({ toolResult: () => ({ content: [{ type: 'text', text: JSON.stringify({ results: [] }) }] }) });
+  delete require.cache[require.resolve('./brain-backend.js')];
+  const backend = require('./brain-backend.js');
+  backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
+  try {
+    await backend.init({ project: 'projIngestTrip' });
+    const realCall = require('./mcp-client.js').prototype.callTool;
+    require('./mcp-client.js').prototype.callTool = async function (name, ...rest) {
+      if (name === 'ingest_conversation') throw new Error('MCP request "tools/call" timed out after 15000ms');
+      return realCall.call(this, name, ...rest);
+    };
+    try {
+      let threw = null;
+      try { await backend.ingestConversation('raw', { sessionId: 's', timeoutMs: 15000 }); } catch (err) { threw = err; }
+      assert(threw && /timed out/.test(threw.message), 'the ingestion failure is reported to the caller');
+      assertEq(backend.circuitOpen(), false, 'a slow bulk upload says nothing about a small recall');
+      const hits = await backend.search('q');
+      assert(Array.isArray(hits), 'recall still reaches the daemon');
+    } finally {
+      require('./mcp-client.js').prototype.callTool = realCall;
+    }
+    await backend.close();
+  } finally {
+    delete require.cache[require.resolve('./brain-backend.js')];
+    await daemon.close();
+  }
+});
+
 test('retrieve-core retrieveRemote: a shared backend.circuitOpen()===true short-circuits before even calling init (cooperative breaker)', async () => {
   let initCalls = 0;
   const fake = { circuitOpen: () => true, init: async () => { initCalls++; } };
@@ -5601,23 +5748,85 @@ test('brain-backend.peekMode: per-user override flips to mcp-memory (shipped unt
   });
 });
 
-// ─── GAP1: conversation-ingest (opt-in daemon ingestion) ─────────────────────
+// ─── GAP1: conversation-ingest (opt-in daemon ingestion: delta + backoff + notices) ─
 const convIngest = require('./conversation-ingest.js');
 
-test('conversation-ingest.clampRaw: small passes through; oversize → line-aligned trailing window', () => {
-  assertEq(convIngest.clampRaw('line1\nline2\n'), 'line1\nline2\n');
-  assertEq(convIngest.clampRaw(''), '');
-  assertEq(convIngest.clampRaw(null), '');
-  const oversize = 'x'.repeat(3800000) + '\n' + 'y'.repeat(3800000); // 7,600,001 > SAFE_MAX
-  const clamped = convIngest.clampRaw(oversize);
-  assert(clamped.length <= 7500000, `windowed to <= SAFE_MAX, got ${clamped.length}`);
-  assertEq(clamped[0], 'y'); // aligned past the newline boundary → valid JSONL tail
+const _ingL = {
+  user: (uuid, text) => JSON.stringify({ type: 'user', uuid, message: { role: 'user', content: [{ type: 'text', text }] } }),
+  userStr: (uuid, text) => JSON.stringify({ type: 'user', uuid, message: { role: 'user', content: text } }),
+  toolResult: (uuid) => JSON.stringify({ type: 'user', uuid, message: { role: 'user', content: [{ type: 'tool_result', content: 'x' }] } }),
+  asst: (uuid, text) => JSON.stringify({ type: 'assistant', uuid, message: { role: 'assistant', content: [{ type: 'text', text }] } }),
+  toolUse: (uuid) => JSON.stringify({ type: 'assistant', uuid, message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash' }] } }),
+  sys: () => JSON.stringify({ type: 'system', content: 'hook' }),
+};
+const _ingBuf = (lines) => Buffer.from(lines.map((l) => l + '\n').join(''), 'utf-8');
+
+test('conversation-ingest.textRole: text in blocks or string counts; tool blocks, system lines and junk do not', () => {
+  assertEq(convIngest.textRole(_ingL.user('u', 'hi')), 'user');
+  assertEq(convIngest.textRole(_ingL.userStr('u', 'hi')), 'user', 'string content is text to the server parser');
+  assertEq(convIngest.textRole(_ingL.asst('a', 'ok')), 'assistant');
+  assertEq(convIngest.textRole(_ingL.toolResult('t')), null);
+  assertEq(convIngest.textRole(_ingL.toolUse('t')), null);
+  assertEq(convIngest.textRole(_ingL.user('u', '   ')), null, 'blank text');
+  assertEq(convIngest.textRole(_ingL.sys()), null);
+  assertEq(convIngest.textRole('{"role": torn'), null);
 });
 
-test('conversation-ingest.transcriptKey: stable per (sid, transcript), differs by content/session', () => {
-  assertEq(convIngest.transcriptKey('s', 'abc'), convIngest.transcriptKey('s', 'abc'));
-  assert(convIngest.transcriptKey('s', 'abc') !== convIngest.transcriptKey('s', 'abd'), 'content change → new key');
-  assert(convIngest.transcriptKey('s1', 'abc') !== convIngest.transcriptKey('s2', 'abc'), 'session change → new key');
+test('conversation-ingest.selectChunk: complete pair → offset at end; trailing unpaired prompt → offset at that prompt', () => {
+  const done = _ingBuf([_ingL.user('u1', 'q1'), _ingL.toolUse('t1'), _ingL.toolResult('r1'), _ingL.asst('a1', 'r1')]);
+  const c1 = convIngest.selectChunk(done, 100);
+  assertEq(c1.raw, done.toString('utf-8'));
+  assertEq(c1.nextOffset, 100 + done.length);
+  const head = _ingBuf([_ingL.user('u1', 'q1'), _ingL.asst('a1', 'r1')]);
+  const open = Buffer.concat([head, _ingBuf([_ingL.user('u2', 'q2'), _ingL.toolUse('t2')])]);
+  const c2 = convIngest.selectChunk(open, 0);
+  assertEq(c2.raw, open.toString('utf-8'), 'the open prompt still goes (server stages what it can)');
+  assertEq(c2.nextOffset, head.length, 'next chunk re-carries the unpaired prompt');
+});
+
+test('conversation-ingest.selectChunk: never sends a chunk without a user+assistant text pair (would degrade the server template)', () => {
+  assertEq(convIngest.selectChunk(_ingBuf([_ingL.toolUse('t'), _ingL.toolResult('r'), _ingL.sys()]), 0).raw, null);
+  assertEq(convIngest.selectChunk(_ingBuf([_ingL.user('u', 'q'), _ingL.toolUse('t')]), 0).raw, null, 'prompt with no reply yet');
+  assertEq(convIngest.selectChunk(_ingBuf([_ingL.asst('a', 'r')]), 0).raw, null, 'reply without its prompt');
+  assertEq(convIngest.selectChunk(Buffer.from('{"partial":'), 0).raw, null, 'no complete line');
+});
+
+test('conversation-ingest.selectChunk: drops a torn last line and, with cutHead, the torn first line', () => {
+  const body = _ingBuf([_ingL.user('u1', 'q1'), _ingL.asst('a1', 'r1')]);
+  const buf = Buffer.concat([Buffer.from('rn":"half"}\n'), body, Buffer.from('{"type":"user","uu')]);
+  const c = convIngest.selectChunk(buf, 50, { cutHead: true });
+  assertEq(c.raw, body.toString('utf-8'));
+  assertEq(c.nextOffset, 50 + buf.length - '{"type":"user","uu'.length);
+});
+
+test('conversation-ingest.selectChunk: escaped payload never exceeds the cap (keeps the newest lines, multibyte + quotes)', () => {
+  const lines = [];
+  for (let i = 0; i < 400; i++) { lines.push(_ingL.user(`u${i}`, `"pergunta" é ação 🚀 ${'x'.repeat(200)}`)); lines.push(_ingL.asst(`a${i}`, 'resposta "ok"')); }
+  const buf = _ingBuf(lines);
+  const cap = 20000;
+  const c = convIngest.selectChunk(buf, 0, { maxPayloadBytes: cap });
+  assert(c.raw, 'something fits');
+  assert(Buffer.byteLength(JSON.stringify(c.raw)) - 2 <= cap, `escaped ${Buffer.byteLength(JSON.stringify(c.raw))} > ${cap}`);
+  assert(buf.toString('utf-8').endsWith(c.raw), 'trailing window');
+  assert(c.raw.startsWith('{"type"'), 'line-aligned');
+  assertEq(c.nextOffset, buf.length);
+  assertEq(convIngest.MAX_PAYLOAD_BYTES < 8_000_000, true, 'under the server MAX_RAW_CHARS and its 10 MiB body cap');
+});
+
+test('conversation-ingest.backoffMs: 30s doubling, capped at 30min', () => {
+  assertEq(convIngest.backoffMs(1), 30_000);
+  assertEq(convIngest.backoffMs(2), 60_000);
+  assertEq(convIngest.backoffMs(4), 240_000);
+  assertEq(convIngest.backoffMs(20), 30 * 60_000);
+});
+
+test('conversation-ingest.curationStalled: cooldown, new permanent failures, or 10min with no progress', () => {
+  assertEq(convIngest.curationStalled({ pending: 3, in_cooldown: 0, success: 5 }, undefined), false, 'no history → only cooldown counts');
+  assertEq(convIngest.curationStalled({ pending: 3, in_cooldown: 2 }, undefined), true);
+  assertEq(convIngest.curationStalled({ pending: 0, permanently_failed: 4 }, { permanently_failed: 3 }), true);
+  assertEq(convIngest.curationStalled({ pending: 6, success: 5 }, { pending: 4, success: 5 }), true, 'pending grows, nothing curated');
+  assertEq(convIngest.curationStalled({ pending: 6, success: 9 }, { pending: 4, success: 5 }), false, 'curation progressing');
+  assertEq(convIngest.curationStalled({ pending: 0, success: 5 }, { pending: 0, success: 5 }), false, 'idle and drained');
 });
 
 test('conversation-ingest.run: backend=local → no-op (never ingests to local KB)', async () => {
@@ -5634,6 +5843,127 @@ test('conversation-ingest.run: mcp-memory but ingestion OFF → no-op', async ()
     return convIngest.run({ session_id: 's', transcript_path: '' });
   });
   assertEq(Object.keys(r || {}).length, 0);
+});
+
+// Drives run() with a fake backend + clock over a real transcript file and state file.
+function _ingHarness() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ingest-'));
+  const h = {
+    transcript: path.join(dir, 's.jsonl'),
+    statePath: path.join(dir, 'ingest-state.json'),
+    clock: 1_000_000,
+    sent: [],
+    statusCalls: 0,
+    ingest: async () => ({ ok: true, pairsStaged: 1 }),
+    status: async () => ({ ok: true, staging: { pending: 0, in_cooldown: 0, success: 1, skipped: 0, permanently_failed: 0, last_error: null } }),
+  };
+  h.backend = {
+    peekMode: () => 'mcp-memory',
+    init: async () => {},
+    ingestConversation: async (raw, opts) => { h.sent.push({ raw, opts }); return h.ingest(raw, opts); },
+    ingestStatus: async (opts) => { h.statusCalls++; return h.status(opts); },
+  };
+  h.append = (lines) => fs.appendFileSync(h.transcript, lines.map((l) => l + '\n').join(''));
+  h.state = () => JSON.parse(fs.readFileSync(h.statePath, 'utf-8'));
+  h.stop = (cwd = path.resolve(__dirname, '..')) => withUserConfig({ backend: { type: 'mcp-memory', ingestion: { enabled: true } } }, () =>
+    convIngest.run({ session_id: 'S1', transcript_path: h.transcript, cwd },
+      { backend: h.backend, now: () => h.clock, statePath: h.statePath }));
+  return h;
+}
+
+test('conversation-ingest.run: sends only the delta per Stop; nothing new → no call', async () => {
+  const h = _ingHarness();
+  h.append([_ingL.user('u1', 'q1'), _ingL.asst('a1', 'r1')]);
+  assertEq(JSON.stringify(await h.stop()), '{}');
+  assertEq(h.sent.length, 1);
+  assertEq(h.sent[0].opts.sessionId, 'S1');
+  assertEq(h.sent[0].opts.consumerId, 'claude-code-boss');
+  assert(h.sent[0].opts.timeoutMs > 0 && h.sent[0].opts.timeoutMs < 29000, 'upload bounded inside the Stop budget');
+  await h.stop();
+  assertEq(h.sent.length, 1, 'duplicate Stop, no new bytes → no upload');
+  h.append([_ingL.user('u2', 'q2'), _ingL.asst('a2', 'r2')]);
+  await h.stop();
+  assertEq(h.sent.length, 2);
+  assert(!h.sent[1].raw.includes('"u1"') && h.sent[1].raw.includes('"u2"'), 'second upload is only the new turn');
+  assertEq(h.state().sessions.S1.offset, fs.statSync(h.transcript).size);
+});
+
+test('conversation-ingest.run: failure → backoff (no upload while waiting), visible notice once, recovery notice', async () => {
+  const h = _ingHarness();
+  h.append([_ingL.user('u1', 'q1'), _ingL.asst('a1', 'r1')]);
+  h.ingest = async () => { throw new Error('MCP request "tools/call" timed out after 15000ms'); };
+  const r1 = await h.stop();
+  assert(/\[INGEST\].*failed 1x.*timed out after 15000ms\. Retrying with backoff \(next in 30s\)/.test(r1.notice || ''), `notice on first failure: ${JSON.stringify(r1)}`);
+  assertEq(h.state().failures, 1);
+  assertEq(h.state().sessions.S1, undefined, 'offset not advanced on failure');
+  h.clock += 10_000;
+  assertEq(JSON.stringify(await h.stop()), '{}', 'inside the 30s backoff: silent');
+  assertEq(h.sent.length, 1, 'no upload during backoff');
+  h.clock += 25_000;
+  const r3 = await h.stop();
+  assertEq(h.sent.length, 2, 'retried after backoff');
+  assertEq(r3.notice, undefined, 'second failure of the streak within 30min: no repeat notice');
+  assertEq(h.state().nextAttemptAt, h.clock + 60_000, 'backoff doubled');
+  h.clock += 61_000;
+  h.ingest = async () => ({ ok: true, pairsStaged: 1 });
+  const r4 = await h.stop();
+  assert(/recovered after 2 failed/.test(r4.notice || ''), `recovery notice: ${JSON.stringify(r4)}`);
+  assertEq(h.state().failures, 0);
+  assert(h.sent[2].raw.includes('"u1"'), 'resumes from where it stopped');
+});
+
+test('conversation-ingest.run: server ok:false (no parser / ingestion off) is a visible failure, not a silent stamp', async () => {
+  const h = _ingHarness();
+  h.append([_ingL.user('u1', 'q1'), _ingL.asst('a1', 'r1')]);
+  h.ingest = async () => ({ ok: false, message: 'no_parser_for_consumer claude-code-boss' });
+  const r = await h.stop();
+  assert(/rejected the transcript: no_parser_for_consumer/.test(r.notice || ''), JSON.stringify(r));
+  assertEq(h.state().failures, 1);
+});
+
+test('conversation-ingest.run: shared breaker open → skipped without counting a failure', async () => {
+  const h = _ingHarness();
+  h.append([_ingL.user('u1', 'q1'), _ingL.asst('a1', 'r1')]);
+  h.ingest = async () => { const e = new Error('mcp-memory backend circuit open'); e.code = 'CIRCUIT_OPEN'; throw e; };
+  assertEq(JSON.stringify(await h.stop()), '{}');
+  assert(!fs.existsSync(h.statePath) || h.state().failures === 0, 'not a failure');
+});
+
+test('conversation-ingest.run: stalled curation (ingest ok:true but LLM down) surfaces from ingest_status, throttled', async () => {
+  const h = _ingHarness();
+  h.status = async () => ({ ok: true, staging: { pending: 4, in_cooldown: 3, success: 0, skipped: 0, permanently_failed: 0, last_error: 'LLM circuit open' } });
+  h.append([_ingL.user('u1', 'q1'), _ingL.asst('a1', 'r1')]);
+  const r1 = await h.stop();
+  assert(/curation is stalled.*4 pair\(s\) pending.*3 in retry cooldown.*LLM circuit open/.test(r1.notice || ''), JSON.stringify(r1));
+  h.clock += 60_000;
+  h.append([_ingL.user('u2', 'q2'), _ingL.asst('a2', 'r2')]);
+  await h.stop();
+  assertEq(h.statusCalls, 1, 'status polled at most every 10 min');
+  h.clock += 10 * 60_000;
+  h.status = async () => ({ ok: true, staging: { pending: 0, in_cooldown: 0, success: 6, skipped: 0, permanently_failed: 0, last_error: 'LLM circuit open' } });
+  h.append([_ingL.user('u3', 'q3'), _ingL.asst('a3', 'r3')]);
+  const r3 = await h.stop();
+  assert(/curation is moving again/.test(r3.notice || ''), JSON.stringify(r3));
+});
+
+test('conversation-ingest.run: transcript rewritten smaller → restarts from the top', async () => {
+  const h = _ingHarness();
+  h.append([_ingL.user('u1', 'q1'), _ingL.asst('a1', 'r1'), _ingL.user('u2', 'q2'), _ingL.asst('a2', 'r2')]);
+  await h.stop();
+  fs.writeFileSync(h.transcript, [_ingL.user('n1', 'q'), _ingL.asst('n2', 'r')].map((l) => l + '\n').join(''));
+  await h.stop();
+  assertEq(h.sent.length, 2);
+  assert(h.sent[1].raw.includes('"n1"'), 'whole new file sent');
+});
+
+test('conversation-ingest.run: folder with no stable project scope → said once per session, nothing sent', async () => {
+  const h = _ingHarness();
+  h.append([_ingL.user('u1', 'q1'), _ingL.asst('a1', 'r1')]);
+  const noScope = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-noscope-'));
+  const r1 = await h.stop(noScope);
+  assert(/\[INGEST\].*skipped for this project/.test(r1.notice || ''), JSON.stringify(r1));
+  assertEq(JSON.stringify(await h.stop(noScope)), '{}', 'not repeated every Stop');
+  assertEq(h.sent.length, 0);
 });
 
 // ─── project-id: client-side identity resolver (STRICT: declared → legacy → git-remote → throw) ─
@@ -8472,6 +8802,7 @@ const routerEnsure = require('./model-router-ensure.js');
 // ─── cost-tuning: 1 h cache + auto-compact window in settings.json env (ownership-safe) ──
 const costTuning = require('./lib/cost-tuning.js');
 const CT_WANT = { CLAUDE_CODE_PROMPT_CACHE_TTL: '1h', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000' };
+const CT_WANT_ALL = { CLAUDE_CODE_PROMPT_CACHE_TTL: '1h', ENABLE_TOOL_SEARCH: 'true', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000' };
 
 test('cost-tuning: applies both knobs on a clean env and remembers they were unset', () => {
   const r = costTuning.planCostTuning({ KEEP: '1' }, CT_WANT, {});
@@ -8530,6 +8861,19 @@ test('cost-tuning: a value the user changes (or removes) after us is theirs — 
   assertEq(moved.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '153000', 'a NEW larger value (not the yielded one) is managed again');
 });
 
+test('cost-tuning: a 153000 window WE wrote earlier (the fixed value that made the engine compact warm at ~120k) is restored away, Tool Search added, user values untouched', () => {
+  const state = { applied: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000', CLAUDE_CODE_PROMPT_CACHE_TTL: '1h' }, previous: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: null, CLAUDE_CODE_PROMPT_CACHE_TTL: null }, yielded: {} };
+  const want = costTuning.wanted(costTuning.resolveConfig({}), true);
+  const r = costTuning.planCostTuning({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000', CLAUDE_CODE_PROMPT_CACHE_TTL: '1h', KEEP: '1' }, want, state);
+  assertEq(r.env, { CLAUDE_CODE_PROMPT_CACHE_TTL: '1h', KEEP: '1', ENABLE_TOOL_SEARCH: 'true' });
+  assertEq(r.state.applied, { CLAUDE_CODE_PROMPT_CACHE_TTL: '1h', ENABLE_TOOL_SEARCH: 'true' });
+  const mine = costTuning.planCostTuning({ CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000' }, want, { applied: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000' }, previous: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000' }, yielded: {} });
+  assertEq(mine.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW, '1000000', 'the value the user had before us comes back');
+  const theirs = costTuning.planCostTuning({ ENABLE_TOOL_SEARCH: 'false' }, want, {});
+  assertEq(theirs.env.ENABLE_TOOL_SEARCH, 'false', 'a Tool Search value the user set stays theirs');
+  assertEq(costTuning.planCostTuning({ ENABLE_TOOL_SEARCH: 'true' }, want, {}).state.applied.ENABLE_TOOL_SEARCH, undefined, 'already true: not ours to remove later');
+});
+
 test('cost-tuning: TTL only for API-billed sessions (gateway, key, cloud) — not subscription, not our proxy', () => {
   const ours = (u) => u.startsWith('http://127.0.0.1:13456');
   assertEq(costTuning.apiBilled({ ANTHROPIC_BASE_URL: 'http://100.124.248.83' }, ours), true, 'own gateway');
@@ -8540,14 +8884,16 @@ test('cost-tuning: TTL only for API-billed sessions (gateway, key, cloud) — no
   assertEq(costTuning.apiBilled({ ANTHROPIC_BASE_URL: 'https://api.anthropic.com' }, ours), false);
   assertEq(costTuning.apiBilled({ ANTHROPIC_BASE_URL: 'http://127.0.0.1:13456' }, ours), false, 'behind our proxy the credential is unknown');
   const cfg = costTuning.resolveConfig({});
-  assertEq(costTuning.wanted(cfg, false), { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000' });
-  assertEq(costTuning.wanted(cfg, true), CT_WANT);
+  assertEq(costTuning.wanted(cfg, false), { ENABLE_TOOL_SEARCH: 'true' }, 'Tool Search always; no fixed compaction window by default');
+  assertEq(costTuning.wanted(cfg, true), { CLAUDE_CODE_PROMPT_CACHE_TTL: '1h', ENABLE_TOOL_SEARCH: 'true' });
+  assertEq(costTuning.wanted(costTuning.resolveConfig({ autoCompactWindow: 153000 }), true), CT_WANT_ALL, 'the window stays available as an explicit opt-in');
+  assertEq(costTuning.wanted(costTuning.resolveConfig({ toolSearch: false }), false), {}, 'Tool Search can be turned off in the config');
   assertEq(costTuning.wanted(costTuning.resolveConfig({ enabled: false }), true), {});
-  assertEq(costTuning.resolveConfig({ cacheTtl: '2h', autoCompactWindow: 5 }), { enabled: true, cacheTtl: null, autoCompactWindow: 100000 }, 'unknown TTL off, window clamped');
+  assertEq(costTuning.resolveConfig({ cacheTtl: '2h', autoCompactWindow: 5 }), { enabled: true, toolSearch: true, cacheTtl: null, autoCompactWindow: 100000 }, 'unknown TTL off, window clamped');
   assertEq(costTuning.resolveConfig({ autoCompactWindow: null }).autoCompactWindow, null, 'null = window not managed');
 });
 
-test('cost-tuning: shipped default ON (153k + 1h); the free profile turns it off (so the shipped block carries no enabled key)', () => {
+test('cost-tuning: shipped default ON (1h + Tool Search, NO fixed compaction window); the free profile turns it off (so the shipped block carries no enabled key)', () => {
   const hc = require('./lib/hooks-config.js');
   const file = hc.userConfigPath();
   assert(file.startsWith(process.env.USERPROFILE), `the suite's temp HOME, never the real one (${file})`);
@@ -8555,7 +8901,7 @@ test('cost-tuning: shipped default ON (153k + 1h); the free profile turns it off
   try {
     if (prev != null) fs.unlinkSync(file);
     hc._resetCache();
-    assertEq(hc.getCostTuning(), { enabled: true, cacheTtl: '1h', autoCompactWindow: 153000 });
+    assertEq(hc.getCostTuning(), { enabled: true, toolSearch: true, cacheTtl: '1h', autoCompactWindow: null });
     fs.mkdirSync(path.dirname(file), { recursive: true });
     fs.writeFileSync(file, JSON.stringify({ profile: 'free' }));
     hc._resetCache();
@@ -8580,13 +8926,13 @@ test('cost-tuning: applyCostTuning writes the temp HOME settings.json, keeps for
     fs.writeFileSync(settings, JSON.stringify({ env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000', BRAIN_HTTP_PORT: '38217' }, hooks: { X: 1 } }));
     assertEq(routerEnsure.applyCostTuning({ ANTHROPIC_BASE_URL: 'http://100.124.248.83' }), true);
     const on = JSON.parse(fs.readFileSync(settings, 'utf8'));
-    assertEq(on.env, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000', BRAIN_HTTP_PORT: '38217', CLAUDE_CODE_PROMPT_CACHE_TTL: '1h' });
+    assertEq(on.env, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000', BRAIN_HTTP_PORT: '38217', CLAUDE_CODE_PROMPT_CACHE_TTL: '1h', ENABLE_TOOL_SEARCH: 'true' }, 'the user\'s own 1M window is left alone; TTL and Tool Search added');
     assertEq(on.hooks, { X: 1 }, 'the rest of settings.json is untouched');
     fs.mkdirSync(path.dirname(ucfg), { recursive: true });
     fs.writeFileSync(ucfg, JSON.stringify({ costTuning: { enabled: false } }));
     hc._resetCache();
     assertEq(routerEnsure.applyCostTuning({ ANTHROPIC_BASE_URL: 'http://100.124.248.83' }), true);
-    assertEq(JSON.parse(fs.readFileSync(settings, 'utf8')).env, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000', BRAIN_HTTP_PORT: '38217' }, 'off → the user 1M is back');
+    assertEq(JSON.parse(fs.readFileSync(settings, 'utf8')).env, { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000', BRAIN_HTTP_PORT: '38217' }, 'off → only what we added is removed, the user 1M stays');
     fs.writeFileSync(stateFile, '{broken');
     assertEq(routerEnsure.applyCostTuning({}), false, 'an unreadable state fails loud and leaves settings.json alone');
   } finally {
@@ -15210,6 +15556,40 @@ test('http-daemon: the open SSE stream (GET) gets periodic keepalive comments, s
   }
 });
 
+test('http-daemon shutdown: frees the port at once but answers the requests already in flight (no "Connection closed")', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-drain-'));
+  const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
+  const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0, shutdownDrainMs: 5000 });
+  const port = d.httpServer.address().port;
+  const tok = fs.readFileSync(path.join(dir, 'brain-http.token'), 'utf8').trim();
+  try {
+    // A request whose body is still arriving when shutdown starts.
+    const pending = new Promise((resolve) => {
+      const req = http.request({ host: '127.0.0.1', port, path: '/mcp', method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: `Bearer ${tok}`, 'mcp-session-id': 'gone-session' } }, (res) => {
+        let b = ''; res.on('data', (c) => { b += c; }); res.on('end', () => resolve({ status: res.statusCode, body: b, conn: res.headers.connection }));
+      });
+      req.on('error', (err) => resolve({ error: err.code || err.message }));
+      req.write('{"jsonrpc":"2.0","id":7,');
+      d.__finish = () => req.end('"method":"tools/list","params":{}}');
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    const down = d.shutdown();
+    await new Promise((r) => setTimeout(r, 100));
+    let refused = null;
+    try { await fetch(`http://127.0.0.1:${port}/health`); } catch (err) { refused = err; }
+    assert(refused, 'the port is released while draining, so a swap can start the new daemon');
+    d.__finish();
+    const r = await pending;
+    assertEq(r.error, undefined, `in-flight request answered, not dropped: ${JSON.stringify(r)}`);
+    assertEq(r.status, 404, 'unknown session → 404 (client re-initializes on the new daemon)');
+    assertEq(r.conn, 'close', 'socket dropped after the answer so the next request reaches the new daemon');
+    await down;
+  } finally {
+    await d.shutdown();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('brain-status: reports the folder\'s real project id (not the folder name / "default") and never sets CCB_PROJECT_ID in the dispatcher process', async () => {
   const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-bstatus-'));
   const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, CCB: process.env.CCB_PROJECT_ID };
@@ -15974,6 +16354,544 @@ test('doctor.checkHooksEvents: evento DESCONHECIDO avisa (warn), nunca crava fai
   assertEq(/typo|mais nov|newer|doc/i.test(r.fix), true, 'o fix admite as DUAS hipoteses');
 });
 
+test('doctor: todo aviso/falha diz o que fazer (fix nao vazio), inclusive Hook events', () => {
+  const rt = doctor.checkHooksEvents({ hooksEvents: ['Stop', 'PostToolUseFailure'] });
+  assertEq(rt.status, 'warn');
+  assertEq(/^What to do:/.test(rt.fix), true, 'runtime-dependent diz a acao');
+  assertEq(/safe to ignore/.test(rt.fix), false, 'sem o "ignore" solto de antes');
+  const unk = doctor.checkHooksEvents({ hooksEvents: ['BogusEvent'] });
+  assertEq(/^What to do:/.test(unk.fix), true);
+  const warns = [
+    doctor.checkModel({ modelPresent: false }),
+    doctor.checkDataDirs({ dataDirCandidates: [{ path: '/a', populated: true }, { path: '/b', populated: true }], env: { data: '/a' } }),
+    doctor.checkDaemon({ daemon: { lockPresent: true, healthy: false } }),
+    doctor.checkCostTuning({ costTuning: { notes: ['X: a -> b'] } }),
+  ];
+  for (const r of warns) {
+    assertEq(r.status, 'warn', r.id);
+    assertEq(typeof r.fix === 'string' && r.fix.length > 10, true, `${r.id} sem acao`);
+  }
+});
+
+test('doctor.checkCostTuning: em dia = ok; divergente = warn com autofix cost-tuning', () => {
+  assertEq(doctor.checkCostTuning({ costTuning: { notes: [] } }).status, 'ok');
+  assertEq(doctor.checkCostTuning({}).status, 'ok');
+  const r = doctor.checkCostTuning({ costTuning: { notes: ['CLAUDE_CODE_AUTO_COMPACT_WINDOW: 153000 → unset (restored)'] } });
+  assertEq(r.status, 'warn');
+  assertEq(r.autofix, 'cost-tuning');
+  assertEq(/153000/.test(r.detail), true);
+});
+
+test('doctor.applyFixes: roda so o autofix de quem nao esta ok; falha de fixer aparece, nao some', () => {
+  const results = [
+    { id: 'a', status: 'warn', autofix: 'ok-fix' },
+    { id: 'b', status: 'ok', autofix: 'ok-fix' },
+    { id: 'c', status: 'warn' },
+    { id: 'd', status: 'warn', autofix: 'boom' },
+    { id: 'e', status: 'warn', autofix: 'missing' },
+  ];
+  const ran = [];
+  const out = doctor.applyFixes(results, { x: 1 }, {
+    'ok-fix': (ctx) => { ran.push(ctx.x); return 'done'; },
+    boom: () => { throw new Error('disk full'); },
+  });
+  assertEq(ran.length, 1, 'so o resultado warn com autofix');
+  assertEq(out.map(o => o.id + ':' + o.ok).join(','), 'a:true,d:false,e:false');
+  assertEq(out[1].message, 'disk full');
+});
+
+test('doctor stale-daemon-lock fixer apaga so o lock informado', () => {
+  const p = path.join(os.tmpdir(), `ccb-doctor-lock-${process.pid}.json`);
+  fs.writeFileSync(p, '{}');
+  const msg = doctor.FIXERS['stale-daemon-lock']({ daemon: { lockPath: p } });
+  assertEq(fs.existsSync(p), false);
+  assertEq(msg.includes(p), true);
+  let threw = false;
+  try { doctor.FIXERS['stale-daemon-lock']({ daemon: {} }); } catch (e) { threw = /lock path unknown/.test(e.message); }
+  assertEq(threw, true, 'sem caminho: falha alto');
+  const d = doctor.checkDaemon({ daemon: { lockPresent: true, healthy: false, lockPath: p } });
+  assertEq(d.autofix, 'stale-daemon-lock');
+});
+
+// ── fixed-cost audit (lib/fixed-cost.js), doctor integration, first run ────────────────────────────────
+
+const fixedCost = require('./lib/fixed-cost.js');
+const fcTmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), `ccb-fc-${p}-`));
+const fcWrite = (file, text) => { fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, typeof text === 'string' ? text : JSON.stringify(text)); };
+const fcLine = (o) => JSON.stringify(o) + '\n';
+
+test('fixed-cost.parseFrontmatter: aspas, bloco dobrado (>) e ausencia de frontmatter', () => {
+  const fm = fixedCost.parseFrontmatter('---\nname: tdd\ndescription: "Use when writing tests"\nwhen_to_use: >\n  first line\n  second line\nother: 1\n---\nbody');
+  assertEq(fm.name, 'tdd');
+  assertEq(fm.description, 'Use when writing tests');
+  assertEq(fm.when_to_use, 'first line second line');
+  assertEq(fixedCost.parseFrontmatter('no frontmatter here'), {});
+});
+
+test('fixed-cost.toolNamesByServer: agrupa por servidor e conta tokens das linhas', () => {
+  const g = fixedCost.toolNamesByServer(['Read', 'mcp__a__x', 'mcp__a__y_long', 'mcp__plugin_p_srv__t']);
+  assertEq(g.a.count, 2);
+  assertEq(g.a.tokens, fixedCost.estTokens('mcp__a__x\n') + fixedCost.estTokens('mcp__a__y_long\n'));
+  assertEq(g.plugin_p_srv.count, 1);
+  assertEq(Object.keys(g).length, 2, 'ferramenta nativa nao conta como MCP');
+});
+
+test('fixed-cost.scanUsage: conta chamadas por servidor na janela, sessoes, mensagens e o delta de ferramentas do projeto', async () => {
+  const home = fcTmp('scan');
+  const cwd = path.join(home, 'work', 'proj');
+  const now = Date.parse('2026-10-14T12:00:00Z');
+  const own = cwd.replace(/[^a-zA-Z0-9]/g, '-');
+  const ts = (d) => new Date(now - d * 86400000).toISOString();
+  const call = (d, name) => fcLine({ type: 'assistant', timestamp: ts(d), message: { content: [{ type: 'tool_use', name }] } });
+  const delta = (d, names, failed) => fcLine({ type: 'attachment', timestamp: ts(d), attachment: { type: 'deferred_tools_delta', addedNames: names, failedMcpServers: failed } });
+  const s1 = path.join(home, '.claude', 'projects', own, 's1.jsonl');
+  fcWrite(s1, call(1, 'mcp__alpha__read') + call(2, 'mcp__alpha__write') + call(3, 'mcp__plugin_boss_brain-server__brain_search') + fcLine({ type: 'user', timestamp: ts(1) })
+    + delta(5, ['mcp__old__t'], []) + delta(1, ['mcp__alpha__read', 'mcp__beta__x'], ['beta']));
+  const s2 = path.join(home, '.claude', 'projects', 'other', 's2.jsonl');
+  fcWrite(s2, call(1, 'mcp__alpha__read') + delta(0.1, ['mcp__zzz__t'], []));
+  const old = path.join(home, '.claude', 'projects', 'other', 'old.jsonl');
+  fcWrite(old, call(100, 'mcp__ancient__t'));
+  fs.utimesSync(old, new Date(now - 100 * 86400000), new Date(now - 100 * 86400000));
+  fs.utimesSync(s1, new Date(now - 3600000), new Date(now - 3600000));
+  fs.utimesSync(s2, new Date(now - 3600000), new Date(now - 3600000));
+  const u = await fixedCost.scanUsage({ home, cwd, days: 30, now });
+  assertEq(u.sessions, 2, 'o arquivo fora da janela nao conta');
+  assertEq(u.byPrefix.alpha.calls, 3);
+  assertEq(u.byPrefix['plugin_boss_brain-server'].calls, 1);
+  assertEq(u.byPrefix.ancient, undefined);
+  assertEq(u.assistantMessages, 4);
+  assertEq(new Date(u.byPrefix.alpha.lastAt).toISOString(), ts(1));
+  assertEq(u.delta.names, ['mcp__alpha__read', 'mcp__beta__x'], 'delta mais recente do PROPRIO projeto, nao o mais novo de qualquer um');
+  assertEq(u.delta.failed, ['beta']);
+  assertEq(u.delta.own, true);
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('fixed-cost.listMcpServers: usuario, local, .mcp.json do projeto e servidor de plugin, com o prefixo das ferramentas', () => {
+  const home = fcTmp('list');
+  const cwd = path.join(home, 'proj');
+  fcWrite(path.join(home, '.claude.json'), { mcpServers: { 'my server': { type: 'http', url: 'http://x' } }, projects: { [cwd]: { mcpServers: { loc: { command: 'node' } }, disabledMcpjsonServers: ['pj'] } } });
+  fcWrite(path.join(cwd, '.mcp.json'), { mcpServers: { pj: { type: 'http', url: 'http://y' } } });
+  const pl = path.join(home, 'cache', 'boss', '1.0');
+  fcWrite(path.join(pl, '.mcp.json'), { mcpServers: { brain: { type: 'http', url: 'http://z' } } });
+  fcWrite(path.join(home, '.claude', 'plugins', 'installed_plugins.json'), { plugins: { 'boss@mk': [{ installPath: pl, version: '1.0' }] } });
+  fcWrite(path.join(home, '.claude', 'settings.json'), { enabledPlugins: { 'boss@mk': true } });
+  const { servers, errors } = fixedCost.listMcpServers({ home, cwd });
+  assertEq(errors, []);
+  const by = Object.fromEntries(servers.map((s) => [s.name, s]));
+  assertEq(by['my server'].prefix, 'my_server');
+  assertEq(by['my server'].scope, 'user');
+  assertEq(by.loc.scope, 'local');
+  assertEq(by.loc.type, 'stdio');
+  assertEq(by.pj.scope, 'project');
+  assertEq(by.pj.disabled, true);
+  assertEq(by['plugin:boss:brain'].prefix, 'plugin_boss_brain');
+  assertEq(by['plugin:boss:brain'].pluginRoot, pl);
+  fcWrite(path.join(home, '.claude', 'settings.json'), { enabledPlugins: { 'boss@mk': false } });
+  assertEq(fixedCost.listMcpServers({ home, cwd }).servers.some((s) => s.scope === 'plugin'), false, 'plugin desligado nao carrega servidor');
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('fixed-cost.probeHttpTools: servidor MCP HTTP real (SSE + paginacao + sessao) mede as definicoes; 401 vira needsAuth', async () => {
+  const http = require('http');
+  const tools = Array.from({ length: 5 }, (_, i) => ({ name: `tool_${i}`, description: 'd'.repeat(100), inputSchema: { type: 'object' } }));
+  const seen = [];
+  const srv = http.createServer((req, res) => {
+    let b = '';
+    req.on('data', (c) => { b += c; });
+    req.on('end', () => {
+      if (req.url === '/locked') { res.writeHead(401); res.end('no'); return; }
+      const m = JSON.parse(b);
+      seen.push({ method: m.method, session: req.headers['mcp-session-id'], auth: req.headers.authorization });
+      if (m.method === 'initialize') { res.writeHead(200, { 'content-type': 'application/json', 'mcp-session-id': 'S1' }); res.end(JSON.stringify({ jsonrpc: '2.0', id: m.id, result: {} })); return; }
+      if (m.method === 'notifications/initialized') { res.writeHead(202); res.end(); return; }
+      const page = m.params && m.params.cursor ? 1 : 0;
+      const body = { jsonrpc: '2.0', id: m.id, result: { tools: page ? tools.slice(3) : tools.slice(0, 3), ...(page ? {} : { nextCursor: 'c1' }) } };
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(`event: message\ndata: ${JSON.stringify(body)}\n\n`);
+    });
+  });
+  await new Promise((r) => srv.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${srv.address().port}`;
+  try {
+    const ok = await fixedCost.probeHttpTools({ name: 's', config: { type: 'http', url: `${base}/mcp`, headers: { Authorization: 'Bearer ${FC_TOKEN:-dflt}' } }, pluginRoot: '' }, { env: { ...process.env, FC_TOKEN: 'abc' } });
+    assertEq(ok.ok, true, JSON.stringify(ok));
+    assertEq(ok.toolCount, 5, 'duas paginas somadas');
+    assertEq(ok.defTokens, fixedCost.estTokens(JSON.stringify(tools)));
+    assertEq(seen.map((x) => x.method), ['initialize', 'notifications/initialized', 'tools/list', 'tools/list']);
+    assertEq(seen[2].session, 'S1', 'o id de sessao do initialize volta nas chamadas seguintes');
+    assertEq(seen[0].auth, 'Bearer abc', 'header com ${VAR} expandido');
+    const locked = await fixedCost.probeHttpTools({ name: 'l', config: { type: 'http', url: `${base}/locked` } });
+    assertEq(locked.ok, false);
+    assertEq(locked.needsAuth, true);
+    const dead = await fixedCost.probeHttpTools({ name: 'd', config: { type: 'http', url: 'http://127.0.0.1:1/mcp' } }, { timeoutMs: 1500 });
+    assertEq(dead.ok, false);
+    assertEq(dead.needsAuth, false);
+    assert(dead.error, 'erro visivel, nao silencioso');
+  } finally { await new Promise((r) => srv.close(r)); }
+});
+
+test('fixed-cost.probeHttpTools: headersHelper roda com a raiz do plugin e seus headers entram; helper quebrado e erro visivel', async () => {
+  let cmdSeen = '';
+  const fetchImpl = async (url, init) => {
+    const m = JSON.parse(init.body);
+    const mk = (status, body, h = {}) => ({ ok: status < 400, status, headers: { get: (k) => h[k.toLowerCase()] || null }, text: async () => (body ? JSON.stringify(body) : '') });
+    if (m.method === 'initialize') return mk(200, { jsonrpc: '2.0', id: 1, result: {} }, { 'content-type': 'application/json' });
+    if (m.method === 'notifications/initialized') return mk(202, null);
+    assertEq(init.headers['x-token'], 'T');
+    return mk(200, { jsonrpc: '2.0', id: m.id, result: { tools: [{ name: 'a' }] } }, { 'content-type': 'application/json' });
+  };
+  const run = (cmd) => { cmdSeen = cmd; return { status: 0, stdout: '{"X-Token":"T"}', stderr: '' }; };
+  const r = await fixedCost.probeHttpTools({ name: 'p', pluginRoot: '/plug', config: { type: 'http', url: 'http://h/mcp', headersHelper: 'node "${CLAUDE_PLUGIN_ROOT}/h.js"' } }, { fetchImpl, run, env: {} });
+  assertEq(r.ok, true, JSON.stringify(r));
+  assertEq(cmdSeen, 'node "/plug/h.js"');
+  const bad = await fixedCost.probeHttpTools({ name: 'p', config: { type: 'http', url: 'http://h/mcp', headersHelper: 'x' } }, { fetchImpl, run: () => ({ status: 1, stdout: '', stderr: 'Error: Cannot find module x\n  at y' }), env: {} });
+  assertEq(bad.ok, false);
+  assert(/headersHelper failed: Error: Cannot find module x/.test(bad.error), bad.error);
+});
+
+const fcServer = (name, scope, extra = {}) => ({ name, prefix: fixedCost.sanitize(name), scope, type: extra.type || 'http', config: extra.config || { type: 'http', url: 'http://x' }, disabled: !!extra.disabled, pluginRoot: '' });
+const fcFacts = (over) => ({
+  days: 30, now: Date.parse('2026-10-14T12:00:00Z'), toolSearch: true,
+  usage: { byPrefix: {}, sessions: 100, assistantMessages: 10000, oldestMs: Date.parse('2026-09-01T00:00:00Z'), delta: { names: [], failed: [], pending: [] } },
+  servers: [], probes: {}, oauth: new Set(), skills: [], overrides: {}, counters: { skillUsage: {}, pluginUsage: {} }, plugins: [], keep: [], ...over,
+});
+
+test('fixed-cost.buildAudit MCP: sem chamadas = unused; 401 sem credencial = needs-auth; sem historico suficiente nao condena; keep protege', () => {
+  const now = Date.parse('2026-10-14T12:00:00Z');
+  const a = fixedCost.buildAudit(fcFacts({
+    servers: [fcServer('used', 'user'), fcServer('dead', 'user'), fcServer('locked', 'user'), fcServer('kept', 'user'), fcServer('auth-ok', 'user'), fcServer('hdr', 'user', { config: { type: 'http', url: 'x', headers: { Authorization: 'k' } } })],
+    keep: ['kept'],
+    oauth: new Set(['auth-ok']),
+    usage: { byPrefix: { used: { calls: 5, lastAt: now - 86400000 } }, sessions: 100, assistantMessages: 10000, oldestMs: Date.parse('2026-09-01T00:00:00Z'), delta: { names: ['mcp__used__a', 'mcp__dead__b'], failed: [], pending: [] } },
+    probes: { locked: { ok: false, needsAuth: true, error: 'HTTP 401' }, 'auth-ok': { ok: false, needsAuth: true, error: 'HTTP 401' }, hdr: { ok: false, needsAuth: true, error: 'HTTP 401' } },
+  }));
+  const v = Object.fromEntries(a.mcp.map((r) => [r.name, r.verdict]));
+  assertEq(v, { used: 'keep', dead: 'unused', locked: 'needs-auth', kept: 'keep', 'auth-ok': 'unused', hdr: 'unused' });
+  assertEq(a.actions.filter((x) => x.kind === 'mcp-remove').map((x) => x.target).sort(), ['auth-ok', 'dead', 'hdr', 'locked']);
+  const thin = fixedCost.buildAudit(fcFacts({ servers: [fcServer('dead', 'user')], usage: { byPrefix: {}, sessions: 3, assistantMessages: 30, oldestMs: now - 2 * 86400000, delta: null } }));
+  assertEq(thin.mcp[0].verdict, 'keep', 'so 2 dias de historico: nao e prova de que nao se usa');
+  assert(/not enough/.test(thin.mcp[0].reason), thin.mcp[0].reason);
+  assertEq(thin.actions.length, 0);
+});
+
+test('fixed-cost.buildAudit MCP: .mcp.json do projeto e servidor de plugin sao reportados, nunca removidos', () => {
+  const a = fixedCost.buildAudit(fcFacts({ servers: [fcServer('pj', 'project'), fcServer('plugin:x:y', 'plugin'), fcServer('off', 'user', { disabled: true })] }));
+  assertEq(a.mcp.map((r) => r.verdict), ['unused', 'unused', 'disabled']);
+  assertEq(a.actions.length, 0);
+  assert(/edit that file/.test(a.mcp[0].reason) && /disable the plugin/.test(a.mcp[1].reason));
+  assertEq(a.mcp[2].perMessageTokens, 0);
+});
+
+test('fixed-cost: backends atras do agregador (MCP Bridge gateway) sao quebrados por backend, com chamadas e tokens; sem uso so e reportado', async () => {
+  assertEq(fixedCost.backendKey('mcp-gateway', 'action__doctor'), 'mcp-gateway/action');
+  assertEq(fixedCost.backendKey('smart-tool', 'smart_search'), null);
+  const home = fcTmp('gw');
+  const cwd = path.join(home, 'p');
+  const now = Date.parse('2026-10-14T12:00:00Z');
+  const f1 = path.join(home, '.claude', 'projects', 'x', 's.jsonl');
+  fcWrite(f1, fcLine({ type: 'assistant', timestamp: new Date(now - 86400000).toISOString(), message: { content: [{ type: 'tool_use', name: 'mcp__mcp-gateway__action__doctor' }, { type: 'tool_use', name: 'mcp__mcp-gateway__action__health' }] } }));
+  fs.utimesSync(f1, new Date(now - 3600000), new Date(now - 3600000));
+  const u = await fixedCost.scanUsage({ home, cwd, days: 30, now });
+  assertEq(u.byBackend['mcp-gateway/action'].calls, 2);
+  assertEq(u.byPrefix['mcp-gateway'].calls, 2);
+  fs.rmSync(home, { recursive: true, force: true });
+  const a = fixedCost.buildAudit(fcFacts({
+    servers: [fcServer('mcp-gateway', 'user')],
+    usage: { byPrefix: { 'mcp-gateway': { calls: 2, lastAt: now } }, byBackend: { 'mcp-gateway/action': { calls: 2, lastAt: now } }, sessions: 100, assistantMessages: 10000, oldestMs: Date.parse('2026-09-01T00:00:00Z'),
+      delta: { names: ['mcp__mcp-gateway__action__doctor', 'mcp__mcp-gateway__action__health', 'mcp__mcp-gateway__bolao__palpite'], failed: [], pending: [], own: true } },
+  }));
+  const b = Object.fromEntries(a.mcp[0].backends.map((x) => [x.name, x]));
+  assertEq(b.action.tools, 2);
+  assertEq(b.action.calls, 2);
+  assertEq(b.action.unused, false);
+  assertEq(b.bolao.unused, true);
+  assertEq(a.actions.length, 0, 'backend do gateway nunca e removido daqui (config de outro projeto)');
+  assert(/backend bolao: 1 tools, .* → unused in 30d: remove it from the gateway's own config/.test(fixedCost.formatAudit(a)), fixedCost.formatAudit(a));
+});
+
+test('fixed-cost.buildAudit: servidor do .mcp.json do projeto que nao foi carregado (nao aprovado) custa zero e nao e alarmado', () => {
+  const a = fixedCost.buildAudit(fcFacts({
+    servers: [fcServer('brain', 'project')],
+    usage: { byPrefix: {}, sessions: 100, assistantMessages: 10000, oldestMs: Date.parse('2026-09-01T00:00:00Z'), delta: { names: ['mcp__other__t'], failed: [], pending: [], own: true } },
+    probes: { brain: { ok: true, toolCount: 36, defTokens: 9934 } },
+  }));
+  assertEq(a.mcp[0].verdict, 'not-loaded');
+  assertEq(a.mcp[0].perMessageTokens, 0);
+  assertEq(a.totals.mcpTokens, 0);
+  assert(!/! brain/.test(fixedCost.formatAudit(a)), 'sem marca de alerta');
+});
+
+test('fixed-cost.buildAudit: custo por mensagem usa os nomes com Tool Search ligado e as definicoes completas com ele desligado', () => {
+  const facts = (toolSearch) => fcFacts({
+    toolSearch, servers: [fcServer('s', 'user')],
+    usage: { byPrefix: { s: { calls: 1, lastAt: 1 } }, sessions: 10, assistantMessages: 100, oldestMs: Date.parse('2026-09-01T00:00:00Z'), delta: { names: ['mcp__s__a', 'mcp__s__b'], failed: [], pending: [] } },
+    probes: { s: { ok: true, toolCount: 2, defTokens: 900 } },
+  });
+  const on = fixedCost.buildAudit(facts(true));
+  assertEq(on.mcp[0].perMessageTokens, fixedCost.estTokens('mcp__s__a\n') * 2);
+  assertEq(on.mcp[0].defTokens, 900);
+  assertEq(fixedCost.buildAudit(facts(false)).mcp[0].perMessageTokens, 900);
+});
+
+test('fixed-cost.buildAudit skills: so skill de usuario/projeto nunca usada vira name-only; usada, ja oculta e keep ficam; skill de plugin nao tem alavanca', () => {
+  const sk = (name, source, l = 100, n = 10) => ({ name, source, file: name, listedTokens: l, nameOnlyTokens: n });
+  const now = Date.parse('2026-10-14T12:00:00Z');
+  const a = fixedCost.buildAudit(fcFacts({
+    skills: [sk('used', 'user'), sk('never', 'user'), sk('hidden', 'user'), sk('kept', 'project'), sk('stale', 'user'), sk('boss:cmd', 'plugin:boss')],
+    overrides: { hidden: 'off' }, keep: ['kept'],
+    counters: { skillUsage: { used: { usageCount: 3, lastUsedAt: now - 86400000 }, stale: { usageCount: 9, lastUsedAt: now - 90 * 86400000 } }, pluginUsage: {} },
+  }));
+  assertEq(a.actions.filter((x) => x.kind === 'skill-name-only').map((x) => x.target).sort(), ['never', 'stale']);
+  assertEq(a.actions[0].tokens, 90);
+  assertEq(a.totals.skillsTotal, 6);
+  assertEq(a.totals.skillsUsed, 1);
+  assertEq(a.totals.skillTokens, 100 + 100 + 0 + 100 + 100 + 100, 'a skill oculta (off) nao custa nada');
+});
+
+test('fixed-cost.buildAudit plugins e economia: plugin sem uso vira plugin-disable (o boss nunca); economia por mensagem e por sessao vem da tabela de precos', () => {
+  const now = Date.parse('2026-10-14T12:00:00Z');
+  const sk = { name: 'x:s', source: 'plugin:x', file: 'f', listedTokens: 500, nameOnlyTokens: 5 };
+  const a = fixedCost.buildAudit(fcFacts({
+    plugins: [{ id: 'x@m', name: 'x', enabled: true }, { id: 'claude-code-boss@m', name: 'claude-code-boss', enabled: true }, { id: 'y@m', name: 'y', enabled: true }, { id: 'z@m', name: 'z', enabled: false }],
+    skills: [sk],
+    counters: { skillUsage: {}, pluginUsage: { 'y@m': { usageCount: 4, lastUsedAt: now - 86400000 } } },
+    pricing: { read: 1, write: 10 },
+  }));
+  const pd = a.actions.filter((x) => x.kind === 'plugin-disable');
+  assertEq(pd.map((x) => x.target), ['x@m'], 'y foi usado, z ja esta desligado, o boss e protegido');
+  assertEq(pd[0].tokens, 500);
+  assertEq(a.savings.tokens, 500);
+  assertEq(a.msgsPerSession, 100);
+  assertEq(a.savings.perMessageUsd, 500 * 1 / 1e6);
+  assertEq(a.savings.perSessionUsd, 500 * (10 + 99 * 1) / 1e6);
+  assert(/US\$/.test(fixedCost.formatAudit(a)) && /Undo: node scripts\/doctor.js --undo/.test(fixedCost.formatAudit(a)));
+});
+
+test('fixed-cost.applyActions/undoActions (settings.json real): name-only, plugin-disable/enable e env-set gravam so a chave e o undo restaura o estado anterior exato', () => {
+  const home = fcTmp('act');
+  const sf = path.join(home, '.claude', 'settings.json');
+  const before = { env: { KEEP: '1', CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000' }, skillOverrides: { old: 'off' }, enabledPlugins: { 'a@m': true, 'b@m': false }, hooks: { Stop: [] } };
+  fcWrite(sf, before);
+  const res = fixedCost.applyActions([
+    { kind: 'skill-name-only', target: 'sk1' },
+    { kind: 'skill-name-only', target: 'old' },
+    { kind: 'plugin-disable', target: 'a@m' },
+    { kind: 'plugin-enable', target: 'b@m' },
+    { kind: 'env-set', target: 'CLAUDE_CODE_AUTO_COMPACT_WINDOW', value: undefined },
+    { kind: 'env-set', target: 'ENABLE_TOOL_SEARCH', value: 'true' },
+    { kind: 'bogus', target: 'x' },
+  ], { home });
+  assertEq(res.map((r) => r.ok), [true, true, true, true, true, true, false]);
+  assert(/unknown action kind/.test(res[6].message), 'tipo desconhecido falha alto');
+  assert(res.slice(0, 6).every((r) => /doctor.js --undo/.test(r.undo)), 'cada correcao diz como desfazer');
+  const after = JSON.parse(fs.readFileSync(sf, 'utf8'));
+  assertEq(after.skillOverrides, { old: 'name-only', sk1: 'name-only' });
+  assertEq(after.enabledPlugins, { 'a@m': false, 'b@m': true });
+  assertEq(after.env, { KEEP: '1', ENABLE_TOOL_SEARCH: 'true' });
+  assertEq(after.hooks, { Stop: [] }, 'o que nao e nosso fica intacto');
+  assertEq(JSON.parse(fs.readFileSync(fixedCost.undoPath(home), 'utf8')).length, 6);
+  const undone = fixedCost.undoActions({ home });
+  assertEq(undone.every((u) => u.ok), true, JSON.stringify(undone));
+  assertEq(JSON.parse(fs.readFileSync(sf, 'utf8')), before, 'undo devolve o arquivo exatamente ao que era');
+  assertEq(JSON.parse(fs.readFileSync(fixedCost.undoPath(home), 'utf8')), [], 'diario esvaziado');
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('fixed-cost.applyActions: settings.json ilegivel nao e tocado e o erro aparece; diario ilegivel barra novas mudancas', () => {
+  const home = fcTmp('bad');
+  const sf = path.join(home, '.claude', 'settings.json');
+  fcWrite(sf, '{ not json');
+  const r = fixedCost.applyActions([{ kind: 'skill-name-only', target: 'x' }], { home });
+  assertEq(r[0].ok, false);
+  assert(/unreadable/.test(r[0].message), r[0].message);
+  assertEq(fs.readFileSync(sf, 'utf8'), '{ not json');
+  fcWrite(sf, {});
+  fcWrite(fixedCost.undoPath(home), 'garbage');
+  const r2 = fixedCost.applyActions([{ kind: 'skill-name-only', target: 'x' }], { home });
+  assertEq(r2[0].ok, false);
+  assert(/undo journal .* unreadable/.test(r2[0].message), r2[0].message);
+  assertEq(JSON.parse(fs.readFileSync(sf, 'utf8')), {}, 'sem diario nao muda nada');
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('fixed-cost.applyActions mcp-remove: diario antes de remover, argumentos do claude mcp corretos, undo re-adiciona; falha do CLI fica no diario e e reportada', () => {
+  const home = fcTmp('mcp');
+  const calls = [];
+  const cfg = { type: 'http', url: 'http://h', headers: { A: 'b' } };
+  const run = (bin, args) => { calls.push(args); return { status: 0, stdout: '', stderr: '' }; };
+  const env = { CLAUDE_CODE_EXECPATH: process.execPath };
+  const r = fixedCost.applyActions([{ kind: 'mcp-remove', target: 'dead', scope: 'user', config: cfg }], { home, env, run });
+  assertEq(r[0].ok, true, JSON.stringify(r));
+  assertEq(calls[0], ['mcp', 'remove', 'dead', '-s', 'user']);
+  const j = JSON.parse(fs.readFileSync(fixedCost.undoPath(home), 'utf8'));
+  assertEq(j[0].config, cfg, 'a config completa fica guardada para o undo');
+  const u = fixedCost.undoActions({ home, env, run });
+  assertEq(u[0].ok, true);
+  assertEq(calls[1], ['mcp', 'add-json', 'dead', JSON.stringify(cfg), '-s', 'user']);
+  assertEq(JSON.parse(fs.readFileSync(fixedCost.undoPath(home), 'utf8')), []);
+  const failing = () => ({ status: 1, stdout: '', stderr: 'boom' });
+  const r2 = fixedCost.applyActions([{ kind: 'mcp-remove', target: 'x', scope: 'user', config: cfg }], { home, env, run: failing });
+  assertEq(r2[0].ok, false);
+  assert(/boom/.test(r2[0].message), r2[0].message);
+  const u2 = fixedCost.undoActions({ home, env, run: failing });
+  assertEq(u2[0].ok, false);
+  assertEq(JSON.parse(fs.readFileSync(fixedCost.undoPath(home), 'utf8')).length, 1, 'o que nao deu para restaurar continua no diario');
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('fixed-cost mcp-remove com o claude de verdade (CLAUDE_CONFIG_DIR isolado): remove, a config some do .claude.json, undo traz igual', () => {
+  let bin;
+  try { bin = fixedCost.resolveClaudeBin(); } catch (e) { console.log(`    (pulado: ${e.message})`); return; }
+  const home = fcTmp('real');
+  const env = { ...process.env, CLAUDE_CONFIG_DIR: path.join(home, '.claude'), CLAUDE_CODE_EXECPATH: bin };
+  const cfg = { type: 'http', url: 'http://127.0.0.1:9/mcp' };
+  const sp = require('child_process').spawnSync(bin, ['mcp', 'add-json', 'fc-dead', JSON.stringify(cfg), '-s', 'user'], { env, encoding: 'utf8', windowsHide: true });
+  assertEq(sp.status, 0, sp.stderr);
+  const cj = () => JSON.parse(fs.readFileSync(path.join(home, '.claude', '.claude.json'), 'utf8')).mcpServers || {};
+  assertEq(cj()['fc-dead'], cfg);
+  const r = fixedCost.applyActions([{ kind: 'mcp-remove', target: 'fc-dead', scope: 'user', config: cfg }], { home, env });
+  assertEq(r[0].ok, true, JSON.stringify(r));
+  assertEq(cj()['fc-dead'], undefined, 'servidor removido de verdade');
+  const u = fixedCost.undoActions({ home, env });
+  assertEq(u[0].ok, true, JSON.stringify(u));
+  assertEq(cj()['fc-dead'], cfg, 'undo re-adicionou a config identica');
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('fixed-cost.auditBossConfig: compactacao em %, janela fixa, Tool Search e plugin ligado — cada item diz o que fazer', () => {
+  const base = { compaction: { enabled: true, thresholdPercent: 30 }, costTuning: { autoCompactWindow: null }, pluginId: 'claude-code-boss@m' };
+  const good = fixedCost.auditBossConfig({ ...base, settings: { env: { ENABLE_TOOL_SEARCH: 'true' }, enabledPlugins: { 'claude-code-boss@m': true } } });
+  assertEq(good.items.every((i) => i.status === 'ok'), true, JSON.stringify(good.items));
+  assertEq(good.actions, []);
+  assert(/30% of the model window \(60000 tokens of 200k, 300000 of 1M\)/.test(good.items[0].detail), good.items[0].detail);
+  const bad = fixedCost.auditBossConfig({
+    ...base, compaction: { enabled: false, thresholdPercent: 30 },
+    settings: { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000', ENABLE_TOOL_SEARCH: 'false' }, enabledPlugins: { 'claude-code-boss@m': false } },
+  });
+  const by = Object.fromEntries(bad.items.map((i) => [i.id, i]));
+  assertEq(by['boss-compaction'].status, 'warn');
+  assertEq(by['boss-fixed-window'].status, 'warn');
+  assert(/153000/.test(by['boss-fixed-window'].detail) && /120000/.test(by['boss-fixed-window'].detail), 'diz que 153000 compacta em 120000');
+  assertEq(by['boss-tool-search'].status, 'warn');
+  assertEq(by['boss-plugin'].status, 'fail');
+  assert(bad.items.filter((i) => i.status !== 'ok').every((i) => i.fix.length > 20), 'todo aviso diz o que fazer');
+  assertEq(bad.actions.map((a) => `${a.kind}:${a.target}`).sort(), ['env-set:CLAUDE_CODE_AUTO_COMPACT_WINDOW', 'env-set:ENABLE_TOOL_SEARCH', 'plugin-enable:claude-code-boss@m']);
+  assertEq(bad.actions.find((a) => a.target === 'ENABLE_TOOL_SEARCH').value, 'true');
+  // 1000000 = maior janela de modelo: nao aperta nada (e o valor que o plugin restaura)
+  const million = fixedCost.auditBossConfig({ ...base, settings: { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '1000000', ENABLE_TOOL_SEARCH: 'auto:20' } } });
+  assertEq(million.items.every((i) => i.status === 'ok'), true, JSON.stringify(million.items));
+  // janela fixa que o usuario escolheu pelo costTuning nao e alarmada
+  const opted = fixedCost.auditBossConfig({ ...base, costTuning: { autoCompactWindow: 153000 }, settings: { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '153000', ENABLE_TOOL_SEARCH: 'true' } } });
+  assertEq(opted.items.find((i) => i.id === 'boss-fixed-window').status, 'ok');
+});
+
+test('doctor.checkBossConfig/checkFixedCost: um resultado por item, autofix compartilhado, e o fixer roda uma vez so', () => {
+  const bossConfig = fixedCost.auditBossConfig({ compaction: { enabled: true, thresholdPercent: 30 }, costTuning: { autoCompactWindow: null }, pluginId: null, settings: { env: { CLAUDE_CODE_AUTO_COMPACT_WINDOW: '100000' } } });
+  const rs = doctor.runChecks({ bossConfig });
+  const boss = rs.filter((r) => /^boss-/.test(r.id));
+  assertEq(boss.map((r) => r.id), ['boss-compaction', 'boss-fixed-window', 'boss-tool-search', 'boss-plugin']);
+  assertEq(boss.filter((r) => r.autofix).map((r) => r.id), ['boss-fixed-window', 'boss-tool-search']);
+  let ran = 0;
+  const out = doctor.applyFixes(rs, { bossConfig }, { 'boss-config': () => { ran++; return 'done'; } });
+  assertEq(ran, 1, 'dois avisos, um fixer');
+  assertEq(out.length, 1);
+  const none = doctor.checkFixedCost({});
+  assertEq(none.status, 'ok');
+  assert(/--cost/.test(none.detail), 'sem medicao, diz como medir');
+  const err = doctor.checkFixedCost({ fixedCost: { error: 'x' } });
+  assertEq(err.status, 'warn');
+  assert(err.fix.length > 20);
+  const audit = fixedCost.buildAudit(fcFacts({ skills: [{ name: 'n', source: 'user', file: 'f', listedTokens: 50, nameOnlyTokens: 5 }] }));
+  const w = doctor.checkFixedCost({ fixedCost: audit });
+  assertEq(w.status, 'warn');
+  assertEq(w.autofix, 'fixed-cost');
+  assert(/--undo/.test(w.fix));
+  assertEq(doctor.checkFixedCost({ fixedCost: fixedCost.buildAudit(fcFacts({})) }).status, 'ok');
+});
+
+test('doctor fixer fixed-cost: resumo agrupado por tipo; falha parcial falha alto e diz o que ja foi aplicado', () => {
+  const home = fcTmp('fx');
+  const old = { up: process.env.USERPROFILE, h: process.env.HOME };
+  process.env.USERPROFILE = home; process.env.HOME = home;
+  try {
+    fcWrite(path.join(home, '.claude', 'settings.json'), {});
+    const msg = doctor.FIXERS['fixed-cost']({ fixedCost: { actions: [{ kind: 'skill-name-only', target: 'a' }, { kind: 'skill-name-only', target: 'b' }, { kind: 'env-set', target: 'ENABLE_TOOL_SEARCH', value: 'true' }] } });
+    assertEq(msg.startsWith('2 skill(s) now listed by name only (loaded on demand): a, b; 1 settings.json env change(s): ENABLE_TOOL_SEARCH.'), true, msg);
+    assert(/--undo/.test(msg));
+    let err = '';
+    try { doctor.FIXERS['fixed-cost']({ fixedCost: { actions: [{ kind: 'skill-name-only', target: 'c' }, { kind: 'bogus', target: 'z' }] } }); } catch (e) { err = e.message; }
+    assert(/FAILED z: unknown action kind bogus/.test(err) && /applied: 1 skill\(s\)/.test(err), err);
+    assertEq(doctor.FIXERS['fixed-cost']({ fixedCost: { actions: [] } }), 'nothing to change');
+  } finally {
+    if (old.up === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = old.up;
+    if (old.h === undefined) delete process.env.HOME; else process.env.HOME = old.h;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('doctor.bossPluginId: tira name@marketplace do caminho do cache; sem cache usa o enabledPlugins', () => {
+  const old = process.env.CLAUDE_PLUGIN_ROOT;
+  try {
+    process.env.CLAUDE_PLUGIN_ROOT = 'C:\\Users\\u\\.claude\\plugins\\cache\\allansantos-plugins\\claude-code-boss\\abc123';
+    assertEq(doctor.bossPluginId({}), 'claude-code-boss@allansantos-plugins');
+    process.env.CLAUDE_PLUGIN_ROOT = '/home/u/.claude/plugins/cache/mk/claude-code-boss/3.9.0/';
+    assertEq(doctor.bossPluginId({}), 'claude-code-boss@mk');
+    process.env.CLAUDE_PLUGIN_ROOT = '/repo/claude-code-boss';
+    assertEq(doctor.bossPluginId({ enabledPlugins: { 'other@x': true, 'claude-code-boss@mk2': true } }), 'claude-code-boss@mk2');
+    assertEq(doctor.bossPluginId({}), null);
+  } finally { if (old === undefined) delete process.env.CLAUDE_PLUGIN_ROOT; else process.env.CLAUDE_PLUGIN_ROOT = old; }
+});
+
+test('hooks-config.getFixedCost: padroes (ligado, autoFix, 30 dias) e a config do usuario e limitada', () => {
+  const c = require('./lib/hooks-config.js').getFixedCost();
+  assertEq(c.enabled, true);
+  assertEq(c.autoFix, true);
+  assertEq(c.days, 30);
+  assertEq(c.keep, []);
+});
+
+test('doctor-first-run: so a primeira sessao do build roda, aplica so correcoes de custo, avisa e diz como desfazer', async () => {
+  const firstRun = require('./doctor-first-run.js');
+  const dir = fcTmp('first');
+  const audit = fixedCost.buildAudit(fcFacts({ skills: [{ name: 'n', source: 'user', file: 'f', listedTokens: 50, nameOnlyTokens: 5 }] }));
+  const applied = [];
+  const results = [
+    { id: 'fixed-cost', label: 'Fixed cost', status: 'warn', detail: 'd', fix: 'f', autofix: 'fixed-cost' },
+    { id: 'stale', label: 'Daemon', status: 'warn', detail: 'lock', fix: 'run --fix', autofix: 'stale-daemon-lock' },
+    { id: 'hooks-events', label: 'Hook events', status: 'warn', detail: 'x', fix: 'What to do: nothing' },
+  ];
+  const fakeDoctor = {
+    gatherContext: async (o) => { assertEq(o.audit, true); return { fixedCost: audit }; },
+    runChecks: () => results,
+    FIXERS: { 'fixed-cost': () => { applied.push('fixed-cost'); return '1 skill now lists by name only'; }, 'stale-daemon-lock': () => { applied.push('LOCK'); return 'no'; }, 'boss-config': () => 'x' },
+    applyFixes: (rs, ctx, fixers) => rs.filter((r) => r.autofix && fixers[r.autofix]).map((r) => ({ id: r.id, ok: true, message: fixers[r.autofix](ctx) })),
+  };
+  const cfg = { enabled: true, autoFix: true, days: 30, keep: [] };
+  const text = await firstRun.run({}, { dir, key: 'k1', doctor: fakeDoctor, cfg });
+  assert(/First run of build k1/.test(text), text);
+  assert(/Applied \(fixed-cost\): 1 skill now lists by name only/.test(text), text);
+  assert(/doctor.js --undo/.test(text) && /Restart Claude Code/.test(text), 'diz como desfazer e reiniciar');
+  assert(/Warning — Daemon: lock → run --fix/.test(text) && /Warning — Hook events: x → What to do: nothing/.test(text), 'o que nao foi corrigido aparece com o que fazer');
+  assertEq(applied, ['fixed-cost'], 'o lock do daemon nao e tocado pelo primeiro run');
+  assertEq(await firstRun.run({}, { dir, key: 'k1', doctor: fakeDoctor, cfg }), null, 'segunda sessao do mesmo build: silencio');
+  const t2 = await firstRun.run({}, { dir, key: 'k2', doctor: fakeDoctor, cfg: { ...cfg, autoFix: false } });
+  assert(/First run of build k2/.test(t2) && !/Applied/.test(t2), 'build novo roda de novo; autoFix desligado so avisa');
+  assertEq(applied.length, 1);
+  assertEq(await firstRun.run({}, { dir, key: 'k3', doctor: fakeDoctor, cfg: { ...cfg, enabled: false } }), null, 'desligado na config');
+  assertEq(firstRun.claim(firstRun.markerPath('k9', dir)), true);
+  assertEq(firstRun.claim(firstRun.markerPath('k9', dir)), false, 'o segundo que chega ao mesmo tempo perde a corrida');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('doctor-first-run.composeNotice: auditoria que falhou aparece e correcao que falhou nao e dada como feita', () => {
+  const firstRun = require('./doctor-first-run.js');
+  const t = firstRun.composeNotice({ key: 'k', results: [], fixes: [{ id: 'fixed-cost', ok: false, message: 'FAILED x: boom' }], audit: { error: 'no transcripts' } });
+  assert(/Fixed-cost audit failed: no transcripts/.test(t), t);
+  assert(/FIX FAILED \(fixed-cost\): FAILED x: boom/.test(t), t);
+  assert(!/Restart Claude Code/.test(t), 'nada aplicado, nada a reiniciar');
+});
+
 test('doctor: nenhum evento do NOSSO hooks.json cai como DESCONHECIDO', () => {
   // Guard anti-regressao: o plugin nunca mais pode alarmar contra si mesmo. O
   // veredito pode ser `warn` (temos eventos runtime-dependentes), mas NENHUM
@@ -15998,11 +16916,11 @@ test('doctor.runChecks + summarize: criticalFail flagged, counts add up', () => 
     hooksEvents: ['Stop'],
   };
   const results = doctor.runChecks(ctx);
-  assertEq(results.length, 11);
+  assertEq(results.length, 15);
   const s = doctor.summarize(results);
   assert(s.criticalFail, 'old node → criticalFail');
   assertEq(s.ok, false);
-  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 11);
+  assertEq(s.counts.ok + s.counts.warn + s.counts.fail, 15);
 });
 
 test('doctor.runChecks: all-healthy ctx → ok summary', () => {
@@ -16444,18 +17362,19 @@ test('user-prompt-submit-dispatcher.withTimeout: distinguishes a genuine error f
   assertEq(okOutcome.value, 'VALUE');
 });
 
-test('session-start-dispatcher.DETECTORS: 16 detectors, correct order + shape (model-router-ensure excluded)', () => {
+test('session-start-dispatcher.DETECTORS: 17 detectors, correct order + shape (model-router-ensure excluded)', () => {
   const d = require('./session-start-dispatcher.js');
   const names = d.DETECTORS.map(x => x.name);
   assertEq(names, [
     'brain-daemon-ensure', 'memory-rotate', 'session-whitelist', 'brain-health',
-    'project-snapshot', 'curation-session', 'doctor-advisory',
+    'project-snapshot', 'curation-session', 'doctor-advisory', 'doctor-first-run',
     'review-checklist-advisory', 'tuning-advisory', 'value-digest', 'project-identity-advisory',
     'backend-onboarding-advisory', 'marketplace-autoupdate', 'graph-warm', 'powershell-advisory', 'policy-inject',
   ]);
   assert(d.DETECTORS.every(x => typeof x.mod.run === 'function'), 'every detector exposes run()');
   assert(!names.includes('model-router-ensure'), 'model-router-ensure must stay OUT (process.exit() in its main flow)');
   assertEq(d.DETECTORS.find(x => x.name === 'brain-daemon-ensure').timeoutMs, 120000);
+  assertEq(d.DETECTORS.find(x => x.name === 'doctor-first-run').timeoutMs, 60000, 'o audit de custo le ~30 dias de transcripts: precisa de folga');
   const hooks = JSON.parse(fs.readFileSync(path.join(ROOT, 'hooks', 'hooks.json'), 'utf8'));
   const sessionCommands = hooks.hooks.SessionStart.flatMap(group => group.hooks || []).map(h => (h.args || []).join(' '));
   assertEq(sessionCommands.filter(cmd => /mcp-memory-auto-update/.test(cmd)).length, 0,
@@ -24958,14 +25877,31 @@ test('compaction-core.decideTiming: waits for the cache to expire, compacts cold
   assertEq(cmpCore.decideTiming({ busy: false, now: 1, tokens: 900000, lastAnswerAt: 0, ttlMs: 1 }, {}), { action: 'none', reason: 'no-window' }, 'no window reading = no threshold = never act on a guess');
 });
 
+test('compaction-core.decideTurnEnd: an autonomous turn (no person prompt gated) past the threshold compacts at its end ONLY with a cold cache — warm waits; person turns, busy, cooldown, no reading stay out', () => {
+  const T = { thresholdTokens: 60000, minIntervalMs: 600000 };
+  const NOW = 100_000_000;
+  const d = (s) => cmpCore.decideTurnEnd({ busy: false, gated: false, now: NOW, ttlMs: 3600000, lastAnswerAt: NOW - 3600000, ...s }, T);
+  assertEq(d({ tokens: 100000 }), { action: 'compact', reason: 'turn-end-cache-cold' }, 'idle >= ttl: cold, compact');
+  assertEq(d({ tokens: 100000, lastAnswerAt: NOW - 60000 }), { action: 'wait', reason: 'cache-warm', dueInMs: 3600000 - 60000 }, 'warm: NEVER compacted (14/10: 15 warm compactions in one session)');
+  assertEq(d({ tokens: 59999 }), { action: 'none', reason: 'below-threshold' });
+  assertEq(d({ tokens: 100000, gated: true }), { action: 'none', reason: 'prompt-gated' }, 'a person\'s prompt was judged by the gate already');
+  assertEq(d({ tokens: 100000, busy: true }), { action: 'none', reason: 'busy' });
+  assertEq(d({ tokens: 100000, lastCompactAt: NOW - 60000 }), { action: 'none', reason: 'cooldown' }, 'no cost loop');
+  assertEq(d({ tokens: 100000, lastCompactAt: NOW - 600000 }).action, 'compact', 'cooldown over');
+  assertEq(d({ tokens: 100000, lastAnswerAt: undefined }), { action: 'none', reason: 'cache-age-unknown' });
+  assertEq(d({}), { action: 'none', reason: 'no-reading' });
+  assertEq(cmpCore.decideTurnEnd({ busy: false, gated: false, now: 1, tokens: 900000 }, {}), { action: 'none', reason: 'no-window' });
+  const hook = fs.readFileSync(path.join(ROOT, 'hooks', 'compaction.mjs'), 'utf8');
+  assert(/decideTurnEnd\(/.test(hook) && /ctx\.gated = true/.test(hook) && /turnEndTimer/.test(hook), 'the module decides at turn.complete, re-checks when the cache is due cold, and the prompt gate marks the turn as judged');
+});
+
 test('compaction-core.thresholdFor: a % of the window the engine applies (200K and 1M alike), clamped to the slider range, flagged past the engine point', () => {
   assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }), { thresholdTokens: 300000, percent: 30, aboveEngine: false });
   assertEq(cmpCore.thresholdFor({ window: 300000, engineAutoCompactAt: 267000 }), { thresholdTokens: 90000, percent: 30, aboveEngine: false });
   assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 167000 }, { thresholdPercent: 50 }), { thresholdTokens: 100000, percent: 50, aboveEngine: false });
-  // The 153k window (costTuning): 30% = 46k is below what a native compaction leaves (~48k) → the 90k floor.
-  assertEq(cmpCore.thresholdFor({ window: 153000, engineAutoCompactAt: 120000 }), { thresholdTokens: 90000, percent: 30, aboveEngine: false }, 'never below minThresholdTokens');
-  assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 167000 }).thresholdTokens, 90000, '30% of 200k = 60k → floor');
-  assertEq(cmpCore.thresholdFor({ window: 153000 }, { minThresholdTokens: 0 }).thresholdTokens, 45900, 'the floor is a default, not hard-wired');
+  assertEq(cmpCore.thresholdFor({ window: 153000, engineAutoCompactAt: 120000 }), { thresholdTokens: 45900, percent: 30, aboveEngine: false }, 'pure percent: no token floor');
+  assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 167000 }).thresholdTokens, 60000, '30% of 200k = 60k, not 90k');
+  assertEq(cmpCore.thresholdFor({ window: 1000000, engineAutoCompactAt: 967000 }, { minThresholdTokens: 999999 }).thresholdTokens, 300000, 'no floor option exists any more: only the percent counts');
   assertEq(cmpCore.thresholdFor({ window: 200000, engineAutoCompactAt: 150000 }, { thresholdPercent: 80 }), { thresholdTokens: 160000, percent: 80, aboveEngine: true }, 'past the engine point: it compacts first — flagged, never silently moved');
   assertEq(cmpCore.thresholdFor({ window: 200000 }, { thresholdPercent: 95 }).percent, 80, 'clamped to the range top');
   assertEq(cmpCore.thresholdFor({ window: 200000 }, { thresholdPercent: 2 }).percent, 10, 'clamped to the range bottom');
@@ -25760,6 +26696,70 @@ test('node-support: 22.13–24.x supported; 25 is "new" with the Node 24 LTS adv
   assertEq(crashEv.reportFlags('/d').map((f) => f.split('=')[0]), nodeSup.OWN_FLAGS, 'OWN_FLAGS must track crash-evidence.reportFlags');
   assertEq(nodeSup.foreignFlags(['--no-maglev', ...crashEv.reportFlags('/d')]), ['--no-maglev']);
   assertEq(nodeSup.missingOwnFlags(['--report-on-fatalerror']), ['--report-uncaught-exception', '--report-directory']);
+});
+
+test('node-support.pickSupportedNode: a default Node 25 switches to the newest installed 22/24; none found keeps it and says so', () => {
+  const versions = { '/a/node': 'v25.2.1', '/b/node': 'v22.14.0', '/c/node': 'v24.11.0', '/d/node': 'v20.0.0', '/e/node': null };
+  const versionOf = (f) => ({ version: versions[f], error: versions[f] ? null : 'exit 1' });
+  const exists = (f) => f in versions;
+  const cur = { execPath: '/x/node', version: 'v25.1.0' };
+  const pick = nodeSup.pickSupportedNode({ current: cur, candidates: ['/a/node', '/b/node', '/c/node', '/d/node', '/e/node', '/missing/node'], versionOf, exists });
+  assertEq([pick.execPath, pick.version, pick.switched, pick.from], ['/c/node', '24.11.0', true, '25.1.0']);
+  assertEq(pick.tried.length, 5, 'a missing file is not run');
+  const none = nodeSup.pickSupportedNode({ current: cur, candidates: ['/a/node', '/d/node'], versionOf, exists });
+  assert(none.unsupported && !none.switched && none.execPath === '/x/node', JSON.stringify(none));
+  let ran = 0;
+  const keep = nodeSup.pickSupportedNode({ current: { execPath: '/x/node', version: 'v24.0.0' }, candidates: ['/b/node'], versionOf: () => { ran++; return {}; }, exists });
+  assert(!keep.switched && keep.execPath === '/x/node' && ran === 0, 'a supported default is kept without probing anything');
+  // The real probe runs a real binary hidden.
+  assertEq(nodeSup.probeNodeVersion(process.execPath).version, process.version);
+  assert(nodeSup.probeNodeVersion(path.join(os.tmpdir(), 'no-such-node.exe')).error, 'a missing binary is an error, not a version');
+});
+
+test('node-support.nodeCandidates: PATH first, then nvm/Volta/fnm/Program Files (win) and nvm/Volta/fnm/Homebrew (posix)', () => {
+  const dirs = {
+    'C:\\nvm': ['v24.11.0', 'v22.14.0', 'settings.txt'],
+    'C:\\L\\Volta\\tools\\image\\node': ['24.10.0'],
+    'C:\\R\\fnm\\node-versions': ['v22.13.1'],
+  };
+  const win = nodeSup.nodeCandidates({ platform: 'win32', env: { Path: 'C:\\n25;C:\\tools', NVM_HOME: 'C:\\nvm', LOCALAPPDATA: 'C:\\L', APPDATA: 'C:\\R', ProgramFiles: 'C:\\PF' }, listDir: (d) => dirs[d] || [] });
+  assertEq(win, ['C:\\n25\\node.exe', 'C:\\tools\\node.exe', 'C:\\PF\\nodejs\\node.exe', 'C:\\nvm\\v24.11.0\\node.exe', 'C:\\nvm\\v22.14.0\\node.exe',
+    'C:\\L\\Volta\\tools\\image\\node\\24.10.0\\node.exe', 'C:\\R\\fnm\\node-versions\\v22.13.1\\installation\\node.exe']);
+  const posix = nodeSup.nodeCandidates({ platform: 'linux', homedir: '/h', env: { PATH: '/usr/bin:/opt/n25/bin' }, listDir: (d) => (d === '/h/.nvm/versions/node' ? ['v24.1.0'] : []) });
+  assert(posix[0] === '/usr/bin/node' && posix.includes('/h/.nvm/versions/node/v24.1.0/bin/node') && posix.includes('/opt/homebrew/opt/node@24/bin/node'), posix.join(' '));
+  assertEq(posix.filter((f) => f === '/usr/bin/node').length, 1, 'duplicates removed');
+});
+
+test('brain daemon supervisor: with an unsupported default Node the daemon is started on the supported one found (PATH of the child too)', async () => {
+  const { ensureDaemon, withNodeOnPath } = await import(SUPERVISOR_URL);
+  const env = withNodeOnPath({ Path: 'C:\\n25' }, { switched: true, execPath: path.join('C:\\n24', 'node.exe') });
+  assert(env.Path.startsWith(path.dirname(path.join('C:\\n24', 'node.exe')) + path.delimiter), env.Path);
+  assertEq(withNodeOnPath({ PATH: '/x' }, { switched: false, execPath: '/y/node' }).PATH, '/x', 'not switched: untouched');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-nodepick-'));
+  const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-nodepick-home-'));
+  const dataDir = path.join(tmp, 'data');
+  fs.mkdirSync(dataDir, { recursive: true });
+  const p = await waitFreePort();
+  // The "default" is a Node 25 that does not exist on disk: only the real Node (a candidate) can serve.
+  const pickNode = () => nodeSup.pickSupportedNode({ current: { execPath: path.join(tmp, 'node25', 'node.exe'), version: 'v25.2.1' }, candidates: [process.execPath] });
+  const res = await ensureDaemon({ pluginRoot: path.join(tmp, 'install-B'), dataDir, env: { BRAIN_HTTP_PORT: String(p), HOME: tmpHome, USERPROFILE: tmpHome }, pickNode });
+  let health = null;
+  try { health = await (await fetch(`http://127.0.0.1:${p}/health`)).json(); } catch (e) { console.error(`[test] /health: ${e.message}`); }
+  try { if (res.pid) process.kill(res.pid, 'SIGTERM'); } catch (e) { void e; }
+  assertEq(res.status, 'started', res.error || '');
+  assert(res.node && res.node.switched && res.node.execPath === process.execPath, JSON.stringify(res.node));
+  assert(/instead of the default v25\.2\.1/.test(res.note), res.note);
+  assert(health && health.node && health.node.version === process.version, `daemon runs on the picked Node: ${JSON.stringify(health && health.node)}`);
+  fs.rmSync(tmpHome, { recursive: true, force: true });
+});
+
+test('doctor.checkNode: a default Node 25 with a supported Node in use is a warn that names it, not a critical fail', async () => {
+  const alt = { switched: true, execPath: 'C:\\nvm\\v24.11.0\\node.exe', version: '24.11.0', from: '25.2.1' };
+  const w = doctor.checkNode({ nodeVersion: 'v25.2.1', nodeChoice: alt });
+  assert(w.status === 'warn' && !w.critical && w.detail.includes(alt.execPath), w.detail);
+  const f = doctor.checkNode({ nodeVersion: 'v25.2.1', nodeChoice: { switched: false, unsupported: true } });
+  assert(f.status === 'fail' && f.critical && /Node 24 LTS/.test(f.fix), 'none found: warns as before');
+  assertEq(doctor.checkNode({ nodeVersion: 'v24.11.0', nodeChoice: { switched: false } }).status, 'ok');
 });
 
 test('doctor.checkDaemonNode: foreign NODE_OPTIONS flags, --no-maglev in the daemon execArgv, Node 25 daemon, old daemon flags', () => {

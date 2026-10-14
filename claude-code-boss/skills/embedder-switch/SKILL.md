@@ -22,7 +22,7 @@ The dashboard must be running. If not, launch it via the `config-dashboard` skil
 curl -s -X POST \
   -H "x-dashboard-token: $DASHBOARD_TOKEN" \
   -H "Content-Type: application/json" \
-  -d '{"provider":"<transformers|ollama|voyage>","model":"<id>"}' \
+  -d '{"provider":"<transformers|ollama|voyage|none>","model":"<id>"}' \
   "$DASHBOARD_URL/api/brain/embedder/test"
 ```
 
@@ -78,6 +78,7 @@ The brain-server MCP process is restarted automatically by the SessionStart + Us
 |---|---|
 | "trocar pra voyage-4-lite" | Run all 4 steps with `provider=voyage, model=voyage-4-lite` |
 | "usar ollama com nomic" | Steps 1-4 with `provider=ollama, model=nomic-embed-text` |
+| "desligar a busca semântica" / onnxruntime não carrega | `provider=none`: keyword-only search, no model and no re-embed (keep the saved model/dimensions to switch back) |
 | "voltar pro transformers" | Steps 1-4 with `provider=transformers, model=Xenova/paraphrase-multilingual-MiniLM-L12-v2` |
 | "mudar dimensão pra 768" | Refuse — dimension is derived from model. Ask which model they want. |
 | "abrir dashboard pra trocar embedder" | Defer to `config-dashboard` skill, then this one for the wiring |

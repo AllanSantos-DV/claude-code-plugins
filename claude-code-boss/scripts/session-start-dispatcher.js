@@ -54,6 +54,7 @@ const brainHealth = require('./brain-health.js');
 const projectSnapshot = require('./project-snapshot.js');
 const curationSession = require('./curation-session.js');
 const doctorAdvisory = require('./doctor-advisory.js');
+const doctorFirstRun = require('./doctor-first-run.js');
 const reviewChecklistAdvisory = require('./review-checklist-advisory.js');
 const powershellAdvisory = require('./powershell-advisory.js');
 const tuningAdvisory = require('./tuning-advisory.js');
@@ -75,6 +76,8 @@ const DETECTORS = [
   { name: 'project-snapshot', mod: projectSnapshot, timeoutMs: 5000 },
   { name: 'curation-session', mod: curationSession, timeoutMs: 5000 },
   { name: 'doctor-advisory', mod: doctorAdvisory, timeoutMs: 5000 },
+  // Once per build: the full doctor + fixed-cost audit reads ~30 days of transcripts (seconds) and probes HTTP MCP servers.
+  { name: 'doctor-first-run', mod: doctorFirstRun, timeoutMs: 60000 },
   { name: 'review-checklist-advisory', mod: reviewChecklistAdvisory, timeoutMs: 5000 },
   { name: 'tuning-advisory', mod: tuningAdvisory, timeoutMs: 8000 },
   { name: 'value-digest', mod: valueDigest, timeoutMs: 5000 },

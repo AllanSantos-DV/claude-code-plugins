@@ -11,7 +11,9 @@
  *     450–770k tokens in ONE session-day, ~US$46 of a US$88 day. A 1 h write costs 1.6× a 5 min
  *     one, paid only on the new part of each turn. Proved through the owner's gateway
  *     (ephemeral_1h_input_tokens on the reply).
- *   - CLAUDE_CODE_AUTO_COMPACT_WINDOW — the window the engine's auto-compaction budgets
+ *   - ENABLE_TOOL_SEARCH=true — always set (owner, 14/10): MCP tool schemas load on demand instead of
+ *     all up front. A value the user already has (false, auto) is theirs and stays.
+ *   - CLAUDE_CODE_AUTO_COMPACT_WINDOW (OFF by default since 14/10; opt-in through the config) — the window the engine's auto-compaction budgets
  *     against. At 1M it compacts at ~967k, so every call between compactions re-reads up to
  *     ~1M tokens; the boss's own prompt gate only acts at a person's prompt on a cold cache,
  *     never mid-turn or in delegated sessions. The engine compacts at the window minus a fixed
@@ -22,6 +24,12 @@
  *     (docs/research/compaction-warm-tail, 2026-10-12): −12.7% against the 300k window, same
  *     summary (the 300k window itself: US$513 → ~US$210 on 6 session-days, cost-2026-10-11).
  *
+ * WHY the window is off by default: the fixed 153k made the ENGINE compact at ~120k, mid-turn, with the
+ * cache WARM — 15 times in one session (14/10), each a summary plus a ~32k cache re-write, and the
+ * boss's cold-cache gate never acted. The owner's rule is a PERCENT of the model window (the
+ * compaction setting), never a fixed number, and only on a cold cache. A previous 153000 written by
+ * us is restored by the ownership state below.
+ *
  * Ownership, so nothing of the user's is lost: the state remembers what WE wrote and what was
  * there before. Turning the feature off restores the previous value. A value the user changes
  * after us is theirs: we yield and never re-apply over that same value. A window the user
@@ -30,8 +38,9 @@
 
 const TTL_KEY = 'CLAUDE_CODE_PROMPT_CACHE_TTL';
 const WINDOW_KEY = 'CLAUDE_CODE_AUTO_COMPACT_WINDOW';
+const TOOL_SEARCH_KEY = 'ENABLE_TOOL_SEARCH'; // Anthropic's own switch (true | auto | auto:N | false)
 
-const DEFAULTS = Object.freeze({ enabled: true, cacheTtl: '1h', autoCompactWindow: 153000 });
+const DEFAULTS = Object.freeze({ enabled: true, cacheTtl: '1h', autoCompactWindow: null, toolSearch: true });
 const WINDOW_RANGE = Object.freeze([100000, 1000000]);
 
 /** The effective config: unknown TTL values off, the window clamped (null = don't manage it). */
@@ -42,6 +51,7 @@ function resolveConfig(raw) {
   const n = Number(w);
   return {
     enabled: c.enabled !== false,
+    toolSearch: c.toolSearch !== false,
     cacheTtl: ttl === '1h' ? '1h' : null, // Claude Code takes only 5m|1h; 5m is its default here
     autoCompactWindow: w === null || w === false || !Number.isFinite(n) ? null : Math.min(WINDOW_RANGE[1], Math.max(WINDOW_RANGE[0], Math.round(n))),
   };
@@ -70,6 +80,7 @@ function wanted(cfg, billed) {
   const want = {};
   if (!cfg.enabled) return want;
   if (cfg.cacheTtl && billed) want[TTL_KEY] = cfg.cacheTtl;
+  if (cfg.toolSearch) want[TOOL_SEARCH_KEY] = 'true'; // always: MCP tools load on demand, not all up front
   if (cfg.autoCompactWindow) want[WINDOW_KEY] = String(cfg.autoCompactWindow);
   return want;
 }
@@ -132,4 +143,4 @@ function planCostTuning(env, want, state) {
   return { env: next, state: s, changed, notes };
 }
 
-module.exports = { DEFAULTS, WINDOW_RANGE, TTL_KEY, WINDOW_KEY, resolveConfig, apiBilled, wanted, planCostTuning };
+module.exports = { DEFAULTS, WINDOW_RANGE, TTL_KEY, WINDOW_KEY, TOOL_SEARCH_KEY, resolveConfig, apiBilled, wanted, planCostTuning };

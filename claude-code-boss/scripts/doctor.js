@@ -47,6 +47,15 @@ const RUNTIME_DEPENDENT_EVENTS = new Set(['UserPromptExpansion', 'PostToolUseFai
 
 function checkNode(ctx) {
   const s = nodeSupport.nodeSupport(ctx.nodeVersion);
+  // ctx.nodeChoice = pickSupportedNode(): the daemon and the router already run on another installed Node.
+  const alt = ctx.nodeChoice && ctx.nodeChoice.switched ? ctx.nodeChoice : null;
+  if (!s.ok && alt) {
+    return {
+      id: 'node', label: 'Node.js runtime', status: 'warn', critical: false,
+      detail: `default Node v${s.version} is outside the tested range (${nodeSupport.RANGE_TEXT}); the Brain daemon and the model router run on Node v${alt.version} (${alt.execPath}) instead`,
+      fix: `Nothing to do for the plugin. Short hooks still run on the default Node; to drop this warning make Node ${nodeSupport.MAX_TESTED_MAJOR} LTS the \`node\` on PATH.`,
+    };
+  }
   return {
     id: 'node', label: 'Node.js runtime',
     status: s.ok ? 'ok' : 'fail',
@@ -114,7 +123,7 @@ function checkNativeDeps(ctx) {
     return {
       ...base, status: 'fail', detail: broken.join('; '),
       fix: n.sqliteError ? nodeSupport.supportAdvice({ ok: false, version: String(process.versions.node), reason: 'old' })
-        : 'Reinstall the plugin (Claude Code → plugins → update) so its node_modules are complete, or switch the embedder provider to ollama/voyage in the dashboard.',
+        : 'Reinstall the plugin (Claude Code → plugins → update) so its node_modules are complete, or switch the embedder provider to ollama/voyage (or none: keyword-only search) in the dashboard.',
     };
   }
   const embed = n.provider === 'transformers' ? `, onnxruntime binding and sharp for ${n.arch}` : ` (embedder "${n.provider}" loads no native addon)`;
@@ -191,7 +200,8 @@ function checkDaemon(ctx) {
   return {
     id: 'daemon', label: 'Brain HTTP daemon',
     status: 'warn', detail: why,
-    fix: !d.healthy ? 'Remove the stale brain-http.lock.json or restart the daemon.' : 'Ensure brain-http.token is readable (chmod 600) or set BRAIN_HTTP_TOKEN.',
+    fix: !d.healthy ? 'Run `node scripts/doctor.js --fix` (removes the stale brain-http.lock.json; the next session starts a fresh daemon), or restart Claude Code.' : 'Ensure brain-http.token is readable (chmod 600) or set BRAIN_HTTP_TOKEN.',
+    ...(!d.healthy && d.lockPath ? { autofix: 'stale-daemon-lock' } : {}),
     critical: false,
   };
 }
@@ -208,8 +218,9 @@ function checkHooksEvents(ctx) {
     return {
       id: 'hooks-events', label: 'Hook events',
       status: 'warn', detail: `evento(s) fora da lista conhecida: ${unknown.join(', ')}`,
-      fix: 'Pode ser um typo OU um evento mais novo que esta versão do plugin — '
-        + 'confira na doc oficial (code.claude.com/docs/en/hooks) antes de mexer no hooks.json.',
+      fix: 'What to do: compare each name with the official list (code.claude.com/docs/en/hooks). '
+        + 'If it is a typo, fix the name in hooks/hooks.json; if it is a newer event, update the plugin (`claude plugin update claude-code-boss`) '
+        + 'and do not touch hooks.json. Never delete the hook just to silence this.',
       critical: false,
     };
   }
@@ -218,11 +229,53 @@ function checkHooksEvents(ctx) {
       id: 'hooks-events', label: 'Hook events',
       status: 'warn',
       detail: `runtime-dependent event(s): ${runtimeDep.join(', ')} — honored by VS Code Copilot / newer Claude Code, no-op elsewhere`,
-      fix: 'If those features seem inactive, your runtime may not fire these events — safe to ignore otherwise.',
+      fix: 'What to do: nothing, if the features that depend on them work. If they seem inactive, your runtime does not fire these events: '
+        + 'update Claude Code (`claude update`) or use a runtime that does (VS Code Copilot).',
       critical: false,
     };
   }
   return { id: 'hooks-events', label: 'Hook events', status: 'ok', detail: `${events.length} event(s), all standard`, fix: '', critical: false };
+}
+
+/** Settings env the plugin manages (cache TTL, Tool Search, opt-in window): drift = what the next SessionStart would change. */
+function checkCostTuning(ctx) {
+  const base = { id: 'cost-tuning', label: 'Cost settings (settings.json env)', critical: false };
+  const c = ctx.costTuning;
+  if (!c) return { ...base, status: 'ok', detail: 'not checked here (settings.json unreadable or not probed)', fix: '' };
+  if (!c.notes.length) return { ...base, status: 'ok', detail: 'settings.json env already matches the plugin configuration', fix: '' };
+  return {
+    ...base, status: 'warn',
+    detail: `settings.json env differs from the plugin configuration: ${c.notes.join('; ')}`,
+    fix: 'Run `node scripts/doctor.js --fix` to apply it now (the plugin also applies it at the next session start; a value you changed yourself is never overwritten). Restart Claude Code afterwards: env is read at launch.',
+    autofix: 'cost-tuning',
+  };
+}
+
+/**
+ * The boss's own settings that decide what every session costs (compaction %, fixed window, Tool Search, plugin on).
+ * One result per setting so each says what to do; `autofix` is shared (the actions are in ctx.bossConfig.actions).
+ */
+function checkBossConfig(ctx) {
+  const b = ctx.bossConfig;
+  if (!b) return [{ id: 'boss-config', label: 'Boss settings', status: 'ok', detail: 'not checked here (settings.json unreadable or not probed)', fix: '', critical: false }];
+  return b.items.map((i) => ({ ...i, critical: i.status === 'fail', ...(i.status !== 'ok' && b.actions.length ? { autofix: 'boss-config' } : {}) }));
+}
+
+/** Fixed cost every message pays (MCP definitions, skill listing, plugins): measured in ctx.fixedCost by `--cost` / `--fix` / first run. */
+function checkFixedCost(ctx) {
+  const base = { id: 'fixed-cost', label: 'Fixed cost per message (MCP, skills, plugins)', critical: false };
+  const a = ctx.fixedCost;
+  if (!a) return { ...base, status: 'ok', detail: 'not measured in this run (it reads 30 days of transcripts: run `node scripts/doctor.js --cost`)', fix: '' };
+  if (a.error) return { ...base, status: 'warn', detail: `could not measure: ${a.error}`, fix: 'What to do: run `node scripts/doctor.js --cost` in a terminal to see the error, then fix the file it names.' };
+  const t = a.totals;
+  const detail = `${t.mcpServers} MCP server(s) (${t.mcpUsed} called in ${a.days}d, ${t.mcpTokens} tok), ${t.skillsTotal} skills (${t.skillsUsed} used, ${t.skillTokens} tok), ${t.pluginsTotal} plugin(s) (${t.pluginsUsed} used), instruction files ${t.instructionTokens} tok`;
+  if (!a.actions.length) return { ...base, status: 'ok', detail, fix: '' };
+  return {
+    ...base, status: 'warn',
+    detail: `${detail}; ${a.actions.length} reversible fix(es) would save ~${a.savings.tokens} tok per message (US$ ${a.savings.perSessionUsd.toFixed(2)} per session)`,
+    fix: 'Run `node scripts/doctor.js --cost` for the list, `--fix` to apply, `--undo` to put everything back.',
+    autofix: 'fixed-cost',
+  };
 }
 
 // onnxruntime >= 1.20 is built with the VS 17.10 STL: against an older msvcp140.dll its
@@ -245,7 +298,7 @@ function checkNativeRuntime(ctx) {
       ...base, critical: true, status: 'fail',
       detail: msvcp ? `msvcp140.dll ${msvcp} is older than ${MIN_MSVCP}: the local embedder (onnxruntime) aborts the Brain daemon with 0xC0000409`
         : 'msvcp140.dll not found in System32: the local embedder (onnxruntime) cannot load',
-      fix: `Install the latest Visual C++ x64 redistributable (${VC_REDIST_URL}), or switch the embedder provider to ollama/voyage in the dashboard.`,
+      fix: `Install the latest Visual C++ x64 redistributable (${VC_REDIST_URL}), or switch the embedder provider to ollama/voyage (or none: keyword-only search) in the dashboard.`,
     };
   }
   // A System32\onnxruntime.dll (Windows 11 ships one) is only reported: Node loads an addon's
@@ -268,12 +321,10 @@ function checkCrashes(ctx) {
 }
 
 const CRASH_WINDOW_DAYS = 14;
-// 0xC0000409 as a child exit status: a native DLL called abort()/__fastfail. Node's own
-// aborts (V8 out-of-memory, process.abort) exit 134 instead — measured on Windows 11 —
-// so 0xC0000409 points at a native module, not at V8.
-const FAST_FAIL_STATUSES = new Set([0xC0000409, 0xC0000409 - 0x100000000]);
-const NODE_ABORT_STATUS = 134;
-const PROBE_TIMEOUT_MS = 180000;
+// Exit-status meanings and the load test itself live in lib/embedder-guard.js, shared with
+// the daemon's boot check.
+const embedderGuard = require('./lib/embedder-guard.js');
+const { FAST_FAIL_STATUSES, NODE_ABORT_STATUS } = embedderGuard;
 
 function checkEmbedderProbe(ctx) {
   const p = ctx.embedderProbe;
@@ -281,20 +332,20 @@ function checkEmbedderProbe(ctx) {
   if (!p) return { ...base, status: 'ok', detail: 'not run here (run `npm run doctor` in a terminal to load the embedder in a separate process)', fix: '' };
   if (p.skipped) return { ...base, status: 'ok', detail: `skipped: ${p.skipped}`, fix: '' };
   if (p.ok) return { ...base, status: 'ok', detail: `the embedder loaded and embedded a test sentence in a separate process (${p.ms} ms, ${p.dims} dims)`, fix: '' };
-  const hex = Number.isInteger(p.status) ? `0x${(p.status >>> 0).toString(16).toUpperCase()}` : null;
+  const hex = embedderGuard.exitHex(p.status);
   const last = p.lastLine ? `; last output: ${p.lastLine}` : '';
   if (FAST_FAIL_STATUSES.has(p.status)) {
     return {
       ...base, critical: true, status: 'fail',
       detail: `loading the embedder ABORTED the process (exit ${hex}, a native DLL failed) — this is what kills the Brain daemon${last}`,
-      fix: `Install the latest Visual C++ x64 redistributable (${VC_REDIST_URL}) and run the doctor again; if it still aborts, switch the embedder provider to ollama/voyage in the dashboard.`,
+      fix: `Install the latest Visual C++ x64 redistributable (${VC_REDIST_URL}) and run the doctor again; if it still aborts, switch the embedder provider to ollama/voyage (or none: keyword-only search) in the dashboard.`,
     };
   }
   if (p.status === NODE_ABORT_STATUS) {
     return {
       ...base, critical: true, status: 'fail',
       detail: `loading the embedder made Node abort (exit 134: V8 fatal error, usually out of memory)${last}`,
-      fix: `Free memory or switch the embedder provider to ollama/voyage in the dashboard; the Node report is in ${p.reportDir}.`,
+      fix: `Free memory or switch the embedder provider to ollama/voyage (or none: keyword-only search) in the dashboard; the Node report is in ${p.reportDir}.`,
     };
   }
   return {
@@ -312,23 +363,26 @@ function checkEmbedderProbe(ctx) {
 // Tests inject `run`; the real one is always hidden.
 function hiddenSpawnSync(cmd, args, opts) { return spawnSync(cmd, args, { ...opts, windowsHide: true }); }
 
-function probeEmbedder({ provider, modelPresent, data, run = hiddenSpawnSync }) {
+// Runs on the Node the daemon runs on (nodeChoice) and records the outcome like the daemon's
+// boot check does: a pass lifts a keyword-only override, a native abort sets one.
+function probeEmbedder({ provider, modelPresent, data, model, node = null, run = hiddenSpawnSync, record = embedderGuard.recordOutcome }) {
   if (provider !== 'transformers') return { skipped: `embedder provider "${provider}" does not load a local model` };
   if (!modelPresent) return { skipped: 'the embedding model is not downloaded yet' };
-  const ce = require('./lib/crash-evidence.js');
-  const embedder = path.join(__dirname, 'brain-embedder.js');
-  const code = `const e=require(${JSON.stringify(embedder)});const t=Date.now();` +
-    `e.init().then(ok=>{if(!ok)throw new Error(e.getStatus().error||'init failed');return e.embed('doctor probe')})` +
-    `.then(v=>{console.log(JSON.stringify({ok:true,dims:v.length,ms:Date.now()-t}))})` +
-    `.catch(err=>{console.log(JSON.stringify({ok:false,error:err.message}));process.exitCode=2})`;
-  fs.mkdirSync(ce.reportDir(data), { recursive: true });
-  const r = run(process.execPath, [...ce.reportFlags(data), '-e', code], { encoding: 'utf8', timeout: PROBE_TIMEOUT_MS, windowsHide: true });
-  const lines = `${r.stdout || ''}\n${r.stderr || ''}`.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-  const result = lines.map(l => { try { return JSON.parse(l); } catch (err) { void err; return null; } }).filter(x => x && typeof x.ok === 'boolean').pop();
-  const lastLine = lines.filter(l => !l.startsWith('{')).pop() || '';
-  if (r.error) return { ok: false, error: r.error.code === 'ETIMEDOUT' ? `no answer in ${PROBE_TIMEOUT_MS / 1000}s` : r.error.message, lastLine, reportDir: ce.reportDir(data) };
-  if (result && result.ok && r.status === 0) return result;
-  return { ok: false, status: r.status, error: result && result.error, lastLine, reportDir: ce.reportDir(data) };
+  const result = embedderGuard.probeSync({ data, execPath: (node && node.execPath) || process.execPath, run });
+  if (model) record(data, { model, node: (node && node.version) || process.version }, result);
+  return result;
+}
+
+/** Keyword-only override written by the load test (lib/embedder-guard.js), when it applies here. */
+function checkEmbedderGuard(ctx) {
+  const g = ctx.embedderGuard;
+  const base = { id: 'embedder-guard', label: 'Semantic search', critical: false };
+  if (!g || !g.forced) return { ...base, status: 'ok', detail: g && g.ok ? `the local embedder passed its load test on ${g.at}` : 'no keyword-only override in place', fix: '' };
+  return {
+    ...base, status: 'warn',
+    detail: `keyword-only: ${g.reason} on ${g.at}. The Brain daemon stays up; recall matches words, not meaning`,
+    fix: `Install the latest Visual C++ x64 redistributable (${VC_REDIST_URL}) and run \`npm run doctor\` again: a load test that passes turns semantic search back on. Or pick another embedder provider (ollama/voyage) in the dashboard.`,
+  };
 }
 
 /** What checkNativeRuntime reads: cheap (a few DLL headers + the config), safe for the SessionStart advisory. */
@@ -365,11 +419,11 @@ function gatherCrashes(data, now = Date.now()) {
   return { file: ce.crashLogFile(data), records };
 }
 
-const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkCrashes, checkHooksEvents];
+const CHECKS = [checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkCostTuning, checkBossConfig, checkFixedCost, checkHooksEvents];
 
-/** Run every pure check over a ctx snapshot. */
+/** Run every pure check over a ctx snapshot (a check may return one result or a list). */
 function runChecks(ctx) {
-  return CHECKS.map(fn => {
+  return CHECKS.flatMap(fn => {
     try { return fn(ctx || {}); }
     catch (err) { return { id: fn.name, label: fn.name, status: 'warn', detail: `check errored: ${err.message}`, fix: '', critical: false }; }
   });
@@ -457,21 +511,7 @@ function _hasKb(dir) {
 }
 
 function _modelPresent(cacheDir) {
-  try {
-    if (!cacheDir || !fs.existsSync(cacheDir)) return false;
-    // Any .onnx weight anywhere under the cache = model materialized.
-    const stack = [cacheDir];
-    let guard = 0;
-    while (stack.length && guard++ < 5000) {
-      const d = stack.pop();
-      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
-        const full = path.join(d, e.name);
-        if (e.isDirectory()) stack.push(full);
-        else if (/\.onnx$/i.test(e.name)) return true;
-      }
-    }
-    return false;
-  } catch (e) { void e; return false; }
+  return embedderGuard.modelPresent(cacheDir);
 }
 
 /** Resolves the parsed /health body, or null when the daemon does not answer 200. */
@@ -492,7 +532,17 @@ function _daemonHealth(port, timeoutMs = 1200) {
   });
 }
 
-async function gatherContext({ probe = false } = {}) {
+/** `name@marketplace` of the running plugin (from its cache path), else the boss entry in enabledPlugins, else null. */
+function bossPluginId(settings) {
+  const m = /[\\/]cache[\\/]([^\\/]+)[\\/]([^\\/]+)[\\/][^\\/]+[\\/]?$/.exec(process.env.CLAUDE_PLUGIN_ROOT || '');
+  if (m) return `${m[2]}@${m[1]}`;
+  return Object.keys((settings && settings.enabledPlugins) || {}).find((k) => k.startsWith('claude-code-boss@')) || null;
+}
+
+/**
+ * `probe` runs the embedder load test; `audit` measures the fixed cost (reads 30 days of transcripts: seconds, so opt-in).
+ */
+async function gatherContext({ probe = false, audit = false } = {}) {
   const root = process.env.CLAUDE_PLUGIN_ROOT || '';
   const data = dataDir();
   const activeDataResolved = process.env.CLAUDE_PLUGIN_DATA || '';
@@ -510,6 +560,7 @@ async function gatherContext({ probe = false } = {}) {
     const lockP = path.join(data, 'brain-http.lock.json');
     if (fs.existsSync(lockP)) {
       daemon.lockPresent = true;
+      daemon.lockPath = lockP;
       const lock = JSON.parse(fs.readFileSync(lockP, 'utf8'));
       daemon.port = Number.isInteger(lock.port) ? lock.port : null;
       daemon.tokenReadable = !!(process.env.BRAIN_HTTP_TOKEN
@@ -528,18 +579,114 @@ async function gatherContext({ probe = false } = {}) {
     hooksEvents = Object.keys(JSON.parse(fs.readFileSync(hp, 'utf8')).hooks || {});
   } catch (e) { void e; }
 
+  let costTuning = null;
+  try {
+    const now = require('./model-router-ensure.js').planCostTuningNow();
+    if (now) costTuning = { notes: now.plan.changed ? now.plan.notes : [] };
+  } catch (e) { console.error(`[doctor] cost tuning: ${e.message}`); }
+
+  let bossConfig = null;
+  const fc = require('./lib/fixed-cost.js');
+  const hooksCfg = require('./lib/hooks-config.js');
+  const home = os.homedir();
+  try {
+    let settings = {};
+    try { settings = JSON.parse(fs.readFileSync(path.join(home, '.claude', 'settings.json'), 'utf8')); } catch (e) { if (e.code !== 'ENOENT') throw e; }
+    bossConfig = fc.auditBossConfig({ settings, compaction: hooksCfg.getCompaction(), costTuning: hooksCfg.getCostTuning(), pluginId: bossPluginId(settings) });
+  } catch (e) { console.error(`[doctor] boss settings: ${e.message}`); }
+  let fixedCost = null;
+  if (audit) {
+    try {
+      const cfg = hooksCfg.getFixedCost();
+      fixedCost = await fc.runAudit({ home, cwd: process.env.CLAUDE_PROJECT_DIR || process.cwd(), days: cfg.days, keep: cfg.keep });
+    } catch (e) { console.error(`[doctor] fixed cost: ${e.message}`); fixedCost = { error: e.message }; }
+  }
+
+  const nodeChoice = nodeSupport.pickSupportedNode();
+  let embedderCfg = null;
+  try { embedderCfg = embedderGuard.configured(); } catch (e) { console.error(`[doctor] embedder config: ${e.message}`); }
+  const embedderProbe = probe && embedderCfg
+    ? probeEmbedder({ provider: native.provider, modelPresent, data, model: embedderCfg.model, node: nodeChoice }) : null;
+  // Read after the probe: a load test that just passed has already lifted the override.
+  const guardRec = embedderGuard.readGuard(data);
+  const guardApplies = !!(guardRec && embedderCfg && guardRec.key === embedderGuard.guardKey({ model: embedderCfg.model, node: nodeChoice.version }));
+
   return {
     nodeVersion: process.version,
+    nodeChoice,
     nodeOptions: process.env.NODE_OPTIONS || '',
     env: { root, data: activeDataResolved || data },
     dataDirCandidates: findDataDirCandidates(data, { counts: true }),
     modelCacheDir, modelPresent,
     daemon,
     native,
-    embedderProbe: probe ? probeEmbedder({ provider: native.provider, modelPresent, data }) : null,
+    embedderProbe,
+    embedderGuard: guardApplies ? guardRec : null,
     crashes: gatherCrashes(data),
     hooksEvents,
+    costTuning,
+    bossConfig,
+    fixedCost,
   };
+}
+
+// ── Fixes (--fix) ─────────────────────────────────────────────────────────────
+
+const APPLIED_LABEL = {
+  'skill-name-only': 'skill(s) now listed by name only (loaded on demand)',
+  'mcp-remove': 'MCP server(s) removed',
+  'plugin-disable': 'plugin(s) disabled',
+  'plugin-enable': 'plugin(s) enabled',
+  'env-set': 'settings.json env change(s)',
+};
+
+/** One clause per kind ("9 skill(s) now listed by name only: a, b, c") — a list of 25 sentences is noise in a notice. */
+function summarizeApplied(res) {
+  const by = new Map();
+  for (const r of res) { if (!by.has(r.kind)) by.set(r.kind, []); by.get(r.kind).push(r.target); }
+  return [...by].map(([k, ts]) => `${ts.length} ${APPLIED_LABEL[k] || k}: ${ts.join(', ')}`).join('; ');
+}
+
+/** Apply fixed-cost actions; a failed one fails the fix loudly (the others were still applied and journaled). */
+function applyListed(actions) {
+  if (!actions || !actions.length) return 'nothing to change';
+  const res = require('./lib/fixed-cost.js').applyActions(actions);
+  const bad = res.filter((r) => !r.ok);
+  const msg = summarizeApplied(res.filter((r) => r.ok));
+  if (bad.length) throw new Error(`${bad.map((r) => `FAILED ${r.target}: ${r.message}`).join('; ')}${msg ? ` (applied: ${msg})` : ''}`);
+  return `${msg}. Undo: node scripts/doctor.js --undo. Restart Claude Code to load it.`;
+}
+
+// Only reversible changes: never the user's data. A user-set value is only changed by a fix the user asked for (--fix) and journaled.
+const FIXERS = {
+  'cost-tuning': () => {
+    const ok = require('./model-router-ensure.js').applyCostTuning();
+    return ok ? 'settings.json env updated (restart Claude Code to load it)' : 'nothing written (settings.json unreadable — see the log above)';
+  },
+  // Reversible through `doctor --undo` (lib/fixed-cost.js journals each change before making it).
+  'fixed-cost': (ctx) => applyListed(ctx.fixedCost && ctx.fixedCost.actions),
+  'boss-config': (ctx) => applyListed(ctx.bossConfig && ctx.bossConfig.actions),
+  'stale-daemon-lock': (ctx) => {
+    const p = ctx.daemon && ctx.daemon.lockPath;
+    if (!p) throw new Error('lock path unknown');
+    fs.unlinkSync(p);
+    return `removed ${p}`;
+  },
+};
+
+/** Run the autofix of every non-ok result. Never throws: a failing fixer is reported, not hidden. */
+function applyFixes(results, ctx, fixers = FIXERS) {
+  const out = [];
+  const ran = new Set(); // several results can share one fixer (e.g. the boss settings): run it once
+  for (const r of results) {
+    if (r.status === 'ok' || !r.autofix || ran.has(r.autofix)) continue;
+    ran.add(r.autofix);
+    const fn = fixers[r.autofix];
+    if (!fn) { out.push({ id: r.id, ok: false, message: `no fixer named ${r.autofix}` }); continue; }
+    try { out.push({ id: r.id, ok: true, message: fn(ctx) }); }
+    catch (err) { out.push({ id: r.id, ok: false, message: err.message }); }
+  }
+  return out;
 }
 
 // ── CLI ───────────────────────────────────────────────────────────────────────
@@ -561,19 +708,36 @@ function formatReport(results) {
 if (require.main === module) {
   (async () => {
     const asJson = process.argv.includes('--json');
-    const results = runChecks(await gatherContext({ probe: !process.argv.includes('--no-probe') }));
+    if (process.argv.includes('--undo')) {
+      const undone = require('./lib/fixed-cost.js').undoActions();
+      for (const u of undone) process.stdout.write(`  [undo] ${u.target}: ${u.ok ? '' : 'FAILED — '}${u.message}\n`);
+      if (!undone.length) process.stdout.write('  [undo] nothing to undo (the undo journal is empty)\n');
+      process.exit(undone.every((u) => u.ok) ? 0 : 1);
+    }
+    const wantFix = process.argv.includes('--fix');
+    const wantCost = process.argv.includes('--cost');
+    const ctx = await gatherContext({ probe: !process.argv.includes('--no-probe'), audit: wantFix || wantCost });
+    let results = runChecks(ctx);
+    let fixes = null;
+    if (wantFix) {
+      fixes = applyFixes(results, ctx);
+      if (!asJson) for (const f of fixes) process.stdout.write(`  [fix] ${f.id}: ${f.ok ? '' : 'FAILED — '}${f.message}\n`);
+      if (!asJson && !fixes.length) process.stdout.write('  [fix] nothing here has an automatic fix; follow the → line of each warning\n');
+      results = runChecks(await gatherContext({ probe: false, audit: true }));
+    }
     if (asJson) {
-      process.stdout.write(JSON.stringify({ results, summary: summarize(results) }, null, 2));
+      process.stdout.write(JSON.stringify({ results, summary: summarize(results), fixes, fixedCost: ctx.fixedCost || null }, null, 2));
     } else {
       process.stdout.write(formatReport(results) + '\n');
+      if (wantCost && ctx.fixedCost && !ctx.fixedCost.error) process.stdout.write('\n' + require('./lib/fixed-cost.js').formatAudit(ctx.fixedCost) + '\n');
     }
     process.exit(summarize(results).ok ? 0 : 1);
   })().catch(err => { console.error(`[doctor] ${err.message}`); process.exit(1); });
 }
 
 module.exports = {
-  runChecks, summarize, gatherContext, formatReport,
-  checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkCrashes, checkHooksEvents,
+  runChecks, summarize, applyFixes, FIXERS, checkCostTuning, checkBossConfig, checkFixedCost, bossPluginId, gatherContext, formatReport,
+  checkNode, checkDaemonNode, checkNativeDeps, checkEnv, checkDataDirs, checkModel, checkDaemon, checkNativeRuntime, checkEmbedderProbe, checkEmbedderGuard, checkCrashes, checkHooksEvents,
   findDataDirCandidates, probeEmbedder, gatherNative, gatherCrashes, MIN_MSVCP,
   STANDARD_EVENTS, RUNTIME_DEPENDENT_EVENTS, MIN_NODE,
 };
