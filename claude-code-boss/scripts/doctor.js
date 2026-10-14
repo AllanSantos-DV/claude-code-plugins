@@ -47,6 +47,15 @@ const RUNTIME_DEPENDENT_EVENTS = new Set(['UserPromptExpansion', 'PostToolUseFai
 
 function checkNode(ctx) {
   const s = nodeSupport.nodeSupport(ctx.nodeVersion);
+  // ctx.nodeChoice = pickSupportedNode(): the daemon and the router already run on another installed Node.
+  const alt = ctx.nodeChoice && ctx.nodeChoice.switched ? ctx.nodeChoice : null;
+  if (!s.ok && alt) {
+    return {
+      id: 'node', label: 'Node.js runtime', status: 'warn', critical: false,
+      detail: `default Node v${s.version} is outside the tested range (${nodeSupport.RANGE_TEXT}); the Brain daemon and the model router run on Node v${alt.version} (${alt.execPath}) instead`,
+      fix: `Nothing to do for the plugin. Short hooks still run on the default Node; to drop this warning make Node ${nodeSupport.MAX_TESTED_MAJOR} LTS the \`node\` on PATH.`,
+    };
+  }
   return {
     id: 'node', label: 'Node.js runtime',
     status: s.ok ? 'ok' : 'fail',
@@ -530,6 +539,7 @@ async function gatherContext({ probe = false } = {}) {
 
   return {
     nodeVersion: process.version,
+    nodeChoice: nodeSupport.pickSupportedNode(),
     nodeOptions: process.env.NODE_OPTIONS || '',
     env: { root, data: activeDataResolved || data },
     dataDirCandidates: findDataDirCandidates(data, { counts: true }),

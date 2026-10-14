@@ -40,6 +40,7 @@ const { dataDir, globalDir } = require('./lib/data-dir.js');
 const costTuning = require('./lib/cost-tuning.js');
 const { routerUserConfigPath, backfillRouterUserConfig } = require('./lib/router-config-path.js');
 const { configFingerprint } = require('./lib/router-fingerprint.js');
+const { pickSupportedNode } = require('./lib/node-support.js');
 const upstreamProfile = require('../servers/model-router/upstream-profile.js');
 
 // ── Paths ─────────────────────────────────────────────────────────────────────
@@ -771,7 +772,11 @@ function startServer(mode) {
 
     const spawnedAt = new Date().toISOString();
 
-    const child = spawn(process.execPath, [
+    // A long-running HTTPS proxy, like the Brain daemon: on a default Node outside the tested
+    // range it runs on an installed 22/24 (Node 25 aborted under parallel HTTPS).
+    const node = pickSupportedNode();
+    if (node.switched) log(`Node padrão v${node.from} fora da faixa testada: servidor no Node v${node.version} (${node.execPath}).`);
+    const child = spawn(node.execPath, [
       SERVER_SCRIPT,
       '--plugin-root', PLUGIN_ROOT,
       '--data-dir',    DATA_DIR,

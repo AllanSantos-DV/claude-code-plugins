@@ -24,6 +24,7 @@ import { resolvePort, readToken, lockFile, canonicalDataDir } from './daemon-com
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const crashEvidence = createRequire(import.meta.url)('../../../scripts/lib/crash-evidence.js');
+const nodeSupport = createRequire(import.meta.url)('../../../scripts/lib/node-support.js');
 const INDEX = path.join(__dirname, '..', 'index.js');
 
 /**
@@ -189,7 +190,17 @@ function readSpawnLogTail(dataDir) {
   return (errs.length ? errs : lines).slice(-3).join(' | ').slice(0, 600);
 }
 
-function spawnDaemon({ pluginRoot, dataDir, port, env, index = null }) {
+/**
+ * Child env on a switched Node: its folder goes first on the child's PATH, so a bare `node`
+ * the daemon starts is the same supported one. Only the child's copy changes.
+ */
+function withNodeOnPath(env, node) {
+  if (!node || !node.switched) return env;
+  const key = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') || 'PATH';
+  return { ...env, [key]: [path.dirname(node.execPath), env[key]].filter(Boolean).join(path.delimiter) };
+}
+
+function spawnDaemon({ pluginRoot, dataDir, port, env, index = null, node = null }) {
   // The daemon serves every session/project on the machine — it must never
   // inherit a single-session identity marker from whichever hook process
   // happens to trigger this spawn. `CCB_PROJECT_ID` is set per-session by
@@ -198,7 +209,7 @@ function spawnDaemon({ pluginRoot, dataDir, port, env, index = null }) {
   // (see the matching guard in `lib/mcp-server.js`'s `resolveProject()`).
   const spawnerEnv = { ...process.env };
   delete spawnerEnv.CCB_PROJECT_ID;
-  const childEnv = { ...spawnerEnv, ...normalizeEnv(env), CLAUDE_PLUGIN_ROOT: pluginRoot, CLAUDE_PLUGIN_DATA: dataDir };
+  const childEnv = withNodeOnPath({ ...spawnerEnv, ...normalizeEnv(env), CLAUDE_PLUGIN_ROOT: pluginRoot, CLAUDE_PLUGIN_DATA: dataDir }, node);
   // Child stderr → spawn log in DATA_DIR (was 'ignore': a boot crash such as
   // listen EACCES vanished and ensureDaemon could only say "check the logs").
   let errFd = 'ignore';
@@ -215,7 +226,7 @@ function spawnDaemon({ pluginRoot, dataDir, port, env, index = null }) {
   }
   try {
     const child = spawn(
-      process.execPath,
+      (node && node.execPath) || process.execPath,
       [...crashEvidence.reportFlags(canonicalDataDir(dataDir)), index || INDEX, '--port', String(port), '--plugin-data', dataDir],
       { detached: true, stdio: ['ignore', 'ignore', errFd], windowsHide: true, env: childEnv },
     );
@@ -439,7 +450,7 @@ async function exileLegacyDaemon({ dataDir, port, env = process.env }) {
  * @returns {Promise<{status:string, pid?:number, port?:number, note?:string, error?:string}>}
  *   status ∈ disabled|current|started|error. Never rejects.
  */
-export async function ensureDaemon({ pluginRoot, dataDir, env = process.env } = {}) {
+export async function ensureDaemon({ pluginRoot, dataDir, env = process.env, pickNode = () => nodeSupport.pickSupportedNode() } = {}) {
   env = (env && typeof env === 'object' && !Array.isArray(env)) ? env : process.env;
   const normalizedEnv = { ...process.env, ...normalizeEnv(env) };
   if (String(normalizedEnv.BRAIN_HTTP_AUTOSTART) === '0') return { status: 'disabled' };
@@ -512,10 +523,19 @@ export async function ensureDaemon({ pluginRoot, dataDir, env = process.env } = 
       // Before the spawn: it truncates the stderr log of the daemon that died.
       if (portWasFree) crash = recordDeadDaemon(dataDir, pluginRoot, port);
       const spawnRoot = newestInstalledRoot(pluginRoot);
+      // A default Node outside the tested range (Node 25) runs the daemon on an installed 22/24 instead.
+      let node;
+      try { node = pickNode(); } catch (err) {
+        // The search is a convenience: it must not stop the daemon from starting on the default Node.
+        console.error(`[brain-supervisor] could not look for a supported Node: ${err.message} — using ${process.execPath}`);
+        node = { execPath: process.execPath, version: process.version.replace(/^v/, ''), switched: false };
+      }
+      if (node.switched) console.error(`[brain-supervisor] default Node v${node.from} is outside ${nodeSupport.RANGE_TEXT}: starting the daemon on Node v${node.version} (${node.execPath})`);
       // A different (newer) install runs ITS server; otherwise this module's own, as before.
-      const pid = spawnDaemon({ pluginRoot: spawnRoot, dataDir, port, env: normalizedEnv, index: spawnRoot !== pluginRoot ? rootIndex(spawnRoot) : null });
+      const pid = spawnDaemon({ pluginRoot: spawnRoot, dataDir, port, env: normalizedEnv, index: spawnRoot !== pluginRoot ? rootIndex(spawnRoot) : null, node });
       const up = await waitCurrent(port, spawnRoot, dataDir);
-      if (up) return done({ status: 'started', pid, port, ...(spawnRoot !== pluginRoot ? { note: `started the newer install ${spawnRoot}` } : {}) });
+      const notes = [spawnRoot !== pluginRoot && `started the newer install ${spawnRoot}`, node.switched && `on Node v${node.version} (${node.execPath}) instead of the default v${node.from}`].filter(Boolean);
+      if (up) return done({ status: 'started', pid, port, node, ...(notes.length ? { note: notes.join('; ') } : {}) });
       // Spawn came up but not healthy — diagnose: index.js exits 0 on
       // EADDRINUSE (silently), so an unseen squatter is the usual cause. A
       // third shape: the daemon booted but resolved a DIFFERENT dataDir than
@@ -569,4 +589,4 @@ export async function ensureDaemon({ pluginRoot, dataDir, env = process.env } = 
 }
 
 // Internal helpers exported for unit tests (the pure, side-effect-free ones).
-export { swapDaemon, newestInstalledRoot, samePluginData, sameIdentity, lockMatchesHealth, acquireSpawnLock, releaseSpawnLock, spawnLockDir, spawnLogFile, readSpawnLogTail, SPAWN_LOCK_STALE_MS, WAIT_CURRENT_MS };
+export { swapDaemon, withNodeOnPath, newestInstalledRoot, samePluginData, sameIdentity, lockMatchesHealth, acquireSpawnLock, releaseSpawnLock, spawnLockDir, spawnLogFile, readSpawnLogTail, SPAWN_LOCK_STALE_MS, WAIT_CURRENT_MS };
