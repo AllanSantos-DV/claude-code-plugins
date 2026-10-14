@@ -8,7 +8,8 @@
   avisam quando a versão está fora da faixa e apontam o Node 24 LTS.
 - **A morte do daemon deixa evidência.** Antes, o daemon detached morria sem registro. Agora o supervisor detecta a morte não graciosa e grava o
   registro do crash (`lib/crash-evidence.js`). O spawn log não é mais truncado, e o daemon sobe com `--report-on-fatalerror`. O
-  `[BRAIN-CRASH]` resume o que houve e diz o que fazer.
+  `[BRAIN-CRASH]` resume o que houve e diz o que fazer. Um daemon parado de propósito pelo plugin (fallback de parada forçada) não é
+  contado como crash.
 
 ### Added
 - **Doctor: runtime e flags do daemon (`daemon-node`).** O `/health` do daemon informa a versão real do Node, o execArgv e o NODE_OPTIONS
