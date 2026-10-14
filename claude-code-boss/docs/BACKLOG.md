@@ -137,6 +137,54 @@ Achados fora do escopo (não implementados, por regra):
 - **Trade-off do 1M:** sem janela fixa o engine só compacta em janela−33k (~967k). Em sessões interativas sempre quentes o
   gate/turn-end não age (esperam cache frio); só o engine compacta. Decisão do Allan (ver TTL dinâmico abaixo).
 
+### TTL por sessão + corte mecânico com os documentos do MCP Memory (3ª rodada, 2026-10-14, nada implementado)
+
+Pedido do Allan via orquestrador. Scripts e dados em `docs/research/ttl-switch/per-session.js`, `real-ttl.js`,
+`five-min-sessions.js` e `docs/research/compaction-inject/` (local, gitignorado).
+
+- **TTL por sessão, medido (CC 2.1.293, Sonnet, 2 rodadas):** 4 processos `claude -p` ao mesmo tempo no mesmo diretório,
+  com `settings.local.json` compartilhado em `1h`. Sem override: 1h nos 2 turnos. Com `CLAUDE_CODE_PROMPT_CACHE_TTL=5m` só no
+  env do processo, ou com `--settings '{"promptCacheTtl":"5m"}'`: 5m nos 2 turnos, e as outras sessões continuaram em 1h.
+  Com `--settings <arquivo>`, trocar o arquivo para `1h` no meio **não** mudou nada (5m depois de 3 s e de 12 s): esse
+  arquivo é lido só no start; o watcher pega só os arquivos de settings normais (1ª rodada). Conclusão: env e `--settings`
+  dão TTL por sessão, mas **fixo desde a abertura**. A troca no meio da sessão só existe pelos arquivos de settings, que são
+  compartilhados. O plugin não controla com que flags/env o Claude Code abre uma sessão interativa, então o bloqueio da
+  2ª rodada continua. Fonte: Claude Code Docs, "How Claude Code uses prompt caching" (code.claude.com/docs/en/prompt-caching,
+  lida em 14/10): ordem `FORCE_PROMPT_CACHING_5M` > env do bucket > setting do bucket > `cacheTtl` do frontmatter do
+  subagente > `ENABLE_PROMPT_CACHING_1H` > padrão (assinatura: 1h na conversa principal; chave de API/gateway: 5m); v2.1.242+.
+- **Issue anthropics/claude-code#101685** (aberta, 2.1.296, sem resposta de mantenedor, lida em 14/10): em assinatura,
+  sessões interativas gravam 5m desde 12/10, enquanto `-p` grava 1h; `promptCacheTtl: "1h"` contorna. Não afeta esta máquina
+  (gateway/chave de API, onde o padrão já é 5m e o boss grava o env `1h`; CC 2.1.293). Transcripts dos últimos 3 dias:
+  109 sessões interativas só em 1h; 4 só em 5m, todas do Jarvis-orquestrador em 11–12/10 (11,4M tokens gravados em 5m),
+  encadeadas uma na outra. Inferência: o processo do orquestrador abriu antes de o cost-tuning gravar o env (env é lido no start).
+- **Bug na métrica de fidelidade do spike de 10/10 (achado e corrigido agora):** a janela "depois da compactação" incluía a
+  própria mensagem do resumo (`isCompactSummary`, em `boundary+4`), então toda âncora citada pelo resumo contava como
+  "lembrada". Com o resumo fora da janela, o resumo nativo cai de **46%/79% para 15%/51%** (âncoras 267→170 e 86→37).
+  Os 27%/64% eram "documentos + cauda de 40k", não o `buildBrief`. Corrigido em `compaction-inject/exp.js`
+  (`check-old-metric.js` reproduz os dois cálculos).
+- **Corte mecânico + documentos da sessão, medido (6 compactações reais, ingestão real num projeto de teste, 75 docs,
+  apagados depois):** cobertura das âncoras que os turnos seguintes citaram do trecho anterior.
+
+  | caso (trecho) | resumo do modelo | `buildBrief` | brief + docs | só docs |
+  |---|---|---|---|---|
+  | cc-1009 (353k) | 15% (5,6k tok) | 62% (52k) | 62% (54k) | 9% |
+  | st-1008 (360k) | 51% (3,8k) | 73% (58k) | 76% (59k) | 16% |
+  | 4 casos de 14/10 (~35k de texto, ~120k de contexto) | 83–100% | 67–94% | igual ao brief | 0–24% |
+
+  Os documentos somam 0 a 2,6 pontos ao brief. Eles citam 4 de 105 arquivos editados e 0 de 44 sites/buscas dos trechos:
+  saem como memória de longo prazo (decisão, técnico, status), não como registro do trabalho. O `buildBrief` já guarda os
+  pedidos do usuário na íntegra e uma linha por ferramenta com o argumento (arquivo, URL, comando), então os arquivos e sites
+  vêm do próprio transcript, sem hook novo. Hooks hoje: `file-edit-detect.js` só grava a edição no diário do turno
+  (`verify-journal`, para o verify-nudge); a ingestão manda o JSONL bruto, mas o servidor cura só os pares texto
+  usuário→assistente. A ingestão está desligada nesta máquina (`ingestion.enabled: false`): nenhuma sessão real tem
+  documentos. Curadoria levou 1–3 min depois da ingestão.
+- **Leitura:** em trechos longos o `buildBrief` preserva mais nomes que o resumo do modelo; em trechos de ~120k o resumo
+  empata ou ganha. O brief é 2–14× maior (7–58k contra 2,5–5,6k), relido a cada chamada. A métrica só mede nomes
+  (arquivos, identificadores), não entendimento nem decisões; é aí que os documentos poderiam ajudar, e isso não foi medido.
+- **Proposta, se o Allan quiser seguir:** no cache frio, `buildBrief` com um bloco curto de decisões da sessão
+  (`memoryNote`, ~2k tokens, só com a ingestão ligada). Decisão do Allan: ligar a ingestão (custo da curadoria pelo LLM do
+  servidor) e aceitar o contexto maior.
+
 ### TTL 1h→5m acima do % + compactação mecânica no próximo cache frio (2ª rodada, 2026-10-14, nada implementado)
 
 Pedido do Allan via orquestrador. Medido em perfil isolado (`docs/research/ttl-switch/exp.js`, diretório temporário,
@@ -152,7 +200,7 @@ Pedido do Allan via orquestrador. Medido em perfil isolado (`docs/research/ttl-s
 - **Simulação (US$, estimativa, 14 sessões):** hoje (1h + gate com resumo) 442 em 200k / 1041 em 1M; troca + resumo
   433 (−2%) / 850 (−18%); troca + mecânica 390 (−12%) / 838 (−20%). O ganho vem de o cache esfriar em 5 min e o gate agir
   cedo; a mecânica tira o custo do resumo (~US$ 0,5–0,7 por compactação).
-- **Fidelidade:** o resumo mecânico guardou 27% e 64% nos 2 casos medidos, contra 46% e 79% do resumo do modelo.
+- **Fidelidade:** o resumo mecânico guardou 27% e 64% nos 2 casos medidos, contra 46% e 79% do resumo do modelo. **Corrigido na 3ª rodada (acima):** a métrica contava o próprio resumo; o certo é resumo 15%/51%, `buildBrief` 62%/73%.
 - **Como o boss faria:** o hook de compactação já mede a ocupação; ao cruzar o % configurado grava
   `promptCacheTtl: "5m"`, no próximo cache frio compacta (mecânica) e volta para `"1h"`. Pré-requisito: o cost-tuning parar
   de gravar o env `CLAUDE_CODE_PROMPT_CACHE_TTL`, que ganha da setting. Latência: a troca vale na requisição seguinte
@@ -193,7 +241,7 @@ reais do custo-agente, 10–14/10), `mech.mjs` (compactação mecânica).
    5461fa31: `planCompaction` (poda de resultados antigos) corta 64% a 62k, 61% a 122k, 50% a 201k, 43% a 405k tokens e
    leva 1–2 ms; `buildBrief` (resumo determinístico, sem modelo) corta 82–86% (122k → 17,5k; 405k → 63k) em 1–3 ms.
    Custo de API: zero na compactação; só a regravação do que sobra (17,5k a US$ 8,8/MTok ≈ US$ 0,15), contra ~US$ 0,7
-   do resumo a frio a 122k. A fidelidade do `buildBrief` medida em 10/10 foi 27%/64% contra 46%/79% do resumo nativo (2 casos),
+   do resumo a frio a 122k. A fidelidade medida em 10/10 (27%/64%, que era docs + cauda, contra 46%/79%) estava inflada para o resumo; corrigida na 3ª rodada: resumo 15%/51%, `buildBrief` 62%/73% (2 casos),
    e a poda deixa o contexto grande (a 405k sobram 245k), por isso não substitui o resumo.
 4. **Recomendação:** não construir a troca dinâmica agora. Passos baratos primeiro (já feitos nesta rodada): gate/turn-end
    com cache frio e janela só em %. Se o Allan quiser a troca: (a) o plugin pára de gravar o env `CLAUDE_CODE_PROMPT_CACHE_TTL`
@@ -523,7 +571,7 @@ Pontos de melhoria identificados fora do escopo do trabalho corrente (ver polít
 ## Pesquisa de custo de compactação (pedido do Allan, 2026-10-10)
 
 - [x] **Compactação automática com cache quente: resumo nativo em vez da poda — RESOLVIDO (3.2.2, aprovado pelo orquestrador)**: medido nas transcrições/métricas reais — a nativa automática a ~967k tokens gera resumo de ~4,6k e o turno seguinte grava ~48k (janela → ~5%, ≈US$0,53 em Opus 5.5 com cache quente, que lê o prefixo do cache segundo a doc do Claude Code); a poda do boss no mesmo ponto (claude-code, 09/10 12:42) cortou 12% e o turno seguinte gravou 780.641 tokens (≈US$3,90). Causa: `session.compact` podava sempre que `ratio ≥ minReductionRatio` (0,15). Agora `compaction-core.chooseCompaction`: com cache quente na compactação AUTOMÁTICA o resumo nativo fica, salvo corte ≥ `warmMinReductionRatio` (0,85, o ponto de equilíbrio); cache desconhecido conta como quente; frio e `/compact` manual inalterados; o evento `compaction.run` passa a gravar `why` e `cacheWarm`. Teste + 4 mutações.
-- [x] **Spike: corte mecânico com documentos da ingestão + cauda — MEDIDO em 2026-10-10 (autorizado pelo Allan via orquestrador); DECIDIDO (orquestrador, 2026-10-10): não construir como substituto do resumo nativo (fidelidade 27%/64% contra 46%/79%)**: replay offline de 2 compactações automáticas reais (~968k tokens) contra o `ingest_conversation` real (mesma chamada do hook; a config global `ingestion.enabled` continua `false`): claude-code `09766aec` (09/10 12:41, 6 prompts humanos, ~353k tokens no trecho) e smart-tool `44950225` (08/10 11:25, 34 prompts, ~360k). Fidelidade = cobertura das âncoras (arquivos/identificadores) que os turnos SEGUINTES citaram do trecho anterior antes de qualquer ferramenta trazê-las de volta (proxy mecânico, ruidoso, mas igual para todos os contextos). Resumo nativo: **46% / 79%** em ~5,6k / ~3,8k tokens. Documentos + cauda de ~40k: **27% / 64%** em ~44k / ~45k (docs sozinhos 13% / 16%; somam só +7 pp / +1 pp à cauda). Os documentos saem com formato de memória de longo prazo (decisão/técnico), não de passagem de trabalho (arquivo em edição, passo pendente). Em sessão autônoma a cauda de 40k não cobre nem 1 prompt humano inteiro (claude-code). Custo com cache frio (preços em platform.claude.com/docs/en/about-claude/pricing, lido em 2026-10-10): gravar ~44k a US$5/MTok ≈ US$0,22 + destilação Haiku 4.5 (17k/4k e 25k/6,5k tokens de entrada/saída ≈ US$0,04–0,06), total ≈ US$0,27, contra ≈ US$5,2 da nativa (~967k gravados + resumo + ~56k no turno seguinte) → ~19× mais barato, com fidelidade bem menor. Destilação: qwen3:4b local gerou 13 docs (GPU disputada, ~85 tok/s, estouros de 120 s); Haiku 4.5 pelo túnel gerou 32 docs a partir dos mesmos 32 pares em ~40 s. Não medido: mensagens sintéticas no motor (nenhum corte foi aplicado a uma sessão viva). Script, relay e dados: `docs/research/compaction-spike/` (local, gitignored); docs do spike na memória com `sessionId` `spike-cc-1009`, `spike-cc-1009h`, `spike-st-1008` (75 docs, removidos ao fechar o spike). O relay/config do túnel fica ativo até o native-java publicar a correção permanente (HTTP/1.1 + `llm.properties`, já delegada).
+- [x] **Spike: corte mecânico com documentos da ingestão + cauda — MEDIDO em 2026-10-10 (autorizado pelo Allan via orquestrador); DECIDIDO (orquestrador, 2026-10-10): não construir como substituto do resumo nativo (fidelidade 27%/64% contra 46%/79%; métrica corrigida em 14/10, ver "3ª rodada": resumo 15%/51%)**: replay offline de 2 compactações automáticas reais (~968k tokens) contra o `ingest_conversation` real (mesma chamada do hook; a config global `ingestion.enabled` continua `false`): claude-code `09766aec` (09/10 12:41, 6 prompts humanos, ~353k tokens no trecho) e smart-tool `44950225` (08/10 11:25, 34 prompts, ~360k). Fidelidade = cobertura das âncoras (arquivos/identificadores) que os turnos SEGUINTES citaram do trecho anterior antes de qualquer ferramenta trazê-las de volta (proxy mecânico, ruidoso, mas igual para todos os contextos). Resumo nativo: **46% / 79%** em ~5,6k / ~3,8k tokens. Documentos + cauda de ~40k: **27% / 64%** em ~44k / ~45k (docs sozinhos 13% / 16%; somam só +7 pp / +1 pp à cauda). Os documentos saem com formato de memória de longo prazo (decisão/técnico), não de passagem de trabalho (arquivo em edição, passo pendente). Em sessão autônoma a cauda de 40k não cobre nem 1 prompt humano inteiro (claude-code). Custo com cache frio (preços em platform.claude.com/docs/en/about-claude/pricing, lido em 2026-10-10): gravar ~44k a US$5/MTok ≈ US$0,22 + destilação Haiku 4.5 (17k/4k e 25k/6,5k tokens de entrada/saída ≈ US$0,04–0,06), total ≈ US$0,27, contra ≈ US$5,2 da nativa (~967k gravados + resumo + ~56k no turno seguinte) → ~19× mais barato, com fidelidade bem menor. Destilação: qwen3:4b local gerou 13 docs (GPU disputada, ~85 tok/s, estouros de 120 s); Haiku 4.5 pelo túnel gerou 32 docs a partir dos mesmos 32 pares em ~40 s. Não medido: mensagens sintéticas no motor (nenhum corte foi aplicado a uma sessão viva). Script, relay e dados: `docs/research/compaction-spike/` (local, gitignored); docs do spike na memória com `sessionId` `spike-cc-1009`, `spike-cc-1009h`, `spike-st-1008` (75 docs, removidos ao fechar o spike). O relay/config do túnel fica ativo até o native-java publicar a correção permanente (HTTP/1.1 + `llm.properties`, já delegada).
 - [x] **(externo, native-java) curadoria via provedor OpenAI-compatible falha contra o túnel por upgrade h2c — RESOLVIDO no mcp-memory 2.49.0 (HTTP/1.1); relay local desligado e removido em 2026-10-11**: `LlmClientFactory.create` monta `HttpClient.newBuilder()` sem `.version(...)`; o padrão HTTP/2 tenta upgrade h2c em `http://` e o túnel perde o corpo → `400 {"detail":"Informe um model ID explícito para esta rota."}` (também "HTTP/1.1 header parser received no bytes"). Reproduzido com o `HttpClient` do JDK: HTTP_2 → 400, HTTP_1_1 → 200 com o mesmo corpo. Correção proposta: `.version(HttpClient.Version.HTTP_1_1)` (ou configurável). Hoje o spike contorna com um relay local (`docs/research/compaction-spike/relay.js`).
 - [x] **(externo, native-java) config do LLM só por env/`-D`: daemon relançado por qualquer cliente perde o provedor — RESOLVIDO no mcp-memory 2.49.0 (`~/.mcp-memory/llm.properties`)**: `mcp.llm.*`/`MCP_INGEST_MODEL` não têm arquivo persistente (o embedding tem `~/.mcp-memory/embedding.properties`, `EmbeddingBackendConfig.loadPersistentProps`). Visto: num restart dois clientes subiram o daemon ao mesmo tempo, um com o haiku e outro com o qwen3:4b; quem pega o lock decide. Correção proposta: ler `~/.mcp-memory/llm.properties` na mesma ordem env → arquivo → padrão.
 - [x] **(externo, native-java) `/health` devolveu 500 "falha ao ler departamentos: ResultSet already requested" — RESOLVIDO no mcp-memory 2.49.0**: visto em `daemon.log` às 22:37:33 de 10/10, sob vários `/health` concorrentes; um cliente concluiu "memory server not running" e chamou o launcher. Leitura de departamentos não é segura sob concorrência. Correção proposta: statement/ResultSet por chamada (sem compartilhar) e teste concorrente.
