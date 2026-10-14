@@ -55,6 +55,9 @@ function newCtx() {
     folderAbove: false,      // past the threshold at the last look (what the folder report says)
     folderTtl: null,         // the daemon's last answer for this folder ({ttl, live, allAbove, action})
     heartbeat: false,        // the folder heartbeat loop is running
+    // A compaction ran and no API call has been seen since: every size reading is still the pre-cut one (E2E 14/10:
+    // the gate compacted the just-cut session again from it). No new compaction until a real call is observed.
+    awaitCallAfterCut: false,
   };
 }
 
@@ -224,6 +227,7 @@ async function afterTurn($, ctx) {
     const settle = ctx.pendingSettle;
     ctx.pendingSettle = null;
     const { id, reply } = await observeCalls($, ctx);
+    if (reply && reply.recorded > 0) ctx.awaitCallAfterCut = false; // a real call after the cut: readings are fresh
     if (ctx.interactive && ctx.config.folderTtl !== false && ctx.folder) {
       try {
         // Past the threshold = the size of the LAST REAL API call (input + cache read + cache write), not usage():
@@ -299,6 +303,7 @@ async function currentWindow($, ctx) {
 async function turnEnd($, ctx) {
   try {
     if (!ctx.interactive || !ctx.configLoaded || !ctx.config.enabled) return;
+    if (ctx.awaitCallAfterCut) return; // just compacted: the size reading is the pre-cut one
     const now = await $.clock.now();
     const { context, windowTokens, windowSource, engineAutoCompactAt, thr } = await currentWindow($, ctx);
     const tokens = context.tokens ?? ctx.measuredTokens;
@@ -363,6 +368,7 @@ async function gate($, ctx, e, next) {
     emit($, ctx, 'resume', { ...r, messages: reloadedMsgs.length, secondsSince: ctx.start.secondsSince ?? null });
     d = r.reexpanded ? { action: 'compact', reason: 'resume-reexpanded' } : null;
   }
+  if (!d && ctx.awaitCallAfterCut) d = { action: 'none', reason: 'just-compacted' }; // the reading is the pre-cut size
   if (!d) d = decideTiming({ tokens, now, lastAnswerAt: ctx.lastAnswerAt, lastCompactAt: ctx.lastCompactAt, busy: false, ttlMs }, { ...ctx.config, thresholdTokens: thr.thresholdTokens });
   const idleMs = ctx.lastAnswerAt == null ? null : now - ctx.lastAnswerAt;
   emit($, ctx, 'gate', {
@@ -443,6 +449,7 @@ async function compact($, ctx, e, next) {
 /** After any compaction the session is below the threshold: say so now, so the folder TTL is restored at once. */
 async function leaveAbove($, ctx) {
   ctx.folderAbove = false;
+  ctx.awaitCallAfterCut = true;
   try { await reportFolder($, ctx); } catch (err) { $.ui.log(`compaction: folder TTL restore after the cut failed: ${String(err && err.message ? err.message : err)}`); }
 }
 
