@@ -48,7 +48,7 @@ function flattenHooks(doc, source) {
     if (!Array.isArray(groups)) continue;
     for (const g of groups) {
       for (const h of (g && Array.isArray(g.hooks) ? g.hooks : [])) {
-        out.push({ source, event, matcher: g.matcher || '', type: h.type || 'command', command: h.command || null, tool: h.tool || null, server: h.server || null });
+        out.push({ source, event, matcher: g.matcher || '', type: h.type || 'command', command: h.command || null, args: Array.isArray(h.args) ? h.args.map(String) : [], tool: h.tool || null, server: h.server || null });
       }
     }
   }
@@ -83,6 +83,17 @@ function matcherFits(entryMatcher, value) {
 }
 
 /**
+ * Does a recorded command string belong to this hook entry? A hook declared as
+ * `command` + `args` is recorded with the pieces joined (exact quoting is the host's), so
+ * compare by the command word plus every arg appearing in the record, not by one string.
+ */
+function commandMatches(entry, recorded) {
+  if (!entry.command) return false;
+  if (!entry.args.length) return entry.command === recorded;
+  return recorded.startsWith(entry.command) && entry.args.every((a) => recorded.includes(a));
+}
+
+/**
  * Who owns this failure record? → `{ certain, owners: [label...] }`.
  * `certain` only for an exact command-string match with ONE owner.
  */
@@ -93,7 +104,7 @@ function findOwners(rec, registry) {
   let pool;
   let certain = false;
   if (rec.command) {
-    pool = byEvent.filter((e) => e.type === 'command' && e.command === rec.command);
+    pool = byEvent.filter((e) => e.type === 'command' && commandMatches(e, rec.command));
     certain = true;
   } else {
     pool = byEvent.filter((e) => e.type === 'mcp_tool');
