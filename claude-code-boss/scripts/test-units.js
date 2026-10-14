@@ -1041,6 +1041,36 @@ test('mcp-client: callToolOnce nunca reconecta/reexecuta uma operação mutável
   assertEq(reconnects, 0);
 });
 
+test('mcp-client: per-call timeoutMs reaches the transport; our own timeout is never re-sent (the server may still be running it); a refused connection retries once', async () => {
+  const McpClient = require('./mcp-client.js');
+  const c = new McpClient({ transport: 'http', serverUrl: 'http://127.0.0.1:1' });
+  c._initialized = true;
+  let sends = 0, reconnects = 0, seenOpts = null;
+  c._reconnect = async () => { reconnects += 1; };
+  c._sendRequest = async (method, params, opts) => {
+    sends += 1; seenOpts = opts;
+    throw new Error('MCP request "tools/call" timed out after 15000ms');
+  };
+  let error = null;
+  try { await c.callTool('ingest_conversation', { raw: 'x' }, { timeoutMs: 15000 }); } catch (err) { error = err; }
+  assert(error && /timed out/.test(error.message), 'the timeout surfaces');
+  assertEq([sends, reconnects], [1, 0], 'no second upload on top of the one the server may still be running');
+  assertEq(seenOpts.timeoutMs, 15000, 'per-call timeout reaches the transport');
+  sends = 0;
+  c._sendRequest = async () => { sends += 1; const e = new Error('connect ECONNREFUSED 127.0.0.1:1'); e.code = 'ECONNREFUSED'; throw e; };
+  try { await c.callTool('search_memory', { query: 'q' }); } catch (err) { void err; }
+  assertEq([sends, reconnects], [2, 1], 'refused (never processed) → reconnect and retry once');
+  sends = 0; reconnects = 0;
+  c._sendRequest = async () => {
+    sends += 1;
+    if (sends === 1) { const e = new Error('HTTP 400 -32600'); e.code = 'SESSION_EXPIRED'; throw e; }
+    return { ok: true };
+  };
+  const r = await c.callTool('ingest_conversation', { raw: 'x' });
+  assertEq(r.ok, true);
+  assertEq([sends, reconnects], [2, 1], 'an expired session was never processed → reconnect + retry');
+});
+
 test('mcp-auto-update: parseia check_update textual e rejeita shape inválido', () => {
   const updater = require('./lib/mcp-memory-auto-update.js');
   assertEq(updater.parseCheckUpdate({
@@ -2641,19 +2671,6 @@ test('O2: transcript-tail.readRange — the one range reader (range, short file,
   assertEq(transcriptTail.readRange(f, 8, 50).toString(), '89', 'past EOF → what exists');
   assertEq(transcriptTail.readRange(f, 5, 5).length, 0);
   assertEq(transcriptTail.readRange(path.join(os.tmpdir(), 'nope-ccb-range.txt'), 0, 10).length, 0);
-});
-
-test('transcript-tail.readTailText + clampRaw: identical to clamping the whole file (31 MB multibyte transcript)', async () => {
-  const convIngestMod = require('./conversation-ingest.js');
-  const line = JSON.stringify({ type: 'user', text: 'é'.repeat(500) + ' ação 🚀' }) + '\n';
-  const f = _tailTmp('huge.jsonl', line.repeat(Math.ceil(31e6 / Buffer.byteLength(line))));
-  const SAFE = 7_500_000;
-  const whole = convIngestMod.clampRaw(fs.readFileSync(f, 'utf-8'));
-  const tail = convIngestMod.clampRaw(await transcriptTail.readTailText(f, SAFE * 4 + 4));
-  assertEq(tail.length, whole.length, 'same window length');
-  assert(tail === whole, 'same window content');
-  const small = _tailTmp('small.jsonl', 'one\ntwo\n');
-  assertEq(await transcriptTail.readTailText(small, 1000), 'one\ntwo\n');
 });
 
 // ─── retrieval-feedback (Plan #1) ────────────────────────────────────────────
@@ -5341,6 +5358,35 @@ test('brain-backend mcp: a REAL transport failure (daemon closed mid-session) op
   }
 });
 
+test('brain-backend mcp: a failed ingestion upload does NOT open the shared breaker (recall keeps working)', async () => {
+  const daemon = await startFakeDaemon({ toolResult: () => ({ content: [{ type: 'text', text: JSON.stringify({ results: [] }) }] }) });
+  delete require.cache[require.resolve('./brain-backend.js')];
+  const backend = require('./brain-backend.js');
+  backend.__testHooks._injectConfig({ backend: { type: 'mcp-memory', mcpMemory: { transport: 'http', serverUrl: daemon.url } } });
+  try {
+    await backend.init({ project: 'projIngestTrip' });
+    const realCall = require('./mcp-client.js').prototype.callTool;
+    require('./mcp-client.js').prototype.callTool = async function (name, ...rest) {
+      if (name === 'ingest_conversation') throw new Error('MCP request "tools/call" timed out after 15000ms');
+      return realCall.call(this, name, ...rest);
+    };
+    try {
+      let threw = null;
+      try { await backend.ingestConversation('raw', { sessionId: 's', timeoutMs: 15000 }); } catch (err) { threw = err; }
+      assert(threw && /timed out/.test(threw.message), 'the ingestion failure is reported to the caller');
+      assertEq(backend.circuitOpen(), false, 'a slow bulk upload says nothing about a small recall');
+      const hits = await backend.search('q');
+      assert(Array.isArray(hits), 'recall still reaches the daemon');
+    } finally {
+      require('./mcp-client.js').prototype.callTool = realCall;
+    }
+    await backend.close();
+  } finally {
+    delete require.cache[require.resolve('./brain-backend.js')];
+    await daemon.close();
+  }
+});
+
 test('retrieve-core retrieveRemote: a shared backend.circuitOpen()===true short-circuits before even calling init (cooperative breaker)', async () => {
   let initCalls = 0;
   const fake = { circuitOpen: () => true, init: async () => { initCalls++; } };
@@ -5702,23 +5748,85 @@ test('brain-backend.peekMode: per-user override flips to mcp-memory (shipped unt
   });
 });
 
-// ─── GAP1: conversation-ingest (opt-in daemon ingestion) ─────────────────────
+// ─── GAP1: conversation-ingest (opt-in daemon ingestion: delta + backoff + notices) ─
 const convIngest = require('./conversation-ingest.js');
 
-test('conversation-ingest.clampRaw: small passes through; oversize → line-aligned trailing window', () => {
-  assertEq(convIngest.clampRaw('line1\nline2\n'), 'line1\nline2\n');
-  assertEq(convIngest.clampRaw(''), '');
-  assertEq(convIngest.clampRaw(null), '');
-  const oversize = 'x'.repeat(3800000) + '\n' + 'y'.repeat(3800000); // 7,600,001 > SAFE_MAX
-  const clamped = convIngest.clampRaw(oversize);
-  assert(clamped.length <= 7500000, `windowed to <= SAFE_MAX, got ${clamped.length}`);
-  assertEq(clamped[0], 'y'); // aligned past the newline boundary → valid JSONL tail
+const _ingL = {
+  user: (uuid, text) => JSON.stringify({ type: 'user', uuid, message: { role: 'user', content: [{ type: 'text', text }] } }),
+  userStr: (uuid, text) => JSON.stringify({ type: 'user', uuid, message: { role: 'user', content: text } }),
+  toolResult: (uuid) => JSON.stringify({ type: 'user', uuid, message: { role: 'user', content: [{ type: 'tool_result', content: 'x' }] } }),
+  asst: (uuid, text) => JSON.stringify({ type: 'assistant', uuid, message: { role: 'assistant', content: [{ type: 'text', text }] } }),
+  toolUse: (uuid) => JSON.stringify({ type: 'assistant', uuid, message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash' }] } }),
+  sys: () => JSON.stringify({ type: 'system', content: 'hook' }),
+};
+const _ingBuf = (lines) => Buffer.from(lines.map((l) => l + '\n').join(''), 'utf-8');
+
+test('conversation-ingest.textRole: text in blocks or string counts; tool blocks, system lines and junk do not', () => {
+  assertEq(convIngest.textRole(_ingL.user('u', 'hi')), 'user');
+  assertEq(convIngest.textRole(_ingL.userStr('u', 'hi')), 'user', 'string content is text to the server parser');
+  assertEq(convIngest.textRole(_ingL.asst('a', 'ok')), 'assistant');
+  assertEq(convIngest.textRole(_ingL.toolResult('t')), null);
+  assertEq(convIngest.textRole(_ingL.toolUse('t')), null);
+  assertEq(convIngest.textRole(_ingL.user('u', '   ')), null, 'blank text');
+  assertEq(convIngest.textRole(_ingL.sys()), null);
+  assertEq(convIngest.textRole('{"role": torn'), null);
 });
 
-test('conversation-ingest.transcriptKey: stable per (sid, transcript), differs by content/session', () => {
-  assertEq(convIngest.transcriptKey('s', 'abc'), convIngest.transcriptKey('s', 'abc'));
-  assert(convIngest.transcriptKey('s', 'abc') !== convIngest.transcriptKey('s', 'abd'), 'content change → new key');
-  assert(convIngest.transcriptKey('s1', 'abc') !== convIngest.transcriptKey('s2', 'abc'), 'session change → new key');
+test('conversation-ingest.selectChunk: complete pair → offset at end; trailing unpaired prompt → offset at that prompt', () => {
+  const done = _ingBuf([_ingL.user('u1', 'q1'), _ingL.toolUse('t1'), _ingL.toolResult('r1'), _ingL.asst('a1', 'r1')]);
+  const c1 = convIngest.selectChunk(done, 100);
+  assertEq(c1.raw, done.toString('utf-8'));
+  assertEq(c1.nextOffset, 100 + done.length);
+  const head = _ingBuf([_ingL.user('u1', 'q1'), _ingL.asst('a1', 'r1')]);
+  const open = Buffer.concat([head, _ingBuf([_ingL.user('u2', 'q2'), _ingL.toolUse('t2')])]);
+  const c2 = convIngest.selectChunk(open, 0);
+  assertEq(c2.raw, open.toString('utf-8'), 'the open prompt still goes (server stages what it can)');
+  assertEq(c2.nextOffset, head.length, 'next chunk re-carries the unpaired prompt');
+});
+
+test('conversation-ingest.selectChunk: never sends a chunk without a user+assistant text pair (would degrade the server template)', () => {
+  assertEq(convIngest.selectChunk(_ingBuf([_ingL.toolUse('t'), _ingL.toolResult('r'), _ingL.sys()]), 0).raw, null);
+  assertEq(convIngest.selectChunk(_ingBuf([_ingL.user('u', 'q'), _ingL.toolUse('t')]), 0).raw, null, 'prompt with no reply yet');
+  assertEq(convIngest.selectChunk(_ingBuf([_ingL.asst('a', 'r')]), 0).raw, null, 'reply without its prompt');
+  assertEq(convIngest.selectChunk(Buffer.from('{"partial":'), 0).raw, null, 'no complete line');
+});
+
+test('conversation-ingest.selectChunk: drops a torn last line and, with cutHead, the torn first line', () => {
+  const body = _ingBuf([_ingL.user('u1', 'q1'), _ingL.asst('a1', 'r1')]);
+  const buf = Buffer.concat([Buffer.from('rn":"half"}\n'), body, Buffer.from('{"type":"user","uu')]);
+  const c = convIngest.selectChunk(buf, 50, { cutHead: true });
+  assertEq(c.raw, body.toString('utf-8'));
+  assertEq(c.nextOffset, 50 + buf.length - '{"type":"user","uu'.length);
+});
+
+test('conversation-ingest.selectChunk: escaped payload never exceeds the cap (keeps the newest lines, multibyte + quotes)', () => {
+  const lines = [];
+  for (let i = 0; i < 400; i++) { lines.push(_ingL.user(`u${i}`, `"pergunta" é ação 🚀 ${'x'.repeat(200)}`)); lines.push(_ingL.asst(`a${i}`, 'resposta "ok"')); }
+  const buf = _ingBuf(lines);
+  const cap = 20000;
+  const c = convIngest.selectChunk(buf, 0, { maxPayloadBytes: cap });
+  assert(c.raw, 'something fits');
+  assert(Buffer.byteLength(JSON.stringify(c.raw)) - 2 <= cap, `escaped ${Buffer.byteLength(JSON.stringify(c.raw))} > ${cap}`);
+  assert(buf.toString('utf-8').endsWith(c.raw), 'trailing window');
+  assert(c.raw.startsWith('{"type"'), 'line-aligned');
+  assertEq(c.nextOffset, buf.length);
+  assertEq(convIngest.MAX_PAYLOAD_BYTES < 8_000_000, true, 'under the server MAX_RAW_CHARS and its 10 MiB body cap');
+});
+
+test('conversation-ingest.backoffMs: 30s doubling, capped at 30min', () => {
+  assertEq(convIngest.backoffMs(1), 30_000);
+  assertEq(convIngest.backoffMs(2), 60_000);
+  assertEq(convIngest.backoffMs(4), 240_000);
+  assertEq(convIngest.backoffMs(20), 30 * 60_000);
+});
+
+test('conversation-ingest.curationStalled: cooldown, new permanent failures, or 10min with no progress', () => {
+  assertEq(convIngest.curationStalled({ pending: 3, in_cooldown: 0, success: 5 }, undefined), false, 'no history → only cooldown counts');
+  assertEq(convIngest.curationStalled({ pending: 3, in_cooldown: 2 }, undefined), true);
+  assertEq(convIngest.curationStalled({ pending: 0, permanently_failed: 4 }, { permanently_failed: 3 }), true);
+  assertEq(convIngest.curationStalled({ pending: 6, success: 5 }, { pending: 4, success: 5 }), true, 'pending grows, nothing curated');
+  assertEq(convIngest.curationStalled({ pending: 6, success: 9 }, { pending: 4, success: 5 }), false, 'curation progressing');
+  assertEq(convIngest.curationStalled({ pending: 0, success: 5 }, { pending: 0, success: 5 }), false, 'idle and drained');
 });
 
 test('conversation-ingest.run: backend=local → no-op (never ingests to local KB)', async () => {
@@ -5735,6 +5843,127 @@ test('conversation-ingest.run: mcp-memory but ingestion OFF → no-op', async ()
     return convIngest.run({ session_id: 's', transcript_path: '' });
   });
   assertEq(Object.keys(r || {}).length, 0);
+});
+
+// Drives run() with a fake backend + clock over a real transcript file and state file.
+function _ingHarness() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ingest-'));
+  const h = {
+    transcript: path.join(dir, 's.jsonl'),
+    statePath: path.join(dir, 'ingest-state.json'),
+    clock: 1_000_000,
+    sent: [],
+    statusCalls: 0,
+    ingest: async () => ({ ok: true, pairsStaged: 1 }),
+    status: async () => ({ ok: true, staging: { pending: 0, in_cooldown: 0, success: 1, skipped: 0, permanently_failed: 0, last_error: null } }),
+  };
+  h.backend = {
+    peekMode: () => 'mcp-memory',
+    init: async () => {},
+    ingestConversation: async (raw, opts) => { h.sent.push({ raw, opts }); return h.ingest(raw, opts); },
+    ingestStatus: async (opts) => { h.statusCalls++; return h.status(opts); },
+  };
+  h.append = (lines) => fs.appendFileSync(h.transcript, lines.map((l) => l + '\n').join(''));
+  h.state = () => JSON.parse(fs.readFileSync(h.statePath, 'utf-8'));
+  h.stop = (cwd = path.resolve(__dirname, '..')) => withUserConfig({ backend: { type: 'mcp-memory', ingestion: { enabled: true } } }, () =>
+    convIngest.run({ session_id: 'S1', transcript_path: h.transcript, cwd },
+      { backend: h.backend, now: () => h.clock, statePath: h.statePath }));
+  return h;
+}
+
+test('conversation-ingest.run: sends only the delta per Stop; nothing new → no call', async () => {
+  const h = _ingHarness();
+  h.append([_ingL.user('u1', 'q1'), _ingL.asst('a1', 'r1')]);
+  assertEq(JSON.stringify(await h.stop()), '{}');
+  assertEq(h.sent.length, 1);
+  assertEq(h.sent[0].opts.sessionId, 'S1');
+  assertEq(h.sent[0].opts.consumerId, 'claude-code-boss');
+  assert(h.sent[0].opts.timeoutMs > 0 && h.sent[0].opts.timeoutMs < 29000, 'upload bounded inside the Stop budget');
+  await h.stop();
+  assertEq(h.sent.length, 1, 'duplicate Stop, no new bytes → no upload');
+  h.append([_ingL.user('u2', 'q2'), _ingL.asst('a2', 'r2')]);
+  await h.stop();
+  assertEq(h.sent.length, 2);
+  assert(!h.sent[1].raw.includes('"u1"') && h.sent[1].raw.includes('"u2"'), 'second upload is only the new turn');
+  assertEq(h.state().sessions.S1.offset, fs.statSync(h.transcript).size);
+});
+
+test('conversation-ingest.run: failure → backoff (no upload while waiting), visible notice once, recovery notice', async () => {
+  const h = _ingHarness();
+  h.append([_ingL.user('u1', 'q1'), _ingL.asst('a1', 'r1')]);
+  h.ingest = async () => { throw new Error('MCP request "tools/call" timed out after 15000ms'); };
+  const r1 = await h.stop();
+  assert(/\[INGEST\].*failed 1x.*timed out after 15000ms\. Retrying with backoff \(next in 30s\)/.test(r1.notice || ''), `notice on first failure: ${JSON.stringify(r1)}`);
+  assertEq(h.state().failures, 1);
+  assertEq(h.state().sessions.S1, undefined, 'offset not advanced on failure');
+  h.clock += 10_000;
+  assertEq(JSON.stringify(await h.stop()), '{}', 'inside the 30s backoff: silent');
+  assertEq(h.sent.length, 1, 'no upload during backoff');
+  h.clock += 25_000;
+  const r3 = await h.stop();
+  assertEq(h.sent.length, 2, 'retried after backoff');
+  assertEq(r3.notice, undefined, 'second failure of the streak within 30min: no repeat notice');
+  assertEq(h.state().nextAttemptAt, h.clock + 60_000, 'backoff doubled');
+  h.clock += 61_000;
+  h.ingest = async () => ({ ok: true, pairsStaged: 1 });
+  const r4 = await h.stop();
+  assert(/recovered after 2 failed/.test(r4.notice || ''), `recovery notice: ${JSON.stringify(r4)}`);
+  assertEq(h.state().failures, 0);
+  assert(h.sent[2].raw.includes('"u1"'), 'resumes from where it stopped');
+});
+
+test('conversation-ingest.run: server ok:false (no parser / ingestion off) is a visible failure, not a silent stamp', async () => {
+  const h = _ingHarness();
+  h.append([_ingL.user('u1', 'q1'), _ingL.asst('a1', 'r1')]);
+  h.ingest = async () => ({ ok: false, message: 'no_parser_for_consumer claude-code-boss' });
+  const r = await h.stop();
+  assert(/rejected the transcript: no_parser_for_consumer/.test(r.notice || ''), JSON.stringify(r));
+  assertEq(h.state().failures, 1);
+});
+
+test('conversation-ingest.run: shared breaker open → skipped without counting a failure', async () => {
+  const h = _ingHarness();
+  h.append([_ingL.user('u1', 'q1'), _ingL.asst('a1', 'r1')]);
+  h.ingest = async () => { const e = new Error('mcp-memory backend circuit open'); e.code = 'CIRCUIT_OPEN'; throw e; };
+  assertEq(JSON.stringify(await h.stop()), '{}');
+  assert(!fs.existsSync(h.statePath) || h.state().failures === 0, 'not a failure');
+});
+
+test('conversation-ingest.run: stalled curation (ingest ok:true but LLM down) surfaces from ingest_status, throttled', async () => {
+  const h = _ingHarness();
+  h.status = async () => ({ ok: true, staging: { pending: 4, in_cooldown: 3, success: 0, skipped: 0, permanently_failed: 0, last_error: 'LLM circuit open' } });
+  h.append([_ingL.user('u1', 'q1'), _ingL.asst('a1', 'r1')]);
+  const r1 = await h.stop();
+  assert(/curation is stalled.*4 pair\(s\) pending.*3 in retry cooldown.*LLM circuit open/.test(r1.notice || ''), JSON.stringify(r1));
+  h.clock += 60_000;
+  h.append([_ingL.user('u2', 'q2'), _ingL.asst('a2', 'r2')]);
+  await h.stop();
+  assertEq(h.statusCalls, 1, 'status polled at most every 10 min');
+  h.clock += 10 * 60_000;
+  h.status = async () => ({ ok: true, staging: { pending: 0, in_cooldown: 0, success: 6, skipped: 0, permanently_failed: 0, last_error: 'LLM circuit open' } });
+  h.append([_ingL.user('u3', 'q3'), _ingL.asst('a3', 'r3')]);
+  const r3 = await h.stop();
+  assert(/curation is moving again/.test(r3.notice || ''), JSON.stringify(r3));
+});
+
+test('conversation-ingest.run: transcript rewritten smaller → restarts from the top', async () => {
+  const h = _ingHarness();
+  h.append([_ingL.user('u1', 'q1'), _ingL.asst('a1', 'r1'), _ingL.user('u2', 'q2'), _ingL.asst('a2', 'r2')]);
+  await h.stop();
+  fs.writeFileSync(h.transcript, [_ingL.user('n1', 'q'), _ingL.asst('n2', 'r')].map((l) => l + '\n').join(''));
+  await h.stop();
+  assertEq(h.sent.length, 2);
+  assert(h.sent[1].raw.includes('"n1"'), 'whole new file sent');
+});
+
+test('conversation-ingest.run: folder with no stable project scope → said once per session, nothing sent', async () => {
+  const h = _ingHarness();
+  h.append([_ingL.user('u1', 'q1'), _ingL.asst('a1', 'r1')]);
+  const noScope = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-noscope-'));
+  const r1 = await h.stop(noScope);
+  assert(/\[INGEST\].*skipped for this project/.test(r1.notice || ''), JSON.stringify(r1));
+  assertEq(JSON.stringify(await h.stop(noScope)), '{}', 'not repeated every Stop');
+  assertEq(h.sent.length, 0);
 });
 
 // ─── project-id: client-side identity resolver (STRICT: declared → legacy → git-remote → throw) ─
@@ -15306,6 +15535,40 @@ test('http-daemon: the open SSE stream (GET) gets periodic keepalive comments, s
   } finally {
     ctrl.abort();
     if (savedTok !== undefined) process.env.BRAIN_HTTP_TOKEN = savedTok;
+    await d.shutdown();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('http-daemon shutdown: frees the port at once but answers the requests already in flight (no "Connection closed")', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-drain-'));
+  const { startHttpDaemon } = await import(require('url').pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'http-daemon.js')).href);
+  const d = await startHttpDaemon({ pluginRoot: ROOT, dataDir: dir, port: 0, shutdownDrainMs: 5000 });
+  const port = d.httpServer.address().port;
+  const tok = fs.readFileSync(path.join(dir, 'brain-http.token'), 'utf8').trim();
+  try {
+    // A request whose body is still arriving when shutdown starts.
+    const pending = new Promise((resolve) => {
+      const req = http.request({ host: '127.0.0.1', port, path: '/mcp', method: 'POST', headers: { 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream', Authorization: `Bearer ${tok}`, 'mcp-session-id': 'gone-session' } }, (res) => {
+        let b = ''; res.on('data', (c) => { b += c; }); res.on('end', () => resolve({ status: res.statusCode, body: b, conn: res.headers.connection }));
+      });
+      req.on('error', (err) => resolve({ error: err.code || err.message }));
+      req.write('{"jsonrpc":"2.0","id":7,');
+      d.__finish = () => req.end('"method":"tools/list","params":{}}');
+    });
+    await new Promise((r) => setTimeout(r, 100));
+    const down = d.shutdown();
+    await new Promise((r) => setTimeout(r, 100));
+    let refused = null;
+    try { await fetch(`http://127.0.0.1:${port}/health`); } catch (err) { refused = err; }
+    assert(refused, 'the port is released while draining, so a swap can start the new daemon');
+    d.__finish();
+    const r = await pending;
+    assertEq(r.error, undefined, `in-flight request answered, not dropped: ${JSON.stringify(r)}`);
+    assertEq(r.status, 404, 'unknown session → 404 (client re-initializes on the new daemon)');
+    assertEq(r.conn, 'close', 'socket dropped after the answer so the next request reaches the new daemon');
+    await down;
+  } finally {
     await d.shutdown();
     fs.rmSync(dir, { recursive: true, force: true });
   }

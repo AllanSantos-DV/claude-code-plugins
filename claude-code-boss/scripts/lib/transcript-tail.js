@@ -81,25 +81,4 @@ function readRange(filePath, from, to) {
   } catch (err) { void err; return Buffer.alloc(0); }
 }
 
-/**
- * The trailing `maxBytes` of a file as a utf-8 string, read asynchronously (the
- * read runs on the libuv pool, not the event loop). Whole file when smaller.
- *
- * @param {string} filePath
- * @param {number} maxBytes
- * @returns {Promise<string>}
- */
-async function readTailText(filePath, maxBytes) {
-  const fh = await fs.promises.open(filePath, 'r');
-  try {
-    const { size } = await fh.stat();
-    const len = Math.min(size, maxBytes);
-    const buf = Buffer.alloc(len);
-    const { bytesRead } = await fh.read(buf, 0, len, size - len);
-    return buf.subarray(0, bytesRead).toString('utf-8');
-  } finally {
-    await fh.close();
-  }
-}
-
-module.exports = { readTailLines, readTailText, readRange, DEFAULT_MAX_BYTES };
+module.exports = { readTailLines, readRange, DEFAULT_MAX_BYTES };
