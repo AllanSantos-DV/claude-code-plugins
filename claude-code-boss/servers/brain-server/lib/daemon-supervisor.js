@@ -19,9 +19,11 @@ import net from 'node:net';
 import path from 'node:path';
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { resolvePort, readToken, lockFile, canonicalDataDir } from './daemon-common.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const crashEvidence = createRequire(import.meta.url)('../../../scripts/lib/crash-evidence.js');
 const INDEX = path.join(__dirname, '..', 'index.js');
 
 /**
@@ -205,16 +207,42 @@ function spawnDaemon({ pluginRoot, dataDir, port, env, index = null }) {
   } catch (err) {
     console.error(`[brain-supervisor] cannot open spawn log ${spawnLogFile(dataDir)}: ${err.message} — daemon stderr will be lost`);
   }
+  // A V8 fatal error (out of memory) or an uncaught exception leaves a Node report there;
+  // crash-evidence lists it in the record of the dead daemon.
+  const reportDir = crashEvidence.reportDir(canonicalDataDir(dataDir));
+  try { fs.mkdirSync(reportDir, { recursive: true }); } catch (err) {
+    console.error(`[brain-supervisor] cannot create ${reportDir}: ${err.message} — Node reports will not be written`);
+  }
   try {
     const child = spawn(
       process.execPath,
-      [index || INDEX, '--port', String(port), '--plugin-data', dataDir],
+      [...crashEvidence.reportFlags(canonicalDataDir(dataDir)), index || INDEX, '--port', String(port), '--plugin-data', dataDir],
       { detached: true, stdio: ['ignore', 'ignore', errFd], windowsHide: true, env: childEnv },
     );
     child.unref();
     return child.pid;
   } finally {
     if (typeof errFd === 'number') fs.closeSync(errFd);
+  }
+}
+
+/**
+ * Record a daemon that died without shutting down (its lock outlived it), then start
+ * the hidden collector of the Windows fault event. Null when there was none.
+ * Recording must never stop the new spawn, so a failure is logged and dropped.
+ * @returns {object|null} the crash record
+ */
+function recordDeadDaemon(dataDir, pluginRoot, port) {
+  try {
+    const dir = canonicalDataDir(dataDir);
+    const lock = crashEvidence.detectUncleanExit({ dataDir: dir, port });
+    if (!lock) return null;
+    const rec = crashEvidence.recordCrash({ dataDir: dir, lock, pluginRoot });
+    crashEvidence.startEnrich(dir, rec.id);
+    return { ...rec, logFile: crashEvidence.crashLogFile(dir) };
+  } catch (err) {
+    console.error(`[brain-supervisor] could not record the dead daemon: ${err.message}`);
+    return null;
   }
 }
 
@@ -416,6 +444,8 @@ export async function ensureDaemon({ pluginRoot, dataDir, env = process.env } = 
     await exileLegacyDaemon({ dataDir, port, env: normalizedEnv });
 
     const probe = await probeHot(port);
+    // Only a port that was ALREADY free can mean a dead daemon: a swap below stops the old one on purpose.
+    const portWasFree = probe.kind === 'absent';
 
     if (probe.kind === 'daemon') {
       const h = probe.health;
@@ -470,12 +500,16 @@ export async function ensureDaemon({ pluginRoot, dataDir, env = process.env } = 
         port,
       };
     }
+    let crash = null;
+    const done = (r) => (crash ? { ...r, crash } : r);
     try {
+      // Before the spawn: it truncates the stderr log of the daemon that died.
+      if (portWasFree) crash = recordDeadDaemon(dataDir, pluginRoot, port);
       const spawnRoot = newestInstalledRoot(pluginRoot);
       // A different (newer) install runs ITS server; otherwise this module's own, as before.
       const pid = spawnDaemon({ pluginRoot: spawnRoot, dataDir, port, env: normalizedEnv, index: spawnRoot !== pluginRoot ? rootIndex(spawnRoot) : null });
       const up = await waitCurrent(port, spawnRoot, dataDir);
-      if (up) return { status: 'started', pid, port, ...(spawnRoot !== pluginRoot ? { note: `started the newer install ${spawnRoot}` } : {}) };
+      if (up) return done({ status: 'started', pid, port, ...(spawnRoot !== pluginRoot ? { note: `started the newer install ${spawnRoot}` } : {}) });
       // Spawn came up but not healthy — diagnose: index.js exits 0 on
       // EADDRINUSE (silently), so an unseen squatter is the usual cause. A
       // third shape: the daemon booted but resolved a DIFFERENT dataDir than
@@ -497,29 +531,29 @@ export async function ensureDaemon({ pluginRoot, dataDir, env = process.env } = 
         if (h.pid === pid) {
           try { process.kill(pid); why += ' — stopped it'; } catch (err) { why += ` — could not stop it (${err.message})`; }
         }
-        return { status: 'error', error: `spawned daemon did not become OUR daemon on ${port}: ${why}`, pid, port };
+        return done({ status: 'error', error: `spawned daemon did not become OUR daemon on ${port}: ${why}`, pid, port });
       }
       if (again.kind !== 'absent') {
         const status = again.httpStatus == null ? 'no response' : `HTTP ${again.httpStatus}`;
-        return {
+        return done({
           status: 'error',
           error: `port ${port} is owned by an unknown process — the spawned daemon exited (EADDRINUSE; ${status}). ` +
             `Free the port or set BRAIN_HTTP_PORT to a different one for this install.`,
           port,
-        };
+        });
       }
       // Port free and no /health: the child genuinely failed to boot. Honest
       // 'error' beats a claim that a spawn that never served is a success —
       // and it carries the child's own stderr (real cause) + where to look.
       const cause = readSpawnLogTail(dataDir) || `no stderr captured (${spawnLogFile(dataDir)})`;
-      return {
+      return done({
         status: 'error',
         error: `spawned daemon (pid ${pid}) on port ${port} never became healthy — cause: ${cause}. ` +
           `If this is EACCES on Windows the port may be reserved: check \`netsh int ipv4 show excludedportrange protocol=tcp\` ` +
           `and set BRAIN_HTTP_PORT to a free port outside those ranges in the environment Claude Code runs with (the plugin's .mcp.json url follows it).`,
         pid,
         port,
-      };
+      });
     } finally {
       releaseSpawnLock(dataDir);
     }

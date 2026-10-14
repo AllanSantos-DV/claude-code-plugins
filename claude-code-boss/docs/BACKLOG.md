@@ -1,5 +1,30 @@
 # Backlog
 
+## Crash 0xC0000409 do brain (branch `fix/brain-crash-diagnostics`, pedido do orquestrador, 2026-10-14)
+
+- **Encontrado e corrigido na hora:** o daemon é detached, então a morte dele (exit code) não ficava registrada em lugar nenhum. O supervisor
+  agora detecta a morte não graciosa (lock com pid morto, startedAt ≥ boot, porta livre) e grava a evidência (`lib/crash-evidence.js`, teste
+  "a dead daemon's lock on a free port is recorded before the respawn").
+- **Encontrado e corrigido na hora:** o spawn log era truncado a cada spawn e apagava o stderr do crash anterior. Agora o log é preservado e
+  o daemon sobe com `--report-on-fatalerror` e `--report-directory`.
+- **Encontrado e corrigido na hora:** abort do Node (OOM do V8, `process.abort`) sai com 134, e abort nativo sai com 0xC0000409. O diagnóstico
+  distingue os dois. O onnxruntime.dll do System32 é só informativo, porque o addon carrega o bundled 1.30 (check `native-runtime`, msvcp140 ≥ 14.40).
+- **Encontrado e corrigido na hora (achado do Allan):** a causa era o Node 25, que aborta com chamadas HTTPS em paralelo. A faixa testada agora é
+  22.13–24.x (`lib/node-support.js`, `engines` `<25`). O doctor, o advisory do SessionStart e o plugin-setup avisam e apontam o Node 24 LTS
+  (testes "node-support:", "checkNode", "plugin-setup.warnNodeVersion").
+- **Encontrado e corrigido na hora:** flags do daemon. O `/health` expõe `node {version, execArgv, nodeOptions}`. O check `daemon-node` aponta
+  flags estranhas (`--no-maglev`), flags próprias faltando e NODE_OPTIONS herdado (teste "checkDaemonNode").
+- **Encontrado e corrigido na hora:** as dependências nativas do daemon (node:sqlite, napi ≥ 6, binding do onnxruntime e sharp para a arquitetura)
+  não eram checadas. Agora o check `native-deps` faz isso (teste "checkNativeDeps").
+- **Registrado (medido, não defeito):** o Node 24 recusa `--no-maglev` em NODE_OPTIONS ("not allowed in NODE_OPTIONS"). Essa flag só chega ao
+  daemon via execArgv, ou seja, quando o daemon foi iniciado à mão ou por outra ferramenta.
+- **Encontrado e corrigido na hora:** o lint `require-windows-hide` rejeitava `spawnSync` usado como default de parâmetro. Troquei pelo wrapper
+  `hiddenSpawnSync` (crash-evidence e doctor).
+- [ ] **Aberto (fora do escopo) — sem correção automática do Node:** quando o `node` do PATH é o 25, o plugin só avisa. Proposta: o supervisor
+  procurar um Node 22/24 instalado (nvm, volta, Program Files) e subir o daemon com ele (`servers/brain-server/lib/daemon-supervisor.js`, spawn de `process.execPath`).
+- [ ] **Aberto (fora do escopo) — não existe provider de embedder "off":** numa máquina onde o runtime nativo quebra, a única saída é trocar para
+  ollama/voyage. Proposta: provider `none`, com busca só lexical (`servers/brain-server/lib/embedder*`).
+
 ## Dono do hook que falhou (branch `feat/hook-owner`, pedido do orquestrador, 2026-10-14)
 
 - **Encontrado e corrigido na hora:** erro de hook sem o plugin dono na tela (`hook-prefix.js` + `hook-owner.js`, testes "hook-prefix:" e "hook-owner:").

@@ -1,6 +1,6 @@
 {
   "name": "claude-code-plugin-brain",
-  "version": "3.7.0",
+  "version": "3.8.0",
   "private": true,
   "description": "Claude Code plugin — Brain Research knowledge base",
   "type": "commonjs",
@@ -9,7 +9,7 @@
     "url": "https://github.com/AllanSantos-DV/claude-code-plugins.git"
   },
   "engines": {
-    "node": ">=22.13.0"
+    "node": ">=22.13.0 <25"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
