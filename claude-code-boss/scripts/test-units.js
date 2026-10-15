@@ -25301,6 +25301,26 @@ test('dashboard /api/plugin/update: one update at a time (a 2nd click while one 
   } finally { pu.performUpdate = orig; }
 });
 
+test('curation_prune_unused: le o uso pela chave de metricas do PROJETO (id), nao pelo nome da pasta nem pela 1a sessao do daemon', async () => {
+  const sp = require('./lib/shells-prune.js');
+  const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-prune-key-'));
+  fs.mkdirSync(path.join(repo, '.git'));
+  fs.mkdirSync(path.join(repo, '.memory'));
+  fs.writeFileSync(path.join(repo, '.memory', 'project.json'), JSON.stringify({ metadata: { defaults: { project_id: 'own/prune-repo' } } }));
+  const orig = sp.pruneCandidates;
+  let seen = null;
+  sp.pruneCandidates = (a) => { seen = a; return { ok: true, days: a.days, historyFromTs: null, candidates: [] }; };
+  try {
+    const { createBrainServer } = await import(pathToFileURL(path.join(ROOT, 'servers', 'brain-server', 'lib', 'mcp-server.js')).href);
+    const server = createBrainServer({ pluginRoot: ROOT, mode: 'http' });
+    server._setSessionRoots([os.tmpdir()]); // some OTHER session's folder
+    const r = await server.dispatch('curation_prune_unused', { cwd: repo });
+    assert(!r.isError, r.content[0].text);
+    assertEq(seen.project, undefined, 'no folder-name key passed: shells-prune resolves the id key itself');
+    assertEq(sp.metricsProjectFor(seen.root, []), require('./lib/metrics-project.js').metricsKeyFor(repo), 'and that key is the project id key metrics.js writes under');
+  } finally { sp.pruneCandidates = orig; fs.rmSync(repo, { recursive: true, force: true }); }
+});
+
 test('dashboard prune (no session known): metrics key = nearest folder up to the repo top that has a metrics db', () => {
   const { metricsProjectFor } = require('./lib/shells-prune.js');
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-mpf-'));
