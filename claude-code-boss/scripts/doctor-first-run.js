@@ -48,14 +48,15 @@ function claim(file) {
 }
 
 /** The notice: what the doctor found, what it changed, how to undo — compact, one build. */
-function composeNotice({ key, results, fixes, audit, turnedOff = [] }) {
+function composeNotice({ key, results, fixes, audit, turnedOff = [], pluginRoot = process.env.CLAUDE_PLUGIN_ROOT || path.resolve(__dirname, '..') }) {
   const L = [`[DOCTOR] First run of build ${key}: full check done.`];
   // Said first and plainly: these were switched off for the user, and why (unused / never authenticated), and how to get each back.
   const off = turnedOff.filter((e) => TURNED_OFF_LABEL[e.kind]);
   if (off.length) {
     L.push(`ATTENTION — ${off.length} item(s) were switched off automatically to cut what every message costs (unused for ${audit && audit.days ? audit.days : 30} days, or never authenticated):`);
     for (const e of off) L.push(`  - ${TURNED_OFF_LABEL[e.kind]}: ${e.target} — ${e.why || 'no reason recorded'}`);
-    L.push('  Need one back? Open the dashboard → Home → "Switched off by the doctor" and press Undo on it (it is never switched off again), or undo everything with `node scripts/doctor.js --undo`.');
+    L.push('  Need one back? Open the dashboard → Home → "Switched off by the doctor" and press Undo on it (it is never switched off again), or undo everything with `node scripts/doctor.js --undo`. The same card has the switch that stops the doctor from switching things off on its own: the final say is the user\'s.');
+    L.push('  INSTRUCTION FOR YOU (the agent): in your first reply, in the user\'s language, tell the user plainly what was switched off and why (the list above), that the doctor acts but the control is theirs (undo one by one, or turn the automatic switch-off off, both in the dashboard), and ASK whether they want to open the dashboard now to see it. If they say yes, run `node "' + path.join(pluginRoot, 'scripts', 'dashboard-open.js') + '"` yourself (do not ask them to type /dashboard) and give them the URL it prints; if it prints ok:false, show the error as it came. If they say no, drop it.');
   }
   if (audit && !audit.error) {
     const t = audit.totals;

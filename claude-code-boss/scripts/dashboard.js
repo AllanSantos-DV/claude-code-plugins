@@ -1442,6 +1442,24 @@ function getDoctorSwitchedOff(req, res) {
   }
 }
 
+function getDoctorConfig(req, res) {
+  try { json(res, require('./lib/hooks-config.js').getFixedCost()); } catch (err) {
+    console.error(`[DASHBOARD] /api/doctor/config failed: ${err.message}`);
+    fail(res, err.message, 500);
+  }
+}
+
+async function saveDoctorConfig(req, res) {
+  let body;
+  try { body = JSON.parse((await readBody(req)) || '{}'); } catch (err) { return fail(res, `invalid JSON body: ${err.message}`, 400); }
+  try {
+    json(res, { ok: true, config: require('./lib/hooks-config.js').saveFixedCost(body) });
+  } catch (err) {
+    console.error(`[DASHBOARD] /api/doctor/config (PUT) failed: ${err.message}`);
+    fail(res, err.message, 400);
+  }
+}
+
 async function postDoctorUndo(req, res) {
   let body;
   try { body = JSON.parse((await readBody(req)) || '{}'); } catch (err) { return fail(res, `invalid JSON body: ${err.message}`, 400); }
@@ -2453,6 +2471,8 @@ function handleAPI(req, res, url) {
   if (p === '/api/doctor' && m === 'GET') return getDoctor(req, res);
   if (p === '/api/doctor/switched-off' && m === 'GET') return getDoctorSwitchedOff(req, res);
   if (p === '/api/doctor/undo' && m === 'POST') return postDoctorUndo(req, res);
+  if (p === '/api/doctor/config' && m === 'GET') return getDoctorConfig(req, res);
+  if (p === '/api/doctor/config' && m === 'PUT') return saveDoctorConfig(req, res);
   if (p === '/api/brain/consolidate' && m === 'POST') return postBrainConsolidate(req, res, url);
   if (p === '/api/metrics/event-log' && m === 'GET') return getMetricsEventLog(req, res, url);
   if (p === '/api/metrics/cleanup' && m === 'POST') return postMetricsCleanup(req, res, url);
@@ -2576,4 +2596,4 @@ if (require.main === module) startDashboardServer();
 // exported so a test can call it with a fake res ({writeHead,end}) and assert
 // on the exact JSON it serializes — otherwise a bug in byokSafe (e.g. `x || null`
 // silently turning a valid `0` into `null`) would never be caught by any test.
-module.exports = { getDoctorSwitchedOff, postDoctorUndo, writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField, postPluginUpdate, getProjectMarker, saveProjectMarker };
+module.exports = { getDoctorSwitchedOff, postDoctorUndo, getDoctorConfig, saveDoctorConfig, writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField, postPluginUpdate, getProjectMarker, saveProjectMarker };
