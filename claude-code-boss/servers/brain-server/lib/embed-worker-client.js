@@ -11,6 +11,7 @@
 import { Worker } from 'node:worker_threads';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { WORKER_RESOURCE_LIMITS } from './daemon-common.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -23,7 +24,7 @@ const SHUTDOWN_DRAIN_MS = 30000;
 // `guard` (lib/embedder-guard.js ensureGuard, started at daemon boot) tests the local model in a
 // throwaway process first: the worker is not spawned — and the model not loaded in this
 // process — until it settles, so a native abort there forces keyword-only instead of a crash.
-export function createEmbedWorker({ pluginRoot, initTimeoutMs = 120000, callTimeoutMs = 30000, workerPath, shutdownDrainMs = SHUTDOWN_DRAIN_MS, guard = null } = {}) {
+export function createEmbedWorker({ pluginRoot, initTimeoutMs = 120000, callTimeoutMs = 30000, workerPath, shutdownDrainMs = SHUTDOWN_DRAIN_MS, guard = null, resourceLimits = WORKER_RESOURCE_LIMITS } = {}) {
   const guarded = guard ? Promise.resolve().then(guard).catch((err) => { console.error(`[embed-worker] guard failed: ${err.message}`); }) : null;
   let worker = null;
   let inWorker = 0;          // messages posted to the CURRENT worker and not yet answered
@@ -39,7 +40,7 @@ export function createEmbedWorker({ pluginRoot, initTimeoutMs = 120000, callTime
   }
 
   function spawn() {
-    const w = new Worker(workerPath || path.join(__dirname, 'embed-worker.js'), { workerData: { pluginRoot } });
+    const w = new Worker(workerPath || path.join(__dirname, 'embed-worker.js'), { workerData: { pluginRoot }, resourceLimits });
     w.on('message', (msg) => {
       if (worker === w && inWorker > 0 && --inWorker === 0 && drained) drained();
       const p = pending.get(msg.id);

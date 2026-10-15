@@ -10,6 +10,7 @@
 import { Worker } from 'node:worker_threads';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { WORKER_RESOURCE_LIMITS } from './daemon-common.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -19,7 +20,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // the worker in between, it is recycled; the death path re-queues background jobs once.
 const STALL_TIMEOUTS = 3;
 
-export function createHookWorker({ pluginRoot, callTimeoutMs = 60000, stallTimeouts = STALL_TIMEOUTS, workerPath, onBackgroundDone } = {}) {
+export function createHookWorker({ pluginRoot, callTimeoutMs = 60000, stallTimeouts = STALL_TIMEOUTS, workerPath, onBackgroundDone, resourceLimits = WORKER_RESOURCE_LIMITS } = {}) {
   if (!pluginRoot) throw new Error('createHookWorker: pluginRoot is required');
   let worker = null;
   let nextId = 1;
@@ -43,7 +44,7 @@ export function createHookWorker({ pluginRoot, callTimeoutMs = 60000, stallTimeo
 
   function ensure() {
     if (worker) return worker;
-    const w = new Worker(workerPath || path.join(__dirname, 'hook-worker.js'), { workerData: { pluginRoot } });
+    const w = new Worker(workerPath || path.join(__dirname, 'hook-worker.js'), { workerData: { pluginRoot }, resourceLimits });
     spawned++;
     w.on('message', (msg) => {
       silentTimeouts = 0;

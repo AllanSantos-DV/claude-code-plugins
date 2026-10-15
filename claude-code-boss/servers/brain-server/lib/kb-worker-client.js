@@ -25,6 +25,7 @@ import { Worker } from 'node:worker_threads';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { WORKER_RESOURCE_LIMITS } from './daemon-common.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -115,7 +116,7 @@ export function createKbWorkerPool({ pluginRoot, callTimeoutMs = 30000, poolSize
     // worker starts without per-project init state — each caller sequence begins with
     // init({project}) anyway (see makeClient below).
     function spawnWorker() {
-      const w = new Worker(path.join(__dirname, 'kb-worker.js'), { workerData: { pluginRoot } });
+      const w = new Worker(path.join(__dirname, 'kb-worker.js'), { workerData: { pluginRoot }, resourceLimits: WORKER_RESOURCE_LIMITS });
       w.on('message', (msg) => {
         const p = pending.get(msg.id);
         if (!p) return;
