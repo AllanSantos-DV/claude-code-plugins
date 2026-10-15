@@ -6981,6 +6981,24 @@ test('command-signature: `VAR=$(cat <<EOF)` never signs as a bare heredoc digest
   assertEq(cmdSig.canonicalSig(s), s, 'idempotent');
 });
 
+test('curation-guard.sweepInlineScripts: varre no maximo 1x a cada 10 min por pasta (era readdir+stat de ~400 arquivos em TODA reescrita, na fast lane)', () => {
+  const cg = require('./curation-guard.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-inline-sweep-'));
+  try {
+    const old = (Date.now() - 2 * 86400e3) / 1000;
+    const mk = (n) => { const p = path.join(dir, n); fs.writeFileSync(p, 'x'); fs.utimesSync(p, old, old); return p; };
+    const a = mk('a.sh');
+    const t0 = Date.now();
+    assertEq(cg.sweepInlineScripts(dir, t0), true);
+    assertEq(fs.existsSync(a), false, 'stale file removed');
+    const b2 = mk('b.sh');
+    assertEq(cg.sweepInlineScripts(dir, t0 + 60e3), false, 'within 10 min: no scan');
+    assertEq(fs.existsSync(b2), true);
+    assertEq(cg.sweepInlineScripts(dir, t0 + 11 * 60e3), true, 'after 10 min: scans again');
+    assertEq(fs.existsSync(b2), false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
 // ─── oneoff-store ─────────────────────────────────────────────────────────────
 const oneoff = require(path.join(SCRIPTS, 'lib', 'oneoff-store.js'));
 const freshDataDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-oneoff-'));
