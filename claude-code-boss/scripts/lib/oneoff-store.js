@@ -24,6 +24,9 @@ const DAY_MS = 86400_000;
 const MAX_SEEN = 50;        // cap of retained per-entry occurrence timestamps
 const MAX_SESSIONS = 25;
 const MAX_ALIASES = 40;
+// Entries kept per project. ~97% of real entries are single sightings of a noisy command that never
+// came back (13.4k of 13.9k on one machine, 3.2k in one project); each costs ~475 bytes on every load.
+const MAX_ENTRIES = 500;
 
 function sanitize(s) {
   return String(s || '').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 60);
@@ -241,6 +244,7 @@ function touch(dataDir, projectKey, command, { sessionId, now = Date.now(), wind
   pushCapped(entry.seen, now, MAX_SEEN);
   entry.lastSeen = now;
   if (sessionId && !entry.sessions.includes(sessionId)) pushCapped(entry.sessions, sessionId, MAX_SESSIONS);
+  if (created) evictOverCap(store, { now, windowDays, keep: entry.sig });
   save(dataDir, projectKey, store);
   return { matched: true, created, oneHit: !!entry.oneHit, count: countInWindow(entry, now, windowDays), sig: entry.sig, ceilingExempt: isCeilingExempt(entry.sig) };
 }
@@ -335,7 +339,26 @@ function mark(dataDir, projectKey, { aliases = [], sigs = [], sessionId, now = D
   return out;
 }
 
-/** Remove entries with no occurrence/marking inside the window (cold). #removed. */
+/**
+ * Keep at most `max` entries: evicts the least recurring (windowed count), then the least recently
+ * seen. A one-hit marking is never evicted (dropping it would bring its Stop block back), nor `keep`
+ * (the entry just created). An evicted command seen again restarts its count at 1 — only commands
+ * that recur less than everything kept, i.e. the single sightings, are in reach.
+ * @returns {number} entries removed
+ */
+function evictOverCap(store, { now = Date.now(), windowDays = 90, keep = null, max = MAX_ENTRIES } = {}) {
+  const keys = Object.keys(store.entries);
+  if (keys.length <= max) return 0;
+  const victims = keys
+    .filter((k) => k !== keep && !store.entries[k].oneHit)
+    .map((k) => ({ k, count: countInWindow(store.entries[k], now, windowDays), last: store.entries[k].lastSeen || 0 }))
+    .sort((a, b) => a.count - b.count || a.last - b.last)
+    .slice(0, keys.length - max);
+  for (const v of victims) delete store.entries[v.k];
+  return victims.length;
+}
+
+/** Remove entries with no occurrence/marking inside the window (cold), then apply the cap. #removed. */
 function prune(dataDir, projectKey, { now = Date.now(), windowDays = 90 } = {}) {
   const store = load(dataDir, projectKey);
   const cutoff = now - windowDays * DAY_MS;
@@ -345,6 +368,7 @@ function prune(dataDir, projectKey, { now = Date.now(), windowDays = 90 } = {}) 
     const fresh = (e.lastSeen && e.lastSeen >= cutoff) || (e.markedAt && e.markedAt >= cutoff);
     if (!fresh) { delete store.entries[key]; removed++; }
   }
+  removed += evictOverCap(store, { now, windowDays });
   if (removed) save(dataDir, projectKey, store);
   return removed;
 }
@@ -357,6 +381,8 @@ function summary(dataDir, projectKey) {
 }
 
 module.exports = {
+  evictOverCap,
+  MAX_ENTRIES,
   pruneOrphanKeys,
   resolveProjectKey, storePath, load, save,
   touch, mark, prune, summary, matchEntry, countInWindow, entryMatchesSig,
