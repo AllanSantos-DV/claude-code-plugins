@@ -39,8 +39,11 @@ Relatórios: `docs/research/checkup/` (local). Tudo abaixo marcado [x] tem teste
   e 3.088 ms no resume (n=4), contra 2.177/2.318 ms antes (n=109/55). O comando no transcript não diz o build. Remedir com n ≥ 30
   (`.claude/scripts/transcript-sessionstart.cjs`) antes de concluir melhora ou piora.
 - [ ] **P13 (proposta, não implementar sem o Allan):** expor `mechanicalCut`, `briefTailTokens` e `folderTtl` na Home do painel.
-- [ ] **Smoke `smoke-decision` desatualizado** (4 de 8 asserções falham já antes da mudança; movido para `smoke/plugin-smokes/`). Visto ao
-  rodá-lo depois de mover. Proposta: o smoke passa `session_id` (o decision-promote só mostra a entrada da própria sessão desde a 3.x).
+- [x] **Smoke `smoke-decision` desatualizado** (4 de 8 asserções falham já antes da mudança; movido para `smoke/plugin-smokes/`). Visto ao
+  rodá-lo depois de mover. Eram duas causas: o smoke não passava `session_id` (o decision-promote só mostra a entrada da própria sessão
+  desde a 3.x) e um `CLAUDE_PLUGIN_DATA` vazio segue o ponteiro da pasta ativa sob o HOME até a pasta real, então os hooks gravavam fora
+  da pasta do smoke. Agora o smoke passa `session_id` e aponta HOME/USERPROFILE para uma pasta temporária (como o `test-units`): 8 de 8.
+  O smoke é local (`smoke/` fica fora do git). Conferido: nenhuma sobra dele em `decision-pending.json` da pasta real.
 - [x] **Rascunhos de skill com descrição de OUTRA lição**: `draftSkillMd` usa o `summary` da entrada, que o merge de dedup sobrescreve com o
   da lição absorvida (visto nos 4 rascunhos exportados: título de uma, descrição de outra). Corrigido na origem, nos dois caminhos do
   `capture_lesson` (local `kbStore.merge` e servidor mcp-memory): o merge só sobe recorrência e confiança, e o sobrevivente fica com o
