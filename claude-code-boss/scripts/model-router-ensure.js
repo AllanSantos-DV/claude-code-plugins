@@ -104,8 +104,7 @@ const SETTINGS_FILE  = path.join(os.homedir(), '.claude', 'settings.json');
 function ts() { return new Date().toISOString(); }
 function appendLog(msg) {
   try {
-    fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
-    fs.appendFileSync(LOG_FILE, `[${ts()}] [ENSURE] ${msg}\n`);
+    require('./lib/log-rotate.js').appendRotating(LOG_FILE, `[${ts()}] [ENSURE] ${msg}`);
   } catch (_) { /* */ }
 }
 function log(msg) { process.stderr.write(`[model-router] ${msg}\n`); appendLog(msg); }
