@@ -17825,13 +17825,22 @@ test('leitores: curation summary conta bloqueios do Stop, correcao de escape (br
   assertEq(s.shellEscape, { rewritten: 6, warned: 0, denied: 1 }, 'the daily summary of compacted rows keeps the total');
   assertEq(s.detectorErrors, { 'verify-nudge': 2 });
   const { aggregateCaptureRate } = require('./lib/capture-rate.js');
+  const off = (w, extra) => ({ eventName: 'capture.offered', payload: { windowId: w, ackTracked: true, ...extra }, ts: 1 });
   const f = aggregateCaptureRate([
-    { eventName: 'capture.offered', payload: {}, ts: 1 }, { eventName: 'capture.offered', payload: {}, ts: 2 },
-    { eventName: 'capture.acked', payload: { outcome: 'none' }, ts: 3 }, { eventName: 'capture.acked', payload: { outcome: 'captured' }, ts: 4 },
-    { eventName: 'capture.reoffered', payload: {}, ts: 5 }, { eventName: 'capture.relented', payload: {}, ts: 6 },
+    off('a'), off('b'), off('c'), off('d'),
+    { eventName: 'capture.acked', payload: { windowId: 'a', outcome: 'none' }, ts: 3 }, { eventName: 'capture.acked', payload: { windowId: 'b', outcome: 'captured' }, ts: 4 },
+    { eventName: 'capture.reoffered', payload: { windowId: 'c' }, ts: 5 },
+    // one stuck window relented on every Stop before the relent fix: still ONE offer given up
+    { eventName: 'capture.relented', payload: { windowId: 'c' }, ts: 6 }, { eventName: 'capture.relented', payload: { windowId: 'c' }, ts: 7 },
     { eventName: 'capture.adopted', payload: { cycles: 7 }, ts: 7 },
   ]).funnel;
-  assertEq(f, { offered: 2, acked: 2, ackedNone: 1, relented: 1, reoffered: 1, adopted: 1, adoptedCycles: 7 });
+  assertEq(f, { offered: 4, untracked: 0, acked: 2, ackedNone: 1, relented: 1, open: 1, reoffered: 1, adopted: 1, adoptedCycles: 7 });
+  // offers from a build that never recorded the answer (no ackTracked) are not read as unanswered
+  const old = aggregateCaptureRate([
+    { eventName: 'capture.offered', payload: { windowId: 'x' }, ts: 1 }, { eventName: 'capture.offered', payload: { windowId: 'y' }, ts: 2 },
+    { eventName: 'capture.relented', payload: { windowId: 'x' }, ts: 3 }, off('z'), { eventName: 'capture.acked', payload: { windowId: 'z', outcome: 'none' }, ts: 4 },
+  ]).funnel;
+  assertEq([old.offered, old.untracked, old.acked, old.relented, old.open], [3, 2, 1, 0, 0]);
   const dash = fs.readFileSync(path.join(ROOT, 'scripts', 'dashboard.js'), 'utf8');
   assert(/CAPTURE_FUNNEL_EVENTS = \['capture\.offered', 'capture\.acked', 'capture\.relented', 'capture\.reoffered', 'capture\.adopted'\]/.test(dash), 'capture-rate route reads the funnel events');
   const ui = fs.readFileSync(path.join(ROOT, 'dashboard', 'index.html'), 'utf8');
@@ -20893,6 +20902,7 @@ test('capture-dispatch: emits capture.offered metric on fire', () => {
   assert(offered, 'capture.offered emitted');
   assertEq(offered.p.cycles, 6, 'cycles in payload');
   assert(typeof offered.p.model === 'string', 'model in payload');
+  assert(offered.p.ackTracked === true && /^[0-9a-f]{24}$/.test(offered.p.windowId), 'the offer says its outcome is recorded (the funnel counts only those)');
 });
 
 test('capture-dispatch: over-budget window is offered in chunks, never skipping cycles (regression)', () => {

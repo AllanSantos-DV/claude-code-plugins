@@ -4300,7 +4300,8 @@ async function loadProfileImpact() {
 
 function captureFunnelLine(f) {
   if (!f || !f.offered) return '';
-  return `<p class="text-muted" style="margin-top:.4rem">Review offers: ${f.offered} offered · ${f.acked} answered (${f.ackedNone} with nothing to capture) · ${f.relented} given up · ${f.reoffered} re-asked · ${f.adopted} adopted from ended sessions (${f.adoptedCycles} cycles).</p>`;
+  const untracked = f.untracked ? ` · ${f.untracked} from builds that did not record the answer (not counted)` : '';
+  return `<p class="text-muted" style="margin-top:.4rem">Review offers: ${f.offered - (f.untracked || 0)} offered · ${f.acked} answered (${f.ackedNone} with nothing to capture) · ${f.relented} given up · ${f.open || 0} still open · ${f.reoffered} re-asked · ${f.adopted} adopted from ended sessions (${f.adoptedCycles} cycles)${untracked}.</p>`;
 }
 
 async function loadCaptureRate() {

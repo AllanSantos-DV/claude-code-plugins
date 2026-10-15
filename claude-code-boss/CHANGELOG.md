@@ -11,6 +11,9 @@ Check-up do motor (2026-10-15). Cada item tem teste; os números são do dado re
   pedir um turno só para ela.
 - **Painel mostra o que antes era só gravado:** bloqueios de curadoria no Stop, correções de escape do Bash, detectores que falharam e
   o funil da revisão de captura. O registro de comandos de uso único tem teto por projeto.
+- **Funil da revisão de captura conta por oferta.** Ele mostrava "2 de 280 respondidas" porque comparava 30 dias de ofertas com a
+  resposta, que só passou a ser registrada nesta versão; nos transcripts, 287 de 296 ofertas foram respondidas. Agora cada oferta
+  conta uma vez (respondida, desistida ou aberta) e as ofertas de versões que não registravam a resposta aparecem à parte.
 - **Painel de curadoria mostra os projetos.** A lista vinha sempre vazia (lia uma pasta que a curadoria não usa mais); agora vem
   das pastas de curadoria de cada projeto, com o número de scripts.
 - **Recall não trava mais o prompt.** O prazo de 8 s cancela a requisição de verdade (o socket fecha; antes ela seguia até 60 s
