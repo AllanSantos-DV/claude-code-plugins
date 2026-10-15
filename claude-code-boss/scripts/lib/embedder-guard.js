@@ -146,9 +146,9 @@ function recordOutcome(data, { model, node }, result, now = new Date()) {
   }
   if (!rec) return null;
   fs.mkdirSync(data, { recursive: true });
-  const file = guardFile(data);
-  fs.writeFileSync(`${file}.tmp`, JSON.stringify(rec, null, 2));
-  fs.renameSync(`${file}.tmp`, file);
+  // Unique temp + retried rename: a FIXED `.tmp` name let two daemons booting at once
+  // write the same temp file and publish each other's half.
+  require('./atomic-write.js').writeFileAtomic(guardFile(data), JSON.stringify(rec, null, 2));
   return rec;
 }
 

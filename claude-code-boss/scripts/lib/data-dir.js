@@ -61,31 +61,10 @@ function activePointerPath() {
   return path.join(globalDir(), 'active-data-dir.json');
 }
 
-// Tear-free write: unique temp sibling + rename. Inlined here (not lib/atomic-
-// write.js) so this hot, module-load-critical resolver stays dependency-light
-// (path/os/fs only). rename(2) can fail TRANSIENTLY on Windows under the
-// SessionStart hook fan-out (MoveFileEx sharing violation → EPERM/EACCES/EBUSY);
-// retry those a bounded number of times so a contended pointer publish isn't
-// dropped. Never called on the read path.
-const _TRANSIENT_RENAME = new Set(['EPERM', 'EACCES', 'EBUSY', 'ENOTEMPTY']);
-
-function _writeJsonAtomic(file, obj) {
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  fs.writeFileSync(tmp, JSON.stringify(obj));
-  try {
-    for (let attempt = 1; ; attempt++) {
-      try { fs.renameSync(tmp, file); return; }
-      catch (err) {
-        if (attempt >= 20 || !_TRANSIENT_RENAME.has(err && err.code)) throw err;
-        Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, Math.min(2 * attempt, 25));
-      }
-    }
-  } catch (err) {
-    try { fs.unlinkSync(tmp); } catch (e) { void e; /* orphan temp already gone */ }
-    throw err;
-  }
-}
+// Tear-free pointer publish (temp + rename, retried on Windows' transient EPERM/EBUSY
+// under the SessionStart fan-out). atomic-write.js needs only fs/path, so the resolver
+// stays dependency-light. Never called on the read path.
+const { writeJsonAtomic: _writeJsonAtomic } = require('./atomic-write.js');
 
 /**
  * SQLite-free proxy for "how much KB data lives under `dir`": the total bytes of
