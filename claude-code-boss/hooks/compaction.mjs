@@ -179,11 +179,35 @@ async function reportFolder($, ctx, { end = false } = {}) {
   if (ctx.folderTtl && ctx.folderTtl.action === 'error') $.ui.log(`compaction: folder TTL not managed: ${ctx.folderTtl.detail}`);
 }
 
+/**
+ * Update "past the threshold" from the calls an observation just recorded. The size is the LAST REAL API call
+ * (input + cache read + cache write), not usage(): a prompt the gate held closes a turn with no call, and usage()
+ * then still says the pre-cut size (E2E 14/10: a cut session re-claimed "above" and kept its folder at 5m). No new
+ * call → the last verdict stands. A real call also ends the post-cut wait (awaitCallAfterCut).
+ */
+async function folderFromReply($, ctx, reply) {
+  if (!reply || !(reply.recorded > 0)) return;
+  ctx.awaitCallAfterCut = false; // a real call after the cut: readings are fresh
+  const o = reply.observed;
+  if (!o || !ctx.folder || ctx.config.folderTtl === false) return;
+  try {
+    const { thr } = await currentWindow($, ctx);
+    const tokens = (Number(o.input) || 0) + (Number(o.read) || 0) + (Number(o.write) || 0);
+    ctx.folderAbove = thr.thresholdTokens != null && tokens >= thr.thresholdTokens;
+  } catch (err) { $.ui.log(`compaction: folder threshold check failed: ${String(err && err.message ? err.message : err)}`); }
+}
+
+// Every 2 min: pick up the calls that landed in the transcript after their turn ended (interactive: the answer's
+// row arrives after turn.complete, so the turn-end look often sees nothing new — E2E 14/10: the switch waited a turn),
+// then report — which also keeps an idle, open session counted in its folder.
 function startHeartbeat($, ctx) {
   if (ctx.heartbeat || !ctx.interactive || ctx.config.folderTtl === false) return;
   ctx.heartbeat = true;
   const beat = () => $.clock.after(FOLDER_HEARTBEAT_MS, () => {
-    reportFolder($, ctx).catch((err) => $.ui.log(`compaction: folder heartbeat failed: ${String(err && err.message ? err.message : err)}`)).finally(beat);
+    (async () => {
+      if (ctx.transcriptPath && !ctx.busy) { const { reply } = await observeCalls($, ctx); await folderFromReply($, ctx, reply); }
+      await reportFolder($, ctx);
+    })().catch((err) => $.ui.log(`compaction: folder heartbeat failed: ${String(err && err.message ? err.message : err)}`)).finally(beat);
   });
   beat();
 }
@@ -227,20 +251,9 @@ async function afterTurn($, ctx) {
     const settle = ctx.pendingSettle;
     ctx.pendingSettle = null;
     const { id, reply } = await observeCalls($, ctx);
-    if (reply && reply.recorded > 0) ctx.awaitCallAfterCut = false; // a real call after the cut: readings are fresh
+    await folderFromReply($, ctx, reply);
     if (ctx.interactive && ctx.config.folderTtl !== false && ctx.folder) {
-      try {
-        // Past the threshold = the size of the LAST REAL API call (input + cache read + cache write), not usage():
-        // a prompt the gate held closes a turn with no call, and usage() then still says the pre-cut size (E2E
-        // 14/10: a cut session re-claimed "above" and kept its folder at 5m). No new call → keep the last verdict.
-        const o = reply && reply.recorded > 0 ? reply.observed : null;
-        if (o) {
-          const { thr } = await currentWindow($, ctx);
-          const tokens = (Number(o.input) || 0) + (Number(o.read) || 0) + (Number(o.write) || 0);
-          ctx.folderAbove = thr.thresholdTokens != null && tokens >= thr.thresholdTokens;
-        }
-        await reportFolder($, ctx);
-      } catch (err) {
+      try { await reportFolder($, ctx); } catch (err) {
         $.ui.log(`compaction: folder TTL report failed: ${String(err && err.message ? err.message : err)}`);
       }
       startHeartbeat($, ctx);
