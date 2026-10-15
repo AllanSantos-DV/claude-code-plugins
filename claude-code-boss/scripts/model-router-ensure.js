@@ -498,16 +498,23 @@ function clearSystemEnvVar(name) {
 // Remove QUALQUER resíduo global de versões antigas. Variáveis no nível User
 // vazam para outros apps (ex.: GitHub Copilot/hermes) e quebram o launch deles.
 // O roteamento NUNCA deve ser global — só dentro do Claude Code, via wrapper.
-function cleanupGlobalEnv() {
+// Nenhuma versão atual escreve essas variáveis: uma passada limpa basta, e o selo
+// dispensa os 2 spawns de PowerShell (~450 ms medidos; 3,7–5,3 s sob Application
+// Control) em todo SessionStart seguinte.
+const LEGACY_ENV_SEAL = path.join(globalDir(), 'legacy-env-clean.json');
+
+function cleanupGlobalEnv(sealFile = LEGACY_ENV_SEAL) {
+  if (fs.existsSync(sealFile)) return 'sealed';
+  let clean = true;
   const node = getSystemEnvVar('NODE_OPTIONS') || '';
   if (node.includes('model-router-patcher')) {
     log(`Self-heal: limpando NODE_OPTIONS global residual: "${node}"`);
-    clearSystemEnvVar('NODE_OPTIONS');
+    clean = clearSystemEnvVar('NODE_OPTIONS') && clean;
   }
   const base = getSystemEnvVar('ANTHROPIC_BASE_URL') || '';
   if (/127\.0\.0\.1|localhost/.test(base)) {
     log(`Self-heal: limpando ANTHROPIC_BASE_URL global residual: "${base}"`);
-    clearSystemEnvVar('ANTHROPIC_BASE_URL');
+    clean = clearSystemEnvVar('ANTHROPIC_BASE_URL') && clean;
   }
   // Remove o patcher órfão do mecanismo global antigo (inerte sem NODE_OPTIONS,
   // mas removido para higiene total — nada mais o referencia no design wrapper-only).
@@ -520,6 +527,12 @@ function cleanupGlobalEnv() {
   } catch (e) {
     log(`AVISO: não foi possível remover patcher órfão: ${e.message}`);
   }
+  if (!clean) return 'dirty';
+  try {
+    fs.mkdirSync(path.dirname(sealFile), { recursive: true });
+    fs.writeFileSync(sealFile, JSON.stringify({ cleanAt: new Date().toISOString() }) + '\n');
+  } catch (e) { log(`AVISO: selo do ambiente legado não gravado: ${e.message}`); }
+  return 'cleaned';
 }
 
 // ── settings.json (escopo Claude Code) ───────────────────────────────────────
@@ -1079,4 +1092,4 @@ module.exports = { run, mergeRouterConfig, readConfig, healthCheck, probeAlive, 
   resolveAutoCompactWindow, planEnableEnv, planDisableEnv, enableSettingsRouting, disableSettingsRouting,
   contextTuningEnabled, planTuningEnv, planTuningRemoval, applySettingsTuning, applyCostTuning, planCostTuningNow,
   // servesThisBuild/processCommandLine/normPath exportados p/ os testes de troca-de-build no boot.
-  servesThisBuild, processCommandLine, normPath, sessionGateway, isOurProxyUrl };
+  servesThisBuild, processCommandLine, normPath, sessionGateway, isOurProxyUrl, cleanupGlobalEnv };
