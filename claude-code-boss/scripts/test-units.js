@@ -3103,6 +3103,36 @@ test('metrics-store: recordMetric inserts + getMetricsSummary aggregates', () =>
   }
 });
 
+test('metrics-store: hooks de projetos intercalados reusam a conexao de cada projeto (LRU de 8), cada linha cai no banco certo e close() solta todos', () => {
+  delete require.cache[require.resolve('./lib/metrics-store.js')];
+  const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ms-lru-'));
+  process.env.CLAUDE_PLUGIN_DATA = dir;
+  const store = require('./lib/metrics-store.js');
+  try {
+    if (!store.init({ project: 'lru-a' })) return; // no SQLite backend on this machine
+    const dbA = store._getDbForTests();
+    store.recordMetric('lesson.captured', { n: 1 }, 's');
+    store.init({ project: 'lru-b' }); store.recordMetric('lesson.captured', { n: 2 }, 's');
+    store.init({ project: 'lru-a' });
+    assert(store._getDbForTests() === dbA, 'back to a: same connection, not a reopen');
+    store.recordMetric('lesson.captured', { n: 3 }, 's');
+    assertEq(store.getEventLog({ eventName: 'lesson.captured' }).map((r) => r.payload.n).sort(), [1, 3]);
+    store.init({ project: 'lru-b' });
+    assertEq(store.getEventLog({ eventName: 'lesson.captured' }).map((r) => r.payload.n), [2]);
+    for (let i = 0; i < 10; i++) store.init({ project: 'lru-x' + i });
+    assertEq(store._openCountForTests(), 8, 'at most 8 open connections');
+    store.close();
+    assertEq(store._openCountForTests(), 0);
+    fs.rmSync(path.join(dir, 'metrics'), { recursive: true }); // throws EBUSY on Windows if any db stayed open
+  } finally {
+    store.close();
+    if (prevDataDir === undefined) delete process.env.CLAUDE_PLUGIN_DATA; else process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
+    delete require.cache[require.resolve('./lib/metrics-store.js')];
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('metrics-memo: um resultado so e reaproveitado enquanto os arquivos do projeto nao mudam (db, -wal, adopted.json); escrita invalida so o projeto escrito', () => {
   const { createMemo, dbSignature, bucketTs } = require('./lib/metrics-memo.js');
   delete require.cache[require.resolve('./lib/metrics-store.js')];
