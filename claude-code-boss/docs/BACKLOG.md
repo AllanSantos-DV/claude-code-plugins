@@ -37,7 +37,11 @@ Relatórios: `docs/research/checkup/` (local). Tudo abaixo marcado [x] tem teste
   respondida") e `capture-dispatch: emits capture.offered`. `docs/research/checkup/s4-capture-ack.txt`.
 - [ ] **SessionStart real do build novo, amostra pequena** (n=7 depois das 19:30Z de 15/10): dispatcher p50 de 2.954 ms no startup (n=3)
   e 3.088 ms no resume (n=4), contra 2.177/2.318 ms antes (n=109/55). O comando no transcript não diz o build. Remedir com n ≥ 30
-  (`.claude/scripts/transcript-sessionstart.cjs`) antes de concluir melhora ou piora.
+  (`.claude/scripts/transcript-sessionstart.cjs`) antes de concluir melhora ou piora. **4ª sessão (15/10 ~22:00Z):** o script agora
+  data o build de cada sessão pela linha do tempo dos backups do registro (`installed_plugins.json.bak.<ts>` = estado antes de cada
+  instalação). Ainda sem amostra: d9617389efbd startup n=3 (p50 4.190 ms), 53deb016d32c n=0; o recall depois do corte de 300 chars tem
+  5 consultas (1 timeout, p50 3,5 s) e 1 evento de citação. A 1ª sessão de cada build roda o doctor completo (p95 de 10-14 s nos três
+  últimos builds), então o p95 de um build só vale com n bem acima de 1. Remedir com uso real (`s4-remeasure.txt`).
 - [ ] **P13 (proposta, não implementar sem o Allan):** expor `mechanicalCut`, `briefTailTokens` e `folderTtl` na Home do painel.
 - [x] **Smoke `smoke-decision` desatualizado** (4 de 8 asserções falham já antes da mudança; movido para `smoke/plugin-smokes/`). Visto ao
   rodá-lo depois de mover. Eram duas causas: o smoke não passava `session_id` (o decision-promote só mostra a entrada da própria sessão
