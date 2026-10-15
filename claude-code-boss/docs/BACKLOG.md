@@ -17,6 +17,10 @@ Relatórios: `docs/research/checkup/` (local). Tudo abaixo marcado [x] tem teste
   shells-prune, router.log, eventos (curation.stop.*, capture.acked/adopted, origem do lesson.captured), código morto e duplicações, motor (passo 1).
 - [x] Lixo de testes na pasta real de dados (`kbw-probe-*` ×8, `smoke-project-a/b`, `__kb-worker-smoke-test*__`, todos de 2026-09-21..23) apagado.
 - [x] Achado na hora: `test-hooks` file-edit-detect afirmava o journal sempre gravado (mudou em 9c26ce2); `stop-dispatcher` testes de sombra/gate atualizados.
+- [x] Achado e corrigido na hora: o gate saía com 1 **depois** de "1665 passed" (`[test-temp] cleanup failed (EPERM)` na raiz da pasta da suíte).
+  Não era um commit: intermitente (2 de 5 execuções na mesma HEAD; a pasta vazia apagava segundos depois). Causa: o Windows recusa remover
+  uma pasta que ainda é o cwd de um processo saindo (ou presa pelo antivírus) e o `rmSync` do Node 24 desiste na hora no EPERM da raiz.
+  `test-temp.cjs` repete por até 5 s e falha alto depois; teste em `test-temp-lifecycle.cjs` com um neto que segura o cwd por 700 ms (falhava, passa).
 - [ ] **P13 (proposta, não implementar sem o Allan):** expor `mechanicalCut`, `briefTailTokens` e `folderTtl` na Home do painel.
 - [ ] **Smoke `smoke-decision` desatualizado** (4 de 8 asserções falham já antes da mudança; movido para `smoke/plugin-smokes/`). Visto ao
   rodá-lo depois de mover. Proposta: o smoke passa `session_id` (o decision-promote só mostra a entrada da própria sessão desde a 3.x).
