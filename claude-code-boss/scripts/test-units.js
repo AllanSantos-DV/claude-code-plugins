@@ -17103,6 +17103,103 @@ test('dashboard Home: card "Desativados pelo doctor" tem a lista, o Desfazer por
   assert(/loadSwitchedOff\(\);\n\}/.test(html.replace(/\r\n/g, '\n')), 'carrega junto com a Home');
 });
 
+const SMART_YAML = [
+  'profile:', '  source: model', 'code:',
+  '  - path: claude-code-boss/scripts/doctor.js', '    lines: 549-720', '    score: 0.66', '    snippet: "x"',
+  '  - path: claude-code-boss/scripts/gone.js', '    lines: 1-5', '    score: 0.5',
+  'test:', '  - path: claude-code-boss/scripts/test-units.js', '    lines: 3-4', '    score: 0.4',
+  'doc:', '  - path: docs/note.md', '    lines: 2', '    score: 0.3',
+].join('\n');
+
+test('context-bundle.parseSmartHits: code/test/doc com caminho, faixa de linhas e score', () => {
+  const cb = require('./lib/context-bundle.js');
+  const h = cb.parseSmartHits(SMART_YAML);
+  assertEq(h.code.map((x) => [x.path, x.start, x.end, x.score]), [['claude-code-boss/scripts/doctor.js', 549, 720, 0.66], ['claude-code-boss/scripts/gone.js', 1, 5, 0.5]]);
+  assertEq(h.test.map((x) => [x.start, x.end]), [[3, 4]]);
+  assertEq(h.doc.map((x) => [x.path, x.start, x.end]), [['docs/note.md', 2, 2]], 'uma linha so: inicio = fim');
+  assertEq(cb.parseSmartHits(''), { code: [], test: [], doc: [] });
+});
+
+test('context-bundle.buildBundle: junta Smart Tool + mapas + memoria em uma chamada; cada fonte que falha aparece em notes; indice velho e dito; o orcamento corta pela cauda', async () => {
+  const cb = require('./lib/context-bundle.js');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-ctxb-'));
+  try {
+    const lines = (n) => Array.from({ length: n }, (_, i) => `line ${i + 1} doctor first run`).join('\n');
+    fcWrite(path.join(root, 'claude-code-boss/scripts/doctor.js'), lines(800));
+    fcWrite(path.join(root, 'claude-code-boss/scripts/test-units.js'), lines(10));
+    fcWrite(path.join(root, 'docs/note.md'), lines(4));
+    fcWrite(path.join(root, 'docs/maps/doctor.md'), '# Task: doctor first run\n\n## Decisions\nthe doctor first run notice lists what it switched off\nsecond doctor decision\n');
+    fcWrite(path.join(root, 'docs/maps/other.md'), '# unrelated\nnothing here\n');
+    const memory = async () => ({ entries: 1, text: 'MEMORY: autoFix stays on' });
+    const b = await cb.buildBundle({ theme: 'doctor first run notice switched off', root, deps: { smartSearch: async () => cb.parseSmartHits(SMART_YAML), memory } });
+    assertEq(b.files.sort(), ['claude-code-boss/scripts/doctor.js', 'claude-code-boss/scripts/test-units.js', 'docs/maps/doctor.md', 'docs/note.md'], 'so arquivos que existem; o mapa que casa entra, o outro nao');
+    assert(/## \[code\] claude-code-boss\/scripts\/doctor\.js:549-588 \(range runs to 720\)/.test(b.text), `so as primeiras 40 linhas da faixa, dizendo que ela e maior: ${b.text.slice(0, 200)}`);
+    assertEq(cb.readExcerpt(root, { path: 'docs/note.md', start: 50, end: 60 }, 40).stale.includes('past the end of the file (4 lines): stale index'), true, 'faixa alem do fim do arquivo: indice velho, nunca um trecho vazio');
+    assert(/\[map\] docs\/maps\/doctor\.md/.test(b.text) && /MEMORY: autoFix stays on/.test(b.text), 'mapa e memoria no mesmo pacote');
+    assert(b.notes.some((n) => /gone\.js is in the index but not on disk/.test(n)), `indice velho dito: ${b.notes}`);
+    // a source that fails is named, the rest still answers
+    const part = await cb.buildBundle({ theme: 'doctor first run', root, deps: { smartSearch: async () => { throw new Error('connect ECONNREFUSED 127.0.0.1:8765'); }, memory: async () => { throw new Error('daemon down'); } } });
+    assert(part.notes.some((n) => /code\/docs unavailable — connect ECONNREFUSED/.test(n)) && part.notes.some((n) => /memory unavailable — daemon down/.test(n)), `fontes que falham: ${part.notes}`);
+    assert(part.files.includes('docs/maps/doctor.md'), 'o mapa ainda responde');
+    // budget: the tail goes first and it is said
+    const small = await cb.buildBundle({ theme: 'doctor first run notice switched off', root, deps: { smartSearch: async () => cb.parseSmartHits(SMART_YAML), memory }, limits: { maxTokens: 120 } });
+    assert(small.tokens <= 120 || small.sections.length === 1, `cabe no orcamento: ${small.tokens}`);
+    assert(small.notes.some((n) => /dropped .* to fit 120 tokens/.test(n)) && small.sections[0].path === 'claude-code-boss/scripts/doctor.js', 'cortou pela cauda e disse');
+    let threw = null; try { await cb.buildBundle({ theme: 'ab', root }); } catch (err) { threw = err.message; }
+    assert(/at least 3 characters/.test(threw || ''), 'tema vazio falha alto');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('context-bundle.smartSearch / mcpCallTool: handshake MCP, job pendente e polling, erro do servidor sai alto, sem URL falha com a causa', async () => {
+  const cb = require('./lib/context-bundle.js');
+  const seen = [];
+  const calls = [];
+  const fetchImpl = async (url, opts) => {
+    const body = JSON.parse(opts.body); seen.push(body.method + (body.params && body.params.name ? `:${body.params.name}` : ''));
+    const rpc = (result) => ({ ok: true, status: 200, headers: { get: (h) => (h === 'content-type' ? 'application/json' : h === 'mcp-session-id' ? 's1' : null) }, text: async () => JSON.stringify({ jsonrpc: '2.0', id: body.id, result }) });
+    if (body.method === 'initialize') return rpc({ protocolVersion: '2025-03-26' });
+    if (body.method === 'notifications/initialized') return { ok: true, status: 202, headers: { get: () => null }, text: async () => '' };
+    return rpc({ content: [{ type: 'text', text: 'pong' }] });
+  };
+  assertEq(await cb.mcpCallTool('http://x/mcp', 'ping', {}, { fetchImpl }), 'pong');
+  assertEq(seen, ['initialize', 'notifications/initialized', 'tools/call:ping']);
+  let polls = 0;
+  const call = async (url, name, _args) => {
+    calls.push(name);
+    if (name === 'smart_search') return JSON.stringify({ status: 'pending', job_id: 'j1', phase: 'indexing' });
+    polls++;
+    return JSON.stringify(polls < 3 ? { status: 'pending', job_id: 'j1' } : { status: 'done', result: SMART_YAML });
+  };
+  const h = await cb.smartSearch('tema qualquer', '/r', { url: 'http://x/mcp', call, sleep: async () => {} });
+  assertEq(h.code.length, 2); assertEq(calls, ['smart_search', 'smart_search_result', 'smart_search_result', 'smart_search_result']);
+  assertEq((await cb.smartSearch('t', '/r', { url: 'http://x/mcp', call: async () => SMART_YAML })).doc.length, 1, 'resposta direta (nao-JSON) tambem serve');
+  let msg = null; try { await cb.smartSearch('t', '/r', { call }); } catch (err) { msg = err.message; }
+  assert(/Smart Tool URL unknown/.test(msg || ''), msg);
+  msg = null; try { await cb.smartSearch('t', '/r', { url: 'http://x/mcp', sleep: async () => {}, timeoutMs: -1, call: async () => JSON.stringify({ status: 'pending', job_id: 'j' }) }); } catch (err) { msg = err.message; }
+  assert(/still pending/.test(msg || ''), 'job que nao termina: erro, nao espera para sempre');
+  const bad = async () => ({ ok: false, status: 500, headers: { get: () => null }, text: async () => 'boom' });
+  msg = null; try { await cb.mcpCallTool('http://x/mcp', 'ping', {}, { fetchImpl: bad }); } catch (err) { msg = err.message; }
+  assert(/initialize: HTTP 500/.test(msg || ''), msg);
+});
+
+test('context-bundle CLI: a URL do Smart Tool vem do env ou do ~/.claude.json; sem tema, uso e codigo 2', async () => {
+  const cli = require('./context-bundle.js');
+  const home = fcTmp('ctxcli');
+  try {
+    assertEq(cli.discoverSmartToolUrl({ CCB_SMART_TOOL_URL: 'http://e/mcp' }, home), 'http://e/mcp');
+    assertEq(cli.discoverSmartToolUrl({}, home), null, 'sem ~/.claude.json: null (o bundle diz que o Smart Tool nao esta configurado)');
+    fcWrite(path.join(home, '.claude.json'), { mcpServers: { 'smart-tool': { type: 'http', url: 'http://127.0.0.1:8765/mcp' } } });
+    assertEq(cli.discoverSmartToolUrl({}, home), 'http://127.0.0.1:8765/mcp');
+    fcWrite(path.join(home, '.claude.json'), '{ not json');
+    let msg = null; try { cli.discoverSmartToolUrl({}, home); } catch (err) { msg = err.message; }
+    assert(/is unreadable/.test(msg || ''), 'arquivo ilegivel: erro, nao "sem Smart Tool"');
+    const origErr = process.stderr.write; let said = '';
+    process.stderr.write = (s) => { said += s; return true; };
+    let code; try { code = await cli.main([]); } finally { process.stderr.write = origErr; }
+    assertEq(code, 2); assert(/usage: node scripts\/context-bundle\.js/.test(said), said);
+  } finally { fs.rmSync(home, { recursive: true, force: true }); }
+});
+
 test('doctor: nenhum evento do NOSSO hooks.json cai como DESCONHECIDO', () => {
   // Guard anti-regressao: o plugin nunca mais pode alarmar contra si mesmo. O
   // veredito pode ser `warn` (temos eventos runtime-dependentes), mas NENHUM
