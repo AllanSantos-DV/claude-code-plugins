@@ -2399,11 +2399,24 @@ const TESTS = [
 
   // ── D2 verify-nudge ───────────────────────────────────────────────────────
   {
+    name: 'file-edit-detect  [standard: verify-nudge off → NO journal (nothing would drain it)]',
+    script: 'file-edit-detect.js',
+    payload: { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/foo.js' }, session_id: SESSION },
+    expect: { noError: true },
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-fed-std-')), CLAUDE_PLUGIN_ROOT: mkTempPluginRoot({ profile: 'standard' }) }),
+    validateWithEnv: (r, env) => {
+      const runtimeDir = path.join(env.CLAUDE_PLUGIN_DATA, '.runtime');
+      const files = fs.existsSync(runtimeDir) ? fs.readdirSync(runtimeDir).filter(f => f.startsWith('turn-verify-')) : [];
+      return files.length === 0 ? null : `expected no verify-journal under standard, got ${files.length}`;
+    },
+  },
+  {
     name: 'file-edit-detect  [PostToolUse Edit→journals edit]',
     script: 'file-edit-detect.js',
     payload: { hook_event_name: 'PostToolUse', tool_name: 'Edit', tool_input: { file_path: 'src/foo.js' }, session_id: SESSION },
     expect: { noError: true },
-    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-fed-')) }),
+    // dev: verify-nudge drains this journal, so it is written (9c26ce2: never otherwise).
+    extraEnv: () => ({ CLAUDE_PLUGIN_DATA: fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-fed-')), CLAUDE_PLUGIN_ROOT: mkTempPluginRoot({ profile: 'dev' }) }),
     validateWithEnv: (r, env) => {
       if (Object.keys(r.parsed || {}).length !== 0) return `expected {} (silent journaler), got: ${JSON.stringify(r.parsed)}`;
       const safe = SESSION.replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
