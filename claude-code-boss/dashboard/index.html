@@ -1836,7 +1836,7 @@ function navigate() {
   const hash = location.hash.slice(1) || 'home';
   document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.id === 'tab-' + hash));
   document.querySelectorAll('nav a').forEach(a => a.classList.toggle('active', a.hash === '#' + hash));
-  const fns = { home: loadHome, brain: loadBrain, skills: loadSkills, hooks: loadHooks, insights: loadInsights, logs: loadLogs, router: loadRouter };
+  const fns = { home: loadHomeIfStale, brain: loadBrain, skills: loadSkills, hooks: loadHooks, insights: loadInsights, logs: loadLogs, router: loadRouter };
   if (fns[hash]) fns[hash]();
 }
 window.addEventListener('hashchange', navigate);
@@ -1845,6 +1845,7 @@ window.addEventListener('load', () => { applyTheme(); applyI18n(); navigate(); }
 // ─── HTTP ─────────────────────────────────────────────────────────
 
 async function api(method, path, body) {
+  if (method !== 'GET') _homeLoadedAt = 0; // a write may change what Home shows: the next visit asks again
   const opts = { method, headers: {} };
   if (window.__DASHBOARD_TOKEN__) opts.headers['x-dashboard-token'] = window.__DASHBOARD_TOKEN__;
   if (body) { opts.headers['Content-Type'] = 'application/json'; opts.body = JSON.stringify(body); }
@@ -2665,9 +2666,21 @@ async function loadByokModelIds() {
 
 // ─── HOME ─────────────────────────────────────────────────────────
 
+// Home keeps its rendered cards while another tab is open, so coming back shows them at once; the data is only asked for again
+// after HOME_FRESH_MS (and the cards are replaced in place, never blanked first). A failed load is not remembered as fresh.
+const HOME_FRESH_MS = 30000;
+let _homeLoadedAt = 0;
+let _homeLoading = null;
+function loadHomeIfStale() {
+  if (_homeLoading || Date.now() - _homeLoadedAt < HOME_FRESH_MS) return;
+  _homeLoading = loadHome().finally(() => { _homeLoading = null; });
+}
+
 async function loadHome() {
   const el = document.getElementById('home-grid');
-  el.innerHTML = '<div class="spinner" style="margin:1rem auto"></div>';
+  if (!el.hasChildNodes()) el.innerHTML = '<div class="spinner" style="margin:1rem auto"></div>';
+  // None of these needs /api/status: start them now instead of behind it.
+  const panels = [loadValueSummary(), loadTuningRecs(), loadSwitchedOff()];
   try {
     const s = await api('GET', '/api/status');
     // Fetch real-time brain integration health (backend, connection, latency)
@@ -2694,10 +2707,9 @@ async function loadHome() {
         s.brain.projects.map(p => `<tr><td>${escapeHtml(p.project)}</td><td>${p.entries}</td></tr>`).join('') +
         '</tbody></table>';
     }
+    _homeLoadedAt = Date.now();
   } catch { el.innerHTML = '<p class="text-muted">Failed to load status.</p>'; }
-  loadValueSummary();
-  loadTuningRecs();
-  loadSwitchedOff();
+  await Promise.allSettled(panels);
 }
 
 async function loadTuningRecs() {
