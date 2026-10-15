@@ -29,9 +29,8 @@ const { USER_SENTINEL } = require('./scope-sanitizer.js');
 const ANCESTOR_TIMEOUT_MS = Number.parseInt(process.env.CCB_ANCESTOR_TIMEOUT_MS, 10) || 0;
 
 /**
- * 2.29.1 — cap the recall query. The daemon's embed + FTS cost grows with the query
- * length (a 4.7k-char prompt took 14 s in compose; the same prompt cut to 800 chars took
- * 1.1 s and kept the top hit). The head of the prompt carries the intent. `max<=0` = off.
+ * Cap the recall query: the server's compose cost grows with the query length (see
+ * brain-config `maxQueryChars`). The head of the prompt carries the intent. `max<=0` = off.
  */
 function capQuery(prompt, max) {
   const s = typeof prompt === 'string' ? prompt : '';
