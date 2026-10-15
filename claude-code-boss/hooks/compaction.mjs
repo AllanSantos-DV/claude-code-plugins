@@ -435,7 +435,7 @@ async function compact($, ctx, e, next) {
   const warm = ctx.busy || isCacheWarm({ now: t0, lastAnswerAt: ctx.lastAnswerAt, ttlMs: ttlInUse(ctx).ttlMs });
   const mechanical = isMechanicalCut({ warm, trigger: e.trigger, reason: ctx.compactReason });
   const choice = chooseCompaction({ plan, trigger: e.trigger, warm, mechanical }, ctx.config);
-  if (choice.kind === 'brief') return briefCut($, ctx, e, next, { plan, warm, t0, why: choice.why });
+  if (choice.kind === 'brief') return briefCut($, ctx, e, next, { plan, warm, mechanical, t0, why: choice.why });
   const ours = choice.ours;
   const byReason = {};
   for (const p of plan.pruned) byReason[p.reason] = (byReason[p.reason] || 0) + 1;
@@ -454,6 +454,8 @@ async function compact($, ctx, e, next) {
   }
   emit($, ctx, 'run', {
     trigger: e.trigger, reason, outcome: ours ? 'pruned' : 'native-summary', why: choice.why, cacheWarm: warm,
+    // what chose the cut: without these, "the brief never fires" and "no cold mechanical cut happened yet" read the same
+    mechanical, mechanicalCut: ctx.config.mechanicalCut !== false,
     messages: e.messages.length, charsBefore: plan.charsBefore, charsAfter: ours ? plan.charsAfter : null,
     charsCut: ours ? plan.charsBefore - plan.charsAfter : 0, ratio: Number(plan.ratio.toFixed(3)),
     prunedResults: plan.pruned.length, byReason, duplicatesDropped: plan.duplicatesDropped, verbatimTextIntact: plan.verbatimTextIntact,
@@ -482,12 +484,12 @@ async function leaveAbove($, ctx) {
  * session is below the threshold again, so the folder TTL is restored before the next request. A brief that
  * cuts nothing or would lose user text falls back to the engine's summary.
  */
-async function briefCut($, ctx, e, next, { plan, warm, t0, why }) {
+async function briefCut($, ctx, e, next, { plan, warm, mechanical, t0, why }) {
   const b = buildBrief(e.messages, ctx.config);
   const { context } = await $.session.usage();
   const tokensBefore = context.tokens ?? ctx.measuredTokens ?? null;
   const reason = ctx.compactReason || e.trigger;
-  const base = { trigger: e.trigger, reason, why, cacheWarm: warm, messages: e.messages.length, charsBefore: b.charsBefore, tokensBefore };
+  const base = { trigger: e.trigger, reason, why, cacheWarm: warm, mechanical, mechanicalCut: ctx.config.mechanicalCut !== false, messages: e.messages.length, charsBefore: b.charsBefore, tokensBefore };
   if (!b.cutMessages || !b.userTextIntact) {
     emit($, ctx, 'run', { ...base, outcome: 'native-summary', why: !b.cutMessages ? 'brief-cuts-nothing' : 'brief-user-text-not-intact', ratio: Number(plan.ratio.toFixed(3)), durationMs: (await $.clock.now()) - t0 });
     return next(e);
