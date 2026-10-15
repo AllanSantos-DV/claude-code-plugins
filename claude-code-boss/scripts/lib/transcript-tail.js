@@ -78,7 +78,11 @@ function readRange(filePath, from, to) {
   try {
     const fd = fs.openSync(filePath, 'r');
     try { return _readRange(fd, from, len); } finally { fs.closeSync(fd); }
-  } catch (err) { void err; return Buffer.alloc(0); }
+  } catch (err) {
+    // A missing file is a normal "nothing to read"; any other I/O failure must not look like an empty transcript.
+    if (!err || err.code !== 'ENOENT') console.error(`[transcript-tail] cannot read ${filePath}: ${err && err.message}`);
+    return Buffer.alloc(0);
+  }
 }
 
 module.exports = { readTailLines, readRange, DEFAULT_MAX_BYTES };
