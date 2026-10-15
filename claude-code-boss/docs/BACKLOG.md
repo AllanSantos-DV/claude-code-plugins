@@ -65,8 +65,12 @@ Relatórios: `docs/research/checkup/` (local). Tudo abaixo marcado [x] tem teste
   800 → 4,2 s); em 8 prompts reais, 800 chars deu mediana de 9,1 s com metade estourando o prazo de 8 s (nenhum fato do compose),
   300 chars deu 5,2 s e nenhum estouro. `maxQueryChars` padrão 800 → 300. Os fatos mudam (sobreposição média de 50 %), mas o compose
   passa a responder em vez de expirar. Cache por consulta não compensa: só repetição exata acertaria. `s3-compose-latency.txt`.
-- [ ] **compactacao-router-07/13/14**: `compaction.run` sem `mechanical/mechanicalCut/warm`; `cache.turn` perde chamadas além de 512 KB sem
-  contar; preço por família de modelo (12 de 5.619 sem preço).
+- [x] **compactacao-router-07/13/14**: `compaction.run` sem `mechanical/mechanicalCut/warm`; `cache.turn` perde chamadas além de 512 KB sem
+  contar; preço por família de modelo (12 de 5.619 sem preço). Feitos os três, com teste: 07 o `run` grava `mechanical` e o
+  `mechanicalCut` efetivo (o `cacheWarm` já estava); 13 a chamada vista que saiu da cauda de 512 KB grava `cache.turn.gap` com as
+  chamadas puladas (o comportamento "só a última" fica, sem enxurrada); 14 `priceOf` casa id com data, `[1m]` e prefixo de provedor, e
+  a tabela ganhou o Haiku 4.5 (US$ 1/MTok, leitura US$ 0,10 — platform.claude.com/docs/en/about-claude/pricing, acessado 15/10/2026).
+  Real: 6.497 `cache.turn`, sem preço 12 → 1 (`gemini-3-flash`).
 - [x] **Hooks — SessionStart de `resume` roda os 18 detectores** (só `compact` foi enxugado, P6). **Medido, não feito:** cada detector
   sozinho num resume real deste projeto (`.claude/scripts/bench-sessionstart-detectors.cjs`): `project-snapshot` 1.457 ms (git + `gh`
   na rede, já com cache de 5 min), `brain-health` 669 ms, os outros 16 somam 147 ms e rodam em paralelo. Cortar os 16 no resume não

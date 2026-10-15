@@ -35,7 +35,20 @@ const MODELS = Object.freeze({
   'claude-sonnet-5': { inputUsd: 2, readRatio: 0.1 },
   'claude-opus-5': { inputUsd: 5, readRatio: 0.1 },
   'claude-opus-4-8': { inputUsd: 5, readRatio: 0.1 },
+  'claude-haiku-4-5': { inputUsd: 1, readRatio: 0.1 }, // same page, accessed 2026-10-15
 });
+
+/**
+ * The MODELS entry for a model id as the transcript writes it — a dated snapshot (`claude-haiku-4-5-20251001`),
+ * a `[1m]` context suffix or a provider prefix (`us.anthropic.`, `vertex_ai.anthropic.`, `@20251001`) is the same
+ * model and price; an exact key was required and those calls dropped out of the USD totals. null = not priced.
+ */
+function priceOf(model) {
+  if (!model) return null;
+  const id = String(model).toLowerCase().replace(/\[[^\]]*\]$/, '').replace(/^(?:[a-z0-9_-]+\.)*anthropic\./, '')
+    .replace(/(?:[-@]\d{8})?(?:-v\d+(?::\d+)?)?$/, '');
+  return Object.prototype.hasOwnProperty.call(MODELS, id) ? MODELS[id] : null;
+}
 const DEFAULT_READ_RATIO = 0.1; // a model not in the table: the conservative (higher) ratio, unpriced in USD
 
 /** `msg_0…` = Claude subscription; `msg_vrtx…`/`msg_bdrk…` = cloud (USD) — the owner's existing rule. */
@@ -47,7 +60,7 @@ function routeOf(messageId) {
 }
 
 const permanenceFor = (calls) => (Number.isFinite(calls) && calls > 0 ? PERMANENCE_BY_CALLS.find(([max]) => calls <= max)[1] : PERMANENCE_MEDIAN);
-const readRatio = (model) => (MODELS[model] ? MODELS[model].readRatio : DEFAULT_READ_RATIO);
+const readRatio = (model) => (priceOf(model) ? priceOf(model).readRatio : DEFAULT_READ_RATIO);
 const writeWeight = (t) => (Number(t.write1h) > Number(t.write5m) ? 2 : 1.25);
 
 /** Index cache.turn / compaction.run rows by session (ascending ts). */
@@ -138,7 +151,7 @@ function summarizeEconomy(items, rows, opts = {}) {
     const pm = permanence(it, sessions);
     const T = R * pm.E * (1 - RECAPTURE);
     const TL = R * pm.EL * (1 - RECAPTURE);
-    const price = pm.model && MODELS[pm.model] ? MODELS[pm.model].inputUsd : null;
+    const price = priceOf(pm.model) ? priceOf(pm.model).inputUsd : null;
     const bucket = pm.measured ? e.measured : e.estimated;
     const route = e.byRoute[pm.route] || (e.byRoute[pm.route] = mk());
     for (const b of [bucket, e.total, route]) {
@@ -170,6 +183,6 @@ function calibrateLimit(windowUnits) {
 }
 
 module.exports = {
-  CHARS_PER_TOKEN, RECAPTURE, PERMANENCE_MEDIAN, LIMIT_UNITS_PER_PERCENT, LIMIT_WEIGHTS, MODELS,
+  CHARS_PER_TOKEN, RECAPTURE, PERMANENCE_MEDIAN, LIMIT_UNITS_PER_PERCENT, LIMIT_WEIGHTS, MODELS, priceOf,
   routeOf, permanenceFor, indexSessions, permanence, consumption, limitUnits, summarizeEconomy, calibrateLimit,
 };

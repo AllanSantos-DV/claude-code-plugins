@@ -20,7 +20,7 @@
  * It ignores that the boss only cuts with a cold cache (where the rewrite is paid anyway), so read
  * it as the cost-optimal ceiling, and it is withheld until the group has MIN_EPISODES measured cuts.
  */
-const { MODELS, LIMIT_WEIGHTS } = require('./economy-metrics.js');
+const { priceOf, LIMIT_WEIGHTS } = require('./economy-metrics.js');
 
 const MIN_EPISODES = 5;          // measured cuts a model|window group needs before it gets a suggestion
 const TOO_MUCH_PER_100_TURNS = 5; // heuristic: more than one cut every 20 calls
@@ -41,7 +41,7 @@ const ctxOf = (p) => num(p.read) + num(p.write) + num(p.input);
 
 /** USD of one call from economy-metrics' per-model price and the plan's fixed weights; null for a model it does not price. */
 function turnCostUsd(p) {
-  const m = MODELS[p.model];
+  const m = priceOf(p.model);
   if (!m) return null;
   const w5 = num(p.write5m); const w1 = num(p.write1h);
   const write = (w5 || w1) ? w5 * LIMIT_WEIGHTS.write5m + w1 * LIMIT_WEIGHTS.write1h : num(p.write) * LIMIT_WEIGHTS.write5m;
@@ -166,13 +166,13 @@ function tooMuch(count, turns, spanHours) {
  */
 function suggestLimit({ model, windowTokens, episodes, afterTokens, growthPerTurn }) {
   const missing = [];
-  if (!MODELS[model]) missing.push(`price of model ${model || '?'} (not in economy-metrics MODELS)`);
+  if (!priceOf(model)) missing.push(`price of model ${model || '?'} (not in economy-metrics MODELS)`);
   if (!windowTokens) missing.push('window size (no compaction.gate seen for these sessions)');
   if (episodes < MIN_EPISODES) missing.push(`samples: ${episodes} of ${MIN_EPISODES} measured compactions`);
   if (!afterTokens) missing.push('context after compaction');
   if (!growthPerTurn) missing.push('context growth per turn (no consecutive calls measured)');
   if (missing.length) return { ok: false, missing };
-  const wOverR = LIMIT_WEIGHTS.write5m / MODELS[model].readRatio; // the 1h write (2×) would raise it; the 5m figure is the conservative lower bound
+  const wOverR = LIMIT_WEIGHTS.write5m / priceOf(model).readRatio; // the 1h write (2×) would raise it; the 5m figure is the conservative lower bound
   const tokens = Math.round(afterTokens + Math.sqrt(2 * wOverR * afterTokens * growthPerTurn));
   return { ok: true, tokens, percent: round((tokens / windowTokens) * 100, 1), basis: { afterTokens, growthPerTurn, writeOverRead: wOverR, episodes } };
 }
