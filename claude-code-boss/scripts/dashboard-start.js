@@ -13,6 +13,7 @@
  */
 const fs = require('fs');
 const { pidAlive } = require('../engine/lib/process-lock.js');
+const { readJsonLoud } = require('../engine/lib/json-file.js');
 const path = require('path');
 const http = require('http');
 const { spawn } = require('child_process');
@@ -27,10 +28,7 @@ function runtimeDir() {
 
 const isAlive = pidAlive; // lib/process-lock
 
-function readJson(file) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf-8')); }
-  catch (err) { if (err.code !== 'ENOENT') console.error(`[DASHBOARD-START] read ${file}: ${err.message}`); return null; }
-}
+const readJson = (file) => readJsonLoud(file, 'DASHBOARD-START');
 
 /** GET / on the published port: the dashboard serves its page without auth. */
 function probe(port, timeoutMs = 800) {
