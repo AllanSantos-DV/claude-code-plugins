@@ -400,9 +400,9 @@ function cleanupMetrics(keepDays = 30) {
   }
 }
 
-// Retention of high-volume NOISE rows (P7, 2026-10-15). These events only ever feed counts
-// (curation.skipped: by class in the curation panel) or nothing at all (shell-escape.*: no
-// reader), yet they grew +590/day per project with no retention. Raw rows older than
+// Retention of high-volume NOISE rows. These events only ever feed counts in the curation
+// panel (curation.skipped by class, shell-escape.* by kind), yet they grew +590/day per
+// project with no retention. Raw rows older than
 // NOISE_KEEP_DAYS become ONE `metrics.daily` row per (UTC day, event) holding the count, so
 // every panel total stays the same; nothing else is touched.
 const NOISE_EVENTS = ['curation.skipped', 'shell-escape.rewritten', 'shell-escape.warned', 'shell-escape.denied'];

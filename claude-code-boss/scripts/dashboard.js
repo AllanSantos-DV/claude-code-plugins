@@ -14,6 +14,7 @@ const { sanitizeProjectId, sanitizeLogicalProjectId } = require('../engine/lib/p
 const { listBrainProjects, brainDbPath } = require('./lib/brain-projects.js');
 const { aggregateSkillRoi } = require('./lib/skill-roi.js');
 const { aggregateCaptureRate } = require('./lib/capture-rate.js');
+const CAPTURE_FUNNEL_EVENTS = ['capture.offered', 'capture.acked', 'capture.relented', 'capture.reoffered', 'capture.adopted'];
 const { loadSqlite } = require('../engine/lib/sqlite-compat.js');
 const pluginUpdater = require('./lib/plugin-updater.js');
 const { resolveMode } = require('./lib/router-mode.js');
@@ -2418,11 +2419,10 @@ async function getCaptureRate(req, res, url) {
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
     if (projects.length === 0) return json(res, { byKind: {}, spontaneous: {} });
 
-    const nud = await eventsLatest(projects, 'nudge.emitted', 2000);
-    const cap = await eventsLatest(projects, 'lesson.captured', 2000);
     const events = [];
-    for (const { value } of nud) events.push(...value);
-    for (const { value } of cap) events.push(...value);
+    for (const name of ['nudge.emitted', 'lesson.captured', ...CAPTURE_FUNNEL_EVENTS]) {
+      for (const { value } of await eventsLatest(projects, name, 2000)) events.push(...value);
+    }
     json(res, aggregateCaptureRate(events));
   } catch (err) {
     console.error(`[DASHBOARD] /api/metrics/capture-rate failed: ${err.message}`);

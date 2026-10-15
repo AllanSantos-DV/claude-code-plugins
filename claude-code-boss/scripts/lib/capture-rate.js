@@ -32,7 +32,7 @@ const KINDS = Object.keys(KIND_TO_TYPE);
 
 /**
  * @param {Array<{eventName:string, payload:object, project?:string, sessionId?:string, ts:number}>} events
- * @returns {{ byKind: Record<string,{kind,nudges,captures,rate}>, spontaneous: Record<string,number> }}
+ * @returns {{ byKind: Record<string,{kind,nudges,captures,rate}>, spontaneous: Record<string,number>, funnel: Record<string,number> }}
  */
 function aggregateCaptureRate(events) {
   const byProject = new Map();
@@ -45,6 +45,20 @@ function aggregateCaptureRate(events) {
   const byKind = {};
   for (const k of KINDS) byKind[k] = { kind: k, nudges: 0, captures: 0, rate: null };
   const spontaneous = {};
+  // The [BRAIN capture] review offer: offered → acked (captured or "none") / relented (gave up after
+  // maxBlockAttempts) / reoffered; adopted = queued cycles of an ended session taken over by another.
+  const funnel = { offered: 0, acked: 0, ackedNone: 0, relented: 0, reoffered: 0, adopted: 0, adoptedCycles: 0 };
+  for (const e of events || []) {
+    const p = e.payload || {};
+    switch (e.eventName) {
+      case 'capture.offered': funnel.offered++; break;
+      case 'capture.acked': funnel.acked++; if (p.outcome === 'none') funnel.ackedNone++; break;
+      case 'capture.relented': funnel.relented++; break;
+      case 'capture.reoffered': funnel.reoffered++; break;
+      case 'capture.adopted': funnel.adopted++; funnel.adoptedCycles += Number(p.cycles) || 0; break;
+      default: break;
+    }
+  }
 
   for (const [, evs] of byProject) {
     const sorted = evs.slice().sort((a, b) => a.ts - b.ts);
@@ -69,7 +83,7 @@ function aggregateCaptureRate(events) {
     const row = byKind[k];
     row.rate = row.nudges > 0 ? row.captures / row.nudges : null;
   }
-  return { byKind, spontaneous };
+  return { byKind, spontaneous, funnel };
 }
 
 module.exports = { aggregateCaptureRate, KIND_TO_TYPE, KINDS };
