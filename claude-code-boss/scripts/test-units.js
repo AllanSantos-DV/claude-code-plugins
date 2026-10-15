@@ -330,6 +330,22 @@ test('session-id: non-string coerced', () => {
 // ─── hooks-config ────────────────────────────────────────────────────────────
 const hooksConfig = require('./lib/hooks-config.js');
 
+// Runs `fn` with the `dev` profile (every Stop detector on) in the suite's temp HOME, then puts the user config back.
+function withDevProfile(fn) {
+  const p = hooksConfig.userConfigPath();
+  const bak = fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : null;
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ profile: 'dev' }));
+  hooksConfig._resetCache();
+  const done = () => { if (bak == null) fs.rmSync(p, { force: true }); else fs.writeFileSync(p, bak); hooksConfig._resetCache(); };
+  try {
+    const r = fn();
+    if (r && typeof r.then === 'function') return r.finally(done);
+    done();
+    return r;
+  } catch (err) { done(); throw err; }
+}
+
 test('hooks-config: getCurationStop defaults', () => {
   const cs = hooksConfig.getCurationStop();
   assert(typeof cs.enabled === 'boolean');
@@ -3221,6 +3237,20 @@ test('runtime-sweep: o detector do SessionStart esta registrado e varre journals
     assertEq(fs.readdirSync(dir).sort(), ['other.json', 'session-start-b.json']);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   assert(/name: 'runtime-sweep', mod: runtimeSweep/.test(fs.readFileSync(path.join(__dirname, 'session-start-dispatcher.js'), 'utf8')), 'registrado no SessionStart');
+});
+
+test('retrieval-feedback: so o que entrou no prompt conta (injectedIds), recall todo filtrado vira retrieve.empty, e as metricas usam a chave da sessao (nao basename)', async () => {
+  const rf = require('./retrieval-feedback.js');
+  const ent = { returnedIds: ['a', 'b'], returnedTitles: ['widget parser off by one', 'database migration ordering'], injectedIds: ['b'], injectedChars: 120, project: 'p' };
+  assertEq(rf.injectedPairs(ent), [['b', 'database migration ordering']]);
+  assertEq(rf.injectedPairs({ returnedIds: ['a'], returnedTitles: ['t'] }), [['a', 't']], 'entrada antiga sem injectedIds: tudo que voltou');
+  assertEq(rf.findCitations([ent], 'the widget parser off by one is fixed').length, 0, 'citar o que foi filtrado nao conta');
+  assertEq(rf.findCitations([ent], 'database migration ordering matters').map((c) => c.id), ['b']);
+  const vs = require('./lib/value-summary.js');
+  assertEq(vs.injectedCount([{ payload: { count: 3, chars: 90 } }, { payload: { count: 5, chars: 0 } }, { payload: { count: 2 } }, null]), 5, 'chars 0 = nada entrou; sem chars (antigo) conta');
+  const src = fs.readFileSync(path.join(__dirname, 'retrieval-feedback.js'), 'utf8');
+  assert(!/path\.basename\(ev\.cwd\)/.test(src) && /const mctx = \{ sessionId: sid, cwd: ev\.cwd \}/.test(src) && /retrieve\.empty/.test(src), 'sem basename; chave resolvida pela sessao; recall vazio medido');
+  assert(!/retrieve\.fired/.test(fs.readFileSync(path.join(__dirname, 'dashboard.js'), 'utf8')) && !/retrieve\.fired/.test(fs.readFileSync(path.join(__dirname, 'tuning-advisory.js'), 'utf8')), 'nenhum leitor de evento que ninguem grava');
 });
 
 test('metrics-store: recordMetric rejects invalid event names', () => {
@@ -15420,7 +15450,7 @@ test('decideStickyModel: classify falha (null) + modelo desconhecido → passthr
 });
 
 // ─── verify-journal: roundtrip (D2) ──────────────────────────────────────────
-test('verify-journal: append edit+cmd, read chronological, clear (D2)', () => {
+test('verify-journal: append edit+cmd, read chronological, clear (D2)', () => withDevProfile(() => {
   const saved = process.env.CLAUDE_PLUGIN_DATA;
   process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-vj-'));
   // Re-require with the fresh DATA_DIR baked into module scope.
@@ -15442,7 +15472,7 @@ test('verify-journal: append edit+cmd, read chronological, clear (D2)', () => {
     process.env.CLAUDE_PLUGIN_DATA = saved;
     delete require.cache[require.resolve('./lib/verify-journal.js')];
   }
-});
+}));
 
 // ─── verify-nudge: test detection + evaluate (D2) ─────────────────────────────
 const verifyNudge = require('./verify-nudge.js');
@@ -16219,7 +16249,7 @@ test('self-review.buildAdvisory: [SELF-REVIEW] header + recurrence + type', () =
   assert(!a.includes('recurrence 1'), 'recurrence<=1 omitted');
 });
 
-test('self-review.run: edits + retrieved lesson → block, journals, dedups next turn', async () => {
+test('self-review.run: edits + retrieved lesson → block, journals, dedups next turn', () => withDevProfile(async () => {
   // Uses the top-level journal singletons (bound to the units temp data dir) with
   // a UNIQUE sid + a STUB retrieve (DI) → no cache/env swapping, no store race.
   const sid = 'srsession-' + Date.now();
@@ -16241,7 +16271,7 @@ test('self-review.run: edits + retrieved lesson → block, journals, dedups next
   verifyJournalTop.appendEdit(sid, 'scripts/lib/widget-parser.js');
   const second = await selfReview.run({ hook_event_name: 'Stop', session_id: sid, cwd }, { retrieve: stubRetrieve, dataDir: dir, metrics: noopMetrics, cfg: srCfg });
   assertEq(Object.keys(second).length, 0);
-});
+}));
 
 // ─── U2 value-summary (aggregation) + session-summary detector ───────────────
 const valueSummary = require('./lib/value-summary.js');
@@ -17863,7 +17893,7 @@ test('session-start-dispatcher.DETECTORS: 17 detectors, correct order + shape (m
   const d = require('./session-start-dispatcher.js');
   const names = d.DETECTORS.map(x => x.name);
   assertEq(names, [
-    'brain-daemon-ensure', 'memory-rotate', 'session-whitelist', 'brain-health',
+    'brain-daemon-ensure', 'memory-rotate', 'runtime-sweep', 'session-whitelist', 'brain-health',
     'project-snapshot', 'curation-session', 'doctor-advisory', 'doctor-first-run',
     'review-checklist-advisory', 'tuning-advisory', 'value-digest', 'project-identity-advisory',
     'backend-onboarding-advisory', 'marketplace-autoupdate', 'graph-warm', 'powershell-advisory', 'policy-inject',
@@ -18087,7 +18117,7 @@ test('tuning-advisor: standard high would-block → suggest dev; low → info go
 });
 
 test('tuning-advisor: recall precision low → suggest raise minScore', () => {
-  const r = tuningAdvisor.analyze({ retrieval: { fired: 40, cited: 8 } });
+  const r = tuningAdvisor.analyze({ retrieval: { injected: 40, cited: 8 } });
   assert(r.recommendations.some(x => x.id === 'recall-noisy' && x.level === 'suggest'));
 });
 
@@ -26186,7 +26216,7 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
     assertEq(enqueued, 1);
   });
 
-  test('G4: REAL worker — a background write lands before the next awaited hook (FIFO)', async () => {
+  test('G4: REAL worker — a background write lands before the next awaited hook (FIFO)', () => withDevProfile(async () => {
     const verifyJournal = require('./lib/verify-journal.js');
     const hw = (await loadHookWorker())({ pluginRoot: ROOT });
     const sid = `g4-order-${Date.now()}`;
@@ -26197,9 +26227,9 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
       const entries = verifyJournal.readEntries(sid);
       assert(entries.some(e => e.kind === 'edit' && String(e.path).endsWith('g4-order.js')), `edit journaled before the awaited hook replied: ${JSON.stringify(entries)}`);
     } finally { verifyJournal.clearEntries(sid); await hw.shutdown(); }
-  });
+  }));
 
-  test('O8: REAL worker — background jobs queued in a worker that crashes are re-queued, not silently lost', async () => {
+  test('O8: REAL worker — background jobs queued in a worker that crashes are re-queued, not silently lost', () => withDevProfile(async () => {
     const verifyJournal = require('./lib/verify-journal.js');
     const hw = (await loadHookWorker())({ pluginRoot: ROOT });
     const sid = `o8-${Date.now()}`;
@@ -26217,7 +26247,7 @@ test('seams: plugin-updater default spawnSync forces windowsHide after the sprea
       assert(st.requeued >= 5, `re-queued the un-acked jobs (requeued=${st.requeued})`);
       assertEq(st.background, 0, 'every background job acked in the end');
     } finally { verifyJournal.clearEntries(sid); await hw.shutdown(); }
-  });
+  }));
 
   test('G4: REAL worker — a background hook that degrades is reported on that session\'s next Stop, once', async () => {
     const hw = (await loadHookWorker())({ pluginRoot: ROOT });
