@@ -413,6 +413,30 @@ function saveCompaction(patch) {
 }
 
 /**
+ * Persist the user's fixed-cost choice (the dashboard switch) to the UPDATE-SAFE user-config.json: `autoFix` = whether the
+ * doctor may switch things off on its own (the first run after an update, `doctor --fix`); `enabled` = the whole audit.
+ * Only the given keys change. Returns the effective fixed-cost config.
+ * @param {{autoFix?: boolean, enabled?: boolean}} patch
+ */
+function saveFixedCost(patch) {
+  const p = patch && typeof patch === 'object' ? patch : {};
+  const next = {};
+  for (const k of ['autoFix', 'enabled']) {
+    if (p[k] === undefined) continue;
+    if (typeof p[k] !== 'boolean') throw new Error(`${k} must be true or false`);
+    next[k] = p[k];
+  }
+  if (!Object.keys(next).length) throw new Error('nothing to save (autoFix or enabled)');
+  const file = userConfigPath();
+  const current = readUserConfigForWrite(file);
+  current.fixedCost = { ...(isPlainObject(current.fixedCost) ? current.fixedCost : {}), ...next };
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  writeFileAtomic(file, `${JSON.stringify(current, null, 2)}\n`);
+  _resetCache();
+  return getFixedCost();
+}
+
+/**
  * Add a name to `fixedCost.keep` (update-safe user-config.json): what the user gave back through the dashboard's undo is
  * never turned off by the doctor again. Idempotent. Returns the effective fixed-cost config.
  * @param {string} name server / skill / plugin name (or plugin id)
@@ -590,6 +614,7 @@ module.exports = {
   getCompaction,
   getCostTuning,
   getFixedCost,
+  saveFixedCost,
   addFixedCostKeep,
   saveCompaction,
   saveOverrides,
