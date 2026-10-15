@@ -139,7 +139,8 @@ async function dispatch(event, opts = {}) {
       const t0 = performance.now();
       let res = null;
       const outcome = typeof mod.run === 'function'
-        ? await settleWithin(Promise.resolve().then(() => mod.run(event)), detectorTimeoutMs)
+        // blockPending: an earlier detector already blocks this Stop, so one more reason costs no extra turn.
+        ? await settleWithin(Promise.resolve().then(() => mod.run(event, { blockPending: blocks.length > 0 })), detectorTimeoutMs)
         : { status: 'ok', value: null };
       if (outcome.status === 'ok') res = outcome.value;
       else {
