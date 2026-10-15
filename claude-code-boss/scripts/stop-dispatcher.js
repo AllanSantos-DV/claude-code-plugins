@@ -33,6 +33,7 @@
  */
 'use strict';
 
+const { settleWithin } = require('./lib/settle-within.js');
 const { performance } = require('node:perf_hooks');
 const { readStdin, parsePayload, emitStopBlock, emitEmpty, emitJson } = require('./lib/hook-io.js');
 const metrics = require('./lib/metrics.js');
@@ -107,8 +108,14 @@ function getShadowRate() {
  * @returns {Promise<{ blocks:Array<{name,reason}>, profile:string, runId:string,
  *                     detectors:Array<object> }>}
  */
+// Per-detector ceiling: the detectors run one after another, so one that hangs held every
+// later one and the end of the turn up to the 29 s hook deadline. The slowest measured was
+// 3.4 s (retrieval-feedback); past this the turn moves on and the dispatch records 'timeout'.
+const DETECTOR_TIMEOUT_MS = 5000;
+
 async function dispatch(event, opts = {}) {
   const profile = opts.profile || hooksConfig.getProfile();
+  const detectorTimeoutMs = Number.isFinite(opts.detectorTimeoutMs) ? opts.detectorTimeoutMs : DETECTOR_TIMEOUT_MS;
   const runId = opts.runId || telem.newRunId();
   const shadowRate = typeof opts.shadowRate === 'number' ? opts.shadowRate : getShadowRate();
   const onError = typeof opts.onError === 'function' ? opts.onError : () => {};
@@ -130,13 +137,15 @@ async function dispatch(event, opts = {}) {
     if (gs.enabled) {
       const t0 = performance.now();
       let res = null;
-      try {
-        res = typeof mod.run === 'function' ? await mod.run(event) : null;
-      } catch (err) {
-        const msg = _errMsg(err);
+      const outcome = typeof mod.run === 'function'
+        ? await settleWithin(Promise.resolve().then(() => mod.run(event)), detectorTimeoutMs)
+        : { status: 'ok', value: null };
+      if (outcome.status === 'ok') res = outcome.value;
+      else {
+        const msg = outcome.status === 'timeout' ? `timed out after ${detectorTimeoutMs}ms (the turn moved on)` : _errMsg(outcome.err);
         console.error(`[stop-dispatcher] ${name}: ${msg}`);
         try { onError(name, msg); } catch (e) { console.error(`[stop-dispatcher] onError(${name}): ${_errMsg(e)}`); }
-        res = null;
+        if (outcome.status === 'timeout') entry.reason = 'timeout';
       }
       entry.ms = _round(performance.now() - t0);
       if (res && res.block && typeof res.reason === 'string' && res.reason) {
