@@ -23,6 +23,7 @@ const { URL } = require('url');
 const cacheCycle = require('./cache-cycle.js');
 const contextRewrite = require('./context-rewrite.js');
 const byok = require('./byok.js');
+const { appendRotating } = require('../../scripts/lib/log-rotate.js');
 const byokModel = require('./byok-model.js');
 const catalog = require('./catalog.js');
 const upstreamProfile = require('./upstream-profile.js');
@@ -101,7 +102,7 @@ function log(level, msg, extra) {
   const line = `[${ts()}] [${level.padEnd(5)}] ${msg}${extra ? ' ' + JSON.stringify(extra) : ''}`;
   process.stdout.write(line + '\n');
   try {
-    fs.appendFileSync(LOG_FILE, line + '\n');
+    appendRotating(LOG_FILE, line);
   } catch (_) { /* ignore log write errors */ }
 }
 

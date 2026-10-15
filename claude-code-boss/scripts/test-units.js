@@ -7097,6 +7097,22 @@ test('curation-guard.sweepInlineScripts: varre no maximo 1x a cada 10 min por pa
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
+test('log-rotate.appendRotating: o arquivo nunca passa do teto; gira para .1/.2 e descarta o mais velho (router.log chegou a 12,8 MB)', () => {
+  const { appendRotating } = require('./lib/log-rotate.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-logrot-'));
+  try {
+    const f = path.join(dir, 'sub', 'router.log');
+    for (let i = 0; i < 100; i++) appendRotating(f, `line ${String(i).padStart(3, '0')} ${'x'.repeat(40)}`, { maxBytes: 500, keep: 2 });
+    assert(fs.statSync(f).size <= 500, 'current file under the cap');
+    assert(fs.existsSync(f + '.1') && fs.existsSync(f + '.2') && !fs.existsSync(f + '.3'), 'keeps exactly 2 rotated files');
+    assert(fs.readFileSync(f, 'utf8').trimEnd().endsWith(`line 099 ${'x'.repeat(40)}`), 'newest line in the current file');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  for (const rel of ['servers/model-router/index.js', 'scripts/model-router-ensure.js']) {
+    const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    assert(/appendRotating\(/.test(src) && !/appendFileSync\(LOG_FILE/.test(src), `${rel} writes router.log through the rotating appender`);
+  }
+});
+
 // ─── oneoff-store ─────────────────────────────────────────────────────────────
 const oneoff = require(path.join(SCRIPTS, 'lib', 'oneoff-store.js'));
 const freshDataDir = () => fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-oneoff-'));
