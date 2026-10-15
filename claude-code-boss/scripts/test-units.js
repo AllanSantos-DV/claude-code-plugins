@@ -3087,6 +3087,82 @@ test('metrics-store: recordMetric inserts + getMetricsSummary aggregates', () =>
   }
 });
 
+test('metrics-memo: um resultado so e reaproveitado enquanto os arquivos do projeto nao mudam (db, -wal, adopted.json); escrita invalida so o projeto escrito', () => {
+  const { createMemo, dbSignature, bucketTs } = require('./lib/metrics-memo.js');
+  delete require.cache[require.resolve('./lib/metrics-store.js')];
+  const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
+  process.env.CLAUDE_PLUGIN_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-memo-'));
+  const store = require('./lib/metrics-store.js');
+  try {
+    if (!store.init({ project: 'memo-a' })) return; // no SQLite backend on this machine: nothing to read
+    store.recordMetric('lesson.captured', { n: 1 }, 's'); store.close();
+    store.init({ project: 'memo-b' }); store.recordMetric('lesson.captured', { n: 1 }, 's'); store.close();
+    const memo = createMemo({ signatureOf: (p) => dbSignature(store._dbPath(p)) });
+    let opens = 0;
+    const read = (p) => memo.get(p, 'ev:lesson.captured', () => { opens++; store.close(); store.init({ project: p }); const r = store.getEventLog({ eventName: 'lesson.captured' }); store.close(); return r; });
+    assertEq([read('memo-a').length, read('memo-b').length, opens], [1, 1, 2]);
+    assertEq([read('memo-a').length, read('memo-b').length, opens], [1, 1, 2], 'nada mudou: nem abriu os bancos');
+    store.init({ project: 'memo-a' }); store.recordMetric('lesson.captured', { n: 2 }, 's'); // WAL still open: the write sits in the -wal sidecar
+    assertEq([read('memo-a').length, read('memo-b').length, opens], [2, 1, 3], 'so o projeto escrito foi relido, e ja com a linha nova');
+    store.close();
+    const fresh = createMemo({ signatureOf: () => 'x', sigTtlMs: 1000, now: (() => { let t = 0; return () => t; })() });
+    let calls = 0; fresh.get('p', 'k', () => { calls++; return 1; }); fresh.get('p', 'k', () => { calls++; return 1; });
+    assertEq(calls, 1);
+    let sig = 'a'; let clock = 0;
+    const ttl = createMemo({ signatureOf: () => sig, sigTtlMs: 1000, now: () => clock });
+    let n = 0; const get = () => ttl.get('p', 'k', () => ++n);
+    get(); sig = 'b'; assertEq(get(), 1, 'dentro da janela de assinatura: ainda a leitura anterior');
+    clock = 1500; assertEq(get(), 2, 'passou a janela: a assinatura nova invalida');
+    assertEq(createMemo({ signatureOf: () => 's' }).get('p', 'k', () => undefined), undefined);
+    const m2 = createMemo({ signatureOf: () => 's' }); m2.get('p', 'k', () => undefined); assertEq(m2.size(), 0, 'undefined (store indisponivel) nao e lembrado');
+    const lru = createMemo({ signatureOf: () => 's', max: 2 }); lru.get('a', 'k', () => 1); lru.get('b', 'k', () => 2); lru.get('c', 'k', () => 3); assertEq(lru.size(), 2, 'limite de entradas');
+    assertEq(bucketTs(3600_000 * 5 + 123, 3600_000), 3600_000 * 5);
+  } finally {
+    store.close();
+    delete require.cache[require.resolve('./lib/metrics-store.js')];
+    process.env.CLAUDE_PLUGIN_DATA = prevDataDir;
+  }
+});
+
+test('dashboard: os paineis da Home leem pelo memo — repetir a consulta nao reabre bancos, e uma escrita aparece no numero seguinte', () => {
+  // Own process: requiring dashboard.js under a temp data dir would leave module state (data-dir pointer, configs) behind for the next tests.
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-memo-dash-'));
+  const script = `
+    const assert = require('assert');
+    const store = require(process.argv[1] + '/lib/metrics-store.js');
+    const dash = require(process.argv[1] + '/dashboard.js');
+    const call = async (fn, q) => { let body = null; await fn({}, { writeHead() {}, end: (t) => { body = JSON.parse(t); } }, new URL('http://x/?' + q)); return body; };
+    (async () => {
+      if (!store.init({ project: 'dash-memo' })) { console.log('NO-SQLITE'); return; }
+      store.recordMetric('lesson.captured', { type: 'procedural' }, 's'); store.close();
+      assert.strictEqual((await call(dash.getValueSummary, 'days=30')).learned.total, 1);
+      const hits0 = dash._metricsMemo.stats().hits;
+      assert.strictEqual((await call(dash.getValueSummary, 'days=30')).learned.total, 1);
+      assert(dash._metricsMemo.stats().hits > hits0, 'the second query came from the memo');
+      await call(dash.getTuningRecommendations, 'days=7');
+      store.init({ project: 'dash-memo' }); store.recordMetric('lesson.captured', { type: 'procedural' }, 's'); store.close();
+      await new Promise((r) => setTimeout(r, 1700));
+      assert.strictEqual((await call(dash.getValueSummary, 'days=30')).learned.total, 2, 'the write invalidated the project');
+      console.log('OK');
+    })().catch((e) => { console.error(e.stack); process.exit(1); });
+  `;
+  try {
+    const r = require('child_process').spawnSync(process.execPath, ['-e', script, __dirname], { env: { ...process.env, CLAUDE_PLUGIN_DATA: dataDir }, encoding: 'utf8', windowsHide: true, timeout: 60000 });
+    assert(r.status === 0 && /OK|NO-SQLITE/.test(r.stdout), `child failed (status ${r.status}): ${r.stderr || r.stdout}`);
+  } finally { fs.rmSync(dataDir, { recursive: true, force: true }); }
+});
+
+test('dashboard Home: volta a Home mostra o que ja esta renderizado (sem apagar nem pedir de novo dentro da janela), nada espera o /api/status e a contagem do servidor e servida velha enquanto atualiza', () => {
+  const html = fs.readFileSync(path.join(__dirname, '..', 'dashboard', 'index.html'), 'utf8');
+  assert(/home: loadHomeIfStale/.test(html) && /HOME_FRESH_MS = 30000/.test(html), 'navegacao usa a janela de frescor');
+  assert(/if \(!el\.hasChildNodes\(\)\) el\.innerHTML = '<div class="spinner"/.test(html), 'so mostra spinner quando nao ha nada renderizado');
+  assert(/const panels = \[loadValueSummary\(\), loadTuningRecs\(\), loadSwitchedOff\(\)\];\s*try \{\s*const s = await api\('GET', '\/api\/status'\)/.test(html), 'os paineis comecam antes do /api/status');
+  assert(/if \(method !== 'GET'\) _homeLoadedAt = 0;/.test(html), 'uma escrita invalida a janela da Home');
+  const src = fs.readFileSync(path.join(__dirname, 'dashboard.js'), 'utf8');
+  assert(/KB_STALE_MAX_MS/.test(src) && /refreshServerKb\(\)\.catch\(/.test(src), 'contagem do servidor: velha ate o limite, atualiza em segundo plano e loga a falha');
+  assert(/warmHomeMetrics\(\);/.test(src), 'aquecimento no start');
+});
+
 test('metrics-store: recordMetric rejects invalid event names', () => {
   delete require.cache[require.resolve('./lib/metrics-store.js')];
   const prevDataDir = process.env.CLAUDE_PLUGIN_DATA;
@@ -4355,7 +4431,11 @@ test('metrics totals: a time-window read is not cut at 500 rows; history COPIED 
     const dash = fs.readFileSync(path.join(ROOT, 'scripts', 'dashboard.js'), 'utf8');
     for (const fn of ['getCurationSummary', 'getValueSummary', 'getProfileImpact', 'getTuningRecommendations', 'getCompactionSummary']) {
       const body = (dash.split(`async function ${fn}(`)[1] || '').split('\nasync function ')[0];
-      assert(body && /getEventLog\(\{ eventName[^}]*sinceTs \}\)/.test(body) && !/getEventLog\(\{[^}]*limit:/.test(body), `${fn}: a windowed panel route reads the whole window (sinceTs), not a capped latest-N`);
+      assert(body && /(rowsSince|eventsSinceBatch)\([^)]*sinceTs\)/.test(body) && !/limit:|eventsLatest/.test(body), `${fn}: a windowed panel route reads the whole window (sinceTs), not a capped latest-N`);
+    }
+    {
+      const batch = (dash.split('async function eventsSinceBatch(')[1] || '').split('\n}\n')[0];
+      assert(/getEventLog\(\{ eventName: name, sinceTs: bound \}\)/.test(batch) && !/limit/.test(batch), 'the shared window reader asks for the whole window (rounded DOWN, then the caller re-filters), never a capped latest-N');
     }
   } finally {
     ms.close();
@@ -17149,7 +17229,7 @@ test('dashboard Home: card "Desativados pelo doctor" tem a lista, o Desfazer por
   assert(/api\('PUT', '\/api\/doctor\/config', \{ autoFix: want \}\)/.test(html), 'o interruptor grava o autoFix');
   assert(/data-id="\$\{escapeHtml\(e\.id\)\}" onclick="undoSwitchedOff\(this\)"/.test(html), 'o id vai em data-id (convencao: nada de onclick com arg-string)');
   assert(/'home\.switchedOff': 'Desativados pelo doctor'/.test(html) && /'home\.switchedOff': 'Switched off by the doctor'/.test(html), 'pt e en');
-  assert(/loadSwitchedOff\(\);\n\}/.test(html.replace(/\r\n/g, '\n')), 'carrega junto com a Home');
+  assert(/const panels = \[loadValueSummary\(\), loadTuningRecs\(\), loadSwitchedOff\(\)\];/.test(html), 'carrega junto com a Home');
 });
 
 const SMART_YAML = [

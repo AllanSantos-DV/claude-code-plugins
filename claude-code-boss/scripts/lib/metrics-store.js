@@ -406,6 +406,6 @@ module.exports = {
   recordMetric, getEventLog, getEventLogIsolated, getCurationUsageIsolated,
   getEvaluationCounts, getEvaluationCountsIsolated,
   getMetricsSummary, cleanupMetrics,
-  listProjects,
+  listProjects, _dbPath: dbPath,
   _getDbForTests: () => _db,
 };

@@ -367,8 +367,21 @@ function serverMode() {
  */
 let _serverKbInflight = null;
 let _serverKbFail = null;
+// Stale-while-revalidate: a scan takes seconds on a big server, so a count up to KB_STALE_MAX_MS old is answered at once while one
+// refresh runs in the background; a failing refresh is logged and, once the count is older than that, thrown (never hidden for good).
+const KB_FRESH_MS = 60000;
+const KB_STALE_MAX_MS = 600000;
 async function serverKbSummary() {
-  if (_serverKbCache && Date.now() - _serverKbCache.at < 60000) return _serverKbCache.projects;
+  const age = _serverKbCache ? Date.now() - _serverKbCache.at : Infinity;
+  if (age < KB_FRESH_MS) return _serverKbCache.projects;
+  if (age < KB_STALE_MAX_MS) {
+    refreshServerKb().catch((err) => console.error(`[DASHBOARD] background refresh of the server KB counts failed (serving ${Math.round(age / 1000)}s-old counts): ${err.message}`));
+    return _serverKbCache.projects;
+  }
+  return refreshServerKb();
+}
+
+async function refreshServerKb() {
   if (_serverKbFail && Date.now() - _serverKbFail.at < 10000) throw new Error(_serverKbFail.message);
   // One scan at a time, on its OWN client: the shared brain-backend singleton re-inits per project
   // (/api/brain/list), which closed the connection under this loop; and 'background' restart mode
@@ -1346,21 +1359,96 @@ function listMetricsProjects() {
   return require('./lib/metrics-store.js').listProjects();
 }
 
-async function aggregateAcrossProjects(projects, op) {
+// Read-only queries pass a `memoKey` naming the query (time bounds already rounded with bucketTs): an unchanged project
+// database is not even opened again (lib/metrics-memo.js). Without a key the op always runs (writes, e.g. cleanup).
+const _metricsMemo = require('./lib/metrics-memo.js').createMemo({
+  sigTtlMs: 1500,
+  signatureOf: (project) => require('./lib/metrics-memo.js').dbSignature(require('./lib/metrics-store.js')._dbPath(project)),
+});
+
+async function aggregateAcrossProjects(projects, op, memoKey) {
   const store = require('./lib/metrics-store.js');
   const results = [];
+  const run = (project) => {
+    // Cycle the store per-project (single-instance module).
+    store.close();
+    if (!store.init({ project })) return { unavailable: true };
+    return { value: op(store) };
+  };
   for (const project of projects) {
     try {
-      // Cycle the store per-project (single-instance module).
-      store.close();
-      if (!store.init({ project })) continue;
-      results.push({ project, value: op(store) });
+      if (memoKey) {
+        const value = _metricsMemo.get(project, memoKey, () => run(project).value);
+        if (value !== undefined) results.push({ project, value });
+        continue;
+      }
+      const r = run(project);
+      if (r.unavailable) continue;
+      results.push({ project, value: r.value });
     } catch (err) {
       console.error(`[DASHBOARD] metrics aggregate failed (${project}): ${err.message}`);
     }
   }
   return results;
 }
+
+// The event queries behind every panel. A window bound is rounded down (bucketTs) so a sliding window keeps hitting the memo;
+// the caller still filters to the exact bound, so the numbers are exact.
+const { bucketTs } = require('./lib/metrics-memo.js');
+// One open per project serves every event name asked for (opening a database is the expensive part).
+async function eventsSinceBatch(projects, names, sinceTs) {
+  const store = require('./lib/metrics-store.js');
+  const bound = bucketTs(sinceTs, 3600_000); // rows are re-filtered to the exact bound by the caller: a coarse step costs nothing in accuracy
+  const out = Object.fromEntries(names.map((n) => [n, []]));
+  for (const project of projects) {
+    try {
+      let open = null; // null = not opened yet, then true/false
+      for (const name of names) {
+        const value = _metricsMemo.get(project, `ev:${name}:since:${bound}`, () => {
+          if (open === null) { store.close(); open = store.init({ project }); }
+          return open ? store.getEventLog({ eventName: name, sinceTs: bound }) : undefined;
+        });
+        if (value !== undefined) out[name].push({ project, value });
+      }
+    } catch (err) {
+      console.error(`[DASHBOARD] metrics aggregate failed (${project}): ${err.message}`);
+    }
+  }
+  return out;
+}
+const flattenSince = (perProject, sinceTs) => perProject.flatMap(({ value }) => value.filter((r) => r.ts >= sinceTs));
+async function rowsSince(projects, names, sinceTs) {
+  const byEvent = await eventsSinceBatch(projects, names, sinceTs);
+  return names.flatMap((n) => flattenSince(byEvent[n], sinceTs));
+}
+// What the Home panels read, computed once right after start (a few projects at a time, yielding in between so the server
+// keeps answering) so the first visit finds it in the memo instead of opening every database.
+async function warmHomeMetrics() {
+  try {
+    const { CURATION_EVENTS, ECONOMY_EVENTS } = require('./lib/curation-metrics.js');
+    const { COMPACTION_EVENTS } = require('./lib/compaction-metrics.js');
+    const jobs = [
+      { names: [...CURATION_EVENTS, ...ECONOMY_EVENTS], days: 30 },
+      { names: COMPACTION_EVENTS, days: 30 },
+      { names: ['lesson.captured', 'retrieve.cited', 'retrieve.injected'], days: 30 },
+      { names: TUNING_EVENTS, days: 7 },
+    ];
+    const projects = listMetricsProjects();
+    for (let i = 0; i < projects.length; i += 10) {
+      const chunk = projects.slice(i, i + 10);
+      for (const j of jobs) await eventsSinceBatch(chunk, j.names, Date.now() - j.days * 86400_000);
+      await aggregateAcrossProjects(chunk, (s) => s.getMetricsSummary(7), `summary:7:${bucketTs(Date.now())}`);
+      // The Insights tab's panels (latest-N reads) too, so opening it is as quick as Home.
+      for (const [name, limit] of [[null, 100], ['skill.invoked', 2000], ['skill.outcome', 2000], ['nudge.emitted', 2000], ['lesson.captured', 2000]]) await eventsLatest(chunk, name, limit);
+      await new Promise((r) => setImmediate(r));
+    }
+    if (serverMode()) await serverKbSummary();
+  } catch (err) {
+    console.error(`[DASHBOARD] warm-up of the Home metrics failed (the first visit will compute them): ${err.message}`);
+  }
+}
+const TUNING_EVENTS = ['stop.dispatch', 'nudge.emitted', 'lesson.captured', 'retrieve.fired', 'retrieve.cited'];
+const eventsLatest = (projects, eventName, limit) => aggregateAcrossProjects(projects, (s) => s.getEventLog({ eventName, limit }), `ev:${eventName}:latest:${limit}`);
 
 async function getMetricsSummary(req, res, url) {
   try {
@@ -1371,7 +1459,7 @@ async function getMetricsSummary(req, res, url) {
       return json(res, { rangeDays: range, totals: {}, daily: [], projects: [] });
     }
 
-    const perProject = await aggregateAcrossProjects(projects, s => s.getMetricsSummary(range));
+    const perProject = await aggregateAcrossProjects(projects, s => s.getMetricsSummary(range), `summary:${range}:${bucketTs(Date.now())}`);
 
     const totals = {};
     const dailyMap = new Map(); // `${date}|${event}` → count
@@ -1554,13 +1642,7 @@ async function getValueSummary(req, res, url) {
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
     const EVENTS = ['lesson.captured', 'retrieve.cited', 'retrieve.injected'];
 
-    const rows = [];
-    for (const ev of EVENTS) {
-      const perProject = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName: ev, sinceTs }));
-      for (const { value } of perProject) {
-        for (const r of value) { if (r.ts >= sinceTs) rows.push(r); }
-      }
-    }
+    const rows = await rowsSince(projects, EVENTS, sinceTs);
 
     const { summarize } = require('./lib/value-summary.js');
     const summary = summarize(rows, projectFilter ? { project: projectFilter } : {});
@@ -1581,11 +1663,7 @@ async function getCurationSummary(req, res, url) {
     const projectFilter = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
     const { summarizeCuration, CURATION_EVENTS, ECONOMY_EVENTS } = require('./lib/curation-metrics.js');
-    const rows = [];
-    for (const ev of [...CURATION_EVENTS, ...ECONOMY_EVENTS]) {
-      const perProject = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName: ev, sinceTs }));
-      for (const { value } of perProject) for (const r of value) if (r.ts >= sinceTs) rows.push(r);
-    }
+    const rows = await rowsSince(projects, [...CURATION_EVENTS, ...ECONOMY_EVENTS], sinceTs);
     let shellIds = [];
     const root = url.searchParams.get('root') || '';
     if (root) {
@@ -1623,11 +1701,7 @@ async function getCompactionSummary(req, res, url) {
     const projectFilter = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
     const { summarizeCompaction, COMPACTION_EVENTS } = require('./lib/compaction-metrics.js');
-    const rows = [];
-    for (const ev of COMPACTION_EVENTS) {
-      const perProject = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName: ev, sinceTs }));
-      for (const { value } of perProject) for (const r of value) if (r.ts >= sinceTs) rows.push(r);
-    }
+    const rows = await rowsSince(projects, COMPACTION_EVENTS, sinceTs);
     const cfg = require('./lib/hooks-config.js').getCompaction();
     json(res, { rangeDays: range, projects, config: cfg, ...summarizeCompaction(rows) });
   } catch (err) {
@@ -1678,11 +1752,7 @@ async function getProfileImpact(req, res, url) {
     const sinceTs = Date.now() - range * 86400_000;
     const projectFilter = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
-    const perProject = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName: 'stop.dispatch', sinceTs }));
-    const rows = [];
-    for (const { value } of perProject) {
-      for (const r of value) { if (r.ts >= sinceTs) rows.push(r); }
-    }
+    const rows = await rowsSince(projects, ['stop.dispatch'], sinceTs);
     const { aggregateProfileImpact } = require('./lib/profile-impact.js');
     json(res, { rangeDays: range, ...aggregateProfileImpact(rows) });
   } catch (err) {
@@ -1698,7 +1768,7 @@ async function getMetricsEventLog(req, res, url) {
     const projectFilter = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
 
-    const perProject = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName, limit }));
+    const perProject = await eventsLatest(projects, eventName, limit);
     const all = [];
     for (const { value } of perProject) all.push(...value);
     all.sort((a, b) => b.ts - a.ts);
@@ -1728,8 +1798,8 @@ async function getSkillRoi(req, res, url) {
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
     if (projects.length === 0) return json(res, { skills: [] });
 
-    const inv = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName: 'skill.invoked', limit: 2000 }));
-    const out = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName: 'skill.outcome', limit: 2000 }));
+    const inv = await eventsLatest(projects, 'skill.invoked', 2000);
+    const out = await eventsLatest(projects, 'skill.outcome', 2000);
     const allInv = []; for (const { value } of inv) allInv.push(...value);
     const allOut = []; for (const { value } of out) allOut.push(...value);
     json(res, { skills: aggregateSkillRoi(allInv, allOut) });
@@ -2365,8 +2435,8 @@ async function getCaptureRate(req, res, url) {
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
     if (projects.length === 0) return json(res, { byKind: {}, spontaneous: {} });
 
-    const nud = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName: 'nudge.emitted', limit: 2000 }));
-    const cap = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName: 'lesson.captured', limit: 2000 }));
+    const nud = await eventsLatest(projects, 'nudge.emitted', 2000);
+    const cap = await eventsLatest(projects, 'lesson.captured', 2000);
     const events = [];
     for (const { value } of nud) events.push(...value);
     for (const { value } of cap) events.push(...value);
@@ -2385,17 +2455,13 @@ async function getTuningRecommendations(req, res, url) {
     const sinceTs = Date.now() - range * 86400_000;
     const projectFilter = sanitizeLogicalProjectId(url.searchParams.get('project') || '');
     const projects = projectFilter ? [projectFilter] : listMetricsProjects();
-    const gather = async (eventName) => {
-      const per = await aggregateAcrossProjects(projects, s => s.getEventLog({ eventName, sinceTs }));
-      const rows = [];
-      for (const { value } of per) for (const r of value) { if (r.ts >= sinceTs) rows.push(r); }
-      return rows;
-    };
-    const dispatch = await gather('stop.dispatch');
-    const nudges = await gather('nudge.emitted');
-    const caps = await gather('lesson.captured');
-    const fired = (await gather('retrieve.fired')).length;
-    const cited = (await gather('retrieve.cited')).length;
+    const byEvent = await eventsSinceBatch(projects, TUNING_EVENTS, sinceTs);
+    const gather = (eventName) => flattenSince(byEvent[eventName], sinceTs);
+    const dispatch = gather('stop.dispatch');
+    const nudges = gather('nudge.emitted');
+    const caps = gather('lesson.captured');
+    const fired = gather('retrieve.fired').length;
+    const cited = gather('retrieve.cited').length;
     const { aggregateProfileImpact } = require('./lib/profile-impact.js');
     const { analyze } = require('./lib/tuning-advisor.js');
     const activeProfile = hooksConfig.getProfile();
@@ -2583,6 +2649,7 @@ server.listen(PORT, '127.0.0.1', () => {
       { port, token: SESSION_TOKEN, startTime: SERVER_START_TIME, pid: process.pid, pluginRoot: ROOT }
     );
   } catch (err) { console.error(`[DASHBOARD] Failed to write dashboard.json: ${err.message}`); }
+  warmHomeMetrics();
   const browser = { win32: 'start', darwin: 'open', linux: 'xdg-open' }[process.platform];
   if (browser && !process.env.DASHBOARD_NO_OPEN) {
     try { execSync(`${browser} http://localhost:${port}`, { stdio: 'ignore', timeout: 5000, windowsHide: true }); } catch (err) { console.error(`[DASHBOARD] Browser open failed: ${err.message}`); }
@@ -2599,4 +2666,4 @@ if (require.main === module) startDashboardServer();
 // exported so a test can call it with a fake res ({writeHead,end}) and assert
 // on the exact JSON it serializes — otherwise a bug in byokSafe (e.g. `x || null`
 // silently turning a valid `0` into `null`) would never be caught by any test.
-module.exports = { getDoctorSwitchedOff, postDoctorUndo, getDoctorConfig, saveDoctorConfig, writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField, postPluginUpdate, getProjectMarker, saveProjectMarker };
+module.exports = { getValueSummary, getTuningRecommendations, _metricsMemo, getDoctorSwitchedOff, postDoctorUndo, getDoctorConfig, saveDoctorConfig, writeRouterOverride, resolveRouterFlags, getRouterConfig, fetchByokModelIds, getByokModels, opensWithField, postPluginUpdate, getProjectMarker, saveProjectMarker };
