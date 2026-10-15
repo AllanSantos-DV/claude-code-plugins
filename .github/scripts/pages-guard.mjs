@@ -14,7 +14,8 @@
  * `pages/<name>/index.html` must exist and carry a `pages/<name>/.source-hash`
  * equal to the hash of that plugin's page SOURCES (README + CHANGELOG +
  * plugin.json). Edit the sources without redrawing the page → hash drifts →
- * merge blocked.
+ * merge blocked. The page must also keep the layer rule: no changelog on the
+ * presentation (see presentationViolations) → state `layers`, merge blocked.
  *
  * Usage:
  *   node .github/scripts/pages-guard.mjs check          # gate: exit 1 if any stale/missing
@@ -25,7 +26,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..', '..'); // .github/scripts -> repo root
@@ -74,6 +75,42 @@ function sourceHash(pluginDir) {
   return h.digest('hex');
 }
 
+/**
+ * Layer rule (Allan, 2026-10-15): the presentation page (`index.html`) is for
+ * people meeting the product — value proposition and features only. Version
+ * history lives on its own page (`changelog.html` or the GitHub CHANGELOG.md),
+ * linked discreetly; architecture lives on the technical page (`tech.html`).
+ * The boss page drifted into a wall of "Na 3.1.1, … Na 3.2.0, …" paragraphs
+ * under a feature section, so this is checked, not trusted.
+ *
+ * Returns a list of violations (empty = clean). Allowed on the presentation:
+ * the version tag in the brand/nav (`<small>v1.2.3</small>`, `class="ver"`),
+ * anything inside <footer>, and links whose href points at the changelog.
+ */
+export function presentationViolations(html) {
+  const out = [];
+  if (!/href="[^"]*(changelog\.html|CHANGELOG\.md)[^"]*"/i.test(html)) {
+    out.push('sem link para o changelog (changelog.html ou CHANGELOG.md) - o historico precisa de uma pagina propria, linkada no rodape ou menu');
+  }
+  if (/\b(id|class)="[^"]*\b(changelog|versoes|versions|release-notes)\b[^"]*"/i.test(html)) {
+    out.push('bloco de changelog/versoes (id/class) na apresentacao');
+  }
+  const text = html
+    .replace(/<head[\s\S]*?<\/head>/gi, ' ')
+    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+    .replace(/<footer[\s\S]*?<\/footer>/gi, ' ')
+    .replace(/<a\b[^>]*href="[^"]*(changelog\.html|CHANGELOG\.md)[^"]*"[^>]*>[\s\S]*?<\/a>/gi, ' ')
+    .replace(/<a\b[^>]*class="[^"]*\bver\b[^"]*"[^>]*>[\s\S]*?<\/a>/gi, ' ')
+    .replace(/<small>\s*v?\d+\.\d+\.\d+\s*<\/small>/gi, ' ')
+    .replace(/<[^>]+>/g, ' ');
+  const semver = text.match(/\bv?\d+\.\d+\.\d+\b/g);
+  if (semver) out.push(`numero de versao no texto da apresentacao: ${[...new Set(semver)].slice(0, 5).join(', ')}`);
+  const phrase = text.match(/\b(novo na \d|novidades? d[ao] \d|na \d+\.\d+\b|changelog|release notes|what's new)/i);
+  if (phrase) out.push(`texto de changelog na apresentacao: "${phrase[0]}"`);
+  return out;
+}
+
 function stampPath(name) { return path.join(PAGES_DIR, name, '.source-hash'); }
 function pagePath(name) { return path.join(PAGES_DIR, name, 'index.html'); }
 
@@ -88,9 +125,14 @@ function statusOf(p) {
   const hasPage = fs.existsSync(pagePath(p.name));
   const have = readStamp(p.name);
   let state = 'ok';
+  let layers = [];
   if (!hasPage || !have) state = 'missing';
   else if (have !== want) state = 'stale';
-  return { name: p.name, state, want, have };
+  if (hasPage) {
+    layers = presentationViolations(fs.readFileSync(pagePath(p.name), 'utf8'));
+    if (state === 'ok' && layers.length) state = 'layers';
+  }
+  return { name: p.name, state, want, have, layers };
 }
 
 function cmdCheck() {
@@ -104,8 +146,11 @@ function cmdCheck() {
   const lines = bad.map((r) => {
     const why = r.state === 'missing'
       ? `pagina ausente (pages/${r.name}/index.html)`
-      : `pagina desatualizada (fontes mudaram)`;
-    return `  - ${r.name}: ${why}`;
+      : r.state === 'stale'
+        ? `pagina desatualizada (fontes mudaram)`
+        : `apresentacao com changelog (mova para changelog.html): ${r.layers.join('; ')}`;
+    const extra = r.state !== 'layers' && r.layers.length ? `\n      e: ${r.layers.join('; ')}` : '';
+    return `  - ${r.name}: ${why}${extra}`;
   });
   process.stderr.write(
     `\n[pages-guard] MERGE BLOQUEADO - a pagina de ${bad.length} plugin(s) precisa ser desenhada/atualizada:\n` +
@@ -146,11 +191,17 @@ function cmdList() {
   process.stdout.write(JSON.stringify(plugins.map(statusOf), null, 2) + '\n');
 }
 
-const [cmd, arg] = process.argv.slice(2);
-switch (cmd || 'check') {
-  case 'check': cmdCheck(); break;
-  case 'stamp': cmdStamp(arg); break;
-  case 'hash': cmdHash(arg); break;
-  case 'list': cmdList(); break;
-  default: fail(`comando desconhecido: ${cmd} (use check|stamp|hash|list)`);
+// CLI only when run directly, so tests can import presentationViolations.
+const invokedDirectly = process.argv[1]
+  && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (invokedDirectly) {
+  const [cmd, arg] = process.argv.slice(2);
+  switch (cmd || 'check') {
+    case 'check': cmdCheck(); break;
+    case 'stamp': cmdStamp(arg); break;
+    case 'hash': cmdHash(arg); break;
+    case 'list': cmdList(); break;
+    default: fail(`comando desconhecido: ${cmd} (use check|stamp|hash|list)`);
+  }
 }
