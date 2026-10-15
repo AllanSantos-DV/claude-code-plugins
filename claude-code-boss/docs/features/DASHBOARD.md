@@ -36,7 +36,6 @@ Ver [features/MODEL-ROUTER.md](./MODEL-ROUTER.md) para o guia completo. Resumo d
 | Card hero | Modo atual ao vivo (dot colorido + label) |
 | Sticky Router | Toggle principal (recomendado) |
 | Fallback 429 | Rede de seguranca de limite |
-| Routing per-turn | Deprecado (quebra cache) |
 | Chave NVIDIA / BYOK | Credenciais locais (0600) |
 | **Desligar tudo** | Master-off: zera tudo, mata daemon, limpa settings.json — sincrono |
 | Salvar & aplicar | Grava user-config + reinicia daemon com config nova |
