@@ -38,6 +38,12 @@ const VALID_EVENT_NAME = /^[a-z][a-z0-9._-]{1,63}$/;
 let _db = null;
 let _floor = 0; // carried-over floor of the open db (floorFor)
 let _project = null;
+// Open connections by project, least recently used first. The daemon serves several
+// sessions at once: with one connection, every interleaved hook paid close + open +
+// pragmas + CREATE IF NOT EXISTS + migration check (5,35 ms vs 0,10 ms per insert).
+const MAX_OPEN = 8;
+const _open = new Map(); // project -> { db, insert }
+let _insert = null;
 
 function metricsDir(project) {
   return path.join(STORE_DIR, 'metrics', project);
@@ -111,23 +117,46 @@ function migrateLegacyIfNeeded(project, db) {
 /** Open (or reuse) the metrics DB for `project`. Never throws; false = unavailable. */
 function init({ project = 'default' } = {}) {
   if (_db && _project === project) return true;
-  if (_db) close();
-  const Database = loadSqlite();
-  if (!Database) return false;
-  try {
-    fs.mkdirSync(metricsDir(project), { recursive: true });
-    _db = new Database(dbPath(project));
-    _db.pragma('journal_mode = WAL');
-    _db.pragma('synchronous = NORMAL');
-    _db.pragma('busy_timeout = 5000');
-    createTables(_db);
+  const cached = _open.get(project);
+  if (cached) {
+    _open.delete(project);
+    _open.set(project, cached); // most recently used
+    _db = cached.db;
+    _insert = cached.insert;
     _project = project;
     _floor = floorFor(project);
-    migrateLegacyIfNeeded(project, _db);
+    return true;
+  }
+  const Database = loadSqlite();
+  if (!Database) return false;
+  let db = null;
+  try {
+    fs.mkdirSync(metricsDir(project), { recursive: true });
+    db = new Database(dbPath(project));
+    db.pragma('journal_mode = WAL');
+    db.pragma('synchronous = NORMAL');
+    db.pragma('busy_timeout = 5000');
+    createTables(db);
+    migrateLegacyIfNeeded(project, db);
+    const insert = db.prepare(
+      `INSERT INTO metrics_event (ts, event_name, payload, session_id, project) VALUES (?, ?, ?, ?, ?)`
+    );
+    while (_open.size >= MAX_OPEN) {
+      const [oldest, entry] = _open.entries().next().value;
+      _open.delete(oldest);
+      try { entry.db.close(); } catch (err) { console.error(`[metrics-store] close failed (${oldest}): ${err.message}`); }
+    }
+    _open.set(project, { db, insert });
+    _db = db;
+    _insert = insert;
+    _project = project;
+    _floor = floorFor(project);
     return true;
   } catch (err) {
     console.error(`[metrics-store] init failed (${project}): ${err.message}`);
+    if (db) { try { db.close(); } catch (e) { void e; } }
     _db = null;
+    _insert = null;
     _project = null;
     return false;
   }
@@ -135,9 +164,12 @@ function init({ project = 'default' } = {}) {
 
 function isReady() { return !!_db; }
 
+/** Close every open connection (callers use it to release the DB files). */
 function close() {
-  if (_db) { try { _db.close(); } catch { /* noop */ } }
+  for (const { db } of _open.values()) { try { db.close(); } catch { /* noop */ } }
+  _open.clear();
   _db = null;
+  _insert = null;
   _floor = 0;
   _project = null;
 }
@@ -151,9 +183,7 @@ function safeParseJson(s) {
 function recordMetric(eventName, payload, sessionId) {
   if (!_db || !eventName || !VALID_EVENT_NAME.test(eventName)) return 0;
   try {
-    const info = _db.prepare(
-      `INSERT INTO metrics_event (ts, event_name, payload, session_id, project) VALUES (?, ?, ?, ?, ?)`
-    ).run(
+    const info = _insert.run(
       Date.now(), eventName, payload ? JSON.stringify(payload) : null, sessionId || null, _project || null,
     );
     return Number(info.lastInsertRowid) || 0;
@@ -408,4 +438,5 @@ module.exports = {
   getMetricsSummary, cleanupMetrics,
   listProjects, _dbPath: dbPath,
   _getDbForTests: () => _db,
+  _openCountForTests: () => _open.size,
 };
