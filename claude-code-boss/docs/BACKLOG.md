@@ -23,6 +23,12 @@ Sem achado blocking (credencial, RCE, vazamento). Cada achado foi conferido cont
 - [x] **Registrado — o embedder-guard força `none` depois de um único aborto nativo** (`scripts/lib/embedder-guard.js`): o código 134 inclui OOM do V8, e o override dura
   até mudar a versão do plugin, do Node ou do modelo (logado e visível no doctor). No primeiro boot por chave o recall pode esperar até 180 s pelo teste de carga
   (`embed-worker-client.js`). Documentado; limitar a espera por chamada é melhoria opcional.
+- [x] **Corrigido na hora — teste `folder-ttl.report` só passava no Windows** (`scripts/test-units.js`, achado pela CI da `main` no Linux, que não roda na `develop`): usava o caminho da
+  pasta em maiúsculas como "a mesma pasta"; só no Windows isso é a mesma pasta (`folderKey` mantém a caixa nos outros SOs), no Linux era outro caminho e o `report` devolvia `error`.
+  A variação de caixa passou a valer só no Windows.
+- [x] **Registrado — `test-units.js` pode sair com código 1 mesmo com 1601 passando e 0 falhando**: no Windows, a limpeza da pasta temporária do teste falha com `EPERM`
+  (`[test-temp] cleanup failed (EPERM)`, depois do teste do supervisor que sobe o daemon num Node 24), e o script curado devolve `FAIL`. A rodada simples anterior saiu com código 0;
+  é intermitente e só afeta o código de saída local. Causa provável: um processo do daemon ainda segurando a pasta; não investigado.
 - **Não confirmado pelo auditor (sem evidência de defeito)**: `doctor --fix` usa `~/.claude` fixo com `CLAUDE_CONFIG_DIR` diferente; `claude mcp remove -s local` a partir do `cwd` do hook.
 
 ## Auto-update do marketplace sobrescreve o build local (pedido do orquestrador, 2026-10-15) — causa verificada, não é defeito do plugin
