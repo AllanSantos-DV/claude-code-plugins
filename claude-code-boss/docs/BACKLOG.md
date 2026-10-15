@@ -46,8 +46,10 @@ Relatórios: `docs/research/checkup/` (local). Tudo abaixo marcado [x] tem teste
   `capture_lesson` (local `kbStore.merge` e servidor mcp-memory): o merge só sobe recorrência e confiança, e o sobrevivente fica com o
   próprio título, summary e detalhe. Testes Q42 e Q53 (falham sem a correção). As entradas já mescladas antes disso continuam com o par
   misturado (o texto original não foi guardado); a próxima exportação delas deve ser revista à mão.
-- [ ] **Filas de captura com id de projeto legado** (`github_com_allansantos-dv_claude-code-plugins`, 327 ciclos) não são adotadas por sessões
-  com o id novo (`AllanSantos-DV/claude-code-plugins`). Proposta: mapa de aliases de id no `adoptOrphans`.
+- [x] **Filas de captura com id de projeto legado** (`github_com_allansantos-dv_claude-code-plugins`, 327 ciclos) não são adotadas por sessões
+  com o id novo (`AllanSantos-DV/claude-code-plugins`). Na máquina: 47 arquivos, 902 ciclos em ids legados. Corrigido: para um id
+  `owner/repo`, o `adoptOrphans` também lê as filas `github_com|gitlab_com|bitbucket_org_owner_repo` (minúsculas). Teste
+  `adoptOrphans: a fila do id LEGADO` (falha sem a correção; outro repo do mesmo dono e id sem `/` ficam de fora).
 - [x] **Painel: eventos sem leitor** ganharam leitor. O painel de curadoria conta os bloqueios do Stop (`curation.stop.*`: bloqueou,
   resolvido, desistiu), a correção de escape do Bash (`shell-escape.*`, inclusive o resumo diário das linhas compactadas) e os detectores
   do Stop que falharam (`stop.detector.error`); a eficácia do loop mostra o funil da oferta de captura (`capture.*`). Teste `leitores:`.

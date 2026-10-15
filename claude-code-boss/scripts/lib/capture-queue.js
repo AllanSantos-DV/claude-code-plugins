@@ -250,6 +250,17 @@ function releaseOffer(project, sid) {
 // belong to the project, not to that session.
 const ORPHAN_STALE_MS = 24 * 3600e3;
 const ADOPT_CHECK_EVERY_MS = 3600e3;
+// Before the `owner/repo` ids, a project was keyed by its lowercased remote host + path
+// (`github_com_owner_repo`); those queues (327 cycles for this repo alone) are the same project.
+const LEGACY_HOSTS = ['github_com', 'gitlab_com', 'bitbucket_org'];
+
+/** File prefixes of this project's queues: the current id and, for an `owner/repo` id, its legacy host-keyed form. */
+function _queuePrefixes(project) {
+  const out = [`capture-queue-${sanitizeSessionId(project)}--`];
+  const m = /^([^/\\]+)\/([^/\\]+)$/.exec(String(project));
+  if (m) for (const h of LEGACY_HOSTS) out.push(`capture-queue-${sanitizeSessionId(`${h}_${m[1]}_${m[2]}`.toLowerCase())}--`);
+  return out;
+}
 
 /**
  * Move the queued cycles of ended sessions of the SAME project into this session's queue
@@ -264,13 +275,13 @@ function adoptOrphans(project, sid, { now = Date.now(), staleMs = ORPHAN_STALE_M
   const own = _load(project, sid);
   if (!force && now - (own.adoptCheckedAt || 0) < ADOPT_CHECK_EVERY_MS) return out;
   const dir = _runtimeDir();
-  const prefix = `capture-queue-${sanitizeSessionId(project)}--`;
+  const prefixes = _queuePrefixes(project);
   const ownName = path.basename(_file(project, sid));
   let names = [];
   try { names = fs.readdirSync(dir); } catch (err) { if (err.code !== 'ENOENT') console.error(`[capture-queue] adopt: ${err.message}`); }
   const orphans = [];
   for (const n of names) {
-    if (!n.startsWith(prefix) || !n.endsWith('.json') || n === ownName) continue;
+    if (!prefixes.some((p) => n.startsWith(p)) || !n.endsWith('.json') || n === ownName) continue;
     try { const mtime = fs.statSync(path.join(dir, n)).mtimeMs; if (now - mtime > staleMs) orphans.push({ n, mtime }); } catch (err) { void err; }
   }
   orphans.sort((a, b) => a.mtime - b.mtime);
