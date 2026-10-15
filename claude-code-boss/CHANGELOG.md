@@ -60,7 +60,11 @@
   instalação; duas sessões juntas não repetem): roda todos os checks, aplica só as correções de custo fixo e de configuração do boss e
   mostra o que achou, o que mudou e como desfazer. Config `fixedCost` (`enabled`, `autoFix`, `days` 7–180, `keep` = nomes que nunca
   são mexidos).
-- **Provider de embedder `none`** (dashboard, config-tester, skill `embedder-switch`): sem modelo e sem busca semântica, só palavra-chave.
+- **Provider de embedder `none`: rede de segurança, nunca o padrão.** O padrão continua `transformers`, com busca semântica
+  ligada. O `none` (só palavra-chave, sem modelo) só entra sozinho numa máquina onde o onnxruntime derruba o processo ao carregar
+  o modelo (teste de carga, uma vez por versão do plugin, do Node e do modelo), e sai sozinho quando o teste volta a passar.
+  Sem ele, o daemon caía de novo a cada prompt. Também dá para escolher à mão (dashboard, config-tester, skill
+  `embedder-switch`), por exemplo para não baixar o modelo. Nesta instalação o teste passou: a busca semântica segue ligada.
 - **Doctor: `embedder-guard`.** Warn quando a busca semântica está desligada pelo teste de carga, com o motivo, a data e como voltar.
 
 ## [3.8.0] - 2026-10-14
