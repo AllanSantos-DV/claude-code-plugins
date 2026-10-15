@@ -16357,6 +16357,72 @@ test('mcp-bootstrap: MANIFEST.json is current (edit a shared file → run "node 
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
 
+// ─── Motor compartilhado (engine core): fronteira, manifesto e o ponto de configuracao do host ──
+test('engine: ENGINE-MANIFEST.json esta atual e o fechamento de require de cada arquivo listado fica DENTRO da lista, sem adaptador do Claude Code; CLAUDE_* so nos dois seams', async () => {
+  const sync = require('./lib/mcp-bootstrap/sync.js');
+  const manifestFile = path.join(ROOT, 'ENGINE-MANIFEST.json');
+  const here = await sync.checkListed({ manifest: manifestFile });
+  assert(here.ok, `engine manifest is stale (edit a listed file → node scripts/lib/mcp-bootstrap/sync.js stamp --manifest ENGINE-MANIFEST.json): ${here.problems.join(' | ')}`);
+  const m = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+  const listed = new Set(Object.keys(m.files));
+  const seams = new Set(m.seams);
+  const FORBIDDEN = /(^|\/)(hook-io|hook-context|hook-tools|hook-prefix|hook-owner|session-root|crash-evidence)\.js$/;
+  const reqRe = /require\(\s*['"]([^'"]+)['"]\s*\)/g;
+  const problems = [];
+  for (const rel of listed) {
+    const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
+    if (/process\.env\.CLAUDE_[A-Z_]+/.test(src) && !seams.has(rel)) problems.push(`${rel} reads process.env.CLAUDE_*`);
+    for (const mm of src.matchAll(reqRe)) {
+      if (!mm[1].startsWith('.')) continue;
+      let target = path.posix.normalize(path.posix.join(path.posix.dirname(rel), mm[1]));
+      if (!/\.(c|m)?js$/.test(target)) target += '.js';
+      if (FORBIDDEN.test(target)) problems.push(`${rel} requires the adapter ${target}`);
+      else if (fs.existsSync(path.join(ROOT, target)) && !listed.has(target)) problems.push(`${rel} requires ${target}, which is not in the engine manifest`);
+    }
+  }
+  assertEq(problems, []);
+});
+
+test('engine: data-dir.setDataDir — um host que nao e o Claude Code passa o proprio data dir e nenhuma resolucao do CC roda', () => {
+  const dd = require('./lib/data-dir.js');
+  const host = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-host-'));
+  try {
+    dd.setDataDir(host);
+    assertEq(dd.dataDir(), path.resolve(host));
+    const prev = process.env.CLAUDE_PLUGIN_DATA;
+    process.env.CLAUDE_PLUGIN_DATA = path.join(os.tmpdir(), 'ignored-cc-data');
+    try { assertEq(dd.dataDir(), path.resolve(host), 'the host value wins over CLAUDE_PLUGIN_DATA'); } finally { if (prev === undefined) delete process.env.CLAUDE_PLUGIN_DATA; else process.env.CLAUDE_PLUGIN_DATA = prev; }
+  } finally { dd.setDataDir(null); fs.rmSync(host, { recursive: true, force: true }); }
+  assert(dd.dataDir() !== path.resolve(host), 'null goes back to the Claude Code resolution');
+});
+
+test('engine: sync.js --manifest (vendorizacao generalizada) — copia nova em dia; arquivo editado, ausente ou atras do upstream e apontado; CRLF nao conta', async () => {
+  const sync = require('./lib/mcp-bootstrap/sync.js');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-engsync-'));
+  try {
+    const up = path.join(base, 'up'); const copy = path.join(base, 'copy');
+    for (const d of [up, copy]) { fs.mkdirSync(path.join(d, 'a', 'b'), { recursive: true }); fs.writeFileSync(path.join(d, 'a', 'b', 'x.js'), 'x\n'); fs.writeFileSync(path.join(d, 'y.js'), 'y\n'); }
+    const man = (d) => { const p = path.join(d, 'M.json'); fs.writeFileSync(p, JSON.stringify({ root: '.', files: { 'a/b/x.js': '', 'y.js': '' } })); return p; };
+    sync.stampListed(man(up)); fs.copyFileSync(path.join(up, 'M.json'), path.join(copy, 'M.json'));
+    assert((await sync.checkListed({ manifest: path.join(copy, 'M.json'), upstream: path.join(up, 'M.json') })).ok, 'fresh copy in sync');
+    fs.writeFileSync(path.join(copy, 'y.js'), 'y\r\n');
+    assert((await sync.checkListed({ manifest: path.join(copy, 'M.json') })).ok, 'CRLF is not a change');
+    fs.writeFileSync(path.join(copy, 'a', 'b', 'x.js'), 'patched\n');
+    let r = await sync.checkListed({ manifest: path.join(copy, 'M.json') });
+    assert(!r.ok && /a\/b\/x\.js/.test(r.problems[0]), JSON.stringify(r));
+    fs.rmSync(path.join(copy, 'y.js'));
+    r = await sync.checkListed({ manifest: path.join(copy, 'M.json') });
+    assert(!r.ok && /y\.js/.test(r.problems[0]), 'missing file reported');
+    fs.writeFileSync(path.join(up, 'y.js'), 'y2\n'); sync.stampListed(path.join(up, 'M.json'));
+    fs.writeFileSync(path.join(copy, 'y.js'), 'y\n'); fs.writeFileSync(path.join(copy, 'a', 'b', 'x.js'), 'x\n');
+    r = await sync.checkListed({ manifest: path.join(copy, 'M.json'), upstream: path.join(up, 'M.json') });
+    assert(!r.ok && /differs from upstream/.test(r.problems[0]) && /y\.js/.test(r.problems[0]), JSON.stringify(r));
+    const cli = (args) => require('child_process').spawnSync(process.execPath, [path.join(SCRIPTS, 'lib', 'mcp-bootstrap', 'sync.js'), ...args], { encoding: 'utf8', windowsHide: true });
+    assertEq(cli(['check', '--manifest', path.join(ROOT, 'ENGINE-MANIFEST.json')]).status, 0);
+    assertEq(cli(['check', '--manifest']).status, 2, 'missing manifest value is a usage error');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});
+
 test('mcp-bootstrap.ensureLocalDaemon: live launcher → reused, nothing installed; no launcher → Java → download → --install-launcher → start; no Java → fail loud', async () => {
   const { ensureLocalDaemon } = require('./lib/mcp-bootstrap/install.js');
   const mk = ({ missingFirst, jar }) => {
