@@ -94,7 +94,7 @@ function dataDir() {
 }
 
 function counterPath(dir, sid) {
-  const safe = String(sid).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64) || 'default';
+  const safe = require('./lib/session-id.js').sanitizeSessionId(sid);
   return path.join(dir, '.runtime', `verify-nudge-${safe}.json`);
 }
 

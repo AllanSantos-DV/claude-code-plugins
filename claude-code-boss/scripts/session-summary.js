@@ -29,7 +29,7 @@ function dataDir() {
 }
 
 function safeSid(sid) {
-  return String(sid).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64) || 'default';
+  return require('./lib/session-id.js').sanitizeSessionId(sid);
 }
 
 function startStampPath(dir, sid) {

@@ -31,7 +31,7 @@ const { dataDir } = require('./lib/data-dir.js');
 const DATA_DIR = dataDir();
 
 function settledPath(sid) {
-  const safe = String(sid).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64) || 'default';
+  const safe = require('./lib/session-id.js').sanitizeSessionId(sid);
   return path.join(DATA_DIR, '.runtime', `skill-outcome-settled-${safe}.json`);
 }
 

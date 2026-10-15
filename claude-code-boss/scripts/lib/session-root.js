@@ -31,7 +31,8 @@ const _memo = new Map();
 const _rootIndex = new Map();
 const ROOT_INDEX_MAX = 16;
 
-const safeId = (sid) => String(sid || '').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64);
+// No id → '' (the callers treat it as "nothing to record"), else the shared sanitizer.
+const safeId = (sid) => (sid ? require('./session-id.js').sanitizeSessionId(sid) : '');
 const dirOf = (base) => path.join(base || dataDir(), '.runtime', 'session-roots');
 
 /**

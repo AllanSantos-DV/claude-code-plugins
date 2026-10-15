@@ -200,7 +200,7 @@ function writeReadyCache(file, state, nodes = 0, nowMs = Date.now()) {
 }
 
 function stampPath(dataDir, sid) {
-  const safe = String(sid).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 64) || 'default';
+  const safe = require('./session-id.js').sanitizeSessionId(sid);
   return path.join(dataDir, '.runtime', `graph-guard-${safe}.json`);
 }
 

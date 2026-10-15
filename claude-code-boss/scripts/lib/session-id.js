@@ -15,7 +15,8 @@ const PATTERN = /[^a-zA-Z0-9_-]/g;
  * @returns {string} — safe basename component
  */
 function sanitizeSessionId(id) {
-  return String(id == null ? 'default' : id).replace(PATTERN, '_').slice(0, MAX_LEN);
+  // Empty → 'default' as well: an empty name made `<prefix>-.json` journal files.
+  return String(id == null ? '' : id).replace(PATTERN, '_').slice(0, MAX_LEN) || 'default';
 }
 
 module.exports = { sanitizeSessionId };
