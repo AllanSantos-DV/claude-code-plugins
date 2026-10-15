@@ -57,7 +57,7 @@ function installedPluginRoots(home, errors) {
   const out = [];
   for (const [id, entries] of Object.entries((ip && ip.plugins) || {})) {
     const e = Array.isArray(entries) ? entries[entries.length - 1] : entries;
-    if (e && e.installPath) out.push({ id, name: id.split('@')[0], installPath: e.installPath, version: e.version || '' });
+    if (e && e.installPath) out.push({ id, name: id.split('@')[0], installPath: e.installPath, version: e.version || '', installedAt: Date.parse(e.installedAt) || null });
   }
   return out;
 }
@@ -356,7 +356,7 @@ function listPlugins({ home = os.homedir() } = {}) {
   const errors = [];
   const settings = _readJsonOrNull(path.join(home, '.claude', 'settings.json'), errors) || {};
   const enabled = settings.enabledPlugins || {};
-  const plugins = installedPluginRoots(home, errors).map((p) => ({ id: p.id, name: p.name, version: p.version, enabled: enabled[p.id] !== false }));
+  const plugins = installedPluginRoots(home, errors).map((p) => ({ id: p.id, name: p.name, version: p.version, installedAt: p.installedAt, enabled: enabled[p.id] !== false }));
   return { plugins, errors };
 }
 
@@ -381,6 +381,9 @@ function listInstructionFiles({ home = os.homedir(), cwd = process.cwd() } = {})
 // ── the audit (pure) ─────────────────────────────────────────────────────────
 
 const usedRecently = (u, cutoff) => !!(u && u.usageCount > 0 && u.lastUsedAt >= cutoff);
+
+// A plugin younger than this has not had a fair chance to be used: never judged, whatever its counters say.
+const PLUGIN_MIN_AGE_DAYS = 14;
 
 /**
  * Turn the gathered facts into verdicts, token numbers and the list of reversible actions.
@@ -460,15 +463,42 @@ function buildAudit(f) {
     }
   }
 
+  // Plugins are judged on real use and on what they cost, never on the clock alone. A plugin is only switched off when it
+  // (1) adds something to every message (listed skills / MCP tool names), (2) is old enough to have had a chance to be
+  // used, (3) has enough history behind the verdict, and (4) shows NO use in the window: neither Claude Code's own counter
+  // nor a call to one of its MCP servers (a server whose login lasts minutes still counts as used: it was called).
+  const dAgo = (t) => (t ? `${Math.max(0, Math.round((now - t) / DAY))}d ago` : 'never');
   const plugins = (f.plugins || []).map((p) => {
     const hits = Object.entries(counters.pluginUsage).filter(([k]) => k === p.id || k.split('@')[0] === p.name);
-    const usedP = hits.some(([, u]) => usedRecently(u, cutoff));
-    return { ...p, used: usedP };
+    const uses = hits.reduce((n, [, u]) => n + (u.usageCount || 0), 0);
+    const counterLast = hits.reduce((m, [, u]) => Math.max(m, u.lastUsedAt || 0), 0);
+    const mcpRows = mcp.filter((r) => r.scope === 'plugin' && r.name.startsWith(`plugin:${p.name}:`));
+    const mcpCalls = mcpRows.reduce((n, r) => n + r.calls, 0);
+    const lastUsedAt = Math.max(counterLast, ...mcpRows.map((r) => r.lastAt || 0));
+    const used = hits.some(([, u]) => usedRecently(u, cutoff)) || mcpCalls > 0;
+    const cost = skills.filter((s) => s.source === `plugin:${p.name}`).reduce((n, s) => n + s.listedNow, 0) + mcpRows.reduce((n, r) => n + (r.perMessageTokens || 0), 0);
+    const ageDays = p.installedAt ? Math.max(0, (now - p.installedAt) / DAY) : null;
+    const neverLoggedIn = mcpRows.some((r) => r.needsAuth);
+    const row = { ...p, used, uses, lastUsedAt, mcpCalls, cost, ageDays, verdict: 'keep', reason: '' };
+    if (!p.enabled) { row.verdict = 'disabled'; row.reason = 'already disabled'; return row; }
+    if (p.name === 'claude-code-boss') { row.reason = 'this plugin is never switched off'; return row; }
+    if (keep.has(p.id) || keep.has(p.name)) { row.reason = 'kept by fixedCost.keep (or given back by you)'; return row; }
+    if (used) { row.reason = `used: ${uses} counted use(s), ${mcpCalls} MCP call(s) in ${days}d, last ${dAgo(lastUsedAt)}`; return row; }
+    if (cost === 0) { row.reason = 'adds nothing to each message (hooks, agents or commands only): nothing to save'; return row; }
+    if (ageDays == null) { row.reason = 'install date unknown: not judged'; return row; }
+    if (ageDays < PLUGIN_MIN_AGE_DAYS) { row.reason = `installed ${Math.round(ageDays)}d ago: too recent to judge (needs ${PLUGIN_MIN_AGE_DAYS}d)`; return row; }
+    if (!enoughHistory) { row.reason = `only ${historyDays.toFixed(0)} day(s) of history: not enough to call it unused`; return row; }
+    row.verdict = 'unused';
+    if (uses === 0 && mcpCalls === 0) {
+      row.reason = neverLoggedIn
+        ? `never authenticated and never used since it was installed ${Math.round(ageDays)}d ago`
+        : `never used since it was installed ${Math.round(ageDays)}d ago`;
+    } else row.reason = `last used ${dAgo(lastUsedAt)} (${uses} use(s) in total), none in the last ${days} days`;
+    return row;
   });
   for (const p of plugins) {
-    if (!p.enabled || p.used || p.name === 'claude-code-boss' || keep.has(p.id) || keep.has(p.name)) continue;
-    const owned = skills.filter((s) => s.source === `plugin:${p.name}`);
-    actions.push({ kind: 'plugin-disable', target: p.id, tokens: owned.reduce((n, s) => n + s.listedNow, 0), why: `installed but not used in the last ${days} days (Claude Code's own pluginUsage)` });
+    if (p.verdict !== 'unused') continue;
+    actions.push({ kind: 'plugin-disable', target: p.id, tokens: p.cost, why: p.reason });
   }
 
   const sum = (rows, k) => rows.reduce((n, r) => n + (r[k] || 0), 0);
@@ -627,7 +657,7 @@ function applyActions(actions, { home = os.homedir(), env = process.env, run = h
   const results = [];
   for (const a of actions) {
     if (only && !only.includes(a.kind)) continue;
-    const entry = { id: `${Date.now().toString(36)}-${results.length}`, at: new Date().toISOString(), kind: a.kind, target: a.target };
+    const entry = { id: `${Date.now().toString(36)}-${results.length}`, at: new Date().toISOString(), kind: a.kind, target: a.target, why: a.why || null, tokens: a.tokens || 0 };
     try {
       if (a.kind === 'mcp-remove') {
         Object.assign(entry, { scope: a.scope, config: a.config });
@@ -660,15 +690,28 @@ function applyActions(actions, { home = os.homedir(), env = process.env, run = h
   return results;
 }
 
-/** Put back what `applyActions` changed (all of it, newest first); an entry that cannot be restored stays in the journal. */
-function undoActions({ home = os.homedir(), env = process.env, run = hiddenSpawnSync } = {}) {
+/**
+ * What the journal holds, for the dashboard: one row per change, WITHOUT the removed server's config (headers/env can hold secrets).
+ * @returns {Array<{id:string,at:string,kind:string,target:string,scope:(string|undefined),why:(string|null),tokens:number}>}
+ */
+function listJournal({ home = os.homedir() } = {}) {
+  return readUndo(undoPath(home)).map((e) => ({ id: e.id, at: e.at, kind: e.kind, target: e.target, scope: e.scope, why: e.why || null, tokens: e.tokens || 0 }));
+}
+
+/**
+ * Put back what `applyActions` changed (all of it, newest first), or only the entries with the given ids; an entry that
+ * cannot be restored stays in the journal, and so does every entry not asked for.
+ */
+function undoActions({ home = os.homedir(), env = process.env, run = hiddenSpawnSync, ids = null } = {}) {
   const jf = undoPath(home);
   const settingsFile = path.join(home, '.claude', 'settings.json');
   const claudeEnv = { ...env, CLAUDE_CONFIG_DIR: env.CLAUDE_CONFIG_DIR || path.join(home, '.claude') };
   const journal = readUndo(jf);
   const left = [];
   const results = [];
+  const want = ids ? new Set(ids) : null;
   for (const e of journal.slice().reverse()) {
+    if (want && !want.has(e.id)) { left.unshift(e); continue; }
     try {
       if (e.kind === 'mcp-remove') {
         _claude(['mcp', 'add-json', e.target, JSON.stringify(e.config), '-s', e.scope], { env: claudeEnv, run });
@@ -716,7 +759,7 @@ function formatAudit(a) {
   L.push(`Instruction files (yours, never edited): ${a.instructions.map((i) => `${path.basename(i.path)} ${i.tokens} tok`).join(', ') || 'none'} — ${t.instructionTokens} tokens per message.`);
   L.push('');
   L.push(`Plugins: ${t.pluginsTotal} installed, ${t.pluginsUsed} used in ${a.days}d.`);
-  for (const p of a.plugins) L.push(`    ${p.id} ${p.enabled ? 'enabled' : 'disabled'} ${p.used ? 'used' : 'NOT used'}`);
+  for (const p of a.plugins) L.push(`    ${p.id} ${p.enabled ? 'enabled' : 'disabled'} ${p.used ? 'used' : 'NOT used'} → ${p.verdict}: ${p.reason}`);
   L.push('');
   if (a.actions.length) {
     L.push(`Reversible fixes available (${a.actions.length}): saves ~${a.savings.tokens} tokens per message = ${usd(a.savings.perMessageUsd)} per message, ${usd(a.savings.perSessionUsd)} per session (${a.msgsPerSession} requests; cache read ${usd(a.price.read)}/MTok, write ${usd(a.price.write)}/MTok).`);
@@ -731,5 +774,5 @@ module.exports = {
   estTokens, PRICING, SKILL_LISTING_CHARS, sanitize, DAY,
   installedPluginRoots, listMcpServers, oauthNames, scanUsage, backendKey, toolNamesByServer, probeHttpTools, expandEnv,
   auditBossConfig, parseFrontmatter, listSkills, listInstructionFiles, readUsageCounters, listPlugins, buildAudit, runAudit,
-  undoPath, resolveClaudeBin, applyActions, undoActions, formatAudit,
+  undoPath, resolveClaudeBin, applyActions, undoActions, listJournal, formatAudit,
 };
