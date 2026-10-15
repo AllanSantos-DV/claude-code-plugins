@@ -17,6 +17,8 @@ Check-up do motor (2026-10-15). Cada item tem teste; os números são do dado re
 - **Custo da compactação com todos os modelos Claude.** O id com data, o sufixo `[1m]` e o prefixo do provedor passam a ter o preço
   do modelo (antes saíam do total em dólar), e o Haiku 4.5 entrou na tabela. As métricas da compactação também registram o que
   escolheu o corte mecânico e as chamadas que ficaram fora da leitura do transcript.
+- **Um worker do daemon que vaza memória não derruba mais o daemon.** Cada worker (base de conhecimento, hooks, embeddings) tem um
+  teto de memória; ao passar dele só aquele worker é reiniciado, e as outras sessões seguem atendidas.
 - **Lição repetida não troca mais a descrição.** Quando uma captura é reconhecida como repetição de uma lição existente, a lição
   antiga fica com o próprio título, resumo e detalhe (só a recorrência e a confiança sobem); antes o resumo era trocado pelo da
   repetida e o rascunho de skill saía com o título de uma lição e a descrição de outra.

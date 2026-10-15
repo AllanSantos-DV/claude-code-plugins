@@ -63,6 +63,12 @@ function identityKey(dataDir) {
 // (Hyper-V/WinNAT `excludedportrange`, e.g. 58048-58247) → listen EACCES and no
 // daemon at all. Keep it below 49152 (the dynamic range those reservations come
 // from). .mcp.json carries the same port statically.
+// JS-heap ceiling of every daemon worker (kb, hook, embed). Past it Node terminates only that worker, and its
+// client fails the in-flight calls and spawns a replacement; without it a runaway worker grows to the process
+// heap limit and aborts the daemon that serves every session. Native memory (SQLite, ONNX) and ArrayBuffers
+// are outside this limit, so it sits far above a worker's normal JS heap.
+export const WORKER_RESOURCE_LIMITS = Object.freeze({ maxOldGenerationSizeMb: 1024 });
+
 export const DEFAULT_PORT = 38217;
 export function resolvePort(dataDir, env = process.env) {
   identityKey(dataDir); // throws on missing/invalid dataDir — see canonicalDataDir

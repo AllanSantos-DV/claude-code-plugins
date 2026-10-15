@@ -80,7 +80,12 @@ Relatórios: `docs/research/checkup/` (local). Tudo abaixo marcado [x] tem teste
   na rede, já com cache de 5 min), `brain-health` 669 ms, os outros 16 somam 147 ms e rodam em paralelo. Cortar os 16 no resume não
   muda o tempo; os dois caros trazem branch/CI e saúde do Brain, que valem num resume que pode vir dias depois (a compactação acontece
   dentro da mesma sessão, o resume é um processo novo). Não é ganho puro.
-- [ ] **Hooks**: Workers sem `resourceLimits` (plataforma-09).
+- [x] **Hooks**: Workers sem `resourceLimits` (plataforma-09). Os workers kb, hook e embed nascem com teto de heap JS de 1 GB
+  (`daemon-common.WORKER_RESOURCE_LIMITS`): passou dele, o Node encerra só aquele worker (documentação de `worker_threads`) e o cliente,
+  que já trocava worker morto, sobe outro; sem teto, um vazamento crescia até o limite do processo e derrubava o daemon de todas as
+  sessões. O teto é folgado: o daemon inteiro ocupa ~580 MB de working set com memória nativa (SQLite, ONNX) que não conta no teto.
+  Teste `plataforma-09` (worker com teto de 16 MB que vaza: a chamada falha visível, o processo segue, o próximo hook roda num worker
+  novo). O handler de `unhandledRejection`, a outra metade do achado, já estava feito.
 - [x] **Duplicação restante**: leitores de transcript (`retrieval-feedback` × `transcript-turns`, reuso-08); `readJson` com contratos
   próprios em `dashboard.js`, `dashboard-start.js`, `marketplace-autoupdate.js`; normalização de caminho/hash espalhada (reuso-09).
   Feito, sem mudar comportamento (testes existentes de cada um passam): `extractAssistantText`/`extractUserText` num extrator por papel;

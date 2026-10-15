@@ -27136,6 +27136,26 @@ test('plugin-updater.killStale: so casa modulos da PASTA DE CACHE do plugin, nao
     } finally { await hw.shutdown(); }
   });
 
+  test('plataforma-09: um worker que passa do teto de heap morre sozinho e o proximo hook roda num worker novo; kb, hook e embed nascem com o teto', async () => {
+    const wp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-leak-')), 'leak-worker.cjs');
+    fs.writeFileSync(wp, "const { parentPort } = require('worker_threads');\n"
+      + "const keep = [];\n"
+      + "parentPort.on('message', (m) => { if (m.name === 'leak') { for (;;) keep.push(new Array(1e5).fill({ x: keep.length })); } parentPort.postMessage({ id: m.id, ok: true, text: 'ok:' + m.name }); });\n");
+    const hw = (await loadHookWorker())({ pluginRoot: ROOT, workerPath: wp, resourceLimits: { maxOldGenerationSizeMb: 16 } });
+    try {
+      let err = null; try { await hw.run('leak', {}, { timeoutMs: 20000 }); } catch (e) { err = e; }
+      assert(err, 'the call on the runaway worker fails visibly');
+      assertEq(await hw.run('b', {}, { timeoutMs: 5000 }), 'ok:b', 'the test process (the daemon) survived and the next hook runs');
+      assertEq(hw.stats().spawned, 2, 'a replacement worker was spawned');
+    } finally { await hw.shutdown(); }
+    const lib = path.join(ROOT, 'servers', 'brain-server', 'lib');
+    const common = await import(require('url').pathToFileURL(path.join(lib, 'daemon-common.js')).href);
+    assert(common.WORKER_RESOURCE_LIMITS.maxOldGenerationSizeMb >= 512, 'the real ceiling stays far above a normal worker heap');
+    for (const f of ['kb-worker-client.js', 'hook-worker-client.js', 'embed-worker-client.js']) {
+      assert(/new Worker\([^;]*resourceLimits/.test(fs.readFileSync(path.join(lib, f), 'utf8')), `${f} passes resourceLimits`);
+    }
+  });
+
   test('audit: deadlines interleaved with progress do NOT recycle a busy-but-healthy worker', async () => {
     const wp = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-busy-')), 'busy-worker.cjs');
     fs.writeFileSync(wp, "const { parentPort } = require('worker_threads');\n"
