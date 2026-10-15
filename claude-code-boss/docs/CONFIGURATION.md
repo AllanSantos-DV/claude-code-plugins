@@ -149,7 +149,7 @@ nenhum                       → off            (cinza)
 | `retrieval.fastTopK` | `1` | Resultados na busca rápida (in-loop) |
 | `retrieval.deepTopK` | `3` | Resultados na busca profunda |
 | `retrieval.minScoreFast` | `0.50` | Score mínimo cosine (fast) — calibrado p/ multilingual MiniLM |
-| `kb.retrieval.compose.maxQueryChars` | `800` | (`mcp-memory`) Teto do texto do prompt enviado ao recall; o custo de embed+FTS do daemon cresce com o tamanho (4,7k chars → 14 s; 800 → ~1 s). `0` = prompt inteiro |
+| `kb.retrieval.compose.maxQueryChars` | `300` | (`mcp-memory`) Teto do texto do prompt enviado ao recall; o custo do compose no servidor cresce com o tamanho (em prompts reais: 800 → mediana 9 s, metade estourava o prazo de 8 s; 300 → 5 s). `0` = prompt inteiro |
 | `kb.retrieval.compose.projectArmMinScore` | `0.65` | (`mcp-memory`) Score mínimo dos hits do braço de projeto (`search_memory` filtrado pelo project id), que roda sempre em paralelo ao compose. Abaixo disso é ruído (~0,5–0,63) |
 | `kb.retrieval.compose.timeoutMs` | `8000` | (`mcp-memory`) Prazo de cada braço do recall; no prazo a requisição é cancelada (socket fechado). Cada braço tem disjuntor por taxa de falha: 5 falhas nas últimas 10 pulam as 4 próximas chamadas e deixam 1 sonda |
 | `kb.retrieval.compose.poolWarming` | `false` | (`mcp-memory`) Busca extra no pool home a cada prompt, para o servidor promover docs; só ajuda com a promoção do servidor ligada (`promotion_mode=multi_signal`) |

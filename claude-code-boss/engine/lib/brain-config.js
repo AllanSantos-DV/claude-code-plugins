@@ -193,7 +193,7 @@ function getIngestion() {
  *   maxInjectChars   (int,  default 6000) — hard cap on total injected fact text.
  *   timeoutMs        (int,  default 8000) — abort a slow compose → degraded (empty).
  *   overlay          (obj  | null)        — generic metadata overlay for active blocks.
- *   maxQueryChars    (int,  default 800)  — recall query cap; 0 = send the whole prompt.
+ *   maxQueryChars    (int,  default 300)  — recall query cap; 0 = send the whole prompt.
  *   projectArmMinScore (num, default 0.65) — floor for the project-arm search_memory hits.
  */
 function getRecallCompose() {
@@ -205,9 +205,10 @@ function getRecallCompose() {
     maxInjectChars: Number.isInteger(c.maxInjectChars) && c.maxInjectChars > 0 ? c.maxInjectChars : 6000,
     timeoutMs: Number.isInteger(c.timeoutMs) && c.timeoutMs > 0 ? c.timeoutMs : 8000,
     overlay,
-    // 2.29.1: the daemon's embed + FTS cost grows with query length (4.7k chars → 14 s
-    // in compose; capped at 800 → 1.1 s, same top hit). 0 disables the cap.
-    maxQueryChars: Number.isInteger(c.maxQueryChars) && c.maxQueryChars >= 0 ? c.maxQueryChars : 800,
+    // The server's compose cost grows with query length. On real prompts, 800 chars took a median
+    // 9.1 s, so half of them hit the 8 s deadline and injected no compose fact at all; 300 chars
+    // took 5.2 s with none over the deadline. The head of a prompt carries the ask. 0 disables the cap.
+    maxQueryChars: Number.isInteger(c.maxQueryChars) && c.maxQueryChars >= 0 ? c.maxQueryChars : 300,
     // 2.29.1: hybrid scores of unrelated prompts sit at ~0.5–0.63, relevant ones at
     // ~0.65–0.77 — below the floor the project arm injects noise, not memory.
     projectArmMinScore: typeof c.projectArmMinScore === 'number' ? c.projectArmMinScore : 0.65,
