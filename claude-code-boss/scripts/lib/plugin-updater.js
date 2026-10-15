@@ -33,7 +33,7 @@ const os = require('os');
 const https = require('https');
 const { spawn, spawnSync } = require('child_process');
 const crypto = require('crypto');
-const { writeFileAtomic } = require('./atomic-write.js');
+const { writeFileAtomic } = require('../../engine/lib/atomic-write.js');
 
 const DEFAULT_REPO = 'AllanSantos-DV/claude-code-plugins';
 const MARKETPLACE = 'allansantos-plugins';

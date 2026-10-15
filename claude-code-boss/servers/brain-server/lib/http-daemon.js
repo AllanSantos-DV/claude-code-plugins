@@ -100,7 +100,7 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
   // process (lib/embedder-guard.js) so a native abort cannot take this daemon down with it.
   let embedderGuard = null;
   try {
-    embedderGuard = createRequire(import.meta.url)(path.join(pluginRoot, 'scripts', 'lib', 'embedder-guard.js'))
+    embedderGuard = createRequire(import.meta.url)(path.join(pluginRoot, 'engine', 'lib', 'embedder-guard.js'))
       .ensureGuard({ data: dataDir });
   } catch (err) {
     console.error(`[brain-http] embedder load test unavailable (${err.message}) — the model loads untested`);
@@ -110,7 +110,7 @@ export async function startHttpDaemon({ pluginRoot, dataDir, port, host = '127.0
   // an unloadable module must not stop the daemon from booting — say so and go on.
   let embedderModule = null;
   try {
-    embedderModule = createRequire(import.meta.url)(path.join(pluginRoot, 'scripts', 'brain-embedder.js'));
+    embedderModule = createRequire(import.meta.url)(path.join(pluginRoot, 'engine', 'brain-embedder.js'));
     embedderModule.setDelegate(embedWorker);
   } catch (err) {
     console.error(`[brain-http] embedder module unavailable (${err.message}) — semantic search off, keyword fallback only`);

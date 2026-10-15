@@ -2,10 +2,10 @@
 
 const fs = require('fs');
 const path = require('path');
-const McpClient = require('../mcp-client.js');
-const { globalDir, dataDir } = require('./data-dir.js');
-const { writeJsonAtomic } = require('./atomic-write.js');
-const { acquireFileLock, releaseFileLock } = require('./process-lock.js');
+const McpClient = require('../../engine/mcp-client.js');
+const { globalDir, dataDir } = require('../../engine/lib/data-dir.js');
+const { writeJsonAtomic } = require('../../engine/lib/atomic-write.js');
+const { acquireFileLock, releaseFileLock } = require('../../engine/lib/process-lock.js');
 const { restartForBootUpdate, rollbackAfterFailedUpdate } = require('./mcp-daemon-restart.js');
 
 const DEFAULT_TTL_MS = 24 * 60 * 60 * 1000;

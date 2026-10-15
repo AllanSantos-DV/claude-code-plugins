@@ -21,7 +21,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { dataDir } = require('./data-dir.js');
+const { dataDir } = require('../../engine/lib/data-dir.js');
 
 const STALE_MS = 24 * 3600_000;
 const REPORT_RE = /CCB_RAW_REPORT="([^"]+)"/g;

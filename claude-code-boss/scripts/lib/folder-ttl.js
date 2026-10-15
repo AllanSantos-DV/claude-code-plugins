@@ -26,7 +26,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { writeJsonAtomic } = require('./atomic-write.js');
+const { writeJsonAtomic } = require('../../engine/lib/atomic-write.js');
 
 const KEY = 'CLAUDE_CODE_PROMPT_CACHE_TTL';
 const SWITCHED = '5m';
@@ -36,7 +36,7 @@ const LOCAL_REL = path.join('.claude', 'settings.local.json');
 function hiddenSpawnSync(cmd, args, opts) { return spawnSync(cmd, args, { ...opts, windowsHide: true }); }
 
 function statePath() {
-  return path.join(require('./data-dir.js').globalDir(), 'folder-ttl-state.json');
+  return path.join(require('../../engine/lib/data-dir.js').globalDir(), 'folder-ttl-state.json');
 }
 
 /**

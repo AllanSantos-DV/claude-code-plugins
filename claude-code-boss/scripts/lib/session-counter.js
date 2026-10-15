@@ -8,7 +8,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { writeJsonAtomic } = require('./atomic-write.js');
+const { writeJsonAtomic } = require('../../engine/lib/atomic-write.js');
 
 const TTL_MS = 24 * 60 * 60 * 1000;
 const MAX_SESSIONS = 200;

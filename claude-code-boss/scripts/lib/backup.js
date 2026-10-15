@@ -124,7 +124,7 @@ async function writeTarGz(entries, outFile) {
  */
 async function createBackup({ dataDir, globalDir, outFile, pluginVersion = '', remote = null, Database, onProgress = () => {} }) {
   if (!dataDir || !fs.existsSync(dataDir)) throw new Error(`backup: data dir not found: ${dataDir}`);
-  const Db = Database || require('./sqlite-compat.js').loadSqlite();
+  const Db = Database || require('../../engine/lib/sqlite-compat.js').loadSqlite();
   if (!Db) throw new Error('backup: no SQLite driver (node:sqlite / better-sqlite3) — cannot snapshot the stores safely');
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ccb-backup-'));
   try {

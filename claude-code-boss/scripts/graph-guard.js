@@ -57,14 +57,14 @@ async function run(event) {
 
     // The graph rides the mcp-memory daemon — on the local backend there is no
     // graph to redirect to.
-    const brainCfg = require('./lib/brain-config.js').load();
+    const brainCfg = require('../engine/lib/brain-config.js').load();
     if (((brainCfg.backend && brainCfg.backend.type) || 'local') !== 'mcp-memory') {
       return PASS;
     }
 
     const cwd = event.cwd || process.cwd();
     const sid = event.session_id || 'default';
-    const dataDir = require('./lib/data-dir.js').dataDir();
+    const dataDir = require('../engine/lib/data-dir.js').dataDir();
     const kind = toolName === 'Grep' ? 'native-grep' : 'native-glob';
     const pattern = String(ti.pattern || '');
 
@@ -81,7 +81,7 @@ async function run(event) {
 
     if (res.action === 'deny') {
       try {
-        require('./lib/metrics.js').fire('graph-guard.fired', { kind }, { sessionId: sid, cwd });
+        require('../engine/lib/metrics.js').fire('graph-guard.fired', { kind }, { sessionId: sid, cwd });
       } catch (e) { void e; /* metrics are best-effort */ }
       return decision('deny', { additionalContext: res.reason, permissionDecisionReason: res.reason });
     }

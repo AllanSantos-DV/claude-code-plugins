@@ -49,8 +49,10 @@ Check-up do motor (2026-10-15). Cada item tem teste; os números são do dado re
 - Observabilidade: hooks em segundo plano medem tempo de execução e espera na fila; o recall do prompt entra no `/health`; o alerta de
   hook lento ganha orçamento absoluto por evento; eventos `capture.acked/adopted`, origem do `lesson.captured`,
   `curation.stop.blocked/released/relented`; `router.log` com rotação (1 MB × 3).
-- **Motor compartilhado:** `ENGINE-MANIFEST.json` lista o núcleo sem dependência do Claude Code e `sync.js --manifest` generaliza a
-  vendorização (ver `docs/ENGINE.md`). Saíram o transporte stdio do cliente MCP, scripts órfãos e cópias de escrita atômica,
+- **Motor compartilhado:** o núcleo sem dependência do Claude Code mora em `engine/` (KB, embedder, recall, métricas, id de projeto,
+  curadoria, políticas, cliente MCP), listado em `ENGINE-MANIFEST.json`; `sync.js --manifest` generaliza a vendorização. Os stores
+  recebem `dataDir` por chamada e as métricas `projectRoot`; `project-id` e `metrics` leem o env da chamada por `host-env`, onde o
+  adaptador do Claude Code se registra (ver `docs/ENGINE.md`). Saíram o transporte stdio do cliente MCP, scripts órfãos e cópias de escrita atômica,
   sanitização de session-id e leitura de JSON.
 
 ## [3.9.0] - 2026-10-14

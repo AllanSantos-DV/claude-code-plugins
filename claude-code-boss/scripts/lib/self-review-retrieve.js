@@ -19,7 +19,7 @@ const path = require('path');
 const http = require('http');
 
 function dataDir() {
-  return require('./data-dir.js').dataDir();
+  return require('../../engine/lib/data-dir.js').dataDir();
 }
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
@@ -224,8 +224,8 @@ async function retrieveViaIndex(keywords, opts = {}) {
   const project = opts.project || 'default';
   const topK = opts.topK || 2;
   try {
-    const index = opts._index || require('../brain-index.js');
-    const store = opts._store || require('../brain-store.js');
+    const index = opts._index || require('../../engine/brain-index.js');
+    const store = opts._store || require('../../engine/brain-store.js');
     await index.init({ project });
     await store.init({ project, skipEmbedder: true });
     const hits = await index.lookup(keywords, { project, topK: topK + 6 });

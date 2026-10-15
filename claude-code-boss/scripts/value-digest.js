@@ -26,7 +26,7 @@ function fmtTokens(n) {
 }
 
 function stampPath(project) {
-  const { dataDir } = require('./lib/data-dir.js');
+  const { dataDir } = require('../engine/lib/data-dir.js');
   return path.join(dataDir(), '.runtime', `value-digest-${String(project).replace(/[^\w.-]+/g, '_').slice(0, 80)}.json`);
 }
 
@@ -63,10 +63,10 @@ async function run(event, { now = Date.now() } = {}) {
   const { hookEnv } = require('./lib/hook-context.js');
   const root = hookEnv().CLAUDE_PROJECT_DIR || (event && event.cwd) || '';
   if (!root) return null;
-  const project = require('./lib/metrics-project.js').metricsKeyFor(root); // the key metrics.js writes under
+  const project = require('../engine/lib/metrics-project.js').metricsKeyFor(root); // the key metrics.js writes under
   const sp = stampPath(project);
   if (onCooldown(sp, now)) return null;
-  const ms = require('./lib/metrics-store.js');
+  const ms = require('../engine/lib/metrics-store.js');
   const { summarizeCuration, CURATION_EVENTS, ECONOMY_EVENTS } = require('./lib/curation-metrics.js');
   const since = now - WINDOW_DAYS * 86400_000;
   const rows = [];

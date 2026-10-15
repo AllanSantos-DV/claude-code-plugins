@@ -46,7 +46,7 @@
 'use strict';
 
 const { readStdin, parsePayload, emitJson, emitEmpty } = require('./lib/hook-io.js');
-const { settleWithin: withTimeout } = require('./lib/settle-within.js');
+const { settleWithin: withTimeout } = require('../engine/lib/settle-within.js');
 const brainDaemonEnsure = require('./brain-daemon-ensure.js');
 const memoryRotate = require('./memory-rotate.js');
 const sessionWhitelist = require('./session-whitelist.js');

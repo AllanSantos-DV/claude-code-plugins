@@ -35,14 +35,14 @@
  * ALWAYS emits `{}`. Off by default: nothing is stored unless the user opts in.
  */
 const { readStdin, emitEmpty } = require('./lib/hook-io.js');
-const { dataDir } = require('./lib/data-dir.js');
-const { resolveLocalScopeId } = require('./lib/project-id.js');
-const policyStore = require('./lib/policy-store.js');
+const { dataDir } = require('../engine/lib/data-dir.js');
+const { resolveLocalScopeId } = require('../engine/lib/project-id.js');
+const policyStore = require('../engine/lib/policy-store.js');
 const { getPolicyInject, getCaptureTriggerEvidence } = require('./lib/hooks-config.js');
-const metrics = require('./lib/metrics.js');
-const { metricsProjectKey } = require('./lib/metrics-project.js');
+const metrics = require('../engine/lib/metrics.js');
+const { metricsProjectKey } = require('../engine/lib/metrics-project.js');
 const crypto = require('crypto');
-const { redact } = require('./lib/redact.js');
+const { redact } = require('../engine/lib/redact.js');
 const triggerEvidenceStore = require('./lib/trigger-evidence-store.js');
 
 // Belt-and-suspenders beyond the hooks.json matcher: this micro measures ONLY Edit.

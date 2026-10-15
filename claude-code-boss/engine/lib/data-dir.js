@@ -263,9 +263,10 @@ function bootstrapMostRecent() {
  * absorbs POPULATED siblings, and the stray dir here is empty by definition.
  * @returns {string}
  */
-// Engine seam: a host that is not Claude Code (codex-boss, OpenCode, Copilot) passes its data
-// dir once, before requiring the engine modules — several read dataDir() at load. Then none of
-// the Claude Code resolution below (CLAUDE_PLUGIN_DATA, active pointer, sibling consolidation) runs.
+// Engine seam: a host that is not Claude Code (codex-boss, OpenCode, Copilot) either passes
+// `dataDir` to each store call (init/isolated reads, see dirResolver) or sets it here once, before
+// the first store call. Then none of the Claude Code resolution below (CLAUDE_PLUGIN_DATA, active
+// pointer, sibling consolidation) runs.
 let _hostDataDir = null;
 /** @param {string|null} dir absolute data dir for this process, or null to go back to the Claude Code resolution */
 function setDataDir(dir) { _hostDataDir = dir ? path.resolve(dir) : null; }
@@ -284,8 +285,20 @@ function dataDir() {
   return HOME_FALLBACK();
 }
 
+/**
+ * A module's data-dir lookup: an explicit `opts.dataDir` (a host passing it per call) wins;
+ * otherwise dataDir(), resolved at the module's FIRST use and then kept — a long-lived daemon
+ * must not follow a pointer moved mid-life into another folder (one KB split in two).
+ * @returns {(opts?: {dataDir?: string}) => string}
+ */
+function dirResolver() {
+  let fallback = null;
+  return (opts) => (opts && opts.dataDir ? path.resolve(opts.dataDir) : (fallback || (fallback = dataDir())));
+}
+
 module.exports = {
   dataDir,
+  dirResolver,
   setDataDir,
   validEnvDir,
   globalDir,

@@ -30,19 +30,19 @@
 'use strict';
 
 const fs = require('fs');
-const { writeJsonAtomic } = require('./lib/atomic-write.js');
+const { writeJsonAtomic } = require('../engine/lib/atomic-write.js');
 const path = require('path');
 
 const { runStopDetectorCli } = require('./lib/hook-io.js');
-const { USER_SENTINEL } = require('./lib/scope-sanitizer.js');
+const { USER_SENTINEL } = require('../engine/lib/scope-sanitizer.js');
 const hooksCfg = require('./lib/hooks-config.js');
 
 function dataDir() {
-  return require('./lib/data-dir.js').dataDir();
+  return require('../engine/lib/data-dir.js').dataDir();
 }
 
 function stampPath(data, sid) {
-  const safe = require('./lib/session-id.js').sanitizeSessionId(sid);
+  const safe = require('../engine/lib/session-id.js').sanitizeSessionId(sid);
   return path.join(data, '.runtime', `research-followup-${safe}.json`);
 }
 
@@ -103,12 +103,12 @@ async function run(event) {
   if (!hooksCfg.getResearchFollowup().enabled) return {};
 
   const sid = ev.session_id || ev.sessionId || 'default';
-  const project = require('./lib/metrics-project.js').sessionMetricsKey(ev.cwd);
+  const project = require('../engine/lib/metrics-project.js').sessionMetricsKey(ev.cwd);
   const data = dataDir();
 
   let metricsStore;
   try {
-    metricsStore = require('./lib/metrics-store.js');
+    metricsStore = require('../engine/lib/metrics-store.js');
     if (!metricsStore.init({ project })) return {};
   } catch { /* store unavailable: no-op */ return {}; }
 

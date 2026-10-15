@@ -30,8 +30,8 @@ const { getShellsConfigPath } = require('./curation-paths.js');
 const { runPreToolUseCli, preToolUseDecision } = require('./lib/hook-io.js');
 const { findProjectRoot, loadShellsConfig, matchCuratedShell, _pathMatches, _tokenize } = require('./shells-config.js');
 const { planRedirect, planShaping } = require('./lib/curation-redirect.js');
-const { canonicalSig } = require('./lib/command-signature.js');
-const metrics = require('./lib/metrics.js');
+const { canonicalSig } = require('../engine/lib/command-signature.js');
+const metrics = require('../engine/lib/metrics.js');
 
 const hooksConfig = require('./lib/hooks-config.js');
 
@@ -136,8 +136,8 @@ function escapeFix(event) {
     if (!cfg.enabled || !cfg.platforms.includes(process.platform)) return null;
     const fs = require('fs');
     const path = require('path');
-    const dir = path.join(require('./lib/data-dir.js').dataDir(), '.runtime', 'inline-scripts');
-    const plan = require('./lib/shell-escape.js').planEscapeFix(event.tool_input.command, {
+    const dir = path.join(require('../engine/lib/data-dir.js').dataDir(), '.runtime', 'inline-scripts');
+    const plan = require('../engine/lib/shell-escape.js').planEscapeFix(event.tool_input.command, {
       dir: dir.replace(/\\/g, '/'), inlineMaxChars: cfg.inlineMaxChars, mode: cfg.mode,
     });
     if (!plan) return null;
@@ -172,7 +172,7 @@ function powershellFix(event, command) {
   try {
     const cfg = hooksConfig.getPowershellGuard();
     if (!cfg.enabled || !cfg.platforms.includes(process.platform)) return null;
-    const compat = require('./lib/powershell-compat.js');
+    const compat = require('../engine/lib/powershell-compat.js');
     const mctx = { sessionId: event.session_id, cwd: event.cwd };
     const fixed = cfg.advisory ? null : compat.fixBashCommand(command);
     const warn = compat.renderWarning(compat.lintBash(fixed ? fixed.command : command));
@@ -307,7 +307,7 @@ async function cascade(event) {
         const core = require('./lib/graph-guard-core.js');
         const broad = core.matchBroadBashSearch(command);
         if (broad) {
-          const brainCfg = require('./lib/brain-config.js').load();
+          const brainCfg = require('../engine/lib/brain-config.js').load();
           if (((brainCfg.backend && brainCfg.backend.type) || 'local') === 'mcp-memory') {
             const cwd = event.cwd || process.cwd();
             const sid = event.session_id || 'default';
@@ -317,13 +317,13 @@ async function cascade(event) {
               pattern: broad.pattern,
               projectRoot: require('path').resolve(cwd),
               sid,
-              dataDir: require('./lib/data-dir.js').dataDir(),
+              dataDir: require('../engine/lib/data-dir.js').dataDir(),
               cfg: ggCfg,
               probe: core.makeGraphStateProbe({ cwd, timeoutMs: ggCfg.probeTimeoutMs }),
             });
             if (res.action === 'deny') {
               try {
-                require('./lib/metrics.js').fire('graph-guard.fired', { kind: 'bash', tool: broad.tool }, { sessionId: sid, cwd });
+                require('../engine/lib/metrics.js').fire('graph-guard.fired', { kind: 'bash', tool: broad.tool }, { sessionId: sid, cwd });
               } catch (e) { void e; /* metrics are best-effort */ }
               return decision('deny', { additionalContext: res.reason, permissionDecisionReason: res.reason });
             }

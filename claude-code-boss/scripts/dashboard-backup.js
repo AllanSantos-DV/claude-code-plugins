@@ -18,13 +18,14 @@ const NAME_RE = /^ccb-backup-[0-9TZ-]+(-pre-restore)?\.tar\.gz$/;
 
 function createBackupRoutes({ pluginRoot, dataDir, globalDir, json, fail, deps = {} }) {
   const lib = (m) => require(path.join(pluginRoot, 'scripts', 'lib', m));
+  const eng = (m) => require(path.join(pluginRoot, 'engine', 'lib', m));
   const backup = deps.backup || lib('backup.js');
   const remote = deps.remote || lib('backup-remote.js');
   const backupsDir = () => path.join(globalDir(), 'backups');
   const pluginVersion = () => { try { return JSON.parse(fs.readFileSync(path.join(pluginRoot, 'package.json'), 'utf8')).version; } catch (err) { void err; return ''; } };
   const remoteOpts = (onProgress) => ({
     pluginRoot, tmpDir: os.tmpdir(), onProgress,
-    loadConfig: deps.loadConfig || (() => lib('brain-config.js').load()),
+    loadConfig: deps.loadConfig || (() => eng('brain-config.js').load()),
     discoverUrl: deps.discoverUrl || (() => lib('mcp-wizard.js').discoverDaemonUrl()),
   });
 

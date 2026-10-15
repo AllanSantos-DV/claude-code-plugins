@@ -4,11 +4,11 @@ const fs = require('fs');
 const path = require('path');
 const { USER_SENTINEL } = require('./scope-sanitizer.js');
 
-const { dataDir } = require('./data-dir.js');
-const STORE_DIR = dataDir();
+const storeDir = require('./data-dir.js').dirResolver();
 
-function userDbExists() {
-  return fs.existsSync(path.join(STORE_DIR, 'brain', USER_SENTINEL, 'brain.db'));
+/** @param {{dataDir?: string}} [opts] */
+function userDbExists(opts) {
+  return fs.existsSync(path.join(storeDir(opts), 'brain', USER_SENTINEL, 'brain.db'));
 }
 
 function splitTopK(topK) {
@@ -42,7 +42,7 @@ async function searchTwoPass(store, currentProject, queryVector, opts = {}) {
   // shared singleton mid-search. On the long-lived MCP server the old close/init
   // dance corrupted singleton state across concurrent tool calls, silently zeroing
   // out retrieval. searchIsolated leaves _db/_project untouched.
-  const needUser = (userK > 0 || projectResults.length < projectK) && userDbExists();
+  const needUser = (userK > 0 || projectResults.length < projectK) && userDbExists(opts);
   let userResults = [];
   if (needUser) {
     const want = userK + Math.max(0, projectK - projectResults.length);

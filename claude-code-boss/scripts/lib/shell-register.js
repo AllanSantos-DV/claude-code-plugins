@@ -27,7 +27,7 @@ const fs = require('fs');
 const path = require('path');
 
 const { findProjectRoot, getScriptsDir, getShellsConfigPath, curationHome } = require('../curation-paths.js');
-const { isGenericAlias, canonicalSig } = require('./command-signature.js');
+const { isGenericAlias, canonicalSig } = require('../../engine/lib/command-signature.js');
 
 /**
  * The first positional of an alias that only fits ONE run — an id/number (`38`), a commit hash,

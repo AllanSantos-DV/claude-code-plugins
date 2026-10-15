@@ -23,7 +23,7 @@ function autoUpdateDisabled(env = process.env) {
 }
 
 function stateFile(dir) {
-  return path.join(dir || require('./data-dir.js').globalDir(), STATE);
+  return path.join(dir || require('../../engine/lib/data-dir.js').globalDir(), STATE);
 }
 
 function readState(file) {
@@ -36,7 +36,7 @@ function readState(file) {
 
 function writeState(file, state) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
-  require('./atomic-write.js').writeFileAtomic(file, JSON.stringify(state, null, 2) + '\n');
+  require('../../engine/lib/atomic-write.js').writeFileAtomic(file, JSON.stringify(state, null, 2) + '\n');
 }
 
 function installedVersion(root) {

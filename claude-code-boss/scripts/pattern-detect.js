@@ -12,13 +12,13 @@
 const sessionCounter = require('./lib/session-counter.js');
 const path = require('path');
 
-const { dataDir } = require('./lib/data-dir.js');
+const { dataDir } = require('../engine/lib/data-dir.js');
 const DATA_DIR = dataDir();
 const STATE = path.join(DATA_DIR, '.runtime', 'pattern-detect-state.json');
 const EVERY = 6; // remind at most once per 6 stops
 
 const { runStopDetectorCli } = require('./lib/hook-io.js');
-const metrics = require('./lib/metrics.js');
+const metrics = require('../engine/lib/metrics.js');
 const hooksCfg = require('./lib/hooks-config.js');
 
 const REASON =

@@ -39,8 +39,11 @@ Relatórios: `docs/research/checkup/` (local). Tudo abaixo marcado [x] tem teste
 - [ ] **Hooks**: SessionStart de `resume` ainda roda os 18 detectores (só `compact` foi enxugado, P6); Workers sem `resourceLimits` (plataforma-09).
 - [ ] **Duplicação restante**: leitores de transcript (`retrieval-feedback` × `transcript-turns`, reuso-08); `readJson` com contratos
   próprios em `dashboard.js`, `dashboard-start.js`, `marketplace-autoupdate.js`; normalização de caminho/hash espalhada (reuso-09).
-- [ ] **Motor, próximos passos**: mover o núcleo para `engine/`, `dataDir`/`projectRoot` por parâmetro função a função (hoje: seam
-  `setDataDir`), tirar `hook-context` de `project-id`/`metrics` (já aceitam `env` por parâmetro).
+- [x] **Motor, passo 2**: núcleo movido para `engine/` (41 arquivos; 740 `require`/caminhos reescritos por codemod, o resto à mão);
+  `dataDir` por chamada nos stores (`init`, leituras isoladas, `listProjects`, `recall-health`, `scope-search`), resolvido no 1º uso
+  em vez de no `require`; `projectRoot` em `metrics.record`; `project-id`/`metrics`/`metrics-project` leem `engine/lib/host-env.js`
+  e o `hook-context` se registra nele. `mcp-bootstrap` fica em `scripts/lib/` (URL pública fixa dos vendors). Testes `engine:`
+  (fronteira = pasta, `dataDir` por chamada, `host-env`); eslint passou a cobrir `engine/`.
 - [ ] **Retenção do one-off store** (6,2 MiB, 2.755 entradas vistas 1 vez): teto por projeto + poda das vistas uma vez (muda a contagem de
   recorrência → perguntar).
 - [ ] **Medir depois de instalar**: precisão do recall (era 17,6 % com a chave errada), recall-health por braço, SessionStart real.

@@ -35,8 +35,8 @@ const os     = require('os');
 const { spawn, execSync, execFileSync } = require('child_process');
 const shim   = require('./model-router-shim.js');
 const { resolveMode } = require('./lib/router-mode.js');
-const { writeJsonAtomic, writeFileAtomic } = require('./lib/atomic-write.js');
-const { dataDir, globalDir } = require('./lib/data-dir.js');
+const { writeJsonAtomic, writeFileAtomic } = require('../engine/lib/atomic-write.js');
+const { dataDir, globalDir } = require('../engine/lib/data-dir.js');
 const costTuning = require('./lib/cost-tuning.js');
 const { routerUserConfigPath, backfillRouterUserConfig } = require('./lib/router-config-path.js');
 const { configFingerprint } = require('./lib/router-fingerprint.js');
@@ -104,7 +104,7 @@ const SETTINGS_FILE  = path.join(os.homedir(), '.claude', 'settings.json');
 function ts() { return new Date().toISOString(); }
 function appendLog(msg) {
   try {
-    require('./lib/log-rotate.js').appendRotating(LOG_FILE, `[${ts()}] [ENSURE] ${msg}`);
+    require('../engine/lib/log-rotate.js').appendRotating(LOG_FILE, `[${ts()}] [ENSURE] ${msg}`);
   } catch (_) { /* */ }
 }
 function log(msg) { process.stderr.write(`[model-router] ${msg}\n`); appendLog(msg); }

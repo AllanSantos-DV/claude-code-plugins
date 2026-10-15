@@ -20,12 +20,12 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { sanitizeProjectId, tryResolveProjectId } = require('./lib/project-id.js');
+const { sanitizeProjectId, tryResolveProjectId } = require('../engine/lib/project-id.js');
 
-const store = require('./brain-store.js');
+const store = require('../engine/brain-store.js');
 
 const HOME = os.homedir();
-const { dataDir } = require('./lib/data-dir.js');
+const { dataDir } = require('../engine/lib/data-dir.js');
 const DATA_DIR = dataDir();
 const STAGING_DIR = path.join(DATA_DIR, 'skills-pending');
 const GLOBAL_SKILLS_DIR = path.join(HOME, '.claude', 'skills');
@@ -45,7 +45,7 @@ function markHandled(slug) {
   const s = readHandled();
   s.add(slug);
   fs.mkdirSync(STAGING_DIR, { recursive: true });
-  require('./lib/atomic-write.js').writeJsonAtomic(HANDLED_FILE, [...s]);
+  require('../engine/lib/atomic-write.js').writeJsonAtomic(HANDLED_FILE, [...s]);
 }
 
 function arg(name, fallback) {
@@ -55,7 +55,7 @@ function arg(name, fallback) {
 
 // Shipped ⊕ user override (BACKLOG Q44) — one reader shared with the dashboard.
 function loadPromotionCfg() {
-  return require('./lib/brain-config.js').getSkillPromotion();
+  return require('../engine/lib/brain-config.js').getSkillPromotion();
 }
 
 function slugify(s) {
@@ -118,7 +118,7 @@ Promoted from Brain entry \`${entry.id}\` (project: ${entry.project}).
  * @returns {Promise<{entries: object[], source: string, close: Function}>}
  */
 async function loadScanEntries(project, types) {
-  const backend = require('./brain-backend.js');
+  const backend = require('../engine/brain-backend.js');
   if (backend.peekMode() === 'mcp-memory') {
     await backend.init({ project, skipEmbedder: true });
     const entries = [];

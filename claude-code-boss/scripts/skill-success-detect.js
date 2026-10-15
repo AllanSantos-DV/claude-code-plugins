@@ -22,16 +22,16 @@
 'use strict';
 
 const fs = require('fs');
-const { writeJsonAtomic } = require('./lib/atomic-write.js');
+const { writeJsonAtomic } = require('../engine/lib/atomic-write.js');
 const path = require('path');
 
 const { runStopDetectorCli } = require('./lib/hook-io.js');
 
-const { dataDir } = require('./lib/data-dir.js');
+const { dataDir } = require('../engine/lib/data-dir.js');
 const DATA_DIR = dataDir();
 
 function settledPath(sid) {
-  const safe = require('./lib/session-id.js').sanitizeSessionId(sid);
+  const safe = require('../engine/lib/session-id.js').sanitizeSessionId(sid);
   return path.join(DATA_DIR, '.runtime', `skill-outcome-settled-${safe}.json`);
 }
 
@@ -70,11 +70,11 @@ async function run(event) {
   if (ev.stop_hook_active) return {};
 
   const sid = ev.session_id || ev.sessionId || 'default';
-  const project = require('./lib/metrics-project.js').sessionMetricsKey(ev.cwd);
+  const project = require('../engine/lib/metrics-project.js').sessionMetricsKey(ev.cwd);
 
   let metricsStore;
   try {
-    metricsStore = require('./lib/metrics-store.js');
+    metricsStore = require('../engine/lib/metrics-store.js');
     if (!metricsStore.init({ project })) return {};
   } catch { /* store unavailable: no-op */ return {}; }
 

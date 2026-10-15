@@ -27,7 +27,7 @@ function parse(result) {
 async function connect({ pluginRoot, loadConfig, discoverUrl, McpClient, timeoutMs = REMOTE_TIMEOUT_MS }) {
   const cfg = (loadConfig() || {}).backend || {};
   if (cfg.type !== 'mcp-memory') return null;
-  const Client = McpClient || require(path.join(pluginRoot, 'scripts', 'mcp-client.js'));
+  const Client = McpClient || require(path.join(pluginRoot, 'engine', 'mcp-client.js'));
   const mcp = cfg.mcpMemory || {};
   const client = new Client({ transport: 'http', serverUrl: mcp.serverUrl || discoverUrl() || '', runDir: mcp.runDir || '', projectId: 'default', timeout: timeoutMs });
   await client.connect();

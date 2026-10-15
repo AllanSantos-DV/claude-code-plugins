@@ -15,10 +15,10 @@
  * Identity = canonicalSig(command), so cwd/flags/wrappers don't fragment the count.
  */
 const fs = require('fs');
-const { saveJson } = require('./json-file.js');
+const { saveJson } = require('../../engine/lib/json-file.js');
 const path = require('path');
 const crypto = require('crypto');
-const { canonicalSig } = require('./command-signature.js');
+const { canonicalSig } = require('../../engine/lib/command-signature.js');
 
 const DAY_MS = 86400_000;
 const MAX_SEEN = 50;        // cap of retained per-entry occurrence timestamps

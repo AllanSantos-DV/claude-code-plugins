@@ -111,7 +111,7 @@ async function main() {
   warnNodeVersion();
 
   // Every session's first prompt may spawn this in the background: one npm at a time.
-  const { acquireFileLock, releaseFileLock } = require('./lib/process-lock.js');
+  const { acquireFileLock, releaseFileLock } = require('../engine/lib/process-lock.js');
   const lockFile = path.join(process.env.CLAUDE_PLUGIN_DATA || PLUGIN_ROOT, 'plugin-setup.lock');
   const lock = acquireFileLock(lockFile);
   if (!lock.acquired) {

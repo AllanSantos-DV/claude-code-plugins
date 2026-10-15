@@ -4,7 +4,7 @@
  *
  * The compose recall path fails OPEN (empty context, prompt still runs) so a bad
  * daemon never breaks a turn — but that means "no memory" can go unnoticed. This
- * tiny counter records every recall outcome to DATA_DIR/.runtime/recall-health.json
+ * tiny counter records every recall outcome to <dataDir>/.runtime/recall-health.json
  * so brain-health / the dashboard can surface a degraded state (e.g. "compose
  * unavailable — recall has been empty for N turns").
  *
@@ -29,11 +29,11 @@
 const fs = require('fs');
 const path = require('path');
 
-const { dataDir } = require('./data-dir.js');
+const storeDir = require('./data-dir.js').dirResolver();
 const { writeJsonAtomic } = require('./atomic-write.js');
 
-const DATA_DIR = dataDir();
-const FILE = path.join(DATA_DIR, '.runtime', 'recall-health.json');
+/** @param {{dataDir?: string}} [opts] */
+function fileFor(opts) { return path.join(storeDir(opts), '.runtime', 'recall-health.json'); }
 
 // 'retrieve-error': the daemon's brain_retrieve_context handler itself threw (fail-open
 // → empty recall); before, only the daemon's stderr — kept nowhere — saw it.
@@ -51,8 +51,8 @@ function isDegraded(reason) {
   return DEGRADED_REASONS.has(reason);
 }
 
-function read() {
-  try { return JSON.parse(fs.readFileSync(FILE, 'utf-8')); }
+function read(opts) {
+  try { return JSON.parse(fs.readFileSync(fileFor(opts), 'utf-8')); }
   catch (err) { void err; return { ok: 0, degraded: 0, byReason: {}, lastDegraded: null, recent: [] }; }
 }
 
@@ -120,12 +120,12 @@ function summarize(state) {
   };
 }
 
-/** Record one recall outcome (`detail`: optional error text kept on lastDegraded). */
-function record(reason, detail, ms, arms) {
-  const h = applyOutcome(read(), reason, Date.now(), detail, ms, arms);
+/** Record one recall outcome (`detail`: optional error text kept on lastDegraded; `opts.dataDir`: the host's). */
+function record(reason, detail, ms, arms, opts) {
+  const h = applyOutcome(read(opts), reason, Date.now(), detail, ms, arms);
   // Best-effort, last-writer-wins (tear-free publish, no cross-process lock).
   try {
-    writeJsonAtomic(FILE, h);
+    writeJsonAtomic(fileFor(opts), h);
   } catch (err) {
     console.error(`[recall-health] write failed: ${err.message}`);
   }
@@ -133,8 +133,8 @@ function record(reason, detail, ms, arms) {
 }
 
 /** Current snapshot for health/dashboard surfacing. */
-function getStatus() {
-  return summarize(read());
+function getStatus(opts) {
+  return summarize(read(opts));
 }
 
-module.exports = { record, getStatus, isDegraded, applyOutcome, summarize, WINDOW_SIZE, FILE };
+module.exports = { record, getStatus, isDegraded, applyOutcome, summarize, WINDOW_SIZE, fileFor };

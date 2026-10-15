@@ -19,9 +19,9 @@ const install = require('./mcp-bootstrap/install.js');
 const path = require('path');
 const https = require('https');
 const http = require('http');
-const { globalDir } = require('./data-dir.js');
-const { loadWithVersion: loadBrainConfigWithVersion, save: saveBrainConfig } = require('./brain-config.js');
-const { acquireFileLock, releaseFileLock, parseOwner, pidAlive, clearStaleReclaim } = require('./process-lock.js');
+const { globalDir } = require('../../engine/lib/data-dir.js');
+const { loadWithVersion: loadBrainConfigWithVersion, save: saveBrainConfig } = require('../../engine/lib/brain-config.js');
+const { acquireFileLock, releaseFileLock, parseOwner, pidAlive, clearStaleReclaim } = require('../../engine/lib/process-lock.js');
 const loadBrainConfig = () => loadBrainConfigWithVersion().config;
 
 // Resolved per-call (not frozen at module load), same convention as
@@ -134,7 +134,7 @@ async function validateDaemon(serverUrl, retries) {
 
 async function handshake(projectId, url = '') {
   try {
-    const McpClient = require('../mcp-client.js');
+    const McpClient = require('../../engine/mcp-client.js');
     const config = loadBrainConfig();
     const mcpCfg = (config.backend && config.backend.mcpMemory) || {};
     const client = new McpClient({

@@ -10,7 +10,7 @@ const path = require('path');
 
 function run(event, deps = {}) {
   try {
-    const load = deps.loadConfig || (() => require(path.join(__dirname, 'lib', 'brain-config.js')).load());
+    const load = deps.loadConfig || (() => require(path.join(__dirname, '..', 'engine', 'lib', 'brain-config.js')).load());
     const b = (load() || {}).backend || {};
     if (b.type === 'mcp-memory') return null;
     const { OFF_ON_LOCAL } = require(path.join(__dirname, 'lib', 'setup-tools.js'));

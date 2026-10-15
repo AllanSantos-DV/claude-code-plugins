@@ -148,7 +148,7 @@ function metricsKeyForId(id) {
  * @returns {string}
  */
 function sessionMetricsKey(eventCwd) {
-  const root = require('./hook-context.js').hookEnv().CLAUDE_PROJECT_DIR || eventCwd;
+  const root = require('./host-env.js').hostEnv().CLAUDE_PROJECT_DIR || eventCwd;
   return root ? metricsKeyFor(root) : 'default';
 }
 

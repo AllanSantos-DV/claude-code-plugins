@@ -33,10 +33,10 @@
  */
 'use strict';
 
-const { settleWithin } = require('./lib/settle-within.js');
+const { settleWithin } = require('../engine/lib/settle-within.js');
 const { performance } = require('node:perf_hooks');
 const { readStdin, parsePayload, emitStopBlock, emitEmpty, emitJson } = require('./lib/hook-io.js');
-const metrics = require('./lib/metrics.js');
+const metrics = require('../engine/lib/metrics.js');
 const hooksConfig = require('./lib/hooks-config.js');
 const telem = require('./lib/stop-telemetry.js');
 
@@ -121,7 +121,7 @@ async function dispatch(event, opts = {}) {
   const shadowRate = typeof opts.shadowRate === 'number' ? opts.shadowRate : (profile === 'free' ? 0 : getShadowRate());
   const onError = typeof opts.onError === 'function' ? opts.onError : () => {};
   const list = Array.isArray(opts.detectors) ? opts.detectors : DETECTORS;
-  const resolveId = typeof opts.resolveProjectId === 'function' ? opts.resolveProjectId : require('./lib/project-id.js').tryResolveProjectId;
+  const resolveId = typeof opts.resolveProjectId === 'function' ? opts.resolveProjectId : require('../engine/lib/project-id.js').tryResolveProjectId;
   const noProjectId = !!(event && typeof event.cwd === 'string' && event.cwd) && !resolveId({ cwd: event.cwd });
   const blocks = [];
   const notices = [];

@@ -25,19 +25,19 @@ const turnJournal = require('./lib/turn-journal.js');
 const pipedStore = require('./lib/piped-store.js');
 const { pipeFilterOf } = require('./curation-guard.js');
 const verifyJournal = require('./lib/verify-journal.js');
-const metrics = require('./lib/metrics.js');
-const { canonicalSig } = require('./lib/command-signature.js');
+const metrics = require('../engine/lib/metrics.js');
+const { canonicalSig } = require('../engine/lib/command-signature.js');
 const oneoff = require('./lib/oneoff-store.js');
-const { classifyCommand } = require('./lib/curation-families.js');
+const { classifyCommand } = require('../engine/lib/curation-families.js');
 const { unwrapShaped, splitTopLevel, planRedirect, RAW_ESCAPE } = require('./lib/curation-redirect.js');
 
 const { findProjectRoot, loadShellsConfig, matchCuratedShell, _tokenize, _pathMatches } = require('./shells-config.js');
 const { classify, successBudgetFor }                            = require('./curation-classifier.js');
 
-const { dataDir } = require('./lib/data-dir.js');
+const { dataDir } = require('../engine/lib/data-dir.js');
 const { hookEnv } = require('./lib/hook-context.js');
 const DATA_DIR = dataDir();
-const brainConfig = require('./lib/brain-config.js');
+const brainConfig = require('../engine/lib/brain-config.js');
 
 // ─── Turn state ──────────────────────────────────────────────────────────────
 // All state lives in the append-only turn journal (lib/turn-journal.js) —

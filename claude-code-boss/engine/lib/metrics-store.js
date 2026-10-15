@@ -30,27 +30,28 @@ const fs = require('fs');
 const path = require('path');
 const { loadSqlite } = require('./sqlite-compat');
 
-const { dataDir } = require('./data-dir.js');
-const STORE_DIR = dataDir();
+// opts.dataDir on init / isolated reads / listProjects (a host passing its own), else the resolved data dir.
+const storeDir = require('./data-dir.js').dirResolver();
 
 const VALID_EVENT_NAME = /^[a-z][a-z0-9._-]{1,63}$/;
 
 let _db = null;
 let _floor = 0; // carried-over floor of the open db (floorFor)
 let _project = null;
+let _dir = null; // data dir of the open db
 // Open connections by project, least recently used first. The daemon serves several
 // sessions at once: with one connection, every interleaved hook paid close + open +
 // pragmas + CREATE IF NOT EXISTS + migration check (5,35 ms vs 0,10 ms per insert).
 const MAX_OPEN = 8;
-const _open = new Map(); // project -> { db, insert }
+const _open = new Map(); // `${dir}|${project}` -> { db, insert, dir, project }
 let _insert = null;
 
-function metricsDir(project) {
-  return path.join(STORE_DIR, 'metrics', project);
+function metricsDir(project, dir = _dir || storeDir()) {
+  return path.join(dir, 'metrics', project);
 }
 
-function dbPath(project) {
-  return path.join(metricsDir(project), 'metrics.db');
+function dbPath(project, dir) {
+  return path.join(metricsDir(project, dir), 'metrics.db');
 }
 
 function createTables(db) {
@@ -75,11 +76,11 @@ function createTables(db) {
  * table. Marked by a sentinel file so it runs at most once per project — a
  * clean cutover, not an ongoing dual-read.
  */
-function migrateLegacyIfNeeded(project, db) {
-  const marker = path.join(metricsDir(project), '.migrated-from-brain-db');
+function migrateLegacyIfNeeded(project, db, dir) {
+  const marker = path.join(metricsDir(project, dir), '.migrated-from-brain-db');
   if (fs.existsSync(marker)) return;
   try {
-    const legacyPath = path.join(STORE_DIR, 'brain', project, 'brain.db');
+    const legacyPath = path.join(dir, 'brain', project, 'brain.db');
     if (fs.existsSync(legacyPath)) {
       const Database = loadSqlite();
       if (Database) {
@@ -114,30 +115,33 @@ function migrateLegacyIfNeeded(project, db) {
   }
 }
 
-/** Open (or reuse) the metrics DB for `project`. Never throws; false = unavailable. */
-function init({ project = 'default' } = {}) {
-  if (_db && _project === project) return true;
-  const cached = _open.get(project);
+/** Open (or reuse) the metrics DB for `project` (under `dataDir`, default the resolved one). Never throws; false = unavailable. */
+function init({ project = 'default', dataDir } = {}) {
+  const dir = storeDir({ dataDir });
+  if (_db && _project === project && _dir === dir) return true;
+  const key = dir + '|' + project;
+  const cached = _open.get(key);
   if (cached) {
-    _open.delete(project);
-    _open.set(project, cached); // most recently used
+    _open.delete(key);
+    _open.set(key, cached); // most recently used
     _db = cached.db;
     _insert = cached.insert;
     _project = project;
-    _floor = floorFor(project);
+    _dir = dir;
+    _floor = floorFor(project, dir);
     return true;
   }
   const Database = loadSqlite();
   if (!Database) return false;
   let db = null;
   try {
-    fs.mkdirSync(metricsDir(project), { recursive: true });
-    db = new Database(dbPath(project));
+    fs.mkdirSync(metricsDir(project, dir), { recursive: true });
+    db = new Database(dbPath(project, dir));
     db.pragma('journal_mode = WAL');
     db.pragma('synchronous = NORMAL');
     db.pragma('busy_timeout = 5000');
     createTables(db);
-    migrateLegacyIfNeeded(project, db);
+    migrateLegacyIfNeeded(project, db, dir);
     const insert = db.prepare(
       `INSERT INTO metrics_event (ts, event_name, payload, session_id, project) VALUES (?, ?, ?, ?, ?)`
     );
@@ -146,11 +150,12 @@ function init({ project = 'default' } = {}) {
       _open.delete(oldest);
       try { entry.db.close(); } catch (err) { console.error(`[metrics-store] close failed (${oldest}): ${err.message}`); }
     }
-    _open.set(project, { db, insert });
+    _open.set(key, { db, insert });
     _db = db;
     _insert = insert;
     _project = project;
-    _floor = floorFor(project);
+    _dir = dir;
+    _floor = floorFor(project, dir);
     return true;
   } catch (err) {
     console.error(`[metrics-store] init failed (${project}): ${err.message}`);
@@ -158,6 +163,7 @@ function init({ project = 'default' } = {}) {
     _db = null;
     _insert = null;
     _project = null;
+    _dir = null;
     return false;
   }
 }
@@ -172,6 +178,7 @@ function close() {
   _insert = null;
   _floor = 0;
   _project = null;
+  _dir = null;
 }
 
 function safeParseJson(s) {
@@ -221,16 +228,17 @@ function getEventLog({ eventName = null, limit = 50, sinceTs = null } = {}) {
  * different project is the active one for this hook run). Read-only; []
  * if the DB file or SQLite backend is unavailable.
  */
-function getEventLogIsolated(project, { eventName = null, limit = 50, sinceTs = null } = {}) {
+function getEventLogIsolated(project, { eventName = null, limit = 50, sinceTs = null, dataDir } = {}) {
   const Database = loadSqlite();
   if (!Database) return [];
-  const p = dbPath(project);
+  const dir = storeDir({ dataDir });
+  const p = dbPath(project, dir);
   if (!fs.existsSync(p)) return [];
   const cap = windowCap(limit, sinceTs);
   let db;
   try { db = new Database(p); } catch (e) { console.error('[metrics-store] isolated open failed:', p, e.message); return []; }
   try {
-    const lo = lowerBound(sinceTs, floorFor(project));
+    const lo = lowerBound(sinceTs, floorFor(project, dir));
     const rows = eventName
       ? db.prepare(`SELECT id, ts, event_name, payload, session_id, project
                       FROM metrics_event WHERE event_name = ? AND ts >= ? ORDER BY ts DESC LIMIT ?`).all(eventName, lo, cap)
@@ -256,7 +264,7 @@ function getEventLogIsolated(project, { eventName = null, limit = 50, sinceTs = 
  * tallies are exact regardless of volume. `json_extract` requires SQLite's JSON1
  * (bundled in node:sqlite) — if it's ever unavailable it throws, which we log and
  * turn into `[]` (honest empty, never a crash).
- * @param {{eventName:string, sinceTs:number}} opts
+ * @param {{eventName:string, sinceTs:number, dataDir?:string}} opts
  * @returns {Array<{activationId:(string|null), outcome:(string|null), count:number}>}
  */
 function getEvaluationCounts({ eventName, sinceTs = 0 } = {}) {
@@ -286,11 +294,11 @@ function getEvaluationCounts({ eventName, sinceTs = 0 } = {}) {
  * @param {{eventName:string, sinceTs:number}} opts
  * @returns {Array<{activationId:(string|null), outcome:(string|null), count:number}>}
  */
-function getEvaluationCountsIsolated(project, { eventName, sinceTs = 0 } = {}) {
+function getEvaluationCountsIsolated(project, { eventName, sinceTs = 0, dataDir } = {}) {
   if (!eventName) return [];
   const Database = loadSqlite();
   if (!Database) return [];
-  const p = dbPath(project);
+  const p = dbPath(project, storeDir({ dataDir }));
   if (!fs.existsSync(p)) return [];
   let db;
   try { db = new Database(p, { readonly: true }); }
@@ -351,11 +359,12 @@ function getMetricsSummary(rangeDays = 7) {
 const USAGE_ERA_EVENTS = ['curation.used', 'curation.redirected', 'curation.piped', 'curation.uncovered',
   'curation.skipped', 'curation.pending', 'curation.bypass', 'curation.shaped'];
 
-function getCurationUsageIsolated(project, sinceTs = 0) {
+function getCurationUsageIsolated(project, sinceTs = 0, { dataDir } = {}) {
   const Database = loadSqlite();
   const empty = { historyFromTs: null, usedIds: [] };
   if (!Database) return empty;
-  const p = dbPath(project);
+  const dir = storeDir({ dataDir });
+  const p = dbPath(project, dir);
   if (!fs.existsSync(p)) return empty;
   let db;
   try { db = new Database(p); } catch (e) { console.error('[metrics-store] usage open failed:', p, e.message); return empty; }
@@ -364,7 +373,7 @@ function getCurationUsageIsolated(project, sinceTs = 0) {
     // (3.0). NOT any curation.* event: curation.flagged dates back to 2.x, which made a
     // 2.x→3.0 install pass the history check on day one and list in-use scripts as
     // "never ran" (pre-release audit: 23 of 42 on a real project).
-    const lo = lowerBound(0, floorFor(project)); // the carried-over history belongs to the project-id key now
+    const lo = lowerBound(0, floorFor(project, dir)); // the carried-over history belongs to the project-id key now
     const first = db.prepare(`SELECT MIN(ts) AS t FROM metrics_event WHERE ts >= ? AND event_name IN (${USAGE_ERA_EVENTS.map(() => '?').join(',')})`).get(lo, ...USAGE_ERA_EVENTS);
     const rows = db.prepare(`SELECT DISTINCT COALESCE(json_extract(payload,'$.scriptId'), json_extract(payload,'$.shellId')) AS id
                                FROM metrics_event
@@ -461,8 +470,8 @@ function windowCap(limit, sinceTs) {
 }
 
 /** Project names that have a metrics DB on disk (for cross-project aggregation). */
-function listProjects() {
-  const base = path.join(STORE_DIR, 'metrics');
+function listProjects({ dataDir } = {}) {
+  const base = path.join(storeDir({ dataDir }), 'metrics');
   if (!fs.existsSync(base)) return [];
   return fs.readdirSync(base).filter(p => fs.existsSync(path.join(base, p, 'metrics.db')));
 }
@@ -475,9 +484,9 @@ function listProjects() {
  * same-named repo without an id, sessions still on the previous build) — pre-release audit 3.2.1.
  * @returns {number} 0 when the db was never carried over
  */
-function floorFor(project) {
+function floorFor(project, dir) {
   try {
-    const m = JSON.parse(fs.readFileSync(path.join(metricsDir(project), 'adopted.json'), 'utf8'));
+    const m = JSON.parse(fs.readFileSync(path.join(metricsDir(project, dir), 'adopted.json'), 'utf8'));
     return Number.isFinite(Number(m.at)) ? Number(m.at) : 0;
   } catch (err) {
     if (err.code !== 'ENOENT') console.error(`[metrics-store] adopted.json of ${project} unreadable — no floor: ${err.message}`);

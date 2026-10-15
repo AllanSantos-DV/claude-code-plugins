@@ -12,9 +12,9 @@
 const fs = require('fs');
 const path = require('path');
 
-const { sanitizeSessionId } = require('./session-id.js');
-const { dataDir } = require('./data-dir.js');
-const { writeJsonAtomic } = require('./atomic-write.js');
+const { sanitizeSessionId } = require('../../engine/lib/session-id.js');
+const { dataDir } = require('../../engine/lib/data-dir.js');
+const { writeJsonAtomic } = require('../../engine/lib/atomic-write.js');
 
 const DATA_DIR = dataDir();
 const RUNTIME_DIR = path.join(DATA_DIR, '.runtime');

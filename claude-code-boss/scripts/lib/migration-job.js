@@ -34,7 +34,7 @@ function start(deps = {}) {
   // Idempotência: uma migração de cada vez (o botão não pode empilhar corridas).
   if (_running) return { started: false, job: _job };
 
-  const peekMode = deps.peekMode || (() => require('../brain-backend.js').peekMode());
+  const peekMode = deps.peekMode || (() => require('../../engine/brain-backend.js').peekMode());
   const migrate = deps.migrateLocalToMcp
     || ((o, d) => require('../brain-migrate.js').migrateLocalToMcp(o, d));
   const verify = deps.verifyMigration

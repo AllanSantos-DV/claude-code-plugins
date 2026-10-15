@@ -17,11 +17,11 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { sanitizeSessionId } = require('./session-id.js');
-const { dataDir } = require('./data-dir.js');
+const { sanitizeSessionId } = require('../../engine/lib/session-id.js');
+const { dataDir } = require('../../engine/lib/data-dir.js');
 const { packCycles } = require('./transcript-block.js');
 const { readLastTurns } = require('./transcript-turns.js');
-const { writeFileAtomic } = require('./atomic-write.js');
+const { writeFileAtomic } = require('../../engine/lib/atomic-write.js');
 
 const SEEN_CAP = 5000;
 

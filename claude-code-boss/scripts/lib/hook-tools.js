@@ -167,7 +167,7 @@ async function runHookInline(pluginRoot, name, args) {
     // curation-paths caches its own copy of the `curation` block: without this an
     // edited curation config was never seen until the daemon restarted.
     refreshConfig(path.join(scripts, 'lib', 'hooks-config.js'), [path.join(scripts, 'curation-paths.js')]);
-    refreshConfig(path.join(scripts, 'lib', 'brain-config.js'));
+    refreshConfig(path.join(scripts, '..', 'engine', 'lib', 'brain-config.js'));
     const ev = rebuildEvent(args);
     const mod = require(path.join(scripts, spec.script));
     // `project_dir` arrives "" (Claude Code doesn't interpolate env vars into mcp_tool
