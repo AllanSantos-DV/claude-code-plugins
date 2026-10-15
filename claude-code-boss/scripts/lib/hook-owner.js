@@ -26,14 +26,7 @@ const KEEP_SEEN = 60;
 const MAX_SHOWN = 3;
 const FAIL_TYPES = new Set(['hook_non_blocking_error', 'hook_cancelled']);
 
-/** Read JSON; a missing file is normal (null), anything else is reported loud and skipped. */
-function readJson(file) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
-  catch (err) {
-    if (err.code !== 'ENOENT') console.error(`[hook-owner] ${file} unreadable (${err.message}) — skipped`);
-    return null;
-  }
-}
+const readJson = (file) => require('./json-file.js').readJsonLoud(file, 'hook-owner');
 
 function claudeDir(env = process.env) {
   return env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude');

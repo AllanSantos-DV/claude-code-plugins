@@ -82,15 +82,7 @@ function escalationPath(sessionId) {
   return path.join(RUNTIME_DIR, `curation-stop-${sanitizeSessionId(sessionId)}.json`);
 }
 
-function loadJson(p) {
-  try {
-    if (!fs.existsSync(p)) return null;
-    return JSON.parse(fs.readFileSync(p, 'utf-8'));
-  } catch (err) {
-    console.error(`[CURATION-STOP] load failed (${p}): ${err.message}`);
-    return null;
-  }
-}
+const loadJson = (p) => require('./lib/json-file.js').readJsonLoud(p, 'CURATION-STOP');
 
 function saveJson(p, data) {
   try {

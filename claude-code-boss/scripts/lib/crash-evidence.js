@@ -50,12 +50,7 @@ function pidAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
 }
 
-function readJson(file) {
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (err) {
-    if (err.code !== 'ENOENT') console.error(`[crash-evidence] ${file} unreadable: ${err.message}`);
-    return null;
-  }
-}
+const readJson = (file) => require('./json-file.js').readJsonLoud(file, 'crash-evidence');
 
 /**
  * The lock of a daemon that died without shutting down, or null.

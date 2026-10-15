@@ -6,8 +6,20 @@ const fs = require('fs');
 const path = require('path');
 const { writeJsonAtomic } = require('./atomic-write.js');
 
+/** Read JSON or `fallback`. A missing file is normal; a corrupt or unreadable one falls back too, but SAYS so. */
 function readJsonSafe(p, fallback) {
-  try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { /* absent or corrupt: use fallback */ return fallback; }
+  try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch (err) {
+    if (err.code !== 'ENOENT') console.error(`[json-file] ${p} unreadable (${err.message}) — using the fallback`);
+    return fallback;
+  }
+}
+
+/** Read JSON; missing → null, anything else reported (tagged `label`) and → null. */
+function readJsonLoud(p, label = 'json-file') {
+  try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch (err) {
+    if (err.code !== 'ENOENT') console.error(`[${label}] ${p} unreadable: ${err.message}`);
+    return null;
+  }
 }
 
 function writeJsonSafe(p, obj) {
@@ -15,7 +27,7 @@ function writeJsonSafe(p, obj) {
     fs.mkdirSync(path.dirname(p), { recursive: true });
     writeJsonAtomic(p, obj);
     return true;
-  } catch { /* write failed (perms/disk): caller sees false */ return false; }
+  } catch (err) { console.error(`[json-file] write failed (${p}): ${err.message}`); return false; }
 }
 
 /** Atomic JSON write that LOGS a failure (tagged `label`) and reports it as false. */
@@ -29,4 +41,4 @@ function saveJson(p, obj, label) {
   }
 }
 
-module.exports = { readJsonSafe, writeJsonSafe, saveJson };
+module.exports = { readJsonSafe, readJsonLoud, writeJsonSafe, saveJson };
