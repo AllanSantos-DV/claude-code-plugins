@@ -413,7 +413,7 @@ html{scroll-behavior:auto}
       <div class="mini">
         <p class="k">sem enforcement</p>
         <b>free</b>
-        <p>Passa tudo: o Stop-dispatcher faz short-circuit e <b>nada bloqueia</b>; só o retrieval de contexto no prompt (read-only) segue ativo.</p>
+        <p>Passa tudo: os detectores do Stop e os guards (curadoria, error-guard, escape de shell, PowerShell, formato de arquivo, políticas, pesquisa ativa) ficam desligados — <b>nada bloqueia nem reescreve</b>; só o retrieval de contexto no prompt (read-only) segue ativo.</p>
       </div>
     </div>
 
