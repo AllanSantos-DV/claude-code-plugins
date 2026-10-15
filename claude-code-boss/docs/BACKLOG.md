@@ -14,7 +14,7 @@
 - **Melhoria proposta (fora do escopo, não feita)**: o `install-local.mjs` poderia avisar quando o marketplace tem `autoUpdate: true`, já que a
   instalação local dura só até a próxima abertura de sessão.
 
-## Auditoria de custo fixo no Doctor (pedido do orquestrador, 2026-10-14) — implementada, aguardando a validação do Allan
+## Auditoria de custo fixo no Doctor (pedido do orquestrador, 2026-10-14) — implementada e validada pelo Allan na máquina dele (2026-10-15)
 
 O que cada mensagem paga antes de o usuário escrever: prompt de sistema, definições de ferramentas (MCP), lista de skills,
 plugins, arquivos de instrução, mensagens e contexto. O contexto já estava tratado; o resto passou a ser medido
@@ -473,7 +473,7 @@ reais do custo-agente, 10–14/10), `mech.mjs` (compactação mecânica).
   daemon via execArgv, ou seja, quando o daemon foi iniciado à mão ou por outra ferramenta.
 - **Encontrado e corrigido na hora:** o lint `require-windows-hide` rejeitava `spawnSync` usado como default de parâmetro. Troquei pelo wrapper
   `hiddenSpawnSync` (crash-evidence e doctor).
-- [x] **Resolvido (branch `fix/node-autoselect-embedder-none`, 3.9.0, aguardando validação do Allan) — correção automática do Node:** o
+- [x] **Resolvido (branch `fix/node-autoselect-embedder-none`, 3.9.0, validado pelo Allan em 2026-10-15) — correção automática do Node:** o
   supervisor e o router sobem num Node 22/24 instalado quando o padrão está fora da faixa (`lib/node-support.js` `pickSupportedNode`;
   testes "pickSupportedNode", "nodeCandidates", "unsupported default Node", "checkNode: a default Node 25").
 - [x] **Resolvido (mesma branch) — provider de embedder `none`:** manual ou forçado pelo teste de carga (`lib/embedder-guard.js`; testes
@@ -551,10 +551,10 @@ não são do boss (hook do orquestrador).
   um turno completo. Agora o detector devolve `{ notice }`; o dispatcher junta os avisos num `systemMessage` (só o
   usuário vê, nenhum turno extra) e o CLI avulso (`runStopDetectorCli`) faz o mesmo. Testes: `session-summary.run` (sem
   `block`), `stop-dispatcher.withNotices` (aviso sozinho → `{systemMessage}`, nunca `decision:block`).
-- [ ] **Aberto (decisão de produto) — `decision-promote` ainda bloqueia o Stop a cada commit com cara de decisão
+- [x] **Fechado sem ação em 2026-10-15 (decisão de produto, reabre se o Allan pedir) — `decision-promote` ainda bloqueia o Stop a cada commit com cara de decisão
   (`scripts/decision-promote.js`)**: pede `brain_store`, então o turno extra tem função; custo medido US$ 0,18–0,25 por
   bloco (5 blocos hoje). Só vale mexer se o Allan quiser menos capturas de decisão; em `standard` já está desligado.
-- [ ] **Adiado — medir o ganho real da janela de 120k (3.2.9; corte 2026-10-12T14:02:31Z; baseline US$ 474,24 em 7.049
+- [x] **Fechado em 2026-10-15 (perdeu o objeto: a 3.9.0 trocou a janela de 120k por 30% da janela do modelo, só com cache frio, e o custo do corte medido está no relatório de compactação) — medir o ganho real da janela de 120k (3.2.9; corte 2026-10-12T14:02:31Z; baseline US$ 474,24 em 7.049
   chamadas; previsão −12,7%)**: só a partir de **2026-10-14**, rodar `docs/research/compaction-warm-tail`
   (`extract.js`, `sim.js`, `gate-events.js`) apenas com chamadas depois do corte e comparar custo por chamada e tamanho
   do contexto antes/depois de cada compactação. Pedido do orquestrador; registrado. Usar também
@@ -585,7 +585,7 @@ não são do boss (hook do orquestrador).
   8.025 chamadas): US$ 546,04 = transcrições 525,44 + 51 resumos 20,60. Validado por
   `node --test docs/research/compaction-bands/summary-cost.test.js` (6/6: soma das 10 chamadas medidas por faixa a ±2%,
   frio > quente, saída monotônica, `pre` inválido falha alto, `sumUsd`/`native`/`warm` presentes nos livros).
-- [ ] **Aberto (fora do escopo deste repo) — livros de custo externos sem a chamada de resumo**: o livro de uso do
+- [x] **Registrado para o dono externo em 2026-10-15 (nada a fazer neste repo; entra no relatório ao orquestrador) — livros de custo externos sem a chamada de resumo**: o livro de uso do
   orchestrador (`src/usage-book.mjs`) e o custo-agente leem só as transcrições, então ainda subcontam ~US$ 0,17–0,23
   por compactação. Visto ao resolver o item acima. Proposta: em cada `compact_boundary` seguido de entrada
   `isCompactSummary`, somar lido = `preTokens` (quente; gravado 1 h se a chamada anterior foi há ≥ 1 h) + 3.232 de
@@ -2169,7 +2169,7 @@ Lacunas conhecidas do gate de project id (2.29.1):
 
 ## CLI de bootstrap do mcp-memory-server (pedido do whatsapp-bridge, 2026-10-13)
 
-- [ ] **Atualizar servidor JÁ rodando só funciona no Windows** — `scripts/mcp-memory-bootstrap.js ensure/update` reusa `lib/mcp-daemon-restart.js`
+- [x] **Fechado sem ação em 2026-10-15 (limite documentado, falha alto; sem cliente não-Windows não há o que testar) — Atualizar servidor JÁ rodando só funciona no Windows** — `scripts/mcp-memory-bootstrap.js ensure/update` reusa `lib/mcp-daemon-restart.js`
   (`restartForBootUpdate`, Windows-only: inspeciona o PID via PowerShell). Em Linux/macOS com daemon antigo vivo o CLI falha alto
   ("restart auxiliar só é necessário/suportado no Windows"); instalar e subir (daemon parado) funciona em qualquer SO. Correção proposta:
   inspeção por `/proc/<pid>/cmdline` / `ps` no restart. Só vira trabalho quando houver cliente não-Windows.
@@ -2183,12 +2183,12 @@ Lacunas conhecidas do gate de project id (2.29.1):
   *Achado e corrigido na hora*: numa retomada a última resposta conta como mais velha que 2h (`RESUMED_CACHE_AGE_MS`), então o primeiro prompt
   acima do limiar é cortado (corte frio, sem modelo) em vez de reescrever o histórico inteiro. Teste `compaction-core.resumedAnswerAt`. Muda o
   comportamento visível (o primeiro prompt de uma retomada grande passa por corte) — reverter = reverter o commit.
-- [ ] **Item 2 do relatório — ferramenta que entrega o contexto pronto nas rajadas de leitura** (44 rajadas, 401 turnos só lendo, ~US$ 15,87 de teto).
+- [x] **Fechado sem ação em 2026-10-15 (funcionalidade nova que muda o uso: vira pedido ao Allan, não defeito) — Item 2 do relatório — ferramenta que entrega o contexto pronto nas rajadas de leitura** (44 rajadas, 401 turnos só lendo, ~US$ 15,87 de teto).
   Dono: o boss, mas é funcionalidade nova que muda o uso → vira pergunta com pacote ao Allan (reuso: `smart-tool`, `brain_retrieve_context`, `task-map`),
   não implementada.
-- [ ] **Fora do boss (outros donos)**: item 1 (modelo por tipo de tarefa — harness), item 4 (regra do Smart Tool na instrução — smart-tool/harness; a
+- [x] **Registrado para os outros donos em 2026-10-15 — Fora do boss (outros donos)**: item 1 (modelo por tipo de tarefa — harness), item 4 (regra do Smart Tool na instrução — smart-tool/harness; a
   mensagem do hook já nomeia a ferramenta de troca), e troca de modelo na mesma sessão (opus→sonnet) gera miss de cache (explica parte do caso de 470k).
-- [ ] **Sessões abertas antes da instalação ainda carregam `CLAUDE_CODE_AUTO_COMPACT_WINDOW=153000` no env do processo** — por isso houve compactações
+- [x] **Resolvido sozinho em 2026-10-15 (some quando a sessão reinicia; a 3.9.0 devolve o valor gravado pelo boss) — Sessões abertas antes da instalação ainda carregam `CLAUDE_CODE_AUTO_COMPACT_WINDOW=153000` no env do processo** — por isso houve compactações
   automáticas do engine em ~118k em 2026-10-15 (smart-tool 6af663dc, custo-agente f9a74c71/b82a294d). Some sozinho quando essas sessões forem reiniciadas.
 - [x] **Contagem de compactações por sessão** (pedido do orquestrador): `scripts/lib/compaction-episodes.js` (um registro por compactação: quando, modelo,
   janela, antes/depois, % da janela no disparo, boss auto/manual × engine, custo do turno de reescrita), exposto em `/api/metrics/compaction`
